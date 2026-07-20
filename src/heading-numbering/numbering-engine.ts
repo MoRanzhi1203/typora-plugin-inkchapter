@@ -24,6 +24,7 @@ export function computeHeadingNumbering(
   settings: HeadingNumberingSettings,
 ): NumberedHeading[] {
   const counters: number[] = [0, 0, 0, 0, 0, 0] // index 0 = H1, index 5 = H6
+  const skipH1 = !settings.showLevelOneNumber
 
   return headings
     .filter((h) => h.level <= settings.maxDepth)
@@ -48,7 +49,21 @@ export function computeHeadingNumbering(
         }
       }
 
-      const label = activeCounters.join(settings.separator) + settings.suffix
+      // Derive visible counters and label based on showLevelOneNumber setting
+      let visibleCounters: number[]
+      if (skipH1 && idx === 0) {
+        // H1 disabled: chapter boundary only, no visible numbering
+        visibleCounters = []
+      } else if (skipH1) {
+        // H2+: omit the H1 counter level
+        visibleCounters = activeCounters.slice(1)
+      } else {
+        visibleCounters = [...activeCounters]
+      }
+
+      const label = visibleCounters.length > 0
+        ? visibleCounters.join(settings.separator) + settings.suffix
+        : ''
 
       return {
         ...h,

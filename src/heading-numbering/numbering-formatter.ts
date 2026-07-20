@@ -6,11 +6,9 @@ import type { NumberedHeading, HeadingNumberingSettings } from './heading-types'
  */
 export function formatNumberedHeadings(
   headings: NumberedHeading[],
-  settings: HeadingNumberingSettings,
+  _settings: HeadingNumberingSettings,
 ): string[] {
-  return headings.map((h) =>
-    h.counters.join(settings.separator) + settings.suffix,
-  )
+  return headings.map((h) => h.label)
 }
 
 /**

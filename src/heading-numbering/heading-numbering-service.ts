@@ -48,13 +48,23 @@ export class HeadingNumberingService {
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
-    this.numberingSettings = { ...ctx.settings.get('headingNumbering') }
+    this.numberingSettings = this.readNormalizedSettings()
     this.store = new DisposableStore()
 
     this.initAdapter()
     this.setupMutationObserver()
     this.registerEvents()
+    this.registerSettingsListener()
     this.requestRefresh('initial-load')
+  }
+
+  /** Read settings and normalize legacy configs missing showLevelOneNumber. */
+  private readNormalizedSettings(): HeadingNumberingSettings {
+    const raw = this.ctx.settings.get('headingNumbering')
+    return {
+      ...raw,
+      showLevelOneNumber: raw?.showLevelOneNumber ?? false,
+    }
   }
 
   toggle(): void {
@@ -82,11 +92,53 @@ export class HeadingNumberingService {
     logger.info('标题已重新编号')
   }
 
+  /** Toggle level-one heading numbering on/off. */
+  toggleLevelOneNumber(): void {
+    this.setShowLevelOneNumber(!(this.numberingSettings.showLevelOneNumber ?? false))
+  }
+
+  /** Set whether level-one heading shows numbering. */
+  setShowLevelOneNumber(enabled: boolean): void {
+    if (this.numberingSettings.showLevelOneNumber === enabled) return
+
+    this.numberingSettings.showLevelOneNumber = enabled
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+
+    // Force full refresh: H1 decorations must be added/removed, H2+ labels recalculated
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+
+    logger.info(`一级标题编号已${enabled ? '开启' : '关闭'}`)
+  }
+
   dispose(): void {
     this.cancelPending()
     this.disconnectObserver()
     this.adapter.clearNumbering()
     this.store.dispose()
+  }
+
+  // ── Settings sync ──────────────────────────────────────
+
+  /** Listen for external settings changes (e.g. from settings UI) and sync local state. */
+  private registerSettingsListener(): void {
+    const dispose = this.ctx.settings.onChange('headingNumbering', (_key: unknown, value: HeadingNumberingSettings) => {
+      const oldShowLevelOne = this.numberingSettings.showLevelOneNumber
+
+      // Normalize in case stored config lacks the field (legacy compat)
+      this.numberingSettings = {
+        ...value,
+        showLevelOneNumber: value?.showLevelOneNumber ?? false,
+      }
+
+      if (oldShowLevelOne !== this.numberingSettings.showLevelOneNumber) {
+        this.lastSnapshot = null
+        this.renderedStates = null
+        this.flushRefresh()
+      }
+    })
+    this.store.add(dispose)
   }
 
   // ── Scheduler ──────────────────────────────────────────
