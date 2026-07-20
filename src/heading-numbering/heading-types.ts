@@ -11,14 +11,56 @@ export interface NumberedHeading extends HeadingDescriptor {
   label: string
 }
 
+// ── Numbering style types ────────────────────────────────
+
+export type NumberTokenStyle =
+  | 'arabic'
+  | 'chinese'
+  | 'chinese-financial'
+  | 'roman-upper'
+  | 'roman-lower'
+  | 'alpha-upper'
+  | 'alpha-lower'
+  | 'circled'
+
+export type HeadingNumberingPreset =
+  | 'decimal-hierarchical'
+  | 'chinese-chapter'
+  | 'chinese-outline'
+  | 'roman-hierarchical'
+  | 'custom'
+
+export interface HeadingLevelStyle {
+  /** Whether this level shows a number. false = empty token. */
+  enabled: boolean
+  /** The number token type. */
+  tokenStyle: NumberTokenStyle
+  /** Include parent-level numbers in this level's label. */
+  includeParents: boolean
+  /** Text prepended before the number. */
+  prefix: string
+  /** Text appended after the number. */
+  suffix: string
+  /** Separator between this level and the previous level when includeParents is true. */
+  separator: string
+}
+
+// ── Settings ─────────────────────────────────────────────
+
 export interface HeadingNumberingSettings {
   enabled: boolean
   showLevelOneNumber: boolean
+  preset: HeadingNumberingPreset
   maxDepth: HeadingLevel
-  separator: string
-  suffix: string
-  showTrailingSeparator: boolean
+  /** Legacy fields kept for migration; not used in current format. */
+  separator?: string
+  suffix?: string
+  showTrailingSeparator?: boolean
+  /** Per-level style configuration (used when preset = 'custom'). */
+  levels: Record<HeadingLevel, HeadingLevelStyle>
 }
+
+// ── Runtime types ────────────────────────────────────────
 
 export type RefreshReason =
   | 'initial-load'
@@ -36,15 +78,12 @@ export type RefreshReason =
   | 'editor-keyup'
   | 'decoration-repair'
 
-/** Lightweight snapshot of a heading element for dirty checking. */
 export interface HeadingSnapshot {
   key: string
   level: HeadingLevel
 }
 
-/** Full rendered state of a heading including element reference and numbering decoration. */
 export interface RenderedHeadingState {
-  /** Direct element reference; checked via === and isConnected. */
   element: HTMLElement
   key: string
   level: HeadingLevel
