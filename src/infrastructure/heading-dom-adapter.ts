@@ -2,6 +2,8 @@ import type {
   HeadingDescriptor,
   HeadingLevel,
   HeadingSnapshot,
+  RenderedHeadingState,
+  DiffResult,
 } from '../heading-numbering/heading-types'
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
@@ -10,204 +12,215 @@ const NUMBER_ATTR = 'data-inkchapter-heading-number'
 
 /**
  * DOM adapter for heading numbering.
- * Provides editor root access, heading extraction, snapshot creation,
- * diff-based numbering application, and full cleanup.
  */
 export class HeadingDomAdapter {
   private editorRoot: HTMLElement | null = null
-  /** Track currently numbered elements for diff updates. */
-  private numberedElements = new WeakMap<HTMLElement, string>()
 
-  /** Get the current editor root element. */
-  getEditorRoot(): HTMLElement | null {
-    return this.editorRoot
-  }
+  getEditorRoot(): HTMLElement | null { return this.editorRoot }
+  setEditorRoot(el: HTMLElement | null): void { this.editorRoot = el }
+  detectEditorRoot(): HTMLElement | null { return document.getElementById('write') }
 
-  /** Set or clear the editor root. Detaches old reference. */
-  setEditorRoot(el: HTMLElement | null): void {
-    this.editorRoot = el
-  }
-
-  /** Detect the editor root from the document. */
-  detectEditorRoot(): HTMLElement | null {
-    return document.getElementById('write')
-  }
-
-  /**
-   * Extract heading descriptors from the current editor root.
-   * Excludes code blocks, hidden elements, and non-editor regions.
-   */
   collectHeadings(): HeadingDescriptor[] {
-    if (!this.editorRoot) {
-      return []
-    }
-
-    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    if (!this.editorRoot) return []
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     const result: HeadingDescriptor[] = []
-
-    for (let i = 0; i < headingEls.length; i++) {
-      const el = headingEls[i]
-
-      if (this.isInsideExcluded(el)) {
-        continue
-      }
-
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
       const level = parseInt(el.tagName.charAt(1), 10)
-      if (level < 1 || level > 6) {
-        continue
-      }
-
-      result.push({
-        key: this.elementKey(el),
-        level: level as HeadingLevel,
-        text: el.textContent ?? '',
-      })
+      if (level < 1 || level > 6) continue
+      result.push({ key: this.elementKey(el), level: level as HeadingLevel, text: el.textContent ?? '' })
     }
-
     return result
   }
 
-  /**
-   * Create a lightweight snapshot for dirty checking.
-   * Only compares heading structure (element identity + level),
-   * not text content.
-   */
   createHeadingSnapshot(): HeadingSnapshot[] {
-    if (!this.editorRoot) {
-      return []
-    }
-
-    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    if (!this.editorRoot) return []
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     const result: HeadingSnapshot[] = []
-
-    for (let i = 0; i < headingEls.length; i++) {
-      const el = headingEls[i]
-
-      if (this.isInsideExcluded(el)) {
-        continue
-      }
-
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
       const level = parseInt(el.tagName.charAt(1), 10)
-      if (level < 1 || level > 6) {
-        continue
-      }
-
-      result.push({
-        key: this.elementKey(el),
-        level: level as HeadingLevel,
-      })
+      if (level < 1 || level > 6) continue
+      result.push({ key: this.elementKey(el), level: level as HeadingLevel })
     }
-
     return result
   }
 
-  /**
-   * Compare two snapshots. Returns true if heading structure changed.
-   */
   hasStructureChanged(a: HeadingSnapshot[], b: HeadingSnapshot[]): boolean {
-    if (a.length !== b.length) {
-      return true
-    }
+    if (a.length !== b.length) return true
     for (let i = 0; i < a.length; i++) {
-      if (a[i].key !== b[i].key || a[i].level !== b[i].level) {
-        return true
-      }
+      if (a[i].key !== b[i].key || a[i].level !== b[i].level) return true
     }
     return false
   }
 
   /**
-   * Apply numbering with diff-based updates.
-   * - Only sets attribute when value changed
-   * - Only adds class when not already present
-   * - Removes numbering from elements no longer numbered
-   * - Does NOT do full clear-then-rebuild
+   * Check if rendered state is still valid.
+   * Each element must: still be connected, have the class, have correct attr value.
    */
-  applyNumberingDiff(labels: readonly string[]): void {
-    if (!this.editorRoot) {
-      return
+  isRenderedStateValid(states: RenderedHeadingState[]): boolean {
+    if (!this.editorRoot) return false
+    const currentEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    let idx = 0
+    for (let i = 0; i < currentEls.length && idx < states.length; i++) {
+      const el = currentEls[i]
+      if (this.isInsideExcluded(el)) continue
+      if (idx >= states.length) return false
+      const state = states[idx]
+      if (state.element !== el) return false
+      if (!state.element.isConnected) return false
+      if (!el.classList.contains(NUMBERED_CLASS)) return false
+      if (el.getAttribute(NUMBER_ATTR) !== state.label) return false
+      idx++
     }
+    return idx === states.length
+  }
 
-    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
-    const newNumbered = new WeakMap<HTMLElement, string>()
+  /** Build rendered states from current DOM + computed labels. */
+  buildRenderedStates(labels: readonly string[]): RenderedHeadingState[] {
+    if (!this.editorRoot) return []
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const result: RenderedHeadingState[] = []
     let labelIdx = 0
-
-    for (let i = 0; i < headingEls.length; i++) {
-      const el = headingEls[i]
-
-      if (this.isInsideExcluded(el)) {
-        continue
-      }
-
-      if (labelIdx >= labels.length) {
-        continue
-      }
-
-      const label = labels[labelIdx]
-      newNumbered.set(el, label)
-
-      // Diff: only update if changed
-      const currentLabel = el.getAttribute(NUMBER_ATTR)
-      if (currentLabel !== label) {
-        el.setAttribute(NUMBER_ATTR, label)
-      }
-
-      if (!el.classList.contains(NUMBERED_CLASS)) {
-        el.classList.add(NUMBERED_CLASS)
-      }
-
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (labelIdx >= labels.length) continue
+      const level = parseInt(el.tagName.charAt(1), 10)
+      result.push({
+        element: el,
+        key: this.elementKey(el),
+        level: level as HeadingLevel,
+        label: labels[labelIdx],
+      })
       labelIdx++
     }
-
-    // Remove numbering from elements no longer in the list
-    for (let i = 0; i < headingEls.length; i++) {
-      const el = headingEls[i]
-
-      if (this.isInsideExcluded(el)) {
-        continue
-      }
-
-      const wasNumbered = this.numberedElements.has(el) && el.classList.contains(NUMBERED_CLASS)
-      const isNumbered = newNumbered.has(el)
-
-      if (wasNumbered && !isNumbered) {
-        el.classList.remove(NUMBERED_CLASS)
-        el.removeAttribute(NUMBER_ATTR)
-      }
-    }
-
-    // Update tracking
-    this.numberedElements = newNumbered
+    return result
   }
 
   /**
-   * Remove all heading numbering. Used for toggle-off and cleanup.
+   * Apply numbering with diff-based updates. Returns diff stats.
    */
-  clearNumbering(): void {
-    if (!this.editorRoot) {
-      return
+  applyNumberingDiff(labels: readonly string[]): DiffResult {
+    let scanned = 0, repaired = 0, updated = 0, removed = 0
+    if (!this.editorRoot) return { scanned, repaired, updated, removed }
+
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const newNumbered = new Set<HTMLElement>()
+    let labelIdx = 0
+
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+
+      if (labelIdx < labels.length) {
+        const label = labels[labelIdx]
+        scanned++
+        newNumbered.add(el)
+        labelIdx++
+
+        const currentLabel = el.getAttribute(NUMBER_ATTR)
+        const hasClass = el.classList.contains(NUMBERED_CLASS)
+
+        // Repair: element missing class or has wrong attribute
+        if (!hasClass || currentLabel !== label) {
+          if (!hasClass) {
+            el.classList.add(NUMBERED_CLASS)
+            repaired++
+          }
+          if (currentLabel !== label) {
+            el.setAttribute(NUMBER_ATTR, label)
+            updated++
+          }
+        }
+      }
     }
 
-    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(`.${NUMBERED_CLASS}`)
-    for (let i = 0; i < headingEls.length; i++) {
-      headingEls[i].classList.remove(NUMBERED_CLASS)
-      headingEls[i].removeAttribute(NUMBER_ATTR)
+    // Remove numbering from headings no longer in the list
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (!newNumbered.has(el) && el.classList.contains(NUMBERED_CLASS)) {
+        el.classList.remove(NUMBERED_CLASS)
+        el.removeAttribute(NUMBER_ATTR)
+        removed++
+      }
+    }
+
+    return { scanned, repaired, updated, removed }
+  }
+
+  /**
+   * Repair numbering decoration without recomputing labels.
+   * Used when: node replaced but snapshot structure unchanged.
+   */
+  repairDecoration(states: RenderedHeadingState[]): DiffResult {
+    let scanned = 0, repaired = 0, updated = 0, removed = 0
+    if (!this.editorRoot) return { scanned, repaired, updated, removed }
+
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const repairedSet = new Set<HTMLElement>()
+    let labelIdx = 0
+
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+
+      if (labelIdx < states.length) {
+        const label = states[labelIdx].label
+        scanned++
+        repairedSet.add(el)
+        labelIdx++
+
+        const currentLabel = el.getAttribute(NUMBER_ATTR)
+        const hasClass = el.classList.contains(NUMBERED_CLASS)
+
+        if (!hasClass || currentLabel !== label) {
+          if (!hasClass) { el.classList.add(NUMBERED_CLASS); repaired++ }
+          if (currentLabel !== label) { el.setAttribute(NUMBER_ATTR, label); updated++ }
+        }
+      }
+    }
+
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (!repairedSet.has(el) && el.classList.contains(NUMBERED_CLASS)) {
+        el.classList.remove(NUMBERED_CLASS)
+        el.removeAttribute(NUMBER_ATTR)
+        removed++
+      }
+    }
+
+    return { scanned, repaired, updated, removed }
+  }
+
+  clearNumbering(): void {
+    if (!this.editorRoot) return
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(`.${NUMBERED_CLASS}`)
+    for (let i = 0; i < els.length; i++) {
+      els[i].classList.remove(NUMBERED_CLASS)
+      els[i].removeAttribute(NUMBER_ATTR)
     }
   }
 
-  /** Generate a stable key for a heading element. */
+  /** Check if any previously numbered element is disconnected. */
+  hasDisconnectedElements(states: RenderedHeadingState[]): boolean {
+    for (const s of states) {
+      if (!s.element.isConnected || !s.element.classList.contains(NUMBERED_CLASS)) return true
+    }
+    return false
+  }
+
   private elementKey(el: HTMLElement): string {
     return `${el.tagName}-${el.getAttribute('data-line') ?? ''}-${el.id ?? ''}`
   }
 
-  /** Check if an element is inside excluded regions. */
   private isInsideExcluded(el: HTMLElement): boolean {
-    if (el.closest('pre, code, .md-codeblock')) {
-      return true
-    }
-    if (el.closest('[hidden], template')) {
-      return true
-    }
+    if (el.closest('pre, code, .md-codeblock')) return true
+    if (el.closest('[hidden], template')) return true
     return false
   }
 }

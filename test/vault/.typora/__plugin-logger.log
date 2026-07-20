@@ -102,3 +102,264 @@
  D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
 [2026-07-20T12:08:45.473Z] DEBUG [Events] workspace @file:open
  D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\doc.md
+[2026-07-20T12:11:21.772Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:23.076Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:23.891Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:29.973Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:31.510Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:33.413Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:34.412Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:37.512Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:38.755Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:40.885Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:43.465Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:43.894Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:44.678Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:47.715Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:48.652Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:49.360Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:51.231Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:52.352Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:53.019Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:54.223Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:55.316Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:11:56.375Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:03.529Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:18.773Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:19.698Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:21.933Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:25.380Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:26.468Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:27.053Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:31.441Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:32.248Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:37.146Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:39.047Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:39.927Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:46.283Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:49.399Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:50.602Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:54.483Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:55.328Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:12:57.220Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:13:01.061Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:13:02.090Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:13:05.708Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:13:07.831Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:13:15.218Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:13:15.923Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:25:24.085Z] DEBUG [Config] Config @switch
+
+[2026-07-20T12:25:24.117Z] DEBUG [Events] undefined @layout-changed
+
+[2026-07-20T12:25:24.139Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:25:24.139Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:25:24.140Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:25:24.140Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:25:24.141Z] DEBUG [Events] undefined @layout-changed
+
+[2026-07-20T12:25:24.519Z] DEBUG [Events] markdown-editor @load
+ {"jQuery331079840025049976271":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":363,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-07-20T12:25:24.549Z] WARN  [Config] Failed to load config "data/ranzhi.inkchapter.json"
+[2026-07-20T12:25:24.553Z] DEBUG [Events] app @load
+
+[2026-07-20T12:25:24.559Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-07-20T12:25:24.563Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\doc.md
+[2026-07-20T12:30:23.203Z] DEBUG [Config] Config @switch
+
+[2026-07-20T12:30:23.258Z] DEBUG [Events] undefined @layout-changed
+
+[2026-07-20T12:30:23.278Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:30:23.278Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:30:23.278Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:30:23.279Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:30:23.279Z] DEBUG [Events] undefined @layout-changed
+
+[2026-07-20T12:30:23.580Z] DEBUG [Events] markdown-editor @load
+ {"jQuery331045239034533840771":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":363,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-07-20T12:30:23.795Z] WARN  [Config] Failed to load config "data/ranzhi.inkchapter.json"
+[2026-07-20T12:30:23.798Z] DEBUG [Events] app @load
+
+[2026-07-20T12:30:23.801Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-07-20T12:30:23.802Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\doc.md
+[2026-07-20T12:34:42.554Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:43.199Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:44.211Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:46.158Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:46.603Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:48.949Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:53.669Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:54.512Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:55.815Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:56.504Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:58.219Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:34:59.922Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:02.811Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:03.914Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:05.714Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:07.712Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:09.265Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:15.249Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:16.823Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:18.114Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:20.222Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:21.580Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:22.503Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:25.143Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:25.673Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:35:30.466Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:37:40.212Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:37:40.802Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:37:41.866Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:37:45.917Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:37:49.724Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:37:51.610Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:38:37.390Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:38:38.001Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:41:48.190Z] DEBUG [Config] Config @switch
+
+[2026-07-20T12:41:48.256Z] DEBUG [Events] undefined @layout-changed
+
+[2026-07-20T12:41:48.271Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:41:48.272Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:41:48.272Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:41:48.272Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\doc.md"}}
+[2026-07-20T12:41:48.272Z] DEBUG [Events] undefined @layout-changed
+
+[2026-07-20T12:41:48.585Z] WARN  [Config] Failed to load config "data/ranzhi.inkchapter.json"
+[2026-07-20T12:41:48.588Z] DEBUG [Events] app @load
+
+[2026-07-20T12:41:48.594Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-07-20T12:41:48.595Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\doc.md
+[2026-07-20T12:41:48.613Z] DEBUG [Events] markdown-editor @load
+ {"jQuery331056279019111438951":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":363,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-07-20T12:42:32.245Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:34.255Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:36.559Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:37.158Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:40.386Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:42.083Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:43.113Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:43.696Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:45.603Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:46.850Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:42:47.421Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:43:02.832Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:43:12.645Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:43:23.318Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:44:21.425Z] DEBUG [Events] markdown-editor @edit
+
+[2026-07-20T12:44:43.809Z] DEBUG [Settings] Saving settings to core.json
+[2026-07-20T12:44:44.986Z] DEBUG [Settings] Saving settings to core.json
