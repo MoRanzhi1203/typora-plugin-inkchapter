@@ -68,10 +68,13 @@ function buildLabel(
   const startIdx = skipH1 ? 1 : 0
 
   if (style.includeParents) {
-    // Build concatenated label from startIdx to currentIdx
+    // Build concatenated label from startIdx to currentIdx.
+    // When H1 is hidden (skipH1=true), shift style indices so that
+    // the first visible position (i=1) inherits H1's tokenStyle.
     const parts: string[] = []
     for (let i = startIdx; i <= currentIdx; i++) {
-      const lv = (i + 1) as HeadingLevel
+      const styleIdx = skipH1 ? i : i + 1
+      const lv = styleIdx as HeadingLevel
       const st = levelStyles[lv]
       if (!st || !st.enabled) continue
       const token = formatToken(activeCounters[i], st.tokenStyle)
