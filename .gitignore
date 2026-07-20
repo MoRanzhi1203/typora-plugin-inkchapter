@@ -8,6 +8,10 @@ yalc.lock
 # output
 dist/
 plugin.zip
+*.map
+
+# logs
+*.log
 
 # trae
-.trae/memory/
+.trae/

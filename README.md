@@ -1,8 +1,14 @@
-# Typora Plugin Example
+# 墨章 InkChapter
 
-This is a plugin based on [typora-community-plugin](https://github.com/typora-community-plugin/typora-community-plugin) for [Typora](https://typora.io).
+面向 Typora 的 Markdown 文档结构与排版增强插件。
 
+## 规划功能
 
-## Development Documentation
+- 标题自动编号与多种编号格式
+- 段落顶格和首行缩进二字符
+- 图题、表题插入与自动编号
+- 文档标签与工作流增强
 
-See [Development Documentation](https://github.com/typora-community-plugin/typora-community-plugin/blob/main/docs/en-us/dev-guide/0-dev-docs.md) or [Getting Started](https://github.com/typora-community-plugin/typora-community-plugin/blob/main/docs/en-us/dev-guide/1-getting-started.md)
+## 当前状态
+
+当前处于基础工程阶段，尚未实现正式业务功能。
