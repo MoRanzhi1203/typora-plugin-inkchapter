@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "settings": {
+    "displayLang": "zh-cn",
+    "githubProxy": "github",
+    "showNotSupportedFile": false,
+    "showSearchResultFullPath": false,
+    "showRibbon": true,
+    "openLinkInCurrentWin": true,
+    "quickOpenInCurrentWin": true,
+    "ignoreFile": true,
+    "ignoreFileGlob": ".git",
+    "ribbonState": {}
+  }
+}
