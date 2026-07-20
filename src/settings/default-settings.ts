@@ -6,7 +6,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
     enabled: true,
     maxDepth: 6,
     separator: '.',
-    suffix: ' ',
+    suffix: '',
     showTrailingSeparator: false,
   },
 }
