@@ -71,8 +71,14 @@ export class HeadingDomAdapter {
       const state = states[idx]
       if (state.element !== el) return false
       if (!state.element.isConnected) return false
-      if (!el.classList.contains(NUMBERED_CLASS)) return false
-      if (el.getAttribute(NUMBER_ATTR) !== state.label) return false
+      if (state.label === '') {
+        // Un-numbered heading: must NOT have class or attr
+        if (el.classList.contains(NUMBERED_CLASS)) return false
+        if (el.hasAttribute(NUMBER_ATTR)) return false
+      } else {
+        if (!el.classList.contains(NUMBERED_CLASS)) return false
+        if (el.getAttribute(NUMBER_ATTR) !== state.label) return false
+      }
       idx++
     }
     return idx === states.length
@@ -102,6 +108,7 @@ export class HeadingDomAdapter {
 
   /**
    * Apply numbering with diff-based updates. Returns diff stats.
+   * Empty labels cause removal of numbering decoration (used for un-numbered H1).
    */
   applyNumberingDiff(labels: readonly string[]): DiffResult {
     let scanned = 0, repaired = 0, updated = 0, removed = 0
@@ -118,13 +125,25 @@ export class HeadingDomAdapter {
       if (labelIdx < labels.length) {
         const label = labels[labelIdx]
         scanned++
-        newNumbered.add(el)
         labelIdx++
+
+        if (label === '') {
+          // Empty label: ensure numbering decoration is removed
+          if (el.classList.contains(NUMBERED_CLASS)) {
+            el.classList.remove(NUMBERED_CLASS)
+            removed++
+          }
+          if (el.hasAttribute(NUMBER_ATTR)) {
+            el.removeAttribute(NUMBER_ATTR)
+          }
+          continue
+        }
+
+        newNumbered.add(el)
 
         const currentLabel = el.getAttribute(NUMBER_ATTR)
         const hasClass = el.classList.contains(NUMBERED_CLASS)
 
-        // Repair: element missing class or has wrong attribute
         if (!hasClass || currentLabel !== label) {
           if (!hasClass) {
             el.classList.add(NUMBERED_CLASS)
@@ -173,6 +192,18 @@ export class HeadingDomAdapter {
         scanned++
         repairedSet.add(el)
         labelIdx++
+
+        if (label === '') {
+          // Un-numbered: ensure decoration is removed
+          if (el.classList.contains(NUMBERED_CLASS)) {
+            el.classList.remove(NUMBERED_CLASS)
+            removed++
+          }
+          if (el.hasAttribute(NUMBER_ATTR)) {
+            el.removeAttribute(NUMBER_ATTR)
+          }
+          continue
+        }
 
         const currentLabel = el.getAttribute(NUMBER_ATTR)
         const hasClass = el.classList.contains(NUMBERED_CLASS)
