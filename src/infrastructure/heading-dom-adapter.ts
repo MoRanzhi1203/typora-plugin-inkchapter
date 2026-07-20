@@ -1,4 +1,8 @@
-import type { HeadingDescriptor, HeadingLevel } from '../heading-numbering/heading-types'
+import type {
+  HeadingDescriptor,
+  HeadingLevel,
+  HeadingSnapshot,
+} from '../heading-numbering/heading-types'
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const NUMBERED_CLASS = 'inkchapter-numbered-heading'
@@ -6,38 +10,44 @@ const NUMBER_ATTR = 'data-inkchapter-heading-number'
 
 /**
  * DOM adapter for heading numbering.
- * Scans the Typora writing area for heading elements and applies/removes
- * numbering display via CSS ::before pseudo-elements.
+ * Provides editor root access, heading extraction, snapshot creation,
+ * diff-based numbering application, and full cleanup.
  */
 export class HeadingDomAdapter {
-  private writingArea: HTMLElement | null = null
+  private editorRoot: HTMLElement | null = null
+  /** Track currently numbered elements for diff updates. */
+  private numberedElements = new WeakMap<HTMLElement, string>()
 
-  /** Set the active writing area element. */
-  setWritingArea(el: HTMLElement): void {
-    this.writingArea = el
+  /** Get the current editor root element. */
+  getEditorRoot(): HTMLElement | null {
+    return this.editorRoot
   }
 
-  /** Detect the writing area from the document. */
-  detectWritingArea(): HTMLElement | null {
+  /** Set or clear the editor root. Detaches old reference. */
+  setEditorRoot(el: HTMLElement | null): void {
+    this.editorRoot = el
+  }
+
+  /** Detect the editor root from the document. */
+  detectEditorRoot(): HTMLElement | null {
     return document.getElementById('write')
   }
 
   /**
-   * Extract heading descriptors from the current writing area.
-   * Excludes headings inside code blocks, templates, and non-editor regions.
+   * Extract heading descriptors from the current editor root.
+   * Excludes code blocks, hidden elements, and non-editor regions.
    */
-  getHeadings(): HeadingDescriptor[] {
-    if (!this.writingArea) {
+  collectHeadings(): HeadingDescriptor[] {
+    if (!this.editorRoot) {
       return []
     }
 
-    const headingEls = this.writingArea.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     const result: HeadingDescriptor[] = []
 
     for (let i = 0; i < headingEls.length; i++) {
       const el = headingEls[i]
 
-      // Exclude headings inside code blocks or hidden elements
       if (this.isInsideExcluded(el)) {
         continue
       }
@@ -48,7 +58,7 @@ export class HeadingDomAdapter {
       }
 
       result.push({
-        key: this.getHeadingKey(el, i),
+        key: this.elementKey(el),
         level: level as HeadingLevel,
         text: el.textContent ?? '',
       })
@@ -58,15 +68,68 @@ export class HeadingDomAdapter {
   }
 
   /**
-   * Apply numbering labels to heading elements.
-   * Does NOT modify text content; only sets class + data attribute.
+   * Create a lightweight snapshot for dirty checking.
+   * Only compares heading structure (element identity + level),
+   * not text content.
    */
-  applyNumbering(labels: readonly string[]): void {
-    if (!this.writingArea) {
+  createHeadingSnapshot(): HeadingSnapshot[] {
+    if (!this.editorRoot) {
+      return []
+    }
+
+    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const result: HeadingSnapshot[] = []
+
+    for (let i = 0; i < headingEls.length; i++) {
+      const el = headingEls[i]
+
+      if (this.isInsideExcluded(el)) {
+        continue
+      }
+
+      const level = parseInt(el.tagName.charAt(1), 10)
+      if (level < 1 || level > 6) {
+        continue
+      }
+
+      result.push({
+        key: this.elementKey(el),
+        level: level as HeadingLevel,
+      })
+    }
+
+    return result
+  }
+
+  /**
+   * Compare two snapshots. Returns true if heading structure changed.
+   */
+  hasStructureChanged(a: HeadingSnapshot[], b: HeadingSnapshot[]): boolean {
+    if (a.length !== b.length) {
+      return true
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].key !== b[i].key || a[i].level !== b[i].level) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Apply numbering with diff-based updates.
+   * - Only sets attribute when value changed
+   * - Only adds class when not already present
+   * - Removes numbering from elements no longer numbered
+   * - Does NOT do full clear-then-rebuild
+   */
+  applyNumberingDiff(labels: readonly string[]): void {
+    if (!this.editorRoot) {
       return
     }
 
-    const headingEls = this.writingArea.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const newNumbered = new WeakMap<HTMLElement, string>()
     let labelIdx = 0
 
     for (let i = 0; i < headingEls.length; i++) {
@@ -76,60 +139,75 @@ export class HeadingDomAdapter {
         continue
       }
 
-      if (labelIdx < labels.length) {
+      if (labelIdx >= labels.length) {
+        continue
+      }
+
+      const label = labels[labelIdx]
+      newNumbered.set(el, label)
+
+      // Diff: only update if changed
+      const currentLabel = el.getAttribute(NUMBER_ATTR)
+      if (currentLabel !== label) {
+        el.setAttribute(NUMBER_ATTR, label)
+      }
+
+      if (!el.classList.contains(NUMBERED_CLASS)) {
         el.classList.add(NUMBERED_CLASS)
-        el.setAttribute(NUMBER_ATTR, labels[labelIdx])
-        labelIdx++
+      }
+
+      labelIdx++
+    }
+
+    // Remove numbering from elements no longer in the list
+    for (let i = 0; i < headingEls.length; i++) {
+      const el = headingEls[i]
+
+      if (this.isInsideExcluded(el)) {
+        continue
+      }
+
+      const wasNumbered = this.numberedElements.has(el) && el.classList.contains(NUMBERED_CLASS)
+      const isNumbered = newNumbered.has(el)
+
+      if (wasNumbered && !isNumbered) {
+        el.classList.remove(NUMBERED_CLASS)
+        el.removeAttribute(NUMBER_ATTR)
       }
     }
+
+    // Update tracking
+    this.numberedElements = newNumbered
   }
 
   /**
-   * Remove all numbering from heading elements.
-   * Removes class and data attribute.
+   * Remove all heading numbering. Used for toggle-off and cleanup.
    */
-  removeNumbering(): void {
-    if (!this.writingArea) {
+  clearNumbering(): void {
+    if (!this.editorRoot) {
       return
     }
 
-    const headingEls = this.writingArea.querySelectorAll<HTMLHeadingElement>(`.${NUMBERED_CLASS}`)
+    const headingEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(`.${NUMBERED_CLASS}`)
     for (let i = 0; i < headingEls.length; i++) {
       headingEls[i].classList.remove(NUMBERED_CLASS)
       headingEls[i].removeAttribute(NUMBER_ATTR)
     }
   }
 
-  /**
-   * Refresh numbering: remove existing, then re-apply with new labels.
-   */
-  refreshNumbering(labels: readonly string[]): void {
-    this.removeNumbering()
-    this.applyNumbering(labels)
-  }
-
-  /** Generate a unique key for a heading element. */
-  private getHeadingKey(el: HTMLElement, index: number): string {
-    return `heading-${el.tagName.toLowerCase()}-${index}`
+  /** Generate a stable key for a heading element. */
+  private elementKey(el: HTMLElement): string {
+    return `${el.tagName}-${el.getAttribute('data-line') ?? ''}-${el.id ?? ''}`
   }
 
   /** Check if an element is inside excluded regions. */
   private isInsideExcluded(el: HTMLElement): boolean {
-    // Exclude code blocks
     if (el.closest('pre, code, .md-codeblock')) {
       return true
     }
-
-    // Exclude hidden/template elements
-    if (el.closest('[hidden], template, [style*="display: none"]')) {
+    if (el.closest('[hidden], template')) {
       return true
     }
-
-    // Exclude non-visible elements
-    if (el.offsetParent === null && el.offsetWidth === 0 && el.offsetHeight === 0) {
-      return true
-    }
-
     return false
   }
 }
