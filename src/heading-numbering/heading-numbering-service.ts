@@ -1,6 +1,11 @@
 import type { PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from '../settings/settings-model'
-import type { HeadingNumberingSettings, HeadingSnapshot, RefreshReason } from './heading-types'
+import type {
+  HeadingNumberingSettings,
+  HeadingSnapshot,
+  RenderedHeadingState,
+  RefreshReason,
+} from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
@@ -8,6 +13,7 @@ import { DisposableStore } from '../utils/disposable-store'
 import * as logger from '../core/logger'
 
 const TAIL_REFRESH_MS = 60
+const FOCUS_TAIL_MS = 50
 
 export interface ServiceContext {
   readonly settings: PluginSettings<InkChapterSettings>
@@ -16,32 +22,28 @@ export interface ServiceContext {
   registerDisposable: (fn: () => void) => void
 }
 
-/**
- * Optimized heading numbering service.
- *
- * Key improvements:
- * - Native input/compositionend for fast trigger (before framework 400ms)
- * - RAF-based scheduler (max 1 per frame, no fixed debounce)
- * - Short tail refresh (60ms) for DOM changes after input
- * - Heading snapshot dirty check: skip recompute if structure unchanged
- * - Diff-based DOM updates: only change what actually changed
- * - Framework edit event kept as compatibility fallback (no extra debounce)
- */
+/** Reasons that mandate a force refresh (skip dirty check entirely). */
+const FORCE_REFRESH_REASONS: Set<RefreshReason> = new Set([
+  'toggle', 'manual', 'initial-load', 'focus-in', 'decoration-repair',
+  'file-open', 'active-leaf-change',
+])
+
 export class HeadingNumberingService {
   private numberingSettings: HeadingNumberingSettings
   private adapter: HeadingDomAdapter
   private store: DisposableStore
   private ctx: ServiceContext
 
-  // Scheduler state
+  // Scheduler
   private rafId: ReturnType<typeof requestAnimationFrame> | null = null
   private tailTimer: ReturnType<typeof setTimeout> | null = null
   private pendingReason: RefreshReason = 'editor-input'
-  private pending = false
 
-  // Dirty check state
+  // State
   private lastSnapshot: HeadingSnapshot[] | null = null
+  private renderedStates: RenderedHeadingState[] | null = null
   private isInComposition = false
+  private mutationObserver: MutationObserver | null = null
 
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
@@ -50,173 +52,226 @@ export class HeadingNumberingService {
     this.store = new DisposableStore()
 
     this.initAdapter()
-    this.registerFastEvents()
-    this.registerFrameworkEvents()
+    this.setupMutationObserver()
+    this.registerEvents()
     this.requestRefresh('initial-load')
   }
 
-  /** Toggle numbering on/off. Saves state. */
   toggle(): void {
     this.numberingSettings.enabled = !this.numberingSettings.enabled
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
 
     if (this.numberingSettings.enabled) {
-      this.lastSnapshot = null // force full refresh
+      this.lastSnapshot = null
+      this.renderedStates = null
       this.requestRefresh('toggle')
     } else {
       this.adapter.clearNumbering()
     }
-
     logger.info(`标题编号已${this.numberingSettings.enabled ? '开启' : '关闭'}`)
   }
 
-  /** Force renumbering. */
   renumber(): void {
     if (!this.numberingSettings.enabled) {
       this.numberingSettings.enabled = true
       this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
     }
     this.lastSnapshot = null
+    this.renderedStates = null
     this.flushRefresh()
     logger.info('标题已重新编号')
   }
 
-  /** Clean up all resources. */
   dispose(): void {
     this.cancelPending()
+    this.disconnectObserver()
     this.adapter.clearNumbering()
     this.store.dispose()
   }
 
   // ── Scheduler ──────────────────────────────────────────
 
-  /** Request a refresh, merged via RAF. Overrides pending reason priority. */
   private requestRefresh(reason: RefreshReason): void {
     if (this.rafId !== null) {
-      return // already scheduled in this frame
+      return
     }
     this.pendingReason = reason
-    this.pending = true
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null
       this.doRefresh(this.pendingReason)
-      this.scheduleTail()
     })
   }
 
-  /** Flush immediately (skips RAF). */
+  private scheduleTail(reason: RefreshReason, ms: number): void {
+    if (this.tailTimer !== null) clearTimeout(this.tailTimer)
+    this.tailTimer = setTimeout(() => {
+      this.tailTimer = null
+      this.doRefresh(reason)
+    }, ms)
+  }
+
   private flushRefresh(): void {
     this.cancelPending()
     this.doRefresh('manual')
   }
 
-  /** Schedule a single tail refresh for deferred DOM updates. */
-  private scheduleTail(): void {
-    if (this.tailTimer !== null) {
-      clearTimeout(this.tailTimer)
-    }
-    this.tailTimer = setTimeout(() => {
-      this.tailTimer = null
-      this.doRefresh('tail-refresh')
-    }, TAIL_REFRESH_MS)
-  }
-
-  /** Cancel all pending refresh tasks. */
   private cancelPending(): void {
-    if (this.rafId !== null) {
-      cancelAnimationFrame(this.rafId)
-      this.rafId = null
-    }
-    if (this.tailTimer !== null) {
-      clearTimeout(this.tailTimer)
-      this.tailTimer = null
-    }
-    this.pending = false
+    if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
+    if (this.tailTimer !== null) { clearTimeout(this.tailTimer); this.tailTimer = null }
   }
 
   // ── Core refresh ───────────────────────────────────────
 
-  /** Execute a full refresh cycle with dirty check. */
   private doRefresh(reason: RefreshReason): void {
-    if (!this.numberingSettings.enabled) {
-      return
-    }
+    if (!this.numberingSettings.enabled) return
 
     const startTime = performance.now()
 
     try {
       const root = this.adapter.detectEditorRoot()
-      if (!root) {
-        return
-      }
+      if (!root) return
       this.adapter.setEditorRoot(root)
 
-      // Dirty check: skip if heading structure unchanged
       const snapshot = this.adapter.createHeadingSnapshot()
-      if (
-        this.lastSnapshot &&
-        reason !== 'toggle' &&
-        reason !== 'manual' &&
-        reason !== 'initial-load' &&
-        !this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)
-      ) {
-        this.lastSnapshot = snapshot
-        return
+      const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
+
+      if (!forceRefresh && this.lastSnapshot && this.renderedStates) {
+        // Structure unchanged?
+        if (!this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)) {
+          // Full state check: element refs, class, attr
+          if (this.adapter.isRenderedStateValid(this.renderedStates)) {
+            this.lastSnapshot = snapshot
+            return // Everything is fine, skip
+          }
+          // Structure same but decoration lost → repair only (node replaced)
+          const diff = this.adapter.repairDecoration(this.renderedStates)
+          this.renderedStates = this.adapter.buildRenderedStates(
+            this.renderedStates.map(s => s.label),
+          )
+          this.logRefresh(reason, snapshot.length, diff, startTime)
+          this.lastSnapshot = snapshot
+          return
+        }
       }
+
+      // Full refresh
       this.lastSnapshot = snapshot
 
       const headings = this.adapter.collectHeadings()
       if (headings.length === 0) {
         this.adapter.clearNumbering()
+        this.renderedStates = null
         return
       }
 
       const numbered = computeHeadingNumbering(headings, this.numberingSettings)
       const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
-      this.adapter.applyNumberingDiff(labels)
+      const diff = this.adapter.applyNumberingDiff(labels)
+      this.renderedStates = this.adapter.buildRenderedStates(labels)
 
-      // Debug perf log
-      const duration = performance.now() - startTime
-      if (this.ctx.settings.get('debug')) {
-        logger.debug(
-          `Heading refresh reason=${reason} headings=${headings.length} duration=${duration.toFixed(1)}ms`,
-        )
-      }
+      this.logRefresh(reason, headings.length, diff, startTime)
     } catch (e) {
       logger.error('标题编号刷新失败', e)
     }
   }
 
-  // ── Editor binding ─────────────────────────────────────
+  private logRefresh(reason: RefreshReason, headingCount: number, diff: { scanned: number; repaired: number; updated: number; removed: number }, startTime: number): void {
+    if (!this.ctx.settings.get('debug')) return
+    const duration = performance.now() - startTime
+    logger.debug(
+      `Heading refresh reason=${reason} headings=${headingCount} diff=s${diff.scanned}/r${diff.repaired}/u${diff.updated}/d${diff.removed} duration=${duration.toFixed(1)}ms`,
+    )
+  }
 
-  /** Initialize adapter with current editor root. */
-  private initAdapter(): void {
-    const area = this.adapter.detectEditorRoot()
-    if (area) {
-      this.adapter.setEditorRoot(area)
+  // ── MutationObserver ───────────────────────────────────
+
+  private setupMutationObserver(): void {
+    const root = this.adapter.detectEditorRoot()
+    if (!root) return
+    this.connectObserver(root)
+  }
+
+  private connectObserver(root: HTMLElement): void {
+    this.disconnectObserver()
+
+    this.mutationObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        // Check added nodes
+        for (let i = 0; i < m.addedNodes.length; i++) {
+          const node = m.addedNodes[i]
+          if (node instanceof HTMLElement) {
+            if (this.isHeadingOrContainsHeading(node)) {
+              this.requestRefresh('editor-mutation')
+              return
+            }
+          }
+        }
+
+        // Check removed nodes
+        for (let i = 0; i < m.removedNodes.length; i++) {
+          const node = m.removedNodes[i]
+          if (node instanceof HTMLElement) {
+            if (this.isHeadingOrContainsHeading(node)) {
+              this.requestRefresh('editor-mutation')
+              return
+            }
+          }
+        }
+
+        // Check characterData (text content change) on heading ancestors
+        if (m.type === 'characterData' && m.target.parentElement) {
+          const ancestor = m.target.parentElement.closest('h1, h2, h3, h4, h5, h6')
+          if (ancestor && root.contains(ancestor)) {
+            this.requestRefresh('editor-mutation')
+            return
+          }
+        }
+      }
+    })
+
+    this.mutationObserver.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+
+    this.store.add(() => this.disconnectObserver())
+  }
+
+  private disconnectObserver(): void {
+    if (this.mutationObserver) {
+      this.mutationObserver.disconnect()
+      this.mutationObserver = null
     }
   }
 
-  /**
-   * Bind/unbind fast native events on the editor root.
-   * Called on document switch to move bindings to the new editor.
-   */
+  private isHeadingOrContainsHeading(el: HTMLElement): boolean {
+    const tag = el.tagName
+    if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4' || tag === 'H5' || tag === 'H6') {
+      return true
+    }
+    return el.querySelector('h1, h2, h3, h4, h5, h6') !== null
+  }
+
+  // ── Editor binding ─────────────────────────────────────
+
+  private initAdapter(): void {
+    const area = this.adapter.detectEditorRoot()
+    if (area) this.adapter.setEditorRoot(area)
+  }
+
   private bindEditorRoot(): void {
     const root = this.adapter.getEditorRoot()
-    if (!root) {
-      return
-    }
+    if (!root) return
 
-    // input: instant trigger for heading text/level changes
+    // input
     const onInput = (): void => {
-      if (!this.isInComposition) {
-        this.requestRefresh('editor-input')
-      }
+      if (!this.isInComposition) this.requestRefresh('editor-input')
     }
     root.addEventListener('input', onInput, { passive: true })
     this.store.add(() => root.removeEventListener('input', onInput))
 
-    // compositionend: flush after IME composition
+    // composition
     const onCompositionEnd = (): void => {
       this.isInComposition = false
       this.requestRefresh('composition-end')
@@ -224,63 +279,80 @@ export class HeadingNumberingService {
     root.addEventListener('compositionend', onCompositionEnd)
     this.store.add(() => root.removeEventListener('compositionend', onCompositionEnd))
 
-    const onCompositionStart = (): void => {
-      this.isInComposition = true
-    }
+    const onCompositionStart = (): void => { this.isInComposition = true }
     root.addEventListener('compositionstart', onCompositionStart)
     this.store.add(() => root.removeEventListener('compositionstart', onCompositionStart))
+
+    // focusin: capture heading edit mode → force re-verify next frame
+    const onFocusIn = (): void => {
+      this.requestRefresh('focus-in')
+      this.scheduleTail('decoration-repair', FOCUS_TAIL_MS)
+    }
+    root.addEventListener('focusin', onFocusIn)
+    this.store.add(() => root.removeEventListener('focusin', onFocusIn))
+
+    // click: mouse move cursor
+    const onClick = (): void => {
+      this.requestRefresh('editor-click')
+    }
+    root.addEventListener('click', onClick, { passive: true })
+    this.store.add(() => root.removeEventListener('click', onClick))
+
+    // keyup: keyboard navigation / undo/redo / heading shortcuts
+    const onKeyUp = (): void => {
+      this.requestRefresh('editor-keyup')
+    }
+    root.addEventListener('keyup', onKeyUp, { passive: true })
+    this.store.add(() => root.removeEventListener('keyup', onKeyUp))
   }
 
   // ── Event registration ─────────────────────────────────
 
-  /** Register fast native input events. */
-  private registerFastEvents(): void {
-    // Bind on initial load
+  private registerEvents(): void {
+    const { ctx } = this
+
+    // Initial bind
     const root = this.adapter.detectEditorRoot()
     if (root) {
       this.adapter.setEditorRoot(root)
       this.bindEditorRoot()
     }
-  }
 
-  /** Register framework events as compatibility fallback. */
-  private registerFrameworkEvents(): void {
-    const { ctx } = this
-
-    // Editor DOM load: bind fast events + immediate refresh
+    // Editor DOM load
     this.store.add(
       ctx.onEditorEvent('load', (editorEl: unknown) => {
         if (editorEl instanceof HTMLElement) {
           this.adapter.setEditorRoot(editorEl)
           this.lastSnapshot = null
+          this.renderedStates = null
+          this.connectObserver(editorEl)
           this.bindEditorRoot()
-          // No fixed delay: queueMicrotask → RAF → refresh
-          queueMicrotask(() => {
-            this.requestRefresh('initial-load')
-          })
+          queueMicrotask(() => this.requestRefresh('initial-load'))
+          this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         }
       }),
     )
 
-    // Framework edit as fallback (no extra debounce)
+    // Framework edit (fallback)
     this.store.add(
-      ctx.onEditorEvent('edit', () => {
-        this.requestRefresh('framework-edit')
-      }),
+      ctx.onEditorEvent('edit', () => this.requestRefresh('framework-edit')),
     )
 
-    // File open: detect new editor root
+    // File open
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
         this.lastSnapshot = null
+        this.renderedStates = null
         setTimeout(() => {
           const area = this.adapter.detectEditorRoot()
           if (area) {
             this.adapter.setEditorRoot(area)
+            this.connectObserver(area)
             this.bindEditorRoot()
           }
           this.requestRefresh('file-open')
-        }, 0) // no fixed 100ms, just next tick
+          this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
+        }, 0)
       }),
     )
 
@@ -288,11 +360,12 @@ export class HeadingNumberingService {
     this.store.add(
       ctx.onWorkspaceEvent('active-leaf:change', () => {
         this.lastSnapshot = null
+        this.renderedStates = null
         this.requestRefresh('active-leaf-change')
+        this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
       }),
     )
 
-    // Auto-cleanup via plugin
     ctx.registerDisposable(() => this.dispose())
   }
 }

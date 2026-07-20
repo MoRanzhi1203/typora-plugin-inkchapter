@@ -29,12 +29,32 @@ export type RefreshReason =
   | 'manual'
   | 'toggle'
   | 'tail-refresh'
+  | 'editor-mutation'
+  | 'focus-in'
+  | 'editor-click'
+  | 'editor-keyup'
+  | 'decoration-repair'
 
 /** Lightweight snapshot of a heading element for dirty checking. */
 export interface HeadingSnapshot {
-  /** Stable identity: element reference or generated key. */
   key: string
   level: HeadingLevel
+}
+
+/** Full rendered state of a heading including element reference and numbering decoration. */
+export interface RenderedHeadingState {
+  /** Direct element reference; checked via === and isConnected. */
+  element: HTMLElement
+  key: string
+  level: HeadingLevel
+  label: string
+}
+
+export interface DiffResult {
+  scanned: number
+  repaired: number
+  updated: number
+  removed: number
 }
 
 export const HEADING_LEVELS: readonly HeadingLevel[] = [1, 2, 3, 4, 5, 6]
