@@ -10,7 +10,10 @@ import { computeHeadingNumbering } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
+import { migrateSettings } from './config-migration'
+import { getPresetLevels, getPresetPreview } from './presets'
 import * as logger from '../core/logger'
+import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset } from './heading-types'
 
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
@@ -58,13 +61,15 @@ export class HeadingNumberingService {
     this.requestRefresh('initial-load')
   }
 
-  /** Read settings and normalize legacy configs missing showLevelOneNumber. */
+  /** Read settings, apply config migration, and normalize. */
   private readNormalizedSettings(): HeadingNumberingSettings {
     const raw = this.ctx.settings.get('headingNumbering')
-    return {
-      ...raw,
-      showLevelOneNumber: raw?.showLevelOneNumber ?? false,
+    const migrated = migrateSettings(raw)
+    // Persist migration result if it changed
+    if (!raw || !raw.preset || !raw.levels) {
+      this.ctx.settings.set('headingNumbering', migrated)
     }
+    return migrated
   }
 
   toggle(): void {
@@ -112,6 +117,48 @@ export class HeadingNumberingService {
     logger.info(`一级标题编号已${enabled ? '开启' : '关闭'}`)
   }
 
+  /** Apply a preset and update numbering immediately. */
+  applyPreset(preset: HeadingNumberingPreset): void {
+    if (preset === 'custom') {
+      this.numberingSettings.preset = 'custom'
+    } else {
+      this.numberingSettings.preset = preset
+      this.numberingSettings.levels = { ...getPresetLevels(preset) }
+    }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+    logger.info(`编号预设已切换为：${preset}`)
+  }
+
+  /** Update a single level's style. Automatically switches preset to 'custom'. */
+  updateLevelStyle(level: HeadingLevel, patch: Partial<HeadingLevelStyle>): void {
+    if (this.numberingSettings.preset !== 'custom') {
+      this.numberingSettings.preset = 'custom'
+      // Copy current preset levels as custom base
+      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    }
+    this.numberingSettings.levels = {
+      ...this.numberingSettings.levels,
+      [level]: { ...this.numberingSettings.levels[level], ...patch },
+    }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /** Get the current numbering settings (for UI reading). */
+  getCurrentSettings(): HeadingNumberingSettings {
+    return { ...this.numberingSettings }
+  }
+
+  /** Generate a preview of the current preset/levels. */
+  getPreview(): Record<HeadingLevel, string> {
+    return getPresetPreview(this.numberingSettings.preset)
+  }
+
   dispose(): void {
     this.cancelPending()
     this.disconnectObserver()
@@ -124,15 +171,14 @@ export class HeadingNumberingService {
   /** Listen for external settings changes (e.g. from settings UI) and sync local state. */
   private registerSettingsListener(): void {
     const dispose = this.ctx.settings.onChange('headingNumbering', (_key: unknown, value: HeadingNumberingSettings) => {
-      const oldShowLevelOne = this.numberingSettings.showLevelOneNumber
+      const oldPreset = this.numberingSettings.preset
+      const oldShow = this.numberingSettings.showLevelOneNumber
 
-      // Normalize in case stored config lacks the field (legacy compat)
-      this.numberingSettings = {
-        ...value,
-        showLevelOneNumber: value?.showLevelOneNumber ?? false,
-      }
+      // Apply migration and normalize
+      this.numberingSettings = migrateSettings(value)
 
-      if (oldShowLevelOne !== this.numberingSettings.showLevelOneNumber) {
+      if (oldPreset !== this.numberingSettings.preset ||
+          oldShow !== this.numberingSettings.showLevelOneNumber) {
         this.lastSnapshot = null
         this.renderedStates = null
         this.flushRefresh()
