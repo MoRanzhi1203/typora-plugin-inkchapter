@@ -1,8 +1,29 @@
-/* Heading numbering via CSS ::before */
-.inkchapter-numbered-heading::before {
-  content: attr(data-inkchapter-heading-number);
-  margin-right: 0.25em;
-  color: inherit;
-  font-family: inherit;
-  font-weight: inherit;
+/* Heading numbering via CSS ::before
+ * Unified for all H1-H6 levels.
+ * Explicitly resets all visual properties to prevent Typora active-heading
+ * styles from adding borders, outlines, backgrounds, or absolute positioning
+ * to the ::before pseudo-element. */
+#write h1.inkchapter-numbered-heading::before,
+#write h2.inkchapter-numbered-heading::before,
+#write h3.inkchapter-numbered-heading::before,
+#write h4.inkchapter-numbered-heading::before,
+#write h5.inkchapter-numbered-heading::before,
+#write h6.inkchapter-numbered-heading::before {
+  content: attr(data-inkchapter-heading-number) !important;
+  display: inline !important;
+  position: static !important;
+  margin: 0 0.5em 0 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: inherit !important;
+  font: inherit !important;
+  line-height: inherit !important;
+  vertical-align: baseline !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
