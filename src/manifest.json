@@ -1,12 +1,12 @@
 {
-  "id": "inkchapter",
+  "id": "ranzhi.inkchapter",
   "name": "墨章 InkChapter",
-  "description": "墨章 InkChapter - Typora 写作增强插件",
-  "author": "墨染止",
-  "authorUrl": "https://github.com/MoRanzhi1203",
-  "repo": "MoRanzhi1203/typora-plugin-inkchapter",
-  "version": "0.1.0",
-  "minAppVersion": "1.5.0",
-  "minCoreVersion": "2.7.7",
-  "platforms": ["win32", "linux", "darwin"]
+  "description": "面向 Typora 的 Markdown 文档结构、自动编号、段落排版、图表题注与文档工作流增强插件",
+  "author": "Ranzhi",
+  "version": "0.1.0-alpha.1",
+  "minAppVersion": "1.6.0",
+  "minCoreVersion": "2.9.0",
+  "platforms": [
+    "win32"
+  ]
 }
