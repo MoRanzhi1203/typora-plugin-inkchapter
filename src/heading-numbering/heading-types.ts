@@ -19,4 +19,22 @@ export interface HeadingNumberingSettings {
   showTrailingSeparator: boolean
 }
 
+export type RefreshReason =
+  | 'initial-load'
+  | 'editor-input'
+  | 'composition-end'
+  | 'framework-edit'
+  | 'file-open'
+  | 'active-leaf-change'
+  | 'manual'
+  | 'toggle'
+  | 'tail-refresh'
+
+/** Lightweight snapshot of a heading element for dirty checking. */
+export interface HeadingSnapshot {
+  /** Stable identity: element reference or generated key. */
+  key: string
+  level: HeadingLevel
+}
+
 export const HEADING_LEVELS: readonly HeadingLevel[] = [1, 2, 3, 4, 5, 6]
