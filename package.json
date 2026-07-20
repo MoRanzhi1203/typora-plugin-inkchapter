@@ -1,8 +1,8 @@
 {
   "private": true,
-  "name": "typora-plugin-example",
-  "version": "",
-  "description": "",
+  "name": "typora-plugin-inkchapter",
+  "version": "0.1.0",
+  "description": "墨章 InkChapter - Typora 写作增强插件",
   "type": "module",
   "main": "",
   "scripts": {
@@ -10,8 +10,8 @@
     "build": "rollup -c rollup.config.js",
     "pack": "pnpm run build && node pack.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["typora", "plugin", "inkchapter", "墨章"],
+  "author": "墨染止",
   "license": "MIT",
   "devDependencies": {
     "@babel/core": "^7.23.2",
