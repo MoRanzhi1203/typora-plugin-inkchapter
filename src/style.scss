@@ -1,3 +1,8 @@
-.typ-inkchapter-cls {
-  color: red;
+/* Heading numbering via CSS ::before */
+.inkchapter-numbered-heading::before {
+  content: attr(data-inkchapter-heading-number);
+  margin-right: 0.25em;
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
 }
