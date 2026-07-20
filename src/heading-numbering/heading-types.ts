@@ -13,6 +13,7 @@ export interface NumberedHeading extends HeadingDescriptor {
 
 export interface HeadingNumberingSettings {
   enabled: boolean
+  showLevelOneNumber: boolean
   maxDepth: HeadingLevel
   separator: string
   suffix: string

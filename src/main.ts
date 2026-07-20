@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS } from './settings/default-settings'
 import { HeadingNumberingService } from './heading-numbering/heading-numbering-service'
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
+import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 
 
 export default class extends Plugin<InkChapterSettings> {
@@ -40,6 +41,11 @@ export default class extends Plugin<InkChapterSettings> {
     const adapter = new HeadingDomAdapter()
     this.numberingService = new HeadingNumberingService(ctx, adapter)
 
+    // Register settings tab
+    this.registerSettingTab(
+      new HeadingNumberingSettingTab(this.settings, this.numberingService),
+    )
+
     // Status check command
     this.registerCommand({
       id: 'inkchapter.check-status',
@@ -62,6 +68,18 @@ export default class extends Plugin<InkChapterSettings> {
       title: '重新编号标题',
       scope: 'global',
       callback: () => this.numberingService?.renumber(),
+    })
+
+    // Toggle level-one heading numbering
+    this.registerCommand({
+      id: 'inkchapter.heading.toggle-level-one',
+      title: '墨章：切换一级标题编号',
+      scope: 'global',
+      callback: () => {
+        this.numberingService?.toggleLevelOneNumber()
+        const current = this.settings.get('headingNumbering')
+        Notice.info(`一级标题编号：已${current?.showLevelOneNumber ? '开启' : '关闭'}`)
+      },
     })
 
     console.log('[InkChapter] 插件已加载')
