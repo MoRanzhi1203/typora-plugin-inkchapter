@@ -1,19 +1,22 @@
 import type { PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from '../settings/settings-model'
 import type {
+  HeadingLevel,
+  HeadingLevelDefinition,
+  HeadingNumberingPreset,
   HeadingNumberingSettings,
   HeadingSnapshot,
   RenderedHeadingState,
   RefreshReason,
 } from './heading-types'
-import { computeHeadingNumbering } from './numbering-engine'
+import { HEADING_LEVELS } from './heading-types'
+import { computeHeadingNumbering, getAvailableReferenceLevels } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
-import { getPresetLevels, getPresetPreview } from './presets'
+import { getPresetLevels, getPresetPreview, deepCloneLevels, normalizeFormatSegments } from './presets'
 import * as logger from '../core/logger'
-import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset } from './heading-types'
 
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
@@ -61,14 +64,34 @@ export class HeadingNumberingService {
     this.requestRefresh('initial-load')
   }
 
-  /** Read settings, apply config migration, and normalize. */
+  /** Read settings, apply config migration, normalize all formats, and persist. */
   private readNormalizedSettings(): HeadingNumberingSettings {
     const raw = this.ctx.settings.get('headingNumbering')
     const migrated = migrateSettings(raw)
-    // Persist migration result if it changed
-    if (!raw || !raw.preset || !raw.levels) {
+    let changed = false
+
+    // Compute hidden levels
+    const hiddenLevels = new Set<HeadingLevel>()
+    if (!migrated.showLevelOneNumber) hiddenLevels.add(1)
+
+    // Normalize all level formats on startup (fixes old corrupted formats)
+    const normalizedLevels = deepCloneLevels(migrated.customDefinition.levels)
+    for (const lv of HEADING_LEVELS) {
+      const oldFormat = normalizedLevels[lv].format
+      const newFormat = normalizeFormatSegments(oldFormat, lv, hiddenLevels)
+      if (JSON.stringify(newFormat) !== JSON.stringify(oldFormat)) {
+        changed = true
+        normalizedLevels[lv] = { ...normalizedLevels[lv], format: newFormat }
+      }
+    }
+
+    if (changed) {
+      migrated.customDefinition = { levels: normalizedLevels }
+      this.ctx.settings.set('headingNumbering', migrated)
+    } else if (!raw || !raw.preset || !raw.customDefinition) {
       this.ctx.settings.set('headingNumbering', migrated)
     }
+
     return migrated
   }
 
@@ -109,7 +132,6 @@ export class HeadingNumberingService {
     this.numberingSettings.showLevelOneNumber = enabled
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
 
-    // Force full refresh: H1 decorations must be added/removed, H2+ labels recalculated
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
@@ -123,7 +145,9 @@ export class HeadingNumberingService {
       this.numberingSettings.preset = 'custom'
     } else {
       this.numberingSettings.preset = preset
-      this.numberingSettings.levels = { ...getPresetLevels(preset) }
+      this.numberingSettings.customDefinition = {
+        levels: getPresetLevels(preset),
+      }
     }
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
     this.lastSnapshot = null
@@ -132,16 +156,21 @@ export class HeadingNumberingService {
     logger.info(`编号预设已切换为：${preset}`)
   }
 
-  /** Update a single level's style. Automatically switches preset to 'custom'. */
-  updateLevelStyle(level: HeadingLevel, patch: Partial<HeadingLevelStyle>): void {
+  /** Update a single level's definition. Automatically switches preset to 'custom'. */
+  updateLevelStyle(level: HeadingLevel, patch: Partial<HeadingLevelDefinition>): void {
     if (this.numberingSettings.preset !== 'custom') {
       this.numberingSettings.preset = 'custom'
       // Copy current preset levels as custom base
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+      this.numberingSettings.customDefinition = {
+        levels: deepCloneLevels(this.numberingSettings.customDefinition.levels),
+      }
     }
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
-      [level]: { ...this.numberingSettings.levels[level], ...patch },
+    const currentLevels = this.numberingSettings.customDefinition.levels
+    this.numberingSettings.customDefinition = {
+      levels: {
+        ...currentLevels,
+        [level]: { ...currentLevels[level], ...patch },
+      },
     }
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
     this.lastSnapshot = null
@@ -152,6 +181,15 @@ export class HeadingNumberingService {
   /** Get the current numbering settings (for UI reading). */
   getCurrentSettings(): HeadingNumberingSettings {
     return { ...this.numberingSettings }
+  }
+
+  /** Apply a complete settings object (used by copy-to-custom, restore-defaults). */
+  applySettings(settings: HeadingNumberingSettings): void {
+    this.numberingSettings = { ...settings }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
   }
 
   /** Generate a preview of the current preset/levels. */
@@ -175,10 +213,10 @@ export class HeadingNumberingService {
       const oldShow = this.numberingSettings.showLevelOneNumber
 
       // Apply migration and normalize
-      this.numberingSettings = migrateSettings(value)
+      this.numberingSettings = migrateSettings(value as unknown as Record<string, unknown>)
 
       if (oldPreset !== this.numberingSettings.preset ||
-          oldShow !== this.numberingSettings.showLevelOneNumber) {
+        oldShow !== this.numberingSettings.showLevelOneNumber) {
         this.lastSnapshot = null
         this.renderedStates = null
         this.flushRefresh()
@@ -190,9 +228,7 @@ export class HeadingNumberingService {
   // ── Scheduler ──────────────────────────────────────────
 
   private requestRefresh(reason: RefreshReason): void {
-    if (this.rafId !== null) {
-      return
-    }
+    if (this.rafId !== null) return
     this.pendingReason = reason
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null
@@ -234,14 +270,11 @@ export class HeadingNumberingService {
       const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
 
       if (!forceRefresh && this.lastSnapshot && this.renderedStates) {
-        // Structure unchanged?
         if (!this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)) {
-          // Full state check: element refs, class, attr
           if (this.adapter.isRenderedStateValid(this.renderedStates)) {
             this.lastSnapshot = snapshot
-            return // Everything is fine, skip
+            return
           }
-          // Structure same but decoration lost → repair only (node replaced)
           const diff = this.adapter.repairDecoration(this.renderedStates)
           this.renderedStates = this.adapter.buildRenderedStates(
             this.renderedStates.map(s => s.label),
@@ -294,7 +327,6 @@ export class HeadingNumberingService {
 
     this.mutationObserver = new MutationObserver((mutations) => {
       for (const m of mutations) {
-        // Check added nodes
         for (let i = 0; i < m.addedNodes.length; i++) {
           const node = m.addedNodes[i]
           if (node instanceof HTMLElement) {
@@ -305,7 +337,6 @@ export class HeadingNumberingService {
           }
         }
 
-        // Check removed nodes
         for (let i = 0; i < m.removedNodes.length; i++) {
           const node = m.removedNodes[i]
           if (node instanceof HTMLElement) {
@@ -316,7 +347,6 @@ export class HeadingNumberingService {
           }
         }
 
-        // Check characterData (text content change) on heading ancestors
         if (m.type === 'characterData' && m.target.parentElement) {
           const ancestor = m.target.parentElement.closest('h1, h2, h3, h4, h5, h6')
           if (ancestor && root.contains(ancestor)) {
@@ -381,7 +411,7 @@ export class HeadingNumberingService {
     root.addEventListener('compositionstart', onCompositionStart)
     this.store.add(() => root.removeEventListener('compositionstart', onCompositionStart))
 
-    // focusin: capture heading edit mode → force re-verify next frame
+    // focusin
     const onFocusIn = (): void => {
       this.requestRefresh('focus-in')
       this.scheduleTail('decoration-repair', FOCUS_TAIL_MS)
@@ -389,14 +419,14 @@ export class HeadingNumberingService {
     root.addEventListener('focusin', onFocusIn)
     this.store.add(() => root.removeEventListener('focusin', onFocusIn))
 
-    // click: mouse move cursor
+    // click
     const onClick = (): void => {
       this.requestRefresh('editor-click')
     }
     root.addEventListener('click', onClick, { passive: true })
     this.store.add(() => root.removeEventListener('click', onClick))
 
-    // keyup: keyboard navigation / undo/redo / heading shortcuts
+    // keyup
     const onKeyUp = (): void => {
       this.requestRefresh('editor-keyup')
     }
@@ -409,14 +439,12 @@ export class HeadingNumberingService {
   private registerEvents(): void {
     const { ctx } = this
 
-    // Initial bind
     const root = this.adapter.detectEditorRoot()
     if (root) {
       this.adapter.setEditorRoot(root)
       this.bindEditorRoot()
     }
 
-    // Editor DOM load
     this.store.add(
       ctx.onEditorEvent('load', (editorEl: unknown) => {
         if (editorEl instanceof HTMLElement) {
@@ -431,12 +459,10 @@ export class HeadingNumberingService {
       }),
     )
 
-    // Framework edit (fallback)
     this.store.add(
       ctx.onEditorEvent('edit', () => this.requestRefresh('framework-edit')),
     )
 
-    // File open
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
         this.lastSnapshot = null
@@ -454,7 +480,6 @@ export class HeadingNumberingService {
       }),
     )
 
-    // Active leaf change
     this.store.add(
       ctx.onWorkspaceEvent('active-leaf:change', () => {
         this.lastSnapshot = null

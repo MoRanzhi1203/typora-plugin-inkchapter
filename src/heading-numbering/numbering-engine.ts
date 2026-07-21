@@ -1,91 +1,132 @@
 import type {
   HeadingDescriptor,
   HeadingLevel,
+  HeadingLevelDefinition,
   HeadingNumberingSettings,
   NumberedHeading,
+  NumberTokenStyle,
 } from './heading-types'
 import { formatToken } from './token-formatter'
 
+// ── Constants ────────────────────────────────────────────
+
+/** Literal separators that can become orphaned when a level-reference is skipped. */
+const ORPHAN_SEPARATOR_REGEX = /^[.\/、-]$/
+
+/** Characters that only serve as separators between level references. */
+const SEPARATOR_ONLY_REGEX = /^[.\-_、，:\：\/\\·\s]+$/
+
+// ── Visibility helpers ───────────────────────────────────
+
 /**
- * Pure function: compute hierarchical heading numbering with per-level styling.
+ * Check whether a heading level is currently visible (shows numbering).
+ * Level 1 is hidden when showLevelOneNumber is false.
+ * A level whose enabled flag is false is also hidden.
+ */
+export function isLevelVisible(
+  level: HeadingLevel,
+  settings: Pick<HeadingNumberingSettings, 'showLevelOneNumber' | 'customDefinition'>,
+): boolean {
+  if (level === 1 && !settings.showLevelOneNumber) return false
+  const def = settings.customDefinition.levels[level]
+  if (!def || !def.enabled) return false
+  return true
+}
+
+/**
+ * Get available parent reference levels for a given current level.
+ * Excludes: future levels, current level itself, hidden levels, disabled levels.
+ * Always returns sorted ascending.
+ */
+export function getAvailableReferenceLevels(
+  currentLevel: HeadingLevel,
+  settings: Pick<HeadingNumberingSettings, 'showLevelOneNumber' | 'customDefinition'>,
+): HeadingLevel[] {
+  const result: HeadingLevel[] = []
+  for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
+    if (lv >= currentLevel) break
+    if (isLevelVisible(lv, settings)) {
+      result.push(lv)
+    }
+  }
+  return result
+}
+
+// ── Public API ───────────────────────────────────────────
+
+export function isValidHeadingLevel(n: number): n is HeadingLevel {
+  return Number.isInteger(n) && n >= 1 && n <= 6
+}
+
+/**
+ * Pure function: compute hierarchical heading numbering using segment-based
+ * per-level definitions (Word-style multilevel list format).
  *
  * Rules:
  * 1. Process headings in input order.
  * 2. When a heading of level L is encountered:
- *    - Increment the counter at level L.
- *    - Reset all deeper level counters to 0.
- * 3. When showLevelOneNumber is false, H1 acts as chapter boundary only (empty label).
- * 4. Per-level styles (preset or custom) control token formatting and label assembly.
- * 5. Skipped levels fill with 0 placeholders.
- * 6. Headings beyond maxDepth are excluded.
- * 7. Input objects are never mutated.
+ *    - Increment the counter at level L (respecting startAt).
+ *    - Reset all deeper level counters to their startAt-1 baseline.
+ * 3. restartAfterLevel: when a heading at level R appears, any level whose
+ *    restartAfterLevel === R gets its counter reset to startAt.
+ * 4. When showLevelOneNumber is false, H1 gets an empty label but still
+ *    participates in counting and restart-after logic.
+ * 5. When H1 is hidden, orphan separator literals adjacent to the skipped
+ *    H1 reference are removed from descendant labels.
+ * 6. Each heading's label is assembled by iterating its level definition's
+ *    format segments:
+ *    - literals: output directly
+ *    - level-references: format the referenced counter
+ *      - self-reference → use current level's numberStyle
+ *      - parent reference  → legalStyle ? 'arabic' : parent's numberStyle
+ * 7. Headings beyond maxDepth are excluded.
+ * 8. Input objects are never mutated.
  */
 export function computeHeadingNumbering(
   headings: readonly HeadingDescriptor[],
   settings: HeadingNumberingSettings,
 ): NumberedHeading[] {
-  const counters: number[] = [0, 0, 0, 0, 0, 0]
+  if (!settings.enabled) {
+    return headings
+      .filter((h) => h.level <= settings.maxDepth)
+      .map((h) => ({ ...h, counters: [], label: '' }))
+  }
+
+  const defs = settings.customDefinition.levels
   const skipH1 = !settings.showLevelOneNumber
-  const levelStyles = settings.levels
+
+  // Initialize counters to (startAt - 1) so first increment lands on startAt
+  const counters: number[] = [0, 0, 0, 0, 0, 0]
+  for (let lv = 1; lv <= 6; lv++) {
+    const def = defs[lv as HeadingLevel]
+    counters[lv - 1] = (def?.startAt ?? 1) - 1
+  }
 
   return headings
     .filter((h) => h.level <= settings.maxDepth)
     .map((h) => {
       const idx = h.level - 1
 
-      // Increment and reset deeper counters
+      // Increment current level counter
       counters[idx]++
-      for (let i = idx + 1; i < 6; i++) counters[i] = 0
 
-      // Build full active counters (including skipped levels as 0)
-      const activeCounters: number[] = counters.slice(0, idx + 1)
-      for (let i = 0; i < idx; i++) {
-        if (counters[i] === 0) activeCounters[i] = 0
+      // Reset deeper counters (and apply restartAfterLevel)
+      for (let i = idx + 1; i < 6; i++) {
+        const deeperLevel = (i + 1) as HeadingLevel
+        const deeperDef = defs[deeperLevel]
+        if (deeperDef && deeperDef.restartAfterLevel === h.level) {
+          // Restart: reset to startAt-1 so next increment lands on startAt
+          counters[i] = deeperDef.startAt - 1
+        } else {
+          counters[i] = (deeperDef?.startAt ?? 1) - 1
+        }
       }
 
-      // H1 completely hidden when showLevelOneNumber is false
-      if (skipH1 && idx === 0) {
-        return { ...h, counters: [...activeCounters], label: '' }
-      }
+      const def = defs[h.level]
+      const label = buildLabelFromSegments(counters, def, defs, skipH1, h.level)
 
-      // Build label based on per-level style
-      const label = buildLabel(activeCounters, levelStyles, skipH1, idx, h.level)
-
-      return { ...h, counters: [...activeCounters], label }
+      return { ...h, counters: [...counters.slice(0, idx + 1)], label }
     })
-}
-
-function buildLabel(
-  activeCounters: number[],
-  levelStyles: Record<HeadingLevel, import('./heading-types').HeadingLevelStyle>,
-  skipH1: boolean,
-  currentIdx: number,
-  headingLevel: HeadingLevel,
-): string {
-  const style = levelStyles[headingLevel]
-  if (!style || !style.enabled) return ''
-
-  const startIdx = skipH1 ? 1 : 0
-
-  if (style.includeParents) {
-    // Build concatenated label from startIdx to currentIdx.
-    // When H1 is hidden (skipH1=true), shift style indices so that
-    // the first visible position (i=1) inherits H1's tokenStyle.
-    const parts: string[] = []
-    for (let i = startIdx; i <= currentIdx; i++) {
-      const styleIdx = skipH1 ? i : i + 1
-      const lv = styleIdx as HeadingLevel
-      const st = levelStyles[lv]
-      if (!st || !st.enabled) continue
-      const token = formatToken(activeCounters[i], st.tokenStyle)
-      parts.push(st.prefix + token + st.suffix)
-    }
-    return parts.join(style.separator)
-  }
-
-  // Non-parent: only the current level's token with its own prefix/suffix
-  const token = formatToken(activeCounters[currentIdx], style.tokenStyle)
-  return style.prefix + token + style.suffix
 }
 
 /**
@@ -101,6 +142,98 @@ export function computeHeadingNumberingLabel(
   return match ? match.label : null
 }
 
-export function isValidHeadingLevel(n: number): n is HeadingLevel {
-  return Number.isInteger(n) && n >= 1 && n <= 6
+// ── Label assembly ───────────────────────────────────────
+
+function buildLabelFromSegments(
+  counters: number[],
+  def: HeadingLevelDefinition | undefined,
+  defs: Record<HeadingLevel, HeadingLevelDefinition>,
+  skipH1: boolean,
+  currentLevel: HeadingLevel,
+): string {
+  if (!def || !def.enabled) return ''
+
+  // H1 completely hidden when showLevelOneNumber is false
+  if (skipH1 && currentLevel === 1) return ''
+
+  const format = def.format
+  const parts: string[] = []
+
+  for (let i = 0; i < format.length; i++) {
+    const seg = format[i]
+
+    if (seg.type === 'level-reference') {
+      // Defensive: skip any hidden/invisible level reference in descendant formats
+      // (not just H1 — any level whose enabled is false or showLevelOneNumber hides level 1)
+      const settingsForVisibility = {
+        showLevelOneNumber: skipH1 ? false : true,
+        customDefinition: { levels: defs },
+      }
+      if (seg.level !== currentLevel && !isLevelVisible(seg.level, settingsForVisibility)) {
+        // Remove trailing orphan separator from already-processed parts
+        removeTrailingOrphanSeparator(parts)
+        // Skip an immediately following orphan separator literal
+        if (
+          i + 1 < format.length &&
+          format[i + 1].type === 'literal' &&
+          ORPHAN_SEPARATOR_REGEX.test((format[i + 1] as { type: 'literal'; value: string }).value)
+        ) {
+          i++ // skip the orphan separator
+        }
+        continue
+      }
+
+      const style = resolveNumberStyle(seg.level, currentLevel, def, defs)
+      parts.push(formatToken(counters[seg.level - 1], style))
+    } else {
+      // literal segment — output as-is
+      parts.push(seg.value)
+    }
+  }
+
+  // Clean any leading orphan separator (edge case: all initial refs were skipped)
+  while (parts.length > 0 && ORPHAN_SEPARATOR_REGEX.test(parts[0])) {
+    parts.shift()
+  }
+
+  return parts.join('')
+}
+
+// ── Number style resolution ──────────────────────────────
+
+function resolveNumberStyle(
+  refLevel: HeadingLevel,
+  currentLevel: HeadingLevel,
+  currentDef: HeadingLevelDefinition,
+  defs: Record<HeadingLevel, HeadingLevelDefinition>,
+): NumberTokenStyle {
+  // Self-reference: use the current level's own numberStyle
+  if (refLevel === currentLevel) {
+    return currentDef.numberStyle
+  }
+
+  // Parent reference (refLevel < currentLevel)
+  if (refLevel < currentLevel) {
+    // Legal-style: force parent references to Arabic numerals
+    if (currentDef.legalStyle) {
+      return 'arabic'
+    }
+    // Otherwise use the referenced level's own numberStyle
+    const refDef = defs[refLevel]
+    return refDef?.numberStyle ?? 'arabic'
+  }
+
+  // Deeper reference (refLevel > currentLevel) — unusual but handle gracefully
+  const refDef = defs[refLevel]
+  return refDef?.numberStyle ?? 'arabic'
+}
+
+// ── Orphan separator helpers ─────────────────────────────
+
+function removeTrailingOrphanSeparator(parts: string[]): void {
+  if (parts.length === 0) return
+  const last = parts[parts.length - 1]
+  if (ORPHAN_SEPARATOR_REGEX.test(last)) {
+    parts.pop()
+  }
 }
