@@ -27,3 +27,594 @@
   user-select: none !important;
   -webkit-user-select: none !important;
 }
+
+/* ── Preset Cards ────────────────────────────────── */
+
+.inkchapter-mll-preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
+  margin-top: 4px;
+}
+
+.inkchapter-mll-preset-card {
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+
+  &:hover {
+    border-color: var(--interactive-accent, #7c6ff7);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 2px var(--interactive-accent, #7c6ff7);
+  }
+
+  &--active {
+    border-color: var(--interactive-accent, #7c6ff7);
+    background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 8%, transparent);
+  }
+}
+
+.inkchapter-mll-preset-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.inkchapter-mll-preset-card-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-normal, #333);
+}
+
+.inkchapter-mll-preset-card-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+}
+
+.inkchapter-mll-preset-card-preview-item {
+  font-size: 12px;
+  font-family: var(--font-monospace, monospace);
+  color: var(--interactive-accent, #7c6ff7);
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 6%, transparent);
+}
+
+.inkchapter-mll-preset-card-desc {
+  font-size: 11px;
+  color: var(--text-muted, #999);
+}
+
+/* ── Custom Editor Panel ─────────────────────────── */
+
+.inkchapter-mll-custom-panel {
+  margin-top: 12px;
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--background-primary-alt, #fafafa);
+}
+
+/* ── Top Row: Level Selector + Preview ───────────── */
+
+.inkchapter-mll-top-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+  min-height: 200px;
+}
+
+/* ── Level Selector ──────────────────────────────── */
+
+.inkchapter-mll-level-selector {
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 6px;
+  background: var(--background-primary, #fff);
+  overflow: hidden;
+}
+
+.inkchapter-mll-level-selector-title {
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--background-modifier-hover, #f0f0f0);
+  border-bottom: 1px solid var(--background-modifier-border, #ddd);
+  color: var(--text-muted, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.inkchapter-mll-level-listbox {
+  outline: none;
+  padding: 4px 0;
+}
+
+.inkchapter-mll-level-option {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+  color: var(--text-normal, #333);
+
+  &:hover {
+    background: var(--background-modifier-hover, #f0f0f0);
+  }
+
+  &--active {
+    background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 12%, transparent);
+    color: var(--interactive-accent, #7c6ff7);
+    font-weight: 600;
+  }
+}
+
+.inkchapter-mll-level-option-label {
+  flex: 1;
+}
+
+.inkchapter-mll-level-option-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--text-muted, #999);
+  color: #fff;
+}
+
+/* ── Preview Panel ───────────────────────────────── */
+
+.inkchapter-mll-preview-panel {
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 6px;
+  padding: 10px 14px;
+  background: var(--background-primary, #fff);
+}
+
+.inkchapter-mll-preview-title {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 8px;
+  color: var(--text-muted, #999);
+  text-transform: uppercase;
+}
+
+.inkchapter-mll-preview-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  min-height: 22px;
+  font-size: 13px;
+
+  &--active {
+    background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 6%, transparent);
+    border-radius: 3px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}
+
+.inkchapter-mll-preview-level-badge {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted, #999);
+  width: 22px;
+  flex-shrink: 0;
+}
+
+.inkchapter-mll-preview-label-text {
+  font-family: var(--font-monospace, monospace);
+  color: var(--interactive-accent, #7c6ff7);
+  font-weight: 500;
+}
+
+/* ── Section Layout ──────────────────────────────── */
+
+.inkchapter-mll-section {
+  margin-bottom: 16px;
+}
+
+.inkchapter-mll-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--background-modifier-border, #ddd);
+  color: var(--text-normal, #333);
+}
+
+/* ── Format Editor ───────────────────────────────── */
+
+.inkchapter-mll-format-editor {
+  padding: 8px 0;
+}
+
+.inkchapter-mll-format-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 4px;
+}
+
+.inkchapter-mll-format-display-label {
+  font-size: 12px;
+  color: var(--text-muted, #999);
+  flex-shrink: 0;
+}
+
+.inkchapter-mll-format-display-value {
+  font-family: var(--font-monospace, monospace);
+  font-size: 14px;
+  color: var(--text-normal, #333);
+}
+
+.inkchapter-mll-format-hint {
+  font-size: 11px;
+  padding: 4px 0;
+}
+
+.inkchapter-mll-format-segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 8px;
+  min-height: 28px;
+}
+
+.inkchapter-mll-format-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-family: monospace;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.inkchapter-mll-format-chip-literal {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-family: monospace;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.inkchapter-mll-format-insert-row {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  gap: 4px;
+  font-size: 12px;
+
+  button {
+    padding: 2px 8px;
+    font-size: 12px;
+    border: 1px solid var(--background-modifier-border, #ddd);
+    border-radius: 3px;
+    background: var(--background-primary, #fff);
+    color: var(--text-normal, #333);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--background-modifier-hover, #f0f0f0);
+    }
+  }
+
+  select {
+    padding: 2px 4px;
+    font-size: 12px;
+    border: 1px solid var(--background-modifier-border, #ddd);
+    border-radius: 3px;
+  }
+}
+
+/* ── Format Insert Slots ─────────────────────────── */
+
+.inkchapter-mll-format-segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  align-items: center;
+  margin: 8px 0;
+  min-height: 32px;
+  padding: 4px;
+  border: 1px dashed var(--background-modifier-border, #ddd);
+  border-radius: 6px;
+  background: var(--background-primary, #fff);
+}
+
+.inkchapter-mll-format-insert-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 26px;
+  margin: 0 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+  border: 1px solid transparent;
+  font-size: 14px;
+  color: var(--text-muted, #999);
+  opacity: 0.3;
+
+  &:hover {
+    opacity: 0.8;
+    background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 10%, transparent);
+    border-color: var(--interactive-accent, #7c6ff7);
+  }
+
+  &--active {
+    opacity: 1;
+    background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 15%, transparent);
+    border-color: var(--interactive-accent, #7c6ff7);
+    color: var(--interactive-accent, #7c6ff7);
+    font-weight: 700;
+    box-shadow: 0 0 0 1px var(--interactive-accent, #7c6ff7);
+  }
+}
+
+/* ── Format chip states ──────────────────────────── */
+
+.inkchapter-mll-format-chip {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: monospace;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: box-shadow 0.1s, border-color 0.1s;
+  position: relative;
+
+  &:hover {
+    box-shadow: 0 0 0 1px var(--interactive-accent, #7c6ff7);
+  }
+
+  &--selected {
+    box-shadow: 0 0 0 2px var(--interactive-accent, #7c6ff7) !important;
+    border-color: var(--interactive-accent, #7c6ff7) !important;
+  }
+
+  &[draggable="true"] {
+    cursor: grab;
+
+    &:active {
+      cursor: grabbing;
+    }
+  }
+}
+
+.inkchapter-mll-format-chip-literal {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: monospace;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: box-shadow 0.1s;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+
+  &:hover {
+    box-shadow: 0 0 0 1px var(--interactive-accent, #7c6ff7);
+  }
+
+  &--selected {
+    box-shadow: 0 0 0 2px var(--interactive-accent, #7c6ff7) !important;
+    border-color: var(--interactive-accent, #7c6ff7) !important;
+  }
+
+  &[draggable="true"] {
+    cursor: grab;
+
+    &:active {
+      cursor: grabbing;
+    }
+  }
+}
+
+/* ── Selected segment controls ───────────────────── */
+
+.inkchapter-mll-format-selected-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 5%, transparent);
+  border-radius: 4px;
+  font-size: 12px;
+
+  button {
+    padding: 3px 10px;
+    font-size: 12px;
+    border: 1px solid var(--background-modifier-border, #ddd);
+    border-radius: 3px;
+    background: var(--background-primary, #fff);
+    color: var(--text-normal, #333);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--background-modifier-hover, #f0f0f0);
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+  }
+}
+
+/* ── Format validation error ─────────────────────── */
+
+.inkchapter-mll-format-error {
+  margin-top: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-error, #e81123);
+  background: color-mix(in srgb, var(--text-error, #e81123) 8%, transparent);
+  border: 1px solid var(--text-error, #e81123);
+  border-radius: 3px;
+}
+
+/* ── Level Settings ──────────────────────────────── */
+
+.inkchapter-mll-level-settings {
+  padding: 4px 0;
+}
+
+.inkchapter-mll-setting-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+  gap: 6px;
+
+  select {
+    padding: 2px 6px;
+    border: 1px solid var(--background-modifier-border, #ddd);
+    border-radius: 3px;
+    background: var(--background-primary, #fff);
+    color: var(--text-normal, #333);
+    font-size: 12px;
+  }
+
+  input[type="number"],
+  input[type="text"] {
+    padding: 2px 6px;
+    border: 1px solid var(--background-modifier-border, #ddd);
+    border-radius: 3px;
+    background: var(--background-primary, #fff);
+    color: var(--text-normal, #333);
+    font-size: 12px;
+  }
+}
+
+.inkchapter-mll-setting-label {
+  flex: 0 0 120px;
+  color: var(--text-muted, #999);
+  font-size: 12px;
+}
+
+.inkchapter-mll-setting-desc {
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  margin: 2px 0 8px 126px;
+  line-height: 1.4;
+}
+
+/* ── Position Settings ───────────────────────────── */
+
+.inkchapter-mll-position-body {
+  padding: 4px 0 4px 16px;
+}
+
+/* ── Actions ─────────────────────────────────────── */
+
+.inkchapter-mll-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border, #ddd);
+
+  button {
+    padding: 4px 12px;
+    font-size: 12px;
+    border: 1px solid var(--background-modifier-border, #ddd);
+    border-radius: 4px;
+    background: var(--background-primary, #fff);
+    color: var(--text-normal, #333);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--background-modifier-hover, #f0f0f0);
+    }
+  }
+}
+
+/* ── Full Preview (bottom) ───────────────────────── */
+
+.inkchapter-mll-full-preview {
+  margin-top: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 6px;
+  background: var(--background-primary-alt, #f8f8f8);
+  font-family: var(--font-interface, sans-serif);
+  user-select: none;
+}
+
+.inkchapter-mll-full-preview-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 24px;
+  line-height: 1.5;
+  padding: 2px 6px;
+  border-radius: 3px;
+
+  &--active {
+    background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 8%, transparent);
+  }
+}
+
+.inkchapter-mll-full-preview-badge {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted, #999);
+  width: 24px;
+  flex-shrink: 0;
+}
+
+.inkchapter-mll-full-preview-label {
+  flex-shrink: 0;
+  min-width: 50px;
+  font-family: var(--font-monospace, monospace);
+  color: var(--interactive-accent, #7c6ff7);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.inkchapter-mll-full-preview-text {
+  color: var(--text-normal, #333);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.inkchapter-mll-full-preview-tag {
+  font-size: 10px;
+  color: var(--interactive-accent, #7c6ff7);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Format insert row ───────────────────────────── */
+
+.inkchapter-mll-format-insert-row input[type="text"] {
+  padding: 2px 6px;
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 3px;
+  background: var(--background-primary, #fff);
+  color: var(--text-normal, #333);
+  font-size: 12px;
+}
