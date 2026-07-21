@@ -434,6 +434,12 @@
   outline: 2px dashed var(--interactive-accent, #7c6ff7);
 }
 
+/* ── Segments container dragging state ───────────── */
+
+.inkchapter-mll-format-segments--dragging {
+  user-select: none;
+}
+
 /* ── Drop target slot ────────────────────────────── */
 
 .inkchapter-mll-format-insert-slot--drop-target {
