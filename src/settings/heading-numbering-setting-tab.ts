@@ -21,6 +21,7 @@ import {
 } from '../heading-numbering/presets'
 import { formatToken, isValidTokenStyle } from '../heading-numbering/token-formatter'
 import { getAvailableReferenceLevels } from '../heading-numbering/numbering-engine'
+import { debug } from '../core/logger'
 
 // ── Constants ────────────────────────────────────────────
 
@@ -126,6 +127,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   onhide(): void {
+    this.cancelDrag()
     this.flushPendingSave()
   }
 
@@ -568,14 +570,19 @@ export class HeadingNumberingSettingTab extends SettingTab {
     container.style.borderRadius = '6px'
     container.style.background = 'var(--background-primary, #fff)'
 
+    // Container-level drag delegation (entire chip body is draggable)
+    this.setupDragDelegation(container)
+
     const segments = def.format
+
+    // Restore --dragging class if a drag is in progress (survives re-render)
     const isDragging = this.dragState !== null
-    const dragIdx = this.dragState?.draggingIndex
-    const overIdx = this.dragState?.dragOverIndex
+    if (isDragging) {
+      container.classList.add(`${CSS_PREFIX}-format-segments--dragging`)
+    }
 
     if (segments.length === 0) {
-      // Still show an insert slot for empty format
-      const slot = this.renderInsertSlot(0, isDragging && overIdx === 0)
+      const slot = this.renderInsertSlot(0)
       container.appendChild(slot)
       return
     }
@@ -583,7 +590,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     for (let i = 0; i <= segments.length; i++) {
       // Insert slot before each segment (and after last)
       if (i <= segments.length) {
-        const slot = this.renderInsertSlot(i, isDragging && overIdx === i)
+        const slot = this.renderInsertSlot(i)
         container.appendChild(slot)
       }
 
@@ -594,7 +601,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const isCurrentLevel = seg.type === 'level-reference' && seg.level === this.selectedLevel
       const isParentRef = seg.type === 'level-reference' && seg.level < this.selectedLevel
       const isSelected = this.selectedSegmentIndex === i
-      const isBeingDragged = isDragging && dragIdx === i
 
       if (seg.type === 'level-reference') {
         const chip = el('span', `${CSS_PREFIX}-format-chip`, container)
@@ -610,9 +616,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const label = el('span', `${CSS_PREFIX}-format-chip-label`, chip)
         label.textContent = `级别${seg.level}`
 
-        // Apply visual states
         if (isSelected) chip.classList.add(`${CSS_PREFIX}-format-chip--selected`)
-        if (isBeingDragged) chip.classList.add(`${CSS_PREFIX}-format-chip--dragging`)
 
         chip.style.border = isSelected
           ? '2px solid var(--interactive-accent, #4a90d9)'
@@ -647,14 +651,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
           chip.appendChild(delBtn)
         }
 
-        // Bind drag to handle
-        this.bindDragHandle(handle, i)
       } else {
         // Literal segment
         const chip = el('span', `${CSS_PREFIX}-format-chip-literal`, container)
         chip.dataset.segmentIndex = String(i)
 
-        // Drag handle
+        // Drag handle (visual indicator only)
         const handle = el('span', `${CSS_PREFIX}-format-chip-handle`, chip)
         handle.textContent = '\u282F' // ⠿
         handle.title = '拖拽排序'
@@ -663,7 +665,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         textSpan.textContent = seg.value
 
         if (isSelected) chip.classList.add(`${CSS_PREFIX}-format-chip-literal--selected`)
-        if (isBeingDragged) chip.classList.add(`${CSS_PREFIX}-format-chip-literal--dragging`)
 
         chip.style.border = isSelected ? '2px solid var(--interactive-accent, #4a90d9)' : '1px solid #ffc107'
 
@@ -729,23 +730,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
           this.deleteSegment(i)
         })
         chip.appendChild(delBtn)
-
-        // Bind drag to handle
-        this.bindDragHandle(handle, i)
       }
     }
   }
 
-  private renderInsertSlot(index: number, isDropTarget: boolean): HTMLElement {
+  private renderInsertSlot(index: number): HTMLElement {
     const slot = el('div', `${CSS_PREFIX}-format-insert-slot`)
     slot.dataset.slotIndex = String(index)
     slot.textContent = '+'
 
     if (this.insertIndex === index && !this.dragState) {
       slot.classList.add(`${CSS_PREFIX}-format-insert-slot--active`)
-    }
-    if (isDropTarget) {
-      slot.classList.add(`${CSS_PREFIX}-format-insert-slot--drop-target`)
     }
 
     slot.addEventListener('click', () => {
@@ -758,11 +753,116 @@ export class HeadingNumberingSettingTab extends SettingTab {
     return slot
   }
 
-  private bindDragHandle(handle: HTMLElement, index: number): void {
-    handle.addEventListener('pointerdown', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
+  /**
+   * Cancel any active drag, releasing pointer capture and cleaning visual state.
+   * Does NOT modify segments. Safe to call at any time.
+   */
+  private cancelDrag(): void {
+    if (!this.dragState) return
 
+    try {
+      // Attempt to release pointer capture
+      const el = document.querySelector(`.${CSS_PREFIX}-format-chip-handle`)
+      if (el && (el as HTMLElement).hasPointerCapture?.(this.dragState.pointerId)) {
+        (el as HTMLElement).releasePointerCapture(this.dragState.pointerId)
+      }
+    } catch { /* best-effort */ }
+
+    this.dragState = null
+    document.body.style.userSelect = ''
+
+    // Clean up CSS classes from segments container
+    const segmentsEl = this.formatEditorContainer?.querySelector(`.${CSS_PREFIX}-format-segments`)
+    if (segmentsEl) {
+      segmentsEl.classList.remove(`${CSS_PREFIX}-format-segments--dragging`)
+    }
+
+    // Clean up dragging chip classes
+    const chips = this.formatEditorContainer?.querySelectorAll(
+      `.${CSS_PREFIX}-format-chip--dragging, .${CSS_PREFIX}-format-chip-literal--dragging`,
+    )
+    chips?.forEach((el) => {
+      el.classList.remove(`${CSS_PREFIX}-format-chip--dragging`, `${CSS_PREFIX}-format-chip-literal--dragging`)
+    })
+  }
+
+  /**
+   * Compute the insertion slot index based on chip geometry.
+   * Walks all chips with `data-format-segment-index`, checks pointer X
+   * position against each chip's horizontal center.
+   *
+   * Returns a value in [0..segments.length].
+   */
+  private calculateDropIndex(container: HTMLElement, clientX: number, clientY: number): number {
+    const chips = Array.from(
+      container.querySelectorAll<HTMLElement>(`[data-segment-index]`),
+    )
+
+    if (chips.length === 0) return 0
+
+    // Find row: chip closest in Y
+    let bestChip: HTMLElement | null = null
+    let bestDy = Infinity
+    for (const chip of chips) {
+      const r = chip.getBoundingClientRect()
+      const cy = r.top + r.height / 2
+      const dy = Math.abs(clientY - cy)
+      if (dy < bestDy) { bestDy = dy; bestChip = chip }
+    }
+
+    if (!bestChip) return 0
+
+    const rect = bestChip.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const idx = parseInt(bestChip.dataset.segmentIndex ?? '0')
+
+    return clientX < centerX ? idx : idx + 1
+  }
+
+  /**
+   * Resolve the final element index after an insert-slot drop.
+   *
+   * When fromIndex < insertIndex, removing the element first shifts
+   * all higher indices left by 1, so we must adjust.
+   */
+  private resolveMoveTargetIndex(fromIndex: number, insertSlotIndex: number): number {
+    return fromIndex < insertSlotIndex ? insertSlotIndex - 1 : insertSlotIndex
+  }
+
+  /**
+   * Set up container-level pointerdown delegation for drag-to-reorder.
+   *
+   * Design principles:
+   * - Entire chip body is draggable (not just the tiny braille handle).
+   * - Drop index is calculated geometrically from chip bounding rects
+   *   (no need to precisely hit narrow insert slots).
+   * - Document capture-phase listeners ensure reliable move/up/cancel
+   *   even if pointer capture fails or is lost.
+   * - RAF throttle limits visual updates to once per frame.
+   * - Real segments are only modified once on pointerup.
+   * - Debug logging traces each drag phase for diagnostics.
+   */
+  private setupDragDelegation(container: HTMLElement): void {
+    const DRAG_THRESHOLD_PX = 4
+    const ATTR_SEGMENT = 'data-segment-index'
+
+    container.addEventListener('pointerdown', (e) => {
+      // ── Find the chip being dragged ──
+      const chip = (e.target as HTMLElement).closest(`[${ATTR_SEGMENT}]`) as HTMLElement | null
+      if (!chip) return
+
+      // Exclude delete button, inputs, editable controls
+      if ((e.target as HTMLElement).closest(`.${CSS_PREFIX}-format-chip-delete, input, select, textarea, button`)) return
+
+      if (e.button !== 0) return
+      e.preventDefault()
+
+      const index = parseInt(chip.getAttribute(ATTR_SEGMENT) ?? '')
+      if (isNaN(index)) return
+
+      debug(`[drag] pointerdown index=${index}`)
+
+      // ── Init drag state ──
       this.dragState = {
         draggingIndex: index,
         dragOverIndex: null,
@@ -772,68 +872,125 @@ export class HeadingNumberingSettingTab extends SettingTab {
         hasMoved: false,
       }
 
-      handle.setPointerCapture(e.pointerId)
+      // Try pointer capture (best-effort)
+      try { (e.target as HTMLElement).setPointerCapture?.(e.pointerId) } catch { /* fallback to doc listeners */ }
 
-      const onMove = (ev: PointerEvent) => {
+      // ── Apply drag-start visuals directly to DOM ──
+      chip.classList.add(
+        chip.matches(`.${CSS_PREFIX}-format-chip-literal`)
+          ? `${CSS_PREFIX}-format-chip-literal--dragging`
+          : `${CSS_PREFIX}-format-chip--dragging`,
+      )
+      container.classList.add(`${CSS_PREFIX}-format-segments--dragging`)
+
+      // ── Per-drag state ──
+      let rafId: number | null = null
+      let pointermoveCount = 0
+      let thresholdPassed = false
+      let dropIndexChanges = 0
+
+      // ── Cleanup helpers ──
+      const removeDocListeners = () => {
+        document.removeEventListener('pointermove', onDocMove, true)
+        document.removeEventListener('pointerup', onDocUp, true)
+        document.removeEventListener('pointercancel', onDocCancel, true)
+        document.removeEventListener('keydown', onKeyDown, true)
+      }
+
+      const cleanupDragVisuals = () => {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null }
+        removeDocListeners()
+
+        chip.classList.remove(`${CSS_PREFIX}-format-chip--dragging`, `${CSS_PREFIX}-format-chip-literal--dragging`)
+        container.classList.remove(`${CSS_PREFIX}-format-segments--dragging`)
+        document.body.style.userSelect = ''
+      }
+
+      // ── Document-level pointermove (capture phase) ──
+      const onDocMove = (ev: PointerEvent) => {
         if (!this.dragState || this.dragState.pointerId !== ev.pointerId) return
+        pointermoveCount++
 
         const dx = ev.clientX - this.dragState.startX
         const dy = ev.clientY - this.dragState.startY
 
-        if (!this.dragState.hasMoved && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+        if (!this.dragState.hasMoved) {
+          if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
           this.dragState.hasMoved = true
-          // Prevent text selection during drag
+          thresholdPassed = true
           document.body.style.userSelect = 'none'
+          debug(`[drag] threshold passed dx=${dx.toFixed(0)} dy=${dy.toFixed(0)}`)
         }
 
-        if (this.dragState.hasMoved) {
-          // Find the nearest slot under the pointer
-          const target = document.elementFromPoint(ev.clientX, ev.clientY)
-          const slot = target?.closest(`.${CSS_PREFIX}-format-insert-slot`) as HTMLElement | null
-          if (slot?.dataset.slotIndex != null) {
-            const slotIdx = parseInt(slot.dataset.slotIndex)
-            if (this.dragState.dragOverIndex !== slotIdx) {
-              this.dragState.dragOverIndex = slotIdx
-              this.renderFormatEditor()
-            }
+        // RAF throttle
+        if (rafId !== null) return
+        rafId = requestAnimationFrame(() => {
+          rafId = null
+          if (!this.dragState) return
+
+          const dropIdx = this.calculateDropIndex(container, ev.clientX, ev.clientY)
+          if (this.dragState.dragOverIndex !== dropIdx) {
+            dropIndexChanges++
+            this.dragState.dragOverIndex = dropIdx
+            debug(`[drag] dropIndex=${dropIdx} (pointermove #${pointermoveCount})`)
           }
-        }
+        })
       }
 
-      const onUp = (_ev: PointerEvent) => {
-        handle.removeEventListener('pointermove', onMove)
-        handle.removeEventListener('pointerup', onUp)
-        handle.removeEventListener('pointercancel', onCancel)
-        document.body.style.userSelect = ''
+      // ── Document-level pointerup (capture phase) ──
+      const onDocUp = () => {
+        debug(`[drag] pointerup from=${this.dragState?.draggingIndex} dropIndex=${this.dragState?.dragOverIndex} hasMoved=${this.dragState?.hasMoved} thresholdPassed=${thresholdPassed} pointermoveCount=${pointermoveCount} dropIndexChanges=${dropIndexChanges}`)
 
         const state = this.dragState
+        const completed = state?.hasMoved
+          && state.dragOverIndex != null
+          && this.resolveMoveTargetIndex(state.draggingIndex, state.dragOverIndex) !== state.draggingIndex
+
+        cleanupDragVisuals()
+
+        // Release capture before clearing state
+        try {
+          if (state && (e.target as HTMLElement).hasPointerCapture?.(state.pointerId)) {
+            (e.target as HTMLElement).releasePointerCapture(state.pointerId)
+          }
+        } catch { /* ignore */ }
+
         this.dragState = null
 
-        if (state?.hasMoved && state.dragOverIndex != null && state.dragOverIndex !== state.draggingIndex) {
-          this.performMove(state.draggingIndex, state.dragOverIndex)
+        if (completed) {
+          const target = this.resolveMoveTargetIndex(state!.draggingIndex, state!.dragOverIndex!)
+          debug(`[drag] committed from=${state!.draggingIndex} to=${target} (insertSlot=${state!.dragOverIndex}) commitCount=1`)
+          this.performMove(state!.draggingIndex, target)
         } else if (!state?.hasMoved) {
-          // Click: select the segment
+          // Click (below threshold): select the segment
           this.selectedSegmentIndex = index
           this.insertIndex = this.currentDefs[this.selectedLevel]?.format?.length ?? 0
           this.renderFormatEditor()
-        } else {
-          // Drag ended but no target — just re-render to clear visual state
-          this.renderFormatEditor()
+        }
+        // If hasMoved but same position: no-op
+      }
+
+      // ── Cancel handler ──
+      const onDocCancel = () => {
+        debug(`[drag] cancel reason=${this.dragState ? 'pointercancel/lostcapture' : 'unknown'}`)
+        cleanupDragVisuals()
+        this.dragState = null
+      }
+
+      // ── Escape key ──
+      const onKeyDown = (ev: KeyboardEvent) => {
+        if (ev.key === 'Escape' && this.dragState) {
+          debug('[drag] cancel reason=Escape')
+          cleanupDragVisuals()
+          this.dragState = null
         }
       }
 
-      const onCancel = () => {
-        handle.removeEventListener('pointermove', onMove)
-        handle.removeEventListener('pointerup', onUp)
-        handle.removeEventListener('pointercancel', onCancel)
-        document.body.style.userSelect = ''
-        this.dragState = null
-        this.renderFormatEditor()
-      }
-
-      handle.addEventListener('pointermove', onMove)
-      handle.addEventListener('pointerup', onUp)
-      handle.addEventListener('pointercancel', onCancel)
+      // ── Register document listeners (capture phase → fire before bubble) ──
+      document.addEventListener('pointermove', onDocMove, true)
+      document.addEventListener('pointerup', onDocUp, true)
+      document.addEventListener('pointercancel', onDocCancel, true)
+      document.addEventListener('keydown', onKeyDown, true)
     })
   }
 
