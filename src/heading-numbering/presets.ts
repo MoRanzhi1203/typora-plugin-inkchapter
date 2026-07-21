@@ -298,6 +298,34 @@ export function buildDefaultLevels(showLevelOneNumber: boolean): Record<HeadingL
   return levels
 }
 
+// ── Segment array operations ─────────────────────────────
+
+/**
+ * Move a segment within the array without mutating the original.
+ *
+ * Index correction: when `fromIndex < toIndex`, the target position
+ * must be decremented by 1 because the element at `fromIndex` has
+ * already been removed from the array before re-insertion.
+ *
+ * Returns a new array. Returns a shallow copy for no-op moves.
+ */
+export function moveSegment(
+  segments: readonly NumberFormatSegment[],
+  fromIndex: number,
+  toIndex: number,
+): NumberFormatSegment[] {
+  if (fromIndex === toIndex) return segments.slice()
+  if (fromIndex < 0 || fromIndex >= segments.length) return segments.slice()
+  if (toIndex < 0 || toIndex > segments.length) return segments.slice()
+
+  const result = segments.slice()
+  const [removed] = result.splice(fromIndex, 1)
+  // After removing the element, indices at positions > fromIndex shift left by 1
+  const adjustedToIndex = fromIndex < toIndex ? toIndex - 1 : toIndex
+  result.splice(adjustedToIndex, 0, removed)
+  return result
+}
+
 // ── Format normalization ─────────────────────────────────
 
 /** Characters that only serve as separators (no semantic meaning like 第/章). */
@@ -328,7 +356,7 @@ export function isCanonicalHierarchicalFormat(segments: readonly NumberFormatSeg
  * 6. Merge adjacent literals
  * 7. Remove empty literals
  * 8. For canonical hierarchical formats: sort refs ascending
- *    (For user-custom formats with packaging text: keep custom order)
+ *    (Skipped when isCustomFormat is true — preserves user's drag order)
  *
  * Returns a new array (never mutates input).
  */
@@ -336,6 +364,7 @@ export function normalizeFormatSegments(
   segments: readonly NumberFormatSegment[],
   currentLevel: HeadingLevel,
   hiddenLevels: Set<HeadingLevel>,
+  isCustomFormat?: boolean,
 ): NumberFormatSegment[] {
   // Step 1-3: filter invalid refs
   const seenLevels = new Set<HeadingLevel>()
@@ -369,7 +398,8 @@ export function normalizeFormatSegments(
   filtered = mergeAdjacentLiterals(filtered)
 
   // Step 8: for canonical hierarchical formats, sort refs ascending
-  if (isCanonicalHierarchicalFormat(filtered)) {
+  // (skip when user has manually reordered — isCustomFormat flag set after drag)
+  if (!isCustomFormat && isCanonicalHierarchicalFormat(filtered)) {
     filtered = sortCanonicalFormat(filtered, currentLevel)
   }
 
@@ -428,44 +458,38 @@ function mergeAdjacentLiterals(segments: NumberFormatSegment[]): NumberFormatSeg
 }
 
 /**
- * Sort a canonical hierarchical format so level refs are ascending,
- * with the current-level ref always last.
+ * Sort level-reference segments in ascending order while preserving
+ * ALL literal segments at their original positions.
+ *
+ * Unlike the original implementation, this function:
+ * - Does NOT insert any separators (no "." auto-insertion);
+ * - Does NOT discard or reorder literal segments;
+ * - Only replaces level-refs at their positions with sorted refs;
+ * - Does NOT force the current-level ref to be last.
+ *
+ * Returns a new array.
  */
-function sortCanonicalFormat(segments: NumberFormatSegment[], currentLevel: HeadingLevel): NumberFormatSegment[] {
-  // Collect all level refs (excluding current-level)
-  const parentRefs: NumberFormatSegment[] = []
-  const otherParts: NumberFormatSegment[] = []
-  let selfRef: NumberFormatSegment | null = null
+function sortCanonicalFormat(segments: NumberFormatSegment[], _currentLevel: HeadingLevel): NumberFormatSegment[] {
+  // Collect level-refs and sort them by level ascending
+  const sortedRefs: NumberFormatSegment[] = segments
+    .filter(s => s.type === 'level-reference')
+    .map(s => ({ ...s }))
+    .sort((a, b) => {
+      const la = (a as { type: 'level-reference'; level: HeadingLevel }).level
+      const lb = (b as { type: 'level-reference'; level: HeadingLevel }).level
+      return la - lb
+    })
 
+  // Replace each level-reference position with the next sorted ref
+  const result: NumberFormatSegment[] = []
+  let refCursor = 0
   for (const seg of segments) {
     if (seg.type === 'level-reference') {
-      if (seg.level === currentLevel) {
-        selfRef = seg
-      } else {
-        parentRefs.push(seg)
-      }
+      result.push(sortedRefs[refCursor])
+      refCursor++
+    } else {
+      result.push({ ...seg })
     }
   }
-
-  // Sort parent refs ascending by level
-  parentRefs.sort((a, b) => {
-    const la = (a as { type: 'level-reference'; level: HeadingLevel }).level
-    const lb = (b as { type: 'level-reference'; level: HeadingLevel }).level
-    return la - lb
-  })
-
-  // Rebuild: parent refs with '.' between, then current-level ref
-  const result: NumberFormatSegment[] = []
-  for (let i = 0; i < parentRefs.length; i++) {
-    if (i > 0) result.push(lit('.'))
-    result.push(parentRefs[i])
-  }
-  if (parentRefs.length > 0 && selfRef) {
-    result.push(lit('.'))
-  }
-  if (selfRef) {
-    result.push(selfRef)
-  }
-
   return result
 }

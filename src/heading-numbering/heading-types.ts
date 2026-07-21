@@ -68,6 +68,8 @@ export interface HeadingLevelDefinition {
   legalStyle: boolean
   /** Position / indentation settings. */
   position: HeadingLevelPosition
+  /** True when the user has manually reordered segments — prevents auto-sort during normalization. */
+  isCustomFormat?: boolean
 }
 
 // ── CustomMultilevelListSettings ─────────────────────────

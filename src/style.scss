@@ -267,35 +267,6 @@
   padding: 4px 0;
 }
 
-.inkchapter-mll-format-segments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-  margin-bottom: 8px;
-  min-height: 28px;
-}
-
-.inkchapter-mll-format-chip {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 3px;
-  font-size: 13px;
-  font-family: monospace;
-  user-select: none;
-  white-space: nowrap;
-}
-
-.inkchapter-mll-format-chip-literal {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 3px;
-  font-size: 13px;
-  font-family: monospace;
-  user-select: none;
-  white-space: nowrap;
-}
-
 .inkchapter-mll-format-insert-row {
   display: flex;
   align-items: center;
@@ -392,14 +363,6 @@
     box-shadow: 0 0 0 2px var(--interactive-accent, #7c6ff7) !important;
     border-color: var(--interactive-accent, #7c6ff7) !important;
   }
-
-  &[draggable="true"] {
-    cursor: grab;
-
-    &:active {
-      cursor: grabbing;
-    }
-  }
 }
 
 .inkchapter-mll-format-chip-literal {
@@ -423,45 +386,66 @@
     border-color: var(--interactive-accent, #7c6ff7) !important;
   }
 
-  &[draggable="true"] {
-    cursor: grab;
-
-    &:active {
-      cursor: grabbing;
-    }
+  &--dragging {
+    opacity: 0.45;
+    outline: 2px dashed var(--interactive-accent, #7c6ff7);
   }
 }
 
-/* ── Selected segment controls ───────────────────── */
+/* ── Drag Handle ─────────────────────────────────── */
 
-.inkchapter-mll-format-selected-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 5%, transparent);
-  border-radius: 4px;
-  font-size: 12px;
+.inkchapter-mll-format-chip-handle {
+  display: inline-block;
+  cursor: grab;
+  font-size: 14px;
+  margin-right: 4px;
+  color: var(--text-muted, #999);
+  user-select: none;
+  line-height: 1;
+  vertical-align: middle;
 
-  button {
-    padding: 3px 10px;
-    font-size: 12px;
-    border: 1px solid var(--background-modifier-border, #ddd);
-    border-radius: 3px;
-    background: var(--background-primary, #fff);
-    color: var(--text-normal, #333);
-    cursor: pointer;
-
-    &:hover:not(:disabled) {
-      background: var(--background-modifier-hover, #f0f0f0);
-    }
-
-    &:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
+  &:active {
+    cursor: grabbing;
   }
+}
+
+/* ── Chip Delete Button ──────────────────────────── */
+
+.inkchapter-mll-format-chip-delete {
+  display: inline-block;
+  cursor: pointer;
+  color: var(--text-muted, #999);
+  margin-left: 3px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  padding: 0 2px;
+
+  &:hover {
+    color: var(--text-error, #e81123);
+  }
+}
+
+/* ── Drag visual states ──────────────────────────── */
+
+.inkchapter-mll-format-chip--dragging {
+  opacity: 0.45;
+  outline: 2px dashed var(--interactive-accent, #7c6ff7);
+}
+
+/* ── Drop target slot ────────────────────────────── */
+
+.inkchapter-mll-format-insert-slot--drop-target {
+  opacity: 1 !important;
+  width: 24px;
+  height: 28px;
+  background: color-mix(in srgb, var(--interactive-accent, #7c6ff7) 25%, transparent) !important;
+  border: 2px solid var(--interactive-accent, #7c6ff7) !important;
+  border-radius: 4px;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--interactive-accent, #7c6ff7) 40%, transparent);
+  transition: all 0.1s ease;
+  color: transparent !important;  // hide the "+" text
 }
 
 /* ── Format validation error ─────────────────────── */
