@@ -17,6 +17,7 @@ import {
   formatSegmentsToString,
   buildCustomDefault,
   normalizeFormatSegments,
+  moveSegment,
 } from '../heading-numbering/presets'
 import { formatToken, isValidTokenStyle } from '../heading-numbering/token-formatter'
 import { getAvailableReferenceLevels } from '../heading-numbering/numbering-engine'
@@ -67,6 +68,19 @@ function el(tag: string, cls?: string, parent?: HTMLElement): HTMLElement {
   return e
 }
 
+// ── Drag State ────────────────────────────────────────────
+
+const DRAG_THRESHOLD = 5
+
+interface DragState {
+  draggingIndex: number
+  dragOverIndex: number | null
+  pointerId: number
+  startX: number
+  startY: number
+  hasMoved: boolean
+}
+
 // ── SettingTab ───────────────────────────────────────────
 
 export class HeadingNumberingSettingTab extends SettingTab {
@@ -87,6 +101,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private actionsContainer: HTMLElement | null = null
   private insertIndex: number = 0
   private selectedSegmentIndex: number | null = null
+  private dragState: DragState | null = null
   private customPanel: HTMLElement | null = null
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -501,64 +516,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       insertRefRow.appendChild(addRefBtn)
     }
 
-    // Selected segment controls
-    if (this.selectedSegmentIndex !== null) {
-      const selRow = el('div', `${CSS_PREFIX}-format-selected-controls`, container)
-      selRow.style.marginTop = '8px'
-
-      const selSeg = def.format[this.selectedSegmentIndex]
-      const selLabel = el('span', undefined, selRow)
-      selLabel.textContent = '选中: '
-      const selValue = el('span', undefined, selRow)
-      selValue.style.fontFamily = 'monospace'
-      selValue.style.padding = '2px 6px'
-      selValue.style.borderRadius = '3px'
-      selValue.style.background = '#e8f0fe'
-      if (selSeg.type === 'level-reference') {
-        selValue.textContent = `级别${selSeg.level}`
-      } else {
-        selValue.textContent = `"${selSeg.value}"`
-      }
-
-      const isCurrentLevelToken =
-        selSeg.type === 'level-reference' && selSeg.level === this.selectedLevel
-
-      const moveLeftBtn = document.createElement('button')
-      moveLeftBtn.textContent = '← 左移'
-      moveLeftBtn.style.marginLeft = '8px'
-      moveLeftBtn.disabled = this.selectedSegmentIndex === 0
-      moveLeftBtn.onclick = () => {
-        this.moveSegment(this.selectedSegmentIndex!, this.selectedSegmentIndex! - 1)
-      }
-      selRow.appendChild(moveLeftBtn)
-
-      const moveRightBtn = document.createElement('button')
-      moveRightBtn.textContent = '右移 →'
-      moveRightBtn.style.marginLeft = '4px'
-      moveRightBtn.disabled = this.selectedSegmentIndex === def.format.length - 1
-      moveRightBtn.onclick = () => {
-        this.moveSegment(this.selectedSegmentIndex!, this.selectedSegmentIndex! + 1)
-      }
-      selRow.appendChild(moveRightBtn)
-
-      if (!isCurrentLevelToken) {
-        const delBtn = document.createElement('button')
-        delBtn.textContent = '删除'
-        delBtn.style.marginLeft = '8px'
-        delBtn.style.color = '#d00'
-        delBtn.onclick = () => {
-          this.deleteSegment(this.selectedSegmentIndex!)
-        }
-        selRow.appendChild(delBtn)
-      } else {
-        const hint = el('span', undefined, selRow)
-        hint.textContent = ' (当前级不能删除，但可以移动)'
-        hint.style.color = '#999'
-        hint.style.fontSize = '12px'
-        hint.style.marginLeft = '4px'
-      }
-    }
-
     // Keyboard handling on the format editor container
     container.tabIndex = 0
     container.addEventListener('keydown', (e) => {
@@ -584,7 +541,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (e.altKey && e.key === 'ArrowLeft') {
         e.preventDefault()
         if (this.selectedSegmentIndex > 0) {
-          this.moveSegment(this.selectedSegmentIndex, this.selectedSegmentIndex - 1)
+          this.performMove(this.selectedSegmentIndex, this.selectedSegmentIndex - 1)
         }
         return
       }
@@ -592,7 +549,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (e.altKey && e.key === 'ArrowRight') {
         e.preventDefault()
         if (this.selectedSegmentIndex < def.format.length - 1) {
-          this.moveSegment(this.selectedSegmentIndex, this.selectedSegmentIndex + 1)
+          this.performMove(this.selectedSegmentIndex, this.selectedSegmentIndex + 1)
         }
         return
       }
@@ -602,170 +559,126 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private renderFormatSegments(container: HTMLElement, def: HeadingLevelDefinition): void {
     container.style.display = 'flex'
     container.style.flexWrap = 'wrap'
-    container.style.gap = '4px'
+    container.style.gap = '0'
     container.style.alignItems = 'center'
-    container.style.marginBottom = '8px'
+    container.style.margin = '8px 0'
+    container.style.minHeight = '32px'
+    container.style.padding = '4px'
+    container.style.border = '1px dashed var(--background-modifier-border, #ddd)'
+    container.style.borderRadius = '6px'
+    container.style.background = 'var(--background-primary, #fff)'
 
     const segments = def.format
+    const isDragging = this.dragState !== null
+    const dragIdx = this.dragState?.draggingIndex
+    const overIdx = this.dragState?.dragOverIndex
 
     if (segments.length === 0) {
       // Still show an insert slot for empty format
-      const slot = el('div', `${CSS_PREFIX}-format-insert-slot`, container)
-      if (this.insertIndex === 0) {
-        slot.classList.add(`${CSS_PREFIX}-format-insert-slot--active`)
-      }
-      slot.textContent = '+'
-      slot.style.cursor = 'pointer'
-      slot.addEventListener('click', () => {
-        this.insertIndex = 0
-        this.renderFormatEditor()
-        this.renderFullPreview()
-      })
-      slot.addEventListener('dragover', (e) => { e.preventDefault() })
-      slot.addEventListener('drop', (e) => {
-        e.preventDefault()
-        const dragIdx = parseInt(e.dataTransfer?.getData('text/plain') ?? '')
-        if (!isNaN(dragIdx) && dragIdx >= 0 && dragIdx < segments.length) {
-          this.moveSegment(dragIdx, 0)
-        }
-      })
+      const slot = this.renderInsertSlot(0, isDragging && overIdx === 0)
+      container.appendChild(slot)
       return
     }
 
     for (let i = 0; i <= segments.length; i++) {
       // Insert slot before each segment (and after last)
       if (i <= segments.length) {
-        const slot = el('div', `${CSS_PREFIX}-format-insert-slot`, container)
-        slot.dataset.slotIndex = String(i)
-        slot.textContent = '+'
-        slot.style.cursor = 'pointer'
-        if (this.insertIndex === i) {
-          slot.classList.add(`${CSS_PREFIX}-format-insert-slot--active`)
-        }
-        const slotPos = i
-        slot.addEventListener('click', () => {
-          this.insertIndex = slotPos
-          this.renderFormatEditor()
-          this.renderFullPreview()
-        })
-        slot.addEventListener('dragover', (e) => { e.preventDefault() })
-        slot.addEventListener('drop', (e) => {
-          e.preventDefault()
-          const dragIdx = parseInt(e.dataTransfer?.getData('text/plain') ?? '')
-          if (!isNaN(dragIdx) && dragIdx >= 0 && dragIdx < segments.length) {
-            this.moveSegment(dragIdx, slotPos)
-          }
-        })
+        const slot = this.renderInsertSlot(i, isDragging && overIdx === i)
+        container.appendChild(slot)
       }
 
-      // Render the segment chip (skip for the last iteration which only adds the trailing slot)
+      // Render the segment chip (skip trailing slot iteration)
       if (i >= segments.length) continue
 
       const seg = segments[i]
       const isCurrentLevel = seg.type === 'level-reference' && seg.level === this.selectedLevel
       const isParentRef = seg.type === 'level-reference' && seg.level < this.selectedLevel
       const isSelected = this.selectedSegmentIndex === i
+      const isBeingDragged = isDragging && dragIdx === i
 
       if (seg.type === 'level-reference') {
         const chip = el('span', `${CSS_PREFIX}-format-chip`, container)
-        chip.textContent = `级别${seg.level}`
-        chip.title = `标题 ${seg.level} 编号引用`
-        chip.style.display = 'inline-block'
-        chip.style.padding = '2px 8px'
-        chip.style.borderRadius = '3px'
-        chip.style.background = isCurrentLevel ? '#e8f0fe' : '#e8e8e8'
+        chip.dataset.segmentIndex = String(i)
+
+        // Drag handle
+        const handle = el('span', `${CSS_PREFIX}-format-chip-handle`, chip)
+        handle.textContent = '\u282F' // ⠿ braille pattern
+        handle.title = isCurrentLevel
+          ? '当前级引用不可删除，可拖拽调整位置。'
+          : '拖拽排序'
+
+        const label = el('span', `${CSS_PREFIX}-format-chip-label`, chip)
+        label.textContent = `级别${seg.level}`
+
+        // Apply visual states
+        if (isSelected) chip.classList.add(`${CSS_PREFIX}-format-chip--selected`)
+        if (isBeingDragged) chip.classList.add(`${CSS_PREFIX}-format-chip--dragging`)
+
         chip.style.border = isSelected
-          ? '2px solid #4a90d9'
-          : `1px solid ${isCurrentLevel ? '#4a90d9' : '#ccc'}`
-        chip.style.fontSize = '13px'
-        chip.style.fontFamily = 'monospace'
-        chip.style.cursor = 'pointer'
-        chip.draggable = true
+          ? '2px solid var(--interactive-accent, #4a90d9)'
+          : `1px solid ${isCurrentLevel ? 'var(--interactive-accent, #4a90d9)' : '#ccc'}`
+        chip.style.background = isCurrentLevel ? '#e8f0fe' : '#e8e8e8'
 
-        if (isSelected) {
-          chip.classList.add(`${CSS_PREFIX}-format-chip--selected`)
-        }
-
+        // Click on chip body selects
         chip.addEventListener('click', () => {
+          if (this.dragState?.hasMoved) return
           this.selectedSegmentIndex = i
           this.insertIndex = this.currentDefs[this.selectedLevel]?.format?.length ?? 0
           this.renderFormatEditor()
         })
 
-        chip.addEventListener('dragstart', (e) => {
-          e.dataTransfer?.setData('text/plain', String(i))
-        })
-        chip.addEventListener('dragover', (e) => { e.preventDefault() })
-        chip.addEventListener('drop', (e) => {
-          e.preventDefault()
-          const dragIdx = parseInt(e.dataTransfer?.getData('text/plain') ?? '')
-          if (!isNaN(dragIdx) && dragIdx !== i && dragIdx >= 0 && dragIdx < segments.length) {
-            this.moveSegment(dragIdx, i)
-          }
-        })
-
+        // Current-level token: no delete button
         if (isCurrentLevel) {
-          // Current-level token: show dimmed "×" (not clickable)
-          const delSpan = document.createElement('span')
-          delSpan.textContent = ' ×'
-          delSpan.style.color = '#bbb'
-          delSpan.style.cursor = 'default'
-          delSpan.title = '当前级别引用不可删除'
-          chip.appendChild(delSpan)
+          chip.title = '当前级引用不可删除，可拖拽调整位置。'
         } else if (isParentRef) {
-          // Parent-level token: clickable "×" delete
+          // Parent ref: delete button
           const delBtn = document.createElement('span')
-          delBtn.textContent = ' ×'
-          delBtn.style.cursor = 'pointer'
-          delBtn.style.color = '#999'
+          delBtn.className = `${CSS_PREFIX}-format-chip-delete`
+          delBtn.textContent = '\u00D7' // ×
           delBtn.title = '删除此引用'
+          delBtn.addEventListener('pointerdown', (e) => {
+            e.stopPropagation()
+            e.preventDefault()
+          })
           delBtn.addEventListener('click', (e) => {
             e.stopPropagation()
             this.deleteSegment(i)
           })
           chip.appendChild(delBtn)
         }
+
+        // Bind drag to handle
+        this.bindDragHandle(handle, i)
       } else {
-        // literal segment
+        // Literal segment
         const chip = el('span', `${CSS_PREFIX}-format-chip-literal`, container)
-        chip.style.display = 'inline-block'
-        chip.style.padding = '2px 8px'
-        chip.style.borderRadius = '3px'
-        chip.style.background = '#fff3cd'
-        chip.style.border = isSelected ? '2px solid #4a90d9' : '1px solid #ffc107'
-        chip.style.fontSize = '13px'
-        chip.style.fontFamily = 'monospace'
-        chip.style.cursor = 'pointer'
-        chip.draggable = true
+        chip.dataset.segmentIndex = String(i)
 
-        if (isSelected) {
-          chip.classList.add(`${CSS_PREFIX}-format-chip--selected`)
-        }
+        // Drag handle
+        const handle = el('span', `${CSS_PREFIX}-format-chip-handle`, chip)
+        handle.textContent = '\u282F' // ⠿
+        handle.title = '拖拽排序'
 
+        const textSpan = el('span', `${CSS_PREFIX}-format-chip-label`, chip)
+        textSpan.textContent = seg.value
+
+        if (isSelected) chip.classList.add(`${CSS_PREFIX}-format-chip-literal--selected`)
+        if (isBeingDragged) chip.classList.add(`${CSS_PREFIX}-format-chip-literal--dragging`)
+
+        chip.style.border = isSelected ? '2px solid var(--interactive-accent, #4a90d9)' : '1px solid #ffc107'
+
+        // Click on chip body selects
         chip.addEventListener('click', (e) => {
-          // Don't trigger if clicking delete button
-          if ((e.target as HTMLElement).closest('[data-delete]')) return
+          if (this.dragState?.hasMoved) return
+          if ((e.target as HTMLElement).closest(`.${CSS_PREFIX}-format-chip-delete`)) return
+          if ((e.target as HTMLElement).closest(`.${CSS_PREFIX}-format-chip-handle`)) return
           this.selectedSegmentIndex = i
           this.insertIndex = this.currentDefs[this.selectedLevel]?.format?.length ?? 0
           this.renderFormatEditor()
         })
 
-        chip.addEventListener('dragstart', (e) => {
-          e.dataTransfer?.setData('text/plain', String(i))
-        })
-        chip.addEventListener('dragover', (e) => { e.preventDefault() })
-        chip.addEventListener('drop', (e) => {
-          e.preventDefault()
-          const dragIdx = parseInt(e.dataTransfer?.getData('text/plain') ?? '')
-          if (!isNaN(dragIdx) && dragIdx !== i && dragIdx >= 0 && dragIdx < segments.length) {
-            this.moveSegment(dragIdx, i)
-          }
-        })
-
-        const textSpan = el('span', undefined, chip)
-        textSpan.textContent = seg.value
-        textSpan.style.cursor = 'pointer'
-        textSpan.addEventListener('click', (e2) => {
+        // Double-click to edit
+        textSpan.addEventListener('dblclick', (e2) => {
           e2.stopPropagation()
           const input = document.createElement('input')
           input.type = 'text'
@@ -774,7 +687,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
           input.style.fontSize = '13px'
           input.style.fontFamily = 'monospace'
           input.style.padding = '0 2px'
-          input.style.border = '1px solid #4a90d9'
+          input.style.border = '1px solid var(--interactive-accent, #4a90d9)'
           input.style.borderRadius = '2px'
 
           while (chip.firstChild) chip.removeChild(chip.firstChild)
@@ -802,21 +715,126 @@ export class HeadingNumberingSettingTab extends SettingTab {
           })
         })
 
-        // Delete button for literal
+        // Delete button
         const delBtn = document.createElement('span')
-        delBtn.setAttribute('data-delete', 'true')
-        delBtn.textContent = ' ×'
-        delBtn.style.cursor = 'pointer'
-        delBtn.style.color = '#999'
-        delBtn.style.marginLeft = '2px'
+        delBtn.className = `${CSS_PREFIX}-format-chip-delete`
+        delBtn.textContent = '\u00D7' // ×
         delBtn.title = '删除此文字'
+        delBtn.addEventListener('pointerdown', (e2) => {
+          e2.stopPropagation()
+          e2.preventDefault()
+        })
         delBtn.addEventListener('click', (e2) => {
           e2.stopPropagation()
           this.deleteSegment(i)
         })
         chip.appendChild(delBtn)
+
+        // Bind drag to handle
+        this.bindDragHandle(handle, i)
       }
     }
+  }
+
+  private renderInsertSlot(index: number, isDropTarget: boolean): HTMLElement {
+    const slot = el('div', `${CSS_PREFIX}-format-insert-slot`)
+    slot.dataset.slotIndex = String(index)
+    slot.textContent = '+'
+
+    if (this.insertIndex === index && !this.dragState) {
+      slot.classList.add(`${CSS_PREFIX}-format-insert-slot--active`)
+    }
+    if (isDropTarget) {
+      slot.classList.add(`${CSS_PREFIX}-format-insert-slot--drop-target`)
+    }
+
+    slot.addEventListener('click', () => {
+      if (this.dragState?.hasMoved) return
+      this.insertIndex = index
+      this.renderFormatEditor()
+      this.renderFullPreview()
+    })
+
+    return slot
+  }
+
+  private bindDragHandle(handle: HTMLElement, index: number): void {
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      this.dragState = {
+        draggingIndex: index,
+        dragOverIndex: null,
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        hasMoved: false,
+      }
+
+      handle.setPointerCapture(e.pointerId)
+
+      const onMove = (ev: PointerEvent) => {
+        if (!this.dragState || this.dragState.pointerId !== ev.pointerId) return
+
+        const dx = ev.clientX - this.dragState.startX
+        const dy = ev.clientY - this.dragState.startY
+
+        if (!this.dragState.hasMoved && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+          this.dragState.hasMoved = true
+          // Prevent text selection during drag
+          document.body.style.userSelect = 'none'
+        }
+
+        if (this.dragState.hasMoved) {
+          // Find the nearest slot under the pointer
+          const target = document.elementFromPoint(ev.clientX, ev.clientY)
+          const slot = target?.closest(`.${CSS_PREFIX}-format-insert-slot`) as HTMLElement | null
+          if (slot?.dataset.slotIndex != null) {
+            const slotIdx = parseInt(slot.dataset.slotIndex)
+            if (this.dragState.dragOverIndex !== slotIdx) {
+              this.dragState.dragOverIndex = slotIdx
+              this.renderFormatEditor()
+            }
+          }
+        }
+      }
+
+      const onUp = (_ev: PointerEvent) => {
+        handle.removeEventListener('pointermove', onMove)
+        handle.removeEventListener('pointerup', onUp)
+        handle.removeEventListener('pointercancel', onCancel)
+        document.body.style.userSelect = ''
+
+        const state = this.dragState
+        this.dragState = null
+
+        if (state?.hasMoved && state.dragOverIndex != null && state.dragOverIndex !== state.draggingIndex) {
+          this.performMove(state.draggingIndex, state.dragOverIndex)
+        } else if (!state?.hasMoved) {
+          // Click: select the segment
+          this.selectedSegmentIndex = index
+          this.insertIndex = this.currentDefs[this.selectedLevel]?.format?.length ?? 0
+          this.renderFormatEditor()
+        } else {
+          // Drag ended but no target — just re-render to clear visual state
+          this.renderFormatEditor()
+        }
+      }
+
+      const onCancel = () => {
+        handle.removeEventListener('pointermove', onMove)
+        handle.removeEventListener('pointerup', onUp)
+        handle.removeEventListener('pointercancel', onCancel)
+        document.body.style.userSelect = ''
+        this.dragState = null
+        this.renderFormatEditor()
+      }
+
+      handle.addEventListener('pointermove', onMove)
+      handle.addEventListener('pointerup', onUp)
+      handle.addEventListener('pointercancel', onCancel)
+    })
   }
 
   private applyFormatChange(newSegments: readonly NumberFormatSegment[]): void {
@@ -829,12 +847,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (!s.customDefinition.levels[lv]?.enabled) hiddenLevels.add(lv)
     }
 
-    // Normalize: removes hidden/future/duplicate refs, ensures self-ref exists,
-    // cleans orphans, merges literals, sorts canonical formats ascending.
+    // Always treat user edits as custom format — skip auto-sort.
+    // All user actions (insert, delete, move, edit) must preserve the
+    // exact order the user constructed.  Separators are NEVER auto-inserted.
     const normalized = normalizeFormatSegments(
       newSegments,
       this.selectedLevel,
       hiddenLevels,
+      true,
     )
 
     // Validate
@@ -850,7 +870,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
+    // Set both isCustomFormat flag and format in one call
     this.numberingService.updateLevelStyle(this.selectedLevel, {
+      isCustomFormat: true,
       format: normalized,
     })
 
@@ -939,13 +961,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.insertIndex = this.insertIndex + 1
   }
 
-  private moveSegment(fromIndex: number, toIndex: number): void {
-    const def = this.getCurrentDef(this.selectedLevel)
-    const format = [...def.format]
-    const [seg] = format.splice(fromIndex, 1)
-    format.splice(toIndex, 0, seg)
-    this.applyFormatChange(format)
-    this.selectedSegmentIndex = toIndex
+  private performMove(fromIndex: number, toIndex: number): void {
+    if (fromIndex === toIndex) return
+    const currentDef = this.getCurrentDef(this.selectedLevel)
+    const newSegments = moveSegment(currentDef.format, fromIndex, toIndex)
+    // Mark as custom format so normalization won't re-sort after drag
+    this.numberingService.updateLevelStyle(this.selectedLevel, {
+      isCustomFormat: true,
+      format: newSegments,
+    })
+    this.selectedSegmentIndex = toIndex > fromIndex ? toIndex - 1 : toIndex
+    this.renderFormatEditor()
+    this.renderFullPreview()
   }
 
   private deleteSegment(index: number): void {
@@ -1403,7 +1430,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     for (const lv of [2, 3, 4, 5, 6] as HeadingLevel[]) {
       const def = newLevels[lv]
       const oldFormat = def.format
-      const newFormat = normalizeFormatSegments(oldFormat, lv, hiddenLevels)
+      const newFormat = normalizeFormatSegments(oldFormat, lv, hiddenLevels, def.isCustomFormat)
       if (JSON.stringify(newFormat) !== JSON.stringify(oldFormat)) {
         changed = true
         newLevels[lv] = { ...def, format: newFormat }

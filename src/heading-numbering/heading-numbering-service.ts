@@ -78,7 +78,8 @@ export class HeadingNumberingService {
     const normalizedLevels = deepCloneLevels(migrated.customDefinition.levels)
     for (const lv of HEADING_LEVELS) {
       const oldFormat = normalizedLevels[lv].format
-      const newFormat = normalizeFormatSegments(oldFormat, lv, hiddenLevels)
+      const isCustom = normalizedLevels[lv].isCustomFormat
+      const newFormat = normalizeFormatSegments(oldFormat, lv, hiddenLevels, isCustom)
       if (JSON.stringify(newFormat) !== JSON.stringify(oldFormat)) {
         changed = true
         normalizedLevels[lv] = { ...normalizedLevels[lv], format: newFormat }
