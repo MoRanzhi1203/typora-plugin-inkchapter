@@ -16,7 +16,7 @@ export default class extends Plugin<InkChapterSettings> {
     // Register settings (must succeed for plugin to function)
     this.registerSettings(
       new PluginSettings(this.app, this.manifest, {
-        version: 1,
+        version: DEFAULT_SETTINGS.schemaVersion,
       }),
     )
     this.settings.setDefault(DEFAULT_SETTINGS)
