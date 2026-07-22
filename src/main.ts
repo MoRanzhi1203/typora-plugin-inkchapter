@@ -13,7 +13,7 @@ export default class extends Plugin<InkChapterSettings> {
   private numberingService?: HeadingNumberingService
 
   onload() {
-    // Register settings
+    // Register settings (must succeed for plugin to function)
     this.registerSettings(
       new PluginSettings(this.app, this.manifest, {
         version: 1,
@@ -37,14 +37,28 @@ export default class extends Plugin<InkChapterSettings> {
       registerDisposable: (fn) => this.register(fn),
     }
 
-    // Init heading numbering
-    const adapter = new HeadingDomAdapter()
-    this.numberingService = new HeadingNumberingService(ctx, adapter)
+    // Init heading numbering (safe: service is optional)
+    try {
+      const adapter = new HeadingDomAdapter()
+      this.numberingService = new HeadingNumberingService(ctx, adapter)
+    } catch (e) {
+      console.error('[InkChapter] 标题编号服务初始化失败，编号功能不可用', e)
+      Notice.error('墨章：标题编号服务初始化失败，编号功能暂不可用')
+    }
 
     // Register settings tab
-    this.registerSettingTab(
-      new HeadingNumberingSettingTab(this.settings, this.numberingService),
-    )
+    if (this.numberingService) {
+      try {
+        this.registerSettingTab(
+          new HeadingNumberingSettingTab(this.settings, this.numberingService),
+        )
+      } catch (e) {
+        console.error('[InkChapter] 设置页面注册失败', e)
+        Notice.error('墨章：设置页面加载失败，但插件主体仍可用')
+      }
+    }
+
+    // ── Commands (always registered, even if service failed) ──
 
     // Status check command
     this.registerCommand({
