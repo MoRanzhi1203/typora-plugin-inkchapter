@@ -12,7 +12,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 2
+const CURRENT_SCHEMA_VERSION = 3
 
 // ── Validation helpers ─────────────────────────────────
 
@@ -46,9 +46,28 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       prefix: '',
       suffix: '',
       separator: '.',
+      startAt: 1,
+      restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+      legalStyle: false,
     }
   }
   return ls
+}
+
+function validateStartAt(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 999) return raw
+  return 1
+}
+
+function validateRestartAfterLevel(raw: unknown, currentLevel: HeadingLevel): HeadingLevel | null {
+  if (raw === null || raw === undefined) return currentLevel === 1 ? null : (currentLevel - 1) as HeadingLevel
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw < currentLevel) return raw as HeadingLevel
+  return currentLevel === 1 ? null : (currentLevel - 1) as HeadingLevel
+}
+
+function validateLegalStyle(raw: unknown): boolean {
+  if (typeof raw === 'boolean') return raw
+  return false
 }
 
 /**
@@ -103,6 +122,9 @@ function migrateLegacyLevels(
       prefix: typeof old.prefix === 'string' ? old.prefix : '',
       suffix: typeof old.suffix === 'string' ? old.suffix : '',
       separator: typeof old.separator === 'string' ? old.separator : '.',
+      startAt: validateStartAt((old as any).startAt),
+      restartAfterLevel: validateRestartAfterLevel((old as any).restartAfterLevel, lv),
+      legalStyle: validateLegalStyle((old as any).legalStyle),
     }
   }
   return levels
@@ -165,6 +187,9 @@ function doMigrate(
           prefix: typeof storedLevel.prefix === 'string' ? storedLevel.prefix : '',
           suffix: typeof storedLevel.suffix === 'string' ? storedLevel.suffix : '',
           separator: typeof storedLevel.separator === 'string' ? storedLevel.separator : '.',
+          startAt: validateStartAt((storedLevel as any).startAt),
+          restartAfterLevel: validateRestartAfterLevel((storedLevel as any).restartAfterLevel, lv),
+          legalStyle: validateLegalStyle((storedLevel as any).legalStyle),
         }
       }
     }
@@ -188,6 +213,9 @@ function doMigrate(
           prefix: typeof (sd as any).prefix === 'string' ? sanitizeString((sd as any).prefix) : '',
           suffix: typeof (sd as any).suffix === 'string' ? sanitizeString((sd as any).suffix) : '',
           separator: typeof (sd as any).separator === 'string' ? sanitizeString((sd as any).separator, '.') : '.',
+          startAt: validateStartAt((sd as any).startAt),
+          restartAfterLevel: validateRestartAfterLevel((sd as any).restartAfterLevel, lv),
+          legalStyle: validateLegalStyle((sd as any).legalStyle),
         }
       }
     }

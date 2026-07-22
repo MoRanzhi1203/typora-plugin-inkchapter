@@ -281,6 +281,45 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
     resetAllRow.appendChild(resetBtn)
+
+    // ── Structural preview ─────────────────────────
+    const structTitle = el('div', undefined, panelContainer)
+    structTitle.style.cssText = 'margin-top:16px;font-weight:600;font-size:0.92em;'
+    structTitle.textContent = '结构预览（验证重启行为）'
+    const structEl = el('div', 'inkchapter-structural-preview', panelContainer)
+    this.renderStructuralPreview(s, structEl)
+  }
+
+  private renderStructuralPreview(s: HeadingNumberingSettings, container: HTMLElement): void {
+    const tree: HeadingDescriptor[] = [
+      { key: 's-h1a', level: 1, text: '第一章' },
+      { key: 's-h2a', level: 2, text: '第一节' },
+      { key: 's-h3a', level: 3, text: '条目A' },
+      { key: 's-h3b', level: 3, text: '条目B' },
+      { key: 's-h2b', level: 2, text: '第二节' },
+      { key: 's-h3c', level: 3, text: '条目C' },
+      { key: 's-h1b', level: 1, text: '第二章' },
+      { key: 's-h2c', level: 2, text: '第三节' },
+      { key: 's-h3d', level: 3, text: '条目D' },
+    ]
+    const numbered = computeHeadingNumbering(tree, s)
+    for (const item of numbered) {
+      const lv = item.level
+      if (lv > s.maxDepth) continue
+      if (lv === 1 && !s.showLevelOneNumber && !item.label) continue
+      const row = el('div', 'inkchapter-structural-row', container)
+      row.style.paddingLeft = (lv - 1) * 16 + 'px'
+      if (item.label) {
+        const token = el('span', 'inkchapter-structural-token', row)
+        token.textContent = item.label
+        const text = el('span', 'inkchapter-structural-text', row)
+        text.textContent = ' ' + (item.text || '')
+      } else {
+        const text = el('span', undefined, row)
+        text.textContent = item.text || ''
+        text.style.color = 'var(--text-muted,#888)'
+      }
+    }
   }
 
   private renderSingleLevelPanel(
@@ -381,6 +420,52 @@ export class HeadingNumberingSettingTab extends SettingTab {
     miniPreview.textContent = this.computeMiniPreview(lv, s)
     this.miniPreviewEls.set(lv, miniPreview)
 
+    // ── Advanced numbering rules ──────────────────
+    const advHeader = el('div', 'inkchapter-advanced-header', body)
+    advHeader.textContent = '▸ 高级编号规则'
+    advHeader.style.cursor = 'pointer'
+    const advBody = el('div', 'inkchapter-advanced-body', body)
+    advBody.style.display = 'none'
+    advHeader.onclick = () => {
+      advBody.style.display = advBody.style.display === 'none' ? '' : 'none'
+      advHeader.textContent = advBody.style.display === 'none' ? '▸ 高级编号规则' : '▾ 高级编号规则'
+    }
+
+    // startAt
+    this.addCustomNumber(advBody, '起始编号', style.startAt, 1, 999, (val) => {
+      this.numberingService.updateLevelStyle(lv, { startAt: val })
+      this.refreshUI()
+      this.updateMiniPreview(lv)
+    })
+
+    // restartAfterLevel
+    if (!isH1) {
+      this.addCustomSelect(advBody, '在哪个上级后重新开始', buildRestartOptions(lv), String(style.restartAfterLevel ?? ''), (val) => {
+        const parsed = val === '' ? null : Number(val) as HeadingLevel
+        this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed as HeadingLevel | null })
+        this.refreshUI()
+        this.updateMiniPreview(lv)
+      })
+    } else {
+      const h1RestartNote = el('div', 'inkchapter-custom-row', advBody)
+      const noteSpan = el('span', 'inkchapter-custom-col-label', h1RestartNote)
+      noteSpan.textContent = '重启规则'
+      const noteVal = el('span', undefined, h1RestartNote)
+      noteVal.textContent = 'H1 不可设置重启规则'
+      noteVal.style.cssText = 'font-size:0.82em;color:var(--text-muted,#888);font-style:italic;'
+    }
+
+    // legalStyle
+    this.addCustomCheckbox(advBody, '将父级编号转换为阿拉伯数字', style.legalStyle, (checked) => {
+      this.numberingService.updateLevelStyle(lv, { legalStyle: checked })
+      this.refreshUI()
+      this.updateMiniPreview(lv)
+    })
+
+    // Advanced summary
+    const advSummary = el('div', 'inkchapter-advanced-summary', advBody)
+    advSummary.textContent = buildAdvancedSummary(style) || '（使用默认规则）'
+
     // Reset button
     const resetRow = el('div', 'inkchapter-custom-reset-row', body)
     const resetBtn = document.createElement('button')
@@ -468,6 +553,36 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     row.appendChild(input)
   }
+
+  private addCustomNumber(
+    container: HTMLElement, label: string, value: number,
+    min: number, max: number,
+    onChange: (val: number) => void,
+  ): void {
+    const row = el('div', 'inkchapter-custom-row', container)
+    const span = el('span', 'inkchapter-custom-col-label', row)
+    span.textContent = label
+    const input = document.createElement('input')
+    input.type = 'number'
+    input.value = String(value)
+    input.min = String(min)
+    input.max = String(max)
+    input.style.width = '80px'
+    // Apply only on blur/Enter, not on every keystroke
+    input.onblur = () => {
+      const n = parseInt(input.value, 10)
+      if (!isNaN(n) && n >= min && n <= max) {
+        onChange(n)
+      } else {
+        // Reset to current valid value
+        input.value = String(value)
+      }
+    }
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') input.blur()
+    }
+    row.appendChild(input)
+  }
 }
 
 // ── Native DOM helpers ─────────────────────────────
@@ -485,4 +600,23 @@ function sanitize(val: string): string {
     .replace(/[<>]/g, '')
     .replace(/\n/g, '')
     .slice(0, 16)
+}
+
+function buildRestartOptions(currentLevel: HeadingLevel): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [
+    { value: '', label: '不重启（连续编号）' },
+  ]
+  for (let i = 1; i < currentLevel; i++) {
+    options.push({ value: String(i), label: `在 H${i} 后重新开始` })
+  }
+  return options
+}
+
+function buildAdvancedSummary(style: HeadingLevelStyle): string {
+  const parts: string[] = []
+  if (style.startAt !== 1) parts.push(`起始编号=${style.startAt}`)
+  if (style.restartAfterLevel != null) parts.push(`在 H${style.restartAfterLevel} 后重启`)
+  else parts.push('全文连续编号')
+  if (style.legalStyle) parts.push('父级阿拉伯数字')
+  return parts.join(' · ')
 }

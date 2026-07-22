@@ -45,54 +45,59 @@ export const PRESETS: Record<Exclude<HeadingNumberingPreset, 'custom'>, PresetMe
 
 // ── Preset builders ──────────────────────────────────────
 
+function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyle>): HeadingLevelStyle {
+  return {
+    enabled: true,
+    tokenStyle: 'arabic',
+    includeParents: true,
+    prefix: '',
+    suffix: '',
+    separator: '.',
+    startAt: 1,
+    restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+    legalStyle: false,
+    ...overrides,
+  }
+}
+
 function buildDecimal(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    levels[lv] = {
-      enabled: true,
-      tokenStyle: 'arabic',
-      includeParents: true,
-      prefix: '',
-      suffix: '',
-      separator: '.',
-    }
+    levels[lv] = defaultLevelStyle(lv, { tokenStyle: 'arabic', separator: '.' })
   }
   return levels
 }
 
 function buildChineseChapter(): Record<HeadingLevel, HeadingLevelStyle> {
   return {
-    1: { enabled: true, tokenStyle: 'chinese', includeParents: false, prefix: '第', suffix: '章', separator: '' },
-    2: { enabled: true, tokenStyle: 'chinese', includeParents: false, prefix: '第', suffix: '节', separator: '' },
-    3: { enabled: true, tokenStyle: 'chinese', includeParents: false, prefix: '', suffix: '、', separator: '' },
-    4: { enabled: true, tokenStyle: 'chinese', includeParents: false, prefix: '（', suffix: '）', separator: '' },
-    5: { enabled: true, tokenStyle: 'arabic', includeParents: false, prefix: '', suffix: '.', separator: '' },
-    6: { enabled: true, tokenStyle: 'arabic', includeParents: false, prefix: '（', suffix: '）', separator: '' },
+    1: defaultLevelStyle(1, { tokenStyle: 'chinese', includeParents: false, prefix: '第', suffix: '章', separator: '' }),
+    2: defaultLevelStyle(2, { tokenStyle: 'chinese', includeParents: false, prefix: '第', suffix: '节', separator: '' }),
+    3: defaultLevelStyle(3, { tokenStyle: 'chinese', includeParents: false, prefix: '', suffix: '、', separator: '' }),
+    4: defaultLevelStyle(4, { tokenStyle: 'chinese', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
+    5: defaultLevelStyle(5, { tokenStyle: 'arabic', includeParents: false, prefix: '', suffix: '.', separator: '' }),
+    6: defaultLevelStyle(6, { tokenStyle: 'arabic', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
   }
 }
 
 function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
   return {
-    1: { enabled: true, tokenStyle: 'chinese', includeParents: false, prefix: '', suffix: '、', separator: '' },
-    2: { enabled: true, tokenStyle: 'chinese', includeParents: false, prefix: '（', suffix: '）', separator: '' },
-    3: { enabled: true, tokenStyle: 'arabic', includeParents: false, prefix: '', suffix: '.', separator: '' },
-    4: { enabled: true, tokenStyle: 'arabic', includeParents: false, prefix: '（', suffix: '）', separator: '' },
-    5: { enabled: true, tokenStyle: 'circled', includeParents: false, prefix: '', suffix: '', separator: '' },
-    6: { enabled: true, tokenStyle: 'alpha-upper', includeParents: false, prefix: '', suffix: '.', separator: '' },
+    1: defaultLevelStyle(1, { tokenStyle: 'chinese', includeParents: false, prefix: '', suffix: '、', separator: '' }),
+    2: defaultLevelStyle(2, { tokenStyle: 'chinese', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
+    3: defaultLevelStyle(3, { tokenStyle: 'arabic', includeParents: false, prefix: '', suffix: '.', separator: '' }),
+    4: defaultLevelStyle(4, { tokenStyle: 'arabic', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
+    5: defaultLevelStyle(5, { tokenStyle: 'circled', includeParents: false, prefix: '', suffix: '', separator: '' }),
+    6: defaultLevelStyle(6, { tokenStyle: 'alpha-upper', includeParents: false, prefix: '', suffix: '.', separator: '' }),
   }
 }
 
 function buildRoman(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    levels[lv] = {
-      enabled: true,
+    levels[lv] = defaultLevelStyle(lv, {
       tokenStyle: lv === 1 ? 'roman-upper' : 'arabic',
       includeParents: true,
-      prefix: '',
-      suffix: '',
       separator: '.',
-    }
+    })
   }
   return levels
 }

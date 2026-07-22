@@ -10,11 +10,14 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
     prefix: '',
     suffix: '',
     separator: '.',
+    startAt: 1,
+    restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+    legalStyle: false,
   }
 }
 
 export const DEFAULT_SETTINGS: InkChapterSettings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   debug: false,
   headingNumbering: {
     enabled: true,
