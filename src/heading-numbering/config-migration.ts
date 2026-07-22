@@ -8,6 +8,33 @@ const VALID_TOKEN_STYLES: ReadonlySet<string> = new Set([
   'roman-upper', 'roman-lower', 'alpha-upper', 'alpha-lower', 'circled',
 ])
 
+const VALID_PRESETS: ReadonlySet<string> = new Set([
+  'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
+])
+
+const CURRENT_SCHEMA_VERSION = 4
+
+// ── Validation helpers ─────────────────────────────────
+
+function validateBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value
+  return fallback
+}
+
+function validatePreset(raw: unknown): HeadingNumberingPreset {
+  if (typeof raw === 'string' && VALID_PRESETS.has(raw)) {
+    return raw as HeadingNumberingPreset
+  }
+  return 'decimal-hierarchical'
+}
+
+function validateMaxDepth(raw: unknown): HeadingLevel {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 6) {
+    return raw as HeadingLevel
+  }
+  return 6 as HeadingLevel
+}
+
 /** Default level style for custom mode. */
 function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
   const ls = {} as Record<HeadingLevel, HeadingLevelStyle>
@@ -19,9 +46,94 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       prefix: '',
       suffix: '',
       separator: '.',
+      startAt: 1,
+      restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+      legalStyle: false,
+      format: [],
     }
   }
   return ls
+}
+
+function validateStartAt(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 999) return raw
+  return 1
+}
+
+function validateRestartAfterLevel(raw: unknown, currentLevel: HeadingLevel): HeadingLevel | null {
+  if (raw === null || raw === undefined) return currentLevel === 1 ? null : (currentLevel - 1) as HeadingLevel
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw < currentLevel) return raw as HeadingLevel
+  return currentLevel === 1 ? null : (currentLevel - 1) as HeadingLevel
+}
+
+function validateLegalStyle(raw: unknown): boolean {
+  if (typeof raw === 'boolean') return raw
+  return false
+}
+
+/**
+ * Validate and normalize a format array.
+ * Ensures: current-level reference exists exactly once, no future references,
+ * no duplicate references, safe literal values.
+ */
+function normalizeFormat(raw: unknown, currentLevel: HeadingLevel): import('./heading-types').NumberFormatSegment[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return generateFormatFromLegacy(currentLevel, true, '', '', '.')
+  }
+  const cleaned: import('./heading-types').NumberFormatSegment[] = []
+  const seenLevels = new Set<number>()
+
+  for (const seg of raw) {
+    if (!seg || typeof seg !== 'object') continue
+    if ((seg as any).type === 'literal') {
+      const val = typeof (seg as any).value === 'string' ? sanitizeFormatString((seg as any).value) : ''
+      cleaned.push({ type: 'literal', value: val })
+    } else if ((seg as any).type === 'level-reference') {
+      const lv = Number((seg as any).level)
+      if (isNaN(lv) || lv < 1 || lv > 6) continue
+      if (lv > currentLevel) continue // no future references
+      if (seenLevels.has(lv)) continue // no duplicates
+      seenLevels.add(lv)
+      cleaned.push({ type: 'level-reference', level: lv as HeadingLevel })
+    }
+  }
+
+  // Ensure current-level reference exists
+  if (!seenLevels.has(currentLevel)) {
+    cleaned.push({ type: 'level-reference', level: currentLevel })
+  }
+
+  return cleaned
+}
+
+function sanitizeFormatString(val: string): string {
+  return val.replace(/<\d\x00-\x1f\x7f>/g, '').replace(/\n/g, '').slice(0, 32)
+}
+
+/**
+ * Generate format from legacy includeParents/prefix/suffix/separator.
+ */
+function generateFormatFromLegacy(
+  lv: HeadingLevel,
+  includeParents: boolean,
+  prefix: string,
+  suffix: string,
+  separator: string,
+): import('./heading-types').NumberFormatSegment[] {
+  const fmt: import('./heading-types').NumberFormatSegment[] = []
+  if (prefix) fmt.push({ type: 'literal', value: prefix })
+
+  if (includeParents) {
+    for (let i = 1; i <= lv; i++) {
+      if (i > 1) fmt.push({ type: 'literal', value: separator })
+      fmt.push({ type: 'level-reference', level: i as HeadingLevel })
+    }
+  } else {
+    fmt.push({ type: 'level-reference', level: lv })
+  }
+
+  if (suffix) fmt.push({ type: 'literal', value: suffix })
+  return fmt
 }
 
 /**
@@ -76,6 +188,10 @@ function migrateLegacyLevels(
       prefix: typeof old.prefix === 'string' ? old.prefix : '',
       suffix: typeof old.suffix === 'string' ? old.suffix : '',
       separator: typeof old.separator === 'string' ? old.separator : '.',
+      startAt: validateStartAt((old as any).startAt),
+      restartAfterLevel: validateRestartAfterLevel((old as any).restartAfterLevel, lv),
+      legalStyle: validateLegalStyle((old as any).legalStyle),
+      format: normalizeFormat((old as any).format ?? (old as any).formatSegments, lv),
     }
   }
   return levels
@@ -93,12 +209,14 @@ export function migrateSettings(
     return doMigrate(raw)
   } catch (e) {
     logger.error('设置迁移失败，将使用默认标题编号设置', e)
+    const defaults = defaultLevelStyle()
     return {
       enabled: true,
       showLevelOneNumber: false,
       preset: 'decimal-hierarchical',
       maxDepth: 6 as HeadingLevel,
-      levels: defaultLevelStyle(),
+      levels: defaults,
+      customDefinition: { ...defaults },
     }
   }
 }
@@ -115,15 +233,10 @@ function doMigrate(
     s.levels = migrateLegacyLevels(legacyCustomDef.levels)
   }
 
-  const preset: HeadingNumberingPreset =
-    s.preset === 'chinese-chapter' || s.preset === 'chinese-outline' ||
-    s.preset === 'roman-hierarchical' || s.preset === 'custom'
-      ? s.preset
-      : 'decimal-hierarchical'
-
-  const showLevelOneNumber = s.showLevelOneNumber ?? false
-  const enabled = s.enabled ?? true
-  const maxDepth = s.maxDepth ?? 6
+  const preset = validatePreset(s.preset)
+  const showLevelOneNumber = validateBoolean(s.showLevelOneNumber, false)
+  const enabled = validateBoolean(s.enabled, true)
+  const maxDepth = validateMaxDepth(s.maxDepth)
 
   // Build levels from preset or stored custom
   let levels: Record<HeadingLevel, HeadingLevelStyle>
@@ -141,6 +254,10 @@ function doMigrate(
           prefix: typeof storedLevel.prefix === 'string' ? storedLevel.prefix : '',
           suffix: typeof storedLevel.suffix === 'string' ? storedLevel.suffix : '',
           separator: typeof storedLevel.separator === 'string' ? storedLevel.separator : '.',
+          startAt: validateStartAt((storedLevel as any).startAt),
+          restartAfterLevel: validateRestartAfterLevel((storedLevel as any).restartAfterLevel, lv),
+          legalStyle: validateLegalStyle((storedLevel as any).legalStyle),
+          format: normalizeFormat((storedLevel as any).format, lv),
         }
       }
     }
@@ -148,17 +265,57 @@ function doMigrate(
     levels = getPresetLevels(preset)
   }
 
+  // ── Migrate / normalize customDefinition ───────────────
+  let customDef: Record<HeadingLevel, HeadingLevelStyle> | undefined
+  const storedCustomDef = (s as any)?.customDefinition as Record<string, unknown> | undefined
+  if (storedCustomDef && typeof storedCustomDef === 'object') {
+    // V2 format: customDefinition is a flat {1: style, 2: style, ...} record
+    customDef = { ...defaultLevelStyle() }
+    for (const lv of HEADING_LEVELS) {
+      const sd = storedCustomDef[String(lv)] ?? storedCustomDef[lv]
+      if (sd && typeof sd === 'object') {
+        customDef[lv] = {
+          enabled: typeof (sd as any).enabled === 'boolean' ? (sd as any).enabled : true,
+          tokenStyle: normalizeTokenStyle((sd as any).tokenStyle),
+          includeParents: typeof (sd as any).includeParents === 'boolean' ? (sd as any).includeParents : true,
+          prefix: typeof (sd as any).prefix === 'string' ? sanitizeString((sd as any).prefix) : '',
+          suffix: typeof (sd as any).suffix === 'string' ? sanitizeString((sd as any).suffix) : '',
+          separator: typeof (sd as any).separator === 'string' ? sanitizeString((sd as any).separator, '.') : '.',
+          startAt: validateStartAt((sd as any).startAt),
+          restartAfterLevel: validateRestartAfterLevel((sd as any).restartAfterLevel, lv),
+          legalStyle: validateLegalStyle((sd as any).legalStyle),
+          format: normalizeFormat((sd as any).format, lv),
+        }
+      }
+    }
+  } else {
+    // V1→V2: initialize customDefinition from current levels
+    customDef = { ...levels }
+  }
+
   return {
     enabled,
     showLevelOneNumber,
     preset,
-    maxDepth: maxDepth as HeadingLevel,
+    maxDepth,
     levels,
+    customDefinition: customDef,
     // Preserve legacy fields for idempotency
     separator: s.separator ?? '.',
     suffix: s.suffix ?? '',
     showTrailingSeparator: s.showTrailingSeparator ?? false,
   }
+}
+
+/**
+ * Clean control chars, HTML, and newlines from user input strings.
+ */
+function sanitizeString(val: string, fallback = ''): string {
+  return val
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/[<>]/g, '')
+    .replace(/\n/g, '')
+    .slice(0, 16) || fallback
 }
 
 /**
