@@ -30,25 +30,26 @@ export type HeadingNumberingPreset =
   | 'roman-hierarchical'
   | 'custom'
 
+export type NumberAlignment = 'left' | 'center' | 'right'
+
+export interface HeadingLevelPosition {
+  numberAlignment: NumberAlignment
+  numberBoxWidthEm: number
+  numberTextGapEm: number
+  alignWrappedLines: boolean
+}
+
 export interface HeadingLevelStyle {
-  /** Whether this level shows a number. false = empty token. */
   enabled: boolean
-  /** The number token type. */
   tokenStyle: NumberTokenStyle
-  /** Include parent-level numbers in this level's label. */
   includeParents: boolean
-  /** Text prepended before the number. */
   prefix: string
-  /** Text appended after the number. */
   suffix: string
-  /** Separator between this level and the previous level when includeParents is true. */
   separator: string
-  /** Starting number for this level (1-999). Counter initial = startAt - 1. */
   startAt: number
-  /** Which parent level restarts this level's counter. null = continuous across document. */
   restartAfterLevel: HeadingLevel | null
-  /** Convert parent-level number tokens to arabic (current level keeps its own style). */
   legalStyle: boolean
+  position: HeadingLevelPosition
 }
 
 // ── Settings ─────────────────────────────────────────────

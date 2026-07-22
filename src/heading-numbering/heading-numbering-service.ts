@@ -288,7 +288,7 @@ export class HeadingNumberingService {
             return // Everything is fine, skip
           }
           // Structure same but decoration lost → repair only (node replaced)
-          const diff = this.adapter.repairDecoration(this.renderedStates)
+          const diff = this.adapter.repairDecoration(this.renderedStates, this.numberingSettings.levels)
           this.renderedStates = this.adapter.buildRenderedStates(
             this.renderedStates.map(s => s.label),
           )
@@ -310,7 +310,7 @@ export class HeadingNumberingService {
 
       const numbered = computeHeadingNumbering(headings, this.numberingSettings)
       const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
-      const diff = this.adapter.applyNumberingDiff(labels)
+      const diff = this.adapter.applyNumberingDiff(labels, this.numberingSettings.levels)
       this.renderedStates = this.adapter.buildRenderedStates(labels)
 
       this.logRefresh(reason, headings.length, diff, startTime)

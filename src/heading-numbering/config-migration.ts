@@ -12,7 +12,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
 
 // ── Validation helpers ─────────────────────────────────
 
@@ -49,6 +49,7 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       startAt: 1,
       restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
       legalStyle: false,
+      position: { numberAlignment: 'right', numberBoxWidthEm: 3, numberTextGapEm: 0.6, alignWrappedLines: true },
     }
   }
   return ls
@@ -68,6 +69,28 @@ function validateRestartAfterLevel(raw: unknown, currentLevel: HeadingLevel): He
 function validateLegalStyle(raw: unknown): boolean {
   if (typeof raw === 'boolean') return raw
   return false
+}
+
+function validateAlignment(raw: unknown): import('./heading-types').NumberAlignment {
+  if (raw === 'left' || raw === 'center' || raw === 'right') return raw
+  return 'right'
+}
+
+function validateEmValue(raw: unknown, fallback: number, min: number, max: number): number {
+  if (typeof raw === 'number' && isFinite(raw)) {
+    return Math.max(min, Math.min(max, Math.round(raw * 10) / 10))
+  }
+  return fallback
+}
+
+function validatePosition(raw: unknown): import('./heading-types').HeadingLevelPosition {
+  const pos = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
+  return {
+    numberAlignment: validateAlignment(pos.numberAlignment),
+    numberBoxWidthEm: validateEmValue(pos.numberBoxWidthEm, 3, 0.5, 12),
+    numberTextGapEm: validateEmValue(pos.numberTextGapEm, 0.6, 0, 6),
+    alignWrappedLines: validateBoolean(pos.alignWrappedLines, true),
+  }
 }
 
 /**
@@ -125,6 +148,7 @@ function migrateLegacyLevels(
       startAt: validateStartAt((old as any).startAt),
       restartAfterLevel: validateRestartAfterLevel((old as any).restartAfterLevel, lv),
       legalStyle: validateLegalStyle((old as any).legalStyle),
+      position: validatePosition((old as any).position),
     }
   }
   return levels
@@ -190,6 +214,7 @@ function doMigrate(
           startAt: validateStartAt((storedLevel as any).startAt),
           restartAfterLevel: validateRestartAfterLevel((storedLevel as any).restartAfterLevel, lv),
           legalStyle: validateLegalStyle((storedLevel as any).legalStyle),
+          position: validatePosition((storedLevel as any).position),
         }
       }
     }
@@ -216,6 +241,7 @@ function doMigrate(
           startAt: validateStartAt((sd as any).startAt),
           restartAfterLevel: validateRestartAfterLevel((sd as any).restartAfterLevel, lv),
           legalStyle: validateLegalStyle((sd as any).legalStyle),
+          position: validatePosition((sd as any).position),
         }
       }
     }

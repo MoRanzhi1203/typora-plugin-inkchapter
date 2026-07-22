@@ -1,6 +1,7 @@
 import type {
   HeadingDescriptor,
   HeadingLevel,
+  HeadingLevelStyle,
   HeadingSnapshot,
   RenderedHeadingState,
   DiffResult,
@@ -9,6 +10,7 @@ import type {
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const NUMBERED_CLASS = 'inkchapter-numbered-heading'
 const NUMBER_ATTR = 'data-inkchapter-heading-number'
+const WRAP_ALIGN_ATTR = 'data-inkchapter-wrap-align'
 
 /**
  * DOM adapter for heading numbering.
@@ -108,9 +110,10 @@ export class HeadingDomAdapter {
 
   /**
    * Apply numbering with diff-based updates. Returns diff stats.
-   * Empty labels cause removal of numbering decoration (used for un-numbered H1).
+   * Empty labels cause removal of numbering decoration.
+   * Accepts optional level styles for applying position CSS variables.
    */
-  applyNumberingDiff(labels: readonly string[]): DiffResult {
+  applyNumberingDiff(labels: readonly string[], levelStyles?: Record<HeadingLevel, HeadingLevelStyle>): DiffResult {
     let scanned = 0, repaired = 0, updated = 0, removed = 0
     if (!this.editorRoot) return { scanned, repaired, updated, removed }
 
@@ -136,6 +139,7 @@ export class HeadingDomAdapter {
           if (el.hasAttribute(NUMBER_ATTR)) {
             el.removeAttribute(NUMBER_ATTR)
           }
+          this.clearPositionVars(el)
           continue
         }
 
@@ -154,6 +158,15 @@ export class HeadingDomAdapter {
             updated++
           }
         }
+
+        // Apply position-based CSS custom properties
+        if (levelStyles) {
+          const lv = parseInt(el.tagName.charAt(1), 10) as HeadingLevel
+          const style = levelStyles[lv]
+          if (style) {
+            this.applyPositionVars(el, style.position)
+          }
+        }
       }
     }
 
@@ -164,6 +177,7 @@ export class HeadingDomAdapter {
       if (!newNumbered.has(el) && el.classList.contains(NUMBERED_CLASS)) {
         el.classList.remove(NUMBERED_CLASS)
         el.removeAttribute(NUMBER_ATTR)
+        this.clearPositionVars(el)
         removed++
       }
     }
@@ -175,7 +189,7 @@ export class HeadingDomAdapter {
    * Repair numbering decoration without recomputing labels.
    * Used when: node replaced but snapshot structure unchanged.
    */
-  repairDecoration(states: RenderedHeadingState[]): DiffResult {
+  repairDecoration(states: RenderedHeadingState[], levelStyles?: Record<HeadingLevel, HeadingLevelStyle>): DiffResult {
     let scanned = 0, repaired = 0, updated = 0, removed = 0
     if (!this.editorRoot) return { scanned, repaired, updated, removed }
 
@@ -212,6 +226,15 @@ export class HeadingDomAdapter {
           if (!hasClass) { el.classList.add(NUMBERED_CLASS); repaired++ }
           if (currentLabel !== label) { el.setAttribute(NUMBER_ATTR, label); updated++ }
         }
+
+        // Apply position CSS vars from levelStyles param
+        if (levelStyles) {
+          const lv = parseInt(el.tagName.charAt(1), 10) as HeadingLevel
+          const style = levelStyles[lv]
+          if (style) {
+            this.applyPositionVars(el, style.position)
+          }
+        }
       }
     }
 
@@ -221,6 +244,7 @@ export class HeadingDomAdapter {
       if (!repairedSet.has(el) && el.classList.contains(NUMBERED_CLASS)) {
         el.classList.remove(NUMBERED_CLASS)
         el.removeAttribute(NUMBER_ATTR)
+        this.clearPositionVars(el)
         removed++
       }
     }
@@ -234,7 +258,31 @@ export class HeadingDomAdapter {
     for (let i = 0; i < els.length; i++) {
       els[i].classList.remove(NUMBERED_CLASS)
       els[i].removeAttribute(NUMBER_ATTR)
+      els[i].style.removeProperty('--inkchapter-num-width')
+      els[i].style.removeProperty('--inkchapter-num-align')
+      els[i].style.removeProperty('--inkchapter-num-gap')
+      els[i].removeAttribute(WRAP_ALIGN_ATTR)
     }
+  }
+
+  /** Apply CSS custom properties from position config. */
+  applyPositionVars(el: HTMLElement, pos: { numberAlignment: string; numberBoxWidthEm: number; numberTextGapEm: number; alignWrappedLines: boolean }): void {
+    el.style.setProperty('--inkchapter-num-width', `${pos.numberBoxWidthEm}em`)
+    el.style.setProperty('--inkchapter-num-align', pos.numberAlignment)
+    el.style.setProperty('--inkchapter-num-gap', `${pos.numberTextGapEm}em`)
+    if (pos.alignWrappedLines) {
+      el.setAttribute(WRAP_ALIGN_ATTR, 'true')
+    } else {
+      el.removeAttribute(WRAP_ALIGN_ATTR)
+    }
+  }
+
+  /** Remove position CSS variables from a heading element. */
+  private clearPositionVars(el: HTMLElement): void {
+    el.style.removeProperty('--inkchapter-num-width')
+    el.style.removeProperty('--inkchapter-num-align')
+    el.style.removeProperty('--inkchapter-num-gap')
+    el.removeAttribute(WRAP_ALIGN_ATTR)
   }
 
   /** Check if any previously numbered element is disconnected. */

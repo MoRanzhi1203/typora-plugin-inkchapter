@@ -466,6 +466,53 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const advSummary = el('div', 'inkchapter-advanced-summary', advBody)
     advSummary.textContent = buildAdvancedSummary(style) || '（使用默认规则）'
 
+    // ── Number position ─────────────────────────
+    const posHeader = el('div', 'inkchapter-advanced-header', body)
+    posHeader.textContent = '▸ 编号位置'
+    posHeader.style.cursor = 'pointer'
+    const posBody = el('div', 'inkchapter-advanced-body', body)
+    posBody.style.display = 'none'
+    posHeader.onclick = () => {
+      posBody.style.display = posBody.style.display === 'none' ? '' : 'none'
+      posHeader.textContent = posBody.style.display === 'none' ? '▸ 编号位置' : '▾ 编号位置'
+    }
+
+    // Alignment
+    this.addCustomSelect(posBody, '编号对齐', buildAlignmentOptions(), style.position.numberAlignment, (val) => {
+      this.numberingService.updateLevelStyle(lv, {
+        position: { ...style.position, numberAlignment: val as 'left' | 'center' | 'right' }
+      })
+      this.refreshUI()
+    })
+
+    // Number box width
+    this.addCustomNumber(posBody, '编号区域宽度 (em)', style.position.numberBoxWidthEm, 0.5, 12, (val) => {
+      this.numberingService.updateLevelStyle(lv, {
+        position: { ...style.position, numberBoxWidthEm: val }
+      })
+      this.refreshUI()
+    })
+
+    // Gap
+    this.addCustomNumber(posBody, '编号后间距 (em)', style.position.numberTextGapEm, 0, 6, (val) => {
+      this.numberingService.updateLevelStyle(lv, {
+        position: { ...style.position, numberTextGapEm: val }
+      })
+      this.refreshUI()
+    })
+
+    // Align wrapped lines
+    this.addCustomCheckbox(posBody, '长标题换行后与正文起点对齐', style.position.alignWrappedLines, (checked) => {
+      this.numberingService.updateLevelStyle(lv, {
+        position: { ...style.position, alignWrappedLines: checked }
+      })
+      this.refreshUI()
+    })
+
+    // Position summary
+    const posSummary = el('div', 'inkchapter-advanced-summary', posBody)
+    posSummary.textContent = buildPositionSummary(style.position)
+
     // Reset button
     const resetRow = el('div', 'inkchapter-custom-reset-row', body)
     const resetBtn = document.createElement('button')
@@ -618,5 +665,20 @@ function buildAdvancedSummary(style: HeadingLevelStyle): string {
   if (style.restartAfterLevel != null) parts.push(`在 H${style.restartAfterLevel} 后重启`)
   else parts.push('全文连续编号')
   if (style.legalStyle) parts.push('父级阿拉伯数字')
+  return parts.join(' · ')
+}
+
+function buildAlignmentOptions(): { value: string; label: string }[] {
+  return [
+    { value: 'left', label: '左对齐' },
+    { value: 'center', label: '居中' },
+    { value: 'right', label: '右对齐' },
+  ]
+}
+
+function buildPositionSummary(pos: import('../heading-numbering/heading-types').HeadingLevelPosition): string {
+  const alignLabel = { left: '左对齐', center: '居中', right: '右对齐' }[pos.numberAlignment]
+  const parts = [`${alignLabel}`, `宽${pos.numberBoxWidthEm}em`, `间距${pos.numberTextGapEm}em`]
+  if (pos.alignWrappedLines) parts.push('续行对齐')
   return parts.join(' · ')
 }

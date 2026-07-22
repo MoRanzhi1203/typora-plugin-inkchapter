@@ -56,6 +56,7 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
     startAt: 1,
     restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
     legalStyle: false,
+    position: { numberAlignment: 'right', numberBoxWidthEm: 3, numberTextGapEm: 0.6, alignWrappedLines: true },
     ...overrides,
   }
 }

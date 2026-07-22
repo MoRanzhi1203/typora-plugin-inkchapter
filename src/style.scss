@@ -1,8 +1,7 @@
 /* Heading numbering via CSS ::before
- * Unified for all H1-H6 levels.
- * Explicitly resets all visual properties to prevent Typora active-heading
- * styles from adding borders, outlines, backgrounds, or absolute positioning
- * to the ::before pseudo-element. */
+ * Safe approach: ::before as inline-block with fixed width.
+ * Uses CSS custom properties set per-heading by the adapter.
+ * Does NOT use Grid/Flex on contenteditable elements. */
 #write h1.inkchapter-numbered-heading::before,
 #write h2.inkchapter-numbered-heading::before,
 #write h3.inkchapter-numbered-heading::before,
@@ -10,9 +9,11 @@
 #write h5.inkchapter-numbered-heading::before,
 #write h6.inkchapter-numbered-heading::before {
   content: attr(data-inkchapter-heading-number) !important;
-  display: inline !important;
+  display: inline-block !important;
+  min-width: var(--inkchapter-num-width, 3em) !important;
+  text-align: var(--inkchapter-num-align, right) !important;
+  margin-right: var(--inkchapter-num-gap, 0.6em) !important;
   position: static !important;
-  margin: 0 0.5em 0 0 !important;
   padding: 0 !important;
   border: 0 !important;
   outline: 0 !important;
@@ -26,6 +27,18 @@
   pointer-events: none !important;
   user-select: none !important;
   -webkit-user-select: none !important;
+}
+
+/* Wrapped line alignment: hanging indent via text-indent + padding */
+#write h1.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h2.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h3.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h4.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h5.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h6.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"] {
+  --inkchapter-indent: calc(var(--inkchapter-num-width, 3em) + var(--inkchapter-num-gap, 0.6em));
+  text-indent: calc(-1 * var(--inkchapter-indent)) !important;
+  padding-left: var(--inkchapter-indent) !important;
 }
 
 /* ── Settings page: live preview ───────────────────────── */
