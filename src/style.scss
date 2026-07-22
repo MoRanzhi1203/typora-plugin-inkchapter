@@ -302,3 +302,59 @@
 .inkchapter-reset-all-btn:hover {
   background: rgba(221, 0, 0, 0.08);
 }
+
+/* ── Advanced rules ────────────────────────────────────── */
+
+.inkchapter-advanced-header {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  background: var(--background-modifier-border, #f0f0f0);
+  font-size: 0.85em;
+  color: var(--text-muted, #666);
+  user-select: none;
+}
+
+.inkchapter-advanced-header:hover {
+  background: var(--background-modifier-hover, #e0e0e0);
+}
+
+.inkchapter-advanced-body {
+  padding: 8px 4px 4px;
+}
+
+.inkchapter-advanced-summary {
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: var(--background-secondary, #f4f4f4);
+  font-size: 0.82em;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+/* ── Structural preview ────────────────────────────────── */
+
+.inkchapter-structural-preview {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 4px;
+  background: var(--background-secondary, #f8f8f8);
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.88em;
+  line-height: 1.8;
+}
+
+.inkchapter-structural-row {
+  white-space: nowrap;
+}
+
+.inkchapter-structural-token {
+  color: var(--text-accent, #07a);
+  font-weight: 600;
+}
+
+.inkchapter-structural-text {
+  color: var(--text-normal, #333);
+}

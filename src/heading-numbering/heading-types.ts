@@ -43,6 +43,12 @@ export interface HeadingLevelStyle {
   suffix: string
   /** Separator between this level and the previous level when includeParents is true. */
   separator: string
+  /** Starting number for this level (1-999). Counter initial = startAt - 1. */
+  startAt: number
+  /** Which parent level restarts this level's counter. null = continuous across document. */
+  restartAfterLevel: HeadingLevel | null
+  /** Convert parent-level number tokens to arabic (current level keeps its own style). */
+  legalStyle: boolean
 }
 
 // ── Settings ─────────────────────────────────────────────
