@@ -56,8 +56,10 @@ export interface HeadingNumberingSettings {
   separator?: string
   suffix?: string
   showTrailingSeparator?: boolean
-  /** Per-level style configuration (used when preset = 'custom'). */
+  /** Per-level style configuration (active, used when preset = 'custom'). */
   levels: Record<HeadingLevel, HeadingLevelStyle>
+  /** Persisted custom draft (schemaVersion >= 2). Preserved when switching between presets. */
+  customDefinition?: Record<HeadingLevel, HeadingLevelStyle>
 }
 
 // ── Runtime types ────────────────────────────────────────

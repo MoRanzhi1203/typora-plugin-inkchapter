@@ -76,4 +76,229 @@
   .inkchapter-preview-token {
     color: #6cf;
   }
+  .inkchapter-preset-card {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .inkchapter-preset-card:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .inkchapter-preset-card--selected {
+    background: rgba(50, 140, 255, 0.15);
+    border-color: rgba(50, 140, 255, 0.5);
+  }
+  .inkchapter-custom-panel-header {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+  .inkchapter-custom-panel-header:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .inkchapter-custom-mini-preview {
+    color: #6cf;
+  }
+}
+
+/* ── Preset cards ─────────────────────────────────────── */
+
+.inkchapter-preset-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 8px 0 16px;
+}
+
+.inkchapter-preset-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  background: var(--background-secondary, #f8f8f8);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  user-select: none;
+  outline: none;
+}
+
+.inkchapter-preset-card:hover {
+  background: var(--background-modifier-hover, #eee);
+}
+
+.inkchapter-preset-card:focus-visible {
+  box-shadow: 0 0 0 2px var(--text-accent, #07a);
+}
+
+.inkchapter-preset-card--selected {
+  background: rgba(7, 119, 170, 0.08);
+  border-color: var(--text-accent, #07a);
+}
+
+.inkchapter-preset-card-name {
+  font-weight: 600;
+  font-size: 0.95em;
+  margin-bottom: 2px;
+}
+
+.inkchapter-preset-card-desc {
+  font-size: 0.82em;
+  color: var(--text-muted, #888);
+  margin-bottom: 6px;
+}
+
+.inkchapter-preset-card-preview {
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.88em;
+  color: var(--text-accent, #07a);
+}
+
+.inkchapter-preset-card-preview-line {
+  line-height: 1.5;
+}
+
+/* ── Custom fold panels ───────────────────────────────── */
+
+.inkchapter-custom-panels {
+  margin: 4px 0 12px;
+}
+
+.inkchapter-custom-panel {
+  margin-bottom: 4px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.inkchapter-custom-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--background-secondary, #f8f8f8);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+.inkchapter-custom-panel-header:hover {
+  background: var(--background-modifier-hover, #eee);
+}
+
+.inkchapter-custom-panel-header:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--text-accent, #07a);
+}
+
+.inkchapter-custom-panel-summary {
+  font-size: 0.92em;
+  font-family: var(--font-monospace, monospace);
+}
+
+.inkchapter-custom-panel-arrow {
+  font-size: 0.8em;
+  color: var(--text-muted, #888);
+}
+
+.inkchapter-custom-panel-body {
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border-primary, #ddd);
+}
+
+.inkchapter-custom-h1-notice {
+  font-size: 0.82em;
+  color: var(--text-muted, #888);
+  font-style: italic;
+  margin-bottom: 10px;
+  padding: 4px 8px;
+  background: var(--background-modifier-border, #f0f0f0);
+  border-radius: 3px;
+}
+
+/* ── Custom panel rows ────────────────────────────────── */
+
+.inkchapter-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.inkchapter-custom-col-label {
+  min-width: 100px;
+  font-size: 0.88em;
+  color: var(--text-muted, #666);
+}
+
+.inkchapter-custom-row input[type="text"] {
+  padding: 2px 6px;
+  border: 1px solid var(--border-primary, #ccc);
+  border-radius: 3px;
+  font-size: 0.88em;
+  background: var(--background-primary, #fff);
+  color: var(--text-normal, #333);
+}
+
+.inkchapter-custom-row input[type="checkbox"] {
+  margin: 0;
+}
+
+.inkchapter-custom-row select {
+  padding: 2px 4px;
+  border: 1px solid var(--border-primary, #ccc);
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+
+/* ── Mini preview & reset ─────────────────────────────── */
+
+.inkchapter-custom-mini-row {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 3px;
+  background: var(--background-secondary, #f4f4f4);
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.92em;
+}
+
+.inkchapter-custom-mini-label {
+  color: var(--text-muted, #888);
+}
+
+.inkchapter-custom-mini-preview {
+  color: var(--text-accent, #07a);
+  font-weight: 600;
+}
+
+.inkchapter-custom-reset-row {
+  margin-top: 8px;
+}
+
+.inkchapter-reset-level-btn {
+  padding: 3px 10px;
+  font-size: 0.8em;
+  border: 1px solid var(--border-primary, #ccc);
+  border-radius: 3px;
+  background: var(--background-secondary, #f8f8f8);
+  color: var(--text-muted, #888);
+  cursor: pointer;
+}
+
+.inkchapter-reset-level-btn:hover {
+  background: var(--background-modifier-hover, #eee);
+  color: var(--text-error, #d00);
+}
+
+.inkchapter-reset-row {
+  margin: 8px 0;
+}
+
+.inkchapter-reset-all-btn {
+  padding: 4px 14px;
+  font-size: 0.85em;
+  border: 1px solid var(--text-error, #d00);
+  border-radius: 3px;
+  background: var(--background-primary, #fff);
+  color: var(--text-error, #d00);
+  cursor: pointer;
+}
+
+.inkchapter-reset-all-btn:hover {
+  background: rgba(221, 0, 0, 0.08);
 }

@@ -12,7 +12,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 1
+const CURRENT_SCHEMA_VERSION = 2
 
 // ── Validation helpers ─────────────────────────────────
 
@@ -120,12 +120,14 @@ export function migrateSettings(
     return doMigrate(raw)
   } catch (e) {
     logger.error('设置迁移失败，将使用默认标题编号设置', e)
+    const defaults = defaultLevelStyle()
     return {
       enabled: true,
       showLevelOneNumber: false,
       preset: 'decimal-hierarchical',
       maxDepth: 6 as HeadingLevel,
-      levels: defaultLevelStyle(),
+      levels: defaults,
+      customDefinition: { ...defaults },
     }
   }
 }
@@ -170,17 +172,53 @@ function doMigrate(
     levels = getPresetLevels(preset)
   }
 
+  // ── Migrate / normalize customDefinition ───────────────
+  let customDef: Record<HeadingLevel, HeadingLevelStyle> | undefined
+  const storedCustomDef = (s as any)?.customDefinition as Record<string, unknown> | undefined
+  if (storedCustomDef && typeof storedCustomDef === 'object') {
+    // V2 format: customDefinition is a flat {1: style, 2: style, ...} record
+    customDef = { ...defaultLevelStyle() }
+    for (const lv of HEADING_LEVELS) {
+      const sd = storedCustomDef[String(lv)] ?? storedCustomDef[lv]
+      if (sd && typeof sd === 'object') {
+        customDef[lv] = {
+          enabled: typeof (sd as any).enabled === 'boolean' ? (sd as any).enabled : true,
+          tokenStyle: normalizeTokenStyle((sd as any).tokenStyle),
+          includeParents: typeof (sd as any).includeParents === 'boolean' ? (sd as any).includeParents : true,
+          prefix: typeof (sd as any).prefix === 'string' ? sanitizeString((sd as any).prefix) : '',
+          suffix: typeof (sd as any).suffix === 'string' ? sanitizeString((sd as any).suffix) : '',
+          separator: typeof (sd as any).separator === 'string' ? sanitizeString((sd as any).separator, '.') : '.',
+        }
+      }
+    }
+  } else {
+    // V1→V2: initialize customDefinition from current levels
+    customDef = { ...levels }
+  }
+
   return {
     enabled,
     showLevelOneNumber,
     preset,
     maxDepth,
     levels,
+    customDefinition: customDef,
     // Preserve legacy fields for idempotency
     separator: s.separator ?? '.',
     suffix: s.suffix ?? '',
     showTrailingSeparator: s.showTrailingSeparator ?? false,
   }
+}
+
+/**
+ * Clean control chars, HTML, and newlines from user input strings.
+ */
+function sanitizeString(val: string, fallback = ''): string {
+  return val
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/[<>]/g, '')
+    .replace(/\n/g, '')
+    .slice(0, 16) || fallback
 }
 
 /**
