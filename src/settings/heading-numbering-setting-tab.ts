@@ -42,15 +42,35 @@ export class HeadingNumberingSettingTab extends SettingTab {
     while (this.containerEl.firstChild) {
       this.containerEl.removeChild(this.containerEl.firstChild)
     }
-    this.render()
+    try {
+      this.render()
+    } catch (e) {
+      console.error('[InkChapter] SettingTab render 失败:', e)
+      const errEl = document.createElement('div')
+      errEl.style.cssText = 'padding:16px;color:#e00;'
+      errEl.textContent = '[错误] 设置页面渲染失败: ' + (e instanceof Error ? e.message : String(e))
+      this.containerEl.appendChild(errEl)
+    }
   }
 
   private get headingSettings() {
-    return this.numberingService.getCurrentSettings()
+    try {
+      return this.numberingService.getCurrentSettings()
+    } catch (e) {
+      console.error('[InkChapter] getCurrentSettings 失败:', e)
+      throw e
+    }
   }
 
   private render(): void {
     const s = this.headingSettings
+    if (!s?.levels) {
+      const errEl = document.createElement('div')
+      errEl.style.cssText = 'padding:16px;color:#e00;'
+      errEl.textContent = '[错误] 标题编号配置数据异常，请尝试重置设置'
+      this.containerEl.appendChild(errEl)
+      return
+    }
 
     // ── Section: Basic ──────────────────────────────
     this.addSettingTitle('基础设置')
@@ -141,6 +161,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.previewEl.textContent = ''
 
     const s = this.headingSettings
+    if (!s?.levels) return
     const skipH1 = !s.showLevelOneNumber
 
     for (const lv of HEADING_LEVELS) {
