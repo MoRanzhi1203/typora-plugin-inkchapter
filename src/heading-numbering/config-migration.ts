@@ -8,6 +8,33 @@ const VALID_TOKEN_STYLES: ReadonlySet<string> = new Set([
   'roman-upper', 'roman-lower', 'alpha-upper', 'alpha-lower', 'circled',
 ])
 
+const VALID_PRESETS: ReadonlySet<string> = new Set([
+  'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
+])
+
+const CURRENT_SCHEMA_VERSION = 1
+
+// ── Validation helpers ─────────────────────────────────
+
+function validateBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value
+  return fallback
+}
+
+function validatePreset(raw: unknown): HeadingNumberingPreset {
+  if (typeof raw === 'string' && VALID_PRESETS.has(raw)) {
+    return raw as HeadingNumberingPreset
+  }
+  return 'decimal-hierarchical'
+}
+
+function validateMaxDepth(raw: unknown): HeadingLevel {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 6) {
+    return raw as HeadingLevel
+  }
+  return 6 as HeadingLevel
+}
+
 /** Default level style for custom mode. */
 function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
   const ls = {} as Record<HeadingLevel, HeadingLevelStyle>
@@ -115,15 +142,10 @@ function doMigrate(
     s.levels = migrateLegacyLevels(legacyCustomDef.levels)
   }
 
-  const preset: HeadingNumberingPreset =
-    s.preset === 'chinese-chapter' || s.preset === 'chinese-outline' ||
-    s.preset === 'roman-hierarchical' || s.preset === 'custom'
-      ? s.preset
-      : 'decimal-hierarchical'
-
-  const showLevelOneNumber = s.showLevelOneNumber ?? false
-  const enabled = s.enabled ?? true
-  const maxDepth = s.maxDepth ?? 6
+  const preset = validatePreset(s.preset)
+  const showLevelOneNumber = validateBoolean(s.showLevelOneNumber, false)
+  const enabled = validateBoolean(s.enabled, true)
+  const maxDepth = validateMaxDepth(s.maxDepth)
 
   // Build levels from preset or stored custom
   let levels: Record<HeadingLevel, HeadingLevelStyle>
@@ -152,7 +174,7 @@ function doMigrate(
     enabled,
     showLevelOneNumber,
     preset,
-    maxDepth: maxDepth as HeadingLevel,
+    maxDepth,
     levels,
     // Preserve legacy fields for idempotency
     separator: s.separator ?? '.',

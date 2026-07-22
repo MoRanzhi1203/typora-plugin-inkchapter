@@ -14,6 +14,7 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
 }
 
 export const DEFAULT_SETTINGS: InkChapterSettings = {
+  schemaVersion: 1,
   debug: false,
   headingNumbering: {
     enabled: true,
