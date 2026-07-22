@@ -1,4 +1,4 @@
-import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset } from './heading-types'
+import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, NumberFormatSegment, NumberTokenStyle } from './heading-types'
 import { HEADING_LEVELS } from './heading-types'
 
 // ── Preset metadata ──────────────────────────────────────
@@ -56,6 +56,7 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
     startAt: 1,
     restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
     legalStyle: false,
+    format: [],
     ...overrides,
   }
 }
@@ -63,40 +64,55 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
 function buildDecimal(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    levels[lv] = defaultLevelStyle(lv, { tokenStyle: 'arabic', separator: '.' })
+    const fmt: NumberFormatSegment[] = []
+    for (let i = 1; i <= lv; i++) {
+      if (i > 1) fmt.push({ type: 'literal', value: '.' })
+      fmt.push({ type: 'level-reference', level: i as HeadingLevel })
+    }
+    levels[lv] = defaultLevelStyle(lv, { tokenStyle: 'arabic', format: fmt })
   }
   return levels
 }
 
 function buildChineseChapter(): Record<HeadingLevel, HeadingLevelStyle> {
+  function fmt(lv: HeadingLevel, format: NumberFormatSegment[]): HeadingLevelStyle {
+    return defaultLevelStyle(lv, { includeParents: false, format })
+  }
   return {
-    1: defaultLevelStyle(1, { tokenStyle: 'chinese', includeParents: false, prefix: '第', suffix: '章', separator: '' }),
-    2: defaultLevelStyle(2, { tokenStyle: 'chinese', includeParents: false, prefix: '第', suffix: '节', separator: '' }),
-    3: defaultLevelStyle(3, { tokenStyle: 'chinese', includeParents: false, prefix: '', suffix: '、', separator: '' }),
-    4: defaultLevelStyle(4, { tokenStyle: 'chinese', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
-    5: defaultLevelStyle(5, { tokenStyle: 'arabic', includeParents: false, prefix: '', suffix: '.', separator: '' }),
-    6: defaultLevelStyle(6, { tokenStyle: 'arabic', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
+    1: fmt(1, [{ type: 'literal', value: '第' }, { type: 'level-reference', level: 1 }, { type: 'literal', value: '章' }]),
+    2: fmt(2, [{ type: 'literal', value: '第' }, { type: 'level-reference', level: 2 }, { type: 'literal', value: '节' }]),
+    3: fmt(3, [{ type: 'level-reference', level: 3 }, { type: 'literal', value: '、' }]),
+    4: fmt(4, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 4 }, { type: 'literal', value: '）' }]),
+    5: fmt(5, [{ type: 'level-reference', level: 5 }, { type: 'literal', value: '.' }]),
+    6: fmt(6, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 6 }, { type: 'literal', value: '）' }]),
   }
 }
 
 function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
+  function fmt(lv: HeadingLevel, format: NumberFormatSegment[], tokenStyle: NumberTokenStyle): HeadingLevelStyle {
+    return defaultLevelStyle(lv, { includeParents: false, tokenStyle, format })
+  }
   return {
-    1: defaultLevelStyle(1, { tokenStyle: 'chinese', includeParents: false, prefix: '', suffix: '、', separator: '' }),
-    2: defaultLevelStyle(2, { tokenStyle: 'chinese', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
-    3: defaultLevelStyle(3, { tokenStyle: 'arabic', includeParents: false, prefix: '', suffix: '.', separator: '' }),
-    4: defaultLevelStyle(4, { tokenStyle: 'arabic', includeParents: false, prefix: '（', suffix: '）', separator: '' }),
-    5: defaultLevelStyle(5, { tokenStyle: 'circled', includeParents: false, prefix: '', suffix: '', separator: '' }),
-    6: defaultLevelStyle(6, { tokenStyle: 'alpha-upper', includeParents: false, prefix: '', suffix: '.', separator: '' }),
+    1: fmt(1, [{ type: 'level-reference', level: 1 }, { type: 'literal', value: '、' }], 'chinese'),
+    2: fmt(2, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 2 }, { type: 'literal', value: '）' }], 'chinese'),
+    3: fmt(3, [{ type: 'level-reference', level: 3 }, { type: 'literal', value: '.' }], 'arabic'),
+    4: fmt(4, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 4 }, { type: 'literal', value: '）' }], 'arabic'),
+    5: fmt(5, [{ type: 'level-reference', level: 5 }], 'circled'),
+    6: fmt(6, [{ type: 'level-reference', level: 6 }, { type: 'literal', value: '.' }], 'alpha-upper'),
   }
 }
 
 function buildRoman(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
+    const fmt: NumberFormatSegment[] = []
+    for (let i = 1; i <= lv; i++) {
+      if (i > 1) fmt.push({ type: 'literal', value: '.' })
+      fmt.push({ type: 'level-reference', level: i as HeadingLevel })
+    }
     levels[lv] = defaultLevelStyle(lv, {
       tokenStyle: lv === 1 ? 'roman-upper' : 'arabic',
-      includeParents: true,
-      separator: '.',
+      format: fmt,
     })
   }
   return levels

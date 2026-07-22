@@ -4,6 +4,7 @@ import type {
   HeadingLevelStyle,
   HeadingNumberingSettings,
   NumberedHeading,
+  NumberFormatSegment,
 } from './heading-types'
 import { formatToken } from './token-formatter'
 
@@ -108,6 +109,12 @@ function buildLabel(
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
 
+  // ── Format-based label (schemaVersion >= 4) ──────
+  if (style.format && style.format.length > 0) {
+    return buildLabelFromFormat(activeCounters, levelStyles, skipH1, headingLevel, style)
+  }
+
+  // ── Legacy includeParents/prefix/suffix/separator ─
   const startIdx = skipH1 ? 1 : 0
 
   if (style.includeParents) {
@@ -130,6 +137,161 @@ function buildLabel(
 
   const token = formatToken(activeCounters[currentIdx], style.tokenStyle)
   return style.prefix + token + style.suffix
+}
+
+function buildLabelFromFormat(
+  activeCounters: number[],
+  levelStyles: Record<HeadingLevel, HeadingLevelStyle>,
+  skipH1: boolean,
+  headingLevel: HeadingLevel,
+  style: HeadingLevelStyle,
+): string {
+  // Get effective format (strips hidden levels and orphaned separators)
+  const effectiveFormat = getEffectiveFormatForLevel(style.format, skipH1, headingLevel)
+  return evaluateFormat(effectiveFormat, activeCounters, levelStyles, headingLevel, style)
+}
+
+/** Evaluate a pre-processed format array into a label string. */
+function evaluateFormat(
+  format: readonly NumberFormatSegment[],
+  activeCounters: number[],
+  levelStyles: Record<HeadingLevel, HeadingLevelStyle>,
+  headingLevel: HeadingLevel,
+  style: HeadingLevelStyle,
+): string {
+  const parts: string[] = []
+  for (const seg of format) {
+    if (seg.type === 'literal') {
+      parts.push(seg.value)
+    } else {
+      const refLv = seg.level
+      const refIdx = refLv - 1
+      if (refIdx < 0 || refIdx >= activeCounters.length) continue
+      const refStyle = levelStyles[refLv]
+      if (!refStyle) continue
+      const isParent = refLv < headingLevel
+      const tokenStyle = (style.legalStyle && isParent) ? 'arabic' : refStyle.tokenStyle
+      const token = formatToken(activeCounters[refIdx], tokenStyle)
+      parts.push(token)
+    }
+  }
+  return parts.join('')
+}
+
+/** Separator-only characters that are orphaned when between-level references are removed. */
+const SEPARATOR_CHARS = new Set(['.', '-', '_', '、', '，', ',', ':', '：', '/', '\\', '·', ' '])
+
+function isSeparatorLiteral(seg: NumberFormatSegment): boolean {
+  if (seg.type !== 'literal') return false
+  const val = seg.value.trim()
+  if (val === '') return true
+  return [...val].every(c => SEPARATOR_CHARS.has(c))
+}
+
+/**
+ * Strip hidden level references and orphaned separator literals from a format array.
+ * When H1 is hidden:
+ *   [L1].[L2]      → [L2]
+ *   [L1]-[L2]      → [L2]
+ *   [L1].[L2].[L3] → [L2].[L3]
+ *   [L2].[L1]      → [L2]
+ *   [L1]text[L2]   → text[L2]
+ *   text[L1].[L2]  → text[L2]
+ */
+export function stripHiddenLevelReferences(
+  format: readonly NumberFormatSegment[],
+  hiddenLevels: ReadonlySet<HeadingLevel>,
+  currentLevel: HeadingLevel,
+): NumberFormatSegment[] {
+  if (hiddenLevels.size === 0) return [...format]
+
+  const result: NumberFormatSegment[] = []
+  for (let i = 0; i < format.length; i++) {
+    const seg = format[i]
+    if (seg.type === 'level-reference' && hiddenLevels.has(seg.level)) {
+      // Remove this hidden reference
+      // Also remove adjacent separator literals
+      // Check previous: if last non-empty result item is a separator, remove it
+      if (result.length > 0) {
+        const last = result[result.length - 1]
+        if (last.type === 'literal' && isSeparatorLiteral(last)) {
+          result.pop()
+        }
+      }
+      // Check next: skip adjacent separator literals
+      while (i + 1 < format.length && format[i + 1].type === 'literal' && isSeparatorLiteral(format[i + 1]) && !isNonSeparatorLiteral(format[i + 1])) {
+        i++ // skip next separator
+      }
+      continue
+    }
+    result.push(seg)
+  }
+
+  // Clean leading/trailing separators
+  while (result.length > 0 && result[0].type === 'literal' && isSeparatorLiteral(result[0]) && !isNonSeparatorLiteral(result[0])) {
+    result.shift()
+  }
+  while (result.length > 0 && result[result.length - 1].type === 'literal' && isSeparatorLiteral(result[result.length - 1]) && !isNonSeparatorLiteral(result[result.length - 1])) {
+    result.pop()
+  }
+
+  // Merge adjacent literals
+  const merged: NumberFormatSegment[] = []
+  for (const seg of result) {
+    if (seg.type === 'literal' && merged.length > 0 && merged[merged.length - 1].type === 'literal') {
+      const last = merged[merged.length - 1] as { type: 'literal'; value: string }
+      last.value += seg.value
+    } else {
+      merged.push({ ...seg })
+    }
+  }
+
+  // Ensure current level reference exists at least once
+  if (!merged.some(s => s.type === 'level-reference' && s.level === currentLevel)) {
+    merged.push({ type: 'level-reference', level: currentLevel })
+  }
+
+  return merged.length > 0 ? merged : [{ type: 'level-reference', level: currentLevel }]
+}
+
+function isNonSeparatorLiteral(seg: NumberFormatSegment): boolean {
+  if (seg.type !== 'literal') return false
+  return !isSeparatorLiteral(seg) && seg.value.trim().length > 0
+}
+
+/**
+ * Get the effective format for a level, stripping hidden references.
+ * Used by both the numbering engine and the settings UI.
+ */
+export function getEffectiveFormatForLevel(
+  format: readonly NumberFormatSegment[],
+  skipH1: boolean,
+  currentLevel: HeadingLevel,
+): NumberFormatSegment[] {
+  const hidden = new Set<HeadingLevel>()
+  if (skipH1) hidden.add(1 as HeadingLevel)
+  return stripHiddenLevelReferences(format, hidden, currentLevel)
+}
+
+/**
+ * Get the available reference levels for the insert dropdown.
+ * Returns only levels strictly before currentLevel (not including self).
+ * Hides H1 when showLevelOneNumber is false.
+ *
+ * Examples:
+ *   showLevelOneNumber=true:  H2→[1], H3→[1,2], H4→[1,2,3]
+ *   showLevelOneNumber=false: H2→[],   H3→[2],   H4→[2,3]
+ */
+export function getAvailableReferenceLevels(
+  currentLevel: HeadingLevel,
+  showLevelOneNumber: boolean,
+): HeadingLevel[] {
+  const result: HeadingLevel[] = []
+  const start = showLevelOneNumber ? 1 : 2
+  for (let lv = start; lv < currentLevel; lv++) {
+    result.push(lv as HeadingLevel)
+  }
+  return result
 }
 
 function clamp(n: number, min: number, max: number): number {

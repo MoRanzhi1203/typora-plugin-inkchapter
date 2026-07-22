@@ -13,11 +13,12 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
     startAt: 1,
     restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
     legalStyle: false,
+    format: [],
   }
 }
 
 export const DEFAULT_SETTINGS: InkChapterSettings = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   debug: false,
   headingNumbering: {
     enabled: true,

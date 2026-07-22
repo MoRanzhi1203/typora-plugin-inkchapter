@@ -11,8 +11,10 @@ import type {
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
-import { PRESET_LIST, PRESETS } from '../heading-numbering/presets'
-import { computeHeadingNumbering } from '../heading-numbering/numbering-engine'
+import type { NumberFormatSegment } from '../heading-numbering/heading-types'
+import { moveSegmentToResolvedIndex, computeDropIndexAfterRemoval } from '../heading-numbering/format-drag-utils'
+import { computeHeadingNumbering, getAvailableReferenceLevels, getEffectiveFormatForLevel } from '../heading-numbering/numbering-engine'
+import { PRESET_LIST } from '../heading-numbering/presets'
 
 const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string }[] = [
   { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)' },
@@ -225,11 +227,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     for (const item of numbered) {
       const lv = item.level as HeadingLevel
-      // H1 skipped when showLevelOneNumber is off
-      if (!s.showLevelOneNumber && lv === 1) continue
-
       const style = s.levels[lv]
       if (!style?.enabled) continue
+
+      // H1 hidden: keep row but without number
+      if (!s.showLevelOneNumber && lv === 1) {
+        const row = el('div', 'inkchapter-preview-row', this.previewEl)
+        const label = el('span', 'inkchapter-preview-label', row)
+        label.textContent = `H${lv} `
+        const token = el('span', 'inkchapter-preview-token', row)
+        token.textContent = '一级标题示例'
+        continue
+      }
 
       const row = el('div', 'inkchapter-preview-row', this.previewEl)
       const label = el('span', 'inkchapter-preview-label', row)
@@ -256,247 +265,272 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.onshow()
   }
 
-  /** Render fold panels for all 6 heading levels. */
+  /** Render Word-style editor: left level list + right preview + bottom format editor. */
   private renderCustomPanels(s: HeadingNumberingSettings): void {
-    const panelContainer = el('div', 'inkchapter-custom-panels')
-    this.containerEl.appendChild(panelContainer)
+    // ── Two-column layout ──────────────────────────
+    const layout = el('div', 'inkchapter-editor-layout')
+    this.containerEl.appendChild(layout)
 
-    // ── H1 panel (no independent enabled toggle) ────
-    this.renderSingleLevelPanel(1, s, panelContainer, true)
+    // Left: level list
+    const leftCol = el('div', 'inkchapter-editor-left', layout)
+    const levelTitle = el('div', 'inkchapter-editor-level-title', leftCol)
+    levelTitle.textContent = '级别'
 
-    // ── H2-H6 panels ────────────────────────────────
-    for (let i = 2; i <= 6; i++) {
-      this.renderSingleLevelPanel(i as HeadingLevel, s, panelContainer, false)
-    }
-
-    // ── Reset all button ────────────────────────────
-    const resetAllRow = el('div', 'inkchapter-reset-row', this.containerEl)
-    const resetBtn = document.createElement('button')
-    resetBtn.textContent = '恢复全部自定义设置'
-    resetBtn.className = 'inkchapter-reset-all-btn'
-    resetBtn.onclick = () => {
-      if (confirm('确定要将所有自定义级别恢复为默认值吗？此操作不可撤销。')) {
-        this.numberingService.resetAllCustomLevels()
-        this.onshow()
-      }
-    }
-    resetAllRow.appendChild(resetBtn)
-
-    // ── Structural preview ─────────────────────────
-    const structTitle = el('div', undefined, panelContainer)
-    structTitle.style.cssText = 'margin-top:16px;font-weight:600;font-size:0.92em;'
-    structTitle.textContent = '结构预览（验证重启行为）'
-    const structEl = el('div', 'inkchapter-structural-preview', panelContainer)
-    this.renderStructuralPreview(s, structEl)
-  }
-
-  private renderStructuralPreview(s: HeadingNumberingSettings, container: HTMLElement): void {
-    const tree: HeadingDescriptor[] = [
-      { key: 's-h1a', level: 1, text: '第一章' },
-      { key: 's-h2a', level: 2, text: '第一节' },
-      { key: 's-h3a', level: 3, text: '条目A' },
-      { key: 's-h3b', level: 3, text: '条目B' },
-      { key: 's-h2b', level: 2, text: '第二节' },
-      { key: 's-h3c', level: 3, text: '条目C' },
-      { key: 's-h1b', level: 1, text: '第二章' },
-      { key: 's-h2c', level: 2, text: '第三节' },
-      { key: 's-h3d', level: 3, text: '条目D' },
-    ]
-    const numbered = computeHeadingNumbering(tree, s)
-    for (const item of numbered) {
-      const lv = item.level
-      if (lv > s.maxDepth) continue
-      if (lv === 1 && !s.showLevelOneNumber && !item.label) continue
-      const row = el('div', 'inkchapter-structural-row', container)
-      row.style.paddingLeft = (lv - 1) * 16 + 'px'
-      if (item.label) {
-        const token = el('span', 'inkchapter-structural-token', row)
-        token.textContent = item.label
-        const text = el('span', 'inkchapter-structural-text', row)
-        text.textContent = ' ' + (item.text || '')
-      } else {
-        const text = el('span', undefined, row)
-        text.textContent = item.text || ''
-        text.style.color = 'var(--text-muted,#888)'
-      }
-    }
-  }
-
-  private renderSingleLevelPanel(
-    lv: HeadingLevel,
-    s: HeadingNumberingSettings,
-    container: HTMLElement,
-    isH1: boolean,
-  ): void {
-    const style = s.levels[lv]
-    if (!style) return
-
-    const panel = el('div', 'inkchapter-custom-panel', container)
-    const isExpanded = this.expandedLevel === lv
-
-    // ── Header (always visible) ─────────────────────
-    const header = el('div', 'inkchapter-custom-panel-header', panel)
-    header.setAttribute('tabindex', '0')
-    header.onclick = () => {
-      this.expandedLevel = this.expandedLevel === lv ? null : lv
-      this.onshow()
-    }
-    header.onkeydown = (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
+    for (const lv of HEADING_LEVELS) {
+      const lvBtn = el('div', 'inkchapter-editor-level-btn', leftCol)
+      lvBtn.textContent = `级别${lv}`
+      lvBtn.setAttribute('tabindex', '0')
+      if (this.expandedLevel === lv) lvBtn.classList.add('inkchapter-editor-level-btn--selected')
+      lvBtn.onclick = () => {
         this.expandedLevel = this.expandedLevel === lv ? null : lv
         this.onshow()
       }
     }
 
-    // Summary line
-    const summary = el('span', 'inkchapter-custom-panel-summary', header)
-    const miniLabel = this.computeMiniPreview(lv, s)
-    summary.textContent = `H${lv}${miniLabel ? '  ' + miniLabel : ''}`
+    // Right: full preview
+    const rightCol = el('div', 'inkchapter-editor-right', layout)
+    const previewTitle = el('div', 'inkchapter-editor-preview-title', rightCol)
+    previewTitle.textContent = '多级编号预览'
+    const fullPreview = el('div', 'inkchapter-preview', rightCol)
+    this.renderFullPreviewInContainer(s, fullPreview)
 
-    const arrow = el('span', 'inkchapter-custom-panel-arrow', header)
-    arrow.textContent = isExpanded ? '▾' : '▸'
+    // ── Bottom: format editor (if level selected) ──
+    if (this.expandedLevel != null) {
+      const lv = this.expandedLevel
+      const style = s.levels[lv]
+      if (!style) return
 
-    if (!isExpanded) return
+      const editorSection = el('div', 'inkchapter-editor-bottom')
+      this.containerEl.appendChild(editorSection)
 
-    // ── Body (expanded) ─────────────────────────────
-    const body = el('div', 'inkchapter-custom-panel-body', panel)
-
-    // H1 notice
-    if (isH1) {
-      const h1Notice = el('div', 'inkchapter-custom-h1-notice', body)
-      h1Notice.textContent = 'H1 是否显示编号由上方「一级标题显示编号」控制。'
-    }
-
-    if (!isH1) {
-      // Enabled checkbox (H2-H6 only)
-      this.addCustomCheckbox(body, '启用本级编号', style.enabled, (checked) => {
-        this.numberingService.updateLevelStyle(lv, { enabled: checked })
-        this.refreshUI()
-        this.updateMiniPreview(lv)
-      })
-    }
-
-    // Token style select
-    this.addCustomSelect(body, '当前级编号样式', TOKEN_STYLE_LABELS, style.tokenStyle, (val) => {
-      if (typeof val === 'string') {
-        this.numberingService.updateLevelStyle(lv, { tokenStyle: val as NumberTokenStyle })
-        this.refreshUI()
-        this.updateMiniPreview(lv)
+      // H1 notice
+      if (lv === 1) {
+        const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
+        h1Notice.textContent = s.showLevelOneNumber
+          ? 'H1 是否显示编号由上方「一级标题显示编号」控制。'
+          : '当前编号已隐藏'
       }
-    })
 
-    // Include parents checkbox
-    this.addCustomCheckbox(body, '包含父级编号', style.includeParents, (checked) => {
-      this.numberingService.updateLevelStyle(lv, { includeParents: checked })
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    })
+      // Format editor header
+      const fmtHeader = el('div', 'inkchapter-format-header', editorSection)
+      fmtHeader.textContent = `H${lv} 编号格式`
 
-    // Prefix / Separator / Suffix
-    this.addCustomText(body, '前缀', style.prefix, (val) => {
-      this.numberingService.updateLevelStyle(lv, { prefix: sanitize(val) })
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    })
+      // ── Format tags with insert slots ─────────────
+      const fmtContainer = el('div', 'inkchapter-format-container', editorSection)
+      const fmtEl = el('div', 'inkchapter-format-chips', fmtContainer)
 
-    this.addCustomText(body, '分隔符', style.separator, (val) => {
-      this.numberingService.updateLevelStyle(lv, { separator: sanitize(val) })
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    })
+      // Insert slot at start
+      this.renderInsertSlot(fmtEl, 0, lv, style)
 
-    this.addCustomText(body, '后缀', style.suffix, (val) => {
-      this.numberingService.updateLevelStyle(lv, { suffix: sanitize(val) })
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    })
+      for (let i = 0; i < style.format.length; i++) {
+        const seg = style.format[i]
+        if (seg.type === 'level-reference') {
+          this.renderLevelRefChip(fmtEl, i, seg, lv, style)
+        } else {
+          this.renderLiteralChip(fmtEl, i, seg, lv, style)
+        }
+        // Insert slot after each segment
+        this.renderInsertSlot(fmtEl, i + 1, lv, style)
+      }
 
-    // Mini preview
-    const miniRow = el('div', 'inkchapter-custom-mini-row', body)
-    const miniLabel2 = el('span', 'inkchapter-custom-mini-label', miniRow)
-    miniLabel2.textContent = '本级预览：'
-    const miniPreview = el('span', 'inkchapter-custom-mini-preview', miniRow)
-    miniPreview.textContent = this.computeMiniPreview(lv, s)
-    this.miniPreviewEls.set(lv, miniPreview)
+      // ── Insert controls ───────────────────────────
+      const insertRow = el('div', 'inkchapter-format-insert-row', editorSection)
 
-    // ── Advanced numbering rules ──────────────────
-    const advHeader = el('div', 'inkchapter-advanced-header', body)
-    advHeader.textContent = '▸ 高级编号规则'
-    advHeader.style.cursor = 'pointer'
-    const advBody = el('div', 'inkchapter-advanced-body', body)
-    advBody.style.display = 'none'
-    advHeader.onclick = () => {
-      advBody.style.display = advBody.style.display === 'none' ? '' : 'none'
-      advHeader.textContent = advBody.style.display === 'none' ? '▸ 高级编号规则' : '▾ 高级编号规则'
-    }
+      // Insert text
+      const textInput = document.createElement('input')
+      textInput.type = 'text'
+      textInput.placeholder = '输入文字'
+      textInput.style.width = '100px'
+      textInput.className = 'inkchapter-format-text-input'
+      const textBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
+      textBtn.textContent = '插入文字'
+      textBtn.onclick = () => {
+        const val = textInput.value
+        if (val) {
+          const newFmt = [...style.format, { type: 'literal' as const, value: sanitize(val) }]
+          this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+          this.onshow()
+        }
+      }
+      // Put both in a wrapper
+      const textWrap = el('div', undefined, insertRow)
+      textWrap.style.cssText = 'display:flex;align-items:center;gap:4px;'
+      textWrap.appendChild(textInput)
+      textWrap.appendChild(textBtn)
 
-    // startAt
-    this.addCustomNumber(advBody, '起始编号', style.startAt, 1, 999, (val) => {
-      this.numberingService.updateLevelStyle(lv, { startAt: val })
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    })
+      // Insert level reference
+      const levelSelect = el('select', undefined, insertRow) as HTMLSelectElement
+      levelSelect.style.cssText = 'margin-left:12px;'
+      const availRefs = getAvailableReferenceLevels(lv, s.showLevelOneNumber)
+      if (availRefs.length === 0) {
+        const opt = document.createElement('option')
+        opt.value = ''
+        opt.textContent = '无可用上级级别'
+        opt.disabled = true
+        levelSelect.appendChild(opt)
+      } else {
+        for (const refLv of availRefs) {
+          const opt = document.createElement('option')
+          opt.value = String(refLv)
+          opt.textContent = `[级别${refLv}]`
+          levelSelect.appendChild(opt)
+        }
+      }
+      const refBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
+      refBtn.textContent = '插入引用'
+      refBtn.onclick = () => {
+        const refLv = Number(levelSelect.value) as HeadingLevel
+        if (!refLv || refLv < 1 || refLv > 6) return
+        const newFmt = [...style.format, { type: 'level-reference' as const, level: refLv }]
+        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        this.onshow()
+      }
 
-    // restartAfterLevel
-    if (!isH1) {
-      this.addCustomSelect(advBody, '在哪个上级后重新开始', buildRestartOptions(lv), String(style.restartAfterLevel ?? ''), (val) => {
-        const parsed = val === '' ? null : Number(val) as HeadingLevel
-        this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed as HeadingLevel | null })
-        this.refreshUI()
-        this.updateMiniPreview(lv)
+      // ── Current level settings ────────────────────
+      const settingsSection = el('div', 'inkchapter-editor-settings', editorSection)
+      const settingsTitle = el('div', 'inkchapter-format-header', settingsSection)
+      settingsTitle.textContent = '当前级设置'
+
+      if (lv > 1) {
+        this.addCustomCheckbox(settingsSection, '启用本级编号', style.enabled, (checked) => {
+          this.numberingService.updateLevelStyle(lv, { enabled: checked })
+          this.onshow()
+        })
+      }
+
+      this.addCustomSelect(settingsSection, '编号样式', TOKEN_STYLE_LABELS, style.tokenStyle, (val) => {
+        this.numberingService.updateLevelStyle(lv, { tokenStyle: val as NumberTokenStyle })
+        this.onshow()
       })
-    } else {
-      const h1RestartNote = el('div', 'inkchapter-custom-row', advBody)
-      const noteSpan = el('span', 'inkchapter-custom-col-label', h1RestartNote)
-      noteSpan.textContent = '重启规则'
-      const noteVal = el('span', undefined, h1RestartNote)
-      noteVal.textContent = 'H1 不可设置重启规则'
-      noteVal.style.cssText = 'font-size:0.82em;color:var(--text-muted,#888);font-style:italic;'
+
+      this.addCustomNumber(settingsSection, '起始编号', style.startAt, 1, 999, (val) => {
+        this.numberingService.updateLevelStyle(lv, { startAt: val })
+        this.onshow()
+      })
+
+      if (lv > 1) {
+        this.addCustomSelect(settingsSection, '在哪个上级后重新开始', buildRestartOptions(lv), String(style.restartAfterLevel ?? ''), (val) => {
+          const parsed = val === '' ? null : Number(val) as HeadingLevel
+          this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed } as any)
+          this.onshow()
+        })
+      }
+
+      this.addCustomCheckbox(settingsSection, '将父级编号转换为阿拉伯数字', style.legalStyle, (checked) => {
+        this.numberingService.updateLevelStyle(lv, { legalStyle: checked })
+        this.onshow()
+      })
+
+      // Format summary (uses effective format so hidden references don't appear)
+      const summary = el('div', 'inkchapter-advanced-summary', settingsSection)
+      const effFmt = getEffectiveFormatForLevel(style.format, !s.showLevelOneNumber, lv)
+      summary.textContent = formatSummary(effFmt, style.tokenStyle)
     }
-
-    // legalStyle
-    this.addCustomCheckbox(advBody, '将父级编号转换为阿拉伯数字', style.legalStyle, (checked) => {
-      this.numberingService.updateLevelStyle(lv, { legalStyle: checked })
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    })
-
-    // Advanced summary
-    const advSummary = el('div', 'inkchapter-advanced-summary', advBody)
-    advSummary.textContent = buildAdvancedSummary(style) || '（使用默认规则）'
-
-    // Reset button
-    const resetRow = el('div', 'inkchapter-custom-reset-row', body)
-    const resetBtn = document.createElement('button')
-    resetBtn.textContent = `恢复 H${lv} 默认值`
-    resetBtn.className = 'inkchapter-reset-level-btn'
-    resetBtn.onclick = () => {
-      this.numberingService.resetLevelStyle(lv)
-      this.refreshUI()
-      this.updateMiniPreview(lv)
-    }
-    resetRow.appendChild(resetBtn)
   }
 
-  /** Get a preview label for a single level using the unified engine. */
-  private computeMiniPreview(lv: HeadingLevel, s: HeadingNumberingSettings): string {
-    if (!s?.levels) return ''
-    if (!s.enabled) return '（已关闭）'
-    if (lv === 1 && !s.showLevelOneNumber) return '（已隐藏）'
-
-    // Use the unified engine with a single synthetic heading
-    const single: HeadingDescriptor[] = [{ key: `mini-h${lv}`, level: lv, text: '' }]
-    const numbered = computeHeadingNumbering(single, s)
-    const item = numbered.find((h) => h.level === lv)
-    return item?.label || ''
+  private renderInsertSlot(fmtEl: HTMLElement, insertIdx: number, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
+    const slot = el('div', 'inkchapter-format-slot', fmtEl)
+    slot.setAttribute('data-insert-index', String(insertIdx))
+    // Add click handler via parent event delegation is simpler, but for now direct:
+    slot.onclick = (e) => {
+      e.stopPropagation()
+      // Open a simple prompt-style insert menu
+      const action = prompt('输入要插入的文字 (或留空取消):')
+      if (action) {
+        const newFmt = [...style.format]
+        newFmt.splice(insertIdx, 0, { type: 'literal' as const, value: sanitize(action) })
+        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        this.onshow()
+      }
+    }
   }
 
-  private updateMiniPreview(lv: HeadingLevel): void {
-    const el = this.miniPreviewEls.get(lv)
-    if (!el) return
-    const s = this.headingSettings
-    el.textContent = this.computeMiniPreview(lv, s)
+  private renderLevelRefChip(fmtEl: HTMLElement, idx: number, seg: { type: 'level-reference'; level: number }, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
+    const chip = el('div', 'inkchapter-format-chip', fmtEl)
+    chip.textContent = `[级别${seg.level}]`
+    chip.draggable = true
+    chip.setAttribute('data-format-index', String(idx))
+
+    // Close button
+    const close = el('span', 'inkchapter-format-chip-close', chip)
+    close.textContent = ' ×'
+    close.onclick = (e) => {
+      e.stopPropagation()
+      if (seg.level === lv) return // current level reference cannot be deleted
+      const newFmt = style.format.filter((_, i) => i !== idx)
+      this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+      this.onshow()
+    }
+
+    // Drag handling
+    chip.ondragstart = (e) => {
+      e.dataTransfer?.setData('text/plain', String(idx))
+      chip.style.opacity = '0.5'
+    }
+    chip.ondragend = () => {
+      chip.style.opacity = '1'
+      // Clear all drop indicators
+      fmtEl.querySelectorAll('.inkchapter-format-drop-indicator').forEach(el => el.remove())
+    }
+  }
+
+  private renderLiteralChip(fmtEl: HTMLElement, idx: number, seg: { type: 'literal'; value: string }, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
+    const chip = el('div', 'inkchapter-format-chip', fmtEl)
+    chip.textContent = seg.value || '(空)'
+    chip.draggable = true
+    chip.setAttribute('data-format-index', String(idx))
+
+    const close = el('span', 'inkchapter-format-chip-close', chip)
+    close.textContent = ' ×'
+    close.onclick = (e) => {
+      e.stopPropagation()
+      const newFmt = style.format.filter((_, i) => i !== idx)
+      this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+      this.onshow()
+    }
+
+    chip.ondragstart = (e) => {
+      e.dataTransfer?.setData('text/plain', String(idx))
+      chip.style.opacity = '0.5'
+    }
+    chip.ondragend = () => {
+      chip.style.opacity = '1'
+      fmtEl.querySelectorAll('.inkchapter-format-drop-indicator').forEach(el => el.remove())
+    }
+  }
+
+  private renderFullPreviewInContainer(s: HeadingNumberingSettings, container: HTMLElement): void {
+    container.textContent = ''
+    if (!s?.levels) return
+    if (!s.enabled) {
+      container.textContent = '标题编号当前已关闭'
+      return
+    }
+    const synthetic: import('../heading-numbering/heading-types').HeadingDescriptor[] = HEADING_LEVELS.map((lv) => ({
+      key: `editor-prev-h${lv}`,
+      level: lv,
+      text: `${lv}级标题示例`,
+    }))
+    const numbered = computeHeadingNumbering(synthetic, s)
+    for (const item of numbered) {
+      const lv = item.level as HeadingLevel
+
+      // H1 hidden: keep row but without number
+      if (!s.showLevelOneNumber && lv === 1) {
+        const row = el('div', 'inkchapter-preview-row', container)
+        const label = el('span', 'inkchapter-preview-label', row)
+        label.textContent = `H${lv} `
+        const token = el('span', 'inkchapter-preview-token', row)
+        token.textContent = '一级标题示例'
+        continue
+      }
+
+      const row = el('div', 'inkchapter-preview-row', container)
+      const label = el('span', 'inkchapter-preview-label', row)
+      label.textContent = `H${lv} `
+      const token = el('span', 'inkchapter-preview-token', row)
+      token.textContent = item.label || '（无编号）'
+    }
   }
 
   // ── Custom panel inline helpers ──────────────────
@@ -619,4 +653,13 @@ function buildAdvancedSummary(style: HeadingLevelStyle): string {
   else parts.push('全文连续编号')
   if (style.legalStyle) parts.push('父级阿拉伯数字')
   return parts.join(' · ')
+}
+
+function formatSummary(format: readonly NumberFormatSegment[], tokenStyle?: string): string {
+  if (!format || format.length === 0) return '（默认格式）'
+  const parts = format.map(seg => {
+    if (seg.type === 'literal') return seg.value || '(空)'
+    return `[L${seg.level}]`
+  })
+  return parts.join('') + (tokenStyle ? ` · ${tokenStyle}` : '')
 }

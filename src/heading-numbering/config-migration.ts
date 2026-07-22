@@ -12,7 +12,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
 
 // ── Validation helpers ─────────────────────────────────
 
@@ -49,6 +49,7 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       startAt: 1,
       restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
       legalStyle: false,
+      format: [],
     }
   }
   return ls
@@ -68,6 +69,71 @@ function validateRestartAfterLevel(raw: unknown, currentLevel: HeadingLevel): He
 function validateLegalStyle(raw: unknown): boolean {
   if (typeof raw === 'boolean') return raw
   return false
+}
+
+/**
+ * Validate and normalize a format array.
+ * Ensures: current-level reference exists exactly once, no future references,
+ * no duplicate references, safe literal values.
+ */
+function normalizeFormat(raw: unknown, currentLevel: HeadingLevel): import('./heading-types').NumberFormatSegment[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return generateFormatFromLegacy(currentLevel, true, '', '', '.')
+  }
+  const cleaned: import('./heading-types').NumberFormatSegment[] = []
+  const seenLevels = new Set<number>()
+
+  for (const seg of raw) {
+    if (!seg || typeof seg !== 'object') continue
+    if ((seg as any).type === 'literal') {
+      const val = typeof (seg as any).value === 'string' ? sanitizeFormatString((seg as any).value) : ''
+      cleaned.push({ type: 'literal', value: val })
+    } else if ((seg as any).type === 'level-reference') {
+      const lv = Number((seg as any).level)
+      if (isNaN(lv) || lv < 1 || lv > 6) continue
+      if (lv > currentLevel) continue // no future references
+      if (seenLevels.has(lv)) continue // no duplicates
+      seenLevels.add(lv)
+      cleaned.push({ type: 'level-reference', level: lv as HeadingLevel })
+    }
+  }
+
+  // Ensure current-level reference exists
+  if (!seenLevels.has(currentLevel)) {
+    cleaned.push({ type: 'level-reference', level: currentLevel })
+  }
+
+  return cleaned
+}
+
+function sanitizeFormatString(val: string): string {
+  return val.replace(/<\d\x00-\x1f\x7f>/g, '').replace(/\n/g, '').slice(0, 32)
+}
+
+/**
+ * Generate format from legacy includeParents/prefix/suffix/separator.
+ */
+function generateFormatFromLegacy(
+  lv: HeadingLevel,
+  includeParents: boolean,
+  prefix: string,
+  suffix: string,
+  separator: string,
+): import('./heading-types').NumberFormatSegment[] {
+  const fmt: import('./heading-types').NumberFormatSegment[] = []
+  if (prefix) fmt.push({ type: 'literal', value: prefix })
+
+  if (includeParents) {
+    for (let i = 1; i <= lv; i++) {
+      if (i > 1) fmt.push({ type: 'literal', value: separator })
+      fmt.push({ type: 'level-reference', level: i as HeadingLevel })
+    }
+  } else {
+    fmt.push({ type: 'level-reference', level: lv })
+  }
+
+  if (suffix) fmt.push({ type: 'literal', value: suffix })
+  return fmt
 }
 
 /**
@@ -125,6 +191,7 @@ function migrateLegacyLevels(
       startAt: validateStartAt((old as any).startAt),
       restartAfterLevel: validateRestartAfterLevel((old as any).restartAfterLevel, lv),
       legalStyle: validateLegalStyle((old as any).legalStyle),
+      format: normalizeFormat((old as any).format ?? (old as any).formatSegments, lv),
     }
   }
   return levels
@@ -190,6 +257,7 @@ function doMigrate(
           startAt: validateStartAt((storedLevel as any).startAt),
           restartAfterLevel: validateRestartAfterLevel((storedLevel as any).restartAfterLevel, lv),
           legalStyle: validateLegalStyle((storedLevel as any).legalStyle),
+          format: normalizeFormat((storedLevel as any).format, lv),
         }
       }
     }
@@ -216,6 +284,7 @@ function doMigrate(
           startAt: validateStartAt((sd as any).startAt),
           restartAfterLevel: validateRestartAfterLevel((sd as any).restartAfterLevel, lv),
           legalStyle: validateLegalStyle((sd as any).legalStyle),
+          format: normalizeFormat((sd as any).format, lv),
         }
       }
     }
