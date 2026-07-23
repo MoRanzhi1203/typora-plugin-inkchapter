@@ -1,4 +1,4 @@
-import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, NumberFormatSegment, NumberTokenStyle } from './heading-types'
+import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, NumberFormatSegment, NumberTokenStyle, HeadingFormatVariants } from './heading-types'
 import { HEADING_LEVELS } from './heading-types'
 
 // ── Preset metadata ──────────────────────────────────────
@@ -43,7 +43,67 @@ export const PRESETS: Record<Exclude<HeadingNumberingPreset, 'custom'>, PresetMe
   },
 }
 
-// ── Preset builders ──────────────────────────────────────
+// ── Variant helpers ─────────────────────────────────────
+
+/** Generate "withoutLevelOne" by stripping all [L1] refs and orphaned separators. */
+function stripLevelOne(format: NumberFormatSegment[]): NumberFormatSegment[] {
+  const hidden = new Set<HeadingLevel>([1 as HeadingLevel])
+  return stripHiddenLevelReferences(format, hidden, format.length > 0 ? (format[format.length - 1] as any)?.level ?? 1 : 1)
+}
+
+function stripHiddenLevelReferences(
+  format: NumberFormatSegment[],
+  hiddenLevels: Set<HeadingLevel>,
+  currentLevel: HeadingLevel,
+): NumberFormatSegment[] {
+  const SEP = new Set(['.', '-', '_', '、', '，', ',', ':', '：', '/', '\\', '·', ' '])
+  const isSep = (v: string) => [...v.trim()].every(c => SEP.has(c)) || v.trim() === ''
+
+  const result: NumberFormatSegment[] = []
+  for (let i = 0; i < format.length; i++) {
+    const seg = format[i]
+    if (seg.type === 'level-reference' && hiddenLevels.has(seg.level)) {
+      if (result.length > 0 && result[result.length - 1].type === 'literal') {
+        const lastLiteral = result[result.length - 1] as { type: 'literal'; value: string }
+        if (isSep(lastLiteral.value)) result.pop()
+      }
+      while (i + 1 < format.length && format[i + 1].type === 'literal') {
+        const nextLiteral = format[i + 1] as { type: 'literal'; value: string }
+        if (!isSep(nextLiteral.value)) break
+        i++
+      }
+      continue
+    }
+    result.push({ ...seg })
+  }
+
+  while (result.length > 0 && result[0].type === 'literal') {
+    const first = result[0] as { type: 'literal'; value: string }
+    if (!isSep(first.value)) break
+    result.shift()
+  }
+  while (result.length > 0 && result[result.length - 1].type === 'literal') {
+    const last = result[result.length - 1] as { type: 'literal'; value: string }
+    if (!isSep(last.value)) break
+    result.pop()
+  }
+
+  const merged: NumberFormatSegment[] = []
+  for (const seg of result) {
+    if (seg.type === 'literal' && merged.length > 0 && merged[merged.length - 1].type === 'literal') {
+      const last = merged[merged.length - 1] as { type: 'literal'; value: string }
+      last.value += (seg as { type: 'literal'; value: string }).value
+    } else {
+      merged.push({ ...seg })
+    }
+  }
+
+  if (!merged.some(s => s.type === 'level-reference' && s.level === currentLevel)) {
+    merged.push({ type: 'level-reference', level: currentLevel })
+  }
+
+  return merged.length > 0 ? merged : [{ type: 'level-reference', level: currentLevel }]
+}
 
 function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyle>): HeadingLevelStyle {
   return {
@@ -56,63 +116,73 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
     startAt: 1,
     restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
     legalStyle: false,
-    format: [],
+    formatVariants: { withLevelOne: [], withoutLevelOne: [] },
     ...overrides,
   }
 }
 
+/** Build hierarchical format [L1].[L2]...[Llevel] with given separator */
+function buildHierarchical(level: HeadingLevel, sep: string): NumberFormatSegment[] {
+  const fmt: NumberFormatSegment[] = []
+  for (let i = 1; i <= level; i++) {
+    if (i > 1) fmt.push({ type: 'literal', value: sep })
+    fmt.push({ type: 'level-reference', level: i as HeadingLevel })
+  }
+  return fmt
+}
+
+/** Build a level style with both format variants */
+function buildVariants(
+  lv: HeadingLevel,
+  withLevelOne: NumberFormatSegment[],
+  overrides: Partial<HeadingLevelStyle> = {},
+): HeadingLevelStyle {
+  return defaultLevelStyle(lv, {
+    ...overrides,
+    formatVariants: {
+      withLevelOne,
+      withoutLevelOne: stripLevelOne([...withLevelOne]),
+    },
+  })
+}
+
+// ── Preset builders ──────────────────────────────────────
+
 function buildDecimal(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    const fmt: NumberFormatSegment[] = []
-    for (let i = 1; i <= lv; i++) {
-      if (i > 1) fmt.push({ type: 'literal', value: '.' })
-      fmt.push({ type: 'level-reference', level: i as HeadingLevel })
-    }
-    levels[lv] = defaultLevelStyle(lv, { tokenStyle: 'arabic', format: fmt })
+    levels[lv] = buildVariants(lv, buildHierarchical(lv, '.'), { tokenStyle: 'arabic' })
   }
   return levels
 }
 
 function buildChineseChapter(): Record<HeadingLevel, HeadingLevelStyle> {
-  function fmt(lv: HeadingLevel, format: NumberFormatSegment[]): HeadingLevelStyle {
-    return defaultLevelStyle(lv, { includeParents: false, format })
-  }
   return {
-    1: fmt(1, [{ type: 'literal', value: '第' }, { type: 'level-reference', level: 1 }, { type: 'literal', value: '章' }]),
-    2: fmt(2, [{ type: 'literal', value: '第' }, { type: 'level-reference', level: 2 }, { type: 'literal', value: '节' }]),
-    3: fmt(3, [{ type: 'level-reference', level: 3 }, { type: 'literal', value: '、' }]),
-    4: fmt(4, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 4 }, { type: 'literal', value: '）' }]),
-    5: fmt(5, [{ type: 'level-reference', level: 5 }, { type: 'literal', value: '.' }]),
-    6: fmt(6, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 6 }, { type: 'literal', value: '）' }]),
+    1: buildVariants(1, [{ type: 'literal', value: '第' }, { type: 'level-reference', level: 1 }, { type: 'literal', value: '章' }], { includeParents: false }),
+    2: buildVariants(2, [{ type: 'literal', value: '第' }, { type: 'level-reference', level: 2 }, { type: 'literal', value: '节' }], { includeParents: false }),
+    3: buildVariants(3, [{ type: 'level-reference', level: 3 }, { type: 'literal', value: '、' }], { includeParents: false }),
+    4: buildVariants(4, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 4 }, { type: 'literal', value: '）' }], { includeParents: false }),
+    5: buildVariants(5, [{ type: 'level-reference', level: 5 }, { type: 'literal', value: '.' }], { includeParents: false }),
+    6: buildVariants(6, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 6 }, { type: 'literal', value: '）' }], { includeParents: false }),
   }
 }
 
 function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
-  function fmt(lv: HeadingLevel, format: NumberFormatSegment[], tokenStyle: NumberTokenStyle): HeadingLevelStyle {
-    return defaultLevelStyle(lv, { includeParents: false, tokenStyle, format })
-  }
   return {
-    1: fmt(1, [{ type: 'level-reference', level: 1 }, { type: 'literal', value: '、' }], 'chinese'),
-    2: fmt(2, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 2 }, { type: 'literal', value: '）' }], 'chinese'),
-    3: fmt(3, [{ type: 'level-reference', level: 3 }, { type: 'literal', value: '.' }], 'arabic'),
-    4: fmt(4, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 4 }, { type: 'literal', value: '）' }], 'arabic'),
-    5: fmt(5, [{ type: 'level-reference', level: 5 }], 'circled'),
-    6: fmt(6, [{ type: 'level-reference', level: 6 }, { type: 'literal', value: '.' }], 'alpha-upper'),
+    1: buildVariants(1, [{ type: 'level-reference', level: 1 }, { type: 'literal', value: '、' }], { includeParents: false, tokenStyle: 'chinese' }),
+    2: buildVariants(2, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 2 }, { type: 'literal', value: '）' }], { includeParents: false, tokenStyle: 'chinese' }),
+    3: buildVariants(3, [{ type: 'level-reference', level: 3 }, { type: 'literal', value: '.' }], { includeParents: false, tokenStyle: 'arabic' }),
+    4: buildVariants(4, [{ type: 'literal', value: '（' }, { type: 'level-reference', level: 4 }, { type: 'literal', value: '）' }], { includeParents: false, tokenStyle: 'arabic' }),
+    5: buildVariants(5, [{ type: 'level-reference', level: 5 }], { includeParents: false, tokenStyle: 'circled' }),
+    6: buildVariants(6, [{ type: 'level-reference', level: 6 }, { type: 'literal', value: '.' }], { includeParents: false, tokenStyle: 'alpha-upper' }),
   }
 }
 
 function buildRoman(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    const fmt: NumberFormatSegment[] = []
-    for (let i = 1; i <= lv; i++) {
-      if (i > 1) fmt.push({ type: 'literal', value: '.' })
-      fmt.push({ type: 'level-reference', level: i as HeadingLevel })
-    }
-    levels[lv] = defaultLevelStyle(lv, {
+    levels[lv] = buildVariants(lv, buildHierarchical(lv, '.'), {
       tokenStyle: lv === 1 ? 'roman-upper' : 'arabic',
-      format: fmt,
     })
   }
   return levels

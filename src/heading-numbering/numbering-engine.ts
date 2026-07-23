@@ -5,6 +5,7 @@ import type {
   HeadingNumberingSettings,
   NumberedHeading,
   NumberFormatSegment,
+  HeadingFormatVariants,
 } from './heading-types'
 import { formatToken } from './token-formatter'
 
@@ -109,8 +110,9 @@ function buildLabel(
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
 
-  // ── Format-based label (schemaVersion >= 4) ──────
-  if (style.format && style.format.length > 0) {
+  // ── Format-based label (schemaVersion >= 5) ──────
+  const activeVariant = getActiveFormatVariant(style, !skipH1, headingLevel)
+  if (activeVariant && activeVariant.length > 0) {
     return buildLabelFromFormat(activeCounters, levelStyles, skipH1, headingLevel, style)
   }
 
@@ -146,9 +148,68 @@ function buildLabelFromFormat(
   headingLevel: HeadingLevel,
   style: HeadingLevelStyle,
 ): string {
-  // Get effective format (strips hidden levels and orphaned separators)
-  const effectiveFormat = getEffectiveFormatForLevel(style.format, skipH1, headingLevel)
+  // Get active format variant for current H1 visibility
+  const activeFormat = getActiveFormatVariant(style, !skipH1, headingLevel)
+  // Safety: still strip hidden refs as defense-in-depth
+  const effectiveFormat = getEffectiveFormatForLevel(activeFormat, skipH1, headingLevel)
   return evaluateFormat(effectiveFormat, activeCounters, levelStyles, headingLevel, style)
+}
+
+// ── Format variant helpers ─────────────────────────────
+
+/**
+ * Get the active format variant for the current H1 visibility state.
+ * - H1 always returns withLevelOne
+ * - H2-H6: withLevelOne when H1 visible, withoutLevelOne when H1 hidden
+ */
+export function getActiveFormatVariant(
+  style: HeadingLevelStyle,
+  showLevelOneNumber: boolean,
+  level: HeadingLevel,
+): readonly NumberFormatSegment[] {
+  if (level === 1) {
+    return style.formatVariants.withLevelOne
+  }
+  return showLevelOneNumber
+    ? style.formatVariants.withLevelOne
+    : style.formatVariants.withoutLevelOne
+}
+
+/**
+ * Update the active format variant, keeping the other variant untouched.
+ * Returns a new style object with the updated variant.
+ */
+export function updateActiveFormatVariant(
+  style: HeadingLevelStyle,
+  level: HeadingLevel,
+  showLevelOneNumber: boolean,
+  nextFormat: readonly NumberFormatSegment[],
+): HeadingLevelStyle {
+  if (level === 1) {
+    return {
+      ...style,
+      formatVariants: {
+        ...style.formatVariants,
+        withLevelOne: [...nextFormat],
+      },
+    }
+  }
+  if (showLevelOneNumber) {
+    return {
+      ...style,
+      formatVariants: {
+        ...style.formatVariants,
+        withLevelOne: [...nextFormat],
+      },
+    }
+  }
+  return {
+    ...style,
+    formatVariants: {
+      ...style.formatVariants,
+      withoutLevelOne: [...nextFormat],
+    },
+  }
 }
 
 /** Evaluate a pre-processed format array into a label string. */

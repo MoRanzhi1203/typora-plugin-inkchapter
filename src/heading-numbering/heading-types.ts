@@ -34,6 +34,12 @@ export type NumberFormatSegment =
   | { type: 'literal'; value: string }
   | { type: 'level-reference'; level: HeadingLevel }
 
+/** Dual format storage: with H1 visible, and with H1 hidden. (schemaVersion >= 5) */
+export interface HeadingFormatVariants {
+  withLevelOne: NumberFormatSegment[]
+  withoutLevelOne: NumberFormatSegment[]
+}
+
 export interface HeadingLevelStyle {
   /** Whether this level shows a number. false = empty token. */
   enabled: boolean
@@ -53,8 +59,10 @@ export interface HeadingLevelStyle {
   restartAfterLevel: HeadingLevel | null
   /** Convert parent-level number tokens to arabic (current level keeps its own style). */
   legalStyle: boolean
-  /** Format template: ordered segments defining the label structure (schemaVersion >= 4). */
-  format: readonly NumberFormatSegment[]
+  /** Dual-format variants for H1 on/off. (schemaVersion >= 5) */
+  formatVariants: HeadingFormatVariants
+  /** Legacy single format (schemaVersion < 5). Only used during migration, not at runtime. */
+  format?: NumberFormatSegment[]
 }
 
 // ── Settings ─────────────────────────────────────────────
@@ -109,14 +117,6 @@ export interface DiffResult {
   repaired: number
   updated: number
   removed: number
-}
-
-/** Backup for custom H2-H6 formats when H1 numbering is hidden. */
-export interface HiddenLevelOneFormatBackup {
-  /** The format each level had before H1 was turned off. */
-  formats: Partial<Record<HeadingLevel, readonly NumberFormatSegment[]>>
-  /** Levels that were edited while H1 was hidden (should keep current format on restore). */
-  editedWhileHidden: Partial<Record<HeadingLevel, boolean>>
 }
 
 export const HEADING_LEVELS: readonly HeadingLevel[] = [1, 2, 3, 4, 5, 6]

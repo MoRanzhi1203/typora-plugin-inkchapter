@@ -20,7 +20,7 @@ import {
   createDebugLog,
 } from '../heading-numbering/format-drag-utils'
 import type { DragState } from '../heading-numbering/format-drag-utils'
-import { computeHeadingNumbering, getAvailableReferenceLevels, getEffectiveFormatForLevel } from '../heading-numbering/numbering-engine'
+import { computeHeadingNumbering, getAvailableReferenceLevels, getEffectiveFormatForLevel, getActiveFormatVariant } from '../heading-numbering/numbering-engine'
 import { PRESET_LIST } from '../heading-numbering/presets'
 
 const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string }[] = [
@@ -409,6 +409,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
         }
       }
 
+      // Mode indicator for H2-H6
+      if (lv > 1) {
+        const modeEl = el('div', 'inkchapter-custom-h1-subnotice', editorSection)
+        modeEl.textContent = h1Visible
+          ? '正在编辑：一级标题编号开启时的格式'
+          : '正在编辑：一级标题编号关闭时的格式'
+        const noteEl = el('div', 'inkchapter-custom-h1-subnotice', editorSection)
+        noteEl.textContent = '两种格式分别保存，切换后不会相互覆盖。'
+      }
+
       // Format editor header
       const fmtHeader = el('div', 'inkchapter-format-header', editorSection)
       fmtHeader.textContent = `H${lv} 编号格式`
@@ -417,22 +427,25 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const fmtContainer = el('div', 'inkchapter-format-container', editorSection)
       const fmtEl = el('div', 'inkchapter-format-chips', fmtContainer)
 
+      // Get active format variant for current H1 visibility
+      const activeFmt = getActiveFormatVariant(style, s.showLevelOneNumber, lv)
+
       // Container-level pointer delegation (disabled for H1 when hidden)
       if (!isH1Disabled) {
         this.setupDragDelegation(fmtEl, lv, style)
       }
 
       // Insert slot at start
-      this.renderInsertSlot(fmtEl, 0, lv, style, isH1Disabled)
+      this.renderInsertSlot(fmtEl, 0, lv, activeFmt, isH1Disabled)
 
-      for (let i = 0; i < style.format.length; i++) {
-        const seg = style.format[i]
+      for (let i = 0; i < activeFmt.length; i++) {
+        const seg = activeFmt[i]
         if (seg.type === 'level-reference') {
-          this.renderLevelRefChip(fmtEl, i, seg, lv, style, isH1Disabled)
+          this.renderLevelRefChip(fmtEl, i, seg, lv, activeFmt, isH1Disabled)
         } else {
-          this.renderLiteralChip(fmtEl, i, seg, lv, style, isH1Disabled)
+          this.renderLiteralChip(fmtEl, i, seg, lv, activeFmt, isH1Disabled)
         }
-        this.renderInsertSlot(fmtEl, i + 1, lv, style, isH1Disabled)
+        this.renderInsertSlot(fmtEl, i + 1, lv, activeFmt, isH1Disabled)
       }
 
       // ── Insert controls ───────────────────────────
@@ -450,8 +463,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
         textBtn.onclick = () => {
           const val = textInput.value
           if (val) {
-            const newFmt = [...style.format, { type: 'literal' as const, value: sanitize(val) }]
-            this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+            const cur = getActiveFormatVariant(style, s.showLevelOneNumber, lv)
+            const newFmt = [...cur, { type: 'literal' as const, value: sanitize(val) }]
+            this.numberingService.updateActiveFormat(lv, newFmt)
             this.onshow()
           }
         }
@@ -483,8 +497,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
         refBtn.onclick = () => {
           const refLv = Number(levelSelect.value) as HeadingLevel
           if (!refLv || refLv < 1 || refLv > 6) return
-          const newFmt = [...style.format, { type: 'level-reference' as const, level: refLv }]
-          this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+          const cur = getActiveFormatVariant(style, s.showLevelOneNumber, lv)
+          const newFmt = [...cur, { type: 'level-reference' as const, level: refLv }]
+          this.numberingService.updateActiveFormat(lv, newFmt)
           this.onshow()
         }
       }
@@ -527,7 +542,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
       // Format summary
       const summary = el('div', 'inkchapter-advanced-summary', settingsSection)
-      const effFmt = getEffectiveFormatForLevel(style.format, !s.showLevelOneNumber, lv)
+      const effFmt = getEffectiveFormatForLevel(activeFmt, !s.showLevelOneNumber, lv)
       summary.textContent = formatSummary(effFmt, style.tokenStyle)
     }
   }
@@ -640,7 +655,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
-    const before = [...style.format]
+    const s = this.headingSettings
+    const before = [...getActiveFormatVariant(style, s.showLevelOneNumber, lv)]
     const draggingIdx = ds.draggingIndex
     const targetIdx = ds.targetIndexAfterRemoval
 
@@ -651,7 +667,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
 
-    const s = this.headingSettings
     const hiddenLevels = new Set<HeadingLevel>()
     if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
 
@@ -665,7 +680,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     this.cancelDrag('commit')
 
-    this.numberingService.updateLevelStyle(lv, { format: after } as any)
+    this.numberingService.updateActiveFormat(lv, after)
     this.onshow()
   }
 
@@ -729,7 +744,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private renderInsertSlot(
     fmtEl: HTMLElement, insertIdx: number, lv: HeadingLevel,
-    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+    activeFmt: readonly NumberFormatSegment[],
     disabled = false,
   ): void {
     const slot = el('div', 'inkchapter-format-slot', fmtEl)
@@ -744,9 +759,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       e.stopPropagation()
       const action = prompt('输入要插入的文字 (或留空取消):')
       if (action) {
-        const newFmt = [...style.format]
+        const newFmt = [...activeFmt]
         newFmt.splice(insertIdx, 0, { type: 'literal' as const, value: sanitize(action) })
-        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        this.numberingService.updateActiveFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -755,7 +770,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private renderLevelRefChip(
     fmtEl: HTMLElement, idx: number,
     seg: { type: 'level-reference'; level: number }, lv: HeadingLevel,
-    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+    activeFmt: readonly NumberFormatSegment[],
     disabled = false,
   ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
@@ -773,8 +788,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       close.textContent = ' ×'
       close.onclick = (e) => {
         e.stopPropagation()
-        const newFmt = style.format.filter((_, i) => i !== idx)
-        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        const newFmt = activeFmt.filter((_, i) => i !== idx)
+        this.numberingService.updateActiveFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -783,7 +798,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private renderLiteralChip(
     fmtEl: HTMLElement, idx: number,
     seg: { type: 'literal'; value: string }, lv: HeadingLevel,
-    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+    activeFmt: readonly NumberFormatSegment[],
     disabled = false,
   ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
@@ -800,8 +815,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       close.textContent = ' ×'
       close.onclick = (e) => {
         e.stopPropagation()
-        const newFmt = style.format.filter((_, i) => i !== idx)
-        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        const newFmt = activeFmt.filter((_, i) => i !== idx)
+        this.numberingService.updateActiveFormat(lv, newFmt)
         this.onshow()
       }
     }
