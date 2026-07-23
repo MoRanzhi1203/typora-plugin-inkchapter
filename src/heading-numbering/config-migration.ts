@@ -13,7 +13,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 5
+const CURRENT_SCHEMA_VERSION = 6
 
 // ── Validation helpers ─────────────────────────────────
 
@@ -49,7 +49,6 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       separator: '.',
       startAt: 1,
       restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
-      legalStyle: false,
       formatVariants: { withLevelOne: [], withoutLevelOne: [] },
     }
   }
@@ -67,12 +66,7 @@ function validateRestartAfterLevel(raw: unknown, currentLevel: HeadingLevel): He
   return currentLevel === 1 ? null : (currentLevel - 1) as HeadingLevel
 }
 
-function validateLegalStyle(raw: unknown): boolean {
-  if (typeof raw === 'boolean') return raw
-  return false
-}
-
-// ── Format migration (v4 → v5) ─────────────────────
+// ── Format migration (v5 → v6) ─────────────────────
 
 /**
  * Generate formatVariants from a stored level style.
@@ -230,7 +224,6 @@ function migrateLegacyLevels(
       separator: typeof old.separator === 'string' ? old.separator : '.',
       startAt: validateStartAt((old as any).startAt),
       restartAfterLevel: validateRestartAfterLevel((old as any).restartAfterLevel, lv),
-      legalStyle: validateLegalStyle((old as any).legalStyle),
       formatVariants: variants.formatVariants,
     }
   }
@@ -293,7 +286,6 @@ function doMigrate(
           separator: typeof stored.separator === 'string' ? stored.separator : '.',
           startAt: validateStartAt(stored.startAt),
           restartAfterLevel: validateRestartAfterLevel(stored.restartAfterLevel, lv),
-          legalStyle: validateLegalStyle(stored.legalStyle),
           formatVariants: variants.formatVariants,
         }
       }
@@ -321,7 +313,6 @@ function doMigrate(
           separator: typeof sdObj.separator === 'string' ? sanitizeString(sdObj.separator, '.') : '.',
           startAt: validateStartAt(sdObj.startAt),
           restartAfterLevel: validateRestartAfterLevel(sdObj.restartAfterLevel, lv),
-          legalStyle: validateLegalStyle(sdObj.legalStyle),
           formatVariants: variants.formatVariants,
         }
       }
