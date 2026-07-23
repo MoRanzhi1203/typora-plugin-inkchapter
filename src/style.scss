@@ -343,6 +343,29 @@
   border-color: var(--text-accent, #07a);
 }
 
+.is-h1-numbering-disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inkchapter-level-status-tag {
+  font-size: 0.75em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: var(--background-modifier-border, #e0e0e0);
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+.inkchapter-custom-h1-subnotice {
+  font-size: 0.8em;
+  color: var(--text-muted, #999);
+  margin-bottom: 6px;
+}
+
 .inkchapter-editor-right {
   flex: 1;
   min-width: 0;
@@ -406,6 +429,13 @@
 .inkchapter-format-chip--dragging {
   opacity: 0.45;
   transform: scale(0.95);
+}
+
+.inkchapter-format-chip--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: var(--background-secondary, #f0f0f0);
+  border-style: dashed;
 }
 
 .inkchapter-format-chip-close {
