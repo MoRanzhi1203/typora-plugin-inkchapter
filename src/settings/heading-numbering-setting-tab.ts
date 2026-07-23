@@ -18,7 +18,6 @@ import {
   normalizeFormatAfterDrag,
   createDragState,
   createDebugLog,
-  formatSegmentsToString,
 } from '../heading-numbering/format-drag-utils'
 import type { DragState } from '../heading-numbering/format-drag-utils'
 import { computeHeadingNumbering, getAvailableReferenceLevels, getEffectiveFormatForLevel } from '../heading-numbering/numbering-engine'
@@ -42,8 +41,8 @@ const PRESET_CARDS: { key: HeadingNumberingPreset; name: string; desc: string; p
   { key: 'custom', name: '自定义', desc: '按 H1-H6 分别配置', previewLines: [] },
 ]
 
-const DRAG_THRESHOLD = 4 // px, Euclidean distance to start dragging
-const DEBUG_DRAG = false // Set true for verbose drag logs
+const DRAG_THRESHOLD = 4
+const DEBUG_DRAG = false
 
 export class HeadingNumberingSettingTab extends SettingTab {
   get name(): string {
@@ -55,7 +54,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private expandedLevel: HeadingLevel | null = null
   private selectEl: HTMLSelectElement | null = null
 
-  // ── Pointer-based drag state ──────────────────────
+  // ── H1 sync ──────────────────────────────────────
+  private globalH1Toggle: HTMLInputElement | null = null
+  private syncingLevelOneUi = false
+  private unsubSettings: (() => void) | null = null
+
+  // ── Drag ─────────────────────────────────────────
   private dragState: DragState | null = null
 
   constructor(
@@ -70,6 +74,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
     while (this.containerEl.firstChild) {
       this.containerEl.removeChild(this.containerEl.firstChild)
     }
+    // Subscribe to external settings changes (F1 commands, etc.)
+    if (!this.unsubSettings) {
+      this.unsubSettings = this.numberingService.onSettingsChanged(() => {
+        this.syncFromExternalChange()
+      })
+    }
     try {
       this.render()
     } catch (e) {
@@ -81,9 +91,62 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  /** Clean up drag state when settings tab is closed. */
   onhide(): void {
     this.cancelDrag()
+    if (this.unsubSettings) {
+      this.unsubSettings()
+      this.unsubSettings = null
+    }
+  }
+
+  // ── H1 visibility: unified entry point ───────────
+
+  /**
+   * Apply level-one numbering visibility change from any source.
+   * This is the single entry point for all H1 toggle operations.
+   */
+  private async applyLevelOneVisibility(
+    enabled: boolean,
+    source: 'global-toggle' | 'h1-panel' | 'command' | 'settings-load',
+  ): Promise<void> {
+    const s = this.headingSettings
+    if (s.showLevelOneNumber === enabled) return // no-op
+
+    // Cancel any active drag on H1 tags
+    this.cancelDrag('h1-visibility-changed')
+
+    // Persist via service (single write)
+    this.numberingService.setShowLevelOneNumber(enabled)
+
+    // Sync UI controls
+    this.syncLevelOneControls(enabled)
+
+    // Update preview and document
+    this.refreshUI()
+  }
+
+  /** Sync both checkboxes and UI state without triggering events. */
+  private syncLevelOneControls(enabled: boolean): void {
+    this.syncingLevelOneUi = true
+    try {
+      if (this.globalH1Toggle) {
+        this.globalH1Toggle.checked = enabled
+      }
+    } finally {
+      this.syncingLevelOneUi = false
+    }
+  }
+
+  /**
+   * Called when settings change externally (F1 command, service API, etc.).
+   * Re-syncs the UI without re-rendering the entire page.
+   */
+  private syncFromExternalChange(): void {
+    const s = this.headingSettings
+    this.syncLevelOneControls(s.showLevelOneNumber)
+    // Re-render to reflect H1 panel state
+    this.cancelDrag('settings-changed')
+    this.onshow()
   }
 
   private get headingSettings() {
@@ -119,18 +182,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
       })
     })
 
-    // Show level one toggle (H1 开关)
+    // Show level one toggle (global H1 switch)
     this.addSetting((setting) => {
       setting.addName('一级标题显示编号')
       setting.addDescription('关闭时 H1 不显示编号，H2 从 1 开始计数，不暴露隐藏的 H1 编号路径。')
       setting.addCheckbox((cb) => {
+        this.globalH1Toggle = cb
         cb.checked = s.showLevelOneNumber
         cb.onclick = () => {
-          const current = { ...this.settings.get('headingNumbering') }
-          current.showLevelOneNumber = cb.checked
-          this.settings.set('headingNumbering', current)
-          this.numberingService.setShowLevelOneNumber(cb.checked)
-          this.refreshUI()
+          if (this.syncingLevelOneUi) return // cycle guard
+          this.applyLevelOneVisibility(cb.checked, 'global-toggle')
         }
       })
     })
@@ -191,7 +252,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // ── Live Preview ────────────────────────────────
     this.addSettingTitle('实时预览')
-    // Create preview element BEFORE addDescription so updatePreview can use it
     this.previewEl = el('div', 'inkchapter-preview')
     this.addSetting((setting) => {
       setting.addName('预览')
@@ -199,7 +259,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         descDiv.appendChild(this.previewEl!)
       })
     })
-    // Now previewEl is already set, safe to update
     this.updatePreview()
 
     // ── Custom section (fold panels for H1-H6) ────
@@ -212,7 +271,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  // ── Preview (unified formatter: uses same engine as document) ──
+  // ── Preview ─────────────────────────────────────
 
   private updatePreview(): void {
     if (!this.previewEl) return
@@ -222,10 +281,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (!s?.levels) return
 
     if (!s.enabled) {
-      // Total switch off: show disabled message
       const disabledMsg = el('div', 'inkchapter-preview-disabled', this.previewEl)
       disabledMsg.textContent = '标题编号当前已关闭'
-      // Also show sample H1-H6 without numbers
       for (const lv of HEADING_LEVELS) {
         const row = el('div', 'inkchapter-preview-row', this.previewEl)
         const label = el('span', 'inkchapter-preview-label', row)
@@ -236,7 +293,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
-    // Generate synthetic headings [H1, H2, ..., H6] to feed the document engine
     const syntheticHeadings: HeadingDescriptor[] = HEADING_LEVELS.map((lv) => ({
       key: `preview-h${lv}`,
       level: lv,
@@ -250,7 +306,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const style = s.levels[lv]
       if (!style?.enabled) continue
 
-      // H1 hidden: keep row but without number
       if (!s.showLevelOneNumber && lv === 1) {
         const row = el('div', 'inkchapter-preview-row', this.previewEl)
         const label = el('span', 'inkchapter-preview-label', row)
@@ -274,20 +329,20 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.updatePreview()
   }
 
-  /** Shared by card click and dropdown change. */
   private handlePresetSelect(preset: HeadingNumberingPreset): void {
     this.cancelDrag()
     this.numberingService.applyPreset(preset)
-    // Sync dropdown
     if (this.selectEl) {
       this.selectEl.value = preset
     }
-    // Re-render (rebuilds cards highlight + custom panels)
     this.onshow()
   }
 
-  /** Render Word-style editor: left level list + right preview + bottom format editor. */
+  // ── Custom panels ──────────────────────────────
+
   private renderCustomPanels(s: HeadingNumberingSettings): void {
+    const h1Visible = s.showLevelOneNumber
+
     // ── Two-column layout ──────────────────────────
     const layout = el('div', 'inkchapter-editor-layout')
     this.containerEl.appendChild(layout)
@@ -302,6 +357,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
       lvBtn.textContent = `级别${lv}`
       lvBtn.setAttribute('tabindex', '0')
       if (this.expandedLevel === lv) lvBtn.classList.add('inkchapter-editor-level-btn--selected')
+
+      // H1 disabled state indicator
+      if (lv === 1 && !h1Visible) {
+        lvBtn.classList.add('is-h1-numbering-disabled')
+        const statusTag = el('span', 'inkchapter-level-status-tag', lvBtn)
+        statusTag.textContent = '已关闭'
+        lvBtn.setAttribute('aria-disabled', 'true')
+      }
+
       lvBtn.onclick = () => {
         this.expandedLevel = this.expandedLevel === lv ? null : lv
         this.onshow()
@@ -321,15 +385,28 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const style = s.levels[lv]
       if (!style) return
 
+      const isH1Disabled = lv === 1 && !h1Visible
+
       const editorSection = el('div', 'inkchapter-editor-bottom')
       this.containerEl.appendChild(editorSection)
 
-      // H1 notice
+      // H1 notice / panel checkbox
       if (lv === 1) {
-        const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
-        h1Notice.textContent = s.showLevelOneNumber
-          ? 'H1 是否显示编号由上方「一级标题显示编号」控制。'
-          : '当前编号已隐藏'
+        if (isH1Disabled) {
+          const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
+          h1Notice.textContent = 'H1 编号当前已关闭'
+          const h1SubNotice = el('div', 'inkchapter-custom-h1-subnotice', editorSection)
+          h1SubNotice.textContent = '由上方「一级标题显示编号」控制'
+        } else {
+          const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
+          h1Notice.textContent = 'H1 显示编号（与上方同步）'
+
+          // H1 panel checkbox (synced with global)
+          this.addCustomCheckbox(editorSection, '显示 H1 编号', h1Visible, (checked) => {
+            if (this.syncingLevelOneUi) return
+            this.applyLevelOneVisibility(checked, 'h1-panel')
+          })
+        }
       }
 
       // Format editor header
@@ -340,74 +417,76 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const fmtContainer = el('div', 'inkchapter-format-container', editorSection)
       const fmtEl = el('div', 'inkchapter-format-chips', fmtContainer)
 
-      // ── Container-level pointer delegation ──────────
-      this.setupDragDelegation(fmtEl, lv, style)
+      // Container-level pointer delegation (disabled for H1 when hidden)
+      if (!isH1Disabled) {
+        this.setupDragDelegation(fmtEl, lv, style)
+      }
 
       // Insert slot at start
-      this.renderInsertSlot(fmtEl, 0, lv, style)
+      this.renderInsertSlot(fmtEl, 0, lv, style, isH1Disabled)
 
       for (let i = 0; i < style.format.length; i++) {
         const seg = style.format[i]
         if (seg.type === 'level-reference') {
-          this.renderLevelRefChip(fmtEl, i, seg, lv, style)
+          this.renderLevelRefChip(fmtEl, i, seg, lv, style, isH1Disabled)
         } else {
-          this.renderLiteralChip(fmtEl, i, seg, lv, style)
+          this.renderLiteralChip(fmtEl, i, seg, lv, style, isH1Disabled)
         }
-        // Insert slot after each segment
-        this.renderInsertSlot(fmtEl, i + 1, lv, style)
+        this.renderInsertSlot(fmtEl, i + 1, lv, style, isH1Disabled)
       }
 
       // ── Insert controls ───────────────────────────
-      const insertRow = el('div', 'inkchapter-format-insert-row', editorSection)
+      if (!isH1Disabled) {
+        const insertRow = el('div', 'inkchapter-format-insert-row', editorSection)
 
-      // Insert text
-      const textInput = document.createElement('input')
-      textInput.type = 'text'
-      textInput.placeholder = '输入文字'
-      textInput.style.width = '100px'
-      textInput.className = 'inkchapter-format-text-input'
-      const textBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
-      textBtn.textContent = '插入文字'
-      textBtn.onclick = () => {
-        const val = textInput.value
-        if (val) {
-          const newFmt = [...style.format, { type: 'literal' as const, value: sanitize(val) }]
+        // Insert text
+        const textInput = document.createElement('input')
+        textInput.type = 'text'
+        textInput.placeholder = '输入文字'
+        textInput.style.width = '100px'
+        textInput.className = 'inkchapter-format-text-input'
+        const textBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
+        textBtn.textContent = '插入文字'
+        textBtn.onclick = () => {
+          const val = textInput.value
+          if (val) {
+            const newFmt = [...style.format, { type: 'literal' as const, value: sanitize(val) }]
+            this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+            this.onshow()
+          }
+        }
+        const textWrap = el('div', undefined, insertRow)
+        textWrap.style.cssText = 'display:flex;align-items:center;gap:4px;'
+        textWrap.appendChild(textInput)
+        textWrap.appendChild(textBtn)
+
+        // Insert level reference
+        const levelSelect = el('select', undefined, insertRow) as HTMLSelectElement
+        levelSelect.style.cssText = 'margin-left:12px;'
+        const availRefs = getAvailableReferenceLevels(lv, s.showLevelOneNumber)
+        if (availRefs.length === 0) {
+          const opt = document.createElement('option')
+          opt.value = ''
+          opt.textContent = '无可用上级级别'
+          opt.disabled = true
+          levelSelect.appendChild(opt)
+        } else {
+          for (const refLv of availRefs) {
+            const opt = document.createElement('option')
+            opt.value = String(refLv)
+            opt.textContent = `[级别${refLv}]`
+            levelSelect.appendChild(opt)
+          }
+        }
+        const refBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
+        refBtn.textContent = '插入引用'
+        refBtn.onclick = () => {
+          const refLv = Number(levelSelect.value) as HeadingLevel
+          if (!refLv || refLv < 1 || refLv > 6) return
+          const newFmt = [...style.format, { type: 'level-reference' as const, level: refLv }]
           this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
           this.onshow()
         }
-      }
-      // Put both in a wrapper
-      const textWrap = el('div', undefined, insertRow)
-      textWrap.style.cssText = 'display:flex;align-items:center;gap:4px;'
-      textWrap.appendChild(textInput)
-      textWrap.appendChild(textBtn)
-
-      // Insert level reference
-      const levelSelect = el('select', undefined, insertRow) as HTMLSelectElement
-      levelSelect.style.cssText = 'margin-left:12px;'
-      const availRefs = getAvailableReferenceLevels(lv, s.showLevelOneNumber)
-      if (availRefs.length === 0) {
-        const opt = document.createElement('option')
-        opt.value = ''
-        opt.textContent = '无可用上级级别'
-        opt.disabled = true
-        levelSelect.appendChild(opt)
-      } else {
-        for (const refLv of availRefs) {
-          const opt = document.createElement('option')
-          opt.value = String(refLv)
-          opt.textContent = `[级别${refLv}]`
-          levelSelect.appendChild(opt)
-        }
-      }
-      const refBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
-      refBtn.textContent = '插入引用'
-      refBtn.onclick = () => {
-        const refLv = Number(levelSelect.value) as HeadingLevel
-        if (!refLv || refLv < 1 || refLv > 6) return
-        const newFmt = [...style.format, { type: 'level-reference' as const, level: refLv }]
-        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
-        this.onshow()
       }
 
       // ── Current level settings ────────────────────
@@ -415,6 +494,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const settingsTitle = el('div', 'inkchapter-format-header', settingsSection)
       settingsTitle.textContent = '当前级设置'
 
+      // Enable toggle (skip for H1 — uses showLevelOneNumber instead)
       if (lv > 1) {
         this.addCustomCheckbox(settingsSection, '启用本级编号', style.enabled, (checked) => {
           this.numberingService.updateLevelStyle(lv, { enabled: checked })
@@ -425,12 +505,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.addCustomSelect(settingsSection, '编号样式', TOKEN_STYLE_LABELS, style.tokenStyle, (val) => {
         this.numberingService.updateLevelStyle(lv, { tokenStyle: val as NumberTokenStyle })
         this.onshow()
-      })
+      }, isH1Disabled)
 
       this.addCustomNumber(settingsSection, '起始编号', style.startAt, 1, 999, (val) => {
         this.numberingService.updateLevelStyle(lv, { startAt: val })
         this.onshow()
-      })
+      }, isH1Disabled)
 
       if (lv > 1) {
         this.addCustomSelect(settingsSection, '在哪个上级后重新开始', buildRestartOptions(lv), String(style.restartAfterLevel ?? ''), (val) => {
@@ -443,9 +523,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.addCustomCheckbox(settingsSection, '将父级编号转换为阿拉伯数字', style.legalStyle, (checked) => {
         this.numberingService.updateLevelStyle(lv, { legalStyle: checked })
         this.onshow()
-      })
+      }, isH1Disabled)
 
-      // Format summary (uses effective format so hidden references don't appear)
+      // Format summary
       const summary = el('div', 'inkchapter-advanced-summary', settingsSection)
       const effFmt = getEffectiveFormatForLevel(style.format, !s.showLevelOneNumber, lv)
       summary.textContent = formatSummary(effFmt, style.tokenStyle)
@@ -454,31 +534,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Drag: container delegation ───────────────────
 
-  /**
-   * Set up pointer-event-based drag on the format chips container.
-   * Uses event delegation: one pointerdown on the container,
-   * document-level pointermove/pointerup/pointercancel during drag.
-   */
   private setupDragDelegation(
     fmtEl: HTMLElement,
     lv: HeadingLevel,
     style: import('../heading-numbering/heading-types').HeadingLevelStyle,
   ): void {
-    // Store level/style on container for access during drag callbacks
     ;(fmtEl as any).__dragLevel = lv
     ;(fmtEl as any).__dragStyle = style
 
     fmtEl.addEventListener('pointerdown', (e: PointerEvent) => {
-      // Only primary button
       if (e.button !== 0) return
 
-      // Exclude close buttons and insert slots
       const target = e.target as HTMLElement
       if (target.closest('.inkchapter-format-chip-close')) return
       if (target.closest('.inkchapter-format-slot')) return
       if (target.closest('input, select, button')) return
 
-      // Find the chip that was clicked
       const chip = target.closest('[data-format-index]') as HTMLElement | null
       if (!chip) return
 
@@ -489,7 +560,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.onDragStart(fmtEl, idx, e.clientX, e.clientY)
     })
 
-    // Escape key handler (on container or window)
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.dragState) {
         this.cancelDrag('Escape')
@@ -498,17 +568,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     fmtEl.addEventListener('keydown', onKey)
   }
 
-  // ── Drag: pointer lifecycle ──────────────────────
-
   private onDragStart(container: HTMLElement, idx: number, clientX: number, clientY: number): void {
     if (this.dragState) this.cancelDrag('re-drag')
+
+    this.dragState = createDragState(idx, clientX, clientY)
 
     const lv = (container as any).__dragLevel as HeadingLevel
     const style = (container as any).__dragStyle as import('../heading-numbering/heading-types').HeadingLevelStyle
 
-    this.dragState = createDragState(idx, clientX, clientY)
-
-    // Register document-level listeners
     const onMove = (e: PointerEvent) => this.onDragMove(container, e.clientX, e.clientY)
     const onUp = (e: PointerEvent) => {
       if (e.button !== 0) return
@@ -534,13 +601,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const ds = this.dragState
 
-    // Not yet dragging — check threshold
     if (!ds.isDragging) {
       const dist = Math.hypot(clientX - ds.startX, clientY - ds.startY)
       if (dist < DRAG_THRESHOLD) return
       ds.isDragging = true
 
-      // Add visual state
       container.style.userSelect = 'none'
       container.style.cursor = 'grabbing'
       const chip = container.querySelector(`[data-format-index="${ds.draggingIndex}"]`) as HTMLElement | null
@@ -551,18 +616,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (DEBUG_DRAG) console.log('[Drag] threshold passed, dragging=' + ds.draggingIndex)
     }
 
-    // RAF throttle
     if (ds.rafId !== null) return
     ds.rafId = requestAnimationFrame(() => {
       ds.rafId = null
       if (!this.dragState) return
 
-      const target = calculateTargetIndexAfterRemoval(
-        container,
-        clientX,
-        clientY,
-        ds.draggingIndex,
-      )
+      const target = calculateTargetIndexAfterRemoval(container, clientX, clientY, ds.draggingIndex)
       ds.targetIndexAfterRemoval = target
       this.updateDropIndicator(container, target)
     })
@@ -577,7 +636,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const ds = this.dragState
 
     if (!ds.isDragging) {
-      // Was just a click, no movement
       this.cancelDrag('no-move')
       return
     }
@@ -586,16 +644,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const draggingIdx = ds.draggingIndex
     const targetIdx = ds.targetIndexAfterRemoval
 
-    // No-op if same position
     if (targetIdx === draggingIdx) {
       this.cancelDrag('same-position')
       return
     }
 
-    // ── Commit the move ────────────────────────────
     const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
 
-    // Build hidden levels set
     const s = this.headingSettings
     const hiddenLevels = new Set<HeadingLevel>()
     if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
@@ -608,16 +663,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
       console.log('[Drag] commit', log)
     }
 
-    // Clean up drag state first (before re-render destroys DOM)
     this.cancelDrag('commit')
 
-    // Persist via service — this will update editor and settings
     this.numberingService.updateLevelStyle(lv, { format: after } as any)
-    // Re-render format editor
     this.onshow()
   }
-
-  // ── Drag: cancel ─────────────────────────────────
 
   private cancelDrag(reason?: string): void {
     if (!this.dragState) return
@@ -625,13 +675,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     if (DEBUG_DRAG && reason) console.log('[Drag] cancel reason=' + reason)
 
-    // Cancel RAF
     if (ds.rafId !== null) {
       cancelAnimationFrame(ds.rafId)
       ds.rafId = null
     }
 
-    // Remove drag visual classes (container may not exist anymore)
     const containers = this.containerEl.querySelectorAll('.inkchapter-format-chips')
     for (let i = 0; i < containers.length; i++) {
       const c = containers[i] as HTMLElement
@@ -641,13 +689,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (draggingChip) draggingChip.classList.remove('inkchapter-format-chip--dragging')
     }
 
-    // Remove drop indicators
     const indicators = this.containerEl.querySelectorAll('.inkchapter-format-drop-indicator')
     for (let i = 0; i < indicators.length; i++) {
       indicators[i].remove()
     }
 
-    // Remove document listeners
     for (const fn of ds.cleanupFns) {
       try { fn() } catch { /* ignore */ }
     }
@@ -655,16 +701,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.dragState = null
   }
 
-  // ── Drag: visual indicator ───────────────────────
-
   private updateDropIndicator(container: HTMLElement, targetIndexAfterRemoval: number): void {
-    // Remove existing indicator
     const existing = container.querySelectorAll('.inkchapter-format-drop-indicator')
     for (let i = 0; i < existing.length; i++) existing[i].remove()
 
-    // Insert a vertical bar indicator at the correct position
-    // targetIndexAfterRemoval is the position in the remaining array
-    // We insert the indicator element into the container's DOM flow at the right place
     const allChips = container.querySelectorAll<HTMLElement>('[data-format-index]')
     const remaining: HTMLElement[] = []
     for (let i = 0; i < allChips.length; i++) {
@@ -679,20 +719,27 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (remaining.length === 0) {
       container.appendChild(indicator)
     } else if (targetIndexAfterRemoval >= remaining.length) {
-      // After the last remaining chip
-      const last = remaining[remaining.length - 1]
-      last.insertAdjacentElement('afterend', indicator)
+      remaining[remaining.length - 1].insertAdjacentElement('afterend', indicator)
     } else {
-      // Before remaining[targetIndexAfterRemoval]
       remaining[targetIndexAfterRemoval].insertAdjacentElement('beforebegin', indicator)
     }
   }
 
   // ── Chip rendering ─────────────────────────────
 
-  private renderInsertSlot(fmtEl: HTMLElement, insertIdx: number, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
+  private renderInsertSlot(
+    fmtEl: HTMLElement, insertIdx: number, lv: HeadingLevel,
+    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+    disabled = false,
+  ): void {
     const slot = el('div', 'inkchapter-format-slot', fmtEl)
     slot.setAttribute('data-insert-index', String(insertIdx))
+    if (disabled) {
+      slot.classList.add('inkchapter-format-slot--disabled')
+      slot.style.pointerEvents = 'none'
+      slot.style.opacity = '0.4'
+      return
+    }
     slot.onclick = (e) => {
       e.stopPropagation()
       const action = prompt('输入要插入的文字 (或留空取消):')
@@ -705,15 +752,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  private renderLevelRefChip(fmtEl: HTMLElement, idx: number, seg: { type: 'level-reference'; level: number }, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
+  private renderLevelRefChip(
+    fmtEl: HTMLElement, idx: number,
+    seg: { type: 'level-reference'; level: number }, lv: HeadingLevel,
+    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+    disabled = false,
+  ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     chip.textContent = `[级别${seg.level}]`
     chip.setAttribute('data-format-index', String(idx))
     chip.setAttribute('data-segment-type', 'level-reference')
     chip.setAttribute('data-segment-level', String(seg.level))
 
-    // Close button (hidden for current-level chip)
-    if (seg.level !== lv) {
+    if (disabled) {
+      chip.classList.add('inkchapter-format-chip--disabled')
+    }
+
+    if (seg.level !== lv && !disabled) {
       const close = el('span', 'inkchapter-format-chip-close', chip)
       close.textContent = ' ×'
       close.onclick = (e) => {
@@ -725,19 +780,30 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  private renderLiteralChip(fmtEl: HTMLElement, idx: number, seg: { type: 'literal'; value: string }, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
+  private renderLiteralChip(
+    fmtEl: HTMLElement, idx: number,
+    seg: { type: 'literal'; value: string }, lv: HeadingLevel,
+    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+    disabled = false,
+  ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     chip.textContent = seg.value || '(空)'
     chip.setAttribute('data-format-index', String(idx))
     chip.setAttribute('data-segment-type', 'literal')
 
-    const close = el('span', 'inkchapter-format-chip-close', chip)
-    close.textContent = ' ×'
-    close.onclick = (e) => {
-      e.stopPropagation()
-      const newFmt = style.format.filter((_, i) => i !== idx)
-      this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
-      this.onshow()
+    if (disabled) {
+      chip.classList.add('inkchapter-format-chip--disabled')
+    }
+
+    if (!disabled) {
+      const close = el('span', 'inkchapter-format-chip-close', chip)
+      close.textContent = ' ×'
+      close.onclick = (e) => {
+        e.stopPropagation()
+        const newFmt = style.format.filter((_, i) => i !== idx)
+        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        this.onshow()
+      }
     }
   }
 
@@ -759,7 +825,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     for (const item of numbered) {
       const lv = item.level as HeadingLevel
 
-      // H1 hidden: keep row but without number
       if (!s.showLevelOneNumber && lv === 1) {
         const row = el('div', 'inkchapter-preview-row', container)
         const label = el('span', 'inkchapter-preview-label', row)
@@ -782,6 +847,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private addCustomCheckbox(
     container: HTMLElement, label: string, checked: boolean,
     onChange: (checked: boolean) => void,
+    disabled = false,
   ): void {
     const row = el('div', 'inkchapter-custom-row', container)
     const span = el('span', 'inkchapter-custom-col-label', row)
@@ -789,6 +855,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const cb = document.createElement('input')
     cb.type = 'checkbox'
     cb.checked = checked
+    cb.disabled = disabled
     cb.onchange = () => onChange(cb.checked)
     row.appendChild(cb)
   }
@@ -797,11 +864,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     container: HTMLElement, label: string,
     options: { value: string; label: string }[],
     value: string, onChange: (val: string) => void,
+    disabled = false,
   ): void {
     const row = el('div', 'inkchapter-custom-row', container)
     const span = el('span', 'inkchapter-custom-col-label', row)
     span.textContent = label
     const select = document.createElement('select')
+    select.disabled = disabled
     for (const opt of options) {
       const o = document.createElement('option')
       o.value = opt.value
@@ -813,29 +882,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
     row.appendChild(select)
   }
 
-  private addCustomText(
-    container: HTMLElement, label: string, value: string,
-    onChange: (val: string) => void,
-  ): void {
-    const row = el('div', 'inkchapter-custom-row', container)
-    const span = el('span', 'inkchapter-custom-col-label', row)
-    span.textContent = label
-    const input = document.createElement('input')
-    input.type = 'text'
-    input.value = value
-    input.style.width = '80px'
-    let timer: ReturnType<typeof setTimeout> | null = null
-    input.oninput = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => onChange(input.value), 300)
-    }
-    row.appendChild(input)
-  }
-
   private addCustomNumber(
     container: HTMLElement, label: string, value: number,
     min: number, max: number,
     onChange: (val: number) => void,
+    disabled = false,
   ): void {
     const row = el('div', 'inkchapter-custom-row', container)
     const span = el('span', 'inkchapter-custom-col-label', row)
@@ -845,14 +896,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     input.value = String(value)
     input.min = String(min)
     input.max = String(max)
+    input.disabled = disabled
     input.style.width = '80px'
-    // Apply only on blur/Enter, not on every keystroke
     input.onblur = () => {
       const n = parseInt(input.value, 10)
       if (!isNaN(n) && n >= min && n <= max) {
         onChange(n)
       } else {
-        // Reset to current valid value
         input.value = String(value)
       }
     }
@@ -888,15 +938,6 @@ function buildRestartOptions(currentLevel: HeadingLevel): { value: string; label
     options.push({ value: String(i), label: `在 H${i} 后重新开始` })
   }
   return options
-}
-
-function buildAdvancedSummary(style: HeadingLevelStyle): string {
-  const parts: string[] = []
-  if (style.startAt !== 1) parts.push(`起始编号=${style.startAt}`)
-  if (style.restartAfterLevel != null) parts.push(`在 H${style.restartAfterLevel} 后重启`)
-  else parts.push('全文连续编号')
-  if (style.legalStyle) parts.push('父级阿拉伯数字')
-  return parts.join(' · ')
 }
 
 function formatSummary(format: readonly NumberFormatSegment[], tokenStyle?: string): string {
