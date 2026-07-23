@@ -12,7 +12,15 @@ import type {
 import { HEADING_LEVELS } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
-import { moveSegmentToResolvedIndex, computeDropIndexAfterRemoval } from '../heading-numbering/format-drag-utils'
+import {
+  moveSegmentToResolvedIndex,
+  calculateTargetIndexAfterRemoval,
+  normalizeFormatAfterDrag,
+  createDragState,
+  createDebugLog,
+  formatSegmentsToString,
+} from '../heading-numbering/format-drag-utils'
+import type { DragState } from '../heading-numbering/format-drag-utils'
 import { computeHeadingNumbering, getAvailableReferenceLevels, getEffectiveFormatForLevel } from '../heading-numbering/numbering-engine'
 import { PRESET_LIST } from '../heading-numbering/presets'
 
@@ -34,6 +42,9 @@ const PRESET_CARDS: { key: HeadingNumberingPreset; name: string; desc: string; p
   { key: 'custom', name: '自定义', desc: '按 H1-H6 分别配置', previewLines: [] },
 ]
 
+const DRAG_THRESHOLD = 4 // px, Euclidean distance to start dragging
+const DEBUG_DRAG = false // Set true for verbose drag logs
+
 export class HeadingNumberingSettingTab extends SettingTab {
   get name(): string {
     return '标题编号'
@@ -44,6 +55,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private expandedLevel: HeadingLevel | null = null
   private selectEl: HTMLSelectElement | null = null
 
+  // ── Pointer-based drag state ──────────────────────
+  private dragState: DragState | null = null
+
   constructor(
     private settings: PluginSettings<InkChapterSettings>,
     private numberingService: HeadingNumberingService,
@@ -52,6 +66,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   onshow(): void {
+    this.cancelDrag()
     while (this.containerEl.firstChild) {
       this.containerEl.removeChild(this.containerEl.firstChild)
     }
@@ -64,6 +79,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
       errEl.textContent = '[错误] 设置页面渲染失败: ' + (e instanceof Error ? e.message : String(e))
       this.containerEl.appendChild(errEl)
     }
+  }
+
+  /** Clean up drag state when settings tab is closed. */
+  onhide(): void {
+    this.cancelDrag()
   }
 
   private get headingSettings() {
@@ -256,6 +276,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /** Shared by card click and dropdown change. */
   private handlePresetSelect(preset: HeadingNumberingPreset): void {
+    this.cancelDrag()
     this.numberingService.applyPreset(preset)
     // Sync dropdown
     if (this.selectEl) {
@@ -318,6 +339,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // ── Format tags with insert slots ─────────────
       const fmtContainer = el('div', 'inkchapter-format-container', editorSection)
       const fmtEl = el('div', 'inkchapter-format-chips', fmtContainer)
+
+      // ── Container-level pointer delegation ──────────
+      this.setupDragDelegation(fmtEl, lv, style)
 
       // Insert slot at start
       this.renderInsertSlot(fmtEl, 0, lv, style)
@@ -428,13 +452,249 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
+  // ── Drag: container delegation ───────────────────
+
+  /**
+   * Set up pointer-event-based drag on the format chips container.
+   * Uses event delegation: one pointerdown on the container,
+   * document-level pointermove/pointerup/pointercancel during drag.
+   */
+  private setupDragDelegation(
+    fmtEl: HTMLElement,
+    lv: HeadingLevel,
+    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+  ): void {
+    // Store level/style on container for access during drag callbacks
+    ;(fmtEl as any).__dragLevel = lv
+    ;(fmtEl as any).__dragStyle = style
+
+    fmtEl.addEventListener('pointerdown', (e: PointerEvent) => {
+      // Only primary button
+      if (e.button !== 0) return
+
+      // Exclude close buttons and insert slots
+      const target = e.target as HTMLElement
+      if (target.closest('.inkchapter-format-chip-close')) return
+      if (target.closest('.inkchapter-format-slot')) return
+      if (target.closest('input, select, button')) return
+
+      // Find the chip that was clicked
+      const chip = target.closest('[data-format-index]') as HTMLElement | null
+      if (!chip) return
+
+      const idx = Number(chip.getAttribute('data-format-index'))
+      if (isNaN(idx) || idx < 0) return
+
+      e.preventDefault()
+      this.onDragStart(fmtEl, idx, e.clientX, e.clientY)
+    })
+
+    // Escape key handler (on container or window)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.dragState) {
+        this.cancelDrag('Escape')
+      }
+    }
+    fmtEl.addEventListener('keydown', onKey)
+  }
+
+  // ── Drag: pointer lifecycle ──────────────────────
+
+  private onDragStart(container: HTMLElement, idx: number, clientX: number, clientY: number): void {
+    if (this.dragState) this.cancelDrag('re-drag')
+
+    const lv = (container as any).__dragLevel as HeadingLevel
+    const style = (container as any).__dragStyle as import('../heading-numbering/heading-types').HeadingLevelStyle
+
+    this.dragState = createDragState(idx, clientX, clientY)
+
+    // Register document-level listeners
+    const onMove = (e: PointerEvent) => this.onDragMove(container, e.clientX, e.clientY)
+    const onUp = (e: PointerEvent) => {
+      if (e.button !== 0) return
+      this.onDragEnd(container, lv, style)
+    }
+    const onCancel = () => this.cancelDrag('pointercancel')
+
+    document.addEventListener('pointermove', onMove, { passive: true })
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onCancel)
+
+    this.dragState.cleanupFns.push(
+      () => document.removeEventListener('pointermove', onMove),
+      () => document.removeEventListener('pointerup', onUp),
+      () => document.removeEventListener('pointercancel', onCancel),
+    )
+
+    if (DEBUG_DRAG) console.log('[Drag] start idx=' + idx)
+  }
+
+  private onDragMove(container: HTMLElement, clientX: number, clientY: number): void {
+    if (!this.dragState) return
+
+    const ds = this.dragState
+
+    // Not yet dragging — check threshold
+    if (!ds.isDragging) {
+      const dist = Math.hypot(clientX - ds.startX, clientY - ds.startY)
+      if (dist < DRAG_THRESHOLD) return
+      ds.isDragging = true
+
+      // Add visual state
+      container.style.userSelect = 'none'
+      container.style.cursor = 'grabbing'
+      const chip = container.querySelector(`[data-format-index="${ds.draggingIndex}"]`) as HTMLElement | null
+      if (chip) {
+        chip.classList.add('inkchapter-format-chip--dragging')
+      }
+
+      if (DEBUG_DRAG) console.log('[Drag] threshold passed, dragging=' + ds.draggingIndex)
+    }
+
+    // RAF throttle
+    if (ds.rafId !== null) return
+    ds.rafId = requestAnimationFrame(() => {
+      ds.rafId = null
+      if (!this.dragState) return
+
+      const target = calculateTargetIndexAfterRemoval(
+        container,
+        clientX,
+        clientY,
+        ds.draggingIndex,
+      )
+      ds.targetIndexAfterRemoval = target
+      this.updateDropIndicator(container, target)
+    })
+  }
+
+  private onDragEnd(
+    container: HTMLElement,
+    lv: HeadingLevel,
+    style: import('../heading-numbering/heading-types').HeadingLevelStyle,
+  ): void {
+    if (!this.dragState) return
+    const ds = this.dragState
+
+    if (!ds.isDragging) {
+      // Was just a click, no movement
+      this.cancelDrag('no-move')
+      return
+    }
+
+    const before = [...style.format]
+    const draggingIdx = ds.draggingIndex
+    const targetIdx = ds.targetIndexAfterRemoval
+
+    // No-op if same position
+    if (targetIdx === draggingIdx) {
+      this.cancelDrag('same-position')
+      return
+    }
+
+    // ── Commit the move ────────────────────────────
+    const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
+
+    // Build hidden levels set
+    const s = this.headingSettings
+    const hiddenLevels = new Set<HeadingLevel>()
+    if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
+
+    const after = normalizeFormatAfterDrag(moved, lv, hiddenLevels)
+
+    if (DEBUG_DRAG) {
+      const remaining = before.filter((_, i) => i !== draggingIdx)
+      const log = createDebugLog(draggingIdx, remaining, targetIdx, before, after, true)
+      console.log('[Drag] commit', log)
+    }
+
+    // Clean up drag state first (before re-render destroys DOM)
+    this.cancelDrag('commit')
+
+    // Persist via service — this will update editor and settings
+    this.numberingService.updateLevelStyle(lv, { format: after } as any)
+    // Re-render format editor
+    this.onshow()
+  }
+
+  // ── Drag: cancel ─────────────────────────────────
+
+  private cancelDrag(reason?: string): void {
+    if (!this.dragState) return
+    const ds = this.dragState
+
+    if (DEBUG_DRAG && reason) console.log('[Drag] cancel reason=' + reason)
+
+    // Cancel RAF
+    if (ds.rafId !== null) {
+      cancelAnimationFrame(ds.rafId)
+      ds.rafId = null
+    }
+
+    // Remove drag visual classes (container may not exist anymore)
+    const containers = this.containerEl.querySelectorAll('.inkchapter-format-chips')
+    for (let i = 0; i < containers.length; i++) {
+      const c = containers[i] as HTMLElement
+      c.style.userSelect = ''
+      c.style.cursor = ''
+      const draggingChip = c.querySelector('.inkchapter-format-chip--dragging') as HTMLElement | null
+      if (draggingChip) draggingChip.classList.remove('inkchapter-format-chip--dragging')
+    }
+
+    // Remove drop indicators
+    const indicators = this.containerEl.querySelectorAll('.inkchapter-format-drop-indicator')
+    for (let i = 0; i < indicators.length; i++) {
+      indicators[i].remove()
+    }
+
+    // Remove document listeners
+    for (const fn of ds.cleanupFns) {
+      try { fn() } catch { /* ignore */ }
+    }
+
+    this.dragState = null
+  }
+
+  // ── Drag: visual indicator ───────────────────────
+
+  private updateDropIndicator(container: HTMLElement, targetIndexAfterRemoval: number): void {
+    // Remove existing indicator
+    const existing = container.querySelectorAll('.inkchapter-format-drop-indicator')
+    for (let i = 0; i < existing.length; i++) existing[i].remove()
+
+    // Insert a vertical bar indicator at the correct position
+    // targetIndexAfterRemoval is the position in the remaining array
+    // We insert the indicator element into the container's DOM flow at the right place
+    const allChips = container.querySelectorAll<HTMLElement>('[data-format-index]')
+    const remaining: HTMLElement[] = []
+    for (let i = 0; i < allChips.length; i++) {
+      if (Number(allChips[i].getAttribute('data-format-index')) !== this.dragState?.draggingIndex) {
+        remaining.push(allChips[i])
+      }
+    }
+
+    const indicator = document.createElement('div')
+    indicator.className = 'inkchapter-format-drop-indicator'
+
+    if (remaining.length === 0) {
+      container.appendChild(indicator)
+    } else if (targetIndexAfterRemoval >= remaining.length) {
+      // After the last remaining chip
+      const last = remaining[remaining.length - 1]
+      last.insertAdjacentElement('afterend', indicator)
+    } else {
+      // Before remaining[targetIndexAfterRemoval]
+      remaining[targetIndexAfterRemoval].insertAdjacentElement('beforebegin', indicator)
+    }
+  }
+
+  // ── Chip rendering ─────────────────────────────
+
   private renderInsertSlot(fmtEl: HTMLElement, insertIdx: number, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
     const slot = el('div', 'inkchapter-format-slot', fmtEl)
     slot.setAttribute('data-insert-index', String(insertIdx))
-    // Add click handler via parent event delegation is simpler, but for now direct:
     slot.onclick = (e) => {
       e.stopPropagation()
-      // Open a simple prompt-style insert menu
       const action = prompt('输入要插入的文字 (或留空取消):')
       if (action) {
         const newFmt = [...style.format]
@@ -448,37 +708,28 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private renderLevelRefChip(fmtEl: HTMLElement, idx: number, seg: { type: 'level-reference'; level: number }, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     chip.textContent = `[级别${seg.level}]`
-    chip.draggable = true
     chip.setAttribute('data-format-index', String(idx))
+    chip.setAttribute('data-segment-type', 'level-reference')
+    chip.setAttribute('data-segment-level', String(seg.level))
 
-    // Close button
-    const close = el('span', 'inkchapter-format-chip-close', chip)
-    close.textContent = ' ×'
-    close.onclick = (e) => {
-      e.stopPropagation()
-      if (seg.level === lv) return // current level reference cannot be deleted
-      const newFmt = style.format.filter((_, i) => i !== idx)
-      this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
-      this.onshow()
-    }
-
-    // Drag handling
-    chip.ondragstart = (e) => {
-      e.dataTransfer?.setData('text/plain', String(idx))
-      chip.style.opacity = '0.5'
-    }
-    chip.ondragend = () => {
-      chip.style.opacity = '1'
-      // Clear all drop indicators
-      fmtEl.querySelectorAll('.inkchapter-format-drop-indicator').forEach(el => el.remove())
+    // Close button (hidden for current-level chip)
+    if (seg.level !== lv) {
+      const close = el('span', 'inkchapter-format-chip-close', chip)
+      close.textContent = ' ×'
+      close.onclick = (e) => {
+        e.stopPropagation()
+        const newFmt = style.format.filter((_, i) => i !== idx)
+        this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
+        this.onshow()
+      }
     }
   }
 
   private renderLiteralChip(fmtEl: HTMLElement, idx: number, seg: { type: 'literal'; value: string }, lv: HeadingLevel, style: import('../heading-numbering/heading-types').HeadingLevelStyle): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     chip.textContent = seg.value || '(空)'
-    chip.draggable = true
     chip.setAttribute('data-format-index', String(idx))
+    chip.setAttribute('data-segment-type', 'literal')
 
     const close = el('span', 'inkchapter-format-chip-close', chip)
     close.textContent = ' ×'
@@ -488,16 +739,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.numberingService.updateLevelStyle(lv, { format: newFmt } as any)
       this.onshow()
     }
-
-    chip.ondragstart = (e) => {
-      e.dataTransfer?.setData('text/plain', String(idx))
-      chip.style.opacity = '0.5'
-    }
-    chip.ondragend = () => {
-      chip.style.opacity = '1'
-      fmtEl.querySelectorAll('.inkchapter-format-drop-indicator').forEach(el => el.remove())
-    }
   }
+
+  // ── Full preview ──────────────────────────────────
 
   private renderFullPreviewInContainer(s: HeadingNumberingSettings, container: HTMLElement): void {
     container.textContent = ''
