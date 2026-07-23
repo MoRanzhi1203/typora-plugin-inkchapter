@@ -8,10 +8,9 @@ import type {
   HeadingLevel,
   HeadingLevelStyle,
   HeadingNumberingPreset,
-  HiddenLevelOneFormatBackup,
-  NumberFormatSegment,
 } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
+import { updateActiveFormatVariant } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
@@ -40,9 +39,6 @@ export class HeadingNumberingService {
   private adapter: HeadingDomAdapter
   private store: DisposableStore
   private ctx: ServiceContext
-
-  /** Backup of H2-H6 custom formats when H1 is hidden. Used for restore on re-enable. */
-  private hiddenLevelOneBackup: HiddenLevelOneFormatBackup | null = null
 
   /** External listeners for settings changes (e.g. settings tab). */
   private settingsListeners: Array<(settings: HeadingNumberingSettings) => void> = []
@@ -116,43 +112,7 @@ export class HeadingNumberingService {
   setShowLevelOneNumber(enabled: boolean): void {
     if (this.numberingSettings.showLevelOneNumber === enabled) return
 
-    const wasVisible = this.numberingSettings.showLevelOneNumber
     this.numberingSettings.showLevelOneNumber = enabled
-
-    // ── Backup / restore custom H2-H6 formats ────────
-    if (!enabled && this.numberingSettings.preset === 'custom') {
-      // Turning H1 off: backup H2-H6 formats
-      const formats: HiddenLevelOneFormatBackup['formats'] = {}
-      for (let lv = 2; lv <= 6; lv++) {
-        const level = lv as HeadingLevel
-        formats[level] = this.numberingSettings.levels[level]?.format ?? []
-      }
-      this.hiddenLevelOneBackup = {
-        formats,
-        editedWhileHidden: {},
-      }
-      logger.info('已备份 H2-H6 自定义格式（H1 编号隐藏）')
-    } else if (enabled && this.hiddenLevelOneBackup) {
-      // Turning H1 back on: restore unedited levels
-      for (let lv = 2; lv <= 6; lv++) {
-        const level = lv as HeadingLevel
-        const wasEdited = this.hiddenLevelOneBackup.editedWhileHidden[level]
-        if (!wasEdited && this.hiddenLevelOneBackup.formats[level]) {
-          this.numberingSettings.levels = {
-            ...this.numberingSettings.levels,
-            [level]: {
-              ...this.numberingSettings.levels[level],
-              format: [...this.hiddenLevelOneBackup.formats[level]!],
-            },
-          }
-        }
-      }
-      this.hiddenLevelOneBackup = null
-      logger.info('已恢复 H2-H6 自定义格式（H1 编号重新开启）')
-    } else if (enabled) {
-      // H1 re-enabled but no backup (preset mode): nothing to restore, preset handles it
-      this.hiddenLevelOneBackup = null
-    }
 
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
 
@@ -169,11 +129,6 @@ export class HeadingNumberingService {
 
   /** Apply a preset and update numbering immediately. */
   applyPreset(preset: HeadingNumberingPreset): void {
-    // Clear H1 hidden backup when switching presets
-    if (preset !== 'custom') {
-      this.hiddenLevelOneBackup = null
-    }
-
     if (preset === 'custom') {
       // Restore custom draft if available
       this.numberingSettings.preset = 'custom'
@@ -213,13 +168,36 @@ export class HeadingNumberingService {
     this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
 
-    // Mark edited while H1 hidden (for backup/restore)
-    if (this.hiddenLevelOneBackup && level > 1) {
-      const patchHasFormat = patch.format !== undefined
-      if (patchHasFormat) {
-        this.hiddenLevelOneBackup.editedWhileHidden[level] = true
-      }
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /**
+   * Update the active format variant for a level.
+   * Automatically writes to withLevelOne or withoutLevelOne based on current H1 state.
+   */
+  updateActiveFormat(level: HeadingLevel, nextFormat: readonly import('./heading-types').NumberFormatSegment[]): void {
+    if (this.numberingSettings.preset !== 'custom') {
+      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+      this.numberingSettings.preset = 'custom'
+      this.numberingSettings.levels = { ...this.numberingSettings.levels }
     }
+
+    const currentStyle = this.numberingSettings.levels[level]
+    const updated = updateActiveFormatVariant(
+      currentStyle,
+      level,
+      this.numberingSettings.showLevelOneNumber,
+      nextFormat,
+    )
+
+    this.numberingSettings.levels = {
+      ...this.numberingSettings.levels,
+      [level]: updated,
+    }
+    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
 
     this.lastSnapshot = null
     this.renderedStates = null
