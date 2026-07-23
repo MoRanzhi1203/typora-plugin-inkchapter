@@ -16,7 +16,6 @@ import { formatToken } from './token-formatter'
  * - startAt: counter begins at (startAt - 1), first occurrence yields startAt.
  * - restartAfterLevel: when a heading at level <= restartAfterLevel appears,
  *   reset this level's counter (to startAt - 1). null = continuous across document.
- * - legalStyle: parent-level tokens converted to arabic; current level keeps its style.
  * - H1 still acts as chapter boundary for H2 restart even when showLevelOneNumber=false.
  */
 export function computeHeadingNumbering(
@@ -127,9 +126,8 @@ function buildLabel(
       const st = levelStyles[actualLv]
       if (!st || !st.enabled) continue
 
-      // legalStyle: parent levels use arabic, current level keeps its own style
-      const isParent = i < currentIdx
-      const tokenStyle = (style.legalStyle && isParent) ? 'arabic' : st.tokenStyle
+      // legalStyle removed — each level always uses its own tokenStyle
+      const tokenStyle = st.tokenStyle
 
       const token = formatToken(activeCounters[i], tokenStyle)
       parts.push(st.prefix + token + st.suffix)
@@ -230,8 +228,7 @@ function evaluateFormat(
       if (refIdx < 0 || refIdx >= activeCounters.length) continue
       const refStyle = levelStyles[refLv]
       if (!refStyle) continue
-      const isParent = refLv < headingLevel
-      const tokenStyle = (style.legalStyle && isParent) ? 'arabic' : refStyle.tokenStyle
+      const tokenStyle = refStyle.tokenStyle
       const token = formatToken(activeCounters[refIdx], tokenStyle)
       parts.push(token)
     }

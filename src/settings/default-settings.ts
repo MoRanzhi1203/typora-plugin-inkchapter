@@ -12,7 +12,6 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
     separator: '.',
     startAt: 1,
     restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
-    legalStyle: false,
     formatVariants: { withLevelOne: [], withoutLevelOne: [] },
   }
 }
