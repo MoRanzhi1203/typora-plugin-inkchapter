@@ -57,8 +57,6 @@ export interface HeadingLevelStyle {
   startAt: number
   /** Which parent level restarts this level's counter. null = continuous across document. */
   restartAfterLevel: HeadingLevel | null
-  /** Convert parent-level number tokens to arabic (current level keeps its own style). */
-  legalStyle: boolean
   /** Dual-format variants for H1 on/off. (schemaVersion >= 5) */
   formatVariants: HeadingFormatVariants
   /** Legacy single format (schemaVersion < 5). Only used during migration, not at runtime. */

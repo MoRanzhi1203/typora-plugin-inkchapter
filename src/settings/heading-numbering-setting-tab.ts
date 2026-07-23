@@ -535,11 +535,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         })
       }
 
-      this.addCustomCheckbox(settingsSection, '将父级编号转换为阿拉伯数字', style.legalStyle, (checked) => {
-        this.numberingService.updateLevelStyle(lv, { legalStyle: checked })
-        this.onshow()
-      }, isH1Disabled)
-
       // Format summary
       const summary = el('div', 'inkchapter-advanced-summary', settingsSection)
       const effFmt = getEffectiveFormatForLevel(activeFmt, !s.showLevelOneNumber, lv)
