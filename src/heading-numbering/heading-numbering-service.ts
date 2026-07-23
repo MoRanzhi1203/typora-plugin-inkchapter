@@ -44,6 +44,9 @@ export class HeadingNumberingService {
   /** Backup of H2-H6 custom formats when H1 is hidden. Used for restore on re-enable. */
   private hiddenLevelOneBackup: HiddenLevelOneFormatBackup | null = null
 
+  /** External listeners for settings changes (e.g. settings tab). */
+  private settingsListeners: Array<(settings: HeadingNumberingSettings) => void> = []
+
   // Scheduler
   private rafId: ReturnType<typeof requestAnimationFrame> | null = null
   private tailTimer: ReturnType<typeof setTimeout> | null = null
@@ -158,6 +161,9 @@ export class HeadingNumberingService {
     this.renderedStates = null
     this.flushRefresh()
 
+    // Notify UI listeners
+    this.notifySettingsListeners()
+
     logger.info(`一级标题编号已${enabled ? '开启' : '关闭'}`)
   }
 
@@ -256,6 +262,25 @@ export class HeadingNumberingService {
   /** Get the current numbering settings (for UI reading). */
   getCurrentSettings(): HeadingNumberingSettings {
     return { ...this.numberingSettings }
+  }
+
+  /**
+   * Subscribe to settings changes. Returns unsubscribe function.
+   * Used by settings tab to react to external changes (F1 commands, etc.).
+   */
+  onSettingsChanged(listener: (settings: HeadingNumberingSettings) => void): () => void {
+    this.settingsListeners.push(listener)
+    return () => {
+      const idx = this.settingsListeners.indexOf(listener)
+      if (idx >= 0) this.settingsListeners.splice(idx, 1)
+    }
+  }
+
+  private notifySettingsListeners(): void {
+    const snapshot = { ...this.numberingSettings }
+    for (const listener of this.settingsListeners) {
+      try { listener(snapshot) } catch (e) { logger.error('设置变化监听器异常', e) }
+    }
   }
 
   /** Generate a preview of the current preset/levels. */
