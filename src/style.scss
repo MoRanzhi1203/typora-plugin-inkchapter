@@ -396,10 +396,16 @@
   font-family: var(--font-monospace, monospace);
   cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 
-.inkchapter-format-chip:active {
-  cursor: grabbing;
+.inkchapter-format-chip:hover {
+  background: var(--background-modifier-hover, #e8e8e8);
+}
+
+.inkchapter-format-chip--dragging {
+  opacity: 0.45;
+  transform: scale(0.95);
 }
 
 .inkchapter-format-chip-close {
@@ -407,10 +413,30 @@
   cursor: pointer;
   color: var(--text-muted, #999);
   font-weight: bold;
+  flex-shrink: 0;
 }
 
 .inkchapter-format-chip-close:hover {
   color: var(--text-error, #d00);
+}
+
+/* ── Drop indicator (vertical bar during drag) ──────── */
+
+.inkchapter-format-drop-indicator {
+  display: inline-block;
+  width: 3px;
+  height: 24px;
+  background: var(--text-accent, #07a);
+  border-radius: 1px;
+  margin: 0 1px;
+  flex-shrink: 0;
+  pointer-events: none;
+  animation: inkhapter-drop-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes inkhapter-drop-pulse {
+  from { opacity: 0.6; }
+  to   { opacity: 1; }
 }
 
 .inkchapter-format-slot {
