@@ -516,6 +516,36 @@
   margin-top: 10px;
 }
 
+/* ── Two-stage editor sections ─────────────────────────── */
+
+.inkchapter-template-section {
+  margin: 8px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 4px;
+  background: var(--background-secondary, #f8f8f8);
+}
+
+.inkchapter-composition-section {
+  margin: 8px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 4px;
+}
+
+.inkchapter-template-preview-value {
+  color: var(--text-accent, #07a);
+  font-weight: 600;
+  font-family: var(--font-monospace, monospace);
+  font-size: 1.1em;
+}
+
+.inkchapter-format-chip--current {
+  border-color: var(--text-accent, #07a) !important;
+  background: rgba(7, 119, 170, 0.06) !important;
+  font-weight: 600;
+}
+
 /* ── Advanced rules ────────────────────────────────────── */
 
 .inkchapter-advanced-header {

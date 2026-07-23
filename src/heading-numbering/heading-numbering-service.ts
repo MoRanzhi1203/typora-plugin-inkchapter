@@ -10,7 +10,7 @@ import type {
   HeadingNumberingPreset,
 } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
-import { updateActiveFormatVariant } from './numbering-engine'
+import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
@@ -195,6 +195,68 @@ export class HeadingNumberingService {
     this.numberingSettings.levels = {
       ...this.numberingSettings.levels,
       [level]: updated,
+    }
+    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /**
+   * Update the active multilevel format variant for a level (two-layer model).
+   */
+  updateActiveMultilevelFormat(level: HeadingLevel, nextFormat: readonly import('./heading-types').MultilevelFormatSegment[]): void {
+    if (this.numberingSettings.preset !== 'custom') {
+      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+      this.numberingSettings.preset = 'custom'
+      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    }
+
+    const currentStyle = this.numberingSettings.levels[level]
+    const updated = updateActiveMultilevelFormatVariant(
+      currentStyle,
+      level,
+      this.numberingSettings.showLevelOneNumber,
+      nextFormat,
+    )
+
+    this.numberingSettings.levels = {
+      ...this.numberingSettings.levels,
+      [level]: updated,
+    }
+    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /**
+   * Update a level's number template (tokenStyle, prefix, suffix).
+   */
+  updateLevelTemplate(level: HeadingLevel, patch: Partial<import('./heading-types').HeadingLevelNumberTemplate>): void {
+    if (this.numberingSettings.preset !== 'custom') {
+      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+      this.numberingSettings.preset = 'custom'
+      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    }
+
+    const currentStyle = this.numberingSettings.levels[level]
+    const currentTemplate = currentStyle.levelTemplate
+    const updatedTemplate = { ...currentTemplate, ...patch }
+    // Also sync legacy tokenStyle for backward compat
+    const updatedStyle = {
+      ...currentStyle,
+      levelTemplate: updatedTemplate,
+      tokenStyle: patch.tokenStyle ?? currentStyle.tokenStyle,
+    }
+
+    this.numberingSettings.levels = {
+      ...this.numberingSettings.levels,
+      [level]: updatedStyle,
     }
     this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
