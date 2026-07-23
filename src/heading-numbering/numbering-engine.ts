@@ -6,6 +6,9 @@ import type {
   NumberedHeading,
   NumberFormatSegment,
   HeadingFormatVariants,
+  MultilevelFormatSegment,
+  MultilevelFormatVariants,
+  HeadingLevelNumberTemplate,
 } from './heading-types'
 import { formatToken } from './token-formatter'
 
@@ -109,7 +112,13 @@ function buildLabel(
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
 
-  // ── Format-based label (schemaVersion >= 5) ──────
+  // ── New two-layer model (schemaVersion >= 7) ──────
+  const multilevelVariant = getActiveMultilevelFormatVariant(style, !skipH1, headingLevel)
+  if (multilevelVariant && multilevelVariant.length > 0) {
+    return buildLabelFromMultilevelFormat(activeCounters, levelStyles, skipH1, headingLevel)
+  }
+
+  // ── Legacy format-based label (schemaVersion < 7) ─
   const activeVariant = getActiveFormatVariant(style, !skipH1, headingLevel)
   if (activeVariant && activeVariant.length > 0) {
     return buildLabelFromFormat(activeCounters, levelStyles, skipH1, headingLevel, style)
@@ -121,14 +130,11 @@ function buildLabel(
   if (style.includeParents) {
     const parts: string[] = []
     for (let i = startIdx; i <= currentIdx; i++) {
-      // actualLv: the real heading level this counter position represents
       const actualLv = (i + 1) as HeadingLevel
       const st = levelStyles[actualLv]
       if (!st || !st.enabled) continue
 
-      // legalStyle removed — each level always uses its own tokenStyle
       const tokenStyle = st.tokenStyle
-
       const token = formatToken(activeCounters[i], tokenStyle)
       parts.push(st.prefix + token + st.suffix)
     }
@@ -137,6 +143,224 @@ function buildLabel(
 
   const token = formatToken(activeCounters[currentIdx], style.tokenStyle)
   return style.prefix + token + style.suffix
+}
+
+// ── New two-layer render functions (schemaVersion >= 7) ──
+
+/**
+ * Render a single level's number template.
+ * Returns prefix + formattedToken + suffix for the given level and counter.
+ */
+export function renderLevelTemplate(
+  level: HeadingLevel,
+  counter: number,
+  template: HeadingLevelNumberTemplate,
+): string {
+  const token = formatToken(counter, template.tokenStyle)
+  return template.prefix + token + template.suffix
+}
+
+/**
+ * Render a complete multilevel format array into a label string.
+ * Iterates segments, outputting literals directly and resolving
+ * level-template-references by reading the referenced level's template
+ * and using its counter.
+ */
+export function renderMultilevelFormat(
+  format: readonly MultilevelFormatSegment[],
+  counters: readonly number[],
+  templates: Record<HeadingLevel, HeadingLevelNumberTemplate>,
+): string {
+  const parts: string[] = []
+  for (const seg of format) {
+    if (seg.type === 'literal') {
+      parts.push(seg.value)
+    } else {
+      const refLv = seg.level
+      const refIdx = refLv - 1
+      if (refIdx < 0 || refIdx >= counters.length) continue
+      const tpl = templates[refLv]
+      if (!tpl) continue
+      parts.push(renderLevelTemplate(refLv, counters[refIdx], tpl))
+    }
+  }
+  return parts.join('')
+}
+
+/**
+ * Build the label for a heading using the two-layer multilevel format model.
+ */
+function buildLabelFromMultilevelFormat(
+  activeCounters: number[],
+  levelStyles: Record<HeadingLevel, HeadingLevelStyle>,
+  skipH1: boolean,
+  headingLevel: HeadingLevel,
+): string {
+  const style = levelStyles[headingLevel]
+  if (!style) return ''
+
+  // Get the active multilevel format variant
+  const activeFormat = getActiveMultilevelFormatVariant(style, !skipH1, headingLevel)
+  const effectiveFormat = getEffectiveMultilevelFormat(activeFormat, skipH1, headingLevel)
+
+  // Build templates map from all level styles
+  const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+  for (let i = 0; i < 6; i++) {
+    const lv = (i + 1) as HeadingLevel
+    const ls = levelStyles[lv]
+    templates[lv] = ls?.levelTemplate ?? { tokenStyle: ls?.tokenStyle ?? 'arabic', prefix: '', suffix: '' }
+  }
+
+  return renderMultilevelFormat(effectiveFormat, activeCounters, templates)
+}
+
+// ── Multilevel format variant helpers ─────────────────
+
+/**
+ * Get the active multilevel format variant for the current H1 visibility.
+ */
+export function getActiveMultilevelFormatVariant(
+  style: HeadingLevelStyle,
+  showLevelOneNumber: boolean,
+  level: HeadingLevel,
+): readonly MultilevelFormatSegment[] {
+  if (level === 1) {
+    return style.multilevelFormatVariants.withLevelOne
+  }
+  return showLevelOneNumber
+    ? style.multilevelFormatVariants.withLevelOne
+    : style.multilevelFormatVariants.withoutLevelOne
+}
+
+/**
+ * Update the active multilevel format variant.
+ */
+export function updateActiveMultilevelFormatVariant(
+  style: HeadingLevelStyle,
+  level: HeadingLevel,
+  showLevelOneNumber: boolean,
+  nextFormat: readonly MultilevelFormatSegment[],
+): HeadingLevelStyle {
+  if (level === 1) {
+    return {
+      ...style,
+      multilevelFormatVariants: {
+        ...style.multilevelFormatVariants,
+        withLevelOne: [...nextFormat],
+      },
+    }
+  }
+  if (showLevelOneNumber) {
+    return {
+      ...style,
+      multilevelFormatVariants: {
+        ...style.multilevelFormatVariants,
+        withLevelOne: [...nextFormat],
+      },
+    }
+  }
+  return {
+    ...style,
+    multilevelFormatVariants: {
+      ...style.multilevelFormatVariants,
+      withoutLevelOne: [...nextFormat],
+    },
+  }
+}
+
+/**
+ * Strip hidden level-template-references and orphaned separator literals.
+ */
+export function stripHiddenMultilevelReferences(
+  format: readonly MultilevelFormatSegment[],
+  hiddenLevels: ReadonlySet<HeadingLevel>,
+  currentLevel: HeadingLevel,
+): MultilevelFormatSegment[] {
+  if (hiddenLevels.size === 0) return [...format]
+
+  const result: MultilevelFormatSegment[] = []
+  for (let i = 0; i < format.length; i++) {
+    const seg = format[i]
+    if (seg.type === 'level-template-reference' && hiddenLevels.has(seg.level)) {
+      // Remove hidden reference and adjacent separator literals
+      if (result.length > 0) {
+        const last = result[result.length - 1]
+        if (last.type === 'literal' && isMultilevelSeparatorLiteral(last)) {
+          result.pop()
+        }
+      }
+      while (i + 1 < format.length && format[i + 1].type === 'literal' && isMultilevelSeparatorLiteral(format[i + 1])) {
+        i++
+      }
+      continue
+    }
+    result.push(seg)
+  }
+
+  // Clean leading/trailing separators
+  while (result.length > 0 && result[0].type === 'literal' && isMultilevelSeparatorLiteral(result[0])) {
+    result.shift()
+  }
+  while (result.length > 0 && result[result.length - 1].type === 'literal' && isMultilevelSeparatorLiteral(result[result.length - 1])) {
+    result.pop()
+  }
+
+  // Merge adjacent literals
+  const merged: MultilevelFormatSegment[] = []
+  for (const seg of result) {
+    if (seg.type === 'literal' && merged.length > 0 && merged[merged.length - 1].type === 'literal') {
+      const last = merged[merged.length - 1] as { type: 'literal'; value: string }
+      last.value += seg.value
+    } else {
+      merged.push({ ...seg })
+    }
+  }
+
+  // Ensure current level reference exists
+  if (!merged.some(s => s.type === 'level-template-reference' && s.level === currentLevel)) {
+    merged.push({ type: 'level-template-reference', level: currentLevel })
+  }
+
+  return merged.length > 0 ? merged : [{ type: 'level-template-reference', level: currentLevel }]
+}
+
+function isMultilevelSeparatorLiteral(seg: MultilevelFormatSegment): boolean {
+  if (seg.type !== 'literal') return false
+  const val = seg.value.trim()
+  if (val === '') return true
+  return [...val].every(c => SEPARATOR_CHARS.has(c))
+}
+
+/**
+ * Get effective multilevel format, stripping hidden level references.
+ */
+export function getEffectiveMultilevelFormat(
+  format: readonly MultilevelFormatSegment[],
+  skipH1: boolean,
+  currentLevel: HeadingLevel,
+): MultilevelFormatSegment[] {
+  const hidden = new Set<HeadingLevel>()
+  if (skipH1) hidden.add(1 as HeadingLevel)
+  return stripHiddenMultilevelReferences(format, hidden, currentLevel)
+}
+
+// ── Multilevel available reference levels ────────────
+
+/**
+ * Get available reference levels for the multilevel insert dropdown.
+ * Returns only levels strictly before currentLevel.
+ * Hides H1 when showLevelOneNumber is false.
+ */
+export function getAvailableMultilevelReferenceLevels(
+  currentLevel: HeadingLevel,
+  showLevelOneNumber: boolean,
+): HeadingLevel[] {
+  const result: HeadingLevel[] = []
+  const start = showLevelOneNumber ? 1 : 2
+  for (let lv = start; lv < currentLevel; lv++) {
+    result.push(lv as HeadingLevel)
+  }
+  return result
 }
 
 function buildLabelFromFormat(

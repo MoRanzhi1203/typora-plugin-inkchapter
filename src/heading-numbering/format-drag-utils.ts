@@ -1,4 +1,4 @@
-import type { NumberFormatSegment, HeadingLevel } from './heading-types'
+import type { NumberFormatSegment, MultilevelFormatSegment, HeadingLevel } from './heading-types'
 
 // ── Drag state ────────────────────────────────────────────
 
@@ -151,6 +151,42 @@ function findGlobalIndex(
   return remaining.length
 }
 
+/** Normalize after drag for multilevel format segments. */
+export function normalizeMultilevelFormatAfterDrag(
+  format: readonly MultilevelFormatSegment[],
+  currentLevel: HeadingLevel,
+  hiddenLevels: ReadonlySet<HeadingLevel>,
+): MultilevelFormatSegment[] {
+  const cleaned: MultilevelFormatSegment[] = []
+  const seenLevels = new Set<number>()
+
+  for (const seg of format) {
+    if (seg.type === 'level-template-reference') {
+      if (hiddenLevels.has(seg.level)) continue
+      if (seg.level > currentLevel) continue
+      if (seenLevels.has(seg.level)) continue
+      seenLevels.add(seg.level)
+      cleaned.push(seg)
+    } else {
+      const trimmed = seg.value.trim()
+      if (trimmed.length === 0) continue
+      const last = cleaned[cleaned.length - 1]
+      if (last?.type === 'literal') {
+        last.value += trimmed
+      } else {
+        cleaned.push({ type: 'literal', value: trimmed })
+      }
+    }
+  }
+
+  // Ensure current level template reference exists exactly once
+  if (!cleaned.some(s => s.type === 'level-template-reference' && s.level === currentLevel)) {
+    cleaned.push({ type: 'level-template-reference', level: currentLevel })
+  }
+
+  return cleaned
+}
+
 // ── Normalize after drag ──────────────────────────────────
 
 /**
@@ -216,6 +252,10 @@ export interface DragDebugLog {
 
 export function formatSegmentsToString(fmt: readonly NumberFormatSegment[]): string[] {
   return fmt.map(s => s.type === 'level-reference' ? `[L${s.level}]` : s.value || '(空)')
+}
+
+export function multilevelFormatSegmentsToString(fmt: readonly MultilevelFormatSegment[]): string[] {
+  return fmt.map(s => s.type === 'level-template-reference' ? `[H${s.level}模板]` : s.value || '(空)')
 }
 
 export function createDebugLog(
