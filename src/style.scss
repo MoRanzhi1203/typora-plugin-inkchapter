@@ -211,6 +211,17 @@
   border-radius: 3px;
 }
 
+.inkchapter-h1-visibility--enabled {
+  color: var(--text-accent, #07a);
+  background: rgba(7, 119, 170, 0.06);
+  font-style: normal;
+}
+
+.inkchapter-h1-visibility--disabled {
+  color: var(--text-muted, #888);
+  background: var(--background-modifier-border, #f0f0f0);
+}
+
 /* ── Custom panel rows ────────────────────────────────── */
 
 .inkchapter-custom-row {
