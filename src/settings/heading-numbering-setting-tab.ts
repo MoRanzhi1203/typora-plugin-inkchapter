@@ -431,69 +431,26 @@ export class HeadingNumberingSettingTab extends SettingTab {
         noteEl.textContent = '两种格式分别保存，切换后不会相互覆盖。'
       }
 
-      // ═══ Stage 1: Current level template ═══
-      this.renderLevelTemplateEditor(editorSection, lv, style, isH1Disabled)
-
-      // Get active contextual format for display
-      const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
-
-      // ═══ Stage 2: Multilevel composition (contextual model) ═══
+      // ═══ Stage 1: Multilevel composition (contextual model) ═══
       if (!isH1Disabled) {
+        const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+        // Default select current level tag
+        if (!this.selectedSegmentId) {
+          const curSeg = activeFmt?.find(s => s.type === 'level-reference' && s.level === lv)
+          if (curSeg) this.selectedSegmentId = curSeg.id
+        }
         if (activeFmt && activeFmt.length > 0) {
           this.renderContextualCompositionEditor(editorSection, lv, style, s, activeFmt)
         } else {
           // Fallback to old multilevel model
-          const mlFmt = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
           this.renderMultilevelCompositionEditor(editorSection, lv, style, s)
         }
       }
 
-      // ═══ Stage 3: Current level behavior ═══
+      // ═══ Stage 2: Current level behavior ═══
       this.renderLevelBehaviorSettings(editorSection, lv, style, isH1Disabled,
-        (activeFmt && activeFmt.length > 0 ? activeFmt : []) as readonly MultilevelFormatSegment[])
+        (getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv) || []) as readonly MultilevelFormatSegment[])
     }
-  }
-
-  // ── Stage 1: Level template editor ───────────────
-
-  private renderLevelTemplateEditor(
-    container: HTMLElement,
-    lv: HeadingLevel,
-    style: HeadingLevelStyle,
-    disabled: boolean,
-  ): void {
-    const section = el('div', 'inkchapter-template-section', container)
-
-    const title = el('div', 'inkchapter-format-header', section)
-    title.textContent = '一、当前级编号模板'
-
-    const tpl = style.levelTemplate
-
-    // Token style select
-    this.addCustomSelect(section, '编号样式', TOKEN_STYLE_LABELS, tpl.tokenStyle, (val) => {
-      this.numberingService.updateLevelTemplate(lv, { tokenStyle: val as NumberTokenStyle })
-      this.onshow()
-    }, disabled)
-
-    // Prefix input
-    this.addCustomTextInput(section, '前缀', tpl.prefix, '例如：第', (val) => {
-      this.numberingService.updateLevelTemplate(lv, { prefix: sanitizeTemplateString(val) })
-      this.onshow()
-    }, disabled)
-
-    // Suffix input
-    this.addCustomTextInput(section, '后缀', tpl.suffix, '例如：章', (val) => {
-      this.numberingService.updateLevelTemplate(lv, { suffix: sanitizeTemplateString(val) })
-      this.onshow()
-    }, disabled)
-
-    // Template preview
-    const previewRow = el('div', 'inkchapter-custom-row', section)
-    const previewLabel = el('span', 'inkchapter-custom-col-label', previewRow)
-    previewLabel.textContent = '模板预览'
-    const previewValue = el('span', 'inkchapter-template-preview-value', previewRow)
-    // Show preview with sample counter values
-    previewValue.textContent = `${tpl.prefix}${getSampleToken(tpl.tokenStyle)}${tpl.suffix}`
   }
 
   // ── Stage 2: Multilevel composition editor ───────
@@ -616,7 +573,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const section = el('div', 'inkchapter-composition-section', container)
 
     const title = el('div', 'inkchapter-format-header', section)
-    title.textContent = '二、多级组合格式'
+    title.textContent = '一、多级组合格式'
 
     // Reset selection when re-rendering
     if (!activeFmt.some(seg => seg.id === this.selectedSegmentId)) {
@@ -812,7 +769,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const panel = el('div', 'inkchapter-template-section', container)
     const panelTitle = el('div', 'inkchapter-format-header', panel)
-    panelTitle.textContent = '所选序号标签设置'
+    panelTitle.textContent = '二、序号标签设置'
 
     if (selectedSeg.type === 'literal') {
       // Literal editing panel
