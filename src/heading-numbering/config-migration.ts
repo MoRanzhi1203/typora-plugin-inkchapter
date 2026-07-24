@@ -1,5 +1,5 @@
-import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, HeadingNumberingSettings, NumberTokenStyle, NumberFormatSegment, HeadingFormatVariants, MultilevelFormatSegment, MultilevelFormatVariants, HeadingLevelNumberTemplate } from './heading-types'
-import { HEADING_LEVELS, createDefaultLevelTemplate } from './heading-types'
+import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, HeadingNumberingSettings, NumberTokenStyle, NumberFormatSegment, HeadingFormatVariants, MultilevelFormatSegment, MultilevelFormatVariants, HeadingLevelNumberTemplate, ContextualFormatSegment, ContextualFormatVariants, LevelReferenceAppearance } from './heading-types'
+import { HEADING_LEVELS, createDefaultLevelTemplate, createDefaultReferenceAppearance, generateStableId } from './heading-types'
 import { getPresetLevels } from './presets'
 import { stripHiddenLevelReferences } from './numbering-engine'
 import { stripHiddenMultilevelReferences } from './numbering-engine'
@@ -14,7 +14,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 7
+const CURRENT_SCHEMA_VERSION = 8
 
 // ── Validation helpers ─────────────────────────────────
 
@@ -53,6 +53,7 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       formatVariants: { withLevelOne: [], withoutLevelOne: [] },
       levelTemplate: createDefaultLevelTemplate('arabic'),
       multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     }
   }
   return ls
@@ -282,6 +283,53 @@ function migrateLevelToV7(
   }
 }
 
+/**
+ * Convert old MultilevelFormatSegment[] to new ContextualFormatSegment[].
+ * Pulls the referenced level's template to create per-segment appearance.
+ * This makes each reference independent.
+ */
+function convertMultilevelToContextual(
+  multilevel: MultilevelFormatSegment[],
+  levelTemplates: Record<HeadingLevel, HeadingLevelNumberTemplate>,
+): ContextualFormatSegment[] {
+  const result: ContextualFormatSegment[] = []
+  for (const seg of multilevel) {
+    if (seg.type === 'literal') {
+      result.push({ id: generateStableId(), type: 'literal', value: seg.value })
+    } else {
+      const tpl = levelTemplates[seg.level] ?? { tokenStyle: 'arabic' as NumberTokenStyle, prefix: '', suffix: '' }
+      result.push({
+        id: generateStableId(),
+        type: 'level-reference',
+        level: seg.level,
+        appearance: {
+          tokenStyle: tpl.tokenStyle,
+          prefix: tpl.prefix ?? '',
+          suffix: tpl.suffix ?? '',
+        },
+      })
+    }
+  }
+  return result
+}
+
+/**
+ * Migrate multilevel format variants to contextual format variants (v7 → v8).
+ * Copies each level-template-reference's appearance from the level template,
+ * making references independent.
+ */
+function migrateMultilevelToContextual(
+  multilevelVariants: MultilevelFormatVariants | undefined,
+  levelTemplates: Record<HeadingLevel, HeadingLevelNumberTemplate>,
+): ContextualFormatVariants {
+  const withL1 = multilevelVariants?.withLevelOne ?? []
+  const withoutL1 = multilevelVariants?.withoutLevelOne ?? []
+  return {
+    withLevelOne: convertMultilevelToContextual(withL1, levelTemplates),
+    withoutLevelOne: convertMultilevelToContextual(withoutL1, levelTemplates),
+  }
+}
+
 function normalizeMultilevelFormat(raw: unknown, currentLevel: HeadingLevel): MultilevelFormatSegment[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     return [{ type: 'level-template-reference', level: currentLevel }]
@@ -452,6 +500,7 @@ function inferIncludeParents(format: unknown, currentLevel: HeadingLevel): boole
 
 function migrateLegacyLevels(
   legacyLevels: Record<string, unknown> | null | undefined,
+  levelTemplates: Record<HeadingLevel, HeadingLevelNumberTemplate>,
 ): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = defaultLevelStyle()
   if (!legacyLevels || typeof legacyLevels !== 'object') return levels
@@ -475,8 +524,22 @@ function migrateLegacyLevels(
       formatVariants: variants.formatVariants,
       levelTemplate: v7.levelTemplate,
       multilevelFormatVariants: v7.multilevelFormatVariants,
+      contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     }
   }
+
+  // Second pass: build contextual format from multilevel format
+  const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+  for (const lv of HEADING_LEVELS) {
+    templates[lv] = levels[lv].levelTemplate
+  }
+  for (const lv of HEADING_LEVELS) {
+    levels[lv].contextualFormatVariants = migrateMultilevelToContextual(
+      levels[lv].multilevelFormatVariants,
+      templates,
+    )
+  }
+
   return levels
 }
 
@@ -510,7 +573,7 @@ function doMigrate(
   const legacyCustomDef = (s as any)?.customDefinition
   if (legacyCustomDef?.levels && !s.levels) {
     logger.info('检测到旧版 customDefinition 配置，自动迁移中...')
-    s.levels = migrateLegacyLevels(legacyCustomDef.levels)
+    s.levels = migrateLegacyLevels(legacyCustomDef.levels, {} as any)
   }
 
   const preset = validatePreset(s.preset)
@@ -540,8 +603,20 @@ function doMigrate(
           formatVariants: variants.formatVariants,
           levelTemplate: v7.levelTemplate,
           multilevelFormatVariants: v7.multilevelFormatVariants,
+          contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
         }
       }
+    }
+    // Build contextual from multilevel
+    const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+    for (const lv of HEADING_LEVELS) {
+      templates[lv] = levels[lv].levelTemplate
+    }
+    for (const lv of HEADING_LEVELS) {
+      levels[lv].contextualFormatVariants = migrateMultilevelToContextual(
+        levels[lv].multilevelFormatVariants,
+        templates,
+      )
     }
   } else {
     levels = getPresetLevels(preset)
@@ -570,8 +645,20 @@ function doMigrate(
           formatVariants: variants.formatVariants,
           levelTemplate: v7.levelTemplate,
           multilevelFormatVariants: v7.multilevelFormatVariants,
+          contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
         }
       }
+    }
+    // Build contextual from multilevel
+    const templates2: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+    for (const lv of HEADING_LEVELS) {
+      templates2[lv] = customDef[lv].levelTemplate
+    }
+    for (const lv of HEADING_LEVELS) {
+      customDef[lv].contextualFormatVariants = migrateMultilevelToContextual(
+        customDef[lv].multilevelFormatVariants,
+        templates2,
+      )
     }
   } else {
     customDef = { ...levels }

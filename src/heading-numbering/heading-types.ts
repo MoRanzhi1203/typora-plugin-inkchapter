@@ -57,15 +57,64 @@ export interface HeadingLevelNumberTemplate {
  * Layer 2: Multilevel composition segment.
  * References a complete level template (prefix+token+suffix), not just the number.
  * level-template-reference = the entire rendered template for that level.
+ * @deprecated Use ContextualFormatSegment (schemaVersion >= 8).
  */
 export type MultilevelFormatSegment =
   | { type: 'level-template-reference'; level: HeadingLevel }
   | { type: 'literal'; value: string }
 
-/** Dual format storage using multilevel composition segments. (schemaVersion >= 7) */
+/** Dual format storage using multilevel composition segments. (schemaVersion >= 7)
+ * @deprecated Use ContextualFormatVariants (schemaVersion >= 8). */
 export interface MultilevelFormatVariants {
   withLevelOne: MultilevelFormatSegment[]
   withoutLevelOne: MultilevelFormatSegment[]
+}
+
+// ── Contextual model (schemaVersion >= 8) ─────────────────
+
+/**
+ * The appearance of a single level reference within a contextual format.
+ * Each level-reference segment carries its own tokenStyle/prefix/suffix,
+ * independent of the referenced level's global template.
+ */
+export interface LevelReferenceAppearance {
+  tokenStyle: NumberTokenStyle
+  prefix: string
+  suffix: string
+}
+
+/**
+ * A segment in a contextual multilevel format array.
+ * Each segment has a stable `id` and its own independent appearance.
+ *
+ * - level-reference: a reference to a specific heading level,
+ *   with its own tokenStyle/prefix/suffix.
+ * - literal: a plain text string inserted into the label.
+ */
+export type ContextualFormatSegment =
+  | {
+      id: string
+      type: 'level-reference'
+      level: HeadingLevel
+      appearance: LevelReferenceAppearance
+    }
+  | {
+      id: string
+      type: 'literal'
+      value: string
+    }
+
+/** Dual format storage using contextual format segments. (schemaVersion >= 8) */
+export interface ContextualFormatVariants {
+  withLevelOne: ContextualFormatSegment[]
+  withoutLevelOne: ContextualFormatSegment[]
+}
+
+/** Create a default level reference appearance. */
+export function createDefaultReferenceAppearance(
+  tokenStyle: NumberTokenStyle = 'arabic',
+): LevelReferenceAppearance {
+  return { tokenStyle, prefix: '', suffix: '' }
 }
 
 /** Create a default level template for a given token style. */
@@ -99,8 +148,10 @@ export interface HeadingLevelStyle {
 
   /** Layer 1: Per-level number template (prefix + tokenStyle + suffix). */
   levelTemplate: HeadingLevelNumberTemplate
-  /** Layer 2: Multilevel composition using level-template-references. */
+  /** Layer 2: Multilevel composition using level-template-references. (Deprecated: use contextualFormatVariants) */
   multilevelFormatVariants: MultilevelFormatVariants
+  /** Layer 2 (schemaVersion >= 8): Contextual composition with per-reference appearance. */
+  contextualFormatVariants: ContextualFormatVariants
 }
 
 // ── Settings ─────────────────────────────────────────────
@@ -158,3 +209,12 @@ export interface DiffResult {
 }
 
 export const HEADING_LEVELS: readonly HeadingLevel[] = [1, 2, 3, 4, 5, 6]
+
+/** Generate a stable pseudo-random id for format segments. */
+let _idCounter = 0
+export function generateStableId(): string {
+  _idCounter++
+  const rand = Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0')
+  const ts = Date.now().toString(36)
+  return `${ts}-${rand}-${_idCounter}`
+}

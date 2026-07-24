@@ -9,8 +9,9 @@ import type {
   HeadingNumberingSettings,
   NumberTokenStyle,
   MultilevelFormatSegment,
+  ContextualFormatSegment,
 } from '../heading-numbering/heading-types'
-import { HEADING_LEVELS } from '../heading-numbering/heading-types'
+import { HEADING_LEVELS, generateStableId } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import {
@@ -18,6 +19,7 @@ import {
   calculateTargetIndexAfterRemoval,
   normalizeFormatAfterDrag,
   normalizeMultilevelFormatAfterDrag,
+  normalizeContextualFormatAfterDrag,
   createDragState,
   createDebugLog,
 } from '../heading-numbering/format-drag-utils'
@@ -29,8 +31,12 @@ import {
   getActiveFormatVariant,
   getActiveMultilevelFormatVariant,
   getAvailableMultilevelReferenceLevels,
+  getActiveContextualFormatVariant,
+  getAvailableContextualReferenceLevels,
   renderLevelTemplate,
   renderMultilevelFormat,
+  renderContextualLevelReference,
+  renderContextualFormat,
 } from '../heading-numbering/numbering-engine'
 import { PRESET_LIST } from '../heading-numbering/presets'
 
@@ -64,6 +70,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private miniPreviewEls: Map<number, HTMLElement> = new Map()
   private expandedLevel: HeadingLevel | null = null
   private selectEl: HTMLSelectElement | null = null
+  private selectedSegmentId: string | null = null
 
   // ── H1 sync ──────────────────────────────────────
   private globalH1Toggle: HTMLInputElement | null = null
@@ -430,16 +437,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // ═══ Stage 1: Current level template ═══
       this.renderLevelTemplateEditor(editorSection, lv, style, isH1Disabled)
 
-      // Get active multilevel format for display
-      const activeFmt = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
+      // Get active contextual format for display
+      const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
 
-      // ═══ Stage 2: Multilevel composition ═══
+      // ═══ Stage 2: Multilevel composition (contextual model) ═══
       if (!isH1Disabled) {
-        this.renderMultilevelCompositionEditor(editorSection, lv, style, s)
+        if (activeFmt && activeFmt.length > 0) {
+          this.renderContextualCompositionEditor(editorSection, lv, style, s, activeFmt)
+        } else {
+          // Fallback to old multilevel model
+          const mlFmt = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
+          this.renderMultilevelCompositionEditor(editorSection, lv, style, s)
+        }
       }
 
       // ═══ Stage 3: Current level behavior ═══
-      this.renderLevelBehaviorSettings(editorSection, lv, style, isH1Disabled, activeFmt)
+      this.renderLevelBehaviorSettings(editorSection, lv, style, isH1Disabled,
+        (activeFmt && activeFmt.length > 0 ? activeFmt : []) as readonly MultilevelFormatSegment[])
     }
   }
 
@@ -591,6 +605,365 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.numberingService.updateActiveMultilevelFormat(lv, newFmt)
       this.onshow()
     }
+  }
+
+  // ── Contextual composition editor (schemaVersion >= 8) ──
+
+  private renderContextualCompositionEditor(
+    container: HTMLElement,
+    lv: HeadingLevel,
+    style: HeadingLevelStyle,
+    s: HeadingNumberingSettings,
+    activeFmt: readonly ContextualFormatSegment[],
+  ): void {
+    const section = el('div', 'inkchapter-composition-section', container)
+
+    const title = el('div', 'inkchapter-format-header', section)
+    title.textContent = '二、多级组合格式'
+
+    // Reset selection when re-rendering
+    if (!activeFmt.some(seg => seg.id === this.selectedSegmentId)) {
+      this.selectedSegmentId = null
+    }
+
+    // ── Format chips container ───────────────────
+    const fmtContainer = el('div', 'inkchapter-format-container', section)
+    const fmtEl = el('div', 'inkchapter-format-chips', fmtContainer)
+
+    // Click on empty area to deselect
+    fmtEl.addEventListener('click', (e) => {
+      if (e.target === fmtEl) {
+        this.selectedSegmentId = null
+        this.onshow()
+      }
+    })
+
+    // Setup drag delegation for contextual format
+    this.setupContextualDragDelegation(fmtEl, lv, style, activeFmt)
+
+    // Render chips
+    for (let i = 0; i < activeFmt.length; i++) {
+      const seg = activeFmt[i]
+      if (seg.type === 'level-reference') {
+        this.renderContextualLevelRefChip(fmtEl, i, seg, lv, activeFmt, s)
+      } else {
+        this.renderContextualLiteralChip(fmtEl, i, seg, lv, activeFmt)
+      }
+    }
+
+    // ── Property panel for selected segment ───────
+    this.renderContextualPropertyPanel(section, lv, activeFmt, s)
+
+    // ── Insert controls ──────────────────────────
+    const insertRow = el('div', 'inkchapter-format-insert-row', section)
+
+    // Insert literal text
+    const textInput = document.createElement('input')
+    textInput.type = 'text'
+    textInput.placeholder = '输入文字'
+    textInput.style.width = '100px'
+    textInput.className = 'inkchapter-format-text-input'
+    const textBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
+    textBtn.textContent = '插入文字'
+    textBtn.onclick = () => {
+      const val = textInput.value
+      if (val) {
+        const newFmt = [...activeFmt, { id: generateStableId(), type: 'literal' as const, value: sanitize(val) }]
+        this.numberingService.updateActiveContextualFormat(lv, newFmt)
+        this.onshow()
+      }
+    }
+    const textWrap = el('div', undefined, insertRow)
+    textWrap.style.cssText = 'display:flex;align-items:center;gap:4px;'
+    textWrap.appendChild(textInput)
+    textWrap.appendChild(textBtn)
+
+    // Insert level reference
+    const refWrap = el('div', undefined, insertRow)
+    refWrap.style.cssText = 'display:flex;align-items:center;gap:4px;margin-left:12px;'
+    const refSelect = el('select', undefined, refWrap) as HTMLSelectElement
+    const availRefs = getAvailableContextualReferenceLevels(lv, s.showLevelOneNumber, activeFmt)
+    if (availRefs.length === 0) {
+      const opt = document.createElement('option')
+      opt.value = ''
+      opt.textContent = '无可用上级级别'
+      opt.disabled = true
+      refSelect.appendChild(opt)
+    } else {
+      for (const refLv of availRefs) {
+        const opt = document.createElement('option')
+        opt.value = String(refLv)
+        const refStyle = s.levels[refLv]
+        const refTpl = refStyle?.levelTemplate
+        const tplPreview = refTpl ? `${refTpl.prefix}${getSampleToken(refTpl.tokenStyle)}${refTpl.suffix}` : `H${refLv}`
+        opt.textContent = `[H${refLv}: ${tplPreview}]`
+        refSelect.appendChild(opt)
+      }
+    }
+    const refBtn = el('button', 'inkchapter-format-insert-btn', refWrap)
+    refBtn.textContent = '添加'
+    refBtn.onclick = () => {
+      const refLv = Number(refSelect.value) as HeadingLevel
+      if (!refLv || refLv < 1 || refLv > 6) return
+      const cur = activeFmt
+      if (cur.some(s => s.type === 'level-reference' && s.level === refLv)) return
+      // Deep copy default appearance from the referenced level
+      const refStyle = s.levels[refLv]
+      const defaultAppearance = refStyle?.levelTemplate
+        ? { tokenStyle: refStyle.levelTemplate.tokenStyle, prefix: refStyle.levelTemplate.prefix ?? '', suffix: refStyle.levelTemplate.suffix ?? '' }
+        : { tokenStyle: 'arabic' as NumberTokenStyle, prefix: '', suffix: '' }
+      const newFmt = [...cur, {
+        id: generateStableId(),
+        type: 'level-reference' as const,
+        level: refLv,
+        appearance: { ...defaultAppearance },
+      }]
+      this.numberingService.updateActiveContextualFormat(lv, newFmt)
+      this.onshow()
+    }
+  }
+
+  // ── Contextual chip rendering ────────────────────
+
+  private renderContextualLevelRefChip(
+    fmtEl: HTMLElement, idx: number,
+    seg: ContextualFormatSegment & { type: 'level-reference' },
+    lv: HeadingLevel,
+    activeFmt: readonly ContextualFormatSegment[],
+    s: HeadingNumberingSettings,
+  ): void {
+    const chip = el('div', 'inkchapter-format-chip', fmtEl)
+    const tplPreview = `${seg.appearance.prefix}${getSampleToken(seg.appearance.tokenStyle)}${seg.appearance.suffix}`
+    chip.textContent = `[H${seg.level}:${tplPreview}]`
+    chip.setAttribute('data-format-index', String(idx))
+    chip.setAttribute('data-segment-type', 'level-reference')
+    chip.setAttribute('data-segment-level', String(seg.level))
+    chip.setAttribute('data-segment-id', seg.id)
+
+    // Selected state
+    if (seg.id === this.selectedSegmentId) {
+      chip.classList.add('inkchapter-format-chip--selected')
+    }
+
+    // Click to select
+    chip.onclick = (e) => {
+      e.stopPropagation()
+      this.selectedSegmentId = seg.id
+      this.onshow()
+    }
+
+    // Current level ref: can drag, cannot delete
+    if (seg.level === lv) {
+      chip.classList.add('inkchapter-format-chip--current')
+    } else {
+      const close = el('span', 'inkchapter-format-chip-close', chip)
+      close.textContent = ' ×'
+      close.onclick = (e) => {
+        e.stopPropagation()
+        // Maintain selection if removing non-selected chip
+        const newFmt = activeFmt.filter(s => s.id !== seg.id)
+        this.numberingService.updateActiveContextualFormat(lv, newFmt)
+        this.onshow()
+      }
+    }
+  }
+
+  private renderContextualLiteralChip(
+    fmtEl: HTMLElement, idx: number,
+    seg: ContextualFormatSegment & { type: 'literal' },
+    lv: HeadingLevel,
+    activeFmt: readonly ContextualFormatSegment[],
+  ): void {
+    const chip = el('div', 'inkchapter-format-chip', fmtEl)
+    chip.textContent = seg.value || '(空)'
+    chip.setAttribute('data-format-index', String(idx))
+    chip.setAttribute('data-segment-type', 'literal')
+    chip.setAttribute('data-segment-id', seg.id)
+
+    if (seg.id === this.selectedSegmentId) {
+      chip.classList.add('inkchapter-format-chip--selected')
+    }
+
+    chip.onclick = (e) => {
+      e.stopPropagation()
+      this.selectedSegmentId = seg.id
+      this.onshow()
+    }
+
+    const close = el('span', 'inkchapter-format-chip-close', chip)
+    close.textContent = ' ×'
+    close.onclick = (e) => {
+      e.stopPropagation()
+      const newFmt = activeFmt.filter(s => s.id !== seg.id)
+      this.numberingService.updateActiveContextualFormat(lv, newFmt)
+      this.onshow()
+    }
+  }
+
+  // ── Contextual property panel ────────────────────
+
+  private renderContextualPropertyPanel(
+    container: HTMLElement,
+    lv: HeadingLevel,
+    activeFmt: readonly ContextualFormatSegment[],
+    s: HeadingNumberingSettings,
+  ): void {
+    if (!this.selectedSegmentId) return
+
+    const selectedSeg = activeFmt.find(seg => seg.id === this.selectedSegmentId)
+    if (!selectedSeg) return
+
+    const panel = el('div', 'inkchapter-template-section', container)
+    const panelTitle = el('div', 'inkchapter-format-header', panel)
+    panelTitle.textContent = '所选序号标签设置'
+
+    if (selectedSeg.type === 'literal') {
+      // Literal editing panel
+      this.addCustomTextInput(panel, '文字内容', selectedSeg.value, '输入文字', (val) => {
+        const newFmt = activeFmt.map(s =>
+          s.id === selectedSeg.id ? { ...s, value: sanitize(val) } : s
+        )
+        this.numberingService.updateActiveContextualFormat(lv, newFmt)
+        this.onshow()
+      })
+      return
+    }
+
+    // Level reference property panel
+    const refLvLabel = el('div', 'inkchapter-custom-row', panel)
+    const refLvSpan = el('span', 'inkchapter-custom-col-label', refLvLabel)
+    refLvSpan.textContent = '引用级别'
+    const levelDisplay = el('span', undefined, refLvLabel)
+    levelDisplay.textContent = `H${selectedSeg.level}`
+    levelDisplay.style.cssText = 'font-weight:600;'
+
+    // Token style select
+    this.addCustomSelect(panel, '编号样式', TOKEN_STYLE_LABELS, selectedSeg.appearance.tokenStyle, (val) => {
+      this.numberingService.updateContextualSegment(lv, selectedSeg.id, { tokenStyle: val as NumberTokenStyle })
+      this.onshow()
+    })
+
+    // Prefix input
+    this.addCustomTextInput(panel, '前缀', selectedSeg.appearance.prefix, '例如：第', (val) => {
+      this.numberingService.updateContextualSegment(lv, selectedSeg.id, { prefix: sanitizeTemplateString(val) })
+      this.onshow()
+    })
+
+    // Suffix input
+    this.addCustomTextInput(panel, '后缀', selectedSeg.appearance.suffix, '例如：章', (val) => {
+      this.numberingService.updateContextualSegment(lv, selectedSeg.id, { suffix: sanitizeTemplateString(val) })
+      this.onshow()
+    })
+
+    // Preview
+    const previewRow = el('div', 'inkchapter-custom-row', panel)
+    const previewLabel = el('span', 'inkchapter-custom-col-label', previewRow)
+    previewLabel.textContent = '标签预览'
+    const previewValue = el('span', 'inkchapter-template-preview-value', previewRow)
+    previewValue.textContent = `${selectedSeg.appearance.prefix}${getSampleToken(selectedSeg.appearance.tokenStyle)}${selectedSeg.appearance.suffix}`
+  }
+
+  // ── Contextual drag delegation ───────────────────
+
+  private setupContextualDragDelegation(
+    fmtEl: HTMLElement,
+    lv: HeadingLevel,
+    style: HeadingLevelStyle,
+    activeFmt: readonly ContextualFormatSegment[],
+  ): void {
+    ;(fmtEl as any).__dragLevel = lv
+    ;(fmtEl as any).__dragStyle = style
+    ;(fmtEl as any).__dragFmt = activeFmt
+
+    fmtEl.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (e.button !== 0) return
+      const target = e.target as HTMLElement
+      if (target.closest('.inkchapter-format-chip-close')) return
+      if (target.closest('input, select, button')) return
+
+      const chip = target.closest('[data-format-index]') as HTMLElement | null
+      if (!chip) return
+
+      const idx = Number(chip.getAttribute('data-format-index'))
+      if (isNaN(idx) || idx < 0) return
+
+      e.preventDefault()
+      this.onContextualDragStart(fmtEl, idx, e.clientX, e.clientY)
+    })
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.dragState) {
+        this.cancelDrag('Escape')
+      }
+    }
+    fmtEl.addEventListener('keydown', onKey)
+  }
+
+  private onContextualDragStart(container: HTMLElement, idx: number, clientX: number, clientY: number): void {
+    if (this.dragState) this.cancelDrag('re-drag')
+    this.dragState = createDragState(idx, clientX, clientY)
+
+    const lv = (container as any).__dragLevel as HeadingLevel
+    const style = (container as any).__dragStyle as HeadingLevelStyle
+
+    const onMove = (e: PointerEvent) => this.onDragMove(container, e.clientX, e.clientY)
+    const onUp = (e: PointerEvent) => {
+      if (e.button !== 0) return
+      this.onContextualDragEnd(container, lv, style)
+    }
+    const onCancel = () => this.cancelDrag('pointercancel')
+
+    document.addEventListener('pointermove', onMove, { passive: true })
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onCancel)
+
+    this.dragState.cleanupFns.push(
+      () => document.removeEventListener('pointermove', onMove),
+      () => document.removeEventListener('pointerup', onUp),
+      () => document.removeEventListener('pointercancel', onCancel),
+    )
+  }
+
+  private onContextualDragEnd(
+    container: HTMLElement,
+    lv: HeadingLevel,
+    style: HeadingLevelStyle,
+  ): void {
+    if (!this.dragState) return
+    const ds = this.dragState
+
+    if (!ds.isDragging) {
+      this.cancelDrag('no-move')
+      return
+    }
+
+    const s = this.headingSettings
+    const before = [...getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)]
+    const draggingIdx = ds.draggingIndex
+    const targetIdx = ds.targetIndexAfterRemoval
+
+    if (targetIdx === draggingIdx) {
+      this.cancelDrag('same-position')
+      return
+    }
+
+    const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
+
+    const hiddenLevels = new Set<HeadingLevel>()
+    if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
+
+    const after = normalizeContextualFormatAfterDrag(moved, lv, hiddenLevels)
+
+    // Preserve selected segment id after drag
+    const draggedId = before[draggingIdx]?.id
+    if (draggedId && !after.some(s => s.id === draggedId)) {
+      this.selectedSegmentId = draggedId
+    }
+
+    this.cancelDrag('commit')
+
+    this.numberingService.updateActiveContextualFormat(lv, after)
+    this.onshow()
   }
 
   // ── Stage 3: Current level behavior settings ────
