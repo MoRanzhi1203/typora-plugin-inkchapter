@@ -607,16 +607,27 @@ function doMigrate(
         }
       }
     }
-    // Build contextual from multilevel
+    // Build contextual from multilevel ONLY if not already populated
     const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
     for (const lv of HEADING_LEVELS) {
       templates[lv] = levels[lv].levelTemplate
     }
     for (const lv of HEADING_LEVELS) {
-      levels[lv].contextualFormatVariants = migrateMultilevelToContextual(
-        levels[lv].multilevelFormatVariants,
-        templates,
-      )
+      const stored = s.levels?.[lv]
+      const existingContextual = (stored as any)?.contextualFormatVariants
+      if (existingContextual && (existingContextual.withLevelOne?.length > 0 || existingContextual.withoutLevelOne?.length > 0)) {
+        // Preserve existing contextual format; only migrate as deep copy
+        levels[lv].contextualFormatVariants = {
+          withLevelOne: (existingContextual.withLevelOne || []).map((seg: any) => ({ ...seg })),
+          withoutLevelOne: (existingContextual.withoutLevelOne || []).map((seg: any) => ({ ...seg })),
+        }
+      } else {
+        // First migration: generate from multilevel
+        levels[lv].contextualFormatVariants = migrateMultilevelToContextual(
+          levels[lv].multilevelFormatVariants,
+          templates,
+        )
+      }
     }
   } else {
     levels = getPresetLevels(preset)

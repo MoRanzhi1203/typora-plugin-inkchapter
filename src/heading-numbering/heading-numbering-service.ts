@@ -8,6 +8,9 @@ import type {
   HeadingLevel,
   HeadingLevelStyle,
   HeadingNumberingPreset,
+  MultilevelFormatSegment,
+  MultilevelFormatVariants,
+  ContextualFormatVariants,
 } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant } from './numbering-engine'
@@ -33,6 +36,24 @@ const FORCE_REFRESH_REASONS: Set<RefreshReason> = new Set([
   'toggle', 'manual', 'initial-load', 'focus-in', 'decoration-repair',
   'file-open', 'active-leaf-change',
 ])
+
+/**
+ * Convert contextual format variants back to multilevel format variants.
+ * This keeps the two models in sync for backward compatibility.
+ */
+function contextualToMultilevelVariants(
+  contextual: ContextualFormatVariants,
+): MultilevelFormatVariants {
+  const convert = (segs: readonly import('./heading-types').ContextualFormatSegment[]): MultilevelFormatSegment[] =>
+    segs.map(seg => {
+      if (seg.type === 'literal') return { type: 'literal', value: seg.value }
+      return { type: 'level-template-reference', level: seg.level }
+    })
+  return {
+    withLevelOne: convert(contextual.withLevelOne),
+    withoutLevelOne: convert(contextual.withoutLevelOne),
+  }
+}
 
 export class HeadingNumberingService {
   private numberingSettings: HeadingNumberingSettings
@@ -222,6 +243,9 @@ export class HeadingNumberingService {
       nextFormat,
     )
 
+    // Sync multilevelFormatVariants from contextual for backward compat
+    updated.multilevelFormatVariants = contextualToMultilevelVariants(updated.contextualFormatVariants)
+
     this.numberingSettings.levels = {
       ...this.numberingSettings.levels,
       [level]: updated,
@@ -271,6 +295,9 @@ export class HeadingNumberingService {
       showL1,
       nextFmt,
     )
+
+    // Sync multilevelFormatVariants for backward compat
+    updated.multilevelFormatVariants = contextualToMultilevelVariants(updated.contextualFormatVariants)
 
     this.numberingSettings.levels = {
       ...this.numberingSettings.levels,
