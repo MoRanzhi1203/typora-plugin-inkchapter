@@ -407,21 +407,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const editorSection = el('div', 'inkchapter-editor-bottom')
       this.containerEl.appendChild(editorSection)
 
-      // H1 notice / panel checkbox
+      // H1 visibility status (read-only)
       if (lv === 1) {
-        if (isH1Disabled) {
-          const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
-          h1Notice.textContent = 'H1 编号当前已关闭'
-          const h1SubNotice = el('div', 'inkchapter-custom-h1-subnotice', editorSection)
-          h1SubNotice.textContent = '由上方「一级标题显示编号」控制'
+        const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
+        h1Notice.textContent = h1Visible ? 'H1 编号当前已开启' : 'H1 编号当前已关闭'
+        h1Notice.setAttribute('aria-live', 'polite')
+        if (h1Visible) {
+          h1Notice.classList.add('inkchapter-h1-visibility--enabled')
         } else {
-          const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorSection)
-          h1Notice.textContent = 'H1 显示编号（与上方同步）'
-          this.addCustomCheckbox(editorSection, '显示 H1 编号', h1Visible, (checked) => {
-            if (this.syncingLevelOneUi) return
-            this.applyLevelOneVisibility(checked, 'h1-panel')
-          })
+          h1Notice.classList.add('inkchapter-h1-visibility--disabled')
         }
+        const h1SubNotice = el('div', 'inkchapter-custom-h1-subnotice', editorSection)
+        h1SubNotice.textContent = '由上方「一级标题显示编号」控制'
       }
 
       // Mode indicator for H2-H6
