@@ -15,12 +15,17 @@ export interface NumberedHeading extends HeadingDescriptor {
 
 export type NumberTokenStyle =
   | 'arabic'
+  | 'fullwidth-arabic'
   | 'chinese'
   | 'chinese-financial'
   | 'roman-upper'
   | 'roman-lower'
   | 'alpha-upper'
   | 'alpha-lower'
+  | 'upper-greek'
+  | 'lower-greek'
+  | 'heavenly-stems'
+  | 'earthly-branches'
   | 'circled'
 
 export type HeadingNumberingPreset =

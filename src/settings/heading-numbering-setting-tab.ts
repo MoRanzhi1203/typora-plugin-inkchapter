@@ -40,14 +40,20 @@ import {
 } from '../heading-numbering/numbering-engine'
 import { PRESET_LIST } from '../heading-numbering/presets'
 
-const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string }[] = [
-  { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)' },
-  { value: 'chinese', label: '中文数字 (一, 二, 三)' },
-  { value: 'roman-upper', label: '大写罗马 (I, II, III)' },
-  { value: 'roman-lower', label: '小写罗马 (i, ii, iii)' },
-  { value: 'alpha-upper', label: '大写字母 (A, B, C)' },
-  { value: 'alpha-lower', label: '小写字母 (a, b, c)' },
-  { value: 'circled', label: '带圈数字 (①, ②, ③)' },
+const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string; group?: string }[] = [
+  { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)', group: '数字' },
+  { value: 'fullwidth-arabic', label: '全角阿拉伯数字 (１, ２, ３)', group: '数字' },
+  { value: 'chinese', label: '中文数字 (一, 二, 三)', group: '数字' },
+  { value: 'chinese-financial', label: '大写中文数字 (壹, 贰, 叁)', group: '数字' },
+  { value: 'circled', label: '带圈数字 (①, ②, ③)', group: '数字' },
+  { value: 'alpha-upper', label: '大写字母 (A, B, C)', group: '字母' },
+  { value: 'alpha-lower', label: '小写字母 (a, b, c)', group: '字母' },
+  { value: 'upper-greek', label: '大写希腊字母 (Α, Β, Γ)', group: '字母' },
+  { value: 'lower-greek', label: '小写希腊字母 (α, β, γ)', group: '字母' },
+  { value: 'heavenly-stems', label: '天干 (甲, 乙, 丙)', group: '传统序列' },
+  { value: 'earthly-branches', label: '地支 (子, 丑, 寅)', group: '传统序列' },
+  { value: 'roman-upper', label: '大写罗马 (I, II, III)', group: '罗马数字' },
+  { value: 'roman-lower', label: '小写罗马 (i, ii, iii)', group: '罗马数字' },
 ]
 
 const PRESET_CARDS: { key: HeadingNumberingPreset; name: string; desc: string; previewLines: string[] }[] = [
@@ -1376,7 +1382,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private addCustomSelect(
     container: HTMLElement, label: string,
-    options: { value: string; label: string }[],
+    options: { value: string; label: string; group?: string }[],
     value: string, onChange: (val: string) => void,
     disabled = false,
   ): void {
@@ -1385,12 +1391,29 @@ export class HeadingNumberingSettingTab extends SettingTab {
     span.textContent = label
     const select = document.createElement('select')
     select.disabled = disabled
+    select.style.minWidth = '220px'
+
+    // Build optgroups
+    const groups = new Map<string, HTMLOptGroupElement>()
+    const flatOpts: HTMLOptionElement[] = []
+
     for (const opt of options) {
       const o = document.createElement('option')
       o.value = opt.value
       o.textContent = opt.label
       o.selected = opt.value === value
-      select.appendChild(o)
+      if (opt.group) {
+        let g = groups.get(opt.group)
+        if (!g) {
+          g = document.createElement('optgroup')
+          g.label = opt.group
+          groups.set(opt.group, g)
+          select.appendChild(g)
+        }
+        g.appendChild(o)
+      } else {
+        select.appendChild(o)
+      }
     }
     select.onchange = () => onChange(select.value)
     row.appendChild(select)
@@ -1456,12 +1479,17 @@ function sanitizeTemplateString(val: string): string {
 function getSampleToken(style: NumberTokenStyle): string {
   switch (style) {
     case 'arabic': return '1'
+    case 'fullwidth-arabic': return '１'
     case 'chinese': return '一'
     case 'chinese-financial': return '壹'
     case 'roman-upper': return 'I'
     case 'roman-lower': return 'i'
     case 'alpha-upper': return 'A'
     case 'alpha-lower': return 'a'
+    case 'upper-greek': return 'Α'
+    case 'lower-greek': return 'α'
+    case 'heavenly-stems': return '甲'
+    case 'earthly-branches': return '子'
     case 'circled': return '①'
     default: return '1'
   }
