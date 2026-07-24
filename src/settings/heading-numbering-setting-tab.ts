@@ -11,7 +11,7 @@ import type {
   MultilevelFormatSegment,
   ContextualFormatSegment,
 } from '../heading-numbering/heading-types'
-import { HEADING_LEVELS, generateStableId } from '../heading-numbering/heading-types'
+import { HEADING_LEVELS, generateStableId, clampMaxLevel } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import {
@@ -274,6 +274,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       })
     })
 
+    // ── Level range ────────────────────────────────
+    this.addSettingTitle('标题有效级数范围')
+    this.renderLevelRangeSection()
+
     // ── Live Preview ────────────────────────────────
     this.addSettingTitle('实时预览')
     this.previewEl = el('div', 'inkchapter-preview')
@@ -362,6 +366,223 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.onshow()
   }
 
+  // ── Level range UI ──────────────────────────────
+
+  private renderLevelRangeSection(): void {
+    const rangeSettings = this.numberingService.getLevelRangeSettings()
+    const docPath = this.numberingService.getActiveFilePath()
+    const effectiveMax = this.numberingService.getEffectiveMaxLevel()
+
+    // Global default max level
+    this.addSetting((setting) => {
+      setting.addName('全局默认范围')
+      setting.addDescription('新文档默认的有效标题级数范围。降低后不影响已有文档的标题，仅新文档生效。')
+      setting.addSelect((select) => {
+        select.style.minWidth = '160px'
+        for (const max of [2, 3, 4, 5, 6] as const) {
+          const opt = document.createElement('option')
+          opt.value = String(max)
+          opt.textContent = `H1 – H${max}`
+          opt.selected = max === rangeSettings.defaultMaxLevel
+          select.appendChild(opt)
+        }
+        select.onchange = () => {
+          const newMax = parseInt(select.value, 10) as 2 | 3 | 4 | 5 | 6
+          this.numberingService.setDefaultMaxLevel(newMax)
+          this.onshow()
+        }
+      })
+    })
+
+    // Current document override
+    if (docPath) {
+      const docOverride = rangeSettings.documentOverrides[docPath]
+      const docMode = docOverride?.mode ?? 'inherit'
+
+      this.addSetting((setting) => {
+        setting.addName('当前文档')
+        setting.addDescription(`当前生效范围：H1 – H${effectiveMax}。可独立设置以覆盖全局。`)
+
+        const btnRow = el('div', 'inkchapter-levelrange-btnrow')
+        setting.containerEl.appendChild(btnRow)
+
+        const inheritBtn = el('button', 'inkchapter-btn', btnRow)
+        inheritBtn.textContent = '继承全局'
+        inheritBtn.style.marginRight = '8px'
+        if (docMode === 'inherit') inheritBtn.classList.add('inkchapter-btn--active')
+        inheritBtn.onclick = () => {
+          this.handleInheritGlobal(docPath)
+        }
+
+        const customBtn = el('button', 'inkchapter-btn', btnRow)
+        customBtn.textContent = '独立设置'
+        if (docMode === 'custom') customBtn.classList.add('inkchapter-btn--active')
+        customBtn.onclick = () => {
+          // Set to custom mode with current effective max, then re-render to show inline controls
+          const clampedMax = clampMaxLevel(effectiveMax)
+          this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: clampedMax })
+          this.onshow()
+        }
+      })
+
+      if (docMode === 'custom') {
+        this.addSetting((setting) => {
+          setting.addName('当前文档范围')
+          setting.addDescription('独立设置后仅影响当前文档，不改变全局默认。')
+
+          const dd = el('div', 'inkchapter-doc-override-controls')
+          setting.containerEl.appendChild(dd)
+
+          const docSelect = document.createElement('select')
+          docSelect.style.minWidth = '160px'
+          for (const max of [2, 3, 4, 5, 6] as const) {
+            const opt = document.createElement('option')
+            opt.value = String(max)
+            opt.textContent = `H1 – H${max}`
+            opt.selected = max === effectiveMax
+            docSelect.appendChild(opt)
+          }
+          dd.appendChild(docSelect)
+
+          const saveBtn = el('button', 'inkchapter-btn', dd)
+          saveBtn.textContent = '保存'
+          saveBtn.style.marginLeft = '8px'
+          saveBtn.onclick = () => {
+            const newMax = parseInt(docSelect.value, 10) as 2 | 3 | 4 | 5 | 6
+            this.handleDocumentLevelChange(docPath, newMax)
+          }
+        })
+      }
+    } else {
+      this.addSetting((setting) => {
+        setting.addName('当前文档')
+        setting.addDescription('未检测到打开的文档。打开 Markdown 文件后可设置文档独立范围。')
+      })
+    }
+
+    // Effective level display
+    if (effectiveMax < 6) {
+      this.addSetting((setting) => {
+        setting.addName('级别状态')
+        setting.addDescription((descDiv) => {
+          for (const lv of [1, 2, 3, 4, 5, 6] as const) {
+            const tag = el('span', 'inkchapter-level-range-tag', descDiv)
+            tag.textContent = lv > effectiveMax ? `级别${lv} 超出范围` : `级别${lv}`
+            if (lv > effectiveMax) tag.classList.add('inkchapter-level-range-tag--out')
+            descDiv.appendChild(tag)
+            if (lv < 6) descDiv.appendChild(document.createTextNode(' '))
+          }
+        })
+      })
+    }
+  }
+
+  /** Handle document-level max level change with conflict detection. */
+  private handleDocumentLevelChange(docPath: string, newMax: 2 | 3 | 4 | 5 | 6): void {
+    // Scan with the NEW max level to detect conflicts
+    const scan = this.numberingService.scanDocumentHeadings(newMax)
+
+    if (scan.outOfRange.length === 0) {
+      // No conflicts: just save
+      this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: newMax })
+      this.onshow()
+      return
+    }
+
+    // Conflict detected: show dialog
+    this.showRangeReduceDialog(docPath, newMax, scan.outOfRange)
+  }
+
+  /** Handle "inherit global" transition with conflict detection. */
+  private handleInheritGlobal(docPath: string): void {
+    const rangeSettings = this.numberingService.getLevelRangeSettings()
+    const globalMax = rangeSettings.defaultMaxLevel
+    const currentEffective = this.numberingService.getEffectiveMaxLevel()
+
+    // If global default is higher or same, no conflict possible
+    if (globalMax >= currentEffective) {
+      this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
+      this.onshow()
+      return
+    }
+
+    // Global default is lower than current: check for out-of-range headings
+    const scan = this.numberingService.scanDocumentHeadings(globalMax)
+    if (scan.outOfRange.length === 0) {
+      this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
+      this.onshow()
+      return
+    }
+
+    // Conflict: show dialog, save as inherit after user choice
+    this.showRangeReduceDialog(docPath, globalMax, scan.outOfRange, 'inherit')
+  }
+
+  // ── Three-option dialog ──────────────────────────
+
+  private showRangeReduceDialog(
+    docPath: string,
+    newMax: 2 | 3 | 4 | 5 | 6,
+    outOfRangeHeadings: import('../heading-numbering/level-range-utils').ParsedHeading[],
+    targetMode: 'custom' | 'inherit' = 'custom',
+  ): void {
+    // Remove existing dialog if any
+    const existing = document.querySelector('.inkchapter-dialog-overlay')
+    if (existing) existing.remove()
+
+    const overlay = el('div', 'inkchapter-dialog-overlay')
+    const dialog = el('div', 'inkchapter-dialog', overlay)
+
+    const title = el('div', 'inkchapter-dialog-title', dialog)
+    title.textContent = '检测到超出范围的标题'
+
+    const body = el('div', 'inkchapter-dialog-body', dialog)
+    const previewList = outOfRangeHeadings.slice(0, 5)
+    body.innerHTML = `
+      <p>当前文档有 <strong>${outOfRangeHeadings.length}</strong> 个标题超出 H${newMax} 范围：</p>
+      <ul>${previewList.map(h => `<li>H${h.level} - ${escapeHtml(h.text.slice(0, 40))}${h.text.length > 40 ? '...' : ''}</li>`).join('')}</ul>
+      ${outOfRangeHeadings.length > 5 ? `<p>...等 ${outOfRangeHeadings.length - 5} 个</p>` : ''}
+    `
+
+    const btnRow = el('div', 'inkchapter-dialog-buttons', dialog)
+
+    const cancelBtn = el('button', 'inkchapter-btn', btnRow)
+    cancelBtn.textContent = '取消'
+    cancelBtn.onclick = () => overlay.remove()
+
+    const limitBtn = el('button', 'inkchapter-btn', btnRow)
+    limitBtn.textContent = '仅限制后续'
+    limitBtn.title = '保存范围，现有标题保持不变，后续操作最多创建对应级别'
+    limitBtn.onclick = () => {
+      overlay.remove()
+      if (targetMode === 'inherit') {
+        this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
+      } else {
+        this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: newMax })
+      }
+      this.onshow()
+    }
+
+    const convertBtn = el('button', 'inkchapter-btn inkchapter-btn--danger', btnRow)
+    convertBtn.textContent = '转换超范围标题'
+    convertBtn.title = '将超出范围的标题转为加粗段落，支持 Ctrl+Z 撤销'
+    convertBtn.onclick = () => {
+      overlay.remove()
+      if (targetMode === 'inherit') {
+        this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
+      } else {
+        this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: newMax })
+      }
+      const converted = this.numberingService.convertOutOfRangeHeadings()
+      if (converted) {
+        console.log(`[InkChapter] 已将 ${outOfRangeHeadings.length} 个超出范围标题转为加粗段落`)
+      }
+      this.onshow()
+    }
+
+    document.body.appendChild(overlay)
+  }
+
   // ── Custom panels (Two-stage: template → composition) ──
 
   private renderCustomPanels(s: HeadingNumberingSettings): void {
@@ -387,6 +608,20 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const statusTag = el('span', 'inkchapter-level-status-tag', lvBtn)
         statusTag.textContent = '已关闭'
         lvBtn.setAttribute('aria-disabled', 'true')
+      }
+
+      // Out-of-range level display
+      const effectiveMax = this.numberingService.getEffectiveMaxLevel()
+      if (lv > effectiveMax) {
+        lvBtn.classList.add('is-h1-numbering-disabled')
+        const statusTag = el('span', 'inkchapter-level-status-tag', lvBtn)
+        statusTag.textContent = '超出范围'
+        lvBtn.setAttribute('aria-disabled', 'true')
+        // Disable click for out-of-range levels
+        lvBtn.onclick = () => {
+          // no-op: out-of-range levels cannot be expanded
+        }
+        continue
       }
 
       lvBtn.onclick = () => {
@@ -1465,6 +1700,15 @@ function sanitize(val: string): string {
     .replace(/[<>]/g, '')
     .replace(/\n/g, '')
     .slice(0, 32)
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }
 
 function sanitizeTemplateString(val: string): string {

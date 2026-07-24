@@ -16,7 +16,7 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
-const CURRENT_SCHEMA_VERSION = 8
+const CURRENT_SCHEMA_VERSION = 9
 
 // ── Validation helpers ─────────────────────────────────
 

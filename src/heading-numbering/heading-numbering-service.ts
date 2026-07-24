@@ -11,7 +11,11 @@ import type {
   MultilevelFormatSegment,
   MultilevelFormatVariants,
   ContextualFormatVariants,
+  MaxHeadingLevel,
+  HeadingLevelRangeSettings,
+  DocumentHeadingLevelOverride,
 } from './heading-types'
+import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
@@ -19,6 +23,7 @@ import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
 import { getPresetLevels, getPresetPreview } from './presets'
+import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import * as logger from '../core/logger'
 
 const TAIL_REFRESH_MS = 60
@@ -29,6 +34,12 @@ export interface ServiceContext {
   onWorkspaceEvent: <K extends string>(event: K, listener: (...args: never[]) => void) => () => void
   onEditorEvent: <K extends string>(event: K, listener: (...args: never[]) => void) => () => void
   registerDisposable: (fn: () => void) => void
+  /** Optional: get the currently open file path (for document-level overrides). */
+  getActiveFilePath?: () => string | null
+  /** Optional: get the raw markdown content of the current editor. */
+  getMarkdown?: () => string
+  /** Optional: replace editor content with undo support. */
+  reloadContent?: (markdown: string) => void
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
@@ -435,6 +446,93 @@ export class HeadingNumberingService {
     return getPresetPreview(this.numberingSettings.preset)
   }
 
+  // ── Level range ──────────────────────────────────────
+
+  /** Get the current level range settings from plugin config. */
+  getLevelRangeSettings(): HeadingLevelRangeSettings {
+    const raw = this.ctx.settings.get('levelRange')
+    if (!raw) return { defaultMaxLevel: 6, documentOverrides: {} }
+    return {
+      defaultMaxLevel: clampMaxLevel(raw.defaultMaxLevel),
+      documentOverrides: raw.documentOverrides ?? {},
+    }
+  }
+
+  /** Resolve the effective max level for the currently open document. */
+  getEffectiveMaxLevel(): HeadingLevel {
+    const rangeSettings = this.getLevelRangeSettings()
+    const docPath = this.getActiveFilePath()
+    return resolveEffectiveMaxLevel(rangeSettings, docPath)
+  }
+
+  /** Get the path of the currently active file, or null if none. */
+  getActiveFilePath(): string | null {
+    return this.ctx.getActiveFilePath?.() ?? null
+  }
+
+  /** Set the global default max heading level. */
+  setDefaultMaxLevel(maxLevel: MaxHeadingLevel): void {
+    const rangeSettings = this.getLevelRangeSettings()
+    rangeSettings.defaultMaxLevel = maxLevel
+    this.ctx.settings.set('levelRange', { ...rangeSettings })
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /** Set a per-document override for the given file path. */
+  setDocumentOverride(docPath: string, override: DocumentHeadingLevelOverride): void {
+    const rangeSettings = this.getLevelRangeSettings()
+    rangeSettings.documentOverrides = {
+      ...rangeSettings.documentOverrides,
+      [docPath]: override,
+    }
+    this.ctx.settings.set('levelRange', { ...rangeSettings })
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /** Remove a per-document override. */
+  removeDocumentOverride(docPath: string): void {
+    const rangeSettings = this.getLevelRangeSettings()
+    if (rangeSettings.documentOverrides[docPath]) {
+      delete rangeSettings.documentOverrides[docPath]
+      rangeSettings.documentOverrides = { ...rangeSettings.documentOverrides }
+      this.ctx.settings.set('levelRange', { ...rangeSettings })
+    }
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /**
+   * Scan the current document for headings and identify out-of-range ones.
+   * Uses editor.getMarkdown() for text-based parsing.
+   * @param maxLevel Optional max level override. Defaults to current effective max.
+   */
+  scanDocumentHeadings(maxLevel?: number): HeadingScanResult {
+    const ml = maxLevel ?? this.getEffectiveMaxLevel()
+    const md = this.ctx.getMarkdown?.() ?? ''
+    return scanHeadingsForRange(md, ml)
+  }
+
+  /**
+   * Convert out-of-range headings to bold paragraphs with undo support.
+   * Returns true if conversion was performed.
+   */
+  convertOutOfRangeHeadings(): boolean {
+    const scan = this.scanDocumentHeadings()
+    if (scan.outOfRange.length === 0) return false
+
+    const md = this.ctx.getMarkdown?.() ?? ''
+    const newMd = convertHeadingsToBold(md, scan.outOfRange)
+    if (newMd === md) return false
+
+    this.ctx.reloadContent?.(newMd)
+    return true
+  }
+
   dispose(): void {
     this.cancelPending()
     this.disconnectObserver()
@@ -537,6 +635,10 @@ export class HeadingNumberingService {
         this.renderedStates = null
         return
       }
+
+      // Apply effective max level from level range settings
+      const effectiveMax = this.getEffectiveMaxLevel()
+      this.numberingSettings.maxDepth = effectiveMax
 
       const numbered = computeHeadingNumbering(headings, this.numberingSettings)
       const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
