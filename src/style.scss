@@ -312,7 +312,7 @@
 }
 
 .inkchapter-editor-left {
-  flex: 0 0 80px;
+  flex: 0 0 100px;
 }
 
 .inkchapter-editor-level-title {
@@ -331,6 +331,8 @@
   font-size: 0.85em;
   user-select: none;
   outline: none;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .inkchapter-editor-level-btn:hover {
