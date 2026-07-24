@@ -6,12 +6,17 @@ export function formatToken(n: number, style: NumberTokenStyle): string {
 
   switch (style) {
     case 'arabic': return String(n)
+    case 'fullwidth-arabic': return toFullwidthArabic(n)
     case 'chinese': return toChinese(n)
     case 'chinese-financial': return toChineseFinancial(n)
     case 'roman-upper': return toRoman(n, true)
     case 'roman-lower': return toRoman(n, false)
     case 'alpha-upper': return toAlpha(n, true)
     case 'alpha-lower': return toAlpha(n, false)
+    case 'upper-greek': return formatAlphabeticSequence(n, GREEK_UPPER)
+    case 'lower-greek': return formatAlphabeticSequence(n, GREEK_LOWER)
+    case 'heavenly-stems': return formatAlphabeticSequence(n, HEAVENLY_STEMS)
+    case 'earthly-branches': return formatAlphabeticSequence(n, EARTHLY_BRANCHES)
     case 'circled': return toCircled(n)
   }
 }
@@ -182,11 +187,67 @@ function toCircled(n: number): string {
   return String(n)
 }
 
+// ── Fullwidth Arabic ─────────────────────────────────────
+
+function toFullwidthArabic(n: number): string {
+  return String(n).replace(
+    /\d/g,
+    digit => String.fromCharCode(digit.charCodeAt(0) + 0xFEE0),
+  )
+}
+
+// ── Generic alphabetic sequence ──────────────────────────
+
+/** Excel-style alphabetic sequence over an arbitrary alphabet. */
+export function formatAlphabeticSequence(
+  n: number,
+  alphabet: readonly string[],
+): string {
+  if (n < 1) return '0'
+  const len = alphabet.length
+  let result = ''
+  let remaining = n
+  while (remaining > 0) {
+    remaining--
+    result = alphabet[remaining % len] + result
+    remaining = Math.floor(remaining / len)
+  }
+  return result
+}
+
+// ── Greek alphabet ───────────────────────────────────────
+
+const GREEK_UPPER: readonly string[] = [
+  'Α', 'Β', 'Γ', 'Δ', 'Ε', 'Ζ', 'Η', 'Θ',
+  'Ι', 'Κ', 'Λ', 'Μ', 'Ν', 'Ξ', 'Ο',
+  'Π', 'Ρ', 'Σ', 'Τ', 'Υ', 'Φ', 'Χ', 'Ψ', 'Ω',
+]
+
+const GREEK_LOWER: readonly string[] = [
+  'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ',
+  'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο',
+  'π', 'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
+]
+
+// ── Heavenly Stems ───────────────────────────────────────
+
+const HEAVENLY_STEMS: readonly string[] = [
+  '甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸',
+]
+
+// ── Earthly Branches ─────────────────────────────────────
+
+const EARTHLY_BRANCHES: readonly string[] = [
+  '子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥',
+]
+
 // ── Validation ───────────────────────────────────────────
 
 const VALID_TOKEN_STYLES: Set<string> = new Set([
-  'arabic', 'chinese', 'chinese-financial',
-  'roman-upper', 'roman-lower', 'alpha-upper', 'alpha-lower', 'circled',
+  'arabic', 'fullwidth-arabic', 'chinese', 'chinese-financial',
+  'roman-upper', 'roman-lower', 'alpha-upper', 'alpha-lower',
+  'upper-greek', 'lower-greek', 'heavenly-stems', 'earthly-branches',
+  'circled',
 ])
 
 export function isValidTokenStyle(s: string): s is NumberTokenStyle {

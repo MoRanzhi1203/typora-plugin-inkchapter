@@ -6,8 +6,10 @@ import { stripHiddenMultilevelReferences } from './numbering-engine'
 import * as logger from '../core/logger'
 
 const VALID_TOKEN_STYLES: ReadonlySet<string> = new Set([
-  'arabic', 'chinese', 'chinese-financial',
-  'roman-upper', 'roman-lower', 'alpha-upper', 'alpha-lower', 'circled',
+  'arabic', 'fullwidth-arabic', 'chinese', 'chinese-financial',
+  'roman-upper', 'roman-lower', 'alpha-upper', 'alpha-lower',
+  'upper-greek', 'lower-greek', 'heavenly-stems', 'earthly-branches',
+  'circled',
 ])
 
 const VALID_PRESETS: ReadonlySet<string> = new Set([
