@@ -215,6 +215,47 @@ export interface DiffResult {
 
 export const HEADING_LEVELS: readonly HeadingLevel[] = [1, 2, 3, 4, 5, 6]
 
+// ── Heading level range ──────────────────────────────────
+
+/** Maximum effective heading level. 2=H1-H2, 6=H1-H6. */
+export type MaxHeadingLevel = 2 | 3 | 4 | 5 | 6
+
+/** Range: H1-H2, H1-H3, ..., H1-H6. Never H1-H1. */
+export const ALLOWED_MAX_LEVELS: readonly MaxHeadingLevel[] = [2, 3, 4, 5, 6]
+
+/** Per-document heading level override. */
+export interface DocumentHeadingLevelOverride {
+  mode: 'inherit' | 'custom'
+  maxLevel?: MaxHeadingLevel
+}
+
+/** Global + per-document heading level range settings. */
+export interface HeadingLevelRangeSettings {
+  defaultMaxLevel: MaxHeadingLevel
+  documentOverrides: Record<string, DocumentHeadingLevelOverride>
+}
+
+/** Compute the effective max heading level for a given document. */
+export function resolveEffectiveMaxLevel(
+  rangeSettings: HeadingLevelRangeSettings,
+  docPath: string | null,
+): HeadingLevel {
+  if (docPath) {
+    const override = rangeSettings.documentOverrides[docPath]
+    if (override?.mode === 'custom' && override.maxLevel != null) {
+      return override.maxLevel
+    }
+  }
+  return rangeSettings.defaultMaxLevel
+}
+
+/** Validate/normalize a maxLevel value. */
+export function clampMaxLevel(value: unknown): MaxHeadingLevel {
+  const n = typeof value === 'number' ? Math.round(value) : 6
+  if (n >= 2 && n <= 6) return n as MaxHeadingLevel
+  return 6
+}
+
 /** Generate a stable pseudo-random id for format segments. */
 let _idCounter = 0
 export function generateStableId(): string {
