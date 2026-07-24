@@ -17,11 +17,12 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
     formatVariants: { withLevelOne: [], withoutLevelOne: [] },
     levelTemplate: { ...defaultTemplate },
     multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
   }
 }
 
 export const DEFAULT_SETTINGS: InkChapterSettings = {
-  schemaVersion: 7,
+  schemaVersion: 8,
   debug: false,
   headingNumbering: {
     enabled: true,
