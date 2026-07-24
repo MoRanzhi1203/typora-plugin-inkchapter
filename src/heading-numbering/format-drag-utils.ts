@@ -1,4 +1,5 @@
-import type { NumberFormatSegment, MultilevelFormatSegment, HeadingLevel } from './heading-types'
+import type { NumberFormatSegment, MultilevelFormatSegment, HeadingLevel, ContextualFormatSegment } from './heading-types'
+import { generateStableId } from './heading-types'
 
 // ── Drag state ────────────────────────────────────────────
 
@@ -258,6 +259,14 @@ export function multilevelFormatSegmentsToString(fmt: readonly MultilevelFormatS
   return fmt.map(s => s.type === 'level-template-reference' ? `[H${s.level}模板]` : s.value || '(空)')
 }
 
+export function contextualFormatSegmentsToString(fmt: readonly ContextualFormatSegment[]): string[] {
+  return fmt.map(s => {
+    if (s.type === 'literal') return s.value || '(空)'
+    const a = s.appearance
+    return `[H${s.level}:${a.prefix}${a.tokenStyle}${a.suffix}]`
+  })
+}
+
 export function createDebugLog(
   draggingIndex: number,
   remaining: readonly NumberFormatSegment[],
@@ -276,4 +285,51 @@ export function createDebugLog(
     commit,
     cancelReason,
   }
+}
+
+// ── Contextual format normalization ───────────────────
+
+/**
+ * Normalize after drag for contextual format segments.
+ * Preserves id, level, and appearance for level-reference segments.
+ */
+export function normalizeContextualFormatAfterDrag(
+  format: readonly ContextualFormatSegment[],
+  currentLevel: HeadingLevel,
+  hiddenLevels: ReadonlySet<HeadingLevel>,
+): ContextualFormatSegment[] {
+  const cleaned: ContextualFormatSegment[] = []
+  const seenLevels = new Set<number>()
+
+  for (const seg of format) {
+    if (seg.type === 'level-reference') {
+      if (hiddenLevels.has(seg.level)) continue
+      if (seg.level > currentLevel) continue
+      if (seenLevels.has(seg.level)) continue
+      seenLevels.add(seg.level)
+      // Preserve full segment including id and appearance
+      cleaned.push({ ...seg })
+    } else {
+      const trimmed = seg.value.trim()
+      if (trimmed.length === 0) continue
+      const last = cleaned[cleaned.length - 1]
+      if (last?.type === 'literal') {
+        last.value += trimmed
+      } else {
+        cleaned.push({ ...seg, value: trimmed })
+      }
+    }
+  }
+
+  // Ensure current level reference exists exactly once
+  if (!cleaned.some(s => s.type === 'level-reference' && s.level === currentLevel)) {
+    cleaned.push({
+      id: generateStableId(),
+      type: 'level-reference',
+      level: currentLevel,
+      appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+    })
+  }
+
+  return cleaned
 }

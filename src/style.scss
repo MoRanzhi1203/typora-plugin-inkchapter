@@ -546,6 +546,12 @@
   font-weight: 600;
 }
 
+.inkchapter-format-chip--selected {
+  outline: 2px solid var(--text-accent, #07a) !important;
+  background: rgba(7, 119, 170, 0.1) !important;
+  box-shadow: 0 0 0 1px rgba(7, 119, 170, 0.25);
+}
+
 /* ── Advanced rules ────────────────────────────────────── */
 
 .inkchapter-advanced-header {

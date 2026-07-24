@@ -10,7 +10,7 @@ import type {
   HeadingNumberingPreset,
 } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
-import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant } from './numbering-engine'
+import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
@@ -195,6 +195,86 @@ export class HeadingNumberingService {
     this.numberingSettings.levels = {
       ...this.numberingSettings.levels,
       [level]: updated,
+    }
+    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /**
+   * Update the active contextual format variant for a level (schemaVersion >= 8).
+   */
+  updateActiveContextualFormat(level: HeadingLevel, nextFormat: readonly import('./heading-types').ContextualFormatSegment[]): void {
+    if (this.numberingSettings.preset !== 'custom') {
+      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+      this.numberingSettings.preset = 'custom'
+      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    }
+
+    const currentStyle = this.numberingSettings.levels[level]
+    const updated = updateActiveContextualFormatVariant(
+      currentStyle,
+      level,
+      this.numberingSettings.showLevelOneNumber,
+      nextFormat,
+    )
+
+    this.numberingSettings.levels = {
+      ...this.numberingSettings.levels,
+      [level]: updated,
+    }
+    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+  }
+
+  /**
+   * Update a single segment's appearance within the active contextual format.
+   */
+  updateContextualSegment(
+    lv: HeadingLevel,
+    segmentId: string,
+    patch: Partial<import('./heading-types').LevelReferenceAppearance>,
+  ): void {
+    if (this.numberingSettings.preset !== 'custom') {
+      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+      this.numberingSettings.preset = 'custom'
+      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    }
+
+    const currentStyle = this.numberingSettings.levels[lv]
+    const active = currentStyle.contextualFormatVariants
+    if (!active) return
+
+    const showL1 = this.numberingSettings.showLevelOneNumber
+    const fmt = lv === 1 ? active.withLevelOne : (showL1 ? active.withLevelOne : active.withoutLevelOne)
+
+    const nextFmt = fmt.map(seg => {
+      if (seg.type === 'level-reference' && seg.id === segmentId) {
+        return {
+          ...seg,
+          appearance: { ...seg.appearance, ...patch },
+        }
+      }
+      return seg
+    })
+
+    const updated = updateActiveContextualFormatVariant(
+      currentStyle,
+      lv,
+      showL1,
+      nextFmt,
+    )
+
+    this.numberingSettings.levels = {
+      ...this.numberingSettings.levels,
+      [lv]: updated,
     }
     this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
     this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })

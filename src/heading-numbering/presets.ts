@@ -5,8 +5,9 @@ import type {
   NumberFormatSegment,
   MultilevelFormatSegment,
   HeadingLevelNumberTemplate,
+  ContextualFormatSegment,
 } from './heading-types'
-import { HEADING_LEVELS, createDefaultLevelTemplate } from './heading-types'
+import { HEADING_LEVELS, createDefaultLevelTemplate, createDefaultReferenceAppearance, generateStableId } from './heading-types'
 
 // ── Preset metadata ──────────────────────────────────────
 
@@ -65,7 +66,96 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
     formatVariants: { withLevelOne: [], withoutLevelOne: [] },
     levelTemplate: createDefaultLevelTemplate('arabic'),
     multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     ...overrides,
+  }
+}
+
+/** Build contextual hierarchical composition [H1(arabic)][.][H2(arabic)]...[.][Hlevel(arabic)]. */
+function buildContextualHierarchicalComposition(level: HeadingLevel, sep: string): ContextualFormatSegment[] {
+  const fmt: ContextualFormatSegment[] = []
+  for (let i = 1; i <= level; i++) {
+    if (i > 1) fmt.push({ id: generateStableId(), type: 'literal', value: sep })
+    fmt.push({
+      id: generateStableId(),
+      type: 'level-reference',
+      level: i as HeadingLevel,
+      appearance: createDefaultReferenceAppearance('arabic'),
+    })
+  }
+  return fmt
+}
+
+/** Strip level-one references from contextual format. */
+function stripContextualLevelOne(format: ContextualFormatSegment[]): ContextualFormatSegment[] {
+  const SEP = new Set(['.', '-', '_', '、', '，', ',', ':', '：', '/', '\\', '·', ' '])
+  const isSep = (v: string) => [...v.trim()].every(c => SEP.has(c)) || v.trim() === ''
+
+  const result: ContextualFormatSegment[] = []
+  for (let i = 0; i < format.length; i++) {
+    const seg = format[i]
+    if (seg.type === 'level-reference' && seg.level === 1) {
+      if (result.length > 0 && result[result.length - 1].type === 'literal') {
+        const last = result[result.length - 1]
+        if (isSep((last as { type: 'literal'; value: string }).value)) result.pop()
+      }
+      while (i + 1 < format.length && format[i + 1].type === 'literal') {
+        if (!isSep((format[i + 1] as { type: 'literal'; value: string }).value)) break
+        i++
+      }
+      continue
+    }
+    result.push({ ...seg })
+  }
+
+  while (result.length > 0 && result[0].type === 'literal') {
+    if (!isSep((result[0] as { type: 'literal'; value: string }).value)) break
+    result.shift()
+  }
+  while (result.length > 0 && result[result.length - 1].type === 'literal') {
+    if (!isSep((result[result.length - 1] as { type: 'literal'; value: string }).value)) break
+    result.pop()
+  }
+
+  // Merge adjacent literals
+  const merged: ContextualFormatSegment[] = []
+  for (const seg of result) {
+    if (seg.type === 'literal' && merged.length > 0 && merged[merged.length - 1].type === 'literal') {
+      (merged[merged.length - 1] as { type: 'literal'; value: string }).value += (seg as { type: 'literal'; value: string }).value
+    } else {
+      merged.push({ ...seg })
+    }
+  }
+
+  const levels = merged.filter(s => s.type === 'level-reference').map(s => (s as any).level as number)
+  const maxLevel = levels.length > 0 ? Math.max(...levels) : 1
+  if (!merged.some(s => s.type === 'level-reference' && s.level === maxLevel as HeadingLevel)) {
+    merged.push({
+      id: generateStableId(),
+      type: 'level-reference',
+      level: maxLevel as HeadingLevel,
+      appearance: createDefaultReferenceAppearance('arabic'),
+    })
+  }
+
+  return merged.length > 0 ? merged : [{
+    id: generateStableId(),
+    type: 'level-reference',
+    level: 2 as HeadingLevel,
+    appearance: createDefaultReferenceAppearance('arabic'),
+  }]
+}
+
+/** Build a contextual variant pair for the two-layer model. */
+function buildContextualVariants(
+  lv: HeadingLevel,
+  templateOverride: Partial<HeadingLevelNumberTemplate>,
+  withLevelOne: ContextualFormatSegment[],
+  overrides: Partial<HeadingLevelStyle> = {},
+): { withLevelOne: ContextualFormatSegment[]; withoutLevelOne: ContextualFormatSegment[] } {
+  return {
+    withLevelOne: [...withLevelOne],
+    withoutLevelOne: stripContextualLevelOne([...withLevelOne]),
   }
 }
 
@@ -143,6 +233,7 @@ function buildVariants(
   withLevelOne: MultilevelFormatSegment[],
   overrides: Partial<HeadingLevelStyle> = {},
 ): HeadingLevelStyle {
+  const contextualWithLevelOne = buildContextualHierarchicalComposition(lv, '.')
   const st = defaultLevelStyle(lv, {
     ...overrides,
     levelTemplate: {
@@ -153,6 +244,10 @@ function buildVariants(
     multilevelFormatVariants: {
       withLevelOne,
       withoutLevelOne: stripLevelOne([...withLevelOne]),
+    },
+    contextualFormatVariants: {
+      withLevelOne: contextualWithLevelOne,
+      withoutLevelOne: stripContextualLevelOne(contextualWithLevelOne),
     },
   })
   // Sync legacy tokenStyle for backward compat

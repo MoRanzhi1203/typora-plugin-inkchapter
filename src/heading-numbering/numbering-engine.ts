@@ -9,6 +9,8 @@ import type {
   MultilevelFormatSegment,
   MultilevelFormatVariants,
   HeadingLevelNumberTemplate,
+  ContextualFormatSegment,
+  ContextualFormatVariants,
 } from './heading-types'
 import { formatToken } from './token-formatter'
 
@@ -112,6 +114,12 @@ function buildLabel(
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
 
+  // ── New contextual model (schemaVersion >= 8) ───
+  const contextualVariant = getActiveContextualFormatVariant(style, !skipH1, headingLevel)
+  if (contextualVariant && contextualVariant.length > 0) {
+    return buildLabelFromContextualFormat(activeCounters, headingLevel, contextualVariant, skipH1)
+  }
+
   // ── New two-layer model (schemaVersion >= 7) ──────
   const multilevelVariant = getActiveMultilevelFormatVariant(style, !skipH1, headingLevel)
   if (multilevelVariant && multilevelVariant.length > 0) {
@@ -212,6 +220,137 @@ function buildLabelFromMultilevelFormat(
   }
 
   return renderMultilevelFormat(effectiveFormat, activeCounters, templates)
+}
+
+// ── Contextual rendering (schemaVersion >= 8) ────────
+
+/**
+ * Render a single contextual level-reference segment.
+ * Uses the segment's own appearance (tokenStyle/prefix/suffix),
+ * NOT the referenced level's global template.
+ */
+export function renderContextualLevelReference(
+  segment: { level: HeadingLevel; appearance: { tokenStyle: import('./heading-types').NumberTokenStyle; prefix: string; suffix: string } },
+  counter: number,
+): string {
+  const token = formatToken(counter, segment.appearance.tokenStyle)
+  return segment.appearance.prefix + token + segment.appearance.suffix
+}
+
+/**
+ * Render a complete contextual format array into a label string.
+ * Iterates segments, outputting literals directly and resolving
+ * level-references using each segment's own appearance.
+ */
+export function renderContextualFormat(
+  segments: readonly ContextualFormatSegment[],
+  counters: readonly number[],
+): string {
+  const parts: string[] = []
+  for (const seg of segments) {
+    if (seg.type === 'literal') {
+      parts.push(seg.value)
+    } else {
+      const refLv = seg.level
+      const refIdx = refLv - 1
+      if (refIdx < 0 || refIdx >= counters.length) continue
+      parts.push(renderContextualLevelReference(seg, counters[refIdx]))
+    }
+  }
+  return parts.join('')
+}
+
+/**
+ * Build the label for a heading using the contextual format model.
+ */
+function buildLabelFromContextualFormat(
+  activeCounters: number[],
+  headingLevel: HeadingLevel,
+  format: readonly ContextualFormatSegment[],
+  skipH1: boolean,
+): string {
+  // Filter hidden levels
+  const hidden = new Set<HeadingLevel>()
+  if (skipH1) hidden.add(1 as HeadingLevel)
+  const effective = format.filter(s => s.type === 'literal' || !hidden.has(s.level))
+
+  return renderContextualFormat(effective, activeCounters)
+}
+
+// ── Contextual format variant helpers ───────────────
+
+/**
+ * Get the active contextual format variant for the current H1 visibility.
+ */
+export function getActiveContextualFormatVariant(
+  style: HeadingLevelStyle,
+  showLevelOneNumber: boolean,
+  level: HeadingLevel,
+): readonly ContextualFormatSegment[] {
+  const variants = style.contextualFormatVariants
+  if (!variants) return []
+  if (level === 1) return variants.withLevelOne
+  return showLevelOneNumber ? variants.withLevelOne : variants.withoutLevelOne
+}
+
+/**
+ * Update the active contextual format variant.
+ */
+export function updateActiveContextualFormatVariant(
+  style: HeadingLevelStyle,
+  level: HeadingLevel,
+  showLevelOneNumber: boolean,
+  nextFormat: readonly ContextualFormatSegment[],
+): HeadingLevelStyle {
+  if (level === 1) {
+    return {
+      ...style,
+      contextualFormatVariants: {
+        ...style.contextualFormatVariants,
+        withLevelOne: [...nextFormat],
+      },
+    }
+  }
+  if (showLevelOneNumber) {
+    return {
+      ...style,
+      contextualFormatVariants: {
+        ...style.contextualFormatVariants,
+        withLevelOne: [...nextFormat],
+      },
+    }
+  }
+  return {
+    ...style,
+    contextualFormatVariants: {
+      ...style.contextualFormatVariants,
+      withoutLevelOne: [...nextFormat],
+    },
+  }
+}
+
+// ── Contextual format: available reference levels ────
+
+/**
+ * Get available reference levels for the contextual insert dropdown.
+ * Only levels that are not yet present in the format.
+ */
+export function getAvailableContextualReferenceLevels(
+  currentLevel: HeadingLevel,
+  showLevelOneNumber: boolean,
+  activeFormat: readonly ContextualFormatSegment[],
+): HeadingLevel[] {
+  const result: HeadingLevel[] = []
+  const start = showLevelOneNumber ? 1 : 2
+  const usedLevels = new Set<HeadingLevel>()
+  for (const seg of activeFormat) {
+    if (seg.type === 'level-reference') usedLevels.add(seg.level)
+  }
+  for (let lv = start; lv < currentLevel; lv++) {
+    const hl = lv as HeadingLevel
+    if (!usedLevels.has(hl)) result.push(hl)
+  }
+  return result
 }
 
 // ── Multilevel format variant helpers ─────────────────
