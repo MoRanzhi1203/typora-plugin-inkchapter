@@ -232,8 +232,10 @@ function buildVariants(
   templateOverride: Partial<HeadingLevelNumberTemplate>,
   withLevelOne: MultilevelFormatSegment[],
   overrides: Partial<HeadingLevelStyle> = {},
+  /** Contextual format segments (with correct appearance). If omitted, builds hierarchical decimal. */
+  contextualWithLevelOne?: ContextualFormatSegment[],
 ): HeadingLevelStyle {
-  const contextualWithLevelOne = buildContextualHierarchicalComposition(lv, '.')
+  const ctxFormat = contextualWithLevelOne ?? buildContextualHierarchicalComposition(lv, '.')
   const st = defaultLevelStyle(lv, {
     ...overrides,
     levelTemplate: {
@@ -246,8 +248,8 @@ function buildVariants(
       withoutLevelOne: stripLevelOne([...withLevelOne]),
     },
     contextualFormatVariants: {
-      withLevelOne: contextualWithLevelOne,
-      withoutLevelOne: stripContextualLevelOne(contextualWithLevelOne),
+      withLevelOne: ctxFormat,
+      withoutLevelOne: stripContextualLevelOne(ctxFormat),
     },
   })
   // Sync legacy tokenStyle for backward compat
@@ -255,12 +257,28 @@ function buildVariants(
   return st
 }
 
+/** Build a single contextual level-reference segment for a level with given appearance. */
+function makeContextualRef(
+  lv: HeadingLevel,
+  tokenStyle: import('./heading-types').NumberTokenStyle,
+  prefix: string,
+  suffix: string,
+): ContextualFormatSegment {
+  return {
+    id: generateStableId(),
+    type: 'level-reference',
+    level: lv,
+    appearance: { tokenStyle, prefix, suffix },
+  }
+}
+
 // ── Preset builders ──────────────────────────────────────
 
 function buildDecimal(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    levels[lv] = buildVariants(lv, { tokenStyle: 'arabic' }, buildHierarchicalComposition(lv, '.'), { includeParents: false })
+    const ctxFmt = buildContextualHierarchicalComposition(lv, '.')
+    levels[lv] = buildVariants(lv, { tokenStyle: 'arabic' }, buildHierarchicalComposition(lv, '.'), { includeParents: false }, ctxFmt)
   }
   return levels
 }
@@ -268,43 +286,62 @@ function buildDecimal(): Record<HeadingLevel, HeadingLevelStyle> {
 function buildChineseChapter(): Record<HeadingLevel, HeadingLevelStyle> {
   return {
     1: buildVariants(1, { tokenStyle: 'chinese', prefix: '第', suffix: '章' },
-      [{ type: 'level-template-reference', level: 1 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 1 }], { includeParents: false },
+      [makeContextualRef(1, 'chinese', '第', '章')]),
     2: buildVariants(2, { tokenStyle: 'chinese', prefix: '第', suffix: '节' },
-      [{ type: 'level-template-reference', level: 2 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 2 }], { includeParents: false },
+      [makeContextualRef(2, 'chinese', '第', '节')]),
     3: buildVariants(3, { tokenStyle: 'chinese', prefix: '', suffix: '、' },
-      [{ type: 'level-template-reference', level: 3 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 3 }], { includeParents: false },
+      [makeContextualRef(3, 'chinese', '', '、')]),
     4: buildVariants(4, { tokenStyle: 'chinese', prefix: '（', suffix: '）' },
-      [{ type: 'level-template-reference', level: 4 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 4 }], { includeParents: false },
+      [makeContextualRef(4, 'chinese', '（', '）')]),
     5: buildVariants(5, { tokenStyle: 'arabic', prefix: '', suffix: '.' },
-      [{ type: 'level-template-reference', level: 5 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 5 }], { includeParents: false },
+      [makeContextualRef(5, 'arabic', '', '.')]),
     6: buildVariants(6, { tokenStyle: 'arabic', prefix: '（', suffix: '）' },
-      [{ type: 'level-template-reference', level: 6 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 6 }], { includeParents: false },
+      [makeContextualRef(6, 'arabic', '（', '）')]),
   }
 }
 
 function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
   return {
     1: buildVariants(1, { tokenStyle: 'chinese', prefix: '', suffix: '、' },
-      [{ type: 'level-template-reference', level: 1 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 1 }], { includeParents: false },
+      [makeContextualRef(1, 'chinese', '', '、')]),
     2: buildVariants(2, { tokenStyle: 'chinese', prefix: '（', suffix: '）' },
-      [{ type: 'level-template-reference', level: 2 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 2 }], { includeParents: false },
+      [makeContextualRef(2, 'chinese', '（', '）')]),
     3: buildVariants(3, { tokenStyle: 'arabic', prefix: '', suffix: '.' },
-      [{ type: 'level-template-reference', level: 3 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 3 }], { includeParents: false },
+      [makeContextualRef(3, 'arabic', '', '.')]),
     4: buildVariants(4, { tokenStyle: 'arabic', prefix: '（', suffix: '）' },
-      [{ type: 'level-template-reference', level: 4 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 4 }], { includeParents: false },
+      [makeContextualRef(4, 'arabic', '（', '）')]),
     5: buildVariants(5, { tokenStyle: 'circled', prefix: '', suffix: '' },
-      [{ type: 'level-template-reference', level: 5 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 5 }], { includeParents: false },
+      [makeContextualRef(5, 'circled', '', '')]),
     6: buildVariants(6, { tokenStyle: 'alpha-upper', prefix: '', suffix: '.' },
-      [{ type: 'level-template-reference', level: 6 }], { includeParents: false }),
+      [{ type: 'level-template-reference', level: 6 }], { includeParents: false },
+      [makeContextualRef(6, 'alpha-upper', '', '.')]),
   }
 }
 
 function buildRoman(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
+    const tokenStyle = lv === 1 ? 'roman-upper' as const : 'arabic'
+    // Build contextual format: hierarchical with correct token style for each level
+    const ctxFmt: ContextualFormatSegment[] = []
+    for (let i = 1; i <= lv; i++) {
+      if (i > 1) ctxFmt.push({ id: generateStableId(), type: 'literal', value: '.' })
+      ctxFmt.push(makeContextualRef(i as HeadingLevel, i === 1 ? 'roman-upper' : 'arabic', '', ''))
+    }
     levels[lv] = buildVariants(lv, {
-      tokenStyle: lv === 1 ? 'roman-upper' : 'arabic',
-    }, buildHierarchicalComposition(lv, '.'), { includeParents: false })
+      tokenStyle,
+    }, buildHierarchicalComposition(lv, '.'), { includeParents: false }, ctxFmt)
   }
   return levels
 }
