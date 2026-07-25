@@ -1,4 +1,5 @@
 import type { PluginSettings } from '@typora-community-plugin/core'
+import { Notice } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from '../settings/settings-model'
 import type {
   HeadingNumberingSettings,
@@ -24,6 +25,7 @@ import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
+import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
 import * as logger from '../core/logger'
 
 const TAIL_REFRESH_MS = 60
@@ -86,10 +88,26 @@ export class HeadingNumberingService {
   private isInComposition = false
   private mutationObserver: MutationObserver | null = null
 
+  // Level Range Enforcer
+  private levelRangeEnforcer!: HeadingLevelRangeEnforcer
+  /** Cache of last effective max level for change detection. */
+  private lastEffectiveMaxLevel: HeadingLevel = 6
+
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
     this.numberingSettings = this.readNormalizedSettings()
+
+    // Build enforcer callbacks
+    const enforcerCallbacks: EnforcerCallbacks = {
+      getEffectiveMaxLevel: () => this.getEffectiveMaxLevel(),
+      getMarkdown: () => this.ctx.getMarkdown?.() ?? '',
+      reloadContent: (md: string) => this.ctx.reloadContent?.(md),
+      showNotice: (msg: string) => Notice.info(msg),
+    }
+    this.levelRangeEnforcer = new HeadingLevelRangeEnforcer(enforcerCallbacks)
+    this.lastEffectiveMaxLevel = this.getEffectiveMaxLevel()
+
     this.store = new DisposableStore()
 
     this.initAdapter()
@@ -477,6 +495,8 @@ export class HeadingNumberingService {
     this.ctx.settings.set('levelRange', { ...rangeSettings })
     this.lastSnapshot = null
     this.renderedStates = null
+    this.levelRangeEnforcer.resetNotices()
+    this.updateLastEffectiveMaxLevel()
     this.flushRefresh()
   }
 
@@ -490,6 +510,8 @@ export class HeadingNumberingService {
     this.ctx.settings.set('levelRange', { ...rangeSettings })
     this.lastSnapshot = null
     this.renderedStates = null
+    this.levelRangeEnforcer.resetNotices()
+    this.updateLastEffectiveMaxLevel()
     this.flushRefresh()
   }
 
@@ -503,7 +525,14 @@ export class HeadingNumberingService {
     }
     this.lastSnapshot = null
     this.renderedStates = null
+    this.levelRangeEnforcer.resetNotices()
+    this.updateLastEffectiveMaxLevel()
     this.flushRefresh()
+  }
+
+  /** Track effective max level changes. */
+  private updateLastEffectiveMaxLevel(): void {
+    this.lastEffectiveMaxLevel = this.getEffectiveMaxLevel()
   }
 
   /**
@@ -515,6 +544,26 @@ export class HeadingNumberingService {
     const ml = maxLevel ?? this.getEffectiveMaxLevel()
     const md = this.ctx.getMarkdown?.() ?? ''
     return scanHeadingsForRange(md, ml)
+  }
+
+  /**
+   * Count headings by level in the current document.
+   * Returns a record mapping each level (1-6) to the count.
+   */
+  countHeadingsByLevel(): Record<number, number> {
+    const scan = this.scanDocumentHeadings(6) // scan ALL headings
+    const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
+    for (const h of scan.allHeadings) {
+      if (h.level >= 1 && h.level <= 6) {
+        counts[h.level]++
+      }
+    }
+    return counts
+  }
+
+  /** Count out-of-range headings for the current effective max level. */
+  countOutOfRangeHeadings(): number {
+    return this.scanDocumentHeadings().outOfRange.length
   }
 
   /**
@@ -538,6 +587,7 @@ export class HeadingNumberingService {
     this.disconnectObserver()
     this.adapter.clearNumbering()
     this.store.dispose()
+    this.levelRangeEnforcer.dispose()
   }
 
   // ── Settings sync ──────────────────────────────────────
@@ -665,12 +715,16 @@ export class HeadingNumberingService {
     const root = this.adapter.detectEditorRoot()
     if (!root) return
     this.connectObserver(root)
+    this.attachPasteListener(root)
+    this.attachKeydownListener(root)
   }
 
   private connectObserver(root: HTMLElement): void {
     this.disconnectObserver()
 
     this.mutationObserver = new MutationObserver((mutations) => {
+      let foundNewHeading = false
+
       for (const m of mutations) {
         // Check added nodes
         for (let i = 0; i < m.addedNodes.length; i++) {
@@ -678,7 +732,7 @@ export class HeadingNumberingService {
           if (node instanceof HTMLElement) {
             if (this.isHeadingOrContainsHeading(node)) {
               this.requestRefresh('editor-mutation')
-              return
+              foundNewHeading = true
             }
           }
         }
@@ -703,6 +757,11 @@ export class HeadingNumberingService {
           }
         }
       }
+
+      // Post-hoc enforcement: check for out-of-range headings created by Typora
+      if (foundNewHeading) {
+        this.levelRangeEnforcer.enforceAfterMutation()
+      }
     })
 
     this.mutationObserver.observe(root, {
@@ -719,6 +778,54 @@ export class HeadingNumberingService {
       this.mutationObserver.disconnect()
       this.mutationObserver = null
     }
+  }
+
+  // ── Paste handling ──────────────────────────────────────
+
+  private attachPasteListener(root: HTMLElement): void {
+    const onPaste = (): void => {
+      // Delay to let Typora process the paste first
+      setTimeout(() => {
+        this.levelRangeEnforcer.enforceAfterPaste()
+        this.requestRefresh('editor-mutation')
+      }, 50)
+    }
+    root.addEventListener('paste', onPaste, { passive: true })
+    this.store.add(() => root.removeEventListener('paste', onPaste))
+  }
+
+  // ── Demotion interception ──────────────────────────────
+
+  /**
+   * Listen for Tab key (heading demotion) to block level changes
+   * that would exceed the effective max level.
+   */
+  private attachKeydownListener(root: HTMLElement): void {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Tab' || e.shiftKey) return // Only Tab (demotion), not Shift+Tab
+
+      // Check if cursor is inside a heading
+      const sel = window.getSelection()
+      if (!sel?.rangeCount) return
+      const node = sel.getRangeAt(0).startContainer
+      const heading = node instanceof Element
+        ? node.closest('h1, h2, h3, h4, h5, h6')
+        : node.parentElement?.closest('h1, h2, h3, h4, h5, h6')
+      if (!heading) return
+
+      const currentLevel = parseInt(heading.tagName.charAt(1), 10)
+      if (isNaN(currentLevel)) return
+
+      const result = this.levelRangeEnforcer.checkDemotion(currentLevel)
+      if (!result.allowed && result.blockedLevel != null) {
+        e.preventDefault()
+        e.stopPropagation()
+        this.levelRangeEnforcer.showDemotionBlockedNotice(result.blockedLevel)
+      }
+    }
+
+    root.addEventListener('keydown', onKeyDown, true)
+    this.store.add(() => root.removeEventListener('keydown', onKeyDown, true))
   }
 
   private isHeadingOrContainsHeading(el: HTMLElement): boolean {

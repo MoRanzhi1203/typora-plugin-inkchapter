@@ -10,6 +10,7 @@ import type {
   NumberTokenStyle,
   MultilevelFormatSegment,
   ContextualFormatSegment,
+  MaxHeadingLevel,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
@@ -86,6 +87,73 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Drag ─────────────────────────────────────────
   private dragState: DragState | null = null
 
+  // ── Level range draft state ──────────────────────
+  /** In-memory draft for the level range UI. Never persisted until user clicks 确定. */
+  private rangeDraft: {
+    globalMaxLevel: MaxHeadingLevel
+    documentMode: 'inherit' | 'custom'
+    documentMaxLevel: MaxHeadingLevel
+    /** Whether the global section has unsaved changes. */
+    globalDirty: boolean
+    /** Whether the document section has unsaved changes. */
+    documentDirty: boolean
+  } = { globalMaxLevel: 6, documentMode: 'inherit', documentMaxLevel: 6, globalDirty: false, documentDirty: false }
+
+  /** Initialize the draft from persisted settings. */
+  private initRangeDraft(): void {
+    const rangeSettings = this.numberingService.getLevelRangeSettings()
+    const docPath = this.numberingService.getActiveFilePath()
+    const docOverride = docPath ? rangeSettings.documentOverrides[docPath] : undefined
+
+    this.rangeDraft = {
+      globalMaxLevel: rangeSettings.defaultMaxLevel,
+      documentMode: docOverride?.mode ?? 'inherit',
+      documentMaxLevel: docOverride?.maxLevel ?? rangeSettings.defaultMaxLevel,
+      globalDirty: false,
+      documentDirty: false,
+    }
+  }
+
+  /** Mark global section as dirty and enable its buttons. */
+  private markGlobalDirty(): void {
+    this.rangeDraft.globalDirty = true
+    this.updateRangeButtons()
+  }
+
+  /** Mark document section as dirty and enable its buttons. */
+  private markDocumentDirty(): void {
+    this.rangeDraft.documentDirty = true
+    this.updateRangeButtons()
+  }
+
+  /** Revert global draft to persisted state. */
+  private revertGlobalDraft(): void {
+    const rangeSettings = this.numberingService.getLevelRangeSettings()
+    this.rangeDraft.globalMaxLevel = rangeSettings.defaultMaxLevel
+    this.rangeDraft.globalDirty = false
+  }
+
+  /** Revert document draft to persisted state. */
+  private revertDocumentDraft(): void {
+    const rangeSettings = this.numberingService.getLevelRangeSettings()
+    const docPath = this.numberingService.getActiveFilePath()
+    const docOverride = docPath ? rangeSettings.documentOverrides[docPath] : undefined
+    this.rangeDraft.documentMode = docOverride?.mode ?? 'inherit'
+    this.rangeDraft.documentMaxLevel = docOverride?.maxLevel ?? rangeSettings.defaultMaxLevel
+    this.rangeDraft.documentDirty = false
+  }
+
+  /** Re-render just the range buttons (for dirty state changes). */
+  private updateRangeButtons(): void {
+    // Re-render the level range section to refresh button states
+    // We skip full onshow to avoid losing other UI state
+    const sectionEl = this.containerEl.querySelector('.inkchapter-levelrange-global')
+    if (!sectionEl) return
+    // Re-render by removing and re-appending
+    this.containerEl.innerHTML = ''
+    this.render()
+  }
+
   constructor(
     private settings: PluginSettings<InkChapterSettings>,
     private numberingService: HeadingNumberingService,
@@ -104,6 +172,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.syncFromExternalChange()
       })
     }
+    // Initialize draft state from persisted settings
+    this.initRangeDraft()
     try {
       this.render()
     } catch (e) {
@@ -369,39 +439,57 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Level range UI ──────────────────────────────
 
   private renderLevelRangeSection(): void {
+    const d = this.rangeDraft // Use draft, not persisted state
     const rangeSettings = this.numberingService.getLevelRangeSettings()
     const docPath = this.numberingService.getActiveFilePath()
     const effectiveMax = this.numberingService.getEffectiveMaxLevel()
 
-    // Global default max level
+    // ═══════════════════════════════════════════════
+    // Global default range (with 确定/取消 buttons)
+    // ═══════════════════════════════════════════════
     this.addSetting((setting) => {
       setting.addName('全局默认范围')
-      setting.addDescription('新文档默认的有效标题级数范围。降低后不影响已有文档的标题，仅新文档生效。')
-      setting.addSelect((select) => {
-        select.style.minWidth = '160px'
-        for (const max of [2, 3, 4, 5, 6] as const) {
-          const opt = document.createElement('option')
-          opt.value = String(max)
-          opt.textContent = `H1 – H${max}`
-          opt.selected = max === rangeSettings.defaultMaxLevel
-          select.appendChild(opt)
-        }
-        select.onchange = () => {
-          const newMax = parseInt(select.value, 10) as 2 | 3 | 4 | 5 | 6
-          this.numberingService.setDefaultMaxLevel(newMax)
-          this.onshow()
-        }
-      })
+      setting.addDescription('新文档默认的有效标题级数范围。降低后不影响已有文档的标题，仅新文档生效。修改后点击确定生效。')
+
+      const row = el('div', 'inkchapter-levelrange-global')
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:6px;'
+      setting.containerEl.appendChild(row)
+
+      const select = document.createElement('select')
+      select.style.minWidth = '140px'
+      for (const max of [2, 3, 4, 5, 6] as const) {
+        const opt = document.createElement('option')
+        opt.value = String(max)
+        opt.textContent = `H1 – H${max}`
+        opt.selected = max === d.globalMaxLevel
+        select.appendChild(opt)
+      }
+      row.appendChild(select)
+
+      select.onchange = () => {
+        d.globalMaxLevel = parseInt(select.value, 10) as MaxHeadingLevel
+        this.markGlobalDirty()
+      }
+
+      const confirmBtn = el('button', 'inkchapter-btn', row) as HTMLButtonElement
+      confirmBtn.textContent = '确定'
+      confirmBtn.disabled = !d.globalDirty
+      confirmBtn.onclick = () => this.handleGlobalConfirm(d)
+
+      const cancelBtn = el('button', 'inkchapter-btn', row) as HTMLButtonElement
+      cancelBtn.textContent = '取消'
+      cancelBtn.disabled = !d.globalDirty
+      cancelBtn.onclick = () => this.handleGlobalCancel(select)
     })
 
-    // Current document override
+    // ═══════════════════════════════════════════════
+    // Current document range
+    // ═══════════════════════════════════════════════
     if (docPath) {
-      const docOverride = rangeSettings.documentOverrides[docPath]
-      const docMode = docOverride?.mode ?? 'inherit'
-
+      // Mode buttons (also part of draft)
       this.addSetting((setting) => {
         setting.addName('当前文档')
-        setting.addDescription(`当前生效范围：H1 – H${effectiveMax}。可独立设置以覆盖全局。`)
+        setting.addDescription(`当前生效范围：H1 – H${effectiveMax}。可独立设置以覆盖全局。修改后点击确定生效。`)
 
         const btnRow = el('div', 'inkchapter-levelrange-btnrow')
         setting.containerEl.appendChild(btnRow)
@@ -409,55 +497,99 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const inheritBtn = el('button', 'inkchapter-btn', btnRow)
         inheritBtn.textContent = '继承全局'
         inheritBtn.style.marginRight = '8px'
-        if (docMode === 'inherit') inheritBtn.classList.add('inkchapter-btn--active')
+        if (d.documentMode === 'inherit') inheritBtn.classList.add('inkchapter-btn--active')
         inheritBtn.onclick = () => {
-          this.handleInheritGlobal(docPath)
+          if (d.documentMode === 'inherit') return
+          d.documentMode = 'inherit'
+          d.documentMaxLevel = d.globalMaxLevel
+          this.markDocumentDirty()
         }
 
         const customBtn = el('button', 'inkchapter-btn', btnRow)
         customBtn.textContent = '独立设置'
-        if (docMode === 'custom') customBtn.classList.add('inkchapter-btn--active')
+        if (d.documentMode === 'custom') customBtn.classList.add('inkchapter-btn--active')
         customBtn.onclick = () => {
-          // Set to custom mode with current effective max, then re-render to show inline controls
-          const clampedMax = clampMaxLevel(effectiveMax)
-          this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: clampedMax })
-          this.onshow()
+          if (d.documentMode === 'custom') return
+          d.documentMode = 'custom'
+          d.documentMaxLevel = clampMaxLevel(effectiveMax) as MaxHeadingLevel
+          this.markDocumentDirty()
         }
       })
 
-      if (docMode === 'custom') {
-        this.addSetting((setting) => {
-          setting.addName('当前文档范围')
-          setting.addDescription('独立设置后仅影响当前文档，不改变全局默认。')
+      // Document-level range selector (always visible, read-only when inherit)
+      this.addSetting((setting) => {
+        setting.addName('当前文档范围')
+        setting.addDescription(
+          d.documentMode === 'inherit'
+            ? `继承全局：H1 – H${d.globalMaxLevel}`
+            : '独立设置后仅影响当前文档，不改变全局默认。',
+        )
 
-          const dd = el('div', 'inkchapter-doc-override-controls')
-          setting.containerEl.appendChild(dd)
+        const dd = el('div', 'inkchapter-doc-override-controls')
+        setting.containerEl.appendChild(dd)
 
-          const docSelect = document.createElement('select')
-          docSelect.style.minWidth = '160px'
-          for (const max of [2, 3, 4, 5, 6] as const) {
-            const opt = document.createElement('option')
-            opt.value = String(max)
-            opt.textContent = `H1 – H${max}`
-            opt.selected = max === effectiveMax
-            docSelect.appendChild(opt)
-          }
-          dd.appendChild(docSelect)
+        const docSelect = document.createElement('select')
+        docSelect.style.minWidth = '140px'
+        for (const max of [2, 3, 4, 5, 6] as const) {
+          const opt = document.createElement('option')
+          opt.value = String(max)
+          opt.textContent = `H1 – H${max}`
+          opt.selected = max === (d.documentMode === 'inherit' ? d.globalMaxLevel : d.documentMaxLevel)
+          docSelect.appendChild(opt)
+        }
+        if (d.documentMode === 'inherit') docSelect.disabled = true
+        dd.appendChild(docSelect)
 
-          const saveBtn = el('button', 'inkchapter-btn', dd)
-          saveBtn.textContent = '保存'
-          saveBtn.style.marginLeft = '8px'
-          saveBtn.onclick = () => {
-            const newMax = parseInt(docSelect.value, 10) as 2 | 3 | 4 | 5 | 6
-            this.handleDocumentLevelChange(docPath, newMax)
-          }
-        })
-      }
+        docSelect.onchange = () => {
+          if (d.documentMode === 'inherit') return
+          d.documentMaxLevel = parseInt(docSelect.value, 10) as MaxHeadingLevel
+          this.markDocumentDirty()
+        }
+
+        const confirmBtn = el('button', 'inkchapter-btn', dd) as HTMLButtonElement
+        confirmBtn.textContent = '确定'
+        confirmBtn.style.marginLeft = '8px'
+        confirmBtn.disabled = !d.documentDirty
+        confirmBtn.onclick = () => this.handleDocumentConfirm(docPath, d)
+
+        const cancelBtn = el('button', 'inkchapter-btn', dd) as HTMLButtonElement
+        cancelBtn.textContent = '取消'
+        cancelBtn.disabled = !d.documentDirty
+        cancelBtn.onclick = () => this.handleDocumentCancel(docSelect)
+      })
     } else {
       this.addSetting((setting) => {
         setting.addName('当前文档')
         setting.addDescription('未检测到打开的文档。打开 Markdown 文件后可设置文档独立范围。')
       })
+    }
+
+    // Heading counts display
+    if (docPath) {
+      try {
+        const counts = this.numberingService.countHeadingsByLevel()
+        const outOfRangeCount = this.numberingService.countOutOfRangeHeadings()
+        const hasHeadings = Object.values(counts).some((c: number) => c > 0)
+        if (hasHeadings) {
+          this.addSetting((setting: any) => {
+            setting.addName('当前文档标题统计')
+            setting.addDescription((descDiv: HTMLElement) => {
+              const parts: string[] = []
+              for (const lv of [1, 2, 3, 4, 5, 6] as const) {
+                if (counts[lv] > 0) parts.push('H' + lv + '\uFF1A' + counts[lv])
+              }
+              const statEl = el('span', undefined, descDiv)
+              statEl.style.cssText = 'font-size:13px;color:var(--text-muted);'
+              statEl.textContent = parts.join('  ')
+              if (outOfRangeCount > 0 && effectiveMax < 6) {
+                const orEl = el('span', undefined, descDiv)
+                orEl.style.cssText = 'display:block;margin-top:4px;color:#e67e22;font-size:13px;'
+                orEl.textContent = '超出范围\uFF1A' + outOfRangeCount
+              }
+            })
+          })
+        }
+      } catch { /* ignore */ }
     }
 
     // Effective level display
@@ -477,46 +609,75 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  /** Handle document-level max level change with conflict detection. */
-  private handleDocumentLevelChange(docPath: string, newMax: 2 | 3 | 4 | 5 | 6): void {
-    // Scan with the NEW max level to detect conflicts
+  // ── Global confirm/cancel ────────────────────────
+
+  private handleGlobalConfirm(d: typeof this.rangeDraft): void {
+    const newMax = d.globalMaxLevel
+    this.numberingService.setDefaultMaxLevel(newMax)
+    d.globalDirty = false
+    this.onshow()
+  }
+
+  private handleGlobalCancel(select: HTMLSelectElement): void {
+    this.revertGlobalDraft()
+    select.value = String(this.rangeDraft.globalMaxLevel)
+    this.updateRangeButtons()
+  }
+
+  // ── Document confirm/cancel ──────────────────────
+
+  private handleDocumentConfirm(
+    docPath: string,
+    d: typeof this.rangeDraft,
+  ): void {
+    if (d.documentMode === 'inherit') {
+      const rangeSettings = this.numberingService.getLevelRangeSettings()
+      const globalMax = rangeSettings.defaultMaxLevel
+      const currentEffective = this.numberingService.getEffectiveMaxLevel()
+
+      if (globalMax < currentEffective) {
+        const scan = this.numberingService.scanDocumentHeadings(globalMax)
+        if (scan.outOfRange.length > 0) {
+          // Show dialog; draft committed only if user chooses an action
+          this.showRangeReduceDialog(
+            docPath, globalMax, scan.outOfRange, 'inherit',
+            () => { d.documentDirty = false; this.onshow() },
+          )
+          return
+        }
+      }
+
+      this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
+      d.documentDirty = false
+      this.onshow()
+      return
+    }
+
+    // Custom mode
+    const newMax = d.documentMaxLevel
     const scan = this.numberingService.scanDocumentHeadings(newMax)
 
-    if (scan.outOfRange.length === 0) {
-      // No conflicts: just save
-      this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: newMax })
-      this.onshow()
+    if (scan.outOfRange.length > 0) {
+      this.showRangeReduceDialog(
+        docPath, newMax, scan.outOfRange, 'custom',
+        () => { d.documentDirty = false; this.onshow() },
+      )
       return
     }
 
-    // Conflict detected: show dialog
-    this.showRangeReduceDialog(docPath, newMax, scan.outOfRange)
+    this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: newMax })
+    d.documentDirty = false
+    this.onshow()
   }
 
-  /** Handle "inherit global" transition with conflict detection. */
-  private handleInheritGlobal(docPath: string): void {
-    const rangeSettings = this.numberingService.getLevelRangeSettings()
-    const globalMax = rangeSettings.defaultMaxLevel
-    const currentEffective = this.numberingService.getEffectiveMaxLevel()
-
-    // If global default is higher or same, no conflict possible
-    if (globalMax >= currentEffective) {
-      this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
-      this.onshow()
-      return
-    }
-
-    // Global default is lower than current: check for out-of-range headings
-    const scan = this.numberingService.scanDocumentHeadings(globalMax)
-    if (scan.outOfRange.length === 0) {
-      this.numberingService.setDocumentOverride(docPath, { mode: 'inherit' })
-      this.onshow()
-      return
-    }
-
-    // Conflict: show dialog, save as inherit after user choice
-    this.showRangeReduceDialog(docPath, globalMax, scan.outOfRange, 'inherit')
+  private handleDocumentCancel(select: HTMLSelectElement): void {
+    this.revertDocumentDraft()
+    select.value = String(this.rangeDraft.documentMaxLevel)
+    this.updateRangeButtons()
   }
+
+  // ── Old methods (now unused, but handleDocumentLevelChange kept for reference) ──
+  // handleDocumentLevelChange and handleInheritGlobal are replaced by the draft flow above.
 
   // ── Three-option dialog ──────────────────────────
 
@@ -525,6 +686,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     newMax: 2 | 3 | 4 | 5 | 6,
     outOfRangeHeadings: import('../heading-numbering/level-range-utils').ParsedHeading[],
     targetMode: 'custom' | 'inherit' = 'custom',
+    onCommitted?: () => void,
   ): void {
     // Remove existing dialog if any
     const existing = document.querySelector('.inkchapter-dialog-overlay')
@@ -547,7 +709,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const btnRow = el('div', 'inkchapter-dialog-buttons', dialog)
 
     const cancelBtn = el('button', 'inkchapter-btn', btnRow)
-    cancelBtn.textContent = '取消'
+    cancelBtn.textContent = '取消变更'
+    cancelBtn.title = '不提交设置，保留当前草稿以便继续调整'
     cancelBtn.onclick = () => overlay.remove()
 
     const limitBtn = el('button', 'inkchapter-btn', btnRow)
@@ -560,7 +723,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       } else {
         this.numberingService.setDocumentOverride(docPath, { mode: 'custom', maxLevel: newMax })
       }
-      this.onshow()
+      onCommitted?.()
     }
 
     const convertBtn = el('button', 'inkchapter-btn inkchapter-btn--danger', btnRow)
@@ -577,7 +740,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (converted) {
         console.log(`[InkChapter] 已将 ${outOfRangeHeadings.length} 个超出范围标题转为加粗段落`)
       }
-      this.onshow()
+      onCommitted?.()
     }
 
     document.body.appendChild(overlay)
