@@ -29,7 +29,7 @@ export class HeadingDomAdapter {
       if (this.isInsideExcluded(el)) continue
       const level = parseInt(el.tagName.charAt(1), 10)
       if (level < 1 || level > 6) continue
-      result.push({ key: this.elementKey(el), level: level as HeadingLevel, text: el.textContent ?? '' })
+      result.push({ key: this.elementKey(el, i), level: level as HeadingLevel, text: el.textContent ?? '' })
     }
     return result
   }
@@ -43,7 +43,7 @@ export class HeadingDomAdapter {
       if (this.isInsideExcluded(el)) continue
       const level = parseInt(el.tagName.charAt(1), 10)
       if (level < 1 || level > 6) continue
-      result.push({ key: this.elementKey(el), level: level as HeadingLevel })
+      result.push({ key: this.elementKey(el, i), level: level as HeadingLevel })
     }
     return result
   }
@@ -97,7 +97,7 @@ export class HeadingDomAdapter {
       const level = parseInt(el.tagName.charAt(1), 10)
       result.push({
         element: el,
-        key: this.elementKey(el),
+        key: this.elementKey(el, i),
         level: level as HeadingLevel,
         label: labels[labelIdx],
       })
@@ -245,8 +245,22 @@ export class HeadingDomAdapter {
     return false
   }
 
-  private elementKey(el: HTMLElement): string {
-    return `${el.tagName}-${el.getAttribute('data-line') ?? ''}-${el.id ?? ''}`
+  /**
+   * Build a unique key for a heading element within the current document.
+   * Priority: element id > data-line > absolute DOM index (guarantees uniqueness).
+   * Previous implementation used only tagName-dataLine-id, which degenerated to
+   * "H2--" for all H2 elements when data-line and id were both empty, causing
+   * the override map to pollute all same-level headings.
+   */
+  private elementKey(el: HTMLElement, absoluteIndex: number): string {
+    const tag = el.tagName.toUpperCase()
+    const id = (el.id ?? '').trim()
+    const dataLine = el.getAttribute('data-line')?.trim()
+
+    if (id) return `${tag}:id:${id}`
+    if (dataLine) return `${tag}:line:${dataLine}`
+    // Fallback: absolute index guarantees uniqueness within the document
+    return `${tag}:idx:${absoluteIndex}`
   }
 
   private isInsideExcluded(el: HTMLElement): boolean {

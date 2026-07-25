@@ -7,6 +7,12 @@ import type { ServiceContext } from './heading-numbering/heading-numbering-servi
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { editor, File } from 'typora'
+import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEventsToClipboard, recordRuntimeAudit } from './heading-numbering/runtime-audit'
+
+/** Build marker — search Typora console for this to verify deployed version. */
+const HEADING_BUILD_MARKER = 'inkchapter-heading-fix-actual-level-style-v2'
+/** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
+const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v1'
 
 
 export default class extends Plugin<InkChapterSettings> {
@@ -14,7 +20,9 @@ export default class extends Plugin<InkChapterSettings> {
   private numberingService?: HeadingNumberingService
 
   onload() {
-    console.log('[InkChapter] onload START')
+    console.log(`[InkChapter] onload START  build=${HEADING_BUILD_MARKER}`)
+    enableRuntimeAudit()
+    console.log('[InkChapter Audit] enabled for diagnostics')
     // Register settings (must succeed for plugin to function)
     this.registerSettings(
       new PluginSettings(this.app, this.manifest, {
@@ -266,6 +274,36 @@ export default class extends Plugin<InkChapterSettings> {
         } else {
           Notice.info('大纲同步失败：未找到大纲根节点')
         }
+      },
+    })
+
+    // ── Runtime audit commands ────────────────
+    this.registerCommand({
+      id: 'inkchapter.audit.copy',
+      title: '墨章：复制运行时诊断日志',
+      scope: 'global',
+      callback: () => {
+        copyAuditEventsToClipboard()
+        Notice.info('诊断日志已复制到剪贴板或输出到控制台')
+      },
+    })
+    this.registerCommand({
+      id: 'inkchapter.audit.clear',
+      title: '墨章：清空运行时诊断日志',
+      scope: 'global',
+      callback: () => {
+        clearRuntimeAudit()
+        Notice.info('诊断日志已清空')
+      },
+    })
+    this.registerCommand({
+      id: 'inkchapter.audit.snapshot',
+      title: '墨章：输出当前标题编号快照',
+      scope: 'editor',
+      callback: () => {
+        const json = getAuditEventsJSON()
+        console.log('[InkChapter Snapshot]', json)
+        Notice.info(`快照已输出到控制台（${JSON.parse(json).length} 条事件）`)
       },
     })
 
