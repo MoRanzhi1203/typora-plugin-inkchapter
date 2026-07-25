@@ -1,4 +1,4 @@
-import type { HeadingNumberingSettings, HeadingLevelRangeSettings } from '../heading-numbering/heading-types'
+import type { HeadingNumberingSettings, HeadingLevelRangeSettings, SpecialHeadingNumberingSettings } from '../heading-numbering/heading-types'
 
 export type { HeadingNumberingSettings }
 
@@ -8,4 +8,5 @@ export interface InkChapterSettings {
   debug: boolean
   headingNumbering: HeadingNumberingSettings
   levelRange: HeadingLevelRangeSettings
+  specialNumbering: SpecialHeadingNumberingSettings
 }

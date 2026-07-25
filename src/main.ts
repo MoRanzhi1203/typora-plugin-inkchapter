@@ -38,6 +38,30 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] migration error:', e)
     }
 
+    // ── Schema migration: add specialNumbering if missing ──
+    try {
+      const current = this.settings.get('specialNumbering' as keyof InkChapterSettings) as any
+      if (!current) {
+        this.settings.set('specialNumbering' as keyof InkChapterSettings, {
+          unnumberedCounterPolicy: 'skip',
+          nameSettings: {
+            enabled: true,
+            candidates: [
+              '摘要', 'Abstract', '关键词', 'Keywords',
+              '引言', '前言', '结语', '总结',
+              '参考文献', 'References', '致谢', '附录',
+              '作者简介',
+            ].map((text: string) => ({ text, enabled: true })),
+            matchMode: 'trim',
+            matchAction: 'prompt',
+          },
+        } as any)
+        console.log('[InkChapter] specialNumbering migration applied')
+      }
+    } catch (e) {
+      console.error('[InkChapter] migration error:', e)
+    }
+
     // Build service context (exposes only needed APIs, avoids protected access)
     const ctx: ServiceContext = {
       settings: this.settings,
@@ -117,6 +141,131 @@ export default class extends Plugin<InkChapterSettings> {
         this.numberingService?.toggleLevelOneNumber()
         const current = this.settings.get('headingNumbering')
         Notice.info(`一级标题编号：已${current?.showLevelOneNumber ? '开启' : '关闭'}`)
+      },
+    })
+
+    // ── Heading numbering override commands ──────────
+
+    // Unnumber current heading
+    this.registerCommand({
+      id: 'inkchapter.heading.unnumber-current',
+      title: '墨章：取消当前标题编号',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.setCurrentHeadingOverride('unnumbered')
+      },
+    })
+
+    // Number current heading
+    this.registerCommand({
+      id: 'inkchapter.heading.number-current',
+      title: '墨章：启用当前标题编号',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.setCurrentHeadingOverride('numbered')
+      },
+    })
+
+    // Inherit current heading
+    this.registerCommand({
+      id: 'inkchapter.heading.inherit-current',
+      title: '墨章：当前标题编号恢复继承',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.setCurrentHeadingOverride('inherit')
+      },
+    })
+
+    // Batch unnumber from current
+    this.registerCommand({
+      id: 'inkchapter.heading.batch-unnumber-from-here',
+      title: '墨章：从此标题开始停止编号',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.batchOverrideFromCurrent('unnumbered')
+      },
+    })
+
+    // Batch number from current
+    this.registerCommand({
+      id: 'inkchapter.heading.batch-number-from-here',
+      title: '墨章：从此标题开始启用编号',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.batchOverrideFromCurrent('numbered')
+      },
+    })
+
+    // Unnumber subtree
+    this.registerCommand({
+      id: 'inkchapter.heading.unnumber-subtree',
+      title: '墨章：取消当前标题及下级编号',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.setSubtreeOverride('unnumbered')
+      },
+    })
+
+    // Restore subtree
+    this.registerCommand({
+      id: 'inkchapter.heading.restore-subtree',
+      title: '墨章：恢复当前标题及下级继承',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.setSubtreeOverride('inherit')
+      },
+    })
+
+    // Clear all overrides
+    this.registerCommand({
+      id: 'inkchapter.heading.clear-overrides',
+      title: '墨章：清除当前文档所有标题编号覆盖',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.clearDocumentOverrides()
+        Notice.info('已清除当前文档所有标题编号覆盖')
+      },
+    })
+
+    // ── Outline numbering commands ─────────────────
+
+    // Diagnostic probe
+    this.registerCommand({
+      id: 'inkchapter.outline.probe',
+      title: '墨章：诊断大纲编号',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.runOutlineProbe((log: string) => {
+          console.log(log)
+        })
+        Notice.info('大纲探针已运行，请查看左侧大纲前三项是否显示 [墨章探针N]')
+      },
+    })
+
+    // Manual outline sync
+    this.registerCommand({
+      id: 'inkchapter.outline.sync',
+      title: '墨章：立即同步大纲编号',
+      scope: 'editor',
+      callback: () => {
+        const result = this.numberingService?.manualOutlineSync((log: string) => {
+          console.log('[InkChapter:outline-sync]', log)
+        })
+        if (result) {
+          const msg = [
+            `rootFound=${result.rootFound}`,
+            `bodyHeadings=${result.bodyHeadingCount}`,
+            `outlineItems=${result.outlineItemCount}`,
+            `matched=${result.matchedCount}`,
+            `byIndex=${result.matchedByIdx}`,
+            `applied=${result.attributeApplied}`,
+            `unmatched=${result.unmatchedCount}`,
+          ].join(', ')
+          Notice.info(`大纲同步: ${msg}`)
+          console.log('[InkChapter:outline-sync]', msg)
+        } else {
+          Notice.info('大纲同步失败：未找到大纲根节点')
+        }
       },
     })
 

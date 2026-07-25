@@ -784,3 +784,20 @@
     background: #c0392b;
   }
 }
+
+// ── Outline sidebar numbering ────────────────────────
+
+[data-inkchapter-number]::before {
+  content: attr(data-inkchapter-number) " ";
+  display: inline;
+  white-space: nowrap;
+  pointer-events: none;
+  color: inherit;
+  font-weight: 400;
+}
+
+// Legacy v2 class (cleanup reference, no new uses)
+.inkchapter-outline-number {
+  // Deprecated: removed in v3. Kept only to avoid style warnings.
+  // Use [data-inkchapter-number]::before instead.
+}
