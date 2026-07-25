@@ -26,6 +26,9 @@ import { migrateSettings } from './config-migration'
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
+import { HeadingOverrideStore } from './heading-override-store'
+import type { HeadingOverrideMap } from './numbering-engine'
+import { OutlineNumberingController } from './outline-numbering-controller'
 import * as logger from '../core/logger'
 
 const TAIL_REFRESH_MS = 60
@@ -93,6 +96,12 @@ export class HeadingNumberingService {
   /** Cache of last effective max level for change detection. */
   private lastEffectiveMaxLevel: HeadingLevel = 6
 
+  // Override Store
+  private overrideStore: HeadingOverrideStore | null = null
+
+  // Outline Numbering
+  private outlineController: OutlineNumberingController
+
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
@@ -107,6 +116,10 @@ export class HeadingNumberingService {
     }
     this.levelRangeEnforcer = new HeadingLevelRangeEnforcer(enforcerCallbacks)
     this.lastEffectiveMaxLevel = this.getEffectiveMaxLevel()
+
+    // Outline numbering controller
+    this.outlineController = new OutlineNumberingController()
+    this.outlineController.start()
 
     this.store = new DisposableStore()
 
@@ -488,6 +501,280 @@ export class HeadingNumberingService {
     return this.ctx.getActiveFilePath?.() ?? null
   }
 
+  // ── Heading override store ───────────────────────
+
+  /** Get or create the override store for the current document. */
+  getOverrideStore(): HeadingOverrideStore | null {
+    const docPath = this.getActiveFilePath()
+    if (!docPath) return null
+
+    if (!this.overrideStore || this.overrideStore.toDocumentOverrides().documentKey !== docPath) {
+      // Load persisted overrides or create new store
+      const overrides = this.loadPersistedOverrides(docPath)
+      this.overrideStore = new HeadingOverrideStore(docPath, overrides)
+    }
+    return this.overrideStore
+  }
+
+  /** Load persisted overrides from plugin settings. */
+  private loadPersistedOverrides(docPath: string): Record<string, import('./heading-types').HeadingNumberingOverride> | undefined {
+    try {
+      const raw = this.ctx.settings.get('headingNumbering') as any
+      return raw?._overrides as Record<string, import('./heading-types').HeadingNumberingOverride> | undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Persist overrides to plugin settings. */
+  persistOverrides(): void {
+    if (!this.overrideStore) return
+    const overrides = this.overrideStore.getAllOverrides()
+    const current = this.ctx.settings.get('headingNumbering')
+    if (current) {
+      ;(current as any)._overrides = overrides
+      this.ctx.settings.set('headingNumbering', { ...current })
+    }
+  }
+
+  /** Build override map for the numbering engine from the store. */
+  private buildOverrideMap(headings: readonly import('./heading-types').HeadingDescriptor[]): import('./numbering-engine').HeadingOverrideMap | undefined {
+    const store = this.getOverrideStore()
+    if (!store) return undefined
+
+    const map = new Map<string, 'numbered' | 'unnumbered'>()
+    const nameSettings = this.getSpecialNumberingSettings().nameSettings
+    const showL1 = this.numberingSettings.showLevelOneNumber
+
+    for (const h of headings) {
+      const parentInfo = this.buildParentStructure(headings, h)
+      const fp = HeadingOverrideStore.fingerprint(
+        store.toDocumentOverrides().documentKey,
+        h.level,
+        parentInfo,
+        h.text.replace(/[\s\u00A0]+/g, '').slice(0, 60),
+      )
+      const resolved = store.resolveMode(
+        h.level, fp, this.getParentFingerprints(headings, h, store),
+        h.text,
+        nameSettings.candidates.filter(c => c.enabled),
+        nameSettings.matchMode,
+        showL1 ?? false,
+      )
+      if (resolved.mode !== 'inherit') {
+        map.set(h.key, resolved.mode)
+      }
+    }
+
+    return map
+  }
+
+  private buildParentStructure(
+    headings: readonly import('./heading-types').HeadingDescriptor[],
+    current: import('./heading-types').HeadingDescriptor,
+  ): import('./heading-override-store').ParentStructure {
+    let parentLine: string | null = null
+    const ancestorLevels: import('./heading-types').HeadingLevel[] = []
+    let foundLevel = current.level
+
+    for (let i = headings.indexOf(current) - 1; i >= 0; i--) {
+      const h = headings[i]
+      if (h.level < foundLevel) {
+        if (!parentLine) parentLine = h.key
+        ancestorLevels.unshift(h.level)
+        foundLevel = h.level
+        if (h.level === 1) break
+      }
+    }
+
+    return { parentLine, ancestorLevels }
+  }
+
+  private getParentFingerprints(
+    headings: readonly import('./heading-types').HeadingDescriptor[],
+    current: import('./heading-types').HeadingDescriptor,
+    store: HeadingOverrideStore,
+  ): string[] {
+    const fps: string[] = []
+    let foundLevel = current.level
+    for (let i = headings.indexOf(current) - 1; i >= 0; i--) {
+      const h = headings[i]
+      if (h.level < foundLevel) {
+        const parentInfo = this.buildParentStructure(headings, h)
+        const fp = HeadingOverrideStore.fingerprint(
+          store.toDocumentOverrides().documentKey,
+          h.level, parentInfo,
+          h.text.replace(/[\s\u00A0]+/g, '').slice(0, 60),
+        )
+        fps.push(fp)
+        foundLevel = h.level
+        if (h.level === 1) break
+      }
+    }
+    return fps
+  }
+
+  /** Get the special numbering settings. */
+  getSpecialNumberingSettings(): import('./heading-types').SpecialHeadingNumberingSettings {
+    try {
+      const raw = this.ctx.settings.get('specialNumbering' as any) as any
+      return raw ?? { unnumberedCounterPolicy: 'skip' as const, nameSettings: { enabled: true, candidates: [], matchMode: 'trim' as const, matchAction: 'prompt' as const } }
+    } catch {
+      return { unnumberedCounterPolicy: 'skip', nameSettings: { enabled: true, candidates: [], matchMode: 'trim', matchAction: 'prompt' } }
+    }
+  }
+
+  // ── Command implementations ──────────────────────
+
+  /** Get the heading element at the current cursor position. */
+  private getCurrentHeadingElement(): HTMLHeadingElement | null {
+    const sel = window.getSelection()
+    if (!sel?.rangeCount) return null
+    const node = sel.getRangeAt(0).startContainer
+    if (node instanceof Element) {
+      return node.closest('h1, h2, h3, h4, h5, h6')
+    }
+    return node.parentElement?.closest('h1, h2, h3, h4, h5, h6') ?? null
+  }
+
+  /** Get the key of the heading at the current cursor position. */
+  private getCurrentHeadingKey(): string | null {
+    const el = this.getCurrentHeadingElement()
+    if (!el) return null
+    return `${el.tagName}-${el.getAttribute('data-line') ?? ''}-${el.id ?? ''}`
+  }
+
+  /** Set override for the heading at cursor position. */
+  setCurrentHeadingOverride(mode: 'inherit' | 'numbered' | 'unnumbered'): void {
+    const store = this.getOverrideStore()
+    if (!store) {
+      Notice.info('未检测到打开的文档')
+      return
+    }
+    const el = this.getCurrentHeadingElement()
+    if (!el) {
+      Notice.info('请将光标置于标题中')
+      return
+    }
+    const headings = this.adapter.collectHeadings()
+    const key = this.getCurrentHeadingKey()
+    const heading = headings.find(h => h.key === key)
+    if (!heading) return
+
+    const parentInfo = this.buildParentStructure(headings, heading)
+    const fp = HeadingOverrideStore.fingerprint(
+      store.toDocumentOverrides().documentKey,
+      heading.level,
+      parentInfo,
+      heading.text.replace(/[\s\u00A0]+/g, '').slice(0, 60),
+    )
+
+    if (mode === 'inherit') {
+      store.removeOverride(fp)
+    } else {
+      store.setOverride(fp, mode, 'self', 'manual')
+    }
+    this.persistOverrides()
+    this.lastSnapshot = null
+    this.flushRefresh()
+
+    const labels = { inherit: '恢复继承', numbered: '启用编号', unnumbered: '取消编号' }
+    Notice.info(`当前标题：已${labels[mode]}`)
+  }
+
+  /** Batch override from current heading to end of siblings. */
+  batchOverrideFromCurrent(mode: 'numbered' | 'unnumbered'): void {
+    const store = this.getOverrideStore()
+    if (!store) { Notice.info('未检测到打开的文档'); return }
+    const el = this.getCurrentHeadingElement()
+    if (!el) { Notice.info('请将光标置于标题中'); return }
+    const headings = this.adapter.collectHeadings()
+    const key = this.getCurrentHeadingKey()
+    const idx = headings.findIndex(h => h.key === key)
+    if (idx < 0) return
+
+    const current = headings[idx]
+    const siblings = headings.slice(idx).filter(h => h.level === current.level)
+    const fps: string[] = []
+    for (const sib of siblings) {
+      const parentInfo = this.buildParentStructure(headings, sib)
+      const fp = HeadingOverrideStore.fingerprint(
+        store.toDocumentOverrides().documentKey,
+        sib.level, parentInfo,
+        sib.text.replace(/[\s\u00A0]+/g, '').slice(0, 60),
+      )
+      fps.push(fp)
+    }
+
+    store.batchSetOverrides(fps, mode, 'self', 'batch')
+    this.persistOverrides()
+    this.lastSnapshot = null
+    this.flushRefresh()
+
+    const action = mode === 'unnumbered' ? '停止' : '启用'
+    Notice.info(`已对当前标题及后续 ${siblings.length - 1} 个同级标题${action}编号`)
+  }
+
+  /** Set subtree override. */
+  setSubtreeOverride(mode: 'unnumbered' | 'inherit'): void {
+    const store = this.getOverrideStore()
+    if (!store) { Notice.info('未检测到打开的文档'); return }
+    const el = this.getCurrentHeadingElement()
+    if (!el) { Notice.info('请将光标置于标题中'); return }
+    const headings = this.adapter.collectHeadings()
+    const key = this.getCurrentHeadingKey()
+    const idx = headings.findIndex(h => h.key === key)
+    if (idx < 0) return
+
+    const current = headings[idx]
+
+    if (mode === 'inherit') {
+      // Remove subtree override
+      const parentInfo = this.buildParentStructure(headings, current)
+      const fp = HeadingOverrideStore.fingerprint(
+        store.toDocumentOverrides().documentKey,
+        current.level, parentInfo,
+        current.text.replace(/[\s\u00A0]+/g, '').slice(0, 60),
+      )
+      store.removeOverride(fp)
+    } else {
+      const parentInfo = this.buildParentStructure(headings, current)
+      const fp = HeadingOverrideStore.fingerprint(
+        store.toDocumentOverrides().documentKey,
+        current.level, parentInfo,
+        current.text.replace(/[\s\u00A0]+/g, '').slice(0, 60),
+      )
+      store.setOverride(fp, mode, 'subtree', 'manual')
+    }
+
+    this.persistOverrides()
+    this.lastSnapshot = null
+    this.flushRefresh()
+
+    const label = mode === 'unnumbered' ? '已取消当前标题及其下级编号' : '已恢复当前标题及其下级继承'
+    Notice.info(label)
+  }
+
+  /** Clear all overrides for current document. */
+  clearDocumentOverrides(): void {
+    const store = this.getOverrideStore()
+    if (!store) return
+    store.clearAll()
+    this.persistOverrides()
+    this.lastSnapshot = null
+    this.flushRefresh()
+  }
+
+  /** Run outline diagnostic probe. */
+  runOutlineProbe(callback: (log: string) => void): void {
+    this.outlineController.runProbe(callback)
+  }
+
+  /** Manual outline sync with diagnostic output. */
+  manualOutlineSync(callback: (log: string) => void): { rootFound: boolean; bodyHeadingCount: number; outlineItemCount: number; matchedCount: number; matchedByIdx: number; attributeApplied: number; unmatchedCount: number } | null {
+    return this.outlineController.manualSync(callback)
+  }
+
   /** Set the global default max heading level. */
   setDefaultMaxLevel(maxLevel: MaxHeadingLevel): void {
     const rangeSettings = this.getLevelRangeSettings()
@@ -588,6 +875,7 @@ export class HeadingNumberingService {
     this.adapter.clearNumbering()
     this.store.dispose()
     this.levelRangeEnforcer.dispose()
+    this.outlineController.stop()
   }
 
   // ── Settings sync ──────────────────────────────────────
@@ -690,10 +978,20 @@ export class HeadingNumberingService {
       const effectiveMax = this.getEffectiveMaxLevel()
       this.numberingSettings.maxDepth = effectiveMax
 
-      const numbered = computeHeadingNumbering(headings, this.numberingSettings)
+      // Build override map from store
+      const overrideMap = this.buildOverrideMap(headings)
+
+      // Get counter policy
+      const specialSettings = this.getSpecialNumberingSettings()
+      const counterPolicy = specialSettings.unnumberedCounterPolicy
+
+      const numbered = computeHeadingNumbering(headings, this.numberingSettings, overrideMap, counterPolicy)
       const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
       const diff = this.adapter.applyNumberingDiff(labels)
       this.renderedStates = this.adapter.buildRenderedStates(labels)
+
+      // Sync outline sidebar numbering
+      this.outlineController.syncAfterRefresh(headings, labels)
 
       this.logRefresh(reason, headings.length, diff, startTime)
     } catch (e) {

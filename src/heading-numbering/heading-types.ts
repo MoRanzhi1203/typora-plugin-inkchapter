@@ -264,3 +264,87 @@ export function generateStableId(): string {
   const ts = Date.now().toString(36)
   return `${ts}-${rand}-${_idCounter}`
 }
+
+// ── Heading numbering override ──────────────────────────
+
+/** Per-heading numbering control mode. */
+export type HeadingNumberingOverrideMode = 'inherit' | 'numbered' | 'unnumbered'
+
+/** Per-heading numbering override stored per document. */
+export interface HeadingNumberingOverride {
+  /** Stable heading fingerprint (not data-line based). */
+  headingKey: string
+  mode: HeadingNumberingOverrideMode
+  /** Scope of the override: self only or entire subtree. */
+  scope: 'self' | 'subtree'
+  /** Origin of the override for UI display. */
+  source: 'manual' | 'batch' | 'name-rule'
+  updatedAt?: number
+}
+
+/** Per-document heading numbering overrides. */
+export interface DocumentHeadingNumberingOverrides {
+  documentKey: string
+  overrides: Record<string, HeadingNumberingOverride>
+}
+
+/** Counter policy for unnumbered headings. */
+export type UnnumberedCounterPolicy = 'skip' | 'consume'
+
+/** Matching mode for special heading name detection. */
+export type NameMatchMode = 'exact' | 'trim' | 'loose'
+
+/** Behavior after name match. */
+export type NameMatchAction = 'prompt' | 'auto-unnumbered' | 'prompt-on-create'
+
+/** A single name rule for special heading detection. */
+export interface SpecialHeadingNameRule {
+  /** The candidate text. */
+  text: string
+  /** Whether this rule is enabled. */
+  enabled: boolean
+  /** Whether user has chosen "don't show again" for this rule. */
+  dismissed?: boolean
+}
+
+/** Settings for special heading name recognition. */
+export interface SpecialHeadingNameSettings {
+  enabled: boolean
+  candidates: SpecialHeadingNameRule[]
+  matchMode: NameMatchMode
+  matchAction: NameMatchAction
+}
+
+/** Settings for special heading numbering behavior. */
+export interface SpecialHeadingNumberingSettings {
+  unnumberedCounterPolicy: UnnumberedCounterPolicy
+  nameSettings: SpecialHeadingNameSettings
+}
+
+/** Default name candidates. */
+export const DEFAULT_NAME_CANDIDATES: string[] = [
+  '摘要', 'Abstract', '关键词', 'Keywords',
+  '引言', '前言', '结语', '总结',
+  '参考文献', 'References', '致谢', '附录',
+  '作者简介',
+]
+
+/** Generate a stable structural fingerprint for a heading. */
+export function generateHeadingFingerprint(
+  docKey: string,
+  level: HeadingLevel,
+  parentStructure: string,
+  normalizedText: string,
+): string {
+  const hash = simpleHash(`${docKey}|${level}|${parentStructure}|${normalizedText}`)
+  return `hfp-${level}-${hash}`
+}
+
+/** Simple string hash for fingerprint generation. */
+function simpleHash(s: string): string {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  return Math.abs(h).toString(36)
+}

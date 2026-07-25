@@ -1,5 +1,6 @@
 import type { InkChapterSettings } from './settings-model'
 import type { HeadingLevel, HeadingLevelNumberTemplate } from '../heading-numbering/heading-types'
+import { DEFAULT_NAME_CANDIDATES } from '../heading-numbering/heading-types'
 
 const decimalLevels = {} as Record<HeadingLevel, import('../heading-numbering/heading-types').HeadingLevelStyle>
 const defaultTemplate: HeadingLevelNumberTemplate = { tokenStyle: 'arabic', prefix: '', suffix: '' }
@@ -35,5 +36,14 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
   levelRange: {
     defaultMaxLevel: 6,
     documentOverrides: {},
+  },
+  specialNumbering: {
+    unnumberedCounterPolicy: 'skip',
+    nameSettings: {
+      enabled: true,
+      candidates: DEFAULT_NAME_CANDIDATES.map(text => ({ text, enabled: true })),
+      matchMode: 'trim',
+      matchAction: 'prompt',
+    },
   },
 }

@@ -11,25 +11,38 @@ import type {
   HeadingLevelNumberTemplate,
   ContextualFormatSegment,
   ContextualFormatVariants,
+  UnnumberedCounterPolicy,
 } from './heading-types'
 import { formatToken } from './token-formatter'
 
 /**
+ * Info about heading numbering mode passed to the engine.
+ * Each heading maps to 'numbered' or 'unnumbered'.
+ * undefined entries are treated as 'numbered' (default).
+ */
+export type HeadingOverrideMap = Map<string, 'numbered' | 'unnumbered'>
+
+/**
  * Pure function: compute hierarchical heading numbering with per-level styling.
  *
- * Advanced rules (schemaVersion >= 3):
- * - startAt: counter begins at (startAt - 1), first occurrence yields startAt.
- * - restartAfterLevel: when a heading at level <= restartAfterLevel appears,
- *   reset this level's counter (to startAt - 1). null = continuous across document.
- * - H1 still acts as chapter boundary for H2 restart even when showLevelOneNumber=false.
+ * Supports per-heading override: unnumbered headings can skip counter or
+ * consume-and-hide. Parent references for unnumbered ancestors are omitted.
+ *
+ * @param headings - Flat list of heading descriptors from DOM
+ * @param settings - Numbering settings
+ * @param overrideMap - Optional per-heading override mode (key = heading key)
+ * @param counterPolicy - Policy for unnumbered headings (default: 'skip')
  */
 export function computeHeadingNumbering(
   headings: readonly HeadingDescriptor[],
   settings: HeadingNumberingSettings,
+  overrideMap?: HeadingOverrideMap,
+  counterPolicy?: UnnumberedCounterPolicy,
 ): NumberedHeading[] {
   const counters: number[] = [0, 0, 0, 0, 0, 0]
   const skipH1 = !settings.showLevelOneNumber
   const levelStyles = settings.levels
+  const policy = counterPolicy ?? 'skip'
 
   // Initialize counters with startAt - 1
   for (let i = 0; i < 6; i++) {
@@ -46,43 +59,37 @@ export function computeHeadingNumbering(
       const idx = h.level - 1
       const style = levelStyles[h.level]
 
+      // ── Check per-heading override ──────────────────
+      const overrideMode = overrideMap?.get(h.key)
+      const isUnnumbered = overrideMode === 'unnumbered'
+      const shouldSkipCount = isUnnumbered && policy === 'skip'
+      const shouldConsumeCount = isUnnumbered && policy === 'consume'
+
       // ── restartAfterLevel ──────────────────────────
-      // Check if any parent level (up to restartAfterLevel) triggered a restart
       if (style?.restartAfterLevel != null) {
-        const restartIdx = style.restartAfterLevel - 1
-        // Previous headings at restartAfterLevel or higher restart this counter
-        // (This is handled by resetting lower counters when higher ones increment,
-        // but for null parents we need to NOT reset them.)
-        // The current logic already resets deeper counters on increment.
-        // For restartAfterLevel, we need to ensure counters between restartIdx+1..idx
-        // get reset. The existing logic does this automatically via the for loop below.
-        // However for null, we need to ONLY increment without resetting.
-        // We handle this below.
+        // no-op; handled below
       }
 
-      // Increment current level
-      counters[idx]++
+      // Increment current level (skip for unnumbered+skip)
+      if (!shouldSkipCount) {
+        counters[idx]++
+      } else {
+        // Still need a placeholder for parent omission detection
+        counters[idx] = 0
+      }
 
-      // Reset deeper levels ONLY if their restartAfterLevel covers this level
-      // Default: deeper levels reset (restartAfterLevel defaults to parent)
-      // If a deeper level has restartAfterLevel=null, we still reset it here
-      // because the increment of a higher level always triggers the standard behavior.
-      // Levels with restartAfterLevel < this level also reset.
-      for (let i = idx + 1; i < 6; i++) {
-        const deeperStyle = levelStyles[(i + 1) as HeadingLevel]
-        if (deeperStyle?.restartAfterLevel != null && deeperStyle.restartAfterLevel <= h.level) {
-          counters[i] = clamp(deeperStyle.startAt, 1, 999) - 1
-        } else if (deeperStyle?.restartAfterLevel == null) {
-          // null = do NOT restart, leave counter as-is
-        } else {
-          // restartAfterLevel > h.level: do not restart yet
-          // But the standard behavior says deeper levels always reset.
-          // With restartAfterLevel, we only reset if the incrementing level
-          // is <= restartAfterLevel (or higher in hierarchy).
-          // If deeper level has restartAfterLevel=3 and we incremented H4 (level 4),
-          // don't reset because 3 < 4.
-          if (deeperStyle.restartAfterLevel >= h.level) {
+      // Reset deeper levels
+      if (!shouldSkipCount) {
+        for (let i = idx + 1; i < 6; i++) {
+          const deeperStyle = levelStyles[(i + 1) as HeadingLevel]
+          if (deeperStyle?.restartAfterLevel != null && deeperStyle.restartAfterLevel <= h.level) {
             counters[i] = clamp(deeperStyle.startAt, 1, 999) - 1
+          } else if (deeperStyle?.restartAfterLevel == null) {
+            // no-op: null = continuous
+          } else {
+            if (deeperStyle.restartAfterLevel >= h.level) {
+              counters[i] = clamp(deeperStyle.startAt, 1, 999) - 1
+            }
           }
         }
       }
@@ -93,12 +100,20 @@ export function computeHeadingNumbering(
         if (counters[i] < 1) activeCounters[i] = 0
       }
 
+      // Unnumbered: no label
+      if (isUnnumbered) {
+        return { ...h, counters: [...activeCounters], label: '' }
+      }
+
       // H1 completely hidden when showLevelOneNumber is false
       if (skipH1 && idx === 0) {
         return { ...h, counters: [...activeCounters], label: '' }
       }
 
-      const label = buildLabel(activeCounters, levelStyles, skipH1, idx, h.level)
+      // Build unnumbered-set for parent omission
+      const unnumberedSet = buildUnnumberedSet(headings, 0, headings.indexOf(h), overrideMap, policy)
+
+      const label = buildLabel(activeCounters, levelStyles, skipH1, idx, h.level, unnumberedSet)
 
       return { ...h, counters: [...activeCounters], label }
     })
@@ -110,6 +125,7 @@ function buildLabel(
   skipH1: boolean,
   currentIdx: number,
   headingLevel: HeadingLevel,
+  unnumberedSet?: Set<HeadingLevel>,
 ): string {
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
@@ -117,7 +133,7 @@ function buildLabel(
   // ── New contextual model (schemaVersion >= 8) ───
   const contextualVariant = getActiveContextualFormatVariant(style, !skipH1, headingLevel)
   if (contextualVariant && contextualVariant.length > 0) {
-    return buildLabelFromContextualFormat(activeCounters, headingLevel, contextualVariant, skipH1)
+    return buildLabelFromContextualFormat(activeCounters, headingLevel, contextualVariant, skipH1, unnumberedSet)
   }
 
   // ── New two-layer model (schemaVersion >= 7) ──────
@@ -141,6 +157,8 @@ function buildLabel(
       const actualLv = (i + 1) as HeadingLevel
       const st = levelStyles[actualLv]
       if (!st || !st.enabled) continue
+      // Skip unnumbered parent levels
+      if (unnumberedSet?.has(actualLv)) continue
 
       const tokenStyle = st.tokenStyle
       const token = formatToken(activeCounters[i], tokenStyle)
@@ -151,6 +169,46 @@ function buildLabel(
 
   const token = formatToken(activeCounters[currentIdx], style.tokenStyle)
   return style.prefix + token + style.suffix
+}
+
+/**
+ * Build a set of heading levels that are unnumbered (for parent omission).
+ * Looks backward from current heading to find unnumbered ancestors whose
+ * counters are 0 (indicating they were skipped).
+ */
+function buildUnnumberedSet(
+  headings: readonly HeadingDescriptor[],
+  startIdx: number,
+  currentIdx: number,
+  overrideMap?: HeadingOverrideMap,
+  _counterPolicy?: UnnumberedCounterPolicy,
+): Set<HeadingLevel> {
+  const set = new Set<HeadingLevel>()
+  if (!overrideMap) return set
+
+  // Collect ancestors of the current heading
+  const ancestorLevels: HeadingLevel[] = []
+  let foundLevel = 0
+  for (let i = currentIdx; i >= 0; i--) {
+    const h = headings[i]
+    if (h.level <= foundLevel || foundLevel === 0) {
+      if (h.level < foundLevel || (foundLevel === 0 && i < currentIdx)) {
+        ancestorLevels.unshift(h.level)
+        foundLevel = h.level
+        if (h.level === 1) break
+      }
+    }
+  }
+
+  // Check each ancestor for unnumbered override
+  for (const h of headings.slice(0, currentIdx + 1)) {
+    const mode = overrideMap.get(h.key)
+    if (mode === 'unnumbered') {
+      set.add(h.level)
+    }
+  }
+
+  return set
 }
 
 // ── New two-layer render functions (schemaVersion >= 7) ──
@@ -268,13 +326,70 @@ function buildLabelFromContextualFormat(
   headingLevel: HeadingLevel,
   format: readonly ContextualFormatSegment[],
   skipH1: boolean,
+  unnumberedSet?: Set<HeadingLevel>,
 ): string {
-  // Filter hidden levels
+  // Filter hidden levels (H1 when skipH1) and unnumbered parent references
   const hidden = new Set<HeadingLevel>()
   if (skipH1) hidden.add(1 as HeadingLevel)
-  const effective = format.filter(s => s.type === 'literal' || !hidden.has(s.level))
+  if (unnumberedSet) {
+    for (const lv of unnumberedSet) hidden.add(lv)
+  }
+  // Filter out level-references to hidden levels
+  let effective = format.filter(s => s.type === 'literal' || !hidden.has(s.level))
+
+  // Clean up orphaned separators: if a literal is now adjacent to another
+  // literal or at start/end of remaining segments, remove it if it looks
+  // like a pure separator (e.g., ".", "-", "/", " ").
+  effective = cleanOrphanSeparators(effective)
 
   return renderContextualFormat(effective, activeCounters)
+}
+
+/**
+ * Remove orphaned separator literals that are now adjacent to
+ * other literals or at the start/end of the segment list (due to
+ * omitted level-references).
+ */
+function cleanOrphanSeparators(
+  segments: readonly ContextualFormatSegment[],
+): ContextualFormatSegment[] {
+  if (segments.length <= 1) return [...segments]
+
+  const result = [...segments]
+  const SEPARATOR_PATTERN = /^[\.\-\/，,、：:·\s]+$/
+
+  for (let i = result.length - 1; i >= 0; i--) {
+    const seg = result[i]
+    if (seg.type !== 'literal') continue
+    if (!SEPARATOR_PATTERN.test(seg.value)) continue
+
+    const prev = i > 0 ? result[i - 1] : null
+    const next = i < result.length - 1 ? result[i + 1] : null
+
+    // Orphaned at start or end
+    if (!prev || !next) {
+      result.splice(i, 1)
+      continue
+    }
+
+    // Both neighbors are now literals (levels were removed)
+    if (prev.type === 'literal' && next.type === 'literal') {
+      // Merge adjacent literals
+      result[i - 1] = { ...prev, value: prev.value + seg.value + next.value }
+      result.splice(i, 2)
+      continue
+    }
+
+    // Only one side is literal and the other was a level-reference that got removed
+    // → this separator is now adjacent to just one literal
+    if (prev.type === 'literal' || next.type === 'literal') {
+      // Keep it only if it's meaningful between the literal and the remaining ref
+      // For simplicity, remove pure separators between literal and ref
+      continue
+    }
+  }
+
+  return result.filter(s => s.type === 'level-reference' || s.value.length > 0)
 }
 
 // ── Contextual format variant helpers ───────────────
