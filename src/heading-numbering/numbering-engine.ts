@@ -395,7 +395,82 @@ function cleanOrphanSeparators(
 // ── Contextual format variant helpers ───────────────
 
 /**
+ * Strip H1 level-references from a contextual format segment array.
+ * Removes H1 references and adjacent separator literals, then cleans
+ * leading/trailing separators. Used to dynamically derive withoutLevelOne
+ * when the user's custom edits only populated withLevelOne.
+ */
+function stripContextualLevelOneRefs(
+  format: readonly ContextualFormatSegment[],
+): ContextualFormatSegment[] {
+  if (format.length === 0) return []
+
+  const SEP = new Set(['.', '-', '_', '、', '，', ',', ':', '：', '/', '\\', '·', ' '])
+  const isSep = (v: string) => [...v.trim()].every(c => SEP.has(c)) || v.trim() === ''
+
+  const result: ContextualFormatSegment[] = []
+  for (let i = 0; i < format.length; i++) {
+    const seg = format[i]
+    if (seg.type === 'level-reference' && seg.level === 1) {
+      // Remove H1 reference and adjacent separator
+      if (result.length > 0 && result[result.length - 1].type === 'literal') {
+        const last = result[result.length - 1]
+        if (isSep((last as { type: 'literal'; value: string }).value)) result.pop()
+      }
+      while (i + 1 < format.length && format[i + 1].type === 'literal') {
+        if (!isSep((format[i + 1] as { type: 'literal'; value: string }).value)) break
+        i++
+      }
+      continue
+    }
+    result.push({ ...seg })
+  }
+
+  // Clean leading/trailing separator literals
+  while (result.length > 0 && result[0].type === 'literal' && isSep((result[0] as { type: 'literal'; value: string }).value) && (result[0] as { type: 'literal'; value: string }).value.trim() !== '') {
+    result.shift()
+  }
+  // Also remove empty literals at start
+  while (result.length > 0 && result[0].type === 'literal' && (result[0] as { type: 'literal'; value: string }).value.trim() === '') {
+    result.shift()
+  }
+  while (result.length > 0 && result[result.length - 1].type === 'literal') {
+    const last = result[result.length - 1] as { type: 'literal'; value: string }
+    if (!isSep(last.value) && last.value.trim() !== '') break
+    result.pop()
+  }
+
+  // Merge adjacent literals
+  const merged: ContextualFormatSegment[] = []
+  for (const seg of result) {
+    if (seg.type === 'literal' && merged.length > 0 && merged[merged.length - 1].type === 'literal') {
+      (merged[merged.length - 1] as { type: 'literal'; value: string }).value +=
+        (seg as { type: 'literal'; value: string }).value
+    } else {
+      merged.push({ ...seg })
+    }
+  }
+
+  // Ensure at least one level-reference exists (the heading's own level)
+  const levels = merged.filter(s => s.type === 'level-reference').map(s => s.level)
+  const maxLevel = levels.length > 0 ? Math.max(...levels) : 1
+  if (!merged.some(s => s.type === 'level-reference' && s.level === maxLevel as HeadingLevel)) {
+    merged.push({
+      id: 'auto-' + Date.now(),
+      type: 'level-reference',
+      level: maxLevel as HeadingLevel,
+      appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+    })
+  }
+
+  return merged
+}
+
+/**
  * Get the active contextual format variant for the current H1 visibility.
+ * When withoutLevelOne is empty (e.g., custom edits only touched withLevelOne),
+ * it's dynamically derived from withLevelOne by stripping H1 references.
+ * This prevents H2-H6 from showing no label or wrong configs when H1 is off.
  */
 export function getActiveContextualFormatVariant(
   style: HeadingLevelStyle,
@@ -405,7 +480,13 @@ export function getActiveContextualFormatVariant(
   const variants = style.contextualFormatVariants
   if (!variants) return []
   if (level === 1) return variants.withLevelOne
-  return showLevelOneNumber ? variants.withLevelOne : variants.withoutLevelOne
+  if (showLevelOneNumber) return variants.withLevelOne
+  // When H1 is hidden: prefer withoutLevelOne, but fall back to
+  // deriving from withLevelOne if withoutLevelOne is empty (e.g.,
+  // user only edited format while H1 was visible).
+  if (variants.withoutLevelOne.length > 0) return variants.withoutLevelOne
+  // Derive withoutLevelOne by stripping H1 references from withLevelOne
+  return stripContextualLevelOneRefs(variants.withLevelOne)
 }
 
 /**

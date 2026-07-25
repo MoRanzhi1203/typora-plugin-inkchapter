@@ -12,6 +12,7 @@ import {
   matchHeadingsToOutline,
   applyNumberingAttributes,
   clearAllNumberingAttributes,
+  clearFileTreeNumberingAttributes,
   quickSyncOutline,
   fullSyncOutline,
   runOutlineProbe,
@@ -20,6 +21,10 @@ import {
 } from './outline-numbering-adapter'
 import type { HeadingDescriptor, HeadingLevel } from './heading-types'
 
+/** Max retries for waiting for outline DOM to appear (each step ~100ms). */
+const MAX_OUTLINE_RETRIES = 20
+const RETRY_INTERVAL_MS = 100
+
 export class OutlineNumberingController {
   private observer: MutationObserver | null = null
   private observerRoot: HTMLElement | null = null
@@ -27,17 +32,34 @@ export class OutlineNumberingController {
   private isObserverActive = false
   private lastLabels: readonly string[] = []
   private lastHeadings: readonly { level: HeadingLevel; text: string }[] = []
+  private retryCount = 0
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
 
   start(): void {
     this.reattachObserver()
     cleanupV2Spans()
+    clearFileTreeNumberingAttributes()
   }
 
   stop(): void {
     this.detachObserver()
+    this.cancelRetry()
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
     const root = findOutlineRoot()
     clearAllNumberingAttributes(root)
+    clearFileTreeNumberingAttributes()
+  }
+
+  /**
+   * Reinitialize for a new document: clear stale state, find new outline root,
+   * re-attach observer, and clean file tree.
+   */
+  reinitialize(): void {
+    this.detachObserver()
+    this.cancelRetry()
+    this.retryCount = 0
+    clearFileTreeNumberingAttributes()
+    this.reattachObserver()
   }
 
   /** Sync after heading refresh (called from doRefresh). */
@@ -48,8 +70,22 @@ export class OutlineNumberingController {
     this.lastHeadings = headings
     this.lastLabels = labels
 
+    // Clear any accidental file tree pollution immediately
+    clearFileTreeNumberingAttributes()
+
     this.scheduleSync(() => {
-      quickSyncOutline(headings, labels)
+      const result = quickSyncOutline(headings, labels)
+      // If outline DOM not ready, schedule retries
+      if (result.matched === 0 && headings.length > 0) {
+        this.scheduleRetry()
+      } else {
+        this.cancelRetry()
+        this.retryCount = 0
+        // Observer re-attach if root found but observer not active
+        if (!this.isObserverActive) {
+          this.reattachObserver()
+        }
+      }
     })
   }
 
@@ -108,5 +144,26 @@ export class OutlineNumberingController {
       this.rafId = null
       try { fn() } catch { /* silent */ }
     })
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryCount >= MAX_OUTLINE_RETRIES) return
+    this.retryCount++
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      clearFileTreeNumberingAttributes()
+      const result = quickSyncOutline(this.lastHeadings, this.lastLabels)
+      if (result.matched === 0 && this.lastHeadings.length > 0) {
+        this.scheduleRetry()
+      } else {
+        this.retryCount = 0
+        if (!this.isObserverActive) this.reattachObserver()
+      }
+    }, RETRY_INTERVAL_MS)
+  }
+
+  private cancelRetry(): void {
+    if (this.retryTimer !== null) { clearTimeout(this.retryTimer); this.retryTimer = null }
+    this.retryCount = 0
   }
 }

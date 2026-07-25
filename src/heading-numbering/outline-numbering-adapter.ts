@@ -13,15 +13,29 @@ import type { HeadingDescriptor, HeadingLevel } from './heading-types'
 
 // ── Selectors (probed at runtime) ─────────────────────
 
+/**
+ * Outline panel candidate selectors (in priority order).
+ * These are the REAL outline container selectors for Typora 1.6.7.
+ * We explicitly EXCLUDE file-tree selectors (#file-library, .file-library, etc.)
+ * to prevent heading numbers from polluting the file tree.
+ */
 const ROOT_CANDIDATES = [
-  '#outline-content',
-  '.outline-content',
-  '#outline',
-  '[data-outline]',
-  '.ty-outline',
-  '#sidebar-content .info-panel',
-  '#file-library .outline-panel',
-  '.sidebar-outline',
+  '#outline-content',            // Typora standard outline
+  '.outline-content',            // alternative class
+  '#file-library .outline-panel', // wihin file-library but specific to outline sub-panel
+  '.sidebar-outline',            // custom class
+  '.ty-outline',                 // Typora internal
+]
+
+/** File-tree selectors: we NEVER apply numbering to these. */
+const FILE_TREE_SELECTORS = [
+  '#file-library',
+  '.file-library',
+  '.file-tree',
+  '#file-tree',
+  '.ty-file-list',
+  '.sidebar-file-list',
+  '[data-file-list]',
 ]
 
 const NUMBER_ATTR = 'data-inkchapter-number'
@@ -52,27 +66,62 @@ export interface SyncResult {
 
 /** Find the real outline root element using multiple candidate selectors. */
 export function findOutlineRoot(): HTMLElement | null {
+  // First try specific outline selectors.
+  // ROOT_CANDIDATES are explicitly known outline containers — only check
+  // el.matches() (not closest) since outline panels may be nested inside
+  // file-library wrappers in some Typora versions.
   for (const sel of ROOT_CANDIDATES) {
     const el = document.querySelector(sel) as HTMLElement | null
     if (el && el.offsetParent !== null && el.textContent && el.textContent.trim().length > 0) {
-      return el
+      // Check only direct match (not ancestors — outline can be inside #file-library)
+      if (!isFileTreeElementDirectly(el)) return el
     }
   }
-  // Fallback: search sidebar area for any container with heading-like content
+  // Fallback: search sidebar area but explicitly exclude file-tree containers
   const sidebar = document.getElementById('typora-sidebar')
   if (sidebar) {
+    // Exclude file-tree containers from the search
+    for (const ftSel of FILE_TREE_SELECTORS) {
+      const ft = sidebar.querySelector(ftSel)
+      if (ft) ft.setAttribute('data-inkchapter-exclude', 'true')
+    }
     const candidates = sidebar.querySelectorAll<HTMLElement>('div, ul, ol, section, nav')
     for (const c of candidates) {
+      if (isInsideFileTree(c)) continue
       if (c.offsetParent !== null && c.textContent && c.textContent.trim().length > 2) {
-        // Check if it contains text that looks like heading titles
         const text = c.textContent.trim()
-        if (text.length > 3 && !text.includes('文件') && !text.includes('搜索')) {
-          return c
-        }
+        // More specific: look for heading-indicative patterns (numbers/letters)
+        // File tree items are usually filenames like "xxx.md"
+        if (text.includes('.md') || text.includes('.MD')) continue
+        return c
       }
     }
   }
   return null
+}
+
+/**
+ * Check if an element directly matches a file-tree selector (no ancestor lookup).
+ * Used for ROOT_CANDIDATES results — these are known outline containers,
+ * so we only need to verify the element itself is not a file tree panel.
+ */
+function isFileTreeElementDirectly(el: HTMLElement): boolean {
+  for (const sel of FILE_TREE_SELECTORS) {
+    if (el.matches(sel)) return true
+  }
+  if (el.hasAttribute('data-inkchapter-exclude')) return true
+  return false
+}
+
+/** Check if an element is inside (or is) a file-tree container. */
+function isInsideFileTree(el: HTMLElement): boolean {
+  for (const sel of FILE_TREE_SELECTORS) {
+    if (el.matches(sel) || el.closest(sel)) return true
+  }
+  if (el.hasAttribute('data-inkchapter-exclude')) return true
+  // Heuristic: file-tree items typically contain ".md" or ".MD"
+  if (el.textContent && /\.[mM][dD]\b/.test(el.textContent.trim())) return true
+  return false
 }
 
 /**
@@ -329,6 +378,20 @@ export function quickSyncOutline(
 /** Check if outline sidebar is visible. */
 export function isOutlineVisible(): boolean {
   return findOutlineRoot() !== null
+}
+
+/** Clear any accidentally-applied numbering attributes from the file tree area. */
+export function clearFileTreeNumberingAttributes(): number {
+  let count = 0
+  for (const sel of FILE_TREE_SELECTORS) {
+    const ft = document.querySelector(sel)
+    if (ft) {
+      ft.removeAttribute('data-inkchapter-exclude')
+      const marked = ft.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
+      marked.forEach(el => { el.removeAttribute(NUMBER_ATTR); count++ })
+    }
+  }
+  return count
 }
 
 /** Remove the leftover NUMBER_CLASS spans from v2 implementation. */

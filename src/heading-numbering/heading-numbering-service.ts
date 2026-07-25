@@ -1224,6 +1224,7 @@ export class HeadingNumberingService {
       ctx.onWorkspaceEvent('file:open', () => {
         this.lastSnapshot = null
         this.renderedStates = null
+        this.outlineController.reinitialize()
         setTimeout(() => {
           const area = this.adapter.detectEditorRoot()
           if (area) {
@@ -1242,6 +1243,7 @@ export class HeadingNumberingService {
       ctx.onWorkspaceEvent('active-leaf:change', () => {
         this.lastSnapshot = null
         this.renderedStates = null
+        this.outlineController.reinitialize()
         this.requestRefresh('active-leaf-change')
         this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
       }),
