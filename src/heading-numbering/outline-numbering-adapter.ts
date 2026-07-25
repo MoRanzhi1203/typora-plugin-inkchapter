@@ -36,6 +36,10 @@ const FILE_TREE_SELECTORS = [
   '.ty-file-list',
   '.sidebar-file-list',
   '[data-file-list]',
+  '#file-library-search',    // file search panel
+  '#file-library-filter',    // file filter area
+  '.file-library-search',    // alt class
+  '.ty-file-search',         // Typora internal file search
 ]
 
 const NUMBER_ATTR = 'data-inkchapter-number'
@@ -66,21 +70,16 @@ export interface SyncResult {
 
 /** Find the real outline root element using multiple candidate selectors. */
 export function findOutlineRoot(): HTMLElement | null {
-  // First try specific outline selectors.
-  // ROOT_CANDIDATES are explicitly known outline containers — only check
-  // el.matches() (not closest) since outline panels may be nested inside
-  // file-library wrappers in some Typora versions.
+  // First try specific outline selectors
   for (const sel of ROOT_CANDIDATES) {
     const el = document.querySelector(sel) as HTMLElement | null
     if (el && el.offsetParent !== null && el.textContent && el.textContent.trim().length > 0) {
-      // Check only direct match (not ancestors — outline can be inside #file-library)
-      if (!isFileTreeElementDirectly(el)) return el
+      if (!isFileTreeElementDirectly(el) && isValidOutlineRoot(el)) return el
     }
   }
-  // Fallback: search sidebar area but explicitly exclude file-tree containers
+  // Fallback: search sidebar area with positive validation
   const sidebar = document.getElementById('typora-sidebar')
   if (sidebar) {
-    // Exclude file-tree containers from the search
     for (const ftSel of FILE_TREE_SELECTORS) {
       const ft = sidebar.querySelector(ftSel)
       if (ft) ft.setAttribute('data-inkchapter-exclude', 'true')
@@ -88,16 +87,27 @@ export function findOutlineRoot(): HTMLElement | null {
     const candidates = sidebar.querySelectorAll<HTMLElement>('div, ul, ol, section, nav')
     for (const c of candidates) {
       if (isInsideFileTree(c)) continue
-      if (c.offsetParent !== null && c.textContent && c.textContent.trim().length > 2) {
-        const text = c.textContent.trim()
-        // More specific: look for heading-indicative patterns (numbers/letters)
-        // File tree items are usually filenames like "xxx.md"
-        if (text.includes('.md') || text.includes('.MD')) continue
-        return c
-      }
+      if (c.offsetParent === null) continue
+      // Positive validation: must contain actual outline entries with href="#..."
+      if (!isValidOutlineRoot(c)) continue
+      return c
     }
   }
   return null
+}
+
+/**
+ * Positive validation: does the element contain real outline entries?
+ * A real outline root has <a> elements with href="#..." (Typora outline links).
+ * This prevents mistaking file-search/other sidebar panels for the outline.
+ */
+function isValidOutlineRoot(el: HTMLElement): boolean {
+  if (!el.isConnected) return false
+  // Check for input/textarea (search panels)
+  if (el.querySelector('input, textarea')) return false
+  // Must contain at least one <a> with href starting with "#"
+  const links = el.querySelectorAll<HTMLAnchorElement>('a[href^="#"]')
+  return links.length > 0
 }
 
 /**

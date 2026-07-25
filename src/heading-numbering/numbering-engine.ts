@@ -13,7 +13,42 @@ import type {
   ContextualFormatVariants,
   UnnumberedCounterPolicy,
 } from './heading-types'
+import { HEADING_LEVELS } from './heading-types'
 import { formatToken } from './token-formatter'
+
+/**
+ * Compute the enabled heading levels based on current settings.
+ * When showLevelOneNumber is false, H1 is excluded from enabled set.
+ * Individual levelStyle.enabled flags can also exclude specific levels.
+ */
+export function getEnabledHeadingLevels(
+  levels: Record<HeadingLevel, HeadingLevelStyle>,
+  showLevelOneNumber: boolean,
+): HeadingLevel[] {
+  return HEADING_LEVELS.filter(lv => {
+    if (lv === 1 && !showLevelOneNumber) return false
+    const style = levels[lv]
+    if (!style) return false
+    return style.enabled
+  })
+}
+
+/**
+ * Map actual heading level to visible numbering depth (1-based).
+ * Returns null if the level is not enabled for numbering.
+ *
+ * Example when H1 is off (showLevelOneNumber=false):
+ *   getNumberingDepth(1, [...]) === null
+ *   getNumberingDepth(2, [...]) === 1
+ *   getNumberingDepth(3, [...]) === 2
+ */
+export function getNumberingDepth(
+  actualLevel: HeadingLevel,
+  enabledLevels: readonly HeadingLevel[],
+): number | null {
+  const index = enabledLevels.indexOf(actualLevel)
+  return index >= 0 ? index + 1 : null
+}
 
 /**
  * Info about heading numbering mode passed to the engine.
@@ -127,6 +162,7 @@ function buildLabel(
   headingLevel: HeadingLevel,
   unnumberedSet?: Set<HeadingLevel>,
 ): string {
+  // Style lookup by actual heading level — H2→H2 config, H3→H3 config
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
 
@@ -328,11 +364,15 @@ function buildLabelFromContextualFormat(
   skipH1: boolean,
   unnumberedSet?: Set<HeadingLevel>,
 ): string {
-  // Filter hidden levels (H1 when skipH1) and unnumbered parent references
+  // Filter hidden levels (H1 when skipH1) and unnumbered parent references.
+  // IMPORTANT: only hide levels STRICTLY BELOW headingLevel — the heading's own
+  // level reference must never be hidden by unnumbered siblings at the same level.
   const hidden = new Set<HeadingLevel>()
   if (skipH1) hidden.add(1 as HeadingLevel)
   if (unnumberedSet) {
-    for (const lv of unnumberedSet) hidden.add(lv)
+    for (const lv of unnumberedSet) {
+      if (lv < headingLevel) hidden.add(lv)
+    }
   }
   // Filter out level-references to hidden levels
   let effective = format.filter(s => s.type === 'literal' || !hidden.has(s.level))
@@ -397,11 +437,12 @@ function cleanOrphanSeparators(
 /**
  * Strip H1 level-references from a contextual format segment array.
  * Removes H1 references and adjacent separator literals, then cleans
- * leading/trailing separators. Used to dynamically derive withoutLevelOne
- * when the user's custom edits only populated withLevelOne.
+ * leading/trailing separators. Falls back to the heading's own level reference
+ * if all references are stripped (e.g., custom format only referenced H1).
  */
 function stripContextualLevelOneRefs(
   format: readonly ContextualFormatSegment[],
+  headingLevel: HeadingLevel,
 ): ContextualFormatSegment[] {
   if (format.length === 0) return []
 
@@ -451,14 +492,26 @@ function stripContextualLevelOneRefs(
     }
   }
 
-  // Ensure at least one level-reference exists (the heading's own level)
-  const levels = merged.filter(s => s.type === 'level-reference').map(s => s.level)
-  const maxLevel = levels.length > 0 ? Math.max(...levels) : 1
-  if (!merged.some(s => s.type === 'level-reference' && s.level === maxLevel as HeadingLevel)) {
+  // Ensure at least one level-reference exists: use heading's own level as anchor
+  const hasOwnRef = merged.some(s => s.type === 'level-reference' && s.level === headingLevel)
+  if (!hasOwnRef && merged.length > 0) {
+    // Check if any level-reference exists at all
+    const anyRef = merged.find(s => s.type === 'level-reference')
+    if (!anyRef) {
+      merged.push({
+        id: 'auto-' + Date.now(),
+        type: 'level-reference',
+        level: headingLevel,
+        appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+      })
+    }
+  }
+  // If completely empty, add heading's own ref
+  if (merged.length === 0) {
     merged.push({
       id: 'auto-' + Date.now(),
       type: 'level-reference',
-      level: maxLevel as HeadingLevel,
+      level: headingLevel,
       appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
     })
   }
@@ -486,7 +539,7 @@ export function getActiveContextualFormatVariant(
   // user only edited format while H1 was visible).
   if (variants.withoutLevelOne.length > 0) return variants.withoutLevelOne
   // Derive withoutLevelOne by stripping H1 references from withLevelOne
-  return stripContextualLevelOneRefs(variants.withLevelOne)
+  return stripContextualLevelOneRefs(variants.withLevelOne, level)
 }
 
 /**
@@ -915,6 +968,37 @@ function clamp(n: number, min: number, max: number): number {
   if (!Number.isFinite(n) || n < min) return min
   if (n > max) return max
   return n
+}
+
+/**
+ * Runtime diagnostic: output first 6 headings' structure to console.table.
+ * Shows actualLevel, enabled, visibleDepth, styleLevel, label for each heading.
+ * Helpful for tracing where H2 numbering breaks in the processing chain.
+ */
+export function diagnoseHeadingChain(
+  headings: readonly HeadingDescriptor[],
+  settings: HeadingNumberingSettings,
+): void {
+  const result = computeHeadingNumbering(headings, settings)
+  const enabledLevels = getEnabledHeadingLevels(settings.levels, settings.showLevelOneNumber ?? false)
+
+  const table = result.slice(0, Math.min(6, result.length)).map(h => {
+    const depth = getNumberingDepth(h.level as HeadingLevel, enabledLevels)
+    return {
+      text: h.text.slice(0, 30),
+      actualLevel: h.level,
+      enabled: settings.levels[h.level as HeadingLevel]?.enabled ?? false,
+      visibleDepth: depth,
+      styleLevel: h.level,
+      label: h.label,
+    }
+  })
+
+  console.group('[InkChapter] Heading diagnostic')
+  console.table(table)
+  console.log('enabledLevels:', enabledLevels)
+  console.log('showLevelOneNumber:', settings.showLevelOneNumber)
+  console.groupEnd()
 }
 
 /**

@@ -18,7 +18,7 @@ import type {
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
-import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant } from './numbering-engine'
+import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
@@ -30,6 +30,7 @@ import { HeadingOverrideStore } from './heading-override-store'
 import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
 import * as logger from '../core/logger'
+import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
 
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
@@ -90,6 +91,9 @@ export class HeadingNumberingService {
   private renderedStates: RenderedHeadingState[] | null = null
   private isInComposition = false
   private mutationObserver: MutationObserver | null = null
+
+  // Render version: incremented on document switch to cancel stale async ops
+  private renderVersion = 0
 
   // Level Range Enforcer
   private levelRangeEnforcer!: HeadingLevelRangeEnforcer
@@ -501,6 +505,11 @@ export class HeadingNumberingService {
     return this.ctx.getActiveFilePath?.() ?? null
   }
 
+  /** Get a short document key for audit logging. */
+  private getDocKey(): string {
+    return this.getActiveFilePath()?.split(/[\\/]/).slice(-1)[0]?.slice(0, 30) ?? 'unknown'
+  }
+
   // ── Heading override store ───────────────────────
 
   /** Get or create the override store for the current document. */
@@ -618,9 +627,15 @@ export class HeadingNumberingService {
   getSpecialNumberingSettings(): import('./heading-types').SpecialHeadingNumberingSettings {
     try {
       const raw = this.ctx.settings.get('specialNumbering' as any) as any
-      return raw ?? { unnumberedCounterPolicy: 'skip' as const, nameSettings: { enabled: true, candidates: [], matchMode: 'trim' as const, matchAction: 'prompt' as const } }
+      const result = raw ?? { unnumberedCounterPolicy: 'skip' as const, nameSettings: { enabled: false, candidates: [], matchMode: 'trim' as const, matchAction: 'prompt' as const } }
+      // Completely remove name-based unnumbering
+      if (result.nameSettings) {
+        result.nameSettings.enabled = false
+        result.nameSettings.candidates = []
+      }
+      return result
     } catch {
-      return { unnumberedCounterPolicy: 'skip', nameSettings: { enabled: true, candidates: [], matchMode: 'trim', matchAction: 'prompt' } }
+      return { unnumberedCounterPolicy: 'skip', nameSettings: { enabled: false, candidates: [], matchMode: 'trim', matchAction: 'prompt' } }
     }
   }
 
@@ -937,6 +952,12 @@ export class HeadingNumberingService {
 
     const startTime = performance.now()
 
+    recordRuntimeAudit('doRefresh:start', {
+      documentKey: this.getDocKey(),
+      renderVersion: this.renderVersion,
+      refreshReason: reason,
+    })
+
     try {
       const root = this.adapter.detectEditorRoot()
       if (!root) return
@@ -968,11 +989,30 @@ export class HeadingNumberingService {
       this.lastSnapshot = snapshot
 
       const headings = this.adapter.collectHeadings()
+      snapshotHeadingCollection(headings)
       if (headings.length === 0) {
         this.adapter.clearNumbering()
         this.renderedStates = null
+        recordRuntimeAudit('doRefresh:end', { headingCount: 0 })
         return
       }
+
+      // Snapshot config before computation
+      snapshotConfigSource('pre-compute', {
+        showLevelOneNumber: this.numberingSettings.showLevelOneNumber,
+        preset: this.numberingSettings.preset,
+        maxDepth: this.numberingSettings.maxDepth,
+        levels: Object.fromEntries(
+          [1, 2, 3, 4, 5, 6].map(lv => [
+            lv,
+            {
+              enabled: this.numberingSettings.levels[lv as HeadingLevel]?.enabled ?? false,
+              cVarWith: this.numberingSettings.levels[lv as HeadingLevel]?.contextualFormatVariants?.withLevelOne?.length ?? 0,
+              cVarWithout: this.numberingSettings.levels[lv as HeadingLevel]?.contextualFormatVariants?.withoutLevelOne?.length ?? 0,
+            },
+          ]),
+        ),
+      })
 
       // Apply effective max level from level range settings
       const effectiveMax = this.getEffectiveMaxLevel()
@@ -987,15 +1027,74 @@ export class HeadingNumberingService {
 
       const numbered = computeHeadingNumbering(headings, this.numberingSettings, overrideMap, counterPolicy)
       const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
+
+      // ── Quick diagnostic: print heading keys + override map ──
+      const h2Keys = headings.filter(h => h.level === 2).map(h => h.key)
+      const ovEntries = overrideMap ? Array.from(overrideMap.entries()) : []
+      console.log('[InkChapter DIAG] H2 keys:', h2Keys)
+      console.log('[InkChapter DIAG] overrideMap size:', ovEntries.length, 'entries:', ovEntries.slice(0, 10).map(([k, v]) => `${k}=${v}`))
+      console.log('[InkChapter DIAG] H2 labels:', numbered.filter(h => h.level === 2).map(h => ({ text: h.text.slice(0, 20), label: h.label, counters: h.counters })))
+
+      // Snapshot numbering engine per-heading output
+      const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {
+        const style = this.numberingSettings.levels[h.level as HeadingLevel]
+        const enabledLvls = [1, 2, 3, 4, 5, 6].filter(
+          lv => lv === 1 ? this.numberingSettings.showLevelOneNumber : (this.numberingSettings.levels[lv as HeadingLevel]?.enabled ?? false),
+        ) as number[]
+        const depth = enabledLvls.indexOf(h.level) >= 0 ? enabledLvls.indexOf(h.level) + 1 : null
+        return {
+          headingIndex: i,
+          actualLevel: h.level,
+          styleLevelUsed: h.level,
+          styleEnabled: style?.enabled ?? false,
+          visibleDepth: depth,
+          enabledLevels: enabledLvls,
+          activeCounters: h.counters as number[],
+          selectedVariant: h.level === 1 ? 'withLevelOne' : (!this.numberingSettings.showLevelOneNumber ? 'withoutLevelOne' : 'withLevelOne'),
+          variantSegmentCount: 0,
+          generatedLabel: h.label,
+          textPreview: h.text.slice(0, 40),
+        }
+      })
+      snapshotNumberingEngine(this.numberingSettings, engineEntries)
+
       const diff = this.adapter.applyNumberingDiff(labels)
       this.renderedStates = this.adapter.buildRenderedStates(labels)
+
+      // Snapshot apply-diff
+      const headingEls = this.adapter.getEditorRoot()?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []
+      const diffEntries: ApplyDiffEntry[] = []
+      let di = 0; for (const el of Array.from(headingEls).slice(0, 20)) {
+        diffEntries.push({
+          domIndex: di, domKey: el.tagName + '-' + (el.getAttribute('data-line') ?? ''), tagName: el.tagName,
+          parsedLevel: parseInt(el.tagName.charAt(1)), textPreview: (el.textContent ?? '').slice(0, 40),
+          labelIndex: di, incomingLabel: di < labels.length ? labels[di] : 'N/A',
+          previousAttr: el.getAttribute('data-inkchapter-heading-number'),
+          action: di < labels.length ? (labels[di] ? 'update' : 'skip-empty') : 'skip-empty',
+          nextAttr: null as string | null,
+        });
+        di++
+      }
+      snapshotApplyDiff(labels, diffEntries, labels.length, headingEls.length)
 
       // Sync outline sidebar numbering
       this.outlineController.syncAfterRefresh(headings, labels)
 
+      // Output H2 diagnostic in dev mode (first load only)
+      if (reason === 'initial-load' || reason === 'file-open') {
+        try { diagnoseHeadingChain(headings, this.numberingSettings) } catch { /* silent */ }
+      }
+
       this.logRefresh(reason, headings.length, diff, startTime)
+      recordRuntimeAudit('doRefresh:end', {
+        headingCount: headings.length,
+        labelCount: labels.length,
+        refreshReason: reason,
+        renderVersion: this.renderVersion,
+      })
     } catch (e) {
       logger.error('标题编号刷新失败', e)
+      recordRuntimeAudit('doRefresh:error', { details: { error: String(e) } })
     }
   }
 
@@ -1202,6 +1301,7 @@ export class HeadingNumberingService {
     // Editor DOM load
     this.store.add(
       ctx.onEditorEvent('load', (editorEl: unknown) => {
+        recordRuntimeAudit('editor:load', { documentKey: this.getDocKey() })
         if (editorEl instanceof HTMLElement) {
           this.adapter.setEditorRoot(editorEl)
           this.lastSnapshot = null
@@ -1219,13 +1319,21 @@ export class HeadingNumberingService {
       ctx.onEditorEvent('edit', () => this.requestRefresh('framework-edit')),
     )
 
-    // File open
+    // File open — cancel stale state, reinit outline, schedule refresh
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
+        const version = ++this.renderVersion
+        this.outlineController.setDocumentKey(this.getDocKey())
+        recordRuntimeAudit('file:open:received', { documentKey: this.getDocKey(), renderVersion: version })
         this.lastSnapshot = null
         this.renderedStates = null
         this.outlineController.reinitialize()
         setTimeout(() => {
+          if (version !== this.renderVersion) {
+            recordRuntimeAudit('file:open:timeout-abort', { renderVersion: this.renderVersion, expectedVersion: version })
+            return
+          }
+          recordRuntimeAudit('file:open:timeout-start', { renderVersion: version })
           const area = this.adapter.detectEditorRoot()
           if (area) {
             this.adapter.setEditorRoot(area)
@@ -1238,9 +1346,12 @@ export class HeadingNumberingService {
       }),
     )
 
-    // Active leaf change
+    // Active leaf change — bump version, reinit outline
     this.store.add(
       ctx.onWorkspaceEvent('active-leaf:change', () => {
+        ++this.renderVersion
+        this.outlineController.setDocumentKey(this.getDocKey())
+        recordRuntimeAudit('active-leaf:change', { documentKey: this.getDocKey(), renderVersion: this.renderVersion })
         this.lastSnapshot = null
         this.renderedStates = null
         this.outlineController.reinitialize()
