@@ -785,6 +785,11 @@ export class HeadingNumberingService {
     this.outlineController.runProbe(callback)
   }
 
+  /** Run full DOM diagnostic dump (for manual command). */
+  dumpOutlineDOM(): void {
+    this.outlineController.dumpDOM()
+  }
+
   /** Manual outline sync with diagnostic output. */
   manualOutlineSync(callback: (log: string) => void): { rootFound: boolean; bodyHeadingCount: number; outlineItemCount: number; matchedCount: number; matchedByIdx: number; attributeApplied: number; unmatchedCount: number } | null {
     return this.outlineController.manualSync(callback)
@@ -1027,13 +1032,6 @@ export class HeadingNumberingService {
 
       const numbered = computeHeadingNumbering(headings, this.numberingSettings, overrideMap, counterPolicy)
       const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
-
-      // ── Quick diagnostic: print heading keys + override map ──
-      const h2Keys = headings.filter(h => h.level === 2).map(h => h.key)
-      const ovEntries = overrideMap ? Array.from(overrideMap.entries()) : []
-      console.log('[InkChapter DIAG] H2 keys:', h2Keys)
-      console.log('[InkChapter DIAG] overrideMap size:', ovEntries.length, 'entries:', ovEntries.slice(0, 10).map(([k, v]) => `${k}=${v}`))
-      console.log('[InkChapter DIAG] H2 labels:', numbered.filter(h => h.level === 2).map(h => ({ text: h.text.slice(0, 20), label: h.label, counters: h.counters })))
 
       // Snapshot numbering engine per-heading output
       const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {

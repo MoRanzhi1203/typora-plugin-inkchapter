@@ -10,9 +10,9 @@ import { editor, File } from 'typora'
 import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEventsToClipboard, recordRuntimeAudit } from './heading-numbering/runtime-audit'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-heading-fix-actual-level-style-v2'
+const HEADING_BUILD_MARKER = 'inkchapter-outline-fix-v4-dom-agnostic'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
-const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v1'
+const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
 
 export default class extends Plugin<InkChapterSettings> {
@@ -21,8 +21,7 @@ export default class extends Plugin<InkChapterSettings> {
 
   onload() {
     console.log(`[InkChapter] onload START  build=${HEADING_BUILD_MARKER}`)
-    enableRuntimeAudit()
-    console.log('[InkChapter Audit] enabled for diagnostics')
+    // Runtime audit: disabled (uncomment enableRuntimeAudit() for diagnostics)
     // Register settings (must succeed for plugin to function)
     this.registerSettings(
       new PluginSettings(this.app, this.manifest, {
@@ -247,6 +246,17 @@ export default class extends Plugin<InkChapterSettings> {
           console.log(log)
         })
         Notice.info('大纲探针已运行，请查看左侧大纲前三项是否显示 [墨章探针N]')
+      },
+    })
+
+    // Full DOM diagnostic dump
+    this.registerCommand({
+      id: 'inkchapter.outline.dump-dom',
+      title: '墨章：导出大纲DOM诊断',
+      scope: 'editor',
+      callback: () => {
+        this.numberingService?.dumpOutlineDOM()
+        Notice.info('大纲DOM诊断已输出到控制台，请打开开发者工具查看')
       },
     })
 

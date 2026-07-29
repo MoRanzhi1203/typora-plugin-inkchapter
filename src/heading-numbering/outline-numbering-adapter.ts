@@ -1,50 +1,57 @@
 /**
- * Outline Numbering Adapter v3 — runtime-probed Typora outline sidebar DOM.
+ * Outline Numbering Adapter v4 — DOM-structure-agnostic outline root detection.
  *
- * Key changes from v1/v2 (which failed):
- * 1. Root selector is probed from multiple candidates, not assumed as #outline-content
- * 2. Item selection uses flexible traversal, not only a[href^="#"]
- * 3. Data attribute + CSS ::before replaces span insertion (spans get wiped)
- * 4. Index-based matching as primary fallback when ID matching fails
- * 5. Probe function for runtime DOM verification
+ * Key changes from v3:
+ * 1. isValidOutlineRoot() no longer requires a[href^="#"] — uses heading-text matching
+ * 2. Full DOM diagnostic dump shows ALL sidebar candidates with rejection reasons
+ * 3. findOutlineTextElements() handles div/span/li items (not just <a>)
+ * 4. File-tree exclusion uses exact panel boundary, not ancestor proximity
+ * 5. Explicit exclusion of sidebar-footer, sidebar-menu-btn, search panels
+ * 6. Text+level+occurrence matching for duplicate headings
  */
 
 import type { HeadingDescriptor, HeadingLevel } from './heading-types'
 
-// ── Selectors (probed at runtime) ─────────────────────
+// ── Selectors ─────────────────────────────────────────
 
-/**
- * Outline panel candidate selectors (in priority order).
- * These are the REAL outline container selectors for Typora 1.6.7.
- * We explicitly EXCLUDE file-tree selectors (#file-library, .file-library, etc.)
- * to prevent heading numbers from polluting the file tree.
- */
 const ROOT_CANDIDATES = [
-  '#outline-content',            // Typora standard outline
-  '.outline-content',            // alternative class
-  '#file-library .outline-panel', // wihin file-library but specific to outline sub-panel
-  '.sidebar-outline',            // custom class
-  '.ty-outline',                 // Typora internal
+  '#outline-content',
+  '.outline-content',
+  '.outline-panel',
+  '#file-library .outline-panel',
+  '.sidebar-outline',
+  '.ty-outline',
+  '[data-outline]',
 ]
 
-/** File-tree selectors: we NEVER apply numbering to these. */
-const FILE_TREE_SELECTORS = [
+/** File-tree panel selectors: these are siblings of the outline panel, not ancestors. */
+const FILE_TREE_PANEL_SELECTORS = [
   '#file-library',
   '.file-library',
   '.file-tree',
   '#file-tree',
   '.ty-file-list',
   '.sidebar-file-list',
-  '[data-file-list]',
-  '#file-library-search',    // file search panel
-  '#file-library-filter',    // file filter area
-  '.file-library-search',    // alt class
-  '.ty-file-search',         // Typora internal file search
+]
+
+/** Search / footer / toolbar selectors: NEVER outline containers. */
+const NON_OUTLINE_SELECTORS = [
+  '#file-library-search',
+  '#file-library-filter',
+  '.file-library-search',
+  '.ty-file-search',
+  '#ty-sidebar-footer',
+  '.sidebar-footer',
+  '#sidebar-menu-btn',
+  '.sidebar-footer-main-item',
+  '[data-action]',
+  'input',
+  'textarea',
 ]
 
 const NUMBER_ATTR = 'data-inkchapter-number'
 
-// ── Probe result types ─────────────────────────────────
+// ── Types ─────────────────────────────────────────────
 
 interface ProbeResult {
   rootFound: boolean
@@ -66,100 +73,408 @@ export interface SyncResult {
   unmatchedCount: number
 }
 
-// ── Public API ─────────────────────────────────────────
+// ── DOM helpers ───────────────────────────────────────
 
-/** Find the real outline root element using multiple candidate selectors. */
-export function findOutlineRoot(): HTMLElement | null {
-  // First try specific outline selectors
+function elTag(el: HTMLElement): string {
+  return el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ').slice(0, 2).join('.') : '')
+}
+
+/** Check if element is inside (or is) a non-outline panel (footer, search, file-tree panel). */
+function isInsideExcludedPanel(el: HTMLElement): boolean {
+  // Direct match or ancestor match for file-tree panels
+  for (const sel of FILE_TREE_PANEL_SELECTORS) {
+    if (el.matches(sel) || el.closest(sel)) return true
+  }
+  // Direct match or ancestor match for non-outline elements
+  for (const sel of NON_OUTLINE_SELECTORS) {
+    if (el.matches(sel) || el.closest(sel)) return true
+  }
+  return false
+}
+
+/** Check if element directly matches a non-outline selector. */
+function isNonOutlineDirectly(el: HTMLElement): boolean {
+  for (const sel of NON_OUTLINE_SELECTORS) {
+    if (el.matches(sel)) return true
+  }
+  for (const sel of FILE_TREE_PANEL_SELECTORS) {
+    if (el.matches(sel)) return true
+  }
+  return false
+}
+
+/** Get ancestor chain from element up to #typora-sidebar (or root). */
+function getAncestorChain(el: HTMLElement): string[] {
+  const chain: string[] = []
+  let cur: HTMLElement | null = el
+  while (cur) {
+    chain.push(elTag(cur))
+    if (cur.id === 'typora-sidebar' || cur === document.body) break
+    cur = cur.parentElement
+  }
+  return chain
+}
+
+// ── Heading text matching ─────────────────────────────
+
+/** Collect current body heading texts for outline candidate validation. */
+function getBodyHeadingTexts(): Set<string> {
+  const write = document.getElementById('write')
+  if (!write) return new Set()
+  const headings = write.querySelectorAll('h1, h2, h3, h4, h5, h6')
+  const texts = new Set<string>()
+  headings.forEach(h => {
+    const t = (h.textContent ?? '').trim()
+    if (t) texts.add(t)
+  })
+  return texts
+}
+
+/** Count how many body heading texts appear inside a container element. */
+function countHeadingTextHits(el: HTMLElement, bodyTexts: Set<string>): number {
+  let count = 0
+  for (const t of bodyTexts) {
+    if (el.textContent && el.textContent.includes(t)) count++
+  }
+  return count
+}
+
+// ── Public API ────────────────────────────────────────
+
+/**
+ * Comprehensive DOM diagnostic dump.
+ * Logs ALL sidebar containers to console, showing which pass/fail each check.
+ */
+export function dumpOutlineDOM(): void {
+  const bodyTexts = getBodyHeadingTexts()
+  console.group('[InkChapter OUTLINE] === DOM Diagnostic Dump ===')
+  console.log(`Body heading texts (${bodyTexts.size}):`, [...bodyTexts].slice(0, 20).join(', '))
+
+  // 1. Check ROOT_CANDIDATES
+  console.log('--- ROOT_CANDIDATES ---')
   for (const sel of ROOT_CANDIDATES) {
     const el = document.querySelector(sel) as HTMLElement | null
-    if (el && el.offsetParent !== null && el.textContent && el.textContent.trim().length > 0) {
-      if (!isFileTreeElementDirectly(el) && isValidOutlineRoot(el)) return el
-    }
+    if (!el) { console.log(`  ${sel}: NOT_FOUND`); continue }
+    const opOk = el.offsetParent !== null
+    const txtOk = el.textContent && el.textContent.trim().length > 0
+    const nonOut = isNonOutlineDirectly(el)
+    const insideEx = isInsideExcludedPanel(el)
+    const hits = countHeadingTextHits(el, bodyTexts)
+    const anchorCount = el.querySelectorAll('a[href^="#"]').length
+    console.log(`  ${sel}: tag=${el.tagName} id=${el.id||'?'} class="${el.className}" offsetParent=${opOk} textLen=${el.textContent?.trim().length??0} nonOutline=${nonOut} insideExcluded=${insideEx} headingHits=${hits} anchorLinks=${anchorCount}`)
   }
-  // Fallback: search sidebar area with positive validation
-  const sidebar = document.getElementById('typora-sidebar')
+
+  // 2. Find outline items by heading text
+  console.log('--- Finding outline items by heading text ---')
+  const sidebar = document.getElementById('typora-sidebar') || document.querySelector('.typora-sidebar')
   if (sidebar) {
-    for (const ftSel of FILE_TREE_SELECTORS) {
-      const ft = sidebar.querySelector(ftSel)
-      if (ft) ft.setAttribute('data-inkchapter-exclude', 'true')
+    // Try to find elements whose textContent matches known heading texts
+    const allLeafish = sidebar.querySelectorAll<HTMLElement>('div, span, li, a, p')
+    const headingMatches: Array<{ el: HTMLElement; text: string; tag: string; ancestors: string[] }> = []
+    for (const el of allLeafish) {
+      if (el.offsetParent === null) continue
+      const text = (el.textContent ?? '').trim()
+      if (!text) continue
+      // Check if this element's direct text matches a heading (not just contains it in a child)
+      const directText = getDirectText(el).trim()
+      if (bodyTexts.has(text) || bodyTexts.has(directText)) {
+        headingMatches.push({
+          el,
+          text: text.slice(0, 60),
+          tag: elTag(el),
+          ancestors: getAncestorChain(el).slice(1, 6), // skip self, show 5 ancestors
+        })
+      }
     }
-    const candidates = sidebar.querySelectorAll<HTMLElement>('div, ul, ol, section, nav')
-    for (const c of candidates) {
-      if (isInsideFileTree(c)) continue
-      if (c.offsetParent === null) continue
-      // Positive validation: must contain actual outline entries with href="#..."
-      if (!isValidOutlineRoot(c)) continue
-      return c
+    console.log(`  Found ${headingMatches.length} elements matching heading texts:`)
+    for (const m of headingMatches.slice(0, 30)) {
+      console.log(`    [${m.tag}] "${m.text}" ancestors: ${m.ancestors.join(' > ')}`)
+    }
+
+    // 3. Find common ancestor of heading-matching elements
+    if (headingMatches.length >= 2) {
+      const ancestors = headingMatches.map(m => new Set(getAncestorChain(m.el)))
+      const common = [...ancestors[0]].filter(a => ancestors.every(s => s.has(a)))
+      console.log(`  Common ancestors (${common.length}):`, common.join(' > '))
+
+      // The deepest common ancestor is the most likely outline root
+      const lca = common[common.length - 1] // deepest = first in chain (closest to items)
+      if (lca) {
+        const lcaEl = document.getElementById(lca.replace(/.*#/, '').replace(/\..*/, '')) ||
+                       sidebar.querySelector('.' + lca.replace(/.*\./, '').split('.')[0]) as HTMLElement
+        console.log(`  Deepest common ancestor (likely outline root): ${lca}`)
+      }
     }
   }
+
+  // 4. Full sidebar scan: show ALL candidate containers
+  console.log('--- Full sidebar scan (all div/ul/ol/section/nav) ---')
+  if (sidebar) {
+    const allDivs = sidebar.querySelectorAll<HTMLElement>('div, ul, ol, section, nav')
+    const candidates: Array<{ tag: string; hits: number; anchors: number; offsetOk: boolean; insideEx: boolean; nonOut: boolean; childCount: number; textLen: number }> = []
+    for (const c of allDivs) {
+      if (c.offsetParent === null && c.tagName !== 'DIV') continue // skip hidden non-divs
+      const hits = countHeadingTextHits(c, bodyTexts)
+      const anchors = c.querySelectorAll('a[href^="#"]').length
+      const insideEx = isInsideExcludedPanel(c)
+      const nonOut = isNonOutlineDirectly(c)
+      candidates.push({
+        tag: elTag(c),
+        hits,
+        anchors,
+        offsetOk: c.offsetParent !== null,
+        insideEx,
+        nonOut,
+        childCount: c.children.length,
+        textLen: (c.textContent ?? '').trim().length,
+      })
+    }
+    // Sort by heading hits descending
+    candidates.sort((a, b) => b.hits - a.hits)
+    for (const c of candidates.slice(0, 20)) {
+      const status = c.insideEx ? 'EXCLUDED' : c.nonOut ? 'NON-OUTLINE' : c.hits >= 2 ? 'CANDIDATE' : 'low-hits'
+      console.log(`  [${status}] ${c.tag} headingHits=${c.hits} anchors=${c.anchors} offsetOk=${c.offsetOk} children=${c.childCount} textLen=${c.textLen}`)
+    }
+  }
+
+  // 5. Dump outline tab button
+  console.log('--- Outline tab button ---')
+  const tabBtns = document.querySelectorAll('[data-action], [data-type], .typora-sidebar-tabs *, .sidebar-tabs *')
+  for (const t of Array.from(tabBtns).slice(0, 6)) {
+    const el = t as HTMLElement
+    if (el.offsetParent === null) continue
+    console.log(`  ${el.tagName}#${el.id||'?'} class="${el.className}" data-action="${el.getAttribute('data-action')||''}" data-type="${el.getAttribute('data-type')||''}" outerHTML=${el.outerHTML.slice(0, 300)}`)
+  }
+
+  // 6. Dump sample outline item outerHTML
+  console.log('--- Sample outline items (by text search) ---')
+  const sampleTexts = ['环境准备', 'Python 版本', '数据读取', '前言']
+  for (const t of sampleTexts) {
+    const found = [...document.querySelectorAll('*')].find(el =>
+      el.textContent?.trim() === t && (el as HTMLElement).offsetParent !== null && el.closest('#typora-sidebar, .typora-sidebar')
+    ) as HTMLElement | undefined
+    if (found) {
+      console.log(`  "${t}": tag=${found.tagName} outerHTML=${found.outerHTML.slice(0, 400)}`)
+      console.log(`    parent: ${found.parentElement ? elTag(found.parentElement) : 'none'} outerHTML=${found.parentElement?.outerHTML.slice(0, 300)}`)
+      console.log(`    ancestors: ${getAncestorChain(found).join(' > ')}`)
+    } else {
+      console.log(`  "${t}": NOT FOUND in sidebar`)
+    }
+  }
+
+  console.groupEnd()
+}
+
+/** Get direct text content (excluding child element text). */
+function getDirectText(el: HTMLElement): string {
+  let text = ''
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent ?? ''
+    }
+  }
+  return text
+}
+
+/** Find the real outline root element. */
+export function findOutlineRoot(): HTMLElement | null {
+  const bodyTexts = getBodyHeadingTexts()
+
+  // Phase 1: Try known ROOT_CANDIDATES with relaxed validation
+  for (const sel of ROOT_CANDIDATES) {
+    const el = document.querySelector(sel) as HTMLElement | null
+    if (!el) continue
+    if (el.offsetParent === null) continue
+    if (!el.textContent || el.textContent.trim().length === 0) continue
+    if (isNonOutlineDirectly(el)) continue
+    if (isInsideExcludedPanel(el)) continue
+    // Relaxed validation: has heading-text matches OR anchor links
+    if (isValidOutlineRootRelaxed(el, bodyTexts)) return el
+  }
+
+  // Phase 2: Search sidebar area for any container with outline items
+  const sidebar = findSidebarHost()
+  if (!sidebar) return null
+
+  // Mark excluded panels
+  for (const sel of [...FILE_TREE_PANEL_SELECTORS, ...NON_OUTLINE_SELECTORS]) {
+    const els = sidebar.querySelectorAll(sel)
+    els.forEach(e => e.setAttribute('data-inkchapter-exclude', 'true'))
+  }
+
+  // Find the container with the most heading-text hits
+  const containers = sidebar.querySelectorAll<HTMLElement>('div, ul, ol, section, nav')
+  let bestEl: HTMLElement | null = null
+  let bestHits = 0
+
+  for (const c of containers) {
+    if (c.offsetParent === null) continue
+    if (c.hasAttribute('data-inkchapter-exclude')) continue
+    if (isInsideExcludedPanel(c)) continue
+    if (isNonOutlineDirectly(c)) continue
+    // Check for input/textarea (search panels)
+    if (c.querySelector('input, textarea')) continue
+
+    const hits = countHeadingTextHits(c, bodyTexts)
+    if (hits >= 2 && hits > bestHits) {
+      // Prefer elements that contain children matching heading texts
+      // over elements that just happen to contain heading text deep in descendants
+      const directChildHits = countDirectChildHeadingHits(c, bodyTexts)
+      if (directChildHits >= 2 || hits >= 5) {
+        bestHits = hits
+        bestEl = c
+      }
+    }
+  }
+
+  if (bestEl) {
+    console.log(`[InkChapter OUTLINE] root-accepted: ${elTag(bestEl)} headingHits=${bestHits}`)
+    return bestEl
+  }
+
+  // Phase 3: Last resort — find by heading-matching element LCA
+  const headingMatchEls = findHeadingMatchElements(sidebar, bodyTexts)
+  if (headingMatchEls.length >= 2) {
+    const lca = findLCA(headingMatchEls)
+    if (lca && lca !== sidebar && lca !== document.body) {
+      console.log(`[InkChapter OUTLINE] root-accepted (LCA): ${elTag(lca)} itemCount=${headingMatchEls.length}`)
+      return lca
+    }
+  }
+
+  console.log('[InkChapter OUTLINE] root not found after all phases')
   return null
 }
 
-/**
- * Positive validation: does the element contain real outline entries?
- * A real outline root has <a> elements with href="#..." (Typora outline links).
- * This prevents mistaking file-search/other sidebar panels for the outline.
- */
-function isValidOutlineRoot(el: HTMLElement): boolean {
+/** Relaxed validation: has heading-text hits (≥2) OR anchor links (≥2). */
+function isValidOutlineRootRelaxed(el: HTMLElement, bodyTexts: Set<string>): boolean {
   if (!el.isConnected) return false
-  // Check for input/textarea (search panels)
   if (el.querySelector('input, textarea')) return false
-  // Must contain at least one <a> with href starting with "#"
+
+  // Check for anchor links
   const links = el.querySelectorAll<HTMLAnchorElement>('a[href^="#"]')
-  return links.length > 0
+  if (links.length >= 2) return true
+
+  // Check for heading text matches
+  const hits = countHeadingTextHits(el, bodyTexts)
+  return hits >= 2
 }
+
+/** Count how many body heading texts appear in DIRECT children of a container. */
+function countDirectChildHeadingHits(el: HTMLElement, bodyTexts: Set<string>): number {
+  let count = 0
+  for (const child of Array.from(el.children)) {
+    const text = (child.textContent ?? '').trim()
+    for (const t of bodyTexts) {
+      if (text === t || text.startsWith(t)) { count++; break }
+    }
+    if (count >= 3) break
+  }
+  return count
+}
+
+/** Find sidebar host element. */
+function findSidebarHost(): HTMLElement | null {
+  const sidebar = document.getElementById('typora-sidebar') ||
+                  document.querySelector('.typora-sidebar') as HTMLElement | null
+  return sidebar
+}
+
+/** Find elements in sidebar whose text matches body headings. */
+function findHeadingMatchElements(sidebar: HTMLElement, bodyTexts: Set<string>): HTMLElement[] {
+  const result: HTMLElement[] = []
+  const allLeafish = sidebar.querySelectorAll<HTMLElement>('div, span, li, a, p')
+  const seen: Set<string> = new Set()
+  for (const el of allLeafish) {
+    if (el.offsetParent === null) continue
+    const text = (el.textContent ?? '').trim()
+    if (!text || text.length > 200) continue
+    if (seen.has(text)) continue
+    if (bodyTexts.has(text)) {
+      seen.add(text)
+      result.push(el)
+    }
+  }
+  return result
+}
+
+/** Find lowest common ancestor of elements. */
+function findLCA(els: HTMLElement[]): HTMLElement | null {
+  if (els.length === 0) return null
+  if (els.length === 1) return els[0]
+  const ancestorSets = els.map(el => {
+    const set = new Set<HTMLElement>()
+    let cur: HTMLElement | null = el
+    while (cur) {
+      set.add(cur)
+      cur = cur.parentElement
+    }
+    return set
+  })
+  // Find all common ancestors
+  const common = [...ancestorSets[0]].filter(a => ancestorSets.every(s => s.has(a)))
+  if (common.length === 0) return null
+  // Return deepest common ancestor (most nested)
+  return common.reduce((deepest, cur) =>
+    cur.contains(deepest) ? cur : deepest
+  )
+}
+
+// ── Outline text elements ─────────────────────────────
 
 /**
- * Check if an element directly matches a file-tree selector (no ancestor lookup).
- * Used for ROOT_CANDIDATES results — these are known outline containers,
- * so we only need to verify the element itself is not a file tree panel.
- */
-function isFileTreeElementDirectly(el: HTMLElement): boolean {
-  for (const sel of FILE_TREE_SELECTORS) {
-    if (el.matches(sel)) return true
-  }
-  if (el.hasAttribute('data-inkchapter-exclude')) return true
-  return false
-}
-
-/** Check if an element is inside (or is) a file-tree container. */
-function isInsideFileTree(el: HTMLElement): boolean {
-  for (const sel of FILE_TREE_SELECTORS) {
-    if (el.matches(sel) || el.closest(sel)) return true
-  }
-  if (el.hasAttribute('data-inkchapter-exclude')) return true
-  // Heuristic: file-tree items typically contain ".md" or ".MD"
-  if (el.textContent && /\.[mM][dD]\b/.test(el.textContent.trim())) return true
-  return false
-}
-
-/**
- * Find all visible text-bearing elements inside the outline root.
- * These are the elements where we can set data-inkchapter-number.
- * We look for leaf text elements: spans, anchors, or divs with direct text.
+ * Find all visible outline entry elements inside the outline root.
+ * Handles both <a href> and <div>/<span>/<li> based outline items.
  */
 export function findOutlineTextElements(root: HTMLElement): HTMLElement[] {
+  const bodyTexts = getBodyHeadingTexts()
   const items: HTMLElement[] = []
 
-  // Strategy 1: find all <a> with href (classic Typora outline)
+  // Strategy 1: Find <a> with href (classic Typora outline)
   const anchors = root.querySelectorAll<HTMLAnchorElement>('a[href]')
   for (const a of anchors) {
     if (a.offsetParent !== null && a.textContent && a.textContent.trim().length > 0) {
       items.push(a)
     }
   }
+  if (items.length >= 2) return items
 
-  if (items.length > 0) return items
+  // Strategy 2: Find elements whose text matches body headings
+  const allLeafish = root.querySelectorAll<HTMLElement>('div, span, li, a, p')
+  const seenTexts = new Set<string>()
+  for (const el of allLeafish) {
+    if (el.offsetParent === null) continue
+    const text = (el.textContent ?? '').trim()
+    if (!text || text.length > 200) continue
+    // Must match a body heading
+    if (!bodyTexts.has(text)) continue
+    // Deduplicate by text
+    if (seenTexts.has(text)) continue
+    // Skip if this element contains other matching elements (prefer leaves)
+    let hasMatchingChild = false
+    for (const child of el.querySelectorAll<HTMLElement>('*')) {
+      if (bodyTexts.has((child.textContent ?? '').trim())) {
+        hasMatchingChild = true
+        break
+      }
+    }
+    if (hasMatchingChild) continue
+    seenTexts.add(text)
+    items.push(el)
+  }
 
-  // Strategy 2: find all visible leaf elements with text
+  if (items.length >= 2) return items
+
+  // Strategy 3: Find all visible leaf elements with non-empty text
   const allEls = root.querySelectorAll<HTMLElement>('span, div, p, li, a')
   for (const el of allEls) {
     if (el.offsetParent === null) continue
     const text = (el.textContent ?? '').trim()
     if (text.length === 0) continue
-    // Skip container elements (they have children that are also candidates)
+    // Skip container elements
     if (el.children.length > 0 && el.querySelector('span, a, div, p, li')) continue
+    // Skip elements that are clearly not outline items
+    if (el.matches('button, input, textarea, [data-action], [role="button"]')) continue
     items.push(el)
   }
 
@@ -170,23 +485,21 @@ export function findOutlineTextElements(root: HTMLElement): HTMLElement[] {
 
 /**
  * Match body headings to outline items.
- * Priority: ID match → index match (when counts equal) → text similarity.
+ * Priority: ID match → text+level+occurrence match → index match (when counts equal).
  */
 export function matchHeadingsToOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
   outlineElements: HTMLElement[],
-): Array<{ element: HTMLElement; label: string; method: 'id' | 'index' | 'none' }> {
-  const result: Array<{ element: HTMLElement; label: string; method: 'id' | 'index' | 'none' }> = []
+): Array<{ element: HTMLElement; label: string; method: 'id' | 'text' | 'index' | 'none' }> {
+  const result: Array<{ element: HTMLElement; label: string; method: 'id' | 'text' | 'index' | 'none' }> = []
+  const usedOutlineIndices = new Set<number>()
 
-  // Try ID-based matching first: find heading elements in #write by id
+  // Phase 1: ID-based matching
   const write = document.getElementById('write')
   const headingEls = write ? Array.from(write.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6')) : []
 
-  let idMatchCount = 0
-
   if (headingEls.length > 0) {
-    // Build id→label map
     const idToLabel = new Map<string, string>()
     for (let i = 0; i < bodyHeadings.length && i < bodyLabels.length; i++) {
       const el = headingEls[i]
@@ -195,43 +508,92 @@ export function matchHeadingsToOutline(
       }
     }
 
-    // Match outline elements by href/id
-    for (const el of outlineElements) {
+    for (let oi = 0; oi < outlineElements.length; oi++) {
+      const el = outlineElements[oi]
       const href = el.getAttribute('href') ?? el.closest('a')?.getAttribute('href')
       if (href && href.startsWith('#')) {
         const id = href.slice(1)
         const label = idToLabel.get(id)
         if (label !== undefined) {
           result.push({ element: el, label, method: 'id' })
-          idMatchCount++
-          continue
+          usedOutlineIndices.add(oi)
         }
       }
     }
   }
 
-  // Index-based fallback: if counts match, pair by position
-  if (idMatchCount < outlineElements.length &&
-      bodyHeadings.length === outlineElements.length) {
-    for (let i = 0; i < outlineElements.length; i++) {
-      // Skip already matched by ID
-      if (result.some(r => r.element === outlineElements[i])) continue
-      if (i < bodyLabels.length) {
-        result.push({ element: outlineElements[i], label: bodyLabels[i], method: 'index' })
+  // Phase 2: Text-based matching with occurrence index for duplicates
+  if (result.length < outlineElements.length) {
+    // Build outline text → indices map
+    const outlineTexts = outlineElements.map(el => (el.textContent ?? '').trim())
+
+    // For each body heading, find matching outline element by text + occurrence
+    const textOccurrenceOutline = new Map<string, number>()
+    const textOccurrenceBody = new Map<string, number>()
+
+    for (let bi = 0; bi < bodyHeadings.length && bi < bodyLabels.length; bi++) {
+      const bodyText = bodyHeadings[bi].text.trim()
+      if (!bodyText) continue
+
+      // Count occurrence of this text in body headings so far
+      const bodyOccurrence = (textOccurrenceBody.get(bodyText) ?? 0)
+      textOccurrenceBody.set(bodyText, bodyOccurrence + 1)
+
+      // Find the Nth occurrence of this text in outline elements
+      let outlineOccurrence = 0
+      for (let oi = 0; oi < outlineElements.length; oi++) {
+        if (usedOutlineIndices.has(oi)) continue
+        if (outlineTexts[oi] === bodyText) {
+          if (outlineOccurrence === bodyOccurrence) {
+            result.push({ element: outlineElements[oi], label: bodyLabels[bi], method: 'text' })
+            usedOutlineIndices.add(oi)
+            break
+          }
+          outlineOccurrence++
+        }
       }
+    }
+  }
+
+  // Phase 3: Index-based fallback (only when unmatched pairs remain)
+  if (result.length < outlineElements.length &&
+      result.length < bodyHeadings.length) {
+    // Collect unmatched outline elements
+    const unmatchedOutline: number[] = []
+    for (let oi = 0; oi < outlineElements.length; oi++) {
+      if (!usedOutlineIndices.has(oi)) unmatchedOutline.push(oi)
+    }
+    // Collect unmatched body headings
+    const matchedBodyIndices = new Set<number>()
+    // Find which body indices are already matched via text
+    for (const r of result) {
+      for (let bi = 0; bi < bodyHeadings.length; bi++) {
+        if (bodyHeadings[bi].text.trim() === (r.element.textContent ?? '').trim()) {
+          matchedBodyIndices.add(bi)
+        }
+      }
+    }
+    const unmatchedBody: number[] = []
+    for (let bi = 0; bi < bodyHeadings.length && bi < bodyLabels.length; bi++) {
+      if (!matchedBodyIndices.has(bi)) unmatchedBody.push(bi)
+    }
+
+    // Match by position if counts align
+    const pairCount = Math.min(unmatchedOutline.length, unmatchedBody.length)
+    for (let i = 0; i < pairCount; i++) {
+      result.push({
+        element: outlineElements[unmatchedOutline[i]],
+        label: bodyLabels[unmatchedBody[i]],
+        method: 'index',
+      })
     }
   }
 
   return result
 }
 
-// ── Data attribute operations ──────────────────────────
+// ── Data attribute operations ─────────────────────────
 
-/**
- * Apply numbering via data-inkchapter-number attribute.
- * The CSS ::before pseudo-element renders the number.
- * Idempotent: only updates if value changed.
- */
 export function applyNumberingAttributes(
   matches: Array<{ element: HTMLElement; label: string }>,
 ): { applied: number; updated: number; removed: number } {
@@ -247,7 +609,7 @@ export function applyNumberingAttributes(
     } else {
       if (current !== null) {
         element.removeAttribute(NUMBER_ATTR)
-        applied++ // count removal as action
+        applied++
       }
     }
   }
@@ -255,7 +617,6 @@ export function applyNumberingAttributes(
   return { applied, updated, removed: 0 }
 }
 
-/** Remove all data-inkchapter-number attributes from outline area. */
 export function clearAllNumberingAttributes(root: HTMLElement | null): number {
   if (!root) return 0
   const els = root.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
@@ -264,16 +625,15 @@ export function clearAllNumberingAttributes(root: HTMLElement | null): number {
   return count
 }
 
-// ── Probe (diagnostic) ─────────────────────────────────
+// ── Probe ─────────────────────────────────────────────
 
-/** Run diagnostic probe: show [墨章探针N] on first 3 outline items for 3 seconds. */
 export function runOutlineProbe(callback: (log: string) => void): ProbeResult | null {
   const root = findOutlineRoot()
   if (!root) {
     callback('[InkChapter:outline-probe] outlineRootFound=false')
     for (const sel of ROOT_CANDIDATES) {
       const el = document.querySelector(sel)
-      callback(`[InkChapter:outline-probe] candidate ${sel}: ${el ? 'exists(visible=' + (el as HTMLElement).offsetParent + ')' : 'NOT_FOUND'}`)
+      callback(`[InkChapter:outline-probe] candidate ${sel}: ${el ? 'exists(visible=' + !!(el as HTMLElement).offsetParent + ')' : 'NOT_FOUND'}`)
     }
     return null
   }
@@ -287,7 +647,6 @@ export function runOutlineProbe(callback: (log: string) => void): ProbeResult | 
   const visibleItems = items.filter(el => el.offsetParent !== null)
   callback(`[InkChapter:outline-probe] visibleItemCount=${visibleItems.length}`)
 
-  // Show probes on first 3 items
   const probeTexts = ['墨章探针1', '墨章探针2', '墨章探针3']
   const probeElements: HTMLElement[] = []
 
@@ -302,7 +661,6 @@ export function runOutlineProbe(callback: (log: string) => void): ProbeResult | 
     callback(`[InkChapter:outline-probe] firstItemHtml=${firstHtml}`)
   }
 
-  // Clean up after 3 seconds
   setTimeout(() => {
     for (const el of probeElements) {
       el.removeAttribute(NUMBER_ATTR)
@@ -320,9 +678,8 @@ export function runOutlineProbe(callback: (log: string) => void): ProbeResult | 
   }
 }
 
-// ── Full sync (for manual command) ─────────────────────
+// ── Full sync ─────────────────────────────────────────
 
-/** Full sync with diagnostic output. Returns stats. */
 export function fullSyncOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
@@ -341,9 +698,9 @@ export function fullSyncOutline(
 
   const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items)
   const idCount = matches.filter(m => m.method === 'id').length
+  const textCount = matches.filter(m => m.method === 'text').length
   const idxCount = matches.filter(m => m.method === 'index').length
-  callback(`matchedCount=${matches.length}`)
-  callback(`matchedByIndexCount=${idxCount}`)
+  callback(`matchedCount=${matches.length} (id=${idCount} text=${textCount} idx=${idxCount})`)
 
   const attrResult = applyNumberingAttributes(
     matches.map(m => ({ element: m.element, label: m.label }))
@@ -364,18 +721,25 @@ export function fullSyncOutline(
   }
 }
 
-/** Lightweight sync (no diagnostic output, for auto-refresh). */
+// ── Quick sync ────────────────────────────────────────
+
 export function quickSyncOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
 ): { matched: number; applied: number } {
   const root = findOutlineRoot()
-  if (!root) return { matched: 0, applied: 0 }
+  if (!root) {
+    console.log('[InkChapter OUTLINE] quickSync: root not found')
+    return { matched: 0, applied: 0 }
+  }
+  console.log(`[InkChapter OUTLINE] quickSync: root=${elTag(root)}`)
 
   const items = findOutlineTextElements(root)
+  console.log(`[InkChapter OUTLINE] quickSync: found ${items.length} text elements, first=${items[0]?.textContent?.trim().slice(0, 30) ?? 'none'}`)
   if (items.length === 0) return { matched: 0, applied: 0 }
 
   const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items)
+  console.log(`[InkChapter OUTLINE] quickSync: ${matches.length} matches (body=${bodyHeadings.length} labels=${bodyLabels.length} items=${items.length})`)
   if (matches.length === 0) return { matched: 0, applied: 0 }
 
   const attrResult = applyNumberingAttributes(
@@ -385,26 +749,26 @@ export function quickSyncOutline(
   return { matched: matches.length, applied: attrResult.applied + attrResult.updated }
 }
 
-/** Check if outline sidebar is visible. */
 export function isOutlineVisible(): boolean {
   return findOutlineRoot() !== null
 }
 
-/** Clear any accidentally-applied numbering attributes from the file tree area. */
+// ── File tree cleanup ─────────────────────────────────
+
 export function clearFileTreeNumberingAttributes(): number {
   let count = 0
-  for (const sel of FILE_TREE_SELECTORS) {
-    const ft = document.querySelector(sel)
-    if (ft) {
+  const allSelectors = [...FILE_TREE_PANEL_SELECTORS, ...NON_OUTLINE_SELECTORS]
+  for (const sel of allSelectors) {
+    const els = document.querySelectorAll(sel)
+    els.forEach(ft => {
       ft.removeAttribute('data-inkchapter-exclude')
       const marked = ft.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
       marked.forEach(el => { el.removeAttribute(NUMBER_ATTR); count++ })
-    }
+    })
   }
   return count
 }
 
-/** Remove the leftover NUMBER_CLASS spans from v2 implementation. */
 export function cleanupV2Spans(): void {
   const spans = document.querySelectorAll('.inkchapter-outline-number')
   spans.forEach(s => s.remove())
