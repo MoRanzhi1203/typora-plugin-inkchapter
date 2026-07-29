@@ -18,6 +18,7 @@ import {
   quickSyncOutline,
   fullSyncOutline,
   runOutlineProbe,
+  dumpOutlineDOM,
   cleanupV2Spans,
   type SyncResult,
 } from './outline-numbering-adapter'
@@ -131,6 +132,11 @@ export class OutlineNumberingController {
     }
   }
 
+  /** Run full DOM diagnostic dump (for manual command). */
+  dumpDOM(): void {
+    dumpOutlineDOM()
+  }
+
   // ── Sidebar host observer (stable, persists across tab switches) ──
 
   /** Observe the stable sidebar parent for outline DOM insertion. */
@@ -146,7 +152,11 @@ export class OutlineNumberingController {
         observerBound: !!host,
       },
     })
-    if (!host) return
+    if (!host) {
+      console.log('[InkChapter OUTLINE] sidebarHostObserver: host not found')
+      return
+    }
+    console.log(`[InkChapter OUTLINE] sidebarHostObserver: bound to ${host.tagName}#${host.id||'?'}.${host.className||'?'}`)
 
     this.sidebarHostObserver = new MutationObserver((mutations) => {
       for (const m of mutations) {
@@ -268,6 +278,7 @@ export class OutlineNumberingController {
       this.isWriting = true
       try {
         const result = quickSyncOutline(this.cache.headings, this.cache.labels)
+        console.log(`[InkChapter OUTLINE] apply result: matched=${result.matched} applied=${result.applied} headings=${this.cache.headings.length} labels=${this.cache.labels.length}`)
         recordRuntimeAudit('outline:apply-end', {
           matchedCount: result.matched,
           appliedCount: result.applied,
@@ -283,10 +294,28 @@ export class OutlineNumberingController {
   private reattachObserver(): void {
     this.detachObserver()
     const root = findOutlineRoot()
+    // Always-on diagnostic for outline root
     if (!root) {
+      console.log('[InkChapter OUTLINE] reattachObserver: root not found')
+      // Debug: what ROOT_CANDIDATES exist in DOM?
+      const cands = ['#outline-content', '.outline-content', '#file-library .outline-panel', '.sidebar-outline', '.ty-outline']
+      for (const sel of cands) {
+        const el = document.querySelector(sel) as HTMLElement | null
+        if (el) {
+          const valid = (() => {
+            if (!el.isConnected) return 'disconnected'
+            if (el.querySelector('input, textarea')) return 'has input'
+            const links = el.querySelectorAll('a[href^="#"]')
+            if (links.length === 0) return 'no anchor links'
+            return `valid(${links.length} links)`
+          })()
+          console.log(`[InkChapter OUTLINE] candidate ${sel}: ${el.tagName}#${el.id||'?'}.${el.className||'?'} offsetParent=${!!el.offsetParent} ${valid}`)
+        }
+      }
       recordRuntimeAudit('outline:root-missing')
       return
     }
+    console.log(`[InkChapter OUTLINE] root found: ${root.tagName}#${root.id} .${root.className} connected=${root.isConnected}`)
     recordRuntimeAudit('outline:root-found', {
       details: { rootTag: root.tagName, rootId: root.id, rootClass: root.className, rootConnected: root.isConnected },
     })
