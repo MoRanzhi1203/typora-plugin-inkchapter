@@ -1,13 +1,12 @@
 /**
- * Outline Numbering Adapter v4 — DOM-structure-agnostic outline root detection.
+ * Outline Numbering Adapter v5 — relaxed root detection for hidden panels.
  *
- * Key changes from v3:
- * 1. isValidOutlineRoot() no longer requires a[href^="#"] — uses heading-text matching
- * 2. Full DOM diagnostic dump shows ALL sidebar candidates with rejection reasons
- * 3. findOutlineTextElements() handles div/span/li items (not just <a>)
- * 4. File-tree exclusion uses exact panel boundary, not ancestor proximity
- * 5. Explicit exclusion of sidebar-footer, sidebar-menu-btn, search panels
- * 6. Text+level+occurrence matching for duplicate headings
+ * Key changes from v4:
+ * 1. findOutlineRootRelaxed() — skips offsetParent checks for hidden panels
+ * 2. findOutlineTextElementsRelaxed() — finds items even when panel is hidden
+ * 3. findOutlineRoot() and findOutlineRootRelaxed() share core logic
+ * 4. Event chain logging with structured event records
+ * 5. outlineRootSelector tracking for diagnostics
  */
 
 import type { HeadingDescriptor, HeadingLevel } from './heading-types'
@@ -276,19 +275,28 @@ function getDirectText(el: HTMLElement): string {
   return text
 }
 
-/** Find the real outline root element. */
+/** Find the real outline root element (visible only). */
 export function findOutlineRoot(): HTMLElement | null {
+  return findOutlineRootCore(true)
+}
+
+/** Find outline root allowing hidden panels (e.g. when file tree is active). */
+export function findOutlineRootRelaxed(): HTMLElement | null {
+  return findOutlineRootCore(false)
+}
+
+/** Core outline root detection with optional visibility requirement. */
+function findOutlineRootCore(requireVisible: boolean): HTMLElement | null {
   const bodyTexts = getBodyHeadingTexts()
 
   // Phase 1: Try known ROOT_CANDIDATES with relaxed validation
   for (const sel of ROOT_CANDIDATES) {
     const el = document.querySelector(sel) as HTMLElement | null
     if (!el) continue
-    if (el.offsetParent === null) continue
+    if (requireVisible && el.offsetParent === null) continue
     if (!el.textContent || el.textContent.trim().length === 0) continue
     if (isNonOutlineDirectly(el)) continue
     if (isInsideExcludedPanel(el)) continue
-    // Relaxed validation: has heading-text matches OR anchor links
     if (isValidOutlineRootRelaxed(el, bodyTexts)) return el
   }
 
@@ -308,17 +316,14 @@ export function findOutlineRoot(): HTMLElement | null {
   let bestHits = 0
 
   for (const c of containers) {
-    if (c.offsetParent === null) continue
+    if (requireVisible && c.offsetParent === null) continue
     if (c.hasAttribute('data-inkchapter-exclude')) continue
     if (isInsideExcludedPanel(c)) continue
     if (isNonOutlineDirectly(c)) continue
-    // Check for input/textarea (search panels)
     if (c.querySelector('input, textarea')) continue
 
     const hits = countHeadingTextHits(c, bodyTexts)
     if (hits >= 2 && hits > bestHits) {
-      // Prefer elements that contain children matching heading texts
-      // over elements that just happen to contain heading text deep in descendants
       const directChildHits = countDirectChildHeadingHits(c, bodyTexts)
       if (directChildHits >= 2 || hits >= 5) {
         bestHits = hits
@@ -328,21 +333,18 @@ export function findOutlineRoot(): HTMLElement | null {
   }
 
   if (bestEl) {
-    console.log(`[InkChapter OUTLINE] root-accepted: ${elTag(bestEl)} headingHits=${bestHits}`)
     return bestEl
   }
 
-  // Phase 3: Last resort — find by heading-matching element LCA
-  const headingMatchEls = findHeadingMatchElements(sidebar, bodyTexts)
+  // Phase 3: LCA of heading-matching elements
+  const headingMatchEls = findHeadingMatchElements(sidebar, bodyTexts, requireVisible)
   if (headingMatchEls.length >= 2) {
     const lca = findLCA(headingMatchEls)
     if (lca && lca !== sidebar && lca !== document.body) {
-      console.log(`[InkChapter OUTLINE] root-accepted (LCA): ${elTag(lca)} itemCount=${headingMatchEls.length}`)
       return lca
     }
   }
 
-  console.log('[InkChapter OUTLINE] root not found after all phases')
   return null
 }
 
@@ -381,12 +383,12 @@ function findSidebarHost(): HTMLElement | null {
 }
 
 /** Find elements in sidebar whose text matches body headings. */
-function findHeadingMatchElements(sidebar: HTMLElement, bodyTexts: Set<string>): HTMLElement[] {
+function findHeadingMatchElements(sidebar: HTMLElement, bodyTexts: Set<string>, requireVisible: boolean = true): HTMLElement[] {
   const result: HTMLElement[] = []
   const allLeafish = sidebar.querySelectorAll<HTMLElement>('div, span, li, a, p')
   const seen: Set<string> = new Set()
   for (const el of allLeafish) {
-    if (el.offsetParent === null) continue
+    if (requireVisible && el.offsetParent === null) continue
     const text = (el.textContent ?? '').trim()
     if (!text || text.length > 200) continue
     if (seen.has(text)) continue
@@ -422,18 +424,26 @@ function findLCA(els: HTMLElement[]): HTMLElement | null {
 
 // ── Outline text elements ─────────────────────────────
 
-/**
- * Find all visible outline entry elements inside the outline root.
- * Handles both <a href> and <div>/<span>/<li> based outline items.
- */
+/** Find all visible outline entry elements inside the outline root. */
 export function findOutlineTextElements(root: HTMLElement): HTMLElement[] {
+  return findOutlineTextElementsCore(root, true)
+}
+
+/** Find outline entry elements including hidden ones (e.g. when panel is display:none). */
+export function findOutlineTextElementsRelaxed(root: HTMLElement): HTMLElement[] {
+  return findOutlineTextElementsCore(root, false)
+}
+
+/** Core outline text element finder with optional visibility filtering. */
+function findOutlineTextElementsCore(root: HTMLElement, requireVisible: boolean): HTMLElement[] {
   const bodyTexts = getBodyHeadingTexts()
   const items: HTMLElement[] = []
 
   // Strategy 1: Find <a> with href (classic Typora outline)
   const anchors = root.querySelectorAll<HTMLAnchorElement>('a[href]')
   for (const a of anchors) {
-    if (a.offsetParent !== null && a.textContent && a.textContent.trim().length > 0) {
+    if (requireVisible && a.offsetParent === null) continue
+    if (a.textContent && a.textContent.trim().length > 0) {
       items.push(a)
     }
   }
@@ -443,14 +453,11 @@ export function findOutlineTextElements(root: HTMLElement): HTMLElement[] {
   const allLeafish = root.querySelectorAll<HTMLElement>('div, span, li, a, p')
   const seenTexts = new Set<string>()
   for (const el of allLeafish) {
-    if (el.offsetParent === null) continue
+    if (requireVisible && el.offsetParent === null) continue
     const text = (el.textContent ?? '').trim()
     if (!text || text.length > 200) continue
-    // Must match a body heading
     if (!bodyTexts.has(text)) continue
-    // Deduplicate by text
     if (seenTexts.has(text)) continue
-    // Skip if this element contains other matching elements (prefer leaves)
     let hasMatchingChild = false
     for (const child of el.querySelectorAll<HTMLElement>('*')) {
       if (bodyTexts.has((child.textContent ?? '').trim())) {
@@ -465,15 +472,13 @@ export function findOutlineTextElements(root: HTMLElement): HTMLElement[] {
 
   if (items.length >= 2) return items
 
-  // Strategy 3: Find all visible leaf elements with non-empty text
+  // Strategy 3: Find all leaf elements with non-empty text
   const allEls = root.querySelectorAll<HTMLElement>('span, div, p, li, a')
   for (const el of allEls) {
-    if (el.offsetParent === null) continue
+    if (requireVisible && el.offsetParent === null) continue
     const text = (el.textContent ?? '').trim()
     if (text.length === 0) continue
-    // Skip container elements
     if (el.children.length > 0 && el.querySelector('span, a, div, p, li')) continue
-    // Skip elements that are clearly not outline items
     if (el.matches('button, input, textarea, [data-action], [role="button"]')) continue
     items.push(el)
   }
@@ -727,14 +732,20 @@ export function quickSyncOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
 ): { matched: number; applied: number } {
-  const root = findOutlineRoot()
+  // Try visible root first, then fall back to relaxed (hidden) root
+  let root = findOutlineRoot()
+  let useRelaxed = false
   if (!root) {
-    console.log('[InkChapter OUTLINE] quickSync: root not found')
+    root = findOutlineRootRelaxed()
+    useRelaxed = true
+  }
+  if (!root) {
+    console.log('[InkChapter OUTLINE] quickSync: root not found (visible or relaxed)')
     return { matched: 0, applied: 0 }
   }
-  console.log(`[InkChapter OUTLINE] quickSync: root=${elTag(root)}`)
+  console.log(`[InkChapter OUTLINE] quickSync: root=${elTag(root)} relaxed=${useRelaxed}`)
 
-  const items = findOutlineTextElements(root)
+  const items = useRelaxed ? findOutlineTextElementsRelaxed(root) : findOutlineTextElements(root)
   console.log(`[InkChapter OUTLINE] quickSync: found ${items.length} text elements, first=${items[0]?.textContent?.trim().slice(0, 30) ?? 'none'}`)
   if (items.length === 0) return { matched: 0, applied: 0 }
 

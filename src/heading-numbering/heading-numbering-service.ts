@@ -1299,13 +1299,15 @@ export class HeadingNumberingService {
     // Editor DOM load
     this.store.add(
       ctx.onEditorEvent('load', (editorEl: unknown) => {
-        recordRuntimeAudit('editor:load', { documentKey: this.getDocKey() })
+        const docKey = this.getDocKey()
+        recordRuntimeAudit('editor:load', { documentKey: docKey })
         if (editorEl instanceof HTMLElement) {
           this.adapter.setEditorRoot(editorEl)
           this.lastSnapshot = null
           this.renderedStates = null
           this.connectObserver(editorEl)
           this.bindEditorRoot()
+          this.outlineController.setDocumentKey(docKey)
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         }
@@ -1317,21 +1319,32 @@ export class HeadingNumberingService {
       ctx.onEditorEvent('edit', () => this.requestRefresh('framework-edit')),
     )
 
-    // File open — cancel stale state, reinit outline, schedule refresh
+    // File open — bump version, reinit outline BEFORE setting docKey,
+    // then let editor:load handle the actual refresh (no setTimeout).
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
         const version = ++this.renderVersion
-        this.outlineController.setDocumentKey(this.getDocKey())
-        recordRuntimeAudit('file:open:received', { documentKey: this.getDocKey(), renderVersion: version })
+        const newDocKey = this.getDocKey()
+        recordRuntimeAudit('file:open:received', {
+          documentKey: newDocKey,
+          renderVersion: version,
+        })
         this.lastSnapshot = null
         this.renderedStates = null
+        // Reinitialize FIRST (detaches old observer, no old cache applied)
+        this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
-        setTimeout(() => {
+        // THEN set document key for the new document
+        this.outlineController.setDocumentKey(newDocKey)
+        // Schedule a refresh in microtask — editor:load will also trigger one
+        queueMicrotask(() => {
           if (version !== this.renderVersion) {
-            recordRuntimeAudit('file:open:timeout-abort', { renderVersion: this.renderVersion, expectedVersion: version })
+            recordRuntimeAudit('file:open:microtask-abort', {
+              renderVersion: this.renderVersion,
+              expectedVersion: version,
+            })
             return
           }
-          recordRuntimeAudit('file:open:timeout-start', { renderVersion: version })
           const area = this.adapter.detectEditorRoot()
           if (area) {
             this.adapter.setEditorRoot(area)
@@ -1340,19 +1353,37 @@ export class HeadingNumberingService {
           }
           this.requestRefresh('file-open')
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
-        }, 0)
+        })
+        // Also schedule a safety refresh after a small delay (in case editor:load doesn't fire)
+        setTimeout(() => {
+          if (version !== this.renderVersion) return
+          const area = this.adapter.detectEditorRoot()
+          if (area && (!this.lastSnapshot || this.lastSnapshot.length === 0)) {
+            this.adapter.setEditorRoot(area)
+            this.connectObserver(area)
+            this.bindEditorRoot()
+            this.requestRefresh('file-open')
+          }
+        }, 100)
       }),
     )
 
-    // Active leaf change — bump version, reinit outline
+    // Active leaf change — bump version, reinit outline BEFORE setting docKey
     this.store.add(
       ctx.onWorkspaceEvent('active-leaf:change', () => {
         ++this.renderVersion
-        this.outlineController.setDocumentKey(this.getDocKey())
-        recordRuntimeAudit('active-leaf:change', { documentKey: this.getDocKey(), renderVersion: this.renderVersion })
+        const newDocKey = this.getDocKey()
+        recordRuntimeAudit('active-leaf:change', {
+          documentKey: newDocKey,
+          renderVersion: this.renderVersion,
+        })
         this.lastSnapshot = null
         this.renderedStates = null
+        // Reinitialize FIRST (detaches old observer, no old cache applied)
+        this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
+        // THEN set document key for the new document
+        this.outlineController.setDocumentKey(newDocKey)
         this.requestRefresh('active-leaf-change')
         this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
       }),
