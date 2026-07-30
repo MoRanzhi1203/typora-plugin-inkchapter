@@ -11,10 +11,13 @@ import type {
   MultilevelFormatSegment,
   ContextualFormatSegment,
   MaxHeadingLevel,
+  HeadingSettingsScope,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
+import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
+import { Notice } from '@typora-community-plugin/core'
 import {
   moveSegmentToResolvedIndex,
   calculateTargetIndexAfterRemoval,
@@ -39,7 +42,7 @@ import {
   renderContextualLevelReference,
   renderContextualFormat,
 } from '../heading-numbering/numbering-engine'
-import { PRESET_LIST } from '../heading-numbering/presets'
+import { PRESET_LIST, getPresetLevels } from '../heading-numbering/presets'
 
 const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string; group?: string }[] = [
   { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)', group: '数字' },
@@ -93,11 +96,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     globalMaxLevel: MaxHeadingLevel
     documentMode: 'inherit' | 'custom'
     documentMaxLevel: MaxHeadingLevel
-    /** Whether the global section has unsaved changes. */
     globalDirty: boolean
-    /** Whether the document section has unsaved changes. */
     documentDirty: boolean
   } = { globalMaxLevel: 6, documentMode: 'inherit', documentMaxLevel: 6, globalDirty: false, documentDirty: false }
+
+  // ── Heading numbering scope & draft ──────────────
+  private headingScope: HeadingSettingsScope = 'document'
+  private headingDraft: HeadingNumberingSettings | null = null
+  private headingDraftOriginal: HeadingNumberingSettings | null = null
 
   /** Initialize the draft from persisted settings. */
   private initRangeDraft(): void {
@@ -244,7 +250,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private get headingSettings() {
-    return this.numberingService.getCurrentSettings()
+    // Return draft if active, otherwise effective settings
+    if (this.headingDraft) return this.headingDraft
+    return this.numberingService.getEffectiveSettings()
   }
 
   private render(): void {
@@ -257,6 +265,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
+    // ── Scope selection bar ──────────────────────────
+    this.renderScopeBar(s)
+
     // ── Section: Basic ──────────────────────────────
     this.addSettingTitle('基础设置')
 
@@ -267,16 +278,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
       setting.addCheckbox((cb) => {
         cb.checked = s.enabled
         cb.onclick = () => {
-          const current = this.settings.get('headingNumbering')
-          current.enabled = cb.checked
-          this.settings.set('headingNumbering', current)
-          this.numberingService.toggle()
-          this.refreshUI()
+          this.ensureDraft()
+          this.headingDraft!.enabled = cb.checked
+          this.rerender()
         }
       })
     })
 
-    // Show level one toggle (global H1 switch)
+    // Show level one toggle
     this.addSetting((setting) => {
       setting.addName('一级标题显示编号')
       setting.addDescription('关闭时 H1 不显示编号，H2 从 1 开始计数，不暴露隐藏的 H1 编号路径。')
@@ -284,8 +293,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.globalH1Toggle = cb
         cb.checked = s.showLevelOneNumber
         cb.onclick = () => {
-          if (this.syncingLevelOneUi) return // cycle guard
-          this.applyLevelOneVisibility(cb.checked, 'global-toggle')
+          if (this.syncingLevelOneUi) return
+          this.ensureDraft()
+          this.headingDraft!.showLevelOneNumber = cb.checked
+          this.syncLevelOneControls(cb.checked)
+          this.rerender()
         }
       })
     })
@@ -429,7 +441,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private handlePresetSelect(preset: HeadingNumberingPreset): void {
     this.cancelDrag()
-    this.numberingService.applyPreset(preset)
+    this.ensureDraft()
+    const s = this.headingDraft!
+    if (preset === 'custom') {
+      s.preset = 'custom'
+      if (s.customDefinition) { s.levels = { ...s.customDefinition } }
+    } else {
+      if (s.preset === 'custom') { s.customDefinition = { ...s.levels } }
+      s.preset = preset
+      s.levels = { ...getPresetLevels(preset) }
+    }
     if (this.selectEl) {
       this.selectEl.value = preset
     }
@@ -1845,6 +1866,139 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (e.key === 'Enter') input.blur()
     }
     row.appendChild(input)
+  }
+
+  // ── Scope bar & confirm/cancel ──────────────────
+
+  private ensureDraft(): void {
+    if (this.headingDraft) return
+    this.headingDraftOriginal = this.numberingService.getEffectiveSettings()
+    this.headingDraft = deepCloneSettings(this.headingDraftOriginal)
+  }
+
+  private rerender(): void {
+    // Re-render the entire page to reflect draft changes
+    this.cancelDrag('draft-change')
+    this.onshow()
+  }
+
+  private renderScopeBar(s: HeadingNumberingSettings): void {
+    const scopeSection = el('div', 'inkchapter-scope-bar', this.containerEl)
+    scopeSection.style.cssText = 'margin:8px 0;padding:12px;background:#f5f5f5;border-radius:6px;border:1px solid #ddd;'
+
+    // Document path
+    const docPath = this.numberingService.getActiveFilePath()
+    const docKey = this.numberingService.getDocumentKey()
+    const pathEl = el('div', 'inkchapter-scope-path', scopeSection)
+    pathEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:8px;'
+    pathEl.textContent = docPath ? `当前文档：${docKey ?? docPath}` : '未打开文档'
+
+    // Source status
+    const source = this.numberingService.getSettingsSource()
+    const statusEl = el('div', 'inkchapter-scope-status', scopeSection)
+    statusEl.style.cssText = 'font-size:12px;color:#888;margin-bottom:10px;'
+    statusEl.textContent = source === 'document' ? '当前状态：使用文档独立设置' : '当前状态：继承全局默认'
+
+    // Scope radio buttons
+    const scopeRow = el('div', 'inkchapter-scope-row', scopeSection)
+    scopeRow.style.cssText = 'display:flex;gap:16px;align-items:center;'
+    const scopeLabel = el('span', '', scopeRow)
+    scopeLabel.textContent = '作用范围：'
+    scopeLabel.style.cssText = 'font-weight:600;font-size:13px;'
+
+    const buildRadio = (value: HeadingSettingsScope, label: string, disabled: boolean) => {
+      const radioRow = el('label', '', scopeRow)
+      radioRow.style.cssText = 'cursor:pointer;display:flex;align-items:center;gap:4px;'
+      if (disabled) radioRow.style.opacity = '0.5'
+      const radio = document.createElement('input')
+      radio.type = 'radio'
+      radio.name = 'heading-scope'
+      radio.value = value
+      radio.checked = this.headingScope === value
+      radio.disabled = disabled
+      radio.onchange = () => {
+        if (this.headingScope === value) return
+        this.headingScope = value
+        // Reset draft when switching scope
+        const newSettings = value === 'global'
+          ? this.numberingService.getScopeStore().globalDefault
+          : this.numberingService.getEffectiveSettings()
+        this.headingDraft = deepCloneSettings(newSettings)
+        this.headingDraftOriginal = deepCloneSettings(newSettings)
+        this.rerender()
+      }
+      radioRow.appendChild(radio)
+      const span = document.createElement('span')
+      span.textContent = label
+      span.style.fontSize = '13px'
+      radioRow.appendChild(span)
+      return radioRow
+    }
+
+    scopeRow.appendChild(buildRadio('document', '当前文档', !docPath))
+    scopeRow.appendChild(buildRadio('global', '全局默认', false))
+
+    if (!docPath) {
+      const hintEl = el('div', '', scopeSection)
+      hintEl.style.cssText = 'font-size:11px;color:#999;margin-top:4px;'
+      hintEl.textContent = '未打开 MD 文件时，"当前文档"不可用。'
+    }
+
+    // Restore inherit button
+    if (source === 'document') {
+      const restoreBtn = el('button', '', scopeSection)
+      restoreBtn.textContent = '恢复继承全局默认'
+      restoreBtn.style.cssText = 'margin-top:8px;padding:4px 12px;font-size:12px;cursor:pointer;'
+      restoreBtn.onclick = () => {
+        this.numberingService.restoreInheritGlobal(docKey ?? '')
+        this.headingDraft = null
+        this.headingDraftOriginal = null
+        this.rerender()
+        Notice.info('已恢复继承全局默认')
+      }
+    }
+
+    // Scope hint
+    const hintEl = el('div', '', scopeSection)
+    hintEl.style.cssText = 'font-size:11px;color:#666;margin-top:6px;'
+    if (this.headingScope === 'global') {
+      hintEl.textContent = '该修改将影响所有尚未设置独立编号样式的文档。已有独立设置的文档不会被覆盖。'
+    } else {
+      hintEl.textContent = '仅影响当前文档，不会改变其他文档的编号样式。'
+    }
+
+    // Confirm / Cancel buttons
+    const actionRow = el('div', 'inkchapter-scope-actions', this.containerEl)
+    actionRow.style.cssText = 'display:flex;gap:8px;margin:12px 0;padding:0 0 16px 0;'
+
+    const confirmBtn = el('button', '', actionRow)
+    confirmBtn.textContent = '确定'
+    confirmBtn.style.cssText = 'padding:8px 24px;font-size:14px;font-weight:600;background:#0078d4;color:#fff;border:none;border-radius:4px;cursor:pointer;'
+    confirmBtn.onclick = () => {
+      if (!this.headingDraft) {
+        Notice.info('没有需要保存的更改')
+        return
+      }
+      const scope = this.headingScope
+      const key = scope === 'document' ? (docKey ?? null) : null
+      this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
+      this.headingDraft = null
+      this.headingDraftOriginal = null
+      this.rerender()
+      Notice.info(scope === 'global' ? '全局默认设置已保存' : '当前文档设置已保存')
+    }
+
+    const cancelBtn = el('button', '', actionRow)
+    cancelBtn.textContent = '取消'
+    cancelBtn.style.cssText = 'padding:8px 24px;font-size:14px;background:#e0e0e0;color:#333;border:none;border-radius:4px;cursor:pointer;'
+    cancelBtn.onclick = () => {
+      if (this.headingDraft) {
+        this.headingDraft = null
+        this.headingDraftOriginal = null
+        this.rerender()
+        Notice.info('更改已取消')
+      }
+    }
   }
 }
 

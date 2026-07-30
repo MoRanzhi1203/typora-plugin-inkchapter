@@ -23,15 +23,19 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
 }
 
 export const DEFAULT_SETTINGS: InkChapterSettings = {
-  schemaVersion: 9,
+  schemaVersion: 10,
   debug: false,
-  headingNumbering: {
-    enabled: true,
-    showLevelOneNumber: false,
-    preset: 'decimal-hierarchical',
-    maxDepth: 6,
-    levels: decimalLevels,
-    customDefinition: { ...decimalLevels },
+  headingNumberingScopes: {
+    schemaVersion: 1,
+    globalDefault: {
+      enabled: true,
+      showLevelOneNumber: false,
+      preset: 'decimal-hierarchical',
+      maxDepth: 6,
+      levels: decimalLevels,
+      customDefinition: { ...decimalLevels },
+    },
+    documentOverrides: {},
   },
   levelRange: {
     defaultMaxLevel: 6,
