@@ -348,3 +348,36 @@ function simpleHash(s: string): string {
   }
   return Math.abs(h).toString(36)
 }
+
+// ── Heading numbering scope store (schema refactor) ──────
+
+/** Scope for heading numbering settings. */
+export type HeadingSettingsScope = 'global' | 'document'
+
+/** Per-document heading numbering override. */
+export interface HeadingNumberingDocumentOverride {
+  updatedAt: number
+  settings: HeadingNumberingSettings
+}
+
+/** Persistent store: global default + per-document overrides. */
+export interface HeadingNumberingScopeStore {
+  schemaVersion: number
+  globalDefault: HeadingNumberingSettings
+  documentOverrides: Record<string, HeadingNumberingDocumentOverride>
+}
+
+/** Request payload for saving heading numbering settings. */
+export interface SaveHeadingSettingsRequest {
+  scope: HeadingSettingsScope
+  documentKey: string | null
+  settings: HeadingNumberingSettings
+}
+
+/** Runtime context: resolved effective settings for the current document. */
+export interface DocumentNumberingContext {
+  documentKey: string | null
+  settingsRevision: number
+  effectiveSettings: HeadingNumberingSettings
+  source: 'global' | 'document'
+}

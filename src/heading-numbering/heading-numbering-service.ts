@@ -15,6 +15,10 @@ import type {
   MaxHeadingLevel,
   HeadingLevelRangeSettings,
   DocumentHeadingLevelOverride,
+  HeadingSettingsScope,
+  SaveHeadingSettingsRequest,
+  DocumentNumberingContext,
+  HeadingNumberingScopeStore,
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
@@ -31,6 +35,16 @@ import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
 import * as logger from '../core/logger'
 import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
+import {
+  generateDocumentKey,
+  deepCloneSettings,
+  resolveEffectiveSettings,
+  saveHeadingSettings,
+  removeDocumentOverride,
+  hasDocumentOverride,
+  migrateHeadingNumberingToScopeStore,
+  getDefaultHeadingNumberingSettings,
+} from './heading-numbering-scope-store'
 
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
@@ -73,7 +87,6 @@ function contextualToMultilevelVariants(
 }
 
 export class HeadingNumberingService {
-  private numberingSettings: HeadingNumberingSettings
   private adapter: HeadingDomAdapter
   private store: DisposableStore
   private ctx: ServiceContext
@@ -95,9 +108,17 @@ export class HeadingNumberingService {
   // Render version: incremented on document switch to cancel stale async ops
   private renderVersion = 0
 
+  // Scope store: authoritative source for heading numbering settings
+  private scopeStore: HeadingNumberingScopeStore
+
+  // Current document context: resolved effective settings for active document
+  private docContext: DocumentNumberingContext
+
+  // Settings revision: bumped on save to invalidate caches
+  private settingsRevision = 0
+
   // Level Range Enforcer
   private levelRangeEnforcer!: HeadingLevelRangeEnforcer
-  /** Cache of last effective max level for change detection. */
   private lastEffectiveMaxLevel: HeadingLevel = 6
 
   // Override Store
@@ -109,7 +130,13 @@ export class HeadingNumberingService {
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
-    this.numberingSettings = this.readNormalizedSettings()
+
+    // Initialize scope store (with migration from old format)
+    this.scopeStore = this.initScopeStore()
+
+    // Resolve effective settings for current document
+    const docKey = this.getDocumentKey()
+    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
 
     // Build enforcer callbacks
     const enforcerCallbacks: EnforcerCallbacks = {
@@ -134,35 +161,158 @@ export class HeadingNumberingService {
     this.requestRefresh('initial-load')
   }
 
-  /** Read settings, apply config migration, and normalize. */
-  private readNormalizedSettings(): HeadingNumberingSettings {
-    const raw = this.ctx.settings.get('headingNumbering')
-    const migrated = migrateSettings(raw)
-    // Persist migration result if it changed
-    if (!raw || !raw.preset || !raw.levels) {
-      this.ctx.settings.set('headingNumbering', migrated)
+  /** Initialize scope store: try reading new format, fall back to migration. */
+  private initScopeStore(): HeadingNumberingScopeStore {
+    const raw = this.ctx.settings.get('headingNumberingScopes' as any) as any
+    if (raw?.schemaVersion && raw.globalDefault) {
+      console.info('[InkChapter] Using headingNumberingScopes')
+      return raw as HeadingNumberingScopeStore
     }
-    return migrated
+
+    // Try migration from old headingNumbering
+    // Access plugin raw data via settings.get on the legacy key
+    const oldSettings = this.ctx.settings.get('headingNumbering' as any) as any
+    if (oldSettings?.preset || oldSettings?.levels) {
+      const migResult = migrateHeadingNumberingToScopeStore(
+        { headingNumbering: oldSettings },
+      )
+      if (migResult.migrated) {
+        console.info('[InkChapter] Migrated headingNumbering → headingNumberingScopes')
+        this.persistScopeStore(migResult.store)
+      }
+      return migResult.store
+    }
+
+    // No existing data — use fresh default store
+    console.info('[InkChapter] No existing heading numbering data, using defaults')
+    return {
+      schemaVersion: 1,
+      globalDefault: getDefaultHeadingNumberingSettings(),
+      documentOverrides: {},
+    }
+  }
+
+  /** Persist the scope store to plugin settings. */
+  private persistScopeStore(store: HeadingNumberingScopeStore): void {
+    this.scopeStore = store
+    this.ctx.settings.set('headingNumberingScopes' as any, store as any)
+  }
+
+  /** Get the current scope store (for settings tab read). */
+  getScopeStore(): HeadingNumberingScopeStore {
+    return this.scopeStore
+  }
+
+  /** Get the current effective settings (for settings tab read). */
+  getEffectiveSettings(): HeadingNumberingSettings {
+    return deepCloneSettings(this.docContext.effectiveSettings)
+  }
+
+  /** Get current settings source ('global' or 'document'). */
+  getSettingsSource(): 'global' | 'document' {
+    return this.docContext.source
+  }
+
+  /** Save heading numbering with explicit scope. */
+  saveHeadingNumberingScoped(
+    scope: HeadingSettingsScope,
+    documentKey: string | null,
+    settings: HeadingNumberingSettings,
+  ): void {
+    const newStore = saveHeadingSettings(this.scopeStore, {
+      scope,
+      documentKey,
+      settings,
+    })
+    this.persistScopeStore(newStore)
+    this.settingsRevision++
+
+    // Reload document context if current document is affected
+    const currentKey = this.getDocumentKey()
+    if (scope === 'global' || documentKey === currentKey) {
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext.settingsRevision = this.settingsRevision
+      this.lastSnapshot = null
+      this.renderedStates = null
+      this.flushRefresh()
+    }
+  }
+
+  /** Remove document override and restore inherit global. */
+  restoreInheritGlobal(documentKey: string): void {
+    const newStore = removeDocumentOverride(this.scopeStore, documentKey)
+    this.persistScopeStore(newStore)
+    this.settingsRevision++
+
+    // Reload current document context
+    const currentKey = this.getDocumentKey()
+    if (currentKey === documentKey) {
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext.settingsRevision = this.settingsRevision
+      this.lastSnapshot = null
+      this.renderedStates = null
+      this.flushRefresh()
+    }
+  }
+
+  /** Check if current document has a custom override. */
+  hasCurrentDocumentOverride(): boolean {
+    return hasDocumentOverride(this.scopeStore, this.getDocumentKey())
+  }
+
+  // ── Convenience accessor for effective settings ──
+  private get s(): HeadingNumberingSettings {
+    return this.docContext.effectiveSettings
+  }
+
+  /** Generate vault-relative document key for the current file. */
+  getDocumentKey(): string | null {
+    const filePath = this.ctx.getActiveFilePath?.() ?? null
+    if (!filePath) return null
+    // Use the vault root from Typora community plugin API
+    const vaultRoot = (this.ctx as any).vaultRoot ??
+      (this.ctx.settings as any).getVaultRoot?.() ??
+      (filePath.split(/[\\/]/).slice(0, -1).join('/'))
+    return generateDocumentKey(filePath, typeof vaultRoot === 'string' ? vaultRoot : filePath.split(/[\\/]/).slice(0, -1).join('/'))
+  }
+
+  /** Get the path of the currently active file, or null if none. */
+  getActiveFilePath(): string | null {
+    return this.ctx.getActiveFilePath?.() ?? null
+  }
+
+  /** Get a short document key for audit logging. */
+  private getDocKey(): string {
+    return this.getActiveFilePath()?.split(/[\\/]/).slice(-1)[0]?.slice(0, 30) ?? 'unknown'
+  }
+
+  /** Load document context when switching documents. */
+  private loadDocumentContext(): void {
+    const docKey = this.getDocumentKey()
+    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
+    this.docContext.settingsRevision = this.settingsRevision
   }
 
   toggle(): void {
-    this.numberingSettings.enabled = !this.numberingSettings.enabled
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    const s = this.s
+    s.enabled = !s.enabled
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
 
-    if (this.numberingSettings.enabled) {
+    if (s.enabled) {
       this.lastSnapshot = null
       this.renderedStates = null
       this.requestRefresh('toggle')
     } else {
       this.adapter.clearNumbering()
     }
-    logger.info(`标题编号已${this.numberingSettings.enabled ? '开启' : '关闭'}`)
+    logger.info(`标题编号已${s.enabled ? '开启' : '关闭'}`)
   }
 
   renumber(): void {
-    if (!this.numberingSettings.enabled) {
-      this.numberingSettings.enabled = true
-      this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    const s = this.s
+    if (!s.enabled) {
+      s.enabled = true
+      this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
     }
     this.lastSnapshot = null
     this.renderedStates = null
@@ -172,46 +322,38 @@ export class HeadingNumberingService {
 
   /** Toggle level-one heading numbering on/off. */
   toggleLevelOneNumber(): void {
-    this.setShowLevelOneNumber(!(this.numberingSettings.showLevelOneNumber ?? false))
+    this.setShowLevelOneNumber(!(this.s.showLevelOneNumber ?? false))
   }
 
   /** Set whether level-one heading shows numbering. */
   setShowLevelOneNumber(enabled: boolean): void {
-    if (this.numberingSettings.showLevelOneNumber === enabled) return
-
-    this.numberingSettings.showLevelOneNumber = enabled
-
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
-
-    // Force full refresh: H1 decorations must be added/removed, H2+ labels recalculated
+    if (this.s.showLevelOneNumber === enabled) return
+    const s = this.s
+    s.showLevelOneNumber = enabled
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
-
-    // Notify UI listeners
     this.notifySettingsListeners()
-
     logger.info(`一级标题编号已${enabled ? '开启' : '关闭'}`)
   }
 
   /** Apply a preset and update numbering immediately. */
   applyPreset(preset: HeadingNumberingPreset): void {
+    const s = this.s
     if (preset === 'custom') {
-      // Restore custom draft if available
-      this.numberingSettings.preset = 'custom'
-      if (this.numberingSettings.customDefinition) {
-        this.numberingSettings.levels = { ...this.numberingSettings.customDefinition }
+      s.preset = 'custom'
+      if (s.customDefinition) {
+        s.levels = { ...s.customDefinition }
       }
-      // else: keep current levels as-is (first time switching to custom)
     } else {
-      // Save current custom levels as draft before switching away
-      if (this.numberingSettings.preset === 'custom') {
-        this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
+      if (s.preset === 'custom') {
+        s.customDefinition = { ...s.levels }
       }
-      this.numberingSettings.preset = preset
-      this.numberingSettings.levels = { ...getPresetLevels(preset) }
+      s.preset = preset
+      s.levels = { ...getPresetLevels(preset) }
     }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
@@ -220,21 +362,15 @@ export class HeadingNumberingService {
 
   /** Update a single level's style. Automatically switches preset to 'custom'. */
   updateLevelStyle(level: HeadingLevel, patch: Partial<HeadingLevelStyle>): void {
-    if (this.numberingSettings.preset !== 'custom') {
-      // Save current preset levels as custom draft before switching
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
-      // Copy current preset levels as custom base
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    const s = this.s
+    if (s.preset !== 'custom') {
+      s.customDefinition = { ...s.levels }
+      s.preset = 'custom'
+      s.levels = { ...s.levels }
     }
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
-      [level]: { ...this.numberingSettings.levels[level], ...patch },
-    }
-    // Also persist to customDefinition draft
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
-
+    s.levels = { ...s.levels, [level]: { ...s.levels[level], ...patch } }
+    s.customDefinition = { ...s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
@@ -245,26 +381,26 @@ export class HeadingNumberingService {
    * Automatically writes to withLevelOne or withoutLevelOne based on current H1 state.
    */
   updateActiveFormat(level: HeadingLevel, nextFormat: readonly import('./heading-types').NumberFormatSegment[]): void {
-    if (this.numberingSettings.preset !== 'custom') {
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    if (this.s.preset !== 'custom') {
+      this.s.customDefinition = { ...this.s.levels }
+      this.s.preset = 'custom'
+      this.s.levels = { ...this.s.levels }
     }
 
-    const currentStyle = this.numberingSettings.levels[level]
+    const currentStyle = this.s.levels[level]
     const updated = updateActiveFormatVariant(
       currentStyle,
       level,
-      this.numberingSettings.showLevelOneNumber,
+      this.s.showLevelOneNumber,
       nextFormat,
     )
 
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
+    this.s.levels = {
+      ...this.s.levels,
       [level]: updated,
     }
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.customDefinition = { ...this.s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
 
     this.lastSnapshot = null
     this.renderedStates = null
@@ -275,29 +411,29 @@ export class HeadingNumberingService {
    * Update the active contextual format variant for a level (schemaVersion >= 8).
    */
   updateActiveContextualFormat(level: HeadingLevel, nextFormat: readonly import('./heading-types').ContextualFormatSegment[]): void {
-    if (this.numberingSettings.preset !== 'custom') {
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    if (this.s.preset !== 'custom') {
+      this.s.customDefinition = { ...this.s.levels }
+      this.s.preset = 'custom'
+      this.s.levels = { ...this.s.levels }
     }
 
-    const currentStyle = this.numberingSettings.levels[level]
+    const currentStyle = this.s.levels[level]
     const updated = updateActiveContextualFormatVariant(
       currentStyle,
       level,
-      this.numberingSettings.showLevelOneNumber,
+      this.s.showLevelOneNumber,
       nextFormat,
     )
 
     // Sync multilevelFormatVariants from contextual for backward compat
     updated.multilevelFormatVariants = contextualToMultilevelVariants(updated.contextualFormatVariants)
 
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
+    this.s.levels = {
+      ...this.s.levels,
       [level]: updated,
     }
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.customDefinition = { ...this.s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
 
     this.lastSnapshot = null
     this.renderedStates = null
@@ -312,17 +448,17 @@ export class HeadingNumberingService {
     segmentId: string,
     patch: Partial<import('./heading-types').LevelReferenceAppearance>,
   ): void {
-    if (this.numberingSettings.preset !== 'custom') {
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    if (this.s.preset !== 'custom') {
+      this.s.customDefinition = { ...this.s.levels }
+      this.s.preset = 'custom'
+      this.s.levels = { ...this.s.levels }
     }
 
-    const currentStyle = this.numberingSettings.levels[lv]
+    const currentStyle = this.s.levels[lv]
     const active = currentStyle.contextualFormatVariants
     if (!active) return
 
-    const showL1 = this.numberingSettings.showLevelOneNumber
+    const showL1 = this.s.showLevelOneNumber
     const fmt = lv === 1 ? active.withLevelOne : (showL1 ? active.withLevelOne : active.withoutLevelOne)
 
     const nextFmt = fmt.map(seg => {
@@ -345,12 +481,12 @@ export class HeadingNumberingService {
     // Sync multilevelFormatVariants for backward compat
     updated.multilevelFormatVariants = contextualToMultilevelVariants(updated.contextualFormatVariants)
 
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
+    this.s.levels = {
+      ...this.s.levels,
       [lv]: updated,
     }
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.customDefinition = { ...this.s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
 
     this.lastSnapshot = null
     this.renderedStates = null
@@ -361,26 +497,26 @@ export class HeadingNumberingService {
    * Update the active multilevel format variant for a level (two-layer model).
    */
   updateActiveMultilevelFormat(level: HeadingLevel, nextFormat: readonly import('./heading-types').MultilevelFormatSegment[]): void {
-    if (this.numberingSettings.preset !== 'custom') {
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    if (this.s.preset !== 'custom') {
+      this.s.customDefinition = { ...this.s.levels }
+      this.s.preset = 'custom'
+      this.s.levels = { ...this.s.levels }
     }
 
-    const currentStyle = this.numberingSettings.levels[level]
+    const currentStyle = this.s.levels[level]
     const updated = updateActiveMultilevelFormatVariant(
       currentStyle,
       level,
-      this.numberingSettings.showLevelOneNumber,
+      this.s.showLevelOneNumber,
       nextFormat,
     )
 
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
+    this.s.levels = {
+      ...this.s.levels,
       [level]: updated,
     }
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.customDefinition = { ...this.s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
 
     this.lastSnapshot = null
     this.renderedStates = null
@@ -391,13 +527,13 @@ export class HeadingNumberingService {
    * Update a level's number template (tokenStyle, prefix, suffix).
    */
   updateLevelTemplate(level: HeadingLevel, patch: Partial<import('./heading-types').HeadingLevelNumberTemplate>): void {
-    if (this.numberingSettings.preset !== 'custom') {
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
-      this.numberingSettings.levels = { ...this.numberingSettings.levels }
+    if (this.s.preset !== 'custom') {
+      this.s.customDefinition = { ...this.s.levels }
+      this.s.preset = 'custom'
+      this.s.levels = { ...this.s.levels }
     }
 
-    const currentStyle = this.numberingSettings.levels[level]
+    const currentStyle = this.s.levels[level]
     const currentTemplate = currentStyle.levelTemplate
     const updatedTemplate = { ...currentTemplate, ...patch }
     // Also sync legacy tokenStyle for backward compat
@@ -407,12 +543,12 @@ export class HeadingNumberingService {
       tokenStyle: patch.tokenStyle ?? currentStyle.tokenStyle,
     }
 
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
+    this.s.levels = {
+      ...this.s.levels,
       [level]: updatedStyle,
     }
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.customDefinition = { ...this.s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
 
     this.lastSnapshot = null
     this.renderedStates = null
@@ -423,17 +559,17 @@ export class HeadingNumberingService {
   resetLevelStyle(level: HeadingLevel): void {
     const defaults = getPresetLevels('custom')
     // Ensure we're in custom mode
-    if (this.numberingSettings.preset !== 'custom') {
-      this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-      this.numberingSettings.preset = 'custom'
+    if (this.s.preset !== 'custom') {
+      this.s.customDefinition = { ...this.s.levels }
+      this.s.preset = 'custom'
     }
     const defaultStyle = defaults[level]
-    this.numberingSettings.levels = {
-      ...this.numberingSettings.levels,
+    this.s.levels = {
+      ...this.s.levels,
       [level]: { ...defaultStyle },
     }
-    this.numberingSettings.customDefinition = { ...this.numberingSettings.levels }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.customDefinition = { ...this.s.levels }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
@@ -442,10 +578,10 @@ export class HeadingNumberingService {
   /** Reset all custom levels to defaults. */
   resetAllCustomLevels(): void {
     const defaults = getPresetLevels('custom')
-    this.numberingSettings.preset = 'custom'
-    this.numberingSettings.levels = { ...defaults }
-    this.numberingSettings.customDefinition = { ...defaults }
-    this.ctx.settings.set('headingNumbering', { ...this.numberingSettings })
+    this.s.preset = 'custom'
+    this.s.levels = { ...defaults }
+    this.s.customDefinition = { ...defaults }
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), { ...this.s })
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
@@ -454,7 +590,7 @@ export class HeadingNumberingService {
 
   /** Get the current numbering settings (for UI reading). */
   getCurrentSettings(): HeadingNumberingSettings {
-    return { ...this.numberingSettings }
+    return { ...this.s }
   }
 
   /**
@@ -470,7 +606,7 @@ export class HeadingNumberingService {
   }
 
   private notifySettingsListeners(): void {
-    const snapshot = { ...this.numberingSettings }
+    const snapshot = { ...this.s }
     for (const listener of this.settingsListeners) {
       try { listener(snapshot) } catch (e) { logger.error('设置变化监听器异常', e) }
     }
@@ -478,7 +614,7 @@ export class HeadingNumberingService {
 
   /** Generate a preview of the current preset/levels. */
   getPreview(): Record<HeadingLevel, string> {
-    return getPresetPreview(this.numberingSettings.preset)
+    return getPresetPreview(this.s.preset)
   }
 
   // ── Level range ──────────────────────────────────────
@@ -500,16 +636,6 @@ export class HeadingNumberingService {
     return resolveEffectiveMaxLevel(rangeSettings, docPath)
   }
 
-  /** Get the path of the currently active file, or null if none. */
-  getActiveFilePath(): string | null {
-    return this.ctx.getActiveFilePath?.() ?? null
-  }
-
-  /** Get a short document key for audit logging. */
-  private getDocKey(): string {
-    return this.getActiveFilePath()?.split(/[\\/]/).slice(-1)[0]?.slice(0, 30) ?? 'unknown'
-  }
-
   // ── Heading override store ───────────────────────
 
   /** Get or create the override store for the current document. */
@@ -528,8 +654,9 @@ export class HeadingNumberingService {
   /** Load persisted overrides from plugin settings. */
   private loadPersistedOverrides(docPath: string): Record<string, import('./heading-types').HeadingNumberingOverride> | undefined {
     try {
-      const raw = this.ctx.settings.get('headingNumbering') as any
-      return raw?._overrides as Record<string, import('./heading-types').HeadingNumberingOverride> | undefined
+      const store = this.scopeStore
+      const docOverride = store.documentOverrides[docPath]
+      return (docOverride?.settings as any)?._overrides as Record<string, import('./heading-types').HeadingNumberingOverride> | undefined
     } catch {
       return undefined
     }
@@ -539,11 +666,12 @@ export class HeadingNumberingService {
   persistOverrides(): void {
     if (!this.overrideStore) return
     const overrides = this.overrideStore.getAllOverrides()
-    const current = this.ctx.settings.get('headingNumbering')
-    if (current) {
-      ;(current as any)._overrides = overrides
-      this.ctx.settings.set('headingNumbering', { ...current })
-    }
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+    // Save overrides within the document override settings
+    const s = this.s
+    ;(s as any)._overrides = overrides
+    this.saveHeadingNumberingScoped(this.docContext.source, docKey, s)
   }
 
   /** Build override map for the numbering engine from the store. */
@@ -553,7 +681,7 @@ export class HeadingNumberingService {
 
     const map = new Map<string, 'numbered' | 'unnumbered'>()
     const nameSettings = this.getSpecialNumberingSettings().nameSettings
-    const showL1 = this.numberingSettings.showLevelOneNumber
+    const showL1 = this.s.showLevelOneNumber
 
     for (const h of headings) {
       const parentInfo = this.buildParentStructure(headings, h)
@@ -903,18 +1031,18 @@ export class HeadingNumberingService {
   /** Listen for external settings changes (e.g. from settings UI) and sync local state. */
   private registerSettingsListener(): void {
     const dispose = this.ctx.settings.onChange('headingNumbering', (_key: unknown, value: HeadingNumberingSettings) => {
-      const oldPreset = this.numberingSettings.preset
-      const oldShow = this.numberingSettings.showLevelOneNumber
-
-      // Apply migration and normalize
-      this.numberingSettings = migrateSettings(value)
-
-      if (oldPreset !== this.numberingSettings.preset ||
-          oldShow !== this.numberingSettings.showLevelOneNumber) {
-        this.lastSnapshot = null
-        this.renderedStates = null
-        this.flushRefresh()
+      // Legacy listener: migrate and reload from scope store
+      if (!this.scopeStore.schemaVersion) {
+        const migResult = migrateHeadingNumberingToScopeStore({ headingNumbering: value })
+        if (migResult.migrated) {
+          this.persistScopeStore(migResult.store)
+        }
       }
+      this.loadDocumentContext()
+      this.lastSnapshot = null
+      this.renderedStates = null
+      this.flushRefresh()
+      this.notifySettingsListeners()
     })
     this.store.add(dispose)
   }
@@ -953,7 +1081,7 @@ export class HeadingNumberingService {
   // ── Core refresh ───────────────────────────────────────
 
   private doRefresh(reason: RefreshReason): void {
-    if (!this.numberingSettings.enabled) return
+    if (!this.s.enabled) return
 
     const startTime = performance.now()
 
@@ -1004,16 +1132,16 @@ export class HeadingNumberingService {
 
       // Snapshot config before computation
       snapshotConfigSource('pre-compute', {
-        showLevelOneNumber: this.numberingSettings.showLevelOneNumber,
-        preset: this.numberingSettings.preset,
-        maxDepth: this.numberingSettings.maxDepth,
+        showLevelOneNumber: this.s.showLevelOneNumber,
+        preset: this.s.preset,
+        maxDepth: this.s.maxDepth,
         levels: Object.fromEntries(
           [1, 2, 3, 4, 5, 6].map(lv => [
             lv,
             {
-              enabled: this.numberingSettings.levels[lv as HeadingLevel]?.enabled ?? false,
-              cVarWith: this.numberingSettings.levels[lv as HeadingLevel]?.contextualFormatVariants?.withLevelOne?.length ?? 0,
-              cVarWithout: this.numberingSettings.levels[lv as HeadingLevel]?.contextualFormatVariants?.withoutLevelOne?.length ?? 0,
+              enabled: this.s.levels[lv as HeadingLevel]?.enabled ?? false,
+              cVarWith: this.s.levels[lv as HeadingLevel]?.contextualFormatVariants?.withLevelOne?.length ?? 0,
+              cVarWithout: this.s.levels[lv as HeadingLevel]?.contextualFormatVariants?.withoutLevelOne?.length ?? 0,
             },
           ]),
         ),
@@ -1021,7 +1149,7 @@ export class HeadingNumberingService {
 
       // Apply effective max level from level range settings
       const effectiveMax = this.getEffectiveMaxLevel()
-      this.numberingSettings.maxDepth = effectiveMax
+      this.s.maxDepth = effectiveMax
 
       // Build override map from store
       const overrideMap = this.buildOverrideMap(headings)
@@ -1030,14 +1158,14 @@ export class HeadingNumberingService {
       const specialSettings = this.getSpecialNumberingSettings()
       const counterPolicy = specialSettings.unnumberedCounterPolicy
 
-      const numbered = computeHeadingNumbering(headings, this.numberingSettings, overrideMap, counterPolicy)
-      const labels = decimalHierarchicalFormatter.format(numbered, this.numberingSettings)
+      const numbered = computeHeadingNumbering(headings, this.s, overrideMap, counterPolicy)
+      const labels = decimalHierarchicalFormatter.format(numbered, this.s)
 
       // Snapshot numbering engine per-heading output
       const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {
-        const style = this.numberingSettings.levels[h.level as HeadingLevel]
+        const style = this.s.levels[h.level as HeadingLevel]
         const enabledLvls = [1, 2, 3, 4, 5, 6].filter(
-          lv => lv === 1 ? this.numberingSettings.showLevelOneNumber : (this.numberingSettings.levels[lv as HeadingLevel]?.enabled ?? false),
+          lv => lv === 1 ? this.s.showLevelOneNumber : (this.s.levels[lv as HeadingLevel]?.enabled ?? false),
         ) as number[]
         const depth = enabledLvls.indexOf(h.level) >= 0 ? enabledLvls.indexOf(h.level) + 1 : null
         return {
@@ -1048,13 +1176,13 @@ export class HeadingNumberingService {
           visibleDepth: depth,
           enabledLevels: enabledLvls,
           activeCounters: h.counters as number[],
-          selectedVariant: h.level === 1 ? 'withLevelOne' : (!this.numberingSettings.showLevelOneNumber ? 'withoutLevelOne' : 'withLevelOne'),
+          selectedVariant: h.level === 1 ? 'withLevelOne' : (!this.s.showLevelOneNumber ? 'withoutLevelOne' : 'withLevelOne'),
           variantSegmentCount: 0,
           generatedLabel: h.label,
           textPreview: h.text.slice(0, 40),
         }
       })
-      snapshotNumberingEngine(this.numberingSettings, engineEntries)
+      snapshotNumberingEngine(this.s, engineEntries)
 
       const diff = this.adapter.applyNumberingDiff(labels)
       this.renderedStates = this.adapter.buildRenderedStates(labels)
@@ -1080,7 +1208,7 @@ export class HeadingNumberingService {
 
       // Output H2 diagnostic in dev mode (first load only)
       if (reason === 'initial-load' || reason === 'file-open') {
-        try { diagnoseHeadingChain(headings, this.numberingSettings) } catch { /* silent */ }
+        try { diagnoseHeadingChain(headings, this.s) } catch { /* silent */ }
       }
 
       this.logRefresh(reason, headings.length, diff, startTime)
@@ -1299,15 +1427,16 @@ export class HeadingNumberingService {
     // Editor DOM load
     this.store.add(
       ctx.onEditorEvent('load', (editorEl: unknown) => {
-        const docKey = this.getDocKey()
-        recordRuntimeAudit('editor:load', { documentKey: docKey })
+        this.loadDocumentContext()
+        const docKey = this.getDocumentKey()
+        recordRuntimeAudit('editor:load', { documentKey: docKey ?? 'none', settingsSource: this.docContext.source })
         if (editorEl instanceof HTMLElement) {
           this.adapter.setEditorRoot(editorEl)
           this.lastSnapshot = null
           this.renderedStates = null
           this.connectObserver(editorEl)
           this.bindEditorRoot()
-          this.outlineController.setDocumentKey(docKey)
+          this.outlineController.setDocumentKey(docKey ?? '')
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         }
@@ -1319,32 +1448,25 @@ export class HeadingNumberingService {
       ctx.onEditorEvent('edit', () => this.requestRefresh('framework-edit')),
     )
 
-    // File open — bump version, reinit outline BEFORE setting docKey,
-    // then let editor:load handle the actual refresh (no setTimeout).
+    // File open — load document context, bump version, reinit outline
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
         const version = ++this.renderVersion
-        const newDocKey = this.getDocKey()
+        this.loadDocumentContext()
+        const newDocKey = this.getDocumentKey()
         recordRuntimeAudit('file:open:received', {
-          documentKey: newDocKey,
+          documentKey: newDocKey ?? 'none',
+          settingsSource: this.docContext.source,
           renderVersion: version,
         })
         this.lastSnapshot = null
         this.renderedStates = null
-        // Reinitialize FIRST (detaches old observer, no old cache applied)
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
-        // THEN set document key for the new document
-        this.outlineController.setDocumentKey(newDocKey)
-        // Schedule a refresh in microtask — editor:load will also trigger one
+        this.outlineController.setDocumentKey(newDocKey ?? '')
+        this.overrideStore = null // Invalidate override store for new doc
         queueMicrotask(() => {
-          if (version !== this.renderVersion) {
-            recordRuntimeAudit('file:open:microtask-abort', {
-              renderVersion: this.renderVersion,
-              expectedVersion: version,
-            })
-            return
-          }
+          if (version !== this.renderVersion) { return }
           const area = this.adapter.detectEditorRoot()
           if (area) {
             this.adapter.setEditorRoot(area)
@@ -1354,7 +1476,6 @@ export class HeadingNumberingService {
           this.requestRefresh('file-open')
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         })
-        // Also schedule a safety refresh after a small delay (in case editor:load doesn't fire)
         setTimeout(() => {
           if (version !== this.renderVersion) return
           const area = this.adapter.detectEditorRoot()
@@ -1368,22 +1489,23 @@ export class HeadingNumberingService {
       }),
     )
 
-    // Active leaf change — bump version, reinit outline BEFORE setting docKey
+    // Active leaf change — load document context, bump version, reinit outline
     this.store.add(
       ctx.onWorkspaceEvent('active-leaf:change', () => {
         ++this.renderVersion
-        const newDocKey = this.getDocKey()
+        this.loadDocumentContext()
+        const newDocKey = this.getDocumentKey()
         recordRuntimeAudit('active-leaf:change', {
-          documentKey: newDocKey,
+          documentKey: newDocKey ?? 'none',
+          settingsSource: this.docContext.source,
           renderVersion: this.renderVersion,
         })
         this.lastSnapshot = null
         this.renderedStates = null
-        // Reinitialize FIRST (detaches old observer, no old cache applied)
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
-        // THEN set document key for the new document
-        this.outlineController.setDocumentKey(newDocKey)
+        this.outlineController.setDocumentKey(newDocKey ?? '')
+        this.overrideStore = null
         this.requestRefresh('active-leaf-change')
         this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
       }),
