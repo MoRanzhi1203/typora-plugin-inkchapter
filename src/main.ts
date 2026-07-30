@@ -10,7 +10,7 @@ import { editor, File } from 'typora'
 import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEventsToClipboard, recordRuntimeAudit } from './heading-numbering/runtime-audit'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-outline-fix-v4-dom-agnostic'
+const HEADING_BUILD_MARKER = 'inkchapter-outline-fix-v5-relaxed-root'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
