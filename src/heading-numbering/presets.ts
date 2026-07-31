@@ -45,8 +45,8 @@ export const PRESETS: Record<Exclude<HeadingNumberingPreset, 'custom'>, PresetMe
   'roman-hierarchical': {
     key: 'roman-hierarchical',
     name: '罗马数字式',
-    description: '大写罗马数字层级编号：I、I.1、I.1.1',
-    preview: { 1: 'I', 2: 'I.1', 3: 'I.1.1', 4: 'I.1.1.1', 5: 'I.1.1.1.1', 6: 'I.1.1.1.1.1' },
+    description: '大写罗马数字层级编号：I、II、III',
+    preview: { 1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V', 6: 'VI' },
     levels: buildRoman(),
   },
 }
@@ -330,31 +330,110 @@ function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
 }
 
 function buildRoman(): Record<HeadingLevel, HeadingLevelStyle> {
+  // Spec: H2 is the primary Roman level.
+  //   H1 (if shown): I    (roman-upper)
+  //   H2:              I    (roman-upper)
+  //   H3:              I.1  (H2 roman-upper + . + H3 arabic)
+  //   H4:              I.1.1
+  // Only H1-H2 use roman-upper; H3-H6 use arabic.
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    const tokenStyle = lv === 1 ? 'roman-upper' as const : 'arabic'
-    // Build contextual format: hierarchical with correct token style for each level
-    const ctxFmt: ContextualFormatSegment[] = []
+    const tokenStyle: import('./heading-types').NumberTokenStyle =
+      lv <= 2 ? 'roman-upper' : 'arabic'
+
+    // Contextual format: each level-ref uses its own tokenStyle
+    const ctxFmtWith: ContextualFormatSegment[] = []
     for (let i = 1; i <= lv; i++) {
-      if (i > 1) ctxFmt.push({ id: generateStableId(), type: 'literal', value: '.' })
-      ctxFmt.push(makeContextualRef(i as HeadingLevel, i === 1 ? 'roman-upper' : 'arabic', '', ''))
+      if (i > 1) ctxFmtWith.push({ id: generateStableId(), type: 'literal', value: '.' })
+      const refStyle: import('./heading-types').NumberTokenStyle =
+        i <= 2 ? 'roman-upper' : 'arabic'
+      ctxFmtWith.push(makeContextualRef(i as HeadingLevel, refStyle, '', ''))
     }
-    levels[lv] = buildVariants(lv, {
-      tokenStyle,
-    }, buildHierarchicalComposition(lv, '.'), { includeParents: false }, ctxFmt)
+
+    // withoutLevelOne: skip H1
+    const ctxFmtWithout: ContextualFormatSegment[] = []
+    for (let i = 2; i <= lv; i++) {
+      if (i > 2) ctxFmtWithout.push({ id: generateStableId(), type: 'literal', value: '.' })
+      const refStyle: import('./heading-types').NumberTokenStyle =
+        i <= 2 ? 'roman-upper' : 'arabic'
+      ctxFmtWithout.push(makeContextualRef(i as HeadingLevel, refStyle, '', ''))
+    }
+
+    // Multilevel format: level-template-refs inherit their level's tokenStyle
+    const withL1 = buildHierarchicalComposition(lv, '.')
+
+    levels[lv] = {
+      ...defaultLevelStyle(lv, {
+        tokenStyle,
+        includeParents: false,
+        levelTemplate: createDefaultLevelTemplate(tokenStyle),
+        multilevelFormatVariants: {
+          withLevelOne: withL1,
+          withoutLevelOne: stripLevelOne(withL1),
+        },
+        contextualFormatVariants: {
+          withLevelOne: ctxFmtWith,
+          withoutLevelOne: ctxFmtWithout,
+        },
+      }),
+    }
   }
   return levels
 }
 
 // ── Helpers ──────────────────────────────────────────────
 
-/** Get the effective level styles for a given preset. */
+/** Get the effective level styles for a given preset. Returns a fresh copy each time. */
 export function getPresetLevels(preset: HeadingNumberingPreset): Record<HeadingLevel, HeadingLevelStyle> {
   if (preset === 'custom') {
-    // Return a default decimal copy; caller should replace with custom config
-    return { ...buildDecimal() }
+    return deepClonePresetLevels(buildDecimal())
   }
-  return { ...PRESETS[preset].levels }
+  return deepClonePresetLevels(PRESETS[preset].levels)
+}
+
+/** Type-safe deep clone for preset levels — no JSON round-trip, no shared references. */
+function deepClonePresetLevels(
+  levels: Record<HeadingLevel, HeadingLevelStyle>,
+): Record<HeadingLevel, HeadingLevelStyle> {
+  const cloned = {} as Record<HeadingLevel, HeadingLevelStyle>
+  for (const lvStr of Object.keys(levels)) {
+    const lv = Number(lvStr) as HeadingLevel
+    const s = levels[lv]
+    cloned[lv] = {
+      enabled: s.enabled,
+      tokenStyle: s.tokenStyle,
+      includeParents: s.includeParents,
+      prefix: s.prefix,
+      suffix: s.suffix,
+      separator: s.separator,
+      startAt: s.startAt,
+      restartAfterLevel: s.restartAfterLevel,
+      formatVariants: {
+        withLevelOne: s.formatVariants.withLevelOne.map(seg => ({ ...seg })),
+        withoutLevelOne: s.formatVariants.withoutLevelOne.map(seg => ({ ...seg })),
+      },
+      levelTemplate: { ...s.levelTemplate },
+      multilevelFormatVariants: {
+        withLevelOne: s.multilevelFormatVariants.withLevelOne.map(seg => ({ ...seg })),
+        withoutLevelOne: s.multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })),
+      },
+      contextualFormatVariants: {
+        withLevelOne: s.contextualFormatVariants.withLevelOne.map(seg => ({
+          ...seg,
+          appearance: seg.type === 'level-reference'
+            ? { ...(seg as any).appearance }
+            : undefined,
+        })),
+        withoutLevelOne: s.contextualFormatVariants.withoutLevelOne.map(seg => ({
+          ...seg,
+          appearance: seg.type === 'level-reference'
+            ? { ...(seg as any).appearance }
+            : undefined,
+        })),
+      },
+    }
+  }
+  return cloned
 }
 
 /** Get the preview for a preset. */

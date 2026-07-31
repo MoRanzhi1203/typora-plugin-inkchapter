@@ -127,6 +127,10 @@ export class HeadingNumberingService {
   // Outline Numbering
   private outlineController: OutlineNumberingController
 
+  // Editor root binding guard
+  private boundEditorRoot: HTMLElement | null = null
+  private editorRootDisposables: DisposableStore | null = null
+
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
@@ -632,8 +636,9 @@ export class HeadingNumberingService {
   /** Resolve the effective max level for the currently open document. */
   getEffectiveMaxLevel(): HeadingLevel {
     const rangeSettings = this.getLevelRangeSettings()
+    const docKey = this.getDocumentKey()
     const docPath = this.getActiveFilePath()
-    return resolveEffectiveMaxLevel(rangeSettings, docPath)
+    return resolveEffectiveMaxLevel(rangeSettings, docKey ?? docPath)
   }
 
   // ── Heading override store ───────────────────────
@@ -1020,6 +1025,7 @@ export class HeadingNumberingService {
   dispose(): void {
     this.cancelPending()
     this.disconnectObserver()
+    this.unbindEditorRoot()
     this.adapter.clearNumbering()
     this.store.dispose()
     this.levelRangeEnforcer.dispose()
@@ -1062,8 +1068,13 @@ export class HeadingNumberingService {
 
   private scheduleTail(reason: RefreshReason, ms: number): void {
     if (this.tailTimer !== null) clearTimeout(this.tailTimer)
+    const expectedVersion = this.renderVersion
+    const expectedDocKey = this.getDocumentKey()
     this.tailTimer = setTimeout(() => {
       this.tailTimer = null
+      // Guard: skip if version or document changed since scheduling
+      if (expectedVersion !== this.renderVersion) return
+      if (expectedDocKey !== this.getDocumentKey()) return
       this.doRefresh(reason)
     }, ms)
   }
@@ -1370,12 +1381,22 @@ export class HeadingNumberingService {
     const root = this.adapter.getEditorRoot()
     if (!root) return
 
+    // Guard: skip if already bound to the same root element
+    if (this.boundEditorRoot === root) return
+
+    // Dispose old editor-specific listeners before binding to new root
+    if (this.editorRootDisposables) {
+      this.editorRootDisposables.dispose()
+    }
+    this.editorRootDisposables = new DisposableStore()
+    this.boundEditorRoot = root
+
     // input
     const onInput = (): void => {
       if (!this.isInComposition) this.requestRefresh('editor-input')
     }
     root.addEventListener('input', onInput, { passive: true })
-    this.store.add(() => root.removeEventListener('input', onInput))
+    this.editorRootDisposables.add(() => root.removeEventListener('input', onInput))
 
     // composition
     const onCompositionEnd = (): void => {
@@ -1383,33 +1404,42 @@ export class HeadingNumberingService {
       this.requestRefresh('composition-end')
     }
     root.addEventListener('compositionend', onCompositionEnd)
-    this.store.add(() => root.removeEventListener('compositionend', onCompositionEnd))
+    this.editorRootDisposables.add(() => root.removeEventListener('compositionend', onCompositionEnd))
 
     const onCompositionStart = (): void => { this.isInComposition = true }
     root.addEventListener('compositionstart', onCompositionStart)
-    this.store.add(() => root.removeEventListener('compositionstart', onCompositionStart))
+    this.editorRootDisposables.add(() => root.removeEventListener('compositionstart', onCompositionStart))
 
-    // focusin: capture heading edit mode → force re-verify next frame
+    // focusin
     const onFocusIn = (): void => {
       this.requestRefresh('focus-in')
       this.scheduleTail('decoration-repair', FOCUS_TAIL_MS)
     }
     root.addEventListener('focusin', onFocusIn)
-    this.store.add(() => root.removeEventListener('focusin', onFocusIn))
+    this.editorRootDisposables.add(() => root.removeEventListener('focusin', onFocusIn))
 
-    // click: mouse move cursor
+    // click
     const onClick = (): void => {
       this.requestRefresh('editor-click')
     }
     root.addEventListener('click', onClick, { passive: true })
-    this.store.add(() => root.removeEventListener('click', onClick))
+    this.editorRootDisposables.add(() => root.removeEventListener('click', onClick))
 
-    // keyup: keyboard navigation / undo/redo / heading shortcuts
+    // keyup
     const onKeyUp = (): void => {
       this.requestRefresh('editor-keyup')
     }
     root.addEventListener('keyup', onKeyUp, { passive: true })
-    this.store.add(() => root.removeEventListener('keyup', onKeyUp))
+    this.editorRootDisposables.add(() => root.removeEventListener('keyup', onKeyUp))
+  }
+
+  /** Detach editor root listeners (called on root change). */
+  private unbindEditorRoot(): void {
+    if (this.editorRootDisposables) {
+      this.editorRootDisposables.dispose()
+      this.editorRootDisposables = null
+    }
+    this.boundEditorRoot = null
   }
 
   // ── Event registration ─────────────────────────────────

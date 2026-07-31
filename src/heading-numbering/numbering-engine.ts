@@ -12,8 +12,9 @@ import type {
   ContextualFormatSegment,
   ContextualFormatVariants,
   UnnumberedCounterPolicy,
+  NumberTokenStyle,
 } from './heading-types'
-import { HEADING_LEVELS } from './heading-types'
+import { HEADING_LEVELS, generateStableId } from './heading-types'
 import { formatToken } from './token-formatter'
 
 /**
@@ -435,6 +436,34 @@ function cleanOrphanSeparators(
 // ── Contextual format variant helpers ───────────────
 
 /**
+ * Ensure the format contains a level-reference for the given editing level.
+ * Returns a new array; does not mutate the input.
+ * If the current level exists, returns the format unchanged.
+ * If absent, appends a new ref with the level's current tokenStyle.
+ */
+export function ensureCurrentLevelSegment(
+  level: HeadingLevel,
+  segments: readonly ContextualFormatSegment[],
+  currentTokenStyle: NumberTokenStyle,
+): ContextualFormatSegment[] {
+  const hasOwnRef = segments.some(
+    s => s.type === 'level-reference' && s.level === level,
+  )
+  if (hasOwnRef) return [...segments]
+  return [
+    ...segments,
+    {
+      id: generateStableId(),
+      type: 'level-reference' as const,
+      level,
+      appearance: { tokenStyle: currentTokenStyle, prefix: '', suffix: '' },
+    },
+  ]
+}
+
+// ──
+
+/**
  * Strip H1 level-references from a contextual format segment array.
  * Removes H1 references and adjacent separator literals, then cleans
  * leading/trailing separators. Falls back to the heading's own level reference
@@ -498,6 +527,14 @@ function stripContextualLevelOneRefs(
     // Check if any level-reference exists at all
     const anyRef = merged.find(s => s.type === 'level-reference')
     if (!anyRef) {
+      merged.push({
+        id: 'auto-' + Date.now(),
+        type: 'level-reference',
+        level: headingLevel,
+        appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+      })
+    } else {
+      // Other level-refs exist but current level is missing — add it at end
       merged.push({
         id: 'auto-' + Date.now(),
         type: 'level-reference',
@@ -595,7 +632,7 @@ export function getAvailableContextualReferenceLevels(
   for (const seg of activeFormat) {
     if (seg.type === 'level-reference') usedLevels.add(seg.level)
   }
-  for (let lv = start; lv < currentLevel; lv++) {
+  for (let lv = start; lv <= currentLevel; lv++) {
     const hl = lv as HeadingLevel
     if (!usedLevels.has(hl)) result.push(hl)
   }
@@ -745,7 +782,7 @@ export function getAvailableMultilevelReferenceLevels(
 ): HeadingLevel[] {
   const result: HeadingLevel[] = []
   const start = showLevelOneNumber ? 1 : 2
-  for (let lv = start; lv < currentLevel; lv++) {
+  for (let lv = start; lv <= currentLevel; lv++) {
     result.push(lv as HeadingLevel)
   }
   return result

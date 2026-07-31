@@ -58,6 +58,10 @@ const SIDEBAR_HOST_SELECTORS = [
 /** Build marker for diagnostics. */
 const CONTROLLER_BUILD_MARKER = 'inkchapter-outline-controller-v5-relaxed-root'
 
+/** Set to false to silence event chain debug logs in production. */
+const EVT_DEBUG = false
+const EVT_LOG = (...args: unknown[]) => { if (EVT_DEBUG) console.log(...args) }
+
 export class OutlineNumberingController {
   private observer: MutationObserver | null = null
   private observerRoot: HTMLElement | null = null
@@ -74,6 +78,9 @@ export class OutlineNumberingController {
   private observerDisconnectCount = 0
   private eventSeq = 0
 
+  // Click handler reference for cleanup
+  private sidebarModeClickHandler: ((e: Event) => void) | null = null
+
   start(): void {
     console.log(`[InkChapter OUTLINE] controller start  build=${CONTROLLER_BUILD_MARKER}`)
     this.bindSidebarHostObserver()
@@ -87,6 +94,7 @@ export class OutlineNumberingController {
   stop(): void {
     this.detachObserver()
     this.detachSidebarHostObserver()
+    this.detachSidebarModeClickListener()
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
     const root = findOutlineRoot()
     clearAllNumberingAttributes(root)
@@ -186,18 +194,17 @@ export class OutlineNumberingController {
       headingCount: 0, labelCount: 0, matchedCount: 0, appliedCount: 0,
     })
     if (!host) {
-      console.log('[InkChapter OUTLINE] sidebarHostObserver: host not found, retrying with relaxed search')
-      // Try finding host even if hidden
+      EVT_LOG('[InkChapter OUTLINE] sidebarHostObserver: host not found, retrying with relaxed search')
       const hostRelaxed = this.findSidebarHostRelaxed()
       if (hostRelaxed && hostRelaxed.isConnected) {
-        console.log(`[InkChapter OUTLINE] sidebarHostObserver: bound to relaxed host ${hostRelaxed.tagName}#${hostRelaxed.id||'?'}`)
+        EVT_LOG(`[InkChapter OUTLINE] sidebarHostObserver: bound to relaxed host ${hostRelaxed.tagName}#${hostRelaxed.id||'?'}`)
         this.observeHost(hostRelaxed)
         return
       }
-      console.log('[InkChapter OUTLINE] sidebarHostObserver: no host found (visible or relaxed)')
+      EVT_LOG('[InkChapter OUTLINE] sidebarHostObserver: no host found (visible or relaxed)')
       return
     }
-    console.log(`[InkChapter OUTLINE] sidebarHostObserver: bound to ${host.tagName}#${host.id||'?'}.${host.className||'?'}`)
+    EVT_LOG(`[InkChapter OUTLINE] sidebarHostObserver: bound to ${host.tagName}#${host.id||'?'}.${host.className||'?'}`)
     this.observeHost(host)
   }
 
@@ -286,7 +293,10 @@ export class OutlineNumberingController {
 
   /** Listen for clicks on sidebar tabs to catch outline activation. */
   private bindSidebarModeClickListener(): void {
-    const handler = (e: Event): void => {
+    // Guard: don't bind if already bound
+    if (this.sidebarModeClickHandler) return
+
+    this.sidebarModeClickHandler = (e: Event): void => {
       const target = e.target as HTMLElement | null
       if (!target) return
 
@@ -300,7 +310,6 @@ export class OutlineNumberingController {
           labelCount: this.cache.labels.length,
           matchedCount: 0, appliedCount: 0,
         })
-        // Use microtask to let Typora finish the tab switch DOM update
         queueMicrotask(() => {
           this.reattachObserver()
           this.applyOutlineFromCache(this.getRenderVersion())
@@ -308,7 +317,14 @@ export class OutlineNumberingController {
       }
     }
 
-    document.addEventListener('click', handler, true)
+    document.addEventListener('click', this.sidebarModeClickHandler, true)
+  }
+
+  private detachSidebarModeClickListener(): void {
+    if (this.sidebarModeClickHandler) {
+      document.removeEventListener('click', this.sidebarModeClickHandler, true)
+      this.sidebarModeClickHandler = null
+    }
   }
 
   /** Dump sidebar tab button DOM for selector verification. */
@@ -385,7 +401,7 @@ export class OutlineNumberingController {
         const result = quickSyncOutline(this.cache.headings, this.cache.labels)
         const headingCount = this.cache.headings.length
         const labelCount = this.cache.labels.length
-        console.log(`[InkChapter OUTLINE] apply result: matched=${result.matched} applied=${result.applied} headings=${headingCount} labels=${labelCount}`)
+        EVT_LOG(`[InkChapter OUTLINE] apply result: matched=${result.matched} applied=${result.applied} headings=${headingCount} labels=${labelCount}`)
         this.recordEvent('outline:apply-end', {
           headingCount,
           labelCount,
@@ -410,7 +426,7 @@ export class OutlineNumberingController {
 
     const root = findOutlineRoot()
     if (!root) {
-      console.log('[InkChapter OUTLINE] reattachObserver: visible root not found')
+      EVT_LOG('[InkChapter OUTLINE] reattachObserver: visible root not found')
       this.recordEvent('outline:reattach-no-root', {
         headingCount: 0, labelCount: 0, matchedCount: 0, appliedCount: 0,
       })
@@ -419,11 +435,11 @@ export class OutlineNumberingController {
 
     // Prevent duplicate binding: skip if same root already observed
     if (this.observerRoot === root && this.isObserverActive) {
-      console.log('[InkChapter OUTLINE] reattachObserver: already bound, skipping')
+      EVT_LOG('[InkChapter OUTLINE] reattachObserver: already bound, skipping')
       return
     }
 
-    console.log(`[InkChapter OUTLINE] reattachObserver: root=${root.tagName}#${root.id||'?'} .${root.className||'?'} connected=${root.isConnected}`)
+    EVT_LOG(`[InkChapter OUTLINE] reattachObserver: root=${root.tagName}#${root.id||'?'}.${root.className||'?'} connected=${root.isConnected}`)
     this.observerBindCount++
     this.recordEvent('outline:observer-bind', {
       headingCount: this.cache.headings.length,
@@ -526,7 +542,7 @@ export class OutlineNumberingController {
     const rootStatus = entry.outlineRootExists
       ? `root=${entry.outlineRootSelector}`
       : 'root=NONE'
-    console.log(
+    EVT_LOG(
       `[InkChapter EVT] seq=${entry.seq} time=${entry.time.toFixed(0)} ${event} ` +
       `doc=${entry.documentKey.slice(0, 20)} rv=${entry.renderVersion} cr=${entry.cacheRevision} ` +
       `${rootStatus} h=${entry.headingCount} l=${entry.labelCount} ` +

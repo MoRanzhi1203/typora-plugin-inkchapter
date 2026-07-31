@@ -50,6 +50,10 @@ const NON_OUTLINE_SELECTORS = [
 
 const NUMBER_ATTR = 'data-inkchapter-number'
 
+/** Set to false to silence outline debug logs in production. */
+const OUTLINE_DEBUG = false
+const LOG = (...args: unknown[]) => { if (OUTLINE_DEBUG) console.log(...args) }
+
 // ── Types ─────────────────────────────────────────────
 
 interface ProbeResult {
@@ -740,17 +744,17 @@ export function quickSyncOutline(
     useRelaxed = true
   }
   if (!root) {
-    console.log('[InkChapter OUTLINE] quickSync: root not found (visible or relaxed)')
+    LOG('[InkChapter OUTLINE] quickSync: root not found (visible or relaxed)')
     return { matched: 0, applied: 0 }
   }
-  console.log(`[InkChapter OUTLINE] quickSync: root=${elTag(root)} relaxed=${useRelaxed}`)
+  LOG(`[InkChapter OUTLINE] quickSync: root=${elTag(root)} relaxed=${useRelaxed}`)
 
   const items = useRelaxed ? findOutlineTextElementsRelaxed(root) : findOutlineTextElements(root)
-  console.log(`[InkChapter OUTLINE] quickSync: found ${items.length} text elements, first=${items[0]?.textContent?.trim().slice(0, 30) ?? 'none'}`)
+  LOG(`[InkChapter OUTLINE] quickSync: found ${items.length} text elements, first=${items[0]?.textContent?.trim().slice(0, 30) ?? 'none'}`)
   if (items.length === 0) return { matched: 0, applied: 0 }
 
   const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items)
-  console.log(`[InkChapter OUTLINE] quickSync: ${matches.length} matches (body=${bodyHeadings.length} labels=${bodyLabels.length} items=${items.length})`)
+  LOG(`[InkChapter OUTLINE] quickSync: ${matches.length} matches (body=${bodyHeadings.length} labels=${bodyLabels.length} items=${items.length})`)
   if (matches.length === 0) return { matched: 0, applied: 0 }
 
   const attrResult = applyNumberingAttributes(

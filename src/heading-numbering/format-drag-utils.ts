@@ -1,4 +1,4 @@
-import type { NumberFormatSegment, MultilevelFormatSegment, HeadingLevel, ContextualFormatSegment } from './heading-types'
+import type { NumberFormatSegment, MultilevelFormatSegment, HeadingLevel, ContextualFormatSegment, NumberTokenStyle } from './heading-types'
 import { generateStableId } from './heading-types'
 
 // ── Drag state ────────────────────────────────────────────
@@ -297,6 +297,7 @@ export function normalizeContextualFormatAfterDrag(
   format: readonly ContextualFormatSegment[],
   currentLevel: HeadingLevel,
   hiddenLevels: ReadonlySet<HeadingLevel>,
+  defaultTokenStyle: NumberTokenStyle = 'arabic',
 ): ContextualFormatSegment[] {
   const cleaned: ContextualFormatSegment[] = []
   const seenLevels = new Set<number>()
@@ -327,7 +328,7 @@ export function normalizeContextualFormatAfterDrag(
       id: generateStableId(),
       type: 'level-reference',
       level: currentLevel,
-      appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+      appearance: { tokenStyle: defaultTokenStyle, prefix: '', suffix: '' },
     })
   }
 

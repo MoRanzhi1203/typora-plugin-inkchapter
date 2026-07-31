@@ -18,6 +18,7 @@ import type {
   HeadingLevel,
   HeadingLevelStyle,
 } from './heading-types'
+import { getPresetLevels } from './presets'
 
 // ── Document key generation ───────────────────────
 
@@ -194,30 +195,32 @@ export function resolveEffectiveSettings(
   store: HeadingNumberingScopeStore,
   documentKey: string | null,
 ): DocumentNumberingContext {
+  const base = documentKey && store.documentOverrides[documentKey]
+    ? deepMergeSettings(store.globalDefault, store.documentOverrides[documentKey].settings)
+    : deepCloneSettings(store.globalDefault)
+
+  // For non-custom presets, always regenerate levels from the latest
+  // preset definition. This ensures preset fixes (like Roman token styles)
+  // are picked up without requiring user to re-save settings.
+  if (base.preset !== 'custom') {
+    base.levels = getPresetLevels(base.preset)
+  }
+
   if (!documentKey) {
     return {
       documentKey: null,
       settingsRevision: 0,
-      effectiveSettings: deepCloneSettings(store.globalDefault),
+      effectiveSettings: base,
       source: 'global',
     }
   }
 
   const override = store.documentOverrides[documentKey]
-  if (!override) {
-    return {
-      documentKey,
-      settingsRevision: 0,
-      effectiveSettings: deepCloneSettings(store.globalDefault),
-      source: 'global',
-    }
-  }
-
   return {
     documentKey,
-    settingsRevision: override.updatedAt,
-    effectiveSettings: deepMergeSettings(store.globalDefault, override.settings),
-    source: 'document',
+    settingsRevision: override?.updatedAt ?? 0,
+    effectiveSettings: base,
+    source: override ? 'document' : 'global',
   }
 }
 
@@ -332,7 +335,31 @@ export function getDefaultHeadingNumberingSettings(): HeadingNumberingSettings {
     showLevelOneNumber: false,
     preset: 'decimal-hierarchical',
     maxDepth: 6,
-    levels: {} as Record<HeadingLevel, HeadingLevelStyle>,
+    levels: getDefaultLevels(),
     customDefinition: undefined,
   }
+}
+
+/** Get default H1-H6 levels (decimal hierarchical). */
+function getDefaultLevels(): Record<HeadingLevel, HeadingLevelStyle> {
+  const defaultTemplate = { tokenStyle: 'arabic' as const, prefix: '', suffix: '' }
+  const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
+  const allLevels: HeadingLevel[] = [1, 2, 3, 4, 5, 6]
+  for (const lv of allLevels) {
+    levels[lv] = {
+      enabled: true,
+      tokenStyle: 'arabic',
+      includeParents: true,
+      prefix: '',
+      suffix: '',
+      separator: '.',
+      startAt: 1,
+      restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+      formatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      levelTemplate: { ...defaultTemplate },
+      multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    }
+  }
+  return levels
 }

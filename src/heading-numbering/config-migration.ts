@@ -16,6 +16,13 @@ const VALID_PRESETS: ReadonlySet<string> = new Set([
   'decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical', 'custom',
 ])
 
+/** Map legacy preset ids to their canonical form. */
+const PRESET_ID_ALIASES: Readonly<Record<string, HeadingNumberingPreset>> = {
+  'roman': 'roman-hierarchical',
+  'roman-upper': 'roman-hierarchical',
+  'roman-lower': 'roman-hierarchical',
+}
+
 const CURRENT_SCHEMA_VERSION = 9
 
 // ── Validation helpers ─────────────────────────────────
@@ -26,8 +33,10 @@ function validateBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 function validatePreset(raw: unknown): HeadingNumberingPreset {
-  if (typeof raw === 'string' && VALID_PRESETS.has(raw)) {
-    return raw as HeadingNumberingPreset
+  if (typeof raw === 'string') {
+    // Check aliases first (legacy names)
+    if (raw in PRESET_ID_ALIASES) return PRESET_ID_ALIASES[raw]
+    if (VALID_PRESETS.has(raw)) return raw as HeadingNumberingPreset
   }
   return 'decimal-hierarchical'
 }
