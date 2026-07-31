@@ -41,6 +41,9 @@ import {
   renderMultilevelFormat,
   renderContextualLevelReference,
   renderContextualFormat,
+  updateActiveContextualFormatVariant,
+  updateActiveMultilevelFormatVariant,
+  ensureCurrentLevelSegment,
 } from '../heading-numbering/numbering-engine'
 import { PRESET_LIST, getPresetLevels } from '../heading-numbering/presets'
 
@@ -373,9 +376,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // ── Custom section (fold panels for H1-H6) ────
     if (s.preset === 'custom') {
+      // Ensure draft exists and all levels have current-level segments.
+      // This must happen before renderCustomPanels so both editor and preview
+      // read from the same (fixed) draft.
+      this.ensureDraft()
+      const draft = this.headingDraft!
+      this.ensureAllLevelsHaveCurrentSegment(draft)
+      // Re-render preview with fixed draft
+      this.updatePreview()
       this.miniPreviewEls.clear()
       this.addSettingTitle('自定义设置')
-      this.renderCustomPanels(s)
+      this.renderCustomPanels(draft)
     } else {
       this.miniPreviewEls.clear()
     }
@@ -444,10 +455,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.ensureDraft()
     const s = this.headingDraft!
     if (preset === 'custom') {
+      const isFirstTime = !s.customDefinition || Object.keys(s.customDefinition).length === 0
+      if (isFirstTime) {
+        // First time entering Custom: generate current-level-only formats.
+        this.ensureAllLevelsHaveCurrentSegment(s)
+        s.customDefinition = deepCloneSettings(s).levels
+      } else {
+        // Restore from previous customization
+        s.levels = deepCloneSettings({ ...s, levels: s.customDefinition! }).levels
+        // Safety: ensure restored levels also have current-level segments
+        this.ensureAllLevelsHaveCurrentSegment(s)
+      }
       s.preset = 'custom'
-      if (s.customDefinition) { s.levels = { ...s.customDefinition } }
     } else {
-      if (s.preset === 'custom') { s.customDefinition = { ...s.levels } }
+      if (s.preset === 'custom') {
+        s.customDefinition = deepCloneSettings(s).levels
+      }
       s.preset = preset
       s.levels = { ...getPresetLevels(preset) }
     }
@@ -930,7 +953,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (val) {
         const cur = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
         const newFmt = [...cur, { type: 'literal' as const, value: sanitize(val) }]
-        this.numberingService.updateActiveMultilevelFormat(lv, newFmt)
+        this.updateDraftMultilevelFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -981,7 +1004,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // Don't add duplicates
       if (cur.some(s => s.type === 'level-template-reference' && s.level === refLv)) return
       const newFmt = [...cur, { type: 'level-template-reference' as const, level: refLv }]
-      this.numberingService.updateActiveMultilevelFormat(lv, newFmt)
+      this.updateDraftMultilevelFormat(lv, newFmt)
       this.onshow()
     }
   }
@@ -1048,7 +1071,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const val = textInput.value
       if (val) {
         const newFmt = [...activeFmt, { id: generateStableId(), type: 'literal' as const, value: sanitize(val) }]
-        this.numberingService.updateActiveContextualFormat(lv, newFmt)
+        this.updateDraftContextualFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -1097,7 +1120,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         level: refLv,
         appearance: { ...defaultAppearance },
       }]
-      this.numberingService.updateActiveContextualFormat(lv, newFmt)
+      this.updateDraftContextualFormat(lv, newFmt)
       this.onshow()
     }
   }
@@ -1141,7 +1164,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         e.stopPropagation()
         // Maintain selection if removing non-selected chip
         const newFmt = activeFmt.filter(s => s.id !== seg.id)
-        this.numberingService.updateActiveContextualFormat(lv, newFmt)
+        this.updateDraftContextualFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -1174,7 +1197,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     close.onclick = (e) => {
       e.stopPropagation()
       const newFmt = activeFmt.filter(s => s.id !== seg.id)
-      this.numberingService.updateActiveContextualFormat(lv, newFmt)
+      this.updateDraftContextualFormat(lv, newFmt)
       this.onshow()
     }
   }
@@ -1202,7 +1225,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const newFmt = activeFmt.map(s =>
           s.id === selectedSeg.id ? { ...s, value: sanitize(val) } : s
         )
-        this.numberingService.updateActiveContextualFormat(lv, newFmt)
+        this.updateDraftContextualFormat(lv, newFmt)
         this.onshow()
       })
       return
@@ -1218,19 +1241,19 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // Token style select
     this.addCustomSelect(panel, '编号样式', TOKEN_STYLE_LABELS, selectedSeg.appearance.tokenStyle, (val) => {
-      this.numberingService.updateContextualSegment(lv, selectedSeg.id, { tokenStyle: val as NumberTokenStyle })
+      this.updateDraftContextualSegment(lv, selectedSeg.id, { tokenStyle: val as NumberTokenStyle })
       this.onshow()
     })
 
     // Prefix input
     this.addCustomTextInput(panel, '前缀', selectedSeg.appearance.prefix, '例如：第', (val) => {
-      this.numberingService.updateContextualSegment(lv, selectedSeg.id, { prefix: sanitizeTemplateString(val) })
+      this.updateDraftContextualSegment(lv, selectedSeg.id, { prefix: sanitizeTemplateString(val) })
       this.onshow()
     })
 
     // Suffix input
     this.addCustomTextInput(panel, '后缀', selectedSeg.appearance.suffix, '例如：章', (val) => {
-      this.numberingService.updateContextualSegment(lv, selectedSeg.id, { suffix: sanitizeTemplateString(val) })
+      this.updateDraftContextualSegment(lv, selectedSeg.id, { suffix: sanitizeTemplateString(val) })
       this.onshow()
     })
 
@@ -1312,6 +1335,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const ds = this.dragState
 
     if (!ds.isDragging) {
+      // This was a click (no drag movement) — select the clicked chip
+      const chip = container.querySelector(`[data-format-index="${ds.draggingIndex}"]`) as HTMLElement | null
+      if (chip) {
+        const segId = chip.getAttribute('data-segment-id')
+        if (segId) {
+          this.selectedSegmentId = segId
+          this.cancelDrag('click-select')
+          this.onshow()
+          return
+        }
+      }
       this.cancelDrag('no-move')
       return
     }
@@ -1331,7 +1365,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const hiddenLevels = new Set<HeadingLevel>()
     if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
 
-    const after = normalizeContextualFormatAfterDrag(moved, lv, hiddenLevels)
+    const after = normalizeContextualFormatAfterDrag(moved, lv, hiddenLevels, style.tokenStyle)
 
     // Preserve selected segment id after drag
     const draggedId = before[draggingIdx]?.id
@@ -1341,7 +1375,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     this.cancelDrag('commit')
 
-    this.numberingService.updateActiveContextualFormat(lv, after)
+    this.updateDraftContextualFormat(lv, after)
     this.onshow()
   }
 
@@ -1413,7 +1447,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       close.onclick = (e) => {
         e.stopPropagation()
         const newFmt = activeFmt.filter((_, i) => i !== idx)
-        this.numberingService.updateActiveMultilevelFormat(lv, newFmt)
+        this.updateDraftMultilevelFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -1434,7 +1468,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     close.onclick = (e) => {
       e.stopPropagation()
       const newFmt = activeFmt.filter((_, i) => i !== idx)
-      this.numberingService.updateActiveMultilevelFormat(lv, newFmt)
+      this.updateDraftMultilevelFormat(lv, newFmt)
       this.onshow()
     }
   }
@@ -1451,7 +1485,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (action) {
         const newFmt = [...activeFmt]
         newFmt.splice(insertIdx, 0, { type: 'literal' as const, value: sanitize(action) })
-        this.numberingService.updateActiveMultilevelFormat(lv, newFmt)
+        this.updateDraftMultilevelFormat(lv, newFmt)
         this.onshow()
       }
     }
@@ -1551,7 +1585,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     this.cancelDrag('commit')
 
-    this.numberingService.updateActiveMultilevelFormat(lv, after)
+    this.updateDraftMultilevelFormat(lv, after)
     this.onshow()
   }
 
@@ -1876,10 +1910,141 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.headingDraft = deepCloneSettings(this.headingDraftOriginal)
   }
 
+  /**
+   * Update the draft's contextual format for a level.
+   * Does NOT persist — only modifies the in-memory draft.
+   * Automatically switches the draft's preset to 'custom' if necessary.
+   */
+  private updateDraftContextualFormat(
+    lv: HeadingLevel,
+    nextFormat: readonly ContextualFormatSegment[],
+  ): void {
+    this.ensureDraft()
+    const s = this.headingDraft!
+    // Switch to custom mode if not already
+    if (s.preset !== 'custom') {
+      s.customDefinition = deepCloneSettings(s).levels
+      s.preset = 'custom'
+    }
+    const currentStyle = s.levels[lv]
+    // Ensure current level reference is present before updating
+    const ensuredFormat = ensureCurrentLevelSegment(lv, nextFormat, currentStyle.tokenStyle)
+    const updated = updateActiveContextualFormatVariant(
+      currentStyle, lv, s.showLevelOneNumber, ensuredFormat,
+    )
+    // Sync multilevelFormatVariants for backward compat
+    updated.multilevelFormatVariants = {
+      withLevelOne: updated.contextualFormatVariants.withLevelOne.map(seg =>
+        seg.type === 'literal' ? { type: 'literal' as const, value: seg.value } : { type: 'level-template-reference' as const, level: seg.level }
+      ),
+      withoutLevelOne: updated.contextualFormatVariants.withoutLevelOne.map(seg =>
+        seg.type === 'literal' ? { type: 'literal' as const, value: seg.value } : { type: 'level-template-reference' as const, level: seg.level }
+      ),
+    }
+    s.levels = { ...s.levels, [lv]: updated }
+  }
+
+  /**
+   * Update the draft's multilevel format for a level.
+   * Does NOT persist — only modifies the in-memory draft.
+   */
+  private updateDraftMultilevelFormat(
+    lv: HeadingLevel,
+    nextFormat: readonly MultilevelFormatSegment[],
+  ): void {
+    this.ensureDraft()
+    const s = this.headingDraft!
+    if (s.preset !== 'custom') {
+      s.customDefinition = deepCloneSettings(s).levels
+      s.preset = 'custom'
+    }
+    const currentStyle = s.levels[lv]
+    const updated = updateActiveMultilevelFormatVariant(
+      currentStyle, lv, s.showLevelOneNumber, nextFormat,
+    )
+    s.levels = { ...s.levels, [lv]: updated }
+  }
+
+  /**
+   * Update a single segment's appearance properties in the draft.
+   * Does NOT persist — only modifies the in-memory draft.
+   */
+  private updateDraftContextualSegment(
+    lv: HeadingLevel,
+    segmentId: string,
+    patch: Partial<{ tokenStyle: NumberTokenStyle; prefix: string; suffix: string }>,
+  ): void {
+    this.ensureDraft()
+    const s = this.headingDraft!
+    if (s.preset !== 'custom') {
+      s.customDefinition = deepCloneSettings(s).levels
+      s.preset = 'custom'
+    }
+    const currentStyle = s.levels[lv]
+    const showL1 = s.showLevelOneNumber
+    const activeFmt = getActiveContextualFormatVariant(currentStyle, showL1, lv)
+    const nextFmt = activeFmt.map(seg => {
+      if (seg.type === 'level-reference' && seg.id === segmentId) {
+        return { ...seg, appearance: { ...seg.appearance, ...patch } }
+      }
+      return seg
+    })
+
+    const updated = updateActiveContextualFormatVariant(currentStyle, lv, showL1, nextFmt)
+    // Sync multilevelFormatVariants for backward compat
+    updated.multilevelFormatVariants = {
+      withLevelOne: updated.contextualFormatVariants.withLevelOne.map(seg =>
+        seg.type === 'literal' ? { type: 'literal' as const, value: seg.value } : { type: 'level-template-reference' as const, level: seg.level }
+      ),
+      withoutLevelOne: updated.contextualFormatVariants.withoutLevelOne.map(seg =>
+        seg.type === 'literal' ? { type: 'literal' as const, value: seg.value } : { type: 'level-template-reference' as const, level: seg.level }
+      ),
+    }
+    s.levels = { ...s.levels, [lv]: updated }
+  }
+
   private rerender(): void {
     // Re-render the entire page to reflect draft changes
     this.cancelDrag('draft-change')
     this.onshow()
+  }
+
+  /**
+   * Ensure every level in Custom mode has a current-level segment.
+   * If a level's contextualFormatVariants is empty, initialize it with
+   * a single current-level reference using the level's own tokenStyle.
+   * No parent references or separators are added automatically.
+   */
+  private ensureAllLevelsHaveCurrentSegment(s: HeadingNumberingSettings): void {
+    for (const lv of HEADING_LEVELS) {
+      const ls = s.levels[lv]
+      if (!ls) continue
+      // Check if withLevelOne has at least one level-reference
+      const hasWith = ls.contextualFormatVariants?.withLevelOne?.some(
+        seg => seg.type === 'level-reference',
+      )
+      const hasWithout = ls.contextualFormatVariants?.withoutLevelOne?.some(
+        seg => seg.type === 'level-reference',
+      )
+      const soloSeg: ContextualFormatSegment = {
+        id: generateStableId(),
+        type: 'level-reference',
+        level: lv,
+        appearance: { tokenStyle: ls.tokenStyle, prefix: '', suffix: '' },
+      }
+      if (!hasWith) {
+        ls.contextualFormatVariants = {
+          ...(ls.contextualFormatVariants || {} as any),
+          withLevelOne: [{ ...soloSeg, id: generateStableId() }],
+        }
+      }
+      if (!hasWithout && lv !== 1) {
+        ls.contextualFormatVariants = {
+          ...ls.contextualFormatVariants,
+          withoutLevelOne: [{ ...soloSeg, id: generateStableId() }],
+        }
+      }
+    }
   }
 
   private renderScopeBar(s: HeadingNumberingSettings): void {
