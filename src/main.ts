@@ -8,9 +8,12 @@ import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { editor, File } from 'typora'
 import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEventsToClipboard, recordRuntimeAudit } from './heading-numbering/runtime-audit'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as crypto from 'crypto'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-roman-custom-format-fix-v1'
+const HEADING_BUILD_MARKER = 'inkchapter-runtime-normalize-v1'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
@@ -316,6 +319,35 @@ export default class extends Plugin<InkChapterSettings> {
         Notice.info(`快照已输出到控制台（${JSON.parse(json).length} 条事件）`)
       },
     })
+
+    // ── Runtime load verification ────────────────
+    try {
+      const pluginRoot = (this as any).manifest?.dir ?? ''
+      if (pluginRoot) {
+        const mainJsPath = path.join(pluginRoot, 'main.js')
+        const manifestPath = path.join(pluginRoot, 'manifest.json')
+        const mainJsContent = fs.readFileSync(mainJsPath)
+        const hash = crypto.createHash('sha256').update(new Uint8Array(mainJsContent)).digest('hex').toUpperCase()
+
+        // Write to {vault}/.typora/inkchapter-runtime-load.json
+        const runtimeLoadPath = path.join(pluginRoot, '..', '..', 'inkchapter-runtime-load.json')
+        const runtimeLoad = {
+          pluginId: this.manifest.id,
+          pluginName: this.manifest.name,
+          buildMarker: HEADING_BUILD_MARKER,
+          loadedAt: new Date().toISOString(),
+          pluginRoot,
+          mainJsPath,
+          mainJsSha256: hash,
+          manifestPath,
+          initializationCount: 1,
+        }
+        fs.writeFileSync(runtimeLoadPath, JSON.stringify(runtimeLoad, null, 2), 'utf8')
+        console.log('[InkChapter] runtime-load.json written:', runtimeLoadPath)
+      }
+    } catch (e) {
+      console.error('[InkChapter] Failed to write runtime-load.json:', e)
+    }
 
     console.log('[InkChapter] 插件已加载')
   }
