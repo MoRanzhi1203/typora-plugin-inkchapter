@@ -12,6 +12,10 @@ import type {
   ContextualFormatSegment,
   MaxHeadingLevel,
   HeadingSettingsScope,
+  CustomNumberingFormat,
+  FormatLibrary,
+  NumberingFormatSource,
+  FormatBasedOn,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
@@ -46,6 +50,18 @@ import {
   ensureCurrentLevelSegment,
 } from '../heading-numbering/numbering-engine'
 import { PRESET_LIST, getPresetLevels } from '../heading-numbering/presets'
+import {
+  getFormatPreview,
+  generateFormatId,
+  createFormat,
+  copyFormat,
+  renameFormat,
+  validateFormatName,
+  deleteFormat as deleteFormatFromLibrary,
+  addFormatToLibrary,
+  updateFormatInLibrary,
+  findFormat,
+} from '../heading-numbering/format-library'
 
 const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string; group?: string }[] = [
   { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)', group: '数字' },
@@ -68,7 +84,6 @@ const PRESET_CARDS: { key: HeadingNumberingPreset; name: string; desc: string; p
   { key: 'chinese-chapter', name: '中文章节', desc: '章节标题格式', previewLines: ['第一章', '第一节', '一、'] },
   { key: 'chinese-outline', name: '中文大纲', desc: '中文大纲格式', previewLines: ['一、', '（一）', '1.'] },
   { key: 'roman-hierarchical', name: '罗马数字', desc: '大写罗马数字层级', previewLines: ['I', 'I.I', 'I.I.I'] },
-  { key: 'custom', name: '自定义', desc: '按 H1-H6 分别配置', previewLines: [] },
 ]
 
 const DRAG_THRESHOLD = 4
@@ -107,6 +122,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private headingScope: HeadingSettingsScope = 'document'
   private headingDraft: HeadingNumberingSettings | null = null
   private headingDraftOriginal: HeadingNumberingSettings | null = null
+
+  // ── Format library state ─────────────────────────
+  /** Cached format library from settings. */
+  private formatLibrary: FormatLibrary = { version: 1, formats: [] }
+  /** Currently selected format ID for editing (null = scope draft). */
+  private selectedFormatId: string | null = null
+  /** Draft of the format being edited. */
+  private formatDraft: CustomNumberingFormat | null = null
 
   /** Initialize the draft from persisted settings. */
   private initRangeDraft(): void {
@@ -268,6 +291,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
+    // Load format library
+    this.formatLibrary = this.numberingService.getFormatLibrary()
+
     // ── Scope selection bar ──────────────────────────
     this.renderScopeBar(s)
 
@@ -305,12 +331,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
       })
     })
 
-    // ── Preset cards ──────────────────────────────
-    const cardsContainer = el('div', 'inkchapter-preset-cards')
-    this.containerEl.appendChild(cardsContainer)
+    // ── System Presets ──────────────────────────────
+    this.addSettingTitle('系统预设')
+    const presetCardsContainer = el('div', 'inkchapter-preset-cards')
+    this.containerEl.appendChild(presetCardsContainer)
 
     for (const card of PRESET_CARDS) {
-      const cardEl = el('div', 'inkchapter-preset-card', cardsContainer)
+      const cardEl = el('div', 'inkchapter-preset-card', presetCardsContainer)
       if (card.key === s.preset) cardEl.classList.add('inkchapter-preset-card--selected')
       cardEl.setAttribute('tabindex', '0')
       cardEl.setAttribute('role', 'radio')
@@ -328,36 +355,48 @@ export class HeadingNumberingSettingTab extends SettingTab {
         }
       }
 
-      cardEl.onclick = () => this.handlePresetSelect(card.key)
+      // Action buttons for system presets
+      const presetActions = el('div', 'inkchapter-preset-card-actions', cardEl)
+
+      const applyBtn = el('button', 'inkchapter-btn inkchapter-btn--small', presetActions)
+      applyBtn.textContent = '应用'
+      applyBtn.title = '将预设应用到当前作用范围'
+      applyBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.cancelDrag()
+        this.applyPresetToScope(card.key)
+      }
+
+      const globalBtn = el('button', 'inkchapter-btn inkchapter-btn--small', presetActions)
+      globalBtn.textContent = '设为默认'
+      globalBtn.title = '将此预设设为全局默认'
+      globalBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.cancelDrag()
+        this.applyPresetToScope(card.key, 'global')
+      }
+
+      const copyBtn = el('button', 'inkchapter-btn inkchapter-btn--small', presetActions)
+      copyBtn.textContent = '复制为自定义'
+      copyBtn.title = '基于此预设创建自定义格式'
+      copyBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.cancelDrag()
+        this.showCreateFormatDialog(card.key)
+      }
+
+      cardEl.onclick = () => {
+        this.cancelDrag()
+        this.handlePresetSelect(card.key)
+      }
       cardEl.onkeydown = (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.handlePresetSelect(card.key) }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.cancelDrag(); this.handlePresetSelect(card.key) }
       }
     }
 
-    // Preset dropdown (compact/backup, synced with cards)
-    this.addSetting((setting) => {
-      setting.addName('编号样式预设')
-      setting.addDescription('选择预设编号格式，切换后立即更新文档和预览。')
-      setting.addSelect((select) => {
-        this.selectEl = select
-        for (const preset of PRESET_LIST) {
-          const opt = document.createElement('option')
-          opt.value = preset.key
-          opt.textContent = preset.name
-          opt.selected = preset.key === s.preset
-          select.appendChild(opt)
-        }
-        const customOpt = document.createElement('option')
-        customOpt.value = 'custom'
-        customOpt.textContent = '自定义'
-        customOpt.selected = s.preset === 'custom'
-        select.appendChild(customOpt)
-
-        select.onchange = () => {
-          this.handlePresetSelect(select.value as HeadingNumberingPreset)
-        }
-      })
-    })
+    // ── User Formats ────────────────────────────────
+    this.addSettingTitle('我的格式')
+    this.renderFormatLibrarySection(s)
 
     // ── Level range ────────────────────────────────
     this.addSettingTitle('标题有效级数范围')
@@ -374,18 +413,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     })
     this.updatePreview()
 
-    // ── Custom section (fold panels for H1-H6) ────
-    if (s.preset === 'custom') {
-      // Ensure draft exists and all levels have current-level segments.
-      // This must happen before renderCustomPanels so both editor and preview
-      // read from the same (fixed) draft.
+    // ── Editing section ─────────────────────────────
+    if (s.preset === 'custom' || this.selectedFormatId !== null) {
       this.ensureDraft()
       const draft = this.headingDraft!
       this.ensureAllLevelsHaveCurrentSegment(draft)
-      // Re-render preview with fixed draft
       this.updatePreview()
       this.miniPreviewEls.clear()
-      this.addSettingTitle('自定义设置')
+      this.renderEditingHeader(s)
       this.renderCustomPanels(draft)
     } else {
       this.miniPreviewEls.clear()
@@ -452,6 +487,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private handlePresetSelect(preset: HeadingNumberingPreset): void {
     this.cancelDrag()
+    this.selectedFormatId = null
+    this.formatDraft = null
     this.ensureDraft()
     const s = this.headingDraft!
     if (preset === 'custom') {
@@ -495,6 +532,556 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.selectEl.value = preset
     }
     this.onshow()
+  }
+
+  // ── Format library: apply preset to scope ───────
+
+  private applyPresetToScope(presetId: string, scope?: HeadingSettingsScope): void {
+    const targetScope = scope ?? this.headingScope
+    const docKey = targetScope === 'document'
+      ? (this.numberingService.getDocumentKey() ?? null)
+      : null
+    this.numberingService.applyPresetToScope(presetId, targetScope, docKey)
+    this.headingDraft = null
+    this.headingDraftOriginal = null
+    this.selectedFormatId = null
+    this.formatDraft = null
+    this.rerender()
+    Notice.info(
+      targetScope === 'global'
+        ? `预设已设为全局默认`
+        : '预设已应用到当前文档',
+    )
+  }
+
+  // ── Format library: apply custom format to scope ─
+
+  private applyFormatToScope(format: CustomNumberingFormat, scope?: HeadingSettingsScope): void {
+    const targetScope = scope ?? this.headingScope
+    const docKey = targetScope === 'document'
+      ? (this.numberingService.getDocumentKey() ?? null)
+      : null
+    this.numberingService.applyFormatToScope(format, targetScope, docKey)
+    this.headingDraft = null
+    this.headingDraftOriginal = null
+    this.selectedFormatId = null
+    this.formatDraft = null
+    this.rerender()
+    Notice.info(
+      targetScope === 'global'
+        ? `格式 "${format.name}" 已设为全局默认`
+        : `格式 "${format.name}" 已应用到当前文档`,
+    )
+  }
+
+  // ── Format library: render user format cards ─────
+
+  private renderFormatLibrarySection(s: HeadingNumberingSettings): void {
+    const lib = this.formatLibrary
+
+    for (const format of lib.formats) {
+      const cardContainer = el('div', 'inkchapter-format-card-wrap')
+      this.containerEl.appendChild(cardContainer)
+
+      const cardEl = el('div', 'inkchapter-format-card', cardContainer)
+      if (this.selectedFormatId === format.id) {
+        cardEl.classList.add('inkchapter-format-card--selected')
+      }
+
+      const header = el('div', 'inkchapter-format-card-header', cardEl)
+      const nameEl = el('span', 'inkchapter-format-card-name', header)
+      nameEl.textContent = format.name
+      const descEl = el('div', 'inkchapter-format-card-desc', cardEl)
+      descEl.textContent = format.description || '（无描述）'
+
+      // Preview lines (3 levels)
+      const previewLines = getFormatPreview(format, 3)
+      if (previewLines.length > 0) {
+        const previewDiv = el('div', 'inkchapter-format-card-preview', cardEl)
+        for (const line of previewLines) {
+          const lineEl = el('div', 'inkchapter-format-card-preview-line', previewDiv)
+          lineEl.textContent = line
+        }
+      }
+
+      // Based-on info
+      const basedOnInfo = el('div', 'inkchapter-format-card-basedon', cardEl)
+      basedOnInfo.textContent = format.basedOn.type === 'built-in'
+        ? `基于系统预设创建`
+        : format.basedOn.type === 'custom'
+          ? '基于其他自定义格式创建'
+          : '空白格式'
+
+      // Action buttons
+      const actions = el('div', 'inkchapter-format-card-actions', cardEl)
+
+      const applyBtn = el('button', 'inkchapter-btn inkchapter-btn--small', actions)
+      applyBtn.textContent = '应用'
+      applyBtn.title = '应用此格式到当前作用范围'
+      applyBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.applyFormatToScope(format)
+      }
+
+      const globalBtn = el('button', 'inkchapter-btn inkchapter-btn--small', actions)
+      globalBtn.textContent = '设为默认'
+      globalBtn.title = '将此格式设为全局默认'
+      globalBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.applyFormatToScope(format, 'global')
+      }
+
+      const editBtn = el('button', 'inkchapter-btn inkchapter-btn--small', actions)
+      editBtn.textContent = '编辑'
+      editBtn.title = '编辑此格式'
+      editBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.startEditingFormat(format)
+      }
+
+      const copyBtn = el('button', 'inkchapter-btn inkchapter-btn--small', actions)
+      copyBtn.textContent = '复制'
+      copyBtn.title = '复制此格式'
+      copyBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.copyUserFormat(format)
+      }
+
+      const renameBtn = el('button', 'inkchapter-btn inkchapter-btn--small', actions)
+      renameBtn.textContent = '重命名'
+      renameBtn.title = '重命名此格式'
+      renameBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.renameUserFormat(format)
+      }
+
+      const deleteBtn = el('button', 'inkchapter-btn inkchapter-btn--small inkchapter-btn--danger', actions)
+      deleteBtn.textContent = '删除'
+      deleteBtn.title = '删除此格式'
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.deleteUserFormat(format)
+      }
+
+      // Click card to select this format for editing
+      cardEl.onclick = () => {
+        this.cancelDrag()
+        this.startEditingFormat(format)
+      }
+    }
+
+    // "+ New format" button
+    const addRow = el('div', 'inkchapter-format-add-row')
+    this.containerEl.appendChild(addRow)
+    const addBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', addRow)
+    addBtn.textContent = '+ 新建格式'
+    addBtn.style.cssText = 'padding:8px 20px;font-size:14px;'
+    addBtn.onclick = () => {
+      this.showCreateFormatDialog()
+    }
+  }
+
+  // ── Format library: start editing a format ───────
+
+  private startEditingFormat(format: CustomNumberingFormat): void {
+    this.cancelDrag()
+    // Create heading settings from format (deep clone levels to avoid mutations)
+    this.selectedFormatId = format.id
+    this.formatDraft = { ...format }
+    // Deep clone settings via deepCloneSettings to prevent shared references
+    const clonedSettings = deepCloneSettings({
+      enabled: format.settings.enabled,
+      showLevelOneNumber: format.settings.showLevelOneNumber,
+      preset: 'custom' as const,
+      maxDepth: format.settings.maxDepth,
+      levels: format.settings.levels,
+      customDefinition: format.settings.levels,
+    } as any)
+    this.headingDraft = clonedSettings
+    this.headingDraftOriginal = deepCloneSettings(clonedSettings)
+    // Don't switch headingScope when editing a format
+    this.rerender()
+  }
+
+  // ── Format library: editing header ───────────────
+
+  private renderEditingHeader(s: HeadingNumberingSettings): void {
+    const editBar = el('div', 'inkchapter-edit-bar')
+    editBar.style.cssText = 'margin:12px 0;padding:8px 12px;background:#f0f7ff;border-radius:6px;border:1px solid #b3d8ff;display:flex;align-items:center;gap:8px;flex-wrap:wrap;'
+
+    if (this.selectedFormatId && this.formatDraft) {
+      // Editing a library format
+      const label = el('span', '', editBar)
+      label.textContent = `正在编辑: ${this.formatDraft.name}`
+      label.style.cssText = 'font-weight:600;margin-right:8px;'
+
+      const saveBtn = el('button', 'inkchapter-btn', editBar)
+      saveBtn.textContent = '保存'
+      saveBtn.onclick = () => this.saveFormatDraft()
+
+      const saveAsBtn = el('button', 'inkchapter-btn', editBar)
+      saveAsBtn.textContent = '另存为'
+      saveAsBtn.onclick = () => this.saveFormatAs()
+
+      const renameBtn = el('button', 'inkchapter-btn', editBar)
+      renameBtn.textContent = '重命名'
+      renameBtn.onclick = () => this.renameCurrentFormat()
+
+      const deleteBtn = el('button', 'inkchapter-btn inkchapter-btn--danger', editBar)
+      deleteBtn.textContent = '删除'
+      deleteBtn.onclick = () => this.deleteCurrentFormat()
+
+      const cancelBtn = el('button', 'inkchapter-btn', editBar)
+      cancelBtn.textContent = '取消'
+      cancelBtn.onclick = () => this.cancelFormatEditing()
+    } else {
+      // Editing scope draft (custom)
+      const label = el('span', '', editBar)
+      label.textContent = '自定义设置'
+      label.style.cssText = 'font-weight:600;margin-right:8px;'
+
+      const saveAsBtn = el('button', 'inkchapter-btn', editBar)
+      saveAsBtn.textContent = '保存为新格式'
+      saveAsBtn.onclick = () => this.saveCurrentAsFormat()
+    }
+
+    this.containerEl.appendChild(editBar)
+  }
+
+  // ── Format library: create format dialog ─────────
+
+  private showCreateFormatDialog(basePreset?: string): void {
+    // Remove any existing dialog
+    const existing = document.querySelector('.inkchapter-dialog-overlay')
+    if (existing) existing.remove()
+
+    const overlay = el('div', 'inkchapter-dialog-overlay')
+    const dialog = el('div', 'inkchapter-dialog', overlay)
+    dialog.style.cssText = 'min-width:400px;'
+
+    const title = el('div', 'inkchapter-dialog-title', dialog)
+    title.textContent = '新建自定义格式'
+
+    const body = el('div', 'inkchapter-dialog-body', dialog)
+
+    // Name input
+    const nameRow = el('div', '', body)
+    nameRow.style.cssText = 'margin-bottom:12px;'
+    const nameLabel = el('span', '', nameRow)
+    nameLabel.textContent = '格式名称: '
+    nameLabel.style.cssText = 'font-weight:600;'
+    const nameInput = document.createElement('input')
+    nameInput.type = 'text'
+    nameInput.placeholder = '输入格式名称（1-30字符）'
+    nameInput.style.cssText = 'width:100%;margin-top:4px;padding:6px 8px;'
+    nameInput.maxLength = 30
+    nameRow.appendChild(nameInput)
+
+    // Description input
+    const descRow = el('div', '', body)
+    descRow.style.cssText = 'margin-bottom:12px;'
+    const descLabel = el('span', '', descRow)
+    descLabel.textContent = '描述: '
+    descLabel.style.cssText = 'font-weight:600;'
+    const descInput = document.createElement('input')
+    descInput.type = 'text'
+    descInput.placeholder = '可选：输入格式描述'
+    descInput.style.cssText = 'width:100%;margin-top:4px;padding:6px 8px;'
+    descInput.maxLength = 200
+    descRow.appendChild(descInput)
+
+    // Based on selection
+    const basedRow = el('div', '', body)
+    basedRow.style.cssText = 'margin-bottom:16px;'
+    const basedLabel = el('div', '', basedRow)
+    basedLabel.textContent = '基于:'
+    basedLabel.style.cssText = 'font-weight:600;margin-bottom:6px;'
+
+    const radioGroup = el('div', '', basedRow)
+    radioGroup.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;'
+
+    const presetOptions: { value: string; label: string }[] = [
+      { value: 'decimal-hierarchical', label: '十进制层级' },
+      { value: 'chinese-chapter', label: '中文章节' },
+      { value: 'chinese-outline', label: '中文大纲' },
+      { value: 'roman-hierarchical', label: '罗马数字' },
+      { value: 'blank', label: '空白' },
+    ]
+
+    let selectedBase = basePreset ?? 'decimal-hierarchical'
+    const radios: HTMLInputElement[] = []
+
+    for (const opt of presetOptions) {
+      const label = el('label', '', radioGroup)
+      label.style.cssText = 'cursor:pointer;font-size:13px;'
+      const radio = document.createElement('input')
+      radio.type = 'radio'
+      radio.name = 'format-base'
+      radio.value = opt.value
+      radio.checked = opt.value === selectedBase
+      radio.onchange = () => { selectedBase = opt.value }
+      label.appendChild(radio)
+      label.appendChild(document.createTextNode(' ' + opt.label))
+      radios.push(radio)
+    }
+
+    // Error message
+    const errorEl = el('div', '', body)
+    errorEl.style.cssText = 'color:#e00;font-size:12px;min-height:16px;margin-top:4px;'
+
+    // Buttons
+    const btnRow = el('div', 'inkchapter-dialog-buttons', dialog)
+
+    const cancelBtn = el('button', 'inkchapter-btn', btnRow)
+    cancelBtn.textContent = '取消'
+    cancelBtn.onclick = () => overlay.remove()
+
+    const createBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', btnRow)
+    createBtn.textContent = '创建'
+    createBtn.onclick = () => {
+      const name = nameInput.value.trim()
+      const error = validateFormatName(name, this.formatLibrary)
+      if (error) {
+        errorEl.textContent = error
+        return
+      }
+
+      let basedOn: FormatBasedOn
+      let levels
+
+      if (selectedBase === 'blank') {
+        basedOn = { type: 'blank' }
+        // Start with simple current-level-only formats
+        levels = {} as Record<HeadingLevel, HeadingLevelStyle>
+        for (const lv of HEADING_LEVELS) {
+          const soloSeg: ContextualFormatSegment = {
+            id: generateStableId(),
+            type: 'level-reference',
+            level: lv,
+            appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+          }
+          levels[lv] = {
+            enabled: true,
+            tokenStyle: 'arabic',
+            includeParents: false,
+            prefix: '',
+            suffix: '',
+            separator: '.',
+            startAt: 1,
+            restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+            formatVariants: { withLevelOne: [], withoutLevelOne: [] },
+            levelTemplate: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+            multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+            contextualFormatVariants: {
+              withLevelOne: [{ ...soloSeg, id: generateStableId() }],
+              withoutLevelOne: lv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
+            },
+          }
+        }
+      } else {
+        basedOn = { type: 'built-in', presetId: selectedBase }
+        levels = getPresetLevels(selectedBase as HeadingNumberingPreset)
+      }
+
+      const newFormat = createFormat(name, descInput.value.trim(), basedOn, levels)
+      const newLib = addFormatToLibrary(this.formatLibrary, newFormat)
+      this.numberingService.saveFormatLibrary(newLib)
+      this.formatLibrary = newLib
+
+      overlay.remove()
+      // Start editing the new format
+      this.startEditingFormat(newFormat)
+      Notice.info(`格式 "${name}" 已创建`)
+    }
+
+    document.body.appendChild(overlay)
+    // Focus the name input
+    setTimeout(() => nameInput.focus(), 50)
+  }
+
+  // ── Format library: save / save-as / rename / delete ─
+
+  private saveFormatDraft(): void {
+    if (!this.selectedFormatId || !this.formatDraft || !this.headingDraft) return
+
+    const updated: CustomNumberingFormat = {
+      ...this.formatDraft,
+      updatedAt: Date.now(),
+      settings: {
+        levels: this.headingDraft.levels,
+        showLevelOneNumber: this.headingDraft.showLevelOneNumber,
+        enabled: this.headingDraft.enabled,
+        maxDepth: this.headingDraft.maxDepth,
+      },
+    }
+
+    const newLib = updateFormatInLibrary(this.formatLibrary, updated)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    this.formatDraft = updated
+    Notice.info(`格式 "${updated.name}" 已保存`)
+  }
+
+  private saveFormatAs(): void {
+    if (!this.formatDraft || !this.headingDraft) return
+
+    const newName = prompt('请输入新格式名称:', this.formatDraft.name + ' (副本)')
+    if (!newName || !newName.trim()) return
+    const error = validateFormatName(newName.trim(), this.formatLibrary)
+    if (error) {
+      Notice.info(error)
+      return
+    }
+
+    const newFormat = copyFormat(this.formatDraft, newName.trim())
+    newFormat.settings = {
+      levels: this.headingDraft.levels,
+      showLevelOneNumber: this.headingDraft.showLevelOneNumber,
+      enabled: this.headingDraft.enabled,
+      maxDepth: this.headingDraft.maxDepth,
+    }
+
+    const newLib = addFormatToLibrary(this.formatLibrary, newFormat)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    Notice.info(`格式已另存为 "${newFormat.name}"`)
+  }
+
+  private saveCurrentAsFormat(): void {
+    if (!this.headingDraft) return
+
+    const newName = prompt('请输入新格式名称:', '我的自定义格式')
+    if (!newName || !newName.trim()) return
+    const error = validateFormatName(newName.trim(), this.formatLibrary)
+    if (error) {
+      Notice.info(error)
+      return
+    }
+
+    const newFormat = createFormat(
+      newName.trim(),
+      '从当前自定义设置保存',
+      { type: 'blank' },
+      this.headingDraft.levels,
+    )
+    newFormat.settings.showLevelOneNumber = this.headingDraft.showLevelOneNumber
+    newFormat.settings.enabled = this.headingDraft.enabled
+    newFormat.settings.maxDepth = this.headingDraft.maxDepth
+
+    const newLib = addFormatToLibrary(this.formatLibrary, newFormat)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    Notice.info(`格式 "${newFormat.name}" 已创建`)
+    // Start editing the new format
+    this.startEditingFormat(newFormat)
+  }
+
+  private renameCurrentFormat(): void {
+    if (!this.selectedFormatId || !this.formatDraft) return
+
+    const newName = prompt('请输入新名称:', this.formatDraft.name)
+    if (!newName || !newName.trim() || newName.trim() === this.formatDraft.name) return
+    const error = validateFormatName(newName.trim(), this.formatLibrary)
+    if (error) {
+      Notice.info(error)
+      return
+    }
+
+    const renamed = renameFormat(this.formatDraft, newName.trim())
+    const newLib = updateFormatInLibrary(this.formatLibrary, renamed)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    this.formatDraft = renamed
+    this.selectedFormatId = renamed.id
+    Notice.info(`格式已重命名为 "${renamed.name}"`)
+    this.rerender()
+  }
+
+  private deleteCurrentFormat(): void {
+    if (!this.selectedFormatId || !this.formatDraft) return
+
+    const confirmed = confirm(
+      `确定要删除格式 "${this.formatDraft.name}" 吗？\n\n` +
+      '已应用此格式的文档不受影响（它们已保存快照）。\n' +
+      '此操作不可撤销。',
+    )
+    if (!confirmed) return
+
+    const formats = deleteFormatFromLibrary(this.formatLibrary, this.selectedFormatId)
+    const newLib: FormatLibrary = { ...this.formatLibrary, formats }
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    this.selectedFormatId = null
+    this.formatDraft = null
+    this.headingDraft = null
+    this.headingDraftOriginal = null
+    Notice.info(`格式已删除`)
+    this.rerender()
+  }
+
+  private cancelFormatEditing(): void {
+    this.selectedFormatId = null
+    this.formatDraft = null
+    this.headingDraft = null
+    this.headingDraftOriginal = null
+    this.rerender()
+  }
+
+  private copyUserFormat(format: CustomNumberingFormat): void {
+    const newName = prompt('请输入副本名称:', format.name + ' (副本)')
+    if (!newName || !newName.trim()) return
+    const error = validateFormatName(newName.trim(), this.formatLibrary)
+    if (error) {
+      Notice.info(error)
+      return
+    }
+
+    const newFormat = copyFormat(format, newName.trim())
+    const newLib = addFormatToLibrary(this.formatLibrary, newFormat)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    Notice.info(`格式已复制为 "${newFormat.name}"`)
+    this.rerender()
+  }
+
+  private renameUserFormat(format: CustomNumberingFormat): void {
+    const newName = prompt('请输入新名称:', format.name)
+    if (!newName || !newName.trim() || newName.trim() === format.name) return
+    const error = validateFormatName(newName.trim(), this.formatLibrary)
+    if (error) {
+      Notice.info(error)
+      return
+    }
+
+    const renamed = renameFormat(format, newName.trim())
+    const newLib = updateFormatInLibrary(this.formatLibrary, renamed)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    Notice.info(`格式已重命名为 "${renamed.name}"`)
+    this.rerender()
+  }
+
+  private deleteUserFormat(format: CustomNumberingFormat): void {
+    const confirmed = confirm(
+      `确定要删除格式 "${format.name}" 吗？\n\n` +
+      '已应用此格式的文档不受影响（它们已保存快照）。\n' +
+      '此操作不可撤销。',
+    )
+    if (!confirmed) return
+
+    const formats = deleteFormatFromLibrary(this.formatLibrary, format.id)
+    const newLib: FormatLibrary = { ...this.formatLibrary, formats }
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+
+    if (this.selectedFormatId === format.id) {
+      this.selectedFormatId = null
+      this.formatDraft = null
+      this.headingDraft = null
+      this.headingDraftOriginal = null
+    }
+    Notice.info(`格式已删除`)
+    this.rerender()
   }
 
   // ── Level range UI ──────────────────────────────

@@ -13,7 +13,7 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-roman-all-levels-v1'
+const HEADING_BUILD_MARKER = 'inkchapter-format-library-v1'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
@@ -70,6 +70,20 @@ export default class extends Plugin<InkChapterSettings> {
       }
     } catch (e) {
       console.error('[InkChapter] migration error:', e)
+    }
+
+    // ── Schema migration: init formatLibrary if missing ──
+    try {
+      const current = this.settings.get('formatLibrary' as keyof InkChapterSettings) as any
+      if (!current || !current.version) {
+        this.settings.set('formatLibrary' as keyof InkChapterSettings, {
+          version: 1,
+          formats: [],
+        } as any)
+        console.log('[InkChapter] formatLibrary migration applied')
+      }
+    } catch (e) {
+      console.error('[InkChapter] formatLibrary migration error:', e)
     }
 
     // Build service context (exposes only needed APIs, avoids protected access)

@@ -349,6 +349,42 @@ function simpleHash(s: string): string {
   return Math.abs(h).toString(36)
 }
 
+// ── Format library (user-managed custom formats) ──────────
+
+/** Describes what a custom format was based on. */
+export type FormatBasedOn =
+  | { type: 'built-in'; presetId: string }
+  | { type: 'custom'; formatId: string }
+  | { type: 'blank' }
+
+/** Identifies the source of a numbering format for a scope. */
+export type NumberingFormatSource =
+  | { type: 'built-in'; presetId: string }
+  | { type: 'custom'; formatId: string }
+  | { type: 'snapshot' }
+
+/** A user-managed custom numbering format. */
+export interface CustomNumberingFormat {
+  id: string
+  name: string
+  description: string
+  createdAt: number
+  updatedAt: number
+  basedOn: FormatBasedOn
+  settings: {
+    levels: Record<HeadingLevel, HeadingLevelStyle>
+    showLevelOneNumber: boolean
+    enabled: boolean
+    maxDepth: HeadingLevel
+  }
+}
+
+/** Persistent format library stored in plugin settings. */
+export interface FormatLibrary {
+  version: number
+  formats: CustomNumberingFormat[]
+}
+
 // ── Heading numbering scope store (schema refactor) ──────
 
 /** Scope for heading numbering settings. */
@@ -358,6 +394,8 @@ export type HeadingSettingsScope = 'global' | 'document'
 export interface HeadingNumberingDocumentOverride {
   updatedAt: number
   settings: HeadingNumberingSettings
+  /** Which format was applied to create this snapshot (informational). */
+  formatSource?: NumberingFormatSource
 }
 
 /** Persistent store: global default + per-document overrides. */
@@ -372,6 +410,8 @@ export interface SaveHeadingSettingsRequest {
   scope: HeadingSettingsScope
   documentKey: string | null
   settings: HeadingNumberingSettings
+  /** Which format was applied to create this snapshot (informational). */
+  formatSource?: NumberingFormatSource
 }
 
 /** Runtime context: resolved effective settings for the current document. */
