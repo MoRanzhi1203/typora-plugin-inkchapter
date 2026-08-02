@@ -1,6 +1,7 @@
 import type { InkChapterSettings } from './settings-model'
 import type { HeadingLevel, HeadingLevelNumberTemplate } from '../heading-numbering/heading-types'
 import { DEFAULT_NAME_CANDIDATES } from '../heading-numbering/heading-types'
+import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 
 const decimalLevels = {} as Record<HeadingLevel, import('../heading-numbering/heading-types').HeadingLevelStyle>
 const defaultTemplate: HeadingLevelNumberTemplate = { tokenStyle: 'arabic', prefix: '', suffix: '' }
@@ -33,7 +34,13 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
       preset: 'decimal-hierarchical',
       maxDepth: 6,
       levels: decimalLevels,
-      customDefinition: { ...decimalLevels },
+      customDefinition: deepCloneSettings({
+        enabled: true,
+        showLevelOneNumber: false,
+        preset: 'decimal-hierarchical',
+        maxDepth: 6,
+        levels: decimalLevels,
+      } as any).levels,
     },
     documentOverrides: {},
   },

@@ -82,7 +82,7 @@ export class OutlineNumberingController {
   private sidebarModeClickHandler: ((e: Event) => void) | null = null
 
   start(): void {
-    console.log(`[InkChapter OUTLINE] controller start  build=${CONTROLLER_BUILD_MARKER}`)
+    EVT_LOG(`[InkChapter OUTLINE] controller start  build=${CONTROLLER_BUILD_MARKER}`)
     this.bindSidebarHostObserver()
     this.reattachObserver()
     this.bindSidebarModeClickListener()
@@ -489,7 +489,7 @@ export class OutlineNumberingController {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null
-      try { fn() } catch { /* silent */ }
+      try { fn() } catch (e) { console.error('[InkChapter OUTLINE] scheduleSync failed', e) }
     })
   }
 
@@ -552,6 +552,6 @@ export class OutlineNumberingController {
 
   /** Dump event chain summary to console. */
   dumpEventChain(): void {
-    console.log(`[InkChapter OUTLINE] observerBindCount=${this.observerBindCount} observerDisconnectCount=${this.observerDisconnectCount}`)
+    EVT_LOG(`[InkChapter OUTLINE] observerBindCount=${this.observerBindCount} observerDisconnectCount=${this.observerDisconnectCount}`)
   }
 }

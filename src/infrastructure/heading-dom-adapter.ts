@@ -34,7 +34,10 @@ export class HeadingDomAdapter {
     return result
   }
 
-  createHeadingSnapshot(): HeadingSnapshot[] {
+  createHeadingSnapshot(preCollected?: HeadingDescriptor[]): HeadingSnapshot[] {
+    if (preCollected) {
+      return preCollected.map(h => ({ key: h.key, level: h.level }))
+    }
     if (!this.editorRoot) return []
     const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     const result: HeadingSnapshot[] = []
