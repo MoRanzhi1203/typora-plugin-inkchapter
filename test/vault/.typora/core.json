@@ -5,7 +5,7 @@
     "githubProxy": "github",
     "showNotSupportedFile": false,
     "showSearchResultFullPath": false,
-    "showRibbon": true,
+    "showRibbon": false,
     "openLinkInCurrentWin": true,
     "quickOpenInCurrentWin": true,
     "ignoreFile": true,
@@ -23,6 +23,7 @@
         "visible": true,
         "order": 2
       }
-    }
+    },
+    "advancedSearchMode": false
   }
 }

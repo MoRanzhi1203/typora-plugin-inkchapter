@@ -13,7 +13,7 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-runtime-normalize-v1'
+const HEADING_BUILD_MARKER = 'inkchapter-sidebar-restored-v1'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
@@ -341,6 +341,15 @@ export default class extends Plugin<InkChapterSettings> {
           mainJsSha256: hash,
           manifestPath,
           initializationCount: 1,
+          ribbonInjected: !!document.querySelector('.typ-ribbon'),
+          ribbonEnableClass: document.body.classList.contains('typ-ribbon--enable'),
+          sidebarStructure: {
+            hasInfoPanelTabWrapper: !!document.querySelector('#typora-sidebar .info-panel-tab-wrapper'),
+            hasInfoPanelTabFile: !!document.querySelector('#info-panel-tab-file'),
+            hasInfoPanelTabSearch: !!document.querySelector('#info-panel-tab-search-back'),
+            hasInfoPanelTabOutline: !!document.querySelector('#info-panel-tab-outline'),
+            sidebarClasses: document.getElementById('typora-sidebar')?.className ?? 'N/A',
+          },
         }
         fs.writeFileSync(runtimeLoadPath, JSON.stringify(runtimeLoad, null, 2), 'utf8')
         console.log('[InkChapter] runtime-load.json written:', runtimeLoadPath)
