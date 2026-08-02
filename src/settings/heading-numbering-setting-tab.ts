@@ -131,6 +131,20 @@ export class HeadingNumberingSettingTab extends SettingTab {
   /** Draft of the format being edited. */
   private formatDraft: CustomNumberingFormat | null = null
 
+  // ── Layout collapse & selection states ──────────
+  /** Whether the custom format editor section is expanded. */
+  private editorExpanded = false
+  /** Whether the heading range section is expanded. */
+  private headingRangeExpanded = false
+  /** Currently selected card key (preset key or format id) for the format summary. */
+  private selectedCardKey: string | null = null
+  /** Whether the selected card is a system preset (true) or user format (false). */
+  private selectedCardIsPreset = false
+  /** Whether the token style settings editor fold is collapsed. */
+  private tokenSettingsCollapsed = false
+  /** Whether the current level behavior editor fold is collapsed. */
+  private levelBehaviorCollapsed = false
+
   /** Initialize the draft from persisted settings. */
   private initRangeDraft(): void {
     const rangeSettings = this.numberingService.getLevelRangeSettings()
@@ -294,137 +308,26 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Load format library
     this.formatLibrary = this.numberingService.getFormatLibrary()
 
-    // ── Scope selection bar ──────────────────────────
+    // 1. Document scope section (compact info bar)
     this.renderScopeBar(s)
 
-    // ── Section: Basic ──────────────────────────────
-    this.addSettingTitle('基础设置')
+    // 2. Basic settings (compact grid: enable + H1 toggle)
+    this.renderCompactBasicSettings(s)
 
-    // Enable toggle (总开关)
-    this.addSetting((setting) => {
-      setting.addName('启用标题编号')
-      setting.addDescription('开启后自动为标题添加编号。关闭后文档和预览均不显示编号，不清空预设。')
-      setting.addCheckbox((cb) => {
-        cb.checked = s.enabled
-        cb.onclick = () => {
-          this.ensureDraft()
-          this.headingDraft!.enabled = cb.checked
-          this.rerender()
-        }
-      })
-    })
+    // 3. Format library (presets grid + user formats grid)
+    this.renderFormatLibraryUnified(s)
 
-    // Show level one toggle
-    this.addSetting((setting) => {
-      setting.addName('一级标题显示编号')
-      setting.addDescription('关闭时 H1 不显示编号，H2 从 1 开始计数，不暴露隐藏的 H1 编号路径。')
-      setting.addCheckbox((cb) => {
-        this.globalH1Toggle = cb
-        cb.checked = s.showLevelOneNumber
-        cb.onclick = () => {
-          if (this.syncingLevelOneUi) return
-          this.ensureDraft()
-          this.headingDraft!.showLevelOneNumber = cb.checked
-          this.syncLevelOneControls(cb.checked)
-          this.rerender()
-        }
-      })
-    })
+    // 4. Current format summary (selected format info + operations)
+    this.renderCurrentFormatSummary(s)
 
-    // ── System Presets ──────────────────────────────
-    this.addSettingTitle('系统预设')
-    const presetCardsContainer = el('div', 'inkchapter-preset-cards')
-    this.containerEl.appendChild(presetCardsContainer)
+    // 5. Custom format editor (COLLAPSED by default, expand on edit/new)
+    this.renderCustomEditorCollapsible(s)
 
-    for (const card of PRESET_CARDS) {
-      const cardEl = el('div', 'inkchapter-preset-card', presetCardsContainer)
-      if (card.key === s.preset) cardEl.classList.add('inkchapter-preset-card--selected')
-      cardEl.setAttribute('tabindex', '0')
-      cardEl.setAttribute('role', 'radio')
-      cardEl.setAttribute('aria-checked', String(card.key === s.preset))
+    // 6. Heading range (COLLAPSED by default)
+    this.renderHeadingRangeCollapsible()
 
-      const cardName = el('div', 'inkchapter-preset-card-name', cardEl)
-      cardName.textContent = card.name
-      const cardDesc = el('div', 'inkchapter-preset-card-desc', cardEl)
-      cardDesc.textContent = card.desc
-      if (card.previewLines.length > 0) {
-        const cardPreview = el('div', 'inkchapter-preset-card-preview', cardEl)
-        for (const line of card.previewLines) {
-          const lineEl = el('div', 'inkchapter-preset-card-preview-line', cardPreview)
-          lineEl.textContent = line
-        }
-      }
-
-      // Action buttons for system presets
-      const presetActions = el('div', 'inkchapter-preset-card-actions', cardEl)
-
-      const applyBtn = el('button', 'inkchapter-btn inkchapter-btn--small', presetActions)
-      applyBtn.textContent = '应用'
-      applyBtn.title = '将预设应用到当前作用范围'
-      applyBtn.onclick = (e) => {
-        e.stopPropagation()
-        this.cancelDrag()
-        this.applyPresetToScope(card.key)
-      }
-
-      const globalBtn = el('button', 'inkchapter-btn inkchapter-btn--small', presetActions)
-      globalBtn.textContent = '设为默认'
-      globalBtn.title = '将此预设设为全局默认'
-      globalBtn.onclick = (e) => {
-        e.stopPropagation()
-        this.cancelDrag()
-        this.applyPresetToScope(card.key, 'global')
-      }
-
-      const copyBtn = el('button', 'inkchapter-btn inkchapter-btn--small', presetActions)
-      copyBtn.textContent = '复制为自定义'
-      copyBtn.title = '基于此预设创建自定义格式'
-      copyBtn.onclick = (e) => {
-        e.stopPropagation()
-        this.cancelDrag()
-        this.showCreateFormatDialog(card.key)
-      }
-
-      cardEl.onclick = () => {
-        this.cancelDrag()
-        this.handlePresetSelect(card.key)
-      }
-      cardEl.onkeydown = (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.cancelDrag(); this.handlePresetSelect(card.key) }
-      }
-    }
-
-    // ── User Formats ────────────────────────────────
-    this.addSettingTitle('我的格式')
-    this.renderFormatLibrarySection(s)
-
-    // ── Level range ────────────────────────────────
-    this.addSettingTitle('标题有效级数范围')
-    this.renderLevelRangeSection()
-
-    // ── Live Preview ────────────────────────────────
-    this.addSettingTitle('实时预览')
-    this.previewEl = el('div', 'inkchapter-preview')
-    this.addSetting((setting) => {
-      setting.addName('预览')
-      setting.addDescription((descDiv) => {
-        descDiv.appendChild(this.previewEl!)
-      })
-    })
-    this.updatePreview()
-
-    // ── Editing section ─────────────────────────────
-    if (s.preset === 'custom' || this.selectedFormatId !== null) {
-      this.ensureDraft()
-      const draft = this.headingDraft!
-      this.ensureAllLevelsHaveCurrentSegment(draft)
-      this.updatePreview()
-      this.miniPreviewEls.clear()
-      this.renderEditingHeader(s)
-      this.renderCustomPanels(draft)
-    } else {
-      this.miniPreviewEls.clear()
-    }
+    // 7. Bottom sticky action bar [Cancel Changes] [Save & Apply]
+    this.renderBottomActionBar()
   }
 
   // ── Preview ─────────────────────────────────────
@@ -685,6 +588,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private startEditingFormat(format: CustomNumberingFormat): void {
     this.cancelDrag()
+    this.editorExpanded = true
     // Create heading settings from format (deep clone levels to avoid mutations)
     this.selectedFormatId = format.id
     this.formatDraft = { ...format }
@@ -2667,43 +2571,40 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private renderScopeBar(s: HeadingNumberingSettings): void {
-    const scopeSection = el('div', 'inkchapter-scope-bar', this.containerEl)
-    scopeSection.style.cssText = 'margin:8px 0;padding:12px;background:#f5f5f5;border-radius:6px;border:1px solid #ddd;'
-
-    // Document path
     const docPath = this.numberingService.getActiveFilePath()
     const docKey = this.numberingService.getDocumentKey()
-    const pathEl = el('div', 'inkchapter-scope-path', scopeSection)
-    pathEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:8px;'
-    pathEl.textContent = docPath ? `当前文档：${docKey ?? docPath}` : '未打开文档'
-
-    // Source status
     const source = this.numberingService.getSettingsSource()
-    const statusEl = el('div', 'inkchapter-scope-status', scopeSection)
-    statusEl.style.cssText = 'font-size:12px;color:#888;margin-bottom:10px;'
-    statusEl.textContent = source === 'document' ? '当前状态：使用文档独立设置' : '当前状态：继承全局默认'
 
-    // Scope radio buttons
-    const scopeRow = el('div', 'inkchapter-scope-row', scopeSection)
-    scopeRow.style.cssText = 'display:flex;gap:16px;align-items:center;'
-    const scopeLabel = el('span', '', scopeRow)
+    const bar = el('div', 'inkchapter-scope-bar--compact', this.containerEl)
+
+    // Info row: Document | Status
+    const infoRow = el('div', 'inkchapter-scope-info', bar)
+    const docEl = el('span', 'inkchapter-scope-doc', infoRow)
+    docEl.textContent = docPath ? `当前文档：${docKey ?? docPath}` : '未打开文档'
+    const sepEl = el('span', '', infoRow)
+    sepEl.textContent = '|'
+    sepEl.style.cssText = 'color:var(--text-muted,#888);'
+    const statusEl = el('span', 'inkchapter-scope-status', infoRow)
+    statusEl.textContent = source === 'document' ? '状态：使用文档独立设置' : '状态：继承全局默认'
+
+    // Scope radio buttons inline
+    const radioRow = el('div', 'inkchapter-scope-radios', bar)
+    const scopeLabel = el('span', '', radioRow)
     scopeLabel.textContent = '作用范围：'
-    scopeLabel.style.cssText = 'font-weight:600;font-size:13px;'
+    scopeLabel.style.cssText = 'font-weight:600;'
 
     const buildRadio = (value: HeadingSettingsScope, label: string, disabled: boolean) => {
-      const radioRow = el('label', '', scopeRow)
-      radioRow.style.cssText = 'cursor:pointer;display:flex;align-items:center;gap:4px;'
-      if (disabled) radioRow.style.opacity = '0.5'
+      const lbl = el('label', '', radioRow)
+      if (disabled) lbl.style.opacity = '0.5'
       const radio = document.createElement('input')
       radio.type = 'radio'
-      radio.name = 'heading-scope'
+      radio.name = 'heading-scope-compact'
       radio.value = value
       radio.checked = this.headingScope === value
       radio.disabled = disabled
       radio.onchange = () => {
         if (this.headingScope === value) return
         this.headingScope = value
-        // Reset draft when switching scope
         const newSettings = value === 'global'
           ? this.numberingService.getScopeStore().globalDefault
           : this.numberingService.getEffectiveSettings()
@@ -2711,28 +2612,21 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.headingDraftOriginal = deepCloneSettings(newSettings)
         this.rerender()
       }
-      radioRow.appendChild(radio)
+      lbl.appendChild(radio)
       const span = document.createElement('span')
       span.textContent = label
-      span.style.fontSize = '13px'
-      radioRow.appendChild(span)
-      return radioRow
+      lbl.appendChild(span)
+      return lbl
     }
 
-    scopeRow.appendChild(buildRadio('document', '当前文档', !docPath))
-    scopeRow.appendChild(buildRadio('global', '全局默认', false))
+    radioRow.appendChild(buildRadio('document', '当前文档', !docPath))
+    radioRow.appendChild(buildRadio('global', '全局默认', false))
 
-    if (!docPath) {
-      const hintEl = el('div', '', scopeSection)
-      hintEl.style.cssText = 'font-size:11px;color:#999;margin-top:4px;'
-      hintEl.textContent = '未打开 MD 文件时，"当前文档"不可用。'
-    }
-
-    // Restore inherit button
+    // Restore inherit button (compact)
     if (source === 'document') {
-      const restoreBtn = el('button', '', scopeSection)
-      restoreBtn.textContent = '恢复继承全局默认'
-      restoreBtn.style.cssText = 'margin-top:8px;padding:4px 12px;font-size:12px;cursor:pointer;'
+      const restoreBtn = el('button', 'inkchapter-btn inkchapter-btn--small', bar)
+      restoreBtn.textContent = '恢复继承'
+      restoreBtn.title = '恢复继承全局默认设置'
       restoreBtn.onclick = () => {
         this.numberingService.restoreInheritGlobal(docKey ?? '')
         this.headingDraft = null
@@ -2741,47 +2635,673 @@ export class HeadingNumberingSettingTab extends SettingTab {
         Notice.info('已恢复继承全局默认')
       }
     }
+  }
 
-    // Scope hint
-    const hintEl = el('div', '', scopeSection)
-    hintEl.style.cssText = 'font-size:11px;color:#666;margin-top:6px;'
-    if (this.headingScope === 'global') {
-      hintEl.textContent = '该修改将影响所有尚未设置独立编号样式的文档。已有独立设置的文档不会被覆盖。'
-    } else {
-      hintEl.textContent = '仅影响当前文档，不会改变其他文档的编号样式。'
+  /** Compact two-column grid for enable + H1 toggle. */
+  private renderCompactBasicSettings(s: HeadingNumberingSettings): void {
+    const grid = el('div', 'inkchapter-basic-settings-grid', this.containerEl)
+
+    // Enable toggle
+    const enableItem = el('div', 'inkchapter-basic-setting-item', grid)
+    const enableLabel = el('label', '', enableItem)
+    const enableCb = document.createElement('input')
+    enableCb.type = 'checkbox'
+    enableCb.checked = s.enabled
+    enableCb.onclick = () => {
+      this.ensureDraft()
+      this.headingDraft!.enabled = enableCb.checked
+      this.rerender()
+    }
+    enableLabel.appendChild(enableCb)
+    enableLabel.appendChild(document.createTextNode(' 启用标题编号'))
+
+    // H1 toggle
+    const h1Item = el('div', 'inkchapter-basic-setting-item', grid)
+    const h1Label = el('label', '', h1Item)
+    const h1Cb = document.createElement('input')
+    h1Cb.type = 'checkbox'
+    this.globalH1Toggle = h1Cb
+    h1Cb.checked = s.showLevelOneNumber
+    h1Cb.onclick = () => {
+      if (this.syncingLevelOneUi) return
+      this.ensureDraft()
+      this.headingDraft!.showLevelOneNumber = h1Cb.checked
+      this.syncLevelOneControls(h1Cb.checked)
+      this.rerender()
+    }
+    h1Label.appendChild(h1Cb)
+    h1Label.appendChild(document.createTextNode(' 一级标题显示编号'))
+  }
+
+  // ── Unified format library grid ──────────────────
+
+  private renderFormatLibraryUnified(s: HeadingNumberingSettings): void {
+    const grid = el('div', 'inkchapter-format-grid', this.containerEl)
+
+    // System presets
+    for (const card of PRESET_CARDS) {
+      const cardEl = this.buildFormatCard(
+        grid,
+        card.key,
+        card.name,
+        card.desc,
+        card.previewLines,
+        true, // isPreset
+        () => this.handlePresetCardApply(card.key),
+      )
+      if (this.selectedCardKey === card.key && this.selectedCardIsPreset) {
+        cardEl.classList.add('inkchapter-format-card--selected')
+      }
     }
 
-    // Confirm / Cancel buttons
-    const actionRow = el('div', 'inkchapter-scope-actions', this.containerEl)
-    actionRow.style.cssText = 'display:flex;gap:8px;margin:12px 0;padding:0 0 16px 0;'
-
-    const confirmBtn = el('button', '', actionRow)
-    confirmBtn.textContent = '确定'
-    confirmBtn.style.cssText = 'padding:8px 24px;font-size:14px;font-weight:600;background:#0078d4;color:#fff;border:none;border-radius:4px;cursor:pointer;'
-    confirmBtn.onclick = () => {
-      if (!this.headingDraft) {
-        Notice.info('没有需要保存的更改')
-        return
+    // User formats
+    for (const format of this.formatLibrary.formats) {
+      const previewLines = getFormatPreview(format, 3)
+      const cardEl = this.buildFormatCard(
+        grid,
+        format.id,
+        format.name,
+        format.description || '（无描述）',
+        previewLines,
+        false,
+        () => this.handleFormatCardApply(format),
+      )
+      if (this.selectedCardKey === format.id && !this.selectedCardIsPreset) {
+        cardEl.classList.add('inkchapter-format-card--selected')
       }
-      const scope = this.headingScope
-      const key = scope === 'document' ? (docKey ?? null) : null
-      this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
+    }
+
+    // "+ New format" dashed card
+    const addCard = el('div', 'inkchapter-format-card--add', grid)
+    addCard.textContent = '+ 新建格式'
+    addCard.setAttribute('tabindex', '0')
+    addCard.onclick = () => {
+      this.cancelDrag()
+      this.showCreateFormatDialog()
+    }
+    addCard.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.showCreateFormatDialog() }
+    }
+  }
+
+  /** Build a single format card for the unified grid. */
+  private buildFormatCard(
+    grid: HTMLElement,
+    key: string,
+    name: string,
+    desc: string,
+    previewLines: string[],
+    isPreset: boolean,
+    onApply: () => void,
+  ): HTMLElement {
+    const cardEl = el('div', 'inkchapter-format-card', grid)
+    cardEl.setAttribute('tabindex', '0')
+
+    const cardName = el('div', 'inkchapter-format-card-name', cardEl)
+    cardName.textContent = name
+
+    const cardDesc = el('div', 'inkchapter-format-card-desc', cardEl)
+    cardDesc.textContent = desc
+
+    if (previewLines.length > 0) {
+      const previewDiv = el('div', 'inkchapter-format-card-preview', cardEl)
+      for (const line of previewLines) {
+        const lineEl = el('div', 'inkchapter-format-card-preview-line', previewDiv)
+        lineEl.textContent = line
+      }
+    }
+
+    // Apply button
+    const actions = el('div', 'inkchapter-format-card-actions', cardEl)
+    const applyBtn = el('button', 'inkchapter-btn', actions)
+    applyBtn.textContent = '应用'
+    applyBtn.onclick = (e) => {
+      e.stopPropagation()
+      this.cancelDrag()
+      onApply()
+    }
+
+    // Click to select
+    cardEl.onclick = () => {
+      this.cancelDrag()
+      this.selectedCardKey = key
+      this.selectedCardIsPreset = isPreset
+      this.rerender()
+    }
+    cardEl.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        this.cancelDrag()
+        this.selectedCardKey = key
+        this.selectedCardIsPreset = isPreset
+        this.rerender()
+      }
+    }
+
+    return cardEl
+  }
+
+  private handlePresetCardApply(presetKey: string): void {
+    this.applyPresetToScope(presetKey)
+  }
+
+  private handleFormatCardApply(format: CustomNumberingFormat): void {
+    this.applyFormatToScope(format)
+  }
+
+  // ── Current format summary ───────────────────────
+
+  private renderCurrentFormatSummary(s: HeadingNumberingSettings): void {
+    const summary = el('div', 'inkchapter-current-format-summary', this.containerEl)
+
+    // Info line
+    const info = el('div', 'inkchapter-current-info', summary)
+    const label = el('span', '', info)
+    label.textContent = '当前格式：'
+    label.style.cssText = 'font-weight:500;'
+    const nameEl = el('span', 'inkchapter-current-name', info)
+    nameEl.textContent = this.getCurrentFormatDisplayName(s)
+    const typeEl = el('span', 'inkchapter-current-type', info)
+    typeEl.textContent = s.preset === 'custom'
+      ? (this.selectedFormatId ? '（用户自定义格式）' : '（自定义设置）')
+      : '（系统预设）'
+
+    // Action buttons
+    const actions = el('div', 'inkchapter-current-actions', summary)
+
+    const docPath = this.numberingService.getActiveFilePath()
+    const docKey = this.numberingService.getDocumentKey()
+
+    // Apply to Doc
+    const applyDocBtn = el('button', 'inkchapter-btn', actions)
+    applyDocBtn.textContent = '应用到当前文档'
+    applyDocBtn.setAttribute('title', '将当前格式应用到当前文档')
+    ;(applyDocBtn as HTMLButtonElement).disabled = !docPath
+    applyDocBtn.onclick = () => {
+      this.applyCurrentToScope('document')
+    }
+
+    // Set as Global Default
+    const applyGlobalBtn = el('button', 'inkchapter-btn', actions)
+    applyGlobalBtn.textContent = '设为全局默认'
+    applyGlobalBtn.title = '将当前格式设为全局默认'
+    applyGlobalBtn.onclick = () => {
+      this.applyCurrentToScope('global')
+    }
+
+    // Edit / Copy as Custom
+    if (s.preset !== 'custom' || !this.selectedFormatId) {
+      // System preset: show [Copy as Custom] (which also acts as edit entry)
+      const copyBtn = el('button', 'inkchapter-btn', actions)
+      copyBtn.textContent = '复制为自定义'
+      copyBtn.title = '基于当前预设创建可编辑的自定义格式'
+      copyBtn.onclick = () => {
+        this.cancelDrag()
+        this.showCreateFormatDialog(s.preset === 'custom' ? undefined : s.preset)
+      }
+    }
+
+    // For user formats: show edit/rename/delete
+    if (this.selectedFormatId && this.formatDraft) {
+      const editBtn = el('button', 'inkchapter-btn', actions)
+      editBtn.textContent = '编辑格式'
+      editBtn.title = '编辑此自定义格式'
+      editBtn.onclick = () => {
+        this.cancelDrag()
+        this.editorExpanded = true
+        this.rerender()
+      }
+
+      const renameBtn = el('button', 'inkchapter-btn', actions)
+      renameBtn.textContent = '重命名'
+      renameBtn.onclick = () => {
+        this.renameCurrentFormat()
+      }
+
+      const copyBtn = el('button', 'inkchapter-btn', actions)
+      copyBtn.textContent = '复制'
+      copyBtn.title = '复制此格式'
+      copyBtn.onclick = () => {
+        this.copyUserFormat(this.formatDraft!)
+      }
+
+      const deleteBtn = el('button', 'inkchapter-btn inkchapter-btn--danger', actions)
+      deleteBtn.textContent = '删除'
+      deleteBtn.onclick = () => {
+        this.deleteCurrentFormat()
+      }
+    }
+  }
+
+  private getCurrentFormatDisplayName(s: HeadingNumberingSettings): string {
+    if (this.selectedFormatId && this.formatDraft) {
+      return this.formatDraft.name
+    }
+    if (this.selectedCardKey) {
+      if (this.selectedCardIsPreset) {
+        const preset = PRESET_CARDS.find(c => c.key === this.selectedCardKey)
+        return preset ? preset.name : '系统预设'
+      } else {
+        const fmt = this.formatLibrary.formats.find(f => f.id === this.selectedCardKey)
+        return fmt ? fmt.name : '自定义格式'
+      }
+    }
+    // Fallback to actual active preset
+    const preset = PRESET_CARDS.find(c => c.key === s.preset)
+    return preset ? preset.name : '自定义'
+  }
+
+  private applyCurrentToScope(scope: HeadingSettingsScope): void {
+    const s = this.headingSettings
+    if (s.preset !== 'custom') {
+      this.applyPresetToScope(s.preset, scope)
+    } else if (this.selectedFormatId && this.formatDraft) {
+      this.applyFormatToScope(this.formatDraft, scope)
+    } else {
+      // Apply current custom draft
+      const docKey = scope === 'document'
+        ? (this.numberingService.getDocumentKey() ?? null)
+        : null
+      this.numberingService.saveHeadingNumberingScoped(
+        scope, docKey, deepCloneSettings(s),
+      )
       this.headingDraft = null
       this.headingDraftOriginal = null
       this.rerender()
       Notice.info(scope === 'global' ? '全局默认设置已保存' : '当前文档设置已保存')
     }
+  }
 
-    const cancelBtn = el('button', '', actionRow)
-    cancelBtn.textContent = '取消'
-    cancelBtn.style.cssText = 'padding:8px 24px;font-size:14px;background:#e0e0e0;color:#333;border:none;border-radius:4px;cursor:pointer;'
+  // ── Collapsible custom editor ────────────────────
+
+  private renderCustomEditorCollapsible(s: HeadingNumberingSettings): void {
+    const isEditing = this.selectedFormatId !== null || s.preset === 'custom'
+
+    const section = el('div', 'inkchapter-collapsible-section', this.containerEl)
+    if (!this.editorExpanded) {
+      section.classList.add('inkchapter-collapsed')
+    } else {
+      section.classList.add('inkchapter-expanded')
+    }
+
+    // Header
+    const header = el('div', 'inkchapter-collapsible-header', section)
+    header.setAttribute('tabindex', '0')
+    const title = el('span', 'inkchapter-collapsible-title', header)
+    title.textContent = '自定义格式编辑器'
+
+    const arrow = el('span', 'inkchapter-collapsible-arrow', header)
+    arrow.textContent = '▼'
+
+    header.onclick = () => {
+      this.editorExpanded = !this.editorExpanded
+      if (this.editorExpanded && isEditing) {
+        this.ensureDraft()
+        this.ensureAllLevelsHaveCurrentSegment(this.headingDraft!)
+      }
+      this.rerender()
+    }
+    header.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        header.click()
+      }
+    }
+
+    // Body
+    const body = el('div', 'inkchapter-collapsible-body', section)
+
+    if (!this.editorExpanded) return
+
+    // Only show editor content if there's a custom/format draft
+    if (!isEditing) {
+      const hint = el('div', '', body)
+      hint.textContent = '选择一个系统预设或自定义格式后，点击"编辑格式"开始编辑。也可以点击"+ 新建格式"创建新格式。'
+      hint.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
+      return
+    }
+
+    this.ensureDraft()
+    const draft = this.headingDraft!
+    this.ensureAllLevelsHaveCurrentSegment(draft)
+
+    // Editing header
+    this.renderEditorEditHeader(body, s, draft)
+
+    // H1-H6 level tabs (horizontal)
+    this.renderLevelTabs(body, s, draft)
+
+    // Dual-column: editor + preview
+    const dualCol = el('div', 'inkchapter-editor-dual-col', body)
+
+    const editorCol = el('div', 'inkchapter-editor-main', dualCol)
+
+    // Foldable sections inside editor
+    this.renderMultiLevelFormatSection(editorCol, s, draft)
+    this.renderTokenSettingsSection(editorCol, s, draft)
+    this.renderLevelBehaviorFoldSection(editorCol, s, draft)
+
+    // Preview column (sticky)
+    const previewCol = el('div', 'inkchapter-editor-preview-col', dualCol)
+    const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
+    const previewTitle = el('div', '', previewSticky)
+    previewTitle.textContent = '实时预览'
+    previewTitle.style.cssText = 'font-weight:600;font-size:13px;margin-bottom:6px;color:var(--text-muted,#666);'
+    this.previewEl = el('div', 'inkchapter-preview', previewSticky)
+    this.updatePreview()
+    this.miniPreviewEls.clear()
+  }
+
+  private renderEditorEditHeader(
+    container: HTMLElement,
+    s: HeadingNumberingSettings,
+    draft: HeadingNumberingSettings,
+  ): void {
+    const header = el('div', 'inkchapter-editor-edit-header', container)
+
+    if (this.selectedFormatId && this.formatDraft) {
+      const label = el('span', 'inkchapter-editor-edit-title', header)
+      label.textContent = `正在编辑：${this.formatDraft.name}`
+
+      const saveBtn = el('button', 'inkchapter-btn', header)
+      saveBtn.textContent = '保存格式'
+      saveBtn.onclick = () => this.saveFormatDraft()
+
+      const saveAsBtn = el('button', 'inkchapter-btn', header)
+      saveAsBtn.textContent = '另存为'
+      saveAsBtn.onclick = () => this.saveFormatAs()
+
+      const cancelBtn = el('button', 'inkchapter-btn', header)
+      cancelBtn.textContent = '取消编辑'
+      cancelBtn.onclick = () => {
+        this.editorExpanded = false
+        this.cancelFormatEditing()
+      }
+    } else {
+      const label = el('span', 'inkchapter-editor-edit-title', header)
+      label.textContent = '自定义格式编辑'
+
+      const saveAsBtn = el('button', 'inkchapter-btn', header)
+      saveAsBtn.textContent = '保存为新格式'
+      saveAsBtn.onclick = () => this.saveCurrentAsFormat()
+
+      const cancelBtn = el('button', 'inkchapter-btn', header)
+      cancelBtn.textContent = '取消编辑'
+      cancelBtn.onclick = () => {
+        this.editorExpanded = false
+        this.rerender()
+      }
+    }
+  }
+
+  private renderLevelTabs(
+    container: HTMLElement,
+    s: HeadingNumberingSettings,
+    draft: HeadingNumberingSettings,
+  ): void {
+    const tabs = el('div', 'inkchapter-level-tabs', container)
+    const h1Visible = s.showLevelOneNumber
+    const effectiveMax = this.numberingService.getEffectiveMaxLevel()
+
+    for (const lv of HEADING_LEVELS) {
+      const tab = el('div', 'inkchapter-level-tab', tabs)
+      tab.textContent = `H${lv}`
+      tab.setAttribute('tabindex', '0')
+
+      if (this.expandedLevel === lv) {
+        tab.classList.add('inkchapter-level-tab--selected')
+      }
+
+      const isDisabled = (lv === 1 && !h1Visible) || lv > effectiveMax
+      if (isDisabled) {
+        tab.classList.add('inkchapter-level-tab--disabled')
+        if (lv === 1 && !h1Visible) {
+          const tag = el('span', 'inkchapter-level-status-tag', tab)
+          tag.textContent = '已关闭'
+        } else if (lv > effectiveMax) {
+          const tag = el('span', 'inkchapter-level-status-tag', tab)
+          tag.textContent = '超出范围'
+        }
+        tab.onclick = () => { /* no-op */ }
+        continue
+      }
+
+      tab.onclick = () => {
+        this.expandedLevel = this.expandedLevel === lv ? null : lv
+        this.selectedSegmentId = null
+        this.tokenSettingsCollapsed = false
+        this.levelBehaviorCollapsed = false
+        this.rerender()
+      }
+    }
+  }
+
+  private renderMultiLevelFormatSection(
+    container: HTMLElement,
+    s: HeadingNumberingSettings,
+    draft: HeadingNumberingSettings,
+  ): void {
+    const section = el('div', 'inkchapter-editor-fold-section', container)
+
+    const foldHeader = el('div', 'inkchapter-editor-fold-header', section)
+    foldHeader.textContent = '一、多级组合格式'
+
+    const foldBody = el('div', 'inkchapter-editor-fold-body', section)
+
+    if (this.expandedLevel == null) {
+      const hint = el('div', 'inkchapter-token-select-hint', foldBody)
+      hint.textContent = '请从上方 H1-H6 标签中选择一个级别进行编辑'
+      return
+    }
+
+    const lv = this.expandedLevel
+    const style = draft.levels[lv]
+    if (!style) return
+
+    const isH1Disabled = lv === 1 && !s.showLevelOneNumber
+
+    if (isH1Disabled) {
+      const h1Notice = el('div', 'inkchapter-custom-h1-notice', foldBody)
+      h1Notice.textContent = 'H1 编号已关闭'
+      h1Notice.classList.add('inkchapter-h1-visibility--disabled')
+      return
+    }
+
+    // Render contextual composition editor
+    let activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+    if (!activeFmt || activeFmt.length === 0) {
+      const soloSeg: ContextualFormatSegment = {
+        id: generateStableId(),
+        type: 'level-reference',
+        level: lv,
+        appearance: { tokenStyle: style.tokenStyle, prefix: '', suffix: '' },
+      }
+      style.contextualFormatVariants = {
+        withLevelOne: [{ ...soloSeg, id: generateStableId() }],
+        withoutLevelOne: lv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
+      }
+      activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+    }
+
+    if (!this.selectedSegmentId && activeFmt) {
+      const curSeg = activeFmt.find(seg => seg.type === 'level-reference' && seg.level === lv)
+      if (curSeg) this.selectedSegmentId = curSeg.id
+    }
+
+    if (activeFmt && activeFmt.length > 0) {
+      this.renderContextualCompositionEditor(foldBody, lv, style, s, activeFmt)
+    }
+  }
+
+  private renderTokenSettingsSection(
+    container: HTMLElement,
+    s: HeadingNumberingSettings,
+    draft: HeadingNumberingSettings,
+  ): void {
+    const section = el('div', 'inkchapter-editor-fold-section', container)
+    if (this.tokenSettingsCollapsed) {
+      section.classList.add('inkchapter-editor-fold-section--collapsed')
+    }
+
+    const foldHeader = el('div', 'inkchapter-editor-fold-header', section)
+    foldHeader.textContent = '二、序号标签设置'
+
+    foldHeader.onclick = () => {
+      this.tokenSettingsCollapsed = !this.tokenSettingsCollapsed
+      this.rerender()
+    }
+
+    const foldBody = el('div', 'inkchapter-editor-fold-body', section)
+
+    if (this.expandedLevel == null) {
+      const hint = el('div', 'inkchapter-token-select-hint', foldBody)
+      hint.textContent = '请从上方 H1-H6 标签中选择一个级别'
+      return
+    }
+
+    const lv = this.expandedLevel
+    const style = draft.levels[lv]
+    if (!style) return
+
+    const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+
+    if (!this.selectedSegmentId || !activeFmt) {
+      const hint = el('div', 'inkchapter-token-select-hint', foldBody)
+      hint.textContent = '请在"多级组合格式"中选择一个序号标签进行编辑'
+      return
+    }
+
+    // Render contextual property panel
+    this.renderContextualPropertyPanel(foldBody, lv, activeFmt, s)
+  }
+
+  private renderLevelBehaviorFoldSection(
+    container: HTMLElement,
+    s: HeadingNumberingSettings,
+    draft: HeadingNumberingSettings,
+  ): void {
+    const section = el('div', 'inkchapter-editor-fold-section', container)
+    if (this.levelBehaviorCollapsed) {
+      section.classList.add('inkchapter-editor-fold-section--collapsed')
+    }
+
+    const foldHeader = el('div', 'inkchapter-editor-fold-header', section)
+    foldHeader.textContent = '三、当前级别行为'
+
+    foldHeader.onclick = () => {
+      this.levelBehaviorCollapsed = !this.levelBehaviorCollapsed
+      this.rerender()
+    }
+
+    const foldBody = el('div', 'inkchapter-editor-fold-body', section)
+
+    if (this.expandedLevel == null) {
+      const hint = el('div', 'inkchapter-token-select-hint', foldBody)
+      hint.textContent = '请选择级别'
+      return
+    }
+
+    const lv = this.expandedLevel
+    const style = draft.levels[lv]
+    if (!style) return
+
+    const isH1Disabled = lv === 1 && !s.showLevelOneNumber
+    const activeFmt = (getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv) || []) as readonly MultilevelFormatSegment[]
+
+    this.renderLevelBehaviorSettings(foldBody, lv, style, isH1Disabled, activeFmt)
+  }
+
+  // ── Collapsible heading range ────────────────────
+
+  private renderHeadingRangeCollapsible(): void {
+    const section = el('div', 'inkchapter-collapsible-section', this.containerEl)
+    if (!this.headingRangeExpanded) {
+      section.classList.add('inkchapter-collapsed')
+    } else {
+      section.classList.add('inkchapter-expanded')
+    }
+
+    const header = el('div', 'inkchapter-collapsible-header', section)
+    header.setAttribute('tabindex', '0')
+    const title = el('span', 'inkchapter-collapsible-title', header)
+    title.textContent = '标题有效级数范围'
+
+    const arrow = el('span', 'inkchapter-collapsible-arrow', header)
+    arrow.textContent = '▼'
+
+    header.onclick = () => {
+      this.headingRangeExpanded = !this.headingRangeExpanded
+      this.rerender()
+    }
+    header.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        header.click()
+      }
+    }
+
+    const body = el('div', 'inkchapter-collapsible-body', section)
+
+    if (!this.headingRangeExpanded) return
+
+    // Reuse existing level range rendering
+    this.renderLevelRangeSectionInto(body)
+  }
+
+  /** Render level range content into a given container. */
+  private renderLevelRangeSectionInto(container: HTMLElement): void {
+    // Capture current child count; render into containerEl; move new children to target
+    const beforeCount = this.containerEl.childNodes.length
+    this.renderLevelRangeSection()
+    // Move newly appended children (after beforeCount) into the target container
+    const children = Array.from(this.containerEl.childNodes)
+    for (let i = beforeCount; i < children.length; i++) {
+      container.appendChild(children[i])
+    }
+  }
+
+  // ── Bottom sticky action bar ─────────────────────
+
+  private renderBottomActionBar(): void {
+    const docPath = this.numberingService.getActiveFilePath()
+    const docKey = this.numberingService.getDocumentKey()
+
+    const bar = el('div', 'inkchapter-settings-actions', this.containerEl)
+
+    const cancelBtn = el('button', 'inkchapter-btn', bar)
+    cancelBtn.textContent = '取消更改'
     cancelBtn.onclick = () => {
       if (this.headingDraft) {
         this.headingDraft = null
         this.headingDraftOriginal = null
+        this.editorExpanded = false
+        this.selectedFormatId = null
+        this.formatDraft = null
         this.rerender()
         Notice.info('更改已取消')
       }
+    }
+
+    const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', bar)
+    saveBtn.textContent = '保存并应用'
+    saveBtn.onclick = () => {
+      // Save format draft if editing
+      if (this.selectedFormatId && this.formatDraft && this.headingDraft) {
+        this.saveFormatDraft()
+      }
+      // Save scope draft if any
+      if (this.headingDraft) {
+        const scope = this.headingScope
+        const key = scope === 'document' ? (docKey ?? null) : null
+        this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
+        this.headingDraft = null
+        this.headingDraftOriginal = null
+      }
+      this.editorExpanded = false
+      this.selectedFormatId = null
+      this.formatDraft = null
+      this.rerender()
+      Notice.info('设置已保存')
     }
   }
 }
