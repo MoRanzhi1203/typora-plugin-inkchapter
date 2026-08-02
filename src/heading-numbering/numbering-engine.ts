@@ -180,6 +180,14 @@ function buildLabel(
   }
 
   // ── Legacy format-based label (schemaVersion < 7) ─
+  // IMPORTANT: If contextualFormatVariants is defined, we MUST NOT fall through
+  // to legacy includeParents/prefix/suffix. An empty but defined contextual model
+  // means the level was intentionally configured — falling back to legacy would
+  // produce old decimal-hierarchical format instead of the intended current-level-only format.
+  if (style.contextualFormatVariants) {
+    return ''
+  }
+
   const activeVariant = getActiveFormatVariant(style, !skipH1, headingLevel)
   if (activeVariant && activeVariant.length > 0) {
     return buildLabelFromFormat(activeCounters, levelStyles, skipH1, headingLevel, style)

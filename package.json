@@ -8,9 +8,16 @@
   "scripts": {
     "build:dev": "node build.js",
     "build": "rollup -c rollup.config.js",
-    "pack": "pnpm run build && node pack.js"
+    "pack": "pnpm run build && node pack.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
-  "keywords": ["typora", "plugin", "inkchapter", "墨章"],
+  "keywords": [
+    "typora",
+    "plugin",
+    "inkchapter",
+    "墨章"
+  ],
   "author": "墨染止",
   "license": "MIT",
   "devDependencies": {
@@ -36,7 +43,8 @@
     "rollup-plugin-typora": "npm:@typora-community-plugin/rollup-plugin-typora@^1.1.0",
     "sass": "^1.69.5",
     "tslib": "^2.6.2",
-    "typescript": "^5.1.6"
+    "typescript": "^5.1.6",
+    "vitest": "^4.1.10"
   },
   "packageManager": "pnpm@11.15.0+sha512.266f8957a30d2be6e9468e5e66bcdedd35a794175f71b067ba8504d686cce1d0c0f429b33c323c3c569ad4891e667574a49ff71d1b89a22cc66f13c65818c578"
 }

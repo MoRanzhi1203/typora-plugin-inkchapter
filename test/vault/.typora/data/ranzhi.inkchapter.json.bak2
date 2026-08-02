@@ -1,0 +1,1402 @@
+{
+  "version": 8,
+  "settings": {
+    "headingNumbering": {
+      "enabled": true,
+      "showLevelOneNumber": false,
+      "preset": "custom",
+      "maxDepth": 6,
+      "levels": {
+        "1": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": null,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 1
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 1
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4f4s8-739c-184",
+                "type": "level-reference",
+                "level": 1,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4f4s8-325a-185",
+                "type": "level-reference",
+                "level": 1,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        },
+        "2": {
+          "enabled": true,
+          "tokenStyle": "chinese",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 1,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "chinese",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "、"
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4f4s8-0f33-186",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4f4s8-cb98-187",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              },
+              {
+                "id": "mrz4f4s8-d2c9-188",
+                "type": "literal",
+                "value": "、"
+              }
+            ]
+          }
+        },
+        "3": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 2,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "（",
+            "suffix": "）"
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 3
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-template-reference",
+                "level": 3
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4f4s8-c812-189",
+                "type": "level-reference",
+                "level": 3,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "（",
+                  "suffix": "）"
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4f4s8-97f6-190",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              },
+              {
+                "id": "mrz4f4s8-03bc-191",
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "id": "mrz4f4s8-ec74-192",
+                "type": "level-reference",
+                "level": 3,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "（",
+                  "suffix": "）"
+                }
+              }
+            ]
+          }
+        },
+        "4": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 3,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 4
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-template-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-template-reference",
+                "level": 4
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4f4s8-bbed-193",
+                "type": "level-reference",
+                "level": 4,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4f4s8-4563-194",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              },
+              {
+                "id": "mrz4f4s8-9f49-195",
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "id": "mrz4f4s8-2f63-196",
+                "type": "level-reference",
+                "level": 3,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "（",
+                  "suffix": "）"
+                }
+              },
+              {
+                "id": "mrz4f4s8-aed7-197",
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "id": "mrz4f4s8-b4db-198",
+                "type": "level-reference",
+                "level": 4,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        },
+        "5": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 4,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 5
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 5
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4f4s8-419d-199",
+                "type": "level-reference",
+                "level": 5,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4f4s8-1030-200",
+                "type": "level-reference",
+                "level": 5,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        },
+        "6": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 5,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 6
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 6
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 6
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 6
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4f4s8-6cb4-201",
+                "type": "level-reference",
+                "level": 6,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4f4s8-2a49-202",
+                "type": "level-reference",
+                "level": 6,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        }
+      },
+      "customDefinition": {
+        "1": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": null,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 1
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 1
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4fagk-a233-222",
+                "type": "level-reference",
+                "level": 1,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4fagk-dc55-223",
+                "type": "level-reference",
+                "level": 1,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        },
+        "2": {
+          "enabled": true,
+          "tokenStyle": "chinese",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 1,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "chinese",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "、"
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4fagk-a83c-224",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4fagk-78e8-225",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              },
+              {
+                "id": "mrz4fagk-730c-226",
+                "type": "literal",
+                "value": "、"
+              }
+            ]
+          }
+        },
+        "3": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 2,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "（",
+            "suffix": "）"
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 3
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-template-reference",
+                "level": 3
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4fagk-28c9-227",
+                "type": "level-reference",
+                "level": 3,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "（",
+                  "suffix": "）"
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4fagk-76ca-228",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              },
+              {
+                "id": "mrz4fagk-3c80-229",
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "id": "mrz4fagk-23ab-230",
+                "type": "level-reference",
+                "level": 3,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "（",
+                  "suffix": "）"
+                }
+              }
+            ]
+          }
+        },
+        "4": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 3,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 4
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-template-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-template-reference",
+                "level": 4
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4fagk-f282-231",
+                "type": "level-reference",
+                "level": 4,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4fagk-16d3-232",
+                "type": "level-reference",
+                "level": 2,
+                "appearance": {
+                  "tokenStyle": "chinese",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              },
+              {
+                "id": "mrz4fagk-841b-233",
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "id": "mrz4fagk-f5bc-234",
+                "type": "level-reference",
+                "level": 3,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "（",
+                  "suffix": "）"
+                }
+              },
+              {
+                "id": "mrz4fagk-2542-235",
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "id": "mrz4fagk-5419-236",
+                "type": "level-reference",
+                "level": 4,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        },
+        "5": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 4,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 5
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 5
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4fagk-7460-237",
+                "type": "level-reference",
+                "level": 5,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4fagk-755d-238",
+                "type": "level-reference",
+                "level": 5,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        },
+        "6": {
+          "enabled": true,
+          "tokenStyle": "arabic",
+          "includeParents": true,
+          "prefix": "",
+          "suffix": "",
+          "separator": ".",
+          "startAt": 1,
+          "restartAfterLevel": 5,
+          "formatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 1
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 6
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-reference",
+                "level": 2
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 3
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 4
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 5
+              },
+              {
+                "type": "literal",
+                "value": "."
+              },
+              {
+                "type": "level-reference",
+                "level": 6
+              }
+            ]
+          },
+          "levelTemplate": {
+            "tokenStyle": "arabic",
+            "prefix": "",
+            "suffix": ""
+          },
+          "multilevelFormatVariants": {
+            "withLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 6
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "type": "level-template-reference",
+                "level": 6
+              }
+            ]
+          },
+          "contextualFormatVariants": {
+            "withLevelOne": [
+              {
+                "id": "mrz4fagk-ef4a-239",
+                "type": "level-reference",
+                "level": 6,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ],
+            "withoutLevelOne": [
+              {
+                "id": "mrz4fagk-e132-240",
+                "type": "level-reference",
+                "level": 6,
+                "appearance": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                }
+              }
+            ]
+          }
+        }
+      },
+      "separator": ".",
+      "suffix": "",
+      "showTrailingSeparator": false
+    }
+  }
+}

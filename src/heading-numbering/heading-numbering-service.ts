@@ -131,6 +131,13 @@ export class HeadingNumberingService {
   private boundEditorRoot: HTMLElement | null = null
   private editorRootDisposables: DisposableStore | null = null
 
+  // Timer handles for cleanup
+  private pasteListenerTimer: ReturnType<typeof setTimeout> | null = null
+  private fileOpenRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+  // Disposed flag
+  private disposed = false
+
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
@@ -1023,6 +1030,7 @@ export class HeadingNumberingService {
   }
 
   dispose(): void {
+    this.disposed = true
     this.cancelPending()
     this.disconnectObserver()
     this.unbindEditorRoot()
@@ -1030,6 +1038,8 @@ export class HeadingNumberingService {
     this.store.dispose()
     this.levelRangeEnforcer.dispose()
     this.outlineController.stop()
+    if (this.pasteListenerTimer !== null) { clearTimeout(this.pasteListenerTimer); this.pasteListenerTimer = null }
+    if (this.fileOpenRetryTimer !== null) { clearTimeout(this.fileOpenRetryTimer); this.fileOpenRetryTimer = null }
   }
 
   // ── Settings sync ──────────────────────────────────────
@@ -1318,8 +1328,11 @@ export class HeadingNumberingService {
 
   private attachPasteListener(root: HTMLElement): void {
     const onPaste = (): void => {
+      if (this.pasteListenerTimer !== null) clearTimeout(this.pasteListenerTimer)
       // Delay to let Typora process the paste first
-      setTimeout(() => {
+      this.pasteListenerTimer = setTimeout(() => {
+        this.pasteListenerTimer = null
+        if (this.disposed) return
         this.levelRangeEnforcer.enforceAfterPaste()
         this.requestRefresh('editor-mutation')
       }, 50)
@@ -1506,7 +1519,10 @@ export class HeadingNumberingService {
           this.requestRefresh('file-open')
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         })
-        setTimeout(() => {
+        if (this.fileOpenRetryTimer !== null) clearTimeout(this.fileOpenRetryTimer)
+        this.fileOpenRetryTimer = setTimeout(() => {
+          this.fileOpenRetryTimer = null
+          if (this.disposed) return
           if (version !== this.renderVersion) return
           const area = this.adapter.detectEditorRoot()
           if (area && (!this.lastSnapshot || this.lastSnapshot.length === 0)) {
@@ -1519,16 +1535,16 @@ export class HeadingNumberingService {
       }),
     )
 
-    // Active leaf change — load document context, bump version, reinit outline
+    // Active leaf change — load document context, bump version, reinit outline, rebind observer + editor root
     this.store.add(
       ctx.onWorkspaceEvent('active-leaf:change', () => {
-        ++this.renderVersion
+        const version = ++this.renderVersion
         this.loadDocumentContext()
         const newDocKey = this.getDocumentKey()
         recordRuntimeAudit('active-leaf:change', {
           documentKey: newDocKey ?? 'none',
           settingsSource: this.docContext.source,
-          renderVersion: this.renderVersion,
+          renderVersion: version,
         })
         this.lastSnapshot = null
         this.renderedStates = null
@@ -1536,8 +1552,27 @@ export class HeadingNumberingService {
         this.outlineController.reinitialize()
         this.outlineController.setDocumentKey(newDocKey ?? '')
         this.overrideStore = null
-        this.requestRefresh('active-leaf-change')
-        this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
+        queueMicrotask(() => {
+          if (version !== this.renderVersion) { return }
+          const area = this.adapter.detectEditorRoot()
+          if (area) {
+            this.adapter.setEditorRoot(area)
+            this.connectObserver(area)
+            this.bindEditorRoot()
+          }
+          this.requestRefresh('active-leaf-change')
+          this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
+        })
+        setTimeout(() => {
+          if (version !== this.renderVersion) return
+          const area = this.adapter.detectEditorRoot()
+          if (area && (!this.lastSnapshot || this.lastSnapshot.length === 0)) {
+            this.adapter.setEditorRoot(area)
+            this.connectObserver(area)
+            this.bindEditorRoot()
+            this.requestRefresh('active-leaf-change')
+          }
+        }, 100)
       }),
     )
 

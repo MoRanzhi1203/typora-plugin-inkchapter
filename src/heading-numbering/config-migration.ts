@@ -3,6 +3,7 @@ import { HEADING_LEVELS, createDefaultLevelTemplate, createDefaultReferenceAppea
 import { getPresetLevels } from './presets'
 import { stripHiddenLevelReferences } from './numbering-engine'
 import { stripHiddenMultilevelReferences } from './numbering-engine'
+import { deepCloneSettings } from './heading-numbering-scope-store'
 import * as logger from '../core/logger'
 
 const VALID_TOKEN_STYLES: ReadonlySet<string> = new Set([
@@ -564,13 +565,20 @@ export function migrateSettings(
   } catch (e) {
     logger.error('设置迁移失败，将使用默认标题编号设置', e)
     const defaults = defaultLevelStyle()
+    const levelInput = {
+      enabled: true,
+      showLevelOneNumber: false,
+      preset: 'decimal-hierarchical' as const,
+      maxDepth: 6 as HeadingLevel,
+      levels: defaults,
+    }
     return {
       enabled: true,
       showLevelOneNumber: false,
       preset: 'decimal-hierarchical',
       maxDepth: 6 as HeadingLevel,
-      levels: defaults,
-      customDefinition: { ...defaults },
+      levels: deepCloneSettings(levelInput as any).levels,
+      customDefinition: deepCloneSettings(levelInput as any).levels,
     }
   }
 }

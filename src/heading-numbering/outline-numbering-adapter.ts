@@ -17,7 +17,6 @@ const ROOT_CANDIDATES = [
   '#outline-content',
   '.outline-content',
   '.outline-panel',
-  '#file-library .outline-panel',
   '.sidebar-outline',
   '.ty-outline',
   '[data-outline]',

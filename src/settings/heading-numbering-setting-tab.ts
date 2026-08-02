@@ -457,8 +457,25 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (preset === 'custom') {
       const isFirstTime = !s.customDefinition || Object.keys(s.customDefinition).length === 0
       if (isFirstTime) {
-        // First time entering Custom: generate current-level-only formats.
-        this.ensureAllLevelsHaveCurrentSegment(s)
+        // First time entering Custom: reset all levels to current-level-only format.
+        // We must explicitly clear contextualFormatVariants first because
+        // ensureAllLevelsHaveCurrentSegment only adds when missing — but
+        // preset formats already contain multi-level references (e.g. [H1].[H2].[H3])
+        // which would pass the "any ref exists" check and keep old multi-level data.
+        for (const lv of HEADING_LEVELS) {
+          const ls = s.levels[lv]
+          if (!ls) continue
+          const soloSeg: ContextualFormatSegment = {
+            id: generateStableId(),
+            type: 'level-reference',
+            level: lv,
+            appearance: { tokenStyle: ls.tokenStyle, prefix: '', suffix: '' },
+          }
+          ls.contextualFormatVariants = {
+            withLevelOne: [{ ...soloSeg, id: generateStableId() }],
+            withoutLevelOne: lv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
+          }
+        }
         s.customDefinition = deepCloneSettings(s).levels
       } else {
         // Restore from previous customization
@@ -881,7 +898,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
       // ═══ Stage 1: Multilevel composition (contextual model) ═══
       if (!isH1Disabled) {
-        const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+        let activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+        if (!activeFmt || activeFmt.length === 0) {
+          // Format not initialized — repair it now with current-level-only format.
+          // Do NOT fall back to the old multilevel model; that would show
+          // stale preset data (e.g. [H1].[H2].[H3]) instead of just [H3].
+          const soloSeg: ContextualFormatSegment = {
+            id: generateStableId(),
+            type: 'level-reference',
+            level: lv,
+            appearance: { tokenStyle: style.tokenStyle, prefix: '', suffix: '' },
+          }
+          style.contextualFormatVariants = {
+            withLevelOne: [{ ...soloSeg, id: generateStableId() }],
+            withoutLevelOne: lv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
+          }
+          activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+        }
         // Default select current level tag
         if (!this.selectedSegmentId) {
           const curSeg = activeFmt?.find(s => s.type === 'level-reference' && s.level === lv)
@@ -889,9 +922,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         }
         if (activeFmt && activeFmt.length > 0) {
           this.renderContextualCompositionEditor(editorSection, lv, style, s, activeFmt)
-        } else {
-          // Fallback to old multilevel model
-          this.renderMultilevelCompositionEditor(editorSection, lv, style, s)
         }
       }
 
@@ -2019,12 +2049,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     for (const lv of HEADING_LEVELS) {
       const ls = s.levels[lv]
       if (!ls) continue
-      // Check if withLevelOne has at least one level-reference
-      const hasWith = ls.contextualFormatVariants?.withLevelOne?.some(
-        seg => seg.type === 'level-reference',
+      // Check specifically for current-level reference, not any reference.
+      // Preset formats (e.g. [H1].[H2].[H3]) contain level-references but
+      // we need to ensure the CURRENT level's own ref is present.
+      const hasOwnWith = ls.contextualFormatVariants?.withLevelOne?.some(
+        seg => seg.type === 'level-reference' && seg.level === lv,
       )
-      const hasWithout = ls.contextualFormatVariants?.withoutLevelOne?.some(
-        seg => seg.type === 'level-reference',
+      const hasOwnWithout = ls.contextualFormatVariants?.withoutLevelOne?.some(
+        seg => seg.type === 'level-reference' && seg.level === lv,
       )
       const soloSeg: ContextualFormatSegment = {
         id: generateStableId(),
@@ -2032,13 +2064,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
         level: lv,
         appearance: { tokenStyle: ls.tokenStyle, prefix: '', suffix: '' },
       }
-      if (!hasWith) {
+      if (!hasOwnWith) {
         ls.contextualFormatVariants = {
           ...(ls.contextualFormatVariants || {} as any),
           withLevelOne: [{ ...soloSeg, id: generateStableId() }],
         }
       }
-      if (!hasWithout && lv !== 1) {
+      if (!hasOwnWithout && lv !== 1) {
         ls.contextualFormatVariants = {
           ...ls.contextualFormatVariants,
           withoutLevelOne: [{ ...soloSeg, id: generateStableId() }],
