@@ -26,6 +26,10 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
 const DEFAULT_FORMAT_LIBRARY: FormatLibrary = {
   version: 1,
   formats: [],
+  preferences: {
+    hiddenBuiltInPresetIds: [],
+    customFormatOrder: [],
+  },
 }
 
 export const DEFAULT_SETTINGS: InkChapterSettings = {

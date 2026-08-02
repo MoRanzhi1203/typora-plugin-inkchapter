@@ -1028,6 +1028,7 @@
   outline: none;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .inkchapter-format-card:hover {
@@ -1191,20 +1192,20 @@
   border-top: 1px solid var(--border-primary, #ddd);
 }
 
-// ── Editor dual-column layout ──────────────────────────
+// ── Dual-column: editor + preview ──────────────────────
 .inkchapter-editor-dual-col {
-  display: flex;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 68fr) minmax(280px, 32fr);
+  gap: 18px;
+  align-items: start;
 }
 
 .inkchapter-editor-main {
-  flex: 0 0 65%;
   min-width: 0;
 }
 
 .inkchapter-editor-preview-col {
-  flex: 0 0 calc(35% - 16px);
-  min-width: 0;
+  min-width: 280px;
 }
 
 .inkchapter-editor-preview-sticky {
@@ -1212,13 +1213,12 @@
   top: 16px;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 900px) {
   .inkchapter-editor-dual-col {
-    flex-direction: column;
+    grid-template-columns: 1fr;
   }
-  .inkchapter-editor-main,
-  .inkchapter-editor-preview-col {
-    flex: 0 0 100%;
+  .inkchapter-editor-preview-sticky {
+    position: static;
   }
 }
 
@@ -1329,6 +1329,137 @@
   border-radius: 6px;
 }
 
+// ── Editor tab bar (composition / label / behavior) ────
+.inkchapter-editor-tab-bar {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border-bottom: 2px solid var(--border-primary, #ddd);
+}
+
+.inkchapter-editor-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  color: var(--text-muted, #888);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.inkchapter-editor-tab:hover {
+  color: var(--text-normal, #333);
+}
+
+.inkchapter-editor-tab--active {
+  color: var(--text-accent, #07a);
+  border-bottom-color: var(--text-accent, #07a);
+}
+
+// ── Label / Behavior compact form grids ────────────────
+.inkchapter-label-form,
+.inkchapter-behavior-form {
+  padding: 4px 0;
+}
+
+// ── Format library title row ───────────────────────────
+.inkchapter-format-library-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.inkchapter-format-library-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+// ── Format card menu ───────────────────────────────────
+.inkchapter-format-card-menu-trigger {
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-muted, #888);
+  user-select: none;
+}
+
+.inkchapter-format-card-menu-trigger:hover {
+  background: var(--background-modifier-hover, #eee);
+  color: var(--text-normal, #333);
+}
+
+.inkchapter-format-card-menu {
+  position: absolute;
+  z-index: 100;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  min-width: 170px;
+  padding: 4px 0;
+}
+
+.inkchapter-format-card-menu-item {
+  padding: 7px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.inkchapter-format-card-menu-item:hover {
+  background: var(--background-modifier-hover, #f0f0f0);
+}
+
+// ── Format card uniform height ─────────────────────────
+.inkchapter-format-grid .inkchapter-format-card {
+  min-height: 200px;
+}
+
+.inkchapter-format-grid .inkchapter-format-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.inkchapter-format-grid .inkchapter-format-card-preview {
+  min-height: calc(3 * 1.5em);
+}
+
+.inkchapter-format-grid .inkchapter-format-card-actions {
+  margin-top: auto;
+}
+
+// ── Scope bar document name ────────────────────────────
+.inkchapter-scope-bar--compact .inkchapter-scope-doc {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+// ── Manage panel ───────────────────────────────────────
+.inkchapter-manage-panel {
+  margin: 0 0 12px;
+  padding: 12px;
+  background: var(--background-secondary, #f9f9f9);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 8px;
+}
+
+// ── Bottom action bar spacing ──────────────────────────
+.inkchapter-collapsible-section:last-of-type {
+  padding-bottom: 84px;
+}
+
 // ── Bottom sticky action bar ───────────────────────────
 .inkchapter-settings-actions {
   position: sticky;
@@ -1421,6 +1552,29 @@
   }
   .inkchapter-settings-actions {
     background: var(--background-primary, #1e1e1e);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .inkchapter-editor-tab-bar {
+    border-bottom-color: rgba(255, 255, 255, 0.1);
+  }
+  .inkchapter-editor-tab {
+    color: rgba(255, 255, 255, 0.5);
+  }
+  .inkchapter-editor-tab:hover {
+    color: rgba(255, 255, 255, 0.8);
+  }
+  .inkchapter-editor-tab--active {
+    color: var(--text-accent, #5af);
+  }
+  .inkchapter-format-card-menu {
+    background: var(--background-primary, #252525);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .inkchapter-format-card-menu-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .inkchapter-manage-panel {
+    background: rgba(255, 255, 255, 0.03);
     border-color: rgba(255, 255, 255, 0.1);
   }
 }
