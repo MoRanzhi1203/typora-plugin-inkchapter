@@ -3,7 +3,7 @@ import {
   createFormat,
   copyFormat,
   renameFormat,
-  deleteFormat as deleteFormatFromLibrary,
+  deleteFormat,
   generateFormatId,
   getFormatPreview,
   validateFormatName,
@@ -12,6 +12,16 @@ import {
   findFormat,
   updateFormatInLibrary,
   getDefaultFormatLibrary,
+  hideBuiltInPreset,
+  showBuiltInPreset,
+  isBuiltInPresetHidden,
+  getVisibleBuiltInPresets,
+  restoreBuiltInPresets,
+  areAllBuiltInPresetsVisible,
+  resetFormatLibrary,
+  getOrderedCustomFormats,
+  migrateFormatLibrary,
+  getDefaultPreferences,
 } from './format-library'
 import type {
   CustomNumberingFormat,
@@ -19,8 +29,9 @@ import type {
   HeadingLevel,
   HeadingLevelStyle,
   FormatBasedOn,
+  BuiltInPresetId,
 } from './heading-types'
-import { HEADING_LEVELS, generateStableId } from './heading-types'
+import { HEADING_LEVELS, generateStableId, BUILT_IN_PRESET_IDS } from './heading-types'
 import { getPresetLevels } from './presets'
 
 function makeBlankLevels(): Record<HeadingLevel, HeadingLevelStyle> {
@@ -51,6 +62,17 @@ function makeBlankLevels(): Record<HeadingLevel, HeadingLevelStyle> {
     }
   }
   return levels
+}
+
+function makeTestLibrary(formats: CustomNumberingFormat[] = []): FormatLibrary {
+  return {
+    version: 1,
+    formats,
+    preferences: {
+      hiddenBuiltInPresetIds: [],
+      customFormatOrder: formats.map(f => f.id),
+    },
+  }
 }
 
 describe('generateFormatId', () => {
@@ -171,53 +193,57 @@ describe('deleteFormat', () => {
     const levels = makeBlankLevels()
     const f1 = createFormat('Format 1', '', { type: 'blank' }, levels)
     const f2 = createFormat('Format 2', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [f1, f2] }
+    const lib: FormatLibrary = makeTestLibrary([f1, f2])
 
-    const remaining = deleteFormatFromLibrary(lib, f1.id)
-    expect(remaining.length).toBe(1)
-    expect(remaining[0].id).toBe(f2.id)
+    const newLib = deleteFormat(lib, f1.id)
+    expect(newLib.formats.length).toBe(1)
+    expect(newLib.formats[0].id).toBe(f2.id)
+    // customFormatOrder should also be cleaned
+    expect(newLib.preferences.customFormatOrder).not.toContain(f1.id)
+    expect(newLib.preferences.customFormatOrder).toContain(f2.id)
   })
 
   it('returns empty array when deleting last format', () => {
     const levels = makeBlankLevels()
     const f1 = createFormat('Format 1', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [f1] }
+    const lib: FormatLibrary = makeTestLibrary([f1])
 
-    const remaining = deleteFormatFromLibrary(lib, f1.id)
-    expect(remaining.length).toBe(0)
+    const newLib = deleteFormat(lib, f1.id)
+    expect(newLib.formats.length).toBe(0)
+    expect(newLib.preferences.customFormatOrder.length).toBe(0)
   })
 
   it('does nothing when format ID not found', () => {
     const levels = makeBlankLevels()
     const f1 = createFormat('Format 1', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [f1] }
+    const lib: FormatLibrary = makeTestLibrary([f1])
 
-    const remaining = deleteFormatFromLibrary(lib, 'nonexistent-id')
-    expect(remaining.length).toBe(1)
+    const newLib = deleteFormat(lib, 'nonexistent-id')
+    expect(newLib.formats.length).toBe(1)
   })
 })
 
 describe('validateFormatName', () => {
   it('returns null for valid name', () => {
-    const lib: FormatLibrary = { version: 1, formats: [] }
+    const lib = makeTestLibrary()
     expect(validateFormatName('我的格式', lib)).toBe(null)
   })
 
   it('rejects empty name', () => {
-    const lib: FormatLibrary = { version: 1, formats: [] }
+    const lib = makeTestLibrary()
     expect(validateFormatName('', lib)).not.toBe(null)
     expect(validateFormatName('   ', lib)).not.toBe(null)
   })
 
   it('rejects name over 30 chars', () => {
-    const lib: FormatLibrary = { version: 1, formats: [] }
+    const lib = makeTestLibrary()
     expect(validateFormatName('a'.repeat(31), lib)).not.toBe(null)
   })
 
   it('rejects duplicate name', () => {
     const levels = makeBlankLevels()
     const f1 = createFormat('My Format', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [f1] }
+    const lib = makeTestLibrary([f1])
     expect(validateFormatName('My Format', lib)).not.toBe(null)
   })
 })
@@ -257,10 +283,7 @@ describe('migrateOldCustom', () => {
 
   it('does not migrate when library already exists', () => {
     const levels = makeBlankLevels()
-    const existingLib: FormatLibrary = {
-      version: 1,
-      formats: [createFormat('Existing', '', { type: 'blank' }, levels)],
-    }
+    const existingLib: FormatLibrary = makeTestLibrary([createFormat('Existing', '', { type: 'blank' }, levels)])
     const result = migrateOldCustom(undefined, existingLib)
     expect(result.migrated).toBe(false)
     expect(result.library.formats.length).toBe(1)
@@ -305,7 +328,7 @@ describe('findFormat', () => {
   it('finds format by ID', () => {
     const levels = makeBlankLevels()
     const format = createFormat('Test', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [format] }
+    const lib = makeTestLibrary([format])
 
     const found = findFormat(lib, format.id)
     expect(found).toBeDefined()
@@ -313,7 +336,7 @@ describe('findFormat', () => {
   })
 
   it('returns undefined for nonexistent ID', () => {
-    const lib: FormatLibrary = { version: 1, formats: [] }
+    const lib = makeTestLibrary()
     expect(findFormat(lib, 'nonexistent')).toBeUndefined()
   })
 })
@@ -322,7 +345,7 @@ describe('updateFormatInLibrary', () => {
   it('updates format by ID', () => {
     const levels = makeBlankLevels()
     const format = createFormat('Test', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [format] }
+    const lib = makeTestLibrary([format])
 
     const updated = { ...format, name: 'Updated' }
     const newLib = updateFormatInLibrary(lib, updated)
@@ -336,17 +359,18 @@ describe('addFormatToLibrary', () => {
   it('adds format to library', () => {
     const levels = makeBlankLevels()
     const format = createFormat('Test', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [] }
+    const lib = makeTestLibrary()
 
     const newLib = addFormatToLibrary(lib, format)
     expect(newLib.formats.length).toBe(1)
     expect(newLib.formats[0].name).toBe('Test')
+    expect(newLib.preferences.customFormatOrder).toContain(format.id)
   })
 
   it('does not mutate original library', () => {
     const levels = makeBlankLevels()
     const format = createFormat('Test', '', { type: 'blank' }, levels)
-    const lib: FormatLibrary = { version: 1, formats: [] }
+    const lib = makeTestLibrary()
 
     addFormatToLibrary(lib, format)
     expect(lib.formats.length).toBe(0) // Original unchanged
@@ -358,5 +382,232 @@ describe('getDefaultFormatLibrary', () => {
     const lib = getDefaultFormatLibrary()
     expect(lib.version).toBe(1)
     expect(lib.formats).toEqual([])
+    expect(lib.preferences.hiddenBuiltInPresetIds).toEqual([])
+    expect(lib.preferences.customFormatOrder).toEqual([])
+  })
+})
+
+// ── Built-in preset hide/restore tests ──────────────────
+
+describe('hideBuiltInPreset', () => {
+  it('adds preset ID to hidden list', () => {
+    const lib = makeTestLibrary()
+    const newLib = hideBuiltInPreset(lib, 'roman-hierarchical')
+    expect(newLib.preferences.hiddenBuiltInPresetIds).toContain('roman-hierarchical')
+  })
+
+  it('does not duplicate already-hidden preset', () => {
+    const lib = makeTestLibrary()
+    let updated = hideBuiltInPreset(lib, 'chinese-chapter')
+    updated = hideBuiltInPreset(updated, 'chinese-chapter')
+    expect(updated.preferences.hiddenBuiltInPresetIds.length).toBe(1)
+  })
+
+  it('allows hiding multiple presets', () => {
+    const lib = makeTestLibrary()
+    let updated = hideBuiltInPreset(lib, 'chinese-chapter')
+    updated = hideBuiltInPreset(updated, 'chinese-outline')
+    expect(updated.preferences.hiddenBuiltInPresetIds.length).toBe(2)
+  })
+})
+
+describe('showBuiltInPreset', () => {
+  it('removes preset ID from hidden list', () => {
+    let lib = hideBuiltInPreset(makeTestLibrary(), 'roman-hierarchical')
+    lib = showBuiltInPreset(lib, 'roman-hierarchical')
+    expect(lib.preferences.hiddenBuiltInPresetIds).not.toContain('roman-hierarchical')
+  })
+
+  it('no-op if preset was not hidden', () => {
+    const lib = makeTestLibrary()
+    const updated = showBuiltInPreset(lib, 'decimal-hierarchical')
+    expect(updated.preferences.hiddenBuiltInPresetIds).toEqual([])
+  })
+})
+
+describe('isBuiltInPresetHidden', () => {
+  it('returns true for hidden preset', () => {
+    const lib = hideBuiltInPreset(makeTestLibrary(), 'chinese-outline')
+    expect(isBuiltInPresetHidden(lib, 'chinese-outline')).toBe(true)
+  })
+
+  it('returns false for visible preset', () => {
+    const lib = makeTestLibrary()
+    expect(isBuiltInPresetHidden(lib, 'decimal-hierarchical')).toBe(false)
+  })
+})
+
+describe('getVisibleBuiltInPresets', () => {
+  it('returns all presets when none hidden', () => {
+    const lib = makeTestLibrary()
+    expect(getVisibleBuiltInPresets(lib)).toEqual(BUILT_IN_PRESET_IDS)
+  })
+
+  it('excludes hidden presets', () => {
+    let lib = hideBuiltInPreset(makeTestLibrary(), 'chinese-chapter')
+    lib = hideBuiltInPreset(lib, 'roman-hierarchical')
+    const visible = getVisibleBuiltInPresets(lib)
+    expect(visible).not.toContain('chinese-chapter')
+    expect(visible).not.toContain('roman-hierarchical')
+    expect(visible).toContain('decimal-hierarchical')
+    expect(visible).toContain('chinese-outline')
+  })
+})
+
+// ── Restore built-in presets ────────────────────────────
+
+describe('restoreBuiltInPresets', () => {
+  it('clears all hidden preset IDs', () => {
+    let lib = hideBuiltInPreset(makeTestLibrary(), 'chinese-chapter')
+    lib = hideBuiltInPreset(lib, 'roman-hierarchical')
+    lib = restoreBuiltInPresets(lib)
+    expect(lib.preferences.hiddenBuiltInPresetIds).toEqual([])
+  })
+
+  it('preserves custom formats', () => {
+    const levels = makeBlankLevels()
+    const format = createFormat('My Format', '', { type: 'blank' }, levels)
+    let lib = addFormatToLibrary(hideBuiltInPreset(makeTestLibrary(), 'chinese-chapter'), format)
+    lib = restoreBuiltInPresets(lib)
+    expect(lib.formats.length).toBe(1)
+    expect(lib.preferences.customFormatOrder).toContain(format.id)
+  })
+})
+
+describe('areAllBuiltInPresetsVisible', () => {
+  it('returns true when nothing hidden', () => {
+    expect(areAllBuiltInPresetsVisible(makeTestLibrary())).toBe(true)
+  })
+
+  it('returns false when a preset is hidden', () => {
+    const lib = hideBuiltInPreset(makeTestLibrary(), 'roman-hierarchical')
+    expect(areAllBuiltInPresetsVisible(lib)).toBe(false)
+  })
+})
+
+// ── Reset entire format library ─────────────────────────
+
+describe('resetFormatLibrary', () => {
+  it('returns a library with no user formats', () => {
+    const levels = makeBlankLevels()
+    const format = createFormat('Test', '', { type: 'blank' }, levels)
+    let lib = addFormatToLibrary(makeTestLibrary(), format)
+    lib = hideBuiltInPreset(lib, 'chinese-chapter')
+    const reset = resetFormatLibrary()
+    expect(reset.formats).toEqual([])
+    expect(reset.preferences.hiddenBuiltInPresetIds).toEqual([])
+    expect(reset.preferences.customFormatOrder).toEqual([])
+  })
+
+  it('idempotent: repeated reset yields same result', () => {
+    const reset1 = resetFormatLibrary()
+    const reset2 = resetFormatLibrary()
+    expect(reset1).toEqual(reset2)
+  })
+})
+
+// ── Custom format ordering ──────────────────────────────
+
+describe('getOrderedCustomFormats', () => {
+  it('returns formats in customFormatOrder', () => {
+    const levels = makeBlankLevels()
+    const f1 = createFormat('First', '', { type: 'blank' }, levels)
+    const f2 = createFormat('Second', '', { type: 'blank' }, levels)
+    let lib = addFormatToLibrary(makeTestLibrary(), f1)
+    lib = addFormatToLibrary(lib, f2)
+    // Reverse order
+    lib = { ...lib, preferences: { ...lib.preferences, customFormatOrder: [f2.id, f1.id] } }
+    const ordered = getOrderedCustomFormats(lib)
+    expect(ordered[0].id).toBe(f2.id)
+    expect(ordered[1].id).toBe(f1.id)
+  })
+
+  it('handles formats not in order list', () => {
+    const levels = makeBlankLevels()
+    const f1 = createFormat('Test', '', { type: 'blank' }, levels)
+    const lib = makeTestLibrary([f1])
+    // Order doesn't include f1
+    const libNoOrder = { ...lib, preferences: { ...lib.preferences, customFormatOrder: [] } }
+    const ordered = getOrderedCustomFormats(libNoOrder)
+    expect(ordered.length).toBe(1)
+  })
+})
+
+// ── Migration of old library structure ──────────────────
+
+describe('migrateFormatLibrary', () => {
+  it('adds preferences to old library', () => {
+    const levels = makeBlankLevels()
+    const f1 = createFormat('Old Format', '', { type: 'blank' }, levels)
+    const oldLib: FormatLibrary = { version: 1, formats: [f1] } as any
+    const migrated = migrateFormatLibrary(oldLib)
+    expect(migrated.preferences.hiddenBuiltInPresetIds).toEqual([])
+    expect(migrated.preferences.customFormatOrder).toEqual([f1.id])
+  })
+
+  it('is idempotent', () => {
+    const levels = makeBlankLevels()
+    const f1 = createFormat('Test', '', { type: 'blank' }, levels)
+    const oldLib: FormatLibrary = { version: 1, formats: [f1] } as any
+    const m1 = migrateFormatLibrary(oldLib)
+    const m2 = migrateFormatLibrary(m1)
+    expect(m2.preferences.customFormatOrder).toEqual(m1.preferences.customFormatOrder)
+  })
+
+  it('filters invalid preset IDs', () => {
+    const levels = makeBlankLevels()
+    const f1 = createFormat('Test', '', { type: 'blank' }, levels)
+    const lib = makeTestLibrary([f1])
+    const libWithBad = {
+      ...lib,
+      preferences: {
+        hiddenBuiltInPresetIds: ['invalid-id', 'decimal-hierarchical', 'chinese-chapter', 'chinese-chapter'] as any as BuiltInPresetId[],
+        customFormatOrder: lib.preferences.customFormatOrder,
+      },
+    }
+    const migrated = migrateFormatLibrary(libWithBad)
+    expect(migrated.preferences.hiddenBuiltInPresetIds).toEqual(['decimal-hierarchical', 'chinese-chapter'])
+  })
+})
+
+// ── Deep clone isolation tests ──────────────────────────
+
+describe('deep clone isolation', () => {
+  it('document snapshot does not share reference with format', () => {
+    const levels = makeBlankLevels()
+    const format = createFormat('Test', '', { type: 'blank' }, levels)
+    // copyFormat creates a deep clone
+    const copy = copyFormat(format, 'Copy')
+    copy.settings.levels[1].enabled = false
+    expect(format.settings.levels[1].enabled).toBe(true)
+  })
+
+  it('deleting a format does not affect other formats', () => {
+    const levels = makeBlankLevels()
+    const f1 = createFormat('Format 1', '', { type: 'blank' }, levels)
+    const f2 = createFormat('Format 2', '', { type: 'blank' }, levels)
+    const lib = makeTestLibrary([f1, f2])
+    const newLib = deleteFormat(lib, f1.id)
+    expect(newLib.formats[0].name).toBe('Format 2')
+    // f2's levels should be intact
+    expect(newLib.formats[0].settings.levels[1].enabled).toBe(true)
+  })
+
+  it('reset library creates fresh deep copies', () => {
+    const levels = makeBlankLevels()
+    const format = createFormat('Test', '', { type: 'blank' }, levels)
+    let lib = addFormatToLibrary(makeTestLibrary(), format)
+    lib = hideBuiltInPreset(lib, 'roman-hierarchical')
+    const reset = resetFormatLibrary()
+    // The reset library is fresh
+    expect(reset).toEqual(getDefaultFormatLibrary())
+  })
+})
+
+describe('getDefaultPreferences', () => {
+  it('returns empty preferences', () => {
+    const prefs = getDefaultPreferences()
+    expect(prefs.hiddenBuiltInPresetIds).toEqual([])
+    expect(prefs.customFormatOrder).toEqual([])
   })
 })

@@ -1,5 +1,6 @@
 /**
- * Format Library Manager — manages user-created custom numbering formats.
+ * Format Library Manager — manages user-created custom numbering formats
+ * and built-in preset visibility preferences.
  *
  * All functions are pure: they take inputs and return new objects.
  * No mutation of input parameters. No side effects.
@@ -14,9 +15,12 @@ import type {
   HeadingNumberingSettings,
   CustomNumberingFormat,
   FormatLibrary,
+  FormatLibraryPreferences,
   FormatBasedOn,
   NumberTokenStyle,
+  BuiltInPresetId,
 } from './heading-types'
+import { BUILT_IN_PRESET_IDS } from './heading-types'
 
 // ── ID generation ───────────────────────────────────────
 
@@ -148,12 +152,22 @@ export function renameFormat(
 
 /**
  * Delete a format from the library. Returns the new formats array.
+ * Also removes the ID from customFormatOrder.
  */
 export function deleteFormat(
   library: FormatLibrary,
   formatId: string,
-): CustomNumberingFormat[] {
-  return library.formats.filter(f => f.id !== formatId)
+): FormatLibrary {
+  const newFormats = library.formats.filter(f => f.id !== formatId)
+  const newOrder = library.preferences.customFormatOrder.filter(id => id !== formatId)
+  return {
+    ...library,
+    formats: newFormats,
+    preferences: {
+      ...library.preferences,
+      customFormatOrder: newOrder,
+    },
+  }
 }
 
 // ── Validation ──────────────────────────────────────────
@@ -244,10 +258,9 @@ export function migrateOldCustom(
     return { library: existingLibrary, migrated: false }
   }
 
-  const library: FormatLibrary = {
-    version: 1,
-    formats: existingLibrary?.formats ?? [],
-  }
+  const library: FormatLibrary = existingLibrary
+    ? { ...existingLibrary, preferences: migratePreferences(existingLibrary.preferences) }
+    : getDefaultFormatLibrary()
 
   // Only migrate if there's old custom data
   if (
@@ -275,6 +288,7 @@ export function migrateOldCustom(
         },
       }
       library.formats = [format, ...library.formats]
+      library.preferences.customFormatOrder = [format.id, ...library.preferences.customFormatOrder]
     }
 
     return { library, migrated: true }
@@ -312,6 +326,7 @@ export function updateFormatInLibrary(
 
 /**
  * Add a format to the library. Returns a new library.
+ * Also adds the new ID to customFormatOrder.
  */
 export function addFormatToLibrary(
   library: FormatLibrary,
@@ -320,6 +335,10 @@ export function addFormatToLibrary(
   return {
     ...library,
     formats: [...library.formats, format],
+    preferences: {
+      ...library.preferences,
+      customFormatOrder: [...library.preferences.customFormatOrder, format.id],
+    },
   }
 }
 
@@ -327,5 +346,200 @@ export function addFormatToLibrary(
  * Get the default empty format library.
  */
 export function getDefaultFormatLibrary(): FormatLibrary {
-  return { version: 1, formats: [] }
+  return {
+    version: 1,
+    formats: [],
+    preferences: getDefaultPreferences(),
+  }
+}
+
+// ── Preferences ─────────────────────────────────────────
+
+/** Get default preferences (nothing hidden, empty order). */
+export function getDefaultPreferences(): FormatLibraryPreferences {
+  return {
+    hiddenBuiltInPresetIds: [],
+    customFormatOrder: [],
+  }
+}
+
+/**
+ * Ensure preferences exist on an existing library (for migration).
+ * Returns preferences as-is if valid, or creates defaults.
+ * Idempotent — never creates duplicate entries.
+ */
+function migratePreferences(
+  prefs: FormatLibraryPreferences | undefined,
+): FormatLibraryPreferences {
+  if (!prefs) return getDefaultPreferences()
+  return {
+    hiddenBuiltInPresetIds: filterValidPresetIds(prefs.hiddenBuiltInPresetIds ?? []),
+    customFormatOrder: prefs.customFormatOrder ?? [],
+  }
+}
+
+/** Filter out invalid preset IDs, deduplicate. */
+function filterValidPresetIds(ids: string[]): BuiltInPresetId[] {
+  const validSet = new Set<string>(BUILT_IN_PRESET_IDS)
+  const seen = new Set<string>()
+  return ids.filter(id => {
+    if (!validSet.has(id) || seen.has(id)) return false
+    seen.add(id)
+    return true
+  }) as BuiltInPresetId[]
+}
+
+// ── Built-in preset visibility ──────────────────────────
+
+/**
+ * Hide a built-in preset. The preset definition is retained; only the UI hides it.
+ * If already hidden, does nothing.
+ */
+export function hideBuiltInPreset(
+  library: FormatLibrary,
+  presetId: BuiltInPresetId,
+): FormatLibrary {
+  const hidden = library.preferences.hiddenBuiltInPresetIds
+  if (hidden.includes(presetId)) return library
+  return {
+    ...library,
+    preferences: {
+      ...library.preferences,
+      hiddenBuiltInPresetIds: [...hidden, presetId],
+    },
+  }
+}
+
+/**
+ * Restore a hidden built-in preset so it appears in the UI again.
+ */
+export function showBuiltInPreset(
+  library: FormatLibrary,
+  presetId: BuiltInPresetId,
+): FormatLibrary {
+  return {
+    ...library,
+    preferences: {
+      ...library.preferences,
+      hiddenBuiltInPresetIds: library.preferences.hiddenBuiltInPresetIds.filter(id => id !== presetId),
+    },
+  }
+}
+
+/** Check whether a built-in preset is hidden. */
+export function isBuiltInPresetHidden(
+  library: FormatLibrary,
+  presetId: BuiltInPresetId,
+): boolean {
+  return library.preferences.hiddenBuiltInPresetIds.includes(presetId)
+}
+
+/** Get the list of visible built-in preset IDs. */
+export function getVisibleBuiltInPresets(library: FormatLibrary): BuiltInPresetId[] {
+  const hidden = new Set(library.preferences.hiddenBuiltInPresetIds)
+  return BUILT_IN_PRESET_IDS.filter(id => !hidden.has(id))
+}
+
+// ── Restore built-in presets ────────────────────────────
+
+/**
+ * Restore all built-in presets to visible state.
+ * Does NOT modify custom formats, document settings, or global defaults.
+ * Returns the updated library.
+ */
+export function restoreBuiltInPresets(library: FormatLibrary): FormatLibrary {
+  return {
+    ...library,
+    preferences: {
+      ...library.preferences,
+      hiddenBuiltInPresetIds: [],
+    },
+  }
+}
+
+/**
+ * Check if all built-in presets are already visible.
+ */
+export function areAllBuiltInPresetsVisible(library: FormatLibrary): boolean {
+  return library.preferences.hiddenBuiltInPresetIds.length === 0
+}
+
+// ── Reset entire format library ─────────────────────────
+
+/**
+ * Reset the entire format library to factory state.
+ * Deletes ALL user formats, clears hidden state, clears customFormatOrder.
+ * Only built-in presets remain (all visible).
+ * Returns the new library.
+ */
+export function resetFormatLibrary(): FormatLibrary {
+  return getDefaultFormatLibrary()
+}
+
+// ── Custom format ordering ──────────────────────────────
+
+/**
+ * Get user formats in their persisted order. Any format not yet in the order
+ * is appended at the end (e.g., from migration or older versions).
+ */
+export function getOrderedCustomFormats(library: FormatLibrary): CustomNumberingFormat[] {
+  const orderMap = new Map<string, number>()
+  library.preferences.customFormatOrder.forEach((id, idx) => {
+    orderMap.set(id, idx)
+  })
+
+  const ordered = [...library.formats]
+  ordered.sort((a, b) => {
+    const aIdx = orderMap.get(a.id)
+    const bIdx = orderMap.get(b.id)
+    if (aIdx !== undefined && bIdx !== undefined) return aIdx - bIdx
+    if (aIdx !== undefined) return -1
+    if (bIdx !== undefined) return 1
+    return a.createdAt - b.createdAt
+  })
+  return ordered
+}
+
+/**
+ * Update the custom format order (e.g., after drag-and-drop reordering).
+ */
+export function setCustomFormatOrder(
+  library: FormatLibrary,
+  order: string[],
+): FormatLibrary {
+  return {
+    ...library,
+    preferences: {
+      ...library.preferences,
+      customFormatOrder: [...order],
+    },
+  }
+}
+
+// ── Migration of old library structure ──────────────────
+
+/**
+ * Migrate an existing FormatLibrary that may lack preferences.
+ * Idempotent: if preferences already exist, returns as-is.
+ */
+export function migrateFormatLibrary(library: FormatLibrary): FormatLibrary {
+  if (library.preferences && library.preferences.hiddenBuiltInPresetIds !== undefined
+    && library.preferences.customFormatOrder !== undefined) {
+    // Already migrated — only sanitize hidden IDs
+    return {
+      ...library,
+      preferences: {
+        hiddenBuiltInPresetIds: filterValidPresetIds(library.preferences.hiddenBuiltInPresetIds),
+        customFormatOrder: library.preferences.customFormatOrder,
+      },
+    }
+  }
+
+  return {
+    ...library,
+    preferences: {
+      hiddenBuiltInPresetIds: [],
+      customFormatOrder: library.formats.map(f => f.id),
+    },
+  }
 }

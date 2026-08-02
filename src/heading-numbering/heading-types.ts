@@ -383,6 +383,25 @@ export interface CustomNumberingFormat {
 export interface FormatLibrary {
   version: number
   formats: CustomNumberingFormat[]
+  preferences: FormatLibraryPreferences
+}
+
+/** Built-in preset IDs (excluding 'custom'). */
+export type BuiltInPresetId = 'decimal-hierarchical' | 'chinese-chapter' | 'chinese-outline' | 'roman-hierarchical'
+
+export const BUILT_IN_PRESET_IDS: readonly BuiltInPresetId[] = [
+  'decimal-hierarchical',
+  'chinese-chapter',
+  'chinese-outline',
+  'roman-hierarchical',
+]
+
+/** User preferences for the format library UI. */
+export interface FormatLibraryPreferences {
+  /** IDs of built-in presets that the user has chosen to hide. */
+  hiddenBuiltInPresetIds: BuiltInPresetId[]
+  /** Stable ordering of user custom formats (format IDs). */
+  customFormatOrder: string[]
 }
 
 // ── Heading numbering scope store (schema refactor) ──────

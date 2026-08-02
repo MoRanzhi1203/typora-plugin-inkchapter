@@ -285,9 +285,36 @@ export class HeadingNumberingService {
   getFormatLibrary(): FormatLibrary {
     const raw = this.ctx.settings.get('formatLibrary' as any) as FormatLibrary | undefined
     if (raw?.version && Array.isArray(raw.formats)) {
-      return raw
+      // If the raw data lacks preferences, add defaults (inline migration)
+      if (!raw.preferences) {
+        return {
+          version: raw.version,
+          formats: raw.formats,
+          preferences: {
+            hiddenBuiltInPresetIds: [],
+            customFormatOrder: raw.formats.map(f => f.id),
+          },
+        }
+      }
+      // Sanitize hidden preset IDs
+      const validIds = new Set(['decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical'])
+      const sanitized: string[] = []
+      const seen = new Set<string>()
+      for (const id of raw.preferences.hiddenBuiltInPresetIds ?? []) {
+        if (validIds.has(id) && !seen.has(id)) {
+          sanitized.push(id)
+          seen.add(id)
+        }
+      }
+      return {
+        ...raw,
+        preferences: {
+          hiddenBuiltInPresetIds: sanitized as any,
+          customFormatOrder: raw.preferences.customFormatOrder ?? raw.formats.map(f => f.id),
+        },
+      }
     }
-    return { version: 1, formats: [] }
+    return { version: 1, formats: [], preferences: { hiddenBuiltInPresetIds: [], customFormatOrder: [] } }
   }
 
   /** Save the format library to plugin settings. */
