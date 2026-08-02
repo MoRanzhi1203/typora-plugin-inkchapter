@@ -4,28 +4,42 @@ import { getPresetLevels, PRESETS } from './presets'
 describe('Roman preset (roman-hierarchical)', () => {
   const romanPreset = PRESETS['roman-hierarchical']
 
-  it('withLevelOne: H1/H2 should be roman-upper, H3-H6 arabic', () => {
-    const h1 = romanPreset.levels[1]
-    const h2 = romanPreset.levels[2]
-    const h3 = romanPreset.levels[3]
-    const h6 = romanPreset.levels[6]
-
-    expect(h1.tokenStyle).toBe('roman-upper')
-    expect(h2.tokenStyle).toBe('roman-upper')
-    expect(h3.tokenStyle).toBe('arabic')
-    expect(h6.tokenStyle).toBe('arabic')
+  it('ALL levels H1-H6 should use roman-upper', () => {
+    for (const lv of [1, 2, 3, 4, 5, 6] as const) {
+      expect(romanPreset.levels[lv].tokenStyle).toBe('roman-upper')
+    }
   })
 
-  it('withoutLevelOne: H2 should be roman-upper', () => {
-    const h2 = romanPreset.levels[2]
-    const withoutL1 = h2.contextualFormatVariants.withoutLevelOne
+  it('withLevelOne: all level-refs should use roman-upper', () => {
+    const h4 = romanPreset.levels[4]
+    const withL1 = h4.contextualFormatVariants.withLevelOne
+    const refs = withL1.filter((s) => s.type === 'level-reference')
+    expect(refs.length).toBe(4)  // H1, H2, H3, H4
+    for (const ref of refs) {
+      if (ref.type === 'level-reference') {
+        expect(ref.appearance.tokenStyle).toBe('roman-upper')
+      }
+    }
+  })
 
-    // Should have at least one level-reference with roman-upper
+  it('withoutLevelOne: H2-H6 should all use roman-upper', () => {
+    const h6 = romanPreset.levels[6]
+    const withoutL1 = h6.contextualFormatVariants.withoutLevelOne
     const refs = withoutL1.filter((s) => s.type === 'level-reference')
-    expect(refs.length).toBeGreaterThan(0)
-    // The H2 reference should use roman-upper
-    const h2Ref = refs.find((s) => s.type === 'level-reference' && s.level === 2)
-    expect(h2Ref).toBeDefined()
+    expect(refs.length).toBe(5)  // H2, H3, H4, H5, H6 — no H1
+    for (const ref of refs) {
+      if (ref.type === 'level-reference') {
+        expect(ref.appearance.tokenStyle).toBe('roman-upper')
+      }
+    }
+  })
+
+  it('H1 off: H2 shows I, H3 shows I.I', () => {
+    const h2 = romanPreset.levels[2]
+    const h3 = romanPreset.levels[3]
+    // withoutLevelOne should not include H1
+    expect(h2.contextualFormatVariants.withoutLevelOne.length).toBe(1)
+    expect(h3.contextualFormatVariants.withoutLevelOne.length).toBe(3)  // H2, dot, H3
   })
 })
 
@@ -38,7 +52,8 @@ describe('getPresetLevels', () => {
     expect(levels[3]).toBeDefined()
     expect(levels[1].tokenStyle).toBe('roman-upper')
     expect(levels[2].tokenStyle).toBe('roman-upper')
-    expect(levels[3].tokenStyle).toBe('arabic')
+    expect(levels[3].tokenStyle).toBe('roman-upper')
+    expect(levels[4].tokenStyle).toBe('roman-upper')
   })
 
   it('returns independent copy (modifying clone doesn\'t affect original)', () => {

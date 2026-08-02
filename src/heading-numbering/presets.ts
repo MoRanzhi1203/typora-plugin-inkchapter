@@ -330,33 +330,28 @@ function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
 }
 
 function buildRoman(): Record<HeadingLevel, HeadingLevelStyle> {
-  // Spec: H2 is the primary Roman level.
+  // Spec: All levels H1-H6 use roman-upper.
   //   H1 (if shown): I    (roman-upper)
   //   H2:              I    (roman-upper)
-  //   H3:              I.1  (H2 roman-upper + . + H3 arabic)
-  //   H4:              I.1.1
-  // Only H1-H2 use roman-upper; H3-H6 use arabic.
+  //   H3:              I.I  (roman-upper)
+  //   H4:              I.I.I
+  //   H1 off → H2=I, H3=I.I, H4=I.I.I
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
   for (const lv of HEADING_LEVELS) {
-    const tokenStyle: import('./heading-types').NumberTokenStyle =
-      lv <= 2 ? 'roman-upper' : 'arabic'
+    const tokenStyle: import('./heading-types').NumberTokenStyle = 'roman-upper'
 
-    // Contextual format: each level-ref uses its own tokenStyle
+    // Contextual format: each level-ref uses roman-upper
     const ctxFmtWith: ContextualFormatSegment[] = []
     for (let i = 1; i <= lv; i++) {
       if (i > 1) ctxFmtWith.push({ id: generateStableId(), type: 'literal', value: '.' })
-      const refStyle: import('./heading-types').NumberTokenStyle =
-        i <= 2 ? 'roman-upper' : 'arabic'
-      ctxFmtWith.push(makeContextualRef(i as HeadingLevel, refStyle, '', ''))
+      ctxFmtWith.push(makeContextualRef(i as HeadingLevel, 'roman-upper', '', ''))
     }
 
     // withoutLevelOne: skip H1
     const ctxFmtWithout: ContextualFormatSegment[] = []
     for (let i = 2; i <= lv; i++) {
       if (i > 2) ctxFmtWithout.push({ id: generateStableId(), type: 'literal', value: '.' })
-      const refStyle: import('./heading-types').NumberTokenStyle =
-        i <= 2 ? 'roman-upper' : 'arabic'
-      ctxFmtWithout.push(makeContextualRef(i as HeadingLevel, refStyle, '', ''))
+      ctxFmtWithout.push(makeContextualRef(i as HeadingLevel, 'roman-upper', '', ''))
     }
 
     // Multilevel format: level-template-refs inherit their level's tokenStyle
