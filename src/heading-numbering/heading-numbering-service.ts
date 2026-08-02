@@ -19,6 +19,9 @@ import type {
   SaveHeadingSettingsRequest,
   DocumentNumberingContext,
   HeadingNumberingScopeStore,
+  FormatLibrary,
+  CustomNumberingFormat,
+  NumberingFormatSource,
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
@@ -229,12 +232,17 @@ export class HeadingNumberingService {
     scope: HeadingSettingsScope,
     documentKey: string | null,
     settings: HeadingNumberingSettings,
+    formatSource?: NumberingFormatSource,
   ): void {
-    const newStore = saveHeadingSettings(this.scopeStore, {
+    const req: SaveHeadingSettingsRequest = {
       scope,
       documentKey,
       settings,
-    })
+    }
+    if (formatSource) {
+      req.formatSource = formatSource
+    }
+    const newStore = saveHeadingSettings(this.scopeStore, req)
     this.persistScopeStore(newStore)
     this.settingsRevision++
 
@@ -269,6 +277,65 @@ export class HeadingNumberingService {
   /** Check if current document has a custom override. */
   hasCurrentDocumentOverride(): boolean {
     return hasDocumentOverride(this.scopeStore, this.getDocumentKey())
+  }
+
+  // ── Format library ───────────────────────────────
+
+  /** Get the user-managed format library from plugin settings. */
+  getFormatLibrary(): FormatLibrary {
+    const raw = this.ctx.settings.get('formatLibrary' as any) as FormatLibrary | undefined
+    if (raw?.version && Array.isArray(raw.formats)) {
+      return raw
+    }
+    return { version: 1, formats: [] }
+  }
+
+  /** Save the format library to plugin settings. */
+  saveFormatLibrary(library: FormatLibrary): void {
+    this.ctx.settings.set('formatLibrary' as any, library as any)
+  }
+
+  /**
+   * Apply a format to the specified scope.
+   * Deep-clones the format's settings into a snapshot in the scope store.
+   * Editing or deleting the format later does NOT affect the snapshot.
+   */
+  applyFormatToScope(
+    format: CustomNumberingFormat,
+    scope: HeadingSettingsScope,
+    documentKey: string | null,
+  ): void {
+    const snapshot: HeadingNumberingSettings = {
+      enabled: format.settings.enabled,
+      showLevelOneNumber: format.settings.showLevelOneNumber,
+      preset: 'custom',
+      maxDepth: format.settings.maxDepth,
+      levels: format.settings.levels,
+      customDefinition: format.settings.levels,
+    }
+    const formatSource: NumberingFormatSource = { type: 'custom', formatId: format.id }
+    this.saveHeadingNumberingScoped(scope, documentKey, snapshot, formatSource)
+  }
+
+  /**
+   * Apply a built-in preset to the specified scope.
+   */
+  applyPresetToScope(
+    presetId: string,
+    scope: HeadingSettingsScope,
+    documentKey: string | null,
+  ): void {
+    const levels = getPresetLevels(presetId as HeadingNumberingPreset)
+    const snapshot: HeadingNumberingSettings = {
+      enabled: true,
+      showLevelOneNumber: false,
+      preset: presetId as HeadingNumberingPreset,
+      maxDepth: 6,
+      levels,
+      customDefinition: levels,
+    }
+    const formatSource: NumberingFormatSource = { type: 'built-in', presetId }
+    this.saveHeadingNumberingScoped(scope, documentKey, snapshot, formatSource)
   }
 
   // ── Convenience accessor for effective settings ──

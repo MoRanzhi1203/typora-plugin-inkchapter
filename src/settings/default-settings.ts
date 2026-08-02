@@ -1,5 +1,5 @@
 import type { InkChapterSettings } from './settings-model'
-import type { HeadingLevel, HeadingLevelNumberTemplate } from '../heading-numbering/heading-types'
+import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary } from '../heading-numbering/heading-types'
 import { DEFAULT_NAME_CANDIDATES } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 
@@ -23,8 +23,13 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
   }
 }
 
+const DEFAULT_FORMAT_LIBRARY: FormatLibrary = {
+  version: 1,
+  formats: [],
+}
+
 export const DEFAULT_SETTINGS: InkChapterSettings = {
-  schemaVersion: 10,
+  schemaVersion: 11,
   debug: false,
   headingNumberingScopes: {
     schemaVersion: 1,
@@ -44,6 +49,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
     },
     documentOverrides: {},
   },
+  formatLibrary: DEFAULT_FORMAT_LIBRARY,
   levelRange: {
     defaultMaxLevel: 6,
     documentOverrides: {},

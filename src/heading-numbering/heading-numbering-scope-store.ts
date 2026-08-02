@@ -250,6 +250,7 @@ export function saveHeadingSettings(
       [request.documentKey]: {
         updatedAt: Date.now(),
         settings: deepCloneSettings(request.settings),
+        formatSource: request.formatSource,
       },
     },
   }

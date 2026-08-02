@@ -154,6 +154,128 @@
   line-height: 1.5;
 }
 
+/* ── Preset card action buttons ─────────────────────────── */
+.inkchapter-preset-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-primary, #eee);
+}
+
+/* ── Format library cards ───────────────────────────────── */
+
+.inkchapter-format-card-wrap {
+  margin-bottom: 8px;
+}
+
+.inkchapter-format-card {
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.inkchapter-format-card:hover {
+  border-color: var(--text-accent, #07a);
+  background: rgba(7, 119, 170, 0.03);
+}
+
+.inkchapter-format-card--selected {
+  border-color: var(--text-accent, #07a);
+  background: rgba(7, 119, 170, 0.06);
+}
+
+.inkchapter-format-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.inkchapter-format-card-name {
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.inkchapter-format-card-desc {
+  font-size: 0.82em;
+  color: var(--text-muted, #888);
+  margin-bottom: 6px;
+}
+
+.inkchapter-format-card-preview {
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.88em;
+  color: var(--text-accent, #07a);
+  margin-bottom: 6px;
+}
+
+.inkchapter-format-card-preview-line {
+  line-height: 1.5;
+}
+
+.inkchapter-format-card-basedon {
+  font-size: 0.75em;
+  color: var(--text-faint, #aaa);
+  margin-bottom: 8px;
+}
+
+.inkchapter-format-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-primary, #eee);
+}
+
+.inkchapter-format-add-row {
+  margin: 12px 0;
+  text-align: center;
+}
+
+/* ── Edit bar for format editing ────────────────────────── */
+
+.inkchapter-edit-bar {
+  margin: 12px 0;
+  padding: 8px 12px;
+  background: #f0f7ff;
+  border-radius: 6px;
+  border: 1px solid #b3d8ff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── Small button variant ───────────────────────────────── */
+
+.inkchapter-btn--small {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.inkchapter-btn--danger {
+  background: #e74c3c;
+  color: #fff;
+  border-color: #c0392b;
+}
+
+.inkchapter-btn--danger:hover {
+  background: #c0392b;
+}
+
+.inkchapter-btn--primary {
+  background: #0078d4;
+  color: #fff;
+  border-color: #006cbd;
+}
+
+.inkchapter-btn--primary:hover {
+  background: #006cbd;
+}
+
 /* ── Custom fold panels ───────────────────────────────── */
 
 .inkchapter-custom-panels {
