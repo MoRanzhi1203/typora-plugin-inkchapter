@@ -936,22 +936,21 @@
 // ── Compact scope bar ──────────────────────────────────
 .inkchapter-scope-bar--compact {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
   margin-bottom: 20px;
   border: 1px solid var(--border-primary, #ddd);
   border-radius: 6px;
   background: var(--background-secondary, #f8f8f8);
   font-size: 13px;
-  flex-wrap: wrap;
 }
 
+// ── Row 1: Document info ──────────────────────────
 .inkchapter-scope-bar--compact .inkchapter-scope-info {
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex: 1;
+  gap: 20px;
   min-width: 0;
 }
 
@@ -969,19 +968,46 @@
   white-space: nowrap;
 }
 
+// ── Row 2: Scope controls ─────────────────────────
 .inkchapter-scope-bar--compact .inkchapter-scope-radios {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.inkchapter-scope-bar--compact .inkchapter-scope-radio-group {
   display: flex;
   align-items: center;
   gap: 12px;
   white-space: nowrap;
 }
 
-.inkchapter-scope-bar--compact .inkchapter-scope-radios label {
+.inkchapter-scope-bar--compact .inkchapter-scope-radio-label {
+  font-weight: 600;
+}
+
+.inkchapter-scope-bar--compact .inkchapter-scope-radio-group label {
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 13px;
+}
+
+// ── Responsive: narrow window wrap ────────────────
+@media (max-width: 760px) {
+  .inkchapter-scope-bar--compact .inkchapter-scope-info {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .inkchapter-scope-bar--compact .inkchapter-scope-radios {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .inkchapter-scope-bar--compact .inkchapter-scope-radio-group {
+    flex-wrap: wrap;
+  }
 }
 
 // ── Basic settings grid ────────────────────────────────
@@ -1416,6 +1442,94 @@
   background: var(--background-modifier-hover, #f0f0f0);
 }
 
+// ── Menu portal layer ────────────────────────────
+.inkchapter-menu-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 200;
+  overflow: visible;
+}
+
+.inkchapter-menu-overlay {
+  position: fixed;
+  pointer-events: auto;
+  width: 180px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 6px 0;
+  z-index: 2000;
+}
+
+.inkchapter-menu-item {
+  padding: 8px 16px;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+
+.inkchapter-menu-item:hover {
+  background: var(--background-modifier-hover, #eee);
+}
+
+.inkchapter-menu-item:focus-visible {
+  background: var(--background-modifier-hover, #eee);
+  outline: 2px solid var(--text-accent, #07a);
+  outline-offset: -2px;
+}
+
+.inkchapter-menu-item[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.inkchapter-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-primary, #eee);
+}
+
+// ── Dark theme menu portal ────────────────────────
+@media (prefers-color-scheme: dark) {
+  .inkchapter-menu-overlay {
+    background: var(--background-primary, #252525);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .inkchapter-menu-item:hover,
+  .inkchapter-menu-item:focus-visible {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .inkchapter-menu-separator {
+    background: rgba(255, 255, 255, 0.08);
+  }
+}
+
+// ── Card status badge ─────────────────────────────
+.inkchapter-format-card-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--text-accent, #07a);
+  color: #fff;
+  font-weight: 500;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+// ── Card disabled apply button ────────────────────
+.inkchapter-btn--disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
 // ── Format card uniform height ─────────────────────────
 .inkchapter-format-grid .inkchapter-format-card {
   min-height: 200px;
@@ -1434,16 +1548,6 @@
 
 .inkchapter-format-grid .inkchapter-format-card-actions {
   margin-top: auto;
-}
-
-// ── Scope bar document name ────────────────────────────
-.inkchapter-scope-bar--compact .inkchapter-scope-doc {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-  vertical-align: bottom;
 }
 
 // ── Manage panel ───────────────────────────────────────

@@ -370,6 +370,8 @@ export interface CustomNumberingFormat {
   description: string
   createdAt: number
   updatedAt: number
+  /** Monotonically increasing version. Incremented each time the format is saved. Used to detect outdated snapshots. */
+  version: number
   basedOn: FormatBasedOn
   settings: {
     levels: Record<HeadingLevel, HeadingLevelStyle>
