@@ -33,6 +33,11 @@ export type HeadingNumberingPreset =
   | 'chinese-chapter'
   | 'chinese-outline'
   | 'roman-hierarchical'
+  | 'academic-paper'
+  | 'chapter-section-clause'
+  | 'appendix-hierarchical'
+  | 'roman-mixed'
+  | 'letter-mixed'
   | 'custom'
 
 export type NumberFormatSegment =
@@ -388,14 +393,28 @@ export interface FormatLibrary {
   preferences: FormatLibraryPreferences
 }
 
-/** Built-in preset IDs (excluding 'custom'). */
-export type BuiltInPresetId = 'decimal-hierarchical' | 'chinese-chapter' | 'chinese-outline' | 'roman-hierarchical'
+/** Built-in preset IDs (excluding 'custom'). Ordered as they appear in the UI. */
+export type BuiltInPresetId =
+  | 'decimal-hierarchical'
+  | 'chinese-chapter'
+  | 'chinese-outline'
+  | 'academic-paper'
+  | 'chapter-section-clause'
+  | 'appendix-hierarchical'
+  | 'roman-hierarchical'
+  | 'roman-mixed'
+  | 'letter-mixed'
 
 export const BUILT_IN_PRESET_IDS: readonly BuiltInPresetId[] = [
   'decimal-hierarchical',
   'chinese-chapter',
-  'chinese-outline',
-  'roman-hierarchical',
+  'chinese-outline',          // 党政公文（四级）
+  'academic-paper',
+  'chapter-section-clause',
+  'appendix-hierarchical',
+  'roman-hierarchical',       // 全罗马层级
+  'roman-mixed',
+  'letter-mixed',
 ]
 
 /** User preferences for the format library UI. */

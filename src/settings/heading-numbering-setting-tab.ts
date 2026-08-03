@@ -94,10 +94,15 @@ const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string; group?: stri
 ]
 
 const PRESET_CARDS: { key: HeadingNumberingPreset; name: string; desc: string; previewLines: string[] }[] = [
-  { key: 'decimal-hierarchical', name: '十进制层级', desc: '阿拉伯数字层级编号', previewLines: ['1', '1.1', '1.1.1'] },
-  { key: 'chinese-chapter', name: '中文章节', desc: '章节标题格式', previewLines: ['第一章', '第一节', '一、'] },
-  { key: 'chinese-outline', name: '中文大纲', desc: '中文大纲格式', previewLines: ['一、', '（一）', '1.'] },
-  { key: 'roman-hierarchical', name: '罗马数字', desc: '大写罗马数字层级', previewLines: ['I', 'I.I', 'I.I.I'] },
+  { key: 'decimal-hierarchical', name: '十进制层级', desc: '通用阿拉伯数字多级编号', previewLines: ['1', '1.1', '1.1.1'] },
+  { key: 'chinese-chapter', name: '中文章节', desc: '章、节与中文条目结构', previewLines: ['第一章', '第一节', '一、'] },
+  { key: 'chinese-outline', name: '党政公文（四级）', desc: '党政机关公文常用四级结构', previewLines: ['一、', '（一）', '1.'] },
+  { key: 'academic-paper', name: '学术论文', desc: '章标题与十进制层级结合', previewLines: ['第1章', '第1章.1', '第1章.1.1'] },
+  { key: 'chapter-section-clause', name: '章—节—条款', desc: '章节、节次与条款结构', previewLines: ['第1章', '第1节', '第1条'] },
+  { key: 'appendix-hierarchical', name: '附录层级', desc: '附录及补充材料编号', previewLines: ['附录A', '附录A.1', '附录A.1.1'] },
+  { key: 'roman-hierarchical', name: '全罗马层级', desc: '所有层级均使用大写罗马数字', previewLines: ['I', 'I.I', 'I.I.I'] },
+  { key: 'roman-mixed', name: '罗马混合层级', desc: '首级罗马、后级阿拉伯', previewLines: ['I', 'I.1', 'I.1.1'] },
+  { key: 'letter-mixed', name: '字母混合层级', desc: '字母、数字与小写罗马混合', previewLines: ['A', 'A.1', 'A.1.a'] },
 ]
 
 const DRAG_THRESHOLD = 4
