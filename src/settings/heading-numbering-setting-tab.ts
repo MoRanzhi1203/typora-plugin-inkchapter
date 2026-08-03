@@ -308,13 +308,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   /**
-   * Called when settings change externally (F1 command, service API, etc.).
-   * Re-syncs the UI without re-rendering the entire page.
+   * Called when settings change externally (menu toggle, F1 command, etc.).
+   * Updates the draft (if any) with external changes, then re-renders the UI.
    */
   private syncFromExternalChange(): void {
-    const s = this.headingSettings
-    this.syncLevelOneControls(s.showLevelOneNumber)
-    // Re-render to reflect H1 panel state
+    const effective = this.numberingService.getEffectiveSettings()
+    if (this.headingDraft) {
+      // Merge external toggle changes into draft without losing other edits
+      this.headingDraft.enabled = effective.enabled
+      this.headingDraft.showLevelOneNumber = effective.showLevelOneNumber
+    }
     this.cancelDrag('settings-changed')
     this.onshow()
   }
@@ -2643,6 +2646,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     h1Cb.type = 'checkbox'
     this.globalH1Toggle = h1Cb
     h1Cb.checked = s.showLevelOneNumber
+    h1Cb.disabled = !s.enabled
+    if (!s.enabled) h1Label.style.opacity = '0.4'
     h1Cb.onclick = () => {
       if (this.syncingLevelOneUi) return
       this.ensureDraft()

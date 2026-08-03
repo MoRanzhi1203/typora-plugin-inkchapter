@@ -949,59 +949,98 @@
 }
 
 // ══════════════════════════════════════════════════════════
-// Outline toolbar controls — injected above outline list
+// Outline command row — independent row below tab bar (v3)
 // ══════════════════════════════════════════════════════════
 
-.inkchapter-outline-actions {
+.inkchapter-outline-command-row {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
-  min-height: 32px;
-  padding: 4px 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 2px 6px;
   border-bottom: 1px solid var(--window-border, #e0e0e0);
   background: var(--side-bar-bg-color, #f5f5f5);
-  flex-shrink: 0;
+  flex: 0 0 auto;
 
-  .inkchapter-outline-action {
+  .inkchapter-outline-menu-trigger {
+    box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     padding: 0;
-    border: 1px solid transparent;
+    border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--text-muted, #666);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 16px;
     font-weight: 600;
     line-height: 1;
+    letter-spacing: 2px;
     user-select: none;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition: background 0.15s, color 0.15s;
 
     &:hover {
       background: var(--background-modifier-hover, #e8e8e8);
       color: var(--text-normal, #333);
     }
 
-    &--active {
-      background: var(--text-accent, #07a);
-      color: #fff;
-      border-color: var(--text-accent, #07a);
-
-      &:hover {
-        background: var(--text-accent-hover, #059);
-        color: #fff;
-      }
+    &:focus-visible {
+      outline: 2px solid var(--text-accent, #07a);
+      outline-offset: -2px;
     }
 
-    &:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
+    &[aria-expanded="true"] {
+      background: var(--background-modifier-hover, #e8e8e8);
+      color: var(--text-normal, #333);
     }
   }
+}
+
+// ── Dropdown menu ────────────────────────────────────
+
+.inkchapter-outline-menu {
+  background: var(--bg-color, #fff);
+  border: 1px solid var(--window-border, #e0e0e0);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 4px 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+.inkchapter-outline-menu-item {
+  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-normal, #333);
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover,
+  &.focused {
+    background: var(--background-modifier-hover, #e8e8e8);
+  }
+
+  &--disabled {
+    color: var(--text-faint, #999);
+    cursor: not-allowed;
+
+    &:hover,
+    &.focused {
+      background: transparent;
+    }
+  }
+}
+
+.inkchapter-outline-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--window-border, #e0e0e0);
 }
 
 // ══════════════════════════════════════════════════════════

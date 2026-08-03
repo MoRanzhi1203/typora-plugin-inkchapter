@@ -101,6 +101,14 @@ export class OutlineNumberingController {
     clearFileTreeNumberingAttributes()
   }
 
+  /** Clear all outline numbering without stopping the controller. */
+  clearOutlineNumbering(): void {
+    const root = findOutlineRoot()
+    clearAllNumberingAttributes(root)
+    clearFileTreeNumberingAttributes()
+    this.cache = { documentKey: '', revision: 0, headings: [], labels: [] }
+  }
+
   /**
    * Reinitialize for a new document: detach old observer, find new outline root.
    * Does NOT clear currentDocumentKey — the caller must call setDocumentKey()
