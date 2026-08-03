@@ -105,6 +105,41 @@ export default class extends Plugin<InkChapterSettings> {
       reloadContent: (markdown: string) => {
         File.reloadContent(markdown, false, true, false, true)
       },
+      writeDiagnosticFile: (filename: string, data: string) => {
+        try {
+          // Derive vault path from active file
+          let vaultDir = ''
+          const activeFile = this.app.workspace.activeFile
+          if (activeFile) {
+            // activeFile is like D:\...\test\vault\doc.md
+            // Find the .typora directory to identify vault root
+            const parts = activeFile.split(/[\\/]/)
+            for (let i = parts.length - 1; i >= 0; i--) {
+              const candidate = parts.slice(0, i).join(path.sep)
+              try {
+                if (fs.existsSync(path.join(candidate, '.typora'))) {
+                  vaultDir = candidate
+                  break
+                }
+              } catch { /* ignore */ }
+            }
+          }
+          // Fallback: use manifest.dir
+          if (!vaultDir) {
+            const pluginRoot = (this as any).manifest?.dir ?? ''
+            if (pluginRoot) {
+              vaultDir = path.join(pluginRoot, '..', '..')
+            }
+          }
+          if (vaultDir) {
+            const diagPath = path.join(vaultDir, filename)
+            fs.writeFileSync(diagPath, data, 'utf8')
+            console.log(`[InkChapter] wrote diagnostic: ${diagPath}`)
+          }
+        } catch (e) {
+          console.error('[InkChapter] failed to write diagnostic:', e)
+        }
+      },
     }
 
     // Init heading numbering (safe: service is optional)

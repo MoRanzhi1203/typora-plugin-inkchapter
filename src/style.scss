@@ -949,6 +949,62 @@
 }
 
 // ══════════════════════════════════════════════════════════
+// Outline toolbar controls — injected above outline list
+// ══════════════════════════════════════════════════════════
+
+.inkchapter-outline-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--window-border, #e0e0e0);
+  background: var(--side-bar-bg-color, #f5f5f5);
+  flex-shrink: 0;
+
+  .inkchapter-outline-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted, #666);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+
+    &:hover {
+      background: var(--background-modifier-hover, #e8e8e8);
+      color: var(--text-normal, #333);
+    }
+
+    &--active {
+      background: var(--text-accent, #07a);
+      color: #fff;
+      border-color: var(--text-accent, #07a);
+
+      &:hover {
+        background: var(--text-accent-hover, #059);
+        color: #fff;
+      }
+    }
+
+    &:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════
 // Settings page layout v2 — compact, collapsible, responsive
 // ══════════════════════════════════════════════════════════
 
