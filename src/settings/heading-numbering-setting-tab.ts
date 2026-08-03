@@ -2739,44 +2739,44 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const cardEl = el('div', 'inkchapter-format-card', grid)
     cardEl.setAttribute('tabindex', '0')
 
-    // Header with name + menu button
+    // ── Header: title row → meta row (badge + menu) ──
     const header = el('div', 'inkchapter-format-card-header', cardEl)
-    const cardName = el('span', 'inkchapter-format-card-name', header)
+    
+    // Title row
+    const titleRow = el('div', 'inkchapter-format-card-title-row', header)
+    const cardName = el('span', 'inkchapter-format-card-title', titleRow)
     cardName.textContent = name
-    cardName.style.flex = '1'
-
-    // Status badge
+    
+    // Meta row: status badge (left) + menu button (right)
+    // Always render for consistent height, even without badge
+    const metaRow = el('div', 'inkchapter-format-card-meta-row', header)
+    const badgeWrap = el('span', 'inkchapter-format-card-badge-wrap', metaRow)
+    
     if (cardState.applied && cardState.isGlobalDefault) {
-      const badge = el('span', 'inkchapter-format-card-badge', header)
+      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--global-default', badgeWrap)
       badge.textContent = '全局默认'
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
     } else if (cardState.applied && cardState.inheritsGlobal) {
-      const badge = el('span', 'inkchapter-format-card-badge', header)
+      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--inherit', badgeWrap)
       badge.textContent = '继承全局'
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
     } else if (cardState.applied && cardState.hasUpdate) {
-      const badge = el('span', 'inkchapter-format-card-badge', header)
+      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--update', badgeWrap)
       badge.textContent = '有更新'
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
     } else if (cardState.applied) {
-      const badge = el('span', 'inkchapter-format-card-badge', header)
+      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--applied', badgeWrap)
       badge.textContent = '当前文档'
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
     } else if (cardState.isGlobalDefault) {
-      const badge = el('span', 'inkchapter-format-card-badge', header)
+      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--global-default', badgeWrap)
       badge.textContent = '全局默认'
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
     }
     
-    // "⋯" menu trigger
-    const menuBtn = el('span', 'inkchapter-format-card-menu-trigger', header)
+    // "⋯" menu trigger (always in meta row, right side)
+    const menuBtn = el('span', 'inkchapter-format-card-menu-trigger', metaRow)
     menuBtn.textContent = '⋯'
     menuBtn.setAttribute('tabindex', '0')
     menuBtn.setAttribute('role', 'button')
     menuBtn.setAttribute('aria-label', '更多格式操作')
     menuBtn.setAttribute('aria-haspopup', 'menu')
     menuBtn.setAttribute('aria-expanded', String(this.openMenuState?.formatId === key))
-    menuBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;'
     menuBtn.onclick = (e) => {
       e.preventDefault()
       e.stopPropagation()
