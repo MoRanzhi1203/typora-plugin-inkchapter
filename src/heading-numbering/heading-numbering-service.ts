@@ -268,11 +268,18 @@ export class HeadingNumberingService {
     // Reload document context if current document is affected
     const currentKey = this.getDocumentKey()
     if (scope === 'global' || documentKey === currentKey) {
+      const wasEnabled = this.docContext.effectiveSettings.enabled
       this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
       this.outlineToolbar.updateAllButtonStates()
+      // When numbering was turned off, doRefresh returns early.
+      // Must explicitly clear body and outline numbering.
+      if (wasEnabled && !this.s.enabled) {
+        this.adapter.clearNumbering()
+        this.outlineController.clearOutlineNumbering()
+      }
       this.flushRefresh()
     }
   }
@@ -286,11 +293,16 @@ export class HeadingNumberingService {
     // Reload current document context
     const currentKey = this.getDocumentKey()
     if (currentKey === documentKey) {
+      const wasEnabled = this.docContext.effectiveSettings.enabled
       this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
       this.outlineToolbar.updateAllButtonStates()
+      if (wasEnabled && !this.s.enabled) {
+        this.adapter.clearNumbering()
+        this.outlineController.clearOutlineNumbering()
+      }
       this.flushRefresh()
     }
   }
