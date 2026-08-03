@@ -47,7 +47,7 @@ export const PRESETS: Record<Exclude<HeadingNumberingPreset, 'custom'>, PresetMe
     key: 'academic-paper',
     name: '学术论文',
     description: '章标题与十进制层级结合',
-    preview: { 1: '第1章', 2: '第1章.1', 3: '第1章.1.1', 4: '第1章.1.1.1', 5: '第1章.1.1.1.1', 6: '第1章.1.1.1.1.1' },
+    preview: { 1: '第一章', 2: '1.1', 3: '1.1.1', 4: '1.1.1.1', 5: '1.1.1.1.1', 6: '1.1.1.1.1.1' },
     levels: buildAcademicPaper(),
   },
   'chapter-section-clause': {
@@ -61,7 +61,7 @@ export const PRESETS: Record<Exclude<HeadingNumberingPreset, 'custom'>, PresetMe
     key: 'appendix-hierarchical',
     name: '附录层级',
     description: '附录及补充材料编号',
-    preview: { 1: '附录A', 2: '附录A.1', 3: '附录A.1.1', 4: '附录A.1.1.1', 5: '附录A.1.1.1.1', 6: '附录A.1.1.1.1.1' },
+    preview: { 1: '附录A', 2: 'A.1', 3: 'A.1.1', 4: 'A.1.1.1', 5: 'A.1.1.1.1', 6: 'A.1.1.1.1.1' },
     levels: buildAppendixHierarchical(),
   },
   'roman-hierarchical': {
@@ -554,25 +554,30 @@ function buildChineseOutline(): Record<HeadingLevel, HeadingLevelStyle> {
 function buildAcademicPaper(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
 
-  // H1: standalone 第n章
-  levels[1] = makeStandaloneStyle(1, 'arabic', '第', '章')
+  // H1: standalone 第一章 (chinese number, not arabic)
+  levels[1] = makeStandaloneStyle(1, 'chinese', '第', '章')
 
-  // H2-H6: hierarchical
+  // H2-H6: hierarchical decimal — H1's counter appears as plain arabic (no 第/章)
   for (let i = 2; i <= 6; i++) {
     const lv = i as HeadingLevel
 
-    // withLevelOne: [H1(第,章)].[H2(arabic)]...[Hlv(arabic)]
-    const ctxWith: ContextualFormatSegment[] = [ref(1, 'arabic', '第', '章')]
+    // withLevelOne: [H1(arabic, no prefix/suffix)].[H2(arabic)]...[Hlv(arabic)]
+    const ctxWith: ContextualFormatSegment[] = [ref(1, 'arabic', '', '')]
     for (let j = 2; j <= lv; j++) {
       ctxWith.push(lit('.'))
       ctxWith.push(ref(j as HeadingLevel, 'arabic', '', ''))
     }
 
-    // withoutLevelOne: H2 gets standalone 第n章; H3+ hierarchical from H2(第,章)
-    const ctxWithout: ContextualFormatSegment[] = [ref(2, 'arabic', '第', '章')]
-    for (let j = 3; j <= lv; j++) {
-      ctxWithout.push(lit('.'))
-      ctxWithout.push(ref(j as HeadingLevel, 'arabic', '', ''))
+    // withoutLevelOne: H2 standalone 第一章; H3+ hierarchical from H2(arabic, no prefix/suffix)
+    const ctxWithout: ContextualFormatSegment[] = lv === 2
+      ? [ref(2, 'chinese', '第', '章')]
+      : [ref(2, 'arabic', '', '')]
+    
+    if (lv > 2) {
+      for (let j = 3; j <= lv; j++) {
+        ctxWithout.push(lit('.'))
+        ctxWithout.push(ref(j as HeadingLevel, 'arabic', '', ''))
+      }
     }
 
     const mfWith: MultilevelFormatSegment[] = [{ type: 'level-template-reference', level: 1 }]
@@ -633,8 +638,8 @@ function buildChapterSectionClause(): Record<HeadingLevel, HeadingLevelStyle> {
 /**
  * 6. appendix-hierarchical — 附录层级
  * H1: standalone '附录A' (alpha-upper)
- * H2-H6: hierarchical [H1(附录, alpha-upper)].[H2(arabic)]...[Hlv(arabic)]
- * withoutLevelOne: H2 becomes standalone '附录A', H3+ hierarchical from H2(附录, alpha-upper)
+ * H2-H6: hierarchical [H1(alpha-upper, no prefix)].[H2(arabic)]...[Hlv(arabic)]
+ * withoutLevelOne: H2 standalone '附录A', H3+ hierarchical from H2(alpha-upper, no prefix)
  */
 function buildAppendixHierarchical(): Record<HeadingLevel, HeadingLevelStyle> {
   const levels = {} as Record<HeadingLevel, HeadingLevelStyle>
@@ -642,22 +647,27 @@ function buildAppendixHierarchical(): Record<HeadingLevel, HeadingLevelStyle> {
   // H1: standalone 附录A
   levels[1] = makeStandaloneStyle(1, 'alpha-upper', '附录', '')
 
-  // H2-H6: hierarchical
+  // H2-H6: hierarchical — parent refs use plain alpha-upper (no '附录' prefix)
   for (let i = 2; i <= 6; i++) {
     const lv = i as HeadingLevel
 
-    // withLevelOne: [H1(附录, alpha-upper)].[H2(arabic)]...[Hlv(arabic)]
-    const ctxWith: ContextualFormatSegment[] = [ref(1, 'alpha-upper', '附录', '')]
+    // withLevelOne: [H1(alpha-upper)].[H2(arabic)]...[Hlv(arabic)]
+    const ctxWith: ContextualFormatSegment[] = [ref(1, 'alpha-upper', '', '')]
     for (let j = 2; j <= lv; j++) {
       ctxWith.push(lit('.'))
       ctxWith.push(ref(j as HeadingLevel, 'arabic', '', ''))
     }
 
-    // withoutLevelOne: H2 standalone 附录A; H3+ hierarchical from H2(附录, alpha-upper)
-    const ctxWithout: ContextualFormatSegment[] = [ref(2, 'alpha-upper', '附录', '')]
-    for (let j = 3; j <= lv; j++) {
-      ctxWithout.push(lit('.'))
-      ctxWithout.push(ref(j as HeadingLevel, 'arabic', '', ''))
+    // withoutLevelOne: H2 standalone 附录A; H3+ hierarchical from H2(alpha-upper, no prefix)
+    const ctxWithoutParsed: ContextualFormatSegment[] = lv === 2
+      ? [ref(2, 'alpha-upper', '附录', '')]
+      : [ref(2, 'alpha-upper', '', '')]
+    
+    if (lv > 2) {
+      for (let j = 3; j <= lv; j++) {
+        ctxWithoutParsed.push(lit('.'))
+        ctxWithoutParsed.push(ref(j as HeadingLevel, 'arabic', '', ''))
+      }
     }
 
     const mfWith: MultilevelFormatSegment[] = [{ type: 'level-template-reference', level: 1 }]
@@ -676,7 +686,7 @@ function buildAppendixHierarchical(): Record<HeadingLevel, HeadingLevelStyle> {
         },
         contextualFormatVariants: {
           withLevelOne: ctxWith,
-          withoutLevelOne: ctxWithout,
+          withoutLevelOne: ctxWithoutParsed,
         },
       }),
     }
