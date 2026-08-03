@@ -2739,16 +2739,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const cardEl = el('div', 'inkchapter-format-card', grid)
     cardEl.setAttribute('tabindex', '0')
 
-    // ── Header: title row → meta row (badge + menu) ──
+    // ── Header: title row → meta row (badge only) ──
     const header = el('div', 'inkchapter-format-card-header', cardEl)
     
-    // Title row
+    // Title row (pr for absolute button)
     const titleRow = el('div', 'inkchapter-format-card-title-row', header)
     const cardName = el('span', 'inkchapter-format-card-title', titleRow)
     cardName.textContent = name
     
-    // Meta row: status badge (left) + menu button (right)
-    // Always render for consistent height, even without badge
+    // Meta row: status badge (left) only
     const metaRow = el('div', 'inkchapter-format-card-meta-row', header)
     const badgeWrap = el('span', 'inkchapter-format-card-badge-wrap', metaRow)
     
@@ -2769,8 +2768,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       badge.textContent = '全局默认'
     }
     
-    // "⋯" menu trigger (always in meta row, right side)
-    const menuBtn = el('span', 'inkchapter-format-card-menu-trigger', metaRow)
+    // "⋯" menu trigger — fixed to card top-right via absolute positioning
+    const menuBtn = el('span', 'inkchapter-format-card-menu-trigger', cardEl)
     menuBtn.textContent = '⋯'
     menuBtn.setAttribute('tabindex', '0')
     menuBtn.setAttribute('role', 'button')

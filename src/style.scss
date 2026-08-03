@@ -196,6 +196,7 @@
 
 .inkchapter-format-card-title-row {
   min-width: 0;
+  padding-right: 38px; /* space for absolute menu button (32px + 6px gap) */
 }
 
 .inkchapter-format-card-title {
@@ -213,7 +214,6 @@
 .inkchapter-format-card-meta-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   min-height: 24px;
 }
@@ -1424,10 +1424,18 @@
 
 // ── Format card menu ───────────────────────────────────
 .inkchapter-format-card-menu-trigger {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
-  padding: 2px 6px;
   border-radius: 4px;
   color: var(--text-muted, #888);
   user-select: none;
