@@ -1044,6 +1044,31 @@
 }
 
 // ══════════════════════════════════════════════════════════
+// Outline collapse depth filter (v4 CSS-based)
+// ══════════════════════════════════════════════════════════
+
+// Collapse to H1: hide all non-H1 outline items
+.inkchapter-collapse-to-h1 .outline-item-wrapper {
+  &[data-inkchapter-heading-level="2"],
+  &[data-inkchapter-heading-level="3"],
+  &[data-inkchapter-heading-level="4"],
+  &[data-inkchapter-heading-level="5"],
+  &[data-inkchapter-heading-level="6"] {
+    display: none !important;
+  }
+}
+
+// Collapse to H2: hide H3+ outline items
+.inkchapter-collapse-to-h2 .outline-item-wrapper {
+  &[data-inkchapter-heading-level="3"],
+  &[data-inkchapter-heading-level="4"],
+  &[data-inkchapter-heading-level="5"],
+  &[data-inkchapter-heading-level="6"] {
+    display: none !important;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
 // Settings page layout v2 — compact, collapsible, responsive
 // ══════════════════════════════════════════════════════════
 

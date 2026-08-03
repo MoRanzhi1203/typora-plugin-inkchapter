@@ -109,6 +109,11 @@ export class OutlineNumberingController {
     this.cache = { documentKey: '', revision: 0, headings: [], labels: [] }
   }
 
+  /** Get cached headings for level mapping (used by collapse depth filter). */
+  getCachedHeadings(): readonly HeadingDescriptor[] {
+    return this.cache.headings
+  }
+
   /**
    * Reinitialize for a new document: detach old observer, find new outline root.
    * Does NOT clear currentDocumentKey — the caller must call setDocumentKey()
