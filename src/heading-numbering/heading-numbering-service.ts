@@ -181,6 +181,7 @@ export class HeadingNumberingService {
       writeDiagnosticFile: (filename, data) => {
         this.ctx.writeDiagnosticFile?.(filename, data)
       },
+      getHeadings: () => this.outlineController.getCachedHeadings(),
     }
     this.outlineToolbar = new OutlineToolbarController(toolbarCallbacks)
     this.outlineToolbar.start()
@@ -1655,6 +1656,7 @@ export class HeadingNumberingService {
           this.bindEditorRoot()
           this.outlineController.setDocumentKey(docKey ?? '')
           this.outlineToolbar.reinitialize()
+          this.outlineToolbar.setDocumentKey(docKey ?? '')
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         }
@@ -1682,7 +1684,7 @@ export class HeadingNumberingService {
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
         this.outlineToolbar.reinitialize()
-        this.outlineController.setDocumentKey(newDocKey ?? '')
+        this.outlineToolbar.setDocumentKey(newDocKey ?? '')
         this.overrideStore = null // Invalidate override store for new doc
         queueMicrotask(() => {
           if (version !== this.renderVersion) { return }
@@ -1727,7 +1729,7 @@ export class HeadingNumberingService {
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
         this.outlineToolbar.reinitialize()
-        this.outlineController.setDocumentKey(newDocKey ?? '')
+        this.outlineToolbar.setDocumentKey(newDocKey ?? '')
         this.overrideStore = null
         queueMicrotask(() => {
           if (version !== this.renderVersion) { return }
