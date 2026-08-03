@@ -1,18 +1,18 @@
 /**
- * Outline Toolbar Controller v2 — injects quick controls into Typora's native outline sidebar.
+ * Outline Toolbar Controller v3 — single menu-trigger approach.
  *
- * v2 changes:
- * 1. DOM diagnostic dump on start/reinit to help debug real DOM structure
- * 2. Visibility-verified host finding (non-zero rect, not hidden)
- * 3. Retry mechanism (up to 10 attempts, 200ms intervals)
- * 4. Unique container with data-inkchapter-outline-actions attribute
- * 5. Native collapse/expand via real button click events (not CSS class manipulation)
- * 6. Observer on stable sidebar host, not guessing toolbar selectors
+ * v3 changes from v2:
+ * 1. Removed the 3 bare inline buttons (N, ⊟/⊞, 1) that competed with native tab bar layout.
+ * 2. Single "大纲操作" (⋯) trigger button in an independent row below the tab bar.
+ * 3. Dropdown menu with full Chinese text and checkmark indicators.
+ * 4. Menu items share state with settings page via callbacks.
+ * 5. Collapse/expand clicks native SPAN.outline-expander (not CSS class manipulation).
+ * 6. Proper menu lifecycle: open/close on click, Escape, outside click, tab switch, doc switch.
  *
- * Controls:
- * 1. Toggle heading numbering (on/off, synced with settings 'enabled')
- * 2. Collapse/expand all outline items (native click on expand toggles)
- * 3. Toggle first-level heading numbering (on/off, synced with 'showLevelOneNumber')
+ * Controls (via menu):
+ * 1. 在文档中显示标题编号 (toggle, synced with settings 'enabled')
+ * 2. 显示第一级标题编号 (toggle, synced with 'showLevelOneNumber')
+ * 3. 折叠所有标题 / 展开所有标题 (native click on outline-expander)
  */
 
 import { clearFileTreeNumberingAttributes } from './outline-numbering-adapter'
@@ -22,219 +22,132 @@ export interface OutlineToolbarCallbacks {
   toggleNumbering: () => void
   isShowLevelOne: () => boolean
   toggleLevelOneNumber: () => void
-  /** Write diagnostic data to a file. Called on start/reinit with DOM structure info. */
   writeDiagnosticFile?: (filename: string, data: string) => void
 }
 
 const ACTIONS_ATTR = 'data-inkchapter-outline-actions'
-const BTN_CLASS = 'inkchapter-outline-action'
-const BTN_ACTIVE = 'inkchapter-outline-action--active'
-const BUILD_MARKER = 'inkchapter-outline-toolbar-v2'
+const BUILD_MARKER = 'inkchapter-outline-toolbar-v3-menu'
 
 const MAX_RETRIES = 10
 const RETRY_INTERVAL_MS = 200
 
-/** Write diagnostic DOM information for debugging. */
-function dumpOutlineDiagnostics(): Record<string, unknown> {
+// ── DOM diagnostic ───────────────────────────────────
+
+function dumpOutlineDiagnostics(controlsContainer: HTMLElement | null): Record<string, unknown> {
   const diagnostic: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
     buildMarker: BUILD_MARKER,
   }
 
-  // Scan for sidebar-related elements
-  const sidebarEls: Array<Record<string, unknown>> = []
-  const candidateSelectors = [
-    '#typora-sidebar', '.typora-sidebar', '.sidebar-content', '#sidebar-content',
-    '.info-panel-tab-wrapper', '#info-panel-tab-wrapper',
-    '[data-action="switch-outline"]', '[data-type="outline"]',
-    '.outline-content', '#outline-content', '.outline-panel',
-    '.outline-item', '.outline-item-wrapper',
-    '.sidebar-tabs', '.typora-sidebar-tabs',
-    '.file-list', '#file-library', '.file-library',
-    '#outline-panel', '#outline',
-    `[${ACTIONS_ATTR}]`,
-  ]
-  for (const sel of candidateSelectors) {
-    const els = document.querySelectorAll(sel)
-    for (let i = 0; i < els.length; i++) {
-      const el = els[i] as HTMLElement
-      const rect = el.getBoundingClientRect()
-      const cs = getComputedStyle(el)
-      sidebarEls.push({
-        selector: sel,
-        index: i,
-        tagName: el.tagName,
-        id: el.id || '',
-        className: (el.className && typeof el.className === 'string') ? el.className.slice(0, 80) : '',
-        rect: { w: Math.round(rect.width), h: Math.round(rect.height), x: Math.round(rect.x), y: Math.round(rect.y) },
-        display: cs.display,
-        visibility: cs.visibility,
-        opacity: cs.opacity,
-        isConnected: el.isConnected,
-        childCount: el.childElementCount,
-      })
+  // Tab bar rect
+  const tabBar = document.querySelector('.info-panel-tab-wrapper') as HTMLElement | null
+  if (tabBar) {
+    const tr = tabBar.getBoundingClientRect()
+    diagnostic.tabBar = {
+      rect: { w: Math.round(tr.width), h: Math.round(tr.height), x: Math.round(tr.x), y: Math.round(tr.y) },
+      bottom: Math.round(tr.bottom),
+      childCount: tabBar.childElementCount,
     }
   }
-  diagnostic.sidebarElements = sidebarEls
 
-  // Find visible outline content (skip hidden TOC panel)
-  let outlineContent: Element | null = null
-  const ocCandidates = document.querySelectorAll('#outline-content, .outline-content, #outline-panel, .outline-panel')
+  // Outline tab button
+  const outlineTabBtn = document.querySelector('[data-action="switch-outline"]') as HTMLElement | null
+        || document.querySelector('.info-panel-tab-wrapper [data-type="outline"]') as HTMLElement | null
+  if (outlineTabBtn) {
+    const or = outlineTabBtn.getBoundingClientRect()
+    diagnostic.outlineTabBtn = {
+      tagName: outlineTabBtn.tagName,
+      rect: { w: Math.round(or.width), h: Math.round(or.height), x: Math.round(or.x), y: Math.round(or.y) },
+      bottom: Math.round(or.bottom),
+      text: outlineTabBtn.textContent?.trim() || '',
+    }
+  }
+
+  // Controls container
+  if (controlsContainer) {
+    const cr = controlsContainer.getBoundingClientRect()
+    diagnostic.controlsRow = {
+      tagName: controlsContainer.tagName,
+      rect: { w: Math.round(cr.width), h: Math.round(cr.height), x: Math.round(cr.x), y: Math.round(cr.y) },
+      top: Math.round(cr.top),
+      bottom: Math.round(cr.bottom),
+      display: getComputedStyle(controlsContainer).display,
+      parentTag: controlsContainer.parentElement?.tagName || '',
+      parentId: controlsContainer.parentElement?.id || '',
+      parentChildCount: controlsContainer.parentElement?.childElementCount ?? 0,
+    }
+
+    // Overlap check
+    if (tabBar) {
+      const tr = tabBar.getBoundingClientRect()
+      diagnostic.overlapCheck = {
+        tabBarBottom: Math.round(tr.bottom),
+        controlsRowTop: Math.round(cr.top),
+        gap: Math.round(cr.top - tr.bottom),
+        noOverlap: cr.top >= tr.bottom,
+      }
+    }
+    if (outlineTabBtn) {
+      const or = outlineTabBtn.getBoundingClientRect()
+      diagnostic.outlineTabOverlap = {
+        outlineTabRight: Math.round(or.right),
+        outlineTabBottom: Math.round(or.bottom),
+        controlsRowLeft: Math.round(cr.left),
+        controlsRowTop: Math.round(cr.top),
+        horizontalGap: Math.round(cr.left - or.right),
+        verticalGap: Math.round(cr.top - or.bottom),
+      }
+    }
+  }
+
+  // Visible outline content
+  const ocCandidates = document.querySelectorAll('#outline-content, .outline-content')
   for (let i = 0; i < ocCandidates.length; i++) {
     const el = ocCandidates[i] as HTMLElement
     const cr = el.getBoundingClientRect()
     if (cr.width > 0 && cr.height > 0 && el.id !== 'toc-content') {
-      outlineContent = el
+      diagnostic.visibleOutlineContent = {
+        id: el.id,
+        rect: { w: Math.round(cr.width), h: Math.round(cr.height), x: Math.round(cr.x), y: Math.round(cr.y) },
+      }
       break
     }
   }
-  // Fallback: accept any non-zero outline content
-  if (!outlineContent) {
-    for (let i = 0; i < ocCandidates.length; i++) {
-      const el = ocCandidates[i] as HTMLElement
-      const cr = el.getBoundingClientRect()
-      if (cr.width > 0 && cr.height > 0) {
-        outlineContent = el
-        break
-      }
-    }
-  }
-  if (outlineContent) {
-    const rect = outlineContent.getBoundingClientRect()
-    const cs = getComputedStyle(outlineContent)
-    diagnostic.outlineContent = {
-      tagName: (outlineContent as HTMLElement).tagName,
-      id: (outlineContent as HTMLElement).id,
-      className: (outlineContent as HTMLElement).className?.slice?.(0, 80) || '',
-      rect: { w: Math.round(rect.width), h: Math.round(rect.height), x: Math.round(rect.x), y: Math.round(rect.y) },
-      display: cs.display,
-      visibility: cs.visibility,
-      parentTag: (outlineContent.parentElement as HTMLElement)?.tagName || '',
-      parentId: (outlineContent.parentElement as HTMLElement)?.id || '',
-      parentClass: (outlineContent.parentElement as HTMLElement)?.className?.slice?.(0, 80) || '',
-    }
 
-    // Get first few outline items
-    const items = outlineContent.querySelectorAll('.outline-item, .outline-item-wrapper, [data-depth]')
-    const itemDetails: Array<Record<string, unknown>> = []
-    for (let i = 0; i < Math.min(items.length, 5); i++) {
-      const item = items[i] as HTMLElement
-      const ir = item.getBoundingClientRect()
-      const expandBtn = item.querySelector('button, [role="button"], .outline-item-toggle, [data-action="toggle"], [aria-expanded]')
-      itemDetails.push({
-        index: i,
-        tagName: item.tagName,
-        className: item.className?.slice?.(0, 60) || '',
-        rect: { w: Math.round(ir.width), h: Math.round(ir.height) },
-        hasExpandButton: !!expandBtn,
-        expandBtnTag: expandBtn?.tagName || '',
-        expandBtnClass: (expandBtn as HTMLElement)?.className?.slice?.(0, 40) || '',
-        ariaExpanded: (expandBtn as HTMLElement)?.getAttribute?.('aria-expanded') || null,
-        dataDepth: item.getAttribute('data-depth'),
-        textPreview: (item.textContent || '').slice(0, 50),
-        children: Array.from(item.children).slice(0, 3).map(ch => ({
-          tag: ch.tagName,
-          cls: (ch as HTMLElement).className?.slice?.(0, 40) || '',
-          text: (ch.textContent || '').slice(0, 30),
-        })),
-      })
-    }
-    diagnostic.outlineItems = itemDetails
-    diagnostic.outlineItemCount = items.length
-
-    // Also scan wrapper LI elements
-    const wrappers = outlineContent.querySelectorAll('.outline-item-wrapper')
-    const wrapperDetails: Array<Record<string, unknown>> = []
-    for (let i = 0; i < Math.min(wrappers.length, 5); i++) {
-      const w = wrappers[i] as HTMLElement
-      const wr = w.getBoundingClientRect()
-      // Check for clickable elements
-      const allClickable = w.querySelectorAll('*')
-      const clickableInfo: string[] = []
-      for (let j = 0; j < Math.min(allClickable.length, 5); j++) {
-        const c = allClickable[j] as HTMLElement
-        clickableInfo.push(`${c.tagName}.${c.className?.split?.(' ')?.[0] || ''}[aria-expanded=${c.getAttribute('aria-expanded')}]`)
-      }
-      wrapperDetails.push({
-        index: i,
-        tagName: w.tagName,
-        className: w.className?.slice?.(0, 60) || '',
-        rect: { w: Math.round(wr.width), h: Math.round(wr.height) },
-        childCount: w.childElementCount,
-        children: Array.from(w.children).map(ch => ({
-          tag: ch.tagName,
-          cls: (ch as HTMLElement).className?.slice?.(0, 40) || '',
-          text: (ch.textContent || '').slice(0, 40),
-        })),
-        clickableDescendants: clickableInfo,
-      })
-    }
-    diagnostic.outlineWrappers = wrapperDetails
-  }
-
-  // Write to file if in test vault
-  try {
-    // Find the vault root by looking for .typora directory
-    const scripts = document.querySelectorAll('script[src*="main.js"]')
-    for (const s of Array.from(scripts)) {
-      const src = (s as HTMLScriptElement).src
-      if (src.includes('inkchapter') && src.includes('.typora')) {
-        const vaultMatch = src.match(/(.+)\\.typora\\plugins\\dist\\main\.js/)
-        if (vaultMatch) {
-          diagnostic.vaultRoot = vaultMatch[1]
-          break
-        }
-      }
-    }
-  } catch { /* ignore */ }
-
-  // Check our controls container
-  const ourContainers = document.querySelectorAll(`[${ACTIONS_ATTR}]`)
-  diagnostic.controlsContainerCount = ourContainers.length
-  if (ourContainers.length > 0) {
-    const c = ourContainers[0] as HTMLElement
-    const cr = c.getBoundingClientRect()
-    const cs = getComputedStyle(c)
-    diagnostic.controlsContainer = {
-      tagName: c.tagName,
-      className: c.className?.slice?.(0, 80) || '',
-      rect: { w: Math.round(cr.width), h: Math.round(cr.height), x: Math.round(cr.x), y: Math.round(cr.y) },
-      display: cs.display,
-      visibility: cs.visibility,
-      opacity: cs.opacity,
-      parentTag: c.parentElement?.tagName || '',
-      parentId: c.parentElement?.id || '',
-      parentClass: c.parentElement?.className?.slice?.(0, 80) || '',
-      childCount: c.childElementCount,
-    }
-    // List button states
-    const btns = c.querySelectorAll('button')
-    const btnStates: Array<Record<string, unknown>> = []
-    for (let i = 0; i < btns.length; i++) {
-      const b = btns[i] as HTMLButtonElement
-      const br = b.getBoundingClientRect()
-      btnStates.push({
-        text: b.textContent,
-        title: b.title,
-        ariaPressed: b.getAttribute('aria-pressed'),
-        disabled: b.disabled,
-        rect: { w: Math.round(br.width), h: Math.round(br.height), x: Math.round(br.x), y: Math.round(br.y) },
-      })
-    }
-    diagnostic.controlsButtons = btnStates
-  }
+  // Container count
+  diagnostic.actionsContainerCount = document.querySelectorAll(`[${ACTIONS_ATTR}]`).length
 
   return diagnostic
 }
 
+// ── Menu portal ─────────────────────────────────────
+
+const MENU_CLASS = 'inkchapter-outline-menu'
+const MENU_ITEM_CLASS = 'inkchapter-outline-menu-item'
+const MENU_DIVIDER_CLASS = 'inkchapter-outline-menu-divider'
+
+interface MenuItem {
+  type: 'checkbox' | 'action' | 'divider'
+  label?: string
+  checked?: boolean
+  disabled?: boolean
+  action?: () => void
+}
+
 export class OutlineToolbarController {
   private observer: MutationObserver | null = null
-  private sidebarHostObserver: MutationObserver | null = null
   private callbacks: OutlineToolbarCallbacks
   private injected = false
   private disposed = false
   private retryCount = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+
+  // Menu state
+  private menuEl: HTMLElement | null = null
+  private triggerBtn: HTMLButtonElement | null = null
+  private menuOpen = false
+  private outsideClickHandler: ((e: MouseEvent) => void) | null = null
+  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
 
   constructor(callbacks: OutlineToolbarCallbacks) {
     this.callbacks = callbacks
@@ -243,87 +156,69 @@ export class OutlineToolbarController {
   start(): void {
     if (this.disposed) return
     console.log(`[InkChapter] toolbar start  build=${BUILD_MARKER}`)
-
     this.tryInjectWithRetry()
     this.bindSidebarHostObserver()
-
-    // Dump DOM diagnostics AFTER injection attempt
-    const diag = dumpOutlineDiagnostics()
-    this.writeDiag(diag)
   }
 
   stop(): void {
     this.disposed = true
     this.cancelRetry()
+    this.closeMenu('dispose')
     this.removeControls()
     this.detachObserver()
-    this.detachSidebarHostObserver()
   }
 
   reinitialize(): void {
     if (this.disposed) return
     this.cancelRetry()
     this.retryCount = 0
+    this.closeMenu('reinitialize')
     this.detachObserver()
-    this.detachSidebarHostObserver()
     this.removeControls()
-
     this.tryInjectWithRetry()
     this.bindSidebarHostObserver()
-
-    const diag = dumpOutlineDiagnostics()
-    this.writeDiag(diag)
   }
 
-  /** Write diagnostic data via callback if available. */
-  private writeDiag(diag: Record<string, unknown>): void {
-    try {
-      const json = JSON.stringify(diag, null, 2)
-      console.log('[InkChapter DIAGNOSTIC]', json)
-      if (this.callbacks.writeDiagnosticFile) {
-        this.callbacks.writeDiagnosticFile('inkchapter-outline-dom-dump.json', json)
-      }
-    } catch { /* ignore */ }
+  /** Refresh menu item states from callbacks. */
+  updateAllButtonStates(): void {
+    // Menu is re-rendered on open, so no-op for closed state.
+    // If menu is open, re-render it.
+    if (this.menuOpen) {
+      this.closeMenu('state-update')
+    }
   }
 
   // ── Retry mechanism ─────────────────────────────
 
   private tryInjectWithRetry(): void {
     this.cancelRetry()
-    const success = this.tryInjectOnce()
-    if (success) {
+    if (this.tryInjectOnce()) {
       this.retryCount = 0
       return
     }
     if (this.retryCount >= MAX_RETRIES) {
-      console.log(`[InkChapter] toolbar: max retries (${MAX_RETRIES}) reached, giving up`)
+      console.log(`[InkChapter] toolbar: max retries (${MAX_RETRIES}) reached`)
       return
     }
     this.retryCount++
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null
-      if (this.disposed) return
-      this.tryInjectWithRetry()
+      if (!this.disposed) this.tryInjectWithRetry()
     }, RETRY_INTERVAL_MS)
   }
 
   private cancelRetry(): void {
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer)
-      this.retryTimer = null
-    }
+    if (this.retryTimer !== null) { clearTimeout(this.retryTimer); this.retryTimer = null }
   }
 
   // ── Injection ──────────────────────────────────────
 
   private tryInjectOnce(): boolean {
     if (this.injected) {
-      // Verify existing container is still in DOM and visible
       const existing = document.querySelector(`[${ACTIONS_ATTR}]`)
       if (existing) {
         const cr = existing.getBoundingClientRect()
         if (cr.width > 0 && cr.height > 0) return true
-        // Container exists but not visible — remove and re-inject
         existing.remove()
         this.injected = false
       } else {
@@ -331,271 +226,338 @@ export class OutlineToolbarController {
       }
     }
 
-    // Clean up any orphaned containers
     this.removeControls()
 
-    const mountPoint = this.findVisibleMountPoint()
-    if (!mountPoint) return false
+    // Find the tab bar to insert after
+    const tabBar = document.querySelector('.info-panel-tab-wrapper') as HTMLElement | null
+    if (!tabBar?.isConnected) return false
 
-    this.injectControlsAt(mountPoint)
+    const sidebar = tabBar.parentElement
+    if (!sidebar) return false
+
+    // Check if we already have a container
+    if (sidebar.querySelector(`[${ACTIONS_ATTR}]`)) return false
+
+    // Create the command row
+    const row = document.createElement('div')
+    row.className = 'inkchapter-outline-command-row'
+    row.setAttribute(ACTIONS_ATTR, 'true')
+
+    // Create the trigger button
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'inkchapter-outline-menu-trigger'
+    btn.textContent = '⋯'
+    btn.title = '大纲操作'
+    btn.setAttribute('aria-label', '大纲操作')
+    btn.setAttribute('aria-haspopup', 'menu')
+    btn.setAttribute('aria-expanded', 'false')
+    btn.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation()
+      this.toggleMenu(btn)
+    }
+    btn.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault(); e.stopPropagation()
+        this.toggleMenu(btn)
+      } else if (e.key === 'ArrowDown' && this.menuOpen) {
+        e.preventDefault()
+        this.focusMenuItem(0)
+      }
+    }
+    row.appendChild(btn)
+    this.triggerBtn = btn
+
+    // Insert after tab bar (before sidebar-content)
+    if (tabBar.nextSibling) {
+      sidebar.insertBefore(row, tabBar.nextSibling)
+    } else {
+      sidebar.appendChild(row)
+    }
+
     this.injected = true
+
+    // Write diagnostic
+    const diag = dumpOutlineDiagnostics(row)
+    this.writeDiag(diag)
+
     return true
   }
 
-  /**
-   * Find the best visible mount point for the controls container.
-   * Priority:
-   * 1. The tab bar below "文件/大纲" tabs (info-panel-tab-wrapper parent or similar)
-   * 2. The visible outline content container (prepend before outline list)
-   * 3. Any visible outline panel
-   */
-  private findVisibleMountPoint(): HTMLElement | null {
-    // Strategy 1: Insert below the tab bar
-    // In Typora 1.6.x, the sidebar has a tab bar with "文件" and "大纲" buttons
-    const tabBar = this.findVisibleTabBar()
-    if (tabBar) {
-      // Check if there's already a sibling container below the tab bar
-      // The tab bar is usually inside a container; insert after that container
-      const tabBarParent = tabBar.parentElement
-      if (tabBarParent) {
-        // Insert after tab bar parent (the tab wrapper)
-        return tabBarParent
-      }
-    }
+  // ── Menu ────────────────────────────────────────────
 
-    // Strategy 2: Find the visible outline content container
-    const outlineContent = this.findVisibleOutlineContent()
-    if (outlineContent) {
-      return outlineContent
-    }
-
-    // Strategy 3: Any visible outline panel
-    const selectors = [
-      '#outline-content', '.outline-content',
-      '#outline-panel', '.outline-panel',
-    ]
-    for (const sel of selectors) {
-      const el = document.querySelector(sel) as HTMLElement | null
-      if (el?.isConnected) {
-        const cr = el.getBoundingClientRect()
-        // Allow hidden panels (they may become visible later)
-        return el
-      }
-    }
-
-    return null
-  }
-
-  private findVisibleTabBar(): HTMLElement | null {
-    const selectors = [
-      '.info-panel-tab-wrapper',
-      '#info-panel-tab-wrapper',
-      '.typora-sidebar-tabs',
-      '.sidebar-tabs',
-      '[role="tablist"]',
-    ]
-    for (const sel of selectors) {
-      const el = document.querySelector(sel) as HTMLElement | null
-      if (!el?.isConnected) continue
-      const cr = el.getBoundingClientRect()
-      if (cr.width > 0 && cr.height > 0) {
-        const cs = getComputedStyle(el)
-        if (cs.display !== 'none' && cs.visibility !== 'hidden') {
-          return el
-        }
-      }
-    }
-    return null
-  }
-
-  private findVisibleOutlineContent(): HTMLElement | null {
-    const selectors = [
-      '#outline-content', '.outline-content',
-      '#outline-panel', '.outline-panel',
-    ]
-    for (const sel of selectors) {
-      const el = document.querySelector(sel) as HTMLElement | null
-      if (!el?.isConnected) continue
-      const cr = el.getBoundingClientRect()
-      if (cr.width > 0 && cr.height > 0) {
-        const cs = getComputedStyle(el)
-        if (cs.display !== 'none' && cs.visibility !== 'hidden') {
-          return el
-        }
-      }
-    }
-    return null
-  }
-
-  // ── Render ─────────────────────────────────────────
-
-  private injectControlsAt(mountPoint: HTMLElement): void {
-    // Check if this mount point already has our container
-    if (mountPoint.querySelector(`[${ACTIONS_ATTR}]`)) return
-
-    // Check if the mount point is the tab bar parent (insert after it)
-    const tabBar = this.findVisibleTabBar()
-    const isTabBarParent = tabBar && mountPoint === tabBar.parentElement
-
-    const container = document.createElement('div')
-    container.setAttribute(ACTIONS_ATTR, 'true')
-    container.className = 'inkchapter-outline-actions'
-
-    // 1. Numbering toggle
-    const numBtn = this.createActionBtn(
-      'N',
-      '在文档中显示标题编号',
-      () => { this.callbacks.toggleNumbering(); this.updateAllButtonStates() },
-      this.callbacks.isNumberingEnabled(),
-    )
-    container.appendChild(numBtn)
-
-    // 2. Collapse / expand all
-    const collapseBtn = this.createActionBtn(
-      '⊟',
-      '折叠所有标题',
-      () => this.handleCollapseExpand(collapseBtn),
-      false,
-    )
-    container.appendChild(collapseBtn)
-
-    // 3. H1 numbering toggle
-    const enabled = this.callbacks.isNumberingEnabled()
-    const h1Btn = this.createActionBtn(
-      '1',
-      '显示第一级标题编号',
-      () => {
-        if (!this.callbacks.isNumberingEnabled()) return
-        this.callbacks.toggleLevelOneNumber()
-        this.updateAllButtonStates()
-      },
-      this.callbacks.isShowLevelOne(),
-    )
-    container.appendChild(h1Btn)
-
-    // Store refs for state update
-    ;(container as any).__numBtn = numBtn
-    ;(container as any).__collapseBtn = collapseBtn
-    ;(container as any).__h1Btn = h1Btn
-
-    if (isTabBarParent && tabBar) {
-      // Insert after the tab bar element
-      if (tabBar.nextSibling) {
-        mountPoint.insertBefore(container, tabBar.nextSibling)
-      } else {
-        mountPoint.appendChild(container)
-      }
+  private toggleMenu(btn: HTMLButtonElement): void {
+    if (this.menuOpen) {
+      this.closeMenu('toggle')
     } else {
-      // Prepend to outline content (before the outline list)
-      if (mountPoint.firstChild) {
-        mountPoint.insertBefore(container, mountPoint.firstChild)
-      } else {
-        mountPoint.appendChild(container)
-      }
+      this.openMenu(btn)
     }
-
-    // Apply initial states
-    this.updateAllButtonStates()
   }
 
-  private createActionBtn(icon: string, title: string, onClick: () => void, active: boolean): HTMLButtonElement {
-    const btn = document.createElement('button')
-    btn.type = 'button'
-    btn.className = BTN_CLASS
-    btn.textContent = icon
-    btn.title = title
-    btn.setAttribute('aria-label', title)
-    btn.setAttribute('aria-pressed', String(active))
-    if (active) btn.classList.add(BTN_ACTIVE)
+  private openMenu(btn: HTMLButtonElement): void {
+    if (this.menuOpen) return
+    this.menuOpen = true
+    btn.setAttribute('aria-expanded', 'true')
 
-    btn.onclick = (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      onClick()
-    }
+    // Remove any stale menu
+    this.removeMenuElement()
 
-    btn.onkeydown = (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        e.stopPropagation()
-        btn.click()
-      }
-    }
+    const menu = this.buildMenu()
+    document.body.appendChild(menu)
+    this.menuEl = menu
 
-    return btn
+    // Position menu relative to trigger button
+    this.positionMenu(menu, btn)
+
+    // Register global listeners
+    this.registerMenuListeners()
+
+    // Focus first item
+    requestAnimationFrame(() => this.focusMenuItem(0))
   }
 
-  // ── State update ───────────────────────────────────
+  closeMenu(reason: string): void {
+    if (!this.menuOpen) return
+    this.menuOpen = false
+    if (this.triggerBtn) {
+      this.triggerBtn.setAttribute('aria-expanded', 'false')
+    }
+    this.removeMenuElement()
+    this.unregisterMenuListeners()
+    // Return focus to trigger
+    this.triggerBtn?.focus()
+  }
 
-  updateAllButtonStates(): void {
+  private buildMenu(): HTMLElement {
+    const menu = document.createElement('div')
+    menu.className = MENU_CLASS
+    menu.role = 'menu'
+    menu.setAttribute('aria-label', '大纲操作')
+
     const enabled = this.callbacks.isNumberingEnabled()
     const showL1 = this.callbacks.isShowLevelOne()
 
-    const containers = document.querySelectorAll(`[${ACTIONS_ATTR}]`)
-    containers.forEach(container => {
-      const numBtn = (container as any).__numBtn as HTMLButtonElement | undefined
-      const h1Btn = (container as any).__h1Btn as HTMLButtonElement | undefined
+    const items: MenuItem[] = [
+      {
+        type: 'checkbox',
+        label: '在文档中显示标题编号',
+        checked: enabled,
+        action: () => this.callbacks.toggleNumbering(),
+      },
+      {
+        type: 'checkbox',
+        label: '显示第一级标题编号',
+        checked: enabled && showL1,
+        disabled: !enabled,
+        action: () => {
+          if (!enabled) return
+          this.callbacks.toggleLevelOneNumber()
+        },
+      },
+      { type: 'divider' },
+      {
+        type: 'action',
+        label: this.getCollapseLabel(),
+        action: () => this.handleCollapseExpand(),
+      },
+    ]
 
-      if (numBtn) {
-        numBtn.setAttribute('aria-pressed', String(enabled))
-        numBtn.classList.toggle(BTN_ACTIVE, enabled)
-      }
-
-      if (h1Btn) {
-        const h1Active = enabled && showL1
-        h1Btn.setAttribute('aria-pressed', String(h1Active))
-        h1Btn.classList.toggle(BTN_ACTIVE, h1Active)
-        if (!enabled) {
-          h1Btn.disabled = true
-          h1Btn.setAttribute('aria-disabled', 'true')
+    for (const item of items) {
+      if (item.type === 'divider') {
+        const div = document.createElement('div')
+        div.className = MENU_DIVIDER_CLASS
+        div.setAttribute('role', 'separator')
+        menu.appendChild(div)
+      } else {
+        const el = document.createElement('div')
+        el.className = MENU_ITEM_CLASS
+        el.role = item.type === 'checkbox' ? 'menuitemcheckbox' : 'menuitem'
+        el.tabIndex = -1
+        if (item.type === 'checkbox') {
+          el.setAttribute('aria-checked', String(item.checked ?? false))
+          el.textContent = (item.checked ? '✓ ' : '  ') + (item.label || '')
         } else {
-          h1Btn.disabled = false
-          h1Btn.removeAttribute('aria-disabled')
+          el.textContent = item.label || ''
+        }
+        if (item.disabled) {
+          el.classList.add('inkchapter-outline-menu-item--disabled')
+          el.setAttribute('aria-disabled', 'true')
+        }
+        if (item.action && !item.disabled) {
+          el.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation()
+            item.action!()
+            this.closeMenu('action')
+          }
+          el.onkeydown = (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault(); e.stopPropagation()
+              item.action!()
+              this.closeMenu('action')
+            }
+          }
+          el.onmouseenter = () => {
+            menu.querySelectorAll(`.${MENU_ITEM_CLASS}`).forEach(mi => mi.classList.remove('focused'))
+            el.classList.add('focused')
+          }
+        }
+        menu.appendChild(el)
+      }
+    }
+
+    return menu
+  }
+
+  private getCollapseLabel(): string {
+    const outlineRoot = document.querySelector('#outline-content') as HTMLElement | null
+    if (!outlineRoot) return '折叠所有标题'
+
+    const wrappers = outlineRoot.querySelectorAll('.outline-item-wrapper')
+    let anyExpanded = false
+    for (let i = 0; i < wrappers.length; i++) {
+      const childrenUl = wrappers[i].querySelector('.outline-children') as HTMLElement | null
+      if (childrenUl) {
+        const cs = getComputedStyle(childrenUl)
+        if (cs.display !== 'none' && childrenUl.querySelectorAll('.outline-item-wrapper').length > 0) {
+          anyExpanded = true
+          break
         }
       }
-    })
+    }
+    return anyExpanded ? '折叠所有标题' : '展开所有标题'
+  }
+
+  private positionMenu(menu: HTMLElement, btn: HTMLButtonElement): void {
+    const btnRect = btn.getBoundingClientRect()
+    const menuWidth = 240
+
+    // Position below the trigger, right-aligned
+    let left = btnRect.right - menuWidth
+    let top = btnRect.bottom + 4
+
+    // Keep within viewport
+    if (left < 4) left = 4
+    if (left + menuWidth > window.innerWidth - 4) {
+      left = window.innerWidth - menuWidth - 4
+    }
+
+    // If menu would go below viewport, position above trigger
+    const estimatedHeight = 130 // approximate
+    if (top + estimatedHeight > window.innerHeight) {
+      top = btnRect.top - estimatedHeight - 4
+    }
+
+    menu.style.cssText = `
+      position: fixed;
+      left: ${left}px;
+      top: ${top}px;
+      min-width: ${menuWidth}px;
+      max-width: ${menuWidth}px;
+      z-index: 10001;
+    `
+  }
+
+  private focusMenuItem(index: number): void {
+    if (!this.menuEl) return
+    const items = this.menuEl.querySelectorAll(`.${MENU_ITEM_CLASS}:not(.${MENU_ITEM_CLASS}--disabled)`)
+    if (items.length === 0) return
+    const idx = Math.max(0, Math.min(index, items.length - 1))
+    ;(items[idx] as HTMLElement).focus()
+    this.menuEl.querySelectorAll(`.${MENU_ITEM_CLASS}`).forEach(mi => mi.classList.remove('focused'))
+    items[idx].classList.add('focused')
+  }
+
+  private handleMenuKeyDown(e: KeyboardEvent): void {
+    if (!this.menuEl) return
+    const items = Array.from(this.menuEl.querySelectorAll(`.${MENU_ITEM_CLASS}:not(.${MENU_ITEM_CLASS}--disabled)`))
+    if (items.length === 0) return
+    const currentIdx = items.indexOf(document.activeElement as Element)
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        this.focusMenuItem(currentIdx < 0 ? 0 : currentIdx + 1)
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        this.focusMenuItem(currentIdx < 0 ? items.length - 1 : currentIdx - 1)
+        break
+      case 'Escape':
+        e.preventDefault(); e.stopPropagation()
+        this.closeMenu('escape')
+        break
+    }
+  }
+
+  private removeMenuElement(): void {
+    if (this.menuEl) {
+      this.menuEl.remove()
+      this.menuEl = null
+    }
+  }
+
+  private registerMenuListeners(): void {
+    this.unregisterMenuListeners()
+
+    this.outsideClickHandler = (e: MouseEvent) => {
+      if (!this.menuOpen) return
+      const target = e.target as HTMLElement
+      if (this.menuEl && !this.menuEl.contains(target) && target !== this.triggerBtn) {
+        this.closeMenu('outside-click')
+      }
+    }
+    document.addEventListener('click', this.outsideClickHandler, true)
+
+    this.escapeHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.menuOpen) {
+        this.closeMenu('escape')
+      }
+    }
+    document.addEventListener('keydown', this.escapeHandler, true)
+  }
+
+  private unregisterMenuListeners(): void {
+    if (this.outsideClickHandler) {
+      document.removeEventListener('click', this.outsideClickHandler, true)
+      this.outsideClickHandler = null
+    }
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler, true)
+      this.escapeHandler = null
+    }
   }
 
   // ── Collapse / Expand (native click) ───────────────
 
   /**
-   * Collapse or expand all outline items by clicking their native expand/collapse toggles.
-   * Does NOT modify CSS classes directly — triggers real DOM events.
-   *
-   * Typora 1.6.x structure:
+   * Collapse or expand all outline items by clicking SPAN.outline-expander.
+   * Typora 1.6.7 structure:
    *   LI.outline-item-wrapper
-   *     DIV.outline-item
-   *       SPAN.outline-expander  ← the clickable toggle
-   *       SPAN.outline-label
+   *     DIV.outline-item > SPAN.outline-expander (clickable)
    *     UL.outline-children
    */
-  private handleCollapseExpand(btn: HTMLButtonElement): void {
-    const outlineRoot = this.findVisibleOutlineContent()
+  private handleCollapseExpand(): void {
+    const outlineRoot = document.querySelector('#outline-content') as HTMLElement | null
     if (!outlineRoot) return
 
-    // Find all outline-item-wrapper LI elements
-    const wrappers = outlineRoot.querySelectorAll('.outline-item-wrapper') as NodeListOf<HTMLElement>
+    const wrappers = outlineRoot.querySelectorAll('.outline-item-wrapper')
     if (wrappers.length === 0) return
 
-    // Collect expandable items with their state
     let anyExpanded = false
     const items: Array<{ expander: HTMLElement; depth: number; isExpanded: boolean }> = []
 
     for (let i = 0; i < wrappers.length; i++) {
-      const wrapper = wrappers[i]
+      const wrapper = wrappers[i] as HTMLElement
       const expander = wrapper.querySelector('.outline-expander') as HTMLElement | null
       if (!expander) continue
 
       const childrenUl = wrapper.querySelector('.outline-children') as HTMLElement | null
-      // An item is expandable if it has visible child LI elements
       const hasChildren = childrenUl ? childrenUl.querySelectorAll('.outline-item-wrapper').length > 0 : false
       if (!hasChildren) continue
 
-      // Depth from class: outline-h1, outline-h2, etc.
       const depthMatch = wrapper.className.match(/outline-h(\d)/)
       const depth = depthMatch ? parseInt(depthMatch[1], 10) : 0
 
-      // Check if expanded: children UL is visible (display is not 'none')
       const cs = childrenUl ? getComputedStyle(childrenUl) : null
       const isExpanded = cs ? cs.display !== 'none' : false
 
@@ -606,66 +568,28 @@ export class OutlineToolbarController {
     if (items.length === 0) return
 
     if (anyExpanded) {
-      // Collapse all expanded items: deepest first
-      const toCollapse = items
-        .filter(ei => ei.isExpanded)
-        .sort((a, b) => b.depth - a.depth)
-
-      for (const ei of toCollapse) {
-        this.safeClick(ei.expander)
-      }
-
-      btn.textContent = '⊞'
-      btn.title = '展开所有标题'
-      btn.setAttribute('aria-pressed', 'false')
+      const toCollapse = items.filter(ei => ei.isExpanded).sort((a, b) => b.depth - a.depth)
+      for (const ei of toCollapse) { this.safeClick(ei.expander) }
     } else {
-      // Expand all collapsed items: shallowest first
-      const toExpand = items
-        .filter(ei => !ei.isExpanded)
-        .sort((a, b) => a.depth - b.depth)
-
-      for (const ei of toExpand) {
-        this.safeClick(ei.expander)
-      }
-
-      btn.textContent = '⊟'
-      btn.title = '折叠所有标题'
-      btn.setAttribute('aria-pressed', 'true')
+      const toExpand = items.filter(ei => !ei.isExpanded).sort((a, b) => a.depth - b.depth)
+      for (const ei of toExpand) { this.safeClick(ei.expander) }
     }
   }
 
-  /**
-   * Find the native expand/collapse toggle within an outline item.
-   * For Typora 1.6.7, this is SPAN.outline-expander inside DIV.outline-item.
-   */
-  private findExpandToggle(item: HTMLElement): HTMLElement | null {
-    // Primary: SPAN.outline-expander (Typora 1.6.x)
-    const expander = item.querySelector('.outline-expander') as HTMLElement | null
-    if (expander) return expander
-
-    // Fallbacks for other Typora versions
-    const ariaToggle = item.querySelector('[aria-expanded]') as HTMLElement | null
-    if (ariaToggle) return ariaToggle
-
-    const button = item.querySelector('button') as HTMLElement | null
-    if (button) return button
-
-    const roleBtn = item.querySelector('[role="button"]') as HTMLElement | null
-    if (roleBtn) return roleBtn
-
-    return null
-  }
-
-  /** Safely trigger a click event on an element. */
   private safeClick(el: HTMLElement): void {
+    try { el.click() } catch { try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })) } catch { /* ignore */ } }
+  }
+
+  // ── Diagnostic ─────────────────────────────────────
+
+  private writeDiag(diag: Record<string, unknown>): void {
     try {
-      el.click()
-    } catch {
-      // Fallback: dispatch a MouseEvent
-      try {
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-      } catch { /* ignore */ }
-    }
+      const json = JSON.stringify(diag, null, 2)
+      console.log('[InkChapter DIAGNOSTIC v3]', json)
+      if (this.callbacks.writeDiagnosticFile) {
+        this.callbacks.writeDiagnosticFile('inkchapter-outline-dom-dump.json', json)
+      }
+    } catch { /* ignore */ }
   }
 
   // ── Removal ────────────────────────────────────────
@@ -673,110 +597,63 @@ export class OutlineToolbarController {
   private removeControls(): void {
     document.querySelectorAll(`[${ACTIONS_ATTR}]`).forEach(el => el.remove())
     this.injected = false
+    this.triggerBtn = null
   }
 
-  // ── Observer (stable sidebar host) ────────────────
+  // ── Observer ───────────────────────────────────────
 
-  /**
-   * Observe the stable sidebar parent for DOM mutations.
-   * When the outline content is added/removed or becomes visible,
-   * re-inject the controls.
-   */
+  private observerRoot: HTMLElement | null = null
+
   private bindSidebarHostObserver(): void {
-    this.detachSidebarHostObserver()
+    this.detachObserver()
 
-    const host = this.findSidebarHost()
-    if (!host) return
+    const sidebar = document.querySelector('#typora-sidebar') as HTMLElement | null
+    if (!sidebar?.isConnected) return
 
-    this.sidebarHostObserver = new MutationObserver((mutations) => {
+    this.observerRoot = sidebar
+
+    this.observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
         if (m.type === 'childList') {
           for (let i = 0; i < m.addedNodes.length; i++) {
             const node = m.addedNodes[i]
             if (node instanceof HTMLElement) {
-              if (node.id === 'outline-content' ||
-                  node.classList.contains('outline-content') ||
-                  node.classList.contains('outline-panel') ||
-                  node.querySelector('#outline-content, .outline-content, .outline-panel')) {
-                // Outline DOM was added — re-inject controls
-                this.injected = false
-                this.retryCount = 0
-                this.tryInjectWithRetry()
+              if (node.id === 'outline-content' || node.classList.contains('outline-content')) {
+                if (!document.querySelector(`[${ACTIONS_ATTR}]`)) {
+                  this.injected = false; this.retryCount = 0; this.tryInjectWithRetry()
+                }
                 clearFileTreeNumberingAttributes()
                 return
               }
             }
           }
-          // If our controls disappeared, re-inject
           if (!document.querySelector(`[${ACTIONS_ATTR}]`)) {
-            this.injected = false
-            this.retryCount = 0
-            this.tryInjectWithRetry()
+            this.injected = false; this.retryCount = 0; this.tryInjectWithRetry()
           }
         }
 
-        // Attribute changes: visibility/style toggles
         if (m.type === 'attributes') {
           const target = m.target as HTMLElement
-          if (target.id === 'outline-content' ||
-              target.classList.contains('outline-content') ||
-              target.classList.contains('outline-panel')) {
-            // Outline panel visibility changed — re-inject if needed
+          if (target.id === 'outline-content' || target.classList.contains('outline-content')) {
             if (!document.querySelector(`[${ACTIONS_ATTR}]`)) {
-              this.injected = false
-              this.retryCount = 0
-              this.tryInjectWithRetry()
+              this.injected = false; this.retryCount = 0; this.tryInjectWithRetry()
             }
           }
         }
       }
-
-      // Always clean up file tree pollution
       clearFileTreeNumberingAttributes()
     })
 
-    this.sidebarHostObserver.observe(host, {
+    this.observer.observe(sidebar, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ['style', 'class'],
     })
-
-    console.log(`[InkChapter] toolbar: sidebar host observer bound to ${host.tagName}#${host.id || '?'}`)
-  }
-
-  private detachSidebarHostObserver(): void {
-    if (this.sidebarHostObserver) {
-      this.sidebarHostObserver.disconnect()
-      this.sidebarHostObserver = null
-    }
-  }
-
-  private findSidebarHost(): HTMLElement | null {
-    const selectors = [
-      '#typora-sidebar',
-      '.typora-sidebar',
-      '.sidebar-content',
-      '#sidebar-content',
-    ]
-    for (const sel of selectors) {
-      const el = document.querySelector(sel) as HTMLElement | null
-      if (el?.isConnected) return el
-    }
-    return null
-  }
-
-  // ── Observer (legacy, kept for backwards compat) ──
-
-  private bindObserver(): void {
-    this.detachObserver()
-    // Legacy observer no longer primary; sidebarHostObserver handles mutations
   }
 
   private detachObserver(): void {
-    if (this.observer) {
-      this.observer.disconnect()
-      this.observer = null
-    }
+    if (this.observer) { this.observer.disconnect(); this.observer = null }
+    this.observerRoot = null
   }
 }

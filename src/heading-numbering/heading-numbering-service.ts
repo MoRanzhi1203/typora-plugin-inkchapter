@@ -430,8 +430,10 @@ export class HeadingNumberingService {
       this.requestRefresh('toggle')
     } else {
       this.adapter.clearNumbering()
+      this.outlineController.clearOutlineNumbering()
     }
     this.outlineToolbar.updateAllButtonStates()
+    this.notifySettingsListeners()
     logger.info(`标题编号已${s.enabled ? '开启' : '关闭'}`)
   }
 
@@ -453,8 +455,10 @@ export class HeadingNumberingService {
       this.flushRefresh()
     } else {
       this.adapter.clearNumbering()
+      this.outlineController.clearOutlineNumbering()
     }
     this.outlineToolbar.updateAllButtonStates()
+    this.notifySettingsListeners()
   }
 
   /** Toggle H1 numbering from outline toolbar — always document scope. */
