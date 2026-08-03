@@ -17,6 +17,7 @@ import type {
   NumberingFormatSource,
   FormatBasedOn,
   BuiltInPresetId,
+  HeadingNumberingDocumentOverride,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
@@ -71,7 +72,10 @@ import {
   resetFormatLibrary as resetLibrary,
   getOrderedCustomFormats,
   migrateFormatLibrary,
+  hasFormatUpdate,
+  getFormatVersion,
 } from '../heading-numbering/format-library'
+import type { AppliedFormatInfo } from '../heading-numbering/format-library'
 
 const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string; group?: string }[] = [
   { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)', group: '数字' },
@@ -98,6 +102,13 @@ const PRESET_CARDS: { key: HeadingNumberingPreset; name: string; desc: string; p
 
 const DRAG_THRESHOLD = 4
 const DEBUG_DRAG = false
+
+interface OpenFormatMenuState {
+  formatType: 'built-in' | 'custom'
+  formatId: string
+  formatName: string
+  triggerElement: HTMLElement
+}
 
 export class HeadingNumberingSettingTab extends SettingTab {
   get name(): string {
@@ -140,8 +151,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private selectedFormatId: string | null = null
   /** Draft of the format being edited. */
   private formatDraft: CustomNumberingFormat | null = null
-  /** Currently open card menu (presetId or formatId). null if closed. */
-  private openMenuKey: string | null = null
+  /** Currently open card menu state. null if closed. */
+  private openMenuState: OpenFormatMenuState | null = null
+  private menuCleanups: Array<() => void> = []
   /** Whether the management panel is open. */
   private managePanelOpen = false
 
@@ -244,6 +256,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   onhide(): void {
+    this.closeMenu()
     this.cancelDrag()
     if (this.unsubSettings) {
       this.unsubSettings()
@@ -307,6 +320,91 @@ export class HeadingNumberingSettingTab extends SettingTab {
     return this.numberingService.getEffectiveSettings()
   }
 
+  /** Get the applied format info for the current document scope (what format the document actually uses). */
+  private getAppliedFormatInfo(): AppliedFormatInfo {
+    const scopeStore = this.numberingService.getScopeStore()
+    const docKey = this.numberingService.getDocumentKey()
+    
+    if (!docKey) {
+      // No document open — inherit global
+      const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+      return {
+        source: gSource ?? null,
+        formatId: gSource?.type === 'custom' ? gSource.formatId : null,
+        inheritsGlobal: true,
+      }
+    }
+    
+    const docOverride = scopeStore.documentOverrides[docKey]
+    if (docOverride?.formatSource) {
+      const src = docOverride.formatSource
+      const info: AppliedFormatInfo = {
+        source: src,
+        formatId: src.type === 'custom' ? src.formatId : null,
+        inheritsGlobal: false,
+      }
+      return info
+    }
+    
+    // No document override — inherits global
+    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    return {
+      source: gSource ?? null,
+      formatId: gSource?.type === 'custom' ? gSource.formatId : null,
+      inheritsGlobal: true,
+    }
+  }
+
+  /** Get the applied format version from the document override (for update detection). */
+  private getAppliedFormatVersion(): number | undefined {
+    const scopeStore = this.numberingService.getScopeStore()
+    const docKey = this.numberingService.getDocumentKey()
+    if (!docKey) return undefined
+    const docOverride = scopeStore.documentOverrides[docKey]
+    // Check if there's a saved version; default to 0 for migrated data without version
+    return (docOverride?.formatSource as any)?._version as number | undefined
+  }
+
+  /** Determine the card state for a given format card. */
+  private getCardState(key: string, isPreset: boolean):
+    { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean; hasUpdate: boolean; appliedVersion?: number }
+  {
+    const info = this.getAppliedFormatInfo()
+    
+    // Check if this card is the current document's applied format
+    let applied = false
+    let inheritsGlobal = false
+    let hasUpdate = false
+    
+    if (isPreset && info.source?.type === 'built-in' && info.source.presetId === key) {
+      applied = true
+      inheritsGlobal = info.inheritsGlobal
+    } else if (!isPreset && info.source?.type === 'custom' && info.source.formatId === key) {
+      applied = true
+      inheritsGlobal = info.inheritsGlobal
+      // Check for template update
+      const appliedVersion = this.getAppliedFormatVersion()
+      hasUpdate = hasFormatUpdate(this.formatLibrary, key, appliedVersion ?? 0)
+    }
+    
+    // Check if this card is the global default
+    const scopeStore = this.numberingService.getScopeStore()
+    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    let isGlobalDefault = false
+    if (isPreset && gSource?.type === 'built-in' && gSource.presetId === key) {
+      isGlobalDefault = true
+    } else if (!isPreset && gSource?.type === 'custom' && gSource.formatId === key) {
+      isGlobalDefault = true
+    }
+    
+    return { applied, isGlobalDefault, inheritsGlobal, hasUpdate }
+  }
+
+  /** Check if a card is the currently selected one for preview. */
+  private isCardSelected(key: string, isPreset: boolean): boolean {
+    return this.selectedCardKey === key && this.selectedCardIsPreset === isPreset
+  }
+
   private render(): void {
     const s = this.headingSettings
     if (!s?.levels) {
@@ -320,6 +418,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Load format library
     this.formatLibrary = this.numberingService.getFormatLibrary()
     this.formatLibrary = migrateFormatLibrary(this.formatLibrary)
+
+    // Menu portal layer
+    let menuLayer = this.containerEl.querySelector('.inkchapter-menu-layer') as HTMLElement | null
+    if (!menuLayer) {
+      menuLayer = document.createElement('div')
+      menuLayer.className = 'inkchapter-menu-layer'
+      menuLayer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:200;'
+      this.containerEl.appendChild(menuLayer)
+    }
 
     // 1. Document scope section (compact info bar)
     this.renderScopeBar(s)
@@ -462,6 +569,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.headingDraftOriginal = null
     this.selectedFormatId = null
     this.formatDraft = null
+    this.selectedCardKey = presetId
+    this.selectedCardIsPreset = true
     this.rerender()
     Notice.info(
       targetScope === 'global'
@@ -482,6 +591,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.headingDraftOriginal = null
     this.selectedFormatId = null
     this.formatDraft = null
+    this.selectedCardKey = format.id
+    this.selectedCardIsPreset = false
     this.rerender()
     Notice.info(
       targetScope === 'global'
@@ -836,6 +947,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.numberingService.saveFormatLibrary(newLib)
     this.formatLibrary = newLib
     this.formatDraft = updated
+
+    // If the edited format was applied to current document, update the snapshot version
+    const editScopeStore = this.numberingService.getScopeStore()
+    const editDocKey = this.numberingService.getDocumentKey()
+    if (editDocKey && editScopeStore.documentOverrides[editDocKey]?.formatSource?.type === 'custom' 
+        && editScopeStore.documentOverrides[editDocKey].formatSource?.formatId === this.selectedFormatId) {
+      // Re-apply to bump the version in the override
+      this.numberingService.applyFormatToScope(updated, 'document', editDocKey)
+    }
+
     Notice.info(`格式 "${updated.name}" 已保存`)
   }
 
@@ -2427,28 +2548,29 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const bar = el('div', 'inkchapter-scope-bar--compact', this.containerEl)
 
-    // Info row: Document | Status
-    const infoRow = el('div', 'inkchapter-scope-info', bar)
-    const docEl = el('span', 'inkchapter-scope-doc', infoRow)
-    docEl.textContent = docPath ? `当前文档：${docPath.split(/[/\\]/).pop() ?? docPath}` : '未打开文档'
+    // ── Row 1: Document info ──────────────────────────
+    const docInfoRow = el('div', 'inkchapter-scope-info', bar)
+
+    const docEl = el('span', 'inkchapter-scope-doc', docInfoRow)
+    const filename = docPath ? (docPath.split(/[/\\]/).pop() ?? docPath) : null
+    docEl.textContent = filename ? `当前文档：${filename}` : '未打开文档'
     if (docPath) {
       docEl.title = docPath
-      docEl.style.cssText = 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
     }
-    const sepEl = el('span', '', infoRow)
-    sepEl.textContent = '|'
-    sepEl.style.cssText = 'color:var(--text-muted,#888);'
-    const statusEl = el('span', 'inkchapter-scope-status', infoRow)
+
+    const statusEl = el('span', 'inkchapter-scope-status', docInfoRow)
     statusEl.textContent = source === 'document' ? '状态：使用文档独立设置' : '状态：继承全局默认'
 
-    // Scope radio buttons inline
-    const radioRow = el('div', 'inkchapter-scope-radios', bar)
-    const scopeLabel = el('span', '', radioRow)
+    // ── Row 2: Scope radio + restore button ────────────
+    const scopeRow = el('div', 'inkchapter-scope-radios', bar)
+
+    // Left group: scope label + radios
+    const radioGroup = el('div', 'inkchapter-scope-radio-group', scopeRow)
+    const scopeLabel = el('span', 'inkchapter-scope-radio-label', radioGroup)
     scopeLabel.textContent = '作用范围：'
-    scopeLabel.style.cssText = 'font-weight:600;'
 
     const buildRadio = (value: HeadingSettingsScope, label: string, disabled: boolean) => {
-      const lbl = el('label', '', radioRow)
+      const lbl = el('label', '', radioGroup)
       if (disabled) lbl.style.opacity = '0.5'
       const radio = document.createElement('input')
       radio.type = 'radio'
@@ -2473,12 +2595,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return lbl
     }
 
-    radioRow.appendChild(buildRadio('document', '当前文档', !docPath))
-    radioRow.appendChild(buildRadio('global', '全局默认', false))
+    radioGroup.appendChild(buildRadio('document', '当前文档', !docPath))
+    radioGroup.appendChild(buildRadio('global', '全局默认', false))
 
-    // Restore inherit button (compact)
+    // Right: Restore inherit button
     if (source === 'document') {
-      const restoreBtn = el('button', 'inkchapter-btn inkchapter-btn--small', bar)
+      const restoreBtn = el('button', 'inkchapter-btn inkchapter-btn--small', scopeRow)
       restoreBtn.textContent = '恢复继承'
       restoreBtn.title = '恢复继承全局默认设置'
       restoreBtn.onclick = () => {
@@ -2552,11 +2674,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // System presets (only visible ones)
     for (const card of PRESET_CARDS) {
       if (isBuiltInPresetHidden(this.formatLibrary, card.key as BuiltInPresetId)) continue
+      const cardState = this.getCardState(card.key, true)
       const cardEl = this.buildFormatCard(
         grid, card.key, card.name, card.desc, card.previewLines, true,
         () => this.handlePresetCardApply(card.key),
+        cardState,
       )
-      if (this.selectedCardKey === card.key && this.selectedCardIsPreset) {
+      if (this.isCardSelected(card.key, true)) {
         cardEl.classList.add('inkchapter-format-card--selected')
       }
     }
@@ -2565,11 +2689,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const orderedFormats = getOrderedCustomFormats(this.formatLibrary)
     for (const format of orderedFormats) {
       const previewLines = getFormatPreview(format, 3)
+      const cardState = this.getCardState(format.id, false)
       const cardEl = this.buildFormatCard(
         grid, format.id, format.name, format.description || '', previewLines, false,
         () => this.handleFormatCardApply(format),
+        cardState,
       )
-      if (this.selectedCardKey === format.id && !this.selectedCardIsPreset) {
+      if (this.isCardSelected(format.id, false)) {
         cardEl.classList.add('inkchapter-format-card--selected')
       }
     }
@@ -2603,6 +2729,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     previewLines: string[],
     isPreset: boolean,
     onApply: () => void,
+    cardState: { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean; hasUpdate: boolean },
   ): HTMLElement {
     const cardEl = el('div', 'inkchapter-format-card', grid)
     cardEl.setAttribute('tabindex', '0')
@@ -2612,20 +2739,52 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const cardName = el('span', 'inkchapter-format-card-name', header)
     cardName.textContent = name
     cardName.style.flex = '1'
+
+    // Status badge
+    if (cardState.applied && cardState.isGlobalDefault) {
+      const badge = el('span', 'inkchapter-format-card-badge', header)
+      badge.textContent = '全局默认'
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
+    } else if (cardState.applied && cardState.inheritsGlobal) {
+      const badge = el('span', 'inkchapter-format-card-badge', header)
+      badge.textContent = '继承全局'
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
+    } else if (cardState.applied && cardState.hasUpdate) {
+      const badge = el('span', 'inkchapter-format-card-badge', header)
+      badge.textContent = '有更新'
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
+    } else if (cardState.applied) {
+      const badge = el('span', 'inkchapter-format-card-badge', header)
+      badge.textContent = '当前文档'
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
+    } else if (cardState.isGlobalDefault) {
+      const badge = el('span', 'inkchapter-format-card-badge', header)
+      badge.textContent = '全局默认'
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:3px;background:var(--text-accent,#07a);color:#fff;font-weight:500;margin-left:6px;flex-shrink:0;'
+    }
     
     // "⋯" menu trigger
     const menuBtn = el('span', 'inkchapter-format-card-menu-trigger', header)
     menuBtn.textContent = '⋯'
     menuBtn.setAttribute('tabindex', '0')
-    menuBtn.title = '更多操作'
+    menuBtn.setAttribute('role', 'button')
+    menuBtn.setAttribute('aria-label', '更多格式操作')
+    menuBtn.setAttribute('aria-haspopup', 'menu')
+    menuBtn.setAttribute('aria-expanded', String(this.openMenuState?.formatId === key))
+    menuBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;'
     menuBtn.onclick = (e) => {
+      e.preventDefault()
       e.stopPropagation()
-      if (this.openMenuKey === key) {
-        this.openMenuKey = null
+      if (this.openMenuState?.formatId === key) {
+        this.closeMenu()
       } else {
-        this.openMenuKey = key
+        this.openMenu(key, isPreset ? 'built-in' : 'custom', name, menuBtn)
       }
-      this.rerender()
+    }
+    menuBtn.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault(); e.stopPropagation(); menuBtn.click()
+      }
     }
 
     const cardDesc = el('div', 'inkchapter-format-card-desc', cardEl)
@@ -2639,37 +2798,340 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
-    // Apply button only
+    // Apply button with context-aware state
     const actions = el('div', 'inkchapter-format-card-actions', cardEl)
-    const applyBtn = el('button', 'inkchapter-btn', actions)
-    applyBtn.textContent = '应用'
-    applyBtn.onclick = (e) => { e.stopPropagation(); this.cancelDrag(); onApply() }
-
-    // Dropdown menu
-    if (this.openMenuKey === key) {
-      this.renderCardDropdownMenu(cardEl, key, name, isPreset)
+    const applyBtn = el('button', 'inkchapter-btn', actions) as HTMLButtonElement
+    
+    let btnText = '应用'
+    let btnDisabled = false
+    
+    if (cardState.applied || cardState.inheritsGlobal) {
+      // Current document uses this format
+      if (cardState.hasUpdate) {
+        btnText = '应用更新'
+      } else {
+        btnText = '已应用'
+        btnDisabled = true
+      }
+    } else if (cardState.isGlobalDefault && !cardState.applied) {
+      btnText = '已设为默认'
+      btnDisabled = true
+    } else if (this.headingScope === 'global' && !cardState.applied) {
+      btnText = '设为默认'
+    }
+    
+    applyBtn.textContent = btnText
+    applyBtn.disabled = btnDisabled
+    if (btnDisabled) {
+      applyBtn.classList.add('inkchapter-btn--disabled')
+      applyBtn.style.cssText = 'opacity:0.6;cursor:default;'
+    }
+    applyBtn.onclick = (e) => {
+      e.stopPropagation()
+      if (btnDisabled) return // Double safety
+      this.cancelDrag()
+      if (cardState.hasUpdate) {
+        // Apply update: re-apply the format with current template
+        if (isPreset) {
+          this.applyPresetToScope(key)
+        } else {
+          const fmt = this.formatLibrary.formats.find(f => f.id === key)
+          if (fmt) this.applyFormatToScope(fmt)
+        }
+      } else if (this.headingScope === 'global' && !cardState.applied) {
+        if (isPreset) {
+          this.applyPresetToScope(key, 'global')
+        } else {
+          const fmt = this.formatLibrary.formats.find(f => f.id === key)
+          if (fmt) this.applyFormatToScope(fmt, 'global')
+        }
+      } else {
+        onApply()
+      }
     }
 
-    // Click card to select
+    // Click card to select (only for preview, never changes applied state)
     cardEl.onclick = () => {
       this.cancelDrag()
+      this.closeMenu()
       this.selectedCardKey = key
       this.selectedCardIsPreset = isPreset
-      this.openMenuKey = null
       this.rerender()
     }
     cardEl.onkeydown = (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
         this.cancelDrag()
+        this.closeMenu()
         this.selectedCardKey = key
         this.selectedCardIsPreset = isPreset
-        this.openMenuKey = null
         this.rerender()
       }
     }
 
     return cardEl
+  }
+
+  // ── Card dropdown menu (portal-based) ────────────
+
+  private openMenu(formatId: string, formatType: 'built-in' | 'custom', formatName: string, trigger: HTMLElement): void {
+    this.closeMenu() // Close any existing
+    this.openMenuState = { formatId, formatType, formatName, triggerElement: trigger }
+    
+    // Update aria-expanded
+    trigger.setAttribute('aria-expanded', 'true')
+    
+    this.renderMenuPortal()
+    this.bindMenuEvents()
+  }
+
+  private closeMenu(): void {
+    if (!this.openMenuState) return
+    // Reset aria
+    this.openMenuState.triggerElement.setAttribute('aria-expanded', 'false')
+    this.openMenuState = null
+    
+    // Remove menu DOM
+    const layer = this.containerEl.querySelector('.inkchapter-menu-layer')
+    if (layer) { while (layer.firstChild) layer.removeChild(layer.firstChild) }
+    
+    // Clean up event listeners
+    this.cleanupMenuEvents()
+  }
+
+  private cleanupMenuEvents(): void {
+    for (const fn of this.menuCleanups) { try { fn() } catch {} }
+    this.menuCleanups = []
+  }
+
+  private bindMenuEvents(): void {
+    this.cleanupMenuEvents()
+    
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      const menuEl = this.containerEl.querySelector('.inkchapter-menu-overlay')
+      const trigger = this.openMenuState?.triggerElement
+      if (menuEl?.contains(target)) return // Click inside menu
+      if (trigger?.contains(target)) return // Click on trigger
+      this.closeMenu()
+    }
+    
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!this.openMenuState) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        const trigger = this.openMenuState.triggerElement
+        this.closeMenu()
+        trigger?.focus()
+      }
+      this.handleMenuKeyboard(e)
+    }
+    
+    const onScroll = () => { this.closeMenu() }
+    
+    document.addEventListener('mousedown', onDocClick, true)
+    this.containerEl.addEventListener('scroll', onScroll, { passive: true })
+    document.addEventListener('keydown', onKeyDown, true)
+    
+    this.menuCleanups.push(
+      () => document.removeEventListener('mousedown', onDocClick, true),
+      () => this.containerEl.removeEventListener('scroll', onScroll),
+      () => document.removeEventListener('keydown', onKeyDown, true),
+    )
+    
+    // Clean on settings close
+    const onHide = () => this.closeMenu()
+    ;(this as any)._menuHideHandler = onHide
+    const originalOnhide = this.onhide
+    this.onhide = () => { this.closeMenu(); originalOnhide.call(this) }
+  }
+
+  private handleMenuKeyboard(e: KeyboardEvent): void {
+    if (!this.openMenuState) return
+    const items = this.containerEl.querySelectorAll('.inkchapter-menu-overlay .inkchapter-menu-item:not([aria-disabled="true"])')
+    if (items.length === 0) return
+    
+    let idx = -1
+    for (let i = 0; i < items.length; i++) {
+      if (items[i] === document.activeElement) { idx = i; break }
+    }
+    
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      const next = (idx + 1) % items.length
+      ;(items[next] as HTMLElement).focus()
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      const prev = (idx - 1 + items.length) % items.length
+      ;(items[prev] as HTMLElement).focus()
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      ;(items[0] as HTMLElement).focus()
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      ;(items[items.length - 1] as HTMLElement).focus()
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      if (idx >= 0) { (items[idx] as HTMLElement).click() }
+    } else if (e.key === 'Tab') {
+      this.closeMenu()
+    }
+  }
+
+  private renderMenuPortal(): void {
+    const state = this.openMenuState!
+    const layer = this.containerEl.querySelector('.inkchapter-menu-layer') as HTMLElement
+    if (!layer) return
+    
+    // Clear
+    while (layer.firstChild) layer.removeChild(layer.firstChild)
+    
+    const overlay = el('div', 'inkchapter-menu-overlay', layer)
+    overlay.setAttribute('role', 'menu')
+    overlay.style.cssText = 'position:absolute;pointer-events:auto;width:180px;background:var(--background-primary,#fff);border:1px solid var(--border-primary,#ddd);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);padding:6px 0;z-index:200;'
+    
+    const addSeparator = () => {
+      const sep = el('div', 'inkchapter-menu-separator', overlay)
+      sep.style.cssText = 'height:1px;margin:4px 0;background:var(--border-primary,#eee);'
+    }
+    
+    const addItem = (label: string, onClick: () => void, opts?: { danger?: boolean; disabled?: boolean }) => {
+      const item = el('div', 'inkchapter-menu-item', overlay) as HTMLElement
+      item.setAttribute('role', 'menuitem')
+      item.setAttribute('tabindex', '0')
+      item.textContent = label
+      if (opts?.disabled) {
+        item.setAttribute('aria-disabled', 'true')
+        item.style.cssText = 'padding:8px 16px;font-size:13px;white-space:nowrap;cursor:default;opacity:0.45;pointer-events:none;'
+      } else {
+        item.style.cssText = `padding:8px 16px;font-size:13px;white-space:nowrap;cursor:pointer;${opts?.danger ? 'color:#e00;' : ''}`
+        item.onclick = (e) => { e.stopPropagation(); onClick(); this.closeMenu() }
+        item.onmouseenter = () => { item.style.background = 'var(--background-modifier-hover,#f0f0f0)' }
+        item.onmouseleave = () => { item.style.background = '' }
+        item.onkeydown = (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); item.click() }
+        }
+      }
+      return item
+    }
+    
+    const isPreset = state.formatType === 'built-in'
+    const scopeStore = this.numberingService.getScopeStore()
+    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const isGlobalDefault = isPreset
+      ? (gSource?.type === 'built-in' && gSource.presetId === state.formatId)
+      : (gSource?.type === 'custom' && gSource.formatId === state.formatId)
+    
+    if (isPreset) {
+      // System preset menu
+      if (isGlobalDefault) {
+        addItem('已设为全局默认', () => {}, { disabled: true })
+      } else {
+        addItem('设为全局默认', () => this.applyPresetToScope(state.formatId, 'global'))
+      }
+      addItem('复制为自定义格式', () => this.showCreateFormatDialog(state.formatId))
+      addSeparator()
+      addItem('隐藏此预设', () => this.showHidePresetConfirm(state.formatId as BuiltInPresetId, state.formatName), { danger: true })
+    } else {
+      // User format menu
+      addItem('编辑格式', () => {
+        const fmt = this.formatLibrary.formats.find(f => f.id === state.formatId)
+        if (fmt) this.startEditingFormat(fmt)
+      })
+      if (isGlobalDefault) {
+        addItem('已设为全局默认', () => {}, { disabled: true })
+      } else {
+        addItem('设为全局默认', () => {
+          const fmt = this.formatLibrary.formats.find(f => f.id === state.formatId)
+          if (fmt) this.applyFormatToScope(fmt, 'global')
+        })
+      }
+      addSeparator()
+      addItem('复制格式', () => {
+        const fmt = this.formatLibrary.formats.find(f => f.id === state.formatId)
+        if (fmt) this.copyUserFormat(fmt)
+      })
+      addItem('重命名…', () => {
+        const fmt = this.formatLibrary.formats.find(f => f.id === state.formatId)
+        if (fmt) this.renameUserFormat(fmt)
+      })
+      addSeparator()
+      addItem('删除格式…', () => {
+        const fmt = this.formatLibrary.formats.find(f => f.id === state.formatId)
+        if (fmt) this.showDeleteFormatConfirm(fmt)
+      }, { danger: true })
+    }
+    
+    // Position the menu with 4-direction auto-flip
+    // Use visibility:hidden so we can measure real dimensions without flicker
+    overlay.style.visibility = 'hidden'
+    this.positionMenu(overlay, state.triggerElement)
+    overlay.style.visibility = 'visible'
+    
+    // Auto-focus first item
+    setTimeout(() => {
+      const firstItem = overlay.querySelector('.inkchapter-menu-item:not([aria-disabled="true"])') as HTMLElement | null
+      firstItem?.focus()
+    }, 50)
+  }
+
+  private positionMenu(menuEl: HTMLElement, trigger: HTMLElement): void {
+    const GAP = 6
+    const SAFE_MARGIN = 8
+    const triggerRect = trigger.getBoundingClientRect()
+    
+    // Measure menu dimensions (must be rendered with visibility:hidden first)
+    const menuWidth = menuEl.offsetWidth || 180
+    const menuHeight = menuEl.offsetHeight || 200
+    
+    // Get settings dialog bounds for overflow clamping (viewport coordinates)
+    const settingsEl = this.containerEl.closest('.ty-setting-panel-body') as HTMLElement
+      || this.containerEl.closest('[class*="setting"]') as HTMLElement
+      || this.containerEl.closest('[class*="panel"]') as HTMLElement
+    const panelRect = settingsEl?.getBoundingClientRect() ?? {
+      top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight,
+      width: window.innerWidth, height: window.innerHeight,
+    }
+    
+    // ── Direction decision ────────────────────────
+    const rightSpace = panelRect.right - triggerRect.right - SAFE_MARGIN
+    const leftSpace = triggerRect.left - panelRect.left - SAFE_MARGIN
+    const bottomSpace = panelRect.bottom - triggerRect.bottom - SAFE_MARGIN
+    const topSpace = triggerRect.top - panelRect.top - SAFE_MARGIN
+    
+    const goRight = rightSpace >= menuWidth || rightSpace > leftSpace
+    const goDown = bottomSpace >= menuHeight || bottomSpace > topSpace
+    
+    // ── Compute position in VIEWPORT coordinates ──
+    let left: number
+    let top: number
+    
+    if (goDown) {
+      // Below trigger
+      top = triggerRect.bottom + GAP
+    } else {
+      // Above trigger
+      top = triggerRect.top - menuHeight - GAP
+    }
+    
+    if (goRight) {
+      // Right of trigger (align left edges)
+      left = triggerRect.left
+    } else {
+      // Left of trigger (align right edges)
+      left = triggerRect.right - menuWidth
+    }
+    
+    // ── Clamp within panel bounds ─────────────────
+    left = Math.max(panelRect.left + SAFE_MARGIN, Math.min(left, panelRect.right - menuWidth - SAFE_MARGIN))
+    top = Math.max(panelRect.top + SAFE_MARGIN, Math.min(top, panelRect.bottom - menuHeight - SAFE_MARGIN))
+    
+    // Apply as viewport-fixed position
+    menuEl.style.position = 'fixed'
+    menuEl.style.left = left + 'px'
+    menuEl.style.top = top + 'px'
+    menuEl.style.right = 'auto'
+    menuEl.style.bottom = 'auto'
   }
 
   private handlePresetCardApply(presetKey: string): void {
@@ -2699,41 +3161,41 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (isPreset) {
       // System preset menu
       addItem('设为全局默认', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         this.applyPresetToScope(key, 'global')
       })
       addItem('复制为自定义格式', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         this.showCreateFormatDialog(key)
       })
       addItem('隐藏此预设', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         this.showHidePresetConfirm(key as BuiltInPresetId, name)
       })
     } else {
       // User format menu
       addItem('编辑', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         const fmt = this.formatLibrary.formats.find(f => f.id === key)
         if (fmt) this.startEditingFormat(fmt)
       })
       addItem('设为全局默认', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         const fmt = this.formatLibrary.formats.find(f => f.id === key)
         if (fmt) this.applyFormatToScope(fmt, 'global')
       })
       addItem('复制', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         const fmt = this.formatLibrary.formats.find(f => f.id === key)
         if (fmt) this.copyUserFormat(fmt)
       })
       addItem('重命名', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         const fmt = this.formatLibrary.formats.find(f => f.id === key)
         if (fmt) this.renameUserFormat(fmt)
       })
       addItem('删除', () => {
-        this.openMenuKey = null
+        this.closeMenu()
         const fmt = this.formatLibrary.formats.find(f => f.id === key)
         if (fmt) this.showDeleteFormatConfirm(fmt)
       }, true)
@@ -2950,7 +3412,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.selectedCardIsPreset = true
       }
     }
-    this.openMenuKey = null
+    this.closeMenu()
     Notice.info(`格式已删除`)
     this.rerender()
   }
@@ -3010,7 +3472,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.headingDraft = null
       this.headingDraftOriginal = null
       this.selectedCardKey = null
-      this.openMenuKey = null
+      this.closeMenu()
       this.managePanelOpen = false
       overlay.remove()
       Notice.info('格式库已重置')
@@ -3069,18 +3531,31 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private renderCurrentFormatSummary(s: HeadingNumberingSettings): void {
     const summary = el('div', 'inkchapter-current-format-summary', this.containerEl)
+    const info = this.getAppliedFormatInfo()
 
     // Info line
-    const info = el('div', 'inkchapter-current-info', summary)
-    const label = el('span', '', info)
+    const infoRow = el('div', 'inkchapter-current-info', summary)
+    const label = el('span', '', infoRow)
     label.textContent = '当前格式：'
     label.style.cssText = 'font-weight:500;'
-    const nameEl = el('span', 'inkchapter-current-name', info)
-    nameEl.textContent = this.getCurrentFormatDisplayName(s)
-    const typeEl = el('span', 'inkchapter-current-type', info)
-    typeEl.textContent = s.preset === 'custom'
-      ? (this.selectedFormatId ? '（用户自定义格式）' : '（自定义设置）')
-      : '（系统预设）'
+    const nameEl = el('span', 'inkchapter-current-name', infoRow)
+    nameEl.textContent = this.getCurrentFormatDisplayNameV2(info)
+    const typeEl = el('span', 'inkchapter-current-type', infoRow)
+    
+    if (info.inheritsGlobal) {
+      typeEl.textContent = '（继承全局默认）'
+    } else if (info.source && info.source.type === 'snapshot') {
+      typeEl.textContent = '（独立快照）'
+    } else if (info.source && info.source.type === 'custom') {
+      const src = info.source
+      const fmt = this.formatLibrary.formats.find(f => f.id === src.formatId)
+      const hasUpdate = hasFormatUpdate(this.formatLibrary, src.formatId, this.getAppliedFormatVersion() ?? 0)
+      typeEl.textContent = hasUpdate ? '（模板已有更新）' : '（当前文档独立设置）'
+    } else if (info.source && info.source.type === 'built-in') {
+      typeEl.textContent = '（当前文档独立设置）'
+    } else {
+      typeEl.textContent = '（自定义设置）'
+    }
 
     // Action buttons
     const actions = el('div', 'inkchapter-current-actions', summary)
@@ -3134,6 +3609,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Fallback to actual active preset
     const preset = PRESET_CARDS.find(c => c.key === s.preset)
     return preset ? preset.name : '自定义'
+  }
+
+  private getCurrentFormatDisplayNameV2(info: AppliedFormatInfo): string {
+    const src = info.source
+    if (src && src.type === 'built-in') {
+      const preset = PRESET_CARDS.find(c => c.key === src.presetId)
+      return preset ? preset.name : '系统预设'
+    }
+    if (src && src.type === 'custom' && src.formatId) {
+      const fmt = this.formatLibrary.formats.find(f => f.id === src.formatId)
+      return fmt ? fmt.name : '自定义格式'
+    }
+    if (src && src.type === 'snapshot') {
+      return '自定义设置'
+    }
+    // Fallback
+    return '未设置'
   }
 
   private applyCurrentToScope(scope: HeadingSettingsScope): void {

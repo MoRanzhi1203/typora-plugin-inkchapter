@@ -19,6 +19,7 @@ import type {
   FormatBasedOn,
   NumberTokenStyle,
   BuiltInPresetId,
+  NumberingFormatSource,
 } from './heading-types'
 import { BUILT_IN_PRESET_IDS } from './heading-types'
 
@@ -100,6 +101,7 @@ export function createFormat(
     description: description.slice(0, 200),
     createdAt: now,
     updatedAt: now,
+    version: 0,
     basedOn,
     settings: {
       levels: deepCloneLevels(levels),
@@ -125,6 +127,7 @@ export function copyFormat(
     description: `${format.description} (副本)`.slice(0, 200),
     createdAt: now,
     updatedAt: now,
+    version: 0,
     basedOn: { type: 'custom', formatId: format.id },
     settings: {
       levels: deepCloneLevels(format.settings.levels),
@@ -147,6 +150,7 @@ export function renameFormat(
     ...format,
     name: newName.slice(0, 30),
     updatedAt: Date.now(),
+    version: format.version,
   }
 }
 
@@ -279,6 +283,7 @@ export function migrateOldCustom(
         description: '从旧版自定义设置自动迁移',
         createdAt: now,
         updatedAt: now,
+        version: 0,
         basedOn: { type: 'blank' },
         settings: {
           levels: deepCloneLevels(oldSettings.customDefinition),
@@ -319,7 +324,9 @@ export function updateFormatInLibrary(
   return {
     ...library,
     formats: library.formats.map(f =>
-      f.id === updatedFormat.id ? updatedFormat : f,
+      f.id === updatedFormat.id
+        ? { ...updatedFormat, version: (f.version ?? 0) + 1, updatedAt: Date.now() }
+        : f,
     ),
   }
 }
@@ -542,4 +549,41 @@ export function migrateFormatLibrary(library: FormatLibrary): FormatLibrary {
       customFormatOrder: library.formats.map(f => f.id),
     },
   }
+}
+
+// ── Applied format state computation ─────────────────
+
+/**
+ * Compute the applied format info for the current document scope.
+ * Returns the format source and format ID from the document override or global default.
+ */
+export interface AppliedFormatInfo {
+  source: NumberingFormatSource | null
+  formatId: string | null
+  /** Whether it inherits from global (no document override). */
+  inheritsGlobal: boolean
+}
+
+/**
+ * Check if an applied format (custom) has a template update available.
+ * Uses version comparison: appliedVersion < format.version means there's an update.
+ */
+export function hasFormatUpdate(
+  library: FormatLibrary,
+  formatId: string,
+  appliedVersion?: number,
+): boolean {
+  const format = library.formats.find(f => f.id === formatId)
+  if (!format) return false
+  return (appliedVersion ?? 0) < (format.version ?? 0)
+}
+
+/**
+ * Get the format version for a custom format ID.
+ */
+export function getFormatVersion(
+  library: FormatLibrary,
+  formatId: string,
+): number | undefined {
+  return library.formats.find(f => f.id === formatId)?.version
 }
