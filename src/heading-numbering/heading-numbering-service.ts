@@ -36,6 +36,8 @@ import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-lev
 import { HeadingOverrideStore } from './heading-override-store'
 import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
+import { OutlineToolbarController } from './outline-toolbar-controller'
+import type { OutlineToolbarCallbacks } from './outline-toolbar-controller'
 import * as logger from '../core/logger'
 import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
 import {
@@ -63,6 +65,8 @@ export interface ServiceContext {
   getMarkdown?: () => string
   /** Optional: replace editor content with undo support. */
   reloadContent?: (markdown: string) => void
+  /** Optional: write diagnostic data to a file (for DOM structure debugging). */
+  writeDiagnosticFile?: (filename: string, data: string) => void
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
@@ -129,6 +133,8 @@ export class HeadingNumberingService {
 
   // Outline Numbering
   private outlineController: OutlineNumberingController
+  // Outline Toolbar
+  private outlineToolbar: OutlineToolbarController
 
   // Editor root binding guard
   private boundEditorRoot: HTMLElement | null = null
@@ -165,6 +171,19 @@ export class HeadingNumberingService {
     // Outline numbering controller
     this.outlineController = new OutlineNumberingController()
     this.outlineController.start()
+
+    // Outline toolbar controller
+    const toolbarCallbacks: OutlineToolbarCallbacks = {
+      isNumberingEnabled: () => this.s.enabled,
+      toggleNumbering: () => this.toggleNumberingFromToolbar(),
+      isShowLevelOne: () => this.s.showLevelOneNumber ?? false,
+      toggleLevelOneNumber: () => this.toggleLevelOneFromToolbar(),
+      writeDiagnosticFile: (filename, data) => {
+        this.ctx.writeDiagnosticFile?.(filename, data)
+      },
+    }
+    this.outlineToolbar = new OutlineToolbarController(toolbarCallbacks)
+    this.outlineToolbar.start()
 
     this.store = new DisposableStore()
 
@@ -253,6 +272,7 @@ export class HeadingNumberingService {
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
+      this.outlineToolbar.updateAllButtonStates()
       this.flushRefresh()
     }
   }
@@ -270,6 +290,7 @@ export class HeadingNumberingService {
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
+      this.outlineToolbar.updateAllButtonStates()
       this.flushRefresh()
     }
   }
@@ -410,7 +431,47 @@ export class HeadingNumberingService {
     } else {
       this.adapter.clearNumbering()
     }
+    this.outlineToolbar.updateAllButtonStates()
     logger.info(`标题编号已${s.enabled ? '开启' : '关闭'}`)
+  }
+
+  /** Toggle numbering from outline toolbar — always document scope. */
+  private toggleNumberingFromToolbar(): void {
+    const s = this.s
+    s.enabled = !s.enabled
+    // Always save to current document (not global)
+    const docKey = this.getDocumentKey()
+    if (docKey) {
+      this.saveHeadingNumberingScoped('document', docKey, { ...s })
+    } else {
+      this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
+    }
+
+    if (s.enabled) {
+      this.lastSnapshot = null
+      this.renderedStates = null
+      this.flushRefresh()
+    } else {
+      this.adapter.clearNumbering()
+    }
+    this.outlineToolbar.updateAllButtonStates()
+  }
+
+  /** Toggle H1 numbering from outline toolbar — always document scope. */
+  private toggleLevelOneFromToolbar(): void {
+    const s = this.s
+    s.showLevelOneNumber = !(s.showLevelOneNumber ?? false)
+    const docKey = this.getDocumentKey()
+    if (docKey) {
+      this.saveHeadingNumberingScoped('document', docKey, { ...s })
+    } else {
+      this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
+    }
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.flushRefresh()
+    this.outlineToolbar.updateAllButtonStates()
+    this.notifySettingsListeners()
   }
 
   renumber(): void {
@@ -439,6 +500,7 @@ export class HeadingNumberingService {
     this.lastSnapshot = null
     this.renderedStates = null
     this.flushRefresh()
+    this.outlineToolbar.updateAllButtonStates()
     this.notifySettingsListeners()
     logger.info(`一级标题编号已${enabled ? '开启' : '关闭'}`)
   }
@@ -1132,6 +1194,7 @@ export class HeadingNumberingService {
     this.store.dispose()
     this.levelRangeEnforcer.dispose()
     this.outlineController.stop()
+    this.outlineToolbar.stop()
     if (this.pasteListenerTimer !== null) { clearTimeout(this.pasteListenerTimer); this.pasteListenerTimer = null }
     if (this.fileOpenRetryTimer !== null) { clearTimeout(this.fileOpenRetryTimer); this.fileOpenRetryTimer = null }
   }
@@ -1151,6 +1214,7 @@ export class HeadingNumberingService {
       this.loadDocumentContext()
       this.lastSnapshot = null
       this.renderedStates = null
+      this.outlineToolbar.updateAllButtonStates()
       this.flushRefresh()
       this.notifySettingsListeners()
     })
@@ -1574,6 +1638,7 @@ export class HeadingNumberingService {
           this.connectObserver(editorEl)
           this.bindEditorRoot()
           this.outlineController.setDocumentKey(docKey ?? '')
+          this.outlineToolbar.reinitialize()
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         }
@@ -1600,6 +1665,7 @@ export class HeadingNumberingService {
         this.renderedStates = null
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
+        this.outlineToolbar.reinitialize()
         this.outlineController.setDocumentKey(newDocKey ?? '')
         this.overrideStore = null // Invalidate override store for new doc
         queueMicrotask(() => {
@@ -1644,6 +1710,7 @@ export class HeadingNumberingService {
         this.renderedStates = null
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
+        this.outlineToolbar.reinitialize()
         this.outlineController.setDocumentKey(newDocKey ?? '')
         this.overrideStore = null
         queueMicrotask(() => {
