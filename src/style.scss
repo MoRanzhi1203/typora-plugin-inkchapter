@@ -939,7 +939,14 @@
   white-space: nowrap;
   pointer-events: none;
   color: inherit;
-  font-weight: 400;
+  font-weight: inherit;
+}
+
+// Bold numbering sync: when outline item text is bold, numbering prefix must match.
+// This covers cases where bold comes from descendant <strong>/<b> elements,
+// while font-weight: inherit handles parent-level bold (e.g. .active class).
+[data-inkchapter-number].inkchapter-outline-number-bold::before {
+  font-weight: bold !important;
 }
 
 // Legacy v2 class (cleanup reference, no new uses)

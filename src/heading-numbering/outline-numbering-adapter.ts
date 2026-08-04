@@ -715,6 +715,9 @@ export function fullSyncOutline(
   )
   callback(`attributeAppliedCount=${attrResult.applied + attrResult.updated}`)
 
+  // Sync bold state on numbering prefixes to match title text boldness
+  syncOutlineNumberBoldStyle()
+
   const unmatched = items.length - matches.length
   callback(`unmatchedCount=${unmatched}`)
 
@@ -760,6 +763,9 @@ export function quickSyncOutline(
     matches.map(m => ({ element: m.element, label: m.label }))
   )
 
+  // Sync bold state on numbering prefixes to match title text boldness
+  syncOutlineNumberBoldStyle()
+
   return { matched: matches.length, applied: attrResult.applied + attrResult.updated }
 }
 
@@ -786,4 +792,62 @@ export function clearFileTreeNumberingAttributes(): number {
 export function cleanupV2Spans(): void {
   const spans = document.querySelectorAll('.inkchapter-outline-number')
   spans.forEach(s => s.remove())
+}
+
+// ── Bold numbering sync ───────────────────────────────
+
+const BOLD_CLASS = 'inkchapter-outline-number-bold'
+
+/**
+ * Determine if an element's text content is bold.
+ * Checks:
+ * 1. Element's own text content is bold (computed font-weight >= 600).
+ * 2. Element contains <strong> or <b> descendants with visible text.
+ * 3. Any descendant has computed font-weight >= 600 AND visible text.
+ *
+ * This catches: active/current item bold, markdown **bold**, theme-level bold.
+ */
+function isElementTextBold(el: HTMLElement): boolean {
+  // Check 1: element itself is bold
+  const ownWeight = parseFloat(getComputedStyle(el).fontWeight)
+  if (ownWeight >= 600) return true
+
+  // Check 2: contains <strong> or <b> with visible text
+  const boldTags = el.querySelectorAll('strong, b')
+  for (const bt of boldTags) {
+    if (bt.textContent && bt.textContent.trim().length > 0) return true
+  }
+
+  // Check 3: any descendant span/div/a with computed bold weight AND visible text
+  const allDescendants = el.querySelectorAll<HTMLElement>('span, div, a, p, li, em, i, mark')
+  for (const desc of allDescendants) {
+    if (!desc.textContent || desc.textContent.trim().length === 0) continue
+    const w = parseFloat(getComputedStyle(desc).fontWeight)
+    if (w >= 600) return true
+  }
+
+  return false
+}
+
+/**
+ * Sync the bold class on all outline items that have data-inkchapter-number.
+ * After numbering attributes are applied, this ensures numbering prefixes
+ * match the bold state of their corresponding title text.
+ *
+ * Must be called after numbering attributes have been written to the DOM,
+ * so the [data-inkchapter-number] elements exist in the document.
+ */
+export function syncOutlineNumberBoldStyle(): void {
+  const numberedEls = document.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
+  for (const el of numberedEls) {
+    try {
+      if (isElementTextBold(el)) {
+        el.classList.add(BOLD_CLASS)
+      } else {
+        el.classList.remove(BOLD_CLASS)
+      }
+    } catch {
+      // Ignore errors from disconnected or orphaned elements
+    }
+  }
 }
