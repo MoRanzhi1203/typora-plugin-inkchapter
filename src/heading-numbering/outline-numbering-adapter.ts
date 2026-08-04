@@ -799,29 +799,58 @@ export function cleanupV2Spans(): void {
 const BOLD_CLASS = 'inkchapter-outline-number-bold'
 
 /**
- * Determine if an element's text content is bold.
- * Checks:
- * 1. Element's own text content is bold (computed font-weight >= 600).
- * 2. Element contains <strong> or <b> descendants with visible text.
- * 3. Any descendant has computed font-weight >= 600 AND visible text.
- *
- * This catches: active/current item bold, markdown **bold**, theme-level bold.
+ * Bold sources are tracked separately so that when active state moves,
+ * only the active source is affected — markdown and level bold persist.
  */
-function isElementTextBold(el: HTMLElement): boolean {
-  // Check 1: element itself is bold
-  const ownWeight = parseFloat(getComputedStyle(el).fontWeight)
-  if (ownWeight >= 600) return true
 
-  // Check 2: contains <strong> or <b> with visible text
+/** Typora applies .active to the currently-active outline item. */
+function isElementActiveBold(el: HTMLElement): boolean {
+  // Direct match: the numbered element itself has .active
+  if (el.classList.contains('active')) return true
+  // Ancestor match: a parent outline-item wrapper has .active
+  const activeAncestor = el.closest('.active') as HTMLElement | null
+  if (activeAncestor) {
+    // Confirm the ancestor is within the outline area (not file tree / footer)
+    const sidebar = document.getElementById('typora-sidebar') || document.querySelector('.typora-sidebar')
+    if (sidebar && sidebar.contains(activeAncestor)) {
+      // Exclude non-outline panels
+      if (!isInsideExcludedPanel(activeAncestor)) return true
+    }
+  }
+  // aria-current fallback
+  if (el.getAttribute('aria-current') === 'true') return true
+  return false
+}
+
+/** Markdown **bold** or __bold__ renders <strong>/<b> in outline text. */
+function isElementMarkdownBold(el: HTMLElement): boolean {
   const boldTags = el.querySelectorAll('strong, b')
   for (const bt of boldTags) {
     if (bt.textContent && bt.textContent.trim().length > 0) return true
   }
+  return false
+}
 
-  // Check 3: any descendant span/div/a with computed bold weight AND visible text
-  const allDescendants = el.querySelectorAll<HTMLElement>('span, div, a, p, li, em, i, mark')
+/**
+ * Theme/level bold: element's own computed weight is >= 600,
+ * but NOT from .active (which is handled separately).
+ * We check after temporarily suppressing the active influence by
+ * checking if non-active descendants are also bold.
+ */
+function isElementLevelOrThemeBold(el: HTMLElement): boolean {
+  const ownWeight = parseFloat(getComputedStyle(el).fontWeight)
+  if (ownWeight < 600) return false
+
+  // If element itself is bold AND does not have .active, it's level/theme bold
+  if (!isElementActiveBold(el)) return true
+
+  // Element has .active AND is bold — check if non-active siblings/children
+  // have the same bold weight (indicating level/theme bold, not active bold)
+  const allDescendants = el.querySelectorAll<HTMLElement>('span, div, a, p, li')
   for (const desc of allDescendants) {
     if (!desc.textContent || desc.textContent.trim().length === 0) continue
+    if (desc.classList.contains('active')) continue
+    if (desc.closest('.active') && desc.closest('.active') !== el) continue
     const w = parseFloat(getComputedStyle(desc).fontWeight)
     if (w >= 600) return true
   }
@@ -830,24 +859,68 @@ function isElementTextBold(el: HTMLElement): boolean {
 }
 
 /**
+ * Determine if an outline item's numbering should be bold.
+ * Combines three independent bold sources (any one true → bold).
+ */
+function shouldOutlineNumberBeBold(el: HTMLElement): boolean {
+  try {
+    return isElementMarkdownBold(el) || isElementLevelOrThemeBold(el) || isElementActiveBold(el)
+  } catch {
+    return false
+  }
+}
+
+// Re-export flag for controller to guard against observer loops.
+export let isApplyingOutlineBoldStyle = false
+
+/**
  * Sync the bold class on all outline items that have data-inkchapter-number.
- * After numbering attributes are applied, this ensures numbering prefixes
- * match the bold state of their corresponding title text.
  *
- * Must be called after numbering attributes have been written to the DOM,
- * so the [data-inkchapter-number] elements exist in the document.
+ * Strategy: CLEAN SLATE then RE-DERIVE.
+ * 1. Remove all existing bold classes from numbered elements.
+ * 2. Re-derive bold state from three independent sources:
+ *    - Markdown bold (<strong>/<b> in outline text)
+ *    - Level/theme bold (non-active computed font-weight >= 600)
+ *    - Active bold (Typora .active class on current outline item)
+ * 3. Apply bold class only where at least one source is true.
+ *
+ * This ensures that when the active item changes:
+ * - Old active item loses its active-bold source → numbering returns to normal
+ * - New active item gains active-bold → numbering becomes bold
+ * - Markdown-bold and level-bold items retain their bold numbering
+ *
+ * Must be called after numbering attributes have been written to the DOM.
  */
 export function syncOutlineNumberBoldStyle(): void {
-  const numberedEls = document.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
-  for (const el of numberedEls) {
-    try {
-      if (isElementTextBold(el)) {
-        el.classList.add(BOLD_CLASS)
-      } else {
-        el.classList.remove(BOLD_CLASS)
-      }
-    } catch {
-      // Ignore errors from disconnected or orphaned elements
+  if (isApplyingOutlineBoldStyle) return
+  isApplyingOutlineBoldStyle = true
+  try {
+    // Step 1: Remove all old bold classes (clean slate)
+    const allBold = document.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}].${BOLD_CLASS}`)
+    for (const el of allBold) {
+      try { el.classList.remove(BOLD_CLASS) } catch { /* ignore disconnected */ }
     }
+
+    // Step 2: Re-derive from actual bold sources
+    const numberedEls = document.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
+    for (const el of numberedEls) {
+      try {
+        if (shouldOutlineNumberBeBold(el)) {
+          el.classList.add(BOLD_CLASS)
+        }
+      } catch {
+        // Ignore errors from disconnected or orphaned elements
+      }
+    }
+  } finally {
+    isApplyingOutlineBoldStyle = false
+  }
+}
+
+/** Clear all bold classes from numbered elements (for shutdown / document switch). */
+export function clearOutlineNumberBoldStyle(): void {
+  const allBold = document.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}].${BOLD_CLASS}`)
+  for (const el of allBold) {
+    try { el.classList.remove(BOLD_CLASS) } catch { /* ignore disconnected */ }
   }
 }
