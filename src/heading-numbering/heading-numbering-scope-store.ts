@@ -58,7 +58,7 @@ export function getFileNameFromKey(key: string): string {
 
 /** Deep clone a HeadingNumberingSettings object (no shared references). */
 export function deepCloneSettings(s: HeadingNumberingSettings): HeadingNumberingSettings {
-  return {
+  const cloned: HeadingNumberingSettings = {
     enabled: s.enabled,
     showLevelOneNumber: s.showLevelOneNumber,
     preset: s.preset,
@@ -68,6 +68,21 @@ export function deepCloneSettings(s: HeadingNumberingSettings): HeadingNumbering
     separator: s.separator,
     suffix: s.suffix,
     showTrailingSeparator: s.showTrailingSeparator,
+  }
+  if (s.headingLayouts) {
+    cloned.headingLayouts = deepCloneLayouts(s.headingLayouts)
+  }
+  return cloned
+}
+
+function deepCloneLayouts(l: import('./heading-types').HeadingLayoutSettings): import('./heading-types').HeadingLayoutSettings {
+  return {
+    h1: { ...l.h1 },
+    h2: { ...l.h2 },
+    h3: { ...l.h3 },
+    h4: { ...l.h4 },
+    h5: { ...l.h5 },
+    h6: { ...l.h6 },
   }
 }
 
@@ -179,6 +194,20 @@ export function deepMergeSettings(
               })) as any,
         },
       }
+    }
+  }
+
+  // Merge headingLayouts (document override wins per-level)
+  if (override.headingLayouts) {
+    if (!result.headingLayouts) {
+      result.headingLayouts = deepCloneLayouts(override.headingLayouts)
+    } else {
+      if (override.headingLayouts.h1) result.headingLayouts.h1 = { ...override.headingLayouts.h1 }
+      if (override.headingLayouts.h2) result.headingLayouts.h2 = { ...override.headingLayouts.h2 }
+      if (override.headingLayouts.h3) result.headingLayouts.h3 = { ...override.headingLayouts.h3 }
+      if (override.headingLayouts.h4) result.headingLayouts.h4 = { ...override.headingLayouts.h4 }
+      if (override.headingLayouts.h5) result.headingLayouts.h5 = { ...override.headingLayouts.h5 }
+      if (override.headingLayouts.h6) result.headingLayouts.h6 = { ...override.headingLayouts.h6 }
     }
   }
 

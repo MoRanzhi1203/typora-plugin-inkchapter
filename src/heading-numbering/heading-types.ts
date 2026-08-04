@@ -164,6 +164,24 @@ export interface HeadingLevelStyle {
   contextualFormatVariants: ContextualFormatVariants
 }
 
+// ── Heading layout ───────────────────────────────────────
+
+export type HeadingTextAlign = 'left' | 'center' | 'right'
+
+export interface HeadingLayoutConfig {
+  textAlign: HeadingTextAlign
+  firstLineIndentEm: number
+}
+
+export interface HeadingLayoutSettings {
+  h1: HeadingLayoutConfig
+  h2: HeadingLayoutConfig
+  h3: HeadingLayoutConfig
+  h4: HeadingLayoutConfig
+  h5: HeadingLayoutConfig
+  h6: HeadingLayoutConfig
+}
+
 // ── Settings ─────────────────────────────────────────────
 
 export interface HeadingNumberingSettings {
@@ -179,6 +197,8 @@ export interface HeadingNumberingSettings {
   levels: Record<HeadingLevel, HeadingLevelStyle>
   /** Persisted custom draft (schemaVersion >= 2). Preserved when switching between presets. */
   customDefinition?: Record<HeadingLevel, HeadingLevelStyle>
+  /** Per-level heading layout (alignment + indent). Independent of numbering enabled state. */
+  headingLayouts?: HeadingLayoutSettings
 }
 
 // ── Runtime types ────────────────────────────────────────

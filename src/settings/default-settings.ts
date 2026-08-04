@@ -23,6 +23,20 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
   }
 }
 
+const DEFAULT_LAYOUT_CONFIG: import('../heading-numbering/heading-types').HeadingLayoutConfig = {
+  textAlign: 'left',
+  firstLineIndentEm: 0,
+}
+
+const DEFAULT_LAYOUTS: import('../heading-numbering/heading-types').HeadingLayoutSettings = {
+  h1: { ...DEFAULT_LAYOUT_CONFIG },
+  h2: { ...DEFAULT_LAYOUT_CONFIG },
+  h3: { ...DEFAULT_LAYOUT_CONFIG },
+  h4: { ...DEFAULT_LAYOUT_CONFIG },
+  h5: { ...DEFAULT_LAYOUT_CONFIG },
+  h6: { ...DEFAULT_LAYOUT_CONFIG },
+}
+
 const DEFAULT_FORMAT_LIBRARY: FormatLibrary = {
   version: 1,
   formats: [],
@@ -43,6 +57,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
       preset: 'decimal-hierarchical',
       maxDepth: 6,
       levels: decimalLevels,
+      headingLayouts: DEFAULT_LAYOUTS,
       customDefinition: deepCloneSettings({
         enabled: true,
         showLevelOneNumber: false,

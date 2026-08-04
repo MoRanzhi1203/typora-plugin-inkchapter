@@ -4,11 +4,20 @@ import type {
   HeadingSnapshot,
   RenderedHeadingState,
   DiffResult,
+  HeadingLayoutSettings,
 } from '../heading-numbering/heading-types'
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const NUMBERED_CLASS = 'inkchapter-numbered-heading'
 const NUMBER_ATTR = 'data-inkchapter-heading-number'
+
+// Layout class names — must match CSS in style.scss
+const LAYOUT_CLASSES = [
+  'inkchapter-heading-align-left',
+  'inkchapter-heading-indent-2',
+  'inkchapter-heading-align-center',
+  'inkchapter-heading-align-right',
+]
 
 /**
  * DOM adapter for heading numbering.
@@ -237,6 +246,51 @@ export class HeadingDomAdapter {
     for (let i = 0; i < els.length; i++) {
       els[i].classList.remove(NUMBERED_CLASS)
       els[i].removeAttribute(NUMBER_ATTR)
+    }
+  }
+
+  // ── Layout (alignment + indent) ─────────────────────
+
+  /**
+   * Apply heading layout classes to all headings in the editor.
+   * Layout is independent of numbering — it applies even when numbering is off.
+   */
+  applyHeadingLayouts(layouts: HeadingLayoutSettings): void {
+    if (!this.editorRoot) return
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const levelToConfig: Record<number, { textAlign: string; firstLineIndentEm: number }> = {
+      1: layouts.h1, 2: layouts.h2, 3: layouts.h3,
+      4: layouts.h4, 5: layouts.h5, 6: layouts.h6,
+    }
+
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      const level = parseInt(el.tagName.charAt(1), 10)
+      const config = levelToConfig[level]
+      if (!config) continue
+
+      // Remove all old layout classes
+      for (const cls of LAYOUT_CLASSES) {
+        el.classList.remove(cls)
+      }
+
+      // Apply the appropriate class
+      if (config.textAlign === 'left' && config.firstLineIndentEm >= 2) {
+        el.classList.add('inkchapter-heading-indent-2')
+      } else {
+        el.classList.add(`inkchapter-heading-align-${config.textAlign}`)
+      }
+    }
+  }
+
+  /** Clear all layout classes from headings. */
+  clearHeadingLayouts(): void {
+    if (!this.editorRoot) return
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    for (let i = 0; i < els.length; i++) {
+      for (const cls of LAYOUT_CLASSES) {
+        els[i].classList.remove(cls)
+      }
     }
   }
 
