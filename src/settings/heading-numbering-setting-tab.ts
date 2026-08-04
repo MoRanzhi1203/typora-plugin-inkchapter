@@ -369,8 +369,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const docKey = this.numberingService.getDocumentKey()
     if (!docKey) return undefined
     const docOverride = scopeStore.documentOverrides[docKey]
-    // Check if there's a saved version; default to 0 for migrated data without version
-    return (docOverride?.formatSource as any)?._version as number | undefined
+    const source = docOverride?.formatSource
+    return source?.type === 'custom' ? source.version : undefined
   }
 
   /** Determine the card state for a given format card. */
@@ -637,7 +637,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       descEl.textContent = format.description || '（无描述）'
 
       // Preview lines (3 levels)
-      const previewLines = getFormatPreview(format, 3)
+      const previewLines = getFormatPreview(format, 3, this.headingSettings.showLevelOneNumber)
       if (previewLines.length > 0) {
         const previewDiv = el('div', 'inkchapter-format-card-preview', cardEl)
         for (const line of previewLines) {
@@ -760,7 +760,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
       const saveBtn = el('button', 'inkchapter-btn', editBar)
       saveBtn.textContent = '保存'
-      saveBtn.onclick = () => this.saveFormatDraft()
+      saveBtn.onclick = () => { this.saveFormatDraft(); this.rerender() }
 
       const saveAsBtn = el('button', 'inkchapter-btn', editBar)
       saveAsBtn.textContent = '另存为'
@@ -962,15 +962,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.numberingService.saveFormatLibrary(newLib)
     this.formatLibrary = newLib
     this.formatDraft = updated
-
-    // If the edited format was applied to current document, update the snapshot version
-    const editScopeStore = this.numberingService.getScopeStore()
-    const editDocKey = this.numberingService.getDocumentKey()
-    if (editDocKey && editScopeStore.documentOverrides[editDocKey]?.formatSource?.type === 'custom' 
-        && editScopeStore.documentOverrides[editDocKey].formatSource?.formatId === this.selectedFormatId) {
-      // Re-apply to bump the version in the override
-      this.numberingService.applyFormatToScope(updated, 'document', editDocKey)
-    }
 
     Notice.info(`格式 "${updated.name}" 已保存`)
   }
@@ -2857,7 +2848,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // User formats (ordered)
     const orderedFormats = getOrderedCustomFormats(this.formatLibrary)
     for (const format of orderedFormats) {
-      const previewLines = getFormatPreview(format, 3)
+      const previewLines = getFormatPreview(format, 3, s.showLevelOneNumber)
       const cardState = this.getCardState(format.id, false)
       const cardEl = this.buildFormatCard(
         grid, format.id, format.name, format.description || '', previewLines, false,
@@ -3944,7 +3935,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
       const saveBtn = el('button', 'inkchapter-btn', header)
       saveBtn.textContent = '保存格式'
-      saveBtn.onclick = () => this.saveFormatDraft()
+      saveBtn.onclick = () => { this.saveFormatDraft(); this.rerender() }
 
       const saveAsBtn = el('button', 'inkchapter-btn', header)
       saveAsBtn.textContent = '另存为'

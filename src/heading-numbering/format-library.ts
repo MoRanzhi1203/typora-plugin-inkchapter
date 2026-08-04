@@ -213,22 +213,37 @@ function getSampleToken(style: NumberTokenStyle): string {
 }
 
 /**
- * Generate preview labels for a format up to maxLevel.
+ * Generate preview labels for a format.
+ *
+ * @param format             The format to preview.
+ * @param maxLevel           Number of preview lines to generate (default 6).
+ * @param showLevelOneNumber Whether H1 numbering is active; determines
+ *                           which contextual variant to read and which
+ *                           physical levels to map.
+ *
+ * When showLevelOneNumber is true:
+ *   maxLevel=3 → physical H1, H2, H3 using withLevelOne variant.
+ *
+ * When showLevelOneNumber is false:
+ *   maxLevel=3 → physical H2, H3, H4 using withoutLevelOne variant.
+ *
  * Returns an array of strings like ['I', 'I.I', 'I.I.I'] for Roman,
  * or ['第一章', '第一节', '一、'] for Chinese chapter.
- *
- * Uses the contextualFormatVariants from the format's levels to build
- * a realistic preview. Each level shows the full composed label.
  */
 export function getFormatPreview(
   format: CustomNumberingFormat,
   maxLevel: HeadingLevel = 6,
+  showLevelOneNumber: boolean = true,
 ): string[] {
   const result: string[] = []
-  for (let lv = 1; lv <= maxLevel; lv++) {
+  const startPhysicalLevel: number = showLevelOneNumber ? 1 : 2
+  const endPhysicalLevel: number = startPhysicalLevel + maxLevel - 1
+  const variantKey = showLevelOneNumber ? 'withLevelOne' : 'withoutLevelOne'
+
+  for (let lv = startPhysicalLevel; lv <= endPhysicalLevel; lv++) {
     const style = format.settings.levels[lv as HeadingLevel]
     if (!style || !style.enabled) continue
-    const variant = style.contextualFormatVariants.withLevelOne
+    const variant = style.contextualFormatVariants[variantKey]
     if (variant && variant.length > 0) {
       const label = variant.map(seg => {
         if (seg.type === 'literal') return seg.value
@@ -530,25 +545,43 @@ export function setCustomFormatOrder(
  * Idempotent: if preferences already exist, returns as-is.
  */
 export function migrateFormatLibrary(library: FormatLibrary): FormatLibrary {
-  if (library.preferences && library.preferences.hiddenBuiltInPresetIds !== undefined
-    && library.preferences.customFormatOrder !== undefined) {
-    // Already migrated — only sanitize hidden IDs
-    return {
-      ...library,
+  let result = library
+
+  // Migration 1: add preferences if missing
+  if (!library.preferences || library.preferences.hiddenBuiltInPresetIds === undefined
+    || library.preferences.customFormatOrder === undefined) {
+    result = {
+      ...result,
       preferences: {
-        hiddenBuiltInPresetIds: filterValidPresetIds(library.preferences.hiddenBuiltInPresetIds),
-        customFormatOrder: library.preferences.customFormatOrder,
+        hiddenBuiltInPresetIds: library.preferences?.hiddenBuiltInPresetIds
+          ? filterValidPresetIds(library.preferences.hiddenBuiltInPresetIds) : [],
+        customFormatOrder: library.preferences?.customFormatOrder ?? library.formats.map(f => f.id),
+      },
+    }
+  } else {
+    // Already migrated — only sanitize hidden IDs
+    result = {
+      ...result,
+      preferences: {
+        hiddenBuiltInPresetIds: filterValidPresetIds(result.preferences.hiddenBuiltInPresetIds),
+        customFormatOrder: result.preferences.customFormatOrder,
       },
     }
   }
 
-  return {
-    ...library,
-    preferences: {
-      hiddenBuiltInPresetIds: [],
-      customFormatOrder: library.formats.map(f => f.id),
-    },
+  // Migration 2: ensure every format has a version (idempotent, never modifies existing versions)
+  if (result.version < 2) {
+    result = {
+      ...result,
+      version: 2,
+      formats: result.formats.map(f => ({
+        ...f,
+        version: (f.version != null) ? f.version : 1,
+      })),
+    }
   }
+
+  return result
 }
 
 // ── Applied format state computation ─────────────────

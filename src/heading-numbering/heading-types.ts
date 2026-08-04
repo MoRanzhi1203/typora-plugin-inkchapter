@@ -385,7 +385,7 @@ export type FormatBasedOn =
 /** Identifies the source of a numbering format for a scope. */
 export type NumberingFormatSource =
   | { type: 'built-in'; presetId: string }
-  | { type: 'custom'; formatId: string }
+  | { type: 'custom'; formatId: string; version?: number }
   | { type: 'snapshot' }
 
 /** A user-managed custom numbering format. */
