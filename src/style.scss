@@ -931,6 +931,31 @@
   }
 }
 
+
+// ══════════════════════════════════════════════════════════
+// Heading layout (alignment + indent) — body-only, not outline
+// ══════════════════════════════════════════════════════════
+
+#write .inkchapter-heading-align-left {
+  text-align: left;
+  text-indent: 0;
+}
+
+#write .inkchapter-heading-indent-2 {
+  text-align: left;
+  text-indent: 2em;
+}
+
+#write .inkchapter-heading-align-center {
+  text-align: center;
+  text-indent: 0;
+}
+
+#write .inkchapter-heading-align-right {
+  text-align: right;
+  text-indent: 0;
+}
+
 // ── Outline sidebar numbering ────────────────────────
 
 [data-inkchapter-number]::before {

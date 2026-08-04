@@ -454,7 +454,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // 6. Heading range (COLLAPSED by default)
     this.renderHeadingRangeCollapsible()
 
-    // 7. Bottom sticky action bar [Cancel Changes] [Save & Apply]
+    // 7. Heading layout (alignment + indent per level)
+    this.renderHeadingLayoutSection()
+
+    // 8. Bottom sticky action bar [Cancel Changes] [Save & Apply]
     this.renderBottomActionBar()
   }
 
@@ -1402,6 +1405,158 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     document.body.appendChild(overlay)
+  }
+
+  // ── Heading layout UI ────────────────────────────
+
+  private renderHeadingLayoutSection(): void {
+    const layouts = this.numberingService.getEffectiveHeadingLayouts()
+    const scope = this.headingScope
+    const isGlobal = scope === 'global'
+
+    this.addSetting((setting) => {
+      setting.addName('标题排版')
+      setting.addDescription(
+        isGlobal
+          ? '设置 H1～H6 各级标题的对齐与缩进（全局默认，新文档继承此设置）'
+          : '设置 H1～H6 各级标题的对齐与缩进（当前文档）'
+      )
+    })
+
+    const container = el('div')
+    container.style.cssText = 'margin-top:8px;'
+
+    const levels: Array<{ key: string; label: string }> = [
+      { key: 'h1', label: 'H1' },
+      { key: 'h2', label: 'H2' },
+      { key: 'h3', label: 'H3' },
+      { key: 'h4', label: 'H4' },
+      { key: 'h5', label: 'H5' },
+      { key: 'h6', label: 'H6' },
+    ]
+
+    for (const { key, label } of levels) {
+      const row = el('div')
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;'
+
+      const levelLabel = el('span')
+      levelLabel.textContent = label
+      levelLabel.style.cssText = 'font-weight:600;min-width:24px;font-size:13px;'
+      row.appendChild(levelLabel)
+
+      const lvKey = key as keyof import('../heading-numbering/heading-types').HeadingLayoutSettings
+      const current = layouts?.[lvKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
+
+      type Mode = 'left' | 'indent-2' | 'center' | 'right'
+      const currentMode: Mode = current.textAlign === 'left' && current.firstLineIndentEm >= 2
+        ? 'indent-2' : current.textAlign as Mode
+
+      const options: Array<{ mode: Mode; label: string }> = [
+        { mode: 'left', label: '居左' },
+        { mode: 'indent-2', label: '缩进2字符' },
+        { mode: 'center', label: '居中' },
+        { mode: 'right', label: '居右' },
+      ]
+
+      const btnGroup = el('div')
+      btnGroup.style.cssText = 'display:flex;gap:0;border:1px solid var(--window-border,#ccc);border-radius:4px;overflow:hidden;'
+
+      for (const opt of options) {
+        const btn = el('button') as HTMLButtonElement
+        btn.textContent = opt.label
+        btn.style.cssText = [
+          'padding:3px 10px',
+          'border:none',
+          'border-right:1px solid var(--window-border,#ccc)',
+          'background:transparent',
+          'color:var(--text-muted,#666)',
+          'font-size:12px',
+          'cursor:pointer',
+          'transition:background 0.15s,color 0.15s',
+          'white-space:nowrap',
+        ].join(';')
+
+        if (opt.mode === currentMode) {
+          btn.style.background = 'var(--text-accent,#07a)'
+          btn.style.color = '#fff'
+          btn.style.fontWeight = '600'
+        }
+
+        // Remove right border from last button
+        if (opt === options[options.length - 1]) {
+          btn.style.borderRight = 'none'
+        }
+
+        btn.onclick = () => {
+          let newConfig: import('../heading-numbering/heading-types').HeadingLayoutConfig
+          switch (opt.mode) {
+            case 'left':
+              newConfig = { textAlign: 'left', firstLineIndentEm: 0 }
+              break
+            case 'indent-2':
+              newConfig = { textAlign: 'left', firstLineIndentEm: 2 }
+              break
+            case 'center':
+              newConfig = { textAlign: 'center', firstLineIndentEm: 0 }
+              break
+            case 'right':
+              newConfig = { textAlign: 'right', firstLineIndentEm: 0 }
+              break
+          }
+          const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
+          this.numberingService.setHeadingLayout(lv, newConfig)
+          this.rerender()
+        }
+
+        btnGroup.appendChild(btn)
+      }
+
+      row.appendChild(btnGroup)
+      container.appendChild(row)
+    }
+
+    // Action buttons row
+    const actionsRow = el('div')
+    actionsRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;'
+
+    const applyToSubsequentBtn = el('button', 'inkchapter-btn') as HTMLButtonElement
+    applyToSubsequentBtn.textContent = '应用到后续级别'
+    applyToSubsequentBtn.title = '将当前级别的排版设置复制到所有更高级别'
+    applyToSubsequentBtn.onclick = () => {
+      const activeLevel = this.findActiveLayoutLevel()
+      if (activeLevel) {
+        this.numberingService.applyLayoutToSubsequentLevels(activeLevel)
+        this.rerender()
+      } else {
+        Notice.info('请先选择某个级别的排版方案')
+      }
+    }
+    actionsRow.appendChild(applyToSubsequentBtn)
+
+    const resetAllBtn = el('button', 'inkchapter-btn') as HTMLButtonElement
+    resetAllBtn.textContent = '全部恢复默认'
+    resetAllBtn.title = '将所有标题排版恢复为居左不缩进'
+    resetAllBtn.onclick = () => {
+      this.numberingService.resetAllHeadingLayouts()
+      this.rerender()
+    }
+    actionsRow.appendChild(resetAllBtn)
+
+    container.appendChild(actionsRow)
+    this.containerEl.appendChild(container)
+  }
+
+  private findActiveLayoutLevel(): import('../heading-numbering/heading-types').HeadingLevel | null {
+    const layouts = this.numberingService.getEffectiveHeadingLayouts()
+    if (!layouts) return null
+    // Find the first level that is not default (left, no indent)
+    for (const [key, config] of Object.entries(layouts) as Array<[string, import('../heading-numbering/heading-types').HeadingLayoutConfig]>) {
+      if (config.textAlign !== 'left' || config.firstLineIndentEm > 0) {
+        return parseInt(key.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
+      }
+    }
+    // All are default — return H1 as the base level
+    return 1
   }
 
   // ── Stage 2: Multilevel composition editor ───────

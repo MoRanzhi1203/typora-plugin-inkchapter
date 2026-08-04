@@ -1277,8 +1277,6 @@ export class HeadingNumberingService {
   // ── Core refresh ───────────────────────────────────────
 
   private doRefresh(reason: RefreshReason): void {
-    if (!this.s.enabled) return
-
     const startTime = performance.now()
 
     recordRuntimeAudit('doRefresh:start', {
@@ -1291,6 +1289,12 @@ export class HeadingNumberingService {
       const root = this.adapter.detectEditorRoot()
       if (!root) return
       this.adapter.setEditorRoot(root)
+
+      // Apply heading layouts (always, independent of numbering state)
+      this.applyHeadingLayouts()
+
+      // Numbering: skip if disabled
+      if (!this.s.enabled) return
 
       const snapshot = this.adapter.createHeadingSnapshot()
       const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
@@ -1418,6 +1422,84 @@ export class HeadingNumberingService {
       logger.error('标题编号刷新失败', e)
       recordRuntimeAudit('doRefresh:error', { details: { error: String(e) } })
     }
+  }
+
+  // ── Heading layout ─────────────────────────────────────
+
+  /** Apply heading layout to the editor (independent of numbering state). */
+  private applyHeadingLayouts(): void {
+    const layouts = this.getEffectiveHeadingLayouts()
+    if (layouts) {
+      this.adapter.applyHeadingLayouts(layouts)
+    } else {
+      this.adapter.clearHeadingLayouts()
+    }
+  }
+
+  /** Get the effective heading layouts for the current document. */
+  getEffectiveHeadingLayouts(): import('./heading-types').HeadingLayoutSettings | undefined {
+    const settings = this.docContext.effectiveSettings
+    return settings.headingLayouts
+  }
+
+  /**
+   * Save heading layout for the specified scope and level.
+   * Automatically clears firstLineIndentEm when textAlign is center or right.
+   */
+  setHeadingLayout(
+    level: import('./heading-types').HeadingLevel,
+    config: import('./heading-types').HeadingLayoutConfig,
+  ): void {
+    const s = this.s
+    const layouts = s.headingLayouts ? { ...s.headingLayouts } : this.defaultLayouts()
+    const levelKey = `h${level}` as keyof import('./heading-types').HeadingLayoutSettings
+
+    // Auto-clear indent when center or right
+    if (config.textAlign !== 'left') {
+      config = { ...config, firstLineIndentEm: 0 }
+    }
+
+    layouts[levelKey] = { ...config }
+    s.headingLayouts = layouts
+
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
+    this.adapter.applyHeadingLayouts(layouts)
+  }
+
+  /** Copy layout from one level to all subsequent levels. */
+  applyLayoutToSubsequentLevels(
+    fromLevel: import('./heading-types').HeadingLevel,
+  ): void {
+    const s = this.s
+    const layouts = s.headingLayouts ? { ...s.headingLayouts } : this.defaultLayouts()
+    const fromKey = `h${fromLevel}` as keyof import('./heading-types').HeadingLayoutSettings
+    const source = layouts[fromKey]
+
+    for (const lv of [fromLevel + 1, fromLevel + 2, fromLevel + 3, fromLevel + 4, fromLevel + 5, fromLevel + 6] as import('./heading-types').HeadingLevel[]) {
+      if (lv > 6) break
+      const key = `h${lv}` as keyof import('./heading-types').HeadingLayoutSettings
+      layouts[key] = { ...source }
+    }
+
+    s.headingLayouts = layouts
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
+    this.adapter.applyHeadingLayouts(layouts)
+  }
+
+  /** Reset all heading layouts to defaults. */
+  resetAllHeadingLayouts(): void {
+    const s = this.s
+    s.headingLayouts = this.defaultLayouts()
+    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
+    this.adapter.applyHeadingLayouts(s.headingLayouts)
+  }
+
+  private defaultLayouts(): import('./heading-types').HeadingLayoutSettings {
+    const def: import('./heading-types').HeadingLayoutConfig = {
+      textAlign: 'left',
+      firstLineIndentEm: 0,
+    }
+    return { h1: { ...def }, h2: { ...def }, h3: { ...def }, h4: { ...def }, h5: { ...def }, h6: { ...def } }
   }
 
   private logRefresh(reason: RefreshReason, headingCount: number, diff: { scanned: number; repaired: number; updated: number; removed: number }, startTime: number): void {
