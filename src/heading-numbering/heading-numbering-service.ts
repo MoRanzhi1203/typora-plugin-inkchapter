@@ -374,7 +374,7 @@ export class HeadingNumberingService {
       levels: format.settings.levels,
       customDefinition: format.settings.levels,
     }
-    const formatSource: NumberingFormatSource = { type: 'custom', formatId: format.id }
+    const formatSource: NumberingFormatSource = { type: 'custom', formatId: format.id, version: format.version ?? 1 }
     this.saveHeadingNumberingScoped(scope, documentKey, snapshot, formatSource)
   }
 
