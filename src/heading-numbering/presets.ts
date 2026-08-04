@@ -133,9 +133,11 @@ function tpl(tokenStyle: NumberTokenStyle, prefix = '', suffix = ''): HeadingLev
 }
 
 /**
- * Build a hierarchical contextual format: [H1(style1)] [sep] [H2(style2)] [sep] ... [H{lvl}(style_lvl)]
+ * Build a hierarchical contextual format: [H1(style1+suffixSep)] [H2(style2+suffixSep)] ... [H{lvl}(style_lvl)]
+ * Separators are placed as suffix on each level-reference (except the last),
+ * replacing the old model of standalone literal tokens between references.
  * @param lv  target level
- * @param sep  separator literal
+ * @param sep  separator string (appended to suffix of all but last reference)
  * @param styles  array of [tokenStyle, prefix, suffix] tuples for levels 1..lv
  */
 function ctxHierarchical(
@@ -145,20 +147,18 @@ function ctxHierarchical(
 ): ContextualFormatSegment[] {
   const result: ContextualFormatSegment[] = []
   for (let i = 1; i <= lv; i++) {
-    if (i > 1) result.push(lit(sep))
     const s = styles[i - 1]
-    result.push(ref(i as HeadingLevel, s[0], s[1], s[2]))
+    // Append separator to suffix for all except the last reference
+    const finalSuffix = (i < lv) ? s[2] + sep : s[2]
+    result.push(ref(i as HeadingLevel, s[0], s[1], finalSuffix))
   }
   return result
 }
 
 /**
  * Build a hierarchical contextual format that starts from `startLv` instead of H1.
- * Used for withoutLevelOne variants where the first visible level may need different appearance.
- * @param startLv  first level to include (e.g. 2 for H1-removed)
- * @param lv       target level
- * @param sep      separator
- * @param styles   array of [tokenStyle, prefix, suffix] tuples for levels startLv..lv
+ * Used for withoutLevelOne variants.
+ * Separators are suffix-based (same as ctxHierarchical).
  */
 function ctxHierarchicalFrom(
   startLv: HeadingLevel,
@@ -168,75 +168,37 @@ function ctxHierarchicalFrom(
 ): ContextualFormatSegment[] {
   const result: ContextualFormatSegment[] = []
   for (let i = startLv; i <= lv; i++) {
-    if (i > startLv) result.push(lit(sep))
     const idx = i - startLv
     const s = styles[idx]
-    result.push(ref(i as HeadingLevel, s[0], s[1], s[2]))
+    const finalSuffix = (i < lv) ? s[2] + sep : s[2]
+    result.push(ref(i as HeadingLevel, s[0], s[1], finalSuffix))
   }
   return result
 }
 
 /**
  * Strip H1 level-references from a contextual format.
- * Only removes H1 refs — does NOT shift formats.
- * Appropriate for hierarchical presets where all levels share the same tokenStyle.
+ * Only removes H1 refs — does NOT modify suffixes of remaining references.
+ * The suffix-based model ensures correct separators between all level pairs.
+ * The last reference already has empty suffix (from ctxHierarchical construction),
+ * so no additional suffix clearing is needed.
  */
 function stripContextualLevelOne(format: ContextualFormatSegment[]): ContextualFormatSegment[] {
-  const SEP = new Set(['.', '-', '_', '、', '，', ',', ':', '：', '/', '\\', '·', ' '])
-  const isSep = (v: string) => [...v.trim()].every(c => SEP.has(c)) || v.trim() === ''
-
+  // Filter out H1 level-references and any remaining orphaned literal separators
   const result: ContextualFormatSegment[] = []
   for (let i = 0; i < format.length; i++) {
     const seg = format[i]
-    if (seg.type === 'level-reference' && seg.level === 1) {
-      // Remove preceding literal if it's a separator
-      if (result.length > 0 && result[result.length - 1].type === 'literal') {
-        const last = result[result.length - 1]
-        if (isSep((last as { type: 'literal'; value: string }).value)) result.pop()
-      }
-      // Skip following separator literals
-      while (i + 1 < format.length && format[i + 1].type === 'literal') {
-        if (!isSep((format[i + 1] as { type: 'literal'; value: string }).value)) break
-        i++
-      }
-      continue
+    if (seg.type === 'level-reference' && seg.level === 1) continue
+    // Skip orphaned separator literals at start or adjacent to another literal
+    if (seg.type === 'literal') {
+      const prevIsLiteral = i > 0 && format[i - 1].type === 'literal'
+      const nextIsLiteral = i < format.length - 1 && format[i + 1].type === 'literal'
+      if (prevIsLiteral || nextIsLiteral || i === 0 || i === format.length - 1) continue
     }
-    result.push({ ...seg })
+    result.push({ ...seg, id: seg.id } as ContextualFormatSegment)
   }
 
-  // Clean leading/trailing separators
-  while (result.length > 0 && result[0].type === 'literal') {
-    if (!isSep((result[0] as { type: 'literal'; value: string }).value)) break
-    result.shift()
-  }
-  while (result.length > 0 && result[result.length - 1].type === 'literal') {
-    if (!isSep((result[result.length - 1] as { type: 'literal'; value: string }).value)) break
-    result.pop()
-  }
-
-  // Merge adjacent literals
-  const merged: ContextualFormatSegment[] = []
-  for (const seg of result) {
-    if (seg.type === 'literal' && merged.length > 0 && merged[merged.length - 1].type === 'literal') {
-      (merged[merged.length - 1] as { type: 'literal'; value: string }).value += (seg as { type: 'literal'; value: string }).value
-    } else {
-      merged.push({ ...seg })
-    }
-  }
-
-  // Ensure current (max) level ref exists
-  const levels = merged.filter(s => s.type === 'level-reference').map(s => (s as any).level as number)
-  const maxLvl = levels.length > 0 ? Math.max(...levels) : 1
-  if (merged.length === 0 || !merged.some(s => s.type === 'level-reference' && s.level === maxLvl as HeadingLevel)) {
-    merged.push({
-      id: generateStableId(),
-      type: 'level-reference',
-      level: maxLvl as HeadingLevel,
-      appearance: createDefaultReferenceAppearance('arabic'),
-    })
-  }
-
-  return merged
+  return result
 }
 
 /** Build hierarchical multilevel composition [H1].[H2]...[Hlevel]. */
@@ -561,24 +523,13 @@ function buildAcademicPaper(): Record<HeadingLevel, HeadingLevelStyle> {
   for (let i = 2; i <= 6; i++) {
     const lv = i as HeadingLevel
 
-    // withLevelOne: [H1(arabic, no prefix/suffix)].[H2(arabic)]...[Hlv(arabic)]
-    const ctxWith: ContextualFormatSegment[] = [ref(1, 'arabic', '', '')]
-    for (let j = 2; j <= lv; j++) {
-      ctxWith.push(lit('.'))
-      ctxWith.push(ref(j as HeadingLevel, 'arabic', '', ''))
-    }
+    // withLevelOne: [H1(arabic, suffix='.')] [H2(arabic, suffix='.')] ... [Hlv(arabic, no suffix)]
+    const ctxWith = ctxHierarchical(lv, '.', Array.from({ length: lv }, () => ['arabic', '', ''] as [NumberTokenStyle, string, string]))
 
-    // withoutLevelOne: H2 standalone 第一章; H3+ hierarchical from H2(arabic, no prefix/suffix)
+    // withoutLevelOne: H2 standalone 第一章; H3+ hierarchical from H2(arabic)
     const ctxWithout: ContextualFormatSegment[] = lv === 2
       ? [ref(2, 'chinese', '第', '章')]
-      : [ref(2, 'arabic', '', '')]
-    
-    if (lv > 2) {
-      for (let j = 3; j <= lv; j++) {
-        ctxWithout.push(lit('.'))
-        ctxWithout.push(ref(j as HeadingLevel, 'arabic', '', ''))
-      }
-    }
+      : ctxHierarchicalFrom(2, lv, '.', Array.from({ length: lv - 1 }, () => ['arabic', '', ''] as [NumberTokenStyle, string, string]))
 
     const mfWith: MultilevelFormatSegment[] = [{ type: 'level-template-reference', level: 1 }]
     for (let j = 2; j <= lv; j++) {
@@ -651,24 +602,17 @@ function buildAppendixHierarchical(): Record<HeadingLevel, HeadingLevelStyle> {
   for (let i = 2; i <= 6; i++) {
     const lv = i as HeadingLevel
 
-    // withLevelOne: [H1(alpha-upper)].[H2(arabic)]...[Hlv(arabic)]
-    const ctxWith: ContextualFormatSegment[] = [ref(1, 'alpha-upper', '', '')]
-    for (let j = 2; j <= lv; j++) {
-      ctxWith.push(lit('.'))
-      ctxWith.push(ref(j as HeadingLevel, 'arabic', '', ''))
-    }
+    // withLevelOne: [H1(alpha-upper, suffix='.')] [H2(arabic, suffix='.')] ... [Hlv(arabic)]
+    const ctxWith = ctxHierarchical(lv, '.', Array.from({ length: lv }, (_, j) =>
+      (j === 0 ? ['alpha-upper', '', ''] : ['arabic', '', '']) as [NumberTokenStyle, string, string]
+    ))
 
-    // withoutLevelOne: H2 standalone 附录A; H3+ hierarchical from H2(alpha-upper, no prefix)
+    // withoutLevelOne: H2 standalone 附录A; H3+ hierarchical from H2(alpha-upper)
     const ctxWithoutParsed: ContextualFormatSegment[] = lv === 2
       ? [ref(2, 'alpha-upper', '附录', '')]
-      : [ref(2, 'alpha-upper', '', '')]
-    
-    if (lv > 2) {
-      for (let j = 3; j <= lv; j++) {
-        ctxWithoutParsed.push(lit('.'))
-        ctxWithoutParsed.push(ref(j as HeadingLevel, 'arabic', '', ''))
-      }
-    }
+      : ctxHierarchicalFrom(2, lv, '.', Array.from({ length: lv - 1 }, (_, j) =>
+          (j === 0 ? ['alpha-upper', '', ''] : ['arabic', '', '']) as [NumberTokenStyle, string, string]
+        ))
 
     const mfWith: MultilevelFormatSegment[] = [{ type: 'level-template-reference', level: 1 }]
     for (let j = 2; j <= lv; j++) {

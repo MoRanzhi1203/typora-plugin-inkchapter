@@ -464,10 +464,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Preview ─────────────────────────────────────
 
   private updatePreview(): void {
+    // Re-acquire preview element since DOM may have been rebuilt after onshow()
+    const previewDom = this.containerEl.querySelector('.inkchapter-preview') as HTMLElement | null
+    if (previewDom) this.previewEl = previewDom
     if (!this.previewEl) return
     this.previewEl.textContent = ''
 
-    const s = this.headingSettings
+    // Always use the draft if editing, otherwise the effective settings
+    const s = this.headingDraft ?? this.numberingService.getEffectiveSettings()
     if (!s?.levels) return
 
     if (!s.enabled) {
@@ -4062,44 +4066,34 @@ export class HeadingNumberingSettingTab extends SettingTab {
         }
       }
 
-      // Insert toolbar (single row)
+      // Insert toolbar: level references only (text/separator moved to label tab prefix/suffix)
       const insertRow = el('div', 'inkchapter-format-insert-row', container)
-      
-      const textInput = document.createElement('input')
-      textInput.type = 'text'
-      textInput.placeholder = '输入文字'
-      textInput.style.cssText = 'width:100px;'
-      textInput.className = 'inkchapter-format-text-input'
-      const textBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
-      textBtn.textContent = '插入'
-      textBtn.onclick = () => {
-        const val = textInput.value
-        if (val) {
-          const cur = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
-          const newFmt = [...cur, { id: generateStableId(), type: 'literal' as const, value: sanitize(val) }]
-          this.updateDraftContextualFormat(lv, newFmt)
-          this.onshow()
-        }
-      }
+      insertRow.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px;'
 
+      // Reference level selector
       const refSelect = el('select', undefined, insertRow) as HTMLSelectElement
-      refSelect.style.cssText = 'margin-left:8px;'
+      refSelect.style.cssText = 'min-width:80px;'
+
       const availRefs = getAvailableContextualReferenceLevels(lv, s.showLevelOneNumber, activeFmt)
       if (availRefs.length === 0) {
         const opt = document.createElement('option'); opt.value = ''; opt.textContent = '无可用'; opt.disabled = true; refSelect.appendChild(opt)
       } else {
         for (const refLv of availRefs) {
+          // Allow re-adding current level ref if it was removed
           if (activeFmt.some(s => s.type === 'level-reference' && s.level === refLv)) continue
           const opt = document.createElement('option'); opt.value = String(refLv);
-          const refStyle = s.levels[refLv]; const refTpl = refStyle?.levelTemplate
-          const tplPreview = refTpl ? `${refTpl?.prefix}${getSampleToken(refTpl?.tokenStyle!)}${refTpl?.suffix}` : `H${refLv}`
           opt.textContent = `H${refLv}`
           refSelect.appendChild(opt)
         }
       }
-      const refBtn = el('button', 'inkchapter-format-insert-btn', insertRow)
-      refBtn.textContent = '添加引用'
-      refBtn.onclick = () => {
+
+      // Add reference button
+      const insertBtn = el('button', 'inkchapter-format-insert-btn', insertRow) as HTMLButtonElement
+      insertBtn.textContent = '添加引用'
+      insertBtn.style.cssText = 'flex-shrink:0;'
+      insertBtn.disabled = refSelect.options.length === 0 || (refSelect.options.length === 1 && refSelect.options[0].disabled)
+
+      insertBtn.onclick = () => {
         const refLv = Number(refSelect.value) as HeadingLevel
         if (!refLv || refLv < 1 || refLv > 6) return
         const cur = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
@@ -4111,7 +4105,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const newFmt = [...cur, { id: generateStableId(), type: 'level-reference' as const, level: refLv, appearance: { ...defaultAppearance } }]
         this.updateDraftContextualFormat(lv, newFmt)
         this.onshow()
+        queueMicrotask(() => this.updatePreview())
       }
+
+      // Hint text
+      const hint = el('span', '', insertRow)
+      hint.textContent = '固定文字和分隔符请在「序号标签设置」中配置前缀/后缀'
+      hint.style.cssText = 'font-size:11px;color:var(--text-muted,#888);margin-left:4px;'
     }
   }
 

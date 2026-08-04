@@ -39,7 +39,8 @@ describe('Roman preset (roman-hierarchical)', () => {
     const h3 = romanPreset.levels[3]
     // withoutLevelOne should not include H1
     expect(h2.contextualFormatVariants.withoutLevelOne.length).toBe(1)
-    expect(h3.contextualFormatVariants.withoutLevelOne.length).toBe(3)  // H2, dot, H3
+    // In suffix-based model: [ref(2, suffix='.'), ref(3)] = 2 segments (separator moved to suffix)
+    expect(h3.contextualFormatVariants.withoutLevelOne.length).toBe(2)
   })
 })
 
