@@ -20,6 +20,9 @@ import {
   runOutlineProbe,
   dumpOutlineDOM,
   cleanupV2Spans,
+  syncOutlineNumberBoldStyle,
+  clearOutlineNumberBoldStyle,
+  isApplyingOutlineBoldStyle,
   type SyncResult,
 } from './outline-numbering-adapter'
 import type { HeadingDescriptor } from './heading-types'
@@ -99,6 +102,7 @@ export class OutlineNumberingController {
     const root = findOutlineRoot()
     clearAllNumberingAttributes(root)
     clearFileTreeNumberingAttributes()
+    clearOutlineNumberBoldStyle()
   }
 
   /** Clear all outline numbering without stopping the controller. */
@@ -106,6 +110,7 @@ export class OutlineNumberingController {
     const root = findOutlineRoot()
     clearAllNumberingAttributes(root)
     clearFileTreeNumberingAttributes()
+    clearOutlineNumberBoldStyle()
     this.cache = { documentKey: '', revision: 0, headings: [], labels: [] }
   }
 
@@ -462,22 +467,62 @@ export class OutlineNumberingController {
 
     this.observerRoot = root
     this.observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
-          // Ignore changes from our own data-attribute writes
-          if (m.target instanceof HTMLElement && m.target.hasAttribute('data-inkchapter-number')) continue
+      let hasChildListChange = false
+      let hasClassChange = false
 
-          this.scheduleSync(() => {
-            if (this.cache.headings.length > 0) {
-              quickSyncOutline(this.cache.headings, this.cache.labels)
-            }
-          })
-          break
+      for (const m of mutations) {
+        // ── childList: outline items added/removed ──
+        if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+          if (m.target instanceof HTMLElement && m.target.hasAttribute('data-inkchapter-number')) continue
+          hasChildListChange = true
         }
+
+        // ── attributes: class changes (e.g. .active moving) ──
+        if (!hasChildListChange && m.type === 'attributes' && m.attributeName === 'class') {
+          // Skip if we are currently applying bold style (prevent observer loop)
+          if (isApplyingOutlineBoldStyle) continue
+
+          const target = m.target as HTMLElement
+          if (!root.contains(target)) continue
+
+          // Skip our own BOLD_CLASS changes on numbered elements
+          if (target.hasAttribute('data-inkchapter-number')) {
+            const oldClass = m.oldValue ?? ''
+            const newClass = target.className ?? ''
+            const oldHasBold = oldClass.includes('inkchapter-outline-number-bold')
+            const newHasBold = newClass.includes('inkchapter-outline-number-bold')
+            if (oldHasBold !== newHasBold) continue
+          }
+
+          hasClassChange = true
+        }
+      }
+
+      // Class-only change: just re-sync bold style (lighter than full re-sync)
+      if (hasClassChange && !hasChildListChange) {
+        this.scheduleSync(() => {
+          syncOutlineNumberBoldStyle()
+        })
+        return
+      }
+
+      // Child list change: full re-sync (which includes bold sync)
+      if (hasChildListChange) {
+        this.scheduleSync(() => {
+          if (this.cache.headings.length > 0) {
+            quickSyncOutline(this.cache.headings, this.cache.labels)
+          }
+        })
       }
     })
 
-    this.observer.observe(root, { childList: true, subtree: true })
+    this.observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class'],
+      attributeOldValue: true,
+    })
     this.isObserverActive = true
 
     // Immediately sync if we have cached data for current document
