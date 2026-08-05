@@ -78,6 +78,12 @@ import {
 } from '../heading-numbering/format-library'
 import type { AppliedFormatInfo } from '../heading-numbering/format-library'
 
+/** Heading layout draft — independent of numbering draft and persisted state. */
+interface HeadingLayoutDraft {
+  headingLayouts: Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig>
+  numberTitleSpacing: Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
+}
+
 const TOKEN_STYLE_LABELS: { value: NumberTokenStyle; label: string; group?: string }[] = [
   { value: 'arabic', label: '阿拉伯数字 (1, 2, 3)', group: '数字' },
   { value: 'fullwidth-arabic', label: '全角阿拉伯数字 (１, ２, ３)', group: '数字' },
@@ -149,6 +155,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private headingScope: HeadingSettingsScope = 'document'
   private headingDraft: HeadingNumberingSettings | null = null
   private headingDraftOriginal: HeadingNumberingSettings | null = null
+
+  // ── Heading layout draft (independent of numbering draft) ──
+  /** Current in-memory layout draft. null = no unsaved changes. */
+  private headingLayoutDraft: HeadingLayoutDraft | null = null
+  /** Deep-cloned snapshot of the persisted layout state. Used for dirty detection and cancel. */
+  private savedLayoutDraft: HeadingLayoutDraft | null = null
 
   // ── Format library state ─────────────────────────
   /** Cached format library from settings. */
@@ -241,6 +253,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     while (this.containerEl.firstChild) {
       this.containerEl.removeChild(this.containerEl.firstChild)
     }
+    // Clear layout draft so it re-reads from persisted state
+    this.headingLayoutDraft = null
+    this.savedLayoutDraft = null
     // Subscribe to external settings changes (F1 commands, etc.)
     if (!this.unsubSettings) {
       this.unsubSettings = this.numberingService.onSettingsChanged(() => {
@@ -375,14 +390,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /** Determine the card state for a given format card. */
   private getCardState(key: string, isPreset: boolean):
-    { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean; hasUpdate: boolean; appliedVersion?: number }
+    { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean;
+      /** Business state: template version > source version (for "应用更新" button). Independent of notice. */
+      templateVersionNewer: boolean;
+      /** Notice state: un-acknowledged template update (for one-time "有更新" notification). */
+      pendingUpdateNotice: boolean;
+      templateVersion?: number; sourceVersion?: number;
+    }
   {
     const info = this.getAppliedFormatInfo()
     
-    // Check if this card is the current document's applied format
     let applied = false
     let inheritsGlobal = false
-    let hasUpdate = false
+    let templateVersionNewer = false
+    let pendingUpdateNotice = false
+    let templateVersion: number | undefined
+    let sourceVersion: number | undefined
     
     if (isPreset && info.source?.type === 'built-in' && info.source.presetId === key) {
       applied = true
@@ -390,9 +413,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
     } else if (!isPreset && info.source?.type === 'custom' && info.source.formatId === key) {
       applied = true
       inheritsGlobal = info.inheritsGlobal
-      // Check for template update
-      const appliedVersion = this.getAppliedFormatVersion()
-      hasUpdate = hasFormatUpdate(this.formatLibrary, key, appliedVersion ?? 0)
+      
+      // Business state: is there a newer template version?
+      templateVersion = getFormatVersion(this.formatLibrary, key)
+      sourceVersion = this.getAppliedFormatVersion()
+      templateVersionNewer = (sourceVersion ?? 0) < (templateVersion ?? 0)
+      
+      // Notice state: is the update un-acknowledged?
+      if (templateVersionNewer) {
+        const docKey = this.numberingService.getDocumentKey()
+        pendingUpdateNotice = this.numberingService.isTemplateUpdatePending(docKey, key, templateVersion!)
+      }
     }
     
     // Check if this card is the global default
@@ -405,7 +436,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       isGlobalDefault = true
     }
     
-    return { applied, isGlobalDefault, inheritsGlobal, hasUpdate }
+    return { applied, isGlobalDefault, inheritsGlobal, templateVersionNewer, pendingUpdateNotice, templateVersion, sourceVersion }
   }
 
   /** Check if a card is the currently selected one for preview. */
@@ -1223,13 +1254,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Heading layout UI ────────────────────────────
 
   private renderHeadingLayoutSection(container: HTMLElement): void {
-    const layouts = this.numberingService.getEffectiveHeadingLayouts()
+    // Ensure layout draft is initialized (reads from persisted state)
+    const draft = this.ensureLayoutDraft()
     const s = this.headingSettings
 
     // Compute real numbering preview labels for each level
     const sampleTitles: Record<number, string> = { 1: '概述', 2: '研究背景', 3: '研究内容', 4: '数据来源', 5: '模块设计', 6: '补充说明' }
     let previewLabels: Record<number, string> = {}
-    let previewGapChars: Record<number, string> = {}
+    let previewGapCharsByNum: Record<number, string> = {}
     try {
       const sampleHeadings: HeadingDescriptor[] = HEADING_LEVELS.map(lv => ({
         key: `layout-prev-h${lv}`,
@@ -1239,10 +1271,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const result = computeHeadingNumbering(sampleHeadings, s)
       for (const r of result) {
         previewLabels[r.level] = r.label
-        previewGapChars[r.level] = r.labelGap === 'space' ? ' ' : ''
+        previewGapCharsByNum[r.level] = r.labelGap === 'space' ? ' ' : ''
       }
     } catch {
-      for (const lv of HEADING_LEVELS) { previewLabels[lv] = `H${lv}`; previewGapChars[lv] = '' }
+      for (const lv of HEADING_LEVELS) { previewLabels[lv] = `H${lv}`; previewGapCharsByNum[lv] = '' }
     }
 
     const section = el('div', 'inkchapter-heading-layout-section', container)
@@ -1267,6 +1299,21 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.openLayoutBatchMenu(batchWrap)
     }
 
+    // Restore default layout button (resets draft to defaults, does NOT persist)
+    const hasPersistedOverrides = this.numberingService.hasDocumentLayoutOverrides()
+    const showRestoreBtn = hasPersistedOverrides || this.hasLayoutDirty()
+    if (showRestoreBtn) {
+      const restoreDefaultBtn = el('button', 'inkchapter-btn inkchapter-btn--small', headerRow)
+      restoreDefaultBtn.textContent = '恢复默认排版'
+      restoreDefaultBtn.title = '清除排版覆盖，恢复格式默认排版（需点击保存并应用生效）'
+      restoreDefaultBtn.style.cssText = 'color:#e67e22;'
+      restoreDefaultBtn.onclick = () => {
+        // Reset draft to factory defaults — does NOT persist, just marks dirty
+        this.headingLayoutDraft = this.defaultLayoutDraft()
+        this.rerender()
+      }
+    }
+
     // ── Workspace: matrix + preview ──
     const workspace = el('div', 'inkchapter-heading-layout-workspace', section)
 
@@ -1283,10 +1330,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     ]
 
     for (const { key, label } of levels) {
-      const lvKey = key as keyof import('../heading-numbering/heading-types').HeadingLayoutSettings
-      const current = layouts?.[lvKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
       const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
-      const currentGap = s.levels[lvNum]?.numberTitleSpacing ?? 'space'
+      const current = draft.headingLayouts[key] ?? this.defaultLayoutConfig()
+      const currentGap = draft.numberTitleSpacing[lvNum] ?? 'space'
       const hasIndent = current.firstLineIndentEm >= 2
       const isCenterOrRight = current.textAlign === 'center' || current.textAlign === 'right'
       const isSelected = this.selectedLayoutLevel === lvNum
@@ -1294,7 +1340,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const row = el('div', 'inkchapter-layout-matrix-row', matrix)
       if (isSelected) row.classList.add('inkchapter-layout-matrix-row--selected')
 
-      // Click row to select level (UI only)
+      // Click row to select level (UI only, does not affect draft)
       row.onclick = () => {
         this.selectedLayoutLevel = this.selectedLayoutLevel === lvNum ? null : lvNum
         this.rerender()
@@ -1303,7 +1349,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const levelLabel = el('span', 'inkchapter-layout-matrix-level', row)
       levelLabel.textContent = label
 
-      // Alignment: [左] [中] [右]
+      // Alignment: [左] [中] [右] — immutable updates on draft
       const alignGroup = el('div', 'inkchapter-layout-matrix-align', row)
       for (const opt of [{ m: 'left', lbl: '左' }, { m: 'center', lbl: '中' }, { m: 'right', lbl: '右' }]) {
         const btn = el('button') as HTMLButtonElement
@@ -1312,14 +1358,20 @@ export class HeadingNumberingSettingTab extends SettingTab {
         if (opt.m === current.textAlign) btn.classList.add('inkchapter-layout-matrix-btn--active')
         btn.onclick = (e) => {
           e.stopPropagation()
-          const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
-          this.numberingService.setHeadingLayout(lv, { textAlign: opt.m as 'left' | 'center' | 'right', firstLineIndentEm: current.firstLineIndentEm })
+          // Immutable update: new draft object, new headingLayouts, new level config
+          this.headingLayoutDraft = {
+            headingLayouts: {
+              ...draft.headingLayouts,
+              [key]: { textAlign: opt.m as 'left' | 'center' | 'right', firstLineIndentEm: (opt.m !== 'left' ? 0 : draft.headingLayouts[key]?.firstLineIndentEm ?? 0) },
+            },
+            numberTitleSpacing: { ...draft.numberTitleSpacing },
+          }
           this.rerender()
         }
         alignGroup.appendChild(btn)
       }
 
-      // Indent: [无] [2字符]
+      // Indent: [无] [2字符] — immutable updates on draft
       const indentGroup = el('div', 'inkchapter-layout-matrix-indent', row)
       for (const opt of [{ v: 0, lbl: '无' }, { v: 2, lbl: '2字符' }]) {
         const btn = el('button') as HTMLButtonElement
@@ -1330,21 +1382,21 @@ export class HeadingNumberingSettingTab extends SettingTab {
         if (opt.v === 2 && isCenterOrRight) { btn.disabled = true; btn.title = '首行缩进仅对居左有效' }
         btn.onclick = (e) => {
           e.stopPropagation()
-          const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
-          let newConfig: import('../heading-numbering/heading-types').HeadingLayoutConfig
-          if (opt.v === 2) {
-            if (isCenterOrRight) return
-            newConfig = { textAlign: 'left', firstLineIndentEm: 2 }
-          } else {
-            newConfig = { textAlign: current.textAlign, firstLineIndentEm: 0 }
+          if (opt.v === 2 && isCenterOrRight) return
+          const newAlign = opt.v === 2 ? 'left' as const : current.textAlign
+          this.headingLayoutDraft = {
+            headingLayouts: {
+              ...draft.headingLayouts,
+              [key]: { textAlign: newAlign, firstLineIndentEm: opt.v },
+            },
+            numberTitleSpacing: { ...draft.numberTitleSpacing },
           }
-          this.numberingService.setHeadingLayout(lv, newConfig)
           this.rerender()
         }
         indentGroup.appendChild(btn)
       }
 
-      // Gap: [无间距] [一个空格]
+      // Gap: [无间距] [一个空格] — immutable updates on draft
       const gapGroup = el('div', 'inkchapter-layout-matrix-gap', row)
       for (const opt of [{ v: 'none', lbl: '无间距' }, { v: 'space', lbl: '一个空格' }]) {
         const btn = el('button') as HTMLButtonElement
@@ -1353,15 +1405,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
         if (currentGap === opt.v) btn.classList.add('inkchapter-layout-matrix-btn--active')
         btn.onclick = (e) => {
           e.stopPropagation()
-          this.ensureDraft()
-          const st = this.headingDraft!.levels[lvNum]; if (st) st.numberTitleSpacing = opt.v as NumberTitleSpacing
+          const newSpacing = { ...draft.numberTitleSpacing, [lvNum]: opt.v as NumberTitleSpacing }
+          this.headingLayoutDraft = {
+            headingLayouts: { ...draft.headingLayouts },
+            numberTitleSpacing: newSpacing,
+          }
           this.rerender()
         }
         gapGroup.appendChild(btn)
       }
     }
 
-    // Right: document preview
+    // Right: document preview (reads from draft, NOT from persisted state)
     const preview = el('div', 'inkchapter-heading-layout-document-preview', workspace)
     const previewTitle = el('div', 'inkchapter-layout-document-preview-title', preview)
     previewTitle.textContent = '整页预览'
@@ -1369,13 +1424,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const previewPage = el('div', 'inkchapter-layout-document-preview-page', preview)
 
     for (const { key, label } of levels) {
-      const lvKey = key as keyof import('../heading-numbering/heading-types').HeadingLayoutSettings
-      const current = layouts?.[lvKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
       const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
-      const currentGap = s.levels[lvNum]?.numberTitleSpacing ?? 'space'
+      const current = draft.headingLayouts[key] ?? this.defaultLayoutConfig()
+      const currentGap = draft.numberTitleSpacing[lvNum] ?? 'space'
       const hasIndent = current.firstLineIndentEm >= 2
       const numberLabel = previewLabels[lvNum] || ''
-      const gapChar = previewGapChars[lvNum] || ''
+      const gapChar = currentGap === 'space' ? ' ' : ''
       const isSelected = this.selectedLayoutLevel === lvNum
 
       const pline = el('div', 'inkchapter-layout-document-preview-line', previewPage)
@@ -1398,7 +1452,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // ── Bottom sticky action bar ──
     const actionBar = el('div', 'inkchapter-heading-layout-actionbar', section)
-    const isDirty = this.headingDraft != null
+    const isDirty = this.hasLayoutDirty()
     const statusEl = el('span', '', actionBar)
     statusEl.textContent = isDirty ? '● 有未保存的更改' : '已保存'
     statusEl.style.cssText = `font-size:12px;${isDirty ? 'color:#e67e22;' : 'color:var(--text-muted,#888);'}`
@@ -1406,47 +1460,58 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const actionsRight = el('div', '', actionBar)
     actionsRight.style.cssText = 'display:flex;gap:8px;'
 
+    // Cancel: revert draft to saved state
     const cancelBtn = el('button', 'inkchapter-btn', actionsRight) as HTMLButtonElement
     cancelBtn.textContent = '取消更改'
     if (!isDirty) cancelBtn.disabled = true
     cancelBtn.onclick = () => {
-      if (this.headingDraft) {
-        this.headingDraft = null
-        this.headingDraftOriginal = null
-        this.editorExpanded = false
-        this.selectedFormatId = null
-        this.formatDraft = null
+      if (this.savedLayoutDraft) {
+        this.headingLayoutDraft = deepCloneLayoutDraft(this.savedLayoutDraft)
         this.rerender()
-        Notice.info('更改已取消')
       }
     }
 
+    // Save: persist draft to layoutOverrides, preserving formatSource
     const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', actionsRight)
     saveBtn.textContent = '保存并应用'
     if (!isDirty) saveBtn.classList.add('inkchapter-btn--disabled')
     saveBtn.onclick = () => {
       const docKey = this.numberingService.getDocumentKey()
-      if (this.selectedFormatId && this.formatDraft && this.headingDraft) {
-        this.saveFormatDraft()
+      if (!docKey || !this.headingLayoutDraft) return
+
+      const d = this.headingLayoutDraft
+
+      // Build layoutOverrides from draft
+      const layoutOverrides: import('../heading-numbering/heading-types').DocumentLayoutOverrides = {
+        headingLayouts: { ...d.headingLayouts },
+        numberTitleSpacing: { ...d.numberTitleSpacing },
       }
-      if (this.headingDraft) {
-        const scope = this.headingScope
-        const key = scope === 'document' ? (docKey ?? null) : null
-        this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
-        this.headingDraft = null
-        this.headingDraftOriginal = null
-      }
+
+      // Persist via service (preserves formatSource, only touches layoutOverrides)
+      this.numberingService.saveLayoutOverridesFromDraft(docKey, layoutOverrides)
+
+      // Update saved snapshot to reflect persisted state
+      this.savedLayoutDraft = deepCloneLayoutDraft(d)
+      // Clear headingLayoutDraft so re-render shows no dirty state
+      this.headingLayoutDraft = null
+
+      // Also clear numbering draft state if it was set (dirty from gap edits via old path)
+      this.headingDraft = null
+      this.headingDraftOriginal = null
       this.editorExpanded = false
       this.selectedFormatId = null
       this.formatDraft = null
+
       this.rerender()
-      Notice.info('设置已保存')
+      Notice.info('当前文档排版已保存')
     }
   }
 
   // ── Batch menu ──
   private openLayoutBatchMenu(anchorEl: HTMLElement): void {
     this.closeMenu()
+    const draft = this.headingLayoutDraft ?? this.ensureLayoutDraft()
+
     const menu = document.createElement('div')
     menu.className = 'inkchapter-menu-overlay'
     menu.style.position = 'absolute'
@@ -1458,24 +1523,66 @@ export class HeadingNumberingSettingTab extends SettingTab {
     anchorEl.appendChild(menu)
 
     const items: Array<{ label: string; action: () => void; disabled?: boolean }> = [
-      { label: '全部左对齐', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'left', firstLineIndentEm: 0 }); this.rerender() } },
-      { label: '全部居中', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'center', firstLineIndentEm: 0 }); this.rerender() } },
-      { label: '全部右对齐', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'right', firstLineIndentEm: 0 }); this.rerender() } },
-      { label: '全部无缩进', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) { const layoutsList = this.numberingService.getEffectiveHeadingLayouts()!; const c = layoutsList[('h' + lv) as keyof typeof layoutsList]; this.numberingService.setHeadingLayout(lv, { textAlign: c?.textAlign ?? 'left', firstLineIndentEm: 0 }) }; this.rerender() } },
-      { label: '全部缩进2字符', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'left', firstLineIndentEm: 2 }); this.rerender() } },
-      { label: '全部无间距', action: () => { this.ensureDraft(); for (const lv of HEADING_LEVELS) { const st = this.headingDraft!.levels[lv]; if (st) st.numberTitleSpacing = 'none' }; this.rerender() } },
-      { label: '全部一个空格', action: () => { this.ensureDraft(); for (const lv of HEADING_LEVELS) { const st = this.headingDraft!.levels[lv]; if (st) st.numberTitleSpacing = 'space' }; this.rerender() } },
+      { label: '全部左对齐', action: () => {
+        const newLayouts: Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig> = {}
+        for (let lv = 1; lv <= 6; lv++) { newLayouts[`h${lv}`] = { textAlign: 'left' as const, firstLineIndentEm: 0 } }
+        this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: { ...draft.numberTitleSpacing } }
+        this.rerender()
+      }},
+      { label: '全部居中', action: () => {
+        const newLayouts: Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig> = {}
+        for (let lv = 1; lv <= 6; lv++) { newLayouts[`h${lv}`] = { textAlign: 'center' as const, firstLineIndentEm: 0 } }
+        this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: { ...draft.numberTitleSpacing } }
+        this.rerender()
+      }},
+      { label: '全部右对齐', action: () => {
+        const newLayouts: Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig> = {}
+        for (let lv = 1; lv <= 6; lv++) { newLayouts[`h${lv}`] = { textAlign: 'right' as const, firstLineIndentEm: 0 } }
+        this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: { ...draft.numberTitleSpacing } }
+        this.rerender()
+      }},
+      { label: '全部无缩进', action: () => {
+        const newLayouts = { ...draft.headingLayouts }
+        for (let lv = 1; lv <= 6; lv++) {
+          const k = `h${lv}`
+          newLayouts[k] = { textAlign: newLayouts[k]?.textAlign ?? 'left', firstLineIndentEm: 0 }
+        }
+        this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: { ...draft.numberTitleSpacing } }
+        this.rerender()
+      }},
+      { label: '全部缩进2字符', action: () => {
+        const newLayouts = { ...draft.headingLayouts }
+        for (let lv = 1; lv <= 6; lv++) {
+          const k = `h${lv}`
+          newLayouts[k] = { textAlign: 'left' as const, firstLineIndentEm: 2 }
+        }
+        this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: { ...draft.numberTitleSpacing } }
+        this.rerender()
+      }},
+      { label: '全部无间距', action: () => {
+        const newSpacing = {} as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
+        for (let lv = 1; lv <= 6; lv++) newSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] = 'none'
+        this.headingLayoutDraft = { headingLayouts: { ...draft.headingLayouts }, numberTitleSpacing: newSpacing }
+        this.rerender()
+      }},
+      { label: '全部一个空格', action: () => {
+        const newSpacing = {} as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
+        for (let lv = 1; lv <= 6; lv++) newSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] = 'space'
+        this.headingLayoutDraft = { headingLayouts: { ...draft.headingLayouts }, numberTitleSpacing: newSpacing }
+        this.rerender()
+      }},
       { label: this.selectedLayoutLevel ? `应用 H${this.selectedLayoutLevel} 排版到后续级别` : '应用当前级到后续级别', action: () => {
         const al = this.selectedLayoutLevel
         if (al && al < 6) {
-          this.ensureDraft()
-          const layouts = this.numberingService.getEffectiveHeadingLayouts()
-          const base = layouts?.[`h${al}` as keyof typeof layouts] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
-          const baseGap = this.headingSettings.levels[al as HeadingLevel]?.numberTitleSpacing ?? 'space'
+          const baseCfg = draft.headingLayouts[`h${al}`] ?? this.defaultLayoutConfig()
+          const baseGap = draft.numberTitleSpacing[al as HeadingLevel] ?? 'space'
+          const newLayouts = { ...draft.headingLayouts }
+          const newSpacing = { ...draft.numberTitleSpacing }
           for (let lv = (al + 1) as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) {
-            this.numberingService.setHeadingLayout(lv, { textAlign: base.textAlign, firstLineIndentEm: base.firstLineIndentEm })
-            const st = this.headingDraft!.levels[lv]; if (st) st.numberTitleSpacing = baseGap
+            newLayouts[`h${lv}`] = { ...baseCfg }
+            newSpacing[lv] = baseGap
           }
+          this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: newSpacing }
           this.rerender()
         } else if (al === 6) {
           Notice.info('H6 已是最后一级')
@@ -1483,7 +1590,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
           Notice.info('请先在左侧点击选择某个级别')
         }
       }, disabled: !this.selectedLayoutLevel || this.selectedLayoutLevel >= 6 },
-      { label: '全部恢复默认', action: () => { this.numberingService.resetAllHeadingLayouts(); this.rerender() } },
+      { label: '全部恢复默认', action: () => {
+        this.headingLayoutDraft = this.defaultLayoutDraft()
+        this.rerender()
+      }},
     ]
 
     for (const item of items) {
@@ -2561,6 +2671,67 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.headingDraft = deepCloneSettings(this.headingDraftOriginal)
   }
 
+  // ── Layout draft (independent of numbering draft) ──
+
+  /** Create default layout config (left, no indent). */
+  private defaultLayoutConfig(): import('../heading-numbering/heading-types').HeadingLayoutConfig {
+    return { textAlign: 'left', firstLineIndentEm: 0 }
+  }
+
+  /** Get default layout draft for all 6 levels. */
+  private defaultLayoutDraft(): HeadingLayoutDraft {
+    const headingLayouts: Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig> = {}
+    for (let lv = 1; lv <= 6; lv++) {
+      headingLayouts[`h${lv}`] = { textAlign: 'left' as const, firstLineIndentEm: 0 }
+    }
+    const numberTitleSpacing = {} as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
+    for (let lv = 1; lv <= 6; lv++) {
+      numberTitleSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] = 'space'
+    }
+    return { headingLayouts, numberTitleSpacing }
+  }
+
+  /** Initialize or get the layout draft from persisted state. Never returns null after first call per render cycle. */
+  private ensureLayoutDraft(): HeadingLayoutDraft {
+    if (this.headingLayoutDraft) return this.headingLayoutDraft
+
+    // Build from persisted layout overrides + defaults
+    const draft = this.defaultLayoutDraft()
+    const store = this.numberingService.getScopeStore()
+    const docKey = this.numberingService.getDocumentKey()
+    const docOverride = docKey ? store.documentOverrides[docKey] : undefined
+    const lo = docOverride?.layoutOverrides
+
+    // Apply persisted heading layouts
+    if (lo?.headingLayouts) {
+      for (const [key, config] of Object.entries(lo.headingLayouts)) {
+        if (config && /^h[1-6]$/.test(key)) {
+          draft.headingLayouts[key] = { textAlign: config.textAlign, firstLineIndentEm: config.firstLineIndentEm }
+        }
+      }
+    }
+
+    // Apply persisted number title spacing
+    if (lo?.numberTitleSpacing) {
+      for (const [lvStr, spacing] of Object.entries(lo.numberTitleSpacing)) {
+        const lv = Number(lvStr) as import('../heading-numbering/heading-types').HeadingLevel
+        if (lv >= 1 && lv <= 6) {
+          draft.numberTitleSpacing[lv] = spacing
+        }
+      }
+    }
+
+    this.headingLayoutDraft = draft
+    this.savedLayoutDraft = deepCloneLayoutDraft(draft)
+    return draft
+  }
+
+  /** Check if layout draft has unsaved changes. */
+  private hasLayoutDirty(): boolean {
+    if (!this.headingLayoutDraft || !this.savedLayoutDraft) return false
+    return !layoutDraftsEqual(this.headingLayoutDraft, this.savedLayoutDraft)
+  }
+
   /**
    * Update the draft's contextual format for a level.
    * Does NOT persist — only modifies the in-memory draft.
@@ -2655,9 +2826,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private rerender(): void {
-    // Re-render the entire page to reflect draft changes
+    // Re-render the entire page to reflect draft changes.
+    // Must NOT call onshow() — that resets layout drafts to persisted state.
     this.cancelDrag('draft-change')
-    this.onshow()
+    while (this.containerEl.firstChild) {
+      this.containerEl.removeChild(this.containerEl.firstChild)
+    }
+    try {
+      this.render()
+    } catch (e) {
+      console.error('[InkChapter] SettingTab render 失败:', e)
+    }
   }
 
   /**
@@ -2806,8 +2985,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const title = el('div', 'inkchapter-library-title', titleRow)
     title.textContent = '编号格式库'
 
-    const manageBtn = el('button', 'inkchapter-btn inkchapter-btn--small', titleRow)
-    manageBtn.textContent = this.managePanelOpen ? '收起管理' : '管理格式库'
+    const manageBtn = el('button', 'inkchapter-library-manage-btn', titleRow)
+    manageBtn.textContent = this.managePanelOpen ? '⚙ 收起管理' : '⚙ 管理格式库'
     manageBtn.onclick = () => {
       this.cancelDrag()
       this.managePanelOpen = !this.managePanelOpen
@@ -2835,8 +3014,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
-    // User formats (ordered)
+    // User formats (ordered) — collect pending update notices for one-time toast
     const orderedFormats = getOrderedCustomFormats(this.formatLibrary)
+    const pendingNotices: Array<{ formatName: string; formatId: string; templateVersion: number }> = []
     for (const format of orderedFormats) {
       const previewLines = getFormatPreview(format, 3, s.showLevelOneNumber)
       const cardState = this.getCardState(format.id, false)
@@ -2847,6 +3027,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       )
       if (this.isCardSelected(format.id, false)) {
         cardEl.classList.add('inkchapter-format-card--selected')
+      }
+      // Collect pending template update notices
+      if (cardState.pendingUpdateNotice && cardState.templateVersion) {
+        pendingNotices.push({ formatName: format.name, formatId: format.id, templateVersion: cardState.templateVersion })
       }
     }
 
@@ -2868,6 +3052,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
       emptyHint.textContent = '尚未创建自定义格式。'
       emptyHint.style.cssText = 'grid-column:1/-1;text-align:center;color:var(--text-muted,#888);font-size:13px;padding:12px;'
     }
+
+    // Show one-time toast for pending template updates, then acknowledge
+    if (pendingNotices.length > 0) {
+      const names = pendingNotices.map(n => `"${n.formatName}"`).join('、')
+      Notice.info(`格式 ${names} 有可用更新`)
+      const docKey = this.numberingService.getDocumentKey()
+      if (docKey) {
+        for (const n of pendingNotices) {
+          this.numberingService.acknowledgeTemplateUpdate(docKey, n.formatId, n.templateVersion)
+        }
+      }
+    }
   }
 
   /** Build a single format card for the unified grid. */
@@ -2879,20 +3075,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
     previewLines: string[],
     isPreset: boolean,
     onApply: () => void,
-    cardState: { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean; hasUpdate: boolean },
+    cardState: { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean;
+      templateVersionNewer: boolean; pendingUpdateNotice: boolean;
+      templateVersion?: number; sourceVersion?: number;
+    },
   ): HTMLElement {
     const cardEl = el('div', 'inkchapter-format-card', grid)
     cardEl.setAttribute('tabindex', '0')
 
-    // ── Header: title row → meta row (badge only) ──
+    // ── Header: title row → meta row ──
     const header = el('div', 'inkchapter-format-card-header', cardEl)
     
-    // Title row (pr for absolute button)
+    // Title row
     const titleRow = el('div', 'inkchapter-format-card-title-row', header)
     const cardName = el('span', 'inkchapter-format-card-title', titleRow)
     cardName.textContent = name
     
-    // Meta row: status badge (left) only
+    // Meta row: only core status badges (no "文档已调整", no "有更新" permanent badge)
     const metaRow = el('div', 'inkchapter-format-card-meta-row', header)
     const badgeWrap = el('span', 'inkchapter-format-card-badge-wrap', metaRow)
     
@@ -2902,9 +3101,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     } else if (cardState.applied && cardState.inheritsGlobal) {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--inherit', badgeWrap)
       badge.textContent = '继承全局'
-    } else if (cardState.applied && cardState.hasUpdate) {
-      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--update', badgeWrap)
-      badge.textContent = '有更新'
     } else if (cardState.applied) {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--applied', badgeWrap)
       badge.textContent = '当前文档'
@@ -2912,8 +3108,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--global-default', badgeWrap)
       badge.textContent = '全局默认'
     }
-    
-    // "⋯" menu trigger — fixed to card top-right via absolute positioning
+
+    // "⋯" menu trigger
     const menuBtn = el('span', 'inkchapter-format-card-menu-trigger', cardEl)
     menuBtn.textContent = '⋯'
     menuBtn.setAttribute('tabindex', '0')
@@ -2947,7 +3143,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
-    // Apply button with context-aware state
+    // Apply button — separate business state from notice state
     const actions = el('div', 'inkchapter-format-card-actions', cardEl)
     const applyBtn = el('button', 'inkchapter-btn', actions) as HTMLButtonElement
     
@@ -2956,7 +3152,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     
     if (cardState.applied || cardState.inheritsGlobal) {
       // Current document uses this format
-      if (cardState.hasUpdate) {
+      if (cardState.templateVersionNewer) {
+        // Business state: template has newer version → always show "应用更新"
         btnText = '应用更新'
       } else {
         btnText = '已应用'
@@ -2977,9 +3174,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     applyBtn.onclick = (e) => {
       e.stopPropagation()
-      if (btnDisabled) return // Double safety
+      if (btnDisabled) return
       this.cancelDrag()
-      if (cardState.hasUpdate) {
+      if (cardState.templateVersionNewer) {
         // Apply update: re-apply the format with current template
         if (isPreset) {
           this.applyPresetToScope(key)
@@ -4425,8 +4622,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const bar = el('div', 'inkchapter-settings-actions', this.containerEl)
 
-    // Left side: unsaved hint
-    const hasDraft = this.headingDraft != null || this.formatDraft != null
+    // Left side: unsaved hint (checks both numbering and layout drafts)
+    const hasDraft = this.headingDraft != null || this.formatDraft != null || this.hasLayoutDirty()
     if (hasDraft) {
       const hint = el('div', 'inkchapter-settings-unsaved-hint', bar)
       hint.textContent = '有未保存的更改'
@@ -4438,9 +4635,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const cancelBtn = el('button', 'inkchapter-btn', right)
     cancelBtn.textContent = '取消更改'
     cancelBtn.onclick = () => {
+      let cancelled = false
       if (this.headingDraft) {
         this.headingDraft = null
         this.headingDraftOriginal = null
+        cancelled = true
+      }
+      if (this.headingLayoutDraft && this.savedLayoutDraft) {
+        this.headingLayoutDraft = deepCloneLayoutDraft(this.savedLayoutDraft)
+        cancelled = true
+      }
+      if (cancelled) {
         this.editorExpanded = false
         this.selectedFormatId = null
         this.formatDraft = null
@@ -4456,13 +4661,24 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (this.selectedFormatId && this.formatDraft && this.headingDraft) {
         this.saveFormatDraft()
       }
-      // Save scope draft if any
+      // Save numbering scope draft if any
       if (this.headingDraft) {
         const scope = this.headingScope
         const key = scope === 'document' ? (docKey ?? null) : null
         this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
         this.headingDraft = null
         this.headingDraftOriginal = null
+      }
+      // Save layout draft if dirty
+      if (this.headingLayoutDraft && docKey && this.hasLayoutDirty()) {
+        const d = this.headingLayoutDraft
+        const layoutOverrides: import('../heading-numbering/heading-types').DocumentLayoutOverrides = {
+          headingLayouts: { ...d.headingLayouts },
+          numberTitleSpacing: { ...d.numberTitleSpacing },
+        }
+        this.numberingService.saveLayoutOverridesFromDraft(docKey, layoutOverrides)
+        this.savedLayoutDraft = deepCloneLayoutDraft(d)
+        this.headingLayoutDraft = null
       }
       this.editorExpanded = false
       this.selectedFormatId = null
@@ -4471,6 +4687,36 @@ export class HeadingNumberingSettingTab extends SettingTab {
       Notice.info('设置已保存')
     }
   }
+}
+
+// ── Layout draft utilities ────────────────────────
+
+function deepCloneLayoutDraft(d: HeadingLayoutDraft): HeadingLayoutDraft {
+  const headingLayouts: Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig> = {}
+  for (const key of Object.keys(d.headingLayouts)) {
+    headingLayouts[key] = { ...d.headingLayouts[key] }
+  }
+  const numberTitleSpacing = { ...d.numberTitleSpacing } as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
+  return { headingLayouts, numberTitleSpacing }
+}
+
+function layoutDraftsEqual(a: HeadingLayoutDraft, b: HeadingLayoutDraft): boolean {
+  // Compare headingLayouts
+  const keysA = Object.keys(a.headingLayouts)
+  const keysB = Object.keys(b.headingLayouts)
+  if (keysA.length !== keysB.length) return false
+  for (const key of keysA) {
+    const ca = a.headingLayouts[key]
+    const cb = b.headingLayouts[key]
+    if (!cb) return false
+    if (ca.textAlign !== cb.textAlign || ca.firstLineIndentEm !== cb.firstLineIndentEm) return false
+  }
+  // Compare numberTitleSpacing
+  for (let lv = 1; lv <= 6; lv++) {
+    if ((a.numberTitleSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] ?? 'space')
+        !== (b.numberTitleSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] ?? 'space')) return false
+  }
+  return true
 }
 
 // ── Native DOM helpers ─────────────────────────────

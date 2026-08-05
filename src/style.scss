@@ -1289,11 +1289,49 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
 }
 .inkchapter-library-title {
   font-weight: 600;
-  font-size: 15px;
+  font-size: 18px;
   color: var(--text-normal, #333);
+  line-height: 1.3;
+}
+// Secondary manage button — right-aligned, light visual weight
+.inkchapter-library-manage-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  background: var(--background-primary, #fff);
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 32px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  &:hover {
+    background: var(--background-modifier-hover, #eee);
+    border-color: var(--text-accent, #07a);
+    color: var(--text-accent, #07a);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--text-accent, #07a);
+    outline-offset: 2px;
+  }
+}
+@media (max-width: 760px) {
+  .inkchapter-library-title-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .inkchapter-library-manage-btn {
+    align-self: flex-end;
+  }
 }
 .inkchapter-format-grid {
   display: grid;
@@ -2011,6 +2049,17 @@
   .inkchapter-range-stats { color: rgba(255,255,255,0.4); }
   .inkchapter-scope-restore-btn { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.5);
     &:hover { background: rgba(255,255,255,0.08); }
+  }
+  .inkchapter-library-manage-btn {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.5);
+    &:hover {
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(50,140,255,0.5);
+      color: #5af;
+    }
+    &:focus-visible { outline-color: #5af; }
   }
 }
 

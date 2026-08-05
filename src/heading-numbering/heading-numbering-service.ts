@@ -49,6 +49,8 @@ import {
   hasDocumentOverride,
   migrateHeadingNumberingToScopeStore,
   getDefaultHeadingNumberingSettings,
+  saveLayoutOverrides,
+  hasLayoutOverrides,
 } from './heading-numbering-scope-store'
 
 const TAIL_REFRESH_MS = 60
@@ -313,6 +315,51 @@ export class HeadingNumberingService {
     return hasDocumentOverride(this.scopeStore, this.getDocumentKey())
   }
 
+  /** Check if current document has any layout overrides (alignment, indent, gap). */
+  hasDocumentLayoutOverrides(): boolean {
+    return hasLayoutOverrides(this.scopeStore, this.getDocumentKey())
+  }
+
+  // ── Template update acknowledgement ──────────────
+
+  /**
+   * Get the last acknowledged template version for a document+format pair.
+   * Returns undefined if never acknowledged.
+   */
+  getAcknowledgedTemplateVersion(docKey: string | null, formatId: string): number | undefined {
+    if (!docKey) return undefined
+    const acks = this.loadAcknowledgements()
+    const ackKey = `${docKey}::${formatId}`
+    return acks[ackKey]
+  }
+
+  /**
+   * Record that the user has acknowledged a template update for this document+format+version.
+   */
+  acknowledgeTemplateUpdate(docKey: string | null, formatId: string, templateVersion: number): void {
+    if (!docKey) return
+    const acks = this.loadAcknowledgements()
+    const ackKey = `${docKey}::${formatId}`
+    acks[ackKey] = templateVersion
+    this.ctx.settings.set('acknowledgedTemplateUpdates' as any, acks as any)
+  }
+
+  /** Load all acknowledged template update records. */
+  private loadAcknowledgements(): Record<string, number> {
+    const raw = this.ctx.settings.get('acknowledgedTemplateUpdates' as any) as Record<string, number> | undefined
+    return raw ?? {}
+  }
+
+  /**
+   * Check whether a template update notice is still pending (not yet acknowledged).
+   * Returns true only when the template version was never acknowledged for this doc+format.
+   */
+  isTemplateUpdatePending(docKey: string | null, formatId: string, templateVersion: number): boolean {
+    const ack = this.getAcknowledgedTemplateVersion(docKey, formatId)
+    if (ack === undefined) return true  // never acknowledged
+    return ack < templateVersion  // new version, not yet acknowledged
+  }
+
   // ── Format library ───────────────────────────────
 
   /** Get the user-managed format library from plugin settings. */
@@ -360,6 +407,7 @@ export class HeadingNumberingService {
    * Apply a format to the specified scope.
    * Deep-clones the format's settings into a snapshot in the scope store.
    * Editing or deleting the format later does NOT affect the snapshot.
+   * Preserves existing document-level layout overrides.
    */
   applyFormatToScope(
     format: CustomNumberingFormat,
@@ -375,7 +423,31 @@ export class HeadingNumberingService {
       customDefinition: format.settings.levels,
     }
     const formatSource: NumberingFormatSource = { type: 'custom', formatId: format.id, version: format.version ?? 1 }
+
+    // Preserve existing layout overrides when re-applying format to document scope
+    const existingLo = documentKey
+      ? this.scopeStore.documentOverrides[documentKey]?.layoutOverrides
+      : undefined
+
+    // Save the settings with formatSource first
     this.saveHeadingNumberingScoped(scope, documentKey, snapshot, formatSource)
+
+    // If document had layout overrides, restore them after the format re-apply
+    if (existingLo && documentKey) {
+      const newStore = saveLayoutOverrides(this.scopeStore, documentKey, existingLo)
+      this.persistScopeStore(newStore)
+    }
+
+    // Reload document context if current document is affected
+    const currentKey = this.getDocumentKey()
+    if (scope === 'global' || documentKey === currentKey) {
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext.settingsRevision = this.settingsRevision
+      this.lastSnapshot = null
+      this.renderedStates = null
+      this.outlineToolbar.updateAllButtonStates()
+      this.flushRefresh()
+    }
   }
 
   /**
@@ -1449,53 +1521,151 @@ export class HeadingNumberingService {
   /**
    * Save heading layout for the specified scope and level.
    * Automatically clears firstLineIndentEm when textAlign is center or right.
+   * Saves to document-level layoutOverrides, preserving formatSource identity.
    */
   setHeadingLayout(
     level: import('./heading-types').HeadingLevel,
     config: import('./heading-types').HeadingLayoutConfig,
   ): void {
-    const s = this.s
-    const layouts = s.headingLayouts ? { ...s.headingLayouts } : this.defaultLayouts()
-    const levelKey = `h${level}` as keyof import('./heading-types').HeadingLayoutSettings
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+
+    const store = this.scopeStore
+    const existingLo = store.documentOverrides[docKey]?.layoutOverrides
+    const currentLayouts = existingLo?.headingLayouts ? { ...existingLo.headingLayouts } : {}
+    const currentGap = existingLo?.numberTitleSpacing ? { ...existingLo.numberTitleSpacing } : {}
 
     // Auto-clear indent when center or right
-    if (config.textAlign !== 'left') {
-      config = { ...config, firstLineIndentEm: 0 }
+    const effectiveConfig = config.textAlign !== 'left'
+      ? { ...config, firstLineIndentEm: 0 }
+      : { ...config }
+
+    const levelKey = `h${level}`
+    currentLayouts[levelKey] = effectiveConfig
+
+    const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
+      headingLayouts: currentLayouts,
+      numberTitleSpacing: currentGap,
     }
 
-    layouts[levelKey] = { ...config }
-    s.headingLayouts = layouts
+    const newStore = saveLayoutOverrides(this.scopeStore, docKey, layoutOverrides)
+    this.persistScopeStore(newStore)
 
-    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
-    this.adapter.applyHeadingLayouts(layouts)
+    // Immediately apply the effective layouts
+    const effectiveLayouts = this.getEffectiveHeadingLayouts()
+    if (effectiveLayouts) {
+      this.adapter.applyHeadingLayouts(effectiveLayouts)
+    }
   }
 
   /** Copy layout from one level to all subsequent levels. */
   applyLayoutToSubsequentLevels(
     fromLevel: import('./heading-types').HeadingLevel,
   ): void {
-    const s = this.s
-    const layouts = s.headingLayouts ? { ...s.headingLayouts } : this.defaultLayouts()
-    const fromKey = `h${fromLevel}` as keyof import('./heading-types').HeadingLayoutSettings
-    const source = layouts[fromKey]
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+
+    const store = this.scopeStore
+    const existingLo = store.documentOverrides[docKey]?.layoutOverrides
+    const currentLayouts = existingLo?.headingLayouts ? { ...existingLo.headingLayouts } : {}
+    const currentGap = existingLo?.numberTitleSpacing ? { ...existingLo.numberTitleSpacing } : {}
+    const fromKey = `h${fromLevel}`
+    const source = currentLayouts[fromKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
 
     for (const lv of [fromLevel + 1, fromLevel + 2, fromLevel + 3, fromLevel + 4, fromLevel + 5, fromLevel + 6] as import('./heading-types').HeadingLevel[]) {
       if (lv > 6) break
-      const key = `h${lv}` as keyof import('./heading-types').HeadingLayoutSettings
-      layouts[key] = { ...source }
+      const key = `h${lv}`
+      currentLayouts[key] = { ...source }
     }
 
-    s.headingLayouts = layouts
-    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
-    this.adapter.applyHeadingLayouts(layouts)
+    const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
+      headingLayouts: currentLayouts,
+      numberTitleSpacing: currentGap,
+    }
+
+    const newStore = saveLayoutOverrides(this.scopeStore, docKey, layoutOverrides)
+    this.persistScopeStore(newStore)
+
+    const effectiveLayouts = this.getEffectiveHeadingLayouts()
+    if (effectiveLayouts) {
+      this.adapter.applyHeadingLayouts(effectiveLayouts)
+    }
   }
 
-  /** Reset all heading layouts to defaults. */
+  /** Reset all heading layouts to defaults (clear document layout overrides). */
   resetAllHeadingLayouts(): void {
-    const s = this.s
-    s.headingLayouts = this.defaultLayouts()
-    this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
-    this.adapter.applyHeadingLayouts(s.headingLayouts)
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+
+    const newStore = saveLayoutOverrides(this.scopeStore, docKey, undefined)
+    this.persistScopeStore(newStore)
+
+    // Immediately clear layouts from DOM
+    this.adapter.clearHeadingLayouts()
+  }
+
+  /**
+   * Reset layout overrides for the current document, restoring template defaults.
+   * Does NOT affect formatSource — the format remains "applied".
+   */
+  resetLayoutOverrides(): void {
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+
+    const newStore = saveLayoutOverrides(this.scopeStore, docKey, undefined)
+    this.persistScopeStore(newStore)
+
+    // Reload context so effective settings reflect cleared overrides
+    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
+    this.docContext.settingsRevision = this.settingsRevision
+    this.adapter.clearHeadingLayouts()
+  }
+
+  /**
+   * Save number-title spacing overrides to layoutOverrides.
+   * Preserves existing headingLayouts and formatSource.
+   */
+  saveNumberTitleSpacingToLayout(
+    gaps: Partial<Record<import('./heading-types').HeadingLevel, import('./heading-types').NumberTitleSpacing>>,
+  ): void {
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+
+    const store = this.scopeStore
+    const existingLo = store.documentOverrides[docKey]?.layoutOverrides
+    const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
+      headingLayouts: existingLo?.headingLayouts ? { ...existingLo.headingLayouts } : undefined,
+      numberTitleSpacing: { ...gaps },
+    }
+
+    const newStore = saveLayoutOverrides(this.scopeStore, docKey, layoutOverrides)
+    this.persistScopeStore(newStore)
+  }
+
+  /**
+   * Save complete layout overrides from the settings tab draft.
+   * Persists to layoutOverrides and applies to DOM.
+   * Preserves formatSource, formatId/presetId, and version.
+   */
+  saveLayoutOverridesFromDraft(
+    docKey: string,
+    layoutOverrides: import('./heading-types').DocumentLayoutOverrides,
+  ): void {
+    const newStore = saveLayoutOverrides(this.scopeStore, docKey, layoutOverrides)
+    this.persistScopeStore(newStore)
+    this.settingsRevision++
+
+    // Reload document context so effective settings reflect new layout overrides
+    const currentKey = this.getDocumentKey()
+    if (currentKey === docKey) {
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext.settingsRevision = this.settingsRevision
+      // Apply layouts to DOM immediately
+      const effectiveLayouts = this.getEffectiveHeadingLayouts()
+      if (effectiveLayouts) {
+        this.adapter.applyHeadingLayouts(effectiveLayouts)
+      }
+    }
   }
 
   private defaultLayouts(): import('./heading-types').HeadingLayoutSettings {
