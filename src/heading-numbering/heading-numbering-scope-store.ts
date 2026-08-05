@@ -236,6 +236,16 @@ export function resolveEffectiveSettings(
     base.levels = getPresetLevels(base.preset)
   }
 
+  // Apply document-level layout overrides on top of the merged settings.
+  // Layout overrides are independent of format source identity — changing
+  // H1 alignment does not affect which format is "applied".
+  if (documentKey) {
+    const docOverride = store.documentOverrides[documentKey]
+    if (docOverride?.layoutOverrides) {
+      applyLayoutOverridesToSettings(base, docOverride.layoutOverrides)
+    }
+  }
+
   if (!documentKey) {
     return {
       documentKey: null,
@@ -251,6 +261,47 @@ export function resolveEffectiveSettings(
     settingsRevision: override?.updatedAt ?? 0,
     effectiveSettings: base,
     source: override ? 'document' : 'global',
+  }
+}
+
+/**
+ * Apply document-level layout overrides to the effective settings in-place.
+ * Does NOT modify any other field — only headingLayouts and numberTitleSpacing.
+ */
+function applyLayoutOverridesToSettings(
+  settings: HeadingNumberingSettings,
+  overrides: import('./heading-types').DocumentLayoutOverrides,
+): void {
+  // Merge headingLayouts
+  if (overrides.headingLayouts) {
+    if (!settings.headingLayouts) {
+      settings.headingLayouts = {
+        h1: { textAlign: 'left', firstLineIndentEm: 0 },
+        h2: { textAlign: 'left', firstLineIndentEm: 0 },
+        h3: { textAlign: 'left', firstLineIndentEm: 0 },
+        h4: { textAlign: 'left', firstLineIndentEm: 0 },
+        h5: { textAlign: 'left', firstLineIndentEm: 0 },
+        h6: { textAlign: 'left', firstLineIndentEm: 0 },
+      }
+    }
+    for (const [key, config] of Object.entries(overrides.headingLayouts)) {
+      if (config && (key === 'h1' || key === 'h2' || key === 'h3' || key === 'h4' || key === 'h5' || key === 'h6')) {
+        (settings.headingLayouts as any)[key] = { ...config }
+      }
+    }
+  }
+
+  // Merge numberTitleSpacing
+  if (overrides.numberTitleSpacing) {
+    for (const [lvStr, spacing] of Object.entries(overrides.numberTitleSpacing)) {
+      const lv = Number(lvStr) as HeadingLevel
+      if (lv >= 1 && lv <= 6 && settings.levels[lv]) {
+        settings.levels[lv] = {
+          ...settings.levels[lv],
+          numberTitleSpacing: spacing,
+        }
+      }
+    }
   }
 }
 
@@ -273,6 +324,12 @@ export function saveHeadingSettings(
     throw new Error('Document-scoped heading settings require a documentKey.')
   }
 
+  // Preserve existing formatSource unless explicitly provided.
+  // This prevents layout-only changes (saveAndApply, setHeadingLayout, etc.)
+  // from wiping the format identity and causing "已应用" to disappear.
+  const existingOverride = store.documentOverrides[request.documentKey]
+  const formatSource = request.formatSource ?? existingOverride?.formatSource
+
   return {
     ...store,
     documentOverrides: {
@@ -280,10 +337,53 @@ export function saveHeadingSettings(
       [request.documentKey]: {
         updatedAt: Date.now(),
         settings: deepCloneSettings(request.settings),
-        formatSource: request.formatSource,
+        formatSource,
+        // Preserve existing layoutOverrides when not explicitly provided
+        layoutOverrides: existingOverride?.layoutOverrides,
       },
     },
   }
+}
+
+/**
+ * Save only layout overrides for a document, preserving formatSource identity.
+ * Used by setHeadingLayout, resetAllHeadingLayouts, and "restore default layout".
+ * Never touches formatSource or the numbering settings blob.
+ */
+export function saveLayoutOverrides(
+  store: HeadingNumberingScopeStore,
+  documentKey: string,
+  layoutOverrides: import('./heading-types').DocumentLayoutOverrides | undefined,
+): HeadingNumberingScopeStore {
+  const existingOverride = store.documentOverrides[documentKey]
+  return {
+    ...store,
+    documentOverrides: {
+      ...store.documentOverrides,
+      [documentKey]: {
+        updatedAt: Date.now(),
+        settings: existingOverride?.settings ?? store.globalDefault,
+        formatSource: existingOverride?.formatSource,
+        layoutOverrides,
+      },
+    },
+  }
+}
+
+/**
+ * Check whether a document override has any non-default layout overrides.
+ */
+export function hasLayoutOverrides(
+  store: HeadingNumberingScopeStore,
+  documentKey: string | null,
+): boolean {
+  if (!documentKey) return false
+  const override = store.documentOverrides[documentKey]
+  if (!override?.layoutOverrides) return false
+  const lo = override.layoutOverrides
+  const hasHeadingLayouts = lo.headingLayouts && Object.keys(lo.headingLayouts).length > 0
+  const hasGap = lo.numberTitleSpacing && Object.keys(lo.numberTitleSpacing).length > 0
+  return !!(hasHeadingLayouts || hasGap)
 }
 
 /** Remove document override (restore inherit global). */

@@ -2776,7 +2776,7 @@
           }
         },
         "doc.md": {
-          "updatedAt": 1785921265920,
+          "updatedAt": 1785938459382,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
@@ -2820,7 +2820,7 @@
                   ],
                   "withoutLevelOne": []
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               },
               "2": {
                 "enabled": true,
@@ -2880,7 +2880,7 @@
                     }
                   ]
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               },
               "3": {
                 "enabled": true,
@@ -3102,7 +3102,7 @@
                     }
                   ]
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               },
               "6": {
                 "enabled": true,
@@ -3162,7 +3162,7 @@
                     }
                   ]
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               }
             },
             "customDefinition": {
@@ -3360,6 +3360,47 @@
                 "textAlign": "left",
                 "firstLineIndentEm": 0
               }
+            }
+          },
+          "formatSource": {
+            "type": "custom",
+            "formatId": "mseumucm-ft7bbc6j",
+            "version": 1
+          },
+          "layoutOverrides": {
+            "headingLayouts": {
+              "h1": {
+                "textAlign": "center",
+                "firstLineIndentEm": 0
+              },
+              "h2": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h3": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h4": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h5": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h6": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              }
+            },
+            "numberTitleSpacing": {
+              "1": "none",
+              "2": "none",
+              "3": "space",
+              "4": "space",
+              "5": "none",
+              "6": "none"
             }
           }
         },

@@ -462,8 +462,21 @@ export type HeadingSettingsScope = 'global' | 'document'
 export interface HeadingNumberingDocumentOverride {
   updatedAt: number
   settings: HeadingNumberingSettings
-  /** Which format was applied to create this snapshot (informational). */
+  /** Which format was applied to create this snapshot (informational).
+   *  Must remain stable when only layout overrides change. */
   formatSource?: NumberingFormatSource
+  /** Document-level heading layout overrides (alignment, indent, gap).
+   *  Independent of format source identity. Cleared on "restore default layout".
+   *  Preserved across format re-application and template updates. */
+  layoutOverrides?: DocumentLayoutOverrides
+}
+
+/** Document-level layout overrides that don't affect format identity. */
+export interface DocumentLayoutOverrides {
+  /** Per-level alignment and indent. Key: "h1"–"h6". */
+  headingLayouts?: Partial<Record<string, HeadingLayoutConfig>>
+  /** Per-level number-to-title spacing overrides. */
+  numberTitleSpacing?: Partial<Record<HeadingLevel, NumberTitleSpacing>>
 }
 
 /** Persistent store: global default + per-document overrides. */
