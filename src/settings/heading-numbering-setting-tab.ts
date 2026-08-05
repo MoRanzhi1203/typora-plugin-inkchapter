@@ -166,8 +166,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Layout collapse & selection states ──────────
   /** Whether the custom format editor section is expanded. */
   private editorExpanded = false
-  /** Whether the heading range section is expanded. */
-  private headingRangeExpanded = false
   /** Currently selected card key (preset key or format id) for the format summary. */
   private selectedCardKey: string | null = null
   /** Whether the selected card is a system preset (true) or user format (false). */
@@ -424,7 +422,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
-    // Load format library
     this.formatLibrary = this.numberingService.getFormatLibrary()
     this.formatLibrary = migrateFormatLibrary(this.formatLibrary)
 
@@ -433,32 +430,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (!menuLayer) {
       menuLayer = document.createElement('div')
       menuLayer.className = 'inkchapter-menu-layer'
-      menuLayer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:200;'
+      menuLayer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:200;overflow:visible;'
       this.containerEl.appendChild(menuLayer)
     }
 
-    // 1. Document scope section (compact info bar)
-    this.renderScopeBar(s)
+    // === A. Scope Card (current scope + basic settings) ===
+    this.renderScopeCard(s)
 
-    // 2. Basic settings (compact grid: enable + H1 toggle)
-    this.renderCompactBasicSettings(s)
+    // === B. Format Library Card ===
+    this.renderFormatLibraryCard(s)
 
-    // 3. Format library (presets grid + user formats grid)
-    this.renderFormatLibraryUnified(s)
+    // === C. Format Content Settings Card (editor + spacing) ===
+    this.renderCustomEditorCard(s)
 
-    // 4. Current format summary (selected format info + operations)
-    this.renderCurrentFormatSummary(s)
+    // === D. Document-level Advanced Settings Card ===
+    this.renderAdvancedSettingsCard(s)
 
-    // 5. Custom format editor (COLLAPSED by default, expand on edit/new)
-    this.renderCustomEditorCollapsible(s)
-
-    // 6. Heading range (COLLAPSED by default)
-    this.renderHeadingRangeCollapsible()
-
-    // 7. Heading layout (alignment + indent per level)
-    this.renderHeadingLayoutSection()
-
-    // 8. Bottom sticky action bar [Cancel Changes] [Save & Apply]
+    // === Bottom sticky action bar ===
     this.renderBottomActionBar()
   }
 
@@ -1093,178 +1081,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.showDeleteFormatConfirm(format)
   }
 
-  // ── Level range UI ──────────────────────────────
-
-  private renderLevelRangeSection(): void {
-    const d = this.rangeDraft // Use draft, not persisted state
-    const rangeSettings = this.numberingService.getLevelRangeSettings()
-    const docPath = this.numberingService.getActiveFilePath()
-    const effectiveMax = this.numberingService.getEffectiveMaxLevel()
-
-    // ═══════════════════════════════════════════════
-    // Global default range (with 确定/取消 buttons)
-    // ═══════════════════════════════════════════════
-    this.addSetting((setting) => {
-      setting.addName('全局默认范围')
-      setting.addDescription('新文档默认的有效标题级数范围。降低后不影响已有文档的标题，仅新文档生效。修改后点击确定生效。')
-
-      const row = el('div', 'inkchapter-levelrange-global')
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:6px;'
-      setting.containerEl.appendChild(row)
-
-      const select = document.createElement('select')
-      select.style.minWidth = '140px'
-      for (const max of [2, 3, 4, 5, 6] as const) {
-        const opt = document.createElement('option')
-        opt.value = String(max)
-        opt.textContent = `H1 – H${max}`
-        opt.selected = max === d.globalMaxLevel
-        select.appendChild(opt)
-      }
-      row.appendChild(select)
-
-      select.onchange = () => {
-        d.globalMaxLevel = parseInt(select.value, 10) as MaxHeadingLevel
-        this.markGlobalDirty()
-      }
-
-      const confirmBtn = el('button', 'inkchapter-btn', row) as HTMLButtonElement
-      confirmBtn.textContent = '确定'
-      confirmBtn.disabled = !d.globalDirty
-      confirmBtn.onclick = () => this.handleGlobalConfirm(d)
-
-      const cancelBtn = el('button', 'inkchapter-btn', row) as HTMLButtonElement
-      cancelBtn.textContent = '取消'
-      cancelBtn.disabled = !d.globalDirty
-      cancelBtn.onclick = () => this.handleGlobalCancel(select)
-    })
-
-    // ═══════════════════════════════════════════════
-    // Current document range
-    // ═══════════════════════════════════════════════
-    if (docPath) {
-      // Mode buttons (also part of draft)
-      this.addSetting((setting) => {
-        setting.addName('当前文档')
-        setting.addDescription(`当前生效范围：H1 – H${effectiveMax}。可独立设置以覆盖全局。修改后点击确定生效。`)
-
-        const btnRow = el('div', 'inkchapter-levelrange-btnrow')
-        setting.containerEl.appendChild(btnRow)
-
-        const inheritBtn = el('button', 'inkchapter-btn', btnRow)
-        inheritBtn.textContent = '继承全局'
-        inheritBtn.style.marginRight = '8px'
-        if (d.documentMode === 'inherit') inheritBtn.classList.add('inkchapter-btn--active')
-        inheritBtn.onclick = () => {
-          if (d.documentMode === 'inherit') return
-          d.documentMode = 'inherit'
-          d.documentMaxLevel = d.globalMaxLevel
-          this.markDocumentDirty()
-        }
-
-        const customBtn = el('button', 'inkchapter-btn', btnRow)
-        customBtn.textContent = '独立设置'
-        if (d.documentMode === 'custom') customBtn.classList.add('inkchapter-btn--active')
-        customBtn.onclick = () => {
-          if (d.documentMode === 'custom') return
-          d.documentMode = 'custom'
-          d.documentMaxLevel = clampMaxLevel(effectiveMax) as MaxHeadingLevel
-          this.markDocumentDirty()
-        }
-      })
-
-      // Document-level range selector (always visible, read-only when inherit)
-      this.addSetting((setting) => {
-        setting.addName('当前文档范围')
-        setting.addDescription(
-          d.documentMode === 'inherit'
-            ? `继承全局：H1 – H${d.globalMaxLevel}`
-            : '独立设置后仅影响当前文档，不改变全局默认。',
-        )
-
-        const dd = el('div', 'inkchapter-doc-override-controls')
-        setting.containerEl.appendChild(dd)
-
-        const docSelect = document.createElement('select')
-        docSelect.style.minWidth = '140px'
-        for (const max of [2, 3, 4, 5, 6] as const) {
-          const opt = document.createElement('option')
-          opt.value = String(max)
-          opt.textContent = `H1 – H${max}`
-          opt.selected = max === (d.documentMode === 'inherit' ? d.globalMaxLevel : d.documentMaxLevel)
-          docSelect.appendChild(opt)
-        }
-        if (d.documentMode === 'inherit') docSelect.disabled = true
-        dd.appendChild(docSelect)
-
-        docSelect.onchange = () => {
-          if (d.documentMode === 'inherit') return
-          d.documentMaxLevel = parseInt(docSelect.value, 10) as MaxHeadingLevel
-          this.markDocumentDirty()
-        }
-
-        const confirmBtn = el('button', 'inkchapter-btn', dd) as HTMLButtonElement
-        confirmBtn.textContent = '确定'
-        confirmBtn.style.marginLeft = '8px'
-        confirmBtn.disabled = !d.documentDirty
-        confirmBtn.onclick = () => this.handleDocumentConfirm(docPath, d)
-
-        const cancelBtn = el('button', 'inkchapter-btn', dd) as HTMLButtonElement
-        cancelBtn.textContent = '取消'
-        cancelBtn.disabled = !d.documentDirty
-        cancelBtn.onclick = () => this.handleDocumentCancel(docSelect)
-      })
-    } else {
-      this.addSetting((setting) => {
-        setting.addName('当前文档')
-        setting.addDescription('未检测到打开的文档。打开 Markdown 文件后可设置文档独立范围。')
-      })
-    }
-
-    // Heading counts display
-    if (docPath) {
-      try {
-        const counts = this.numberingService.countHeadingsByLevel()
-        const outOfRangeCount = this.numberingService.countOutOfRangeHeadings()
-        const hasHeadings = Object.values(counts).some((c: number) => c > 0)
-        if (hasHeadings) {
-          this.addSetting((setting: any) => {
-            setting.addName('当前文档标题统计')
-            setting.addDescription((descDiv: HTMLElement) => {
-              const parts: string[] = []
-              for (const lv of [1, 2, 3, 4, 5, 6] as const) {
-                if (counts[lv] > 0) parts.push('H' + lv + '\uFF1A' + counts[lv])
-              }
-              const statEl = el('span', undefined, descDiv)
-              statEl.style.cssText = 'font-size:13px;color:var(--text-muted);'
-              statEl.textContent = parts.join('  ')
-              if (outOfRangeCount > 0 && effectiveMax < 6) {
-                const orEl = el('span', undefined, descDiv)
-                orEl.style.cssText = 'display:block;margin-top:4px;color:#e67e22;font-size:13px;'
-                orEl.textContent = '超出范围\uFF1A' + outOfRangeCount
-              }
-            })
-          })
-        }
-      } catch { /* ignore */ }
-    }
-
-    // Effective level display
-    if (effectiveMax < 6) {
-      this.addSetting((setting) => {
-        setting.addName('级别状态')
-        setting.addDescription((descDiv) => {
-          for (const lv of [1, 2, 3, 4, 5, 6] as const) {
-            const tag = el('span', 'inkchapter-level-range-tag', descDiv)
-            tag.textContent = lv > effectiveMax ? `级别${lv} 超出范围` : `级别${lv}`
-            if (lv > effectiveMax) tag.classList.add('inkchapter-level-range-tag--out')
-            descDiv.appendChild(tag)
-            if (lv < 6) descDiv.appendChild(document.createTextNode(' '))
-          }
-        })
-      })
-    }
-  }
 
   // ── Global confirm/cancel ────────────────────────
 
@@ -1405,22 +1221,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Heading layout UI ────────────────────────────
 
-  private renderHeadingLayoutSection(): void {
+  private renderHeadingLayoutSection(container: HTMLElement): void {
     const layouts = this.numberingService.getEffectiveHeadingLayouts()
-    const scope = this.headingScope
-    const isGlobal = scope === 'global'
 
-    this.addSetting((setting) => {
-      setting.addName('标题排版')
-      setting.addDescription(
-        isGlobal
-          ? '设置 H1～H6 各级标题的对齐与缩进（全局默认，新文档继承此设置）'
-          : '设置 H1～H6 各级标题的对齐与缩进（当前文档）'
-      )
-    })
-
-    const container = el('div')
-    container.style.cssText = 'margin-top:8px;'
+    // Header row
+    const headerRow = el('div', 'inkchapter-layout-header-row', container)
+    headerRow.style.cssText = 'display:grid;grid-template-columns:56px minmax(180px,1fr) minmax(100px,120px) minmax(140px,1.5fr);padding:6px 8px;font-size:12px;color:var(--text-muted,#888);font-weight:500;border-bottom:2px solid var(--border-primary,#ddd);gap:4px;'
+    ;['级别', '对齐方式', '首行缩进', '示例'].forEach(t => { const s = el('span','',headerRow); s.textContent = t })
 
     const levels: Array<{ key: string; label: string }> = [
       { key: 'h1', label: 'H1' },
@@ -1432,91 +1239,94 @@ export class HeadingNumberingSettingTab extends SettingTab {
     ]
 
     for (const { key, label } of levels) {
-      const row = el('div')
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;'
-
-      const levelLabel = el('span')
-      levelLabel.textContent = label
-      levelLabel.style.cssText = 'font-weight:600;min-width:24px;font-size:13px;'
-      row.appendChild(levelLabel)
-
       const lvKey = key as keyof import('../heading-numbering/heading-types').HeadingLayoutSettings
       const current = layouts?.[lvKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
 
-      type Mode = 'left' | 'indent-2' | 'center' | 'right'
-      const currentMode: Mode = current.textAlign === 'left' && current.firstLineIndentEm >= 2
-        ? 'indent-2' : current.textAlign as Mode
+      const row = el('div', 'inkchapter-layout-row', container)
+      row.style.cssText = 'display:grid;grid-template-columns:56px minmax(180px,1fr) minmax(100px,120px) minmax(140px,1.5fr);align-items:center;padding:0 8px;border-bottom:1px solid var(--border-primary,#eee);height:44px;gap:4px;'
 
-      const options: Array<{ mode: Mode; label: string }> = [
+      const levelLabel = el('span', 'inkchapter-layout-level', row)
+      levelLabel.textContent = label
+      levelLabel.style.cssText = 'font-weight:600;font-size:13px;'
+
+      // Alignment group (left/center/right as segmented buttons)
+      const alignWrap = el('div', '', row)
+      const alignGroup = el('div', '', alignWrap)
+      alignGroup.style.cssText = 'display:flex;gap:0;border:1px solid var(--window-border,#ccc);border-radius:4px;overflow:hidden;'
+
+      const alignOptions: Array<{ mode: string; label: string }> = [
         { mode: 'left', label: '居左' },
-        { mode: 'indent-2', label: '缩进2字符' },
         { mode: 'center', label: '居中' },
         { mode: 'right', label: '居右' },
       ]
 
-      const btnGroup = el('div')
-      btnGroup.style.cssText = 'display:flex;gap:0;border:1px solid var(--window-border,#ccc);border-radius:4px;overflow:hidden;'
-
-      for (const opt of options) {
+      for (const opt of alignOptions) {
         const btn = el('button') as HTMLButtonElement
         btn.textContent = opt.label
-        btn.style.cssText = [
-          'padding:3px 10px',
-          'border:none',
-          'border-right:1px solid var(--window-border,#ccc)',
-          'background:transparent',
-          'color:var(--text-muted,#666)',
-          'font-size:12px',
-          'cursor:pointer',
-          'transition:background 0.15s,color 0.15s',
-          'white-space:nowrap',
-        ].join(';')
+        btn.classList.add('inkchapter-layout-align-btn')
 
-        if (opt.mode === currentMode) {
-          btn.style.background = 'var(--text-accent,#07a)'
-          btn.style.color = '#fff'
-          btn.style.fontWeight = '600'
-        }
-
-        // Remove right border from last button
-        if (opt === options[options.length - 1]) {
-          btn.style.borderRight = 'none'
-        }
+        const isActive = opt.mode === current.textAlign
+        if (isActive) btn.classList.add('inkchapter-layout-align-btn--active')
 
         btn.onclick = () => {
-          let newConfig: import('../heading-numbering/heading-types').HeadingLayoutConfig
-          switch (opt.mode) {
-            case 'left':
-              newConfig = { textAlign: 'left', firstLineIndentEm: 0 }
-              break
-            case 'indent-2':
-              newConfig = { textAlign: 'left', firstLineIndentEm: 2 }
-              break
-            case 'center':
-              newConfig = { textAlign: 'center', firstLineIndentEm: 0 }
-              break
-            case 'right':
-              newConfig = { textAlign: 'right', firstLineIndentEm: 0 }
-              break
-          }
           const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
+          this.numberingService.setHeadingLayout(lv, { textAlign: opt.mode as 'left' | 'center' | 'right', firstLineIndentEm: 0 })
+          this.rerender()
+        }
+
+        alignGroup.appendChild(btn)
+      }
+
+      // Indent group (none/2chars as segmented buttons)
+      const indentWrap = el('div', '', row)
+      const indentGroup = el('div', '', indentWrap)
+      indentGroup.style.cssText = 'display:flex;gap:0;border:1px solid var(--window-border,#ccc);border-radius:4px;overflow:hidden;'
+
+      const indentOptions: Array<{ mode: string; label: string; indentEm: number }> = [
+        { mode: 'none', label: '无', indentEm: 0 },
+        { mode: 'indent-2', label: '缩进2字符', indentEm: 2 },
+      ]
+
+      const hasIndent = current.firstLineIndentEm >= 2
+      for (const opt of indentOptions) {
+        const btn = el('button') as HTMLButtonElement
+        btn.textContent = opt.label
+        btn.classList.add('inkchapter-layout-indent-btn')
+
+        const isActive = (opt.indentEm === 0 && !hasIndent) || (opt.indentEm === 2 && hasIndent)
+        if (isActive) btn.classList.add('inkchapter-layout-indent-btn--active')
+
+        btn.onclick = () => {
+          const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
+          let newConfig: import('../heading-numbering/heading-types').HeadingLayoutConfig
+          if (opt.indentEm === 2) {
+            newConfig = { textAlign: 'left', firstLineIndentEm: 2 }
+          } else {
+            newConfig = { textAlign: current.textAlign, firstLineIndentEm: 0 }
+          }
           this.numberingService.setHeadingLayout(lv, newConfig)
           this.rerender()
         }
 
-        btnGroup.appendChild(btn)
+        indentGroup.appendChild(btn)
       }
 
-      row.appendChild(btnGroup)
-      container.appendChild(row)
+      // Preview example
+      const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
+      const sampleText = lvNum === 1 ? '第一章 概述' : lvNum === 2 ? '一、 背景' : lvNum === 3 ? '1.1 研究内容' : lvNum === 4 ? '(一) 数据来源' : lvNum === 5 ? '1.1.1 模块' : 'a) 补充'
+      const prevSpan = el('span', 'inkchapter-layout-preview', row)
+      prevSpan.textContent = sampleText
     }
 
-    // Action buttons row
-    const actionsRow = el('div')
-    actionsRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;'
+    // Action buttons at bottom-right
+    const actionsRow = el('div', 'inkchapter-layout-actions', container)
+    actionsRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;justify-content:flex-end;'
 
     const applyToSubsequentBtn = el('button', 'inkchapter-btn') as HTMLButtonElement
-    applyToSubsequentBtn.textContent = '应用到后续级别'
+    const activeLevel = this.findActiveLayoutLevel()
+    applyToSubsequentBtn.textContent = activeLevel 
+      ? `应用 H${activeLevel} 设置到后续级别` 
+      : '应用到后续级别'
     applyToSubsequentBtn.title = '将当前级别的排版设置复制到所有更高级别'
     applyToSubsequentBtn.onclick = () => {
       const activeLevel = this.findActiveLayoutLevel()
@@ -1537,9 +1347,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.rerender()
     }
     actionsRow.appendChild(resetAllBtn)
-
-    container.appendChild(actionsRow)
-    this.containerEl.appendChild(container)
   }
 
   private findActiveLayoutLevel(): import('../heading-numbering/heading-types').HeadingLevel | null {
@@ -2593,9 +2400,63 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /** Render a fixed H1-H6 grid for number-to-title spacing configuration. */
   private renderNumberTitleSpacingGrid(container: HTMLElement, draft: HeadingNumberingSettings): void {
-    const section = el('div', 'inkchapter-template-section', container)
-    const title = el('div', 'inkchapter-format-header', section)
+    const section = el('div', 'inkchapter-spacing-section', container)
+    
+    // Section header with bulk actions
+    const headerRow = el('div', 'inkchapter-section-header', section)
+    const titleWrap = el('div', '', headerRow)
+    const title = el('div', 'inkchapter-section-title', titleWrap)
     title.textContent = '序号与标题间距'
+    const desc = el('div', 'inkchapter-section-desc', titleWrap)
+    desc.textContent = '控制各级标题序号与标题文本之间是否保留一个空格'
+
+    // Bulk action buttons
+    const allNone = HEADING_LEVELS.every(lv => (draft.levels[lv]?.numberTitleSpacing ?? 'space') === 'none')
+    const allSpace = HEADING_LEVELS.every(lv => (draft.levels[lv]?.numberTitleSpacing ?? 'space') === 'space')
+    
+    const bulkRow = el('div', 'inkchapter-spacing-bulk-row', headerRow)
+    const noneAllBtn = el('button', 'inkchapter-spacing-bulk-btn', bulkRow) as HTMLButtonElement
+    noneAllBtn.textContent = '全部无间距'
+    if (allNone) noneAllBtn.classList.add('inkchapter-spacing-bulk-btn--active')
+    noneAllBtn.onclick = () => {
+      for (const lv of HEADING_LEVELS) {
+        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'none'
+      }
+      if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
+      this.rerender()
+    }
+
+    const spaceAllBtn = el('button', 'inkchapter-spacing-bulk-btn', bulkRow) as HTMLButtonElement
+    spaceAllBtn.textContent = '全部一个空格'
+    if (allSpace) spaceAllBtn.classList.add('inkchapter-spacing-bulk-btn--active')
+    spaceAllBtn.onclick = () => {
+      for (const lv of HEADING_LEVELS) {
+        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'space'
+      }
+      if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
+      this.rerender()
+    }
+
+    // Compute real preview labels using numbering engine
+    const sampleHeadings: HeadingDescriptor[] = HEADING_LEVELS.map(lv => ({
+      key: `sample-h${lv}`,
+      level: lv,
+      text: lv === 1 ? '摘要' : lv === 2 ? '背景' : lv === 3 ? '研究内容' : lv === 4 ? '数据来源' : lv === 5 ? '模块说明' : '补充说明',
+    }))
+    let previewLabels: Record<number, string> = {}
+    try {
+      const result = computeHeadingNumbering(sampleHeadings, draft)
+      for (const r of result) {
+        previewLabels[r.level] = r.label
+      }
+    } catch {
+      // Fallback: simple H1/H2/etc
+      for (const lv of HEADING_LEVELS) previewLabels[lv] = `H${lv}`
+    }
+
+    // Column header
+    const colHeader = el('div', 'inkchapter-spacing-header-row', section)
+    ;['级别', '间距设置', '实际效果'].forEach(t => { const s = el('span','',colHeader); s.textContent = t })
 
     for (const lv of HEADING_LEVELS) {
       const style = draft.levels[lv]
@@ -2603,34 +2464,44 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const currentGap = style.numberTitleSpacing ?? 'space'
 
       const row = el('div', 'inkchapter-spacing-row', section)
-      row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:4px 0;'
 
-      const levelLabel = el('span', '', row)
+      // Disabled state
+      if (!style.enabled) {
+        row.classList.add('inkchapter-spacing-row--disabled')
+      }
+
+      const levelLabel = el('span', 'inkchapter-spacing-level', row)
       levelLabel.textContent = `H${lv}`
-      levelLabel.style.cssText = 'font-weight:600;width:30px;'
 
-      // Radio group for this level
-      const group = el('div', '', row)
-      group.setAttribute('role', 'radiogroup')
-      group.setAttribute('aria-label', `H${lv} 序号与标题间距`)
-      group.style.cssText = 'display:flex;gap:16px;margin-right:24px;'
+      // Segmented control: 无间距 | 一个空格
+      const segWrap = el('div', '', row)
+      const segmented = el('div', 'inkchapter-spacing-segmented', segWrap)
 
-      // Draft-only onChange: modify the draft's level style, never the service
-      const capLv = lv
-      this.addSpacingRadio(group, 'none', '无间距', currentGap, lv, () => {
-        const st = draft.levels[capLv]
-        if (st) st.numberTitleSpacing = 'none'
-      })
-      this.addSpacingRadio(group, 'space', '一个空格', currentGap, lv, () => {
-        const st = draft.levels[capLv]
-        if (st) st.numberTitleSpacing = 'space'
-      })
+      const noneBtn = el('button', 'inkchapter-spacing-seg-btn', segmented) as HTMLButtonElement
+      noneBtn.textContent = '无间距'
+      if (currentGap === 'none') noneBtn.classList.add('inkchapter-spacing-seg-btn--active')
+      noneBtn.onclick = () => {
+        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'none'
+        if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
+        this.rerender()
+      }
 
-      // Preview
-      const prevSpan = el('span', '', row)
-      prevSpan.style.cssText = 'font-size:12px;color:var(--text-muted,#888);'
+      const spaceBtn = el('button', 'inkchapter-spacing-seg-btn', segmented) as HTMLButtonElement
+      spaceBtn.textContent = '一个空格'
+      if (currentGap === 'space') spaceBtn.classList.add('inkchapter-spacing-seg-btn--active')
+      spaceBtn.onclick = () => {
+        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'space'
+        if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
+        this.rerender()
+      }
+
+      // Preview: real label + gap + sample text
+      const prevSpan = el('span', 'inkchapter-spacing-preview', row)
+      const label = previewLabels[lv] || `H${lv}`
       const gap = currentGap === 'space' ? ' ' : ''
-      prevSpan.textContent = `示例：H${lv}${gap}示例标题`
+      const sampleTexts: Record<number, string> = { 1: '摘要', 2: '背景', 3: '研究内容', 4: '数据来源', 5: '模块说明', 6: '补充说明' }
+      const sampleText = style.enabled ? `${label}${gap}${sampleTexts[lv] || '标题'}` : `(该级已关闭)`
+      prevSpan.textContent = sampleText
     }
   }
 
@@ -2781,66 +2652,58 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  private renderScopeBar(s: HeadingNumberingSettings): void {
+  private renderScopeCard(s: HeadingNumberingSettings): void {
     const docPath = this.numberingService.getActiveFilePath()
     const docKey = this.numberingService.getDocumentKey()
     const source = this.numberingService.getSettingsSource()
 
-    const bar = el('div', 'inkchapter-scope-bar--compact', this.containerEl)
+    const card = el('div', 'inkchapter-card', this.containerEl)
+    const body = el('div', 'inkchapter-card-body', card)
+    body.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:12px 16px;'
 
-    // ── Row 1: Document info ──────────────────────────
-    const docInfoRow = el('div', 'inkchapter-scope-info', bar)
-
-    const docEl = el('span', 'inkchapter-scope-doc', docInfoRow)
+    // ── Row 1: Document info ──
+    const infoRow = el('div', 'inkchapter-scope-info-row', body)
     const filename = docPath ? (docPath.split(/[/\\]/).pop() ?? docPath) : null
+    const docEl = el('span', 'inkchapter-scope-doc-name', infoRow)
     docEl.textContent = filename ? `当前文档：${filename}` : '未打开文档'
-    if (docPath) {
-      docEl.title = docPath
+    if (docPath) docEl.title = docPath
+
+    const badge = el('span', 'inkchapter-scope-status-badge', infoRow)
+    badge.textContent = source === 'document' ? '使用文档独立设置' : '继承全局默认'
+
+    // ── Row 2: Scope segmented control + restore ──
+    const controlsRow = el('div', 'inkchapter-scope-controls-row', body)
+
+    const segmented = el('div', 'inkchapter-scope-segmented', controlsRow)
+
+    const docBtn = el('button', 'inkchapter-scope-segmented-btn', segmented) as HTMLButtonElement
+    docBtn.textContent = '当前文档'
+    if (this.headingScope === 'document') docBtn.classList.add('inkchapter-scope-segmented-btn--active')
+    if (!docPath) docBtn.disabled = true
+    docBtn.onclick = () => {
+      if (this.headingScope === 'document') return
+      this.headingScope = 'document'
+      const newSettings = this.numberingService.getEffectiveSettings()
+      this.headingDraft = deepCloneSettings(newSettings)
+      this.headingDraftOriginal = deepCloneSettings(newSettings)
+      this.rerender()
     }
 
-    const statusEl = el('span', 'inkchapter-scope-status', docInfoRow)
-    statusEl.textContent = source === 'document' ? '状态：使用文档独立设置' : '状态：继承全局默认'
-
-    // ── Row 2: Scope radio + restore button ────────────
-    const scopeRow = el('div', 'inkchapter-scope-radios', bar)
-
-    // Left group: scope label + radios
-    const radioGroup = el('div', 'inkchapter-scope-radio-group', scopeRow)
-    const scopeLabel = el('span', 'inkchapter-scope-radio-label', radioGroup)
-    scopeLabel.textContent = '作用范围：'
-
-    const buildRadio = (value: HeadingSettingsScope, label: string, disabled: boolean) => {
-      const lbl = el('label', '', radioGroup)
-      if (disabled) lbl.style.opacity = '0.5'
-      const radio = document.createElement('input')
-      radio.type = 'radio'
-      radio.name = 'heading-scope-compact'
-      radio.value = value
-      radio.checked = this.headingScope === value
-      radio.disabled = disabled
-      radio.onchange = () => {
-        if (this.headingScope === value) return
-        this.headingScope = value
-        const newSettings = value === 'global'
-          ? this.numberingService.getScopeStore().globalDefault
-          : this.numberingService.getEffectiveSettings()
-        this.headingDraft = deepCloneSettings(newSettings)
-        this.headingDraftOriginal = deepCloneSettings(newSettings)
-        this.rerender()
-      }
-      lbl.appendChild(radio)
-      const span = document.createElement('span')
-      span.textContent = label
-      lbl.appendChild(span)
-      return lbl
+    const globalBtn = el('button', 'inkchapter-scope-segmented-btn', segmented) as HTMLButtonElement
+    globalBtn.textContent = '全局默认'
+    if (this.headingScope === 'global') globalBtn.classList.add('inkchapter-scope-segmented-btn--active')
+    globalBtn.onclick = () => {
+      if (this.headingScope === 'global') return
+      this.headingScope = 'global'
+      const newSettings = this.numberingService.getScopeStore().globalDefault
+      this.headingDraft = deepCloneSettings(newSettings)
+      this.headingDraftOriginal = deepCloneSettings(newSettings)
+      this.rerender()
     }
 
-    radioGroup.appendChild(buildRadio('document', '当前文档', !docPath))
-    radioGroup.appendChild(buildRadio('global', '全局默认', false))
-
-    // Right: Restore inherit button
+    // Restore button (only when document override exists)
     if (source === 'document') {
-      const restoreBtn = el('button', 'inkchapter-btn inkchapter-btn--small', scopeRow)
+      const restoreBtn = el('button', 'inkchapter-scope-restore-btn', controlsRow)
       restoreBtn.textContent = '恢复继承'
       restoreBtn.title = '恢复继承全局默认设置'
       restoreBtn.onclick = () => {
@@ -2851,15 +2714,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
         Notice.info('已恢复继承全局默认')
       }
     }
-  }
 
-  /** Compact two-column grid for enable + H1 toggle. */
-  private renderCompactBasicSettings(s: HeadingNumberingSettings): void {
-    const grid = el('div', 'inkchapter-basic-settings-grid', this.containerEl)
+    // ── Basic checks (enable + H1 toggle) ──
+    const checksRow = el('div', 'inkchapter-basic-checks', body)
+    checksRow.style.cssText = 'display:flex;gap:20px;padding:4px 0 0;font-size:13px;'
 
-    // Enable toggle
-    const enableItem = el('div', 'inkchapter-basic-setting-item', grid)
-    const enableLabel = el('label', '', enableItem)
+    const enableLabel = el('label', '', checksRow)
     const enableCb = document.createElement('input')
     enableCb.type = 'checkbox'
     enableCb.checked = s.enabled
@@ -2871,9 +2731,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     enableLabel.appendChild(enableCb)
     enableLabel.appendChild(document.createTextNode(' 启用标题编号'))
 
-    // H1 toggle
-    const h1Item = el('div', 'inkchapter-basic-setting-item', grid)
-    const h1Label = el('label', '', h1Item)
+    const h1Label = el('label', '', checksRow)
     const h1Cb = document.createElement('input')
     h1Cb.type = 'checkbox'
     this.globalH1Toggle = h1Cb
@@ -2893,13 +2751,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Unified format library grid ──────────────────
 
-  private renderFormatLibraryUnified(s: HeadingNumberingSettings): void {
-    // Title row
-    const titleRow = el('div', 'inkchapter-format-library-title-row', this.containerEl)
-    const title = el('span', 'inkchapter-format-library-title', titleRow)
+  private renderFormatLibraryCard(s: HeadingNumberingSettings): void {
+    const card = el('div', 'inkchapter-card', this.containerEl)
+    const header = el('div', 'inkchapter-card-header', card)
+    const titleRow = el('div', 'inkchapter-library-title-row', header)
+    const title = el('div', 'inkchapter-library-title', titleRow)
     title.textContent = '编号格式库'
+
     const manageBtn = el('button', 'inkchapter-btn inkchapter-btn--small', titleRow)
-    manageBtn.textContent = '管理格式库'
+    manageBtn.textContent = this.managePanelOpen ? '收起管理' : '管理格式库'
     manageBtn.onclick = () => {
       this.cancelDrag()
       this.managePanelOpen = !this.managePanelOpen
@@ -2908,10 +2768,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // Management panel
     if (this.managePanelOpen) {
-      this.renderManageLibraryPanel()
+      this.renderManageLibraryPanel(card)
     }
 
-    const grid = el('div', 'inkchapter-format-grid', this.containerEl)
+    const grid = el('div', 'inkchapter-format-grid', card)
 
     // System presets (only visible ones)
     for (const card of PRESET_CARDS) {
@@ -3445,8 +3305,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Management panel ─────────────────────────────
 
-  private renderManageLibraryPanel(): void {
-    const panel = el('div', 'inkchapter-manage-panel', this.containerEl)
+  private renderManageLibraryPanel(parentEl?: HTMLElement): void {
+    const container = parentEl ?? this.containerEl
+    const panel = el('div', 'inkchapter-manage-panel', container)
     panel.style.cssText = 'margin:0 0 12px;padding:12px;background:var(--bg-secondary,#f9f9f9);border:1px solid var(--border-color,#ddd);border-radius:8px;'
 
     // System presets section
@@ -3890,25 +3751,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  // ── Collapsible custom editor ────────────────────
+  // ── Custom editor card ───────────────────────────
 
-  private renderCustomEditorCollapsible(s: HeadingNumberingSettings): void {
+  private renderCustomEditorCard(s: HeadingNumberingSettings): void {
     const isEditing = this.selectedFormatId !== null || s.preset === 'custom'
 
-    const section = el('div', 'inkchapter-collapsible-section', this.containerEl)
-    if (!this.editorExpanded) {
-      section.classList.add('inkchapter-collapsed')
-    } else {
-      section.classList.add('inkchapter-expanded')
-    }
-
-    // Header
-    const header = el('div', 'inkchapter-collapsible-header', section)
+    const card = el('div', 'inkchapter-card', this.containerEl)
+    const header = el('div', 'inkchapter-card-header', card)
     header.setAttribute('tabindex', '0')
-    const title = el('span', 'inkchapter-collapsible-title', header)
-    title.textContent = '自定义格式编辑器'
-    const arrow = el('span', 'inkchapter-collapsible-arrow', header)
-    arrow.textContent = '▼'
+    const title = el('div', 'inkchapter-card-title', header)
+    title.textContent = '格式内容设置'
+    const desc = el('div', 'inkchapter-card-desc', header)
+    desc.textContent = '编辑当前格式的编号组合、标签、行为与标题间距'
 
     header.onclick = () => {
       this.editorExpanded = !this.editorExpanded
@@ -3922,8 +3776,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); header.click() }
     }
 
-    const body = el('div', 'inkchapter-collapsible-body', section)
     if (!this.editorExpanded) return
+
+    const body = el('div', 'inkchapter-card-body', card)
 
     if (!isEditing) {
       const hint = el('div', '', body)
@@ -4003,7 +3858,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.updatePreview()
     this.miniPreviewEls.clear()
 
-    // ── H1-H6 number-to-title spacing grid ──
+    // Section divider before spacing
+    const spacingDivider = el('div', 'inkchapter-section-divider', body)
+    // Spacing grid
     this.renderNumberTitleSpacingGrid(body, draft)
   }
 
@@ -4349,64 +4206,193 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
-  // ── Collapsible heading range ────────────────────
+  // ── Advanced settings card ───────────────────────
 
-  private renderHeadingRangeCollapsible(): void {
-    const section = el('div', 'inkchapter-collapsible-section', this.containerEl)
-    if (!this.headingRangeExpanded) {
-      section.classList.add('inkchapter-collapsed')
-    } else {
-      section.classList.add('inkchapter-expanded')
-    }
+  private renderAdvancedSettingsCard(s: HeadingNumberingSettings): void {
+    const card = el('div', 'inkchapter-card', this.containerEl)
+    const header = el('div', 'inkchapter-card-header', card)
+    const title = el('div', 'inkchapter-card-title', header)
+    title.textContent = '文档级高级设置'
+    const desc = el('div', 'inkchapter-card-desc', header)
+    desc.textContent = '标题有效级数范围和标题排版方式'
 
-    const header = el('div', 'inkchapter-collapsible-header', section)
-    header.setAttribute('tabindex', '0')
-    const title = el('span', 'inkchapter-collapsible-title', header)
-    title.textContent = '标题有效级数范围'
+    const body = el('div', 'inkchapter-card-body', card)
 
-    const arrow = el('span', 'inkchapter-collapsible-arrow', header)
-    arrow.textContent = '▼'
+    // Sub-section: Heading Range
+    this.renderHeadingRangeSubCards(body)
 
-    header.onclick = () => {
-      this.headingRangeExpanded = !this.headingRangeExpanded
-      this.rerender()
-    }
-    header.onkeydown = (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        header.click()
-      }
-    }
+    // Divider
+    const divider = el('div', '', body)
+    divider.style.cssText = 'height:1px;background:var(--border-primary,#eee);margin:16px 0;'
 
-    const body = el('div', 'inkchapter-collapsible-body', section)
-
-    if (!this.headingRangeExpanded) return
-
-    // Reuse existing level range rendering
-    this.renderLevelRangeSectionInto(body)
+    // Sub-section: Heading Layout
+    this.renderHeadingLayoutSection(body)
   }
 
-  /** Render level range content into a given container. */
-  private renderLevelRangeSectionInto(container: HTMLElement): void {
-    // Capture current child count; render into containerEl; move new children to target
-    const beforeCount = this.containerEl.childNodes.length
-    this.renderLevelRangeSection()
-    // Move newly appended children (after beforeCount) into the target container
-    const children = Array.from(this.containerEl.childNodes)
-    for (let i = beforeCount; i < children.length; i++) {
-      container.appendChild(children[i])
+  // ── Heading range sub-cards ──────────────────────
+
+  private renderHeadingRangeSubCards(container: HTMLElement): void {
+    const section = el('div', 'inkchapter-range-section', container)
+    const secTitle = el('div', 'inkchapter-section-title', section)
+    secTitle.textContent = '标题有效级数范围'
+    const secDesc = el('div', 'inkchapter-section-desc', section)
+    secDesc.textContent = '设置文档中参与编号的标题级别范围'
+
+    // ── Global default range ──
+    const d = this.rangeDraft
+
+    const globalLabel = el('div', 'inkchapter-range-setting-desc', section)
+    globalLabel.textContent = '全局默认范围 — 新文档默认使用的标题级数范围'
+
+    const globalRow = el('div', 'inkchapter-range-setting-row', section)
+    const globalTag = el('span', 'inkchapter-range-setting-label', globalRow)
+    globalTag.textContent = '全局默认范围'
+
+    const globalControls = el('div', 'inkchapter-range-controls', globalRow)
+    const globalSelect = document.createElement('select')
+    for (const max of [2, 3, 4, 5, 6] as const) {
+      const opt = document.createElement('option')
+      opt.value = String(max)
+      opt.textContent = `H1 – H${max}`
+      opt.selected = max === d.globalMaxLevel
+      globalSelect.appendChild(opt)
     }
+    globalSelect.onchange = () => {
+      d.globalMaxLevel = parseInt(globalSelect.value, 10) as MaxHeadingLevel
+      this.markGlobalDirty()
+    }
+    globalControls.appendChild(globalSelect)
+
+    const globalConfirmBtn = el('button', 'inkchapter-btn', globalControls) as HTMLButtonElement
+    globalConfirmBtn.textContent = '确定'
+    globalConfirmBtn.disabled = !d.globalDirty
+    globalConfirmBtn.onclick = () => this.handleGlobalConfirm(d)
+
+    const globalCancelBtn = el('button', 'inkchapter-btn', globalControls) as HTMLButtonElement
+    globalCancelBtn.textContent = '取消'
+    globalCancelBtn.disabled = !d.globalDirty
+    globalCancelBtn.onclick = () => this.handleGlobalCancel(globalSelect)
+
+    // ── Document range ──
+    const docPath = this.numberingService.getActiveFilePath()
+    const effectiveMax = this.numberingService.getEffectiveMaxLevel()
+
+    const docLabel = el('div', 'inkchapter-range-setting-desc', section)
+    docLabel.textContent = '当前文档范围 — 覆盖全局设置的文档独立范围'
+    docLabel.style.marginTop = '12px'
+
+    if (!docPath) {
+      const docRow = el('div', 'inkchapter-range-setting-row', section)
+      const docTag = el('span', 'inkchapter-range-setting-label', docRow)
+      docTag.textContent = '当前文档'
+      const status = el('span', 'inkchapter-range-setting-status', docRow)
+      status.textContent = '未检测到打开的文档'
+      return
+    }
+
+    const docRow = el('div', 'inkchapter-range-setting-row', section)
+    const docTag = el('span', 'inkchapter-range-setting-label', docRow)
+    docTag.textContent = '当前文档'
+
+    // Mode segmented control
+    const docSeg = el('div', 'inkchapter-range-doc-segmented', docRow)
+    const inheritBtn = el('button', 'inkchapter-range-doc-seg-btn', docSeg) as HTMLButtonElement
+    inheritBtn.textContent = '继承全局'
+    if (d.documentMode === 'inherit') inheritBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    inheritBtn.onclick = () => {
+      if (d.documentMode === 'inherit') return
+      d.documentMode = 'inherit'
+      d.documentMaxLevel = d.globalMaxLevel
+      this.markDocumentDirty()
+    }
+    const customBtn = el('button', 'inkchapter-range-doc-seg-btn', docSeg) as HTMLButtonElement
+    customBtn.textContent = '独立设置'
+    if (d.documentMode === 'custom') customBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    customBtn.onclick = () => {
+      if (d.documentMode === 'custom') return
+      d.documentMode = 'custom'
+      d.documentMaxLevel = clampMaxLevel(effectiveMax) as MaxHeadingLevel
+      this.markDocumentDirty()
+    }
+
+    // Status
+    const status = el('span', 'inkchapter-range-setting-status', docRow)
+    status.textContent = `当前生效：H1 – H${effectiveMax}`
+
+    // Doc range selector row
+    const docSelRow = el('div', 'inkchapter-range-setting-row', section)
+    const docSelLabel = el('span', 'inkchapter-range-setting-label', docSelRow)
+    docSelLabel.textContent = ''
+
+    const docControls = el('div', 'inkchapter-range-controls', docSelRow)
+    const docSelect = document.createElement('select')
+    for (const max of [2, 3, 4, 5, 6] as const) {
+      const opt = document.createElement('option')
+      opt.value = String(max)
+      opt.textContent = `H1 – H${max}`
+      opt.selected = max === (d.documentMode === 'inherit' ? d.globalMaxLevel : d.documentMaxLevel)
+      docSelect.appendChild(opt)
+    }
+    if (d.documentMode === 'inherit') docSelect.disabled = true
+    docSelect.onchange = () => {
+      if (d.documentMode === 'inherit') return
+      d.documentMaxLevel = parseInt(docSelect.value, 10) as MaxHeadingLevel
+      this.markDocumentDirty()
+    }
+    docControls.appendChild(docSelect)
+
+    const docConfirmBtn = el('button', 'inkchapter-btn', docControls) as HTMLButtonElement
+    docConfirmBtn.textContent = '确定'
+    docConfirmBtn.disabled = !d.documentDirty
+    docConfirmBtn.onclick = () => this.handleDocumentConfirm(docPath, d)
+
+    const docCancelBtn = el('button', 'inkchapter-btn', docControls) as HTMLButtonElement
+    docCancelBtn.textContent = '取消'
+    docCancelBtn.disabled = !d.documentDirty
+    docCancelBtn.onclick = () => this.handleDocumentCancel(docSelect)
+
+    // Heading stats - compact single line
+    try {
+      const counts = this.numberingService.countHeadingsByLevel()
+      const outOfRangeCount = this.numberingService.countOutOfRangeHeadings()
+      const hasHeadings = Object.values(counts).some((c: number) => c > 0)
+      if (hasHeadings) {
+        const statsRow = el('div', 'inkchapter-range-stats', section)
+        const label = el('span', '', statsRow)
+        label.textContent = '标题统计：'
+        for (let lv = 1; lv <= 6; lv++) {
+          const item = el('span', 'inkchapter-range-stat-item', statsRow)
+          item.textContent = `H${lv} ${counts[lv] as number || 0}`
+          if (lv < 6) {
+            const dot = el('span', 'inkchapter-range-stat-dot', statsRow)
+          }
+        }
+        if (outOfRangeCount > 0 && effectiveMax < 6) {
+          const orEl = el('div', 'inkchapter-range-out-of-range', section)
+          orEl.textContent = `超出范围：${outOfRangeCount} 个标题`
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   // ── Bottom sticky action bar ─────────────────────
 
   private renderBottomActionBar(): void {
-    const docPath = this.numberingService.getActiveFilePath()
     const docKey = this.numberingService.getDocumentKey()
 
     const bar = el('div', 'inkchapter-settings-actions', this.containerEl)
 
-    const cancelBtn = el('button', 'inkchapter-btn', bar)
+    // Left side: unsaved hint
+    const hasDraft = this.headingDraft != null || this.formatDraft != null
+    if (hasDraft) {
+      const hint = el('div', 'inkchapter-settings-unsaved-hint', bar)
+      hint.textContent = '有未保存的更改'
+    }
+
+    // Right side: buttons
+    const right = el('div', 'inkchapter-settings-actions-right', bar)
+
+    const cancelBtn = el('button', 'inkchapter-btn', right)
     cancelBtn.textContent = '取消更改'
     cancelBtn.onclick = () => {
       if (this.headingDraft) {
@@ -4420,7 +4406,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
-    const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', bar)
+    const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', right)
     saveBtn.textContent = '保存并应用'
     saveBtn.onclick = () => {
       // Save format draft if editing
