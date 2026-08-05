@@ -949,25 +949,35 @@
 // ══════════════════════════════════════════════════════════
 // Heading layout (alignment + indent) — body-only, not outline
 // ══════════════════════════════════════════════════════════
+//
+// Indent strategy: padding-inline-start on the heading root element.
+// padding-inline-start is NOT inheritable, so Typora focus/edit child
+// elements (e.g., md-plain, md-expand, intermediary block wrappers)
+// cannot pick up a second indent.  The ::before pseudo-element (number)
+// participates in the heading's content area and shifts with the padding.
+//
+// text-indent was previously used but caused double-indent during focus
+// because the property IS inheritable by child block containers.
 
 #write .inkchapter-heading-align-left {
   text-align: left;
-  text-indent: 0;
+  padding-inline-start: 0;
 }
 
 #write .inkchapter-heading-indent-2 {
   text-align: left;
-  text-indent: 2em;
+  padding-inline-start: 2em;
+  box-sizing: border-box;
 }
 
 #write .inkchapter-heading-align-center {
   text-align: center;
-  text-indent: 0;
+  padding-inline-start: 0;
 }
 
 #write .inkchapter-heading-align-right {
   text-align: right;
-  text-indent: 0;
+  padding-inline-start: 0;
 }
 
 // ── Outline sidebar numbering ────────────────────────
