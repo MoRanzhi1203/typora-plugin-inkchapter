@@ -1136,762 +1136,835 @@
 }
 
 // ══════════════════════════════════════════════════════════
-// Settings page layout v2 — compact, collapsible, responsive
+// Settings page layout v3 — compact, clear sections, reduced nesting
 // ══════════════════════════════════════════════════════════
 
-// ── Section spacing ─────────────────────────────────────
-.inkchapter-settings-section {
-  margin-bottom: 20px;
-}
-
-// ── Compact scope bar ──────────────────────────────────
-.inkchapter-scope-bar--compact {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  margin-bottom: 20px;
+// ── Card base ─────────────────────────────────────────
+.inkchapter-card {
   border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  background: var(--background-secondary, #f8f8f8);
-  font-size: 13px;
-}
-
-// ── Row 1: Document info ──────────────────────────
-.inkchapter-scope-bar--compact .inkchapter-scope-info {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  min-width: 0;
-}
-
-.inkchapter-scope-bar--compact .inkchapter-scope-doc {
-  color: var(--text-normal, #333);
-  font-weight: 500;
-  white-space: nowrap;
+  border-radius: 8px;
+  background: var(--background-primary, #fff);
+  margin-bottom: 16px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 280px;
 }
-
-.inkchapter-scope-bar--compact .inkchapter-scope-status {
-  color: var(--text-muted, #888);
-  white-space: nowrap;
-}
-
-// ── Row 2: Scope controls ─────────────────────────
-.inkchapter-scope-bar--compact .inkchapter-scope-radios {
+.inkchapter-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  padding: 14px 16px 0;
+  cursor: default;
+  &[tabindex] { cursor: pointer; }
 }
-
-.inkchapter-scope-bar--compact .inkchapter-scope-radio-group {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  white-space: nowrap;
-}
-
-.inkchapter-scope-bar--compact .inkchapter-scope-radio-label {
+.inkchapter-card-title {
   font-weight: 600;
+  font-size: 15px;
+  color: var(--text-normal, #333);
+}
+.inkchapter-card-desc {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  margin-top: 2px;
+}
+.inkchapter-card-body {
+  padding: 12px 16px 16px;
 }
 
-.inkchapter-scope-bar--compact .inkchapter-scope-radio-group label {
-  cursor: pointer;
+// ── Section header (used inside cards for sub-sections) ──
+.inkchapter-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.inkchapter-section-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-normal, #333);
+}
+.inkchapter-section-desc {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  margin-bottom: 8px;
+}
+.inkchapter-section-divider {
+  height: 1px;
+  background: var(--border-primary, #eee);
+  margin: 14px 0;
+}
+
+// ── Scope card (A) ────────────────────────────────────
+.inkchapter-scope-info-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 16px;
   font-size: 13px;
+  min-width: 0;
+  margin-bottom: 8px;
 }
-
-// ── Responsive: narrow window wrap ────────────────
-@media (max-width: 760px) {
-  .inkchapter-scope-bar--compact .inkchapter-scope-info {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .inkchapter-scope-bar--compact .inkchapter-scope-radios {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .inkchapter-scope-bar--compact .inkchapter-scope-radio-group {
-    flex-wrap: wrap;
-  }
-}
-
-// ── Basic settings grid ────────────────────────────────
-.inkchapter-basic-settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.inkchapter-basic-setting-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  background: var(--background-secondary, #f8f8f8);
-}
-
-.inkchapter-basic-setting-item label {
-  font-size: 13px;
+.inkchapter-scope-doc-name {
   font-weight: 500;
+  color: var(--text-normal, #333);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.inkchapter-scope-status-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--background-modifier-border, #f0f0f0);
+  color: var(--text-muted, #666);
+  white-space: nowrap;
+  line-height: 20px;
+}
+.inkchapter-scope-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.inkchapter-scope-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 32px;
+}
+.inkchapter-scope-segmented-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #666);
   cursor: pointer;
-  user-select: none;
+  transition: background 0.15s, color 0.15s;
+  border-right: 1px solid var(--border-primary, #ddd);
+  white-space: nowrap;
+  line-height: 32px;
+  &:last-child { border-right: none; }
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--active {
+    background: var(--text-accent, #07a);
+    color: #fff;
+    font-weight: 500;
+  }
+  &:disabled { opacity: 0.45; cursor: not-allowed; }
+}
+.inkchapter-scope-restore-btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 4px;
+  background: var(--background-primary, #fff);
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  &:hover { background: var(--background-modifier-hover, #eee); }
 }
 
-// ── Unified format grid ────────────────────────────────
+// Basic checks row
+.inkchapter-basic-checks {
+  display: flex;
+  gap: 20px;
+  padding: 4px 0 0;
+  font-size: 13px;
+  label { cursor: pointer; display: flex; align-items: center; gap: 5px; user-select: none; }
+  input[type="checkbox"] { margin: 0; }
+}
+
+// ── Format library card (B) ───────────────────────────
+.inkchapter-library-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.inkchapter-library-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-normal, #333);
+}
 .inkchapter-format-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
 }
-
 .inkchapter-format-card {
-  padding: 14px;
+  padding: 12px;
   border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--background-secondary, #f8f8f8);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
   user-select: none;
   outline: none;
   display: flex;
   flex-direction: column;
   position: relative;
+  min-height: 156px;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &:focus-visible { box-shadow: 0 0 0 2px var(--text-accent, #07a); }
+  &--selected {
+    background: rgba(7, 119, 170, 0.06);
+    border-color: var(--text-accent, #07a);
+    box-shadow: 0 0 0 1px var(--text-accent, #07a);
+  }
+  &--add {
+    border-style: dashed;
+    border-color: var(--text-muted, #999);
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted, #888);
+    font-size: 14px;
+    cursor: pointer;
+    min-height: 156px;
+    &:hover { border-color: var(--text-accent, #07a); color: var(--text-accent, #07a); background: rgba(7,119,170,0.03); }
+  }
 }
-
-.inkchapter-format-card:hover {
-  background: var(--background-modifier-hover, #eee);
-}
-
-.inkchapter-format-card:focus-visible {
-  box-shadow: 0 0 0 2px var(--text-accent, #07a);
-}
-
-.inkchapter-format-card--selected {
-  background: rgba(7, 119, 170, 0.08);
-  border-color: var(--text-accent, #07a);
-}
-
-.inkchapter-format-card--add {
-  border-style: dashed;
-  border-color: var(--text-muted, #999);
-  background: transparent;
+.inkchapter-format-card-header {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted, #888);
-  font-size: 14px;
-  cursor: pointer;
-  min-height: 120px;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
 }
-
-.inkchapter-format-card--add:hover {
-  border-color: var(--text-accent, #07a);
-  color: var(--text-accent, #07a);
-  background: rgba(7, 119, 170, 0.03);
-}
-
-.inkchapter-format-card-desc {
-  font-size: 0.82em;
-  color: var(--text-muted, #888);
-  margin-bottom: 8px;
-  flex: 1;
-}
-
-.inkchapter-format-card-preview {
-  font-family: var(--font-monospace, monospace);
-  font-size: 0.88em;
-  color: var(--text-accent, #07a);
-  margin-bottom: 8px;
-}
-
-.inkchapter-format-card-preview-line {
-  line-height: 1.5;
-}
-
-.inkchapter-format-card-actions {
-  margin-top: auto;
-}
-
-.inkchapter-format-card-actions .inkchapter-btn {
-  width: 100%;
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  border-radius: 6px;
-}
-
-// ── Current format summary ─────────────────────────────
-.inkchapter-current-format-summary {
-  padding: 12px 14px;
-  margin-bottom: 20px;
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  background: var(--background-secondary, #f8f8f8);
-}
-
-.inkchapter-current-format-summary .inkchapter-current-info {
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-
-.inkchapter-current-format-summary .inkchapter-current-name {
-  font-weight: 600;
-  color: var(--text-accent, #07a);
-}
-
-.inkchapter-current-format-summary .inkchapter-current-type {
-  font-size: 12px;
-  color: var(--text-muted, #888);
-  margin-left: 8px;
-}
-
-.inkchapter-current-format-summary .inkchapter-current-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.inkchapter-current-format-summary .inkchapter-current-actions .inkchapter-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  border-radius: 6px;
-}
-
-// ── Collapsible sections ───────────────────────────────
-.inkchapter-collapsible-section {
-  margin-bottom: 20px;
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.inkchapter-collapsible-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--background-secondary, #f8f8f8);
-  cursor: pointer;
-  user-select: none;
-  outline: none;
-}
-
-.inkchapter-collapsible-header:hover {
-  background: var(--background-modifier-hover, #eee);
-}
-
-.inkchapter-collapsible-header:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--text-accent, #07a);
-}
-
-.inkchapter-collapsible-title {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.inkchapter-collapsible-arrow {
-  font-size: 12px;
-  color: var(--text-muted, #888);
-  transition: transform 0.2s;
-}
-
-.inkchapter-collapsed .inkchapter-collapsible-body {
-  display: none;
-}
-
-.inkchapter-collapsed .inkchapter-collapsible-arrow {
-  transform: rotate(-90deg);
-}
-
-.inkchapter-expanded .inkchapter-collapsible-arrow {
-  transform: rotate(0deg);
-}
-
-.inkchapter-collapsible-body {
-  padding: 14px;
-  border-top: 1px solid var(--border-primary, #ddd);
-}
-
-// ── Dual-column: editor + preview ──────────────────────
-.inkchapter-editor-dual-col {
-  display: grid;
-  grid-template-columns: minmax(0, 68fr) minmax(280px, 32fr);
-  gap: 18px;
-  align-items: start;
-}
-
-.inkchapter-editor-main {
+.inkchapter-format-card-title-row {
   min-width: 0;
+  padding-right: 34px;
 }
-
-.inkchapter-editor-preview-col {
-  min-width: 280px;
-}
-
-.inkchapter-editor-preview-sticky {
-  position: sticky;
-  top: 16px;
-}
-
-@media (max-width: 900px) {
-  .inkchapter-editor-dual-col {
-    grid-template-columns: 1fr;
-  }
-  .inkchapter-editor-preview-sticky {
-    position: static;
-  }
-}
-
-// ── Level tabs (H1-H6 horizontal) ──────────────────────
-.inkchapter-level-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.inkchapter-level-tab {
-  padding: 6px 14px;
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  background: var(--background-secondary, #f8f8f8);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  user-select: none;
-  outline: none;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.inkchapter-level-tab:hover {
-  background: var(--background-modifier-hover, #eee);
-}
-
-.inkchapter-level-tab--selected {
-  background: var(--text-accent, #07a);
-  color: #fff;
-  border-color: var(--text-accent, #07a);
-}
-
-.inkchapter-level-tab--disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-// ── Editor fold sections ───────────────────────────────
-.inkchapter-editor-fold-section {
-  margin-bottom: 12px;
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.inkchapter-editor-fold-header {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  background: var(--background-secondary, #f8f8f8);
-  cursor: pointer;
-  user-select: none;
-  font-size: 13px;
+.inkchapter-format-card-title {
   font-weight: 600;
-}
-
-.inkchapter-editor-fold-header:hover {
-  background: var(--background-modifier-hover, #eee);
-}
-
-.inkchapter-editor-fold-body {
-  padding: 12px;
-  border-top: 1px solid var(--border-primary, #ddd);
-}
-
-.inkchapter-editor-fold-section--collapsed .inkchapter-editor-fold-body {
-  display: none;
-}
-
-.inkchapter-token-select-hint {
-  font-size: 13px;
-  color: var(--text-muted, #888);
-  padding: 20px;
-  text-align: center;
-}
-
-// ── Editor editing header ──────────────────────────────
-.inkchapter-editor-edit-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 8px 14px;
-  margin-bottom: 12px;
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  background: var(--background-secondary, #f8f8f8);
-}
-
-.inkchapter-editor-edit-title {
-  font-weight: 600;
-  font-size: 14px;
-  margin-right: 8px;
-}
-
-.inkchapter-editor-edit-header .inkchapter-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  border-radius: 6px;
-}
-
-// ── Editor tab bar (composition / label / behavior) ────
-.inkchapter-editor-tab-bar {
-  display: flex;
-  gap: 0;
-  margin-bottom: 12px;
-  border-bottom: 2px solid var(--border-primary, #ddd);
-}
-
-.inkchapter-editor-tab {
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  user-select: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  color: var(--text-muted, #888);
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.inkchapter-editor-tab:hover {
-  color: var(--text-normal, #333);
-}
-
-.inkchapter-editor-tab--active {
-  color: var(--text-accent, #07a);
-  border-bottom-color: var(--text-accent, #07a);
-}
-
-// ── Label / Behavior compact form grids ────────────────
-.inkchapter-label-form,
-.inkchapter-behavior-form {
-  padding: 4px 0;
-}
-
-// ── Format library title row ───────────────────────────
-.inkchapter-format-library-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.inkchapter-format-library-title {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-// ── Format card menu ───────────────────────────────────
-.inkchapter-format-card-menu-trigger {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  border-radius: 4px;
-  color: var(--text-muted, #888);
-  user-select: none;
-}
-
-.inkchapter-format-card-menu-trigger:hover {
-  background: var(--background-modifier-hover, #eee);
-  color: var(--text-normal, #333);
-}
-
-.inkchapter-format-card-menu {
-  position: absolute;
-  z-index: 100;
-  background: var(--background-primary, #fff);
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  min-width: 170px;
-  padding: 4px 0;
-}
-
-.inkchapter-format-card-menu-item {
-  padding: 7px 16px;
-  cursor: pointer;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.inkchapter-format-card-menu-item:hover {
-  background: var(--background-modifier-hover, #f0f0f0);
-}
-
-// ── Menu portal layer ────────────────────────────
-.inkchapter-menu-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  pointer-events: none;
-  z-index: 200;
-  overflow: visible;
-}
-
-.inkchapter-menu-overlay {
-  position: fixed;
-  pointer-events: auto;
-  width: 180px;
-  background: var(--background-primary, #fff);
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 6px 0;
-  z-index: 2000;
-}
-
-.inkchapter-menu-item {
-  padding: 8px 16px;
-  font-size: 13px;
-  white-space: nowrap;
-  cursor: pointer;
-  outline: none;
-}
-
-.inkchapter-menu-item:hover {
-  background: var(--background-modifier-hover, #eee);
-}
-
-.inkchapter-menu-item:focus-visible {
-  background: var(--background-modifier-hover, #eee);
-  outline: 2px solid var(--text-accent, #07a);
-  outline-offset: -2px;
-}
-
-.inkchapter-menu-item[aria-disabled="true"] {
-  opacity: 0.45;
-  cursor: default;
-  pointer-events: none;
-}
-
-.inkchapter-menu-separator {
-  height: 1px;
-  margin: 4px 0;
-  background: var(--border-primary, #eee);
-}
-
-// ── Dark theme menu portal ────────────────────────
-@media (prefers-color-scheme: dark) {
-  .inkchapter-menu-overlay {
-    background: var(--background-primary, #252525);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-  .inkchapter-menu-item:hover,
-  .inkchapter-menu-item:focus-visible {
-    background: rgba(255, 255, 255, 0.06);
-  }
-  .inkchapter-menu-separator {
-    background: rgba(255, 255, 255, 0.08);
-  }
-}
-
-// ── Card status badge ─────────────────────────────
-.inkchapter-format-card-badge {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--text-accent, #07a);
-  color: #fff;
-  font-weight: 500;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-// ── Card disabled apply button ────────────────────
-.inkchapter-btn--disabled {
-  opacity: 0.55;
-  cursor: default;
-  pointer-events: none;
-}
-
-// ── Format card uniform height ─────────────────────────
-.inkchapter-format-grid .inkchapter-format-card {
-  min-height: 200px;
-}
-
-.inkchapter-format-grid .inkchapter-format-card-desc {
+  font-size: 0.93em;
+  line-height: 1.35;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: break-word;
 }
-
-.inkchapter-format-grid .inkchapter-format-card-preview {
+.inkchapter-format-card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+.inkchapter-format-card-badge-wrap { display: flex; min-width: 0; }
+.inkchapter-format-card-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--text-accent, #07a);
+  color: #fff;
+}
+.inkchapter-format-card-badge--global-default { background: #6c757d; }
+.inkchapter-format-card-badge--inherit { background: #6c757d; }
+.inkchapter-format-card-badge--update { background: #e67e22; }
+.inkchapter-format-card-badge--applied { background: #27ae60; }
+.inkchapter-format-card-desc {
+  font-size: 0.8em;
+  color: var(--text-muted, #888);
+  margin-bottom: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.inkchapter-format-card-preview {
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.88em;
+  color: var(--text-accent, #07a);
+  margin-bottom: 6px;
+  flex: 1;
   min-height: calc(3 * 1.5em);
 }
-
-.inkchapter-format-grid .inkchapter-format-card-actions {
-  margin-top: auto;
+.inkchapter-format-card-preview-line { line-height: 1.5; }
+.inkchapter-format-card-actions { margin-top: auto; }
+.inkchapter-format-card-actions .inkchapter-btn {
+  width: 100%; height: 32px; padding: 0 12px; font-size: 13px; border-radius: 6px;
+}
+.inkchapter-format-card-menu-trigger {
+  position: absolute; top: 10px; right: 8px; z-index: 5;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; cursor: pointer; font-size: 16px;
+  line-height: 1; border-radius: 4px; color: var(--text-muted, #888); user-select: none;
+  &:hover { background: var(--background-modifier-hover, #eee); color: var(--text-normal, #333); }
+}
+.inkchapter-format-empty-hint {
+  color: var(--text-muted, #888); font-size: 13px; text-align: center; padding: 16px;
 }
 
-// ── Manage panel ───────────────────────────────────────
-.inkchapter-manage-panel {
-  margin: 0 0 12px;
-  padding: 12px;
-  background: var(--background-secondary, #f9f9f9);
+// Responsive format grid
+@media (max-width: 1000px) {
+  .inkchapter-format-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+}
+@media (max-width: 760px) {
+  .inkchapter-format-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}
+
+// ── Custom editor card (C) ────────────────────────────
+.inkchapter-editor-edit-header {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; margin-bottom: 10px;
+}
+.inkchapter-editor-edit-title {
+  font-weight: 600; font-size: 14px; margin-right: auto;
+}
+.inkchapter-editor-edit-header .inkchapter-btn {
+  height: 30px; padding: 0 12px; font-size: 12px; border-radius: 4px;
+}
+.inkchapter-level-tabs {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;
+}
+.inkchapter-level-tab {
+  height: 32px; padding: 0 14px; border: 1px solid var(--border-primary, #ddd);
+  border-radius: 5px; background: var(--background-secondary, #f8f8f8);
+  cursor: pointer; font-size: 13px; font-weight: 500; user-select: none; outline: none;
+  display: flex; align-items: center;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--selected { background: var(--text-accent, #07a); color: #fff; border-color: var(--text-accent, #07a); }
+  &--disabled { opacity: 0.5; cursor: not-allowed; display: flex; align-items: center; gap: 6px; }
+}
+.inkchapter-editor-tab-bar {
+  display: flex; gap: 0; margin-bottom: 10px;
+  border-bottom: 2px solid var(--border-primary, #ddd);
+}
+.inkchapter-editor-tab {
+  height: 38px; padding: 0 16px; font-size: 13px; font-weight: 500;
+  cursor: pointer; user-select: none;
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  color: var(--text-muted, #888);
+  display: flex; align-items: center;
+  transition: color 0.15s, border-color 0.15s;
+  &:hover { color: var(--text-normal, #333); }
+  &--active { color: var(--text-accent, #07a); border-bottom-color: var(--text-accent, #07a); }
+}
+.inkchapter-editor-dual-col {
+  display: grid;
+  grid-template-columns: minmax(0, 65fr) minmax(260px, 35fr);
+  gap: 16px; align-items: start;
+}
+.inkchapter-editor-main { min-width: 0; }
+.inkchapter-editor-preview-col { min-width: 260px; }
+.inkchapter-editor-preview-sticky { position: sticky; top: 16px; }
+.inkchapter-editor-preview-card {
   border: 1px solid var(--border-primary, #ddd);
-  border-radius: 8px;
+  border-radius: 8px; background: var(--background-secondary, #f8f8f8); padding: 12px;
+}
+.inkchapter-editor-preview-title {
+  font-weight: 600; font-size: 13px; color: var(--text-muted, #666); margin-bottom: 8px;
+}
+.inkchapter-editor-empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 32px 16px; color: var(--text-muted, #888); font-size: 13px;
+  text-align: center; gap: 8px; min-height: 120px;
+}
+.inkchapter-token-select-hint {
+  color: var(--text-muted, #888); font-size: 13px; text-align: center; padding: 24px;
+}
+@media (max-width: 1000px) {
+  .inkchapter-editor-dual-col { grid-template-columns: 1fr; }
+  .inkchapter-editor-preview-sticky { position: static; }
 }
 
-// ── Bottom action bar spacing ──────────────────────────
-.inkchapter-collapsible-section:last-of-type {
-  padding-bottom: 84px;
+// ── Number-title spacing matrix ───────────────────────
+.inkchapter-spacing-section {
+  // used as a sub-section wrapper
+}
+.inkchapter-spacing-header-row {
+  display: grid;
+  grid-template-columns: 56px minmax(200px, 240px) 1fr;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  font-weight: 500;
+  border-bottom: 2px solid var(--border-primary, #ddd);
+}
+.inkchapter-spacing-row {
+  display: grid;
+  grid-template-columns: 56px minmax(200px, 240px) 1fr;
+  align-items: center;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-primary, #eee);
+  height: 44px;
+  &--disabled { opacity: 0.4; pointer-events: none; }
+}
+.inkchapter-spacing-level {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-normal, #333);
+}
+.inkchapter-spacing-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 32px;
+}
+.inkchapter-spacing-seg-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  white-space: nowrap;
+  border-right: 1px solid var(--border-primary, #ddd);
+  line-height: 32px;
+  transition: background 0.15s, color 0.15s;
+  &:last-child { border-right: none; }
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--active {
+    background: var(--text-accent, #07a);
+    color: #fff;
+    font-weight: 500;
+  }
+}
+.inkchapter-spacing-preview {
+  font-size: 13px;
+  color: var(--text-normal, #333);
+  font-family: var(--font-monospace, monospace);
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inkchapter-spacing-bulk-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.inkchapter-spacing-bulk-btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 4px;
+  background: var(--background-secondary, #f8f8f8);
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--active {
+    background: var(--text-accent, #07a);
+    color: #fff;
+    font-weight: 500;
+    border-color: var(--text-accent, #07a);
+  }
 }
 
-// ── Bottom sticky action bar ───────────────────────────
+@media (max-width: 760px) {
+  .inkchapter-spacing-header-row,
+  .inkchapter-spacing-row {
+    grid-template-columns: 48px 1fr minmax(0, 1.5fr);
+  }
+}
+
+// ── Heading effective range ───────────────────────────
+.inkchapter-range-section {
+  // sub-section container
+}
+.inkchapter-range-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  min-height: 36px;
+}
+.inkchapter-range-setting-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-normal, #333);
+  min-width: 110px;
+  white-space: nowrap;
+}
+.inkchapter-range-setting-desc {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  margin-bottom: 4px;
+}
+.inkchapter-range-setting-status {
+  font-size: 12px;
+  color: var(--text-muted, #666);
+}
+.inkchapter-range-doc-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 32px;
+}
+.inkchapter-range-doc-seg-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  white-space: nowrap;
+  border-right: 1px solid var(--border-primary, #ddd);
+  line-height: 32px;
+  transition: background 0.15s, color 0.15s;
+  &:last-child { border-right: none; }
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--active {
+    background: var(--text-accent, #07a);
+    color: #fff;
+    font-weight: 500;
+  }
+}
+.inkchapter-range-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.inkchapter-range-controls select {
+  height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--border-primary, #ccc);
+  border-radius: 4px;
+  font-size: 13px;
+  min-width: 120px;
+  background: var(--background-primary, #fff);
+  color: var(--text-normal, #333);
+}
+.inkchapter-range-controls .inkchapter-btn {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.inkchapter-range-stats {
+  font-size: 12px;
+  color: var(--text-muted, #999);
+  padding-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.inkchapter-range-stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.inkchapter-range-stat-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-muted, #bbb);
+  margin: 0 3px;
+}
+.inkchapter-range-out-of-range {
+  color: #e67e22;
+  font-size: 12px;
+  padding-top: 2px;
+}
+.inkchapter-level-range-tag {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--background-modifier-border, #eee);
+  color: var(--text-muted, #888);
+  margin-right: 4px;
+  &--out { color: #e67e22; background: rgba(230,126,34,0.1); }
+}
+
+// ── Heading layout matrix ─────────────────────────────
+.inkchapter-layout-header-row {
+  display: grid;
+  grid-template-columns: 56px minmax(180px, 1fr) minmax(100px, 120px) minmax(140px, 1.5fr);
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  font-weight: 500;
+  border-bottom: 2px solid var(--border-primary, #ddd);
+  gap: 4px;
+}
+.inkchapter-layout-row {
+  display: grid;
+  grid-template-columns: 56px minmax(180px, 1fr) minmax(100px, 120px) minmax(140px, 1.5fr);
+  align-items: center;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-primary, #eee);
+  height: 44px;
+  gap: 4px;
+}
+.inkchapter-layout-level {
+  font-weight: 600; font-size: 13px; color: var(--text-normal, #333);
+}
+.inkchapter-layout-align-group {
+  display: inline-flex;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 32px;
+}
+.inkchapter-layout-align-btn {
+  height: 32px; padding: 0 12px; font-size: 12px;
+  border: none; border-right: 1px solid var(--border-primary, #ddd);
+  background: transparent; color: var(--text-muted, #666);
+  cursor: pointer; white-space: nowrap;
+  line-height: 32px;
+  transition: background 0.15s, color 0.15s;
+  &:last-child { border-right: none; }
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--active { background: var(--text-accent, #07a); color: #fff; font-weight: 500; }
+}
+.inkchapter-layout-indent-group {
+  display: inline-flex;
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 32px;
+}
+.inkchapter-layout-indent-btn {
+  height: 32px; padding: 0 12px; font-size: 12px;
+  border: none; border-right: 1px solid var(--border-primary, #ddd);
+  background: transparent; color: var(--text-muted, #666);
+  cursor: pointer; white-space: nowrap;
+  line-height: 32px;
+  transition: background 0.15s, color 0.15s;
+  &:last-child { border-right: none; }
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &--active { background: var(--text-accent, #07a); color: #fff; font-weight: 500; }
+}
+.inkchapter-layout-preview {
+  font-size: 12px;
+  color: var(--text-muted, #777);
+  font-family: var(--font-monospace, monospace);
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inkchapter-layout-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 10px;
+}
+.inkchapter-layout-actions .inkchapter-btn {
+  height: 30px; padding: 0 12px; font-size: 12px; border-radius: 4px;
+}
+
+@media (max-width: 1000px) {
+  .inkchapter-layout-header-row,
+  .inkchapter-layout-row {
+    grid-template-columns: 48px 1fr 1fr 1fr;
+    gap: 2px;
+  }
+}
+@media (max-width: 760px) {
+  .inkchapter-layout-header-row,
+  .inkchapter-layout-row {
+    grid-template-columns: 48px 1fr 1fr;
+    gap: 2px;
+  }
+  .inkchapter-layout-preview { display: none; }
+}
+
+// ── Bottom sticky action bar ──────────────────────────
 .inkchapter-settings-actions {
   position: sticky;
   bottom: 0;
   display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding: 12px 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
   background: var(--background-primary, #fff);
   border-top: 1px solid var(--border-primary, #e0e0e0);
-  z-index: 10;
-  margin-top: 20px;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+  z-index: 50;
+  margin-top: auto;
 }
-
-.inkchapter-settings-actions .inkchapter-btn {
-  height: 32px;
-  padding: 0 16px;
-  font-size: 13px;
-  border-radius: 6px;
+.inkchapter-settings-unsaved-hint {
+  font-size: 12px;
+  color: #e67e22;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
-
+.inkchapter-settings-actions-right {
+  display: flex;
+  gap: 8px;
+}
 .inkchapter-settings-actions .inkchapter-btn--primary {
-  height: 34px;
-  padding: 0 20px;
-  font-size: 14px;
-  font-weight: 600;
+  height: 36px; padding: 0 20px; font-size: 14px; font-weight: 600;
+  border-radius: 6px; min-width: 120px;
+}
+.inkchapter-settings-actions .inkchapter-btn {
+  height: 36px; padding: 0 16px; font-size: 13px; border-radius: 6px;
 }
 
-// ── Dark theme overrides for v2 layout ─────────────────
+// ── Preset cards (format library) ─────────────────────
+.inkchapter-preset-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+// ── Dark theme overrides ──────────────────────────────
 @media (prefers-color-scheme: dark) {
-  .inkchapter-scope-bar--compact {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.1);
+  .inkchapter-card {
+    background: var(--background-primary, #1e1e1e);
+    border-color: rgba(255,255,255,0.1);
   }
-  .inkchapter-basic-setting-item {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.1);
+  .inkchapter-scope-status-badge {
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.6);
+  }
+  .inkchapter-scope-segmented { border-color: rgba(255,255,255,0.12); }
+  .inkchapter-scope-segmented-btn {
+    color: rgba(255,255,255,0.5);
+    border-color: rgba(255,255,255,0.12);
+    &:hover { background: rgba(255,255,255,0.06); }
   }
   .inkchapter-format-card {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-  .inkchapter-format-card:hover {
-    background: rgba(255, 255, 255, 0.08);
-  }
-  .inkchapter-format-card--selected {
-    background: rgba(50, 140, 255, 0.15);
-    border-color: rgba(50, 140, 255, 0.5);
-  }
-  .inkchapter-format-card--add {
-    border-color: rgba(255, 255, 255, 0.2);
-    color: #999;
-  }
-  .inkchapter-format-card--add:hover {
-    border-color: #6cf;
-    color: #6cf;
-  }
-  .inkchapter-current-format-summary {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-  .inkchapter-collapsible-section {
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-  .inkchapter-collapsible-header {
-    background: rgba(255, 255, 255, 0.04);
-  }
-  .inkchapter-collapsible-header:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.1);
+    &:hover { background: rgba(255,255,255,0.08); }
+    &--selected { background: rgba(50,140,255,0.12); border-color: rgba(50,140,255,0.4); }
+    &--add { border-color: rgba(255,255,255,0.2); color: #999;
+      &:hover { border-color: #6cf; color: #6cf; }
+    }
   }
   .inkchapter-level-tab {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.1);
+    &:hover { background: rgba(255,255,255,0.08); }
   }
-  .inkchapter-level-tab:hover {
-    background: rgba(255, 255, 255, 0.08);
+  .inkchapter-editor-tab-bar { border-bottom-color: rgba(255,255,255,0.1); }
+  .inkchapter-editor-tab { color: rgba(255,255,255,0.5);
+    &:hover { color: rgba(255,255,255,0.8); }
   }
-  .inkchapter-editor-fold-section {
-    border-color: rgba(255, 255, 255, 0.1);
+  .inkchapter-editor-preview-card {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.1);
   }
-  .inkchapter-editor-fold-header {
-    background: rgba(255, 255, 255, 0.04);
+  .inkchapter-spacing-header-row,
+  .inkchapter-layout-header-row { border-bottom-color: rgba(255,255,255,0.1); }
+  .inkchapter-spacing-row,
+  .inkchapter-layout-row { border-bottom-color: rgba(255,255,255,0.06); }
+  .inkchapter-spacing-segmented,
+  .inkchapter-layout-align-group,
+  .inkchapter-layout-indent-group,
+  .inkchapter-range-doc-segmented { border-color: rgba(255,255,255,0.12); }
+  .inkchapter-spacing-seg-btn,
+  .inkchapter-layout-align-btn,
+  .inkchapter-layout-indent-btn,
+  .inkchapter-range-doc-seg-btn {
+    color: rgba(255,255,255,0.5);
+    border-color: rgba(255,255,255,0.12);
+    &:hover { background: rgba(255,255,255,0.06); }
   }
-  .inkchapter-editor-fold-header:hover {
-    background: rgba(255, 255, 255, 0.08);
+  .inkchapter-range-controls select {
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.8);
+    border-color: rgba(255,255,255,0.12);
   }
-  .inkchapter-editor-edit-header {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: rgba(255, 255, 255, 0.1);
+  .inkchapter-range-subcard {
+    background: transparent;
+  }
+  .inkchapter-level-range-tag {
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.5);
+    &--out { color: #e67e22; background: rgba(230,126,34,0.15); }
   }
   .inkchapter-settings-actions {
     background: var(--background-primary, #1e1e1e);
-    border-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255,255,255,0.1);
   }
-  .inkchapter-editor-tab-bar {
-    border-bottom-color: rgba(255, 255, 255, 0.1);
+  .inkchapter-spacing-bulk-btn {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.5);
+    &:hover { background: rgba(255,255,255,0.08); }
   }
-  .inkchapter-editor-tab {
-    color: rgba(255, 255, 255, 0.5);
-  }
-  .inkchapter-editor-tab:hover {
-    color: rgba(255, 255, 255, 0.8);
-  }
-  .inkchapter-editor-tab--active {
-    color: var(--text-accent, #5af);
-  }
-  .inkchapter-format-card-menu {
-    background: var(--background-primary, #252525);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-  .inkchapter-format-card-menu-item:hover {
-    background: rgba(255, 255, 255, 0.06);
-  }
-  .inkchapter-manage-panel {
-    background: rgba(255, 255, 255, 0.03);
-    border-color: rgba(255, 255, 255, 0.1);
+  .inkchapter-range-setting-desc,
+  .inkchapter-range-stats { color: rgba(255,255,255,0.4); }
+  .inkchapter-layout-preview { color: rgba(255,255,255,0.5); }
+  .inkchapter-scope-restore-btn { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.5);
+    &:hover { background: rgba(255,255,255,0.08); }
   }
 }
+
+// ── Preset card actions (keep existing) ───────────────
+.inkchapter-preset-card-actions {
+  display: flex; gap: 6px; margin-top: 10px; padding-top: 8px;
+  border-top: 1px solid var(--border-primary, #eee);
+}
+
+// ── Format card dropdown menu items (keep existing) ───
+.inkchapter-format-card-menu {
+  position: absolute; z-index: 100;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  min-width: 170px; padding: 4px 0;
+}
+.inkchapter-format-card-menu-item {
+  padding: 7px 16px; cursor: pointer; font-size: 13px; white-space: nowrap;
+  &:hover { background: var(--background-modifier-hover, #f0f0f0); }
+}
+
+// ── Menu portal layer ─────────────────────────────────
+.inkchapter-menu-layer {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; z-index: 200; overflow: visible;
+}
+.inkchapter-menu-overlay {
+  position: fixed; pointer-events: auto; width: 180px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 6px 0; z-index: 2000;
+}
+.inkchapter-menu-item {
+  padding: 8px 16px; font-size: 13px; white-space: nowrap; cursor: pointer; outline: none;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &:focus-visible { background: var(--background-modifier-hover, #eee); outline: 2px solid var(--text-accent, #07a); outline-offset: -2px; }
+  &[aria-disabled="true"] { opacity: 0.45; cursor: default; pointer-events: none; }
+}
+.inkchapter-menu-separator {
+  height: 1px; margin: 4px 0; background: var(--border-primary, #eee);
+}
+@media (prefers-color-scheme: dark) {
+  .inkchapter-menu-overlay { background: var(--background-primary, #252525); border-color: rgba(255,255,255,0.1); }
+  .inkchapter-menu-item:hover,
+  .inkchapter-menu-item:focus-visible { background: rgba(255,255,255,0.06); }
+  .inkchapter-menu-separator { background: rgba(255,255,255,0.08); }
+  .inkchapter-format-card-menu {
+    background: var(--background-primary, #252525);
+    border-color: rgba(255,255,255,0.1);
+  }
+  .inkchapter-format-card-menu-item:hover { background: rgba(255,255,255,0.06); }
+}
+
+// ── Misc utilities ────────────────────────────────────
+.inkchapter-btn--disabled { opacity: 0.55; cursor: default; pointer-events: none; }
+.inkchapter-manage-panel {
+  margin: 0 0 12px; padding: 12px;
+  background: var(--background-secondary, #f9f9f9);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  .inkchapter-manage-panel {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.1);
+  }
+}
+
+// ── Label / Behavior form (keep existing) ─────────────
+.inkchapter-label-form,
+.inkchapter-behavior-form { padding: 4px 0; }
