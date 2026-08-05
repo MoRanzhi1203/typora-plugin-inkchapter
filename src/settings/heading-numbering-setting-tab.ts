@@ -165,10 +165,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Format library state ─────────────────────────
   /** Cached format library from settings. */
   private formatLibrary: FormatLibrary = { version: 1, formats: [], preferences: { hiddenBuiltInPresetIds: [], customFormatOrder: [] } }
-  /** Currently selected format ID for editing (null = scope draft). */
+  /** Currently selected format ID for editing/viewing (null = scope draft). */
   private selectedFormatId: string | null = null
+  /** Type of currently selected format: 'built-in' (system) or 'custom' (user). */
+  private selectedFormatType: 'built-in' | 'custom' | null = null
   /** Draft of the format being edited. */
   private formatDraft: CustomNumberingFormat | null = null
+  /** Saved baseline of the format being edited (for dirty detection). */
+  private savedFormatBaseline: CustomNumberingFormat | null = null
   /** Currently open card menu state. null if closed. */
   private openMenuState: OpenFormatMenuState | null = null
   private menuCleanups: Array<() => void> = []
@@ -254,6 +258,26 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Clear layout draft so it re-reads from persisted state
     this.headingLayoutDraft = null
     this.savedLayoutDraft = null
+    // Auto-select the currently applied format on page open (system or custom)
+    if (!this.selectedFormatId) {
+      const info = this.getAppliedFormatInfo()
+      if (info.source?.type === 'built-in' && info.source.presetId) {
+        this.selectedFormatId = info.source.presetId
+        this.selectedFormatType = 'built-in'
+        this.formatDraft = null
+        this.savedFormatBaseline = null
+        this.selectedCardKey = info.source.presetId
+        this.selectedCardIsPreset = true
+        this.loadPresetForViewing(info.source.presetId)
+      } else if (info.source?.type === 'custom' && info.formatId) {
+        const format = this.numberingService.getFormatLibrary().formats.find(f => f.id === info.formatId)
+        if (format) {
+          this.selectedCardKey = info.formatId
+          this.selectedCardIsPreset = false
+          this.initializeFormatEditor(format)
+        }
+      }
+    }
     // Subscribe to external settings changes (F1 commands, etc.)
     if (!this.unsubSettings) {
       this.unsubSettings = this.numberingService.onSettingsChanged(() => {
@@ -545,7 +569,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private handlePresetSelect(preset: HeadingNumberingPreset): void {
     this.cancelDrag()
     this.selectedFormatId = null
+    this.selectedFormatType = null
     this.formatDraft = null
+    this.savedFormatBaseline = null
     this.ensureDraft()
     const s = this.headingDraft!
     if (preset === 'custom') {
@@ -602,7 +628,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.headingDraft = null
     this.headingDraftOriginal = null
     this.selectedFormatId = null
+    this.selectedFormatType = null
     this.formatDraft = null
+    this.savedFormatBaseline = null
     this.selectedCardKey = presetId
     this.selectedCardIsPreset = true
     this.rerender()
@@ -746,10 +774,21 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private startEditingFormat(format: CustomNumberingFormat): void {
     this.cancelDrag()
-    // Create heading settings from format (deep clone levels to avoid mutations)
+    this.initializeFormatEditor(format)
+    this.rerender()
+  }
+
+  /** 
+   * Initialize the format editor with a custom format's data.
+   * Sets selectedFormatId, formatDraft, savedFormatBaseline, headingDraft, and headingDraftOriginal.
+   * Normalizes both draft and original so they compare equal (no false dirty).
+   */
+  private initializeFormatEditor(format: CustomNumberingFormat): void {
     this.selectedFormatId = format.id
+    this.selectedFormatType = 'custom'
     this.formatDraft = { ...format }
-    // Deep clone settings via deepCloneSettings to prevent shared references
+    this.savedFormatBaseline = { ...format }
+    // Deep clone settings for the working draft
     const clonedSettings = deepCloneSettings({
       enabled: format.settings.enabled,
       showLevelOneNumber: format.settings.showLevelOneNumber,
@@ -760,7 +799,60 @@ export class HeadingNumberingSettingTab extends SettingTab {
     } as any)
     this.headingDraft = clonedSettings
     this.headingDraftOriginal = deepCloneSettings(clonedSettings)
+    // Normalize both so contextualFormatVariants defaults don't show as dirty
+    this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
+    this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
     // Don't switch headingScope when editing a format
+  }
+
+  /**
+   * Load a system preset's levels into headingDraft for read-only viewing.
+   * Does NOT set formatDraft — system presets cannot be edited in place.
+   */
+  private loadPresetForViewing(presetKey: string): void {
+    const preset = presetKey as HeadingNumberingPreset
+    const presetLevels = getPresetLevels(preset)
+    const clonedSettings = deepCloneSettings({
+      enabled: true,
+      showLevelOneNumber: true,
+      preset: preset,
+      maxDepth: 6,
+      levels: presetLevels,
+    } as any)
+    this.headingDraft = clonedSettings
+    this.headingDraftOriginal = deepCloneSettings(clonedSettings)
+    this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
+    this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
+  }
+
+  /** Copy the currently viewed system preset as a new custom format. */
+  private copySystemPresetToCustom(): void {
+    if (this.selectedFormatType !== 'built-in' || !this.selectedFormatId || !this.headingDraft) return
+    const presetMeta = PRESET_CARDS.find(c => c.key === this.selectedFormatId)
+    const baseName = presetMeta ? `${presetMeta.name}（副本）` : '系统格式副本'
+    const newName = prompt('请输入新格式名称:', baseName)
+    if (!newName || !newName.trim()) return
+    const error = validateFormatName(newName.trim(), this.formatLibrary)
+    if (error) { Notice.info(error); return }
+
+    const newFormat = createFormat(
+      newName.trim(),
+      `从系统格式「${presetMeta?.name ?? this.selectedFormatId}」复制`,
+      { type: 'built-in', presetId: this.selectedFormatId },
+      this.headingDraft.levels,
+    )
+    newFormat.settings.showLevelOneNumber = this.headingDraft.showLevelOneNumber
+    newFormat.settings.enabled = this.headingDraft.enabled
+    newFormat.settings.maxDepth = this.headingDraft.maxDepth
+
+    const newLib = addFormatToLibrary(this.formatLibrary, newFormat)
+    this.numberingService.saveFormatLibrary(newLib)
+    this.formatLibrary = newLib
+    Notice.info(`已复制为自定义格式 "${newFormat.name}"`)
+    // Switch to editing the new custom format
+    this.initializeFormatEditor(newFormat)
+    this.selectedCardKey = newFormat.id
+    this.selectedCardIsPreset = false
     this.rerender()
   }
 
@@ -980,6 +1072,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.numberingService.saveFormatLibrary(newLib)
     this.formatLibrary = newLib
     this.formatDraft = updated
+    this.savedFormatBaseline = { ...updated }
 
     Notice.info(`格式 "${updated.name}" 已保存`)
   }
@@ -1065,10 +1158,30 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private cancelFormatEditing(): void {
-    this.selectedFormatId = null
-    this.formatDraft = null
-    this.headingDraft = null
-    this.headingDraftOriginal = null
+    if (this.savedFormatBaseline && this.formatDraft) {
+      // Restore from baseline — keep editor visible, reset dirty
+      this.formatDraft = { ...this.savedFormatBaseline }
+      const fmtSettings = deepCloneSettings({
+        enabled: this.savedFormatBaseline.settings.enabled,
+        showLevelOneNumber: this.savedFormatBaseline.settings.showLevelOneNumber,
+        preset: 'custom' as const,
+        maxDepth: this.savedFormatBaseline.settings.maxDepth,
+        levels: this.savedFormatBaseline.settings.levels,
+        customDefinition: this.savedFormatBaseline.settings.levels,
+      } as any)
+      this.headingDraft = fmtSettings
+      this.headingDraftOriginal = deepCloneSettings(fmtSettings)
+      this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
+      this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
+    } else {
+      // No saved baseline (e.g. editing scope draft) — clear everything
+      this.selectedFormatId = null
+      this.selectedFormatType = null
+      this.formatDraft = null
+      this.savedFormatBaseline = null
+      this.headingDraft = null
+      this.headingDraftOriginal = null
+    }
     this.rerender()
   }
 
@@ -1510,7 +1623,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.headingDraft = null
       this.headingDraftOriginal = null
       this.selectedFormatId = null
+      this.selectedFormatType = null
       this.formatDraft = null
+      this.savedFormatBaseline = null
 
       this.rerender()
       Notice.info('当前文档排版已保存')
@@ -1875,6 +1990,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     lv: HeadingLevel,
     activeFmt: readonly ContextualFormatSegment[],
     s: HeadingNumberingSettings,
+    readonlyForm = false,
   ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     const tplPreview = `${seg.appearance.prefix}${getSampleToken(seg.appearance.tokenStyle)}${seg.appearance.suffix}`
@@ -1899,9 +2015,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Current level ref: can drag, cannot delete
     if (seg.level === lv) {
       chip.classList.add('inkchapter-format-chip--current')
-    } else {
+    } else if (!readonlyForm) {
       const close = el('span', 'inkchapter-format-chip-close', chip)
-      close.textContent = ' ×'
+      close.textContent = ' \xD7'
       close.onclick = (e) => {
         e.stopPropagation()
         // Maintain selection if removing non-selected chip
@@ -1917,6 +2033,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     seg: ContextualFormatSegment & { type: 'literal' },
     lv: HeadingLevel,
     activeFmt: readonly ContextualFormatSegment[],
+    readonlyForm = false,
   ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     chip.textContent = seg.value || '(空)'
@@ -1934,13 +2051,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.onshow()
     }
 
-    const close = el('span', 'inkchapter-format-chip-close', chip)
-    close.textContent = ' ×'
-    close.onclick = (e) => {
-      e.stopPropagation()
-      const newFmt = activeFmt.filter(s => s.id !== seg.id)
-      this.updateDraftContextualFormat(lv, newFmt)
-      this.onshow()
+    if (!readonlyForm) {
+      const close = el('span', 'inkchapter-format-chip-close', chip)
+      close.textContent = ' \xD7'
+      close.onclick = (e) => {
+        e.stopPropagation()
+        const newFmt = activeFmt.filter(s => s.id !== seg.id)
+        this.updateDraftContextualFormat(lv, newFmt)
+        this.onshow()
+      }
     }
   }
 
@@ -3236,12 +3355,26 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
-    // Click card to select (only for preview, never changes applied state)
+    // Click card to select AND show format content below
     cardEl.onclick = () => {
       this.cancelDrag()
       this.closeMenu()
       this.selectedCardKey = key
       this.selectedCardIsPreset = isPreset
+      if (isPreset) {
+        // System format: show read-only content
+        this.selectedFormatId = key
+        this.selectedFormatType = 'built-in'
+        this.formatDraft = null
+        this.savedFormatBaseline = null
+        this.loadPresetForViewing(key)
+      } else {
+        // Custom format: load editor
+        const format = this.formatLibrary.formats.find(f => f.id === key)
+        if (format) {
+          this.initializeFormatEditor(format)
+        }
+      }
       this.rerender()
     }
     cardEl.onkeydown = (e) => {
@@ -3251,6 +3384,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.closeMenu()
         this.selectedCardKey = key
         this.selectedCardIsPreset = isPreset
+        if (isPreset) {
+          this.selectedFormatId = key
+          this.selectedFormatType = 'built-in'
+          this.formatDraft = null
+          this.savedFormatBaseline = null
+          this.loadPresetForViewing(key)
+        } else {
+          const format = this.formatLibrary.formats.find(f => f.id === key)
+          if (format) {
+            this.initializeFormatEditor(format)
+          }
+        }
         this.rerender()
       }
     }
@@ -3784,7 +3929,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     if (this.selectedFormatId === format.id) {
       this.selectedFormatId = null
+      this.selectedFormatType = null
       this.formatDraft = null
+      this.savedFormatBaseline = null
       this.headingDraft = null
       this.headingDraftOriginal = null
     }
@@ -3855,7 +4002,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.formatLibrary = resetLibrary()
       this.numberingService.saveFormatLibrary(this.formatLibrary)
       this.selectedFormatId = null
+      this.selectedFormatType = null
       this.formatDraft = null
+      this.savedFormatBaseline = null
       this.headingDraft = null
       this.headingDraftOriginal = null
       this.selectedCardKey = null
@@ -4039,27 +4188,39 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Custom editor card ───────────────────────────
 
   private renderCustomEditorCard(s: HeadingNumberingSettings): void {
-    // Only considered "editing" when user explicitly clicked "编辑" on a format card.
-    // s.preset === 'custom' means the current DOCUMENT uses custom settings — not that user is editing.
-    const isEditing = this.selectedFormatId !== null
-
     const card = el('div', 'inkchapter-card', this.containerEl)
     const header = el('div', 'inkchapter-card-header', card)
     const title = el('div', 'inkchapter-card-title', header)
     title.textContent = '格式内容设置'
-    const desc = el('div', 'inkchapter-card-desc', header)
-    desc.textContent = '编辑当前格式的编号组合、标签、行为与标题间距'
 
     const body = el('div', 'inkchapter-card-body', card)
 
-    if (!isEditing) {
+    // No format selected at all — show empty state
+    if (!this.selectedFormatId) {
+      const desc = el('div', 'inkchapter-card-desc', header)
+      desc.textContent = '选择上方任意格式卡片以查看其编号内容'
       const hint = el('div', '', body)
-      hint.textContent = '请选择一个自定义格式进行编辑。从格式卡片点击"编辑"进入，或点击"+ 新建格式"创建新格式。'
+      hint.textContent = '请选择一个格式卡片以查看内容。自定义格式可直接编辑，系统格式可查看复制。'
       hint.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
       return
     }
 
-    this.ensureDraft()
+    // System format: read-only viewer
+    if (this.selectedFormatType === 'built-in') {
+      const desc = el('div', 'inkchapter-card-desc', header)
+      desc.textContent = '系统预设格式（只读）— 查看编号组合、标签、行为与实时预览'
+      this.renderSystemFormatViewer(body, s)
+      return
+    }
+
+    // Custom format: editable
+    const desc = el('div', 'inkchapter-card-desc', header)
+    desc.textContent = '编辑当前自定义格式的编号组合、标签、行为与标题间距'
+
+    // Ensure draft is loaded (already done by card click, but guard against edge cases)
+    if (!this.headingDraft) {
+      this.ensureDraft()
+    }
     const draft = this.headingDraft!
     this.ensureAllLevelsHaveCurrentSegment(draft)
 
@@ -4070,6 +4231,41 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.renderLevelTabs(body, s, draft)
 
     // Editor tab bar (composition / label / behavior)
+    this.renderEditorTabBar(body, s, draft)
+  }
+
+  /** Render the system format content as read-only. */
+  private renderSystemFormatViewer(body: HTMLElement, s: HeadingNumberingSettings): void {
+    if (!this.headingDraft) {
+      const hint = el('div', '', body)
+      hint.textContent = '无法加载系统格式数据。'
+      hint.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
+      return
+    }
+    const draft = this.headingDraft
+    this.ensureAllLevelsHaveCurrentSegment(draft)
+
+    // Header with "复制为自定义格式" button
+    const viewerHeader = el('div', 'inkchapter-editor-edit-header', body)
+    const label = el('span', 'inkchapter-editor-edit-title', viewerHeader)
+    const presetName = this.getCurrentFormatDisplayName(s)
+    label.textContent = `系统格式：${presetName}（只读）`
+    const copyBtn = el('button', 'inkchapter-btn', viewerHeader)
+    copyBtn.textContent = '复制为自定义格式'
+    copyBtn.onclick = () => {
+      this.cancelDrag()
+      this.copySystemPresetToCustom()
+    }
+
+    // H1-H6 level tabs (read-only — same look, just disabled inputs later)
+    this.renderLevelTabs(body, s, draft)
+
+    // Editor tab bar
+    this.renderEditorTabBar(body, s, draft)
+  }
+
+  /** Render tab bar and dual-column content (shared between readonly and editable). */
+  private renderEditorTabBar(body: HTMLElement, s: HeadingNumberingSettings, draft: HeadingNumberingSettings): void {
     const tabBar = el('div', 'inkchapter-editor-tab-bar', body)
     const tabs: { key: 'composition' | 'label' | 'behavior'; label: string }[] = [
       { key: 'composition', label: '多级组合格式' },
@@ -4094,6 +4290,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const dualCol = el('div', 'inkchapter-editor-dual-col', body)
     const editorCol = el('div', 'inkchapter-editor-main', dualCol)
 
+    const isReadonly = this.selectedFormatType === 'built-in'
+
     // Render only the active tab content
     if (this.expandedLevel != null) {
       const lv = this.expandedLevel
@@ -4102,11 +4300,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const isH1Disabled = lv === 1 && !s.showLevelOneNumber
         if (!isH1Disabled || this.customEditorTab === 'behavior') {
           if (this.customEditorTab === 'composition') {
-            this.renderCompositionTabContent(editorCol, lv, style, s)
+            this.renderCompositionTabContent(editorCol, lv, style, s, isReadonly)
           } else if (this.customEditorTab === 'label') {
-            this.renderLabelTabContent(editorCol, lv, style, s)
+            this.renderLabelTabContent(editorCol, lv, style, s, isReadonly)
           } else {
-            this.renderBehaviorTabContent(editorCol, lv, style, s)
+            this.renderBehaviorTabContent(editorCol, lv, style, s, isReadonly)
           }
         } else {
           const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorCol)
@@ -4115,9 +4313,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
         }
       }
     } else {
-      const hint = el('div', 'inkchapter-token-select-hint', editorCol)
-      hint.textContent = '请从上方 H1-H6 标签中选择一个级别进行编辑'
-      hint.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
+      const hnt = el('div', 'inkchapter-token-select-hint', editorCol)
+      hnt.textContent = '请从上方 H1-H6 标签中选择一个级别进行查看'
+      hnt.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
     }
 
     // Preview column (sticky)
@@ -4220,6 +4418,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     lv: HeadingLevel,
     style: HeadingLevelStyle,
     s: HeadingNumberingSettings,
+    readonly = false,
   ): void {
     let activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
     if (!activeFmt || activeFmt.length === 0) {
@@ -4255,14 +4454,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
         if (e.target === fmtEl) { this.selectedSegmentId = null; this.onshow() }
       })
 
-      this.setupContextualDragDelegation(fmtEl, lv, style, activeFmt)
+      if (!readonly) {
+        this.setupContextualDragDelegation(fmtEl, lv, style, activeFmt)
+      }
 
       for (let i = 0; i < activeFmt.length; i++) {
         const seg = activeFmt[i]
         if (seg.type === 'level-reference') {
-          this.renderContextualLevelRefChip(fmtEl, i, seg, lv, activeFmt, s)
+          this.renderContextualLevelRefChip(fmtEl, i, seg, lv, activeFmt, s, readonly)
         } else {
-          this.renderContextualLiteralChip(fmtEl, i, seg, lv, activeFmt)
+          this.renderContextualLiteralChip(fmtEl, i, seg, lv, activeFmt, readonly)
         }
       }
 
@@ -4273,6 +4474,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // Reference level selector
       const refSelect = el('select', undefined, insertRow) as HTMLSelectElement
       refSelect.style.cssText = 'min-width:80px;'
+      if (readonly) refSelect.disabled = true
 
       const availRefs = getAvailableContextualReferenceLevels(lv, s.showLevelOneNumber, activeFmt)
       if (availRefs.length === 0) {
@@ -4291,9 +4493,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const insertBtn = el('button', 'inkchapter-format-insert-btn', insertRow) as HTMLButtonElement
       insertBtn.textContent = '添加引用'
       insertBtn.style.cssText = 'flex-shrink:0;'
-      insertBtn.disabled = refSelect.options.length === 0 || (refSelect.options.length === 1 && refSelect.options[0].disabled)
+      insertBtn.disabled = readonly || refSelect.options.length === 0 || (refSelect.options.length === 1 && refSelect.options[0].disabled)
 
       insertBtn.onclick = () => {
+        if (readonly) return
         const refLv = Number(refSelect.value) as HeadingLevel
         if (!refLv || refLv < 1 || refLv > 6) return
         const cur = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
@@ -4310,7 +4513,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
       // Hint text
       const hint = el('span', '', insertRow)
-      hint.textContent = '固定文字和分隔符请在「序号标签设置」中配置前缀/后缀'
+      hint.textContent = readonly ? '系统格式只读 — 无法修改组合' : '固定文字和分隔符请在「序号标签设置」中配置前缀/后缀'
       hint.style.cssText = 'font-size:11px;color:var(--text-muted,#888);margin-left:4px;'
     }
   }
@@ -4320,6 +4523,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     lv: HeadingLevel,
     style: HeadingLevelStyle,
     s: HeadingNumberingSettings,
+    readonly = false,
   ): void {
     const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
 
@@ -4347,7 +4551,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const input = document.createElement('input')
         input.type = 'text'; input.value = selectedSeg.value; input.placeholder = '输入文字'
         input.style.cssText = 'width:100%;padding:4px 6px;'
+        if (readonly) { input.readOnly = true; input.style.opacity = '0.6' }
         input.onblur = () => {
+          if (readonly) return
           const newFmt = activeFmt.map(s => s.id === selectedSeg.id ? { ...s, value: sanitize(input.value) } : s)
           this.updateDraftContextualFormat(lv, newFmt)
           this.onshow()
@@ -4368,11 +4574,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.addLabelFormRow(form, '编号样式', () => {
       const select = document.createElement('select')
       select.style.cssText = 'width:100%;padding:4px 6px;'
+      if (readonly) select.disabled = true
       for (const opt of TOKEN_STYLE_LABELS) {
         const o = document.createElement('option'); o.value = opt.value; o.textContent = opt.label; o.selected = opt.value === selectedSeg.appearance.tokenStyle
         select.appendChild(o)
       }
-      select.onchange = () => { this.updateDraftContextualSegment(lv, selectedSeg.id, { tokenStyle: select.value as NumberTokenStyle }); this.onshow() }
+      select.onchange = () => { if (readonly) return; this.updateDraftContextualSegment(lv, selectedSeg.id, { tokenStyle: select.value as NumberTokenStyle }); this.onshow() }
       return select
     })
 
@@ -4381,7 +4588,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const input = document.createElement('input')
       input.type = 'text'; input.value = selectedSeg.appearance.prefix; input.placeholder = '例如：第'
       input.style.cssText = 'width:100%;padding:4px 6px;'
-      input.onblur = () => { this.updateDraftContextualSegment(lv, selectedSeg.id, { prefix: sanitizeTemplateString(input.value) }); this.onshow() }
+      if (readonly) { input.readOnly = true; input.style.opacity = '0.6' }
+      input.onblur = () => { if (readonly) return; this.updateDraftContextualSegment(lv, selectedSeg.id, { prefix: sanitizeTemplateString(input.value) }); this.onshow() }
       input.onkeydown = (e) => { if (e.key === 'Enter') input.blur() }
       return input
     })
@@ -4391,7 +4599,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const input = document.createElement('input')
       input.type = 'text'; input.value = selectedSeg.appearance.suffix; input.placeholder = '例如：章'
       input.style.cssText = 'width:100%;padding:4px 6px;'
-      input.onblur = () => { this.updateDraftContextualSegment(lv, selectedSeg.id, { suffix: sanitizeTemplateString(input.value) }); this.onshow() }
+      if (readonly) { input.readOnly = true; input.style.opacity = '0.6' }
+      input.onblur = () => { if (readonly) return; this.updateDraftContextualSegment(lv, selectedSeg.id, { suffix: sanitizeTemplateString(input.value) }); this.onshow() }
       input.onkeydown = (e) => { if (e.key === 'Enter') input.blur() }
       return input
     })
@@ -4418,6 +4627,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     lv: HeadingLevel,
     style: HeadingLevelStyle,
     s: HeadingNumberingSettings,
+    readonly = false,
   ): void {
     const isH1Disabled = lv === 1 && !s.showLevelOneNumber
 
@@ -4431,7 +4641,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       cbRow.style.cssText = 'grid-column:1/-1;display:flex;align-items:center;gap:6px;'
       const cb = document.createElement('input')
       cb.type = 'checkbox'; cb.checked = style.enabled
-      cb.onchange = () => { this.numberingService.updateLevelStyle(lv, { enabled: cb.checked }); this.onshow() }
+      if (readonly) cb.disabled = true
+      cb.onchange = () => { if (readonly) return; this.numberingService.updateLevelStyle(lv, { enabled: cb.checked }); this.onshow() }
       cbRow.appendChild(cb)
       const cbLabel = document.createElement('span'); cbLabel.textContent = '启用本级编号'; cbLabel.style.cssText = 'font-size:13px;'
       cbRow.appendChild(cbLabel)
@@ -4444,7 +4655,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const startInput = document.createElement('input')
     startInput.type = 'number'; startInput.value = String(style.startAt); startInput.min = '1'; startInput.max = '999'
     startInput.style.cssText = 'width:80px;padding:4px 6px;'
+    if (readonly) { startInput.disabled = true; startInput.style.opacity = '0.6' }
     startInput.onblur = () => {
+      if (readonly) return
       const n = parseInt(startInput.value, 10)
       if (!isNaN(n) && n >= 1 && n <= 999) { this.numberingService.updateLevelStyle(lv, { startAt: n }); this.onshow() }
       else { startInput.value = String(style.startAt) }
@@ -4459,6 +4672,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       form.appendChild(restartLabel)
       const restartSelect = document.createElement('select')
       restartSelect.style.cssText = 'width:100%;padding:4px 6px;'
+      if (readonly) restartSelect.disabled = true
       const noneOpt = document.createElement('option'); noneOpt.value = ''; noneOpt.textContent = '不重启（连续编号）'; noneOpt.selected = style.restartAfterLevel === null
       restartSelect.appendChild(noneOpt)
       for (let i = 1; i < lv; i++) {
@@ -4466,6 +4680,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         restartSelect.appendChild(opt)
       }
       restartSelect.onchange = () => {
+        if (readonly) return
         const parsed = restartSelect.value === '' ? null : Number(restartSelect.value) as HeadingLevel
         this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed } as any); this.onshow()
       }
@@ -4652,9 +4867,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const hdDirty = this.headingDraft != null && this.headingDraftOriginal != null
     results.push({ source: 'headingDraft', dirty: hdDirty, detail: hdDirty ? 'draft differs from saved' : 'OK' })
 
-    // formatDraft (format editor)
-    const fdDirty = this.formatDraft != null
-    results.push({ source: 'formatDraft', dirty: fdDirty, detail: fdDirty ? 'editing format' : 'OK' })
+    // formatDraft (format editor) — only dirty if differs from saved baseline
+    if (this.formatDraft && this.savedFormatBaseline) {
+      const fdDirty = JSON.stringify(this.formatDraft) !== JSON.stringify(this.savedFormatBaseline)
+      results.push({ source: 'formatDraft', dirty: fdDirty, detail: fdDirty ? 'differs from baseline' : 'OK' })
+    } else {
+      results.push({ source: 'formatDraft', dirty: this.formatDraft != null, detail: this.formatDraft ? 'no baseline (new format?)' : 'OK' })
+    }
 
     // headingLayoutDraft
     if (this.headingLayoutDraft && this.savedLayoutDraft) {
@@ -4709,7 +4928,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // hasDraft: only true when there are ACTUAL unsaved changes, not just initialized drafts.
     // headingDraft exists when renderCustomEditorCard initializes it for preset='custom',
     // but that does NOT mean there are unsaved changes.
-    const formatDirty = this.formatDraft != null
+    const formatDirty = this.formatDraft != null && this.savedFormatBaseline != null
+      && JSON.stringify(this.formatDraft) !== JSON.stringify(this.savedFormatBaseline)
     const numberingDirty = this.headingDraft != null && this.headingDraftOriginal != null
       && JSON.stringify(this.headingDraft) !== JSON.stringify(this.headingDraftOriginal)
     const layoutDirty = this.hasLayoutDirty()
@@ -4729,8 +4949,25 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // Only cancel headingDraft if it was actually modified (not just initialized by render)
       if (this.headingDraft && this.headingDraftOriginal
           && JSON.stringify(this.headingDraft) !== JSON.stringify(this.headingDraftOriginal)) {
-        this.headingDraft = null
-        this.headingDraftOriginal = null
+        // Restore format draft to baseline if editing a format
+        if (this.formatDraft && this.savedFormatBaseline) {
+          this.formatDraft = { ...this.savedFormatBaseline }
+          const fmtSettings = deepCloneSettings({
+            enabled: this.savedFormatBaseline.settings.enabled,
+            showLevelOneNumber: this.savedFormatBaseline.settings.showLevelOneNumber,
+            preset: 'custom' as const,
+            maxDepth: this.savedFormatBaseline.settings.maxDepth,
+            levels: this.savedFormatBaseline.settings.levels,
+            customDefinition: this.savedFormatBaseline.settings.levels,
+          } as any)
+          this.headingDraft = fmtSettings
+          this.headingDraftOriginal = deepCloneSettings(fmtSettings)
+          this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
+          this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
+        } else {
+          this.headingDraft = null
+          this.headingDraftOriginal = null
+        }
         cancelled = true
       }
       if (this.headingLayoutDraft && this.savedLayoutDraft) {
@@ -4738,9 +4975,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         cancelled = true
       }
       if (cancelled) {
-
-        this.selectedFormatId = null
-        this.formatDraft = null
         this.rerender()
         Notice.info('更改已取消')
       }
@@ -4749,12 +4983,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', right)
     saveBtn.textContent = '保存并应用'
     saveBtn.onclick = () => {
-      // Save format draft if editing
-      if (this.selectedFormatId && this.formatDraft && this.headingDraft) {
+      // Save format draft if editing (only for custom formats)
+      if (this.selectedFormatId && this.selectedFormatType === 'custom' && this.formatDraft && this.headingDraft) {
         this.saveFormatDraft()
       }
-      // Save numbering scope draft if any
-      if (this.headingDraft) {
+      // Save numbering scope draft if any (skip for system format viewing)
+      if (this.headingDraft && this.selectedFormatType !== 'built-in') {
         const scope = this.headingScope
         const key = scope === 'document' ? (docKey ?? null) : null
         this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
@@ -4773,7 +5007,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.headingLayoutDraft = null
       }
       this.selectedFormatId = null
+      this.selectedFormatType = null
       this.formatDraft = null
+      this.savedFormatBaseline = null
       this.rerender()
       Notice.info('设置已保存')
     }
