@@ -172,6 +172,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private selectedCardIsPreset = false
   /** Active tab in the custom editor */
   private customEditorTab: 'composition' | 'label' | 'behavior' = 'composition'
+  private selectedLayoutLevel: HeadingLevel | null = null
 
   /** Initialize the draft from persisted settings. */
   private initRangeDraft(): void {
@@ -1228,7 +1229,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Compute real numbering preview labels for each level
     const sampleTitles: Record<number, string> = { 1: '概述', 2: '研究背景', 3: '研究内容', 4: '数据来源', 5: '模块设计', 6: '补充说明' }
     let previewLabels: Record<number, string> = {}
-    let previewGaps: Record<number, string> = {}
+    let previewGapChars: Record<number, string> = {}
     try {
       const sampleHeadings: HeadingDescriptor[] = HEADING_LEVELS.map(lv => ({
         key: `layout-prev-h${lv}`,
@@ -1238,93 +1239,101 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const result = computeHeadingNumbering(sampleHeadings, s)
       for (const r of result) {
         previewLabels[r.level] = r.label
-        previewGaps[r.level] = r.labelGap === 'space' ? ' ' : ''
+        previewGapChars[r.level] = r.labelGap === 'space' ? ' ' : ''
       }
     } catch {
-      // Fallback
-      for (const lv of HEADING_LEVELS) { previewLabels[lv] = `H${lv}`; previewGaps[lv] = '' }
+      for (const lv of HEADING_LEVELS) { previewLabels[lv] = `H${lv}`; previewGapChars[lv] = '' }
     }
 
-    // Header row
-    const headerRow = el('div', 'inkchapter-layout-header-row', container)
-    ;['级别', '对齐方式', '首行缩进', '版式预览'].forEach(t => { const s = el('span','',headerRow); s.textContent = t })
+    const section = el('div', 'inkchapter-heading-layout-section', container)
+
+    // ── Header row with batch menu ──
+    const headerRow = el('div', 'inkchapter-heading-layout-header', section)
+    const headerLeft = el('div', '', headerRow)
+    headerLeft.style.cssText = 'display:flex;align-items:center;gap:8px;'
+    const title = el('span', '', headerLeft)
+    title.textContent = '标题排版'
+    title.style.cssText = 'font-weight:600;font-size:14px;'
+    const desc = el('span', '', headerLeft)
+    desc.textContent = 'H1–H6 对齐、缩进、间距配置'
+    desc.style.cssText = 'font-size:12px;color:var(--text-muted,#888);'
+
+    // Batch menu
+    const batchWrap = el('div', '', headerRow)
+    batchWrap.style.cssText = 'position:relative;'
+    const batchBtn = el('button', 'inkchapter-btn inkchapter-btn--small', batchWrap)
+    batchBtn.textContent = '批量设置 ▾'
+    batchBtn.onclick = () => {
+      this.openLayoutBatchMenu(batchWrap)
+    }
+
+    // ── Workspace: matrix + preview ──
+    const workspace = el('div', 'inkchapter-heading-layout-workspace', section)
+
+    // Left: settings matrix
+    const matrix = el('div', 'inkchapter-heading-layout-matrix', workspace)
+
+    // Matrix header
+    const mHeader = el('div', 'inkchapter-layout-matrix-header', matrix)
+    ;['级别', '对齐方式', '首行缩进', '标题间距'].forEach(t => { const s = el('span','',mHeader); s.textContent = t })
 
     const levels: Array<{ key: string; label: string }> = [
-      { key: 'h1', label: 'H1' },
-      { key: 'h2', label: 'H2' },
-      { key: 'h3', label: 'H3' },
-      { key: 'h4', label: 'H4' },
-      { key: 'h5', label: 'H5' },
-      { key: 'h6', label: 'H6' },
+      { key: 'h1', label: 'H1' }, { key: 'h2', label: 'H2' }, { key: 'h3', label: 'H3' },
+      { key: 'h4', label: 'H4' }, { key: 'h5', label: 'H5' }, { key: 'h6', label: 'H6' },
     ]
 
     for (const { key, label } of levels) {
       const lvKey = key as keyof import('../heading-numbering/heading-types').HeadingLayoutSettings
       const current = layouts?.[lvKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
+      const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
+      const currentGap = s.levels[lvNum]?.numberTitleSpacing ?? 'space'
+      const hasIndent = current.firstLineIndentEm >= 2
+      const isCenterOrRight = current.textAlign === 'center' || current.textAlign === 'right'
+      const isSelected = this.selectedLayoutLevel === lvNum
 
-      const row = el('div', 'inkchapter-layout-row', container)
+      const row = el('div', 'inkchapter-layout-matrix-row', matrix)
+      if (isSelected) row.classList.add('inkchapter-layout-matrix-row--selected')
 
-      const levelLabel = el('span', 'inkchapter-layout-level', row)
+      // Click row to select level (UI only)
+      row.onclick = () => {
+        this.selectedLayoutLevel = this.selectedLayoutLevel === lvNum ? null : lvNum
+        this.rerender()
+      }
+
+      const levelLabel = el('span', 'inkchapter-layout-matrix-level', row)
       levelLabel.textContent = label
 
-      // Alignment group (left/center/right as segmented buttons)
-      const alignWrap = el('div', '', row)
-      const alignGroup = el('div', 'inkchapter-layout-align-group', alignWrap)
-
-      const alignOptions: Array<{ mode: string; label: string }> = [
-        { mode: 'left', label: '居左' },
-        { mode: 'center', label: '居中' },
-        { mode: 'right', label: '居右' },
-      ]
-
-      for (const opt of alignOptions) {
+      // Alignment: [左] [中] [右]
+      const alignGroup = el('div', 'inkchapter-layout-matrix-align', row)
+      for (const opt of [{ m: 'left', lbl: '左' }, { m: 'center', lbl: '中' }, { m: 'right', lbl: '右' }]) {
         const btn = el('button') as HTMLButtonElement
-        btn.textContent = opt.label
-        btn.classList.add('inkchapter-layout-align-btn')
-
-        const isActive = opt.mode === current.textAlign
-        if (isActive) btn.classList.add('inkchapter-layout-align-btn--active')
-
-        btn.onclick = () => {
+        btn.textContent = opt.lbl
+        btn.classList.add('inkchapter-layout-matrix-btn')
+        if (opt.m === current.textAlign) btn.classList.add('inkchapter-layout-matrix-btn--active')
+        btn.onclick = (e) => {
+          e.stopPropagation()
           const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
-          this.numberingService.setHeadingLayout(lv, { textAlign: opt.mode as 'left' | 'center' | 'right', firstLineIndentEm: current.firstLineIndentEm })
+          this.numberingService.setHeadingLayout(lv, { textAlign: opt.m as 'left' | 'center' | 'right', firstLineIndentEm: current.firstLineIndentEm })
           this.rerender()
         }
-
         alignGroup.appendChild(btn)
       }
 
-      // Indent group (none/2chars as segmented buttons)
-      const indentWrap = el('div', '', row)
-      const indentGroup = el('div', 'inkchapter-layout-indent-group', indentWrap)
-
-      const indentOptions: Array<{ mode: string; label: string; indentEm: number }> = [
-        { mode: 'none', label: '无缩进', indentEm: 0 },
-        { mode: 'indent-2', label: '缩进2字符', indentEm: 2 },
-      ]
-
-      const hasIndent = current.firstLineIndentEm >= 2
-      const isCenterOrRight = current.textAlign === 'center' || current.textAlign === 'right'
-
-      for (const opt of indentOptions) {
+      // Indent: [无] [2字符]
+      const indentGroup = el('div', 'inkchapter-layout-matrix-indent', row)
+      for (const opt of [{ v: 0, lbl: '无' }, { v: 2, lbl: '2字符' }]) {
         const btn = el('button') as HTMLButtonElement
-        btn.textContent = opt.label
-        btn.classList.add('inkchapter-layout-indent-btn')
-
-        const isActive = (opt.indentEm === 0 && !hasIndent) || (opt.indentEm === 2 && hasIndent)
-        if (isActive) btn.classList.add('inkchapter-layout-indent-btn--active')
-
-        // Disable indent for center/right alignment
-        if (opt.indentEm === 2 && isCenterOrRight) {
-          btn.disabled = true
-          btn.title = '首行缩进仅对居左对齐有效'
-        }
-
-        btn.onclick = () => {
+        btn.textContent = opt.lbl
+        btn.classList.add('inkchapter-layout-matrix-btn')
+        const isActive = (opt.v === 0 && !hasIndent) || (opt.v === 2 && hasIndent)
+        if (isActive) btn.classList.add('inkchapter-layout-matrix-btn--active')
+        if (opt.v === 2 && isCenterOrRight) { btn.disabled = true; btn.title = '首行缩进仅对居左有效' }
+        btn.onclick = (e) => {
+          e.stopPropagation()
           const lv = parseInt(label.charAt(1), 10) as import('../heading-numbering/heading-types').HeadingLevel
           let newConfig: import('../heading-numbering/heading-types').HeadingLayoutConfig
-          if (opt.indentEm === 2) {
-            if (isCenterOrRight) return // blocked
+          if (opt.v === 2) {
+            if (isCenterOrRight) return
             newConfig = { textAlign: 'left', firstLineIndentEm: 2 }
           } else {
             newConfig = { textAlign: current.textAlign, firstLineIndentEm: 0 }
@@ -1332,69 +1341,169 @@ export class HeadingNumberingSettingTab extends SettingTab {
           this.numberingService.setHeadingLayout(lv, newConfig)
           this.rerender()
         }
-
         indentGroup.appendChild(btn)
       }
 
-      // ── Visual preview canvas ──
+      // Gap: [无间距] [一个空格]
+      const gapGroup = el('div', 'inkchapter-layout-matrix-gap', row)
+      for (const opt of [{ v: 'none', lbl: '无间距' }, { v: 'space', lbl: '一个空格' }]) {
+        const btn = el('button') as HTMLButtonElement
+        btn.textContent = opt.lbl
+        btn.classList.add('inkchapter-layout-matrix-btn')
+        if (currentGap === opt.v) btn.classList.add('inkchapter-layout-matrix-btn--active')
+        btn.onclick = (e) => {
+          e.stopPropagation()
+          this.ensureDraft()
+          const st = this.headingDraft!.levels[lvNum]; if (st) st.numberTitleSpacing = opt.v as NumberTitleSpacing
+          this.rerender()
+        }
+        gapGroup.appendChild(btn)
+      }
+    }
+
+    // Right: document preview
+    const preview = el('div', 'inkchapter-heading-layout-document-preview', workspace)
+    const previewTitle = el('div', 'inkchapter-layout-document-preview-title', preview)
+    previewTitle.textContent = '整页预览'
+
+    const previewPage = el('div', 'inkchapter-layout-document-preview-page', preview)
+
+    for (const { key, label } of levels) {
+      const lvKey = key as keyof import('../heading-numbering/heading-types').HeadingLayoutSettings
+      const current = layouts?.[lvKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
       const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
-      const numberLabel = previewLabels[lvNum] || `H${lvNum}`
-      const gap = previewGaps[lvNum] || ''
+      const currentGap = s.levels[lvNum]?.numberTitleSpacing ?? 'space'
+      const hasIndent = current.firstLineIndentEm >= 2
+      const numberLabel = previewLabels[lvNum] || ''
+      const gapChar = previewGapChars[lvNum] || ''
+      const isSelected = this.selectedLayoutLevel === lvNum
 
-      const previewWrap = el('div', 'inkchapter-layout-preview', row)
-      previewWrap.classList.add(`inkchapter-layout-preview--h${lvNum}`)
-
-      // Canvas = alignment positioner (left/center/right)
-      const canvas = el('div', 'inkchapter-layout-preview-canvas', previewWrap)
-      canvas.setAttribute('data-align', current.textAlign)
-
-      // Content wrapper = single indent target
-      const content = el('span', 'inkchapter-layout-preview-content', canvas)
-      if (hasIndent) content.classList.add('inkchapter-layout-preview-content--indent')
+      const pline = el('div', 'inkchapter-layout-document-preview-line', previewPage)
+      pline.setAttribute('data-level', String(lvNum))
+      pline.setAttribute('data-align', current.textAlign)
+      if (hasIndent) pline.setAttribute('data-indent', '2em')
+      if (isSelected) pline.classList.add('inkchapter-layout-document-preview-line--selected')
 
       if (numberLabel) {
-        const numSpan = el('span', 'inkchapter-layout-preview-number', content)
+        const numSpan = el('span', 'inkchapter-layout-document-preview-number', pline)
         numSpan.textContent = numberLabel
-
-        const gapSpan = el('span', 'inkchapter-layout-preview-gap', content)
-        gapSpan.textContent = gap
-
-        const titleSpan = el('span', 'inkchapter-layout-preview-title', content)
+        const gapSpan = el('span', '', pline)
+        gapSpan.textContent = gapChar
+        const titleSpan = el('span', 'inkchapter-layout-document-preview-title', pline)
         titleSpan.textContent = sampleTitles[lvNum] || '标题'
       } else {
-        content.textContent = sampleTitles[lvNum] || '标题'
+        pline.textContent = sampleTitles[lvNum] || '标题'
       }
     }
 
-    // Action buttons at bottom-right
-    const actionsRow = el('div', 'inkchapter-layout-actions', container)
-    actionsRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;justify-content:flex-end;'
+    // ── Bottom sticky action bar ──
+    const actionBar = el('div', 'inkchapter-heading-layout-actionbar', section)
+    const isDirty = this.headingDraft != null
+    const statusEl = el('span', '', actionBar)
+    statusEl.textContent = isDirty ? '● 有未保存的更改' : '已保存'
+    statusEl.style.cssText = `font-size:12px;${isDirty ? 'color:#e67e22;' : 'color:var(--text-muted,#888);'}`
 
-    const applyToSubsequentBtn = el('button', 'inkchapter-btn') as HTMLButtonElement
-    const activeLevel = this.findActiveLayoutLevel()
-    applyToSubsequentBtn.textContent = activeLevel
-      ? `应用 H${activeLevel} 设置到后续级别`
-      : '应用到后续级别'
-    applyToSubsequentBtn.title = '将当前级别的排版设置复制到所有更高级别'
-    applyToSubsequentBtn.onclick = () => {
-      const activeLevel = this.findActiveLayoutLevel()
-      if (activeLevel) {
-        this.numberingService.applyLayoutToSubsequentLevels(activeLevel)
+    const actionsRight = el('div', '', actionBar)
+    actionsRight.style.cssText = 'display:flex;gap:8px;'
+
+    const cancelBtn = el('button', 'inkchapter-btn', actionsRight) as HTMLButtonElement
+    cancelBtn.textContent = '取消更改'
+    if (!isDirty) cancelBtn.disabled = true
+    cancelBtn.onclick = () => {
+      if (this.headingDraft) {
+        this.headingDraft = null
+        this.headingDraftOriginal = null
+        this.editorExpanded = false
+        this.selectedFormatId = null
+        this.formatDraft = null
         this.rerender()
-      } else {
-        Notice.info('请先选择某个级别的排版方案')
+        Notice.info('更改已取消')
       }
     }
-    actionsRow.appendChild(applyToSubsequentBtn)
 
-    const resetAllBtn = el('button', 'inkchapter-btn') as HTMLButtonElement
-    resetAllBtn.textContent = '全部恢复默认'
-    resetAllBtn.title = '将所有标题排版恢复为居左不缩进'
-    resetAllBtn.onclick = () => {
-      this.numberingService.resetAllHeadingLayouts()
+    const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', actionsRight)
+    saveBtn.textContent = '保存并应用'
+    if (!isDirty) saveBtn.classList.add('inkchapter-btn--disabled')
+    saveBtn.onclick = () => {
+      const docKey = this.numberingService.getDocumentKey()
+      if (this.selectedFormatId && this.formatDraft && this.headingDraft) {
+        this.saveFormatDraft()
+      }
+      if (this.headingDraft) {
+        const scope = this.headingScope
+        const key = scope === 'document' ? (docKey ?? null) : null
+        this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
+        this.headingDraft = null
+        this.headingDraftOriginal = null
+      }
+      this.editorExpanded = false
+      this.selectedFormatId = null
+      this.formatDraft = null
       this.rerender()
+      Notice.info('设置已保存')
     }
-    actionsRow.appendChild(resetAllBtn)
+  }
+
+  // ── Batch menu ──
+  private openLayoutBatchMenu(anchorEl: HTMLElement): void {
+    this.closeMenu()
+    const menu = document.createElement('div')
+    menu.className = 'inkchapter-menu-overlay'
+    menu.style.position = 'absolute'
+    menu.style.top = '100%'
+    menu.style.right = '0'
+    menu.style.width = '220px'
+    menu.style.zIndex = '2000'
+    menu.style.pointerEvents = 'auto'
+    anchorEl.appendChild(menu)
+
+    const items: Array<{ label: string; action: () => void; disabled?: boolean }> = [
+      { label: '全部左对齐', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'left', firstLineIndentEm: 0 }); this.rerender() } },
+      { label: '全部居中', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'center', firstLineIndentEm: 0 }); this.rerender() } },
+      { label: '全部右对齐', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'right', firstLineIndentEm: 0 }); this.rerender() } },
+      { label: '全部无缩进', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) { const layoutsList = this.numberingService.getEffectiveHeadingLayouts()!; const c = layoutsList[('h' + lv) as keyof typeof layoutsList]; this.numberingService.setHeadingLayout(lv, { textAlign: c?.textAlign ?? 'left', firstLineIndentEm: 0 }) }; this.rerender() } },
+      { label: '全部缩进2字符', action: () => { for (let lv = 1 as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) this.numberingService.setHeadingLayout(lv, { textAlign: 'left', firstLineIndentEm: 2 }); this.rerender() } },
+      { label: '全部无间距', action: () => { this.ensureDraft(); for (const lv of HEADING_LEVELS) { const st = this.headingDraft!.levels[lv]; if (st) st.numberTitleSpacing = 'none' }; this.rerender() } },
+      { label: '全部一个空格', action: () => { this.ensureDraft(); for (const lv of HEADING_LEVELS) { const st = this.headingDraft!.levels[lv]; if (st) st.numberTitleSpacing = 'space' }; this.rerender() } },
+      { label: this.selectedLayoutLevel ? `应用 H${this.selectedLayoutLevel} 排版到后续级别` : '应用当前级到后续级别', action: () => {
+        const al = this.selectedLayoutLevel
+        if (al && al < 6) {
+          this.ensureDraft()
+          const layouts = this.numberingService.getEffectiveHeadingLayouts()
+          const base = layouts?.[`h${al}` as keyof typeof layouts] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
+          const baseGap = this.headingSettings.levels[al as HeadingLevel]?.numberTitleSpacing ?? 'space'
+          for (let lv = (al + 1) as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) {
+            this.numberingService.setHeadingLayout(lv, { textAlign: base.textAlign, firstLineIndentEm: base.firstLineIndentEm })
+            const st = this.headingDraft!.levels[lv]; if (st) st.numberTitleSpacing = baseGap
+          }
+          this.rerender()
+        } else if (al === 6) {
+          Notice.info('H6 已是最后一级')
+        } else {
+          Notice.info('请先在左侧点击选择某个级别')
+        }
+      }, disabled: !this.selectedLayoutLevel || this.selectedLayoutLevel >= 6 },
+      { label: '全部恢复默认', action: () => { this.numberingService.resetAllHeadingLayouts(); this.rerender() } },
+    ]
+
+    for (const item of items) {
+      const mi = el('div', 'inkchapter-menu-item', menu)
+      mi.textContent = item.label
+      if (item.disabled) mi.setAttribute('aria-disabled', 'true')
+      mi.onclick = () => {
+        menu.remove()
+        item.action()
+      }
+    }
+
+    // Close on outside click
+    const closeListener = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove()
+        document.removeEventListener('mousedown', closeListener)
+      }
+    }
+    setTimeout(() => document.addEventListener('mousedown', closeListener), 0)
   }
 
   private findActiveLayoutLevel(): import('../heading-numbering/heading-types').HeadingLevel | null {
@@ -2442,115 +2551,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const text = document.createTextNode(` ${label}`)
     wrapper.appendChild(text)
     return radio
-  }
-
-  // ── Scope bar & confirm/cancel ──────────────────
-
-  /** Render a fixed H1-H6 grid for number-to-title spacing configuration. */
-  private renderNumberTitleSpacingGrid(container: HTMLElement, draft: HeadingNumberingSettings): void {
-    const section = el('div', 'inkchapter-spacing-section', container)
-    
-    // Section header with bulk actions
-    const headerRow = el('div', 'inkchapter-section-header', section)
-    const titleWrap = el('div', '', headerRow)
-    const title = el('div', 'inkchapter-section-title', titleWrap)
-    title.textContent = '序号与标题间距'
-    const desc = el('div', 'inkchapter-section-desc', titleWrap)
-    desc.textContent = '控制各级标题序号与标题文本之间是否保留一个空格'
-
-    // Bulk action buttons
-    const allNone = HEADING_LEVELS.every(lv => (draft.levels[lv]?.numberTitleSpacing ?? 'space') === 'none')
-    const allSpace = HEADING_LEVELS.every(lv => (draft.levels[lv]?.numberTitleSpacing ?? 'space') === 'space')
-    
-    const bulkRow = el('div', 'inkchapter-spacing-bulk-row', headerRow)
-    const noneAllBtn = el('button', 'inkchapter-spacing-bulk-btn', bulkRow) as HTMLButtonElement
-    noneAllBtn.textContent = '全部无间距'
-    if (allNone) noneAllBtn.classList.add('inkchapter-spacing-bulk-btn--active')
-    noneAllBtn.onclick = () => {
-      for (const lv of HEADING_LEVELS) {
-        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'none'
-      }
-      if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
-      this.rerender()
-    }
-
-    const spaceAllBtn = el('button', 'inkchapter-spacing-bulk-btn', bulkRow) as HTMLButtonElement
-    spaceAllBtn.textContent = '全部一个空格'
-    if (allSpace) spaceAllBtn.classList.add('inkchapter-spacing-bulk-btn--active')
-    spaceAllBtn.onclick = () => {
-      for (const lv of HEADING_LEVELS) {
-        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'space'
-      }
-      if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
-      this.rerender()
-    }
-
-    // Compute real preview labels using numbering engine
-    const sampleHeadings: HeadingDescriptor[] = HEADING_LEVELS.map(lv => ({
-      key: `sample-h${lv}`,
-      level: lv,
-      text: lv === 1 ? '摘要' : lv === 2 ? '背景' : lv === 3 ? '研究内容' : lv === 4 ? '数据来源' : lv === 5 ? '模块说明' : '补充说明',
-    }))
-    let previewLabels: Record<number, string> = {}
-    try {
-      const result = computeHeadingNumbering(sampleHeadings, draft)
-      for (const r of result) {
-        previewLabels[r.level] = r.label
-      }
-    } catch {
-      // Fallback: simple H1/H2/etc
-      for (const lv of HEADING_LEVELS) previewLabels[lv] = `H${lv}`
-    }
-
-    // Column header
-    const colHeader = el('div', 'inkchapter-spacing-header-row', section)
-    ;['级别', '间距设置', '实际效果'].forEach(t => { const s = el('span','',colHeader); s.textContent = t })
-
-    for (const lv of HEADING_LEVELS) {
-      const style = draft.levels[lv]
-      if (!style) continue
-      const currentGap = style.numberTitleSpacing ?? 'space'
-
-      const row = el('div', 'inkchapter-spacing-row', section)
-
-      // Disabled state
-      if (!style.enabled) {
-        row.classList.add('inkchapter-spacing-row--disabled')
-      }
-
-      const levelLabel = el('span', 'inkchapter-spacing-level', row)
-      levelLabel.textContent = `H${lv}`
-
-      // Segmented control: 无间距 | 一个空格
-      const segWrap = el('div', '', row)
-      const segmented = el('div', 'inkchapter-spacing-segmented', segWrap)
-
-      const noneBtn = el('button', 'inkchapter-spacing-seg-btn', segmented) as HTMLButtonElement
-      noneBtn.textContent = '无间距'
-      if (currentGap === 'none') noneBtn.classList.add('inkchapter-spacing-seg-btn--active')
-      noneBtn.onclick = () => {
-        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'none'
-        if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
-        this.rerender()
-      }
-
-      const spaceBtn = el('button', 'inkchapter-spacing-seg-btn', segmented) as HTMLButtonElement
-      spaceBtn.textContent = '一个空格'
-      if (currentGap === 'space') spaceBtn.classList.add('inkchapter-spacing-seg-btn--active')
-      spaceBtn.onclick = () => {
-        const st = draft.levels[lv]; if (st) st.numberTitleSpacing = 'space'
-        if (this.headingDraft) this.headingDraft = deepCloneSettings(this.headingDraft)
-        this.rerender()
-      }
-
-      // Preview: real label + gap + sample text
-      const prevSpan = el('span', 'inkchapter-spacing-preview', row)
-      const label = previewLabels[lv] || `H${lv}`
-      const gap = currentGap === 'space' ? ' ' : ''
-      const sampleTexts: Record<number, string> = { 1: '摘要', 2: '背景', 3: '研究内容', 4: '数据来源', 5: '模块说明', 6: '补充说明' }
-      const sampleText = style.enabled ? `${label}${gap}${sampleTexts[lv] || '标题'}` : `(该级已关闭)`
-      prevSpan.textContent = sampleText
-    }
   }
 
   // ── Scope bar & confirm/cancel ──────────────────
@@ -3905,11 +3905,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.previewEl = el('div', 'inkchapter-preview', previewSticky)
     this.updatePreview()
     this.miniPreviewEls.clear()
-
-    // Section divider before spacing
-    const spacingDivider = el('div', 'inkchapter-section-divider', body)
-    // Spacing grid
-    this.renderNumberTitleSpacingGrid(body, draft)
   }
 
   private renderEditorEditHeader(

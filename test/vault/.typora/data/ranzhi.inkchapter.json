@@ -2776,7 +2776,7 @@
           }
         },
         "doc.md": {
-          "updatedAt": 1785917427646,
+          "updatedAt": 1785921265920,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
@@ -3337,7 +3337,7 @@
             },
             "headingLayouts": {
               "h1": {
-                "textAlign": "left",
+                "textAlign": "center",
                 "firstLineIndentEm": 0
               },
               "h2": {
@@ -3346,19 +3346,19 @@
               },
               "h3": {
                 "textAlign": "left",
-                "firstLineIndentEm": 2
+                "firstLineIndentEm": 0
               },
               "h4": {
                 "textAlign": "left",
-                "firstLineIndentEm": 2
+                "firstLineIndentEm": 0
               },
               "h5": {
                 "textAlign": "left",
-                "firstLineIndentEm": 2
+                "firstLineIndentEm": 0
               },
               "h6": {
                 "textAlign": "left",
-                "firstLineIndentEm": 2
+                "firstLineIndentEm": 0
               }
             }
           }
