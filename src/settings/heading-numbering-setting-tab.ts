@@ -176,8 +176,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private managePanelOpen = false
 
   // ── Layout collapse & selection states ──────────
-  /** Whether the custom format editor section is expanded. */
-  private editorExpanded = false
   /** Currently selected card key (preset key or format id) for the format summary. */
   private selectedCardKey: string | null = null
   /** Whether the selected card is a system preset (true) or user format (false). */
@@ -748,7 +746,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private startEditingFormat(format: CustomNumberingFormat): void {
     this.cancelDrag()
-    this.editorExpanded = true
     // Create heading settings from format (deep clone levels to avoid mutations)
     this.selectedFormatId = format.id
     this.formatDraft = { ...format }
@@ -1512,7 +1509,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // Also clear numbering draft state if it was set (dirty from gap edits via old path)
       this.headingDraft = null
       this.headingDraftOriginal = null
-      this.editorExpanded = false
       this.selectedFormatId = null
       this.formatDraft = null
 
@@ -4047,31 +4043,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const card = el('div', 'inkchapter-card', this.containerEl)
     const header = el('div', 'inkchapter-card-header', card)
-    header.setAttribute('tabindex', '0')
     const title = el('div', 'inkchapter-card-title', header)
     title.textContent = '格式内容设置'
     const desc = el('div', 'inkchapter-card-desc', header)
     desc.textContent = '编辑当前格式的编号组合、标签、行为与标题间距'
 
-    header.onclick = () => {
-      this.editorExpanded = !this.editorExpanded
-      if (this.editorExpanded && isEditing) {
-        this.ensureDraft()
-        this.ensureAllLevelsHaveCurrentSegment(this.headingDraft!)
-      }
-      this.rerender()
-    }
-    header.onkeydown = (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); header.click() }
-    }
-
-    if (!this.editorExpanded) return
-
     const body = el('div', 'inkchapter-card-body', card)
 
     if (!isEditing) {
       const hint = el('div', '', body)
-      hint.textContent = '选择一个系统预设或自定义格式后，点击"编辑格式"开始编辑。也可以点击"+ 新建格式"创建新格式。'
+      hint.textContent = '请选择一个自定义格式进行编辑。从格式卡片点击"编辑"进入，或点击"+ 新建格式"创建新格式。'
       hint.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
       return
     }
@@ -4170,7 +4151,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const cancelBtn = el('button', 'inkchapter-btn', header)
       cancelBtn.textContent = '取消编辑'
       cancelBtn.onclick = () => {
-        this.editorExpanded = false
+
         this.cancelFormatEditing()
       }
     } else {
@@ -4184,7 +4165,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const cancelBtn = el('button', 'inkchapter-btn', header)
       cancelBtn.textContent = '取消编辑'
       cancelBtn.onclick = () => {
-        this.editorExpanded = false
+
         this.rerender()
       }
     }
@@ -4690,7 +4671,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         cancelled = true
       }
       if (cancelled) {
-        this.editorExpanded = false
+
         this.selectedFormatId = null
         this.formatDraft = null
         this.rerender()
@@ -4724,7 +4705,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.savedLayoutDraft = deepCloneLayoutDraft(d)
         this.headingLayoutDraft = null
       }
-      this.editorExpanded = false
       this.selectedFormatId = null
       this.formatDraft = null
       this.rerender()
