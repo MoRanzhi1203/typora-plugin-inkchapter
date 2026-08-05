@@ -48,6 +48,7 @@ const NON_OUTLINE_SELECTORS = [
 ]
 
 const NUMBER_ATTR = 'data-inkchapter-number'
+const GAP_ATTR = 'data-inkchapter-number-gap'
 
 /** Set to false to silence outline debug logs in production. */
 const OUTLINE_DEBUG = false
@@ -603,20 +604,32 @@ export function matchHeadingsToOutline(
 // ── Data attribute operations ─────────────────────────
 
 export function applyNumberingAttributes(
-  matches: Array<{ element: HTMLElement; label: string }>,
+  matches: Array<{ element: HTMLElement; label: string; labelGap?: string }>,
 ): { applied: number; updated: number; removed: number } {
   let applied = 0, updated = 0
 
-  for (const { element, label } of matches) {
+  for (const { element, label, labelGap } of matches) {
     const current = element.getAttribute(NUMBER_ATTR)
+    const gapValue = labelGap === 'space' ? 'space' : null
     if (label) {
-      if (current === label) continue
+      if (current === label) {
+        // Label unchanged — still update gap if needed
+        const currentGap = element.getAttribute(GAP_ATTR)
+        if (currentGap !== (gapValue || '')) {
+          if (gapValue) element.setAttribute(GAP_ATTR, gapValue)
+          else element.removeAttribute(GAP_ATTR)
+        }
+        continue
+      }
       if (current !== null) updated++
       else applied++
       element.setAttribute(NUMBER_ATTR, label)
+      if (gapValue) element.setAttribute(GAP_ATTR, gapValue)
+      else element.removeAttribute(GAP_ATTR)
     } else {
       if (current !== null) {
         element.removeAttribute(NUMBER_ATTR)
+        element.removeAttribute(GAP_ATTR)
         applied++
       }
     }
@@ -692,6 +705,7 @@ export function fullSyncOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
   callback: (log: string) => void,
+  labelGaps?: readonly string[],
 ): SyncResult {
   const root = findOutlineRoot()
   callback(`rootFound=${String(!!root)}`)
@@ -711,7 +725,7 @@ export function fullSyncOutline(
   callback(`matchedCount=${matches.length} (id=${idCount} text=${textCount} idx=${idxCount})`)
 
   const attrResult = applyNumberingAttributes(
-    matches.map(m => ({ element: m.element, label: m.label }))
+    matches.map((m, i) => ({ element: m.element, label: m.label, labelGap: labelGaps?.[i] ?? '' }))
   )
   callback(`attributeAppliedCount=${attrResult.applied + attrResult.updated}`)
 
@@ -737,6 +751,7 @@ export function fullSyncOutline(
 export function quickSyncOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
+  labelGaps?: readonly string[],
 ): { matched: number; applied: number } {
   // Try visible root first, then fall back to relaxed (hidden) root
   let root = findOutlineRoot()
@@ -760,7 +775,7 @@ export function quickSyncOutline(
   if (matches.length === 0) return { matched: 0, applied: 0 }
 
   const attrResult = applyNumberingAttributes(
-    matches.map(m => ({ element: m.element, label: m.label }))
+    matches.map((m, i) => ({ element: m.element, label: m.label, labelGap: labelGaps?.[i] ?? '' }))
   )
 
   // Sync bold state on numbering prefixes to match title text boldness

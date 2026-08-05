@@ -103,6 +103,7 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
     levelTemplate: createDefaultLevelTemplate('arabic'),
     multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    numberTitleSpacing: 'space' as const,
     ...overrides,
   }
 }

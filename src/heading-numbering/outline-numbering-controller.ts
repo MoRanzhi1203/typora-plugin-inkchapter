@@ -33,6 +33,7 @@ interface OutlineNumberCache {
   revision: number
   headings: readonly HeadingDescriptor[]
   labels: readonly string[]
+  labelGaps: readonly string[]
 }
 
 /** Event chain entry for structured logging. */
@@ -72,7 +73,7 @@ export class OutlineNumberingController {
   private rafId: number | null = null
   private isObserverActive = false
   private isWriting = false
-  private cache: OutlineNumberCache = { documentKey: '', revision: 0, headings: [], labels: [] }
+  private cache: OutlineNumberCache = { documentKey: '', revision: 0, headings: [], labels: [], labelGaps: [] }
   private currentDocumentKey = ''
   private renderVersion = 0
 
@@ -111,7 +112,7 @@ export class OutlineNumberingController {
     clearAllNumberingAttributes(root)
     clearFileTreeNumberingAttributes()
     clearOutlineNumberBoldStyle()
-    this.cache = { documentKey: '', revision: 0, headings: [], labels: [] }
+    this.cache = { documentKey: '', revision: 0, headings: [], labels: [], labelGaps: [] }
   }
 
   /** Get cached headings for level mapping (used by collapse depth filter). */
@@ -158,6 +159,7 @@ export class OutlineNumberingController {
   syncAfterRefresh(
     headings: readonly HeadingDescriptor[],
     labels: readonly string[],
+    labelGaps?: readonly string[],
   ): void {
     const capturedVersion = this.getRenderVersion()
     const capturedDocKey = this.currentDocumentKey
@@ -168,6 +170,7 @@ export class OutlineNumberingController {
       revision: this.cache.revision + 1,
       headings,
       labels,
+      labelGaps: labelGaps ?? [],
     }
 
     this.recordEvent('outline:cache-updated', {
@@ -186,7 +189,7 @@ export class OutlineNumberingController {
 
   /** Full sync with diagnostic output (for manual command). */
   manualSync(callback: (log: string) => void): SyncResult {
-    return fullSyncOutline(this.cache.headings, this.cache.labels, callback)
+    return fullSyncOutline(this.cache.headings, this.cache.labels, callback, this.cache.labelGaps)
   }
 
   /** Run diagnostic probe (for manual command). */
@@ -416,7 +419,7 @@ export class OutlineNumberingController {
 
       this.isWriting = true
       try {
-        const result = quickSyncOutline(this.cache.headings, this.cache.labels)
+        const result = quickSyncOutline(this.cache.headings, this.cache.labels, this.cache.labelGaps)
         const headingCount = this.cache.headings.length
         const labelCount = this.cache.labels.length
         EVT_LOG(`[InkChapter OUTLINE] apply result: matched=${result.matched} applied=${result.applied} headings=${headingCount} labels=${labelCount}`)
@@ -510,7 +513,7 @@ export class OutlineNumberingController {
       if (hasChildListChange) {
         this.scheduleSync(() => {
           if (this.cache.headings.length > 0) {
-            quickSyncOutline(this.cache.headings, this.cache.labels)
+            quickSyncOutline(this.cache.headings, this.cache.labels, this.cache.labelGaps)
           }
         })
       }
