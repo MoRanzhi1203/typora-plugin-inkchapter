@@ -18,6 +18,7 @@ import type {
   FormatBasedOn,
   BuiltInPresetId,
   HeadingNumberingDocumentOverride,
+  NumberTitleSpacing,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
@@ -2552,6 +2553,87 @@ export class HeadingNumberingSettingTab extends SettingTab {
     row.appendChild(input)
   }
 
+  private addSpacingRadio(
+    container: HTMLElement,
+    value: string,
+    label: string,
+    currentValue: string,
+    lv: HeadingLevel,
+    onChange?: () => void,
+  ): HTMLInputElement {
+    const radio = document.createElement('input')
+    radio.type = 'radio'
+    radio.name = `inkchapter-spacing-h${lv}`
+    radio.value = value
+    radio.checked = currentValue === value
+    radio.setAttribute('role', 'radio')
+    radio.setAttribute('aria-checked', String(currentValue === value))
+    radio.style.cssText = 'margin-right:4px;cursor:pointer;'
+    radio.onchange = () => {
+      if (radio.checked) {
+        if (onChange) {
+          onChange()
+        } else {
+          // Fallback for non-draft contexts (should not normally be reached)
+          this.numberingService.updateLevelStyle(lv, { numberTitleSpacing: value as NumberTitleSpacing })
+        }
+        this.onshow()
+      }
+    }
+
+    const wrapper = el('label', '', container)
+    wrapper.style.cssText = 'display:inline-flex;align-items:center;cursor:pointer;font-size:13px;'
+    wrapper.appendChild(radio)
+    const text = document.createTextNode(` ${label}`)
+    wrapper.appendChild(text)
+    return radio
+  }
+
+  // ── Scope bar & confirm/cancel ──────────────────
+
+  /** Render a fixed H1-H6 grid for number-to-title spacing configuration. */
+  private renderNumberTitleSpacingGrid(container: HTMLElement, draft: HeadingNumberingSettings): void {
+    const section = el('div', 'inkchapter-template-section', container)
+    const title = el('div', 'inkchapter-format-header', section)
+    title.textContent = '序号与标题间距'
+
+    for (const lv of HEADING_LEVELS) {
+      const style = draft.levels[lv]
+      if (!style) continue
+      const currentGap = style.numberTitleSpacing ?? 'space'
+
+      const row = el('div', 'inkchapter-spacing-row', section)
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:4px 0;'
+
+      const levelLabel = el('span', '', row)
+      levelLabel.textContent = `H${lv}`
+      levelLabel.style.cssText = 'font-weight:600;width:30px;'
+
+      // Radio group for this level
+      const group = el('div', '', row)
+      group.setAttribute('role', 'radiogroup')
+      group.setAttribute('aria-label', `H${lv} 序号与标题间距`)
+      group.style.cssText = 'display:flex;gap:16px;margin-right:24px;'
+
+      // Draft-only onChange: modify the draft's level style, never the service
+      const capLv = lv
+      this.addSpacingRadio(group, 'none', '无间距', currentGap, lv, () => {
+        const st = draft.levels[capLv]
+        if (st) st.numberTitleSpacing = 'none'
+      })
+      this.addSpacingRadio(group, 'space', '一个空格', currentGap, lv, () => {
+        const st = draft.levels[capLv]
+        if (st) st.numberTitleSpacing = 'space'
+      })
+
+      // Preview
+      const prevSpan = el('span', '', row)
+      prevSpan.style.cssText = 'font-size:12px;color:var(--text-muted,#888);'
+      const gap = currentGap === 'space' ? ' ' : ''
+      prevSpan.textContent = `示例：H${lv}${gap}示例标题`
+    }
+  }
+
   // ── Scope bar & confirm/cancel ──────────────────
 
   private ensureDraft(): void {
@@ -3920,6 +4002,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.previewEl = el('div', 'inkchapter-preview', previewSticky)
     this.updatePreview()
     this.miniPreviewEls.clear()
+
+    // ── H1-H6 number-to-title spacing grid ──
+    this.renderNumberTitleSpacingGrid(body, draft)
   }
 
   private renderEditorEditHeader(

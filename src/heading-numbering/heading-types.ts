@@ -8,7 +8,10 @@ export interface HeadingDescriptor {
 
 export interface NumberedHeading extends HeadingDescriptor {
   counters: readonly number[]
+  /** Semantic number label (without gap). Example: "一、", "1.1", "第一章" */
   label: string
+  /** Title gap character: " " (space) or "" (none). Applied at rendering boundary only. */
+  labelGap: string
 }
 
 // ── Numbering style types ────────────────────────────────
@@ -162,11 +165,16 @@ export interface HeadingLevelStyle {
   multilevelFormatVariants: MultilevelFormatVariants
   /** Layer 2 (schemaVersion >= 8): Contextual composition with per-reference appearance. */
   contextualFormatVariants: ContextualFormatVariants
+
+  // ── Number-to-title spacing ──────
+  numberTitleSpacing?: NumberTitleSpacing
 }
 
 // ── Heading layout ───────────────────────────────────────
 
 export type HeadingTextAlign = 'left' | 'center' | 'right'
+
+export type NumberTitleSpacing = 'none' | 'space'
 
 export interface HeadingLayoutConfig {
   textAlign: HeadingTextAlign

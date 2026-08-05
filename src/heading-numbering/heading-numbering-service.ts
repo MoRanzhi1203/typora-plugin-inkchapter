@@ -26,7 +26,7 @@ import type {
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
 import { computeHeadingNumbering } from './numbering-engine'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
-import { decimalHierarchicalFormatter } from './numbering-formatter'
+import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
@@ -1387,6 +1387,10 @@ export class HeadingNumberingService {
       const diff = this.adapter.applyNumberingDiff(labels)
       this.renderedStates = this.adapter.buildRenderedStates(labels)
 
+      // Apply per-heading label gaps (number-to-title spacing)
+      const gaps = extractLabelGaps(numbered)
+      this.adapter.applyLabelGaps(gaps)
+
       // Snapshot apply-diff
       const headingEls = this.adapter.getEditorRoot()?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []
       const diffEntries: ApplyDiffEntry[] = []
@@ -1404,7 +1408,7 @@ export class HeadingNumberingService {
       snapshotApplyDiff(labels, diffEntries, labels.length, headingEls.length)
 
       // Sync outline sidebar numbering
-      this.outlineController.syncAfterRefresh(headings, labels)
+      this.outlineController.syncAfterRefresh(headings, labels, gaps)
 
       // Output H2 diagnostic in dev mode (first load only)
       if (reason === 'initial-load' || reason === 'file-open') {

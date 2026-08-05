@@ -11,6 +11,11 @@ export function formatNumberedHeadings(
   return headings.map((h) => h.label)
 }
 
+/** Extract label gaps from NumberedHeading results for DOM attribution. */
+export function extractLabelGaps(headings: NumberedHeading[]): string[] {
+  return headings.map((h) => h.labelGap)
+}
+
 export interface NumberingFormatter {
   format(headings: NumberedHeading[], settings: HeadingNumberingSettings): string[]
 }

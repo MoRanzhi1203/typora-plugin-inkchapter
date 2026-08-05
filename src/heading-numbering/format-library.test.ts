@@ -32,6 +32,7 @@ import type {
   HeadingLevelStyle,
   FormatBasedOn,
   BuiltInPresetId,
+  ContextualFormatSegment,
 } from './heading-types'
 import { HEADING_LEVELS, generateStableId, BUILT_IN_PRESET_IDS } from './heading-types'
 import { getPresetLevels } from './presets'
@@ -757,5 +758,153 @@ describe('migrateFormatLibrary v2 (version field)', () => {
     // Already at v2 — should not touch formats
     // (in real flow, migrateFormatLibrary only runs on load, so v2 means already migrated)
     expect(migratedLib.version).toBe(2)
+  })
+})
+
+// ── Number-to-title spacing tests ──────────────────────
+
+import { computeHeadingNumbering } from './numbering-engine'
+import type { HeadingDescriptor, NumberTitleSpacing } from './heading-types'
+
+function makeHeading(text: string, level: HeadingLevel, key?: string): HeadingDescriptor {
+  return { key: key ?? generateStableId(), text, level }
+}
+
+function makeSpacingTestSettings(spacing: NumberTitleSpacing): import('./heading-types').HeadingNumberingSettings {
+  const levels: Record<HeadingLevel, HeadingLevelStyle> = {} as any
+  for (const lv of HEADING_LEVELS) {
+    // Build a hierarchical contextual format: parent refs with '.' suffix
+    const contextSegments: ContextualFormatSegment[] = []
+    for (let p = 1; p <= lv; p++) {
+      contextSegments.push({
+        id: generateStableId(),
+        type: 'level-reference',
+        level: p as HeadingLevel,
+        appearance: { tokenStyle: 'arabic' as const, prefix: '', suffix: '' },
+      })
+      if (p < lv) {
+        contextSegments.push({
+          id: generateStableId(),
+          type: 'literal',
+          value: '.',
+        })
+      }
+    }
+    levels[lv] = {
+      enabled: true,
+      tokenStyle: 'arabic',
+      includeParents: false,
+      prefix: '',
+      suffix: '',
+      separator: '.',
+      startAt: 1,
+      restartAfterLevel: lv === 1 ? null : (lv - 1) as HeadingLevel,
+      formatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      levelTemplate: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+      multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      contextualFormatVariants: {
+        withLevelOne: contextSegments as any,
+        withoutLevelOne: lv === 1 ? [] : contextSegments.filter(s => s.type === 'literal' || (s.type === 'level-reference' && s.level !== 1)) as any,
+      },
+      numberTitleSpacing: spacing,
+    }
+  }
+  return {
+    enabled: true,
+    showLevelOneNumber: true,
+    preset: 'custom',
+    maxDepth: 6 as HeadingLevel,
+    levels,
+  }
+}
+
+describe('numberTitleSpacing in label generation', () => {
+  it('adds gap="space" to label when spacing is space', () => {
+    const settings = makeSpacingTestSettings('space')
+    const headings: HeadingDescriptor[] = [
+      makeHeading('Overview', 1 as HeadingLevel),
+      makeHeading('Background', 2 as HeadingLevel),
+    ]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].label).toBe('1')
+    expect(result[0].labelGap).toBe('space')
+    expect(result[1].label).toBe('1.1')
+    expect(result[1].labelGap).toBe('space')
+  })
+
+  it('sets gap="none" when spacing is none', () => {
+    const settings = makeSpacingTestSettings('none')
+    const headings: HeadingDescriptor[] = [
+      makeHeading('Overview', 1 as HeadingLevel),
+      makeHeading('Background', 2 as HeadingLevel),
+    ]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].label).toBe('1')
+    expect(result[0].labelGap).toBe('none')
+    expect(result[1].label).toBe('1.1')
+    expect(result[1].labelGap).toBe('none')
+  })
+
+  it('uses per-level spacing independently', () => {
+    const settings = makeSpacingTestSettings('space')
+    settings.levels[2].numberTitleSpacing = 'none'   // H2: no space (override)
+    settings.levels[1].numberTitleSpacing = 'space'  // H1: with space
+    settings.levels[3].numberTitleSpacing = 'space'  // H3: with space
+    const headings: HeadingDescriptor[] = [
+      makeHeading('H1', 1 as HeadingLevel),
+      makeHeading('H2', 2 as HeadingLevel),
+      makeHeading('H3', 3 as HeadingLevel),
+    ]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].labelGap).toBe('space')   // H1 with space
+    expect(result[1].labelGap).toBe('none')    // H2 without space
+    expect(result[2].labelGap).toBe('space')   // H3 with space
+  })
+
+  it('preserves spacing per physical level when H1 is off', () => {
+    const settings = makeSpacingTestSettings('space')
+    settings.showLevelOneNumber = false
+    settings.levels[1].numberTitleSpacing = 'space'
+    settings.levels[2].numberTitleSpacing = 'none'
+    settings.levels[3].numberTitleSpacing = 'space'
+    const headings: HeadingDescriptor[] = [
+      makeHeading('H1', 1 as HeadingLevel),
+      makeHeading('H2', 2 as HeadingLevel),
+      makeHeading('H3', 3 as HeadingLevel),
+    ]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].label).toBe('')       // H1 hidden (no label)
+    expect(result[0].labelGap).toBe('none')
+    expect(result[1].label).toBe('1')      // H2 uses H2 spacing (none)
+    expect(result[1].labelGap).toBe('none')
+    expect(result[2].label).toBe('1.1')   // H3 uses H3 spacing (space)
+    expect(result[2].labelGap).toBe('space')
+  })
+
+  it('does not add space when label is empty (unnumbered)', () => {
+    const levels = makeBlankLevels()
+    levels[1].enabled = false
+    levels[1].numberTitleSpacing = 'space'
+    const settings: import('./heading-types').HeadingNumberingSettings = {
+      enabled: true, showLevelOneNumber: true, preset: 'custom', maxDepth: 6 as HeadingLevel, levels,
+    }
+    const headings: HeadingDescriptor[] = [
+      makeHeading('Disabled', 1 as HeadingLevel),
+    ]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].label).toBe('') // empty label, no trailing space
+  })
+
+  it('defaults to space when numberTitleSpacing is missing (old data)', () => {
+    const levels = makeBlankLevels()
+    delete levels[1].numberTitleSpacing
+    const settings: import('./heading-types').HeadingNumberingSettings = {
+      enabled: true, showLevelOneNumber: true, preset: 'custom', maxDepth: 6 as HeadingLevel, levels,
+    }
+    const headings: HeadingDescriptor[] = [
+      makeHeading('H1', 1 as HeadingLevel),
+    ]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].labelGap).toBe('space') // default 'space'
   })
 })

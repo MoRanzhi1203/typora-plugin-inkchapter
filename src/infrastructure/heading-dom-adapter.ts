@@ -10,6 +10,7 @@ import type {
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const NUMBERED_CLASS = 'inkchapter-numbered-heading'
 const NUMBER_ATTR = 'data-inkchapter-heading-number'
+const GAP_ATTR = 'data-inkchapter-heading-gap'
 
 // Layout class names — must match CSS in style.scss
 const LAYOUT_CLASSES = [
@@ -181,6 +182,44 @@ export class HeadingDomAdapter {
     }
 
     return { scanned, repaired, updated, removed }
+  }
+
+  /**
+   * Apply label gap (number-to-title spacing) to all heading elements.
+   * Stores an enumeration value ("space"/"none") so that CSS attribute
+   * selectors can deterministically apply spacing without fragile
+   * trailing-space characters.
+   * Must be called after applyNumberingDiff or repairDecoration.
+   */
+  applyLabelGaps(gaps: readonly string[]): void {
+    if (!this.editorRoot) return
+
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    let gapIdx = 0
+
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+
+      if (gapIdx < gaps.length) {
+        const gap = gaps[gapIdx]
+        gapIdx++
+        if (gap === 'space') {
+          el.setAttribute(GAP_ATTR, 'space')
+        } else {
+          el.removeAttribute(GAP_ATTR)
+        }
+      }
+    }
+
+    // Remove gap from any remaining heading that is no longer numbered
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (!el.classList.contains(NUMBERED_CLASS) && el.hasAttribute(GAP_ATTR)) {
+        el.removeAttribute(GAP_ATTR)
+      }
+    }
   }
 
   /**

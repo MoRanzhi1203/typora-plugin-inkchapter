@@ -2776,7 +2776,7 @@
           }
         },
         "doc.md": {
-          "updatedAt": 1785660898900,
+          "updatedAt": 1785907460046,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
@@ -2802,23 +2802,13 @@
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ],
-                  "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ]
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
                 },
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhng-64c7-1",
+                      "id": "mseumuck-55bb-251",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
@@ -2828,19 +2818,9 @@
                       }
                     }
                   ],
-                  "withoutLevelOne": [
-                    {
-                      "id": "msbjnhnh-1227-2",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    }
-                  ]
-                }
+                  "withoutLevelOne": []
+                },
+                "numberTitleSpacing": "space"
               },
               "2": {
                 "enabled": true,
@@ -2864,14 +2844,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 2
                     }
                   ],
@@ -2885,22 +2857,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-ceb5-3",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-aa9f-4",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-2803-5",
+                      "id": "mseumuck-34df-253",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
@@ -2912,17 +2869,18 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-2803-5",
+                      "id": "mseumuck-23eb-254",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "chinese",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "、"
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "3": {
                 "enabled": true,
@@ -2946,22 +2904,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 3
                     }
                   ],
@@ -2969,10 +2911,6 @@
                     {
                       "type": "level-template-reference",
                       "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -2983,37 +2921,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-f631-6",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-164e-7",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-ec44-8",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-d08d-9",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-9575-10",
+                      "id": "mseumuck-5418-256",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -3025,22 +2933,17 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-ec44-8",
+                      "id": "mseunacj-d9b6-327",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-d08d-9",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-9575-10",
+                      "id": "mseumuck-2d36-257",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -3050,7 +2953,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "4": {
                 "enabled": true,
@@ -3074,30 +2978,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 4
                     }
                   ],
@@ -3107,16 +2987,8 @@
                       "level": 2
                     },
                     {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
                       "type": "level-template-reference",
                       "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -3127,52 +2999,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-21fd-11",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-bfcd-12",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-84b1-13",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-d1d1-14",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-c917-15",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-987d-16",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d0d4-17",
+                      "id": "mseumuck-12b8-259",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
@@ -3184,37 +3011,27 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-84b1-13",
+                      "id": "mseuokrd-deaa-552",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-d1d1-14",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-c917-15",
+                      "id": "mseuoco6-d018-521",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-987d-16",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d0d4-17",
+                      "id": "mseumuck-4f35-260",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
@@ -3224,7 +3041,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "5": {
                 "enabled": true,
@@ -3248,66 +3066,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 5
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 5
@@ -3317,67 +3079,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-b0b3-18",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-eed5-19",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d21b-20",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-2178-21",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-b832-22",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c0a9-23",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-63f6-24",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c91c-25",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d37a-26",
+                      "id": "mseumuck-8d84-262",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
@@ -3389,62 +3091,18 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-d21b-20",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-2178-21",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-b832-22",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c0a9-23",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-63f6-24",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c91c-25",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d37a-26",
+                      "id": "mseumuck-8de6-263",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
                         "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
+                        "prefix": "（",
+                        "suffix": "）"
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "6": {
                 "enabled": true,
@@ -3468,82 +3126,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 6
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 6
@@ -3553,82 +3139,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhni-5a80-27",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-dd9b-28",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-3acc-29",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-cb9e-30",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-72b7-31",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-2f15-32",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-747c-33",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-f6d9-34",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-e544-35",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-9ed7-36",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-f39b-37",
+                      "id": "mseumuck-10f0-265",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
@@ -3640,77 +3151,18 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhni-3acc-29",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-cb9e-30",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-72b7-31",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-2f15-32",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-747c-33",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-f6d9-34",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-e544-35",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-9ed7-36",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-f39b-37",
+                      "id": "mseumuck-1866-266",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "）"
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               }
             },
             "customDefinition": {
@@ -3733,23 +3185,13 @@
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ],
-                  "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ]
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
                 },
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhng-64c7-1",
+                      "id": "mseumuck-55bb-251",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
@@ -3759,19 +3201,9 @@
                       }
                     }
                   ],
-                  "withoutLevelOne": [
-                    {
-                      "id": "msbjnhnh-1227-2",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    }
-                  ]
-                }
+                  "withoutLevelOne": []
+                },
+                "numberTitleSpacing": "space"
               },
               "2": {
                 "enabled": true,
@@ -3795,14 +3227,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 2
                     }
                   ],
@@ -3816,22 +3240,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-ceb5-3",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-aa9f-4",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-2803-5",
+                      "id": "mseumuck-34df-253",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
@@ -3843,17 +3252,18 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-2803-5",
+                      "id": "mseumuck-23eb-254",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "chinese",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "、"
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "3": {
                 "enabled": true,
@@ -3877,22 +3287,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 3
                     }
                   ],
@@ -3900,10 +3294,6 @@
                     {
                       "type": "level-template-reference",
                       "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -3914,37 +3304,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-f631-6",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-164e-7",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-ec44-8",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-d08d-9",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-9575-10",
+                      "id": "mseumuck-5418-256",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -3956,22 +3316,17 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-ec44-8",
+                      "id": "mseunacj-d9b6-327",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-d08d-9",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-9575-10",
+                      "id": "mseumuck-2d36-257",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -3981,7 +3336,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "4": {
                 "enabled": true,
@@ -4005,30 +3361,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 4
                     }
                   ],
@@ -4038,16 +3370,8 @@
                       "level": 2
                     },
                     {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
                       "type": "level-template-reference",
                       "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -4058,52 +3382,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-21fd-11",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-bfcd-12",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-84b1-13",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-d1d1-14",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-c917-15",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-987d-16",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d0d4-17",
+                      "id": "mseumuck-12b8-259",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
@@ -4115,37 +3394,27 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-84b1-13",
+                      "id": "mseuokrd-deaa-552",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-d1d1-14",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-c917-15",
+                      "id": "mseuoco6-d018-521",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-987d-16",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d0d4-17",
+                      "id": "mseumuck-4f35-260",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
@@ -4155,7 +3424,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "5": {
                 "enabled": true,
@@ -4179,66 +3449,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 5
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 5
@@ -4248,67 +3462,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-b0b3-18",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-eed5-19",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d21b-20",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-2178-21",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-b832-22",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c0a9-23",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-63f6-24",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c91c-25",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d37a-26",
+                      "id": "mseumuck-8d84-262",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
@@ -4320,62 +3474,18 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-d21b-20",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-2178-21",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-b832-22",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c0a9-23",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-63f6-24",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c91c-25",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d37a-26",
+                      "id": "mseumuck-8de6-263",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
                         "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
+                        "prefix": "（",
+                        "suffix": "）"
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "6": {
                 "enabled": true,
@@ -4399,82 +3509,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 6
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 6
@@ -4484,82 +3522,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhni-5a80-27",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-dd9b-28",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-3acc-29",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-cb9e-30",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-72b7-31",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-2f15-32",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-747c-33",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-f6d9-34",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-e544-35",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-9ed7-36",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-f39b-37",
+                      "id": "mseumuck-10f0-265",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
@@ -4571,83 +3534,25 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhni-3acc-29",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-cb9e-30",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-72b7-31",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-2f15-32",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-747c-33",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-f6d9-34",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-e544-35",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-9ed7-36",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-f39b-37",
+                      "id": "mseumuck-1866-266",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "）"
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               }
             }
           },
           "formatSource": {
             "type": "custom",
-            "formatId": "msbjo971-2e7qj6h4"
+            "formatId": "mseumucm-ft7bbc6j",
+            "version": 1
           }
         },
         "03-项目报告模板.md": {
@@ -7195,14 +6100,14 @@
       "version": 1,
       "formats": [
         {
-          "id": "msbjo971-2e7qj6h4",
-          "name": "样式一",
+          "id": "mseumucm-ft7bbc6j",
+          "name": "样式1",
           "description": "",
-          "createdAt": 1785659687821,
-          "updatedAt": 1785659687821,
+          "createdAt": 1785859496230,
+          "updatedAt": 1785859619947,
+          "version": 1,
           "basedOn": {
-            "type": "built-in",
-            "presetId": "decimal-hierarchical"
+            "type": "blank"
           },
           "settings": {
             "levels": {
@@ -7225,23 +6130,13 @@
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ],
-                  "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ]
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
                 },
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhng-64c7-1",
+                      "id": "mseumuck-55bb-251",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
@@ -7251,18 +6146,7 @@
                       }
                     }
                   ],
-                  "withoutLevelOne": [
-                    {
-                      "id": "msbjnhnh-1227-2",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    }
-                  ]
+                  "withoutLevelOne": []
                 }
               },
               "2": {
@@ -7287,14 +6171,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 2
                     }
                   ],
@@ -7308,22 +6184,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-ceb5-3",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-aa9f-4",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-2803-5",
+                      "id": "mseumuck-34df-253",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
@@ -7335,13 +6196,13 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-2803-5",
+                      "id": "mseumuck-23eb-254",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "chinese",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "、"
                       }
                     }
                   ]
@@ -7369,22 +6230,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 3
                     }
                   ],
@@ -7392,10 +6237,6 @@
                     {
                       "type": "level-template-reference",
                       "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -7406,37 +6247,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-f631-6",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-164e-7",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-ec44-8",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-d08d-9",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-9575-10",
+                      "id": "mseumuck-5418-256",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -7448,22 +6259,17 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-ec44-8",
+                      "id": "mseunacj-d9b6-327",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-d08d-9",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-9575-10",
+                      "id": "mseumuck-2d36-257",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -7497,30 +6303,6 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 4
                     }
                   ],
@@ -7530,16 +6312,8 @@
                       "level": 2
                     },
                     {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
                       "type": "level-template-reference",
                       "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -7550,52 +6324,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-21fd-11",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-bfcd-12",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-84b1-13",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-d1d1-14",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-c917-15",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-987d-16",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d0d4-17",
+                      "id": "mseumuck-12b8-259",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
@@ -7607,37 +6336,27 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-84b1-13",
+                      "id": "mseuokrd-deaa-552",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-d1d1-14",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-c917-15",
+                      "id": "mseuoco6-d018-521",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "msbjnhnh-987d-16",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d0d4-17",
+                      "id": "mseumuck-4f35-260",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
@@ -7671,66 +6390,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 5
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 5
@@ -7740,67 +6403,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhnh-b0b3-18",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-eed5-19",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d21b-20",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-2178-21",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-b832-22",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c0a9-23",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-63f6-24",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c91c-25",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d37a-26",
+                      "id": "mseumuck-8d84-262",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
@@ -7812,58 +6415,13 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhnh-d21b-20",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-2178-21",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-b832-22",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c0a9-23",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-63f6-24",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhnh-c91c-25",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhnh-d37a-26",
+                      "id": "mseumuck-8de6-263",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
                         "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
+                        "prefix": "（",
+                        "suffix": "）"
                       }
                     }
                   ]
@@ -7891,82 +6449,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 6
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 6
@@ -7976,82 +6462,7 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msbjnhni-5a80-27",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-dd9b-28",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-3acc-29",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-cb9e-30",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-72b7-31",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-2f15-32",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-747c-33",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-f6d9-34",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-e544-35",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-9ed7-36",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-f39b-37",
+                      "id": "mseumuck-10f0-265",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
@@ -8063,73 +6474,13 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msbjnhni-3acc-29",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-cb9e-30",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-72b7-31",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-2f15-32",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-747c-33",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-f6d9-34",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-e544-35",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "arabic",
-                        "prefix": "",
-                        "suffix": ""
-                      }
-                    },
-                    {
-                      "id": "msbjnhni-9ed7-36",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "msbjnhni-f39b-37",
+                      "id": "mseumuck-1866-266",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "）"
                       }
                     }
                   ]
@@ -8141,7 +6492,13 @@
             "maxDepth": 6
           }
         }
-      ]
+      ],
+      "preferences": {
+        "hiddenBuiltInPresetIds": [],
+        "customFormatOrder": [
+          "mseumucm-ft7bbc6j"
+        ]
+      }
     }
   }
 }

@@ -2,7 +2,11 @@
  * Unified for all H1-H6 levels.
  * Explicitly resets all visual properties to prevent Typora active-heading
  * styles from adding borders, outlines, backgrounds, or absolute positioning
- * to the ::before pseudo-element. */
+ * to the ::before pseudo-element.
+ *
+ * Gap (number-to-title spacing): controlled via data-inkchapter-heading-gap
+ * attribute. When set to "space", a non-breaking space (U+00A0) is appended
+ * to the number. This is stable across Typora focus/edit/expand states. */
 #write h1.inkchapter-numbered-heading::before,
 #write h2.inkchapter-numbered-heading::before,
 #write h3.inkchapter-numbered-heading::before,
@@ -12,7 +16,7 @@
   content: attr(data-inkchapter-heading-number) !important;
   display: inline !important;
   position: static !important;
-  margin: 0 0.5em 0 0 !important;
+  margin: 0 !important;
   padding: 0 !important;
   border: 0 !important;
   outline: 0 !important;
@@ -26,6 +30,16 @@
   pointer-events: none !important;
   user-select: none !important;
   -webkit-user-select: none !important;
+}
+
+/* Number-to-title spacing: non-breaking space for stable rendering */
+#write h1[data-inkchapter-heading-gap="space"]::before,
+#write h2[data-inkchapter-heading-gap="space"]::before,
+#write h3[data-inkchapter-heading-gap="space"]::before,
+#write h4[data-inkchapter-heading-gap="space"]::before,
+#write h5[data-inkchapter-heading-gap="space"]::before,
+#write h6[data-inkchapter-heading-gap="space"]::before {
+  content: attr(data-inkchapter-heading-number) "\00a0" !important;
 }
 
 /* ── Settings page: live preview ───────────────────────── */
@@ -957,14 +971,22 @@
 }
 
 // ── Outline sidebar numbering ────────────────────────
+//
+// Gap (number-to-title spacing): controlled via data-inkchapter-number-gap
+// attribute. When set to "space", a non-breaking space (U+00A0) is appended
+// to the number via CSS. This is stable across Typora panel show/hide states.
 
 [data-inkchapter-number]::before {
-  content: attr(data-inkchapter-number) " ";
+  content: attr(data-inkchapter-number);
   display: inline;
   white-space: nowrap;
   pointer-events: none;
   color: inherit;
   font-weight: inherit;
+}
+
+[data-inkchapter-number-gap="space"]::before {
+  content: attr(data-inkchapter-number) "\00a0";
 }
 
 // Bold numbering sync: when outline item text is bold, numbering prefix must match.

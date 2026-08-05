@@ -138,12 +138,12 @@ export function computeHeadingNumbering(
 
       // Unnumbered: no label
       if (isUnnumbered) {
-        return { ...h, counters: [...activeCounters], label: '' }
+        return { ...h, counters: [...activeCounters], label: '', labelGap: 'none' }
       }
 
       // H1 completely hidden when showLevelOneNumber is false
       if (skipH1 && idx === 0) {
-        return { ...h, counters: [...activeCounters], label: '' }
+        return { ...h, counters: [...activeCounters], label: '', labelGap: 'none' }
       }
 
       // Build unnumbered-set for parent omission
@@ -151,7 +151,11 @@ export function computeHeadingNumbering(
 
       const label = buildLabel(activeCounters, levelStyles, skipH1, idx, h.level, unnumberedSet)
 
-      return { ...h, counters: [...activeCounters], label }
+      // ── Compute labelGap from the heading's own numberTitleSpacing ──
+      const gapSetting = style?.numberTitleSpacing ?? 'space'
+      const labelGap = label !== '' && gapSetting === 'space' ? 'space' : 'none'
+
+      return { ...h, counters: [...activeCounters], label, labelGap }
     })
 }
 
@@ -180,10 +184,6 @@ function buildLabel(
   }
 
   // ── Legacy format-based label (schemaVersion < 7) ─
-  // IMPORTANT: If contextualFormatVariants is defined, we MUST NOT fall through
-  // to legacy includeParents/prefix/suffix. An empty but defined contextual model
-  // means the level was intentionally configured — falling back to legacy would
-  // produce old decimal-hierarchical format instead of the intended current-level-only format.
   if (style.contextualFormatVariants) {
     return ''
   }
@@ -202,9 +202,7 @@ function buildLabel(
       const actualLv = (i + 1) as HeadingLevel
       const st = levelStyles[actualLv]
       if (!st || !st.enabled) continue
-      // Skip unnumbered parent levels
       if (unnumberedSet?.has(actualLv)) continue
-
       const tokenStyle = st.tokenStyle
       const token = formatToken(activeCounters[i], tokenStyle)
       parts.push(st.prefix + token + st.suffix)

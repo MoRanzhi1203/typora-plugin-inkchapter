@@ -130,6 +130,7 @@ function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
           : undefined,
       })) as any,
     },
+    numberTitleSpacing: s.numberTitleSpacing ?? 'space',
   }
 }
 
