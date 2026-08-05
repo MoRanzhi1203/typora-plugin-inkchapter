@@ -1397,20 +1397,32 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
 
       // Gap: [无间距] [一个空格] — immutable updates on draft
+      // H1 gap is locked to 'none' when level-one numbering is hidden
       const gapGroup = el('div', 'inkchapter-layout-matrix-gap', row)
+      const h1GapLocked = lvNum === 1 && !s.showLevelOneNumber
+      const effectiveGap = h1GapLocked ? 'none' : currentGap
       for (const opt of [{ v: 'none', lbl: '无间距' }, { v: 'space', lbl: '一个空格' }]) {
         const btn = el('button') as HTMLButtonElement
         btn.textContent = opt.lbl
         btn.classList.add('inkchapter-layout-matrix-btn')
-        if (currentGap === opt.v) btn.classList.add('inkchapter-layout-matrix-btn--active')
-        btn.onclick = (e) => {
-          e.stopPropagation()
-          const newSpacing = { ...draft.numberTitleSpacing, [lvNum]: opt.v as NumberTitleSpacing }
-          this.headingLayoutDraft = {
-            headingLayouts: { ...draft.headingLayouts },
-            numberTitleSpacing: newSpacing,
+        if (effectiveGap === opt.v) btn.classList.add('inkchapter-layout-matrix-btn--active')
+        if (h1GapLocked) {
+          btn.disabled = true
+          btn.setAttribute('aria-disabled', 'true')
+          btn.title = '一级标题编号已关闭，标题间距固定为无间距'
+          btn.style.opacity = '0.5'
+          btn.style.cursor = 'not-allowed'
+          btn.onclick = (e) => { e.stopPropagation() } // no-op
+        } else {
+          btn.onclick = (e) => {
+            e.stopPropagation()
+            const newSpacing = { ...draft.numberTitleSpacing, [lvNum]: opt.v as NumberTitleSpacing }
+            this.headingLayoutDraft = {
+              headingLayouts: { ...draft.headingLayouts },
+              numberTitleSpacing: newSpacing,
+            }
+            this.rerender()
           }
-          this.rerender()
         }
         gapGroup.appendChild(btn)
       }
@@ -1426,7 +1438,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     for (const { key, label } of levels) {
       const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
       const current = draft.headingLayouts[key] ?? this.defaultLayoutConfig()
-      const currentGap = draft.numberTitleSpacing[lvNum] ?? 'space'
+      const rawGap = draft.numberTitleSpacing[lvNum] ?? 'space'
+      // H1 gap is forcibly none when level-one numbering is hidden
+      const currentGap = (lvNum === 1 && !s.showLevelOneNumber) ? 'none' : rawGap
       const hasIndent = current.firstLineIndentEm >= 2
       const numberLabel = previewLabels[lvNum] || ''
       const gapChar = currentGap === 'space' ? ' ' : ''
@@ -1566,8 +1580,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.rerender()
       }},
       { label: '全部一个空格', action: () => {
-        const newSpacing = {} as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
+        const newSpacing = { ...draft.numberTitleSpacing } as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
         for (let lv = 1; lv <= 6; lv++) newSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] = 'space'
+        // Skip H1 if level-one numbering is hidden — H1 gap is locked to none
+        if (!this.headingSettings.showLevelOneNumber) {
+          newSpacing[1 as import('../heading-numbering/heading-types').HeadingLevel] = 'none'
+        }
         this.headingLayoutDraft = { headingLayouts: { ...draft.headingLayouts }, numberTitleSpacing: newSpacing }
         this.rerender()
       }},
@@ -1578,9 +1596,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
           const baseGap = draft.numberTitleSpacing[al as HeadingLevel] ?? 'space'
           const newLayouts = { ...draft.headingLayouts }
           const newSpacing = { ...draft.numberTitleSpacing }
+          // When H1 numbering is off, H1 gap is locked to none — skip copying gap to avoid
+          // forcing none onto H2-H6 which should remain independently configurable.
+          const skipGap = al === 1 && !this.headingSettings.showLevelOneNumber
           for (let lv = (al + 1) as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) {
             newLayouts[`h${lv}`] = { ...baseCfg }
-            newSpacing[lv] = baseGap
+            if (!skipGap) { newSpacing[lv] = baseGap }
           }
           this.headingLayoutDraft = { headingLayouts: newLayouts, numberTitleSpacing: newSpacing }
           this.rerender()
@@ -2721,6 +2742,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
+    // Normalize old data: if H1 numbering is hidden, H1 gap must be none
+    const s = this.headingSettings
+    if (!s.showLevelOneNumber) {
+      const h1Lv = 1 as import('../heading-numbering/heading-types').HeadingLevel
+      draft.numberTitleSpacing[h1Lv] = 'none'
+    }
+
     this.headingLayoutDraft = draft
     this.savedLayoutDraft = deepCloneLayoutDraft(draft)
     return draft
@@ -2970,6 +2998,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.ensureDraft()
       this.headingDraft!.showLevelOneNumber = h1Cb.checked
       this.syncLevelOneControls(h1Cb.checked)
+
+      // If headingLayoutDraft exists, sync H1 gap: lock to 'none' when H1 numbering off
+      if (this.headingLayoutDraft) {
+        if (!h1Cb.checked) {
+          // Unchecking: force H1 gap to none, mark dirty
+          const h1Lv = 1 as HeadingLevel
+          if (this.headingLayoutDraft.numberTitleSpacing[h1Lv] !== 'none') {
+            this.headingLayoutDraft = {
+              headingLayouts: { ...this.headingLayoutDraft.headingLayouts },
+              numberTitleSpacing: { ...this.headingLayoutDraft.numberTitleSpacing, [h1Lv]: 'none' as const },
+            }
+          }
+        }
+        // Re-checking: value stays at whatever it was (we don't restore old space)
+      }
+
       this.rerender()
     }
     h1Label.appendChild(h1Cb)

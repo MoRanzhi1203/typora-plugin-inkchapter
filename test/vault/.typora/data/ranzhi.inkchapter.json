@@ -2776,7 +2776,7 @@
           }
         },
         "doc.md": {
-          "updatedAt": 1785938459382,
+          "updatedAt": 1785939013062,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
@@ -3337,7 +3337,7 @@
             },
             "headingLayouts": {
               "h1": {
-                "textAlign": "center",
+                "textAlign": "left",
                 "firstLineIndentEm": 0
               },
               "h2": {
@@ -3370,7 +3370,7 @@
           "layoutOverrides": {
             "headingLayouts": {
               "h1": {
-                "textAlign": "center",
+                "textAlign": "left",
                 "firstLineIndentEm": 0
               },
               "h2": {
