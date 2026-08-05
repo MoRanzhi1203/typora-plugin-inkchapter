@@ -4039,7 +4039,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Custom editor card ───────────────────────────
 
   private renderCustomEditorCard(s: HeadingNumberingSettings): void {
-    const isEditing = this.selectedFormatId !== null || s.preset === 'custom'
+    // Only considered "editing" when user explicitly clicked "编辑" on a format card.
+    // s.preset === 'custom' means the current DOCUMENT uses custom settings — not that user is editing.
+    const isEditing = this.selectedFormatId !== null
 
     const card = el('div', 'inkchapter-card', this.containerEl)
     const header = el('div', 'inkchapter-card-header', card)
@@ -4642,13 +4644,76 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Bottom sticky action bar ─────────────────────
 
+  /** Development diagnostic: output which dirty source is causing "有未保存的更改". */
+  private getDirtyBreakdown(): { source: string; dirty: boolean; detail: string }[] {
+    const results: { source: string; dirty: boolean; detail: string }[] = []
+
+    // headingDraft (numbering settings)
+    const hdDirty = this.headingDraft != null && this.headingDraftOriginal != null
+    results.push({ source: 'headingDraft', dirty: hdDirty, detail: hdDirty ? 'draft differs from saved' : 'OK' })
+
+    // formatDraft (format editor)
+    const fdDirty = this.formatDraft != null
+    results.push({ source: 'formatDraft', dirty: fdDirty, detail: fdDirty ? 'editing format' : 'OK' })
+
+    // headingLayoutDraft
+    if (this.headingLayoutDraft && this.savedLayoutDraft) {
+      const eq = layoutDraftsEqual(this.headingLayoutDraft, this.savedLayoutDraft)
+      results.push({ source: 'headingLayoutDraft', dirty: !eq, detail: !eq ? this._diffLayoutDrafts() : 'OK' })
+    } else if (this.headingLayoutDraft && !this.savedLayoutDraft) {
+      results.push({ source: 'headingLayoutDraft', dirty: true, detail: 'saved baseline is null' })
+    } else {
+      results.push({ source: 'headingLayoutDraft', dirty: false, detail: 'draft is null' })
+    }
+
+    // range draft
+    results.push({ source: 'rangeDraft(global)', dirty: this.rangeDraft.globalDirty, detail: this.rangeDraft.globalDirty ? `globalMax=${this.rangeDraft.globalMaxLevel}` : 'OK' })
+    results.push({ source: 'rangeDraft(document)', dirty: this.rangeDraft.documentDirty, detail: this.rangeDraft.documentDirty ? `docMode=${this.rangeDraft.documentMode},max=${this.rangeDraft.documentMaxLevel}` : 'OK' })
+
+    return results
+  }
+
+  private _diffLayoutDrafts(): string {
+    if (!this.headingLayoutDraft || !this.savedLayoutDraft) return 'missing'
+    const d = this.headingLayoutDraft
+    const s = this.savedLayoutDraft
+    const diffs: string[] = []
+    for (const key of Object.keys(d.headingLayouts)) {
+      const dc = d.headingLayouts[key]
+      const sc = s.headingLayouts[key]
+      if (!sc) { diffs.push(`${key}: missing in saved`); continue }
+      if (dc.textAlign !== sc.textAlign) diffs.push(`${key} align: draft=${dc.textAlign} saved=${sc.textAlign}`)
+      if (dc.firstLineIndentEm !== sc.firstLineIndentEm) diffs.push(`${key} indent: draft=${dc.firstLineIndentEm} saved=${sc.firstLineIndentEm}`)
+    }
+    for (let lv = 1; lv <= 6; lv++) {
+      const dg = d.numberTitleSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] ?? 'space'
+      const sg = s.numberTitleSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] ?? 'space'
+      if (dg !== sg) diffs.push(`H${lv} gap: draft=${dg} saved=${sg}`)
+    }
+    return diffs.length > 0 ? diffs.join('; ') : 'no diffs found (but equal returned false)'
+  }
+
   private renderBottomActionBar(): void {
     const docKey = this.numberingService.getDocumentKey()
 
+    // Development diagnostic: log dirty breakdown on first render
+    const breakdown = this.getDirtyBreakdown()
+    const anyDirty = breakdown.some(b => b.dirty)
+    if (anyDirty) {
+      console.warn('[InkChapter DirtyBreakdown] hasAnyDirty=true, sources:',
+        breakdown.filter(b => b.dirty).map(b => `${b.source}=${b.detail}`))
+    }
+
     const bar = el('div', 'inkchapter-settings-actions', this.containerEl)
 
-    // Left side: unsaved hint (checks both numbering and layout drafts)
-    const hasDraft = this.headingDraft != null || this.formatDraft != null || this.hasLayoutDirty()
+    // hasDraft: only true when there are ACTUAL unsaved changes, not just initialized drafts.
+    // headingDraft exists when renderCustomEditorCard initializes it for preset='custom',
+    // but that does NOT mean there are unsaved changes.
+    const formatDirty = this.formatDraft != null
+    const numberingDirty = this.headingDraft != null && this.headingDraftOriginal != null
+      && JSON.stringify(this.headingDraft) !== JSON.stringify(this.headingDraftOriginal)
+    const layoutDirty = this.hasLayoutDirty()
+    const hasDraft = formatDirty || numberingDirty || layoutDirty
     if (hasDraft) {
       const hint = el('div', 'inkchapter-settings-unsaved-hint', bar)
       hint.textContent = '有未保存的更改'
@@ -4661,7 +4726,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     cancelBtn.textContent = '取消更改'
     cancelBtn.onclick = () => {
       let cancelled = false
-      if (this.headingDraft) {
+      // Only cancel headingDraft if it was actually modified (not just initialized by render)
+      if (this.headingDraft && this.headingDraftOriginal
+          && JSON.stringify(this.headingDraft) !== JSON.stringify(this.headingDraftOriginal)) {
         this.headingDraft = null
         this.headingDraftOriginal = null
         cancelled = true
