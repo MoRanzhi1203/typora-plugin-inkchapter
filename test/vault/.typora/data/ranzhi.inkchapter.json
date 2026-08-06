@@ -4030,17 +4030,17 @@
           }
         },
         "03-项目报告模板.md": {
-          "updatedAt": 1785400209247,
+          "updatedAt": 1786027539418,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
-            "preset": "roman-hierarchical",
+            "preset": "letter-mixed",
             "maxDepth": 6,
             "levels": {
               "1": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": false,
+                "tokenStyle": "alpha-upper",
+                "includeParents": true,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -4051,7 +4051,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "alpha-upper",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -4072,23 +4072,24 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "ms78w8th-429c-52",
+                      "id": "mshmnuzp-cd92-184",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
                         "suffix": ""
                       }
                     }
                   ],
                   "withoutLevelOne": []
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "2": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": false,
+                "tokenStyle": "arabic",
+                "includeParents": true,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -4099,7 +4100,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -4128,22 +4129,17 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "ms78w8th-7f07-53",
+                      "id": "mshmnuzp-8be5-185",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-0db4-54",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-2cdc-55",
+                      "id": "mshmnuzp-6fa0-186",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
@@ -4155,22 +4151,23 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "ms78w8th-ceb9-56",
+                      "id": "mshmnuzp-eba7-187",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
                         "suffix": ""
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "3": {
                 "enabled": true,
-                "tokenStyle": "arabic",
-                "includeParents": false,
+                "tokenStyle": "alpha-lower",
+                "includeParents": true,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -4181,7 +4178,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "alpha-lower",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -4226,41 +4223,31 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "ms78w8th-9f08-57",
+                      "id": "mshmnuzp-5d6c-188",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-ccf8-58",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-7a7f-59",
+                      "id": "mshmnuzp-44d7-189",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-aef3-60",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-b70e-61",
+                      "id": "mshmnuzp-3fd5-190",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -4268,22 +4255,17 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "ms78w8th-b4b3-62",
+                      "id": "mshmnuzp-58d8-191",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-1548-63",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-8af5-64",
+                      "id": "mshmnuzp-5543-192",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
@@ -4293,12 +4275,13 @@
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "4": {
                 "enabled": true,
-                "tokenStyle": "arabic",
-                "includeParents": false,
+                "tokenStyle": "roman-lower",
+                "includeParents": true,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -4309,7 +4292,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "roman-lower",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -4370,56 +4353,41 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "ms78w8th-84f3-65",
+                      "id": "mshmnuzp-c78d-193",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-573e-66",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-063b-67",
+                      "id": "mshmnuzp-f623-194",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-9e1a-68",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-14c2-69",
+                      "id": "mshmnuzp-d673-195",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-de62-70",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-4733-71",
+                      "id": "mshmnuzp-04e2-196",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "roman-lower",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -4427,52 +4395,43 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "ms78w8th-cd6c-72",
+                      "id": "mshmnuzp-1ebd-197",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-12f4-73",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-8c00-74",
+                      "id": "mshmnuzp-d3e0-198",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-cb10-75",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-3442-76",
+                      "id": "mshmnuzp-a55d-199",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
                         "suffix": ""
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "5": {
                 "enabled": true,
                 "tokenStyle": "arabic",
-                "includeParents": false,
+                "includeParents": true,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -4560,67 +4519,47 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "ms78w8th-1768-77",
+                      "id": "mshmnuzp-8f12-200",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-d5cc-78",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-b6f5-79",
+                      "id": "mshmnuzp-4914-201",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-27e2-80",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-2272-81",
+                      "id": "mshmnuzp-b3a9-202",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-2fe8-82",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-9891-83",
+                      "id": "mshmnuzp-de63-203",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "roman-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-8f68-84",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-dc7c-85",
+                      "id": "mshmnuzp-305f-204",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
@@ -4632,67 +4571,53 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "ms78w8th-4bb6-86",
+                      "id": "mshmnuzp-6927-205",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-7ba2-87",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-a84d-88",
+                      "id": "mshmnuzp-53c1-206",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-8603-89",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-9de0-90",
+                      "id": "mshmnuzp-690d-207",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-b781-91",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-2e8c-92",
+                      "id": "mshmnuzp-8236-208",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "roman-lower",
                         "prefix": "",
                         "suffix": ""
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "6": {
                 "enabled": true,
-                "tokenStyle": "arabic",
-                "includeParents": false,
+                "tokenStyle": "alpha-lower",
+                "includeParents": true,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -4703,7 +4628,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "alpha-lower",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -4796,86 +4721,61 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "ms78w8th-e58a-93",
+                      "id": "mshmnuzq-b360-209",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-9edb-94",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-a0fa-95",
+                      "id": "mshmnuzq-1ec4-210",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-5ce2-96",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-904e-97",
+                      "id": "mshmnuzq-d8e7-211",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-bf1e-98",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-0944-99",
+                      "id": "mshmnuzq-a993-212",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "roman-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-8b03-100",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-093e-101",
+                      "id": "mshmnuzq-5070-213",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-b935-102",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-a369-103",
+                      "id": "mshmnuzq-29bb-214",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -4883,67 +4783,47 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "ms78w8th-2ab0-104",
+                      "id": "mshmnuzq-1e6f-215",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "alpha-upper",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-3e1d-105",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-ba70-106",
+                      "id": "mshmnuzq-908b-216",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-cf1b-107",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-827b-108",
+                      "id": "mshmnuzq-07c6-217",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "alpha-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-4a3b-109",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-0034-110",
+                      "id": "mshmnuzq-4f93-218",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
-                        "tokenStyle": "arabic",
+                        "tokenStyle": "roman-lower",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     },
                     {
-                      "id": "ms78w8th-5da3-111",
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "id": "ms78w8th-feb6-112",
+                      "id": "mshmnuzq-e32a-219",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
@@ -4953,13 +4833,14 @@
                       }
                     }
                   ]
-                }
+                },
+                "numberTitleSpacing": "space"
               }
             },
             "customDefinition": {
               "1": {
                 "enabled": true,
-                "tokenStyle": "arabic",
+                "tokenStyle": "alpha-upper",
                 "includeParents": true,
                 "prefix": "",
                 "suffix": "",
@@ -4971,18 +4852,40 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "alpha-upper",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ]
                 },
                 "contextualFormatVariants": {
-                  "withLevelOne": [],
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzp-cd92-184",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
                   "withoutLevelOne": []
-                }
+                },
+                "numberTitleSpacing": "space"
               },
               "2": {
                 "enabled": true,
@@ -5003,17 +4906,68 @@
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ]
                 },
                 "contextualFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
-                }
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzp-8be5-185",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-6fa0-186",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzp-eba7-187",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
               },
               "3": {
                 "enabled": true,
-                "tokenStyle": "arabic",
+                "tokenStyle": "alpha-lower",
                 "includeParents": true,
                 "prefix": "",
                 "suffix": "",
@@ -5025,22 +4979,109 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "alpha-lower",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ]
                 },
                 "contextualFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
-                }
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzp-5d6c-188",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-44d7-189",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-3fd5-190",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzp-58d8-191",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-5543-192",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
               },
               "4": {
                 "enabled": true,
-                "tokenStyle": "arabic",
+                "tokenStyle": "roman-lower",
                 "includeParents": true,
                 "prefix": "",
                 "suffix": "",
@@ -5052,18 +5093,141 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "roman-lower",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ]
                 },
                 "contextualFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
-                }
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzp-c78d-193",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-f623-194",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-d673-195",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-04e2-196",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "roman-lower",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzp-1ebd-197",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-d3e0-198",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-a55d-199",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
               },
               "5": {
                 "enabled": true,
@@ -5084,17 +5248,176 @@
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ]
                 },
                 "contextualFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
-                }
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzp-8f12-200",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-4914-201",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-b3a9-202",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-de63-203",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "roman-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-305f-204",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzp-6927-205",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-53c1-206",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-690d-207",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzp-8236-208",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "roman-lower",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
               },
               "6": {
                 "enabled": true,
-                "tokenStyle": "arabic",
+                "tokenStyle": "alpha-lower",
                 "includeParents": true,
                 "prefix": "",
                 "suffix": "",
@@ -5106,20 +5429,219 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "arabic",
+                  "tokenStyle": "alpha-lower",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ]
                 },
                 "contextualFormatVariants": {
-                  "withLevelOne": [],
-                  "withoutLevelOne": []
-                }
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzq-b360-209",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-1ec4-210",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-d8e7-211",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-a993-212",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "roman-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-5070-213",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-29bb-214",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzq-1e6f-215",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "alpha-upper",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-908b-216",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-07c6-217",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "alpha-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-4f93-218",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "roman-lower",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzq-e32a-219",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
               }
             }
+          },
+          "formatSource": {
+            "type": "built-in",
+            "presetId": "letter-mixed"
           }
         },
         "02-技术博客模板.md": {
@@ -7033,6 +7555,1621 @@
             "type": "custom",
             "formatId": "mseumucm-ft7bbc6j",
             "version": 1
+          }
+        },
+        "05-中英双语论文模板.md": {
+          "updatedAt": 1786027550790,
+          "settings": {
+            "enabled": true,
+            "showLevelOneNumber": false,
+            "preset": "decimal-hierarchical",
+            "maxDepth": 6,
+            "levels": {
+              "1": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": null,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-b72d-1",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": []
+                },
+                "numberTitleSpacing": "space"
+              },
+              "2": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 1,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-2160-2",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-fb43-3",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-fb43-3",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "3": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 2,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-7700-4",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-38e9-5",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-72c3-6",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-38e9-5",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-72c3-6",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "4": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 3,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-8d5a-7",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-d7d8-8",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-10bd-9",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-0f6a-10",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-d7d8-8",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-10bd-9",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-0f6a-10",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "5": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 4,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-3e85-11",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-305f-12",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2bb8-13",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9640-14",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8c46-15",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-305f-12",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2bb8-13",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9640-14",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8c46-15",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "6": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 5,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-1566-16",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8f36-17",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2e05-18",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-c3f8-19",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9066-20",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8926-21",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-8f36-17",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2e05-18",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-c3f8-19",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9066-20",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8926-21",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              }
+            },
+            "customDefinition": {
+              "1": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": null,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-b72d-1",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": []
+                },
+                "numberTitleSpacing": "space"
+              },
+              "2": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 1,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-2160-2",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-fb43-3",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-fb43-3",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "3": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 2,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-7700-4",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-38e9-5",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-72c3-6",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-38e9-5",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-72c3-6",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "4": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 3,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-8d5a-7",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-d7d8-8",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-10bd-9",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-0f6a-10",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-d7d8-8",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-10bd-9",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-0f6a-10",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "5": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 4,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-3e85-11",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-305f-12",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2bb8-13",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9640-14",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8c46-15",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-305f-12",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2bb8-13",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9640-14",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8c46-15",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "6": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": true,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 5,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    },
+                    {
+                      "type": "literal",
+                      "value": "."
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mshmnuzn-1566-16",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8f36-17",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2e05-18",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-c3f8-19",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9066-20",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8926-21",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mshmnuzn-8f36-17",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-2e05-18",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-c3f8-19",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-9066-20",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mshmnuzn-8926-21",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              }
+            }
+          },
+          "formatSource": {
+            "type": "built-in",
+            "presetId": "decimal-hierarchical"
           }
         }
       }

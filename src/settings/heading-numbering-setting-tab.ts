@@ -137,6 +137,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private globalH1Toggle: HTMLInputElement | null = null
   private syncingLevelOneUi = false
   private unsubSettings: (() => void) | null = null
+  private unsubDocument: (() => void) | null = null
 
   // ── Drag ─────────────────────────────────────────
   private dragState: DragState | null = null
@@ -284,6 +285,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.syncFromExternalChange()
       })
     }
+    // Subscribe to document changes (file switch) to refresh card states
+    if (!this.unsubDocument) {
+      this.unsubDocument = this.numberingService.onDocumentChanged(() => {
+        this.handleDocumentSwitch()
+      })
+    }
     // Initialize draft state from persisted settings
     this.initRangeDraft()
     try {
@@ -303,6 +310,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (this.unsubSettings) {
       this.unsubSettings()
       this.unsubSettings = null
+    }
+    if (this.unsubDocument) {
+      this.unsubDocument()
+      this.unsubDocument = null
     }
   }
 
@@ -357,6 +368,56 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     this.cancelDrag('settings-changed')
     this.onshow()
+  }
+
+  /**
+   * Called when the active document changes (file switch).
+   * Clears all document-specific state and re-renders for the new document.
+   */
+  private handleDocumentSwitch(): void {
+    this.cancelDrag('document-switch')
+    // Clear all document-specific draft state — new document means new settings
+    this.headingDraft = null
+    this.headingDraftOriginal = null
+    this.formatDraft = null
+    this.savedFormatBaseline = null
+    this.selectedFormatId = null
+    this.selectedFormatType = null
+    this.headingLayoutDraft = null
+    this.savedLayoutDraft = null
+    this.expandedLevel = null
+    this.selectedSegmentId = null
+    // Reset card selection
+    this.selectedCardKey = null
+    this.selectedCardIsPreset = false
+    // Re-init range draft for new document
+    this.initRangeDraft()
+    // Auto-select the new document's applied format
+    const info = this.getAppliedFormatInfo()
+    // [Diagnostic] Document switch log — remove after verification
+    const docPath = this.numberingService.getActiveFilePath()
+    const docKey = this.numberingService.getDocumentKey()
+    console.log('[InkChapter DocSwitch] path=' + (docPath ?? '(none)')
+      + ' docKey=' + (docKey ?? '(none)')
+      + ' formatSource=' + JSON.stringify(info.source)
+      + ' inheritsGlobal=' + info.inheritsGlobal)
+    if (info.source?.type === 'built-in' && info.source.presetId) {
+      this.selectedFormatId = info.source.presetId
+      this.selectedFormatType = 'built-in'
+      this.formatDraft = null
+      this.savedFormatBaseline = null
+      this.selectedCardKey = info.source.presetId
+      this.selectedCardIsPreset = true
+      this.loadPresetForViewing(info.source.presetId)
+    } else if (info.source?.type === 'custom' && info.formatId) {
+      const format = this.numberingService.getFormatLibrary().formats.find(f => f.id === info.formatId)
+      if (format) {
+        this.selectedCardKey = info.formatId
+        this.selectedCardIsPreset = false
+        this.initializeFormatEditor(format)
+      }
+    }
+    this.rerender()
   }
 
   private get headingSettings() {
