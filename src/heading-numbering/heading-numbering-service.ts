@@ -499,9 +499,41 @@ export class HeadingNumberingService {
 
   /** Load document context when switching documents. */
   private loadDocumentContext(): void {
+    const oldKey = this.docContext?.documentKey ?? null
     const docKey = this.getDocumentKey()
     this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
     this.docContext.settingsRevision = this.settingsRevision
+    // [Diagnostic] Document change log — remove after verification
+    const docPath = this.getActiveFilePath()
+    const override = docKey ? this.scopeStore.documentOverrides[docKey] : undefined
+    const fs = override?.formatSource
+    console.log('[InkChapter ServiceDocSwitch] path=' + (docPath ?? '(none)')
+      + ' oldKey=' + (oldKey ?? '(none)')
+      + ' newKey=' + (docKey ?? '(none)')
+      + ' formatSource=' + JSON.stringify(fs ?? null)
+      + ' preset=' + this.s.preset
+      + ' showLevelOne=' + this.s.showLevelOneNumber)
+    // Notify document change listeners when document key changes
+    if (docKey !== oldKey) {
+      this.notifyDocumentChanged(docKey, oldKey)
+    }
+  }
+
+  private documentChangeListeners: Array<(newKey: string | null, oldKey: string | null) => void> = []
+
+  /** Subscribe to document changes (file switch). Returns unsubscribe function. */
+  onDocumentChanged(listener: (newKey: string | null, oldKey: string | null) => void): () => void {
+    this.documentChangeListeners.push(listener)
+    return () => {
+      const idx = this.documentChangeListeners.indexOf(listener)
+      if (idx >= 0) this.documentChangeListeners.splice(idx, 1)
+    }
+  }
+
+  private notifyDocumentChanged(newKey: string | null, oldKey: string | null): void {
+    for (const listener of this.documentChangeListeners) {
+      try { listener(newKey, oldKey) } catch (e) { logger.error('文档切换监听器异常', e) }
+    }
   }
 
   toggle(): void {
