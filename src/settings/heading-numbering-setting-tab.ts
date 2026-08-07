@@ -133,6 +133,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private selectEl: HTMLSelectElement | null = null
   private selectedSegmentId: string | null = null
 
+  /** Get the default level to select when first viewing a format. */
+  private getDefaultEditableLevel(s: HeadingNumberingSettings): HeadingLevel {
+    // Find the first enabled level — if H1 is off, default to H2
+    for (const lv of HEADING_LEVELS) {
+      const ls = s.levels[lv]
+      if (ls?.enabled && (lv !== 1 || s.showLevelOneNumber)) {
+        return lv
+      }
+    }
+    return 1
+  }
+
   // ── H1 sync ──────────────────────────────────────
   private globalH1Toggle: HTMLInputElement | null = null
   private syncingLevelOneUi = false
@@ -385,7 +397,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.selectedFormatType = null
     this.headingLayoutDraft = null
     this.savedLayoutDraft = null
-    this.expandedLevel = null
     this.selectedSegmentId = null
     // Reset card selection
     this.selectedCardKey = null
@@ -877,6 +888,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Normalize both so contextualFormatVariants defaults don't show as dirty
     this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
     this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
+    // Auto-select default level based on H1 enabled state
+    this.expandedLevel = this.getDefaultEditableLevel(this.headingDraft)
     // Don't switch headingScope when editing a format
   }
 
@@ -898,6 +911,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.headingDraftOriginal = deepCloneSettings(clonedSettings)
     this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
     this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
+    // Auto-select default level based on H1 enabled state
+    this.expandedLevel = this.getDefaultEditableLevel(this.headingDraft)
   }
 
   /** Copy the currently viewed system preset as a new custom format. */
@@ -3166,7 +3181,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.savedFormatBaseline = null
         this.headingLayoutDraft = null
         this.savedLayoutDraft = null
-        this.expandedLevel = null
         this.selectedSegmentId = null
         this.selectedCardKey = null
         this.selectedCardIsPreset = false
@@ -3233,6 +3247,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
           }
         }
         // Re-checking: value stays at whatever it was (we don't restore old space)
+      }
+
+      // If H1 was just disabled and user is viewing H1, bump to H2
+      if (!h1Cb.checked && this.expandedLevel === 1) {
+        this.expandedLevel = 2
       }
 
       this.rerender()
