@@ -685,6 +685,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const docKey = targetScope === 'document'
       ? (this.numberingService.getDocumentKey() ?? null)
       : null
+    // [Diagnostic] Global default apply log
+    console.log('[InkChapter GlobalDefaultApply] scope=' + targetScope
+      + ' docKey=' + (docKey ?? 'null')
+      + ' presetId=' + presetId
+      + ' type=built-in')
     this.numberingService.applyPresetToScope(presetId, targetScope, docKey)
     this.headingDraft = null
     this.headingDraftOriginal = null
@@ -709,6 +714,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const docKey = targetScope === 'document'
       ? (this.numberingService.getDocumentKey() ?? null)
       : null
+    // [Diagnostic] Global default apply log (custom format)
+    console.log('[InkChapter GlobalDefaultApply] scope=' + targetScope
+      + ' docKey=' + (docKey ?? 'null')
+      + ' formatId=' + format.id
+      + ' formatName=' + format.name
+      + ' version=' + (format.version ?? 'N/A')
+      + ' type=custom')
     this.numberingService.applyFormatToScope(format, targetScope, docKey)
     this.headingDraft = null
     this.headingDraftOriginal = null
@@ -3311,20 +3323,19 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const cardName = el('span', 'inkchapter-format-card-title', titleRow)
     cardName.textContent = name
     
-    // Meta row: only core status badges (no "文档已调整", no "有更新" permanent badge)
+    // Meta row: independent status badges (not mutually exclusive)
     const metaRow = el('div', 'inkchapter-format-card-meta-row', header)
     const badgeWrap = el('span', 'inkchapter-format-card-badge-wrap', metaRow)
+    badgeWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;'
     
-    if (cardState.applied && cardState.isGlobalDefault) {
-      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--global-default', badgeWrap)
-      badge.textContent = '全局默认'
-    } else if (cardState.applied && cardState.inheritsGlobal) {
-      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--inherit', badgeWrap)
-      badge.textContent = '继承全局'
-    } else if (cardState.applied) {
+    // "当前文档" — based on resolvedEffectiveFormatRef (is this format applied to the current doc?)
+    if (cardState.applied) {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--applied', badgeWrap)
       badge.textContent = '当前文档'
-    } else if (cardState.isGlobalDefault) {
+    }
+    
+    // "全局默认" — based on globalDefaultFormatRef (is this format the global default?)
+    if (cardState.isGlobalDefault) {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--global-default', badgeWrap)
       badge.textContent = '全局默认'
     }
@@ -3370,10 +3381,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
     let btnText = '应用'
     let btnDisabled = false
     
-    if (cardState.applied || cardState.inheritsGlobal) {
+    if (this.headingScope === 'global') {
+      // Global mode: button reflects global default status
+      if (cardState.isGlobalDefault) {
+        btnText = '当前默认'
+        btnDisabled = true
+      } else {
+        btnText = '设为默认'
+      }
+    } else if (cardState.applied || cardState.inheritsGlobal) {
       // Current document uses this format
       if (cardState.templateVersionNewer) {
-        // Business state: template has newer version → always show "应用更新"
         btnText = '应用更新'
       } else {
         btnText = '已应用'
@@ -3382,8 +3400,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     } else if (cardState.isGlobalDefault && !cardState.applied) {
       btnText = '已设为默认'
       btnDisabled = true
-    } else if (this.headingScope === 'global' && !cardState.applied) {
-      btnText = '设为默认'
     }
     
     applyBtn.textContent = btnText

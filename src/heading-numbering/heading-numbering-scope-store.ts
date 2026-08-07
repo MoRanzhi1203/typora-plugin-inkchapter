@@ -313,9 +313,13 @@ export function saveHeadingSettings(
   request: SaveHeadingSettingsRequest,
 ): HeadingNumberingScopeStore {
   if (request.scope === 'global') {
+    const gd: any = deepCloneSettings(request.settings)
+    if (request.formatSource) {
+      gd.formatSource = { ...request.formatSource }
+    }
     return {
       ...store,
-      globalDefault: deepCloneSettings(request.settings),
+      globalDefault: gd,
     }
   }
 
