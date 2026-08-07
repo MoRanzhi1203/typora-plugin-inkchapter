@@ -561,8 +561,9 @@
 
 .inkchapter-format-header {
   font-weight: 600;
-  font-size: 0.9em;
-  margin: 6px 0 4px;
+  font-size: 0.92em;
+  margin: 0 0 10px;
+  color: var(--text-normal, #333);
 }
 
 .inkchapter-format-container {
@@ -1469,7 +1470,7 @@
   display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;
 }
 .inkchapter-level-tab {
-  height: 32px; padding: 0 14px; border: 1px solid var(--border-primary, #ddd);
+  min-width: 48px; height: 36px; padding: 0 14px; border: 1px solid var(--border-primary, #ddd);
   border-radius: 5px; background: var(--background-secondary, #f8f8f8);
   cursor: pointer; font-size: 13px; font-weight: 500; user-select: none; outline: none;
   display: flex; align-items: center;
@@ -1492,14 +1493,21 @@
   &:hover { color: var(--text-normal, #333); }
   &--active { color: var(--text-accent, #07a); border-bottom-color: var(--text-accent, #07a); }
 }
+// ── Level config page: dual-column (config + preview) ──
 .inkchapter-editor-dual-col {
   display: grid;
-  grid-template-columns: minmax(0, 65fr) minmax(260px, 35fr);
-  gap: 16px; align-items: start;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px; align-items: start;
 }
 .inkchapter-editor-main { min-width: 0; }
-.inkchapter-editor-preview-col { min-width: 260px; }
-.inkchapter-editor-preview-sticky { position: sticky; top: 16px; }
+
+// Preview column — sticky right panel in wide mode
+.inkchapter-editor-preview-col {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+}
+.inkchapter-editor-preview-sticky { /* wrapper; sticky override in narrow via parent */ }
 .inkchapter-editor-preview-card {
   border: 1px solid var(--border-primary, #ddd);
   border-radius: 8px; background: var(--background-secondary, #f8f8f8); padding: 12px;
@@ -1507,6 +1515,40 @@
 .inkchapter-editor-preview-title {
   font-weight: 600; font-size: 13px; color: var(--text-muted, #666); margin-bottom: 8px;
 }
+
+// ② Label + ③ Behavior side-by-side (wide) → stacked (medium)
+.inkchapter-config-dual-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px 24px;
+  align-items: start;
+  margin-top: 18px;
+}
+.inkchapter-config-half { min-width: 0; }
+
+// Section spacing — between ① Number Composition and ②③
+.inkchapter-config-section {
+  margin-bottom: 4px;
+}
+
+// Unified form: label column (104px) + control column (flexible)
+.inkchapter-label-form,
+.inkchapter-behavior-form {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+
+  select, input[type="text"], input[type="number"] {
+    width: 100%;
+    min-width: 0;
+    padding: 4px 6px;
+    box-sizing: border-box;
+  }
+}
+
 .inkchapter-editor-empty-state {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 32px 16px; color: var(--text-muted, #888); font-size: 13px;
@@ -1514,10 +1556,24 @@
 }
 .inkchapter-token-select-hint {
   color: var(--text-muted, #888); font-size: 13px; text-align: center; padding: 24px;
+  grid-column: 1 / -1; // span full width when inside a form grid
 }
-@media (max-width: 1000px) {
-  .inkchapter-editor-dual-col { grid-template-columns: 1fr; }
-  .inkchapter-editor-preview-sticky { position: static; }
+
+// ── Responsive: medium width — stack label/behavior, keep preview right ──
+@media (max-width: 1050px) {
+  .inkchapter-config-dual-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+// ── Responsive: narrow width — single column, preview below ──
+@media (max-width: 820px) {
+  .inkchapter-editor-dual-col {
+    grid-template-columns: 1fr;
+  }
+  .inkchapter-editor-preview-col {
+    position: static;
+  }
 }
 
 // ── Number-title spacing matrix ───────────────────────
@@ -2132,6 +2188,4 @@
   }
 }
 
-// ── Label / Behavior form (keep existing) ─────────────
-.inkchapter-label-form,
-.inkchapter-behavior-form { padding: 4px 0; }
+
