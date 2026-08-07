@@ -16905,17 +16905,17 @@
           }
         },
         "doc.md": {
-          "updatedAt": 1786089469390,
+          "updatedAt": 1786095489196,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
-            "preset": "roman-hierarchical",
+            "preset": "custom",
             "maxDepth": 6,
             "levels": {
               "1": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -16926,7 +16926,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -16937,21 +16937,16 @@
                       "level": 1
                     }
                   ],
-                  "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    }
-                  ]
+                  "withoutLevelOne": []
                 },
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msinhkf2-7d40-127",
+                      "id": "mseumuck-55bb-251",
                       "type": "level-reference",
                       "level": 1,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -16959,12 +16954,12 @@
                   ],
                   "withoutLevelOne": []
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               },
               "2": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -16975,20 +16970,12 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
                   "withLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 2
@@ -17004,21 +16991,11 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msinhkf2-cee2-128",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-7ab1-129",
+                      "id": "mseumuck-34df-253",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17026,23 +17003,23 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msinhkf2-7ab1-129",
+                      "id": "mseumuck-23eb-254",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "chinese",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "、"
                       }
                     }
                   ]
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               },
               "3": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -17053,28 +17030,12 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
                   "withLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 3
@@ -17084,10 +17045,6 @@
                     {
                       "type": "level-template-reference",
                       "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -17098,31 +17055,11 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msinhkf2-d25a-130",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-b686-131",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-7a2b-132",
+                      "id": "mseumuck-5418-256",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17130,21 +17067,21 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msinhkf2-b686-131",
+                      "id": "mseunacj-d9b6-327",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": "."
                       }
                     },
                     {
-                      "id": "msinhkf2-7a2b-132",
+                      "id": "mseumuck-2d36-257",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17155,8 +17092,8 @@
               },
               "4": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -17167,36 +17104,12 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
                   "withLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 4
@@ -17208,16 +17121,8 @@
                       "level": 2
                     },
                     {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
                       "type": "level-template-reference",
                       "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
                     },
                     {
                       "type": "level-template-reference",
@@ -17228,41 +17133,11 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msinhkf2-1550-133",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-e8c9-134",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-219d-135",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-5e24-136",
+                      "id": "mseumuck-12b8-259",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17270,31 +17145,31 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msinhkf2-e8c9-134",
+                      "id": "mseuokrd-deaa-552",
                       "type": "level-reference",
                       "level": 2,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": "."
                       }
                     },
                     {
-                      "id": "msinhkf2-219d-135",
+                      "id": "mseuoco6-d018-521",
                       "type": "level-reference",
                       "level": 3,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": "."
                       }
                     },
                     {
-                      "id": "msinhkf2-5e24-136",
+                      "id": "mseumuck-4f35-260",
                       "type": "level-reference",
                       "level": 4,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17305,8 +17180,8 @@
               },
               "5": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -17317,7 +17192,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -17325,66 +17200,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 5
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 5
@@ -17394,51 +17213,11 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msinhkf2-76b8-137",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-688d-138",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-1145-139",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-2d0b-140",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-318a-141",
+                      "id": "mseumuck-8d84-262",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17446,53 +17225,23 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msinhkf2-688d-138",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-1145-139",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-2d0b-140",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-318a-141",
+                      "id": "mseumuck-8de6-263",
                       "type": "level-reference",
                       "level": 5,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": ""
+                        "tokenStyle": "arabic",
+                        "prefix": "（",
+                        "suffix": "）"
                       }
                     }
                   ]
                 },
-                "numberTitleSpacing": "space"
+                "numberTitleSpacing": "none"
               },
               "6": {
                 "enabled": true,
-                "tokenStyle": "roman-upper",
-                "includeParents": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
                 "prefix": "",
                 "suffix": "",
                 "separator": ".",
@@ -17503,7 +17252,7 @@
                   "withoutLevelOne": []
                 },
                 "levelTemplate": {
-                  "tokenStyle": "roman-upper",
+                  "tokenStyle": "arabic",
                   "prefix": "",
                   "suffix": ""
                 },
@@ -17511,82 +17260,10 @@
                   "withLevelOne": [
                     {
                       "type": "level-template-reference",
-                      "level": 1
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
                       "level": 6
                     }
                   ],
                   "withoutLevelOne": [
-                    {
-                      "type": "level-template-reference",
-                      "level": 2
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 3
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 4
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
-                      "type": "level-template-reference",
-                      "level": 5
-                    },
-                    {
-                      "type": "literal",
-                      "value": "."
-                    },
                     {
                       "type": "level-template-reference",
                       "level": 6
@@ -17596,61 +17273,11 @@
                 "contextualFormatVariants": {
                   "withLevelOne": [
                     {
-                      "id": "msinhkf2-798a-142",
-                      "type": "level-reference",
-                      "level": 1,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-a665-143",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-2ddf-144",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-a3ab-145",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-0f2c-146",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-0fd3-147",
+                      "id": "mseumuck-10f0-265",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
                         "suffix": ""
                       }
@@ -17658,119 +17285,21 @@
                   ],
                   "withoutLevelOne": [
                     {
-                      "id": "msinhkf2-a665-143",
-                      "type": "level-reference",
-                      "level": 2,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-2ddf-144",
-                      "type": "level-reference",
-                      "level": 3,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-a3ab-145",
-                      "type": "level-reference",
-                      "level": 4,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-0f2c-146",
-                      "type": "level-reference",
-                      "level": 5,
-                      "appearance": {
-                        "tokenStyle": "roman-upper",
-                        "prefix": "",
-                        "suffix": "."
-                      }
-                    },
-                    {
-                      "id": "msinhkf2-0fd3-147",
+                      "id": "mseumuck-1866-266",
                       "type": "level-reference",
                       "level": 6,
                       "appearance": {
-                        "tokenStyle": "roman-upper",
+                        "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "）"
                       }
                     }
                   ]
                 },
-                "numberTitleSpacing": "space"
-              }
-            }
-          },
-          "formatSource": {
-            "type": "built-in",
-            "presetId": "roman-hierarchical"
-          },
-          "layoutOverrides": {
-            "headingLayouts": {
-              "h1": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h2": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h3": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h4": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h5": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h6": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
+                "numberTitleSpacing": "none"
               }
             },
-            "numberTitleSpacing": {
-              "1": "none",
-              "2": "space",
-              "3": "space",
-              "4": "space",
-              "5": "space",
-              "6": "space"
-            }
-          }
-        }
-      }
-    },
-    "formatLibrary": {
-      "version": 2,
-      "formats": [
-        {
-          "id": "mseumucm-ft7bbc6j",
-          "name": "样式1",
-          "description": "",
-          "createdAt": 1785859496230,
-          "updatedAt": 1786088923793,
-          "version": 2,
-          "basedOn": {
-            "type": "blank"
-          },
-          "settings": {
-            "levels": {
+            "customDefinition": {
               "1": {
                 "enabled": true,
                 "tokenStyle": "arabic",
@@ -18153,7 +17682,480 @@
                 "numberTitleSpacing": "space"
               }
             },
-            "showLevelOneNumber": true,
+            "headingLayouts": {
+              "h1": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h2": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h3": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h4": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h5": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h6": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              }
+            }
+          },
+          "formatSource": {
+            "type": "custom",
+            "formatId": "mseumucm-ft7bbc6j",
+            "version": 3
+          },
+          "layoutOverrides": {
+            "headingLayouts": {
+              "h1": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h2": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h3": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h4": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h5": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              },
+              "h6": {
+                "textAlign": "left",
+                "firstLineIndentEm": 0
+              }
+            },
+            "numberTitleSpacing": {
+              "1": "none",
+              "2": "none",
+              "3": "space",
+              "4": "space",
+              "5": "none",
+              "6": "none"
+            }
+          }
+        }
+      }
+    },
+    "formatLibrary": {
+      "version": 2,
+      "formats": [
+        {
+          "id": "mseumucm-ft7bbc6j",
+          "name": "样式1",
+          "description": "",
+          "createdAt": 1785859496230,
+          "updatedAt": 1786095477480,
+          "version": 4,
+          "basedOn": {
+            "type": "blank"
+          },
+          "settings": {
+            "levels": {
+              "1": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": null,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ],
+                  "withoutLevelOne": []
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mseumuck-55bb-251",
+                      "type": "level-reference",
+                      "level": 1,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": []
+                },
+                "numberTitleSpacing": "space"
+              },
+              "2": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 1,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mseumuck-34df-253",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mseumuck-23eb-254",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "chinese",
+                        "prefix": "",
+                        "suffix": "、"
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "3": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 2,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mseumuck-5418-256",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mseunacj-d9b6-327",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mseumuck-2d36-257",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "4": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 3,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 2
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 3
+                    },
+                    {
+                      "type": "level-template-reference",
+                      "level": 4
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mseumuck-12b8-259",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mseuokrd-deaa-552",
+                      "type": "level-reference",
+                      "level": 2,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mseuoco6-d018-521",
+                      "type": "level-reference",
+                      "level": 3,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "."
+                      }
+                    },
+                    {
+                      "id": "mseumuck-4f35-260",
+                      "type": "level-reference",
+                      "level": 4,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "5": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 4,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 5
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mseumuck-8d84-262",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mseumuck-8de6-263",
+                      "type": "level-reference",
+                      "level": 5,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "（",
+                        "suffix": "）"
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              },
+              "6": {
+                "enabled": true,
+                "tokenStyle": "arabic",
+                "includeParents": false,
+                "prefix": "",
+                "suffix": "",
+                "separator": ".",
+                "startAt": 1,
+                "restartAfterLevel": 5,
+                "formatVariants": {
+                  "withLevelOne": [],
+                  "withoutLevelOne": []
+                },
+                "levelTemplate": {
+                  "tokenStyle": "arabic",
+                  "prefix": "",
+                  "suffix": ""
+                },
+                "multilevelFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 6
+                    }
+                  ]
+                },
+                "contextualFormatVariants": {
+                  "withLevelOne": [
+                    {
+                      "id": "mseumuck-10f0-265",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": ""
+                      }
+                    }
+                  ],
+                  "withoutLevelOne": [
+                    {
+                      "id": "mseumuck-1866-266",
+                      "type": "level-reference",
+                      "level": 6,
+                      "appearance": {
+                        "tokenStyle": "arabic",
+                        "prefix": "",
+                        "suffix": "）"
+                      }
+                    }
+                  ]
+                },
+                "numberTitleSpacing": "space"
+              }
+            },
+            "showLevelOneNumber": false,
             "enabled": true,
             "maxDepth": 6
           }
@@ -18163,8 +18165,8 @@
           "name": "样式2",
           "description": "",
           "createdAt": 1785948069279,
-          "updatedAt": 1785948069279,
-          "version": 0,
+          "updatedAt": 1786095439870,
+          "version": 1,
           "basedOn": {
             "type": "built-in",
             "presetId": "decimal-hierarchical"
@@ -18245,10 +18247,6 @@
                       "level": 1
                     },
                     {
-                      "type": "literal",
-                      "value": "."
-                    },
-                    {
                       "type": "level-template-reference",
                       "level": 2
                     }
@@ -18291,7 +18289,7 @@
                       "appearance": {
                         "tokenStyle": "arabic",
                         "prefix": "",
-                        "suffix": ""
+                        "suffix": "."
                       }
                     }
                   ]
@@ -18986,7 +18984,8 @@
       }
     },
     "acknowledgedTemplateUpdates": {
-      "doc.md::mseumucm-ft7bbc6j": 1
+      "doc.md::mseumucm-ft7bbc6j": 4,
+      "doc.md::msgbd9r3-z6dhy5xo": 1
     }
   }
 }
