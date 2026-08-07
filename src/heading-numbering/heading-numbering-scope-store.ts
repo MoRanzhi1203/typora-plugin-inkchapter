@@ -17,6 +17,7 @@ import type {
   DocumentNumberingContext,
   HeadingLevel,
   HeadingLevelStyle,
+  ParagraphLayoutSettings,
 } from './heading-types'
 import { getPresetLevels } from './presets'
 
@@ -429,11 +430,18 @@ export function migrateHeadingNumberingToScopeStore(
   // Already migrated?
   const scopes = data['headingNumberingScopes'] as HeadingNumberingScopeStore | undefined
   if (scopes?.schemaVersion && scopes.globalDefault) {
+    // Ensure globalParagraphLayout exists (added in a later version)
+    if (!scopes.globalParagraphLayout) {
+      scopes.globalParagraphLayout = { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true }
+    }
     return { migrated: false, store: scopes }
   }
 
   const scopesNew = data['heading_numbering_scopes'] as HeadingNumberingScopeStore | undefined
   if (scopesNew?.schemaVersion && scopesNew.globalDefault) {
+    if (!scopesNew.globalParagraphLayout) {
+      scopesNew.globalParagraphLayout = { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true }
+    }
     return { migrated: false, store: scopesNew }
   }
 
@@ -446,6 +454,7 @@ export function migrateHeadingNumberingToScopeStore(
       schemaVersion: 1,
       globalDefault: deepCloneSettings(old),
       documentOverrides: {},
+      globalParagraphLayout: { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true },
     }
     return { migrated: true, store }
   }
@@ -459,6 +468,7 @@ export function migrateHeadingNumberingToScopeStore(
       schemaVersion: 1,
       globalDefault: getDefaultHeadingNumberingSettings(),
       documentOverrides: {},
+      globalParagraphLayout: { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true },
     },
   }
 }
