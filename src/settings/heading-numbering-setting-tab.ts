@@ -199,8 +199,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private selectedCardKey: string | null = null
   /** Whether the selected card is a system preset (true) or user format (false). */
   private selectedCardIsPreset = false
-  /** Active tab in the custom editor */
-  private customEditorTab: 'composition' | 'label' | 'behavior' = 'composition'
   private selectedLayoutLevel: HeadingLevel | null = null
 
   /** Initialize the draft from persisted settings. */
@@ -4364,7 +4362,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.renderLevelTabs(body, s, draft)
 
     // Editor tab bar (composition / label / behavior)
-    this.renderEditorTabBar(body, s, draft)
+    this.renderLevelConfigPage(body, s, draft)
   }
 
   /** Render the system format content as read-only. */
@@ -4393,66 +4391,67 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // H1-H6 level tabs (read-only — same look, just disabled inputs later)
     this.renderLevelTabs(body, s, draft)
 
-    // Editor tab bar
-    this.renderEditorTabBar(body, s, draft)
+    // Unified level config page
+    this.renderLevelConfigPage(body, s, draft)
   }
 
-  /** Render tab bar and dual-column content (shared between readonly and editable). */
-  private renderEditorTabBar(body: HTMLElement, s: HeadingNumberingSettings, draft: HeadingNumberingSettings): void {
-    const tabBar = el('div', 'inkchapter-editor-tab-bar', body)
-    const tabs: { key: 'composition' | 'label' | 'behavior'; label: string }[] = [
-      { key: 'composition', label: '多级组合格式' },
-      { key: 'label', label: '序号标签设置' },
-      { key: 'behavior', label: '当前级行为' },
-    ]
-    for (const t of tabs) {
-      const tabBtn = el('div', 'inkchapter-editor-tab', tabBar)
-      tabBtn.textContent = t.label
-      tabBtn.setAttribute('tabindex', '0')
-      if (this.customEditorTab === t.key) tabBtn.classList.add('inkchapter-editor-tab--active')
-      tabBtn.onclick = () => {
-        this.customEditorTab = t.key
-        this.rerender()
-      }
-      tabBtn.onkeydown = (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tabBtn.click() }
-      }
-    }
-
-    // Dual-column: editor + preview
-    const dualCol = el('div', 'inkchapter-editor-dual-col', body)
-    const editorCol = el('div', 'inkchapter-editor-main', dualCol)
-
+  /** Render the unified level configuration page with all three sections. */
+  private renderLevelConfigPage(body: HTMLElement, s: HeadingNumberingSettings, draft: HeadingNumberingSettings): void {
     const isReadonly = this.selectedFormatType === 'built-in'
 
-    // Render only the active tab content
-    if (this.expandedLevel != null) {
-      const lv = this.expandedLevel
-      const style = draft.levels[lv]
-      if (style) {
-        const isH1Disabled = lv === 1 && !s.showLevelOneNumber
-        if (!isH1Disabled || this.customEditorTab === 'behavior') {
-          if (this.customEditorTab === 'composition') {
-            this.renderCompositionTabContent(editorCol, lv, style, s, isReadonly)
-          } else if (this.customEditorTab === 'label') {
-            this.renderLabelTabContent(editorCol, lv, style, s, isReadonly)
-          } else {
-            this.renderBehaviorTabContent(editorCol, lv, style, s, isReadonly)
-          }
-        } else {
-          const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorCol)
-          h1Notice.textContent = 'H1 编号已关闭'
-          h1Notice.classList.add('inkchapter-h1-visibility--disabled')
-        }
-      }
-    } else {
-      const hnt = el('div', 'inkchapter-token-select-hint', editorCol)
+    // No level selected — show hint
+    if (this.expandedLevel == null) {
+      const hnt = el('div', 'inkchapter-token-select-hint', body)
       hnt.textContent = '请从上方 H1-H6 标签中选择一个级别进行查看'
       hnt.style.cssText = 'color:var(--text-muted,#888);font-size:13px;text-align:center;padding:16px;'
+      return
+    }
+
+    const lv = this.expandedLevel
+    const style = draft.levels[lv]
+    if (!style) return
+
+    const isH1Disabled = lv === 1 && !s.showLevelOneNumber
+
+    // Dual-column: editor sections + preview
+    const dualCol = el('div', 'inkchapter-editor-dual-col', body)
+    dualCol.style.cssText = 'display:flex;gap:16px;align-items:flex-start;'
+    const editorCol = el('div', 'inkchapter-editor-main', dualCol)
+    editorCol.style.cssText = 'flex:1;min-width:0;'
+
+    if (isH1Disabled) {
+      const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorCol)
+      h1Notice.textContent = 'H1 编号已关闭'
+      h1Notice.classList.add('inkchapter-h1-visibility--disabled')
+      h1Notice.style.cssText = 'padding:16px;text-align:center;color:var(--text-muted,#888);'
+      // Still show preview column
+    } else {
+      // ── ① Number Composition ──
+      const compSection = el('div', 'inkchapter-config-section', editorCol)
+      const compHeader = el('div', 'inkchapter-format-header', compSection)
+      compHeader.textContent = '① 编号组合'
+      this.renderCompositionTabContent(compSection, lv, style, s, isReadonly)
+
+      // ── ② Sequence Label + ③ Current Level Behavior (side by side) ──
+      const dualRow = el('div', 'inkchapter-config-dual-row', editorCol)
+      dualRow.style.cssText = 'display:flex;gap:16px;align-items:flex-start;margin-top:12px;'
+
+      const labelCol = el('div', 'inkchapter-config-half', dualRow)
+      labelCol.style.cssText = 'flex:1;min-width:0;'
+      const labelHeader = el('div', 'inkchapter-format-header', labelCol)
+      labelHeader.textContent = '② 序号标签'
+      this.renderLabelTabContent(labelCol, lv, style, s, isReadonly)
+
+      const behaviorCol = el('div', 'inkchapter-config-half', dualRow)
+      behaviorCol.style.cssText = 'flex:1;min-width:0;'
+      const behaviorHeader = el('div', 'inkchapter-format-header', behaviorCol)
+      behaviorHeader.textContent = '③ 当前级行为'
+      this.renderBehaviorTabContent(behaviorCol, lv, style, s, isReadonly)
     }
 
     // Preview column (sticky)
     const previewCol = el('div', 'inkchapter-editor-preview-col', dualCol)
+    previewCol.style.cssText = 'flex:0 0 220px;position:sticky;top:8px;'
     const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
     const previewTitle = el('div', '', previewSticky)
     previewTitle.textContent = '实时预览'
