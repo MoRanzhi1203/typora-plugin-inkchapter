@@ -135,10 +135,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /** Get the default level to select when first viewing a format. */
   private getDefaultEditableLevel(s: HeadingNumberingSettings): HeadingLevel {
-    // Find the first enabled level — if H1 is off, default to H2
+    // Effective H1 state: format raw enabled AND scope-level showLevelOneNumber
+    const scopeShowL1 = this.headingSettings.showLevelOneNumber
+    // Find the first level that is enabled in the format AND effective at document scope
     for (const lv of HEADING_LEVELS) {
       const ls = s.levels[lv]
-      if (ls?.enabled && (lv !== 1 || s.showLevelOneNumber)) {
+      if (ls?.enabled && (lv !== 1 || scopeShowL1)) {
         return lv
       }
     }
@@ -706,12 +708,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.numberingService.applyPresetToScope(presetId, targetScope, docKey)
     this.headingDraft = null
     this.headingDraftOriginal = null
-    this.selectedFormatId = null
-    this.selectedFormatType = null
+    // Sync selectedFormatRef to the applied format and load content
+    this.selectedFormatId = presetId
+    this.selectedFormatType = 'built-in'
     this.formatDraft = null
     this.savedFormatBaseline = null
     this.selectedCardKey = presetId
     this.selectedCardIsPreset = true
+    this.loadPresetForViewing(presetId)
     this.rerender()
     Notice.info(
       targetScope === 'global'
@@ -735,12 +739,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       + ' version=' + (format.version ?? 'N/A')
       + ' type=custom')
     this.numberingService.applyFormatToScope(format, targetScope, docKey)
-    this.headingDraft = null
-    this.headingDraftOriginal = null
-    this.selectedFormatId = null
-    this.formatDraft = null
+    // Sync selectedFormatRef to the applied format and load content
     this.selectedCardKey = format.id
     this.selectedCardIsPreset = false
+    this.initializeFormatEditor(format)
     this.rerender()
     Notice.info(
       targetScope === 'global'
@@ -770,7 +772,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       descEl.textContent = format.description || '（无描述）'
 
       // Preview lines (3 levels)
-      const previewLines = getFormatPreview(format, 3, this.headingSettings.showLevelOneNumber)
+      const previewLines = getFormatPreview(format, 3, format.settings.showLevelOneNumber)
       if (previewLines.length > 0) {
         const previewDiv = el('div', 'inkchapter-format-card-preview', cardEl)
         for (const line of previewLines) {
@@ -902,7 +904,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const presetLevels = getPresetLevels(preset)
     const clonedSettings = deepCloneSettings({
       enabled: true,
-      showLevelOneNumber: true,
+      showLevelOneNumber: this.headingSettings.showLevelOneNumber,
       preset: preset,
       maxDepth: 6,
       levels: presetLevels,
@@ -3302,7 +3304,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const orderedFormats = getOrderedCustomFormats(this.formatLibrary)
     const pendingNotices: Array<{ formatName: string; formatId: string; templateVersion: number }> = []
     for (const format of orderedFormats) {
-      const previewLines = getFormatPreview(format, 3, s.showLevelOneNumber)
+      const previewLines = getFormatPreview(format, 3, format.settings.showLevelOneNumber)
       const cardState = this.getCardState(format.id, false)
       const cardEl = this.buildFormatCard(
         grid, format.id, format.name, format.description || '', previewLines, false,
