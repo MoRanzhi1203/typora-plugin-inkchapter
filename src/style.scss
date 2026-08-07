@@ -42,6 +42,13 @@
   content: attr(data-inkchapter-heading-number) "\00a0" !important;
 }
 
+/* ── Paragraph indent ───────────────────────────────── */
+/* Force first-line indent 2em for paragraphs with the force-indent semantic marker. */
+
+#write p.inkchapter-paragraph-indent-2 {
+  text-indent: 2em;
+}
+
 /* ── Settings page: live preview ───────────────────────── */
 
 .inkchapter-preview {

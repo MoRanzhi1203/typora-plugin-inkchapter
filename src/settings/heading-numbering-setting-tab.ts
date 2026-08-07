@@ -19,6 +19,7 @@ import type {
   BuiltInPresetId,
   HeadingNumberingDocumentOverride,
   NumberTitleSpacing,
+  ParagraphLayoutSettings,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
@@ -201,6 +202,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private selectedCardIsPreset = false
   private selectedLayoutLevel: HeadingLevel | null = null
 
+  // ── Paragraph layout draft ───────────────────────
+  private paragraphLayoutDraft: ParagraphLayoutSettings | null = null
+  private savedParagraphLayoutBaseline: ParagraphLayoutSettings | null = null
+
   /** Initialize the draft from persisted settings. */
   private initRangeDraft(): void {
     const rangeSettings = this.numberingService.getLevelRangeSettings()
@@ -271,6 +276,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Clear layout draft so it re-reads from persisted state
     this.headingLayoutDraft = null
     this.savedLayoutDraft = null
+    // Clear paragraph layout draft
+    this.paragraphLayoutDraft = null
+    this.savedParagraphLayoutBaseline = null
     // Auto-select the currently applied format on page open (system or custom)
     if (!this.selectedFormatId) {
       const info = this.getAppliedFormatInfo()
@@ -4820,7 +4828,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const title = el('div', 'inkchapter-card-title', header)
     title.textContent = '文档级高级设置'
     const desc = el('div', 'inkchapter-card-desc', header)
-    desc.textContent = '标题有效级数范围和标题排版方式'
+    desc.textContent = '标题有效级数范围、标题排版方式和正文段落排版'
 
     const body = el('div', 'inkchapter-card-body', card)
 
@@ -4828,11 +4836,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.renderHeadingRangeSubCards(body)
 
     // Divider
-    const divider = el('div', '', body)
-    divider.style.cssText = 'height:1px;background:var(--border-primary,#eee);margin:16px 0;'
+    const divider1 = el('div', '', body)
+    divider1.style.cssText = 'height:1px;background:var(--border-primary,#eee);margin:16px 0;'
 
     // Sub-section: Heading Layout
     this.renderHeadingLayoutSection(body)
+
+    // Divider
+    const divider2 = el('div', '', body)
+    divider2.style.cssText = 'height:1px;background:var(--border-primary,#eee);margin:16px 0;'
+
+    // Sub-section: Paragraph Layout
+    this.renderParagraphLayoutSection(body)
   }
 
   // ── Heading range sub-cards ──────────────────────
@@ -4979,6 +4994,164 @@ export class HeadingNumberingSettingTab extends SettingTab {
         }
       }
     } catch { /* ignore */ }
+  }
+
+  // ── Paragraph layout UI ──────────────────────────
+
+  /** Initialize or get the paragraph layout draft. */
+  private ensureParagraphLayoutDraft(): ParagraphLayoutSettings {
+    if (!this.paragraphLayoutDraft) {
+      const settings = this.numberingService.getParagraphLayoutSettings()
+      this.paragraphLayoutDraft = { ...settings }
+      this.savedParagraphLayoutBaseline = { ...settings }
+    }
+    return this.paragraphLayoutDraft
+  }
+
+  /** Check if paragraph layout draft has unsaved changes. */
+  private hasParagraphLayoutDirty(): boolean {
+    if (!this.paragraphLayoutDraft || !this.savedParagraphLayoutBaseline) return false
+    return JSON.stringify(this.paragraphLayoutDraft) !== JSON.stringify(this.savedParagraphLayoutBaseline)
+  }
+
+  private renderParagraphLayoutSection(container: HTMLElement): void {
+    const draft = this.ensureParagraphLayoutDraft()
+    const docKey = this.numberingService.getDocumentKey()
+
+    const section = el('div', 'inkchapter-para-layout-section', container)
+    const secTitle = el('div', 'inkchapter-section-title', section)
+    secTitle.textContent = '正文段落排版'
+    const secDesc = el('div', 'inkchapter-section-desc', section)
+    secDesc.textContent = '设置普通正文段落的默认首行排版和快捷输入'
+
+    // Scope selector
+    const scopeRow = el('div', 'inkchapter-range-setting-row', section)
+    const scopeLabel = el('span', 'inkchapter-range-setting-label', scopeRow)
+    scopeLabel.textContent = '设置范围'
+
+    const scopeControls = el('div', 'inkchapter-range-controls', scopeRow)
+    const scopeSelect = document.createElement('select')
+    scopeSelect.style.cssText = 'padding:2px 6px;'
+    const globalOpt = document.createElement('option')
+    globalOpt.value = 'global'; globalOpt.textContent = '全局默认'; globalOpt.selected = true
+    scopeSelect.appendChild(globalOpt)
+    if (docKey) {
+      const docOpt = document.createElement('option')
+      docOpt.value = 'document'; docOpt.textContent = '当前文档'
+      const hasDocOverride = this.numberingService.hasCurrentDocumentOverride()
+        && this.numberingService.getScopeStore().documentOverrides[docKey]?.paragraphLayout !== undefined
+      docOpt.selected = hasDocOverride
+      scopeSelect.appendChild(docOpt)
+    }
+    const scope: 'global' | 'document' = scopeSelect.value as 'global' | 'document'
+    scopeSelect.onchange = () => { this.rerender() }
+
+    // ── Default indent ──
+    const indentRow = el('div', 'inkchapter-range-setting-row', section)
+    indentRow.style.cssText = 'margin-top:10px;'
+    const indentLabel = el('span', 'inkchapter-range-setting-label', indentRow)
+    indentLabel.textContent = '普通正文段落默认'
+
+    const indentControls = el('div', 'inkchapter-range-controls', indentRow)
+    const flushBtn = el('button', 'inkchapter-range-doc-seg-btn', indentControls) as HTMLButtonElement
+    flushBtn.textContent = '顶格对齐'
+    if (draft.defaultIndent === 'flush') flushBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    flushBtn.onclick = () => { draft.defaultIndent = 'flush'; flushBtn.classList.add('inkchapter-range-doc-seg-btn--active'); indentBtn.classList.remove('inkchapter-range-doc-seg-btn--active') }
+    const indentBtn = el('button', 'inkchapter-range-doc-seg-btn', indentControls) as HTMLButtonElement
+    indentBtn.textContent = '首行缩进 2 字符'
+    if (draft.defaultIndent === 'indent-2') indentBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    indentBtn.onclick = () => { draft.defaultIndent = 'indent-2'; indentBtn.classList.add('inkchapter-range-doc-seg-btn--active'); flushBtn.classList.remove('inkchapter-range-doc-seg-btn--active') }
+
+    // ── Formula continuation rule ──
+    const formulaRow = el('div', 'inkchapter-range-setting-row', section)
+    formulaRow.style.cssText = 'margin-top:8px;'
+    const formulaLabel = el('span', 'inkchapter-range-setting-label', formulaRow)
+    formulaLabel.textContent = '结构规则'
+    const formulaControls = el('div', 'inkchapter-range-controls', formulaRow)
+    const formulaCb = document.createElement('input')
+    formulaCb.type = 'checkbox'; formulaCb.checked = draft.flushAfterDisplayMath
+    formulaCb.onchange = () => { draft.flushAfterDisplayMath = formulaCb.checked }
+    formulaControls.appendChild(formulaCb)
+    const formulaCbLabel = document.createElement('span')
+    formulaCbLabel.textContent = '块级公式后的续接文本默认顶格'
+    formulaCbLabel.style.cssText = 'font-size:13px;margin-left:6px;'
+    formulaControls.appendChild(formulaCbLabel)
+
+    // ── Shortcut toggle ──
+    const shortcutRow = el('div', 'inkchapter-range-setting-row', section)
+    shortcutRow.style.cssText = 'margin-top:8px;'
+    const shortcutLabel = el('span', 'inkchapter-range-setting-label', shortcutRow)
+    shortcutLabel.textContent = '快捷输入'
+    const shortcutControls = el('div', 'inkchapter-range-controls', shortcutRow)
+    const shortcutCb = document.createElement('input')
+    shortcutCb.type = 'checkbox'; shortcutCb.checked = draft.indentShortcutEnabled
+    shortcutCb.onchange = () => { draft.indentShortcutEnabled = shortcutCb.checked }
+    shortcutControls.appendChild(shortcutCb)
+    const shortcutCbLabel = document.createElement('span')
+    shortcutCbLabel.textContent = '启用 .. / 。。 + Enter 强制首行缩进'
+    shortcutCbLabel.style.cssText = 'font-size:13px;margin-left:6px;'
+    shortcutControls.appendChild(shortcutCbLabel)
+
+    // ── Preview ──
+    const previewRow = el('div', 'inkchapter-para-preview', section)
+    previewRow.style.cssText = 'margin-top:12px;padding:10px 12px;border:1px solid var(--border-primary,#ddd);border-radius:6px;background:var(--background-secondary,#f8f8f8);'
+    const previewTitle = el('div', '', previewRow)
+    previewTitle.textContent = '预览效果'
+    previewTitle.style.cssText = 'font-weight:600;font-size:12px;margin-bottom:8px;color:var(--text-muted,#666);'
+
+    // Show preview paragraphs
+    const previewItems = [
+      { label: '普通新段落', indent: draft.defaultIndent === 'indent-2' ? '2em' : '0' },
+      { label: '公式后的续接文本', indent: (draft.flushAfterDisplayMath && draft.defaultIndent === 'indent-2') ? '0' : (draft.defaultIndent === 'indent-2' ? '2em' : '0') },
+      { label: '强制首行缩进段落', indent: '2em' },
+    ]
+    for (const item of previewItems) {
+      const p = el('div', '', previewRow)
+      p.style.cssText = `font-size:13px;line-height:1.6;text-indent:${item.indent};margin-bottom:4px;`
+      p.textContent = item.label
+    }
+
+    // ── Scope action buttons ──
+    const actionRow = el('div', '', section)
+    actionRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;align-items:center;'
+
+    const saveBtn = el('button', 'inkchapter-btn', actionRow) as HTMLButtonElement
+    saveBtn.textContent = '保存'
+    saveBtn.onclick = () => {
+      const s = scopeSelect.value as 'global' | 'document'
+      this.numberingService.saveParagraphLayoutSettings(s, { ...draft })
+      this.savedParagraphLayoutBaseline = { ...draft }
+      this.paragraphLayoutDraft = null
+      this.rerender()
+      Notice.info('正文段落排版已保存')
+    }
+
+    const cancelBtn = el('button', 'inkchapter-btn', actionRow) as HTMLButtonElement
+    cancelBtn.textContent = '取消'
+    cancelBtn.onclick = () => {
+      if (this.savedParagraphLayoutBaseline) {
+        this.paragraphLayoutDraft = { ...this.savedParagraphLayoutBaseline }
+      } else {
+        this.paragraphLayoutDraft = null
+      }
+      this.rerender()
+    }
+
+    // Restore inheritance (document only)
+    if (docKey && scope === 'document') {
+      const docOverride = this.numberingService.getScopeStore().documentOverrides[docKey]
+      if (docOverride?.paragraphLayout) {
+        const restoreBtn = el('button', 'inkchapter-btn', actionRow) as HTMLButtonElement
+        restoreBtn.textContent = '恢复继承全局'
+        restoreBtn.onclick = () => {
+          this.numberingService.restoreParagraphLayoutInheritance()
+          this.paragraphLayoutDraft = null
+          this.savedParagraphLayoutBaseline = null
+          this.rerender()
+          Notice.info('已恢复继承全局设置')
+        }
+      }
+    }
   }
 
   // ── Bottom sticky action bar ─────────────────────

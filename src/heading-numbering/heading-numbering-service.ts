@@ -41,6 +41,14 @@ import type { OutlineToolbarCallbacks } from './outline-toolbar-controller'
 import * as logger from '../core/logger'
 import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
 import {
+  injectShortcutMarkerInMarkdown,
+  focusNewIndentParagraph,
+  refreshParagraphIndentStyles,
+  getCurrentParagraphElement,
+  isInExcludedContext,
+  isCursorAtEnd,
+} from './paragraph-indent-manager'
+import {
   generateDocumentKey,
   deepCloneSettings,
   resolveEffectiveSettings,
@@ -225,6 +233,7 @@ export class HeadingNumberingService {
       schemaVersion: 1,
       globalDefault: getDefaultHeadingNumberingSettings(),
       documentOverrides: {},
+      globalParagraphLayout: { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true },
     }
   }
 
@@ -318,6 +327,76 @@ export class HeadingNumberingService {
   /** Check if current document has any layout overrides (alignment, indent, gap). */
   hasDocumentLayoutOverrides(): boolean {
     return hasLayoutOverrides(this.scopeStore, this.getDocumentKey())
+  }
+
+  // ── Paragraph layout ─────────────────────────────
+
+  /** Get the effective paragraph layout settings for the current document. */
+  getParagraphLayoutSettings(): import('./heading-types').ParagraphLayoutSettings {
+    const docKey = this.getDocumentKey()
+    if (docKey) {
+      const override = this.scopeStore.documentOverrides[docKey]
+      if (override?.paragraphLayout) {
+        return { ...override.paragraphLayout }
+      }
+    }
+    return { ...this.scopeStore.globalParagraphLayout }
+  }
+
+  /** Save paragraph layout settings. */
+  saveParagraphLayoutSettings(
+    scope: 'global' | 'document',
+    settings: import('./heading-types').ParagraphLayoutSettings,
+  ): void {
+    if (scope === 'global') {
+      this.scopeStore = {
+        ...this.scopeStore,
+        globalParagraphLayout: { ...settings },
+      }
+    } else {
+      const docKey = this.getDocumentKey()
+      if (!docKey) return
+      const existing = this.scopeStore.documentOverrides[docKey]
+      this.scopeStore = {
+        ...this.scopeStore,
+        documentOverrides: {
+          ...this.scopeStore.documentOverrides,
+          [docKey]: {
+            updatedAt: Date.now(),
+            settings: existing?.settings ?? this.scopeStore.globalDefault,
+            formatSource: existing?.formatSource,
+            layoutOverrides: existing?.layoutOverrides,
+            paragraphLayout: { ...settings },
+          },
+        },
+      }
+    }
+    this.persistScopeStore(this.scopeStore)
+    this.flushRefresh()
+  }
+
+  /** Restore paragraph layout to inherit global default. */
+  restoreParagraphLayoutInheritance(): void {
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+    const existing = this.scopeStore.documentOverrides[docKey]
+    if (!existing) return
+
+    const { paragraphLayout: _, ...rest } = existing
+    if (Object.keys(rest).length <= 2) {
+      // Only settings/formatSource remain — remove entire override
+      this.scopeStore = removeDocumentOverride(this.scopeStore, docKey)
+    } else {
+      this.scopeStore = {
+        ...this.scopeStore,
+        documentOverrides: {
+          ...this.scopeStore.documentOverrides,
+          [docKey]: rest as import('./heading-types').HeadingNumberingDocumentOverride,
+        },
+      }
+    }
+    this.persistScopeStore(this.scopeStore)
+    this.flushRefresh()
   }
 
   // ── Template update acknowledgement ──────────────
@@ -1397,6 +1476,9 @@ export class HeadingNumberingService {
       // Apply heading layouts (always, independent of numbering state)
       this.applyHeadingLayouts()
 
+      // Apply paragraph indent styles (always)
+      this.refreshParagraphIndents()
+
       // Numbering: skip if disabled
       if (!this.s.enabled) return
 
@@ -1542,6 +1624,14 @@ export class HeadingNumberingService {
     } else {
       this.adapter.clearHeadingLayouts()
     }
+  }
+
+  /** Apply paragraph indent styles to the editor DOM. */
+  private refreshParagraphIndents(): void {
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+    const settings = this.getParagraphLayoutSettings()
+    refreshParagraphIndentStyles(root, settings)
   }
 
   /** Get the effective heading layouts for the current document. */
@@ -1846,6 +1936,53 @@ export class HeadingNumberingService {
     return el.querySelector('h1, h2, h3, h4, h5, h6') !== null
   }
 
+  /** Handle paragraph indent shortcut: .. / 。。 + Enter → force-indent-2 paragraph. */
+  private handleParagraphIndentShortcut(e: KeyboardEvent): void {
+    if (e.key !== 'Enter') return
+
+    // Guard: must not be in composition (IME)
+    if (this.isInComposition) return
+
+    // Guard: shortcut must be enabled
+    const settings = this.getParagraphLayoutSettings()
+    if (!settings.indentShortcutEnabled) return
+
+    // Guard: must be in a valid context (not in code, math, list, quote, table, footnote)
+    if (!isCursorAtEnd()) return
+
+    const paragraph = getCurrentParagraphElement()
+    if (!paragraph) return
+    if (isInExcludedContext(paragraph)) return
+
+    // Guard: content must be exactly ".." or "。。"
+    const text = paragraph.textContent?.trim() ?? ''
+    if (text !== '..' && text !== '。。') {
+
+      return
+    }
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Get Markdown source and inject the indent marker
+    const md = this.ctx.getMarkdown?.() ?? ''
+    const newMd = injectShortcutMarkerInMarkdown(md)
+    if (!newMd) return
+
+    // Reload content with the marker injected
+    this.ctx.reloadContent?.(newMd)
+
+    // After reload, find and focus the new paragraph
+    // Use microtask to ensure DOM is updated
+    queueMicrotask(() => {
+      const root = this.adapter.detectEditorRoot()
+      if (root) {
+        focusNewIndentParagraph(root)
+      }
+      this.requestRefresh('editor-input')
+    })
+  }
+
   // ── Editor binding ─────────────────────────────────────
 
   private initAdapter(): void {
@@ -1907,6 +2044,13 @@ export class HeadingNumberingService {
     }
     root.addEventListener('keyup', onKeyUp, { passive: true })
     this.editorRootDisposables.add(() => root.removeEventListener('keyup', onKeyUp))
+
+    // Paragraph indent shortcut: .. / 。。 + Enter → force-indent-2
+    const onEnterKey = (e: KeyboardEvent): void => {
+      this.handleParagraphIndentShortcut(e)
+    }
+    root.addEventListener('keydown', onEnterKey, true)
+    this.editorRootDisposables.add(() => root.removeEventListener('keydown', onEnterKey, true))
   }
 
   /** Detach editor root listeners (called on root change). */

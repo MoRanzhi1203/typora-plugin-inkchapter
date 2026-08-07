@@ -1,6 +1,6 @@
 import type { InkChapterSettings } from './settings-model'
-import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary } from '../heading-numbering/heading-types'
-import { DEFAULT_NAME_CANDIDATES } from '../heading-numbering/heading-types'
+import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary, ParagraphLayoutSettings } from '../heading-numbering/heading-types'
+import { DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 
 const decimalLevels = {} as Record<HeadingLevel, import('../heading-numbering/heading-types').HeadingLevelStyle>
@@ -67,6 +67,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
       } as any).levels,
     },
     documentOverrides: {},
+    globalParagraphLayout: { ...DEFAULT_PARAGRAPH_LAYOUT },
   },
   formatLibrary: DEFAULT_FORMAT_LIBRARY,
   levelRange: {

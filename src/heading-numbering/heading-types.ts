@@ -453,6 +453,53 @@ export interface FormatLibraryPreferences {
   customFormatOrder: string[]
 }
 
+// ── Paragraph layout ─────────────────────────────────────
+
+/** Body paragraph indent mode. */
+export type ParagraphIndentMode = 'flush' | 'indent-2'
+
+/** Paragraph indent override: 'auto' = follow rules, 'force-indent-2' = always 2em. */
+export type ParagraphIndentOverride = 'auto' | 'force-indent-2'
+
+/** Per-paragraph context for indent resolution. */
+export interface ParagraphLayoutContext {
+  isContinuationAfterDisplayMath: boolean
+}
+
+/** User-facing paragraph layout settings. */
+export interface ParagraphLayoutSettings {
+  defaultIndent: ParagraphIndentMode
+  flushAfterDisplayMath: boolean
+  indentShortcutEnabled: boolean
+}
+
+/** Semantic marker key used in HTML comments. */
+export const PARAGRAPH_INDENT_MARKER = 'inkchapter:paragraph-indent=2'
+
+export const DEFAULT_PARAGRAPH_LAYOUT: ParagraphLayoutSettings = {
+  defaultIndent: 'flush',
+  flushAfterDisplayMath: true,
+  indentShortcutEnabled: true,
+}
+
+/**
+ * Resolve the effective paragraph indent mode.
+ *
+ * Priority:
+ * 1. force-indent-2 → always indent-2
+ * 2. formula continuation (flushAfterDisplayMath enabled) → flush
+ * 3. document default
+ */
+export function resolveParagraphIndent(
+  override: ParagraphIndentOverride,
+  context: ParagraphLayoutContext,
+  documentDefault: ParagraphIndentMode,
+): ParagraphIndentMode {
+  if (override === 'force-indent-2') return 'indent-2'
+  if (context.isContinuationAfterDisplayMath && documentDefault === 'indent-2') return 'flush'
+  return documentDefault
+}
+
 // ── Heading numbering scope store (schema refactor) ──────
 
 /** Scope for heading numbering settings. */
@@ -469,6 +516,8 @@ export interface HeadingNumberingDocumentOverride {
    *  Independent of format source identity. Cleared on "restore default layout".
    *  Preserved across format re-application and template updates. */
   layoutOverrides?: DocumentLayoutOverrides
+  /** Document-level paragraph layout settings. Undefined = inherit global. */
+  paragraphLayout?: ParagraphLayoutSettings
 }
 
 /** Document-level layout overrides that don't affect format identity. */
@@ -484,6 +533,8 @@ export interface HeadingNumberingScopeStore {
   schemaVersion: number
   globalDefault: HeadingNumberingSettings
   documentOverrides: Record<string, HeadingNumberingDocumentOverride>
+  /** Global default paragraph layout settings. */
+  globalParagraphLayout: ParagraphLayoutSettings
 }
 
 /** Request payload for saving heading numbering settings. */
