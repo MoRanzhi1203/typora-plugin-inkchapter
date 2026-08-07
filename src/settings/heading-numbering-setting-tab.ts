@@ -497,15 +497,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
       applied = true
       inheritsGlobal = info.inheritsGlobal
       
-      // Business state: is there a newer template version?
-      templateVersion = getFormatVersion(this.formatLibrary, key)
-      sourceVersion = this.getAppliedFormatVersion()
-      templateVersionNewer = (sourceVersion ?? 0) < (templateVersion ?? 0)
-      
-      // Notice state: is the update un-acknowledged?
-      if (templateVersionNewer) {
-        const docKey = this.numberingService.getDocumentKey()
-        pendingUpdateNotice = this.numberingService.isTemplateUpdatePending(docKey, key, templateVersion!)
+      // Template update check: only valid when document has independent formatSource.
+      // Inherited formats get version from globalDefault — updates handled at global scope.
+      if (!inheritsGlobal) {
+        templateVersion = getFormatVersion(this.formatLibrary, key)
+        sourceVersion = this.getAppliedFormatVersion()
+        templateVersionNewer = (sourceVersion ?? 0) < (templateVersion ?? 0)
+        
+        if (templateVersionNewer) {
+          const docKey = this.numberingService.getDocumentKey()
+          pendingUpdateNotice = this.numberingService.isTemplateUpdatePending(docKey, key, templateVersion!)
+        }
       }
     }
     
@@ -3391,7 +3393,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     } else if (cardState.applied || cardState.inheritsGlobal) {
       // Current document uses this format
-      if (cardState.templateVersionNewer) {
+      if (cardState.inheritsGlobal) {
+        // Inherited from global — updates handled at global scope
+        btnText = '继承中'
+        btnDisabled = true
+      } else if (cardState.templateVersionNewer) {
+        // Independent format with available update
         btnText = '应用更新'
       } else {
         btnText = '已应用'
