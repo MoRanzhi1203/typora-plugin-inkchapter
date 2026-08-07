@@ -4415,9 +4415,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // Dual-column: editor sections + preview
     const dualCol = el('div', 'inkchapter-editor-dual-col', body)
-    dualCol.style.cssText = 'display:flex;gap:16px;align-items:flex-start;'
     const editorCol = el('div', 'inkchapter-editor-main', dualCol)
-    editorCol.style.cssText = 'flex:1;min-width:0;'
 
     if (isH1Disabled) {
       const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorCol)
@@ -4432,26 +4430,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
       compHeader.textContent = '① 编号组合'
       this.renderCompositionTabContent(compSection, lv, style, s, isReadonly)
 
-      // ── ② Sequence Label + ③ Current Level Behavior (side by side) ──
+      // ── ② Sequence Label + ③ Current Level Behavior ──
       const dualRow = el('div', 'inkchapter-config-dual-row', editorCol)
-      dualRow.style.cssText = 'display:flex;gap:16px;align-items:flex-start;margin-top:12px;'
 
       const labelCol = el('div', 'inkchapter-config-half', dualRow)
-      labelCol.style.cssText = 'flex:1;min-width:0;'
       const labelHeader = el('div', 'inkchapter-format-header', labelCol)
       labelHeader.textContent = '② 序号标签'
       this.renderLabelTabContent(labelCol, lv, style, s, isReadonly)
 
       const behaviorCol = el('div', 'inkchapter-config-half', dualRow)
-      behaviorCol.style.cssText = 'flex:1;min-width:0;'
       const behaviorHeader = el('div', 'inkchapter-format-header', behaviorCol)
       behaviorHeader.textContent = '③ 当前级行为'
       this.renderBehaviorTabContent(behaviorCol, lv, style, s, isReadonly)
     }
 
-    // Preview column (sticky)
+    // Preview column
     const previewCol = el('div', 'inkchapter-editor-preview-col', dualCol)
-    previewCol.style.cssText = 'flex:0 0 220px;position:sticky;top:8px;'
     const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
     const previewTitle = el('div', '', previewSticky)
     previewTitle.textContent = '实时预览'
@@ -4676,7 +4670,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     const form = el('div', 'inkchapter-label-form', container)
-    form.style.cssText = 'display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px 14px;align-items:center;'
 
     if (selectedSeg.type === 'literal') {
       this.addLabelFormRow(form, '文字内容', () => {
@@ -4765,7 +4758,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     // Compact grid form
     const form = el('div', 'inkchapter-behavior-form', container)
-    form.style.cssText = 'display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px 14px;align-items:center;'
 
     if (lv > 1) {
       // Enable toggle
@@ -4786,7 +4778,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     form.appendChild(startLabel)
     const startInput = document.createElement('input')
     startInput.type = 'number'; startInput.value = String(style.startAt); startInput.min = '1'; startInput.max = '999'
-    startInput.style.cssText = 'width:80px;padding:4px 6px;'
+    startInput.style.cssText = 'padding:4px 6px;'
     if (readonly) { startInput.disabled = true; startInput.style.opacity = '0.6' }
     startInput.onblur = () => {
       if (readonly) return
