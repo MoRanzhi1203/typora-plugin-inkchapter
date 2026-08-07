@@ -3153,8 +3153,39 @@ export class HeadingNumberingSettingTab extends SettingTab {
       restoreBtn.title = '恢复继承全局默认设置'
       restoreBtn.onclick = () => {
         this.numberingService.restoreInheritGlobal(docKey ?? '')
+        // [Diagnostic] Restore inheritance trace
+        const afterOverride = this.numberingService.getScopeStore().documentOverrides[docKey ?? '']
+        console.log('[InkChapter RestoreInheritance] docKey=' + (docKey ?? 'null')
+          + ' afterOverride=' + JSON.stringify(afterOverride ?? null))
+        // Clear all document-specific state and sync to global default
         this.headingDraft = null
         this.headingDraftOriginal = null
+        this.selectedFormatId = null
+        this.selectedFormatType = null
+        this.formatDraft = null
+        this.savedFormatBaseline = null
+        this.headingLayoutDraft = null
+        this.savedLayoutDraft = null
+        this.expandedLevel = null
+        this.selectedSegmentId = null
+        this.selectedCardKey = null
+        this.selectedCardIsPreset = false
+        // Auto-select the global default format
+        const info = this.getAppliedFormatInfo()
+        if (info.source?.type === 'built-in' && info.source.presetId) {
+          this.selectedFormatId = info.source.presetId
+          this.selectedFormatType = 'built-in'
+          this.selectedCardKey = info.source.presetId
+          this.selectedCardIsPreset = true
+          this.loadPresetForViewing(info.source.presetId)
+        } else if (info.source?.type === 'custom' && info.formatId) {
+          const format = this.numberingService.getFormatLibrary().formats.find(f => f.id === info.formatId)
+          if (format) {
+            this.selectedCardKey = info.formatId
+            this.selectedCardIsPreset = false
+            this.initializeFormatEditor(format)
+          }
+        }
         this.rerender()
         Notice.info('已恢复继承全局默认')
       }
@@ -3404,11 +3435,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
         btnText = '已应用'
         btnDisabled = true
       }
-    } else if (cardState.isGlobalDefault && !cardState.applied) {
-      btnText = '已设为默认'
-      btnDisabled = true
     }
-    
+
     applyBtn.textContent = btnText
     applyBtn.disabled = btnDisabled
     if (btnDisabled) {
