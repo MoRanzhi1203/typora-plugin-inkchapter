@@ -16905,7 +16905,7 @@
           }
         },
         "doc.md": {
-          "updatedAt": 1786095489196,
+          "updatedAt": 1786097569537,
           "settings": {
             "enabled": true,
             "showLevelOneNumber": false,
@@ -16954,7 +16954,7 @@
                   ],
                   "withoutLevelOne": []
                 },
-                "numberTitleSpacing": "none"
+                "numberTitleSpacing": "space"
               },
               "2": {
                 "enabled": true,
@@ -17014,7 +17014,7 @@
                     }
                   ]
                 },
-                "numberTitleSpacing": "none"
+                "numberTitleSpacing": "space"
               },
               "3": {
                 "enabled": true,
@@ -17236,7 +17236,7 @@
                     }
                   ]
                 },
-                "numberTitleSpacing": "none"
+                "numberTitleSpacing": "space"
               },
               "6": {
                 "enabled": true,
@@ -17296,7 +17296,7 @@
                     }
                   ]
                 },
-                "numberTitleSpacing": "none"
+                "numberTitleSpacing": "space"
               }
             },
             "customDefinition": {
@@ -17319,7 +17319,12 @@
                   "suffix": ""
                 },
                 "multilevelFormatVariants": {
-                  "withLevelOne": [],
+                  "withLevelOne": [
+                    {
+                      "type": "level-template-reference",
+                      "level": 1
+                    }
+                  ],
                   "withoutLevelOne": []
                 },
                 "contextualFormatVariants": {
@@ -17681,38 +17686,12 @@
                 },
                 "numberTitleSpacing": "space"
               }
-            },
-            "headingLayouts": {
-              "h1": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h2": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h3": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h4": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h5": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              },
-              "h6": {
-                "textAlign": "left",
-                "firstLineIndentEm": 0
-              }
             }
           },
           "formatSource": {
             "type": "custom",
             "formatId": "mseumucm-ft7bbc6j",
-            "version": 3
+            "version": 4
           },
           "layoutOverrides": {
             "headingLayouts": {
