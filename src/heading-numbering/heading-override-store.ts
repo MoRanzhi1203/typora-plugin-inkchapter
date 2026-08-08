@@ -127,27 +127,26 @@ export class HeadingOverrideStore {
     matchMode: 'exact' | 'trim' | 'loose',
     showLevelOneNumber: boolean,
   ): ResolvedMode {
-    // 1. Check explicit self override
+    // 1. Strict mode H1: structure rule priority > per-heading override
+    //    In strict mode, H1 is always unnumbered regardless of override.
+    if (level === 1 && !showLevelOneNumber) {
+      return { mode: 'unnumbered', source: 'default' }
+    }
+
+    // 2. Check explicit self override
     const ov = this.findOverride(level, fingerprint, text)
     if (ov && ov.scope === 'self') {
       if (ov.mode !== 'inherit') return { mode: ov.mode, source: ov.source }
     }
 
-    // 2. Check subtree override from parent
+    // 3. Check subtree override from parent
     if (this.isUnderUnnumberedSubtree(level, fingerprint, parentFingerprints)) {
       return { mode: 'unnumbered', source: 'manual' }
     }
 
-    // 3. Check batch/name-rule overrides (those with scope='self' and non-inherit)
+    // 4. Check batch/name-rule overrides (those with scope='self' and non-inherit)
     if (ov && ov.mode !== 'inherit') {
       return { mode: ov.mode, source: ov.source }
-    }
-
-    // 4. Strict mode H1: structure rule priority > per-heading override
-    //    In strict mode, H1 is always unnumbered regardless of override.
-    if (level === 1 && !showLevelOneNumber) {
-      // In strict mode, H1 must not be numbered even with a per-heading 'numbered' override
-      return { mode: 'unnumbered', source: 'default' }
     }
 
     // 5. Check name rules
