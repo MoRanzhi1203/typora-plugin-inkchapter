@@ -126,11 +126,8 @@ interface OpenFormatMenuState {
 }
 
 function getLevelLabel(physicalLevel: number, mode: HeadingStructureMode): string {
-  const slot = resolveStyleSlot(mode, physicalLevel as 1 | 2 | 3 | 4 | 5 | 6)
   if (physicalLevel === 1 && mode === 'strict') return 'H1 · 文档题目'
-  if (slot === null) return `H${physicalLevel}`
-  const suffix = slot === 6 ? ' · 扩展样式' : ` · 样式 ${slot}`
-  return `H${physicalLevel}${suffix}`
+  return `H${physicalLevel}`
 }
 
 export class HeadingNumberingSettingTab extends SettingTab {
@@ -653,27 +650,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const numbered = computeHeadingNumbering(syntheticHeadings, s)
 
-    for (const item of numbered) {
-      const lv = item.level as HeadingLevel
-      const slotLv = this.resolveSlotLevel(lv)
-      if (slotLv === null) continue // strict H1: skip
-      const style = s.levels[slotLv]
-      if (!style?.enabled) continue
-
-      if (!resolveHeadingStructure(s).showLevelOneNumber && lv === 1) {
-        const row = el('div', 'inkchapter-preview-row', this.previewEl)
-        const label = el('span', 'inkchapter-preview-label', row)
-        label.textContent = `H${lv} `
-        const token = el('span', 'inkchapter-preview-token', row)
-        token.textContent = '一级标题示例'
-        continue
-      }
-
+    // Always render all H1-H6 rows. Strict H1 is visible but unnumbered.
+    const structure = resolveHeadingStructure(s)
+    for (const lv of HEADING_LEVELS) {
+      const item = numbered.find(h => h.level === lv)
       const row = el('div', 'inkchapter-preview-row', this.previewEl)
       const label = el('span', 'inkchapter-preview-label', row)
       label.textContent = `H${lv} `
+
+      // strict H1: document title, no number
+      if (!structure.showLevelOneNumber && lv === 1) {
+        const token = el('span', 'inkchapter-preview-token', row)
+        token.textContent = '文档题目示例'
+        continue
+      }
+
       const token = el('span', 'inkchapter-preview-token', row)
-      token.textContent = item.label || `（无编号）`
+      token.textContent = item?.label || `（无编号）`
     }
   }
 
@@ -2127,7 +2120,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
         const refStyle = s.levels[refLv]
         const refTpl = refStyle?.levelTemplate
         const tplPreview = refTpl ? `${refTpl.prefix}${getSampleToken(refTpl.tokenStyle)}${refTpl.suffix}` : `H${refLv}`
-        opt.textContent = `[H${refLv}: ${tplPreview}]`
+        const displayLv = resolvePhysicalHeadingForStyleSlot(resolveHeadingStructure(s).mode, refLv as StyleSlot) ?? refLv
+        opt.textContent = `[H${displayLv}: ${tplPreview}]`
         refSelect.appendChild(opt)
       }
     }
@@ -2386,8 +2380,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     const s = this.headingSettings
-    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
-    const before = [...getActiveContextualFormatVariant(style, showL1, lv)]
+    const slotLvForDrag = this.resolveSlotLevel(lv) ?? lv
+    const before = [...getActiveContextualFormatVariant(style, true, slotLvForDrag)]
     const draggingIdx = ds.draggingIndex
     const targetIdx = ds.targetIndexAfterRemoval
 
@@ -2399,7 +2393,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
 
     const hiddenLevels = new Set<HeadingLevel>()
-    if (!showL1) hiddenLevels.add(1 as HeadingLevel)
+    // Slot model: no hidden levels needed — refs are slot-relative
 
     const after = normalizeContextualFormatAfterDrag(moved, lv, hiddenLevels, style.tokenStyle)
 
@@ -2616,7 +2610,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
 
     const hiddenLevels = new Set<HeadingLevel>()
-    if (!showL1) hiddenLevels.add(1 as HeadingLevel)
+    // Slot model: no hidden levels needed — refs are slot-relative
 
     const after = normalizeMultilevelFormatAfterDrag(moved, lv, hiddenLevels)
 
@@ -3082,9 +3076,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (slotLv === null) return // strict H1: no slot
     const currentStyle = s.levels[slotLv]
     // Ensure current level reference is present before updating
-    const ensuredFormat = ensureCurrentLevelSegment(lv, nextFormat, currentStyle.tokenStyle)
+    // Use slotLv (not physical lv) for slot-relative reference levels.
+    const ensuredFormat = ensureCurrentLevelSegment(slotLv, nextFormat, currentStyle.tokenStyle)
+    // Always write to withLevelOne in slot model — withoutLevelOne is legacy.
     const updated = updateActiveContextualFormatVariant(
-      currentStyle, lv, resolveHeadingStructure(s).showLevelOneNumber, ensuredFormat,
+      currentStyle, slotLv, true, ensuredFormat,
     )
     // Sync multilevelFormatVariants for backward compat
     updated.multilevelFormatVariants = {
@@ -3116,7 +3112,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (slotLv === null) return // strict H1: no slot
     const currentStyle = s.levels[slotLv]
     const updated = updateActiveMultilevelFormatVariant(
-      currentStyle, lv, resolveHeadingStructure(s).showLevelOneNumber, nextFormat,
+      currentStyle, slotLv, true, nextFormat,
     )
     s.levels = { ...s.levels, [slotLv]: updated }
   }
@@ -3139,8 +3135,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const slotLv = this.resolveSlotLevel(lv)
     if (slotLv === null) return // strict H1: no slot
     const currentStyle = s.levels[slotLv]
-    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
-    const activeFmt = getActiveContextualFormatVariant(currentStyle, showL1, lv)
+    // Always read/write withLevelOne in slot model.
+    const activeFmt = getActiveContextualFormatVariant(currentStyle, true, slotLv)
     const nextFmt = activeFmt.map(seg => {
       if (seg.type === 'level-reference' && seg.id === segmentId) {
         return { ...seg, appearance: { ...seg.appearance, ...patch } }
@@ -3148,7 +3144,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return seg
     })
 
-    const updated = updateActiveContextualFormatVariant(currentStyle, lv, showL1, nextFmt)
+    const updated = updateActiveContextualFormatVariant(currentStyle, slotLv, true, nextFmt)
     // Sync multilevelFormatVariants for backward compat
     updated.multilevelFormatVariants = {
       withLevelOne: updated.contextualFormatVariants.withLevelOne.map(seg =>
@@ -4542,12 +4538,29 @@ export class HeadingNumberingSettingTab extends SettingTab {
       return
     }
 
-    const lv = this.expandedLevel
-    const style = draft.levels[lv]
+    const physicalLevel = this.expandedLevel
+    const slotLv = this.resolveSlotLevel(physicalLevel)
+    // strict H1: document title, no style slot
+    if (slotLv === null) {
+      const h1Notice = el('div', 'inkchapter-custom-h1-notice', body)
+      h1Notice.textContent = 'H1 为文档题目，不参与编号'
+      h1Notice.classList.add('inkchapter-h1-visibility--disabled')
+      h1Notice.style.cssText = 'padding:16px;text-align:center;color:var(--text-muted,#888);'
+      // Still show preview column
+      const previewCol = el('div', 'inkchapter-editor-preview-col', body)
+      const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
+      const previewTitle = el('div', '', previewSticky)
+      previewTitle.textContent = '实时预览'
+      previewTitle.style.cssText = 'font-weight:600;font-size:13px;margin-bottom:6px;color:var(--text-muted,#666);'
+      this.previewEl = el('div', 'inkchapter-preview', previewSticky)
+      this.updatePreview()
+      return
+    }
+    const style = draft.levels[slotLv]
     if (!style) return
 
     const structureResolved = resolveHeadingStructure(s)
-    const isH1Disabled = lv === 1 && !structureResolved.showLevelOneNumber
+    const isH1Disabled = physicalLevel === 1 && !structureResolved.showLevelOneNumber
 
     // Dual-column: editor sections + preview
     const dualCol = el('div', 'inkchapter-editor-dual-col', body)
@@ -4564,7 +4577,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const compSection = el('div', 'inkchapter-config-section', editorCol)
       const compHeader = el('div', 'inkchapter-format-header', compSection)
       compHeader.textContent = '① 编号组合'
-      this.renderCompositionTabContent(compSection, lv, style, s, isReadonly)
+      this.renderCompositionTabContent(compSection, physicalLevel, style, s, isReadonly)
 
       // ── ② Sequence Label + ③ Current Level Behavior ──
       const dualRow = el('div', 'inkchapter-config-dual-row', editorCol)
@@ -4572,12 +4585,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const labelCol = el('div', 'inkchapter-config-half', dualRow)
       const labelHeader = el('div', 'inkchapter-format-header', labelCol)
       labelHeader.textContent = '② 序号标签'
-      this.renderLabelTabContent(labelCol, lv, style, s, isReadonly)
+      this.renderLabelTabContent(labelCol, physicalLevel, style, s, isReadonly)
 
       const behaviorCol = el('div', 'inkchapter-config-half', dualRow)
       const behaviorHeader = el('div', 'inkchapter-format-header', behaviorCol)
       behaviorHeader.textContent = '③ 当前级行为'
-      this.renderBehaviorTabContent(behaviorCol, lv, style, s, isReadonly)
+      this.renderBehaviorTabContent(behaviorCol, physicalLevel, style, s, isReadonly)
     }
 
     // Preview column
@@ -4683,24 +4696,25 @@ export class HeadingNumberingSettingTab extends SettingTab {
     s: HeadingNumberingSettings,
     readonly = false,
   ): void {
-    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
-    let activeFmt = getActiveContextualFormatVariant(style, showL1, lv)
+    const showL1 = true // Slot model: always use withLevelOne
+    const slotLv = this.resolveSlotLevel(lv) ?? lv
+    let activeFmt = getActiveContextualFormatVariant(style, showL1, slotLv)
     if (!activeFmt || activeFmt.length === 0) {
       const soloSeg: ContextualFormatSegment = {
         id: generateStableId(),
         type: 'level-reference',
-        level: lv,
+        level: slotLv,
         appearance: { tokenStyle: style.tokenStyle, prefix: '', suffix: '' },
       }
       style.contextualFormatVariants = {
         withLevelOne: [{ ...soloSeg, id: generateStableId() }],
-        withoutLevelOne: lv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
+        withoutLevelOne: slotLv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
       }
-      activeFmt = getActiveContextualFormatVariant(style, showL1, lv)
+      activeFmt = getActiveContextualFormatVariant(style, showL1, slotLv)
     }
 
     if (!this.selectedSegmentId && activeFmt) {
-      const curSeg = activeFmt.find(seg => seg.type === 'level-reference' && seg.level === lv)
+      const curSeg = activeFmt.find(seg => seg.type === 'level-reference' && seg.level === slotLv)
       if (curSeg) this.selectedSegmentId = curSeg.id
     }
 
@@ -4740,7 +4754,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       refSelect.style.cssText = 'min-width:80px;'
       if (readonly) refSelect.disabled = true
 
-      const availRefs = getAvailableContextualReferenceLevels(lv, showL1, activeFmt)
+      const availRefs = getAvailableContextualReferenceLevels(slotLv, showL1, activeFmt)
       if (availRefs.length === 0) {
         const opt = document.createElement('option'); opt.value = ''; opt.textContent = '无可用'; opt.disabled = true; refSelect.appendChild(opt)
       } else {
@@ -4748,7 +4762,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
           // Allow re-adding current level ref if it was removed
           if (activeFmt.some(s => s.type === 'level-reference' && s.level === refLv)) continue
           const opt = document.createElement('option'); opt.value = String(refLv);
-          opt.textContent = `H${refLv}`
+          const displayLv = resolvePhysicalHeadingForStyleSlot(resolveHeadingStructure(s).mode, refLv as StyleSlot) ?? refLv
+          opt.textContent = `H${displayLv}`
           refSelect.appendChild(opt)
         }
       }
@@ -4763,13 +4778,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
         if (readonly) return
         const refLv = Number(refSelect.value) as HeadingLevel
         if (!refLv || refLv < 1 || refLv > 6) return
-        const cur = getActiveContextualFormatVariant(style, showL1, lv)
-        if (cur.some(s => s.type === 'level-reference' && s.level === refLv)) return
-        const refStyle2 = s.levels[refLv]
+        const slotLvForInsert = this.resolveSlotLevel(lv) ?? lv
+        const refSlotLv = this.resolveSlotLevel(refLv) ?? refLv
+        const cur = getActiveContextualFormatVariant(style, true, slotLvForInsert)
+        if (cur.some(s => s.type === 'level-reference' && s.level === refSlotLv)) return
+        const refStyle2 = s.levels[refSlotLv]
         const defaultAppearance = refStyle2?.levelTemplate
           ? { tokenStyle: refStyle2.levelTemplate.tokenStyle, prefix: refStyle2.levelTemplate.prefix ?? '', suffix: refStyle2.levelTemplate.suffix ?? '' }
           : { tokenStyle: 'arabic' as NumberTokenStyle, prefix: '', suffix: '' }
-        const newFmt = [...cur, { id: generateStableId(), type: 'level-reference' as const, level: refLv, appearance: { ...defaultAppearance } }]
+        const newFmt = [...cur, { id: generateStableId(), type: 'level-reference' as const, level: refSlotLv, appearance: { ...defaultAppearance } }]
         this.updateDraftContextualFormat(lv, newFmt)
         this.onshow()
         queueMicrotask(() => this.updatePreview())
@@ -4789,8 +4806,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     s: HeadingNumberingSettings,
     readonly = false,
   ): void {
-    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
-    const activeFmt = getActiveContextualFormatVariant(style, showL1, lv)
+    const showL1 = true // Slot model: always use withLevelOne
+    const slotLv = this.resolveSlotLevel(lv) ?? lv
+    const activeFmt = getActiveContextualFormatVariant(style, showL1, slotLv)
 
     if (!this.selectedSegmentId || !activeFmt) {
       const hint = el('div', 'inkchapter-token-select-hint', container)

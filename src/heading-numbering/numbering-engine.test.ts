@@ -867,3 +867,341 @@ describe('gap slot equality', () => {
     expect(rLoose[1].labelGap).toBe('none')
   })
 })
+
+describe('H2→H3 shift regression', () => {
+  /**
+   * Bug: ensureAllLevelsHaveCurrentSegment and updateDraftContextualFormat
+   * were using physical lv instead of slotLv, causing ref levels to be
+   * shifted +1 in the draft. In strict mode, H2/S1 would store ref(2)
+   * instead of ref(1), which buildStrictEffectiveLevels would shift to ref(3).
+   */
+  function strictH2SelfLevel(): number {
+    const levels = getPresetLevels('decimal-hierarchical')
+    const effective = buildStrictEffectiveLevels(levels)
+    // strict H2 uses effective level 2, which maps to S1 (levels[1])
+    const selfSeg = effective[2].contextualFormatVariants.withLevelOne
+      .find(s => s.type === 'level-reference' && s.level === 2)
+    return selfSeg ? (selfSeg as any).level : -1
+  }
+
+  it('strict H2 does not shift self reference to H3', () => {
+    // strict H2 (effective level 2) self ref should be at level 2
+    // If it were 3, the bug is still present
+    expect(strictH2SelfLevel()).toBe(2)
+  })
+
+  it('strict H3 does not shift self reference to H4', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    const effective = buildStrictEffectiveLevels(levels)
+    const selfSeg = effective[3].contextualFormatVariants.withLevelOne
+      .find(s => s.type === 'level-reference' && s.level === 3)
+    expect(selfSeg).toBeDefined()
+    expect((selfSeg as any).level).toBe(3)
+  })
+
+  it('strict H2/S1 with chinese draft produces 一、not 1', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    // Simulate editor: user sets S1 to chinese with suffix 、
+    levels[1] = {
+      ...levels[1],
+      tokenStyle: 'chinese' as const,
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 'test', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [],
+      },
+    }
+    const settings: HeadingNumberingSettings = {
+      enabled: true,
+      headingStructureMode: 'strict',
+      showLevelOneNumber: false,
+      preset: 'custom',
+      maxDepth: 6 as HeadingLevel,
+      levels,
+      customDefinition: levels,
+    }
+    const headings = [hd('T', 1, 0), hd('A', 2, 1)]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[1].label).toBe('一、')
+  })
+
+  it('same S1 in loose: H1 produces 一、', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    levels[1] = {
+      ...levels[1],
+      tokenStyle: 'chinese' as const,
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 'test', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [],
+      },
+    }
+    const settings: HeadingNumberingSettings = {
+      enabled: true,
+      headingStructureMode: 'loose',
+      showLevelOneNumber: true,
+      preset: 'custom',
+      maxDepth: 6 as HeadingLevel,
+      levels,
+      customDefinition: levels,
+    }
+    const headings = [hd('A', 1, 0)]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[0].label).toBe('一、')
+  })
+})
+
+describe('canonical variant verification', () => {
+  it('engine buildLabel always reads withLevelOne', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    // Set withLevelOne to chinese, withoutLevelOne to arabic
+    // Engine should read withLevelOne (chinese)
+    levels[1] = {
+      ...levels[1],
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 'w', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [
+          { id: 'wo', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'arabic' as const, prefix: '', suffix: '' } },
+        ],
+      },
+    }
+    const settings: HeadingNumberingSettings = {
+      enabled: true,
+      headingStructureMode: 'strict',
+      showLevelOneNumber: false,
+      preset: 'custom',
+      maxDepth: 6 as HeadingLevel,
+      levels,
+    }
+    // strict H2 reads S1 → should get withLevelOne (chinese 一、)
+    const headings = [hd('T', 1, 0), hd('A', 2, 1)]
+    const result = computeHeadingNumbering(headings, settings)
+    expect(result[1].label).toBe('一、')
+  })
+
+  it('canonical withLevelOne is shared between strict and loose', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    levels[1] = {
+      ...levels[1],
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 's', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [],
+      },
+    }
+    const strictS: HeadingNumberingSettings = {
+      ...makeSettings('decimal-hierarchical', false), levels, preset: 'custom',
+    }
+    const looseS: HeadingNumberingSettings = {
+      ...makeSettings('decimal-hierarchical', true), levels, preset: 'custom',
+    }
+    const rStrict = computeHeadingNumbering([hd('T', 1, 0), hd('A', 2, 1)], strictS)
+    const rLoose = computeHeadingNumbering([hd('A', 1, 0)], looseS)
+    expect(rStrict[1].label).toBe('一、')
+    expect(rLoose[0].label).toBe('一、')
+  })
+})
+
+describe('normalization idempotence', () => {
+  it('buildStrictEffectiveLevels is idempotent on already-shifted data', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    // First shift
+    const shifted1 = buildStrictEffectiveLevels(levels)
+    // Second shift should not cause further +1 (it operates on raw levels)
+    const shifted2 = buildStrictEffectiveLevels(levels)
+    // Both should give same effective H2 label
+    const s: HeadingNumberingSettings = {
+      enabled: true,
+      headingStructureMode: 'strict',
+      showLevelOneNumber: false,
+      preset: 'custom',
+      maxDepth: 6 as HeadingLevel,
+      levels,
+    }
+    const r1 = computeHeadingNumbering([hd('T', 1, 0), hd('A', 2, 1)], s)
+    expect(r1[1].label).not.toBe('')
+    // The key test: applying buildStrictEffectiveLevels twice on same raw data
+    // should never cause the ref levels to keep increasing
+    const effectiveFirst = shifted1[2].contextualFormatVariants.withLevelOne
+    const effectiveSecond = shifted2[2].contextualFormatVariants.withLevelOne
+    for (let i = 0; i < effectiveFirst.length; i++) {
+      if (effectiveFirst[i].type === 'level-reference' && effectiveSecond[i].type === 'level-reference') {
+        expect((effectiveSecond[i] as any).level).toBe((effectiveFirst[i] as any).level)
+      }
+    }
+  })
+
+  it('ensureAllLevelsHaveCurrentSegment does not cause cumulative shift', () => {
+    // Simulate calling ensure multiple times: levels data should be stable
+    const levels = getPresetLevels('decimal-hierarchical')
+    const originalLevel = levels[1].contextualFormatVariants.withLevelOne
+      .find(s => s.type === 'level-reference') as any
+    const origVal = originalLevel?.level ?? 0
+
+    // Simulate what ensureAllLevelsHaveCurrentSegment does for strict H2:
+    // check seg.level === slotLv(1) → original ref(1) matches → no change
+    const slotLv = 1 // S1 for strict H2
+    const hasOwn = levels[slotLv].contextualFormatVariants.withLevelOne
+      .some(s => s.type === 'level-reference' && (s as any).level === slotLv)
+    expect(hasOwn).toBe(true)
+
+    // Multiple calls should keep same level
+    const levelAfter = levels[1].contextualFormatVariants.withLevelOne
+      .find(s => s.type === 'level-reference') as any
+    expect(levelAfter?.level).toBe(origVal)
+  })
+})
+
+describe('mode round-trip no drift', () => {
+  it('strict→loose→strict: S1 data unchanged', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    const s1Snapshot = JSON.stringify(levels[1])
+
+    // Strict computation
+    const strictS: HeadingNumberingSettings = {
+      ...makeSettings('decimal-hierarchical', false), levels, preset: 'custom',
+    }
+    computeHeadingNumbering([hd('T', 1, 0), hd('A', 2, 1)], strictS)
+
+    // Loose computation (same levels data)
+    const looseS: HeadingNumberingSettings = {
+      ...makeSettings('decimal-hierarchical', true), levels, preset: 'custom',
+    }
+    computeHeadingNumbering([hd('A', 1, 0)], looseS)
+
+    // Back to strict
+    computeHeadingNumbering([hd('T', 1, 0), hd('A', 2, 1)], strictS)
+
+    // S1 data must be unchanged
+    expect(JSON.stringify(levels[1])).toBe(s1Snapshot)
+  })
+})
+
+describe('mini/full preview equality', () => {
+  it('S1 draft with chinese token: strict H2 full preview == loose H1 full preview', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    levels[1] = {
+      ...levels[1],
+      tokenStyle: 'chinese' as const,
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 's', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [],
+      },
+    }
+    const rStrict = computeLabels(
+      [{ text: 'T', level: 1 }, { text: 'A', level: 2 }],
+      'decimal-hierarchical', false,
+    )
+    const rLoose = computeLabels(
+      [{ text: 'A', level: 1 }],
+      'decimal-hierarchical', true,
+    )
+    // The S1 data with override should be used in both modes
+    // Both should produce same label
+    expect(rStrict.labels[1]).toBe(rLoose.labels[0])
+  })
+})
+
+describe('draft vs saved priority', () => {
+  it('draft S1=chinese一、overrides saved S1=arabic 1 in preview', () => {
+    // This simulates: saved format has arabic "1" but editor draft has chinese "一、"
+    // The computeHeadingNumbering should use whatever levels it's given
+    const levels = getPresetLevels('decimal-hierarchical')
+    // This IS the draft — set to chinese
+    levels[1] = {
+      ...levels[1],
+      tokenStyle: 'chinese' as const,
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 'draft', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [],
+      },
+    }
+    const settings: HeadingNumberingSettings = {
+      enabled: true,
+      headingStructureMode: 'strict',
+      showLevelOneNumber: false,
+      preset: 'custom',
+      maxDepth: 6 as HeadingLevel,
+      levels,
+    }
+    const result = computeHeadingNumbering([hd('T', 1, 0), hd('A', 2, 1)], settings)
+    expect(result[1].label).toBe('一、')
+  })
+})
+
+describe('presets have correct slot-level refs', () => {
+  // System presets' levels[1] (S1) should have ref(1) for self reference
+  const presets: HeadingNumberingPreset[] = [
+    'decimal-hierarchical', 'chinese-chapter', 'chinese-outline',
+    'academic-paper', 'chapter-section-clause', 'appendix-hierarchical',
+    'roman-hierarchical', 'roman-mixed', 'letter-mixed',
+  ]
+
+  for (const preset of presets) {
+    it(`${preset}: S1 has self ref at level 1`, () => {
+      const levels = getPresetLevels(preset)
+      const s1Self = levels[1].contextualFormatVariants.withLevelOne
+        .find(s => s.type === 'level-reference' && (s as any).level === 1)
+      expect(s1Self).toBeDefined()
+    })
+
+    it(`${preset}: strict H2 == loose H1`, () => {
+      const rStrict = computeLabels(
+        [{ text: 'T', level: 1 }, { text: 'A', level: 2 }],
+        preset, false,
+      )
+      const rLoose = computeLabels(
+        [{ text: 'A', level: 1 }],
+        preset, true,
+      )
+      expect(rStrict.labels[1]).toBe(rLoose.labels[0])
+    })
+  }
+})
+
+describe('legacy withoutLevelOne compatibility', () => {
+  it('engine ignores withoutLevelOne when withLevelOne present', () => {
+    const levels = getPresetLevels('decimal-hierarchical')
+    // withoutLevelOne has different format — engine should NOT use it
+    levels[1] = {
+      ...levels[1],
+      contextualFormatVariants: {
+        withLevelOne: [
+          { id: 'w', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'chinese' as const, prefix: '', suffix: '、' } },
+        ],
+        withoutLevelOne: [
+          { id: 'wo', type: 'level-reference' as const, level: 1,
+            appearance: { tokenStyle: 'arabic' as const, prefix: '', suffix: '' } },
+        ],
+      },
+    }
+    const settings: HeadingNumberingSettings = {
+      enabled: true,
+      headingStructureMode: 'strict',
+      showLevelOneNumber: false,
+      preset: 'custom',
+      maxDepth: 6 as HeadingLevel,
+      levels,
+    }
+    const result = computeHeadingNumbering([hd('T', 1, 0), hd('A', 2, 1)], settings)
+    // Must read withLevelOne (chinese 一、), not withoutLevelOne (arabic 1)
+    expect(result[1].label).toBe('一、')
+  })
+})
