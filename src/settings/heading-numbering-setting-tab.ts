@@ -1152,7 +1152,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Format library: save / save-as / rename / delete ─
 
-  private saveFormatDraft(): void {
+  private saveFormatDraft(suppressToast = false): void {
     if (!this.selectedFormatId || !this.formatDraft || !this.headingDraft) return
 
     const updated: CustomNumberingFormat = {
@@ -1169,10 +1169,44 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const newLib = updateFormatInLibrary(this.formatLibrary, updated)
     this.numberingService.saveFormatLibrary(newLib)
     this.formatLibrary = newLib
-    this.formatDraft = updated
-    this.savedFormatBaseline = { ...updated }
 
-    Notice.info(`格式 "${updated.name}" 已保存`)
+    // Read the saved format from the library to get the new version
+    const savedFmt = newLib.formats.find(f => f.id === updated.id)
+    const newVersion = savedFmt?.version ?? 0
+
+    // Acknowledge the template update so it doesn't show "有可用更新" toast
+    const docKey = this.numberingService.getDocumentKey()
+    if (docKey && savedFmt) {
+      this.numberingService.acknowledgeTemplateUpdate(docKey, savedFmt.id, newVersion)
+    }
+
+    // Sync applied scope version: if this format IS the currently applied format or global default,
+    // update the scope store's formatSource.version so "应用更新" doesn't appear immediately.
+    const formatId = updated.id
+    const scopeStore = this.numberingService.getScopeStore()
+
+    // Check and update document-scope applied version
+    if (docKey) {
+      const docOverride = scopeStore.documentOverrides[docKey]
+      const docSource = docOverride?.formatSource
+      if (docSource?.type === 'custom' && docSource.formatId === formatId) {
+        this.numberingService.syncDocumentFormatVersion(docKey, formatId, newVersion)
+      }
+    }
+
+    // Check and update global default applied version
+    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    if (gSource?.type === 'custom' && gSource.formatId === formatId) {
+      this.numberingService.syncGlobalDefaultFormatVersion(formatId, newVersion)
+    }
+
+    // Update draft with library version so formatDirty stays false
+    this.formatDraft = { ...updated, version: newVersion }
+    this.savedFormatBaseline = { ...updated, version: newVersion }
+
+    if (!suppressToast) {
+      Notice.info(`格式 "${updated.name}" 已保存`)
+    }
   }
 
   private saveFormatAs(): void {
@@ -5280,9 +5314,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const saveBtn = el('button', 'inkchapter-btn inkchapter-btn--primary', right)
     saveBtn.textContent = '保存并应用'
     saveBtn.onclick = () => {
+      // Capture view intent before any saves
+      const viewIntent = {
+        selectedFormatId: this.selectedFormatId,
+        selectedFormatType: this.selectedFormatType,
+        expandedLevel: this.expandedLevel,
+      }
+
       // Save format draft if editing (only for custom formats)
       if (this.selectedFormatId && this.selectedFormatType === 'custom' && this.formatDraft && this.headingDraft) {
-        this.saveFormatDraft()
+        this.saveFormatDraft(true) // suppressToast — we'll show one summary toast
       }
       // Save numbering scope draft if any (skip for system format viewing)
       if (this.headingDraft && this.selectedFormatType !== 'built-in') {
@@ -5303,12 +5344,24 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.savedLayoutDraft = deepCloneLayoutDraft(d)
         this.headingLayoutDraft = null
       }
-      this.selectedFormatId = null
-      this.selectedFormatType = null
-      this.formatDraft = null
-      this.savedFormatBaseline = null
+
+      // Restore view intent — editor must continue showing the same format.
+      // Only clear these if the view intent is no longer valid (format was deleted).
+      this.selectedFormatId = viewIntent.selectedFormatId
+      this.selectedFormatType = viewIntent.selectedFormatType
+      this.expandedLevel = viewIntent.expandedLevel
+
+      // If selectedFormatId is set but formatDraft was reset, reload it from library
+      if (this.selectedFormatId && this.selectedFormatType === 'custom' && !this.formatDraft) {
+        const fmt = this.formatLibrary.formats.find(f => f.id === this.selectedFormatId)
+        if (fmt) {
+          this.formatDraft = { ...fmt }
+          this.savedFormatBaseline = { ...fmt }
+        }
+      }
+
       this.rerender()
-      Notice.info('设置已保存')
+      Notice.info('设置已保存并应用')
     }
   }
 }
