@@ -288,6 +288,29 @@ export class HeadingDomAdapter {
     }
   }
 
+  /**
+   * Validate that all heading elements still carry their expected gap attributes.
+   * Used by the fast-path to detect gap loss without a full refresh.
+   */
+  areGapsValid(gaps: readonly string[]): boolean {
+    if (!this.editorRoot) return true
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    let gapIdx = 0
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (gapIdx >= gaps.length) return true
+      const expected = gaps[gapIdx]
+      gapIdx++
+      if (expected === 'space') {
+        if (el.getAttribute(GAP_ATTR) !== 'space') return false
+      } else {
+        if (el.hasAttribute(GAP_ATTR)) return false
+      }
+    }
+    return true
+  }
+
   // ── Layout (alignment + indent) ─────────────────────
 
   /**

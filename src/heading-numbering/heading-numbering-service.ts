@@ -119,6 +119,7 @@ export class HeadingNumberingService {
   // State
   private lastSnapshot: HeadingSnapshot[] | null = null
   private renderedStates: RenderedHeadingState[] | null = null
+  private renderedGaps: string[] | null = null
   private isInComposition = false
   private mutationObserver: MutationObserver | null = null
 
@@ -327,6 +328,51 @@ export class HeadingNumberingService {
   /** Check if current document has any layout overrides (alignment, indent, gap). */
   hasDocumentLayoutOverrides(): boolean {
     return hasLayoutOverrides(this.scopeStore, this.getDocumentKey())
+  }
+
+  // ── Format version sync ──────────────────────────
+
+  /** Sync the applied format version in the document override to match the library version. */
+  syncDocumentFormatVersion(docKey: string, formatId: string, newVersion: number): void {
+    const override = this.scopeStore.documentOverrides[docKey]
+    const docSource = override?.formatSource
+    if (!docSource || docSource.type !== 'custom' || docSource.formatId !== formatId) return
+
+    this.scopeStore = {
+      ...this.scopeStore,
+      documentOverrides: {
+        ...this.scopeStore.documentOverrides,
+        [docKey]: {
+          ...override,
+          updatedAt: Date.now(),
+          formatSource: {
+            type: 'custom' as const,
+            formatId: docSource.formatId,
+            version: newVersion,
+          },
+        },
+      },
+    }
+    this.persistScopeStore(this.scopeStore)
+  }
+
+  /** Sync the global default applied format version to match the library version. */
+  syncGlobalDefaultFormatVersion(formatId: string, newVersion: number): void {
+    const gSource = (this.scopeStore.globalDefault as any).formatSource as import('./heading-types').NumberingFormatSource | undefined
+    if (!gSource || gSource.type !== 'custom' || gSource.formatId !== formatId) return
+
+    this.scopeStore = {
+      ...this.scopeStore,
+      globalDefault: {
+        ...this.scopeStore.globalDefault,
+        formatSource: {
+          type: 'custom' as const,
+          formatId: gSource.formatId,
+          version: newVersion,
+        },
+      } as any,
+    }
+    this.persistScopeStore(this.scopeStore)
   }
 
   // ── Paragraph layout ─────────────────────────────
@@ -1490,6 +1536,10 @@ export class HeadingNumberingService {
         if (!this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)) {
           // Full state check: element refs, class, attr
           if (this.adapter.isRenderedStateValid(this.renderedStates)) {
+            // Also check gaps — Typora may strip data-inkchapter-heading-gap on Enter
+            if (this.renderedGaps && !this.adapter.areGapsValid(this.renderedGaps)) {
+              this.adapter.applyLabelGaps(this.renderedGaps)
+            }
             this.lastSnapshot = snapshot
             return // Everything is fine, skip
           }
@@ -1498,6 +1548,10 @@ export class HeadingNumberingService {
           this.renderedStates = this.adapter.buildRenderedStates(
             this.renderedStates.map(s => s.label),
           )
+          // Also re-apply gaps after repair
+          if (this.renderedGaps) {
+            this.adapter.applyLabelGaps(this.renderedGaps)
+          }
           this.logRefresh(reason, snapshot.length, diff, startTime)
           this.lastSnapshot = snapshot
           return
@@ -1512,6 +1566,7 @@ export class HeadingNumberingService {
       if (headings.length === 0) {
         this.adapter.clearNumbering()
         this.renderedStates = null
+        this.renderedGaps = null
         recordRuntimeAudit('doRefresh:end', { headingCount: 0 })
         return
       }
@@ -1576,6 +1631,7 @@ export class HeadingNumberingService {
       // Apply per-heading label gaps (number-to-title spacing)
       const gaps = extractLabelGaps(numbered)
       this.adapter.applyLabelGaps(gaps)
+      this.renderedGaps = [...gaps]
 
       // Snapshot apply-diff
       const headingEls = this.adapter.getEditorRoot()?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []
