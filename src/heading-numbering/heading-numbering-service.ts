@@ -30,6 +30,7 @@ import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-form
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
+import { resolveHeadingStructure } from './heading-structure'
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
@@ -187,7 +188,10 @@ export class HeadingNumberingService {
     const toolbarCallbacks: OutlineToolbarCallbacks = {
       isNumberingEnabled: () => this.s.enabled,
       toggleNumbering: () => this.toggleNumberingFromToolbar(),
-      isShowLevelOne: () => this.s.showLevelOneNumber ?? false,
+      isShowLevelOne: () => {
+        const structure = resolveHeadingStructure(this.s)
+        return structure.showLevelOneNumber
+      },
       toggleLevelOneNumber: () => this.toggleLevelOneFromToolbar(),
       writeDiagnosticFile: (filename, data) => {
         this.ctx.writeDiagnosticFile?.(filename, data)
@@ -539,9 +543,13 @@ export class HeadingNumberingService {
     scope: HeadingSettingsScope,
     documentKey: string | null,
   ): void {
+    // Preserve the current scope's structure mode — format must not change it
+    const currentMode = this.resolveScopeStructureMode(scope, documentKey)
+
     const snapshot: HeadingNumberingSettings = {
       enabled: format.settings.enabled,
-      showLevelOneNumber: format.settings.showLevelOneNumber,
+      headingStructureMode: currentMode,
+      showLevelOneNumber: currentMode === 'loose',
       preset: 'custom',
       maxDepth: format.settings.maxDepth,
       levels: format.settings.levels,
@@ -583,10 +591,14 @@ export class HeadingNumberingService {
     scope: HeadingSettingsScope,
     documentKey: string | null,
   ): void {
+    // Preserve the current scope's structure mode — preset must not change it
+    const currentMode = this.resolveScopeStructureMode(scope, documentKey)
+
     const levels = getPresetLevels(presetId as HeadingNumberingPreset)
     const snapshot: HeadingNumberingSettings = {
       enabled: true,
-      showLevelOneNumber: false,
+      headingStructureMode: currentMode,
+      showLevelOneNumber: currentMode === 'loose',
       preset: presetId as HeadingNumberingPreset,
       maxDepth: 6,
       levels,
@@ -594,6 +606,20 @@ export class HeadingNumberingService {
     }
     const formatSource: NumberingFormatSource = { type: 'built-in', presetId }
     this.saveHeadingNumberingScoped(scope, documentKey, snapshot, formatSource)
+  }
+
+  /** Resolve the effective structure mode for a given scope. */
+  private resolveScopeStructureMode(
+    scope: HeadingSettingsScope,
+    documentKey: string | null,
+  ): import('./heading-structure').HeadingStructureMode {
+    if (scope === 'document' && documentKey) {
+      const override = this.scopeStore.documentOverrides[documentKey]
+      if (override?.settings.headingStructureMode) {
+        return override.settings.headingStructureMode
+      }
+    }
+    return this.scopeStore.globalDefault.headingStructureMode ?? 'strict'
   }
 
   // ── Convenience accessor for effective settings ──
@@ -703,10 +729,13 @@ export class HeadingNumberingService {
     this.notifySettingsListeners()
   }
 
-  /** Toggle H1 numbering from outline toolbar — always document scope. */
+  /** Toggle heading structure mode from outline toolbar — always document scope. */
   private toggleLevelOneFromToolbar(): void {
     const s = this.s
-    s.showLevelOneNumber = !(s.showLevelOneNumber ?? false)
+    const currentMode = s.headingStructureMode ?? (s.showLevelOneNumber ? 'loose' : 'strict')
+    const newMode: import('./heading-structure').HeadingStructureMode = currentMode === 'strict' ? 'loose' : 'strict'
+    s.headingStructureMode = newMode
+    s.showLevelOneNumber = newMode === 'loose'
     const docKey = this.getDocumentKey()
     if (docKey) {
       this.saveHeadingNumberingScoped('document', docKey, { ...s })
@@ -737,10 +766,11 @@ export class HeadingNumberingService {
     this.setShowLevelOneNumber(!(this.s.showLevelOneNumber ?? false))
   }
 
-  /** Set whether level-one heading shows numbering. */
+  /** Set whether level-one heading shows numbering. @deprecated Use setHeadingStructureMode instead. */
   setShowLevelOneNumber(enabled: boolean): void {
     if (this.s.showLevelOneNumber === enabled) return
     const s = this.s
+    s.headingStructureMode = enabled ? 'loose' : 'strict'
     s.showLevelOneNumber = enabled
     this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
     this.lastSnapshot = null
@@ -801,10 +831,11 @@ export class HeadingNumberingService {
     }
 
     const currentStyle = this.s.levels[level]
+    const showL1 = resolveHeadingStructure(this.s).showLevelOneNumber
     const updated = updateActiveFormatVariant(
       currentStyle,
       level,
-      this.s.showLevelOneNumber,
+      showL1,
       nextFormat,
     )
 
@@ -831,10 +862,11 @@ export class HeadingNumberingService {
     }
 
     const currentStyle = this.s.levels[level]
+    const showL1 = resolveHeadingStructure(this.s).showLevelOneNumber
     const updated = updateActiveContextualFormatVariant(
       currentStyle,
       level,
-      this.s.showLevelOneNumber,
+      showL1,
       nextFormat,
     )
 
@@ -871,7 +903,7 @@ export class HeadingNumberingService {
     const active = currentStyle.contextualFormatVariants
     if (!active) return
 
-    const showL1 = this.s.showLevelOneNumber
+    const showL1 = resolveHeadingStructure(this.s).showLevelOneNumber
     const fmt = lv === 1 ? active.withLevelOne : (showL1 ? active.withLevelOne : active.withoutLevelOne)
 
     const nextFmt = fmt.map(seg => {
@@ -917,10 +949,11 @@ export class HeadingNumberingService {
     }
 
     const currentStyle = this.s.levels[level]
+    const showL1 = resolveHeadingStructure(this.s).showLevelOneNumber
     const updated = updateActiveMultilevelFormatVariant(
       currentStyle,
       level,
-      this.s.showLevelOneNumber,
+      showL1,
       nextFormat,
     )
 
@@ -1095,7 +1128,7 @@ export class HeadingNumberingService {
 
     const map = new Map<string, 'numbered' | 'unnumbered'>()
     const nameSettings = this.getSpecialNumberingSettings().nameSettings
-    const showL1 = this.s.showLevelOneNumber
+    const showL1 = resolveHeadingStructure(this.s).showLevelOneNumber
 
     for (const h of headings) {
       const parentInfo = this.buildParentStructure(headings, h)

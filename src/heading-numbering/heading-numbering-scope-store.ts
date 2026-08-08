@@ -61,6 +61,7 @@ export function getFileNameFromKey(key: string): string {
 export function deepCloneSettings(s: HeadingNumberingSettings): HeadingNumberingSettings {
   const cloned: HeadingNumberingSettings = {
     enabled: s.enabled,
+    headingStructureMode: s.headingStructureMode,
     showLevelOneNumber: s.showLevelOneNumber,
     preset: s.preset,
     maxDepth: s.maxDepth,
@@ -147,6 +148,7 @@ export function deepMergeSettings(
   // Shallow-merge top-level fields (document override wins)
   if (override.enabled !== undefined) result.enabled = override.enabled
   if (override.showLevelOneNumber !== undefined) result.showLevelOneNumber = override.showLevelOneNumber
+  if (override.headingStructureMode !== undefined) result.headingStructureMode = override.headingStructureMode
   if (override.preset !== undefined) result.preset = override.preset
   if (override.maxDepth !== undefined) result.maxDepth = override.maxDepth
 
@@ -477,6 +479,7 @@ export function migrateHeadingNumberingToScopeStore(
 export function getDefaultHeadingNumberingSettings(): HeadingNumberingSettings {
   return {
     enabled: true,
+    headingStructureMode: 'strict',
     showLevelOneNumber: false,
     preset: 'decimal-hierarchical',
     maxDepth: 6,

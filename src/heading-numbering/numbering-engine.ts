@@ -76,7 +76,12 @@ export function computeHeadingNumbering(
   counterPolicy?: UnnumberedCounterPolicy,
 ): NumberedHeading[] {
   const counters: number[] = [0, 0, 0, 0, 0, 0]
-  const skipH1 = !settings.showLevelOneNumber
+  // Use structure resolver for authoritative H1 visibility
+  const structure = (settings as any)._resolvedStructure
+    || (settings.headingStructureMode
+      ? { showLevelOneNumber: settings.headingStructureMode === 'loose' }
+      : { showLevelOneNumber: settings.showLevelOneNumber })
+  const skipH1 = !structure.showLevelOneNumber
   const levelStyles = settings.levels
   const policy = counterPolicy ?? 'skip'
 

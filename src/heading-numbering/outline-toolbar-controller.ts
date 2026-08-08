@@ -625,6 +625,7 @@ export class OutlineToolbarController {
       this.removeCollapseFilter()
       state.collapseDepth = null
     } else {
+      // Use resolved structure: strict→root H2, loose→root H1
       const targetDepth = showL1 ? 1 : 2
       const headings = this.callbacks.getHeadings?.() ?? []
       mapOutlineLevels(root, headings)
@@ -675,6 +676,8 @@ export class OutlineToolbarController {
       lastCommand: state.lastCommand,
       documentKey: this.currentDocKey,
       showLevelOneNumber: showL1,
+      headingStructureMode: showL1 ? 'loose' : 'strict',
+      numberingRootPhysicalLevel: showL1 ? 1 : 2,
       targetDepth: showL1 ? 1 : 2,
       collapseDepth: state.collapseDepth,
       itemCount: root.querySelectorAll('.outline-item-wrapper').length,
@@ -697,7 +700,9 @@ export class OutlineToolbarController {
 
     const result: Record<string, unknown> = {
       showLevelOneNumber: showL1,
+      headingStructureMode: showL1 ? 'loose' : 'strict',
       documentKey: this.currentDocKey,
+      numberingRootPhysicalLevel: showL1 ? 1 : 2,
       headingModelCount: headings.length,
       outlineItemCount: root?.querySelectorAll('.outline-item-wrapper').length ?? 0,
       before: {
