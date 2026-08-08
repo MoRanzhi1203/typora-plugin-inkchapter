@@ -191,15 +191,17 @@ export default class extends Plugin<InkChapterSettings> {
       callback: () => this.numberingService?.renumber(),
     })
 
-    // Toggle level-one heading numbering
+    // Toggle heading structure mode (strict / loose)
     this.registerCommand({
-      id: 'inkchapter.heading.toggle-level-one',
-      title: '墨章：切换一级标题编号',
+      id: 'inkchapter.heading.toggle-structure-mode',
+      title: '墨章：切换标题结构模式',
       scope: 'global',
       callback: () => {
         this.numberingService?.toggleLevelOneNumber()
-        const current = this.settings.get('headingNumbering')
-        Notice.info(`一级标题编号：已${current?.showLevelOneNumber ? '开启' : '关闭'}`)
+        const scopes = this.numberingService?.getScopeStore()
+        const mode = scopes?.globalDefault?.headingStructureMode
+          ?? (scopes?.globalDefault?.showLevelOneNumber ? 'loose' : 'strict')
+        Notice.info(`标题结构：${mode === 'strict' ? '严格模式' : '宽松模式'}`)
       },
     })
 
