@@ -218,6 +218,13 @@ export interface HeadingNumberingSettings {
   customDefinition?: Record<HeadingLevel, HeadingLevelStyle>
   /** Per-level heading layout (alignment + indent). Independent of numbering enabled state. */
   headingLayouts?: HeadingLayoutSettings
+  /**
+   * Whether the loose-mode H6 extension slot (S6) has been explicitly configured.
+   * When false, loose H6 keeps native/original formatting.
+   * When true, loose H6 uses S6 settings (stored in levels[6]).
+   * Always ignored in strict mode.
+   */
+  s6Configured?: boolean
 }
 
 // ── Runtime types ────────────────────────────────────────

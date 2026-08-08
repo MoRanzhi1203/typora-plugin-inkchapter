@@ -22,7 +22,8 @@ import type {
   ParagraphLayoutSettings,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
-import { resolveHeadingStructure, validateHeadingStructure } from '../heading-numbering/heading-structure'
+import { resolveHeadingStructure, resolveStyleSlot, resolvePhysicalHeadingForStyleSlot, validateHeadingStructure } from '../heading-numbering/heading-structure'
+import type { HeadingStructureMode, StyleSlot } from '../heading-numbering/heading-structure'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
@@ -124,6 +125,14 @@ interface OpenFormatMenuState {
   triggerElement: HTMLElement
 }
 
+function getLevelLabel(physicalLevel: number, mode: HeadingStructureMode): string {
+  const slot = resolveStyleSlot(mode, physicalLevel as 1 | 2 | 3 | 4 | 5 | 6)
+  if (physicalLevel === 1 && mode === 'strict') return 'H1 · 文档题目'
+  if (slot === null) return `H${physicalLevel}`
+  const suffix = slot === 6 ? ' · 扩展样式' : ` · 样式 ${slot}`
+  return `H${physicalLevel}${suffix}`
+}
+
 export class HeadingNumberingSettingTab extends SettingTab {
   get name(): string {
     return '标题编号'
@@ -141,8 +150,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const numberingRoot = structure.numberingRootPhysicalLevel
     // Find the first enabled level starting from the numbering root
     for (const lv of HEADING_LEVELS) {
-      if (lv < numberingRoot) continue
-      const ls = s.levels[lv]
+      const slotLv = this.resolveSlotLevel(lv)
+      if (slotLv === null) continue // strict H1: no slot
+      const ls = s.levels[slotLv]
       if (ls?.enabled) return lv
     }
     return numberingRoot
@@ -645,7 +655,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     for (const item of numbered) {
       const lv = item.level as HeadingLevel
-      const style = s.levels[lv]
+      const slotLv = this.resolveSlotLevel(lv)
+      if (slotLv === null) continue // strict H1: skip
+      const style = s.levels[slotLv]
       if (!style?.enabled) continue
 
       if (!resolveHeadingStructure(s).showLevelOneNumber && lv === 1) {
@@ -688,7 +700,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
         // preset formats already contain multi-level references (e.g. [H1].[H2].[H3])
         // which would pass the "any ref exists" check and keep old multi-level data.
         for (const lv of HEADING_LEVELS) {
-          const ls = s.levels[lv]
+          const slotLv = this.resolveSlotLevel(lv)
+          if (slotLv === null) continue // strict H1: no slot
+          const ls = s.levels[slotLv]
           if (!ls) continue
           const soloSeg: ContextualFormatSegment = {
             id: generateStableId(),
@@ -2152,7 +2166,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
   ): void {
     const chip = el('div', 'inkchapter-format-chip', fmtEl)
     const tplPreview = `${seg.appearance.prefix}${getSampleToken(seg.appearance.tokenStyle)}${seg.appearance.suffix}`
-    chip.textContent = `[H${seg.level}:${tplPreview}]`
+    const displayLevel = resolvePhysicalHeadingForStyleSlot(resolveHeadingStructure(s).mode, seg.level as StyleSlot) ?? seg.level
+    chip.textContent = `[H${displayLevel}:${tplPreview}]`
     chip.setAttribute('data-format-index', String(idx))
     chip.setAttribute('data-segment-type', 'level-reference')
     chip.setAttribute('data-segment-level', String(seg.level))
@@ -2255,7 +2270,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const refLvSpan = el('span', 'inkchapter-custom-col-label', refLvLabel)
     refLvSpan.textContent = '引用级别'
     const levelDisplay = el('span', undefined, refLvLabel)
-    levelDisplay.textContent = `H${selectedSeg.level}`
+    const propertyDisplayLevel = resolvePhysicalHeadingForStyleSlot(resolveHeadingStructure(s).mode, selectedSeg.level as StyleSlot) ?? selectedSeg.level
+    levelDisplay.textContent = `H${propertyDisplayLevel}`
     levelDisplay.style.cssText = 'font-weight:600;'
 
     // Token style select
@@ -2961,6 +2977,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   // ── Scope bar & confirm/cancel ──────────────────
 
+  /**
+   * Resolve the style slot level for a physical heading level in the current mode.
+   * In strict mode: H2→1 (S1), H3→2 (S2), etc.
+   * In loose mode:  physical = slot (no change).
+   * Returns null for strict H1 (document title, no slot).
+   */
+  private resolveSlotLevel(physicalLevel: HeadingLevel): HeadingLevel | null {
+    const structure = resolveHeadingStructure(this.headingSettings)
+    return resolveStyleSlot(structure.mode, physicalLevel) as HeadingLevel | null
+  }
+
   private ensureDraft(): void {
     if (this.headingDraft) return
     this.headingDraftOriginal = this.numberingService.getEffectiveSettings()
@@ -3051,7 +3078,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       s.customDefinition = deepCloneSettings(s).levels
       s.preset = 'custom'
     }
-    const currentStyle = s.levels[lv]
+    const slotLv = this.resolveSlotLevel(lv)
+    if (slotLv === null) return // strict H1: no slot
+    const currentStyle = s.levels[slotLv]
     // Ensure current level reference is present before updating
     const ensuredFormat = ensureCurrentLevelSegment(lv, nextFormat, currentStyle.tokenStyle)
     const updated = updateActiveContextualFormatVariant(
@@ -3066,7 +3095,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         seg.type === 'literal' ? { type: 'literal' as const, value: seg.value } : { type: 'level-template-reference' as const, level: seg.level }
       ),
     }
-    s.levels = { ...s.levels, [lv]: updated }
+    s.levels = { ...s.levels, [slotLv]: updated }
   }
 
   /**
@@ -3083,11 +3112,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
       s.customDefinition = deepCloneSettings(s).levels
       s.preset = 'custom'
     }
-    const currentStyle = s.levels[lv]
+    const slotLv = this.resolveSlotLevel(lv)
+    if (slotLv === null) return // strict H1: no slot
+    const currentStyle = s.levels[slotLv]
     const updated = updateActiveMultilevelFormatVariant(
       currentStyle, lv, resolveHeadingStructure(s).showLevelOneNumber, nextFormat,
     )
-    s.levels = { ...s.levels, [lv]: updated }
+    s.levels = { ...s.levels, [slotLv]: updated }
   }
 
   /**
@@ -3105,7 +3136,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       s.customDefinition = deepCloneSettings(s).levels
       s.preset = 'custom'
     }
-    const currentStyle = s.levels[lv]
+    const slotLv = this.resolveSlotLevel(lv)
+    if (slotLv === null) return // strict H1: no slot
+    const currentStyle = s.levels[slotLv]
     const showL1 = resolveHeadingStructure(s).showLevelOneNumber
     const activeFmt = getActiveContextualFormatVariant(currentStyle, showL1, lv)
     const nextFmt = activeFmt.map(seg => {
@@ -3125,7 +3158,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         seg.type === 'literal' ? { type: 'literal' as const, value: seg.value } : { type: 'level-template-reference' as const, level: seg.level }
       ),
     }
-    s.levels = { ...s.levels, [lv]: updated }
+    s.levels = { ...s.levels, [slotLv]: updated }
   }
 
   private rerender(): void {
@@ -3150,21 +3183,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
    */
   private ensureAllLevelsHaveCurrentSegment(s: HeadingNumberingSettings): void {
     for (const lv of HEADING_LEVELS) {
-      const ls = s.levels[lv]
+      const slotLv = this.resolveSlotLevel(lv)
+      if (slotLv === null) continue // strict H1: no slot
+      const ls = s.levels[slotLv]
       if (!ls) continue
       // Check specifically for current-level reference, not any reference.
       // Preset formats (e.g. [H1].[H2].[H3]) contain level-references but
       // we need to ensure the CURRENT level's own ref is present.
       const hasOwnWith = ls.contextualFormatVariants?.withLevelOne?.some(
-        seg => seg.type === 'level-reference' && seg.level === lv,
+        seg => seg.type === 'level-reference' && seg.level === slotLv,
       )
       const hasOwnWithout = ls.contextualFormatVariants?.withoutLevelOne?.some(
-        seg => seg.type === 'level-reference' && seg.level === lv,
+        seg => seg.type === 'level-reference' && seg.level === slotLv,
       )
       const soloSeg: ContextualFormatSegment = {
         id: generateStableId(),
         type: 'level-reference',
-        level: lv,
+        level: slotLv,
         appearance: { tokenStyle: ls.tokenStyle, prefix: '', suffix: '' },
       }
       if (!hasOwnWith) {
@@ -4604,12 +4639,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     draft: HeadingNumberingSettings,
   ): void {
     const tabs = el('div', 'inkchapter-level-tabs', container)
-    const h1Visible = resolveHeadingStructure(s).showLevelOneNumber
+    const structure = resolveHeadingStructure(s)
+    const h1Visible = structure.showLevelOneNumber
     const effectiveMax = this.numberingService.getEffectiveMaxLevel()
 
     for (const lv of HEADING_LEVELS) {
       const tab = el('div', 'inkchapter-level-tab', tabs)
-      tab.textContent = `H${lv}`
+      tab.textContent = getLevelLabel(lv, structure.mode)
       tab.setAttribute('tabindex', '0')
 
       if (this.expandedLevel === lv) {
@@ -4794,7 +4830,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Reference level display
     this.addLabelFormRow(form, '引用级别', () => {
       const span = document.createElement('span')
-      span.textContent = `H${selectedSeg.level}`; span.style.cssText = 'font-weight:600;'
+      const labelDisplayLevel = resolvePhysicalHeadingForStyleSlot(resolveHeadingStructure(s).mode, selectedSeg.level as StyleSlot) ?? selectedSeg.level
+      span.textContent = `H${labelDisplayLevel}`; span.style.cssText = 'font-weight:600;'
       return span
     })
 

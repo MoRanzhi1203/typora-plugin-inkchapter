@@ -99,6 +99,47 @@ export function isStrictHeadingStructure(settings: StructureSettings): boolean {
   return resolveHeadingStructure(settings).mode === 'strict'
 }
 
+// ── Style slot model ──────────────────────────────────
+
+/** Style slot index: 1-5 are shared, 6 is loose-only extension. */
+export type StyleSlot = 1 | 2 | 3 | 4 | 5 | 6
+
+/**
+ * Resolve which style slot a physical heading maps to.
+ *
+ * strict: H1→null, H2→1, H3→2, H4→3, H5→4, H6→5
+ * loose:  H1→1, H2→2, H3→3, H4→4, H5→5, H6→6
+ */
+export function resolveStyleSlot(
+  mode: HeadingStructureMode,
+  physicalLevel: HeadingLevel,
+): StyleSlot | null {
+  if (mode === 'strict') {
+    if (physicalLevel === 1) return null
+    return (physicalLevel - 1) as StyleSlot
+  }
+  return physicalLevel as StyleSlot
+}
+
+/**
+ * Reverse mapping: given a style slot index, return the physical heading level
+ * that the slot maps to in the given mode.
+ *
+ * strict: S1→H2, S2→H3, S3→H4, S4→H5, S5→H6
+ * loose:  S1→H1, S2→H2, ..., S6→H6
+ * Returns null for S6 in strict mode.
+ */
+export function resolvePhysicalHeadingForStyleSlot(
+  mode: HeadingStructureMode,
+  slot: StyleSlot,
+): HeadingLevel | null {
+  if (mode === 'strict') {
+    if (slot === 6) return null // S6 not used in strict
+    return (slot + 1) as HeadingLevel
+  }
+  return slot as HeadingLevel
+}
+
 /** Validate heading structure for a document. */
 export function validateHeadingStructure(
   headings: ReadonlyArray<{ level: number }>,
