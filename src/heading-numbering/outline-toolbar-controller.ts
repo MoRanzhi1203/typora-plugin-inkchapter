@@ -513,7 +513,7 @@ export class OutlineToolbarController {
 
     const items: MenuItem[] = [
       { type: 'checkbox', label: '在文档中显示标题编号', checked: enabled, action: () => this.callbacks.toggleNumbering() },
-      { type: 'checkbox', label: showL1 ? '标题结构：宽松模式' : '标题结构：严格模式', checked: enabled && showL1, disabled: !enabled, action: () => { if (!enabled) return; this.callbacks.toggleLevelOneNumber() } },
+      { type: 'action', label: enabled ? (showL1 ? '切换为严格模式' : '切换为宽松模式') : '标题结构（需先启用编号）', disabled: !enabled, action: () => { if (!enabled) return; this.callbacks.toggleLevelOneNumber() } },
       { type: 'divider' },
       { type: 'action', label: this.getCollapseLabel(), action: () => { this.executeCollapseExpand() } },
     ]

@@ -70,6 +70,7 @@ export function deepCloneSettings(s: HeadingNumberingSettings): HeadingNumbering
     separator: s.separator,
     suffix: s.suffix,
     showTrailingSeparator: s.showTrailingSeparator,
+    s6Configured: s.s6Configured,
   }
   if (s.headingLayouts) {
     cloned.headingLayouts = deepCloneLayouts(s.headingLayouts)
@@ -485,6 +486,7 @@ export function getDefaultHeadingNumberingSettings(): HeadingNumberingSettings {
     maxDepth: 6,
     levels: getDefaultLevels(),
     customDefinition: undefined,
+    s6Configured: false,
   }
 }
 

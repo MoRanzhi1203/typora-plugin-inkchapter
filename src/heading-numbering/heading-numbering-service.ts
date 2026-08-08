@@ -30,7 +30,8 @@ import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-form
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
-import { resolveHeadingStructure } from './heading-structure'
+import { resolveHeadingStructure, resolveStyleSlot } from './heading-structure'
+import type { HeadingStructureMode } from './heading-structure'
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
@@ -1708,11 +1709,14 @@ export class HeadingNumberingService {
   /** Apply heading layout to the editor (independent of numbering state). */
   private applyHeadingLayouts(): void {
     const layouts = this.getEffectiveHeadingLayouts()
-    if (layouts) {
-      this.adapter.applyHeadingLayouts(layouts)
-    } else {
+    if (!layouts) {
       this.adapter.clearHeadingLayouts()
+      return
     }
+    // Apply slot-mapped layouts for the current mode
+    const structure = resolveHeadingStructure(this.s)
+    const effectiveLayouts = buildEffectiveLayouts(layouts, structure.mode)
+    this.adapter.applyHeadingLayouts(effectiveLayouts)
   }
 
   /** Apply paragraph indent styles to the editor DOM. */
@@ -1751,7 +1755,10 @@ export class HeadingNumberingService {
       ? { ...config, firstLineIndentEm: 0 }
       : { ...config }
 
-    const levelKey = `h${level}`
+    const structure = resolveHeadingStructure(this.s)
+    const slot = resolveStyleSlot(structure.mode, level)
+    if (slot === null) return // strict H1 has no slot
+    const levelKey = `h${slot}`
     currentLayouts[levelKey] = effectiveConfig
 
     const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
@@ -2277,5 +2284,30 @@ export class HeadingNumberingService {
     )
 
     ctx.registerDisposable(() => this.dispose())
+  }
+}
+
+/**
+ * Build effective heading layouts by remapping physical level → style slot.
+ * Returns a HeadingLayoutSettings with h1-h6 keys filled from the slot data.
+ * Does not modify the source layout object.
+ */
+function buildEffectiveLayouts(
+  sourceLayouts: import('./heading-types').HeadingLayoutSettings,
+  mode: import('./heading-structure').HeadingStructureMode,
+): import('./heading-types').HeadingLayoutSettings {
+  const defaultLayout: import('./heading-types').HeadingLayoutConfig = { textAlign: 'left', firstLineIndentEm: 0 }
+  if (mode === 'loose') {
+    // Loose: physical = slot, no remapping needed
+    return sourceLayouts
+  }
+  // Strict: H1=title(native), H2→S1(h1), H3→S2(h2), ..., H6→S5(h5)
+  return {
+    h1: defaultLayout,
+    h2: sourceLayouts.h1 ?? defaultLayout,
+    h3: sourceLayouts.h2 ?? defaultLayout,
+    h4: sourceLayouts.h3 ?? defaultLayout,
+    h5: sourceLayouts.h4 ?? defaultLayout,
+    h6: sourceLayouts.h5 ?? defaultLayout,
   }
 }

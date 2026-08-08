@@ -861,12 +861,12 @@ describe('numberTitleSpacing in label generation', () => {
     expect(result[2].labelGap).toBe('space')   // H3 with space
   })
 
-  it('preserves spacing per physical level when H1 is off', () => {
+  it('preserves spacing per slot when H1 is off', () => {
     const settings = makeSpacingTestSettings('space')
     settings.showLevelOneNumber = false
-    settings.levels[1].numberTitleSpacing = 'space'
-    settings.levels[2].numberTitleSpacing = 'none'
-    settings.levels[3].numberTitleSpacing = 'space'
+    settings.levels[1].numberTitleSpacing = 'space'   // S1 → strict H2 uses this
+    settings.levels[2].numberTitleSpacing = 'none'    // S2 → strict H3 uses this
+    settings.levels[3].numberTitleSpacing = 'space'   // S3 → strict H4 uses this
     const headings: HeadingDescriptor[] = [
       makeHeading('H1', 1 as HeadingLevel),
       makeHeading('H2', 2 as HeadingLevel),
@@ -875,10 +875,12 @@ describe('numberTitleSpacing in label generation', () => {
     const result = computeHeadingNumbering(headings, settings)
     expect(result[0].label).toBe('')       // H1 hidden (no label)
     expect(result[0].labelGap).toBe('none')
-    expect(result[1].label).toBe('1')      // H2 uses H2 spacing (none)
-    expect(result[1].labelGap).toBe('none')
-    expect(result[2].label).toBe('1.1')   // H3 uses H3 spacing (space)
-    expect(result[2].labelGap).toBe('space')
+    // Slot model: strict H2 uses S1(levels[1]) gap = 'space'
+    expect(result[1].label).toBe('1')
+    expect(result[1].labelGap).toBe('space')
+    // Slot model: strict H3 uses S2(levels[2]) gap = 'none'
+    expect(result[2].label).toBe('1.1')
+    expect(result[2].labelGap).toBe('none')
   })
 
   it('does not add space when label is empty (unnumbered)', () => {

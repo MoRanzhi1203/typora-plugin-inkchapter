@@ -205,6 +205,20 @@ export default class extends Plugin<InkChapterSettings> {
       },
     })
 
+    // @deprecated — use inkchapter.heading.toggle-structure-mode instead
+    this.registerCommand({
+      id: 'inkchapter.heading.toggle-level-one',
+      title: '墨章：切换标题结构模式（旧版兼容）',
+      scope: 'global',
+      callback: () => {
+        this.numberingService?.toggleLevelOneNumber()
+        const scopes = this.numberingService?.getScopeStore()
+        const mode = scopes?.globalDefault?.headingStructureMode
+          ?? (scopes?.globalDefault?.showLevelOneNumber ? 'loose' : 'strict')
+        Notice.info(`标题结构：${mode === 'strict' ? '严格模式' : '宽松模式'}`)
+      },
+    })
+
     // ── Heading numbering override commands ──────────
 
     // Unnumber current heading

@@ -18,6 +18,75 @@ import { HEADING_LEVELS, generateStableId } from './heading-types'
 import { formatToken } from './token-formatter'
 
 /**
+ * Build strict-mode effective levels with ref levels shifted by +1.
+ * S1 (levels[1]) → effective H2, S2 (levels[2]) → effective H3, etc.
+ * All level-reference segments have their `level` field incremented by 1
+ * so that they read from the correct physical counter index.
+ *
+ * IMPORTANT: This does NOT copy or modify persisted data.
+ * It creates a new runtime object that shares sub-structures where possible.
+ */
+export function buildStrictEffectiveLevels(
+  levels: Record<HeadingLevel, HeadingLevelStyle>,
+): Record<HeadingLevel, HeadingLevelStyle> {
+  const dummyTitle: HeadingLevelStyle = {
+    enabled: false,
+    tokenStyle: 'arabic',
+    includeParents: false,
+    prefix: '',
+    suffix: '',
+    separator: '',
+    startAt: 1,
+    restartAfterLevel: null,
+    formatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    levelTemplate: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+    multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    numberTitleSpacing: 'none',
+  }
+
+  function shiftRefLevel(style: HeadingLevelStyle): HeadingLevelStyle {
+    const shift = (lv: HeadingLevel): HeadingLevel =>
+      (lv + 1) as HeadingLevel
+
+    const shiftContextual = (segments: readonly ContextualFormatSegment[]): ContextualFormatSegment[] =>
+      segments.map(s => s.type === 'level-reference'
+        ? { ...s, level: shift(s.level) }
+        : { ...s })
+
+    const shiftMultilevel = (segments: readonly MultilevelFormatSegment[]): MultilevelFormatSegment[] =>
+      segments.map(s => s.type === 'level-template-reference'
+        ? { ...s, level: shift(s.level) }
+        : { ...s })
+
+    return {
+      ...style,
+      contextualFormatVariants: {
+        withLevelOne: shiftContextual(style.contextualFormatVariants.withLevelOne),
+        withoutLevelOne: shiftContextual(style.contextualFormatVariants.withoutLevelOne),
+      },
+      multilevelFormatVariants: {
+        withLevelOne: shiftMultilevel(style.multilevelFormatVariants.withLevelOne),
+        withoutLevelOne: shiftMultilevel(style.multilevelFormatVariants.withoutLevelOne),
+      },
+      formatVariants: {
+        withLevelOne: shiftMultilevel(style.formatVariants.withLevelOne as any) as any,
+        withoutLevelOne: shiftMultilevel(style.formatVariants.withoutLevelOne as any) as any,
+      },
+    }
+  }
+
+  return {
+    1: dummyTitle,
+    2: shiftRefLevel(levels[1]),
+    3: shiftRefLevel(levels[2]),
+    4: shiftRefLevel(levels[3]),
+    5: shiftRefLevel(levels[4]),
+    6: shiftRefLevel(levels[5]),
+  }
+}
+
+/**
  * Compute the enabled heading levels based on current settings.
  * When showLevelOneNumber is false, H1 is excluded from enabled set.
  * Individual levelStyle.enabled flags can also exclude specific levels.
@@ -81,11 +150,18 @@ export function computeHeadingNumbering(
     || (settings.headingStructureMode
       ? { showLevelOneNumber: settings.headingStructureMode === 'loose' }
       : { showLevelOneNumber: settings.showLevelOneNumber })
-  const skipH1 = !structure.showLevelOneNumber
-  const levelStyles = settings.levels
-  const policy = counterPolicy ?? 'skip'
+  const isStrict = !structure.showLevelOneNumber
+  const skipH1 = isStrict
 
-  // Initialize counters with startAt - 1
+  // ── Build effective levels using shared style slot model ──
+  const rawLevels = settings.levels
+  const effectiveLevels: Record<HeadingLevel, HeadingLevelStyle> = isStrict
+    ? buildStrictEffectiveLevels(rawLevels)
+    : rawLevels
+
+  const levelStyles: Record<HeadingLevel, HeadingLevelStyle> = effectiveLevels
+
+  // Initialize counters with startAt - 1 (uses effective levels)
   for (let i = 0; i < 6; i++) {
     const lv = (i + 1) as HeadingLevel
     const style = levelStyles[lv]
@@ -93,6 +169,7 @@ export function computeHeadingNumbering(
       counters[i] = clamp(style.startAt, 1, 999) - 1
     }
   }
+  const policy = counterPolicy ?? 'skip'
 
   return headings
     .filter((h) => h.level <= settings.maxDepth)
@@ -151,6 +228,14 @@ export function computeHeadingNumbering(
         return { ...h, counters: [...activeCounters], label: '', labelGap: 'none' }
       }
 
+      // Loose H6: check if S6 is configured
+      if (!isStrict && h.level === 6) {
+        if (!settings.s6Configured) {
+          // S6 not configured → native H6, return no label
+          return { ...h, counters: [...activeCounters], label: '', labelGap: 'none' }
+        }
+      }
+
       // Build unnumbered-set for parent omission
       const unnumberedSet = buildUnnumberedSet(headings, 0, headings.indexOf(h), overrideMap, policy)
 
@@ -177,13 +262,15 @@ function buildLabel(
   if (!style || !style.enabled) return ''
 
   // ── New contextual model (schemaVersion >= 8) ───
-  const contextualVariant = getActiveContextualFormatVariant(style, !skipH1, headingLevel)
+  // Slot model: effective levels already have correct variant data.
+  // Always use withLevelOne since strict mode effective levels are pre-shifted.
+  const contextualVariant = style.contextualFormatVariants.withLevelOne
   if (contextualVariant && contextualVariant.length > 0) {
     return buildLabelFromContextualFormat(activeCounters, headingLevel, contextualVariant, skipH1, unnumberedSet)
   }
 
   // ── New two-layer model (schemaVersion >= 7) ──────
-  const multilevelVariant = getActiveMultilevelFormatVariant(style, !skipH1, headingLevel)
+  const multilevelVariant = style.multilevelFormatVariants.withLevelOne
   if (multilevelVariant && multilevelVariant.length > 0) {
     return buildLabelFromMultilevelFormat(activeCounters, levelStyles, skipH1, headingLevel)
   }
@@ -193,7 +280,7 @@ function buildLabel(
     return ''
   }
 
-  const activeVariant = getActiveFormatVariant(style, !skipH1, headingLevel)
+  const activeVariant = style.formatVariants.withLevelOne
   if (activeVariant && activeVariant.length > 0) {
     return buildLabelFromFormat(activeCounters, levelStyles, skipH1, headingLevel, style)
   }
