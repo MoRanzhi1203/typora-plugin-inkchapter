@@ -194,6 +194,17 @@ export interface HeadingLayoutSettings {
 
 export interface HeadingNumberingSettings {
   enabled: boolean
+  /**
+   * Authoritative heading structure mode.
+   * strict: H1 as unique document title, not numbered; numbering starts at H2.
+   * loose:  H1 as normal heading, participates in numbering; unlimited H1 count.
+   */
+  headingStructureMode?: import('./heading-structure').HeadingStructureMode
+  /**
+   * @deprecated Legacy compatibility only.
+   * Runtime structure behavior is resolved from `headingStructureMode`.
+   * This field is preserved for backward compat with old configs and custom formats.
+   */
   showLevelOneNumber: boolean
   preset: HeadingNumberingPreset
   maxDepth: HeadingLevel
@@ -408,6 +419,7 @@ export interface CustomNumberingFormat {
   basedOn: FormatBasedOn
   settings: {
     levels: Record<HeadingLevel, HeadingLevelStyle>
+    /** @deprecated Legacy format metadata — not authoritative for scope structure mode. */
     showLevelOneNumber: boolean
     enabled: boolean
     maxDepth: HeadingLevel

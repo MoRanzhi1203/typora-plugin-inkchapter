@@ -22,6 +22,7 @@ import type {
   ParagraphLayoutSettings,
 } from '../heading-numbering/heading-types'
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
+import { resolveHeadingStructure, validateHeadingStructure } from '../heading-numbering/heading-structure'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
@@ -136,16 +137,37 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /** Get the default level to select when first viewing a format. */
   private getDefaultEditableLevel(s: HeadingNumberingSettings): HeadingLevel {
-    // Effective H1 state: format raw enabled AND scope-level showLevelOneNumber
-    const scopeShowL1 = this.headingSettings.showLevelOneNumber
-    // Find the first level that is enabled in the format AND effective at document scope
+    const structure = this.resolveStructureFromDraft(s)
+    const numberingRoot = structure.numberingRootPhysicalLevel
+    // Find the first enabled level starting from the numbering root
     for (const lv of HEADING_LEVELS) {
+      if (lv < numberingRoot) continue
       const ls = s.levels[lv]
-      if (ls?.enabled && (lv !== 1 || scopeShowL1)) {
-        return lv
-      }
+      if (ls?.enabled) return lv
     }
-    return 1
+    return numberingRoot
+  }
+
+  /** Resolve the effective heading structure from draft or effective settings. */
+  private resolveStructureFromDraft(s: HeadingNumberingSettings): import('../heading-numbering/heading-structure').ResolvedHeadingStructure {
+    return resolveHeadingStructure(s)
+  }
+
+  /** Get H1 structure validation for the current document. */
+  private getStructureValidation(s: HeadingNumberingSettings): import('../heading-numbering/heading-structure').HeadingStructureValidation | null {
+    try {
+      const root = document.getElementById('write')
+      if (!root) return null
+      const h1Elements = root.querySelectorAll('h1')
+      const headings = Array.from(h1Elements).map(() => ({ level: 1 }))
+      // Also count H2-H6 for full heading set
+      for (let lv = 2; lv <= 6; lv++) {
+        const els = root.querySelectorAll(`h${lv}`)
+        headings.push(...Array.from(els).map(() => ({ level: lv })))
+      }
+      const structure = resolveHeadingStructure(s)
+      return validateHeadingStructure(headings, structure.mode)
+    } catch { return null }
   }
 
   // ── H1 sync ──────────────────────────────────────
@@ -385,6 +407,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // Merge external toggle changes into draft without losing other edits
       this.headingDraft.enabled = effective.enabled
       this.headingDraft.showLevelOneNumber = effective.showLevelOneNumber
+      this.headingDraft.headingStructureMode = effective.headingStructureMode
     }
     this.cancelDrag('settings-changed')
     this.onshow()
@@ -625,7 +648,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const style = s.levels[lv]
       if (!style?.enabled) continue
 
-      if (!s.showLevelOneNumber && lv === 1) {
+      if (!resolveHeadingStructure(s).showLevelOneNumber && lv === 1) {
         const row = el('div', 'inkchapter-preview-row', this.previewEl)
         const label = el('span', 'inkchapter-preview-label', row)
         label.textContent = `H${lv} `
@@ -1639,9 +1662,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
 
       // Gap: [无间距] [一个空格] — immutable updates on draft
-      // H1 gap is locked to 'none' when level-one numbering is hidden
+      // H1 gap is locked to 'none' in strict mode (H1 not numbered)
       const gapGroup = el('div', 'inkchapter-layout-matrix-gap', row)
-      const h1GapLocked = lvNum === 1 && !s.showLevelOneNumber
+      const h1GapLocked = lvNum === 1 && !resolveHeadingStructure(s).showLevelOneNumber
       const effectiveGap = h1GapLocked ? 'none' : currentGap
       for (const opt of [{ v: 'none', lbl: '无间距' }, { v: 'space', lbl: '一个空格' }]) {
         const btn = el('button') as HTMLButtonElement
@@ -1681,8 +1704,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const lvNum = parseInt(label.charAt(1), 10) as HeadingLevel
       const current = draft.headingLayouts[key] ?? this.defaultLayoutConfig()
       const rawGap = draft.numberTitleSpacing[lvNum] ?? 'space'
-      // H1 gap is forcibly none when level-one numbering is hidden
-      const currentGap = (lvNum === 1 && !s.showLevelOneNumber) ? 'none' : rawGap
+      // H1 gap is locked to 'none' in strict mode (H1 not numbered)
+      const currentGap = (lvNum === 1 && !resolveHeadingStructure(s).showLevelOneNumber) ? 'none' : rawGap
       const hasIndent = current.firstLineIndentEm >= 2
       const numberLabel = previewLabels[lvNum] || ''
       const gapChar = currentGap === 'space' ? ' ' : ''
@@ -1825,8 +1848,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       { label: '全部一个空格', action: () => {
         const newSpacing = { ...draft.numberTitleSpacing } as Record<import('../heading-numbering/heading-types').HeadingLevel, import('../heading-numbering/heading-types').NumberTitleSpacing>
         for (let lv = 1; lv <= 6; lv++) newSpacing[lv as import('../heading-numbering/heading-types').HeadingLevel] = 'space'
-        // Skip H1 if level-one numbering is hidden — H1 gap is locked to none
-        if (!this.headingSettings.showLevelOneNumber) {
+        // Skip H1 in strict mode — H1 gap is locked to none
+        if (!resolveHeadingStructure(this.headingSettings).showLevelOneNumber) {
           newSpacing[1 as import('../heading-numbering/heading-types').HeadingLevel] = 'none'
         }
         this.headingLayoutDraft = { headingLayouts: { ...draft.headingLayouts }, numberTitleSpacing: newSpacing }
@@ -1839,9 +1862,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
           const baseGap = draft.numberTitleSpacing[al as HeadingLevel] ?? 'space'
           const newLayouts = { ...draft.headingLayouts }
           const newSpacing = { ...draft.numberTitleSpacing }
-          // When H1 numbering is off, H1 gap is locked to none — skip copying gap to avoid
-          // forcing none onto H2-H6 which should remain independently configurable.
-          const skipGap = al === 1 && !this.headingSettings.showLevelOneNumber
+          // When strict mode H1 is not numbered, H1 gap is locked to none — skip copying gap
+          const skipGap = al === 1 && !resolveHeadingStructure(this.headingSettings).showLevelOneNumber
           for (let lv = (al + 1) as HeadingLevel; lv <= 6; lv = (lv + 1) as HeadingLevel) {
             newLayouts[`h${lv}`] = { ...baseCfg }
             if (!skipGap) { newSpacing[lv] = baseGap }
@@ -1906,8 +1928,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const title = el('div', 'inkchapter-format-header', section)
     title.textContent = '二、多级组合格式'
 
-    // Get active multilevel format
-    const activeFmt = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
+    // Get active multilevel format — use resolver for H1 visibility
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
+    const activeFmt = getActiveMultilevelFormatVariant(style, showL1, lv)
 
     // ── Format chips container ───────────────────
     const fmtContainer = el('div', 'inkchapter-format-container', section)
@@ -1943,7 +1966,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     textBtn.onclick = () => {
       const val = textInput.value
       if (val) {
-        const cur = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
+        const cur = getActiveMultilevelFormatVariant(style, showL1, lv)
         const newFmt = [...cur, { type: 'literal' as const, value: sanitize(val) }]
         this.updateDraftMultilevelFormat(lv, newFmt)
         this.onshow()
@@ -1958,7 +1981,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const refWrap = el('div', undefined, insertRow)
     refWrap.style.cssText = 'display:flex;align-items:center;gap:4px;margin-left:12px;'
     const refSelect = el('select', undefined, refWrap) as HTMLSelectElement
-    const availRefs = getAvailableMultilevelReferenceLevels(lv, s.showLevelOneNumber)
+    const availRefs = getAvailableMultilevelReferenceLevels(lv, showL1)
     if (availRefs.length === 0) {
       const opt = document.createElement('option')
       opt.value = ''
@@ -1992,7 +2015,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     refBtn.onclick = () => {
       const refLv = Number(refSelect.value) as HeadingLevel
       if (!refLv || refLv < 1 || refLv > 6) return
-      const cur = getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)
+      const cur = getActiveMultilevelFormatVariant(style, showL1, lv)
       // Don't add duplicates
       if (cur.some(s => s.type === 'level-template-reference' && s.level === refLv)) return
       const newFmt = [...cur, { type: 'level-template-reference' as const, level: refLv }]
@@ -2014,6 +2037,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const title = el('div', 'inkchapter-format-header', section)
     title.textContent = '一、多级组合格式'
+
+    // Compute H1 visibility from resolver
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
 
     // Reset selection when re-rendering
     if (!activeFmt.some(seg => seg.id === this.selectedSegmentId)) {
@@ -2073,7 +2099,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const refWrap = el('div', undefined, insertRow)
     refWrap.style.cssText = 'display:flex;align-items:center;gap:4px;margin-left:12px;'
     const refSelect = el('select', undefined, refWrap) as HTMLSelectElement
-    const availRefs = getAvailableContextualReferenceLevels(lv, s.showLevelOneNumber, activeFmt)
+    const availRefs = getAvailableContextualReferenceLevels(lv, showL1, activeFmt)
     if (availRefs.length === 0) {
       const opt = document.createElement('option')
       opt.value = ''
@@ -2344,7 +2370,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     const s = this.headingSettings
-    const before = [...getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)]
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
+    const before = [...getActiveContextualFormatVariant(style, showL1, lv)]
     const draggingIdx = ds.draggingIndex
     const targetIdx = ds.targetIndexAfterRemoval
 
@@ -2356,7 +2383,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
 
     const hiddenLevels = new Set<HeadingLevel>()
-    if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
+    if (!showL1) hiddenLevels.add(1 as HeadingLevel)
 
     const after = normalizeContextualFormatAfterDrag(moved, lv, hiddenLevels, style.tokenStyle)
 
@@ -2560,7 +2587,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     const s = this.headingSettings
-    const before = [...getActiveMultilevelFormatVariant(style, s.showLevelOneNumber, lv)]
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
+    const before = [...getActiveMultilevelFormatVariant(style, showL1, lv)]
     const draggingIdx = ds.draggingIndex
     const targetIdx = ds.targetIndexAfterRemoval
 
@@ -2572,7 +2600,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const moved = moveSegmentToResolvedIndex(before, draggingIdx, targetIdx)
 
     const hiddenLevels = new Set<HeadingLevel>()
-    if (!s.showLevelOneNumber) hiddenLevels.add(1 as HeadingLevel)
+    if (!showL1) hiddenLevels.add(1 as HeadingLevel)
 
     const after = normalizeMultilevelFormatAfterDrag(moved, lv, hiddenLevels)
 
@@ -2769,7 +2797,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     for (const item of numbered) {
       const lv = item.level as HeadingLevel
 
-      if (!s.showLevelOneNumber && lv === 1) {
+      if (!resolveHeadingStructure(s).showLevelOneNumber && lv === 1) {
         const row = el('div', 'inkchapter-preview-row', container)
         const label = el('span', 'inkchapter-preview-label', row)
         label.textContent = `H${lv} `
@@ -2989,9 +3017,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
     }
 
-    // Normalize old data: if H1 numbering is hidden, H1 gap must be none
+    // Normalize: in strict mode H1 gap must be locked to none
     const s = this.headingSettings
-    if (!s.showLevelOneNumber) {
+    if (!resolveHeadingStructure(s).showLevelOneNumber) {
       const h1Lv = 1 as import('../heading-numbering/heading-types').HeadingLevel
       draft.numberTitleSpacing[h1Lv] = 'none'
     }
@@ -3027,7 +3055,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Ensure current level reference is present before updating
     const ensuredFormat = ensureCurrentLevelSegment(lv, nextFormat, currentStyle.tokenStyle)
     const updated = updateActiveContextualFormatVariant(
-      currentStyle, lv, s.showLevelOneNumber, ensuredFormat,
+      currentStyle, lv, resolveHeadingStructure(s).showLevelOneNumber, ensuredFormat,
     )
     // Sync multilevelFormatVariants for backward compat
     updated.multilevelFormatVariants = {
@@ -3057,7 +3085,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     const currentStyle = s.levels[lv]
     const updated = updateActiveMultilevelFormatVariant(
-      currentStyle, lv, s.showLevelOneNumber, nextFormat,
+      currentStyle, lv, resolveHeadingStructure(s).showLevelOneNumber, nextFormat,
     )
     s.levels = { ...s.levels, [lv]: updated }
   }
@@ -3078,7 +3106,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       s.preset = 'custom'
     }
     const currentStyle = s.levels[lv]
-    const showL1 = s.showLevelOneNumber
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
     const activeFmt = getActiveContextualFormatVariant(currentStyle, showL1, lv)
     const nextFmt = activeFmt.map(seg => {
       if (seg.type === 'level-reference' && seg.id === segmentId) {
@@ -3263,43 +3291,73 @@ export class HeadingNumberingSettingTab extends SettingTab {
     enableLabel.appendChild(enableCb)
     enableLabel.appendChild(document.createTextNode(' 启用标题编号'))
 
-    const h1Label = el('label', '', checksRow)
-    const h1Cb = document.createElement('input')
-    h1Cb.type = 'checkbox'
-    this.globalH1Toggle = h1Cb
-    h1Cb.checked = s.showLevelOneNumber
-    h1Cb.disabled = !s.enabled
-    if (!s.enabled) h1Label.style.opacity = '0.4'
-    h1Cb.onclick = () => {
-      if (this.syncingLevelOneUi) return
+    // ── Heading structure mode (strict / loose) ──
+    const structure = this.resolveStructureFromDraft(s)
+    const structureRow = el('div', '', checksRow.parentElement ?? checksRow)
+    structureRow.style.cssText = 'margin-top:10px;'
+    const structureLabel = el('span', '', structureRow)
+    structureLabel.textContent = '标题结构'
+    structureLabel.style.cssText = 'font-size:13px;font-weight:500;margin-right:8px;'
+
+    const structureControls = el('div', '', structureRow)
+    structureControls.style.cssText = 'display:flex;gap:4px;'
+
+    const strictBtn = el('button', 'inkchapter-range-doc-seg-btn', structureControls) as HTMLButtonElement
+    strictBtn.textContent = '严格模式'
+    strictBtn.title = 'H1 作为唯一文档题目，不参与编号；正文编号从 H2 开始'
+    if (structure.mode === 'strict') strictBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    strictBtn.onclick = () => {
+      if (structure.mode === 'strict') return
       this.ensureDraft()
-      this.headingDraft!.showLevelOneNumber = h1Cb.checked
-      this.syncLevelOneControls(h1Cb.checked)
-
-      // If headingLayoutDraft exists, sync H1 gap: lock to 'none' when H1 numbering off
-      if (this.headingLayoutDraft) {
-        if (!h1Cb.checked) {
-          // Unchecking: force H1 gap to none, mark dirty
-          const h1Lv = 1 as HeadingLevel
-          if (this.headingLayoutDraft.numberTitleSpacing[h1Lv] !== 'none') {
-            this.headingLayoutDraft = {
-              headingLayouts: { ...this.headingLayoutDraft.headingLayouts },
-              numberTitleSpacing: { ...this.headingLayoutDraft.numberTitleSpacing, [h1Lv]: 'none' as const },
-            }
-          }
-        }
-        // Re-checking: value stays at whatever it was (we don't restore old space)
-      }
-
-      // If H1 was just disabled and user is viewing H1, bump to H2
-      if (!h1Cb.checked && this.expandedLevel === 1) {
-        this.expandedLevel = 2
-      }
-
+      this.headingDraft!.headingStructureMode = 'strict'
+      this.headingDraft!.showLevelOneNumber = false
+      // Bump expandedLevel from H1 to H2 if currently viewing H1
+      if (this.expandedLevel === 1) this.expandedLevel = 2
       this.rerender()
     }
-    h1Label.appendChild(h1Cb)
-    h1Label.appendChild(document.createTextNode(' 一级标题显示编号'))
+
+    const looseBtn = el('button', 'inkchapter-range-doc-seg-btn', structureControls) as HTMLButtonElement
+    looseBtn.textContent = '宽松模式'
+    looseBtn.title = 'H1 作为普通一级标题参与编号；H1 数量不限'
+    if (structure.mode === 'loose') looseBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    looseBtn.onclick = () => {
+      if (structure.mode === 'loose') return
+      this.ensureDraft()
+      this.headingDraft!.headingStructureMode = 'loose'
+      this.headingDraft!.showLevelOneNumber = true
+      this.rerender()
+    }
+
+    // Mode description
+    const modeDesc = el('div', '', structureRow.parentElement ?? checksRow)
+    modeDesc.style.cssText = 'font-size:12px;color:var(--text-muted,#888);margin-top:4px;'
+    modeDesc.textContent = structure.mode === 'strict'
+      ? '严格模式：H1 作为唯一文档题目，不参与编号；正文编号从 H2 开始。'
+      : '宽松模式：H1 作为普通一级标题参与编号；H1 数量不限。'
+
+    // ── Structure validation status (strict only) ──
+    if (structure.mode === 'strict') {
+      const docKey = this.numberingService.getDocumentKey()
+      if (docKey) {
+        try {
+          const validation = this.getStructureValidation(s)
+          if (validation) {
+            const statusRow = el('div', '', structureRow.parentElement ?? structureRow)
+            statusRow.style.cssText = 'margin-top:6px;font-size:12px;'
+            if (validation.state === 'valid') {
+              statusRow.style.color = 'var(--color-green,#2e7d32)'
+              statusRow.textContent = `✓ 当前结构：正常 · 检测到 ${validation.h1Count} 个 H1`
+            } else if (validation.state === 'missing-title') {
+              statusRow.style.color = 'var(--color-orange,#e65100)'
+              statusRow.textContent = '⚠ 当前结构：缺少文档题目 — 严格模式要求文档包含一个 H1'
+            } else {
+              statusRow.style.color = 'var(--color-orange,#e65100)'
+              statusRow.textContent = `⚠ 当前结构：检测到 ${validation.h1Count} 个 H1 — 严格模式要求仅保留一个 H1`
+            }
+          }
+        } catch { /* validation best-effort */ }
+      }
+    }
   }
 
   // ── Unified format library grid ──────────────────
@@ -4453,7 +4511,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const style = draft.levels[lv]
     if (!style) return
 
-    const isH1Disabled = lv === 1 && !s.showLevelOneNumber
+    const structureResolved = resolveHeadingStructure(s)
+    const isH1Disabled = lv === 1 && !structureResolved.showLevelOneNumber
 
     // Dual-column: editor sections + preview
     const dualCol = el('div', 'inkchapter-editor-dual-col', body)
@@ -4545,7 +4604,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     draft: HeadingNumberingSettings,
   ): void {
     const tabs = el('div', 'inkchapter-level-tabs', container)
-    const h1Visible = s.showLevelOneNumber
+    const h1Visible = resolveHeadingStructure(s).showLevelOneNumber
     const effectiveMax = this.numberingService.getEffectiveMaxLevel()
 
     for (const lv of HEADING_LEVELS) {
@@ -4588,7 +4647,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     s: HeadingNumberingSettings,
     readonly = false,
   ): void {
-    let activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
+    let activeFmt = getActiveContextualFormatVariant(style, showL1, lv)
     if (!activeFmt || activeFmt.length === 0) {
       const soloSeg: ContextualFormatSegment = {
         id: generateStableId(),
@@ -4600,7 +4660,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         withLevelOne: [{ ...soloSeg, id: generateStableId() }],
         withoutLevelOne: lv === 1 ? [] : [{ ...soloSeg, id: generateStableId() }],
       }
-      activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+      activeFmt = getActiveContextualFormatVariant(style, showL1, lv)
     }
 
     if (!this.selectedSegmentId && activeFmt) {
@@ -4644,7 +4704,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       refSelect.style.cssText = 'min-width:80px;'
       if (readonly) refSelect.disabled = true
 
-      const availRefs = getAvailableContextualReferenceLevels(lv, s.showLevelOneNumber, activeFmt)
+      const availRefs = getAvailableContextualReferenceLevels(lv, showL1, activeFmt)
       if (availRefs.length === 0) {
         const opt = document.createElement('option'); opt.value = ''; opt.textContent = '无可用'; opt.disabled = true; refSelect.appendChild(opt)
       } else {
@@ -4667,7 +4727,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         if (readonly) return
         const refLv = Number(refSelect.value) as HeadingLevel
         if (!refLv || refLv < 1 || refLv > 6) return
-        const cur = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+        const cur = getActiveContextualFormatVariant(style, showL1, lv)
         if (cur.some(s => s.type === 'level-reference' && s.level === refLv)) return
         const refStyle2 = s.levels[refLv]
         const defaultAppearance = refStyle2?.levelTemplate
@@ -4693,7 +4753,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     s: HeadingNumberingSettings,
     readonly = false,
   ): void {
-    const activeFmt = getActiveContextualFormatVariant(style, s.showLevelOneNumber, lv)
+    const showL1 = resolveHeadingStructure(s).showLevelOneNumber
+    const activeFmt = getActiveContextualFormatVariant(style, showL1, lv)
 
     if (!this.selectedSegmentId || !activeFmt) {
       const hint = el('div', 'inkchapter-token-select-hint', container)
@@ -4796,7 +4857,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     s: HeadingNumberingSettings,
     readonly = false,
   ): void {
-    const isH1Disabled = lv === 1 && !s.showLevelOneNumber
+    const isH1Disabled = lv === 1 && !resolveHeadingStructure(s).showLevelOneNumber
 
     // Compact grid form
     const form = el('div', 'inkchapter-behavior-form', container)

@@ -17,6 +17,7 @@ import type {
   UnnumberedCounterPolicy,
 } from './heading-types'
 import { generateHeadingFingerprint } from './heading-types'
+import { resolveHeadingStructure } from './heading-structure'
 
 /** Result of mode resolution including source info. */
 export interface ResolvedMode {
@@ -142,8 +143,10 @@ export class HeadingOverrideStore {
       return { mode: ov.mode, source: ov.source }
     }
 
-    // 4. H1 global switch: if H1 numbering is off, H1 is always unnumbered
-    if (level === 1 && !showLevelOneNumber && ov?.mode !== 'numbered') {
+    // 4. Strict mode H1: structure rule priority > per-heading override
+    //    In strict mode, H1 is always unnumbered regardless of override.
+    if (level === 1 && !showLevelOneNumber) {
+      // In strict mode, H1 must not be numbered even with a per-heading 'numbered' override
       return { mode: 'unnumbered', source: 'default' }
     }
 

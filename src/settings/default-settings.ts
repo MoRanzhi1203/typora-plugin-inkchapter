@@ -53,6 +53,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
     schemaVersion: 1,
     globalDefault: {
       enabled: true,
+      headingStructureMode: 'strict',
       showLevelOneNumber: false,
       preset: 'decimal-hierarchical',
       maxDepth: 6,
@@ -60,6 +61,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
       headingLayouts: DEFAULT_LAYOUTS,
       customDefinition: deepCloneSettings({
         enabled: true,
+        headingStructureMode: 'strict',
         showLevelOneNumber: false,
         preset: 'decimal-hierarchical',
         maxDepth: 6,

@@ -1,4 +1,5 @@
 import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, HeadingNumberingSettings, NumberTokenStyle, NumberFormatSegment, HeadingFormatVariants, MultilevelFormatSegment, MultilevelFormatVariants, HeadingLevelNumberTemplate, ContextualFormatSegment, ContextualFormatVariants, LevelReferenceAppearance } from './heading-types'
+import type { HeadingStructureMode } from './heading-structure'
 import { HEADING_LEVELS, createDefaultLevelTemplate, createDefaultReferenceAppearance, generateStableId } from './heading-types'
 import { getPresetLevels } from './presets'
 import { stripHiddenLevelReferences } from './numbering-engine'
@@ -600,6 +601,12 @@ function doMigrate(
   const enabled = validateBoolean(s.enabled, true)
   const maxDepth = validateMaxDepth(s.maxDepth)
 
+  // Migrate headingStructureMode from legacy showLevelOneNumber
+  const headingStructureMode = migrateHeadingStructureMode(
+    (s as any).headingStructureMode,
+    showLevelOneNumber,
+  )
+
   // Build levels from preset or stored custom
   let levels: Record<HeadingLevel, HeadingLevelStyle>
   if (preset === 'custom' && s.levels) {
@@ -697,6 +704,7 @@ function doMigrate(
   return {
     enabled,
     showLevelOneNumber,
+    headingStructureMode,
     preset,
     maxDepth,
     levels,
@@ -705,6 +713,18 @@ function doMigrate(
     suffix: s.suffix ?? '',
     showTrailingSeparator: s.showTrailingSeparator ?? false,
   }
+}
+
+function migrateHeadingStructureMode(
+  existingMode: unknown,
+  legacyShowLevelOneNumber: boolean,
+): HeadingStructureMode {
+  // If new field already exists with valid value, it takes priority
+  if (existingMode === 'strict' || existingMode === 'loose') {
+    return existingMode
+  }
+  // Legacy migration: false → strict, true → loose
+  return legacyShowLevelOneNumber ? 'loose' : 'strict'
 }
 
 function sanitizeString(val: string, fallback = ''): string {
