@@ -707,7 +707,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
           const soloSeg: ContextualFormatSegment = {
             id: generateStableId(),
             type: 'level-reference',
-            level: lv,
+            level: slotLv,
             appearance: { tokenStyle: ls.tokenStyle, prefix: '', suffix: '' },
           }
           ls.contextualFormatVariants = {
@@ -4851,17 +4851,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
       insertBtn.onclick = () => {
         if (readonly) return
-        const refLv = Number(refSelect.value) as HeadingLevel
-        if (!refLv || refLv < 1 || refLv > 6) return
+        const referenceSlot = Number(refSelect.value) as HeadingLevel
+        if (!referenceSlot || referenceSlot < 1 || referenceSlot > 6) return
         const slotLvForInsert = this.resolveSlotLevel(lv) ?? lv
-        const refSlotLv = this.resolveSlotLevel(refLv) ?? refLv
+        // refLv from getAvailableContextualReferenceLevels is already StyleSlot.
+        // Do NOT call resolveSlotLevel on it — that would treat S as P and reconvert.
         const cur = getActiveContextualFormatVariant(style, true, slotLvForInsert)
-        if (cur.some(s => s.type === 'level-reference' && s.level === refSlotLv)) return
-        const refStyle2 = s.levels[refSlotLv]
+        if (cur.some(s => s.type === 'level-reference' && s.level === referenceSlot)) return
+        const refStyle2 = s.levels[referenceSlot]
         const defaultAppearance = refStyle2?.levelTemplate
           ? { tokenStyle: refStyle2.levelTemplate.tokenStyle, prefix: refStyle2.levelTemplate.prefix ?? '', suffix: refStyle2.levelTemplate.suffix ?? '' }
           : { tokenStyle: 'arabic' as NumberTokenStyle, prefix: '', suffix: '' }
-        const newFmt = [...cur, { id: generateStableId(), type: 'level-reference' as const, level: refSlotLv, appearance: { ...defaultAppearance } }]
+        const newFmt = [...cur, { id: generateStableId(), type: 'level-reference' as const, level: referenceSlot, appearance: { ...defaultAppearance } }]
         this.updateDraftContextualFormat(lv, newFmt)
         this.onshow()
         queueMicrotask(() => this.updatePreview())
