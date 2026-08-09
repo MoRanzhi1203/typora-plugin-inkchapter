@@ -296,13 +296,24 @@ function applyLayoutOverridesToSettings(
     }
   }
 
-  // Merge numberTitleSpacing
+  // Merge numberTitleSpacing — Physical → StyleSlot mapping required.
+  // DocumentLayoutOverrides use Physical H1-H6 keys, but settings.levels[]
+  // uses StyleSlot S1-S6 indices. In strict mode, Physical H2→S1, H3→S2, etc.
+  // Without slot resolution, physical override would write to wrong slot level.
   if (overrides.numberTitleSpacing) {
+    const mode = (settings.headingStructureMode || 'strict') as 'strict' | 'loose'
     for (const [lvStr, spacing] of Object.entries(overrides.numberTitleSpacing)) {
-      const lv = Number(lvStr) as HeadingLevel
-      if (lv >= 1 && lv <= 6 && settings.levels[lv]) {
-        settings.levels[lv] = {
-          ...settings.levels[lv],
+      const physical = Number(lvStr) as HeadingLevel
+      if (physical < 1 || physical > 6) continue
+      // Resolve which StyleSlot this physical heading maps to.
+      // strict: H1→null (document title, no slot), H2→S1, H3→S2, ..., H6→S5
+      // loose:  H1→S1, H2→S2, ..., H6→S6
+      const slot = (mode === 'strict' && physical === 1) ? null
+        : mode === 'strict' ? (physical - 1) as HeadingLevel
+        : physical // loose: identity mapping
+      if (slot !== null && settings.levels[slot]) {
+        settings.levels[slot] = {
+          ...settings.levels[slot],
           numberTitleSpacing: spacing,
         }
       }
