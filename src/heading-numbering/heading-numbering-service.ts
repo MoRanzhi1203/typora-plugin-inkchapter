@@ -50,12 +50,18 @@ import {
   canTriggerIndentShortcut,
   isCursorAtEnd,
   setParagraphIndentMode,
+  getParagraphIndentMode,
   probeInlineParagraphCommand,
   writeBlockProbeDiagnostic,
   classifyEditorMutation,
   resolveCurrentBlockFromSelection,
+  resolvePreviousBlock,
   isContentBlock,
+  isCaretAtLogicalStartOfParagraph,
+  resolveCurrentBodyParagraph,
+  shouldConsumeBackspaceForIndentRemoval,
   type InlineCommandResult,
+  type BackspaceIndentCommandContext,
 } from './paragraph-indent-manager'
 import {
   loadParagraphLayout,
@@ -67,6 +73,28 @@ import {
   migrateLegacyIndentMarkers,
   type ParagraphIndentOverrideRecord,
 } from './paragraph-layout-store'
+import {
+  activateNormalEnterTrace,
+  deactivateNormalEnterTrace,
+  getTraceState,
+  safeTrace,
+  traceT1_AfterNormalEnter,
+  traceT2_MutationRecords,
+  traceT3_Classifier,
+  traceT4_RequestRefresh,
+  traceT5_DoRefresh,
+  traceT6_Rehydrate,
+  traceT7_RefreshStyles,
+  traceT8_FinalState,
+  identifyElement,
+  identifyNode,
+  summarizeElement,
+  summarizeSelection,
+  getComputedIndent,
+  type T0Data,
+  type T2Record,
+  type T6Data,
+} from './normal-enter-trace'
 import {
   generateDocumentKey,
   deepCloneSettings,
@@ -153,6 +181,11 @@ export class HeadingNumberingService {
   // Mirrors sidecar records but updates immediately (no debounce for reads).
   // Source of truth for rehydration; sidecar is the persistent copy.
   private inMemoryOverrides = new Map<string, ParagraphIndentOverrideRecord[]>()
+
+  // ── Normal Enter Trace (P0 diagnostic, dev only) ────
+  // Stores T0 snapshot from the PREVIOUS doRefresh for cross-event comparison.
+  private lastTraceSnapshot: T0Data | null = null
+  private traceDoRefreshCount = 0
 
   // Render version: incremented on document switch to cancel stale async ops
   private renderVersion = 0
@@ -1580,6 +1613,18 @@ export class HeadingNumberingService {
       }
     }
 
+    // ── Trace: T4 RequestRefresh (fail-open) ──
+    safeTrace(() => {
+      traceT4_RequestRefresh({
+        reasonsBeforeAdd: Array.from(reasons).filter(r => r !== primaryReason),
+        reasonAdded: primaryReason,
+        reasonsAfterAdd: Array.from(reasons),
+        rafAlreadyPending: false, // RAF callback is executing now
+        primaryReason,
+        hasParagraphMutation: hasParagraphCommandMutation,
+      })
+    })
+
     this.doRefresh(primaryReason, { hasParagraphCommandMutation })
   }
 
@@ -1623,6 +1668,20 @@ export class HeadingNumberingService {
       const root = this.adapter.detectEditorRoot()
       if (!root) return
       this.adapter.setEditorRoot(root)
+
+      // ── Trace: T5 doRefresh (fail-open) ──
+      this.traceDoRefreshCount++
+      safeTrace(() => {
+        traceT5_DoRefresh({
+          doRefreshCount: this.traceDoRefreshCount,
+          primaryReason: reason,
+          allPendingReasons: hasParagraphCommand ? [reason, 'paragraph-command-mutation'] : [reason],
+          editorRootDetected: true,
+          documentKey: this.getDocumentKey(),
+          willCallRehydrate: true,
+          willCallRefreshStyles: true,
+        })
+      })
 
       // Apply heading layouts (always, independent of numbering state)
       this.applyHeadingLayouts()
@@ -1775,6 +1834,9 @@ export class HeadingNumberingService {
         refreshReason: reason,
         renderVersion: this.renderVersion,
       })
+
+      // ── Trace: save T0 snapshot for next cycle + record T8 ──
+      this.captureTraceEndOfDoRefresh(root)
     } catch (e) {
       logger.error('标题编号刷新失败', e)
       recordRuntimeAudit('doRefresh:error', { details: { error: String(e) } })
@@ -1801,7 +1863,42 @@ export class HeadingNumberingService {
     const root = this.adapter.getEditorRoot()
     if (!root) return
     const settings = this.getParagraphLayoutSettings()
+
+    // ── Trace: T7 before ──
+    let t7Target: HTMLElement | null = null
+    let t7BeforeClass: string | null = null
+    let t7BeforeData: string | null = null
+    safeTrace(() => {
+      const contentParas = root.querySelectorAll<HTMLParagraphElement>('p')
+      for (const p of contentParas) {
+        if (p.classList.contains('inkchapter-paragraph-indent-2')) {
+          t7Target = p
+          break
+        }
+      }
+      if (t7Target) {
+        t7BeforeClass = t7Target.className ? String(t7Target.className) : null
+        t7BeforeData = t7Target.getAttribute('data-inkchapter-indent-mode')
+      }
+    })
+
+    // Business: always execute (never inside trace wrapper)
     refreshParagraphIndentStyles(root, settings)
+
+    // ── Trace: T7 after ──
+    safeTrace(() => {
+      if (!t7Target) return
+      const afterClass = t7Target.className ? String(t7Target.className) : null
+      const afterData = t7Target.getAttribute('data-inkchapter-indent-mode')
+      traceT7_RefreshStyles({
+        targetElement: summarizeElement(t7Target),
+        beforeClass: t7BeforeClass,
+        beforeDataMode: t7BeforeData,
+        afterClass,
+        afterDataMode: afterData,
+        didRendererClear: (t7BeforeClass?.includes('inkchapter-paragraph-indent-2') ?? false) && !(afterClass?.includes('inkchapter-paragraph-indent-2') ?? false),
+      })
+    })
   }
 
   /**
@@ -1887,18 +1984,20 @@ export class HeadingNumberingService {
     const anchor = createParagraphAnchor(paraIndex, allParas)
     const isTemporary = !paragraph.textContent?.trim()
     const overrides = this.inMemoryOverrides.get(docKey) ?? []
-    const id = overrides.length > 0 ? overrides[overrides.length - 1].id : `indent-${Date.now()}-0`
+
+    // Try to find existing record by anchor resolution (textHash-based match preferred)
+    const existing = overrides.find(o => resolveParagraphAnchor(o.anchor, allParas)?.index === paraIndex)
 
     if (_mode === 'auto') {
-      const filtered = overrides.filter(o =>
-        o.id !== id && (Math.abs(o.anchor.lastKnownOrdinal - paraIndex) > 1 || o.anchor.textHash !== anchor.textHash))
-      this.inMemoryOverrides.set(docKey, filtered)
-      this.scheduleSidecarWrite(docKey, docPath, filtered)
+      if (existing) {
+        const clean = overrides.filter(o => o !== existing)
+        this.inMemoryOverrides.set(docKey, clean)
+        this.scheduleSidecarWrite(docKey, docPath, clean)
+      }
       return
     }
 
     // Update existing record or create new one (maintain stable record id)
-    const existing = overrides.find(o => o.anchor.lastKnownOrdinal === paraIndex && o.temporary)
     if (existing) {
       existing.mode = _mode
       existing.anchor = anchor
@@ -1939,19 +2038,107 @@ export class HeadingNumberingService {
     }
   }
 
+  // ── Normal Enter Trace: T0 snapshot + T8 final ──────────
+
+  /**
+   * Save T0 snapshot (for next cycle's comparison) and record T8 final state.
+   * Called at the end of every doRefresh when trace is active.
+   */
+  private captureTraceEndOfDoRefresh(root: HTMLElement): void {
+    if (!getTraceState().active) return
+
+    safeTrace(() => {
+      const docKey = this.getDocumentKey()
+
+      // ── T8: Final visual state ──
+      let t8Target: HTMLElement | null = null
+      // With WeakMap-based identity, we look for the element that has the trace ID
+      // stored in the WeakMap (not DOM dataset). For now, find any force-indent paragraph.
+      const allParas = collectContentParagraphs(root)
+      for (const p of allParas) {
+        if (p.classList.contains('inkchapter-paragraph-indent-2')) {
+          t8Target = p
+          break
+        }
+      }
+      traceT8_FinalState({
+        targetElement: summarizeElement(t8Target),
+        targetClass: t8Target?.className ? String(t8Target.className) : null,
+        targetDataMode: t8Target?.getAttribute('data-inkchapter-indent-mode') ?? null,
+        computedTextIndent: t8Target ? getComputedIndent(t8Target) : 'no-target',
+        selectionCurrentBlock: summarizeElement(resolveCurrentBlockFromSelection(root)),
+      })
+
+      // ── Save T0 snapshot for next cycle ──
+      let aPara: HTMLElement | null = null
+      let aOrdinal = -1
+      let aPrev: HTMLElement | null = null
+      let aNext: HTMLElement | null = null
+      for (let i = 0; i < allParas.length; i++) {
+        if (allParas[i].classList.contains('inkchapter-paragraph-indent-2')) {
+          aPara = allParas[i]
+          aOrdinal = i
+          aPrev = i > 0 ? allParas[i - 1] : null
+          aNext = i < allParas.length - 1 ? allParas[i + 1] : null
+          // WeakMap identity — no DOM mutation
+          break
+        }
+      }
+
+      const overrides = this.inMemoryOverrides.get(docKey ?? '') ?? []
+      let targetOverride: ParagraphIndentOverrideRecord | null = null
+      if (aPara) {
+        targetOverride = overrides.find(o => {
+          const r = resolveParagraphAnchor(o.anchor, allParas)
+          return r?.index === aOrdinal
+        }) ?? null
+      }
+
+      this.lastTraceSnapshot = {
+        documentKey: docKey,
+        editorRootIdentity: identifyNode(root),
+        aElement: summarizeElement(aPara),
+        aOrdinal,
+        aPreviousBlockSummary: summarizeElement(aPrev),
+        aNextBlockSummary: summarizeElement(aNext),
+        aTextNormalized: aPara?.textContent?.trim() ?? '',
+        selection: summarizeSelection(),
+        overrideRecordId: targetOverride?.id ?? null,
+        overrideMode: targetOverride?.mode ?? null,
+        overrideTemporary: targetOverride?.temporary ?? null,
+        overrideAnchor: targetOverride?.anchor ? {
+          textHash: targetOverride.anchor.textHash ?? null,
+          lastKnownOrdinal: targetOverride.anchor.lastKnownOrdinal,
+          occurrence: targetOverride.anchor.occurrence ?? null,
+        } : null,
+        inMemoryOverrideCount: overrides.length,
+        sidecarWritePending: this.sidecarWritePending !== null,
+      }
+    })
+  }
+
   /**
    * Rehydrate explicit force-indent overrides from in-memory registry.
    * Called before every refreshParagraphIndentStyles so that explicit
    * overrides survive Normal Enter / paragraph split / DOM rebuild.
+   *
+   * Also promotes temporary anchors (empty paragraph) to stable anchors
+   * when the user has typed text, and triggers a debounced sidecar write
+   * to persist stable anchors for save/reopen round-trip.
    */
   private rehydrateParagraphIndentOverrides(root: HTMLElement): void {
     const docKey = this.getDocumentKey()
     if (!docKey) return
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
     const overrides = this.inMemoryOverrides.get(docKey)
     if (!overrides || overrides.length === 0) return
 
     const allParas = collectContentParagraphs(root)
     if (allParas.length === 0) return
+
+    let dirty = false
+    let promotionHappened = false
+    let promotionTextHash: string | null = null
 
     // First, promote temporary anchors if text has been typed
     for (const o of overrides) {
@@ -1964,25 +2151,97 @@ export class HeadingNumberingService {
           const newAnchor = createParagraphAnchor(resolved.index, allParas)
           o.anchor = newAnchor
           o.temporary = false
+          dirty = true
+          promotionHappened = true
+          promotionTextHash = newAnchor.textHash ?? null
         }
       }
     }
 
     // Rehydrate: set semantic state on matching DOM elements
+    let traceTarget: {
+      o: ParagraphIndentOverrideRecord
+      resolved: { index: number } | null
+      para: HTMLElement | null
+      beforeClass: string | null
+      beforeData: string | null
+      afterClass: string | null
+      afterData: string | null
+    } | null = null
+
     for (const o of overrides) {
-      if (o.mode !== 'force-indent') continue
+      if (o.mode !== 'force-indent' && o.mode !== 'force-flush') continue
       const resolved = resolveParagraphAnchor(o.anchor, allParas)
       if (resolved) {
         const para = allParas[resolved.index]
-        if (para && !para.classList.contains('inkchapter-paragraph-indent-2')) {
-          setParagraphIndentMode(para, 'force-indent')
+        const beforeClass = para?.className ? String(para.className) : null
+        const beforeData = para?.getAttribute('data-inkchapter-indent-mode') ?? null
+        if (para && !para.classList.contains('inkchapter-paragraph-indent-2')
+          && para.getAttribute('data-inkchapter-indent-mode') !== o.mode) {
+          setParagraphIndentMode(para, o.mode)
+        }
+        const afterClass = para?.className ? String(para.className) : null
+        const afterData = para?.getAttribute('data-inkchapter-indent-mode') ?? null
+        // Capture first force-indent override for T6 trace
+        if (!traceTarget) {
+          traceTarget = { o, resolved, para, beforeClass, beforeData, afterClass, afterData }
         }
         // Auto-repair anchor (refresh ordinals/neighbors after DOM changes)
-        if (resolved.confidence === 'exact' || resolved.confidence === 'high') {
-          const updated = updateParagraphAnchor(o.anchor, resolved.index, allParas)
-          o.anchor = updated
+        if (resolved.index >= 0 && resolved.index < allParas.length) {
+          updateParagraphAnchor(o.anchor, resolved.index, allParas)
+          dirty = true
         }
       }
+    }
+
+    // ── Trace: T6 Rehydrate ──
+    if (getTraceState().active && traceTarget) {
+      safeTrace(() => {
+      const rt = traceTarget
+      const resolvedEl = rt.para
+      let resolveResult: T6Data['resolveResult'] = 'other'
+      if (rt.resolved && resolvedEl) {
+        // Compare with last T0 snapshot's A element identity (WeakMap-based)
+        const lastA = this.lastTraceSnapshot?.aElement
+        if (lastA) {
+          const currentTraceId = identifyNode(resolvedEl)
+          const lastTraceId = (lastA as any).traceId as string | undefined
+          if (currentTraceId && lastTraceId && currentTraceId === lastTraceId) resolveResult = 'A'
+          else resolveResult = 'Aprime'
+        } else {
+          resolveResult = 'other'
+        }
+      } else {
+        resolveResult = 'null'
+      }
+      traceT6_Rehydrate({
+        overrideCount: overrides.length,
+        targetRecordId: rt.o.id,
+        targetRecordMode: rt.o.mode,
+        targetRecordTemporary: rt.o.temporary ?? false,
+        targetRecordAnchor: {
+          textHash: rt.o.anchor.textHash ?? null,
+          lastKnownOrdinal: rt.o.anchor.lastKnownOrdinal,
+          occurrence: rt.o.anchor.occurrence ?? null,
+        },
+        candidateParagraphCount: allParas.length,
+        resolveResult,
+        resolvedElement: summarizeElement(resolvedEl),
+        resolvedText: resolvedEl?.textContent?.slice(0, 80) ?? null,
+        resolvedOrdinal: rt.resolved?.index ?? null,
+        beforeApplyClass: rt.beforeClass,
+        beforeApplyData: rt.beforeData,
+        afterApplyClass: rt.afterClass,
+        afterApplyData: rt.afterData,
+        promotionHappened,
+        promotionAnchorTextHash: promotionTextHash,
+      })
+      }) // safeTrace end
+    }
+
+    // Persist promoted/repaired anchors to sidecar (debounced)
+    if (dirty) {
+      this.scheduleSidecarWrite(docKey, docPath, [...overrides])
     }
   }
 
@@ -2009,12 +2268,12 @@ export class HeadingNumberingService {
     this.migrateLegacyMarkersIfPresent()
 
     for (const override of data.paragraphOverrides) {
-      if (override.mode !== 'force-indent') continue
+      if (override.mode !== 'force-indent' && override.mode !== 'force-flush') continue
       const resolved = resolveParagraphAnchor(override.anchor, allParas)
       if (resolved) {
         const para = allParas[resolved.index]
         if (para) {
-          setParagraphIndentMode(para, 'force-indent')
+          setParagraphIndentMode(para, override.mode)
           // Auto-repair anchor
           const updated = updateParagraphAnchor(override.anchor, resolved.index, allParas)
           override.anchor = updated
@@ -2280,9 +2539,66 @@ export class HeadingNumberingService {
     this.disconnectObserver()
 
     this.mutationObserver = new MutationObserver((mutations) => {
+      // ── Trace: T1 + T2 (fail-open: never blocks classifier) ──
+      safeTrace(() => {
+        const lastA = this.lastTraceSnapshot
+        let oldAEl: HTMLElement | null = null
+        if (lastA?.aElement) {
+          const traceId = (lastA.aElement as any).traceId as string | undefined
+          // Note: since trace identity is now WeakMap-based (no DOM dataset),
+          // querySelector by [data-inkchapter-trace-id] will return null.
+          // This is expected behavior — identity tracking is observer-external.
+          if (traceId) {
+            oldAEl = root.querySelector(`[data-inkchapter-trace-id="${traceId}"]`) as HTMLElement | null
+          }
+        }
+        const caretBlock = resolveCurrentBlockFromSelection(root)
+        let domModel = 'unknown'
+        if (oldAEl && oldAEl.isConnected) domModel = 'D1-A-retained'
+        else if (lastA?.aTextNormalized && !oldAEl) domModel = 'D2-A-replaced'
+        else domModel = 'D5-other'
+        traceT1_AfterNormalEnter({
+          oldAIsConnected: oldAEl?.isConnected ?? false,
+          oldAIdentityLabel: oldAEl ? (identifyNode(oldAEl) ?? null) : null,
+          oldAElement: summarizeElement(oldAEl),
+          selection: summarizeSelection(),
+          caretBlock: summarizeElement(caretBlock),
+          previousBlock: summarizeElement(caretBlock ? resolvePreviousBlock(caretBlock as HTMLElement, root) : null),
+          domModel,
+        })
+
+        const t2Records: T2Record[] = mutations.map(m => ({
+          type: m.type,
+          targetTag: (m.target instanceof Element) ? m.target.tagName : m.target.nodeName,
+          targetClass: (m.target instanceof HTMLElement) ? String(m.target.className).slice(0, 80) : undefined,
+          targetIdentity: identifyNode(m.target),
+          addedCount: m.addedNodes.length,
+          addedSummaries: Array.from(m.addedNodes).slice(0, 5).map(n =>
+            n instanceof HTMLElement ? { tag: n.tagName, text: n.textContent?.slice(0, 40) ?? '', class: n.className ? String(n.className).slice(0, 60) : undefined } : { type: n.nodeName }),
+          removedCount: m.removedNodes.length,
+          removedSummaries: Array.from(m.removedNodes).slice(0, 5).map(n =>
+            n instanceof HTMLElement ? { tag: n.tagName, text: n.textContent?.slice(0, 40) ?? '', class: n.className ? String(n.className).slice(0, 60) : undefined } : { type: n.nodeName }),
+        }))
+        traceT2_MutationRecords(t2Records)
+      })
+
       // ── Use classifier to determine mutation type ──
       const classification = classifyEditorMutation(mutations, root, {
         suppressParagraphDetection: this.suppressParagraphCommandDetection,
+      })
+
+      // ── Trace: T3 Classifier (fail-open) ──
+      safeTrace(() => {
+        traceT3_Classifier({
+          headingMutation: classification.headingMutation,
+          paragraphCommandCandidate: classification.paragraphCommandCandidate,
+          largeBatch: classification.largeBatch,
+          suppressed: this.suppressParagraphCommandDetection,
+          paragraphMutationEpoch: this.paragraphMutationEpoch,
+          didRequestRefresh: classification.headingMutation || (classification.paragraphCommandCandidate && !classification.largeBatch),
+          refreshReason: classification.headingMutation ? 'editor-mutation' :
+            (classification.paragraphCommandCandidate && !classification.largeBatch) ? 'paragraph-command-mutation' : null,
+        })
       })
 
       // Heading structural change → editor-mutation
@@ -2443,6 +2759,37 @@ export class HeadingNumberingService {
     }
     root.addEventListener('keydown', onEnterCommand, true)
     this.editorRootDisposables.add(() => root.removeEventListener('keydown', onEnterCommand, true))
+
+    // ── Backspace Indent Removal: pre-delete interception ──
+    // FORCE_INDENT + caret@logical-start + Backspace → FORCE_FLUSH
+    // Must intercept BEFORE Typora processes the Backspace (delete/merge).
+    const onBackspaceCommand = (e: KeyboardEvent): void => {
+      if (e.key !== 'Backspace') return
+
+      const settings = this.getParagraphLayoutSettings()
+
+      const ctx = shouldConsumeBackspaceForIndentRemoval(
+        root,
+        settings,
+        this.isInComposition || e.isComposing,
+      )
+
+      // Not our concern — let Typora handle natively
+      if (!ctx || !ctx.caretAtLogicalStart) return
+
+      // ── Consume Backspace, apply force-flush ──
+      e.preventDefault()
+      e.stopPropagation()
+
+      console.info('[InkChapter] Backspace reverse command: force-indent → force-flush')
+
+      this.applyParagraphIndentOverride(ctx.paragraph, 'force-flush')
+
+      // Restore caret at logical start of the same paragraph
+      this.placeCaretInParagraph(ctx.paragraph)
+    }
+    root.addEventListener('keydown', onBackspaceCommand, true)
+    this.editorRootDisposables.add(() => root.removeEventListener('keydown', onBackspaceCommand, true))
 
     // input
     const onInput = (): void => {
@@ -2640,6 +2987,7 @@ export class HeadingNumberingService {
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
           // Reconstruct paragraph indent overrides from sidecar after DOM settles
           setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 100)
+          // Normal Enter Trace: OFF by default. Enable via window.__INKCHAPTER_NORMAL_ENTER_TRACE__
         }
       }),
     )

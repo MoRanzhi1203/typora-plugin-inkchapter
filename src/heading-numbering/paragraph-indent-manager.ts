@@ -6,6 +6,7 @@
  * 2. Apply text-indent styles to paragraph DOM elements
  * 3. Detect formula continuation (paragraph → display math → paragraph)
  * 4. Handle `..` / `。。` + Enter shortcut for force-indent-2 paragraphs
+ * 5. Handle Backspace at logical start to remove force-indent (→ force-flush)
  */
 
 import type {
@@ -313,6 +314,9 @@ export function refreshParagraphIndentStyles(
 
     // Skip paragraphs that already have force-indent
     if (hasForceIndentClass(p)) continue
+
+    // Skip paragraphs with explicit force-flush (Backspace reverse command)
+    if (getParagraphIndentMode(p) === 'force-flush') continue
 
     // Skip empty paragraphs
     if (!p.textContent?.trim()) continue
@@ -1026,4 +1030,162 @@ function isHeadingOrContainsHeading(el: HTMLElement): boolean {
     return true
   }
   return el.querySelector('h1, h2, h3, h4, h5, h6') !== null
+}
+
+// ── Backspace Indent Removal (force-indent → force-flush) ──────────────
+
+/**
+ * Check if the caret is at the logical start of the paragraph's text content.
+ *
+ * A caret is at logical start when there are NO user-editable text characters
+ * between the paragraph's first content position and the current caret position.
+ *
+ * Covers:
+ * - Plain text node: `<p>│text</p>` → true
+ * - Inline span wrapper: `<p><span>│text</span></p>` → true
+ * - Empty paragraph (BR): `<p><br></p>` with caret before BR → true
+ * - Multiple inline spans: `<p><span>A</span><span>│B</span></p>` → false
+ * - Caret inside text: `<p>te│xt</p>` → false
+ * - Placeholder span with no text → treated as empty
+ *
+ * Uses Range API to create a range from block start to cursor position,
+ * then checks if any non-whitespace text exists in that range.
+ */
+export function isCaretAtLogicalStartOfParagraph(paragraph: HTMLElement): boolean {
+  const sel = window.getSelection()
+  if (!sel?.rangeCount || !sel.isCollapsed) return false
+
+  const cursorRange = sel.getRangeAt(0)
+  const { startContainer, startOffset } = cursorRange
+
+  try {
+    const range = document.createRange()
+    range.setStart(paragraph, 0)
+    range.setEnd(startContainer, startOffset)
+
+    const textBefore = range.toString().trim()
+    return textBefore.length === 0
+  } catch {
+    // Range creation failed (e.g., nodes not in same tree) — assume not at start
+    return false
+  }
+}
+
+/**
+ * Resolve the current body paragraph element from the selection.
+ *
+ * Returns null if:
+ * - No selection / no range
+ * - Current block is not a <p> tag
+ * - Current block is in excluded context (heading, list, code, etc.)
+ * - Current block is not a content block
+ */
+export function resolveCurrentBodyParagraph(editorRoot: HTMLElement): HTMLElement | null {
+  const block = resolveCurrentBlockFromSelection(editorRoot)
+  if (!block || block.tagName !== 'P') return null
+  if (!isContentBlock(block)) return null
+  if (isInExcludedContext(block)) return null
+  return block
+}
+
+/**
+ * Context for the Backspace indent removal decision.
+ */
+export interface BackspaceIndentCommandContext {
+  paragraph: HTMLElement
+  mode: ParagraphIndentSemanticMode
+  caretAtLogicalStart: boolean
+  selectionCollapsed: boolean
+  composing: boolean
+  excludedContext: boolean
+}
+
+/**
+ * Determine whether InkChapter should consume the Backspace key
+ * to remove force-indent from the current paragraph.
+ *
+ * Returns true only when ALL conditions are met:
+ * 1. indentShortcutEnabled is true
+ * 2. Not in IME composition
+ * 3. Selection is collapsed
+ * 4. Current paragraph resolved and not excluded
+ * 5. Paragraph mode is force-indent
+ * 6. Caret is at logical start of paragraph text
+ */
+export function shouldConsumeBackspaceForIndentRemoval(
+  editorRoot: HTMLElement,
+  settings: { indentShortcutEnabled: boolean },
+  isComposing: boolean,
+): BackspaceIndentCommandContext | null {
+  if (!settings.indentShortcutEnabled) return null
+
+  const sel = window.getSelection()
+  if (!sel?.rangeCount) return null
+
+  if (isComposing) {
+    return {
+      paragraph: null!,
+      mode: 'auto',
+      caretAtLogicalStart: false,
+      selectionCollapsed: sel.isCollapsed,
+      composing: true,
+      excludedContext: false,
+    }
+  }
+
+  if (!sel.isCollapsed) {
+    return {
+      paragraph: null!,
+      mode: 'auto',
+      caretAtLogicalStart: false,
+      selectionCollapsed: false,
+      composing: false,
+      excludedContext: false,
+    }
+  }
+
+  const paragraph = resolveCurrentBodyParagraph(editorRoot)
+  if (!paragraph) {
+    return {
+      paragraph: null!,
+      mode: 'auto',
+      caretAtLogicalStart: false,
+      selectionCollapsed: true,
+      composing: false,
+      excludedContext: true,
+    }
+  }
+
+  const mode = getParagraphIndentMode(paragraph)
+  if (mode !== 'force-indent') {
+    return {
+      paragraph,
+      mode,
+      caretAtLogicalStart: false,
+      selectionCollapsed: true,
+      composing: false,
+      excludedContext: false,
+    }
+  }
+
+  const atLogicalStart = isCaretAtLogicalStartOfParagraph(paragraph)
+  if (!atLogicalStart) {
+    return {
+      paragraph,
+      mode,
+      caretAtLogicalStart: false,
+      selectionCollapsed: true,
+      composing: false,
+      excludedContext: false,
+    }
+  }
+
+  return {
+    paragraph,
+    mode,
+    caretAtLogicalStart: true,
+    selectionCollapsed: true,
+    composing: false,
+    excludedContext: false,
+  }
 }
