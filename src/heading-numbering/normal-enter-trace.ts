@@ -280,7 +280,7 @@ export function summarizeElement(el: unknown): Record<string, unknown> | null {
       className: el.className ? String(el.className).slice(0, 120) : undefined,
       indentMode: el.getAttribute('data-inkchapter-indent-mode') ?? undefined,
       traceId: identifyNode(el) ?? undefined,
-      forceIndentClass: el.classList.contains('inkchapter-paragraph-indent-2'),
+      forceIndentClass: el.classList.contains('inkchapter-paragraph-effective-indent-2'),
       textContent: el.textContent?.slice(0, 80) ?? '',
       isConnected: el.isConnected,
       dataLine: el.getAttribute('data-line') ?? undefined,

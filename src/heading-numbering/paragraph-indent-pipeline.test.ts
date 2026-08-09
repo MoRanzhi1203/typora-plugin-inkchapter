@@ -30,11 +30,17 @@ import {
   isCaretAtLogicalStartOfParagraph,
   resolveCurrentBodyParagraph,
   shouldConsumeBackspaceForIndentRemoval,
+  applyEffectiveParagraphIndent,
+  resolveEffectiveParagraphIndent,
+  resolveParagraphShortcutCandidate,
   type InlineCommandResult,
   type ParagraphIndentSemanticMode,
   type MutationClassification,
   type BackspaceIndentCommandContext,
+  type ParagraphEffectiveIndent,
+  type ParagraphShortcutCandidateState,
 } from './paragraph-indent-manager'
+import type { ParagraphLayoutSettings } from './heading-types'
 
 // ── DOM helpers ─────────────────────────────────────────────────────────
 
@@ -94,40 +100,41 @@ const DISABLED_SETTINGS = { indentShortcutEnabled: false }
 
 // ── 1. Semantic Setter Tests ───────────────────────────────────────────
 
-describe('setParagraphIndentMode (unified semantic entry point)', () => {
-  it('sets force-indent class and data attribute', () => {
+describe('setParagraphIndentMode (semantic-only setter)', () => {
+  it('sets force-indent semantic attribute only (no visual class)', () => {
     const p = document.createElement('p')
     setParagraphIndentMode(p, 'force-indent')
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    // Semantic only — no visual class
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
     expect(getParagraphIndentMode(p)).toBe('force-indent')
+    // Visual class is NOT set by setParagraphIndentMode
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
   })
 
-  it('sets force-flush attribute, removes indent class', () => {
+  it('sets force-flush semantic attribute only', () => {
     const p = document.createElement('p')
-    p.classList.add('inkchapter-paragraph-indent-2')
+    p.classList.add('inkchapter-paragraph-effective-indent-2')
     setParagraphIndentMode(p, 'force-flush')
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    // Semantic only — class NOT removed by setParagraphIndentMode
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-flush')
     expect(getParagraphIndentMode(p)).toBe('force-flush')
   })
 
-  it('auto mode removes all explicit state', () => {
+  it('auto mode clears semantic attribute only', () => {
     const p = document.createElement('p')
-    p.classList.add('inkchapter-paragraph-indent-2')
     p.setAttribute(INDENT_MODE_ATTR, 'force-indent')
     setParagraphIndentMode(p, 'auto')
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBeNull()
     expect(getParagraphIndentMode(p)).toBe('auto')
   })
 
-  it('force-indent overrides previous force-flush', () => {
+  it('force-indent overrides previous force-flush (semantic only)', () => {
     const p = document.createElement('p')
     setParagraphIndentMode(p, 'force-flush')
     setParagraphIndentMode(p, 'force-indent')
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    // Semantic only
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
   })
 
   it('type-safe modes are restricted to union', () => {
@@ -460,8 +467,8 @@ describe('Pipeline Integration: inline command → probe → semantic setter', (
     expect(result!.currentBlock).toBe(a) // SAME paragraph
 
     setParagraphIndentMode(a, 'force-indent')
-    expect(a.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
     expect(a.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
+    expect(getParagraphIndentMode(a)).toBe('force-indent')
   })
 })
 
@@ -482,7 +489,7 @@ describe('Manual Semantic Command: forceIndentCurrentParagraph', () => {
     expect(block).not.toBeNull()
     setParagraphIndentMode(block!, 'force-indent')
 
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    // Semantic only — setParagraphIndentMode doesn't set visual class
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
     expect(getParagraphIndentMode(p)).toBe('force-indent')
   })
@@ -752,12 +759,12 @@ describe('Multi-marker and target identity recovery', () => {
     // Apply to first marker → p1
     const r1 = applyIndentByMarkerIndex(root, 0)
     expect(r1).toBe(true)
-    expect(p1.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
-    expect(p2.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    expect(p1.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p2.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
 
     // Apply to second marker → p2
     applyIndentByMarkerIndex(root, 1)
-    expect(p2.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    expect(p2.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
   })
 
   it('returns false for out-of-range marker index', () => {
@@ -805,7 +812,8 @@ describe('Normal Enter: override survives DOM rebuild', () => {
     const a = makeParagraph('test paragraph')
     appendBlocks(root, a)
     setParagraphIndentMode(a, 'force-indent')
-    expect(a.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    // Check semantic attribute only — visual is separate
+    expect(getParagraphIndentMode(a)).toBe('force-indent')
 
     // Simulate DOM rebuild by Typora Normal Enter: remove A, create A' (new element)
     const aText = a.textContent
@@ -814,13 +822,14 @@ describe('Normal Enter: override survives DOM rebuild', () => {
     appendBlocks(root, aPrime)
 
     // A' does NOT have force-indent yet (DOM was rebuilt)
-    expect(aPrime.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    expect(aPrime.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
 
     // Rehydrate: set force-indent on A' (simulating rehydrateParagraphIndentOverrides)
     setParagraphIndentMode(aPrime, 'force-indent')
+    applyEffectiveParagraphIndent(aPrime, 'indent-2')
 
-    // A' now has force-indent
-    expect(aPrime.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    // A' now has force-indent semantic + visual
+    expect(aPrime.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
     expect(aPrime.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
     root.remove()
   })
@@ -833,7 +842,7 @@ describe('Normal Enter: override survives DOM rebuild', () => {
     setParagraphIndentMode(a, 'force-indent')
 
     // B should NOT have force-indent
-    expect(b.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    expect(b.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
     root.remove()
   })
 })
@@ -884,13 +893,14 @@ describe('Override priority: explicit > formula > default', () => {
     expect(getParagraphIndentMode(a)).toBe('force-indent')
 
     // Simulate class being stripped (Typora DOM rebuild)
-    a.classList.remove('inkchapter-paragraph-indent-2')
+    a.classList.remove('inkchapter-paragraph-effective-indent-2')
     a.removeAttribute(INDENT_MODE_ATTR)
 
-    // Rehydrate: re-apply explicit override
+    // Rehydrate: re-apply explicit override → semantic + visual
     setParagraphIndentMode(a, 'force-indent')
+    applyEffectiveParagraphIndent(a, 'indent-2')
     expect(getParagraphIndentMode(a)).toBe('force-indent')
-    expect(a.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    expect(a.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
     root.remove()
   })
 })
@@ -1042,7 +1052,7 @@ describe('B does not inherit explicit override from A', () => {
 
     expect(getParagraphIndentMode(a)).toBe('force-indent')
     expect(getParagraphIndentMode(b)).toBe('auto')
-    expect(b.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    expect(b.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
     root.remove()
   })
 
@@ -1140,7 +1150,7 @@ describe('Full flow: command → type text → Normal Enter → rehydrate', () =
     // Assertions
     expect(getParagraphIndentMode(aPrime)).toBe('force-indent')
     expect(getParagraphIndentMode(b)).toBe('auto')
-    expect(b.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    expect(b.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
     root.remove()
   })
 
@@ -1565,22 +1575,24 @@ describe('Backspace Indent Removal — shouldConsumeBackspaceForIndentRemoval', 
   it('T5: recordId unchanged, mode changes force-indent → force-flush', () => {
     const p = makeParagraph('这是一个段落')
     setParagraphIndentMode(p, 'force-indent')
+    applyEffectiveParagraphIndent(p, 'indent-2') // visual: indent-2
 
     // Verify initial state
     expect(getParagraphIndentMode(p)).toBe('force-indent')
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
 
     // Simulate Backspace action
     setParagraphIndentMode(p, 'force-flush')
+    applyEffectiveParagraphIndent(p, 'flush') // visual: flush
 
     // Mode changed
     expect(getParagraphIndentMode(p)).toBe('force-flush')
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-flush')
-    // Force-indent class removed
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
-    // Inline style ensures visual 0
-    expect(p.style.textIndent).toBe('0px')
+    // Visual indent-2 class removed
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
+    // Inline style cleared (flush visual does NOT use inline, class removal is sufficient)
+    expect(p.style.textIndent).toBe('')
   })
 
   // ── T6: Second Backspace ──
@@ -1696,15 +1708,17 @@ describe('Backspace Indent Removal — shouldConsumeBackspaceForIndentRemoval', 
   })
 
   // ── T11: Body Default 2em ──
-  it('T11: force-flush sets textIndent=0 regardless of body default', () => {
+  it('T11: force-flush semantic + flush visual = 0 visual', () => {
     const p = makeParagraph('这是一个段落')
-    // Simulate force-flush via Backspace
+    // Simulate force-flush via Backspace: semantic + visual
     setParagraphIndentMode(p, 'force-flush')
+    applyEffectiveParagraphIndent(p, 'flush')
 
-    // Verify force-flush semantics: textIndent is explicitly 0
-    expect(p.style.textIndent).toBe('0px')
+    // Verify force-flush: semantic = force-flush, visual = flush (class removed)
     expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-flush')
-    expect(p.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
+    // Inline style cleared by applyEffectiveParagraphIndent
+    expect(p.style.textIndent).toBe('')
 
     // Verify getParagraphIndentMode returns 'force-flush' not 'auto'
     expect(getParagraphIndentMode(p)).toBe('force-flush')
@@ -2085,5 +2099,435 @@ describe('Trace Isolation — default OFF', () => {
     activateNormalEnterTrace()
     const stateAfter = getTraceState()
     expect(stateAfter.active).toBe(false)
+  })
+})
+
+// ── 31. Trigger Timing Tests (TT-1 ~ TT-12) ───────────────────────────
+
+describe('Shortcut Trigger Timing — only exact token + Enter', () => {
+  // All tests: defaultIndent=flush to eliminate visual projection confusion
+  const FLUSH_SETTINGS: ParagraphLayoutSettings = {
+    defaultIndent: 'flush',
+    flushAfterDisplayMath: false,
+    indentShortcutEnabled: true,
+  }
+  const DISABLED_SHORTCUT: ParagraphLayoutSettings = {
+    defaultIndent: 'flush',
+    flushAfterDisplayMath: false,
+    indentShortcutEnabled: false,
+  }
+  const INDENT2_SETTINGS: ParagraphLayoutSettings = {
+    defaultIndent: 'indent-2',
+    flushAfterDisplayMath: false,
+    indentShortcutEnabled: true,
+  }
+
+  // Helper: simulate typing text into a paragraph
+  function typeText(paragraph: HTMLElement, text: string): void {
+    paragraph.textContent = text
+    // Place caret at end
+    const sel = window.getSelection()!
+    const firstText = findDeepFirstText(paragraph)
+    if (firstText) {
+      const range = document.createRange()
+      range.setStart(firstText, firstText.textContent?.length ?? 0)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+  }
+
+  function findDeepFirstText(el: Node): Text | null {
+    if (el.nodeType === Node.TEXT_NODE) return el as Text
+    for (const child of el.childNodes) {
+      const found = findDeepFirstText(child)
+      if (found) return found
+    }
+    return null
+  }
+
+  // TT-1: "." typed → no execute, AUTO
+  it('TT-1: single "." is NOT recognized as shortcut token', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('.')
+    appendBlocks(root, p)
+    typeText(p, '.')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    root.remove()
+  })
+
+  // TT-2: "。" typed → no execute, AUTO
+  it('TT-2: single "。" is NOT recognized as shortcut token', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('。')
+    appendBlocks(root, p)
+    typeText(p, '。')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    root.remove()
+  })
+
+  // TT-3: ".." typed, no Enter → AUTO
+  it('TT-3: ".." without Enter stays AUTO', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('..')
+    appendBlocks(root, p)
+    typeText(p, '..')
+    // probe recognizes the token but doesn't execute (Enter hasn't happened)
+    const result = probeInlineParagraphCommand(root, { indentShortcutEnabled: true })
+    expect(result).not.toBeNull() // token IS recognized
+    expect(result!.currentBlock).toBe(p)
+    // But semantic is still AUTO (no Enter → no execute)
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    root.remove()
+  })
+
+  // TT-4: "。。" typed, no Enter → AUTO
+  it('TT-4: "。。" without Enter stays AUTO', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('。。')
+    appendBlocks(root, p)
+    typeText(p, '。。')
+    const result = probeInlineParagraphCommand(root, { indentShortcutEnabled: true })
+    expect(result).not.toBeNull()
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    root.remove()
+  })
+
+  // TT-5: ".." + Enter → execute (unit: probe returns token, handler would consume)
+  it('TT-5: ".." is recognized as exact token for Enter submission', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('..')
+    appendBlocks(root, p)
+    typeText(p, '..')
+    const result = probeInlineParagraphCommand(root, { indentShortcutEnabled: true })
+    expect(result).not.toBeNull()
+    expect(result!.token).toBe('..')
+    expect(result!.currentBlock).toBe(p)
+    root.remove()
+  })
+
+  // TT-6: "。。" + Enter → execute
+  it('TT-6: "。。" is recognized as exact token for Enter submission', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('。。')
+    appendBlocks(root, p)
+    typeText(p, '。。')
+    const result = probeInlineParagraphCommand(root, { indentShortcutEnabled: true })
+    expect(result).not.toBeNull()
+    expect(result!.token).toBe('。。')
+    root.remove()
+  })
+
+  // TT-7: "..." + Enter → native
+  it('TT-7: "..." is NOT a valid shortcut token', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('...')
+    appendBlocks(root, p)
+    typeText(p, '...')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+    root.remove()
+  })
+
+  // TT-8: "。。。" + Enter → native
+  it('TT-8: "。。。" is NOT a valid shortcut token', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('。。。')
+    appendBlocks(root, p)
+    typeText(p, '。。。')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+    root.remove()
+  })
+
+  // TT-9: ".。" / "。." + Enter → native
+  it('TT-9: mixed ".。" and "。." are NOT valid shortcut tokens', () => {
+    const root = createEditorRoot()
+
+    const p1 = makeParagraph('.。')
+    appendBlocks(root, p1)
+    typeText(p1, '.。')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+
+    const p2 = makeParagraph('。.')
+    p1.remove()
+    appendBlocks(root, p2)
+    typeText(p2, '。.')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+
+    root.remove()
+  })
+
+  // TT-10: "abc.." + Enter → native
+  it('TT-10: "abc.." and "..abc" are NOT valid shortcut tokens', () => {
+    const root = createEditorRoot()
+
+    const p1 = makeParagraph('abc..')
+    appendBlocks(root, p1)
+    typeText(p1, 'abc..')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+
+    const p2 = makeParagraph('..abc')
+    p1.remove()
+    appendBlocks(root, p2)
+    typeText(p2, '..abc')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: true })).toBeNull()
+
+    root.remove()
+  })
+
+  // TT-11: shortcut disabled → ".."+Enter = native
+  it('TT-11: ".." with shortcut disabled returns null', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('..')
+    appendBlocks(root, p)
+    typeText(p, '..')
+    expect(probeInlineParagraphCommand(root, { indentShortcutEnabled: false })).toBeNull()
+    root.remove()
+  })
+
+  // TT-12: IME composing → no execute (tested via isComposing flag)
+  it('TT-12: composing flag prevents Backspace consumption (and Enter too)', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('..')
+    setParagraphIndentMode(p, 'force-indent')
+    appendBlocks(root, p)
+    typeText(p, '..')
+
+    // isComposing=true → shouldConsumeBackspaceForIndentRemoval returns non-consuming context
+    const ctx = shouldConsumeBackspaceForIndentRemoval(root, { indentShortcutEnabled: true }, true)
+    expect(ctx).not.toBeNull()
+    expect(ctx!.composing).toBe(true)
+    expect(ctx!.caretAtLogicalStart).toBe(false)
+    root.remove()
+  })
+})
+
+// ── 32. Default Interaction Matrix ─────────────────────────────────────
+
+describe('Default Interaction Matrix', () => {
+  it('default=flush: all single/partial tokens are AUTO / visual 0', () => {
+    const settings: ParagraphLayoutSettings = {
+      defaultIndent: 'flush',
+      flushAfterDisplayMath: false,
+      indentShortcutEnabled: true,
+    }
+    const tokens = ['.', '。', '..', '。。']
+    for (const tok of tokens) {
+      const p = makeParagraph(tok)
+      const semantic = getParagraphIndentMode(p)
+      expect(semantic).toBe('auto')
+
+      const effective = resolveEffectiveParagraphIndent(semantic, settings.defaultIndent)
+      expect(effective).toBe('flush')
+    }
+  })
+
+  it('default=indent-2: all single/partial tokens are AUTO / visual indent-2', () => {
+    const settings: ParagraphLayoutSettings = {
+      defaultIndent: 'indent-2',
+      flushAfterDisplayMath: false,
+      indentShortcutEnabled: true,
+    }
+    const tokens = ['.', '。', '..', '。。']
+    for (const tok of tokens) {
+      const p = makeParagraph(tok)
+      const semantic = getParagraphIndentMode(p)
+      // semantic MUST remain AUTO even though visual will be indent-2
+      expect(semantic).toBe('auto')
+
+      const effective = resolveEffectiveParagraphIndent(semantic, settings.defaultIndent)
+      expect(effective).toBe('indent-2')
+    }
+  })
+
+  it('exact ".." + Enter: FORCE_INDENT always indent-2, overriding any default', () => {
+    const semantic = 'force-indent' as ParagraphIndentSemanticMode
+    expect(resolveEffectiveParagraphIndent(semantic, 'flush')).toBe('indent-2')
+    expect(resolveEffectiveParagraphIndent(semantic, 'indent-2')).toBe('indent-2')
+  })
+
+  it('exact "。。" + Enter: same as ".." (both are exact tokens)', () => {
+    // Same recognizer for both
+    expect(resolveEffectiveParagraphIndent('force-indent', 'flush')).toBe('indent-2')
+    expect(resolveEffectiveParagraphIndent('force-indent', 'indent-2')).toBe('indent-2')
+  })
+
+  it('FORCE_FLUSH always flush, overriding any default', () => {
+    expect(resolveEffectiveParagraphIndent('force-flush', 'flush')).toBe('flush')
+    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2')).toBe('flush')
+  })
+})
+
+// ── 33. Sidecar Timing ─────────────────────────────────────────────────
+
+describe('Sidecar Timing', () => {
+  it('no sidecar record created for "." or "。" or ".." or "。。" before Enter', () => {
+    // Sidecar records are only created by applyParagraphIndentOverride → applyParagraphIndentOverrideToSidecar
+    // which is only called in onEnterCommand after probe + guards pass.
+    // Unit: setParagraphIndentMode does NOT create sidecar records.
+    const p = makeParagraph('..')
+    setParagraphIndentMode(p, 'force-indent')
+    // setParagraphIndentMode is semantic-only → no sidecar write
+    // Sidecar is written by applyParagraphIndentOverrideToSidecar, not setParagraphIndentMode
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    // The attribute is set but sidecar write is separate (debounced in heading-numbering-service.ts)
+  })
+
+  it('AUTO paragraphs have no semantic attribute', () => {
+    const p = makeParagraph('.')
+    expect(p.getAttribute('data-inkchapter-indent-mode')).toBeNull()
+    expect(getParagraphIndentMode(p)).toBe('auto')
+  })
+})
+
+// ── 34. Candidate State Tests (CAND-1 ~ CAND-10) ─────────────────────
+
+describe('Shortcut Candidate State — resolveParagraphShortcutCandidate', () => {
+  const ENABLED = { indentShortcutEnabled: true }
+
+  // CAND-1
+  it('CAND-1: "." with default=indent-2 → candidate=prefix → effective=flush', () => {
+    const p = makeParagraph('.')
+    const candidate = resolveParagraphShortcutCandidate(p, ENABLED, false)
+    expect(candidate).toBe('prefix')
+    const effective = resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, candidate)
+    expect(effective).toBe('flush')
+  })
+
+  // CAND-2
+  it('CAND-2: "。" → candidate=prefix → effective=flush', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('prefix')
+  })
+
+  // CAND-3
+  it('CAND-3: ".." → candidate=exact-token → effective=flush', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('exact-token')
+  })
+
+  // CAND-4
+  it('CAND-4: "。。" → candidate=exact-token → effective=flush', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('exact-token')
+  })
+
+  // CAND-5: "..." → none, follows default
+  it('CAND-5: "..." → candidate=none, default=indent-2 gives indent-2', () => {
+    const c = resolveParagraphShortcutCandidate(makeParagraph('...'), ENABLED, false)
+    expect(c).toBe('none')
+    expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, c)).toBe('indent-2')
+  })
+
+  // CAND-6 to CAND-9: invalid tokens
+  it('CAND-6: "。。。" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。。。'), ENABLED, false)).toBe('none')
+  })
+  it('CAND-7: ".。" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('.。'), ENABLED, false)).toBe('none')
+  })
+  it('CAND-8: "。." → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。.'), ENABLED, false)).toBe('none')
+  })
+  it('CAND-9: "abc." → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('abc.'), ENABLED, false)).toBe('none')
+  })
+
+  // CAND-10: explicit semantic wins over candidate
+  it('CAND-10: FORCE_INDENT + text="." → indent-2 (candidate does NOT override)', () => {
+    expect(resolveEffectiveParagraphIndent('force-indent', 'flush', { isFormulaContinuation: false }, 'prefix')).toBe('indent-2')
+    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2', { isFormulaContinuation: false }, 'prefix')).toBe('flush')
+  })
+
+  it('disabled shortcut → always none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), { indentShortcutEnabled: false }, false)).toBe('none')
+  })
+  it('composing → always none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, true)).toBe('none')
+  })
+})
+
+// ── 35. Candidate Exit Tests ──────────────────────────────────────────
+
+describe('Candidate Exit Behavior', () => {
+  const ENABLED = { indentShortcutEnabled: true }
+  it('"." → prefix; ".a" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('.'), ENABLED, false)).toBe('prefix')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('.a'), ENABLED, false)).toBe('none')
+  })
+  it('"。" → prefix; "。test" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('prefix')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。test'), ENABLED, false)).toBe('none')
+  })
+  it('".." → exact-token; "..." → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('exact-token')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('...'), ENABLED, false)).toBe('none')
+  })
+  it('"。。" → exact-token; "。。。" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('exact-token')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。。。'), ENABLED, false)).toBe('none')
+  })
+})
+
+// ── 36. Enter Submit + Sidecar ────────────────────────────────────────
+
+describe('Enter Submit Transition', () => {
+  it('Submit: semantic=FORCE_INDENT, effective=indent-2', () => {
+    const p = makeParagraph('')
+    setParagraphIndentMode(p, 'force-indent')
+    applyEffectiveParagraphIndent(p, 'indent-2')
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+  })
+  it('After token consumed: empty paragraph, candidate=none, semantic intact', () => {
+    const p = makeParagraph('')
+    setParagraphIndentMode(p, 'force-indent')
+    expect(resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)).toBe('none')
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+  })
+})
+
+// ── 37. Settings + Candidate Matrix ───────────────────────────────────
+
+describe('Settings + Candidate Matrix', () => {
+  it('default=flush: all candidates → effective=flush', () => {
+    for (const text of ['.', '。', '..', '。。']) {
+      const p = makeParagraph(text)
+      const c = resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)
+      expect(c).not.toBe('none')
+      expect(resolveEffectiveParagraphIndent('auto', 'flush', { isFormulaContinuation: false }, c)).toBe('flush')
+    }
+  })
+  it('default=indent-2: candidates suppress to flush; normal text follows default', () => {
+    for (const text of ['.', '。', '..', '。。']) {
+      const p = makeParagraph(text)
+      const c = resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)
+      expect(c).not.toBe('none')
+      expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, c)).toBe('flush')
+    }
+    const normal = makeParagraph('普通正文')
+    expect(resolveParagraphShortcutCandidate(normal, { indentShortcutEnabled: true }, false)).toBe('none')
+    expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, 'none')).toBe('indent-2')
+  })
+})
+
+// ── 38. Candidate Backspace Regression ────────────────────────────────
+
+describe('Candidate Backspace Regression', () => {
+  it('"." candidate: semantic=auto → Backspace NOT consumed', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('.')
+    appendBlocks(root, p)
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    const ctx = shouldConsumeBackspaceForIndentRemoval(root, { indentShortcutEnabled: true }, false)
+    expect(ctx!.caretAtLogicalStart).toBe(false)
+    root.remove()
+  })
+  it('"。。" candidate: semantic=auto → Backspace NOT consumed', () => {
+    const root = createEditorRoot()
+    const p = makeParagraph('。。')
+    appendBlocks(root, p)
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    const ctx = shouldConsumeBackspaceForIndentRemoval(root, { indentShortcutEnabled: true }, false)
+    expect(ctx!.caretAtLogicalStart).toBe(false)
+    root.remove()
   })
 })

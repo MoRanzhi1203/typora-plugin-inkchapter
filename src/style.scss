@@ -43,10 +43,17 @@
 }
 
 /* ── Paragraph indent ───────────────────────────────── */
-/* Force first-line indent 2em for paragraphs with the force-indent semantic marker. */
+/* Effective visual indent-2 projection class.
+   This is PURELY visual — NOT a semantic force-indent marker.
+   Semantic mode is stored in data-inkchapter-indent-mode only. */
 
-#write p.inkchapter-paragraph-indent-2 {
+#write p.inkchapter-paragraph-effective-indent-2 {
   text-indent: 2em;
+}
+
+/* Explicit flush — ensures computed 0 even with parent inheritance. */
+#write p.inkchapter-paragraph-effective-flush {
+  text-indent: 0;
 }
 
 /* ── Settings page: live preview ───────────────────────── */
