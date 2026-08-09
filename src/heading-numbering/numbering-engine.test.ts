@@ -1205,3 +1205,153 @@ describe('legacy withoutLevelOne compatibility', () => {
     expect(result[1].label).toBe('一、')
   })
 })
+
+// ── Drag/reorder: Physical/Slot remapping bug ──────────────────
+
+import {
+  moveSegmentToResolvedIndex,
+  normalizeContextualFormatAfterDrag,
+  checkDragInvariant,
+} from './format-drag-utils'
+
+describe('moveSegmentToResolvedIndex (pure move)', () => {
+  it('keeps length', () => {
+    const before = [1, 2, 3]
+    const after = moveSegmentToResolvedIndex(before, 0, 2)
+    expect(after.length).toBe(before.length)
+  })
+
+  it('keeps all elements (multiset)', () => {
+    const before = [1, 2, 3]
+    const after = moveSegmentToResolvedIndex(before, 0, 2)
+    expect([...after].sort()).toEqual([...before].sort())
+  })
+
+  it('changes only order', () => {
+    const before = [1, 2, 3]
+    const after = moveSegmentToResolvedIndex(before, 0, 2)
+    expect(after).toEqual([2, 3, 1])
+  })
+
+  it('no-op when fromIndex === targetIndex', () => {
+    const before = [1, 2, 3]
+    const after = moveSegmentToResolvedIndex(before, 1, 1)
+    expect(after).toEqual([1, 2, 3])
+  })
+})
+
+describe('normalizeContextualFormatAfterDrag with StyleSlot currentLevel', () => {
+  function makeRef(level: number, id?: string): ContextualFormatSegment {
+    return {
+      id: id ?? `r-${level}-${Math.random().toString(36).slice(2, 6)}`,
+      type: 'level-reference',
+      level: level as HeadingLevel,
+      appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' },
+    }
+  }
+
+  it('strict H4/S3: drag [S3,S1]→[S1,S3] keeps 2 segments, no S4', () => {
+    // strict H4 = physical 4, slot S3. Segments store StyleSlot.
+    const before: ContextualFormatSegment[] = [makeRef(3, 'self'), makeRef(1, 'parent')]
+    const moved = moveSegmentToResolvedIndex(before, 1, 0) // → [S1,S3]
+    const after = normalizeContextualFormatAfterDrag(moved, 3 as HeadingLevel, new Set(), 'arabic')
+    // currentLevel=3 (StyleSlot S3) — NOT physical 4
+
+    expect(after.length).toBe(2)
+    const levels = after.filter(s => s.type === 'level-reference').map(s => s.level)
+    expect(levels.sort()).toEqual([1, 3])
+    // No S4, no H5
+    expect(after.some(s => s.type === 'level-reference' && s.level === 4)).toBe(false)
+  })
+
+  it('currentLevel=4 (physical) creates S4/H5 — demonstrates the bug', () => {
+    // This is what the old code did: pass physical lv=4 as currentLevel
+    const before: ContextualFormatSegment[] = [makeRef(3, 'self'), makeRef(1, 'parent')]
+    const moved = moveSegmentToResolvedIndex(before, 1, 0)
+    const after = normalizeContextualFormatAfterDrag(moved, 4 as HeadingLevel, new Set(), 'arabic')
+    // BUG: currentLevel=4, segments have levels 1,3 → SELF not found → auto-create level 4
+
+    expect(after.length).toBe(3) // WRONG: should be 2
+    expect(after.some(s => s.type === 'level-reference' && s.level === 4)).toBe(true) // H5!
+  })
+
+  it('loose H4: drag keeps slot identity', () => {
+    // loose H4 = physical 4, slot S4
+    const before: ContextualFormatSegment[] = [makeRef(4, 'self'), makeRef(2, 'p2'), makeRef(1, 'p1')]
+    const moved = moveSegmentToResolvedIndex(before, 0, 2)
+    const after = normalizeContextualFormatAfterDrag(moved, 4 as HeadingLevel, new Set(), 'arabic')
+
+    expect(after.length).toBe(3)
+    const levels = after.filter(s => s.type === 'level-reference').map(s => s.level).sort()
+    expect(levels).toEqual([1, 2, 4])
+  })
+
+  it('loose H6/S6: drag keeps S6, no S7', () => {
+    // loose H6 = physical 6, slot S6
+    const before: ContextualFormatSegment[] = [makeRef(6, 'self'), makeRef(3, 'p3')]
+    const moved = moveSegmentToResolvedIndex(before, 1, 0)
+    const after = normalizeContextualFormatAfterDrag(moved, 6 as HeadingLevel, new Set(), 'arabic')
+
+    expect(after.length).toBe(2)
+    // No invalid S7
+    expect(after.some(s => s.type === 'level-reference' && (s.level as number) === 7)).toBe(false)
+  })
+})
+
+describe('drag invariant', () => {
+  function makeRef(level: number, id: string): ContextualFormatSegment {
+    return { id, type: 'level-reference', level: level as HeadingLevel,
+      appearance: { tokenStyle: 'arabic', prefix: '', suffix: '' } }
+  }
+
+  it('passes for valid reorder', () => {
+    const before: ContextualFormatSegment[] = [makeRef(3, 'self'), makeRef(1, 'p1')]
+    const after: ContextualFormatSegment[] = [makeRef(1, 'p1'), makeRef(3, 'self')]
+    const inv = checkDragInvariant(before, after)
+    expect(inv.countMatch).toBe(true)
+    expect(inv.idsMatch).toBe(true)
+    expect(inv.typesMatch).toBe(true)
+    expect(inv.levelsMatch).toBe(true)
+  })
+
+  it('fails on duplicate creation (count mismatch)', () => {
+    const before: ContextualFormatSegment[] = [makeRef(3, 'self'), makeRef(1, 'p1')]
+    const after: ContextualFormatSegment[] = [makeRef(1, 'p1'), makeRef(3, 'self'), makeRef(4, 'dup')]
+    const inv = checkDragInvariant(before, after)
+    expect(inv.countMatch).toBe(false)
+  })
+
+  it('fails on level set mismatch (slot changed)', () => {
+    const before: ContextualFormatSegment[] = [makeRef(3, 'self'), makeRef(1, 'p1')]
+    const after: ContextualFormatSegment[] = [makeRef(1, 'p1'), makeRef(4, 'self')] // S3→S4!
+    const inv = checkDragInvariant(before, after)
+    expect(inv.levelsMatch).toBe(false)
+  })
+
+  it('repeated drag 5x preserves invariant', () => {
+    let segments: ContextualFormatSegment[] = [makeRef(3, 'self'), makeRef(1, 'p1')]
+    for (let i = 0; i < 5; i++) {
+      const moved = moveSegmentToResolvedIndex(segments, 1, 0)
+      segments = normalizeContextualFormatAfterDrag(moved, 3 as HeadingLevel, new Set(), 'arabic')
+      expect(segments.length).toBe(2)
+      const inv = checkDragInvariant([makeRef(3, 'self'), makeRef(1, 'p1')], segments)
+      expect(inv.countMatch).toBe(true)
+      expect(inv.levelsMatch).toBe(true)
+    }
+  })
+
+  it('multiple parent refs drag stays valid', () => {
+    // strict H4/S3 with SELF S3 + REF S2 + REF S1
+    const self = makeRef(3, 'self'); const ref2 = makeRef(2, 'ref2'); const ref1 = makeRef(1, 'ref1')
+    const original: ContextualFormatSegment[] = [self, ref2, ref1]
+    // Drag ref1 to front
+    const moved = moveSegmentToResolvedIndex([self, ref2, ref1], 2, 0)
+    const after = normalizeContextualFormatAfterDrag(moved, 3 as HeadingLevel, new Set(), 'arabic')
+    const inv = checkDragInvariant(original, after)
+    expect(inv.countMatch).toBe(true)
+    expect(inv.idsMatch).toBe(true)
+    expect(inv.levelsMatch).toBe(true)
+    // No H5/H6
+    expect(after.some(s => s.type === 'level-reference' && s.level >= 4)).toBe(false)
+  })
+})
