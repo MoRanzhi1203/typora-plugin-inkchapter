@@ -240,6 +240,7 @@ export type RefreshReason =
   | 'toggle'
   | 'tail-refresh'
   | 'editor-mutation'
+  | 'paragraph-command-mutation'
   | 'focus-in'
   | 'editor-click'
   | 'editor-keyup'

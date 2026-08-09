@@ -105,6 +105,9 @@ export default class extends Plugin<InkChapterSettings> {
       reloadContent: (markdown: string) => {
         File.reloadContent(markdown, false, true, false, true)
       },
+      reloadContentPreservingUndo: (markdown: string) => {
+        File.reloadContent(markdown, false, false, false, true)
+      },
       writeDiagnosticFile: (filename: string, data: string) => {
         try {
           // Derive vault path from active file
@@ -248,6 +251,41 @@ export default class extends Plugin<InkChapterSettings> {
       scope: 'editor',
       callback: () => {
         this.numberingService?.setCurrentHeadingOverride('inherit')
+      },
+    })
+
+    // ── Paragraph Indent Diagnostic Commands (R32) ──
+
+    // Force indent current paragraph (diagnostic: bypasses shortcut producer)
+    this.registerCommand({
+      id: 'inkchapter.paragraph.force-indent-current',
+      title: '墨章：强制首行缩进当前段落（诊断）',
+      scope: 'editor',
+      callback: () => {
+        const ok = this.numberingService?.forceIndentCurrentParagraph('force-indent')
+        Notice.info(ok ? '已强制首行缩进当前段落' : '当前段落不支持强制缩进')
+      },
+    })
+
+    // Force flush current paragraph
+    this.registerCommand({
+      id: 'inkchapter.paragraph.force-flush-current',
+      title: '墨章：强制顶格当前段落',
+      scope: 'editor',
+      callback: () => {
+        const ok = this.numberingService?.forceIndentCurrentParagraph('force-flush')
+        Notice.info(ok ? '已强制顶格当前段落' : '当前段落不支持此操作')
+      },
+    })
+
+    // Restore auto indent for current paragraph
+    this.registerCommand({
+      id: 'inkchapter.paragraph.auto-indent-current',
+      title: '墨章：恢复当前段落自动缩进',
+      scope: 'editor',
+      callback: () => {
+        const ok = this.numberingService?.forceIndentCurrentParagraph('auto')
+        Notice.info(ok ? '已恢复自动缩进' : '当前段落不支持此操作')
       },
     })
 

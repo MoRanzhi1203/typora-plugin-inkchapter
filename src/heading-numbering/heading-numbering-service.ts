@@ -43,13 +43,29 @@ import type { OutlineToolbarCallbacks } from './outline-toolbar-controller'
 import * as logger from '../core/logger'
 import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
 import {
-  injectShortcutMarkerInMarkdown,
-  focusNewIndentParagraph,
   refreshParagraphIndentStyles,
+  applyParagraphIndent,
   getCurrentParagraphElement,
   isInExcludedContext,
+  canTriggerIndentShortcut,
   isCursorAtEnd,
+  setParagraphIndentMode,
+  probeParagraphIndentShortcut,
+  writeBlockProbeDiagnostic,
+  classifyEditorMutation,
+  resolveCurrentBlockFromSelection,
+  isContentBlock,
+  type ShortcutProbeResult,
 } from './paragraph-indent-manager'
+import {
+  loadParagraphLayout,
+  saveParagraphLayout,
+  createParagraphAnchor,
+  resolveParagraphAnchor,
+  updateParagraphAnchor,
+  collectContentParagraphs,
+  migrateLegacyIndentMarkers,
+} from './paragraph-layout-store'
 import {
   generateDocumentKey,
   deepCloneSettings,
@@ -77,6 +93,8 @@ export interface ServiceContext {
   getMarkdown?: () => string
   /** Optional: replace editor content with undo support. */
   reloadContent?: (markdown: string) => void
+  /** Optional: replace editor content preserving undo history (for shortcut commands). */
+  reloadContentPreservingUndo?: (markdown: string) => void
   /** Optional: write diagnostic data to a file (for DOM structure debugging). */
   writeDiagnosticFile?: (filename: string, data: string) => void
 }
@@ -116,7 +134,7 @@ export class HeadingNumberingService {
   // Scheduler
   private rafId: ReturnType<typeof requestAnimationFrame> | null = null
   private tailTimer: ReturnType<typeof setTimeout> | null = null
-  private pendingReason: RefreshReason = 'editor-input'
+  private pendingReasons = new Set<RefreshReason>()
 
   // State
   private lastSnapshot: HeadingSnapshot[] | null = null
@@ -124,6 +142,11 @@ export class HeadingNumberingService {
   private renderedGaps: string[] | null = null
   private isInComposition = false
   private mutationObserver: MutationObserver | null = null
+
+  // Paragraph command mutation: epoch counter for dedupe
+  private paragraphMutationEpoch = 0
+  /** Suppress paragraph command detection during plugin-authored reloads. */
+  private suppressParagraphCommandDetection = false
 
   // Render version: incremented on document switch to cancel stale async ops
   private renderVersion = 0
@@ -1503,15 +1526,55 @@ export class HeadingNumberingService {
 
   // ── Scheduler ──────────────────────────────────────────
 
+  /** Priority order for refresh reasons (higher = more important). */
+  private static readonly REASON_PRIORITY: Record<string, number> = {
+    'paragraph-command-mutation': 10,
+    'editor-mutation': 8,
+    'editor-input': 6,
+    'composition-end': 5,
+    'framework-edit': 5,
+    'editor-keyup': 3,
+    'editor-click': 3,
+    'focus-in': 2,
+    'decoration-repair': 1,
+    'tail-refresh': 1,
+  }
+
   private requestRefresh(reason: RefreshReason): void {
-    if (this.rafId !== null) {
-      return
-    }
-    this.pendingReason = reason
+    this.pendingReasons.add(reason)
+
+    // Dedupe: if already scheduled, just accumulate — don't schedule another RAF
+    if (this.rafId !== null) return
+
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null
-      this.doRefresh(this.pendingReason)
+
+      // Snapshot and clear pending reasons
+      const reasons = new Set(this.pendingReasons)
+      this.pendingReasons.clear()
+
+      this.doRefreshWithReasons(reasons)
     })
+  }
+
+  /** Compute primary reason and paragraph command flag, then call doRefresh. */
+  private doRefreshWithReasons(reasons: Set<RefreshReason>): void {
+    if (reasons.size === 0) return
+
+    const hasParagraphCommandMutation = reasons.has('paragraph-command-mutation')
+
+    // Compute primary reason with priority
+    let primaryReason: RefreshReason = 'editor-input'
+    let maxPriority = -1
+    for (const r of reasons) {
+      const p = HeadingNumberingService.REASON_PRIORITY[r] ?? 0
+      if (p > maxPriority) {
+        maxPriority = p
+        primaryReason = r
+      }
+    }
+
+    this.doRefresh(primaryReason, { hasParagraphCommandMutation })
   }
 
   private scheduleTail(reason: RefreshReason, ms: number): void {
@@ -1539,13 +1602,15 @@ export class HeadingNumberingService {
 
   // ── Core refresh ───────────────────────────────────────
 
-  private doRefresh(reason: RefreshReason): void {
+  private doRefresh(reason: RefreshReason, flags?: { hasParagraphCommandMutation?: boolean }): void {
     const startTime = performance.now()
+    const hasParagraphCommand = flags?.hasParagraphCommandMutation ?? false
 
     recordRuntimeAudit('doRefresh:start', {
       documentKey: this.getDocKey(),
       renderVersion: this.renderVersion,
       refreshReason: reason,
+      hasParagraphCommand,
     })
 
     try {
@@ -1555,6 +1620,13 @@ export class HeadingNumberingService {
 
       // Apply heading layouts (always, independent of numbering state)
       this.applyHeadingLayouts()
+
+      // ── Paragraph indent shortcut probe ──
+      // Must run BEFORE refreshParagraphIndents so the semantic state
+      // (force-indent class) is picked up by the immediate refresh cycle.
+      // Only paragraph-command-mutation refreshes trigger the shortcut;
+      // initial load, document switch, selection-only, full rerender are excluded.
+      this.probeAndConsumeIndentShortcut(root, reason, hasParagraphCommand)
 
       // Apply paragraph indent styles (always)
       this.refreshParagraphIndents()
@@ -1725,6 +1797,292 @@ export class HeadingNumberingService {
     if (!root) return
     const settings = this.getParagraphLayoutSettings()
     refreshParagraphIndentStyles(root, settings)
+  }
+
+  /**
+   * Paragraph Indent Shortcut Probe — attached to existing refresh pipeline.
+   *
+   * Strategy (R31): Instead of building another independent event listener
+   * or MutationObserver, this probe hooks into the existing proven
+   * `input event → requestRefresh('editor-input') → doRefresh` pipeline
+   * that title numbering and paragraph layout already use successfully.
+   *
+   * The probe only checks the local caret area (current block B + previous
+   * block A) — no full-document scan.
+   *
+   * Branch diagnosis:
+   *   A = refresh pipeline didn't trigger (reason filter)
+   *   B = selection can't resolve current block
+   *   C = current block found, previous block structure wrong
+   *   D = A/B correct but command filter/setting/dedupe blocked
+   *   E = command recognized, block deleted, Markdown synced
+   *   F = A consumed, B has semantic force-indent
+   */
+  private probeAndConsumeIndentShortcut(
+    root: HTMLElement,
+    reason: RefreshReason,
+    hasParagraphCommand: boolean,
+  ): void {
+    // Development: output runtime block probe on first content-edit refresh
+    if (reason === 'editor-input') {
+      writeBlockProbeDiagnostic(root, reason, this.ctx.writeDiagnosticFile)
+    }
+
+    const settings = this.getParagraphLayoutSettings()
+    const result = probeParagraphIndentShortcut(root, reason, settings, {
+      hasParagraphCommandMutation: hasParagraphCommand,
+    })
+    if (!result) return
+
+    const { commandBlock, targetBlock, token } = result
+    console.info(`[InkChapter] Shortcut detected: "${token}" → force-indent`, {
+      commandBlockTag: commandBlock.tagName,
+      targetBlockTag: targetBlock.tagName,
+    })
+
+    // ── Step 1: Immediate Runtime ──
+    // User must immediately see 2em. No reload.
+    setParagraphIndentMode(targetBlock, 'force-indent')
+    refreshParagraphIndentStyles(root, this.getParagraphLayoutSettings())
+
+    // ── Step 2: Persist to sidecar metadata ──
+    // Write force-indent override to plugin-owned sidecar.
+    // Does NOT modify user Markdown.
+    this.applyParagraphIndentOverrideToSidecar(targetBlock, 'force-indent')
+
+    // ── Step 3: Delete command paragraph ──
+    // Remove the ".." / "。。" block from the document.
+    this.consumeIndentCommandBlock(commandBlock)
+
+    console.info('[InkChapter] Shortcut consumed — sidecar persistence')
+  }
+
+  /**
+   * Unified entry point: apply paragraph indent override.
+   * Handles both runtime semantic state and sidecar persistence.
+   * Used by both shortcut and manual command.
+   */
+  applyParagraphIndentOverride(
+    paragraph: HTMLElement,
+    mode: 'force-indent' | 'force-flush' | 'auto',
+  ): void {
+    // Set runtime semantic state immediately
+    setParagraphIndentMode(paragraph, mode)
+
+    // Refresh layout for visual effect
+    const root = this.adapter.detectEditorRoot()
+    if (root) {
+      refreshParagraphIndentStyles(root, this.getParagraphLayoutSettings())
+    }
+
+    // Persist to sidecar
+    this.applyParagraphIndentOverrideToSidecar(paragraph, mode)
+  }
+
+  /** Persist override to sidecar metadata file. */
+  private applyParagraphIndentOverrideToSidecar(
+    paragraph: HTMLElement,
+    _mode: 'force-indent' | 'force-flush' | 'auto',
+  ): void {
+    const docKey = this.getDocumentKey()
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    if (!docKey) return
+
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+
+    const allParas = collectContentParagraphs(root)
+    const paraIndex = allParas.indexOf(paragraph)
+    if (paraIndex < 0) return
+
+    const anchor = createParagraphAnchor(paraIndex, allParas)
+    const isTemporary = !paragraph.textContent?.trim()
+
+    const existing = loadParagraphLayout(docKey)
+    const overrides = existing?.paragraphOverrides ?? []
+
+    // Generate unique id
+    const id = `indent-${Date.now()}-${overrides.length}`
+
+    // Remove if mode is 'auto'
+    if (_mode === 'auto') {
+      const filtered = overrides.filter(o => {
+        // Try to match by ordinal proximity if textHash unavailable
+        return Math.abs(o.anchor.lastKnownOrdinal - paraIndex) > 1 || o.anchor.textHash !== anchor.textHash
+      })
+      saveParagraphLayout(docKey, docPath, filtered)
+      return
+    }
+
+    overrides.push({
+      id,
+      mode: _mode,
+      anchor,
+      temporary: isTemporary,
+    })
+    saveParagraphLayout(docKey, docPath, overrides)
+  }
+
+  /** Safely delete the command block paragraph from the editor. */
+  private consumeIndentCommandBlock(block: HTMLElement): void {
+    // Strategy: Try Typora-compatible deletion first via selection + execCommand.
+    // Fall back to targeted Markdown reload if needed.
+    const sel = window.getSelection()
+    if (sel) {
+      const range = document.createRange()
+      range.selectNodeContents(block)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      try {
+        const ok = document.execCommand('delete', false)
+        if (ok) return // Successful — Typora should sync
+      } catch { /* fall through */ }
+    }
+
+    // Fallback: targeted Markdown reload — remove just the command line
+    const markdown = this.ctx.getMarkdown?.()
+    if (!markdown) {
+      // Last resort: DOM removal
+      block.remove()
+      return
+    }
+
+    const lines = markdown.split('\n')
+    const blockText = (block.textContent ?? '').trim()
+
+    // Find the line matching the command block text
+    let cmdLineIdx = -1
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].trim() === blockText) {
+        cmdLineIdx = i
+        break
+      }
+    }
+
+    if (cmdLineIdx < 0) {
+      block.remove()
+      return
+    }
+
+    // Remove command line + trailing blank lines
+    const newLines = [...lines.slice(0, cmdLineIdx)]
+    // Skip trailing blank lines after command
+    let j = cmdLineIdx + 1
+    while (j < lines.length && lines[j].trim() === '') j++
+    newLines.push(...lines.slice(j))
+    const cleanMarkdown = newLines.join('\n')
+
+    this.suppressParagraphCommandDetection = true
+    try {
+      if (this.ctx.reloadContentPreservingUndo) {
+        this.ctx.reloadContentPreservingUndo(cleanMarkdown)
+      } else if (this.ctx.reloadContent) {
+        this.ctx.reloadContent(cleanMarkdown)
+      }
+      // Re-apply sidecar overrides after reload
+      setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 60)
+    } finally {
+      this.suppressParagraphCommandDetection = false
+    }
+  }
+
+  /** Reconstruct runtime force-indent projections from sidecar metadata. */
+  reconstructParagraphOverridesFromSidecar(): void {
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+
+    const data = loadParagraphLayout(docKey)
+    if (!data || data.paragraphOverrides.length === 0) return
+
+    const root = this.adapter.detectEditorRoot()
+    if (!root) return
+
+    const allParas = collectContentParagraphs(root)
+
+    // First, run legacy migration if markers exist in Markdown
+    this.migrateLegacyMarkersIfPresent()
+
+    for (const override of data.paragraphOverrides) {
+      if (override.mode !== 'force-indent') continue
+      const resolved = resolveParagraphAnchor(override.anchor, allParas)
+      if (resolved) {
+        const para = allParas[resolved.index]
+        if (para) {
+          setParagraphIndentMode(para, 'force-indent')
+          // Auto-repair anchor
+          const updated = updateParagraphAnchor(override.anchor, resolved.index, allParas)
+          override.anchor = updated
+          override.temporary = !para.textContent?.trim()
+        }
+      }
+    }
+
+    // Save repaired anchors
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    saveParagraphLayout(docKey, docPath, data.paragraphOverrides)
+  }
+
+  /** Migrate legacy HTML comment markers to sidecar if present. */
+  private migrateLegacyMarkersIfPresent(): void {
+    const markdown = this.ctx.getMarkdown?.()
+    if (!markdown) return
+
+    const { cleanMarkdown, overrides, migrated } = migrateLegacyIndentMarkers(markdown)
+    if (!migrated) return
+
+    // Merge with existing sidecar
+    const docKey = this.getDocumentKey()
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    if (!docKey) return
+
+    const existing = loadParagraphLayout(docKey)
+    const existingOverrides = existing?.paragraphOverrides ?? []
+    const merged = [...existingOverrides, ...overrides]
+    saveParagraphLayout(docKey, docPath, merged)
+
+    // Reload with clean Markdown (no markers)
+    this.suppressParagraphCommandDetection = true
+    try {
+      if (this.ctx.reloadContentPreservingUndo) {
+        this.ctx.reloadContentPreservingUndo(cleanMarkdown)
+      } else if (this.ctx.reloadContent) {
+        this.ctx.reloadContent(cleanMarkdown)
+      }
+    } finally {
+      this.suppressParagraphCommandDetection = false
+    }
+
+    console.info(`[InkChapter] Migrated ${overrides.length} legacy marker(s) to sidecar`)
+  }
+
+  // ── Manual Semantic Diagnostic Command ──────────────────
+
+  /**
+   * Force-indent the paragraph at the current selection.
+   *
+   * This is a diagnostic entry point that completely bypasses the
+   * shortcut producer (mutation observer, command token, Enter).
+   * It directly tests: selection → resolveBlock → semantic setter → layout.
+   *
+   * If this command works but .. + Enter doesn't, the problem is
+   * in the shortcut producer chain, not the semantic/render layer.
+   *
+   * Supports three modes via `setParagraphIndentMode`:
+   *   'force-indent' | 'force-flush' | 'auto'
+   */
+  forceIndentCurrentParagraph(mode: 'force-indent' | 'force-flush' | 'auto' = 'force-indent'): boolean {
+    const root = this.adapter.detectEditorRoot()
+    if (!root) return false
+
+    const block = resolveCurrentBlockFromSelection(root)
+    if (!block) return false
+
+    if (!isContentBlock(block)) return false
+
+    // Use unified entry point — handles both runtime semantic and sidecar persistence
+    this.applyParagraphIndentOverride(block, mode)
+
+    return true
   }
 
   /** Get the effective heading layouts for the current document. */
@@ -1916,44 +2274,35 @@ export class HeadingNumberingService {
     this.disconnectObserver()
 
     this.mutationObserver = new MutationObserver((mutations) => {
-      let foundNewHeading = false
+      // ── Use classifier to determine mutation type ──
+      const classification = classifyEditorMutation(mutations, root, {
+        suppressParagraphDetection: this.suppressParagraphCommandDetection,
+      })
 
-      for (const m of mutations) {
-        // Check added nodes
-        for (let i = 0; i < m.addedNodes.length; i++) {
-          const node = m.addedNodes[i]
-          if (node instanceof HTMLElement) {
-            if (this.isHeadingOrContainsHeading(node)) {
-              this.requestRefresh('editor-mutation')
-              foundNewHeading = true
-            }
-          }
-        }
-
-        // Check removed nodes
-        for (let i = 0; i < m.removedNodes.length; i++) {
-          const node = m.removedNodes[i]
-          if (node instanceof HTMLElement) {
-            if (this.isHeadingOrContainsHeading(node)) {
-              this.requestRefresh('editor-mutation')
-              return
-            }
-          }
-        }
-
-        // Check characterData (text content change) on heading ancestors
-        if (m.type === 'characterData' && m.target.parentElement) {
-          const ancestor = m.target.parentElement.closest('h1, h2, h3, h4, h5, h6')
-          if (ancestor && root.contains(ancestor)) {
-            this.requestRefresh('editor-mutation')
-            return
-          }
-        }
+      // Heading structural change → editor-mutation
+      if (classification.headingMutation) {
+        this.requestRefresh('editor-mutation')
       }
 
-      // Post-hoc enforcement: check for out-of-range headings created by Typora
-      if (foundNewHeading) {
-        this.levelRangeEnforcer.enforceAfterMutation()
+      // Small paragraph structural change → paragraph-command-mutation
+      // Only when not suppressed (plugin-authored reloads) and not large batch
+      if (classification.paragraphCommandCandidate && !classification.largeBatch) {
+        this.paragraphMutationEpoch++
+        this.requestRefresh('paragraph-command-mutation')
+      }
+
+      // Post-hoc enforcement: check for out-of-range headings
+      if (classification.headingMutation) {
+        // Check added nodes for new headings that need enforcement
+        for (const m of mutations) {
+          for (let i = 0; i < m.addedNodes.length; i++) {
+            const node = m.addedNodes[i]
+            if (node instanceof HTMLElement && this.isHeadingOrContainsHeading(node)) {
+              this.levelRangeEnforcer.enforceAfterMutation()
+              break
+            }
+          }
+        }
       }
     })
 
@@ -2032,52 +2381,8 @@ export class HeadingNumberingService {
     return el.querySelector('h1, h2, h3, h4, h5, h6') !== null
   }
 
-  /** Handle paragraph indent shortcut: .. / 。。 + Enter → force-indent-2 paragraph. */
-  private handleParagraphIndentShortcut(e: KeyboardEvent): void {
-    if (e.key !== 'Enter') return
-
-    // Guard: must not be in composition (IME)
-    if (this.isInComposition) return
-
-    // Guard: shortcut must be enabled
-    const settings = this.getParagraphLayoutSettings()
-    if (!settings.indentShortcutEnabled) return
-
-    // Guard: must be in a valid context (not in code, math, list, quote, table, footnote)
-    if (!isCursorAtEnd()) return
-
-    const paragraph = getCurrentParagraphElement()
-    if (!paragraph) return
-    if (isInExcludedContext(paragraph)) return
-
-    // Guard: content must be exactly ".." or "。。"
-    const text = paragraph.textContent?.trim() ?? ''
-    if (text !== '..' && text !== '。。') {
-
-      return
-    }
-
-    e.preventDefault()
-    e.stopPropagation()
-
-    // Get Markdown source and inject the indent marker
-    const md = this.ctx.getMarkdown?.() ?? ''
-    const newMd = injectShortcutMarkerInMarkdown(md)
-    if (!newMd) return
-
-    // Reload content with the marker injected
-    this.ctx.reloadContent?.(newMd)
-
-    // After reload, find and focus the new paragraph
-    // Use microtask to ensure DOM is updated
-    queueMicrotask(() => {
-      const root = this.adapter.detectEditorRoot()
-      if (root) {
-        focusNewIndentParagraph(root)
-      }
-      this.requestRefresh('editor-input')
-    })
-  }
+  /** Indent shortcut: MutationObserver on editor root for childList changes. */
+  private indentObserver: MutationObserver | null = null
 
   // ── Editor binding ─────────────────────────────────────
 
@@ -2141,12 +2446,114 @@ export class HeadingNumberingService {
     root.addEventListener('keyup', onKeyUp, { passive: true })
     this.editorRootDisposables.add(() => root.removeEventListener('keyup', onKeyUp))
 
-    // Paragraph indent shortcut: .. / 。。 + Enter → force-indent-2
-    const onEnterKey = (e: KeyboardEvent): void => {
-      this.handleParagraphIndentShortcut(e)
+    // ── Indent shortcut: DISABLED (R31) ──
+    // The old standalone MutationObserver approach has been retired in favor
+    // of the pipeline-integrated probe in probeAndConsumeIndentShortcut(),
+    // which hooks into the proven input→requestRefresh→doRefresh pipeline.
+    // this.bindIndentCommandObserver(root)
+  }
+
+  /** Bind MutationObserver to detect and process indent shortcut commands. */
+  private bindIndentCommandObserver(root: HTMLElement): void {
+    // Ensure no duplicate observer
+    if (this.indentObserver) {
+      this.indentObserver.disconnect()
+      this.indentObserver = null
     }
-    root.addEventListener('keydown', onEnterKey, true)
-    this.editorRootDisposables.add(() => root.removeEventListener('keydown', onEnterKey, true))
+
+    const settings = this.getParagraphLayoutSettings()
+    if (!settings.indentShortcutEnabled) return
+
+    // Recursion guard: prevent observer callback from triggering itself
+    let observerActive = false
+
+    const observer = new MutationObserver((mutations: MutationRecord[]) => {
+      if (observerActive) return
+      observerActive = true
+      try {
+        this.processIndentCommandMutations(mutations, root)
+      } finally {
+        observerActive = false
+      }
+    })
+
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+    })
+
+    this.indentObserver = observer
+    this.editorRootDisposables?.add(() => {
+      observer.disconnect()
+      if (this.indentObserver === observer) this.indentObserver = null
+    })
+  }
+
+  /** Process childList mutations to detect indent command pattern. */
+  private processIndentCommandMutations(mutations: MutationRecord[], root: HTMLElement): void {
+    const settings = this.getParagraphLayoutSettings()
+    if (!settings.indentShortcutEnabled) return
+
+    // Accumulate added paragraphs (may be multiple in one batch)
+    const addedParagraphs: HTMLParagraphElement[] = []
+
+    for (const mutation of mutations) {
+      // Skip large mutations (paste, document load)
+      if (mutation.addedNodes.length > 20) continue
+
+      for (let i = 0; i < mutation.addedNodes.length; i++) {
+        const node = mutation.addedNodes[i]
+        if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'P') {
+          addedParagraphs.push(node as HTMLParagraphElement)
+        }
+      }
+    }
+
+    if (addedParagraphs.length === 0) return
+    // Only process small-scale edits (not paste/document load)
+    if (addedParagraphs.length > 5) return
+
+    for (const newPara of addedParagraphs) {
+      // Guard: new paragraph must be inside editor root
+      if (!root.contains(newPara)) continue
+
+      // Guard: must be a plain paragraph (not in heading/list/code context)
+      if (isInExcludedContext(newPara)) continue
+
+      // Guard: must have a previous sibling that is also a paragraph
+      const prevSibling = newPara.previousElementSibling
+      if (!prevSibling || prevSibling.tagName !== 'P') continue
+
+      // Guard: previous sibling must contain exactly ".." or "。。"
+      const prevText = (prevSibling.textContent ?? '').trim()
+      if (prevText !== '..' && prevText !== '。。') continue
+
+      // Guard: previous sibling must be in a valid context (not code, heading, etc.)
+      if (isInExcludedContext(prevSibling)) continue
+
+      // Guard: previous sibling must not have other inline content
+      // (already handled by prevText check: only ".." or "。。")
+
+      // Guard: caret/selection should be in the new paragraph
+      const sel = window.getSelection()
+      if (sel?.rangeCount && sel.getRangeAt(0).startContainer) {
+        const selNode = sel.getRangeAt(0).startContainer
+        if (!newPara.contains(selNode)) {
+          // Selection not in new paragraph — skip this mutation
+          continue
+        }
+      }
+
+      // ── Command recognized: consume marker paragraph, force-indent target ──
+      prevSibling.remove()
+
+      // Apply force-indent to the new paragraph
+      applyParagraphIndent(newPara, '2em')
+
+      // One command per mutation batch is sufficient
+      this.requestRefresh('editor-input')
+      break
+    }
   }
 
   /** Detach editor root listeners (called on root change). */
@@ -2154,6 +2561,10 @@ export class HeadingNumberingService {
     if (this.editorRootDisposables) {
       this.editorRootDisposables.dispose()
       this.editorRootDisposables = null
+    }
+    if (this.indentObserver) {
+      this.indentObserver.disconnect()
+      this.indentObserver = null
     }
     this.boundEditorRoot = null
   }
@@ -2187,6 +2598,8 @@ export class HeadingNumberingService {
           this.outlineToolbar.setDocumentKey(docKey ?? '')
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
+          // Reconstruct paragraph indent overrides from sidecar after DOM settles
+          setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 100)
         }
       }),
     )
@@ -2224,6 +2637,8 @@ export class HeadingNumberingService {
           }
           this.requestRefresh('file-open')
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
+          // Reconstruct sidecar overrides
+          setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 120)
         })
         if (this.fileOpenRetryTimer !== null) clearTimeout(this.fileOpenRetryTimer)
         this.fileOpenRetryTimer = setTimeout(() => {
