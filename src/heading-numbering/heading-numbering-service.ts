@@ -65,6 +65,7 @@ import {
   updateParagraphAnchor,
   collectContentParagraphs,
   migrateLegacyIndentMarkers,
+  type ParagraphIndentOverrideRecord,
 } from './paragraph-layout-store'
 import {
   generateDocumentKey,
@@ -147,6 +148,11 @@ export class HeadingNumberingService {
   private paragraphMutationEpoch = 0
   /** Suppress paragraph command detection during plugin-authored reloads. */
   private suppressParagraphCommandDetection = false
+
+  // ── In-memory Override Registry ──────────────────────
+  // Mirrors sidecar records but updates immediately (no debounce for reads).
+  // Source of truth for rehydration; sidecar is the persistent copy.
+  private inMemoryOverrides = new Map<string, ParagraphIndentOverrideRecord[]>()
 
   // Render version: incremented on document switch to cancel stale async ops
   private renderVersion = 0
@@ -1621,6 +1627,12 @@ export class HeadingNumberingService {
       // Apply heading layouts (always, independent of numbering state)
       this.applyHeadingLayouts()
 
+      // ── Rehydrate explicit paragraph overrides before layout refresh ──
+      // Normal Enter / paragraph split destroys HTMLElement identity.
+      // Rehydrate force-indent from in-memory registry BEFORE refreshParagraphIndentStyles
+      // so explicit overrides survive DOM rebuild.
+      this.rehydrateParagraphIndentOverrides(root)
+
       // Apply paragraph indent styles (always)
       this.refreshParagraphIndents()
 
@@ -1874,17 +1886,104 @@ export class HeadingNumberingService {
     if (paraIndex < 0) return
     const anchor = createParagraphAnchor(paraIndex, allParas)
     const isTemporary = !paragraph.textContent?.trim()
-    const existing = loadParagraphLayout(docKey)
-    const overrides = existing?.paragraphOverrides ?? []
-    const id = `indent-${Date.now()}-${overrides.length}`
+    const overrides = this.inMemoryOverrides.get(docKey) ?? []
+    const id = overrides.length > 0 ? overrides[overrides.length - 1].id : `indent-${Date.now()}-0`
+
     if (_mode === 'auto') {
       const filtered = overrides.filter(o =>
-        Math.abs(o.anchor.lastKnownOrdinal - paraIndex) > 1 || o.anchor.textHash !== anchor.textHash)
-      saveParagraphLayout(docKey, docPath, filtered)
+        o.id !== id && (Math.abs(o.anchor.lastKnownOrdinal - paraIndex) > 1 || o.anchor.textHash !== anchor.textHash))
+      this.inMemoryOverrides.set(docKey, filtered)
+      this.scheduleSidecarWrite(docKey, docPath, filtered)
       return
     }
-    overrides.push({ id, mode: _mode, anchor, temporary: isTemporary })
-    saveParagraphLayout(docKey, docPath, overrides)
+
+    // Update existing record or create new one (maintain stable record id)
+    const existing = overrides.find(o => o.anchor.lastKnownOrdinal === paraIndex && o.temporary)
+    if (existing) {
+      existing.mode = _mode
+      existing.anchor = anchor
+      existing.temporary = isTemporary
+    } else {
+      overrides.push({ id: `indent-${Date.now()}-${overrides.length}`, mode: _mode, anchor, temporary: isTemporary })
+    }
+    this.inMemoryOverrides.set(docKey, [...overrides])
+    this.scheduleSidecarWrite(docKey, docPath, overrides)
+  }
+
+  private sidecarWriteTimer: ReturnType<typeof setTimeout> | null = null
+  private sidecarWritePending: { docKey: string; docPath: string; overrides: ParagraphIndentOverrideRecord[] } | null = null
+
+  private scheduleSidecarWrite(docKey: string, docPath: string, overrides: ParagraphIndentOverrideRecord[]): void {
+    this.sidecarWritePending = { docKey, docPath, overrides }
+    if (this.sidecarWriteTimer !== null) clearTimeout(this.sidecarWriteTimer)
+    this.sidecarWriteTimer = setTimeout(() => {
+      this.sidecarWriteTimer = null
+      const pending = this.sidecarWritePending
+      if (pending) {
+        this.sidecarWritePending = null
+        saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
+      }
+    }, 200)
+  }
+
+  /** Flush pending sidecar writes (call before document switch). */
+  private flushSidecarWrite(): void {
+    if (this.sidecarWriteTimer !== null) {
+      clearTimeout(this.sidecarWriteTimer)
+      this.sidecarWriteTimer = null
+    }
+    const pending = this.sidecarWritePending
+    if (pending) {
+      this.sidecarWritePending = null
+      saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
+    }
+  }
+
+  /**
+   * Rehydrate explicit force-indent overrides from in-memory registry.
+   * Called before every refreshParagraphIndentStyles so that explicit
+   * overrides survive Normal Enter / paragraph split / DOM rebuild.
+   */
+  private rehydrateParagraphIndentOverrides(root: HTMLElement): void {
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+    const overrides = this.inMemoryOverrides.get(docKey)
+    if (!overrides || overrides.length === 0) return
+
+    const allParas = collectContentParagraphs(root)
+    if (allParas.length === 0) return
+
+    // First, promote temporary anchors if text has been typed
+    for (const o of overrides) {
+      if (!o.temporary || o.mode !== 'force-indent') continue
+      const resolved = resolveParagraphAnchor(o.anchor, allParas)
+      if (resolved) {
+        const para = allParas[resolved.index]
+        if (para && para.textContent?.trim()) {
+          // Text entered — promote to stable anchor
+          const newAnchor = createParagraphAnchor(resolved.index, allParas)
+          o.anchor = newAnchor
+          o.temporary = false
+        }
+      }
+    }
+
+    // Rehydrate: set semantic state on matching DOM elements
+    for (const o of overrides) {
+      if (o.mode !== 'force-indent') continue
+      const resolved = resolveParagraphAnchor(o.anchor, allParas)
+      if (resolved) {
+        const para = allParas[resolved.index]
+        if (para && !para.classList.contains('inkchapter-paragraph-indent-2')) {
+          setParagraphIndentMode(para, 'force-indent')
+        }
+        // Auto-repair anchor (refresh ordinals/neighbors after DOM changes)
+        if (resolved.confidence === 'exact' || resolved.confidence === 'high') {
+          const updated = updateParagraphAnchor(o.anchor, resolved.index, allParas)
+          o.anchor = updated
+        }
+      }
+    }
   }
 
   /** Reconstruct runtime force-indent projections from sidecar metadata. */
@@ -1893,7 +1992,13 @@ export class HeadingNumberingService {
     if (!docKey) return
 
     const data = loadParagraphLayout(docKey)
-    if (!data || data.paragraphOverrides.length === 0) return
+    if (!data || data.paragraphOverrides.length === 0) {
+      this.inMemoryOverrides.set(docKey, [])
+      return
+    }
+
+    // Populate in-memory registry from sidecar
+    this.inMemoryOverrides.set(docKey, data.paragraphOverrides.map(o => ({ ...o })))
 
     const root = this.adapter.detectEditorRoot()
     if (!root) return
@@ -2518,6 +2623,7 @@ export class HeadingNumberingService {
     // Editor DOM load
     this.store.add(
       ctx.onEditorEvent('load', (editorEl: unknown) => {
+        this.flushSidecarWrite()
         this.loadDocumentContext()
         const docKey = this.getDocumentKey()
         recordRuntimeAudit('editor:load', { documentKey: docKey ?? 'none', settingsSource: this.docContext.source })
@@ -2546,6 +2652,7 @@ export class HeadingNumberingService {
     // File open — load document context, bump version, reinit outline
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
+        this.flushSidecarWrite()
         const version = ++this.renderVersion
         this.loadDocumentContext()
         const newDocKey = this.getDocumentKey()

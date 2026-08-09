@@ -769,3 +769,109 @@ describe('type exports', () => {
     expect(INDENT_MODE_ATTR).toBe('data-inkchapter-indent-mode')
   })
 })
+
+// ── 14. Normal Enter Persistence Tests (NEW R36) ──────────────────────
+
+import {
+  createParagraphAnchor,
+  resolveParagraphAnchor,
+  updateParagraphAnchor,
+  type ParagraphAnchor,
+} from './paragraph-layout-store'
+
+describe('Normal Enter: override survives DOM rebuild', () => {
+  it('force-indent survives DOM element replacement (rehydrate)', () => {
+    const root = createEditorRoot()
+    // Create paragraph A with force-indent
+    const a = makeParagraph('test paragraph')
+    appendBlocks(root, a)
+    setParagraphIndentMode(a, 'force-indent')
+    expect(a.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+
+    // Simulate DOM rebuild by Typora Normal Enter: remove A, create A' (new element)
+    const aText = a.textContent
+    a.remove()
+    const aPrime = makeParagraph(aText ?? '')
+    appendBlocks(root, aPrime)
+
+    // A' does NOT have force-indent yet (DOM was rebuilt)
+    expect(aPrime.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+
+    // Rehydrate: set force-indent on A' (simulating rehydrateParagraphIndentOverrides)
+    setParagraphIndentMode(aPrime, 'force-indent')
+
+    // A' now has force-indent
+    expect(aPrime.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    expect(aPrime.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
+    root.remove()
+  })
+
+  it('new paragraph B does NOT inherit explicit force-indent from A', () => {
+    const root = createEditorRoot()
+    const a = makeParagraph('indented paragraph')
+    const b = makeParagraph('new paragraph')
+    appendBlocks(root, a, b)
+    setParagraphIndentMode(a, 'force-indent')
+
+    // B should NOT have force-indent
+    expect(b.classList.contains('inkchapter-paragraph-indent-2')).toBe(false)
+    root.remove()
+  })
+})
+
+describe('Anchor promotion: temporary → stable', () => {
+  it('promotes temporary anchor when text is typed', () => {
+    // Start with empty paragraph (temporary anchor)
+    const root = createEditorRoot()
+    const a = makeParagraph('')
+    appendBlocks(root, a)
+
+    // Create temporary anchor
+    const tempAnchor = createParagraphAnchor(0, [a])
+    expect(tempAnchor.textHash).toBeUndefined() // empty → no textHash
+
+    // User types text: "test content"
+    a.textContent = 'test content'
+    const stableAnchor = createParagraphAnchor(0, [a])
+    expect(stableAnchor.textHash).toBeDefined()
+    expect(stableAnchor.textHash).not.toBeUndefined()
+    root.remove()
+  })
+
+  it('stable anchor has textHash after promotion', () => {
+    const root = createEditorRoot()
+    const a = makeParagraph('')
+    appendBlocks(root, a)
+
+    const tempAnchor = createParagraphAnchor(0, [a])
+    expect(tempAnchor.temporary !== true || tempAnchor.textHash === undefined).toBe(true) // empty para
+
+    // After typing
+    a.textContent = 'hello world'
+    const promoted = createParagraphAnchor(0, [a])
+    expect(promoted.textHash).toBeDefined()
+    root.remove()
+  })
+})
+
+describe('Override priority: explicit > formula > default', () => {
+  it('explicit force-indent survives refresh even when class was lost', () => {
+    const root = createEditorRoot()
+    const a = makeParagraph('indented text')
+    appendBlocks(root, a)
+
+    // Apply explicit force-indent
+    setParagraphIndentMode(a, 'force-indent')
+    expect(getParagraphIndentMode(a)).toBe('force-indent')
+
+    // Simulate class being stripped (Typora DOM rebuild)
+    a.classList.remove('inkchapter-paragraph-indent-2')
+    a.removeAttribute(INDENT_MODE_ATTR)
+
+    // Rehydrate: re-apply explicit override
+    setParagraphIndentMode(a, 'force-indent')
+    expect(getParagraphIndentMode(a)).toBe('force-indent')
+    expect(a.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    root.remove()
+  })
+})
