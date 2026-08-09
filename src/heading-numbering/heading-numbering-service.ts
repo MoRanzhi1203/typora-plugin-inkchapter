@@ -50,12 +50,12 @@ import {
   canTriggerIndentShortcut,
   isCursorAtEnd,
   setParagraphIndentMode,
-  probeParagraphIndentShortcut,
+  probeInlineParagraphCommand,
   writeBlockProbeDiagnostic,
   classifyEditorMutation,
   resolveCurrentBlockFromSelection,
   isContentBlock,
-  type ShortcutProbeResult,
+  type InlineCommandResult,
 } from './paragraph-indent-manager'
 import {
   loadParagraphLayout,
@@ -1621,13 +1621,6 @@ export class HeadingNumberingService {
       // Apply heading layouts (always, independent of numbering state)
       this.applyHeadingLayouts()
 
-      // ── Paragraph indent shortcut probe ──
-      // Must run BEFORE refreshParagraphIndents so the semantic state
-      // (force-indent class) is picked up by the immediate refresh cycle.
-      // Only paragraph-command-mutation refreshes trigger the shortcut;
-      // initial load, document switch, selection-only, full rerender are excluded.
-      this.probeAndConsumeIndentShortcut(root, reason, hasParagraphCommand)
-
       // Apply paragraph indent styles (always)
       this.refreshParagraphIndents()
 
@@ -1800,61 +1793,54 @@ export class HeadingNumberingService {
   }
 
   /**
-   * Paragraph Indent Shortcut Probe — attached to existing refresh pipeline.
-   *
-   * Strategy (R31): Instead of building another independent event listener
-   * or MutationObserver, this probe hooks into the existing proven
-   * `input event → requestRefresh('editor-input') → doRefresh` pipeline
-   * that title numbering and paragraph layout already use successfully.
-   *
-   * The probe only checks the local caret area (current block B + previous
-   * block A) — no full-document scan.
-   *
-   * Branch diagnosis:
-   *   A = refresh pipeline didn't trigger (reason filter)
-   *   B = selection can't resolve current block
-   *   C = current block found, previous block structure wrong
-   *   D = A/B correct but command filter/setting/dedupe blocked
-   *   E = command recognized, block deleted, Markdown synced
-   *   F = A consumed, B has semantic force-indent
+   * Clear the command token from a paragraph using selection-based editing.
+   * This is the minimum editor transaction — replaces ".." or "。。" with "".
+   * Uses Typora-compatible execCommand for undo integration.
    */
-  private probeAndConsumeIndentShortcut(
-    root: HTMLElement,
-    reason: RefreshReason,
-    hasParagraphCommand: boolean,
-  ): void {
-    // Development: output runtime block probe on first content-edit refresh
-    if (reason === 'editor-input') {
-      writeBlockProbeDiagnostic(root, reason, this.ctx.writeDiagnosticFile)
+  private clearParagraphToken(paragraph: HTMLElement, token: '..' | '。。'): void {
+    const text = paragraph.textContent ?? ''
+    // Find the token text position
+    const idx = text.indexOf(token)
+    if (idx < 0) return
+
+    // Try selection-based deletion (Typora-compatible, preserves undo)
+    const sel = window.getSelection()
+    const textNode = findTextNodeContaining(paragraph, token)
+    if (textNode && sel) {
+      const range = document.createRange()
+      const tokenStart = textNode.textContent?.indexOf(token) ?? 0
+      range.setStart(textNode, tokenStart)
+      range.setEnd(textNode, tokenStart + token.length)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      try {
+        document.execCommand('delete', false)
+        return
+      } catch { /* fall through */ }
     }
 
-    const settings = this.getParagraphLayoutSettings()
-    const result = probeParagraphIndentShortcut(root, reason, settings, {
-      hasParagraphCommandMutation: hasParagraphCommand,
-    })
-    if (!result) return
+    // Fallback: direct text replacement
+    paragraph.textContent = text.slice(0, idx) + text.slice(idx + token.length)
+  }
 
-    const { commandBlock, targetBlock, token } = result
-    console.info(`[InkChapter] Shortcut detected: "${token}" → force-indent`, {
-      commandBlockTag: commandBlock.tagName,
-      targetBlockTag: targetBlock.tagName,
-    })
+  /** Place caret at the start of a paragraph, handling empty/BR/text node. */
+  private placeCaretInParagraph(paragraph: HTMLElement): void {
+    const sel = window.getSelection()
+    if (!sel) return
+    const range = document.createRange()
 
-    // ── Step 1: Immediate Runtime ──
-    // User must immediately see 2em. No reload.
-    setParagraphIndentMode(targetBlock, 'force-indent')
-    refreshParagraphIndentStyles(root, this.getParagraphLayoutSettings())
-
-    // ── Step 2: Persist to sidecar metadata ──
-    // Write force-indent override to plugin-owned sidecar.
-    // Does NOT modify user Markdown.
-    this.applyParagraphIndentOverrideToSidecar(targetBlock, 'force-indent')
-
-    // ── Step 3: Delete command paragraph ──
-    // Remove the ".." / "。。" block from the document.
-    this.consumeIndentCommandBlock(commandBlock)
-
-    console.info('[InkChapter] Shortcut consumed — sidecar persistence')
+    // Find first text node or BR
+    const firstChild = paragraph.firstChild
+    if (firstChild?.nodeType === Node.TEXT_NODE) {
+      range.setStart(firstChild, 0)
+    } else if (firstChild?.nodeName === 'BR') {
+      range.setStartBefore(firstChild)
+    } else {
+      range.setStart(paragraph, 0)
+    }
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
   }
 
   /**
@@ -1866,20 +1852,14 @@ export class HeadingNumberingService {
     paragraph: HTMLElement,
     mode: 'force-indent' | 'force-flush' | 'auto',
   ): void {
-    // Set runtime semantic state immediately
     setParagraphIndentMode(paragraph, mode)
-
-    // Refresh layout for visual effect
     const root = this.adapter.detectEditorRoot()
     if (root) {
       refreshParagraphIndentStyles(root, this.getParagraphLayoutSettings())
     }
-
-    // Persist to sidecar
     this.applyParagraphIndentOverrideToSidecar(paragraph, mode)
   }
 
-  /** Persist override to sidecar metadata file. */
   private applyParagraphIndentOverrideToSidecar(
     paragraph: HTMLElement,
     _mode: 'force-indent' | 'force-flush' | 'auto',
@@ -1887,103 +1867,24 @@ export class HeadingNumberingService {
     const docKey = this.getDocumentKey()
     const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
     if (!docKey) return
-
     const root = this.adapter.getEditorRoot()
     if (!root) return
-
     const allParas = collectContentParagraphs(root)
     const paraIndex = allParas.indexOf(paragraph)
     if (paraIndex < 0) return
-
     const anchor = createParagraphAnchor(paraIndex, allParas)
     const isTemporary = !paragraph.textContent?.trim()
-
     const existing = loadParagraphLayout(docKey)
     const overrides = existing?.paragraphOverrides ?? []
-
-    // Generate unique id
     const id = `indent-${Date.now()}-${overrides.length}`
-
-    // Remove if mode is 'auto'
     if (_mode === 'auto') {
-      const filtered = overrides.filter(o => {
-        // Try to match by ordinal proximity if textHash unavailable
-        return Math.abs(o.anchor.lastKnownOrdinal - paraIndex) > 1 || o.anchor.textHash !== anchor.textHash
-      })
+      const filtered = overrides.filter(o =>
+        Math.abs(o.anchor.lastKnownOrdinal - paraIndex) > 1 || o.anchor.textHash !== anchor.textHash)
       saveParagraphLayout(docKey, docPath, filtered)
       return
     }
-
-    overrides.push({
-      id,
-      mode: _mode,
-      anchor,
-      temporary: isTemporary,
-    })
+    overrides.push({ id, mode: _mode, anchor, temporary: isTemporary })
     saveParagraphLayout(docKey, docPath, overrides)
-  }
-
-  /** Safely delete the command block paragraph from the editor. */
-  private consumeIndentCommandBlock(block: HTMLElement): void {
-    // Strategy: Try Typora-compatible deletion first via selection + execCommand.
-    // Fall back to targeted Markdown reload if needed.
-    const sel = window.getSelection()
-    if (sel) {
-      const range = document.createRange()
-      range.selectNodeContents(block)
-      sel.removeAllRanges()
-      sel.addRange(range)
-      try {
-        const ok = document.execCommand('delete', false)
-        if (ok) return // Successful — Typora should sync
-      } catch { /* fall through */ }
-    }
-
-    // Fallback: targeted Markdown reload — remove just the command line
-    const markdown = this.ctx.getMarkdown?.()
-    if (!markdown) {
-      // Last resort: DOM removal
-      block.remove()
-      return
-    }
-
-    const lines = markdown.split('\n')
-    const blockText = (block.textContent ?? '').trim()
-
-    // Find the line matching the command block text
-    let cmdLineIdx = -1
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (lines[i].trim() === blockText) {
-        cmdLineIdx = i
-        break
-      }
-    }
-
-    if (cmdLineIdx < 0) {
-      block.remove()
-      return
-    }
-
-    // Remove command line + trailing blank lines
-    const newLines = [...lines.slice(0, cmdLineIdx)]
-    // Skip trailing blank lines after command
-    let j = cmdLineIdx + 1
-    while (j < lines.length && lines[j].trim() === '') j++
-    newLines.push(...lines.slice(j))
-    const cleanMarkdown = newLines.join('\n')
-
-    this.suppressParagraphCommandDetection = true
-    try {
-      if (this.ctx.reloadContentPreservingUndo) {
-        this.ctx.reloadContentPreservingUndo(cleanMarkdown)
-      } else if (this.ctx.reloadContent) {
-        this.ctx.reloadContent(cleanMarkdown)
-      }
-      // Re-apply sidecar overrides after reload
-      setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 60)
-    } finally {
-      this.suppressParagraphCommandDetection = false
-    }
   }
 
   /** Reconstruct runtime force-indent projections from sidecar metadata. */
@@ -2405,6 +2306,39 @@ export class HeadingNumberingService {
     this.editorRootDisposables = new DisposableStore()
     this.boundEditorRoot = root
 
+    // ── Inline Paragraph Command: Enter interception (PRIMARY PATH) ──
+    // Enter = command SUBMIT, NOT paragraph break (R35 corrected semantics).
+    // Intercept Enter BEFORE Typora processes it via keydown capture.
+    const onEnterCommand = (e: KeyboardEvent): void => {
+      if (e.key !== 'Enter') return
+      // IME guard: don't intercept during composition
+      if (this.isInComposition || e.isComposing) return
+
+      const settings = this.getParagraphLayoutSettings()
+      if (!settings.indentShortcutEnabled) return
+
+      const result = probeInlineParagraphCommand(root, settings)
+      if (!result) return
+
+      // ── Command recognized: consume Enter, execute inline ──
+      e.preventDefault()
+      e.stopPropagation()
+
+      const { currentBlock, token } = result
+      console.info(`[InkChapter] Inline command: "${token}" → force-indent (same paragraph)`)
+
+      // Step 1: Clear command token from the paragraph
+      this.clearParagraphToken(currentBlock, token)
+
+      // Step 2: Apply force-indent to SAME paragraph
+      this.applyParagraphIndentOverride(currentBlock, 'force-indent')
+
+      // Step 3: Keep caret in the same paragraph
+      this.placeCaretInParagraph(currentBlock)
+    }
+    root.addEventListener('keydown', onEnterCommand, true)
+    this.editorRootDisposables.add(() => root.removeEventListener('keydown', onEnterCommand, true))
+
     // input
     const onInput = (): void => {
       if (!this.isInComposition) this.requestRefresh('editor-input')
@@ -2725,4 +2659,14 @@ function buildEffectiveLayouts(
     h5: sourceLayouts.h4 ?? defaultLayout,
     h6: sourceLayouts.h5 ?? defaultLayout,
   }
+}
+
+/** Find the text node within an element that contains a given substring. */
+function findTextNodeContaining(el: HTMLElement, substr: string): Text | null {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text
+    if (node.textContent?.includes(substr)) return node
+  }
+  return null
 }

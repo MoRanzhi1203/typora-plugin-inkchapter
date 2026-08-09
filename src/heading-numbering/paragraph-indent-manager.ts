@@ -835,96 +835,65 @@ export function writeBlockProbeDiagnostic(
   }
 }
 
-// ── Shortcut Probe (attached to existing refresh pipeline) ────────────────
+// ── Inline Paragraph Command Probe (corrected semantics) ─────────────────
 
-/** Result of a successful shortcut probe. */
-export interface ShortcutProbeResult {
-  /** The command block (A) — text is exactly ".." or "。。" */
-  commandBlock: HTMLElement
-  /** The target block (B) — the new paragraph after Enter */
-  targetBlock: HTMLElement
-  /** The command token that was recognized */
+/** Result of a successful inline command probe (same-paragraph model). */
+export interface InlineCommandResult {
+  /** The command paragraph — this IS the force-indent target. */
+  currentBlock: HTMLElement
+  /** The command token that was recognized. */
   token: '..' | '。。'
 }
 
 /**
- * Dedupe guard: tracks processed (source, target) pairs within one session.
- * Uses a regular Map (not WeakMap) so we can clear it for testing.
- * In production, pairs are cleaned up when either element is removed from DOM.
+ * Dedupe guard: prevent same command paragraph from being processed twice.
  */
-const processedPairs = new Map<HTMLElement, Set<HTMLElement>>()
+const processedCommands = new Set<HTMLElement>()
 
 /**
- * Probe the current selection context for a paragraph indent shortcut.
+ * Probe current selection for an inline paragraph indent command.
  *
- * Called from the existing editor refresh pipeline (doRefresh).
- * Only checks the local caret area: current block B and its previous
- * sibling A.  Does NOT scan the full document.
+ * CORRECTED SEMANTICS (R35): Enter is a command SUBMIT, not a paragraph break.
+ * The command paragraph A IS the force-indent target.
+ * There is NO next paragraph B.
  *
- * Conditions for a match (all must be true):
- * 1. Refresh plan contains paragraph-command-mutation (producer signal)
- * 2. indentShortcutEnabled is true
- * 3. Current block B resolved from selection
- * 4. Previous block A is a content block (isContentBlock)
- * 5. A's textContent (trimmed) is exactly ".." or "。。"
- * 6. B is a content block (isContentBlock)
- * 7. Neither A nor B is in excluded context
- * 8. Same (A, B) pair not already processed (dedupe)
+ * Conditions (all must be true):
+ * 1. indentShortcutEnabled is true
+ * 2. Current block resolved from selection is a content block
+ * 3. Current block NOT in excluded context
+ * 4. Current block textContent (trimmed) is exactly ".." or "。。"
+ * 5. Cursor is inside the current block
+ * 6. (Optional) hasParagraphCommandMutation flag for mutex
  *
- * @returns ShortcutProbeResult if a shortcut is detected, null otherwise.
+ * @returns InlineCommandResult if a command is detected, null otherwise.
  */
-export function probeParagraphIndentShortcut(
+export function probeInlineParagraphCommand(
   editorRoot: HTMLElement,
-  refreshReason: string,
   settings: { indentShortcutEnabled: boolean },
-  flags?: { hasParagraphCommandMutation?: boolean },
-): ShortcutProbeResult | null {
-  // Branch D guard: shortcut disabled
+): InlineCommandResult | null {
   if (!settings.indentShortcutEnabled) return null
 
-  // Branch A guard: must have paragraph-command-mutation producer signal
-  // Selection-only, load, switch, full rerender must NOT trigger shortcut.
-  if (!flags?.hasParagraphCommandMutation) return null
-
-  // Resolve current block from selection (Branch B)
   const currentBlock = resolveCurrentBlockFromSelection(editorRoot)
   if (!currentBlock) return null
-
-  // Branch B: current block must be a content block
   if (!isContentBlock(currentBlock)) return null
+  if (isInExcludedContext(currentBlock)) return null
 
-  // Branch C: resolve previous block
-  const prevBlock = resolvePreviousBlock(currentBlock, editorRoot)
-  if (!prevBlock) return null
-
-  // Branch C: previous block must be a content block
-  if (!isContentBlock(prevBlock)) return null
-
-  // Excluded context check
-  if (isInExcludedContext(currentBlock) || isInExcludedContext(prevBlock)) return null
-
-  // Exact command token recognition
-  const prevText = (prevBlock.textContent ?? '').trim()
-  const token = recognizeParagraphIndentCommand(prevText)
+  const text = (currentBlock.textContent ?? '').trim()
+  const token = recognizeParagraphIndentCommand(text)
   if (!token) return null
 
-  // Current block must be "fresh" — empty or just starting (cursor inside it)
+  // Cursor must be in the command block
   const sel = window.getSelection()
   if (sel?.rangeCount) {
     const selNode = sel.getRangeAt(0).startContainer
     if (!currentBlock.contains(selNode)) return null
   }
 
-  // Dedupe: same (A, B) pair already processed
-  let targets = processedPairs.get(prevBlock)
-  if (targets?.has(currentBlock)) return null
-  if (!targets) {
-    targets = new Set()
-    processedPairs.set(prevBlock, targets)
-  }
-  targets.add(currentBlock)
+  // Dedupe
+  if (processedCommands.has(currentBlock)) return null
+  processedCommands.add(currentBlock)
 
-  return { commandBlock: prevBlock, targetBlock: currentBlock, token }
+  return { currentBlock, token }
 }
 
 /**
@@ -935,10 +904,10 @@ export function resetBlockProbeDiagnostic(): void {
 }
 
 /**
- * Clear the processed pairs dedupe guard (for testing).
+ * Clear dedupe guards (for testing).
  */
 export function resetProcessedPairs(): void {
-  processedPairs.clear()
+  processedCommands.clear()
 }
 
 // ── Mutation Classifier (used by main MutationObserver) ──────────────────
