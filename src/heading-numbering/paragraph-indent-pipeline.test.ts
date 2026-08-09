@@ -17,7 +17,7 @@ import {
   resolveCurrentBlockFromSelection,
   resolvePreviousBlock,
   isContentBlock,
-  probeParagraphIndentShortcut,
+  probeInlineParagraphCommand,
   resetBlockProbeDiagnostic,
   resetProcessedPairs,
   writeBlockProbeDiagnostic,
@@ -27,8 +27,8 @@ import {
   parseIndentMarkers,
   focusParagraphAfterMarkerIndex,
   applyIndentByMarkerIndex,
+  type InlineCommandResult,
   type ParagraphIndentSemanticMode,
-  type ShortcutProbeResult,
   type MutationClassification,
 } from './paragraph-indent-manager'
 
@@ -78,8 +78,6 @@ function clearSelection(): void {
 
 const ENABLED_SETTINGS = { indentShortcutEnabled: true }
 const DISABLED_SETTINGS = { indentShortcutEnabled: false }
-const FLAG_ON = { hasParagraphCommandMutation: true }
-const FLAG_OFF = { hasParagraphCommandMutation: false }
 
 // ── 1. Semantic Setter Tests ───────────────────────────────────────────
 
@@ -247,9 +245,9 @@ describe('resolvePreviousBlock', () => {
   })
 })
 
-// ── 3. Shortcut Probe Tests (revised for paragraph-command-mutation flag) ──
+// ── 3. Inline Command Probe Tests (R35: same-paragraph model) ─────────
 
-describe('probeParagraphIndentShortcut (paragraph-command-mutation flag)', () => {
+describe('probeInlineParagraphCommand (Enter = command submit)', () => {
   let root: HTMLElement
 
   beforeEach(() => {
@@ -258,154 +256,67 @@ describe('probeParagraphIndentShortcut (paragraph-command-mutation flag)', () =>
   })
   afterEach(() => { clearSelection(); root.remove() })
 
-  // ── Branch A: requires paragraph-command-mutation flag ──
-
-  it('returns null WITHOUT paragraph-command-mutation flag (Branch A guard)', () => {
+  it('detects ".." in current paragraph', () => {
     const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-
-    // Any reason without the flag should return null
-    expect(probeParagraphIndentShortcut(root, 'editor-input', ENABLED_SETTINGS)).toBeNull()
-    expect(probeParagraphIndentShortcut(root, 'editor-input', ENABLED_SETTINGS, FLAG_OFF)).toBeNull()
-    expect(probeParagraphIndentShortcut(root, 'editor-mutation', ENABLED_SETTINGS, FLAG_OFF)).toBeNull()
-    expect(probeParagraphIndentShortcut(root, 'initial-load', ENABLED_SETTINGS)).toBeNull()
-    expect(probeParagraphIndentShortcut(root, 'file-open', ENABLED_SETTINGS)).toBeNull()
-    expect(probeParagraphIndentShortcut(root, 'focus-in', ENABLED_SETTINGS)).toBeNull()
-    expect(probeParagraphIndentShortcut(root, 'editor-click', ENABLED_SETTINGS)).toBeNull()
-  })
-
-  it('allows match WITH paragraph-command-mutation flag (Branch A pass)', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-
-    const result = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
+    appendBlocks(root, a)
+    setSelectionInElement(a, 2)
+    const result = probeInlineParagraphCommand(root, ENABLED_SETTINGS)
     expect(result).not.toBeNull()
     expect(result!.token).toBe('..')
+    expect(result!.currentBlock).toBe(a)
   })
 
-  // ── Branch B: selection → block resolver ──
-
-  it('returns null when selection cannot resolve current block (Branch B)', () => {
-    clearSelection()
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  it('returns null when cursor is on a heading (Branch B — not content block)', () => {
-    const prevPara = makeParagraph('text')
-    const h2 = makeHeading(2, 'Title')
-    appendBlocks(root, prevPara, h2)
-    setSelectionInElement(h2, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  // ── Branch C: previous block resolver ──
-
-  it('returns null when current block has no previous sibling (Branch C)', () => {
-    const b = makeParagraph('')
-    appendBlocks(root, b)
-    setSelectionInElement(b, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  it('returns null when previous block is a heading (Branch C — not content)', () => {
-    const h2 = makeHeading(2, 'Title')
-    const b = makeParagraph('')
-    appendBlocks(root, h2, b)
-    setSelectionInElement(b, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  // ── Branch D: command filter / setting / dedupe ──
-
-  it('returns null when indentShortcutEnabled is false (Branch D)', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', DISABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  it('returns null for invalid command token "..." (Branch D)', () => {
-    const a = makeParagraph('...')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  it('returns null for invalid command token "abc.." (Branch D)', () => {
-    const a = makeParagraph('abc..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  it('returns null when cursor is not in the target block (anti-false-positive)', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    const c = makeParagraph('other text')
-    appendBlocks(root, a, b, c)
-    setSelectionInElement(c, 0)
-    expect(probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)).toBeNull()
-  })
-
-  it('deduplicates same (A, B) pair (Branch D dedupe)', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-
-    const r1 = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
-    expect(r1).not.toBeNull()
-
-    const r2 = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
-    expect(r2).toBeNull()
-  })
-
-  // ── Exact token recognition ──
-
-  it('recognizes ".." exact command', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-    const result = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
-    expect(result).not.toBeNull()
-    expect(result!.token).toBe('..')
-  })
-
-  it('recognizes "。。" exact command', () => {
+  it('detects "。。" in current paragraph', () => {
     const a = makeParagraph('。。')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-    const result = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
+    appendBlocks(root, a)
+    setSelectionInElement(a, 2)
+    const result = probeInlineParagraphCommand(root, ENABLED_SETTINGS)
     expect(result).not.toBeNull()
     expect(result!.token).toBe('。。')
   })
 
-  // ── Historical ".." not consumed ──
-
-  it('does NOT trigger when cursor clicks historical ".." without flag', () => {
+  it('returns null when disabled', () => {
     const a = makeParagraph('..')
-    const b = makeParagraph('some text already')
-    appendBlocks(root, a, b)
+    appendBlocks(root, a)
     setSelectionInElement(a, 2)
-    // Without the paragraph-command-mutation flag, no trigger
-    expect(probeParagraphIndentShortcut(root, 'editor-click', ENABLED_SETTINGS)).toBeNull()
+    expect(probeInlineParagraphCommand(root, DISABLED_SETTINGS)).toBeNull()
   })
 
-  it('does NOT trigger on focus-in without paragraph-command-mutation', () => {
+  it('returns null for invalid token "..."', () => {
+    const a = makeParagraph('...')
+    appendBlocks(root, a)
+    setSelectionInElement(a, 2)
+    expect(probeInlineParagraphCommand(root, ENABLED_SETTINGS)).toBeNull()
+  })
+
+  it('returns null for non-content block (heading)', () => {
+    const h = makeHeading(2, '..')
+    appendBlocks(root, h)
+    setSelectionInElement(h, 0)
+    expect(probeInlineParagraphCommand(root, ENABLED_SETTINGS)).toBeNull()
+  })
+
+  it('returns null for normal text', () => {
+    const a = makeParagraph('normal text')
+    appendBlocks(root, a)
+    setSelectionInElement(a, 0)
+    expect(probeInlineParagraphCommand(root, ENABLED_SETTINGS)).toBeNull()
+  })
+
+  it('deduplicates same paragraph', () => {
     const a = makeParagraph('..')
-    const b = makeParagraph('')
+    appendBlocks(root, a)
+    setSelectionInElement(a, 2)
+    expect(probeInlineParagraphCommand(root, ENABLED_SETTINGS)).not.toBeNull()
+    expect(probeInlineParagraphCommand(root, ENABLED_SETTINGS)).toBeNull()
+  })
+
+  it('cursor must be inside command paragraph', () => {
+    const a = makeParagraph('..')
+    const b = makeParagraph('other')
     appendBlocks(root, a, b)
     setSelectionInElement(b, 0)
-    expect(probeParagraphIndentShortcut(root, 'focus-in', ENABLED_SETTINGS)).toBeNull()
+    expect(probeInlineParagraphCommand(root, ENABLED_SETTINGS)).toBeNull()
   })
 })
 
@@ -515,9 +426,9 @@ describe('classifyEditorMutation', () => {
   })
 })
 
-// ── 5. Pipeline Integration Tests ──────────────────────────────────────
+// ── 5. Pipeline Integration Tests (R35: inline command model) ──────
 
-describe('Pipeline Integration: mutation → paragraph-command → probe → semantic setter', () => {
+describe('Pipeline Integration: inline command → probe → semantic setter', () => {
   let root: HTMLElement
 
   beforeEach(() => {
@@ -526,57 +437,18 @@ describe('Pipeline Integration: mutation → paragraph-command → probe → sem
   })
   afterEach(() => { clearSelection(); root.remove() })
 
-  it('full producer→consumer integration: mutation classifier → probe → force-indent', () => {
-    // Simulate the mutation observer seeing a paragraph added
+  it('full flow: detect command → same paragraph force-indent', () => {
     const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
+    appendBlocks(root, a)
+    setSelectionInElement(a, 2)
 
-    // Classifier: mock a small childList adding a P
-    const mockMut = { type: 'childList', target: root, addedNodes: [b] as unknown as NodeList, removedNodes: [] as unknown as NodeList } as unknown as MutationRecord
-    const cls = classifyEditorMutation([mockMut], root)
-    expect(cls.paragraphCommandCandidate).toBe(true)
-
-    // Set cursor in B
-    setSelectionInElement(b, 0)
-
-    // Probe with paragraph-command flag
-    const result = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
+    const result = probeInlineParagraphCommand(root, ENABLED_SETTINGS)
     expect(result).not.toBeNull()
-    expect(result!.commandBlock).toBe(a)
-    expect(result!.targetBlock).toBe(b)
+    expect(result!.currentBlock).toBe(a) // SAME paragraph
 
-    // Apply semantic force-indent
-    setParagraphIndentMode(result!.targetBlock, 'force-indent')
-    expect(b.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
-    expect(b.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
-  })
-
-  it('focus-in does NOT trigger shortcut even with A/B present', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-    // Without paragraph-command-mutation flag, no probe match
-    const result = probeParagraphIndentShortcut(root, 'focus-in', ENABLED_SETTINGS)
-    expect(result).toBeNull()
-  })
-
-  it('pipeline respects formula continuation priority', () => {
-    const a = makeParagraph('..')
-    const b = makeParagraph('')
-    appendBlocks(root, a, b)
-    setSelectionInElement(b, 0)
-
-    const result = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
-    expect(result).not.toBeNull()
-
-    setParagraphIndentMode(b, 'force-indent')
-    expect(getParagraphIndentMode(b)).toBe('force-indent')
-    setParagraphIndentMode(b, 'force-flush')
-    expect(getParagraphIndentMode(b)).toBe('force-flush')
-    setParagraphIndentMode(b, 'force-indent')
-    expect(getParagraphIndentMode(b)).toBe('force-indent')
+    setParagraphIndentMode(a, 'force-indent')
+    expect(a.classList.contains('inkchapter-paragraph-indent-2')).toBe(true)
+    expect(a.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
   })
 })
 
@@ -660,9 +532,9 @@ describe('Probe performance: no full-document scan', () => {
       blocks.push(makeParagraph(i === 18 ? '..' : i === 19 ? '' : `text ${i}`))
     }
     appendBlocks(root, ...blocks)
-    const b = blocks[19]
-    setSelectionInElement(b, 0)
-    const result = probeParagraphIndentShortcut(root, 'paragraph-command-mutation', ENABLED_SETTINGS, FLAG_ON)
+    const cmdPara = blocks[18] // the ".." paragraph
+    setSelectionInElement(cmdPara, 2)
+    const result = probeInlineParagraphCommand(root, ENABLED_SETTINGS)
     expect(result).not.toBeNull()
     expect(result!.token).toBe('..')
     root.remove()
@@ -884,14 +756,13 @@ describe('Multi-marker and target identity recovery', () => {
 // ── 13. Type Export Verification ─────────────────────────────────────────
 
 describe('type exports', () => {
-  it('ShortcutProbeResult has required fields', () => {
-    const r: ShortcutProbeResult = {
-      commandBlock: document.createElement('p'),
-      targetBlock: document.createElement('p'),
+  it('InlineCommandResult has required fields', () => {
+    const r: InlineCommandResult = {
+      currentBlock: document.createElement('p'),
       token: '..',
     }
     expect(r.token).toBe('..')
-    expect(r.commandBlock.tagName).toBe('P')
+    expect(r.currentBlock.tagName).toBe('P')
   })
 
   it('INDENT_MODE_ATTR is the correct value', () => {
