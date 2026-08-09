@@ -60,6 +60,11 @@ import {
   isCaretAtLogicalStartOfParagraph,
   resolveCurrentBodyParagraph,
   shouldConsumeBackspaceForIndentRemoval,
+  resolveParagraphShortcutCandidate,
+  applyEffectiveParagraphIndent,
+  resolveEffectiveParagraphIndent,
+  isAfterDisplayMath,
+  getNormalizedVisibleParagraphText,
   type InlineCommandResult,
   type BackspaceIndentCommandContext,
 } from './paragraph-indent-manager'
@@ -95,6 +100,18 @@ import {
   type T2Record,
   type T6Data,
 } from './normal-enter-trace'
+import {
+  activateForensic,
+  deactivateForensic,
+  isForensicActive,
+  safeForensic,
+  captureParagraphState,
+  captureParentChain,
+  captureSelectionState,
+  captureMatchedCSSRules,
+  writeForensicEntry,
+  FORENSIC_BUILD_MARKER,
+} from './paragraph-indent-forensic'
 import {
   generateDocumentKey,
   deepCloneSettings,
@@ -1871,7 +1888,7 @@ export class HeadingNumberingService {
     safeTrace(() => {
       const contentParas = root.querySelectorAll<HTMLParagraphElement>('p')
       for (const p of contentParas) {
-        if (p.classList.contains('inkchapter-paragraph-indent-2')) {
+        if (p.classList.contains('inkchapter-paragraph-effective-indent-2')) {
           t7Target = p
           break
         }
@@ -1883,7 +1900,7 @@ export class HeadingNumberingService {
     })
 
     // Business: always execute (never inside trace wrapper)
-    refreshParagraphIndentStyles(root, settings)
+    refreshParagraphIndentStyles(root, settings, this.isInComposition)
 
     // ── Trace: T7 after ──
     safeTrace(() => {
@@ -1896,40 +1913,69 @@ export class HeadingNumberingService {
         beforeDataMode: t7BeforeData,
         afterClass,
         afterDataMode: afterData,
-        didRendererClear: (t7BeforeClass?.includes('inkchapter-paragraph-indent-2') ?? false) && !(afterClass?.includes('inkchapter-paragraph-indent-2') ?? false),
+        didRendererClear: (t7BeforeClass?.includes('inkchapter-paragraph-effective-indent-2') ?? false) && !(afterClass?.includes('inkchapter-paragraph-effective-indent-2') ?? false),
       })
     })
   }
 
   /**
-   * Clear the command token from a paragraph using selection-based editing.
-   * This is the minimum editor transaction — replaces ".." or "。。" with "".
-   * Uses Typora-compatible execCommand for undo integration.
+   * Immediate local projection for the current paragraph.
+   *
+   * Computes candidate + effective for the current selection paragraph
+   * and applies visual projection synchronously, BEFORE the next RAF refresh.
+   * Only touches the current paragraph — no full document scan.
+   *
+   * This is the bridge between Typora's real-time editing and the
+   * candidate visual suppression model.
    */
-  private clearParagraphToken(paragraph: HTMLElement, token: '..' | '。。'): void {
-    const text = paragraph.textContent ?? ''
-    // Find the token text position
-    const idx = text.indexOf(token)
-    if (idx < 0) return
+  private projectCurrentParagraphLocally(root: HTMLElement): void {
+    const block = resolveCurrentBlockFromSelection(root)
+    if (!block || block.tagName !== 'P') return
+    if (!isContentBlock(block)) return
+    if (isInExcludedContext(block)) return
 
-    // Try selection-based deletion (Typora-compatible, preserves undo)
-    const sel = window.getSelection()
-    const textNode = findTextNodeContaining(paragraph, token)
-    if (textNode && sel) {
-      const range = document.createRange()
-      const tokenStart = textNode.textContent?.indexOf(token) ?? 0
-      range.setStart(textNode, tokenStart)
-      range.setEnd(textNode, tokenStart + token.length)
-      sel.removeAllRanges()
-      sel.addRange(range)
-      try {
-        document.execCommand('delete', false)
-        return
-      } catch { /* fall through */ }
+    const settings = this.getParagraphLayoutSettings()
+
+    const semantic = getParagraphIndentMode(block)
+    const candidate = resolveParagraphShortcutCandidate(block, settings, this.isInComposition)
+
+    const structuralContext = {
+      isFormulaContinuation: settings.flushAfterDisplayMath
+        ? isAfterDisplayMath(block)
+        : false,
     }
 
-    // Fallback: direct text replacement
-    paragraph.textContent = text.slice(0, idx) + text.slice(idx + token.length)
+    const effective = resolveEffectiveParagraphIndent(
+      semantic,
+      settings.defaultIndent,
+      structuralContext,
+      candidate,
+    )
+
+    applyEffectiveParagraphIndent(block, effective)
+  }
+
+  /**
+   * Clear the command token from a paragraph by modifying only the text node.
+   *
+   * Must preserve Typora's inline DOM structure (<span>, etc.).
+   * Does NOT use execCommand (unreliable in Typora).
+   * Does NOT use textContent= replacement (destroys inline spans).
+   *
+   * Instead: finds the exact text node containing the token and
+   * replaces the token substring within that text node only.
+   */
+  private clearParagraphToken(paragraph: HTMLElement, token: '..' | '。。'): void {
+    // Find the text node containing the token
+    const textNode = findTextNodeContaining(paragraph, token)
+    if (!textNode) return
+
+    const content = textNode.textContent ?? ''
+    const idx = content.indexOf(token)
+    if (idx < 0) return
+
+    // Replace token within the text node — preserves all DOM structure
+    textNode.textContent = content.slice(0, idx) + content.slice(idx + token.length)
   }
 
   /** Place caret at the start of a paragraph, handling empty/BR/text node. */
@@ -2056,7 +2102,7 @@ export class HeadingNumberingService {
       // stored in the WeakMap (not DOM dataset). For now, find any force-indent paragraph.
       const allParas = collectContentParagraphs(root)
       for (const p of allParas) {
-        if (p.classList.contains('inkchapter-paragraph-indent-2')) {
+        if (p.classList.contains('inkchapter-paragraph-effective-indent-2')) {
           t8Target = p
           break
         }
@@ -2075,7 +2121,7 @@ export class HeadingNumberingService {
       let aPrev: HTMLElement | null = null
       let aNext: HTMLElement | null = null
       for (let i = 0; i < allParas.length; i++) {
-        if (allParas[i].classList.contains('inkchapter-paragraph-indent-2')) {
+        if (allParas[i].classList.contains('inkchapter-paragraph-effective-indent-2')) {
           aPara = allParas[i]
           aOrdinal = i
           aPrev = i > 0 ? allParas[i - 1] : null
@@ -2176,8 +2222,7 @@ export class HeadingNumberingService {
         const para = allParas[resolved.index]
         const beforeClass = para?.className ? String(para.className) : null
         const beforeData = para?.getAttribute('data-inkchapter-indent-mode') ?? null
-        if (para && !para.classList.contains('inkchapter-paragraph-indent-2')
-          && para.getAttribute('data-inkchapter-indent-mode') !== o.mode) {
+        if (para && para.getAttribute('data-inkchapter-indent-mode') !== o.mode) {
           setParagraphIndentMode(para, o.mode)
         }
         const afterClass = para?.className ? String(para.className) : null
@@ -2791,9 +2836,112 @@ export class HeadingNumberingService {
     root.addEventListener('keydown', onBackspaceCommand, true)
     this.editorRootDisposables.add(() => root.removeEventListener('keydown', onBackspaceCommand, true))
 
+    // ── Forensic: beforeinput recording (passive, no mutation) ──
+    const onBeforeInput = (e: InputEvent): void => {
+      safeForensic(() => {
+        const block = resolveCurrentBlockFromSelection(root)
+        if (!block || block.tagName !== 'P') return
+        const state = captureParagraphState(block)
+        state.candidate = 'beforeinput'
+        const prospective = (block.textContent ?? '') + (e.data ?? '')
+        writeForensicEntry('T0_beforeinput', {
+          eventType: e.inputType,
+          eventData: e.data,
+          isComposing: e.isComposing,
+          currentTextContent: block.textContent,
+          prospectiveText: prospective,
+          paragraphState: state,
+          selection: captureSelectionState(block),
+        })
+      })
+    }
+    root.addEventListener('beforeinput', onBeforeInput, { passive: true })
+    this.editorRootDisposables.add(() => root.removeEventListener('beforeinput', onBeforeInput))
+
     // input
     const onInput = (): void => {
+      // ── Forensic: T1 after native insertion, before projection ──
+      safeForensic(() => {
+        const block = resolveCurrentBlockFromSelection(root)
+        if (!block || block.tagName !== 'P') return
+        const state = captureParagraphState(block)
+        const settings = this.getParagraphLayoutSettings()
+        const semantic = getParagraphIndentMode(block)
+        const normalized = getNormalizedVisibleParagraphText(block)
+        const candidate = resolveParagraphShortcutCandidate(block, settings, this.isInComposition)
+        state.semantic = semantic
+        state.candidate = candidate
+        state.documentDefault = settings.defaultIndent
+        writeForensicEntry('T1_after_native_insertion', {
+          rawTextContent: block.textContent,
+          normalizedText: normalized,
+          semantic,
+          candidate,
+          settingsDefault: settings.defaultIndent,
+          isComposing: this.isInComposition,
+          paragraphState: state,
+          parentChain: captureParentChain(block),
+          matchedCSS: captureMatchedCSSRules(block, 'text-indent'),
+        })
+      })
+
+      // Immediate local projection: candidate suppression on current paragraph
+      this.projectCurrentParagraphLocally(root)
+
+      // ── Forensic: T2 after local projection ──
+      safeForensic(() => {
+        const block = resolveCurrentBlockFromSelection(root)
+        if (!block || block.tagName !== 'P') return
+        const state = captureParagraphState(block)
+        writeForensicEntry('T2_after_local_projection', {
+          paragraphState: state,
+          localProjectionCalled: true,
+          localTargetIsP: block.tagName === 'P',
+          localTargetId: (block as HTMLElement).dataset ? undefined : undefined,
+        })
+      })
+
       if (!this.isInComposition) this.requestRefresh('editor-input')
+
+      // ── Forensic: T6 next RAF ──
+      safeForensic(() => {
+        requestAnimationFrame(() => {
+          safeForensic(() => {
+            const block = resolveCurrentBlockFromSelection(root)
+            if (!block || block.tagName !== 'P') return
+            writeForensicEntry('T6_next_RAF', {
+              paragraphState: captureParagraphState(block),
+            })
+          })
+        })
+      })
+
+      // ── Forensic: T7 100ms final ──
+      safeForensic(() => {
+        setTimeout(() => {
+          safeForensic(() => {
+            const block = resolveCurrentBlockFromSelection(root)
+            if (!block || block.tagName !== 'P') return
+            const state = captureParagraphState(block)
+            const settings = this.getParagraphLayoutSettings()
+            state.candidate = resolveParagraphShortcutCandidate(block, settings, this.isInComposition)
+            state.semantic = getParagraphIndentMode(block)
+            state.documentDefault = settings.defaultIndent
+            writeForensicEntry('T7_final_100ms', {
+              paragraphState: state,
+              parentChain: captureParentChain(block),
+              matchedCSS: captureMatchedCSSRules(block, 'text-indent'),
+              selection: captureSelectionState(block),
+              SEMANTIC: state.semantic,
+              CANDIDATE: state.candidate,
+              DEFAULT: state.documentDefault,
+              COMPUTED_TEXT_INDENT: state.computedTextIndent,
+              COMPUTED_MARGIN_LEFT: state.computedMarginLeft,
+              VISUAL_OFFSET_PX: state.visualOffsetPx,
+            })
+          })
+        }, 100)
+      })
     }
     root.addEventListener('input', onInput, { passive: true })
     this.editorRootDisposables.add(() => root.removeEventListener('input', onInput))
@@ -2801,6 +2949,8 @@ export class HeadingNumberingService {
     // composition
     const onCompositionEnd = (): void => {
       this.isInComposition = false
+      // Immediate local projection after composition ends
+      this.projectCurrentParagraphLocally(root)
       this.requestRefresh('composition-end')
     }
     root.addEventListener('compositionend', onCompositionEnd)
@@ -2988,6 +3138,10 @@ export class HeadingNumberingService {
           // Reconstruct paragraph indent overrides from sidecar after DOM settles
           setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 100)
           // Normal Enter Trace: OFF by default. Enable via window.__INKCHAPTER_NORMAL_ENTER_TRACE__
+          // Forensic Probe: OFF by default. Enable via window.__INKCHAPTER_PARAGRAPH_FORENSIC__
+          // Then call window.__inkchapter_activate_forensic__() from DevTools to activate.
+          ;(window as any).__inkchapter_activate_forensic__ = () => activateForensic()
+          setTimeout(() => activateForensic(), 200)
         }
       }),
     )

@@ -19,8 +19,18 @@ import { PARAGRAPH_INDENT_MARKER, resolveParagraphIndent } from './heading-types
 
 const INDENT_MARKER_COMMENT = `<!-- ${PARAGRAPH_INDENT_MARKER} -->`
 
-// CSS class applied to a paragraph with force-indent-2 semantic
-const FORCE_INDENT_CLASS = 'inkchapter-paragraph-indent-2'
+// CSS class applied for effective visual indent-2 projection.
+// This is PURELY a visual artifact — NEVER used to determine semantic mode.
+const EFFECTIVE_INDENT_CLASS = 'inkchapter-paragraph-effective-indent-2'
+
+// CSS class applied for effective visual flush projection.
+// Ensures computed text-indent=0 even when parent has text-indent inheritance.
+// Mutually exclusive with EFFECTIVE_INDENT_CLASS.
+const EFFECTIVE_FLUSH_CLASS = 'inkchapter-paragraph-effective-flush'
+
+// Typora invisible characters and placeholder patterns to strip during normalization.
+const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\uFEFF]/g
+const ZERO_WIDTH_SPACE = '\u200B'
 
 // Excluded context selectors — must not trigger shortcut in these elements
 const EXCLUDED_PARENT_SELECTORS = [
@@ -230,27 +240,34 @@ export function canTriggerIndentShortcut(): boolean {
 }
 
 /**
- * Check if a paragraph DOM element has the force-indent-2 class applied.
+ * Check if a paragraph DOM element has the effective indent-2 visual class.
+ * @deprecated Legacy visual check — prefer getParagraphIndentMode() for semantic queries.
  */
 export function hasForceIndentClass(el: HTMLElement): boolean {
-  return el.classList.contains(FORCE_INDENT_CLASS)
+  return el.classList.contains(EFFECTIVE_INDENT_CLASS)
 }
 
 /**
- * Apply text-indent style to a paragraph DOM element.
+ * Apply visual indent projection to a paragraph DOM element.
+ * Purely visual — does NOT affect semantic state.
+ * @deprecated Prefer applyEffectiveParagraphIndent() for unified visual projection.
  */
 export function applyParagraphIndent(el: HTMLElement, indentValue: string): void {
   if (indentValue === '2em') {
-    el.classList.add(FORCE_INDENT_CLASS)
+    el.classList.add(EFFECTIVE_INDENT_CLASS)
   } else {
-    el.classList.remove(FORCE_INDENT_CLASS)
+    el.classList.remove(EFFECTIVE_INDENT_CLASS)
+    el.style.textIndent = ''
   }
 }
 
 /**
- * Scan editor DOM for all comment nodes with the indent marker,
- * and apply force-indent-2 to the following paragraph.
+ * Legacy migration: scan editor DOM for indent marker comments and
+ * apply FORCE_INDENT semantic + effective projection to the following paragraph.
  * Returns the count of markers found.
+ *
+ * @deprecated New paragraphs use applyParagraphIndentOverride() → sidecar.
+ * This function exists only for legacy HTML comment marker migration.
  */
 export function applyIndentMarkersFromDOM(editorRoot: HTMLElement): number {
   const walker = document.createTreeWalker(
@@ -266,17 +283,17 @@ export function applyIndentMarkersFromDOM(editorRoot: HTMLElement): number {
   }
 
   for (const comment of markerNodes) {
-    // Find the next paragraph element after this comment
     let next: Node | null = comment.nextSibling
     while (next) {
       if (next.nodeType === Node.ELEMENT_NODE) {
         const el = next as HTMLElement
         if (el.tagName === 'P') {
-          applyParagraphIndent(el, '2em')
+          // Set semantic FORCE_INDENT + apply effective projection
+          setParagraphIndentMode(el, 'force-indent')
+          applyEffectiveParagraphIndent(el, 'indent-2')
           count++
           break
         }
-        // Skip non-paragraph elements (headings, lists, etc.)
         if (/^(H[1-6]|UL|OL|BLOCKQUOTE|PRE|TABLE|HR)$/.test(el.tagName)) break
         if (el.classList.contains('md-codeblock')) break
         if (el.classList.contains('md-math-block')) break
@@ -285,49 +302,66 @@ export function applyIndentMarkersFromDOM(editorRoot: HTMLElement): number {
     }
   }
 
-  // Also handle markers that are inside paragraph elements (inline comments)
-  // After the walker scan, we've applied force-indent to all relevant paragraphs.
   return count
 }
 
 /**
- * Apply paragraph indent styles based on settings and markers.
+ * Apply paragraph indent styles based on semantic mode and settings.
  *
- * For each paragraph element in the editor:
- * 1. If it has a force-indent-2 marker → text-indent: 2em
- * 2. Else if it follows a display math block and flushAfterDisplayMath → text-indent: 0
- * 3. Else → document default (0 or 2em)
+ * For EACH paragraph, recomputes:
+ *   semantic = getParagraphIndentMode(p)          (reads data-inkchapter-indent-mode only)
+ *   structural = isFormulaContinuation
+ *   effective = resolveEffectiveParagraphIndent(semantic, defaultIndent, structural)
+ *   applyEffectiveParagraphIndent(p, effective)
+ *
+ * NO paragraph is skipped based on visual class.
+ * Every paragraph gets its effective indent recomputed from semantic + settings.
+ * This ensures:
+ *   - AUTO + default indent-2 → semantic AUTO, visual 2em
+ *   - default switch flush → same paragraph immediately 0
+ *   - force-indent → always 2em regardless of default
+ *   - force-flush → always 0 regardless of default
  */
 export function refreshParagraphIndentStyles(
   editorRoot: HTMLElement,
   settings: ParagraphLayoutSettings,
+  isComposing: boolean = false,
 ): void {
-  // First, apply force-indent markers from DOM comments
+  // First, run legacy marker migration (converts HTML comments to sidecar)
   applyIndentMarkersFromDOM(editorRoot)
 
-  // Then, handle default and formula continuation for non-force-indent paragraphs
   const paragraphs = editorRoot.querySelectorAll<HTMLParagraphElement>('p')
 
   for (const p of paragraphs) {
     // Skip excluded paragraphs
     if (isInExcludedContext(p)) continue
 
-    // Skip paragraphs that already have force-indent
-    if (hasForceIndentClass(p)) continue
-
-    // Skip paragraphs with explicit force-flush (Backspace reverse command)
-    if (getParagraphIndentMode(p) === 'force-flush') continue
-
     // Skip empty paragraphs
     if (!p.textContent?.trim()) continue
 
-    // Determine indent mode
-    let mode: ParagraphIndentMode = settings.defaultIndent
-    if (settings.flushAfterDisplayMath && isAfterDisplayMath(p)) {
-      mode = 'flush'
+    // ── Full recompute: semantic → candidate → structural → effective → project ──
+    const semantic = getParagraphIndentMode(p)
+
+    const candidate = resolveParagraphShortcutCandidate(
+      p,
+      settings,
+      isComposing,
+    )
+
+    const structuralContext = {
+      isFormulaContinuation: settings.flushAfterDisplayMath
+        ? isAfterDisplayMath(p)
+        : false,
     }
 
-    applyParagraphIndent(p, mode === 'indent-2' ? '2em' : '0')
+    const effective = resolveEffectiveParagraphIndent(
+      semantic,
+      settings.defaultIndent,
+      structuralContext,
+      candidate,
+    )
+
+    applyEffectiveParagraphIndent(p, effective)
   }
 }
 
@@ -610,6 +644,111 @@ export const INDENT_MODE_ATTR = 'data-inkchapter-indent-mode'
 /** Semantic indent mode for a paragraph block. */
 export type ParagraphIndentSemanticMode = 'auto' | 'force-indent' | 'force-flush'
 
+/** Effective visual indent result. */
+export type ParagraphEffectiveIndent = 'flush' | 'indent-2'
+
+/** Shortcut candidate state — runtime-only, never persisted. */
+export type ParagraphShortcutCandidateState = 'none' | 'prefix' | 'exact-token'
+
+/**
+ * Get the normalized visible text from a paragraph element.
+ *
+ * Strips Typora-internal invisible content (zero-width chars, placeholder
+ * nodes) and returns the user-visible text.
+ *
+ * This is the SINGLE canonical text source shared by:
+ *   1. Shortcut Candidate resolver
+ *   2. Enter exact-token recognizer (probeInlineParagraphCommand)
+ *   3. Token consumer precondition
+ */
+export function getNormalizedVisibleParagraphText(paragraph: HTMLElement): string {
+  const raw = paragraph.textContent ?? ''
+  const withoutZW = raw.replace(ZERO_WIDTH_CHARS, '')
+  return withoutZW.trim()
+}
+
+/**
+ * Determine the shortcut candidate state for a paragraph.
+ *
+ * Uses getNormalizedVisibleParagraphText() as the canonical text source.
+ *
+ * Rules:
+ *   "."  → prefix
+ *   "。"  → prefix
+ *   ".." → exact-token
+ *   "。。" → exact-token
+ *   anything else → none
+ *
+ * Only applies when shortcut is enabled and paragraph is in valid context.
+ */
+export function resolveParagraphShortcutCandidate(
+  paragraph: HTMLElement,
+  settings: { indentShortcutEnabled: boolean },
+  isComposing: boolean,
+): ParagraphShortcutCandidateState {
+  if (!settings.indentShortcutEnabled) return 'none'
+  if (isComposing) return 'none'
+  if (isInExcludedContext(paragraph)) return 'none'
+
+  const text = getNormalizedVisibleParagraphText(paragraph)
+  // must be exact match — no prefix/startsWith/includes
+  if (text === '.' || text === '。') return 'prefix'
+  if (text === '..' || text === '。。') return 'exact-token'
+  return 'none'
+}
+
+/**
+ * Resolve the effective visual indent from semantic mode,
+ * document default, structural context, and shortcut candidate state.
+ *
+ * Rules (priority order):
+ *   1. FORCE_INDENT     → indent-2
+ *   2. FORCE_FLUSH      → flush
+ *   3. AUTO + candidate ≠ none  → flush  (visual suppression)
+ *   4. AUTO + structural flush   → flush
+ *   5. AUTO             → document default
+ *
+ * This is the SINGLE source of truth for what indent a paragraph should have.
+ * Every visual projection MUST go through this resolver.
+ */
+export function resolveEffectiveParagraphIndent(
+  semanticMode: ParagraphIndentSemanticMode,
+  documentDefault: ParagraphIndentMode,
+  structuralContext: { isFormulaContinuation: boolean } = { isFormulaContinuation: false },
+  shortcutCandidate: ParagraphShortcutCandidateState = 'none',
+): ParagraphEffectiveIndent {
+  if (semanticMode === 'force-indent') return 'indent-2'
+  if (semanticMode === 'force-flush') return 'flush'
+  // AUTO
+  if (shortcutCandidate !== 'none') return 'flush'  // candidate visual suppression
+  if (structuralContext.isFormulaContinuation) return 'flush'
+  return documentDefault === 'indent-2' ? 'indent-2' : 'flush'
+}
+
+/**
+ * Apply the effective visual indent to a paragraph DOM element.
+ *
+ * This is the SINGLE place where visual projection happens.
+ * Clears all stale visual state (class, inline style) before applying.
+ * NEVER modifies semantic state.
+ */
+export function applyEffectiveParagraphIndent(
+  paragraph: HTMLElement,
+  effective: ParagraphEffectiveIndent,
+): void {
+  // Clear all visual state first
+  paragraph.classList.remove(EFFECTIVE_INDENT_CLASS)
+  paragraph.classList.remove(EFFECTIVE_FLUSH_CLASS)
+  paragraph.style.textIndent = ''
+
+  if (effective === 'indent-2') {
+    paragraph.classList.add(EFFECTIVE_INDENT_CLASS)
+  } else {
+    // FLUSH: apply explicit flush class to prevent parent text-indent inheritance
+    paragraph.classList.add(EFFECTIVE_FLUSH_CLASS)
+  }
+}
+
 /**
  * Unified semantic entry point: set the indent mode for a paragraph.
  *
@@ -623,7 +762,7 @@ export type ParagraphIndentSemanticMode = 'auto' | 'force-indent' | 'force-flush
  * Rendering chain:
  *   semantic = force-indent
  *   → setParagraphIndentMode(block, 'force-indent')
- *   → FORCE_INDENT_CLASS + data-inkchapter-indent-mode="force-indent"
+ *   → EFFECTIVE_INDENT_CLASS + data-inkchapter-indent-mode="force-indent"
  *   → refreshParagraphIndentStyles skips (already marked)
  *   → CSS: .inkchapter-paragraph-indent-2 { text-indent: 2em }
  */
@@ -631,26 +770,28 @@ export function setParagraphIndentMode(
   paragraph: HTMLElement,
   mode: ParagraphIndentSemanticMode,
 ): void {
-  // Clear previous state
-  paragraph.classList.remove(FORCE_INDENT_CLASS)
+  // Semantic only — writes data-inkchapter-indent-mode attribute.
+  // Visual projection is handled separately by resolveEffectiveParagraphIndent
+  // and applyEffectiveParagraphIndent.
   paragraph.removeAttribute(INDENT_MODE_ATTR)
 
   if (mode === 'force-indent') {
-    paragraph.classList.add(FORCE_INDENT_CLASS)
     paragraph.setAttribute(INDENT_MODE_ATTR, 'force-indent')
   } else if (mode === 'force-flush') {
     paragraph.setAttribute(INDENT_MODE_ATTR, 'force-flush')
-    paragraph.style.textIndent = '0'
   }
-  // 'auto': no explicit state (falls through to default / formula rules)
+  // 'auto': attribute absent = AUTO
 }
 
 /**
  * Get the current semantic indent mode from a paragraph element.
+ *
+ * Reads ONLY from data-inkchapter-indent-mode attribute.
+ * NEVER reads from CSS classes — visual projection is NOT semantic state.
  */
 export function getParagraphIndentMode(el: HTMLElement): ParagraphIndentSemanticMode {
-  if (el.classList.contains(FORCE_INDENT_CLASS)) return 'force-indent'
   const attr = el.getAttribute(INDENT_MODE_ATTR)
+  if (attr === 'force-indent') return 'force-indent'
   if (attr === 'force-flush') return 'force-flush'
   return 'auto'
 }
@@ -882,7 +1023,7 @@ export function probeInlineParagraphCommand(
   if (!isContentBlock(currentBlock)) return null
   if (isInExcludedContext(currentBlock)) return null
 
-  const text = (currentBlock.textContent ?? '').trim()
+  const text = getNormalizedVisibleParagraphText(currentBlock)
   const token = recognizeParagraphIndentCommand(text)
   if (!token) return null
 
