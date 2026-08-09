@@ -13,7 +13,7 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-settings-layout-v2'
+const HEADING_BUILD_MARKER = 'inkchapter-backspace-trace-isolation-r37-a1b2c'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
