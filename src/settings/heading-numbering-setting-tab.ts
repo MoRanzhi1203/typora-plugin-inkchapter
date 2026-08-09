@@ -665,6 +665,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
         continue
       }
 
+      // loose H6 unconfigured: native/original
+      if (structure.showLevelOneNumber && lv === 6 && !s.s6Configured) {
+        const token = el('span', 'inkchapter-preview-token', row)
+        token.textContent = '未自定义'
+        continue
+      }
+
       const token = el('span', 'inkchapter-preview-token', row)
       token.textContent = item?.label || `（无编号）`
     }
@@ -2395,7 +2402,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const hiddenLevels = new Set<HeadingLevel>()
     // Slot model: no hidden levels needed — refs are slot-relative
 
-    const after = normalizeContextualFormatAfterDrag(moved, lv, hiddenLevels, style.tokenStyle)
+    // Use slotLvForDrag (StyleSlot) as currentLevel — NOT physical lv.
+    // Segments store StyleSlot indices in .level; comparing against physical lv
+    // will never find the SELF segment, causing normalize to auto-create a
+    // duplicate at the wrong level (e.g. physical 4 → S4 → H5).
+    const after = normalizeContextualFormatAfterDrag(moved, slotLvForDrag, hiddenLevels, style.tokenStyle)
 
     // Preserve selected segment id after drag
     const draggedId = before[draggingIdx]?.id
@@ -2426,6 +2437,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Enable toggle (skip for H1)
     if (lv > 1) {
       this.addCustomCheckbox(section, '启用本级编号', style.enabled, (checked) => {
+        if (lv === 6 && this.headingDraft) { const st2 = resolveHeadingStructure(this.headingDraft); if (st2.mode === 'loose') this.headingDraft.s6Configured = true }
         this.numberingService.updateLevelStyle(lv, { enabled: checked })
         this.onshow()
       })
@@ -2612,7 +2624,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const hiddenLevels = new Set<HeadingLevel>()
     // Slot model: no hidden levels needed — refs are slot-relative
 
-    const after = normalizeMultilevelFormatAfterDrag(moved, lv, hiddenLevels)
+    const slotLv = this.resolveSlotLevel(lv) ?? lv
+    const after = normalizeMultilevelFormatAfterDrag(moved, slotLv, hiddenLevels)
 
     this.cancelDrag('commit')
 
@@ -3074,6 +3087,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     const slotLv = this.resolveSlotLevel(lv)
     if (slotLv === null) return // strict H1: no slot
+    // First edit of loose H6 triggers S6 configured
+    if (lv === 6 && resolveHeadingStructure(s).mode === 'loose') {
+      s.s6Configured = true
+    }
     const currentStyle = s.levels[slotLv]
     // Ensure current level reference is present before updating
     // Use slotLv (not physical lv) for slot-relative reference levels.
@@ -3110,6 +3127,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     const slotLv = this.resolveSlotLevel(lv)
     if (slotLv === null) return // strict H1: no slot
+    // First edit of loose H6 triggers S6 configured
+    if (lv === 6 && resolveHeadingStructure(s).mode === 'loose') {
+      s.s6Configured = true
+    }
     const currentStyle = s.levels[slotLv]
     const updated = updateActiveMultilevelFormatVariant(
       currentStyle, slotLv, true, nextFormat,
@@ -3134,6 +3155,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     const slotLv = this.resolveSlotLevel(lv)
     if (slotLv === null) return // strict H1: no slot
+    // First edit of loose H6 triggers S6 configured
+    if (lv === 6 && resolveHeadingStructure(s).mode === 'loose') {
+      s.s6Configured = true
+    }
     const currentStyle = s.levels[slotLv]
     // Always read/write withLevelOne in slot model.
     const activeFmt = getActiveContextualFormatVariant(currentStyle, true, slotLv)
@@ -4562,9 +4587,59 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const structureResolved = resolveHeadingStructure(s)
     const isH1Disabled = physicalLevel === 1 && !structureResolved.showLevelOneNumber
 
+    // ── S6: loose H6 configured state ──
+    const isLooseH6 = structureResolved.showLevelOneNumber && physicalLevel === 6
+    const s6Configured = isLooseH6 && s.s6Configured
+
     // Dual-column: editor sections + preview
     const dualCol = el('div', 'inkchapter-editor-dual-col', body)
     const editorCol = el('div', 'inkchapter-editor-main', dualCol)
+
+    // ── S6 unconfigured: show placeholder ──
+    if (isLooseH6 && !s6Configured) {
+      const s6Notice = el('div', 'inkchapter-s6-notice', editorCol)
+      s6Notice.style.cssText = 'padding:24px;text-align:center;border:1px dashed #ccc;border-radius:8px;margin:8px 0;'
+      const s6Title = el('div', '', s6Notice)
+      s6Title.textContent = 'H6 · 宽松模式'
+      s6Title.style.cssText = 'font-weight:600;font-size:14px;margin-bottom:8px;'
+      const s6Desc = el('div', '', s6Notice)
+      s6Desc.textContent = '当前使用 Typora 原始 H6 样式，未启用墨章自定义格式'
+      s6Desc.style.cssText = 'color:var(--text-muted,#888);font-size:13px;margin-bottom:12px;'
+      const s6EnableBtn = el('button', 'inkchapter-btn', s6Notice)
+      s6EnableBtn.textContent = '启用 H6 自定义'
+      s6EnableBtn.onclick = () => {
+        this.ensureDraft()
+        this.headingDraft!.s6Configured = true
+        this.rerender()
+      }
+      // Preview column
+      const previewCol = el('div', 'inkchapter-editor-preview-col', dualCol)
+      const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
+      const previewTitle = el('div', '', previewSticky)
+      previewTitle.textContent = '实时预览'
+      previewTitle.style.cssText = 'font-weight:600;font-size:13px;margin-bottom:6px;color:var(--text-muted,#666);'
+      this.previewEl = el('div', 'inkchapter-preview', previewSticky)
+      this.updatePreview()
+      return
+    }
+
+    // ── S6 configured: show restore control ──
+    if (isLooseH6 && s6Configured) {
+      const s6Bar = el('div', '', editorCol)
+      s6Bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:#f0f7ff;border-radius:6px;border:1px solid #b3d8ff;margin-bottom:8px;font-size:13px;'
+      const s6Label = el('span', '', s6Bar)
+      s6Label.textContent = '当前：已自定义'
+      const s6RestoreBtn = el('button', 'inkchapter-btn', s6Bar)
+      s6RestoreBtn.textContent = '恢复原始 H6'
+      s6RestoreBtn.style.cssText = 'font-size:12px;'
+      s6RestoreBtn.onclick = () => {
+        this.ensureDraft()
+        this.headingDraft!.s6Configured = false
+        this.rerender()
+      }
+    }
+
+    // ── Main editor sections ──
 
     if (isH1Disabled) {
       const h1Notice = el('div', 'inkchapter-custom-h1-notice', editorCol)
@@ -4924,7 +4999,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const cb = document.createElement('input')
       cb.type = 'checkbox'; cb.checked = style.enabled
       if (readonly) cb.disabled = true
-      cb.onchange = () => { if (readonly) return; this.numberingService.updateLevelStyle(lv, { enabled: cb.checked }); this.onshow() }
+      cb.onchange = () => { if (readonly) return; if (lv === 6 && this.headingDraft) { const st = resolveHeadingStructure(this.headingDraft); if (st.mode === 'loose') this.headingDraft.s6Configured = true } this.numberingService.updateLevelStyle(lv, { enabled: cb.checked }); this.onshow() }
       cbRow.appendChild(cb)
       const cbLabel = document.createElement('span'); cbLabel.textContent = '启用本级编号'; cbLabel.style.cssText = 'font-size:13px;'
       cbRow.appendChild(cbLabel)

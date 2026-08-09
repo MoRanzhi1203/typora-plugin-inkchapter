@@ -287,6 +287,57 @@ export function createDebugLog(
   }
 }
 
+// ── Drag invariant ─────────────────────────────────
+
+/**
+ * Verify that a reorder operation preserves all segment properties
+ * (count, ids, types, slot levels) — only array order may change.
+ * Returns a diagnostic object for debug logging.
+ */
+export interface DragInvariantResult {
+  countMatch: boolean
+  idsMatch: boolean
+  typesMatch: boolean
+  levelsMatch: boolean
+  beforeCount: number
+  afterCount: number
+}
+
+export function checkDragInvariant(
+  before: readonly ContextualFormatSegment[],
+  after: readonly ContextualFormatSegment[],
+): DragInvariantResult {
+  const beforeIds = new Set(before.map(s => s.id).filter(Boolean))
+  const afterIds = new Set(after.map(s => s.id).filter(Boolean))
+  const idsMatch = beforeIds.size === afterIds.size
+    && [...beforeIds].every(id => afterIds.has(id))
+
+  const beforeTypes = before.map(s => s.type).sort().join(',')
+  const afterTypes = after.map(s => s.type).sort().join(',')
+  const typesMatch = beforeTypes === afterTypes
+
+  const beforeLevels = before
+    .filter(s => s.type === 'level-reference')
+    .map(s => s.level)
+    .sort((a, b) => a - b)
+    .join(',')
+  const afterLevels = after
+    .filter(s => s.type === 'level-reference')
+    .map(s => s.level)
+    .sort((a, b) => a - b)
+    .join(',')
+  const levelsMatch = beforeLevels === afterLevels
+
+  return {
+    countMatch: before.length === after.length,
+    idsMatch,
+    typesMatch,
+    levelsMatch,
+    beforeCount: before.length,
+    afterCount: after.length,
+  }
+}
+
 // ── Contextual format normalization ───────────────────
 
 /**

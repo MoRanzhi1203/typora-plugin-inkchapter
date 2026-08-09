@@ -152,6 +152,7 @@ export function deepMergeSettings(
   if (override.headingStructureMode !== undefined) result.headingStructureMode = override.headingStructureMode
   if (override.preset !== undefined) result.preset = override.preset
   if (override.maxDepth !== undefined) result.maxDepth = override.maxDepth
+  if (override.s6Configured !== undefined) result.s6Configured = override.s6Configured
 
   // Deep-merge levels
   for (const lvStr of Object.keys(override.levels)) {
