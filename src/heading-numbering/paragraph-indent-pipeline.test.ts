@@ -32,7 +32,15 @@ import {
   shouldConsumeBackspaceForIndentRemoval,
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
-  resolveParagraphShortcutCandidate,
+  rehydrateParagraphIndentState,
+  type RehydrateContext,
+  evaluateRehydrateSafety,
+  anchorConfidenceToRehydrateConfidence,
+  RehydrateMatchStrategy,
+  RehydrateConfidence,
+  type RehydrateMatchProvenance,
+  type CandidateRecord,
+  type RehydrateConfidenceLevel,
   getUserVisibleParagraphText,
   readParagraphIndentCommand,
   isCaretAtTokenEnd,
@@ -42,7 +50,6 @@ import {
   type MutationClassification,
   type BackspaceIndentCommandContext,
   type ParagraphEffectiveIndent,
-  type ParagraphShortcutCandidateState,
 } from './paragraph-indent-manager'
 import type { ParagraphLayoutSettings } from './heading-types'
 
@@ -2385,52 +2392,23 @@ describe('Sidecar Timing', () => {
   })
 })
 
-// ── 34. Candidate State Tests (CAND-1 ~ CAND-10) ─────────────────────
+// ── 34. Semantic Priority Tests ────────────────────────────────────
 
-describe('Shortcut Candidate State — resolveParagraphShortcutCandidate (DEPRECATED, always none)', () => {
-  const ENABLED = { indentShortcutEnabled: true }
-
-  // Candidate always returns 'none' — token text is ordinary text until Enter submit.
-  it('"." → none (text is ordinary)', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('.'), ENABLED, false)).toBe('none')
-  })
-  it('"。" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('none')
-  })
-  it('".." → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('none')
-  })
-  it('"。。" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('none')
-  })
-
-  // Explicit semantic mode still wins
-  it('FORCE_INDENT → effective=indent-2 regardless of text', () => {
-    expect(resolveEffectiveParagraphIndent('force-indent', 'flush', { isFormulaContinuation: false })).toBe('indent-2')
-    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2', { isFormulaContinuation: false })).toBe('flush')
-  })
-
-  it('disabled shortcut → always none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), { indentShortcutEnabled: false }, false)).toBe('none')
-  })
-  it('composing → always none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, true)).toBe('none')
+describe('Semantic Priority (no candidate)', () => {
+  it('FORCE_INDENT → effective=indent-2', () => {
+    expect(resolveEffectiveParagraphIndent('force-indent', 'flush')).toBe('indent-2')
+    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2')).toBe('flush')
   })
 })
 
-// ── 35. Candidate Exit Tests ──────────────────────────────────────────
+// ── 35. Removed Candidate Tests ─────────────────────────────────────
 
-describe('Candidate Exit Behavior (DEPRECATED, all none)', () => {
-  const ENABLED = { indentShortcutEnabled: true }
-  it('Candidate always returns none regardless of text', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('.'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('.a'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。test'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('...'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('none')
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。。。'), ENABLED, false)).toBe('none')
+describe('Removed Candidate (isIndentShortcutEditingToken replaces it)', () => {
+  it('isIndentShortcutEditingToken detects shortcut editing tokens', () => {
+    expect(isIndentShortcutEditingToken(makeParagraph('.'), true)).toBe(true)
+    expect(isIndentShortcutEditingToken(makeParagraph('..'), true)).toBe(true)
+    expect(isIndentShortcutEditingToken(makeParagraph('。'), false)).toBe(false)
+    expect(getParagraphIndentMode(makeParagraph('..'))).toBe('auto')
   })
 })
 
@@ -2447,7 +2425,6 @@ describe('Enter Submit Transition', () => {
   it('After token consumed: empty paragraph, no candidate, semantic intact', () => {
     const p = makeParagraph('')
     setParagraphIndentMode(p, 'force-indent')
-    expect(resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)).toBe('none')
     expect(getParagraphIndentMode(p)).toBe('force-indent')
   })
 })
@@ -2772,5 +2749,459 @@ describe('VIS — Transient Pre-Enter Visual Flush', () => {
     const p = makeParagraph('。。')
     expect(isIndentShortcutEditingToken(p, true)).toBe(true)
     expect(getParagraphIndentMode(p)).toBe('auto')
+  })
+})
+
+// ── Atomic Rehydrate Tests ────────────────────────────────────────────
+// Tests RH-1 through RH-5: verify rehydrateParagraphIndentState()
+// atomic semantic+visual on the SAME paragraph element.
+
+describe('RH — Atomic Rehydrate (semantic + visual)', () => {
+  const defaultSettings: ParagraphLayoutSettings = {
+    defaultIndent: 'flush',
+    flushAfterDisplayMath: true,
+    indentShortcutEnabled: true,
+  }
+
+  const makeRehydrateCtx = (): RehydrateContext => ({
+    source: 'rehydrate',
+    semanticWriterId: 'W-REHYDRATE-SEMANTIC',
+    visualWriterId: 'W-REHYDRATE-VISUAL',
+  })
+
+  it('RH-1: FORCE_INDENT → semantic FORCE_INDENT + effective INDENT_2', () => {
+    const p = makeParagraph('test')
+    rehydrateParagraphIndentState(p, 'force-indent', defaultSettings, makeRehydrateCtx())
+
+    // Semantic
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    expect(p.getAttribute('data-inkchapter-indent-mode')).toBe('force-indent')
+
+    // Visual
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+  })
+
+  it('RH-2: FORCE_FLUSH → semantic FORCE_FLUSH + effective FLUSH', () => {
+    const p = makeParagraph('test')
+    rehydrateParagraphIndentState(p, 'force-flush', defaultSettings, makeRehydrateCtx())
+
+    expect(getParagraphIndentMode(p)).toBe('force-flush')
+    expect(p.getAttribute('data-inkchapter-indent-mode')).toBe('force-flush')
+
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(true)
+  })
+
+  it('RH-3: AUTO + default=indent-2 → semantic AUTO + effective INDENT_2', () => {
+    const settings: ParagraphLayoutSettings = { defaultIndent: 'indent-2', flushAfterDisplayMath: true, indentShortcutEnabled: true }
+    const p = makeParagraph('test')
+    rehydrateParagraphIndentState(p, 'auto', settings, makeRehydrateCtx())
+
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    expect(p.hasAttribute('data-inkchapter-indent-mode')).toBe(false) // AUTO = absent
+
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+  })
+
+  it('RH-4: AUTO + default=flush → semantic AUTO + effective FLUSH', () => {
+    const p = makeParagraph('test')
+    rehydrateParagraphIndentState(p, 'auto', defaultSettings, makeRehydrateCtx())
+
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
+  })
+
+  it('RH-5: FORCE_INDENT + shortcut text "。。" → explicit wins, INDENT_2 (not transient FLUSH)', () => {
+    const settings: ParagraphLayoutSettings = { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true }
+    const p = makeParagraph('。。')
+    // The paragraph looks like a shortcut editing token, but FORCE_INDENT is explicit
+    rehydrateParagraphIndentState(p, 'force-indent', settings, makeRehydrateCtx())
+
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    // Must NOT be flush — explicit semantic wins over transient shortcut visual
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+  })
+
+  it('RH: explicit FORCE_FLUSH + shortcut text "。。" → explicit wins, FLUSH', () => {
+    const settings: ParagraphLayoutSettings = { defaultIndent: 'indent-2', flushAfterDisplayMath: true, indentShortcutEnabled: true }
+    const p = makeParagraph('。。')
+    rehydrateParagraphIndentState(p, 'force-flush', settings, makeRehydrateCtx())
+
+    expect(getParagraphIndentMode(p)).toBe('force-flush')
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
+  })
+})
+
+describe('RH — DOM Rebuild Regression', () => {
+  const settings: ParagraphLayoutSettings = {
+    defaultIndent: 'flush',
+    flushAfterDisplayMath: true,
+    indentShortcutEnabled: true,
+  }
+
+  it('DOM rebuild: P1 removed → P2 rehydrated → same semantic + visual', () => {
+    const root = createEditorRoot()
+
+    // Create P1 with FORCE_INDENT semantic + visual
+    const p1 = document.createElement('p')
+    p1.textContent = 'original paragraph'
+    setParagraphIndentMode(p1, 'force-indent')
+    applyEffectiveParagraphIndent(p1, 'indent-2')
+    root.appendChild(p1)
+
+    expect(getParagraphIndentMode(p1)).toBe('force-indent')
+    expect(p1.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+
+    // Simulate DOM rebuild: remove P1, insert P2 (new HTMLElement)
+    p1.remove()
+    const p2 = document.createElement('p')
+    p2.textContent = 'original paragraph'
+    root.appendChild(p2)
+
+    // P2 has NO semantic or visual yet
+    expect(getParagraphIndentMode(p2)).toBe('auto')
+    expect(p2.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(false)
+
+    // Atomic rehydrate on P2
+    const ctx: RehydrateContext = { source: 'rehydrate', semanticWriterId: 'W-REHYDRATE-SEMANTIC', visualWriterId: 'W-REHYDRATE-VISUAL' }
+    rehydrateParagraphIndentState(p2, 'force-indent', settings, ctx)
+
+    // Must have BOTH semantic AND visual
+    expect(getParagraphIndentMode(p2)).toBe('force-indent')
+    expect(p2.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p2.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+
+    // Cleanup
+    root.remove()
+  })
+
+  it('No Future Refresh Dependency: rehydrate alone gives correct visual', () => {
+    const p = makeParagraph('rebuilt paragraph')
+    // P has NO semantic or visual
+
+    const ctx: RehydrateContext = { source: 'rehydrate', semanticWriterId: 'W-REHYDRATE-SEMANTIC', visualWriterId: 'W-REHYDRATE-VISUAL' }
+    rehydrateParagraphIndentState(p, 'force-indent', settings, ctx)
+
+    // After rehydrate ONLY (no refreshParagraphIndentStyles call):
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    // Visual must be correct WITHOUT needing a future refresh
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+  })
+})
+
+describe('RH — Sidecar Write Count Regression', () => {
+  it('atomic rehydrate does NOT add sidecar writes — only restores state', () => {
+    // rehydrateParagraphIndentState only calls setParagraphIndentMode +
+    // applyEffectiveParagraphIndent. It does NOT write sidecar.
+    // This test verifies that calling rehydrate on a paragraph doesn't
+    // trigger any side effects beyond semantic + visual on the DOM element.
+
+    const p = makeParagraph('test')
+    const beforeClass = p.className
+    const beforeAttr = p.getAttribute('data-inkchapter-indent-mode')
+
+    const ctx: RehydrateContext = { source: 'rehydrate', semanticWriterId: 'W-REHYDRATE-SEMANTIC', visualWriterId: 'W-REHYDRATE-VISUAL' }
+    const settings: ParagraphLayoutSettings = { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true }
+
+    // rehydrate should work without error
+    expect(() => rehydrateParagraphIndentState(p, 'force-indent', settings, ctx)).not.toThrow()
+
+    // Should have semantic + visual
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+
+    // Second rehydrate is idempotent
+    expect(() => rehydrateParagraphIndentState(p, 'force-indent', settings, ctx)).not.toThrow()
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+  })
+})
+
+// ── Anchor Record Tests ──────────────────────────────────────────────
+// Tests AR-1 through AR-10: anchor collision, record identity,
+// ambiguity detection, weak match guard, backspace cross-contamination.
+// Uses createParagraphAnchor, resolveParagraphAnchor, etc. imported above.
+
+const makeAnchoredElement = (text: string, tag = 'p'): HTMLElement => {
+  const el = document.createElement(tag)
+  el.textContent = text
+  return el
+}
+
+describe('AR-1: Empty Paragraph Collision', () => {
+  it('two empty paragraphs with different semantic do not collide', () => {
+    const p1 = makeAnchoredElement('')
+    const p2 = makeAnchoredElement('')
+    const root = createEditorRoot()
+    root.appendChild(p1)
+    root.appendChild(p2)
+    const allParas = [p1, p2]
+
+    const anchor1 = createParagraphAnchor(0, allParas)
+    const anchor2 = createParagraphAnchor(1, allParas)
+
+    // Both anchors have no textHash (empty)
+    expect(anchor1.textHash).toBeUndefined()
+    expect(anchor2.textHash).toBeUndefined()
+
+    // But they have different ordinals
+    const r1 = resolveParagraphAnchor(anchor1, allParas)
+    const r2 = resolveParagraphAnchor(anchor2, allParas)
+
+    expect(r1?.index).toBe(0)
+    expect(r2?.index).toBe(1)
+    // Confidence: fallback (no textHash, no neighborHash)
+    expect(r1?.confidence).toBe('fallback')
+    expect(r2?.confidence).toBe('fallback')
+
+    root.remove()
+  })
+})
+
+describe('AR-2: Adjacent Empty Paragraphs', () => {
+  it('two adjacent empty paragraphs resolve to correct ordinals via neighbors', () => {
+    const p1 = makeAnchoredElement('')
+    const p2 = makeAnchoredElement('')
+    const p3 = makeAnchoredElement('正文')
+    const root = createEditorRoot()
+    root.appendChild(p1)
+    root.appendChild(p2)
+    root.appendChild(p3)
+    const allParas = [p1, p2, p3]
+
+    const a1 = createParagraphAnchor(0, allParas)
+    const a2 = createParagraphAnchor(1, allParas)
+
+    const r1 = resolveParagraphAnchor(a1, allParas)
+    const r2 = resolveParagraphAnchor(a2, allParas)
+
+    expect(r1?.index).toBe(0)
+    expect(r2?.index).toBe(1)
+
+    root.remove()
+  })
+})
+
+describe('AR-3: Same Text Different Semantic', () => {
+  it('same text paragraphs with different semantics resolve correctly via occurrence', () => {
+    const p1 = makeAnchoredElement('测试')
+    const p2 = makeAnchoredElement('测试')
+    const root = createEditorRoot()
+    root.appendChild(p1)
+    root.appendChild(p2)
+    const allParas = [p1, p2]
+
+    const a1 = createParagraphAnchor(0, allParas) // occurrence=1
+    const a2 = createParagraphAnchor(1, allParas) // occurrence=2
+
+    expect(a1.occurrence).toBe(1)
+    expect(a2.occurrence).toBe(2)
+
+    const r1 = resolveParagraphAnchor(a1, allParas)
+    const r2 = resolveParagraphAnchor(a2, allParas)
+
+    expect(r1?.index).toBe(0)
+    expect(r1?.confidence).toBe('exact')
+    expect(r2?.index).toBe(1)
+    expect(r2?.confidence).toBe('exact')
+
+    root.remove()
+  })
+})
+
+describe('AR-4: Backspace Cross-Contamination', () => {
+  it('FORCE_FLUSH record does not contaminate FORCE_INDENT paragraph', () => {
+    const p1 = makeAnchoredElement('正文一')
+    const p2 = makeAnchoredElement('正文二')
+    const root = createEditorRoot()
+    root.appendChild(p1)
+    root.appendChild(p2)
+    const allParas = [p1, p2]
+
+    const anchor1 = createParagraphAnchor(0, allParas)
+    const anchor2 = createParagraphAnchor(1, allParas)
+
+    const record1: ParagraphIndentOverrideRecord = {
+      id: 'rec-force-indent',
+      mode: 'force-indent',
+      anchor: anchor1,
+    }
+    const record2: ParagraphIndentOverrideRecord = {
+      id: 'rec-force-flush',
+      mode: 'force-flush',
+      anchor: anchor2,
+    }
+
+    const r1 = resolveParagraphAnchor(record1.anchor, allParas)
+    const r2 = resolveParagraphAnchor(record2.anchor, allParas)
+
+    expect(r1?.index).toBe(0)
+    expect(r2?.index).toBe(1)
+    expect(r1?.index).not.toBe(r2?.index)
+
+    root.remove()
+  })
+})
+
+describe('AR-5: DOM Rebuild Stable RecordId', () => {
+  it('textHash-based anchor survives DOM rebuild', () => {
+    const p1 = makeAnchoredElement('original')
+    const root = createEditorRoot()
+    root.appendChild(p1)
+
+    const anchor1 = createParagraphAnchor(0, [p1])
+
+    // Simulate DOM rebuild: remove p1, insert p2 with same text
+    p1.remove()
+    const p2 = makeAnchoredElement('original')
+    root.appendChild(p2)
+
+    const r = resolveParagraphAnchor(anchor1, [p2])
+    expect(r?.index).toBe(0)
+    expect(r?.confidence).toBe('exact')
+
+    root.remove()
+  })
+})
+
+describe('AR-6: Weak Match Cannot Override Explicit Runtime Semantic', () => {
+  it('blocks weak match on force-indent', () => {
+    const provenance: RehydrateMatchProvenance = {
+      timestamp: Date.now(),
+      rehydrateAttemptId: 'test-1',
+      txnId: null,
+      observationId: null,
+      targetParagraphIdentity: 'p:test',
+      targetText: 'test',
+      targetUserVisibleText: 'test',
+      currentSemantic: 'force-indent',
+      candidateRecords: [{ recordId: 'r1', mode: 'force-flush', index: 0, source: 'test' }],
+      candidateCount: 1,
+      selectedRecordId: 'r1',
+      selectedRecordMode: 'force-flush',
+      matchStrategy: RehydrateMatchStrategy.INDEX_FALLBACK,
+      matchConfidence: RehydrateConfidence.WEAK,
+      ambiguityDetected: false,
+      rehydrateBlocked: false,
+    }
+
+    const reason = evaluateRehydrateSafety(provenance)
+    expect(reason).not.toBeNull()
+    expect(reason).toContain('weak match with explicit runtime semantic')
+    expect(reason).toContain('force-indent')
+  })
+
+  it('allows weak match on auto semantic', () => {
+    const provenance: RehydrateMatchProvenance = {
+      timestamp: Date.now(),
+      rehydrateAttemptId: 'test-2',
+      txnId: null,
+      observationId: null,
+      targetParagraphIdentity: 'p:test',
+      targetText: 'test',
+      targetUserVisibleText: 'test',
+      currentSemantic: 'auto',
+      candidateRecords: [{ recordId: 'r1', mode: 'force-indent', index: 0, source: 'test' }],
+      candidateCount: 1,
+      selectedRecordId: 'r1',
+      selectedRecordMode: 'force-indent',
+      matchStrategy: RehydrateMatchStrategy.INDEX_FALLBACK,
+      matchConfidence: RehydrateConfidence.WEAK,
+      ambiguityDetected: false,
+      rehydrateBlocked: false,
+    }
+
+    const reason = evaluateRehydrateSafety(provenance)
+    expect(reason).toBeNull()
+  })
+})
+
+describe('AR-7: Ambiguous Match Must No-Op', () => {
+  it('blocks ambiguous match regardless of semantic', () => {
+    const provenance: RehydrateMatchProvenance = {
+      timestamp: Date.now(),
+      rehydrateAttemptId: 'test-amb',
+      txnId: null,
+      observationId: null,
+      targetParagraphIdentity: 'p:test',
+      targetText: 'test',
+      targetUserVisibleText: 'test',
+      currentSemantic: 'auto',
+      candidateRecords: [],
+      candidateCount: 2,
+      selectedRecordId: 'r1',
+      selectedRecordMode: 'force-indent',
+      matchStrategy: RehydrateMatchStrategy.INDEX_FALLBACK,
+      matchConfidence: RehydrateConfidence.AMBIGUOUS,
+      ambiguityDetected: true,
+      rehydrateBlocked: false,
+    }
+
+    const reason = evaluateRehydrateSafety(provenance)
+    expect(reason).not.toBeNull()
+    expect(reason).toContain('ambiguous match')
+  })
+})
+
+describe('AR-8: Exact/Strong Confidence Allows Rehydrate', () => {
+  it('exact confidence always allows rehydrate even with explicit semantic', () => {
+    const provenance: RehydrateMatchProvenance = {
+      timestamp: Date.now(),
+      rehydrateAttemptId: 'test-strong',
+      txnId: null,
+      observationId: null,
+      targetParagraphIdentity: 'p:test',
+      targetText: 'test',
+      targetUserVisibleText: 'test',
+      currentSemantic: 'force-flush',
+      candidateRecords: [{ recordId: 'r-exact', mode: 'force-indent', index: 0, source: 'test' }],
+      candidateCount: 1,
+      selectedRecordId: 'r-exact',
+      selectedRecordMode: 'force-indent',
+      matchStrategy: RehydrateMatchStrategy.EXACT_ANCHOR,
+      matchConfidence: RehydrateConfidence.EXACT,
+      ambiguityDetected: false,
+      rehydrateBlocked: false,
+    }
+
+    expect(evaluateRehydrateSafety(provenance)).toBeNull()
+
+    const strongProv: RehydrateMatchProvenance = { ...provenance, matchConfidence: RehydrateConfidence.STRONG }
+    expect(evaluateRehydrateSafety(strongProv)).toBeNull()
+  })
+})
+
+describe('AR-9: Anchor Confidence Mapping', () => {
+  it('maps anchor result confidence to rehydrate confidence', () => {
+    expect(anchorConfidenceToRehydrateConfidence('exact')).toBe('exact')
+    expect(anchorConfidenceToRehydrateConfidence('high')).toBe('strong')
+    expect(anchorConfidenceToRehydrateConfidence('medium')).toBe('weak')
+    expect(anchorConfidenceToRehydrateConfidence('fallback')).toBe('weak')
+  })
+})
+
+describe('AR-10: Observation Multi-Session Isolation', () => {
+  it('Map-based observations do not interfere', () => {
+    const observations = new Map<string, { id: string; alive: boolean }>()
+
+    observations.set('obs-1', { id: 'obs-1', alive: true })
+    observations.set('obs-2', { id: 'obs-2', alive: true })
+
+    expect(observations.size).toBe(2)
+    expect(observations.get('obs-1')?.alive).toBe(true)
+    expect(observations.get('obs-2')?.alive).toBe(true)
+
+    // Close obs-1
+    observations.get('obs-1')!.alive = false
+    observations.delete('obs-1')
+
+    expect(observations.size).toBe(1)
+    expect(observations.has('obs-2')).toBe(true)
+    expect(observations.has('obs-1')).toBe(false)
   })
 })

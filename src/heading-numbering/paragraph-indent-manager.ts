@@ -28,6 +28,83 @@ const EFFECTIVE_INDENT_CLASS = 'inkchapter-paragraph-effective-indent-2'
 // Mutually exclusive with EFFECTIVE_INDENT_CLASS.
 const EFFECTIVE_FLUSH_CLASS = 'inkchapter-paragraph-effective-flush'
 
+// ── Writer Registry (dev-only diagnostic) ──────────────────────────
+// Tracks the full writer history for each paragraph.
+// Write-only diagnostic — never used to gate behavior.
+
+/** High-level writer IDs for tracing paragraph state modifications. */
+export const WriterIds = {
+  ENTER_COMMIT_SEMANTIC: 'W-ENTER-COMMIT-SEMANTIC',
+  ENTER_COMMIT_VISUAL: 'W-ENTER-COMMIT-VISUAL',
+  CARET_ENTER_RESTORE: 'W-CARET-ENTER-RESTORE',
+  BACKSPACE_SEMANTIC: 'W-BACKSPACE-SEMANTIC',
+  EXPLICIT_UI_SEMANTIC: 'W-EXPLICIT-UI-SEMANTIC',
+  REFRESH_VISUAL: 'W-REFRESH-VISUAL',
+  LOCAL_PROJECTION_VISUAL: 'W-LOCAL-PROJECTION-VISUAL',
+  SETTINGS_REFRESH_VISUAL: 'W-SETTINGS-REFRESH-VISUAL',
+  REHYDRATE_SEMANTIC: 'W-REHYDRATE-SEMANTIC',
+  REHYDRATE_VISUAL: 'W-REHYDRATE-VISUAL',
+  SIDECAR_RECONSTRUCT_SEMANTIC: 'W-SIDECAR-RECONSTRUCT-SEMANTIC',
+  SIDECAR_RECONSTRUCT_VISUAL: 'W-SIDECAR-RECONSTRUCT-VISUAL',
+  DOM_REBUILD_RESTORE: 'W-DOM-REBUILD-RESTORE',
+  LEGACY_MARKER_VISUAL: 'W-LEGACY-MARKER-VISUAL',
+  LEGACY_MIGRATION_SEMANTIC: 'W-LEGACY-MIGRATION-SEMANTIC',
+  SIDECAR_WRITE: 'W-SIDECAR-WRITE',
+  SIDECAR_LOAD: 'W-SIDECAR-LOAD',
+  CARET_OTHER: 'W-CARET-OTHER',
+} as const
+
+export interface WriterRecord {
+  timestamp: number
+  relativeMs: number
+  writerId: string
+  reason: string
+  txnId?: string
+  paragraphIdentity?: string
+  beforeSemantic?: string
+  afterSemantic?: string
+  beforeClass?: string
+  afterClass?: string
+}
+
+const writerHistoryMap = new WeakMap<HTMLElement, WriterRecord[]>()
+const MAX_WRITER_HISTORY = 50
+
+/** Record a paragraph state write with high-level writer context. fail-open. */
+export function recordParagraphWrite(
+  el: HTMLElement,
+  writerId: string,
+  reason: string,
+  options?: { txnId?: string; beforeSemantic?: string; afterSemantic?: string; beforeClass?: string; afterClass?: string },
+): void {
+  try {
+    const history = writerHistoryMap.get(el) ?? []
+    const record: WriterRecord = {
+      timestamp: performance.now(),
+      relativeMs: history.length > 0 ? performance.now() - history[0].timestamp : 0,
+      writerId,
+      reason,
+      ...options,
+    }
+    history.push(record)
+    if (history.length > MAX_WRITER_HISTORY) history.shift()
+    writerHistoryMap.set(el, history)
+  } catch { /* fail-open */ }
+}
+
+/** Read the full writer history for a paragraph element. */
+export function getParagraphWriterHistory(el: HTMLElement): WriterRecord[] {
+  return writerHistoryMap.get(el) ?? []
+}
+
+/** Read the last writer for a paragraph element. */
+export function getLastParagraphWriter(el: HTMLElement): WriterRecord | null {
+  const h = writerHistoryMap.get(el)
+  return h && h.length > 0 ? h[h.length - 1] : null
+}
+
+// ────────────────────────────────────────────────────────────────────
+
 // Typora invisible characters and placeholder patterns to strip during normalization.
 const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\uFEFF]/g
 
@@ -239,19 +316,11 @@ export function canTriggerIndentShortcut(): boolean {
 }
 
 /**
- * Check if a paragraph DOM element has the effective indent-2 visual class.
- * @deprecated Legacy visual check — prefer getParagraphIndentMode() for semantic queries.
- */
-export function hasForceIndentClass(el: HTMLElement): boolean {
-  return el.classList.contains(EFFECTIVE_INDENT_CLASS)
-}
-
-/**
  * Apply visual indent projection to a paragraph DOM element.
  * Purely visual — does NOT affect semantic state.
  * @deprecated Prefer applyEffectiveParagraphIndent() for unified visual projection.
  */
-export function applyParagraphIndent(el: HTMLElement, indentValue: string): void {
+function applyParagraphIndent(el: HTMLElement, indentValue: string): void {
   if (indentValue === '2em') {
     el.classList.add(EFFECTIVE_INDENT_CLASS)
   } else {
@@ -288,8 +357,8 @@ export function applyIndentMarkersFromDOM(editorRoot: HTMLElement): number {
         const el = next as HTMLElement
         if (el.tagName === 'P') {
           // Set semantic FORCE_INDENT + apply effective projection
-          setParagraphIndentMode(el, 'force-indent')
-          applyEffectiveParagraphIndent(el, 'indent-2')
+          setParagraphIndentMode(el, 'force-indent', WriterIds.LEGACY_MIGRATION_SEMANTIC)
+          applyEffectiveParagraphIndent(el, 'indent-2', WriterIds.LEGACY_MARKER_VISUAL)
           count++
           break
         }
@@ -356,7 +425,7 @@ export function refreshParagraphIndentStyles(
       { isShortcutEditingToken: isEditingToken },
     )
 
-    applyEffectiveParagraphIndent(p, effective)
+    applyEffectiveParagraphIndent(p, effective, WriterIds.REFRESH_VISUAL)
   }
 }
 
@@ -551,7 +620,7 @@ export function applyIndentByMarkerIndex(editorRoot: HTMLElement, markerIndex: n
   const p = findNextParagraphAfter(marker)
   if (!p) return false
 
-  applyParagraphIndent(p, '2em')
+  applyEffectiveParagraphIndent(p, 'indent-2', WriterIds.LEGACY_MARKER_VISUAL)
   return true
 }
 
@@ -615,22 +684,6 @@ export function recognizeParagraphIndentCommand(text: string): IndentCommandToke
   return null
 }
 
-/**
- * Resolve the effective indent for a paragraph element.
- */
-export function resolveParagraphElementIndent(
-  el: HTMLElement,
-  settings: ParagraphLayoutSettings,
-): ParagraphIndentMode {
-  // Check force-indent marker
-  if (hasForceIndentClass(el)) return 'indent-2'
-
-  // Check formula continuation
-  if (settings.flushAfterDisplayMath && isAfterDisplayMath(el)) return 'flush'
-
-  return settings.defaultIndent
-}
-
 // ── Unified Semantic Paragraph Indent Setter ─────────────────────────────
 
 /** Data attribute storing the semantic indent mode. */
@@ -641,9 +694,6 @@ export type ParagraphIndentSemanticMode = 'auto' | 'force-indent' | 'force-flush
 
 /** Effective visual indent result. */
 export type ParagraphEffectiveIndent = 'flush' | 'indent-2'
-
-/** Shortcut candidate state — runtime-only, never persisted. */
-export type ParagraphShortcutCandidateState = 'none' | 'prefix' | 'exact-token'
 
 /**
  * Get the user-visible text from a paragraph element.
@@ -659,11 +709,6 @@ export type ParagraphShortcutCandidateState = 'none' | 'prefix' | 'exact-token'
 export function getUserVisibleParagraphText(paragraph: HTMLElement): string {
   const raw = paragraph.textContent ?? ''
   return raw.replace(ZERO_WIDTH_CHARS, '')
-}
-
-/** @deprecated Use getUserVisibleParagraphText() instead. */
-export function getNormalizedVisibleParagraphText(paragraph: HTMLElement): string {
-  return getUserVisibleParagraphText(paragraph).trim()
 }
 
 /**
@@ -789,18 +834,6 @@ function countVisibleCharsBefore(
 }
 
 /**
- * @deprecated DEAD/DEBUG-ONLY — shortcut no longer uses Candidate visual suppression.
- * Token text is ordinary text until Enter submit. Kept for forensic/compatibility shim.
- */
-export function resolveParagraphShortcutCandidate(
-  _paragraph: HTMLElement,
-  _settings: { indentShortcutEnabled: boolean },
-  _isComposing: boolean,
-): ParagraphShortcutCandidateState {
-  return 'none'
-}
-
-/**
  * Resolve the effective visual indent from semantic mode,
  * document default, structural context, and transient editing state.
  *
@@ -838,6 +871,7 @@ export function resolveEffectiveParagraphIndent(
 export function applyEffectiveParagraphIndent(
   paragraph: HTMLElement,
   effective: ParagraphEffectiveIndent,
+  writerId?: string,
 ): void {
   // Clear all visual state first
   paragraph.classList.remove(EFFECTIVE_INDENT_CLASS)
@@ -849,6 +883,180 @@ export function applyEffectiveParagraphIndent(
   } else {
     // FLUSH: apply explicit flush class to prevent parent text-indent inheritance
     paragraph.classList.add(EFFECTIVE_FLUSH_CLASS)
+  }
+  recordParagraphWrite(paragraph, writerId ?? 'applyEffectiveParagraphIndent', effective)
+}
+
+// ── Atomic Rehydrate Helper ──────────────────────────────────────────
+// Guarantees: new DOM paragraph after rebuild gets BOTH semantic AND
+// effective visual in ONE synchronous call. Never depends on future
+// refreshParagraphIndentStyles to complete the visual.
+
+/** Context for atomic rehydrate — identifies the source and writer IDs. */
+export interface RehydrateContext {
+  source: 'rehydrate' | 'sidecar-reconstruct' | 'dom-rebuild-restore'
+  semanticWriterId: string
+  visualWriterId: string
+}
+
+/**
+ * Atomic rehydrate: restore semantic AND effective visual on a paragraph.
+ *
+ * For ANY paragraph that receives explicit semantic (FORCE_INDENT/FORCE_FLUSH)
+ * or AUTO during DOM rebuild / sidecar load / rehydrate, this function
+ * guarantees that the SAME paragraph element gets correct effective visual
+ * before the call returns.
+ *
+ * Explicit semantic (force-indent/force-flush) always wins over transient
+ * shortcut visual. AUTO resolves based on structure + document default.
+ *
+ * @param paragraph - The exact paragraph element to rehydrate
+ * @param mode - Semantic mode to restore
+ * @param settings - Current paragraph layout settings
+ * @param context - Writer IDs and source identifier
+ */
+export function rehydrateParagraphIndentState(
+  paragraph: HTMLElement,
+  mode: ParagraphIndentSemanticMode,
+  settings: ParagraphLayoutSettings,
+  context: RehydrateContext,
+): void {
+  // 1. Write semantic state on this exact paragraph
+  setParagraphIndentMode(paragraph, mode, context.semanticWriterId)
+
+  // 2. Compute structural context
+  const structuralContext = {
+    isFormulaContinuation: settings.flushAfterDisplayMath
+      ? isAfterDisplayMath(paragraph)
+      : false,
+  }
+
+  // 3. Resolve effective visual using canonical resolver.
+  //    No transientOptions.isShortcutEditingToken — explicit semantic
+  //    (force-indent/force-flush) always wins in rehydrate.
+  //    AUTO resolves based on structure + document default.
+  const effective = resolveEffectiveParagraphIndent(
+    mode,
+    settings.defaultIndent,
+    structuralContext,
+  )
+
+  // 4. Apply visual on the SAME paragraph element
+  applyEffectiveParagraphIndent(paragraph, effective, context.visualWriterId)
+}
+
+// ── Rehydrate Match Provenance ───────────────────────────────────────
+// Enumerates how a sidecar record was matched to a DOM paragraph.
+// Every rehydrate decision MUST record its strategy.
+
+export const RehydrateMatchStrategy = {
+  RECORD_ID: 'MATCH-RECORD-ID',
+  EXACT_ANCHOR: 'MATCH-EXACT-ANCHOR',
+  NORMALIZED_ANCHOR: 'MATCH-NORMALIZED-ANCHOR',
+  PROMOTED_ANCHOR: 'MATCH-PROMOTED-ANCHOR',
+  INDEX_FALLBACK: 'MATCH-INDEX-FALLBACK',
+  PROXIMITY: 'MATCH-PROXIMITY',
+  LEGACY: 'MATCH-LEGACY',
+  NONE: 'MATCH-NONE',
+} as const
+
+export type RehydrateMatchStrategy = (typeof RehydrateMatchStrategy)[keyof typeof RehydrateMatchStrategy]
+
+export const RehydrateConfidence = {
+  EXACT: 'exact',
+  STRONG: 'strong',
+  WEAK: 'weak',
+  AMBIGUOUS: 'ambiguous',
+} as const
+
+export type RehydrateConfidenceLevel = (typeof RehydrateConfidence)[keyof typeof RehydrateConfidence]
+
+export interface CandidateRecord {
+  recordId: string
+  mode: string
+  anchorRaw?: unknown
+  anchorNormalized?: unknown
+  index: number | null
+  distance?: number
+  score?: number
+  source: string
+}
+
+export interface RehydrateMatchProvenance {
+  timestamp: number
+  rehydrateAttemptId: string
+  txnId: string | null
+  observationId: string | null
+
+  targetParagraphIdentity: string
+  targetText: string | null
+  targetUserVisibleText: string | null
+
+  currentSemantic: string
+
+  candidateRecords: CandidateRecord[]
+  candidateCount: number
+
+  selectedRecordId: string | null
+  selectedRecordMode: string | null
+
+  matchStrategy: RehydrateMatchStrategy
+  matchConfidence: RehydrateConfidenceLevel
+  ambiguityDetected: boolean
+
+  /** True if rehydrate was blocked due to ambiguity/weak match */
+  rehydrateBlocked: boolean
+  /** Reason for blocking, if applicable */
+  blockReason?: string
+}
+
+/**
+ * Determines if a rehydrate should proceed given the match quality and
+ * the paragraph's current runtime semantic.
+ *
+ * Rules:
+ *   exact/strong → always allow
+ *   weak → only if paragraph has no explicit runtime semantic (auto or none)
+ *   ambiguous → blocked (safe no-op)
+ *
+ * @returns null if rehydrate should proceed; blockReason string if blocked
+ */
+export function evaluateRehydrateSafety(
+  provenance: RehydrateMatchProvenance,
+): string | null {
+  const c = provenance.matchConfidence
+
+  if (c === RehydrateConfidence.EXACT || c === RehydrateConfidence.STRONG) {
+    return null // safe to rehydrate
+  }
+
+  if (c === RehydrateConfidence.AMBIGUOUS) {
+    return 'ambiguous match — rehydrate blocked'
+  }
+
+  // WEAK: only allow if no explicit runtime semantic
+  if (c === RehydrateConfidence.WEAK) {
+    const semantic = provenance.currentSemantic
+    if (semantic === 'force-indent' || semantic === 'force-flush') {
+      return `weak match with explicit runtime semantic=${semantic} — rehydrate blocked`
+    }
+    return null // auto → safe to rehydrate even with weak match
+  }
+
+  return null
+}
+
+/**
+ * Convert an AnchorResolveResult's confidence to RehydrateConfidence.
+ */
+export function anchorConfidenceToRehydrateConfidence(
+  confidence: 'exact' | 'high' | 'medium' | 'fallback',
+): RehydrateConfidenceLevel {
+  switch (confidence) {
+    case 'exact': return RehydrateConfidence.EXACT
+    case 'high': return RehydrateConfidence.STRONG
+    case 'medium': return RehydrateConfidence.WEAK
+    case 'fallback': return RehydrateConfidence.WEAK
   }
 }
 
@@ -872,6 +1080,7 @@ export function applyEffectiveParagraphIndent(
 export function setParagraphIndentMode(
   paragraph: HTMLElement,
   mode: ParagraphIndentSemanticMode,
+  writerId?: string,
 ): void {
   // Semantic only — writes data-inkchapter-indent-mode attribute.
   // Visual projection is handled separately by resolveEffectiveParagraphIndent
@@ -883,6 +1092,7 @@ export function setParagraphIndentMode(
   } else if (mode === 'force-flush') {
     paragraph.setAttribute(INDENT_MODE_ATTR, 'force-flush')
   }
+  recordParagraphWrite(paragraph, writerId ?? 'setParagraphIndentMode', mode)
   // 'auto': attribute absent = AUTO
 }
 
