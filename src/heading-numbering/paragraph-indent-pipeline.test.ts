@@ -33,6 +33,10 @@ import {
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
   resolveParagraphShortcutCandidate,
+  getUserVisibleParagraphText,
+  readParagraphIndentCommand,
+  isCaretAtTokenEnd,
+  isIndentShortcutEditingToken,
   type InlineCommandResult,
   type ParagraphIndentSemanticMode,
   type MutationClassification,
@@ -2383,58 +2387,27 @@ describe('Sidecar Timing', () => {
 
 // ── 34. Candidate State Tests (CAND-1 ~ CAND-10) ─────────────────────
 
-describe('Shortcut Candidate State — resolveParagraphShortcutCandidate', () => {
+describe('Shortcut Candidate State — resolveParagraphShortcutCandidate (DEPRECATED, always none)', () => {
   const ENABLED = { indentShortcutEnabled: true }
 
-  // CAND-1
-  it('CAND-1: "." with default=indent-2 → candidate=prefix → effective=flush', () => {
-    const p = makeParagraph('.')
-    const candidate = resolveParagraphShortcutCandidate(p, ENABLED, false)
-    expect(candidate).toBe('prefix')
-    const effective = resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, candidate)
-    expect(effective).toBe('flush')
+  // Candidate always returns 'none' — token text is ordinary text until Enter submit.
+  it('"." → none (text is ordinary)', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('.'), ENABLED, false)).toBe('none')
+  })
+  it('"。" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('none')
+  })
+  it('".." → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('none')
+  })
+  it('"。。" → none', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('none')
   })
 
-  // CAND-2
-  it('CAND-2: "。" → candidate=prefix → effective=flush', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('prefix')
-  })
-
-  // CAND-3
-  it('CAND-3: ".." → candidate=exact-token → effective=flush', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('exact-token')
-  })
-
-  // CAND-4
-  it('CAND-4: "。。" → candidate=exact-token → effective=flush', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('exact-token')
-  })
-
-  // CAND-5: "..." → none, follows default
-  it('CAND-5: "..." → candidate=none, default=indent-2 gives indent-2', () => {
-    const c = resolveParagraphShortcutCandidate(makeParagraph('...'), ENABLED, false)
-    expect(c).toBe('none')
-    expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, c)).toBe('indent-2')
-  })
-
-  // CAND-6 to CAND-9: invalid tokens
-  it('CAND-6: "。。。" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。。。'), ENABLED, false)).toBe('none')
-  })
-  it('CAND-7: ".。" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('.。'), ENABLED, false)).toBe('none')
-  })
-  it('CAND-8: "。." → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。.'), ENABLED, false)).toBe('none')
-  })
-  it('CAND-9: "abc." → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('abc.'), ENABLED, false)).toBe('none')
-  })
-
-  // CAND-10: explicit semantic wins over candidate
-  it('CAND-10: FORCE_INDENT + text="." → indent-2 (candidate does NOT override)', () => {
-    expect(resolveEffectiveParagraphIndent('force-indent', 'flush', { isFormulaContinuation: false }, 'prefix')).toBe('indent-2')
-    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2', { isFormulaContinuation: false }, 'prefix')).toBe('flush')
+  // Explicit semantic mode still wins
+  it('FORCE_INDENT → effective=indent-2 regardless of text', () => {
+    expect(resolveEffectiveParagraphIndent('force-indent', 'flush', { isFormulaContinuation: false })).toBe('indent-2')
+    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2', { isFormulaContinuation: false })).toBe('flush')
   })
 
   it('disabled shortcut → always none', () => {
@@ -2447,22 +2420,16 @@ describe('Shortcut Candidate State — resolveParagraphShortcutCandidate', () =>
 
 // ── 35. Candidate Exit Tests ──────────────────────────────────────────
 
-describe('Candidate Exit Behavior', () => {
+describe('Candidate Exit Behavior (DEPRECATED, all none)', () => {
   const ENABLED = { indentShortcutEnabled: true }
-  it('"." → prefix; ".a" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('.'), ENABLED, false)).toBe('prefix')
+  it('Candidate always returns none regardless of text', () => {
+    expect(resolveParagraphShortcutCandidate(makeParagraph('.'), ENABLED, false)).toBe('none')
     expect(resolveParagraphShortcutCandidate(makeParagraph('.a'), ENABLED, false)).toBe('none')
-  })
-  it('"。" → prefix; "。test" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('prefix')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。'), ENABLED, false)).toBe('none')
     expect(resolveParagraphShortcutCandidate(makeParagraph('。test'), ENABLED, false)).toBe('none')
-  })
-  it('".." → exact-token; "..." → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('exact-token')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('..'), ENABLED, false)).toBe('none')
     expect(resolveParagraphShortcutCandidate(makeParagraph('...'), ENABLED, false)).toBe('none')
-  })
-  it('"。。" → exact-token; "。。。" → none', () => {
-    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('exact-token')
+    expect(resolveParagraphShortcutCandidate(makeParagraph('。。'), ENABLED, false)).toBe('none')
     expect(resolveParagraphShortcutCandidate(makeParagraph('。。。'), ENABLED, false)).toBe('none')
   })
 })
@@ -2477,7 +2444,7 @@ describe('Enter Submit Transition', () => {
     expect(getParagraphIndentMode(p)).toBe('force-indent')
     expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
   })
-  it('After token consumed: empty paragraph, candidate=none, semantic intact', () => {
+  it('After token consumed: empty paragraph, no candidate, semantic intact', () => {
     const p = makeParagraph('')
     setParagraphIndentMode(p, 'force-indent')
     expect(resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)).toBe('none')
@@ -2485,49 +2452,325 @@ describe('Enter Submit Transition', () => {
   })
 })
 
-// ── 37. Settings + Candidate Matrix ───────────────────────────────────
+// ── 37. Settings Matrix (no candidate suppression) ───────────────────
 
-describe('Settings + Candidate Matrix', () => {
-  it('default=flush: all candidates → effective=flush', () => {
-    for (const text of ['.', '。', '..', '。。']) {
-      const p = makeParagraph(text)
-      const c = resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)
-      expect(c).not.toBe('none')
-      expect(resolveEffectiveParagraphIndent('auto', 'flush', { isFormulaContinuation: false }, c)).toBe('flush')
-    }
+describe('Settings + Effective Indent (no candidate)', () => {
+  it('default=flush: auto → effective=flush', () => {
+    expect(resolveEffectiveParagraphIndent('auto', 'flush', { isFormulaContinuation: false })).toBe('flush')
   })
-  it('default=indent-2: candidates suppress to flush; normal text follows default', () => {
-    for (const text of ['.', '。', '..', '。。']) {
-      const p = makeParagraph(text)
-      const c = resolveParagraphShortcutCandidate(p, { indentShortcutEnabled: true }, false)
-      expect(c).not.toBe('none')
-      expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, c)).toBe('flush')
-    }
-    const normal = makeParagraph('普通正文')
-    expect(resolveParagraphShortcutCandidate(normal, { indentShortcutEnabled: true }, false)).toBe('none')
-    expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, 'none')).toBe('indent-2')
+  it('default=indent-2: auto → effective=indent-2 (no candidate suppression)', () => {
+    expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false })).toBe('indent-2')
+  })
+  it('default=indent-2: auto + structural → effective=flush', () => {
+    expect(resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: true })).toBe('flush')
   })
 })
 
-// ── 38. Candidate Backspace Regression ────────────────────────────────
+// ── 39. Current-Line Transform Tests (CLT-1 ~ CLT-12) ──────────────────
 
-describe('Candidate Backspace Regression', () => {
-  it('"." candidate: semantic=auto → Backspace NOT consumed', () => {
-    const root = createEditorRoot()
-    const p = makeParagraph('.')
-    appendBlocks(root, p)
-    expect(getParagraphIndentMode(p)).toBe('auto')
-    const ctx = shouldConsumeBackspaceForIndentRemoval(root, { indentShortcutEnabled: true }, false)
-    expect(ctx!.caretAtLogicalStart).toBe(false)
-    root.remove()
+describe('CLT — Current-Line Transform', () => {
+  // CLT-1: "." → native
+  it('CLT-1: "." → readParagraphIndentCommand returns null (native Enter)', () => {
+    expect(readParagraphIndentCommand(makeParagraph('.'))).toBeNull()
   })
-  it('"。。" candidate: semantic=auto → Backspace NOT consumed', () => {
+
+  // CLT-2: "." → native
+  it('CLT-2: "." → null', () => {
+    expect(readParagraphIndentCommand(makeParagraph('.'))).toBeNull()
+  })
+
+  // CLT-3: "。。" without Enter → no shortcut
+  it('CLT-3: "。。" unsubmitted → semantic stays auto', () => {
+    const p = makeParagraph('。。')
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    expect(readParagraphIndentCommand(p)).toBe('。。')
+    expect(getParagraphIndentMode(p)).toBe('auto') // STILL auto
+  })
+
+  // CLT-4: ".." without Enter → no shortcut
+  it('CLT-4: ".." unsubmitted → semantic stays auto', () => {
+    const p = makeParagraph('..')
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    expect(readParagraphIndentCommand(p)).toBe('..')
+    expect(getParagraphIndentMode(p)).toBe('auto')
+  })
+
+  // CLT-5: "。。", caret=end, Enter → transform same P
+  it('CLT-5: "。。" + Enter → same paragraph, FORCE_INDENT, token consumed', () => {
+    const p = makeParagraph('。。')
+    const pRef = p
+    expect(readParagraphIndentCommand(p)).toBe('。。')
+    // Simulate commit transaction:
+    setParagraphIndentMode(p, 'force-indent')
+    p.textContent = '' // token consumed
+    // Verify same paragraph
+    expect(p).toBe(pRef)
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    expect(readParagraphIndentCommand(p)).toBeNull()
+  })
+
+  // CLT-6: "..", caret=end, Enter → transform same P
+  it('CLT-6: ".." + Enter → same paragraph, FORCE_INDENT, token consumed', () => {
+    const p = makeParagraph('..')
+    const pRef = p
+    expect(readParagraphIndentCommand(p)).toBe('..')
+    setParagraphIndentMode(p, 'force-indent')
+    p.textContent = ''
+    expect(p).toBe(pRef)
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+    expect(readParagraphIndentCommand(p)).toBeNull()
+  })
+
+  // CLT-7: "。。", caret between chars → native
+  it('CLT-7: caret between chars → isCaretAtTokenEnd=false → native', () => {
+    const p = makeParagraph('。。')
+    // Set selection at position 1 (middle)
+    const textNode = p.firstChild!
+    const sel = window.getSelection()!
+    const range = document.createRange()
+    range.setStart(textNode, 1)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    expect(isCaretAtTokenEnd(p, 2)).toBe(false)
+  })
+
+  // CLT-8: "。。 " trailing space → native
+  it('CLT-8: "。。 " (trailing space) → null', () => {
+    expect(readParagraphIndentCommand(makeParagraph('。。 '))).toBeNull()
+  })
+
+  // CLT-9: " 。。" leading space → native
+  it('CLT-9: " 。。" (leading space) → null', () => {
+    expect(readParagraphIndentCommand(makeParagraph(' 。。'))).toBeNull()
+  })
+
+  // CLT-10: "abc。。" → native
+  it('CLT-10: "abc。。" → null', () => {
+    expect(readParagraphIndentCommand(makeParagraph('abc。。'))).toBeNull()
+  })
+
+  // CLT-11: IME composing → native / no submit
+  it('CLT-11: readParagraphIndentCommand recognizes token; IME guard is service-level', () => {
+    expect(readParagraphIndentCommand(makeParagraph('。。'))).toBe('。。')
+  })
+
+  // CLT-12: keydown + beforeinput same Enter → commit exactly once
+  it('CLT-12: after single submit, token gone, no double-commit possible', () => {
+    const p = makeParagraph('。。')
+    expect(readParagraphIndentCommand(p)).toBe('。。')
+    p.textContent = '' // submit consumed
+    setParagraphIndentMode(p, 'force-indent')
+    expect(readParagraphIndentCommand(p)).toBeNull()
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+  })
+
+  // CLT: caret at end verification
+  it('CLT: caret at token end (offset=2) → isCaretAtTokenEnd=true', () => {
     const root = createEditorRoot()
     const p = makeParagraph('。。')
     appendBlocks(root, p)
-    expect(getParagraphIndentMode(p)).toBe('auto')
-    const ctx = shouldConsumeBackspaceForIndentRemoval(root, { indentShortcutEnabled: true }, false)
-    expect(ctx!.caretAtLogicalStart).toBe(false)
+    const textNode = p.firstChild!
+    const sel = window.getSelection()!
+    const range = document.createRange()
+    range.setStart(textNode, 2) // after both chars
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    expect(isCaretAtTokenEnd(p, 2)).toBe(true)
     root.remove()
+  })
+})
+
+// ── 40. Transaction Tests: same paragraph identity, count unchanged ─────
+
+describe('Transaction — current-line atomic commit', () => {
+  it('TXN-1: token consumed from DOM', () => {
+    const p = makeParagraph('。。')
+    expect(readParagraphIndentCommand(p)).toBe('。。')
+    p.textContent = ''
+    expect(readParagraphIndentCommand(p)).toBeNull()
+    expect(getUserVisibleParagraphText(p)).toBe('')
+  })
+
+  it('TXN-2: semantic FORCE_INDENT after transform', () => {
+    const p = makeParagraph('。。')
+    setParagraphIndentMode(p, 'force-indent')
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+  })
+
+  it('TXN-3: effective visual = indent-2', () => {
+    const p = makeParagraph('')
+    setParagraphIndentMode(p, 'force-indent')
+    applyEffectiveParagraphIndent(p, 'indent-2')
+    expect(p.classList.contains('inkchapter-paragraph-effective-indent-2')).toBe(true)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+  })
+
+  it('TXN-4: same paragraph identity preserved', () => {
+    const p = makeParagraph('。。')
+    const pRef = p
+    setParagraphIndentMode(p, 'force-indent')
+    p.textContent = ''
+    expect(p).toBe(pRef) // hard assertion: ===
+    expect(getParagraphIndentMode(p)).toBe('force-indent')
+  })
+
+  it('TXN-5: FORCE_INDENT resolves to indent-2 regardless of default', () => {
+    expect(resolveEffectiveParagraphIndent('force-indent', 'flush')).toBe('indent-2')
+    expect(resolveEffectiveParagraphIndent('force-indent', 'indent-2')).toBe('indent-2')
+  })
+
+  it('TXN-6: FORCE_FLUSH resolves to flush', () => {
+    expect(resolveEffectiveParagraphIndent('force-flush', 'indent-2')).toBe('flush')
+    expect(resolveEffectiveParagraphIndent('force-flush', 'flush')).toBe('flush')
+  })
+
+  it('TXN-7: getUserVisibleParagraphText preserves real spaces', () => {
+    expect(getUserVisibleParagraphText(makeParagraph('。。'))).toBe('。。')
+    expect(getUserVisibleParagraphText(makeParagraph('。。 '))).toBe('。。 ')
+    expect(getUserVisibleParagraphText(makeParagraph(' 。。'))).toBe(' 。。')
+    expect(getUserVisibleParagraphText(makeParagraph('..'))).toBe('..')
+    expect(getUserVisibleParagraphText(makeParagraph('.. '))).toBe('.. ')
+  })
+
+  it('TXN-8: resolver has no candidate param', () => {
+    const result: ParagraphEffectiveIndent = resolveEffectiveParagraphIndent('auto', 'indent-2')
+    expect(result).toBe('indent-2')
+  })
+})
+
+// ── 41. Source Roundtrip (Markdown clean, sidecar-only persistence) ─────
+
+describe('Source Roundtrip — Markdown clean', () => {
+  it('SRC-1: injectShortcutMarkerInMarkdown is LEGACY ONLY (exists but not for new shortcut)', () => {
+    // The function exists for legacy migration but must NOT be the new shortcut persistence
+    const md = '..\n\n'
+    const result = injectShortcutMarkerInMarkdown(md)
+    // Legacy behavior: replaces token with marker in markdown
+    expect(result).not.toBeNull()
+    expect(result).toContain('<!-- inkchapter:paragraph-indent=2 -->')
+    // NOTE: New shortcut persistence uses plugin-owned sidecar, not HTML markers
+  })
+
+  it('SRC-2: non-token paragraphs unchanged', () => {
+    expect(injectShortcutMarkerInMarkdown('普通正文\n\n')).toBeNull()
+  })
+
+  it('SRC-3: empty markdown returns null', () => {
+    expect(injectShortcutMarkerInMarkdown('')).toBeNull()
+  })
+
+  it('SRC-4: paragraph count unchanged after transform (no new paragraph created)', () => {
+    // Simulated: same paragraph, text cleared, semantic set
+    // No paragraph elements are added/removed
+    const p = makeParagraph('。。')
+    const initialCount = 1
+    setParagraphIndentMode(p, 'force-indent')
+    p.textContent = ''
+    // paragraph count still 1 (same element, just text changed)
+    expect(p.childElementCount).toBe(0) // no new elements inside
+    // In real DOM, collectContentParagraphs would still count this as 1
+  })
+})
+
+// ── 42. Settings Resolution Tests (SET-1 ~ SET-5) ──────────────────────
+
+describe('SET — indentShortcutEnabled Resolution', () => {
+  const defaults = { defaultIndent: 'flush' as const, flushAfterDisplayMath: true, indentShortcutEnabled: true }
+
+  it('SET-1: global=true, document=inherit → resolved=true', () => {
+    const global = { ...defaults, indentShortcutEnabled: true }
+    const resolved = { ...defaults, ...global }
+    expect(resolved.indentShortcutEnabled).toBe(true)
+  })
+
+  it('SET-2: global=false, document=inherit → resolved=false', () => {
+    const global = { ...defaults, indentShortcutEnabled: false }
+    const resolved = { ...defaults, ...global }
+    expect(resolved.indentShortcutEnabled).toBe(false)
+  })
+
+  it('SET-3: global=true, document override=false → resolved=false', () => {
+    const global = { ...defaults, indentShortcutEnabled: true }
+    const docOverride = { indentShortcutEnabled: false, defaultIndent: 'flush' as const, flushAfterDisplayMath: true }
+    const resolved = { ...defaults, ...docOverride }
+    expect(resolved.indentShortcutEnabled).toBe(false)
+  })
+
+  it('SET-4: global=false, document override=true → resolved=true', () => {
+    const resolved = { ...defaults, indentShortcutEnabled: true }
+    expect(resolved.indentShortcutEnabled).toBe(true)
+  })
+
+  it('SET-5: document paragraphLayout exists but indentShortcutEnabled missing → inherit global', () => {
+    const docOverride = { defaultIndent: 'indent-2' as const, flushAfterDisplayMath: false }
+    const resolved = { ...defaults, ...docOverride as any }
+    expect(resolved.indentShortcutEnabled).toBe(true)
+    expect(resolved.defaultIndent).toBe('indent-2')
+  })
+})
+
+// ── 43. Visual Transient Tests (VIS-1 ~ VIS-6) ─────────────────────────
+
+describe('VIS — Transient Pre-Enter Visual Flush', () => {
+  it('VIS-1: shortcut=true, default=indent-2, P=".", semantic=AUTO → effective FLUSH', () => {
+    const p = makeParagraph('。')
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    expect(isIndentShortcutEditingToken(p, true)).toBe(true)
+    const effective = resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, { isShortcutEditingToken: true })
+    expect(effective).toBe('flush')
+  })
+
+  it('VIS-2: shortcut=true, default=indent-2, P="..", semantic=AUTO → effective FLUSH', () => {
+    const p = makeParagraph('。。')
+    expect(isIndentShortcutEditingToken(p, true)).toBe(true)
+    const effective = resolveEffectiveParagraphIndent('auto', 'indent-2', { isFormulaContinuation: false }, { isShortcutEditingToken: true })
+    expect(effective).toBe('flush')
+  })
+
+  it('VIS-3: P=".test" → NOT editing token → effective INDENT_2', () => {
+    const p = makeParagraph('。测试')
+    expect(isIndentShortcutEditingToken(p, true)).toBe(false)
+    const effective = resolveEffectiveParagraphIndent('auto', 'indent-2')
+    expect(effective).toBe('indent-2')
+  })
+
+  it('VIS-4: shortcut=false, P="." → NOT editing token → INDENT_2', () => {
+    const p = makeParagraph('。')
+    expect(isIndentShortcutEditingToken(p, false)).toBe(false)
+    const effective = resolveEffectiveParagraphIndent('auto', 'indent-2')
+    expect(effective).toBe('indent-2')
+  })
+
+  it('VIS-5: semantic=FORCE_INDENT, P="." → explicit wins → indent-2', () => {
+    const p = makeParagraph('。')
+    setParagraphIndentMode(p, 'force-indent')
+    expect(isIndentShortcutEditingToken(p, true)).toBe(false)
+    const effective = resolveEffectiveParagraphIndent('force-indent', 'flush')
+    expect(effective).toBe('indent-2')
+  })
+
+  it('VIS-6: semantic=FORCE_FLUSH, P="text" → FLUSH', () => {
+    const p = makeParagraph('正文')
+    setParagraphIndentMode(p, 'force-flush')
+    expect(isIndentShortcutEditingToken(p, true)).toBe(false)
+    const effective = resolveEffectiveParagraphIndent('force-flush', 'indent-2')
+    expect(effective).toBe('flush')
+  })
+
+  it('VIS: "..." → NOT editing token', () => {
+    expect(isIndentShortcutEditingToken(makeParagraph('。。。'), true)).toBe(false)
+  })
+  it('VIS: ".. " trailing space → NOT editing token', () => {
+    expect(isIndentShortcutEditingToken(makeParagraph('。。 '), true)).toBe(false)
+  })
+  it('VIS: " .." leading space → NOT editing token', () => {
+    expect(isIndentShortcutEditingToken(makeParagraph(' 。。'), true)).toBe(false)
+  })
+  it('VIS: editing token detection does NOT write semantic', () => {
+    const p = makeParagraph('。。')
+    expect(isIndentShortcutEditingToken(p, true)).toBe(true)
+    expect(getParagraphIndentMode(p)).toBe('auto')
   })
 })

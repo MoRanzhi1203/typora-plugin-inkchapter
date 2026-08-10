@@ -64,7 +64,10 @@ import {
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
   isAfterDisplayMath,
-  getNormalizedVisibleParagraphText,
+  getUserVisibleParagraphText,
+  readParagraphIndentCommand,
+  isCaretAtTokenEnd,
+  isIndentShortcutEditingToken,
   type InlineCommandResult,
   type BackspaceIndentCommandContext,
 } from './paragraph-indent-manager'
@@ -124,6 +127,22 @@ import {
   saveLayoutOverrides,
   hasLayoutOverrides,
 } from './heading-numbering-scope-store'
+
+// ── Enter Indent Transaction ───────────────────────────────
+
+interface EnterIndentTransaction {
+  id: string
+  startedAt: number
+  paragraph: HTMLElement
+  token: '..' | '。。'
+  paragraphCountBefore: number
+  state: 'created' | 'token-consumed' | 'semantic-written' | 'visual-applied' | 'caret-restored' | 'committed' | 'closed'
+  suppressNativeInsertParagraph: boolean
+  semanticWritten: boolean
+  sidecarWritten: boolean
+  tokenConsumed: boolean
+  traceData: Record<string, unknown>
+}
 
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
@@ -193,6 +212,10 @@ export class HeadingNumberingService {
   private paragraphMutationEpoch = 0
   /** Suppress paragraph command detection during plugin-authored reloads. */
   private suppressParagraphCommandDetection = false
+
+  // ── Enter Indent Transaction — single owner, single transaction per Enter ──
+  private activeEnterTransaction: EnterIndentTransaction | null = null
+  private enterTxnSeq = 0
 
   // ── In-memory Override Registry ──────────────────────
   // Mirrors sidecar records but updates immediately (no debounce for reads).
@@ -463,14 +486,23 @@ export class HeadingNumberingService {
 
   /** Get the effective paragraph layout settings for the current document. */
   getParagraphLayoutSettings(): import('./heading-types').ParagraphLayoutSettings {
+    // Hard defaults — ensure indentShortcutEnabled is never undefined.
+    // undefined globalParagraphLayout in persisted stores must not resolve to false.
+    const defaults: import('./heading-types').ParagraphLayoutSettings = {
+      defaultIndent: 'flush',
+      flushAfterDisplayMath: true,
+      indentShortcutEnabled: true,
+    }
     const docKey = this.getDocumentKey()
     if (docKey) {
       const override = this.scopeStore.documentOverrides[docKey]
       if (override?.paragraphLayout) {
-        return { ...override.paragraphLayout }
+        // Document explicit override merges with defaults
+        return { ...defaults, ...override.paragraphLayout }
       }
     }
-    return { ...this.scopeStore.globalParagraphLayout }
+    // Global merges with defaults — handles undefined globalParagraphLayout
+    return { ...defaults, ...this.scopeStore.globalParagraphLayout }
   }
 
   /** Save paragraph layout settings. */
@@ -1919,14 +1951,166 @@ export class HeadingNumberingService {
   }
 
   /**
+   * SOLE COMMIT OWNER: keydown Enter capture starts the transaction.
+   *
+   * Only keydown can identify token, create transaction, consume token,
+   * write semantic/sidecar, project visual, and restore caret.
+   * beforeinput(insertParagraph) must NOT commit — only suppress native split.
+   */
+  private tryStartEnterIndentTransaction(event: KeyboardEvent, root: HTMLElement): void {
+    if (event.key !== 'Enter') return
+    if (this.isInComposition || event.isComposing) return
+
+    const settings = this.getParagraphLayoutSettings()
+    if (!settings.indentShortcutEnabled) return
+
+    if (this.activeEnterTransaction) return // one transaction at a time
+
+    const sel = window.getSelection()
+    if (!sel?.rangeCount || !sel.isCollapsed) return
+
+    const paragraph = resolveCurrentBodyParagraph(root)
+    if (!paragraph) return
+
+    const token = readParagraphIndentCommand(paragraph)
+    if (!token) return
+    if (!isCaretAtTokenEnd(paragraph, 2)) return
+
+    // ── Create transaction, lock paragraph ──
+    const txnId = 'txn-' + (++this.enterTxnSeq) + '-' + Date.now()
+    const txn: EnterIndentTransaction = {
+      id: txnId,
+      startedAt: performance.now(),
+      paragraph,
+      token,
+      paragraphCountBefore: root ? collectContentParagraphs(root).length : -1,
+      state: 'created',
+      suppressNativeInsertParagraph: false,
+      semanticWritten: false,
+      sidecarWritten: false,
+      tokenConsumed: false,
+      traceData: { txnId, event: 'keydown', key: 'Enter', token, paraCountBefore: root ? collectContentParagraphs(root).length : -1, beforeinput_suppressed: false },
+    }
+    this.activeEnterTransaction = txn
+
+    // ── Sync commit ──
+    this.commitEnterIndentTransactionSync(txn, event)
+  }
+
+  /** Synchronous atomic commit — all steps in one call stack. */
+  private commitEnterIndentTransactionSync(txn: EnterIndentTransaction, event: Event): void {
+    const para = txn.paragraph
+    const root = this.adapter.getEditorRoot()
+    txn.traceData['T0_paraCountBefore'] = txn.paragraphCountBefore
+    txn.traceData['T0_paraTag'] = para.tagName
+
+    // consume Enter
+    event.preventDefault()
+    event.stopPropagation()
+    txn.traceData['preventDefault'] = true
+    txn.state = 'token-consumed'
+
+    // consume token
+    this.clearParagraphToken(para, txn.token)
+    txn.tokenConsumed = true
+    txn.traceData['tokenConsumed'] = true
+    txn.traceData['DOMtextAfter'] = getUserVisibleParagraphText(para)
+
+    // semantic FORCE_INDENT
+    setParagraphIndentMode(para, 'force-indent')
+    txn.semanticWritten = true
+    txn.state = 'semantic-written'
+
+    // sidecar exactly once
+    this.applyParagraphIndentOverrideToSidecar(para, 'force-indent')
+    txn.sidecarWritten = true
+    txn.traceData['sidecarWriteCount'] = 1
+
+    // visual projection
+    const settings = this.getParagraphLayoutSettings()
+    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(para) : false }
+    const effective = resolveEffectiveParagraphIndent('force-indent', settings.defaultIndent, structural)
+    applyEffectiveParagraphIndent(para, effective)
+    txn.state = 'visual-applied'
+    txn.traceData['computedIndent'] = window.getComputedStyle(para).textIndent
+
+    // caret restore
+    this.placeCaretInParagraph(para)
+    txn.state = 'caret-restored'
+
+    // mark committed, suppress native insertParagraph going forward
+    txn.state = 'committed'
+    txn.suppressNativeInsertParagraph = true
+    txn.traceData['stopReason'] = 'commit completed'
+    txn.traceData['T0'] = 'commit sync end'
+
+    console.info(`[InkChapter] ${txn.id} committed: token=${txn.token} state=${txn.state}`)
+
+    // Schedule T0-T4 stability snapshots + close
+    this.scheduleTransactionStabilitySnapshots(txn)
+  }
+
+  /** T0-T4 stability verification, then close transaction. */
+  private scheduleTransactionStabilitySnapshots(txn: EnterIndentTransaction): void {
+    const snap = (label: string) => {
+      if (txn.state === 'closed') return
+      const para = txn.paragraph
+      const root = this.adapter.getEditorRoot()
+      const data: Record<string, unknown> = {
+        txnId: txn.id, label,
+        paraCount: root ? collectContentParagraphs(root).length : -1,
+        DOMtext: getUserVisibleParagraphText(para),
+        semantic: getParagraphIndentMode(para),
+        computedIndent: window.getComputedStyle(para).textIndent,
+        caretInPara: window.getSelection()?.rangeCount ? para.contains(window.getSelection()!.getRangeAt(0).startContainer) : false,
+        txnState: txn.state,
+      }
+      data['tokenGone'] = data['DOMtext'] === ''
+      data['sameParagraphCount'] = data['paraCount'] === txn.paragraphCountBefore
+      txn.traceData[label] = data
+      console.info(`[InkChapter] ${txn.id} ${label}: tokenGone=${data['tokenGone']} countMatch=${data['sameParagraphCount']}`)
+    }
+
+    // T0 = sync end (already captured)
+    // T1 = microtask
+    queueMicrotask(() => { snap('T1_microtask') })
+    // T2 = next RAF
+    requestAnimationFrame(() => { snap('T2_RAF') })
+    // T3 = 50ms
+    setTimeout(() => { snap('T3_50ms') }, 50)
+    // T4 = 150ms → close
+    setTimeout(() => {
+      snap('T4_150ms')
+      this.flushEnterRaceTrace(txn)
+      this.activeEnterTransaction = null
+      txn.state = 'closed'
+    }, 150)
+  }
+
+  /** Append one JSONL line to race trace file. */
+  private flushEnterRaceTrace(txn: EnterIndentTransaction): void {
+    try {
+      const fs = require('fs') as typeof import('fs')
+      const path = require('path') as typeof import('path')
+      const vaultRoot = (this.ctx as any).vaultRoot ??
+        (this.ctx.settings as any).getVaultRoot?.() ?? ''
+      const tracePath = path.join(
+        vaultRoot || path.dirname(this.getActiveFilePath() || ''),
+        '.typora',
+        'inkchapter-enter-race-trace.jsonl',
+      )
+      fs.appendFileSync(tracePath, JSON.stringify(txn.traceData) + '\n', 'utf8')
+    } catch { /* fail-open */ }
+  }
+
+  /**
    * Immediate local projection for the current paragraph.
    *
-   * Computes candidate + effective for the current selection paragraph
-   * and applies visual projection synchronously, BEFORE the next RAF refresh.
+   * Computes effective visual indent (semantic → structural → effective) and
+   * applies it synchronously, BEFORE the next RAF refresh.
    * Only touches the current paragraph — no full document scan.
    *
-   * This is the bridge between Typora's real-time editing and the
-   * candidate visual suppression model.
+   * NO shortcut candidate logic — token text is ordinary text until Enter submit.
    */
   private projectCurrentParagraphLocally(root: HTMLElement): void {
     const block = resolveCurrentBlockFromSelection(root)
@@ -1934,10 +2118,15 @@ export class HeadingNumberingService {
     if (!isContentBlock(block)) return
     if (isInExcludedContext(block)) return
 
+    // ── Active transaction guard: never overwrite FORCE_INDENT ──
+    const txn = this.activeEnterTransaction
+    if (txn && txn.paragraph === block && txn.state === 'committed') {
+      return // transaction owns this paragraph — keep its FORCE_INDENT
+    }
+
     const settings = this.getParagraphLayoutSettings()
 
     const semantic = getParagraphIndentMode(block)
-    const candidate = resolveParagraphShortcutCandidate(block, settings, this.isInComposition)
 
     const structuralContext = {
       isFormulaContinuation: settings.flushAfterDisplayMath
@@ -1945,11 +2134,17 @@ export class HeadingNumberingService {
         : false,
     }
 
+    // Transient editing visual: suppress if paragraph belongs to active transaction
+    let isEditingToken = false
+    if (!txn || txn.paragraph !== block) {
+      isEditingToken = isIndentShortcutEditingToken(block, settings.indentShortcutEnabled)
+    }
+
     const effective = resolveEffectiveParagraphIndent(
       semantic,
       settings.defaultIndent,
       structuralContext,
-      candidate,
+      { isShortcutEditingToken: isEditingToken },
     )
 
     applyEffectiveParagraphIndent(block, effective)
@@ -2772,38 +2967,27 @@ export class HeadingNumberingService {
     this.editorRootDisposables = new DisposableStore()
     this.boundEditorRoot = root
 
-    // ── Inline Paragraph Command: Enter interception (PRIMARY PATH) ──
-    // Enter = command SUBMIT, NOT paragraph break (R35 corrected semantics).
-    // Intercept Enter BEFORE Typora processes it via keydown capture.
+    // ── Current-Line Transform: keydown = sole commit owner ──
+    // Only keydown can identify token, create transaction, and commit.
     const onEnterCommand = (e: KeyboardEvent): void => {
-      if (e.key !== 'Enter') return
-      // IME guard: don't intercept during composition
-      if (this.isInComposition || e.isComposing) return
-
-      const settings = this.getParagraphLayoutSettings()
-      if (!settings.indentShortcutEnabled) return
-
-      const result = probeInlineParagraphCommand(root, settings)
-      if (!result) return
-
-      // ── Command recognized: consume Enter, execute inline ──
-      e.preventDefault()
-      e.stopPropagation()
-
-      const { currentBlock, token } = result
-      console.info(`[InkChapter] Inline command: "${token}" → force-indent (same paragraph)`)
-
-      // Step 1: Clear command token from the paragraph
-      this.clearParagraphToken(currentBlock, token)
-
-      // Step 2: Apply force-indent to SAME paragraph
-      this.applyParagraphIndentOverride(currentBlock, 'force-indent')
-
-      // Step 3: Keep caret in the same paragraph
-      this.placeCaretInParagraph(currentBlock)
+      this.tryStartEnterIndentTransaction(e, root)
     }
     root.addEventListener('keydown', onEnterCommand, true)
     this.editorRootDisposables.add(() => root.removeEventListener('keydown', onEnterCommand, true))
+
+    // beforeinput(insertParagraph) — suppress-only, NEVER commits
+    const onBeforeInputInsertParagraph = (e: InputEvent): void => {
+      if (e.inputType !== 'insertParagraph') return
+      const txn = this.activeEnterTransaction
+      if (!txn) return // no active transaction → native
+      if (txn.suppressNativeInsertParagraph) {
+        e.preventDefault()
+        e.stopPropagation()
+        txn.traceData['beforeinput_suppressed'] = true
+      }
+    }
+    root.addEventListener('beforeinput', onBeforeInputInsertParagraph)
+    this.editorRootDisposables.add(() => root.removeEventListener('beforeinput', onBeforeInputInsertParagraph))
 
     // ── Backspace Indent Removal: pre-delete interception ──
     // FORCE_INDENT + caret@logical-start + Backspace → FORCE_FLUSH
@@ -2867,16 +3051,16 @@ export class HeadingNumberingService {
         const state = captureParagraphState(block)
         const settings = this.getParagraphLayoutSettings()
         const semantic = getParagraphIndentMode(block)
-        const normalized = getNormalizedVisibleParagraphText(block)
-        const candidate = resolveParagraphShortcutCandidate(block, settings, this.isInComposition)
+        const userVisible = getUserVisibleParagraphText(block)
+        const token = readParagraphIndentCommand(block)
         state.semantic = semantic
-        state.candidate = candidate
+        state.candidate = token ? 'exact-token' : 'none'
         state.documentDefault = settings.defaultIndent
         writeForensicEntry('T1_after_native_insertion', {
           rawTextContent: block.textContent,
-          normalizedText: normalized,
+          userVisibleText: userVisible,
+          indentCommandToken: token,
           semantic,
-          candidate,
           settingsDefault: settings.defaultIndent,
           isComposing: this.isInComposition,
           paragraphState: state,
@@ -2885,7 +3069,7 @@ export class HeadingNumberingService {
         })
       })
 
-      // Immediate local projection: candidate suppression on current paragraph
+      // Immediate local projection for current paragraph (no candidate logic)
       this.projectCurrentParagraphLocally(root)
 
       // ── Forensic: T2 after local projection ──
@@ -2924,7 +3108,8 @@ export class HeadingNumberingService {
             if (!block || block.tagName !== 'P') return
             const state = captureParagraphState(block)
             const settings = this.getParagraphLayoutSettings()
-            state.candidate = resolveParagraphShortcutCandidate(block, settings, this.isInComposition)
+            const indentToken = readParagraphIndentCommand(block)
+            state.candidate = indentToken ? 'exact-token' : 'none'
             state.semantic = getParagraphIndentMode(block)
             state.documentDefault = settings.defaultIndent
             writeForensicEntry('T7_final_100ms', {
@@ -2933,7 +3118,7 @@ export class HeadingNumberingService {
               matchedCSS: captureMatchedCSSRules(block, 'text-indent'),
               selection: captureSelectionState(block),
               SEMANTIC: state.semantic,
-              CANDIDATE: state.candidate,
+              INDENT_TOKEN: indentToken,
               DEFAULT: state.documentDefault,
               COMPUTED_TEXT_INDENT: state.computedTextIndent,
               COMPUTED_MARGIN_LEFT: state.computedMarginLeft,
@@ -3142,6 +3327,24 @@ export class HeadingNumberingService {
           // Then call window.__inkchapter_activate_forensic__() from DevTools to activate.
           ;(window as any).__inkchapter_activate_forensic__ = () => activateForensic()
           setTimeout(() => activateForensic(), 200)
+          // Single-dot diagnostic: call __inkchapter_diagnose_single_dot__() from DevTools
+          ;(window as any).__inkchapter_diagnose_single_dot__ = () => {
+            const rt = this.adapter.getEditorRoot()
+            if (!rt) return 'no editor root'
+            const p = resolveCurrentBodyParagraph(rt)
+            if (!p) return 'no current paragraph'
+            const settings = this.getParagraphLayoutSettings()
+            return {
+              SINGLE_DOT_UI_SETTING: settings.defaultIndent,
+              SINGLE_DOT_RESOLVED_DEFAULT: resolveEffectiveParagraphIndent('auto', settings.defaultIndent),
+              SINGLE_DOT_SEMANTIC: getParagraphIndentMode(p),
+              SINGLE_DOT_COMPUTED_TEXT_INDENT: window.getComputedStyle(p).textIndent,
+              SINGLE_DOT_RAW_TEXT: p.textContent,
+              SINGLE_DOT_VISIBLE_TEXT: getUserVisibleParagraphText(p),
+              SINGLE_DOT_EFFECTIVE_CLASS_INDENT: p.classList.contains('inkchapter-paragraph-effective-indent-2'),
+              SINGLE_DOT_EFFECTIVE_CLASS_FLUSH: p.classList.contains('inkchapter-paragraph-effective-flush'),
+            }
+          }
         }
       }),
     )
