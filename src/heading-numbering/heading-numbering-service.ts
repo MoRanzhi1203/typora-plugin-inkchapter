@@ -44,14 +44,12 @@ import * as logger from '../core/logger'
 import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
 import {
   refreshParagraphIndentStyles,
-  applyParagraphIndent,
   getCurrentParagraphElement,
   isInExcludedContext,
   canTriggerIndentShortcut,
   isCursorAtEnd,
   setParagraphIndentMode,
   getParagraphIndentMode,
-  probeInlineParagraphCommand,
   writeBlockProbeDiagnostic,
   classifyEditorMutation,
   resolveCurrentBlockFromSelection,
@@ -60,15 +58,24 @@ import {
   isCaretAtLogicalStartOfParagraph,
   resolveCurrentBodyParagraph,
   shouldConsumeBackspaceForIndentRemoval,
-  resolveParagraphShortcutCandidate,
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
+  rehydrateParagraphIndentState,
+  type RehydrateContext,
+  evaluateRehydrateSafety,
+  anchorConfidenceToRehydrateConfidence,
+  RehydrateMatchStrategy,
+  type RehydrateMatchProvenance,
+  type CandidateRecord,
   isAfterDisplayMath,
   getUserVisibleParagraphText,
   readParagraphIndentCommand,
   isCaretAtTokenEnd,
   isIndentShortcutEditingToken,
-  type InlineCommandResult,
+  recordParagraphWrite,
+  getLastParagraphWriter,
+  getParagraphWriterHistory,
+  WriterIds,
   type BackspaceIndentCommandContext,
 } from './paragraph-indent-manager'
 import {
@@ -80,6 +87,7 @@ import {
   collectContentParagraphs,
   migrateLegacyIndentMarkers,
   type ParagraphIndentOverrideRecord,
+  type AnchorResolveResult,
 } from './paragraph-layout-store'
 import {
   activateNormalEnterTrace,
@@ -141,6 +149,18 @@ interface EnterIndentTransaction {
   semanticWritten: boolean
   sidecarWritten: boolean
   tokenConsumed: boolean
+  traceData: Record<string, unknown>
+}
+
+interface PostCommitObservationSession {
+  observationId: string
+  txnId: string
+  paragraphAtCommit: HTMLElement
+  paragraphIdentityAtCommit: string
+  startedAt: number
+  transactionClosedAt: number
+  lastKnownParagraph: HTMLElement | null
+  mutationObserver: MutationObserver | null
   traceData: Record<string, unknown>
 }
 
@@ -216,6 +236,11 @@ export class HeadingNumberingService {
   // ── Enter Indent Transaction — single owner, single transaction per Enter ──
   private activeEnterTransaction: EnterIndentTransaction | null = null
   private enterTxnSeq = 0
+
+  // ── Post-Commit Observation — read-only, independent of transaction lifecycle ──
+  // Map-based: each transaction gets its own independent observation to T9.
+  // Multiple concurrent observations coexist without overwriting each other.
+  private observations = new Map<string, PostCommitObservationSession>()
 
   // ── In-memory Override Registry ──────────────────────
   // Mirrors sidecar records but updates immediately (no debounce for reads).
@@ -2017,7 +2042,7 @@ export class HeadingNumberingService {
     txn.traceData['DOMtextAfter'] = getUserVisibleParagraphText(para)
 
     // semantic FORCE_INDENT
-    setParagraphIndentMode(para, 'force-indent')
+    setParagraphIndentMode(para, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
     txn.semanticWritten = true
     txn.state = 'semantic-written'
 
@@ -2030,7 +2055,7 @@ export class HeadingNumberingService {
     const settings = this.getParagraphLayoutSettings()
     const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(para) : false }
     const effective = resolveEffectiveParagraphIndent('force-indent', settings.defaultIndent, structural)
-    applyEffectiveParagraphIndent(para, effective)
+    applyEffectiveParagraphIndent(para, effective, WriterIds.ENTER_COMMIT_VISUAL)
     txn.state = 'visual-applied'
     txn.traceData['computedIndent'] = window.getComputedStyle(para).textIndent
 
@@ -2046,49 +2071,72 @@ export class HeadingNumberingService {
 
     console.info(`[InkChapter] ${txn.id} committed: token=${txn.token} state=${txn.state}`)
 
-    // Schedule T0-T4 stability snapshots + close
+    // Schedule T0-T4 transaction snapshots, then close tx at T4.
+    // Post-commit observation runs independently T4→T9.
     this.scheduleTransactionStabilitySnapshots(txn)
+    
+    // Install diagnostic MutationObserver on target paragraph (read-only)
+    this.installDiagnosticMutationObserver(txn)
   }
 
-  /** T0-T4 stability verification, then close transaction. */
+  /**
+   * T0-T4 stability verification within the transaction window.
+   * Transaction closes at T4_150ms.
+   * PostCommitObservationSession takes over from T4_150ms to T9_2000ms.
+   */
   private scheduleTransactionStabilitySnapshots(txn: EnterIndentTransaction): void {
     const snap = (label: string) => {
       if (txn.state === 'closed') return
       const para = txn.paragraph
       const root = this.adapter.getEditorRoot()
+      const lastWriter = getLastParagraphWriter(para)
       const data: Record<string, unknown> = {
         txnId: txn.id, label,
+        transactionActive: true,
         paraCount: root ? collectContentParagraphs(root).length : -1,
         DOMtext: getUserVisibleParagraphText(para),
         semantic: getParagraphIndentMode(para),
         computedIndent: window.getComputedStyle(para).textIndent,
         caretInPara: window.getSelection()?.rangeCount ? para.contains(window.getSelection()!.getRangeAt(0).startContainer) : false,
+        effectiveClass_indent2: para.classList.contains('inkchapter-paragraph-effective-indent-2'),
+        effectiveClass_flush: para.classList.contains('inkchapter-paragraph-effective-flush'),
+        dataAttr: para.getAttribute('data-inkchapter-indent-mode'),
+        lastWriterId: lastWriter?.writerId ?? null,
+        lastWriterReason: lastWriter?.reason ?? null,
+        lastWriterTime: lastWriter?.timestamp ?? null,
         txnState: txn.state,
+        paragraphIsConnected: para.isConnected,
+        paragraphTextContent: para.textContent?.slice(0, 80) ?? '',
+        userVisibleText: getUserVisibleParagraphText(para),
       }
       data['tokenGone'] = data['DOMtext'] === ''
       data['sameParagraphCount'] = data['paraCount'] === txn.paragraphCountBefore
       txn.traceData[label] = data
-      console.info(`[InkChapter] ${txn.id} ${label}: tokenGone=${data['tokenGone']} countMatch=${data['sameParagraphCount']}`)
+      console.info(`[InkChapter] ${txn.id} ${label}: tokenGone=${data['tokenGone']} countMatch=${data['sameParagraphCount']} txActive=true`)
     }
 
-    // T0 = sync end (already captured)
+    // T0 = sync end (already captured in commitEnterIndentTransactionSync)
     // T1 = microtask
     queueMicrotask(() => { snap('T1_microtask') })
     // T2 = next RAF
     requestAnimationFrame(() => { snap('T2_RAF') })
     // T3 = 50ms
     setTimeout(() => { snap('T3_50ms') }, 50)
-    // T4 = 150ms → close
+    // T4 = 150ms → close transaction, start observation
     setTimeout(() => {
       snap('T4_150ms')
-      this.flushEnterRaceTrace(txn)
+      const closeTime = performance.now()
       this.activeEnterTransaction = null
       txn.state = 'closed'
+      console.info(`[InkChapter] ${txn.id} TRANSACTION CLOSED at ~${Math.round(closeTime - txn.startedAt)}ms`)
+      
+      // Start independent PostCommitObservationSession
+      this.startPostCommitObservation(txn, closeTime)
     }, 150)
   }
 
-  /** Append one JSONL line to race trace file. */
-  private flushEnterRaceTrace(txn: EnterIndentTransaction): void {
+  /** Flush race trace data to JSONL file. */
+  private flushEnterRaceTrace(traceData: Record<string, unknown>): void {
     try {
       const fs = require('fs') as typeof import('fs')
       const path = require('path') as typeof import('path')
@@ -2099,8 +2147,272 @@ export class HeadingNumberingService {
         '.typora',
         'inkchapter-enter-race-trace.jsonl',
       )
-      fs.appendFileSync(tracePath, JSON.stringify(txn.traceData) + '\n', 'utf8')
+      fs.appendFileSync(tracePath, JSON.stringify(traceData) + '\n', 'utf8')
     } catch { /* fail-open */ }
+  }
+
+  // ── Post-Commit Observation ────────────────────────────────────────
+  // COMPLETELY READ-ONLY. Never modifies DOM, semantic, class, style,
+  // sidecar, caret, or any business state. Only traces for diagnosis.
+  //
+  // Observation continues after transaction closes, up to T9=2000ms.
+  // Records all paragraph state mutations including those from async
+  // writers (refresh, rehydrate, settings, sidecar, etc.).
+
+  /**
+   * Start a read-only observation session that continues after transaction close.
+   * Runs T4→T9 with transactionActive=false, recording all state changes.
+   */
+  private startPostCommitObservation(txn: EnterIndentTransaction, closedAt: number): void {
+    const obs: PostCommitObservationSession = {
+      observationId: `obs-${txn.id}`,
+      txnId: txn.id,
+      paragraphAtCommit: txn.paragraph,
+      paragraphIdentityAtCommit: this.getElementIdentity(txn.paragraph),
+      startedAt: performance.now(),
+      transactionClosedAt: closedAt,
+      lastKnownParagraph: txn.paragraph,
+      mutationObserver: null,
+      traceData: { ...txn.traceData, observationId: `obs-${txn.id}`, observationStartedAt: performance.now(), transactionClosedAt: closedAt },
+    }
+    this.observations.set(obs.observationId, obs)
+
+    // Migrate diagnostic MutationObserver from transaction to observation session
+    const diagnosticObserver = (txn as any)._diagnosticObserver as MutationObserver | undefined
+    if (diagnosticObserver) {
+      obs.mutationObserver = diagnosticObserver
+      delete (txn as any)._diagnosticObserver
+    }
+
+    const snapObs = (label: string) => {
+      if (!this.observations.has(obs.observationId)) return
+      const para = obs.lastKnownParagraph
+
+      // Re-resolve the logical paragraph if original is disconnected
+      let resolvedPara = para
+      let sameDOMElement = true
+      if (para && !para.isConnected) {
+        sameDOMElement = false
+        const root = this.adapter.getEditorRoot()
+        if (root) {
+          const allParas = collectContentParagraphs(root)
+          // Try to find the same paragraph by identity / text
+          const idAtCommit = obs.paragraphIdentityAtCommit
+          for (const p of allParas) {
+            if (this.getElementIdentity(p) === idAtCommit) {
+              resolvedPara = p
+              sameDOMElement = true
+              obs.lastKnownParagraph = p
+              break
+            }
+          }
+          // Fallback: try anchor-based resolution
+          if (!sameDOMElement) {
+            const docKey = this.getDocumentKey()
+            if (docKey) {
+              const overrides = this.inMemoryOverrides.get(docKey) ?? []
+              for (const o of overrides) {
+                if (o.mode === 'force-indent' || o.mode === 'force-flush') {
+                  const resolved = resolveParagraphAnchor(o.anchor, allParas)
+                  if (resolved) {
+                    const candidate = allParas[resolved.index]
+                    if (candidate && candidate.textContent?.trim() === txn.paragraph.textContent?.trim()) {
+                      resolvedPara = candidate
+                      obs.lastKnownParagraph = candidate
+                      break
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const lastWriter = resolvedPara ? getLastParagraphWriter(resolvedPara) : null
+      const writerHistory = resolvedPara ? getParagraphWriterHistory(resolvedPara) : []
+      const lastHighLevelWriter = writerHistory.length > 0 ? writerHistory[writerHistory.length - 1] : null
+
+      const data: Record<string, unknown> = {
+        observationId: obs.observationId,
+        txnId: obs.txnId,
+        label,
+        transactionActive: false,
+        transactionClosedAt: obs.transactionClosedAt,
+        relativeMs: Math.round(performance.now() - obs.transactionClosedAt),
+
+        // DOM identity
+        sameDOMElement,
+        paragraphIsConnected: resolvedPara?.isConnected ?? false,
+        paragraphIdentityAtCommit: obs.paragraphIdentityAtCommit,
+        currentParagraphIdentity: resolvedPara ? this.getElementIdentity(resolvedPara) : null,
+
+        // State
+        semantic: resolvedPara ? getParagraphIndentMode(resolvedPara) : null,
+        effectiveClass_indent2: resolvedPara?.classList.contains('inkchapter-paragraph-effective-indent-2') ?? false,
+        effectiveClass_flush: resolvedPara?.classList.contains('inkchapter-paragraph-effective-flush') ?? false,
+        computedTextIndent: resolvedPara ? window.getComputedStyle(resolvedPara).textIndent : null,
+        dataAttr: resolvedPara?.getAttribute('data-inkchapter-indent-mode') ?? null,
+        className: resolvedPara?.className ? String(resolvedPara.className).slice(0, 120) : null,
+
+        // Text
+        DOMtext: resolvedPara ? getUserVisibleParagraphText(resolvedPara) : null,
+        textContent: resolvedPara?.textContent?.slice(0, 80) ?? null,
+        tokenGone: resolvedPara ? getUserVisibleParagraphText(resolvedPara) === '' : null,
+        paraCount: this.adapter.getEditorRoot() ? collectContentParagraphs(this.adapter.getEditorRoot()!).length : -1,
+        sameParagraphCount: (this.adapter.getEditorRoot() ? collectContentParagraphs(this.adapter.getEditorRoot()!).length : -1) === txn.paragraphCountBefore,
+
+        // Writer
+        lastHighLevelWriterId: lastHighLevelWriter?.writerId ?? null,
+        lastHighLevelWriterReason: lastHighLevelWriter?.reason ?? null,
+        lastWriterId: lastWriter?.writerId ?? null,
+        lastWriterReason: lastWriter?.reason ?? null,
+        writerHistoryTail: writerHistory.slice(-5).map(w => ({ id: w.writerId, reason: w.reason, relMs: w.relativeMs })),
+
+        // Selection
+        selectionParagraphIdentity: resolvedPara && window.getSelection()?.rangeCount
+          ? (resolvedPara.contains(window.getSelection()!.getRangeAt(0).startContainer) ? obs.paragraphIdentityAtCommit : 'different')
+          : null,
+        caretInObservedParagraph: resolvedPara && window.getSelection()?.rangeCount
+          ? resolvedPara.contains(window.getSelection()!.getRangeAt(0).startContainer)
+          : false,
+      }
+      obs.traceData[label] = data
+      console.info(`[InkChapter] ${obs.observationId} ${label}: txActive=false sameDOM=${sameDOMElement} semantic=${data['semantic']} indent=${data['computedTextIndent']} lastWriter=${data['lastHighLevelWriterId']}`)
+    }
+
+    // T4 = 150ms (observation starts here, already 0ms into observation)
+    snapObs('T4_150ms')
+
+    // T5 = 300ms (150ms into observation)
+    setTimeout(() => { snapObs('T5_300ms') }, 150)
+
+    // T6 = 500ms (350ms into observation)
+    setTimeout(() => { snapObs('T6_500ms') }, 350)
+
+    // T7 = 1000ms (850ms into observation)
+    setTimeout(() => { snapObs('T7_1000ms') }, 850)
+
+    // T8 = 1500ms (1350ms into observation)
+    setTimeout(() => { snapObs('T8_1500ms') }, 1350)
+
+    // T9 = 2000ms → close observation
+    setTimeout(() => {
+      snapObs('T9_2000ms')
+      this.flushEnterRaceTrace(obs.traceData)
+      // Disconnect diagnostic MutationObserver
+      if (obs.mutationObserver) {
+        obs.mutationObserver.disconnect()
+      }
+      this.observations.delete(obs.observationId)
+      console.info(`[InkChapter] ${obs.observationId} OBSERVATION CLOSED at T9_2000ms`)
+    }, 1850)
+  }
+
+  /**
+   * Install a read-only diagnostic MutationObserver on the commit-time paragraph.
+   * Listens for class, style, data-inkchapter-indent-mode, childList, characterData.
+   * NEVER modifies DOM, semantic, class, style, sidecar, or caret.
+   */
+  private installDiagnosticMutationObserver(txn: EnterIndentTransaction): void {
+    const para = txn.paragraph
+    try {
+      const observer = new MutationObserver((mutations) => {
+        if (txn.state === 'closed' && this.observations.size === 0) return
+        // Find the observation for this paragraph
+        let obs: PostCommitObservationSession | null = null
+        for (const o of this.observations.values()) {
+          if (o.paragraphAtCommit === para || o.txnId === txn.id) {
+            obs = o
+            break
+          }
+        }
+        if (!obs) return
+
+        for (const m of mutations) {
+          const record: Record<string, unknown> = {
+            observationId: obs.observationId,
+            txnId: obs.txnId,
+            relativeMs: Math.round(performance.now() - obs.transactionClosedAt),
+
+            mutationType: m.type,
+            attributeName: m.attributeName ?? null,
+            oldValue: m.oldValue ?? null,
+
+            paragraphIdentityAtCommit: obs.paragraphIdentityAtCommit,
+            currentParagraphIdentity: this.getElementIdentity(para),
+            sameDOMElement: para.isConnected && para === obs.paragraphAtCommit,
+
+            semantic: getParagraphIndentMode(para),
+            effectiveClass_indent2: para.classList.contains('inkchapter-paragraph-effective-indent-2'),
+            effectiveClass_flush: para.classList.contains('inkchapter-paragraph-effective-flush'),
+            computedTextIndent: window.getComputedStyle(para).textIndent,
+
+            textContent: para.textContent?.slice(0, 80) ?? '',
+            userVisibleText: getUserVisibleParagraphText(para),
+
+            transactionActive: this.activeEnterTransaction !== null,
+
+            lastHighLevelWriterId: (() => {
+              const h = getParagraphWriterHistory(para)
+              return h.length > 0 ? h[h.length - 1].writerId : null
+            })(),
+            lastHighLevelWriterReason: (() => {
+              const h = getParagraphWriterHistory(para)
+              return h.length > 0 ? h[h.length - 1].reason : null
+            })(),
+
+            selectionParagraphIdentity: window.getSelection()?.rangeCount
+              ? (para.contains(window.getSelection()!.getRangeAt(0).startContainer) ? obs.paragraphIdentityAtCommit : 'different')
+              : null,
+          }
+
+          // Record new values
+          if (m.type === 'attributes' && m.attributeName) {
+            record['newValue'] = para.getAttribute(m.attributeName)
+          }
+          if (m.type === 'characterData') {
+            record['newValue'] = m.target.textContent?.slice(0, 80) ?? ''
+          }
+          if (m.type === 'childList') {
+            record['addedCount'] = m.addedNodes.length
+            record['removedCount'] = m.removedNodes.length
+          }
+
+          obs.traceData[`MUT-${m.type}-${m.attributeName ?? 'data'}-${Math.round(performance.now())}`] = record
+        }
+      })
+
+      observer.observe(para, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-inkchapter-indent-mode'],
+        attributeOldValue: true,
+        childList: true,
+        characterData: true,
+        characterDataOldValue: true,
+        subtree: true,
+      })
+
+      // Store on observation session for cleanup
+      // Find the observation for this transaction
+      for (const o of this.observations.values()) {
+        if (o.txnId === txn.id) {
+          o.mutationObserver = observer
+          break
+        }
+      }
+      if (![...this.observations.values()].some(o => o.txnId === txn.id)) {
+        // Observation hasn't started yet — attach to transaction for now
+        ;(txn as any)._diagnosticObserver = observer
+      }
+    } catch {
+      // fail-open — diagnostic observer must never break runtime
+    }
+  }
+
+  /** Generate a stable identity key for a paragraph element. Read-only. */
+  private getElementIdentity(el: HTMLElement): string {
+    return `${el.tagName}:${el.className?.slice(0, 40) ?? ''}:${el.textContent?.slice(0, 30) ?? ''}:${el.getAttribute('data-line') ?? ''}`
   }
 
   /**
@@ -2147,7 +2459,7 @@ export class HeadingNumberingService {
       { isShortcutEditingToken: isEditingToken },
     )
 
-    applyEffectiveParagraphIndent(block, effective)
+    applyEffectiveParagraphIndent(block, effective, WriterIds.LOCAL_PROJECTION_VISUAL)
   }
 
   /**
@@ -2201,8 +2513,9 @@ export class HeadingNumberingService {
   applyParagraphIndentOverride(
     paragraph: HTMLElement,
     mode: 'force-indent' | 'force-flush' | 'auto',
+    writerId?: string,
   ): void {
-    setParagraphIndentMode(paragraph, mode)
+    setParagraphIndentMode(paragraph, mode, writerId)
     const root = this.adapter.detectEditorRoot()
     if (root) {
       refreshParagraphIndentStyles(root, this.getParagraphLayoutSettings())
@@ -2402,7 +2715,7 @@ export class HeadingNumberingService {
     // Rehydrate: set semantic state on matching DOM elements
     let traceTarget: {
       o: ParagraphIndentOverrideRecord
-      resolved: { index: number } | null
+      resolved: AnchorResolveResult | null
       para: HTMLElement | null
       beforeClass: string | null
       beforeData: string | null
@@ -2410,27 +2723,141 @@ export class HeadingNumberingService {
       afterData: string | null
     } | null = null
 
+    // Collect all candidate records for ambiguity detection
+    const allCandidateRecords: CandidateRecord[] = overrides
+      .filter(o => o.mode === 'force-indent' || o.mode === 'force-flush')
+      .map(o => ({
+        recordId: o.id,
+        mode: o.mode,
+        anchorRaw: { textHash: o.anchor.textHash, lastKnownOrdinal: o.anchor.lastKnownOrdinal, occurrence: o.anchor.occurrence },
+        index: null as number | null,
+        source: 'in-memory-override',
+      }))
+
     for (const o of overrides) {
       if (o.mode !== 'force-indent' && o.mode !== 'force-flush') continue
       const resolved = resolveParagraphAnchor(o.anchor, allParas)
-      if (resolved) {
-        const para = allParas[resolved.index]
-        const beforeClass = para?.className ? String(para.className) : null
-        const beforeData = para?.getAttribute('data-inkchapter-indent-mode') ?? null
-        if (para && para.getAttribute('data-inkchapter-indent-mode') !== o.mode) {
-          setParagraphIndentMode(para, o.mode)
+      if (!resolved) continue
+
+      const para = allParas[resolved.index]
+      if (!para) continue
+
+      const beforeClass = para.className ? String(para.className) : null
+      const beforeData = para.getAttribute('data-inkchapter-indent-mode') ?? null
+      const currentSemantic = getParagraphIndentMode(para)
+
+      // ── Match Provenance ───────────────────────────────────────
+      const provenanceId = `rhp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const matchConfidence = anchorConfidenceToRehydrateConfidence(resolved.confidence)
+
+      // Determine match strategy
+      let matchStrategy: typeof RehydrateMatchStrategy[keyof typeof RehydrateMatchStrategy]
+      switch (resolved.confidence) {
+        case 'exact':
+          matchStrategy = o.anchor.textHash ? RehydrateMatchStrategy.EXACT_ANCHOR : RehydrateMatchStrategy.INDEX_FALLBACK
+          break
+        case 'high':
+          matchStrategy = RehydrateMatchStrategy.NORMALIZED_ANCHOR
+          break
+        case 'medium':
+          matchStrategy = RehydrateMatchStrategy.PROXIMITY
+          break
+        case 'fallback':
+          matchStrategy = RehydrateMatchStrategy.INDEX_FALLBACK
+          break
+      }
+
+      // Update candidate records with resolved indices
+      for (const cr of allCandidateRecords) {
+        if (cr.recordId === o.id) {
+          cr.index = resolved.index
+          cr.score = resolved.confidence === 'exact' ? 10 : resolved.confidence === 'high' ? 5 : resolved.confidence === 'medium' ? 3 : 1
         }
-        const afterClass = para?.className ? String(para.className) : null
-        const afterData = para?.getAttribute('data-inkchapter-indent-mode') ?? null
-        // Capture first force-indent override for T6 trace
-        if (!traceTarget) {
-          traceTarget = { o, resolved, para, beforeClass, beforeData, afterClass, afterData }
+      }
+
+      const candidatesForThisPara = allCandidateRecords.filter(cr => cr.index === resolved.index)
+
+      const provenance: RehydrateMatchProvenance = {
+        timestamp: Date.now(),
+        rehydrateAttemptId: provenanceId,
+        txnId: this.activeEnterTransaction?.id ?? null,
+        observationId: [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id)?.observationId ?? null,
+
+        targetParagraphIdentity: this.getElementIdentity(para),
+        targetText: para.textContent?.slice(0, 80) ?? null,
+        targetUserVisibleText: getUserVisibleParagraphText(para) || null,
+
+        currentSemantic: currentSemantic,
+
+        candidateRecords: candidatesForThisPara.map(cr => ({ ...cr })),
+        candidateCount: candidatesForThisPara.length,
+
+        selectedRecordId: o.id,
+        selectedRecordMode: o.mode,
+
+        matchStrategy,
+        matchConfidence,
+        ambiguityDetected: candidatesForThisPara.length > 1,
+
+        rehydrateBlocked: false,
+      }
+
+      // ── Ambiguity / Safety Check ────────────────────────────────
+      if (candidatesForThisPara.length > 1) {
+        provenance.ambiguityDetected = true
+        // Check if candidates have different modes (real conflict)
+        const modes = [...new Set(candidatesForThisPara.map(c => c.mode))]
+        if (modes.length > 1) {
+          provenance.rehydrateBlocked = true
+          provenance.blockReason = `ambiguous match: ${candidatesForThisPara.length} candidates at index=${resolved.index} with modes=[${modes.join(',')}] — rehydrate blocked`
         }
-        // Auto-repair anchor (refresh ordinals/neighbors after DOM changes)
+      }
+
+      const blockReason = evaluateRehydrateSafety(provenance)
+      if (blockReason) {
+        provenance.rehydrateBlocked = true
+        provenance.blockReason = blockReason
+      }
+
+      // Log provenance to console (always, for diagnostics)
+      console.info(`[InkChapter] REHYDRATE-DECISION: id=${provenanceId} recordId=${o.id} mode=${o.mode} strategy=${matchStrategy} confidence=${matchConfidence} candidates=${candidatesForThisPara.length} ambiguity=${provenance.ambiguityDetected} blocked=${provenance.rehydrateBlocked} currentSemantic=${currentSemantic}`)
+
+      // Record to observation session trace
+      const obs = [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id)
+      if (obs) {
+        obs.traceData[`REHYDRATE-DECISION-${provenanceId}`] = provenance
+      }
+
+      // ── Execute or Block ────────────────────────────────────────
+      if (provenance.rehydrateBlocked) {
+        console.info(`[InkChapter] REHYDRATE-BLOCKED: ${provenanceId} reason=${provenance.blockReason}`)
+        // Still auto-repair anchor
         if (resolved.index >= 0 && resolved.index < allParas.length) {
           updateParagraphAnchor(o.anchor, resolved.index, allParas)
           dirty = true
         }
+        continue
+      }
+
+      // Atomic rehydrate: semantic + visual in ONE synchronous call.
+      const settings = this.getParagraphLayoutSettings()
+      const rehydrateCtx: RehydrateContext = {
+        source: 'rehydrate',
+        semanticWriterId: WriterIds.REHYDRATE_SEMANTIC,
+        visualWriterId: WriterIds.REHYDRATE_VISUAL,
+      }
+      rehydrateParagraphIndentState(para, o.mode, settings, rehydrateCtx)
+
+      const afterClass = para.className ? String(para.className) : null
+      const afterData = para.getAttribute('data-inkchapter-indent-mode') ?? null
+      // Capture first force-indent override for T6 trace
+      if (!traceTarget) {
+        traceTarget = { o, resolved, para, beforeClass, beforeData, afterClass, afterData }
+      }
+      // Auto-repair anchor (refresh ordinals/neighbors after DOM changes)
+      if (resolved.index >= 0 && resolved.index < allParas.length) {
+        updateParagraphAnchor(o.anchor, resolved.index, allParas)
+        dirty = true
       }
     }
 
@@ -2513,7 +2940,14 @@ export class HeadingNumberingService {
       if (resolved) {
         const para = allParas[resolved.index]
         if (para) {
-          setParagraphIndentMode(para, override.mode)
+          // Atomic rehydrate: semantic + visual in ONE synchronous call
+          const settings = this.getParagraphLayoutSettings()
+          const sidecarCtx: RehydrateContext = {
+            source: 'sidecar-reconstruct',
+            semanticWriterId: WriterIds.SIDECAR_RECONSTRUCT_SEMANTIC,
+            visualWriterId: WriterIds.SIDECAR_RECONSTRUCT_VISUAL,
+          }
+          rehydrateParagraphIndentState(para, override.mode, settings, sidecarCtx)
           // Auto-repair anchor
           const updated = updateParagraphAnchor(override.anchor, resolved.index, allParas)
           override.anchor = updated
@@ -2943,9 +3377,6 @@ export class HeadingNumberingService {
     return el.querySelector('h1, h2, h3, h4, h5, h6') !== null
   }
 
-  /** Indent shortcut: MutationObserver on editor root for childList changes. */
-  private indentObserver: MutationObserver | null = null
-
   // ── Editor binding ─────────────────────────────────────
 
   private initAdapter(): void {
@@ -3012,7 +3443,7 @@ export class HeadingNumberingService {
 
       console.info('[InkChapter] Backspace reverse command: force-indent → force-flush')
 
-      this.applyParagraphIndentOverride(ctx.paragraph, 'force-flush')
+      this.applyParagraphIndentOverride(ctx.paragraph, 'force-flush', WriterIds.BACKSPACE_SEMANTIC)
 
       // Restore caret at logical start of the same paragraph
       this.placeCaretInParagraph(ctx.paragraph)
@@ -3166,115 +3597,6 @@ export class HeadingNumberingService {
     }
     root.addEventListener('keyup', onKeyUp, { passive: true })
     this.editorRootDisposables.add(() => root.removeEventListener('keyup', onKeyUp))
-
-    // ── Indent shortcut: DISABLED (R31) ──
-    // The old standalone MutationObserver approach has been retired in favor
-    // of the pipeline-integrated probe in probeAndConsumeIndentShortcut(),
-    // which hooks into the proven input→requestRefresh→doRefresh pipeline.
-    // this.bindIndentCommandObserver(root)
-  }
-
-  /** Bind MutationObserver to detect and process indent shortcut commands. */
-  private bindIndentCommandObserver(root: HTMLElement): void {
-    // Ensure no duplicate observer
-    if (this.indentObserver) {
-      this.indentObserver.disconnect()
-      this.indentObserver = null
-    }
-
-    const settings = this.getParagraphLayoutSettings()
-    if (!settings.indentShortcutEnabled) return
-
-    // Recursion guard: prevent observer callback from triggering itself
-    let observerActive = false
-
-    const observer = new MutationObserver((mutations: MutationRecord[]) => {
-      if (observerActive) return
-      observerActive = true
-      try {
-        this.processIndentCommandMutations(mutations, root)
-      } finally {
-        observerActive = false
-      }
-    })
-
-    observer.observe(root, {
-      childList: true,
-      subtree: true,
-    })
-
-    this.indentObserver = observer
-    this.editorRootDisposables?.add(() => {
-      observer.disconnect()
-      if (this.indentObserver === observer) this.indentObserver = null
-    })
-  }
-
-  /** Process childList mutations to detect indent command pattern. */
-  private processIndentCommandMutations(mutations: MutationRecord[], root: HTMLElement): void {
-    const settings = this.getParagraphLayoutSettings()
-    if (!settings.indentShortcutEnabled) return
-
-    // Accumulate added paragraphs (may be multiple in one batch)
-    const addedParagraphs: HTMLParagraphElement[] = []
-
-    for (const mutation of mutations) {
-      // Skip large mutations (paste, document load)
-      if (mutation.addedNodes.length > 20) continue
-
-      for (let i = 0; i < mutation.addedNodes.length; i++) {
-        const node = mutation.addedNodes[i]
-        if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'P') {
-          addedParagraphs.push(node as HTMLParagraphElement)
-        }
-      }
-    }
-
-    if (addedParagraphs.length === 0) return
-    // Only process small-scale edits (not paste/document load)
-    if (addedParagraphs.length > 5) return
-
-    for (const newPara of addedParagraphs) {
-      // Guard: new paragraph must be inside editor root
-      if (!root.contains(newPara)) continue
-
-      // Guard: must be a plain paragraph (not in heading/list/code context)
-      if (isInExcludedContext(newPara)) continue
-
-      // Guard: must have a previous sibling that is also a paragraph
-      const prevSibling = newPara.previousElementSibling
-      if (!prevSibling || prevSibling.tagName !== 'P') continue
-
-      // Guard: previous sibling must contain exactly ".." or "。。"
-      const prevText = (prevSibling.textContent ?? '').trim()
-      if (prevText !== '..' && prevText !== '。。') continue
-
-      // Guard: previous sibling must be in a valid context (not code, heading, etc.)
-      if (isInExcludedContext(prevSibling)) continue
-
-      // Guard: previous sibling must not have other inline content
-      // (already handled by prevText check: only ".." or "。。")
-
-      // Guard: caret/selection should be in the new paragraph
-      const sel = window.getSelection()
-      if (sel?.rangeCount && sel.getRangeAt(0).startContainer) {
-        const selNode = sel.getRangeAt(0).startContainer
-        if (!newPara.contains(selNode)) {
-          // Selection not in new paragraph — skip this mutation
-          continue
-        }
-      }
-
-      // ── Command recognized: consume marker paragraph, force-indent target ──
-      prevSibling.remove()
-
-      // Apply force-indent to the new paragraph
-      applyParagraphIndent(newPara, '2em')
-
-      // One command per mutation batch is sufficient
-      this.requestRefresh('editor-input')
-      break
-    }
   }
 
   /** Detach editor root listeners (called on root change). */
@@ -3282,10 +3604,6 @@ export class HeadingNumberingService {
     if (this.editorRootDisposables) {
       this.editorRootDisposables.dispose()
       this.editorRootDisposables = null
-    }
-    if (this.indentObserver) {
-      this.indentObserver.disconnect()
-      this.indentObserver = null
     }
     this.boundEditorRoot = null
   }

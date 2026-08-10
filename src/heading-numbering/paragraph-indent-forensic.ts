@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const FORENSIC_BUILD_MARKER = 'inkchapter-paragraph-indent-visual-forensic-r43-e2f0d'
+export const FORENSIC_BUILD_MARKER = 'inkchapter-anchor-record-forensic-r49-b7c1e'
 
 // ── State ────────────────────────────────────────────────────────────
 
