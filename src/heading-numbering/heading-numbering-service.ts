@@ -64,6 +64,12 @@ import {
   type RehydrateContext,
   evaluateRehydrateSafety,
   anchorConfidenceToRehydrateConfidence,
+  resolveSafeRehydrateDecision,
+  type SafeRehydrateDecision,
+  type PendingLogicalParagraphState,
+  resolvePendingReplacementParagraph,
+  releasePendingCaretIfUserMoved,
+  generateParagraphFingerprint,
   RehydrateMatchStrategy,
   type RehydrateMatchProvenance,
   type CandidateRecord,
@@ -77,6 +83,11 @@ import {
   getParagraphWriterHistory,
   WriterIds,
   type BackspaceIndentCommandContext,
+  type RehydrateResolvedCandidate,
+  type RehydrateOwnershipGroup,
+  type ParagraphRehydratePlan,
+  buildRehydrateOwnershipGroups,
+  getElementIdentity,
 } from './paragraph-indent-manager'
 import {
   loadParagraphLayout,
@@ -241,6 +252,11 @@ export class HeadingNumberingService {
   // Map-based: each transaction gets its own independent observation to T9.
   // Multiple concurrent observations coexist without overwriting each other.
   private observations = new Map<string, PostCommitObservationSession>()
+
+  // ── Pending Logical Paragraph Identity — Stage A runtime continuity ──
+  // Short-lived state for post-Enter empty paragraphs before stable text.
+  // Maintains semantic/visual/caret across DOM rebuilds without sidecar.
+  private activePendingState: PendingLogicalParagraphState | null = null
 
   // ── In-memory Override Registry ──────────────────────
   // Mirrors sidecar records but updates immediately (no debounce for reads).
@@ -2026,6 +2042,8 @@ export class HeadingNumberingService {
   private commitEnterIndentTransactionSync(txn: EnterIndentTransaction, event: Event): void {
     const para = txn.paragraph
     const root = this.adapter.getEditorRoot()
+    const preParagraphIdentity = getElementIdentity(para)
+    const preParagraphConnected = para.isConnected
     txn.traceData['T0_paraCountBefore'] = txn.paragraphCountBefore
     txn.traceData['T0_paraTag'] = para.tagName
 
@@ -2035,41 +2053,130 @@ export class HeadingNumberingService {
     txn.traceData['preventDefault'] = true
     txn.state = 'token-consumed'
 
-    // consume token
+    // consume token — direct DOM textContent mutation
     this.clearParagraphToken(para, txn.token)
     txn.tokenConsumed = true
     txn.traceData['tokenConsumed'] = true
-    txn.traceData['DOMtextAfter'] = getUserVisibleParagraphText(para)
+    txn.traceData['tokenConsumerType'] = 'direct-textNode-mutation'
+
+    // Check if token consumer caused DOM replacement (stale element)
+    const postTokenConnected = para.isConnected
+    let caretTarget: HTMLElement | null = para
+
+    if (!postTokenConnected) {
+      // ── STALE-PARAGRAPH-AFTER-TOKEN-CONSUME ──
+      console.info(`[InkChapter] STALE-PARAGRAPH-AFTER-TOKEN-CONSUME: txnId=${txn.id} preIdentity=${preParagraphIdentity} preConnected=true postConnected=false`)
+      txn.traceData['staleDetected'] = true
+
+      // ── One-Shot Local Replacement Resolution ──
+      // Find the replacement paragraph at the same ordinal in editor root
+      const currentRoot = this.adapter.getEditorRoot()
+      if (currentRoot) {
+        const allParas = collectContentParagraphs(currentRoot)
+        const paraOrdinal = txn.paragraphCountBefore > 0
+          ? Math.min(txn.paragraphCountBefore - 1, allParas.length - 1)
+          : 0
+
+        // Try to find the replacement: same ordinal, empty text (after token consumed)
+        if (paraOrdinal >= 0 && paraOrdinal < allParas.length) {
+          const candidate = allParas[paraOrdinal]
+          const candidateText = getUserVisibleParagraphText(candidate)
+          // The replacement should be empty (token consumed, no other text)
+          if (candidateText === '' || candidate.textContent === '') {
+            caretTarget = candidate
+            txn.traceData['replacementResolved'] = true
+            txn.traceData['replacementIdentity'] = getElementIdentity(candidate)
+            txn.traceData['replacementOrdinal'] = paraOrdinal
+            console.info(`[InkChapter] STALE-PARAGRAPH-RESOLVED: txnId=${txn.id} replacementIdentity=${getElementIdentity(candidate)} ordinal=${paraOrdinal}`)
+          } else {
+            txn.traceData['replacementResolved'] = false
+            txn.traceData['replacementAmbiguous'] = true
+          }
+        }
+      }
+    }
 
     // semantic FORCE_INDENT
-    setParagraphIndentMode(para, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
+    setParagraphIndentMode(caretTarget, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
     txn.semanticWritten = true
     txn.state = 'semantic-written'
 
-    // sidecar exactly once
-    this.applyParagraphIndentOverrideToSidecar(para, 'force-indent')
-    txn.sidecarWritten = true
-    txn.traceData['sidecarWriteCount'] = 1
+    // SIDECAR TEMPORARILY DISABLED for empty paragraph commit.
+    txn.sidecarWritten = false
+    txn.traceData['sidecarWriteCount'] = 0
+    txn.traceData['sidecarDisabled'] = 'empty-paragraph-persistence-paused'
 
     // visual projection
     const settings = this.getParagraphLayoutSettings()
-    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(para) : false }
+    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(caretTarget) : false }
     const effective = resolveEffectiveParagraphIndent('force-indent', settings.defaultIndent, structural)
-    applyEffectiveParagraphIndent(para, effective, WriterIds.ENTER_COMMIT_VISUAL)
+    applyEffectiveParagraphIndent(caretTarget, effective, WriterIds.ENTER_COMMIT_VISUAL)
     txn.state = 'visual-applied'
-    txn.traceData['computedIndent'] = window.getComputedStyle(para).textIndent
+    txn.traceData['computedIndent'] = window.getComputedStyle(caretTarget).textIndent
+    txn.traceData['semanticTargetIdentity'] = getElementIdentity(caretTarget)
 
-    // caret restore
-    this.placeCaretInParagraph(para)
+    // caret restore — only if target is valid and connected
+    const caretConnected = caretTarget.isConnected
+    if (caretConnected) {
+      this.placeCaretInParagraph(caretTarget)
+      txn.traceData['caretWriterType'] = 'one-shot-sync-placeCaret'
+      txn.traceData['caretTargetIdentity'] = getElementIdentity(caretTarget)
+      txn.traceData['caretTargetConnected'] = true
+    } else {
+      txn.traceData['caretWriterType'] = 'none-stale-target'
+      txn.traceData['caretTargetConnected'] = false
+    }
     txn.state = 'caret-restored'
 
     // mark committed, suppress native insertParagraph going forward
     txn.state = 'committed'
     txn.suppressNativeInsertParagraph = true
+
+    // Paragraph count verification
+    const finalRoot = this.adapter.getEditorRoot()
+    const paragraphCountAfter = finalRoot ? collectContentParagraphs(finalRoot).length : -1
+    txn.traceData['paragraphCountAfter'] = paragraphCountAfter
+
+    const tokenGone = caretTarget ? getUserVisibleParagraphText(caretTarget) === '' : false
+    const semanticAfter = caretTarget ? getParagraphIndentMode(caretTarget) : 'unknown'
+    const computedIndentAfter = caretTarget ? window.getComputedStyle(caretTarget).textIndent : 'unknown'
+    const success = tokenGone &&
+      paragraphCountAfter === txn.paragraphCountBefore &&
+      semanticAfter === 'force-indent' &&
+      computedIndentAfter === '32px'
+
     txn.traceData['stopReason'] = 'commit completed'
     txn.traceData['T0'] = 'commit sync end'
 
+    // ── ENTER-COMMIT-ATOMIC (r53 P0-C) ──
+    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} preParagraphConnected=${preParagraphConnected} preParagraphIdentity=${preParagraphIdentity} tokenConsumerType=direct-textNode-mutation postTokenOldParagraphConnected=${postTokenConnected} replacementResolved=${txn.traceData['replacementResolved'] ?? false} semanticTargetIdentity=${txn.traceData['semanticTargetIdentity']} caretTargetIdentity=${txn.traceData['caretTargetIdentity']} caretTargetConnected=${caretConnected} paragraphCountBefore=${txn.paragraphCountBefore} paragraphCountAfter=${paragraphCountAfter} tokenGone=${tokenGone} semanticAfter=${semanticAfter} computedIndentAfter=${computedIndentAfter} success=${success}`)
+
     console.info(`[InkChapter] ${txn.id} committed: token=${txn.token} state=${txn.state}`)
+
+    // ── Create Pending Logical Paragraph Identity ────────────────────
+    // Stage A: short-lived runtime identity for post-Enter empty paragraph.
+    // Does NOT depend on textHash or sidecar heuristic — uses local continuity.
+    const root2 = this.adapter.getEditorRoot()
+    const allParasCommitted = root2 ? collectContentParagraphs(root2) : []
+    const paraOrdinal = allParasCommitted.indexOf(para)
+    const prevPara = paraOrdinal > 0 ? allParasCommitted[paraOrdinal - 1] : null
+    const nextPara = paraOrdinal < allParasCommitted.length - 1 ? allParasCommitted[paraOrdinal + 1] : null
+
+    this.activePendingState = {
+      pendingId: `pending-${txn.id}`,
+      sourceTxnId: txn.id,
+      semantic: 'force-indent',
+      createdAt: performance.now(),
+      originalElement: para,
+      originalParagraphOrdinal: paraOrdinal >= 0 ? paraOrdinal : 0,
+      originalPreviousParagraphFingerprint: generateParagraphFingerprint(prevPara),
+      originalNextParagraphFingerprint: generateParagraphFingerprint(nextPara),
+      originalSelectionLogicalOffset: 0,
+      caretOwnedByPending: true,
+      promoted: false,
+      state: 'COMMAND_COMMITTED_PENDING_EMPTY',
+    }
+    console.info(`[InkChapter] PENDING created: ${this.activePendingState.pendingId} ordinal=${paraOrdinal} semantic=force-indent`)
 
     // Schedule T0-T4 transaction snapshots, then close tx at T4.
     // Post-commit observation runs independently T4→T9.
@@ -2168,7 +2275,7 @@ export class HeadingNumberingService {
       observationId: `obs-${txn.id}`,
       txnId: txn.id,
       paragraphAtCommit: txn.paragraph,
-      paragraphIdentityAtCommit: this.getElementIdentity(txn.paragraph),
+      paragraphIdentityAtCommit: getElementIdentity(txn.paragraph),
       startedAt: performance.now(),
       transactionClosedAt: closedAt,
       lastKnownParagraph: txn.paragraph,
@@ -2199,7 +2306,7 @@ export class HeadingNumberingService {
           // Try to find the same paragraph by identity / text
           const idAtCommit = obs.paragraphIdentityAtCommit
           for (const p of allParas) {
-            if (this.getElementIdentity(p) === idAtCommit) {
+            if (getElementIdentity(p) === idAtCommit) {
               resolvedPara = p
               sameDOMElement = true
               obs.lastKnownParagraph = p
@@ -2245,7 +2352,7 @@ export class HeadingNumberingService {
         sameDOMElement,
         paragraphIsConnected: resolvedPara?.isConnected ?? false,
         paragraphIdentityAtCommit: obs.paragraphIdentityAtCommit,
-        currentParagraphIdentity: resolvedPara ? this.getElementIdentity(resolvedPara) : null,
+        currentParagraphIdentity: resolvedPara ? getElementIdentity(resolvedPara) : null,
 
         // State
         semantic: resolvedPara ? getParagraphIndentMode(resolvedPara) : null,
@@ -2340,7 +2447,7 @@ export class HeadingNumberingService {
             oldValue: m.oldValue ?? null,
 
             paragraphIdentityAtCommit: obs.paragraphIdentityAtCommit,
-            currentParagraphIdentity: this.getElementIdentity(para),
+            currentParagraphIdentity: getElementIdentity(para),
             sameDOMElement: para.isConnected && para === obs.paragraphAtCommit,
 
             semantic: getParagraphIndentMode(para),
@@ -2411,8 +2518,203 @@ export class HeadingNumberingService {
   }
 
   /** Generate a stable identity key for a paragraph element. Read-only. */
-  private getElementIdentity(el: HTMLElement): string {
-    return `${el.tagName}:${el.className?.slice(0, 40) ?? ''}:${el.textContent?.slice(0, 30) ?? ''}:${el.getAttribute('data-line') ?? ''}`
+  // ── Pending Continuity ──────────────────────────────────────────────
+  // Stage A: post-Enter DOM rebuild recovery WITHOUT sidecar heuristics.
+
+  /**
+   * Try to restore pending state after DOM rebuild.
+   * Called during rehydrate when the pending original element is disconnected.
+   * Resolves the replacement paragraph via LOCAL mutation context,
+   * then atomically restores semantic + visual + caret.
+   */
+  private tryRestorePendingContinuity(addedElements: HTMLElement[]): void {
+    const pending = this.activePendingState
+    if (!pending) return
+    if (pending.promoted) return
+
+    const original = pending.originalElement
+    if (original.isConnected) {
+      // Still connected — update currentElement reference
+      pending.currentElement = original
+      return
+    }
+
+    // Original disconnected — find replacement
+    const replacement = resolvePendingReplacementParagraph(pending, original, addedElements)
+    if (!replacement) {
+      console.info(`[InkChapter] PENDING: ${pending.pendingId} original disconnected, no replacement found`)
+      return
+    }
+
+    pending.currentElement = replacement
+    pending.state = 'DOM_REBOUND_PENDING'
+
+    // ── Pending Continuity: DIAGNOSTIC ONLY ──
+    // Per r52 Hard Rollback Section 31: Pending CANNOT repair semantic, visual, or caret.
+    // All restores are DISABLED until clean M1~M3 baseline is proven stable.
+    // Only record observation data — never mutate DOM or selection.
+    //
+    // Semantic restore: OFF (was: rehydrateParagraphIndentState(...))
+    // Visual restore:   OFF
+    // Caret restore:     OFF
+
+    // Read-only diagnostic: record the potential caret ownership without acting on it
+    if (pending.caretOwnedByPending) {
+      // Read-only diagnostic
+      recordParagraphWrite(replacement, 'W-CARET-DIAGNOSTIC', 'pending-caret-owned-readonly')
+    }
+
+    console.info(`[InkChapter] PENDING DIAGNOSTIC: ${pending.pendingId} rebound to replacement (semantic=${pending.semantic}) — ALL RESTORES OFF (r52 Hard Rollback)`)
+  }
+
+  /**
+   * Try to promote pending state to stable sidecar record.
+   * Called when the pending paragraph receives stable text.
+   * Uses UPSERT — never creates duplicate records for the same logical paragraph.
+   */
+  private tryPromotePendingState(): void {
+    const pending = this.activePendingState
+    if (!pending) return
+    if (pending.promoted) return
+
+    const para = pending.currentElement ?? pending.originalElement
+    if (!para?.isConnected) return
+
+    const userVisibleText = getUserVisibleParagraphText(para)
+    if (!userVisibleText || userVisibleText.trim().length === 0) return // still empty
+
+    // Text entered — promote to stable sidecar
+    const docKey = this.getDocumentKey()
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    if (!docKey) return
+
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+
+    const allParas = collectContentParagraphs(root)
+    const paraIndex = allParas.indexOf(para)
+    if (paraIndex < 0) return
+
+    const newAnchor = createParagraphAnchor(paraIndex, allParas)
+    const overrides = this.inMemoryOverrides.get(docKey) ?? []
+
+    // UPSERT: find existing record for this logical paragraph by anchor match
+    const existingIndex = overrides.findIndex(o =>
+      o.mode === pending.semantic &&
+      resolveParagraphAnchor(o.anchor, allParas)?.index === paraIndex,
+    )
+
+    if (existingIndex >= 0) {
+      // Update existing record
+      overrides[existingIndex].anchor = newAnchor
+      overrides[existingIndex].temporary = false
+    } else {
+      // Create new record (only for new logical paragraphs)
+      const recordId = `promoted-${pending.pendingId}`
+      overrides.push({
+        id: recordId,
+        mode: pending.semantic,
+        anchor: newAnchor,
+        temporary: false,
+      })
+      pending.promotedRecordId = recordId
+    }
+
+    pending.state = 'CONTENT_STABLE_PROMOTED'
+    pending.promoted = true
+    this.inMemoryOverrides.set(docKey, overrides)
+    this.scheduleSidecarWrite(docKey, docPath, overrides)
+
+    console.info(`[InkChapter] PENDING PROMOTED: ${pending.pendingId} → sidecar record semantic=${pending.semantic} paraIndex=${paraIndex}`)
+  }
+
+  /**
+   * Release active pending state (document switch, explicit override, deletion).
+   */
+  private releasePendingState(reason: string): void {
+    const pending = this.activePendingState
+    if (!pending) return
+    console.info(`[InkChapter] PENDING RELEASED: ${pending.pendingId} reason=${reason}`)
+    this.activePendingState = null
+  }
+
+  /**
+   * SINGLE-DOT-TRACE: automatically record state when user types "." or "。".
+   *
+   * Verifies that single-dot input never creates FORCE_INDENT semantic or
+   * modifies sidecar. If violation detected → HARD STOP.
+   */
+  private traceSingleDotIfMatch(paragraph: HTMLElement | null, settings: import('./heading-types').ParagraphLayoutSettings): void {
+    if (!paragraph) return
+    const visibleText = getUserVisibleParagraphText(paragraph)
+    // Only trace exact single dot "。" or "."
+    if (visibleText !== '。' && visibleText !== '.') return
+
+    const docKey = this.getDocumentKey()
+    const semanticBefore = getParagraphIndentMode(paragraph)
+    const computedBefore = window.getComputedStyle(paragraph).textIndent
+    const overrides = this.inMemoryOverrides.get(docKey ?? '') ?? []
+    const sidecarCountBefore = overrides.length
+
+    const rehydrateDecision = this.getLastRehydrateDecision()
+
+    const trace: Record<string, unknown> = {
+      type: 'SINGLE-DOT-TRACE',
+      timestamp: Date.now(),
+      documentKey: docKey ?? 'unknown',
+      paragraphIdentity: getElementIdentity(paragraph),
+      visibleText,
+      semanticBefore,
+      semanticAfter: semanticBefore,
+      computedIndentBefore: computedBefore,
+      computedIndentAfter: computedBefore,
+      effectiveClassBefore: paragraph.className ? String(paragraph.className).slice(0, 120) : null,
+      effectiveClassAfter: paragraph.className ? String(paragraph.className).slice(0, 120) : null,
+      sidecarRecordCountBefore: sidecarCountBefore,
+      sidecarRecordCountAfter: sidecarCountBefore,
+      lastSemanticWriter: (() => {
+        const h = getParagraphWriterHistory(paragraph)
+        const lastSemantic = [...h].reverse().find(w => w.writerId.includes('SEMANTIC'))
+        return lastSemantic?.writerId ?? null
+      })(),
+      lastVisualWriter: (() => {
+        const h = getParagraphWriterHistory(paragraph)
+        const lastVisual = [...h].reverse().find(w =>
+          w.writerId.includes('VISUAL') || w.writerId.includes('PROJECTION') || w.writerId.includes('REFRESH')
+        )
+        return lastVisual?.writerId ?? null
+      })(),
+      writerHistoryTail: (() => {
+        const h = getParagraphWriterHistory(paragraph)
+        return h.slice(-5).map(w => ({ id: w.writerId, reason: w.reason, relMs: w.relativeMs }))
+      })(),
+      rehydrateDecisionId: rehydrateDecision?.rehydrateAttemptId ?? null,
+      selectedRecordId: rehydrateDecision?.selectedRecordId ?? null,
+      matchStrategy: rehydrateDecision?.matchStrategy ?? null,
+      candidateCount: rehydrateDecision?.candidateCount ?? 0,
+      ambiguity: rehydrateDecision?.ambiguityDetected ?? false,
+      blocked: rehydrateDecision?.rehydrateBlocked ?? false,
+    }
+
+    console.info(`[InkChapter] SINGLE-DOT-TRACE: text="${visibleText}" semantic=${semanticBefore} computed=${computedBefore} sidecar=${sidecarCountBefore}`)
+
+    // Record to observation
+    const obs = this.activeEnterTransaction ? [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id) : null
+    if (obs) {
+      obs.traceData[`SINGLE-DOT-${Date.now()}`] = trace
+    }
+
+    // HARD STOP: single dot must NEVER create FORCE_INDENT
+    if (semanticBefore !== 'auto') {
+      console.error(`[InkChapter] SINGLE_DOT_SEMANTIC_VIOLATION: text="${visibleText}" semantic=${semanticBefore} — HARD STOP`)
+      console.error('[InkChapter] VIOLATION DETAILS:', JSON.stringify(trace, null, 2))
+    }
+  }
+
+  private lastRehydrateDecisionSnapshot: RehydrateMatchProvenance | null = null
+
+  private getLastRehydrateDecision(): RehydrateMatchProvenance | null {
+    return this.lastRehydrateDecisionSnapshot
   }
 
   /**
@@ -2487,22 +2789,30 @@ export class HeadingNumberingService {
 
   /** Place caret at the start of a paragraph, handling empty/BR/text node. */
   private placeCaretInParagraph(paragraph: HTMLElement): void {
-    const sel = window.getSelection()
-    if (!sel) return
-    const range = document.createRange()
-
-    // Find first text node or BR
-    const firstChild = paragraph.firstChild
-    if (firstChild?.nodeType === Node.TEXT_NODE) {
-      range.setStart(firstChild, 0)
-    } else if (firstChild?.nodeName === 'BR') {
-      range.setStartBefore(firstChild)
-    } else {
-      range.setStart(paragraph, 0)
+    if (!paragraph || !(paragraph instanceof Node) || !paragraph.isConnected) {
+      console.info('[InkChapter] CARET_TARGET_INVALID: paragraph not a valid connected Node')
+      return
     }
-    range.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(range)
+    try {
+      const sel = window.getSelection()
+      if (!sel) return
+      const range = document.createRange()
+
+      // Find first text node or BR
+      const firstChild = paragraph.firstChild
+      if (firstChild?.nodeType === Node.TEXT_NODE) {
+        range.setStart(firstChild, 0)
+      } else if (firstChild?.nodeName === 'BR') {
+        range.setStartBefore(firstChild)
+      } else {
+        range.setStart(paragraph, 0)
+      }
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+    } catch (e) {
+      console.info('[InkChapter] CARET_WRITE_FAILED:', e)
+    }
   }
 
   /**
@@ -2565,14 +2875,23 @@ export class HeadingNumberingService {
 
   private sidecarWriteTimer: ReturnType<typeof setTimeout> | null = null
   private sidecarWritePending: { docKey: string; docPath: string; overrides: ParagraphIndentOverrideRecord[] } | null = null
+  private sidecarGeneration = 0
 
   private scheduleSidecarWrite(docKey: string, docPath: string, overrides: ParagraphIndentOverrideRecord[]): void {
-    this.sidecarWritePending = { docKey, docPath, overrides }
+    // Deep clone records + anchors for immutable snapshot.
+    // Prevents 200ms debounce window mutations from corrupting the pending write.
+    const snapshot = overrides.map(o => ({
+      ...o,
+      anchor: { ...o.anchor },
+    }))
+    this.sidecarWritePending = { docKey, docPath, overrides: snapshot }
+    const gen = ++this.sidecarGeneration
     if (this.sidecarWriteTimer !== null) clearTimeout(this.sidecarWriteTimer)
     this.sidecarWriteTimer = setTimeout(() => {
       this.sidecarWriteTimer = null
       const pending = this.sidecarWritePending
-      if (pending) {
+      // Only execute if no newer generation has been scheduled
+      if (pending && this.sidecarGeneration === gen) {
         this.sidecarWritePending = null
         saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
       }
@@ -2671,70 +2990,51 @@ export class HeadingNumberingService {
     })
   }
 
+  // ── Two-Pass Rehydrate Pipeline (r53 P0-A) ──────────────────────
+
   /**
-   * Rehydrate explicit force-indent overrides from in-memory registry.
-   * Called before every refreshParagraphIndentStyles so that explicit
-   * overrides survive Normal Enter / paragraph split / DOM rebuild.
+   * Phase 1: Resolve ALL sidecar records into candidates.
+   * Phase 2: Group candidates by target paragraph ownership.
+   * Phase 3: Build plan (winners + blocked groups).
    *
-   * Also promotes temporary anchors (empty paragraph) to stable anchors
-   * when the user has typed text, and triggers a debounced sidecar write
-   * to persist stable anchors for save/reopen round-trip.
+   * NO semantic/visual/sidecar/caret writers during Phase 1/2.
+   * This eliminates the first-candidate leak where the first record
+   * is applied before later records for the same paragraph are discovered.
+   *
+   * Shared by both rehydrateParagraphIndentOverrides and
+   * reconstructParagraphOverridesFromSidecar.
    */
-  private rehydrateParagraphIndentOverrides(root: HTMLElement): void {
-    const docKey = this.getDocumentKey()
-    if (!docKey) return
-    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
-    const overrides = this.inMemoryOverrides.get(docKey)
-    if (!overrides || overrides.length === 0) return
+  private resolveParagraphOverrideRehydratePlan(
+    docKey: string,
+    docPath: string,
+    allRecords: ParagraphIndentOverrideRecord[],
+    allParas: HTMLElement[],
+    source: 'rehydrate' | 'reconstruct',
+  ): ParagraphRehydratePlan {
+    const planId = `plan-${source}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const resolvedCandidates: RehydrateResolvedCandidate[] = []
+    let phase1WriterCount = 0
 
-    const allParas = collectContentParagraphs(root)
-    if (allParas.length === 0) return
-
+    // ── Phase 1: RESOLVE ALL — NO writers allowed ──
+    // Promote temporary anchors first (same logic as before)
     let dirty = false
-    let promotionHappened = false
-    let promotionTextHash: string | null = null
-
-    // First, promote temporary anchors if text has been typed
-    for (const o of overrides) {
-      if (!o.temporary || o.mode !== 'force-indent') continue
+    for (const o of allRecords) {
+      if (!o.temporary) continue
+      if (o.mode !== 'force-indent' && o.mode !== 'force-flush') continue
       const resolved = resolveParagraphAnchor(o.anchor, allParas)
       if (resolved) {
         const para = allParas[resolved.index]
         if (para && para.textContent?.trim()) {
-          // Text entered — promote to stable anchor
           const newAnchor = createParagraphAnchor(resolved.index, allParas)
           o.anchor = newAnchor
           o.temporary = false
           dirty = true
-          promotionHappened = true
-          promotionTextHash = newAnchor.textHash ?? null
         }
       }
     }
 
-    // Rehydrate: set semantic state on matching DOM elements
-    let traceTarget: {
-      o: ParagraphIndentOverrideRecord
-      resolved: AnchorResolveResult | null
-      para: HTMLElement | null
-      beforeClass: string | null
-      beforeData: string | null
-      afterClass: string | null
-      afterData: string | null
-    } | null = null
-
-    // Collect all candidate records for ambiguity detection
-    const allCandidateRecords: CandidateRecord[] = overrides
-      .filter(o => o.mode === 'force-indent' || o.mode === 'force-flush')
-      .map(o => ({
-        recordId: o.id,
-        mode: o.mode,
-        anchorRaw: { textHash: o.anchor.textHash, lastKnownOrdinal: o.anchor.lastKnownOrdinal, occurrence: o.anchor.occurrence },
-        index: null as number | null,
-        source: 'in-memory-override',
-      }))
-
-    for (const o of overrides) {
+    // Resolve ALL explicit records
+    for (const o of allRecords) {
       if (o.mode !== 'force-indent' && o.mode !== 'force-flush') continue
       const resolved = resolveParagraphAnchor(o.anchor, allParas)
       if (!resolved) continue
@@ -2742,15 +3042,8 @@ export class HeadingNumberingService {
       const para = allParas[resolved.index]
       if (!para) continue
 
-      const beforeClass = para.className ? String(para.className) : null
-      const beforeData = para.getAttribute('data-inkchapter-indent-mode') ?? null
-      const currentSemantic = getParagraphIndentMode(para)
-
-      // ── Match Provenance ───────────────────────────────────────
-      const provenanceId = `rhp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
       const matchConfidence = anchorConfidenceToRehydrateConfidence(resolved.confidence)
 
-      // Determine match strategy
       let matchStrategy: typeof RehydrateMatchStrategy[keyof typeof RehydrateMatchStrategy]
       switch (resolved.confidence) {
         case 'exact':
@@ -2767,149 +3060,188 @@ export class HeadingNumberingService {
           break
       }
 
-      // Update candidate records with resolved indices
-      for (const cr of allCandidateRecords) {
-        if (cr.recordId === o.id) {
-          cr.index = resolved.index
-          cr.score = resolved.confidence === 'exact' ? 10 : resolved.confidence === 'high' ? 5 : resolved.confidence === 'medium' ? 3 : 1
-        }
+      const score = resolved.confidence === 'exact' ? 100 : resolved.confidence === 'high' ? 5 : resolved.confidence === 'medium' ? 3 : 1
+
+      resolvedCandidates.push({
+        recordId: o.id,
+        recordMode: o.mode,
+        record: { ...o },
+        targetParagraph: para,
+        targetParagraphIndex: resolved.index,
+        strategy: matchStrategy,
+        confidence: matchConfidence,
+        score,
+        candidateCountAtGroup: 0, // filled in Phase 2
+      })
+    }
+
+    // ── Phase 1 invariant check ──
+    if (phase1WriterCount > 0) {
+      console.error(`[InkChapter] REHYDRATE_PHASE1_WRITER_VIOLATION: writers=${phase1WriterCount} — HARD FAIL`)
+    }
+
+    // ── Phase 2: GROUP OWNERSHIP ──
+    const groups = buildRehydrateOwnershipGroups(resolvedCandidates)
+
+    // Update candidateCountAtGroup for all candidates
+    for (const group of groups) {
+      for (const c of group.candidates) {
+        c.candidateCountAtGroup = group.candidateCount
+      }
+    }
+
+    // ── Phase 3: DECIDE — determine winners and blocked groups ──
+    // For single-owner groups, also run match safety check
+    const winners: RehydrateResolvedCandidate[] = []
+    const blockedGroups: RehydrateOwnershipGroup[] = []
+
+    for (const group of groups) {
+      if (group.decision === 'block') {
+        blockedGroups.push(group)
+        // Log REHYDRATE-GROUP for blocked
+        console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} targetIndex=${group.targetParagraphIndex} candidateRecordIds=[${group.candidateRecordIds.join(',')}] candidateModes=[${group.candidateModes.join(',')}] candidateCount=${group.candidateCount} decision=BLOCK reason=${group.reason}`)
+        continue
       }
 
-      const candidatesForThisPara = allCandidateRecords.filter(cr => cr.index === resolved.index)
+      // Single-owner: run match safety
+      if (!group.winner) continue
+      const winner = group.winner
+
+      const currentSemantic = getParagraphIndentMode(winner.targetParagraph)
 
       const provenance: RehydrateMatchProvenance = {
         timestamp: Date.now(),
-        rehydrateAttemptId: provenanceId,
+        rehydrateAttemptId: `${planId}-${winner.recordId}`,
         txnId: this.activeEnterTransaction?.id ?? null,
-        observationId: [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id)?.observationId ?? null,
-
-        targetParagraphIdentity: this.getElementIdentity(para),
-        targetText: para.textContent?.slice(0, 80) ?? null,
-        targetUserVisibleText: getUserVisibleParagraphText(para) || null,
-
-        currentSemantic: currentSemantic,
-
-        candidateRecords: candidatesForThisPara.map(cr => ({ ...cr })),
-        candidateCount: candidatesForThisPara.length,
-
-        selectedRecordId: o.id,
-        selectedRecordMode: o.mode,
-
-        matchStrategy,
-        matchConfidence,
-        ambiguityDetected: candidatesForThisPara.length > 1,
-
+        observationId: null,
+        targetParagraphIdentity: getElementIdentity(winner.targetParagraph),
+        targetText: winner.targetParagraph.textContent?.slice(0, 80) ?? null,
+        targetUserVisibleText: getUserVisibleParagraphText(winner.targetParagraph) || null,
+        currentSemantic,
+        candidateRecords: [],
+        candidateCount: 1,
+        selectedRecordId: winner.recordId,
+        selectedRecordMode: winner.recordMode,
+        matchStrategy: winner.strategy,
+        matchConfidence: winner.confidence,
+        ambiguityDetected: false,
         rehydrateBlocked: false,
-      }
-
-      // ── Ambiguity / Safety Check ────────────────────────────────
-      if (candidatesForThisPara.length > 1) {
-        provenance.ambiguityDetected = true
-        // Check if candidates have different modes (real conflict)
-        const modes = [...new Set(candidatesForThisPara.map(c => c.mode))]
-        if (modes.length > 1) {
-          provenance.rehydrateBlocked = true
-          provenance.blockReason = `ambiguous match: ${candidatesForThisPara.length} candidates at index=${resolved.index} with modes=[${modes.join(',')}] — rehydrate blocked`
-        }
       }
 
       const blockReason = evaluateRehydrateSafety(provenance)
       if (blockReason) {
-        provenance.rehydrateBlocked = true
-        provenance.blockReason = blockReason
-      }
-
-      // Log provenance to console (always, for diagnostics)
-      console.info(`[InkChapter] REHYDRATE-DECISION: id=${provenanceId} recordId=${o.id} mode=${o.mode} strategy=${matchStrategy} confidence=${matchConfidence} candidates=${candidatesForThisPara.length} ambiguity=${provenance.ambiguityDetected} blocked=${provenance.rehydrateBlocked} currentSemantic=${currentSemantic}`)
-
-      // Record to observation session trace
-      const obs = [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id)
-      if (obs) {
-        obs.traceData[`REHYDRATE-DECISION-${provenanceId}`] = provenance
-      }
-
-      // ── Execute or Block ────────────────────────────────────────
-      if (provenance.rehydrateBlocked) {
-        console.info(`[InkChapter] REHYDRATE-BLOCKED: ${provenanceId} reason=${provenance.blockReason}`)
-        // Still auto-repair anchor
-        if (resolved.index >= 0 && resolved.index < allParas.length) {
-          updateParagraphAnchor(o.anchor, resolved.index, allParas)
-          dirty = true
-        }
+        group.decision = 'block'
+        group.reason = blockReason
+        blockedGroups.push(group)
+        console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} candidateCount=1 decision=BLOCK reason=${blockReason}`)
         continue
       }
 
-      // Atomic rehydrate: semantic + visual in ONE synchronous call.
-      const settings = this.getParagraphLayoutSettings()
-      const rehydrateCtx: RehydrateContext = {
-        source: 'rehydrate',
-        semanticWriterId: WriterIds.REHYDRATE_SEMANTIC,
-        visualWriterId: WriterIds.REHYDRATE_VISUAL,
-      }
-      rehydrateParagraphIndentState(para, o.mode, settings, rehydrateCtx)
+      winners.push(winner)
+      console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} candidateCount=1 decision=APPLY winner=${winner.recordId} mode=${winner.recordMode}`)
+    }
 
-      const afterClass = para.className ? String(para.className) : null
-      const afterData = para.getAttribute('data-inkchapter-indent-mode') ?? null
-      // Capture first force-indent override for T6 trace
-      if (!traceTarget) {
-        traceTarget = { o, resolved, para, beforeClass, beforeData, afterClass, afterData }
+    // ── REHYDRATE-PLAN summary ──
+    console.info(`[InkChapter] REHYDRATE-PLAN: planId=${planId} documentKey=${docKey} source=${source} recordCount=${allRecords.length} resolvedCandidateCount=${resolvedCandidates.length} groupCount=${groups.length} winnerCount=${winners.length} blockedGroupCount=${blockedGroups.length} phase1WriterCount=${phase1WriterCount}`)
+
+    return {
+      planId,
+      documentKey: docKey,
+      allRecords,
+      resolvedCandidates,
+      groups,
+      winners,
+      blockedGroups,
+      phase1WriterCount,
+    }
+  }
+
+  /**
+   * Phase 4: Apply safe winners from the rehydrate plan.
+   * Only winners with group.length===1 + match safety pass are applied.
+   * Also handles anchor repair and sidecar persistence.
+   */
+  private applyParagraphRehydratePlan(plan: ParagraphRehydratePlan): void {
+    if (plan.winners.length === 0) return
+
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+    const allParas = collectContentParagraphs(root)
+    const settings = this.getParagraphLayoutSettings()
+
+    let dirty = false
+
+    for (const winner of plan.winners) {
+      const para = winner.targetParagraph
+      if (!para?.isConnected) continue
+
+      const rehydrateCtx: RehydrateContext = {
+        source: plan.allRecords === this.inMemoryOverrides.get(plan.documentKey) ? 'rehydrate' : 'sidecar-reconstruct',
+        semanticWriterId: plan.allRecords === this.inMemoryOverrides.get(plan.documentKey)
+          ? WriterIds.REHYDRATE_SEMANTIC
+          : WriterIds.SIDECAR_RECONSTRUCT_SEMANTIC,
+        visualWriterId: plan.allRecords === this.inMemoryOverrides.get(plan.documentKey)
+          ? WriterIds.REHYDRATE_VISUAL
+          : WriterIds.SIDECAR_RECONSTRUCT_VISUAL,
       }
-      // Auto-repair anchor (refresh ordinals/neighbors after DOM changes)
-      if (resolved.index >= 0 && resolved.index < allParas.length) {
-        updateParagraphAnchor(o.anchor, resolved.index, allParas)
+
+      // Atomic rehydrate: semantic + visual in ONE synchronous call
+      rehydrateParagraphIndentState(para, winner.recordMode, settings, rehydrateCtx)
+
+      // Auto-repair anchor
+      if (winner.targetParagraphIndex >= 0 && winner.targetParagraphIndex < allParas.length) {
+        winner.record.anchor = updateParagraphAnchor(winner.record.anchor, winner.targetParagraphIndex, allParas)
+        // Update in-memory copy
+        const orig = plan.allRecords.find(r => r.id === winner.recordId)
+        if (orig) {
+          orig.anchor = winner.record.anchor
+          orig.temporary = !para.textContent?.trim()
+        }
         dirty = true
       }
     }
 
-    // ── Trace: T6 Rehydrate ──
-    if (getTraceState().active && traceTarget) {
-      safeTrace(() => {
-      const rt = traceTarget
-      const resolvedEl = rt.para
-      let resolveResult: T6Data['resolveResult'] = 'other'
-      if (rt.resolved && resolvedEl) {
-        // Compare with last T0 snapshot's A element identity (WeakMap-based)
-        const lastA = this.lastTraceSnapshot?.aElement
-        if (lastA) {
-          const currentTraceId = identifyNode(resolvedEl)
-          const lastTraceId = (lastA as any).traceId as string | undefined
-          if (currentTraceId && lastTraceId && currentTraceId === lastTraceId) resolveResult = 'A'
-          else resolveResult = 'Aprime'
-        } else {
-          resolveResult = 'other'
-        }
-      } else {
-        resolveResult = 'null'
-      }
-      traceT6_Rehydrate({
-        overrideCount: overrides.length,
-        targetRecordId: rt.o.id,
-        targetRecordMode: rt.o.mode,
-        targetRecordTemporary: rt.o.temporary ?? false,
-        targetRecordAnchor: {
-          textHash: rt.o.anchor.textHash ?? null,
-          lastKnownOrdinal: rt.o.anchor.lastKnownOrdinal,
-          occurrence: rt.o.anchor.occurrence ?? null,
-        },
-        candidateParagraphCount: allParas.length,
-        resolveResult,
-        resolvedElement: summarizeElement(resolvedEl),
-        resolvedText: resolvedEl?.textContent?.slice(0, 80) ?? null,
-        resolvedOrdinal: rt.resolved?.index ?? null,
-        beforeApplyClass: rt.beforeClass,
-        beforeApplyData: rt.beforeData,
-        afterApplyClass: rt.afterClass,
-        afterApplyData: rt.afterData,
-        promotionHappened,
-        promotionAnchorTextHash: promotionTextHash,
-      })
-      }) // safeTrace end
-    }
-
-    // Persist promoted/repaired anchors to sidecar (debounced)
+    // Persist repaired anchors to sidecar (debounced)
     if (dirty) {
-      this.scheduleSidecarWrite(docKey, docPath, [...overrides])
+      const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+      this.scheduleSidecarWrite(plan.documentKey, docPath, [...plan.allRecords])
     }
+  }
+
+  /**
+   * Rehydrate explicit force-indent overrides from in-memory registry.
+   * Called before every refreshParagraphIndentStyles so that explicit
+   * overrides survive Normal Enter / paragraph split / DOM rebuild.
+   *
+   * Also promotes temporary anchors (empty paragraph) to stable anchors
+   * when the user has typed text, and triggers a debounced sidecar write
+   * to persist stable anchors for save/reopen round-trip.
+   *
+   * r53 P0-A: Uses two-pass pipeline — RESOLVE ALL → GROUP → DECIDE → APPLY.
+   */
+  private rehydrateParagraphIndentOverrides(root: HTMLElement): void {
+    // ── Two-Pass Pipeline: RESOLVE ALL → GROUP → DECIDE → APPLY SAFE WINNERS ──
+    // r53 P0-A: Eliminates first-candidate leak by resolving ALL records
+    // before applying ANY semantic/visual writer.
+
+    // Pending diagnostic check (read-only)
+    this.tryRestorePendingContinuity(Array.from(root.querySelectorAll('p')) as HTMLElement[])
+    this.tryPromotePendingState()
+
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    const overrides = this.inMemoryOverrides.get(docKey)
+    if (!overrides || overrides.length === 0) return
+
+    const allParas = collectContentParagraphs(root)
+    if (allParas.length === 0) return
+
+    // ── Build and apply the plan ──
+    const plan = this.resolveParagraphOverrideRehydratePlan(
+      docKey, docPath, overrides, allParas, 'rehydrate',
+    )
+    this.applyParagraphRehydratePlan(plan)
   }
 
   /** Reconstruct runtime force-indent projections from sidecar metadata. */
@@ -2923,41 +3255,26 @@ export class HeadingNumberingService {
       return
     }
 
-    // Populate in-memory registry from sidecar
+    // Populate in-memory registry from sidecar (deep clone)
     this.inMemoryOverrides.set(docKey, data.paragraphOverrides.map(o => ({ ...o })))
 
     const root = this.adapter.detectEditorRoot()
     if (!root) return
 
-    const allParas = collectContentParagraphs(root)
-
     // First, run legacy migration if markers exist in Markdown
     this.migrateLegacyMarkersIfPresent()
 
-    for (const override of data.paragraphOverrides) {
-      if (override.mode !== 'force-indent' && override.mode !== 'force-flush') continue
-      const resolved = resolveParagraphAnchor(override.anchor, allParas)
-      if (resolved) {
-        const para = allParas[resolved.index]
-        if (para) {
-          // Atomic rehydrate: semantic + visual in ONE synchronous call
-          const settings = this.getParagraphLayoutSettings()
-          const sidecarCtx: RehydrateContext = {
-            source: 'sidecar-reconstruct',
-            semanticWriterId: WriterIds.SIDECAR_RECONSTRUCT_SEMANTIC,
-            visualWriterId: WriterIds.SIDECAR_RECONSTRUCT_VISUAL,
-          }
-          rehydrateParagraphIndentState(para, override.mode, settings, sidecarCtx)
-          // Auto-repair anchor
-          const updated = updateParagraphAnchor(override.anchor, resolved.index, allParas)
-          override.anchor = updated
-          override.temporary = !para.textContent?.trim()
-        }
-      }
-    }
+    const allParas = collectContentParagraphs(root)
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+
+    // ── Two-Pass Pipeline: shared with rehydrateParagraphIndentOverrides ──
+    const overrides = this.inMemoryOverrides.get(docKey)!
+    const plan = this.resolveParagraphOverrideRehydratePlan(
+      docKey, docPath, overrides, allParas, 'reconstruct',
+    )
+    this.applyParagraphRehydratePlan(plan)
 
     // Save repaired anchors
-    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
     saveParagraphLayout(docKey, docPath, data.paragraphOverrides)
   }
 
@@ -3502,6 +3819,14 @@ export class HeadingNumberingService {
 
       // Immediate local projection for current paragraph (no candidate logic)
       this.projectCurrentParagraphLocally(root)
+
+      // ── SINGLE-DOT-TRACE (P0 diagnostic) ──
+      // Auto-trace single "." / "。" input to verify semantic stays AUTO.
+      {
+        const dotBlock = resolveCurrentBlockFromSelection(root)
+        const dotSettings = this.getParagraphLayoutSettings()
+        this.traceSingleDotIfMatch(dotBlock, dotSettings)
+      }
 
       // ── Forensic: T2 after local projection ──
       safeForensic(() => {

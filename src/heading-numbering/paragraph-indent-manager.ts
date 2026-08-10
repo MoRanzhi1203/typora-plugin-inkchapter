@@ -52,6 +52,9 @@ export const WriterIds = {
   SIDECAR_WRITE: 'W-SIDECAR-WRITE',
   SIDECAR_LOAD: 'W-SIDECAR-LOAD',
   CARET_OTHER: 'W-CARET-OTHER',
+  PENDING_CONTINUITY_SEMANTIC: 'W-PENDING-CONTINUITY-SEMANTIC',
+  PENDING_CONTINUITY_VISUAL: 'W-PENDING-CONTINUITY-VISUAL',
+  PENDING_CONTINUITY_CARET: 'W-PENDING-CONTINUITY-CARET',
 } as const
 
 export interface WriterRecord {
@@ -945,6 +948,108 @@ export function rehydrateParagraphIndentState(
   applyEffectiveParagraphIndent(paragraph, effective, context.visualWriterId)
 }
 
+// ── Pending Logical Paragraph Identity ──────────────────────────────
+// Stage A runtime identity for post-Enter empty paragraphs.
+// Maintains semantic, visual, and caret continuity across DOM rebuilds
+// WITHOUT depending on sidecar heuristic anchors.
+
+export interface PendingLogicalParagraphState {
+  pendingId: string
+  sourceTxnId: string
+  semantic: ParagraphIndentSemanticMode
+  createdAt: number
+  originalElement: HTMLElement
+  originalParagraphOrdinal: number
+  originalPreviousParagraphFingerprint?: string
+  originalNextParagraphFingerprint?: string
+  originalSelectionLogicalOffset: number
+  currentElement?: HTMLElement
+  caretOwnedByPending: boolean
+  promoted: boolean
+  promotedRecordId?: string
+  state: 'COMMAND_COMMITTED_PENDING_EMPTY' | 'DOM_REBOUND_PENDING' | 'CONTENT_STABLE_PROMOTED' | 'USER_SELECTION_RELEASED' | 'DOCUMENT_SWITCHED'
+}
+
+/**
+ * Release caret ownership if user has moved selection away from pending paragraph.
+ * Call on keydown/mousedown/selectionchange.
+ */
+export function releasePendingCaretIfUserMoved(
+  pending: PendingLogicalParagraphState | null,
+  selection: Selection | null,
+): boolean {
+  if (!pending || !pending.caretOwnedByPending) return false
+  if (pending.state === 'USER_SELECTION_RELEASED') return false
+  if (!selection?.rangeCount) return true
+
+  const range = selection.getRangeAt(0)
+  const currentPara = pending.currentElement ?? pending.originalElement
+
+  if (!currentPara || !currentPara.isConnected) {
+    // Element disconnected but not yet rebound — don't release yet
+    return false
+  }
+
+  // Check if selection anchor is still in or near the pending paragraph
+  const startInPending = currentPara.contains(range.startContainer)
+  if (!startInPending) {
+    pending.caretOwnedByPending = false
+    pending.state = 'USER_SELECTION_RELEASED'
+    return true
+  }
+  return false
+}
+
+/**
+ * Resolve which new DOM paragraph replaced the pending original element.
+ * Uses LOCAL mutation context (removed/added in same batch), not sidecar.
+ *
+ * Returns the replacement HTMLElement if uniquely identified, null otherwise.
+ */
+export function resolvePendingReplacementParagraph(
+  pending: PendingLogicalParagraphState,
+  removedElement: HTMLElement,
+  addedElements: HTMLElement[],
+): HTMLElement | null {
+  // Only paragraph elements
+  const addedParagraphs = addedElements.filter(
+    (el): el is HTMLParagraphElement => el.tagName === 'P' && el.isConnected,
+  )
+  if (addedParagraphs.length === 0) return null
+  if (addedParagraphs.length === 1) return addedParagraphs[0]
+
+  // Multiple candidates — use ordinal proximity
+  const targetOrdinal = pending.originalParagraphOrdinal
+  let best: HTMLElement | null = null
+  let bestDistance = Infinity
+
+  for (const para of addedParagraphs) {
+    const parent = para.parentElement
+    if (!parent) continue
+    const siblings = Array.from(parent.querySelectorAll('p'))
+    const idx = siblings.indexOf(para)
+    if (idx < 0) continue
+    const dist = Math.abs(idx - targetOrdinal)
+    if (dist < bestDistance) {
+      bestDistance = dist
+      best = para
+    }
+  }
+
+  // Only accept if within tight tolerance
+  if (best && bestDistance <= 2) return best
+  return null
+}
+
+/**
+ * Generate paragraph fingerprint for continuity comparison.
+ */
+export function generateParagraphFingerprint(para: HTMLElement | null): string | undefined {
+  if (!para) return undefined
+  const text = (para.textContent ?? '').trim().slice(0, 40)
+  return text ? `fp:${text.length}:${text}` : undefined
+}
+
 // ── Rehydrate Match Provenance ───────────────────────────────────────
 // Enumerates how a sidecar record was matched to a DOM paragraph.
 // Every rehydrate decision MUST record its strategy.
@@ -1010,6 +1115,115 @@ export interface RehydrateMatchProvenance {
   blockReason?: string
 }
 
+// ── Two-Pass Rehydrate Pipeline Types (r53 P0-A) ────────────────────────
+
+/**
+ * Phase 1: A fully resolved candidate from a single sidecar record.
+ * No semantic/visual/sidecar/caret writers are allowed during Phase 1.
+ */
+export interface RehydrateResolvedCandidate {
+  recordId: string
+  recordMode: 'force-indent' | 'force-flush'
+  record: import('./paragraph-layout-store').ParagraphIndentOverrideRecord
+
+  targetParagraph: HTMLElement
+  targetParagraphIndex: number
+
+  strategy: RehydrateMatchStrategy
+  confidence: RehydrateConfidenceLevel
+
+  score: number
+  candidateCountAtGroup: number
+}
+
+/**
+ * Phase 2: All candidates grouped by their target paragraph.
+ */
+export interface RehydrateOwnershipGroup {
+  targetParagraphIndex: number
+  targetParagraph: HTMLElement
+  targetElementIdentity: string
+  candidates: RehydrateResolvedCandidate[]
+  candidateRecordIds: string[]
+  candidateModes: string[]
+  candidateCount: number
+  decision: 'apply' | 'block'
+  reason: string
+  winner?: RehydrateResolvedCandidate
+}
+
+/**
+ * Complete rehydrate plan after the two-pass pipeline.
+ */
+export interface ParagraphRehydratePlan {
+  planId: string
+  documentKey: string
+  allRecords: import('./paragraph-layout-store').ParagraphIndentOverrideRecord[]
+  resolvedCandidates: RehydrateResolvedCandidate[]
+  groups: RehydrateOwnershipGroup[]
+  winners: RehydrateResolvedCandidate[]
+  blockedGroups: RehydrateOwnershipGroup[]
+  /** Phase 1 writer count — must be 0 per invariant */
+  phase1WriterCount: number
+}
+
+/**
+ * Deterministic paragraph identity suitable for log comparison.
+ */
+export function getElementIdentity(el: HTMLElement): string {
+  return `${el.tagName}:${el.className?.slice(0, 40) ?? ''}:${el.textContent?.slice(0, 30) ?? ''}:${el.getAttribute('data-line') ?? ''}`
+}
+
+/**
+ * Phase 2: Build ownership groups from resolved candidates.
+ * Groups are keyed by targetParagraphIndex then by element identity.
+ * Must be called AFTER all candidates are fully resolved.
+ */
+export function buildRehydrateOwnershipGroups(
+  candidates: RehydrateResolvedCandidate[],
+): RehydrateOwnershipGroup[] {
+  const groupMap = new Map<number, RehydrateResolvedCandidate[]>()
+
+  for (const c of candidates) {
+    const existing = groupMap.get(c.targetParagraphIndex)
+    if (existing) {
+      existing.push(c)
+    } else {
+      groupMap.set(c.targetParagraphIndex, [c])
+    }
+  }
+
+  const groups: RehydrateOwnershipGroup[] = []
+
+  for (const [idx, groupCandidates] of groupMap) {
+    const targetPara = groupCandidates[0].targetParagraph
+    const decision: 'apply' | 'block' = groupCandidates.length > 1 ? 'block' : 'apply'
+    const reason = groupCandidates.length > 1
+      ? `multi-owner: ${groupCandidates.length} candidates at index=${idx} — ambiguous ownership`
+      : 'single-owner'
+
+    const group: RehydrateOwnershipGroup = {
+      targetParagraphIndex: idx,
+      targetParagraph: targetPara,
+      targetElementIdentity: getElementIdentity(targetPara),
+      candidates: groupCandidates,
+      candidateRecordIds: groupCandidates.map(c => c.recordId),
+      candidateModes: [...new Set(groupCandidates.map(c => c.recordMode))],
+      candidateCount: groupCandidates.length,
+      decision,
+      reason,
+    }
+
+    if (decision === 'apply') {
+      group.winner = groupCandidates[0]
+    }
+
+    groups.push(group)
+  }
+
+  return groups
+}
+
 /**
  * Determines if a rehydrate should proceed given the match quality and
  * the paragraph's current runtime semantic.
@@ -1034,13 +1248,14 @@ export function evaluateRehydrateSafety(
     return 'ambiguous match — rehydrate blocked'
   }
 
-  // WEAK: only allow if no explicit runtime semantic
+  // WEAK: default BLOCK.
+  // AUTO does NOT prove this sidecar record belongs to the paragraph —
+  // a freshly DOM-rebuilt paragraph starts as AUTO and can be overwritten.
+  // Weak match is only safe when candidateCount=1 AND at least one strong
+  // neighbor (beforeHash/afterHash) is confirmed. That check happens at
+  // the candidate resolution level, not here.
   if (c === RehydrateConfidence.WEAK) {
-    const semantic = provenance.currentSemantic
-    if (semantic === 'force-indent' || semantic === 'force-flush') {
-      return `weak match with explicit runtime semantic=${semantic} — rehydrate blocked`
-    }
-    return null // auto → safe to rehydrate even with weak match
+    return `weak match blocked (currentSemantic=${provenance.currentSemantic}) — cannot prove record identity`
   }
 
   return null
@@ -1057,6 +1272,144 @@ export function anchorConfidenceToRehydrateConfidence(
     case 'high': return RehydrateConfidence.STRONG
     case 'medium': return RehydrateConfidence.WEAK
     case 'fallback': return RehydrateConfidence.WEAK
+  }
+}
+
+// ── Shared Safe Rehydrate Decision ───────────────────────────────────
+// Unified safety check used by BOTH rehydrateParagraphIndentOverrides
+// AND reconstructParagraphOverridesFromSidecar. Ensures the same rules
+// are applied to all rehydrate paths.
+
+import {
+  type ParagraphAnchorCandidate,
+  resolveParagraphAnchorCandidates,
+  type AnchorResolveResult,
+} from './paragraph-layout-store'
+
+export interface SafeRehydrateDecision {
+  paragraph: HTMLElement | null
+  paragraphIndex: number | null
+
+  strategy: RehydrateMatchStrategy
+  confidence: RehydrateConfidenceLevel
+
+  candidateCount: number
+  ambiguityDetected: boolean
+  topScoreUnique: boolean
+
+  selectedRecordId: string | null
+  selectedRecordMode: string | null
+
+  blocked: boolean
+  blockReason?: string
+}
+
+/**
+ * Build a single safe rehydrate decision from anchor resolution results.
+ *
+ * Resolution priority:
+ * 1. Run resolveParagraphAnchorCandidates to get ALL candidates
+ * 2. If empty → MATCH-NONE, blocked
+ * 3. Check for equal-score ties at the top → ambiguous, blocked
+ * 4. If top score unique AND confidence is exact/strong → allow
+ * 5. Otherwise → weak, blocked (unless anchor has textHash match)
+ *
+ * This is the SINGLE decision point — both rehydrate and reconstruct
+ * MUST go through this function.
+ */
+export function resolveSafeRehydrateDecision(
+  anchor: {
+    textHash?: string
+    lastKnownOrdinal: number
+    beforeHash?: string
+    afterHash?: string
+  },
+  allParagraphs: HTMLElement[],
+  recordId: string,
+  recordMode: string,
+): SafeRehydrateDecision {
+  // Convert to ParagraphAnchor-compatible shape
+  const paraAnchor = {
+    lastKnownOrdinal: anchor.lastKnownOrdinal,
+    textHash: anchor.textHash,
+    beforeHash: anchor.beforeHash,
+    afterHash: anchor.afterHash,
+  }
+
+  const candidates = resolveParagraphAnchorCandidates(paraAnchor, allParagraphs)
+
+  if (candidates.length === 0) {
+    return {
+      paragraph: null,
+      paragraphIndex: null,
+      strategy: RehydrateMatchStrategy.NONE,
+      confidence: RehydrateConfidence.AMBIGUOUS,
+      candidateCount: 0,
+      ambiguityDetected: false,
+      topScoreUnique: false,
+      selectedRecordId: recordId,
+      selectedRecordMode: recordMode,
+      blocked: true,
+      blockReason: 'no paragraph candidates resolved',
+    }
+  }
+
+  // Check for equal-score ties among top candidates
+  const topScore = candidates[0].score
+  const topCandidates = candidates.filter(c => c.score === topScore)
+  const topScoreUnique = topCandidates.length === 1
+
+  // Ambiguity: equal scores at top AND different paragraphs
+  const ambiguityDetected = !topScoreUnique
+
+  const best = candidates[0]
+  const confidence = anchorConfidenceToRehydrateConfidence(best.confidence)
+
+  // Determine strategy
+  let strategy: RehydrateMatchStrategy
+  if (best.textHashMatch) {
+    strategy = RehydrateMatchStrategy.EXACT_ANCHOR
+  } else if (best.neighborScore > 0 && best.ordinalProximityBonus > 0) {
+    strategy = RehydrateMatchStrategy.NORMALIZED_ANCHOR
+  } else if (best.neighborScore > 0) {
+    strategy = RehydrateMatchStrategy.PROXIMITY
+  } else {
+    strategy = RehydrateMatchStrategy.INDEX_FALLBACK
+  }
+
+  // Block if candidateCount > 1 (multi-owner), ambiguous, or weak
+  let blocked = false
+  let blockReason: string | undefined
+
+  // CRITICAL: candidateCount > 1 means multiple sidecar records claim the same
+  // logical paragraph. Even if all have the same mode and exact anchors,
+  // ownership is ambiguous — BLOCK.
+  if (candidates.length > 1) {
+    blocked = true
+    blockReason = `multi-owner: ${candidates.length} candidates for same paragraph — ambiguous ownership`
+  } else if (ambiguityDetected) {
+    blocked = true
+    const tieIndices = topCandidates.map(c => c.index).join(',')
+    blockReason = `ambiguous: ${topCandidates.length} candidates with score=${topScore} at indices [${tieIndices}]`
+  } else if (confidence === RehydrateConfidence.WEAK) {
+    blocked = true
+    blockReason = 'weak match blocked — cannot prove record identity'
+  }
+
+  const para = allParagraphs[best.index] ?? null
+
+  return {
+    paragraph: para,
+    paragraphIndex: best.index,
+    strategy,
+    confidence,
+    candidateCount: candidates.length,
+    ambiguityDetected,
+    topScoreUnique,
+    selectedRecordId: recordId,
+    selectedRecordMode: recordMode,
+    blocked,
+    blockReason,
   }
 }
 

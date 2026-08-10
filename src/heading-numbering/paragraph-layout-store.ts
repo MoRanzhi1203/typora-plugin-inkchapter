@@ -99,13 +99,26 @@ function getSidecarPath(documentKey: string): string {
 export function loadParagraphLayout(documentKey: string): ParagraphLayoutDocument | null {
   try {
     const filePath = getSidecarPath(documentKey)
-    if (!fs.existsSync(filePath)) return null
+    const dir = getSidecarDir()
+    const vault = getVaultRoot()
+
+    if (!fs.existsSync(filePath)) {
+      // ── SIDECAR-ACTUAL-LOAD (P0-B diagnostic) ──
+      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=false recordCount=0 source=filesystem`)
+      return null
+    }
     const raw = fs.readFileSync(filePath, 'utf8')
     const data = JSON.parse(raw) as ParagraphLayoutDocument
     // Basic validation
-    if (!data.schemaVersion || !Array.isArray(data.paragraphOverrides)) return null
+    if (!data.schemaVersion || !Array.isArray(data.paragraphOverrides)) {
+      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} exists=true recordCount=0 source=filesystem (invalid schema)`)
+      return null
+    }
+    // ── SIDECAR-ACTUAL-LOAD (P0-B diagnostic) ──
+    console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=true recordCount=${data.paragraphOverrides.length} source=filesystem`)
     return data
-  } catch {
+  } catch (e) {
+    console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} error=${e}`)
     return null
   }
 }
@@ -120,6 +133,15 @@ export function saveParagraphLayout(
     fs.mkdirSync(dir, { recursive: true })
   }
   const filePath = getSidecarPath(documentKey)
+  const vault = getVaultRoot()
+
+  // ── SIDECAR-ACTUAL-WRITE (P0-B diagnostic) ──
+  const prevCount = (() => {
+    try { if (fs.existsSync(filePath)) { const raw = fs.readFileSync(filePath, 'utf8'); const data = JSON.parse(raw); return data.paragraphOverrides?.length ?? 0 } } catch {}
+    return -1
+  })()
+  console.info(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} recordCountBefore=${prevCount} recordCountAfter=${overrides.length} source=filesystem`)
+
   const doc: ParagraphLayoutDocument = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     documentPath,
@@ -263,6 +285,115 @@ export function resolveParagraphAnchor(
   }
 
   return null
+}
+
+// ── Candidate Resolution ──────────────────────────────────────────────
+// Returns ALL candidate paragraphs with scores, NOT just the best.
+// Caller must detect ties and ambiguity.
+
+export interface ParagraphAnchorCandidate {
+  index: number
+  score: number
+  confidence: 'exact' | 'high' | 'medium' | 'fallback'
+  textHashMatch: boolean
+  neighborScore: number
+  ordinalProximityBonus: number
+}
+
+/**
+ * Resolve ALL candidate paragraphs for an anchor, ranked by score.
+ * Does NOT pick a winner — the caller must detect equal-score ties and
+ * treat them as ambiguous.
+ *
+ * Scoring:
+ *   textHash + occurrence match → score=100 (exact)
+ *   beforeHash match → +2
+ *   afterHash match → +2
+ *   ordinal proximity ≤2 → +1
+ *   ordinal-only fallback → score=1 (fallback)
+ */
+export function resolveParagraphAnchorCandidates(
+  anchor: ParagraphAnchor,
+  allParagraphs: HTMLElement[],
+): ParagraphAnchorCandidate[] {
+  if (allParagraphs.length === 0) return []
+
+  const candidates: ParagraphAnchorCandidate[] = []
+
+  // Level 1: textHash + occurrence match
+  if (anchor.textHash) {
+    let matchOccurrence = 0
+    for (let i = 0; i < allParagraphs.length; i++) {
+      const text = normalizeText(allParagraphs[i]?.textContent ?? '')
+      if (hashText(text) === anchor.textHash) {
+        matchOccurrence++
+        if (matchOccurrence === (anchor.occurrence ?? 1)) {
+          candidates.push({
+            index: i,
+            score: 100,
+            confidence: 'exact',
+            textHashMatch: true,
+            neighborScore: 0,
+            ordinalProximityBonus: 0,
+          })
+        }
+      }
+    }
+    // If textHash exists and found a match (or at least one textHash match existed),
+    // we have our best candidate. Don't fall back to neighbors unless textHash
+    // has ZERO matches and neighbors exist.
+    if (candidates.length > 0) return candidates
+    // textHash exists but 0 matches — fall through to neighbor scoring
+    if (!anchor.beforeHash && !anchor.afterHash) return []
+  }
+
+  // Level 2/3: neighbor hashes + ordinal proximity — score ALL paragraphs
+  for (let i = 0; i < allParagraphs.length; i++) {
+    const beforePara = i > 0 ? allParagraphs[i - 1] : null
+    const afterPara = i < allParagraphs.length - 1 ? allParagraphs[i + 1] : null
+    let neighborScore = 0
+    if (anchor.beforeHash && beforePara) {
+      if (hashText(normalizeText(beforePara.textContent ?? '')) === anchor.beforeHash)
+        neighborScore += 2
+    }
+    if (anchor.afterHash && afterPara) {
+      if (hashText(normalizeText(afterPara.textContent ?? '')) === anchor.afterHash)
+        neighborScore += 2
+    }
+    const ordinalBonus = Math.abs(i - anchor.lastKnownOrdinal) <= 2 ? 1 : 0
+    const totalScore = neighborScore + ordinalBonus
+
+    if (totalScore >= 2) {
+      candidates.push({
+        index: i,
+        score: totalScore,
+        confidence: totalScore >= 5 ? 'high' : 'medium',
+        textHashMatch: false,
+        neighborScore,
+        ordinalProximityBonus: ordinalBonus,
+      })
+    }
+  }
+
+  // Level 4: lastKnownOrdinal fallback — ONLY when textHash was never provided
+  if (!anchor.textHash && candidates.length === 0) {
+    const ordinal = anchor.lastKnownOrdinal
+    if (ordinal >= 0 && ordinal < allParagraphs.length) {
+      candidates.push({
+        index: ordinal,
+        score: 1,
+        confidence: 'fallback',
+        textHashMatch: false,
+        neighborScore: 0,
+        ordinalProximityBonus: 0,
+      })
+    }
+  }
+
+  // Sort by score descending
+  candidates.sort((a, b) => b.score - a.score)
+
+  return candidates
 }
 
 /**
