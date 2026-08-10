@@ -13,7 +13,7 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 
 /** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-paragraph-indent-visual-forensic-r43-e2f0d'
+const HEADING_BUILD_MARKER = 'inkchapter-enter-single-owner-transaction-r47-d9f3c'
 /** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 

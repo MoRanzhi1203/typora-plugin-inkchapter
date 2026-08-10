@@ -30,7 +30,6 @@ const EFFECTIVE_FLUSH_CLASS = 'inkchapter-paragraph-effective-flush'
 
 // Typora invisible characters and placeholder patterns to strip during normalization.
 const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\uFEFF]/g
-const ZERO_WIDTH_SPACE = '\u200B'
 
 // Excluded context selectors — must not trigger shortcut in these elements
 const EXCLUDED_PARENT_SELECTORS = [
@@ -339,14 +338,8 @@ export function refreshParagraphIndentStyles(
     // Skip empty paragraphs
     if (!p.textContent?.trim()) continue
 
-    // ── Full recompute: semantic → candidate → structural → effective → project ──
+    // ── Full recompute: semantic → structural/transient → effective → project ──
     const semantic = getParagraphIndentMode(p)
-
-    const candidate = resolveParagraphShortcutCandidate(
-      p,
-      settings,
-      isComposing,
-    )
 
     const structuralContext = {
       isFormulaContinuation: settings.flushAfterDisplayMath
@@ -354,11 +347,13 @@ export function refreshParagraphIndentStyles(
         : false,
     }
 
+    const isEditingToken = isIndentShortcutEditingToken(p, settings.indentShortcutEnabled)
+
     const effective = resolveEffectiveParagraphIndent(
       semantic,
       settings.defaultIndent,
       structuralContext,
-      candidate,
+      { isShortcutEditingToken: isEditingToken },
     )
 
     applyEffectiveParagraphIndent(p, effective)
@@ -651,62 +646,170 @@ export type ParagraphEffectiveIndent = 'flush' | 'indent-2'
 export type ParagraphShortcutCandidateState = 'none' | 'prefix' | 'exact-token'
 
 /**
- * Get the normalized visible text from a paragraph element.
+ * Get the user-visible text from a paragraph element.
  *
- * Strips Typora-internal invisible content (zero-width chars, placeholder
- * nodes) and returns the user-visible text.
+ * Filters Typora-invisible auxiliary content (zero-width chars) but
+ * PRESERVES user-real whitespace. NO trim() — user spaces are real content.
  *
- * This is the SINGLE canonical text source shared by:
- *   1. Shortcut Candidate resolver
- *   2. Enter exact-token recognizer (probeInlineParagraphCommand)
- *   3. Token consumer precondition
+ * This is the SINGLE canonical text source for:
+ *   1. Enter exact-token recognition (readParagraphIndentCommand)
+ *   2. Token consumer precondition
+ *   3. All DOM text query paths in paragraph indent command chain
  */
-export function getNormalizedVisibleParagraphText(paragraph: HTMLElement): string {
+export function getUserVisibleParagraphText(paragraph: HTMLElement): string {
   const raw = paragraph.textContent ?? ''
-  const withoutZW = raw.replace(ZERO_WIDTH_CHARS, '')
-  return withoutZW.trim()
+  return raw.replace(ZERO_WIDTH_CHARS, '')
+}
+
+/** @deprecated Use getUserVisibleParagraphText() instead. */
+export function getNormalizedVisibleParagraphText(paragraph: HTMLElement): string {
+  return getUserVisibleParagraphText(paragraph).trim()
 }
 
 /**
- * Determine the shortcut candidate state for a paragraph.
+ * Read the indent command token from a paragraph's user-visible text.
  *
- * Uses getNormalizedVisibleParagraphText() as the canonical text source.
+ * Pure reader — no side effects. Returns the exact token if the paragraph's
+ * entire user-visible content is strictly ".." or "。。", null otherwise.
  *
- * Rules:
- *   "."  → prefix
- *   "。"  → prefix
- *   ".." → exact-token
- *   "。。" → exact-token
- *   anything else → none
+ * Matching rules (strict):
+ *   ".."  → '..'
+ *   "。。" → '。。'
+ *   "。。 " → null (trailing user space)
+ *   " 。。" → null (leading user space)
+ *   "。。。" → null (extra char)
+ *   "abc" → null
+ *   " .." → null
+ */
+export function readParagraphIndentCommand(paragraph: HTMLElement): '..' | '。。' | null {
+  const text = getUserVisibleParagraphText(paragraph)
+  if (text === '..') return '..'
+  if (text === '。。') return '。。'
+  return null
+}
+
+/**
+ * Check if the current paragraph is in shortcut command editing state.
  *
- * Only applies when shortcut is enabled and paragraph is in valid context.
+ * This is a PURELY VISUAL transient state — NO semantic/sidecar/Markdown writes.
+ * Returns true when:
+ *   1. shortcut is enabled
+ *   2. paragraph is ordinary body (not heading/code/quote)
+ *   3. semantic is AUTO (not already FORCE_INDENT or FORCE_FLUSH)
+ *   4. user-visible text is exactly one of: "." "。" ".." "。。"
+ *
+ * When this returns true, the visual projection should be FLUSH (0em).
+ * When the user types more chars (e.g. "。。。" or "。测试"), this returns false
+ * and the paragraph reverts to document default layout.
+ */
+export function isIndentShortcutEditingToken(
+  paragraph: HTMLElement,
+  indentShortcutEnabled: boolean,
+): boolean {
+  if (!indentShortcutEnabled) return false
+  if (isInExcludedContext(paragraph)) return false
+  if (getParagraphIndentMode(paragraph) !== 'auto') return false
+
+  const text = getUserVisibleParagraphText(paragraph)
+  // Exact tokens: '.' (U+002E), '\u3002' (CJK full stop), '..', '\u3002\u3002'
+  return text === '.' || text === '\u3002' || text === '..' || text === '\u3002\u3002'
+}
+
+/**
+ * Check if the caret is at the end of the paragraph's token text.
+ *
+ * Used to ensure that `。│。` (caret between chars) does NOT trigger
+ * the indent command — only `。。│` (caret at end) does.
+ *
+ * @param tokenLength Number of characters in the token (always 2 for `..`/`。。`)
+ */
+export function isCaretAtTokenEnd(paragraph: HTMLElement, tokenLength: number = 2): boolean {
+  const sel = window.getSelection()
+  if (!sel?.rangeCount || !sel.isCollapsed) return false
+
+  const range = sel.getRangeAt(0)
+  const { startContainer, startOffset } = range
+
+  // Caret must be inside the paragraph (walk up from startContainer)
+  let ancestor: Node | null = startContainer
+  let inside = false
+  while (ancestor) {
+    if (ancestor === paragraph) { inside = true; break }
+    ancestor = ancestor.parentNode
+  }
+  if (!inside) return false
+
+  // Overall text must match token length
+  const visibleText = getUserVisibleParagraphText(paragraph)
+  if (visibleText.length !== tokenLength) return false
+
+  // Count visible chars from paragraph start to caret position
+  let charCount = 0
+  countVisibleCharsBefore(paragraph, startContainer, startOffset, c => { charCount = c })
+
+  return charCount === tokenLength
+}
+
+/** Recursively count visible (non-ZWSP) characters before the caret point. */
+function countVisibleCharsBefore(
+  node: Node,
+  targetContainer: Node,
+  targetOffset: number,
+  setCount: (c: number) => void,
+): boolean {
+  if (node === targetContainer) {
+    const text = (node.textContent ?? '').slice(0, targetOffset)
+    setCount(text.replace(ZERO_WIDTH_CHARS, '').length)
+    return true // found
+  }
+
+  let count = 0
+  for (let i = 0; i < node.childNodes.length; i++) {
+    const child = node.childNodes[i]
+    if (child.nodeType === Node.TEXT_NODE) {
+      if (child === targetContainer) {
+        const text = (child.textContent ?? '').slice(0, targetOffset)
+        count += text.replace(ZERO_WIDTH_CHARS, '').length
+        setCount(count)
+        return true
+      }
+      count += (child.textContent ?? '').replace(ZERO_WIDTH_CHARS, '').length
+    } else if (child.contains(targetContainer)) {
+      const result = countVisibleCharsBefore(child, targetContainer, targetOffset, innerCount => {
+        count += innerCount
+        setCount(count)
+      })
+      if (result) return true
+    } else {
+      // Sibling before caret — count its visible text
+      count += (child.textContent ?? '').replace(ZERO_WIDTH_CHARS, '').length
+    }
+  }
+  return false
+}
+
+/**
+ * @deprecated DEAD/DEBUG-ONLY — shortcut no longer uses Candidate visual suppression.
+ * Token text is ordinary text until Enter submit. Kept for forensic/compatibility shim.
  */
 export function resolveParagraphShortcutCandidate(
-  paragraph: HTMLElement,
-  settings: { indentShortcutEnabled: boolean },
-  isComposing: boolean,
+  _paragraph: HTMLElement,
+  _settings: { indentShortcutEnabled: boolean },
+  _isComposing: boolean,
 ): ParagraphShortcutCandidateState {
-  if (!settings.indentShortcutEnabled) return 'none'
-  if (isComposing) return 'none'
-  if (isInExcludedContext(paragraph)) return 'none'
-
-  const text = getNormalizedVisibleParagraphText(paragraph)
-  // must be exact match — no prefix/startsWith/includes
-  if (text === '.' || text === '。') return 'prefix'
-  if (text === '..' || text === '。。') return 'exact-token'
   return 'none'
 }
 
 /**
  * Resolve the effective visual indent from semantic mode,
- * document default, structural context, and shortcut candidate state.
+ * document default, structural context, and transient editing state.
  *
  * Rules (priority order):
- *   1. FORCE_INDENT     → indent-2
- *   2. FORCE_FLUSH      → flush
- *   3. AUTO + candidate ≠ none  → flush  (visual suppression)
- *   4. AUTO + structural flush   → flush
- *   5. AUTO             → document default
+ *   1. FORCE_INDENT           → indent-2
+ *   2. FORCE_FLUSH            → flush
+ *   3. TRANSIENT editing token → flush  (visual only, NO semantic write)
+ *   4. AUTO + structural flush → flush
+ *   5. AUTO                   → document default
  *
  * This is the SINGLE source of truth for what indent a paragraph should have.
  * Every visual projection MUST go through this resolver.
@@ -715,12 +818,12 @@ export function resolveEffectiveParagraphIndent(
   semanticMode: ParagraphIndentSemanticMode,
   documentDefault: ParagraphIndentMode,
   structuralContext: { isFormulaContinuation: boolean } = { isFormulaContinuation: false },
-  shortcutCandidate: ParagraphShortcutCandidateState = 'none',
+  transientOptions?: { isShortcutEditingToken: boolean },
 ): ParagraphEffectiveIndent {
   if (semanticMode === 'force-indent') return 'indent-2'
   if (semanticMode === 'force-flush') return 'flush'
   // AUTO
-  if (shortcutCandidate !== 'none') return 'flush'  // candidate visual suppression
+  if (transientOptions?.isShortcutEditingToken) return 'flush' // transient visual, NOT semantic
   if (structuralContext.isFormulaContinuation) return 'flush'
   return documentDefault === 'indent-2' ? 'indent-2' : 'flush'
 }
@@ -1023,8 +1126,7 @@ export function probeInlineParagraphCommand(
   if (!isContentBlock(currentBlock)) return null
   if (isInExcludedContext(currentBlock)) return null
 
-  const text = getNormalizedVisibleParagraphText(currentBlock)
-  const token = recognizeParagraphIndentCommand(text)
+  const token = readParagraphIndentCommand(currentBlock)
   if (!token) return null
 
   // Cursor must be in the command block
