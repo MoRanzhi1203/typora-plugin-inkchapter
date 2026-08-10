@@ -19,7 +19,10 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const FORENSIC_BUILD_MARKER = 'inkchapter-anchor-record-forensic-r49-b7c1e'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-two-pass-rehydrate-atomic-enter-r53-a2c8f'
+
+// Legacy alias for backward compatibility
+export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
 
 // ── State ────────────────────────────────────────────────────────────
 

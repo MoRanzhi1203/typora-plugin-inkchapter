@@ -11,10 +11,9 @@ import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEve
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
+import { INKCHAPTER_BUILD_ID } from './heading-numbering/paragraph-indent-forensic'
 
-/** Build marker — search Typora console for this to verify deployed version. */
-const HEADING_BUILD_MARKER = 'inkchapter-paragraph-indent-conflict-cleanup-r48-e8f4a'
-/** Runtime audit marker — must co-exist with HEADING_BUILD_MARKER. */
+/** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
 
@@ -23,7 +22,38 @@ export default class extends Plugin<InkChapterSettings> {
   private numberingService?: HeadingNumberingService
 
   onload() {
-    console.log(`[InkChapter] onload START  build=${HEADING_BUILD_MARKER}`)
+    console.log(`[InkChapter] onload START  build=${INKCHAPTER_BUILD_ID}`)
+
+    // ── Startup SyntaxError attribution ──────────
+    // Catch SyntaxError: Unexpected token ')' that may appear during
+    // Typora startup. If no evidence links it to InkChapter, mark UNRESOLVED.
+    const startupErrorHandler = (event: ErrorEvent): void => {
+      if (event.error instanceof SyntaxError && event.error.message.includes("Unexpected token ')'")) {
+        const filename = event.filename ?? ''
+        const isInkChapter = filename.toLowerCase().includes('inkchapter') ||
+          (event.error.stack ?? '').toLowerCase().includes('inkchapter')
+        if (isInkChapter) {
+          console.error('[InkChapter] STARTUP_SYNTAX_ERROR_ATTRIBUTED:', {
+            message: event.error.message,
+            filename,
+            stack: event.error.stack?.slice(0, 500),
+            build: INKCHAPTER_BUILD_ID,
+          })
+        } else {
+          console.warn('[InkChapter] STARTUP_SYNTAX_ERROR_UNRESOLVED:', {
+            message: event.error.message,
+            filename,
+            stack: event.error.stack?.slice(0, 500),
+            attribution: 'NOT from InkChapter — upstream or third-party',
+            build: INKCHAPTER_BUILD_ID,
+          })
+        }
+      }
+    }
+    window.addEventListener('error', startupErrorHandler)
+    // Remove after 10s — startup-only diagnostic
+    setTimeout(() => window.removeEventListener('error', startupErrorHandler), 10000)
+
     // Runtime audit: disabled (uncomment enableRuntimeAudit() for diagnostics)
     // Register settings (must succeed for plugin to function)
     this.registerSettings(
@@ -437,7 +467,7 @@ export default class extends Plugin<InkChapterSettings> {
         const runtimeLoad = {
           pluginId: this.manifest.id,
           pluginName: this.manifest.name,
-          buildMarker: HEADING_BUILD_MARKER,
+          buildMarker: INKCHAPTER_BUILD_ID,
           loadedAt: new Date().toISOString(),
           pluginRoot,
           mainJsPath,
