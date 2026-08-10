@@ -87,6 +87,8 @@ import {
   type CaretWriteResult,
   type OneShotParagraphReplacementHandoff,
   type EnterCommitSuccessFields,
+  type CommandParagraphCaretTarget,
+  type ParagraphLocalCaretWriteResult,
 } from './paragraph-indent-manager'
 import {
   loadParagraphLayout,
@@ -193,6 +195,10 @@ export interface ServiceContext {
   reloadContentPreservingUndo?: (markdown: string) => void
   /** Optional: write diagnostic data to a file (for DOM structure debugging). */
   writeDiagnosticFile?: (filename: string, data: string) => void
+  /** Optional: get cursor absolute offset via EditorSelection API. */
+  getCursorOffset?: () => number | null
+  /** Optional: set cursor absolute offset via EditorSelection API. */
+  setCursorOffset?: (offset: number) => void
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
@@ -2083,11 +2089,14 @@ export class HeadingNumberingService {
   /** Synchronous atomic commit — all steps in one call stack. */
   private commitEnterIndentTransactionSync(txn: EnterIndentTransaction, event: Event): void {
     const para = txn.paragraph
-    const root = this.adapter.getEditorRoot()
     const preParagraphIdentity = getElementIdentity(para)
     const preParagraphConnected = para.isConnected
     txn.traceData['T0_paraCountBefore'] = txn.paragraphCountBefore
     txn.traceData['T0_paraTag'] = para.tagName
+
+    // ── r56: Pre-cursor global offset (diagnostic only, NOT for success) ──
+    const globalCursorBefore = this.ctx.getCursorOffset?.() ?? null
+    txn.traceData['globalCursorBefore'] = globalCursorBefore
 
     // consume Enter
     event.preventDefault()
@@ -2101,88 +2110,70 @@ export class HeadingNumberingService {
     txn.traceData['tokenConsumed'] = true
     txn.traceData['tokenConsumerType'] = 'direct-textNode-mutation'
 
-    // Check if token consumer caused DOM replacement (stale element)
+    // ── r56: Resolve final command target (A or unique replacement A') ──
     const postTokenConnected = para.isConnected
-    let caretTarget: HTMLElement | null = para
+    let finalCommandTarget: HTMLElement | null = para
 
     if (!postTokenConnected) {
-      // ── STALE-PARAGRAPH-AFTER-TOKEN-CONSUME ──
-      console.info(`[InkChapter] STALE-PARAGRAPH-AFTER-TOKEN-CONSUME: txnId=${txn.id} preIdentity=${preParagraphIdentity} preConnected=true postConnected=false`)
+      console.info(`[InkChapter] STALE-PARAGRAPH-AFTER-TOKEN-CONSUME: txnId=${txn.id}`)
       txn.traceData['staleDetected'] = true
-
-      // ── One-Shot Local Replacement Resolution ──
-      // Find the replacement paragraph at the same ordinal in editor root
       const currentRoot = this.adapter.getEditorRoot()
       if (currentRoot) {
         const allParas = collectContentParagraphs(currentRoot)
         const paraOrdinal = txn.paragraphCountBefore > 0
           ? Math.min(txn.paragraphCountBefore - 1, allParas.length - 1)
           : 0
-
-        // Try to find the replacement: same ordinal, empty text (after token consumed)
         if (paraOrdinal >= 0 && paraOrdinal < allParas.length) {
-          const candidate = allParas[paraOrdinal]
-          const candidateText = getUserVisibleParagraphText(candidate)
-          // The replacement should be empty (token consumed, no other text)
-          if (candidateText === '' || candidate.textContent === '') {
-            caretTarget = candidate
-            txn.traceData['replacementResolved'] = true
-            txn.traceData['replacementIdentity'] = getElementIdentity(candidate)
-            txn.traceData['replacementOrdinal'] = paraOrdinal
-            console.info(`[InkChapter] STALE-PARAGRAPH-RESOLVED: txnId=${txn.id} replacementIdentity=${getElementIdentity(candidate)} ordinal=${paraOrdinal}`)
-          } else {
-            txn.traceData['replacementResolved'] = false
-            txn.traceData['replacementAmbiguous'] = true
-          }
+          finalCommandTarget = allParas[paraOrdinal]
+          txn.traceData['replacementUsed'] = true
         }
       }
     }
 
     // semantic FORCE_INDENT
-    setParagraphIndentMode(caretTarget, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
+    setParagraphIndentMode(finalCommandTarget, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
     txn.semanticWritten = true
     txn.state = 'semantic-written'
 
-    // SIDECAR TEMPORARILY DISABLED for empty paragraph commit.
     txn.sidecarWritten = false
     txn.traceData['sidecarWriteCount'] = 0
     txn.traceData['sidecarDisabled'] = 'empty-paragraph-persistence-paused'
 
     // visual projection
     const settings = this.getParagraphLayoutSettings()
-    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(caretTarget) : false }
+    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(finalCommandTarget) : false }
     const effective = resolveEffectiveParagraphIndent('force-indent', settings.defaultIndent, structural)
-    applyEffectiveParagraphIndent(caretTarget, effective, WriterIds.ENTER_COMMIT_VISUAL)
+    applyEffectiveParagraphIndent(finalCommandTarget, effective, WriterIds.ENTER_COMMIT_VISUAL)
     txn.state = 'visual-applied'
-    txn.traceData['computedIndent'] = window.getComputedStyle(caretTarget).textIndent
-    txn.traceData['semanticTargetIdentity'] = getElementIdentity(caretTarget)
+    txn.traceData['computedIndent'] = window.getComputedStyle(finalCommandTarget).textIndent
 
-    // caret restore — only if target is valid and connected
-    const caretResult = this.placeCaretInParagraph(caretTarget)
-    txn.traceData['caretWriterType'] = caretResult.method
-    txn.traceData['caretTargetIdentity'] = caretResult.resolvedParagraphIdentity
-    txn.traceData['caretTargetConnected'] = caretResult.targetConnected
-    txn.traceData['caretWritten'] = caretResult.caretWritten
-    txn.traceData['caretRealmSafe'] = caretResult.realmSafe
-    if (caretResult.failReason) {
-      txn.traceData['caretFailReason'] = caretResult.failReason
-    }
+    // ── r56: Paragraph-local caret write (NOT global offset) ──
+    const caretResult = this.placeCaretAtParagraphLogicalStart(finalCommandTarget, preParagraphIdentity)
+
+    // Diagnostic global cursor readback (NOT used for success)
+    const globalCursorAfter = this.ctx.getCursorOffset?.() ?? null
+    txn.traceData['globalCursorAfter'] = globalCursorAfter
+
+    txn.traceData['caretSuccess'] = caretResult.success
+    txn.traceData['caretWriterType'] = caretResult.writerType
+    txn.traceData['caretTargetIdentity'] = caretResult.targetParagraphIdentity
+    txn.traceData['caretSameAsCommand'] = caretResult.sameAsCommandParagraph
+    txn.traceData['caretLocalOffset'] = caretResult.localLogicalOffset
+    if (caretResult.failureReason) txn.traceData['caretFailReason'] = caretResult.failureReason
+
     txn.state = 'caret-restored'
-
-    // mark committed, suppress native insertParagraph going forward
     txn.state = 'committed'
     txn.suppressNativeInsertParagraph = true
 
-    // Paragraph count verification
     const finalRoot = this.adapter.getEditorRoot()
     const paragraphCountAfter = finalRoot ? collectContentParagraphs(finalRoot).length : -1
     txn.traceData['paragraphCountAfter'] = paragraphCountAfter
+    const paragraphCountSuccess = paragraphCountAfter === txn.paragraphCountBefore
 
-    const tokenGone = caretTarget ? getUserVisibleParagraphText(caretTarget) === '' : false
-    const semanticAfter = caretTarget ? getParagraphIndentMode(caretTarget) : 'unknown'
-    const computedIndentAfter = caretTarget ? window.getComputedStyle(caretTarget).textIndent : 'unknown'
+    const semanticAfter = finalCommandTarget ? getParagraphIndentMode(finalCommandTarget) : 'unknown'
+    const computedIndentAfter = finalCommandTarget ? window.getComputedStyle(finalCommandTarget).textIndent : 'unknown'
 
-    // ── P0-4: Split success fields ──
+    // ── r56: ENTER-COMMIT-ATOMIC with paragraph-identity-based success ──
     const successFields: EnterCommitSuccessFields = {
       tokenSuccess: txn.tokenConsumed,
       semanticSuccess: txn.semanticWritten && semanticAfter === 'force-indent',
@@ -2190,25 +2181,27 @@ export class HeadingNumberingService {
       caretSuccess: caretResult.success,
       overallSuccess: false,
     }
+    ;(successFields as any).paragraphCountSuccess = paragraphCountSuccess
+    ;(successFields as any).sameParagraphSuccess = caretResult.sameAsCommandParagraph
+    ;(successFields as any).localOffsetSuccess = (caretResult.localLogicalOffset ?? -1) === 0
+    ;(successFields as any).globalCursorBefore = globalCursorBefore
+    ;(successFields as any).globalCursorAfter = globalCursorAfter
     successFields.overallSuccess =
       successFields.tokenSuccess &&
+      paragraphCountSuccess &&
       successFields.semanticSuccess &&
       successFields.visualSuccess &&
-      successFields.caretSuccess
+      successFields.caretSuccess &&
+      caretResult.sameAsCommandParagraph &&
+      (caretResult.localLogicalOffset ?? -1) === 0
 
     txn.traceData['successFields'] = successFields
     txn.traceData['stopReason'] = 'commit completed'
-    txn.traceData['T0'] = 'commit sync end'
 
-    // ── ENTER-COMMIT-ATOMIC (r54 P0-4 split) ──
-    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} preParagraphConnected=${preParagraphConnected} preParagraphIdentity=${preParagraphIdentity} tokenConsumerType=direct-textNode-mutation postTokenOldParagraphConnected=${postTokenConnected} tokenSuccess=${successFields.tokenSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} overallSuccess=${successFields.overallSuccess} caretTargetConnected=${caretResult.targetConnected} caretRealmSafe=${caretResult.realmSafe} caretFailReason=${caretResult.failReason ?? 'none'} paragraphCountBefore=${txn.paragraphCountBefore} paragraphCountAfter=${paragraphCountAfter} tokenGone=${tokenGone} semanticAfter=${semanticAfter} computedIndentAfter=${computedIndentAfter}`)
-
-    console.info(`[InkChapter] ${txn.id} committed: token=${txn.token} state=${txn.state}`)
+    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=${successFields.tokenSuccess} paragraphCountSuccess=${paragraphCountSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} sameParagraph=${caretResult.sameAsCommandParagraph} localOffset=${caretResult.localLogicalOffset} overallSuccess=${successFields.overallSuccess}`)
+    console.info(`[InkChapter] ${txn.id} committed: token=${txn.token}`)
 
     // ── P0-5: One-Shot Paragraph Replacement Handoff ────────────────
-    // Replaces old long-lived PendingLogicalParagraphState.
-    // Short-lived: only resolves replacement once, transfers semantic+visual,
-    // never writes caret/sidecar, consumed after first resolution.
     const rootAfter = this.adapter.getEditorRoot()
     const allParasAfter = rootAfter ? collectContentParagraphs(rootAfter) : []
     const paraOrdinal2 = allParasAfter.indexOf(para) >= 0
@@ -2232,11 +2225,7 @@ export class HeadingNumberingService {
       visualTransferred: false,
     }
 
-    // Schedule T0-T4 transaction snapshots, then close tx at T4.
-    // Post-commit observation runs independently T4→T9.
     this.scheduleTransactionStabilitySnapshots(txn)
-
-    // Install diagnostic MutationObserver on target paragraph (read-only)
     this.installDiagnosticMutationObserver(txn)
   }
 
@@ -2349,102 +2338,71 @@ export class HeadingNumberingService {
       if (!this.observations.has(obs.observationId)) return
       const para = obs.lastKnownParagraph
 
-      // ── P0-5: Track original AND current replacement separately ──
-      // When sameDOMElement=false, record original state and replacement state
-      // independently. Never use disconnected old element's semantic as current state.
-      let resolvedPara: HTMLElement | null = para
-      let sameDOMElement = true
-      const originalSemantic = para ? getParagraphIndentMode(para) : null
-      const originalIsConnected = para?.isConnected ?? false
+      // ── P0-B: Three independent targets ────────────────────────────
+      // COMMAND TARGET: the original paragraph at commit time
+      // CONTINUITY TARGET: the handoff replacement (if resolved)
+      // SELECTION TARGET: current cursor/selection position (diagnostic only)
 
-      // Re-resolve the logical paragraph if original is disconnected
-      if (para && !para.isConnected) {
-        sameDOMElement = false
-        const root = this.adapter.getEditorRoot()
-        if (root) {
-          const allParas = collectContentParagraphs(root)
-          // Try to find the same paragraph by identity / text
-          const idAtCommit = obs.paragraphIdentityAtCommit
-          for (const p of allParas) {
-            if (getElementIdentity(p) === idAtCommit) {
-              resolvedPara = p
-              sameDOMElement = true
-              obs.lastKnownParagraph = p
-              break
-            }
-          }
-          // Fallback: try ordinal-based (one-shot handoff path)
-          if (!sameDOMElement && allParas.length > 0) {
-            const paraOrdinal = txn.paragraphCountBefore > 0
-              ? Math.min(txn.paragraphCountBefore - 1, allParas.length - 1)
-              : 0
-            const candidate = allParas[paraOrdinal]
-            if (candidate) {
-              resolvedPara = candidate
-              obs.lastKnownParagraph = candidate
-            }
-          }
+      // --- COMMAND TARGET ---
+      const commandConnected = para?.isConnected ?? false
+      const commandSemantic = para ? getParagraphIndentMode(para) : null
+      const commandIndent = para ? window.getComputedStyle(para).textIndent : null
+
+      const obsCommand: Record<string, unknown> = {
+        txnId: obs.txnId,
+        originalConnected: commandConnected,
+        originalOrdinal: txn.paragraphCountBefore,
+        originalIdentity: obs.paragraphIdentityAtCommit,
+        originalSemantic: commandSemantic,
+        originalIndent: commandIndent,
+      }
+
+      // --- CONTINUITY TARGET ---
+      const handoff = this.activeOneShotHandoff
+      const obsContinuity: Record<string, unknown> = {
+        handoffExists: !!handoff,
+        handoffConsumed: handoff?.consumed ?? false,
+        replacementKnown: handoff?.replacementResolved ?? false,
+        replacementConnected: handoff?.replacementElement?.isConnected ?? false,
+        replacementOrdinal: handoff?.replacementOrdinal ?? null,
+        replacementIdentity: handoff?.replacementIdentity ?? null,
+        replacementSemantic: handoff?.replacementElement ? getParagraphIndentMode(handoff.replacementElement) : null,
+        replacementIndent: handoff?.replacementElement ? window.getComputedStyle(handoff.replacementElement).textIndent : null,
+        semanticTransferred: handoff?.semanticTransferred ?? false,
+        visualTransferred: handoff?.visualTransferred ?? false,
+      }
+
+      // --- SELECTION TARGET (diagnostic only) — r56: resolve paragraph identity ──
+      const cursorOffset = this.ctx.getCursorOffset?.() ?? null
+      const sel = para?.ownerDocument?.defaultView?.getSelection()
+      let selParagraph: HTMLElement | null = null
+      if (sel?.rangeCount) {
+        const anchor = sel.getRangeAt(0).startContainer
+        if (anchor.nodeType === Node.ELEMENT_NODE && (anchor as Element).tagName === 'P') {
+          selParagraph = anchor as HTMLElement
+        } else {
+          const el = (anchor.nodeType === Node.ELEMENT_NODE ? anchor : anchor.parentElement) as Element | null
+          selParagraph = el?.closest('p') as HTMLElement | null
         }
       }
-
-      const currentSemantic = resolvedPara ? getParagraphIndentMode(resolvedPara) : null
-      const currentIsConnected = resolvedPara?.isConnected ?? false
-
-      const lastWriter = resolvedPara ? getLastParagraphWriter(resolvedPara) : null
-      const writerHistory = resolvedPara ? getParagraphWriterHistory(resolvedPara) : []
-      const lastHighLevelWriter = writerHistory.length > 0 ? writerHistory[writerHistory.length - 1] : null
-
-      const data: Record<string, unknown> = {
-        observationId: obs.observationId,
-        txnId: obs.txnId,
-        label,
-        transactionActive: false,
-        transactionClosedAt: obs.transactionClosedAt,
-        relativeMs: Math.round(performance.now() - obs.transactionClosedAt),
-
-        // DOM identity
-        sameDOMElement,
-        originalIsConnected,
-        originalParagraphIdentity: obs.paragraphIdentityAtCommit,
-        originalSemantic,
-        currentParagraphIsConnected: currentIsConnected,
-        currentParagraphIdentity: resolvedPara ? getElementIdentity(resolvedPara) : null,
-        currentSemantic,
-
-        // P0-5: Clearly separate original and current — never use disconnected as current
-        usingStaleSemantic: !sameDOMElement && originalSemantic !== currentSemantic,
-
-        // State
-        effectiveClass_indent2: resolvedPara?.classList.contains('inkchapter-paragraph-effective-indent-2') ?? false,
-        effectiveClass_flush: resolvedPara?.classList.contains('inkchapter-paragraph-effective-flush') ?? false,
-        computedTextIndent: resolvedPara ? window.getComputedStyle(resolvedPara).textIndent : null,
-        dataAttr: resolvedPara?.getAttribute('data-inkchapter-indent-mode') ?? null,
-        className: resolvedPara?.className ? String(resolvedPara.className).slice(0, 120) : null,
-
-        // Text
-        DOMtext: resolvedPara ? getUserVisibleParagraphText(resolvedPara) : null,
-        textContent: resolvedPara?.textContent?.slice(0, 80) ?? null,
-        tokenGone: resolvedPara ? getUserVisibleParagraphText(resolvedPara) === '' : null,
-        paraCount: this.adapter.getEditorRoot() ? collectContentParagraphs(this.adapter.getEditorRoot()!).length : -1,
-        sameParagraphCount: (this.adapter.getEditorRoot() ? collectContentParagraphs(this.adapter.getEditorRoot()!).length : -1) === txn.paragraphCountBefore,
-
-        // Writer
-        lastHighLevelWriterId: lastHighLevelWriter?.writerId ?? null,
-        lastHighLevelWriterReason: lastHighLevelWriter?.reason ?? null,
-        lastWriterId: lastWriter?.writerId ?? null,
-        lastWriterReason: lastWriter?.reason ?? null,
-        writerHistoryTail: writerHistory.slice(-5).map(w => ({ id: w.writerId, reason: w.reason, relMs: w.relativeMs })),
-
-        // Selection
-        selectionParagraphIdentity: resolvedPara && window.getSelection()?.rangeCount
-          ? (resolvedPara.contains(window.getSelection()!.getRangeAt(0).startContainer) ? obs.paragraphIdentityAtCommit : 'different')
-          : null,
-        caretInObservedParagraph: resolvedPara && window.getSelection()?.rangeCount
-          ? resolvedPara.contains(window.getSelection()!.getRangeAt(0).startContainer)
-          : false,
+      const selOrdinal = selParagraph ? (() => { const r = this.adapter.getEditorRoot(); return r ? collectContentParagraphs(r).indexOf(selParagraph!) : -1 })() : -1
+      const obsSelection: Record<string, unknown> = {
+        absoluteCursorOffset: cursorOffset,
+        selectionAnchorNode: sel?.anchorNode?.nodeName ?? 'none',
+        selectionAnchorOffset: sel?.anchorOffset ?? -1,
+        selectionParagraphIdentity: selParagraph ? getElementIdentity(selParagraph) : null,
+        selectionParagraphOrdinal: selOrdinal,
+        sameAsCommandTarget: selParagraph ? (getElementIdentity(selParagraph) === obs.paragraphIdentityAtCommit) : false,
+        sameAsContinuityTarget: handoff?.replacementElement && selParagraph ? (getElementIdentity(selParagraph) === getElementIdentity(handoff.replacementElement)) : false,
       }
-      obs.traceData[label] = data
-      console.info(`[InkChapter] ${obs.observationId} ${label}: txActive=false sameDOM=${sameDOMElement} currentSemantic=${currentSemantic} indent=${data['computedTextIndent']} lastWriter=${data['lastHighLevelWriterId']}`)
+
+      obs.traceData[`OBS-COMMAND-${label}`] = obsCommand
+      obs.traceData[`OBS-CONTINUITY-${label}`] = obsContinuity
+      obs.traceData[`OBS-SELECTION-${label}`] = obsSelection
+
+      console.info(`[InkChapter] OBS-COMMAND ${label}: originalConnected=${commandConnected} originalSemantic=${commandSemantic}`)
+      console.info(`[InkChapter] OBS-CONTINUITY ${label}: handoffExists=${obsContinuity['handoffExists']} replacementSemantic=${obsContinuity['replacementSemantic']}`)
+      console.info(`[InkChapter] OBS-SELECTION ${label}: cursorOffset=${cursorOffset} selParagraph=${obsSelection['selectionParagraphIdentity']} sameAsCommand=${obsSelection['sameAsCommandTarget']}`)
     }
 
     // T4 = 150ms (observation starts here, already 0ms into observation)
@@ -2584,8 +2542,8 @@ export class HeadingNumberingService {
 
   /**
    * Check active one-shot handoff: if the original paragraph is disconnected,
-   * find its replacement, transfer semantic+visual once, and consume the handoff.
-   * Called from rehydrate path (no more than once per Enter txn).
+   * find its replacement, transfer semantic+visual once, and verify.
+   * Consumed only after verified or in explicit terminal failure.
    */
   private tryExecuteOneShotHandoff(allParagraphs: HTMLElement[]): void {
     const handoff = this.activeOneShotHandoff
@@ -2594,19 +2552,45 @@ export class HeadingNumberingService {
     const original = handoff.preElement
     if (original.isConnected) return // still alive
 
-    // Original disconnected — one-shot replacement resolution
+    // ── P0-C: HANDOFF-RESOLVE ──────────────────────────────────────
     const paraOrdinal = handoff.preOrdinal
-    if (paraOrdinal < 0 || paraOrdinal >= allParagraphs.length) return
+    const candidateCount = paraOrdinal >= 0 && paraOrdinal < allParagraphs.length ? 1 : 0
+    const candidates = candidateCount > 0 ? [allParagraphs[paraOrdinal]] : []
 
-    const replacement = allParagraphs[paraOrdinal]
-    if (!replacement) return
+    const resolveTrace: Record<string, unknown> = {
+      handoffId: handoff.handoffId,
+      txnId: handoff.sourceTxnId,
+      originalConnected: false,
+      candidateCount,
+      candidateIdentities: candidates.map(p => getElementIdentity(p)),
+      candidateOrdinals: candidates.map(_ => paraOrdinal),
+      ambiguous: candidateCount > 1,
+    }
 
+    if (candidateCount !== 1) {
+      handoff.consumed = true
+      // handoff failed — no candidate or ambiguous
+      ;(resolveTrace as any).replacementChosen = false
+      console.info(`[InkChapter] HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
+      return
+    }
+
+    const replacement = candidates[0]
     handoff.replacementElement = replacement
     handoff.replacementOrdinal = paraOrdinal
     handoff.replacementIdentity = getElementIdentity(replacement)
     handoff.replacementResolved = true
 
-    // Transfer semantic + visual ONCE (never caret, never sidecar)
+    ;(resolveTrace as any).replacementChosen = true
+    ;(resolveTrace as any).replacementIdentity = handoff.replacementIdentity
+    ;(resolveTrace as any).replacementOrdinal = paraOrdinal
+    ;(resolveTrace as any).matchEvidence = 'same-ordinal'
+    console.info(`[InkChapter] HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
+
+    // ── P0-C: HANDOFF-TRANSFER ─────────────────────────────────────
+    const semanticBefore = getParagraphIndentMode(replacement)
+    const indentBefore = window.getComputedStyle(replacement).textIndent
+
     const settings = this.getParagraphLayoutSettings()
     setParagraphIndentMode(replacement, handoff.semantic, 'W-ONESHOT-SEMANTIC')
     const effective = resolveEffectiveParagraphIndent(handoff.semantic, settings.defaultIndent)
@@ -2614,10 +2598,37 @@ export class HeadingNumberingService {
     handoff.semanticTransferred = true
     handoff.visualTransferred = true
 
-    // Consume immediately — no more rebound
-    handoff.consumed = true
+    const semanticAfter = getParagraphIndentMode(replacement)
+    const indentAfter = window.getComputedStyle(replacement).textIndent
+    const replacementConnected = replacement.isConnected
 
-    console.info(`[InkChapter] ONE-SHOT-HANDOFF: handoffId=${handoff.handoffId} original=${handoff.preIdentity} replacement=${handoff.replacementIdentity} semantic=${handoff.semantic} consumed=true`)
+    // Only verified when replacement connected, FORCE_INDENT, 32px
+    const verified = replacementConnected &&
+      semanticAfter === 'force-indent' &&
+      indentAfter === '32px'
+
+    const transferTrace: Record<string, unknown> = {
+      handoffId: handoff.handoffId,
+      txnId: handoff.sourceTxnId,
+      semanticBefore,
+      indentBefore,
+      semanticWriteAttempted: true,
+      visualWriteAttempted: true,
+      semanticAfter,
+      indentAfter,
+      replacementConnected,
+      verified,
+    }
+    console.info(`[InkChapter] HANDOFF-TRANSFER: ${JSON.stringify(transferTrace)}`)
+
+    // Consume only on verified or terminal failure
+    handoff.consumed = verified
+
+    if (verified) {
+      console.info(`[InkChapter] ONE-SHOT-HANDOFF VERIFIED: ${handoff.handoffId} semantic=${handoff.semantic}`)
+    } else {
+      console.info(`[InkChapter] ONE-SHOT-HANDOFF FAILED: ${handoff.handoffId} semantic=${semanticAfter} indent=${indentAfter} connected=${replacementConnected}`)
+    }
   }
 
   /** Release active one-shot handoff (document switch, explicit override). */
@@ -2858,6 +2869,115 @@ export class HeadingNumberingService {
     }
 
     return result
+  }
+
+  // ── r56: Paragraph-Local Caret Writer ────────────────────────────
+  // No instanceof guards. Uses nodeType, ownerDocument, isConnected,
+  // and DOM capability checks only. Range from paragraph.ownerDocument.
+
+  private placeCaretAtParagraphLogicalStart(
+    paragraph: HTMLElement,
+    commandIdentity: string,
+  ): ParagraphLocalCaretWriteResult {
+    const result: ParagraphLocalCaretWriteResult = {
+      attempted: true,
+      success: false,
+      writerType: 'paragraph-local-range',
+      targetParagraphIdentity: commandIdentity,
+      targetParagraphOrdinal: -1,
+      targetConnected: false,
+      sameAsCommandParagraph: false,
+    }
+
+    // Realm-safe structural validation — NO instanceof
+    if (!paragraph || paragraph.nodeType !== 1) {
+      result.failureReason = 'null-or-not-element'
+      return result
+    }
+    const ownerDoc = paragraph.ownerDocument
+    if (!ownerDoc) {
+      result.failureReason = 'no-ownerDocument'
+      return result
+    }
+    if (!paragraph.isConnected) {
+      result.failureReason = 'disconnected'
+      return result
+    }
+    result.targetConnected = true
+
+    // Get ordinal for reference
+    const root = this.adapter.getEditorRoot()
+    if (root) {
+      const allParas = collectContentParagraphs(root)
+      result.targetParagraphOrdinal = allParas.indexOf(paragraph)
+    }
+
+    // EMPTY-PARAGRAPH-DOM-PROBE (diagnostic)
+    this.probeEmptyParagraphDOM(paragraph)
+
+    // Use ownerDocument.createRange() — never global document
+    try {
+      const doc = ownerDoc
+      const win = doc.defaultView
+      if (!win) { result.failureReason = 'no-defaultView'; return result }
+
+      const sel = win.getSelection()
+      if (!sel) { result.failureReason = 'no-selection'; return result }
+
+      const range = doc.createRange()
+      // selectNodeContents + collapse(true) = caret at paragraph local logical start
+      range.selectNodeContents(paragraph)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+
+      // Resolve actual selection paragraph for verification
+      const anchorNode = sel.anchorNode
+      result.selectionContainerType = anchorNode?.nodeType === Node.TEXT_NODE ? 'text' : anchorNode?.nodeName ?? 'unknown'
+      result.selectionOffset = sel.anchorOffset
+
+      // Walk up to find the P ancestor
+      let resolved: HTMLElement | null = null
+      if (anchorNode) {
+        if (anchorNode.nodeType === Node.ELEMENT_NODE && (anchorNode as Element).tagName === 'P') {
+          resolved = anchorNode as HTMLElement
+        } else {
+          const el = (anchorNode.nodeType === Node.ELEMENT_NODE ? anchorNode : anchorNode.parentElement) as Element | null
+          resolved = el?.closest('p') as HTMLElement | null
+        }
+      }
+      if (resolved) {
+        result.resolvedSelectionParagraphIdentity = getElementIdentity(resolved)
+        if (root) {
+          const allParas = collectContentParagraphs(root)
+          result.resolvedSelectionParagraphOrdinal = allParas.indexOf(resolved)
+        }
+        result.localLogicalOffset = result.selectionOffset ?? 0
+        result.sameAsCommandParagraph = result.resolvedSelectionParagraphIdentity === commandIdentity
+      }
+
+      result.success = result.sameAsCommandParagraph && (result.localLogicalOffset ?? -1) === 0
+    } catch (e) {
+      result.failureReason = `range-error: ${e}`
+    }
+
+    // ENTER-CARET-LOCAL trace
+    console.info(`[InkChapter] ENTER-CARET-LOCAL: commandIdentity=${commandIdentity} targetOrdinal=${result.targetParagraphOrdinal} writer=${result.writerType} connected=${result.targetConnected} success=${result.success} sameParagraph=${result.sameAsCommandParagraph} localOffset=${result.localLogicalOffset} selectionIdentity=${result.resolvedSelectionParagraphIdentity ?? 'null'} failureReason=${result.failureReason ?? 'none'}`)
+
+    return result
+  }
+
+  /** EMPTY-PARAGRAPH-DOM-PROBE: diagnostic only, never mutates. */
+  private probeEmptyParagraphDOM(paragraph: HTMLElement): void {
+    try {
+      const children: Array<{ idx: number; nodeType: number; nodeName: string; text: string }> = []
+      for (let i = 0; i < paragraph.childNodes.length; i++) {
+        const c = paragraph.childNodes[i]
+        children.push({ idx: i, nodeType: c.nodeType, nodeName: c.nodeName, text: c.textContent?.slice(0, 30) ?? '' })
+      }
+      const sel = paragraph.ownerDocument?.defaultView?.getSelection()
+      console.info(`[InkChapter] EMPTY-PARAGRAPH-DOM-PROBE: tagName=${paragraph.tagName} className=${paragraph.className?.slice(0,40) ?? ''} nodeType=${paragraph.nodeType} isConnected=${paragraph.isConnected} textContent=${paragraph.textContent?.slice(0,20) ?? ''} childCount=${paragraph.childNodes.length} children=${JSON.stringify(children)} firstChildType=${paragraph.firstChild?.nodeType ?? 'none'} ownerDoc=${!!paragraph.ownerDocument} defaultView=${!!paragraph.ownerDocument?.defaultView} selAnchorNode=${sel?.anchorNode?.nodeName ?? 'none'} selAnchorOffset=${sel?.anchorOffset ?? -1}`)
+    } catch { /* fail-open */ }
   }
 
   /**
