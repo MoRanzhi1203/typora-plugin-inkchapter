@@ -102,6 +102,32 @@ export type EnterCommitSuccessFields = {
   overallSuccess: boolean
 }
 
+// ── r56: Paragraph-Local Caret Types ────────────────────────────────
+
+export interface CommandParagraphCaretTarget {
+  txnId: string
+  paragraph: HTMLElement
+  paragraphIdentity: string
+  paragraphOrdinal: number
+  localLogicalOffset: 0
+}
+
+export interface ParagraphLocalCaretWriteResult {
+  attempted: boolean
+  success: boolean
+  failureReason?: string
+  writerType: 'paragraph-local-range' | 'none'
+  targetParagraphIdentity: string
+  targetParagraphOrdinal: number
+  targetConnected: boolean
+  selectionContainerType?: string
+  selectionOffset?: number
+  resolvedSelectionParagraphIdentity?: string
+  resolvedSelectionParagraphOrdinal?: number
+  localLogicalOffset?: number
+  sameAsCommandParagraph: boolean
+}
+
 // ── Writer Record ──────────────────────────────────────────────────
 
 export interface WriterRecord {

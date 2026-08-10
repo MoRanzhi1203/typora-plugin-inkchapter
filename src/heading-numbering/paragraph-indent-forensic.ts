@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-sidecar-context-caret-realm-handoff-r54-b3d0g'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-paragraph-local-caret-empty-block-r56-e5f2i'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
