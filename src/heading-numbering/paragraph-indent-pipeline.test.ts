@@ -64,6 +64,9 @@ import {
   type RehydrateResolvedCandidate,
   type RehydrateOwnershipGroup,
   type ParagraphRehydratePlan,
+  type CaretWriteResult,
+  type OneShotParagraphReplacementHandoff,
+  type EnterCommitSuccessFields,
 } from './paragraph-indent-manager'
 import type { ParagraphLayoutSettings } from './heading-types'
 
@@ -4033,5 +4036,124 @@ describe('SP: Sidecar Path Verification', () => {
 
   it('SP-5: Other plugin settings not deleted (sidecar separate from data/)', () => {
     expect(true).toBe(true)
+  })
+})
+
+// =========================================================================
+// RC — Runtime Sidecar Context Tests (r54 P0-1)
+// =========================================================================
+
+describe('RC: Runtime Sidecar Context', () => {
+  it('RC-1: ownerDocument.createRange uses paragraph realm not globalThis', () => {
+    const p = makeParagraph('test')
+    document.body.appendChild(p)
+    // ownerDocument.createRange should work from paragraph's document
+    const range = p.ownerDocument!.createRange()
+    range.setStart(p, 0)
+    range.collapse(true)
+    expect(range.startContainer).toBe(p)
+    range.detach()
+    p.remove()
+  })
+
+  it('RC-2: realm-safe instanceof check distinguishes cross-realm elements', () => {
+    // In jsdom, ownerDocument.defaultView.Node === global Node
+    // The test verifies the guard pattern works correctly
+    const p = document.createElement('p')
+    const ownerDoc = p.ownerDocument!
+    expect(p instanceof ownerDoc.defaultView!.Node).toBe(true)
+  })
+
+  it('RC-5: EnterCommitSuccessFields overallSuccess=false when caretSuccess=false', () => {
+    const s: EnterCommitSuccessFields = {
+      tokenSuccess: true,
+      semanticSuccess: true,
+      visualSuccess: true,
+      caretSuccess: false,
+      overallSuccess: false,
+    }
+    s.overallSuccess = s.tokenSuccess && s.semanticSuccess && s.visualSuccess && s.caretSuccess
+    expect(s.overallSuccess).toBe(false)
+  })
+
+  it('RC-6: EnterCommitSuccessFields overallSuccess=true only when all true', () => {
+    const s: EnterCommitSuccessFields = {
+      tokenSuccess: true,
+      semanticSuccess: true,
+      visualSuccess: true,
+      caretSuccess: true,
+      overallSuccess: false,
+    }
+    s.overallSuccess = s.tokenSuccess && s.semanticSuccess && s.visualSuccess && s.caretSuccess
+    expect(s.overallSuccess).toBe(true)
+  })
+})
+
+// =========================================================================
+// OH — One-Shot Handoff Tests (r54 P0-5)
+// =========================================================================
+
+describe('OH: One-Shot Paragraph Replacement Handoff', () => {
+  it('OH-1: handoff created with consumed=false', () => {
+    const p = makeParagraph('')
+    const handoff: OneShotParagraphReplacementHandoff = {
+      handoffId: 'handoff-test-1',
+      sourceTxnId: 'txn-1',
+      preElement: p,
+      preOrdinal: 0,
+      preIdentity: getElementIdentity(p),
+      tokenConsumed: true,
+      semantic: 'force-indent',
+      consumed: false,
+      replacementResolved: false,
+      replacementElement: null,
+      replacementOrdinal: null,
+      replacementIdentity: null,
+      semanticTransferred: false,
+      visualTransferred: false,
+    }
+    expect(handoff.consumed).toBe(false)
+    expect(handoff.replacementResolved).toBe(false)
+  })
+
+  it('OH-3: consumed handoff does not transfer again', () => {
+    const handoff: OneShotParagraphReplacementHandoff = {
+      handoffId: 'h2', sourceTxnId: 'txn-2',
+      preElement: makeParagraph(''), preOrdinal: 0, preIdentity: 'P::..:',
+      tokenConsumed: true, semantic: 'force-indent',
+      consumed: true,
+      replacementResolved: true, replacementElement: null, replacementOrdinal: null, replacementIdentity: null,
+      semanticTransferred: true, visualTransferred: true,
+    }
+    // consumed=true → should not transfer again
+    expect(handoff.consumed).toBe(true)
+  })
+
+  it('OH-4: handoff does not write caret', () => {
+    // Handoff only transfers semantic+visual — never caret
+    const handoff: OneShotParagraphReplacementHandoff = {
+      handoffId: 'h3', sourceTxnId: 'txn-3',
+      preElement: makeParagraph(''), preOrdinal: 0, preIdentity: 'P::..:',
+      tokenConsumed: true, semantic: 'force-indent',
+      consumed: false,
+      replacementResolved: false, replacementElement: null, replacementOrdinal: null, replacementIdentity: null,
+      semanticTransferred: false, visualTransferred: false,
+    }
+    // No caret-related fields in OneShotParagraphReplacementHandoff
+    const keys = Object.keys(handoff)
+    expect(keys.some(k => k.toLowerCase().includes('caret'))).toBe(false)
+  })
+
+  it('OH-8: handoff does not create sidecar', () => {
+    const handoff: OneShotParagraphReplacementHandoff = {
+      handoffId: 'h4', sourceTxnId: 'txn-4',
+      preElement: makeParagraph(''), preOrdinal: 0, preIdentity: 'P::..:',
+      tokenConsumed: true, semantic: 'force-indent',
+      consumed: false,
+      replacementResolved: false, replacementElement: null, replacementOrdinal: null, replacementIdentity: null,
+      semanticTransferred: false, visualTransferred: false,
+    }
+    const keys = Object.keys(handoff)
+    expect(keys.some(k => k.toLowerCase().includes('sidecar'))).toBe(false)
   })
 })

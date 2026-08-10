@@ -57,6 +57,53 @@ export const WriterIds = {
   PENDING_CONTINUITY_CARET: 'W-PENDING-CONTINUITY-CARET',
 } as const
 
+// ── P0-4: Structured Caret Write Result ────────────────────────────
+
+export interface CaretWriteResult {
+  success: boolean
+  caretWritten: boolean
+  targetConnected: boolean
+  realmSafe: boolean
+  method: 'owner-realm-range' | 'cursor-api' | 'none'
+  resolvedParagraphIdentity: string | null
+  failReason?: string
+}
+
+// ── P0-5: One-Shot Paragraph Replacement Handoff ───────────────────
+
+export interface OneShotParagraphReplacementHandoff {
+  handoffId: string
+  sourceTxnId: string
+
+  preElement: HTMLElement
+  preOrdinal: number
+  preIdentity: string
+
+  tokenConsumed: boolean
+  semantic: 'force-indent'
+
+  consumed: boolean
+
+  // After replacement
+  replacementResolved: boolean
+  replacementElement: HTMLElement | null
+  replacementOrdinal: number | null
+  replacementIdentity: string | null
+
+  semanticTransferred: boolean
+  visualTransferred: boolean
+}
+
+export type EnterCommitSuccessFields = {
+  tokenSuccess: boolean
+  semanticSuccess: boolean
+  visualSuccess: boolean
+  caretSuccess: boolean
+  overallSuccess: boolean
+}
+
+// ── Writer Record ──────────────────────────────────────────────────
+
 export interface WriterRecord {
   timestamp: number
   relativeMs: number
