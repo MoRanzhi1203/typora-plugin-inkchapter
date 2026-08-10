@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-two-pass-rehydrate-atomic-enter-r53-a2c8f'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-sidecar-context-caret-realm-handoff-r54-b3d0g'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

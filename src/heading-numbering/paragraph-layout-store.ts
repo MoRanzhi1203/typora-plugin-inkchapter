@@ -72,24 +72,47 @@ function resolveVaultRoot(): string | null {
 }
 
 let vaultRootOverride: string | null = null
+/** Set vault root for testing. Overrides all other sources. */
 export function setVaultRootForTesting(root: string): void {
   vaultRootOverride = root
 }
 
+let productionVaultRoot: string | null = null
+let productionVaultRootSet = false
+/** Inject vault root for production use. Called by HeadingNumberingService on init. */
+export function injectProductionVaultRoot(root: string): void {
+  productionVaultRoot = root
+  productionVaultRootSet = true
+  // Also set globalThis for other modules (trace, forensic)
+  ;(globalThis as any).__inkchapter_vault_root__ = root
+}
+
 function getVaultRoot(): string | null {
   if (vaultRootOverride) return vaultRootOverride
+  if (productionVaultRoot) return productionVaultRoot
   return resolveVaultRoot()
 }
 
-function getSidecarDir(): string {
+/** Whether a production vault root has been explicitly injected. */
+function isProductionVaultKnown(): boolean {
+  return productionVaultRootSet || !!vaultRootOverride
+}
+
+function getSidecarDir(): string | null {
   const vault = getVaultRoot()
   if (vault) return path.join(vault, '.typora', 'inkchapter', 'paragraph-layout')
-  // Fallback: use temp directory for testing
+  // Production with unknown vault: HARD diagnostic, disable sidecar
+  if (!isProductionVaultKnown()) {
+    console.warn('[InkChapter] SIDECAR-DISABLED: vaultRoot unknown — cannot resolve sidecar storage. TEMP fallback blocked in production.')
+    return null
+  }
+  // Test mode: only allow TEMP fallback when vaultRootOverride is explicitly set
   return path.join(require('os').tmpdir(), 'inkchapter-paragraph-layout-test')
 }
 
-function getSidecarPath(documentKey: string): string {
+function getSidecarPath(documentKey: string): string | null {
   const dir = getSidecarDir()
+  if (!dir) return null
   const safeKey = documentKey.replace(/[/\\:*?"<>|]/g, '_')
   return path.join(dir, `${safeKey}.json`)
 }
@@ -99,22 +122,24 @@ function getSidecarPath(documentKey: string): string {
 export function loadParagraphLayout(documentKey: string): ParagraphLayoutDocument | null {
   try {
     const filePath = getSidecarPath(documentKey)
+    if (!filePath) {
+      // ── SIDECAR-ACTUAL-LOAD (P0-1: vaultRoot unknown, sidecar disabled) ──
+      console.warn(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${getVaultRoot() ?? 'unknown'} storageRoot=null source=disabled (vaultRoot unknown, TEMP fallback blocked)`)
+      return null
+    }
     const dir = getSidecarDir()
     const vault = getVaultRoot()
 
     if (!fs.existsSync(filePath)) {
-      // ── SIDECAR-ACTUAL-LOAD (P0-B diagnostic) ──
       console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=false recordCount=0 source=filesystem`)
       return null
     }
     const raw = fs.readFileSync(filePath, 'utf8')
     const data = JSON.parse(raw) as ParagraphLayoutDocument
-    // Basic validation
     if (!data.schemaVersion || !Array.isArray(data.paragraphOverrides)) {
       console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} exists=true recordCount=0 source=filesystem (invalid schema)`)
       return null
     }
-    // ── SIDECAR-ACTUAL-LOAD (P0-B diagnostic) ──
     console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=true recordCount=${data.paragraphOverrides.length} source=filesystem`)
     return data
   } catch (e) {
@@ -129,10 +154,16 @@ export function saveParagraphLayout(
   overrides: ParagraphIndentOverrideRecord[],
 ): void {
   const dir = getSidecarDir()
+  if (!dir) {
+    // ── SIDECAR-ACTUAL-WRITE (P0-1: vaultRoot unknown, sidecar disabled) ──
+    console.warn(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${documentKey} vaultRoot=${getVaultRoot() ?? 'unknown'} source=disabled (vaultRoot unknown, write blocked)`)
+    return
+  }
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
   }
   const filePath = getSidecarPath(documentKey)
+  if (!filePath) return
   const vault = getVaultRoot()
 
   // ── SIDECAR-ACTUAL-WRITE (P0-B diagnostic) ──

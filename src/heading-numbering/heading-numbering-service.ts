@@ -66,10 +66,6 @@ import {
   anchorConfidenceToRehydrateConfidence,
   resolveSafeRehydrateDecision,
   type SafeRehydrateDecision,
-  type PendingLogicalParagraphState,
-  resolvePendingReplacementParagraph,
-  releasePendingCaretIfUserMoved,
-  generateParagraphFingerprint,
   RehydrateMatchStrategy,
   type RehydrateMatchProvenance,
   type CandidateRecord,
@@ -88,6 +84,9 @@ import {
   type ParagraphRehydratePlan,
   buildRehydrateOwnershipGroups,
   getElementIdentity,
+  type CaretWriteResult,
+  type OneShotParagraphReplacementHandoff,
+  type EnterCommitSuccessFields,
 } from './paragraph-indent-manager'
 import {
   loadParagraphLayout,
@@ -97,6 +96,7 @@ import {
   updateParagraphAnchor,
   collectContentParagraphs,
   migrateLegacyIndentMarkers,
+  injectProductionVaultRoot,
   type ParagraphIndentOverrideRecord,
   type AnchorResolveResult,
 } from './paragraph-layout-store'
@@ -253,10 +253,11 @@ export class HeadingNumberingService {
   // Multiple concurrent observations coexist without overwriting each other.
   private observations = new Map<string, PostCommitObservationSession>()
 
-  // ── Pending Logical Paragraph Identity — Stage A runtime continuity ──
-  // Short-lived state for post-Enter empty paragraphs before stable text.
-  // Maintains semantic/visual/caret across DOM rebuilds without sidecar.
-  private activePendingState: PendingLogicalParagraphState | null = null
+  // ── P0-5: One-Shot Paragraph Replacement Handoff ────────────────
+  // Replaces old PendingLogicalParagraphState (removed r54).
+  // Short-lived: resolves replacement once, transfers semantic+visual,
+  // never writes caret/sidecar, consumed after first resolution.
+  private activeOneShotHandoff: OneShotParagraphReplacementHandoff | null = null
 
   // ── In-memory Override Registry ──────────────────────
   // Mirrors sidecar records but updates immediately (no debounce for reads).
@@ -306,6 +307,10 @@ export class HeadingNumberingService {
   constructor(ctx: ServiceContext, adapter: HeadingDomAdapter) {
     this.ctx = ctx
     this.adapter = adapter
+
+    // ── P0-1: Inject production vault root ──────────────────────────
+    // Must happen before any sidecar load/write.
+    this.injectVaultRoot()
 
     // Initialize scope store (with migration from old format)
     this.scopeStore = this.initScopeStore()
@@ -781,6 +786,43 @@ export class HeadingNumberingService {
   }
 
   /** Generate vault-relative document key for the current file. */
+  /** Inject production vault root before any sidecar operation. */
+  private injectVaultRoot(): void {
+    try {
+      const filePath = this.ctx.getActiveFilePath?.()
+      if (!filePath) return
+      // Derive vault root: the directory containing .typora
+      // For test vault: D:\...\test\vault
+      const vaultCandidate = (this.ctx as any).vaultRoot ??
+        (this.ctx.settings as any).getVaultRoot?.()
+
+      if (typeof vaultCandidate === 'string' && vaultCandidate.length > 0) {
+        injectProductionVaultRoot(vaultCandidate)
+        console.info(`[InkChapter] SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=plugin-config`)
+        return
+      }
+
+      // Fallback: derive from active file path by searching for .typora ancestor
+      const { dirname, join } = require('path') as typeof import('path')
+      const { existsSync } = require('fs') as typeof import('fs')
+      let dir = dirname(filePath)
+      for (let i = 0; i < 5; i++) {
+        if (existsSync(join(dir, '.typora'))) {
+          injectProductionVaultRoot(dir)
+          console.info(`[InkChapter] SIDECAR-CONTEXT: vaultRoot=${dir} storageRoot=${join(dir, '.typora', 'inkchapter', 'paragraph-layout')} source=derived-from-active-file`)
+          return
+        }
+        const parent = dirname(dir)
+        if (parent === dir) break
+        dir = parent
+      }
+
+      console.warn(`[InkChapter] SIDECAR-CONTEXT: vaultRoot unknown — could not derive from filePath=${filePath}`)
+    } catch (e) {
+      console.warn('[InkChapter] SIDECAR-CONTEXT: vault root injection failed:', e)
+    }
+  }
+
   getDocumentKey(): string | null {
     const filePath = this.ctx.getActiveFilePath?.() ?? null
     if (!filePath) return null
@@ -2116,15 +2158,14 @@ export class HeadingNumberingService {
     txn.traceData['semanticTargetIdentity'] = getElementIdentity(caretTarget)
 
     // caret restore — only if target is valid and connected
-    const caretConnected = caretTarget.isConnected
-    if (caretConnected) {
-      this.placeCaretInParagraph(caretTarget)
-      txn.traceData['caretWriterType'] = 'one-shot-sync-placeCaret'
-      txn.traceData['caretTargetIdentity'] = getElementIdentity(caretTarget)
-      txn.traceData['caretTargetConnected'] = true
-    } else {
-      txn.traceData['caretWriterType'] = 'none-stale-target'
-      txn.traceData['caretTargetConnected'] = false
+    const caretResult = this.placeCaretInParagraph(caretTarget)
+    txn.traceData['caretWriterType'] = caretResult.method
+    txn.traceData['caretTargetIdentity'] = caretResult.resolvedParagraphIdentity
+    txn.traceData['caretTargetConnected'] = caretResult.targetConnected
+    txn.traceData['caretWritten'] = caretResult.caretWritten
+    txn.traceData['caretRealmSafe'] = caretResult.realmSafe
+    if (caretResult.failReason) {
+      txn.traceData['caretFailReason'] = caretResult.failReason
     }
     txn.state = 'caret-restored'
 
@@ -2140,48 +2181,61 @@ export class HeadingNumberingService {
     const tokenGone = caretTarget ? getUserVisibleParagraphText(caretTarget) === '' : false
     const semanticAfter = caretTarget ? getParagraphIndentMode(caretTarget) : 'unknown'
     const computedIndentAfter = caretTarget ? window.getComputedStyle(caretTarget).textIndent : 'unknown'
-    const success = tokenGone &&
-      paragraphCountAfter === txn.paragraphCountBefore &&
-      semanticAfter === 'force-indent' &&
-      computedIndentAfter === '32px'
 
+    // ── P0-4: Split success fields ──
+    const successFields: EnterCommitSuccessFields = {
+      tokenSuccess: txn.tokenConsumed,
+      semanticSuccess: txn.semanticWritten && semanticAfter === 'force-indent',
+      visualSuccess: computedIndentAfter === '32px',
+      caretSuccess: caretResult.success,
+      overallSuccess: false,
+    }
+    successFields.overallSuccess =
+      successFields.tokenSuccess &&
+      successFields.semanticSuccess &&
+      successFields.visualSuccess &&
+      successFields.caretSuccess
+
+    txn.traceData['successFields'] = successFields
     txn.traceData['stopReason'] = 'commit completed'
     txn.traceData['T0'] = 'commit sync end'
 
-    // ── ENTER-COMMIT-ATOMIC (r53 P0-C) ──
-    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} preParagraphConnected=${preParagraphConnected} preParagraphIdentity=${preParagraphIdentity} tokenConsumerType=direct-textNode-mutation postTokenOldParagraphConnected=${postTokenConnected} replacementResolved=${txn.traceData['replacementResolved'] ?? false} semanticTargetIdentity=${txn.traceData['semanticTargetIdentity']} caretTargetIdentity=${txn.traceData['caretTargetIdentity']} caretTargetConnected=${caretConnected} paragraphCountBefore=${txn.paragraphCountBefore} paragraphCountAfter=${paragraphCountAfter} tokenGone=${tokenGone} semanticAfter=${semanticAfter} computedIndentAfter=${computedIndentAfter} success=${success}`)
+    // ── ENTER-COMMIT-ATOMIC (r54 P0-4 split) ──
+    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} preParagraphConnected=${preParagraphConnected} preParagraphIdentity=${preParagraphIdentity} tokenConsumerType=direct-textNode-mutation postTokenOldParagraphConnected=${postTokenConnected} tokenSuccess=${successFields.tokenSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} overallSuccess=${successFields.overallSuccess} caretTargetConnected=${caretResult.targetConnected} caretRealmSafe=${caretResult.realmSafe} caretFailReason=${caretResult.failReason ?? 'none'} paragraphCountBefore=${txn.paragraphCountBefore} paragraphCountAfter=${paragraphCountAfter} tokenGone=${tokenGone} semanticAfter=${semanticAfter} computedIndentAfter=${computedIndentAfter}`)
 
     console.info(`[InkChapter] ${txn.id} committed: token=${txn.token} state=${txn.state}`)
 
-    // ── Create Pending Logical Paragraph Identity ────────────────────
-    // Stage A: short-lived runtime identity for post-Enter empty paragraph.
-    // Does NOT depend on textHash or sidecar heuristic — uses local continuity.
-    const root2 = this.adapter.getEditorRoot()
-    const allParasCommitted = root2 ? collectContentParagraphs(root2) : []
-    const paraOrdinal = allParasCommitted.indexOf(para)
-    const prevPara = paraOrdinal > 0 ? allParasCommitted[paraOrdinal - 1] : null
-    const nextPara = paraOrdinal < allParasCommitted.length - 1 ? allParasCommitted[paraOrdinal + 1] : null
+    // ── P0-5: One-Shot Paragraph Replacement Handoff ────────────────
+    // Replaces old long-lived PendingLogicalParagraphState.
+    // Short-lived: only resolves replacement once, transfers semantic+visual,
+    // never writes caret/sidecar, consumed after first resolution.
+    const rootAfter = this.adapter.getEditorRoot()
+    const allParasAfter = rootAfter ? collectContentParagraphs(rootAfter) : []
+    const paraOrdinal2 = allParasAfter.indexOf(para) >= 0
+      ? allParasAfter.indexOf(para)
+      : txn.paragraphCountBefore > 0 ? Math.min(txn.paragraphCountBefore - 1, allParasAfter.length - 1) : 0
 
-    this.activePendingState = {
-      pendingId: `pending-${txn.id}`,
+    this.activeOneShotHandoff = {
+      handoffId: `handoff-${txn.id}`,
       sourceTxnId: txn.id,
+      preElement: para,
+      preOrdinal: paraOrdinal2,
+      preIdentity: preParagraphIdentity,
+      tokenConsumed: txn.tokenConsumed,
       semantic: 'force-indent',
-      createdAt: performance.now(),
-      originalElement: para,
-      originalParagraphOrdinal: paraOrdinal >= 0 ? paraOrdinal : 0,
-      originalPreviousParagraphFingerprint: generateParagraphFingerprint(prevPara),
-      originalNextParagraphFingerprint: generateParagraphFingerprint(nextPara),
-      originalSelectionLogicalOffset: 0,
-      caretOwnedByPending: true,
-      promoted: false,
-      state: 'COMMAND_COMMITTED_PENDING_EMPTY',
+      consumed: false,
+      replacementResolved: false,
+      replacementElement: null,
+      replacementOrdinal: null,
+      replacementIdentity: null,
+      semanticTransferred: false,
+      visualTransferred: false,
     }
-    console.info(`[InkChapter] PENDING created: ${this.activePendingState.pendingId} ordinal=${paraOrdinal} semantic=force-indent`)
 
     // Schedule T0-T4 transaction snapshots, then close tx at T4.
     // Post-commit observation runs independently T4→T9.
     this.scheduleTransactionStabilitySnapshots(txn)
-    
+
     // Install diagnostic MutationObserver on target paragraph (read-only)
     this.installDiagnosticMutationObserver(txn)
   }
@@ -2295,9 +2349,15 @@ export class HeadingNumberingService {
       if (!this.observations.has(obs.observationId)) return
       const para = obs.lastKnownParagraph
 
-      // Re-resolve the logical paragraph if original is disconnected
-      let resolvedPara = para
+      // ── P0-5: Track original AND current replacement separately ──
+      // When sameDOMElement=false, record original state and replacement state
+      // independently. Never use disconnected old element's semantic as current state.
+      let resolvedPara: HTMLElement | null = para
       let sameDOMElement = true
+      const originalSemantic = para ? getParagraphIndentMode(para) : null
+      const originalIsConnected = para?.isConnected ?? false
+
+      // Re-resolve the logical paragraph if original is disconnected
       if (para && !para.isConnected) {
         sameDOMElement = false
         const root = this.adapter.getEditorRoot()
@@ -2313,28 +2373,22 @@ export class HeadingNumberingService {
               break
             }
           }
-          // Fallback: try anchor-based resolution
-          if (!sameDOMElement) {
-            const docKey = this.getDocumentKey()
-            if (docKey) {
-              const overrides = this.inMemoryOverrides.get(docKey) ?? []
-              for (const o of overrides) {
-                if (o.mode === 'force-indent' || o.mode === 'force-flush') {
-                  const resolved = resolveParagraphAnchor(o.anchor, allParas)
-                  if (resolved) {
-                    const candidate = allParas[resolved.index]
-                    if (candidate && candidate.textContent?.trim() === txn.paragraph.textContent?.trim()) {
-                      resolvedPara = candidate
-                      obs.lastKnownParagraph = candidate
-                      break
-                    }
-                  }
-                }
-              }
+          // Fallback: try ordinal-based (one-shot handoff path)
+          if (!sameDOMElement && allParas.length > 0) {
+            const paraOrdinal = txn.paragraphCountBefore > 0
+              ? Math.min(txn.paragraphCountBefore - 1, allParas.length - 1)
+              : 0
+            const candidate = allParas[paraOrdinal]
+            if (candidate) {
+              resolvedPara = candidate
+              obs.lastKnownParagraph = candidate
             }
           }
         }
       }
+
+      const currentSemantic = resolvedPara ? getParagraphIndentMode(resolvedPara) : null
+      const currentIsConnected = resolvedPara?.isConnected ?? false
 
       const lastWriter = resolvedPara ? getLastParagraphWriter(resolvedPara) : null
       const writerHistory = resolvedPara ? getParagraphWriterHistory(resolvedPara) : []
@@ -2350,12 +2404,17 @@ export class HeadingNumberingService {
 
         // DOM identity
         sameDOMElement,
-        paragraphIsConnected: resolvedPara?.isConnected ?? false,
-        paragraphIdentityAtCommit: obs.paragraphIdentityAtCommit,
+        originalIsConnected,
+        originalParagraphIdentity: obs.paragraphIdentityAtCommit,
+        originalSemantic,
+        currentParagraphIsConnected: currentIsConnected,
         currentParagraphIdentity: resolvedPara ? getElementIdentity(resolvedPara) : null,
+        currentSemantic,
+
+        // P0-5: Clearly separate original and current — never use disconnected as current
+        usingStaleSemantic: !sameDOMElement && originalSemantic !== currentSemantic,
 
         // State
-        semantic: resolvedPara ? getParagraphIndentMode(resolvedPara) : null,
         effectiveClass_indent2: resolvedPara?.classList.contains('inkchapter-paragraph-effective-indent-2') ?? false,
         effectiveClass_flush: resolvedPara?.classList.contains('inkchapter-paragraph-effective-flush') ?? false,
         computedTextIndent: resolvedPara ? window.getComputedStyle(resolvedPara).textIndent : null,
@@ -2385,7 +2444,7 @@ export class HeadingNumberingService {
           : false,
       }
       obs.traceData[label] = data
-      console.info(`[InkChapter] ${obs.observationId} ${label}: txActive=false sameDOM=${sameDOMElement} semantic=${data['semantic']} indent=${data['computedTextIndent']} lastWriter=${data['lastHighLevelWriterId']}`)
+      console.info(`[InkChapter] ${obs.observationId} ${label}: txActive=false sameDOM=${sameDOMElement} currentSemantic=${currentSemantic} indent=${data['computedTextIndent']} lastWriter=${data['lastHighLevelWriterId']}`)
     }
 
     // T4 = 150ms (observation starts here, already 0ms into observation)
@@ -2518,124 +2577,55 @@ export class HeadingNumberingService {
   }
 
   /** Generate a stable identity key for a paragraph element. Read-only. */
-  // ── Pending Continuity ──────────────────────────────────────────────
-  // Stage A: post-Enter DOM rebuild recovery WITHOUT sidecar heuristics.
+  // ── P0-5: One-Shot Paragraph Replacement Handoff ──────────────────
+  // Replaces old PendingLogicalParagraphState (removed r54).
+  // Only resolves replacement ONCE, transfers semantic+visual, never caret/sidecar.
+  // Consumed immediately after first resolution.
 
   /**
-   * Try to restore pending state after DOM rebuild.
-   * Called during rehydrate when the pending original element is disconnected.
-   * Resolves the replacement paragraph via LOCAL mutation context,
-   * then atomically restores semantic + visual + caret.
+   * Check active one-shot handoff: if the original paragraph is disconnected,
+   * find its replacement, transfer semantic+visual once, and consume the handoff.
+   * Called from rehydrate path (no more than once per Enter txn).
    */
-  private tryRestorePendingContinuity(addedElements: HTMLElement[]): void {
-    const pending = this.activePendingState
-    if (!pending) return
-    if (pending.promoted) return
+  private tryExecuteOneShotHandoff(allParagraphs: HTMLElement[]): void {
+    const handoff = this.activeOneShotHandoff
+    if (!handoff || handoff.consumed) return
 
-    const original = pending.originalElement
-    if (original.isConnected) {
-      // Still connected — update currentElement reference
-      pending.currentElement = original
-      return
-    }
+    const original = handoff.preElement
+    if (original.isConnected) return // still alive
 
-    // Original disconnected — find replacement
-    const replacement = resolvePendingReplacementParagraph(pending, original, addedElements)
-    if (!replacement) {
-      console.info(`[InkChapter] PENDING: ${pending.pendingId} original disconnected, no replacement found`)
-      return
-    }
+    // Original disconnected — one-shot replacement resolution
+    const paraOrdinal = handoff.preOrdinal
+    if (paraOrdinal < 0 || paraOrdinal >= allParagraphs.length) return
 
-    pending.currentElement = replacement
-    pending.state = 'DOM_REBOUND_PENDING'
+    const replacement = allParagraphs[paraOrdinal]
+    if (!replacement) return
 
-    // ── Pending Continuity: DIAGNOSTIC ONLY ──
-    // Per r52 Hard Rollback Section 31: Pending CANNOT repair semantic, visual, or caret.
-    // All restores are DISABLED until clean M1~M3 baseline is proven stable.
-    // Only record observation data — never mutate DOM or selection.
-    //
-    // Semantic restore: OFF (was: rehydrateParagraphIndentState(...))
-    // Visual restore:   OFF
-    // Caret restore:     OFF
+    handoff.replacementElement = replacement
+    handoff.replacementOrdinal = paraOrdinal
+    handoff.replacementIdentity = getElementIdentity(replacement)
+    handoff.replacementResolved = true
 
-    // Read-only diagnostic: record the potential caret ownership without acting on it
-    if (pending.caretOwnedByPending) {
-      // Read-only diagnostic
-      recordParagraphWrite(replacement, 'W-CARET-DIAGNOSTIC', 'pending-caret-owned-readonly')
-    }
+    // Transfer semantic + visual ONCE (never caret, never sidecar)
+    const settings = this.getParagraphLayoutSettings()
+    setParagraphIndentMode(replacement, handoff.semantic, 'W-ONESHOT-SEMANTIC')
+    const effective = resolveEffectiveParagraphIndent(handoff.semantic, settings.defaultIndent)
+    applyEffectiveParagraphIndent(replacement, effective, 'W-ONESHOT-VISUAL')
+    handoff.semanticTransferred = true
+    handoff.visualTransferred = true
 
-    console.info(`[InkChapter] PENDING DIAGNOSTIC: ${pending.pendingId} rebound to replacement (semantic=${pending.semantic}) — ALL RESTORES OFF (r52 Hard Rollback)`)
+    // Consume immediately — no more rebound
+    handoff.consumed = true
+
+    console.info(`[InkChapter] ONE-SHOT-HANDOFF: handoffId=${handoff.handoffId} original=${handoff.preIdentity} replacement=${handoff.replacementIdentity} semantic=${handoff.semantic} consumed=true`)
   }
 
-  /**
-   * Try to promote pending state to stable sidecar record.
-   * Called when the pending paragraph receives stable text.
-   * Uses UPSERT — never creates duplicate records for the same logical paragraph.
-   */
-  private tryPromotePendingState(): void {
-    const pending = this.activePendingState
-    if (!pending) return
-    if (pending.promoted) return
-
-    const para = pending.currentElement ?? pending.originalElement
-    if (!para?.isConnected) return
-
-    const userVisibleText = getUserVisibleParagraphText(para)
-    if (!userVisibleText || userVisibleText.trim().length === 0) return // still empty
-
-    // Text entered — promote to stable sidecar
-    const docKey = this.getDocumentKey()
-    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
-    if (!docKey) return
-
-    const root = this.adapter.getEditorRoot()
-    if (!root) return
-
-    const allParas = collectContentParagraphs(root)
-    const paraIndex = allParas.indexOf(para)
-    if (paraIndex < 0) return
-
-    const newAnchor = createParagraphAnchor(paraIndex, allParas)
-    const overrides = this.inMemoryOverrides.get(docKey) ?? []
-
-    // UPSERT: find existing record for this logical paragraph by anchor match
-    const existingIndex = overrides.findIndex(o =>
-      o.mode === pending.semantic &&
-      resolveParagraphAnchor(o.anchor, allParas)?.index === paraIndex,
-    )
-
-    if (existingIndex >= 0) {
-      // Update existing record
-      overrides[existingIndex].anchor = newAnchor
-      overrides[existingIndex].temporary = false
-    } else {
-      // Create new record (only for new logical paragraphs)
-      const recordId = `promoted-${pending.pendingId}`
-      overrides.push({
-        id: recordId,
-        mode: pending.semantic,
-        anchor: newAnchor,
-        temporary: false,
-      })
-      pending.promotedRecordId = recordId
-    }
-
-    pending.state = 'CONTENT_STABLE_PROMOTED'
-    pending.promoted = true
-    this.inMemoryOverrides.set(docKey, overrides)
-    this.scheduleSidecarWrite(docKey, docPath, overrides)
-
-    console.info(`[InkChapter] PENDING PROMOTED: ${pending.pendingId} → sidecar record semantic=${pending.semantic} paraIndex=${paraIndex}`)
-  }
-
-  /**
-   * Release active pending state (document switch, explicit override, deletion).
-   */
-  private releasePendingState(reason: string): void {
-    const pending = this.activePendingState
-    if (!pending) return
-    console.info(`[InkChapter] PENDING RELEASED: ${pending.pendingId} reason=${reason}`)
-    this.activePendingState = null
+  /** Release active one-shot handoff (document switch, explicit override). */
+  private releaseOneShotHandoff(reason: string): void {
+    const handoff = this.activeOneShotHandoff
+    if (!handoff) return
+    console.info(`[InkChapter] ONE-SHOT-HANDOFF RELEASED: ${handoff.handoffId} reason=${reason}`)
+    this.activeOneShotHandoff = null
   }
 
   /**
@@ -2788,19 +2778,66 @@ export class HeadingNumberingService {
   }
 
   /** Place caret at the start of a paragraph, handling empty/BR/text node. */
-  private placeCaretInParagraph(paragraph: HTMLElement): void {
-    if (!paragraph || !(paragraph instanceof Node) || !paragraph.isConnected) {
-      console.info('[InkChapter] CARET_TARGET_INVALID: paragraph not a valid connected Node')
-      return
+  private placeCaretInParagraph(paragraph: HTMLElement): CaretWriteResult {
+    const result: CaretWriteResult = {
+      success: false,
+      caretWritten: false,
+      targetConnected: false,
+      realmSafe: false,
+      method: 'none',
+      resolvedParagraphIdentity: null,
     }
+
+    // ── P0-4: structured validation ──
+    if (!paragraph) {
+      result.failReason = 'null-target'
+      return result
+    }
+
+    // ── P0-3: Realm-safe Node validation ──
+    // Use ownerDocument to avoid cross-realm instanceof failures
+    const ownerDoc = paragraph.ownerDocument
+    if (!ownerDoc) {
+      result.failReason = 'no-ownerDocument'
+      console.info('[InkChapter] CARET_TARGET_INVALID: no ownerDocument (cross-realm?)')
+      return result
+    }
+
+    // Validate against owner document's Node constructor
     try {
-      const sel = window.getSelection()
-      if (!sel) return
-      const range = document.createRange()
+      if (!(paragraph instanceof ownerDoc.defaultView!.Node)) {
+        result.failReason = 'not-a-node-in-realm'
+        console.info('[InkChapter] CARET_TARGET_INVALID: paragraph is not a Node in owner document realm')
+        return result
+      }
+    } catch {
+      result.failReason = 'instanceof-check-failed'
+      console.info('[InkChapter] CARET_TARGET_INVALID: instanceof check threw (cross-realm)')
+      return result
+    }
+
+    result.realmSafe = true
+
+    if (!paragraph.isConnected) {
+      result.failReason = 'disconnected'
+      console.info('[InkChapter] CARET_TARGET_INVALID: paragraph not connected')
+      return result
+    }
+    result.targetConnected = true
+
+    // ── P0-3: Use ownerDocument.createRange() ──
+    try {
+      const sel = ownerDoc.defaultView?.getSelection()
+      if (!sel) {
+        result.failReason = 'no-selection'
+        return result
+      }
+
+      const range = ownerDoc.createRange()
 
       // Find first text node or BR
       const firstChild = paragraph.firstChild
-      if (firstChild?.nodeType === Node.TEXT_NODE) {
+      if (firstChild?.nodeType === ownerDoc.defaultView!.Node.TEXT_NODE) {
         range.setStart(firstChild, 0)
       } else if (firstChild?.nodeName === 'BR') {
         range.setStartBefore(firstChild)
@@ -2810,9 +2847,17 @@ export class HeadingNumberingService {
       range.collapse(true)
       sel.removeAllRanges()
       sel.addRange(range)
+
+      result.caretWritten = true
+      result.success = true
+      result.method = 'owner-realm-range'
+      result.resolvedParagraphIdentity = getElementIdentity(paragraph)
     } catch (e) {
+      result.failReason = `range-error: ${e}`
       console.info('[InkChapter] CARET_WRITE_FAILED:', e)
     }
+
+    return result
   }
 
   /**
@@ -3220,13 +3265,8 @@ export class HeadingNumberingService {
    * r53 P0-A: Uses two-pass pipeline — RESOLVE ALL → GROUP → DECIDE → APPLY.
    */
   private rehydrateParagraphIndentOverrides(root: HTMLElement): void {
-    // ── Two-Pass Pipeline: RESOLVE ALL → GROUP → DECIDE → APPLY SAFE WINNERS ──
-    // r53 P0-A: Eliminates first-candidate leak by resolving ALL records
-    // before applying ANY semantic/visual writer.
-
-    // Pending diagnostic check (read-only)
-    this.tryRestorePendingContinuity(Array.from(root.querySelectorAll('p')) as HTMLElement[])
-    this.tryPromotePendingState()
+    // ── P0-5: One-shot handoff check (replaces old Pending) ──────
+    this.tryExecuteOneShotHandoff(Array.from(root.querySelectorAll('p')) as HTMLElement[])
 
     const docKey = this.getDocumentKey()
     if (!docKey) return
@@ -3256,7 +3296,8 @@ export class HeadingNumberingService {
     }
 
     // Populate in-memory registry from sidecar (deep clone)
-    this.inMemoryOverrides.set(docKey, data.paragraphOverrides.map(o => ({ ...o })))
+    const loadedOverrides = data.paragraphOverrides.map(o => ({ ...o }))
+    this.inMemoryOverrides.set(docKey, loadedOverrides)
 
     const root = this.adapter.detectEditorRoot()
     if (!root) return
@@ -3274,8 +3315,20 @@ export class HeadingNumberingService {
     )
     this.applyParagraphRehydratePlan(plan)
 
-    // Save repaired anchors
-    saveParagraphLayout(docKey, docPath, data.paragraphOverrides)
+    // ── P0-2: Only save when dirty (winners applied or anchors repaired) ──
+    // Check if any anchor changed by comparing with original loaded data
+    let reconstructDirty = false
+    for (const o of loadedOverrides) {
+      const orig = data.paragraphOverrides.find(r => r.id === o.id)
+      if (!orig) { reconstructDirty = true; break }
+      if (JSON.stringify(o.anchor) !== JSON.stringify(orig.anchor)) {
+        reconstructDirty = true
+        break
+      }
+    }
+    if (reconstructDirty) {
+      saveParagraphLayout(docKey, docPath, loadedOverrides)
+    }
   }
 
   /** Migrate legacy HTML comment markers to sidecar if present. */
