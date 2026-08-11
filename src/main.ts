@@ -11,7 +11,7 @@ import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEve
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
-import { INKCHAPTER_BUILD_ID } from './heading-numbering/paragraph-indent-forensic'
+import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
@@ -117,8 +117,20 @@ export default class extends Plugin<InkChapterSettings> {
     }
 
     // Build service context (exposes only needed APIs, avoids protected access)
+    // R58.4: Authoritative vault root from Typora Core app.vault.path
+    let vaultRoot: string | undefined
+    try {
+      // Access app.vault — the authoritative vault service from Typora Community Core
+      const appVault = (this.app as any).vault as { path?: string } | undefined
+      if (appVault?.path) {
+        vaultRoot = appVault.path
+        console.info(`[InkChapter] SIDECAR-CONTEXT-UPDATE: vaultRoot=${vaultRoot} source=vault-service`)
+      }
+    } catch { /* vaultRoot stays undefined */ }
+
     const ctx: ServiceContext = {
       settings: this.settings,
+      vaultRoot,
       onWorkspaceEvent: (event, listener) => {
         const dispose = this.app.workspace.on(event as never, listener as never)
         this.register(dispose)
@@ -142,36 +154,17 @@ export default class extends Plugin<InkChapterSettings> {
         try {
           // Derive vault path from active file
           let vaultDir = ''
-          const activeFile = this.app.workspace.activeFile
-          if (activeFile) {
-            // activeFile is like D:\...\test\vault\doc.md
-            // Find the .typora directory to identify vault root
-            const parts = activeFile.split(/[\\/]/)
-            for (let i = parts.length - 1; i >= 0; i--) {
-              const candidate = parts.slice(0, i).join(path.sep)
-              try {
-                if (fs.existsSync(path.join(candidate, '.typora'))) {
-                  vaultDir = candidate
-                  break
-                }
-              } catch { /* ignore */ }
-            }
-          }
-          // Fallback: use manifest.dir
-          if (!vaultDir) {
-            const pluginRoot = (this as any).manifest?.dir ?? ''
-            if (pluginRoot) {
-              vaultDir = path.join(pluginRoot, '..', '..')
-            }
-          }
-          if (vaultDir) {
-            const diagPath = path.join(vaultDir, filename)
-            fs.writeFileSync(diagPath, data, 'utf8')
-            console.log(`[InkChapter] wrote diagnostic: ${diagPath}`)
-          }
-        } catch (e) {
-          console.error('[InkChapter] failed to write diagnostic:', e)
-        }
+          const fp = this.app.workspace.activeFile
+          if (fp) { vaultDir = path.dirname(fp) }
+          const dp = path.join(vaultDir, '.typora', filename)
+          fs.writeFileSync(dp, data, 'utf8')
+        } catch { /* fail-open */ }
+      },
+      getCursorOffset: () => {
+        try { return this.app.features.markdownEditor.selection.getCursor() } catch { return null }
+      },
+      setCursorOffset: (offset: number) => {
+        try { this.app.features.markdownEditor.selection.setCursor(offset) } catch { /* fail-open */ }
       },
     }
 
@@ -468,6 +461,7 @@ export default class extends Plugin<InkChapterSettings> {
           pluginId: this.manifest.id,
           pluginName: this.manifest.name,
           buildMarker: INKCHAPTER_BUILD_ID,
+          runtimeGateRevision: RUNTIME_GATE_REVISION,
           loadedAt: new Date().toISOString(),
           pluginRoot,
           mainJsPath,
@@ -490,6 +484,59 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] Failed to write runtime-load.json:', e)
     }
+
+    // ── R59: Runtime Banner ─────────────────────────────────────────
+    const activeDoc = (typeof editor !== 'undefined' && (editor as any)?.library?.getActiveFilePath)
+      ? (editor as any).library.getActiveFilePath() ?? 'unknown'
+      : 'unknown'
+    // R58.6.1: PLUGIN-RUNTIME-ARTIFACT — resolve actual deployed plugin bundle path
+    const { existsSync } = require('fs') as typeof import('fs')
+    // Try canonical test vault path first, then fall back to __dirname
+    const canonicalPluginPath = path.resolve(
+      __dirname, '..', '..', 'test', 'vault', '.typora', 'plugins', 'dist', 'main.js',
+    )
+    // Also try project dist for SHA256 computation
+    const projectDistPath = path.resolve(__dirname, '..', '..', 'dist', 'main.js')
+    
+    // Determine actual running plugin path
+    let pluginArtifactPath: string
+    if (existsSync(canonicalPluginPath)) {
+      pluginArtifactPath = canonicalPluginPath
+    } else if (existsSync(projectDistPath)) {
+      pluginArtifactPath = projectDistPath
+    } else {
+      // Fallback: try to derive from __dirname
+      pluginArtifactPath = path.resolve(__dirname, 'main.js')
+    }
+    const pluginArtifactExists = existsSync(pluginArtifactPath)
+    
+    const pluginMainSha256 = (() => {
+      try {
+        // Always compute SHA from project dist for consistency
+        const shaPath = existsSync(projectDistPath) ? projectDistPath : (existsSync(canonicalPluginPath) ? canonicalPluginPath : pluginArtifactPath)
+        if (existsSync(shaPath)) {
+          const data = require('fs').readFileSync(shaPath, 'utf-8') as string
+          const sha = crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
+          return sha
+        }
+        return 'unknown'
+      } catch { return 'unknown' }
+    })()
+    console.log('================================================')
+    console.log('InkChapter Runtime')
+    console.log(`Business Build: ${INKCHAPTER_BUILD_ID}`)
+    console.log(`Runtime Gate Revision: ${RUNTIME_GATE_REVISION}`)
+    console.log(`Plugin Artifact Path: ${pluginArtifactPath}`)
+    console.log(`Plugin SHA256: ${pluginMainSha256}`)
+    console.log(`Active Doc: ${activeDoc}`)
+    console.log('================================================')
+
+    console.info(
+      `[InkChapter] PLUGIN-RUNTIME-ARTIFACT: ` +
+      `pluginMainPath=${pluginArtifactPath} ` +
+      `pluginMainSha256=${pluginMainSha256} ` +
+      `buildId=${INKCHAPTER_BUILD_ID}`,
+    )
 
     console.log('[InkChapter] 插件已加载')
   }

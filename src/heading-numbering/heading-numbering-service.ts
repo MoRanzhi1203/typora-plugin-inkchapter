@@ -64,6 +64,7 @@ import {
   type RehydrateContext,
   evaluateRehydrateSafety,
   anchorConfidenceToRehydrateConfidence,
+  RehydrateConfidence,
   resolveSafeRehydrateDecision,
   type SafeRehydrateDecision,
   RehydrateMatchStrategy,
@@ -89,6 +90,15 @@ import {
   type EnterCommitSuccessFields,
   type CommandParagraphCaretTarget,
   type ParagraphLocalCaretWriteResult,
+  resolveSelectionParagraph,
+  type SelectionParagraphResolution,
+  type RuntimeParagraphContinuity,
+  type PostTokenSelectionResult,
+  type CaretRepairResult,
+  findCaretBearingTextLeaf,
+  writeCaretAtTextLeaf,
+  repairCaretAtParagraphLogicalStart,
+  type LiveParagraphRecordBinding,
 } from './paragraph-indent-manager'
 import {
   loadParagraphLayout,
@@ -102,6 +112,19 @@ import {
   type ParagraphIndentOverrideRecord,
   type AnchorResolveResult,
 } from './paragraph-layout-store'
+import {
+  ParagraphCanonicalRegistry,
+  validatePersistentResolverEligibility,
+  validateSingleDotCandidate,
+  type CanonicalRuntimeState,
+  type CanonicalRuntimeMeta,
+  type CanonicalMutationIntent,
+  type CandidateSource,
+  type CanonicalBindingTransferResult,
+  type LiveOwnershipProof,
+  type LiveReplacementTicket,
+  type ReplacementResolution,
+} from './paragraph-canonical-registry'
 import {
   activateNormalEnterTrace,
   deactivateNormalEnterTrace,
@@ -199,6 +222,8 @@ export interface ServiceContext {
   getCursorOffset?: () => number | null
   /** Optional: set cursor absolute offset via EditorSelection API. */
   setCursorOffset?: (offset: number) => void
+  /** R58.3: Authoritative vault root for sidecar storage. */
+  vaultRoot?: string
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
@@ -265,10 +290,107 @@ export class HeadingNumberingService {
   // never writes caret/sidecar, consumed after first resolution.
   private activeOneShotHandoff: OneShotParagraphReplacementHandoff | null = null
 
+  // ── R58.5: Generic Live Replacement Ticket ────────────────────────
+  // Created by MutationObserver when a CURRENT_LIVE bound element is removed.
+  // Used for non-Enter DOM replacement continuity.
+  private activeLiveReplacementTickets = new Map<string, LiveReplacementTicket>()
+
+  // ── r57: Runtime Paragraph ID ────────────────────────────────────
+  // WeakMap: same HTMLElement → same runtime ID (object identity).
+  // Replacement HTMLElement → new runtime ID. Not affected by class/text change.
+  private paragraphRuntimeIds = new WeakMap<object, string>()
+  private nextParagraphRuntimeId = 1
+  private getParagraphRuntimeId(el: HTMLElement): string {
+    const existing = this.paragraphRuntimeIds.get(el)
+    if (existing) return existing
+    const id = `P-RUNTIME-${this.nextParagraphRuntimeId++}`
+    this.paragraphRuntimeIds.set(el, id)
+    return id
+  }
+
+  // ── R58: Live Binding Helpers ────────────────────────────────────
+
+  /** Create or upsert a live binding from a paragraph element to a sidecar record. */
+  private upsertLiveBinding(
+    recordId: string,
+    txnId: string,
+    element: HTMLElement,
+    temporary: boolean,
+    documentKey: string,
+  ): LiveParagraphRecordBinding {
+    const runtimeId = this.getParagraphRuntimeId(element)
+    const existing = this.liveBindings.get(recordId)
+    const binding: LiveParagraphRecordBinding = {
+      recordId,
+      txnId,
+      currentElement: element,
+      currentRuntimeId: runtimeId,
+      generation: (existing?.generation ?? 0) + 1,
+      temporary,
+      live: true,
+      documentKey,
+      createdAt: existing?.createdAt ?? Date.now(),
+    }
+    this.liveBindings.set(recordId, binding)
+    this.elementToBindingRecordId.set(element, recordId)
+
+    // LIVE-BINDING-RESOLUTION trace
+    console.info(
+      `[InkChapter] LIVE-BINDING-RESOLUTION: recordId=${recordId} ` +
+      `runtimeId=${runtimeId} ` +
+      `operation=${existing ? 'UPSERT' : 'CREATE'} ` +
+      `temporary=${temporary} live=true ` +
+      `generation=${binding.generation} ` +
+      `documentKey=${documentKey}`,
+    )
+    return binding
+  }
+
+  /** Resolve the live binding for a paragraph element. */
+  private resolveLiveBindingByElement(element: HTMLElement): LiveParagraphRecordBinding | null {
+    const recordId = this.elementToBindingRecordId.get(element)
+    if (!recordId) return null
+    const binding = this.liveBindings.get(recordId)
+    if (!binding) {
+      // Stale weak reference — recordId exists but binding was removed
+      return null
+    }
+    if (!binding.currentElement.isConnected) {
+      // Element disconnected — binding may be stale
+      return null
+    }
+    return binding
+  }
+
+  /** Resolve a live binding by record ID. */
+  private resolveLiveBindingByRecordId(recordId: string): LiveParagraphRecordBinding | null {
+    const binding = this.liveBindings.get(recordId)
+    if (!binding) return null
+    if (!binding.currentElement.isConnected) return null
+    return binding
+  }
+
+  /** Clear all live bindings for a document (on document switch). */
+  private clearLiveBindings(): void {
+    this.liveBindings.clear()
+  }
+
   // ── In-memory Override Registry ──────────────────────
   // Mirrors sidecar records but updates immediately (no debounce for reads).
   // Source of truth for rehydration; sidecar is the persistent copy.
   private inMemoryOverrides = new Map<string, ParagraphIndentOverrideRecord[]>()
+
+  // ── R58: Live Paragraph Record Binding Registry ──────────────────
+  // Connects live Typora paragraph elements (runtimeId) to canonical sidecar records.
+  // Keyed by recordId for direct record lookup.
+  // Also maintained: WeakMap<HTMLElement, recordId> for element→record reverse lookup.
+  private liveBindings = new Map<string, LiveParagraphRecordBinding>()
+  private elementToBindingRecordId = new WeakMap<HTMLElement, string>()
+
+  // ── R58.2: Canonical Registry (authoritative identity source) ─────
+  // Replaces ad-hoc liveBindings Maps with structured lifecycle state machine.
+  // CanonicalRecordId = 唯一业务身份.
+  private canonicalRegistry = new ParagraphCanonicalRegistry()
 
   // ── Normal Enter Trace (P0 diagnostic, dev only) ────
   // Stores T0 snapshot from the PREVIOUS doRefresh for cross-event comparison.
@@ -795,20 +917,22 @@ export class HeadingNumberingService {
   /** Inject production vault root before any sidecar operation. */
   private injectVaultRoot(): void {
     try {
-      const filePath = this.ctx.getActiveFilePath?.()
-      if (!filePath) return
-      // Derive vault root: the directory containing .typora
-      // For test vault: D:\...\test\vault
-      const vaultCandidate = (this.ctx as any).vaultRoot ??
-        (this.ctx.settings as any).getVaultRoot?.()
+      // R58.3: Use authoritative vault root from ServiceContext (set by main.ts)
+      const vaultCandidate = this.ctx.vaultRoot
 
       if (typeof vaultCandidate === 'string' && vaultCandidate.length > 0) {
         injectProductionVaultRoot(vaultCandidate)
-        console.info(`[InkChapter] SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=plugin-config`)
+        console.info(`[InkChapter] SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=service-context`)
         return
       }
 
       // Fallback: derive from active file path by searching for .typora ancestor
+      const filePath = this.ctx.getActiveFilePath?.()
+      if (!filePath) {
+        console.warn('[InkChapter] SIDECAR-CONTEXT: vaultRoot unknown — no active file and no context vaultRoot')
+        return
+      }
+
       const { dirname, join } = require('path') as typeof import('path')
       const { existsSync } = require('fs') as typeof import('fs')
       let dir = dirname(filePath)
@@ -832,9 +956,8 @@ export class HeadingNumberingService {
   getDocumentKey(): string | null {
     const filePath = this.ctx.getActiveFilePath?.() ?? null
     if (!filePath) return null
-    // Use the vault root from Typora community plugin API
-    const vaultRoot = (this.ctx as any).vaultRoot ??
-      (this.ctx.settings as any).getVaultRoot?.() ??
+    // Use the vault root from service context
+    const vaultRoot = this.ctx.vaultRoot ??
       (filePath.split(/[\\/]/).slice(0, -1).join('/'))
     return generateDocumentKey(filePath, typeof vaultRoot === 'string' ? vaultRoot : filePath.split(/[\\/]/).slice(0, -1).join('/'))
   }
@@ -1763,6 +1886,16 @@ export class HeadingNumberingService {
       })
     })
 
+    // ── R58.2: Document switch — canonical registry lifecycle ──────────
+    if (primaryReason === 'active-leaf-change' || primaryReason === 'file-open') {
+      this.canonicalRegistry.clearDocumentBindings(this.getDocumentKey() ?? '')
+      this.releaseOneShotHandoff('document-switch')
+      console.info(
+        `[InkChapter] CANONICAL-BINDING-DOCUMENT-SWITCH: reason=${primaryReason} ` +
+        `registryRecordCount=${this.canonicalRegistry.recordCount}`,
+      )
+    }
+
     this.doRefresh(primaryReason, { hasParagraphCommandMutation })
   }
 
@@ -2089,7 +2222,8 @@ export class HeadingNumberingService {
   /** Synchronous atomic commit — all steps in one call stack. */
   private commitEnterIndentTransactionSync(txn: EnterIndentTransaction, event: Event): void {
     const para = txn.paragraph
-    const preParagraphIdentity = getElementIdentity(para)
+    // r57: Use stable object-identity runtime ID, NOT mutable class/text fingerprint.
+    const commandRuntimeId = this.getParagraphRuntimeId(para)
     const preParagraphConnected = para.isConnected
     txn.traceData['T0_paraCountBefore'] = txn.paragraphCountBefore
     txn.traceData['T0_paraTag'] = para.tagName
@@ -2135,9 +2269,37 @@ export class HeadingNumberingService {
     txn.semanticWritten = true
     txn.state = 'semantic-written'
 
-    txn.sidecarWritten = false
-    txn.traceData['sidecarWriteCount'] = 0
-    txn.traceData['sidecarDisabled'] = 'empty-paragraph-persistence-paused'
+    // ── R58.2: Canonical sidecar record with live binding via registry ──────
+    // Uses canonicalCreateOrReuseForEnter — the ONLY path that allows CREATE_NEW.
+    const docKey = this.getDocumentKey()
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    const recordCountBefore = (this.inMemoryOverrides.get(docKey ?? '') ?? []).length
+    const sidecarResult = this.canonicalCreateOrReuseForEnter(
+      finalCommandTarget, 'force-indent', txn.id,
+      this.getParagraphRuntimeId(finalCommandTarget),
+      docKey ?? '', docPath,
+    )
+    txn.sidecarWritten = true
+    txn.traceData['sidecarWriteCount'] = 1
+    txn.traceData['sidecarCanonicalRecordCreated'] = true
+
+    const afterRecords = this.inMemoryOverrides.get(docKey ?? '') ?? []
+    const recordCountAfter = afterRecords.length
+    const recordId = sidecarResult.recordId
+
+    // CANONICAL-RECORD-COMMIT trace
+    console.info(
+      `[InkChapter] CANONICAL-RECORD-COMMIT: txnId=${txn.id} ` +
+      `recordId=${recordId} ` +
+      `operation=${sidecarResult.decision} ` +
+      `recordCountBefore=${recordCountBefore} recordCountAfter=${recordCountAfter} ` +
+      `mode=FORCE_INDENT temporary=true ` +
+      `boundRuntimeId=${commandRuntimeId} ` +
+      `duplicateAppendDetected=${sidecarResult.decision === 'CREATE_NEW' && recordCountAfter > recordCountBefore + 1}`,
+    )
+    txn.traceData['canonicalRecordId'] = recordId
+    txn.traceData['canonicalRecordCountBefore'] = recordCountBefore
+    txn.traceData['canonicalRecordCountAfter'] = recordCountAfter
 
     // visual projection
     const settings = this.getParagraphLayoutSettings()
@@ -2147,19 +2309,76 @@ export class HeadingNumberingService {
     txn.state = 'visual-applied'
     txn.traceData['computedIndent'] = window.getComputedStyle(finalCommandTarget).textIndent
 
-    // ── r56: Paragraph-local caret write (NOT global offset) ──
-    const caretResult = this.placeCaretAtParagraphLogicalStart(finalCommandTarget, preParagraphIdentity)
+    // ── r57: VERIFY-FIRST Caret ──────────────────────────────────
+    // After token consume + semantic + visual, check if Typora already
+    // placed the caret correctly. Only repair if mismatch.
+    const rootAfterVisual = this.adapter.getEditorRoot()
+    const doc = finalCommandTarget.ownerDocument
+    const sel = doc?.defaultView?.getSelection() ?? null
+
+    // POST-TOKEN-SELECTION: resolve current selection against command target
+    const postTokenRes = resolveSelectionParagraph(
+      sel,
+      rootAfterVisual ?? finalCommandTarget,
+      (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+    )
+
+    const alreadyCorrect =
+      postTokenRes.paragraphRuntimeId === commandRuntimeId &&
+      (postTokenRes.localLogicalOffset ?? -1) === 0
+
+    let repairResult: CaretRepairResult | null = null
+
+    if (alreadyCorrect) {
+      // Typora already has caret in correct position — do NOT write
+      txn.traceData['caretWriteAttempted'] = false
+      txn.traceData['caretSuccess'] = true
+      txn.traceData['caretRepairAttempted'] = false
+    } else {
+      // Mismatch — repair needed
+      txn.traceData['caretWriteAttempted'] = true
+      repairResult = repairCaretAtParagraphLogicalStart(
+        finalCommandTarget,
+        rootAfterVisual ?? finalCommandTarget,
+        commandRuntimeId,
+        (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      )
+      txn.traceData['caretSuccess'] = repairResult.success
+      txn.traceData['caretRepairAttempted'] = true
+      txn.traceData['caretRepairMethod'] = repairResult.method
+      txn.traceData['caretRepairTextLeafFound'] = repairResult.textLeafFound
+    }
 
     // Diagnostic global cursor readback (NOT used for success)
     const globalCursorAfter = this.ctx.getCursorOffset?.() ?? null
     txn.traceData['globalCursorAfter'] = globalCursorAfter
 
-    txn.traceData['caretSuccess'] = caretResult.success
-    txn.traceData['caretWriterType'] = caretResult.writerType
-    txn.traceData['caretTargetIdentity'] = caretResult.targetParagraphIdentity
-    txn.traceData['caretSameAsCommand'] = caretResult.sameAsCommandParagraph
-    txn.traceData['caretLocalOffset'] = caretResult.localLogicalOffset
-    if (caretResult.failureReason) txn.traceData['caretFailReason'] = caretResult.failureReason
+    // POST-TOKEN-SELECTION trace
+    const postTokenSelection: PostTokenSelectionResult = {
+      txnId: txn.id,
+      commandRuntimeId,
+      anchorNodeType: postTokenRes.anchorNodeType,
+      anchorNodeName: postTokenRes.anchorNodeName,
+      resolvedParagraphRuntimeId: postTokenRes.paragraphRuntimeId ?? null,
+      resolvedParagraphOrdinal: postTokenRes.paragraphOrdinal,
+      localLogicalOffset: postTokenRes.localLogicalOffset,
+      sameAsCommandTarget: postTokenRes.paragraphRuntimeId === commandRuntimeId,
+      alreadyCorrect,
+      repairAttempted: repairResult !== null,
+      caretWriteAttempted: !alreadyCorrect,
+      caretSuccess: alreadyCorrect || (repairResult?.success ?? false),
+    }
+    txn.traceData['POST-TOKEN-SELECTION'] = postTokenSelection
+    console.info(
+      `[InkChapter] POST-TOKEN-SELECTION: txnId=${txn.id} ` +
+      `commandRuntimeId=${commandRuntimeId} ` +
+      `resolvedRuntimeId=${postTokenRes.paragraphRuntimeId ?? 'null'} ` +
+      `anchorOffset=${postTokenRes.localLogicalOffset} ` +
+      `sameAsCommand=${postTokenRes.paragraphRuntimeId === commandRuntimeId} ` +
+      `alreadyCorrect=${alreadyCorrect} ` +
+      `caretWriteAttempted=${postTokenSelection.caretWriteAttempted} ` +
+      `caretSuccess=${postTokenSelection.caretSuccess}`,
+    )
 
     txn.state = 'caret-restored'
     txn.state = 'committed'
@@ -2173,17 +2392,18 @@ export class HeadingNumberingService {
     const semanticAfter = finalCommandTarget ? getParagraphIndentMode(finalCommandTarget) : 'unknown'
     const computedIndentAfter = finalCommandTarget ? window.getComputedStyle(finalCommandTarget).textIndent : 'unknown'
 
-    // ── r56: ENTER-COMMIT-ATOMIC with paragraph-identity-based success ──
+    // ── r57: ENTER-COMMIT-ATOMIC with runtime-ID-based success ──
+    const caretSuccess = alreadyCorrect || (repairResult?.success ?? false)
     const successFields: EnterCommitSuccessFields = {
       tokenSuccess: txn.tokenConsumed,
       semanticSuccess: txn.semanticWritten && semanticAfter === 'force-indent',
       visualSuccess: computedIndentAfter === '32px',
-      caretSuccess: caretResult.success,
+      caretSuccess,
       overallSuccess: false,
     }
     ;(successFields as any).paragraphCountSuccess = paragraphCountSuccess
-    ;(successFields as any).sameParagraphSuccess = caretResult.sameAsCommandParagraph
-    ;(successFields as any).localOffsetSuccess = (caretResult.localLogicalOffset ?? -1) === 0
+    ;(successFields as any).sameParagraphSuccess = postTokenRes.paragraphRuntimeId === commandRuntimeId
+    ;(successFields as any).localOffsetSuccess = (postTokenRes.localLogicalOffset ?? -1) === 0
     ;(successFields as any).globalCursorBefore = globalCursorBefore
     ;(successFields as any).globalCursorAfter = globalCursorAfter
     successFields.overallSuccess =
@@ -2192,13 +2412,13 @@ export class HeadingNumberingService {
       successFields.semanticSuccess &&
       successFields.visualSuccess &&
       successFields.caretSuccess &&
-      caretResult.sameAsCommandParagraph &&
-      (caretResult.localLogicalOffset ?? -1) === 0
+      postTokenRes.paragraphRuntimeId === commandRuntimeId &&
+      (postTokenRes.localLogicalOffset ?? -1) === 0
 
     txn.traceData['successFields'] = successFields
     txn.traceData['stopReason'] = 'commit completed'
 
-    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=${successFields.tokenSuccess} paragraphCountSuccess=${paragraphCountSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} sameParagraph=${caretResult.sameAsCommandParagraph} localOffset=${caretResult.localLogicalOffset} overallSuccess=${successFields.overallSuccess}`)
+    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=${successFields.tokenSuccess} paragraphCountSuccess=${paragraphCountSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} sameParagraph=${postTokenRes.paragraphRuntimeId === commandRuntimeId} localOffset=${postTokenRes.localLogicalOffset} overallSuccess=${successFields.overallSuccess}`)
     console.info(`[InkChapter] ${txn.id} committed: token=${txn.token}`)
 
     // ── P0-5: One-Shot Paragraph Replacement Handoff ────────────────
@@ -2211,11 +2431,14 @@ export class HeadingNumberingService {
     this.activeOneShotHandoff = {
       handoffId: `handoff-${txn.id}`,
       sourceTxnId: txn.id,
+      canonicalRecordId: recordId,
       preElement: para,
       preOrdinal: paraOrdinal2,
-      preIdentity: preParagraphIdentity,
+      preIdentity: commandRuntimeId,
       tokenConsumed: txn.tokenConsumed,
       semantic: 'force-indent',
+      semanticAtCreation: 'force-indent',
+      preRuntimeId: commandRuntimeId,
       consumed: false,
       replacementResolved: false,
       replacementElement: null,
@@ -2372,28 +2595,24 @@ export class HeadingNumberingService {
         visualTransferred: handoff?.visualTransferred ?? false,
       }
 
-      // --- SELECTION TARGET (diagnostic only) — r56: resolve paragraph identity ──
+      // --- SELECTION TARGET (diagnostic only) — r57: unified resolver ──
       const cursorOffset = this.ctx.getCursorOffset?.() ?? null
-      const sel = para?.ownerDocument?.defaultView?.getSelection()
-      let selParagraph: HTMLElement | null = null
-      if (sel?.rangeCount) {
-        const anchor = sel.getRangeAt(0).startContainer
-        if (anchor.nodeType === Node.ELEMENT_NODE && (anchor as Element).tagName === 'P') {
-          selParagraph = anchor as HTMLElement
-        } else {
-          const el = (anchor.nodeType === Node.ELEMENT_NODE ? anchor : anchor.parentElement) as Element | null
-          selParagraph = el?.closest('p') as HTMLElement | null
-        }
-      }
-      const selOrdinal = selParagraph ? (() => { const r = this.adapter.getEditorRoot(); return r ? collectContentParagraphs(r).indexOf(selParagraph!) : -1 })() : -1
+      const sel = para?.ownerDocument?.defaultView?.getSelection() ?? null
+      const selRes = resolveSelectionParagraph(
+        sel,
+        this.adapter.getEditorRoot() ?? document.body,
+        (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      )
+      const selOrdinal = selRes.paragraphOrdinal ?? -1
       const obsSelection: Record<string, unknown> = {
         absoluteCursorOffset: cursorOffset,
         selectionAnchorNode: sel?.anchorNode?.nodeName ?? 'none',
         selectionAnchorOffset: sel?.anchorOffset ?? -1,
-        selectionParagraphIdentity: selParagraph ? getElementIdentity(selParagraph) : null,
+        selectionParagraphRuntimeId: selRes.paragraphRuntimeId ?? null,
         selectionParagraphOrdinal: selOrdinal,
-        sameAsCommandTarget: selParagraph ? (getElementIdentity(selParagraph) === obs.paragraphIdentityAtCommit) : false,
-        sameAsContinuityTarget: handoff?.replacementElement && selParagraph ? (getElementIdentity(selParagraph) === getElementIdentity(handoff.replacementElement)) : false,
+        selectionLocalOffset: selRes.localLogicalOffset,
+        sameAsCommandTarget: selRes.paragraphRuntimeId ? (selRes.paragraphRuntimeId === this.getParagraphRuntimeId(obs.lastKnownParagraph!)) : false,
+        sameAsContinuityTarget: handoff?.replacementElement && selRes.paragraphRuntimeId ? (selRes.paragraphRuntimeId === this.getParagraphRuntimeId(handoff.replacementElement)) : false,
       }
 
       obs.traceData[`OBS-COMMAND-${label}`] = obsCommand
@@ -2420,13 +2639,30 @@ export class HeadingNumberingService {
     // T8 = 1500ms (1350ms into observation)
     setTimeout(() => { snapObs('T8_1500ms') }, 1350)
 
-    // T9 = 2000ms → close observation
+    // T9 = 2000ms → close observation, close stale handoff if still active
     setTimeout(() => {
       snapObs('T9_2000ms')
       this.flushEnterRaceTrace(obs.traceData)
       // Disconnect diagnostic MutationObserver
       if (obs.mutationObserver) {
         obs.mutationObserver.disconnect()
+      }
+      // ── R58.6.1: Close stale handoff if original still connected ──
+      const handoff = this.activeOneShotHandoff
+      if (handoff && !handoff.consumed && handoff.sourceTxnId === obs.txnId) {
+        const originalConnected = handoff.preElement.isConnected
+        if (originalConnected || !handoff.replacementResolved) {
+          console.info(
+            `[InkChapter] HANDOFF-CLOSE: ` +
+            `handoffId=${handoff.handoffId} ` +
+            `txnId=${obs.txnId} ` +
+            `reason=NO_REPLACEMENT_REQUIRED ` +
+            `originalConnected=${originalConnected} ` +
+            `ageMs=${Math.round(performance.now() - obs.transactionClosedAt)} ` +
+            `decision=CLOSE`,
+          )
+          this.activeOneShotHandoff = null
+        }
       }
       this.observations.delete(obs.observationId)
       console.info(`[InkChapter] ${obs.observationId} OBSERVATION CLOSED at T9_2000ms`)
@@ -2587,13 +2823,31 @@ export class HeadingNumberingService {
     ;(resolveTrace as any).matchEvidence = 'same-ordinal'
     console.info(`[InkChapter] HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
 
-    // ── P0-C: HANDOFF-TRANSFER ─────────────────────────────────────
+    // ── P0-D: HANDOFF-TRANSFER — read CURRENT semantic, not frozen ──
     const semanticBefore = getParagraphIndentMode(replacement)
     const indentBefore = window.getComputedStyle(replacement).textIndent
 
+    // r57: Use handoff.semantic (may have been updated by Backspace), NOT creation snapshot
+    const currentSemantic = handoff.semantic
+    const creationSemantic = handoff.semanticAtCreation
+    const semanticChanged = currentSemantic !== creationSemantic
+
+    // HANDOFF-CURRENT-SEMANTIC trace
+    const handoffSemanticTrace: Record<string, unknown> = {
+      handoffId: handoff.handoffId,
+      txnId: handoff.sourceTxnId,
+      generation: 1, // r57: generation tracking
+      preRuntimeId: handoff.preRuntimeId,
+      semanticAtHandoffCreation: creationSemantic,
+      semanticAtReplacementTime: currentSemantic,
+      semanticChanged,
+      replacementRuntimeId: this.getParagraphRuntimeId(replacement),
+    }
+    console.info(`[InkChapter] HANDOFF-CURRENT-SEMANTIC: ${JSON.stringify(handoffSemanticTrace)}`)
+
     const settings = this.getParagraphLayoutSettings()
-    setParagraphIndentMode(replacement, handoff.semantic, 'W-ONESHOT-SEMANTIC')
-    const effective = resolveEffectiveParagraphIndent(handoff.semantic, settings.defaultIndent)
+    setParagraphIndentMode(replacement, currentSemantic, 'W-ONESHOT-SEMANTIC')
+    const effective = resolveEffectiveParagraphIndent(currentSemantic, settings.defaultIndent)
     applyEffectiveParagraphIndent(replacement, effective, 'W-ONESHOT-VISUAL')
     handoff.semanticTransferred = true
     handoff.visualTransferred = true
@@ -2602,10 +2856,11 @@ export class HeadingNumberingService {
     const indentAfter = window.getComputedStyle(replacement).textIndent
     const replacementConnected = replacement.isConnected
 
-    // Only verified when replacement connected, FORCE_INDENT, 32px
+    // r57: Verify based on current semantic (FORCE_FLUSH expects 0px, FORCE_INDENT expects 32px)
+    const expectedIndent = currentSemantic === 'force-flush' ? '0px' : '32px'
     const verified = replacementConnected &&
-      semanticAfter === 'force-indent' &&
-      indentAfter === '32px'
+      semanticAfter === currentSemantic &&
+      indentAfter === expectedIndent
 
     const transferTrace: Record<string, unknown> = {
       handoffId: handoff.handoffId,
@@ -2626,6 +2881,39 @@ export class HeadingNumberingService {
 
     if (verified) {
       console.info(`[InkChapter] ONE-SHOT-HANDOFF VERIFIED: ${handoff.handoffId} semantic=${handoff.semantic}`)
+
+      // ── R58.2: CANONICAL-BINDING-TRANSFER via registry ──
+      const recordId = handoff.canonicalRecordId
+      if (recordId) {
+        const oldRuntimeId = this.getParagraphRuntimeId(original)
+        const newRuntimeId = this.getParagraphRuntimeId(replacement)
+        const docKey = this.getDocumentKey() ?? ''
+
+        this.canonicalTransferBinding(
+          recordId, original, oldRuntimeId,
+          replacement, newRuntimeId,
+          'HANDOFF_REPLACE',
+          handoff.handoffId,
+        )
+      } else {
+        // Legacy fallback: no canonicalRecordId in handoff → use old approach
+        const oldBinding = this.resolveLiveBindingByElement(original)
+        if (oldBinding) {
+          const oldRuntimeId = this.getParagraphRuntimeId(original)
+          const newRuntimeId = this.getParagraphRuntimeId(replacement)
+          const docKey = this.getDocumentKey() ?? ''
+
+          this.upsertLiveBinding(oldBinding.recordId, handoff.sourceTxnId, replacement, oldBinding.temporary, docKey)
+          this.elementToBindingRecordId.delete(original)
+
+          console.info(
+            `[InkChapter] CANONICAL-BINDING-TRANSFER-LEGACY: documentKey=${docKey} ` +
+            `canonicalRecordId=${oldBinding.recordId} ` +
+            `fromRuntimeId=${oldRuntimeId} toRuntimeId=${newRuntimeId} ` +
+            `reason=HANDOFF_REPLACE`,
+          )
+        }
+      }
     } else {
       console.info(`[InkChapter] ONE-SHOT-HANDOFF FAILED: ${handoff.handoffId} semantic=${semanticAfter} indent=${indentAfter} connected=${replacementConnected}`)
     }
@@ -2995,47 +3283,145 @@ export class HeadingNumberingService {
     if (root) {
       refreshParagraphIndentStyles(root, this.getParagraphLayoutSettings())
     }
-    this.applyParagraphIndentOverrideToSidecar(paragraph, mode)
+    // R58.2: Use intent-specific API
+    const docKey = this.getDocumentKey()
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    if (docKey) {
+      this.canonicalUpdateUI(
+        paragraph, mode,
+        this.getParagraphRuntimeId(paragraph),
+        docKey, docPath,
+      )
+    }
   }
 
   private applyParagraphIndentOverrideToSidecar(
     paragraph: HTMLElement,
     _mode: 'force-indent' | 'force-flush' | 'auto',
   ): void {
+    this.applyParagraphIndentOverrideToSidecarR58(paragraph, _mode, '', 'LEGACY')
+  }
+
+  /**
+   * R58: Canonical sidecar upsert with live binding lookup.
+   * Returns decision metadata for trace logging.
+   */
+  private applyParagraphIndentOverrideToSidecarR58(
+    paragraph: HTMLElement,
+    _mode: 'force-indent' | 'force-flush' | 'auto',
+    txnId: string,
+    operationReason: string,
+  ): { recordId: string; decision: 'UPDATE_EXISTING' | 'CREATE_NEW' | 'BLOCK' } {
     const docKey = this.getDocumentKey()
     const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
-    if (!docKey) return
+    const result = { recordId: '', decision: 'BLOCK' as 'UPDATE_EXISTING' | 'CREATE_NEW' | 'BLOCK' }
+    if (!docKey) return result
     const root = this.adapter.getEditorRoot()
-    if (!root) return
+    if (!root) return result
     const allParas = collectContentParagraphs(root)
     const paraIndex = allParas.indexOf(paragraph)
-    if (paraIndex < 0) return
+    if (paraIndex < 0) return result
     const anchor = createParagraphAnchor(paraIndex, allParas)
     const isTemporary = !paragraph.textContent?.trim()
     const overrides = this.inMemoryOverrides.get(docKey) ?? []
+    const runtimeId = this.getParagraphRuntimeId(paragraph)
+    const recordCountBefore = overrides.length
 
-    // Try to find existing record by anchor resolution (textHash-based match preferred)
-    const existing = overrides.find(o => resolveParagraphAnchor(o.anchor, allParas)?.index === paraIndex)
+    // ── R58: Live binding lookup FIRST ────────────────────────────────
+    const liveBinding = this.resolveLiveBindingByElement(paragraph)
+    let existing = overrides.find(o => o.id === liveBinding?.recordId)
 
+    // Anchor-based fallback (only used when no live binding)
+    let anchorExisting: ParagraphIndentOverrideRecord | undefined
+    if (!existing) {
+      anchorExisting = overrides.find(o => resolveParagraphAnchor(o.anchor, allParas)?.index === paraIndex)
+    }
+
+    // SIDECAR-UPSERT-DECISION trace fields
+    const upsertTrace: Record<string, unknown> = {
+      operationReason,
+      txnId,
+      incomingRuntimeId: runtimeId,
+      incomingParagraphOrdinal: paraIndex,
+      incomingMode: _mode,
+      incomingTemporary: isTemporary,
+      recordIdFromElementBinding: liveBinding?.recordId ?? null,
+      recordIdFromLiveBinding: liveBinding?.recordId ?? null,
+      recordIdFromAnchor: anchorExisting?.id ?? null,
+      recordIdFromOrdinal: null,
+      recordCountBefore,
+    }
+
+    // ── AUTO mode: remove existing record ─────────────────────────────
     if (_mode === 'auto') {
       if (existing) {
         const clean = overrides.filter(o => o !== existing)
         this.inMemoryOverrides.set(docKey, clean)
         this.scheduleSidecarWrite(docKey, docPath, clean)
+        result.recordId = existing.id
+        result.decision = 'UPDATE_EXISTING'
       }
-      return
+      upsertTrace['decision'] = result.decision
+      upsertTrace['selectedRecordId'] = existing?.id ?? null
+      console.info(`[InkChapter] SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
+      return result
     }
 
-    // Update existing record or create new one (maintain stable record id)
+    // ── UPDATE or CREATE (with BACKSPACE BLOCK invariant) ─────────────
     if (existing) {
       existing.mode = _mode
       existing.anchor = anchor
       existing.temporary = isTemporary
+      result.recordId = existing.id
+      result.decision = 'UPDATE_EXISTING'
+    } else if (anchorExisting) {
+      anchorExisting.mode = _mode
+      anchorExisting.anchor = anchor
+      anchorExisting.temporary = isTemporary
+      result.recordId = anchorExisting.id
+      result.decision = 'UPDATE_EXISTING'
+    } else if (operationReason === 'BACKSPACE_UPDATE') {
+      // R58 Phase F: BACKSPACE_UPDATE MUST NOT CREATE_NEW — BLOCK
+      result.recordId = ''
+      result.decision = 'BLOCK'
+      upsertTrace['backspaceBlocked'] = true
+      upsertTrace['blockReason'] = 'no trusted identity for Backspace — element/live/anchor all null'
+      console.info(`[InkChapter] BACKSPACE-CANONICAL-BLOCK: runtimeId=${runtimeId} reason=NO_TRUSTED_IDENTITY`)
+      // Do NOT push a new record. Do NOT write sidecar.
+      upsertTrace['decision'] = 'BLOCK'
+      upsertTrace['selectedRecordId'] = null
+      upsertTrace['recordCountAfter'] = overrides.length
+      console.info(`[InkChapter] SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
+      return result
     } else {
-      overrides.push({ id: `indent-${Date.now()}-${overrides.length}`, mode: _mode, anchor, temporary: isTemporary })
+      const newId = `indent-${Date.now()}-${overrides.length}`
+      overrides.push({ id: newId, mode: _mode, anchor, temporary: isTemporary })
+      result.recordId = newId
+      result.decision = 'CREATE_NEW'
     }
+
     this.inMemoryOverrides.set(docKey, [...overrides])
     this.scheduleSidecarWrite(docKey, docPath, overrides)
+
+    upsertTrace['selectedRecordId'] = result.recordId
+    upsertTrace['decision'] = result.decision
+    upsertTrace['recordCountAfter'] = overrides.length
+
+    // ── R58 Hard Stops ────────────────────────────────────────────────
+    if (operationReason === 'BACKSPACE_UPDATE' && result.decision === 'CREATE_NEW') {
+      upsertTrace['BACKSPACE_DUPLICATE_RECORD_BUG'] = true
+      upsertTrace['whyElementBindingMissing'] = liveBinding ? 'none' : 'no element→recordId in WeakMap'
+      upsertTrace['whyLiveBindingMissing'] = liveBinding ? 'none' : 'no liveBinding for element'
+      upsertTrace['whyAnchorLookupRejected'] = anchorExisting ? 'none' : 'anchor resolution did not match'
+      console.info(`[InkChapter] BACKSPACE-DUPLICATE-RECORD-BUG: ${JSON.stringify(upsertTrace)}`)
+      console.info(
+        `[InkChapter] BACKSPACE-RECORD-COUNT-INVARIANT-VIOLATION: ` +
+        `runtimeId=${runtimeId} recordCountBefore=${recordCountBefore} recordCountAfter=${overrides.length}`,
+      )
+    }
+
+    console.info(`[InkChapter] SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
+    return result
   }
 
   private sidecarWriteTimer: ReturnType<typeof setTimeout> | null = null
@@ -3074,6 +3460,299 @@ export class HeadingNumberingService {
       this.sidecarWritePending = null
       saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
     }
+  }
+
+  // ── R58.2: Intent-Specific Canonical Mutation API ──────────────────
+  // Replaces the generic applyParagraphIndentOverrideToSidecarR58.
+  // Each mutation intent maps to exactly one API — no ambiguous paths.
+
+  /**
+   * ENTER_CREATE_OR_REUSE: Create a canonical record for a newly-entered paragraph,
+   * or reuse an existing live binding. This is the ONLY path that can CREATE_NEW.
+   */
+  private canonicalCreateOrReuseForEnter(
+    paragraph: HTMLElement,
+    mode: 'force-indent' | 'force-flush',
+    txnId: string,
+    runtimeId: string,
+    documentKey: string,
+    documentPath: string,
+  ): { recordId: string; decision: 'CREATE_NEW' | 'REUSE_EXISTING' } {
+    const root = this.adapter.getEditorRoot()
+    const allParas = root ? collectContentParagraphs(root) : []
+    const paraIndex = allParas.indexOf(paragraph)
+    const anchor = paraIndex >= 0 ? createParagraphAnchor(paraIndex, allParas) : { lastKnownOrdinal: -1 }
+    const isTemporary = !paragraph.textContent?.trim()
+    const overrides = this.inMemoryOverrides.get(documentKey) ?? []
+    const recordCountBefore = overrides.length
+
+    // ── Check canonical registry for existing binding ──
+    const exactRecord = this.canonicalRegistry.resolveExactLiveRecord(paragraph)
+    if (exactRecord) {
+      // Reuse existing canonical record
+      const existing = overrides.find(o => o.id === exactRecord.recordId)
+      if (existing) {
+        existing.mode = mode
+        existing.anchor = anchor
+        existing.temporary = isTemporary
+        this.inMemoryOverrides.set(documentKey, [...overrides])
+        this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+
+        console.info(
+          `[InkChapter] CANONICAL-RECORD-COMMIT: txnId=${txnId} ` +
+          `recordId=${exactRecord.recordId} ` +
+          `decision=REUSE_EXISTING ` +
+          `recordCountBefore=${recordCountBefore} recordCountAfter=${overrides.length} ` +
+          `mode=${mode} temporary=${isTemporary} ` +
+          `boundRuntimeId=${runtimeId}`,
+        )
+        return { recordId: exactRecord.recordId, decision: 'REUSE_EXISTING' }
+      }
+    }
+
+    // ── Check registry by runtimeId ──
+    const byRt = this.canonicalRegistry.resolveByRuntimeId(runtimeId)
+    if (byRt && byRt.meta.state === 'CURRENT_LIVE') {
+      const existing = overrides.find(o => o.id === byRt.recordId)
+      if (existing) {
+        existing.mode = mode
+        existing.anchor = anchor
+        existing.temporary = isTemporary
+        // Update element binding
+        try {
+          this.canonicalRegistry.registerCurrentSessionRecord(
+            existing, documentKey, paragraph, runtimeId, isTemporary,
+          )
+        } catch { /* collision already logged */ }
+        this.inMemoryOverrides.set(documentKey, [...overrides])
+        this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+
+        console.info(
+          `[InkChapter] CANONICAL-RECORD-COMMIT: txnId=${txnId} ` +
+          `recordId=${byRt.recordId} decision=REUSE_EXISTING ` +
+          `recordCountBefore=${recordCountBefore} recordCountAfter=${overrides.length} ` +
+          `mode=${mode} temporary=${isTemporary} boundRuntimeId=${runtimeId}`,
+        )
+        return { recordId: byRt.recordId, decision: 'REUSE_EXISTING' }
+      }
+    }
+
+    // ── CREATE_NEW — only allowed here ──
+    const newId = `indent-${Date.now()}-${overrides.length}`
+    const newRecord: ParagraphIndentOverrideRecord = {
+      id: newId,
+      mode,
+      anchor,
+      temporary: isTemporary,
+    }
+    overrides.push(newRecord)
+    this.inMemoryOverrides.set(documentKey, [...overrides])
+
+    // Register in canonical registry
+    try {
+      this.canonicalRegistry.registerCurrentSessionRecord(
+        newRecord, documentKey, paragraph, runtimeId, isTemporary,
+      )
+    } catch (e) {
+      console.warn(`[InkChapter] CANONICAL-REGISTRY-REGISTER-WARN: ${e}`)
+    }
+
+    this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+
+    console.info(
+      `[InkChapter] CANONICAL-RECORD-COMMIT: txnId=${txnId} ` +
+      `recordId=${newId} decision=CREATE_NEW ` +
+      `recordCountBefore=${recordCountBefore} recordCountAfter=${overrides.length} ` +
+      `mode=${mode} temporary=${isTemporary} boundRuntimeId=${runtimeId}`,
+    )
+    return { recordId: newId, decision: 'CREATE_NEW' }
+  }
+
+  /**
+   * BACKSPACE_UPDATE_EXISTING: Update an existing record's mode.
+   * MUST have exact canonical identity. BLOCK if no identity found.
+   * CANNOT create new records.
+   */
+  private canonicalUpdateBackspace(
+    paragraph: HTMLElement,
+    mode: 'force-flush',
+    runtimeId: string,
+    documentKey: string,
+    documentPath: string,
+  ): { recordId: string; decision: 'UPDATE_EXISTING' | 'BLOCK'; blockReason?: string } {
+    const overrides = this.inMemoryOverrides.get(documentKey) ?? []
+    const recordCountBefore = overrides.length
+
+    // ── Exact canonical owner lookup ONLY ──
+    const exactRecord = this.canonicalRegistry.resolveExactLiveRecord(paragraph)
+    if (!exactRecord) {
+      // Try by runtimeId
+      const byRt = this.canonicalRegistry.resolveByRuntimeId(runtimeId)
+      if (!byRt || byRt.meta.state !== 'CURRENT_LIVE') {
+        console.info(
+          `[InkChapter] BACKSPACE-CANONICAL-BLOCK: runtimeId=${runtimeId} ` +
+          `reason=NO_TRUSTED_IDENTITY ` +
+          `recordCount=${recordCountBefore} ` +
+          `ACTION=BLOCK`,
+        )
+        return { recordId: '', decision: 'BLOCK', blockReason: 'no trusted identity for Backspace' }
+      }
+
+      // R58.4: Mutation firewall
+      const validation = this.canonicalRegistry.validateMutation(
+        byRt.recordId, 'BACKSPACE_UPDATE', 'CURRENT_LIVE',
+        documentKey, runtimeId, paragraph,
+      )
+      if (!validation.ok) {
+        console.error(
+          `[InkChapter] CANONICAL-MUTATION-BLOCK: ` +
+          `recordId=${byRt.recordId} intent=BACKSPACE_UPDATE ` +
+          `reason=${validation.reason} ACTION=BLOCK`,
+        )
+        return { recordId: '', decision: 'BLOCK', blockReason: `lifecycle-firewall: ${validation.reason}` }
+      }
+
+      const existing = overrides.find(o => o.id === byRt.recordId)
+      if (!existing) {
+        return { recordId: '', decision: 'BLOCK', blockReason: 'record not found in inMemoryOverrides' }
+      }
+
+      existing.mode = mode
+      this.inMemoryOverrides.set(documentKey, [...overrides])
+      this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+
+      console.info(
+        `[InkChapter] CANONICAL-RECORD-BACKSPACE: runtimeId=${runtimeId} ` +
+        `recordId=${byRt.recordId} ` +
+        `recordCountBefore=${recordCountBefore} recordCountAfter=${overrides.length} ` +
+        `modeBefore=FORCE_INDENT modeAfter=FORCE_FLUSH ` +
+        `decision=UPDATE_EXISTING sameRecord=${recordCountBefore === overrides.length}`,
+      )
+      return { recordId: byRt.recordId, decision: 'UPDATE_EXISTING' }
+    }
+
+    // R58.4: Mutation firewall
+    const validation = this.canonicalRegistry.validateMutation(
+      exactRecord.recordId, 'BACKSPACE_UPDATE', 'CURRENT_LIVE',
+      documentKey, runtimeId, paragraph,
+    )
+    if (!validation.ok) {
+      console.error(
+        `[InkChapter] CANONICAL-MUTATION-BLOCK: ` +
+        `recordId=${exactRecord.recordId} intent=BACKSPACE_UPDATE ` +
+        `reason=${validation.reason} ACTION=BLOCK`,
+      )
+      return { recordId: '', decision: 'BLOCK', blockReason: `lifecycle-firewall: ${validation.reason}` }
+    }
+
+    const existing = overrides.find(o => o.id === exactRecord.recordId)
+    if (!existing) {
+      return { recordId: '', decision: 'BLOCK', blockReason: 'record not found in inMemoryOverrides' }
+    }
+
+    existing.mode = mode
+    this.inMemoryOverrides.set(documentKey, [...overrides])
+    this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+
+    const recordCountAfter = overrides.length
+    console.info(
+      `[InkChapter] CANONICAL-RECORD-BACKSPACE: runtimeId=${runtimeId} ` +
+      `recordId=${exactRecord.recordId} ` +
+      `recordCountBefore=${recordCountBefore} recordCountAfter=${recordCountAfter} ` +
+      `modeBefore=FORCE_INDENT modeAfter=FORCE_FLUSH ` +
+      `sameRecord=${recordCountBefore === recordCountAfter} ` +
+      `decision=UPDATE_EXISTING ` +
+      `appendOccurred=${recordCountAfter > recordCountBefore}`,
+    )
+    return { recordId: exactRecord.recordId, decision: 'UPDATE_EXISTING' }
+  }
+
+  /**
+   * UI_UPDATE_EXISTING: Update an existing record via explicit UI command.
+   * Also handles AUTO mode (removes record).
+   */
+  private canonicalUpdateUI(
+    paragraph: HTMLElement,
+    mode: 'force-indent' | 'force-flush' | 'auto',
+    runtimeId: string,
+    documentKey: string,
+    documentPath: string,
+  ): { recordId: string; decision: 'UPDATE_EXISTING' | 'CREATE_NEW' | 'DELETE' } {
+    const overrides = this.inMemoryOverrides.get(documentKey) ?? []
+
+    if (mode === 'auto') {
+      const exactRecord = this.canonicalRegistry.resolveExactLiveRecord(paragraph)
+      if (exactRecord) {
+        const clean = overrides.filter(o => o.id !== exactRecord.recordId)
+        this.inMemoryOverrides.set(documentKey, clean)
+        this.canonicalRegistry.deleteRecord(exactRecord.recordId)
+        this.scheduleSidecarWrite(documentKey, documentPath, clean)
+        return { recordId: exactRecord.recordId, decision: 'DELETE' }
+      }
+      return { recordId: '', decision: 'UPDATE_EXISTING' }
+    }
+
+    // Non-auto: find existing or create
+    const exactRecord = this.canonicalRegistry.resolveExactLiveRecord(paragraph)
+    if (exactRecord) {
+      const existing = overrides.find(o => o.id === exactRecord.recordId)
+      if (existing) {
+        existing.mode = mode
+        this.inMemoryOverrides.set(documentKey, [...overrides])
+        this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+        return { recordId: exactRecord.recordId, decision: 'UPDATE_EXISTING' }
+      }
+    }
+
+    // Fallback: create (UI commands are user-initiated)
+    const newId = `indent-ui-${Date.now()}-${overrides.length}`
+    const root = this.adapter.getEditorRoot()
+    const allParas = root ? collectContentParagraphs(root) : []
+    const paraIndex = allParas.indexOf(paragraph)
+    const anchor = paraIndex >= 0 ? createParagraphAnchor(paraIndex, allParas) : { lastKnownOrdinal: -1 }
+    overrides.push({ id: newId, mode, anchor, temporary: !paragraph.textContent?.trim() })
+    this.inMemoryOverrides.set(documentKey, [...overrides])
+    this.scheduleSidecarWrite(documentKey, documentPath, overrides)
+    return { recordId: newId, decision: 'CREATE_NEW' }
+  }
+
+  /**
+   * TRANSFER_BINDING_ONLY: Transfer canonical binding from old to new element.
+   * Does NOT create/update any record — only moves the live binding.
+   */
+  private canonicalTransferBinding(
+    recordId: string,
+    fromElement: HTMLElement,
+    fromRuntimeId: string,
+    toElement: HTMLElement,
+    toRuntimeId: string,
+    reason: string,
+    handoffId?: string,
+  ): CanonicalBindingTransferResult {
+    // First, mark old record as awaiting transfer with handoff context
+    this.canonicalRegistry.markAwaitingTransfer(recordId, handoffId, reason)
+
+    // Then transfer
+    const result = this.canonicalRegistry.transferCanonicalBinding(
+      recordId, toElement, toRuntimeId, reason,
+    )
+
+    console.info(
+      `[InkChapter] CANONICAL-BINDING-TRANSFER: ` +
+      `canonicalRecordId=${result.canonicalRecordId} ` +
+      `fromRuntimeId=${result.fromRuntimeId} ` +
+      `toRuntimeId=${result.toRuntimeId} ` +
+      `stateBefore=${result.stateBefore} ` +
+      `stateAfter=${result.stateAfter} ` +
+      `generationBefore=${result.generationBefore} ` +
+      `generationAfter=${result.generationAfter} ` +
+      `oldOwnerInvalidated=${result.oldOwnerInvalidated} ` +
+      `newOwnerEstablished=${result.newOwnerEstablished} ` +
+      `recordCountBefore=${result.recordCountBefore} ` +
+      `recordCountAfter=${result.recordCountAfter} ` +
+      `reason=${reason}`,
+    )
+    return result
   }
 
   // ── Normal Enter Trace: T0 snapshot + T8 final ──────────
@@ -3190,10 +3869,43 @@ export class HeadingNumberingService {
       if (resolved) {
         const para = allParas[resolved.index]
         if (para && para.textContent?.trim()) {
+          // ── R58.6: Registry must authorize BEFORE any mutation ──
+          const meta = this.canonicalRegistry.getRuntimeMeta(o.id)
+          if (meta && meta.state === 'PERSISTED_HISTORICAL') {
+            // Historical records cannot be promoted — only logged, never mutated
+            continue
+          }
+
+          const promoResult = this.canonicalRegistry.promoteExistingByRecordId(o.id)
+          if (!promoResult.ok) {
+            console.error(
+              `[InkChapter] PROMOTION-LIFECYCLE-VIOLATION: ` +
+              `recordId=${o.id} ` +
+              `state=${meta?.state ?? 'unknown'} ` +
+              `reason=${promoResult.reason} ` +
+              `decision=BLOCK`,
+            )
+            continue // STOP — no mutation
+          }
+
+          // Only now: registry authorized → apply
           const newAnchor = createParagraphAnchor(resolved.index, allParas)
           o.anchor = newAnchor
           o.temporary = false
           dirty = true
+
+          console.info(
+            `[InkChapter] CANONICAL-RECORD-PROMOTION: recordId=${o.id} ` +
+            `stateBefore=${promoResult.stateBefore} ` +
+            `stateAfter=CURRENT_LIVE ` +
+            `bindingVerified=true ` +
+            `elementConnected=true ` +
+            `generationMatches=true ` +
+            `temporaryBefore=true ` +
+            `temporaryAfter=false ` +
+            `recordCount=${allRecords.length} ` +
+            `decision=PROMOTE`,
+          )
         }
       }
     }
@@ -3201,6 +3913,75 @@ export class HeadingNumberingService {
     // Resolve ALL explicit records
     for (const o of allRecords) {
       if (o.mode !== 'force-indent' && o.mode !== 'force-flush') continue
+
+      // ── R58.2: Lifecycle eligibility gate ────────────────────────────
+      const meta = this.canonicalRegistry.getRuntimeMeta(o.id)
+      if (meta) {
+        switch (meta.state) {
+          case 'CURRENT_LIVE':
+            // Only MATCH-LIVE-BINDING allowed
+            if (meta.currentElement && meta.currentElement.isConnected) {
+              const boundElement = meta.currentElement
+              const paraIdx = allParas.indexOf(boundElement)
+              if (paraIdx >= 0) {
+                resolvedCandidates.push({
+                  recordId: o.id,
+                  recordMode: o.mode,
+                  record: { ...o },
+                  targetParagraph: boundElement,
+                  targetParagraphIndex: paraIdx,
+                  strategy: 'MATCH-LIVE-BINDING' as any,
+                  confidence: RehydrateConfidence.EXACT,
+                  score: 200,
+                  candidateCountAtGroup: 0,
+                })
+                console.info(
+                  `[InkChapter] MATCH-LIVE-BINDING: recordId=${o.id} ` +
+                  `targetRuntimeId=${this.getParagraphRuntimeId(boundElement)} ` +
+                  `targetOrdinal=${paraIdx} ` +
+                  `candidateSource=LIVE candidateCount=1`,
+                )
+              }
+            } else {
+              // CURRENT_LIVE but element disconnected → should have been AWAITING_TRANSFER
+              // Mark it now and skip
+              console.info(
+                `[InkChapter] CURRENT-LIVE-DISCONNECTED: recordId=${o.id} ` +
+                `reason=element disconnected but state still CURRENT_LIVE — marking AWAITING_TRANSFER`,
+              )
+              this.canonicalRegistry.markAwaitingTransfer(o.id)
+            }
+            continue // Do NOT enter persistent resolver
+
+          case 'CURRENT_AWAITING_TRANSFER':
+            // ZERO candidates — must wait for handoff to resolve replacement
+            console.info(
+              `[InkChapter] REHYDRATE-CANDIDATE: recordId=${o.id} ` +
+              `state=CURRENT_AWAITING_TRANSFER candidateCount=0 ` +
+              `reason=awaiting handoff transfer — no heuristic candidates`,
+            )
+            continue
+
+          case 'CURRENT_RETIRED':
+            // ZERO candidates
+            console.info(
+              `[InkChapter] REHYDRATE-CANDIDATE: recordId=${o.id} ` +
+              `state=CURRENT_RETIRED candidateCount=0 reason=retired`,
+            )
+            continue
+
+          case 'PERSISTED_HISTORICAL':
+            // Fall through to persistent resolver below
+            break
+        }
+      } else {
+        // Not in registry — treat as PERSISTED_HISTORICAL (loaded before registry existed)
+        // Register it now for future tracking
+        this.canonicalRegistry.registerPersistedHistorical(o, docKey)
+      }
+
+      // ── PERSISTED_HISTORICAL: Only this path enters persistent heuristic resolver ──
+
       const resolved = resolveParagraphAnchor(o.anchor, allParas)
       if (!resolved) continue
 
@@ -3245,8 +4026,82 @@ export class HeadingNumberingService {
       console.error(`[InkChapter] REHYDRATE_PHASE1_WRITER_VIOLATION: writers=${phase1WriterCount} — HARD FAIL`)
     }
 
+    // ── R58.6.1: Live Owner Dominance — suppress historical for LIVE-occupied targets ──
+    const liveOccupiedTargets = new Set<number>()
+    for (const c of resolvedCandidates) {
+      if (c.strategy === ('MATCH-LIVE-BINDING' as any)) {
+        liveOccupiedTargets.add(c.targetParagraphIndex)
+      }
+    }
+    if (liveOccupiedTargets.size > 0) {
+      const suppressedIds: string[] = []
+      const keptCandidates = resolvedCandidates.filter(c => {
+        if (liveOccupiedTargets.has(c.targetParagraphIndex) && c.strategy !== ('MATCH-LIVE-BINDING' as any)) {
+          suppressedIds.push(c.recordId)
+          console.info(
+            `[InkChapter] HISTORICAL-CANDIDATE-SUPPRESSED-BY-LIVE-OWNER: ` +
+            `targetRuntimeId=index-${c.targetParagraphIndex} ` +
+            `liveRecordId=${resolvedCandidates.find(cc => cc.strategy === ('MATCH-LIVE-BINDING' as any) && cc.targetParagraphIndex === c.targetParagraphIndex)?.recordId ?? 'unknown'} ` +
+            `historicalCandidateRecordIds=[${c.recordId}] ` +
+            `suppressedCount=1 ` +
+            `reason=exact-live-owner`,
+          )
+          return false
+        }
+        return true
+      })
+      // Replace the candidate list
+      resolvedCandidates.length = 0
+      resolvedCandidates.push(...keptCandidates)
+    }
+
+    // ── R58.2: REHYDRATE-CANDIDATE-DEDUPE ──
+    // For same recordId + targetRuntimeId, keep only highest priority strategy
+    const dedupeMap = new Map<string, RehydrateResolvedCandidate>()
+    const strategyPriority: Record<string, number> = {
+      'MATCH-LIVE-BINDING': 10,
+      'MATCH-RECORD-ID': 9,
+      'MATCH-EXACT-ANCHOR': 8,
+      'MATCH-NORMALIZED-ANCHOR': 7,
+      'MATCH-PROMOTED-ANCHOR': 6,
+      'MATCH-INDEX-FALLBACK': 5,
+      'MATCH-PROXIMITY': 4,
+      'MATCH-LEGACY': 3,
+      'MATCH-NONE': 0,
+    }
+    let duplicatesRemoved = 0
+    for (const c of resolvedCandidates) {
+      const key = `${c.recordId}::${c.targetParagraphIndex}`
+      const existing = dedupeMap.get(key)
+      const cPriority = strategyPriority[c.strategy] ?? 0
+      const ePriority = existing ? (strategyPriority[existing.strategy] ?? 0) : 0
+      if (existing && cPriority <= ePriority) {
+        duplicatesRemoved++
+        console.info(
+          `[InkChapter] REHYDRATE-CANDIDATE-DEDUPE: recordId=${c.recordId} ` +
+          `targetRuntimeId=${this.getParagraphRuntimeId(c.targetParagraph)} ` +
+          `strategiesBefore=[${existing.strategy},${c.strategy}] ` +
+          `strategyKept=${existing.strategy} ` +
+          `duplicatesRemoved=${duplicatesRemoved}`,
+        )
+        continue
+      }
+      if (existing) {
+        duplicatesRemoved++
+        console.info(
+          `[InkChapter] REHYDRATE-CANDIDATE-DEDUPE: recordId=${c.recordId} ` +
+          `targetRuntimeId=${this.getParagraphRuntimeId(c.targetParagraph)} ` +
+          `strategiesBefore=[${existing.strategy},${c.strategy}] ` +
+          `strategyKept=${c.strategy} ` +
+          `duplicatesRemoved=${duplicatesRemoved}`,
+        )
+      }
+      dedupeMap.set(key, c)
+    }
+    const dedupedCandidates = Array.from(dedupeMap.values())
+
     // ── Phase 2: GROUP OWNERSHIP ──
-    const groups = buildRehydrateOwnershipGroups(resolvedCandidates)
+    const groups = buildRehydrateOwnershipGroups(dedupedCandidates)
 
     // Update candidateCountAtGroup for all candidates
     for (const group of groups) {
@@ -3263,8 +4118,25 @@ export class HeadingNumberingService {
     for (const group of groups) {
       if (group.decision === 'block') {
         blockedGroups.push(group)
+        // ── R58.2: Multi-owner lifecycle state check ──
+        const lifecycleStates = group.candidates.map(c => {
+          const m = this.canonicalRegistry.getRuntimeMeta(c.recordId)
+          return m?.state ?? 'UNKNOWN'
+        })
+        const currentSessionCount = lifecycleStates.filter(s => s !== 'PERSISTED_HISTORICAL' && s !== 'UNKNOWN').length
+        if (currentSessionCount > 0) {
+          console.error(
+            `[InkChapter] REHYDRATE-BLOCK-CURRENT-SESSION-MULTI-OWNER: ` +
+            `target=${group.targetElementIdentity} ` +
+            `candidateCount=${group.candidateCount} ` +
+            `candidateRecordIds=[${group.candidateRecordIds.join(',')}] ` +
+            `candidateLifecycleStates=[${lifecycleStates.join(',')}] ` +
+            `currentSessionCandidateCount=${currentSessionCount} ` +
+            `ACTION=HARD_STOP`,
+          )
+        }
         // Log REHYDRATE-GROUP for blocked
-        console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} targetIndex=${group.targetParagraphIndex} candidateRecordIds=[${group.candidateRecordIds.join(',')}] candidateModes=[${group.candidateModes.join(',')}] candidateCount=${group.candidateCount} decision=BLOCK reason=${group.reason}`)
+        console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} targetIndex=${group.targetParagraphIndex} candidateRecordIds=[${group.candidateRecordIds.join(',')}] candidateModes=[${group.candidateModes.join(',')}] candidateCount=${group.candidateCount} candidateLifecycleStates=[${lifecycleStates.join(',')}] decision=BLOCK reason=${group.reason}`)
         continue
       }
 
@@ -3307,7 +4179,7 @@ export class HeadingNumberingService {
     }
 
     // ── REHYDRATE-PLAN summary ──
-    console.info(`[InkChapter] REHYDRATE-PLAN: planId=${planId} documentKey=${docKey} source=${source} recordCount=${allRecords.length} resolvedCandidateCount=${resolvedCandidates.length} groupCount=${groups.length} winnerCount=${winners.length} blockedGroupCount=${blockedGroups.length} phase1WriterCount=${phase1WriterCount}`)
+    console.info(`[InkChapter] REHYDRATE-PLAN: planId=${planId} documentKey=${docKey} source=${source} recordCount=${allRecords.length} resolvedCandidateCount=${dedupedCandidates.length} groupCount=${groups.length} winnerCount=${winners.length} blockedGroupCount=${blockedGroups.length} phase1WriterCount=${phase1WriterCount}`)
 
     return {
       planId,
@@ -3340,6 +4212,48 @@ export class HeadingNumberingService {
       const para = winner.targetParagraph
       if (!para?.isConnected) continue
 
+      // ── R58: REHYDRATE-APPLY provenance ────────────────────────────
+      const targetText = getUserVisibleParagraphText(para)
+      const semanticBefore = getParagraphIndentMode(para)
+      console.info(
+        `[InkChapter] REHYDRATE-APPLY: planId=${plan.planId} ` +
+        `recordId=${winner.recordId} targetRuntimeId=${this.getParagraphRuntimeId(para)} ` +
+        `targetOrdinal=${winner.targetParagraphIndex} targetText="${targetText}" ` +
+        `semanticBefore=${semanticBefore} semanticAfter=${winner.recordMode} ` +
+        `matchStrategy=${winner.strategy}`,
+      )
+
+      // ── R58.2: SINGLE-DOT-CURRENT-SESSION-CANDIDATE gate ──────────
+      if (targetText === '。' && semanticBefore === 'auto' &&
+          winner.strategy !== 'MATCH-LIVE-BINDING' as any) {
+        // Check if this is a current-session record (should not happen with lifecycle gate,
+        // but this is the final safety net)
+        const candMeta = this.canonicalRegistry.getRuntimeMeta(winner.recordId)
+        const isCurrentSession = candMeta && candMeta.state !== 'PERSISTED_HISTORICAL'
+        if (isCurrentSession) {
+          console.error(
+            `[InkChapter] SINGLE-DOT-CURRENT-SESSION-CANDIDATE: ` +
+            `recordId=${winner.recordId} ` +
+            `state=${candMeta!.state} ` +
+            `origin=${candMeta!.origin} ` +
+            `targetText="。" ` +
+            `matchStrategy=${winner.strategy} ` +
+            `ACTION=HARD_STOP`,
+          )
+          continue
+        }
+
+        console.info(
+          `[InkChapter] SINGLE-DOT-WRONG-APPLY: recordId=${winner.recordId} ` +
+          `targetRuntimeId=${this.getParagraphRuntimeId(para)} ` +
+          `targetText="。" semanticBefore=auto ` +
+          `recordMode=${winner.recordMode} matchStrategy=${winner.strategy} ` +
+          `candidateSource=rehydrate ` +
+          `ACTION=BLOCKED`,
+        )
+        continue // Block this winner — do NOT apply
+      }
+
       const rehydrateCtx: RehydrateContext = {
         source: plan.allRecords === this.inMemoryOverrides.get(plan.documentKey) ? 'rehydrate' : 'sidecar-reconstruct',
         semanticWriterId: plan.allRecords === this.inMemoryOverrides.get(plan.documentKey)
@@ -3353,16 +4267,52 @@ export class HeadingNumberingService {
       // Atomic rehydrate: semantic + visual in ONE synchronous call
       rehydrateParagraphIndentState(para, winner.recordMode, settings, rehydrateCtx)
 
-      // Auto-repair anchor
+      // ── R58.3: Live projection-only gate ──
+      // CURRENT_LIVE records: projection only, NO anchor repair, NO canonical mutation
+      const winnerMeta = this.canonicalRegistry.getRuntimeMeta(winner.recordId)
+      const isCurrentLive = winnerMeta?.state === 'CURRENT_LIVE'
+
+      if (isCurrentLive) {
+        // Live projection only — no anchor repair, no dirty, no write
+        console.info(
+          `[InkChapter] REHYDRATE-WRITE-AUDIT: planId=${plan.planId} ` +
+          `recordId=${winner.recordId} ` +
+          `runtimeState=CURRENT_LIVE ` +
+          `candidateSource=LIVE ` +
+          `matchStrategy=${winner.strategy} ` +
+          `dirty=false ` +
+          `reason=live-projection-only ` +
+          `writeScheduled=false`,
+        )
+        continue // Skip anchor repair for CURRENT_LIVE
+      }
+
+      // ── PERSISTED_HISTORICAL only: anchor repair allowed once ──
+      // Auto-repair anchor (idempotent — only if materially changed)
       if (winner.targetParagraphIndex >= 0 && winner.targetParagraphIndex < allParas.length) {
-        winner.record.anchor = updateParagraphAnchor(winner.record.anchor, winner.targetParagraphIndex, allParas)
-        // Update in-memory copy
-        const orig = plan.allRecords.find(r => r.id === winner.recordId)
-        if (orig) {
-          orig.anchor = winner.record.anchor
-          orig.temporary = !para.textContent?.trim()
+        const newAnchor = updateParagraphAnchor(winner.record.anchor, winner.targetParagraphIndex, allParas)
+        const oldAnchorNorm = JSON.stringify(winner.record.anchor)
+        const newAnchorNorm = JSON.stringify(newAnchor)
+        if (oldAnchorNorm !== newAnchorNorm) {
+          // REHYDRATE-CANONICAL-MUTATION trace
+          console.info(
+            `[InkChapter] REHYDRATE-CANONICAL-MUTATION: planId=${plan.planId} ` +
+            `recordId=${winner.recordId} ` +
+            `runtimeState=${winnerMeta?.state ?? 'UNKNOWN'} ` +
+            `candidateSource=PERSISTENT ` +
+            `matchStrategy=${winner.strategy} ` +
+            `mutationType=anchor-repair ` +
+            `before=${oldAnchorNorm} ` +
+            `after=${newAnchorNorm}`,
+          )
+          winner.record.anchor = newAnchor
+          const orig = plan.allRecords.find(r => r.id === winner.recordId)
+          if (orig) {
+            orig.anchor = winner.record.anchor
+            orig.temporary = !para.textContent?.trim()
+          }
+          dirty = true
         }
-        dirty = true
       }
     }
 
@@ -3370,6 +4320,27 @@ export class HeadingNumberingService {
     if (dirty) {
       const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
       this.scheduleSidecarWrite(plan.documentKey, docPath, [...plan.allRecords])
+
+      // ── R59: REHYDRATE-WRITE-AUDIT ──────────────────────────────────
+      console.info(
+        `[InkChapter] REHYDRATE-WRITE-AUDIT: planId=${plan.planId} ` +
+        `documentKey=${plan.documentKey} ` +
+        `winners=${plan.winners.length} blocked=${plan.blockedGroups.length} ` +
+        `recordCount=${plan.allRecords.length} ` +
+        `dirty=${dirty} ` +
+        `reason=anchor-repair ` +
+        `writeScheduled=true`,
+      )
+    } else {
+      console.info(
+        `[InkChapter] REHYDRATE-WRITE-AUDIT: planId=${plan.planId} ` +
+        `documentKey=${plan.documentKey} ` +
+        `winners=${plan.winners.length} blocked=${plan.blockedGroups.length} ` +
+        `recordCount=${plan.allRecords.length} ` +
+        `dirty=${dirty} ` +
+        `reason=no-anchor-repair-needed ` +
+        `writeScheduled=false`,
+      )
     }
   }
 
@@ -3401,6 +4372,14 @@ export class HeadingNumberingService {
     const plan = this.resolveParagraphOverrideRehydratePlan(
       docKey, docPath, overrides, allParas, 'rehydrate',
     )
+
+    // ── R58.3: Sweep stale awaiting records ──
+    const activeHandoffIds = new Set<string>()
+    if (this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed) {
+      activeHandoffIds.add(this.activeOneShotHandoff.handoffId)
+    }
+    this.canonicalRegistry.sweepStaleAwaitingRecords(activeHandoffIds)
+
     this.applyParagraphRehydratePlan(plan)
   }
 
@@ -3418,6 +4397,15 @@ export class HeadingNumberingService {
     // Populate in-memory registry from sidecar (deep clone)
     const loadedOverrides = data.paragraphOverrides.map(o => ({ ...o }))
     this.inMemoryOverrides.set(docKey, loadedOverrides)
+
+    // ── R58.2: Register all loaded records as PERSISTED_HISTORICAL ──
+    for (const o of loadedOverrides) {
+      this.canonicalRegistry.registerPersistedHistorical(o, docKey)
+    }
+    console.info(
+      `[InkChapter] SIDECAR-HISTORICAL-REGISTRATION: documentKey=${docKey} ` +
+      `recordCount=${loadedOverrides.length} state=PERSISTED_HISTORICAL`,
+    )
 
     const root = this.adapter.detectEditorRoot()
     if (!root) return
@@ -3689,6 +4677,188 @@ export class HeadingNumberingService {
     )
   }
 
+  // ── R58.5: Generic DOM Replacement Continuity ───────────────────
+
+  /**
+   * Detect CURRENT_LIVE bound elements removed in a MutationObserver batch.
+   * Creates LiveReplacementTickets and attempts continuity resolution
+   * using DOM evidence (same parent, same batch, single candidate).
+   * Does NOT use anchor/text/ordinal heuristics.
+   */
+  private detectGenericDomReplacement(mutations: MutationRecord[]): void {
+    // Collect all removed elements
+    const removedElements: HTMLElement[] = []
+    const addedElements: HTMLElement[] = []
+
+    for (const m of mutations) {
+      if (m.type !== 'childList') continue
+      for (let i = 0; i < m.removedNodes.length; i++) {
+        const node = m.removedNodes[i]
+        if (node instanceof HTMLElement) removedElements.push(node)
+      }
+      for (let i = 0; i < m.addedNodes.length; i++) {
+        const node = m.addedNodes[i]
+        if (node instanceof HTMLElement) addedElements.push(node)
+      }
+    }
+
+    // ── R58.6: EDITOR-MUTATION-BATCH ──
+    const removedPs = removedElements.filter(el => el.tagName === 'P')
+    const addedPs = addedElements.filter(el => el.tagName === 'P')
+    const batchId = `emb-${Date.now()}-${Math.random().toString(36).slice(2, 4)}`
+    const docKeyBatch = this.getDocumentKey() ?? ''
+    const selRuntimeId = (() => {
+      const root = this.adapter.getEditorRoot()
+      if (!root) return 'none'
+      const block = resolveCurrentBlockFromSelection(root)
+      return block ? this.getParagraphRuntimeId(block) : 'none'
+    })()
+    console.info(
+      `[InkChapter] EDITOR-MUTATION-BATCH: ` +
+      `batchId=${batchId} ` +
+      `removedParagraphCount=${removedPs.length} ` +
+      `addedParagraphCount=${addedPs.length} ` +
+      `removedRuntimeIds=[${removedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
+      `addedRuntimeIds=[${addedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
+      `selectionRuntimeId=${selRuntimeId} ` +
+      `documentKey=${docKeyBatch}`,
+    )
+
+    // Check each removed element for CURRENT_LIVE binding
+    for (const removedEl of removedElements) {
+      // R58.6: Use resolveRecordByRemovedElement — removed elements ARE disconnected
+      const exactRecord = this.canonicalRegistry.resolveRecordByRemovedElement(removedEl)
+      if (!exactRecord) continue
+
+      const docKey = this.getDocumentKey() ?? ''
+      if (exactRecord.meta.documentKey !== docKey) continue
+
+      // Don't interfere with active One-Shot Handoff
+      if (this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed) {
+        if (this.activeOneShotHandoff.preElement === removedEl) {
+          // Handoff will handle this
+          continue
+        }
+      }
+
+      // Create LiveReplacementTicket
+      const ticketId = `lrt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const parentEl = removedEl.parentElement
+      const parent = removedEl.parentElement
+
+      // Find child index within parent
+      let childIdx: number | undefined
+      if (parent) {
+        for (let i = 0; i < parent.children.length; i++) {
+          if (parent.children[i] === removedEl) { childIdx = i; break }
+        }
+      }
+
+      const ticket: LiveReplacementTicket = {
+        ticketId,
+        recordId: exactRecord.recordId,
+        documentKey: docKey,
+        previousElement: removedEl,
+        previousRuntimeId: exactRecord.meta.currentRuntimeId ?? 'unknown',
+        previousGeneration: exactRecord.meta.generation,
+        parentElement: parentEl ?? undefined,
+        childIndex: childIdx,
+        semanticMode: exactRecord.record?.mode ?? 'force-indent',
+        createdAt: Date.now(),
+        source: 'MUTATION_OBSERVER',
+      }
+
+      this.activeLiveReplacementTickets.set(ticketId, ticket)
+
+      console.info(
+        `[InkChapter] LIVE-REPLACEMENT-TICKET: ` +
+        `ticketId=${ticketId} ` +
+        `recordId=${ticket.recordId} ` +
+        `fromRuntimeId=${ticket.previousRuntimeId} ` +
+        `generation=${ticket.previousGeneration} ` +
+        `documentKey=${ticket.documentKey} ` +
+        `source=MUTATION_OBSERVER`,
+      )
+
+      // Mark as awaiting transfer
+      this.canonicalRegistry.markAwaitingTransfer(
+        exactRecord.recordId, ticketId, 'generic-dom-replacement',
+      )
+
+      // Try to resolve replacement in the same batch
+      const addedPs = addedElements.filter(el =>
+        el.tagName === 'P' && el.isConnected &&
+        el !== removedEl, // not the same element
+      )
+
+      const resolution = this.canonicalRegistry.resolveLiveReplacement(
+        ticket, removedElements, addedPs, parentEl,
+      )
+
+      // R58.6: EDITOR-MUTATION-CLASSIFICATION
+      const kind = addedPs.length === 1 ? 'REPLACE_1_TO_1'
+        : addedPs.length === 2 ? 'SPLIT_1_TO_2'
+        : addedPs.length === 0 ? 'AMBIGUOUS'
+        : 'AMBIGUOUS'
+      console.info(
+        `[InkChapter] EDITOR-MUTATION-CLASSIFICATION: ` +
+        `batchId=${batchId} ` +
+        `kind=${kind} ` +
+        `candidateCount=${addedPs.length} ` +
+        `reason=${resolution.decision === 'PENDING' ? resolution.reason : (resolution.decision === 'BLOCK' ? resolution.reason : 'resolved')}`,
+      )
+
+      if (resolution.decision === 'TRANSFER') {
+        const newRuntimeId = this.getParagraphRuntimeId(resolution.replacement)
+
+        console.info(
+          `[InkChapter] LIVE-REPLACEMENT-DETECTED: ` +
+          `ticketId=${ticketId} ` +
+          `same-batch same-parent candidateCount=1`,
+        )
+
+        const docKey2 = this.getDocumentKey() ?? ''
+        const transferResult = this.canonicalTransferBinding(
+          ticket.recordId,
+          removedEl, ticket.previousRuntimeId,
+          resolution.replacement, newRuntimeId,
+          'LIVE_DOM_REPLACEMENT',
+          ticketId,
+        )
+
+        if (transferResult.success) {
+          console.info(
+            `[InkChapter] LIVE-REPLACEMENT-RESOLVE: ` +
+            `ticketId=${ticketId} ` +
+            `recordId=${ticket.recordId} ` +
+            `replacementRuntimeId=${newRuntimeId} ` +
+            `evidence=[same-batch,same-parent,old-in-removed] ` +
+            `decision=TRANSFER`,
+          )
+          this.activeLiveReplacementTickets.delete(ticketId)
+        } else {
+          console.info(
+            `[InkChapter] LIVE-REPLACEMENT-BLOCK: ` +
+            `ticketId=${ticketId} ` +
+            `recordId=${ticket.recordId} ` +
+            `reason=${transferResult.failReason ?? 'transfer-failed'} ` +
+            `candidateCount=1`,
+          )
+        }
+      } else if (resolution.decision === 'PENDING') {
+        console.info(
+          `[InkChapter] LIVE-REPLACEMENT-MISSED: ` +
+          `ticketId=${ticketId} ` +
+          `recordId=${ticket.recordId} ` +
+          `reason=${resolution.reason} ` +
+          `candidateCount=${resolution.candidateCount} ` +
+          `addedParagraphCount=${addedPs.length}`,
+        )
+      }
+      // BLOCK: leave ticket pending for audit
+    }
+  }
+
   // ── MutationObserver ───────────────────────────────────
 
   private setupMutationObserver(): void {
@@ -3703,6 +4873,9 @@ export class HeadingNumberingService {
     this.disconnectObserver()
 
     this.mutationObserver = new MutationObserver((mutations) => {
+      // ── R58.5: Generic DOM Replacement Continuity Detection ──────
+      this.detectGenericDomReplacement(mutations)
+
       // ── Trace: T1 + T2 (fail-open: never blocks classifier) ──
       safeTrace(() => {
         const lastA = this.lastTraceSnapshot
@@ -3931,12 +5104,95 @@ export class HeadingNumberingService {
       e.preventDefault()
       e.stopPropagation()
 
-      console.info('[InkChapter] Backspace reverse command: force-indent → force-flush')
+      const para = ctx.paragraph
+      const paraRuntimeId = this.getParagraphRuntimeId(para)
 
-      this.applyParagraphIndentOverride(ctx.paragraph, 'force-flush', WriterIds.BACKSPACE_SEMANTIC)
+      // ── R58.5: Resolve LiveOwnershipProof for Backspace ──
+      const bsDocKeyProof = this.getDocumentKey() ?? ''
+      const proof = this.canonicalRegistry.resolveLiveOwnershipProof(
+        para, bsDocKeyProof, paraRuntimeId,
+      )
+      if (!proof) {
+        console.info(
+          `[InkChapter] BACKSPACE-CANONICAL-BLOCK: runtimeId=${paraRuntimeId} ` +
+          `reason=NO_LIVE_OWNERSHIP_PROOF — no valid proof for Backspace`,
+        )
+        return
+      }
 
-      // Restore caret at logical start of the same paragraph
-      this.placeCaretInParagraph(ctx.paragraph)
+      // Validate generation lease
+      const genCheck = this.canonicalRegistry.validateProofGeneration(proof, 'BACKSPACE_UPDATE')
+      if (!genCheck.ok) {
+        console.error(
+          `[InkChapter] STALE-LIVE-OWNERSHIP-PROOF: ` +
+          `recordId=${proof.recordId} intent=BACKSPACE_UPDATE ` +
+          `reason=${genCheck.reason} ACTION=BLOCK`,
+        )
+        return
+      }
+
+      console.info(`[InkChapter] BACKSPACE-REVERSE: force-indent → force-flush runtimeId=${paraRuntimeId} ordinal=${collectContentParagraphs(root).indexOf(para)}`)
+
+      // R58: Semantic + visual directly; sidecar via live binding pipeline
+      setParagraphIndentMode(para, 'force-flush', WriterIds.BACKSPACE_SEMANTIC)
+      const bsSettings = this.getParagraphLayoutSettings()
+      applyEffectiveParagraphIndent(para, 'flush', WriterIds.BACKSPACE_SEMANTIC)
+
+      // ── R58.4: CANONICAL-RECORD-BACKSPACE via registry (UPDATE_EXISTING only + firewall) ─
+      const bsDocKey = this.getDocumentKey() ?? ''
+      const bsDocPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+      const bsRecordsBefore = (this.inMemoryOverrides.get(bsDocKey) ?? []).length
+      const bsSidecarResult = this.canonicalUpdateBackspace(
+        para, 'force-flush', paraRuntimeId, bsDocKey, bsDocPath,
+      )
+      const bsRecordsAfter = (this.inMemoryOverrides.get(bsDocKey) ?? []).length
+      const bsRecordId = bsSidecarResult.recordId
+      const bsDecision = bsSidecarResult.decision
+
+      console.info(
+        `[InkChapter] CANONICAL-RECORD-BACKSPACE: runtimeId=${paraRuntimeId} ` +
+        `recordId=${bsRecordId} ` +
+        `recordCountBefore=${bsRecordsBefore} recordCountAfter=${bsRecordsAfter} ` +
+        `modeBefore=FORCE_INDENT modeAfter=FORCE_FLUSH ` +
+        `sameRecord=${bsRecordsAfter === bsRecordsBefore} ` +
+        `decision=${bsDecision} ` +
+        `appendOccurred=${bsRecordsAfter > bsRecordsBefore}`,
+      )
+
+      // ── r57: Update active handoff semantic if this paragraph is the handoff owner ──
+      const handoff = this.activeOneShotHandoff
+      if (handoff && !handoff.consumed && handoff.preElement === para) {
+        handoff.semantic = 'force-flush'
+        console.info(`[InkChapter] HANDOFF-SEMANTIC-UPDATED: ${handoff.handoffId} force-indent → force-flush via Backspace`)
+      }
+
+      // ── r57: VERIFY-FIRST Caret — same pipeline as Enter ──
+      const bsDoc = para.ownerDocument
+      const bsSel = bsDoc?.defaultView?.getSelection() ?? null
+      const bsSelRes = resolveSelectionParagraph(
+        bsSel,
+        root,
+        (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      )
+
+      const bsAlreadyCorrect =
+        bsSelRes.paragraphRuntimeId === paraRuntimeId &&
+        (bsSelRes.localLogicalOffset ?? -1) === 0
+
+      if (bsAlreadyCorrect) {
+        // Caret already in correct position — no write needed
+        console.info(`[InkChapter] BACKSPACE-CARET-VERIFY: runtimeId=${paraRuntimeId} alreadyCorrect=true caretWriteAttempted=false`)
+      } else {
+        // Repair via shared pipeline
+        console.info(`[InkChapter] BACKSPACE-CARET-VERIFY: runtimeId=${paraRuntimeId} alreadyCorrect=false repair needed (resolvedRuntimeId=${bsSelRes.paragraphRuntimeId ?? 'null'} offset=${bsSelRes.localLogicalOffset})`)
+        const bsRepair = repairCaretAtParagraphLogicalStart(
+          para,
+          root,
+          paraRuntimeId,
+          (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+        )
+        console.info(`[InkChapter] BACKSPACE-CARET-REPAIR: method=${bsRepair.method} success=${bsRepair.success} resolvedRuntimeId=${bsRepair.resolvedParagraphRuntimeId ?? 'null'} localOffset=${bsRepair.localLogicalOffset}`)
+      }
     }
     root.addEventListener('keydown', onBackspaceCommand, true)
     this.editorRootDisposables.add(() => root.removeEventListener('keydown', onBackspaceCommand, true))
