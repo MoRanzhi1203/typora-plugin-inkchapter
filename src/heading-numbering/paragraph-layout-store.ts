@@ -131,16 +131,16 @@ export function loadParagraphLayout(documentKey: string): ParagraphLayoutDocumen
     const vault = getVaultRoot()
 
     if (!fs.existsSync(filePath)) {
-      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=false recordCount=0 source=filesystem`)
+      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=false recordCount=0 source=physical backend=filesystem`)
       return null
     }
     const raw = fs.readFileSync(filePath, 'utf8')
     const data = JSON.parse(raw) as ParagraphLayoutDocument
     if (!data.schemaVersion || !Array.isArray(data.paragraphOverrides)) {
-      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} exists=true recordCount=0 source=filesystem (invalid schema)`)
+      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} exists=true recordCount=0 source=physical backend=filesystem (invalid schema)`)
       return null
     }
-    console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=true recordCount=${data.paragraphOverrides.length} source=filesystem`)
+    console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=true recordCount=${data.paragraphOverrides.length} source=physical backend=filesystem`)
     return data
   } catch (e) {
     console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} error=${e}`)
@@ -171,7 +171,7 @@ export function saveParagraphLayout(
     try { if (fs.existsSync(filePath)) { const raw = fs.readFileSync(filePath, 'utf8'); const data = JSON.parse(raw); return data.paragraphOverrides?.length ?? 0 } } catch {}
     return -1
   })()
-  console.info(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} recordCountBefore=${prevCount} recordCountAfter=${overrides.length} source=filesystem`)
+  console.info(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} recordCountBefore=${prevCount} recordCountAfter=${overrides.length} source=physical backend=filesystem`)
 
   const doc: ParagraphLayoutDocument = {
     schemaVersion: CURRENT_SCHEMA_VERSION,

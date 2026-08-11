@@ -75,12 +75,20 @@ export interface OneShotParagraphReplacementHandoff {
   handoffId: string
   sourceTxnId: string
 
+  /** R58.2: Canonical record identity carried through DOM replacement. */
+  canonicalRecordId?: string
+
   preElement: HTMLElement
   preOrdinal: number
   preIdentity: string
 
   tokenConsumed: boolean
-  semantic: 'force-indent'
+  /** Current semantic — may be updated by Backspace/FORCE_FLUSH. NOT a frozen snapshot. */
+  semantic: ParagraphIndentSemanticMode
+  /** Diagnostic: semantic at handoff creation time. */
+  semanticAtCreation: ParagraphIndentSemanticMode
+  /** Runtime ID of preElement at creation time (diagnostic). */
+  preRuntimeId: string
 
   consumed: boolean
 
@@ -92,6 +100,34 @@ export interface OneShotParagraphReplacementHandoff {
 
   semanticTransferred: boolean
   visualTransferred: boolean
+}
+
+// ── R58: Live Canonical Record Binding ──────────────────────────────
+
+/**
+ * Live binding between a Typora paragraph element and its canonical sidecar record.
+ * Ensures Enter/Backspace/merge mutations reuse the same record lineage,
+ * and prevents temporary/live records from entering generic heuristic rehydrate.
+ */
+export interface LiveParagraphRecordBinding {
+  /** Canonical sidecar record identity. */
+  recordId: string
+  /** Enter transaction ID that created this binding. */
+  txnId: string
+  /** Current live paragraph element. Updated on DOM replacement. */
+  currentElement: HTMLElement
+  /** Runtime object-identity ID (WeakMap-based). */
+  currentRuntimeId: string
+  /** Replacement generation counter. */
+  generation: number
+  /** True if the record is still provisional (empty paragraph). */
+  temporary: boolean
+  /** True if this record was created by the current live editing session. */
+  live: boolean
+  /** Document key for scope isolation. */
+  documentKey: string
+  /** Timestamp of binding creation. */
+  createdAt: number
 }
 
 export type EnterCommitSuccessFields = {
@@ -126,6 +162,291 @@ export interface ParagraphLocalCaretWriteResult {
   resolvedSelectionParagraphOrdinal?: number
   localLogicalOffset?: number
   sameAsCommandParagraph: boolean
+}
+
+// ── r57: Unified Selection Resolver ─────────────────────────────────
+
+export interface SelectionParagraphResolution {
+  selectionExists: boolean
+  anchorNodeType?: number
+  anchorNodeName?: string
+  normalizedElement?: Element | null
+  paragraph?: HTMLElement | null
+  paragraphRuntimeId?: string
+  paragraphOrdinal?: number
+  localLogicalOffset?: number
+  insideEditorRoot: boolean
+  reason?: string
+}
+
+/** Normalize selection anchor node to element. TextNode → parentElement. */
+function normalizeSelectionNodeToElement(node: Node | null): Element | null {
+  if (!node) return null
+  if (node.nodeType === 1) return node as Element
+  if (node.nodeType === 3) return (node as Text).parentElement
+  return (node as any).parentElement ?? null
+}
+
+/** Unified public entry: resolve selection to body paragraph. */
+export function resolveSelectionParagraph(
+  selection: Selection | null,
+  editorRoot: HTMLElement,
+  getRuntimeId: (el: object) => string,
+): SelectionParagraphResolution {
+  const result: SelectionParagraphResolution = {
+    selectionExists: false,
+    insideEditorRoot: false,
+  }
+
+  if (!selection?.rangeCount || !selection.isCollapsed) {
+    result.reason = 'no-valid-selection'
+    return result
+  }
+
+  const anchor = selection.getRangeAt(0).startContainer
+  result.anchorNodeType = anchor.nodeType
+  result.anchorNodeName = anchor.nodeName
+  result.selectionExists = true
+
+  // Normalize TextNode → Element
+  const normalized = normalizeSelectionNodeToElement(anchor)
+  if (!normalized) {
+    result.reason = 'normalized-to-null'
+    return result
+  }
+  result.normalizedElement = normalized
+
+  // Check inside editor root
+  result.insideEditorRoot = editorRoot.contains(normalized)
+
+  // Closest body P (not heading/list/blockquote)
+  const closest = normalized.closest('p')
+  if (!closest) {
+    result.reason = 'no-closest-P'
+    return result
+  }
+
+  // Exclude paragraphs inside excluded contexts
+  const excluded = closest.closest('pre, code, .md-codeblock, li, blockquote, table, .md-math-block')
+  if (excluded) {
+    result.reason = 'inside-excluded-context'
+    return result
+  }
+
+  const para = closest as HTMLElement
+  result.paragraph = para
+  result.paragraphRuntimeId = getRuntimeId(para)
+
+  // Ordinal
+  const allParas = editorRoot.querySelectorAll<HTMLElement>('p')
+  let ordinal = -1
+  for (let i = 0; i < allParas.length; i++) {
+    if (allParas[i] === para) { ordinal = i; break }
+  }
+  result.paragraphOrdinal = ordinal >= 0 ? ordinal : undefined
+
+  // Local logical offset from selection
+  result.localLogicalOffset = selection.anchorOffset
+
+  return result
+}
+
+// ── r57: Runtime Paragraph Continuity ───────────────────────────────
+
+/** Tracks paragraph identity across DOM replacement generations. */
+export interface RuntimeParagraphContinuity {
+  txnId: string
+  currentElement: HTMLElement
+  currentRuntimeId: string
+  generation: number
+}
+
+// ── r57: Verify-First Caret ─────────────────────────────────────────
+
+export interface PostTokenSelectionResult {
+  txnId: string
+
+  /** Runtime ID of the command target paragraph. */
+  commandRuntimeId: string
+
+  /** anchorNode diagnostic. */
+  anchorNodeType?: number
+  anchorNodeName?: string
+
+  /** Resolution: resolved paragraph runtime ID from selection. */
+  resolvedParagraphRuntimeId: string | null
+  /** Resolution: ordinal index among all body P elements. */
+  resolvedParagraphOrdinal?: number
+  /** Resolution: local logical offset (= selection.anchorOffset). */
+  localLogicalOffset?: number
+
+  /** True if selected paragraph IS the command target (object identity). */
+  sameAsCommandTarget: boolean
+
+  /** True if selection is already at the correct position. */
+  alreadyCorrect: boolean
+
+  /** Whether caret repair was attempted. */
+  repairAttempted: boolean
+  /** Whether caret write was attempted (false when alreadyCorrect=true). */
+  caretWriteAttempted: boolean
+  /** Final caret success status. */
+  caretSuccess: boolean
+}
+
+export interface CaretRepairResult {
+  attempted: boolean
+  success: boolean
+  failureReason?: string
+  method: 'text-leaf' | 'paragraph-structural' | 'none'
+  targetElement?: HTMLElement
+  targetRuntimeId?: string
+  textLeafFound: boolean
+  /** Readback: resolved paragraph after repair. */
+  resolvedParagraphRuntimeId?: string
+  resolvedParagraphOrdinal?: number
+  localLogicalOffset?: number
+  sameAsCommandParagraph: boolean
+}
+
+/**
+ * Find the first caret-bearing text leaf inside a paragraph.
+ * For the known empty-paragraph structure P > SPAN > #text, this returns
+ * the Text node. Falls back to any Text descendant.
+ */
+export function findCaretBearingTextLeaf(paragraph: HTMLElement): Text | null {
+  // P0: prefer SPAN > #text (known Typora empty paragraph structure)
+  const spans = paragraph.querySelectorAll('span')
+  for (const span of spans) {
+    for (let i = 0; i < span.childNodes.length; i++) {
+      const child = span.childNodes[i]
+      if (child.nodeType === 3) return child as Text
+    }
+  }
+
+  // Fallback: any direct Text child
+  for (let i = 0; i < paragraph.childNodes.length; i++) {
+    if (paragraph.childNodes[i].nodeType === 3) return paragraph.childNodes[i] as Text
+  }
+
+  // Deep fallback: any Text descendant
+  const walker = paragraph.ownerDocument.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT)
+  const firstText = walker.nextNode()
+  return firstText as Text | null
+}
+
+/**
+ * Write caret at a specific Text node offset using the paragraph's owner document.
+ * Uses ownerDocument.createRange() and ownerDocument.defaultView.getSelection().
+ */
+export function writeCaretAtTextLeaf(
+  textNode: Text,
+  offset: number,
+): { success: boolean; failReason?: string } {
+  try {
+    const doc = textNode.ownerDocument
+    const win = doc.defaultView
+    if (!win) return { success: false, failReason: 'no-defaultView' }
+    const sel = win.getSelection()
+    if (!sel) return { success: false, failReason: 'no-selection' }
+    const range = doc.createRange()
+    range.setStart(textNode, offset)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    return { success: true }
+  } catch (e) {
+    return { success: false, failReason: `range-error: ${e}` }
+  }
+}
+
+/**
+ * Repair caret: set caret at paragraph logical start (offset=0).
+ *
+ * Priority:
+ * 1. Find caret-bearing Text leaf (SPAN > #text or descendant) → write #text,0
+ * 2. Fallback: setStart(paragraph, 0)
+ *
+ * NEVER uses neighbor-paragraph or global text offset.
+ * Range from paragraph.ownerDocument. Selection from ownerDocument.defaultView.
+ *
+ * After write, does a readback via resolveSelectionParagraph to verify.
+ */
+export function repairCaretAtParagraphLogicalStart(
+  paragraph: HTMLElement,
+  editorRoot: HTMLElement,
+  commandRuntimeId: string,
+  getRuntimeId: (el: object) => string,
+): CaretRepairResult {
+  const result: CaretRepairResult = {
+    attempted: true,
+    success: false,
+    method: 'none',
+    textLeafFound: false,
+    sameAsCommandParagraph: false,
+  }
+
+  if (!paragraph || paragraph.nodeType !== 1) {
+    result.failureReason = 'null-or-not-element'
+    return result
+  }
+  const ownerDoc = paragraph.ownerDocument
+  if (!ownerDoc) { result.failureReason = 'no-ownerDocument'; return result }
+  if (!paragraph.isConnected) { result.failureReason = 'disconnected'; return result }
+
+  result.targetElement = paragraph
+  result.targetRuntimeId = getRuntimeId(paragraph)
+
+  // Priority 1: find text leaf
+  const textLeaf = findCaretBearingTextLeaf(paragraph)
+  if (textLeaf) {
+    result.textLeafFound = true
+    const writeResult = writeCaretAtTextLeaf(textLeaf, 0)
+    if (writeResult.success) {
+      result.method = 'text-leaf'
+    }
+  }
+
+  // Priority 2: paragraph structural fallback
+  if (!result.textLeafFound || !result.method) {
+    try {
+      const range = ownerDoc.createRange()
+      range.setStart(paragraph, 0)
+      range.collapse(true)
+      const sel = ownerDoc.defaultView?.getSelection()
+      if (sel) {
+        sel.removeAllRanges()
+        sel.addRange(range)
+        result.method = 'paragraph-structural'
+      }
+    } catch {
+      result.failureReason = 'paragraph-structural-range-error'
+      return result
+    }
+  }
+
+  // Readback: verify via resolveSelectionParagraph
+  const sel = ownerDoc.defaultView?.getSelection()
+  const readback = resolveSelectionParagraph(sel ?? null, editorRoot, getRuntimeId)
+  if (readback.paragraphRuntimeId) {
+    result.resolvedParagraphRuntimeId = readback.paragraphRuntimeId
+    result.resolvedParagraphOrdinal = readback.paragraphOrdinal
+    result.localLogicalOffset = readback.localLogicalOffset
+    result.sameAsCommandParagraph = readback.paragraphRuntimeId === commandRuntimeId
+  }
+
+  result.success = result.sameAsCommandParagraph && (result.localLogicalOffset ?? -1) === 0
+
+  // CARET-REPAIR trace
+  console.info(
+    `[InkChapter] CARET-REPAIR: commandRuntimeId=${commandRuntimeId} ` +
+    `method=${result.method} textLeafFound=${result.textLeafFound} ` +
+    `resolvedRuntimeId=${result.resolvedParagraphRuntimeId ?? 'null'} ` +
+    `localOffset=${result.localLogicalOffset} sameAsCommand=${result.sameAsCommandParagraph} ` +
+    `success=${result.success} failureReason=${result.failureReason ?? 'none'}`,
+  )
+
+  return result
 }
 
 // ── Writer Record ──────────────────────────────────────────────────
