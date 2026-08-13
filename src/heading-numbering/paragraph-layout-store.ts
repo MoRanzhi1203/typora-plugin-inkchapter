@@ -153,6 +153,11 @@ export function saveParagraphLayout(
   documentPath: string,
   overrides: ParagraphIndentOverrideRecord[],
 ): void {
+  // ── R58.7 Phase A: Hard invariant — empty documentKey must never write sidecar ──
+  if (!documentKey || documentKey.trim() === '') {
+    console.warn(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${JSON.stringify(documentKey)} vaultRoot=${getVaultRoot() ?? 'unknown'} source=BLOCKED (empty documentKey, write prevented)`)
+    return
+  }
   const dir = getSidecarDir()
   if (!dir) {
     // ── SIDECAR-ACTUAL-WRITE (P0-1: vaultRoot unknown, sidecar disabled) ──

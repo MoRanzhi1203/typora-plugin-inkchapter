@@ -57,6 +57,32 @@ export const WriterIds = {
   PENDING_CONTINUITY_CARET: 'W-PENDING-CONTINUITY-CARET',
 } as const
 
+// ── R58.7: Plugin Selection Write Audit sink (read-only observation) ──
+// All plugin selection writers must route through this sink so the service
+// can emit PLUGIN-SELECTION-WRITE-AUDIT for every raw write site.
+
+export interface PluginSelectionWriteAuditEntry {
+  writeId: string
+  caller: string
+  reason: string
+  runtimeId: string
+  logicalOffsetBefore: number | null
+  logicalOffsetRequested: number | null
+  success: boolean
+}
+
+let pluginSelectionWriteSink: ((entry: PluginSelectionWriteAuditEntry) => void) | null = null
+
+export function setPluginSelectionWriteSink(
+  sink: ((entry: PluginSelectionWriteAuditEntry) => void) | null,
+): void {
+  pluginSelectionWriteSink = sink
+}
+
+export function emitPluginSelectionWrite(entry: PluginSelectionWriteAuditEntry): void {
+  pluginSelectionWriteSink?.(entry)
+}
+
 // ── P0-4: Structured Caret Write Result ────────────────────────────
 
 export interface CaretWriteResult {
@@ -77,6 +103,9 @@ export interface OneShotParagraphReplacementHandoff {
 
   /** R58.2: Canonical record identity carried through DOM replacement. */
   canonicalRecordId?: string
+
+  /** R58.7 Phase A.1.3.1a: Runtime scope identity for cross-scope guard. */
+  scopeId: string
 
   preElement: HTMLElement
   preOrdinal: number
@@ -251,9 +280,179 @@ export function resolveSelectionParagraph(
   return result
 }
 
-// ── r57: Runtime Paragraph Continuity ───────────────────────────────
+// ── R58.6.4: Unified SelectionTruth ─────────────────────────────────
 
-/** Tracks paragraph identity across DOM replacement generations. */
+export interface SelectionTruth {
+  selectionExists: boolean
+  paragraph: HTMLElement | null
+  runtimeId: string | null
+  ordinal: number | null
+  logicalOffset: number | null
+  collapsed: boolean
+  anchorNodeConnected: boolean
+  focusNodeConnected: boolean
+  insideEditor: boolean
+  source?: string
+}
+
+/**
+ * R58.6.4: Single authoritative selection identity resolver.
+ * All selection consumers must use this ONE function.
+ */
+export function resolveSelectionTruth(
+  editorRoot: HTMLElement,
+  getRuntimeId: (el: object) => string,
+  source: string,
+): SelectionTruth {
+  const sel = window.getSelection()
+  const result: SelectionTruth = {
+    selectionExists: false,
+    paragraph: null,
+    runtimeId: null,
+    ordinal: null,
+    logicalOffset: null,
+    collapsed: true,
+    anchorNodeConnected: false,
+    focusNodeConnected: false,
+    insideEditor: false,
+    source,
+  }
+
+  if (!sel?.rangeCount) {
+    console.info(
+      `[InkChapter] SELECTION-TRUTH: ` +
+      `source=${source} runtimeId=null ordinal=null logicalOffset=null ` +
+      `selectionExists=false collapsed=true ` +
+      `anchorConnected=false focusConnected=false ` +
+      `insideEditor=false`,
+    )
+    return result
+  }
+
+  const range = sel.getRangeAt(0)
+  result.selectionExists = true
+  result.collapsed = range.collapsed
+  result.anchorNodeConnected = range.startContainer.isConnected || false
+  result.focusNodeConnected = range.endContainer.isConnected || false
+
+  // Resolve paragraph via existing resolver
+  const selRes = resolveSelectionParagraph(sel, editorRoot, getRuntimeId)
+  if (selRes.paragraph) {
+    result.paragraph = selRes.paragraph
+    result.runtimeId = selRes.paragraphRuntimeId ?? null
+    result.ordinal = selRes.paragraphOrdinal ?? null
+    result.logicalOffset = selRes.localLogicalOffset ?? null
+    result.insideEditor = selRes.insideEditorRoot
+  }
+
+  console.info(
+    `[InkChapter] SELECTION-TRUTH: ` +
+    `source=${source} ` +
+    `runtimeId=${result.runtimeId ?? 'null'} ` +
+    `ordinal=${result.ordinal ?? 'null'} ` +
+    `logicalOffset=${result.logicalOffset ?? 'null'} ` +
+    `collapsed=${result.collapsed} ` +
+    `anchorConnected=${result.anchorNodeConnected} ` +
+    `focusConnected=${result.focusNodeConnected} ` +
+    `insideEditor=${result.insideEditor}`,
+  )
+  return result
+}
+
+// ── R58.6.5: CaretExpectation + Selection Continuity Verify ──────────
+
+export type CaretExpectationReason =
+  | 'SPECIAL_COMMAND_CURRENT_PARAGRAPH'
+  | 'SPLIT_NEW_PARAGRAPH'
+  | 'MERGE_DESTINATION'
+
+export interface CaretExpectation {
+  expectationId: string
+  documentKey: string
+  scopeId: string
+  expectedElement: HTMLElement
+  expectedRuntimeId: string
+  expectedLogicalOffset: number | null
+  canonicalRecordId: string | null
+  generation: number
+  reason: CaretExpectationReason
+  createdAt: number
+  active: boolean
+  restoreAttempts: number
+  intentEpoch: number
+  /** R58.7: Paragraph text content snapshot at creation — restore gate insurance. */
+  expectedTextContent?: string
+}
+
+export interface CaretVerificationResult {
+  expectationId: string
+  expectedRuntimeId: string
+  actualRuntimeId: string | null
+  expectedLogicalOffset: number | null
+  actualLogicalOffset: number | null
+  paragraphMatches: boolean
+  offsetMatches: boolean
+  connected: boolean
+  verified: boolean
+  caretWriteAttempted: boolean
+}
+
+export function verifyCaretExpectation(
+  expectation: CaretExpectation,
+  editorRoot: HTMLElement,
+  getRuntimeId: (el: object) => string,
+  source: 'MICROTASK' | 'RAF' | 'OBS',
+): CaretVerificationResult {
+  const truth = resolveSelectionTruth(editorRoot, getRuntimeId, `VERIFY-${source}`)
+  const actualRtId = truth.runtimeId
+  const paragraphMatches = actualRtId !== null && actualRtId === expectation.expectedRuntimeId
+  const offsetMatches = truth.logicalOffset === expectation.expectedLogicalOffset
+  const connected = expectation.expectedElement.isConnected
+  const verified = paragraphMatches && offsetMatches && connected
+
+  console.info(
+    `[InkChapter] SELECTION-CONTINUITY-VERIFY: ` +
+    `expectationId=${expectation.expectationId} ` +
+    `reason=${expectation.reason} ` +
+    `source=${source} ` +
+    `expectedRuntimeId=${expectation.expectedRuntimeId} ` +
+    `actualRuntimeId=${actualRtId ?? 'null'} ` +
+    `expectedLogicalOffset=${expectation.expectedLogicalOffset} ` +
+    `actualLogicalOffset=${truth.logicalOffset} ` +
+    `paragraphMatches=${paragraphMatches} ` +
+    `offsetMatches=${offsetMatches} ` +
+    `connected=${connected} ` +
+    `verified=${verified} ` +
+    `caretWriteAttempted=false`,
+  )
+  return { expectationId: expectation.expectationId, expectedRuntimeId: expectation.expectedRuntimeId, actualRuntimeId: actualRtId, expectedLogicalOffset: expectation.expectedLogicalOffset, actualLogicalOffset: truth.logicalOffset, paragraphMatches, offsetMatches, connected, verified, caretWriteAttempted: false }
+}
+
+export function restoreLogicalCaret(
+  expectation: CaretExpectation,
+  editorRoot: HTMLElement,
+  getRuntimeId: (el: object) => string,
+): { success: boolean; actualRuntimeId: string | null; actualLogicalOffset: number | null } {
+  if (expectation.restoreAttempts >= 1) {
+    console.error(`[InkChapter] CARET-CONTINUITY-RESTORE-FAILED: expectationId=${expectation.expectationId} reason=DUPLICATE_RESTORE_BLOCKED restoreAttempts=${expectation.restoreAttempts} ACTION=HARD_STOP`)
+    return { success: false, actualRuntimeId: null, actualLogicalOffset: null }
+  }
+  expectation.restoreAttempts++
+  const el = expectation.expectedElement
+  if (!el?.isConnected) {
+    console.info(`[InkChapter] CARET-CONTINUITY-RESTORE: expectationId=${expectation.expectationId} reason=${expectation.reason} attempt=${expectation.restoreAttempts} decision=FAIL (disconnected)`)
+    return { success: false, actualRuntimeId: null, actualLogicalOffset: null }
+  }
+  console.info(`[InkChapter] CARET-CONTINUITY-RESTORE: expectationId=${expectation.expectationId} reason=${expectation.reason} toRuntimeId=${expectation.expectedRuntimeId} targetLogicalOffset=${expectation.expectedLogicalOffset} attempt=${expectation.restoreAttempts} decision=ATTEMPT`)
+  const repairResult = repairCaretAtParagraphLogicalStart(el, editorRoot, expectation.expectedRuntimeId, getRuntimeId)
+  const truth = resolveSelectionTruth(editorRoot, getRuntimeId, 'RESTORE-VERIFY')
+  const actualRtId = truth.runtimeId
+  const success = repairResult.success && actualRtId === expectation.expectedRuntimeId
+  console.info(`[InkChapter] CARET-CONTINUITY-RESTORE-RESULT: expectationId=${expectation.expectationId} actualRuntimeId=${actualRtId ?? 'null'} decision=${success ? 'SUCCESS' : 'FAIL'}`)
+  return { success, actualRuntimeId: actualRtId, actualLogicalOffset: truth.logicalOffset }
+}
+
+// ── r57-stub placeholder ─────────────────────────────────────────────
 export interface RuntimeParagraphContinuity {
   txnId: string
   currentElement: HTMLElement
@@ -1001,6 +1200,15 @@ export function focusParagraphAfterMarkerIndex(editorRoot: HTMLElement, markerIn
   range.collapse(true)
   sel.removeAllRanges()
   sel.addRange(range)
+  emitPluginSelectionWrite({
+    writeId: `focus-marker-${markerIndex}-${Date.now()}`,
+    caller: 'LEGACY-MARKER-FOCUS',
+    reason: 'legacy-marker-focus',
+    runtimeId: getElementIdentity(p),
+    logicalOffsetBefore: null,
+    logicalOffsetRequested: 0,
+    success: true,
+  })
   p.scrollIntoView?.({ block: 'nearest' })
   return true
 }

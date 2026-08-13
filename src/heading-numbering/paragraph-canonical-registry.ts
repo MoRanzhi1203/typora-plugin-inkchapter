@@ -55,6 +55,8 @@ export interface LiveReplacementTicket {
   ticketId: string
   recordId: string
   documentKey: string
+  /** R58.7 Phase A.1.3.1a: Runtime scope identity for cross-scope guard. */
+  scopeId: string
   previousElement: HTMLElement
   previousRuntimeId: string
   previousGeneration: number
@@ -160,8 +162,12 @@ export type CandidateSource =
 export interface CanonicalRuntimeMeta {
   /** Canonical record identity (matches ParagraphIndentOverrideRecord.id). */
   recordId: string
-  /** Document scope key. */
+  /** Document scope key (DEPRECATED: use scopeId for current-session identity). */
   documentKey: string
+  /** R58.7 Phase A.1.3.1a: Runtime scope identity (current-session authority). */
+  scopeId: string
+  /** R58.7 Phase A.1.3.1a: Persistence namespace key (null for EPHEMERAL). */
+  persistenceKey: string | null
 
   /** Current lifecycle state. */
   state: CanonicalRuntimeState
@@ -250,6 +256,8 @@ export class ParagraphCanonicalRegistry {
     element: HTMLElement,
     runtimeId: string,
     temporary: boolean,
+    scopeId?: string,
+    persistenceKey?: string | null,
   ): CanonicalRuntimeMeta {
     // Collision check: one runtime → max one record
     const existingByRt = this.recordIdByRuntimeId.get(runtimeId)
@@ -279,6 +287,8 @@ export class ParagraphCanonicalRegistry {
     const meta: CanonicalRuntimeMeta = {
       recordId: record.id,
       documentKey,
+      scopeId: scopeId || documentKey,
+      persistenceKey: persistenceKey !== undefined ? persistenceKey : (documentKey || null),
       state: 'CURRENT_LIVE',
       sessionId: this.sessionId,
       generation: (existingMeta?.generation ?? 0) + 1,
@@ -322,6 +332,8 @@ export class ParagraphCanonicalRegistry {
     const meta: CanonicalRuntimeMeta = {
       recordId: record.id,
       documentKey,
+      scopeId: documentKey,       // PERSISTED_HISTORICAL uses documentKey as scopeId
+      persistenceKey: documentKey, // PERSISTED_HISTORICAL has persistence key
       state: 'PERSISTED_HISTORICAL',
       sessionId: this.sessionId, // loaded IN this session but origin distinguishes
       generation: 0,
@@ -341,11 +353,20 @@ export class ParagraphCanonicalRegistry {
   /**
    * Transition: CURRENT_LIVE → CURRENT_AWAITING_TRANSFER.
    * Called when current live element is detected as disconnected (DOM replacement).
+   *
+   * R58.7 Phase A.1.3.1a: operationScopeId is required for scope authorization.
    */
-  markAwaitingTransfer(recordId: string, handoffId?: string, reason?: string): boolean {
+  markAwaitingTransfer(recordId: string, handoffId?: string, reason?: string, operationScopeId?: string): boolean {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     if (!meta) return false
     if (meta.state !== 'CURRENT_LIVE') return false
+
+    // R58.7: Cross-scope mutation firewall
+    if (operationScopeId && !this.assertCanonicalScope(
+      meta.scopeId, operationScopeId, 'AWAIT', recordId,
+    )) {
+      return false
+    }
 
     meta.previousElement = meta.currentElement
     meta.previousRuntimeId = meta.currentRuntimeId
@@ -379,12 +400,15 @@ export class ParagraphCanonicalRegistry {
    * - old owner invalidated
    *
    * Returns detailed transfer result.
+   *
+   * R58.7 Phase A.1.3.1a: operationScopeId is required for scope authorization.
    */
   transferCanonicalBinding(
     recordId: string,
     toElement: HTMLElement,
     toRuntimeId: string,
     reason: string,
+    operationScopeId?: string,
   ): CanonicalBindingTransferResult {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     const recordCountBefore = this.runtimeMetaByRecordId.size
@@ -406,6 +430,14 @@ export class ParagraphCanonicalRegistry {
 
     if (!meta) {
       baseResult.failReason = 'record-not-found'
+      return baseResult
+    }
+
+    // R58.7: Cross-scope mutation firewall
+    if (operationScopeId && !this.assertCanonicalScope(
+      meta.scopeId, operationScopeId, 'TRANSFER', recordId,
+    )) {
+      baseResult.failReason = 'scope-mismatch'
       return baseResult
     }
 
@@ -481,10 +513,18 @@ export class ParagraphCanonicalRegistry {
    *
    * R58.4: ONLY accepts explicit CanonicalRetireReason.
    * PREMATURE-RETIREMENT-VIOLATION on any non-explicit reason.
+   * R58.7: operationScopeId is required for scope authorization.
    */
-  retireRecord(recordId: string, reason: string, retireReason?: CanonicalRetireReason): boolean {
+  retireRecord(recordId: string, reason: string, retireReason?: CanonicalRetireReason, operationScopeId?: string): boolean {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     if (!meta) return false
+
+    // R58.7: Cross-scope mutation firewall
+    if (operationScopeId && !this.assertCanonicalScope(
+      meta.scopeId, operationScopeId, 'RETIRE', recordId,
+    )) {
+      return false
+    }
 
     // ── R58.4: Premature retirement gate ──
     const validRetireReasons: CanonicalRetireReason[] = [
@@ -571,6 +611,7 @@ export class ParagraphCanonicalRegistry {
     verifiedDocumentKey?: string,
     verifiedRuntimeId?: string,
     verifiedElement?: HTMLElement,
+    verifiedScopeId?: string,
   ): CanonicalMutationResult {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     const recordCountBefore = this.runtimeMetaByRecordId.size
@@ -584,6 +625,13 @@ export class ParagraphCanonicalRegistry {
 
     if (!meta) {
       return block('RECORD_MISSING')
+    }
+
+    // R58.7: Cross-scope mutation firewall — scope check BEFORE documentKey
+    if (verifiedScopeId && !this.assertCanonicalScope(
+      meta.scopeId, verifiedScopeId, intent, recordId,
+    )) {
+      return block('DOCUMENT_MISMATCH' as any)
     }
 
     // ── Document key check ──
@@ -745,6 +793,7 @@ export class ParagraphCanonicalRegistry {
     verifiedRuntimeId?: string,
     verifiedElement?: HTMLElement,
     verifiedDocumentKey?: string,
+    verifiedScopeId?: string,
   ): CanonicalMutationResult {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     const recordCountBefore = this.runtimeMetaByRecordId.size
@@ -758,6 +807,13 @@ export class ParagraphCanonicalRegistry {
 
     if (!meta) {
       return baseBlock('RECORD_MISSING')
+    }
+
+    // R58.7: Cross-scope mutation firewall — scope check BEFORE documentKey
+    if (verifiedScopeId && !this.assertCanonicalScope(
+      meta.scopeId, verifiedScopeId, 'PROMOTION', recordId,
+    )) {
+      return baseBlock('DOCUMENT_MISMATCH' as any)
     }
 
     // ── Lifecycle validation ──
@@ -918,6 +974,15 @@ export class ParagraphCanonicalRegistry {
   /** Get record by ID. */
   getRecord(recordId: string): ParagraphIndentOverrideRecord | undefined {
     return this.recordsById.get(recordId)
+  }
+
+  /** R58.7: Count records stuck in CURRENT_AWAITING_TRANSFER (leak audit). */
+  getAwaitingTransferCount(): number {
+    let count = 0
+    for (const meta of this.runtimeMetaByRecordId.values()) {
+      if (meta.state === 'CURRENT_AWAITING_TRANSFER') count++
+    }
+    return count
   }
 
   /** Update persistent record reference (used when service mutates records). */
@@ -1257,6 +1322,30 @@ export class ParagraphCanonicalRegistry {
 
   // ── Diagnostic ──────────────────────────────────────────────────────
 
+  /**
+   * R58.7 Phase A.1.3.1a: Scope authorization guard.
+   * Returns true if record scope matches operation scope.
+   * On mismatch: emits CANONICAL-SCOPE-MISMATCH, returns false.
+   * Caller must BLOCK the mutation.
+   */
+  assertCanonicalScope(
+    recordScopeId: string,
+    operationScopeId: string,
+    operation: string,
+    recordId: string,
+  ): boolean {
+    if (recordScopeId === operationScopeId) return true
+    console.warn(
+      `[InkChapter] CANONICAL-SCOPE-MISMATCH: ` +
+      `recordId=${recordId} ` +
+      `recordScopeId=${recordScopeId} ` +
+      `operationScopeId=${operationScopeId} ` +
+      `operation=${operation} ` +
+      `decision=HARD_STOP`,
+    )
+    return false
+  }
+
   private emitLifecycle(
     recordId: string,
     event: string,
@@ -1266,6 +1355,8 @@ export class ParagraphCanonicalRegistry {
     console.info(
       `[InkChapter] RECORD-LIFECYCLE: event=${event} ` +
       `recordId=${recordId} ` +
+      `scopeId=${meta.scopeId} ` +
+      `persistenceKey=${meta.persistenceKey ?? 'null'} ` +
       `documentKey=${meta.documentKey} ` +
       `sessionId=${meta.sessionId} ` +
       `state=${meta.state} ` +

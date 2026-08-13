@@ -4099,11 +4099,14 @@ describe('OH: One-Shot Paragraph Replacement Handoff', () => {
     const handoff: OneShotParagraphReplacementHandoff = {
       handoffId: 'handoff-test-1',
       sourceTxnId: 'txn-1',
+      scopeId: 'test-scope',
       preElement: p,
       preOrdinal: 0,
       preIdentity: getElementIdentity(p),
       tokenConsumed: true,
       semantic: 'force-indent',
+      semanticAtCreation: 'force-indent',
+      preRuntimeId: 'P-RUNTIME-0',
       consumed: false,
       replacementResolved: false,
       replacementElement: null,
@@ -4118,9 +4121,9 @@ describe('OH: One-Shot Paragraph Replacement Handoff', () => {
 
   it('OH-3: consumed handoff does not transfer again', () => {
     const handoff: OneShotParagraphReplacementHandoff = {
-      handoffId: 'h2', sourceTxnId: 'txn-2',
+      handoffId: 'h2', sourceTxnId: 'txn-2', scopeId: 'test-scope',
       preElement: makeParagraph(''), preOrdinal: 0, preIdentity: 'P::..:',
-      tokenConsumed: true, semantic: 'force-indent',
+      tokenConsumed: true, semantic: 'force-indent', semanticAtCreation: 'force-indent', preRuntimeId: 'P-RUNTIME-0',
       consumed: true,
       replacementResolved: true, replacementElement: null, replacementOrdinal: null, replacementIdentity: null,
       semanticTransferred: true, visualTransferred: true,
@@ -4132,9 +4135,9 @@ describe('OH: One-Shot Paragraph Replacement Handoff', () => {
   it('OH-4: handoff does not write caret', () => {
     // Handoff only transfers semantic+visual — never caret
     const handoff: OneShotParagraphReplacementHandoff = {
-      handoffId: 'h3', sourceTxnId: 'txn-3',
+      handoffId: 'h3', sourceTxnId: 'txn-3', scopeId: 'test-scope',
       preElement: makeParagraph(''), preOrdinal: 0, preIdentity: 'P::..:',
-      tokenConsumed: true, semantic: 'force-indent',
+      tokenConsumed: true, semantic: 'force-indent', semanticAtCreation: 'force-indent', preRuntimeId: 'P-RUNTIME-0',
       consumed: false,
       replacementResolved: false, replacementElement: null, replacementOrdinal: null, replacementIdentity: null,
       semanticTransferred: false, visualTransferred: false,
@@ -4146,9 +4149,9 @@ describe('OH: One-Shot Paragraph Replacement Handoff', () => {
 
   it('OH-8: handoff does not create sidecar', () => {
     const handoff: OneShotParagraphReplacementHandoff = {
-      handoffId: 'h4', sourceTxnId: 'txn-4',
+      handoffId: 'h4', sourceTxnId: 'txn-4', scopeId: 'test-scope',
       preElement: makeParagraph(''), preOrdinal: 0, preIdentity: 'P::..:',
-      tokenConsumed: true, semantic: 'force-indent',
+      tokenConsumed: true, semantic: 'force-indent', semanticAtCreation: 'force-indent', preRuntimeId: 'P-RUNTIME-0',
       consumed: false,
       replacementResolved: false, replacementElement: null, replacementOrdinal: null, replacementIdentity: null,
       semanticTransferred: false, visualTransferred: false,
