@@ -486,56 +486,116 @@ export default class extends Plugin<InkChapterSettings> {
     }
 
     // ── R59: Runtime Banner ─────────────────────────────────────────
-    const activeDoc = (typeof editor !== 'undefined' && (editor as any)?.library?.getActiveFilePath)
-      ? (editor as any).library.getActiveFilePath() ?? 'unknown'
-      : 'unknown'
-    // R58.6.1: PLUGIN-RUNTIME-ARTIFACT — resolve actual deployed plugin bundle path
+    const activeDoc = this.app.workspace.activeFile ?? 'unknown'
+    // R58.6.3: PLUGIN-RUNTIME-ARTIFACT — resolve from vault root, NOT __dirname
     const { existsSync } = require('fs') as typeof import('fs')
-    // Try canonical test vault path first, then fall back to __dirname
-    const canonicalPluginPath = path.resolve(
-      __dirname, '..', '..', 'test', 'vault', '.typora', 'plugins', 'dist', 'main.js',
-    )
-    // Also try project dist for SHA256 computation
-    const projectDistPath = path.resolve(__dirname, '..', '..', 'dist', 'main.js')
+    const targetVault = vaultRoot ?? ''
+    const pluginDistPath = targetVault
+      ? path.join(targetVault, '.typora', 'plugins', 'dist', 'main.js')
+      : ''
+    // R58.7 Phase A: project path derived from vault root (not __dirname which points to deployed vault)
+    const projectDistPath = targetVault
+      ? path.resolve(targetVault, '..', '..', 'dist', 'main.js')
+      : path.resolve(__dirname, '..', '..', '..', '..', '..', 'dist', 'main.js')
     
-    // Determine actual running plugin path
     let pluginArtifactPath: string
-    if (existsSync(canonicalPluginPath)) {
-      pluginArtifactPath = canonicalPluginPath
+    if (pluginDistPath && existsSync(pluginDistPath)) {
+      pluginArtifactPath = pluginDistPath
     } else if (existsSync(projectDistPath)) {
       pluginArtifactPath = projectDistPath
     } else {
-      // Fallback: try to derive from __dirname
       pluginArtifactPath = path.resolve(__dirname, 'main.js')
     }
-    const pluginArtifactExists = existsSync(pluginArtifactPath)
+    const pluginExists = existsSync(pluginArtifactPath)
     
     const pluginMainSha256 = (() => {
       try {
-        // Always compute SHA from project dist for consistency
-        const shaPath = existsSync(projectDistPath) ? projectDistPath : (existsSync(canonicalPluginPath) ? canonicalPluginPath : pluginArtifactPath)
+        const shaPath = existsSync(projectDistPath) ? projectDistPath : (existsSync(pluginDistPath) ? pluginDistPath : pluginArtifactPath)
         if (existsSync(shaPath)) {
           const data = require('fs').readFileSync(shaPath, 'utf-8') as string
-          const sha = crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
-          return sha
+          return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
         }
         return 'unknown'
       } catch { return 'unknown' }
     })()
+
+    // ── R58.6.7: Project source SHA256 ──
+    const projectMainPath = projectDistPath
+    const projectMainExists = existsSync(projectMainPath)
+    const projectMainSha256 = (() => {
+      try {
+        if (existsSync(projectMainPath)) {
+          const data = require('fs').readFileSync(projectMainPath, 'utf-8') as string
+          return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
+        }
+        return 'unknown'
+      } catch { return 'unknown' }
+    })()
+    const shaMatch = pluginMainSha256 !== 'unknown' && projectMainSha256 !== 'unknown'
+      ? pluginMainSha256 === projectMainSha256
+      : null
+
+    // ── R58.6.7: Style SHA256 ──
+    const stylePath = targetVault
+      ? path.resolve(targetVault, '..', '..', 'dist', 'style.css')
+      : path.resolve(__dirname, '..', '..', '..', '..', '..', 'dist', 'style.css')
+    const styleSha256 = (() => {
+      try {
+        if (existsSync(stylePath)) {
+          const data = require('fs').readFileSync(stylePath, 'utf-8') as string
+          return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
+        }
+        return 'unknown'
+      } catch { return 'unknown' }
+    })()
+    
+    // Initialization count (starts at 1 for fresh restart)
+    const initCount = 1
     console.log('================================================')
     console.log('InkChapter Runtime')
     console.log(`Business Build: ${INKCHAPTER_BUILD_ID}`)
     console.log(`Runtime Gate Revision: ${RUNTIME_GATE_REVISION}`)
     console.log(`Plugin Artifact Path: ${pluginArtifactPath}`)
     console.log(`Plugin SHA256: ${pluginMainSha256}`)
+    console.log(`Project SHA256: ${projectMainSha256}`)
+    console.log(`SHA Match: ${shaMatch}`)
+    console.log(`Style SHA256: ${styleSha256}`)
     console.log(`Active Doc: ${activeDoc}`)
+    console.log(`Initialization Count: ${initCount}`)
     console.log('================================================')
 
+    const sessionId = `sess-${Date.now()}`
     console.info(
       `[InkChapter] PLUGIN-RUNTIME-ARTIFACT: ` +
       `pluginMainPath=${pluginArtifactPath} ` +
+      `exists=${pluginExists} ` +
       `pluginMainSha256=${pluginMainSha256} ` +
       `buildId=${INKCHAPTER_BUILD_ID}`,
+    )
+    console.info(
+      `[InkChapter] INKCHAPTER-INITIALIZATION: ` +
+      `buildId=${INKCHAPTER_BUILD_ID} ` +
+      `initializationCount=${initCount} ` +
+      `sessionId=${sessionId} ` +
+      `timestamp=${new Date().toISOString()}`,
+    )
+    // R58.6.7: RUNTIME-IDENTITY-FINAL — complete identity snapshot
+    console.info(
+      `[InkChapter] RUNTIME-IDENTITY-FINAL: ` +
+      `vaultRoot=${vaultRoot} ` +
+      `activeDoc=${activeDoc} ` +
+      `pluginMainPath=${pluginArtifactPath} ` +
+      `pluginMainExists=${pluginExists} ` +
+      `pluginMainSha256=${pluginMainSha256} ` +
+      `projectMainPath=${projectMainPath} ` +
+      `projectMainExists=${projectMainExists} ` +
+      `projectMainSha256=${projectMainSha256} ` +
+      `shaMatch=${shaMatch} ` +
+      `stylePath=${stylePath} ` +
+      `styleSha256=${styleSha256} ` +
+      `buildId=${INKCHAPTER_BUILD_ID} ` +
+      `initializationCount=${initCount} ` +
+      `sessionId=${sessionId}`,
     )
 
     console.log('[InkChapter] 插件已加载')

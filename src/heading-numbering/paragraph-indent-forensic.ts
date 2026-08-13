@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-r58-6-1-runtime-closure-s3t6v'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-r58-7-persisted-docswitch-scope-authority-dsw2q7'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
 export const RUNTIME_GATE_REVISION = 'r58-lifecycle-repair'

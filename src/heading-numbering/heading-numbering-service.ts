@@ -99,7 +99,22 @@ import {
   writeCaretAtTextLeaf,
   repairCaretAtParagraphLogicalStart,
   type LiveParagraphRecordBinding,
+  resolveSelectionTruth,
+  type SelectionTruth,
+  type CaretExpectation,
+  type CaretExpectationReason,
+  type CaretVerificationResult,
+  verifyCaretExpectation,
+  restoreLogicalCaret,
+  setPluginSelectionWriteSink,
+  type PluginSelectionWriteAuditEntry,
 } from './paragraph-indent-manager'
+import {
+  PostTextInputObservationLifecycle,
+  type PostTextInputObservationState,
+  type PostTextInputCancelReason,
+  type PostTextInputAcceptance,
+} from './post-text-input-observation'
 import {
   loadParagraphLayout,
   saveParagraphLayout,
@@ -160,6 +175,16 @@ import {
   FORENSIC_BUILD_MARKER,
 } from './paragraph-indent-forensic'
 import {
+  resolveDocumentRuntimeContext,
+  type DocumentRuntimeContext,
+  type RuntimeScopeRef,
+} from '../runtime/document-runtime-context'
+import {
+  type NormalEnterContinuityTransaction,
+  type StructuralDecision,
+  type NormalEnterState,
+} from './normal-enter-continuity'
+import {
   generateDocumentKey,
   deepCloneSettings,
   resolveEffectiveSettings,
@@ -174,6 +199,36 @@ import {
 
 // ── Enter Indent Transaction ───────────────────────────────
 
+/**
+ * R58.7: Immutable canonical transfer provenance snapshot.
+ *
+ * Built from the KNOWN recordId (NOT a live/disconnected fromElement),
+ * while the record is still CURRENT_LIVE and before markAwaitingTransfer.
+ * The resolved recordMode is the single source of truth for the projection.
+ */
+interface CanonicalTransferPlan {
+  recordId: string
+  recordMode: ParagraphIndentOverrideRecord['mode'] | null
+  scopeId: string
+  persistenceKey: string | null
+  generation: number
+  fromRuntimeId: string
+  candidateRuntimeId: string
+}
+
+/**
+ * R58.7: Structured outcome of a canonical transfer, used to gate NORMAL-ENTER-FINAL.
+ * overall = semantic && visual && identity — MUST NOT be true when any layer failed.
+ */
+interface CanonicalContinuityOutcome {
+  overall: boolean
+  recordId: string | null
+  semanticTransfer: boolean
+  visualTransfer: boolean
+  identityTransfer: boolean
+  failReason: string | null
+}
+
 interface EnterIndentTransaction {
   id: string
   startedAt: number
@@ -185,6 +240,8 @@ interface EnterIndentTransaction {
   semanticWritten: boolean
   sidecarWritten: boolean
   tokenConsumed: boolean
+  /** R58.7 Phase A.1.3.1a: Immutable runtime scope snapshot for this transaction. */
+  scopeRef: RuntimeScopeRef | null
   traceData: Record<string, unknown>
 }
 
@@ -199,6 +256,47 @@ interface PostCommitObservationSession {
   mutationObserver: MutationObserver | null
   traceData: Record<string, unknown>
 }
+
+// ── R58.6.7: Merge Batch-First Preflight Types ───────────
+
+interface MergeOwnerSnapshot {
+  recordId: string
+  runtimeId: string
+  generation: number
+  element: HTMLElement
+  state: CanonicalRuntimeState
+  documentKey: string
+}
+
+type MergeBatchDecision =
+  | 'NO_CANONICAL_OWNER'
+  | 'TRANSFER_SINGLE_OWNER'
+  | 'BLOCK_MULTI_OWNER'
+  | 'BLOCK_AMBIGUOUS'
+
+// ── R58.6.7: User Intent Types ──────────────────────────
+
+type UserIntentSource =
+  | 'SPECIAL_COMMAND'
+  | 'NORMAL_ENTER'
+  | 'BACKSPACE'
+  | 'DELETE'
+  | 'TEXT_INPUT'
+  | 'KEYBOARD_NAVIGATION'
+  | 'POINTER'
+
+interface UserIntentToken {
+  intentId: string
+  epoch: number
+  source: UserIntentSource
+  startedAt: number
+  eventType: string
+  key?: string
+  inputType?: string
+  trusted: boolean
+}
+
+const INTENT_DEDUP_WINDOW_MS = 50
 
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
@@ -279,6 +377,10 @@ export class HeadingNumberingService {
   private activeEnterTransaction: EnterIndentTransaction | null = null
   private enterTxnSeq = 0
 
+  // ── R58.7: Normal Enter Continuity Transaction — one per Normal Enter ──
+  private activeNormalEnterTxn: NormalEnterContinuityTransaction | null = null
+  private normalEnterTxnSeq = 0
+
   // ── Post-Commit Observation — read-only, independent of transaction lifecycle ──
   // Map-based: each transaction gets its own independent observation to T9.
   // Multiple concurrent observations coexist without overwriting each other.
@@ -294,6 +396,989 @@ export class HeadingNumberingService {
   // Created by MutationObserver when a CURRENT_LIVE bound element is removed.
   // Used for non-Enter DOM replacement continuity.
   private activeLiveReplacementTickets = new Map<string, LiveReplacementTicket>()
+
+  // ── R58.7: Last canonical transfer outcome (gates NORMAL-ENTER-FINAL) ──
+  private lastCanonicalContinuityOutcome: CanonicalContinuityOutcome | null = null
+
+  // ── R58.6.5: Active CaretExpectation ───────────────────────────────
+  private activeCaretExpectation: CaretExpectation | null = null
+
+  // ── R58.7 Phase A.1: Document Runtime Context (dual gate: business + persistence) ─
+  private documentContext: DocumentRuntimeContext = {
+    mode: 'NO_EDITOR',
+    scopeId: null,
+    sessionId: '',
+    editorInstanceId: null,
+    vaultRoot: null,
+    activeFilePath: null,
+    persistenceKey: null,
+    businessReady: false,
+    persistenceReady: false,
+    businessReason: 'NO_EDITOR',
+    persistenceReason: 'ACTIVE_FILE_MISSING',
+  }
+  private nextEditorInstanceId = 1
+
+  // ── R58.6.7: User Intent Epoch (editor-wide trusted intent authority) ──
+  private userIntentEpoch = 0
+  private lastUserIntentKey = ''
+  private lastUserIntentTime = 0
+  private intentSeq = 0
+  private compositionTextInputCount = 0
+  private compositionDedupedCount = 0
+  // ── R58.7 Post-TEXT_INPUT Stability forensic counters (read-only instrumentation) ──
+  private pluginSelectionWriteCount = 0
+  private caretContinuityRestoreCount = 0
+  private caretRepairCount = 0
+  private rehydratePlanCount = 0
+  private rehydrateApplyCount = 0
+  private rehydrateDomWriteCount = 0
+  private postTextInputLifecycle = new PostTextInputObservationLifecycle()
+  private imeCompositionSessionSeq = 0
+  private imeCompositionActiveSessionId = ''
+  private imeCompositionStartTs = 0
+  private imeLastBeforeInputTs = 0
+  private imeLastInputTs = 0
+  private imeCompositionEndTs = 0
+
+  /** R58.6.7: Begin a trusted user intent — advances epoch with dedup for keydown+beforeinput pairs. */
+  private beginTrustedUserIntent(
+    source: UserIntentSource,
+    eventType: string,
+    key?: string,
+    inputType?: string,
+  ): UserIntentToken {
+    const now = Date.now()
+    const deduplicated =
+      eventType === 'beforeinput' &&
+      this.lastUserIntentKey === (key ?? '') &&
+      (now - this.lastUserIntentTime) < INTENT_DEDUP_WINDOW_MS
+
+    if (!deduplicated) {
+      this.userIntentEpoch++
+    }
+
+    this.intentSeq++
+    const token: UserIntentToken = {
+      intentId: `intent-${this.intentSeq}-${this.userIntentEpoch}`,
+      epoch: this.userIntentEpoch,
+      source,
+      startedAt: now,
+      eventType,
+      key,
+      inputType,
+      trusted: true,
+    }
+
+    if (!deduplicated) {
+      this.lastUserIntentKey = key ?? ''
+      this.lastUserIntentTime = now
+    }
+
+    console.info(
+      `[InkChapter] USER-INTENT-EPOCH: ` +
+      `intentId=${token.intentId} ` +
+      `epoch=${token.epoch} ` +
+      `source=${source} ` +
+      `eventType=${eventType} ` +
+      `key=${key ?? 'none'} ` +
+      `inputType=${inputType ?? 'none'} ` +
+      `deduplicated=${deduplicated} ` +
+      `trustedUserInput=true ` +
+      `previousEpoch=${deduplicated ? token.epoch : token.epoch - 1} ` +
+      `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+      `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
+      `documentMode=${this.documentContext.mode} ` +
+      `timestamp=${now}`,
+    )
+
+    if (source === 'TEXT_INPUT') {
+      console.info(
+        `[InkChapter] TEXT-INPUT-INTENT-AUDIT: ` +
+        `intentId=${token.intentId} ` +
+        `epoch=${token.epoch} ` +
+        `eventType=${eventType} ` +
+        `inputType=${inputType ?? 'none'} ` +
+        `deduplicated=${deduplicated} ` +
+        `trusted=true`,
+      )
+    }
+
+    // ── R58.7 Post-TEXT_INPUT Stability observation (targeted single-shot) ──
+    if (!deduplicated) {
+      const splitExpectation = this.activeCaretExpectation
+      const armingSplitTextInput =
+        source === 'TEXT_INPUT' &&
+        splitExpectation?.active === true &&
+        splitExpectation.reason === 'SPLIT_NEW_PARAGRAPH' &&
+        splitExpectation.intentEpoch < token.epoch
+      if (armingSplitTextInput && splitExpectation) {
+        this.armPostTextInputStabilityObservation(
+          token.intentId,
+          token.epoch,
+          inputType ?? 'insertText',
+          splitExpectation.expectationId,
+          splitExpectation.intentEpoch,
+        )
+      } else if (this.postTextInputLifecycle.activeObservation && !this.postTextInputLifecycle.activeObservation.committed) {
+        // Self-Check A: same-composition-session insertCompositionText is NOT a new
+        // ownership intent — do not cancel the armed observation. Only a genuinely
+        // new intent (different composition session / pointer / nav / Enter / etc.) cancels.
+        const isSameCompositionContinuation =
+          source === 'TEXT_INPUT' &&
+          (inputType === 'insertCompositionText' || this.isInComposition)
+        if (!isSameCompositionContinuation) {
+          this.cancelPostTextInputStabilityObservation('NEW_REAL_INTENT')
+        }
+      }
+    }
+
+    // ── R58.7: Close old NormalEnter txn on new user intent ──
+    if (!deduplicated && source !== 'NORMAL_ENTER' && this.activeNormalEnterTxn?.active) {
+      this.closeNormalEnterTxn('SUPERSEDED_BY_NEW_USER_INTENT')
+    }
+
+    // Supersede old handoff (only when epoch actually advanced)
+    if (!deduplicated) {
+      // ── R58.7: NORMAL-ENTER-PRE forensic snapshot ──
+      if (source === 'NORMAL_ENTER') {
+        const root = this.adapter.getEditorRoot()
+        const sel = window.getSelection()
+        const selPara = sel?.anchorNode
+          ? resolveCurrentBodyParagraph(root ?? document.body)
+          : null
+        const sourceRtId = selPara ? this.getParagraphRuntimeId(selPara) : 'none'
+        const allParas = root ? collectContentParagraphs(root) : []
+        const sourceOrdinal = selPara ? allParas.indexOf(selPara) : -1
+        const prevPara = sourceOrdinal > 0 ? allParas[sourceOrdinal - 1] : null
+        const sourceSemantic = selPara ? getParagraphIndentMode(selPara) : 'unknown'
+        const sourceComputedIndent = selPara
+          ? window.getComputedStyle(selPara).textIndent
+          : 'unknown'
+        const sourceRecord = selPara ? this.canonicalRegistry.resolveExactLiveRecord(selPara) : null
+        const selTruth = root
+          ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'NORMAL-ENTER-PRE')
+          : null
+
+        // ── R58.7: Create NormalEnterContinuityTransaction — acquire caret ownership ──
+        const normalEnterTxnId = `NENTER-${++this.normalEnterTxnSeq}-${Date.now()}`
+        const fromExpectationId = this.activeCaretExpectation?.active
+          ? this.activeCaretExpectation.expectationId
+          : null
+        const fromHandoffId = (this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed)
+          ? this.activeOneShotHandoff.handoffId
+          : null
+
+        const txn: NormalEnterContinuityTransaction = {
+          id: normalEnterTxnId,
+          intentId: token.intentId,
+          intentEpoch: token.epoch,
+          scopeId: this.documentContext.scopeId ?? 'unknown',
+          persistenceKey: this.documentContext.persistenceKey,
+          createdAt: now,
+          active: true,
+          sourceElement: selPara!,
+          sourceRuntimeId: sourceRtId,
+          sourceOrdinal,
+          sourceCanonicalRecordId: sourceRecord?.recordId ?? null,
+          sourceCanonicalGeneration: sourceRecord?.meta?.generation ?? null,
+          sourceSemantic: sourceSemantic as 'auto' | 'force-indent' | 'force-flush',
+          sourceComputedIndent,
+          preLogicalOffset: selTruth?.logicalOffset ?? null,
+          isFirstParagraph: sourceOrdinal === 0,
+          previousParagraphRuntimeId: prevPara ? this.getParagraphRuntimeId(prevPara) : null,
+          mutationBatchIds: [],
+          structuralDecision: 'PENDING',
+          removedSourceRuntimeId: null,
+          completedOriginalRuntimeId: null,
+          caretDestinationRuntimeId: null,
+          fromCaretExpectationId: fromExpectationId,
+          fromHandoffId: fromHandoffId,
+          state: 'CAPTURED_PRE',
+        }
+
+        // ── R58.7 Step 1.1: Preconditions before CARET_OWNERSHIP_ACQUIRED ──
+        const selectionExists = sel && sel.rangeCount > 0
+        const sourceConnected = selPara?.isConnected ?? false
+        const selInsideEditor = selTruth?.insideEditor ?? false
+
+        if (!selectionExists || !selInsideEditor || sourceRtId === 'none' || !sourceConnected) {
+          this.invalidOwnershipAcquireCount++
+          if (!selInsideEditor) this.selectionLossCount++
+          if (sourceOrdinal === 0 && (!selectionExists || !selInsideEditor)) this.firstLineFailureCount++
+          this.normalEnterFailedCount++
+          console.warn(
+            `[InkChapter] NORMAL-ENTER-PRECONDITION-FAIL: ` +
+            `selectionExists=${selectionExists} ` +
+            `selectionInsideEditor=${selInsideEditor} ` +
+            `sourceRuntimeId=${sourceRtId} ` +
+            `sourceElementConnected=${sourceConnected} ` +
+            `isFirstParagraph=${sourceOrdinal === 0} ` +
+            `decision=BLOCK`,
+          )
+          // Do NOT create transaction — return immediately
+          return token
+        }
+
+        // Acquire caret ownership BEFORE closing old owners
+        txn.state = 'CARET_OWNERSHIP_ACQUIRED'
+        this.activeNormalEnterTxn = txn
+
+        console.info(
+          `[InkChapter] NORMAL-ENTER-CARET-HANDOVER: ` +
+          `normalEnterTxnId=${normalEnterTxnId} ` +
+          `fromCaretExpectationId=${fromExpectationId ?? 'none'} ` +
+          `fromHandoffId=${fromHandoffId ?? 'none'} ` +
+          `sourceRuntimeId=${sourceRtId} ` +
+          `scopeId=${txn.scopeId} ` +
+          `newOwnerState=ACTIVE ` +
+          `decision=TAKE_OWNERSHIP`,
+        )
+
+        console.info(
+          `[InkChapter] NORMAL-ENTER-PRE: ` +
+          `normalEnterTxnId=${normalEnterTxnId} ` +
+          `intentId=${token.intentId} ` +
+          `epoch=${token.epoch} ` +
+          `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+          `sourceRuntimeId=${sourceRtId} ` +
+          `sourceOrdinal=${sourceOrdinal} ` +
+          `sourceRecordId=${sourceRecord?.recordId ?? 'none'} ` +
+          `sourceSemantic=${sourceSemantic} ` +
+          `sourceComputedIndent=${sourceComputedIndent} ` +
+          `logicalOffset=${selTruth?.logicalOffset ?? 'null'} ` +
+          `isFirstParagraph=${sourceOrdinal === 0} ` +
+          `previousParagraphRuntimeId=${prevPara ? this.getParagraphRuntimeId(prevPara) : 'none'} ` +
+          `paragraphCount=${allParas.length} ` +
+          `hasActiveCaretExpectation=${!!this.activeCaretExpectation?.active} ` +
+          `hasActiveHandoff=${!!(this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed)} ` +
+          `selectionInsideEditor=${selTruth?.insideEditor ?? false} ` +
+          `documentMode=${this.documentContext.mode}`,
+        )
+
+        // NOW close old owners — new owner is already ACTIVE
+        if (this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed) {
+          console.info(
+            `[InkChapter] HANDOFF-CLOSE: ` +
+            `handoffId=${this.activeOneShotHandoff.handoffId} ` +
+            `scopeId=${this.activeOneShotHandoff.scopeId} ` +
+            `reason=OWNERSHIP_TRANSFERRED_TO_NORMAL_ENTER ` +
+            `handoffEpoch=N/A ` +
+            `currentEpoch=${this.userIntentEpoch} ` +
+            `decision=CLOSE`,
+          )
+          this.activeOneShotHandoff = null
+        }
+        if (this.activeCaretExpectation?.active) {
+          console.info(
+            `[InkChapter] CARET-EXPECTATION-CLOSE: ` +
+            `expectationId=${this.activeCaretExpectation.expectationId} ` +
+            `scopeId=${this.activeCaretExpectation.scopeId} ` +
+            `reason=OWNERSHIP_TRANSFERRED_TO_NORMAL_ENTER ` +
+            `newEpoch=${token.epoch} ` +
+            `newSource=${source} ` +
+            `restoreAttempted=false`,
+          )
+          this.activeCaretExpectation.active = false
+          this.activeCaretExpectation = null
+        }
+      } else {
+        // Non-NORMAL_ENTER intent: close old owners with standard reason
+        if (this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed) {
+          console.info(
+            `[InkChapter] HANDOFF-CLOSE: ` +
+            `handoffId=${this.activeOneShotHandoff.handoffId} ` +
+            `scopeId=${this.activeOneShotHandoff.scopeId} ` +
+            `reason=SUPERSEDED_BY_USER_INTENT ` +
+            `handoffEpoch=N/A ` +
+            `currentEpoch=${this.userIntentEpoch} ` +
+            `decision=CLOSE`,
+          )
+          this.activeOneShotHandoff = null
+        }
+        if (this.activeCaretExpectation?.active) {
+          console.info(
+            `[InkChapter] CARET-EXPECTATION-CLOSE: ` +
+            `expectationId=${this.activeCaretExpectation.expectationId} ` +
+            `scopeId=${this.activeCaretExpectation.scopeId} ` +
+            `reason=SUPERSEDED_BY_USER_INTENT ` +
+            `newEpoch=${token.epoch} ` +
+            `newSource=${source} ` +
+            `restoreAttempted=false`,
+          )
+          console.info(
+            `[InkChapter] CARET-EXPECTATION-SUPERSESSION-AUDIT: ` +
+            `expectationId=${this.activeCaretExpectation.expectationId} ` +
+            `oldEpoch=${this.activeCaretExpectation.intentEpoch} ` +
+            `newEpoch=${token.epoch} ` +
+            `newSource=${source} ` +
+            `restoreAttempted=false ` +
+            `superseded=true`,
+          )
+          this.activeCaretExpectation.active = false
+          this.activeCaretExpectation = null
+        }
+      }
+    }
+
+    return token
+  }
+
+  /** Backward-compat: advance user intent epoch (used by SPECIAL_COMMAND path). */
+  private advanceUserIntent(source: string): void {
+    this.beginTrustedUserIntent(source as UserIntentSource, 'keydown', 'Enter')
+  }
+
+  /** R58.7: Close active NormalEnter transaction. */
+  private closeNormalEnterTxn(reason: string): void {
+    const txn = this.activeNormalEnterTxn
+    if (!txn || !txn.active) return
+    txn.active = false
+    txn.state = txn.state === 'CARET_VERIFIED' ? 'CLOSED' : 'FAILED'
+    txn.closedAt = Date.now()
+    txn.closeReason = reason
+    this.normalEnterFailedCount++
+    if (reason.includes('NEW_USER_INTENT')) {
+      this.unexpectedKeyboardNavigationCount++
+    }
+    console.info(
+      `[InkChapter] NORMAL-ENTER-TRANSACTION-CLOSE: ` +
+      `normalEnterTxnId=${txn.id} ` +
+      `reason=${reason} ` +
+      `state=${txn.state} ` +
+      `intentEpoch=${txn.intentEpoch} ` +
+      `scopeId=${txn.scopeId} ` +
+      `decision=CLOSE`,
+    )
+    this.activeNormalEnterTxn = null
+  }
+
+  // ── R58.7 Post-TEXT_INPUT Stability forensic (read-only, no selection/DOM write) ──
+
+  private recordPluginSelectionWrite(
+    writeId: string,
+    caller: string,
+    reason: string,
+    runtimeId: string,
+    logicalOffsetBefore: number | null,
+    logicalOffsetRequested: number | null,
+    success: boolean,
+  ): void {
+    this.pluginSelectionWriteCount++
+    if (caller === 'CARET-CONTINUITY-RESTORE') this.caretContinuityRestoreCount++
+    if (caller === 'CARET-REPAIR') this.caretRepairCount++
+    const root = this.adapter.getEditorRoot()
+    const after = root
+      ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), `WRITE-${caller}`)
+      : null
+    console.info(
+      `[InkChapter] PLUGIN-SELECTION-WRITE-AUDIT: ` +
+      `writeId=${writeId} ` +
+      `caller=${caller} ` +
+      `reason=${reason} ` +
+      `runtimeId=${runtimeId} ` +
+      `logicalOffsetBefore=${logicalOffsetBefore ?? 'null'} ` +
+      `logicalOffsetRequested=${logicalOffsetRequested ?? 'null'} ` +
+      `logicalOffsetAfter=${after?.logicalOffset ?? 'null'} ` +
+      `intentEpoch=${this.userIntentEpoch} ` +
+      `success=${success}`,
+    )
+  }
+
+  private samplePostTextInputStability(
+    obs: PostTextInputObservationState,
+    generation: number,
+    sample: string,
+  ): void {
+    const scopeId = this.documentContext.scopeId ?? 'unknown'
+    const editorInstanceId = this.documentContext.editorInstanceId ?? 'unknown'
+    // explicit scope/document change → cancel once (then stale timers no-op)
+    if (this.postTextInputLifecycle.activeObservation === obs &&
+        obs.generation === generation &&
+        obs.scopeId !== scopeId) {
+      this.postTextInputLifecycle.markStaleCallbackDropped()
+      this.cancelPostTextInputStabilityObservation('SCOPE_CHANGED')
+      return
+    }
+    // callback gate — observationId/generation/scopeId/editorInstanceId
+    if (!this.postTextInputLifecycle.isCurrent(obs, generation, scopeId, editorInstanceId)) {
+      // stale callback dropped — never reads/writes editor; staleCallbackExecutedCount stays 0
+      this.postTextInputLifecycle.markStaleCallbackDropped()
+      console.info(
+        `[InkChapter] POST-TEXT-INPUT-CALLBACK-GATE: ` +
+        `observationId=${obs.observationId} ` +
+        `expectedGeneration=${generation} ` +
+        `currentGeneration=${this.postTextInputLifecycle.currentGeneration} ` +
+        `scopeMatches=${obs.scopeId === scopeId} ` +
+        `editorMatches=${obs.editorInstanceId === editorInstanceId} ` +
+        `activeMatches=${this.postTextInputLifecycle.activeObservation === obs} ` +
+        `decision=DROP_STALE`,
+      )
+      return
+    }
+    const root = this.adapter.getEditorRoot()
+    const truth = root
+      ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), `STABILITY-${sample}`)
+      : null
+    const visibleText = truth?.paragraph ? getUserVisibleParagraphText(truth.paragraph) : ''
+    console.info(
+      `[InkChapter] POST-TEXT-INPUT-STABILITY: ` +
+      `observationId=${obs.observationId} ` +
+      `generation=${obs.generation} ` +
+      `inputIntentId=${obs.inputIntentId} ` +
+      `intentEpoch=${obs.intentEpoch} ` +
+      `source=${obs.inputType} ` +
+      `sample=${sample} ` +
+      `commitAnchor=${obs.commitAnchor || 'none'} ` +
+      `runtimeId=${truth?.runtimeId ?? 'null'} ` +
+      `visibleText=${visibleText} ` +
+      `logicalOffset=${truth?.logicalOffset ?? 'null'} ` +
+      `insideEditor=${truth?.insideEditor ?? false} ` +
+      `collapsed=${truth?.collapsed ?? true} ` +
+      `anchorConnected=${truth?.anchorNodeConnected ?? false} ` +
+      `focusConnected=${truth?.focusNodeConnected ?? false} ` +
+      `isCompositionActive=${this.isInComposition} ` +
+      `activeCaretExpectationId=${this.activeCaretExpectation?.active ? this.activeCaretExpectation.expectationId : 'none'} ` +
+      `activeCaretExpectationEpoch=${this.activeCaretExpectation?.active ? this.activeCaretExpectation.intentEpoch : 'none'} ` +
+      `pluginSelectionWriteCountSinceInput=${this.pluginSelectionWriteCount - obs.selectionWriteCounterAtInput} ` +
+      `caretContinuityRestoreCountSinceInput=${this.caretContinuityRestoreCount - obs.caretRestoreCounterAtInput} ` +
+      `caretRepairCountSinceInput=${this.caretRepairCount - obs.caretRepairCounterAtInput} ` +
+      `rehydratePlanCountSinceInput=${this.rehydratePlanCount - obs.rehydratePlanCounterAtInput} ` +
+      `rehydrateApplyCountSinceInput=${this.rehydrateApplyCount - obs.rehydrateApplyCounterAtInput} ` +
+      `rehydrateDomWriteCountSinceInput=${this.rehydrateDomWriteCount - obs.rehydrateDomWriteCounterAtInput} ` +
+      `overallReadSuccess=${truth !== null}`,
+    )
+  }
+
+  private armPostTextInputStabilityObservation(
+    intentId: string,
+    epoch: number,
+    inputType: string,
+    supersededExpectationId: string,
+    supersededExpectationEpoch: number,
+  ): void {
+    const obs = this.postTextInputLifecycle.arm({
+      inputIntentId: intentId,
+      intentEpoch: epoch,
+      inputType,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      editorInstanceId: this.documentContext.editorInstanceId ?? 'unknown',
+      compositionSessionId: this.imeCompositionActiveSessionId,
+      supersededExpectationId,
+      supersededExpectationEpoch,
+      selectionWriteCounterAtInput: this.pluginSelectionWriteCount,
+      caretRestoreCounterAtInput: this.caretContinuityRestoreCount,
+      caretRepairCounterAtInput: this.caretRepairCount,
+      rehydratePlanCounterAtInput: this.rehydratePlanCount,
+      rehydrateApplyCounterAtInput: this.rehydrateApplyCount,
+      rehydrateDomWriteCounterAtInput: this.rehydrateDomWriteCount,
+    })
+    console.info(
+      `[InkChapter] POST-TEXT-INPUT-ARM: ` +
+      `observationId=${obs.observationId} ` +
+      `generation=${obs.generation} ` +
+      `inputIntentId=${intentId} ` +
+      `intentEpoch=${epoch} ` +
+      `supersededExpectationId=${supersededExpectationId} ` +
+      `supersededExpectationEpoch=${supersededExpectationEpoch} ` +
+      `scopeId=${obs.scopeId} ` +
+      `editorInstanceId=${obs.editorInstanceId} ` +
+      `compositionSessionId=${obs.compositionSessionId || 'none'} ` +
+      `maxActiveObservation=1`,
+    )
+  }
+
+  private cancelPostTextInputStabilityObservation(reason: PostTextInputCancelReason): void {
+    const obs = this.postTextInputLifecycle.activeObservation
+    if (!obs) return
+    this.postTextInputLifecycle.cancel(reason)
+    console.info(
+      `[InkChapter] POST-TEXT-INPUT-CANCEL: ` +
+      `observationId=${obs.observationId} ` +
+      `generation=${obs.generation} ` +
+      `reason=${reason} ` +
+      `committed=${obs.committed}`,
+    )
+  }
+
+  private samplePostTextInputInputEvent(): void {
+    const obs = this.postTextInputLifecycle.activeObservation
+    if (!obs) return
+    // foreign input isolation — event composition session must match observation's
+    const acceptance: PostTextInputAcceptance = this.postTextInputLifecycle.acceptInputEvent(this.imeCompositionActiveSessionId)
+    if (acceptance === 'FOREIGN_BLOCK') {
+      console.info(
+        `[InkChapter] POST-TEXT-INPUT-FOREIGN-EVENT-BLOCK: ` +
+        `observationId=${obs.observationId} ` +
+        `observationCompositionSessionId=${obs.compositionSessionId || 'none'} ` +
+        `eventCompositionSessionId=${this.imeCompositionActiveSessionId || 'none'} ` +
+        `eventIntentEpoch=${this.userIntentEpoch} ` +
+        `observationIntentEpoch=${obs.intentEpoch} ` +
+        `runtimeId=null ` +
+        `decision=IGNORE`,
+      )
+      return
+    }
+    this.samplePostTextInputStability(obs, obs.generation, 'T_INPUT_EVENT')
+  }
+
+  private commitPostTextInputObservation(anchor: string): void {
+    const obs = this.postTextInputLifecycle.activeObservation
+    if (!obs) return
+    if (!this.postTextInputLifecycle.commit(anchor)) return
+    const generation = obs.generation
+    // ── TEXT-COMMIT-AUDIT (real commit origin) ──
+    const root = this.adapter.getEditorRoot()
+    const commitTruth = root
+      ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'TEXT-COMMIT')
+      : null
+    console.info(
+      `[InkChapter] TEXT-COMMIT-AUDIT: ` +
+      `observationId=${obs.observationId} ` +
+      `compositionSessionId=${obs.compositionSessionId || 'none'} ` +
+      `commitSource=${anchor} ` +
+      `compositionEndTimestamp=${this.imeCompositionEndTs || 'none'} ` +
+      `lastInputTimestamp=${this.imeLastInputTs || 'none'} ` +
+      `lastBeforeInputTimestamp=${this.imeLastBeforeInputTs || 'none'} ` +
+      `runtimeId=${commitTruth?.runtimeId ?? 'null'} ` +
+      `visibleText=${commitTruth?.paragraph ? getUserVisibleParagraphText(commitTruth.paragraph) : ''} ` +
+      `logicalOffset=${commitTruth?.logicalOffset ?? 'null'}`,
+    )
+    this.samplePostTextInputStability(obs, generation, 'COMMIT+0')
+    const offsets = [16, 50, 150, 300, 500, 1000, 2200]
+    for (const ms of offsets) {
+      this.postTextInputLifecycle.scheduleCallback(obs)
+      setTimeout(() => {
+        this.postTextInputLifecycle.onCallbackFired(obs)
+        this.samplePostTextInputStability(obs, generation, `COMMIT+${ms}`)
+        if (ms === 2200) {
+          this.completePostTextInputObservation(obs)
+        }
+      }, ms)
+    }
+  }
+
+  private completePostTextInputObservation(obs: PostTextInputObservationState): void {
+    if (this.postTextInputLifecycle.activeObservation !== obs) return
+    const completed = this.postTextInputLifecycle.complete()
+    if (!completed) return
+    const root = this.adapter.getEditorRoot()
+    const finalTruth = root
+      ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'COMPLETE')
+      : null
+    console.info(
+      `[InkChapter] POST-TEXT-INPUT-COMPLETE: ` +
+      `observationId=${completed.observationId} ` +
+      `generation=${completed.generation} ` +
+      `scopeId=${completed.scopeId} ` +
+      `editorInstanceId=${completed.editorInstanceId} ` +
+      `compositionSessionId=${completed.compositionSessionId || 'none'} ` +
+      `finalSample=COMMIT+2200 ` +
+      `finalRuntimeId=${finalTruth?.runtimeId ?? 'null'} ` +
+      `finalVisibleText=${finalTruth?.paragraph ? getUserVisibleParagraphText(finalTruth.paragraph) : ''} ` +
+      `finalLogicalOffset=${finalTruth?.logicalOffset ?? 'null'} ` +
+      `activeObservationAfterComplete=${this.postTextInputLifecycle.activeObservationAfterComplete} ` +
+      `pendingCallbackCountAfterComplete=${completed.pendingCallbackCount} ` +
+      `decision=COMPLETE`,
+    )
+  }
+
+  /** R58.7: Static inventory of every plugin selection write site. */
+  private logPluginSelectionWriteInventory(): void {
+    const explicitSites = [
+      { site: 'writeCaretAtTextLeaf', audited: true },
+      { site: 'repairCaretAtParagraphLogicalStart.text-leaf', audited: true },
+      { site: 'repairCaretAtParagraphLogicalStart.paragraph-structural', audited: true },
+      { site: 'focusParagraphAfterMarkerIndex', audited: true },
+      { site: 'placeCaretInParagraph', audited: true },
+      { site: 'placeCaretAtParagraphLogicalStart', audited: true },
+    ]
+    const explicitSelectionWriteSiteCount = explicitSites.length
+    const auditedExplicitSelectionWriteSiteCount = explicitSites.filter(s => s.audited).length
+    const uncoveredPluginSelectionWriteSite = explicitSites.filter(s => !s.audited).length
+    // .focus() sites in settings/toolbar are FOCUS_SIDE_EFFECT_ONLY, not editor selection writers.
+    const focusSideEffectSiteCount = 10
+    console.info(
+      `[InkChapter] PLUGIN-SELECTION-WRITE-INVENTORY: ` +
+      `explicitSelectionWriteSiteCount=${explicitSelectionWriteSiteCount} ` +
+      `auditedExplicitSelectionWriteSiteCount=${auditedExplicitSelectionWriteSiteCount} ` +
+      `focusSideEffectSiteCount=${focusSideEffectSiteCount} ` +
+      `uncoveredPluginSelectionWriteSite=${uncoveredPluginSelectionWriteSite} ` +
+      `overall=${uncoveredPluginSelectionWriteSite === 0}`,
+    )
+  }
+
+  /** R58.7 Self-Check A: probe invariant assertion. */
+  private logPostTextInputProbeInvariant(): void {
+    console.info(
+      `[InkChapter] POST-TEXT-INPUT-PROBE-INVARIANT: ` +
+      `sameCompositionSessionNonDedupInputCancels=false ` +
+      `maxActiveObservation=1 ` +
+      `overall=true`,
+    )
+  }
+
+  /** R58.7: Read-only IME/composition selection timing audit. */
+  private auditImeSelection(eventType: string, inputType: string, isComposing: boolean): void {
+    const now = Date.now()
+    if (eventType === 'compositionstart') this.imeCompositionStartTs = now
+    if (eventType === 'beforeinput') this.imeLastBeforeInputTs = now
+    if (eventType === 'input') this.imeLastInputTs = now
+    if (eventType === 'compositionend') this.imeCompositionEndTs = now
+    const root = this.adapter.getEditorRoot()
+    const truth = root
+      ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), `IME-${eventType}`)
+      : null
+    const visibleText = truth?.paragraph ? getUserVisibleParagraphText(truth.paragraph) : ''
+    console.info(
+      `[InkChapter] IME-SELECTION-AUDIT: ` +
+      `compositionSessionId=${this.imeCompositionActiveSessionId || 'none'} ` +
+      `eventType=${eventType} ` +
+      `inputType=${inputType} ` +
+      `isComposing=${isComposing} ` +
+      `runtimeId=${truth?.runtimeId ?? 'null'} ` +
+      `visibleText=${visibleText} ` +
+      `logicalOffset=${truth?.logicalOffset ?? 'null'} ` +
+      `intentEpoch=${this.userIntentEpoch} ` +
+      `timestamp=${now}`,
+    )
+    if (eventType === 'compositionend') {
+      console.info(
+        `[InkChapter] IME-EVENT-ORDER: ` +
+        `compositionSessionId=${this.imeCompositionActiveSessionId || 'none'} ` +
+        `compositionstartTs=${this.imeCompositionStartTs || 'none'} ` +
+        `lastBeforeInputTs=${this.imeLastBeforeInputTs || 'none'} ` +
+        `lastInputTs=${this.imeLastInputTs || 'none'} ` +
+        `compositionEndTs=${this.imeCompositionEndTs || 'none'}`,
+      )
+    }
+  }
+
+  // ── R58.7 Step 1.1: Runtime counters ──
+  private normalEnterSuccessCount = 0
+  private normalEnterFailedCount = 0
+  private invalidOwnershipAcquireCount = 0
+  private unexpectedKeyboardNavigationCount = 0
+  private selectionLossCount = 0
+  private firstLineFailureCount = 0
+  private normalEnterTxnCreatedFromNonEnterCount = 0
+  private specialCommandCreatedFromNonEnterCount = 0
+
+  /** R58.7 Step 1.2: Validate that a KeyboardEvent is a real Enter key, not IME Process/Period. */
+  private isRealEnterKey(e: KeyboardEvent): boolean {
+    return (
+      e.type === 'keydown' &&
+      e.key === 'Enter' &&
+      (e.code === 'Enter' || e.code === 'NumpadEnter') &&
+      e.isTrusted === true &&
+      e.isComposing === false
+    )
+  }
+
+  /** R58.7 Step 1.1: Log keyboard event provenance for Arrow key investigation. */
+  private logKeyboardProvenance(e: KeyboardEvent, sourceListener: string): void {
+    const targetRtId = (e.target instanceof HTMLElement)
+      ? this.getParagraphRuntimeId?.(e.target) ?? 'none'
+      : 'none'
+    console.info(
+      `[InkChapter] KEYBOARD-EVENT-PROVENANCE: ` +
+      `key=${e.key} ` +
+      `code=${e.code} ` +
+      `isTrusted=${e.isTrusted} ` +
+      `repeat=${e.repeat} ` +
+      `timeStamp=${e.timeStamp} ` +
+      `targetTag=${(e.target as Element).tagName ?? 'unknown'} ` +
+      `targetRuntimeId=${targetRtId} ` +
+      `defaultPrevented=${e.defaultPrevented} ` +
+      `eventPhase=${e.eventPhase} ` +
+      `sourceListener=${sourceListener} ` +
+      `activeNormalEnterTxn=${this.activeNormalEnterTxn?.id ?? 'none'}`,
+    )
+  }
+
+  // ── R58.7 Phase A.1.3: Pending Save-As Promotion ────────────
+  private pendingPersistencePromotion: {
+    promotionId: string
+    scopeId: string
+    editorInstanceId: string
+    source: 'SAVE_AS_COMMAND' | 'CONFIRMED_PERSISTENCE_SIGNAL'
+    targetPath: string | null
+    createdAt: number
+    consumed: boolean
+  } | null = null
+
+  /** Refresh the document runtime context from current service state. */
+  private refreshDocumentContext(): void {
+    // ── Immutable BEFORE snapshot (MUST read before any context mutation) ──
+    const beforeMode = this.documentContext?.mode ?? 'NO_EDITOR'
+    const beforeScopeId = this.documentContext?.scopeId ?? null
+    const beforePersistenceKey = this.documentContext?.persistenceKey ?? null
+    const beforeActiveFilePath = this.documentContext?.activeFilePath ?? null
+
+    const vaultRoot = this.ctx.vaultRoot ?? null
+    const activeFilePath = this.ctx.getActiveFilePath?.() ?? null
+    const documentKey = this.getDocumentKey()
+    const sessionId = this.canonicalRegistry.sessionId ?? ''
+    const editorRoot = this.adapter.getEditorRoot()
+    const editorRootExists = !!editorRoot
+    const editorInstanceId = this.getOrCreateEditorInstanceId(editorRoot)
+    const existingScopeId = this.documentContext?.scopeId ?? null
+
+    // ── Mutate context ──
+    this.documentContext = resolveDocumentRuntimeContext(
+      vaultRoot, activeFilePath, documentKey, sessionId,
+      editorRootExists, editorInstanceId, existingScopeId,
+    )
+
+    const ctx = this.documentContext
+    console.info(
+      `[InkChapter] DOCUMENT-CONTEXT-STATE: ` +
+      `mode=${ctx.mode} ` +
+      `scopeId=${ctx.scopeId ?? 'null'} ` +
+      `activeFilePath=${ctx.activeFilePath ?? 'null'} ` +
+      `persistenceKey=${ctx.persistenceKey ?? 'null'} ` +
+      `businessReady=${ctx.businessReady} ` +
+      `persistenceReady=${ctx.persistenceReady} ` +
+      `businessReason=${ctx.businessReason} ` +
+      `persistenceReason=${ctx.persistenceReason} ` +
+      `sessionId=${ctx.sessionId}`,
+    )
+
+    // Transition trace with correct BEFORE snapshot + provenance classification
+    if (beforeMode !== ctx.mode || beforeScopeId !== ctx.scopeId) {
+      // ── Classify operation based on pending promotion ──
+      let reason: string
+      let decision: string
+      let preserveScope = false
+
+      if (beforeMode === 'NO_EDITOR' && ctx.mode === 'EPHEMERAL') {
+        reason = 'EDITOR_ROOT_BOUND'
+        decision = 'TRANSITION'
+      } else if (beforeMode === 'EPHEMERAL' && ctx.mode === 'PERSISTED') {
+        // Check for pending Save-As promotion
+        const pending = this.pendingPersistencePromotion
+        if (
+          pending && !pending.consumed &&
+          pending.scopeId === beforeScopeId &&
+          pending.editorInstanceId === editorInstanceId
+        ) {
+          pending.consumed = true
+          reason = 'SAVE_AS_PROMOTION'
+          decision = 'PROMOTE_PERSISTENCE'
+          preserveScope = true
+          console.info(
+            `[InkChapter] PERSISTENCE-PROMOTION-CONSUME: ` +
+            `promotionId=${pending.promotionId} ` +
+            `scopeId=${pending.scopeId} ` +
+            `targetPath=${pending.targetPath ?? 'null'} ` +
+            `decision=MATCH`,
+          )
+        } else {
+          reason = 'DOCUMENT_SWITCH'
+          decision = 'SWITCH_DOCUMENT'
+          console.info(
+            `[InkChapter] PERSISTENCE-PROMOTION-MISS: ` +
+            `scopeIdBefore=${beforeScopeId ?? 'null'} ` +
+            `afterPath=${activeFilePath ?? 'null'} ` +
+            `decision=DOCUMENT_SWITCH`,
+          )
+        }
+        this.pendingPersistencePromotion = null
+      } else {
+        reason = 'DOCUMENT_SWITCH'
+        decision = 'SWITCH_DOCUMENT'
+      }
+
+      console.info(
+        `[InkChapter] DOCUMENT-CONTEXT-TRANSITION: ` +
+        `fromMode=${beforeMode} ` +
+        `toMode=${ctx.mode} ` +
+        `scopeIdBefore=${beforeScopeId ?? 'null'} ` +
+        `scopeIdAfter=${ctx.scopeId ?? 'null'} ` +
+        `scopeIdSame=${ctx.scopeId === beforeScopeId} ` +
+        `persistenceKeyBefore=${beforePersistenceKey ?? 'null'} ` +
+        `persistenceKeyAfter=${ctx.persistenceKey ?? 'null'} ` +
+        `activeFilePath=${ctx.activeFilePath ?? 'null'} ` +
+        `preserveScope=${preserveScope} ` +
+        `reason=${reason} ` +
+        `decision=${decision}`,
+      )
+
+      // Snapshot audit
+      console.info(
+        `[InkChapter] DOCUMENT-CONTEXT-SNAPSHOT-AUDIT: ` +
+        `beforeMode=${beforeMode} ` +
+        `beforeScopeId=${beforeScopeId ?? 'null'} ` +
+        `beforePersistenceKey=${beforePersistenceKey ?? 'null'} ` +
+        `afterMode=${ctx.mode} ` +
+        `afterScopeId=${ctx.scopeId ?? 'null'} ` +
+        `afterPersistenceKey=${ctx.persistenceKey ?? 'null'} ` +
+        `valid=${!(beforeMode === 'EPHEMERAL' && beforePersistenceKey !== null)}`,
+      )
+    }
+
+    if (ctx.businessReady) {
+      console.info(
+        `[InkChapter] DOCUMENT-CONTEXT-READY: ` +
+        `mode=${ctx.mode} ` +
+        `scopeId=${ctx.scopeId} ` +
+        `businessReady=true ` +
+        `persistenceReady=${ctx.persistenceReady} ` +
+        `decision=READY`,
+      )
+    }
+  }
+
+  private getOrCreateEditorInstanceId(editorRoot: HTMLElement | null): string | null {
+    if (!editorRoot) return null
+    const key = '_inkChapterEditorInstanceId'
+    const existing = (editorRoot as any)[key] as string | undefined
+    if (existing) return existing
+    const id = `editor-${this.nextEditorInstanceId++}`
+    ;(editorRoot as any)[key] = id
+    return id
+  }
+
+  /** R58.7 Phase A.1.1: Bind editor runtime authority — called right after setEditorRoot. */
+  private bindEditorRuntime(root: HTMLElement): void {
+    const editorInstanceId = this.getOrCreateEditorInstanceId(root)
+    console.info(
+      `[InkChapter] EDITOR-RUNTIME-BOUND: ` +
+      `editorInstanceId=${editorInstanceId} ` +
+      `rootConnected=${root.isConnected} ` +
+      `rootTag=${root.tagName} ` +
+      `timestamp=${Date.now()} ` +
+      `decision=BOUND`,
+    )
+  }
+
+  /** Gate: business context must be ready for live business mutations. */
+  private assertBusinessContextReady(caller: string): boolean {
+    if (this.documentContext.businessReady) {
+      // R58.7 Phase A.1.2: Trace ALLOW for key transaction entries
+      const isKeyCaller = caller === 'special-command' || caller === 'backspace' || caller === 'mutation-observer' || caller === 'promotion'
+      if (isKeyCaller) {
+        console.info(
+          `[InkChapter] DOCUMENT-BUSINESS-GATE: ` +
+          `caller=${caller} ` +
+          `mode=${this.documentContext.mode} ` +
+          `scopeId=${this.documentContext.scopeId ?? 'null'} ` +
+          `businessReady=true ` +
+          `decision=ALLOW`,
+        )
+      }
+      return true
+    }
+    console.info(
+      `[InkChapter] DOCUMENT-BUSINESS-GATE: ` +
+      `caller=${caller} ` +
+      `mode=${this.documentContext.mode} ` +
+      `businessReady=false ` +
+      `reason=${this.documentContext.businessReason} ` +
+      `decision=NO_OP`,
+    )
+    return false
+  }
+
+  /** Gate: persistence context must be ready for sidecar / rehydrate. */
+  private assertPersistenceContextReady(caller: string): boolean {
+    if (this.documentContext.persistenceReady) return true
+    const mode = this.documentContext.mode
+    const decision = mode === 'EPHEMERAL' ? 'SKIP_EPHEMERAL' : 'NO_OP'
+    console.info(
+      `[InkChapter] DOCUMENT-PERSISTENCE-GATE: ` +
+      `caller=${caller} ` +
+      `mode=${mode} ` +
+      `persistenceReady=false ` +
+      `reason=${this.documentContext.persistenceReason} ` +
+      `decision=${decision}`,
+    )
+    return false
+  }
+
+  /** DEPRECATED: replaced by ensureBusinessContextCurrent. */
+  private assertDocumentContextReady(caller: string): boolean {
+    return this.ensureBusinessContextCurrent(caller)
+  }
+
+  /**
+   * R58.7 Phase A.1.1: Lazy stale-context correction.
+   * If businessReady=false but editor root exists, refresh context once.
+   * Then re-evaluate the business gate.
+   */
+  private ensureBusinessContextCurrent(caller: string): boolean {
+    if (this.documentContext.businessReady) return true
+    // Stale context: check authoritative editor runtime
+    const editorRoot = this.adapter.getEditorRoot()
+    if (editorRoot && editorRoot.isConnected) {
+      console.info(
+        `[InkChapter] DOCUMENT-CONTEXT-REFRESH: ` +
+        `reason=STALE_CONTEXT_CORRECTION ` +
+        `caller=${caller} ` +
+        `editorRootExists=true ` +
+        `editorInstanceId=${this.getOrCreateEditorInstanceId(editorRoot)} ` +
+        `activeFilePath=${this.ctx.getActiveFilePath?.() ?? 'null'} ` +
+        `previousMode=${this.documentContext.mode}`,
+      )
+      this.refreshDocumentContext()
+      if (this.documentContext.businessReady) return true
+    }
+    // Still not ready — log divergence
+    console.info(
+      `[InkChapter] EDITOR-CONTEXT-DIVERGENCE: ` +
+      `source=${caller} ` +
+      `editorRuntimeExists=${!!editorRoot} ` +
+      `documentMode=${this.documentContext.mode} ` +
+      `businessReady=${this.documentContext.businessReady} ` +
+      `decision=HARD_STOP`,
+    )
+    return false
+  }
+
+  /** R58.7 Phase A.1.2: Runtime scope context for diagnostic traces. */
+  private getScopeContext(): { scopeId: string; persistenceKey: string | null; mode: string } {
+    return {
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      persistenceKey: this.documentContext.persistenceKey,
+      mode: this.documentContext.mode,
+    }
+  }
+
+  /** R58.7 Phase A.1.3.1: Immutable runtime scope snapshot. Returns null if business not ready. */
+  private snapshotRuntimeScope(): RuntimeScopeRef | null {
+    const ctx = this.documentContext
+    if (!ctx.businessReady || !ctx.scopeId || !ctx.editorInstanceId) {
+      console.warn(
+        `[InkChapter] RUNTIME-SCOPE-VIOLATION: ` +
+        `reason=INVALID_SCOPE_SNAPSHOT ` +
+        `businessReady=${ctx.businessReady} ` +
+        `scopeId=${ctx.scopeId ?? 'null'} ` +
+        `editorInstanceId=${ctx.editorInstanceId ?? 'null'} ` +
+        `decision=HARD_STOP`,
+      )
+      return null
+    }
+    const scope: RuntimeScopeRef = Object.freeze({
+      scopeId: ctx.scopeId,
+      persistenceKey: ctx.persistenceKey,
+      mode: ctx.mode === 'EPHEMERAL' ? 'EPHEMERAL' : 'PERSISTED',
+      sessionId: ctx.sessionId,
+      editorInstanceId: ctx.editorInstanceId,
+    })
+    console.info(
+      `[InkChapter] RUNTIME-SCOPE-SNAPSHOT: ` +
+      `source=TRANSACTION_START ` +
+      `scopeId=${scope.scopeId} ` +
+      `persistenceKey=${scope.persistenceKey ?? 'null'} ` +
+      `mode=${scope.mode} ` +
+      `sessionId=${scope.sessionId} ` +
+      `editorInstanceId=${scope.editorInstanceId} ` +
+      `valid=true`,
+    )
+    return scope
+  }
+
+  // ── r57: Runtime Paragraph ID ────────────────────────────────────
 
   // ── r57: Runtime Paragraph ID ────────────────────────────────────
   // WeakMap: same HTMLElement → same runtime ID (object identity).
@@ -436,9 +1521,27 @@ export class HeadingNumberingService {
     this.ctx = ctx
     this.adapter = adapter
 
+    // ── R58.7: Route every raw plugin selection write through the unified audit ──
+    setPluginSelectionWriteSink((entry: PluginSelectionWriteAuditEntry) => {
+      this.recordPluginSelectionWrite(
+        entry.writeId,
+        entry.caller,
+        entry.reason,
+        entry.runtimeId,
+        entry.logicalOffsetBefore,
+        entry.logicalOffsetRequested,
+        entry.success,
+      )
+    })
+    this.logPluginSelectionWriteInventory()
+    this.logPostTextInputProbeInvariant()
+
     // ── P0-1: Inject production vault root ──────────────────────────
     // Must happen before any sidecar load/write.
     this.injectVaultRoot()
+
+    // ── R58.7 Phase A: Initialize document context ──
+    this.refreshDocumentContext()
 
     // Initialize scope store (with migration from old format)
     this.scopeStore = this.initScopeStore()
@@ -960,6 +2063,11 @@ export class HeadingNumberingService {
     const vaultRoot = this.ctx.vaultRoot ??
       (filePath.split(/[\\/]/).slice(0, -1).join('/'))
     return generateDocumentKey(filePath, typeof vaultRoot === 'string' ? vaultRoot : filePath.split(/[\\/]/).slice(0, -1).join('/'))
+  }
+
+  /** R58.7 Phase A.1: Scope-aware key for in-memory operations (EPHEMERAL uses scopeId, PERSISTED uses documentKey). */
+  getScopeKey(): string {
+    return this.documentContext.scopeId ?? this.getDocumentKey() ?? 'unknown'
   }
 
   /** Get the path of the currently active file, or null if none. */
@@ -1790,6 +2898,8 @@ export class HeadingNumberingService {
 
   dispose(): void {
     this.disposed = true
+    this.cancelPostTextInputStabilityObservation('UNLOAD')
+    setPluginSelectionWriteSink(null)
     this.cancelPending()
     this.disconnectObserver()
     this.unbindEditorRoot()
@@ -2179,27 +3289,39 @@ export class HeadingNumberingService {
    * write semantic/sidecar, project visual, and restore caret.
    * beforeinput(insertParagraph) must NOT commit — only suppress native split.
    */
-  private tryStartEnterIndentTransaction(event: KeyboardEvent, root: HTMLElement): void {
-    if (event.key !== 'Enter') return
-    if (this.isInComposition || event.isComposing) return
+  private tryStartEnterIndentTransaction(event: KeyboardEvent, root: HTMLElement): boolean {
+    if (event.key !== 'Enter') return false
+    if (this.isInComposition || event.isComposing) return false
 
     const settings = this.getParagraphLayoutSettings()
-    if (!settings.indentShortcutEnabled) return
+    if (!settings.indentShortcutEnabled) return false
 
-    if (this.activeEnterTransaction) return // one transaction at a time
+    // R58.7 Phase A: Gate — no business mutations without document context
+    if (!this.assertDocumentContextReady('special-command')) return false
+
+    // R58.7 Phase A.1.3.1a: Snapshot immutable runtime scope for this transaction
+    const scopeRef = this.snapshotRuntimeScope()
+    if (!scopeRef) {
+      console.warn(`[InkChapter] TRANSACTION-ABORTED: reason=SCOPE_NOT_READY`)
+      return false
+    }
+
+    if (this.activeEnterTransaction) return false // one transaction at a time
 
     const sel = window.getSelection()
-    if (!sel?.rangeCount || !sel.isCollapsed) return
+    if (!sel?.rangeCount || !sel.isCollapsed) return false
 
     const paragraph = resolveCurrentBodyParagraph(root)
-    if (!paragraph) return
+    if (!paragraph) return false
 
     const token = readParagraphIndentCommand(paragraph)
-    if (!token) return
-    if (!isCaretAtTokenEnd(paragraph, 2)) return
+    if (!token) return false
+    if (!isCaretAtTokenEnd(paragraph, 2)) return false
 
     // ── Create transaction, lock paragraph ──
     const txnId = 'txn-' + (++this.enterTxnSeq) + '-' + Date.now()
+    // R58.6.7: Advance user intent epoch for special command
+    this.beginTrustedUserIntent('SPECIAL_COMMAND', 'keydown', 'Enter')
     const txn: EnterIndentTransaction = {
       id: txnId,
       startedAt: performance.now(),
@@ -2211,12 +3333,14 @@ export class HeadingNumberingService {
       semanticWritten: false,
       sidecarWritten: false,
       tokenConsumed: false,
+      scopeRef,
       traceData: { txnId, event: 'keydown', key: 'Enter', token, paraCountBefore: root ? collectContentParagraphs(root).length : -1, beforeinput_suppressed: false },
     }
     this.activeEnterTransaction = txn
 
     // ── Sync commit ──
     this.commitEnterIndentTransactionSync(txn, event)
+    return true
   }
 
   /** Synchronous atomic commit — all steps in one call stack. */
@@ -2343,6 +3467,15 @@ export class HeadingNumberingService {
         commandRuntimeId,
         (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
       )
+      this.recordPluginSelectionWrite(
+        `write-${commandRuntimeId}-${Date.now()}`,
+        'CARET-REPAIR',
+        'POST-TOKEN-SELECTION',
+        commandRuntimeId,
+        postTokenRes.localLogicalOffset ?? null,
+        0,
+        repairResult.success,
+      )
       txn.traceData['caretSuccess'] = repairResult.success
       txn.traceData['caretRepairAttempted'] = true
       txn.traceData['caretRepairMethod'] = repairResult.method
@@ -2421,6 +3554,92 @@ export class HeadingNumberingService {
     console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=${successFields.tokenSuccess} paragraphCountSuccess=${paragraphCountSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} sameParagraph=${postTokenRes.paragraphRuntimeId === commandRuntimeId} localOffset=${postTokenRes.localLogicalOffset} overallSuccess=${successFields.overallSuccess}`)
     console.info(`[InkChapter] ${txn.id} committed: token=${txn.token}`)
 
+    // ── R58.6.6: Create CaretExpectation for special command ──
+    const docKeyExpect = this.getDocumentKey() ?? ''
+    const expectEl = finalCommandTarget
+    const expectRtId = this.getParagraphRuntimeId(expectEl)
+    this.activeCaretExpectation = {
+      expectationId: `ce-${txn.id}`,
+      documentKey: docKeyExpect,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      expectedElement: expectEl,
+      expectedRuntimeId: expectRtId,
+      expectedLogicalOffset: 0,
+      canonicalRecordId: recordId,
+      generation: 1,
+      reason: 'SPECIAL_COMMAND_CURRENT_PARAGRAPH',
+      createdAt: Date.now(),
+      active: true,
+      restoreAttempts: 0,
+      intentEpoch: this.userIntentEpoch,
+    }
+    console.info(
+      `[InkChapter] CARET-EXPECTATION-CREATE: ` +
+      `expectationId=${this.activeCaretExpectation.expectationId} ` +
+      `scopeId=${this.activeCaretExpectation.scopeId} ` +
+      `reason=SPECIAL_COMMAND_CURRENT_PARAGRAPH ` +
+      `intentEpoch=${this.userIntentEpoch} ` +
+      `expectedRuntimeId=${expectRtId} ` +
+      `expectedLogicalOffset=0 ` +
+      `canonicalRecordId=${recordId} ` +
+      `generation=1 ` +
+      `decision=ACTIVE`,
+    )
+    // R58.6.6: Verify + optional one-shot restore
+    const expectRef2 = this.activeCaretExpectation!
+    queueMicrotask(() => {
+      if (!expectRef2.active) return
+      // R58.7: Scope guard — SCOPE_CHANGED before intentEpoch
+      if (expectRef2.scopeId !== this.documentContext.scopeId) {
+        console.info(
+          `[InkChapter] CARET-EXPECTATION-CLOSE: ` +
+          `expectationId=${expectRef2.expectationId} ` +
+          `reason=SCOPE_CHANGED ` +
+          `expectationScopeId=${expectRef2.scopeId} ` +
+          `currentScopeId=${this.documentContext.scopeId ?? 'null'} ` +
+          `restoreAttempted=false`,
+        )
+        expectRef2.active = false
+        this.activeCaretExpectation = null
+        return
+      }
+      const r = this.adapter.getEditorRoot()
+      if (!r) return
+      const v = verifyCaretExpectation(expectRef2, r, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'MICROTASK')
+      if (!v.verified && expectRef2.restoreAttempts < 1 && this.userIntentEpoch === expectRef2.intentEpoch) {
+        const contentChanged = expectRef2.expectedTextContent !== undefined &&
+          getUserVisibleParagraphText(expectRef2.expectedElement) !== expectRef2.expectedTextContent
+        if (contentChanged) {
+          console.info(
+            `[InkChapter] CARET-RESTORE-BLOCK: ` +
+            `expectationId=${expectRef2.expectationId} ` +
+            `reason=CONTENT_CHANGED_AFTER_EXPECTATION ` +
+            `decision=BLOCK`,
+          )
+          expectRef2.active = false
+          this.activeCaretExpectation = null
+        } else {
+          const restoreBefore = resolveSelectionTruth(r, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'CARET-RESTORE-BEFORE')
+          const restoreResult = restoreLogicalCaret(expectRef2, r, (el: object) => this.getParagraphRuntimeId(el as HTMLElement))
+          this.recordPluginSelectionWrite(
+            `restore-${expectRef2.expectationId}-${Date.now()}`,
+            'CARET-CONTINUITY-RESTORE',
+            expectRef2.reason,
+            expectRef2.expectedRuntimeId,
+            restoreBefore.logicalOffset ?? null,
+            expectRef2.expectedLogicalOffset,
+            restoreResult.success,
+          )
+        }
+      }
+    })
+    requestAnimationFrame(() => {
+      if (!expectRef2.active) return
+      const r = this.adapter.getEditorRoot()
+      if (!r) return
+      verifyCaretExpectation(expectRef2, r, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'RAF')
+    })
+
     // ── P0-5: One-Shot Paragraph Replacement Handoff ────────────────
     const rootAfter = this.adapter.getEditorRoot()
     const allParasAfter = rootAfter ? collectContentParagraphs(rootAfter) : []
@@ -2432,6 +3651,7 @@ export class HeadingNumberingService {
       handoffId: `handoff-${txn.id}`,
       sourceTxnId: txn.id,
       canonicalRecordId: recordId,
+      scopeId: txn.scopeRef?.scopeId ?? this.documentContext.scopeId ?? 'unknown',
       preElement: para,
       preOrdinal: paraOrdinal2,
       preIdentity: commandRuntimeId,
@@ -2447,6 +3667,16 @@ export class HeadingNumberingService {
       semanticTransferred: false,
       visualTransferred: false,
     }
+
+    console.info(
+      `[InkChapter] HANDOFF-CREATE: ` +
+      `handoffId=${this.activeOneShotHandoff.handoffId} ` +
+      `scopeId=${this.activeOneShotHandoff.scopeId} ` +
+      `intentEpoch=${this.userIntentEpoch} ` +
+      `canonicalRecordId=${recordId} ` +
+      `preRuntimeId=${commandRuntimeId} ` +
+      `decision=ACTIVE`,
+    )
 
     this.scheduleTransactionStabilitySnapshots(txn)
     this.installDiagnosticMutationObserver(txn)
@@ -2595,24 +3825,22 @@ export class HeadingNumberingService {
         visualTransferred: handoff?.visualTransferred ?? false,
       }
 
-      // --- SELECTION TARGET (diagnostic only) — r57: unified resolver ──
-      const cursorOffset = this.ctx.getCursorOffset?.() ?? null
-      const sel = para?.ownerDocument?.defaultView?.getSelection() ?? null
-      const selRes = resolveSelectionParagraph(
-        sel,
+      // --- SELECTION TARGET — R58.6.4: Unified SelectionTruth ──
+      const selTruth = resolveSelectionTruth(
         this.adapter.getEditorRoot() ?? document.body,
         (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+        'OBS',
       )
-      const selOrdinal = selRes.paragraphOrdinal ?? -1
+      const expectedRtId = handoff?.replacementElement
+        ? this.getParagraphRuntimeId(handoff.replacementElement)
+        : this.getParagraphRuntimeId(obs.lastKnownParagraph!)
+      const sameAsCommand = selTruth.runtimeId !== null && selTruth.runtimeId === expectedRtId
       const obsSelection: Record<string, unknown> = {
-        absoluteCursorOffset: cursorOffset,
-        selectionAnchorNode: sel?.anchorNode?.nodeName ?? 'none',
-        selectionAnchorOffset: sel?.anchorOffset ?? -1,
-        selectionParagraphRuntimeId: selRes.paragraphRuntimeId ?? null,
-        selectionParagraphOrdinal: selOrdinal,
-        selectionLocalOffset: selRes.localLogicalOffset,
-        sameAsCommandTarget: selRes.paragraphRuntimeId ? (selRes.paragraphRuntimeId === this.getParagraphRuntimeId(obs.lastKnownParagraph!)) : false,
-        sameAsContinuityTarget: handoff?.replacementElement && selRes.paragraphRuntimeId ? (selRes.paragraphRuntimeId === this.getParagraphRuntimeId(handoff.replacementElement)) : false,
+        selectionParagraphRuntimeId: selTruth.runtimeId,
+        selectionParagraphOrdinal: selTruth.ordinal,
+        selectionLocalOffset: selTruth.logicalOffset,
+        sameAsCommandTarget: sameAsCommand,
+        sameAsContinuityTarget: handoff?.replacementElement && selTruth.runtimeId ? (selTruth.runtimeId === this.getParagraphRuntimeId(handoff.replacementElement)) : false,
       }
 
       obs.traceData[`OBS-COMMAND-${label}`] = obsCommand
@@ -2621,7 +3849,75 @@ export class HeadingNumberingService {
 
       console.info(`[InkChapter] OBS-COMMAND ${label}: originalConnected=${commandConnected} originalSemantic=${commandSemantic}`)
       console.info(`[InkChapter] OBS-CONTINUITY ${label}: handoffExists=${obsContinuity['handoffExists']} replacementSemantic=${obsContinuity['replacementSemantic']}`)
-      console.info(`[InkChapter] OBS-SELECTION ${label}: cursorOffset=${cursorOffset} selParagraph=${obsSelection['selectionParagraphIdentity']} sameAsCommand=${obsSelection['sameAsCommandTarget']}`)
+      console.info(`[InkChapter] OBS-SELECTION ${label}: runtimeId=${selTruth.runtimeId ?? 'null'} sameAsCommand=${sameAsCommand}`)
+
+      // ── R58.6.7: OBS CaretExpectation verify ──
+      const expectation = this.activeCaretExpectation
+      if (expectation?.active) {
+        const currentEpoch = this.userIntentEpoch
+        const root = this.adapter.getEditorRoot()
+        // R58.7: Scope guard — SCOPE_CHANGED BEFORE intentEpoch
+        if (expectation.scopeId !== this.documentContext.scopeId) {
+          console.info(
+            `[InkChapter] CARET-EXPECTATION-CLOSE: ` +
+            `expectationId=${expectation.expectationId} ` +
+            `reason=SCOPE_CHANGED ` +
+            `expectationScopeId=${expectation.scopeId} ` +
+            `currentScopeId=${this.documentContext.scopeId ?? 'null'} ` +
+            `restoreAttempted=false`,
+          )
+          expectation.active = false
+          this.activeCaretExpectation = null
+        } else if (expectation.intentEpoch !== currentEpoch) {
+          // Superseded by newer user intent — close, never restore
+          console.info(
+            `[InkChapter] CARET-EXPECTATION-CLOSE: ` +
+            `expectationId=${expectation.expectationId} ` +
+            `reason=SUPERSEDED_BY_USER_INTENT ` +
+            `expectationEpoch=${expectation.intentEpoch} ` +
+            `currentEpoch=${currentEpoch} ` +
+            `restoreAttempted=false`,
+          )
+          expectation.active = false
+          this.activeCaretExpectation = null
+        } else if (root) {
+          const v = verifyCaretExpectation(expectation, root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'OBS')
+          if (!v.verified && expectation.restoreAttempts < 1 && this.userIntentEpoch === expectation.intentEpoch) {
+            // R58.7: content snapshot insurance — never overwrite legitimate user offset drift
+            const contentChanged = expectation.expectedTextContent !== undefined &&
+              getUserVisibleParagraphText(expectation.expectedElement) !== expectation.expectedTextContent
+            console.info(
+              `[InkChapter] CARET-RESTORE-GATE: ` +
+              `expectationId=${expectation.expectationId} ` +
+              `contentChanged=${contentChanged} ` +
+              `restoreAllowed=${!contentChanged} ` +
+              `selectionWriteAttempted=${contentChanged ? 'false' : 'pending'}`,
+            )
+            if (contentChanged) {
+              console.info(
+                `[InkChapter] CARET-RESTORE-BLOCK: ` +
+                `expectationId=${expectation.expectationId} ` +
+                `reason=CONTENT_CHANGED_AFTER_EXPECTATION ` +
+                `decision=BLOCK`,
+              )
+              expectation.active = false
+              this.activeCaretExpectation = null
+            } else {
+              const restoreBefore = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'CARET-RESTORE-BEFORE')
+              const restoreResult = restoreLogicalCaret(expectation, root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement))
+              this.recordPluginSelectionWrite(
+                `restore-${expectation.expectationId}-${Date.now()}`,
+                'CARET-CONTINUITY-RESTORE',
+                expectation.reason,
+                expectation.expectedRuntimeId,
+                restoreBefore.logicalOffset ?? null,
+                expectation.expectedLogicalOffset,
+                restoreResult.success,
+              )
+            }
+          }
+        }
+      }
     }
 
     // T4 = 150ms (observation starts here, already 0ms into observation)
@@ -2655,6 +3951,7 @@ export class HeadingNumberingService {
           console.info(
             `[InkChapter] HANDOFF-CLOSE: ` +
             `handoffId=${handoff.handoffId} ` +
+            `scopeId=${handoff.scopeId} ` +
             `txnId=${obs.txnId} ` +
             `reason=NO_REPLACEMENT_REQUIRED ` +
             `originalConnected=${originalConnected} ` +
@@ -2785,6 +4082,19 @@ export class HeadingNumberingService {
     const handoff = this.activeOneShotHandoff
     if (!handoff || handoff.consumed) return
 
+    // R58.7: Scope guard — SCOPE_CHANGED before resolve
+    if (handoff.scopeId !== this.documentContext.scopeId) {
+      console.info(
+        `[InkChapter] HANDOFF-CLOSE: ` +
+        `handoffId=${handoff.handoffId} ` +
+        `scopeId=${handoff.scopeId} ` +
+        `reason=SCOPE_CHANGED ` +
+        `decision=CLOSE`,
+      )
+      this.activeOneShotHandoff = null
+      return
+    }
+
     const original = handoff.preElement
     if (original.isConnected) return // still alive
 
@@ -2894,6 +4204,7 @@ export class HeadingNumberingService {
           replacement, newRuntimeId,
           'HANDOFF_REPLACE',
           handoff.handoffId,
+          handoff.scopeId,
         )
       } else {
         // Legacy fallback: no canonicalRecordId in handoff → use old approach
@@ -2985,7 +4296,7 @@ export class HeadingNumberingService {
       blocked: rehydrateDecision?.rehydrateBlocked ?? false,
     }
 
-    console.info(`[InkChapter] SINGLE-DOT-TRACE: text="${visibleText}" semantic=${semanticBefore} computed=${computedBefore} sidecar=${sidecarCountBefore}`)
+    console.info(`[InkChapter] SINGLE-DOT-TRACE: text="${visibleText}" semantic=${semanticBefore} computed=${computedBefore} sidecar=${sidecarCountBefore} scopeId=${this.documentContext.scopeId ?? 'unknown'}`)
 
     // Record to observation
     const obs = this.activeEnterTransaction ? [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id) : null
@@ -2993,10 +4304,30 @@ export class HeadingNumberingService {
       obs.traceData[`SINGLE-DOT-${Date.now()}`] = trace
     }
 
-    // HARD STOP: single dot must NEVER create FORCE_INDENT
+    // ── R58.7 Phase A.1.3.1: Distinguish CURRENT_LIVE single-dot from historical wrong apply ──
     if (semanticBefore !== 'auto') {
-      console.error(`[InkChapter] SINGLE_DOT_SEMANTIC_VIOLATION: text="${visibleText}" semantic=${semanticBefore} — HARD STOP`)
-      console.error('[InkChapter] VIOLATION DETAILS:', JSON.stringify(trace, null, 2))
+      // Check if this is a CURRENT_LIVE record (user typed special command, not historical apply)
+      const exactRecord = this.canonicalRegistry.resolveExactLiveRecord(paragraph)
+      const isCurrentLive =
+        exactRecord?.meta.state === 'CURRENT_LIVE' &&
+        (trace.rehydrateDecisionId === null || !rehydrateDecision?.rehydrateBlocked) &&
+        (trace.lastSemanticWriter as string ?? '').includes('SEMANTIC')
+
+      if (isCurrentLive) {
+        console.info(
+          `[InkChapter] SINGLE-DOT-CURRENT-LIVE: ` +
+          `text="${visibleText}" ` +
+          `semantic=${semanticBefore} ` +
+          `recordState=CURRENT_LIVE ` +
+          `recordId=${exactRecord.recordId} ` +
+          `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+          `writer=${trace.lastSemanticWriter ?? 'unknown'} ` +
+          `decision=INFO`,
+        )
+      } else {
+        console.error(`[InkChapter] SINGLE-DOT-WRONG-APPLY: text="${visibleText}" semantic=${semanticBefore} — HARD STOP`)
+        console.error('[InkChapter] WRONG APPLY DETAILS:', JSON.stringify(trace, null, 2))
+      }
     }
   }
 
@@ -3151,6 +4482,15 @@ export class HeadingNumberingService {
       result.success = true
       result.method = 'owner-realm-range'
       result.resolvedParagraphIdentity = getElementIdentity(paragraph)
+      this.recordPluginSelectionWrite(
+        `write-${Date.now()}`,
+        'CARET-REPAIR',
+        'placeCaretInParagraph',
+        getElementIdentity(paragraph),
+        null,
+        0,
+        result.success,
+      )
     } catch (e) {
       result.failReason = `range-error: ${e}`
       console.info('[InkChapter] CARET_WRITE_FAILED:', e)
@@ -3245,6 +4585,15 @@ export class HeadingNumberingService {
       }
 
       result.success = result.sameAsCommandParagraph && (result.localLogicalOffset ?? -1) === 0
+      this.recordPluginSelectionWrite(
+        `write-${Date.now()}`,
+        'CARET-REPAIR',
+        'placeCaretAtParagraphLogicalStart',
+        commandIdentity,
+        null,
+        0,
+        result.success,
+      )
     } catch (e) {
       result.failureReason = `range-error: ${e}`
     }
@@ -3429,6 +4778,18 @@ export class HeadingNumberingService {
   private sidecarGeneration = 0
 
   private scheduleSidecarWrite(docKey: string, docPath: string, overrides: ParagraphIndentOverrideRecord[]): void {
+    // ── R58.7 Phase A.1.2: Skip scheduling when persistence not ready (EPHEMERAL mode) ──
+    if (!this.documentContext.persistenceReady) {
+      console.info(
+        `[InkChapter] SIDECAR-WRITE-SKIP: ` +
+        `mode=${this.documentContext.mode} ` +
+        `scopeId=${this.documentContext.scopeId ?? 'null'} ` +
+        `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
+        `reason=PERSISTENCE_NOT_READY ` +
+        `decision=SKIP`,
+      )
+      return
+    }
     // Deep clone records + anchors for immutable snapshot.
     // Prevents 200ms debounce window mutations from corrupting the pending write.
     const snapshot = overrides.map(o => ({
@@ -3458,6 +4819,7 @@ export class HeadingNumberingService {
     const pending = this.sidecarWritePending
     if (pending) {
       this.sidecarWritePending = null
+      if (!this.assertPersistenceContextReady('flush-sidecar')) return
       saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
     }
   }
@@ -3522,6 +4884,8 @@ export class HeadingNumberingService {
         try {
           this.canonicalRegistry.registerCurrentSessionRecord(
             existing, documentKey, paragraph, runtimeId, isTemporary,
+            this.documentContext.scopeId ?? documentKey,
+            this.documentContext.persistenceKey,
           )
         } catch { /* collision already logged */ }
         this.inMemoryOverrides.set(documentKey, [...overrides])
@@ -3552,6 +4916,8 @@ export class HeadingNumberingService {
     try {
       this.canonicalRegistry.registerCurrentSessionRecord(
         newRecord, documentKey, paragraph, runtimeId, isTemporary,
+        this.documentContext.scopeId ?? documentKey,
+        this.documentContext.persistenceKey,
       )
     } catch (e) {
       console.warn(`[InkChapter] CANONICAL-REGISTRY-REGISTER-WARN: ${e}`)
@@ -3718,7 +5084,10 @@ export class HeadingNumberingService {
 
   /**
    * TRANSFER_BINDING_ONLY: Transfer canonical binding from old to new element.
-   * Does NOT create/update any record — only moves the live binding.
+   *
+   * R58.7 Step 3: ATOMIC canonical projection — PROJECTION-BEFORE-IDENTITY.
+   *   PREPARE → read record → semantic projection → visual projection → verify →
+   *   ONLY THEN commit identity to Registry → FINAL AUDIT.
    */
   private canonicalTransferBinding(
     recordId: string,
@@ -3728,13 +5097,292 @@ export class HeadingNumberingService {
     toRuntimeId: string,
     reason: string,
     handoffId?: string,
+    scopeId?: string,
   ): CanonicalBindingTransferResult {
-    // First, mark old record as awaiting transfer with handoff context
-    this.canonicalRegistry.markAwaitingTransfer(recordId, handoffId, reason)
+    // ── PREPARE: Obtain canonical record by KNOWN recordId (NOT live fromElement) ──
+    // The source paragraph (fromElement) may already be disconnected after a split.
+    // Business identity (recordMode) MUST come from the known recordId's canonical record,
+    // never from re-resolving the disconnected element via live-only resolver.
+    const record = this.canonicalRegistry.getRecord(recordId)
+    const meta = this.canonicalRegistry.getRuntimeMeta(recordId)
+    const stateBeforeAwait = meta?.state ?? 'CURRENT_LIVE'
+    const recordMode = record?.mode ?? null
 
-    // Then transfer
+    // Immutable plan built BEFORE markAwaitingTransfer, while record is still CURRENT_LIVE.
+    const transferPlan: CanonicalTransferPlan = {
+      recordId,
+      recordMode,
+      scopeId: meta?.scopeId ?? scopeId ?? 'unknown',
+      persistenceKey: meta?.persistenceKey ?? null,
+      generation: meta?.generation ?? 0,
+      fromRuntimeId,
+      candidateRuntimeId: toRuntimeId,
+    }
+
+    console.info(
+      `[InkChapter] TRANSFER-PLAN: ` +
+      `recordId=${recordId} ` +
+      `recordLookupSource=KNOWN_RECORD_ID ` +
+      `stateBeforeAwait=${stateBeforeAwait} ` +
+      `recordMode=${recordMode ?? 'none'} ` +
+      `generation=${transferPlan.generation} ` +
+      `scopeId=${transferPlan.scopeId} ` +
+      `fromRuntimeId=${fromRuntimeId} ` +
+      `candidateRuntimeId=${toRuntimeId} ` +
+      `overall=${recordMode !== null}`,
+    )
+
+    // ── R58.7 Step 3: Candidate resolution guard ──
+    // Verify candidate is uniquely resolved (matches active NormalEnter txn's completedOriginal)
+    if (this.activeNormalEnterTxn?.active && this.activeNormalEnterTxn.completedOriginalRuntimeId) {
+      if (toRuntimeId !== this.activeNormalEnterTxn.completedOriginalRuntimeId) {
+        console.warn(
+          `[InkChapter] CANONICAL-TRANSFER-CANDIDATE-MISMATCH: ` +
+          `candidateRuntimeId=${toRuntimeId} ` +
+          `txnCompletedOriginal=${this.activeNormalEnterTxn.completedOriginalRuntimeId} ` +
+          `decision=WARN_CONTINUE`,
+        )
+      }
+    }
+
+    console.info(
+      `[InkChapter] CANONICAL-TRANSFER-PREPARE: ` +
+      `recordId=${recordId} ` +
+      `fromRuntimeId=${fromRuntimeId} ` +
+      `candidateRuntimeId=${toRuntimeId} ` +
+      `recordMode=${recordMode ?? 'none'} ` +
+      `reason=${reason}`,
+    )
+
+    // ── PROJECT: Apply semantic + visual to candidate BEFORE identity commit ──
+    let semanticTransfer = false
+    let visualTransfer = false
+    let newOwnerSemantic = 'unknown'
+    let expectedIndent = 'unknown'
+    let actualIndent = 'unknown'
+    let expectedEffectiveMode = 'unknown'
+    let actualEffectiveMode = 'unknown'
+    let visualFontSize = 0
+    let expectedComputedIndent = 0
+    let actualComputedIndent = 0
+
+    // R58.7 Step 3: Snapshot candidate pre-state for potential rollback (4 fields)
+    const preCandidateSemantic = toElement.getAttribute('data-inkchapter-indent-mode') ?? 'auto'
+    const preCandidateEffectiveIndentClass = (
+      toElement.classList.contains('inkchapter-paragraph-effective-indent-2') ? 'indent-2'
+      : toElement.classList.contains('inkchapter-paragraph-effective-flush') ? 'flush'
+      : 'none'
+    )
+    const preCandidateInlineTextIndent = toElement.style.textIndent
+    const preCandidateComputedIndent = window.getComputedStyle(toElement).textIndent
+
+    if (recordMode) {
+      // Apply semantic
+      setParagraphIndentMode(toElement, recordMode, 'W-CANONICAL-TRANSFER-SEMANTIC')
+      newOwnerSemantic = getParagraphIndentMode(toElement)
+      semanticTransfer = (newOwnerSemantic === recordMode)
+
+      // Apply visual projection (class-based, NEVER hardcoded px)
+      const settings = this.getParagraphLayoutSettings()
+      const effective = resolveEffectiveParagraphIndent(
+        recordMode as 'force-indent' | 'force-flush',
+        settings.defaultIndent,
+        { isFormulaContinuation: false },
+      )
+      applyEffectiveParagraphIndent(toElement, effective, 'W-CANONICAL-TRANSFER-VISUAL')
+
+      // ── Visual verification: two independent layers ──
+      // Layer 1 — effective class projection (indent-2 vs flush, mutually exclusive)
+      const hasIndentClass = toElement.classList.contains('inkchapter-paragraph-effective-indent-2')
+      const hasFlushClass = toElement.classList.contains('inkchapter-paragraph-effective-flush')
+      expectedEffectiveMode = effective
+      actualEffectiveMode = hasIndentClass ? 'indent-2' : hasFlushClass ? 'flush' : 'none'
+      const effectiveModeMatches = effective === 'indent-2'
+        ? (hasIndentClass && !hasFlushClass)
+        : (hasFlushClass && !hasIndentClass)
+
+      // Layer 2 — computed px (2em = fontSize*2 for indent-2; 0 for flush), ≤0.5px tolerance
+      visualFontSize = parseFloat(window.getComputedStyle(toElement).fontSize) || 16
+      expectedComputedIndent = effective === 'indent-2' ? visualFontSize * 2 : 0
+      actualComputedIndent = parseFloat(window.getComputedStyle(toElement).textIndent) || 0
+      const computedMatches = Math.abs(actualComputedIndent - expectedComputedIndent) <= 0.5
+
+      visualTransfer = effectiveModeMatches && computedMatches
+      expectedIndent = `${expectedComputedIndent}px`
+      actualIndent = `${actualComputedIndent}px`
+
+      console.info(
+        `[InkChapter] CANONICAL-VISUAL-VERIFY: ` +
+        `recordId=${recordId} ` +
+        `expectedEffectiveMode=${expectedEffectiveMode} ` +
+        `actualEffectiveMode=${actualEffectiveMode} ` +
+        `fontSize=${visualFontSize} ` +
+        `expectedComputedIndent=${expectedComputedIndent} ` +
+        `actualComputedIndent=${actualComputedIndent} ` +
+        `effectiveModeMatches=${effectiveModeMatches} ` +
+        `computedMatches=${computedMatches} ` +
+        `overall=${visualTransfer}`,
+      )
+    }
+
+    // ── VERIFY: projection must pass BEFORE identity commit ──
+    const projectionVerified = semanticTransfer && visualTransfer
+    console.info(
+      `[InkChapter] PROJECTION-VERIFY: ` +
+      `recordId=${recordId} ` +
+      `semanticTransfer=${semanticTransfer} ` +
+      `visualTransfer=${visualTransfer} ` +
+      `newOwnerSemantic=${newOwnerSemantic} ` +
+      `expectedIndent=${expectedIndent} ` +
+      `actualIndent=${actualIndent} ` +
+      `overall=${projectionVerified}`,
+    )
+
+    if (!projectionVerified) {
+      console.error(
+        `[InkChapter] CANONICAL-TRANSFER-PROJECTION-FAIL: ` +
+        `recordId=${recordId} ` +
+        `recordMode=${recordMode} ` +
+        `newOwnerSemantic=${newOwnerSemantic} ` +
+        `expectedIndent=${expectedIndent} ` +
+        `actualIndent=${actualIndent} ` +
+        `reason=${!semanticTransfer ? 'SEMANTIC_MISMATCH' : 'VISUAL_MISMATCH'} ` +
+        `decision=BLOCK`,
+      )
+      // Do NOT commit identity — return failure immediately
+      this.lastCanonicalContinuityOutcome = {
+        overall: false,
+        recordId,
+        semanticTransfer,
+        visualTransfer,
+        identityTransfer: false,
+        failReason: !semanticTransfer ? 'projection-semantic-mismatch' : 'projection-visual-mismatch',
+      }
+      return {
+        success: false,
+        canonicalRecordId: recordId,
+        fromRuntimeId,
+        toRuntimeId,
+        stateBefore: 'CURRENT_LIVE',
+        stateAfter: 'CURRENT_LIVE',
+        generationBefore: transferPlan.generation,
+        generationAfter: transferPlan.generation,
+        oldOwnerInvalidated: false,
+        newOwnerEstablished: false,
+        recordCountBefore: 0,
+        recordCountAfter: 0,
+        failReason: !semanticTransfer ? 'projection-semantic-mismatch' : 'projection-visual-mismatch',
+      }
+    }
+
+    // ── COMMIT IDENTITY: Only after projection verified ──
+    this.canonicalRegistry.markAwaitingTransfer(recordId, handoffId, reason, scopeId)
     const result = this.canonicalRegistry.transferCanonicalBinding(
-      recordId, toElement, toRuntimeId, reason,
+      recordId, toElement, toRuntimeId, reason, scopeId,
+    )
+
+    // ── R58.7 Step 3: ROLLBACK on identity commit failure ──
+    if (!result.success) {
+      // Old owner is physically disconnected after TOP_LEVEL_SPLIT.
+      // Do NOT restore fake live binding to disconnected element.
+      const oldOwnerConnected = fromElement.isConnected
+
+      // 1. Rollback candidate: restore ALL 4 pre-projection fields exactly.
+      // 1a. Semantic attribute (data-inkchapter-indent-mode)
+      if (preCandidateSemantic !== 'auto') {
+        setParagraphIndentMode(
+          toElement,
+          preCandidateSemantic as 'force-indent' | 'force-flush',
+          'W-CANONICAL-ROLLBACK-SEMANTIC',
+        )
+      } else {
+        toElement.removeAttribute('data-inkchapter-indent-mode')
+      }
+
+      // 1b. Effective indent class (mutually exclusive)
+      toElement.classList.remove('inkchapter-paragraph-effective-indent-2')
+      toElement.classList.remove('inkchapter-paragraph-effective-flush')
+      if (preCandidateEffectiveIndentClass === 'indent-2') {
+        toElement.classList.add('inkchapter-paragraph-effective-indent-2')
+      } else if (preCandidateEffectiveIndentClass === 'flush') {
+        toElement.classList.add('inkchapter-paragraph-effective-flush')
+      }
+
+      // 1c. Inline text-indent style (exact value)
+      toElement.style.textIndent = preCandidateInlineTextIndent
+
+      // 2. Verify ALL 4 fields restored
+      const semanticRestored =
+        (toElement.getAttribute('data-inkchapter-indent-mode') ?? 'auto') === preCandidateSemantic
+      const currentEffectiveIndentClass = (
+        toElement.classList.contains('inkchapter-paragraph-effective-indent-2') ? 'indent-2'
+        : toElement.classList.contains('inkchapter-paragraph-effective-flush') ? 'flush'
+        : 'none'
+      )
+      const classRestored = currentEffectiveIndentClass === preCandidateEffectiveIndentClass
+      const inlineStyleRestored = toElement.style.textIndent === preCandidateInlineTextIndent
+      const computedIndentRestored = window.getComputedStyle(toElement).textIndent
+        .replace(/\s+/g, '').toLowerCase()
+        === preCandidateComputedIndent.replace(/\s+/g, '').toLowerCase()
+
+      // 3. Registry: keep CURRENT_AWAITING_TRANSFER (NOT fake live binding, NOT historical resolver)
+      const preTransferGeneration = transferPlan.generation
+      const registryMeta = this.canonicalRegistry.getRuntimeMeta(recordId)
+      const registryState = registryMeta?.state ?? 'CURRENT_AWAITING_TRANSFER'
+      const currentRuntimeId = registryMeta?.currentRuntimeId ?? 'none'
+      const previousRuntimeId = registryMeta?.previousRuntimeId ?? 'unknown'
+      const generationUnchanged = (registryMeta?.generation ?? 0) === preTransferGeneration
+      const fakeLiveBinding = registryState === 'CURRENT_LIVE' && !oldOwnerConnected
+      const historicalResolverUsed = registryState === 'PERSISTED_HISTORICAL'
+
+      const overall = semanticRestored && classRestored && inlineStyleRestored &&
+        computedIndentRestored && !fakeLiveBinding && !historicalResolverUsed &&
+        registryState === 'CURRENT_AWAITING_TRANSFER' &&
+        currentRuntimeId === 'none' &&
+        previousRuntimeId === fromRuntimeId &&
+        generationUnchanged
+
+      console.error(
+        `[InkChapter] CANONICAL-TRANSFER-ROLLBACK-AUDIT: ` +
+        `recordId=${recordId} ` +
+        `oldOwnerConnected=${oldOwnerConnected} ` +
+        `semanticRestored=${semanticRestored} ` +
+        `classRestored=${classRestored} ` +
+        `inlineStyleRestored=${inlineStyleRestored} ` +
+        `computedIndentRestored=${computedIndentRestored} ` +
+        `registryState=${registryState} ` +
+        `currentRuntimeId=${currentRuntimeId} ` +
+        `previousRuntimeId=${previousRuntimeId} ` +
+        `generationUnchanged=${generationUnchanged} ` +
+        `fakeLiveBinding=${fakeLiveBinding} ` +
+        `historicalResolverUsed=${historicalResolverUsed} ` +
+        `overall=${overall} ` +
+        `reason=${result.failReason ?? 'identity-commit-failed'}`,
+      )
+    }
+
+    // ── FINAL AUDIT ──
+    console.info(
+      `[InkChapter] CANONICAL-TRANSFER-FINAL-AUDIT: ` +
+      `recordId=${recordId} ` +
+      `oldOwnerRuntimeId=${result.fromRuntimeId} ` +
+      `newOwnerRuntimeId=${result.toRuntimeId} ` +
+      `recordMode=${recordMode} ` +
+      `newOwnerSemantic=${newOwnerSemantic} ` +
+      `expectedIndent=${expectedIndent} ` +
+      `actualIndent=${actualIndent} ` +
+      `identityTransfer=${result.success} ` +
+      `semanticTransfer=${semanticTransfer} ` +
+      `visualTransfer=${visualTransfer} ` +
+      `overall=${semanticTransfer && visualTransfer && result.success}`,
+    )
+
+    console.info(
+      `[InkChapter] AWAITING-TRANSFER-LEAK-AUDIT: ` +
+      `recordId=${recordId} ` +
+      `awaitingCount=${this.canonicalRegistry.getAwaitingTransferCount()} ` +
+      `activeHandoffCount=${this.activeLiveReplacementTickets.size} ` +
+      `transferSuccess=${result.success}`,
     )
 
     console.info(
@@ -3752,6 +5400,15 @@ export class HeadingNumberingService {
       `recordCountAfter=${result.recordCountAfter} ` +
       `reason=${reason}`,
     )
+
+    this.lastCanonicalContinuityOutcome = {
+      overall: semanticTransfer && visualTransfer && result.success,
+      recordId,
+      semanticTransfer,
+      visualTransfer,
+      identityTransfer: result.success,
+      failReason: result.failReason ?? null,
+    }
     return result
   }
 
@@ -3869,43 +5526,69 @@ export class HeadingNumberingService {
       if (resolved) {
         const para = allParas[resolved.index]
         if (para && para.textContent?.trim()) {
-          // ── R58.6: Registry must authorize BEFORE any mutation ──
-          const meta = this.canonicalRegistry.getRuntimeMeta(o.id)
-          if (meta && meta.state === 'PERSISTED_HISTORICAL') {
-            // Historical records cannot be promoted — only logged, never mutated
+          // ── R58.6.2: Proof-Before-Mutation — requires LiveOwnershipProof ──
+          const promoMeta = this.canonicalRegistry.getRuntimeMeta(o.id)
+          if (promoMeta && promoMeta.state === 'PERSISTED_HISTORICAL') {
+            continue // Historical records cannot be promoted
+          }
+
+          // Resolve proof from the matched paragraph
+          const docKeyPromo = this.getDocumentKey() ?? ''
+          const paraRtId = this.getParagraphRuntimeId(para)
+
+          if (promoMeta?.state === 'CURRENT_LIVE') {
+            // Must have valid LiveOwnershipProof for live promotion
+            const proof = this.canonicalRegistry.resolveLiveOwnershipProof(
+              para, docKeyPromo, paraRtId,
+            )
+            if (!proof) {
+              console.info(
+                `[InkChapter] PROMOTION-LIFECYCLE-VIOLATION: ` +
+                `recordId=${o.id} ` +
+                `state=${promoMeta.state} ` +
+                `reason=NO_LIVE_OWNERSHIP_PROOF ` +
+                `decision=BLOCK`,
+              )
+              continue
+            }
+
+            const promoResult = this.canonicalRegistry.promoteExistingByRecordId(
+              o.id, paraRtId, para, docKeyPromo,
+            )
+            if (!promoResult.ok) {
+              console.error(
+                `[InkChapter] PROMOTION-LIFECYCLE-VIOLATION: ` +
+                `recordId=${o.id} ` +
+                `state=${promoMeta.state} ` +
+                `reason=${promoResult.reason} ` +
+                `decision=BLOCK`,
+              )
+              continue
+            }
+
+            // Only now: registry authorized → apply
+            const newAnchor = createParagraphAnchor(resolved.index, allParas)
+            o.anchor = newAnchor
+            o.temporary = false
+            dirty = true
+
+            console.info(
+              `[InkChapter] CANONICAL-RECORD-PROMOTION: recordId=${o.id} ` +
+              `stateBefore=${promoResult.stateBefore} ` +
+              `stateAfter=CURRENT_LIVE ` +
+              `bindingVerified=true ` +
+              `elementConnected=true ` +
+              `generationMatches=true ` +
+              `runtimeIdMatches=true ` +
+              `temporaryBefore=true ` +
+              `temporaryAfter=false ` +
+              `recordCount=${allRecords.length} ` +
+              `decision=PROMOTE`,
+            )
+          } else {
+            // Not in registry or not CURRENT_LIVE — skip promotion
             continue
           }
-
-          const promoResult = this.canonicalRegistry.promoteExistingByRecordId(o.id)
-          if (!promoResult.ok) {
-            console.error(
-              `[InkChapter] PROMOTION-LIFECYCLE-VIOLATION: ` +
-              `recordId=${o.id} ` +
-              `state=${meta?.state ?? 'unknown'} ` +
-              `reason=${promoResult.reason} ` +
-              `decision=BLOCK`,
-            )
-            continue // STOP — no mutation
-          }
-
-          // Only now: registry authorized → apply
-          const newAnchor = createParagraphAnchor(resolved.index, allParas)
-          o.anchor = newAnchor
-          o.temporary = false
-          dirty = true
-
-          console.info(
-            `[InkChapter] CANONICAL-RECORD-PROMOTION: recordId=${o.id} ` +
-            `stateBefore=${promoResult.stateBefore} ` +
-            `stateAfter=CURRENT_LIVE ` +
-            `bindingVerified=true ` +
-            `elementConnected=true ` +
-            `generationMatches=true ` +
-            `temporaryBefore=true ` +
-            `temporaryAfter=false ` +
-            `recordCount=${allRecords.length} ` +
-            `decision=PROMOTE`,
-          )
         }
       }
     }
@@ -3949,7 +5632,8 @@ export class HeadingNumberingService {
                 `[InkChapter] CURRENT-LIVE-DISCONNECTED: recordId=${o.id} ` +
                 `reason=element disconnected but state still CURRENT_LIVE — marking AWAITING_TRANSFER`,
               )
-              this.canonicalRegistry.markAwaitingTransfer(o.id)
+              this.canonicalRegistry.markAwaitingTransfer(o.id, undefined, undefined,
+                this.documentContext.scopeId ?? undefined)
             }
             continue // Do NOT enter persistent resolver
 
@@ -4206,7 +5890,19 @@ export class HeadingNumberingService {
     const allParas = collectContentParagraphs(root)
     const settings = this.getParagraphLayoutSettings()
 
+    // ── R58.7: REHYDRATE-SELECTION-AUDIT — read-only before/after sampling ──
+    this.rehydrateApplyCount++
+    const selectionBefore = resolveSelectionTruth(
+      root,
+      (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      'REHYDRATE-SELECTION-BEFORE',
+    )
+
     let dirty = false
+    let applyAttemptedCount = 0
+    let semanticChangedCount = 0
+    let classChangedCount = 0
+    let inlineStyleChangedCount = 0
 
     for (const winner of plan.winners) {
       const para = winner.targetParagraph
@@ -4215,6 +5911,8 @@ export class HeadingNumberingService {
       // ── R58: REHYDRATE-APPLY provenance ────────────────────────────
       const targetText = getUserVisibleParagraphText(para)
       const semanticBefore = getParagraphIndentMode(para)
+      const classBefore = Array.from(para.classList).sort().join(',')
+      const styleBefore = para.style.textIndent
       console.info(
         `[InkChapter] REHYDRATE-APPLY: planId=${plan.planId} ` +
         `recordId=${winner.recordId} targetRuntimeId=${this.getParagraphRuntimeId(para)} ` +
@@ -4265,7 +5963,16 @@ export class HeadingNumberingService {
       }
 
       // Atomic rehydrate: semantic + visual in ONE synchronous call
+      applyAttemptedCount++
       rehydrateParagraphIndentState(para, winner.recordMode, settings, rehydrateCtx)
+
+      // R58.7: count material DOM mutations (semantic / class / inline style)
+      const semanticAfter = getParagraphIndentMode(para)
+      const classAfter = Array.from(para.classList).sort().join(',')
+      const styleAfter = para.style.textIndent
+      if (semanticBefore !== semanticAfter) semanticChangedCount++
+      if (classBefore !== classAfter) classChangedCount++
+      if (styleBefore !== styleAfter) inlineStyleChangedCount++
 
       // ── R58.3: Live projection-only gate ──
       // CURRENT_LIVE records: projection only, NO anchor repair, NO canonical mutation
@@ -4342,6 +6049,59 @@ export class HeadingNumberingService {
         `writeScheduled=false`,
       )
     }
+
+    // ── R58.7: REHYDRATE-SELECTION-AUDIT (read-only) ──
+    const actualDomWriteCount = semanticChangedCount + classChangedCount + inlineStyleChangedCount
+    this.rehydrateDomWriteCount += actualDomWriteCount
+    const rehydrateSource = plan.allRecords === this.inMemoryOverrides.get(plan.documentKey) ? 'rehydrate' : 'sidecar-reconstruct'
+    const selectionAfterSync = resolveSelectionTruth(
+      root,
+      (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      'REHYDRATE-SELECTION-AFTER-SYNC',
+    )
+    console.info(
+      `[InkChapter] REHYDRATE-SELECTION-AUDIT: ` +
+      `planId=${plan.planId} ` +
+      `source=${rehydrateSource} ` +
+      `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+      `selectionBeforeRuntimeId=${selectionBefore.runtimeId ?? 'null'} ` +
+      `selectionBeforeOffset=${selectionBefore.logicalOffset ?? 'null'} ` +
+      `selectionBeforeVisibleText=${selectionBefore.paragraph ? getUserVisibleParagraphText(selectionBefore.paragraph) : ''} ` +
+      `winnerCount=${plan.winners.length} ` +
+      `blockedCount=${plan.blockedGroups.length} ` +
+      `rehydrateApplyCount=${this.rehydrateApplyCount} ` +
+      `applyAttemptedCount=${applyAttemptedCount} ` +
+      `semanticApplyAttempted=${applyAttemptedCount} ` +
+      `semanticActuallyChanged=${semanticChangedCount} ` +
+      `classApplyAttempted=${applyAttemptedCount} ` +
+      `classActuallyChanged=${classChangedCount} ` +
+      `inlineStyleApplyAttempted=${applyAttemptedCount} ` +
+      `inlineStyleActuallyChanged=${inlineStyleChangedCount} ` +
+      `decorationApplyAttempted=0 ` +
+      `decorationActuallyChanged=0 ` +
+      `actualDomWriteCount=${actualDomWriteCount} ` +
+      `selectionAfterSyncRuntimeId=${selectionAfterSync.runtimeId ?? 'null'} ` +
+      `selectionAfterSyncOffset=${selectionAfterSync.logicalOffset ?? 'null'} ` +
+      `selectionAfterMicrotaskRuntimeId=pending ` +
+      `selectionAfterMicrotaskOffset=pending ` +
+      `selectionAfterRAFRuntimeId=pending ` +
+      `selectionAfterRAFOffset=pending ` +
+      `selectionWriteAttemptedByRehydrate=false`,
+    )
+    queueMicrotask(() => {
+      const t = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'REHYDRATE-SELECTION-AFTER-MICROTASK')
+      console.info(
+        `[InkChapter] REHYDRATE-SELECTION-AFTER-MICROTASK: planId=${plan.planId} ` +
+        `runtimeId=${t.runtimeId ?? 'null'} logicalOffset=${t.logicalOffset ?? 'null'} visibleText=${t.paragraph ? getUserVisibleParagraphText(t.paragraph) : ''}`,
+      )
+    })
+    requestAnimationFrame(() => {
+      const t = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'REHYDRATE-SELECTION-AFTER-RAF')
+      console.info(
+        `[InkChapter] REHYDRATE-SELECTION-AFTER-RAF: planId=${plan.planId} ` +
+        `runtimeId=${t.runtimeId ?? 'null'} logicalOffset=${t.logicalOffset ?? 'null'} visibleText=${t.paragraph ? getUserVisibleParagraphText(t.paragraph) : ''}`,
+      )
+    })
   }
 
   /**
@@ -4372,6 +6132,7 @@ export class HeadingNumberingService {
     const plan = this.resolveParagraphOverrideRehydratePlan(
       docKey, docPath, overrides, allParas, 'rehydrate',
     )
+    this.rehydratePlanCount++
 
     // ── R58.3: Sweep stale awaiting records ──
     const activeHandoffIds = new Set<string>()
@@ -4385,6 +6146,9 @@ export class HeadingNumberingService {
 
   /** Reconstruct runtime force-indent projections from sidecar metadata. */
   reconstructParagraphOverridesFromSidecar(): void {
+    // R58.7 Phase A.1: Gate — persistence must be ready for sidecar load
+    if (!this.assertPersistenceContextReady('rehydrate-sidecar')) return
+
     const docKey = this.getDocumentKey()
     if (!docKey) return
 
@@ -4421,6 +6185,7 @@ export class HeadingNumberingService {
     const plan = this.resolveParagraphOverrideRehydratePlan(
       docKey, docPath, overrides, allParas, 'reconstruct',
     )
+    this.rehydratePlanCount++
     this.applyParagraphRehydratePlan(plan)
 
     // ── P0-2: Only save when dirty (winners applied or anchors repaired) ──
@@ -4707,12 +6472,14 @@ export class HeadingNumberingService {
     const addedPs = addedElements.filter(el => el.tagName === 'P')
     const batchId = `emb-${Date.now()}-${Math.random().toString(36).slice(2, 4)}`
     const docKeyBatch = this.getDocumentKey() ?? ''
-    const selRuntimeId = (() => {
-      const root = this.adapter.getEditorRoot()
-      if (!root) return 'none'
-      const block = resolveCurrentBlockFromSelection(root)
-      return block ? this.getParagraphRuntimeId(block) : 'none'
-    })()
+    const editorRoot = this.adapter.getEditorRoot()
+    const selTruthBatch = resolveSelectionTruth(
+      editorRoot ?? document.body,
+      (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      'MUTATION',
+    )
+    const selRuntimeId = selTruthBatch.runtimeId ?? 'none'
+    const scopeCtx = this.getScopeContext()
     console.info(
       `[InkChapter] EDITOR-MUTATION-BATCH: ` +
       `batchId=${batchId} ` +
@@ -4721,11 +6488,85 @@ export class HeadingNumberingService {
       `removedRuntimeIds=[${removedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
       `addedRuntimeIds=[${addedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
       `selectionRuntimeId=${selRuntimeId} ` +
-      `documentKey=${docKeyBatch}`,
+      `scopeId=${scopeCtx.scopeId} ` +
+      `persistenceKey=${scopeCtx.persistenceKey ?? 'null'} ` +
+      `documentMode=${scopeCtx.mode}`,
     )
 
-    // Check each removed element for CURRENT_LIVE binding
+    // ── R58.6.2: EDITOR-MUTATION-CLASSIFICATION from GLOBAL batch shape ──
+    // Shape is determined by TOTAL removed/added paragraph counts, NOT canonical participants
+    const globalShape = (() => {
+      const r = removedPs.length, a = addedPs.length
+      if (r === 0 && a === 0) return 'NONE' as const
+      if (r === 1 && a === 1) return 'REPLACE_1_TO_1' as const
+      if (r === 1 && a === 2) return 'SPLIT_1_TO_2' as const
+      if (r === 2 && a === 1) return 'MERGE_2_TO_1' as const
+      return 'COMPLEX' as const
+    })()
+    console.info(
+      `[InkChapter] EDITOR-MUTATION-CLASSIFICATION: ` +
+      `batchId=${batchId} ` +
+      `mutationShape=${globalShape} ` +
+      `removedParagraphCount=${removedPs.length} ` +
+      `addedParagraphCount=${addedPs.length} ` +
+      `canonicalRemovedCount=0 ` +
+      `canonicalAddedCandidateCount=0 ` +
+      `reason=global-batch-shape`,
+    )
+
+    // ── R58.7: NORMAL-ENTER-RAW-MUTATION — only when active NormalEnter txn owns this batch ──
+    const ownerTxn = this.activeNormalEnterTxn
+    if (ownerTxn?.active && ownerTxn.state === 'NATIVE_MUTATION_PENDING') {
+      for (let mi = 0; mi < mutations.length; mi++) {
+        const m = mutations[mi]
+        const targetRtId = m.target instanceof HTMLElement
+          ? this.getParagraphRuntimeId(m.target)
+          : (m.target as Element).tagName ?? 'unknown'
+        const addedSummaries: string[] = []
+        const removedSummaries: string[] = []
+        for (let ai = 0; ai < m.addedNodes.length; ai++) {
+          const an = m.addedNodes[ai]
+          addedSummaries.push(an instanceof HTMLElement ? `${an.tagName}#rt=${this.getParagraphRuntimeId(an)}` : an.nodeName)
+        }
+        for (let ri = 0; ri < m.removedNodes.length; ri++) {
+          const rn = m.removedNodes[ri]
+          removedSummaries.push(rn instanceof HTMLElement ? `${rn.tagName}#rt=${this.getParagraphRuntimeId(rn)}` : rn.nodeName)
+        }
+        console.info(
+          `[InkChapter] NORMAL-ENTER-RAW-MUTATION: ` +
+          `normalEnterTxnId=${ownerTxn.id} ` +
+          `batchId=${batchId} ` +
+          `index=${mi + 1}/${mutations.length} ` +
+          `type=${m.type} ` +
+          `targetTag=${(m.target as Element).tagName ?? 'unknown'} ` +
+          `targetRuntimeId=${targetRtId} ` +
+          `added=[${addedSummaries.join(',')}] ` +
+          `removed=[${removedSummaries.join(',')}] ` +
+          `addedCount=${m.addedNodes.length} ` +
+          `removedCount=${m.removedNodes.length} ` +
+          `mutationShape=${globalShape}`,
+        )
+      }
+    }
+
+    // ── R58.7 Phase A: Gate — no business mutations without document context ──
+    if (!this.assertDocumentContextReady('mutation-observer')) return
+
+    // ── R58.6.7: MERGE_2_TO_1 — BATCH-FIRST PREFLIGHT (MUST precede per-owner loop) ──
+    // Collect owners BEFORE any markAwaitingTransfer / canonicalTransferBinding.
+    // M3 (canonicalOwnerCount >= 2) → BLOCK_MULTI_OWNER with ZERO partial commit.
+    if (globalShape === 'MERGE_2_TO_1') {
+      this.handleMerge2To1BatchFirst(removedPs, addedPs, batchId, docKeyBatch, selRuntimeId)
+    }
+
+    // Per-owner loop for non-MERGE shapes (REPLACE_1_TO_1, SPLIT_1_TO_2, COMPLEX).
+    // Skip P elements when MERGE_2_TO_1 (already handled by batch-first above).
+    let canonicalRemovedCount = 0
+    let canonicalAddedCandidateCount = 0
     for (const removedEl of removedElements) {
+      // R58.6.7: P elements in MERGE_2_TO_1 already handled by batch-first preflight
+      if (globalShape === 'MERGE_2_TO_1' && removedEl.tagName === 'P') continue
+
       // R58.6: Use resolveRecordByRemovedElement — removed elements ARE disconnected
       const exactRecord = this.canonicalRegistry.resolveRecordByRemovedElement(removedEl)
       if (!exactRecord) continue
@@ -4758,6 +6599,7 @@ export class HeadingNumberingService {
         ticketId,
         recordId: exactRecord.recordId,
         documentKey: docKey,
+        scopeId: this.documentContext.scopeId ?? 'unknown',
         previousElement: removedEl,
         previousRuntimeId: exactRecord.meta.currentRuntimeId ?? 'unknown',
         previousGeneration: exactRecord.meta.generation,
@@ -4769,6 +6611,7 @@ export class HeadingNumberingService {
       }
 
       this.activeLiveReplacementTickets.set(ticketId, ticket)
+      canonicalRemovedCount++
 
       console.info(
         `[InkChapter] LIVE-REPLACEMENT-TICKET: ` +
@@ -4776,39 +6619,56 @@ export class HeadingNumberingService {
         `recordId=${ticket.recordId} ` +
         `fromRuntimeId=${ticket.previousRuntimeId} ` +
         `generation=${ticket.previousGeneration} ` +
-        `documentKey=${ticket.documentKey} ` +
+        `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+        `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
+        `mode=${this.documentContext.mode} ` +
         `source=MUTATION_OBSERVER`,
+      )
+
+      // ── R58.7: SOURCE-SNAPSHOT captured BEFORE markAwaitingTransfer (state MUST be CURRENT_LIVE) ──
+      console.info(
+        `[InkChapter] SOURCE-SNAPSHOT: ` +
+        `recordId=${ticket.recordId} ` +
+        `recordMode=${ticket.semanticMode} ` +
+        `scopeId=${ticket.scopeId} ` +
+        `persistenceKey=${exactRecord.meta.persistenceKey ?? 'null'} ` +
+        `generation=${ticket.previousGeneration} ` +
+        `fromRuntimeId=${ticket.previousRuntimeId} ` +
+        `state=${exactRecord.meta.state}`,
       )
 
       // Mark as awaiting transfer
       this.canonicalRegistry.markAwaitingTransfer(
         exactRecord.recordId, ticketId, 'generic-dom-replacement',
+        ticket.scopeId,
       )
 
-      // Try to resolve replacement in the same batch
-      const addedPs = addedElements.filter(el =>
+      // ── R58.6.2: Resolve based on authoritative global shape ──
+      // NOTE: MERGE_2_TO_1 is handled by batch-first preflight above, not here.
+      if (globalShape === 'COMPLEX') {
+        console.info(`[InkChapter] LIVE-REPLACEMENT-BLOCK: ticketId=${ticketId} recordId=${ticket.recordId} mutationShape=COMPLEX reason=unsafe-shape`)
+        continue
+      }
+
+      if (globalShape === 'SPLIT_1_TO_2') {
+        // R58.6.2: SPLIT resolver — separate canonicalOwner from caretDestination
+        this.resolveSplitContinuity(ticket, exactRecord, addedPs, batchId, removedEl)
+        canonicalAddedCandidateCount += 2
+        continue
+      }
+
+      // REPLACE_1_TO_1: only allowed shape for 1→1 resolver
+      const addedPsFiltered = addedElements.filter(el =>
         el.tagName === 'P' && el.isConnected &&
-        el !== removedEl, // not the same element
+        el !== removedEl,
       )
 
       const resolution = this.canonicalRegistry.resolveLiveReplacement(
-        ticket, removedElements, addedPs, parentEl,
-      )
-
-      // R58.6: EDITOR-MUTATION-CLASSIFICATION
-      const kind = addedPs.length === 1 ? 'REPLACE_1_TO_1'
-        : addedPs.length === 2 ? 'SPLIT_1_TO_2'
-        : addedPs.length === 0 ? 'AMBIGUOUS'
-        : 'AMBIGUOUS'
-      console.info(
-        `[InkChapter] EDITOR-MUTATION-CLASSIFICATION: ` +
-        `batchId=${batchId} ` +
-        `kind=${kind} ` +
-        `candidateCount=${addedPs.length} ` +
-        `reason=${resolution.decision === 'PENDING' ? resolution.reason : (resolution.decision === 'BLOCK' ? resolution.reason : 'resolved')}`,
+        ticket, removedElements, addedPsFiltered, parentEl,
       )
 
       if (resolution.decision === 'TRANSFER') {
+        canonicalAddedCandidateCount++
         const newRuntimeId = this.getParagraphRuntimeId(resolution.replacement)
 
         console.info(
@@ -4824,16 +6684,17 @@ export class HeadingNumberingService {
           resolution.replacement, newRuntimeId,
           'LIVE_DOM_REPLACEMENT',
           ticketId,
+          ticket.scopeId,
         )
 
         if (transferResult.success) {
           console.info(
-            `[InkChapter] LIVE-REPLACEMENT-RESOLVE: ` +
-            `ticketId=${ticketId} ` +
+            `[InkChapter] EDITOR-CONTINUITY-RESOLVE: ` +
+            `mutationShape=REPLACE_1_TO_1 ` +
             `recordId=${ticket.recordId} ` +
-            `replacementRuntimeId=${newRuntimeId} ` +
-            `evidence=[same-batch,same-parent,old-in-removed] ` +
-            `decision=TRANSFER`,
+            `fromRuntimeId=${ticket.previousRuntimeId} ` +
+            `toRuntimeId=${newRuntimeId} ` +
+            `decision=RESOLVED`,
           )
           this.activeLiveReplacementTickets.delete(ticketId)
         } else {
@@ -4852,10 +6713,402 @@ export class HeadingNumberingService {
           `recordId=${ticket.recordId} ` +
           `reason=${resolution.reason} ` +
           `candidateCount=${resolution.candidateCount} ` +
-          `addedParagraphCount=${addedPs.length}`,
+          `addedParagraphCount=${addedPsFiltered.length}`,
         )
       }
-      // BLOCK: leave ticket pending for audit
+    }
+
+    // Update batch-level classification with canonical counts
+    console.info(
+      `[InkChapter] EDITOR-MUTATION-CLASSIFICATION: ` +
+      `batchId=${batchId} ` +
+      `mutationShape=${globalShape} ` +
+      `removedParagraphCount=${removedPs.length} ` +
+      `addedParagraphCount=${addedPs.length} ` +
+      `canonicalRemovedCount=${canonicalRemovedCount} ` +
+      `canonicalAddedCandidateCount=${canonicalAddedCandidateCount} ` +
+      `reason=global-batch-shape-final`,
+    )
+  }
+
+  /**
+   * R58.6.2: Resolve SPLIT_1_TO_2 continuity.
+   *
+   * Separates canonicalOwner (completed old paragraph) from caretDestination
+   * (new paragraph with caret). Uses selection + DOM continuity evidence.
+   */
+  private resolveSplitContinuity(
+    ticket: LiveReplacementTicket,
+    exactRecord: { recordId: string; meta: CanonicalRuntimeMeta; record: ParagraphIndentOverrideRecord | undefined },
+    addedPs: HTMLElement[],
+    batchId: string,
+    removedEl: HTMLElement,
+  ): void {
+    // Require exactly 2 added paragraphs for split
+    if (addedPs.length !== 2) {
+      console.info(
+        `[InkChapter] LIVE-REPLACEMENT-BLOCK: ` +
+        `ticketId=${ticket.ticketId} ` +
+        `recordId=${ticket.recordId} ` +
+        `mutationShape=SPLIT_1_TO_2 ` +
+        `reason=expected-2-added-got-${addedPs.length}`,
+      )
+      return
+    }
+
+    // Resolve caret destination from selection
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+
+    const splitSelTruth = resolveSelectionTruth(
+      root,
+      (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+      'SPLIT',
+    )
+    const selRuntimeId = splitSelTruth.runtimeId
+
+    let caretDestination: HTMLElement | null = null
+    let caretDestinationIdx = -1
+
+    if (selRuntimeId) {
+      for (let i = 0; i < addedPs.length; i++) {
+        if (this.getParagraphRuntimeId(addedPs[i]) === selRuntimeId) {
+          caretDestination = addedPs[i]
+          caretDestinationIdx = i
+          break
+        }
+      }
+    }
+
+    if (!caretDestination) {
+      console.info(
+        `[InkChapter] LIVE-REPLACEMENT-BLOCK: ` +
+        `ticketId=${ticket.ticketId} ` +
+        `recordId=${ticket.recordId} ` +
+        `mutationShape=SPLIT_1_TO_2 ` +
+        `reason=caret-destination-not-in-added-paragraphs ` +
+        `selectionRuntimeId=${selRuntimeId ?? 'none'}`,
+      )
+      return
+    }
+
+    console.info(
+      `[InkChapter] SPLIT-CARET-DESTINATION: ` +
+      `ticketId=${ticket.ticketId} ` +
+      `caretDestinationRuntimeId=${this.getParagraphRuntimeId(caretDestination)} ` +
+      `selectionRuntimeId=${selRuntimeId} ` +
+      `decision=RESOLVED`,
+    )
+
+    // Canonical owner = the OTHER added paragraph (not caret destination)
+    const canonicalOwner = addedPs[1 - caretDestinationIdx]
+    if (!canonicalOwner || !canonicalOwner.isConnected) {
+      console.info(
+        `[InkChapter] LIVE-REPLACEMENT-BLOCK: ` +
+        `ticketId=${ticket.ticketId} ` +
+        `mutationShape=SPLIT_1_TO_2 ` +
+        `reason=canonical-owner-not-valid`,
+      )
+      return
+    }
+
+    const canonicalOwnerRtId = this.getParagraphRuntimeId(canonicalOwner)
+
+    console.info(
+      `[InkChapter] EDITOR-CONTINUITY-RESOLVE: ` +
+      `ticketId=${ticket.ticketId} ` +
+      `mutationShape=SPLIT_1_TO_2 ` +
+      `recordId=${ticket.recordId} ` +
+      `fromRuntimeId=${ticket.previousRuntimeId} ` +
+      `canonicalOwnerRuntimeId=${canonicalOwnerRtId} ` +
+      `caretDestinationRuntimeId=${selRuntimeId} ` +
+      `decision=RESOLVED`,
+    )
+
+    // Transfer canonical binding to canonical owner
+    const docKey2 = this.getDocumentKey() ?? ''
+    const transferResult = this.canonicalTransferBinding(
+      ticket.recordId,
+      removedEl, ticket.previousRuntimeId,
+      canonicalOwner, canonicalOwnerRtId,
+      'LIVE_DOM_SPLIT_COMPLETED_PARAGRAPH',
+      ticket.ticketId,
+      ticket.scopeId,
+    )
+
+    if (transferResult.success) {
+      console.info(
+        `[InkChapter] CANONICAL-BINDING-TRANSFER: ` +
+        `recordId=${ticket.recordId} ` +
+        `fromRuntimeId=${ticket.previousRuntimeId} ` +
+        `toRuntimeId=${canonicalOwnerRtId} ` +
+        `reason=LIVE_DOM_SPLIT_COMPLETED_PARAGRAPH ` +
+        `mutationShape=SPLIT_1_TO_2`,
+      )
+      this.activeLiveReplacementTickets.delete(ticket.ticketId)
+
+      // ── R58.6.7: CaretExpectation for split — target = caretDestination, NOT canonicalOwner ──
+      const caretDestRtId = this.getParagraphRuntimeId(caretDestination)
+      this.activeCaretExpectation = {
+        expectationId: `ce-split-${ticket.ticketId}`,
+        documentKey: docKey2,
+        scopeId: this.documentContext.scopeId ?? 'unknown',
+        expectedElement: caretDestination,
+        expectedRuntimeId: caretDestRtId,
+        expectedLogicalOffset: 0,
+        canonicalRecordId: ticket.recordId,
+        generation: transferResult.generationAfter,
+        reason: 'SPLIT_NEW_PARAGRAPH',
+        createdAt: Date.now(),
+        active: true,
+        restoreAttempts: 0,
+        intentEpoch: this.userIntentEpoch,
+        expectedTextContent: getUserVisibleParagraphText(caretDestination),
+      }
+      console.info(
+        `[InkChapter] CARET-EXPECTATION-CREATE: ` +
+        `expectationId=${this.activeCaretExpectation.expectationId} ` +
+        `scopeId=${this.activeCaretExpectation.scopeId} ` +
+        `reason=SPLIT_NEW_PARAGRAPH ` +
+        `intentEpoch=${this.userIntentEpoch} ` +
+        `expectedRuntimeId=${caretDestRtId} ` +
+        `expectedLogicalOffset=0 ` +
+        `canonicalOwnerRuntimeId=${canonicalOwnerRtId} ` +
+        `decision=ACTIVE`,
+      )
+    }
+  }
+
+  /**
+   * R58.6.7: Batch-first MERGE_2_TO_1 preflight.
+   *
+   * Collect ALL canonical owners from removed paragraphs BEFORE any lifecycle mutation.
+   * M0 (ownerCount=0) → NO_CANONICAL_OWNER, zero mutations.
+   * M1/M2 (ownerCount=1) → TRANSFER_SINGLE_OWNER, one awaiting→transfer→live.
+   * M3 (ownerCount>=2) → BLOCK_MULTI_OWNER, ZERO partial commit.
+   */
+  private handleMerge2To1BatchFirst(
+    removedPs: HTMLElement[],
+    addedPs: HTMLElement[],
+    batchId: string,
+    docKey: string,
+    selRuntimeId: string,
+  ): void {
+    // 1. Collect unique canonical owners
+    const owners: MergeOwnerSnapshot[] = []
+    const ownerRecordIds = new Set<string>()
+
+    for (const removedP of removedPs) {
+      const exactRecord = this.canonicalRegistry.resolveRecordByRemovedElement(removedP)
+      if (!exactRecord) continue
+      if (exactRecord.meta.documentKey !== docKey) continue
+
+      // Don't interfere with active One-Shot Handoff
+      if (this.activeOneShotHandoff && !this.activeOneShotHandoff.consumed) {
+        if (this.activeOneShotHandoff.preElement === removedP) continue
+      }
+
+      if (ownerRecordIds.has(exactRecord.recordId)) continue // dedup unique recordIds
+
+      ownerRecordIds.add(exactRecord.recordId)
+      owners.push({
+        recordId: exactRecord.recordId,
+        runtimeId: exactRecord.meta.currentRuntimeId ?? 'unknown',
+        generation: exactRecord.meta.generation,
+        element: removedP,
+        state: exactRecord.meta.state,
+        documentKey: docKey,
+      })
+    }
+
+    const canonicalOwnerCount = owners.length
+    const removedParagraphCount = removedPs.length
+
+    // 2. MERGE-OWNER-COUNT-INVARIANT
+    const invariantValid = canonicalOwnerCount <= removedParagraphCount
+    console.info(
+      `[InkChapter] MERGE-OWNER-COUNT-INVARIANT: ` +
+      `batchId=${batchId} ` +
+      `removedParagraphCount=${removedParagraphCount} ` +
+      `canonicalOwnerCount=${canonicalOwnerCount} ` +
+      `valid=${invariantValid}`,
+    )
+
+    // 3. MERGE-BATCH-PREFLIGHT — decide BEFORE any mutation
+    const ownerIds = owners.map(o => o.recordId)
+    const mergedDestination = addedPs.length === 1 ? addedPs[0] : null
+    const decision: MergeBatchDecision =
+      canonicalOwnerCount >= 2 ? 'BLOCK_MULTI_OWNER' :
+      canonicalOwnerCount === 1 ? 'TRANSFER_SINGLE_OWNER' :
+      'NO_CANONICAL_OWNER'
+
+    console.info(
+      `[InkChapter] MERGE-BATCH-PREFLIGHT: ` +
+      `batchId=${batchId} ` +
+      `mutationShape=MERGE_2_TO_1 ` +
+      `removedRuntimeIds=[${removedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
+      `mergedDestination=${mergedDestination ? this.getParagraphRuntimeId(mergedDestination) : 'none'} ` +
+      `canonicalOwnerIds=[${ownerIds.join(',')}] ` +
+      `canonicalOwnerCount=${canonicalOwnerCount} ` +
+      `decision=${decision}`,
+    )
+
+    // 4. Execute decision — ONE commit, NO partial
+    if (decision === 'BLOCK_MULTI_OWNER') {
+      // ── M3: HARD STOP — zero lifecycle mutation ──
+      console.info(
+        `[InkChapter] MERGE-CANONICAL-CONFLICT: ` +
+        `batchId=${batchId} ` +
+        `recordIds=[${ownerIds.join(',')}] ` +
+        `destination=${mergedDestination ? this.getParagraphRuntimeId(mergedDestination) : 'none'} ` +
+        `decision=BLOCK_MULTI_OWNER ` +
+        `markAwaitingTransfer=0 ` +
+        `canonicalTransferBinding=0 ` +
+        `partialCommit=0`,
+      )
+      return
+    }
+
+    if (decision === 'NO_CANONICAL_OWNER') {
+      console.info(
+        `[InkChapter] MERGE-BATCH-PREFLIGHT: ` +
+        `batchId=${batchId} ` +
+        `canonicalOwnerCount=0 ` +
+        `decision=NO_CANONICAL_OWNER ` +
+        `markAwaitingTransfer=0 ` +
+        `canonicalTransferBinding=0`,
+      )
+      return
+    }
+
+    // ── M1/M2: exactly one canonical owner → transfer ──
+    if (!mergedDestination || !mergedDestination.isConnected) {
+      console.info(`[InkChapter] MERGE-CONTINUITY-RESOLVE: batchId=${batchId} decision=BLOCK_AMBIGUOUS reason=destination-disconnected`)
+      return
+    }
+
+    const owner = owners[0]
+    const ticketId = `lrt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const toRtId = this.getParagraphRuntimeId(mergedDestination)
+    const fromRtId = this.getParagraphRuntimeId(owner.element)
+
+    // Create ticket for tracking
+    const ticket: LiveReplacementTicket = {
+      ticketId,
+      recordId: owner.recordId,
+      documentKey: docKey,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      previousElement: owner.element,
+      previousRuntimeId: owner.runtimeId,
+      previousGeneration: owner.generation,
+      parentElement: owner.element.parentElement ?? undefined,
+      semanticMode: 'force-indent',
+      createdAt: Date.now(),
+      source: 'MUTATION_OBSERVER',
+    }
+    this.activeLiveReplacementTickets.set(ticketId, ticket)
+
+    console.info(
+      `[InkChapter] LIVE-REPLACEMENT-TICKET: ` +
+      `ticketId=${ticketId} ` +
+      `recordId=${ticket.recordId} ` +
+      `fromRuntimeId=${ticket.previousRuntimeId} ` +
+      `generation=${ticket.previousGeneration} ` +
+      `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+      `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
+      `mode=${this.documentContext.mode} ` +
+      `source=MUTATION_OBSERVER`,
+    )
+
+    console.info(
+      `[InkChapter] MERGE-CONTINUITY-TICKET: ` +
+      `ticketId=${ticketId} ` +
+      `documentKey=${docKey} ` +
+      `removedRuntimeIds=[${fromRtId}] ` +
+      `canonicalRemovedRecords=[{recordId=${owner.recordId},runtimeId=${owner.runtimeId},generation=${owner.generation}}] ` +
+      `mergedDestination=${toRtId} ` +
+      `createdAt=${Date.now()}`,
+    )
+
+    // Mark awaiting → transfer → live in one atomic sequence
+    this.canonicalRegistry.markAwaitingTransfer(
+      owner.recordId, ticketId, 'generic-dom-replacement',
+      ticket.scopeId,
+    )
+
+    const transferResult = this.canonicalTransferBinding(
+      owner.recordId,
+      owner.element, owner.runtimeId,
+      mergedDestination, toRtId,
+      'LIVE_DOM_MERGE_SINGLE_OWNER',
+      ticketId,
+      ticket.scopeId,
+    )
+
+    if (transferResult.success) {
+      console.info(
+        `[InkChapter] MERGE-CONTINUITY-RESOLVE: ` +
+        `ticketId=${ticketId} ` +
+        `decision=TRANSFER_SINGLE_OWNER ` +
+        `recordId=${owner.recordId} ` +
+        `fromRuntimeId=${owner.runtimeId} ` +
+        `toRuntimeId=${toRtId} ` +
+        `generationBefore=${transferResult.generationBefore} ` +
+        `generationAfter=${transferResult.generationAfter} ` +
+        `recordCount unchanged`,
+      )
+      this.activeLiveReplacementTickets.delete(ticketId)
+
+      // Check selection for caret destination
+      const root = this.adapter.getEditorRoot()
+      if (root) {
+        const selRes = resolveSelectionParagraph(
+          window.getSelection(), root,
+          (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+        )
+        if (selRes.paragraphRuntimeId === toRtId) {
+          console.info(
+            `[InkChapter] MERGE-CARET-DESTINATION: ` +
+            `ticketId=${ticketId} ` +
+            `runtimeId=${toRtId} ` +
+            `decision=RESOLVED`,
+          )
+        }
+      }
+
+      // ── R58.6.7: CaretExpectation for merge — target = mergedDestination ──
+      this.activeCaretExpectation = {
+        expectationId: `ce-merge-${ticketId}`,
+        documentKey: docKey,
+        scopeId: this.documentContext.scopeId ?? 'unknown',
+        expectedElement: mergedDestination,
+        expectedRuntimeId: toRtId,
+        expectedLogicalOffset: 0,
+        canonicalRecordId: owner.recordId,
+        generation: transferResult.generationAfter,
+        reason: 'MERGE_DESTINATION',
+        createdAt: Date.now(),
+        active: true,
+        restoreAttempts: 0,
+        intentEpoch: this.userIntentEpoch,
+      }
+      console.info(
+        `[InkChapter] CARET-EXPECTATION-CREATE: ` +
+        `expectationId=ce-merge-${ticketId} ` +
+        `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
+        `reason=MERGE_DESTINATION ` +
+        `intentEpoch=${this.userIntentEpoch} ` +
+        `expectedRuntimeId=${toRtId} ` +
+        `expectedLogicalOffset=0 ` +
+        `decision=ACTIVE`,
+      )
+    } else {
+      console.info(
+        `[InkChapter] MERGE-CONTINUITY-RESOLVE: ` +
+        `ticketId=${ticketId} ` +
+        `decision=BLOCK_AMBIGUOUS ` +
+        `reason=${transferResult.failReason ?? 'transfer-failed'}`,
+      )
     }
   }
 
@@ -4873,6 +7126,19 @@ export class HeadingNumberingService {
     this.disconnectObserver()
 
     this.mutationObserver = new MutationObserver((mutations) => {
+      // ── R58.7: Mutation attribution lock — only active NormalEnter txn gets NORMAL-ENTER traces ──
+      const txn = this.activeNormalEnterTxn
+      const batchId = `emb-${Date.now()}-${Math.random().toString(36).slice(2, 4)}`
+      const batchOwnedByNormalEnter = !!(
+        txn?.active &&
+        txn.intentEpoch === this.userIntentEpoch &&
+        txn.scopeId === (this.documentContext.scopeId ?? '')
+      )
+      if (batchOwnedByNormalEnter && txn) {
+        txn.mutationBatchIds.push(batchId)
+        txn.state = 'NATIVE_MUTATION_PENDING'
+      }
+
       // ── R58.5: Generic DOM Replacement Continuity Detection ──────
       this.detectGenericDomReplacement(mutations)
 
@@ -4960,6 +7226,173 @@ export class HeadingNumberingService {
               this.levelRangeEnforcer.enforceAfterMutation()
               break
             }
+          }
+        }
+      }
+
+      // ── R58.7: NORMAL-ENTER-POST — only when active NormalEnter txn owns this batch ──
+      {
+        const postTxn = this.activeNormalEnterTxn
+        if (postTxn?.active && postTxn.state === 'NATIVE_MUTATION_PENDING') {
+          const postRoot = this.adapter.getEditorRoot()
+          const postAllParas = postRoot ? collectContentParagraphs(postRoot) : []
+          const postSel = resolveSelectionTruth(
+            postRoot ?? document.body,
+            (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+            'NORMAL-ENTER-POST',
+          )
+
+          // Collect removed/added P-level runtimeIds from mutations
+          const removedRuntimeIds = new Set<string>()
+          for (const m of mutations) {
+            for (let ri = 0; ri < m.removedNodes.length; ri++) {
+              const rn = m.removedNodes[ri]
+              if (rn instanceof HTMLElement && rn.tagName === 'P') {
+                removedRuntimeIds.add(this.getParagraphRuntimeId(rn))
+              }
+            }
+          }
+          const addedRuntimeIds: string[] = []
+          for (const m of mutations) {
+            for (let ai = 0; ai < m.addedNodes.length; ai++) {
+              const an = m.addedNodes[ai]
+              if (an instanceof HTMLElement && an.tagName === 'P') {
+                addedRuntimeIds.push(this.getParagraphRuntimeId(an))
+              }
+            }
+          }
+
+          // StructuralResolution: removedSource / completedOriginal / caretDestination
+          // PRIORITY: post native selection → pre/post structure → canonical record verify (not assign)
+          const rPCount = removedRuntimeIds.size
+          const aPCount = addedRuntimeIds.length
+          const removedSourceRtId = rPCount === 1 ? [...removedRuntimeIds][0] : null
+
+          // Determine structural decision
+          let structural: StructuralDecision = 'UNKNOWN'
+          const hasBrEvidence = mutations.some(m => {
+            for (let ai = 0; ai < m.addedNodes.length; ai++) {
+              const an = m.addedNodes[ai]
+              if (an.nodeName === 'BR') return true
+            }
+            return false
+          })
+          if (rPCount === 1 && aPCount === 2) structural = 'TOP_LEVEL_SPLIT'
+          else if (rPCount === 0 && aPCount === 1) structural = 'INSERT_NEW_PARAGRAPH'
+          else if (rPCount === 0 && aPCount === 0 && hasBrEvidence) structural = 'SAME_PARAGRAPH_LINE_BREAK'
+          else if (rPCount === 0 && aPCount === 0) structural = 'NO_TOP_LEVEL_CHANGE'
+          else if (rPCount === 1 && aPCount === 1) structural = 'REPLACED_PARAGRAPH'
+
+          // Resolve caretDestination first: use post native selection
+          const caretDestRtId: string | null = postSel.runtimeId ?? null
+
+          // Resolve completedOriginal: for TOP_LEVEL_SPLIT, the added P NOT at caret is the completed
+          let completedRtId: string | null = null
+          if (structural === 'TOP_LEVEL_SPLIT' && addedRuntimeIds.length === 2) {
+            // If caret is on one added P, the OTHER added P is the completed original
+            if (caretDestRtId && addedRuntimeIds.includes(caretDestRtId)) {
+              completedRtId = addedRuntimeIds.find(id => id !== caretDestRtId) ?? null
+            }
+            // If no caret match, we cannot determine which is which — leave null
+          } else if (structural === 'INSERT_NEW_PARAGRAPH') {
+            completedRtId = null // no removed source, no completed original
+          } else if (structural === 'REPLACED_PARAGRAPH' && aPCount === 1) {
+            completedRtId = addedRuntimeIds[0]
+          }
+
+          // Canonical record consistency VERIFY (never assign)
+          if (completedRtId && postTxn.sourceCanonicalRecordId) {
+            const canonOwnerRecord = this.canonicalRegistry.resolveExactLiveRecord(
+              postAllParas.find(p => this.getParagraphRuntimeId(p) === completedRtId)!
+            )
+            const canonOwnerRtId = canonOwnerRecord?.meta?.currentRuntimeId
+            if (canonOwnerRtId && canonOwnerRtId !== completedRtId) {
+              console.warn(
+                `[InkChapter] CANONICAL-OWNER-MISMATCH: ` +
+                `completedOriginalRuntimeId=${completedRtId} ` +
+                `canonicalOwnerRuntimeId=${canonOwnerRtId} ` +
+                `decision=WARN`,
+              )
+            }
+          }
+
+          // Resolve semantic/visual for completed and caret
+          const completedPara = completedRtId
+            ? postAllParas.find(p => this.getParagraphRuntimeId(p) === completedRtId) ?? null
+            : null
+          const caretDestPara = caretDestRtId
+            ? postAllParas.find(p => this.getParagraphRuntimeId(p) === caretDestRtId) ?? null
+            : null
+
+          // Write back to transaction
+          postTxn.removedSourceRuntimeId = removedSourceRtId
+          postTxn.completedOriginalRuntimeId = completedRtId
+          postTxn.caretDestinationRuntimeId = caretDestRtId
+          postTxn.structuralDecision = structural
+          postTxn.state = 'STRUCTURE_RESOLVED'
+
+          console.info(
+            `[InkChapter] NORMAL-ENTER-POST: ` +
+            `normalEnterTxnId=${postTxn.id} ` +
+            `intentEpoch=${postTxn.intentEpoch} ` +
+            `scopeId=${postTxn.scopeId} ` +
+            `structuralDecision=${structural} ` +
+            `removedSourceRuntimeId=${removedSourceRtId ?? 'none'} ` +
+            `completedOriginalRuntimeId=${completedRtId ?? 'none'} ` +
+            `caretDestinationRuntimeId=${caretDestRtId ?? 'none'} ` +
+            `removedPRuntimeIds=[${[...removedRuntimeIds].join(',')}] ` +
+            `addedPRuntimeIds=[${addedRuntimeIds.join(',')}] ` +
+            `completedSemantic=${completedPara ? getParagraphIndentMode(completedPara) : 'unknown'} ` +
+            `completedComputedIndent=${completedPara ? window.getComputedStyle(completedPara).textIndent : 'unknown'} ` +
+            `caretDestinationSemantic=${caretDestPara ? getParagraphIndentMode(caretDestPara) : 'unknown'} ` +
+            `caretDestinationComputedIndent=${caretDestPara ? window.getComputedStyle(caretDestPara).textIndent : 'unknown'} ` +
+            `selectionRuntimeId=${postSel.runtimeId ?? 'none'} ` +
+            `selectionInsideEditor=${postSel.insideEditor} ` +
+            `paragraphCount=${postAllParas.length}`,
+          )
+
+          // ── R58.7 Step 1.1: Normal success close path ──
+          // Advance: STRUCTURE_RESOLVED → CARET_VERIFIED → NORMAL-ENTER-FINAL → CLOSED
+          if (postSel.insideEditor && postSel.runtimeId) {
+            postTxn.state = 'CARET_VERIFIED'
+            const canonicalOutcome = this.lastCanonicalContinuityOutcome
+            const hasCanonicalSource = !!postTxn.sourceCanonicalRecordId
+            // When a canonical source exists, NORMAL-ENTER-FINAL MUST NOT report
+            // overall=true if the canonical transfer failed at any layer.
+            const canonicalGatePassed = !hasCanonicalSource || (canonicalOutcome?.overall ?? false)
+            if (canonicalGatePassed) this.normalEnterSuccessCount++
+            console.info(
+              `[InkChapter] NORMAL-ENTER-FINAL: ` +
+              `normalEnterTxnId=${postTxn.id} ` +
+              `caretDestinationRuntimeId=${caretDestRtId ?? 'none'} ` +
+              `selectionInsideEditor=${postSel.insideEditor} ` +
+              `sourceCanonicalRecordId=${postTxn.sourceCanonicalRecordId ?? 'none'} ` +
+              `canonicalOutcomeOverall=${hasCanonicalSource ? String(canonicalOutcome?.overall ?? 'none') : 'n/a'} ` +
+              `overall=${canonicalGatePassed}`,
+            )
+            if (canonicalGatePassed) {
+              postTxn.state = 'CLOSED'
+              postTxn.closedAt = Date.now()
+              postTxn.closeReason = 'NORMAL_COMPLETION'
+            } else {
+              postTxn.state = 'FAILED'
+              postTxn.closeReason = 'CANONICAL_TRANSFER_FAILED'
+            }
+            this.activeNormalEnterTxn = null
+          } else {
+            postTxn.state = 'FAILED'
+            this.selectionLossCount++
+            this.normalEnterFailedCount++
+            console.warn(
+              `[InkChapter] NORMAL-ENTER-SELECTION-LOSS: ` +
+              `normalEnterTxnId=${postTxn.id} ` +
+              `sourceRuntimeId=${postTxn.sourceRuntimeId} ` +
+              `sourceOrdinal=${postTxn.sourceOrdinal} ` +
+              `isFirstParagraph=${postTxn.isFirstParagraph} ` +
+              `structuralDecision=${structural} ` +
+              `decision=FAIL`,
+            )
+            this.activeNormalEnterTxn = null
           }
         }
       }
@@ -5064,10 +7497,115 @@ export class HeadingNumberingService {
     // ── Current-Line Transform: keydown = sole commit owner ──
     // Only keydown can identify token, create transaction, and commit.
     const onEnterCommand = (e: KeyboardEvent): void => {
-      this.tryStartEnterIndentTransaction(e, root)
+      this.logKeyboardProvenance(e, 'onEnterCommand')
+
+      // ── R58.7 Step 1.2: ENTER ADMISSION FIREWALL ──
+      const isRealEnter = this.isRealEnterKey(e)
+      console.info(
+        `[InkChapter] ENTER-ADMISSION-AUDIT: ` +
+        `key=${e.key} ` +
+        `code=${e.code} ` +
+        `isTrusted=${e.isTrusted} ` +
+        `isComposing=${e.isComposing} ` +
+        `decision=${isRealEnter ? (readParagraphIndentCommand(resolveCurrentBodyParagraph(root)!) ? 'ALLOW_SPECIAL_COMMAND' : 'ALLOW_NORMAL_ENTER') : (e.isComposing ? 'REJECT_COMPOSITION' : 'REJECT_NON_ENTER')}`,
+      )
+
+      if (!isRealEnter) {
+        // IME Process/Period, composition, or non-Enter key — do NOT route to Enter pipeline
+        if (e.key === 'Process') {
+          this.normalEnterTxnCreatedFromNonEnterCount++
+        }
+        return
+      }
+
+      const handled = this.tryStartEnterIndentTransaction(e, root)
+      if (!handled) {
+        this.beginTrustedUserIntent('NORMAL_ENTER', 'keydown', 'Enter')
+      }
     }
     root.addEventListener('keydown', onEnterCommand, true)
     this.editorRootDisposables.add(() => root.removeEventListener('keydown', onEnterCommand, true))
+
+    // ── R58.6.7: Generic User Intent Capture (keydown) ──
+    // Captures Delete, Arrow navigation, printable typing — BEFORE other handlers.
+    const onIntentKeydown = (e: KeyboardEvent): void => {
+      if (e.isComposing) return
+      let source: UserIntentSource
+      if (e.key === 'Enter' || e.key === 'Backspace') return // handled by dedicated handlers
+      if (e.key === 'Delete') {
+        source = 'DELETE'
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        source = 'KEYBOARD_NAVIGATION'
+        this.logKeyboardProvenance(e, 'onIntentKeydown')
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        source = 'TEXT_INPUT'
+      } else {
+        return
+      }
+      this.beginTrustedUserIntent(source, 'keydown', e.key)
+    }
+    root.addEventListener('keydown', onIntentKeydown, true)
+    this.editorRootDisposables.add(() => root.removeEventListener('keydown', onIntentKeydown, true))
+
+    // ── R58.6.7: Beforeinput dedup (same physical action as preceding keydown) ──
+    const onIntentBeforeInput = (e: InputEvent): void => {
+      const deducedKey = (() => {
+        switch (e.inputType) {
+          case 'insertParagraph': return 'Enter'
+          case 'deleteContentBackward': return 'Backspace'
+          case 'deleteContentForward': return 'Delete'
+          case 'insertText': return 'TEXT_INPUT'
+          case 'insertCompositionText': return 'TEXT_INPUT'
+          default: return null
+        }
+      })()
+      if (!deducedKey) return
+      // R58.7: IME text commit (insertText / insertCompositionText) is trusted
+      // user input and MUST supersede a pending caret expectation — do NOT skip
+      // it merely because isComposing is true. Non-text intents still skip composition.
+      if (deducedKey !== 'TEXT_INPUT' && e.isComposing) return
+
+      // R58.7: composition/dedupe audit — prevent a caret ownership storm from
+      // redundant insertCompositionText events within one composition session.
+      if (deducedKey === 'TEXT_INPUT' && e.inputType === 'insertCompositionText') {
+        this.compositionTextInputCount++
+        const now = Date.now()
+        const duped = this.lastUserIntentKey === 'TEXT_INPUT' &&
+          (now - this.lastUserIntentTime) < INTENT_DEDUP_WINDOW_MS
+        if (duped) this.compositionDedupedCount++
+        console.info(
+          `[InkChapter] COMPOSITION-DEDUPE-AUDIT: ` +
+          `inputType=${e.inputType} ` +
+          `isComposing=${e.isComposing} ` +
+          `compositionTextInputCount=${this.compositionTextInputCount} ` +
+          `compositionDedupedCount=${this.compositionDedupedCount} ` +
+          `windowDeduped=${duped} ` +
+          `lastUserIntentKey=${this.lastUserIntentKey}`,
+        )
+      }
+
+      if (deducedKey === 'TEXT_INPUT' && e.isComposing) {
+        this.auditImeSelection('beforeinput', e.inputType, e.isComposing)
+      }
+
+      this.beginTrustedUserIntent(
+        deducedKey === 'Enter' ? 'NORMAL_ENTER' :
+        deducedKey === 'Backspace' ? 'BACKSPACE' :
+        deducedKey === 'Delete' ? 'DELETE' : 'TEXT_INPUT',
+        'beforeinput',
+        deducedKey,
+        e.inputType,
+      )
+    }
+    root.addEventListener('beforeinput', onIntentBeforeInput, true)
+    this.editorRootDisposables.add(() => root.removeEventListener('beforeinput', onIntentBeforeInput, true))
+
+    // ── R58.6.7: Pointer/mousedown intent capture ──
+    const onPointerIntent = (): void => {
+      this.beginTrustedUserIntent('POINTER', 'pointerdown')
+    }
+    root.addEventListener('pointerdown', onPointerIntent, true)
+    this.editorRootDisposables.add(() => root.removeEventListener('pointerdown', onPointerIntent, true))
 
     // beforeinput(insertParagraph) — suppress-only, NEVER commits
     const onBeforeInputInsertParagraph = (e: InputEvent): void => {
@@ -5088,6 +7626,12 @@ export class HeadingNumberingService {
     // Must intercept BEFORE Typora processes the Backspace (delete/merge).
     const onBackspaceCommand = (e: KeyboardEvent): void => {
       if (e.key !== 'Backspace') return
+
+      // R58.6.7: Backspace always advances user intent
+      this.beginTrustedUserIntent('BACKSPACE', 'keydown', 'Backspace')
+
+      // R58.7 Phase A: Gate — no business mutations without document context
+      if (!this.assertDocumentContextReady('backspace')) return
 
       const settings = this.getParagraphLayoutSettings()
 
@@ -5191,6 +7735,15 @@ export class HeadingNumberingService {
           paraRuntimeId,
           (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
         )
+        this.recordPluginSelectionWrite(
+          `write-${paraRuntimeId}-${Date.now()}`,
+          'CARET-REPAIR',
+          'BACKSPACE-CARET-REPAIR',
+          paraRuntimeId,
+          bsSelRes.localLogicalOffset ?? null,
+          0,
+          bsRepair.success,
+        )
         console.info(`[InkChapter] BACKSPACE-CARET-REPAIR: method=${bsRepair.method} success=${bsRepair.success} resolvedRuntimeId=${bsRepair.resolvedParagraphRuntimeId ?? 'null'} localOffset=${bsRepair.localLogicalOffset}`)
       }
     }
@@ -5221,6 +7774,13 @@ export class HeadingNumberingService {
 
     // input
     const onInput = (): void => {
+      // ── R58.7: IME/composition input selection timing ──
+      this.auditImeSelection('input', 'input', this.isInComposition)
+      // ── R58.7: post-insert T_INPUT_EVENT sample + direct-text commit anchor ──
+      this.samplePostTextInputInputEvent()
+      if (!this.isInComposition) {
+        this.commitPostTextInputObservation('INPUT_EVENT')
+      }
       // ── Forensic: T1 after native insertion, before projection ──
       safeForensic(() => {
         const block = resolveCurrentBlockFromSelection(root)
@@ -5318,17 +7878,32 @@ export class HeadingNumberingService {
 
     // composition
     const onCompositionEnd = (): void => {
+      this.auditImeSelection('compositionend', 'none', false)
+      // ── R58.7: IME text commit anchor — COMMIT+0 stability starts here ──
+      this.commitPostTextInputObservation('COMPOSITION_END')
       this.isInComposition = false
       // Immediate local projection after composition ends
       this.projectCurrentParagraphLocally(root)
       this.requestRefresh('composition-end')
+      this.imeCompositionActiveSessionId = ''
     }
     root.addEventListener('compositionend', onCompositionEnd)
     this.editorRootDisposables.add(() => root.removeEventListener('compositionend', onCompositionEnd))
 
-    const onCompositionStart = (): void => { this.isInComposition = true }
+    const onCompositionStart = (): void => {
+      this.isInComposition = true
+      this.imeCompositionSessionSeq++
+      this.imeCompositionActiveSessionId = `ime-${this.imeCompositionSessionSeq}-${Date.now()}`
+      this.auditImeSelection('compositionstart', 'none', true)
+    }
     root.addEventListener('compositionstart', onCompositionStart)
     this.editorRootDisposables.add(() => root.removeEventListener('compositionstart', onCompositionStart))
+
+    const onCompositionUpdate = (): void => {
+      this.auditImeSelection('compositionupdate', 'none', this.isInComposition)
+    }
+    root.addEventListener('compositionupdate', onCompositionUpdate)
+    this.editorRootDisposables.add(() => root.removeEventListener('compositionupdate', onCompositionUpdate))
 
     // focusin
     const onFocusIn = (): void => {
@@ -5355,6 +7930,7 @@ export class HeadingNumberingService {
 
   /** Detach editor root listeners (called on root change). */
   private unbindEditorRoot(): void {
+    this.cancelPostTextInputStabilityObservation('EDITOR_UNBOUND')
     if (this.editorRootDisposables) {
       this.editorRootDisposables.dispose()
       this.editorRootDisposables = null
@@ -5383,6 +7959,9 @@ export class HeadingNumberingService {
         recordRuntimeAudit('editor:load', { documentKey: docKey ?? 'none', settingsSource: this.docContext.source })
         if (editorEl instanceof HTMLElement) {
           this.adapter.setEditorRoot(editorEl)
+          // ── R58.7 Phase A.1.1: Bind editor runtime + refresh context IMMEDIATELY ──
+          this.bindEditorRuntime(editorEl)
+          this.refreshDocumentContext()
           this.lastSnapshot = null
           this.renderedStates = null
           this.connectObserver(editorEl)
@@ -5426,6 +8005,37 @@ export class HeadingNumberingService {
       ctx.onEditorEvent('edit', () => this.requestRefresh('framework-edit')),
     )
 
+    // ── R58.7 Phase A.1.3: File will-save — create pending persistence promotion ──
+    this.store.add(
+      ctx.onWorkspaceEvent('file:will-save' as any, (file: any) => {
+        const path = file?.path ?? file ?? null
+        const scopeId = this.documentContext.scopeId
+        const editorRoot = this.adapter.getEditorRoot()
+        const editorInstanceId = this.getOrCreateEditorInstanceId(editorRoot)
+        const isUntitled = !this.ctx.getActiveFilePath?.()
+        if (isUntitled && scopeId && editorInstanceId) {
+          this.pendingPersistencePromotion = {
+            promotionId: `promo-${Date.now()}`,
+            scopeId,
+            editorInstanceId,
+            source: 'SAVE_AS_COMMAND',
+            targetPath: typeof path === 'string' ? path : null,
+            createdAt: Date.now(),
+            consumed: false,
+          }
+          console.info(
+            `[InkChapter] PERSISTENCE-PROMOTION-PENDING: ` +
+            `promotionId=${this.pendingPersistencePromotion.promotionId} ` +
+            `scopeId=${scopeId} ` +
+            `editorInstanceId=${editorInstanceId} ` +
+            `source=WILL_SAVE ` +
+            `targetPath=${this.pendingPersistencePromotion.targetPath ?? 'null'} ` +
+            `decision=CREATE`,
+          )
+        }
+      }),
+    )
+
     // File open — load document context, bump version, reinit outline
     this.store.add(
       ctx.onWorkspaceEvent('file:open', () => {
@@ -5433,6 +8043,16 @@ export class HeadingNumberingService {
         const version = ++this.renderVersion
         this.loadDocumentContext()
         const newDocKey = this.getDocumentKey()
+        const activePath = this.ctx.getActiveFilePath?.()
+        // ── R58.6.6: RUNTIME-IDENTITY-FINAL — no hard-coded build, use authoritative session ──
+        console.info(
+          `[InkChapter] RUNTIME-IDENTITY-FINAL: ` +
+          `reason=file-open ` +
+          `vaultRoot=${this.ctx.vaultRoot ?? 'unknown'} ` +
+          `activeDoc=${activePath ?? 'unknown'} ` +
+          `initializationCount=1 ` +
+          `sessionId=${this.canonicalRegistry.sessionId}`,
+        )
         recordRuntimeAudit('file:open:received', {
           documentKey: newDocKey ?? 'none',
           settingsSource: this.docContext.source,
@@ -5450,6 +8070,8 @@ export class HeadingNumberingService {
           const area = this.adapter.detectEditorRoot()
           if (area) {
             this.adapter.setEditorRoot(area)
+            this.bindEditorRuntime(area)
+            this.refreshDocumentContext()
             this.connectObserver(area)
             this.bindEditorRoot()
           }
@@ -5497,6 +8119,8 @@ export class HeadingNumberingService {
           const area = this.adapter.detectEditorRoot()
           if (area) {
             this.adapter.setEditorRoot(area)
+            this.bindEditorRuntime(area)
+            this.refreshDocumentContext()
             this.connectObserver(area)
             this.bindEditorRoot()
           }
