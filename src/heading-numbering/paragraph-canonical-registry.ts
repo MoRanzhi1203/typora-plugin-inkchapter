@@ -19,6 +19,7 @@
  */
 
 import type { ParagraphIndentOverrideRecord } from './paragraph-layout-store'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 // ── R58.5: LiveOwnershipProof ─────────────────────────────────────────
 
@@ -737,13 +738,12 @@ export class ParagraphCanonicalRegistry {
     }
 
     // ── AWAITING-TRANSFER-LEAK-AUDIT (diagnostic only, no mutation) ──
-    console.info(
-      `[InkChapter] AWAITING-TRANSFER-LEAK-AUDIT: ` +
-      `awaitingCount=${pendingCount} ` +
-      `oldestAwaitingMs=${oldestAwaitingMs} ` +
-      `recordIds=[${pendingRecordIds.join(',')}] ` +
-      `activeHandoffCount=${activeHandoffIds.size}`,
-    )
+    emitRuntimeAudit('AWAITING-TRANSFER-LEAK-AUDIT', {
+      awaitingCount: pendingCount,
+      oldestAwaitingMs,
+      recordIds: `[${pendingRecordIds.join(',')}]`,
+      activeHandoffCount: activeHandoffIds.size,
+    })
   }
 
   /**
@@ -957,6 +957,124 @@ export class ParagraphCanonicalRegistry {
       meta,
       record: this.recordsById.get(recordId),
     }
+  }
+
+  /**
+   * P0: Controlled replacement — rebind an existing CURRENT_LIVE record to a
+   * replacement element using a CAS-like lease contract.
+   *
+   * Only used by empty-slot CONTROLLED_REPLACEMENT resolution (final-owner
+   * commit). Does NOT retire the record and MUST NOT CREATE_NEW or consult any
+   * historical resolver.
+   *
+   * Lease enforcement (any violation → BLOCK, return false):
+   *   - record exists and state === CURRENT_LIVE
+   *   - scopeId matches (when provided)
+   *   - documentKey matches (when provided)
+   *   - expectedGeneration matches (when provided)
+   *   - expectedOldRuntimeId matches the current owner (when provided)
+   *   - new element is not already bound to a different record
+   *   - new runtimeId is not already bound to a different record
+   */
+  rebindCurrentLiveRecord(
+    recordId: string,
+    newElement: HTMLElement,
+    newRuntimeId: string,
+    lease?: {
+      scopeId?: string
+      documentKey?: string
+      expectedGeneration?: number
+      expectedOldRuntimeId?: string
+    },
+  ): boolean {
+    const meta = this.runtimeMetaByRecordId.get(recordId)
+    if (!meta || meta.state !== 'CURRENT_LIVE') {
+      this.emitDiagnostic('REBIND-BLOCKED', { recordId, reason: 'invalid-state' })
+      return false
+    }
+
+    if (lease?.scopeId !== undefined && !this.assertCanonicalScope(meta.scopeId, lease.scopeId, 'REBIND', recordId)) {
+      return false
+    }
+    if (lease?.documentKey !== undefined && meta.documentKey !== lease.documentKey) {
+      this.emitDiagnostic('REBIND-BLOCKED', {
+        recordId, reason: 'document-mismatch',
+        expectedDocumentKey: lease.documentKey, actualDocumentKey: meta.documentKey,
+      })
+      return false
+    }
+    if (lease?.expectedGeneration !== undefined && meta.generation !== lease.expectedGeneration) {
+      this.emitDiagnostic('REBIND-BLOCKED', {
+        recordId, reason: 'generation-mismatch',
+        expectedGeneration: lease.expectedGeneration, actualGeneration: meta.generation,
+      })
+      return false
+    }
+    if (lease?.expectedOldRuntimeId !== undefined && meta.currentRuntimeId !== lease.expectedOldRuntimeId) {
+      this.emitDiagnostic('REBIND-BLOCKED', {
+        recordId, reason: 'old-runtime-mismatch',
+        expectedOldRuntimeId: lease.expectedOldRuntimeId, actualOldRuntimeId: meta.currentRuntimeId ?? 'none',
+      })
+      return false
+    }
+
+    // Collision: new element already bound to a different record
+    const existingByElement = this.recordIdByElement.get(newElement)
+    if (existingByElement !== undefined && existingByElement !== recordId) {
+      this.emitDiagnostic('REBIND-BLOCKED', { recordId, reason: 'element-collision', otherRecordId: existingByElement })
+      return false
+    }
+    // Collision: new runtimeId already bound to a different record
+    const existingByRt = this.recordIdByRuntimeId.get(newRuntimeId)
+    if (existingByRt !== undefined && existingByRt !== recordId) {
+      this.emitDiagnostic('REBIND-BLOCKED', { recordId, reason: 'runtime-collision', otherRecordId: existingByRt })
+      return false
+    }
+
+    const oldRuntimeId = meta.currentRuntimeId
+    const oldElement = meta.currentElement
+    const generationBefore = meta.generation
+    const recordCountBefore = this.runtimeMetaByRecordId.size
+
+    // Invalidate old bindings (D8/D9)
+    if (oldElement && this.recordIdByElement.get(oldElement) === recordId) {
+      this.recordIdByElement.delete(oldElement)
+    }
+    if (oldRuntimeId && this.recordIdByRuntimeId.get(oldRuntimeId) === recordId) {
+      this.recordIdByRuntimeId.delete(oldRuntimeId)
+    }
+
+    // Install new bindings (D10/D11) — generation increments exactly once (D12)
+    this.recordIdByElement.set(newElement, recordId)
+    this.recordIdByRuntimeId.set(newRuntimeId, recordId)
+    meta.currentElement = newElement
+    meta.currentRuntimeId = newRuntimeId
+    meta.generation = generationBefore + 1
+    meta.updatedAt = Date.now()
+
+    const recordCountAfter = this.runtimeMetaByRecordId.size
+    const recordCountPreserved = recordCountBefore === recordCountAfter
+
+    this.emitLifecycle(recordId, 'REBIND_CURRENT', meta, newRuntimeId)
+    emitRuntimeAudit('EMPTY-SPECIAL-CANONICAL-REBIND', {
+      recordId,
+      scopeId: meta.scopeId,
+      documentKey: meta.documentKey,
+      expectedScopeId: lease?.scopeId ?? null,
+      expectedDocumentKey: lease?.documentKey ?? null,
+      expectedGeneration: lease?.expectedGeneration ?? null,
+      expectedOldRuntimeId: lease?.expectedOldRuntimeId ?? null,
+      oldRuntimeId: oldRuntimeId ?? null,
+      newRuntimeId,
+      generationBefore,
+      generationAfter: meta.generation,
+      recordCountBefore,
+      recordCountAfter,
+      recordCountPreserved,
+      decision: 'REBOUND',
+    })
+
+    return recordCountPreserved
   }
 
   /** Get runtime metadata for a record. Returns null if not in registry. */
@@ -1335,14 +1453,13 @@ export class ParagraphCanonicalRegistry {
     recordId: string,
   ): boolean {
     if (recordScopeId === operationScopeId) return true
-    console.warn(
-      `[InkChapter] CANONICAL-SCOPE-MISMATCH: ` +
-      `recordId=${recordId} ` +
-      `recordScopeId=${recordScopeId} ` +
-      `operationScopeId=${operationScopeId} ` +
-      `operation=${operation} ` +
-      `decision=HARD_STOP`,
-    )
+    emitRuntimeAudit('CANONICAL-SCOPE-MISMATCH', {
+      recordId,
+      recordScopeId,
+      operationScopeId,
+      operation,
+      decision: 'HARD_STOP',
+    }, 'warn')
     return false
   }
 
@@ -1352,22 +1469,22 @@ export class ParagraphCanonicalRegistry {
     meta: CanonicalRuntimeMeta,
     targetRuntimeId: string | undefined,
   ): void {
-    console.info(
-      `[InkChapter] RECORD-LIFECYCLE: event=${event} ` +
-      `recordId=${recordId} ` +
-      `scopeId=${meta.scopeId} ` +
-      `persistenceKey=${meta.persistenceKey ?? 'null'} ` +
-      `documentKey=${meta.documentKey} ` +
-      `sessionId=${meta.sessionId} ` +
-      `state=${meta.state} ` +
-      `runtimeId=${meta.currentRuntimeId ?? targetRuntimeId ?? 'none'} ` +
-      `previousRuntimeId=${meta.previousRuntimeId ?? 'none'} ` +
-      `generation=${meta.generation} ` +
-      `temporary=${meta.temporary} ` +
-      `origin=${meta.origin} ` +
-      `recordCount=${this.runtimeMetaByRecordId.size} ` +
-      `timestamp=${Date.now()}`,
-    )
+    emitRuntimeAudit('RECORD-LIFECYCLE', {
+      event,
+      recordId,
+      scopeId: meta.scopeId,
+      persistenceKey: meta.persistenceKey ?? 'null',
+      documentKey: meta.documentKey,
+      sessionId: meta.sessionId,
+      state: meta.state,
+      runtimeId: meta.currentRuntimeId ?? targetRuntimeId ?? 'none',
+      previousRuntimeId: meta.previousRuntimeId ?? 'none',
+      generation: meta.generation,
+      temporary: meta.temporary,
+      origin: meta.origin,
+      recordCount: this.runtimeMetaByRecordId.size,
+      timestamp: Date.now(),
+    })
   }
 
   private emitDiagnostic(

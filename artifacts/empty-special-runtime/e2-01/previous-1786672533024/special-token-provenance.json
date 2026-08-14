@@ -1,0 +1,7 @@
+{
+  "verdict": "INVALID",
+  "invalidReason": "SPECIAL_TOKEN_PROVENANCE_MISMATCH",
+  "tokenText": null,
+  "logicalOffset": null,
+  "imeProvenance": false
+}

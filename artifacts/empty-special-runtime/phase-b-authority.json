@@ -1,0 +1,27 @@
+{
+  "mode": "phase-b-authority",
+  "formal": {
+    "sessionId": "sess-1786735387348",
+    "buildId": "inkchapter-r58-7-evc1-phase-b-observability-ts1",
+    "mainSha": "CDC9C206028B6B406DE692D41A876FB66932A95DE9F7A2B1FE372B47FC107AF1",
+    "styleSha": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+    "vault": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault",
+    "document": "r58-empty-special-e2-01.md",
+    "verdict": "PASS"
+  },
+  "current": {
+    "sessionId": "sess-1786735387348",
+    "auditSessionId": "sess-1786735387348",
+    "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786735387348.log",
+    "buildId": "inkchapter-r58-7-evc1-phase-b-observability-ts1",
+    "mainSha": "CDC9C206028B6B406DE692D41A876FB66932A95DE9F7A2B1FE372B47FC107AF1",
+    "styleSha": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+    "initializationCount": 1,
+    "document": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-e2-01.md",
+    "vault": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault"
+  },
+  "overall": false,
+  "failedChecks": [
+    "DOCUMENT_MISMATCH"
+  ]
+}

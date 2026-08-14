@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-e1-01.md",
+  "updatedAt": 1786728432066,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786728431861-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1,
+        "beforeHash": "hhu2t"
+      },
+      "temporary": true
+    }
+  ]
+}

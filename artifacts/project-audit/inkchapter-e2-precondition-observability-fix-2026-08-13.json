@@ -1,0 +1,65 @@
+{
+  "report": "inkchapter-e2-precondition-observability-fix-2026-08-13",
+  "generatedAt": "2026-08-14T00:00:00Z",
+  "projectRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter",
+  "buildId": "inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq",
+  "mainSHA": "238A7D80B6AE6ED0564F13867562E0E017E4CDDDF3A8AE3F70DD81723EC83D9B",
+  "styleSHA": "F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0",
+  "rootCause": "E2 precondition read audit JSONL once (no bounded wait/poll) and mislabeled context/sidecar observability as FIXTURE_TOPOLOGY_MISMATCH",
+  "classification": "E2 PRECONDITION OBSERVABILITY / ARTIFACT AUTHORITY = BUG CONFIRMED / HARNESS",
+  "status": "SOURCE/HARNESS FIXED = RUNTIME PENDING",
+  "r60Verdict": "NO-GO",
+  "r587Verdict": "NOT CLOSED",
+  "modifiedFiles": [
+    "scripts/r58-matrix/run-empty-special-gate.mjs",
+    "scripts/r58-matrix/e2-precondition.mjs",
+    "scripts/r58-matrix/e2-precondition.contract.mjs"
+  ],
+  "staticVerification": {
+    "nodeCheckHarness": "PASS",
+    "nodeCheckModule": "PASS",
+    "nodeCheckContract": "PASS",
+    "contractTests": "PRECOND-1..10 PASS (10/10)",
+    "preflight": "PASS (shaMatch=true styleMatch=true fixtureClean=true)"
+  },
+  "runtimeReproof": {
+    "strictStartup": "NOT EXECUTED (sandbox; external Windows runtime required)",
+    "e2_01": "NOT EXECUTED"
+  },
+  "invalidReasonTaxonomy": [
+    "DOCUMENT_CONTEXT_READY_NOT_OBSERVED",
+    "DOCUMENT_CONTEXT_SCOPE_MISMATCH",
+    "SIDECAR_ACTUAL_LOAD_NOT_OBSERVED",
+    "SIDECAR_DOCUMENT_KEY_MISMATCH",
+    "SIDECAR_EXISTS_UNEXPECTEDLY",
+    "SIDECAR_RECORD_COUNT_NONZERO",
+    "SIDECAR_SOURCE_NOT_PHYSICAL",
+    "AUDIT_SESSION_AUTHORITY_MISMATCH",
+    "AUDIT_PRECONDITION_TIMEOUT",
+    "AUDIT_JSONL_PARSE_FAILURE"
+  ],
+  "p0RuntimeStatus": {
+    "P0-A": "SOURCE FIXED / RUNTIME PENDING",
+    "P0-B": "SOURCE FIXED / RUNTIME PENDING",
+    "P0-C": "SOURCE FIXED / RUNTIME PENDING",
+    "caretGeometry": "UNKNOWN ON CURRENT BUILD"
+  },
+  "remainingIssues": [
+    "E2 Precondition False-INVALID = SOURCE/HARNESS FIXED / RUNTIME PENDING",
+    "P2 Duplicate Lifecycle = CONFIRMED / RUNTIME (deferred until E2-01 closed)",
+    "P2 dispose() EmptySpecial observer/RAF/sidecar timer cleanup",
+    "P2 Typora executable path authority",
+    "P3 canonical existingId missing -> BLOCK",
+    "P3 parser single authority",
+    "P3 TRANSACTION-CLOSE cleanupComplete/businessOverall naming",
+    "P3 minor listener/timer/process.cwd/deprecated cleanup"
+  ],
+  "stopDiscipline": {
+    "businessSrcModified": false,
+    "newBuildGenerated": false,
+    "powershellUsed": false,
+    "retryUntilPass": false,
+    "strictStartupRetriedInSandbox": false,
+    "e2_01Executed": false
+  }
+}

@@ -60,6 +60,7 @@ import {
   shouldConsumeBackspaceForIndentRemoval,
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
+  clearParagraphIndentVisualAndSemantic,
   rehydrateParagraphIndentState,
   type RehydrateContext,
   evaluateRehydrateSafety,
@@ -179,6 +180,30 @@ import {
   type DocumentRuntimeContext,
   type RuntimeScopeRef,
 } from '../runtime/document-runtime-context'
+import { emitRuntimeAudit, flushForensicSink } from '../runtime/forensic-log-sink'
+import { runEditorInputFocusProbeWithSafety } from '../runtime/editor-input-focus-probe'
+import {
+  resolveEmptySlot,
+  evaluateEmptySpecialFinal,
+  isTokenOnlyEmptySpecialCommand,
+  snapshotEmptyBlockDom,
+  decideEmptySpecialSettle,
+  normalizeTokenConsumedEmptyParagraph,
+  shouldClearActiveTxn,
+  isNativeEmptyParagraph,
+  decideEmptyProjectionMode,
+  computeEmptyVisualCaretGeometry,
+  decideEmptySpecialCommit,
+  shouldEmitEmptyNonemptyTransition,
+  evaluateEmptyNonemptyProjectionTransition,
+  type EmptySpecialCommandTransaction,
+  type EmptyBlockDomSnapshot,
+  type EmptySpecialSettleDecisionName,
+  type EmptyProjectionMode,
+  type EmptyVisualCaretGeometryResult,
+  type EmptyNonemptyProjectionBefore,
+  type EmptyNonemptyProjectionAfter,
+} from './empty-special-command'
 import {
   type NormalEnterContinuityTransaction,
   type StructuralDecision,
@@ -243,6 +268,33 @@ interface EnterIndentTransaction {
   /** R58.7 Phase A.1.3.1a: Immutable runtime scope snapshot for this transaction. */
   scopeRef: RuntimeScopeRef | null
   traceData: Record<string, unknown>
+}
+
+/** P0-B: Mutation-authoritative settle context (observer armed BEFORE token consume). */
+interface EmptySpecialSettleContext {
+  emptyTxn: EmptySpecialCommandTransaction
+  root: HTMLElement | null
+  observer: MutationObserver | null
+  observerArmedAt: number
+  tokenConsumedAt: number
+  observerArmedBeforeTokenConsume: boolean
+  mutationGeneration: number
+  relevantMutationCount: number
+  relevantMutationTypes: Set<string>
+  sourceConnectedBefore: boolean
+  sourceConnectedAfter: boolean
+  paragraphCountBefore: number
+  version: number
+  quietFrames: number
+  lastSeenVersion: number
+  settled: boolean
+  rafId: number | null
+  // ARM-time immutable snapshot (captured once, after observer.observe, before token consume).
+  observerRootConnectedAtArm: boolean
+  observerRootContainsSourceAtArm: boolean
+  sourceConnectedAtArm: boolean
+  observerRootIsCurrentEditorRoot: boolean
+  editorInstanceId: string
 }
 
 interface PostCommitObservationSession {
@@ -422,6 +474,7 @@ export class HeadingNumberingService {
   // ── R58.6.7: User Intent Epoch (editor-wide trusted intent authority) ──
   private userIntentEpoch = 0
   private lastUserIntentKey = ''
+  private lastUserIntentSource: UserIntentSource | '' = ''
   private lastUserIntentTime = 0
   private intentSeq = 0
   private compositionTextInputCount = 0
@@ -440,6 +493,7 @@ export class HeadingNumberingService {
   private imeLastBeforeInputTs = 0
   private imeLastInputTs = 0
   private imeCompositionEndTs = 0
+  private pendingEmptyNonemptyBefore: EmptyNonemptyProjectionBefore | null = null
 
   /** R58.6.7: Begin a trusted user intent — advances epoch with dedup for keydown+beforeinput pairs. */
   private beginTrustedUserIntent(
@@ -472,25 +526,25 @@ export class HeadingNumberingService {
 
     if (!deduplicated) {
       this.lastUserIntentKey = key ?? ''
+      this.lastUserIntentSource = source
       this.lastUserIntentTime = now
     }
 
-    console.info(
-      `[InkChapter] USER-INTENT-EPOCH: ` +
-      `intentId=${token.intentId} ` +
-      `epoch=${token.epoch} ` +
-      `source=${source} ` +
-      `eventType=${eventType} ` +
-      `key=${key ?? 'none'} ` +
-      `inputType=${inputType ?? 'none'} ` +
-      `deduplicated=${deduplicated} ` +
-      `trustedUserInput=true ` +
-      `previousEpoch=${deduplicated ? token.epoch : token.epoch - 1} ` +
-      `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
-      `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
-      `documentMode=${this.documentContext.mode} ` +
-      `timestamp=${now}`,
-    )
+    emitRuntimeAudit('USER-INTENT-EPOCH', {
+      intentId: token.intentId,
+      epoch: token.epoch,
+      source,
+      eventType,
+      key: key ?? 'none',
+      inputType: inputType ?? 'none',
+      deduplicated,
+      trustedUserInput: true,
+      previousEpoch: deduplicated ? token.epoch : token.epoch - 1,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      persistenceKey: this.documentContext.persistenceKey ?? 'null',
+      documentMode: this.documentContext.mode,
+      timestamp: now,
+    })
 
     if (source === 'TEXT_INPUT') {
       console.info(
@@ -706,15 +760,14 @@ export class HeadingNumberingService {
             `newSource=${source} ` +
             `restoreAttempted=false`,
           )
-          console.info(
-            `[InkChapter] CARET-EXPECTATION-SUPERSESSION-AUDIT: ` +
-            `expectationId=${this.activeCaretExpectation.expectationId} ` +
-            `oldEpoch=${this.activeCaretExpectation.intentEpoch} ` +
-            `newEpoch=${token.epoch} ` +
-            `newSource=${source} ` +
-            `restoreAttempted=false ` +
-            `superseded=true`,
-          )
+          emitRuntimeAudit('CARET-EXPECTATION-SUPERSESSION-AUDIT', {
+            expectationId: this.activeCaretExpectation.expectationId,
+            oldEpoch: this.activeCaretExpectation.intentEpoch,
+            newEpoch: token.epoch,
+            newSource: source,
+            restoreAttempted: false,
+            superseded: true,
+          })
           this.activeCaretExpectation.active = false
           this.activeCaretExpectation = null
         }
@@ -771,18 +824,17 @@ export class HeadingNumberingService {
     const after = root
       ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), `WRITE-${caller}`)
       : null
-    console.info(
-      `[InkChapter] PLUGIN-SELECTION-WRITE-AUDIT: ` +
-      `writeId=${writeId} ` +
-      `caller=${caller} ` +
-      `reason=${reason} ` +
-      `runtimeId=${runtimeId} ` +
-      `logicalOffsetBefore=${logicalOffsetBefore ?? 'null'} ` +
-      `logicalOffsetRequested=${logicalOffsetRequested ?? 'null'} ` +
-      `logicalOffsetAfter=${after?.logicalOffset ?? 'null'} ` +
-      `intentEpoch=${this.userIntentEpoch} ` +
-      `success=${success}`,
-    )
+    emitRuntimeAudit('PLUGIN-SELECTION-WRITE-AUDIT', {
+      writeId,
+      caller,
+      reason,
+      runtimeId,
+      logicalOffsetBefore: logicalOffsetBefore ?? 'null',
+      logicalOffsetRequested: logicalOffsetRequested ?? 'null',
+      logicalOffsetAfter: after?.logicalOffset ?? 'null',
+      intentEpoch: this.userIntentEpoch,
+      success,
+    })
   }
 
   private samplePostTextInputStability(
@@ -821,33 +873,32 @@ export class HeadingNumberingService {
       ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), `STABILITY-${sample}`)
       : null
     const visibleText = truth?.paragraph ? getUserVisibleParagraphText(truth.paragraph) : ''
-    console.info(
-      `[InkChapter] POST-TEXT-INPUT-STABILITY: ` +
-      `observationId=${obs.observationId} ` +
-      `generation=${obs.generation} ` +
-      `inputIntentId=${obs.inputIntentId} ` +
-      `intentEpoch=${obs.intentEpoch} ` +
-      `source=${obs.inputType} ` +
-      `sample=${sample} ` +
-      `commitAnchor=${obs.commitAnchor || 'none'} ` +
-      `runtimeId=${truth?.runtimeId ?? 'null'} ` +
-      `visibleText=${visibleText} ` +
-      `logicalOffset=${truth?.logicalOffset ?? 'null'} ` +
-      `insideEditor=${truth?.insideEditor ?? false} ` +
-      `collapsed=${truth?.collapsed ?? true} ` +
-      `anchorConnected=${truth?.anchorNodeConnected ?? false} ` +
-      `focusConnected=${truth?.focusNodeConnected ?? false} ` +
-      `isCompositionActive=${this.isInComposition} ` +
-      `activeCaretExpectationId=${this.activeCaretExpectation?.active ? this.activeCaretExpectation.expectationId : 'none'} ` +
-      `activeCaretExpectationEpoch=${this.activeCaretExpectation?.active ? this.activeCaretExpectation.intentEpoch : 'none'} ` +
-      `pluginSelectionWriteCountSinceInput=${this.pluginSelectionWriteCount - obs.selectionWriteCounterAtInput} ` +
-      `caretContinuityRestoreCountSinceInput=${this.caretContinuityRestoreCount - obs.caretRestoreCounterAtInput} ` +
-      `caretRepairCountSinceInput=${this.caretRepairCount - obs.caretRepairCounterAtInput} ` +
-      `rehydratePlanCountSinceInput=${this.rehydratePlanCount - obs.rehydratePlanCounterAtInput} ` +
-      `rehydrateApplyCountSinceInput=${this.rehydrateApplyCount - obs.rehydrateApplyCounterAtInput} ` +
-      `rehydrateDomWriteCountSinceInput=${this.rehydrateDomWriteCount - obs.rehydrateDomWriteCounterAtInput} ` +
-      `overallReadSuccess=${truth !== null}`,
-    )
+    emitRuntimeAudit('POST-TEXT-INPUT-STABILITY', {
+      observationId: obs.observationId,
+      generation: obs.generation,
+      inputIntentId: obs.inputIntentId,
+      intentEpoch: obs.intentEpoch,
+      source: obs.inputType,
+      sample,
+      commitAnchor: obs.commitAnchor || 'none',
+      runtimeId: truth?.runtimeId ?? 'null',
+      visibleText,
+      logicalOffset: truth?.logicalOffset ?? 'null',
+      insideEditor: truth?.insideEditor ?? false,
+      collapsed: truth?.collapsed ?? true,
+      anchorConnected: truth?.anchorNodeConnected ?? false,
+      focusConnected: truth?.focusNodeConnected ?? false,
+      isCompositionActive: this.isInComposition,
+      activeCaretExpectationId: this.activeCaretExpectation?.active ? this.activeCaretExpectation.expectationId : 'none',
+      activeCaretExpectationEpoch: this.activeCaretExpectation?.active ? this.activeCaretExpectation.intentEpoch : 'none',
+      pluginSelectionWriteCountSinceInput: this.pluginSelectionWriteCount - obs.selectionWriteCounterAtInput,
+      caretContinuityRestoreCountSinceInput: this.caretContinuityRestoreCount - obs.caretRestoreCounterAtInput,
+      caretRepairCountSinceInput: this.caretRepairCount - obs.caretRepairCounterAtInput,
+      rehydratePlanCountSinceInput: this.rehydratePlanCount - obs.rehydratePlanCounterAtInput,
+      rehydrateApplyCountSinceInput: this.rehydrateApplyCount - obs.rehydrateApplyCounterAtInput,
+      rehydrateDomWriteCountSinceInput: this.rehydrateDomWriteCount - obs.rehydrateDomWriteCounterAtInput,
+      overallReadSuccess: truth !== null,
+    })
   }
 
   private armPostTextInputStabilityObservation(
@@ -873,19 +924,18 @@ export class HeadingNumberingService {
       rehydrateApplyCounterAtInput: this.rehydrateApplyCount,
       rehydrateDomWriteCounterAtInput: this.rehydrateDomWriteCount,
     })
-    console.info(
-      `[InkChapter] POST-TEXT-INPUT-ARM: ` +
-      `observationId=${obs.observationId} ` +
-      `generation=${obs.generation} ` +
-      `inputIntentId=${intentId} ` +
-      `intentEpoch=${epoch} ` +
-      `supersededExpectationId=${supersededExpectationId} ` +
-      `supersededExpectationEpoch=${supersededExpectationEpoch} ` +
-      `scopeId=${obs.scopeId} ` +
-      `editorInstanceId=${obs.editorInstanceId} ` +
-      `compositionSessionId=${obs.compositionSessionId || 'none'} ` +
-      `maxActiveObservation=1`,
-    )
+    emitRuntimeAudit('POST-TEXT-INPUT-ARM', {
+      observationId: obs.observationId,
+      generation: obs.generation,
+      inputIntentId: intentId,
+      intentEpoch: epoch,
+      supersededExpectationId,
+      supersededExpectationEpoch,
+      scopeId: obs.scopeId,
+      editorInstanceId: obs.editorInstanceId,
+      compositionSessionId: obs.compositionSessionId || 'none',
+      maxActiveObservation: 1,
+    })
   }
 
   private cancelPostTextInputStabilityObservation(reason: PostTextInputCancelReason): void {
@@ -932,18 +982,17 @@ export class HeadingNumberingService {
     const commitTruth = root
       ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'TEXT-COMMIT')
       : null
-    console.info(
-      `[InkChapter] TEXT-COMMIT-AUDIT: ` +
-      `observationId=${obs.observationId} ` +
-      `compositionSessionId=${obs.compositionSessionId || 'none'} ` +
-      `commitSource=${anchor} ` +
-      `compositionEndTimestamp=${this.imeCompositionEndTs || 'none'} ` +
-      `lastInputTimestamp=${this.imeLastInputTs || 'none'} ` +
-      `lastBeforeInputTimestamp=${this.imeLastBeforeInputTs || 'none'} ` +
-      `runtimeId=${commitTruth?.runtimeId ?? 'null'} ` +
-      `visibleText=${commitTruth?.paragraph ? getUserVisibleParagraphText(commitTruth.paragraph) : ''} ` +
-      `logicalOffset=${commitTruth?.logicalOffset ?? 'null'}`,
-    )
+    emitRuntimeAudit('TEXT-COMMIT-AUDIT', {
+      observationId: obs.observationId,
+      compositionSessionId: obs.compositionSessionId || 'none',
+      commitSource: anchor,
+      compositionEndTimestamp: this.imeCompositionEndTs || 'none',
+      lastInputTimestamp: this.imeLastInputTs || 'none',
+      lastBeforeInputTimestamp: this.imeLastBeforeInputTs || 'none',
+      runtimeId: commitTruth?.runtimeId ?? 'null',
+      visibleText: commitTruth?.paragraph ? getUserVisibleParagraphText(commitTruth.paragraph) : '',
+      logicalOffset: commitTruth?.logicalOffset ?? 'null',
+    })
     this.samplePostTextInputStability(obs, generation, 'COMMIT+0')
     const offsets = [16, 50, 150, 300, 500, 1000, 2200]
     for (const ms of offsets) {
@@ -966,21 +1015,20 @@ export class HeadingNumberingService {
     const finalTruth = root
       ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'COMPLETE')
       : null
-    console.info(
-      `[InkChapter] POST-TEXT-INPUT-COMPLETE: ` +
-      `observationId=${completed.observationId} ` +
-      `generation=${completed.generation} ` +
-      `scopeId=${completed.scopeId} ` +
-      `editorInstanceId=${completed.editorInstanceId} ` +
-      `compositionSessionId=${completed.compositionSessionId || 'none'} ` +
-      `finalSample=COMMIT+2200 ` +
-      `finalRuntimeId=${finalTruth?.runtimeId ?? 'null'} ` +
-      `finalVisibleText=${finalTruth?.paragraph ? getUserVisibleParagraphText(finalTruth.paragraph) : ''} ` +
-      `finalLogicalOffset=${finalTruth?.logicalOffset ?? 'null'} ` +
-      `activeObservationAfterComplete=${this.postTextInputLifecycle.activeObservationAfterComplete} ` +
-      `pendingCallbackCountAfterComplete=${completed.pendingCallbackCount} ` +
-      `decision=COMPLETE`,
-    )
+    emitRuntimeAudit('POST-TEXT-INPUT-COMPLETE', {
+      observationId: completed.observationId,
+      generation: completed.generation,
+      scopeId: completed.scopeId,
+      editorInstanceId: completed.editorInstanceId,
+      compositionSessionId: completed.compositionSessionId || 'none',
+      finalSample: 'COMMIT+2200',
+      finalRuntimeId: finalTruth?.runtimeId ?? 'null',
+      finalVisibleText: finalTruth?.paragraph ? getUserVisibleParagraphText(finalTruth.paragraph) : '',
+      finalLogicalOffset: finalTruth?.logicalOffset ?? 'null',
+      activeObservationAfterComplete: this.postTextInputLifecycle.activeObservationAfterComplete,
+      pendingCallbackCountAfterComplete: completed.pendingCallbackCount,
+      decision: 'COMPLETE',
+    })
   }
 
   /** R58.7: Static inventory of every plugin selection write site. */
@@ -1030,27 +1078,25 @@ export class HeadingNumberingService {
       ? resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), `IME-${eventType}`)
       : null
     const visibleText = truth?.paragraph ? getUserVisibleParagraphText(truth.paragraph) : ''
-    console.info(
-      `[InkChapter] IME-SELECTION-AUDIT: ` +
-      `compositionSessionId=${this.imeCompositionActiveSessionId || 'none'} ` +
-      `eventType=${eventType} ` +
-      `inputType=${inputType} ` +
-      `isComposing=${isComposing} ` +
-      `runtimeId=${truth?.runtimeId ?? 'null'} ` +
-      `visibleText=${visibleText} ` +
-      `logicalOffset=${truth?.logicalOffset ?? 'null'} ` +
-      `intentEpoch=${this.userIntentEpoch} ` +
-      `timestamp=${now}`,
-    )
+    emitRuntimeAudit('IME-SELECTION-AUDIT', {
+      compositionSessionId: this.imeCompositionActiveSessionId || 'none',
+      eventType,
+      inputType,
+      isComposing,
+      runtimeId: truth?.runtimeId ?? 'null',
+      visibleText,
+      logicalOffset: truth?.logicalOffset ?? 'null',
+      intentEpoch: this.userIntentEpoch,
+      timestamp: now,
+    })
     if (eventType === 'compositionend') {
-      console.info(
-        `[InkChapter] IME-EVENT-ORDER: ` +
-        `compositionSessionId=${this.imeCompositionActiveSessionId || 'none'} ` +
-        `compositionstartTs=${this.imeCompositionStartTs || 'none'} ` +
-        `lastBeforeInputTs=${this.imeLastBeforeInputTs || 'none'} ` +
-        `lastInputTs=${this.imeLastInputTs || 'none'} ` +
-        `compositionEndTs=${this.imeCompositionEndTs || 'none'}`,
-      )
+      emitRuntimeAudit('IME-EVENT-ORDER', {
+        compositionSessionId: this.imeCompositionActiveSessionId || 'none',
+        compositionstartTs: this.imeCompositionStartTs || 'none',
+        lastBeforeInputTs: this.imeLastBeforeInputTs || 'none',
+        lastInputTs: this.imeLastInputTs || 'none',
+        compositionEndTs: this.imeCompositionEndTs || 'none',
+      })
     }
   }
 
@@ -1063,6 +1109,8 @@ export class HeadingNumberingService {
   private firstLineFailureCount = 0
   private normalEnterTxnCreatedFromNonEnterCount = 0
   private specialCommandCreatedFromNonEnterCount = 0
+  private activeEmptySpecialTransaction: EmptySpecialCommandTransaction | null = null
+  private activeEmptySpecialSettle: EmptySpecialSettleContext | null = null
 
   /** R58.7 Step 1.2: Validate that a KeyboardEvent is a real Enter key, not IME Process/Period. */
   private isRealEnterKey(e: KeyboardEvent): boolean {
@@ -1080,20 +1128,19 @@ export class HeadingNumberingService {
     const targetRtId = (e.target instanceof HTMLElement)
       ? this.getParagraphRuntimeId?.(e.target) ?? 'none'
       : 'none'
-    console.info(
-      `[InkChapter] KEYBOARD-EVENT-PROVENANCE: ` +
-      `key=${e.key} ` +
-      `code=${e.code} ` +
-      `isTrusted=${e.isTrusted} ` +
-      `repeat=${e.repeat} ` +
-      `timeStamp=${e.timeStamp} ` +
-      `targetTag=${(e.target as Element).tagName ?? 'unknown'} ` +
-      `targetRuntimeId=${targetRtId} ` +
-      `defaultPrevented=${e.defaultPrevented} ` +
-      `eventPhase=${e.eventPhase} ` +
-      `sourceListener=${sourceListener} ` +
-      `activeNormalEnterTxn=${this.activeNormalEnterTxn?.id ?? 'none'}`,
-    )
+    emitRuntimeAudit('KEYBOARD-EVENT-PROVENANCE', {
+      key: e.key,
+      code: e.code,
+      isTrusted: e.isTrusted,
+      repeat: e.repeat,
+      timeStamp: e.timeStamp,
+      targetTag: (e.target as Element).tagName ?? 'unknown',
+      targetRuntimeId: targetRtId,
+      defaultPrevented: e.defaultPrevented,
+      eventPhase: e.eventPhase,
+      sourceListener,
+      activeNormalEnterTxn: this.activeNormalEnterTxn?.id ?? 'none',
+    })
   }
 
   // ── R58.7 Phase A.1.3: Pending Save-As Promotion ────────────
@@ -1131,18 +1178,17 @@ export class HeadingNumberingService {
     )
 
     const ctx = this.documentContext
-    console.info(
-      `[InkChapter] DOCUMENT-CONTEXT-STATE: ` +
-      `mode=${ctx.mode} ` +
-      `scopeId=${ctx.scopeId ?? 'null'} ` +
-      `activeFilePath=${ctx.activeFilePath ?? 'null'} ` +
-      `persistenceKey=${ctx.persistenceKey ?? 'null'} ` +
-      `businessReady=${ctx.businessReady} ` +
-      `persistenceReady=${ctx.persistenceReady} ` +
-      `businessReason=${ctx.businessReason} ` +
-      `persistenceReason=${ctx.persistenceReason} ` +
-      `sessionId=${ctx.sessionId}`,
-    )
+    emitRuntimeAudit('DOCUMENT-CONTEXT-STATE', {
+      mode: ctx.mode,
+      scopeId: ctx.scopeId ?? 'null',
+      activeFilePath: ctx.activeFilePath ?? 'null',
+      persistenceKey: ctx.persistenceKey ?? 'null',
+      businessReady: ctx.businessReady,
+      persistenceReady: ctx.persistenceReady,
+      businessReason: ctx.businessReason,
+      persistenceReason: ctx.persistenceReason,
+      sessionId: ctx.sessionId,
+    })
 
     // Transition trace with correct BEFORE snapshot + provenance classification
     if (beforeMode !== ctx.mode || beforeScopeId !== ctx.scopeId) {
@@ -1189,20 +1235,21 @@ export class HeadingNumberingService {
         decision = 'SWITCH_DOCUMENT'
       }
 
-      console.info(
-        `[InkChapter] DOCUMENT-CONTEXT-TRANSITION: ` +
-        `fromMode=${beforeMode} ` +
-        `toMode=${ctx.mode} ` +
-        `scopeIdBefore=${beforeScopeId ?? 'null'} ` +
-        `scopeIdAfter=${ctx.scopeId ?? 'null'} ` +
-        `scopeIdSame=${ctx.scopeId === beforeScopeId} ` +
-        `persistenceKeyBefore=${beforePersistenceKey ?? 'null'} ` +
-        `persistenceKeyAfter=${ctx.persistenceKey ?? 'null'} ` +
-        `activeFilePath=${ctx.activeFilePath ?? 'null'} ` +
-        `preserveScope=${preserveScope} ` +
-        `reason=${reason} ` +
-        `decision=${decision}`,
-      )
+      emitRuntimeAudit('DOCUMENT-CONTEXT-TRANSITION', {
+        fromMode: beforeMode,
+        toMode: ctx.mode,
+        scopeIdBefore: beforeScopeId ?? 'null',
+        scopeIdAfter: ctx.scopeId ?? 'null',
+        scopeIdSame: ctx.scopeId === beforeScopeId,
+        persistenceKeyBefore: beforePersistenceKey ?? 'null',
+        persistenceKeyAfter: ctx.persistenceKey ?? 'null',
+        activeFilePath: ctx.activeFilePath ?? 'null',
+        preserveScope,
+        reason,
+        decision,
+      })
+      // Document-switch boundary: force the sink to persist the transition synchronously.
+      flushForensicSink()
 
       // Snapshot audit
       console.info(
@@ -1218,14 +1265,13 @@ export class HeadingNumberingService {
     }
 
     if (ctx.businessReady) {
-      console.info(
-        `[InkChapter] DOCUMENT-CONTEXT-READY: ` +
-        `mode=${ctx.mode} ` +
-        `scopeId=${ctx.scopeId} ` +
-        `businessReady=true ` +
-        `persistenceReady=${ctx.persistenceReady} ` +
-        `decision=READY`,
-      )
+      emitRuntimeAudit('DOCUMENT-CONTEXT-READY', {
+        mode: ctx.mode,
+        scopeId: ctx.scopeId,
+        businessReady: true,
+        persistenceReady: ctx.persistenceReady,
+        decision: 'READY',
+      })
     }
   }
 
@@ -1391,6 +1437,31 @@ export class HeadingNumberingService {
     const id = `P-RUNTIME-${this.nextParagraphRuntimeId++}`
     this.paragraphRuntimeIds.set(el, id)
     return id
+  }
+
+  /** Read-only runtimeId peek — used by the focus probe; NEVER creates an id. */
+  private peekParagraphRuntimeId(el: HTMLElement): string | null {
+    return this.paragraphRuntimeIds.get(el) ?? null
+  }
+
+  /**
+   * PURE OBSERVABILITY: read-only renderer focus probe. Emits
+   * EDITOR-INPUT-FOCUS-PROBE + EDITOR-INPUT-FOCUS-PROBE-SAFETY without mutating
+   * focus / selection / DOM / canonical state.
+   */
+  runEditorInputFocusProbe(
+    phase: 'BEFORE_ACQUIRE' | 'AFTER_ACQUIRE' | 'BEFORE_INPUT' | 'AFTER_INPUT' | 'ON_DEMAND',
+  ): void {
+    try {
+      runEditorInputFocusProbeWithSafety(phase, {
+        editorRoot: this.adapter.getEditorRoot(),
+        editorInstanceId: this.documentContext.editorInstanceId,
+        peekRuntimeId: (el) => this.peekParagraphRuntimeId(el),
+      })
+    } catch (e) {
+      // fail-open: probe must never break business
+      logger.warn('EDITOR-INPUT-FOCUS-PROBE failed:', e)
+    }
   }
 
   // ── R58: Live Binding Helpers ────────────────────────────────────
@@ -1588,13 +1659,22 @@ export class HeadingNumberingService {
     this.registerEvents()
     this.registerSettingsListener()
     this.requestRefresh('initial-load')
+
+    // ── PURE OBSERVABILITY: expose the read-only renderer focus probe to the
+    // harness / DevTools. Trigger emits EDITOR-INPUT-FOCUS-PROBE (the snapshot)
+    // into the forensic audit stream; it never mutates focus/selection/DOM.
+    try {
+      ;(window as any).__inkchapter_probe_editor_input_focus__ = (phase: string) => {
+        this.runEditorInputFocusProbe(phase as any)
+      }
+    } catch { /* ignore */ }
   }
 
   /** Initialize scope store: try reading new format, fall back to migration. */
   private initScopeStore(): HeadingNumberingScopeStore {
     const raw = this.ctx.settings.get('headingNumberingScopes' as any) as any
     if (raw?.schemaVersion && raw.globalDefault) {
-      console.info('[InkChapter] Using headingNumberingScopes')
+      logger.info('Using headingNumberingScopes')
       return raw as HeadingNumberingScopeStore
     }
 
@@ -1606,14 +1686,14 @@ export class HeadingNumberingService {
         { headingNumbering: oldSettings },
       )
       if (migResult.migrated) {
-        console.info('[InkChapter] Migrated headingNumbering → headingNumberingScopes')
+        logger.info('Migrated headingNumbering → headingNumberingScopes')
         this.persistScopeStore(migResult.store)
       }
       return migResult.store
     }
 
     // No existing data — use fresh default store
-    console.info('[InkChapter] No existing heading numbering data, using defaults')
+    logger.info('No existing heading numbering data, using defaults')
     return {
       schemaVersion: 1,
       globalDefault: getDefaultHeadingNumberingSettings(),
@@ -2025,14 +2105,14 @@ export class HeadingNumberingService {
 
       if (typeof vaultCandidate === 'string' && vaultCandidate.length > 0) {
         injectProductionVaultRoot(vaultCandidate)
-        console.info(`[InkChapter] SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=service-context`)
+        logger.info(`SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=service-context`)
         return
       }
 
       // Fallback: derive from active file path by searching for .typora ancestor
       const filePath = this.ctx.getActiveFilePath?.()
       if (!filePath) {
-        console.warn('[InkChapter] SIDECAR-CONTEXT: vaultRoot unknown — no active file and no context vaultRoot')
+        logger.warn('SIDECAR-CONTEXT: vaultRoot unknown — no active file and no context vaultRoot')
         return
       }
 
@@ -2042,7 +2122,7 @@ export class HeadingNumberingService {
       for (let i = 0; i < 5; i++) {
         if (existsSync(join(dir, '.typora'))) {
           injectProductionVaultRoot(dir)
-          console.info(`[InkChapter] SIDECAR-CONTEXT: vaultRoot=${dir} storageRoot=${join(dir, '.typora', 'inkchapter', 'paragraph-layout')} source=derived-from-active-file`)
+          logger.info(`SIDECAR-CONTEXT: vaultRoot=${dir} storageRoot=${join(dir, '.typora', 'inkchapter', 'paragraph-layout')} source=derived-from-active-file`)
           return
         }
         const parent = dirname(dir)
@@ -2050,9 +2130,9 @@ export class HeadingNumberingService {
         dir = parent
       }
 
-      console.warn(`[InkChapter] SIDECAR-CONTEXT: vaultRoot unknown — could not derive from filePath=${filePath}`)
+      logger.warn(`SIDECAR-CONTEXT: vaultRoot unknown — could not derive from filePath=${filePath}`)
     } catch (e) {
-      console.warn('[InkChapter] SIDECAR-CONTEXT: vault root injection failed:', e)
+      logger.warn('SIDECAR-CONTEXT: vault root injection failed:', e)
     }
   }
 
@@ -3302,7 +3382,7 @@ export class HeadingNumberingService {
     // R58.7 Phase A.1.3.1a: Snapshot immutable runtime scope for this transaction
     const scopeRef = this.snapshotRuntimeScope()
     if (!scopeRef) {
-      console.warn(`[InkChapter] TRANSACTION-ABORTED: reason=SCOPE_NOT_READY`)
+      logger.warn(`TRANSACTION-ABORTED: reason=SCOPE_NOT_READY`)
       return false
     }
 
@@ -3343,9 +3423,1044 @@ export class HeadingNumberingService {
     return true
   }
 
+  // ── P0: Empty Paragraph Special-Command (token-only) ───────────────────────
+
+  /**
+   * Synchronous phase of a token-only empty special command. Captures the plan,
+   * consumes the token, applies optimistic semantic/visual, then defers the
+   * canonical commit + caret + verify to AFTER Typora's empty-block normalization.
+   */
+  private commitEmptySpecialTransactionSync(txn: EnterIndentTransaction, event: Event, para: HTMLElement): void {
+    const commandRuntimeId = this.getParagraphRuntimeId(para)
+    const root = this.adapter.getEditorRoot()
+    const allParas = root ? collectContentParagraphs(root) : []
+    const paraIndex = allParas.indexOf(para)
+    const prevEl = paraIndex > 0 ? allParas[paraIndex - 1] : null
+    const nextEl = paraIndex >= 0 && paraIndex < allParas.length - 1 ? allParas[paraIndex + 1] : null
+    const prevRtId = prevEl ? this.getParagraphRuntimeId(prevEl) : null
+    const nextRtId = nextEl ? this.getParagraphRuntimeId(nextEl) : null
+
+    const exact = this.canonicalRegistry.resolveExactLiveRecord(para)
+    const existingRecordId = exact?.recordId ?? null
+
+    const emptyTxn: EmptySpecialCommandTransaction = {
+      txnId: txn.id,
+      scopeId: this.documentContext.scopeId ?? (this.getDocumentKey() ?? 'unknown'),
+      intentEpoch: this.userIntentEpoch,
+      sourceElement: para,
+      sourceRuntimeId: commandRuntimeId,
+      sourceOrdinal: paraIndex,
+      previousElement: prevEl,
+      previousRuntimeId: prevRtId,
+      nextElement: nextEl,
+      nextRuntimeId: nextRtId,
+      paragraphCountBefore: txn.paragraphCountBefore,
+      sourceWasTokenOnly: true,
+      existingCanonicalRecordId: existingRecordId,
+      desiredMode: 'force-indent',
+      state: 'PRE_CAPTURED',
+      authorizedCaretWriteCount: 0,
+      resolvedRuntimeId: null,
+    }
+    this.activeEmptySpecialTransaction = emptyTxn
+
+    // A: Native empty DOM root-cause probe — read-only sampling across phases.
+    const nativeEmptyRef = this.findNativeEmptyReferenceParagraph(para, prevEl, nextEl, allParas)
+    this.emitEmptyBlockDomSnapshot('NATIVE_EMPTY', nativeEmptyRef, nativeEmptyRef ? this.getParagraphRuntimeId(nativeEmptyRef) : null)
+    this.emitEmptyBlockDomSnapshot('BEFORE_TOKEN_CONSUME', para, commandRuntimeId)
+
+    emitRuntimeAudit('EMPTY-SPECIAL-PRE', {
+      txnId: emptyTxn.txnId,
+      intentEpoch: emptyTxn.intentEpoch,
+      scopeId: emptyTxn.scopeId,
+      sourceRuntimeId: commandRuntimeId,
+      sourceOrdinal: paraIndex,
+      previousRuntimeId: prevRtId ?? 'none',
+      nextRuntimeId: nextRtId ?? 'none',
+      previousVisibleText: prevEl ? getUserVisibleParagraphText(prevEl) : '',
+      sourceVisibleText: getUserVisibleParagraphText(para),
+      nextVisibleText: nextEl ? getUserVisibleParagraphText(nextEl) : '',
+      paragraphCountBefore: txn.paragraphCountBefore,
+      selectionRuntimeId: commandRuntimeId,
+      logicalOffset: 2,
+      existingCanonicalRecordId: existingRecordId ?? 'none',
+    })
+
+    // P0-B: ARM the mutation window BEFORE consuming the token.
+    this.armEmptySpecialMutationWindow(emptyTxn, root, para.isConnected)
+
+    // consume Enter + token
+    event.preventDefault()
+    event.stopPropagation()
+    this.clearParagraphToken(para, txn.token)
+    txn.tokenConsumed = true
+    emptyTxn.state = 'TOKEN_CONSUMED'
+    const settleCtx = this.activeEmptySpecialSettle
+    if (settleCtx) {
+      settleCtx.tokenConsumedAt = performance.now()
+      settleCtx.observerArmedBeforeTokenConsume = settleCtx.observerArmedAt <= settleCtx.tokenConsumedAt
+    }
+    emitRuntimeAudit('EMPTY-SPECIAL-TOKEN-CONSUMED', {
+      txnId: emptyTxn.txnId,
+      token: txn.token,
+      sourceRuntimeId: commandRuntimeId,
+      tokenConsumedAt: settleCtx?.tokenConsumedAt ?? 0,
+    })
+
+    // P0-A: restore the token-consumed empty paragraph to Typora-native empty.
+    const norm = normalizeTokenConsumedEmptyParagraph({
+      txnId: emptyTxn.txnId,
+      runtimeId: commandRuntimeId,
+      paragraph: para,
+    })
+    emitRuntimeAudit('EMPTY-SPECIAL-DOM-NORMALIZATION', {
+      txnId: norm.txnId,
+      intentEpoch: emptyTxn.intentEpoch,
+      runtimeId: norm.runtimeId,
+      beforeInnerHTML: norm.beforeInnerHTML,
+      afterInnerHTML: norm.afterInnerHTML,
+      beforeChildNodeCount: norm.beforeChildNodeCount,
+      afterChildNodeCount: norm.afterChildNodeCount,
+      beforeVisibleText: norm.beforeVisibleText,
+      afterVisibleText: norm.afterVisibleText,
+      nativeEmptyEquivalentBefore: norm.nativeEmptyEquivalentBefore,
+      nativeEmptyEquivalentAfter: norm.nativeEmptyEquivalentAfter,
+      markdownContentChanged: norm.markdownContentChanged,
+      decision: norm.decision,
+      overall: norm.overall,
+    })
+    // P0-A forensic predicate — precise reason for SAFE_EMPTY vs REJECT.
+    const sp = norm.spanPredicate
+    if (sp) {
+      emitRuntimeAudit('EMPTY-SPECIAL-EMPTY-SPAN-PREDICATE', {
+        txnId: emptyTxn.txnId,
+        runtimeId: norm.runtimeId,
+        spanTag: sp.spanTag,
+        mdInlineValue: sp.mdInlineValue,
+        classList: sp.classList,
+        spanChildNodeCount: sp.spanChildNodeCount,
+        spanTextNodeCount: sp.spanTextNodeCount,
+        spanElementChildCount: sp.spanElementChildCount,
+        textNodeValues: sp.textNodeValues,
+        spanTextContent: sp.spanTextContent,
+        hasNestedElement: sp.hasNestedElement,
+        hasNonTextNode: sp.hasNonTextNode,
+        hasNonEmptyTextNode: sp.hasNonEmptyTextNode,
+        matchesExpectedMdPlainShape: sp.matchesExpectedMdPlainShape,
+        safeEmptyTextShape: sp.safeEmptyTextShape,
+        rejectReason: sp.rejectReason ?? 'none',
+        decision: sp.decision,
+      })
+    }
+    if (norm.decision === 'BLOCK_UNSAFE_STRUCTURE') {
+      this.finishEmptySpecialBlocked(emptyTxn, 'BLOCK_UNSAFE_EMPTY_DOM')
+      return
+    }
+    emptyTxn.state = 'DOM_NORMALIZED'
+    this.emitEmptyBlockDomSnapshot('AFTER_TOKEN_CONSUME', para, commandRuntimeId)
+
+    // optimistic semantic + visual on source (re-applied to final owner after settle)
+    setParagraphIndentMode(para, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
+    const settings = this.getParagraphLayoutSettings()
+    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(para) : false }
+    const effective = resolveEffectiveParagraphIndent('force-indent', settings.defaultIndent, structural)
+    applyEffectiveParagraphIndent(para, effective, WriterIds.ENTER_COMMIT_VISUAL)
+    txn.semanticWritten = true
+    emptyTxn.state = 'NORMALIZATION_PENDING'
+
+    // ENTER-COMMIT-ATOMIC degraded to SYNCHRONOUS_PHASE_PASS (NOT final authority)
+    logger.info(`ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=true phase=SYNCHRONOUS_PHASE_PASS overallSuccess=true(degraded)`)
+
+    this.scheduleEmptySpecialSettle(emptyTxn)
+  }
+
+  /** P0-B: Arm the mutation window BEFORE token consume (so the normalization batch is observed). */
+  private armEmptySpecialMutationWindow(
+    emptyTxn: EmptySpecialCommandTransaction,
+    root: HTMLElement | null,
+    sourceConnectedBefore: boolean,
+  ): void {
+    const ctx: EmptySpecialSettleContext = {
+      emptyTxn,
+      root,
+      observer: null,
+      observerArmedAt: performance.now(),
+      tokenConsumedAt: 0,
+      observerArmedBeforeTokenConsume: false,
+      mutationGeneration: 0,
+      relevantMutationCount: 0,
+      relevantMutationTypes: new Set(),
+      sourceConnectedBefore,
+      sourceConnectedAfter: sourceConnectedBefore,
+      paragraphCountBefore: emptyTxn.paragraphCountBefore,
+      version: 0,
+      quietFrames: 0,
+      lastSeenVersion: 0,
+      settled: false,
+      rafId: null,
+      observerRootConnectedAtArm: false,
+      observerRootContainsSourceAtArm: false,
+      sourceConnectedAtArm: false,
+      observerRootIsCurrentEditorRoot: false,
+      editorInstanceId: this.documentContext.editorInstanceId ?? 'unknown',
+    }
+    this.activeEmptySpecialSettle = ctx
+
+    if (!root) return
+
+    ctx.observer = new MutationObserver((records) => {
+      if (ctx.settled) {
+        // Stale callback already queued before terminal close — drop, no generation/mutation.
+        emitRuntimeAudit('EMPTY-SPECIAL-STALE-CALLBACK-DROP', {
+          txnId: emptyTxn.txnId,
+          terminalState: emptyTxn.state,
+          callbackType: 'MUTATION_OBSERVER',
+          decision: 'DROP_STALE',
+        })
+        return
+      }
+      ctx.version++
+      ctx.mutationGeneration++
+      let relevantCount = 0
+      for (const r of records) {
+        if (this.isRelevantEmptySpecialMutation(r, emptyTxn, root)) {
+          relevantCount++
+          ctx.relevantMutationTypes.add(r.type)
+        }
+      }
+      if (relevantCount > 0) {
+        ctx.relevantMutationCount += relevantCount
+        emptyTxn.state = 'MUTATION_OBSERVED'
+        emitRuntimeAudit('EMPTY-SPECIAL-MUTATION', {
+          txnId: emptyTxn.txnId,
+          mutationGeneration: ctx.mutationGeneration,
+          batchSize: records.length,
+          relevantBatchSize: relevantCount,
+        })
+      }
+    })
+    ctx.observer.observe(root, { childList: true, subtree: true, characterData: true })
+
+    // ARM-time immutable snapshot — captured AFTER observer.observe, BEFORE token consume.
+    ctx.observerRootConnectedAtArm = !!(root && root.isConnected)
+    ctx.observerRootContainsSourceAtArm = !!(root && root.contains(emptyTxn.sourceElement))
+    ctx.sourceConnectedAtArm = emptyTxn.sourceElement.isConnected
+    ctx.observerRootIsCurrentEditorRoot = root === this.adapter.getEditorRoot()
+    emitRuntimeAudit('EMPTY-SPECIAL-MUTATION-WINDOW-ARM', {
+      txnId: emptyTxn.txnId,
+      intentEpoch: emptyTxn.intentEpoch,
+      observerRootConnectedAtArm: ctx.observerRootConnectedAtArm,
+      observerRootContainsSourceAtArm: ctx.observerRootContainsSourceAtArm,
+      sourceConnectedAtArm: ctx.sourceConnectedAtArm,
+      observerRootIsCurrentEditorRoot: ctx.observerRootIsCurrentEditorRoot,
+      editorInstanceId: ctx.editorInstanceId,
+      observerArmedAt: ctx.observerArmedAt,
+      decision: 'ARMED',
+    })
+    emptyTxn.state = 'MUTATION_WINDOW_ARMED'
+  }
+
+  private scheduleEmptySpecialSettle(emptyTxn: EmptySpecialCommandTransaction): void {
+    const ctx = this.activeEmptySpecialSettle
+    if (!ctx || ctx.emptyTxn.txnId !== emptyTxn.txnId) {
+      this.finishEmptySpecialBlocked(emptyTxn, 'NO_SETTLE_CONTEXT')
+      return
+    }
+    const startedAt = Date.now()
+    const requiredQuietFrames = 2
+    const maxTimeoutMs = 300
+
+    // AFTER_MICROTASK probe (runs after the current synchronous task completes).
+    queueMicrotask(() => {
+      if (ctx.settled) return
+      const connected = emptyTxn.sourceElement.isConnected
+      this.emitEmptyBlockDomSnapshot(
+        'AFTER_MICROTASK',
+        connected ? emptyTxn.sourceElement : null,
+        connected ? emptyTxn.sourceRuntimeId : null,
+      )
+    })
+
+    const finalize = (decision: EmptySpecialSettleDecisionName | 'NO_ROOT') => {
+      if (ctx.settled) return
+      ctx.settled = true
+      ctx.sourceConnectedAfter = emptyTxn.sourceElement.isConnected
+      this.emitEmptySpecialSettleAudit(ctx, decision)
+      if (decision === 'SETTLED_BY_MUTATION_QUIET' || decision === 'SETTLED_NO_RELEVANT_MUTATION') {
+        emptyTxn.state = 'QUIET_BOUNDARY_REACHED'
+        this.settleEmptySpecialTransaction(emptyTxn)
+      } else if (decision === 'TIMEOUT_BLOCK') {
+        this.finishEmptySpecialTimeoutBlock(emptyTxn)
+      } else {
+        this.finishEmptySpecialBlocked(emptyTxn, 'NO_EDITOR_ROOT')
+      }
+    }
+
+    if (!ctx.root) {
+      finalize('NO_ROOT')
+      return
+    }
+
+    const tick = () => {
+      if (ctx.settled) {
+        emitRuntimeAudit('EMPTY-SPECIAL-STALE-CALLBACK-DROP', {
+          txnId: emptyTxn.txnId,
+          terminalState: emptyTxn.state,
+          callbackType: 'RAF_TICK',
+          decision: 'DROP_STALE',
+        })
+        return
+      }
+      if (this.activeEmptySpecialTransaction?.txnId !== emptyTxn.txnId) {
+        if (ctx.observer) ctx.observer.disconnect()
+        ctx.settled = true
+        return
+      }
+      const elapsedMs = Date.now() - startedAt
+      if (ctx.version !== ctx.lastSeenVersion) {
+        ctx.lastSeenVersion = ctx.version
+        ctx.quietFrames = 0
+      } else {
+        ctx.quietFrames++
+      }
+      const sourceConnected = emptyTxn.sourceElement.isConnected
+      const topologyStable = ctx.quietFrames >= requiredQuietFrames
+      const decision = decideEmptySpecialSettle({
+        mutationGeneration: ctx.mutationGeneration,
+        relevantMutationCount: ctx.relevantMutationCount,
+        quietFramesSinceMutation: ctx.quietFrames,
+        elapsedMs,
+        maxTimeoutMs,
+        requiredQuietFrames,
+        sourceConnected,
+        topologyStable,
+      })
+      if (decision.decision !== 'PENDING') {
+        finalize(decision.decision)
+        return
+      }
+      ctx.rafId = requestAnimationFrame(tick)
+    }
+
+    ctx.rafId = requestAnimationFrame(tick)
+  }
+
+  /** P0-B: Single terminal cleanup authority for every empty-special terminal path. */
+  private closeEmptySpecialTransaction(emptyTxn: EmptySpecialCommandTransaction, finalState: string): void {
+    const ctx = this.activeEmptySpecialSettle
+    let observerDisconnected = false
+    if (ctx && ctx.emptyTxn.txnId === emptyTxn.txnId) {
+      ctx.settled = true
+      if (ctx.observer) {
+        ctx.observer.disconnect()
+        ctx.observer = null
+        observerDisconnected = true
+      }
+      if (ctx.rafId != null) {
+        cancelAnimationFrame(ctx.rafId)
+        ctx.rafId = null
+      }
+    }
+    if (this.activeEmptySpecialTransaction && shouldClearActiveTxn(this.activeEmptySpecialTransaction.txnId, emptyTxn.txnId)) {
+      this.activeEmptySpecialTransaction = null
+    }
+    if (this.activeEmptySpecialSettle?.emptyTxn && shouldClearActiveTxn(this.activeEmptySpecialSettle.emptyTxn.txnId, emptyTxn.txnId)) {
+      this.activeEmptySpecialSettle = null
+    }
+    // P0-C: the EnterIndentTransaction also owns the one-at-a-time gate.
+    if (this.activeEnterTransaction && shouldClearActiveTxn(this.activeEnterTransaction.id, emptyTxn.txnId)) {
+      this.activeEnterTransaction = null
+    }
+    emptyTxn.state = finalState === 'COMMITTED' ? 'COMMITTED' : 'BLOCKED'
+    emitRuntimeAudit('EMPTY-SPECIAL-TRANSACTION-CLOSE', {
+      txnId: emptyTxn.txnId,
+      finalState,
+      observerDisconnected,
+      timeoutCleared: true,
+      rafOwnershipCleared: true,
+      mutationBufferCleared: true,
+      activeTxnCleared: true,
+      terminal: true,
+      overall: true,
+    })
+  }
+
+  private emitEmptySpecialSettleAudit(ctx: EmptySpecialSettleContext, decision: EmptySpecialSettleDecisionName | 'NO_ROOT'): void {
+    const emptyTxn = ctx.emptyTxn
+    const paragraphCountAfter = ctx.root ? collectContentParagraphs(ctx.root).length : emptyTxn.paragraphCountBefore
+    emitRuntimeAudit('EMPTY-SPECIAL-SETTLE-AUDIT', {
+      txnId: emptyTxn.txnId,
+      intentEpoch: emptyTxn.intentEpoch,
+      observerArmedAt: ctx.observerArmedAt,
+      tokenConsumedAt: ctx.tokenConsumedAt,
+      observerArmedBeforeTokenConsume: ctx.observerArmedBeforeTokenConsume,
+      mutationGenerationStart: 0,
+      mutationGenerationEnd: ctx.mutationGeneration,
+      relevantMutationCount: ctx.relevantMutationCount,
+      relevantMutationTypes: Array.from(ctx.relevantMutationTypes),
+      sourceConnectedBefore: ctx.sourceConnectedBefore,
+      sourceConnectedAfter: ctx.sourceConnectedAfter,
+      observerRootConnectedAtArm: ctx.observerRootConnectedAtArm,
+      observerRootContainsSourceAtArm: ctx.observerRootContainsSourceAtArm,
+      sourceConnectedAtArm: ctx.sourceConnectedAtArm,
+      observerRootIsCurrentEditorRoot: ctx.observerRootIsCurrentEditorRoot,
+      paragraphCountBefore: emptyTxn.paragraphCountBefore,
+      paragraphCountAfter,
+      quietBoundaryReached: decision === 'SETTLED_BY_MUTATION_QUIET',
+      timeoutReached: decision === 'TIMEOUT_BLOCK',
+      decision,
+    })
+  }
+
+  /** A mutation is relevant when it is a structural/characterData change touching source/prev/next. */
+  private isRelevantEmptySpecialMutation(record: MutationRecord, emptyTxn: EmptySpecialCommandTransaction, root: HTMLElement): boolean {
+    const target = record.target
+
+    if (record.type === 'childList') {
+      if (target === root) return true
+      const relevantEls: (HTMLElement | null)[] = [emptyTxn.sourceElement, emptyTxn.previousElement, emptyTxn.nextElement]
+      for (const el of relevantEls) {
+        if (!el) continue
+        if (target === el) return true
+        if (target.contains && target.contains(el)) return true
+        for (let i = 0; i < record.addedNodes.length; i++) {
+          const n = record.addedNodes[i]
+          if (n === el || (n instanceof Node && el.contains(n))) return true
+        }
+        for (let i = 0; i < record.removedNodes.length; i++) {
+          const n = record.removedNodes[i]
+          if (n === el || (n instanceof Node && el.contains(n))) return true
+        }
+      }
+      return false
+    }
+
+    if (record.type === 'characterData') {
+      const relevantEls: (HTMLElement | null)[] = [emptyTxn.sourceElement, emptyTxn.previousElement, emptyTxn.nextElement]
+      for (const el of relevantEls) {
+        if (el && target instanceof Node && el.contains(target)) return true
+      }
+      return false
+    }
+
+    return false
+  }
+
+  private settleEmptySpecialTransaction(emptyTxn: EmptySpecialCommandTransaction): void {
+    if (this.activeEmptySpecialTransaction?.txnId !== emptyTxn.txnId) return
+    if (this.userIntentEpoch !== emptyTxn.intentEpoch) {
+      this.finishEmptySpecialSuperseded(emptyTxn)
+      return
+    }
+    const root = this.adapter.getEditorRoot()
+    if (!root) {
+      this.finishEmptySpecialBlocked(emptyTxn, 'NO_EDITOR_ROOT')
+      return
+    }
+
+    const allParas = collectContentParagraphs(root)
+    const paragraphCountAfter = allParas.length
+    const sourceConnected = emptyTxn.sourceElement.isConnected
+
+    const candidateRuntimeIds: string[] = []
+    if (!sourceConnected) {
+      for (const p of allParas) {
+        if (!p.isConnected) continue
+        const rt = this.getParagraphRuntimeId(p)
+        if (rt === emptyTxn.sourceRuntimeId) continue
+        if (this.isEmptySlotCandidate(p, emptyTxn, allParas)) candidateRuntimeIds.push(rt)
+      }
+    }
+
+    const resolution = resolveEmptySlot({
+      sourceConnected,
+      sourceRuntimeId: emptyTxn.sourceRuntimeId,
+      previousRuntimeId: emptyTxn.previousRuntimeId,
+      nextRuntimeId: emptyTxn.nextRuntimeId,
+      candidateRuntimeIds,
+      paragraphCountBefore: emptyTxn.paragraphCountBefore,
+      paragraphCountAfter,
+    })
+    emptyTxn.resolvedRuntimeId = resolution.resolvedRuntimeId
+
+    emitRuntimeAudit('EMPTY-SPECIAL-STRUCTURAL-RESOLUTION', {
+      txnId: emptyTxn.txnId,
+      decision: resolution.decision,
+      sourceRuntimeId: resolution.sourceRuntimeId,
+      resolvedRuntimeId: resolution.resolvedRuntimeId ?? 'none',
+      previousRuntimeId: resolution.previousRuntimeId ?? 'none',
+      nextRuntimeId: resolution.nextRuntimeId ?? 'none',
+      candidateCount: resolution.candidateCount,
+      paragraphCountBefore: resolution.paragraphCountBefore,
+      paragraphCountAfter: resolution.paragraphCountAfter,
+    })
+
+    const paragraphCountPreserved = paragraphCountAfter === emptyTxn.paragraphCountBefore
+    if (!paragraphCountPreserved) {
+      this.finishEmptySpecialBlocked(emptyTxn, 'PARAGRAPH_COUNT_CHANGED')
+      return
+    }
+    if (resolution.decision === 'AMBIGUOUS' || resolution.decision === 'MISSING') {
+      this.finishEmptySpecialBlocked(emptyTxn, resolution.decision === 'AMBIGUOUS' ? 'AMBIGUOUS_SLOT' : 'MISSING_SLOT')
+      return
+    }
+
+    let finalElement: HTMLElement | null = null
+    let finalRtId: string | null = null
+    if (resolution.decision === 'SAME_NODE') {
+      finalElement = emptyTxn.sourceElement
+      finalRtId = emptyTxn.sourceRuntimeId
+    } else {
+      finalRtId = resolution.resolvedRuntimeId
+      finalElement = allParas.find(p => this.getParagraphRuntimeId(p) === finalRtId) ?? null
+    }
+    if (!finalElement || !finalRtId) {
+      this.finishEmptySpecialBlocked(emptyTxn, 'NO_FINAL_ELEMENT')
+      return
+    }
+    emptyTxn.state = 'STRUCTURE_RESOLVED'
+    this.emitEmptyBlockDomSnapshot('AFTER_RAF', finalElement, finalRtId)
+
+    // re-apply provisional semantic + visual on final owner
+    setParagraphIndentMode(finalElement, 'force-indent', WriterIds.ENTER_COMMIT_SEMANTIC)
+    const settings = this.getParagraphLayoutSettings()
+    const structural = { isFormulaContinuation: settings.flushAfterDisplayMath ? isAfterDisplayMath(finalElement) : false }
+    const effective = resolveEffectiveParagraphIndent('force-indent', settings.defaultIndent, structural)
+    applyEffectiveParagraphIndent(finalElement, effective, WriterIds.ENTER_COMMIT_VISUAL)
+
+    const semanticCorrect = getParagraphIndentMode(finalElement) === 'force-indent'
+    const isNativeEmpty = isNativeEmptyParagraph(finalElement)
+    const projectionMode: EmptyProjectionMode = decideEmptyProjectionMode(isNativeEmpty, semanticCorrect ? 'force-indent' : 'auto')
+    const cs = window.getComputedStyle(finalElement)
+    const computedTextIndent = cs.textIndent
+    const computedPaddingInlineStart = cs.paddingLeft
+    const visualIndentCorrect = semanticCorrect && this.emptyVisualIndentCorrect(projectionMode, cs)
+
+    emitRuntimeAudit('EMPTY-SPECIAL-EMPTY-VISUAL-PROJECTION', {
+      txnId: emptyTxn.txnId,
+      runtimeId: finalRtId,
+      isNativeEmpty,
+      semanticMode: semanticCorrect ? 'force-indent' : getParagraphIndentMode(finalElement),
+      projectionMode,
+      computedTextIndent,
+      computedPaddingInlineStart,
+    })
+    emitRuntimeAudit('EMPTY-SPECIAL-VISUAL-VERIFY', {
+      txnId: emptyTxn.txnId,
+      runtimeId: finalRtId,
+      semanticCorrect,
+      projectionMode,
+      computedTextIndent,
+      computedPaddingInlineStart,
+      visualIndentCorrect,
+    })
+
+    // transaction-scoped caret restore (logical caret verify)
+    const caretLogical = this.emptySpecialCaretRestore(emptyTxn, finalElement, finalRtId, root)
+    emptyTxn.state = 'CARET_VERIFIED'
+    emitRuntimeAudit('EMPTY-SPECIAL-CARET-VERIFY', {
+      txnId: emptyTxn.txnId,
+      resolvedRuntimeId: finalRtId,
+      caretLogicalCorrect: caretLogical,
+      authorizedCaretWriteCount: emptyTxn.authorizedCaretWriteCount,
+    })
+
+    // caret geometry (visual caret verify) — P0-VC authority
+    const geometry = this.emptySpecialCaretGeometry(finalElement, projectionMode)
+    emitRuntimeAudit('EMPTY-SPECIAL-CARET-GEOMETRY', {
+      txnId: emptyTxn.txnId,
+      runtimeId: finalRtId,
+      projectionMode: geometry.projectionMode,
+      fontSizePx: geometry.fontSizePx,
+      expectedIndentPx: geometry.expectedIndentPx,
+      paragraphRectLeft: geometry.paragraphRectLeft,
+      borderInlineStartWidth: geometry.borderInlineStartWidth,
+      paddingInlineStart: geometry.paddingInlineStart,
+      textIndentPx: geometry.textIndentPx,
+      paragraphContentLeft: geometry.paragraphContentLeft,
+      unindentedVisualStart: geometry.unindentedVisualStart,
+      caretRectLeft: geometry.caretRectLeft,
+      actualCaretIndentPx: geometry.actualCaretIndentPx,
+      tolerancePx: geometry.tolerancePx,
+      logicalOffset: geometry.logicalOffset,
+      overall: geometry.overall,
+    })
+
+    const preCommitVerifyPassed = semanticCorrect && visualIndentCorrect && caretLogical && geometry.overall
+    if (!preCommitVerifyPassed) {
+      // P0-AC: nothing committed yet — roll back provisional projection only.
+      this.rollbackEmptySpecialProjection(emptyTxn, finalElement, 'none', 'PRE_COMMIT_VERIFY_FAILED')
+      this.closeEmptySpecialTransaction(emptyTxn, 'BLOCKED')
+      emitRuntimeAudit('EMPTY-SPECIAL-FINAL', {
+        txnId: emptyTxn.txnId,
+        sourceWasTokenOnly: true,
+        overall: false,
+        blockedReason: 'PRE_COMMIT_VERIFY_FAILED',
+      })
+      return
+    }
+
+    // P0-AC: deferred canonical commit — ONLY after every verification passed.
+    const docKey = this.getDocumentKey() ?? ''
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    const canonical = this.commitEmptySpecialCanonical(emptyTxn, finalElement, finalRtId, docKey, docPath)
+    emptyTxn.state = 'CANONICAL_COMMITTED'
+    emitRuntimeAudit('EMPTY-SPECIAL-CANONICAL-COMMIT', {
+      txnId: emptyTxn.txnId,
+      recordId: canonical.recordId,
+      decision: canonical.decision,
+      success: canonical.success,
+      resolvedRuntimeId: finalRtId,
+      sourceRuntimeId: emptyTxn.sourceRuntimeId,
+    })
+
+    const canonicalOwnerCorrect = canonical.success && canonical.recordId !== '' &&
+      this.canonicalRegistry.resolveExactLiveRecord(finalElement)?.recordId === canonical.recordId
+
+    const finalReport = evaluateEmptySpecialFinal({
+      logicalSlotPreserved: true,
+      paragraphCountPreserved,
+      canonicalOwnerCorrect,
+      semanticCorrect,
+      visualIndentCorrect,
+      caretLogicalCorrect: caretLogical,
+      caretVisualCorrect: geometry.overall,
+      authorizedCaretWriteCount: emptyTxn.authorizedCaretWriteCount,
+      unexpectedMerge: false,
+      unexpectedDelete: false,
+    })
+
+    emitRuntimeAudit('EMPTY-SPECIAL-FINAL', {
+      txnId: emptyTxn.txnId,
+      sourceWasTokenOnly: true,
+      logicalSlotPreserved: finalReport.logicalSlotPreserved,
+      paragraphCountPreserved: finalReport.paragraphCountPreserved,
+      canonicalOwnerCorrect: finalReport.canonicalOwnerCorrect,
+      semanticCorrect: finalReport.semanticCorrect,
+      visualIndentCorrect: finalReport.visualIndentCorrect,
+      caretLogicalCorrect: finalReport.caretLogicalCorrect,
+      caretVisualCorrect: finalReport.caretVisualCorrect,
+      authorizedCaretWriteCount: finalReport.authorizedCaretWriteCount,
+      unexpectedMerge: finalReport.unexpectedMerge,
+      unexpectedDelete: finalReport.unexpectedDelete,
+      overall: finalReport.overall,
+    })
+
+    const commitDecision = decideEmptySpecialCommit({
+      preCommitVerifyPassed,
+      canonicalCommitSucceeded: canonical.success,
+      canonicalOwnerCorrect,
+    })
+
+    if (commitDecision === 'COMMIT') {
+      this.closeEmptySpecialTransaction(emptyTxn, 'COMMITTED')
+      return
+    }
+
+    // P0-AC: post-commit rollback — remove the just-created record + projection.
+    this.rollbackEmptySpecialCanonical(canonical, docKey)
+    this.rollbackEmptySpecialProjection(emptyTxn, finalElement, canonical.recordId, 'COMMIT_GATE_ROLLBACK')
+    this.closeEmptySpecialTransaction(emptyTxn, 'BLOCKED')
+  }
+
+  /** A replacement candidate must be a connected, empty paragraph between prev and next. */
+  private isEmptySlotCandidate(p: HTMLElement, emptyTxn: EmptySpecialCommandTransaction, allParas: HTMLElement[]): boolean {
+    const rt = this.getParagraphRuntimeId(p)
+    if (rt === emptyTxn.sourceRuntimeId) return false
+    if (getUserVisibleParagraphText(p) !== '') return false
+    const idx = allParas.indexOf(p)
+    if (idx < 0) return false
+    let minIdx = -1
+    let maxIdx = allParas.length
+    if (emptyTxn.previousRuntimeId) {
+      const prevIdx = allParas.findIndex(x => this.getParagraphRuntimeId(x) === emptyTxn.previousRuntimeId)
+      if (prevIdx >= 0) minIdx = prevIdx
+    }
+    if (emptyTxn.nextRuntimeId) {
+      const nextIdx = allParas.findIndex(x => this.getParagraphRuntimeId(x) === emptyTxn.nextRuntimeId)
+      if (nextIdx >= 0) maxIdx = nextIdx
+    }
+    return idx > minIdx && idx < maxIdx
+  }
+
+  /** Deferred canonical commit: UPDATE_EXISTING for existing, CREATE only after unique final owner. */
+  private commitEmptySpecialCanonical(
+    emptyTxn: EmptySpecialCommandTransaction,
+    finalElement: HTMLElement,
+    finalRtId: string,
+    docKey: string,
+    docPath: string,
+  ): { recordId: string; decision: 'UPDATE_EXISTING' | 'CREATE' | 'BLOCK'; success: boolean } {
+    const root = this.adapter.getEditorRoot()
+    const allParas = root ? collectContentParagraphs(root) : []
+    const paraIndex = allParas.indexOf(finalElement)
+    const anchor = paraIndex >= 0 ? createParagraphAnchor(paraIndex, allParas) : { lastKnownOrdinal: -1 }
+    const isTemporary = !finalElement.textContent?.trim()
+    const scopeId = this.documentContext.scopeId ?? docKey
+
+    const existingId = emptyTxn.existingCanonicalRecordId
+    if (existingId) {
+      const overrides = this.inMemoryOverrides.get(docKey) ?? []
+      const existing = overrides.find(o => o.id === existingId)
+      if (existing) {
+        // D: CAS-like rebind lease — must pass BEFORE any identity mutation; failure = BLOCK (no CREATE_NEW).
+        if (finalRtId !== emptyTxn.sourceRuntimeId) {
+          const meta = this.canonicalRegistry.getRuntimeMeta(existingId)
+          const rebound = this.canonicalRegistry.rebindCurrentLiveRecord(existingId, finalElement, finalRtId, {
+            scopeId,
+            documentKey: docKey,
+            expectedGeneration: meta?.generation,
+            expectedOldRuntimeId: meta?.currentRuntimeId,
+          })
+          if (!rebound) {
+            return { recordId: existingId, decision: 'BLOCK', success: false }
+          }
+        }
+        existing.mode = 'force-indent'
+        existing.anchor = anchor
+        existing.temporary = isTemporary
+        this.inMemoryOverrides.set(docKey, [...overrides])
+        this.scheduleSidecarWrite(docKey, docPath, overrides)
+        return { recordId: existingId, decision: 'UPDATE_EXISTING', success: true }
+      }
+    }
+
+    // CREATE — only after unique final owner confirmed by settle.
+    // Register into the live registry FIRST; only on success update in-memory
+    // overrides + schedule sidecar (atomic: a failed register leaks nothing).
+    const overrides = this.inMemoryOverrides.get(docKey) ?? []
+    const newId = `indent-${Date.now()}-${overrides.length}`
+    const newRecord: ParagraphIndentOverrideRecord = {
+      id: newId,
+      mode: 'force-indent',
+      anchor,
+      temporary: isTemporary,
+    }
+    try {
+      this.canonicalRegistry.registerCurrentSessionRecord(
+        newRecord, docKey, finalElement, finalRtId, isTemporary,
+        scopeId,
+        this.documentContext.persistenceKey,
+      )
+    } catch (e) {
+      logger.warn(`EMPTY-SPECIAL-CANONICAL-REGISTER-WARN: ${e}`)
+      return { recordId: newId, decision: 'BLOCK', success: false }
+    }
+    overrides.push(newRecord)
+    this.inMemoryOverrides.set(docKey, [...overrides])
+    this.scheduleSidecarWrite(docKey, docPath, overrides)
+    return { recordId: newId, decision: 'CREATE', success: true }
+  }
+
+  /** Transaction-scoped caret restore: at most ONE authorized selection write. */
+  private emptySpecialCaretRestore(
+    emptyTxn: EmptySpecialCommandTransaction,
+    finalElement: HTMLElement,
+    finalRtId: string,
+    root: HTMLElement,
+  ): boolean {
+    const truth = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'EMPTY-SPECIAL-CARET-VERIFY')
+    if (truth.runtimeId === finalRtId && truth.logicalOffset === 0) return true
+
+    if (emptyTxn.authorizedCaretWriteCount >= 1) return false
+    if (this.userIntentEpoch !== emptyTxn.intentEpoch) return false
+    if (!finalElement.isConnected) return false
+
+    const repair = repairCaretAtParagraphLogicalStart(finalElement, root, finalRtId, (el: object) => this.getParagraphRuntimeId(el as HTMLElement))
+    if (!repair.success) return false
+
+    emptyTxn.authorizedCaretWriteCount++
+    emitRuntimeAudit('EMPTY-SPECIAL-CARET-RESTORE', {
+      txnId: emptyTxn.txnId,
+      runtimeId: finalRtId,
+      authorizedCaretWriteCount: emptyTxn.authorizedCaretWriteCount,
+      repairSuccess: repair.success,
+    })
+    const verify = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'EMPTY-SPECIAL-CARET-VERIFY-AFTER')
+    return verify.runtimeId === finalRtId && verify.logicalOffset === 0
+  }
+
+  /** P0-VC: measure caret X against the 2em target using the corrected visual start. */
+  private emptySpecialCaretGeometry(
+    finalElement: HTMLElement,
+    projectionMode: EmptyProjectionMode,
+  ): EmptyVisualCaretGeometryResult {
+    const cs = window.getComputedStyle(finalElement)
+    const fontSizePx = parseFloat(cs.fontSize) || 16
+    const expectedIndentPx = fontSizePx * 2
+    const rect = finalElement.getBoundingClientRect()
+    const paragraphRectLeft = rect.left
+    const borderInlineStartWidth = parseFloat(cs.borderLeftWidth) || 0
+    const paddingInlineStart = parseFloat(cs.paddingLeft) || 0
+    const textIndentPx = parseFloat(cs.textIndent) || 0
+    const paragraphContentLeft = paragraphRectLeft + borderInlineStartWidth + paddingInlineStart
+
+    const sel = window.getSelection()
+    let caretRectLeft = paragraphContentLeft
+    if (sel?.rangeCount && sel.isCollapsed) {
+      const r = sel.getRangeAt(0).getBoundingClientRect()
+      if (r && r.width === 0 && r.height > 0) caretRectLeft = r.left
+    }
+
+    return computeEmptyVisualCaretGeometry({
+      fontSizePx,
+      expectedIndentPx,
+      projectionMode,
+      paragraphRectLeft,
+      borderInlineStartWidth,
+      paddingInlineStart,
+      textIndentPx,
+      caretRectLeft,
+      tolerancePx: 4,
+      logicalOffset: 0,
+    })
+  }
+
+  /** P0-VC: whether the effective visual projection matches force-indent 2em. */
+  private emptyVisualIndentCorrect(projectionMode: EmptyProjectionMode, cs: CSSStyleDeclaration): boolean {
+    const fontSizePx = parseFloat(cs.fontSize) || 16
+    const expectedPx = fontSizePx * 2
+    const tolerancePx = 4
+    if (projectionMode === 'EMPTY_PADDING') {
+      const padding = parseFloat(cs.paddingLeft) || 0
+      return Math.abs(padding - expectedPx) <= tolerancePx
+    }
+    if (projectionMode === 'TEXT_INDENT') {
+      const indent = cs.textIndent
+      if (indent === '2em' || indent === '32px') return true
+      const indentPx = parseFloat(indent) || 0
+      return Math.abs(indentPx - expectedPx) <= tolerancePx
+    }
+    return false
+  }
+
+  /** P0-AC: roll back a provisional semantic + visual projection on a failed txn. */
+  private rollbackEmptySpecialProjection(
+    emptyTxn: EmptySpecialCommandTransaction,
+    el: HTMLElement,
+    recordId: string,
+    reason: string,
+  ): void {
+    clearParagraphIndentVisualAndSemantic(el, WriterIds.EMPTY_SPECIAL_ROLLBACK)
+    emitRuntimeAudit('EMPTY-SPECIAL-ROLLBACK', {
+      txnId: emptyTxn.txnId,
+      recordId,
+      recordStateBefore: recordId === 'none' ? 'none' : 'CURRENT_LIVE',
+      recordStateAfter: 'none',
+      provisionalBefore: true,
+      provisionalAfter: false,
+      visualProjectionRemoved: true,
+      semanticProjectionRemoved: true,
+      rehydrateEligibleAfter: false,
+      persistableAfter: false,
+      sidecarWriteEligibleAfter: false,
+      reason,
+      overall: true,
+    })
+  }
+
+  /** P0-AC: remove a just-created canonical record + its in-memory override. */
+  private rollbackEmptySpecialCanonical(
+    canonical: { recordId: string; decision: 'UPDATE_EXISTING' | 'CREATE' | 'BLOCK' },
+    docKey: string,
+  ): void {
+    // Only a record created by THIS transaction may be removed. UPDATE_EXISTING
+    // rebinds a pre-existing record — never delete it on a defensive rollback.
+    if (canonical.decision === 'CREATE') {
+      const overrides = this.inMemoryOverrides.get(docKey) ?? []
+      this.inMemoryOverrides.set(docKey, overrides.filter(o => o.id !== canonical.recordId))
+      this.canonicalRegistry.deleteRecord(canonical.recordId)
+    }
+  }
+
+  /** P0-VC Phase B: read-only BEFORE snapshot for an empty force-indent paragraph. */
+  private captureEmptyNonemptyBefore(): EmptyNonemptyProjectionBefore | null {
+    try {
+      const root = this.adapter.getEditorRoot()
+      const block = root ? resolveCurrentBodyParagraph(root) : null
+      if (!block) return null
+      if (!root) return null
+      if (getParagraphIndentMode(block) !== 'force-indent') return null
+      if (!isNativeEmptyParagraph(block)) return null
+      const exact = this.canonicalRegistry.resolveExactLiveRecord(block)
+      if (!exact) return null
+      const visibleText = getUserVisibleParagraphText(block)
+      if (!shouldEmitEmptyNonemptyTransition(true, 'force-indent', true, exact.recordId, visibleText)) return null
+
+      const cs = window.getComputedStyle(block)
+      const rect = block.getBoundingClientRect()
+      const truth = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'EMPTY-NONEMPTY-BEFORE')
+      return {
+        runtimeId: this.getParagraphRuntimeId(block),
+        canonicalRecordId: exact.recordId,
+        generation: exact.meta.generation,
+        semanticMode: 'force-indent',
+        visibleText,
+        isNativeEmpty: true,
+        paddingInlineStartPx: parseFloat(cs.paddingLeft) || 0,
+        textIndentPx: parseFloat(cs.textIndent) || 0,
+        fontSizePx: parseFloat(cs.fontSize) || 16,
+        paragraphRectLeft: rect.left,
+        borderInlineStartWidth: parseFloat(cs.borderLeftWidth) || 0,
+        selectionRuntimeId: truth?.runtimeId ?? null,
+        logicalOffset: truth?.logicalOffset ?? 0,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /** P0-VC Phase B: read-only first-glyph rect via a temporary DOM Range (never writes Selection). */
+  private readFirstGlyphRectLeft(block: HTMLElement): number {
+    try {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+      let node: Node | null = walker.nextNode()
+      while (node) {
+        if ((node.textContent ?? '') !== '') {
+          const range = document.createRange()
+          range.setStart(node, 0)
+          range.setEnd(node, 1)
+          const r = range.getBoundingClientRect()
+          if (r && r.width > 0) return r.left
+        }
+        node = walker.nextNode()
+      }
+    } catch { /* ignore */ }
+    return block.getBoundingClientRect().left
+  }
+
+  /** P0-VC Phase B: emit the empty→nonempty transition event (fail-open, read-only). */
+  private emitEmptyNonemptyTransitionIfPending(root: HTMLElement): void {
+    const before = this.pendingEmptyNonemptyBefore
+    this.pendingEmptyNonemptyBefore = null
+    if (!before) return
+    try {
+      const block = resolveCurrentBodyParagraph(root)
+      if (!block) return
+      const exact = this.canonicalRegistry.resolveExactLiveRecord(block)
+      const cs = window.getComputedStyle(block)
+      const rect = block.getBoundingClientRect()
+      const truth = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'EMPTY-NONEMPTY-AFTER')
+
+      const after: EmptyNonemptyProjectionAfter = {
+        runtimeId: this.getParagraphRuntimeId(block),
+        canonicalRecordId: exact?.recordId ?? '',
+        generation: exact?.meta.generation ?? before.generation,
+        semanticMode: getParagraphIndentMode(block) === 'force-indent' ? 'force-indent' : 'auto',
+        visibleText: getUserVisibleParagraphText(block),
+        isNativeEmpty: isNativeEmptyParagraph(block),
+        paddingInlineStartPx: parseFloat(cs.paddingLeft) || 0,
+        textIndentPx: parseFloat(cs.textIndent) || 0,
+        fontSizePx: parseFloat(cs.fontSize) || 16,
+        paragraphRectLeft: rect.left,
+        borderInlineStartWidth: parseFloat(cs.borderLeftWidth) || 0,
+        firstGlyphRectLeft: this.readFirstGlyphRectLeft(block),
+        selectionRuntimeId: truth?.runtimeId ?? null,
+        logicalOffset: truth?.logicalOffset ?? 0,
+        pluginSelectionWriteCount: this.pluginSelectionWriteCount,
+        caretContinuityRestoreCount: this.caretContinuityRestoreCount,
+        caretRepairCount: this.caretRepairCount,
+      }
+
+      const report = evaluateEmptyNonemptyProjectionTransition(before, after)
+      emitRuntimeAudit('EMPTY-NONEMPTY-PROJECTION-TRANSITION', { ...report })
+    } catch {
+      /* fail-open: observation never blocks business */
+    }
+  }
+
+  private finishEmptySpecialBlocked(emptyTxn: EmptySpecialCommandTransaction, reason: string): void {
+    this.closeEmptySpecialTransaction(emptyTxn, 'BLOCKED')
+    emitRuntimeAudit('EMPTY-SPECIAL-FINAL', {
+      txnId: emptyTxn.txnId,
+      sourceWasTokenOnly: true,
+      overall: false,
+      blockedReason: reason,
+    })
+    logger.info(`EMPTY-SPECIAL-BLOCKED: txnId=${emptyTxn.txnId} reason=${reason}`)
+  }
+
+  /** P0-B: TIMEOUT_BLOCK — timeout is NEVER a success fallback; no canonical/caret mutation. */
+  private finishEmptySpecialTimeoutBlock(emptyTxn: EmptySpecialCommandTransaction): void {
+    this.closeEmptySpecialTransaction(emptyTxn, 'TIMEOUT_BLOCK')
+    emitRuntimeAudit('EMPTY-SPECIAL-FINAL', {
+      txnId: emptyTxn.txnId,
+      sourceWasTokenOnly: true,
+      overall: false,
+      blockedReason: 'TIMEOUT_BLOCK',
+      canonicalCommitAttempted: false,
+      canonicalRebindAttempted: false,
+      caretWriteAttempted: false,
+    })
+    logger.info(`EMPTY-SPECIAL-TIMEOUT-BLOCK: txnId=${emptyTxn.txnId}`)
+  }
+
+  /** E: Intent supersession — BLOCK the stale txn before any mutation, with full audit. */
+  private finishEmptySpecialSuperseded(emptyTxn: EmptySpecialCommandTransaction): void {
+    this.closeEmptySpecialTransaction(emptyTxn, 'SUPERSEDED')
+    emitRuntimeAudit('EMPTY-SPECIAL-SUPERSESSION-AUDIT', {
+      txnId: emptyTxn.txnId,
+      oldEpoch: emptyTxn.intentEpoch,
+      newEpoch: this.userIntentEpoch,
+      newSource: this.lastUserIntentSource || 'unknown',
+      mutationAttempted: false,
+      canonicalCommitAttempted: false,
+      caretWriteAttempted: false,
+      decision: 'SUPERSEDE',
+    })
+    emitRuntimeAudit('EMPTY-SPECIAL-FINAL', {
+      txnId: emptyTxn.txnId,
+      sourceWasTokenOnly: true,
+      overall: false,
+      blockedReason: 'INTENT_SUPERSEDED',
+    })
+    logger.info(`EMPTY-SPECIAL-SUPERSEDED: txnId=${emptyTxn.txnId} oldEpoch=${emptyTxn.intentEpoch} newEpoch=${this.userIntentEpoch}`)
+  }
+
+  /** A: Emit a read-only empty-block DOM snapshot into the JSONL audit. */
+  private emitEmptyBlockDomSnapshot(phase: string, node: Node | null, runtimeId: string | null): EmptyBlockDomSnapshot {
+    const snap = snapshotEmptyBlockDom(node, phase, runtimeId)
+    emitRuntimeAudit('EMPTY-BLOCK-DOM-SNAPSHOT', {
+      phase: snap.phase,
+      runtimeId: snap.runtimeId ?? 'none',
+      isConnected: snap.isConnected,
+      tagName: snap.tagName,
+      innerHTML: snap.innerHTML,
+      textContent: snap.textContent,
+      childNodeCount: snap.childNodeCount,
+      childNodeSummaries: snap.childNodeSummaries,
+      hasBR: snap.hasBR,
+      brCount: snap.brCount,
+      hasPlaceholderSpan: snap.hasPlaceholderSpan,
+      hasTyporaMarker: snap.hasTyporaMarker,
+    })
+    return snap
+  }
+
+  /** A: Find a reference native-empty paragraph (prev → next → any other empty). */
+  private findNativeEmptyReferenceParagraph(
+    sourceEl: HTMLElement,
+    prevEl: HTMLElement | null,
+    nextEl: HTMLElement | null,
+    allParas: HTMLElement[],
+  ): HTMLElement | null {
+    if (prevEl && getUserVisibleParagraphText(prevEl) === '') return prevEl
+    if (nextEl && getUserVisibleParagraphText(nextEl) === '') return nextEl
+    for (const p of allParas) {
+      if (p !== sourceEl && getUserVisibleParagraphText(p) === '') return p
+    }
+    return null
+  }
+
   /** Synchronous atomic commit — all steps in one call stack. */
   private commitEnterIndentTransactionSync(txn: EnterIndentTransaction, event: Event): void {
     const para = txn.paragraph
+    // P0: token-only empty paragraph ("。。" and nothing else) requires the
+    // deferred empty-special-command flow. Ordinary non-empty path is unchanged.
+    if (isTokenOnlyEmptySpecialCommand(getUserVisibleParagraphText(para), txn.token)) {
+      this.commitEmptySpecialTransactionSync(txn, event, para)
+      return
+    }
     // r57: Use stable object-identity runtime ID, NOT mutable class/text fingerprint.
     const commandRuntimeId = this.getParagraphRuntimeId(para)
     const preParagraphConnected = para.isConnected
@@ -3373,7 +4488,7 @@ export class HeadingNumberingService {
     let finalCommandTarget: HTMLElement | null = para
 
     if (!postTokenConnected) {
-      console.info(`[InkChapter] STALE-PARAGRAPH-AFTER-TOKEN-CONSUME: txnId=${txn.id}`)
+      logger.info(`STALE-PARAGRAPH-AFTER-TOKEN-CONSUME: txnId=${txn.id}`)
       txn.traceData['staleDetected'] = true
       const currentRoot = this.adapter.getEditorRoot()
       if (currentRoot) {
@@ -3551,8 +4666,8 @@ export class HeadingNumberingService {
     txn.traceData['successFields'] = successFields
     txn.traceData['stopReason'] = 'commit completed'
 
-    console.info(`[InkChapter] ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=${successFields.tokenSuccess} paragraphCountSuccess=${paragraphCountSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} sameParagraph=${postTokenRes.paragraphRuntimeId === commandRuntimeId} localOffset=${postTokenRes.localLogicalOffset} overallSuccess=${successFields.overallSuccess}`)
-    console.info(`[InkChapter] ${txn.id} committed: token=${txn.token}`)
+    logger.info(`ENTER-COMMIT-ATOMIC: txnId=${txn.id} tokenSuccess=${successFields.tokenSuccess} paragraphCountSuccess=${paragraphCountSuccess} semanticSuccess=${successFields.semanticSuccess} visualSuccess=${successFields.visualSuccess} caretSuccess=${successFields.caretSuccess} sameParagraph=${postTokenRes.paragraphRuntimeId === commandRuntimeId} localOffset=${postTokenRes.localLogicalOffset} overallSuccess=${successFields.overallSuccess}`)
+    logger.info(`${txn.id} committed: token=${txn.token}`)
 
     // ── R58.6.6: Create CaretExpectation for special command ──
     const docKeyExpect = this.getDocumentKey() ?? ''
@@ -3715,7 +4830,7 @@ export class HeadingNumberingService {
       data['tokenGone'] = data['DOMtext'] === ''
       data['sameParagraphCount'] = data['paraCount'] === txn.paragraphCountBefore
       txn.traceData[label] = data
-      console.info(`[InkChapter] ${txn.id} ${label}: tokenGone=${data['tokenGone']} countMatch=${data['sameParagraphCount']} txActive=true`)
+      logger.info(`${txn.id} ${label}: tokenGone=${data['tokenGone']} countMatch=${data['sameParagraphCount']} txActive=true`)
     }
 
     // T0 = sync end (already captured in commitEnterIndentTransactionSync)
@@ -3731,7 +4846,7 @@ export class HeadingNumberingService {
       const closeTime = performance.now()
       this.activeEnterTransaction = null
       txn.state = 'closed'
-      console.info(`[InkChapter] ${txn.id} TRANSACTION CLOSED at ~${Math.round(closeTime - txn.startedAt)}ms`)
+      logger.info(`${txn.id} TRANSACTION CLOSED at ~${Math.round(closeTime - txn.startedAt)}ms`)
       
       // Start independent PostCommitObservationSession
       this.startPostCommitObservation(txn, closeTime)
@@ -3847,9 +4962,9 @@ export class HeadingNumberingService {
       obs.traceData[`OBS-CONTINUITY-${label}`] = obsContinuity
       obs.traceData[`OBS-SELECTION-${label}`] = obsSelection
 
-      console.info(`[InkChapter] OBS-COMMAND ${label}: originalConnected=${commandConnected} originalSemantic=${commandSemantic}`)
-      console.info(`[InkChapter] OBS-CONTINUITY ${label}: handoffExists=${obsContinuity['handoffExists']} replacementSemantic=${obsContinuity['replacementSemantic']}`)
-      console.info(`[InkChapter] OBS-SELECTION ${label}: runtimeId=${selTruth.runtimeId ?? 'null'} sameAsCommand=${sameAsCommand}`)
+      logger.info(`OBS-COMMAND ${label}: originalConnected=${commandConnected} originalSemantic=${commandSemantic}`)
+      logger.info(`OBS-CONTINUITY ${label}: handoffExists=${obsContinuity['handoffExists']} replacementSemantic=${obsContinuity['replacementSemantic']}`)
+      logger.info(`OBS-SELECTION ${label}: runtimeId=${selTruth.runtimeId ?? 'null'} sameAsCommand=${sameAsCommand}`)
 
       // ── R58.6.7: OBS CaretExpectation verify ──
       const expectation = this.activeCaretExpectation
@@ -3962,7 +5077,7 @@ export class HeadingNumberingService {
         }
       }
       this.observations.delete(obs.observationId)
-      console.info(`[InkChapter] ${obs.observationId} OBSERVATION CLOSED at T9_2000ms`)
+      logger.info(`${obs.observationId} OBSERVATION CLOSED at T9_2000ms`)
     }, 1850)
   }
 
@@ -4117,7 +5232,7 @@ export class HeadingNumberingService {
       handoff.consumed = true
       // handoff failed — no candidate or ambiguous
       ;(resolveTrace as any).replacementChosen = false
-      console.info(`[InkChapter] HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
+      logger.info(`HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
       return
     }
 
@@ -4131,7 +5246,7 @@ export class HeadingNumberingService {
     ;(resolveTrace as any).replacementIdentity = handoff.replacementIdentity
     ;(resolveTrace as any).replacementOrdinal = paraOrdinal
     ;(resolveTrace as any).matchEvidence = 'same-ordinal'
-    console.info(`[InkChapter] HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
+    logger.info(`HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
 
     // ── P0-D: HANDOFF-TRANSFER — read CURRENT semantic, not frozen ──
     const semanticBefore = getParagraphIndentMode(replacement)
@@ -4153,7 +5268,7 @@ export class HeadingNumberingService {
       semanticChanged,
       replacementRuntimeId: this.getParagraphRuntimeId(replacement),
     }
-    console.info(`[InkChapter] HANDOFF-CURRENT-SEMANTIC: ${JSON.stringify(handoffSemanticTrace)}`)
+    logger.info(`HANDOFF-CURRENT-SEMANTIC: ${JSON.stringify(handoffSemanticTrace)}`)
 
     const settings = this.getParagraphLayoutSettings()
     setParagraphIndentMode(replacement, currentSemantic, 'W-ONESHOT-SEMANTIC')
@@ -4184,13 +5299,13 @@ export class HeadingNumberingService {
       replacementConnected,
       verified,
     }
-    console.info(`[InkChapter] HANDOFF-TRANSFER: ${JSON.stringify(transferTrace)}`)
+    logger.info(`HANDOFF-TRANSFER: ${JSON.stringify(transferTrace)}`)
 
     // Consume only on verified or terminal failure
     handoff.consumed = verified
 
     if (verified) {
-      console.info(`[InkChapter] ONE-SHOT-HANDOFF VERIFIED: ${handoff.handoffId} semantic=${handoff.semantic}`)
+      logger.info(`ONE-SHOT-HANDOFF VERIFIED: ${handoff.handoffId} semantic=${handoff.semantic}`)
 
       // ── R58.2: CANONICAL-BINDING-TRANSFER via registry ──
       const recordId = handoff.canonicalRecordId
@@ -4226,7 +5341,7 @@ export class HeadingNumberingService {
         }
       }
     } else {
-      console.info(`[InkChapter] ONE-SHOT-HANDOFF FAILED: ${handoff.handoffId} semantic=${semanticAfter} indent=${indentAfter} connected=${replacementConnected}`)
+      logger.info(`ONE-SHOT-HANDOFF FAILED: ${handoff.handoffId} semantic=${semanticAfter} indent=${indentAfter} connected=${replacementConnected}`)
     }
   }
 
@@ -4234,7 +5349,7 @@ export class HeadingNumberingService {
   private releaseOneShotHandoff(reason: string): void {
     const handoff = this.activeOneShotHandoff
     if (!handoff) return
-    console.info(`[InkChapter] ONE-SHOT-HANDOFF RELEASED: ${handoff.handoffId} reason=${reason}`)
+    logger.info(`ONE-SHOT-HANDOFF RELEASED: ${handoff.handoffId} reason=${reason}`)
     this.activeOneShotHandoff = null
   }
 
@@ -4296,7 +5411,7 @@ export class HeadingNumberingService {
       blocked: rehydrateDecision?.rehydrateBlocked ?? false,
     }
 
-    console.info(`[InkChapter] SINGLE-DOT-TRACE: text="${visibleText}" semantic=${semanticBefore} computed=${computedBefore} sidecar=${sidecarCountBefore} scopeId=${this.documentContext.scopeId ?? 'unknown'}`)
+    logger.info(`SINGLE-DOT-TRACE: text="${visibleText}" semantic=${semanticBefore} computed=${computedBefore} sidecar=${sidecarCountBefore} scopeId=${this.documentContext.scopeId ?? 'unknown'}`)
 
     // Record to observation
     const obs = this.activeEnterTransaction ? [...this.observations.values()].find(o => o.txnId === this.activeEnterTransaction?.id) : null
@@ -4325,8 +5440,8 @@ export class HeadingNumberingService {
           `decision=INFO`,
         )
       } else {
-        console.error(`[InkChapter] SINGLE-DOT-WRONG-APPLY: text="${visibleText}" semantic=${semanticBefore} — HARD STOP`)
-        console.error('[InkChapter] WRONG APPLY DETAILS:', JSON.stringify(trace, null, 2))
+        logger.error(`SINGLE-DOT-WRONG-APPLY: text="${visibleText}" semantic=${semanticBefore} — HARD STOP`)
+        logger.error('WRONG APPLY DETAILS:', JSON.stringify(trace, null, 2))
       }
     }
   }
@@ -4429,7 +5544,7 @@ export class HeadingNumberingService {
     const ownerDoc = paragraph.ownerDocument
     if (!ownerDoc) {
       result.failReason = 'no-ownerDocument'
-      console.info('[InkChapter] CARET_TARGET_INVALID: no ownerDocument (cross-realm?)')
+      logger.info('CARET_TARGET_INVALID: no ownerDocument (cross-realm?)')
       return result
     }
 
@@ -4437,12 +5552,12 @@ export class HeadingNumberingService {
     try {
       if (!(paragraph instanceof ownerDoc.defaultView!.Node)) {
         result.failReason = 'not-a-node-in-realm'
-        console.info('[InkChapter] CARET_TARGET_INVALID: paragraph is not a Node in owner document realm')
+        logger.info('CARET_TARGET_INVALID: paragraph is not a Node in owner document realm')
         return result
       }
     } catch {
       result.failReason = 'instanceof-check-failed'
-      console.info('[InkChapter] CARET_TARGET_INVALID: instanceof check threw (cross-realm)')
+      logger.info('CARET_TARGET_INVALID: instanceof check threw (cross-realm)')
       return result
     }
 
@@ -4450,7 +5565,7 @@ export class HeadingNumberingService {
 
     if (!paragraph.isConnected) {
       result.failReason = 'disconnected'
-      console.info('[InkChapter] CARET_TARGET_INVALID: paragraph not connected')
+      logger.info('CARET_TARGET_INVALID: paragraph not connected')
       return result
     }
     result.targetConnected = true
@@ -4493,7 +5608,7 @@ export class HeadingNumberingService {
       )
     } catch (e) {
       result.failReason = `range-error: ${e}`
-      console.info('[InkChapter] CARET_WRITE_FAILED:', e)
+      logger.info('CARET_WRITE_FAILED:', e)
     }
 
     return result
@@ -4599,7 +5714,7 @@ export class HeadingNumberingService {
     }
 
     // ENTER-CARET-LOCAL trace
-    console.info(`[InkChapter] ENTER-CARET-LOCAL: commandIdentity=${commandIdentity} targetOrdinal=${result.targetParagraphOrdinal} writer=${result.writerType} connected=${result.targetConnected} success=${result.success} sameParagraph=${result.sameAsCommandParagraph} localOffset=${result.localLogicalOffset} selectionIdentity=${result.resolvedSelectionParagraphIdentity ?? 'null'} failureReason=${result.failureReason ?? 'none'}`)
+    logger.info(`ENTER-CARET-LOCAL: commandIdentity=${commandIdentity} targetOrdinal=${result.targetParagraphOrdinal} writer=${result.writerType} connected=${result.targetConnected} success=${result.success} sameParagraph=${result.sameAsCommandParagraph} localOffset=${result.localLogicalOffset} selectionIdentity=${result.resolvedSelectionParagraphIdentity ?? 'null'} failureReason=${result.failureReason ?? 'none'}`)
 
     return result
   }
@@ -4613,7 +5728,7 @@ export class HeadingNumberingService {
         children.push({ idx: i, nodeType: c.nodeType, nodeName: c.nodeName, text: c.textContent?.slice(0, 30) ?? '' })
       }
       const sel = paragraph.ownerDocument?.defaultView?.getSelection()
-      console.info(`[InkChapter] EMPTY-PARAGRAPH-DOM-PROBE: tagName=${paragraph.tagName} className=${paragraph.className?.slice(0,40) ?? ''} nodeType=${paragraph.nodeType} isConnected=${paragraph.isConnected} textContent=${paragraph.textContent?.slice(0,20) ?? ''} childCount=${paragraph.childNodes.length} children=${JSON.stringify(children)} firstChildType=${paragraph.firstChild?.nodeType ?? 'none'} ownerDoc=${!!paragraph.ownerDocument} defaultView=${!!paragraph.ownerDocument?.defaultView} selAnchorNode=${sel?.anchorNode?.nodeName ?? 'none'} selAnchorOffset=${sel?.anchorOffset ?? -1}`)
+      logger.info(`EMPTY-PARAGRAPH-DOM-PROBE: tagName=${paragraph.tagName} className=${paragraph.className?.slice(0,40) ?? ''} nodeType=${paragraph.nodeType} isConnected=${paragraph.isConnected} textContent=${paragraph.textContent?.slice(0,20) ?? ''} childCount=${paragraph.childNodes.length} children=${JSON.stringify(children)} firstChildType=${paragraph.firstChild?.nodeType ?? 'none'} ownerDoc=${!!paragraph.ownerDocument} defaultView=${!!paragraph.ownerDocument?.defaultView} selAnchorNode=${sel?.anchorNode?.nodeName ?? 'none'} selAnchorOffset=${sel?.anchorOffset ?? -1}`)
     } catch { /* fail-open */ }
   }
 
@@ -4712,7 +5827,7 @@ export class HeadingNumberingService {
       }
       upsertTrace['decision'] = result.decision
       upsertTrace['selectedRecordId'] = existing?.id ?? null
-      console.info(`[InkChapter] SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
+      logger.info(`SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
       return result
     }
 
@@ -4735,12 +5850,12 @@ export class HeadingNumberingService {
       result.decision = 'BLOCK'
       upsertTrace['backspaceBlocked'] = true
       upsertTrace['blockReason'] = 'no trusted identity for Backspace — element/live/anchor all null'
-      console.info(`[InkChapter] BACKSPACE-CANONICAL-BLOCK: runtimeId=${runtimeId} reason=NO_TRUSTED_IDENTITY`)
+      logger.info(`BACKSPACE-CANONICAL-BLOCK: runtimeId=${runtimeId} reason=NO_TRUSTED_IDENTITY`)
       // Do NOT push a new record. Do NOT write sidecar.
       upsertTrace['decision'] = 'BLOCK'
       upsertTrace['selectedRecordId'] = null
       upsertTrace['recordCountAfter'] = overrides.length
-      console.info(`[InkChapter] SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
+      logger.info(`SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
       return result
     } else {
       const newId = `indent-${Date.now()}-${overrides.length}`
@@ -4762,14 +5877,14 @@ export class HeadingNumberingService {
       upsertTrace['whyElementBindingMissing'] = liveBinding ? 'none' : 'no element→recordId in WeakMap'
       upsertTrace['whyLiveBindingMissing'] = liveBinding ? 'none' : 'no liveBinding for element'
       upsertTrace['whyAnchorLookupRejected'] = anchorExisting ? 'none' : 'anchor resolution did not match'
-      console.info(`[InkChapter] BACKSPACE-DUPLICATE-RECORD-BUG: ${JSON.stringify(upsertTrace)}`)
+      logger.info(`BACKSPACE-DUPLICATE-RECORD-BUG: ${JSON.stringify(upsertTrace)}`)
       console.info(
         `[InkChapter] BACKSPACE-RECORD-COUNT-INVARIANT-VIOLATION: ` +
         `runtimeId=${runtimeId} recordCountBefore=${recordCountBefore} recordCountAfter=${overrides.length}`,
       )
     }
 
-    console.info(`[InkChapter] SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
+    logger.info(`SIDECAR-UPSERT-DECISION: ${JSON.stringify(upsertTrace)}`)
     return result
   }
 
@@ -4920,7 +6035,7 @@ export class HeadingNumberingService {
         this.documentContext.persistenceKey,
       )
     } catch (e) {
-      console.warn(`[InkChapter] CANONICAL-REGISTRY-REGISTER-WARN: ${e}`)
+      logger.warn(`CANONICAL-REGISTRY-REGISTER-WARN: ${e}`)
     }
 
     this.scheduleSidecarWrite(documentKey, documentPath, overrides)
@@ -5119,18 +6234,17 @@ export class HeadingNumberingService {
       candidateRuntimeId: toRuntimeId,
     }
 
-    console.info(
-      `[InkChapter] TRANSFER-PLAN: ` +
-      `recordId=${recordId} ` +
-      `recordLookupSource=KNOWN_RECORD_ID ` +
-      `stateBeforeAwait=${stateBeforeAwait} ` +
-      `recordMode=${recordMode ?? 'none'} ` +
-      `generation=${transferPlan.generation} ` +
-      `scopeId=${transferPlan.scopeId} ` +
-      `fromRuntimeId=${fromRuntimeId} ` +
-      `candidateRuntimeId=${toRuntimeId} ` +
-      `overall=${recordMode !== null}`,
-    )
+    emitRuntimeAudit('TRANSFER-PLAN', {
+      recordId,
+      recordLookupSource: 'KNOWN_RECORD_ID',
+      stateBeforeAwait,
+      recordMode: recordMode ?? 'none',
+      generation: transferPlan.generation,
+      scopeId: transferPlan.scopeId,
+      fromRuntimeId,
+      candidateRuntimeId: toRuntimeId,
+      overall: recordMode !== null,
+    })
 
     // ── R58.7 Step 3: Candidate resolution guard ──
     // Verify candidate is uniquely resolved (matches active NormalEnter txn's completedOriginal)
@@ -5211,32 +6325,30 @@ export class HeadingNumberingService {
       expectedIndent = `${expectedComputedIndent}px`
       actualIndent = `${actualComputedIndent}px`
 
-      console.info(
-        `[InkChapter] CANONICAL-VISUAL-VERIFY: ` +
-        `recordId=${recordId} ` +
-        `expectedEffectiveMode=${expectedEffectiveMode} ` +
-        `actualEffectiveMode=${actualEffectiveMode} ` +
-        `fontSize=${visualFontSize} ` +
-        `expectedComputedIndent=${expectedComputedIndent} ` +
-        `actualComputedIndent=${actualComputedIndent} ` +
-        `effectiveModeMatches=${effectiveModeMatches} ` +
-        `computedMatches=${computedMatches} ` +
-        `overall=${visualTransfer}`,
-      )
+      emitRuntimeAudit('CANONICAL-VISUAL-VERIFY', {
+        recordId,
+        expectedEffectiveMode,
+        actualEffectiveMode,
+        fontSize: visualFontSize,
+        expectedComputedIndent,
+        actualComputedIndent,
+        effectiveModeMatches,
+        computedMatches,
+        overall: visualTransfer,
+      })
     }
 
     // ── VERIFY: projection must pass BEFORE identity commit ──
     const projectionVerified = semanticTransfer && visualTransfer
-    console.info(
-      `[InkChapter] PROJECTION-VERIFY: ` +
-      `recordId=${recordId} ` +
-      `semanticTransfer=${semanticTransfer} ` +
-      `visualTransfer=${visualTransfer} ` +
-      `newOwnerSemantic=${newOwnerSemantic} ` +
-      `expectedIndent=${expectedIndent} ` +
-      `actualIndent=${actualIndent} ` +
-      `overall=${projectionVerified}`,
-    )
+    emitRuntimeAudit('PROJECTION-VERIFY', {
+      recordId,
+      semanticTransfer,
+      visualTransfer,
+      newOwnerSemantic,
+      expectedIndent,
+      actualIndent,
+      overall: projectionVerified,
+    })
 
     if (!projectionVerified) {
       console.error(
@@ -5362,28 +6474,26 @@ export class HeadingNumberingService {
     }
 
     // ── FINAL AUDIT ──
-    console.info(
-      `[InkChapter] CANONICAL-TRANSFER-FINAL-AUDIT: ` +
-      `recordId=${recordId} ` +
-      `oldOwnerRuntimeId=${result.fromRuntimeId} ` +
-      `newOwnerRuntimeId=${result.toRuntimeId} ` +
-      `recordMode=${recordMode} ` +
-      `newOwnerSemantic=${newOwnerSemantic} ` +
-      `expectedIndent=${expectedIndent} ` +
-      `actualIndent=${actualIndent} ` +
-      `identityTransfer=${result.success} ` +
-      `semanticTransfer=${semanticTransfer} ` +
-      `visualTransfer=${visualTransfer} ` +
-      `overall=${semanticTransfer && visualTransfer && result.success}`,
-    )
+    emitRuntimeAudit('CANONICAL-TRANSFER-FINAL-AUDIT', {
+      recordId,
+      oldOwnerRuntimeId: result.fromRuntimeId,
+      newOwnerRuntimeId: result.toRuntimeId,
+      recordMode,
+      newOwnerSemantic,
+      expectedIndent,
+      actualIndent,
+      identityTransfer: result.success,
+      semanticTransfer,
+      visualTransfer,
+      overall: semanticTransfer && visualTransfer && result.success,
+    })
 
-    console.info(
-      `[InkChapter] AWAITING-TRANSFER-LEAK-AUDIT: ` +
-      `recordId=${recordId} ` +
-      `awaitingCount=${this.canonicalRegistry.getAwaitingTransferCount()} ` +
-      `activeHandoffCount=${this.activeLiveReplacementTickets.size} ` +
-      `transferSuccess=${result.success}`,
-    )
+    emitRuntimeAudit('AWAITING-TRANSFER-LEAK-AUDIT', {
+      recordId,
+      awaitingCount: this.canonicalRegistry.getAwaitingTransferCount(),
+      activeHandoffCount: this.activeLiveReplacementTickets.size,
+      transferSuccess: result.success,
+    })
 
     console.info(
       `[InkChapter] CANONICAL-BINDING-TRANSFER: ` +
@@ -5707,7 +6817,7 @@ export class HeadingNumberingService {
 
     // ── Phase 1 invariant check ──
     if (phase1WriterCount > 0) {
-      console.error(`[InkChapter] REHYDRATE_PHASE1_WRITER_VIOLATION: writers=${phase1WriterCount} — HARD FAIL`)
+      logger.error(`REHYDRATE_PHASE1_WRITER_VIOLATION: writers=${phase1WriterCount} — HARD FAIL`)
     }
 
     // ── R58.6.1: Live Owner Dominance — suppress historical for LIVE-occupied targets ──
@@ -5820,7 +6930,7 @@ export class HeadingNumberingService {
           )
         }
         // Log REHYDRATE-GROUP for blocked
-        console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} targetIndex=${group.targetParagraphIndex} candidateRecordIds=[${group.candidateRecordIds.join(',')}] candidateModes=[${group.candidateModes.join(',')}] candidateCount=${group.candidateCount} candidateLifecycleStates=[${lifecycleStates.join(',')}] decision=BLOCK reason=${group.reason}`)
+        logger.info(`REHYDRATE-GROUP: target=${group.targetElementIdentity} targetIndex=${group.targetParagraphIndex} candidateRecordIds=[${group.candidateRecordIds.join(',')}] candidateModes=[${group.candidateModes.join(',')}] candidateCount=${group.candidateCount} candidateLifecycleStates=[${lifecycleStates.join(',')}] decision=BLOCK reason=${group.reason}`)
         continue
       }
 
@@ -5854,16 +6964,16 @@ export class HeadingNumberingService {
         group.decision = 'block'
         group.reason = blockReason
         blockedGroups.push(group)
-        console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} candidateCount=1 decision=BLOCK reason=${blockReason}`)
+        logger.info(`REHYDRATE-GROUP: target=${group.targetElementIdentity} candidateCount=1 decision=BLOCK reason=${blockReason}`)
         continue
       }
 
       winners.push(winner)
-      console.info(`[InkChapter] REHYDRATE-GROUP: target=${group.targetElementIdentity} candidateCount=1 decision=APPLY winner=${winner.recordId} mode=${winner.recordMode}`)
+      logger.info(`REHYDRATE-GROUP: target=${group.targetElementIdentity} candidateCount=1 decision=APPLY winner=${winner.recordId} mode=${winner.recordMode}`)
     }
 
     // ── REHYDRATE-PLAN summary ──
-    console.info(`[InkChapter] REHYDRATE-PLAN: planId=${planId} documentKey=${docKey} source=${source} recordCount=${allRecords.length} resolvedCandidateCount=${dedupedCandidates.length} groupCount=${groups.length} winnerCount=${winners.length} blockedGroupCount=${blockedGroups.length} phase1WriterCount=${phase1WriterCount}`)
+    logger.info(`REHYDRATE-PLAN: planId=${planId} documentKey=${docKey} source=${source} recordCount=${allRecords.length} resolvedCandidateCount=${dedupedCandidates.length} groupCount=${groups.length} winnerCount=${winners.length} blockedGroupCount=${blockedGroups.length} phase1WriterCount=${phase1WriterCount}`)
 
     return {
       planId,
@@ -6059,35 +7169,34 @@ export class HeadingNumberingService {
       (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
       'REHYDRATE-SELECTION-AFTER-SYNC',
     )
-    console.info(
-      `[InkChapter] REHYDRATE-SELECTION-AUDIT: ` +
-      `planId=${plan.planId} ` +
-      `source=${rehydrateSource} ` +
-      `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
-      `selectionBeforeRuntimeId=${selectionBefore.runtimeId ?? 'null'} ` +
-      `selectionBeforeOffset=${selectionBefore.logicalOffset ?? 'null'} ` +
-      `selectionBeforeVisibleText=${selectionBefore.paragraph ? getUserVisibleParagraphText(selectionBefore.paragraph) : ''} ` +
-      `winnerCount=${plan.winners.length} ` +
-      `blockedCount=${plan.blockedGroups.length} ` +
-      `rehydrateApplyCount=${this.rehydrateApplyCount} ` +
-      `applyAttemptedCount=${applyAttemptedCount} ` +
-      `semanticApplyAttempted=${applyAttemptedCount} ` +
-      `semanticActuallyChanged=${semanticChangedCount} ` +
-      `classApplyAttempted=${applyAttemptedCount} ` +
-      `classActuallyChanged=${classChangedCount} ` +
-      `inlineStyleApplyAttempted=${applyAttemptedCount} ` +
-      `inlineStyleActuallyChanged=${inlineStyleChangedCount} ` +
-      `decorationApplyAttempted=0 ` +
-      `decorationActuallyChanged=0 ` +
-      `actualDomWriteCount=${actualDomWriteCount} ` +
-      `selectionAfterSyncRuntimeId=${selectionAfterSync.runtimeId ?? 'null'} ` +
-      `selectionAfterSyncOffset=${selectionAfterSync.logicalOffset ?? 'null'} ` +
-      `selectionAfterMicrotaskRuntimeId=pending ` +
-      `selectionAfterMicrotaskOffset=pending ` +
-      `selectionAfterRAFRuntimeId=pending ` +
-      `selectionAfterRAFOffset=pending ` +
-      `selectionWriteAttemptedByRehydrate=false`,
-    )
+    emitRuntimeAudit('REHYDRATE-SELECTION-AUDIT', {
+      planId: plan.planId,
+      source: rehydrateSource,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      selectionBeforeRuntimeId: selectionBefore.runtimeId ?? 'null',
+      selectionBeforeOffset: selectionBefore.logicalOffset ?? 'null',
+      selectionBeforeVisibleText: selectionBefore.paragraph ? getUserVisibleParagraphText(selectionBefore.paragraph) : '',
+      winnerCount: plan.winners.length,
+      blockedCount: plan.blockedGroups.length,
+      rehydrateApplyCount: this.rehydrateApplyCount,
+      applyAttemptedCount,
+      semanticApplyAttempted: applyAttemptedCount,
+      semanticActuallyChanged: semanticChangedCount,
+      classApplyAttempted: applyAttemptedCount,
+      classActuallyChanged: classChangedCount,
+      inlineStyleApplyAttempted: applyAttemptedCount,
+      inlineStyleActuallyChanged: inlineStyleChangedCount,
+      decorationApplyAttempted: 0,
+      decorationActuallyChanged: 0,
+      actualDomWriteCount,
+      selectionAfterSyncRuntimeId: selectionAfterSync.runtimeId ?? 'null',
+      selectionAfterSyncOffset: selectionAfterSync.logicalOffset ?? 'null',
+      selectionAfterMicrotaskRuntimeId: 'pending',
+      selectionAfterMicrotaskOffset: 'pending',
+      selectionAfterRAFRuntimeId: 'pending',
+      selectionAfterRAFOffset: 'pending',
+      selectionWriteAttemptedByRehydrate: false,
+    })
     queueMicrotask(() => {
       const t = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'REHYDRATE-SELECTION-AFTER-MICROTASK')
       console.info(
@@ -6166,10 +7275,11 @@ export class HeadingNumberingService {
     for (const o of loadedOverrides) {
       this.canonicalRegistry.registerPersistedHistorical(o, docKey)
     }
-    console.info(
-      `[InkChapter] SIDECAR-HISTORICAL-REGISTRATION: documentKey=${docKey} ` +
-      `recordCount=${loadedOverrides.length} state=PERSISTED_HISTORICAL`,
-    )
+    emitRuntimeAudit('SIDECAR-HISTORICAL-REGISTRATION', {
+      documentKey: docKey,
+      recordCount: loadedOverrides.length,
+      state: 'PERSISTED_HISTORICAL',
+    })
 
     const root = this.adapter.detectEditorRoot()
     if (!root) return
@@ -6234,7 +7344,7 @@ export class HeadingNumberingService {
       this.suppressParagraphCommandDetection = false
     }
 
-    console.info(`[InkChapter] Migrated ${overrides.length} legacy marker(s) to sidecar`)
+    logger.info(`Migrated ${overrides.length} legacy marker(s) to sidecar`)
   }
 
   // ── Manual Semantic Diagnostic Command ──────────────────
@@ -6480,18 +7590,17 @@ export class HeadingNumberingService {
     )
     const selRuntimeId = selTruthBatch.runtimeId ?? 'none'
     const scopeCtx = this.getScopeContext()
-    console.info(
-      `[InkChapter] EDITOR-MUTATION-BATCH: ` +
-      `batchId=${batchId} ` +
-      `removedParagraphCount=${removedPs.length} ` +
-      `addedParagraphCount=${addedPs.length} ` +
-      `removedRuntimeIds=[${removedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
-      `addedRuntimeIds=[${addedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}] ` +
-      `selectionRuntimeId=${selRuntimeId} ` +
-      `scopeId=${scopeCtx.scopeId} ` +
-      `persistenceKey=${scopeCtx.persistenceKey ?? 'null'} ` +
-      `documentMode=${scopeCtx.mode}`,
-    )
+    emitRuntimeAudit('EDITOR-MUTATION-BATCH', {
+      batchId,
+      removedParagraphCount: removedPs.length,
+      addedParagraphCount: addedPs.length,
+      removedRuntimeIds: `[${removedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}]`,
+      addedRuntimeIds: `[${addedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}]`,
+      selectionRuntimeId: selRuntimeId,
+      scopeId: scopeCtx.scopeId,
+      persistenceKey: scopeCtx.persistenceKey ?? 'null',
+      documentMode: scopeCtx.mode,
+    })
 
     // ── R58.6.2: EDITOR-MUTATION-CLASSIFICATION from GLOBAL batch shape ──
     // Shape is determined by TOTAL removed/added paragraph counts, NOT canonical participants
@@ -6613,29 +7722,27 @@ export class HeadingNumberingService {
       this.activeLiveReplacementTickets.set(ticketId, ticket)
       canonicalRemovedCount++
 
-      console.info(
-        `[InkChapter] LIVE-REPLACEMENT-TICKET: ` +
-        `ticketId=${ticketId} ` +
-        `recordId=${ticket.recordId} ` +
-        `fromRuntimeId=${ticket.previousRuntimeId} ` +
-        `generation=${ticket.previousGeneration} ` +
-        `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
-        `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
-        `mode=${this.documentContext.mode} ` +
-        `source=MUTATION_OBSERVER`,
-      )
+      emitRuntimeAudit('LIVE-REPLACEMENT-TICKET', {
+        ticketId,
+        recordId: ticket.recordId,
+        fromRuntimeId: ticket.previousRuntimeId,
+        generation: ticket.previousGeneration,
+        scopeId: this.documentContext.scopeId ?? 'unknown',
+        persistenceKey: this.documentContext.persistenceKey ?? 'null',
+        mode: this.documentContext.mode,
+        source: 'MUTATION_OBSERVER',
+      })
 
       // ── R58.7: SOURCE-SNAPSHOT captured BEFORE markAwaitingTransfer (state MUST be CURRENT_LIVE) ──
-      console.info(
-        `[InkChapter] SOURCE-SNAPSHOT: ` +
-        `recordId=${ticket.recordId} ` +
-        `recordMode=${ticket.semanticMode} ` +
-        `scopeId=${ticket.scopeId} ` +
-        `persistenceKey=${exactRecord.meta.persistenceKey ?? 'null'} ` +
-        `generation=${ticket.previousGeneration} ` +
-        `fromRuntimeId=${ticket.previousRuntimeId} ` +
-        `state=${exactRecord.meta.state}`,
-      )
+      emitRuntimeAudit('SOURCE-SNAPSHOT', {
+        recordId: ticket.recordId,
+        recordMode: ticket.semanticMode,
+        scopeId: ticket.scopeId,
+        persistenceKey: exactRecord.meta.persistenceKey ?? 'null',
+        generation: ticket.previousGeneration,
+        fromRuntimeId: ticket.previousRuntimeId,
+        state: exactRecord.meta.state,
+      })
 
       // Mark as awaiting transfer
       this.canonicalRegistry.markAwaitingTransfer(
@@ -6646,7 +7753,7 @@ export class HeadingNumberingService {
       // ── R58.6.2: Resolve based on authoritative global shape ──
       // NOTE: MERGE_2_TO_1 is handled by batch-first preflight above, not here.
       if (globalShape === 'COMPLEX') {
-        console.info(`[InkChapter] LIVE-REPLACEMENT-BLOCK: ticketId=${ticketId} recordId=${ticket.recordId} mutationShape=COMPLEX reason=unsafe-shape`)
+        logger.info(`LIVE-REPLACEMENT-BLOCK: ticketId=${ticketId} recordId=${ticket.recordId} mutationShape=COMPLEX reason=unsafe-shape`)
         continue
       }
 
@@ -6983,7 +8090,7 @@ export class HeadingNumberingService {
 
     // ── M1/M2: exactly one canonical owner → transfer ──
     if (!mergedDestination || !mergedDestination.isConnected) {
-      console.info(`[InkChapter] MERGE-CONTINUITY-RESOLVE: batchId=${batchId} decision=BLOCK_AMBIGUOUS reason=destination-disconnected`)
+      logger.info(`MERGE-CONTINUITY-RESOLVE: batchId=${batchId} decision=BLOCK_AMBIGUOUS reason=destination-disconnected`)
       return
     }
 
@@ -7008,17 +8115,16 @@ export class HeadingNumberingService {
     }
     this.activeLiveReplacementTickets.set(ticketId, ticket)
 
-    console.info(
-      `[InkChapter] LIVE-REPLACEMENT-TICKET: ` +
-      `ticketId=${ticketId} ` +
-      `recordId=${ticket.recordId} ` +
-      `fromRuntimeId=${ticket.previousRuntimeId} ` +
-      `generation=${ticket.previousGeneration} ` +
-      `scopeId=${this.documentContext.scopeId ?? 'unknown'} ` +
-      `persistenceKey=${this.documentContext.persistenceKey ?? 'null'} ` +
-      `mode=${this.documentContext.mode} ` +
-      `source=MUTATION_OBSERVER`,
-    )
+    emitRuntimeAudit('LIVE-REPLACEMENT-TICKET', {
+      ticketId,
+      recordId: ticket.recordId,
+      fromRuntimeId: ticket.previousRuntimeId,
+      generation: ticket.previousGeneration,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      persistenceKey: this.documentContext.persistenceKey ?? 'null',
+      mode: this.documentContext.mode,
+      source: 'MUTATION_OBSERVER',
+    })
 
     console.info(
       `[InkChapter] MERGE-CONTINUITY-TICKET: ` +
@@ -7361,15 +8467,14 @@ export class HeadingNumberingService {
             // overall=true if the canonical transfer failed at any layer.
             const canonicalGatePassed = !hasCanonicalSource || (canonicalOutcome?.overall ?? false)
             if (canonicalGatePassed) this.normalEnterSuccessCount++
-            console.info(
-              `[InkChapter] NORMAL-ENTER-FINAL: ` +
-              `normalEnterTxnId=${postTxn.id} ` +
-              `caretDestinationRuntimeId=${caretDestRtId ?? 'none'} ` +
-              `selectionInsideEditor=${postSel.insideEditor} ` +
-              `sourceCanonicalRecordId=${postTxn.sourceCanonicalRecordId ?? 'none'} ` +
-              `canonicalOutcomeOverall=${hasCanonicalSource ? String(canonicalOutcome?.overall ?? 'none') : 'n/a'} ` +
-              `overall=${canonicalGatePassed}`,
-            )
+            emitRuntimeAudit('NORMAL-ENTER-FINAL', {
+              normalEnterTxnId: postTxn.id,
+              caretDestinationRuntimeId: caretDestRtId ?? 'none',
+              selectionInsideEditor: postSel.insideEditor,
+              sourceCanonicalRecordId: postTxn.sourceCanonicalRecordId ?? 'none',
+              canonicalOutcomeOverall: hasCanonicalSource ? String(canonicalOutcome?.overall ?? 'none') : 'n/a',
+              overall: canonicalGatePassed,
+            })
             if (canonicalGatePassed) {
               postTxn.state = 'CLOSED'
               postTxn.closedAt = Date.now()
@@ -7501,14 +8606,19 @@ export class HeadingNumberingService {
 
       // ── R58.7 Step 1.2: ENTER ADMISSION FIREWALL ──
       const isRealEnter = this.isRealEnterKey(e)
-      console.info(
-        `[InkChapter] ENTER-ADMISSION-AUDIT: ` +
-        `key=${e.key} ` +
-        `code=${e.code} ` +
-        `isTrusted=${e.isTrusted} ` +
-        `isComposing=${e.isComposing} ` +
-        `decision=${isRealEnter ? (readParagraphIndentCommand(resolveCurrentBodyParagraph(root)!) ? 'ALLOW_SPECIAL_COMMAND' : 'ALLOW_NORMAL_ENTER') : (e.isComposing ? 'REJECT_COMPOSITION' : 'REJECT_NON_ENTER')}`,
-      )
+      const preParagraph = resolveCurrentBodyParagraph(root)
+      const preVisibleText = preParagraph ? getUserVisibleParagraphText(preParagraph) : ''
+      const preToken = preParagraph ? readParagraphIndentCommand(preParagraph) : null
+      const admissionDecision = isRealEnter
+        ? (preToken ? 'ALLOW_SPECIAL_COMMAND' : 'ALLOW_NORMAL_ENTER')
+        : (e.isComposing ? 'REJECT_COMPOSITION' : 'REJECT_NON_ENTER')
+      emitRuntimeAudit('ENTER-ADMISSION-AUDIT', {
+        key: e.key,
+        code: e.code,
+        isTrusted: e.isTrusted,
+        isComposing: e.isComposing,
+        decision: admissionDecision,
+      })
 
       if (!isRealEnter) {
         // IME Process/Period, composition, or non-Enter key — do NOT route to Enter pipeline
@@ -7519,6 +8629,35 @@ export class HeadingNumberingService {
       }
 
       const handled = this.tryStartEnterIndentTransaction(e, root)
+
+      // P0-C routing audit — locate SPECIAL→NORMAL_ENTER divergence without modifying NormalEnter.
+      if (admissionDecision === 'ALLOW_SPECIAL_COMMAND') {
+        const activeEmpty = this.activeEmptySpecialTransaction
+        const isTokenOnlyEmpty = preToken ? isTokenOnlyEmptySpecialCommand(preVisibleText, preToken) : false
+        let selectedPath: string
+        let reason = ''
+        if (handled) {
+          selectedPath = isTokenOnlyEmpty ? 'EMPTY_SPECIAL' : 'NORMAL_ENTER'
+        } else {
+          selectedPath = 'NORMAL_ENTER'
+          if (activeEmpty) reason = 'activeEmptySpecialTransaction-leak'
+          else if (this.activeEnterTransaction) reason = 'activeEnterTransaction-leak'
+          else if (!preToken) reason = 'no-token'
+          else reason = 'special-command-blocked'
+        }
+        emitRuntimeAudit('SPECIAL-COMMAND-ROUTING-AUDIT', {
+          intentId: `intent-${this.intentSeq}-${this.userIntentEpoch}`,
+          intentEpoch: this.userIntentEpoch,
+          visibleText: preVisibleText,
+          logicalOffset: preVisibleText.length,
+          admissionDecision,
+          activeEmptySpecialTxnId: activeEmpty ? activeEmpty.txnId : 'none',
+          activeEmptySpecialTxnState: activeEmpty ? activeEmpty.state : 'none',
+          selectedPath,
+          reason,
+        })
+      }
+
       if (!handled) {
         this.beginTrustedUserIntent('NORMAL_ENTER', 'keydown', 'Enter')
       }
@@ -7675,7 +8814,7 @@ export class HeadingNumberingService {
         return
       }
 
-      console.info(`[InkChapter] BACKSPACE-REVERSE: force-indent → force-flush runtimeId=${paraRuntimeId} ordinal=${collectContentParagraphs(root).indexOf(para)}`)
+      logger.info(`BACKSPACE-REVERSE: force-indent → force-flush runtimeId=${paraRuntimeId} ordinal=${collectContentParagraphs(root).indexOf(para)}`)
 
       // R58: Semantic + visual directly; sidecar via live binding pipeline
       setParagraphIndentMode(para, 'force-flush', WriterIds.BACKSPACE_SEMANTIC)
@@ -7707,7 +8846,7 @@ export class HeadingNumberingService {
       const handoff = this.activeOneShotHandoff
       if (handoff && !handoff.consumed && handoff.preElement === para) {
         handoff.semantic = 'force-flush'
-        console.info(`[InkChapter] HANDOFF-SEMANTIC-UPDATED: ${handoff.handoffId} force-indent → force-flush via Backspace`)
+        logger.info(`HANDOFF-SEMANTIC-UPDATED: ${handoff.handoffId} force-indent → force-flush via Backspace`)
       }
 
       // ── r57: VERIFY-FIRST Caret — same pipeline as Enter ──
@@ -7725,10 +8864,10 @@ export class HeadingNumberingService {
 
       if (bsAlreadyCorrect) {
         // Caret already in correct position — no write needed
-        console.info(`[InkChapter] BACKSPACE-CARET-VERIFY: runtimeId=${paraRuntimeId} alreadyCorrect=true caretWriteAttempted=false`)
+        logger.info(`BACKSPACE-CARET-VERIFY: runtimeId=${paraRuntimeId} alreadyCorrect=true caretWriteAttempted=false`)
       } else {
         // Repair via shared pipeline
-        console.info(`[InkChapter] BACKSPACE-CARET-VERIFY: runtimeId=${paraRuntimeId} alreadyCorrect=false repair needed (resolvedRuntimeId=${bsSelRes.paragraphRuntimeId ?? 'null'} offset=${bsSelRes.localLogicalOffset})`)
+        logger.info(`BACKSPACE-CARET-VERIFY: runtimeId=${paraRuntimeId} alreadyCorrect=false repair needed (resolvedRuntimeId=${bsSelRes.paragraphRuntimeId ?? 'null'} offset=${bsSelRes.localLogicalOffset})`)
         const bsRepair = repairCaretAtParagraphLogicalStart(
           para,
           root,
@@ -7744,7 +8883,7 @@ export class HeadingNumberingService {
           0,
           bsRepair.success,
         )
-        console.info(`[InkChapter] BACKSPACE-CARET-REPAIR: method=${bsRepair.method} success=${bsRepair.success} resolvedRuntimeId=${bsRepair.resolvedParagraphRuntimeId ?? 'null'} localOffset=${bsRepair.localLogicalOffset}`)
+        logger.info(`BACKSPACE-CARET-REPAIR: method=${bsRepair.method} success=${bsRepair.success} resolvedRuntimeId=${bsRepair.resolvedParagraphRuntimeId ?? 'null'} localOffset=${bsRepair.localLogicalOffset}`)
       }
     }
     root.addEventListener('keydown', onBackspaceCommand, true)
@@ -7752,6 +8891,10 @@ export class HeadingNumberingService {
 
     // ── Forensic: beforeinput recording (passive, no mutation) ──
     const onBeforeInput = (e: InputEvent): void => {
+      // P0-VC Phase B observability: capture BEFORE snapshot for empty→nonempty.
+      if (e.inputType === 'insertText' || e.inputType === 'insertCompositionText') {
+        this.pendingEmptyNonemptyBefore = this.captureEmptyNonemptyBefore()
+      }
       safeForensic(() => {
         const block = resolveCurrentBlockFromSelection(root)
         if (!block || block.tagName !== 'P') return
@@ -7776,6 +8919,8 @@ export class HeadingNumberingService {
     const onInput = (): void => {
       // ── R58.7: IME/composition input selection timing ──
       this.auditImeSelection('input', 'input', this.isInComposition)
+      // P0-VC Phase B observability: emit empty→nonempty transition if pending.
+      this.emitEmptyNonemptyTransitionIfPending(root)
       // ── R58.7: post-insert T_INPUT_EVENT sample + direct-text commit anchor ──
       this.samplePostTextInputInputEvent()
       if (!this.isInComposition) {
@@ -8045,14 +9190,13 @@ export class HeadingNumberingService {
         const newDocKey = this.getDocumentKey()
         const activePath = this.ctx.getActiveFilePath?.()
         // ── R58.6.6: RUNTIME-IDENTITY-FINAL — no hard-coded build, use authoritative session ──
-        console.info(
-          `[InkChapter] RUNTIME-IDENTITY-FINAL: ` +
-          `reason=file-open ` +
-          `vaultRoot=${this.ctx.vaultRoot ?? 'unknown'} ` +
-          `activeDoc=${activePath ?? 'unknown'} ` +
-          `initializationCount=1 ` +
-          `sessionId=${this.canonicalRegistry.sessionId}`,
-        )
+        emitRuntimeAudit('RUNTIME-IDENTITY-FINAL', {
+          reason: 'file-open',
+          vaultRoot: this.ctx.vaultRoot ?? 'unknown',
+          activeDoc: activePath ?? 'unknown',
+          initializationCount: 1,
+          sessionId: this.canonicalRegistry.sessionId,
+        })
         recordRuntimeAudit('file:open:received', {
           documentKey: newDocKey ?? 'none',
           settingsSource: this.docContext.source,

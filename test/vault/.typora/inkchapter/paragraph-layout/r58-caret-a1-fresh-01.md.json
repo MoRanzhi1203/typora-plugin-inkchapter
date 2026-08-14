@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-01.md",
+  "updatedAt": 1786561842336,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786561733357-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786561747931-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "beforeHash": "h1a"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786561750606-2",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786561757932-3",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 3
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786561798148-4",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786561815943-5",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "beforeHash": "h9he"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786561842132-6",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4,
+        "beforeHash": "h9he"
+      },
+      "temporary": true
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "mode": "E2",
+  "fixture": "r58-empty-special-e2-01.md",
+  "txnId": "txn-1-1786634973432",
+  "transactionUnique": true,
+  "arm": {
+    "observerRootConnectedAtArm": true,
+    "observerRootContainsSourceAtArm": true,
+    "sourceConnectedAtArm": true,
+    "observerRootIsCurrentEditorRoot": true,
+    "observerArmedAt": 17113.10000000056,
+    "tokenConsumedAt": 17113.300000000745,
+    "decision": "ARMED"
+  },
+  "settle": null,
+  "geometry": null,
+  "domNormalization": {
+    "decision": "BLOCK_UNSAFE_STRUCTURE",
+    "nativeEmptyEquivalentAfter": false,
+    "overall": false,
+    "markdownContentChanged": false
+  },
+  "final": {
+    "overall": false
+  },
+  "verdict": "FAIL",
+  "failedChecks": [
+    "missing:EMPTY-SPECIAL-SETTLE-AUDIT",
+    "missing:EMPTY-SPECIAL-STRUCTURAL-RESOLUTION",
+    "missing:EMPTY-SPECIAL-CANONICAL-COMMIT",
+    "missing:EMPTY-SPECIAL-CARET-VERIFY",
+    "missing:EMPTY-SPECIAL-CARET-GEOMETRY",
+    "missing:EMPTY-SPECIAL-VISUAL-VERIFY",
+    "domNormalization:BLOCK_UNSAFE_STRUCTURE",
+    "domNormalization:nativeEmptyEquivalentAfter!=true",
+    "domNormalization:overall!=true",
+    "missing:EMPTY-SPECIAL-SETTLE-AUDIT",
+    "missing:EMPTY-SPECIAL-CARET-GEOMETRY",
+    "final:overall!=true",
+    "final:logicalSlotPreserved!=true",
+    "final:paragraphCountPreserved!=true",
+    "final:canonicalOwnerCorrect!=true",
+    "final:semanticCorrect!=true",
+    "final:visualIndentCorrect!=true",
+    "final:caretLogicalCorrect!=true",
+    "final:caretVisualCorrect!=true",
+    "final:unexpectedMerge!=false",
+    "final:unexpectedDelete!=false"
+  ],
+  "invalidReason": null,
+  "trial": "E2",
+  "type": "E2"
+}

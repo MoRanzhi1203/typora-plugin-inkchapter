@@ -1,0 +1,19 @@
+{
+  "verdict": "INVALID",
+  "invalidReason": "RUNTIME_KEYBOARD_EVENT_NOT_OBSERVED",
+  "tokenText": null,
+  "logicalOffset": null,
+  "imeProvenance": false,
+  "keyboardEventCount": 0,
+  "beforeInputCount": 0,
+  "inputCount": 0,
+  "compositionStartCount": 0,
+  "compositionEndCount": 0,
+  "overall": false,
+  "buildId": "inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq",
+  "runtimeSessionId": "sess-1786674663620",
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786674663620.log",
+  "trialId": "e2-01",
+  "trialStartedAt": "2026-08-14T02:30:59.435Z",
+  "generatedAt": "2026-08-14T02:31:12.285Z"
+}

@@ -1,0 +1,68 @@
+{
+  "report": "inkchapter-e2-editor-input-focus-authority-gate-2026-08-13",
+  "generatedAt": "2026-08-14T00:00:00Z",
+  "projectRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter",
+  "buildId": "inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq",
+  "mainSHA": "238A7D80B6AE6ED0564F13867562E0E017E4CDDDF3A8AE3F70DD81723EC83D9B",
+  "styleSHA": "F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0",
+  "status": "HARNESS PARTIAL",
+  "gateStatus": "E2 Editor Input Focus Authority Gate = HARNESS PARTIAL",
+  "rendererFocusProbe": "PURE OBSERVABILITY BUILD REQUIRED",
+  "r60Verdict": "NO-GO",
+  "r587Verdict": "NOT CLOSED",
+  "modifiedFiles": [
+    "scripts/r58-matrix/run-empty-special-gate.mjs",
+    "scripts/r58-matrix/win32-helper/R58Win32Helper.cs",
+    "scripts/r58-matrix/e2-focus.mjs",
+    "scripts/r58-matrix/e2-focus.contract.mjs"
+  ],
+  "win32FocusProbe": {
+    "implemented": true,
+    "verified": "COMPILE OK (Roslyn csc.dll, 20480 bytes) + focus-probe self-test OK (guiThreadInfoOk=true)",
+    "fields": ["targetPid", "targetHwnd", "foregroundHwnd", "foregroundPid", "foregroundThreadId", "activeHwnd", "focusedChildHwnd", "captureHwnd", "caretHwnd", "guiThreadInfoOk"]
+  },
+  "rendererFocusProbe": {
+    "implemented": false,
+    "reason": "src/** has no EDITOR-INPUT-FOCUS-PROBE event; harness cannot read Electron renderer DOM (document.activeElement / selection) without a business build change",
+    "missing": ["document.activeElement", "editorRoot.contains(activeElement)", "selection ownership", "runtimeId/logicalOffset"]
+  },
+  "focusVerdictTaxonomy": [
+    "FOREGROUND_WINDOW_MISMATCH",
+    "WIN32_FOCUSED_CHILD_NOT_FOUND",
+    "EDITOR_INPUT_NOT_FOCUSED",
+    "EDITOR_SELECTION_NOT_OWNED",
+    "EDITOR_PARAGRAPH_IDENTITY_NOT_RESOLVED",
+    "EDITOR_FOCUS_AUTHORITY_PASS",
+    "RENDERER_FOCUS_PROBE_UNAVAILABLE",
+    "FOCUSED_EDITOR_DID_NOT_OBSERVE_KEYBOARD_EVENT"
+  ],
+  "staticVerification": {
+    "nodeCheckHarness": "PASS",
+    "nodeCheckE2Input": "PASS",
+    "nodeCheckE2Focus": "PASS",
+    "contractFocus": "FOCUS-1..10 PASS (10/10)",
+    "contractInputRegression": "INPUT-1..11 PASS (11/11)",
+    "contractArtifactRegression": "ARTIFACT-1..10 PASS (10/10)",
+    "contractPreconditionRegression": "PRECOND-1..10 PASS (10/10)",
+    "preflight": "PASS (shaMatch=true styleMatch=true fixtureClean=true)"
+  },
+  "runtimeReproof": {
+    "strictStartup": "NOT EXECUTED (this round)",
+    "e2_01": "NOT EXECUTED (this round)"
+  },
+  "p0RuntimeStatus": {
+    "P0-A": "SOURCE FIXED / RUNTIME PENDING",
+    "P0-B": "SOURCE FIXED / RUNTIME PENDING",
+    "P0-C": "SOURCE FIXED / RUNTIME PENDING",
+    "caretGeometry": "RUNTIME PENDING"
+  },
+  "stopDiscipline": {
+    "businessSrcModified": false,
+    "newBuildGenerated": false,
+    "powershellUsed": false,
+    "retryUntilPass": false,
+    "autoFocusOrClick": false,
+    "strictStartupExecuted": false,
+    "e2_01Executed": false
+  }
+}

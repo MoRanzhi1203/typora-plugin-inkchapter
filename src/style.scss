@@ -56,6 +56,16 @@
   text-indent: 0;
 }
 
+/* Native-empty + force-indent: a truly empty <p></p> has no text/inline caret
+   host, so text-indent cannot move the collapsed caret. Use padding-inline-start
+   instead (padding shifts the content box and therefore the caret). `:empty`
+   removes the projection the moment the first real character/child appears, which
+   avoids a 64px double-indent after the empty→text transition. */
+#write p.inkchapter-paragraph-effective-indent-2:empty {
+  text-indent: 0;
+  padding-inline-start: 2em;
+}
+
 /* ── Settings page: live preview ───────────────────────── */
 
 .inkchapter-preview {

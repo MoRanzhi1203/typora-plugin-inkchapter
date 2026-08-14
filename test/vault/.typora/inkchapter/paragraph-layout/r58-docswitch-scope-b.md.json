@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-docswitch-scope-b.md",
+  "updatedAt": 1786581494879,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786581483716-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786581494677-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1
+      },
+      "temporary": true
+    }
+  ]
+}

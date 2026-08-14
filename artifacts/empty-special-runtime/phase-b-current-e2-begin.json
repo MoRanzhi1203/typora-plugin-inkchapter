@@ -1,0 +1,11 @@
+{
+  "phase": "B-current-e2-begin",
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786704321905.log",
+  "byteOffsetStart": 5013,
+  "runtimeSessionId": "sess-1786704321905",
+  "buildId": "inkchapter-r58-7-p0-empty-caret-atomic-evc1",
+  "activeDocument": "r58-empty-special-e2-01.md",
+  "timestamp": "2026-08-14T17:24:07.708Z",
+  "sessionConfirmed": true,
+  "sessionSource": "artifacts/empty-special-runtime/strict-startup.json"
+}

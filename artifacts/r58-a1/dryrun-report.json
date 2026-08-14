@@ -1,0 +1,139 @@
+﻿{
+    "mode":  "DryRun",
+    "buildId":  "inkchapter-r58-7-clean-r0-closure-p4v9n",
+    "pathAuthority":  {
+                          "root":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter",
+                          "vault":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault",
+                          "dotTypora":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora",
+                          "wrongPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault.typora",
+                          "wrongPathExists":  false,
+                          "vaultExists":  true,
+                          "dotTyporaExists":  true,
+                          "authorityPathPass":  true
+                      },
+    "smokeFixture":  {
+                         "fixtureName":  "r58-caret-a1-auto-smoke-01.md",
+                         "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-auto-smoke-01.md",
+                         "fixtureExists":  false,
+                         "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-auto-smoke-01.md.json",
+                         "sidecarExists":  false,
+                         "recordCount":  0
+                     },
+    "a1Fixtures":  [
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-06.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-06.md",
+                           "fixtureExists":  true,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-06.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-07.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-07.md",
+                           "fixtureExists":  true,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-07.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-08.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-08.md",
+                           "fixtureExists":  true,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-08.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-09.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-09.md",
+                           "fixtureExists":  true,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-09.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-10.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-10.md",
+                           "fixtureExists":  true,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-10.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-11.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-11.md",
+                           "fixtureExists":  false,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-11.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-12.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-12.md",
+                           "fixtureExists":  false,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-12.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-13.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-13.md",
+                           "fixtureExists":  false,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-13.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-14.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-14.md",
+                           "fixtureExists":  false,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-14.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       },
+                       {
+                           "fixtureName":  "r58-caret-a1-fresh-15.md",
+                           "fixturePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-15.md",
+                           "fixtureExists":  false,
+                           "sidecarPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-15.md.json",
+                           "sidecarExists":  false,
+                           "recordCount":  0
+                       }
+                   ],
+    "typoraProcessCount":  5,
+    "mainWindow":  {
+                       "Id":  3360,
+                       "StartTime":  "\/Date(1786569746434)\/",
+                       "MainWindowHandle":  3344332,
+                       "MainWindowTitle":  "r58-caret-a1-fresh-05.md• - Typora"
+                   },
+    "runtimeLoad":  {
+                        "runtimeLoadPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter-runtime-load.json",
+                        "runtimeLoadExists":  true,
+                        "buildMarker":  "inkchapter-r58-7-clean-r0-closure-p4v9n",
+                        "initializationCount":  1,
+                        "mainJsPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\main.js",
+                        "mainJsSha256":  "A4AA5689C724E427A5108895E329070406AA7CA47EBDE74559D785B1B9C77CA3",
+                        "loadedAt":  "2026-08-12T21:22:29.019Z"
+                    },
+    "sha":  {
+                "projectMainPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\dist\\main.js",
+                "runtimeMainPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\main.js",
+                "projectMainSHA":  "A4AA5689C724E427A5108895E329070406AA7CA47EBDE74559D785B1B9C77CA3",
+                "runtimeMainSHA":  "A4AA5689C724E427A5108895E329070406AA7CA47EBDE74559D785B1B9C77CA3",
+                "mainMatch":  true,
+                "mainMatchExpected":  true,
+                "projectStylePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\dist\\style.css",
+                "runtimeStylePath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\style.css",
+                "projectStyleSHA":  "F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0",
+                "runtimeStyleSHA":  "F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0",
+                "cssMatch":  true,
+                "cssMatchExpected":  true
+            },
+    "nodeAvailable":  true,
+    "collectorJsAvailable":  true,
+    "foregroundHwnd":  68938,
+    "dryRunPass":  true,
+    "timestamp":  "2026-08-12T21:44:59.7291674Z"
+}

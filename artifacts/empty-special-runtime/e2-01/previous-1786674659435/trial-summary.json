@@ -1,0 +1,28 @@
+{
+  "mode": "run",
+  "scenario": "E2",
+  "trialId": "e2-01",
+  "verdict": "INVALID",
+  "invalidReason": "TOKEN_PROOF_TIMEOUT",
+  "sendEnterCallCount": 0,
+  "tokenProof": {
+    "verdict": "INVALID",
+    "invalidReason": "TOKEN_PROOF_TIMEOUT",
+    "tokenText": null,
+    "logicalOffset": null,
+    "imeProvenance": false,
+    "keyboardEventCount": 0,
+    "beforeInputCount": 0,
+    "inputCount": 0,
+    "compositionStartCount": 0,
+    "compositionEndCount": 0
+  },
+  "failedChecks": [
+    "TOKEN_PROOF_TIMEOUT"
+  ],
+  "buildId": "inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq",
+  "runtimeSessionId": "sess-1786672539069",
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786672539069.log",
+  "trialStartedAt": "2026-08-14T01:55:33.023Z",
+  "generatedAt": "2026-08-14T01:55:49.400Z"
+}

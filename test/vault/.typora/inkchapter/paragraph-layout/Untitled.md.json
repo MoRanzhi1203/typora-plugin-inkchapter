@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\Untitled.md",
+  "updatedAt": 1786550484374,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786468328363-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550459014-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0,
+        "textHash": "h9he",
+        "occurrence": 1
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786550462806-2",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1,
+        "beforeHash": "h9he"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550465617-3",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1,
+        "beforeHash": "h9he"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550469803-4",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550472298-5",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 3
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550474018-6",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550475527-7",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 5
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550477119-8",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 6
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550478419-9",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 7
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550479839-10",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 8
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550481107-11",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 9
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550482476-12",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 10
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786550484159-13",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 11
+      },
+      "temporary": true
+    }
+  ]
+}

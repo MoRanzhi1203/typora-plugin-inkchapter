@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-automation-input-smoke.md",
+  "updatedAt": 1786610507721,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786607796005-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "textHash": "h2p",
+        "occurrence": 1,
+        "beforeHash": "h10s0",
+        "afterHash": "h215mg"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786607807153-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 5,
+        "textHash": "h1y4",
+        "occurrence": 1,
+        "beforeHash": "h1qzuev",
+        "afterHash": "h215mg"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786607815566-2",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 6,
+        "textHash": "h215mg",
+        "occurrence": 2,
+        "beforeHash": "h1y4"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786608001479-3",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 11,
+        "textHash": "hb468w0",
+        "occurrence": 1,
+        "afterHash": "h1y4"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786608006451-4",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 12,
+        "textHash": "h1y4",
+        "occurrence": 2,
+        "beforeHash": "hb468w0"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786608013422-5",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 8
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786608023792-6",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 8
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786608028708-7",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 15
+      },
+      "temporary": true
+    }
+  ]
+}

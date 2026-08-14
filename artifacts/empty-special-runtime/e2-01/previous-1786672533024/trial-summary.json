@@ -1,0 +1,18 @@
+{
+  "mode": "run",
+  "scenario": "E2",
+  "trialId": "e2-01",
+  "verdict": "INVALID",
+  "invalidReason": "SPECIAL_TOKEN_PROVENANCE_MISMATCH",
+  "sendEnterCallCount": 0,
+  "tokenProof": {
+    "verdict": "INVALID",
+    "invalidReason": "SPECIAL_TOKEN_PROVENANCE_MISMATCH",
+    "tokenText": null,
+    "logicalOffset": null,
+    "imeProvenance": false
+  },
+  "failedChecks": [
+    "SPECIAL_TOKEN_PROVENANCE_MISMATCH"
+  ]
+}

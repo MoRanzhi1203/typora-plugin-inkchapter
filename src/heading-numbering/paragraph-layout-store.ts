@@ -11,6 +11,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 // ── Schema ─────────────────────────────────────────────────────────────
 
@@ -124,26 +125,60 @@ export function loadParagraphLayout(documentKey: string): ParagraphLayoutDocumen
     const filePath = getSidecarPath(documentKey)
     if (!filePath) {
       // ── SIDECAR-ACTUAL-LOAD (P0-1: vaultRoot unknown, sidecar disabled) ──
-      console.warn(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${getVaultRoot() ?? 'unknown'} storageRoot=null source=disabled (vaultRoot unknown, TEMP fallback blocked)`)
+      emitRuntimeAudit('SIDECAR-ACTUAL-LOAD', {
+        documentKey,
+        vaultRoot: getVaultRoot() ?? 'unknown',
+        storageRoot: null,
+        source: 'disabled (vaultRoot unknown, TEMP fallback blocked)',
+      }, 'warn')
       return null
     }
     const dir = getSidecarDir()
     const vault = getVaultRoot()
 
     if (!fs.existsSync(filePath)) {
-      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=false recordCount=0 source=physical backend=filesystem`)
+      emitRuntimeAudit('SIDECAR-ACTUAL-LOAD', {
+        documentKey,
+        vaultRoot: vault ?? 'unknown',
+        storageRoot: dir,
+        absolutePath: filePath,
+        exists: false,
+        recordCount: 0,
+        source: 'physical',
+        backend: 'filesystem',
+      })
       return null
     }
     const raw = fs.readFileSync(filePath, 'utf8')
     const data = JSON.parse(raw) as ParagraphLayoutDocument
     if (!data.schemaVersion || !Array.isArray(data.paragraphOverrides)) {
-      console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} exists=true recordCount=0 source=physical backend=filesystem (invalid schema)`)
+      emitRuntimeAudit('SIDECAR-ACTUAL-LOAD', {
+        documentKey,
+        vaultRoot: vault ?? 'unknown',
+        absolutePath: filePath,
+        exists: true,
+        recordCount: 0,
+        source: 'physical',
+        backend: 'filesystem (invalid schema)',
+      })
       return null
     }
-    console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} storageRoot=${dir} absolutePath=${filePath} exists=true recordCount=${data.paragraphOverrides.length} source=physical backend=filesystem`)
+    emitRuntimeAudit('SIDECAR-ACTUAL-LOAD', {
+      documentKey,
+      vaultRoot: vault ?? 'unknown',
+      storageRoot: dir,
+      absolutePath: filePath,
+      exists: true,
+      recordCount: data.paragraphOverrides.length,
+      source: 'physical',
+      backend: 'filesystem',
+    })
     return data
   } catch (e) {
-    console.info(`[InkChapter] SIDECAR-ACTUAL-LOAD: documentKey=${documentKey} error=${e}`)
+    emitRuntimeAudit('SIDECAR-ACTUAL-LOAD', {
+      documentKey,
+      error: String(e),
+    })
     return null
   }
 }

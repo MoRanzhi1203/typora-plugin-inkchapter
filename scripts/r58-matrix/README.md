@@ -1,93 +1,68 @@
-# R58 A1 Matrix Automation Runner
+# R58 Matrix Automation (external black-box)
 
-External black-box automation for the R58.7 A1 fresh-canonical ×10 gate.
-This runner never touches plugin business source, never synthesizes DOM events,
-and never calls plugin internals. All input goes through the real Windows input
-layer (`user32!SendInput`), and console capture goes through Chromium DevTools
-Protocol (CDP).
+Two automation runners share the primitives in this directory.
 
-## Layout
+## Final Reduced Matrix Runner (current)
 
 ```
-scripts/r58-matrix/
-  run-r58-a1-matrix.ps1      orchestrator (DryRun / Smoke / A1)
-  r58-process-verifier.ps1   Typora process discovery / close / start / wait / SHA
-  r58-input-injector.ps1     user32 SendInput real-keyboard injection
-  r58-console-collector.ps1  PowerShell wrapper for the Node CDP collector
-  r58-cdp-collector.js       Node.js CDP Runtime.consoleAPICalled / exceptionThrown collector
-  r58-trial-evaluator.ps1    console-log parser → PASS/FAIL/INVALID verdict
-  README.md                  this file
+run-r58-final-matrix.ps1 -Mode DryRun      # read-only preflight (no input)
+run-r58-final-matrix.ps1 -Mode InputSmoke  # disposable trusted-IME proof
+run-r58-final-matrix.ps1 -Mode Full        # reset → strict startup → A1×3/A2/A3/B1×2 → summary
 ```
 
-## CLI
+Files:
 
-```powershell
-.\scripts\r58-matrix\run-r58-a1-matrix.ps1 -Mode DryRun
-.\scripts\r58-matrix\run-r58-a1-matrix.ps1 -Mode Smoke
-.\scripts\r58-matrix\run-r58-a1-matrix.ps1 -Mode A1 -StartFreshNumber 6 -TrialCount 10
+```
+run-r58-final-matrix.ps1    orchestrator (DryRun / InputSmoke / Full)
+fixture-manager.ps1         fixture reset / detection / B1 seed fixtures
+process-control.ps1         Typora process / SHA / runtime-load (wraps r58-process-verifier.ps1)
+window-input.ps1            user32 SendInput real-keyboard injection (wraps r58-input-injector.ps1)
+document-switch-driver.ps1  same-session file-open (Typora single-instance forward)
+trial-parser.js             deterministic verdict parser (no AI judgment)
+report-writer.js            final-summary.md / final-summary.json
+scenarios.json              trial mapping + frozen build/SHA provenance
+r58-cdp-collector.js        Node CDP console collector (Runtime.consoleAPICalled)
 ```
 
-Optional: `-OutputDir artifacts\r58-a1`, `-FailFast $true`, `-DebugPort 9222`.
+Trial mapping:
 
-## Input injection
+```
+A1-01..A1-03 → r58-caret-a1-fresh-01..03.md   (。。 Enter Enter 。)
+A2-01        → r58-caret-a1-fresh-04.md        (ordinary paragraph + Enter + 。)
+A3-01        → r58-caret-a1-fresh-05.md        (。。 Enter Enter, no text)
+B1-01/B1-02  → r58-b1-historical-01/02.md      (seeded sidecar, physical load)
+```
 
-- No AutoHotkey detected on this machine → uses **PowerShell + `user32!SendInput`**.
-- The runner focuses the Typora main window via `SetForegroundWindow`, then sends
-  the physical **Period** key (`VK_OEM_PERIOD`) and **Enter** (`VK_RETURN`).
-- The Chinese fullwidth period `。` (U+3002) is **not** injected as Unicode. It is
-  produced by the active Chinese IME when the physical Period key is pressed, which
-  yields the renderer evidence `key=Process code=Period isTrusted=true` plus the
+## Input layer
+
+- No AutoHotkey on this machine → **PowerShell + `user32!SendInput`**.
+- `SetForegroundWindow` → confirm `GetForegroundWindow() == target` → send physical
+  `VK_OEM_PERIOD` (Period) / `VK_RETURN` (Enter).
+- The Chinese fullwidth period `。` (U+3002) is produced by the active IME on the
+  physical Period key, yielding `key=Process code=Period isTrusted=true` + a real
   `compositionstart → beforeinput(insertCompositionText) → input → compositionend`
-  chain and `IME-EVENT-ORDER`.
-
-## Why isTrusted=true
-
-`SendInput` injects at the OS input queue level, which is indistinguishable from a
-physical keyboard for the renderer. Browser/Electron mark such events `isTrusted=true`.
-DOM `dispatchEvent(new KeyboardEvent(...))` would be `isTrusted=false`, which is
-explicitly forbidden and is not used here.
+  chain. DOM `dispatchEvent` / `Runtime.evaluate` / `document.execCommand` are
+  forbidden and unused.
 
 ## Console capture
 
-- Typora is started with `--remote-debugging-port=9222 --remote-allow-origins=*`.
-- `r58-cdp-collector.js` (Node ≥ 21) fetches `/json/list`, attaches to the renderer
-  page target, sends `Runtime.enable`, and streams `Runtime.consoleAPICalled` /
-  `Runtime.exceptionThrown` lines into `trial-XX-console.log`.
-- The collector is started **before** Typora so the plugin-load baseline
-  (`SIDECAR-ACTUAL-LOAD exists=false recordCount=0`) is captured.
+- Typora started with `--remote-debugging-port=9222 --remote-allow-origins=*`.
+- `r58-cdp-collector.js` attaches via CDP, streams `Runtime.consoleAPICalled` /
+  `Runtime.exceptionThrown` to `trial-XX.log`.
+- The collector is started **before** Typora/doc-switch so the baseline/transition
+  (`SIDECAR-ACTUAL-LOAD`, `DOCUMENT-CONTEXT-TRANSITION`) is captured.
 
-## Trial flow (Smoke / A1)
+## Verdict
 
-1. record old PID → close Typora → verify old PID gone + count=0
-2. verify fixture `sidecarExists=false recordCount=0` (else `FIXTURE_NOT_FRESH`)
-3. start CDP collector
-4. start Typora on the fixture with remote debugging
-5. verify strict startup (new PID / HWND / title / runtime-load / SHA)
-6. inject `。。 Enter Enter 。` (exactly 2 Enters)
-7. wait ≥ 2.5 s
-8. stop collector → evaluate console → write `trial-XX-verdict.json`
+- `trial-parser.js` is deterministic: it only regex-checks the mandatory markers,
+  emits a structured JSON (verdict / failedChecks / counters), never relies on
+  human or AI fuzzy judgment.
+- Fail-fast: any real business assertion failure stops the matrix and preserves
+  the Typora process / fixture / sidecar / console / runtime-load / metadata under
+  `artifacts/r58-final/`.
 
-## Verdict criteria (must ALL hold)
+## Legacy A1×10 runner (superseded)
 
-- trusted input: `key=Process code=Period isTrusted=true` + IME chain
-- `POST-TEXT-INPUT-ARM count=1` + `superseded=true`
-- `COMMIT+50/150/300/500/1000/2200` all `logicalOffset=1 visibleText=。 insideEditor=true`
-- `caretRestore=0 caretRepair=0 pluginSelectionWrite=0`
-- `POST-TEXT-INPUT-COMPLETE` once, `activeObservationAfterComplete=none`, `pendingCallbackCountAfterComplete=0`
-- canonical four `overall=true` + `AWAITING-TRANSFER-LEAK awaitingCount=0`
-- `Process/Period → REJECT_NON_ENTER`
-
-## Fail-fast
-
-A1 stops on the first non-PASS trial and preserves the console/runtime/verdict
-artifacts for that trial. It never deletes a sidecar or re-runs a fixture.
-
-## Artifacts
-
-Written under `artifacts/r58-a1/`:
-
-```
-trial-XX-console.log  trial-XX-runtime.json  trial-XX-verdict.json
-a1-summary.json       a1-summary.md
-dryrun-report.json    smoke-summary.json
-```
+`run-r58-a1-matrix.ps1 -Mode {DryRun|Smoke|A1}` (with `r58-*` helpers) implements
+the earlier A1×10 automation attempt. Kept for reference; use the Final runner for
+the Reduced Matrix.

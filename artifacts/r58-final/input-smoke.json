@@ -1,0 +1,19 @@
+﻿{
+    "mode":  "InputSmoke",
+    "verdict":  "INVALID",
+    "invalidReason":  "FOREGROUND_WINDOW_MISMATCH",
+    "injectionAudit":  {
+                           "targetPid":  31668,
+                           "targetHwnd":  4657414,
+                           "foregroundHwndBefore":  2427792,
+                           "foregroundMatchBefore":  false,
+                           "requestedInputCount":  5,
+                           "sendInputReturnCount":  5,
+                           "foregroundHwndAfter":  2427792,
+                           "injectionAttempted":  true,
+                           "injectionSucceeded":  true
+                       },
+    "failedChecks":  [
+                         "FOREGROUND_WINDOW_MISMATCH"
+                     ]
+}

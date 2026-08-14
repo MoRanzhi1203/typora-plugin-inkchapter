@@ -1,0 +1,13 @@
+{
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786674663620.log",
+  "readyFound": true,
+  "identityFound": true,
+  "buildId": "inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq",
+  "runtimeSessionId": "sess-1786674663620",
+  "initializationCount": 1,
+  "activeDoc": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-e2-01.md",
+  "vaultRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault",
+  "parseFailureCount": 0,
+  "trialId": "e2-01",
+  "trialStartedAt": "2026-08-14T02:30:59.435Z"
+}

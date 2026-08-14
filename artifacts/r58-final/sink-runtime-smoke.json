@@ -1,0 +1,21 @@
+﻿{
+    "mode":  "SinkSmoke",
+    "auditDirectoryExists":  true,
+    "auditFileExists":  true,
+    "auditPath":  "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786601372208.log",
+    "auditSessionId":  "sess-1786601372208",
+    "fileSize":  6286,
+    "forensSinkReadyFound":  true,
+    "buildId":  "inkchapter-r58-7-file-audit-ime-provenance-imep4k7",
+    "buildIdCorrect":  true,
+    "jsonlParseFailureCount":  0,
+    "jsonlValid":  true,
+    "baselineEventsPresent":  true,
+    "sinkErrorCount":  0,
+    "droppedCount":  0,
+    "fileBackedAuditSink":  "PASS",
+    "verdict":  "PASS",
+    "failedChecks":  [
+
+                     ]
+}

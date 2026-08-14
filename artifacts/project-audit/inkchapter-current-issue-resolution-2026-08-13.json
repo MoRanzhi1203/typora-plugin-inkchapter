@@ -1,0 +1,61 @@
+{
+  "report": "inkchapter-current-issue-resolution-2026-08-13",
+  "generatedAt": "2026-08-14T00:00:00Z",
+  "projectRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter",
+  "buildId": "inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq",
+  "mainSHA": "238A7D80B6AE6ED0564F13867562E0E017E4CDDDF3A8AE3F70DD81723EC83D9B",
+  "styleSHA": "F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0",
+  "r60Verdict": "NO-GO",
+  "phase1aHarnessPathFix": {
+    "status": "DONE",
+    "files": ["scripts/r58-matrix/run-empty-special-gate.mjs"],
+    "rootResolution": "path.resolve(SCRIPT_DIR, '..', '..') where SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))",
+    "typoraExeResolutionOrder": ["CLI --typora-exe", "env INKCHAPTER_TYPORA_EXE", "default D:\\Typora\\Typora.exe"],
+    "resolvedPathsPrinted": ["resolvedScriptDir", "resolvedRepoRoot", "resolvedTyporaExe", "resolvedFixture", "resolvedAuditDir"],
+    "duplicatePathSegment": false
+  },
+  "phase1bPreflight": {
+    "status": "PASS",
+    "verdict": "PASS",
+    "shaMatch": true,
+    "styleMatch": true,
+    "fixtureClean": true
+  },
+  "phase1cStrictStartup": {
+    "status": "NOT EXECUTED / BLOCKED",
+    "verdict": null,
+    "failureCategory": "NON_POWERSHELL_RUNTIME_CAPABILITY_GAP",
+    "failureStage": "ensureHelperBuilt -> dotnet build",
+    "failureReason": "Sandbox blocked access to C:\\Users\\MSIPC\\AppData\\Roaming\\NuGet during dotnet build",
+    "evidence": "artifacts/empty-special-runtime/runner-error.json"
+  },
+  "phase1dE2_01": {
+    "status": "NOT EXECUTED"
+  },
+  "p0RuntimeStatus": {
+    "P0-A": "NOT VERIFIED",
+    "P0-B": "NOT VERIFIED",
+    "P0-C": "NOT VERIFIED",
+    "caretGeometry": "UNKNOWN / NOT VERIFIED"
+  },
+  "phase2Status": "FORBIDDEN",
+  "businessSrcModified": false,
+  "newBuildGenerated": false,
+  "issues": [
+    {
+      "id": "GATE-P1C-001",
+      "severity": "P0",
+      "category": "RUNTIME_OBSERVABILITY_GAP",
+      "title": "Strict Startup blocked by sandbox NON_POWERSHELL_RUNTIME_CAPABILITY_GAP (dotnet build NuGet access denied)",
+      "status": "BLOCKED",
+      "evidenceLevel": "RUNTIME",
+      "files": ["artifacts/empty-special-runtime/runner-error.json"],
+      "runtimeEvidence": ["TRAE Sandbox Error: hit restricted / Not allow operate files: C:\\Users\\MSIPC\\AppData\\Roaming\\NuGet"],
+      "rootCauseConfidence": "HIGH",
+      "impact": "Blocks formal Strict Startup and E2-01 for 1jdevq; keeps R60 at NO-GO.",
+      "recommendedFix": "Run strict-startup/E2-01 outside sandbox or grant NuGet access; do NOT fall back to PowerShell.",
+      "regressionRisk": "N/A",
+      "verificationPlan": "Re-run --mode strict-startup after capability unblocked."
+    }
+  ]
+}
