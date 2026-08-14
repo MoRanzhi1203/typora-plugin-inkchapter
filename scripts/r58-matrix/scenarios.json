@@ -1,0 +1,34 @@
+{
+  "buildId": "inkchapter-r58-7-evc1-phase-b-observability-ts1",
+  "expectedMainSha": "CDC9C206028B6B406DE692D41A876FB66932A95DE9F7A2B1FE372B47FC107AF1",
+  "expectedStyleSha": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+  "trials": [
+    { "trial": "A1-01", "type": "A1", "fixture": "r58-caret-a1-fresh-01.md" },
+    { "trial": "A1-02", "type": "A1", "fixture": "r58-caret-a1-fresh-02.md" },
+    { "trial": "A1-03", "type": "A1", "fixture": "r58-caret-a1-fresh-03.md" },
+    { "trial": "A2-01", "type": "A2", "fixture": "r58-caret-a1-fresh-04.md" },
+    { "trial": "A3-01", "type": "A3", "fixture": "r58-caret-a1-fresh-05.md" },
+    { "trial": "B1-01", "type": "B1", "fixture": "r58-b1-historical-01.md" },
+    { "trial": "B1-02", "type": "B1", "fixture": "r58-b1-historical-02.md" }
+  ],
+  "backupFixtures": [
+    "r58-caret-a1-fresh-06.md",
+    "r58-caret-a1-fresh-07.md",
+    "r58-caret-a1-fresh-08.md",
+    "r58-caret-a1-fresh-09.md",
+    "r58-caret-a1-fresh-10.md"
+  ],
+  "resetFixtures": [
+    "r58-caret-a1-fresh-01.md",
+    "r58-caret-a1-fresh-02.md",
+    "r58-caret-a1-fresh-03.md",
+    "r58-caret-a1-fresh-04.md",
+    "r58-caret-a1-fresh-05.md",
+    "r58-caret-a1-fresh-06.md",
+    "r58-caret-a1-fresh-07.md",
+    "r58-caret-a1-fresh-08.md",
+    "r58-caret-a1-fresh-09.md",
+    "r58-caret-a1-fresh-10.md"
+  ],
+  "smokeFixture": "r58-automation-input-smoke.md"
+}

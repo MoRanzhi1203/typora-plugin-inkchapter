@@ -20,8 +20,8 @@ $script:R58RuntimeLoad = Join-Path $script:R58DotTypora 'inkchapter-runtime-load
 $script:R58SidecarDir = Join-Path $script:R58DotTypora 'inkchapter\paragraph-layout'
 
 # ── Frozen provenance values ──────────────────────────────────────────────────
-$script:R58BuildId = 'inkchapter-r58-7-clean-r0-closure-p4v9n'
-$script:R58ExpectedMainSha = 'A4AA5689C724E427A5108895E329070406AA7CA47EBDE74559D785B1B9C77CA3'
+$script:R58BuildId = 'inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq'
+$script:R58ExpectedMainSha = '238A7D80B6AE6ED0564F13867562E0E017E4CDDDF3A8AE3F70DD81723EC83D9B'
 $script:R58ExpectedStyleSha = 'F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0'
 
 # ── Path authority check ──────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ function Stop-R58Typora {
     }
 }
 
-# ── Start Typora on a specific fixture (with optional remote debugging) ───────
+# ── Start Typora on a specific fixture (NORMAL launch, NO debugging flags) ─────
 function Start-R58TyporaFixture {
     param(
         [Parameter(Mandatory = $true)][string]$FixtureName,
@@ -142,11 +142,8 @@ function Start-R58TyporaFixture {
     if (-not (Test-Path -LiteralPath $fixturePath)) {
         throw "Fixture not found: $fixturePath"
     }
-    $args = @(
-        '--remote-debugging-port=' + $DebugPort
-        '--remote-allow-origins=*'
-        $fixturePath
-    )
+    # Normal launch only: Typora rejects --remote-debugging-port / --inspect*.
+    $args = @($fixturePath)
     try {
         $proc = Start-Process -FilePath $script:R58TyporaExe -ArgumentList $args -PassThru
     } catch {

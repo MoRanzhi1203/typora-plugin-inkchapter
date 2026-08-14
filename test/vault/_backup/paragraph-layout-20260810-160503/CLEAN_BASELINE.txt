@@ -1,0 +1,1 @@
+﻿CLEAN-BASELINE: no prior paragraph-layout sidecar exists (record count = 0)

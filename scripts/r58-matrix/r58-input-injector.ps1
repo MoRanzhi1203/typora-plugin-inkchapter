@@ -113,7 +113,7 @@ function Send-R58VkKey {
     $up.U.ki.dwExtraInfo = [IntPtr]::Zero
 
     $sent = [R58InputNative]::SendInput(2, [R58InputNative+INPUT[]]@($down, $up), $size)
-    return ($sent -eq 2)
+    return $sent
 }
 
 # ── Send the full A1 keystroke sequence: 。。 Enter Enter 。 ────────────────────

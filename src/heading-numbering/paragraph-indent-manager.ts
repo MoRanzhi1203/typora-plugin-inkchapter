@@ -16,6 +16,7 @@ import type {
   ParagraphLayoutSettings,
 } from './heading-types'
 import { PARAGRAPH_INDENT_MARKER, resolveParagraphIndent } from './heading-types'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 const INDENT_MARKER_COMMENT = `<!-- ${PARAGRAPH_INDENT_MARKER} -->`
 
@@ -55,6 +56,7 @@ export const WriterIds = {
   PENDING_CONTINUITY_SEMANTIC: 'W-PENDING-CONTINUITY-SEMANTIC',
   PENDING_CONTINUITY_VISUAL: 'W-PENDING-CONTINUITY-VISUAL',
   PENDING_CONTINUITY_CARET: 'W-PENDING-CONTINUITY-CARET',
+  EMPTY_SPECIAL_ROLLBACK: 'W-EMPTY-SPECIAL-ROLLBACK',
 } as const
 
 // ── R58.7: Plugin Selection Write Audit sink (read-only observation) ──
@@ -319,13 +321,17 @@ export function resolveSelectionTruth(
   }
 
   if (!sel?.rangeCount) {
-    console.info(
-      `[InkChapter] SELECTION-TRUTH: ` +
-      `source=${source} runtimeId=null ordinal=null logicalOffset=null ` +
-      `selectionExists=false collapsed=true ` +
-      `anchorConnected=false focusConnected=false ` +
-      `insideEditor=false`,
-    )
+    emitRuntimeAudit('SELECTION-TRUTH', {
+      source,
+      runtimeId: null,
+      ordinal: null,
+      logicalOffset: null,
+      selectionExists: false,
+      collapsed: true,
+      anchorConnected: false,
+      focusConnected: false,
+      insideEditor: false,
+    })
     return result
   }
 
@@ -345,17 +351,16 @@ export function resolveSelectionTruth(
     result.insideEditor = selRes.insideEditorRoot
   }
 
-  console.info(
-    `[InkChapter] SELECTION-TRUTH: ` +
-    `source=${source} ` +
-    `runtimeId=${result.runtimeId ?? 'null'} ` +
-    `ordinal=${result.ordinal ?? 'null'} ` +
-    `logicalOffset=${result.logicalOffset ?? 'null'} ` +
-    `collapsed=${result.collapsed} ` +
-    `anchorConnected=${result.anchorNodeConnected} ` +
-    `focusConnected=${result.focusNodeConnected} ` +
-    `insideEditor=${result.insideEditor}`,
-  )
+  emitRuntimeAudit('SELECTION-TRUTH', {
+    source,
+    runtimeId: result.runtimeId ?? 'null',
+    ordinal: result.ordinal ?? 'null',
+    logicalOffset: result.logicalOffset ?? 'null',
+    collapsed: result.collapsed,
+    anchorConnected: result.anchorNodeConnected,
+    focusConnected: result.focusNodeConnected,
+    insideEditor: result.insideEditor,
+  })
   return result
 }
 
@@ -440,10 +445,22 @@ export function restoreLogicalCaret(
   expectation.restoreAttempts++
   const el = expectation.expectedElement
   if (!el?.isConnected) {
-    console.info(`[InkChapter] CARET-CONTINUITY-RESTORE: expectationId=${expectation.expectationId} reason=${expectation.reason} attempt=${expectation.restoreAttempts} decision=FAIL (disconnected)`)
+    emitRuntimeAudit('CARET-CONTINUITY-RESTORE', {
+      expectationId: expectation.expectationId,
+      reason: expectation.reason,
+      attempt: expectation.restoreAttempts,
+      decision: 'FAIL (disconnected)',
+    })
     return { success: false, actualRuntimeId: null, actualLogicalOffset: null }
   }
-  console.info(`[InkChapter] CARET-CONTINUITY-RESTORE: expectationId=${expectation.expectationId} reason=${expectation.reason} toRuntimeId=${expectation.expectedRuntimeId} targetLogicalOffset=${expectation.expectedLogicalOffset} attempt=${expectation.restoreAttempts} decision=ATTEMPT`)
+  emitRuntimeAudit('CARET-CONTINUITY-RESTORE', {
+    expectationId: expectation.expectationId,
+    reason: expectation.reason,
+    toRuntimeId: expectation.expectedRuntimeId,
+    targetLogicalOffset: expectation.expectedLogicalOffset,
+    attempt: expectation.restoreAttempts,
+    decision: 'ATTEMPT',
+  })
   const repairResult = repairCaretAtParagraphLogicalStart(el, editorRoot, expectation.expectedRuntimeId, getRuntimeId)
   const truth = resolveSelectionTruth(editorRoot, getRuntimeId, 'RESTORE-VERIFY')
   const actualRtId = truth.runtimeId
@@ -637,13 +654,16 @@ export function repairCaretAtParagraphLogicalStart(
   result.success = result.sameAsCommandParagraph && (result.localLogicalOffset ?? -1) === 0
 
   // CARET-REPAIR trace
-  console.info(
-    `[InkChapter] CARET-REPAIR: commandRuntimeId=${commandRuntimeId} ` +
-    `method=${result.method} textLeafFound=${result.textLeafFound} ` +
-    `resolvedRuntimeId=${result.resolvedParagraphRuntimeId ?? 'null'} ` +
-    `localOffset=${result.localLogicalOffset} sameAsCommand=${result.sameAsCommandParagraph} ` +
-    `success=${result.success} failureReason=${result.failureReason ?? 'none'}`,
-  )
+  emitRuntimeAudit('CARET-REPAIR', {
+    commandRuntimeId,
+    method: result.method,
+    textLeafFound: result.textLeafFound,
+    resolvedRuntimeId: result.resolvedParagraphRuntimeId ?? 'null',
+    localOffset: result.localLogicalOffset,
+    sameAsCommand: result.sameAsCommandParagraph,
+    success: result.success,
+    failureReason: result.failureReason ?? 'none',
+  })
 
   return result
 }
@@ -1490,6 +1510,19 @@ export function applyEffectiveParagraphIndent(
     paragraph.classList.add(EFFECTIVE_FLUSH_CLASS)
   }
   recordParagraphWrite(paragraph, writerId ?? 'applyEffectiveParagraphIndent', effective)
+}
+
+/**
+ * Rollback a provisional semantic + visual projection to AUTO.
+ * Used by the EmptySpecial transaction rollback path so a BLOCKED transaction
+ * leaves zero committed projection side effects. Never used by NormalEnter.
+ */
+export function clearParagraphIndentVisualAndSemantic(paragraph: HTMLElement, writerId?: string): void {
+  paragraph.removeAttribute(INDENT_MODE_ATTR)
+  paragraph.classList.remove(EFFECTIVE_INDENT_CLASS)
+  paragraph.classList.remove(EFFECTIVE_FLUSH_CLASS)
+  paragraph.style.textIndent = ''
+  recordParagraphWrite(paragraph, writerId ?? 'clearParagraphIndentVisualAndSemantic', 'auto')
 }
 
 // ── Atomic Rehydrate Helper ──────────────────────────────────────────

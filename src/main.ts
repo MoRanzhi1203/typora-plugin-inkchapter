@@ -12,6 +12,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
+import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
@@ -127,6 +128,10 @@ export default class extends Plugin<InkChapterSettings> {
         console.info(`[InkChapter] SIDECAR-CONTEXT-UPDATE: vaultRoot=${vaultRoot} source=vault-service`)
       }
     } catch { /* vaultRoot stays undefined */ }
+
+    // ── File-backed forensic audit sink (pure observability, fail-open) ──
+    const sessionId = `sess-${Date.now()}`
+    initializeForensicSink({ vaultRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
 
     const ctx: ServiceContext = {
       settings: this.settings,
@@ -564,7 +569,6 @@ export default class extends Plugin<InkChapterSettings> {
     console.log(`Initialization Count: ${initCount}`)
     console.log('================================================')
 
-    const sessionId = `sess-${Date.now()}`
     console.info(
       `[InkChapter] PLUGIN-RUNTIME-ARTIFACT: ` +
       `pluginMainPath=${pluginArtifactPath} ` +
@@ -580,23 +584,23 @@ export default class extends Plugin<InkChapterSettings> {
       `timestamp=${new Date().toISOString()}`,
     )
     // R58.6.7: RUNTIME-IDENTITY-FINAL — complete identity snapshot
-    console.info(
-      `[InkChapter] RUNTIME-IDENTITY-FINAL: ` +
-      `vaultRoot=${vaultRoot} ` +
-      `activeDoc=${activeDoc} ` +
-      `pluginMainPath=${pluginArtifactPath} ` +
-      `pluginMainExists=${pluginExists} ` +
-      `pluginMainSha256=${pluginMainSha256} ` +
-      `projectMainPath=${projectMainPath} ` +
-      `projectMainExists=${projectMainExists} ` +
-      `projectMainSha256=${projectMainSha256} ` +
-      `shaMatch=${shaMatch} ` +
-      `stylePath=${stylePath} ` +
-      `styleSha256=${styleSha256} ` +
-      `buildId=${INKCHAPTER_BUILD_ID} ` +
-      `initializationCount=${initCount} ` +
-      `sessionId=${sessionId}`,
-    )
+    emitRuntimeAudit('RUNTIME-IDENTITY-FINAL', {
+      reason: 'plugin-onload',
+      vaultRoot: vaultRoot ?? 'unknown',
+      activeDoc,
+      pluginMainPath: pluginArtifactPath,
+      pluginMainExists: pluginExists,
+      pluginMainSha256,
+      projectMainPath,
+      projectMainExists,
+      projectMainSha256,
+      shaMatch,
+      stylePath,
+      styleSha256,
+      buildId: INKCHAPTER_BUILD_ID,
+      initializationCount: initCount,
+      sessionId,
+    })
 
     console.log('[InkChapter] 插件已加载')
   }
@@ -606,6 +610,7 @@ export default class extends Plugin<InkChapterSettings> {
       this.numberingService.dispose()
       this.numberingService = undefined
     }
+    shutdownForensicSink()
     console.log('[InkChapter] 插件已卸载')
   }
 }
