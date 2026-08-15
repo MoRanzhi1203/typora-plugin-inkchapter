@@ -6,6 +6,10 @@ import { HeadingNumberingService } from './heading-numbering/heading-numbering-s
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
+import { CaptionService } from './heading-numbering/caption-service'
+import type { CaptionServiceContext } from './heading-numbering/caption-service'
+import { CaptionContextMenu } from './heading-numbering/caption-context-menu'
+import { generateDocumentKey } from './heading-numbering/heading-numbering-scope-store'
 import { editor, File } from 'typora'
 import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEventsToClipboard, recordRuntimeAudit } from './heading-numbering/runtime-audit'
 import * as fs from 'fs'
@@ -21,6 +25,8 @@ const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 export default class extends Plugin<InkChapterSettings> {
 
   private numberingService?: HeadingNumberingService
+  private captionService?: CaptionService
+  private captionContextMenu?: CaptionContextMenu
 
   onload() {
     console.log(`[InkChapter] onload START  build=${INKCHAPTER_BUILD_ID}`)
@@ -117,6 +123,24 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] formatLibrary migration error:', e)
     }
 
+    // ── Schema migration: init caption settings if missing ──
+    try {
+      const current = this.settings.get('caption' as keyof InkChapterSettings) as any
+      if (!current || !current.types) {
+        this.settings.set('caption' as keyof InkChapterSettings, {
+          schemaVersion: 1,
+          types: {
+            table: { enabled: true, position: 'above', prefix: '表', numbering: 'continuous' },
+            figure: { enabled: true, position: 'below', prefix: '图', numbering: 'continuous' },
+            code: { enabled: true, position: 'above', prefix: '代码', numbering: 'continuous' },
+          },
+        } as any)
+        console.log('[InkChapter] caption settings migration applied')
+      }
+    } catch (e) {
+      console.error('[InkChapter] caption settings migration error:', e)
+    }
+
     // Build service context (exposes only needed APIs, avoids protected access)
     // R58.4: Authoritative vault root from Typora Core app.vault.path
     let vaultRoot: string | undefined
@@ -181,6 +205,39 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] 标题编号服务初始化失败，编号功能不可用', e)
       Notice.error('墨章：标题编号服务初始化失败，编号功能暂不可用')
+    }
+
+    // Init caption system (table/figure/code caption naming + numbering)
+    try {
+      const captionCtx: CaptionServiceContext = {
+        vaultRoot,
+        getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+        getDocumentKey: () => {
+          const fp = this.app.workspace.activeFile
+          const vr = vaultRoot ?? ''
+          if (!fp || !vr) return null
+          try { return generateDocumentKey(fp, vr) } catch { return null }
+        },
+        getEditorRoot: () => document.getElementById('write') as HTMLElement | null,
+        onEditorEvent: (event, listener) => {
+          const dispose = this.app.features.markdownEditor.on(event as never, listener as never)
+          this.register(dispose)
+          return dispose
+        },
+        onWorkspaceEvent: (event, listener) => {
+          const dispose = this.app.workspace.on(event as never, listener as never)
+          this.register(dispose)
+          return dispose
+        },
+        registerDisposable: (fn) => this.register(fn),
+      }
+      this.captionService = new CaptionService(captionCtx)
+      this.captionService.start()
+      this.captionContextMenu = new CaptionContextMenu(this.captionService)
+      this.captionContextMenu.attach(() => document.getElementById('write') as HTMLElement | null)
+      console.log('[InkChapter] caption service started')
+    } catch (e) {
+      console.error('[InkChapter] 题注服务初始化失败，题注功能不可用', e)
     }
 
     // Register settings tab
@@ -609,6 +666,14 @@ export default class extends Plugin<InkChapterSettings> {
     if (this.numberingService) {
       this.numberingService.dispose()
       this.numberingService = undefined
+    }
+    if (this.captionContextMenu) {
+      this.captionContextMenu.dispose()
+      this.captionContextMenu = undefined
+    }
+    if (this.captionService) {
+      this.captionService.dispose()
+      this.captionService = undefined
     }
     shutdownForensicSink()
     console.log('[InkChapter] 插件已卸载')

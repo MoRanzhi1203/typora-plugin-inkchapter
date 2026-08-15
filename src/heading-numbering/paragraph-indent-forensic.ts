@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-r58-7-pf5-historical-rehydrate-owner-proof-fix'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-r58-7-caption-system-v1'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
 export const RUNTIME_GATE_REVISION = 'r58-lifecycle-repair'
