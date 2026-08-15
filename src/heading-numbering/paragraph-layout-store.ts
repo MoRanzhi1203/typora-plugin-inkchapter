@@ -358,6 +358,100 @@ export function resolveParagraphAnchor(
   return null
 }
 
+// ── PF5: Historical Rehydrate Identity Isolation ───────────────────────
+
+export type HistoricalRehydrateIdentityDecision =
+  | 'ACCEPT_STRONG_IDENTITY'
+  | 'REJECT_TEXT_ONLY_COLLISION'
+  | 'REJECT_AMBIGUOUS_DUPLICATE_TEXT'
+
+export interface HistoricalRehydrateIdentityResult {
+  decision: HistoricalRehydrateIdentityDecision
+  reason: string
+  neighborCorroborated: boolean
+  duplicateTextCount: number
+}
+
+/**
+ * Gate whether a PERSISTED_HISTORICAL anchor may rehydrate to a paragraph.
+ *
+ * Text-only equality is NEVER sufficient identity proof. A historical anchor
+ * is only accepted when its structural neighborhood (beforeHash/afterHash)
+ * corroborates — OR when the document has a single paragraph (unambiguous).
+ *
+ * This prevents a stale historical record from colliding with a newly-created
+ * session-born paragraph that merely shares the same visible text.
+ */
+export function evaluateHistoricalRehydrateIdentity(
+  anchor: ParagraphAnchor,
+  resolvedIndex: number,
+  allParagraphs: HTMLElement[],
+): HistoricalRehydrateIdentityResult {
+  const hasBefore = anchor.beforeHash !== undefined
+  const hasAfter = anchor.afterHash !== undefined
+
+  let duplicateTextCount = 0
+  if (anchor.textHash) {
+    for (const p of allParagraphs) {
+      if (hashText(normalizeText(p.textContent ?? '')) === anchor.textHash) duplicateTextCount++
+    }
+  }
+
+  // Single-paragraph document: text-only match is unambiguous (no neighbor exists).
+  if (allParagraphs.length === 1) {
+    return {
+      decision: 'ACCEPT_STRONG_IDENTITY',
+      reason: 'single-paragraph document — text-only match is unambiguous',
+      neighborCorroborated: true,
+      duplicateTextCount,
+    }
+  }
+
+  // Text-only anchor (no structural neighborhood recorded) → never sufficient.
+  if (!hasBefore && !hasAfter) {
+    if (duplicateTextCount > 1) {
+      return {
+        decision: 'REJECT_AMBIGUOUS_DUPLICATE_TEXT',
+        reason: 'duplicate text without structural neighborhood',
+        neighborCorroborated: false,
+        duplicateTextCount,
+      }
+    }
+    return {
+      decision: 'REJECT_TEXT_ONLY_COLLISION',
+      reason: 'text-only identity without structural neighborhood',
+      neighborCorroborated: false,
+      duplicateTextCount,
+    }
+  }
+
+  const beforeMatches = !hasBefore || (
+    resolvedIndex > 0 &&
+    hashText(normalizeText(allParagraphs[resolvedIndex - 1]?.textContent ?? '')) === anchor.beforeHash
+  )
+  const afterMatches = !hasAfter || (
+    resolvedIndex < allParagraphs.length - 1 &&
+    hashText(normalizeText(allParagraphs[resolvedIndex + 1]?.textContent ?? '')) === anchor.afterHash
+  )
+  const neighborCorroborated = beforeMatches && afterMatches
+
+  if (!neighborCorroborated) {
+    return {
+      decision: 'REJECT_TEXT_ONLY_COLLISION',
+      reason: 'text matched but structural neighborhood mismatch',
+      neighborCorroborated: false,
+      duplicateTextCount,
+    }
+  }
+
+  return {
+    decision: 'ACCEPT_STRONG_IDENTITY',
+    reason: 'structural neighborhood corroborated',
+    neighborCorroborated: true,
+    duplicateTextCount,
+  }
+}
+
 // ── Candidate Resolution ──────────────────────────────────────────────
 // Returns ALL candidate paragraphs with scores, NOT just the best.
 // Caller must detect ties and ambiguity.

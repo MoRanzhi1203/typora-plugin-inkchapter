@@ -130,6 +130,29 @@ export function resolveHeadingLayoutsForMode(
   return deepCloneLayouts(DEFAULT_HEADING_LAYOUTS)
 }
 
+/**
+ * Resolve effective paragraph layout settings for a document.
+ * Priority: document override → global default → hard defaults.
+ * Always returns a complete object (indentShortcutEnabled never undefined).
+ */
+export function resolveParagraphLayoutSettings(
+  store: HeadingNumberingScopeStore,
+  documentKey: string | null,
+): import('./heading-types').ParagraphLayoutSettings {
+  const defaults: import('./heading-types').ParagraphLayoutSettings = {
+    defaultIndent: 'flush',
+    flushAfterDisplayMath: true,
+    indentShortcutEnabled: true,
+  }
+  if (documentKey) {
+    const override = store.documentOverrides[documentKey]
+    if (override?.paragraphLayout) {
+      return { ...defaults, ...override.paragraphLayout }
+    }
+  }
+  return { ...defaults, ...store.globalParagraphLayout }
+}
+
 function deepCloneLevels(
   levels: Record<HeadingLevel, HeadingLevelStyle>,
 ): Record<HeadingLevel, HeadingLevelStyle> {

@@ -60,6 +60,11 @@ import {
   shouldConsumeBackspaceForIndentRemoval,
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
+  resolveMergeSemantic,
+  resolveMergeWinnerSide,
+  resolveProvenMergeSemantic,
+  computeMergeContentExpectation,
+  verifyMergeContent,
   clearParagraphIndentVisualAndSemantic,
   rehydrateParagraphIndentState,
   type RehydrateContext,
@@ -80,6 +85,7 @@ import {
   getLastParagraphWriter,
   getParagraphWriterHistory,
   WriterIds,
+  type ParagraphIndentSemanticMode,
   type BackspaceIndentCommandContext,
   type RehydrateResolvedCandidate,
   type RehydrateOwnershipGroup,
@@ -122,6 +128,7 @@ import {
   createParagraphAnchor,
   resolveParagraphAnchor,
   updateParagraphAnchor,
+  evaluateHistoricalRehydrateIdentity,
   collectContentParagraphs,
   migrateLegacyIndentMarkers,
   injectProductionVaultRoot,
@@ -232,6 +239,7 @@ import {
   saveLayoutOverrides,
   hasLayoutOverrides,
   resolveHeadingLayoutsForMode,
+  resolveParagraphLayoutSettings,
 } from './heading-numbering-scope-store'
 
 // ── Enter Indent Transaction ───────────────────────────────
@@ -330,6 +338,36 @@ interface MergeOwnerSnapshot {
   element: HTMLElement
   state: CanonicalRuntimeState
   documentKey: string
+  semantic: 'auto' | 'force-indent' | 'force-flush'
+}
+
+// ── PF4: Boundary merge pre-keydown intent snapshot ───────────────────
+// Captured at keydown BEFORE Typora's native DOM mutation. Single-slot,
+// short-lived — serves exactly the next boundary Delete/Backspace merge.
+
+interface PendingBoundaryMergeIntent {
+  intentId: string
+  intentEpoch: number
+  key: 'Delete' | 'Backspace'
+  direction: 'forward' | 'backward'
+  leftElement: HTMLElement
+  rightElement: HTMLElement
+  leftRuntimeId: string
+  rightRuntimeId: string
+  leftText: string
+  rightText: string
+  leftSemantic: ParagraphIndentSemanticMode
+  rightSemantic: ParagraphIndentSemanticMode
+  leftRecordId: string | null
+  rightRecordId: string | null
+  leftExplicitProven: boolean
+  rightExplicitProven: boolean
+  leftOwnershipProofReason: string
+  rightOwnershipProofReason: string
+  expectedMergedText: string
+  expectedCaretOffset: number
+  documentKey: string
+  scopeId: string
 }
 
 type MergeBatchDecision =
@@ -466,6 +504,9 @@ export class HeadingNumberingService {
 
   // ── R58.6.5: Active CaretExpectation ───────────────────────────────
   private activeCaretExpectation: CaretExpectation | null = null
+
+  // ── PF4: Boundary merge pre-keydown intent (single-slot, short-lived) ──
+  private pendingBoundaryMergeIntent: PendingBoundaryMergeIntent | null = null
 
   // ── R58.7 Phase A.1: Document Runtime Context (dual gate: business + persistence) ─
   private documentContext: DocumentRuntimeContext = {
@@ -1855,23 +1896,7 @@ export class HeadingNumberingService {
 
   /** Get the effective paragraph layout settings for the current document. */
   getParagraphLayoutSettings(): import('./heading-types').ParagraphLayoutSettings {
-    // Hard defaults — ensure indentShortcutEnabled is never undefined.
-    // undefined globalParagraphLayout in persisted stores must not resolve to false.
-    const defaults: import('./heading-types').ParagraphLayoutSettings = {
-      defaultIndent: 'flush',
-      flushAfterDisplayMath: true,
-      indentShortcutEnabled: true,
-    }
-    const docKey = this.getDocumentKey()
-    if (docKey) {
-      const override = this.scopeStore.documentOverrides[docKey]
-      if (override?.paragraphLayout) {
-        // Document explicit override merges with defaults
-        return { ...defaults, ...override.paragraphLayout }
-      }
-    }
-    // Global merges with defaults — handles undefined globalParagraphLayout
-    return { ...defaults, ...this.scopeStore.globalParagraphLayout }
+    return resolveParagraphLayoutSettings(this.scopeStore, this.getDocumentKey())
   }
 
   /** Save paragraph layout settings. */
@@ -7009,6 +7034,36 @@ export class HeadingNumberingService {
       const para = allParas[resolved.index]
       if (!para) continue
 
+      // ── PF5: Historical identity isolation — text-only match is NOT sufficient ──
+      // A PERSISTED_HISTORICAL record must not bind to a session-born paragraph
+      // merely because visible text (textHash) collides. Require structural
+      // neighborhood corroboration for textHash 'exact' matches.
+      if (resolved.confidence === 'exact') {
+        const histIdentity = evaluateHistoricalRehydrateIdentity(o.anchor, resolved.index, allParas)
+        if (histIdentity.decision !== 'ACCEPT_STRONG_IDENTITY') {
+          emitRuntimeAudit('HISTORICAL-REHYDRATE-CANDIDATE', {
+            recordId: o.id,
+            recordState: 'PERSISTED_HISTORICAL',
+            recordMode: o.mode,
+            candidateRuntimeId: this.getParagraphRuntimeId(para),
+            candidateText: getUserVisibleParagraphText(para).slice(0, 80),
+            matchStrategy: RehydrateMatchStrategy.EXACT_ANCHOR,
+            identityProof: false,
+            sessionBorn: false,
+            currentLiveOwnerPresent: false,
+            decision: histIdentity.decision,
+            reason: histIdentity.reason,
+          })
+          console.info(
+            `[InkChapter] HISTORICAL-REHYDRATE-REJECT: recordId=${o.id} ` +
+            `candidateRuntimeId=${this.getParagraphRuntimeId(para)} ` +
+            `decision=${histIdentity.decision} reason=${histIdentity.reason} ` +
+            `duplicateTextCount=${histIdentity.duplicateTextCount}`,
+          )
+          continue
+        }
+      }
+
       const matchConfidence = anchorConfidenceToRehydrateConfidence(resolved.confidence)
 
       let matchStrategy: typeof RehydrateMatchStrategy[keyof typeof RehydrateMatchStrategy]
@@ -7900,20 +7955,31 @@ export class HeadingNumberingService {
     // ── R58.7 Phase A: Gate — no business mutations without document context ──
     if (!this.assertDocumentContextReady('mutation-observer')) return
 
+    // ── PF4: Capture + clear single-slot boundary merge intent (armed at keydown) ──
+    const boundaryIntent = this.pendingBoundaryMergeIntent
+    this.pendingBoundaryMergeIntent = null
+    let boundaryMergeConsumed = false
+
     // ── R58.6.7: MERGE_2_TO_1 — BATCH-FIRST PREFLIGHT (MUST precede per-owner loop) ──
     // Collect owners BEFORE any markAwaitingTransfer / canonicalTransferBinding.
     // M3 (canonicalOwnerCount >= 2) → BLOCK_MULTI_OWNER with ZERO partial commit.
     if (globalShape === 'MERGE_2_TO_1') {
       this.handleMerge2To1BatchFirst(removedPs, addedPs, batchId, docKeyBatch, selRuntimeId)
+    } else if (boundaryIntent && removedPs.length === 1 && addedPs.length === 0) {
+      // ── PF4: 1→0 existing-survivor boundary merge (continuity sub-classification) ──
+      this.handleBoundaryMergeExistingSurvivor(boundaryIntent, removedPs, batchId, docKeyBatch, selRuntimeId)
+      boundaryMergeConsumed = true
     }
 
     // Per-owner loop for non-MERGE shapes (REPLACE_1_TO_1, SPLIT_1_TO_2, COMPLEX).
-    // Skip P elements when MERGE_2_TO_1 (already handled by batch-first above).
+    // Skip P elements when MERGE_2_TO_1 or a 1→0 boundary merge (already handled).
     let canonicalRemovedCount = 0
     let canonicalAddedCandidateCount = 0
     for (const removedEl of removedElements) {
       // R58.6.7: P elements in MERGE_2_TO_1 already handled by batch-first preflight
       if (globalShape === 'MERGE_2_TO_1' && removedEl.tagName === 'P') continue
+      // PF4: P element consumed by 1→0 boundary merge preflight
+      if (boundaryMergeConsumed && removedEl.tagName === 'P') continue
 
       // R58.6: Use resolveRecordByRemovedElement — removed elements ARE disconnected
       const exactRecord = this.canonicalRegistry.resolveRecordByRemovedElement(removedEl)
@@ -8226,6 +8292,127 @@ export class HeadingNumberingService {
   }
 
   /**
+   * PF4: Arm a single-slot boundary merge intent at keydown, BEFORE Typora's
+   * native DOM mutation. Only arms on a genuine ordinary-body paragraph
+   * boundary (Delete at end / Backspace at start with a mergeable neighbor).
+   */
+  private armBoundaryMergeIntent(key: 'Delete' | 'Backspace'): boolean {
+    if (!this.assertDocumentContextReady('boundary-merge-arm')) return false
+    const root = this.adapter.getEditorRoot()
+    if (!root) return false
+
+    const sel = window.getSelection()
+    if (!sel || !sel.isCollapsed) return false
+
+    const current = resolveCurrentBodyParagraph(root)
+    if (!current) return false
+
+    const allParas = collectContentParagraphs(root)
+    const idx = allParas.indexOf(current)
+    if (idx < 0) return false
+
+    let left: HTMLElement
+    let right: HTMLElement
+    if (key === 'Delete') {
+      if (!isCursorAtEnd()) return false
+      const next = allParas[idx + 1]
+      if (!next) return false
+      left = current
+      right = next
+    } else {
+      if (!isCaretAtLogicalStartOfParagraph(current)) return false
+      const prev = allParas[idx - 1]
+      if (!prev) return false
+      left = prev
+      right = current
+    }
+
+    const leftText = getUserVisibleParagraphText(left)
+    const rightText = getUserVisibleParagraphText(right)
+    const leftRecord = this.canonicalRegistry.resolveExactLiveRecord(left)
+    const rightRecord = this.canonicalRegistry.resolveExactLiveRecord(right)
+    const leftSemantic = getParagraphIndentMode(left)
+    const rightSemantic = getParagraphIndentMode(right)
+    const leftRecordId = leftRecord?.recordId ?? null
+    const rightRecordId = rightRecord?.recordId ?? null
+    const leftExplicitProven = leftSemantic !== 'auto' && leftRecordId != null
+    const rightExplicitProven = rightSemantic !== 'auto' && rightRecordId != null
+    const leftOwnershipProofReason = leftRecordId
+      ? 'CURRENT_LIVE_CANONICAL_OWNER'
+      : leftSemantic !== 'auto' ? 'UNPROVEN_EXPLICIT_SEMANTIC' : 'AUTO'
+    const rightOwnershipProofReason = rightRecordId
+      ? 'CURRENT_LIVE_CANONICAL_OWNER'
+      : rightSemantic !== 'auto' ? 'UNPROVEN_EXPLICIT_SEMANTIC' : 'AUTO'
+
+    this.pendingBoundaryMergeIntent = {
+      intentId: `bmi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      intentEpoch: this.userIntentEpoch,
+      key,
+      direction: key === 'Delete' ? 'forward' : 'backward',
+      leftElement: left,
+      rightElement: right,
+      leftRuntimeId: this.getParagraphRuntimeId(left),
+      rightRuntimeId: this.getParagraphRuntimeId(right),
+      leftText,
+      rightText,
+      leftSemantic,
+      rightSemantic,
+      leftRecordId,
+      rightRecordId,
+      leftExplicitProven,
+      rightExplicitProven,
+      leftOwnershipProofReason,
+      rightOwnershipProofReason,
+      expectedMergedText: leftText + rightText,
+      expectedCaretOffset: leftText.length,
+      documentKey: this.getDocumentKey() ?? '',
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+    }
+
+    // ── PF5: contamination observability — force-* semantic without owner ──
+    if (leftSemantic !== 'auto' && leftRecordId == null) {
+      emitRuntimeAudit('PARAGRAPH-SEMANTIC-OWNER-MISMATCH', {
+        runtimeId: this.getParagraphRuntimeId(left),
+        semantic: leftSemantic,
+        recordId: 'none',
+        ownershipProof: false,
+        source: 'BOUNDARY-MERGE-ARM',
+        decision: 'UNPROVEN_EXPLICIT_SEMANTIC',
+      })
+    }
+    if (rightSemantic !== 'auto' && rightRecordId == null) {
+      emitRuntimeAudit('PARAGRAPH-SEMANTIC-OWNER-MISMATCH', {
+        runtimeId: this.getParagraphRuntimeId(right),
+        semantic: rightSemantic,
+        recordId: 'none',
+        ownershipProof: false,
+        source: 'BOUNDARY-MERGE-ARM',
+        decision: 'UNPROVEN_EXPLICIT_SEMANTIC',
+      })
+    }
+
+    emitRuntimeAudit('BOUNDARY-MERGE-INTENT-ARM', {
+      intentEpoch: this.userIntentEpoch,
+      key,
+      leftRuntimeId: this.getParagraphRuntimeId(left),
+      rightRuntimeId: this.getParagraphRuntimeId(right),
+      leftText,
+      rightText,
+      leftSemantic,
+      rightSemantic,
+      leftRecordId: leftRecordId ?? 'none',
+      rightRecordId: rightRecordId ?? 'none',
+      leftExplicitProven,
+      rightExplicitProven,
+      leftOwnershipProofReason,
+      rightOwnershipProofReason,
+      expectedMergedText: leftText + rightText,
+      expectedCaretOffset: leftText.length,
+    })
+    return true
+  }
+
+  /**
    * R58.6.7: Batch-first MERGE_2_TO_1 preflight.
    *
    * Collect ALL canonical owners from removed paragraphs BEFORE any lifecycle mutation.
@@ -8264,6 +8451,7 @@ export class HeadingNumberingService {
         element: removedP,
         state: exactRecord.meta.state,
         documentKey: docKey,
+        semantic: exactRecord.record?.mode ?? 'auto',
       })
     }
 
@@ -8280,13 +8468,77 @@ export class HeadingNumberingService {
       `valid=${invariantValid}`,
     )
 
-    // 3. MERGE-BATCH-PREFLIGHT — decide BEFORE any mutation
+    // 3. MERGE-BATCH-PREFLIGHT — resolve semantic winner BEFORE any mutation
     const ownerIds = owners.map(o => o.recordId)
     const mergedDestination = addedPs.length === 1 ? addedPs[0] : null
-    const decision: MergeBatchDecision =
-      canonicalOwnerCount >= 2 ? 'BLOCK_MULTI_OWNER' :
-      canonicalOwnerCount === 1 ? 'TRANSFER_SINGLE_OWNER' :
-      'NO_CANONICAL_OWNER'
+
+    // ── PF3: content preservation snapshot ──────────────────────────
+    // Removed paragraphs retain their frozen pre-merge textContent, so this is
+    // the authoritative leftText/rightText WITHOUT intercepting native input.
+    const leftText = removedPs[0]?.textContent ?? ''
+    const rightText = removedPs[1]?.textContent ?? ''
+    const contentExpectation = computeMergeContentExpectation(leftText, rightText)
+    const mergeKey = this.lastUserIntentKey === 'Backspace' ? 'Backspace' : 'Delete'
+    const mergeDirection = this.lastUserIntentKey === 'Backspace' ? 'backward' : 'forward'
+    const leftRuntimeId = removedPs[0] ? this.getParagraphRuntimeId(removedPs[0]) : 'none'
+    const rightRuntimeId = removedPs[1] ? this.getParagraphRuntimeId(removedPs[1]) : 'none'
+
+    emitRuntimeAudit('PARAGRAPH-MERGE-INTENT', {
+      batchId,
+      intentEpoch: this.userIntentEpoch,
+      key: mergeKey,
+      direction: mergeDirection,
+      leftRuntimeId,
+      rightRuntimeId,
+      leftText,
+      rightText,
+      expectedMergedText: contentExpectation.expectedMergedText,
+      expectedCaretOffset: contentExpectation.expectedCaretOffset,
+      scopeId: this.documentContext.scopeId ?? 'unknown',
+      persistenceKey: this.documentContext.persistenceKey ?? 'null',
+      documentKey: docKey,
+    })
+
+    // Phase 1 — content verify immediately after native merge (read-only).
+    const nativeMergedText = mergedDestination?.textContent ?? ''
+    const nativeVerify = verifyMergeContent(
+      contentExpectation.expectedMergedText,
+      nativeMergedText,
+      contentExpectation.expectedCaretOffset,
+    )
+    emitRuntimeAudit('PARAGRAPH-MERGE-CONTENT-VERIFY', {
+      batchId,
+      phase: 'AFTER_NATIVE_MERGE',
+      expectedMergedText: nativeVerify.expectedMergedText,
+      actualMergedText: nativeVerify.actualMergedText,
+      expectedCaretOffset: nativeVerify.expectedCaretOffset,
+      reason: nativeVerify.reason,
+      overall: nativeVerify.preserved,
+    })
+
+    // PF3: semantic merge resolution — explicit > auto; conflict by user intent.
+    let winnerOwner: MergeOwnerSnapshot | null = null
+    let loserOwner: MergeOwnerSnapshot | null = null
+    let mergeResolutionReason = 'NO_CANONICAL_OWNER'
+
+    if (canonicalOwnerCount === 1) {
+      winnerOwner = owners[0]
+      mergeResolutionReason = 'SINGLE_OWNER'
+    } else if (canonicalOwnerCount >= 2) {
+      // owners[] follows removedNodes order (left → right).
+      const intent: 'delete' | 'backspace' = this.lastUserIntentKey === 'Backspace' ? 'backspace' : 'delete'
+      const left = owners[0]
+      const right = owners[1]
+      const result = resolveMergeSemantic(intent, left.semantic, right.semantic)
+      if (result.winner === left.semantic) {
+        winnerOwner = left
+        loserOwner = right
+      } else {
+        winnerOwner = right
+        loserOwner = left
+      }
+      mergeResolutionReason = result.reason
+    }
 
     console.info(
       `[InkChapter] MERGE-BATCH-PREFLIGHT: ` +
@@ -8296,26 +8548,29 @@ export class HeadingNumberingService {
       `mergedDestination=${mergedDestination ? this.getParagraphRuntimeId(mergedDestination) : 'none'} ` +
       `canonicalOwnerIds=[${ownerIds.join(',')}] ` +
       `canonicalOwnerCount=${canonicalOwnerCount} ` +
-      `decision=${decision}`,
+      `winnerRecordId=${winnerOwner ? winnerOwner.recordId : 'none'} ` +
+      `loserRecordId=${loserOwner ? loserOwner.recordId : 'none'} ` +
+      `mergeReason=${mergeResolutionReason}`,
     )
 
-    // 4. Execute decision — ONE commit, NO partial
-    if (decision === 'BLOCK_MULTI_OWNER') {
-      // ── M3: HARD STOP — zero lifecycle mutation ──
-      console.info(
-        `[InkChapter] MERGE-CANONICAL-CONFLICT: ` +
-        `batchId=${batchId} ` +
-        `recordIds=[${ownerIds.join(',')}] ` +
-        `destination=${mergedDestination ? this.getParagraphRuntimeId(mergedDestination) : 'none'} ` +
-        `decision=BLOCK_MULTI_OWNER ` +
-        `markAwaitingTransfer=0 ` +
-        `canonicalTransferBinding=0 ` +
-        `partialCommit=0`,
+    // 4. Retire loser (if any) BEFORE transferring winner — exactly one owner.
+    if (loserOwner) {
+      this.canonicalRegistry.retireRecord(
+        loserOwner.recordId,
+        'merge-superseded',
+        'EXPLICIT_PARAGRAPH_DELETE',
+        this.documentContext.scopeId ?? 'unknown',
       )
-      return
+      emitRuntimeAudit('PARAGRAPH-MERGE-CANONICAL-TRANSFER', {
+        batchId,
+        loserRecordId: loserOwner.recordId,
+        winnerRecordId: winnerOwner!.recordId,
+        decision: 'RETIRE_LOSER',
+        mergeReason: mergeResolutionReason,
+      })
     }
 
-    if (decision === 'NO_CANONICAL_OWNER') {
+    if (!winnerOwner) {
       console.info(
         `[InkChapter] MERGE-BATCH-PREFLIGHT: ` +
         `batchId=${batchId} ` +
@@ -8327,13 +8582,13 @@ export class HeadingNumberingService {
       return
     }
 
-    // ── M1/M2: exactly one canonical owner → transfer ──
+    // ── Transfer winner owner to merged destination ──
     if (!mergedDestination || !mergedDestination.isConnected) {
       logger.info(`MERGE-CONTINUITY-RESOLVE: batchId=${batchId} decision=BLOCK_AMBIGUOUS reason=destination-disconnected`)
       return
     }
 
-    const owner = owners[0]
+    const owner = winnerOwner
     const ticketId = `lrt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const toRtId = this.getParagraphRuntimeId(mergedDestination)
     const fromRtId = this.getParagraphRuntimeId(owner.element)
@@ -8348,7 +8603,7 @@ export class HeadingNumberingService {
       previousRuntimeId: owner.runtimeId,
       previousGeneration: owner.generation,
       parentElement: owner.element.parentElement ?? undefined,
-      semanticMode: 'force-indent',
+      semanticMode: owner.semantic,
       createdAt: Date.now(),
       source: 'MUTATION_OBSERVER',
     }
@@ -8404,21 +8659,76 @@ export class HeadingNumberingService {
       )
       this.activeLiveReplacementTickets.delete(ticketId)
 
-      // Check selection for caret destination
+      // ── PF3: Phase 2 — content verify after canonical transfer (read-only) ──
+      const postTransferText = mergedDestination?.textContent ?? ''
+      const postTransferVerify = verifyMergeContent(
+        contentExpectation.expectedMergedText,
+        postTransferText,
+        contentExpectation.expectedCaretOffset,
+      )
+      emitRuntimeAudit('PARAGRAPH-MERGE-CONTENT-VERIFY', {
+        batchId,
+        phase: 'AFTER_CANONICAL_TRANSFER',
+        expectedMergedText: postTransferVerify.expectedMergedText,
+        actualMergedText: postTransferVerify.actualMergedText,
+        expectedCaretOffset: postTransferVerify.expectedCaretOffset,
+        reason: postTransferVerify.reason,
+        overall: postTransferVerify.preserved,
+      })
+
+      // ── PF3: caret verify (read-only; never writes selection) ──
       const root = this.adapter.getEditorRoot()
-      if (root) {
-        const selRes = resolveSelectionParagraph(
-          window.getSelection(), root,
-          (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
-        )
-        if (selRes.paragraphRuntimeId === toRtId) {
-          console.info(
-            `[InkChapter] MERGE-CARET-DESTINATION: ` +
-            `ticketId=${ticketId} ` +
-            `runtimeId=${toRtId} ` +
-            `decision=RESOLVED`,
+      const mergeSel = window.getSelection()
+      const caretVerifyRes = root
+        ? resolveSelectionParagraph(
+            mergeSel, root,
+            (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
           )
-        }
+        : null
+      const caretCollapsed = mergeSel?.isCollapsed ?? false
+      const caretRuntimeId = caretVerifyRes?.paragraphRuntimeId ?? 'none'
+      const caretOffset = caretVerifyRes?.localLogicalOffset ?? -1
+      emitRuntimeAudit('PARAGRAPH-MERGE-CARET-VERIFY', {
+        batchId,
+        selectionCollapsed: caretCollapsed,
+        caretRuntimeId,
+        expectedCaretOffset: contentExpectation.expectedCaretOffset,
+        actualCaretOffset: caretOffset,
+        caretOnSurvivor: caretRuntimeId === toRtId,
+        caretOffsetCorrect: caretOffset === contentExpectation.expectedCaretOffset,
+        overall: caretCollapsed && caretRuntimeId === toRtId && caretOffset === contentExpectation.expectedCaretOffset,
+      })
+
+      // ── PF3: final merge audit ──
+      emitRuntimeAudit('PARAGRAPH-MERGE-FINAL', {
+        batchId,
+        key: mergeKey,
+        direction: mergeDirection,
+        leftRuntimeId,
+        rightRuntimeId,
+        survivorRuntimeId: toRtId,
+        leftText,
+        rightText,
+        expectedMergedText: contentExpectation.expectedMergedText,
+        actualMergedText: postTransferText,
+        contentPreserved: postTransferVerify.preserved,
+        semanticWinner: owner.semantic,
+        winnerRecordId: owner.recordId,
+        loserRecordId: loserOwner ? loserOwner.recordId : 'none',
+        mergeReason: mergeResolutionReason,
+        recordCountBefore: canonicalOwnerCount,
+        awaitingCount: this.canonicalRegistry.getAwaitingCount(),
+        overall: postTransferVerify.preserved,
+      })
+
+      // Check selection for caret destination
+      if (caretVerifyRes?.paragraphRuntimeId === toRtId) {
+        console.info(
+          `[InkChapter] MERGE-CARET-DESTINATION: ` +
+          `ticketId=${ticketId} ` +
+          `runtimeId=${toRtId} ` +
+          `decision=RESOLVED`,
+        )
       }
 
       // ── R58.6.7: CaretExpectation for merge — target = mergedDestination ──
@@ -8428,7 +8738,7 @@ export class HeadingNumberingService {
         scopeId: this.documentContext.scopeId ?? 'unknown',
         expectedElement: mergedDestination,
         expectedRuntimeId: toRtId,
-        expectedLogicalOffset: 0,
+        expectedLogicalOffset: contentExpectation.expectedCaretOffset,
         canonicalRecordId: owner.recordId,
         generation: transferResult.generationAfter,
         reason: 'MERGE_DESTINATION',
@@ -8444,7 +8754,7 @@ export class HeadingNumberingService {
         `reason=MERGE_DESTINATION ` +
         `intentEpoch=${this.userIntentEpoch} ` +
         `expectedRuntimeId=${toRtId} ` +
-        `expectedLogicalOffset=0 ` +
+        `expectedLogicalOffset=${contentExpectation.expectedCaretOffset} ` +
         `decision=ACTIVE`,
       )
     } else {
@@ -8455,6 +8765,178 @@ export class HeadingNumberingService {
         `reason=${transferResult.failReason ?? 'transfer-failed'}`,
       )
     }
+  }
+
+  /**
+   * PF4: Boundary merge with an EXISTING survivor (1 removed / 0 added).
+   *
+   * Typora keeps one original <p> as the physical survivor and removes the
+   * other. Canonical ownership must follow the semantic winner, NOT the DOM
+   * survivor. Resolved synchronously within the same mutation batch.
+   */
+  private handleBoundaryMergeExistingSurvivor(
+    intent: PendingBoundaryMergeIntent,
+    removedPs: HTMLElement[],
+    batchId: string,
+    docKey: string,
+    selRuntimeId: string,
+  ): void {
+    const leftConnected = intent.leftElement.isConnected
+    const rightConnected = intent.rightElement.isConnected
+
+    let survivor: HTMLElement | null = null
+    let removedEl: HTMLElement | null = null
+
+    if (leftConnected && !rightConnected) {
+      survivor = intent.leftElement
+      removedEl = intent.rightElement
+    } else if (!leftConnected && rightConnected) {
+      survivor = intent.rightElement
+      removedEl = intent.leftElement
+    }
+
+    const survivorRuntimeId = survivor ? this.getParagraphRuntimeId(survivor) : 'none'
+
+    emitRuntimeAudit('BOUNDARY-MERGE-MUTATION-RESOLVE', {
+      batchId,
+      globalMutationShape: 'COMPLEX',
+      mergeVariant: survivor ? 'EXISTING_SURVIVOR_1_TO_0' : 'BLOCK_AMBIGUOUS',
+      removedRuntimeIds: `[${removedPs.map(p => this.getParagraphRuntimeId(p)).join(',')}]`,
+      addedRuntimeIds: '[]',
+      leftConnectedAfter: leftConnected,
+      rightConnectedAfter: rightConnected,
+      survivorRuntimeId,
+      decision: survivor ? 'RESOLVED' : 'BLOCK_AMBIGUOUS',
+    })
+
+    if (!survivor || !removedEl) return
+
+    // Semantic resolution — reuse the shared 2→1 resolver.
+    const semanticIntent: 'delete' | 'backspace' = intent.key === 'Backspace' ? 'backspace' : 'delete'
+    const leftProvenSemantic = resolveProvenMergeSemantic(intent.leftSemantic, intent.leftRecordId)
+    const rightProvenSemantic = resolveProvenMergeSemantic(intent.rightSemantic, intent.rightRecordId)
+    const result = resolveMergeSemantic(semanticIntent, leftProvenSemantic, rightProvenSemantic)
+
+    const winnerSide = resolveMergeWinnerSide(result.reason)
+
+    const loserSide: 'left' | 'right' | 'none' =
+      winnerSide === 'left' ? 'right' : winnerSide === 'right' ? 'left' : 'none'
+
+    const winnerRecordId = winnerSide === 'left' ? intent.leftRecordId : winnerSide === 'right' ? intent.rightRecordId : null
+    const loserRecordId = loserSide === 'left' ? intent.leftRecordId : loserSide === 'right' ? intent.rightRecordId : null
+    const scopeId = intent.scopeId
+
+    // Retire loser FIRST (avoid element/runtime collision on transfer).
+    if (loserRecordId) {
+      this.canonicalRegistry.retireRecord(loserRecordId, 'merge-superseded', 'EXPLICIT_PARAGRAPH_DELETE', scopeId)
+      emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
+        batchId,
+        decision: 'RETIRE_LOSER',
+        loserRecordId,
+        winnerRecordId: winnerRecordId ?? 'none',
+        mergeReason: result.reason,
+      })
+    }
+
+    // Transfer winner record if it lives on the removed side; otherwise keep live.
+    if (winnerRecordId) {
+      const winnerElement = winnerSide === 'left' ? intent.leftElement : intent.rightElement
+      const winnerRuntimeId = winnerSide === 'left' ? intent.leftRuntimeId : intent.rightRuntimeId
+
+      if (!winnerElement.isConnected) {
+        // Case B — winner was removed; transfer to survivor.
+        const ticketId = `bmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const transferResult = this.canonicalTransferBinding(
+          winnerRecordId,
+          winnerElement,
+          winnerRuntimeId,
+          survivor,
+          survivorRuntimeId,
+          'BOUNDARY_MERGE_EXISTING_SURVIVOR',
+          ticketId,
+          scopeId,
+        )
+        emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
+          batchId,
+          decision: transferResult.success ? 'TRANSFER_WINNER_TO_SURVIVOR' : 'TRANSFER_BLOCKED',
+          winnerRecordId,
+          survivorRuntimeId,
+          failReason: transferResult.failReason ?? 'none',
+          mergeReason: result.reason,
+        })
+      } else {
+        // Case A — winner already on survivor; keep CURRENT_LIVE.
+        emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
+          batchId,
+          decision: 'RETAIN_LIVE_OWNER',
+          winnerRecordId,
+          survivorRuntimeId,
+          mergeReason: result.reason,
+        })
+      }
+    } else {
+      // BOTH_AUTO — no explicit record to transfer.
+      emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
+        batchId,
+        decision: 'NO_CANONICAL_OWNER',
+        mergeReason: result.reason,
+      })
+    }
+
+    // Content verify — pre-keydown snapshot vs native survivor text (read-only).
+    const actualMergedText = getUserVisibleParagraphText(survivor)
+    const contentPreserved = actualMergedText === intent.expectedMergedText
+    emitRuntimeAudit('BOUNDARY-MERGE-CONTENT-VERIFY', {
+      batchId,
+      phase: 'AFTER_NATIVE_MERGE',
+      expectedMergedText: intent.expectedMergedText,
+      actualMergedText,
+      expectedCaretOffset: intent.expectedCaretOffset,
+      reason: contentPreserved ? 'CONTENT_PRESERVED' : 'NATIVE_CONTENT_MISMATCH',
+      overall: contentPreserved,
+    })
+
+    // Caret verify (read-only; never writes selection).
+    const root = this.adapter.getEditorRoot()
+    const sel = window.getSelection()
+    const caretRes = root
+      ? resolveSelectionParagraph(sel, root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement))
+      : null
+    const caretCollapsed = sel?.isCollapsed ?? false
+    const caretRuntimeId = caretRes?.paragraphRuntimeId ?? 'none'
+    const caretOffset = caretRes?.localLogicalOffset ?? -1
+    emitRuntimeAudit('BOUNDARY-MERGE-CARET-VERIFY', {
+      batchId,
+      selectionCollapsed: caretCollapsed,
+      caretRuntimeId,
+      expectedCaretOffset: intent.expectedCaretOffset,
+      actualCaretOffset: caretOffset,
+      caretOnSurvivor: caretRuntimeId === survivorRuntimeId,
+      caretOffsetCorrect: caretOffset === intent.expectedCaretOffset,
+      overall: caretCollapsed && caretRuntimeId === survivorRuntimeId && caretOffset === intent.expectedCaretOffset,
+    })
+
+    emitRuntimeAudit('BOUNDARY-MERGE-FINAL', {
+      batchId,
+      key: intent.key,
+      direction: intent.direction,
+      leftRuntimeId: intent.leftRuntimeId,
+      rightRuntimeId: intent.rightRuntimeId,
+      survivorRuntimeId,
+      leftSemantic: intent.leftSemantic,
+      rightSemantic: intent.rightSemantic,
+      leftProvenSemantic,
+      rightProvenSemantic,
+      leftExplicitProven: intent.leftExplicitProven,
+      rightExplicitProven: intent.rightExplicitProven,
+      semanticWinner: result.winner,
+      winnerRecordId: winnerRecordId ?? 'none',
+      loserRecordId: loserRecordId ?? 'none',
+      mergeReason: result.reason,
+      contentPreserved,
+      awaitingCount: this.canonicalRegistry.getAwaitingCount(),
+      overall: contentPreserved,
+    })
   }
 
   // ── MutationObserver ───────────────────────────────────
@@ -8921,6 +9403,11 @@ export class HeadingNumberingService {
         return
       }
       this.beginTrustedUserIntent(source, 'keydown', e.key)
+
+      // PF4: Arm boundary merge intent for Delete BEFORE native mutation.
+      if (e.key === 'Delete') {
+        this.armBoundaryMergeIntent('Delete')
+      }
     }
     root.addEventListener('keydown', onIntentKeydown, true)
     this.editorRootDisposables.add(() => root.removeEventListener('keydown', onIntentKeydown, true))
@@ -9011,6 +9498,17 @@ export class HeadingNumberingService {
       // R58.7 Phase A: Gate — no business mutations without document context
       if (!this.assertDocumentContextReady('backspace')) return
 
+      // ── PF4: Boundary paragraph merge priority over BACKSPACE-REVERSE ──
+      // When a previous mergeable paragraph exists, Backspace at paragraph start
+      // must merge (native), NOT reverse force-indent → force-flush.
+      if (this.armBoundaryMergeIntent('Backspace')) {
+        emitRuntimeAudit('BACKSPACE-ADMISSION', {
+          decision: 'ALLOW_NATIVE_BOUNDARY_MERGE',
+          intentEpoch: this.userIntentEpoch,
+        })
+        return // do NOT preventDefault — let Typora native merge
+      }
+
       const settings = this.getParagraphLayoutSettings()
 
       const ctx = shouldConsumeBackspaceForIndentRemoval(
@@ -9021,6 +9519,12 @@ export class HeadingNumberingService {
 
       // Not our concern — let Typora handle natively
       if (!ctx || !ctx.caretAtLogicalStart) return
+
+      // ── PF4: Consume Backspace (reverse-to-flush) only when no previous mergeable ──
+      emitRuntimeAudit('BACKSPACE-ADMISSION', {
+        decision: 'CONSUME_REMOVE_INDENT',
+        intentEpoch: this.userIntentEpoch,
+      })
 
       // ── Consume Backspace, apply force-flush ──
       e.preventDefault()

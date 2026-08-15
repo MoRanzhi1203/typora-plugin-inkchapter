@@ -11,11 +11,9 @@
 
 import type {
   ParagraphIndentMode,
-  ParagraphIndentOverride,
-  ParagraphLayoutContext,
   ParagraphLayoutSettings,
 } from './heading-types'
-import { PARAGRAPH_INDENT_MARKER, resolveParagraphIndent } from './heading-types'
+import { PARAGRAPH_INDENT_MARKER } from './heading-types'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 const INDENT_MARKER_COMMENT = `<!-- ${PARAGRAPH_INDENT_MARKER} -->`
@@ -1484,6 +1482,146 @@ export function resolveEffectiveParagraphIndent(
   if (transientOptions?.isShortcutEditingToken) return 'flush' // transient visual, NOT semantic
   if (structuralContext.isFormulaContinuation) return 'flush'
   return documentDefault === 'indent-2' ? 'indent-2' : 'flush'
+}
+
+/**
+ * PF3: Resolve the merged semantic for a paragraph boundary merge (Delete/Backspace).
+ *
+ * Policy: explicit paragraph override > auto.
+ * - one side explicit → that side wins
+ * - both auto → auto (no new explicit record)
+ * - both explicit same → that semantic, exactly one owner
+ * - both explicit conflict → user-intent owner policy:
+ *     Delete (forward)  → left wins
+ *     Backspace (backward) → right wins
+ */
+export function resolveMergeSemantic(
+  intent: 'delete' | 'backspace',
+  leftSemantic: ParagraphIndentSemanticMode,
+  rightSemantic: ParagraphIndentSemanticMode,
+): { winner: ParagraphIndentSemanticMode; reason: MergeSemanticReason } {
+  const leftExplicit = leftSemantic !== 'auto'
+  const rightExplicit = rightSemantic !== 'auto'
+
+  if (!leftExplicit && !rightExplicit) {
+    return { winner: 'auto', reason: 'BOTH_AUTO' }
+  }
+  if (leftExplicit && !rightExplicit) {
+    return { winner: leftSemantic, reason: 'LEFT_EXPLICIT_ONLY' }
+  }
+  if (!leftExplicit && rightExplicit) {
+    return { winner: rightSemantic, reason: 'RIGHT_EXPLICIT_ONLY' }
+  }
+  if (leftSemantic === rightSemantic) {
+    return { winner: leftSemantic, reason: 'BOTH_EXPLICIT_SAME' }
+  }
+  // Conflict — user-intent owner policy
+  if (intent === 'delete') {
+    return { winner: leftSemantic, reason: 'CONFLICT_DELETE_LEFT' }
+  }
+  return { winner: rightSemantic, reason: 'CONFLICT_BACKSPACE_RIGHT' }
+}
+
+export type MergeSemanticReason =
+  | 'BOTH_AUTO'
+  | 'LEFT_EXPLICIT_ONLY'
+  | 'RIGHT_EXPLICIT_ONLY'
+  | 'BOTH_EXPLICIT_SAME'
+  | 'CONFLICT_DELETE_LEFT'
+  | 'CONFLICT_BACKSPACE_RIGHT'
+
+/** Which side owns the merged semantic after a boundary merge. */
+export type MergeWinnerSide = 'left' | 'right' | 'none'
+
+/**
+ * Map a merge resolution reason to the winning side (left/right/none).
+ *
+ * Pure derivation from `resolveMergeSemantic` — does NOT introduce new merge
+ * semantics. Shared by BOTH merge variants (2→1 rebuild and 1→0 existing survivor).
+ */
+export function resolveMergeWinnerSide(reason: MergeSemanticReason): MergeWinnerSide {
+  switch (reason) {
+    case 'RIGHT_EXPLICIT_ONLY':
+    case 'CONFLICT_BACKSPACE_RIGHT':
+      return 'right'
+    case 'LEFT_EXPLICIT_ONLY':
+    case 'BOTH_EXPLICIT_SAME':
+    case 'CONFLICT_DELETE_LEFT':
+      return 'left'
+    default:
+      return 'none'
+  }
+}
+
+/**
+ * Resolve the "proven" merge semantic for a paragraph in a boundary merge.
+ *
+ * A paragraph only counts as an EXPLICIT merge owner when it BOTH carries a
+ * force-* semantic AND a valid canonical ownership record. A force-* DOM
+ * semantic with no record (UNPROVEN_EXPLICIT_SEMANTIC) must NOT participate in
+ * explicit-vs-explicit conflict resolution — it degrades to auto.
+ */
+export function resolveProvenMergeSemantic(
+  semantic: ParagraphIndentSemanticMode,
+  recordId: string | null,
+): ParagraphIndentSemanticMode {
+  if (semantic === 'auto') return 'auto'
+  if (recordId == null) return 'auto'
+  return semantic
+}
+
+// ── PF3: Merge content preservation ────────────────────────────────────
+
+/**
+ * Expected merged content for a paragraph boundary merge (Delete/Backspace).
+ *
+ * mergedText MUST strictly equal leftText + rightText.
+ * caret MUST sit at leftText.length (both Delete and Backspace converge here).
+ */
+export interface MergeContentExpectation {
+  expectedMergedText: string
+  expectedCaretOffset: number
+}
+
+export function computeMergeContentExpectation(
+  leftText: string,
+  rightText: string,
+): MergeContentExpectation {
+  return {
+    expectedMergedText: leftText + rightText,
+    expectedCaretOffset: leftText.length,
+  }
+}
+
+export type MergeContentVerifyReason = 'CONTENT_PRESERVED' | 'CONTENT_MISMATCH'
+
+export interface MergeContentVerifyResult {
+  preserved: boolean
+  expectedMergedText: string
+  actualMergedText: string
+  expectedCaretOffset: number
+  reason: MergeContentVerifyReason
+}
+
+/**
+ * Read-only content preservation check. NEVER writes text.
+ *
+ * Compares the actual survivor text against leftText + rightText so the
+ * forensic audit can pin the exact layer where content first diverges.
+ */
+export function verifyMergeContent(
+  expectedMergedText: string,
+  actualMergedText: string,
+  expectedCaretOffset: number,
+): MergeContentVerifyResult {
+  const preserved = actualMergedText === expectedMergedText
+  return {
+    preserved,
+    expectedMergedText,
+    actualMergedText,
+    expectedCaretOffset,
+    reason: preserved ? 'CONTENT_PRESERVED' : 'CONTENT_MISMATCH',
+  }
 }
 
 /**
