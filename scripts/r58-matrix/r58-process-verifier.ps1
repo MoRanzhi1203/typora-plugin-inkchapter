@@ -19,10 +19,10 @@ $script:R58ProjectStyle = Join-Path $script:R58Root 'dist\style.css'
 $script:R58RuntimeLoad = Join-Path $script:R58DotTypora 'inkchapter-runtime-load.json'
 $script:R58SidecarDir = Join-Path $script:R58DotTypora 'inkchapter\paragraph-layout'
 
-# ── Frozen provenance values ──────────────────────────────────────────────────
-$script:R58BuildId = 'inkchapter-r58-7-p0-empty-special-terminal-normalize-1jdevq'
-$script:R58ExpectedMainSha = '238A7D80B6AE6ED0564F13867562E0E017E4CDDDF3A8AE3F70DD81723EC83D9B'
-$script:R58ExpectedStyleSha = 'F163883946FD4FB7448110D0E7A8EB48CD5D52AFC3380BC0E466F7F3378470C0'
+# ── Frozen provenance values (canonical transfer empty visual rc3) ──────────
+$script:R58BuildId = 'inkchapter-r58-7-evc3-canonical-transfer-empty-visual-rc3'
+$script:R58ExpectedMainSha = 'E059EDE4DE878FB467D75C3180E451F6B3B622DD931EF3D04D088DF4B0FA9ED8'
+$script:R58ExpectedStyleSha = '3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31'
 
 # ── Path authority check ──────────────────────────────────────────────────────
 function Test-R58PathAuthority {

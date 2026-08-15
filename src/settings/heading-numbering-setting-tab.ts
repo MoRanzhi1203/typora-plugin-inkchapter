@@ -1773,10 +1773,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (!docKey || !this.headingLayoutDraft) return
 
       const d = this.headingLayoutDraft
+      const mode = resolveHeadingStructure(this.headingSettings).mode
 
-      // Build layoutOverrides from draft
+      // Preserve the OTHER mode's layout, update only the current mode.
+      const existingByMode = this.numberingService.getScopeStore()
+        .documentOverrides[docKey]?.layoutOverrides?.headingLayoutsByMode
+      const headingLayoutsByMode = { ...(existingByMode ?? {}) } as Record<string, Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig>>
+      headingLayoutsByMode[mode] = { ...d.headingLayouts }
+
+      // Build layoutOverrides from draft (per-mode physical H1-H6, no level shift)
       const layoutOverrides: import('../heading-numbering/heading-types').DocumentLayoutOverrides = {
-        headingLayouts: { ...d.headingLayouts },
+        headingLayoutsByMode: headingLayoutsByMode as import('../heading-numbering/heading-types').DocumentLayoutOverrides['headingLayoutsByMode'],
         numberTitleSpacing: { ...d.numberTitleSpacing },
       }
 
@@ -3031,10 +3038,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const docKey = this.numberingService.getDocumentKey()
     const docOverride = docKey ? store.documentOverrides[docKey] : undefined
     const lo = docOverride?.layoutOverrides
+    const s = this.headingSettings
+    const mode = resolveHeadingStructure(s).mode
 
-    // Apply persisted heading layouts
-    if (lo?.headingLayouts) {
-      for (const [key, config] of Object.entries(lo.headingLayouts)) {
+    // Apply persisted heading layouts — per-mode physical H1-H6 (no level shift).
+    // Prefer headingLayoutsByMode[mode]; fall back to legacy shared headingLayouts.
+    const modeLayouts = lo?.headingLayoutsByMode?.[mode] ?? lo?.headingLayouts
+    if (modeLayouts) {
+      for (const [key, config] of Object.entries(modeLayouts)) {
         if (config && /^h[1-6]$/.test(key)) {
           draft.headingLayouts[key] = { textAlign: config.textAlign, firstLineIndentEm: config.firstLineIndentEm }
         }
@@ -3052,7 +3063,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     // Normalize: in strict mode H1 gap must be locked to none
-    const s = this.headingSettings
     if (!resolveHeadingStructure(s).showLevelOneNumber) {
       const h1Lv = 1 as import('../heading-numbering/heading-types').HeadingLevel
       draft.numberTitleSpacing[h1Lv] = 'none'
@@ -4571,6 +4581,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       h1Notice.textContent = 'H1 为文档题目，不参与编号'
       h1Notice.classList.add('inkchapter-h1-visibility--disabled')
       h1Notice.style.cssText = 'padding:16px;text-align:center;color:var(--text-muted,#888);'
+      // H1 still has editable physical layout (alignment/indent), no numbering slot.
+      this.renderLayoutConfigSection(body, physicalLevel, s)
       // Still show preview column
       const previewCol = el('div', 'inkchapter-editor-preview-col', body)
       const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
@@ -4668,6 +4680,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.renderBehaviorTabContent(behaviorCol, physicalLevel, style, s, isReadonly)
     }
 
+    // ── ④ Heading Layout ── (physical level, no style-slot shift)
+    this.renderLayoutConfigSection(editorCol, physicalLevel, s)
+
     // Preview column
     const previewCol = el('div', 'inkchapter-editor-preview-col', dualCol)
     const previewSticky = el('div', 'inkchapter-editor-preview-sticky', previewCol)
@@ -4677,6 +4692,105 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.previewEl = el('div', 'inkchapter-preview', previewSticky)
     this.updatePreview()
     this.miniPreviewEls.clear()
+  }
+
+  /**
+   * ④ 标题排版 — per-level heading layout editor (physical H1-H6, no level shift).
+   * Reads/writes the SAME layout draft (`headingLayoutDraft`) the editor resolver
+   * applies — no second layout state. Batch menu operates on the current mode only.
+   */
+  private renderLayoutConfigSection(container: HTMLElement, physicalLevel: HeadingLevel, s: HeadingNumberingSettings): void {
+    const section = el('div', 'inkchapter-layout-config', container)
+
+    const header = el('div', 'inkchapter-layout-config-header', section)
+    const headerText = el('span', 'inkchapter-layout-config-title', header)
+    headerText.textContent = '④ 标题排版'
+    const batchWrap = el('div', 'inkchapter-layout-config-batch', header)
+    const batchBtn = el('button', 'inkchapter-btn inkchapter-btn--small', batchWrap) as HTMLButtonElement
+    batchBtn.textContent = '批量设置 ▾'
+    batchBtn.onclick = () => {
+      this.openLayoutBatchMenu(batchWrap)
+    }
+
+    const draft = this.ensureLayoutDraft()
+    const key = `h${physicalLevel}`
+    const lvNum = physicalLevel
+    const current = draft.headingLayouts[key] ?? this.defaultLayoutConfig()
+    const currentGap = draft.numberTitleSpacing[lvNum] ?? 'space'
+    const hasIndent = current.firstLineIndentEm >= 2
+    const isCenterOrRight = current.textAlign === 'center' || current.textAlign === 'right'
+    const h1GapLocked = lvNum === 1 && !resolveHeadingStructure(s).showLevelOneNumber
+    const effectiveGap = h1GapLocked ? 'none' : currentGap
+
+    const grid = el('div', 'inkchapter-layout-config-grid', section)
+
+    const mkControl = (label: string): HTMLElement => {
+      const row = el('div', 'inkchapter-layout-config-row', grid)
+      const lbl = el('span', 'inkchapter-layout-config-label', row)
+      lbl.textContent = label
+      const controls = el('div', 'inkchapter-layout-config-controls', row)
+      return controls
+    }
+    const mkBtn = (controls: HTMLElement, text: string, active: boolean, onClick: () => void, disabled = false): void => {
+      const btn = el('button', 'inkchapter-layout-matrix-btn', controls) as HTMLButtonElement
+      btn.textContent = text
+      if (active) btn.classList.add('inkchapter-layout-matrix-btn--active')
+      if (disabled) btn.disabled = true
+      btn.onclick = onClick
+    }
+
+    // Alignment
+    {
+      const controls = mkControl('对齐方式')
+      for (const opt of [{ m: 'left', lbl: '左' }, { m: 'center', lbl: '中' }, { m: 'right', lbl: '右' }] as const) {
+        mkBtn(controls, opt.lbl, opt.m === current.textAlign, () => {
+          this.headingLayoutDraft = {
+            headingLayouts: {
+              ...draft.headingLayouts,
+              [key]: { textAlign: opt.m, firstLineIndentEm: opt.m !== 'left' ? 0 : draft.headingLayouts[key]?.firstLineIndentEm ?? 0 },
+            },
+            numberTitleSpacing: { ...draft.numberTitleSpacing },
+          }
+          this.rerender()
+        })
+      }
+    }
+
+    // Indent
+    {
+      const controls = mkControl('首行缩进')
+      for (const opt of [{ v: 0, lbl: '无' }, { v: 2, lbl: '2字符' }] as const) {
+        const active = (opt.v === 0 && !hasIndent) || (opt.v === 2 && hasIndent)
+        mkBtn(controls, opt.lbl, active, () => {
+          if (opt.v === 2 && isCenterOrRight) return
+          const newAlign = opt.v === 2 ? ('left' as const) : current.textAlign
+          this.headingLayoutDraft = {
+            headingLayouts: { ...draft.headingLayouts, [key]: { textAlign: newAlign, firstLineIndentEm: opt.v } },
+            numberTitleSpacing: { ...draft.numberTitleSpacing },
+          }
+          this.rerender()
+        }, opt.v === 2 && isCenterOrRight)
+      }
+    }
+
+    // Gap
+    {
+      const controls = mkControl('标题间距')
+      for (const opt of [{ v: 'none', lbl: '无间距' }, { v: 'space', lbl: '一个空格' }] as const) {
+        mkBtn(controls, opt.lbl, effectiveGap === opt.v, () => {
+          if (h1GapLocked) return
+          const newSpacing = { ...draft.numberTitleSpacing, [lvNum]: opt.v as NumberTitleSpacing }
+          this.headingLayoutDraft = { headingLayouts: { ...draft.headingLayouts }, numberTitleSpacing: newSpacing }
+          this.rerender()
+        }, h1GapLocked)
+      }
+    }
+
+    // Inline preview line — reflects the same draft the editor resolver applies.
+    const previewLine = el('div', 'inkchapter-layout-config-preview', section)
+    previewLine.textContent = `H${physicalLevel} 示例标题`
+    previewLine.setAttribute('data-align', current.textAlign)
+    if (hasIndent) previewLine.setAttribute('data-indent', '2em')
   }
 
   private renderEditorEditHeader(
@@ -5054,7 +5168,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const title = el('div', 'inkchapter-card-title', header)
     title.textContent = '文档级高级设置'
     const desc = el('div', 'inkchapter-card-desc', header)
-    desc.textContent = '标题有效级数范围、标题排版方式和正文段落排版'
+    desc.textContent = '标题有效级数范围与正文段落排版'
 
     const body = el('div', 'inkchapter-card-body', card)
 
@@ -5064,13 +5178,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Divider
     const divider1 = el('div', '', body)
     divider1.style.cssText = 'height:1px;background:var(--border-primary,#eee);margin:16px 0;'
-
-    // Sub-section: Heading Layout
-    this.renderHeadingLayoutSection(body)
-
-    // Divider
-    const divider2 = el('div', '', body)
-    divider2.style.cssText = 'height:1px;background:var(--border-primary,#eee);margin:16px 0;'
 
     // Sub-section: Paragraph Layout
     this.renderParagraphLayoutSection(body)
@@ -5528,8 +5635,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
       // Save layout draft if dirty
       if (this.headingLayoutDraft && docKey && this.hasLayoutDirty()) {
         const d = this.headingLayoutDraft
+        const mode = resolveHeadingStructure(this.headingSettings).mode
+        const existingByMode = this.numberingService.getScopeStore()
+          .documentOverrides[docKey]?.layoutOverrides?.headingLayoutsByMode
+        const headingLayoutsByMode = { ...(existingByMode ?? {}) } as Record<string, Record<string, import('../heading-numbering/heading-types').HeadingLayoutConfig>>
+        headingLayoutsByMode[mode] = { ...d.headingLayouts }
         const layoutOverrides: import('../heading-numbering/heading-types').DocumentLayoutOverrides = {
-          headingLayouts: { ...d.headingLayouts },
+          headingLayoutsByMode: headingLayoutsByMode as import('../heading-numbering/heading-types').DocumentLayoutOverrides['headingLayoutsByMode'],
           numberTitleSpacing: { ...d.numberTitleSpacing },
         }
         this.numberingService.saveLayoutOverridesFromDraft(docKey, layoutOverrides)

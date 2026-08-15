@@ -803,6 +803,9 @@ export interface EmptyNonemptyProjectionBefore {
   semanticMode: EmptySemanticMode
   visibleText: string
   isNativeEmpty: boolean
+  /** Safe empty-equivalent (TS1 Fix2): true for native-empty AND known editor-only empty shells. */
+  safeEmptyEquivalent?: boolean
+  emptyEquivalentReason?: string | null
   paddingInlineStartPx: number
   textIndentPx: number
   fontSizePx: number
@@ -819,6 +822,8 @@ export interface EmptyNonemptyProjectionAfter {
   semanticMode: EmptySemanticMode
   visibleText: string
   isNativeEmpty: boolean
+  safeEmptyEquivalent?: boolean
+  emptyEquivalentReason?: string | null
   paddingInlineStartPx: number
   textIndentPx: number
   fontSizePx: number
@@ -845,6 +850,10 @@ export interface EmptyNonemptyProjectionTransitionReport {
   visibleTextAfter: string
   isNativeEmptyBefore: boolean
   isNativeEmptyAfter: boolean
+  safeEmptyEquivalentBefore: boolean
+  safeEmptyEquivalentAfter: boolean
+  emptyEquivalentReasonBefore: string | null
+  emptyEquivalentReasonAfter: string | null
   paddingInlineStartBeforePx: number
   paddingInlineStartAfterPx: number
   textIndentBeforePx: number
@@ -878,11 +887,194 @@ export function shouldEmitEmptyNonemptyTransition(
   canonicalRecordIdBefore: string | null,
   visibleTextBefore: string,
 ): boolean {
-  if (!isTrustedTextInput) return false
-  if (semanticMode !== 'force-indent') return false
-  if (!isNativeEmptyBefore) return false
-  if (!canonicalRecordIdBefore) return false
-  return visibleTextBefore === ''
+  return classifyEmptyNonemptySkipReason(
+    isTrustedTextInput,
+    'insertText',
+    semanticMode,
+    isNativeEmptyBefore,
+    canonicalRecordIdBefore,
+    visibleTextBefore,
+  ) === null
+}
+
+/**
+ * Pure eligibility classifier for the empty→nonempty observer. Returns a SKIP
+ * reason string, or `null` when eligible (ARM).
+ */
+export function classifyEmptyNonemptySkipReason(
+  isTrustedTextInput: boolean,
+  inputType: string,
+  semanticMode: EmptySemanticMode,
+  isNativeEmptyBefore: boolean,
+  canonicalRecordIdBefore: string | null,
+  visibleTextBefore: string,
+): string | null {
+  if (!isTrustedTextInput) return 'NOT_TRUSTED_INPUT'
+  if (inputType !== 'insertText' && inputType !== 'insertCompositionText') return 'UNSUPPORTED_INPUT_TYPE'
+  if (semanticMode !== 'force-indent') return 'SEMANTIC_NOT_FORCE_INDENT'
+  if (!isNativeEmptyBefore) return 'BEFORE_NOT_NATIVE_EMPTY'
+  if (!canonicalRecordIdBefore) return 'NO_CURRENT_LIVE_RECORD'
+  if (visibleTextBefore !== '') return 'BEFORE_NOT_EMPTY'
+  return null
+}
+
+// ── TS1 Fix2: Safe Empty-Equivalent Classifier ───────────────────────
+
+export type EmptyEquivalentReason =
+  | 'NATIVE_EMPTY'
+  | 'EMPTY_MD_PLAIN_SHELL'
+  | 'EMPTY_BR_SHELL'
+  | 'EMPTY_EDITOR_PLACEHOLDER'
+  | 'VISIBLE_TEXT_NONEMPTY'
+  | 'INVISIBLE_TEXT_CONTENT'
+  | 'UNKNOWN_ELEMENT_CONTENT'
+  | 'NESTED_MEANINGFUL_CONTENT'
+
+export interface EmptyEquivalentClassification {
+  strictNativeEmpty: boolean
+  safeEmptyEquivalent: boolean
+  reason: EmptyEquivalentReason | null
+}
+
+const INVISIBLE_CHARS_REGEX = /[\u200B\u200C\u200D\uFEFF\u00A0]/g
+
+function hasInvisibleOnly(text: string): boolean {
+  return text.length > 0 && text.replace(INVISIBLE_CHARS_REGEX, '') === ''
+}
+
+/**
+ * Pure read-only classifier: is a paragraph a SAFE empty-equivalent for the
+ * empty→nonempty observer? Accepts native-empty and known Typora editor-only
+ * empty shells (empty md-plain span / BR-only / editor placeholder). Rejects
+ * visible text, invisible text content, and unknown/nested meaningful elements.
+ */
+export function classifyObserverEmptyEquivalent(paragraph: HTMLElement): EmptyEquivalentClassification {
+  const rawTextContent = paragraph.textContent ?? ''
+  const childNodes: Node[] = []
+  paragraph.childNodes.forEach(c => childNodes.push(c))
+
+  const strictNativeEmpty = childNodes.length === 0 && rawTextContent === ''
+  if (strictNativeEmpty) {
+    return { strictNativeEmpty: true, safeEmptyEquivalent: true, reason: 'NATIVE_EMPTY' }
+  }
+
+  const visibleText = rawTextContent.replace(INVISIBLE_CHARS_REGEX, '')
+  if (visibleText !== '') {
+    return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'VISIBLE_TEXT_NONEMPTY' }
+  }
+
+  if (rawTextContent !== '' && hasInvisibleOnly(rawTextContent)) {
+    return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'INVISIBLE_TEXT_CONTENT' }
+  }
+
+  let hasEmptyText = false
+  let hasBR = false
+  let hasSafeMdPlainSpan = false
+  let hasSafePlaceholder = false
+
+  for (const node of childNodes) {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      const v = node.nodeValue ?? ''
+      if (v === '') {
+        hasEmptyText = true
+        continue
+      }
+      return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'INVISIBLE_TEXT_CONTENT' }
+    }
+
+    if (node.nodeType === 1 /* ELEMENT_NODE */) {
+      const el = node as Element
+      const tag = el.tagName.toLowerCase()
+      const isEmpty = (el.textContent ?? '') === '' && el.children.length === 0
+
+      if (tag === 'br') {
+        hasBR = true
+        continue
+      }
+      if (tag === 'span' && isEmpty) {
+        const mdInline = el.getAttribute('md-inline')
+        const cls = (typeof el.className === 'string' ? el.className : '').split(/\s+/).filter(Boolean)
+        if (mdInline === 'plain' && cls.includes('md-plain') && cls.includes('md-expand')) {
+          hasSafeMdPlainSpan = true
+          continue
+        }
+        if (el.hasAttribute('data-placeholder') || cls.includes('placeholder') || cls.includes('md-empty')) {
+          hasSafePlaceholder = true
+          continue
+        }
+      }
+      // any other element (img / a / code / unknown span / nested) → reject
+      if (el.children.length > 0) {
+        return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'NESTED_MEANINGFUL_CONTENT' }
+      }
+      return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'UNKNOWN_ELEMENT_CONTENT' }
+    }
+
+    // comment / other node type → reject
+    return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'UNKNOWN_ELEMENT_CONTENT' }
+  }
+
+  if (hasBR && !hasSafeMdPlainSpan && !hasSafePlaceholder) {
+    return { strictNativeEmpty: false, safeEmptyEquivalent: true, reason: 'EMPTY_BR_SHELL' }
+  }
+  if (hasSafeMdPlainSpan && !hasBR && !hasSafePlaceholder) {
+    return { strictNativeEmpty: false, safeEmptyEquivalent: true, reason: 'EMPTY_MD_PLAIN_SHELL' }
+  }
+  if (hasSafePlaceholder && !hasBR && !hasSafeMdPlainSpan) {
+    return { strictNativeEmpty: false, safeEmptyEquivalent: true, reason: 'EMPTY_EDITOR_PLACEHOLDER' }
+  }
+  if (hasEmptyText && !hasBR && !hasSafeMdPlainSpan && !hasSafePlaceholder) {
+    return { strictNativeEmpty: false, safeEmptyEquivalent: true, reason: 'NATIVE_EMPTY' }
+  }
+
+  return { strictNativeEmpty: false, safeEmptyEquivalent: false, reason: 'UNKNOWN_ELEMENT_CONTENT' }
+}
+
+/**
+ * R58.7 Empty-Equivalent RAF Race Fix: unified empty-equivalent predicate.
+ *
+ * Single truth source shared by EmptySpecial projection / visual verify / caret
+ * geometry. Treats native-empty, zero-length-Text-only, and known editor-only
+ * empty shells (empty md-plain span / BR-only / placeholder) as equivalent empty.
+ * Rejects visible text, invisible-only content, unknown elements, and nested
+ * meaningful content. This fixes the txn-14 race where <p>Text("")</p> was
+ * misclassified as non-empty (TEXT_INDENT) instead of EMPTY_PADDING.
+ */
+export function isEmptyEquivalentParagraph(paragraph: HTMLElement): boolean {
+  return classifyObserverEmptyEquivalent(paragraph).safeEmptyEquivalent
+}
+
+/**
+ * R58.7 A1 canonical-transfer visual-verify fix: resolve the actual computed
+ * indent for the transfer Layer-2 verify. Empty-equivalent candidates project
+ * via padding-inline-start (their `:empty` CSS sets text-indent:0), so read
+ * padding-left; every non-empty-equivalent candidate keeps the text-indent read.
+ */
+export function computeCanonicalTransferComputedIndent(
+  candidate: HTMLElement,
+  computedStyle: Pick<CSSStyleDeclaration, 'paddingLeft' | 'textIndent'>,
+): number {
+  return isEmptyEquivalentParagraph(candidate)
+    ? (parseFloat(computedStyle.paddingLeft) || 0)
+    : (parseFloat(computedStyle.textIndent) || 0)
+}
+
+/**
+ * TS1 Fix2: pure empty→nonempty observer eligibility gate. Returns `null` when
+ * the observer may ARM, otherwise a specific SKIP reason. This is the single
+ * authority for the semantic/visible/canonical/safe-empty-equivalent decision.
+ */
+export function classifyObserverArmReason(
+  semanticMode: EmptySemanticMode,
+  visibleText: string,
+  canonicalRecordId: string | null,
+  safeEmptyEquivalent: boolean,
+): string | null {
+  if (!canonicalRecordId) return 'NO_CURRENT_LIVE_RECORD'
+  if (semanticMode !== 'force-indent') return 'SEMANTIC_NOT_FORCE_INDENT'
+  if (visibleText !== '') return 'BEFORE_NOT_EMPTY'
+  if (!safeEmptyEquivalent) return 'BEFORE_NOT_SAFE_EMPTY_EQUIVALENT'
+  return null
 }
 
 /** Pure evaluation of the empty→nonempty projection transition (Phase B). */
@@ -931,6 +1123,10 @@ export function evaluateEmptyNonemptyProjectionTransition(
     visibleTextAfter: after.visibleText,
     isNativeEmptyBefore: before.isNativeEmpty,
     isNativeEmptyAfter: after.isNativeEmpty,
+    safeEmptyEquivalentBefore: before.safeEmptyEquivalent ?? false,
+    safeEmptyEquivalentAfter: after.safeEmptyEquivalent ?? false,
+    emptyEquivalentReasonBefore: before.emptyEquivalentReason ?? null,
+    emptyEquivalentReasonAfter: after.emptyEquivalentReason ?? null,
     paddingInlineStartBeforePx: before.paddingInlineStartPx,
     paddingInlineStartAfterPx: after.paddingInlineStartPx,
     textIndentBeforePx: before.textIndentPx,
