@@ -27,6 +27,7 @@ import type { HeadingStructureMode, StyleSlot } from '../heading-numbering/headi
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
+import { resolveEffectiveParagraphIndent } from '../heading-numbering/paragraph-indent-manager'
 import { Notice } from '@typora-community-plugin/core'
 import {
   moveSegmentToResolvedIndex,
@@ -234,6 +235,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   // ── Paragraph layout draft ───────────────────────
   private paragraphLayoutDraft: ParagraphLayoutSettings | null = null
   private savedParagraphLayoutBaseline: ParagraphLayoutSettings | null = null
+  private paragraphLayoutScope: 'global' | 'document' = 'global'
 
   /** Initialize the draft from persisted settings. */
   private initRangeDraft(): void {
@@ -5377,7 +5379,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
       scopeSelect.appendChild(docOpt)
     }
     const scope: 'global' | 'document' = scopeSelect.value as 'global' | 'document'
-    scopeSelect.onchange = () => { this.rerender() }
+    this.paragraphLayoutScope = scope
+    scopeSelect.onchange = () => {
+      this.paragraphLayoutScope = scopeSelect.value as 'global' | 'document'
+      this.rerender()
+    }
 
     // ── Default indent ──
     const indentRow = el('div', 'inkchapter-range-setting-row', section)
@@ -5432,11 +5438,20 @@ export class HeadingNumberingSettingTab extends SettingTab {
     previewTitle.textContent = '预览效果'
     previewTitle.style.cssText = 'font-weight:600;font-size:12px;margin-bottom:8px;color:var(--text-muted,#666);'
 
-    // Show preview paragraphs
+    // Show preview paragraphs — reuse the REAL paragraph resolver, not an inline copy.
     const previewItems = [
-      { label: '普通新段落', indent: draft.defaultIndent === 'indent-2' ? '2em' : '0' },
-      { label: '公式后的续接文本', indent: (draft.flushAfterDisplayMath && draft.defaultIndent === 'indent-2') ? '0' : (draft.defaultIndent === 'indent-2' ? '2em' : '0') },
-      { label: '强制首行缩进段落', indent: '2em' },
+      {
+        label: '普通新段落',
+        indent: resolveEffectiveParagraphIndent('auto', draft.defaultIndent, { isFormulaContinuation: false }) === 'indent-2' ? '2em' : '0',
+      },
+      {
+        label: '公式后的续接文本',
+        indent: resolveEffectiveParagraphIndent('auto', draft.defaultIndent, { isFormulaContinuation: draft.flushAfterDisplayMath }) === 'indent-2' ? '2em' : '0',
+      },
+      {
+        label: '强制首行缩进段落',
+        indent: resolveEffectiveParagraphIndent('force-indent', draft.defaultIndent, { isFormulaContinuation: true }) === 'indent-2' ? '2em' : '0',
+      },
     ]
     for (const item of previewItems) {
       const p = el('div', '', previewRow)
@@ -5515,6 +5530,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       results.push({ source: 'headingLayoutDraft', dirty: false, detail: 'draft is null' })
     }
 
+    // paragraphLayoutDraft (body paragraph layout settings) — independent dirty source
+    const paraDirty = this.hasParagraphLayoutDirty()
+    results.push({ source: 'paragraphLayoutDraft', dirty: paraDirty, detail: paraDirty ? 'draft differs from saved' : 'OK' })
+
     // range draft
     results.push({ source: 'rangeDraft(global)', dirty: this.rangeDraft.globalDirty, detail: this.rangeDraft.globalDirty ? `globalMax=${this.rangeDraft.globalMaxLevel}` : 'OK' })
     results.push({ source: 'rangeDraft(document)', dirty: this.rangeDraft.documentDirty, detail: this.rangeDraft.documentDirty ? `docMode=${this.rangeDraft.documentMode},max=${this.rangeDraft.documentMaxLevel}` : 'OK' })
@@ -5563,7 +5582,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const numberingDirty = this.headingDraft != null && this.headingDraftOriginal != null
       && JSON.stringify(this.headingDraft) !== JSON.stringify(this.headingDraftOriginal)
     const layoutDirty = this.hasLayoutDirty()
-    const hasDraft = formatDirty || numberingDirty || layoutDirty
+    const paragraphLayoutDirty = this.hasParagraphLayoutDirty()
+    const hasDraft = formatDirty || numberingDirty || layoutDirty || paragraphLayoutDirty
     if (hasDraft) {
       const hint = el('div', 'inkchapter-settings-unsaved-hint', bar)
       hint.textContent = '有未保存的更改'
@@ -5602,6 +5622,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
       if (this.headingLayoutDraft && this.savedLayoutDraft) {
         this.headingLayoutDraft = deepCloneLayoutDraft(this.savedLayoutDraft)
+        cancelled = true
+      }
+      if (this.paragraphLayoutDraft && this.savedParagraphLayoutBaseline) {
+        this.paragraphLayoutDraft = { ...this.savedParagraphLayoutBaseline }
         cancelled = true
       }
       if (cancelled) {
@@ -5647,6 +5671,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.numberingService.saveLayoutOverridesFromDraft(docKey, layoutOverrides)
         this.savedLayoutDraft = deepCloneLayoutDraft(d)
         this.headingLayoutDraft = null
+      }
+
+      // Save paragraph layout draft if dirty (body paragraph settings).
+      // Independent of headingDraft — prevents the two save buttons from
+      // splitting state / silently dropping paragraph layout changes.
+      if (this.paragraphLayoutDraft && this.hasParagraphLayoutDirty()) {
+        this.numberingService.saveParagraphLayoutSettings(this.paragraphLayoutScope, { ...this.paragraphLayoutDraft })
+        this.savedParagraphLayoutBaseline = { ...this.paragraphLayoutDraft }
+        this.paragraphLayoutDraft = null
       }
 
       // Restore view intent — editor must continue showing the same format.
