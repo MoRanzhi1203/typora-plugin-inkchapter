@@ -2263,4 +2263,87 @@
   }
 }
 
+// ── Caption System V1 ─────────────────────────────────
+#write .inkchapter-caption {
+  font-size: 0.9em;
+  color: var(--text-muted, #666);
+  margin: 6px 0;
+  padding: 2px 0;
+  line-height: 1.4;
+  user-select: none;
+}
+#write .inkchapter-caption-table { text-align: center; font-weight: 600; }
+#write .inkchapter-caption-figure { text-align: center; }
+#write .inkchapter-caption-code { text-align: left; }
+
+// Context menu
+.inkchapter-caption-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 160px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 4px 0;
+}
+.inkchapter-caption-menu__item {
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+}
+
+// Dialog
+.inkchapter-caption-dialog-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 4000;
+}
+.inkchapter-caption-dialog {
+  width: 360px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 8px;
+  padding: 18px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+.inkchapter-caption-dialog__heading { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.inkchapter-caption-dialog__input {
+  width: 100%; box-sizing: border-box;
+  padding: 8px 10px; font-size: 14px;
+  border: 1px solid var(--border-primary, #ccc); border-radius: 6px;
+  &:focus { outline: none; border-color: var(--text-accent, #07a); }
+}
+.inkchapter-caption-dialog__preview {
+  margin: 12px 0; font-size: 13px; color: var(--text-muted, #888);
+  min-height: 1.2em;
+}
+.inkchapter-caption-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.inkchapter-caption-dialog__cancel,
+.inkchapter-caption-dialog__ok {
+  padding: 6px 16px; font-size: 13px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border-primary, #ccc); background: transparent;
+}
+.inkchapter-caption-dialog__ok { background: var(--text-accent, #07a); color: #fff; border-color: transparent; }
+
+// Settings card rows
+.inkchapter-caption-setting-row {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-primary, #eee);
+  &:last-child { border-bottom: none; }
+}
+.inkchapter-caption-setting-name { font-weight: 600; font-size: 13px; }
+.inkchapter-caption-setting-detail { font-size: 12px; color: var(--text-muted, #888); }
+
+@media (prefers-color-scheme: dark) {
+  .inkchapter-caption-menu { background: var(--background-primary, #252525); border-color: rgba(255,255,255,0.1); }
+  .inkchapter-caption-menu__item:hover { background: rgba(255,255,255,0.06); }
+  .inkchapter-caption-dialog { background: var(--background-primary, #252525); border-color: rgba(255,255,255,0.1); }
+}
+
+
 

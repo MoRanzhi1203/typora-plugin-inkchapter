@@ -1,4 +1,5 @@
 import type { HeadingNumberingSettings, HeadingLevelRangeSettings, SpecialHeadingNumberingSettings, HeadingNumberingScopeStore, FormatLibrary } from '../heading-numbering/heading-types'
+import type { CaptionSettings } from '../heading-numbering/caption-system'
 
 export type { HeadingNumberingSettings }
 
@@ -14,4 +15,6 @@ export interface InkChapterSettings {
   formatLibrary?: FormatLibrary
   levelRange: HeadingLevelRangeSettings
   specialNumbering: SpecialHeadingNumberingSettings
+  /** Caption System V1 settings (schema version >= 12, optional field). */
+  caption?: CaptionSettings
 }

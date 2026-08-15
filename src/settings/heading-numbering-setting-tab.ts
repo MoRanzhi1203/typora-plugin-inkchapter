@@ -626,6 +626,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // === D. Document-level Advanced Settings Card ===
     this.renderAdvancedSettingsCard(s)
 
+    // === E. Caption & Object Numbering Card ===
+    this.renderCaptionCard()
+
     // === Bottom sticky action bar ===
     this.renderBottomActionBar()
   }
@@ -5598,6 +5601,37 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (dg !== sg) diffs.push(`H${lv} gap: draft=${dg} saved=${sg}`)
     }
     return diffs.length > 0 ? diffs.join('; ') : 'no diffs found (but equal returned false)'
+  }
+
+  private renderCaptionCard(): void {
+    const card = el('div', 'inkchapter-card', this.containerEl)
+    const header = el('div', 'inkchapter-card-header', card)
+    const title = el('div', 'inkchapter-card-title', header)
+    title.textContent = '题注与对象编号'
+    const desc = el('div', 'inkchapter-card-desc', header)
+    desc.textContent = '表格 / 图片 / 代码块的题注命名与独立编号（第一版为只读预览）'
+
+    const body = el('div', 'inkchapter-card-body', card)
+
+    const raw = this.settings.get('caption' as any) as any
+    const types = raw?.types ?? {
+      table: { enabled: true, position: 'above', prefix: '表', numbering: 'continuous' },
+      figure: { enabled: true, position: 'below', prefix: '图', numbering: 'continuous' },
+      code: { enabled: true, position: 'above', prefix: '代码', numbering: 'continuous' },
+    }
+
+    const rows: Array<[string, any]> = [
+      ['表格题注', types.table],
+      ['图片题注', types.figure],
+      ['代码块题注', types.code],
+    ]
+    for (const [label, cfg] of rows) {
+      const row = el('div', 'inkchapter-caption-setting-row', body)
+      const name = el('div', 'inkchapter-caption-setting-name', row)
+      name.textContent = label
+      const detail = el('div', 'inkchapter-caption-setting-detail', row)
+      detail.textContent = `启用${cfg?.enabled ? '：是' : '：否'} · 位置：${cfg?.position === 'above' ? '上方' : '下方'} · 编号方式：全文连续 · 前缀：${cfg?.prefix ?? ''}`
+    }
   }
 
   private renderBottomActionBar(): void {

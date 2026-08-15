@@ -2,6 +2,7 @@ import type { InkChapterSettings } from './settings-model'
 import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary, ParagraphLayoutSettings } from '../heading-numbering/heading-types'
 import { DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
+import { DEFAULT_CAPTION_SETTINGS } from '../heading-numbering/caption-system'
 
 const decimalLevels = {} as Record<HeadingLevel, import('../heading-numbering/heading-types').HeadingLevelStyle>
 const defaultTemplate: HeadingLevelNumberTemplate = { tokenStyle: 'arabic', prefix: '', suffix: '' }
@@ -89,4 +90,5 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
       matchAction: 'prompt',
     },
   },
+  caption: DEFAULT_CAPTION_SETTINGS,
 }
