@@ -24,6 +24,7 @@ import type {
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
 import { resolveHeadingStructure, resolveStyleSlot, resolvePhysicalHeadingForStyleSlot, validateHeadingStructure } from '../heading-numbering/heading-structure'
 import type { HeadingStructureMode, StyleSlot } from '../heading-numbering/heading-structure'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
@@ -183,6 +184,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private syncingLevelOneUi = false
   private unsubSettings: (() => void) | null = null
   private unsubDocument: (() => void) | null = null
+  private unsubStrictFirstH1: (() => void) | null = null
 
   // ── Drag ─────────────────────────────────────────
   private dragState: DragState | null = null
@@ -342,6 +344,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.handleDocumentSwitch()
       })
     }
+    // Subscribe to STRICT-FIRST-H1 runtime state changes for auto-refresh
+    if (!this.unsubStrictFirstH1) {
+      this.unsubStrictFirstH1 = this.numberingService.onStrictFirstH1Changed(() => {
+        this.rerender()
+      })
+    }
     // Initialize draft state from persisted settings
     this.initRangeDraft()
     try {
@@ -365,6 +373,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (this.unsubDocument) {
       this.unsubDocument()
       this.unsubDocument = null
+    }
+    if (this.unsubStrictFirstH1) {
+      this.unsubStrictFirstH1()
+      this.unsubStrictFirstH1 = null
     }
   }
 
@@ -3422,6 +3434,33 @@ export class HeadingNumberingSettingTab extends SettingTab {
               statusRow.style.color = 'var(--color-orange,#e65100)'
               statusRow.textContent = `⚠ 当前结构：检测到 ${validation.h1Count} 个 H1 — 严格模式要求仅保留一个 H1`
             }
+          }
+
+          // ── STRICT-FIRST-H1 top-line: read runtime cached state (UI is a consumer) ──
+          const topline = this.numberingService.getStrictFirstH1ToplineResult?.()
+          const firstH1 = topline?.result ?? null
+          const validationSource = topline?.source ?? 'UI_FALLBACK'
+
+          if (firstH1 && !firstH1.passed) {
+            const firstH1Row = el('div', '', structureRow.parentElement ?? structureRow)
+            firstH1Row.style.cssText = 'margin-top:4px;font-size:12px;color:var(--color-red,#c62828);white-space:pre-line;'
+            firstH1Row.textContent = firstH1.message
+          }
+
+          if (validationSource === 'UI_FALLBACK' && firstH1) {
+            emitRuntimeAudit('STRICT-DOCUMENT-VALIDATION-TRIGGER', {
+              documentKey: docKey,
+              mode: 'strict',
+              trigger: 'UI_FALLBACK',
+              previousDecision: 'NONE',
+              nextDecision: firstH1.decision,
+              documentStartState: firstH1.documentStartState,
+              firstLineRaw: firstH1.firstLineRaw ?? null,
+              firstBlockType: firstH1.firstBlockType ?? null,
+              firstHeadingLevel: firstH1.firstHeadingLevel ?? null,
+              decision: firstH1.decision === 'SKIP' ? 'SKIP' : 'RUN',
+              reason: firstH1.reason,
+            })
           }
         } catch { /* validation best-effort */ }
       }
