@@ -1,0 +1,34 @@
+{
+  "verdict": "PASS",
+  "firstFail": null,
+  "failedChecks": [],
+  "txnIds": [
+    "txn-2-1786783276319"
+  ],
+  "recordIds": [
+    "indent-1786783276336-0"
+  ],
+  "runtimeIds": [
+    "P-RUNTIME-6",
+    "null"
+  ],
+  "selectionWriteCount": 0,
+  "caretRestoreCount": 0,
+  "caretRepairCount": 0,
+  "awaitingCount": 0,
+  "mismatchCount": 0,
+  "structurePreserved": true,
+  "canonicalOwnerCorrect": true,
+  "semanticCorrect": true,
+  "visualCorrect": true,
+  "caretLogicalCorrect": true,
+  "caretVisualCorrect": true,
+  "scenario": "E3",
+  "fixture": "r58-empty-special-e3-01.md",
+  "sessionId": "sess-1786783050840",
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786783050840.log",
+  "auditStartOffset": 66665,
+  "auditEndOffset": 117534,
+  "windowSource": "authority-default",
+  "authorityDecision": "ACCEPT"
+}

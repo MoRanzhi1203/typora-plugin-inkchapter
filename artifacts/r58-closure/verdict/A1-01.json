@@ -1,0 +1,32 @@
+{
+  "verdict": "PASS",
+  "firstFail": null,
+  "failedChecks": [],
+  "txnIds": [
+    "txn-1-1786791156550"
+  ],
+  "recordIds": [
+    "indent-1786791156568-0"
+  ],
+  "runtimeIds": [
+    "P-RUNTIME-1",
+    "null",
+    "P-RUNTIME-3",
+    "P-RUNTIME-4"
+  ],
+  "selectionWriteCount": 0,
+  "caretRestoreCount": 0,
+  "caretRepairCount": 0,
+  "awaitingCount": 0,
+  "mismatchCount": 0,
+  "scenario": "A1-01",
+  "fixture": "r58-caret-a1-fresh-01.md",
+  "sessionId": "sess-1786791133644",
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786791133644.log",
+  "auditStartOffset": 5214,
+  "auditEndOffset": 107392,
+  "windowSource": "authority-default",
+  "authorityDecision": "ACCEPT",
+  "cleanBaseline": true,
+  "cleanBaselineFailedChecks": []
+}

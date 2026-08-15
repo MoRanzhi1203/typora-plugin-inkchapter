@@ -190,6 +190,15 @@ export interface HeadingLayoutSettings {
   h6: HeadingLayoutConfig
 }
 
+/**
+ * Per-structure-mode heading layout. Each of loose/strict owns an independent
+ * physical H1-H6 layout. Never share a mutable object between modes.
+ */
+export type HeadingLayoutsByMode = Record<
+  import('./heading-structure').HeadingStructureMode,
+  HeadingLayoutSettings
+>
+
 // ── Settings ─────────────────────────────────────────────
 
 export interface HeadingNumberingSettings {
@@ -218,6 +227,12 @@ export interface HeadingNumberingSettings {
   customDefinition?: Record<HeadingLevel, HeadingLevelStyle>
   /** Per-level heading layout (alignment + indent). Independent of numbering enabled state. */
   headingLayouts?: HeadingLayoutSettings
+  /**
+   * Per-structure-mode heading layout (physical H1-H6, no level shift).
+   * `loose` and `strict` each own an independent H1-H6 layout. Authoritative
+   * when present; `headingLayouts` is the legacy shared fallback (migration source).
+   */
+  headingLayoutsByMode?: HeadingLayoutsByMode
   /**
    * Whether the loose-mode H6 extension slot (S6) has been explicitly configured.
    * When false, loose H6 keeps native/original formatting.
@@ -544,6 +559,13 @@ export interface HeadingNumberingDocumentOverride {
 export interface DocumentLayoutOverrides {
   /** Per-level alignment and indent. Key: "h1"–"h6". */
   headingLayouts?: Partial<Record<string, HeadingLayoutConfig>>
+  /**
+   * Per-structure-mode heading layout overrides (physical H1-H6, no level shift).
+   * `headingLayouts` remains as the legacy shared fallback.
+   */
+  headingLayoutsByMode?: Partial<
+    Record<import('./heading-structure').HeadingStructureMode, Partial<Record<string, HeadingLayoutConfig>>>
+  >
   /** Per-level number-to-title spacing overrides. */
   numberTitleSpacing?: Partial<Record<HeadingLevel, NumberTitleSpacing>>
 }

@@ -196,6 +196,10 @@ import {
   decideEmptySpecialCommit,
   shouldEmitEmptyNonemptyTransition,
   evaluateEmptyNonemptyProjectionTransition,
+  classifyObserverEmptyEquivalent,
+  classifyObserverArmReason,
+  isEmptyEquivalentParagraph,
+  computeCanonicalTransferComputedIndent,
   type EmptySpecialCommandTransaction,
   type EmptyBlockDomSnapshot,
   type EmptySpecialSettleDecisionName,
@@ -204,6 +208,13 @@ import {
   type EmptyNonemptyProjectionBefore,
   type EmptyNonemptyProjectionAfter,
 } from './empty-special-command'
+import {
+  evaluateEmptySpecialTestHook,
+  readEmptySpecialTestHookFile,
+  writeEmptySpecialTestHookFile,
+  isTestVaultRoot,
+  isTestVaultPath,
+} from './empty-special-test-hook'
 import {
   type NormalEnterContinuityTransaction,
   type StructuralDecision,
@@ -220,6 +231,7 @@ import {
   getDefaultHeadingNumberingSettings,
   saveLayoutOverrides,
   hasLayoutOverrides,
+  resolveHeadingLayoutsForMode,
 } from './heading-numbering-scope-store'
 
 // ── Enter Indent Transaction ───────────────────────────────
@@ -3308,15 +3320,14 @@ export class HeadingNumberingService {
 
   /** Apply heading layout to the editor (independent of numbering state). */
   private applyHeadingLayouts(): void {
-    const layouts = this.getEffectiveHeadingLayouts()
+    const structure = resolveHeadingStructure(this.s)
+    const layouts = this.getEffectiveHeadingLayouts(structure.mode)
     if (!layouts) {
       this.adapter.clearHeadingLayouts()
       return
     }
-    // Apply slot-mapped layouts for the current mode
-    const structure = resolveHeadingStructure(this.s)
-    const effectiveLayouts = buildEffectiveLayouts(layouts, structure.mode)
-    this.adapter.applyHeadingLayouts(effectiveLayouts)
+    // Layout is physical H1-H6 (NO level shift): real H2 uses layout.h2.
+    this.adapter.applyHeadingLayouts(layouts)
   }
 
   /** Apply paragraph indent styles to the editor DOM. */
@@ -3846,6 +3857,59 @@ export class HeadingNumberingService {
     return false
   }
 
+  /**
+   * Failed-Txn one-shot test hook. Only the FORCE_VISUAL_VERIFY_FAIL_ONCE hook is
+   * implemented. Default disabled; armed only in the test vault + explicit config
+   * + document match + remaining>0. It ONLY overrides the effective visual-verify
+   * result (never touches Markdown/Selection/DOM/canonical/sidecar/caret).
+   */
+  private consumeEmptySpecialRuntimeTestHook(
+    emptyTxn: EmptySpecialCommandTransaction,
+    originalVisualVerify: boolean,
+  ): { effectiveVisualVerify: boolean; armed: boolean; consumed: boolean } {
+    const vaultRoot = this.ctx.vaultRoot ?? null
+    const activeFilePath = this.getActiveFilePath()
+    const activeDocumentKey = this.getDocumentKey()
+    const config = readEmptySpecialTestHookFile(vaultRoot)
+
+    if (!config) {
+      return { effectiveVisualVerify: originalVisualVerify, armed: false, consumed: false }
+    }
+
+    const result = evaluateEmptySpecialTestHook({
+      hook: config.hook ?? null,
+      configuredDocument: config.document ?? null,
+      activeDocumentKey,
+      activeFilePath,
+      remaining: typeof config.remaining === 'number' ? config.remaining : 0,
+      isTestVault: isTestVaultRoot(vaultRoot) || isTestVaultPath(activeFilePath),
+      originalVisualVerify,
+    })
+
+    // One-shot consume: persist remaining -> remainingAfter (0 on first fire).
+    if (result.armed) {
+      writeEmptySpecialTestHookFile(vaultRoot, { ...config, remaining: result.remainingAfter })
+    }
+
+    emitRuntimeAudit('EMPTY-SPECIAL-TEST-HOOK', {
+      txnId: emptyTxn.txnId,
+      hook: config.hook ?? 'none',
+      documentKey: activeDocumentKey ?? activeFilePath ?? 'none',
+      armed: result.armed,
+      consumed: result.consumed,
+      originalVisualVerify: result.originalVisualVerify,
+      effectiveVisualVerify: result.effectiveVisualVerify,
+      remainingBefore: result.remainingBefore,
+      remainingAfter: result.remainingAfter,
+    })
+
+    return {
+      effectiveVisualVerify: result.effectiveVisualVerify,
+      armed: result.armed,
+      consumed: result.consumed,
+    }
+  }
+
   private settleEmptySpecialTransaction(emptyTxn: EmptySpecialCommandTransaction): void {
     if (this.activeEmptySpecialTransaction?.txnId !== emptyTxn.txnId) return
     if (this.userIntentEpoch !== emptyTxn.intentEpoch) {
@@ -3930,7 +3994,8 @@ export class HeadingNumberingService {
 
     const semanticCorrect = getParagraphIndentMode(finalElement) === 'force-indent'
     const isNativeEmpty = isNativeEmptyParagraph(finalElement)
-    const projectionMode: EmptyProjectionMode = decideEmptyProjectionMode(isNativeEmpty, semanticCorrect ? 'force-indent' : 'auto')
+    const emptyEquivalent = isEmptyEquivalentParagraph(finalElement)
+    const projectionMode: EmptyProjectionMode = decideEmptyProjectionMode(emptyEquivalent, semanticCorrect ? 'force-indent' : 'auto')
     const cs = window.getComputedStyle(finalElement)
     const computedTextIndent = cs.textIndent
     const computedPaddingInlineStart = cs.paddingLeft
@@ -3940,6 +4005,7 @@ export class HeadingNumberingService {
       txnId: emptyTxn.txnId,
       runtimeId: finalRtId,
       isNativeEmpty,
+      emptyEquivalent,
       semanticMode: semanticCorrect ? 'force-indent' : getParagraphIndentMode(finalElement),
       projectionMode,
       computedTextIndent,
@@ -3950,10 +4016,17 @@ export class HeadingNumberingService {
       runtimeId: finalRtId,
       semanticCorrect,
       projectionMode,
+      emptyEquivalent,
       computedTextIndent,
       computedPaddingInlineStart,
       visualIndentCorrect,
     })
+
+    // Failed-Txn one-shot test hook (FORCE_VISUAL_VERIFY_FAIL_ONCE): only the
+    // effective visual-verify result is overridden; nothing else is touched.
+    const originalVisualVerify = visualIndentCorrect
+    const testHook = this.consumeEmptySpecialRuntimeTestHook(emptyTxn, originalVisualVerify)
+    const effectiveVisualVerify = testHook.effectiveVisualVerify
 
     // transaction-scoped caret restore (logical caret verify)
     const caretLogical = this.emptySpecialCaretRestore(emptyTxn, finalElement, finalRtId, root)
@@ -3986,7 +4059,7 @@ export class HeadingNumberingService {
       overall: geometry.overall,
     })
 
-    const preCommitVerifyPassed = semanticCorrect && visualIndentCorrect && caretLogical && geometry.overall
+    const preCommitVerifyPassed = semanticCorrect && effectiveVisualVerify && caretLogical && geometry.overall
     if (!preCommitVerifyPassed) {
       // P0-AC: nothing committed yet — roll back provisional projection only.
       this.rollbackEmptySpecialProjection(emptyTxn, finalElement, 'none', 'PRE_COMMIT_VERIFY_FAILED')
@@ -4274,29 +4347,103 @@ export class HeadingNumberingService {
   }
 
   /** P0-VC Phase B: read-only BEFORE snapshot for an empty force-indent paragraph. */
-  private captureEmptyNonemptyBefore(): EmptyNonemptyProjectionBefore | null {
+  private captureEmptyNonemptyBefore(inputType: string, isComposing: boolean): EmptyNonemptyProjectionBefore | null {
+    const skip = (reason: string, extra: Record<string, unknown> = {}): null => {
+      emitRuntimeAudit('EMPTY-NONEMPTY-OBSERVER-SKIP', {
+        decision: 'SKIP',
+        reason,
+        phase: 'BEFORE',
+        inputType,
+        isComposing,
+        ...extra,
+      })
+      return null
+    }
+
+    let block: HTMLElement | null = null
+    let root: HTMLElement | null = null
+    let runtimeId = ''
     try {
-      const root = this.adapter.getEditorRoot()
-      const block = root ? resolveCurrentBodyParagraph(root) : null
-      if (!block) return null
-      if (!root) return null
-      if (getParagraphIndentMode(block) !== 'force-indent') return null
-      if (!isNativeEmptyParagraph(block)) return null
+      root = this.adapter.getEditorRoot()
+      if (!root) return skip('NO_CURRENT_PARAGRAPH')
+      block = resolveCurrentBodyParagraph(root)
+      if (!block) return skip('NO_CURRENT_PARAGRAPH')
+
+      runtimeId = this.getParagraphRuntimeId(block)
+      if (!runtimeId) return skip('NO_RUNTIME_ID')
+
       const exact = this.canonicalRegistry.resolveExactLiveRecord(block)
-      if (!exact) return null
+      if (!exact) return skip('NO_CURRENT_LIVE_RECORD', { runtimeId })
+
+      const semanticMode = getParagraphIndentMode(block)
+      if (semanticMode !== 'force-indent') {
+        return skip('SEMANTIC_NOT_FORCE_INDENT', { runtimeId, canonicalRecordId: exact.recordId })
+      }
+
       const visibleText = getUserVisibleParagraphText(block)
-      if (!shouldEmitEmptyNonemptyTransition(true, 'force-indent', true, exact.recordId, visibleText)) return null
+      if (visibleText !== '') {
+        return skip('BEFORE_NOT_EMPTY', { runtimeId, canonicalRecordId: exact.recordId, visibleTextBefore: visibleText })
+      }
+
+      // TS1 Fix2: use safe empty-equivalent classifier (not strict <p></p>).
+      const emptyState = classifyObserverEmptyEquivalent(block)
+      emitRuntimeAudit('EMPTY-NONEMPTY-OBSERVER-BEFORE-DOM', {
+        inputType,
+        isComposing,
+        runtimeId,
+        canonicalRecordId: exact.recordId,
+        canonicalState: 'CURRENT_LIVE',
+        generation: exact.meta.generation,
+        semanticMode,
+        visibleText,
+        rawTextContent: block.textContent ?? '',
+        tagName: block.tagName.toLowerCase(),
+        innerHTML: block.innerHTML,
+        childNodeCount: block.childNodes.length,
+        childNodeSummaries: Array.from(block.childNodes).map(n => n.nodeType === 3 ? `text:${(n.textContent ?? '').slice(0, 24)}` : n instanceof Element ? `tag:${n.tagName.toLowerCase()}` : `node:${n.nodeType}`),
+        elementChildCount: block.children.length,
+        textNodeCount: Array.from(block.childNodes).filter(n => n.nodeType === 3).length,
+        hasBR: block.querySelector('br') !== null,
+        brCount: block.querySelectorAll('br').length,
+        hasMdPlainSpan: block.querySelector('span[md-inline="plain"].md-plain.md-expand') !== null,
+        hasPlaceholderSpan: block.querySelector('span[data-placeholder], span.placeholder, span.md-empty') !== null,
+        hasTyporaMarker: block.querySelector('[class*="md-"], [class*="cm-"]') !== null,
+        hasContentEditableMarker: block.hasAttribute('contenteditable'),
+        computedTextIndent: window.getComputedStyle(block).textIndent,
+        computedPaddingInlineStart: window.getComputedStyle(block).paddingLeft,
+        strictNativeEmpty: emptyState.strictNativeEmpty,
+        safeEmptyEquivalent: emptyState.safeEmptyEquivalent,
+        emptyEquivalentReason: emptyState.reason ?? 'none',
+      })
+
+      const armReason = classifyObserverArmReason(
+        semanticMode,
+        visibleText,
+        exact.recordId,
+        emptyState.safeEmptyEquivalent,
+      )
+      if (armReason) {
+        return skip(armReason, {
+          runtimeId,
+          canonicalRecordId: exact.recordId,
+          visibleTextBefore: visibleText,
+          emptyEquivalentReason: emptyState.reason ?? 'none',
+        })
+      }
 
       const cs = window.getComputedStyle(block)
       const rect = block.getBoundingClientRect()
       const truth = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'EMPTY-NONEMPTY-BEFORE')
-      return {
-        runtimeId: this.getParagraphRuntimeId(block),
+
+      const before: EmptyNonemptyProjectionBefore = {
+        runtimeId,
         canonicalRecordId: exact.recordId,
         generation: exact.meta.generation,
-        semanticMode: 'force-indent',
+        semanticMode,
         visibleText,
-        isNativeEmpty: true,
+        isNativeEmpty: emptyState.strictNativeEmpty,
+        safeEmptyEquivalent: emptyState.safeEmptyEquivalent,
+        emptyEquivalentReason: emptyState.reason ?? null,
         paddingInlineStartPx: parseFloat(cs.paddingLeft) || 0,
         textIndentPx: parseFloat(cs.textIndent) || 0,
         fontSizePx: parseFloat(cs.fontSize) || 16,
@@ -4305,8 +4452,27 @@ export class HeadingNumberingService {
         selectionRuntimeId: truth?.runtimeId ?? null,
         logicalOffset: truth?.logicalOffset ?? 0,
       }
-    } catch {
-      return null
+
+      emitRuntimeAudit('EMPTY-NONEMPTY-OBSERVER-ARM', {
+        decision: 'ARMED',
+        inputType,
+        isComposing,
+        runtimeId,
+        canonicalRecordId: exact.recordId,
+        canonicalState: 'CURRENT_LIVE',
+        generation: exact.meta.generation,
+        semanticMode: 'force-indent',
+        visibleTextBefore: visibleText,
+        strictNativeEmpty: emptyState.strictNativeEmpty,
+        safeEmptyEquivalent: emptyState.safeEmptyEquivalent,
+        emptyEquivalentReason: emptyState.reason ?? 'none',
+        paddingBeforePx: before.paddingInlineStartPx,
+        textIndentBeforePx: before.textIndentPx,
+      })
+
+      return before
+    } catch (e) {
+      return skip('BEFORE_READ_FAILED', { runtimeId, error: String(e) })
     }
   }
 
@@ -4334,13 +4500,28 @@ export class HeadingNumberingService {
     const before = this.pendingEmptyNonemptyBefore
     this.pendingEmptyNonemptyBefore = null
     if (!before) return
+
+    const skipAfter = (reason: string, extra: Record<string, unknown> = {}): void => {
+      emitRuntimeAudit('EMPTY-NONEMPTY-OBSERVER-SKIP', {
+        decision: 'SKIP',
+        reason,
+        phase: 'AFTER',
+        runtimeIdBefore: before.runtimeId,
+        ...extra,
+      })
+    }
+
     try {
       const block = resolveCurrentBodyParagraph(root)
-      if (!block) return
+      if (!block) {
+        skipAfter('NO_CURRENT_PARAGRAPH')
+        return
+      }
       const exact = this.canonicalRegistry.resolveExactLiveRecord(block)
       const cs = window.getComputedStyle(block)
       const rect = block.getBoundingClientRect()
       const truth = resolveSelectionTruth(root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement), 'EMPTY-NONEMPTY-AFTER')
+      const afterEmptyState = classifyObserverEmptyEquivalent(block)
 
       const after: EmptyNonemptyProjectionAfter = {
         runtimeId: this.getParagraphRuntimeId(block),
@@ -4349,6 +4530,8 @@ export class HeadingNumberingService {
         semanticMode: getParagraphIndentMode(block) === 'force-indent' ? 'force-indent' : 'auto',
         visibleText: getUserVisibleParagraphText(block),
         isNativeEmpty: isNativeEmptyParagraph(block),
+        safeEmptyEquivalent: afterEmptyState.safeEmptyEquivalent,
+        emptyEquivalentReason: afterEmptyState.reason ?? null,
         paddingInlineStartPx: parseFloat(cs.paddingLeft) || 0,
         textIndentPx: parseFloat(cs.textIndent) || 0,
         fontSizePx: parseFloat(cs.fontSize) || 16,
@@ -4362,10 +4545,45 @@ export class HeadingNumberingService {
         caretRepairCount: this.caretRepairCount,
       }
 
+      emitRuntimeAudit('EMPTY-NONEMPTY-OBSERVER-AFTER', {
+        runtimeIdBefore: before.runtimeId,
+        runtimeIdAfter: after.runtimeId,
+        canonicalRecordIdBefore: before.canonicalRecordId,
+        canonicalRecordIdAfter: after.canonicalRecordId,
+        generationBefore: before.generation,
+        generationAfter: after.generation,
+        visibleTextBefore: before.visibleText,
+        visibleTextAfter: after.visibleText,
+        isNativeEmptyBefore: before.isNativeEmpty,
+        isNativeEmptyAfter: after.isNativeEmpty,
+        safeEmptyEquivalentBefore: before.safeEmptyEquivalent ?? false,
+        safeEmptyEquivalentAfter: after.safeEmptyEquivalent ?? false,
+        emptyEquivalentReasonBefore: before.emptyEquivalentReason ?? 'none',
+        semanticBefore: before.semanticMode,
+        semanticAfter: after.semanticMode,
+        paddingBeforePx: before.paddingInlineStartPx,
+        paddingAfterPx: after.paddingInlineStartPx,
+        textIndentBeforePx: before.textIndentPx,
+        textIndentAfterPx: after.textIndentPx,
+        selectionRuntimeId: after.selectionRuntimeId,
+        logicalOffset: after.logicalOffset,
+      })
+
+      // Only the empty→nonempty transition qualifies.
+      const beforeEmpty = before.safeEmptyEquivalent ?? before.isNativeEmpty
+      if (!beforeEmpty || afterEmptyState.safeEmptyEquivalent) {
+        skipAfter('AFTER_STILL_EMPTY', { runtimeIdAfter: after.runtimeId })
+        return
+      }
+
       const report = evaluateEmptyNonemptyProjectionTransition(before, after)
-      emitRuntimeAudit('EMPTY-NONEMPTY-PROJECTION-TRANSITION', { ...report })
-    } catch {
-      /* fail-open: observation never blocks business */
+      emitRuntimeAudit('EMPTY-NONEMPTY-PROJECTION-TRANSITION', {
+        ...report,
+        strictNativeEmptyBefore: before.isNativeEmpty,
+        strictNativeEmptyAfter: after.isNativeEmpty,
+      })
+    } catch (e) {
+      skipAfter('AFTER_READ_FAILED', { error: String(e) })
     }
   }
 
@@ -6318,7 +6536,15 @@ export class HeadingNumberingService {
       // Layer 2 — computed px (2em = fontSize*2 for indent-2; 0 for flush), ≤0.5px tolerance
       visualFontSize = parseFloat(window.getComputedStyle(toElement).fontSize) || 16
       expectedComputedIndent = effective === 'indent-2' ? visualFontSize * 2 : 0
-      actualComputedIndent = parseFloat(window.getComputedStyle(toElement).textIndent) || 0
+
+      // R58.7 A1 empty-paragraph fix: an empty-equivalent candidate projects its
+      // visual indent via padding-inline-start (the `:empty` CSS sets text-indent:0),
+      // so text-indent computes to 0px. Read padding-left for empty-equivalent,
+      // keep text-indent for everything else. Reuses isEmptyEquivalentParagraph
+      // (which rejects whitespace-only / NBSP / unknown nested content).
+      const candidateEmptyEquivalent = isEmptyEquivalentParagraph(toElement)
+      const candidateComputedStyle = window.getComputedStyle(toElement)
+      actualComputedIndent = computeCanonicalTransferComputedIndent(toElement, candidateComputedStyle)
       const computedMatches = Math.abs(actualComputedIndent - expectedComputedIndent) <= 0.5
 
       visualTransfer = effectiveModeMatches && computedMatches
@@ -6334,6 +6560,7 @@ export class HeadingNumberingService {
         actualComputedIndent,
         effectiveModeMatches,
         computedMatches,
+        candidateEmptyEquivalent,
         overall: visualTransfer,
       })
     }
@@ -7377,10 +7604,11 @@ export class HeadingNumberingService {
     return true
   }
 
-  /** Get the effective heading layouts for the current document. */
-  getEffectiveHeadingLayouts(): import('./heading-types').HeadingLayoutSettings | undefined {
+  /** Get the effective heading layouts for the current document (physical H1-H6). */
+  getEffectiveHeadingLayouts(mode?: import('./heading-structure').HeadingStructureMode): import('./heading-types').HeadingLayoutSettings | undefined {
     const settings = this.docContext.effectiveSettings
-    return settings.headingLayouts
+    const m = mode ?? resolveHeadingStructure(this.s).mode
+    return resolveHeadingLayoutsForMode(settings, m)
   }
 
   /**
@@ -7396,8 +7624,12 @@ export class HeadingNumberingService {
     if (!docKey) return
 
     const store = this.scopeStore
+    const structure = resolveHeadingStructure(this.s)
+    const mode = structure.mode
     const existingLo = store.documentOverrides[docKey]?.layoutOverrides
-    const currentLayouts = existingLo?.headingLayouts ? { ...existingLo.headingLayouts } : {}
+    const currentByMode = existingLo?.headingLayoutsByMode
+      ? { ...existingLo.headingLayoutsByMode }
+      : {}
     const currentGap = existingLo?.numberTitleSpacing ? { ...existingLo.numberTitleSpacing } : {}
 
     // Auto-clear indent when center or right
@@ -7405,14 +7637,14 @@ export class HeadingNumberingService {
       ? { ...config, firstLineIndentEm: 0 }
       : { ...config }
 
-    const structure = resolveHeadingStructure(this.s)
-    const slot = resolveStyleSlot(structure.mode, level)
-    if (slot === null) return // strict H1 has no slot
-    const levelKey = `h${slot}`
-    currentLayouts[levelKey] = effectiveConfig
+    // Physical H1-H6 key — NO style-slot level shift.
+    const levelKey = `h${level}`
+    const modeLayouts = currentByMode[mode] ? { ...currentByMode[mode] } : {}
+    modeLayouts[levelKey] = effectiveConfig
+    currentByMode[mode] = modeLayouts
 
     const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
-      headingLayouts: currentLayouts,
+      headingLayoutsByMode: currentByMode,
       numberTitleSpacing: currentGap,
     }
 
@@ -7420,7 +7652,7 @@ export class HeadingNumberingService {
     this.persistScopeStore(newStore)
 
     // Immediately apply the effective layouts
-    const effectiveLayouts = this.getEffectiveHeadingLayouts()
+    const effectiveLayouts = this.getEffectiveHeadingLayouts(mode)
     if (effectiveLayouts) {
       this.adapter.applyHeadingLayouts(effectiveLayouts)
     }
@@ -7434,27 +7666,33 @@ export class HeadingNumberingService {
     if (!docKey) return
 
     const store = this.scopeStore
+    const structure = resolveHeadingStructure(this.s)
+    const mode = structure.mode
     const existingLo = store.documentOverrides[docKey]?.layoutOverrides
-    const currentLayouts = existingLo?.headingLayouts ? { ...existingLo.headingLayouts } : {}
+    const currentByMode = existingLo?.headingLayoutsByMode
+      ? { ...existingLo.headingLayoutsByMode }
+      : {}
     const currentGap = existingLo?.numberTitleSpacing ? { ...existingLo.numberTitleSpacing } : {}
+    const modeLayouts = currentByMode[mode] ? { ...currentByMode[mode] } : {}
     const fromKey = `h${fromLevel}`
-    const source = currentLayouts[fromKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
+    const source = modeLayouts[fromKey] ?? { textAlign: 'left' as const, firstLineIndentEm: 0 }
 
     for (const lv of [fromLevel + 1, fromLevel + 2, fromLevel + 3, fromLevel + 4, fromLevel + 5, fromLevel + 6] as import('./heading-types').HeadingLevel[]) {
       if (lv > 6) break
       const key = `h${lv}`
-      currentLayouts[key] = { ...source }
+      modeLayouts[key] = { ...source }
     }
+    currentByMode[mode] = modeLayouts
 
     const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
-      headingLayouts: currentLayouts,
+      headingLayoutsByMode: currentByMode,
       numberTitleSpacing: currentGap,
     }
 
     const newStore = saveLayoutOverrides(this.scopeStore, docKey, layoutOverrides)
     this.persistScopeStore(newStore)
 
-    const effectiveLayouts = this.getEffectiveHeadingLayouts()
+    const effectiveLayouts = this.getEffectiveHeadingLayouts(mode)
     if (effectiveLayouts) {
       this.adapter.applyHeadingLayouts(effectiveLayouts)
     }
@@ -7503,6 +7741,7 @@ export class HeadingNumberingService {
     const existingLo = store.documentOverrides[docKey]?.layoutOverrides
     const layoutOverrides: import('./heading-types').DocumentLayoutOverrides = {
       headingLayouts: existingLo?.headingLayouts ? { ...existingLo.headingLayouts } : undefined,
+      headingLayoutsByMode: existingLo?.headingLayoutsByMode ? { ...existingLo.headingLayoutsByMode } : undefined,
       numberTitleSpacing: { ...gaps },
     }
 
@@ -8893,7 +9132,7 @@ export class HeadingNumberingService {
     const onBeforeInput = (e: InputEvent): void => {
       // P0-VC Phase B observability: capture BEFORE snapshot for empty→nonempty.
       if (e.inputType === 'insertText' || e.inputType === 'insertCompositionText') {
-        this.pendingEmptyNonemptyBefore = this.captureEmptyNonemptyBefore()
+        this.pendingEmptyNonemptyBefore = this.captureEmptyNonemptyBefore(e.inputType, e.isComposing)
       }
       safeForensic(() => {
         const block = resolveCurrentBlockFromSelection(root)
@@ -9289,29 +9528,11 @@ export class HeadingNumberingService {
 }
 
 /**
- * Build effective heading layouts by remapping physical level → style slot.
- * Returns a HeadingLayoutSettings with h1-h6 keys filled from the slot data.
- * Does not modify the source layout object.
+ * NOTE: The previous `buildEffectiveLayouts` level-shift (strict H2→h1) has
+ * been removed. Heading layout is now resolved per structure mode via
+ * `resolveHeadingLayoutsForMode` and applied with physical H1-H6 keys — real
+ * H2 always uses layout.h2, never layout.h1.
  */
-function buildEffectiveLayouts(
-  sourceLayouts: import('./heading-types').HeadingLayoutSettings,
-  mode: import('./heading-structure').HeadingStructureMode,
-): import('./heading-types').HeadingLayoutSettings {
-  const defaultLayout: import('./heading-types').HeadingLayoutConfig = { textAlign: 'left', firstLineIndentEm: 0 }
-  if (mode === 'loose') {
-    // Loose: physical = slot, no remapping needed
-    return sourceLayouts
-  }
-  // Strict: H1=title(native), H2→S1(h1), H3→S2(h2), ..., H6→S5(h5)
-  return {
-    h1: defaultLayout,
-    h2: sourceLayouts.h1 ?? defaultLayout,
-    h3: sourceLayouts.h2 ?? defaultLayout,
-    h4: sourceLayouts.h3 ?? defaultLayout,
-    h5: sourceLayouts.h4 ?? defaultLayout,
-    h6: sourceLayouts.h5 ?? defaultLayout,
-  }
-}
 
 /** Find the text node within an element that contains a given substring. */
 function findTextNodeContaining(el: HTMLElement, substr: string): Text | null {

@@ -1,0 +1,62 @@
+{
+  "report": "inkchapter-ts1-fix2-empty-equivalent-observer-repair-2026-08-14",
+  "generatedAt": "2026-08-14T00:00:00Z",
+  "projectRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter",
+  "gateDocument": "docs/prompts/pending/trae-ts1-fix2-empty-nonempty-observer-empty-equivalent-repair.md",
+  "businessBaselineBuild": "inkchapter-r58-7-p0-empty-caret-atomic-evc1",
+  "runtimeObservabilityBuild": "inkchapter-r58-7-evc1-phase-b-observability-ts1-fix2",
+  "mainSHA": "8A0019A67FCA0D692CD6A098D4BA3DF11D24D83249D8678B5D723854E3FF8CE1",
+  "styleSHA": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+  "shaMatch": true,
+  "styleMatch": true,
+  "styleDrift": false,
+  "problem": {
+    "title": "Empty→Nonempty observer over-strict native-empty eligibility",
+    "firstFailingReason": "BEFORE_NOT_NATIVE_EMPTY",
+    "fix": "classifyObserverEmptyEquivalent + classifyObserverArmReason + BEFORE-DOM audit + BEFORE_NOT_SAFE_EMPTY_EQUIVALENT skip"
+  },
+  "classifier": {
+    "allowed": ["NATIVE_EMPTY", "EMPTY_MD_PLAIN_SHELL", "EMPTY_BR_SHELL", "EMPTY_EDITOR_PLACEHOLDER"],
+    "rejected": ["VISIBLE_TEXT_NONEMPTY", "INVISIBLE_TEXT_CONTENT", "UNKNOWN_ELEMENT_CONTENT", "NESTED_MEANINGFUL_CONTENT"]
+  },
+  "tests": {
+    "tsc": "PASS",
+    "vitest": "869 PASS / 28 files",
+    "EMPTYEQ-1..12": "PASS",
+    "OBSRT2-1..15": "PASS",
+    "OBSRT-1..15": "PASS",
+    "ENOT-1..10": "PASS",
+    "ATOMIC-1..8": "PASS",
+    "EVC-1..12": "PASS",
+    "GEOM-1..5": "PASS",
+    "EMPTYBUS-1..16": "PASS",
+    "PHASEBGATE-1..10": "PASS",
+    "AUTHDOC-1..8": "PASS",
+    "IDENTITY-1..7": "PASS",
+    "nodeCheck": "PASS"
+  },
+  "runtime": "NOT EXECUTED / reason=SANDBOX_DESKTOP_LIMITATION",
+  "externalHandoff": [
+    "taskkill /IM Typora.exe /F",
+    "delete E2 sidecar (fixtureHex=E69687E69CAC0A0A, sidecarExists=false)",
+    "preflight PASS",
+    "strict-startup PASS (buildId=inkchapter-r58-7-evc1-phase-b-observability-ts1-fix2)",
+    "phase-b-authority PASS (documentMatch=true)",
+    "current-session E2 reproof (。。 + Enter)",
+    "input 啊 (no Enter) -> BEFORE-DOM -> ARM -> AFTER -> TRANSITION overall=true"
+  ],
+  "status": {
+    "safeEmptyEquivalentClassifier": "FIXED / STATIC",
+    "observerEligibility": "FIXED / STATIC",
+    "ts1Fix2Build": "STATIC READY",
+    "runtime": "PENDING",
+    "evc1Core": "NO NEW FAILURE EVIDENCE",
+    "p0E2": "PASS / PRIOR MANUAL RUNTIME",
+    "phaseB": "RUNTIME PENDING",
+    "e1": "RUNTIME PENDING",
+    "e3": "RUNTIME PENDING",
+    "failedTxnFailurePath": "RUNTIME PENDING",
+    "r587": "NOT CLOSED",
+    "r60": "NO-GO"
+  }
+}

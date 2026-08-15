@@ -1,0 +1,24 @@
+{
+  "fixture": "r58-empty-special-failure-path-01.md",
+  "fixturePath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-failure-path-01.md",
+  "fixtureExisted": true,
+  "fixtureReady": true,
+  "sidecarRemoved": true,
+  "sidecarState": {
+    "fixture": "r58-empty-special-failure-path-01.md",
+    "sidecarPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-empty-special-failure-path-01.md.json",
+    "exists": false,
+    "recordCount": 0
+  },
+  "testHookConfig": {
+    "hookConfigPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\runtime-test-hook.json",
+    "config": {
+      "hook": "FORCE_VISUAL_VERIFY_FAIL_ONCE",
+      "document": "r58-empty-special-failure-path-01.md",
+      "remaining": 1
+    }
+  },
+  "scenario": "FAILURE-PATH",
+  "parser": "empty-special-negative",
+  "type": "FAILURE-PATH"
+}

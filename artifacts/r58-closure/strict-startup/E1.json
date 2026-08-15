@@ -1,0 +1,19 @@
+{
+  "mode": "strict-startup",
+  "scenario": "E1",
+  "targetDocument": "r58-empty-special-e1-01.md",
+  "oldProcessExited": true,
+  "processCountAfterClose": 0,
+  "newPid": 27624,
+  "newStartTime": "2026-08-14T22:31:52.7259409+00:00",
+  "mainWindowHandle": 594318,
+  "mainWindowTitle": "r58-empty-special-e1-01.md - Typora",
+  "projectMainSHA": "5A868A008A4D6FBC7EBD385B4D2BC8CC19D2B2D454BD6472595EF4ABBCC7824A",
+  "runtimeMainSHA": "5A868A008A4D6FBC7EBD385B4D2BC8CC19D2B2D454BD6472595EF4ABBCC7824A",
+  "shaMatch": true,
+  "styleSHA": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+  "styleMatch": true,
+  "buildId": "inkchapter-r58-7-evc1-r58-closure-rc1",
+  "verdict": "PASS",
+  "failedChecks": []
+}

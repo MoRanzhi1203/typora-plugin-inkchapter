@@ -1,7 +1,21 @@
 {
-  "buildId": "inkchapter-r58-7-evc1-phase-b-observability-ts1",
-  "expectedMainSha": "CDC9C206028B6B406DE692D41A876FB66932A95DE9F7A2B1FE372B47FC107AF1",
+  "buildId": "inkchapter-r58-7-evc3-canonical-transfer-empty-visual-rc3",
+  "expectedMainSha": "E059EDE4DE878FB467D75C3180E451F6B3B622DD931EF3D04D088DF4B0FA9ED8",
   "expectedStyleSha": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+  "scenarioMap": {
+    "E1": { "fixture": "r58-empty-special-e1-01.md", "parser": "empty-special", "sidecarPolicy": "clean", "type": "E1" },
+    "E2": { "fixture": "r58-empty-special-e2-01.md", "parser": "empty-special", "sidecarPolicy": "clean", "type": "E2" },
+    "E3": { "fixture": "r58-empty-special-e3-01.md", "parser": "empty-special", "sidecarPolicy": "clean", "type": "E3" },
+    "A1-01": { "fixture": "r58-caret-a1-fresh-01.md", "parser": "matrix", "sidecarPolicy": "clean", "type": "A1" },
+    "A1-02": { "fixture": "r58-caret-a1-fresh-02.md", "parser": "matrix", "sidecarPolicy": "clean", "type": "A1" },
+    "A1-03": { "fixture": "r58-caret-a1-fresh-03.md", "parser": "matrix", "sidecarPolicy": "clean", "type": "A1" },
+    "A2-01": { "fixture": "r58-caret-a1-fresh-04.md", "parser": "matrix", "sidecarPolicy": "clean", "type": "A2" },
+    "A3-01": { "fixture": "r58-caret-a1-fresh-05.md", "parser": "matrix", "sidecarPolicy": "clean", "type": "A3" },
+    "B1-01": { "fixture": "r58-b1-historical-01.md", "parser": "matrix", "sidecarPolicy": "seed", "type": "B1" },
+    "B1-02": { "fixture": "r58-b1-historical-02.md", "parser": "matrix", "sidecarPolicy": "seed", "type": "B1" },
+    "FAILURE-PATH": { "fixture": "r58-empty-special-failure-path-01.md", "parser": "empty-special-negative", "sidecarPolicy": "clean", "type": "FAILURE-PATH" },
+    "RAF-RACE": { "fixture": "r58-empty-equivalent-raf-race-01.md", "parser": "raf-race", "sidecarPolicy": "clean", "type": "RAF-RACE", "expectedTxnCount": 5 }
+  },
   "trials": [
     { "trial": "A1-01", "type": "A1", "fixture": "r58-caret-a1-fresh-01.md" },
     { "trial": "A1-02", "type": "A1", "fixture": "r58-caret-a1-fresh-02.md" },

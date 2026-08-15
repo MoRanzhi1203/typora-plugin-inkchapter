@@ -75,6 +75,9 @@ export function deepCloneSettings(s: HeadingNumberingSettings): HeadingNumbering
   if (s.headingLayouts) {
     cloned.headingLayouts = deepCloneLayouts(s.headingLayouts)
   }
+  if (s.headingLayoutsByMode) {
+    cloned.headingLayoutsByMode = deepCloneLayoutsByMode(s.headingLayoutsByMode)
+  }
   return cloned
 }
 
@@ -87,6 +90,44 @@ function deepCloneLayouts(l: import('./heading-types').HeadingLayoutSettings): i
     h5: { ...l.h5 },
     h6: { ...l.h6 },
   }
+}
+
+/** Deep clone a per-structure-mode layout map (loose/strict independent). */
+function deepCloneLayoutsByMode(
+  l: import('./heading-types').HeadingLayoutsByMode,
+): import('./heading-types').HeadingLayoutsByMode {
+  const out = {} as import('./heading-types').HeadingLayoutsByMode
+  for (const mode of ['loose', 'strict'] as const) {
+    if (l[mode]) out[mode] = deepCloneLayouts(l[mode])
+  }
+  return out
+}
+
+/** Factory default heading layout (left-aligned, no indent) for all H1-H6. */
+export const DEFAULT_HEADING_LAYOUTS: import('./heading-types').HeadingLayoutSettings = {
+  h1: { textAlign: 'left', firstLineIndentEm: 0 },
+  h2: { textAlign: 'left', firstLineIndentEm: 0 },
+  h3: { textAlign: 'left', firstLineIndentEm: 0 },
+  h4: { textAlign: 'left', firstLineIndentEm: 0 },
+  h5: { textAlign: 'left', firstLineIndentEm: 0 },
+  h6: { textAlign: 'left', firstLineIndentEm: 0 },
+}
+
+/**
+ * Resolve the effective heading layout for a structure mode, indexed by real
+ * physical H1-H6 (NO level shift). Priority:
+ *   1. `headingLayoutsByMode[mode]` (authoritative per-mode)
+ *   2. legacy shared `headingLayouts`
+ *   3. factory default
+ */
+export function resolveHeadingLayoutsForMode(
+  settings: import('./heading-types').HeadingNumberingSettings,
+  mode: 'loose' | 'strict',
+): import('./heading-types').HeadingLayoutSettings {
+  const byMode = settings.headingLayoutsByMode?.[mode]
+  if (byMode) return byMode
+  if (settings.headingLayouts) return settings.headingLayouts
+  return deepCloneLayouts(DEFAULT_HEADING_LAYOUTS)
 }
 
 function deepCloneLevels(
@@ -217,6 +258,25 @@ export function deepMergeSettings(
     }
   }
 
+  // Merge headingLayoutsByMode (document override wins per-mode, per-level)
+  if (override.headingLayoutsByMode) {
+    if (!result.headingLayoutsByMode) {
+      result.headingLayoutsByMode = deepCloneLayoutsByMode(override.headingLayoutsByMode)
+    } else {
+      for (const mode of ['loose', 'strict'] as const) {
+        const ovMode = override.headingLayoutsByMode[mode]
+        if (!ovMode) continue
+        if (!result.headingLayoutsByMode[mode]) {
+          result.headingLayoutsByMode[mode] = deepCloneLayouts(ovMode as import('./heading-types').HeadingLayoutSettings)
+        } else {
+          for (const key of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const) {
+            if (ovMode[key]) result.headingLayoutsByMode[mode][key] = { ...ovMode[key]! }
+          }
+        }
+      }
+    }
+  }
+
   return result
 }
 
@@ -292,6 +352,27 @@ function applyLayoutOverridesToSettings(
     for (const [key, config] of Object.entries(overrides.headingLayouts)) {
       if (config && (key === 'h1' || key === 'h2' || key === 'h3' || key === 'h4' || key === 'h5' || key === 'h6')) {
         (settings.headingLayouts as any)[key] = { ...config }
+      }
+    }
+  }
+
+  // Merge per-mode heading layouts (physical H1-H6, NO level shift).
+  if (overrides.headingLayoutsByMode) {
+    if (!settings.headingLayoutsByMode) {
+      settings.headingLayoutsByMode = {
+        loose: deepCloneLayouts(DEFAULT_HEADING_LAYOUTS),
+        strict: deepCloneLayouts(DEFAULT_HEADING_LAYOUTS),
+      }
+    }
+    for (const mode of ['loose', 'strict'] as const) {
+      const ovMode = overrides.headingLayoutsByMode[mode]
+      if (!ovMode) continue
+      if (!settings.headingLayoutsByMode[mode]) {
+        settings.headingLayoutsByMode[mode] = deepCloneLayouts(DEFAULT_HEADING_LAYOUTS)
+      }
+      for (const key of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const) {
+        const cfg = ovMode[key]
+        if (cfg) settings.headingLayoutsByMode[mode]![key] = { ...cfg }
       }
     }
   }
@@ -433,6 +514,63 @@ export function hasDocumentOverride(
 // ── Migration ──────────────────────────────────────
 
 /**
+ * Normalize legacy shared `headingLayouts` into independent per-mode layouts.
+ * Idempotent: if `headingLayoutsByMode` already exists, leaves it untouched.
+ * Deep-clones the legacy shared layout into BOTH loose and strict (no shared ref).
+ */
+export function normalizeHeadingLayoutsByMode(
+  store: HeadingNumberingScopeStore,
+): HeadingNumberingScopeStore {
+  let changed = false
+
+  const globalDefault = normalizeSettingsLayoutsByMode(store.globalDefault)
+  if (globalDefault !== store.globalDefault) changed = true
+
+  const documentOverrides: Record<string, HeadingNumberingDocumentOverride> = {}
+  for (const [key, ov] of Object.entries(store.documentOverrides)) {
+    let next = ov
+    const settings = normalizeSettingsLayoutsByMode(ov.settings)
+    if (settings !== ov.settings) { next = { ...next, settings }; changed = true }
+    if (ov.layoutOverrides) {
+      const lo = normalizeLayoutOverridesByMode(ov.layoutOverrides)
+      if (lo !== ov.layoutOverrides) { next = { ...next, layoutOverrides: lo }; changed = true }
+    }
+    documentOverrides[key] = next
+  }
+
+  if (!changed) return store
+  return { ...store, globalDefault, documentOverrides }
+}
+
+function normalizeSettingsLayoutsByMode(
+  s: HeadingNumberingSettings,
+): HeadingNumberingSettings {
+  if (s.headingLayoutsByMode) return s
+  if (!s.headingLayouts) return s
+  return {
+    ...s,
+    headingLayoutsByMode: {
+      loose: deepCloneLayouts(s.headingLayouts),
+      strict: deepCloneLayouts(s.headingLayouts),
+    },
+  }
+}
+
+function normalizeLayoutOverridesByMode(
+  lo: import('./heading-types').DocumentLayoutOverrides,
+): import('./heading-types').DocumentLayoutOverrides {
+  if (lo.headingLayoutsByMode) return lo
+  if (!lo.headingLayouts) return lo
+  return {
+    ...lo,
+    headingLayoutsByMode: {
+      loose: { ...lo.headingLayouts },
+      strict: { ...lo.headingLayouts },
+    },
+  }
+}
+
+/**
  * Migrate old flat headingNumbering to new scope store.
  * Idempotent — does nothing if already migrated.
  */
@@ -449,7 +587,7 @@ export function migrateHeadingNumberingToScopeStore(
     if (!scopes.globalParagraphLayout) {
       scopes.globalParagraphLayout = { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true }
     }
-    return { migrated: false, store: scopes }
+    return { migrated: false, store: normalizeHeadingLayoutsByMode(scopes) }
   }
 
   const scopesNew = data['heading_numbering_scopes'] as HeadingNumberingScopeStore | undefined
@@ -457,7 +595,7 @@ export function migrateHeadingNumberingToScopeStore(
     if (!scopesNew.globalParagraphLayout) {
       scopesNew.globalParagraphLayout = { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true }
     }
-    return { migrated: false, store: scopesNew }
+    return { migrated: false, store: normalizeHeadingLayoutsByMode(scopesNew) }
   }
 
   // Try to get old headingNumbering
@@ -471,7 +609,7 @@ export function migrateHeadingNumberingToScopeStore(
       documentOverrides: {},
       globalParagraphLayout: { defaultIndent: 'flush', flushAfterDisplayMath: true, indentShortcutEnabled: true },
     }
-    return { migrated: true, store }
+    return { migrated: true, store: normalizeHeadingLayoutsByMode(store) }
   }
 
   // No old data — return empty store
@@ -499,6 +637,10 @@ export function getDefaultHeadingNumberingSettings(): HeadingNumberingSettings {
     levels: getDefaultLevels(),
     customDefinition: undefined,
     s6Configured: false,
+    headingLayoutsByMode: {
+      loose: deepCloneLayouts(DEFAULT_HEADING_LAYOUTS),
+      strict: deepCloneLayouts(DEFAULT_HEADING_LAYOUTS),
+    },
   }
 }
 

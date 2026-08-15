@@ -45,8 +45,8 @@ const AUDIT_DIR = path.join(DOT_TYPORA, 'inkchapter', 'audit');
 const SIDECAR_DIR = path.join(DOT_TYPORA, 'inkchapter', 'paragraph-layout');
 const ARTIFACTS_DIR = path.join(ROOT, 'artifacts', 'empty-special-runtime');
 
-const BUILD_ID = 'inkchapter-r58-7-evc1-phase-b-observability-ts1';
-const EXPECTED_MAIN_SHA = 'CDC9C206028B6B406DE692D41A876FB66932A95DE9F7A2B1FE372B47FC107AF1';
+const BUILD_ID = 'inkchapter-r58-7-evc3-canonical-transfer-empty-visual-rc3';
+const EXPECTED_MAIN_SHA = 'E059EDE4DE878FB467D75C3180E451F6B3B622DD931EF3D04D088DF4B0FA9ED8';
 const EXPECTED_STYLE_SHA = '3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31';
 
 const FIXTURE = 'r58-empty-special-e2-01.md';
@@ -1486,8 +1486,11 @@ async function phaseBAuthority() {
 
   log(`formalSessionId=${formal?.auditSessionId ?? formal?.formalSessionId ?? 'null'}`);
   log(`currentSessionId=${current.sessionId ?? 'null'}`);
-  log(`formalDocument=${formal?.targetDocument ?? 'null'}`);
-  log(`currentDocument=${current.document ?? 'null'}`);
+  log(`formalDocumentRaw=${result.formalDocumentRaw ?? 'null'}`);
+  log(`currentDocumentRaw=${result.currentDocumentRaw ?? 'null'}`);
+  log(`formalDocumentKey=${result.formalDocumentKey ?? 'null'}`);
+  log(`currentDocumentKey=${result.currentDocumentKey ?? 'null'}`);
+  log(`documentMatch=${result.documentMatch}`);
   log(`formalBuildId=${formal?.runtimeBuildId ?? formal?.buildId ?? 'null'}`);
   log(`currentBuildId=${current.buildId ?? 'null'}`);
   log(`verdict=${result.overall ? 'PASS' : 'FAIL'} failedChecks=${result.failedChecks.join(',')}`);

@@ -59,6 +59,10 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
       maxDepth: 6,
       levels: decimalLevels,
       headingLayouts: DEFAULT_LAYOUTS,
+      headingLayoutsByMode: {
+        loose: { h1: { ...DEFAULT_LAYOUT_CONFIG }, h2: { ...DEFAULT_LAYOUT_CONFIG }, h3: { ...DEFAULT_LAYOUT_CONFIG }, h4: { ...DEFAULT_LAYOUT_CONFIG }, h5: { ...DEFAULT_LAYOUT_CONFIG }, h6: { ...DEFAULT_LAYOUT_CONFIG } },
+        strict: { h1: { ...DEFAULT_LAYOUT_CONFIG }, h2: { ...DEFAULT_LAYOUT_CONFIG }, h3: { ...DEFAULT_LAYOUT_CONFIG }, h4: { ...DEFAULT_LAYOUT_CONFIG }, h5: { ...DEFAULT_LAYOUT_CONFIG }, h6: { ...DEFAULT_LAYOUT_CONFIG } },
+      },
       customDefinition: deepCloneSettings({
         enabled: true,
         headingStructureMode: 'strict',

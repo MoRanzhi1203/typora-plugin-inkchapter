@@ -1,0 +1,38 @@
+{
+  "trialId": "A1-01",
+  "scenario": "A1-01",
+  "fixture": "r58-caret-a1-fresh-01.md",
+  "sessionId": "sess-1786791133644",
+  "auditPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\audit\\runtime-sess-1786791133644.log",
+  "auditStartOffset": 5214,
+  "documentKey": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-01.md",
+  "buildId": "inkchapter-r58-7-evc3-canonical-transfer-empty-visual-rc3",
+  "mainSHA": "E059EDE4DE878FB467D75C3180E451F6B3B622DD931EF3D04D088DF4B0FA9ED8",
+  "styleSHA": "3B9F8AEE699925428770283E1DEAF0FE7A71B041B7A530BD583CFB60B4682B31",
+  "initializationCount": 1,
+  "sidecarStateBefore": {
+    "fixture": "r58-caret-a1-fresh-01.md",
+    "sidecarPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\inkchapter\\paragraph-layout\\r58-caret-a1-fresh-01.md.json",
+    "exists": false,
+    "recordCount": 0
+  },
+  "preAuthoritySidecarLoad": {
+    "exists": false,
+    "recordCount": 0,
+    "source": "physical",
+    "tsIso": "2026-08-15T10:52:14.193Z"
+  },
+  "preAuthorityPersistedLoadCount": 0,
+  "preAuthorityPersistedHistoricalCount": 0,
+  "runtimeIdentityDocument": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-01.md",
+  "documentContextDocument": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-01.md",
+  "documentAuthorityOk": true,
+  "documentAuthorityReason": null,
+  "runtimeIdentityTs": "2026-08-15T10:52:13.806Z",
+  "documentContextTs": "2026-08-15T10:52:13.979Z",
+  "expectedDocument": "r58-caret-a1-fresh-01.md",
+  "actualDocument": "r58-caret-a1-fresh-01.md",
+  "documentOk": true,
+  "decision": "ACCEPT",
+  "failedChecks": []
+}
