@@ -32,6 +32,13 @@ import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
 import { resolveHeadingStructure, resolveStyleSlot } from './heading-structure'
 import type { HeadingStructureMode } from './heading-structure'
+import {
+  validateStrictFirstH1Topline,
+  computeDocumentStartSignature,
+  shouldRevalidateStrictFirstH1,
+  type StrictFirstH1RuntimeState,
+  type StrictFirstH1ToplineResult,
+} from './strict-document-validator'
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
@@ -507,6 +514,11 @@ export class HeadingNumberingService {
 
   // ── PF4: Boundary merge pre-keydown intent (single-slot, short-lived) ──
   private pendingBoundaryMergeIntent: PendingBoundaryMergeIntent | null = null
+
+  // ── STRICT-FIRST-H1: reactive runtime validation state ──
+  private strictFirstH1State: StrictFirstH1RuntimeState | null = null
+  private strictFirstH1Signature: string | null = null
+  private strictFirstH1Listeners: Array<() => void> = []
 
   // ── R58.7 Phase A.1: Document Runtime Context (dual gate: business + persistence) ─
   private documentContext: DocumentRuntimeContext = {
@@ -3117,6 +3129,9 @@ export class HeadingNumberingService {
     if (primaryReason === 'active-leaf-change' || primaryReason === 'file-open') {
       this.canonicalRegistry.clearDocumentBindings(this.getDocumentKey() ?? '')
       this.releaseOneShotHandoff('document-switch')
+      // STRICT-FIRST-H1: force revalidation on the new document (no stale state/signature).
+      this.strictFirstH1State = null
+      this.strictFirstH1Signature = null
       console.info(
         `[InkChapter] CANONICAL-BINDING-DOCUMENT-SWITCH: reason=${primaryReason} ` +
         `registryRecordCount=${this.canonicalRegistry.recordCount}`,
@@ -3147,6 +3162,111 @@ export class HeadingNumberingService {
   private cancelPending(): void {
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
     if (this.tailTimer !== null) { clearTimeout(this.tailTimer); this.tailTimer = null }
+  }
+
+  // ── STRICT-FIRST-H1 reactive validation ─────────────────────────────
+
+  /** Public cached state (settings UI reads this; never re-validates itself). */
+  getStrictFirstH1State(): StrictFirstH1RuntimeState | null {
+    return this.strictFirstH1State
+  }
+
+  /**
+   * Public accessor for STRICT-FIRST-H1 top-line result (settings UI consumer).
+   * Returns the cached runtime result; if absent, runs a read-only validation
+   * from the live editor markdown buffer (UI_FALLBACK) — never mutates document.
+   */
+  getStrictFirstH1ToplineResult(): { result: StrictFirstH1ToplineResult; source: 'RUNTIME_STATE' | 'UI_FALLBACK' } {
+    if (this.strictFirstH1State?.result) {
+      return { result: this.strictFirstH1State.result, source: 'RUNTIME_STATE' }
+    }
+    const mode = resolveHeadingStructure(this.s).mode
+    const markdown = this.ctx.getMarkdown?.() ?? ''
+    return { result: validateStrictFirstH1Topline(markdown, mode), source: 'UI_FALLBACK' }
+  }
+
+  /** Subscribe to runtime validation state changes (settings UI auto-refresh). */
+  onStrictFirstH1Changed(listener: () => void): () => void {
+    this.strictFirstH1Listeners.push(listener)
+    return () => {
+      const idx = this.strictFirstH1Listeners.indexOf(listener)
+      if (idx >= 0) this.strictFirstH1Listeners.splice(idx, 1)
+    }
+  }
+
+  private notifyStrictFirstH1Changed(): void {
+    for (const listener of this.strictFirstH1Listeners) {
+      try { listener() } catch (e) { logger.error('STRICT-FIRST-H1 状态监听器异常', e) }
+    }
+  }
+
+  /**
+   * Reactive STRICT-FIRST-H1 validation. `validateStrictFirstH1` remains the
+   * single source of truth; this layer only decides WHEN to run, caches the
+   * result, emits audit, and notifies UI. Cheap skip when the first block's
+   * structural signature and the mode are unchanged.
+   */
+  private revalidateStrictFirstH1(trigger: string): void {
+    const structure = resolveHeadingStructure(this.s)
+    const mode = structure.mode
+    const docKey = this.getDocumentKey() ?? null
+    const markdown = this.ctx.getMarkdown?.() ?? ''
+    const signature = computeDocumentStartSignature(markdown)
+
+    const prev = this.strictFirstH1State
+    const prevMode = prev?.mode ?? null
+    const prevSignature = this.strictFirstH1Signature
+    const prevHasResult = prev?.result != null
+    const prevDecision = prev?.result?.decision ?? 'NONE'
+
+    if (!shouldRevalidateStrictFirstH1(prevMode, prevSignature, prevHasResult, mode, signature)) {
+      emitRuntimeAudit('STRICT-DOCUMENT-VALIDATION-TRIGGER', {
+        documentKey: docKey ?? 'none',
+        mode,
+        trigger,
+        previousDecision: prevDecision,
+        nextDecision: prev!.result!.decision,
+        decision: 'SKIP',
+        reason: 'SKIP_REVALIDATION_DOCUMENT_START_UNCHANGED',
+      })
+      return
+    }
+
+    const result = validateStrictFirstH1Topline(markdown, mode)
+    this.strictFirstH1State = { documentKey: docKey, mode, result, updatedAt: Date.now(), trigger }
+    this.strictFirstH1Signature = signature
+
+    emitRuntimeAudit('STRICT-DOCUMENT-VALIDATION-TRIGGER', {
+      documentKey: docKey ?? 'none',
+      mode,
+      trigger,
+      previousDecision: prevDecision,
+      nextDecision: result.decision,
+      sourceKind: 'EDITOR_MARKDOWN',
+      documentStartState: result.documentStartState,
+      firstLineRaw: result.firstLineRaw ?? null,
+      firstBlockType: result.firstBlockType ?? null,
+      firstHeadingLevel: result.firstHeadingLevel ?? null,
+      decision: result.decision === 'SKIP' ? 'SKIP' : 'RUN',
+      reason: result.reason,
+    })
+
+    if (result.decision !== 'SKIP') {
+      emitRuntimeAudit('STRICT-DOCUMENT-VALIDATION', {
+        documentKey: docKey ?? 'none',
+        mode,
+        ruleId: 'STRICT-FIRST-H1',
+        sourceKind: 'EDITOR_MARKDOWN',
+        documentStartState: result.documentStartState,
+        firstLineRaw: result.firstLineRaw ?? null,
+        firstBlockType: result.firstBlockType ?? null,
+        firstHeadingLevel: result.firstHeadingLevel ?? null,
+        decision: result.decision,
+        reason: result.reason,
+      })
+    }
+
+    this.notifyStrictFirstH1Changed()
   }
 
   // ── Core refresh ───────────────────────────────────────
@@ -3192,6 +3312,9 @@ export class HeadingNumberingService {
 
       // Apply paragraph indent styles (always)
       this.refreshParagraphIndents()
+
+      // ── STRICT-FIRST-H1 reactive validation (runs even when numbering off) ──
+      this.revalidateStrictFirstH1(reason)
 
       // Numbering: skip if disabled
       if (!this.s.enabled) return
