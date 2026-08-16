@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-textinput-clean-20260813.md",
+  "updatedAt": 1786821135133,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786821134917-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0
+      },
+      "temporary": true
+    }
+  ]
+}

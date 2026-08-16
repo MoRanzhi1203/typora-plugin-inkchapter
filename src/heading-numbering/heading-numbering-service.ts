@@ -47,6 +47,7 @@ import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
 import { OutlineToolbarController } from './outline-toolbar-controller'
 import type { OutlineToolbarCallbacks } from './outline-toolbar-controller'
+import { registerOutlineClickForensic } from './outline-click-forensic'
 import * as logger from '../core/logger'
 import { recordRuntimeAudit, snapshotHeadingCollection, snapshotNumberingEngine, snapshotApplyDiff, snapshotConfigSource, type NumberingEngineEntry, type ApplyDiffEntry } from './runtime-audit'
 import {
@@ -248,6 +249,13 @@ import {
   resolveHeadingLayoutsForMode,
   resolveParagraphLayoutSettings,
 } from './heading-numbering-scope-store'
+import { isInkChapterUiEvent } from './plugin-ui-event-guard'
+import {
+  customFormatRef,
+  resolveDocumentFormatBinding,
+  resolveGlobalDefaultFormatRef,
+  resolveEffectiveFormatId,
+} from './document-format-binding'
 
 // ── Enter Indent Transaction ───────────────────────────────
 
@@ -1337,6 +1345,15 @@ export class HeadingNumberingService {
         persistenceReady: ctx.persistenceReady,
         decision: 'READY',
       })
+      // Business context ready → drive the outline document context now (the
+      // outlineController may not yet exist during the very first constructor call).
+      if (this.outlineController) {
+        this.syncOutlineDocumentContext('document-context-ready')
+        // A real business-context transition to READY must also produce the
+        // authoritative outline snapshot — otherwise the outline can remain
+        // empty until the next heading refresh (pointer/focus/keyboard).
+        this.requestRefresh('outline-document-context-ready')
+      }
     }
   }
 
@@ -1684,7 +1701,7 @@ export class HeadingNumberingService {
 
     // Resolve effective settings for current document
     const docKey = this.getDocumentKey()
-    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
+    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey, this.getFormatLibrary())
 
     // Build enforcer callbacks
     const enforcerCallbacks: EnforcerCallbacks = {
@@ -1697,6 +1714,10 @@ export class HeadingNumberingService {
     this.lastEffectiveMaxLevel = this.getEffectiveMaxLevel()
 
     // Outline numbering controller
+    console.info(
+      `[InkChapter Numbering] OUTLINE-CODEPATH-MARKER site=SERVICE_CONTROLLER_CREATE ` +
+      `controllerImplExpected=outline-controller-late-bind-v26-A`,
+    )
     this.outlineController = new OutlineNumberingController()
     this.outlineController.start()
 
@@ -1717,6 +1738,11 @@ export class HeadingNumberingService {
     this.outlineToolbar = new OutlineToolbarController(toolbarCallbacks)
     this.outlineToolbar.start()
 
+    // ── Startup catch-up: the markdown editor may already be loaded (its `load`
+    // event fired before plugin onload registered the listener). Bind the
+    // outline document context now, before the initial heading refresh.
+    this.syncOutlineDocumentContext('startup-catch-up')
+
     this.store = new DisposableStore()
 
     this.initAdapter()
@@ -1732,6 +1758,14 @@ export class HeadingNumberingService {
       ;(window as any).__inkchapter_probe_editor_input_focus__ = (phase: string) => {
         this.runEditorInputFocusProbe(phase as any)
       }
+      ;(window as any).__inkchapter_format_sync_probe__ = () => this.formatSyncProbe()
+      ;(window as any).__inkchapter_outline_sync_probe__ = () => ({
+        authoritativeDocumentKey: this.getDocumentKey() ?? null,
+        activeFilePath: this.getActiveFilePath() ?? null,
+        toolbarDocumentKey: this.outlineToolbar.getDocumentKey(),
+        ...this.outlineController.getSyncProbe(),
+      })
+      registerOutlineClickForensic()
     } catch { /* ignore */ }
   }
 
@@ -1811,7 +1845,7 @@ export class HeadingNumberingService {
     const currentKey = this.getDocumentKey()
     if (scope === 'global' || documentKey === currentKey) {
       const wasEnabled = this.docContext.effectiveSettings.enabled
-      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey, this.getFormatLibrary())
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
@@ -1836,7 +1870,7 @@ export class HeadingNumberingService {
     const currentKey = this.getDocumentKey()
     if (currentKey === documentKey) {
       const wasEnabled = this.docContext.effectiveSettings.enabled
-      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey, this.getFormatLibrary())
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
@@ -2051,6 +2085,105 @@ export class HeadingNumberingService {
   }
 
   /**
+   * Notify that a library format definition changed (created/updated).
+   * The active document's effective settings are re-resolved from the library
+   * LATEST definition (never the stale applied snapshot), then runtime + outline
+   * refresh — with NO format/document/reopen/restart switch required.
+   * Unrelated format changes are skipped to avoid pointless refreshes.
+   */
+  notifyFormatLibraryChanged(formatId: string): void {
+    const library = this.getFormatLibrary()
+    const latest = library.formats.find(f => f.id === formatId)
+    const newVersion = latest?.version ?? 0
+
+    // Keep persisted formatSource.version consistent (informational only — the
+    // effective settings now resolve the latest definition dynamically).
+    this.syncGlobalDefaultFormatVersion(formatId, newVersion)
+    for (const docKey of Object.keys(this.scopeStore.documentOverrides)) {
+      const ov = this.scopeStore.documentOverrides[docKey]
+      if (ov.formatSource?.type === 'custom' && ov.formatSource.formatId === formatId) {
+        this.syncDocumentFormatVersion(docKey, formatId, newVersion)
+      }
+    }
+
+    const currentKey = this.getDocumentKey()
+    const binding = resolveDocumentFormatBinding(this.scopeStore, currentKey)
+    const globalRef = resolveGlobalDefaultFormatRef(this.scopeStore)
+    const effectiveRef = resolveEffectiveFormatId(binding, globalRef)
+    const changedRef = customFormatRef(formatId)
+
+    if (effectiveRef !== changedRef) {
+      console.info(
+        `[InkChapter] FORMAT-RUNTIME-APPLY formatId=${formatId} decision=SKIP reason=UNRELATED_FORMAT ` +
+        `effectiveRef=${effectiveRef} changedRef=${changedRef}`,
+      )
+      return
+    }
+
+    this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey, library)
+    this.docContext.settingsRevision = this.settingsRevision
+    this.lastSnapshot = null
+    this.renderedStates = null
+    this.outlineToolbar.updateAllButtonStates()
+    this.flushRefresh()
+    console.info(
+      `[InkChapter] FORMAT-RUNTIME-APPLY formatId=${formatId} version=${newVersion} ` +
+      `documentKey=${currentKey ?? 'none'} decision=APPLIED reason=FORMAT_LIBRARY_UPDATED`,
+    )
+  }
+
+  /**
+   * Diagnostic probe exposing the live-reference sync state, so stale
+   * `library version=8 / effective version=5 / runtime version=5` mismatches
+   * are directly visible. Editor/card fields are filled by the settings tab.
+   */
+  formatSyncProbe(): Record<string, unknown> {
+    const store = this.scopeStore
+    const docKey = this.getDocumentKey()
+    const binding = resolveDocumentFormatBinding(store, docKey)
+    const globalRef = resolveGlobalDefaultFormatRef(store)
+    const effectiveRef = resolveEffectiveFormatId(binding, globalRef)
+    const library = this.getFormatLibrary()
+
+    const refFormatId = (ref: string): string | null =>
+      ref.startsWith('format:') ? ref.slice('format:'.length) : null
+    const effectiveFormatId = refFormatId(effectiveRef)
+    const libraryLatest = effectiveFormatId
+      ? library.formats.find(f => f.id === effectiveFormatId) ?? null
+      : null
+
+    const gSource = (store.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const docSource = docKey ? store.documentOverrides[docKey]?.formatSource : undefined
+    const persistedVersion = binding.mode === 'override'
+      ? (docSource?.type === 'custom' ? docSource.version ?? null : null)
+      : (gSource?.type === 'custom' ? gSource.version ?? null : null)
+
+    return {
+      activeDocument: this.ctx.getActiveFilePath?.() ?? docKey ?? null,
+      globalDefault: {
+        formatRef: globalRef,
+        snapshotVersion: gSource?.type === 'custom' ? gSource.version ?? null : null,
+      },
+      documentBinding: binding,
+      effective: {
+        formatId: effectiveFormatId,
+        formatVersion: libraryLatest?.version ?? null,
+        source: binding.mode === 'override' ? 'document-override' : 'global-default',
+      },
+      library: {
+        formatId: effectiveFormatId,
+        latestVersion: libraryLatest?.version ?? null,
+      },
+      runtime: {
+        appliedFormatId: effectiveFormatId,
+        appliedVersion: persistedVersion,
+      },
+      editor: { editingFormatId: null, draftDirty: null, baselineVersion: null },
+      card: { previewFormatId: effectiveFormatId, previewVersion: libraryLatest?.version ?? null },
+    }
+  }
+
+  /**
    * Apply a format to the specified scope.
    * Deep-clones the format's settings into a snapshot in the scope store.
    * Editing or deleting the format later does NOT affect the snapshot.
@@ -2092,7 +2225,7 @@ export class HeadingNumberingService {
     // Reload document context if current document is affected
     const currentKey = this.getDocumentKey()
     if (scope === 'global' || documentKey === currentKey) {
-      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey, this.getFormatLibrary())
       this.docContext.settingsRevision = this.settingsRevision
       this.lastSnapshot = null
       this.renderedStates = null
@@ -2194,6 +2327,37 @@ export class HeadingNumberingService {
     return generateDocumentKey(filePath, typeof vaultRoot === 'string' ? vaultRoot : filePath.split(/[\\/]/).slice(0, -1).join('/'))
   }
 
+  /**
+   * Single authoritative entry point: drive the OutlineController + Toolbar
+   * documentKey from the current Document Runtime Context. Called at startup
+   * catch-up, DOCUMENT-CONTEXT-READY, editor-load, file-open, and document
+   * switch — never rely solely on a possibly-already-fired `load` event.
+   */
+  private syncOutlineDocumentContext(reason: string): void {
+    const authoritativeKey = this.getDocumentKey()
+    const businessReady = this.documentContext?.businessReady ?? false
+
+    // Startup catch-up must only bind editor/root infrastructure; a formal
+    // document bind is deferred until DOCUMENT-CONTEXT-READY (businessReady=true).
+    // Otherwise startup produces a premature bind with businessReady=false and
+    // can emit stale SKIP_STALE_TASK/DOCUMENT_KEY_MISMATCH renders.
+    if (reason === 'startup-catch-up' && !businessReady) {
+      console.info(
+        `[InkChapter Numbering] OUTLINE-DOCUMENT-CONTEXT-SYNC reason=${reason} ` +
+        `authoritativeKey=${authoritativeKey ?? 'none'} businessReady=${businessReady} decision=DEFER`,
+      )
+      return
+    }
+
+    this.outlineController.syncDocumentContext(authoritativeKey, reason)
+    this.outlineToolbar.setDocumentKey(authoritativeKey ?? '')
+    console.info(
+      `[InkChapter Numbering] OUTLINE-DOCUMENT-CONTEXT-SYNC reason=${reason} ` +
+      `authoritativeKey=${authoritativeKey ?? 'none'} businessReady=${businessReady} ` +
+      `toolbarKey=${this.outlineToolbar.getDocumentKey() || 'none'}`,
+    )
+  }
+
   /** R58.7 Phase A.1: Scope-aware key for in-memory operations (EPHEMERAL uses scopeId, PERSISTED uses documentKey). */
   getScopeKey(): string {
     return this.documentContext.scopeId ?? this.getDocumentKey() ?? 'unknown'
@@ -2213,7 +2377,7 @@ export class HeadingNumberingService {
   private loadDocumentContext(): void {
     const oldKey = this.docContext?.documentKey ?? null
     const docKey = this.getDocumentKey()
-    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
+    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey, this.getFormatLibrary())
     this.docContext.settingsRevision = this.settingsRevision
     // [Diagnostic] Document change log — remove after verification
     const docPath = this.getActiveFilePath()
@@ -3440,8 +3604,8 @@ export class HeadingNumberingService {
       }
       snapshotApplyDiff(labels, diffEntries, labels.length, headingEls.length)
 
-      // Sync outline sidebar numbering
-      this.outlineController.syncAfterRefresh(headings, labels, gaps)
+      // Sync outline sidebar numbering — pass the authoritative documentKey.
+      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, labels, gaps)
 
       // Output H2 diagnostic in dev mode (first load only)
       if (reason === 'initial-load' || reason === 'file-open') {
@@ -7900,7 +8064,7 @@ export class HeadingNumberingService {
     this.persistScopeStore(newStore)
 
     // Reload context so effective settings reflect cleared overrides
-    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey)
+    this.docContext = resolveEffectiveSettings(this.scopeStore, docKey, this.getFormatLibrary())
     this.docContext.settingsRevision = this.settingsRevision
     this.adapter.clearHeadingLayouts()
   }
@@ -7943,7 +8107,7 @@ export class HeadingNumberingService {
     // Reload document context so effective settings reflect new layout overrides
     const currentKey = this.getDocumentKey()
     if (currentKey === docKey) {
-      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey)
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey, this.getFormatLibrary())
       this.docContext.settingsRevision = this.settingsRevision
       // Apply layouts to DOM immediately
       const effectiveLayouts = this.getEffectiveHeadingLayouts()
@@ -9365,6 +9529,16 @@ export class HeadingNumberingService {
 
   // ── Paste handling ──────────────────────────────────────
 
+  /** Returns true (and logs SKIP) when the event originates from InkChapter's own UI. */
+  private skipIfInkChapterUiEvent(event: Event, handler: string): boolean {
+    if (!isInkChapterUiEvent(event)) return false
+    console.info(
+      `[InkChapter] R58-UI-GUARD handler=${handler} ` +
+      `type=${event.type} decision=SKIP reason=INKCHAPTER_UI_EVENT`,
+    )
+    return true
+  }
+
   private attachPasteListener(root: HTMLElement): void {
     const onPaste = (): void => {
       if (this.pasteListenerTimer !== null) clearTimeout(this.pasteListenerTimer)
@@ -9388,6 +9562,7 @@ export class HeadingNumberingService {
    */
   private attachKeydownListener(root: HTMLElement): void {
     const onKeyDown = (e: KeyboardEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'tab-demotion')) return
       if (e.key !== 'Tab' || e.shiftKey) return // Only Tab (demotion), not Shift+Tab
 
       // Check if cursor is inside a heading
@@ -9446,6 +9621,7 @@ export class HeadingNumberingService {
     // ── Current-Line Transform: keydown = sole commit owner ──
     // Only keydown can identify token, create transaction, and commit.
     const onEnterCommand = (e: KeyboardEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'enter-command')) return
       this.logKeyboardProvenance(e, 'onEnterCommand')
 
       // ── R58.7 Step 1.2: ENTER ADMISSION FIREWALL ──
@@ -9512,6 +9688,7 @@ export class HeadingNumberingService {
     // ── R58.6.7: Generic User Intent Capture (keydown) ──
     // Captures Delete, Arrow navigation, printable typing — BEFORE other handlers.
     const onIntentKeydown = (e: KeyboardEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'intent-keydown')) return
       if (e.isComposing) return
       let source: UserIntentSource
       if (e.key === 'Enter' || e.key === 'Backspace') return // handled by dedicated handlers
@@ -9537,6 +9714,7 @@ export class HeadingNumberingService {
 
     // ── R58.6.7: Beforeinput dedup (same physical action as preceding keydown) ──
     const onIntentBeforeInput = (e: InputEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'intent-beforeinput')) return
       const deducedKey = (() => {
         switch (e.inputType) {
           case 'insertParagraph': return 'Enter'
@@ -9589,7 +9767,8 @@ export class HeadingNumberingService {
     this.editorRootDisposables.add(() => root.removeEventListener('beforeinput', onIntentBeforeInput, true))
 
     // ── R58.6.7: Pointer/mousedown intent capture ──
-    const onPointerIntent = (): void => {
+    const onPointerIntent = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'pointer-intent')) return
       this.beginTrustedUserIntent('POINTER', 'pointerdown')
     }
     root.addEventListener('pointerdown', onPointerIntent, true)
@@ -9597,6 +9776,7 @@ export class HeadingNumberingService {
 
     // beforeinput(insertParagraph) — suppress-only, NEVER commits
     const onBeforeInputInsertParagraph = (e: InputEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'beforeinput-insert-paragraph')) return
       if (e.inputType !== 'insertParagraph') return
       const txn = this.activeEnterTransaction
       if (!txn) return // no active transaction → native
@@ -9613,6 +9793,7 @@ export class HeadingNumberingService {
     // FORCE_INDENT + caret@logical-start + Backspace → FORCE_FLUSH
     // Must intercept BEFORE Typora processes the Backspace (delete/merge).
     const onBackspaceCommand = (e: KeyboardEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'backspace-command')) return
       if (e.key !== 'Backspace') return
 
       // R58.6.7: Backspace always advances user intent
@@ -9757,6 +9938,7 @@ export class HeadingNumberingService {
 
     // ── Forensic: beforeinput recording (passive, no mutation) ──
     const onBeforeInput = (e: InputEvent): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'forensic-beforeinput')) return
       // P0-VC Phase B observability: capture BEFORE snapshot for empty→nonempty.
       if (e.inputType === 'insertText' || e.inputType === 'insertCompositionText') {
         this.pendingEmptyNonemptyBefore = this.captureEmptyNonemptyBefore(e.inputType, e.isComposing)
@@ -9782,7 +9964,8 @@ export class HeadingNumberingService {
     this.editorRootDisposables.add(() => root.removeEventListener('beforeinput', onBeforeInput))
 
     // input
-    const onInput = (): void => {
+    const onInput = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'editor-input')) return
       // ── R58.7: IME/composition input selection timing ──
       this.auditImeSelection('input', 'input', this.isInComposition)
       // P0-VC Phase B observability: emit empty→nonempty transition if pending.
@@ -9888,7 +10071,8 @@ export class HeadingNumberingService {
     this.editorRootDisposables.add(() => root.removeEventListener('input', onInput))
 
     // composition
-    const onCompositionEnd = (): void => {
+    const onCompositionEnd = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'composition-end')) return
       this.auditImeSelection('compositionend', 'none', false)
       // ── R58.7: IME text commit anchor — COMMIT+0 stability starts here ──
       this.commitPostTextInputObservation('COMPOSITION_END')
@@ -9901,7 +10085,8 @@ export class HeadingNumberingService {
     root.addEventListener('compositionend', onCompositionEnd)
     this.editorRootDisposables.add(() => root.removeEventListener('compositionend', onCompositionEnd))
 
-    const onCompositionStart = (): void => {
+    const onCompositionStart = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'composition-start')) return
       this.isInComposition = true
       this.imeCompositionSessionSeq++
       this.imeCompositionActiveSessionId = `ime-${this.imeCompositionSessionSeq}-${Date.now()}`
@@ -9910,14 +10095,16 @@ export class HeadingNumberingService {
     root.addEventListener('compositionstart', onCompositionStart)
     this.editorRootDisposables.add(() => root.removeEventListener('compositionstart', onCompositionStart))
 
-    const onCompositionUpdate = (): void => {
+    const onCompositionUpdate = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'composition-update')) return
       this.auditImeSelection('compositionupdate', 'none', this.isInComposition)
     }
     root.addEventListener('compositionupdate', onCompositionUpdate)
     this.editorRootDisposables.add(() => root.removeEventListener('compositionupdate', onCompositionUpdate))
 
     // focusin
-    const onFocusIn = (): void => {
+    const onFocusIn = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'focus-in')) return
       this.requestRefresh('focus-in')
       this.scheduleTail('decoration-repair', FOCUS_TAIL_MS)
     }
@@ -9925,14 +10112,16 @@ export class HeadingNumberingService {
     this.editorRootDisposables.add(() => root.removeEventListener('focusin', onFocusIn))
 
     // click
-    const onClick = (): void => {
+    const onClick = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'editor-click')) return
       this.requestRefresh('editor-click')
     }
     root.addEventListener('click', onClick, { passive: true })
     this.editorRootDisposables.add(() => root.removeEventListener('click', onClick))
 
     // keyup
-    const onKeyUp = (): void => {
+    const onKeyUp = (e: Event): void => {
+      if (this.skipIfInkChapterUiEvent(e, 'editor-keyup')) return
       this.requestRefresh('editor-keyup')
     }
     root.addEventListener('keyup', onKeyUp, { passive: true })
@@ -9966,8 +10155,7 @@ export class HeadingNumberingService {
       ctx.onEditorEvent('load', (editorEl: unknown) => {
         this.flushSidecarWrite()
         this.loadDocumentContext()
-        const docKey = this.getDocumentKey()
-        recordRuntimeAudit('editor:load', { documentKey: docKey ?? 'none', settingsSource: this.docContext.source })
+        recordRuntimeAudit('editor:load', { documentKey: this.getDocumentKey() ?? 'none', settingsSource: this.docContext.source })
         if (editorEl instanceof HTMLElement) {
           this.adapter.setEditorRoot(editorEl)
           // ── R58.7 Phase A.1.1: Bind editor runtime + refresh context IMMEDIATELY ──
@@ -9977,9 +10165,10 @@ export class HeadingNumberingService {
           this.renderedStates = null
           this.connectObserver(editorEl)
           this.bindEditorRoot()
-          this.outlineController.setDocumentKey(docKey ?? '')
+          // Authoritative documentKey MUST be read AFTER refreshDocumentContext():
+          // the active file may only become available after the editor context refresh.
+          this.syncOutlineDocumentContext('editor-load')
           this.outlineToolbar.reinitialize()
-          this.outlineToolbar.setDocumentKey(docKey ?? '')
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
           // Reconstruct paragraph indent overrides from sidecar after DOM settles
@@ -10072,8 +10261,8 @@ export class HeadingNumberingService {
         this.renderedStates = null
         this.outlineController.bumpRenderVersion()
         this.outlineController.reinitialize()
+        this.syncOutlineDocumentContext('file-open')
         this.outlineToolbar.reinitialize()
-        this.outlineToolbar.setDocumentKey(newDocKey ?? '')
         this.overrideStore = null // Invalidate override store for new doc
         queueMicrotask(() => {
           if (version !== this.renderVersion) { return }

@@ -1,10 +1,18 @@
 {
   "schemaVersion": 1,
   "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-05.md",
-  "updatedAt": 1786569754966,
+  "updatedAt": 1786868199987,
   "paragraphOverrides": [
     {
       "id": "indent-1786569754757-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786868199777-1",
       "mode": "force-indent",
       "anchor": {
         "lastKnownOrdinal": 0

@@ -318,6 +318,11 @@ export class OutlineToolbarController {
     this.updateVisibility()
   }
 
+  /** Diagnostic accessor for the document identity invariant probe. */
+  getDocumentKey(): string {
+    return this.currentDocKey
+  }
+
   // ── v5: Tab click listeners ──────────────────────
 
   private bindTabClickListeners(): void {

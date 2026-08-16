@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-r58-7-caption-system-v1'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-outline-observer-late-bind-v26'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
 export const RUNTIME_GATE_REVISION = 'r58-lifecycle-repair'

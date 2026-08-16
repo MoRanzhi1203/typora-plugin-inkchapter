@@ -2517,6 +2517,15 @@ export interface MutationClassification {
  * - small paragraph childList change (→ 'paragraph-command-mutation' candidate)
  * - large batch (paste/document load → no shortcut candidate)
  */
+
+const CAPTION_DECORATION_SELECTOR = '[data-inkchapter-caption]'
+
+/** Caption decorations are plugin-authored and must never be classified as business paragraphs. */
+function isCaptionDecoration(node: Node): boolean {
+  if (!(node instanceof HTMLElement)) return false
+  return node.matches(CAPTION_DECORATION_SELECTOR) || node.closest(CAPTION_DECORATION_SELECTOR) !== null
+}
+
 export function classifyEditorMutation(
   mutations: MutationRecord[],
   root: HTMLElement,
@@ -2538,12 +2547,14 @@ export function classifyEditorMutation(
       // Check added/removed for heading elements
       for (let i = 0; i < m.addedNodes.length; i++) {
         const node = m.addedNodes[i]
+        if (isCaptionDecoration(node)) continue
         if (node instanceof HTMLElement && isHeadingOrContainsHeading(node)) {
           headingMutation = true
         }
       }
       for (let i = 0; i < m.removedNodes.length; i++) {
         const node = m.removedNodes[i]
+        if (isCaptionDecoration(node)) continue
         if (node instanceof HTMLElement && isHeadingOrContainsHeading(node)) {
           headingMutation = true
         }
@@ -2566,6 +2577,7 @@ export function classifyEditorMutation(
           // Check if any added/removed node relates to content blocks
           for (let i = 0; i < m.addedNodes.length; i++) {
             const node = m.addedNodes[i]
+            if (isCaptionDecoration(node)) continue
             if (node instanceof HTMLElement) {
               const tag = node.tagName
               if (tag === 'P' || BLOCK_TAGS.has(tag)) {
@@ -2577,6 +2589,7 @@ export function classifyEditorMutation(
           if (!paragraphCommandCandidate) {
             for (let i = 0; i < m.removedNodes.length; i++) {
               const node = m.removedNodes[i]
+              if (isCaptionDecoration(node)) continue
               if (node instanceof HTMLElement) {
                 const tag = node.tagName
                 if (tag === 'P' || BLOCK_TAGS.has(tag)) {

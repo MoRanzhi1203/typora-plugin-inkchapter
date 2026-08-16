@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-e3-clean.md",
+  "updatedAt": 1786806994833,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786806976320-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1,
+        "textHash": "hb468w0",
+        "occurrence": 1,
+        "beforeHash": "hvn0404"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786806990518-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 3,
+        "textHash": "h1cfclnz",
+        "occurrence": 1,
+        "beforeHash": "hxncyzm"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786806993743-2",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4,
+        "beforeHash": "h1cfclnz"
+      },
+      "temporary": true
+    }
+  ]
+}

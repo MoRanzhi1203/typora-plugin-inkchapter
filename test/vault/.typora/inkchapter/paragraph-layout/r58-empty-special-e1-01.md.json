@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-e1-01.md",
-  "updatedAt": 1786783080409,
+  "updatedAt": 1786809368943,
   "paragraphOverrides": [
     {
       "id": "indent-1786783080207-0",
@@ -9,6 +9,16 @@
       "anchor": {
         "lastKnownOrdinal": 1,
         "beforeHash": "hhu2t"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786809368741-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4,
+        "beforeHash": "hgui",
+        "afterHash": "hcwpai"
       },
       "temporary": true
     }

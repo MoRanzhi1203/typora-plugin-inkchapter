@@ -18,6 +18,8 @@ import type {
   HeadingLevel,
   HeadingLevelStyle,
   ParagraphLayoutSettings,
+  NumberingFormatSource,
+  FormatLibrary,
 } from './heading-types'
 import { getPresetLevels } from './presets'
 
@@ -308,13 +310,21 @@ export function deepMergeSettings(
 /**
  * Resolve the effective heading numbering settings for a document.
  * Returns deep-cloned copy — no shared mutable objects.
+ *
+ * Live Reference: when a `formatLibrary` is provided and the effective format
+ * source is a custom format that still exists in the library, the LATEST
+ * library definition is resolved (never the stale applied snapshot). This is
+ * the single place where a linked custom format's latest content is resolved.
+ * A missing format reference falls back to the persisted snapshot (repair path).
  */
 export function resolveEffectiveSettings(
   store: HeadingNumberingScopeStore,
   documentKey: string | null,
+  formatLibrary?: FormatLibrary,
 ): DocumentNumberingContext {
-  const base = documentKey && store.documentOverrides[documentKey]
-    ? deepMergeSettings(store.globalDefault, store.documentOverrides[documentKey].settings)
+  const docOverride = documentKey ? store.documentOverrides[documentKey] : undefined
+  const base = docOverride
+    ? deepMergeSettings(store.globalDefault, docOverride.settings)
     : deepCloneSettings(store.globalDefault)
 
   // For non-custom presets, always regenerate levels from the latest
@@ -322,16 +332,25 @@ export function resolveEffectiveSettings(
   // are picked up without requiring user to re-save settings.
   if (base.preset !== 'custom') {
     base.levels = getPresetLevels(base.preset)
+  } else if (formatLibrary) {
+    // Live Reference: resolve the latest custom format definition.
+    const source = docOverride?.formatSource ?? (store.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    if (source?.type === 'custom') {
+      const latest = formatLibrary.formats.find(f => f.id === source.formatId)
+      if (latest) {
+        base.levels = deepCloneLevels(latest.settings.levels)
+        base.enabled = latest.settings.enabled
+        base.maxDepth = latest.settings.maxDepth
+        base.customDefinition = deepCloneLevels(latest.settings.levels)
+      }
+    }
   }
 
   // Apply document-level layout overrides on top of the merged settings.
   // Layout overrides are independent of format source identity — changing
   // H1 alignment does not affect which format is "applied".
-  if (documentKey) {
-    const docOverride = store.documentOverrides[documentKey]
-    if (docOverride?.layoutOverrides) {
-      applyLayoutOverridesToSettings(base, docOverride.layoutOverrides)
-    }
+  if (documentKey && docOverride?.layoutOverrides) {
+    applyLayoutOverridesToSettings(base, docOverride.layoutOverrides)
   }
 
   if (!documentKey) {
@@ -343,12 +362,11 @@ export function resolveEffectiveSettings(
     }
   }
 
-  const override = store.documentOverrides[documentKey]
   return {
     documentKey,
-    settingsRevision: override?.updatedAt ?? 0,
+    settingsRevision: docOverride?.updatedAt ?? 0,
     effectiveSettings: base,
-    source: override ? 'document' : 'global',
+    source: docOverride ? 'document' : 'global',
   }
 }
 

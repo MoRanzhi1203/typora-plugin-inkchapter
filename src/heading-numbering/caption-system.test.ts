@@ -4,6 +4,7 @@ import {
   CaptionRegistry,
   resolveCaptionNumbers,
   renderCaptionLabel,
+  buildCaptionLabel,
   computeCaptionAnchor,
   resolveCaptionTargetIndex,
   resolveCaptionAnchor,
@@ -20,18 +21,18 @@ describe('CAPTION: unified table/figure/code caption system V1', () => {
       title: '实验结果', targetAnchor: computeCaptionAnchor('table', 0),
     })
     const n = resolveCaptionNumbers([{ captionId: r.captionId, type: r.type }])
-    expect(renderCaptionLabel('table', n[0].number, r.title)).toBe('表 1  实验结果')
+    expect(renderCaptionLabel('table', n[0].number, r.title)).toBe('表 1 实验结果')
   })
 
   it('CAPTION-2: figure set caption → 图 1 系统架构, position below', () => {
     expect(CAPTION_TYPE_CONFIG.figure.position).toBe('below')
     const label = renderCaptionLabel('figure', 1, '系统架构')
-    expect(label).toBe('图 1  系统架构')
+    expect(label).toBe('图 1 系统架构')
   })
 
   it('CAPTION-3: code set caption → 代码 1 初始化逻辑, position above', () => {
     expect(CAPTION_TYPE_CONFIG.code.position).toBe('above')
-    expect(renderCaptionLabel('code', 1, '初始化逻辑')).toBe('代码 1  初始化逻辑')
+    expect(renderCaptionLabel('code', 1, '初始化逻辑')).toBe('代码 1 初始化逻辑')
   })
 
   it('CAPTION-4: table/figure/code numbering independent', () => {
@@ -194,6 +195,31 @@ describe('CAPTION: unified table/figure/code caption system V1', () => {
     const titleBefore = reg.getById('f1')!.title
     resolveCaptionNumbers([{ captionId: 'f1', type: 'figure' }])
     expect(reg.getById('f1')!.title).toBe(titleBefore)
+  })
+})
+
+describe('buildCaptionLabel: structural single-space separator', () => {
+  it('no name → prefix + number only', () => {
+    expect(buildCaptionLabel('图', 1, '')).toBe('图 1')
+    expect(buildCaptionLabel('图', 1, '   ')).toBe('图 1')
+  })
+
+  it('simple name → exactly one space between number and name', () => {
+    expect(buildCaptionLabel('图', 1, 'tst')).toBe('图 1 tst')
+    expect(buildCaptionLabel('表', 2, '实验数据')).toBe('表 2 实验数据')
+    expect(buildCaptionLabel('代码', 3, '初始化流程')).toBe('代码 3 初始化流程')
+  })
+
+  it('leading/trailing spaces in name are trimmed', () => {
+    expect(buildCaptionLabel('图', 1, '  系统架构  ')).toBe('图 1 系统架构')
+  })
+
+  it('internal double spaces in name are preserved (never collapsed)', () => {
+    expect(buildCaptionLabel('图', 1, 'a  b')).toBe('图 1 a  b')
+  })
+
+  it('Chinese name keeps a single structural space', () => {
+    expect(buildCaptionLabel('图', 1, '系统架构')).toBe('图 1 系统架构')
   })
 })
 

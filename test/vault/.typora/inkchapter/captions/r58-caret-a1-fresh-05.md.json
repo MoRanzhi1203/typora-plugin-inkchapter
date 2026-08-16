@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-caret-a1-fresh-05.md",
+  "updatedAt": 1786870004504,
+  "captions": [
+    {
+      "captionId": "caption-msvj9yz6-1",
+      "documentKey": "r58-caret-a1-fresh-05.md",
+      "type": "table",
+      "title": "阿道夫",
+      "targetAnchor": {
+        "type": "table",
+        "ordinal": 0
+      },
+      "createdAt": 1786868344914,
+      "updatedAt": 1786868344914
+    },
+    {
+      "captionId": "caption-msvjbg68-2",
+      "documentKey": "r58-caret-a1-fresh-05.md",
+      "type": "code",
+      "title": "测试",
+      "targetAnchor": {
+        "type": "code",
+        "ordinal": 0,
+        "beforeFingerprint": "div>div",
+        "afterFingerprint": "p",
+        "contentSignature": "hsnvtu1",
+        "occurrence": 1
+      },
+      "createdAt": 1786868413856,
+      "updatedAt": 1786868413856
+    },
+    {
+      "captionId": "caption-msvjbt5g-3",
+      "documentKey": "r58-caret-a1-fresh-05.md",
+      "type": "figure",
+      "title": "okok",
+      "targetAnchor": {
+        "type": "figure",
+        "ordinal": 0,
+        "beforeFingerprint": "figure>div",
+        "afterFingerprint": "div>div",
+        "contentSignature": "honj23k",
+        "occurrence": 1
+      },
+      "createdAt": 1786868430676,
+      "updatedAt": 1786868430676
+    },
+    {
+      "captionId": "caption-msvjwu4x-1",
+      "documentKey": "r58-caret-a1-fresh-05.md",
+      "type": "figure",
+      "title": "tst",
+      "targetAnchor": {
+        "type": "figure",
+        "ordinal": 0,
+        "beforeFingerprint": "h1>span",
+        "afterFingerprint": "figure>div",
+        "contentSignature": "h1wv2gb6",
+        "occurrence": 1
+      },
+      "createdAt": 1786869411729,
+      "updatedAt": 1786870004502
+    }
+  ]
+}

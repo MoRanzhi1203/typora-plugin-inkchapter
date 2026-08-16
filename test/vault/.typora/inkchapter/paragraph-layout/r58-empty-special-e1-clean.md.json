@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\r58-empty-special-e1-clean.md",
+  "updatedAt": 1786817238999,
+  "paragraphOverrides": [
+    {
+      "id": "indent-1786812437522-0",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "textHash": "hk6n",
+        "occurrence": 1,
+        "beforeHash": "h215j0"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786812500557-1",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 5,
+        "beforeHash": "hk6n",
+        "afterHash": "h215mg"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786812517174-2",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 7,
+        "beforeHash": "h215mg"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786814238418-3",
+      "mode": "force-flush",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "textHash": "hcwpai",
+        "occurrence": 1,
+        "beforeHash": "h3ylkmv",
+        "afterHash": "hcwpai"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786814252500-4",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1,
+        "textHash": "hcwpai",
+        "occurrence": 2,
+        "beforeHash": "hcwpai"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786814257617-5",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "beforeHash": "hcwpai"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786814275383-6",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786815892241-7",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0,
+        "textHash": "hgui",
+        "occurrence": 1
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786815904608-8",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 1,
+        "textHash": "h3ylkmv",
+        "occurrence": 1,
+        "beforeHash": "hgui"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786815911156-9",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2,
+        "beforeHash": "h3ylkmv"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786815923200-10",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 3,
+        "textHash": "hcwpai",
+        "occurrence": 2,
+        "beforeHash": "hcwpai",
+        "afterHash": "hcwpai"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786815929574-11",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4,
+        "beforeHash": "hcwpai"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786815939010-12",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 5,
+        "beforeHash": "hcwpai"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786815947654-13",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 6,
+        "beforeHash": "h1frj6kd"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786817196516-14",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 0,
+        "textHash": "hcwpai",
+        "occurrence": 1
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786817207941-15",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 4,
+        "textHash": "h1gpy4",
+        "occurrence": 1
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786817213165-16",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 5,
+        "textHash": "hfyqi4j",
+        "occurrence": 1,
+        "beforeHash": "h1gpy4"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786817219221-17",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 6,
+        "textHash": "hfyqi4j",
+        "occurrence": 2,
+        "beforeHash": "hfyqi4j"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786817224410-18",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 7,
+        "beforeHash": "hfyqi4j"
+      },
+      "temporary": true
+    },
+    {
+      "id": "indent-1786817230145-19",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 9,
+        "textHash": "hh8ul",
+        "occurrence": 1,
+        "beforeHash": "hb3e9lj"
+      },
+      "temporary": false
+    },
+    {
+      "id": "indent-1786817238793-20",
+      "mode": "force-indent",
+      "anchor": {
+        "lastKnownOrdinal": 2
+      },
+      "temporary": true
+    }
+  ]
+}
