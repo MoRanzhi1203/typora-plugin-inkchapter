@@ -30,6 +30,19 @@ import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 import { resolveEffectiveParagraphIndent } from '../heading-numbering/paragraph-indent-manager'
 import { Notice } from '@typora-community-plugin/core'
+import type { CaptionService } from '../heading-numbering/caption-service'
+import { DEFAULT_CAPTION_SETTINGS, type CaptionSettings, type CaptionTargetType } from '../heading-numbering/caption-system'
+import {
+  DEFAULT_OBJECT_NUMBERING_CONFIG,
+  renderNumberingPreview,
+  validateNumberTemplate,
+  type ObjectNumberingConfig,
+  type ObjectNumberingType,
+  type NumberingMode,
+  type NumberStyle,
+  type ObjectPosition,
+} from '../heading-numbering/object-numbering-engine'
+import { migrateObjectNumberingConfig } from '../heading-numbering/object-numbering-settings'
 import {
   moveSegmentToResolvedIndex,
   calculateTargetIndexAfterRemoval,
@@ -82,6 +95,16 @@ import {
   getFormatVersion,
 } from '../heading-numbering/format-library'
 import type { AppliedFormatInfo } from '../heading-numbering/format-library'
+import {
+  builtInFormatRef,
+  customFormatRef,
+  findFormatReferences,
+  resolveDocumentFormatBinding,
+  resolveDocumentFormatState,
+  resolveFormatBadges,
+  resolveGlobalDefaultFormatRef,
+  type ResolvedDocumentFormat,
+} from '../heading-numbering/document-format-binding'
 
 /** Heading layout draft — independent of numbering draft and persisted state. */
 interface HeadingLayoutDraft {
@@ -297,9 +320,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
   constructor(
     private settings: PluginSettings<InkChapterSettings>,
     private numberingService: HeadingNumberingService,
+    private captionService?: CaptionService,
   ) {
     super()
   }
+
+  // ── Caption settings draft state ──────────────────
+  private captionDraft: CaptionSettings | null = null
+  private savedCaptionBaseline: CaptionSettings | null = null
+  private captionFormulaDraft: ObjectNumberingConfig | null = null
+  private savedCaptionFormulaBaseline: ObjectNumberingConfig | null = null
 
   onshow(): void {
     this.cancelDrag()
@@ -352,6 +382,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     // Initialize draft state from persisted settings
     this.initRangeDraft()
+    this.initCaptionDraft()
     try {
       this.render()
     } catch (e) {
@@ -524,6 +555,31 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
   }
 
+  /** Unified resolved document format state (single source for badges/buttons/top card). */
+  private getResolvedDocumentFormat(): ResolvedDocumentFormat {
+    const scopeStore = this.numberingService.getScopeStore()
+    const docKey = this.numberingService.getDocumentKey()
+    const binding = resolveDocumentFormatBinding(scopeStore, docKey)
+    const globalDefaultFormatId = resolveGlobalDefaultFormatRef(scopeStore)
+    return resolveDocumentFormatState(binding, globalDefaultFormatId)
+  }
+
+  /** Resolve a format reference key to its human-readable display name. */
+  private formatRefDisplayName(ref: string | null): string {
+    if (!ref) return '未设置'
+    if (ref.startsWith('preset:')) {
+      const presetId = ref.slice('preset:'.length)
+      const preset = PRESET_CARDS.find(c => c.key === presetId)
+      return preset ? preset.name : presetId
+    }
+    if (ref.startsWith('format:')) {
+      const formatId = ref.slice('format:'.length)
+      const fmt = this.formatLibrary.formats.find(f => f.id === formatId)
+      return fmt ? fmt.name : formatId
+    }
+    return ref
+  }
+
   /** Get the applied format version from the document override (for update detection). */
   private getAppliedFormatVersion(): number | undefined {
     const scopeStore = this.numberingService.getScopeStore()
@@ -536,7 +592,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /** Determine the card state for a given format card. */
   private getCardState(key: string, isPreset: boolean):
-    { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean;
+    { applied: boolean; effective: boolean; currentDocument: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean;
       /** Business state: template version > source version (for "应用更新" button). Independent of notice. */
       templateVersionNewer: boolean;
       /** Notice state: un-acknowledged template update (for one-time "有更新" notification). */
@@ -544,47 +600,36 @@ export class HeadingNumberingSettingTab extends SettingTab {
       templateVersion?: number; sourceVersion?: number;
     }
   {
-    const info = this.getAppliedFormatInfo()
-    
-    let applied = false
-    let inheritsGlobal = false
+    const resolved = this.getResolvedDocumentFormat()
+    const ref = isPreset ? builtInFormatRef(key) : customFormatRef(key)
+    const badges = resolveFormatBadges(resolved, ref)
+
+    const effective = badges.effective
+    const currentDocument = badges.currentDocument
+    const isGlobalDefault = badges.globalDefault
+    const inheritsGlobal = resolved.mode === 'inherit'
+
     let templateVersionNewer = false
     let pendingUpdateNotice = false
     let templateVersion: number | undefined
     let sourceVersion: number | undefined
-    
-    if (isPreset && info.source?.type === 'built-in' && info.source.presetId === key) {
-      applied = true
-      inheritsGlobal = info.inheritsGlobal
-    } else if (!isPreset && info.source?.type === 'custom' && info.source.formatId === key) {
-      applied = true
-      inheritsGlobal = info.inheritsGlobal
-      
-      // Template update check: only valid when document has independent formatSource.
-      // Inherited formats get version from globalDefault — updates handled at global scope.
-      if (!inheritsGlobal) {
-        templateVersion = getFormatVersion(this.formatLibrary, key)
-        sourceVersion = this.getAppliedFormatVersion()
-        templateVersionNewer = (sourceVersion ?? 0) < (templateVersion ?? 0)
-        
-        if (templateVersionNewer) {
-          const docKey = this.numberingService.getDocumentKey()
-          pendingUpdateNotice = this.numberingService.isTemplateUpdatePending(docKey, key, templateVersion!)
-        }
+
+    // Template update check only applies to a custom format explicitly bound to
+    // the current document (override). Inherited/global-default sources are
+    // handled at the global scope and must not trigger a per-document update.
+    if (!isPreset && currentDocument) {
+      templateVersion = getFormatVersion(this.formatLibrary, key)
+      sourceVersion = this.getAppliedFormatVersion()
+      templateVersionNewer = (sourceVersion ?? 0) < (templateVersion ?? 0)
+
+      if (templateVersionNewer) {
+        const docKey = this.numberingService.getDocumentKey()
+        pendingUpdateNotice = this.numberingService.isTemplateUpdatePending(docKey, key, templateVersion!)
       }
     }
-    
-    // Check if this card is the global default
-    const scopeStore = this.numberingService.getScopeStore()
-    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
-    let isGlobalDefault = false
-    if (isPreset && gSource?.type === 'built-in' && gSource.presetId === key) {
-      isGlobalDefault = true
-    } else if (!isPreset && gSource?.type === 'custom' && gSource.formatId === key) {
-      isGlobalDefault = true
-    }
-    
-    return { applied, isGlobalDefault, inheritsGlobal, templateVersionNewer, pendingUpdateNotice, templateVersion, sourceVersion }
+
+    // `applied` is kept as a backward-compatible alias for `effective`.
+    return { applied: effective, effective, currentDocument, isGlobalDefault, inheritsGlobal, templateVersionNewer, pendingUpdateNotice, templateVersion, sourceVersion }
   }
 
   /** Check if a card is the currently selected one for preview. */
@@ -1258,6 +1303,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.formatDraft = { ...updated, version: newVersion }
     this.savedFormatBaseline = { ...updated, version: newVersion }
 
+    // Refresh the heading draft baseline so dirty=false reflects the just-saved
+    // version (prevents "有未保存的更改" lingering right after save).
+    this.headingDraftOriginal = deepCloneSettings(this.headingDraft)
+
+    // Publish the change down the live chain: effective settings → runtime → outline.
+    this.numberingService.notifyFormatLibraryChanged(formatId)
+
     if (!suppressToast) {
       Notice.info(`格式 "${updated.name}" 已保存`)
     }
@@ -1344,30 +1396,38 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private cancelFormatEditing(): void {
-    if (this.savedFormatBaseline && this.formatDraft) {
-      // Restore from baseline — keep editor visible, reset dirty
-      this.formatDraft = { ...this.savedFormatBaseline }
-      const fmtSettings = deepCloneSettings({
-        enabled: this.savedFormatBaseline.settings.enabled,
-        showLevelOneNumber: this.savedFormatBaseline.settings.showLevelOneNumber,
-        preset: 'custom' as const,
-        maxDepth: this.savedFormatBaseline.settings.maxDepth,
-        levels: this.savedFormatBaseline.settings.levels,
-        customDefinition: this.savedFormatBaseline.settings.levels,
-      } as any)
-      this.headingDraft = fmtSettings
-      this.headingDraftOriginal = deepCloneSettings(fmtSettings)
-      this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
-      this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
-    } else {
-      // No saved baseline (e.g. editing scope draft) — clear everything
-      this.selectedFormatId = null
-      this.selectedFormatType = null
-      this.formatDraft = null
-      this.savedFormatBaseline = null
-      this.headingDraft = null
-      this.headingDraftOriginal = null
+    // Restore from the Format Library's LATEST saved definition (never a stale
+    // applied snapshot or an old in-memory baseline object reference).
+    if (this.selectedFormatId) {
+      const lib = this.numberingService.getFormatLibrary()
+      const latest = lib.formats.find(f => f.id === this.selectedFormatId)
+      if (latest) {
+        this.formatDraft = { ...latest }
+        this.savedFormatBaseline = { ...latest }
+        const fmtSettings = deepCloneSettings({
+          enabled: latest.settings.enabled,
+          showLevelOneNumber: latest.settings.showLevelOneNumber,
+          preset: 'custom' as const,
+          maxDepth: latest.settings.maxDepth,
+          levels: latest.settings.levels,
+          customDefinition: latest.settings.levels,
+        } as any)
+        this.headingDraft = fmtSettings
+        this.headingDraftOriginal = deepCloneSettings(fmtSettings)
+        this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
+        this.ensureAllLevelsHaveCurrentSegment(this.headingDraftOriginal)
+        this.rerender()
+        return
+      }
     }
+
+    // No editable format (scope draft) or the format was deleted — clear.
+    this.selectedFormatId = null
+    this.selectedFormatType = null
+    this.formatDraft = null
+    this.savedFormatBaseline = null
+    this.headingDraft = null
+    this.headingDraftOriginal = null
     this.rerender()
   }
 
@@ -3268,21 +3328,26 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private renderScopeCard(s: HeadingNumberingSettings): void {
     const docPath = this.numberingService.getActiveFilePath()
     const docKey = this.numberingService.getDocumentKey()
-    const source = this.numberingService.getSettingsSource()
 
     const card = el('div', 'inkchapter-card', this.containerEl)
     const body = el('div', 'inkchapter-card-body', card)
     body.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:12px 16px;'
 
-    // ── Row 1: Document info ──
+    // ── Row 1: Document info + format source / effective / global default ──
+    const resolved = this.getResolvedDocumentFormat()
     const infoRow = el('div', 'inkchapter-scope-info-row', body)
+    infoRow.style.cssText = 'display:flex;flex-direction:column;gap:2px;'
     const filename = docPath ? (docPath.split(/[/\\]/).pop() ?? docPath) : null
     const docEl = el('span', 'inkchapter-scope-doc-name', infoRow)
-    docEl.textContent = filename ? `当前文档：${filename}` : '未打开文档'
+    docEl.textContent = filename ? `当前文档：${filename}` : '当前没有活动文档'
     if (docPath) docEl.title = docPath
 
-    const badge = el('span', 'inkchapter-scope-status-badge', infoRow)
-    badge.textContent = source === 'document' ? '使用文档独立设置' : '继承全局默认'
+    const sourceLine = el('span', '', infoRow)
+    sourceLine.textContent = `格式来源：${resolved.mode === 'override' ? '当前文档独立格式' : '继承全局默认'}`
+    const effectiveLine = el('span', '', infoRow)
+    effectiveLine.textContent = `当前生效：${this.formatRefDisplayName(resolved.effectiveFormatId)}`
+    const globalLine = el('span', '', infoRow)
+    globalLine.textContent = `全局默认：${this.formatRefDisplayName(resolved.globalDefaultFormatId)}`
 
     // ── Row 2: Scope segmented control + restore ──
     const controlsRow = el('div', 'inkchapter-scope-controls-row', body)
@@ -3314,11 +3379,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.rerender()
     }
 
-    // Restore button (only when document override exists)
-    if (source === 'document') {
+    // Restore button (only when the document has an explicit format override)
+    if (resolved.mode === 'override') {
       const restoreBtn = el('button', 'inkchapter-scope-restore-btn', controlsRow)
-      restoreBtn.textContent = '恢复继承'
-      restoreBtn.title = '恢复继承全局默认设置'
+      restoreBtn.textContent = '恢复继承全局默认'
+      restoreBtn.title = '清除当前文档的独立格式，恢复继承全局默认'
       restoreBtn.onclick = () => {
         this.numberingService.restoreInheritGlobal(docKey ?? '')
         // [Diagnostic] Restore inheritance trace
@@ -3569,7 +3634,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     previewLines: string[],
     isPreset: boolean,
     onApply: () => void,
-    cardState: { applied: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean;
+    cardState: { applied: boolean; effective: boolean; currentDocument: boolean; isGlobalDefault: boolean; inheritsGlobal: boolean;
       templateVersionNewer: boolean; pendingUpdateNotice: boolean;
       templateVersion?: number; sourceVersion?: number;
     },
@@ -3590,16 +3655,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const badgeWrap = el('span', 'inkchapter-format-card-badge-wrap', metaRow)
     badgeWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;'
     
-    // "当前文档" — based on resolvedEffectiveFormatRef (is this format applied to the current doc?)
-    if (cardState.applied) {
+    // "当前文档" — ONLY when this document is explicitly overridden to this format.
+    if (cardState.currentDocument) {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--applied', badgeWrap)
       badge.textContent = '当前文档'
     }
     
-    // "全局默认" — based on globalDefaultFormatRef (is this format the global default?)
+    // "全局默认" — globalDefaultFormatId === this format.
     if (cardState.isGlobalDefault) {
       const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--global-default', badgeWrap)
       badge.textContent = '全局默认'
+    }
+
+    // "当前生效" — effectiveFormatId === this format (inherit OR override).
+    if (cardState.effective) {
+      const badge = el('span', 'inkchapter-format-card-badge inkchapter-format-card-badge--effective', badgeWrap)
+      badge.textContent = '当前生效'
     }
 
     // "⋯" menu trigger
@@ -3640,29 +3711,33 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const actions = el('div', 'inkchapter-format-card-actions', cardEl)
     const applyBtn = el('button', 'inkchapter-btn', actions) as HTMLButtonElement
     
-    let btnText = '应用'
+    let btnText = '应用到当前文档'
     let btnDisabled = false
     
     if (this.headingScope === 'global') {
-      // Global mode: button reflects global default status
+      // Global default scope: button only sets the global default.
       if (cardState.isGlobalDefault) {
         btnText = '当前默认'
         btnDisabled = true
       } else {
-        btnText = '设为默认'
+        btnText = '设为全局默认'
       }
-    } else if (cardState.applied || cardState.inheritsGlobal) {
-      // Current document uses this format
-      if (cardState.inheritsGlobal) {
-        // Inherited from global — updates handled at global scope
+    } else {
+      // Current document scope.
+      if (cardState.currentDocument) {
+        // This document is explicitly bound to this format.
+        if (cardState.templateVersionNewer) {
+          btnText = '应用更新'
+        } else {
+          btnText = '当前使用'
+          btnDisabled = true
+        }
+      } else if (cardState.inheritsGlobal && cardState.effective) {
+        // Inherit mode + this is the effective (=global default) format.
         btnText = '继承中'
         btnDisabled = true
-      } else if (cardState.templateVersionNewer) {
-        // Independent format with available update
-        btnText = '应用更新'
       } else {
-        btnText = '已应用'
-        btnDisabled = true
+        btnText = '应用到当前文档'
       }
     }
 
@@ -3677,14 +3752,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (btnDisabled) return
       this.cancelDrag()
       if (cardState.templateVersionNewer) {
-        // Apply update: re-apply the format with current template
+        // Apply update: re-apply the format with current template.
         if (isPreset) {
           this.applyPresetToScope(key)
         } else {
           const fmt = this.formatLibrary.formats.find(f => f.id === key)
           if (fmt) this.applyFormatToScope(fmt)
         }
-      } else if (this.headingScope === 'global' && !cardState.applied) {
+      } else if (this.headingScope === 'global') {
+        // Set as global default — never touches the document binding.
         if (isPreset) {
           this.applyPresetToScope(key, 'global')
         } else {
@@ -3692,6 +3768,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
           if (fmt) this.applyFormatToScope(fmt, 'global')
         }
       } else {
+        // Apply to current document (override).
         onApply()
       }
     }
@@ -4176,13 +4253,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private showDeleteFormatConfirm(format: CustomNumberingFormat): void {
-    // Check if this format is global default
     const scopeStore = this.numberingService.getScopeStore()
-    const isGlobalDefault = scopeStore.globalDefault.preset === 'custom'
-      && scopeStore.globalDefault.levels === format.settings.levels
+    const refs = findFormatReferences(scopeStore, customFormatRef(format.id))
 
-    if (isGlobalDefault) {
+    if (refs.isGlobalDefault) {
       this.showDeleteGlobalDefaultConfirm(format)
+      return
+    }
+
+    if (refs.overrideDocumentKeys.length > 0) {
+      this.showDeleteInUseConfirm(format, refs.overrideDocumentKeys)
       return
     }
 
@@ -4206,6 +4286,24 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.executeDeleteFormat(format)
       overlay.remove()
     }
+  }
+
+  /** Block deletion of a format still referenced by one or more document overrides. */
+  private showDeleteInUseConfirm(format: CustomNumberingFormat, documentKeys: string[]): void {
+    const overlay = this.showModalOverlay()
+    const dialog = el('div', 'inkchapter-dialog', overlay)
+    dialog.style.cssText = 'min-width:420px;'
+
+    const title = el('div', 'inkchapter-dialog-title', dialog)
+    title.textContent = `无法删除"${format.name}"`
+
+    const body = el('div', 'inkchapter-dialog-body', dialog)
+    body.textContent = `该格式仍被 ${documentKeys.length} 个文档显式使用，不能直接删除。\n请先在这些文档中「恢复继承全局默认」或改用其他格式。`
+
+    const btnRow = el('div', 'inkchapter-dialog-buttons', dialog)
+    const okBtn = el('button', 'inkchapter-btn', btnRow)
+    okBtn.textContent = '知道了'
+    okBtn.onclick = () => overlay.remove()
   }
 
   private showDeleteGlobalDefaultConfirm(format: CustomNumberingFormat): void {
@@ -5603,35 +5701,253 @@ export class HeadingNumberingSettingTab extends SettingTab {
     return diffs.length > 0 ? diffs.join('; ') : 'no diffs found (but equal returned false)'
   }
 
+  private initCaptionDraft(): void {
+    const raw = this.settings.get('caption' as any) as any
+    const cfg = (raw?.types ? raw : DEFAULT_CAPTION_SETTINGS) as CaptionSettings
+    this.captionDraft = {
+      schemaVersion: cfg.schemaVersion ?? 1,
+      types: {
+        table: { ...(cfg.types?.table ?? DEFAULT_CAPTION_SETTINGS.types.table) },
+        figure: { ...(cfg.types?.figure ?? DEFAULT_CAPTION_SETTINGS.types.figure) },
+        code: { ...(cfg.types?.code ?? DEFAULT_CAPTION_SETTINGS.types.code) },
+      },
+    }
+    this.savedCaptionBaseline = {
+      schemaVersion: this.captionDraft.schemaVersion,
+      types: {
+        table: { ...this.captionDraft.types.table },
+        figure: { ...this.captionDraft.types.figure },
+        code: { ...this.captionDraft.types.code },
+      },
+    }
+    const rawFormula = this.settings.get('captionFormula' as any) as any
+    this.captionFormulaDraft = migrateObjectNumberingConfig('formula', rawFormula)
+    this.savedCaptionFormulaBaseline = { ...this.captionFormulaDraft }
+  }
+
+  private hasCaptionDirty(): boolean {
+    const captionDirty = this.captionDraft != null && this.savedCaptionBaseline != null
+      && JSON.stringify(this.captionDraft) !== JSON.stringify(this.savedCaptionBaseline)
+    const formulaDirty = this.captionFormulaDraft != null && this.savedCaptionFormulaBaseline != null
+      && JSON.stringify(this.captionFormulaDraft) !== JSON.stringify(this.savedCaptionFormulaBaseline)
+    return captionDirty || formulaDirty
+  }
+
+  private saveCaptionSettings(): void {
+    if (!this.captionDraft) return
+    const errors = this.captionTemplateErrors()
+    if (errors.length > 0) {
+      Notice.error(`编号格式无效：${errors[0]}`)
+      console.warn('[InkChapter Caption] SETTINGS-SAVE-BLOCKED', errors)
+      return
+    }
+    this.settings.set('caption' as any, this.captionDraft as any)
+    this.savedCaptionBaseline = {
+      schemaVersion: this.captionDraft.schemaVersion,
+      types: {
+        table: { ...this.captionDraft.types.table },
+        figure: { ...this.captionDraft.types.figure },
+        code: { ...this.captionDraft.types.code },
+      },
+    }
+    if (this.captionFormulaDraft) {
+      this.settings.set('captionFormula' as any, this.captionFormulaDraft as any)
+      this.savedCaptionFormulaBaseline = { ...this.captionFormulaDraft }
+    }
+    this.captionService?.applySettings(this.captionDraft)
+    if (this.captionFormulaDraft) {
+      this.captionService?.applyFormulaSettings(this.captionFormulaDraft)
+    }
+    console.info('[InkChapter Caption] SETTINGS-SAVE')
+    emitRuntimeAudit('CAPTION-SETTINGS-SAVE', { decision: 'SAVED' })
+  }
+
+  private cancelCaptionSettings(): void {
+    if (!this.savedCaptionBaseline) return
+    this.captionDraft = {
+      schemaVersion: this.savedCaptionBaseline.schemaVersion,
+      types: {
+        table: { ...this.savedCaptionBaseline.types.table },
+        figure: { ...this.savedCaptionBaseline.types.figure },
+        code: { ...this.savedCaptionBaseline.types.code },
+      },
+    }
+    if (this.savedCaptionFormulaBaseline) {
+      this.captionFormulaDraft = { ...this.savedCaptionFormulaBaseline }
+    }
+    this.render()
+  }
+
   private renderCaptionCard(): void {
     const card = el('div', 'inkchapter-card', this.containerEl)
     const header = el('div', 'inkchapter-card-header', card)
     const title = el('div', 'inkchapter-card-title', header)
     title.textContent = '题注与对象编号'
     const desc = el('div', 'inkchapter-card-desc', header)
-    desc.textContent = '表格 / 图片 / 代码块的题注命名与独立编号（第一版为只读预览）'
+    desc.textContent = '表格 / 图片 / 代码块 / 公式的题注命名与独立编号'
 
     const body = el('div', 'inkchapter-card-body', card)
+    const draft = this.captionDraft ?? DEFAULT_CAPTION_SETTINGS
 
-    const raw = this.settings.get('caption' as any) as any
-    const types = raw?.types ?? {
-      table: { enabled: true, position: 'above', prefix: '表', numbering: 'continuous' },
-      figure: { enabled: true, position: 'below', prefix: '图', numbering: 'continuous' },
-      code: { enabled: true, position: 'above', prefix: '代码', numbering: 'continuous' },
-    }
-
-    const rows: Array<[string, any]> = [
-      ['表格题注', types.table],
-      ['图片题注', types.figure],
-      ['代码块题注', types.code],
+    const positions2 = [
+      { value: 'above' as ObjectPosition, label: '上方' },
+      { value: 'below' as ObjectPosition, label: '下方' },
     ]
-    for (const [label, cfg] of rows) {
-      const row = el('div', 'inkchapter-caption-setting-row', body)
-      const name = el('div', 'inkchapter-caption-setting-name', row)
-      name.textContent = label
-      const detail = el('div', 'inkchapter-caption-setting-detail', row)
-      detail.textContent = `启用${cfg?.enabled ? '：是' : '：否'} · 位置：${cfg?.position === 'above' ? '上方' : '下方'} · 编号方式：全文连续 · 前缀：${cfg?.prefix ?? ''}`
+
+    this.renderNumberingGroup(body, 'table', '表格题注', () => draft.types.table, patch => {
+      if (this.captionDraft) Object.assign(this.captionDraft.types.table, patch)
+    }, positions2, '示例名称', false)
+
+    this.renderNumberingGroup(body, 'figure', '图片题注', () => draft.types.figure, patch => {
+      if (this.captionDraft) Object.assign(this.captionDraft.types.figure, patch)
+    }, positions2, '示例图片', false)
+
+    this.renderNumberingGroup(body, 'code', '代码块题注', () => draft.types.code, patch => {
+      if (this.captionDraft) Object.assign(this.captionDraft.types.code, patch)
+    }, positions2, '示例代码', false)
+
+    // Formula group — independent ObjectNumberingConfig draft (native mode default).
+    this.renderNumberingGroup(body, 'formula', '公式编号', () => this.captionFormulaDraft ?? DEFAULT_OBJECT_NUMBERING_CONFIG.formula, patch => {
+      if (this.captionFormulaDraft) Object.assign(this.captionFormulaDraft, patch)
+    }, [
+      { value: 'above' as ObjectPosition, label: '上方' },
+      { value: 'below' as ObjectPosition, label: '下方' },
+      { value: 'left' as ObjectPosition, label: '左侧' },
+      { value: 'right' as ObjectPosition, label: '右侧' },
+    ], '', true)
+  }
+
+  private renderNumberingGroup(
+    parent: HTMLElement,
+    type: ObjectNumberingType,
+    label: string,
+    get: () => Record<string, any>,
+    apply: (patch: Record<string, any>) => void,
+    positionOptions: Array<{ value: ObjectPosition; label: string }>,
+    sampleName: string,
+    showFormulaMode: boolean,
+  ): void {
+    const row = el('div', 'inkchapter-caption-setting-row', parent)
+    const name = el('div', 'inkchapter-caption-setting-name', row)
+    name.textContent = label
+
+    const controls = el('div', 'inkchapter-caption-setting-controls', row)
+
+    const enabledLabel = el('label', 'inkchapter-caption-setting-control', controls)
+    const enabledInput = document.createElement('input')
+    enabledInput.type = 'checkbox'
+    enabledInput.checked = !!get().enabled
+    enabledInput.addEventListener('change', () => { apply({ enabled: enabledInput.checked }) })
+    enabledLabel.appendChild(enabledInput)
+    enabledLabel.appendChild(document.createTextNode(' 启用'))
+
+    // Formula implementation mode (Typora native / InkChapter custom).
+    if (showFormulaMode) {
+      const modeLabel = el('label', 'inkchapter-caption-setting-control', controls)
+      modeLabel.appendChild(document.createTextNode('编号实现 '))
+      const modeSelect = buildSelect<'typora-native' | 'inkchapter'>([
+        { value: 'typora-native', label: 'Typora 原生' },
+        { value: 'inkchapter', label: '墨章自定义' },
+      ], (get().formulaMode ?? 'typora-native') as 'typora-native' | 'inkchapter', 'inkchapter-caption-setting-select')
+      modeSelect.addEventListener('change', () => { apply({ formulaMode: modeSelect.value }) })
+      modeLabel.appendChild(modeSelect)
     }
+
+    const positionSelect = buildSelect<ObjectPosition>(positionOptions, (get().position ?? 'above') as ObjectPosition, 'inkchapter-caption-setting-select')
+    positionSelect.addEventListener('change', () => { apply({ position: positionSelect.value }) })
+    controls.appendChild(positionSelect)
+
+    const prefixInput = document.createElement('input')
+    prefixInput.type = 'text'
+    prefixInput.className = 'inkchapter-caption-setting-input'
+    prefixInput.value = get().prefix ?? ''
+    prefixInput.addEventListener('input', () => { apply({ prefix: prefixInput.value }); refreshPreview() })
+    controls.appendChild(prefixInput)
+
+    const detail = el('div', 'inkchapter-caption-setting-detail', row)
+    detail.style.display = 'flex'
+    detail.style.flexWrap = 'wrap'
+    detail.style.gap = '8px'
+    detail.style.alignItems = 'center'
+
+    const addField = (text: string, inputEl: HTMLElement): void => {
+      const wrap = el('label', 'inkchapter-caption-setting-control', detail)
+      wrap.appendChild(document.createTextNode(text))
+      wrap.appendChild(inputEl)
+    }
+
+    const modeSelect = buildSelect<NumberingMode>(NUMBERING_MODE_OPTIONS, (get().numberingMode ?? 'continuous') as NumberingMode, 'inkchapter-caption-setting-select')
+    modeSelect.addEventListener('change', () => { apply({ numberingMode: modeSelect.value }); refreshPreview() })
+    addField('编号方式 ', modeSelect)
+
+    const styleSelect = buildSelect<NumberStyle>(NUMBER_STYLE_OPTIONS, (get().numberStyle ?? 'arabic') as NumberStyle, 'inkchapter-caption-setting-select')
+    styleSelect.addEventListener('change', () => { apply({ numberStyle: styleSelect.value }); refreshPreview() })
+    addField('序号样式 ', styleSelect)
+
+    const startInput = document.createElement('input')
+    startInput.type = 'number'
+    startInput.min = '1'
+    startInput.className = 'inkchapter-caption-setting-input'
+    startInput.style.width = '64px'
+    startInput.value = String(get().startAt ?? 1)
+    startInput.addEventListener('input', () => { apply({ startAt: Math.max(1, Number(startInput.value) || 1) }); refreshPreview() })
+    addField('起始编号 ', startInput)
+
+    const minDigitsInput = document.createElement('input')
+    minDigitsInput.type = 'number'
+    minDigitsInput.min = '1'
+    minDigitsInput.max = '6'
+    minDigitsInput.className = 'inkchapter-caption-setting-input'
+    minDigitsInput.style.width = '64px'
+    minDigitsInput.value = String(get().minDigits ?? 1)
+    minDigitsInput.addEventListener('input', () => { apply({ minDigits: Math.min(6, Math.max(1, Number(minDigitsInput.value) || 1)) }); refreshPreview() })
+    addField('最小位数 ', minDigitsInput)
+
+    const templateInput = document.createElement('input')
+    templateInput.type = 'text'
+    templateInput.className = 'inkchapter-caption-setting-input'
+    templateInput.style.width = '120px'
+    templateInput.value = get().template ?? '{n}'
+    templateInput.addEventListener('input', () => { apply({ template: templateInput.value }); refreshPreview() })
+    addField('编号格式 ', templateInput)
+
+    const varHint = el('div', 'inkchapter-caption-setting-detail', row)
+    varHint.textContent = '可用变量：{n} {chapter} {section}'
+    varHint.style.fontSize = '11px'
+    varHint.style.color = 'var(--text-muted, #888)'
+
+    const errorEl = el('div', 'inkchapter-caption-template-error', row)
+    errorEl.style.color = '#c62828'
+    errorEl.style.fontSize = '12px'
+    errorEl.style.minHeight = '16px'
+
+    const previewEl = el('div', 'inkchapter-caption-setting-detail', row)
+    previewEl.style.fontWeight = '600'
+
+    const refreshPreview = (): void => {
+      const cfg = migrateObjectNumberingConfig(type, get())
+      const preview = renderNumberingPreview(type, cfg, { n: 1, chapter: '2', section: '3', name: sampleName })
+      previewEl.textContent = `预览：${preview}`
+      const validation = validateNumberTemplate(cfg.template)
+      errorEl.textContent = validation.valid ? '' : `编号格式错误：${validation.reason}（必须包含 {n}）`
+    }
+    refreshPreview()
+  }
+
+  private captionTemplateErrors(): string[] {
+    const errors: string[] = []
+    if (this.captionDraft) {
+      for (const type of ['table', 'figure', 'code'] as const) {
+        const t = this.captionDraft.types[type].template ?? '{n}'
+        const v = validateNumberTemplate(t)
+        if (!v.valid) errors.push(`${type}: ${v.reason}`)
+      }
+    }
+    if (this.captionFormulaDraft) {
+      const v = validateNumberTemplate(this.captionFormulaDraft.template)
+      if (!v.valid) errors.push(`formula: ${v.reason}`)
+    }
+    return errors
   }
 
   private renderBottomActionBar(): void {
@@ -5656,7 +5972,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
       && JSON.stringify(this.headingDraft) !== JSON.stringify(this.headingDraftOriginal)
     const layoutDirty = this.hasLayoutDirty()
     const paragraphLayoutDirty = this.hasParagraphLayoutDirty()
-    const hasDraft = formatDirty || numberingDirty || layoutDirty || paragraphLayoutDirty
+    const captionDirty = this.hasCaptionDirty()
+    const hasDraft = formatDirty || numberingDirty || layoutDirty || paragraphLayoutDirty || captionDirty
     if (hasDraft) {
       const hint = el('div', 'inkchapter-settings-unsaved-hint', bar)
       hint.textContent = '有未保存的更改'
@@ -5699,6 +6016,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
       if (this.paragraphLayoutDraft && this.savedParagraphLayoutBaseline) {
         this.paragraphLayoutDraft = { ...this.savedParagraphLayoutBaseline }
+        cancelled = true
+      }
+      if (this.hasCaptionDirty()) {
+        this.cancelCaptionSettings()
         cancelled = true
       }
       if (cancelled) {
@@ -5753,6 +6074,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
         this.numberingService.saveParagraphLayoutSettings(this.paragraphLayoutScope, { ...this.paragraphLayoutDraft })
         this.savedParagraphLayoutBaseline = { ...this.paragraphLayoutDraft }
         this.paragraphLayoutDraft = null
+      }
+
+      // Save caption settings if dirty (table/image/code caption enabled/position/prefix).
+      if (this.hasCaptionDirty()) {
+        this.saveCaptionSettings()
       }
 
       // Restore view intent — editor must continue showing the same format.
@@ -5813,6 +6139,39 @@ function el(tag: string, cls?: string, parent?: HTMLElement): HTMLElement {
   if (cls) e.className = cls
   if (parent) parent.appendChild(e)
   return e
+}
+
+const NUMBERING_MODE_OPTIONS: Array<{ value: NumberingMode; label: string }> = [
+  { value: 'continuous', label: '全文连续' },
+  { value: 'reset-h1', label: '按一级标题重置' },
+  { value: 'reset-h2', label: '按二级标题重置' },
+  { value: 'reset-h3', label: '按三级标题重置' },
+  { value: 'chapter-linked', label: '跟随章节' },
+  { value: 'custom', label: '自定义' },
+]
+
+const NUMBER_STYLE_OPTIONS: Array<{ value: NumberStyle; label: string }> = [
+  { value: 'arabic', label: '1, 2, 3' },
+  { value: 'arabic-padded', label: '01, 02, 03' },
+  { value: 'chinese', label: '一, 二, 三' },
+  { value: 'chinese-financial', label: '壹, 贰, 叁' },
+  { value: 'roman-lower', label: 'i, ii, iii' },
+  { value: 'roman-upper', label: 'I, II, III' },
+  { value: 'alpha-lower', label: 'a, b, c' },
+  { value: 'alpha-upper', label: 'A, B, C' },
+]
+
+function buildSelect<T extends string>(options: Array<{ value: T; label: string }>, selected: T, cls: string): HTMLSelectElement {
+  const select = document.createElement('select')
+  select.className = cls
+  for (const opt of options) {
+    const o = document.createElement('option')
+    o.value = opt.value
+    o.textContent = opt.label
+    select.appendChild(o)
+  }
+  select.value = selected
+  return select
 }
 
 function sanitize(val: string): string {

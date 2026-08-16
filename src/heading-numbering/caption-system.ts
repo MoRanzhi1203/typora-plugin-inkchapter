@@ -38,6 +38,13 @@ export interface CaptionTypeSettings {
   position: 'above' | 'below'
   prefix: string
   numbering: 'continuous'
+  /** Object Numbering V2 fields (additive; defaults keep legacy behavior). */
+  numberingMode?: 'continuous' | 'reset-h1' | 'reset-h2' | 'reset-h3' | 'chapter-linked' | 'custom'
+  numberStyle?: 'arabic' | 'arabic-padded' | 'chinese' | 'chinese-financial' | 'roman-lower' | 'roman-upper' | 'alpha-lower' | 'alpha-upper'
+  startAt?: number
+  minDigits?: number
+  template?: string
+  resetHeadingLevel?: 1 | 2 | 3
 }
 
 export interface CaptionSettings {
@@ -48,9 +55,9 @@ export interface CaptionSettings {
 export const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
   schemaVersion: 1,
   types: {
-    table: { enabled: true, position: 'above', prefix: '表', numbering: 'continuous' },
-    figure: { enabled: true, position: 'below', prefix: '图', numbering: 'continuous' },
-    code: { enabled: true, position: 'above', prefix: '代码', numbering: 'continuous' },
+    table: { enabled: true, position: 'above', prefix: '表', numbering: 'continuous', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}' },
+    figure: { enabled: true, position: 'below', prefix: '图', numbering: 'continuous', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}' },
+    code: { enabled: true, position: 'above', prefix: '代码', numbering: 'continuous', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}' },
   },
 }
 
@@ -214,11 +221,32 @@ export function resolveCaptionNumbers(
   })
 }
 
+/**
+ * Build a caption label from prefix + number + optional name using a single
+ * structural space between each part.
+ *
+ * Invariants:
+ * - no name  → `图 1`
+ * - with name → `图 1 tst` (exactly ONE structural space between number and name)
+ * - the user's own internal double spaces inside `name` are PRESERVED (only the
+ *   leading/trailing whitespace is trimmed; the plugin never collapses inner spaces).
+ */
+export function buildCaptionLabel(prefix: string, number: number, name: string): string {
+  const parts: string[] = [prefix, String(number)]
+  const trimmedName = name.trim()
+  if (trimmedName !== '') parts.push(trimmedName)
+  return parts.join(' ')
+}
+
 /** Build the display label (prefix + number + title) from the resolved number. */
-export function renderCaptionLabel(type: CaptionTargetType, number: number, title: string): string {
-  const prefix = CAPTION_TYPE_CONFIG[type].prefix
-  if (title.trim() === '') return `${prefix} ${number}`
-  return `${prefix} ${number}  ${title}`
+export function renderCaptionLabel(type: CaptionTargetType, number: number, title: string, prefixOverride?: string): string {
+  const prefix = prefixOverride ?? CAPTION_TYPE_CONFIG[type].prefix
+  return buildCaptionLabel(prefix, number, title)
+}
+
+/** Resolve the effective per-type config from user settings (or default). */
+export function resolveCaptionTypeSettings(settings: CaptionSettings | null | undefined, type: CaptionTargetType): CaptionTypeSettings {
+  return settings?.types?.[type] ?? DEFAULT_CAPTION_SETTINGS.types[type]
 }
 
 // ── Target identity (positional, content-independent) ────────────────

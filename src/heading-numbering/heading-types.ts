@@ -260,6 +260,7 @@ export type RefreshReason =
   | 'editor-click'
   | 'editor-keyup'
   | 'decoration-repair'
+  | 'outline-document-context-ready'
 
 export interface HeadingSnapshot {
   key: string

@@ -33,28 +33,24 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Startup SyntaxError attribution ──────────
     // Catch SyntaxError: Unexpected token ')' that may appear during
-    // Typora startup. If no evidence links it to InkChapter, mark UNRESOLVED.
+    // Typora startup and formally attribute it to InkChapter or an external
+    // script (community-plugin core / Typora / another plugin).
     const startupErrorHandler = (event: ErrorEvent): void => {
       if (event.error instanceof SyntaxError && event.error.message.includes("Unexpected token ')'")) {
         const filename = event.filename ?? ''
+        const stack = event.error.stack ?? ''
+        const source = filename || (stack.match(/https?:\/\/[^\s)]+/) ?? [])[0] || stack.split('\n')[0] || 'unknown'
         const isInkChapter = filename.toLowerCase().includes('inkchapter') ||
-          (event.error.stack ?? '').toLowerCase().includes('inkchapter')
-        if (isInkChapter) {
-          console.error('[InkChapter] STARTUP_SYNTAX_ERROR_ATTRIBUTED:', {
-            message: event.error.message,
-            filename,
-            stack: event.error.stack?.slice(0, 500),
-            build: INKCHAPTER_BUILD_ID,
-          })
-        } else {
-          console.warn('[InkChapter] STARTUP_SYNTAX_ERROR_UNRESOLVED:', {
-            message: event.error.message,
-            filename,
-            stack: event.error.stack?.slice(0, 500),
-            attribution: 'NOT from InkChapter — upstream or third-party',
-            build: INKCHAPTER_BUILD_ID,
-          })
-        }
+          stack.toLowerCase().includes('inkchapter')
+        console.info(
+          `[InkChapter] SYNTAX-ERROR-ATTRIBUTION ` +
+          `decision=${isInkChapter ? 'INKCHAPTER' : 'UNRELATED_EXTERNAL'} ` +
+          `source=${source} filename=${filename} build=${INKCHAPTER_BUILD_ID}`,
+        )
+        console.info(
+          `[InkChapter] SYNTAX-ERROR-ATTRIBUTION-EVIDENCE message=${event.error.message} ` +
+          `stack=${stack.slice(0, 500)}`,
+        )
       }
     }
     window.addEventListener('error', startupErrorHandler)
@@ -219,6 +215,19 @@ export default class extends Plugin<InkChapterSettings> {
           try { return generateDocumentKey(fp, vr) } catch { return null }
         },
         getEditorRoot: () => document.getElementById('write') as HTMLElement | null,
+        getMarkdown: () => {
+          try { return editor.getMarkdown() } catch { return '' }
+        },
+        reloadContent: (markdown: string) => {
+          try { File.reloadContent(markdown, false, false, false, true) } catch { /* fail-open */ }
+        },
+        readActiveFileContent: () => {
+          try {
+            const fp = this.app.workspace.activeFile
+            if (!fp) return null
+            return fs.readFileSync(fp, 'utf8')
+          } catch { return null }
+        },
         onEditorEvent: (event, listener) => {
           const dispose = this.app.features.markdownEditor.on(event as never, listener as never)
           this.register(dispose)
@@ -235,6 +244,17 @@ export default class extends Plugin<InkChapterSettings> {
       this.captionService.start()
       this.captionContextMenu = new CaptionContextMenu(this.captionService)
       this.captionContextMenu.attach(() => document.getElementById('write') as HTMLElement | null)
+      // Apply persisted caption settings to the runtime service (enabled/position/prefix).
+      try {
+        const captionCfg = this.settings.get('caption' as keyof InkChapterSettings) as any
+        if (captionCfg?.types) {
+          this.captionService.applySettings(captionCfg as any)
+        }
+        const captionFormulaCfg = this.settings.get('captionFormula' as keyof InkChapterSettings) as any
+        if (captionFormulaCfg) {
+          this.captionService.applyFormulaSettings(captionFormulaCfg as any)
+        }
+      } catch { /* fail-open */ }
       console.log('[InkChapter] caption service started')
     } catch (e) {
       console.error('[InkChapter] 题注服务初始化失败，题注功能不可用', e)
@@ -244,7 +264,7 @@ export default class extends Plugin<InkChapterSettings> {
     if (this.numberingService) {
       try {
         this.registerSettingTab(
-          new HeadingNumberingSettingTab(this.settings, this.numberingService),
+          new HeadingNumberingSettingTab(this.settings, this.numberingService, this.captionService),
         )
         console.log('[InkChapter] settings tab registered')
       } catch (e) {

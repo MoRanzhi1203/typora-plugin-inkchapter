@@ -1437,6 +1437,7 @@
 .inkchapter-format-card-badge--inherit { background: #6c757d; }
 .inkchapter-format-card-badge--update { background: #e67e22; }
 .inkchapter-format-card-badge--applied { background: #27ae60; }
+.inkchapter-format-card-badge--effective { background: var(--text-accent, #07a); }
 .inkchapter-format-card-desc {
   font-size: 0.8em;
   color: var(--text-muted, #888);
@@ -2271,6 +2272,10 @@
   padding: 2px 0;
   line-height: 1.4;
   user-select: none;
+  // Caption is the naming entry point: it must receive contextmenu/pointer,
+  // but it is NOT editable Markdown (contenteditable=false stays on the DOM).
+  pointer-events: auto;
+  cursor: context-menu;
 }
 #write .inkchapter-caption-table { text-align: center; font-weight: 600; }
 #write .inkchapter-caption-figure { text-align: center; }
@@ -2338,6 +2343,15 @@
 }
 .inkchapter-caption-setting-name { font-weight: 600; font-size: 13px; }
 .inkchapter-caption-setting-detail { font-size: 12px; color: var(--text-muted, #888); }
+.inkchapter-caption-setting-controls { display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+.inkchapter-caption-setting-control { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+.inkchapter-caption-setting-select,
+.inkchapter-caption-setting-input {
+  padding: 4px 6px; font-size: 13px;
+  border: 1px solid var(--border-primary, #ccc); border-radius: 4px;
+  background: var(--background-primary, #fff); color: var(--text-normal, #333);
+}
+.inkchapter-caption-setting-input { width: 80px; }
 
 @media (prefers-color-scheme: dark) {
   .inkchapter-caption-menu { background: var(--background-primary, #252525); border-color: rgba(255,255,255,0.1); }
