@@ -16,7 +16,7 @@ import { installMathJaxHook, probeMathJaxApiAuthority, createSingleTargetSession
 import { executeMathJaxRenderOwnershipProbe } from './mathjax-render-ownership-probe'
 import { installRenderRouteHooks, restoreRenderRouteHooks, setRouteTraceContext, setRouteTraceEditorRoot, executeMathJaxRenderRouteTrace, type TraceFormulaInput } from './mathjax-render-route-trace'
 import { verifyFormulaTexSource, extractFormulaTexForTrace, normalizeTexSource, type FormulaTexSourceKind } from './formula-tex-source-verifier'
-import { buildFormulaRenderAuthorizationPlan, nextPlanRevision, setTex2svgInjectionContext, executeTex2svgInjectionVerification, emitPlanBindingAuthority, getPendingInjectionCount, getCatchupStats, getExistingSourceRegressionCount, getCallsiteAuthorityDecision, getCurrentInjectionPlan, getCatchupRebindStats, R54_RUNTIME_MARKER, type FormulaRenderAuthorizationPlan } from './mathjax-tex2svg-tag-injection'
+import { buildFormulaRenderAuthorizationPlan, nextPlanRevision, setTex2svgInjectionContext, executeTex2svgInjectionVerification, emitPlanBindingAuthority, getPendingInjectionCount, getCatchupStats, getExistingSourceRegressionCount, getCallsiteAuthorityDecision, getCurrentInjectionPlan, getCatchupRebindStats, R54_RUNTIME_MARKER, settleNaturalRenderCorrelation, type FormulaRenderAuthorizationPlan } from './mathjax-tex2svg-tag-injection'
 import {
   R543_RUNTIME_MARKER,
   R543_BUILD_MARKER,
@@ -94,7 +94,16 @@ import {
   resolvePendingProjection,
   clearPendingProjectionsForDocument,
   resetPendingProjections,
+  requestFormulaProjectionFulfillment,
+  getOriginalTex2svgPromise,
+  getNaturalRenderOptions,
+  resolveCanonicalHostFromRendererNode,
+  checkNativeSlotOwnership,
+  captureVisualIntegritySnapshot,
+  verifyVisualIntegrity,
+  resolveFormulaCompositeVisualOwner,
   type RenderProjectionReconcileResult,
+  type ProjectionFulfillmentRequest,
 } from './formula-render-projection'
 import {
   emitStructuralSlotAuthority,
@@ -1011,7 +1020,7 @@ export class CaptionService {
    * The formula/heading pipeline only processes formula and heading events.
    * It NEVER triggers table/image/code caption scans or global refresh.
    */
-  private onSemanticEventBatch(batch: SemanticOperationBatch): void {
+  private async onSemanticEventBatch(batch: SemanticOperationBatch): Promise<void> {
     try {
       this.semanticOperationBatchCount++
       emitEventDispatch(batch)
@@ -1099,7 +1108,7 @@ export class CaptionService {
         emitAffectedRenderSet({ ...affected, liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision }, getLiveFormulaRevision().liveFormulaRevision)
         // R5.4.3.8 P5: surviving formulas whose desiredTag changed close through
         // the persistent projection executor — never the old typesetPromise BLOCK.
-        this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-formula')
+        await this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-formula')
       }
 
       // R5.4.3.7: pending projection replay after FORMULA_ADDED / adoption /
@@ -1217,7 +1226,7 @@ export class CaptionService {
           emitAffectedRenderSet(affected, getLiveFormulaRevision().liveFormulaRevision)
           // R5.4.3.8 P5: heading-driven desiredTag shifts also close through the
           // persistent projection executor.
-          this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-heading')
+          await this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-heading')
         }
       }
 
@@ -4283,9 +4292,17 @@ export class CaptionService {
       for (const n of candidates) {
         if (!(n instanceof Node)) continue
         if (!root.contains(n)) continue
-        const host = n instanceof HTMLElement && (n.classList.contains('mathjax-block') || n.classList.contains('md-math-block'))
-          ? n
-          : (n instanceof HTMLElement ? n.closest('.mathjax-block, .md-math-block') : null)
+        // R5.4.3.9 P2: try closest() for connected nodes, then reverse binding registry.
+        let host: HTMLElement | null = null
+        if (n instanceof HTMLElement && (n.classList.contains('mathjax-block') || n.classList.contains('md-math-block'))) {
+          host = n
+        } else if (n instanceof HTMLElement) {
+          host = n.closest('.mathjax-block, .md-math-block')
+        }
+        // For detached nodes or nodes that failed closest(), try the reverse binding registry.
+        if (!host) {
+          host = resolveCanonicalHostFromRendererNode(n, root).host
+        }
         if (host instanceof HTMLElement) touched.add(host)
       }
     }
@@ -4412,6 +4429,7 @@ export class CaptionService {
       }
       resolvedStableIdentityCount++
       reconcileFunctionCalledCount++
+      const rawTex = extractFormulaTexForTrace(host)
       const res = reconcileFormulaRenderProjectionNow({
         documentKey: docKey,
         documentGeneration: this.documentGeneration,
@@ -4420,14 +4438,30 @@ export class CaptionService {
         formulaIndex,
         formulaHost: host,
         desiredTag,
+        authoritativeRawTex: rawTex,
+        requestFulfillment: getOriginalTex2svgPromise()
+          ? (tex: string, tag: string) => requestFormulaProjectionFulfillment({
+              stableFormulaIdentity: stableIdentity,
+              formulaIndex,
+              rawTex: tex,
+              desiredTag: tag,
+              planRevision: 0,
+              liveFormulaRevision: 0,
+              documentKey: docKey,
+              generation: this.documentGeneration,
+              rootToken: root ? this.editorRootTokenFor(root) : 0,
+            }, getNaturalRenderOptions(stableIdentity) ?? undefined).then((r) => r.resultNode)
+          : undefined,
         reason: 'TYPOORA_RENDERER_INTERNAL_OUTPUT_REPLACEMENT',
       })
       if (res.reconcileSucceeded) reconcileSucceededCount++
       if (res.route === 'STRATEGY_B_EXACT_FULFILLMENT' || res.route === 'NO_OP') visibleVerifyCount++
     }
-    // R5.4.3.8 P3: FORMULA-PROJECTION-RECONCILE-EXECUTION — decision must
-    // actually execute. reconcileFunctionCalledCount=0 while reconcileRequested
-    // >0 is DECLARED_BUT_NOT_EXECUTED.
+    // R5.4.3.9 P2: FORMULA-PROJECTION-RECONCILE-EXECUTION — FAIL if reverse
+    // binding could not resolve any canonical host. candidateRendererNodeCount>0
+    // with resolvedFormulaHostCount=0 is RENDERER_NODE_TO_CANONICAL_HOST_UNRESOLVED.
+    const candidateRendererNodeCount = records.length
+    const unresolvedHosts = candidateRendererNodeCount > 0 && resolvedFormulaHostCount === 0
     emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE-EXECUTION', {
       mutationBatchId: null,
       candidateRendererNodeCount: records.length,
@@ -4437,9 +4471,11 @@ export class CaptionService {
       reconcileRequestedCount,
       reconcileSucceededCount,
       visibleVerifyCount,
-      decision: reconcileRequestedCount > 0 && reconcileFunctionCalledCount === 0 ? 'FAIL' : 'PASS',
-      reason: reconcileRequestedCount > 0 && reconcileFunctionCalledCount === 0 ? 'DECLARED_BUT_NOT_EXECUTED' : null,
-      runtimeMarker: 'FORMULA-STRUCTURAL-SLOT-EDIT-SESSION-PROJECTION-V2.5.7-R5.4.3.8',
+      decision: unresolvedHosts ? 'FAIL'
+        : (reconcileRequestedCount > 0 && reconcileFunctionCalledCount === 0 ? 'FAIL' : 'PASS'),
+      reason: unresolvedHosts ? 'RENDERER_NODE_TO_CANONICAL_HOST_UNRESOLVED'
+        : (reconcileRequestedCount > 0 && reconcileFunctionCalledCount === 0 ? 'DECLARED_BUT_NOT_EXECUTED' : null),
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
     })
   }
 
@@ -4449,10 +4485,10 @@ export class CaptionService {
    * remains historical diagnostics only — it never decides the final visible
    * closure of a surviving formula whose desiredTag shifted.
    */
-  private reconcileAffectedExistingFormulaProjection(
+  private async reconcileAffectedExistingFormulaProjection(
     affected: ReturnType<typeof computeAffectedFormulaSet>,
     reason: string,
-  ): void {
+  ): Promise<void> {
     const snapshot = this.lastLiveSemanticSnapshot
     if (!snapshot) return
     const docKey = this.currentDocumentKey
@@ -4460,6 +4496,15 @@ export class CaptionService {
     if (!docKey || !root) return
     const targets = this.formulaAdapter.collectFormulaTargets()
     let reconcileCalledCount = 0
+    let providerAvailableCount = 0
+    let fulfilledCount = 0
+    let appliedCount = 0
+    let visibleVerifiedCount = 0
+    let failedCount = 0
+    let pendingCount = 0
+    const providerAvailable = !!getOriginalTex2svgPromise()
+    const allAffectedCount = affected.affectedStableFormulaIdentities.length
+    const promises: Promise<void>[] = []
     for (const identity of affected.affectedStableFormulaIdentities) {
       if (identity === null || identity === 'AMBIGUOUS') continue
       const entry = snapshot.entries.find((e) => e.stableFormulaIdentity === identity)
@@ -4467,28 +4512,99 @@ export class CaptionService {
       const target = targets.find((t) => t.ordinal === entry.formulaIndex)
       if (!target) continue
       const visible = readVisibleFormulaTag(target.root, entry.desiredTag)
-      if (visible.decision === 'MATCH') continue
+      if (visible.decision === 'MATCH') { visibleVerifiedCount++; continue }
       reconcileCalledCount++
-      reconcileFormulaRenderProjectionNow({
-        documentKey: docKey,
-        documentGeneration: this.documentGeneration,
-        editorRootToken: this.editorRootTokenFor(root),
-        stableFormulaIdentity: identity,
-        formulaIndex: entry.formulaIndex,
-        formulaHost: target.root,
-        desiredTag: entry.desiredTag,
-        reason,
-      })
+      if (providerAvailable) {
+        providerAvailableCount++
+        const options = getNaturalRenderOptions(identity)
+        // Use the production fulfillment provider as requestFulfillment callback.
+        promises.push(
+          requestFormulaProjectionFulfillment({
+            stableFormulaIdentity: identity,
+            formulaIndex: entry.formulaIndex,
+            rawTex: extractFormulaTexForTrace(target.root),
+            desiredTag: entry.desiredTag,
+            planRevision: 0,
+            liveFormulaRevision: 0,
+            documentKey: docKey,
+            generation: this.documentGeneration,
+            rootToken: this.editorRootTokenFor(root),
+          }, options ?? undefined).then((res) => {
+            if (res.fulfilled && res.resultNode) {
+              fulfilledCount++
+              const old = target.root.querySelector('mjx-container')
+              if (old && old.parentNode) {
+                // R5.4.3.11 P0-D: Use composite visual owner for slot check
+                const compositeOwner = resolveFormulaCompositeVisualOwner(target.root, root)
+
+                // Use the composite owner's native output for slot check
+                const slotCheck = checkNativeSlotOwnership({
+                  formulaHost: target.root,
+                  targetNode: compositeOwner.nativeMjxOutput ?? old,
+                })
+                if (!slotCheck.allowed) {
+                  failedCount++
+                  return
+                }
+                const visualBefore = captureVisualIntegritySnapshot(target.root, root)
+                old.replaceWith(res.resultNode)
+                appliedCount++
+                const visualAfter = verifyVisualIntegrity(target.root, root, visualBefore)
+                if (visualAfter.decision !== 'PASS') {
+                  // Rollback: restore the original native output.
+                  const newMjx = target.root.querySelector('mjx-container')
+                  if (newMjx && newMjx.parentNode) {
+                    newMjx.replaceWith(old)
+                  }
+                  failedCount++
+                  return
+                }
+                // Register the natural render correlation binding
+                settleNaturalRenderCorrelation(res.resultNode, target.root)
+                const after = readVisibleFormulaTag(target.root, entry.desiredTag)
+                if (after.decision === 'MATCH') visibleVerifiedCount++
+              }
+            } else {
+              failedCount++
+            }
+          }),
+        )
+      } else {
+        pendingCount++
+      }
     }
-    emitRuntimeAudit('FORMULA-AFFECTED-EXISTING-PROJECTION-CLOSURE', {
-      documentKey: docKey,
-      generation: this.documentGeneration,
-      affectedExistingFormulaCount: affected.affectedExistingFormulaCount,
-      desiredTagChangedCount: affected.desiredTagChangedCount,
-      reconcileFunctionCalledCount: reconcileCalledCount,
-      decision: reconcileCalledCount > 0 ? 'PASS' : 'NO_EXECUTION',
+
+    // Emit DISPATCH with initial counts
+    emitRuntimeAudit('FORMULA-AFFECTED-EXISTING-PROJECTION-DISPATCH', {
+      affectedCount: allAffectedCount,
+      requestedCount: reconcileCalledCount,
+      providerAvailableCount,
+      promiseCount: promises.length,
       reason,
-      runtimeMarker: 'FORMULA-STRUCTURAL-SLOT-EDIT-SESSION-PROJECTION-V2.5.7-R5.4.3.8',
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+    })
+
+    // Wait for all promises to settle
+    await Promise.allSettled(promises)
+
+    // Emit FINAL with final counts
+    const finalPass = failedCount === 0 && pendingCount === 0 && visibleVerifiedCount >= reconcileCalledCount
+    emitRuntimeAudit('FORMULA-AFFECTED-EXISTING-PROJECTION-FINAL', {
+      affectedCount: allAffectedCount,
+      requestedCount: reconcileCalledCount,
+      providerAvailableCount,
+      fulfilledCount,
+      appliedCount,
+      visibleVerifiedCount,
+      failedCount,
+      pendingCount,
+      settledCount: promises.length,
+      allDesiredTagsVisible: finalPass,
+      decision: finalPass ? 'PASS' : (failedCount > 0 ? 'FAIL' : 'PARTIAL'),
+      reason: finalPass ? null
+        : (!providerAvailable ? 'PRODUCTION_FULFILLMENT_PROVIDER_UNAVAILABLE'
+          : (failedCount > 0 ? 'FULFILLMENT_FAILED' : 'PENDING_OR_NOT_VERIFIED')),
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
     })
   }
 

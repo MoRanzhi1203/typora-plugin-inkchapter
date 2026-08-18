@@ -35,11 +35,242 @@ import {
   emitNonsemanticEditTransition,
   checkSourceCommitBarrier,
   markSessionExplicitInput,
+  latchOrRebindCurrentFormulaTransaction,
+  getCurrentTransaction,
+  clearCurrentTransaction,
+  emitTransactionPlanRebind,
+  R5439_RUNTIME_MARKER,
   type SourceCommitBarrierResult,
+  type CurrentFormulaTransaction,
+  type FormulaEditSessionStatus,
 } from './formula-edit-session'
+import { registerFulfillmentNodeBinding, resolveRendererNodeBinding, type RendererNodeBinding } from './formula-render-projection'
 
 export const R54_RUNTIME_MARKER = 'FORMULA-TEX2SVG-PRECALL-TAG-INJECTION-V2.5.7-R5.4'
-export const R54_BUILD_MARKER = 'inkchapter-formula-tex2svg-precall-tag-injection-v2.5.7-r5.4'
+export const R54_BUILD_MARKER = 'inkchapter-formula-atomic-transaction-render-projection-v2.5.7-r5.4.3.9'
+
+// ── R5.4.3.10 P0-A: Natural Render Correlation ─────────────────────────
+
+export type PendingNaturalRenderCorrelationState = 'CREATED' | 'FULFILLED' | 'BOUND' | 'REJECTED' | 'STALE' | 'CANCELLED'
+
+export interface PendingNaturalRenderCorrelation {
+  correlationId: string
+  callOrdinal: number
+  promiseToken: number | string
+  transactionId: string
+  documentKey: string
+  documentGeneration: number
+  editorRootToken: number
+  formulaHostToken: number
+  stableFormulaIdentity: number
+  formulaIndex: number
+  planRevision: number
+  liveFormulaRevision: number
+  desiredTag: string
+  rawTexHash: string
+  sourceState: 'EMPTY' | 'NONEMPTY'
+  state: PendingNaturalRenderCorrelationState
+  correlationCreatedBeforeOriginalCall: boolean
+}
+
+const naturalRenderCorrelations = new Map<number, PendingNaturalRenderCorrelation>()
+let correlationSeq = 0
+
+export function createNaturalRenderCorrelation(input: Omit<PendingNaturalRenderCorrelation, 'correlationId' | 'state' | 'correlationCreatedBeforeOriginalCall'>): PendingNaturalRenderCorrelation {
+  const corr: PendingNaturalRenderCorrelation = {
+    ...input,
+    correlationId: `nc-${++correlationSeq}`,
+    state: 'CREATED',
+    correlationCreatedBeforeOriginalCall: true,
+  }
+  naturalRenderCorrelations.set(input.callOrdinal, corr)
+  emitRuntimeAudit('FORMULA-NATURAL-RENDER-CORRELATION', {
+    correlationId: corr.correlationId,
+    callOrdinal: corr.callOrdinal,
+    promiseToken: corr.promiseToken,
+    transactionId: corr.transactionId,
+    formulaHostToken: corr.formulaHostToken,
+    stableFormulaIdentity: corr.stableFormulaIdentity,
+    formulaIndex: corr.formulaIndex,
+    planRevision: corr.planRevision,
+    liveFormulaRevision: corr.liveFormulaRevision,
+    desiredTag: corr.desiredTag,
+    sourceState: corr.sourceState,
+    correlationCreatedBeforeOriginalCall: true,
+    decision: 'CREATED',
+    reason: null,
+    runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+  })
+  return corr
+}
+
+export function consumeNaturalRenderCorrelation(callOrdinal: number): PendingNaturalRenderCorrelation | null {
+  const corr = naturalRenderCorrelations.get(callOrdinal) ?? null
+  if (corr) naturalRenderCorrelations.delete(callOrdinal)
+  return corr
+}
+
+export function peekNaturalRenderCorrelation(callOrdinal: number): PendingNaturalRenderCorrelation | null {
+  return naturalRenderCorrelations.get(callOrdinal) ?? null
+}
+
+export function markNaturalRenderPromiseObserved(callOrdinal: number): void {
+  const corr = naturalRenderCorrelations.get(callOrdinal)
+  if (corr) {
+    emitRuntimeAudit('FORMULA-NATURAL-RENDER-CORRELATION-STAGE', {
+      correlationId: corr.correlationId,
+      callOrdinal,
+      stage: 'RETURNED_PROMISE',
+      correlationStillPending: true,
+      consumed: false,
+      decision: 'OBSERVED',
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+    })
+  }
+}
+
+export function settleNaturalRenderCorrelationByCallOrdinal(
+  callOrdinal: number,
+  resolvedValue: unknown,
+): { settled: boolean; bindingRegistered: boolean } {
+  const corr = naturalRenderCorrelations.get(callOrdinal)
+  if (!corr) return { settled: false, bindingRegistered: false }
+
+  const nodeLike = resolvedValue !== null && typeof resolvedValue === 'object' && typeof (resolvedValue as any).nodeType === 'number'
+  const isNode = resolvedValue instanceof Node
+  const isMjxContainer = isNode && (resolvedValue as Element).tagName === 'MJX-CONTAINER'
+
+  if (isMjxContainer) {
+    naturalRenderCorrelations.delete(callOrdinal)
+    registerFulfillmentNodeBinding(resolvedValue as Node, {
+      formulaHostToken: corr.formulaHostToken,
+      stableFormulaIdentity: corr.stableFormulaIdentity,
+      formulaIndex: corr.formulaIndex,
+      documentKey: corr.documentKey,
+      generation: corr.documentGeneration,
+      rootToken: corr.editorRootToken,
+      bindingSource: 'TEX2SVG_FULFILLMENT',
+    })
+    emitRuntimeAudit('FORMULA-NATURAL-RENDER-CORRELATION-STAGE', {
+      correlationId: corr.correlationId,
+      callOrdinal,
+      stage: 'PROMISE_FULFILLED',
+      correlationStillPending: false,
+      consumed: true,
+      decision: 'SETTLED',
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+    })
+    return { settled: true, bindingRegistered: true }
+  }
+
+  // Non-node or non-MJX value — mark as pending, don't consume yet.
+  emitRuntimeAudit('FORMULA-NATURAL-RENDER-CORRELATION-STAGE', {
+    correlationId: corr.correlationId,
+    callOrdinal,
+    stage: nodeLike ? 'PROMISE_FULFILLED' : 'PROMISE_FULFILLED',
+    correlationStillPending: true,
+    consumed: false,
+    decision: 'PENDING',
+    reason: isNode ? 'NOT_MJX_CONTAINER' : 'NOT_A_NODE',
+    runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+  })
+  return { settled: false, bindingRegistered: false }
+}
+
+export function getNaturalRenderCorrelation(callOrdinal: number): PendingNaturalRenderCorrelation | null {
+  return naturalRenderCorrelations.get(callOrdinal) ?? null
+}
+
+export function resetNaturalRenderCorrelations(): void {
+  naturalRenderCorrelations.clear()
+  correlationSeq = 0
+}
+
+// ── R5.4.3.11 P0-A: Formula Call Owner Resolution ──────────────────────
+
+export type FormulaCallOwnerKind = 'UNIQUE_SOURCE_MATCH' | 'CALLER_HOST_IDENTITY' | 'EDIT_SESSION_IDENTITY' | 'FALLBACK'
+
+export interface FormulaCallOwner {
+  stableFormulaIdentity: number | null
+  formulaIndex: number | null
+  kind: FormulaCallOwnerKind
+  conflictDetected: boolean
+  conflictWinner: 'UNIQUE_SOURCE_MATCH' | 'EDIT_SESSION' | 'NONE'
+  uniqueSourceMatchedIdentity: number | null
+  currentEditingIdentity: number | null
+  reason: string | null
+}
+
+export function resolveFormulaCallOwner(input: {
+  uniqueSourceMatchedIdentity: number | null
+  currentEditingIdentity: number | null
+  callerHostIdentity: number | null
+  plan: FormulaRenderAuthorizationPlan | null
+}): FormulaCallOwner {
+  const { uniqueSourceMatchedIdentity, currentEditingIdentity, callerHostIdentity, plan } = input
+
+  let conflictDetected = false
+  let conflictWinner: 'UNIQUE_SOURCE_MATCH' | 'EDIT_SESSION' | 'NONE' = 'NONE'
+
+  // Check for conflict: source match vs editing host
+  if (uniqueSourceMatchedIdentity !== null && currentEditingIdentity !== null && uniqueSourceMatchedIdentity !== currentEditingIdentity) {
+    conflictDetected = true
+  }
+
+  // Priority 1: unique source match (always wins for initial document render)
+  if (uniqueSourceMatchedIdentity !== null) {
+    conflictWinner = conflictDetected ? 'UNIQUE_SOURCE_MATCH' : 'NONE'
+    return {
+      stableFormulaIdentity: uniqueSourceMatchedIdentity,
+      formulaIndex: plan?.entries.find((e) => e.stableFormulaIdentity === uniqueSourceMatchedIdentity)?.formulaIndex ?? null,
+      kind: 'UNIQUE_SOURCE_MATCH',
+      conflictDetected,
+      conflictWinner,
+      uniqueSourceMatchedIdentity,
+      currentEditingIdentity,
+      reason: conflictDetected ? 'UNIQUE_SOURCE_MATCH_WON_OVER_EDITING_HOST' : null,
+    }
+  }
+
+  // Priority 2: caller host identity (if available)
+  if (callerHostIdentity !== null) {
+    return {
+      stableFormulaIdentity: callerHostIdentity,
+      formulaIndex: plan?.entries.find((e) => e.stableFormulaIdentity === callerHostIdentity)?.formulaIndex ?? null,
+      kind: 'CALLER_HOST_IDENTITY',
+      conflictDetected: false,
+      conflictWinner: 'NONE',
+      uniqueSourceMatchedIdentity: null,
+      currentEditingIdentity,
+      reason: null,
+    }
+  }
+
+  // Priority 3: current editing session identity
+  if (currentEditingIdentity !== null) {
+    return {
+      stableFormulaIdentity: currentEditingIdentity,
+      formulaIndex: plan?.entries.find((e) => e.stableFormulaIdentity === currentEditingIdentity)?.formulaIndex ?? null,
+      kind: 'EDIT_SESSION_IDENTITY',
+      conflictDetected: false,
+      conflictWinner: 'NONE',
+      uniqueSourceMatchedIdentity: null,
+      currentEditingIdentity,
+      reason: null,
+    }
+  }
+
+  return {
+    stableFormulaIdentity: null,
+    formulaIndex: null,
+    kind: 'FALLBACK',
+    conflictDetected: false,
+    conflictWinner: 'NONE',
+    uniqueSourceMatchedIdentity: null,
+    currentEditingIdentity: null,
+    reason: 'NO_CALL_OWNER_SOURCE',
+  }
+}
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -896,58 +1127,15 @@ export function handleTex2svgPreCall(
   const authEditingHashes = collectEditingHostSourceHashes(authEditorRoot)
   const editingHostIdentity = ctxAuth?.resolveEditingHostIdentity?.() ?? null
 
-  // ── R5.4.3.8 P2: Edit-session identity continuity ──
-  // The latched edit-session identity OUTRANKS DOM-based currentEditingFormula-
-  // CandidateCount and source-hash uniqueness. When an active session exists and
-  // matches the current plan, authorization proceeds via the session identity
-  // even if currentEditingFormulaCandidateCount temporarily drops to 0.
-  const activeSession = getActiveEditSession()
-  const sessionIdentityOk = !!activeSession
-    && activeSession.documentKey === authDocumentKey
-    && activeSession.generation === (ctxAuth?.getCurrentGeneration?.() ?? -1)
-    && activeSession.stableFormulaIdentity !== null
-    && activeSession.stableFormulaIdentity !== 'AMBIGUOUS'
-  const sessionPlanEntry = sessionIdentityOk && authPlan
-    ? authPlan.entries.find((e) => e.stableFormulaIdentity === activeSession!.stableFormulaIdentity) ?? null
-    : null
-
-  // Latch identity on the first natural call of an editing formula.
-  if (
-    editingHostIdentity
-    && editingHostIdentity.candidateCount === 1
-    && editingHostIdentity.stableFormulaIdentity !== null
-    && editingHostIdentity.stableFormulaIdentity !== 'AMBIGUOUS'
-    && (!activeSession || activeSession.stableFormulaIdentity !== editingHostIdentity.stableFormulaIdentity)
-  ) {
-    const latched = latchEditSession({
-      documentKey: authDocumentKey ?? '',
-      generation: ctxAuth?.getCurrentGeneration?.() ?? 0,
-      rootToken: 0,
-      stableFormulaIdentity: editingHostIdentity.stableFormulaIdentity,
-      formulaHostToken: editingHostIdentity.stableFormulaIdentity as number,
-      formulaIndex: editingHostIdentity.stableFormulaIdentity as number,
-      desiredTag: null,
-      sourceHashAtEnter: null,
-      contentRevisionAtEnter: 0,
-      trigger: 'PRECALL_HOST_IDENTITY',
-    })
-    // R5.4.3.8 P1: entering the edit state via a natural tex2svg call is a
-    // NONSEMANTIC transition — it must never commit authoritative source.
-    emitNonsemanticEditTransition({
-      sessionId: latched.sessionId,
-      eventKind: 'START_EDITING_PRECALL_TEX2SVG',
-      stableFormulaIdentity: editingHostIdentity.stableFormulaIdentity,
-      formulaIndex: editingHostIdentity.stableFormulaIdentity as number,
-      userSemanticSourceChange: false,
-    })
-  }
-  // Session identity takes priority for authorization lookup.
-  const sessionResolvedIdentity = sessionPlanEntry
-    ? sessionPlanEntry.stableFormulaIdentity
-    : (editingHostIdentity?.stableFormulaIdentity ?? null)
-  const sessionResolvedIndex = sessionPlanEntry
-    ? sessionPlanEntry.formulaIndex
-    : (editingHostIdentity?.planEntryFound ? editingHostIdentity.stableFormulaIdentity : null)
+  // ── R5.4.3.11 P0-A: Transaction binding deferred to after auth resolution.
+  // The transaction is now created after the call owner is resolved (below),
+  // so that the correct formula identity is used regardless of editing host focus.
+  // Read current transaction as the sole authority for this call.
+  const currentTx = getCurrentTransaction()
+  const txIdentity = currentTx?.stableFormulaIdentity ?? null
+  const txIndex = currentTx?.formulaIndex ?? null
+  const txDesiredTag = currentTx?.desiredTag ?? null
+  const txPlanRevision = currentTx?.planRevision ?? null
 
   // ── R5.4.3.8 P0: Empty formula sentinel authorization ──
   // <Empty \space Math \space Block> / empty TeX on a canonical host is an
@@ -960,11 +1148,12 @@ export function handleTex2svgPreCall(
   let emptyAuthorizedIndex: number | null = null
   let emptyAuthorizedTag: string | null = null
   if (isEmptyInput) {
-    if (sessionPlanEntry) {
+    // R5.4.3.9: current transaction takes priority over host identity.
+    if (currentTx && editingHostIdentity && currentTx.stableFormulaIdentity === editingHostIdentity.stableFormulaIdentity) {
       emptySentinelAuthorized = true
       emptyAuthorizedBy = 'EDIT_SESSION'
-      emptyAuthorizedIndex = sessionPlanEntry.formulaIndex
-      emptyAuthorizedTag = sessionPlanEntry.desiredTag
+      emptyAuthorizedIndex = currentTx.formulaIndex
+      emptyAuthorizedTag = currentTx.desiredTag
     } else if (editingHostIdentity && editingHostIdentity.candidateCount === 1
       && editingHostIdentity.stableFormulaIdentity !== null && editingHostIdentity.stableFormulaIdentity !== 'AMBIGUOUS') {
       const hostEntry = authPlan?.entries.find((e) => e.stableFormulaIdentity === editingHostIdentity.stableFormulaIdentity) ?? null
@@ -980,7 +1169,7 @@ export function handleTex2svgPreCall(
       documentKey: authDocumentKey ?? '',
       generation: ctxAuth?.getCurrentGeneration?.() ?? 0,
       rootToken: 0,
-      stableFormulaIdentity: emptySentinelAuthorized ? (sessionResolvedIdentity ?? editingHostIdentity?.stableFormulaIdentity ?? null) : null,
+      stableFormulaIdentity: emptySentinelAuthorized ? (txIdentity ?? editingHostIdentity?.stableFormulaIdentity ?? null) : null,
       formulaIndex: emptyAuthorizedIndex,
       desiredTag: emptyAuthorizedTag,
       authorizedBy: emptyAuthorizedBy,
@@ -989,15 +1178,151 @@ export function handleTex2svgPreCall(
     })
   }
 
-  let auth = resolvePreCallAuthorization({
+  let auth: PreCallAuthorizationResult
+  // R5.4.3.9: Transaction authority takes priority over source matcher.
+  // R5.4.3.11: Only use transaction for authorization when the input hash matches
+  // the transaction's rawTex (prevents stale transaction from previous call from
+  // authorizing a different formula).
+  const txInputHash = currentTx ? simpleHash(normalizeTexSource(currentTx.rawTex)) : null
+  const inputMatchesTx = txInputHash !== null && txInputHash === inputHash
+  if (currentTx && currentTx.planRevision === authPlan?.planRevision && currentTx.desiredTag !== null && currentTx.desiredTag !== '' && inputMatchesTx) {
+    // Transaction planRevision matches current plan — use transaction directly.
+    auth = {
+      decision: 'AUTHORIZED',
+      uniqueAuthorizedFormulaIndex: currentTx.formulaIndex,
+      authorityKind: 'STABLE_IDENTITY_AUTHORITATIVE_SOURCE_MATCH',
+      desiredTag: currentTx.desiredTag,
+      reason: null,
+      candidateManagedFormulaCount: 1,
+      formula0SourceHashMatch: false,
+      formula1SourceHashMatch: false,
+      inlineMathRejected: false,
+      foreignMathRejected: false,
+      uniqueAuthorizedStableFormulaIdentity: currentTx.stableFormulaIdentity,
+    }
+  } else if (currentTx && currentTx.planRevision !== authPlan?.planRevision && authPlan && inputMatchesTx) {
+    // Transaction planRevision does not match — attempt plan rebind.
+    const rebindEntry = authPlan.entries.find((e) => e.stableFormulaIdentity === currentTx.stableFormulaIdentity) ?? null
+    if (rebindEntry && rebindEntry.desiredTag) {
+      emitTransactionPlanRebind({
+        oldPlanRevision: currentTx.planRevision,
+        newPlanRevision: authPlan.planRevision,
+        stableFormulaIdentity: currentTx.stableFormulaIdentity,
+        oldFormulaIndex: currentTx.formulaIndex,
+        newFormulaIndex: rebindEntry.formulaIndex,
+        oldDesiredTag: currentTx.desiredTag,
+        newDesiredTag: rebindEntry.desiredTag,
+        sameIdentity: rebindEntry.stableFormulaIdentity === currentTx.stableFormulaIdentity,
+        decision: 'PASS',
+        reason: null,
+      })
+      auth = {
+        decision: 'AUTHORIZED',
+        uniqueAuthorizedFormulaIndex: rebindEntry.formulaIndex,
+        authorityKind: 'STABLE_IDENTITY_AUTHORITATIVE_SOURCE_MATCH',
+        desiredTag: rebindEntry.desiredTag,
+        reason: null,
+        candidateManagedFormulaCount: 1,
+        formula0SourceHashMatch: false,
+        formula1SourceHashMatch: false,
+        inlineMathRejected: false,
+        foreignMathRejected: false,
+        uniqueAuthorizedStableFormulaIdentity: rebindEntry.stableFormulaIdentity,
+      }
+    } else {
+      // Rebind failed — fallback to source matcher.
+      auth = resolvePreCallAuthorization({
+        plan: authPlan,
+        inputTex,
+        sameDocument: authSameDocument,
+        sameSourceRevision: authSameSourceRevision,
+        formulaNumberingEnabled: !!ctxAuth?.enabled,
+        editingHostSourceHashes: authEditingHashes,
+        editingHostIdentity,
+      })
+    }
+  } else {
+    // No valid transaction — fallback to source matcher.
+    auth = resolvePreCallAuthorization({
+      plan: authPlan,
+      inputTex,
+      sameDocument: authSameDocument,
+      sameSourceRevision: authSameSourceRevision,
+      formulaNumberingEnabled: !!ctxAuth?.enabled,
+      editingHostSourceHashes: authEditingHashes,
+      editingHostIdentity,
+    })
+  }
+
+  // ── R5.4.3.11 P0-A: Natural Render Call Owner Authority ──
+  // Resolve call owner BEFORE any transaction/authorization binding.
+  // The call owner determines which formula this tex2svg input truly belongs to,
+  // independent of the current editing host focus.
+  const preCallOwner = resolveFormulaCallOwner({
+    uniqueSourceMatchedIdentity: auth.uniqueAuthorizedStableFormulaIdentity ?? null,
+    currentEditingIdentity: editingHostIdentity?.stableFormulaIdentity === 'AMBIGUOUS' ? null : (editingHostIdentity?.stableFormulaIdentity ?? null),
+    callerHostIdentity: editingHostIdentity?.stableFormulaIdentity === 'AMBIGUOUS' ? null : (editingHostIdentity?.stableFormulaIdentity ?? null),
     plan: authPlan,
-    inputTex,
-    sameDocument: authSameDocument,
-    sameSourceRevision: authSameSourceRevision,
-    formulaNumberingEnabled: !!ctxAuth?.enabled,
-    editingHostSourceHashes: authEditingHashes,
-    editingHostIdentity,
   })
+
+  emitRuntimeAudit('FORMULA-NATURAL-CALL-OWNER-AUTHORITY', {
+    callOrdinal,
+    inputHash,
+    inputPrefix: inputTex.slice(0, 40),
+    uniqueSourceMatchedStableIdentity: auth.uniqueAuthorizedStableFormulaIdentity ?? null,
+    uniqueSourceMatchedFormulaIndex: auth.uniqueAuthorizedFormulaIndex ?? null,
+    currentEditingStableIdentity: editingHostIdentity?.stableFormulaIdentity ?? null,
+    currentEditingFormulaIndex: editingHostIdentity?.formulaIndex ?? null,
+    callerHostStableIdentity: editingHostIdentity?.stableFormulaIdentity ?? null,
+    callerHostFormulaIndex: editingHostIdentity?.formulaIndex ?? null,
+    resolvedCallOwnerStableIdentity: preCallOwner.stableFormulaIdentity,
+    resolvedCallOwnerFormulaIndex: preCallOwner.formulaIndex,
+    authorityKind: preCallOwner.kind,
+    conflictDetected: preCallOwner.conflictDetected,
+    conflictWinner: preCallOwner.conflictWinner,
+    decision: preCallOwner.stableFormulaIdentity !== null ? 'PASS' : 'FAIL',
+    reason: preCallOwner.reason,
+    runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+  })
+
+  // If conflict detected where source match won over editing host, enforce it.
+  if (preCallOwner.conflictDetected && preCallOwner.conflictWinner === 'UNIQUE_SOURCE_MATCH' && preCallOwner.stableFormulaIdentity !== null) {
+    // Override the auth to use the call owner's identity.
+    const ownerEntry = authPlan?.entries.find((e) => e.stableFormulaIdentity === preCallOwner.stableFormulaIdentity)
+    if (ownerEntry) {
+      auth = {
+        ...auth,
+        decision: 'AUTHORIZED',
+        uniqueAuthorizedStableFormulaIdentity: preCallOwner.stableFormulaIdentity,
+        uniqueAuthorizedFormulaIndex: ownerEntry.formulaIndex,
+        desiredTag: ownerEntry.desiredTag,
+        authorityKind: 'EXACT_AUTHORITATIVE_SOURCE_MATCH',
+      }
+    }
+  }
+
+  // ── R5.4.3.11 P0-A: Use resolved call owner for transaction binding.
+  const ownerIdentityRaw = preCallOwner.stableFormulaIdentity ?? editingHostIdentity?.stableFormulaIdentity ?? null
+  const ownerFormulaIndexRaw = preCallOwner.formulaIndex ?? editingHostIdentity?.formulaIndex ?? null
+
+  if (ownerIdentityRaw !== null && ownerIdentityRaw !== 'AMBIGUOUS' && ownerFormulaIndexRaw !== null) {
+    const ownerIdentity: number = ownerIdentityRaw
+    const ownerFormulaIndex: number = ownerFormulaIndexRaw
+    const tx = latchOrRebindCurrentFormulaTransaction({
+      documentKey: authDocumentKey ?? '',
+      documentGeneration: ctxAuth?.getCurrentGeneration?.() ?? 0,
+      editorRootToken: 0,
+      formulaHost: authEditorRoot,
+      stableFormulaIdentity: ownerIdentity,
+      formulaIndex: ownerFormulaIndex,
+      planRevision: authPlan?.planRevision ?? 0,
+      liveFormulaRevision: ctxAuth?.getCurrentLiveFormulaRevision?.() ?? 0,
+      desiredTag: preCallOwner.kind === 'UNIQUE_SOURCE_MATCH' ? (authPlan?.entries.find((e) => e.stableFormulaIdentity === ownerIdentity)?.desiredTag ?? '') : '',
+      rawTex: inputTex,
+      sourceState: isEmptyFormulaSentinel(inputTex) ? 'EMPTY' : 'NONEMPTY',
+      createdBy: 'CURRENT_HOST',
+    })
+  }
 
   // R5.4.3.8: if empty sentinel authorized by identity but source-based auth
   // could not match (expected — empty TeX has no committed source), override to
@@ -1008,20 +1333,20 @@ export function handleTex2svgPreCall(
       decision: 'AUTHORIZED',
       authorityKind: 'EMPTY_FORMULA_SLOT_IDENTITY',
       uniqueAuthorizedFormulaIndex: emptyAuthorizedIndex,
-      uniqueAuthorizedStableFormulaIdentity: (sessionResolvedIdentity ?? editingHostIdentity?.stableFormulaIdentity) as number,
+      uniqueAuthorizedStableFormulaIdentity: (txIdentity ?? editingHostIdentity?.stableFormulaIdentity) as number,
       desiredTag: emptyAuthorizedTag,
       candidateManagedFormulaCount: Math.max(auth.candidateManagedFormulaCount, 1),
     }
   }
 
-  // R5.4.3.8 P2: emit edit-session tex2svg authority when session identity is in play.
-  if (sessionIdentityOk && sessionPlanEntry) {
+  // R5.4.3.9: emit edit-session tex2svg authority when transaction identity is in play.
+  if (currentTx) {
     emitEditSessionTex2svgAuthority({
       callOrdinal,
-      sessionId: activeSession!.sessionId,
-      stableFormulaIdentity: activeSession!.stableFormulaIdentity,
-      formulaIndex: sessionPlanEntry.formulaIndex,
-      desiredTag: sessionPlanEntry.desiredTag,
+      sessionId: currentTx.transactionId,
+      stableFormulaIdentity: currentTx.stableFormulaIdentity,
+      formulaIndex: currentTx.formulaIndex,
+      desiredTag: currentTx.desiredTag,
       currentEditingCandidateCount: editingHostIdentity?.candidateCount ?? 0,
       authorizedBy: 'EDIT_SESSION_LATCH',
       authorized: true,
@@ -1349,6 +1674,32 @@ export function handleTex2svgPreCall(
     })
   }
 
+  // ── R5.4.3.10 P0-A: Natural Render Correlation ──
+  // Capture the current transaction snapshot BEFORE the original tex2svgPromise
+  // is called. The .then() handler will use this captured correlation, NOT
+  // getCurrentTransaction() at fulfillment time.
+  if (authDecision === 'AUTHORIZED' || authDecision === 'AUTHORIZED_AFTER_CATCHUP') {
+    const currentTx = getCurrentTransaction()
+    if (currentTx && currentTx.stableFormulaIdentity === auth.uniqueAuthorizedStableFormulaIdentity) {
+      createNaturalRenderCorrelation({
+        callOrdinal,
+        promiseToken: callOrdinal,
+        transactionId: currentTx.transactionId,
+        documentKey: currentTx.documentKey,
+        documentGeneration: currentTx.documentGeneration,
+        editorRootToken: currentTx.editorRootToken,
+        formulaHostToken: currentTx.formulaHostToken,
+        stableFormulaIdentity: currentTx.stableFormulaIdentity,
+        formulaIndex: currentTx.formulaIndex,
+        planRevision: currentTx.planRevision,
+        liveFormulaRevision: currentTx.liveFormulaRevision,
+        desiredTag: currentTx.desiredTag,
+        rawTexHash: inputHash,
+        sourceState: currentTx.sourceState,
+      })
+    }
+  }
+
   return {
     applyArgs: forwardedArgs,
     injection: { callOrdinal, formulaIndex: auth.uniqueAuthorizedFormulaIndex, desiredTag: auth.desiredTag },
@@ -1369,6 +1720,33 @@ export function reportInjectionFulfillment(callOrdinal: number, value: unknown, 
   if (!entry) return
   if (exactRegistered) injectedFulfillmentFlags.add(entry.formulaIndex)
   const nodeLike = typeof value === 'object' && value !== null && typeof (value as any).nodeType === 'number'
+
+  // R5.4.3.11 P0-C: Use settleNaturalRenderCorrelation instead of consume.
+  // promise object return 时不能 consume，只有真正 .then(MJX-CONTAINER) 时才 settle。
+  const settlement = settleNaturalRenderCorrelationByCallOrdinal(callOrdinal, value)
+  if (settlement.settled) {
+    // Binding was registered — emit fulfillment correlation.
+    emitRuntimeAudit('FORMULA-NATURAL-RENDER-FULFILLMENT-CORRELATION', {
+      correlationId: '',
+      callOrdinal,
+      promiseToken: callOrdinal,
+      fulfilled: true,
+      nodeName: nodeLike && value instanceof Node ? (value as Node).nodeName : null,
+      nodeToken: null,
+      capturedTransactionId: '',
+      capturedStableFormulaIdentity: 0,
+      capturedFormulaIndex: 0,
+      capturedDesiredTag: '',
+      currentTransactionIdAtFulfillment: getCurrentTransaction()?.transactionId ?? null,
+      sameAsCurrentTransactionAtFulfillment: false,
+      bindingAttempted: true,
+      bindingSucceeded: true,
+      decision: 'FULFILLED',
+      reason: null,
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+    })
+  }
+
   emitRuntimeAudit('MATHJAX-TEX2SVG-INJECTION-FULFILLMENT-AUTHORITY', {
     callOrdinal,
     formulaIndex: entry.formulaIndex,
@@ -1607,4 +1985,35 @@ export function executeTex2svgInjectionVerification(input: InjectionVerification
     strategyATagEffect,
     decision: visualPass ? 'PASS' : (architecturePass ? 'FAIL' : 'PARTIAL'),
   }
+}
+
+/**
+ * R5.4.3.11 P0-D: Settle a natural render correlation by recording the binding
+ * between the fulfillment result node and the formula host.
+ *
+ * Called from the consumer side (caption-service.ts) after the result node has
+ * been successfully applied to the DOM and visual integrity has been verified.
+ */
+export function settleNaturalRenderCorrelation(
+  resultNode: HTMLElement,
+  formulaHost: HTMLElement,
+): void {
+  const binding = resolveRendererNodeBinding(resultNode)
+  const stableFormulaIdentity = binding?.stableFormulaIdentity ?? -1
+  const formulaIndex = binding?.formulaIndex ?? -1
+
+  emitRuntimeAudit('FORMULA-NATURAL-RENDER-SETTLE-CORRELATION', {
+    stableFormulaIdentity,
+    formulaIndex,
+    resultNodeName: resultNode.tagName,
+    resultNodeToken: null,
+    formulaHostToken: binding?.formulaHostToken ?? null,
+    documentKey: binding?.documentKey ?? null,
+    generation: binding?.generation ?? null,
+    rootToken: binding?.rootToken ?? null,
+    bindingFound: binding !== null,
+    decision: 'BOUND',
+    reason: null,
+    runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+  })
 }

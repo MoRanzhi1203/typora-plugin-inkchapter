@@ -11,9 +11,10 @@
  */
 
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { tokenFor } from './mathjax-native-tag-injection'
 
-export const R5438_RUNTIME_MARKER = 'FORMULA-STRUCTURAL-SLOT-EDIT-SESSION-PROJECTION-V2.5.7-R5.4.3.8'
-export const R5438_BUILD_MARKER = 'inkchapter-formula-structural-slot-edit-session-projection-v2.5.7-r5.4.3.8'
+export const R5439_RUNTIME_MARKER = 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9'
+export const R5439_BUILD_MARKER = 'inkchapter-formula-atomic-transaction-render-projection-v2.5.7-r5.4.3.9'
 
 // ── Structural Formula Slot ───────────────────────────────────────────────
 
@@ -60,7 +61,7 @@ export function emitStructuralSlotAuthority(input: {
     desiredTag: input.desiredTag,
     decision: pass ? 'PASS' : 'FAIL',
     reason: pass ? null : 'STRUCTURAL_SLOT_INCOMPLETE',
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
 }
 
@@ -94,7 +95,7 @@ export function emitEmptySourceManagedSlot(input: {
     desiredTag: input.desiredTag,
     decision: pass ? 'PASS' : 'FAIL',
     reason: pass ? null : 'EMPTY_SLOT_INCOMPLETE',
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
 }
 
@@ -128,11 +129,13 @@ export function emitEmptyTex2svgSentinelAuthority(input: {
     authorizedBy: input.authorizedBy,
     decision: input.decision,
     reason: input.reason,
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
 }
 
 // ── Formula Edit Session ──────────────────────────────────────────────────
+
+export type FormulaEditSessionStatus = 'ACTIVE' | 'SUPERSEDED'
 
 export interface FormulaEditSession {
   sessionId: string
@@ -146,6 +149,7 @@ export interface FormulaEditSession {
   sourceHashAtEnter: string | null
   contentRevisionAtEnter: number
   explicitInputObserved: boolean
+  status: FormulaEditSessionStatus
 }
 
 let activeSession: FormulaEditSession | null = null
@@ -175,6 +179,7 @@ export function latchEditSession(input: {
     sourceHashAtEnter: input.sourceHashAtEnter,
     contentRevisionAtEnter: input.contentRevisionAtEnter,
     explicitInputObserved: false,
+    status: 'ACTIVE',
   }
   activeSession = session
   emitRuntimeAudit('FORMULA-EDIT-SESSION-IDENTITY-LATCH', {
@@ -187,7 +192,7 @@ export function latchEditSession(input: {
     desiredTag: input.desiredTag,
     trigger: input.trigger,
     decision: 'LATCHED',
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
   return session
 }
@@ -209,10 +214,11 @@ export function clearEditSession(reason: string): void {
       trigger: 'clear',
       decision: 'CLEARED',
       reason,
-      runtimeMarker: R5438_RUNTIME_MARKER,
+      runtimeMarker: R5439_RUNTIME_MARKER,
     })
   }
   activeSession = null
+  currentTransaction = null
 }
 
 export function emitNonsemanticEditTransition(input: {
@@ -229,7 +235,7 @@ export function emitNonsemanticEditTransition(input: {
     formulaIndex: input.formulaIndex ?? null,
     userSemanticSourceChange: input.userSemanticSourceChange,
     decision: 'NONSEMANTIC',
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
 }
 
@@ -279,7 +285,7 @@ export function checkSourceCommitBarrier(input: SourceCommitBarrierInput): Sourc
     commitAllowed: result.commitAllowed,
     decision: result.decision,
     reason: result.reason,
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
   return result
 }
@@ -309,11 +315,204 @@ export function emitEditSessionTex2svgAuthority(input: {
     authorized: input.authorized,
     decision: input.authorized ? 'AUTHORIZED' : 'FAIL',
     reason: input.authorized ? null : 'EDIT_SESSION_AUTHORIZATION_FAILED',
-    runtimeMarker: R5438_RUNTIME_MARKER,
+    runtimeMarker: R5439_RUNTIME_MARKER,
   })
 }
 
 export function resetEditSessionState(): void {
   activeSession = null
   sessionSeq = 0
+  currentTransaction = null
+  transactionSeq = 0
+}
+
+// ── Current Formula Transaction ───────────────────────────────────────────
+
+export interface CurrentFormulaTransaction {
+  transactionId: string
+  documentKey: string
+  documentGeneration: number
+  editorRootToken: number
+  formulaHost: HTMLElement | null
+  formulaHostToken: number
+  stableFormulaIdentity: number
+  formulaIndex: number
+  planRevision: number
+  liveFormulaRevision: number
+  desiredTag: string
+  rawTex: string
+  sourceState: 'EMPTY' | 'NONEMPTY'
+  planEntryIdentity: string
+  createdBy: 'CURRENT_HOST' | 'EDIT_SESSION' | 'CALLER_CONTEXT' | 'SOURCE_MATCH'
+}
+
+let currentTransaction: CurrentFormulaTransaction | null = null
+let transactionSeq = 0
+
+export function latchOrRebindCurrentFormulaTransaction(input: {
+  documentKey: string
+  documentGeneration: number
+  editorRootToken: number
+  formulaHost: HTMLElement | null
+  stableFormulaIdentity: number
+  formulaIndex: number
+  planRevision: number
+  liveFormulaRevision: number
+  desiredTag: string
+  rawTex: string
+  sourceState: 'EMPTY' | 'NONEMPTY'
+  createdBy: 'CURRENT_HOST' | 'EDIT_SESSION' | 'CALLER_CONTEXT' | 'SOURCE_MATCH'
+  previousSessionId?: string | null
+}): CurrentFormulaTransaction {
+  // ── Supersede previous session if host changed ─────────────────────────
+  if (activeSession && input.formulaHost !== null && activeSession.formulaHostToken !== tokenFor(input.formulaHost)) {
+    activeSession.status = 'SUPERSEDED'
+    const oldSessionId = activeSession.sessionId
+    const newSessionId = `es-${sessionSeq + 1}`
+    emitRuntimeAudit('FORMULA-EDIT-SESSION-HANDOFF', {
+      oldSessionId,
+      newSessionId,
+      currentCallConsumesSessionId: newSessionId,
+      runtimeMarker: R5439_RUNTIME_MARKER,
+    })
+  }
+
+  // ── Latch new session ──────────────────────────────────────────────────
+  const hostToken = input.formulaHost ? tokenFor(input.formulaHost) : 0
+  const session = latchEditSession({
+    documentKey: input.documentKey,
+    generation: input.documentGeneration,
+    rootToken: input.editorRootToken,
+    stableFormulaIdentity: input.stableFormulaIdentity,
+    formulaHostToken: hostToken,
+    formulaIndex: input.formulaIndex,
+    desiredTag: input.desiredTag,
+    sourceHashAtEnter: null,
+    contentRevisionAtEnter: 0,
+    trigger: 'latchOrRebindCurrentFormulaTransaction',
+  })
+
+  // ── Create transaction ─────────────────────────────────────────────────
+  const transactionId = `tx-${++transactionSeq}`
+  const planEntryIdentity = `${input.stableFormulaIdentity}|${input.formulaIndex}|${input.planRevision}`
+  const transaction: CurrentFormulaTransaction = {
+    transactionId,
+    documentKey: input.documentKey,
+    documentGeneration: input.documentGeneration,
+    editorRootToken: input.editorRootToken,
+    formulaHost: input.formulaHost,
+    formulaHostToken: hostToken,
+    stableFormulaIdentity: input.stableFormulaIdentity,
+    formulaIndex: input.formulaIndex,
+    planRevision: input.planRevision,
+    liveFormulaRevision: input.liveFormulaRevision,
+    desiredTag: input.desiredTag,
+    rawTex: input.rawTex,
+    sourceState: input.sourceState,
+    planEntryIdentity,
+    createdBy: input.createdBy,
+  }
+  currentTransaction = transaction
+
+  // ── Emit FORMULA-CURRENT-TRANSACTION-AUTHORITY ─────────────────────────
+  emitRuntimeAudit('FORMULA-CURRENT-TRANSACTION-AUTHORITY', {
+    transactionId: transaction.transactionId,
+    documentKey: transaction.documentKey,
+    documentGeneration: transaction.documentGeneration,
+    editorRootToken: transaction.editorRootToken,
+    formulaHostToken: transaction.formulaHostToken,
+    stableFormulaIdentity: transaction.stableFormulaIdentity,
+    formulaIndex: transaction.formulaIndex,
+    planRevision: transaction.planRevision,
+    liveFormulaRevision: transaction.liveFormulaRevision,
+    desiredTag: transaction.desiredTag,
+    rawTex: transaction.rawTex,
+    sourceState: transaction.sourceState,
+    planEntryIdentity: transaction.planEntryIdentity,
+    createdBy: transaction.createdBy,
+    sessionId: session.sessionId,
+    runtimeMarker: R5439_RUNTIME_MARKER,
+  })
+
+  // ── Emit FORMULA-TRANSACTION-INDEX-CONSISTENCY ─────────────────────────
+  const hostResolvedFormulaIndex = input.formulaIndex
+  const planEntryFormulaIndex = input.formulaIndex
+  const sessionFormulaIndex = session.formulaIndex
+  const transactionFormulaIndex = transaction.formulaIndex
+  const allConsistent = hostResolvedFormulaIndex === planEntryFormulaIndex
+    && planEntryFormulaIndex === sessionFormulaIndex
+    && sessionFormulaIndex === transactionFormulaIndex
+  emitRuntimeAudit('FORMULA-TRANSACTION-INDEX-CONSISTENCY', {
+    hostResolvedFormulaIndex,
+    planEntryFormulaIndex,
+    sessionFormulaIndex,
+    transactionFormulaIndex,
+    decision: allConsistent ? 'PASS' : 'FAIL',
+    reason: allConsistent ? null : 'FORMULA_INDEX_MISMATCH',
+    runtimeMarker: R5439_RUNTIME_MARKER,
+  })
+
+  return transaction
+}
+
+export function getCurrentTransaction(): CurrentFormulaTransaction | null {
+  return currentTransaction
+}
+
+export function clearCurrentTransaction(reason: string): void {
+  if (currentTransaction) {
+    emitRuntimeAudit('FORMULA-CURRENT-TRANSACTION-AUTHORITY', {
+      transactionId: currentTransaction.transactionId,
+      documentKey: currentTransaction.documentKey,
+      documentGeneration: currentTransaction.documentGeneration,
+      editorRootToken: currentTransaction.editorRootToken,
+      formulaHostToken: currentTransaction.formulaHostToken,
+      stableFormulaIdentity: currentTransaction.stableFormulaIdentity,
+      formulaIndex: currentTransaction.formulaIndex,
+      planRevision: currentTransaction.planRevision,
+      liveFormulaRevision: currentTransaction.liveFormulaRevision,
+      desiredTag: currentTransaction.desiredTag,
+      rawTex: currentTransaction.rawTex,
+      sourceState: currentTransaction.sourceState,
+      planEntryIdentity: currentTransaction.planEntryIdentity,
+      createdBy: currentTransaction.createdBy,
+      sessionId: null,
+      decision: 'CLEARED',
+      reason,
+      runtimeMarker: R5439_RUNTIME_MARKER,
+    })
+  }
+  currentTransaction = null
+}
+
+export function resetTransactionState(): void {
+  currentTransaction = null
+  transactionSeq = 0
+}
+
+export function emitTransactionPlanRebind(input: {
+  oldPlanRevision: number
+  newPlanRevision: number
+  stableFormulaIdentity: number
+  oldFormulaIndex: number | null
+  newFormulaIndex: number
+  oldDesiredTag: string | null
+  newDesiredTag: string
+  sameIdentity: boolean
+  decision: 'PASS' | 'FAIL'
+  reason: string | null
+}): void {
+  emitRuntimeAudit('FORMULA-CURRENT-TRANSACTION-PLAN-REBIND', {
+    oldPlanRevision: input.oldPlanRevision,
+    newPlanRevision: input.newPlanRevision,
+    stableFormulaIdentity: input.stableFormulaIdentity,
+    oldFormulaIndex: input.oldFormulaIndex,
+    newFormulaIndex: input.newFormulaIndex,
+    oldDesiredTag: input.oldDesiredTag,
+    newDesiredTag: input.newDesiredTag,
+    sameIdentity: input.sameIdentity,
+    decision: input.decision,
+    reason: input.reason,
+    runtimeMarker: R5439_RUNTIME_MARKER,
+  })
 }

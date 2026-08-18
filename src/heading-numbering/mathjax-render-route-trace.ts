@@ -16,6 +16,7 @@
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { verifyFormulaTexSource, type FormulaTexSourceKind } from './formula-tex-source-verifier'
 import { handleTex2svgPreCall, reportInjectionFulfillment } from './mathjax-tex2svg-tag-injection'
+import { setOriginalTex2svgPromise } from './formula-render-projection'
 
 export const R531_RUNTIME_MARKER = 'FORMULA-RENDER-RESULT-CALLER-AUTHORITY-V2.5.7-R5.3.1'
 export const R53_RUNTIME_MARKER = 'FORMULA-TYPORA-RENDER-ROUTE-AUTHORITY-V2.5.7-R5.3'
@@ -400,6 +401,21 @@ export function installRenderRouteHooks(): { decision: string; reason: string | 
       candidate.installed = true
       candidate.installationCount = 1
       installedCount++
+      // R5.4.3.10 P0-C: Save original tex2svgPromise for production fulfillment provider.
+      if (isTex2svgPromise && original) {
+        setOriginalTex2svgPromise(original as (...args: unknown[]) => Promise<unknown>)
+        emitRuntimeAudit('FORMULA-PROJECTION-PROVIDER-INSTALL', {
+          originalTex2svgPromiseCallable: true,
+          originalFunctionToken: tokenForFn(original),
+          wrapperFunctionToken: tokenForFn(wrapper),
+          sameFunction: false,
+          providerInstalled: true,
+          installationCount: 1,
+          decision: 'PASS',
+          reason: null,
+          runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+        })
+      }
       if (hookInstallTimestamp === null) hookInstallTimestamp = Date.now()
       emitRuntimeAudit('MATHJAX-RENDER-ROUTE-HOOK-INSTALL', {
         routeName: candidate.routeName,
