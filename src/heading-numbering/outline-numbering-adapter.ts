@@ -490,6 +490,58 @@ function findOutlineTextElementsCore(root: HTMLElement, requireVisible: boolean)
   return items
 }
 
+// ── Native outline items (level-aware, decoration-stripped) ────────
+
+// Only strip InkChapter decoration NODES that carry TEXT. The numbering label is
+// an ATTRIBUTE (`data-inkchapter-number`) on the outline item itself, rendered via
+// CSS `::before`, so it must NOT be stripped (stripping it would also remove the
+// outline item's heading text).
+const INKCHAPTER_DECORATION_SELECTORS = [
+  '[data-inkchapter-outline-number]',
+  '[data-inkchapter-outline-decoration]',
+  '.inkchapter-outline-number',
+  '[data-inkchapter-outline-observer-probe]',
+]
+
+/** Strip InkChapter decoration nodes from a cloned subtree and return text. */
+function nativeTextOf(el: HTMLElement): string {
+  const clone = el.cloneNode(true) as HTMLElement
+  for (const sel of INKCHAPTER_DECORATION_SELECTORS) {
+    clone.querySelectorAll(sel).forEach(n => n.remove())
+  }
+  return (clone.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
+export interface OutlineNativeItem {
+  level: number
+  text: string
+  element: HTMLElement
+}
+
+/**
+ * Collect native outline items with their level. Typora encodes the level in the
+ * `.outline-item-wrapper` class (`outline-h1`…`outline-h6`). Falls back to the
+ * adapter text-element finder (level 0) when wrappers are absent.
+ */
+export function findOutlineNativeItems(root: HTMLElement): OutlineNativeItem[] {
+  const wrappers = root.querySelectorAll<HTMLElement>('.outline-item-wrapper')
+  if (wrappers.length > 0) {
+    const items: OutlineNativeItem[] = []
+    wrappers.forEach(w => {
+      const anchor = w.querySelector<HTMLAnchorElement>('a[href]')
+      const levelMatch = (w.className || '').match(/outline-h(\d)/)
+      items.push({
+        level: levelMatch ? parseInt(levelMatch[1], 10) : 0,
+        text: nativeTextOf(w),
+        element: anchor ?? w,
+      })
+    })
+    return items
+  }
+  const els = findOutlineTextElements(root)
+  return els.map(el => ({ level: 0, text: nativeTextOf(el), element: el }))
+}
+
 // ── Matching ──────────────────────────────────────────
 
 /**

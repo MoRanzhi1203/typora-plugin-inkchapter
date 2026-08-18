@@ -19,6 +19,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID } from '../heading-numbering/paragraph-indent-forensic'
 import { captureRuntimeLogTimestamp, formatRuntimeLogTimestamp, type RuntimeLogTimestamp } from './runtime-log-timestamp'
 
@@ -222,7 +223,7 @@ function enqueueRecord(event: string, payload?: Record<string, unknown>, level: 
   if (!enabled || failed) return
   try {
     writeQueue.push(buildRecord(event, payload, ts))
-    queuedCount++
+    queuedCount++;
   } catch (e) {
     errorCount++
     droppedCount++
@@ -325,4 +326,179 @@ export function getForensicSinkStats(): ForensicSinkStats {
     flushScheduled,
     queueLength: writeQueue.length,
   }
+}
+
+// ── Immutable log export snapshot (v2.5.3) ──────────────────────────
+
+export interface LogFileIdentity {
+  path: string | null
+  size: number
+  sha256: string
+}
+
+export interface ForensicLogExportResult {
+  sessionId: string
+  liveSinkPath: string | null
+  exportPath: string | null
+  snapshotEndOffset: number
+  exportSize: number
+  exportSha256: string
+  exportHandleClosed: boolean
+  exportRegisteredAsLiveSink: boolean
+  activeLiveSinkCount: number
+  decision: 'PASS' | 'FAIL'
+  reason: string | null
+}
+
+export interface ForensicLogImmutabilityVerify {
+  exportPath: string | null
+  exportSizeBefore: number
+  exportShaBefore: string
+  exportSizeAfter: number
+  exportShaAfter: string
+  unchanged: boolean
+  liveSinkSize: number
+  activeLiveSinkCount: number
+  decision: 'PASS' | 'FAIL'
+}
+
+function sha256File(filePath: string): string {
+  const data = fs.readFileSync(filePath)
+  return crypto.createHash('sha256').update(new Uint8Array(data)).digest('hex').toUpperCase()
+}
+
+/** Count of active live sinks (always 0 or 1). */
+export function getActiveLiveSinkCount(): number {
+  return enabled ? 1 : 0
+}
+
+/** Point-in-time identity (size + SHA256) of a log file. */
+export function computeLogFileIdentity(filePath: string | null): LogFileIdentity {
+  if (!filePath || !fs.existsSync(filePath)) return { path: filePath, size: 0, sha256: '' }
+  return { path: filePath, size: fs.statSync(filePath).size, sha256: sha256File(filePath) }
+}
+
+/**
+ * Export an IMMUTABLE byte snapshot of the live sink into a NEW file. The live
+ * sink keeps growing; the export is frozen at `snapshotEndOffset`. The export is
+ * never registered as a live sink and its handle is always closed.
+ */
+export function exportForensicLogSnapshot(): ForensicLogExportResult {
+  const activeLiveSinkCount = getActiveLiveSinkCount()
+  const base: ForensicLogExportResult = {
+    sessionId,
+    liveSinkPath: outputPath,
+    exportPath: null,
+    snapshotEndOffset: 0,
+    exportSize: 0,
+    exportSha256: '',
+    exportHandleClosed: false,
+    exportRegisteredAsLiveSink: false,
+    activeLiveSinkCount,
+    decision: 'FAIL',
+    reason: null,
+  }
+
+  if (!enabled || !outputPath) {
+    base.reason = 'NO_LIVE_SINK'
+    emitRuntimeAudit('LOG-EXPORT-SNAPSHOT', { ...base }, 'warn')
+    return base
+  }
+
+  // flush the live sink so every pending byte is on disk before snapshotting.
+  flushForensicSink()
+
+  let statSize = 0
+  try {
+    statSize = fs.statSync(outputPath).size
+  } catch (e) {
+    base.reason = `STAT_FAILED:${String(e)}`
+    emitRuntimeAudit('LOG-EXPORT-SNAPSHOT', { ...base }, 'error')
+    return base
+  }
+
+  const snapshotEndOffset = statSize
+  const exportDir = path.dirname(outputPath)
+  const exportPath = path.join(exportDir, `runtime-${sessionId}-export-${Date.now()}.log`)
+
+  if (exportPath === outputPath) {
+    base.reason = 'EXPORT_PATH_EQUALS_LIVE_SINK'
+    emitRuntimeAudit('LOG-EXPORT-SNAPSHOT', { ...base }, 'error')
+    return base
+  }
+
+  let exportHandleClosed = false
+  try {
+    const srcFd = fs.openSync(outputPath, 'r')
+    const dstFd = fs.openSync(exportPath, 'w')
+    try {
+      const buf = new Uint8Array(64 * 1024)
+      let pos = 0
+      let remaining = snapshotEndOffset
+      while (remaining > 0) {
+        const toRead = Math.min(buf.length, remaining)
+        const bytesRead = fs.readSync(srcFd, buf, 0, toRead, pos)
+        if (bytesRead <= 0) break
+        fs.writeSync(dstFd, buf, 0, bytesRead)
+        pos += bytesRead
+        remaining -= bytesRead
+      }
+      fs.fsyncSync(dstFd)
+    } finally {
+      fs.closeSync(dstFd)
+      fs.closeSync(srcFd)
+      exportHandleClosed = true
+    }
+  } catch (e) {
+    base.reason = `COPY_FAILED:${String(e)}`
+    emitRuntimeAudit('LOG-EXPORT-SNAPSHOT', { ...base }, 'error')
+    return base
+  }
+
+  let exportSize = 0
+  let exportSha256 = ''
+  try {
+    exportSize = fs.statSync(exportPath).size
+    exportSha256 = sha256File(exportPath)
+  } catch (e) {
+    base.reason = `HASH_FAILED:${String(e)}`
+    emitRuntimeAudit('LOG-EXPORT-SNAPSHOT', { ...base }, 'error')
+    return base
+  }
+
+  const result: ForensicLogExportResult = {
+    ...base,
+    exportPath,
+    snapshotEndOffset,
+    exportSize,
+    exportSha256,
+    exportHandleClosed,
+    exportRegisteredAsLiveSink: false,
+    activeLiveSinkCount,
+    decision: 'PASS',
+    reason: null,
+  }
+
+  emitRuntimeAudit('LOG-EXPORT-SNAPSHOT', { ...result })
+  return result
+}
+
+/** Re-check the exported file's size + SHA against the snapshot (immutability). */
+export function verifyForensicLogExport(result: ForensicLogExportResult): ForensicLogImmutabilityVerify {
+  const after = computeLogFileIdentity(result.exportPath)
+  const live = computeLogFileIdentity(result.liveSinkPath)
+  const unchanged = after.size === result.exportSize && after.sha256 === result.exportSha256
+  const verify: ForensicLogImmutabilityVerify = {
+    exportPath: result.exportPath,
+    exportSizeBefore: result.exportSize,
+    exportShaBefore: result.exportSha256,
+    exportSizeAfter: after.size,
+    exportShaAfter: after.sha256,
+    unchanged,
+    liveSinkSize: live.size,
+    activeLiveSinkCount: getActiveLiveSinkCount(),
+    decision: unchanged ? 'PASS' : 'FAIL',
+  }
+  emitRuntimeAudit('LOG-EXPORT-IMMUTABILITY-VERIFY', { ...verify })
+  return verify
 }

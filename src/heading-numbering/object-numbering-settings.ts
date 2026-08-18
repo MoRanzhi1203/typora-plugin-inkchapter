@@ -10,12 +10,20 @@
 
 import {
   DEFAULT_OBJECT_NUMBERING_CONFIG,
+  scopeFromNumberingMode,
   type ObjectNumberingType,
   type ObjectNumberingConfig,
   type NumberingMode,
   type NumberStyle,
   type ObjectPosition,
+  type ObjectNumberingScope,
+  type ObjectNumberingPreset,
 } from './object-numbering-engine'
+import {
+  isValidObjectNumberingPreset,
+  resolvePresetConfig,
+  OBJECT_NUMBERING_PRESETS,
+} from './object-numbering-presets'
 
 export interface ObjectNumberingSettings {
   schemaVersion: number
@@ -54,6 +62,13 @@ function asPosition(value: unknown, fallback: ObjectPosition): ObjectPosition {
   return value === 'above' || value === 'below' || value === 'left' || value === 'right' ? value : fallback
 }
 
+/** Formula parens are the formatter's concern; strip one outer pair for preset matching. */
+function stripFormulaParens(template: string): string {
+  const s = template.trim()
+  if (s.startsWith('(') && s.endsWith(')')) return s.slice(1, -1)
+  return template
+}
+
 /** Migrate a single (possibly legacy/partial) type config into V2 shape. */
 export function migrateObjectNumberingConfig(
   type: ObjectNumberingType,
@@ -67,10 +82,29 @@ export function migrateObjectNumberingConfig(
   const numberStyle = asNumberStyle(r.numberStyle)
   const startAt = typeof r.startAt === 'number' && Number.isFinite(r.startAt) && r.startAt >= 0 ? Math.floor(r.startAt) : base.startAt
   const minDigits = typeof r.minDigits === 'number' ? Math.min(6, Math.max(1, Math.floor(r.minDigits))) : base.minDigits
-  const template = typeof r.template === 'string' && r.template.trim() !== '' ? r.template : base.template
+  const rawTemplate = typeof r.template === 'string' && r.template.trim() !== '' ? r.template : base.template
+  const matchTemplate = type === 'formula' ? stripFormulaParens(rawTemplate) : rawTemplate
   const resetHeadingLevel = r.resetHeadingLevel === 1 || r.resetHeadingLevel === 2 || r.resetHeadingLevel === 3 ? (r.resetHeadingLevel as 1 | 2 | 3) : base.resetHeadingLevel
   const customExpression = typeof r.customExpression === 'string' ? r.customExpression : base.customExpression
   const formulaMode = r.formulaMode === 'inkchapter' ? 'inkchapter' : (r.formulaMode === 'typora-native' ? 'typora-native' : base.formulaMode)
+  const scope: ObjectNumberingScope | undefined =
+    r.scope === 'document' || r.scope === 'chapter' || r.scope === 'section' || r.scope === 'subsection'
+      ? (r.scope as ObjectNumberingScope)
+      : undefined
+  // Legacy configs saved `numberingMode` (not `scope`); derive scope for preset matching.
+  const matchScope: ObjectNumberingScope = scope ?? scopeFromNumberingMode(numberingMode)
+
+  // ── v2 preset resolution: preset ID is authority; scope+format derive from it. ──
+  const resolved = resolvePresetConfig({ preset: r.preset, scope: matchScope, format: matchTemplate })
+  const preset: ObjectNumberingPreset | undefined = resolved.preset ?? undefined
+  const effectiveScope = resolved.decision === 'LEGACY_CUSTOM' ? scope : resolved.scope
+  const effectiveTemplate = resolved.decision === 'LEGACY_CUSTOM' ? rawTemplate : resolved.format
+  const legacyCustomFormat = resolved.decision === 'LEGACY_CUSTOM' ? true : undefined
+  console.info(
+    `[InkChapter Numbering] OBJECT-NUMBERING-PRESET-MIGRATION type=${type} ` +
+    `oldScope=${scope ?? 'none'} oldFormat=${JSON.stringify(rawTemplate)} ` +
+    `resolvedPreset=${preset ?? 'none'} decision=${resolved.decision}`,
+  )
 
   return {
     enabled,
@@ -80,7 +114,10 @@ export function migrateObjectNumberingConfig(
     numberStyle,
     startAt,
     minDigits,
-    template,
+    template: effectiveTemplate,
+    ...(effectiveScope ? { scope: effectiveScope } : {}),
+    ...(preset ? { preset } : {}),
+    ...(legacyCustomFormat ? { legacyCustomFormat } : {}),
     resetHeadingLevel,
     customExpression,
     ...(type === 'formula' ? { formulaMode } : {}),

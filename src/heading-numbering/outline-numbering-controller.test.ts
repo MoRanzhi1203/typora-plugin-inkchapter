@@ -1,7 +1,20 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { OutlineNumberingController } from './outline-numbering-controller'
+import { OutlineNumberingController, buildSemanticSequence } from './outline-numbering-controller'
 import type { HeadingDescriptor } from './heading-types'
+
+/** Create a native outline item wrapper (`.outline-item-wrapper.outline-h<N>`) + anchor. */
+function appendNativeItem(outline: HTMLElement, href: string, text: string, level = 2): HTMLElement {
+  const w = document.createElement('div')
+  w.className = `outline-item-wrapper outline-h${level}`
+  const a = document.createElement('a')
+  a.href = href
+  a.textContent = text
+  w.appendChild(a)
+  outline.appendChild(w)
+  Object.defineProperty(a, 'offsetParent', { get: () => w, configurable: true })
+  return a
+}
 
 function makeDom(): { outline: HTMLElement; items: HTMLElement[] } {
   document.body.innerHTML = ''
@@ -13,14 +26,8 @@ function makeDom(): { outline: HTMLElement; items: HTMLElement[] } {
   outline.id = 'outline-content'
   sidebar.appendChild(outline)
 
-  const a1 = document.createElement('a')
-  a1.href = '#h1'
-  a1.textContent = '第一章'
-  outline.appendChild(a1)
-  const a2 = document.createElement('a')
-  a2.href = '#h2'
-  a2.textContent = '第二章'
-  outline.appendChild(a2)
+  const a1 = appendNativeItem(outline, '#h1', '第一章')
+  const a2 = appendNativeItem(outline, '#h2', '第二章')
 
   const write = document.createElement('div')
   write.id = 'write'
@@ -37,8 +44,8 @@ function makeDom(): { outline: HTMLElement; items: HTMLElement[] } {
   // jsdom has no layout — mock offsetParent so `findOutlineRoot` sees visible.
   Object.defineProperty(sidebar, 'offsetParent', { get: () => document.body, configurable: true })
   Object.defineProperty(outline, 'offsetParent', { get: () => sidebar, configurable: true })
-  Object.defineProperty(a1, 'offsetParent', { get: () => outline, configurable: true })
-  Object.defineProperty(a2, 'offsetParent', { get: () => outline, configurable: true })
+  Object.defineProperty(a1, 'offsetParent', { get: () => a1.parentElement, configurable: true })
+  Object.defineProperty(a2, 'offsetParent', { get: () => a2.parentElement, configurable: true })
 
   return { outline, items: [a1, a2] }
 }
@@ -77,26 +84,19 @@ describe('OutlineNumberingController — live reapply', () => {
     ctrl.stop()
   })
 
-  it('native childList mutation after Typora wipes decorations re-applies them', async () => {
+  it('native childList rebuild (wipe + re-add) re-applies wiped decorations', async () => {
     const { outline } = makeDom()
     const ctrl = new OutlineNumberingController()
     ctrl.start()
     ctrl.setDocumentKey('doc-a')
     ctrl.syncAfterRefresh('doc-a', headings, labels)
-    await nextFrames()
+    await nextFrames(4)
 
-    // Typora wipes InkChapter decorations.
-    for (const el of outline.querySelectorAll<HTMLElement>('[data-inkchapter-number]')) {
-      el.removeAttribute('data-inkchapter-number')
-    }
-    expect(outline.querySelectorAll('[data-inkchapter-number]').length).toBe(0)
-
-    // Native rebuild: add an outline item (childList mutation) → auto reapply.
-    const a3 = document.createElement('a')
-    a3.href = '#h3'
-    a3.textContent = '第三章'
-    outline.appendChild(a3)
-    await nextFrames()
+    // Typora rebuilds the two native wrappers (wiping decorations).
+    for (const w of Array.from(outline.querySelectorAll('.outline-item-wrapper'))) w.remove()
+    appendNativeItem(outline, '#h1', '第一章')
+    appendNativeItem(outline, '#h2', '第二章')
+    await nextFrames(8)
 
     expect(outline.querySelectorAll('[data-inkchapter-number]').length).toBeGreaterThan(0)
     ctrl.stop()
@@ -263,11 +263,9 @@ describe('OutlineNumberingController — live reapply', () => {
     const outline = document.createElement('div')
     outline.id = 'outline-content'
     sidebar.appendChild(outline)
-    const a1 = document.createElement('a'); a1.href = '#h1'; a1.textContent = '第一章'; outline.appendChild(a1)
-    const a2 = document.createElement('a'); a2.href = '#h2'; a2.textContent = '第二章'; outline.appendChild(a2)
+    appendNativeItem(outline, '#h1', '第一章')
+    appendNativeItem(outline, '#h2', '第二章')
     Object.defineProperty(outline, 'offsetParent', { get: () => sidebar, configurable: true })
-    Object.defineProperty(a1, 'offsetParent', { get: () => outline, configurable: true })
-    Object.defineProperty(a2, 'offsetParent', { get: () => outline, configurable: true })
 
     await nextFrames()
 
@@ -350,6 +348,245 @@ describe('OutlineNumberingController — live reapply', () => {
     // Same root throughout → observer bound exactly once.
     expect(probe.observer.observerGeneration).toBe(1)
     expect(probe.observer.observedRootToken).toBeGreaterThanOrEqual(1)
+    ctrl.stop()
+  })
+
+  // ── v27 Post-Native Stability Closure ──────────────────────────────
+
+  it('native mutation burst coalesces into one post-native apply', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    // A burst of native item insertions in one synchronous task. They do NOT
+    // match the current headings, so the semantic gate blocks any spurious apply.
+    appendNativeItem(outline, '#h3', '第三章')
+    appendNativeItem(outline, '#h4', '第四章')
+    appendNativeItem(outline, '#h5', '第五章')
+    await nextFrames(8)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.stats.nativeMutationCount).toBeGreaterThanOrEqual(3)
+    // Only the initial converged full resync happened; the mismatched burst did
+    // not force extra full re-applies (coalesced to 0 because not READY).
+    expect(probe.stats.fullResyncBeginCount).toBe(1)
+    ctrl.stop()
+  })
+
+  it('latest snapshot wins during native dirty (convergence)', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    // Native rebuild to 3 items → native becomes dirty.
+    appendNativeItem(outline, '#h3', '第三章')
+    await nextFrames(1)
+
+    // Two more snapshots arrive while native is dirty → only latest must apply.
+    const h3: HeadingDescriptor[] = [...headings, { key: 'h3', level: 2, text: '第三章' }]
+    ctrl.syncAfterRefresh('doc-a', h3, ['A、', 'B、', 'C、'])
+    ctrl.syncAfterRefresh('doc-a', h3, ['X、', 'Y、', 'Z、'])
+    await nextFrames(8)
+
+    const a3 = outline.querySelector<HTMLElement>('a[href="#h3"]')!
+    expect(a3.getAttribute('data-inkchapter-number')).toBe('Z、')
+    ctrl.stop()
+  })
+
+  it('native rebuild after decoration loss repairs and reaches STABLE verify', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    // Typora wipes decorations by rebuilding the native wrappers.
+    for (const w of Array.from(outline.querySelectorAll('.outline-item-wrapper'))) w.remove()
+    appendNativeItem(outline, '#h1', '第一章')
+    appendNativeItem(outline, '#h2', '第二章')
+    await nextFrames(8)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(outline.querySelectorAll('[data-inkchapter-number]').length).toBeGreaterThan(0)
+    expect(probe.lastVerify.phase).toBe('STABLE')
+    expect(probe.stats.stableVerifyFailCount).toBe(0)
+    expect(probe.stats.finalDecorationLossCount).toBe(0)
+    ctrl.stop()
+  })
+
+  it('self decoration attribute mutation does not set nativeDirty', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    const epochBefore = (window as any).__inkchapter_outline_sync_probe__().nativeMutationEpoch
+    const el = outline.querySelector<HTMLElement>('[data-inkchapter-number]')!
+    const original = el.getAttribute('data-inkchapter-number')!
+    el.setAttribute('data-inkchapter-number', original + 'x')
+    el.setAttribute('data-inkchapter-number', original)
+    await nextFrames(3)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.nativeMutationEpoch).toBe(epochBefore)
+    expect(probe.nativeDirty).toBe(false)
+    ctrl.stop()
+  })
+
+  it('active class mutation does not force structural repair (no native epoch bump)', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    const epochBefore = (window as any).__inkchapter_outline_sync_probe__().nativeMutationEpoch
+    outline.classList.add('outline-active')
+    await nextFrames(3)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.nativeMutationEpoch).toBe(epochBefore)
+    expect(probe.nativeDirty).toBe(false)
+    ctrl.stop()
+  })
+
+  it('normal native text change does not produce a coverage-gap false FAIL', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    outline.querySelector('a')!.firstChild!.textContent = '第一章（改）'
+    await nextFrames(8)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.stats.coverageGapFailCount).toBe(0)
+    ctrl.stop()
+  })
+
+  // ── v28 Document-Switch Semantic Convergence ──────────────────────
+
+  it('H2→H3 changes the semantic fingerprint', () => {
+    const h2 = buildSemanticSequence([{ level: 2, text: '背景' }])
+    const h3 = buildSemanticSequence([{ level: 3, text: '背景' }])
+    expect(h2).not.toEqual(h3)
+  })
+
+  it('duplicate headings are disambiguated by occurrence', () => {
+    const seq = buildSemanticSequence([
+      { level: 2, text: '背景' },
+      { level: 2, text: '背景' },
+    ])
+    expect(seq).toEqual(['2|背景|1', '2|背景|2'])
+  })
+
+  it('same root token across document switch resyncs current document', async () => {
+    makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    const probeA = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probeA.outlineDirty).toBe(false)
+    const rootTokenBefore = probeA.boundRootToken
+
+    // Switch to doc-b reusing the SAME DOM root — the matcher re-derives content.
+    ctrl.setDocumentKey('doc-b')
+    ctrl.syncAfterRefresh('doc-b', headings, labels)
+    await nextFrames(4)
+
+    const probeB = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probeB.boundRootToken).toBe(rootTokenBefore)
+    expect(probeB.snapshotDocumentKey).toBe('doc-b')
+    expect(probeB.outlineDirty).toBe(false)
+    ctrl.stop()
+  })
+
+  it('same root document switch does not disconnect observer', async () => {
+    makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    const genBefore = (window as any).__inkchapter_outline_sync_probe__().observer.observerGeneration
+    ctrl.reinitialize()
+    ctrl.setDocumentKey('doc-b')
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.observer.observerGeneration).toBe(genBefore)
+    expect(probe.observer.rootBound).toBe(true)
+    ctrl.stop()
+  })
+
+  it('full resync clears dirty after readiness', async () => {
+    makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.outlineDirty).toBe(false)
+    expect(probe.outlineDirtyReason).toBe(null)
+    expect(probe.lastReadiness.semanticReady).toBe(true)
+    ctrl.stop()
+  })
+
+  it('native outline not caught up keeps dirty and is not terminal', async () => {
+    const { outline } = makeDom()
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    // Native outline gains a stale extra item (not caught up).
+    appendNativeItem(outline, '#stale', '陈旧标题')
+    await nextFrames(10)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.stats.stableVerifyFailCount).toBe(0)
+    expect(probe.lastReadiness.semanticReady).toBe(false)
+    expect(probe.outlineDirty).toBe(true)
+    ctrl.stop()
+  })
+
+  it('semantic fingerprint mismatch does not block full resync (matcher is authority)', async () => {
+    const { outline } = makeDom()
+    // Force a level difference (h3 vs heading level 2) → matcher still matches by
+    // text, but the semantic fingerprint differs. Must NOT block full resync.
+    for (const w of Array.from(outline.querySelectorAll('.outline-item-wrapper'))) {
+      w.className = 'outline-item-wrapper outline-h3'
+    }
+    const ctrl = new OutlineNumberingController()
+    ctrl.start()
+    ctrl.setDocumentKey('doc-a')
+    ctrl.syncAfterRefresh('doc-a', headings, labels)
+    await nextFrames(4)
+
+    const probe = (window as any).__inkchapter_outline_sync_probe__()
+    expect(probe.lastReadiness.semanticReady).toBe(true)
+    expect(probe.lastReadiness.fingerprintMismatch).toBe(true)
+    expect(probe.stats.semanticDiagnosticMismatchCount).toBeGreaterThan(0)
+    expect(probe.outlineDirty).toBe(false)
+    expect(outline.querySelectorAll('[data-inkchapter-number]').length).toBeGreaterThan(0)
     ctrl.stop()
   })
 })

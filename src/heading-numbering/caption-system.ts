@@ -45,6 +45,10 @@ export interface CaptionTypeSettings {
   minDigits?: number
   template?: string
   resetHeadingLevel?: 1 | 2 | 3
+  /** v2 preset authority (scope/template derive from it). */
+  scope?: 'document' | 'chapter' | 'section' | 'subsection'
+  preset?: 'continuous' | 'chapter-dot' | 'chapter-dash' | 'section-dot' | 'section-dash'
+  legacyCustomFormat?: boolean
 }
 
 export interface CaptionSettings {
