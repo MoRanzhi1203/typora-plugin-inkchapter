@@ -1,12 +1,12 @@
 {
   "pluginId": "ranzhi.inkchapter",
   "pluginName": "墨章 InkChapter",
-  "buildMarker": "inkchapter-outline-observer-late-bind-v26",
+  "buildMarker": "inkchapter-formula-tex2svg-precall-tag-injection-v2.5.7-r5.4",
   "runtimeGateRevision": "r58-lifecycle-repair",
-  "loadedAt": "2026-08-16T18:47:19.980Z",
+  "loadedAt": "2026-08-18T09:22:08.594Z",
   "pluginRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist",
   "mainJsPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\main.js",
-  "mainJsSha256": "229022B665FA0044BC84F9D6AC5F567621C0057AE0949CC1FFE79A8AFB2C6CCE",
+  "mainJsSha256": "26CA706C6F5F5C57969AA9ADCEC353775A6C88AF5AF8EC9E2BB84498E386F8CD",
   "manifestPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\manifest.json",
   "initializationCount": 1,
   "ribbonInjected": false,
@@ -16,6 +16,6 @@
     "hasInfoPanelTabFile": true,
     "hasInfoPanelTabSearch": true,
     "hasInfoPanelTabOutline": true,
-    "sidebarClasses": "stopselect dropmenu sidebar-menu open active-tab-outline"
+    "sidebarClasses": "stopselect dropmenu sidebar-menu open active-tab-files use-file-tree-style"
   }
 }

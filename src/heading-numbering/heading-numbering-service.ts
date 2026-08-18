@@ -32,6 +32,8 @@ import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
 import { resolveHeadingStructure, resolveStyleSlot } from './heading-structure'
 import type { HeadingStructureMode } from './heading-structure'
+import { resolveLogicalHeadingRoleMap } from './heading-context-resolver'
+import { buildStructuredHeadingStates, type StructuredHeadingNumberState } from './object-heading-ordinal-authority'
 import {
   validateStrictFirstH1Topline,
   computeDocumentStartSignature,
@@ -482,6 +484,8 @@ export class HeadingNumberingService {
   private lastSnapshot: HeadingSnapshot[] | null = null
   private renderedStates: RenderedHeadingState[] | null = null
   private renderedGaps: string[] | null = null
+  /** v2.5.3: structured numeric heading state exposed to shared object numbering. */
+  private lastStructuredHeadingStates: StructuredHeadingNumberState[] = []
   private isInComposition = false
   private mutationObserver: MutationObserver | null = null
 
@@ -1815,6 +1819,16 @@ export class HeadingNumberingService {
   /** Get the current effective settings (for settings tab read). */
   getEffectiveSettings(): HeadingNumberingSettings {
     return deepCloneSettings(this.docContext.effectiveSettings)
+  }
+
+  /**
+   * v2.5.3: shared structured numeric heading state for object numbering.
+   * Read-only projection of the last Heading Numbering engine output (numeric
+   * counters → logical role / ordinal / numberingPath), never a re-parse of the
+   * rendered display label.
+   */
+  getStructuredHeadingNumberState(): StructuredHeadingNumberState[] {
+    return this.lastStructuredHeadingStates
   }
 
   /** Get current settings source ('global' or 'document'). */
@@ -3582,6 +3596,19 @@ export class HeadingNumberingService {
 
       const diff = this.adapter.applyNumberingDiff(labels)
       this.renderedStates = this.adapter.buildRenderedStates(labels)
+
+      // ── v2.5.4: write a stable live heading identity (never text / display label) ──
+      for (const s of this.renderedStates) {
+        s.element.setAttribute('data-inkchapter-heading-id', s.key)
+      }
+
+      // ── v2.5.3: expose structured numeric heading state (never reparse labels) ──
+      this.lastStructuredHeadingStates = buildStructuredHeadingStates(
+        numbered,
+        resolveLogicalHeadingRoleMap(resolveHeadingStructure(this.s).mode),
+        this.getDocumentKey() ?? '',
+        new Map(this.renderedStates.map((s) => [s.key, s.element])),
+      )
 
       // Apply per-heading label gaps (number-to-title spacing)
       const gaps = extractLabelGaps(numbered)

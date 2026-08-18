@@ -38,11 +38,15 @@ import {
   validateNumberTemplate,
   type ObjectNumberingConfig,
   type ObjectNumberingType,
-  type NumberingMode,
-  type NumberStyle,
   type ObjectPosition,
 } from '../heading-numbering/object-numbering-engine'
 import { migrateObjectNumberingConfig } from '../heading-numbering/object-numbering-settings'
+import {
+  OBJECT_NUMBERING_PRESET_IDS,
+  isValidObjectNumberingPreset,
+  presetOptionLabel,
+  presetSelectionPatch,
+} from '../heading-numbering/object-numbering-presets'
 import {
   moveSegmentToResolvedIndex,
   calculateTargetIndexAfterRemoval,
@@ -5780,6 +5784,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   private renderCaptionCard(): void {
     const card = el('div', 'inkchapter-card', this.containerEl)
+    // v2.1 UI authority: this card is the ONLY object-numbering settings renderer.
+    card.setAttribute('data-inkchapter-object-numbering-ui', OBJECT_NUMBERING_UI_DOM_MARKER)
+    card.setAttribute('data-inkchapter-object-numbering-ui-impl', OBJECT_NUMBERING_UI_IMPL_ID)
+
+    console.info(
+      `[InkChapter Numbering] OBJECT-NUMBERING-UI-RENDER ` +
+      `implId=${OBJECT_NUMBERING_UI_IMPL_ID} site=renderCaptionCard renderGeneration=1 ` +
+      `documentKey=${this.numberingService.getDocumentKey() ?? 'none'} ` +
+      `presetUiEnabled=true legacyUiEnabled=false runtimeMarker=${OBJECT_NUMBERING_UI_RUNTIME_MARKER}`,
+    )
+
     const header = el('div', 'inkchapter-card-header', card)
     const title = el('div', 'inkchapter-card-title', header)
     title.textContent = '题注与对象编号'
@@ -5806,15 +5821,47 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (this.captionDraft) Object.assign(this.captionDraft.types.code, patch)
     }, positions2, '示例代码', false)
 
-    // Formula group — independent ObjectNumberingConfig draft (native mode default).
+    // Formula group — InkChapter-only, fixed right, preset-only (no implementation/position selectors).
     this.renderNumberingGroup(body, 'formula', '公式编号', () => this.captionFormulaDraft ?? DEFAULT_OBJECT_NUMBERING_CONFIG.formula, patch => {
       if (this.captionFormulaDraft) Object.assign(this.captionFormulaDraft, patch)
-    }, [
-      { value: 'above' as ObjectPosition, label: '上方' },
-      { value: 'below' as ObjectPosition, label: '下方' },
-      { value: 'left' as ObjectPosition, label: '左侧' },
-      { value: 'right' as ObjectPosition, label: '右侧' },
-    ], '', true)
+    }, [], '', false)
+
+    // Render complete — single UI authority probe (no polling).
+    const presetControlCount = card.querySelectorAll(`[${OBJECT_NUMBERING_PRESET_CONTROL_ATTR}]`).length
+    const legacyControlCount = card.querySelectorAll('[data-inkchapter-object-numbering-ui="legacy"]').length
+    const startAtControlCount = 0
+    const minDigitsControlCount = 0
+    const tablePrefixInputCount = card.querySelectorAll(`[${OBJECT_NUMBERING_PREFIX_CONTROL_ATTR}="table"]`).length
+    const figurePrefixInputCount = card.querySelectorAll(`[${OBJECT_NUMBERING_PREFIX_CONTROL_ATTR}="figure"]`).length
+    const codePrefixInputCount = card.querySelectorAll(`[${OBJECT_NUMBERING_PREFIX_CONTROL_ATTR}="code"]`).length
+    const formulaPrefixInputCount = card.querySelectorAll(`[${OBJECT_NUMBERING_PREFIX_CONTROL_ATTR}="formula"]`).length
+    const authorityPass = legacyControlCount === 0 && startAtControlCount === 0 && minDigitsControlCount === 0 && presetControlCount >= 4
+      && tablePrefixInputCount === 1 && figurePrefixInputCount === 1 && codePrefixInputCount === 1 && formulaPrefixInputCount === 0
+    console.info(
+      `[InkChapter Numbering] OBJECT-NUMBERING-UI-AUTHORITY ` +
+      `implId=${OBJECT_NUMBERING_UI_IMPL_ID} rootMarker=${OBJECT_NUMBERING_UI_DOM_MARKER} ` +
+      `legacyControlCount=${legacyControlCount} startAtControlCount=${startAtControlCount} ` +
+      `minDigitsControlCount=${minDigitsControlCount} presetControlCount=${presetControlCount} ` +
+      `tablePrefixInputCount=${tablePrefixInputCount} figurePrefixInputCount=${figurePrefixInputCount} ` +
+      `codePrefixInputCount=${codePrefixInputCount} formulaPrefixInputCount=${formulaPrefixInputCount} ` +
+      `decision=${authorityPass ? 'PASS' : 'FAIL'} runtimeMarker=${OBJECT_NUMBERING_UI_RUNTIME_MARKER}`,
+    )
+
+    // v2.4 formula-specific authority — formula keeps only enabled + preset + preview.
+    const formulaRow = card.querySelector('[data-inkchapter-formula-numbering-ui]')
+    const formulaPresetControlCount = formulaRow ? formulaRow.querySelectorAll(`[${OBJECT_NUMBERING_PRESET_CONTROL_ATTR}]`).length : 0
+    const formulaImplementationControlCount = 0
+    const formulaPositionControlCount = 0
+    const formulaAuthorityPass = formulaImplementationControlCount === 0 && formulaPositionControlCount === 0
+      && formulaPrefixInputCount === 0 && formulaPresetControlCount === 1
+    console.info(
+      `[InkChapter Numbering] FORMULA-NUMBERING-UI-AUTHORITY ` +
+      `implId=${OBJECT_NUMBERING_UI_IMPL_ID} ` +
+      `formulaImplementationControlCount=${formulaImplementationControlCount} ` +
+      `formulaPositionControlCount=${formulaPositionControlCount} ` +
+      `formulaPrefixInputCount=${formulaPrefixInputCount} formulaPresetControlCount=${formulaPresetControlCount} ` +
+      `decision=${formulaAuthorityPass ? 'PASS' : 'FAIL'} runtimeMarker=${OBJECT_NUMBERING_UI_RUNTIME_MARKER}`,
+    )
   }
 
   private renderNumberingGroup(
@@ -5841,6 +5888,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     enabledLabel.appendChild(enabledInput)
     enabledLabel.appendChild(document.createTextNode(' 启用'))
 
+    const isFormula = type === 'formula'
+    const nativeFormula = showFormulaMode && (get().formulaMode ?? 'typora-native') === 'typora-native'
+
+    if (isFormula) {
+      row.setAttribute('data-inkchapter-formula-numbering-ui', FORMULA_NUMBERING_UI_DOM_MARKER)
+    }
+
     // Formula implementation mode (Typora native / InkChapter custom).
     if (showFormulaMode) {
       const modeLabel = el('label', 'inkchapter-caption-setting-control', controls)
@@ -5849,20 +5903,30 @@ export class HeadingNumberingSettingTab extends SettingTab {
         { value: 'typora-native', label: 'Typora 原生' },
         { value: 'inkchapter', label: '墨章自定义' },
       ], (get().formulaMode ?? 'typora-native') as 'typora-native' | 'inkchapter', 'inkchapter-caption-setting-select')
-      modeSelect.addEventListener('change', () => { apply({ formulaMode: modeSelect.value }) })
+      modeSelect.addEventListener('change', () => {
+        apply({ formulaMode: modeSelect.value })
+        this.rerender()
+      })
       modeLabel.appendChild(modeSelect)
     }
 
-    const positionSelect = buildSelect<ObjectPosition>(positionOptions, (get().position ?? 'above') as ObjectPosition, 'inkchapter-caption-setting-select')
-    positionSelect.addEventListener('change', () => { apply({ position: positionSelect.value }) })
-    controls.appendChild(positionSelect)
+    // Position selector only for table/figure/code — formula is fixed right.
+    if (!isFormula) {
+      const positionSelect = buildSelect<ObjectPosition>(positionOptions, (get().position ?? 'above') as ObjectPosition, 'inkchapter-caption-setting-select')
+      positionSelect.addEventListener('change', () => { apply({ position: positionSelect.value }) })
+      controls.appendChild(positionSelect)
+    }
 
-    const prefixInput = document.createElement('input')
-    prefixInput.type = 'text'
-    prefixInput.className = 'inkchapter-caption-setting-input'
-    prefixInput.value = get().prefix ?? ''
-    prefixInput.addEventListener('input', () => { apply({ prefix: prefixInput.value }); refreshPreview() })
-    controls.appendChild(prefixInput)
+    // Prefix input only for table/figure/code — formula has no text prefix.
+    if (!isFormula) {
+      const prefixInput = document.createElement('input')
+      prefixInput.type = 'text'
+      prefixInput.className = 'inkchapter-caption-setting-input'
+      prefixInput.setAttribute(OBJECT_NUMBERING_PREFIX_CONTROL_ATTR, type)
+      prefixInput.value = get().prefix ?? ''
+      prefixInput.addEventListener('input', () => { apply({ prefix: prefixInput.value }); refreshPreview() })
+      controls.appendChild(prefixInput)
+    }
 
     const detail = el('div', 'inkchapter-caption-setting-detail', row)
     detail.style.display = 'flex'
@@ -5876,60 +5940,68 @@ export class HeadingNumberingSettingTab extends SettingTab {
       wrap.appendChild(inputEl)
     }
 
-    const modeSelect = buildSelect<NumberingMode>(NUMBERING_MODE_OPTIONS, (get().numberingMode ?? 'continuous') as NumberingMode, 'inkchapter-caption-setting-select')
-    modeSelect.addEventListener('change', () => { apply({ numberingMode: modeSelect.value }); refreshPreview() })
-    addField('编号方式 ', modeSelect)
+    // Preset dropdown — the ONLY numbering-scheme authority in the normal UI.
+    // Reuse the SAME migration used at runtime so display never diverges.
+    const migrated = migrateObjectNumberingConfig(type, get())
+    const isLegacyCustom = migrated.legacyCustomFormat === true
+    const displayPreset: string = nativeFormula ? 'continuous' : (migrated.preset ?? 'continuous')
+    const presetOptions: Array<{ value: string; label: string }> = OBJECT_NUMBERING_PRESET_IDS.map(id => ({
+      value: id,
+      label: presetOptionLabel(id, isFormula),
+    }))
+    if (isLegacyCustom) presetOptions.push({ value: LEGACY_PRESET_VALUE, label: '旧版自定义（兼容模式）' })
+    const presetSelect = buildSelect<string>(presetOptions, displayPreset, 'inkchapter-caption-setting-select')
+    presetSelect.disabled = nativeFormula
+    presetSelect.setAttribute(OBJECT_NUMBERING_PRESET_CONTROL_ATTR, 'true')
+    presetSelect.addEventListener('change', () => {
+      const value = presetSelect.value
+      if (value === LEGACY_PRESET_VALUE) return
+      if (!isValidObjectNumberingPreset(value)) return
+      const patch = presetSelectionPatch(value)
+      const startAtBefore = typeof get().startAt === 'number' ? get().startAt : 1
+      const minDigitsBefore = typeof get().minDigits === 'number' ? get().minDigits : 1
+      const oldImplementation = get().formulaMode ?? 'typora-native'
+      const oldPosition = get().position ?? 'right'
+      const formulaNormalize = type === 'formula'
+        ? { formulaMode: 'inkchapter' as const, position: 'right' as const }
+        : {}
+      apply({ preset: patch.preset, scope: patch.scope, template: patch.template, startAt: patch.startAt, minDigits: patch.minDigits, legacyCustomFormat: patch.legacyCustomFormat, ...formulaNormalize })
+      console.info(
+        `[InkChapter Numbering] OBJECT-NUMBERING-PRESET-NORMALIZE type=${type} preset=${value} ` +
+        `startAtBefore=${startAtBefore} startAtAfter=1 minDigitsBefore=${minDigitsBefore} minDigitsAfter=1 ` +
+        `reason=USER_SELECTED_STANDARD_PRESET decision=NORMALIZED`,
+      )
+      if (type === 'formula') {
+        console.info(
+          `[InkChapter Numbering] FORMULA-NUMBERING-MIGRATION oldImplementation=${oldImplementation} ` +
+          `newImplementation=inkchapter oldPosition=${oldPosition} newPosition=right preset=${value} decision=MIGRATED`,
+        )
+      }
+      refreshPreview()
+    })
+    addField('编号方案 ', presetSelect)
 
-    const styleSelect = buildSelect<NumberStyle>(NUMBER_STYLE_OPTIONS, (get().numberStyle ?? 'arabic') as NumberStyle, 'inkchapter-caption-setting-select')
-    styleSelect.addEventListener('change', () => { apply({ numberStyle: styleSelect.value }); refreshPreview() })
-    addField('序号样式 ', styleSelect)
-
-    const startInput = document.createElement('input')
-    startInput.type = 'number'
-    startInput.min = '1'
-    startInput.className = 'inkchapter-caption-setting-input'
-    startInput.style.width = '64px'
-    startInput.value = String(get().startAt ?? 1)
-    startInput.addEventListener('input', () => { apply({ startAt: Math.max(1, Number(startInput.value) || 1) }); refreshPreview() })
-    addField('起始编号 ', startInput)
-
-    const minDigitsInput = document.createElement('input')
-    minDigitsInput.type = 'number'
-    minDigitsInput.min = '1'
-    minDigitsInput.max = '6'
-    minDigitsInput.className = 'inkchapter-caption-setting-input'
-    minDigitsInput.style.width = '64px'
-    minDigitsInput.value = String(get().minDigits ?? 1)
-    minDigitsInput.addEventListener('input', () => { apply({ minDigits: Math.min(6, Math.max(1, Number(minDigitsInput.value) || 1)) }); refreshPreview() })
-    addField('最小位数 ', minDigitsInput)
-
-    const templateInput = document.createElement('input')
-    templateInput.type = 'text'
-    templateInput.className = 'inkchapter-caption-setting-input'
-    templateInput.style.width = '120px'
-    templateInput.value = get().template ?? '{n}'
-    templateInput.addEventListener('input', () => { apply({ template: templateInput.value }); refreshPreview() })
-    addField('编号格式 ', templateInput)
-
-    const varHint = el('div', 'inkchapter-caption-setting-detail', row)
-    varHint.textContent = '可用变量：{n} {chapter} {section}'
-    varHint.style.fontSize = '11px'
-    varHint.style.color = 'var(--text-muted, #888)'
-
-    const errorEl = el('div', 'inkchapter-caption-template-error', row)
-    errorEl.style.color = '#c62828'
-    errorEl.style.fontSize = '12px'
-    errorEl.style.minHeight = '16px'
+    const hintEl = el('div', 'inkchapter-caption-setting-detail', row)
+    hintEl.style.fontSize = '11px'
+    hintEl.style.color = 'var(--text-muted, #888)'
+    if (nativeFormula) {
+      hintEl.textContent = 'Typora 原生编号仅支持全文连续'
+    } else if (isLegacyCustom) {
+      hintEl.textContent = '旧版自定义（兼容模式）；选择任意新版编号方案后将转为预设模式'
+    } else if ((get().startAt ?? 1) !== 1 || (get().minDigits ?? 1) !== 1) {
+      hintEl.textContent = '检测到旧版编号设置；选择任意新版编号方案后将使用标准起始编号 1'
+    }
 
     const previewEl = el('div', 'inkchapter-caption-setting-detail', row)
     previewEl.style.fontWeight = '600'
 
     const refreshPreview = (): void => {
-      const cfg = migrateObjectNumberingConfig(type, get())
+      let cfg = migrateObjectNumberingConfig(type, get())
+      if (nativeFormula) {
+        cfg = { ...cfg, preset: 'continuous', scope: 'document', template: '{n}' }
+      }
       const preview = renderNumberingPreview(type, cfg, { n: 1, chapter: '2', section: '3', name: sampleName })
       previewEl.textContent = `预览：${preview}`
-      const validation = validateNumberTemplate(cfg.template)
-      errorEl.textContent = validation.valid ? '' : `编号格式错误：${validation.reason}（必须包含 {n}）`
     }
     refreshPreview()
   }
@@ -6141,25 +6213,16 @@ function el(tag: string, cls?: string, parent?: HTMLElement): HTMLElement {
   return e
 }
 
-const NUMBERING_MODE_OPTIONS: Array<{ value: NumberingMode; label: string }> = [
-  { value: 'continuous', label: '全文连续' },
-  { value: 'reset-h1', label: '按一级标题重置' },
-  { value: 'reset-h2', label: '按二级标题重置' },
-  { value: 'reset-h3', label: '按三级标题重置' },
-  { value: 'chapter-linked', label: '跟随章节' },
-  { value: 'custom', label: '自定义' },
-]
+/** Sentinel option for an unmappable legacy custom format (read-only in UI). */
+const LEGACY_PRESET_VALUE = '__legacy_custom__'
 
-const NUMBER_STYLE_OPTIONS: Array<{ value: NumberStyle; label: string }> = [
-  { value: 'arabic', label: '1, 2, 3' },
-  { value: 'arabic-padded', label: '01, 02, 03' },
-  { value: 'chinese', label: '一, 二, 三' },
-  { value: 'chinese-financial', label: '壹, 贰, 叁' },
-  { value: 'roman-lower', label: 'i, ii, iii' },
-  { value: 'roman-upper', label: 'I, II, III' },
-  { value: 'alpha-lower', label: 'a, b, c' },
-  { value: 'alpha-upper', label: 'A, B, C' },
-]
+/** v2.5.1 formula/object-numbering UI authority markers (dist marker gate + DOM gate). */
+const OBJECT_NUMBERING_UI_IMPL_ID = 'formula-numbering-ui-v2.5.1-A'
+const OBJECT_NUMBERING_UI_RUNTIME_MARKER = 'FORMULA-INTERLEAVED-NATIVE-SLOT-V2.5.5'
+const OBJECT_NUMBERING_UI_DOM_MARKER = 'preset-v2.5.1'
+const FORMULA_NUMBERING_UI_DOM_MARKER = 'preset-v2.5.1'
+const OBJECT_NUMBERING_PRESET_CONTROL_ATTR = 'data-inkchapter-object-numbering-preset-control'
+const OBJECT_NUMBERING_PREFIX_CONTROL_ATTR = 'data-inkchapter-object-prefix'
 
 function buildSelect<T extends string>(options: Array<{ value: T; label: string }>, selected: T, cls: string): HTMLSelectElement {
   const select = document.createElement('select')

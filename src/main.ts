@@ -4,6 +4,7 @@ import type { InkChapterSettings } from './settings/settings-model'
 import { DEFAULT_SETTINGS } from './settings/default-settings'
 import { HeadingNumberingService } from './heading-numbering/heading-numbering-service'
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
+import { resolveHeadingStructure } from './heading-numbering/heading-structure'
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { CaptionService } from './heading-numbering/caption-service'
@@ -16,7 +17,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
-import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit, exportForensicLogSnapshot, verifyForensicLogExport } from './runtime/forensic-log-sink'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
@@ -151,11 +152,10 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── File-backed forensic audit sink (pure observability, fail-open) ──
     const sessionId = `sess-${Date.now()}`
-    initializeForensicSink({ vaultRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
 
     const ctx: ServiceContext = {
       settings: this.settings,
-      vaultRoot,
+      vaultRoot: (this.app.vault.path) ?? null,
       onWorkspaceEvent: (event, listener) => {
         const dispose = this.app.workspace.on(event as never, listener as never)
         this.register(dispose)
@@ -206,13 +206,24 @@ export default class extends Plugin<InkChapterSettings> {
     // Init caption system (table/figure/code caption naming + numbering)
     try {
       const captionCtx: CaptionServiceContext = {
-        vaultRoot,
+        vaultRoot: vaultRoot,
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {
           const fp = this.app.workspace.activeFile
           const vr = vaultRoot ?? ''
           if (!fp || !vr) return null
           try { return generateDocumentKey(fp, vr) } catch { return null }
+        },
+        getHeadingStructureMode: () => {
+          try {
+            const settings = this.numberingService?.getEffectiveSettings() ?? {}
+            return resolveHeadingStructure(settings).mode
+          } catch { return 'strict' }
+        },
+        getStructuredHeadingNumberState: () => {
+          try {
+            return this.numberingService?.getStructuredHeadingNumberState() ?? []
+          } catch { return [] }
         },
         getEditorRoot: () => document.getElementById('write') as HTMLElement | null,
         getMarkdown: () => {
@@ -527,6 +538,25 @@ export default class extends Plugin<InkChapterSettings> {
         Notice.info(`快照已输出到控制台（${JSON.parse(json).length} 条事件）`)
       },
     })
+    this.registerCommand({
+      id: 'inkchapter.audit.export-log',
+      title: '墨章：导出当前运行时日志快照',
+      scope: 'global',
+      callback: () => {
+        const result = exportForensicLogSnapshot()
+        if (result.decision === 'PASS') {
+          Notice.info(`日志快照已导出：${result.exportPath}`)
+        } else {
+          Notice.info(`日志导出失败：${result.reason ?? 'unknown'}`)
+        }
+      },
+    })
+
+    // DevTools probes for log export snapshot / immutability verification.
+    try {
+      ;(window as any).__inkchapter_export_log__ = () => exportForensicLogSnapshot()
+      ;(window as any).__inkchapter_verify_log_export__ = (r: unknown) => verifyForensicLogExport(r as ReturnType<typeof exportForensicLogSnapshot>)
+    } catch { /* ignore */ }
 
     // ── Runtime load verification ────────────────
     try {
@@ -617,10 +647,14 @@ export default class extends Plugin<InkChapterSettings> {
       ? pluginMainSha256 === projectMainSha256
       : null
 
-    // ── R58.6.7: Style SHA256 ──
+    // ── R58.6.7: Style SHA256 (project build emits dist/main.css; the plugin
+    // framework renames it to style.css when installing into the vault) ──
     const stylePath = targetVault
       ? path.resolve(targetVault, '..', '..', 'dist', 'style.css')
       : path.resolve(__dirname, '..', '..', '..', '..', '..', 'dist', 'style.css')
+    const runtimeStylePath = targetVault
+      ? path.join(targetVault, '.typora', 'plugins', 'dist', 'style.css')
+      : ''
     const styleSha256 = (() => {
       try {
         if (existsSync(stylePath)) {
@@ -630,6 +664,18 @@ export default class extends Plugin<InkChapterSettings> {
         return 'unknown'
       } catch { return 'unknown' }
     })()
+    const runtimeStyleSha256 = (() => {
+      try {
+        if (runtimeStylePath && existsSync(runtimeStylePath)) {
+          const data = require('fs').readFileSync(runtimeStylePath, 'utf-8') as string
+          return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
+        }
+        return 'unknown'
+      } catch { return 'unknown' }
+    })()
+    const styleShaMatch = styleSha256 !== 'unknown' && runtimeStyleSha256 !== 'unknown'
+      ? styleSha256 === runtimeStyleSha256
+      : null
     
     // Initialization count (starts at 1 for fresh restart)
     const initCount = 1
@@ -642,6 +688,8 @@ export default class extends Plugin<InkChapterSettings> {
     console.log(`Project SHA256: ${projectMainSha256}`)
     console.log(`SHA Match: ${shaMatch}`)
     console.log(`Style SHA256: ${styleSha256}`)
+    console.log(`Runtime Style SHA256: ${runtimeStyleSha256}`)
+    console.log(`Style SHA Match: ${styleShaMatch}`)
     console.log(`Active Doc: ${activeDoc}`)
     console.log(`Initialization Count: ${initCount}`)
     console.log('================================================')
@@ -674,6 +722,9 @@ export default class extends Plugin<InkChapterSettings> {
       shaMatch,
       stylePath,
       styleSha256,
+      runtimeStylePath,
+      runtimeStyleSha256,
+      styleShaMatch,
       buildId: INKCHAPTER_BUILD_ID,
       initializationCount: initCount,
       sessionId,

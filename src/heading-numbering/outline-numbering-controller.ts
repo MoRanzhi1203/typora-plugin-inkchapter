@@ -1,19 +1,18 @@
 /**
- * Outline Numbering Controller v5 — relaxed root detection, host observer with attributes.
+ * Outline Numbering Controller v29 — Current-Document Full Resync.
  *
- * Key changes from v4:
- * 1. reinitialize() no longer clears currentDocumentKey — caller manages key lifecycle
- * 2. syncAfterRefresh() always applies numbering via relaxed (hidden-panel) root finder
- * 3. Host observer watches attributes (style/class) to catch hidden→visible transitions
- * 4. Event chain logging with structured data (seq, time, documentKey, renderVersion, ...)
- * 5. Root identity tracking to prevent duplicate observer binding
- * 6. RenderVersion guard to cancel stale sync operations
+ * MODEL K: current Markdown headings are the sole business authority; the
+ * native outline is read-only input; InkChapter numbering is a rebuildable
+ * derived view. EVENT → DIRTY → CURRENT-DOCUMENT-READINESS → FULL RESYNC →
+ * VERIFY → CLEAN. The v28 semantic fingerprint is diagnostic-only and never
+ * blocks a full resync when the mature matcher reports a complete match.
  */
 
 import {
   findOutlineRoot,
   findOutlineRootRelaxed,
   findOutlineTextElements,
+  findOutlineNativeItems,
   matchHeadingsToOutline,
   applyNumberingAttributes,
   clearAllNumberingAttributes,
@@ -54,6 +53,40 @@ interface EventChainEntry {
   appliedCount: number
 }
 
+/** Result of a semantic convergence evaluation (v28 MODEL_J). */
+interface SemanticConvergenceResult {
+  documentKey: string
+  revision: number
+  rootToken: number | null
+  convergenceTxnId: number
+  headingCount: number
+  nativeItemCount: number
+  matchedCount: number
+  unmatchedHeadingCount: number
+  unmatchedOutlineCount: number
+  headingSemanticFingerprint: string
+  nativeSemanticFingerprint: string
+  temporalStable: boolean
+  semanticReady: boolean
+  /** v29: matcher-ready but fingerprint differs → diagnostic only, never blocks. */
+  fingerprintMismatch: boolean
+  decision: 'PASS' | 'WAIT_OR_REFRESH'
+  reason: string
+}
+
+/** Unified outline dirty trigger (v29 MODEL_K). */
+type OutlineDirtyReason =
+  | 'startup'
+  | 'document-switch'
+  | 'heading-structure-change'
+  | 'heading-snapshot-change'
+  | 'native-subtree-rebuild'
+  | 'decoration-loss'
+  | 'outline-root-replacement'
+  | 'outline-became-visible'
+  | 'document-context-ready'
+  | 'verify-repair'
+
 const SIDEBAR_HOST_SELECTORS = [
   '#typora-sidebar',
   '.typora-sidebar',
@@ -62,7 +95,7 @@ const SIDEBAR_HOST_SELECTORS = [
 ]
 
 /** Build marker for diagnostics. */
-const CONTROLLER_BUILD_MARKER = 'inkchapter-outline-controller-v5-relaxed-root'
+const CONTROLLER_BUILD_MARKER = 'inkchapter-outline-current-document-full-resync-v29'
 
 /** Set to false to silence event chain debug logs in production. */
 const EVT_DEBUG = false
@@ -76,6 +109,32 @@ function hashFingerprint(input: string): string {
   }
   return (h >>> 0).toString(16).padStart(8, '0')
 }
+
+// ── Semantic convergence helpers (v28 MODEL J) ─────────────────────
+// DOM root identity (rootToken) is NOT the same as document content ownership.
+// The semantic sequence captures heading level + normalized text + occurrence
+// ordinal, so H2→H3 (same text) changes the fingerprint and duplicate headings
+// are disambiguated by occurrence.
+
+function normalizeOutlineText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+export interface SemanticSequenceItem { level: number; text: string }
+
+/** Occurrence-aware semantic sequence (level + normalized text + ordinal). */
+export function buildSemanticSequence(items: readonly SemanticSequenceItem[]): string[] {
+  const occurrence = new Map<string, number>()
+  return items.map(it => {
+    const key = `${it.level}|${it.text}`
+    const n = (occurrence.get(key) ?? 0) + 1
+    occurrence.set(key, n)
+    return `${it.level}|${it.text}|${n}`
+  })
+}
+
+/** Maximum number of native-refresh recovery attempts before terminal evidence. */
+const MAX_NATIVE_REFRESH_ATTEMPTS = 3
 
 // ── Real DOM Node identity (WeakMap) ──────────────────────────────
 // rootToken must reflect the actual DOM Node, not a counter that can stay 0.
@@ -126,8 +185,8 @@ function isObserverProbe(node: Node | null): boolean {
   return node instanceof HTMLElement && node.hasAttribute('data-inkchapter-outline-observer-probe')
 }
 
-// ── Code path authority (v25) ──────────────────────────────────────
-const OUTLINE_CONTROLLER_IMPL_ID = 'outline-controller-late-bind-v26-A'
+// ── Code path authority (v29) ──────────────────────────────────────
+const OUTLINE_CONTROLLER_IMPL_ID = 'outline-controller-current-document-full-resync-v29-A'
 let nextOutlineControllerInstanceId = 1
 
 // Fires once when the module is first evaluated (imported). Distinguishes
@@ -159,9 +218,13 @@ export class OutlineNumberingController {
     unmatchedCount: number
     unmatchedOutlineCount: number
     staleDecorationCount: number
+    duplicateDecorationCount: number
+    orphanDecorationCount: number
+    labelMismatchCount: number
+    headingCount: number
     reason: string
   } | null = null
-  private lastVerify: { expectedCount: number; actualCount: number; decision: string } | null = null
+  private lastVerify: { expectedCount: number; actualCount: number; decision: string; phase: string } | null = null
 
   // Root identity — real HTMLElement reference + generation/token (never selector string).
   // rootToken: WeakMap-derived DOM node identity. null = no root, 1+ = concrete node.
@@ -203,10 +266,72 @@ export class OutlineNumberingController {
   private postApplyEpochAtApply = 0
   private postApplyGenerationAtApply = 0
 
-  // Native quiescence debounce: wait until the native mutation burst is stable
-  // for one RAF before applying (never a fixed setTimeout).
-  private nativeQuiescenceEpoch = -1
-  private nativeQuiescenceRafId: number | null = null
+  // ── Native stability state (v27 MODEL_I_POST_NATIVE_STABILITY) ──
+  // Native mutation → nativeDirty → quiescence (event-driven) → latest apply
+  // → post-apply watch → stable verify. Fixed timeouts are NEVER a gate.
+  private nativeDirty = false
+  private repairRequired = false
+  private nativeStabilityCheckGeneration = 0
+  private nativeStabilityInFlight = false
+  private lastNativeMutationAtRevision: number | null = null
+  private lastNativeMutationRootToken: number | null = null
+  private pendingPostNativeApplyRevision: number | null = null
+
+  // Post-apply stability watch (cross MutationObserver delivery + RAF).
+  private postApplyWatchActive = false
+  private postApplyWatchEpoch = 0
+  private postApplyWatchGeneration = 0
+  private postApplyWatchRevision = 0
+
+  // Coverage-gap pending-delivery two-phase state.
+  private pendingCoverageGap: {
+    documentKey: string
+    rootToken: number | null
+    epochAtSample: number
+    textFingerprint: string
+    structureFingerprint: string
+  } | null = null
+
+  // ── Stability statistics (acceptance metrics) ──
+  private nativeMutationCount = 0
+  private nativeBurstCount = 0
+  private postNativeApplyCount = 0
+  private repairScheduleCount = 0
+  private postApplyInvalidationCount = 0
+  private coverageGapPendingCount = 0
+  private coverageGapResolvedCount = 0
+  private coverageGapFailCount = 0
+  private immediateVerifyFailCount = 0
+  private stableVerifyFailCount = 0
+  private finalDecorationLossCount = 0
+
+  // v29 full-resync acceptance metrics.
+  private dirtyMarkCount = 0
+  private readinessReadyCount = 0
+  private readinessWaitCount = 0
+  private fullResyncBeginCount = 0
+  private fullResyncPassCount = 0
+  private fullResyncFailCount = 0
+  private staleDocumentDropCount = 0
+  private staleRootDropCount = 0
+  private semanticDiagnosticMismatchCount = 0
+
+  // ── v29 MODEL_K: unified dirty → readiness → full resync → verify → clean ──
+  private outlineDirty = true
+  private outlineDirtyReason: OutlineDirtyReason | null = 'startup'
+  private fullResyncGeneration = 0
+  private lastReadiness: SemanticConvergenceResult | null = null
+
+  // ── v28 content ownership (downgraded to forensic/diagnostic only) ──
+  private outlineContentDocumentKey: string | null = null
+  private outlineContentGeneration = 0
+  private documentSwitchConvergencePending = false
+  private convergenceTargetDocumentKey: string | null = null
+  private convergenceTargetRevision: number | null = null
+  private convergenceTxnId = 0
+  private nativeRefreshAttempts = 0
+  private nativeRefreshGeneration = 0
+  private lastSemanticResult: SemanticConvergenceResult | null = null
 
   // Diagnostic counters
   private observerBindCount = 0
@@ -260,7 +385,10 @@ export class OutlineNumberingController {
     this.stopAvailabilityWatch()
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
     if (this.verifyRafId !== null) { cancelAnimationFrame(this.verifyRafId); this.verifyRafId = null }
-    if (this.nativeQuiescenceRafId !== null) { cancelAnimationFrame(this.nativeQuiescenceRafId); this.nativeQuiescenceRafId = null }
+    this.nativeStabilityInFlight = false
+    this.postApplyWatchActive = false
+    this.nativeDirty = false
+    this.repairRequired = false
     const root = findOutlineRoot()
     clearAllNumberingAttributes(root)
     clearFileTreeNumberingAttributes()
@@ -282,17 +410,19 @@ export class OutlineNumberingController {
   }
 
   /**
-   * Reinitialize for a new document: detach old observer, find new outline root.
-   * Does NOT clear currentDocumentKey — the caller must call setDocumentKey()
-   * BEFORE or AFTER reinitialize() to set the correct key.
-   * Cache is NOT applied here (caller ensures new cache is generated first).
+   * Reinitialize for a new document. Does NOT clear currentDocumentKey — the
+   * caller manages the key via setDocumentKey()/syncDocumentContext(). The
+   * observer is kept bound when the SAME DOM root is reused across documents;
+   * only a detached/replaced root triggers a rebind (v28 MODEL_J).
    */
   reinitialize(): void {
     this.recordEvent('outline:reinitialize', {
       headingCount: 0, labelCount: 0, matchedCount: 0, appliedCount: 0,
     })
-    this.detachObserver()
-    // Try to reattach to current outline root (may be null if panel hidden)
+    // Do NOT detachObserver() here: same-root document switches must keep the
+    // observer alive so Typora's async native-outline rebuild mutations are
+    // captured. ensureObserverBoundToCurrentRoot NO_OPs on the same root and
+    // only rebinds when the root actually changed.
     this.ensureObserverBoundToCurrentRoot('reinitialize')
     clearFileTreeNumberingAttributes()
   }
@@ -311,6 +441,28 @@ export class OutlineNumberingController {
       this.pendingRevision = 0
       this.lastAvailabilityReason = 'DOCUMENT_SWITCH_PENDING_STALE'
     }
+    // Document switch: any in-flight native-stability / post-apply transaction
+    // belongs to the old document and must be dropped (DROP_STALE_DOCUMENT).
+    if (this.nativeStabilityInFlight || this.postApplyWatchActive || this.pendingCoverageGap !== null) {
+      console.info(
+        `[InkChapter Numbering] OUTLINE-STABILITY-TRANSACTION-STALE previousDocumentKey=${before || 'none'} ` +
+        `newDocumentKey=${key} decision=DROP_STALE_DOCUMENT reason=DOCUMENT_SWITCH`,
+      )
+      this.nativeStabilityInFlight = false
+      this.postApplyWatchActive = false
+      this.pendingCoverageGap = null
+    }
+
+    // ── v29 MODEL_K: document switch marks dirty; readiness + full resync will ──
+    // re-derive the numbering once the native outline reflects the new document.
+    // rootToken staying the same across documents is NOT a bug — content
+    // ownership is re-established by the matcher, not the DOM node identity.
+    this.convergenceTxnId++
+    this.convergenceTargetDocumentKey = key
+    this.convergenceTargetRevision = this.cache.revision
+    this.nativeRefreshAttempts = 0
+    this.outlineContentDocumentKey = null
+    this.markOutlineDirty('document-switch')
     return { decision: before === '' ? 'BIND' : 'REBIND', before, after: key }
   }
 
@@ -376,6 +528,11 @@ export class OutlineNumberingController {
       )
     }
 
+    // Detect heading-structure change (level/count) vs. plain text/rename.
+    const prevHeadings = this.cache.headings
+    const structureChanged = prevHeadings.length !== headings.length ||
+      headings.some((h, i) => prevHeadings[i] && prevHeadings[i].level !== h.level)
+
     // Generate new cache with current document identity. Revision always
     // advances on a real heading refresh (never skipped by heading-count-only).
     this.cache = {
@@ -405,10 +562,23 @@ export class OutlineNumberingController {
     // Clear any accidental file tree pollution immediately
     clearFileTreeNumberingAttributes()
 
-    // Cache update IS the apply trigger — but wait for Typora's native outline
-    // subtree mutation burst to settle before applying (MODEL F: applying before
-    // the native rebuild settles gets the decoration wiped).
-    this.schedulePostNativeApply('heading-snapshot-updated')
+    // Cache update IS the latest snapshot (latest-wins). Mark dirty, then either
+    // defer to the in-flight native stability check (native dirty) or try the
+    // unified full resync now.
+    this.pendingPostNativeApplyRevision = this.cache.revision
+    this.markOutlineDirty(structureChanged ? 'heading-structure-change' : 'heading-snapshot-change')
+    if (this.nativeDirty) {
+      console.info(
+        `[InkChapter Numbering] OUTLINE-SNAPSHOT-DEFER documentKey=${documentKey} ` +
+        `revision=${this.cache.revision} nativeDirty=true decision=DEFER_FOR_NATIVE_STABILITY`,
+      )
+      return
+    }
+    if (!findOutlineRoot()) {
+      this.scheduleApply('heading-snapshot-updated')
+      return
+    }
+    this.tryFullResyncCurrentDocument('heading-snapshot-updated')
   }
 
   /** Full sync with diagnostic output (for manual command). */
@@ -619,24 +789,198 @@ export class OutlineNumberingController {
   }
 
   /**
-   * Quiescence debounce: wait until the native outline mutation epoch is stable
-   * for one RAF before applying. This prevents MODEL F — applying decoration
-   * before Typora finishes its native subtree rebuild, which then wipes it.
-   * Never uses a fixed setTimeout.
+   * Event-driven native stability check. Waits until nativeMutationEpoch and
+   * nativeSubtreeGeneration are unchanged across two consecutive RAF checkpoints
+   * (MutationObserver delivery + RAF), then applies the latest snapshot only.
+   * Never uses a fixed setTimeout as a correctness gate.
    */
-  private schedulePostNativeApply(reason: string): void {
-    this.nativeQuiescenceEpoch = this.nativeMutationEpoch
-    if (this.nativeQuiescenceRafId !== null) return
-    this.nativeQuiescenceRafId = requestAnimationFrame(() => {
-      this.nativeQuiescenceRafId = null
-      if (this.nativeMutationEpoch === this.nativeQuiescenceEpoch) {
-        // Stable for one full RAF → safe to apply latest snapshot.
-        this.scheduleApply(reason)
-      } else {
-        // More native mutations arrived during this frame → wait another frame.
-        this.schedulePostNativeApply(reason)
+  private scheduleNativeStabilityCheck(reason: string): void {
+    if (this.nativeStabilityInFlight) return
+    this.nativeStabilityInFlight = true
+    this.nativeStabilityCheckGeneration++
+    const txnId = this.nativeStabilityCheckGeneration
+    const docKey = this.currentDocumentKey
+    const rootToken = this.rootToken
+    const revision = this.cache.revision
+    const epochBefore = this.nativeMutationEpoch
+    const generationBefore = this.nativeSubtreeGeneration
+
+    this.logNativeStability(txnId, docKey, rootToken, revision, epochBefore, epochBefore, generationBefore, generationBefore, false, 'WAIT', 'AWAITING_QUIESCENCE')
+
+    requestAnimationFrame(() => {
+      if (this.isStaleStabilityTxn(docKey, rootToken)) {
+        this.nativeStabilityInFlight = false
+        this.logNativeStability(txnId, docKey, rootToken, revision, epochBefore, this.nativeMutationEpoch, generationBefore, this.nativeSubtreeGeneration, false, 'DROP_STALE', 'DOCUMENT_OR_ROOT_CHANGED')
+        return
       }
+      const epochA = this.nativeMutationEpoch
+      const generationA = this.nativeSubtreeGeneration
+      requestAnimationFrame(() => {
+        if (this.isStaleStabilityTxn(docKey, rootToken)) {
+          this.nativeStabilityInFlight = false
+          this.logNativeStability(txnId, docKey, rootToken, revision, epochA, this.nativeMutationEpoch, generationA, this.nativeSubtreeGeneration, false, 'DROP_STALE', 'DOCUMENT_OR_ROOT_CHANGED')
+          return
+        }
+        const epochB = this.nativeMutationEpoch
+        const generationB = this.nativeSubtreeGeneration
+        const stable = epochA === epochB && generationA === generationB
+        if (stable) {
+          this.nativeStabilityInFlight = false
+          this.nativeDirty = false
+          this.repairRequired = false
+          this.logNativeStability(txnId, docKey, rootToken, this.cache.revision, epochA, epochB, generationA, generationB, true, 'STABLE', 'NATIVE_QUIESCENT')
+
+          // v29: temporal quiescence → unified full-resync entry. Readiness is
+          // decided by the mature matcher (not the semantic fingerprint).
+          this.tryFullResyncCurrentDocument(reason)
+        } else {
+          this.nativeStabilityInFlight = false
+          this.logNativeStability(txnId, docKey, rootToken, this.cache.revision, epochA, epochB, generationA, generationB, false, 'WAIT', 'EPOCH_CHANGED_DURING_WINDOW')
+          // New mutation arrived during the window → wait for the newest epoch/generation.
+          this.scheduleNativeStabilityCheck(reason)
+        }
+      })
     })
+  }
+
+  private isStaleStabilityTxn(docKey: string, rootToken: number | null): boolean {
+    if (this.currentDocumentKey !== docKey) return true
+    if (rootToken !== null && this.rootToken !== rootToken) return true
+    return false
+  }
+
+  private logNativeStability(
+    txnId: number,
+    documentKey: string,
+    rootToken: number | null,
+    revision: number,
+    epochBefore: number,
+    epochAfter: number,
+    generationBefore: number,
+    generationAfter: number,
+    stable: boolean,
+    decision: 'WAIT' | 'STABLE' | 'DROP_STALE',
+    reason: string,
+  ): void {
+    console.info(
+      `[InkChapter Numbering] OUTLINE-NATIVE-STABILITY documentKey=${documentKey} rootToken=${rootToken} ` +
+      `revision=${revision} checkGeneration=${txnId} epochBefore=${epochBefore} epochAfter=${epochAfter} ` +
+      `generationBefore=${generationBefore} generationAfter=${generationAfter} stable=${stable} ` +
+      `decision=${decision} reason=${reason}`,
+    )
+  }
+
+  /**
+   * Evaluate semantic convergence (v28 MODEL_J): does the native outline
+   * actually reflect the current document? Compares occurrence-aware
+   * level+text sequences, not just counts.
+   */
+  private evaluateSemanticConvergence(temporalStable: boolean): SemanticConvergenceResult {
+    const documentKey = this.currentDocumentKey
+    const revision = this.cache.revision
+    const root = findOutlineRoot() ?? findOutlineRootRelaxed()
+    const headings = this.cache.headings
+    const labels = this.cache.labels
+
+    const headingSequence = buildSemanticSequence(headings.map(h => ({ level: h.level, text: normalizeOutlineText(h.text) })))
+    const headingSemanticFingerprint = hashFingerprint(headingSequence.join('\n'))
+
+    const nativeItems = root ? findOutlineNativeItems(root) : []
+    const nativeSequence = buildSemanticSequence(nativeItems.map(n => ({ level: n.level, text: normalizeOutlineText(n.text) })))
+    const nativeSemanticFingerprint = hashFingerprint(nativeSequence.join('\n'))
+
+    const headingCount = headings.length
+    const nativeItemCount = nativeItems.length
+
+    const matches = root ? matchHeadingsToOutline(headings, labels, nativeItems.map(n => n.element)) : []
+    const matchedCount = matches.length
+    const unmatchedHeadingCount = Math.max(0, headingCount - matchedCount)
+    const unmatchedOutlineCount = Math.max(0, nativeItemCount - matchedCount)
+
+    // v29: the mature reconcile matcher is the sole business readiness authority.
+    const matcherReady = matchedCount === headingCount && unmatchedHeadingCount === 0 && unmatchedOutlineCount === 0
+    const fingerprintMismatch = headingSequence.join('\n') !== nativeSequence.join('\n')
+    const documentKeyMatch = documentKey !== '' && this.cache.documentKey === documentKey
+    const semanticReady = temporalStable && documentKeyMatch && matcherReady
+
+    return {
+      documentKey,
+      revision,
+      rootToken: this.rootToken,
+      convergenceTxnId: this.convergenceTxnId,
+      headingCount,
+      nativeItemCount,
+      matchedCount,
+      unmatchedHeadingCount,
+      unmatchedOutlineCount,
+      headingSemanticFingerprint,
+      nativeSemanticFingerprint,
+      temporalStable,
+      semanticReady,
+      fingerprintMismatch,
+      decision: semanticReady ? 'PASS' : 'WAIT_OR_REFRESH',
+      reason: !documentKeyMatch ? 'DOCUMENT_KEY_MISMATCH'
+        : !matcherReady ? 'NATIVE_OUTLINE_NOT_CAUGHT_UP'
+          : 'OK',
+    }
+  }
+
+  private logReadiness(sem: SemanticConvergenceResult): void {
+    const ready = sem.semanticReady
+    if (ready) this.readinessReadyCount++
+    else this.readinessWaitCount++
+    console.info(
+      `[InkChapter Numbering] OUTLINE-CURRENT-DOCUMENT-READINESS documentKey=${sem.documentKey} revision=${sem.revision} ` +
+      `rootToken=${sem.rootToken} headingCount=${sem.headingCount} nativeItemCount=${sem.nativeItemCount} ` +
+      `matchedCount=${sem.matchedCount} unmatchedHeadingCount=${sem.unmatchedHeadingCount} ` +
+      `unmatchedOutlineCount=${sem.unmatchedOutlineCount} outlineVisible=${findOutlineRoot() !== null} ` +
+      `ready=${ready} decision=${ready ? 'READY' : 'WAIT_NATIVE'} reason=${sem.reason}`,
+    )
+    // v29: fingerprint mismatch is diagnostic-only and never blocks full resync.
+    if (ready && sem.fingerprintMismatch) {
+      this.semanticDiagnosticMismatchCount++
+      console.info(
+        `[InkChapter Numbering] OUTLINE-SEMANTIC-FINGERPRINT-DIAGNOSTIC documentKey=${sem.documentKey} ` +
+        `headingSemanticFingerprint=${sem.headingSemanticFingerprint} nativeSemanticFingerprint=${sem.nativeSemanticFingerprint} ` +
+        `decision=NON_BLOCKING_MISMATCH reason=SEMANTIC_FINGERPRINT_DIFFERS`,
+      )
+    }
+  }
+
+  /** Mark the outline numbering as dirty, requiring a full resync. */
+  private markOutlineDirty(reason: OutlineDirtyReason): void {
+    this.outlineDirty = true
+    this.outlineDirtyReason = reason
+    this.dirtyMarkCount++
+    console.info(
+      `[InkChapter Numbering] OUTLINE-DIRTY documentKey=${this.currentDocumentKey} ` +
+      `revision=${this.cache.revision} reason=${reason} decision=MARKED`,
+    )
+  }
+
+  /**
+   * Unified full-resync entry (v29 MODEL_K). Reads the current document + latest
+   * snapshot + current native outline, then uses the mature matcher as the sole
+   * readiness authority. Only writes decorations after READY; the semantic
+   * fingerprint is diagnostic-only and never blocks.
+   */
+  private tryFullResyncCurrentDocument(trigger: string): void {
+    if (!this.outlineDirty) return
+    const root = findOutlineRoot()
+    if (!root) {
+      // Root missing: keep dirty and register the root-availability watch.
+      this.scheduleApply(trigger)
+      return
+    }
+    const sem = this.evaluateSemanticConvergence(true)
+    this.lastSemanticResult = sem
+    this.lastReadiness = sem
+    this.logReadiness(sem)
+    if (!sem.semanticReady) {
+      // WAIT_NATIVE: keep dirty, do not modify DOM, wait for the next real event.
+      return
+    }
+    this.applyLatestSnapshot([trigger])
   }
 
   /** Sample native outline item count + stable fingerprints (decoration-stripped). */
@@ -657,18 +1001,17 @@ export class OutlineNumberingController {
     }
 
     // Fingerprint/epoch cross-check: if native content changed but the observer
-    // never reported a native mutation, the observer has a coverage gap.
+    // never reported a native mutation, the observer may have a coverage gap.
+    // This is a TWO-PHASE check: a changed fingerprint with an unchanged epoch is
+    // only PENDING_DELIVERY (the MutationObserver callback may not have fired yet);
+    // a final FAIL requires the epoch to still be unchanged after a delivery
+    // checkpoint (microtask + RAF).
     const prevText = this.nativeTextFingerprint
     const prevStruct = this.nativeStructureFingerprint
     const hasPrev = prevText !== '' || prevStruct !== ''
     const changed = hasPrev && (sampled.textFingerprint !== prevText || sampled.structureFingerprint !== prevStruct)
     if (changed && this.nativeMutationEpoch === this.lastSampleEpoch) {
-      console.info(
-        `[InkChapter Numbering] OUTLINE-OBSERVER-COVERAGE-GAP previousFingerprint=${prevText}/${prevStruct} ` +
-        `currentFingerprint=${sampled.textFingerprint}/${sampled.structureFingerprint} ` +
-        `previousEpoch=${this.lastSampleEpoch} currentEpoch=${this.nativeMutationEpoch} ` +
-        `decision=FAIL reason=FINGERPRINT_CHANGED_WITHOUT_MUTATION_EVENT`,
-      )
+      this.handleCoverageGapPending(sampled.textFingerprint, sampled.structureFingerprint)
     }
     this.lastSampleEpoch = this.nativeMutationEpoch
 
@@ -676,6 +1019,51 @@ export class OutlineNumberingController {
     this.nativeTextFingerprint = sampled.textFingerprint
     this.nativeStructureFingerprint = sampled.structureFingerprint
     return sampled
+  }
+
+  /** Two-phase coverage-gap: PENDING_DELIVERY now, FAIL only after delivery checkpoint. */
+  private handleCoverageGapPending(textFingerprint: string, structureFingerprint: string): void {
+    this.coverageGapPendingCount++
+    const documentKey = this.currentDocumentKey
+    const rootToken = this.rootToken
+    const epochAtSample = this.nativeMutationEpoch
+    console.info(
+      `[InkChapter Numbering] OUTLINE-OBSERVER-COVERAGE-GAP phase=PENDING_DELIVERY decision=WAIT ` +
+      `documentKey=${documentKey} rootToken=${rootToken} currentFingerprint=${textFingerprint}/${structureFingerprint} ` +
+      `epochAtSample=${epochAtSample} reason=FINGERPRINT_CHANGED_BEFORE_MUTATION_DELIVERY`,
+    )
+    this.pendingCoverageGap = { documentKey, rootToken, epochAtSample, textFingerprint, structureFingerprint }
+    // Delivery checkpoint: MutationObserver callback is a microtask; the next RAF
+    // is a safe boundary to decide whether the epoch finally advanced.
+    queueMicrotask(() => {
+      requestAnimationFrame(() => {
+        const pending = this.pendingCoverageGap
+        if (!pending) return
+        this.pendingCoverageGap = null
+        if (pending.documentKey !== this.currentDocumentKey || (pending.rootToken !== null && pending.rootToken !== this.rootToken)) {
+          console.info(
+            `[InkChapter Numbering] OUTLINE-OBSERVER-COVERAGE-GAP phase=POST_DELIVERY decision=DROP_STALE ` +
+            `documentKey=${pending.documentKey} reason=DOCUMENT_OR_ROOT_CHANGED`,
+          )
+          return
+        }
+        if (this.nativeMutationEpoch !== pending.epochAtSample) {
+          this.coverageGapResolvedCount++
+          console.info(
+            `[InkChapter Numbering] OUTLINE-OBSERVER-COVERAGE-GAP phase=POST_DELIVERY decision=RESOLVED ` +
+            `documentKey=${pending.documentKey} epochBefore=${pending.epochAtSample} epochAfter=${this.nativeMutationEpoch} ` +
+            `reason=MUTATION_DELIVERED_AFTER_SAMPLE`,
+          )
+        } else {
+          this.coverageGapFailCount++
+          console.info(
+            `[InkChapter Numbering] OUTLINE-OBSERVER-COVERAGE-GAP phase=POST_DELIVERY decision=FAIL ` +
+            `documentKey=${pending.documentKey} epochAtSample=${pending.epochAtSample} currentEpoch=${this.nativeMutationEpoch} ` +
+            `reason=FINGERPRINT_CHANGED_WITHOUT_MUTATION_EVENT`,
+          )
+        }
+      })
+    })
   }
 
   /** Remove stale decorations on elements no longer in the matched set. */
@@ -739,7 +1127,7 @@ export class OutlineNumberingController {
     const weakMapRootToken = getRootToken(root)
     console.info(
       `[InkChapter Numbering] OUTLINE-ROOT-RESOLVE implId=${OUTLINE_CONTROLLER_IMPL_ID} ` +
-      `instanceId=${this.instanceId} codepathRevision=v26 found=true connected=${root.isConnected} visible=true ` +
+      `instanceId=${this.instanceId} codepathRevision=v29 found=true connected=${root.isConnected} visible=true ` +
       `rootToken=${this.rootToken} weakMapRootToken=${weakMapRootToken} ` +
       `rootGeneration=${this.rootGeneration} identity=${root.tagName}#${root.id || '?'}`,
     )
@@ -781,6 +1169,15 @@ export class OutlineNumberingController {
       `textFingerprint=${nativeAtApply.textFingerprint} structureFingerprint=${nativeAtApply.structureFingerprint}`,
     )
 
+    // v29 FULL RESYNC begin: deterministic rebuild of the derived numbering view.
+    this.fullResyncGeneration++
+    this.fullResyncBeginCount++
+    console.info(
+      `[InkChapter Numbering] OUTLINE-FULL-RESYNC-BEGIN documentKey=${expectedDocKey} revision=${expectedRevision} ` +
+      `rootToken=${this.rootToken} generation=${this.fullResyncGeneration} dirtyReason=${this.outlineDirtyReason ?? 'none'} ` +
+      `headingCount=${this.cache.headings.length} nativeItemCount=${nativeAtApply.itemCount}`,
+    )
+
     this.isWriting = true
     try {
       const items = findOutlineTextElements(root)
@@ -803,12 +1200,25 @@ export class OutlineNumberingController {
       const unmatchedOutline = Math.max(0, items.length - matches.length)
       const staleDecorationCount = Math.max(0, actualDecorations - expectedNumbered)
 
+      // Post-apply diagnostics: label mismatch + orphan decorations.
+      let labelMismatchCount = 0
+      for (const m of matches) {
+        if (m.label && m.element.getAttribute('data-inkchapter-number') !== m.label) labelMismatchCount++
+      }
+      let orphanDecorationCount = 0
+      const decoratedAfterApply = root.querySelectorAll<HTMLElement>('[data-inkchapter-number]')
+      decoratedAfterApply.forEach(el => { if (!matchedSet.has(el)) orphanDecorationCount++ })
+
       this.lastApply = {
         matchedCount: matches.length,
         appliedCount: attrResult.applied + attrResult.updated,
         unmatchedCount: unmatchedHeading,
         unmatchedOutlineCount: unmatchedOutline,
         staleDecorationCount,
+        duplicateDecorationCount: 0, // matchHeadingsToOutline dedups via usedOutlineIndices
+        orphanDecorationCount,
+        labelMismatchCount,
+        headingCount: this.cache.headings.length,
         reason: reasons.join('+'),
       }
 
@@ -824,7 +1234,27 @@ export class OutlineNumberingController {
         `matchedCount=${matches.length} createdCount=${attrResult.applied + attrResult.updated} ` +
         `updatedCount=${attrResult.updated} removedCount=${staleRemoved} ` +
         `unmatchedHeadingCount=${unmatchedHeading} unmatchedOutlineCount=${unmatchedOutline} ` +
-        `staleDecorationCount=${staleDecorationCount}`,
+        `staleDecorationCount=${staleDecorationCount} orphanDecorationCount=${orphanDecorationCount} ` +
+        `labelMismatchCount=${labelMismatchCount}`,
+      )
+
+      // v29 FULL RESYNC end: immediate verify decision + dirty→clean transition.
+      const resyncPass = expectedNumbered === actualDecorations &&
+        staleDecorationCount === 0 && orphanDecorationCount === 0 && labelMismatchCount === 0
+      if (resyncPass) {
+        this.fullResyncPassCount++
+        this.outlineDirty = false
+        this.outlineDirtyReason = null
+      } else {
+        this.fullResyncFailCount++
+      }
+      console.info(
+        `[InkChapter Numbering] OUTLINE-FULL-RESYNC-END documentKey=${expectedDocKey} revision=${expectedRevision} ` +
+        `rootToken=${this.rootToken} generation=${this.fullResyncGeneration} ` +
+        `removedDecorationCount=${staleRemoved} createdDecorationCount=${attrResult.applied + attrResult.updated} ` +
+        `updatedDecorationCount=${attrResult.updated} expectedDecorationCount=${expectedNumbered} ` +
+        `actualDecorationCount=${actualDecorations} decision=${resyncPass ? 'PASS' : 'FAIL'} ` +
+        `reason=${resyncPass ? 'OK' : 'DECORATION_COUNT_MISMATCH'}`,
       )
 
       // Decoration-loss repair: expected numbered > 0 but decorations dropped to 0.
@@ -833,21 +1263,85 @@ export class OutlineNumberingController {
         const attempts = this.verifyRepairByRevision.get(expectedRevision) ?? 0
         if (attempts < 1) {
           this.verifyRepairByRevision.set(expectedRevision, attempts + 1)
-          this.scheduleApply('outline-decoration-lost')
+          this.repairRequired = true
+          this.nativeDirty = true
+          this.scheduleNativeStabilityCheck('outline-decoration-lost')
         }
       }
     } finally {
       this.isWriting = false
     }
 
-    this.scheduleVerify(expectedDocKey, expectedRevision)
+    this.scheduleImmediateVerify(expectedDocKey, expectedRevision)
+    this.startPostApplyStabilityWatch(expectedDocKey, expectedRevision)
   }
 
-  private scheduleVerify(docKey: string, revision: number): void {
+  private scheduleImmediateVerify(docKey: string, revision: number): void {
     if (this.verifyRafId !== null) return
     this.verifyRafId = requestAnimationFrame(() => {
       this.verifyRafId = null
-      this.verifyOutline(docKey, revision)
+      this.verifyOutline(docKey, revision, 'IMMEDIATE')
+    })
+  }
+
+  /**
+   * Post-apply stability watch: after writing decorations, cross a
+   * MutationObserver delivery boundary + RAF checkpoint and confirm the native
+   * epoch/generation did not change. If it did, invalidate → repair → stability.
+   */
+  private startPostApplyStabilityWatch(docKey: string, revision: number): void {
+    this.postApplyWatchActive = true
+    this.postApplyWatchEpoch = this.nativeMutationEpoch
+    this.postApplyWatchGeneration = this.nativeSubtreeGeneration
+    this.postApplyWatchRevision = revision
+    const appliedEpoch = this.nativeMutationEpoch
+    const appliedGeneration = this.nativeSubtreeGeneration
+    const appliedRootToken = this.rootToken
+
+    queueMicrotask(() => {
+      requestAnimationFrame(() => {
+        if (!this.postApplyWatchActive) return
+        if (this.currentDocumentKey !== docKey || (appliedRootToken !== null && this.rootToken !== appliedRootToken)) {
+          this.postApplyWatchActive = false
+          console.info(
+            `[InkChapter Numbering] OUTLINE-POST-APPLY-STABILITY documentKey=${docKey} revision=${revision} ` +
+            `rootToken=${appliedRootToken} appliedEpoch=${appliedEpoch} currentEpoch=${this.nativeMutationEpoch} ` +
+            `appliedGeneration=${appliedGeneration} currentGeneration=${this.nativeSubtreeGeneration} ` +
+            `decision=DROP_STALE reason=DOCUMENT_OR_ROOT_CHANGED`,
+          )
+          return
+        }
+        const currentEpoch = this.nativeMutationEpoch
+        const currentGeneration = this.nativeSubtreeGeneration
+        const stable = currentEpoch === appliedEpoch && currentGeneration === appliedGeneration
+        if (stable) {
+          this.postApplyWatchActive = false
+          console.info(
+            `[InkChapter Numbering] OUTLINE-POST-APPLY-STABILITY documentKey=${docKey} revision=${revision} ` +
+            `rootToken=${appliedRootToken} appliedEpoch=${appliedEpoch} currentEpoch=${currentEpoch} ` +
+            `appliedGeneration=${appliedGeneration} currentGeneration=${currentGeneration} ` +
+            `decision=STABLE reason=NATIVE_QUIESCENT_AFTER_APPLY`,
+          )
+          this.verifyOutline(docKey, revision, 'STABLE')
+        } else {
+          this.postApplyWatchActive = false
+          this.postApplyInvalidationCount++
+          console.info(
+            `[InkChapter Numbering] OUTLINE-POST-APPLY-STABILITY documentKey=${docKey} revision=${revision} ` +
+            `rootToken=${appliedRootToken} appliedEpoch=${appliedEpoch} currentEpoch=${currentEpoch} ` +
+            `appliedGeneration=${appliedGeneration} currentGeneration=${currentGeneration} ` +
+            `decision=INVALIDATED reason=NATIVE_MUTATION_AFTER_APPLY`,
+          )
+          this.repairScheduleCount++
+          console.info(
+            `[InkChapter Numbering] OUTLINE-REPAIR-SCHEDULE documentKey=${docKey} revision=${revision} ` +
+            `rootToken=${appliedRootToken} reason=native-outline-rebuilt-after-apply`,
+          )
+          this.repairRequired = true
+          this.nativeDirty = true
+          this.scheduleNativeStabilityCheck('post-apply-invalidated')
+        }
+      })
     })
   }
 
@@ -901,7 +1395,7 @@ export class OutlineNumberingController {
     }
   }
 
-  private verifyOutline(docKey: string, revision: number): void {
+  private verifyOutline(docKey: string, revision: number, phase: 'IMMEDIATE' | 'STABLE'): void {
     if (docKey !== this.currentDocumentKey) return
     if (revision !== this.cache.revision) return
 
@@ -920,66 +1414,116 @@ export class OutlineNumberingController {
     const rootConnected = !!currentRoot && currentRoot.isConnected
     const rootVisible = !!currentRoot && currentRoot.offsetParent !== null
 
-    // MODEL F: detect whether Typora mutated the native subtree AFTER InkChapter
-    // wrote decorations (which would invalidate this transaction's verify).
-    const nativeEpochChangedAfterApply = this.nativeMutationEpoch !== this.postApplyEpochAtApply
-    const nativeGenerationChangedAfterApply = this.nativeSubtreeGeneration !== this.postApplyGenerationAtApply
+    // Native stability: has the native subtree changed since apply?
+    const nativeEpochStable = this.nativeMutationEpoch === this.postApplyEpochAtApply
+    const nativeGenerationStable = this.nativeSubtreeGeneration === this.postApplyGenerationAtApply
 
-    let decision: 'PASS' | 'FAIL' | 'RETRY'
+    const la = this.lastApply
+    const matchedCount = la?.matchedCount ?? 0
+    const headingCount = la?.headingCount ?? this.cache.headings.length
+    const unmatchedHeadingCount = la?.unmatchedCount ?? 0
+    const unmatchedOutlineCount = la?.unmatchedOutlineCount ?? 0
+    const duplicateDecorationCount = la?.duplicateDecorationCount ?? 0
+    const orphanDecorationCount = la?.orphanDecorationCount ?? 0
+    const labelMismatchCount = la?.labelMismatchCount ?? 0
+
+    const countOk =
+      expectedNumbered === actualDecorations &&
+      staleDecorationCount === 0 &&
+      duplicateDecorationCount === 0 &&
+      orphanDecorationCount === 0 &&
+      labelMismatchCount === 0
+    const matchOk = matchedCount === headingCount && unmatchedHeadingCount === 0 && unmatchedOutlineCount === 0
+    const identityOk = rootSame && rootGenerationSame && rootTokenSame
+
+    let decision: 'PASS' | 'FAIL' | 'DEFER' | 'RETRY'
     let reason: string
 
     if (!tx) {
       decision = 'FAIL'; reason = 'NO_APPLY_TRANSACTION'
     } else if (expectedNumbered === 0) {
       decision = 'PASS'; reason = 'NO_NUMBERED_HEADINGS'
-    } else if (!rootSame || !rootGenerationSame || !rootTokenSame) {
+    } else if (!identityOk) {
       decision = 'RETRY'; reason = 'ROOT_REPLACED_AFTER_APPLY'
     } else if (!rootConnected || !rootVisible) {
       decision = 'FAIL'; reason = 'ROOT_NOT_VISIBLE'
-    } else if (actualDecorations !== expectedNumbered) {
-      // Strict equality: actual > expected (stale) is ALSO a FAIL, never PASS.
-      decision = 'FAIL'; reason = 'DECORATION_COUNT_MISMATCH'
-    } else if (staleDecorationCount > 0) {
-      decision = 'FAIL'; reason = 'STALE_DECORATION_PRESENT'
-    } else if ((this.lastApply?.unmatchedCount ?? 0) > 0) {
-      decision = 'FAIL'; reason = 'UNMATCHED_HEADING_PRESENT'
-    } else if ((this.lastApply?.unmatchedOutlineCount ?? 0) > 0) {
-      decision = 'FAIL'; reason = 'UNMATCHED_OUTLINE_PRESENT'
-    } else if (nativeEpochChangedAfterApply || nativeGenerationChangedAfterApply) {
-      // Post-apply stability barrier: Typora rebuilt native items after apply.
-      decision = 'RETRY'; reason = 'NATIVE_OUTLINE_MUTATED_AFTER_APPLY'
+    } else if (phase === 'IMMEDIATE') {
+      // Immediate verify is a transient sanity check only — never final success.
+      if (countOk && matchOk) {
+        decision = 'PASS'; reason = 'IMMEDIATE_OK'
+      } else {
+        this.immediateVerifyFailCount++
+        decision = 'DEFER'; reason = this.nativeDirty ? 'TRANSIENT_NATIVE_LAG' : 'IMMEDIATE_MISMATCH_AWAITING_STABLE'
+      }
     } else {
-      decision = 'PASS'; reason = 'OK'
+      // STABLE verify — final gate: document identity + matcher READY + post-apply
+      // temporal stability. The mature matcher (matched/unmatched) is the sole
+      // readiness authority; the semantic fingerprint is NOT a stable-verify gate.
+      if (!nativeEpochStable || !nativeGenerationStable) {
+        this.stableVerifyFailCount++
+        decision = 'RETRY'; reason = 'NATIVE_OUTLINE_MUTATED_AFTER_APPLY'
+      } else if (!countOk || !matchOk) {
+        this.stableVerifyFailCount++
+        if (actualDecorations < expectedNumbered) this.finalDecorationLossCount++
+        decision = 'FAIL'; reason = 'TERMINAL_MISMATCH'
+      } else {
+        decision = 'PASS'; reason = 'OK'
+      }
     }
 
-    this.lastVerify = { expectedCount: expectedNumbered, actualCount: actualDecorations, decision }
+    this.lastVerify = { expectedCount: expectedNumbered, actualCount: actualDecorations, decision, phase }
+
+    // Literal phase marker (kept as a contiguous string in the bundle for the
+    // dist-marker gate: phase=IMMEDIATE / phase=STABLE).
+    const phaseLabel = phase === 'IMMEDIATE' ? 'phase=IMMEDIATE' : 'phase=STABLE'
 
     console.info(
-      `[InkChapter Numbering] OUTLINE-VERIFY documentKey=${docKey} revision=${revision} ` +
+      `[InkChapter Numbering] OUTLINE-VERIFY documentKey=${docKey} revision=${revision} ${phaseLabel} ` +
       `expectedNumberedCount=${expectedNumbered} actualNumberDecorationCount=${actualDecorations} ` +
       `rootConnected=${rootConnected} rootVisible=${rootVisible} rootSame=${rootSame} ` +
       `rootGenerationSame=${rootGenerationSame} rootTokenSame=${rootTokenSame} decision=${decision} reason=${reason}`,
     )
     console.info(
-      `[InkChapter Numbering] OUTLINE-STRICT-VERIFY documentKey=${docKey} revision=${revision} ` +
-      `expectedNumberedCount=${expectedNumbered} actualNumberDecorationCount=${actualDecorations} ` +
-      `matchedCount=${this.lastApply?.matchedCount ?? 0} ` +
-      `unmatchedHeadingCount=${this.lastApply?.unmatchedCount ?? 0} ` +
-      `unmatchedOutlineCount=${this.lastApply?.unmatchedOutlineCount ?? 0} ` +
-      `staleDecorationCount=${staleDecorationCount} ` +
-      `nativeEpochChangedAfterApply=${nativeEpochChangedAfterApply} ` +
-      `nativeGenerationChangedAfterApply=${nativeGenerationChangedAfterApply} ` +
+      `[InkChapter Numbering] OUTLINE-STRICT-VERIFY documentKey=${docKey} revision=${revision} ${phaseLabel} ` +
+      `expected=${expectedNumbered} actual=${actualDecorations} ` +
+      `matchedCount=${matchedCount} headingCount=${headingCount} ` +
+      `unmatchedHeadingCount=${unmatchedHeadingCount} unmatchedOutlineCount=${unmatchedOutlineCount} ` +
+      `staleDecorationCount=${staleDecorationCount} duplicateDecorationCount=${duplicateDecorationCount} ` +
+      `orphanDecorationCount=${orphanDecorationCount} labelMismatchCount=${labelMismatchCount} ` +
+      `rootSame=${rootSame} rootTokenSame=${rootTokenSame} ` +
+      `nativeEpochStable=${nativeEpochStable} nativeGenerationStable=${nativeGenerationStable} ` +
       `decision=${decision} reason=${reason}`,
     )
 
+    // Match-state: distinguish transient native lag from terminal mismatch.
+    if (!countOk || !matchOk) {
+      console.info(
+        `[InkChapter Numbering] OUTLINE-MATCH-STATE documentKey=${docKey} revision=${revision} phase=${phase} ` +
+        `headingCount=${headingCount} matchedCount=${matchedCount} nativeDirty=${this.nativeDirty} ` +
+        `state=${phase === 'IMMEDIATE' ? 'IMMEDIATE_MISMATCH' : 'TERMINAL_MISMATCH'} ` +
+        `decision=${decision === 'FAIL' ? 'FAIL' : 'DEFER'}`,
+      )
+    }
+
+    if (phase === 'STABLE' && decision === 'FAIL') {
+      console.info(
+        `[InkChapter Numbering] OUTLINE-STABLE-VERIFY-FAIL documentKey=${docKey} revision=${revision} ` +
+        `reason=${reason} expected=${expectedNumbered} actual=${actualDecorations}`,
+      )
+    }
+
     if (decision === 'RETRY') {
       if (reason === 'NATIVE_OUTLINE_MUTATED_AFTER_APPLY') {
-        // MODEL F repair: wait for the native rebuild to settle, then re-apply.
+        // MODEL F repair: native rebuilt after apply — wait quiescence and re-apply.
+        this.repairScheduleCount++
         console.info(
           `[InkChapter Numbering] OUTLINE-REPAIR-SCHEDULE documentKey=${docKey} revision=${revision} ` +
           `reason=native-outline-rebuilt-after-apply`,
         )
-        this.schedulePostNativeApply('outline-native-rebuilt-after-apply')
+        this.repairRequired = true
+        this.nativeDirty = true
+        this.markOutlineDirty('verify-repair')
+        this.scheduleNativeStabilityCheck('outline-native-rebuilt-after-apply')
       } else {
         // rootSame=false must NEVER pass — rebind the new root and reapply latest.
         this.ensureObserverBoundToCurrentRoot('root-replaced')
@@ -1018,6 +1562,16 @@ export class OutlineNumberingController {
 
     // Rebind: disconnect old (if any), then bind the current root.
     const oldRootToken = this.observedRootToken
+    if (oldRootToken !== null && oldRootToken !== newRootToken) {
+      // Root replacement: drop any in-flight stability / post-apply transactions.
+      console.info(
+        `[InkChapter Numbering] OUTLINE-STABILITY-TRANSACTION-STALE oldRootToken=${oldRootToken} ` +
+        `newRootToken=${newRootToken} decision=DROP_STALE_ROOT reason=ROOT_REPLACED`,
+      )
+      this.nativeStabilityInFlight = false
+      this.postApplyWatchActive = false
+      this.pendingCoverageGap = null
+    }
     this.detachObserver()
 
     const currentResolvedToken = getRootToken(findOutlineRoot())
@@ -1137,15 +1691,26 @@ export class OutlineNumberingController {
       if (nativeChange) {
         this.nativeMutationEpoch++
         if (structuralNativeChange) this.nativeSubtreeGeneration++
+        this.nativeDirty = true
+        this.repairRequired = true
+        this.markOutlineDirty('native-subtree-rebuild')
         this.lastNativeMutationAt = performance.now()
+        this.lastNativeMutationAtRevision = this.cache.revision
+        this.lastNativeMutationRootToken = this.rootToken
+        this.nativeMutationCount += nativeMutationCount
+        this.nativeBurstCount++
         console.info(
           `[InkChapter Numbering] OUTLINE-NATIVE-SUBTREE-MUTATION documentKey=${this.currentDocumentKey} rootToken=${this.rootToken} ` +
           `source=TYPOGRAPHIC_NATIVE mutationCount=${nativeMutationCount} addedNativeItemCount=${addedNativeItemCount} ` +
           `removedNativeItemCount=${removedNativeItemCount} nativeMutationEpoch=${this.nativeMutationEpoch} ` +
-          `nativeSubtreeGeneration=${this.nativeSubtreeGeneration} decision=TRACKED`,
+          `nativeSubtreeGeneration=${this.nativeSubtreeGeneration} nativeDirty=true repairRequired=true ` +
+          `decision=TRACKED`,
         )
-        this.schedulePostNativeApply('outline-native-mutation')
+        this.scheduleNativeStabilityCheck('outline-native-mutation')
       } else if (classOnlyChange) {
+        // Pure active/visual class change (outline-active / outline-item-active):
+        // state event only — never a structural repair, never a native epoch bump.
+        console.info('[InkChapter Numbering] OUTLINE-MUTATION-CLASSIFY source=VISUAL_ATTRIBUTE reason=ACTIVE_CLASS_CHANGE repairRequired=false')
         this.scheduleApply('outline-class-changed')
       }
 
@@ -1223,6 +1788,12 @@ export class OutlineNumberingController {
         `after=${current} rootToken=${this.lastAppliedRootToken} observerBoundary=${this.observerBoundaryLevel} ` +
         `nativeMutationEpoch=${this.nativeMutationEpoch} decision=DETECTED`,
       )
+      // Decoration loss is a STRONG repair signal — mark dirty and go through
+      // native stability → full resync (never apply before READY).
+      this.repairRequired = true
+      this.nativeDirty = true
+      this.markOutlineDirty('decoration-loss')
+      this.scheduleNativeStabilityCheck('decoration-loss')
     }
   }
 
@@ -1383,6 +1954,49 @@ export class OutlineNumberingController {
       lastInkchapterMutationAt: this.lastInkchapterMutationAt,
       postApplyEpochAtApply: this.postApplyEpochAtApply,
       postApplyGenerationAtApply: this.postApplyGenerationAtApply,
+      nativeDirty: this.nativeDirty,
+      repairRequired: this.repairRequired,
+      nativeStabilityInFlight: this.nativeStabilityInFlight,
+      postApplyWatchActive: this.postApplyWatchActive,
+      nativeStabilityCheckGeneration: this.nativeStabilityCheckGeneration,
+      pendingPostNativeApplyRevision: this.pendingPostNativeApplyRevision,
+      lastNativeMutationAtRevision: this.lastNativeMutationAtRevision,
+      lastNativeMutationRootToken: this.lastNativeMutationRootToken,
+      outlineContentDocumentKey: this.outlineContentDocumentKey,
+      outlineContentGeneration: this.outlineContentGeneration,
+      documentSwitchConvergencePending: this.documentSwitchConvergencePending,
+      convergenceTargetDocumentKey: this.convergenceTargetDocumentKey,
+      convergenceTargetRevision: this.convergenceTargetRevision,
+      convergenceTxnId: this.convergenceTxnId,
+      nativeRefreshAttempts: this.nativeRefreshAttempts,
+      nativeRefreshGeneration: this.nativeRefreshGeneration,
+      lastSemanticResult: this.lastSemanticResult,
+      outlineDirty: this.outlineDirty,
+      outlineDirtyReason: this.outlineDirtyReason,
+      fullResyncGeneration: this.fullResyncGeneration,
+      lastReadiness: this.lastReadiness,
+      stats: {
+        nativeMutationCount: this.nativeMutationCount,
+        nativeBurstCount: this.nativeBurstCount,
+        postNativeApplyCount: this.postNativeApplyCount,
+        repairScheduleCount: this.repairScheduleCount,
+        postApplyInvalidationCount: this.postApplyInvalidationCount,
+        coverageGapPendingCount: this.coverageGapPendingCount,
+        coverageGapResolvedCount: this.coverageGapResolvedCount,
+        coverageGapFailCount: this.coverageGapFailCount,
+        immediateVerifyFailCount: this.immediateVerifyFailCount,
+        stableVerifyFailCount: this.stableVerifyFailCount,
+        finalDecorationLossCount: this.finalDecorationLossCount,
+        dirtyMarkCount: this.dirtyMarkCount,
+        readinessReadyCount: this.readinessReadyCount,
+        readinessWaitCount: this.readinessWaitCount,
+        fullResyncBeginCount: this.fullResyncBeginCount,
+        fullResyncPassCount: this.fullResyncPassCount,
+        fullResyncFailCount: this.fullResyncFailCount,
+        staleDocumentDropCount: this.staleDocumentDropCount,
+        staleRootDropCount: this.staleRootDropCount,
+        semanticDiagnosticMismatchCount: this.semanticDiagnosticMismatchCount,
+      },
     }
   }
 }

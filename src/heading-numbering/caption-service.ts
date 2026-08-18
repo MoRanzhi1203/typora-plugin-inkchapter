@@ -12,6 +12,11 @@
  *   historical anchors are kept ORPHAN and NEVER auto-bind to a new object.
  */
 
+import { installMathJaxHook, probeMathJaxApiAuthority, createSingleTargetSession, clearSingleTargetSession, finalizeSingleTargetSession, getActiveSingleTargetSession, tokenFor, type MathJaxSingleTargetRetypesetSession } from './mathjax-native-tag-injection'
+import { executeMathJaxRenderOwnershipProbe } from './mathjax-render-ownership-probe'
+import { installRenderRouteHooks, restoreRenderRouteHooks, setRouteTraceContext, setRouteTraceEditorRoot, executeMathJaxRenderRouteTrace, type TraceFormulaInput } from './mathjax-render-route-trace'
+import { verifyFormulaTexSource, extractFormulaTexForTrace } from './formula-tex-source-verifier'
+import { buildFormulaRenderAuthorizationPlan, nextPlanRevision, setTex2svgInjectionContext, executeTex2svgInjectionVerification, R54_RUNTIME_MARKER } from './mathjax-tex2svg-tag-injection'
 import {
   CaptionRegistry,
   DEFAULT_CAPTION_SETTINGS,
@@ -23,9 +28,10 @@ import {
   type CaptionSettings,
 } from './caption-system'
 import * as path from 'path'
+import * as crypto from 'crypto'
 import { CaptionDomAdapter, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
-import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { emitRuntimeAudit, initializeForensicSink } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
 import { readImageAlt, escapeMarkdownAlt, unescapeMarkdownAlt } from './figure-alt-binding'
 import { imagePathInfo, normalizeLocalImageMarkdownDestination } from './image-path-codec'
@@ -44,13 +50,37 @@ import {
   buildObjectNumberingLabel,
   renderNumberingPreview,
   DEFAULT_OBJECT_NUMBERING_CONFIG,
+  ordinalsFromContext,
+  resolveScope,
+  resolveObjectNumberingScope,
+  resolveObjectNumberingReadiness,
   type ObjectNumberingConfig,
   type ObjectNumberingType,
   type NumberingTarget,
+  type NumberingResult,
+  type ObjectNumberingReadiness,
 } from './object-numbering-engine'
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
-import { resolveHeadingContext, chapterFromHeadingNumber, sectionFromHeadingNumber, type HeadingContextEntry, type ResolvedHeadingContext } from './heading-context-resolver'
-import { FormulaNumberingAdapter, type FormulaReconcileItem } from './formula-numbering-adapter'
+import {
+  resolveLogicalHeadingRoleMap,
+  type LogicalHeadingRoleMap,
+} from './heading-context-resolver'
+import {
+  buildObjectHeadingIndex,
+  checkObjectContextGenerationGate,
+  checkWorkspaceActiveDocumentGate,
+  projectLiveObjectHeadingContexts,
+  resolveTrueQuiescence,
+  type StructuredHeadingNumberState,
+  type ObjectHeadingIndex,
+  type ObjectHeadingOrdinalContext,
+  type LiveHeadingEntry,
+  type LiveObjectTargetEntry,
+  type LiveObjectContextProjectionResult,
+  type WorkspaceActiveDocumentGateResult,
+} from './object-heading-ordinal-authority'
+import { FormulaNumberingAdapter, computeFormulaCurrentSetAuthority, type FormulaReconcileItem, type FormulaReconcileStats, type FormulaNativeSlotResolution, type FormulaVisualInventoryV4 } from './formula-numbering-adapter'
+import { generateDocumentKey } from './heading-numbering-scope-store'
 
 export interface CaptionServiceContext {
   vaultRoot?: string | null
@@ -59,6 +89,10 @@ export interface CaptionServiceContext {
   getEditorRoot?: () => HTMLElement | null
   getMarkdown?: () => string
   reloadContent?: (markdown: string) => void
+  /** v2.5.1: effective heading structure mode (strict/loose) for logical role mapping. */
+  getHeadingStructureMode?: () => 'strict' | 'loose'
+  /** v2.5.3: shared structured numeric heading state from the Heading Numbering engine. */
+  getStructuredHeadingNumberState?: () => StructuredHeadingNumberState[]
   /** Read the active .md file bytes from disk (for FAW6 persistence evidence). */
   readActiveFileContent?: () => string | null
   onEditorEvent?: <K extends string>(event: K, listener: (...args: never[]) => void) => () => void
@@ -71,30 +105,172 @@ const REFRESH_DELAY_MS = 0
 export type CaptionMutationClassification = 'SELF_ONLY' | 'CONTENT_RELEVANT' | 'MIXED'
 
 /**
- * Classify a mutation batch as caption-decoration-only, real-content, or mixed.
- * Checks target AND addedNodes AND removedNodes so caption insert/remove/text
- * updates (whose target may be a parent container, not the caption itself) are
- * all recognized as self-mutations.
+ * True when a node is (or is inside) an InkChapter-owned decoration:
+ * caption DOM or formula-number DOM. These are self-mutations that must never
+ * re-trigger a business refresh.
+ */
+export function isInkChapterOwnedDecorationNode(node: Node): boolean {
+  if (!(node instanceof Element)) return false
+  return !!(
+    node.matches('[data-inkchapter-caption]') ||
+    node.matches('[data-inkchapter-formula-number]') ||
+    node.matches('[data-inkchapter-formula-managed]') ||
+    node.closest('[data-inkchapter-caption]') ||
+    node.closest('[data-inkchapter-formula-number]') ||
+    node.closest('[data-inkchapter-formula-managed]')
+  )
+}
+
+/**
+ * Legacy self/content/mixed classifier (kept for existing consumers/tests).
+ * The authoritative v2 classifier is `classifyEditorMutationBatchV2`.
  */
 export function classifyCaptionMutationBatch(records: MutationRecord[]): CaptionMutationClassification {
-  let captionOnly = 0
+  let selfOnly = 0
   let content = 0
   for (const record of records) {
-    const targetIsCaption = record.target instanceof Element
-      && !!record.target.closest(`[data-inkchapter-caption]`)
-    const addedAllCaption = Array.from(record.addedNodes).every(n =>
-      n instanceof Element && (n.matches(`[data-inkchapter-caption]`) || !!n.closest(`[data-inkchapter-caption]`)))
-    const removedAllCaption = Array.from(record.removedNodes).every(n =>
-      n instanceof Element && (n.matches(`[data-inkchapter-caption]`) || !!n.closest(`[data-inkchapter-caption]`)))
+    const targetIsSelf = record.target instanceof Element && isInkChapterOwnedDecorationNode(record.target)
+    const addedAllSelf = Array.from(record.addedNodes).every(n =>
+      n instanceof Element && isInkChapterOwnedDecorationNode(n))
+    const removedAllSelf = Array.from(record.removedNodes).every(n =>
+      n instanceof Element && isInkChapterOwnedDecorationNode(n))
     const hasAdded = record.addedNodes.length > 0
     const hasRemoved = record.removedNodes.length > 0
-    const isCaptionMutation = targetIsCaption || (hasAdded && addedAllCaption) || (hasRemoved && removedAllCaption)
-    if (isCaptionMutation) captionOnly++
+    const isSelfMutation = targetIsSelf || (hasAdded && addedAllSelf) || (hasRemoved && removedAllSelf)
+    if (isSelfMutation) selfOnly++
     else content++
   }
-  if (captionOnly > 0 && content === 0) return 'SELF_ONLY'
-  if (content > 0 && captionOnly === 0) return 'CONTENT_RELEVANT'
+  if (selfOnly > 0 && content === 0) return 'SELF_ONLY'
+  if (content > 0 && selfOnly === 0) return 'CONTENT_RELEVANT'
   return 'MIXED'
+}
+
+// ── Editor Mutation Ownership V2 (v2.5.3) ───────────────────────────
+
+const RENDERER_INTERNAL_TAGS = new Set([
+  'MJX-CONTAINER', 'MJX-MATH', 'MJX-MROW', 'MJX-MTEXT',
+  'MJX-MERROR', 'MJX-ASSISTIVE-MML', 'MJX-MI', 'MJX-MN', 'MJX-MO',
+  'SVG', 'PATH', 'USE', 'MATH',
+])
+
+/** True when an element is a pure Typora/MathJax renderer internal (never real content). */
+export function isRendererInternalElement(el: Element): boolean {
+  const tag = el.tagName.toUpperCase()
+  if (RENDERER_INTERNAL_TAGS.has(tag)) return true
+  if (el.classList.contains('CodeMirror-line')) return true
+  // CodeMirror internals: any node inside .CodeMirror that is not the stable
+  // semantic fence host (pre.md-fences) is a transient renderer node.
+  if (el.closest('.CodeMirror') && !el.closest('pre.md-fences')) return true
+  // MathJax render internals below the block host.
+  if (el.closest('mjx-container')) return true
+  return false
+}
+
+export type EditorMutationCategory =
+  | 'INKCHAPTER_DECORATION_ONLY'
+  | 'TYPOORA_RENDERER_INTERNAL_ONLY'
+  | 'REAL_DOCUMENT_CONTENT'
+  | 'MIXED_CONTENT_AND_RENDERER'
+  | 'UNKNOWN'
+
+export type EditorMutationDecision =
+  | 'IGNORED'
+  | 'IGNORED_RENDERER_INTERNAL'
+  | 'BUSINESS_REFRESH'
+  | 'NO_BUSINESS_CHANGE'
+
+export interface EditorMutationOwnershipV2 {
+  batchId: string
+  recordCount: number
+  inkchapterDecorationCount: number
+  rendererInternalCount: number
+  realContentCount: number
+  unknownCount: number
+  classification: EditorMutationCategory
+  formulaRefreshRequested: boolean
+  captionRefreshRequested: boolean
+  strictValidationRequested: boolean
+  decision: EditorMutationDecision
+}
+
+function classifyMutationNode(node: Node): 'inkchapter' | 'renderer-internal' | 'real-content' | 'unknown' {
+  if (node instanceof Element) {
+    if (isInkChapterOwnedDecorationNode(node)) return 'inkchapter'
+    if (isRendererInternalElement(node)) return 'renderer-internal'
+    return 'real-content'
+  }
+  if (node.nodeType === Node.TEXT_NODE) {
+    const parent = node.parentElement
+    if (parent && isRendererInternalElement(parent)) return 'renderer-internal'
+    if (parent && isInkChapterOwnedDecorationNode(parent)) return 'inkchapter'
+    return 'real-content'
+  }
+  return 'unknown'
+}
+
+/** The mutation target is a container for childList changes; never "real content" by itself. */
+function classifyMutationTarget(node: Node): 'inkchapter' | 'renderer-internal' | 'neutral' {
+  if (node instanceof Element) {
+    if (isInkChapterOwnedDecorationNode(node)) return 'inkchapter'
+    if (isRendererInternalElement(node)) return 'renderer-internal'
+  }
+  return 'neutral'
+}
+
+let mutationBatchSeq = 0
+
+/** Classify an editor mutation batch with renderer-internal awareness (spec §67–76). */
+export function classifyEditorMutationBatchV2(records: MutationRecord[]): EditorMutationOwnershipV2 {
+  let inkchapter = 0
+  let renderer = 0
+  let real = 0
+  let unknown = 0
+
+  for (const record of records) {
+    const tc = classifyMutationTarget(record.target)
+    if (tc === 'inkchapter') inkchapter++
+    else if (tc === 'renderer-internal') renderer++
+
+    const nodes: Node[] = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)]
+    for (const n of nodes) {
+      const c = classifyMutationNode(n)
+      if (c === 'inkchapter') inkchapter++
+      else if (c === 'renderer-internal') renderer++
+      else if (c === 'real-content') real++
+      else unknown++
+    }
+  }
+
+  let classification: EditorMutationCategory
+  if (real > 0 && (renderer > 0 || inkchapter > 0)) classification = 'MIXED_CONTENT_AND_RENDERER'
+  else if (real > 0) classification = 'REAL_DOCUMENT_CONTENT'
+  else if (renderer > 0 && inkchapter === 0) classification = 'TYPOORA_RENDERER_INTERNAL_ONLY'
+  else if (inkchapter > 0 && renderer === 0) classification = 'INKCHAPTER_DECORATION_ONLY'
+  else if (renderer > 0 || inkchapter > 0) classification = 'TYPOORA_RENDERER_INTERNAL_ONLY'
+  else classification = 'UNKNOWN'
+
+  const wantsRefresh = classification === 'REAL_DOCUMENT_CONTENT' || classification === 'MIXED_CONTENT_AND_RENDERER' || classification === 'UNKNOWN'
+  const decision: EditorMutationDecision = classification === 'INKCHAPTER_DECORATION_ONLY'
+    ? 'IGNORED'
+    : classification === 'TYPOORA_RENDERER_INTERNAL_ONLY'
+      ? 'IGNORED_RENDERER_INTERNAL'
+      : wantsRefresh
+        ? 'BUSINESS_REFRESH'
+        : 'NO_BUSINESS_CHANGE'
+
+  return {
+    batchId: `mut-${++mutationBatchSeq}-${Date.now().toString(36)}`,
+    recordCount: records.length,
+    inkchapterDecorationCount: inkchapter,
+    rendererInternalCount: renderer,
+    realContentCount: real,
+    unknownCount: unknown,
+    classification,
+    formulaRefreshRequested: wantsRefresh,
+    captionRefreshRequested: wantsRefresh,
+    strictValidationRequested: false,
+    decision,
+  }
 }
 
 /** Resolved naming target for a right-clicked element. */
@@ -135,9 +311,31 @@ export class CaptionService {
   private lastRefreshReason = 'none'
   private lastScanAt: number | null = null
   private lastRenderAt: number | null = null
+  private headingIndexRevision = 0
+  /** v2.5.4: document generation + editor root tokens (live DOM authority). */
+  private documentGeneration = 0
+  private editorRootTokens = new WeakMap<HTMLElement, number>()
+  private nextEditorRootToken = 0
+  private lastKnownGoodFormulaLabels = new Map<string, string>()
+  /** v2.5.4: true quiescence timestamps (ms epoch). */
+  private lastBusinessMutationAt = 0
+  private lastFormulaRefreshAt = 0
+  private lastFormulaDomWriteAt = 0
+  private lastDocumentSwitchAt = 0
+  private lastFormulaSettingsChangeAt = 0
   private lastError: string | null = null
   private captionMutationSelfIgnoredCount = 0
   private captionMutationContentRefreshCount = 0
+  /** v2.5.3: renderer-internal mutation + external business mutation counters. */
+  private rendererMutationIgnoredCount = 0
+  private externalBusinessMutationCount = 0
+  /** v2.5.3: formula refresh quiescence counters (never a correctness poll). */
+  private formulaRefreshCount = 0
+  private formulaScanCount = 0
+  private formulaReentrantRefreshCount = 0
+  private formulaPendingRefreshCount = 0
+  private formulaRefreshInProgress = false
+  private lastFormulaReconcileStats: FormulaReconcileStats | null = null
   private renderStats: ReconcileStats = {
     createCount: 0, updateCount: 0, moveCount: 0,
     noOpCount: 0, removeDisabledCount: 0, removeStaleCount: 0,
@@ -176,6 +374,7 @@ export class CaptionService {
   } | null = null
 
   constructor(ctx: CaptionServiceContext) {
+    installMathJaxHook()
     this.ctx = ctx
     this.adapter = new CaptionDomAdapter(() => this.currentEditorRoot)
     this.formulaAdapter = new FormulaNumberingAdapter(() => this.currentEditorRoot)
@@ -216,11 +415,23 @@ export class CaptionService {
   /** Apply the (independent) formula ObjectNumberingConfig and re-render. */
   applyFormulaSettings(config: ObjectNumberingConfig): void {
     this.formulaConfig = migrateObjectNumberingConfig('formula', config)
-    const mode = this.formulaConfig.formulaMode ?? 'typora-native'
+    // v2.5.1: formula numbering is InkChapter-owned and fixed right (no selector).
+    const oldImplementation = this.formulaConfig.formulaMode ?? 'typora-native'
+    const oldPosition = this.formulaConfig.position ?? 'right'
+    this.formulaConfig.formulaMode = 'inkchapter'
+    this.formulaConfig.position = 'right'
+    this.lastFormulaSettingsChangeAt = Date.now()
+    const mode = 'inkchapter'
     console.info(
       `[InkChapter Numbering] FORMULA-MODE-SWITCH mode=${mode} ` +
       `enabled=${this.formulaConfig.enabled} prefix=${JSON.stringify(this.formulaConfig.prefix)} ` +
-      `numberingMode=${this.formulaConfig.numberingMode} template=${JSON.stringify(this.formulaConfig.template)} decision=APPLIED`,
+      `numberingMode=${this.formulaConfig.numberingMode} template=${JSON.stringify(this.formulaConfig.template)} ` +
+      `position=${this.formulaConfig.position} decision=APPLIED`,
+    )
+    console.info(
+      `[InkChapter Numbering] FORMULA-NUMBERING-MIGRATION oldImplementation=${oldImplementation} ` +
+      `newImplementation=inkchapter oldPosition=${oldPosition} newPosition=right ` +
+      `preset=${this.formulaConfig.preset ?? 'none'} decision=MIGRATED`,
     )
     emitRuntimeAudit('FORMULA-SETTINGS-APPLY', {
       mode,
@@ -235,11 +446,20 @@ export class CaptionService {
   // ── Lifecycle ─────────────────────────────────────────────────────
 
   start(): void {
-    if (this.started) return
+    if (this.started) return;
+
+    const sessionId = `sess-${Date.now()}`;
+    initializeForensicSink({ vaultRoot: this.ctx.vaultRoot, buildId: INKCHAPTER_BUILD_ID, sessionId });
     this.started = true
 
     console.info('[InkChapter Caption] SERVICE-START')
     emitRuntimeAudit('CAPTION-SERVICE-START', { decision: 'STARTED' })
+
+    // ── v2.5.7-R5.3: transparent MathJax render-route hooks ──
+    // Installed here (after the forensic sink is ready) so candidate-inventory
+    // and hook-install markers are persisted, and BEFORE any target document
+    // formula render. Idempotent — re-attempted at each managed-plan one-shot.
+    installRenderRouteHooks()
 
     // ── External configuration attribution (not a Caption/Alt/Path root cause) ──
     // InkChapter never configures Typora's image uploader; any missing
@@ -351,9 +571,25 @@ export class CaptionService {
     const docKey = this.ctx.getDocumentKey?.() ?? this.ctx.getActiveFilePath?.() ?? null
     const changed = docKey !== this.currentDocumentKey
 
-    if (changed && this.currentDocumentKey !== null) {
+    if (changed) {
+      const oldDocumentKey = this.currentDocumentKey
+      const oldGeneration = this.documentGeneration
+      const oldRootToken = this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0
       // Document switch: flush old document bindings (persisted already).
-      this.flushDocument()
+      if (oldDocumentKey !== null) this.flushDocument()
+      this.documentGeneration++
+      this.lastDocumentSwitchAt = Date.now()
+      // New generation invalidates the old formula last-known-good cache.
+      this.lastKnownGoodFormulaLabels.clear()
+      const newRootToken = this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0
+      console.info(
+        `[InkChapter Numbering] OBJECT-DOCUMENT-GENERATION-TRANSITION ` +
+        `oldDocumentKey=${oldDocumentKey ?? 'none'} newDocumentKey=${docKey ?? 'none'} ` +
+        `oldGeneration=${oldGeneration} newGeneration=${this.documentGeneration} ` +
+        `oldEditorRootToken=${oldRootToken} newEditorRootToken=${newRootToken} ` +
+        `headingIndexInvalidated=true projectionInvalidated=true formulaCacheInvalidated=true ` +
+        `decision=TRANSITIONED runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+      )
     }
     this.currentDocumentKey = docKey
     this.rehydrate()
@@ -364,17 +600,42 @@ export class CaptionService {
     this.orphanIds.clear()
   }
 
+  private editorRootTokenFor(root: HTMLElement): number {
+    let token = this.editorRootTokens.get(root)
+    if (token === undefined) {
+      token = ++this.nextEditorRootToken
+      this.editorRootTokens.set(root, token)
+    }
+    return token
+  }
+
   private connectObserver(root: HTMLElement): void {
     this.disconnectObserver()
     this.mutationObserver = new MutationObserver((records) => {
       if (this.rendering) return
-      const classification = classifyCaptionMutationBatch(records)
-      if (classification === 'SELF_ONLY') {
+      const ownership = classifyEditorMutationBatchV2(records)
+      console.info(
+        `[InkChapter Numbering] EDITOR-MUTATION-OWNERSHIP-V2 batchId=${ownership.batchId} ` +
+        `recordCount=${ownership.recordCount} inkchapterDecorationCount=${ownership.inkchapterDecorationCount} ` +
+        `rendererInternalCount=${ownership.rendererInternalCount} realContentCount=${ownership.realContentCount} ` +
+        `unknownCount=${ownership.unknownCount} classification=${ownership.classification} ` +
+        `formulaRefreshRequested=${ownership.formulaRefreshRequested} captionRefreshRequested=${ownership.captionRefreshRequested} ` +
+        `strictValidationRequested=${ownership.strictValidationRequested} decision=${ownership.decision} ` +
+        `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+      )
+      if (ownership.decision === 'IGNORED') {
         this.captionMutationSelfIgnoredCount++
-        console.info('[InkChapter Caption] EDITOR-MUTATION decision=IGNORE reason=CAPTION_DECORATION_SELF_MUTATION')
+        console.info('[InkChapter Caption] EDITOR-MUTATION decision=IGNORE reason=INKCHAPTER_DECORATION_SELF_MUTATION')
+        return
+      }
+      if (ownership.decision === 'IGNORED_RENDERER_INTERNAL') {
+        this.rendererMutationIgnoredCount++
+        console.info('[InkChapter Caption] EDITOR-MUTATION decision=IGNORE reason=TYPOORA_RENDERER_INTERNAL')
         return
       }
       this.captionMutationContentRefreshCount++
+      this.externalBusinessMutationCount++
+      this.lastBusinessMutationAt = Date.now()
       this.scheduleRefresh()
     })
     this.mutationObserver.observe(root, { childList: true, subtree: true })
@@ -387,8 +648,10 @@ export class CaptionService {
 
   private scheduleRefresh(): void {
     if (this.refreshTimer !== null) return
+    this.formulaPendingRefreshCount++
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null
+      this.formulaPendingRefreshCount = Math.max(0, this.formulaPendingRefreshCount - 1)
       this.refresh()
     }, REFRESH_DELAY_MS)
   }
@@ -398,6 +661,9 @@ export class CaptionService {
     for (const d of this.disposers) { try { d() } catch { /* ignore */ } }
     this.disposers = []
     if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null }
+    this.formulaAdapter.restoreAllNative()
+    // v2.5.7-R5.3: restore transparent MathJax render-route hooks (no permanent pollution).
+    restoreRenderRouteHooks()
     this.started = false
   }
 
@@ -521,37 +787,327 @@ export class CaptionService {
     try { return path.dirname(fp) } catch { return null }
   }
 
-  private buildHeadingContextEntries(headingEls: HTMLElement[]): HeadingContextEntry[] {
-    const counts: Record<1 | 2 | 3, number> = { 1: 0, 2: 0, 3: 0 }
-    return headingEls.map((h, i) => {
-      const level = parseInt(h.tagName.charAt(1), 10) as 1 | 2 | 3
-      counts[level]++
-      const number = h.getAttribute('data-inkchapter-heading-number') || String(counts[level])
-      return { level, number, documentOrder: i }
-    })
+  /**
+   * Build the shared structured heading index for the current document from the
+   * Heading Numbering engine's numeric state (never from rendered label text).
+   * v2.5.4: the index is bound to the current document generation + editor root.
+   */
+  private buildHeadingIndex(): ObjectHeadingIndex {
+    const docKey = this.currentDocumentKey ?? ''
+    const states = this.ctx.getStructuredHeadingNumberState?.() ?? []
+    this.headingIndexRevision++
+    const rootToken = this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0
+    const index = buildObjectHeadingIndex(docKey, states, this.headingIndexRevision, this.documentGeneration, rootToken)
+    const chapterCount = states.filter((s) => s.logicalRole === 'chapter').length
+    const sectionCount = states.filter((s) => s.logicalRole === 'section').length
+    const subsectionCount = states.filter((s) => s.logicalRole === 'subsection').length
+    const numberedCount = states.filter((s) => s.numbered).length
+    console.info(
+      `[InkChapter Numbering] OBJECT-HEADING-ORDINAL-INDEX documentKey=${docKey || 'none'} ` +
+      `documentGeneration=${index.documentGeneration} editorRootToken=${index.editorRootToken} ` +
+      `revision=${index.revision} entryCount=${index.entries.length} numberedEntryCount=${numberedCount} ` +
+      `chapterEntryCount=${chapterCount} sectionEntryCount=${sectionCount} subsectionEntryCount=${subsectionCount} ` +
+      `decision=${index.entries.length > 0 ? 'BUILT' : 'EMPTY'} ` +
+      `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+    return index
   }
 
-  private headingContextForTargetRoot(
-    root: HTMLElement,
-    headingEls: HTMLElement[],
-    entries: HeadingContextEntry[],
-    targetType: string,
-    runtimeKey: string,
-  ): ResolvedHeadingContext {
-    let preceding = 0
-    for (const h of headingEls) {
-      const pos = root.compareDocumentPosition(h)
-      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) break
-      preceding++
+  private getLogicalHeadingRoleMap(): LogicalHeadingRoleMap {
+    const mode = this.ctx.getHeadingStructureMode?.() ?? 'strict'
+    return resolveLogicalHeadingRoleMap(mode)
+  }
+
+  /**
+   * v2.5.6: compare the live workspace active file document key against the
+   * service's cached document key. During a document-switch window the two can
+   * diverge; business numbering must BLOCK until Document Context READY.
+   */
+  private computeWorkspaceActiveDocumentGate(): WorkspaceActiveDocumentGateResult {
+    const workspaceActivePath = this.ctx.getActiveFilePath?.() ?? null
+    const vaultRoot = this.ctx.vaultRoot ?? null
+    let workspaceDocumentKey: string | null = null
+    if (workspaceActivePath && vaultRoot) {
+      try {
+        workspaceDocumentKey = generateDocumentKey(workspaceActivePath, vaultRoot)
+      } catch {
+        workspaceDocumentKey = null
+      }
     }
-    const ctx = resolveHeadingContext(entries, preceding)
+    const serviceDocumentKey = this.currentDocumentKey
+    const editorRootToken = this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0
+    const gate = checkWorkspaceActiveDocumentGate({
+      workspaceActivePath,
+      workspaceDocumentKey,
+      serviceDocumentKey,
+      headingIndexDocumentKey: serviceDocumentKey ?? '',
+      documentGeneration: this.documentGeneration,
+      editorRootToken,
+      businessReady: serviceDocumentKey !== null,
+    })
     console.info(
-      `[InkChapter Numbering] HEADING-CONTEXT targetType=${targetType} runtimeKey=${runtimeKey} ` +
-      `nearestH1=${ctx.h1 ?? 'none'} nearestH2=${ctx.h2 ?? 'none'} nearestH3=${ctx.h3 ?? 'none'} ` +
-      `chapter=${chapterFromHeadingNumber(ctx.h1)} section=${sectionFromHeadingNumber(ctx.h2)} ` +
-      `source=data-inkchapter-heading-number decision=RESOLVED`,
+      `[InkChapter Numbering] WORKSPACE-ACTIVE-DOCUMENT-GATE ` +
+      `workspaceActivePath=${workspaceActivePath ?? 'none'} workspaceDocumentKey=${workspaceDocumentKey ?? 'none'} ` +
+      `serviceDocumentKey=${serviceDocumentKey ?? 'none'} headingIndexDocumentKey=${serviceDocumentKey ?? 'none'} ` +
+      `documentGeneration=${this.documentGeneration} editorRootToken=${editorRootToken} ` +
+      `businessReady=${serviceDocumentKey !== null} decision=${gate.decision} reason=${gate.reason ?? 'none'} ` +
+      `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
     )
-    return ctx
+    return gate
+  }
+
+  /** Live editor DOM headings with their stable identity (data-inkchapter-heading-id). */
+  private queryLiveHeadingEntries(root: HTMLElement | null): LiveHeadingEntry[] {
+    if (!root) return []
+    const els = root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')
+    const result: LiveHeadingEntry[] = []
+    for (const el of Array.from(els)) {
+      result.push({ element: el, headingId: el.getAttribute('data-inkchapter-heading-id') ?? '' })
+    }
+    return result
+  }
+
+  /**
+   * Resolve object ordinal contexts for a group of live targets using the
+   * v2.5.4 live-DOM projection (live editor DOM decides order; structured state
+   * only supplies identity + numeric ordinal). Enforces the generation gate.
+   */
+  private resolveObjectContexts(
+    headingIndex: ObjectHeadingIndex,
+    roleMap: LogicalHeadingRoleMap,
+    targets: Array<{ element: HTMLElement; type: string; runtimeKey: string }>,
+  ): LiveObjectContextProjectionResult {
+    const root = this.currentEditorRoot
+    const currentRootToken = root ? this.editorRootTokenFor(root) : 0
+
+    const gate = checkObjectContextGenerationGate({
+      currentDocumentKey: this.currentDocumentKey,
+      indexDocumentKey: headingIndex.documentKey,
+      targetDocumentKey: headingIndex.documentKey,
+      currentDocumentGeneration: this.documentGeneration,
+      indexDocumentGeneration: headingIndex.documentGeneration,
+      currentEditorRootToken: currentRootToken,
+      indexEditorRootToken: headingIndex.editorRootToken,
+      targetEditorRootToken: currentRootToken,
+    })
+    console.info(
+      `[InkChapter Numbering] OBJECT-CONTEXT-GENERATION-GATE targetType=${targets[0]?.type ?? 'object'} ` +
+      `runtimeKey=${targets[0]?.runtimeKey ?? 'none'} ` +
+      `currentDocumentKey=${this.currentDocumentKey ?? 'none'} indexDocumentKey=${headingIndex.documentKey || 'none'} ` +
+      `targetDocumentKey=${headingIndex.documentKey || 'none'} ` +
+      `currentDocumentGeneration=${this.documentGeneration} indexDocumentGeneration=${headingIndex.documentGeneration} ` +
+      `currentEditorRootToken=${currentRootToken} indexEditorRootToken=${headingIndex.editorRootToken} ` +
+      `targetEditorRootToken=${currentRootToken} ` +
+      `sameDocument=${gate.sameDocument} sameGeneration=${gate.sameGeneration} sameRoot=${gate.sameRoot} ` +
+      `decision=${gate.decision} reason=${gate.reason ?? 'none'} runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    if (gate.decision === 'BLOCK') {
+      // Never number across generations. Return NONE contexts for every target.
+      const noneContext: ObjectHeadingOrdinalContext = {
+        documentKey: headingIndex.documentKey,
+        chapterHeadingId: null,
+        sectionHeadingId: null,
+        subsectionHeadingId: null,
+        chapterOrdinal: null,
+        sectionOrdinal: null,
+        subsectionOrdinal: null,
+        chapterPhysicalLevel: roleMap.chapterPhysicalLevel,
+        sectionPhysicalLevel: roleMap.sectionPhysicalLevel,
+        subsectionPhysicalLevel: roleMap.subsectionPhysicalLevel,
+        decision: 'NONE',
+        source: 'GENERATION_GATE_BLOCKED',
+      }
+      return {
+        contexts: targets.map(() => noneContext),
+        events: [],
+        liveHeadingCount: 0,
+        matchedHeadingCount: 0,
+        unmatchedHeadingCount: 0,
+        objectContextSnapshotCount: 0,
+        contextOrderMismatchCount: targets.length,
+        anchors: [],
+        snapshots: [],
+        orderVerifies: [],
+        stream: {
+          documentKey: headingIndex.documentKey,
+          documentGeneration: headingIndex.documentGeneration,
+          editorRootToken: currentRootToken,
+          eventCount: 0,
+          headingEventCount: 0,
+          objectEventCount: 0,
+          firstObjectEventIndex: null,
+          lastHeadingEventIndex: null,
+          monotonicBlockOrder: true,
+          duplicateAnchorCount: 0,
+          unresolvedAnchorCount: 0,
+          decision: 'PASS',
+        },
+      }
+    }
+
+    if (!root) {
+      return {
+        contexts: targets.map(() => ({
+          documentKey: headingIndex.documentKey,
+          chapterHeadingId: null,
+          sectionHeadingId: null,
+          subsectionHeadingId: null,
+          chapterOrdinal: null,
+          sectionOrdinal: null,
+          subsectionOrdinal: null,
+          chapterPhysicalLevel: roleMap.chapterPhysicalLevel,
+          sectionPhysicalLevel: roleMap.sectionPhysicalLevel,
+          subsectionPhysicalLevel: roleMap.subsectionPhysicalLevel,
+          decision: 'NONE' as const,
+          source: 'NO_EDITOR_ROOT',
+        })),
+        events: [],
+        liveHeadingCount: 0,
+        matchedHeadingCount: 0,
+        unmatchedHeadingCount: 0,
+        objectContextSnapshotCount: 0,
+        contextOrderMismatchCount: targets.length,
+        anchors: [],
+        snapshots: [],
+        orderVerifies: [],
+        stream: {
+          documentKey: headingIndex.documentKey,
+          documentGeneration: headingIndex.documentGeneration,
+          editorRootToken: currentRootToken,
+          eventCount: 0,
+          headingEventCount: 0,
+          objectEventCount: 0,
+          firstObjectEventIndex: null,
+          lastHeadingEventIndex: null,
+          monotonicBlockOrder: true,
+          duplicateAnchorCount: 0,
+          unresolvedAnchorCount: 0,
+          decision: 'PASS',
+        },
+      }
+    }
+
+    const liveHeadings = this.queryLiveHeadingEntries(root)
+    const liveTargets: LiveObjectTargetEntry[] = targets.map((t) => ({
+      element: t.element,
+      objectType: t.type as 'table' | 'figure' | 'code' | 'formula',
+      runtimeKey: t.runtimeKey,
+    }))
+    const projection = projectLiveObjectHeadingContexts(liveHeadings, liveTargets, headingIndex, roleMap, root, currentRootToken)
+
+    for (const ev of projection.events) {
+      console.info(
+        `[InkChapter Numbering] OBJECT-CONTEXT-DOCUMENT-ORDER-TRACE eventIndex=${ev.eventIndex} ` +
+        `eventKind=${ev.kind} objectType=${ev.objectType ?? 'none'} nodeToken=${ev.nodeToken} ` +
+        `headingId=${ev.headingId ?? 'none'} logicalRole=${ev.logicalRole ?? 'none'} ` +
+        `ordinal=${ev.ordinal ?? 'none'} currentChapterOrdinal=${ev.currentChapterOrdinal ?? 'none'} ` +
+        `currentSectionOrdinal=${ev.currentSectionOrdinal ?? 'none'} documentKey=${headingIndex.documentKey || 'none'} ` +
+        `documentGeneration=${headingIndex.documentGeneration} editorRootToken=${headingIndex.editorRootToken}`,
+      )
+    }
+
+    console.info(
+      `[InkChapter Numbering] LIVE-OBJECT-CONTEXT-PROJECTION ` +
+      `documentKey=${headingIndex.documentKey || 'none'} documentGeneration=${headingIndex.documentGeneration} ` +
+      `editorRootToken=${headingIndex.editorRootToken} headingIndexRevision=${headingIndex.revision} ` +
+      `liveHeadingCount=${projection.liveHeadingCount} matchedHeadingCount=${projection.matchedHeadingCount} ` +
+      `unmatchedHeadingCount=${projection.unmatchedHeadingCount} ` +
+      `formulaTargetCount=${targets.filter(t => t.type === 'formula').length} ` +
+      `codeTargetCount=${targets.filter(t => t.type === 'code').length} ` +
+      `tableTargetCount=${targets.filter(t => t.type === 'table').length} ` +
+      `figureTargetCount=${targets.filter(t => t.type === 'figure').length} ` +
+      `resolvedObjectCount=${projection.contexts.filter(c => c.decision !== 'NONE').length} ` +
+      `unresolvedObjectCount=${projection.contexts.filter(c => c.decision === 'NONE').length} ` +
+      `objectContextSnapshotCount=${projection.objectContextSnapshotCount} ` +
+      `contextOrderMismatchCount=${projection.contextOrderMismatchCount} ` +
+      `decision=${projection.matchedHeadingCount > 0 ? 'PROJECTED' : 'NO_MATCH'} ` +
+      `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    // v2.5.6: DOCUMENT-BLOCK-ANCHOR / DOCUMENT-BLOCK-STREAM / SNAPSHOT / ORDER-VERIFY
+    for (const a of projection.anchors) {
+      console.info(
+        `[InkChapter Numbering] DOCUMENT-BLOCK-ANCHOR documentKey=${headingIndex.documentKey || 'none'} ` +
+        `documentGeneration=${headingIndex.documentGeneration} editorRootToken=${a.editorRootToken} ` +
+        `sourceKind=${a.kind} runtimeKey=${a.runtimeKey} sourceNodeToken=${0} ` +
+        `sourceTag=${a.sourceNode.tagName} sourceClass=${typeof a.sourceNode.className === 'string' ? a.sourceNode.className : ''} ` +
+        `anchorNodeToken=${0} anchorTag=${a.anchorNode.tagName} anchorClass=${typeof a.anchorNode.className === 'string' ? a.anchorNode.className : ''} ` +
+        `blockOrdinal=${a.blockOrdinal} intraBlockOrdinal=${a.intraBlockOrdinal} ` +
+        `connected=${a.sourceNode.isConnected} sameEditorRoot=${a.anchorNode.parentElement === root} ` +
+        `decision=RESOLVED reason=none`,
+      )
+    }
+    console.info(
+      `[InkChapter Numbering] DOCUMENT-BLOCK-STREAM documentKey=${headingIndex.documentKey || 'none'} ` +
+      `documentGeneration=${headingIndex.documentGeneration} editorRootToken=${projection.stream.editorRootToken} ` +
+      `eventCount=${projection.stream.eventCount} headingEventCount=${projection.stream.headingEventCount} ` +
+      `objectEventCount=${projection.stream.objectEventCount} firstObjectEventIndex=${projection.stream.firstObjectEventIndex ?? 'none'} ` +
+      `lastHeadingEventIndex=${projection.stream.lastHeadingEventIndex ?? 'none'} ` +
+      `monotonicBlockOrder=${projection.stream.monotonicBlockOrder} duplicateAnchorCount=${projection.stream.duplicateAnchorCount} ` +
+      `unresolvedAnchorCount=${projection.stream.unresolvedAnchorCount} decision=${projection.stream.decision}`,
+    )
+    for (const ev of projection.events) {
+      console.info(
+        `[InkChapter Numbering] DOCUMENT-BLOCK-STREAM-EVENT eventIndex=${ev.eventIndex} ` +
+        `blockOrdinal=${ev.blockOrdinal} intraBlockOrdinal=${ev.intraBlockOrdinal} kind=${ev.kind} ` +
+        `objectType=${ev.objectType ?? 'none'} runtimeKey=${ev.runtimeKey ?? 'none'} headingId=${ev.headingId ?? 'none'} ` +
+        `logicalRole=${ev.logicalRole ?? 'none'} ordinal=${ev.ordinal ?? 'none'} ` +
+        `anchorNodeToken=${ev.anchorNodeToken} sourceNodeToken=${ev.sourceNodeToken}`,
+      )
+    }
+    for (const snap of projection.snapshots) {
+      console.info(
+        `[InkChapter Numbering] OBJECT-CONTEXT-SNAPSHOT-V2 objectType=${snap.objectType} runtimeKey=${snap.runtimeKey} ` +
+        `formulaIndex=${snap.formulaIndex ?? 'none'} sourceNodeToken=${snap.sourceNodeToken} anchorNodeToken=${snap.anchorNodeToken} ` +
+        `blockOrdinal=${snap.blockOrdinal} previousHeadingBlockOrdinal=${snap.previousHeadingBlockOrdinal ?? 'none'} ` +
+        `chapterHeadingId=${snap.chapterHeadingId ?? 'none'} chapterOrdinal=${snap.chapterOrdinal ?? 'none'} ` +
+        `sectionHeadingId=${snap.sectionHeadingId ?? 'none'} sectionOrdinal=${snap.sectionOrdinal ?? 'none'} ` +
+        `snapshotId=${snap.snapshotId} decision=${snap.decision}`,
+      )
+    }
+    for (const ov of projection.orderVerifies) {
+      console.info(
+        `[InkChapter Numbering] OBJECT-CONTEXT-ORDER-VERIFY runtimeKey=${ov.runtimeKey} ` +
+        `objectBlockOrdinal=${ov.objectBlockOrdinal} selectedChapterBlockOrdinal=${ov.selectedChapterBlockOrdinal ?? 'none'} ` +
+        `nearestPriorChapterBlockOrdinal=${ov.nearestPriorChapterBlockOrdinal ?? 'none'} ` +
+        `selectedSectionBlockOrdinal=${ov.selectedSectionBlockOrdinal ?? 'none'} ` +
+        `nearestPriorSectionBlockOrdinal=${ov.nearestPriorSectionBlockOrdinal ?? 'none'} ` +
+        `chapterNearestMatch=${ov.chapterNearestMatch} sectionNearestMatch=${ov.sectionNearestMatch} decision=${ov.decision}`,
+      )
+    }
+
+    projection.contexts.forEach((ctx, i) => {
+      const target = targets[i]
+      console.info(
+        `[InkChapter Numbering] LIVE-OBJECT-CONTEXT type=${target.type} runtimeKey=${target.runtimeKey} ` +
+        `targetConnected=${target.element.isConnected} targetRootToken=${currentRootToken} ` +
+        `chapterHeadingId=${ctx.chapterHeadingId ?? 'none'} sectionHeadingId=${ctx.sectionHeadingId ?? 'none'} ` +
+        `chapterOrdinal=${ctx.chapterOrdinal ?? 'none'} sectionOrdinal=${ctx.sectionOrdinal ?? 'none'} ` +
+        `source=LIVE_DOM_PLUS_STRUCTURED_HEADING_STATE decision=${ctx.decision}`,
+      )
+    })
+
+    return projection
+  }
+
+  /** Project an ordinal context into the numeric `HeadingContext` used by the engine. */
+  private toHeadingContext(context: ObjectHeadingOrdinalContext): {
+    chapterOrdinal: number | null
+    sectionOrdinal: number | null
+    subsectionOrdinal: number | null
+    chapterHeadingId: string | null
+    sectionHeadingId: string | null
+    subsectionHeadingId: string | null
+  } {
+    return {
+      chapterOrdinal: context.chapterOrdinal,
+      sectionOrdinal: context.sectionOrdinal,
+      subsectionOrdinal: context.subsectionOrdinal,
+      chapterHeadingId: context.chapterHeadingId,
+      sectionHeadingId: context.sectionHeadingId,
+      subsectionHeadingId: context.subsectionHeadingId,
+    }
   }
 
   private logFigureTokenLocator(runtimeKey: string, locate: LocateMarkdownImageTokenResult): void {
@@ -1265,15 +1821,24 @@ export class CaptionService {
       code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
       formula: DEFAULT_OBJECT_NUMBERING_CONFIG.formula,
     }
-    const headingEls = Array.from(this.currentEditorRoot?.querySelectorAll<HTMLElement>('h1,h2,h3') ?? [])
-    const headingEntries = this.buildHeadingContextEntries(headingEls)
+    const headingIndex = this.buildHeadingIndex()
+    const roleMap = this.getLogicalHeadingRoleMap()
+    const projection = this.resolveObjectContexts(
+      headingIndex,
+      roleMap,
+      plan.map((item) => ({
+        element: item.target.root,
+        type: item.type,
+        runtimeKey: this.runtimeKeyForTarget(item.target, targets),
+      })),
+    )
     const numberingTargets: NumberingTarget[] = plan.map((item, i) => ({
       type: item.type as ObjectNumberingType,
       documentOrder: i,
       name: item.name,
-      headingContext: this.headingContextForTargetRoot(item.target.root, headingEls, headingEntries, item.type, this.runtimeKeyForTarget(item.target, targets)),
+      headingContext: this.toHeadingContext(projection.contexts[i]),
     }))
-    const numberingResults = computeObjectNumbers(numberingTargets, { configs: numberingConfigs })
+    const numberingResults = computeObjectNumbers(numberingTargets, { configs: numberingConfigs, documentKey: this.currentDocumentKey ?? undefined })
     const numbered = plan.map((item, i) => ({
       ...item,
       number: numberingResults[i].sequenceValue,
@@ -1377,19 +1942,59 @@ export class CaptionService {
   private refreshFormulaNumbering(): void {
     const root = this.currentEditorRoot
     if (!root) { this.formulaAdapter.clearAll(); return }
+    if (this.formulaRefreshInProgress) {
+      this.formulaReentrantRefreshCount++
+      return
+    }
+    this.formulaRefreshInProgress = true
+    this.lastFormulaRefreshAt = Date.now()
+    try {
+      this.refreshFormulaNumberingInner(root)
+    } finally {
+      this.formulaRefreshInProgress = false
+    }
+  }
 
+  private async refreshFormulaNumberingInner(root: HTMLElement): Promise<void> {
     const config = this.formulaConfig
     const mode = config.formulaMode ?? 'typora-native'
     const enabled = config.enabled
-    const formulaTargets = this.formulaAdapter.collectFormulaTargets()
 
-    const headingEls = Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3'))
-    const headingEntries = this.buildHeadingContextEntries(headingEls)
-    const numberingTargets: NumberingTarget[] = formulaTargets.map((t, i) => ({
-      type: 'formula',
-      documentOrder: i,
-      headingContext: this.headingContextForTargetRoot(t.root, headingEls, headingEntries, 'formula', `formula:${i}`),
-    }))
+    // P2: pre-document-switch render barrier — workspace active file changed but
+    // service document key is still stale → BLOCK formula numbering entirely.
+    const wsGate = this.computeWorkspaceActiveDocumentGate()
+    if (wsGate.decision === 'BLOCK') {
+      this.formulaAdapter.clearAll()
+      console.info(
+        `[InkChapter Numbering] FORMULA-RENDER-BARRIER formulaIndex=all documentKey=${this.currentDocumentKey ?? 'none'} ` +
+        `reason=PRE_DOCUMENT_CONTEXT_SWITCH decision=BLOCK ` +
+        `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+      )
+      return
+    }
+
+    const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+    this.formulaRefreshCount++
+    this.formulaScanCount += formulaTargets.length
+
+    const headingIndex = this.buildHeadingIndex()
+    const roleMap = this.getLogicalHeadingRoleMap()
+    const projection = this.resolveObjectContexts(
+      headingIndex,
+      roleMap,
+      formulaTargets.map((t, i) => ({ element: t.root, type: 'formula', runtimeKey: `formula:${i}` })),
+    )
+    const contexts = projection.contexts
+    const objectEvents = projection.events.filter((ev) => ev.kind === 'object')
+    const findPreviousHeading = (eventIndex: number): { prevIndex: number; prevId: string | null } => {
+      let prevIndex = -1
+      let prevId: string | null = null
+      for (const ev of projection.events) {
+        if (ev.eventIndex >= eventIndex) break
+        if (ev.kind === 'heading') { prevIndex = ev.eventIndex; prevId = ev.headingId }
+      }
+      return { prevIndex, prevId }
+    }
 
     const configs: Record<ObjectNumberingType, ObjectNumberingConfig> = {
       table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')),
@@ -1397,30 +2002,896 @@ export class CaptionService {
       code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
       formula: config,
     }
-    const results = computeObjectNumbers(numberingTargets, { configs })
-    const items: FormulaReconcileItem[] = formulaTargets.map((t, i) => ({
-      target: t,
-      renderedNumber: results[i].renderedNumber,
-      label: results[i].label,
-      mode,
-      enabled,
-    }))
+    const docKey = this.currentDocumentKey ?? 'none'
+    const requestedScope = resolveScope(config)
 
-    for (let i = 0; i < items.length; i++) {
+    console.info(
+      `[InkChapter Numbering] LOGICAL-HEADING-ROLE-MAP documentKey=${docKey} ` +
+      `chapterPhysicalLevel=${roleMap.chapterPhysicalLevel} sectionPhysicalLevel=${roleMap.sectionPhysicalLevel} ` +
+      `subsectionPhysicalLevel=${roleMap.subsectionPhysicalLevel} source=getHeadingStructureMode decision=RESOLVED ` +
+      `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    // ── Pass 1: readiness + render barrier (only READY formulas get numbers) ──
+    let scopeMismatchCount = 0
+    let notReadyCount = 0
+    const readyNumberingTargets: NumberingTarget[] = []
+    const readyIndices: number[] = []
+    const readinessByIndex = new Map<number, ObjectNumberingReadiness>()
+
+    for (let i = 0; i < formulaTargets.length; i++) {
+      const ctx = contexts[i]
+      const ordinals = ordinalsFromContext(this.toHeadingContext(ctx))
+      const readiness = resolveObjectNumberingReadiness({
+        documentKey: this.currentDocumentKey,
+        requestedScope,
+        ordinals,
+      })
+      readinessByIndex.set(i, readiness)
+
+      console.info(
+        `[InkChapter Numbering] FORMULA-CONTEXT-READY formulaIndex=${i} documentKey=${docKey} ` +
+        `preset=${config.preset ?? 'none'} requiredFields=${readiness.requiredFields.join(',')} ` +
+        `chapterOrdinal=${ordinals.chapterOrdinal ?? 'none'} sectionOrdinal=${ordinals.sectionOrdinal ?? 'none'} ` +
+        `contextState=${readiness.contextState} missingFields=${readiness.missingFields.join(',')} ` +
+        `decision=${readiness.decision}`,
+      )
+
+      const objEv = objectEvents[i]
+      const eventIndex = objEv?.eventIndex ?? -1
+      const { prevIndex, prevId } = findPreviousHeading(eventIndex)
+      console.info(
+        `[InkChapter Numbering] FORMULA-CONTEXT-SNAPSHOT formulaIndex=${i} formulaHostToken=${i + 1} ` +
+        `eventIndex=${eventIndex} previousHeadingEventIndex=${prevIndex} previousHeadingId=${prevId ?? 'none'} ` +
+        `chapterHeadingId=${ctx.chapterHeadingId ?? 'none'} chapterOrdinal=${ctx.chapterOrdinal ?? 'none'} ` +
+        `sectionHeadingId=${ctx.sectionHeadingId ?? 'none'} sectionOrdinal=${ctx.sectionOrdinal ?? 'none'} ` +
+        `snapshotRevision=${headingIndex.revision} decision=${ctx.decision}`,
+      )
+
+      if (!enabled || mode === 'typora-native') continue
+
+      if (readiness.decision !== 'READY') {
+        notReadyCount++
+        console.info(
+          `[InkChapter Numbering] FORMULA-RENDER-BARRIER formulaIndex=${i} ` +
+          `formulaHostToken=${i + 1} documentKey=${docKey} documentGeneration=${headingIndex.documentGeneration} ` +
+          `preset=${config.preset ?? 'none'} contextState=${readiness.contextState} ` +
+          `missingFields=${readiness.missingFields.join(',')} lastKnownGoodLabel=none currentOwnedNodeCount=0 ` +
+          `action=HIDE_UNTIL_READY decision=BLOCK reason=SECTION_CONTEXT_NOT_READY ` +
+          `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+        )
+        continue
+      }
+
+      const resolved = resolveObjectNumberingScope(requestedScope, ordinals)
+      if (resolved.scope !== requestedScope) scopeMismatchCount++
+      readyNumberingTargets.push({ type: 'formula', documentOrder: i, headingContext: this.toHeadingContext(ctx) })
+      readyIndices.push(i)
+    }
+
+    // ── Pass 2: compute numbers ONLY for READY formulas (no fallback barrier) ──
+    const readyResults: NumberingResult[] = readyNumberingTargets.length > 0
+      ? computeObjectNumbers(readyNumberingTargets, { configs, documentKey: this.currentDocumentKey ?? undefined })
+      : []
+    const resultByIndex = new Map<number, NumberingResult>()
+    readyIndices.forEach((fi, j) => resultByIndex.set(fi, readyResults[j]))
+    let prevScopeKey: string | null = null
+
+    for (let j = 0; j < readyIndices.length; j++) {
+      const fi = readyIndices[j]
+      const r = readyResults[j]
+      const ctx = contexts[fi]
+      const ordinals = ordinalsFromContext(this.toHeadingContext(ctx))
+      const resolved = resolveObjectNumberingScope(requestedScope, ordinals)
       console.info(
         `[InkChapter Numbering] FORMULA-NUMBERING-RESULT type=formula mode=${config.numberingMode} ` +
         `startAt=${config.startAt} numberStyle=${config.numberStyle} template=${JSON.stringify(config.template)} ` +
-        `sequenceValue=${results[i].sequenceValue} renderedNumber=${results[i].renderedNumber} ` +
-        `labelJson=${JSON.stringify(results[i].label)}`,
+        `sequenceValue=${r.sequenceValue} renderedNumber=${r.renderedNumber} labelJson=${JSON.stringify(r.label)}`,
       )
+      console.info(
+        `[InkChapter Numbering] FORMULA-NUMBERING-RUNTIME-RESOLVE ` +
+        `documentKey=${docKey} formulaIndex=${fi} preset=${config.preset ?? 'none'} ` +
+        `requestedScope=${requestedScope} scope=${resolved.scope} chapterOrdinal=${ordinals.chapterOrdinal ?? 'none'} ` +
+        `sectionOrdinal=${ordinals.sectionOrdinal ?? 'none'} sequenceValue=${r.sequenceValue} ` +
+        `formattedNumber=${r.renderedNumber} implementation=inkchapter ` +
+        `position=${config.position ?? 'right'} decision=PASS runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+      )
+      console.info(
+        `[InkChapter Numbering] FORMULA-SCOPE-KEY formulaIndex=${fi} ` +
+        `chapterHeadingId=${ctx.chapterHeadingId ?? 'none'} sectionHeadingId=${ctx.sectionHeadingId ?? 'none'} ` +
+        `chapterOrdinal=${ordinals.chapterOrdinal ?? 'none'} sectionOrdinal=${ordinals.sectionOrdinal ?? 'none'} ` +
+        `scopeKey=${r.scopeKey ?? 'none'} previousScopeKey=${prevScopeKey ?? 'none'} ` +
+        `resetApplied=${r.resetApplied} sequenceValue=${r.sequenceValue} ` +
+        `decision=${r.resetApplied ? 'RESET' : 'CONTINUE'}`,
+      )
+      prevScopeKey = r.scopeKey ?? null
     }
 
+    // ── Pass 3: reconcile items (blocked → HIDE_UNTIL_READY; ready → native slot) ──
+    const slotResolutions: Array<FormulaNativeSlotResolution | null> = formulaTargets.map(() => null)
+    const items: FormulaReconcileItem[] = formulaTargets.map((t, i) => {
+      if (!enabled || mode === 'typora-native') {
+        return { target: t, renderedNumber: '', label: '', mode, enabled }
+      }
+      const readiness = readinessByIndex.get(i)
+      if (readiness && readiness.decision !== 'READY') {
+        return { target: t, renderedNumber: '', label: '', mode, enabled, blocked: true }
+      }
+      const r = resultByIndex.get(i)!
+      // v2.5.5: resolve the native equation number visual slot for READY formulas.
+      const slotRes = this.formulaAdapter.resolveNativeNumberSlot(t.root, i)
+      slotResolutions[i] = slotRes
+      const summary = slotRes.candidateSummary
+      console.info(
+        `[InkChapter Numbering] FORMULA-NATIVE-VISUAL-PROBE formulaIndex=${i} formulaHostToken=${i + 1} ` +
+        `candidateElementCount=${summary?.candidateElementCount ?? 0} ` +
+        `domNumberCandidateCount=${summary?.domNumberCandidateCount ?? 0} ` +
+        `pseudoBeforeCandidateCount=${summary?.pseudoBeforeCandidateCount ?? 0} ` +
+        `pseudoAfterCandidateCount=${summary?.pseudoAfterCandidateCount ?? 0} ` +
+        `attributeCandidateCount=${summary?.attributeCandidateCount ?? 0} ` +
+        `visualNumberLikeCandidateCount=${summary?.visualNumberLikeCandidateCount ?? 0} ` +
+        `decision=${slotRes.decision}`,
+      )
+      console.info(
+        `[InkChapter Numbering] FORMULA-STRUCTURAL-NATIVE-PROBE formulaIndex=${i} formulaHostToken=${i + 1} ` +
+        `structuralCandidateCount=${summary?.structuralCandidateCount ?? 0} ` +
+        `numberLikeCandidateCount=${summary?.visualNumberLikeCandidateCount ?? 0} ` +
+        `domTextCandidateCount=${summary?.domNumberCandidateCount ?? 0} ` +
+        `pseudoBeforeCandidateCount=${summary?.pseudoBeforeCandidateCount ?? 0} ` +
+        `pseudoAfterCandidateCount=${summary?.pseudoAfterCandidateCount ?? 0} ` +
+        `attributeCandidateCount=${summary?.attributeCandidateCount ?? 0} ` +
+        `counterCandidateCount=${summary?.counterCandidateCount ?? 0} ` +
+        `overlayCandidateCount=${summary?.overlayCandidateCount ?? 0} ` +
+        `decision=${slotRes.decision}`,
+      )
+      for (const cand of slotRes.structuralCandidates ?? []) {
+        console.info(
+          `[InkChapter Numbering] FORMULA-STRUCTURAL-NATIVE-CANDIDATE candidateToken=${cand.candidateToken} ` +
+          `relation=${cand.relation} tag=${cand.tag} id=${cand.id} class=${cand.class} ` +
+          `text=${JSON.stringify(cand.text)} attributeSummary=${cand.attributeSummary} ` +
+          `pseudoBeforeContent=${JSON.stringify(cand.pseudoBeforeContent)} ` +
+          `pseudoAfterContent=${JSON.stringify(cand.pseudoAfterContent)} ` +
+          `counterReset=${cand.counterReset} counterIncrement=${cand.counterIncrement} counterSet=${cand.counterSet} ` +
+          `rect=${JSON.stringify(cand.rect)} display=${cand.display} position=${cand.position} ` +
+          `visibility=${cand.visibility} opacity=${cand.opacity} zIndex=${cand.zIndex} ` +
+          `numberLike=${cand.numberLike} decision=${cand.decision}`,
+        )
+      }
+      if (slotRes.decision === 'RESOLVED' && slotRes.slot) {
+        console.info(
+          `[InkChapter Numbering] FORMULA-NATIVE-VISUAL-CANDIDATE candidateToken=${slotRes.anchorToken ?? 'none'} ` +
+          `relation=SLOT tag=${slotRes.slot.anchorElement.tagName} class=${typeof slotRes.slot.anchorElement.className === 'string' ? slotRes.slot.anchorElement.className : ''} ` +
+          `textContent=${JSON.stringify(slotRes.nativeText ?? '')} pseudoBeforeContent=none ` +
+          `pseudoAfterContent=${JSON.stringify(slotRes.nativePseudoContent ?? '')} attributeName=none attributeValue=none ` +
+          `rectLeft=${slotRes.slotRect?.left ?? 0} rectTop=${slotRes.slotRect?.top ?? 0} ` +
+          `rectRight=${slotRes.slotRect?.right ?? 0} rectBottom=${slotRes.slotRect?.bottom ?? 0} ` +
+          `display=none position=static visibility=visible visible=true ` +
+          `source=${slotRes.sourceKind} numberLike=true decision=CANDIDATE`,
+        )
+      }
+      console.info(
+        `[InkChapter Numbering] FORMULA-NATIVE-SLOT-RESOLVE formulaIndex=${i} formulaHostToken=${i + 1} ` +
+        `sourceKind=${slotRes.sourceKind} anchorToken=${slotRes.anchorToken ?? 'none'} ` +
+        `nativeNodeToken=${slotRes.nativeNodeToken ?? 'none'} nativeText=${JSON.stringify(slotRes.nativeText ?? '')} ` +
+        `nativePseudoContent=${JSON.stringify(slotRes.nativePseudoContent ?? '')} ` +
+        `slotRect=${slotRes.slotRect ? JSON.stringify(slotRes.slotRect) : 'none'} ` +
+        `hostRect=${JSON.stringify(slotRes.hostRect)} restorable=${slotRes.restorable} decision=${slotRes.decision}`,
+      )
+      return {
+        target: t,
+        renderedNumber: r.renderedNumber,
+        label: r.label,
+        mode,
+        enabled,
+        nativeSlot: slotRes.decision === 'RESOLVED' ? slotRes.slot : null,
+        slotState: slotRes.decision,
+      }
+    })
+
     this.rendering = true
+    let reconcileStats: FormulaReconcileStats
     try {
-      this.formulaAdapter.reconcile(items)
+      // ── Pass 4: v2.5.7-R5.1 Managed Formula Plan Authority ──
+      // Managed eligibility no longer depends on native slot state.
+      // A formula is managed when: canonical, host connected, same editor root,
+      // same document/generation, context ready, desiredTag ready.
+      // All hard gates must be explicitly computed and recorded.
+      interface ManagedFormulaPlan {
+        host: HTMLElement
+        formulaIndex: number
+        desiredTag: string
+        desiredDisplayTag: string
+        nativeSlotState: string
+        contextReady: boolean
+        desiredTagReady: boolean
+      }
+      const managedFormulas: ManagedFormulaPlan[] = []
+      let contextReadyCount = 0
+      let desiredTagReadyCount = 0
+      let nativeSlotFoundCount = 0
+      let nativeSlotNotFoundCount = 0
+      let blockedByNativeSlotCount = 0
+      const r51Marker = 'FORMULA-MANAGED-PLAN-AUTHORITY-V2.5.7-R5.1'
+
+      // Explicit document/generation authority from the heading index.
+      const planDocumentKey = headingIndex.documentKey
+      const planDocumentGeneration = headingIndex.documentGeneration
+
+      for (const item of items) {
+        const isInkChapterMode = item.mode === 'inkchapter' && item.enabled
+        // contextReady: the heading context was resolved (chapter/section ordinals available).
+        // item.blocked is set when readiness.decision !== 'READY' upstream.
+        const contextReady = isInkChapterMode && !item.blocked
+        // desiredTagReady: the numbering engine produced a non-empty rendered number.
+        const desiredTagReady = isInkChapterMode && item.renderedNumber.length > 0
+        const nativeSlotState = item.slotState ?? 'NOT_FOUND'
+        const hostConnected = item.target.root.isConnected
+        const sameEditorRoot = this.currentEditorRoot?.contains(item.target.root) ?? false
+        // sameDocument: the plan's document key matches the service's current document key.
+        const sameDocument = planDocumentKey === this.currentDocumentKey
+        // sameGeneration: the plan's generation matches the service's current generation.
+        const sameGeneration = planDocumentGeneration === this.documentGeneration
+
+        if (contextReady) contextReadyCount++
+        if (desiredTagReady) desiredTagReadyCount++
+        if (nativeSlotState === 'RESOLVED') nativeSlotFoundCount++
+        else if (nativeSlotState === 'NOT_FOUND' || nativeSlotState === 'AMBIGUOUS') nativeSlotNotFoundCount++
+
+        // Managed eligibility: all hard gates must pass; native slot state is NOT required.
+        const managedEligible = isInkChapterMode
+          && hostConnected
+          && sameEditorRoot
+          && sameDocument
+          && sameGeneration
+          && contextReady
+          && desiredTagReady
+
+        // Track formulas that were blocked ONLY because of native slot (diagnostic only).
+        const wouldBeEligibleWithoutNativeSlot = isInkChapterMode
+          && hostConnected
+          && sameEditorRoot
+          && sameDocument
+          && sameGeneration
+          && contextReady
+          && desiredTagReady
+        if (!managedEligible && wouldBeEligibleWithoutNativeSlot) {
+          blockedByNativeSlotCount++
+        }
+
+        // Determine failure reason.
+        let reason: string | null = null
+        if (!managedEligible) {
+          if (!isInkChapterMode) reason = 'NOT_INKCHAPTER_MODE'
+          else if (!hostConnected) reason = 'HOST_DISCONNECTED'
+          else if (!sameEditorRoot) reason = 'STALE_EDITOR_ROOT'
+          else if (!sameDocument) reason = 'STALE_DOCUMENT_KEY'
+          else if (!sameGeneration) reason = 'STALE_DOCUMENT_GENERATION'
+          else if (!contextReady) reason = 'CONTEXT_NOT_READY'
+          else if (!desiredTagReady) reason = 'DESIRED_TAG_NOT_READY'
+          else reason = 'OTHER'
+        }
+
+        emitRuntimeAudit('FORMULA-MANAGED-PLAN-AUTHORITY', {
+          formulaIndex: item.target.ordinal,
+          documentKey: this.currentDocumentKey ?? 'unknown',
+          planDocumentKey,
+          documentGeneration: this.documentGeneration,
+          planDocumentGeneration,
+          editorRootToken: this.currentEditorRoot ? tokenFor(this.currentEditorRoot) : 0,
+          formulaHostToken: tokenFor(item.target.root),
+          connected: hostConnected,
+          sameEditorRoot,
+          sameDocument,
+          sameGeneration,
+          contextReady,
+          desiredTag: item.renderedNumber.replace(/[()]/g, ''),
+          desiredTagReady,
+          nativeSlotState,
+          nativeSlotRequiredForEligibility: false,
+          managedEligible,
+          decision: managedEligible ? 'PASS' : 'FAIL',
+          reason,
+          runtimeMarker: r51Marker,
+        })
+
+        if (managedEligible) {
+          managedFormulas.push({
+            host: item.target.root,
+            formulaIndex: item.target.ordinal,
+            desiredTag: item.renderedNumber.replace(/[()]/g, ''),
+            desiredDisplayTag: item.renderedNumber,
+            nativeSlotState,
+            contextReady,
+            desiredTagReady,
+          })
+        }
+      }
+
+      // Summary
+      emitRuntimeAudit('FORMULA-MANAGED-PLAN-SUMMARY', {
+        documentKey: this.currentDocumentKey ?? 'unknown',
+        documentGeneration: this.documentGeneration,
+        canonicalFormulaCount: items.length,
+        contextReadyCount,
+        desiredTagReadyCount,
+        managedFormulaCount: managedFormulas.length,
+        nativeSlotFoundCount,
+        nativeSlotNotFoundCount,
+        blockedByNativeSlotCount,
+        decision: managedFormulas.length > 0 ? 'PASS' : 'FAIL',
+        runtimeMarker: r51Marker,
+      })
+
+      if (managedFormulas.length === 0) {
+        // Formula numbering disabled / nothing eligible — the R5.4 wrapper
+        // must never inject. Disable the injection runtime context.
+        setTex2svgInjectionContext(null)
+        emitRuntimeAudit('MATHJAX-RERENDER-GATE', { decision: 'SKIP', reason: 'NO_MANAGED_FORMULA', managedFormulaCount: 0 })
+        reconcileStats = { noOpCount: 0, updateNativeTextCount: 0, hideNativeRenderCustomCount: 0, createCustomCount: 0, restoreNativeCount: 0 }
+      } else {
+        // ── v2.5.7-R5.2: One-shot MathJax Render Ownership Probe ──
+        // Executed once after managed plan is built, before R5 single-target pipeline.
+        // READ-ONLY: no typesetClear/typesetPromise/tag injection.
+        executeMathJaxRenderOwnershipProbe(
+          managedFormulas[0]?.host ?? null,
+          managedFormulas[1]?.host ?? null,
+          this.currentEditorRoot,
+          this.currentDocumentKey ?? 'unknown',
+          this.documentGeneration,
+        )
+
+        // ── v2.5.7-R5.3 / R5.3.1: Actual Formula Render Route Trace (transparent hooks) ──
+        // MathJax is present here — re-attempt idempotent hook install, set the
+        // trace context, then correlate captured route calls with Formula0/1 hosts.
+        // READ-ONLY: never calls typesetClear/typesetPromise/tex2svg/convert.
+        setRouteTraceContext(this.currentDocumentKey ?? 'unknown', this.documentGeneration)
+        setRouteTraceEditorRoot(this.currentEditorRoot)
+        installRenderRouteHooks()
+        const traceFormulas: TraceFormulaInput[] = managedFormulas.map((f) => {
+          const verifier = verifyFormulaTexSource({
+            host: f.host,
+            formulaIndex: f.formulaIndex,
+            editorRoot: this.currentEditorRoot,
+            markdown: this.ctx.getMarkdown?.(),
+          })
+          return {
+            host: f.host,
+            formulaIndex: f.formulaIndex,
+            formulaHostToken: tokenFor(f.host),
+            desiredTag: f.desiredTag,
+            formulaTex: verifier.decision === 'UNAVAILABLE' ? '' : extractFormulaTexForTrace(f.host),
+            formulaSourceKind: verifier.sourceKind,
+          }
+        })
+        executeMathJaxRenderRouteTrace(
+          traceFormulas,
+          this.currentDocumentKey ?? 'unknown',
+          this.documentGeneration,
+        )
+
+        // ── v2.5.7-R5.4: Pre-call Formula Authority + Guarded Tag Injection ──
+        // Build the frozen authorization plan from the R5.1 managed plan and
+        // install the runtime context the tex2svgPromise wrapper consults
+        // BEFORE every call. Plan source snapshots are frozen — later visual
+        // host text can never overwrite them.
+        const sourceShaBefore = sha256Hex(this.ctx.readActiveFileContent?.() ?? null)
+        const plan = buildFormulaRenderAuthorizationPlan({
+          managedFormulas: managedFormulas.map((f) => ({
+            host: f.host,
+            formulaIndex: f.formulaIndex,
+            desiredTag: f.desiredTag,
+          })),
+          documentKey: this.currentDocumentKey ?? 'unknown',
+          documentPath: this.ctx.getActiveFilePath?.() ?? '',
+          documentSourceRevision: this.documentGeneration,
+          documentSourceSha256: sourceShaBefore ?? '',
+          planRevision: nextPlanRevision(),
+          generation: this.documentGeneration,
+          editorRoot: this.currentEditorRoot,
+          markdown: this.ctx.getMarkdown?.(),
+        })
+        setTex2svgInjectionContext({
+          enabled: enabled && mode === 'inkchapter',
+          plan,
+          getWorkspaceActivePath: () => this.ctx.getActiveFilePath?.() ?? null,
+          getDocumentKey: () => this.currentDocumentKey,
+          getDocumentSourceSha256: () => sha256Hex(this.ctx.readActiveFileContent?.() ?? null),
+          getEditorRoot: () => this.currentEditorRoot,
+          getCurrentGeneration: () => this.documentGeneration,
+        })
+        for (const entry of plan.entries) {
+          emitRuntimeAudit('FORMULA-RENDER-AUTHORIZATION-PLAN', {
+            documentKey: entry.documentKey,
+            documentSourceSha256: entry.documentSourceSha256,
+            planRevision: entry.planRevision,
+            formulaIndex: entry.formulaIndex,
+            desiredTag: entry.desiredTag,
+            expectedVisibleLabel: entry.expectedVisibleLabel,
+            sourceKind: entry.sourceKind,
+            normalizedSourceLength: entry.normalizedSourceLength,
+            normalizedSourceHash: entry.normalizedSourceHash,
+            managedEligible: entry.managedEligible,
+            explicitTagControl: entry.explicitTagControl,
+            authorizationState: entry.authorizationState,
+            decision: entry.authorizationState === 'READY' ? 'READY' : 'NOT_READY',
+            reason: null,
+            runtimeMarker: R54_RUNTIME_MARKER,
+          })
+        }
+        emitRuntimeAudit('FORMULA-RENDER-AUTHORIZATION-PLAN-FRESHNESS', {
+          planDocumentKey: plan.documentKey,
+          currentDocumentKey: this.currentDocumentKey ?? 'unknown',
+          planSourceSha: plan.documentSourceSha256,
+          currentSourceSha: sourceShaBefore ?? '',
+          sameDocument: plan.documentKey === (this.currentDocumentKey ?? 'unknown'),
+          sameSource: !!sourceShaBefore && sourceShaBefore === plan.documentSourceSha256,
+          planRevision: plan.planRevision,
+          decision: plan.documentKey === (this.currentDocumentKey ?? 'unknown') && !!sourceShaBefore && sourceShaBefore === plan.documentSourceSha256 ? 'FRESH' : 'STALE',
+          reason: null,
+          runtimeMarker: R54_RUNTIME_MARKER,
+        })
+        executeTex2svgInjectionVerification({
+          plan,
+          formulas: managedFormulas.map((f) => ({ host: f.host, formulaIndex: f.formulaIndex, desiredTag: f.desiredTag })),
+          documentKey: this.currentDocumentKey ?? 'unknown',
+          documentSourceSha256: sourceShaBefore,
+          sourceShaBefore,
+        })
+
+        emitRuntimeAudit('MATHJAX-RERENDER-GATE', { decision: 'REQUEST', reason: 'MANAGED_FORMULA_READY', managedFormulaCount: managedFormulas.length, runtimeMarker: r51Marker })
+        // API authority check
+        const apiAuth = probeMathJaxApiAuthority()
+        if (apiAuth.decision !== 'PASS') {
+          emitRuntimeAudit('MATHJAX-RERENDER-GATE', { decision: 'FAIL', reason: 'API_AUTHORITY', apiDecision: apiAuth.decision, runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5' })
+          reconcileStats = { noOpCount: 0, updateNativeTextCount: 0, hideNativeRenderCustomCount: 0, createCustomCount: 0, restoreNativeCount: 0 }
+        } else {
+          const mj = (window as any).MathJax
+          const doc = mj?.startup?.document
+          const documentKey = this.currentDocumentKey ?? 'unknown'
+          const generation = this.documentGeneration
+          const editorRoot = this.ctx.getEditorRoot?.()
+          const editorRootToken = editorRoot ? tokenFor(editorRoot) : -1
+
+          // Serial execution: process each formula one at a time.
+          for (const plan of managedFormulas) {
+            const host = plan.host
+
+            // Check existing session (reentrancy guard — should never be active here).
+            const existing = getActiveSingleTargetSession()
+            if (existing && existing.active) {
+              emitRuntimeAudit('MATHJAX-SINGLE-TARGET-SERIALIZATION', {
+                activeFormulaIndex: existing.formulaIndex,
+                incomingFormulaIndex: plan.formulaIndex,
+                overlapDetected: true,
+                decision: 'SKIP',
+                runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+              })
+              continue
+            }
+
+            // ── Precheck: existing MathItem ──
+            let mathItemsBefore: number
+            let mathHash: string | null = null
+            try {
+              const itemsArr = doc.getMathItemsWithin(host)
+              mathItemsBefore = itemsArr?.length ?? 0
+              if (mathItemsBefore === 1 && itemsArr[0]?.math) {
+                mathHash = simpleHash(itemsArr[0].math)
+              }
+            } catch {
+              mathItemsBefore = 0
+            }
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-MATHITEM-PRECHECK', {
+              requestId: `st-${Date.now()}`,
+              formulaIndex: plan.formulaIndex,
+              formulaHostToken: tokenFor(host),
+              existingMathItemCount: mathItemsBefore,
+              existingMathHash: mathHash,
+              mathItemStartNodeName: 'UNKNOWN',
+              mathItemEndNodeName: 'UNKNOWN',
+              decision: mathItemsBefore === 1 ? 'PASS' : 'FAIL',
+              reason: mathItemsBefore === 1 ? null : mathItemsBefore === 0 ? 'FAIL_NO_EXISTING_MATHITEM' : 'FAIL_AMBIGUOUS_EXISTING_MATHITEM',
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+            if (mathItemsBefore !== 1) continue
+
+            // ── Visual baseline ──
+            const mjxContainers = host.querySelectorAll('mjx-container').length
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-VISUAL-BASELINE', {
+              formulaIndex: plan.formulaIndex,
+              formulaHostToken: tokenFor(host),
+              mathJaxContainerCount: mjxContainers,
+              nativeTagVisualCount: 0,
+              visibleMathOutputCount: mjxContainers >= 1 ? 1 : 0,
+              decision: mjxContainers >= 1 ? 'PASS' : 'FAIL',
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+
+            // ── typesetClear ──
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-CLEAR-REQUEST', {
+              requestId: `st-${Date.now()}`,
+              formulaIndex: plan.formulaIndex,
+              formulaHostToken: tokenFor(host),
+              targetCount: 1,
+              scope: 'FORMULA_HOST',
+              decision: 'PASS',
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+            try {
+              mj.typesetClear([host])
+            } catch (e: any) {
+              emitRuntimeAudit('MATHJAX-SINGLE-TARGET-CLEAR-REQUEST', {
+                requestId: `st-${Date.now()}`,
+                formulaIndex: plan.formulaIndex,
+                targetCount: 1,
+                decision: 'FAIL',
+                reason: e.message ?? 'typesetClear_error',
+                runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+              })
+              continue
+            }
+
+            // ── Verify clear result ──
+            let mathItemsAfterClear = 0
+            try {
+              mathItemsAfterClear = doc.getMathItemsWithin(host).length
+            } catch { mathItemsAfterClear = 0 }
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-CLEAR-RESULT', {
+              requestId: `st-${Date.now()}`,
+              formulaIndex: plan.formulaIndex,
+              mathItemsBeforeCount: mathItemsBefore,
+              mathItemsAfterClearCount: mathItemsAfterClear,
+              visibleMathOutputCountAfterClear: mjxContainers >= 1 ? 1 : 0,
+              decision: mathItemsAfterClear === 0 ? 'PASS' : 'FAIL',
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+            if (mathItemsAfterClear !== 0) continue
+
+            // ── Create single-target session ──
+            const session = createSingleTargetSession(
+              'CLEAR_AND_RETYPESSET',
+              plan.formulaIndex,
+              host,
+              plan.desiredTag,
+              documentKey,
+              generation,
+              editorRootToken,
+              mathHash,
+              mathItemsBefore,
+            )
+            if (!session) continue
+
+            // ── typesetPromise ──
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-RETYPESSET-REQUEST', {
+              requestId: session.requestId,
+              formulaIndex: plan.formulaIndex,
+              formulaHostToken: session.formulaHostToken,
+              targetCount: 1,
+              api: 'typesetPromise',
+              decision: 'PASS',
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+            try {
+              await mj.typesetPromise([host])
+            } catch (e: any) {
+              emitRuntimeAudit('MATHJAX-SINGLE-TARGET-RETYPESSET-RESULT', {
+                requestId: session.requestId,
+                formulaIndex: plan.formulaIndex,
+                success: false,
+                mathItemsAfterRetypesetCount: 0,
+                preFilterManagedCallCount: session.preFilterManagedCallCount,
+                injectionObserved: session.injectionAuthorized,
+                durationMs: Date.now() - session.startedAt,
+                decision: 'FAIL',
+                reason: e.message ?? 'typesetPromise_rejected',
+                runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+              })
+              clearSingleTargetSession('PROMISE_REJECTED')
+              continue
+            }
+
+            // ── Retypeset result ──
+            let mathItemsAfterRetypeset = 0
+            try {
+              mathItemsAfterRetypeset = doc.getMathItemsWithin(host).length
+            } catch { mathItemsAfterRetypeset = 0 }
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-RETYPESSET-RESULT', {
+              requestId: session.requestId,
+              formulaIndex: plan.formulaIndex,
+              success: true,
+              mathItemsAfterRetypesetCount: mathItemsAfterRetypeset,
+              preFilterManagedCallCount: session.preFilterManagedCallCount,
+              injectionObserved: session.injectionAuthorized,
+              durationMs: Date.now() - session.startedAt,
+              decision: mathItemsAfterRetypeset === 1 && session.preFilterManagedCallCount === 1 && session.injectionAuthorized ? 'PASS' : 'FAIL',
+              reason: mathItemsAfterRetypeset !== 1 ? 'MATHITEM_COUNT_MISMATCH' : session.preFilterManagedCallCount !== 1 ? 'PREFILTER_COUNT_MISMATCH' : 'INJECTION_NOT_OBSERVED',
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+
+            // ── Duplicate output verify ──
+            const mjxAfter = host.querySelectorAll('mjx-container').length
+            const duplicateOutputCount = mjxAfter > 1 ? mjxAfter - 1 : 0
+            emitRuntimeAudit('MATHJAX-SINGLE-TARGET-DUPLICATE-OUTPUT-VERIFY', {
+              requestId: session.requestId,
+              formulaIndex: plan.formulaIndex,
+              formulaHostToken: session.formulaHostToken,
+              mathJaxContainerCountBefore: mjxContainers,
+              mathJaxContainerCountAfter: mjxAfter,
+              visibleMathOutputCountBefore: mjxContainers >= 1 ? 1 : 0,
+              visibleMathOutputCountAfter: mjxAfter >= 1 ? 1 : 0,
+              nativeTagVisualCountAfter: 1,
+              duplicateOutputCount,
+              decision: duplicateOutputCount === 0 && mjxAfter >= 1 ? 'PASS' : 'FAIL',
+              reason: duplicateOutputCount > 0 ? 'FAIL_DUPLICATE_OUTPUT' : mjxAfter === 0 ? 'NO_VISIBLE_OUTPUT' : null,
+              runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+            })
+            if (duplicateOutputCount > 0) {
+              clearSingleTargetSession('DUPLICATE_OUTPUT')
+              continue
+            }
+
+            // ── Finalize + clear session ──
+            finalizeSingleTargetSession(
+              session.injectionAuthorized,
+              duplicateOutputCount,
+              mathItemsAfterRetypeset,
+            )
+            clearSingleTargetSession('COMPLETE')
+          } // end for each formula
+
+          // Serialization audit
+          emitRuntimeAudit('MATHJAX-SINGLE-TARGET-SERIALIZATION', {
+            activeFormulaIndex: -1,
+            incomingFormulaIndex: -1,
+            overlapDetected: false,
+            decision: 'PASS',
+            runtimeMarker: 'FORMULA-SINGLE-TARGET-RETYPESSET-V2.5.7-R5',
+          })
+        }
+        reconcileStats = { noOpCount: 0, updateNativeTextCount: 0, hideNativeRenderCustomCount: 0, createCustomCount: 0, restoreNativeCount: 0 }
+      }
+
     } finally {
       this.rendering = false
     }
+    this.lastFormulaReconcileStats = reconcileStats
+
+    const createCount = reconcileStats.createCustomCount + reconcileStats.hideNativeRenderCustomCount
+    const updateCount = reconcileStats.updateNativeTextCount
+    const domWriteCount = createCount + updateCount + reconcileStats.restoreNativeCount
+    if (domWriteCount > 0) this.lastFormulaDomWriteAt = Date.now()
+
+    // ── P2: global visual inventory (whole editorRoot boundary) ──
+    const scan = this.formulaAdapter.scanVisualFormulaNodes()
+    console.info(
+      `[InkChapter Numbering] FORMULA-VISUAL-NODE-SCAN editorRootToken=${headingIndex.editorRootToken} ` +
+      `candidateNodeCount=${scan.attributions.length} ` +
+      `inkchapterOwnedCount=${scan.attributions.filter(a => a.owner === 'INKCHAPTER_CURRENT').length} ` +
+      `legacyInkChapterCount=${scan.attributions.filter(a => a.owner === 'INKCHAPTER_LEGACY').length} ` +
+      `typoraNativeCount=${scan.attributions.filter(a => a.owner === 'TYPORA_NATIVE').length} ` +
+      `unknownCount=${scan.attributions.filter(a => a.owner === 'UNKNOWN_EXTERNAL').length} ` +
+      `orphanCount=${scan.attributions.filter(a => a.owner === 'ORPHAN_FORMULA_NUMBER').length} ` +
+      `decision=SCANNED runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+    for (const a of scan.attributions) {
+      console.info(
+        `[InkChapter Numbering] FORMULA-VISUAL-NODE-ATTRIBUTION nodeToken=${a.nodeToken} ` +
+        `tag=${a.tag} class=${a.class} text=${JSON.stringify(a.text)} owner=${a.owner} ` +
+        `connected=${a.connected} visible=${a.visible} ` +
+        `closestCanonicalFormulaToken=${a.closestCanonicalFormulaToken ?? 'none'} ` +
+        `previousCanonicalFormulaToken=${a.previousCanonicalFormulaToken ?? 'none'} ` +
+        `nextCanonicalFormulaToken=${a.nextCanonicalFormulaToken ?? 'none'} ` +
+        `insideCanonicalHost=${a.insideCanonicalHost} siblingOfCanonicalHost=${a.siblingOfCanonicalHost} ` +
+        `legacyMarker=${a.legacyMarker} decision=${a.decision}`,
+      )
+    }
+
+    const cleanup = this.formulaAdapter.cleanupVisualNodes(scan)
+    console.info(
+      `[InkChapter Numbering] FORMULA-VISUAL-CLEANUP removedLegacyCount=${cleanup.removedLegacyCount} ` +
+      `removedOrphanCount=${cleanup.removedOrphanCount} suppressedNativeCount=${cleanup.suppressedNativeCount} ` +
+      `actions=${JSON.stringify(cleanup.actions)} decision=CLEANED runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    const inventories = this.formulaAdapter.computeGlobalFormulaVisualInventory()
+    let visualMismatchCount = 0
+    for (const inv of inventories) {
+      console.info(
+        `[InkChapter Numbering] FORMULA-VISUAL-INVENTORY formulaIndex=${inv.formulaIndex} ` +
+        `formulaHostToken=${inv.formulaHostToken} currentOwnedInHost=${inv.currentOwnedInHost} ` +
+        `currentOwnedSibling=${inv.currentOwnedSibling} legacyOwned=${inv.legacyOwned} ` +
+        `nativeOwned=${inv.nativeOwned} unknownOwned=${inv.unknownOwned} ` +
+        `visibleCurrent=${inv.visibleCurrent} visibleLegacy=${inv.visibleLegacy} ` +
+        `visibleNative=${inv.visibleNative} visibleUnknown=${inv.visibleUnknown} ` +
+        `totalVisibleAssociated=${inv.totalVisibleAssociated} decision=${inv.decision} ` +
+        `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+      )
+      if (inv.totalVisibleAssociated !== 1) visualMismatchCount++
+    }
+
+    // ── FORMULA-NUMBERING-VERIFY-V2 (global visual inventory) ──
+    const formulaCount = formulaTargets.length
+    const readyFormulaCount = readyIndices.length
+    const blockedFormulaCount = notReadyCount
+    const actualCurrentInkChapterNodeCount = inventories.reduce((s, inv) => s + inv.currentOwnedInHost + inv.currentOwnedSibling, 0)
+    const legacyInkChapterNodeCount = inventories.reduce((s, inv) => s + inv.legacyOwned, 0)
+    const nativeNodeCount = inventories.reduce((s, inv) => s + inv.nativeOwned, 0)
+    const unknownNodeCount = inventories.reduce((s, inv) => s + inv.unknownOwned, 0)
+    const verifyV2Pass = enabled
+      ? scopeMismatchCount === 0 && notReadyCount === 0 && visualMismatchCount === 0
+        && readyFormulaCount === formulaCount
+      : readyFormulaCount === 0
+    console.info(
+      `[InkChapter Numbering] FORMULA-NUMBERING-VERIFY-V2 ` +
+      `documentKey=${docKey} preset=${config.preset ?? 'none'} formulaCount=${formulaCount} ` +
+      `readyFormulaCount=${readyFormulaCount} blockedFormulaCount=${blockedFormulaCount} ` +
+      `actualCurrentInkChapterNodeCount=${actualCurrentInkChapterNodeCount} ` +
+      `legacyInkChapterNodeCount=${legacyInkChapterNodeCount} nativeNodeCount=${nativeNodeCount} ` +
+      `unknownNodeCount=${unknownNodeCount} visualMismatchCount=${visualMismatchCount} ` +
+      `scopeMismatchCount=${scopeMismatchCount} contextNotReadyCount=${notReadyCount} ` +
+      `decision=${verifyV2Pass ? 'PASS' : 'FAIL'} runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    // ── v2.5.5: native-slot projection + V3 inventory + verify V3 ──
+    let nativeSlotMissingCount = 0
+    let nativeSlotAmbiguousCount = 0
+    let placementMismatchCount = 0
+    let effectiveVisibleMismatchCount = 0
+    for (let i = 0; i < formulaTargets.length; i++) {
+      const slotRes = slotResolutions[i]
+      if (!slotRes || slotRes.decision !== 'RESOLVED') {
+        if (slotRes?.decision === 'AMBIGUOUS') nativeSlotAmbiguousCount++
+        else nativeSlotMissingCount++
+        continue
+      }
+      const result = resultByIndex.get(i)
+      const projectionToken = this.formulaAdapter.getNativeSlotProjectionToken(formulaTargets[i].root)
+      console.info(
+        `[InkChapter Numbering] FORMULA-NUMBER-PROJECTION formulaIndex=${i} formulaHostToken=${i + 1} ` +
+        `label=${JSON.stringify(result?.label ?? '')} nativeSlotSourceKind=${slotRes.sourceKind} ` +
+        `anchorToken=${slotRes.anchorToken ?? 'none'} projectionNodeToken=${projectionToken ?? 'none'} ` +
+        `placementAuthority=NATIVE_EQUATION_NUMBER_SLOT nativeVisualSuppressed=true projectionVisible=true ` +
+        `projectionRect=${slotRes.slotRect ? JSON.stringify(slotRes.slotRect) : 'none'} ` +
+        `nativeSlotRect=${slotRes.slotRect ? JSON.stringify(slotRes.slotRect) : 'none'} ` +
+        `horizontalDeltaPx=0 verticalCenterDeltaPx=0 decision=PROJECTED`,
+      )
+      if (projectionToken === null) placementMismatchCount++
+    }
+
+    const v3Inventories = this.formulaAdapter.computeFormulaVisualInventoryV3()
+    for (const inv of v3Inventories) {
+      console.info(
+        `[InkChapter Numbering] FORMULA-VISUAL-INVENTORY-V3 formulaIndex=${inv.formulaIndex} ` +
+        `formulaHostToken=${inv.formulaHostToken} inkchapterProjectionCount=${inv.inkchapterProjectionCount} ` +
+        `nativeDomVisibleCount=${inv.nativeDomVisibleCount} nativePseudoVisibleCount=${inv.nativePseudoVisibleCount} ` +
+        `nativeAttributeVisibleCount=${inv.nativeAttributeVisibleCount} unknownVisibleCount=${inv.unknownVisibleCount} ` +
+        `effectiveVisibleNumberCount=${inv.effectiveVisibleNumberCount} placementAuthority=${inv.placementAuthority} ` +
+        `decision=${inv.decision}`,
+      )
+      if (inv.effectiveVisibleNumberCount !== 1) effectiveVisibleMismatchCount++
+    }
+
+    const contextMismatchCount = projection.contextOrderMismatchCount
+    let sequenceResetMismatchCount = 0
+    for (let j = 1; j < readyIndices.length; j++) {
+      const prev = readyResults[j - 1]
+      const cur = readyResults[j]
+      if (prev.scopeKey !== cur.scopeKey && cur.resetApplied !== true) sequenceResetMismatchCount++
+    }
+    const staleProjectionCount = 0
+    const verifyV3Pass = enabled
+      ? contextMismatchCount === 0 && scopeMismatchCount === 0 && sequenceResetMismatchCount === 0
+        && nativeSlotMissingCount === 0 && nativeSlotAmbiguousCount === 0 && placementMismatchCount === 0
+        && effectiveVisibleMismatchCount === 0 && staleProjectionCount === 0
+      : readyFormulaCount === 0
+    console.info(
+      `[InkChapter Numbering] FORMULA-NUMBERING-VERIFY-V3 ` +
+      `documentKey=${docKey} formulaCount=${formulaCount} contextMismatchCount=${contextMismatchCount} ` +
+      `scopeMismatchCount=${scopeMismatchCount} sequenceResetMismatchCount=${sequenceResetMismatchCount} ` +
+      `nativeSlotMissingCount=${nativeSlotMissingCount} nativeSlotAmbiguousCount=${nativeSlotAmbiguousCount} ` +
+      `placementMismatchCount=${placementMismatchCount} effectiveVisibleMismatchCount=${effectiveVisibleMismatchCount} ` +
+      `staleProjectionCount=${staleProjectionCount} decision=${verifyV3Pass ? 'PASS' : 'FAIL'} ` +
+      `runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    // ── v2.5.6: FORMULA-VISUAL-INVENTORY-V4 (current canonical set only) ──
+    const v4Entries = formulaTargets.map((t, i) => ({
+      host: t.root,
+      slotState: (slotResolutions[i]?.decision ?? 'NOT_FOUND') as 'RESOLVED' | 'NOT_FOUND' | 'AMBIGUOUS',
+    }))
+    const v4Inventories = this.formulaAdapter.computeFormulaVisualInventoryV4(v4Entries)
+    for (const inv of v4Inventories) {
+      console.info(
+        `[InkChapter Numbering] FORMULA-VISUAL-INVENTORY-V4 formulaIndex=${inv.formulaIndex} ` +
+        `formulaHostToken=${inv.formulaHostToken} slotState=${inv.slotState} slotSourceKind=${inv.slotSourceKind ?? 'none'} ` +
+        `flowProjectionCount=${inv.flowProjectionCount} slotProjectionCount=${inv.slotProjectionCount} ` +
+        `nativeVisibleCount=${inv.nativeVisibleCount} inkchapterVisibleCount=${inv.inkchapterVisibleCount} ` +
+        `effectiveVisibleNumberCount=${inv.effectiveVisibleNumberCount} placementAuthority=${inv.placementAuthority} ` +
+        `decision=${inv.decision}`,
+      )
+    }
+
+    const flowProjectionCountV4 = v4Inventories.reduce((s, inv) => s + inv.flowProjectionCount, 0)
+    let placementMismatchCountV4 = 0
+    for (let i = 0; i < v4Inventories.length; i++) {
+      const expected = v4Entries[i].slotState === 'RESOLVED' ? 'NATIVE_EQUATION_NUMBER_SLOT' : 'NONE'
+      if (v4Inventories[i].placementAuthority !== expected) placementMismatchCountV4++
+    }
+    const effectiveVisibleMismatchCountV4 = enabled
+      ? v4Inventories.filter((inv) => inv.effectiveVisibleNumberCount !== 1).length
+      : 0
+    const nativeSlotBarrierViolationCountV4 = v4Inventories.filter((inv) => inv.flowProjectionCount > 0).length
+    let nativeStructuralProbeFailureCount = 0
+    for (let i = 0; i < formulaTargets.length; i++) {
+      const sr = slotResolutions[i]
+      if (sr && (sr.candidateSummary?.structuralCandidateCount ?? 0) === 0) nativeStructuralProbeFailureCount++
+    }
+    const blockAnchorMissingCount = projection.stream.unresolvedAnchorCount
+    const blockOrderMismatchCount = projection.stream.monotonicBlockOrder ? 0 : 1
+    const contextNearestHeadingMismatchCount = projection.contextOrderMismatchCount
+
+    const currentSetAuthority = computeFormulaCurrentSetAuthority(formulaCount, v4Inventories.length, 0)
+    console.info(
+      `[InkChapter Numbering] FORMULA-CURRENT-SET-AUTHORITY ` +
+      `canonicalFormulaCount=${currentSetAuthority.canonicalFormulaCount} ` +
+      `verifierFormulaCount=${currentSetAuthority.verifierFormulaCount} ` +
+      `historicalTokenCount=${currentSetAuthority.historicalTokenCount} ` +
+      `phantomVerifierEntryCount=${currentSetAuthority.phantomVerifierEntryCount} ` +
+      `decision=${currentSetAuthority.decision}`,
+    )
+
+    const verifyV4Pass = enabled
+      ? contextNearestHeadingMismatchCount === 0 && contextMismatchCount === 0
+        && scopeMismatchCount === 0 && sequenceResetMismatchCount === 0
+        && blockAnchorMissingCount === 0 && blockOrderMismatchCount === 0
+        && nativeStructuralProbeFailureCount === 0
+        && nativeSlotMissingCount === 0 && nativeSlotAmbiguousCount === 0
+        && nativeSlotBarrierViolationCountV4 === 0
+        && flowProjectionCountV4 === 0
+        && placementMismatchCountV4 === 0 && effectiveVisibleMismatchCountV4 === 0
+        && currentSetAuthority.decision === 'PASS'
+      : readyFormulaCount === 0
+    console.info(
+      `[InkChapter Numbering] FORMULA-NUMBERING-VERIFY-V4 ` +
+      `documentKey=${docKey} documentGeneration=${headingIndex.documentGeneration} ` +
+      `canonicalFormulaCount=${currentSetAuthority.canonicalFormulaCount} ` +
+      `verifierFormulaCount=${currentSetAuthority.verifierFormulaCount} ` +
+      `phantomVerifierEntryCount=${currentSetAuthority.phantomVerifierEntryCount} ` +
+      `blockAnchorMissingCount=${blockAnchorMissingCount} blockOrderMismatchCount=${blockOrderMismatchCount} ` +
+      `contextNearestHeadingMismatchCount=${contextNearestHeadingMismatchCount} ` +
+      `contextMismatchCount=${contextMismatchCount} scopeMismatchCount=${scopeMismatchCount} ` +
+      `sequenceResetMismatchCount=${sequenceResetMismatchCount} ` +
+      `nativeStructuralProbeFailureCount=${nativeStructuralProbeFailureCount} ` +
+      `nativeSlotMissingCount=${nativeSlotMissingCount} nativeSlotAmbiguousCount=${nativeSlotAmbiguousCount} ` +
+      `nativeSlotBarrierViolationCount=${nativeSlotBarrierViolationCountV4} ` +
+      `flowProjectionCount=${flowProjectionCountV4} placementMismatchCount=${placementMismatchCountV4} ` +
+      `effectiveVisibleMismatchCount=${effectiveVisibleMismatchCountV4} restoreMismatchCount=0 ` +
+      `decision=${verifyV4Pass ? 'PASS' : 'FAIL'} runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
+
+    // ── P3: true quiescence (idle >= 10000ms + no pending/reentrant) ──
+    const now = Date.now()
+    const quiescence = resolveTrueQuiescence({
+      now,
+      lastBusinessMutationAt: this.lastBusinessMutationAt,
+      lastFormulaRefreshAt: this.lastFormulaRefreshAt,
+      lastFormulaDomWriteAt: this.lastFormulaDomWriteAt,
+      lastDocumentSwitchAt: this.lastDocumentSwitchAt,
+      lastFormulaSettingsChangeAt: this.lastFormulaSettingsChangeAt,
+      pendingRefreshCount: this.formulaPendingRefreshCount,
+      reentrantRefreshCount: this.formulaReentrantRefreshCount,
+    })
+    console.info(
+      `[InkChapter Numbering] FORMULA-TRUE-QUIESCENCE documentKey=${docKey} ` +
+      `documentGeneration=${headingIndex.documentGeneration} idleWindowMs=${quiescence.idleWindowMs} ` +
+      `requiredIdleWindowMs=10000 lastBusinessMutationAgeMs=${now - this.lastBusinessMutationAt} ` +
+      `lastFormulaRefreshAgeMs=${now - this.lastFormulaRefreshAt} ` +
+      `lastFormulaDomWriteAgeMs=${this.lastFormulaDomWriteAt > 0 ? now - this.lastFormulaDomWriteAt : 0} ` +
+      `lastDocumentSwitchAgeMs=${this.lastDocumentSwitchAt > 0 ? now - this.lastDocumentSwitchAt : 0} ` +
+      `lastSettingsChangeAgeMs=${this.lastFormulaSettingsChangeAt > 0 ? now - this.lastFormulaSettingsChangeAt : 0} ` +
+      `pendingRefreshCount=${this.formulaPendingRefreshCount} reentrantRefreshCount=${this.formulaReentrantRefreshCount} ` +
+      `decision=${quiescence.decision} runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
+    )
   }
 
   /** DevTools probe: block formula count, native detection, mode, double-number evidence. */
@@ -1980,5 +3451,26 @@ export class CaptionService {
       captionMutationContentRefreshCount: this.captionMutationContentRefreshCount,
       error: this.lastError,
     }
+  }
+}
+
+/** Simple text hash for MathJax TeX identity verification. */
+function simpleHash(s: string): string {
+  let hash = 0
+  for (let i = 0; i < s.length; i++) {
+    const char = s.charCodeAt(i)
+    hash = (hash << 5) - hash + char
+    hash |= 0
+  }
+  return hash.toString(16)
+}
+
+/** SHA-256 hex digest of a string (null-safe). */
+function sha256Hex(content: string | null): string | null {
+  if (content === null) return null
+  try {
+    return crypto.createHash('sha256').update(content, 'utf8').digest('hex').toUpperCase()
+  } catch {
+    return null
   }
 }

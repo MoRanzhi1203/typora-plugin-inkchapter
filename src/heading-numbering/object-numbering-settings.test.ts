@@ -40,6 +40,36 @@ describe('migrateObjectNumberingConfig', () => {
     expect(cfg.enabled).toBe(false)
     expect(cfg.formulaMode).toBe('typora-native')
   })
+
+  it('formula default template maps to continuous preset (parens stripped)', () => {
+    const cfg = migrateObjectNumberingConfig('formula', undefined)
+    expect(cfg.preset).toBe('continuous')
+    expect(cfg.scope).toBe('document')
+    expect(cfg.template).toBe('{n}')
+    expect(cfg.legacyCustomFormat).toBeUndefined()
+  })
+
+  it('legacy formula ({chapter}.{n}) maps to chapter-dot preset', () => {
+    const cfg = migrateObjectNumberingConfig('formula', { scope: 'chapter', template: '({chapter}.{n})', formulaMode: 'inkchapter' })
+    expect(cfg.preset).toBe('chapter-dot')
+    expect(cfg.scope).toBe('chapter')
+    expect(cfg.template).toBe('{chapter}.{n}')
+    expect(cfg.legacyCustomFormat).toBeUndefined()
+  })
+
+  it('legacy numberingMode=chapter-linked + {chapter}-{n} maps to chapter-dash', () => {
+    const cfg = migrateObjectNumberingConfig('figure', { numberingMode: 'chapter-linked', template: '{chapter}-{n}' })
+    expect(cfg.preset).toBe('chapter-dash')
+    expect(cfg.scope).toBe('chapter')
+    expect(cfg.template).toBe('{chapter}-{n}')
+  })
+
+  it('legacy custom format with numberingMode stays LEGACY_CUSTOM', () => {
+    const cfg = migrateObjectNumberingConfig('figure', { numberingMode: 'chapter-linked', template: '[{chapter}.{n}]' })
+    expect(cfg.legacyCustomFormat).toBe(true)
+    expect(cfg.template).toBe('[{chapter}.{n}]')
+    expect(cfg.preset).toBeUndefined()
+  })
 })
 
 describe('migrateObjectNumberingSettings', () => {

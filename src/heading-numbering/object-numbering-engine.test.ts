@@ -141,12 +141,12 @@ describe('computeObjectNumbers', () => {
     expect(r.map(x => x.renderedNumber)).toEqual(['2.3.1', '2.3.2'])
   })
 
-  it('object before first H1 falls back to chapter=0 section=0', () => {
+  it('object before first H1 falls back to document scope (no 0-1)', () => {
     const targets = [
       { type: 'figure' as const, documentOrder: 0, headingContext: {} },
     ]
     const r = computeObjectNumbers(targets, { configs: configs({ figure: { numberingMode: 'chapter-linked', template: '{chapter}-{n}' } }) })
-    expect(r[0].renderedNumber).toBe('0-1')
+    expect(r[0].renderedNumber).toBe('1')
   })
 
   it('cross-chapter move renumbers while name stays bound', () => {

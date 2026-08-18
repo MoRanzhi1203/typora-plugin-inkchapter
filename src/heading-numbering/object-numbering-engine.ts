@@ -8,6 +8,12 @@
 
 import { chapterFromHeadingNumber, sectionFromHeadingNumber } from './heading-context-resolver'
 
+/** v1 numeric-chapter runtime marker (dist marker gate). */
+export const OBJECT_NUMBERING_RUNTIME_MARKER = 'OBJECT-NUMBERING-NUMERIC-MODES-V1'
+
+/** v2 preset-UI runtime marker (dist marker gate). */
+export const OBJECT_NUMBERING_PRESET_UI_V2_MARKER = 'OBJECT-NUMBERING-PRESET-UI-V2'
+
 export type ObjectNumberingType = 'table' | 'figure' | 'code' | 'formula'
 
 export type NumberingMode =
@@ -28,6 +34,17 @@ export type NumberStyle =
   | 'alpha-lower'
   | 'alpha-upper'
 
+/** v1 numeric-chapter scope: the reset granularity for object numbering. */
+export type ObjectNumberingScope = 'document' | 'chapter' | 'section' | 'subsection'
+
+/** v2 stable preset IDs (UI authority; template variables stay internal). */
+export type ObjectNumberingPreset =
+  | 'continuous'
+  | 'chapter-dot'
+  | 'chapter-dash'
+  | 'section-dot'
+  | 'section-dash'
+
 export type ObjectPosition = 'above' | 'below' | 'left' | 'right'
 
 export interface ObjectNumberingConfig {
@@ -39,6 +56,12 @@ export interface ObjectNumberingConfig {
   startAt: number
   minDigits: number
   template: string
+  /** v1 numeric-chapter scope (authoritative; `numberingMode` is legacy). */
+  scope?: ObjectNumberingScope
+  /** v2 stable preset id. When present, scope/template are derived from it. */
+  preset?: ObjectNumberingPreset
+  /** v2 legacy custom flag: unmappable custom format kept for compatibility. */
+  legacyCustomFormat?: boolean
   resetHeadingLevel?: 1 | 2 | 3
   customExpression?: string
   /** formula only: native vs inkchapter numbering implementation. */
@@ -49,6 +72,21 @@ export interface HeadingContext {
   h1?: string
   h2?: string
   h3?: string
+  /** Structured numeric ordinals (authority for {chapter}/{section}/{subsection}). */
+  chapterOrdinal?: number | null
+  sectionOrdinal?: number | null
+  subsectionOrdinal?: number | null
+  /** v2.5.5: stable heading identity for scope-reset keys. */
+  chapterHeadingId?: string | null
+  sectionHeadingId?: string | null
+  subsectionHeadingId?: string | null
+}
+
+/** Numeric chapter/section/subsection context used by the v1 engine. */
+export interface ObjectNumberingContext {
+  chapterOrdinal: number | null
+  sectionOrdinal: number | null
+  subsectionOrdinal: number | null
 }
 
 export interface NumberingTarget {
@@ -62,6 +100,7 @@ export interface NumberingContext {
   n: string
   chapter?: string
   section?: string
+  subsection?: string
   type?: string
 }
 
@@ -71,6 +110,10 @@ export interface NumberingResult {
   formattedSequence: string
   renderedNumber: string
   label: string
+  /** v2.5.5: scope reset key used for this target (section identity bound). */
+  scopeKey?: string
+  /** v2.5.5: whether the counter reset on this target. */
+  resetApplied?: boolean
 }
 
 export const DEFAULT_OBJECT_NUMBERING_CONFIG: Record<ObjectNumberingType, ObjectNumberingConfig> = {
@@ -149,7 +192,8 @@ export function formatSequenceNumber(value: number, style: NumberStyle, minDigit
   const v = Math.max(0, Math.floor(value))
   switch (style) {
     case 'arabic':
-      return String(v)
+      // minDigits pads the {n} token (1 → 1, 2 → 01, 3 → 001).
+      return minDigits > 1 ? String(v).padStart(Math.max(1, minDigits), '0') : String(v)
     case 'arabic-padded':
       return String(v).padStart(Math.max(1, minDigits), '0')
     case 'chinese':
@@ -180,6 +224,7 @@ export function renderNumberTemplate(template: string, context: NumberingContext
     .replace(/\{n\}/g, context.n ?? '')
     .replace(/\{chapter\}/g, context.chapter ?? '0')
     .replace(/\{section\}/g, context.section ?? '0')
+    .replace(/\{subsection\}/g, context.subsection ?? '0')
     .replace(/\{type\}/g, context.type ?? '')
 }
 
@@ -191,7 +236,7 @@ export function validateNumberTemplate(template: string): { valid: boolean; reas
   let m: RegExpExecArray | null
   known.lastIndex = 0
   while ((m = known.exec(t)) !== null) {
-    if (!['{n}', '{chapter}', '{section}', '{type}'].includes(m[1])) {
+    if (!['{n}', '{chapter}', '{section}', '{subsection}', '{type}'].includes(m[1])) {
       return { valid: false, reason: `UNKNOWN_TOKEN_${m[1]}` }
     }
   }
@@ -204,57 +249,287 @@ export interface ComputeObjectNumbersOptions {
   configs: Record<ObjectNumberingType, ObjectNumberingConfig>
   /** Fallback heading context used when a target has none. */
   headingContext?: HeadingContext
+  /** Document key (diagnostic only; used in OBJECT-NUMBERING-CONTEXT log). */
+  documentKey?: string
+}
+
+/** Map a legacy `numberingMode` to the v1 numeric scope. */
+export function scopeFromNumberingMode(mode: NumberingMode): ObjectNumberingScope {
+  switch (mode) {
+    case 'reset-h1':
+    case 'chapter-linked':
+      return 'chapter'
+    case 'reset-h2':
+      return 'section'
+    case 'reset-h3':
+      return 'subsection'
+    default:
+      return 'document'
+  }
+}
+
+/** Resolve a config's effective scope (scope field wins; numberingMode is legacy). */
+export function resolveScope(config: ObjectNumberingConfig): ObjectNumberingScope {
+  if (config.scope === 'document' || config.scope === 'chapter' || config.scope === 'section' || config.scope === 'subsection') {
+    return config.scope
+  }
+  return scopeFromNumberingMode(config.numberingMode)
+}
+
+/** Default template per resolved scope (formula wraps the core template). */
+export function defaultTemplateFor(scope: ObjectNumberingScope, type: ObjectNumberingType): string {
+  const core =
+    scope === 'chapter' ? '{chapter}.{n}'
+    : scope === 'section' ? '{chapter}.{section}.{n}'
+    : scope === 'subsection' ? '{chapter}.{section}.{subsection}.{n}'
+    : '{n}'
+  return type === 'formula' ? `(${core})` : core
+}
+
+/** Extract numeric ordinals from a heading context (numeric fields win; strings fallback). */
+export function ordinalsFromContext(ctx: HeadingContext | undefined): ObjectNumberingContext {
+  const c = ctx ?? {}
+  if (c.chapterOrdinal != null || c.sectionOrdinal != null || c.subsectionOrdinal != null) {
+    return {
+      chapterOrdinal: c.chapterOrdinal ?? null,
+      sectionOrdinal: c.sectionOrdinal ?? null,
+      subsectionOrdinal: c.subsectionOrdinal ?? null,
+    }
+  }
+  const toOrd = (s: string | undefined): number | null => {
+    if (s === undefined || s === '') return null
+    const n = parseInt(s, 10)
+    return Number.isFinite(n) && n >= 1 ? n : null
+  }
+  return {
+    chapterOrdinal: toOrd(chapterFromHeadingNumber(c.h1)),
+    sectionOrdinal: toOrd(sectionFromHeadingNumber(c.h2)),
+    subsectionOrdinal: toOrd(sectionFromHeadingNumber(c.h3)),
+  }
+}
+
+function scopeSatisfied(scope: ObjectNumberingScope, o: ObjectNumberingContext): boolean {
+  switch (scope) {
+    case 'chapter': return o.chapterOrdinal != null
+    case 'section': return o.chapterOrdinal != null && o.sectionOrdinal != null
+    case 'subsection': return o.chapterOrdinal != null && o.sectionOrdinal != null && o.subsectionOrdinal != null
+    default: return true
+  }
+}
+
+export interface ResolvedScopeResult {
+  scope: ObjectNumberingScope
+  fallback: boolean
+  reason: string | null
+}
+
+/** Fall back subsection → section → chapter → document when ordinals are missing. */
+export function resolveObjectNumberingScope(
+  requested: ObjectNumberingScope,
+  ordinals: ObjectNumberingContext,
+): ResolvedScopeResult {
+  const order: ObjectNumberingScope[] = ['subsection', 'section', 'chapter', 'document']
+  let idx = order.indexOf(requested)
+  if (idx < 0) idx = order.indexOf('document')
+  for (let i = idx; i < order.length; i++) {
+    const scope = order[i]
+    if (scopeSatisfied(scope, ordinals)) {
+      return { scope, fallback: scope !== requested, reason: scope !== requested ? fallbackReason(requested) : null }
+    }
+  }
+  return { scope: 'document', fallback: true, reason: 'NO_CONTEXT' }
+}
+
+function fallbackReason(requested: ObjectNumberingScope): string {
+  switch (requested) {
+    case 'subsection': return 'NO_SUBSECTION_CONTEXT'
+    case 'section': return 'NO_SECTION_CONTEXT'
+    case 'chapter': return 'NO_CHAPTER_CONTEXT'
+    default: return 'NO_HEADING_CONTEXT'
+  }
+}
+
+// ── Context readiness authority (v2.5.3) ────────────────────────────
+
+export type ObjectNumberingReadinessState = 'READY' | 'PARTIAL' | 'NOT_READY'
+export type ObjectNumberingReadinessDecision = 'READY' | 'NOT_READY'
+
+export interface ObjectNumberingReadiness {
+  contextState: ObjectNumberingReadinessState
+  decision: ObjectNumberingReadinessDecision
+  requiredFields: string[]
+  missingFields: string[]
+  reason: string | null
+}
+
+/**
+ * Decide whether a target has enough structured heading context for its
+ * requested scope. A section-scoped target missing a section ordinal must NEVER
+ * be reported READY (false-ready is forbidden by v2.5.3).
+ */
+export function resolveObjectNumberingReadiness(input: {
+  documentKey: string | null
+  requestedScope: ObjectNumberingScope
+  ordinals: ObjectNumberingContext
+}): ObjectNumberingReadiness {
+  const { documentKey, requestedScope, ordinals } = input
+
+  const requiredFields: string[] = ['documentKey']
+  if (requestedScope === 'chapter' || requestedScope === 'section' || requestedScope === 'subsection') {
+    requiredFields.push('chapterOrdinal')
+  }
+  if (requestedScope === 'section' || requestedScope === 'subsection') {
+    requiredFields.push('sectionOrdinal')
+  }
+  if (requestedScope === 'subsection') {
+    requiredFields.push('subsectionOrdinal')
+  }
+
+  const missingFields: string[] = []
+  if (!documentKey) missingFields.push('documentKey')
+  if (requestedScope === 'chapter' || requestedScope === 'section' || requestedScope === 'subsection') {
+    if (ordinals.chapterOrdinal == null) missingFields.push('chapterOrdinal')
+  }
+  if (requestedScope === 'section' || requestedScope === 'subsection') {
+    if (ordinals.sectionOrdinal == null) missingFields.push('sectionOrdinal')
+  }
+  if (requestedScope === 'subsection') {
+    if (ordinals.subsectionOrdinal == null) missingFields.push('subsectionOrdinal')
+  }
+
+  if (missingFields.length === 0) {
+    return { contextState: 'READY', decision: 'READY', requiredFields, missingFields: [], reason: null }
+  }
+
+  const reason = missingFields.includes('documentKey')
+    ? 'MISSING_DOCUMENT_KEY'
+    : missingFields.includes('chapterOrdinal')
+      ? 'MISSING_CHAPTER_ORDINAL'
+      : missingFields.includes('sectionOrdinal')
+        ? 'MISSING_SECTION_ORDINAL'
+        : 'MISSING_SUBSECTION_ORDINAL'
+
+  // documentKey present but ordinals missing → PARTIAL (still NOT_READY for gates).
+  const contextState: ObjectNumberingReadinessState = !documentKey ? 'NOT_READY' : 'PARTIAL'
+  return { contextState, decision: 'NOT_READY', requiredFields, missingFields, reason }
+}
+
+/** Render the object number from resolved scope + ordinals + padded sequence n. */
+export function formatObjectNumber(
+  config: ObjectNumberingConfig,
+  type: ObjectNumberingType,
+  ordinals: ObjectNumberingContext,
+  n: string,
+  requestedScope: ObjectNumberingScope,
+  resolvedScope: ObjectNumberingScope,
+): string {
+  const template = requestedScope === resolvedScope
+    ? (config.template && config.template.trim() !== '' ? config.template : defaultTemplateFor(resolvedScope, type))
+    : defaultTemplateFor(resolvedScope, type)
+  const rendered = renderNumberTemplate(template, {
+    n,
+    chapter: ordinals.chapterOrdinal != null ? String(ordinals.chapterOrdinal) : '',
+    section: ordinals.sectionOrdinal != null ? String(ordinals.sectionOrdinal) : '',
+    subsection: ordinals.subsectionOrdinal != null ? String(ordinals.subsectionOrdinal) : '',
+  })
+  // Formula parens are the formatter's responsibility (never the user's template).
+  return type === 'formula' ? wrapFormulaNumber(rendered) : rendered
+}
+
+function wrapFormulaNumber(rendered: string): string {
+  const trimmed = rendered.trim()
+  if (trimmed.startsWith('(') && trimmed.endsWith(')')) return trimmed
+  return `(${trimmed})`
+}
+
+function scopeResetKey(
+  type: ObjectNumberingType,
+  scope: ObjectNumberingScope,
+  ordinals: ObjectNumberingContext,
+  headingIds: { chapterHeadingId?: string | null; sectionHeadingId?: string | null; subsectionHeadingId?: string | null },
+  documentKey?: string,
+): string {
+  const doc = documentKey ?? 'none'
+  const ch = headingIds.chapterHeadingId ?? (ordinals.chapterOrdinal != null ? `ord:${ordinals.chapterOrdinal}` : 'none')
+  const sec = headingIds.sectionHeadingId ?? (ordinals.sectionOrdinal != null ? `ord:${ordinals.sectionOrdinal}` : 'none')
+  const sub = headingIds.subsectionHeadingId ?? (ordinals.subsectionOrdinal != null ? `ord:${ordinals.subsectionOrdinal}` : 'none')
+  switch (scope) {
+    case 'chapter': return `${type}|chapter|${doc}|${ch}`
+    case 'section': return `${type}|section|${doc}|${ch}|${sec}`
+    case 'subsection': return `${type}|subsection|${doc}|${ch}|${sec}|${sub}`
+    default: return `${type}|document|${doc}`
+  }
 }
 
 /**
  * Compute per-target sequence values + rendered numbers + labels.
- * Each type has an INDEPENDENT sequence. NumberingMode controls reset points:
- * continuous (no reset), reset-h1/h2/h3 (reset when that heading changes),
- * chapter-linked (reset per H1 chapter), custom (continuous fallback).
- * Name never influences numbering.
+ * Each type has an INDEPENDENT sequence. Scope controls reset points via the
+ * numeric chapter/section/subsection ordinals (with subsection→section→chapter
+ * →document fallback). Name never influences numbering.
  */
 export function computeObjectNumbers(
   targets: NumberingTarget[],
   options: ComputeObjectNumbersOptions,
 ): NumberingResult[] {
-  const { configs, headingContext = {} } = options
+  const { configs, headingContext = {}, documentKey } = options
   const counters: Partial<Record<ObjectNumberingType, number>> = {}
-  const lastHeading: Partial<Record<ObjectNumberingType, { h1?: string; h2?: string; h3?: string }>> = {}
-
-  const resetKey = (mode: NumberingMode, ctx: HeadingContext | undefined, type: ObjectNumberingType): string => {
-    const c = ctx ?? {}
-    switch (mode) {
-      case 'reset-h1': return c.h1 ?? ''
-      case 'reset-h2': return `${c.h1 ?? ''}\u0000${c.h2 ?? ''}`
-      case 'reset-h3': return `${c.h1 ?? ''}\u0000${c.h2 ?? ''}\u0000${c.h3 ?? ''}`
-      case 'chapter-linked': return c.h1 ?? ''
-      default: return ''
-    }
-  }
+  const lastKey: Partial<Record<ObjectNumberingType, string>> = {}
+  const presetLogged = new Set<ObjectNumberingType>()
 
   return targets.map(target => {
     const type = target.type
     const config = configs[type] ?? DEFAULT_OBJECT_NUMBERING_CONFIG[type]
     const ctx: HeadingContext = target.headingContext ?? headingContext
-    const key = resetKey(config.numberingMode, ctx, type)
-    const prevKey = lastHeading[type]?.h1 === undefined ? undefined : resetKey(config.numberingMode, lastHeading[type], type)
+    const ordinals = ordinalsFromContext(ctx)
+    const requestedScope = resolveScope(config)
+    const resolved = resolveObjectNumberingScope(requestedScope, ordinals)
 
-    if (key !== (prevKey ?? key) || counters[type] === undefined) {
+    if (!presetLogged.has(type)) {
+      presetLogged.add(type)
+      console.info(
+        `[InkChapter Numbering] OBJECT-NUMBERING-PRESET type=${type} preset=${config.preset ?? 'none'} ` +
+        `scope=${requestedScope} internalFormat=${JSON.stringify(config.template)} startAt=${config.startAt} ` +
+        `minDigits=${config.minDigits} ` +
+        `decision=${config.preset ? 'PRESET' : (config.legacyCustomFormat ? 'LEGACY_CUSTOM' : 'RESOLVED')} ` +
+        `runtimeMarker=${OBJECT_NUMBERING_PRESET_UI_V2_MARKER}`,
+      )
+    }
+
+    if (resolved.fallback) {
+      console.info(
+        `[InkChapter Numbering] OBJECT-NUMBERING-SCOPE-FALLBACK type=${type} ` +
+        `requestedScope=${requestedScope} resolvedScope=${resolved.scope} reason=${resolved.reason}`,
+      )
+    }
+
+    const key = scopeResetKey(type, resolved.scope, ordinals, {
+      chapterHeadingId: ctx.chapterHeadingId,
+      sectionHeadingId: ctx.sectionHeadingId,
+      subsectionHeadingId: ctx.subsectionHeadingId,
+    }, documentKey)
+    const resetApplied = key !== lastKey[type] || counters[type] === undefined
+    if (resetApplied) {
       counters[type] = config.startAt - 1
     }
-    counters[type]++
-    lastHeading[type] = ctx
+    const sequenceValue = (counters[type] ?? 0) + 1
+    counters[type] = sequenceValue
+    lastKey[type] = key
 
-    const sequenceValue = counters[type]
     const formattedSequence = formatSequenceNumber(sequenceValue, config.numberStyle, config.minDigits)
-    const renderedNumber = renderNumberTemplate(config.template, {
-      n: formattedSequence,
-      chapter: chapterFromHeadingNumber(ctx.h1 ?? headingContext.h1),
-      section: sectionFromHeadingNumber(ctx.h2 ?? headingContext.h2),
-      type: config.prefix,
-    })
+    const renderedNumber = formatObjectNumber(config, type, ordinals, formattedSequence, requestedScope, resolved.scope)
+
+    console.info(
+      `[InkChapter Numbering] OBJECT-NUMBERING-CONTEXT type=${type} documentKey=${documentKey ?? 'none'} ` +
+      `requestedScope=${requestedScope} resolvedScope=${resolved.scope} ` +
+      `chapterOrdinal=${ordinals.chapterOrdinal ?? 'none'} sectionOrdinal=${ordinals.sectionOrdinal ?? 'none'} ` +
+      `subsectionOrdinal=${ordinals.subsectionOrdinal ?? 'none'} sequenceValue=${sequenceValue} ` +
+      `formattedSequence=${formattedSequence} format=${config.template} ` +
+      `scopeKey=${key} resetApplied=${resetApplied} ` +
+      `runtimeMarker=${OBJECT_NUMBERING_RUNTIME_MARKER} decision=RESOLVED`,
+    )
+
     const label = buildObjectNumberingLabel(config.prefix, renderedNumber, target.name ?? '')
-    return { type, sequenceValue, formattedSequence, renderedNumber, label }
+    return { type, sequenceValue, formattedSequence, renderedNumber, label, scopeKey: key, resetApplied }
   })
 }
 
@@ -268,20 +543,27 @@ export function buildObjectNumberingLabel(prefix: string, renderedNumber: string
   return parts.join(' ')
 }
 
-/** Render a preview label from an explicit sample context (for the settings UI). */
+/** Render a preview label via the SAME runtime formatter (never a separate UI formatter). */
 export function renderNumberingPreview(
   type: ObjectNumberingType,
   config: ObjectNumberingConfig,
-  sample: { n?: number; chapter?: string; section?: string; name?: string },
+  sample: { n?: number; chapter?: string; section?: string; subsection?: string; chapterOrdinal?: number; sectionOrdinal?: number; subsectionOrdinal?: number; name?: string },
 ): string {
   const cfg = { ...DEFAULT_OBJECT_NUMBERING_CONFIG[type], ...config }
   const n = sample.n ?? 1
   const formatted = formatSequenceNumber(n, cfg.numberStyle, cfg.minDigits)
-  const rendered = renderNumberTemplate(cfg.template, {
-    n: formatted,
-    chapter: sample.chapter ?? '2',
-    section: sample.section ?? '3',
-    type: cfg.prefix,
-  })
+  const toOrd = (s: string | undefined): number | null => {
+    if (s === undefined || s === '') return null
+    const p = parseInt(s, 10)
+    return Number.isFinite(p) ? p : null
+  }
+  const ordinals: ObjectNumberingContext = {
+    chapterOrdinal: sample.chapterOrdinal ?? toOrd(sample.chapter) ?? 2,
+    sectionOrdinal: sample.sectionOrdinal ?? toOrd(sample.section) ?? 3,
+    subsectionOrdinal: sample.subsectionOrdinal ?? toOrd(sample.subsection) ?? 4,
+  }
+  const requestedScope = resolveScope(cfg)
+  const resolved = resolveObjectNumberingScope(requestedScope, ordinals)
+  const rendered = formatObjectNumber(cfg, type, ordinals, formatted, requestedScope, resolved.scope)
   return buildObjectNumberingLabel(cfg.prefix, rendered, sample.name ?? '')
 }
