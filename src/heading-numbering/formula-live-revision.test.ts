@@ -276,6 +276,7 @@ describe('Live Formula Revision (v2.5.7-R5.4.1)', () => {
         managedEligible: true,
         explicitTagControl: false,
         formulaContentRevision: 1,
+        scopeKey: null,
       }],
     }
     const ambCurr: LiveFormulaSemanticSnapshot = {

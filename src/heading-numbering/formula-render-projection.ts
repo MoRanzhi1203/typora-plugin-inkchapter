@@ -15,6 +15,7 @@
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { getActiveEditSession, getCurrentTransaction } from './formula-edit-session'
 import { simpleHash, normalizeTexSource } from './formula-tex-source-verifier'
+import type { FormulaStableIdentity } from './formula-state-store'
 
 export const R5439_RUNTIME_MARKER = 'FORMULA-PERSISTENT-RENDERER-PROJECTION-V2.5.7-R5.4.3.9'
 export const R5439_BUILD_MARKER = 'inkchapter-formula-persistent-renderer-projection-v2.5.7-r5.4.3.9'
@@ -23,7 +24,7 @@ export const R5439_BUILD_MARKER = 'inkchapter-formula-persistent-renderer-projec
 
 export interface RendererNodeBinding {
   formulaHostToken: number
-  stableFormulaIdentity: number
+  stableFormulaIdentity: FormulaStableIdentity
   formulaIndex: number
   documentKey: string
   generation: number
@@ -107,10 +108,10 @@ export interface NaturalRenderOptions {
   display?: boolean
 }
 
-const naturalRenderOptionsCache = new Map<number, NaturalRenderOptions>()
+const naturalRenderOptionsCache = new Map<FormulaStableIdentity, NaturalRenderOptions>()
 
 export function cacheNaturalRenderOptions(
-  stableFormulaIdentity: number,
+  stableFormulaIdentity: FormulaStableIdentity,
   options: NaturalRenderOptions
 ): void {
   naturalRenderOptionsCache.set(stableFormulaIdentity, options)
@@ -122,14 +123,14 @@ export function cacheNaturalRenderOptions(
   })
 }
 
-export function getNaturalRenderOptions(stableFormulaIdentity: number): NaturalRenderOptions | null {
+export function getNaturalRenderOptions(stableFormulaIdentity: FormulaStableIdentity): NaturalRenderOptions | null {
   return naturalRenderOptionsCache.get(stableFormulaIdentity) ?? null
 }
 
 // ── Production Fulfillment Provider ────────────────────────────────────────
 
 export interface ProjectionFulfillmentRequest {
-  stableFormulaIdentity: number
+  stableFormulaIdentity: FormulaStableIdentity
   formulaIndex: number
   rawTex: string
   desiredTag: string
@@ -138,6 +139,8 @@ export interface ProjectionFulfillmentRequest {
   documentKey: string
   generation: number
   rootToken: number
+  /** R5.4.3.19: separate renderer binding token — NEVER aliases business identity. */
+  formulaHostToken?: number
 }
 
 export interface ProjectionFulfillmentResult {
@@ -187,9 +190,9 @@ export async function requestFormulaProjectionFulfillment(
     }
 
     if (resultNode) {
-      // Register the binding
+      // Register the binding — business stable identity is preserved as-is.
       registerFulfillmentNodeBinding(resultNode, {
-        formulaHostToken: request.stableFormulaIdentity,
+        formulaHostToken: request.formulaHostToken ?? (typeof request.stableFormulaIdentity === 'number' ? request.stableFormulaIdentity : 0),
         stableFormulaIdentity: request.stableFormulaIdentity,
         formulaIndex: request.formulaIndex,
         documentKey: request.documentKey,
@@ -944,7 +947,7 @@ export interface FormulaCompositeVisualOwner {
   previewHostContainedByOwner: boolean
   nativeOutputContainedByOwner: boolean
   nativeOutputCountWithinOwner: number
-  otherFormulaSourceHostCountWithinOwner: number
+  otherFormulaSourceHostCountWithinOwner: number | null
   decision: string
   reason: string | null
 }
@@ -1009,15 +1012,24 @@ export function resolveFormulaCompositeVisualOwner(
     : 0
 
   // Count other formula source hosts within the same composite owner.
-  const otherFormulaSourceHostCountWithinOwner = compositeOwner
-    ? (compositeOwner.querySelectorAll('.md-math-block, .mathjax-block').length - 1)
-    : 0
+  let otherFormulaSourceHostCountWithinOwner: number | null | null = null
+  if (compositeOwner) {
+    try {
+      const count = compositeOwner.querySelectorAll('.md-math-block, .mathjax-block').length
+      otherFormulaSourceHostCountWithinOwner = count - 1
+    } catch {
+      otherFormulaSourceHostCountWithinOwner = null // UNKNOWN
+    }
+  }
+
+  const otherFormulaPresent = otherFormulaSourceHostCountWithinOwner !== null && otherFormulaSourceHostCountWithinOwner > 0
+  const otherFormulaUnknown = otherFormulaSourceHostCountWithinOwner === null
 
   const allowed = sourceHostContainedByOwner
     && previewHostContainedByOwner
     && nativeOutputContainedByOwner
     && nativeOutputCountWithinOwner === 1
-    && otherFormulaSourceHostCountWithinOwner === 0
+    && !otherFormulaPresent
 
   emitRuntimeAudit('FORMULA-COMPOSITE-VISUAL-OWNER-FORENSIC', {
     sourceHostPath: formulaHost ? `${formulaHost.tagName}.${(formulaHost.className || '').slice(0, 40)}` : null,
@@ -1051,7 +1063,9 @@ export function resolveFormulaCompositeVisualOwner(
         : (!previewHostContainedByOwner ? 'PREVIEW_HOST_OUTSIDE_OWNER'
           : (!nativeOutputContainedByOwner ? 'NATIVE_OUTPUT_OUTSIDE_OWNER'
             : nativeOutputCountWithinOwner !== 1 ? 'EXPECTED_EXACTLY_ONE_NATIVE_OUTPUT'
-              : 'OTHER_FORMULA_HOST_WITHIN_OWNER'))),
+              : otherFormulaPresent ? 'OTHER_FORMULA_HOST_WITHIN_OWNER'
+                : otherFormulaUnknown ? 'COMPOSITE_OWNER_AMBIGUOUS'
+                  : 'UNKNOWN_FAILURE'))),
     runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
   })
 

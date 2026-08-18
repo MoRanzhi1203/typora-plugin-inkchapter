@@ -45,6 +45,9 @@ import {
   type FormulaEditSessionStatus,
 } from './formula-edit-session'
 import { registerFulfillmentNodeBinding, resolveRendererNodeBinding, type RendererNodeBinding } from './formula-render-projection'
+import { isZeroSource, getReservation, consumeReservation, emitZeroSourceTransactionAuthority, emitZeroSourceSameCallReauthorization, emitAuthorizationDesiredTagInvariant, type EmptyFormulaRenderReservation } from './formula-empty-render-reservation'
+import { produceRenderTransaction, registerPendingBaselineProjection } from './formula-state-machine-wiring'
+import { getFormulaStateStore } from './formula-state-store'
 
 export const R54_RUNTIME_MARKER = 'FORMULA-TEX2SVG-PRECALL-TAG-INJECTION-V2.5.7-R5.4'
 export const R54_BUILD_MARKER = 'inkchapter-formula-atomic-transaction-render-projection-v2.5.7-r5.4.3.9'
@@ -286,6 +289,7 @@ export type PreCallAuthorityKind =
   // v2.5.7-R5.4.3.8: empty formula sentinel authorized by host/session identity.
   | 'EMPTY_FORMULA_SLOT_IDENTITY'
   | 'CALLER_CONTEXT_HOST_PLUS_AUTHORITATIVE_SOURCE_MATCH'
+  | 'ZERO_SOURCE_STRUCTURAL_SLOT'
   | 'NONE'
   | 'AMBIGUOUS'
 
@@ -868,6 +872,26 @@ function collectEditingHostSourceHashes(root: HTMLElement | null): string[] {
 }
 
 /**
+ * R5.4.3.17: find the single current editing/caller canonical formula host.
+ * Used ONLY to locate the canonical host — never to derive identity.
+ */
+function findCurrentEditingHostElement(root: HTMLElement | null): HTMLElement | null {
+  if (!root) return null
+  try {
+    const hosts = root.querySelectorAll<HTMLElement>('.md-rawblock-on-edit, .mathjax-block.md-focus, .md-math-block.md-focus')
+    if (hosts.length === 0) return null
+    // Prefer an element that is itself (or contains) the canonical host.
+    for (const h of hosts) {
+      const canonical = h.closest<HTMLElement>('.md-math-block, .mathjax-block, .MathJax_Display, .md-block-formula, [data-formula-host]')
+      if (canonical) return canonical
+    }
+    return hosts[0]
+  } catch {
+    return null
+  }
+}
+
+/**
  * v2.5.7-R5.4.2 Phase N: Typora renderer callsite authority (READ-ONLY). We
  * observe the REAL external caller of tex2svgPromise from the captured stack.
  * We never invoke it and never patch frame.js; safeToInvoke stays false unless
@@ -1127,6 +1151,40 @@ export function handleTex2svgPreCall(
   const authEditingHashes = collectEditingHostSourceHashes(authEditorRoot)
   const editingHostIdentity = ctxAuth?.resolveEditingHostIdentity?.() ?? null
 
+  // ── R5.4.3.17 P0-3: FormulaStateStore render entry authority ──
+  // caller/editing/session/reservation may ONLY resolve the exact canonical
+  // host; stableIdentity/formulaIndex/desiredTag come from the COMMITTED slot.
+  let storeRenderEntry: {
+    hostResolved: boolean
+    editingHostElement: HTMLElement | null
+    renderTransaction: import('./formula-state-store').FormulaRenderTransaction | null
+  } = { hostResolved: false, editingHostElement: null, renderTransaction: null }
+  {
+    const store = getFormulaStateStore()
+    const editingHostElement = findCurrentEditingHostElement(authEditorRoot)
+    if (editingHostElement) {
+      storeRenderEntry.hostResolved = true
+      storeRenderEntry.editingHostElement = editingHostElement
+      if (store.committedState) {
+        // Store baseline ready → render transaction from the committed slot.
+        storeRenderEntry.renderTransaction = produceRenderTransaction(editingHostElement)
+      } else {
+        // Natural render raced the baseline → register a pending projection;
+        // the baseline projection closure will replay it automatically.
+        registerPendingBaselineProjection({
+          documentKey: authDocumentKey ?? '',
+          generation: ctxAuth?.getCurrentGeneration?.() ?? 0,
+          rootToken: 0,
+          canonicalHost: editingHostElement,
+          hostToken: 0,
+          rawTex: inputTex,
+          sourceState: isEmptyFormulaSentinel(inputTex) ? 'EMPTY' : 'NONEMPTY',
+          createdFromCallOrdinal: callOrdinal,
+        })
+      }
+    }
+  }
+
   // ── R5.4.3.11 P0-A: Transaction binding deferred to after auth resolution.
   // The transaction is now created after the call owner is resolved (below),
   // so that the correct formula identity is used regardless of editing host focus.
@@ -1179,6 +1237,134 @@ export function handleTex2svgPreCall(
   }
 
   let auth: PreCallAuthorizationResult
+
+  // ── R5.4.3.13: Zero-Source Formula Transaction Authority ──
+  // For empty input (rawTex="", whitespace, sentinel), resolve authority
+  // through reservation/session/structural host, NOT source hash matching.
+  const zeroSource = isZeroSource(inputTex)
+  if (zeroSource) {
+    // Priority 1: Exact reservation
+    let zeroSourceIdentity: number | null = null
+    let zeroSourceIndex: number | null = null
+    let zeroSourceDesiredTag: string | null = null
+    let zeroSourceAuthority = 'FAIL'
+    const session = getActiveEditSession()
+    
+    // Priority 1a: Try to find a reservation matching the current editing host
+    if (editingHostIdentity && editingHostIdentity.stableFormulaIdentity !== null && editingHostIdentity.stableFormulaIdentity !== 'AMBIGUOUS') {
+      const res = getReservation(editingHostIdentity.stableFormulaIdentity)
+      if (res && res.status === 'RESERVED') {
+        const consumed = consumeReservation({
+          stableFormulaIdentity: res.stableFormulaIdentity,
+          callOrdinal,
+          documentKey: authDocumentKey ?? '',
+          generation: ctxAuth?.getCurrentGeneration?.() ?? 0,
+        })
+        if (consumed.consumeSucceeded) {
+          zeroSourceIdentity = res.stableFormulaIdentity
+          zeroSourceIndex = res.formulaIndex
+          zeroSourceDesiredTag = res.desiredTag
+          zeroSourceAuthority = 'RESERVATION'
+        }
+      }
+    }
+    
+    // Priority 1b: Current transaction from structural host
+    if (zeroSourceIdentity === null && currentTx && currentTx.desiredTag && currentTx.desiredTag !== '') {
+      zeroSourceIdentity = currentTx.stableFormulaIdentity
+      zeroSourceIndex = currentTx.formulaIndex
+      zeroSourceDesiredTag = currentTx.desiredTag
+      zeroSourceAuthority = 'HOST_TRANSACTION'
+    }
+    
+    // Priority 1c: Edit session plan rebind
+    if (zeroSourceIdentity === null && session && session.stableFormulaIdentity !== 'AMBIGUOUS') {
+      const planEntry = authPlan?.entries.find((e) => e.stableFormulaIdentity === session.stableFormulaIdentity) ?? null
+      if (planEntry && planEntry.desiredTag) {
+        zeroSourceIdentity = session.stableFormulaIdentity as number
+        zeroSourceIndex = planEntry.formulaIndex
+        zeroSourceDesiredTag = planEntry.desiredTag
+        zeroSourceAuthority = 'EDIT_SESSION_REBIND'
+      } else if (authPlan) {
+        // Plan catch-up: rebuild plan and look up same identity
+        if (ctxAuth?.rebuildPlanSynchronously) {
+          const rebuildOk = ctxAuth.rebuildPlanSynchronously()
+          if (rebuildOk) {
+            const newCtx = injectionContext
+            const newPlan = newCtx?.plan ?? null
+            if (newPlan) {
+              const rebindEntry = newPlan.entries.find((e) => e.stableFormulaIdentity === session.stableFormulaIdentity) ?? null
+              if (rebindEntry && rebindEntry.desiredTag) {
+                zeroSourceIdentity = session.stableFormulaIdentity as number
+                zeroSourceIndex = rebindEntry.formulaIndex
+                zeroSourceDesiredTag = rebindEntry.desiredTag
+                zeroSourceAuthority = 'EDIT_SESSION_REBIND'
+                emitZeroSourceSameCallReauthorization({
+                  callOrdinal,
+                  reservationId: null,
+                  stableFormulaIdentityBefore: session.stableFormulaIdentity as number,
+                  stableFormulaIdentityAfter: session.stableFormulaIdentity as number,
+                  planRevisionBefore: authPlan?.planRevision ?? null,
+                  planRevisionAfter: newPlan.planRevision,
+                  formulaIndex: rebindEntry.formulaIndex,
+                  desiredTag: rebindEntry.desiredTag,
+                  rebindByStableIdentity: true,
+                  sourceMatchUsed: false,
+                  reauthorizationSucceeded: true,
+                  decision: 'PASS',
+                  reason: null,
+                })
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    emitZeroSourceTransactionAuthority({
+      callOrdinal,
+      reservationId: zeroSourceIdentity !== null ? (getReservation(zeroSourceIdentity)?.reservationId ?? null) : null,
+      stableFormulaIdentity: zeroSourceIdentity,
+      formulaIndex: zeroSourceIndex,
+      desiredTag: zeroSourceDesiredTag,
+      authoritySource: zeroSourceAuthority as any,
+      decision: zeroSourceIdentity !== null ? 'PASS' : 'FAIL',
+      reason: zeroSourceIdentity !== null ? null : 'ZERO_SOURCE_NO_AUTHORITY_SOURCE',
+    })
+    
+    if (zeroSourceIdentity !== null && zeroSourceDesiredTag !== null) {
+      // Override auth to use zero-source authority
+      auth = {
+        decision: 'AUTHORIZED',
+        uniqueAuthorizedFormulaIndex: zeroSourceIndex!,
+        authorityKind: 'ZERO_SOURCE_STRUCTURAL_SLOT',
+        desiredTag: zeroSourceDesiredTag,
+        reason: null,
+        candidateManagedFormulaCount: 1,
+        formula0SourceHashMatch: false,
+        formula1SourceHashMatch: false,
+        inlineMathRejected: false,
+        foreignMathRejected: false,
+        uniqueAuthorizedStableFormulaIdentity: zeroSourceIdentity,
+      }
+      
+      // Emit desired-tag invariant
+      emitAuthorizationDesiredTagInvariant({
+        callOrdinal,
+        authorityKind: 'ZERO_SOURCE_STRUCTURAL_SLOT',
+        stableFormulaIdentity: zeroSourceIdentity,
+        formulaIndex: zeroSourceIndex,
+        planEntryFound: true,
+        desiredTag: zeroSourceDesiredTag,
+        managedEligible: true,
+        authorized: true,
+        invariantSatisfied: true,
+        decision: 'PASS',
+        reason: null,
+      })
+    }
+  }
+
   // R5.4.3.9: Transaction authority takes priority over source matcher.
   // R5.4.3.11: Only use transaction for authorization when the input hash matches
   // the transaction's rawTex (prevents stale transaction from previous call from
@@ -1339,6 +1525,74 @@ export function handleTex2svgPreCall(
     }
   }
 
+  // ── R5.4.3.18 P0-A2: Readiness-aware Store/Legacy Arbitration ──
+  // storeRenderEntry.renderTransaction is non-null ONLY when the store is
+  // renderAuthorityReady (createRenderTransaction gate). Rules:
+  //   A: store not ready, legacy ready → LEGACY_READY_PLAN (temporary authority)
+  //   B: store ready + legacy ready + tags equal → COMMITTED_STORE
+  //   C: store ready + legacy ready + tags differ → FAIL=READY_AUTHORITIES_DIVERGED
+  if (storeRenderEntry.renderTransaction) {
+    const srt = storeRenderEntry.renderTransaction
+    const legacyTagBeforeStore = auth.desiredTag ?? null
+    const storeReady = true
+    const legacyReady = legacyTagBeforeStore !== null && legacyTagBeforeStore !== ''
+    let selectedAuthority: 'COMMITTED_STORE' | 'LEGACY_READY_PLAN' | 'FAIL' = 'COMMITTED_STORE'
+    let failReason: string | null = null
+    if (storeReady && legacyReady && legacyTagBeforeStore !== srt.desiredTag) {
+      // Both ready but diverged — hard FAIL (never silent storeWins).
+      selectedAuthority = 'FAIL'
+      failReason = 'READY_AUTHORITIES_DIVERGED'
+    } else if (storeReady && legacyReady && legacyTagBeforeStore === srt.desiredTag) {
+      selectedAuthority = 'COMMITTED_STORE'
+    } else {
+      // store ready, legacy not ready → store wins.
+      selectedAuthority = 'COMMITTED_STORE'
+    }
+    emitRuntimeAudit('FORMULA-LEGACY-PLAN-DIVERGED-FROM-COMMITTED-STORE', {
+      callOrdinal,
+      storeStableIdentity: srt.stableIdentity,
+      storeFormulaIndex: srt.formulaIndex,
+      storeDesiredTag: srt.desiredTag,
+      legacyPlanDesiredTag: legacyTagBeforeStore,
+      storeRenderAuthorityReady: storeReady,
+      legacyPlanReady: legacyReady,
+      selectedAuthority,
+      storeWins: selectedAuthority === 'COMMITTED_STORE',
+      decision: selectedAuthority === 'FAIL' ? 'FAIL' : (selectedAuthority === 'COMMITTED_STORE' ? 'PASS' : 'PASS'),
+      reason: failReason,
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+    })
+    if (selectedAuthority !== 'FAIL') {
+      auth = {
+        ...auth,
+        decision: 'AUTHORIZED',
+        uniqueAuthorizedStableFormulaIdentity: srt.stableIdentity as number,
+        uniqueAuthorizedFormulaIndex: srt.formulaIndex,
+        desiredTag: srt.desiredTag,
+        authorityKind: 'ZERO_SOURCE_STRUCTURAL_SLOT',
+        candidateManagedFormulaCount: Math.max(auth.candidateManagedFormulaCount, 1),
+      }
+    }
+  } else if (storeRenderEntry.hostResolved && !getFormulaStateStore().committedState?.renderAuthorityReady) {
+    // Store structurally ready but NOT numbering-ready → legacy ready plan is
+    // the transition authority (never let a provisional tag win).
+    const legacyReady = auth.decision === 'AUTHORIZED' && auth.desiredTag !== null && auth.desiredTag !== ''
+    emitRuntimeAudit('FORMULA-LEGACY-PLAN-DIVERGED-FROM-COMMITTED-STORE', {
+      callOrdinal,
+      storeStableIdentity: null,
+      storeFormulaIndex: null,
+      storeDesiredTag: null,
+      legacyPlanDesiredTag: auth.desiredTag ?? null,
+      storeRenderAuthorityReady: false,
+      legacyPlanReady: legacyReady,
+      selectedAuthority: legacyReady ? 'LEGACY_READY_PLAN' : 'NONE',
+      storeWins: false,
+      decision: legacyReady ? 'PASS' : 'PENDING',
+      reason: legacyReady ? 'LEGACY_READY_PLAN_TEMPORARY_AUTHORITY' : 'PENDING_NUMBERING_AUTHORITY',
+      runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
+    })
+  }
+
   // R5.4.3.9: emit edit-session tex2svg authority when transaction identity is in play.
   if (currentTx) {
     emitEditSessionTex2svgAuthority({
@@ -1351,6 +1605,27 @@ export function handleTex2svgPreCall(
       authorizedBy: 'EDIT_SESSION_LATCH',
       authorized: true,
     })
+
+    // R5.4.3.13: Authorization Desired-Tag Invariant
+    // If edit session authorized but desiredTag is empty, FAIL immediately.
+    const sessionIdentityOk = currentTx.stableFormulaIdentity !== null && currentTx.stableFormulaIdentity !== undefined
+    const sessionPlanEntry = authPlan?.entries.find((e) => e.stableFormulaIdentity === currentTx.stableFormulaIdentity) ?? null
+    if (sessionIdentityOk && sessionPlanEntry) {
+      const invariantOk = sessionPlanEntry.desiredTag !== null && sessionPlanEntry.desiredTag !== ''
+      emitAuthorizationDesiredTagInvariant({
+        callOrdinal,
+        authorityKind: 'EDIT_SESSION_LATCH',
+        stableFormulaIdentity: sessionPlanEntry.stableFormulaIdentity as number,
+        formulaIndex: sessionPlanEntry.formulaIndex,
+        planEntryFound: true,
+        desiredTag: sessionPlanEntry.desiredTag,
+        managedEligible: true,
+        authorized: sessionIdentityOk && invariantOk,
+        invariantSatisfied: invariantOk,
+        decision: invariantOk ? 'PASS' : 'FAIL',
+        reason: invariantOk ? null : 'AUTHORIZED_WITHOUT_DESIRED_TAG',
+      })
+    }
   }
 
   // ── R5.4.3.5 P3: Existing Formula Transitional Current Source Authority ──

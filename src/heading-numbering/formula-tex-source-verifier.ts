@@ -192,13 +192,25 @@ export function verifyFormulaTexSource(input: FormulaTexSourceVerifierInput): Fo
   }
 }
 
-/** Compatibility helper used by caption-service wiring (normalized tex only). */
+/**
+ * R5.4.3.19: extract authoritative TeX WITHOUT any composite host.textContent
+ * fallback. Only <pre> (FORMULA_HOST_RAW_SOURCE_NODE) and the rawblock source
+ * container are trusted. Returns '' when no authoritative source is found
+ * (sourceAuthorityReady=false / UNKNOWN) — NEVER derive TeX from rendered text.
+ */
 export function extractFormulaTexForTrace(host: HTMLElement | null): string {
   if (!host) return ''
-  const result = verifyFormulaTexSource({ host, formulaIndex: 0, editorRoot: null })
-  if (result.decision === 'UNAVAILABLE') return ''
-  const pre = host.querySelector('pre')
-  const fromPre = pre?.textContent?.trim()
-  if (fromPre) return normalizeTexSource(fromPre)
-  return normalizeTexSource(host.textContent ?? '')
+  try {
+    const pre = host.querySelector('pre')
+    const fromPre = pre?.textContent?.trim()
+    if (fromPre && fromPre.length > 0) return normalizeTexSource(fromPre)
+  } catch { /* read-only */ }
+  try {
+    const container = host.querySelector('.md-rawblock-container, .md-math-container')
+    const fromContainer = container?.textContent?.trim()
+    if (fromContainer && fromContainer.length > 0) return normalizeTexSource(fromContainer)
+  } catch { /* read-only */ }
+  // Hard barrier: composite host.textContent (Typora UI "公式", old tag, MJX
+  // rendered body) MUST NEVER become the authoritative TeX source.
+  return ''
 }
