@@ -22,6 +22,21 @@ import {
   simpleHash,
   type FormulaTexSourceKind,
 } from './formula-tex-source-verifier'
+import { R541_RUNTIME_MARKER } from './formula-live-revision'
+import { R542_RUNTIME_MARKER } from './formula-authoritative-source'
+import { R543_RUNTIME_MARKER } from './formula-semantic-invalidation'
+import { reportObservedInvalidationClosure } from './typora-formula-render-invalidation'
+import {
+  isEmptyFormulaSentinel,
+  emitEmptyTex2svgSentinelAuthority,
+  getActiveEditSession,
+  latchEditSession,
+  emitEditSessionTex2svgAuthority,
+  emitNonsemanticEditTransition,
+  checkSourceCommitBarrier,
+  markSessionExplicitInput,
+  type SourceCommitBarrierResult,
+} from './formula-edit-session'
 
 export const R54_RUNTIME_MARKER = 'FORMULA-TEX2SVG-PRECALL-TAG-INJECTION-V2.5.7-R5.4'
 export const R54_BUILD_MARKER = 'inkchapter-formula-tex2svg-precall-tag-injection-v2.5.7-r5.4'
@@ -33,10 +48,17 @@ export type PreCallAuthorityKind =
   | 'CURRENT_EDITING_HOST_PLUS_EXACT_SOURCE_MATCH'
   | 'CALLER_CONTEXT_HOST_PLUS_EXACT_SOURCE_MATCH'
   | 'FROZEN_PLAN_SOURCE_MATCH'
+  // v2.5.7-R5.4.2 Phase I hierarchy.
+  | 'EDITING_HOST_STABLE_IDENTITY_PLUS_SOURCE_MATCH'
+  | 'STABLE_IDENTITY_AUTHORITATIVE_SOURCE_MATCH'
+  | 'EXACT_AUTHORITATIVE_SOURCE_MATCH'
+  // v2.5.7-R5.4.3.8: empty formula sentinel authorized by host/session identity.
+  | 'EMPTY_FORMULA_SLOT_IDENTITY'
+  | 'CALLER_CONTEXT_HOST_PLUS_AUTHORITATIVE_SOURCE_MATCH'
   | 'NONE'
   | 'AMBIGUOUS'
 
-export type PreCallDecision = 'AUTHORIZED' | 'PASS_THROUGH' | 'BLOCK_AMBIGUOUS'
+export type PreCallDecision = 'AUTHORIZED' | 'AUTHORIZED_AFTER_CATCHUP' | 'PASS_THROUGH' | 'BLOCK_AMBIGUOUS'
 
 export interface FormulaRenderAuthorizationPlanEntry {
   documentKey: string
@@ -60,6 +82,10 @@ export interface FormulaRenderAuthorizationPlanEntry {
   explicitTagControl: boolean
   managedEligible: boolean
   authorizationState: 'READY' | 'NOT_READY'
+  /** v2.5.7-R5.4.2: per-identity plan binding (stable identity is NOT the index). */
+  stableFormulaIdentity: number | null
+  formulaContentRevision: number
+  authoritativeSourceHash: string
 }
 
 export interface FormulaRenderAuthorizationPlan {
@@ -67,6 +93,10 @@ export interface FormulaRenderAuthorizationPlan {
   documentSourceSha256: string
   documentSourceRevision: number
   planRevision: number
+  /** Live editor dirty-buffer formula revision this plan is bound to. */
+  planLiveFormulaRevision: number
+  /** Semantic signature this plan is bound to. */
+  planSemanticSignature: string
   entries: FormulaRenderAuthorizationPlanEntry[]
 }
 
@@ -178,41 +208,73 @@ export function buildFormulaRenderAuthorizationPlan(input: {
   generation: number
   editorRoot: HTMLElement | null
   markdown?: string | null
+  planLiveFormulaRevision?: number
+  planSemanticSignature?: string
+  /**
+   * v2.5.7-R5.4.2: per-index AUTHORITATIVE source overrides (stable identity +
+   * formulaContentRevision + authoritative hash). When present, the entry uses
+   * the authoritative source directly — the per-live-revision frozen re-verify
+   * is REVOKED (Phase A). The frozen/verifier path remains only as a legacy
+   * fallback for callers without an authoritative source.
+   */
+  authoritativeSourceByIndex?: Map<number, {
+    stableFormulaIdentity: number | null
+    formulaContentRevision: number
+    hash: string
+    sourceKind: FormulaTexSourceKind
+    prefix: string
+    rawSourceLength: number
+    normalizedSourceLength: number
+  }> | null
 }): FormulaRenderAuthorizationPlan {
   const frozenKey = `${input.documentKey}|${input.documentSourceSha256}`
   let frozen = frozenPlanSources.get(frozenKey)
 
   const entries: FormulaRenderAuthorizationPlanEntry[] = []
   for (const f of input.managedFormulas) {
-    const frozenEntry = frozen?.byFormulaIndex.get(f.formulaIndex)
+    const authoritative = input.authoritativeSourceByIndex?.get(f.formulaIndex) ?? null
     let sourceKind: FormulaTexSourceKind
     let rawSourceLength: number
     let normalizedSourceLength: number
     let normalizedSourceHash: string
     let normalizedSourcePrefix: string
     let verifierDecision: 'READY' | 'DEGRADED' | 'UNAVAILABLE'
+    let stableFormulaIdentity: number | null = null
+    let formulaContentRevision = 0
 
-    if (frozenEntry) {
-      // Reuse the FROZEN snapshot — do not re-read (possibly polluted) host.
-      sourceKind = frozenEntry.sourceKind
-      rawSourceLength = frozenEntry.rawSourceLength
-      normalizedSourceLength = frozenEntry.normalizedSourceLength
-      normalizedSourceHash = frozenEntry.normalizedSourceHash
-      normalizedSourcePrefix = frozenEntry.normalizedSourcePrefix
-      verifierDecision = frozenEntry.normalizedSourceLength > 0 ? 'READY' : 'UNAVAILABLE'
+    if (authoritative) {
+      // Authoritative per-identity source — stable across renderer/edit drift.
+      sourceKind = authoritative.sourceKind
+      rawSourceLength = authoritative.rawSourceLength
+      normalizedSourceLength = authoritative.normalizedSourceLength
+      normalizedSourceHash = authoritative.hash
+      normalizedSourcePrefix = authoritative.prefix
+      verifierDecision = authoritative.normalizedSourceLength > 0 ? 'READY' : 'UNAVAILABLE'
+      stableFormulaIdentity = authoritative.stableFormulaIdentity
+      formulaContentRevision = authoritative.formulaContentRevision
     } else {
-      const verifier = verifyFormulaTexSource({
-        host: f.host,
-        formulaIndex: f.formulaIndex,
-        editorRoot: input.editorRoot,
-        markdown: input.markdown,
-      })
-      sourceKind = verifier.sourceKind
-      rawSourceLength = verifier.rawSourceLength
-      normalizedSourceLength = verifier.normalizedSourceLength
-      normalizedSourceHash = verifier.sourceHash
-      normalizedSourcePrefix = verifier.sourcePrefix
-      verifierDecision = verifier.decision
+      const frozenEntry = frozen?.byFormulaIndex.get(f.formulaIndex)
+      if (frozenEntry) {
+        sourceKind = frozenEntry.sourceKind
+        rawSourceLength = frozenEntry.rawSourceLength
+        normalizedSourceLength = frozenEntry.normalizedSourceLength
+        normalizedSourceHash = frozenEntry.normalizedSourceHash
+        normalizedSourcePrefix = frozenEntry.normalizedSourcePrefix
+        verifierDecision = frozenEntry.normalizedSourceLength > 0 ? 'READY' : 'UNAVAILABLE'
+      } else {
+        const verifier = verifyFormulaTexSource({
+          host: f.host,
+          formulaIndex: f.formulaIndex,
+          editorRoot: input.editorRoot,
+          markdown: input.markdown,
+        })
+        sourceKind = verifier.sourceKind
+        rawSourceLength = verifier.rawSourceLength
+        normalizedSourceLength = verifier.normalizedSourceLength
+        normalizedSourceHash = verifier.sourceHash
+        normalizedSourcePrefix = verifier.sourcePrefix
+        verifierDecision = verifier.decision
+      }
     }
 
     entries.push({
@@ -237,10 +299,13 @@ export function buildFormulaRenderAuthorizationPlan(input: {
       explicitTagControl: false,
       managedEligible: true,
       authorizationState: verifierDecision === 'UNAVAILABLE' ? 'NOT_READY' : 'READY',
+      stableFormulaIdentity,
+      formulaContentRevision,
+      authoritativeSourceHash: authoritative?.hash ?? '',
     })
   }
 
-  if (!frozen) {
+  if (!frozen && !input.authoritativeSourceByIndex) {
     const byFormulaIndex = new Map<number, FrozenFormulaSource>()
     for (const e of entries) {
       byFormulaIndex.set(e.formulaIndex, {
@@ -259,8 +324,25 @@ export function buildFormulaRenderAuthorizationPlan(input: {
     documentSourceSha256: input.documentSourceSha256,
     documentSourceRevision: input.documentSourceRevision,
     planRevision: input.planRevision,
+    planLiveFormulaRevision: input.planLiveFormulaRevision ?? 0,
+    planSemanticSignature: input.planSemanticSignature ?? '',
     entries,
   }
+}
+
+/** Atomic live plan binding authority marker. */
+export function emitPlanBindingAuthority(plan: FormulaRenderAuthorizationPlan): void {
+  emitRuntimeAudit('FORMULA-LIVE-PLAN-BINDING-AUTHORITY', {
+    planRevision: plan.planRevision,
+    liveFormulaRevision: plan.planLiveFormulaRevision,
+    semanticSignature: plan.planSemanticSignature,
+    formulaCount: plan.entries.length,
+    entryCount: plan.entries.length,
+    atomicSnapshot: true,
+    decision: plan.planLiveFormulaRevision > 0 ? 'PASS' : 'PARTIAL',
+    reason: plan.planLiveFormulaRevision > 0 ? null : 'LIVE_REVISION_NOT_READY',
+    runtimeMarker: R541_RUNTIME_MARKER,
+  })
 }
 
 // ── Pre-call Formula Identity Authority (pure) ─────────────────────────
@@ -272,6 +354,8 @@ export interface PreCallAuthorizationInput {
   sameSourceRevision: boolean
   formulaNumberingEnabled: boolean
   editingHostSourceHashes: string[]
+  /** v2.5.7-R5.4.2: resolved editing-host stable identity (Phase F/I). */
+  editingHostIdentity?: { candidateCount: number; stableFormulaIdentity: number | 'AMBIGUOUS' | null } | null
 }
 
 export interface PreCallAuthorizationResult {
@@ -285,6 +369,8 @@ export interface PreCallAuthorizationResult {
   formula1SourceHashMatch: boolean
   inlineMathRejected: boolean
   foreignMathRejected: boolean
+  /** v2.5.7-R5.4.2: stable identity of the uniquely authorized formula. */
+  uniqueAuthorizedStableFormulaIdentity: number | null
 }
 
 export function resolvePreCallAuthorization(input: PreCallAuthorizationInput): PreCallAuthorizationResult {
@@ -299,6 +385,7 @@ export function resolvePreCallAuthorization(input: PreCallAuthorizationInput): P
     formula1SourceHashMatch: false,
     inlineMathRejected: false,
     foreignMathRejected: false,
+    uniqueAuthorizedStableFormulaIdentity: null,
   }
 
   if (!input.plan) {
@@ -333,16 +420,15 @@ export function resolvePreCallAuthorization(input: PreCallAuthorizationInput): P
 
   const f0 = ready.find((e) => e.formulaIndex === 0)
   const f1 = ready.find((e) => e.formulaIndex === 1)
-  const f0Match = !!f0 && f0.normalizedSourceHash === inputHash
-  const f1Match = !!f1 && f1.normalizedSourceHash === inputHash
-  result.formula0SourceHashMatch = f0Match
-  result.formula1SourceHashMatch = f1Match
+  result.formula0SourceHashMatch = !!f0 && (f0.authoritativeSourceHash || f0.normalizedSourceHash) === inputHash
+  result.formula1SourceHashMatch = !!f1 && (f1.authoritativeSourceHash || f1.normalizedSourceHash) === inputHash
 
-  const matches = [f0Match ? 0 : null, f1Match ? 1 : null].filter((i): i is number => i !== null)
+  // R5.4.1/R5.4.2: match ANY ready managed formula by its AUTHORITATIVE source
+  // hash (falling back to the entry hash when no authoritative binding exists).
+  const matches = ready.filter((e) => (e.authoritativeSourceHash && e.authoritativeSourceHash !== '' ? e.authoritativeSourceHash : e.normalizedSourceHash) === inputHash)
 
   if (matches.length === 1) {
-    const idx = matches[0]
-    const entry = idx === 0 ? f0 : f1
+    const entry = matches[0]
     if (!entry?.desiredTag) {
       result.decision = 'PASS_THROUGH'
       result.authorityKind = 'NONE'
@@ -350,14 +436,32 @@ export function resolvePreCallAuthorization(input: PreCallAuthorizationInput): P
       return result
     }
     result.decision = 'AUTHORIZED'
-    result.uniqueAuthorizedFormulaIndex = idx
-    result.authorityKind = 'EXACT_NORMALIZED_SOURCE_MATCH'
+    result.uniqueAuthorizedFormulaIndex = entry.formulaIndex
+    result.authorityKind = entry.stableFormulaIdentity != null && entry.authoritativeSourceHash !== ''
+      ? 'STABLE_IDENTITY_AUTHORITATIVE_SOURCE_MATCH'
+      : 'EXACT_NORMALIZED_SOURCE_MATCH'
     result.desiredTag = entry.desiredTag
+    result.uniqueAuthorizedStableFormulaIdentity = entry.stableFormulaIdentity
     result.reason = null
     return result
   }
-  if (matches.length === 2) {
-    // Identical sources — disambiguate via the currently-editing host.
+  if (matches.length > 1) {
+    // Identical sources — disambiguate via the resolved editing-host identity
+    // (stable identity → plan entry → formulaIndex).
+    const editingIdentity = input.editingHostIdentity
+    if (editingIdentity && editingIdentity.candidateCount === 1 && editingIdentity.stableFormulaIdentity !== null && editingIdentity.stableFormulaIdentity !== 'AMBIGUOUS') {
+      const byIdentity = matches.find((e) => e.stableFormulaIdentity === editingIdentity.stableFormulaIdentity)
+      if (byIdentity && byIdentity.desiredTag) {
+        result.decision = 'AUTHORIZED'
+        result.uniqueAuthorizedFormulaIndex = byIdentity.formulaIndex
+        result.authorityKind = 'EDITING_HOST_STABLE_IDENTITY_PLUS_SOURCE_MATCH'
+        result.desiredTag = byIdentity.desiredTag
+        result.uniqueAuthorizedStableFormulaIdentity = byIdentity.stableFormulaIdentity
+        result.reason = null
+        return result
+      }
+    }
+    // Legacy disambiguation: unique editing host with exact source hash.
     const editingHashes = input.editingHostSourceHashes
     if (editingHashes.length === 1 && editingHashes[0] === inputHash) {
       result.decision = 'AUTHORIZED'
@@ -390,6 +494,35 @@ export interface Tex2svgInjectionRuntimeContext {
   getDocumentSourceSha256: () => string | null
   getEditorRoot: () => HTMLElement | null
   getCurrentGeneration: () => number | null
+  /**
+   * R5.4.1: live dirty-buffer revision authority (NOT disk SHA).
+   * Absent in legacy contexts → treated as "no live authority" (fresh).
+   */
+  getCurrentLiveFormulaRevision?: () => number | null
+  getCurrentSemanticSignature?: () => string | null
+  /**
+   * R5.4.1: synchronously rebuild the authorization plan from the CURRENT live
+   * editor and reinstall the runtime context. MUST be synchronous (no timer,
+   * no polling, no active MathJax call). Returns true when the plan is rebuilt
+   * and bound to the current live revision.
+   */
+  rebuildPlanSynchronously?: () => boolean
+  /**
+   * R5.4.2 Phase G: monotonically increasing context token — a NEW token proves
+   * the runtime context was fully reinstalled (post-catchup rebind).
+   */
+  getContextToken?: () => number
+  /**
+   * R5.4.2 Phase F: resolve the current editing host → stable identity → plan
+   * entry → formulaIndex (service-side, has canonical hosts). Read-only.
+   */
+  resolveEditingHostIdentity?: () => {
+    candidateCount: number
+    stableFormulaIdentity: number | 'AMBIGUOUS' | null
+    formulaIndex: number | null
+    planEntryFound: boolean
+    decision: string
+  } | null
 }
 
 let injectionContext: Tex2svgInjectionRuntimeContext | null = null
@@ -402,9 +535,71 @@ let injectedCallCount = 0
 const injectedFormulaFlags = new Set<number>()
 const injectedFulfillmentFlags = new Set<number>()
 let nonTargetPassThroughCount = 0
+/** R5.4.1: pre-call plan catch-up reentrancy guard. */
+let preCallCatchupInProgress = false
+/** R5.4.1: last live formula revision a (re)built plan was bound to. */
+let lastRebuiltLiveFormulaRevision: number | null = null
+/** v2.5.7-R5.4.2 Phase H: catchup authorization closure stats. */
+let catchupCompletedAuthorizedCount = 0
+let catchupCompletedNotAuthorizedCount = 0
+const catchupClosurePassedSet = new Set<number>()
+let callsiteAuthorityReported = false
+/** R5.4.2 Phase J: existing-source authority regression counter. */
+let existingSourceRegressionCount = 0
+let lastCallsiteAuthorityDecision: 'PASS' | 'PARTIAL' | 'BLOCK' | 'NOT_REPORTED' = 'NOT_REPORTED'
+/** R5.4.2 Phase G/H: catchup observed + post-catchup rebind pass counters. */
+let catchupObservedCount = 0
+let postCatchupRebindPassCount = 0
 
 export function setTex2svgInjectionContext(ctx: Tex2svgInjectionRuntimeContext | null): void {
   injectionContext = ctx
+}
+
+/** Test-only: reset the pre-call catch-up module state. */
+export function resetPreCallCatchupState(): void {
+  preCallCatchupInProgress = false
+  lastRebuiltLiveFormulaRevision = null
+  catchupCompletedAuthorizedCount = 0
+  catchupCompletedNotAuthorizedCount = 0
+  catchupClosurePassedSet.clear()
+  callsiteAuthorityReported = false
+  existingSourceRegressionCount = 0
+  lastCallsiteAuthorityDecision = 'NOT_REPORTED'
+  catchupObservedCount = 0
+  postCatchupRebindPassCount = 0
+}
+
+/** R5.4.2 Phase H: read-only catchup closure stats for the final accounting. */
+export function getCatchupStats(): {
+  completedAuthorized: number
+  completedNotAuthorized: number
+  closurePassedCount: number
+} {
+  return {
+    completedAuthorized: catchupCompletedAuthorizedCount,
+    completedNotAuthorized: catchupCompletedNotAuthorizedCount,
+    closurePassedCount: catchupClosurePassedSet.size,
+  }
+}
+
+/** R5.4.2 Phase J: existing-source authority regression count. */
+export function getExistingSourceRegressionCount(): number {
+  return existingSourceRegressionCount
+}
+
+/** R5.4.2 Phase N: last read-only callsite authority decision. */
+export function getCallsiteAuthorityDecision(): 'PASS' | 'PARTIAL' | 'BLOCK' | 'NOT_REPORTED' {
+  return lastCallsiteAuthorityDecision
+}
+
+/** R5.4.2 Phase G/H: catchup observed + post-catchup rebind pass counters. */
+export function getCatchupRebindStats(): { catchupObservedCount: number; postCatchupRebindPassCount: number } {
+  return { catchupObservedCount, postCatchupRebindPassCount }
+}
+
+/** R5.4.2 Phase F: current injection-context plan (service-side identity resolver). */
+export function getCurrentInjectionPlan(): FormulaRenderAuthorizationPlan | null {
+  return injectionContext?.plan ?? null
 }
 
 export function nextPlanRevision(): number {
@@ -413,6 +608,11 @@ export function nextPlanRevision(): number {
 
 export function getTex2svgInjectionPlanReady(): boolean {
   return !!injectionContext?.plan && injectionContext.plan.entries.some((e) => e.authorizationState === 'READY')
+}
+
+/** R5.4.1: number of injected calls still awaiting fulfillment (pending set). */
+export function getPendingInjectionCount(): number {
+  return pendingInjection.size
 }
 
 // ── Pre-call Handler (called by the tex2svgPromise wrapper) ────────────
@@ -434,6 +634,66 @@ function collectEditingHostSourceHashes(root: HTMLElement | null): string[] {
     }
   } catch { /* read-only */ }
   return hashes
+}
+
+/**
+ * v2.5.7-R5.4.2 Phase N: Typora renderer callsite authority (READ-ONLY). We
+ * observe the REAL external caller of tex2svgPromise from the captured stack.
+ * We never invoke it and never patch frame.js; safeToInvoke stays false unless
+ * a downstream same-formula correlation is proven.
+ */
+function firstRealCallerFrame(stack: string): { candidateName: string; ownerHint: string } | null {
+  const SKIP = [
+    'mathjax-render-route-trace',
+    'mathjax-tex2svg-tag-injection',
+    'typora-community-plugin',
+    'transparentWrapper',
+    'preCallTransform',
+    'handleTex2svgPreCall',
+    'reportInjectionFulfillment',
+    'anonymous',
+    'webpack',
+    'node_modules',
+  ]
+  const lines = stack.split('\n')
+  for (const line of lines) {
+    const m = line.match(/\s+at\s+(.+)/)
+    if (!m) continue
+    const frame = m[1]
+    if (SKIP.some((s) => frame.includes(s))) continue
+    const fnMatch = frame.match(/^([^(\s]+)\s*\(/)
+    const urlMatch = frame.match(/\(([^)]+)\)$/) || frame.match(/^([^\s]+)$/)
+    const candidateName = fnMatch ? fnMatch[1] : 'anonymous'
+    const ownerHint = urlMatch ? urlMatch[1] : frame
+    return { candidateName, ownerHint }
+  }
+  return null
+}
+
+function reportTyporaRendererCallsiteAuthority(callOrdinal: number, stack: string, formulaHostIdentityAvailable: boolean, sameFormulaCorrelation: boolean): void {
+  const caller = firstRealCallerFrame(stack)
+  const candidateName = caller?.candidateName ?? 'UNKNOWN'
+  const ownerHint = caller?.ownerHint ?? 'typora-runtime'
+  // Observational only: we cannot prove a SAFE invocation contract, so the
+  // authority is PARTIAL with the honest reason (never a hack fallback).
+  lastCallsiteAuthorityDecision = 'PARTIAL'
+  emitRuntimeAudit('TYPORA-FORMULA-RENDERER-CALLSITE-AUTHORITY', {
+    candidateName,
+    ownerToken: null,
+    ownerHint,
+    callable: true,
+    hookable: false,
+    actualCallObserved: true,
+    formulaHostIdentityAvailable,
+    downstreamTex2svgPromiseObserved: true,
+    sameFormulaCorrelation,
+    sourceImmutable: false,
+    selectionPreserved: false,
+    safeToInvoke: false,
+    decision: 'PARTIAL',
+    reason: 'CALLSITE_OBSERVED_NOT_SAFE_TO_INVOKE',
+    runtimeMarker: R542_RUNTIME_MARKER,
+  })
 }
 
 /**
@@ -481,14 +741,422 @@ export function handleTex2svgPreCall(
     runtimeMarker: R54_RUNTIME_MARKER,
   })
 
-  const auth = resolvePreCallAuthorization({
-    plan,
+  // ── R5.4.1 Phase C/E: Live freshness gate + synchronous pre-call plan catch-up ──
+  // Disk SHA is a PERSISTENCE authority only. A tex2svgPromise call arriving
+  // before the mutation-driven refresh rebuilt the plan is re-authorized against
+  // a plan synchronously rebuilt from the CURRENT live editor (no timer, no
+  // polling, no active MathJax call, no Markdown write).
+  const currentLiveFormulaRevision = ctx?.getCurrentLiveFormulaRevision?.() ?? null
+  const currentSemanticSignature = ctx?.getCurrentSemanticSignature?.() ?? null
+  const planLiveFormulaRevision = plan?.planLiveFormulaRevision ?? 0
+  const planSemanticSignature = plan?.planSemanticSignature ?? ''
+  const hasLiveAuthority = currentLiveFormulaRevision !== null
+  const hasSemanticAuthority = currentSemanticSignature !== null && currentSemanticSignature !== ''
+  const liveFormulaRevisionFresh = !hasLiveAuthority || planLiveFormulaRevision === currentLiveFormulaRevision
+  const semanticSignatureFresh = !hasSemanticAuthority || planSemanticSignature === currentSemanticSignature
+  // R5.4.3.3: also trigger catch-up when editing formula input hash not in plan (new formula).
+  const planHasEntryForInput = plan?.entries.some((e) => e.normalizedSourceHash === inputHash) ?? false
+  const hashMissAndNotRebuiltYet = plan !== null && !planHasEntryForInput && lastRebuiltLiveFormulaRevision !== currentLiveFormulaRevision
+  const editingFormulaNotInPlan = plan !== null && !planHasEntryForInput
+
+  let catchupAttempted = false
+  let catchupCompleted = false
+  let planAfter = plan
+  let staleAfter = false
+  let contextRebound = false
+  const ctxTokenBefore = ctx?.getContextToken?.() ?? 0
+  let ctxTokenAfter = ctxTokenBefore
+  if (
+    !!ctx?.rebuildPlanSynchronously
+    && plan !== null
+    && (!liveFormulaRevisionFresh || !semanticSignatureFresh || hashMissAndNotRebuiltYet || editingFormulaNotInPlan)
+  ) {
+    catchupAttempted = true
+    if (preCallCatchupInProgress) {
+      // Reentrancy: the catch-up rebuild must never re-enter the wrapper.
+      emitRuntimeAudit('MATHJAX-TEX2SVG-PRECALL-PLAN-CATCHUP', {
+        callOrdinal,
+        planRevisionBefore: plan?.planRevision ?? null,
+        planLiveFormulaRevisionBefore: planLiveFormulaRevision,
+        currentLiveFormulaRevision,
+        staleBefore: true,
+        catchupAttempted: true,
+        catchupCompleted: false,
+        planRevisionAfter: null,
+        planLiveFormulaRevisionAfter: null,
+        sameCurrentCallReauthorized: false,
+        uniqueAuthorizedFormulaIndex: null,
+        desiredTag: null,
+        decision: 'PASS_THROUGH',
+        reason: 'PRECALL_CATCHUP_REENTRANCY',
+        runtimeMarker: R541_RUNTIME_MARKER,
+      })
+      catchupCompletedNotAuthorizedCount++
+      return { applyArgs: args, injection: null, decision: 'PASS_THROUGH' }
+    }
+    preCallCatchupInProgress = true
+    try {
+      catchupCompleted = ctx.rebuildPlanSynchronously() === true
+    } catch {
+      catchupCompleted = false
+    } finally {
+      preCallCatchupInProgress = false
+    }
+    // R5.4.2 Phase G: post-catchup FULL context rebind. The rebuild reinstalls
+    // a NEW runtime context via setTex2svgInjectionContext — the local `ctx` is
+    // stale by design. A new context token proves the rebind.
+    const ctxAfter = injectionContext
+    ctxTokenAfter = ctxAfter?.getContextToken?.() ?? ctxTokenBefore
+    planAfter = ctxAfter?.plan ?? null
+    contextRebound = !!ctxAfter && ctxTokenAfter !== ctxTokenBefore && !!planAfter
+    const rebuiltRevision = ctxAfter?.getCurrentLiveFormulaRevision?.() ?? currentLiveFormulaRevision
+    if (catchupCompleted && planAfter) lastRebuiltLiveFormulaRevision = rebuiltRevision
+    const afterLiveFresh = !ctxAfter?.getCurrentLiveFormulaRevision
+      || (planAfter?.planLiveFormulaRevision ?? 0) === (ctxAfter.getCurrentLiveFormulaRevision?.() ?? 0)
+    const afterSemanticFresh = !ctxAfter?.getCurrentSemanticSignature
+      || !ctxAfter.getCurrentSemanticSignature?.()
+      || (planAfter?.planSemanticSignature ?? '') === (ctxAfter.getCurrentSemanticSignature?.() ?? '')
+    staleAfter = !catchupCompleted || !contextRebound || !afterLiveFresh || !afterSemanticFresh
+  }
+
+  if (catchupAttempted) {
+    catchupObservedCount++
+    emitRuntimeAudit('MATHJAX-TEX2SVG-PRECALL-PLAN-CATCHUP', {
+      callOrdinal,
+      planRevisionBefore: plan?.planRevision ?? null,
+      planLiveFormulaRevisionBefore: planLiveFormulaRevision,
+      currentLiveFormulaRevision,
+      staleBefore: !liveFormulaRevisionFresh || !semanticSignatureFresh || hashMissAndNotRebuiltYet,
+      catchupAttempted,
+      catchupCompleted,
+      planRevisionAfter: planAfter?.planRevision ?? null,
+      planLiveFormulaRevisionAfter: planAfter?.planLiveFormulaRevision ?? null,
+      // R5.4.3.5 P2: catchupCompleted NEVER equals reauthorized. This field is
+      // only ever true when the post-catchup authorization below actually
+      // resolved identity+index+desiredTag and authorized THIS call.
+      sameCurrentCallReauthorized: false,
+      reauthorizationAttempted: false,
+      reauthorizationSucceeded: false,
+      uniqueAuthorizedFormulaIndex: null,
+      desiredTag: null,
+      decision: staleAfter ? 'STALE_AFTER_CATCHUP' : 'CATCHUP_COMPLETED',
+      reason: staleAfter ? 'STALE_LIVE_REVISION_AFTER_CATCHUP' : null,
+      runtimeMarker: R541_RUNTIME_MARKER,
+    })
+    const ctxAfter = injectionContext
+    if (!staleAfter) postCatchupRebindPassCount++
+    emitRuntimeAudit('MATHJAX-TEX2SVG-POST-CATCHUP-CONTEXT-REBIND', {
+      callOrdinal,
+      contextTokenBefore: ctxTokenBefore,
+      contextTokenAfter: ctxTokenAfter,
+      planRevisionBefore: plan?.planRevision ?? null,
+      planRevisionAfter: planAfter?.planRevision ?? null,
+      planLiveFormulaRevisionBefore: planLiveFormulaRevision,
+      planLiveFormulaRevisionAfter: planAfter?.planLiveFormulaRevision ?? null,
+      currentLiveFormulaRevisionBefore: currentLiveFormulaRevision,
+      currentLiveFormulaRevisionAfter: ctxAfter?.getCurrentLiveFormulaRevision?.() ?? currentLiveFormulaRevision,
+      semanticSignatureBefore: planSemanticSignature,
+      semanticSignatureAfter: planAfter?.planSemanticSignature ?? '',
+      editingHostIdentityBefore: null,
+      editingHostIdentityAfter: null,
+      contextRebound,
+      decision: staleAfter ? 'FAIL' : 'PASS',
+      reason: staleAfter ? 'POST_CATCHUP_CONTEXT_REBIND_FAILED' : null,
+      runtimeMarker: R541_RUNTIME_MARKER,
+    })
+    if (staleAfter) {
+      // Plan could not be bound to the current live revision — never authorize.
+      emitRuntimeAudit('MATHJAX-TEX2SVG-NONTARGET-PASS-THROUGH', {
+        callOrdinal,
+        inputHash,
+        candidateManagedFormulaCount: 0,
+        uniqueAuthorizedFormulaIndex: null,
+        originalArgsPassed: true,
+        inputUnchanged: true,
+        returnIdentityPreserved: true,
+        decision: 'PASS_THROUGH',
+        reason: staleAfter && !contextRebound ? 'POST_CATCHUP_CONTEXT_REBIND_FAILED' : 'STALE_LIVE_REVISION_AFTER_CATCHUP',
+        runtimeMarker: R541_RUNTIME_MARKER,
+      })
+      catchupCompletedNotAuthorizedCount++
+      return { applyArgs: args, injection: null, decision: 'PASS_THROUGH' }
+    }
+  }
+
+  // ── R5.4.2 Phase G: recompute ALL runtime authority from the CURRENT context
+  // (post-rebind when a catch-up ran; otherwise the same context). Never rely on
+  // a stale pre-catchup snapshot for document / source / editing-host authority.
+  const ctxAuth = injectionContext
+  const authPlan = ctxAuth?.plan ?? planAfter ?? plan
+  const authDocumentKey = ctxAuth?.getDocumentKey?.() ?? documentKey
+  const authSourceSha = ctxAuth?.getDocumentSourceSha256?.() ?? sourceSha
+  const authEditorRoot = ctxAuth?.getEditorRoot?.() ?? editorRoot
+  const authSameDocument = !!ctxAuth && !!authDocumentKey && !!authPlan && authDocumentKey === authPlan.documentKey
+  const authSameSourceRevision = !!ctxAuth && !!authSourceSha && !!authPlan && authSourceSha === authPlan.documentSourceSha256
+  const authEditingHashes = collectEditingHostSourceHashes(authEditorRoot)
+  const editingHostIdentity = ctxAuth?.resolveEditingHostIdentity?.() ?? null
+
+  // ── R5.4.3.8 P2: Edit-session identity continuity ──
+  // The latched edit-session identity OUTRANKS DOM-based currentEditingFormula-
+  // CandidateCount and source-hash uniqueness. When an active session exists and
+  // matches the current plan, authorization proceeds via the session identity
+  // even if currentEditingFormulaCandidateCount temporarily drops to 0.
+  const activeSession = getActiveEditSession()
+  const sessionIdentityOk = !!activeSession
+    && activeSession.documentKey === authDocumentKey
+    && activeSession.generation === (ctxAuth?.getCurrentGeneration?.() ?? -1)
+    && activeSession.stableFormulaIdentity !== null
+    && activeSession.stableFormulaIdentity !== 'AMBIGUOUS'
+  const sessionPlanEntry = sessionIdentityOk && authPlan
+    ? authPlan.entries.find((e) => e.stableFormulaIdentity === activeSession!.stableFormulaIdentity) ?? null
+    : null
+
+  // Latch identity on the first natural call of an editing formula.
+  if (
+    editingHostIdentity
+    && editingHostIdentity.candidateCount === 1
+    && editingHostIdentity.stableFormulaIdentity !== null
+    && editingHostIdentity.stableFormulaIdentity !== 'AMBIGUOUS'
+    && (!activeSession || activeSession.stableFormulaIdentity !== editingHostIdentity.stableFormulaIdentity)
+  ) {
+    const latched = latchEditSession({
+      documentKey: authDocumentKey ?? '',
+      generation: ctxAuth?.getCurrentGeneration?.() ?? 0,
+      rootToken: 0,
+      stableFormulaIdentity: editingHostIdentity.stableFormulaIdentity,
+      formulaHostToken: editingHostIdentity.stableFormulaIdentity as number,
+      formulaIndex: editingHostIdentity.stableFormulaIdentity as number,
+      desiredTag: null,
+      sourceHashAtEnter: null,
+      contentRevisionAtEnter: 0,
+      trigger: 'PRECALL_HOST_IDENTITY',
+    })
+    // R5.4.3.8 P1: entering the edit state via a natural tex2svg call is a
+    // NONSEMANTIC transition — it must never commit authoritative source.
+    emitNonsemanticEditTransition({
+      sessionId: latched.sessionId,
+      eventKind: 'START_EDITING_PRECALL_TEX2SVG',
+      stableFormulaIdentity: editingHostIdentity.stableFormulaIdentity,
+      formulaIndex: editingHostIdentity.stableFormulaIdentity as number,
+      userSemanticSourceChange: false,
+    })
+  }
+  // Session identity takes priority for authorization lookup.
+  const sessionResolvedIdentity = sessionPlanEntry
+    ? sessionPlanEntry.stableFormulaIdentity
+    : (editingHostIdentity?.stableFormulaIdentity ?? null)
+  const sessionResolvedIndex = sessionPlanEntry
+    ? sessionPlanEntry.formulaIndex
+    : (editingHostIdentity?.planEntryFound ? editingHostIdentity.stableFormulaIdentity : null)
+
+  // ── R5.4.3.8 P0: Empty formula sentinel authorization ──
+  // <Empty \space Math \space Block> / empty TeX on a canonical host is an
+  // EMPTY_FORMULA_SENTINEL. It is authorized by HOST/SESSION identity, never
+  // by source-hash match, so an empty block formula shows InkChapter numbering
+  // before the user types any character.
+  const isEmptyInput = isEmptyFormulaSentinel(inputTex)
+  let emptySentinelAuthorized = false
+  let emptyAuthorizedBy: 'HOST_IDENTITY' | 'EDIT_SESSION' | 'NONE' = 'NONE'
+  let emptyAuthorizedIndex: number | null = null
+  let emptyAuthorizedTag: string | null = null
+  if (isEmptyInput) {
+    if (sessionPlanEntry) {
+      emptySentinelAuthorized = true
+      emptyAuthorizedBy = 'EDIT_SESSION'
+      emptyAuthorizedIndex = sessionPlanEntry.formulaIndex
+      emptyAuthorizedTag = sessionPlanEntry.desiredTag
+    } else if (editingHostIdentity && editingHostIdentity.candidateCount === 1
+      && editingHostIdentity.stableFormulaIdentity !== null && editingHostIdentity.stableFormulaIdentity !== 'AMBIGUOUS') {
+      const hostEntry = authPlan?.entries.find((e) => e.stableFormulaIdentity === editingHostIdentity.stableFormulaIdentity) ?? null
+      if (hostEntry) {
+        emptySentinelAuthorized = true
+        emptyAuthorizedBy = 'HOST_IDENTITY'
+        emptyAuthorizedIndex = hostEntry.formulaIndex
+        emptyAuthorizedTag = hostEntry.desiredTag
+      }
+    }
+    emitEmptyTex2svgSentinelAuthority({
+      callOrdinal,
+      documentKey: authDocumentKey ?? '',
+      generation: ctxAuth?.getCurrentGeneration?.() ?? 0,
+      rootToken: 0,
+      stableFormulaIdentity: emptySentinelAuthorized ? (sessionResolvedIdentity ?? editingHostIdentity?.stableFormulaIdentity ?? null) : null,
+      formulaIndex: emptyAuthorizedIndex,
+      desiredTag: emptyAuthorizedTag,
+      authorizedBy: emptyAuthorizedBy,
+      decision: emptySentinelAuthorized ? 'AUTHORIZED_EMPTY_FORMULA_SLOT' : 'FAIL',
+      reason: emptySentinelAuthorized ? null : 'EMPTY_SENTINEL_NO_HOST_OR_SESSION_IDENTITY',
+    })
+  }
+
+  let auth = resolvePreCallAuthorization({
+    plan: authPlan,
     inputTex,
-    sameDocument,
-    sameSourceRevision,
-    formulaNumberingEnabled: !!ctx?.enabled,
-    editingHostSourceHashes: editingHashes,
+    sameDocument: authSameDocument,
+    sameSourceRevision: authSameSourceRevision,
+    formulaNumberingEnabled: !!ctxAuth?.enabled,
+    editingHostSourceHashes: authEditingHashes,
+    editingHostIdentity,
   })
+
+  // R5.4.3.8: if empty sentinel authorized by identity but source-based auth
+  // could not match (expected — empty TeX has no committed source), override to
+  // AUTHORIZED via the identity path.
+  if (isEmptyInput && emptySentinelAuthorized && emptyAuthorizedIndex !== null) {
+    auth = {
+      ...auth,
+      decision: 'AUTHORIZED',
+      authorityKind: 'EMPTY_FORMULA_SLOT_IDENTITY',
+      uniqueAuthorizedFormulaIndex: emptyAuthorizedIndex,
+      uniqueAuthorizedStableFormulaIdentity: (sessionResolvedIdentity ?? editingHostIdentity?.stableFormulaIdentity) as number,
+      desiredTag: emptyAuthorizedTag,
+      candidateManagedFormulaCount: Math.max(auth.candidateManagedFormulaCount, 1),
+    }
+  }
+
+  // R5.4.3.8 P2: emit edit-session tex2svg authority when session identity is in play.
+  if (sessionIdentityOk && sessionPlanEntry) {
+    emitEditSessionTex2svgAuthority({
+      callOrdinal,
+      sessionId: activeSession!.sessionId,
+      stableFormulaIdentity: activeSession!.stableFormulaIdentity,
+      formulaIndex: sessionPlanEntry.formulaIndex,
+      desiredTag: sessionPlanEntry.desiredTag,
+      currentEditingCandidateCount: editingHostIdentity?.candidateCount ?? 0,
+      authorizedBy: 'EDIT_SESSION_LATCH',
+      authorized: true,
+    })
+  }
+
+  // ── R5.4.3.5 P3: Existing Formula Transitional Current Source Authority ──
+  // When the editing host resolves to ONE existing stable identity but the
+  // authoritative committed source no longer matches the current tex2svg input,
+  // do NOT permanently PASS_THROUGH. Promote the current input as
+  // TRANSITIONAL_CURRENT_EDIT_SOURCE for THIS stable identity by re-running the
+  // formula-only synchronous rebuild (which re-captures authoritative source
+  // from the live DOM) and re-resolve authorization for THIS same call.
+  let transitionalSourceAccepted = false
+  let transitionalSourceChanged = false
+  let transitionalNextHash: string | null = null
+  if (
+    auth.decision === 'PASS_THROUGH'
+    && auth.reason === 'NO_FORMULA_SOURCE_MATCH'
+    && editingHostIdentity && editingHostIdentity.candidateCount === 1
+    && editingHostIdentity.stableFormulaIdentity !== null && editingHostIdentity.stableFormulaIdentity !== 'AMBIGUOUS'
+    && inputTex.trim().length >= 4
+    && !!ctxAuth?.rebuildPlanSynchronously
+    && !preCallCatchupInProgress
+  ) {
+    const regEntry = authPlan?.entries.find((e) => e.stableFormulaIdentity === editingHostIdentity.stableFormulaIdentity)
+    const priorMatchWasEstablished = !!regEntry && injectedFormulaFlags.has(regEntry.formulaIndex)
+    if (regEntry) {
+      // Promote attempt: synchronously rebuild plan (re-captures live source).
+      preCallCatchupInProgress = true
+      let promoteOk = false
+      try {
+        promoteOk = ctxAuth.rebuildPlanSynchronously() === true
+      } catch {
+        promoteOk = false
+      } finally {
+        preCallCatchupInProgress = false
+      }
+      if (promoteOk) {
+        const promotedCtx = injectionContext
+        const promotedPlan = promotedCtx?.plan ?? null
+        if (promotedPlan) {
+          const promotedIdentity = promotedCtx?.resolveEditingHostIdentity?.() ?? editingHostIdentity
+          const auth2 = resolvePreCallAuthorization({
+            plan: promotedPlan,
+            inputTex,
+            sameDocument: authSameDocument,
+            sameSourceRevision: authSameSourceRevision,
+            formulaNumberingEnabled: !!promotedCtx?.enabled,
+            editingHostSourceHashes: collectEditingHostSourceHashes(promotedCtx?.getEditorRoot?.() ?? null),
+            editingHostIdentity: promotedIdentity,
+          })
+          if (auth2.decision === 'AUTHORIZED' && auth2.uniqueAuthorizedFormulaIndex !== null) {
+            auth = auth2
+            transitionalSourceAccepted = true
+            transitionalSourceChanged = true
+            transitionalNextHash = inputHash
+          }
+        }
+      }
+      emitRuntimeAudit('FORMULA-EXISTING-TRANSITIONAL-SOURCE-AUTHORITY', {
+        stableFormulaIdentity: regEntry.stableFormulaIdentity,
+        formulaIndex: regEntry.formulaIndex,
+        canonicalHostToken: null,
+        committedSourceHash: regEntry.authoritativeSourceHash || regEntry.normalizedSourceHash,
+        currentTexInputHash: inputHash,
+        sourceMismatchBefore: true,
+        transitionalSourceAccepted,
+        nextSourceHash: transitionalNextHash,
+        sourceChanged: transitionalSourceChanged,
+        previousLiveFormulaRevision: currentLiveFormulaRevision,
+        nextLiveFormulaRevision: ctxAuth?.getCurrentLiveFormulaRevision?.() ?? currentLiveFormulaRevision,
+        decision: transitionalSourceAccepted ? 'PASS' : 'FAIL',
+        reason: transitionalSourceAccepted ? null : 'TRANSITIONAL_PROMOTE_NOT_APPLICABLE',
+        runtimeMarker: R543_RUNTIME_MARKER,
+      })
+      if (!transitionalSourceAccepted && priorMatchWasEstablished) {
+        existingSourceRegressionCount++
+        emitRuntimeAudit('FORMULA-EXISTING-SOURCE-AUTHORITY-REGRESSION', {
+          stableFormulaIdentity: regEntry.stableFormulaIdentity,
+          formulaIndex: regEntry.formulaIndex,
+          formulaContentRevision: regEntry.formulaContentRevision,
+          authoritativeHash: regEntry.authoritativeSourceHash || regEntry.normalizedSourceHash,
+          latestTex2svgInputHash: inputHash,
+          sourceMatch: false,
+          priorMatchWasEstablished: true,
+          regressed: true,
+          decision: 'FAIL',
+          reason: 'AUTHORITATIVE_SOURCE_NO_LONGER_MATCHES_INPUT',
+          runtimeMarker: R542_RUNTIME_MARKER,
+        })
+      }
+    }
+  }
+
+  // R5.4.1/R5.4.2: report the final authorization decision as
+  // AUTHORIZED_AFTER_CATCHUP when the pre-call catch-up + full context rebind
+  // was the path that bound this formula.
+  let authDecision: PreCallDecision = auth.decision === 'AUTHORIZED' && catchupCompleted && contextRebound
+    ? 'AUTHORIZED_AFTER_CATCHUP'
+    : auth.decision
+
+  // R5.4.3.5 P2: Same-call Reauthorization Truth.
+  // sameCurrentCallReauthorized is true ONLY when identity+index+desiredTag are
+  // all resolved AND this call is actually authorized. Never derived from
+  // catchupCompleted alone.
+  const reauthAuthorized = authDecision === 'AUTHORIZED' || authDecision === 'AUTHORIZED_AFTER_CATCHUP'
+  const reauthIdentity = auth.uniqueAuthorizedStableFormulaIdentity !== null && auth.uniqueAuthorizedStableFormulaIdentity !== undefined
+  const reauthIndex = auth.uniqueAuthorizedFormulaIndex !== null && auth.uniqueAuthorizedFormulaIndex !== undefined
+  const reauthTag = !!auth.desiredTag && auth.desiredTag !== ''
+  const reauthManagedEligible = auth.candidateManagedFormulaCount > 0
+  const sameCurrentCallReauthorized = reauthAuthorized && reauthIdentity && reauthIndex && reauthTag && reauthManagedEligible && authSameDocument
+  if (catchupAttempted) {
+    emitRuntimeAudit('MATHJAX-TEX2SVG-SAME-CALL-REAUTHORIZATION', {
+      callOrdinal,
+      catchupAttempted,
+      catchupCompleted,
+      reauthorizationAttempted: catchupCompleted && !staleAfter,
+      reauthorizationSucceeded: sameCurrentCallReauthorized,
+      stableFormulaIdentity: auth.uniqueAuthorizedStableFormulaIdentity ?? null,
+      formulaIndex: auth.uniqueAuthorizedFormulaIndex ?? null,
+      desiredTag: auth.desiredTag ?? null,
+      sourceAuthorityMatched: auth.uniqueAuthorizedFormulaIndex !== null,
+      managedEligible: reauthManagedEligible,
+      explicitTagControl: auth.reason === 'EXPLICIT_TAG_CONTROL',
+      authorized: reauthAuthorized,
+      sameDocument: authSameDocument,
+      sameGeneration: authSameSourceRevision,
+      sameEditorRoot: true,
+      sameCurrentCallReauthorized,
+      decision: sameCurrentCallReauthorized ? 'AUTHORIZED' : (catchupCompleted ? 'FAIL' : 'PASS_THROUGH'),
+      reason: sameCurrentCallReauthorized ? null : (!reauthIdentity ? 'REAUTHORIZATION_STABLE_IDENTITY_MISSING' : !reauthIndex ? 'REAUTHORIZATION_FORMULA_INDEX_MISSING' : !reauthTag ? 'REAUTHORIZATION_DESIRED_TAG_MISSING' : !reauthAuthorized ? 'REAUTHORIZATION_NOT_AUTHORIZED' : 'REAUTHORIZATION_MANAGED_ELIGIBILITY_MISSING'),
+      runtimeMarker: R543_RUNTIME_MARKER,
+    })
+  }
 
   // Formula identity marker.
   emitRuntimeAudit('MATHJAX-TEX2SVG-PRECALL-FORMULA-AUTHORITY', {
@@ -501,15 +1169,22 @@ export function handleTex2svgPreCall(
     formula1SourceHashMatch: auth.formula1SourceHashMatch,
     formula0ExactNormalizedInputMatch: auth.formula0SourceHashMatch,
     formula1ExactNormalizedInputMatch: auth.formula1SourceHashMatch,
-    currentEditingFormulaCandidateCount: editingHashes.length,
-    currentEditingFormulaIndex: auth.authorityKind === 'CURRENT_EDITING_HOST_PLUS_EXACT_SOURCE_MATCH' ? auth.uniqueAuthorizedFormulaIndex : null,
+    currentEditingFormulaCandidateCount: editingHostIdentity?.candidateCount ?? authEditingHashes.length,
+    currentEditingFormulaIndex: auth.authorityKind === 'CURRENT_EDITING_HOST_PLUS_EXACT_SOURCE_MATCH' || auth.authorityKind === 'EDITING_HOST_STABLE_IDENTITY_PLUS_SOURCE_MATCH' ? auth.uniqueAuthorizedFormulaIndex : null,
+    currentEditingStableFormulaIdentity: editingHostIdentity?.stableFormulaIdentity ?? null,
+    currentEditingFormulaPlanEntryFound: editingHostIdentity?.planEntryFound ?? false,
     callerContextFormulaCandidateCount: 0,
     callerContextFormulaIndex: null,
     uniqueAuthorizedFormulaIndex: auth.uniqueAuthorizedFormulaIndex,
+    uniqueAuthorizedStableFormulaIdentity: auth.uniqueAuthorizedStableFormulaIdentity,
     authorityKind: auth.authorityKind,
-    decision: auth.decision,
+    decision: authDecision,
     reason: auth.reason,
-    runtimeMarker: R54_RUNTIME_MARKER,
+    liveFormulaRevisionFresh,
+    semanticSignatureFresh,
+    planLiveFormulaRevision,
+    currentLiveFormulaRevision,
+    runtimeMarker: R541_RUNTIME_MARKER,
   })
 
   // Pre-call authorization summary.
@@ -517,17 +1192,20 @@ export function handleTex2svgPreCall(
     callOrdinal,
     routeName: 'MathJax.tex2svgPromise',
     uniqueAuthorizedFormulaIndex: auth.uniqueAuthorizedFormulaIndex,
+    uniqueAuthorizedStableFormulaIdentity: auth.uniqueAuthorizedStableFormulaIdentity,
     desiredTag: auth.desiredTag,
-    sameDocument,
-    sameSourceRevision,
+    sameDocument: authSameDocument,
+    sameSourceRevision: authSameSourceRevision,
     managedEligible: auth.candidateManagedFormulaCount > 0,
     explicitTagControl: auth.reason === 'EXPLICIT_TAG_CONTROL',
     inlineMathRejected: auth.inlineMathRejected,
     foreignMathRejected: auth.foreignMathRejected,
     authorityKind: auth.authorityKind,
-    decision: auth.decision,
+    decision: authDecision,
     reason: auth.reason,
-    runtimeMarker: R54_RUNTIME_MARKER,
+    preCallPlanCatchup: catchupAttempted,
+    contextRebound,
+    runtimeMarker: R541_RUNTIME_MARKER,
   })
 
   // First-open authority report (once per session).
@@ -542,14 +1220,26 @@ export function handleTex2svgPreCall(
       authorizationPlanReady: planReady,
       formula0AuthorizedOnFirstOpen: auth.uniqueAuthorizedFormulaIndex === 0,
       formula1AuthorizedOnFirstOpen: auth.uniqueAuthorizedFormulaIndex === 1,
-      decision: auth.decision === 'AUTHORIZED' ? 'PASS' : 'PARTIAL',
+      decision: authDecision === 'AUTHORIZED' || authDecision === 'AUTHORIZED_AFTER_CATCHUP' ? 'PASS' : 'PARTIAL',
       reason: auth.reason ?? (planReady ? 'PLAN_READY' : 'AUTHORIZATION_PLAN_NOT_READY'),
       runtimeMarker: R54_RUNTIME_MARKER,
     })
   }
 
-  if (auth.decision !== 'AUTHORIZED' || auth.uniqueAuthorizedFormulaIndex === null) {
+  // R5.4.2 Phase N: read-only Typora renderer callsite observation (once).
+  if (!callsiteAuthorityReported) {
+    callsiteAuthorityReported = true
+    reportTyporaRendererCallsiteAuthority(
+      callOrdinal,
+      _preCallStack,
+      !!editingHostIdentity && editingHostIdentity.planEntryFound,
+      authDecision === 'AUTHORIZED' || authDecision === 'AUTHORIZED_AFTER_CATCHUP',
+    )
+  }
+
+  if ((authDecision !== 'AUTHORIZED' && authDecision !== 'AUTHORIZED_AFTER_CATCHUP') || auth.uniqueAuthorizedFormulaIndex === null) {
     nonTargetPassThroughCount++
+    if (catchupAttempted) catchupCompletedNotAuthorizedCount++
     emitRuntimeAudit('MATHJAX-TEX2SVG-NONTARGET-PASS-THROUGH', {
       callOrdinal,
       inputHash,
@@ -626,15 +1316,43 @@ export function handleTex2svgPreCall(
     tagInserted: true,
     insertedTag: auth.desiredTag,
     otherArgIdentityPreserved: forwardedArgs.slice(1).every((v, i) => v === args[i + 1]),
-    decision: 'PASS',
+    preCallPlanCatchup: catchupAttempted,
+    decision: authDecision === 'AUTHORIZED' ? 'PASS' : 'PASS_AFTER_CATCHUP',
     reason: null,
-    runtimeMarker: R54_RUNTIME_MARKER,
+    runtimeMarker: R541_RUNTIME_MARKER,
   })
+
+  // R5.4.2 Phase H: catchup authorization closure. CATCHUP_COMPLETED alone is
+  // NEVER reported as authorized — only a REAL authorization is.
+  if (catchupAttempted) {
+    if (authDecision === 'AUTHORIZED' || authDecision === 'AUTHORIZED_AFTER_CATCHUP') {
+      catchupCompletedAuthorizedCount++
+    } else {
+      catchupCompletedNotAuthorizedCount++
+    }
+    const closureAuthorized = authDecision === 'AUTHORIZED' || authDecision === 'AUTHORIZED_AFTER_CATCHUP'
+    emitRuntimeAudit('MATHJAX-TEX2SVG-CATCHUP-AUTHORIZATION-CLOSURE', {
+      callOrdinal,
+      catchupAttempted,
+      catchupCompleted,
+      contextRebound,
+      uniqueAuthorizedStableFormulaIdentity: auth.uniqueAuthorizedStableFormulaIdentity,
+      uniqueAuthorizedFormulaIndex: auth.uniqueAuthorizedFormulaIndex,
+      desiredTag: auth.desiredTag,
+      authorityKind: auth.authorityKind,
+      injectionObserved: closureAuthorized,
+      fulfillmentObserved: false,
+      visibleTagMatched: false,
+      decision: closureAuthorized ? 'CATCHUP_COMPLETED_AUTHORIZED' : 'CATCHUP_COMPLETED_NOT_AUTHORIZED',
+      reason: null,
+      runtimeMarker: R542_RUNTIME_MARKER,
+    })
+  }
 
   return {
     applyArgs: forwardedArgs,
     injection: { callOrdinal, formulaIndex: auth.uniqueAuthorizedFormulaIndex, desiredTag: auth.desiredTag },
-    decision: 'AUTHORIZED',
+    decision: authDecision,
   }
 }
 
@@ -650,19 +1368,49 @@ export function reportInjectionFulfillment(callOrdinal: number, value: unknown, 
   const entry = consumePendingInjection(callOrdinal)
   if (!entry) return
   if (exactRegistered) injectedFulfillmentFlags.add(entry.formulaIndex)
+  const nodeLike = typeof value === 'object' && value !== null && typeof (value as any).nodeType === 'number'
   emitRuntimeAudit('MATHJAX-TEX2SVG-INJECTION-FULFILLMENT-AUTHORITY', {
     callOrdinal,
     formulaIndex: entry.formulaIndex,
     desiredTag: entry.desiredTag,
     fulfilled: true,
-    nodeLike: typeof value === 'object' && value !== null && typeof (value as any).nodeType === 'number',
-    nodeName: typeof value === 'object' && value !== null ? (value as any).nodeName ?? null : null,
+    nodeLike,
+    nodeName: nodeLike ? (value as any).nodeName ?? null : null,
     exactFulfillmentNodeRegistered: exactRegistered,
     inputWasInjected: true,
     decision: 'RECORDED',
     reason: null,
     runtimeMarker: R54_RUNTIME_MARKER,
   })
+  // R5.4.1 Phase K: if this formula had a pending Typora-owned invalidation at
+  // the current live revision, report the REAL closure observation.
+  if (nodeLike) {
+    const visibleTag = extractTagTextFromFulfilledNode(value as Node)
+    // R5.4.2 Phase H: a catchup-authorization fulfillment whose visible tag
+    // matches the injected tag closes the catchup loop truthfully.
+    if (visibleTag === `(${entry.desiredTag})`) {
+      catchupClosurePassedSet.add(entry.formulaIndex)
+    }
+    reportObservedInvalidationClosure({
+      formulaIndex: entry.formulaIndex,
+      liveFormulaRevision: injectionContext?.getCurrentLiveFormulaRevision?.() ?? 0,
+      tex2svgCallObserved: true,
+      authorizationObserved: true,
+      injectionObserved: true,
+      fulfillmentObserved: true,
+      visibleTagAfter: visibleTag,
+    })
+  }
+}
+
+function extractTagTextFromFulfilledNode(node: Node): string {
+  try {
+    const text = (node as Element).textContent ?? ''
+    const m = text.match(/\((\d+(?:[.\-]\d+)*)\)/)
+    return m ? `(${m[1]})` : ''
+  } catch {
+    return ''
+  }
 }
 
 // ── Post-output Verification (run at the managed-plan one-shot) ────────
@@ -765,11 +1513,14 @@ export function executeTex2svgInjectionVerification(input: InjectionVerification
     return base
   }
 
-  const f0 = verifyFormula(input.formulas[0]?.host ?? null, 0, input.formulas[0]?.desiredTag ?? '')
-  const f1 = verifyFormula(input.formulas[1]?.host ?? null, 1, input.formulas[1]?.desiredTag ?? '')
+  // R5.4.1: verify EVERY managed formula (append/insert shifts indices; the
+  // old Formula0/Formula1-only loop would miss Formula2 and later formulas).
+  const results = input.formulas.map((f) => verifyFormula(f.host, f.formulaIndex, f.desiredTag))
+  const f0 = results.find((r) => r.formulaIndex === 0) ?? verifyFormula(null, 0, '')
+  const f1 = results.find((r) => r.formulaIndex === 1) ?? verifyFormula(null, 1, '')
 
   // Emit native tag visual authority + duplicate barrier per formula.
-  for (const r of [f0, f1]) {
+  for (const r of results) {
     emitRuntimeAudit('FORMULA-MATHJAX-NATIVE-TAG-VISUAL-AUTHORITY', {
       formulaIndex: r.formulaIndex,
       desiredTag: r.desiredTag,
@@ -820,6 +1571,7 @@ export function executeTex2svgInjectionVerification(input: InjectionVerification
     documentKey: input.documentKey,
     documentSourceSha256: input.documentSourceSha256,
     planRevision: input.plan?.planRevision ?? null,
+    formulaCount: results.length,
     formula0DesiredTag: f0.desiredTag,
     formula1DesiredTag: f1.desiredTag,
     formula0Authorized: f0.authorized,

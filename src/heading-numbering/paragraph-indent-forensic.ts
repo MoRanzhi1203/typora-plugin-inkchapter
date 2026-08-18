@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-formula-tex2svg-precall-tag-injection-v2.5.7-r5.4'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-formula-structural-slot-edit-session-projection-v2.5.7-r5.4.3.8'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
 export const RUNTIME_GATE_REVISION = 'r58-lifecycle-repair'
