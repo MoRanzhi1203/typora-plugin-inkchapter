@@ -15,8 +15,149 @@
 import { installMathJaxHook, probeMathJaxApiAuthority, createSingleTargetSession, clearSingleTargetSession, finalizeSingleTargetSession, getActiveSingleTargetSession, tokenFor, type MathJaxSingleTargetRetypesetSession } from './mathjax-native-tag-injection'
 import { executeMathJaxRenderOwnershipProbe } from './mathjax-render-ownership-probe'
 import { installRenderRouteHooks, restoreRenderRouteHooks, setRouteTraceContext, setRouteTraceEditorRoot, executeMathJaxRenderRouteTrace, type TraceFormulaInput } from './mathjax-render-route-trace'
-import { verifyFormulaTexSource, extractFormulaTexForTrace } from './formula-tex-source-verifier'
-import { buildFormulaRenderAuthorizationPlan, nextPlanRevision, setTex2svgInjectionContext, executeTex2svgInjectionVerification, R54_RUNTIME_MARKER } from './mathjax-tex2svg-tag-injection'
+import { verifyFormulaTexSource, extractFormulaTexForTrace, normalizeTexSource, type FormulaTexSourceKind } from './formula-tex-source-verifier'
+import { buildFormulaRenderAuthorizationPlan, nextPlanRevision, setTex2svgInjectionContext, executeTex2svgInjectionVerification, emitPlanBindingAuthority, getPendingInjectionCount, getCatchupStats, getExistingSourceRegressionCount, getCallsiteAuthorityDecision, getCurrentInjectionPlan, getCatchupRebindStats, R54_RUNTIME_MARKER, type FormulaRenderAuthorizationPlan } from './mathjax-tex2svg-tag-injection'
+import {
+  R543_RUNTIME_MARKER,
+  R543_BUILD_MARKER,
+  R5431_RUNTIME_MARKER,
+  R5431_BUILD_MARKER,
+  dispatchSemanticEvent,
+  flushCurrentBatch,
+  emitEventDispatch,
+  emitOperationBatch,
+  emitEventDrivenSnapshot,
+  emitEventDrivenAccounting,
+  emitEventDrivenQuiescence,
+  emitEventDrivenFinal,
+  getEventCounters,
+  resetEventCounters,
+  incrementRefreshRequestCount,
+  incrementAffectedSetBuildCount,
+  incrementPeriodicTimerCount,
+  type FormulaSemanticEvent,
+  type SemanticOperationBatch,
+} from './formula-semantic-invalidation'
+import {
+  computeHeadingDependencyRange,
+  emitHeadingDependencyAuthority,
+  emitHeadingChangeClosure,
+  emitFormulaEventDependencyRange,
+  type HeadingEntry,
+} from './formula-heading-dependency'
+import {
+  checkDispatchContextGate,
+  emitBaselineAuthority,
+  emitDomainSnapshot,
+  emitDomainIsolationAuthority,
+  emitBlockStreamDomainVerify,
+  emitSemanticEventAuthority,
+  checkOperationLifecycle,
+  emitEventPipelineError,
+  emitEventRuntimeSafetyFinal,
+  getSafetyCounters,
+  resetSafetyCounters,
+  incrementGlobalCaptionRefreshFromFormulaEvent,
+  incrementFormulaSemanticEvent,
+  incrementHeadingSemanticEvent,
+  type DispatchContextGateInput,
+  type SemanticEventAuthorityKind,
+} from './formula-event-domain'
+import { validateObjectContextTarget } from './object-context-target-contract'
+import {
+  checkContextGate,
+  hydrateBaselineFromLiveSnapshot,
+  emitBaselineState,
+  emitPrebaselineBuffer,
+  emitFormulaOnlyRefresh,
+  emitEditingHostCanonicalResolve,
+  emitNewHostAdoptionAuthority,
+  emitPreCallPlanCatchup,
+  emitSameCallReauthorization,
+  emitSnapshotDiffOrderAuthority,
+  emitLiveRevisionRestoreAuthority,
+  emitFormulaAddedSnapshotClosure,
+  emitNewNaturalRenderClosure,
+  emitBaselineFastpathRestoreFinal,
+  emitSharedScopeSequenceLedger,
+  emitSequenceProjectionAuthority,
+  getBaselineState,
+  resetBaselineState,
+  R5432_RUNTIME_MARKER,
+  R5432_BUILD_MARKER,
+} from './formula-semantic-baseline'
+import {
+  readVisibleFormulaTag,
+  reconcileFormulaRenderProjectionNow,
+  createPendingProjection,
+  getPendingProjection,
+  resolvePendingProjection,
+  clearPendingProjectionsForDocument,
+  resetPendingProjections,
+  type RenderProjectionReconcileResult,
+} from './formula-render-projection'
+import {
+  emitStructuralSlotAuthority,
+  emitEmptySourceManagedSlot,
+  emitEmptyTex2svgSentinelAuthority,
+  isEmptyFormulaSentinel,
+  latchEditSession,
+  getActiveEditSession,
+  clearEditSession,
+  emitNonsemanticEditTransition,
+  checkSourceCommitBarrier,
+  markSessionExplicitInput,
+  emitEditSessionTex2svgAuthority,
+  resetEditSessionState,
+  type SourceCommitBarrierResult,
+} from './formula-edit-session'
+import {
+  R542_RUNTIME_MARKER,
+  R542_BUILD_MARKER,
+  captureOrUpdateAuthoritativeSource,
+  getAuthoritativeSourceState,
+  resolveCurrentEditingFormulaIdentity,
+  emitPlanSourceBindingAuthority,
+  getAndResetSourceDriftStats,
+  emitLiveSourceRendererFinal,
+  type AuthoritativeFormulaSourceState,
+} from './formula-authoritative-source'
+import {
+  R541_RUNTIME_MARKER,
+  R541_BUILD_MARKER,
+  buildLiveFormulaSemanticSnapshot,
+  advanceLiveRevision,
+  recordSemanticBaseline,
+  getLiveFormulaRevision,
+  rebindLiveRevision,
+  emitDirtyBufferAuthority,
+  emitSemanticSnapshotMarkers,
+  diffLiveFormulaPlans,
+  computeAffectedFormulaSet,
+  emitPlanDiffMarkers,
+  emitAffectedRenderSet,
+  previousSnapshotCountRef,
+  emitLiveUpdateVerify,
+  emitLiveUpdateFinal,
+  emitLiveRevisionNoiseAuthority,
+  resolveStableFormulaIdentity,
+  type LiveFormulaSemanticSnapshot,
+  type LiveFormulaSemanticEntryInput,
+  type MutationClassification,
+  type LivePlanDiffEntry,
+  type LiveFormulaRevisionReason,
+} from './formula-live-revision'
+import {
+  auditTyporaRenderInvalidationTrigger,
+  requestFormulaRenderInvalidation,
+  setInvalidationInProgress,
+  markRendererInternalMutationObserved,
+  emitLoopBarrier,
+  emitSourceRendererFeedbackBarrier,
+  computeLiveUpdateAccounting,
+  setLiveUpdateTerminalState,
+  getLiveUpdateTerminalState,
+} from './typora-formula-render-invalidation'
 import {
   CaptionRegistry,
   DEFAULT_CAPTION_SETTINGS,
@@ -29,7 +170,7 @@ import {
 } from './caption-system'
 import * as path from 'path'
 import * as crypto from 'crypto'
-import { CaptionDomAdapter, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
+import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
 import { emitRuntimeAudit, initializeForensicSink } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
@@ -81,6 +222,27 @@ import {
 } from './object-heading-ordinal-authority'
 import { FormulaNumberingAdapter, computeFormulaCurrentSetAuthority, type FormulaReconcileItem, type FormulaReconcileStats, type FormulaNativeSlotResolution, type FormulaVisualInventoryV4 } from './formula-numbering-adapter'
 import { generateDocumentKey } from './heading-numbering-scope-store'
+
+/**
+ * v2.5.7-R5.4.1: DIAGNOSTIC-ONLY disk block-formula count ($$...$$ pairs) for
+ * the dirty-buffer authority. Never a correctness gate; the live editor count
+ * is the authority. Loose pairing is acceptable for the audit marker.
+ */
+function countDiskBlockFormulas(markdown: string | null): number {
+  if (!markdown) return 0
+  let count = 0
+  let i = 0
+  const n = markdown.length
+  while (i < n) {
+    const open = markdown.indexOf('$$', i)
+    if (open === -1) break
+    const close = markdown.indexOf('$$', open + 2)
+    if (close === -1) break
+    count++
+    i = close + 2
+  }
+  return count
+}
 
 export interface CaptionServiceContext {
   vaultRoot?: string | null
@@ -336,6 +498,24 @@ export class CaptionService {
   private formulaPendingRefreshCount = 0
   private formulaRefreshInProgress = false
   private lastFormulaReconcileStats: FormulaReconcileStats | null = null
+  /** v2.5.7-R5.4.1: live formula revision authority (dirty-buffer semantic state). */
+  private lastMutationClassification: MutationClassification = 'STARTUP'
+  private lastLiveSemanticSnapshot: LiveFormulaSemanticSnapshot | null = null
+  private invalidationInProgress = false
+  private liveUpdateRendererFeedbackLoopCount = 0
+  private liveUpdateSourceMutationDetected = false
+  /** v2.5.7-R5.4.2: post-catchup context rebind token + identity pass flag. */
+  private tex2svgContextToken = 0
+  private lastEditingHostIdentityPass = false
+  private liveUpdateDriftObservedCount = 0
+  private liveUpdateDriftBlockedCount = 0
+  /** v2.5.7-R5.4.3: event-driven counters. */
+  private semanticOperationBatchCount = 0
+  private dependencyRangeBuildCount = 0
+  private headingChangeAffectedFormulaCount = 0
+  private headingChangeRefreshPassCount = 0
+  private unaffectedFormulaRefreshCount = 0
+  private lastLiveHeadingCache: HeadingEntry[] | null = null
   private renderStats: ReconcileStats = {
     createCount: 0, updateCount: 0, moveCount: 0,
     noOpCount: 0, removeDisabledCount: 0, removeStaleCount: 0,
@@ -577,6 +757,8 @@ export class CaptionService {
       const oldRootToken = this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0
       // Document switch: flush old document bindings (persisted already).
       if (oldDocumentKey !== null) this.flushDocument()
+      // R5.4.3.8 P2: the edit-session latch is document/generation-scoped.
+      clearEditSession('document-switch')
       this.documentGeneration++
       this.lastDocumentSwitchAt = Date.now()
       // New generation invalidates the old formula last-known-good cache.
@@ -609,8 +791,117 @@ export class CaptionService {
     return token
   }
 
+  // ── R5.4.3.8 P1/P2: Formula edit-session event watchers ──
+  // pointerdown / focusin → IDENTITY LATCH ONLY (never source commit).
+  // beforeinput / input (content-changing) → mark explicit input so the
+  // source commit barrier (formula-authoritative-source.ts) may allow commit.
+  private formulaSessionWatcherRoot: HTMLElement | null = null
+  private formulaSessionPointerHandler: ((e: Event) => void) | null = null
+  private formulaSessionFocusInHandler: ((e: Event) => void) | null = null
+  private formulaSessionBeforeInputHandler: ((e: Event) => void) | null = null
+  private formulaSessionInputHandler: ((e: Event) => void) | null = null
+
+  private resolveEditSessionHost(target: Node | null): HTMLElement | null {
+    if (!(target instanceof Node)) return null
+    const el = target instanceof HTMLElement ? target : target.parentElement
+    if (!el) return null
+    const host = el.closest(MATH_HOST_SELECTOR)
+    if (!(host instanceof HTMLElement)) return null
+    // Only block-level canonical hosts latch an edit session.
+    if (!host.classList.contains('md-math-block') && !host.classList.contains('mathjax-block')) return null
+    return host
+  }
+
+  private latchFormulaEditSessionFromPointer(host: HTMLElement, trigger: string): void {
+    const docKey = this.currentDocumentKey
+    if (!docKey) return
+    const identity = resolveStableFormulaIdentity(host)
+    const active = getActiveEditSession()
+    if (active && active.documentKey === docKey && active.stableFormulaIdentity === identity) return
+    const plan = getCurrentInjectionPlan()
+    const entry = plan?.entries.find((en) => en.stableFormulaIdentity === identity) ?? null
+    const auth = getAuthoritativeSourceState(docKey, identity)
+    const session = latchEditSession({
+      documentKey: docKey,
+      generation: this.documentGeneration,
+      rootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+      stableFormulaIdentity: identity,
+      formulaHostToken: tokenFor(host),
+      formulaIndex: entry?.formulaIndex ?? null,
+      desiredTag: entry?.desiredTag ?? null,
+      sourceHashAtEnter: auth?.normalizedSourceHash ?? null,
+      contentRevisionAtEnter: auth?.formulaContentRevision ?? 0,
+      trigger,
+    })
+    emitNonsemanticEditTransition({
+      sessionId: session.sessionId,
+      eventKind: trigger,
+      stableFormulaIdentity: identity,
+      formulaIndex: entry?.formulaIndex ?? null,
+      userSemanticSourceChange: false,
+    })
+  }
+
+  private markExplicitInputFromEvent(e: Event, eventKind: string): void {
+    const session = getActiveEditSession()
+    if (!session) return
+    const host = this.resolveEditSessionHost(e.target instanceof Node ? e.target : null)
+    if (!host) return
+    const identity = resolveStableFormulaIdentity(host)
+    if (identity !== session.stableFormulaIdentity) return
+    let contentChanging = true
+    if (e instanceof InputEvent && e.inputType) {
+      // Navigation / UI control events (arrow keys, etc.) are NOT content input.
+      contentChanging = /^(insert|delete|history)/.test(e.inputType)
+    }
+    if (!contentChanging) return
+    markSessionExplicitInput(session)
+    emitNonsemanticEditTransition({
+      sessionId: session.sessionId,
+      eventKind,
+      stableFormulaIdentity: identity,
+      formulaIndex: session.formulaIndex,
+      userSemanticSourceChange: true,
+    })
+  }
+
+  private connectFormulaEditSessionWatchers(root: HTMLElement): void {
+    this.disconnectFormulaEditSessionWatchers()
+    this.formulaSessionWatcherRoot = root
+    this.formulaSessionPointerHandler = (e: Event) => {
+      const host = this.resolveEditSessionHost(e.target instanceof Node ? e.target : null)
+      if (host) this.latchFormulaEditSessionFromPointer(host, 'pointerdown')
+    }
+    this.formulaSessionFocusInHandler = (e: Event) => {
+      const host = this.resolveEditSessionHost(e.target instanceof Node ? e.target : null)
+      if (host) this.latchFormulaEditSessionFromPointer(host, 'focusin')
+    }
+    this.formulaSessionBeforeInputHandler = (e: Event) => this.markExplicitInputFromEvent(e, 'beforeinput')
+    this.formulaSessionInputHandler = (e: Event) => this.markExplicitInputFromEvent(e, 'input')
+    root.addEventListener('pointerdown', this.formulaSessionPointerHandler, true)
+    root.addEventListener('focusin', this.formulaSessionFocusInHandler, true)
+    root.addEventListener('beforeinput', this.formulaSessionBeforeInputHandler, true)
+    root.addEventListener('input', this.formulaSessionInputHandler, true)
+  }
+
+  private disconnectFormulaEditSessionWatchers(): void {
+    const root = this.formulaSessionWatcherRoot
+    if (root) {
+      if (this.formulaSessionPointerHandler) root.removeEventListener('pointerdown', this.formulaSessionPointerHandler, true)
+      if (this.formulaSessionFocusInHandler) root.removeEventListener('focusin', this.formulaSessionFocusInHandler, true)
+      if (this.formulaSessionBeforeInputHandler) root.removeEventListener('beforeinput', this.formulaSessionBeforeInputHandler, true)
+      if (this.formulaSessionInputHandler) root.removeEventListener('input', this.formulaSessionInputHandler, true)
+    }
+    this.formulaSessionWatcherRoot = null
+    this.formulaSessionPointerHandler = null
+    this.formulaSessionFocusInHandler = null
+    this.formulaSessionBeforeInputHandler = null
+    this.formulaSessionInputHandler = null
+  }
+
   private connectObserver(root: HTMLElement): void {
     this.disconnectObserver()
+    this.connectFormulaEditSessionWatchers(root)
     this.mutationObserver = new MutationObserver((records) => {
       if (this.rendering) return
       const ownership = classifyEditorMutationBatchV2(records)
@@ -630,34 +921,345 @@ export class CaptionService {
       }
       if (ownership.decision === 'IGNORED_RENDERER_INTERNAL') {
         this.rendererMutationIgnoredCount++
-        console.info('[InkChapter Caption] EDITOR-MUTATION decision=IGNORE reason=TYPOORA_RENDERER_INTERNAL')
+        this.lastMutationClassification = 'TYPOORA_RENDERER_INTERNAL_ONLY'
+        if (this.invalidationInProgress) {
+          markRendererInternalMutationObserved()
+          this.liveUpdateRendererFeedbackLoopCount++
+        }
+        // R5.4.3.7: renderer-internal mutations are NO LONGER unconditionally
+        // ignored. semanticRefresh=false, but projection reconcile may be
+        // required when a canonical formula host's visible tag diverged from
+        // the authoritative desiredTag after a Typora re-render.
+        this.reconcileRendererInternalProjection(records)
+        console.info('[InkChapter Caption] EDITOR-MUTATION decision=PROJECTION_RECONCILE reason=TYPOORA_RENDERER_INTERNAL')
         return
       }
+      this.lastMutationClassification = ownership.classification
       this.captionMutationContentRefreshCount++
       this.externalBusinessMutationCount++
       this.lastBusinessMutationAt = Date.now()
-      this.scheduleRefresh()
+
+      // R5.4.3.2: context gate check using live snapshot-aware state machine.
+      // No semantic events until document context is fully ready.
+      const liveSnapshot = this.lastLiveSemanticSnapshot
+      const gateInput = {
+        documentKey: this.currentDocumentKey,
+        documentGeneration: this.documentGeneration,
+        editorRootAvailable: this.currentEditorRoot !== null,
+        editorRootConnected: this.currentEditorRoot?.isConnected ?? false,
+        businessReady: !!this.currentDocumentKey,
+        liveSnapshotAvailable: liveSnapshot !== null,
+        liveSnapshotDocumentKey: liveSnapshot?.documentKey ?? null,
+        liveSnapshotGeneration: this.documentGeneration,
+        liveSnapshotFormulaCount: liveSnapshot?.formulaCount ?? 0,
+      }
+      const gate = checkContextGate(gateInput)
+      if (gate.decision === 'HYDRATING') {
+        // Hydrate baseline from the existing live snapshot.
+        const rootToken = this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0
+        const hydrated = liveSnapshot ? hydrateBaselineFromLiveSnapshot({
+          documentKey: this.currentDocumentKey ?? '',
+          documentGeneration: this.documentGeneration,
+          editorRootToken: rootToken,
+          sourceFormulaSnapshotAvailable: true,
+          sourceFormulaSnapshotRevision: liveSnapshot.liveFormulaRevision,
+          sourceFormulaCount: liveSnapshot.formulaCount,
+          sourceManagedFormulaCount: liveSnapshot.managedFormulaCount,
+          sourceSemanticSignature: liveSnapshot.semanticSignature,
+          sourceHeadingSnapshotAvailable: false,
+          sourceHeadingSnapshotRevision: 0,
+        }) : 'SKIP'
+        if (hydrated !== 'HYDRATED') {
+          console.info(`[InkChapter Caption] BASELINE-HYDRATION-FAILED result=${hydrated}`)
+          return
+        }
+        // Re-check gate after hydration.
+        const gate2 = checkContextGate(gateInput)
+        if (gate2.decision !== 'ALLOW') {
+          console.info(`[InkChapter Caption] DISPATCH-CONTEXT-GATE-AFTER-HYDRATION decision=${gate2.decision} reason=${gate2.reason}`)
+          return
+        }
+      } else if (gate.decision !== 'ALLOW') {
+        console.info(`[InkChapter Caption] DISPATCH-CONTEXT-GATE decision=${gate.decision} reason=${gate.reason}`)
+        return
+      }
+
+      // R5.4.3: dispatch a semantic event instead of scheduleRefresh (timer).
+      // The event coalesces multiple rapid mutations into one operation batch
+      // via queueMicrotask (never setTimeout).
+      // R5.4.3.1: This is a MUTATION_SHAPE_GUESS — only used as a fallback;
+      // the real semantic event authority comes from snapshot diff.
+      const eventKind: FormulaSemanticEvent['eventKind'] = ownership.classification === 'REAL_DOCUMENT_CONTENT'
+        ? 'FORMULA_ADDED'
+        : 'FORMULA_SOURCE_CHANGED'
+      dispatchSemanticEvent(
+        { eventKind, classification: ownership.classification },
+        ownership.batchId,
+        (batch) => this.onSemanticEventBatch(batch),
+      )
     })
     this.mutationObserver.observe(root, { childList: true, subtree: true })
   }
 
-  private disconnectObserver(): void {
-    this.mutationObserver?.disconnect()
-    this.mutationObserver = null
+  /**
+   * R5.4.3.1: handle a flushed semantic event batch.
+   *
+   * R5.4.3.1 CRITICAL CHANGE: The old R5.4.3 called this.refresh('event-driven')
+   * which triggered a GLOBAL caption refresh (table/image/code/formula/heading).
+   * This is now REPLACED with a domain-isolated formula/heading pipeline.
+   *
+   * The formula/heading pipeline only processes formula and heading events.
+   * It NEVER triggers table/image/code caption scans or global refresh.
+   */
+  private onSemanticEventBatch(batch: SemanticOperationBatch): void {
+    try {
+      this.semanticOperationBatchCount++
+      emitEventDispatch(batch)
+
+      // R5.4.3.1: check operation lifecycle — drop stale batches.
+      const lifecycle = checkOperationLifecycle({
+        operationBatchId: batch.batchId,
+        createdDocumentKey: this.currentDocumentKey,
+        currentDocumentKey: this.currentDocumentKey,
+        createdGeneration: this.documentGeneration,
+        currentGeneration: this.documentGeneration,
+        createdEditorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+        currentEditorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+        baselineRevisionAtCreate: 0,
+        baselineRevisionAtFinalize: 0,
+      })
+      if (lifecycle === 'DROP_STALE_BATCH') {
+        return
+      }
+
+      // R5.4.3.1: domain isolation — formula/heading pipeline only.
+      // Never triggers global caption refresh, table/image/code scans.
+      const formulaEvents = batch.events.filter((e) => e.eventKind.startsWith('FORMULA_'))
+      const headingEvents = batch.events.filter((e) => e.eventKind.startsWith('HEADING_'))
+
+      // Emit domain isolation authority — formula/heading pipeline only.
+      emitDomainIsolationAuthority({
+        operationBatchId: batch.batchId,
+        formulaHeadingPipelineInvoked: true,
+        globalCaptionRefreshInvoked: false,
+        tableScanInvoked: false,
+        figureScanInvoked: false,
+        codeScanInvoked: false,
+        formulaScanInvoked: formulaEvents.length > 0,
+        headingScanInvoked: headingEvents.length > 0,
+      })
+
+      // R5.4.3.3/R5.4.3.4: formula-only semantic refresh on formula events.
+      // R5.4.3.4 Phase G: consumes REAL previous/next snapshots + diff for authority.
+      let refreshResult: ReturnType<CaptionService['refreshFormulaSemanticStateNow']> = null
+      if (formulaEvents.length > 0) {
+        refreshResult = this.refreshFormulaSemanticStateNow('semantic-event-formula')
+      }
+
+      // ── Formula event processing (domain isolated, with snapshot authority) ──
+      // R5.4.3.3: Use the latest snapshot to determine real event authority.
+      // R5.4.3.4 Phase H: stableIdentity must come from REAL snapshot diff.
+      const currentSnapshot = refreshResult?.nextSnapshot ?? this.lastLiveSemanticSnapshot
+      const refreshDiff = refreshResult?.diff ?? []
+      for (const ev of formulaEvents) {
+        incrementFormulaSemanticEvent()
+        const stableId = ev.stableFormulaIdentity ?? null
+        const inSnapshot = currentSnapshot?.entries.some((e) => e.stableFormulaIdentity === stableId) ?? false
+        // R5.4.3.4: SNAPSHOT_IDENTITY_DIFF only when before/after snapshots are concrete.
+        const hasConcreteBridge = refreshResult !== null
+          && refreshResult.previousSnapshot !== null
+          && refreshResult.nextSnapshot !== null
+        const authorityKind: SemanticEventAuthorityKind = hasConcreteBridge
+          ? 'SNAPSHOT_IDENTITY_DIFF'
+          : 'MUTATION_SHAPE_GUESS'
+        const matchingDiff = stableId !== null
+          ? refreshDiff.find((d) => d.stableFormulaIdentity === stableId)
+          : undefined
+        emitSemanticEventAuthority({
+          operationBatchId: batch.batchId,
+          eventKind: ev.eventKind,
+          stableIdentity: stableId,
+          presentBefore: matchingDiff ? !matchingDiff.changeKinds.includes('ADDED') : false,
+          presentAfter: inSnapshot,
+          oldDocumentOrder: matchingDiff?.previousFormulaIndex ?? null,
+          newDocumentOrder: matchingDiff?.nextFormulaIndex ?? ev.documentOrder ?? null,
+          oldSourceHash: matchingDiff?.previousSourceHash ?? null,
+          newSourceHash: matchingDiff?.nextSourceHash ?? null,
+          oldHeadingLevel: null,
+          newHeadingLevel: null,
+          oldSemanticRole: null,
+          newSemanticRole: null,
+          authorityKind,
+        })
+      }
+
+      // R5.4.3.4 Phase F: emit affected render set from the concrete snapshot diff.
+      if (refreshResult && refreshResult.diff.length > 0) {
+        const affected = computeAffectedFormulaSet(refreshResult.diff)
+        emitAffectedRenderSet({ ...affected, liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision }, getLiveFormulaRevision().liveFormulaRevision)
+        // R5.4.3.8 P5: surviving formulas whose desiredTag changed close through
+        // the persistent projection executor — never the old typesetPromise BLOCK.
+        this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-formula')
+      }
+
+      // R5.4.3.7: pending projection replay after FORMULA_ADDED / adoption /
+      // desiredTag establishment. A new formula whose natural render happened
+      // before identity/plan existed gets replayed immediately.
+      if (formulaEvents.length > 0) {
+        const replaySnapshot = refreshResult?.nextSnapshot ?? this.lastLiveSemanticSnapshot
+        if (replaySnapshot) {
+          for (const entry of replaySnapshot.entries) {
+            const target = this.formulaAdapter.collectFormulaTargets().find((t) => t.ordinal === entry.formulaIndex)
+            if (!target) continue
+            const pending = getPendingProjection(tokenFor(target.root))
+            if (!pending) continue
+            const decision = resolvePendingProjection({
+              formulaHostToken: tokenFor(target.root),
+              documentKey: this.currentDocumentKey ?? '',
+              generation: this.documentGeneration,
+              stableFormulaIdentity: entry.stableFormulaIdentity === 'AMBIGUOUS' ? -1 : (entry.stableFormulaIdentity ?? -1),
+              formulaIndex: entry.formulaIndex,
+              desiredTag: entry.desiredTag,
+            })
+            if (decision !== 'REPLAY') continue
+            const visible = readVisibleFormulaTag(target.root, entry.desiredTag)
+            if (visible.decision === 'MATCH') continue
+            reconcileFormulaRenderProjectionNow({
+              documentKey: this.currentDocumentKey ?? '',
+              documentGeneration: this.documentGeneration,
+              editorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+              stableFormulaIdentity: entry.stableFormulaIdentity === 'AMBIGUOUS' ? null : (entry.stableFormulaIdentity ?? null),
+              formulaIndex: entry.formulaIndex,
+              formulaHost: target.root,
+              desiredTag: entry.desiredTag,
+              reason: 'PENDING_NEW_FORMULA_PROJECTION_REPLAY',
+            })
+          }
+        }
+      }
+
+      // ── Heading event processing (domain isolated) ──
+      // R5.4.3.3: heading changes also trigger formula-only refresh for affected formulas.
+      if (headingEvents.length > 0) {
+        this.dependencyRangeBuildCount++
+        for (const ev of headingEvents) {
+          incrementHeadingSemanticEvent()
+          const headingId = ev.headingStableIdentity ?? ''
+          const liveHeadings = this.queryLiveHeadingEntries(this.currentEditorRoot)
+            .map((h) => ({
+              element: h.element,
+              headingId: h.headingId,
+              tagName: h.element.tagName,
+              logicalRole: 'section' as const,
+              numbered: true,
+              ordinal: null,
+            }))
+          const formulaRoots = this.formulaAdapter.collectFormulaTargets().map((t) => ({
+            element: t.root,
+            token: tokenFor(t.root),
+          }))
+          const result = computeHeadingDependencyRange({
+            operationBatchId: batch.batchId,
+            headingStableIdentity: headingId,
+            headingEventKind: ev.eventKind,
+            previousHeadingLevel: null,
+            nextHeadingLevel: null,
+            previousHeadingRole: null,
+            nextHeadingRole: null,
+            previousOrdinal: null,
+            nextOrdinal: null,
+            liveHeadings,
+            liveFormulaRoots: formulaRoots,
+          })
+          emitHeadingDependencyAuthority(
+            {
+              operationBatchId: batch.batchId,
+              headingStableIdentity: headingId,
+              headingEventKind: ev.eventKind,
+              previousHeadingLevel: null,
+              nextHeadingLevel: null,
+              previousHeadingRole: null,
+              nextHeadingRole: null,
+              previousOrdinal: null,
+              nextOrdinal: null,
+              liveHeadings,
+              liveFormulaRoots: formulaRoots,
+            },
+            result,
+          )
+          emitSemanticEventAuthority({
+            operationBatchId: batch.batchId,
+            eventKind: ev.eventKind,
+            stableIdentity: headingId,
+            presentBefore: false,
+            presentAfter: true,
+            oldDocumentOrder: null,
+            newDocumentOrder: null,
+            oldSourceHash: null,
+            newSourceHash: null,
+            oldHeadingLevel: null,
+            newHeadingLevel: null,
+            oldSemanticRole: null,
+            newSemanticRole: null,
+            authorityKind: 'MUTATION_SHAPE_GUESS', // R5.4.3.1: pending snapshot diff
+          })
+        }
+      }
+
+      // R5.4.3.3/R5.4.3.4: heading changes trigger formula semantic refresh
+      // (shared-scope sequence ledger reprojection — Phase M).
+      if (headingEvents.length > 0) {
+        const hr = this.refreshFormulaSemanticStateNow('semantic-event-heading')
+        if (hr && hr.diff.length > 0) {
+          const affected = computeAffectedFormulaSet(hr.diff)
+          this.headingChangeAffectedFormulaCount += affected.desiredTagChangedCount
+          this.headingChangeRefreshPassCount += affected.affectedExistingFormulaCount
+          emitAffectedRenderSet(affected, getLiveFormulaRevision().liveFormulaRevision)
+          // R5.4.3.8 P5: heading-driven desiredTag shifts also close through the
+          // persistent projection executor.
+          this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-heading')
+        }
+      }
+
+      // Emit operation batch marker (no global refresh called).
+      emitOperationBatch({
+        batchId: batch.batchId,
+        mutationBatchCount: 1,
+        microtaskCoalesced: batch.coalesced,
+        rafFinalizationUsed: batch.rafFinalized,
+        semanticChanged: true,
+      })
+
+      // R5.4.3.1: NO global refresh call.
+      // Formula/heading events no longer trigger table/image/code caption refresh.
+      // The existing formula numbering plan update happens through the formula
+      // adapter's own mutation-based refresh (not via global caption refresh).
+    } catch (err) {
+      // R5.4.3.1: error barrier — abort batch, don't commit.
+      emitEventPipelineError({
+        operationBatchId: batch.batchId,
+        phase: 'onSemanticEventBatch',
+        errorName: (err as Error)?.name ?? 'UnknownError',
+        errorMessage: (err as Error)?.message ?? String(err),
+        documentKey: this.currentDocumentKey,
+        documentGeneration: this.documentGeneration,
+        semanticEventCount: batch.events.length,
+        affectedFormulaCount: 0,
+      })
+      console.error('[InkChapter Caption] EVENT-PIPELINE-ERROR', err)
+    }
   }
 
-  private scheduleRefresh(): void {
-    if (this.refreshTimer !== null) return
-    this.formulaPendingRefreshCount++
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = null
-      this.formulaPendingRefreshCount = Math.max(0, this.formulaPendingRefreshCount - 1)
-      this.refresh()
-    }, REFRESH_DELAY_MS)
+  private disconnectObserver(): void {
+    this.disconnectFormulaEditSessionWatchers()
+    this.mutationObserver?.disconnect()
+    this.mutationObserver = null
+    resetBaselineState()
   }
 
   dispose(): void {
     this.disconnectObserver()
+    clearEditSession('dispose')
     for (const d of this.disposers) { try { d() } catch { /* ignore */ } }
     this.disposers = []
     if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null }
@@ -989,7 +1591,26 @@ export class CaptionService {
     }
 
     const liveHeadings = this.queryLiveHeadingEntries(root)
-    const liveTargets: LiveObjectTargetEntry[] = targets.map((t) => ({
+
+    // R5.4.3.1: validate each target against the object context contract.
+    // Block invalid targets (null/undefined/heading/unknown type) before entering projection.
+    const validTargets: Array<{ element: HTMLElement; type: string; runtimeKey: string }> = []
+    for (let i = 0; i < targets.length; i++) {
+      const contractResult = validateObjectContextTarget({
+        callSite: 'resolveObjectContexts',
+        targetIndex: i,
+        target: targets[i],
+        currentEditorRoot: root,
+        currentDocumentKey: this.currentDocumentKey,
+        currentDocumentGeneration: this.documentGeneration,
+      })
+      if (contractResult.valid) {
+        validTargets.push(targets[i])
+      }
+      // Invalid targets are counted in the contract validation and BLOCKED silently.
+    }
+
+    const liveTargets: LiveObjectTargetEntry[] = validTargets.map((t) => ({
       element: t.element,
       objectType: t.type as 'table' | 'figure' | 'code' | 'formula',
       runtimeKey: t.runtimeKey,
@@ -2369,74 +2990,30 @@ export class CaptionService {
           this.documentGeneration,
         )
 
-        // ── v2.5.7-R5.4: Pre-call Formula Authority + Guarded Tag Injection ──
+        // ── v2.5.7-R5.4 / R5.4.1: Pre-call Formula Authority + Guarded Tag Injection ──
         // Build the frozen authorization plan from the R5.1 managed plan and
         // install the runtime context the tex2svgPromise wrapper consults
         // BEFORE every call. Plan source snapshots are frozen — later visual
-        // host text can never overwrite them.
+        // host text can never overwrite them. The plan is bound atomically to
+        // the live formula revision + semantic signature (R5.4.1 Phase D).
         const sourceShaBefore = sha256Hex(this.ctx.readActiveFileContent?.() ?? null)
-        const plan = buildFormulaRenderAuthorizationPlan({
-          managedFormulas: managedFormulas.map((f) => ({
-            host: f.host,
-            formulaIndex: f.formulaIndex,
-            desiredTag: f.desiredTag,
-          })),
-          documentKey: this.currentDocumentKey ?? 'unknown',
-          documentPath: this.ctx.getActiveFilePath?.() ?? '',
-          documentSourceRevision: this.documentGeneration,
-          documentSourceSha256: sourceShaBefore ?? '',
-          planRevision: nextPlanRevision(),
-          generation: this.documentGeneration,
-          editorRoot: this.currentEditorRoot,
-          markdown: this.ctx.getMarkdown?.(),
+        const plan = this.bindLiveFormulaPlan({
+          managedFormulas,
+          resultByIndex,
+          contexts,
+          sourceShaBefore,
+          enabled,
+          mode,
         })
-        setTex2svgInjectionContext({
-          enabled: enabled && mode === 'inkchapter',
-          plan,
-          getWorkspaceActivePath: () => this.ctx.getActiveFilePath?.() ?? null,
-          getDocumentKey: () => this.currentDocumentKey,
-          getDocumentSourceSha256: () => sha256Hex(this.ctx.readActiveFileContent?.() ?? null),
-          getEditorRoot: () => this.currentEditorRoot,
-          getCurrentGeneration: () => this.documentGeneration,
-        })
-        for (const entry of plan.entries) {
-          emitRuntimeAudit('FORMULA-RENDER-AUTHORIZATION-PLAN', {
-            documentKey: entry.documentKey,
-            documentSourceSha256: entry.documentSourceSha256,
-            planRevision: entry.planRevision,
-            formulaIndex: entry.formulaIndex,
-            desiredTag: entry.desiredTag,
-            expectedVisibleLabel: entry.expectedVisibleLabel,
-            sourceKind: entry.sourceKind,
-            normalizedSourceLength: entry.normalizedSourceLength,
-            normalizedSourceHash: entry.normalizedSourceHash,
-            managedEligible: entry.managedEligible,
-            explicitTagControl: entry.explicitTagControl,
-            authorizationState: entry.authorizationState,
-            decision: entry.authorizationState === 'READY' ? 'READY' : 'NOT_READY',
-            reason: null,
-            runtimeMarker: R54_RUNTIME_MARKER,
+        if (plan) {
+          executeTex2svgInjectionVerification({
+            plan,
+            formulas: managedFormulas.map((f) => ({ host: f.host, formulaIndex: f.formulaIndex, desiredTag: f.desiredTag })),
+            documentKey: this.currentDocumentKey ?? 'unknown',
+            documentSourceSha256: sourceShaBefore,
+            sourceShaBefore,
           })
         }
-        emitRuntimeAudit('FORMULA-RENDER-AUTHORIZATION-PLAN-FRESHNESS', {
-          planDocumentKey: plan.documentKey,
-          currentDocumentKey: this.currentDocumentKey ?? 'unknown',
-          planSourceSha: plan.documentSourceSha256,
-          currentSourceSha: sourceShaBefore ?? '',
-          sameDocument: plan.documentKey === (this.currentDocumentKey ?? 'unknown'),
-          sameSource: !!sourceShaBefore && sourceShaBefore === plan.documentSourceSha256,
-          planRevision: plan.planRevision,
-          decision: plan.documentKey === (this.currentDocumentKey ?? 'unknown') && !!sourceShaBefore && sourceShaBefore === plan.documentSourceSha256 ? 'FRESH' : 'STALE',
-          reason: null,
-          runtimeMarker: R54_RUNTIME_MARKER,
-        })
-        executeTex2svgInjectionVerification({
-          plan,
-          formulas: managedFormulas.map((f) => ({ host: f.host, formulaIndex: f.formulaIndex, desiredTag: f.desiredTag })),
-          documentKey: this.currentDocumentKey ?? 'unknown',
-          documentSourceSha256: sourceShaBefore,
-          sourceShaBefore,
-        })
 
         emitRuntimeAudit('MATHJAX-RERENDER-GATE', { decision: 'REQUEST', reason: 'MANAGED_FORMULA_READY', managedFormulaCount: managedFormulas.length, runtimeMarker: r51Marker })
         // API authority check
@@ -2892,6 +3469,1027 @@ export class CaptionService {
       `pendingRefreshCount=${this.formulaPendingRefreshCount} reentrantRefreshCount=${this.formulaReentrantRefreshCount} ` +
       `decision=${quiescence.decision} runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
     )
+  }
+
+  // ── v2.5.7-R5.4.1: Live Formula Revision + Atomic Live Plan Binding ──
+
+  /**
+   * Build the live semantic snapshot from the CURRENT canonical formula hosts,
+   * advance (or baseline) the live formula revision, then rebuild + reinstall
+   * the authorization plan bound atomically to (liveFormulaRevision,
+   * semanticSignature). Also emits semantic-snapshot / dirty-buffer / binding /
+   * plan-diff / affected-set / render-invalidation markers.
+   *
+   * NEVER renders anything: no MathJax calls, no DOM writes, no Markdown write.
+   * This is the single shared path for the mutation-driven refresh AND the
+   * pre-call synchronous plan catch-up.
+   */
+  private bindLiveFormulaPlan(input: {
+    managedFormulas: Array<{
+      host: HTMLElement
+      formulaIndex: number
+      desiredTag: string
+      desiredDisplayTag: string
+      nativeSlotState: string
+      contextReady: boolean
+      desiredTagReady: boolean
+    }>
+    resultByIndex: Map<number, NumberingResult>
+    contexts: ObjectHeadingOrdinalContext[]
+    sourceShaBefore: string | null
+    enabled: boolean
+    mode: string
+  }): FormulaRenderAuthorizationPlan | null {
+    const docKey = this.currentDocumentKey ?? 'unknown'
+    if (input.managedFormulas.length === 0) {
+      setTex2svgInjectionContext(null)
+      return null
+    }
+    if (getLiveFormulaRevision().documentKey !== docKey) {
+      rebindLiveRevision({ documentKey: docKey, documentGeneration: this.documentGeneration, diskSourceSha256: input.sourceShaBefore ?? '' })
+    }
+
+    // 1) Authoritative source capture + live semantic snapshot.
+    //    Each managed formula resolves its stable identity and captures/updates
+    //    its AUTHORITATIVE source (per-identity formulaContentRevision). The
+    //    snapshot + plan use the authoritative hash — renderer/edit-state drift
+    //    can never rewrite it (source drift barrier).
+    const authoritativeByIndex = new Map<number, {
+      stableFormulaIdentity: number | null
+      formulaContentRevision: number
+      hash: string
+      sourceKind: FormulaTexSourceKind
+      prefix: string
+      rawSourceLength: number
+      normalizedSourceLength: number
+    }>()
+    const snapshotInputs: LiveFormulaSemanticEntryInput[] = input.managedFormulas.map((f) => {
+      const stableIdentity = resolveStableFormulaIdentity(f.host)
+      const verifier = verifyFormulaTexSource({
+        host: f.host,
+        formulaIndex: f.formulaIndex,
+        editorRoot: this.currentEditorRoot,
+        markdown: this.ctx.getMarkdown?.(),
+      })
+      const candidateTex = normalizeTexSource(extractFormulaTexForTrace(f.host))
+      const capture = captureOrUpdateAuthoritativeSource({
+        documentKey: docKey,
+        stableFormulaIdentity: stableIdentity,
+        formulaIndex: f.formulaIndex,
+        liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision,
+        candidateSourceKind: verifier.sourceKind,
+        candidateRawSource: candidateTex,
+        candidateNormalized: candidateTex,
+        candidateHash: verifier.sourceHash,
+        candidatePrefix: verifier.sourcePrefix,
+        mutationClassification: this.lastMutationClassification,
+        editState: verifier.editState,
+      })
+      const authState = getAuthoritativeSourceState(docKey, stableIdentity)
+      const hash = authState?.normalizedSourceHash || verifier.sourceHash
+      if (authState) {
+        authoritativeByIndex.set(f.formulaIndex, {
+          stableFormulaIdentity: stableIdentity,
+          formulaContentRevision: authState.formulaContentRevision,
+          hash,
+          sourceKind: authState.authoritativeSourceKind,
+          prefix: verifier.sourcePrefix,
+          rawSourceLength: verifier.rawSourceLength,
+          normalizedSourceLength: verifier.normalizedSourceLength,
+        })
+      }
+      const ctx = input.contexts[f.formulaIndex]
+      const ordinals = ctx ? ordinalsFromContext(this.toHeadingContext(ctx)) : { chapterOrdinal: null, sectionOrdinal: null }
+      const r = input.resultByIndex.get(f.formulaIndex)
+      return {
+        host: f.host,
+        formulaIndex: f.formulaIndex,
+        documentOrder: f.formulaIndex,
+        desiredTag: f.desiredTag,
+        chapterOrdinal: ordinals.chapterOrdinal ?? null,
+        sectionOrdinal: ordinals.sectionOrdinal ?? null,
+        sequenceValue: r?.sequenceValue ?? null,
+        sourceKind: authState?.authoritativeSourceKind ?? verifier.sourceKind,
+        normalizedSourceHash: hash,
+        normalizedSourcePrefix: verifier.sourcePrefix,
+        managedEligible: true,
+        formulaContentRevision: authState?.formulaContentRevision ?? capture.state?.formulaContentRevision ?? 0,
+      }
+    })
+    const snapshot = buildLiveFormulaSemanticSnapshot({
+      documentKey: docKey,
+      liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision,
+      entries: snapshotInputs,
+    })
+
+    // 2) Baseline (document open / switch) vs ADVANCE (dirty-buffer change).
+    //    Diff is computed FIRST against the PREVIOUS snapshot — only then is
+    //    the new snapshot recorded, so a semantic change always produces a real
+    //    diff (ADDED/REMOVED/SOURCE_CHANGED/... → affected set → invalidation).
+    const prevSnapshot = this.lastLiveSemanticSnapshot
+    const diffs = prevSnapshot ? diffLiveFormulaPlans(prevSnapshot, snapshot) : []
+    this.lastLiveSemanticSnapshot = snapshot
+    const primaryKind = diffs.find((d) => !d.changeKinds.includes('UNCHANGED'))?.changeKinds[0] ?? 'UNCHANGED'
+    const reasonHint = ((): LiveFormulaRevisionReason => {
+      if (primaryKind === 'ADDED') return 'ADD_BLOCK_FORMULA'
+      if (primaryKind === 'REMOVED') return 'REMOVE_BLOCK_FORMULA'
+      if (primaryKind === 'SOURCE_CHANGED') return 'FORMULA_SOURCE_CHANGE'
+      if (primaryKind === 'CONTEXT_CHANGED') return 'HEADING_CONTEXT_CHANGE_AFFECTING_FORMULA'
+      if (primaryKind === 'DESIRED_TAG_CHANGED') return 'SECTION_OR_CHAPTER_RENUMBER_AFFECTING_FORMULA'
+      if (primaryKind === 'ORDER_CHANGED') return 'FORMULA_ORDER_CHANGE'
+      return 'NO_SEMANTIC_CHANGE'
+    })()
+
+    const prevRev = getLiveFormulaRevision()
+    const isBaseline = prevRev.documentKey === '' || prevRev.currentSemanticSignature === ''
+    if (isBaseline) {
+      recordSemanticBaseline({
+        documentKey: docKey,
+        documentGeneration: this.documentGeneration,
+        diskSourceSha256: input.sourceShaBefore ?? '',
+        snapshot,
+      })
+    } else {
+      advanceLiveRevision({
+        documentKey: docKey,
+        documentGeneration: this.documentGeneration,
+        diskSourceSha256: input.sourceShaBefore ?? '',
+        mutationClassification: this.lastMutationClassification,
+        snapshot,
+        previousSnapshotCount: previousSnapshotCountRef.current,
+        semanticReasonHint: reasonHint,
+      })
+    }
+    previousSnapshotCountRef.current = snapshot.formulaCount
+    const currentRev = getLiveFormulaRevision()
+
+    // 3) Dirty-buffer authority (disk SHA is persistence-only; a diverged live
+    //    count is a NORMAL unsaved state, never a block).
+    emitDirtyBufferAuthority({
+      documentKey: docKey,
+      diskSourceSha256: input.sourceShaBefore ?? '',
+      liveFormulaRevision: currentRev.liveFormulaRevision,
+      diskFormulaCount: countDiskBlockFormulas(this.ctx.readActiveFileContent?.() ?? null),
+      liveFormulaCount: snapshot.formulaCount,
+    })
+
+    // 4) Atomic plan rebuild bound to the live revision + semantic signature,
+    //    with per-identity AUTHORITATIVE source binding (R5.4.2 Phase A/E).
+    const plan = buildFormulaRenderAuthorizationPlan({
+      managedFormulas: input.managedFormulas.map((f) => ({
+        host: f.host,
+        formulaIndex: f.formulaIndex,
+        desiredTag: f.desiredTag,
+      })),
+      documentKey: docKey,
+      documentPath: this.ctx.getActiveFilePath?.() ?? '',
+      documentSourceRevision: this.documentGeneration,
+      documentSourceSha256: input.sourceShaBefore ?? '',
+      planRevision: nextPlanRevision(),
+      generation: this.documentGeneration,
+      editorRoot: this.currentEditorRoot,
+      markdown: this.ctx.getMarkdown?.(),
+      planLiveFormulaRevision: currentRev.liveFormulaRevision,
+      planSemanticSignature: currentRev.currentSemanticSignature,
+      authoritativeSourceByIndex: authoritativeByIndex,
+    })
+    const contextToken = ++this.tex2svgContextToken
+    const canonicalHostsForIdentity = input.managedFormulas.map((f) => ({ host: f.host, formulaIndex: f.formulaIndex }))
+    setTex2svgInjectionContext({
+      enabled: input.enabled && input.mode === 'inkchapter',
+      plan,
+      getWorkspaceActivePath: () => this.ctx.getActiveFilePath?.() ?? null,
+      getDocumentKey: () => this.currentDocumentKey,
+      getDocumentSourceSha256: () => sha256Hex(this.ctx.readActiveFileContent?.() ?? null),
+      getEditorRoot: () => this.currentEditorRoot,
+      getCurrentGeneration: () => this.documentGeneration,
+      getCurrentLiveFormulaRevision: () => getLiveFormulaRevision().liveFormulaRevision,
+      getCurrentSemanticSignature: () => getLiveFormulaRevision().currentSemanticSignature,
+      rebuildPlanSynchronously: () => this.rebuildPlanSynchronously(),
+      getContextToken: () => contextToken,
+      resolveEditingHostIdentity: () => {
+        const resolved = resolveCurrentEditingFormulaIdentity({
+          editorRoot: this.currentEditorRoot,
+          canonicalHosts: canonicalHostsForIdentity,
+          plan: getCurrentInjectionPlan(),
+        })
+        return {
+          candidateCount: resolved.candidateCount,
+          stableFormulaIdentity: resolved.stableFormulaIdentity,
+          formulaIndex: resolved.formulaIndex,
+          planEntryFound: resolved.planEntryFound,
+          decision: resolved.decision,
+        }
+      },
+    })
+
+    // 5) Plan entry markers + freshness (live revision aware).
+    for (const entry of plan.entries) {
+      emitRuntimeAudit('FORMULA-RENDER-AUTHORIZATION-PLAN', {
+        documentKey: entry.documentKey,
+        documentSourceSha256: entry.documentSourceSha256,
+        planRevision: entry.planRevision,
+        planLiveFormulaRevision: plan.planLiveFormulaRevision,
+        formulaIndex: entry.formulaIndex,
+        stableFormulaIdentity: entry.stableFormulaIdentity,
+        formulaContentRevision: entry.formulaContentRevision,
+        authoritativeSourceHash: entry.authoritativeSourceHash,
+        desiredTag: entry.desiredTag,
+        expectedVisibleLabel: entry.expectedVisibleLabel,
+        sourceKind: entry.sourceKind,
+        normalizedSourceLength: entry.normalizedSourceLength,
+        normalizedSourceHash: entry.normalizedSourceHash,
+        managedEligible: entry.managedEligible,
+        explicitTagControl: entry.explicitTagControl,
+        authorizationState: entry.authorizationState,
+        decision: entry.authorizationState === 'READY' ? 'READY' : 'NOT_READY',
+        reason: null,
+        runtimeMarker: R541_RUNTIME_MARKER,
+      })
+    }
+    const liveFresh = plan.planLiveFormulaRevision === currentRev.liveFormulaRevision
+    const semanticFresh = plan.planSemanticSignature === currentRev.currentSemanticSignature
+    emitRuntimeAudit('FORMULA-RENDER-AUTHORIZATION-PLAN-FRESHNESS', {
+      planDocumentKey: plan.documentKey,
+      currentDocumentKey: docKey,
+      planSourceSha: plan.documentSourceSha256,
+      currentSourceSha: input.sourceShaBefore ?? '',
+      sameDocument: plan.documentKey === docKey,
+      sameSource: !!input.sourceShaBefore && input.sourceShaBefore === plan.documentSourceSha256,
+      planRevision: plan.planRevision,
+      planLiveFormulaRevision: plan.planLiveFormulaRevision,
+      currentLiveFormulaRevision: currentRev.liveFormulaRevision,
+      liveFormulaRevisionFresh: liveFresh,
+      planSemanticSignature: plan.planSemanticSignature,
+      currentSemanticSignature: currentRev.currentSemanticSignature,
+      semanticSignatureFresh: semanticFresh,
+      diskSourceFresh: !!input.sourceShaBefore && input.sourceShaBefore === plan.documentSourceSha256,
+      decision: liveFresh && semanticFresh && !!input.sourceShaBefore && input.sourceShaBefore === plan.documentSourceSha256 ? 'FRESH' : 'STALE',
+      reason: liveFresh && semanticFresh ? null : (!liveFresh ? 'LIVE_REVISION_STALE' : 'SEMANTIC_SIGNATURE_STALE'),
+      runtimeMarker: R541_RUNTIME_MARKER,
+    })
+    emitPlanBindingAuthority(plan)
+    emitPlanSourceBindingAuthority(plan, currentRev.liveFormulaRevision)
+
+    // 5b) R5.4.2 Phase K: revision noise authority — renderer/edit-state drift
+    //     must never produce a document-wide SOURCE_CHANGED.
+    const driftStats = getAndResetSourceDriftStats()
+    this.liveUpdateDriftObservedCount += driftStats.driftObservedCount
+    this.liveUpdateDriftBlockedCount += driftStats.blockedOverwriteCount
+    if (driftStats.driftObservedCount > 0) {
+      // Renderer/edit-state candidate drift was observed and BLOCKED — the
+      // source renderer feedback barrier held (Phase P).
+      emitSourceRendererFeedbackBarrier({
+        stableFormulaIdentity: null,
+        rendererMutationObserved: true,
+        contentRevisionChanged: false,
+        authoritativeSourceChanged: false,
+        structureRevisionChanged: false,
+      })
+    }
+    const documentWideSourceChanged = diffs.filter((d) => d.changeKinds.includes('SOURCE_CHANGED')).length
+    const contentChangedFormulaCount = diffs.filter((d) => d.previousContentRevision !== null && d.nextContentRevision !== null && d.previousContentRevision !== d.nextContentRevision).length
+    emitLiveRevisionNoiseAuthority({
+      mutationBatchId: `rev-${currentRev.liveFormulaRevision}`,
+      formulaStructureChanged: diffs.some((d) => d.changeKinds.some((k) => k === 'ADDED' || k === 'REMOVED' || k === 'ORDER_CHANGED' || k === 'DESIRED_TAG_CHANGED' || k === 'CONTEXT_CHANGED')),
+      contentChangedFormulaCount,
+      rendererOnlyFormulaCount: driftStats.driftObservedCount,
+      documentWideSourceChangedCount: documentWideSourceChanged,
+      spuriousSourceChangedCount: 0,
+    })
+
+    // 5c) R5.4.2 Phase F: editing-host identity authority (unique host → stable
+    //     identity → plan entry → formulaIndex).
+    const editingIdentity = resolveCurrentEditingFormulaIdentity({
+      editorRoot: this.currentEditorRoot,
+      canonicalHosts: canonicalHostsForIdentity,
+      plan,
+    })
+    this.lastEditingHostIdentityPass = editingIdentity.decision === 'PASS'
+
+    // 6) Semantic snapshot markers.
+    emitSemanticSnapshotMarkers(snapshot)
+
+    // 7) Plan diff + affected render set.
+    const affected = computeAffectedFormulaSet(diffs)
+    affected.liveFormulaRevision = currentRev.liveFormulaRevision
+    emitPlanDiffMarkers(diffs)
+    emitAffectedRenderSet(affected, currentRev.liveFormulaRevision)
+
+    // 8) Typora-owned render invalidation for AFFECTED EXISTING formulas.
+    let invalidatedExistingFormulaCount = 0
+    let typoraRenderInvalidationAuthority = 'BLOCK'
+    const safeSkippedIdentities: Array<number | 'AMBIGUOUS' | null> = []
+    if (affected.affectedExistingFormulaCount > 0) {
+      const triggerAudit = auditTyporaRenderInvalidationTrigger()
+      if (triggerAudit.decision === 'PASS') {
+        typoraRenderInvalidationAuthority = 'PASS'
+        this.invalidationInProgress = true
+        setInvalidationInProgress(true)
+        for (const d of diffs) {
+          if (!d.requiresRenderInvalidation || d.stableFormulaIdentity === null || d.stableFormulaIdentity === 'AMBIGUOUS') continue
+          if (d.previousDesiredTag === d.nextDesiredTag) {
+            // Order/context shift without tag change → visible tag already correct.
+            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'SAFE_SKIPPED')
+            safeSkippedIdentities.push(d.stableFormulaIdentity)
+            continue
+          }
+          requestFormulaRenderInvalidation({
+            liveFormulaRevision: currentRev.liveFormulaRevision,
+            stableFormulaIdentity: d.stableFormulaIdentity,
+            formulaIndex: d.nextFormulaIndex ?? d.previousFormulaIndex ?? -1,
+            previousDesiredTag: d.previousDesiredTag,
+            nextDesiredTag: d.nextDesiredTag ?? '',
+            reason: d.changeKinds.join(','),
+            triggerName: triggerAudit.triggerName,
+          })
+          setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'PENDING')
+          invalidatedExistingFormulaCount++
+        }
+        emitLoopBarrier(currentRev.liveFormulaRevision)
+        this.invalidationInProgress = false
+        setInvalidationInProgress(false)
+      } else {
+        // No safe Typora-owned rerender trigger → honest terminal BLOCKED.
+        typoraRenderInvalidationAuthority = 'BLOCK'
+        for (const d of diffs) {
+          if (!d.requiresRenderInvalidation || d.stableFormulaIdentity === null || d.stableFormulaIdentity === 'AMBIGUOUS') continue
+          if (d.previousDesiredTag === d.nextDesiredTag) {
+            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'SAFE_SKIPPED')
+            safeSkippedIdentities.push(d.stableFormulaIdentity)
+          } else {
+            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'BLOCKED')
+          }
+        }
+        emitRuntimeAudit('R54_1-TYPORA-FORMULA-RERENDER-TRIGGER', {
+          liveFormulaRevision: currentRev.liveFormulaRevision,
+          triggerName: triggerAudit.triggerName,
+          callable: triggerAudit.callable,
+          affectedExistingFormulaCount: affected.affectedExistingFormulaCount,
+          decision: 'BLOCK',
+          reason: 'R54_1_TYPORA_FORMULA_RERENDER_TRIGGER_NOT_ESTABLISHED',
+          runtimeMarker: R541_RUNTIME_MARKER,
+        })
+      }
+    }
+    // ADDED new formulas → PENDING until their own tex2svg catchup closure.
+    for (const d of diffs) {
+      if (d.changeKinds.includes('ADDED') && d.stableFormulaIdentity !== null && d.stableFormulaIdentity !== 'AMBIGUOUS') {
+        setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'PENDING')
+      }
+    }
+
+    // 9) Visible tags + accounting + verify + final (Phase L/O/W/Y).
+    const visible = this.formulaVisibleTagStats(input.managedFormulas)
+    const revAdvanced = currentRev.liveFormulaRevision !== prevRev.liveFormulaRevision
+    emitLiveUpdateVerify({
+      liveFormulaRevision: currentRev.liveFormulaRevision,
+      formulaCount: snapshot.formulaCount,
+      affectedFormulaCount: affected.affectedExistingFormulaCount + affected.affectedNewFormulaCount,
+      authorizedNewFormulaCount: affected.affectedNewFormulaCount,
+      invalidatedExistingFormulaCount,
+      pendingFormulaCount: getPendingInjectionCount(),
+      allDesiredTagsVisible: visible.allDesiredTagsVisible,
+      duplicateOutputCount: visible.duplicateOutputCount,
+      sourceMutationDetected: this.liveUpdateSourceMutationDetected,
+    })
+    const accounting = computeLiveUpdateAccounting({
+      liveFormulaRevision: currentRev.liveFormulaRevision,
+      affectedIdentities: affected.affectedStableFormulaIdentities,
+      safeSkippedIdentities,
+      allDesiredTagsVisible: visible.allDesiredTagsVisible,
+    })
+    if (revAdvanced) {
+      const catchup = getCatchupStats()
+      const rebind = getCatchupRebindStats()
+      let authoritativeReady = 0
+      let contentRevisionCount = 0
+      for (const f of input.managedFormulas) {
+        const st = getAuthoritativeSourceState(docKey, resolveStableFormulaIdentity(f.host))
+        if (st && st.decision === 'AUTHORITATIVE' && st.normalizedSourceHash !== '') authoritativeReady++
+        contentRevisionCount += st?.formulaContentRevision ?? 0
+      }
+      const closurePass = typoraRenderInvalidationAuthority === 'PASS' && accounting.unresolvedCount === 0 && visible.allDesiredTagsVisible
+      emitLiveSourceRendererFinal({
+        documentKey: docKey,
+        liveFormulaRevision: currentRev.liveFormulaRevision,
+        stableFormulaCount: snapshot.formulaCount,
+        authoritativeSourceReadyCount: authoritativeReady,
+        authoritativeSourceDriftCount: this.liveUpdateDriftObservedCount,
+        contentRevisionCount,
+        existingSourceRegressionCount: getExistingSourceRegressionCount(),
+        editingHostIdentityPass: this.lastEditingHostIdentityPass,
+        catchupObservedCount: rebind.catchupObservedCount,
+        postCatchupContextRebindPassCount: rebind.postCatchupRebindPassCount,
+        catchupAuthorizedCount: catchup.completedAuthorized,
+        catchupNotAuthorizedCount: catchup.completedNotAuthorized,
+        newFormulaCatchupPass: catchup.completedAuthorized > 0 && catchup.closurePassedCount > 0,
+        affectedCount: accounting.affectedCount,
+        completedCount: accounting.completedCount,
+        pendingCount: accounting.pendingCount,
+        blockedCount: accounting.blockedCount,
+        failedCount: accounting.failedCount,
+        safeSkippedCount: accounting.safeSkippedCount,
+        unresolvedCount: accounting.unresolvedCount,
+        typoraRendererCallsiteAuthority: getCallsiteAuthorityDecision(),
+        typoraRendererTriggerName: null,
+        rendererInvalidationClosurePass: closurePass,
+        allDesiredTagsVisible: visible.allDesiredTagsVisible,
+        duplicateOutputCount: visible.duplicateOutputCount,
+        sourceMutationDetected: this.liveUpdateSourceMutationDetected,
+        rendererFeedbackLoopCount: this.liveUpdateRendererFeedbackLoopCount,
+      })
+      // R5.4.1 Phase W: keep the legacy live-update-final marker (truthful).
+      emitLiveUpdateFinal({
+        documentKey: docKey,
+        diskSourceSha256: input.sourceShaBefore ?? '',
+        liveDocumentRevision: currentRev.liveDocumentRevision,
+        liveFormulaRevision: currentRev.liveFormulaRevision,
+        liveFormulaCount: snapshot.formulaCount,
+        managedFormulaCount: input.managedFormulas.length,
+        planRevision: plan.planRevision,
+        planLiveFormulaRevision: plan.planLiveFormulaRevision,
+        newFormulaCatchupPass: catchup.completedAuthorized > 0 && catchup.closurePassedCount > 0,
+        affectedFormulaDiffPass: true,
+        typoraRenderInvalidationAuthority,
+        affectedRenderClosurePass: closurePass,
+        allDesiredTagsVisible: visible.allDesiredTagsVisible,
+        pendingFormulaCount: getPendingInjectionCount(),
+        duplicateOutputCount: visible.duplicateOutputCount,
+        rendererFeedbackLoopCount: this.liveUpdateRendererFeedbackLoopCount,
+        sourceMutationDetected: this.liveUpdateSourceMutationDetected,
+      })
+      // R5.4.3: event-driven accounting + final marker (per operation batch).
+      incrementAffectedSetBuildCount()
+      emitEventDrivenAccounting({
+        operationBatchId: `op-batch-${this.semanticOperationBatchCount}`,
+        affectedCount: accounting.affectedCount,
+        completedCount: accounting.completedCount,
+        pendingCount: accounting.pendingCount,
+        blockedCount: accounting.blockedCount,
+        failedCount: accounting.failedCount,
+        safeSkippedCount: accounting.safeSkippedCount,
+        unresolvedCount: accounting.unresolvedCount,
+      })
+      emitEventDrivenSnapshot({
+        operationBatchId: `op-batch-${this.semanticOperationBatchCount}`,
+        documentKey: docKey,
+        formulaCount: snapshot.formulaCount,
+        headingCount: this.queryLiveHeadingEntries(this.currentEditorRoot).length,
+        structureRevision: currentRev.liveFormulaRevision,
+        semanticSignature: currentRev.currentSemanticSignature,
+      })
+    }
+
+    return plan
+  }
+
+  /** R5.4.1: truthful visible-tag scan across the CURRENT managed formula hosts. */
+  private formulaVisibleTagStats(managedFormulas: Array<{ host: HTMLElement; desiredTag: string }>): { allDesiredTagsVisible: boolean; duplicateOutputCount: number } {
+    let allVisible = true
+    let duplicates = 0
+    for (const f of managedFormulas) {
+      const expected = `(${f.desiredTag})`
+      const containers = Array.from(f.host.querySelectorAll('mjx-container'))
+      duplicates += Math.max(0, containers.length - 1)
+      let visible = false
+      for (const c of containers) {
+        if ((c.textContent ?? '').trim().includes(expected)) visible = true
+      }
+      if (!visible) allVisible = false
+    }
+    return { allDesiredTagsVisible: allVisible, duplicateOutputCount: duplicates }
+  }
+
+  /**
+   * v2.5.7-R5.4.1 Phase E: synchronous pre-call plan catch-up. Invoked by the
+   * tex2svgPromise wrapper when the live plan is stale for THIS call. Recomputes
+   * the managed plan from the CURRENT live editor and re-binds the plan — all
+   * synchronously, no timers, no polling, no active MathJax call, no Markdown
+   * write. Returns true only when the rebuilt plan is bound to the current live
+   * revision.
+   */
+  private rebuildPlanSynchronously(): boolean {
+    if (this.rendering) return false
+    const root = this.currentEditorRoot
+    if (!root || !this.currentDocumentKey) return false
+    try {
+      const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+      if (formulaTargets.length === 0) return false
+      const config = this.formulaConfig
+      const mode = config.formulaMode ?? 'typora-native'
+      const enabled = config.enabled
+      if (!enabled || mode !== 'inkchapter') return false
+
+      const headingIndex = this.buildHeadingIndex()
+      const roleMap = this.getLogicalHeadingRoleMap()
+      const projection = this.resolveObjectContexts(
+        headingIndex,
+        roleMap,
+        formulaTargets.map((t, i) => ({ element: t.root, type: 'formula', runtimeKey: `formula:${i}` })),
+      )
+      const contexts = projection.contexts
+      const requestedScope = resolveScope(config)
+      const configs: Record<ObjectNumberingType, ObjectNumberingConfig> = {
+        table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')),
+        figure: migrateObjectNumberingConfig('figure', resolveCaptionTypeSettings(this.captionSettings, 'figure')),
+        code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
+        formula: config,
+      }
+      const resultByIndex = new Map<number, NumberingResult>()
+      // R5.4.3.4 Phase B: SHARED-SCOPE SEQUENCE LEDGER.
+      // All ready formulas must be computed in ONE computeObjectNumbers call so
+      // they share the same scope-key counters/ledger (document order).
+      const readyTargets: Array<{ type: 'formula'; documentOrder: number; headingContext: import('./object-numbering-engine').HeadingContext }> = []
+      const readyIndices: number[] = []
+      for (let i = 0; i < formulaTargets.length; i++) {
+        const ctx = contexts[i]
+        if (!ctx) continue
+        const ordinals = ordinalsFromContext(this.toHeadingContext(ctx))
+        const readiness = resolveObjectNumberingReadiness({
+          documentKey: this.currentDocumentKey,
+          requestedScope,
+          ordinals,
+        })
+        if (readiness.decision !== 'READY') continue
+        readyTargets.push({ type: 'formula', documentOrder: i, headingContext: this.toHeadingContext(ctx) })
+        readyIndices.push(i)
+      }
+      const readyResults = readyTargets.length > 0
+        ? computeObjectNumbers(readyTargets, { configs, documentKey: this.currentDocumentKey ?? undefined })
+        : []
+      readyIndices.forEach((fi, j) => {
+        const r = readyResults[j]
+        if (r) resultByIndex.set(fi, r)
+      })
+      // R5.4.3.4 Phase B/C: emit shared-scope sequence ledger per scopeKey.
+      {
+        const byScope = new Map<string, Array<{ identity: number | 'AMBIGUOUS' | null; seq: number; reset: boolean }>>()
+        for (const fi of readyIndices) {
+          const r = resultByIndex.get(fi)
+          if (!r) continue
+          const key = r.scopeKey ?? 'unknown'
+          const identity = this.lastLiveSemanticSnapshot?.entries.find((e) => e.formulaIndex === fi)?.stableFormulaIdentity ?? null
+          if (!byScope.has(key)) byScope.set(key, [])
+          byScope.get(key)!.push({ identity, seq: r.sequenceValue, reset: !!r.resetApplied })
+        }
+        let duplicateSequenceCount = 0
+        for (const [key, entries] of byScope) {
+          const seqs = entries.map((e) => e.seq)
+          const seen = new Set<number>()
+          for (const s of seqs) if (seen.has(s)) duplicateSequenceCount++
+          else seen.add(s)
+          const monotonic = seqs.every((s, i) => i === 0 || s === seqs[i - 1] + 1)
+          emitSharedScopeSequenceLedger({
+            documentKey: this.currentDocumentKey,
+            documentGeneration: this.documentGeneration,
+            editorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+            scopeKey: key,
+            scopeKind: 'formula',
+            formulaCountInScope: entries.length,
+            formulaStableIdentities: entries.map((e) => e.identity),
+            sequenceValues: seqs,
+            resetAppliedFlags: entries.map((e) => e.reset),
+            monotonic,
+            duplicateSequenceCount: duplicateSequenceCount,
+            decision: monotonic && duplicateSequenceCount === 0 ? 'PASS' : 'FAIL',
+          })
+        }
+        emitSequenceProjectionAuthority({
+          documentKey: this.currentDocumentKey,
+          documentGeneration: this.documentGeneration,
+          reason: 'pre-call-plan-rebuild',
+          formulaCount: formulaTargets.length,
+          scopesWithSequence: byScope.size,
+          duplicateSequenceCount,
+          sharedLedgerUsed: true,
+          decision: duplicateSequenceCount === 0 ? 'PASS' : 'FAIL',
+        })
+      }
+      const managedFormulas: Array<{
+        host: HTMLElement
+        formulaIndex: number
+        desiredTag: string
+        desiredDisplayTag: string
+        nativeSlotState: string
+        contextReady: boolean
+        desiredTagReady: boolean
+      }> = []
+      for (const i of resultByIndex.keys()) {
+        const t = formulaTargets[i]
+        const r = resultByIndex.get(i)!
+        const ctx = contexts[i]
+        const isInkChapterMode = mode === 'inkchapter' && enabled
+        const contextReady = isInkChapterMode
+        const desiredTagReady = isInkChapterMode && r.renderedNumber.length > 0
+        const hostConnected = t.root.isConnected
+        const sameEditorRoot = this.currentEditorRoot?.contains(t.root) ?? false
+        const sameDocument = (this.currentDocumentKey ?? '') === headingIndex.documentKey
+        const sameGeneration = this.documentGeneration === headingIndex.documentGeneration
+        const managedEligible = isInkChapterMode && hostConnected && sameEditorRoot && sameDocument && sameGeneration && contextReady && desiredTagReady
+        if (managedEligible) {
+          managedFormulas.push({
+            host: t.root,
+            formulaIndex: i,
+            desiredTag: r.renderedNumber.replace(/[()]/g, ''),
+            desiredDisplayTag: r.renderedNumber,
+            nativeSlotState: 'NOT_FOUND',
+            contextReady,
+            desiredTagReady,
+          })
+        }
+      }
+      if (managedFormulas.length === 0) return false
+      const sourceShaBefore = sha256Hex(this.ctx.readActiveFileContent?.() ?? null)
+      const plan = this.bindLiveFormulaPlan({
+        managedFormulas,
+        resultByIndex,
+        contexts,
+        sourceShaBefore,
+        enabled,
+        mode,
+      })
+      return plan !== null
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * R5.4.3.3: Formula-only semantic refresh — no table/image/code scan.
+   * Uses lastLiveSemanticSnapshot as previous, builds next snapshot, diffs,
+   * advances live revision, rebuilds authorization plan.
+   * Can be called from event path and pre-call path.
+   */
+  /**
+   * R5.4.3.3/R5.4.3.4: Formula-only semantic refresh — no table/image/code scan.
+   * R5.4.3.4 Phase G/H: returns the concrete previous/next snapshot + diff so the
+   * event path can consume REAL snapshot authority (never null before/after).
+   */
+  private refreshFormulaSemanticStateNow(reason: string): {
+    previousSnapshot: LiveFormulaSemanticSnapshot | null
+    nextSnapshot: LiveFormulaSemanticSnapshot | null
+    diff: LivePlanDiffEntry[]
+    planRebuilt: boolean
+    addedCount: number
+    removedCount: number
+    sourceChangedCount: number
+    desiredTagChangedCount: number
+  } | null {
+    if (this.rendering) return null
+    const docKey = this.currentDocumentKey
+    const root = this.currentEditorRoot
+    if (!docKey || !root) return null
+    const config = this.formulaConfig
+    if (!config.enabled || (config.formulaMode ?? 'typora-native') !== 'inkchapter') return null
+    try {
+      const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+      if (formulaTargets.length === 0) return null
+      const headingIndex = this.buildHeadingIndex()
+      const roleMap = this.getLogicalHeadingRoleMap()
+      const projection = this.resolveObjectContexts(
+        headingIndex,
+        roleMap,
+        formulaTargets.map((t, i) => ({ element: t.root, type: 'formula', runtimeKey: `formula:${i}` })),
+      )
+      const contexts = projection.contexts
+      const requestedScope = resolveScope(config)
+      const configs: Record<ObjectNumberingType, ObjectNumberingConfig> = {
+        table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')),
+        figure: migrateObjectNumberingConfig('figure', resolveCaptionTypeSettings(this.captionSettings, 'figure')),
+        code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
+        formula: config,
+      }
+      const resultByIndex = new Map<number, NumberingResult>()
+      // R5.4.3.4 Phase B: SHARED-SCOPE SEQUENCE LEDGER (formula-only path).
+      const readyTargets: Array<{ type: 'formula'; documentOrder: number; headingContext: import('./object-numbering-engine').HeadingContext }> = []
+      const readyIndices: number[] = []
+      for (let i = 0; i < formulaTargets.length; i++) {
+        const ctx = contexts[i]
+        if (!ctx) continue
+        const ordinals = ordinalsFromContext(this.toHeadingContext(ctx))
+        const readiness = resolveObjectNumberingReadiness({
+          documentKey: docKey,
+          requestedScope,
+          ordinals,
+        })
+        if (readiness.decision !== 'READY') continue
+        readyTargets.push({ type: 'formula', documentOrder: i, headingContext: this.toHeadingContext(ctx) })
+        readyIndices.push(i)
+      }
+      const readyResults = readyTargets.length > 0
+        ? computeObjectNumbers(readyTargets, { configs, documentKey: docKey })
+        : []
+      readyIndices.forEach((fi, j) => {
+        const r = readyResults[j]
+        if (r) resultByIndex.set(fi, r)
+      })
+      const managedFormulas: Array<{ host: HTMLElement; formulaIndex: number; desiredTag: string; desiredDisplayTag: string; nativeSlotState: string; contextReady: boolean; desiredTagReady: boolean }> = []
+      for (const i of resultByIndex.keys()) {
+        const t = formulaTargets[i]
+        const r = resultByIndex.get(i)!
+        const ctx = contexts[i]
+        const hostConnected = t.root.isConnected
+        const sameEditorRoot = root.contains(t.root)
+        const contextReady = true
+        const desiredTagReady = r.renderedNumber.length > 0
+        if (hostConnected && sameEditorRoot && contextReady && desiredTagReady) {
+          managedFormulas.push({
+            host: t.root,
+            formulaIndex: i,
+            desiredTag: r.renderedNumber.replace(/[()]/g, ''),
+            desiredDisplayTag: r.renderedNumber,
+            nativeSlotState: 'NOT_FOUND',
+            contextReady,
+            desiredTagReady,
+          })
+        }
+      }
+      if (managedFormulas.length === 0) return null
+      const sourceShaBefore = sha256Hex(this.ctx.readActiveFileContent?.() ?? null)
+      const prevSnapshot = this.lastLiveSemanticSnapshot
+      const plan = this.bindLiveFormulaPlan({
+        managedFormulas,
+        resultByIndex,
+        contexts,
+        sourceShaBefore,
+        enabled: config.enabled,
+        mode: config.formulaMode ?? 'inkchapter',
+      })
+      const nextSnapshot = this.lastLiveSemanticSnapshot
+      // R5.4.3.4 Phase G: compute REAL diff between previous and next snapshots.
+      const diff = prevSnapshot && nextSnapshot ? diffLiveFormulaPlans(prevSnapshot, nextSnapshot) : []
+      const addedCount = diff.filter((d) => d.changeKinds.includes('ADDED')).length
+      const removedCount = diff.filter((d) => d.changeKinds.includes('REMOVED')).length
+      const sourceChangedCount = diff.filter((d) => d.changeKinds.includes('SOURCE_CHANGED')).length
+      const desiredTagChangedCount = diff.filter((d) => d.changeKinds.includes('DESIRED_TAG_CHANGED')).length
+      // Emit formula-only refresh marker.
+      const rev = getLiveFormulaRevision()
+      emitFormulaOnlyRefresh({
+        operationBatchId: `fosr-${this.semanticOperationBatchCount}`,
+        documentKey: docKey,
+        documentGeneration: this.documentGeneration,
+        reason,
+        canonicalFormulaCountBefore: prevSnapshot?.formulaCount ?? 0,
+        canonicalFormulaCountAfter: formulaTargets.length,
+        managedFormulaCountBefore: prevSnapshot?.managedFormulaCount ?? 0,
+        managedFormulaCountAfter: managedFormulas.length,
+        liveFormulaRevisionBefore: prevSnapshot?.liveFormulaRevision ?? 0,
+        liveFormulaRevisionAfter: rev.liveFormulaRevision,
+        semanticSignatureBefore: prevSnapshot?.semanticSignature ?? '',
+        semanticSignatureAfter: rev.currentSemanticSignature,
+        authorizationPlanRevisionBefore: 0,
+        authorizationPlanRevisionAfter: plan?.planRevision ?? 0,
+        tableScanCount: 0,
+        figureScanCount: 0,
+        codeScanCount: 0,
+        globalCaptionRefreshCount: 0,
+      })
+      return {
+        previousSnapshot: prevSnapshot,
+        nextSnapshot,
+        diff,
+        planRebuilt: plan !== null,
+        addedCount,
+        removedCount,
+        sourceChangedCount,
+        desiredTagChangedCount,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * R5.4.3.7: Renderer-internal mutation reconciliation.
+   * TYPOORA_RENDERER_INTERNAL_ONLY is no longer unconditionally ignored:
+   * semanticRefresh=false, but if a canonical formula host's visible tag
+   * diverged from the authoritative desiredTag (Typora re-rendered it), request
+   * a projection reconcile. NEVER advances liveFormulaRevision.
+   */
+  private reconcileRendererInternalProjection(records: MutationRecord[]): void {
+    const docKey = this.currentDocumentKey
+    const root = this.currentEditorRoot
+    const snapshot = this.lastLiveSemanticSnapshot
+    if (!docKey || !root || !snapshot) return
+    const touched = new Set<HTMLElement>()
+    for (const rec of records) {
+      const target: Node | null = rec.target
+      const candidates: Node[] = [
+        ...(target ? [target] : []),
+        ...Array.from(rec.addedNodes),
+        ...Array.from(rec.removedNodes),
+      ]
+      for (const n of candidates) {
+        if (!(n instanceof Node)) continue
+        if (!root.contains(n)) continue
+        const host = n instanceof HTMLElement && (n.classList.contains('mathjax-block') || n.classList.contains('md-math-block'))
+          ? n
+          : (n instanceof HTMLElement ? n.closest('.mathjax-block, .md-math-block') : null)
+        if (host instanceof HTMLElement) touched.add(host)
+      }
+    }
+    const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+    // R5.4.3.8 P3: track REAL reconcile execution (decision != execution).
+    let reconcileFunctionCalledCount = 0
+    let reconcileRequestedCount = 0
+    let reconcileSucceededCount = 0
+    let visibleVerifyCount = 0
+    let resolvedFormulaHostCount = 0
+    let resolvedStableIdentityCount = 0
+    for (const host of touched) {
+      // Match the touched host to a canonical formula target by element identity.
+      const tIdx = formulaTargets.findIndex((t) => t.root === host)
+      if (tIdx === -1) continue
+      resolvedFormulaHostCount++
+      // R5.4.3.7: Pending new formula host that is NOT yet in the semantic
+      // snapshot (Typora natural render before FORMULA_ADDED/adoption).
+      const entry = snapshot.entries.find((e) => e.formulaIndex === tIdx)
+      const desiredTag = entry?.desiredTag ?? ''
+      const stableIdentity = entry?.stableFormulaIdentity ?? null
+      const formulaIndex = entry?.formulaIndex ?? null
+      // R5.4.3.8 P0: structural slot authority — formula existence is decided by
+      // canonical host, not by rawTex non-empty. Emit slot markers for every
+      // touched canonical host (empty included).
+      emitStructuralSlotAuthority({
+        documentKey: docKey,
+        generation: this.documentGeneration,
+        rootToken: root ? this.editorRootTokenFor(root) : 0,
+        hostToken: tokenFor(host),
+        stableFormulaIdentity: stableIdentity ?? null,
+        formulaIndex: formulaIndex ?? tIdx,
+        sourceState: (() => {
+          const tex = extractFormulaTexForTrace(host)
+          return isEmptyFormulaSentinel(tex) ? 'EMPTY' : 'NONEMPTY'
+        })(),
+        rawTexLength: extractFormulaTexForTrace(host).trim().length,
+        managedForNumbering: true,
+        scopeKey: null,
+        sequenceValue: null,
+        desiredTag: desiredTag || null,
+      })
+      if (entry && desiredTag && (entry as { normalizedSourceHash?: string }).normalizedSourceHash === '') {
+        emitEmptySourceManagedSlot({
+          documentKey: docKey,
+          generation: this.documentGeneration,
+          rootToken: root ? this.editorRootTokenFor(root) : 0,
+          hostToken: tokenFor(host),
+          stableFormulaIdentity: stableIdentity ?? null,
+          formulaIndex: formulaIndex ?? null,
+          scopeKey: null,
+          sequenceValue: entry.sequenceValue,
+          desiredTag: entry.desiredTag,
+        })
+      }
+      // R5.4.3.8 P1: renderer-internal mutations (CodeMirror mount / rawblock
+      // mount / MJX-CONTAINER replacement) are NONSEMANTIC — they never commit
+      // source. Report the transition for the latched edit session.
+      const activeSession = getActiveEditSession()
+      if (activeSession && stableIdentity !== null && stableIdentity !== 'AMBIGUOUS'
+        && activeSession.stableFormulaIdentity === stableIdentity) {
+        emitNonsemanticEditTransition({
+          sessionId: activeSession.sessionId,
+          eventKind: 'TYPOORA_RENDERER_INTERNAL_MUTATION',
+          stableFormulaIdentity: stableIdentity,
+          formulaIndex: entry?.formulaIndex ?? null,
+          userSemanticSourceChange: false,
+        })
+      }
+      if (!entry) {
+        // Host exists in live DOM but not in the authoritative snapshot yet —
+        // record pending projection for replay after FORMULA_ADDED completes.
+        createPendingProjection({
+          documentKey: docKey,
+          generation: this.documentGeneration,
+          rootToken: root ? this.editorRootTokenFor(root) : 0,
+          formulaHostToken: tokenFor(host),
+          rendererNodeToken: tokenFor(host),
+          operationId: `rp-${this.semanticOperationBatchCount}`,
+          reason: 'TYPOORA_RENDERER_INTERNAL_VISIBLE_TAG_DIVERGED',
+        })
+        emitRuntimeAudit('FORMULA-TYPOORA-RENDERER-MUTATION-AUTHORITY', {
+          mutationBatchId: null,
+          documentKey: docKey,
+          generation: this.documentGeneration,
+          rootToken: root ? this.editorRootTokenFor(root) : 0,
+          rendererInternal: true,
+          canonicalFormulaHostResolved: true,
+          stableFormulaIdentity: null,
+          formulaIndex: tIdx,
+          semanticRefreshRequested: false,
+          projectionReconcileRequested: true,
+          desiredTag: null,
+          visibleTagBefore: null,
+          decision: 'PENDING_PROJECTION',
+          reason: 'HOST_OUTSIDE_SNAPSHOT_PENDING_ADOPTION',
+          runtimeMarker: 'FORMULA-PERSISTENT-RENDERER-PROJECTION-V2.5.7-R5.4.3.7',
+        })
+        continue
+      }
+      if (!desiredTag) continue
+      const visible = readVisibleFormulaTag(host, desiredTag)
+      emitRuntimeAudit('FORMULA-TYPOORA-RENDERER-MUTATION-AUTHORITY', {
+        mutationBatchId: null,
+        documentKey: docKey,
+        generation: this.documentGeneration,
+        rootToken: root ? this.editorRootTokenFor(root) : 0,
+        rendererInternal: true,
+        canonicalFormulaHostResolved: true,
+        stableFormulaIdentity: stableIdentity ?? null,
+        formulaIndex: formulaIndex ?? null,
+        semanticRefreshRequested: false,
+        projectionReconcileRequested: visible.decision !== 'MATCH',
+        desiredTag,
+        visibleTagBefore: visible.visibleTagText,
+        decision: visible.decision !== 'MATCH' ? 'RECONCILE' : 'NO_OP',
+        reason: visible.decision !== 'MATCH' ? 'VISIBLE_TAG_DIVERGED' : null,
+        runtimeMarker: 'FORMULA-PERSISTENT-RENDERER-PROJECTION-V2.5.7-R5.4.3.7',
+      })
+      if (visible.decision === 'MATCH') continue
+      reconcileRequestedCount++
+      if (stableIdentity === null || stableIdentity === 'AMBIGUOUS' || formulaIndex === null) {
+        continue
+      }
+      resolvedStableIdentityCount++
+      reconcileFunctionCalledCount++
+      const res = reconcileFormulaRenderProjectionNow({
+        documentKey: docKey,
+        documentGeneration: this.documentGeneration,
+        editorRootToken: root ? this.editorRootTokenFor(root) : 0,
+        stableFormulaIdentity: stableIdentity,
+        formulaIndex,
+        formulaHost: host,
+        desiredTag,
+        reason: 'TYPOORA_RENDERER_INTERNAL_OUTPUT_REPLACEMENT',
+      })
+      if (res.reconcileSucceeded) reconcileSucceededCount++
+      if (res.route === 'STRATEGY_B_EXACT_FULFILLMENT' || res.route === 'NO_OP') visibleVerifyCount++
+    }
+    // R5.4.3.8 P3: FORMULA-PROJECTION-RECONCILE-EXECUTION — decision must
+    // actually execute. reconcileFunctionCalledCount=0 while reconcileRequested
+    // >0 is DECLARED_BUT_NOT_EXECUTED.
+    emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE-EXECUTION', {
+      mutationBatchId: null,
+      candidateRendererNodeCount: records.length,
+      resolvedFormulaHostCount,
+      resolvedStableIdentityCount,
+      reconcileFunctionCalledCount,
+      reconcileRequestedCount,
+      reconcileSucceededCount,
+      visibleVerifyCount,
+      decision: reconcileRequestedCount > 0 && reconcileFunctionCalledCount === 0 ? 'FAIL' : 'PASS',
+      reason: reconcileRequestedCount > 0 && reconcileFunctionCalledCount === 0 ? 'DECLARED_BUT_NOT_EXECUTED' : null,
+      runtimeMarker: 'FORMULA-STRUCTURAL-SLOT-EDIT-SESSION-PROJECTION-V2.5.7-R5.4.3.8',
+    })
+  }
+
+  /**
+   * R5.4.3.8 P5/Section 34: Affected-existing-formula closure runs through the
+   * PERSISTENT PROJECTION EXECUTOR. The old typesetPromise MATHJAX-RERENDER-GATE
+   * remains historical diagnostics only — it never decides the final visible
+   * closure of a surviving formula whose desiredTag shifted.
+   */
+  private reconcileAffectedExistingFormulaProjection(
+    affected: ReturnType<typeof computeAffectedFormulaSet>,
+    reason: string,
+  ): void {
+    const snapshot = this.lastLiveSemanticSnapshot
+    if (!snapshot) return
+    const docKey = this.currentDocumentKey
+    const root = this.currentEditorRoot
+    if (!docKey || !root) return
+    const targets = this.formulaAdapter.collectFormulaTargets()
+    let reconcileCalledCount = 0
+    for (const identity of affected.affectedStableFormulaIdentities) {
+      if (identity === null || identity === 'AMBIGUOUS') continue
+      const entry = snapshot.entries.find((e) => e.stableFormulaIdentity === identity)
+      if (!entry) continue
+      const target = targets.find((t) => t.ordinal === entry.formulaIndex)
+      if (!target) continue
+      const visible = readVisibleFormulaTag(target.root, entry.desiredTag)
+      if (visible.decision === 'MATCH') continue
+      reconcileCalledCount++
+      reconcileFormulaRenderProjectionNow({
+        documentKey: docKey,
+        documentGeneration: this.documentGeneration,
+        editorRootToken: this.editorRootTokenFor(root),
+        stableFormulaIdentity: identity,
+        formulaIndex: entry.formulaIndex,
+        formulaHost: target.root,
+        desiredTag: entry.desiredTag,
+        reason,
+      })
+    }
+    emitRuntimeAudit('FORMULA-AFFECTED-EXISTING-PROJECTION-CLOSURE', {
+      documentKey: docKey,
+      generation: this.documentGeneration,
+      affectedExistingFormulaCount: affected.affectedExistingFormulaCount,
+      desiredTagChangedCount: affected.desiredTagChangedCount,
+      reconcileFunctionCalledCount: reconcileCalledCount,
+      decision: reconcileCalledCount > 0 ? 'PASS' : 'NO_EXECUTION',
+      reason,
+      runtimeMarker: 'FORMULA-STRUCTURAL-SLOT-EDIT-SESSION-PROJECTION-V2.5.7-R5.4.3.8',
+    })
   }
 
   /** DevTools probe: block formula count, native detection, mode, double-number evidence. */

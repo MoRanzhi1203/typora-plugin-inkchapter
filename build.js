@@ -55,6 +55,18 @@ await esbuild.build({
   ],
 })
 
+// v2.5.7-R5.4.3.5 P1: CSS Artifact Normalization Authority.
+// esbuild-plugin-typora emits dist/main.css. The community-plugin runtime
+// expects style.css. Normalize main.css -> style.css here (NOT in reports),
+// so Project dist\style.css and Runtime style.css are the SAME artifact.
+try {
+  await fs.access('./dist/main.css')
+  await fs.copyFile('./dist/main.css', './dist/style.css')
+  console.log('[build] CSS-ARTIFACT-NORMALIZATION main.css -> style.css')
+} catch (e) {
+  console.log('[build] no main.css emitted; skipping style.css normalization')
+}
+
 if (IS_DEV) {
 
   await installDevPlugin()
