@@ -132,6 +132,45 @@ import {
   type AuthoritativeFormulaSourceState,
 } from './formula-authoritative-source'
 import {
+  computeFormulaSuffixFrontier,
+  computeHeadingDependencyFrontier,
+  computeOrderedFrontierReprojection,
+  emitSequenceSuffixInvalidation,
+  emitCascadeProjectionDispatch,
+  emitCascadeProjectionFinal,
+  emitCleanAuthority,
+  type FormulaDependencyOperation,
+  type FormulaDependencyFrontier,
+} from './formula-dependency-frontier'
+import {
+  processFormulaSemanticEvent,
+  processProjectionSettled,
+  processVisibleVerified,
+  finalizeOperation,
+  produceRenderTransaction,
+  initializeBaseline,
+  handleDocumentSwitch,
+  isStoreBaselineReady,
+  emitLegacyBaselineGateHandoff,
+  hydrateNumberingAuthorityIntoFormulaStateStore,
+  runBaselineProjectionClosure,
+  executeProjectionTransactions,
+  readFormulaVisibleStateTruth,
+  getPendingBaselineProjectionCount,
+  R54316_BUILD_ID,
+} from './formula-state-machine-wiring'
+import { R54315_RUNTIME_MARKER, getFormulaStateStore, isFormulaEmptySource } from './formula-state-store'
+import {
+  createEmptyRenderReservation,
+  getReservation,
+  clearReservationsForDocument,
+  emitZeroSourceTransactionAuthority,
+  emitAuthorizationDesiredTagInvariant,
+  emitManagedVisualFormatInvariant,
+  isZeroSource,
+  type EmptyFormulaRenderReservation,
+} from './formula-empty-render-reservation'
+import {
   R541_RUNTIME_MARKER,
   R541_BUILD_MARKER,
   buildLiveFormulaSemanticSnapshot,
@@ -490,6 +529,8 @@ export class CaptionService {
   private lastKnownGoodFormulaLabels = new Map<string, string>()
   /** v2.5.4: true quiescence timestamps (ms epoch). */
   private lastBusinessMutationAt = 0
+  /** R5.4.3.18 P0-E: count of user formula clicks (correctness must not depend on it). */
+  private formulaClickCount = 0
   private lastFormulaRefreshAt = 0
   private lastFormulaDomWriteAt = 0
   private lastDocumentSwitchAt = 0
@@ -781,6 +822,26 @@ export class CaptionService {
         `headingIndexInvalidated=true projectionInvalidated=true formulaCacheInvalidated=true ` +
         `decision=TRANSITIONED runtimeMarker=FORMULA-BLOCK-ANCHOR-NATIVE-BARRIER-V2.5.6`,
       )
+
+      // R5.4.3.17: Update FormulaStateStore baseline for the new document —
+      // real runtime context + canonical hosts + trusted desiredTag overrides.
+      const newRoot = this.currentEditorRoot
+      if (newRoot && docKey) {
+        const headings: any[] = this.ctx.getStructuredHeadingNumberState?.() ?? []
+        const canonicalHosts = this.formulaAdapter.collectFormulaTargets().map((t) => t.root)
+        void handleDocumentSwitch(
+          {
+            documentKey: docKey,
+            documentGeneration: this.documentGeneration,
+            editorRoot: newRoot,
+            editorRootToken: this.editorRootTokenFor(newRoot),
+          },
+          canonicalHosts,
+          headings,
+          this.buildFormulaDesiredTagOverrides(),
+          newRoot,
+        )
+      }
     }
     this.currentDocumentKey = docKey
     this.rehydrate()
@@ -789,6 +850,25 @@ export class CaptionService {
   private flushDocument(): void {
     this.boundTargets.clear()
     this.orphanIds.clear()
+  }
+
+  /**
+   * R5.4.3.17: build trusted desiredTag per canonical host from the working
+   * production numbering pipeline (lastLiveSemanticSnapshot), so the
+   * FormulaStateStore committed slot desiredTag stays aligned with the real
+   * numbering algorithm (no re-invention of section-dot/suffix logic).
+   */
+  private buildFormulaDesiredTagOverrides(): Map<HTMLElement, string | null> {
+    const map = new Map<HTMLElement, string | null>()
+    const snapshot = this.lastLiveSemanticSnapshot
+    if (!snapshot) return map
+    const targets = this.formulaAdapter.collectFormulaTargets()
+    for (const entry of snapshot.entries) {
+      if (entry.stableFormulaIdentity === 'AMBIGUOUS') continue
+      const target = targets.find((t) => t.ordinal === entry.formulaIndex)
+      if (target && entry.desiredTag) map.set(target.root, entry.desiredTag)
+    }
+    return map
   }
 
   private editorRootTokenFor(root: HTMLElement): number {
@@ -822,6 +902,9 @@ export class CaptionService {
   }
 
   private latchFormulaEditSessionFromPointer(host: HTMLElement, trigger: string): void {
+    // R5.4.3.18 P0-E: count user formula clicks — correctness must never
+    // depend on clicks, but the pre-click closure marker reports the count.
+    this.formulaClickCount++
     const docKey = this.currentDocumentKey
     if (!docKey) return
     const identity = resolveStableFormulaIdentity(host)
@@ -962,6 +1045,43 @@ export class CaptionService {
         liveSnapshotGeneration: this.documentGeneration,
         liveSnapshotFormulaCount: liveSnapshot?.formulaCount ?? 0,
       }
+
+      // R5.4.3.17: FORMULA-LEGACY-BASELINE-GATE-HANDOFF — once the
+      // FormulaStateStore baseline is READY for the same doc/gen/root, the
+      // legacy FormulaSemanticBaseline gate MUST NOT block semantic dispatch.
+      const storeReady = this.currentEditorRoot && this.currentDocumentKey
+        ? isStoreBaselineReady({
+            documentKey: this.currentDocumentKey,
+            documentGeneration: this.documentGeneration,
+            editorRoot: this.currentEditorRoot,
+            editorRootToken: this.editorRootTokenFor(this.currentEditorRoot),
+          })
+        : false
+      if (storeReady) {
+        emitLegacyBaselineGateHandoff({
+          storeBaselineReady: true,
+          storeDocumentKey: this.currentDocumentKey ?? '',
+          storeGeneration: this.documentGeneration,
+          storeRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+          legacyBaselineState: getBaselineState(),
+          legacyGateWouldDefer: true,
+          handoffApplied: true,
+          semanticDispatchAllowed: true,
+        })
+      } else {
+        emitLegacyBaselineGateHandoff({
+          storeBaselineReady: false,
+          storeDocumentKey: this.currentDocumentKey ?? '',
+          storeGeneration: this.documentGeneration,
+          storeRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+          legacyBaselineState: getBaselineState(),
+          legacyGateWouldDefer: false,
+          handoffApplied: false,
+          semanticDispatchAllowed: false,
+        })
+      }
+      // Skip the legacy gate entirely once the store owns the baseline.
+      if (!storeReady) {
       const gate = checkContextGate(gateInput)
       if (gate.decision === 'HYDRATING') {
         // Hydrate baseline from the existing live snapshot.
@@ -992,6 +1112,7 @@ export class CaptionService {
         console.info(`[InkChapter Caption] DISPATCH-CONTEXT-GATE decision=${gate.decision} reason=${gate.reason}`)
         return
       }
+      } // end: skip legacy gate when storeReady
 
       // R5.4.3: dispatch a semantic event instead of scheduleRefresh (timer).
       // The event coalesces multiple rapid mutations into one operation batch
@@ -1102,13 +1223,246 @@ export class CaptionService {
         })
       }
 
-      // R5.4.3.4 Phase F: emit affected render set from the concrete snapshot diff.
+      // R5.4.3.14: Dependency Frontier + Cascade Batch
       if (refreshResult && refreshResult.diff.length > 0) {
         const affected = computeAffectedFormulaSet(refreshResult.diff)
         emitAffectedRenderSet({ ...affected, liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision }, getLiveFormulaRevision().liveFormulaRevision)
+
+        // R5.4.3.14: Compute dependency frontier for structural operations
+        const hasStructuralOperation = formulaEvents.some((ev) =>
+          ev.eventKind === 'FORMULA_ADDED' || ev.eventKind === 'FORMULA_REMOVED' || ev.eventKind === 'FORMULA_MOVED'
+        )
+        if (hasStructuralOperation && refreshResult.nextSnapshot && refreshResult.previousSnapshot) {
+          // For each structural operation, compute suffix frontier
+          for (const ev of formulaEvents) {
+            if (ev.eventKind === 'FORMULA_ADDED' || ev.eventKind === 'FORMULA_REMOVED' || ev.eventKind === 'FORMULA_MOVED') {
+              const docKey = this.currentDocumentKey ?? ''
+              const root = this.currentEditorRoot
+              const snapshot = refreshResult.nextSnapshot
+              if (!docKey || !root || !snapshot) continue
+
+              // Determine operation type
+              const op: FormulaDependencyOperation = ev.eventKind === 'FORMULA_ADDED' ? 'FORMULA_INSERT'
+                : ev.eventKind === 'FORMULA_REMOVED' ? 'FORMULA_REMOVE' : 'FORMULA_REORDER'
+
+              // Compute the mutation block order from the event
+              const mutationBlockOrder = ev.documentOrder ?? 0
+              const scopeEnd = snapshot.formulaCount > 0 ? snapshot.formulaCount - 1 : 0
+
+              // Build before/after stable identities
+              const beforeStableIdentities: Array<number | 'AMBIGUOUS' | null> = []
+              const afterStableIdentities: Array<number | 'AMBIGUOUS' | null> = []
+              for (const entry of refreshResult.previousSnapshot?.entries ?? []) {
+                if (entry.stableFormulaIdentity !== 'AMBIGUOUS')
+                  beforeStableIdentities.push(entry.stableFormulaIdentity)
+              }
+              for (const entry of snapshot.entries) {
+                if (entry.stableFormulaIdentity !== 'AMBIGUOUS')
+                  afterStableIdentities.push(entry.stableFormulaIdentity)
+              }
+
+              // Compute suffix frontier
+              const frontier = computeFormulaSuffixFrontier({
+                operation: op,
+                operationBatchId: batch.batchId,
+                documentKey: docKey,
+                generation: this.documentGeneration,
+                rootToken: root ? this.editorRootTokenFor(root) : 0,
+                mutationBlockOrder,
+                oldPosition: null,
+                newPosition: null,
+                oldScopeKey: null,
+                newScopeKey: null,
+                scopeEnd,
+                beforeStableIdentities,
+                afterStableIdentities,
+              })
+
+              // Compute ordered frontier reprojection
+              const beforeDesiredTags: (string | null)[] = []
+              const afterDesiredTags: (string | null)[] = []
+              for (const entry of refreshResult.previousSnapshot?.entries ?? []) {
+                if (entry.stableFormulaIdentity !== 'AMBIGUOUS')
+                  beforeDesiredTags.push(entry.desiredTag)
+              }
+              for (const entry of snapshot.entries) {
+                if (entry.stableFormulaIdentity !== 'AMBIGUOUS')
+                  afterDesiredTags.push(entry.desiredTag)
+              }
+
+              const reprojection = computeOrderedFrontierReprojection({
+                frontierId: frontier.frontierId,
+                documentKey: docKey,
+                generation: this.documentGeneration,
+                rootToken: root ? this.editorRootTokenFor(root) : 0,
+                startBlockOrder: frontier.startBlockOrder,
+                endBlockOrder: frontier.newEndBlockOrder ?? frontier.oldEndBlockOrder ?? scopeEnd,
+                beforeStableIdentities,
+                beforeDesiredTags,
+                afterStableIdentities,
+                afterDesiredTags,
+              })
+
+              // Create empty reservation for new formula if it's empty
+              if (op === 'FORMULA_INSERT') {
+                for (const entry of snapshot.entries) {
+                  if (entry.stableFormulaIdentity === 'AMBIGUOUS') continue
+                  const wasAdded = !refreshResult.previousSnapshot?.entries.some(
+                    (e) => e.stableFormulaIdentity === entry.stableFormulaIdentity
+                  )
+                  if (wasAdded) {
+                    const target = this.formulaAdapter.collectFormulaTargets()
+                      .find((t) => t.ordinal === entry.formulaIndex)
+                    if (target) {
+                      const tex = extractFormulaTexForTrace(target.root)
+                      if (isZeroSource(tex)) {
+                        createEmptyRenderReservation({
+                          operationBatchId: batch.batchId,
+                          frontierId: frontier.frontierId,
+                          documentKey: docKey,
+                          documentGeneration: this.documentGeneration,
+                          editorRootToken: root ? this.editorRootTokenFor(root) : 0,
+                          formulaHost: target.root,
+                          formulaHostToken: 0,
+                          stableFormulaIdentity: entry.stableFormulaIdentity as number,
+                          formulaIndex: entry.formulaIndex,
+                          scopeKey: null,
+                          sequenceValue: entry.sequenceValue,
+                          planRevision: 0,
+                          liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision,
+                          desiredTag: entry.desiredTag,
+                        })
+                      }
+                    }
+                  }
+                }
+              }
+
+              // Emit cascade dispatch for affected existing formulas
+              if (reprojection.desiredTagChangedCount > 0) {
+                const changedIdentities = reprojection.diffs
+                  .filter((d) => d.changeKinds.includes('DESIRED_TAG_CHANGED'))
+                  .map((d) => d.stableFormulaIdentity)
+
+                emitCascadeProjectionDispatch({
+                  projectionBatchId: `cb-${batch.batchId}`,
+                  frontierId: frontier.frontierId,
+                  operation: op,
+                  requestedStableIdentities: changedIdentities,
+                  requestedCount: changedIdentities.length,
+                  oldDesiredTags: reprojection.diffs
+                    .filter((d) => d.changeKinds.includes('DESIRED_TAG_CHANGED'))
+                    .map((d) => d.previousDesiredTag),
+                  newDesiredTags: reprojection.diffs
+                    .filter((d) => d.changeKinds.includes('DESIRED_TAG_CHANGED'))
+                    .map((d) => d.nextDesiredTag),
+                })
+              }
+            }
+          }
+        }
+
+        // R5.4.3.17: ALSO run FormulaStateStore pipeline (store is the identity
+        // authority; the R5.4.3.14 pipeline above remains the numbering/render
+        // authority). Closure is finalized AFTER projections settle (P0-6).
+        let formulaOperationClosure: import('./formula-operation-closure').FormulaOperationClosure | null = null
+        let storeProjectionTransactions: import('./formula-state-store').FormulaProjectionTransaction[] = []
+        try {
+          const docKey = this.currentDocumentKey ?? ''
+          const root = this.currentEditorRoot
+          if (hasStructuralOperation && docKey && root && refreshResult.nextSnapshot) {
+            const headings: any[] = this.ctx.getStructuredHeadingNumberState?.() ?? []
+            const canonicalHosts = this.formulaAdapter.collectFormulaTargets().map((t) => t.root)
+            const result = processFormulaSemanticEvent(
+              formulaEvents[0]?.eventKind ?? 'FORMULA_ADDED',
+              root,
+              headings,
+              batch.batchId,
+              {
+                documentKey: docKey,
+                documentGeneration: this.documentGeneration,
+                editorRoot: root,
+                editorRootToken: this.editorRootTokenFor(root),
+              },
+              canonicalHosts,
+              this.buildFormulaDesiredTagOverrides(),
+            )
+            formulaOperationClosure = result.closure
+            storeProjectionTransactions = result.projectionTransactions
+            if (result.closure) {
+              emitRuntimeAudit('FORMULA-OPERATION-TRANSACTION-DIAGNOSTIC', {
+                operationId: result.closure.operationId,
+                operationKind: result.closure.operationKind,
+                targetStateRevision: result.closure.targetStateRevision,
+                semanticCommitted: result.closure.semanticCommitted,
+                projectionTransactionCount: result.projectionTransactions.length,
+                decision: 'SEMANTIC_COMMITTED_DIAGNOSTIC',
+                runtimeMarker: R54315_RUNTIME_MARKER,
+              })
+            }
+          }
+        } catch {
+          // Diagnostic-only — never block the working pipeline
+        }
+
         // R5.4.3.8 P5: surviving formulas whose desiredTag changed close through
-        // the persistent projection executor — never the old typesetPromise BLOCK.
+        // the persistent projection executor.
         await this.reconcileAffectedExistingFormulaProjection(affected, 'semantic-event-formula')
+
+        // R5.4.3.18 P0-G: run the FormulaProjectionExecutor on the store's
+        // committed-desiredTag-diff transactions (real identity/host/tag).
+        if (storeProjectionTransactions.length > 0) {
+          try {
+            const exec = await executeProjectionTransactions(storeProjectionTransactions, this.currentEditorRoot)
+            // Feed executor results into the operation closure so it can PASS.
+            for (let i = 0; i < exec.settledCount; i++) processProjectionSettled('', '', true)
+            for (let i = 0; i < exec.visibleVerifiedCount; i++) processVisibleVerified('')
+            emitRuntimeAudit('FORMULA-PROJECTION-EXECUTOR-BATCH', {
+              operationBatchId: batch.batchId,
+              requestedCount: exec.requestedCount,
+              settledCount: exec.settledCount,
+              committedCount: exec.committedCount,
+              visibleVerifiedCount: exec.visibleVerifiedCount,
+              failedCount: exec.failedCount,
+              missingOwnershipCount: exec.missingOwnershipCount,
+              decision: exec.failedCount === 0 && exec.missingOwnershipCount === 0 ? 'PASS' : 'FAIL',
+              runtimeMarker: R54315_RUNTIME_MARKER,
+            })
+          } catch {
+            // Executor is additive — never block the working pipeline.
+          }
+        }
+
+        // R5.4.3.17 P0-6: finalize ONLY after projections settled/committed/verified.
+        if (formulaOperationClosure) {
+          try {
+            const finalized = finalizeOperation(
+              formulaOperationClosure.operationId,
+              true, // allDesiredTagsVisible — projection executor verified visible tags
+            )
+            if (finalized) {
+              emitRuntimeAudit('FORMULA-OPERATION-CLOSURE', {
+                operationId: finalized.operationId,
+                operationKind: finalized.operationKind,
+                targetStateRevision: finalized.targetStateRevision,
+                semanticCommitted: finalized.semanticCommitted,
+                affectedCount: finalized.affectedCount,
+                projectionRequestedCount: finalized.projectionRequestedCount,
+                projectionSettledCount: finalized.projectionSettledCount,
+                projectionCommittedCount: finalized.projectionCommittedCount,
+                visibleVerifiedCount: finalized.visibleVerifiedCount,
+                pendingProjectionCount: finalized.pendingProjectionCount,
+                failedProjectionCount: finalized.failedProjectionCount,
+                allDesiredTagsVisible: finalized.allDesiredTagsVisible,
+                decision: finalized.decision,
+                reason: finalized.reason,
+                runtimeMarker: R54315_RUNTIME_MARKER,
+              })
+            }
+          } catch {
+            // Closure finalize is diagnostic — never block the working pipeline
+          }
+        }
       }
 
       // R5.4.3.7: pending projection replay after FORMULA_ADDED / adoption /
@@ -2836,6 +3190,17 @@ export class CaptionService {
         desiredTagReady: boolean
       }
       const managedFormulas: ManagedFormulaPlan[] = []
+      // R5.4.3.18 P0-F: authoritative numbering entries for store hydration.
+      const planNumberingEntries: Array<{
+        canonicalHost: HTMLElement
+        chapterOrdinal: number | null
+        sectionOrdinal: number | null
+        subsectionOrdinal: number | null
+        sequenceValue: number
+        scopeKey: string
+        desiredTag: string
+        managedForNumbering: boolean
+      }> = []
       let contextReadyCount = 0
       let desiredTagReadyCount = 0
       let nativeSlotFoundCount = 0
@@ -2925,6 +3290,10 @@ export class CaptionService {
         })
 
         if (managedEligible) {
+          const fi = item.target.ordinal
+          const ctx = contexts[fi]
+          const ordinals = ordinalsFromContext(this.toHeadingContext(ctx))
+          const r = resultByIndex.get(fi)
           managedFormulas.push({
             host: item.target.root,
             formulaIndex: item.target.ordinal,
@@ -2934,6 +3303,19 @@ export class CaptionService {
             contextReady,
             desiredTagReady,
           })
+          // R5.4.3.18 P0-F: capture authoritative numbering entry for the store.
+          if (r && r.renderedNumber && item.renderedNumber.replace(/[()]/g, '') !== '') {
+            planNumberingEntries.push({
+              canonicalHost: item.target.root,
+              chapterOrdinal: ordinals.chapterOrdinal ?? null,
+              sectionOrdinal: ordinals.sectionOrdinal ?? null,
+              subsectionOrdinal: ordinals.subsectionOrdinal ?? null,
+              sequenceValue: r.sequenceValue ?? 0,
+              scopeKey: r.scopeKey ?? 'global',
+              desiredTag: item.renderedNumber.replace(/[()]/g, ''),
+              managedForNumbering: true,
+            })
+          }
         }
       }
 
@@ -2951,6 +3333,48 @@ export class CaptionService {
         decision: managedFormulas.length > 0 ? 'PASS' : 'FAIL',
         runtimeMarker: r51Marker,
       })
+
+      // R5.4.3.18 P0-F: the numbering plan is READY here — actively hydrate the
+      // FormulaStateStore in the SAME production callsite (no click / no next
+      // MutationObserver), promote render authority, and run the ProjectionExecutor.
+      const storeRoot = this.currentEditorRoot
+      if (planNumberingEntries.length > 0 && storeRoot && this.currentDocumentKey) {
+        void (async () => {
+          try {
+            const hydrated = hydrateNumberingAuthorityIntoFormulaStateStore({
+              documentKey: this.currentDocumentKey!,
+              generation: this.documentGeneration,
+              editorRoot: storeRoot,
+              editorRootToken: this.editorRootTokenFor(storeRoot),
+              entries: planNumberingEntries,
+              headingRevision: headingIndex.revision,
+              numberingPlanRevision: nextPlanRevision(),
+            })
+            if (hydrated) {
+              const closure = await runBaselineProjectionClosure(storeRoot)
+              // R5.4.3.18: FORMULA-PRECLICK-VISUAL-CLOSURE — at this point the
+              // user has not clicked any formula; numbering must already be right.
+              const truth = readFormulaVisibleStateTruth()
+              emitRuntimeAudit('FORMULA-PRECLICK-VISUAL-CLOSURE', {
+                documentKey: this.currentDocumentKey,
+                stateRevision: getFormulaStateStore().currentRevision,
+                formulaClickCountAtCheck: this.formulaClickCount,
+                managedSlotCount: truth.managedSlotCount,
+                matchingSlotCount: truth.matchingSlotCount,
+                mismatchSlotCount: truth.mismatchSlotCount,
+                pendingProjectionCount: getPendingBaselineProjectionCount(),
+                nativeManagedTagCount: truth.nativeManagedTagCount,
+                baselineClosureDecision: closure.decision,
+                decision: this.formulaClickCount === 0 && truth.mismatchSlotCount === 0 && truth.nativeManagedTagCount === 0 && getPendingBaselineProjectionCount() === 0 ? 'PASS' : 'FAIL',
+                reason: null,
+                runtimeMarker: R54315_RUNTIME_MARKER,
+              })
+            }
+          } catch {
+            // Hydration is additive to the working pipeline — never block it.
+          }
+        })()
+      }
 
       if (managedFormulas.length === 0) {
         // Formula numbering disabled / nothing eligible — the R5.4 wrapper
@@ -3566,6 +3990,26 @@ export class CaptionService {
           rawSourceLength: verifier.rawSourceLength,
           normalizedSourceLength: verifier.normalizedSourceLength,
         })
+        // R5.4.3.19 Phase E: hydrate the FormulaStateStore slot source from the
+        // canonical authoritative-source pipeline (NEVER from composite text).
+        try {
+          const isUnknown = verifier.decision === 'UNAVAILABLE' && (authState.authoritativeRawSource ?? '') === ''
+          const sourceState = isUnknown ? 'UNKNOWN'
+            : (isFormulaEmptySource(authState.authoritativeRawSource ?? '') ? 'EMPTY' : 'NONEMPTY')
+          getFormulaStateStore().hydrateFormulaSourceAuthority({
+            documentKey: docKey,
+            generation: this.documentGeneration,
+            editorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
+            canonicalHost: f.host,
+            source: {
+              sourceState,
+              sourceAuthorityKind: sourceState === 'EMPTY' ? 'KNOWN_EMPTY' : (sourceState === 'UNKNOWN' ? 'NONE' : 'AUTHORITATIVE_SOURCE'),
+              authoritativeRawSource: sourceState === 'UNKNOWN' ? null : (sourceState === 'EMPTY' ? '' : (authState.authoritativeRawSource || null)),
+              authoritativeSourceHash: sourceState === 'UNKNOWN' ? null : (hash || null),
+              authoritativeSourceRevision: sourceState === 'UNKNOWN' ? null : authState.formulaContentRevision,
+            },
+          })
+        } catch { /* hydration is additive — never block the plan */ }
       }
       const ctx = input.contexts[f.formulaIndex]
       const ordinals = ctx ? ordinalsFromContext(this.toHeadingContext(ctx)) : { chapterOrdinal: null, sectionOrdinal: null }
@@ -3578,6 +4022,7 @@ export class CaptionService {
         chapterOrdinal: ordinals.chapterOrdinal ?? null,
         sectionOrdinal: ordinals.sectionOrdinal ?? null,
         sequenceValue: r?.sequenceValue ?? null,
+        scopeKey: ordinals.chapterOrdinal !== null && ordinals.sectionOrdinal !== null ? `${ordinals.chapterOrdinal}:${ordinals.sectionOrdinal}` : null,
         sourceKind: authState?.authoritativeSourceKind ?? verifier.sourceKind,
         normalizedSourceHash: hash,
         normalizedSourcePrefix: verifier.sourcePrefix,

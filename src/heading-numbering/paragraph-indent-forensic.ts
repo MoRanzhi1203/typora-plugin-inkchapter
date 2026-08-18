@@ -19,7 +19,7 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-formula-call-owner-composite-slot-async-closure-v2.5.7-r5.4.3.11'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-formula-authoritative-source-feedback-isolation-v2.5.7-r5.4.3.19'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
 export const RUNTIME_GATE_REVISION = 'r58-lifecycle-repair'

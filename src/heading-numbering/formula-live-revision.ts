@@ -41,8 +41,10 @@ export type PlanDiffKind =
   | 'REMOVED'
   | 'SOURCE_CHANGED'
   | 'ORDER_CHANGED'
-  | 'CONTEXT_CHANGED'
   | 'DESIRED_TAG_CHANGED'
+  | 'CONTEXT_CHANGED'
+  | 'SCOPE_CHANGED'      // v2.5.7-R5.4.3.12
+  | 'SEQUENCE_CHANGED'   // v2.5.7-R5.4.3.12
   | 'UNCHANGED'
 
 // ── Semantic Snapshot ──────────────────────────────────────────────────
@@ -62,6 +64,7 @@ export interface LiveFormulaSemanticEntryInput {
   managedEligible: boolean
   /** v2.5.7-R5.4.2: per-identity TeX content revision (advances ONLY on user edit). */
   formulaContentRevision: number
+  scopeKey?: string | null           // v2.5.7-R5.4.3.12
 }
 
 export interface LiveFormulaSemanticEntry {
@@ -80,6 +83,7 @@ export interface LiveFormulaSemanticEntry {
   managedEligible: boolean
   explicitTagControl: boolean
   formulaContentRevision: number
+  scopeKey: string | null           // v2.5.7-R5.4.3.12
 }
 
 export interface LiveFormulaSemanticSnapshot {
@@ -166,6 +170,7 @@ export function buildLiveFormulaSemanticSnapshot(input: {
     managedEligible: e.managedEligible,
     explicitTagControl: false,
     formulaContentRevision: e.formulaContentRevision,
+    scopeKey: e.scopeKey ?? null,
   }))
   return {
     documentKey: input.documentKey,
@@ -428,6 +433,10 @@ export interface LivePlanDiffEntry {
   nextDesiredTag: string | null
   previousContentRevision: number | null
   nextContentRevision: number | null
+  previousScopeKey: string | null          // v2.5.7-R5.4.3.12
+  nextScopeKey: string | null              // v2.5.7-R5.4.3.12
+  previousSequenceValue: number | null     // v2.5.7-R5.4.3.12
+  nextSequenceValue: number | null         // v2.5.7-R5.4.3.12
   changeKinds: PlanDiffKind[]
   requiresRenderInvalidation: boolean
 }
@@ -466,9 +475,11 @@ export function diffLiveFormulaPlans(
       if (p.formulaIndex !== c.formulaIndex) kinds.push('ORDER_CHANGED')
       if (p.desiredTag !== c.desiredTag) kinds.push('DESIRED_TAG_CHANGED')
       if (p.chapterOrdinal !== c.chapterOrdinal || p.sectionOrdinal !== c.sectionOrdinal) kinds.push('CONTEXT_CHANGED')
+      if (p.scopeKey !== c.scopeKey) kinds.push('SCOPE_CHANGED')
+      if (p.sequenceValue !== c.sequenceValue) kinds.push('SEQUENCE_CHANGED')
       if (kinds.length === 0) kinds.push('UNCHANGED')
     }
-    const requiresRenderInvalidation = kinds.some((k) => k === 'SOURCE_CHANGED' || k === 'DESIRED_TAG_CHANGED' || k === 'ORDER_CHANGED' || k === 'CONTEXT_CHANGED')
+    const requiresRenderInvalidation = kinds.some((k) => k === 'SOURCE_CHANGED' || k === 'DESIRED_TAG_CHANGED' || k === 'ORDER_CHANGED' || k === 'CONTEXT_CHANGED' || k === 'SCOPE_CHANGED' || k === 'SEQUENCE_CHANGED')
     diffs.push({
       stableFormulaIdentity: id,
       previousFormulaIndex: p?.formulaIndex ?? null,
@@ -479,16 +490,20 @@ export function diffLiveFormulaPlans(
       nextDesiredTag: c?.desiredTag ?? null,
       previousContentRevision: p?.formulaContentRevision ?? null,
       nextContentRevision: c?.formulaContentRevision ?? null,
+      previousScopeKey: p?.scopeKey ?? null,
+      nextScopeKey: c?.scopeKey ?? null,
+      previousSequenceValue: p?.sequenceValue ?? null,
+      nextSequenceValue: c?.sequenceValue ?? null,
       changeKinds: kinds,
       requiresRenderInvalidation,
     })
   }
   // Ambiguous-identity entries cannot be diffed — mark without guessing.
   for (const e of prevAmbiguous) {
-    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', previousFormulaIndex: e.formulaIndex, nextFormulaIndex: null, previousSourceHash: e.normalizedSourceHash, nextSourceHash: null, previousDesiredTag: e.desiredTag, nextDesiredTag: null, previousContentRevision: e.formulaContentRevision, nextContentRevision: null, changeKinds: ['REMOVED'], requiresRenderInvalidation: false })
+    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', previousFormulaIndex: e.formulaIndex, nextFormulaIndex: null, previousSourceHash: e.normalizedSourceHash, nextSourceHash: null, previousDesiredTag: e.desiredTag, nextDesiredTag: null, previousContentRevision: e.formulaContentRevision, nextContentRevision: null, previousScopeKey: null, nextScopeKey: null, previousSequenceValue: null, nextSequenceValue: null, changeKinds: ['REMOVED'], requiresRenderInvalidation: false })
   }
   for (const e of currAmbiguous) {
-    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', previousFormulaIndex: null, nextFormulaIndex: e.formulaIndex, previousSourceHash: null, nextSourceHash: e.normalizedSourceHash, previousDesiredTag: null, nextDesiredTag: e.desiredTag, previousContentRevision: null, nextContentRevision: e.formulaContentRevision, changeKinds: ['ADDED'], requiresRenderInvalidation: false })
+    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', previousFormulaIndex: null, nextFormulaIndex: e.formulaIndex, previousSourceHash: null, nextSourceHash: e.normalizedSourceHash, previousDesiredTag: null, nextDesiredTag: e.desiredTag, previousContentRevision: null, nextContentRevision: e.formulaContentRevision, previousScopeKey: null, nextScopeKey: null, previousSequenceValue: null, nextSequenceValue: null, changeKinds: ['ADDED'], requiresRenderInvalidation: false })
   }
   return diffs
 }
