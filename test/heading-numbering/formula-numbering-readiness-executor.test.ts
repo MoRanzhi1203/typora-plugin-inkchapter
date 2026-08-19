@@ -636,9 +636,9 @@ describe('T20 — Document Switch Stale Promise', () => {
 // ═════════════════════════════════════════════════════════════════════════
 
 describe('T21 — Build ID is R5.4.3.20', () => {
-  it('R54316_BUILD_ID includes r5.4.3.21 and single-source-stale-projection', () => {
-    expect(R54316_BUILD_ID).toContain('r5.4.3.21')
-    expect(R54316_BUILD_ID).toContain('single-source-stale-projection-visible-closure')
+  it('R54316_BUILD_ID includes r5.4.3.25 and cross-kind render owner source integrity', () => {
+    expect(R54316_BUILD_ID).toContain('r5.4.3.25')
+    expect(R54316_BUILD_ID).toContain('cross-kind-render-owner-source-integrity')
   })
 })
 

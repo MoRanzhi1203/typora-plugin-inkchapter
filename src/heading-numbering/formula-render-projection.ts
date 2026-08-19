@@ -273,7 +273,10 @@ export interface VisibleFormulaTagResult {
  * Only reads the live native MathJax output inside this exact host.
  */
 export function readVisibleFormulaTag(formulaHost: HTMLElement, desiredTag: string): VisibleFormulaTagResult {
-  const containers = Array.from(formulaHost.querySelectorAll('mjx-container'))
+  const currentOwner = formulaHost.isConnected
+    ? ((formulaHost.closest('.md-math-block, .mathjax-block, .md-block-formula, figure.math, .typora-math-block') as HTMLElement | null) ?? formulaHost)
+    : formulaHost
+  const containers = Array.from(currentOwner.querySelectorAll('mjx-container'))
   const nativeOutputCount = containers.length
   // The tag candidate lives in the LAST container's mjx-container / label text.
   let visibleTagText: string | null = null
