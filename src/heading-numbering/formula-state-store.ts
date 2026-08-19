@@ -214,20 +214,20 @@ export interface FormulaOperationTransaction {
   operationKind: FormulaOperationKind
 
   /** Identities that appear in after but not in before. */
-  addedStableIdentities: Array<string | number>
+  addedStableIdentities: FormulaStableIdentity[]
   /** Identities that appear in before but not in after. */
-  removedStableIdentities: Array<string | number>
+  removedStableIdentities: FormulaStableIdentity[]
   /** Identities that appear in both before and after. */
-  survivingStableIdentities: Array<string | number>
+  survivingStableIdentities: FormulaStableIdentity[]
 
   /** Primary identity of interest (e.g. the inserted/removed/moved slot). */
-  primaryStableIdentity: string | number | null
+  primaryStableIdentity: FormulaStableIdentity | null
 
   /** Dependency frontier computed from the classified operation. */
   dependencyFrontier: FormulaDependencyFrontier | null
 
   /** All identities whose desiredTag may have changed. */
-  affectedStableIdentities: Array<string | number>
+  affectedStableIdentities: FormulaStableIdentity[]
 
   /** The revision number this transaction targets (beforeRevision + 1 for semantic ops). */
   targetStateRevision: number
@@ -252,7 +252,7 @@ export interface FormulaRenderTransaction {
   renderTransactionId: string
   stateRevision: number
 
-  stableIdentity: string | number
+  stableIdentity: FormulaStableIdentity
   canonicalHost: HTMLElement
   canonicalHostToken: number
 
@@ -309,6 +309,15 @@ export interface FormulaProjectionTransaction {
     | 'BLOCKED_SOURCE_NOT_READY'
 }
 
+export interface RendererCausalRebindTicket {
+  stableIdentity: FormulaStableIdentity
+  oldCanonicalHost: HTMLElement
+  newCanonicalHost: HTMLElement
+  renderTransactionId?: string | null
+  projectionTransactionId?: string | null
+  reason: string
+}
+
 // ── FormulaDependencyFrontier ───────────────────────────────────────────
 
 /**
@@ -322,7 +331,7 @@ export interface FormulaDependencyFrontier {
   endDocumentOrder: number
   oldScopeKeys: string[]
   newScopeKeys: string[]
-  affectedStableIdentities: Array<string | number>
+  affectedStableIdentities: FormulaStableIdentity[]
 }
 
 // ── CommittedFormulaDocumentState ───────────────────────────────────────
@@ -338,7 +347,7 @@ export interface CommittedFormulaDocumentState {
   editorRootToken: number
   headingStateRevision: number
   slotsInDocumentOrder: CanonicalFormulaSlot[]
-  slotByStableIdentity: Map<string | number, CanonicalFormulaSlot>
+  slotByStableIdentity: Map<FormulaStableIdentity, CanonicalFormulaSlot>
   semanticSignature: string
   committedAtOperationId: string | null
 
@@ -822,6 +831,7 @@ export class FormulaStateStore {
   private readonly _documentStates: Map<number, CommittedFormulaDocumentState> = new Map()
   private readonly _pendingTransactions: Map<string, FormulaOperationTransaction> = new Map()
   private readonly _projectionTransactions: Map<string, FormulaProjectionTransaction> = new Map()
+  private readonly _rendererCausalRebindTickets: WeakMap<HTMLElement, RendererCausalRebindTicket> = new WeakMap()
   /** R5.4.3.20: BLOCKED_SOURCE_NOT_READY → source-ready replay registry. */
   private readonly _pendingSourceReadyProjections: Map<string, PendingSourceReadyProjection> = new Map()
   private _documentKey: string = ''
@@ -915,6 +925,28 @@ export class FormulaStateStore {
     return null
   }
 
+  registerRendererCausalRebindTicket(input: RendererCausalRebindTicket): boolean {
+    const slot = this._committedState?.slotByStableIdentity.get(input.stableIdentity) ?? null
+    const valid = !!slot
+      && slot.canonicalHost === input.oldCanonicalHost
+      && !!input.newCanonicalHost
+      && (!!input.renderTransactionId || !!input.projectionTransactionId)
+    emitRuntimeAudit('FORMULA-CAUSAL-RENDERER-HOST-REBIND-TICKET', {
+      stableIdentity: input.stableIdentity,
+      oldCanonicalHostToken: slot?.canonicalHostToken ?? null,
+      newCanonicalHostToken: input.newCanonicalHost ? tokenFor(input.newCanonicalHost) : null,
+      renderTransactionId: input.renderTransactionId ?? null,
+      projectionTransactionId: input.projectionTransactionId ?? null,
+      reason: input.reason,
+      decision: valid ? 'REGISTERED' : 'FAIL',
+      failureReason: valid ? null : 'TICKET_NOT_BOUND_TO_CURRENT_COMMITTED_SLOT',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    if (!valid) return false
+    this._rendererCausalRebindTickets.set(input.newCanonicalHost, input)
+    return true
+  }
+
   get documentKey(): string { return this._documentKey }
   get documentGeneration(): number { return this._documentGeneration }
   get editorRootToken(): number { return this._editorRootToken }
@@ -990,7 +1022,7 @@ export class FormulaStateStore {
       return null
     }
     const slots = this._scanFormulaSlots(editorRoot, headings, sourceSnapshots)
-    const slotMap = new Map<string | number, CanonicalFormulaSlot>()
+    const slotMap = new Map<FormulaStableIdentity, CanonicalFormulaSlot>()
     for (const slot of slots) {
       slotMap.set(slot.stableIdentity, slot)
     }
@@ -1075,7 +1107,7 @@ export class FormulaStateStore {
       return null
     }
     const slots = this._slotsFromHosts(canonicalHosts, headings, desiredTagOverrides, sourceSnapshots)
-    const slotMap = new Map<string | number, CanonicalFormulaSlot>()
+    const slotMap = new Map<FormulaStableIdentity, CanonicalFormulaSlot>()
     for (const slot of slots) {
       slotMap.set(slot.stableIdentity, slot)
     }
@@ -1130,9 +1162,9 @@ export class FormulaStateStore {
     after: CommittedFormulaDocumentState,
   ): {
     operationKind: FormulaOperationKind
-    addedIdentities: Array<string | number>
-    removedIdentities: Array<string | number>
-    survivingIdentities: Array<string | number>
+    addedIdentities: FormulaStableIdentity[]
+    removedIdentities: FormulaStableIdentity[]
+    survivingIdentities: FormulaStableIdentity[]
   } {
     // Validate before/after object references
     if (before === after) {
@@ -1156,9 +1188,9 @@ export class FormulaStateStore {
     const beforeIdentities = new Set(before.slotByStableIdentity.keys())
     const afterIdentities = new Set(after.slotByStableIdentity.keys())
 
-    const addedIdentities: Array<string | number> = []
-    const removedIdentities: Array<string | number> = []
-    const survivingIdentities: Array<string | number> = []
+    const addedIdentities: FormulaStableIdentity[] = []
+    const removedIdentities: FormulaStableIdentity[] = []
+    const survivingIdentities: FormulaStableIdentity[] = []
 
     for (const id of afterIdentities) {
       if (!beforeIdentities.has(id)) {
@@ -1490,9 +1522,9 @@ export class FormulaStateStore {
    */
   computeDependencyFrontier(
     operationKind: FormulaOperationKind,
-    addedIdentities: Array<string | number>,
-    removedIdentities: Array<string | number>,
-    survivingIdentities: Array<string | number>,
+    addedIdentities: FormulaStableIdentity[],
+    removedIdentities: FormulaStableIdentity[],
+    survivingIdentities: FormulaStableIdentity[],
     before: CommittedFormulaDocumentState,
     after: CommittedFormulaDocumentState,
   ): FormulaDependencyFrontier | null {
@@ -1523,10 +1555,10 @@ export class FormulaStateStore {
     let endDocumentOrder = 0
     const oldScopeKeys: string[] = []
     const newScopeKeys: string[] = []
-    const affectedStableIdentities: Array<string | number> = []
+    const affectedStableIdentities: FormulaStableIdentity[] = []
 
     // Collect all affected identities
-    const affectedSet = new Set<string | number>()
+    const affectedSet = new Set<FormulaStableIdentity>()
     for (const id of addedIdentities) affectedSet.add(id)
     for (const id of removedIdentities) affectedSet.add(id)
     for (const id of survivingIdentities) affectedSet.add(id)
@@ -1908,7 +1940,7 @@ export class FormulaStateStore {
    *
    * Returns null if the stable identity is not found in the committed state.
    */
-  createRenderTransaction(stableIdentity: string | number): FormulaRenderTransaction | null {
+  createRenderTransaction(stableIdentity: FormulaStableIdentity): FormulaRenderTransaction | null {
     if (!this._committedState) return null
 
     const slot = this._committedState.slotByStableIdentity.get(stableIdentity)
@@ -1986,7 +2018,7 @@ export class FormulaStateStore {
     const before = this._committedState
 
     const byHost = new Map<HTMLElement, typeof input.planEntries[number]>()
-    const byIdentity = new Map<string | number, typeof input.planEntries[number]>()
+    const byIdentity = new Map<FormulaStableIdentity, typeof input.planEntries[number]>()
     for (const e of input.planEntries) {
       byHost.set(e.canonicalHost, e)
       byIdentity.set(e.stableIdentity, e)
@@ -2118,7 +2150,7 @@ export class FormulaStateStore {
     }
 
     // Determine which identities need projection
-    const identitiesToProject = new Set<string | number>()
+    const identitiesToProject = new Set<FormulaStableIdentity>()
 
     // All affected identities from the transaction
     for (const id of transaction.affectedStableIdentities) {
@@ -2249,9 +2281,116 @@ export class FormulaStateStore {
    * @param headings - The heading info for scope resolution.
    * @returns The updated slots (new array, does not mutate input).
    */
+  createProjectionTransactionsFromCommittedSlots(input: {
+    stableIdentities: FormulaStableIdentity[]
+    reason: string
+    operationId?: string
+  }): FormulaProjectionTransaction[] {
+    if (!this._committedState) return []
+    const state = this._committedState
+    const operationId = input.operationId ?? `projection-request-${state.stateRevision}-${Date.now()}`
+    const projections: FormulaProjectionTransaction[] = []
+
+    for (const stableIdentity of input.stableIdentities) {
+      const slot = state.slotByStableIdentity.get(stableIdentity)
+      if (!slot) {
+        emitRuntimeAudit('FORMULA-CURRENT-SLOT-PROJECTION-REQUEST', {
+          operationId,
+          stableIdentity,
+          reason: input.reason,
+          decision: 'FAIL',
+          failureReason: 'CURRENT_COMMITTED_SLOT_NOT_FOUND',
+          runtimeMarker: R54315_RUNTIME_MARKER,
+        })
+        throw new Error(`FormulaStateStore: current committed slot not found for ${stableIdentity}`)
+      }
+
+      if (!slot.managedForNumbering || slot.desiredTag === null) continue
+
+      if (!slot.sourceAuthorityReady || slot.sourceState === 'UNKNOWN') {
+        emitRuntimeAudit('FORMULA-BASELINE-SOURCE-READINESS-CLOSURE', {
+          stableIdentity: slot.stableIdentity,
+          identityReady: true,
+          canonicalSourceContainerFound: false,
+          sourceReady: false,
+          sourceAuthorityKind: slot.sourceAuthorityKind,
+          sourceRevision: slot.authoritativeSourceRevision,
+          numberingReady: slot.desiredTag !== null,
+          desiredTag: slot.desiredTag,
+          projectionEligible: false,
+          projectionCreated: false,
+          pendingSourceReplayCreated: true,
+          pendingSourceReplayConsumed: false,
+          decision: 'WAITING_SOURCE_AUTHORITY',
+          reason: 'SOURCE_AUTHORITY_NOT_READY',
+          runtimeMarker: R54315_RUNTIME_MARKER,
+        })
+        continue
+      }
+
+      const formulaIndex = state.slotsInDocumentOrder.indexOf(slot)
+      if (formulaIndex < 0) {
+        emitRuntimeAudit('FORMULA-CURRENT-SLOT-PROJECTION-REQUEST', {
+          operationId,
+          stableIdentity,
+          reason: input.reason,
+          decision: 'FAIL',
+          failureReason: 'CURRENT_COMMITTED_SLOT_ORDER_NOT_FOUND',
+          runtimeMarker: R54315_RUNTIME_MARKER,
+        })
+        throw new Error(`FormulaStateStore: current committed slot order not found for ${stableIdentity}`)
+      }
+
+      const projectionTransactionId = nextProjectionTransactionId()
+      const compositeOwner = (slot.canonicalHost.closest?.(
+        'figure.math, .md-block-formula, .md-math-block, .typora-math-block',
+      ) as HTMLElement | null) ?? null
+      const previewHost = compositeOwner
+        ? (compositeOwner.querySelector<HTMLElement>('mjx-container, .MathJax_Display, .MJXc-display') as HTMLElement | null)
+        : (slot.canonicalHost.querySelector<HTMLElement>('mjx-container, .MathJax_Display, .MJXc-display') as HTMLElement | null)
+
+      const projTx: FormulaProjectionTransaction = {
+        projectionTransactionId,
+        operationId,
+        targetStateRevision: state.stateRevision,
+        stableIdentity: slot.stableIdentity,
+        formulaIndex,
+        canonicalHost: slot.canonicalHost,
+        canonicalHostToken: slot.canonicalHostToken,
+        desiredTag: slot.desiredTag,
+        rawSource: slot.authoritativeRawSource ?? '',
+        sourceState: slot.sourceState,
+        authoritativeSourceHash: slot.authoritativeSourceHash,
+        authoritativeSourceRevision: slot.authoritativeSourceRevision,
+        compositeOwner,
+        previewHost,
+        oldNativeMjx: previewHost,
+        nativeDomMutationCount: 0,
+        status: 'CREATED',
+      }
+
+      this._projectionTransactions.set(projectionTransactionId, projTx)
+      projections.push(projTx)
+      emitRuntimeAudit('FORMULA-CURRENT-SLOT-PROJECTION-REQUEST', {
+        projectionTransactionId,
+        operationId,
+        targetStateRevision: state.stateRevision,
+        stableIdentity,
+        formulaIndex,
+        desiredTag: slot.desiredTag,
+        sourceState: slot.sourceState,
+        reason: input.reason,
+        decision: 'CREATED',
+        runtimeMarker: R54315_RUNTIME_MARKER,
+      })
+    }
+
+    return projections
+  }
+
   computeOrderedReprojection(
     after: CommittedFormulaDocumentState,
-    affectedIdentities: Array<string | number>,
+    affectedIdentities: FormulaStableIdentity[],
     headings: HeadingInfo[],
   ): CanonicalFormulaSlot[] {
     // Build a map of affected slots keyed by stableIdentity
@@ -2479,7 +2618,7 @@ export class FormulaStateStore {
     const committedByHost = new Map<HTMLElement, CanonicalFormulaSlot>()
     for (const s of committed) committedByHost.set(s.canonicalHost, s)
     const claimedCommitted = new Set<CanonicalFormulaSlot>()
-    const claimedByHost = new Map<HTMLElement, { slot: CanonicalFormulaSlot; rebind: boolean }>()
+    const claimedByHost = new Map<HTMLElement, { slot: CanonicalFormulaSlot; rebind: boolean; alignment: 'EXACT_HOST' | 'CAUSAL_RENDERER_REBIND' }>()
     const unclaimedHosts: HTMLElement[] = []
 
     // Pass 1: exact host reference match.
@@ -2487,7 +2626,7 @@ export class FormulaStateStore {
       const exact = committedByHost.get(host)
       if (exact) {
         claimedCommitted.add(exact)
-        claimedByHost.set(host, { slot: exact, rebind: false })
+        claimedByHost.set(host, { slot: exact, rebind: false, alignment: 'EXACT_HOST' })
       } else {
         unclaimedHosts.push(host)
       }
@@ -2495,15 +2634,20 @@ export class FormulaStateStore {
 
     // Pass 2: positional alignment ONLY when counts are equal (host-replacement
     // rebind, e.g. Typora edit mode). Both lists are in document order.
-    let alignedRebindCount = 0
+    let causalRebindCount = 0
     if (unclaimedHosts.length > 0) {
-      const unclaimedCommitted = committed.filter((s) => !claimedCommitted.has(s))
-      if (unclaimedHosts.length === unclaimedCommitted.length) {
-        for (let i = 0; i < unclaimedHosts.length; i++) {
-          claimedByHost.set(unclaimedHosts[i], { slot: unclaimedCommitted[i], rebind: true })
+      for (let i = unclaimedHosts.length - 1; i >= 0; i--) {
+        const host = unclaimedHosts[i]
+        const ticket = this._rendererCausalRebindTickets.get(host)
+        const slot = ticket ? this._committedState?.slotByStableIdentity.get(ticket.stableIdentity) ?? null : null
+        if (ticket && slot && !claimedCommitted.has(slot)
+          && ticket.newCanonicalHost === host
+          && ticket.oldCanonicalHost === slot.canonicalHost) {
+          claimedCommitted.add(slot)
+          claimedByHost.set(host, { slot, rebind: true, alignment: 'CAUSAL_RENDERER_REBIND' })
+          causalRebindCount++
+          unclaimedHosts.splice(i, 1)
         }
-        alignedRebindCount = unclaimedHosts.length
-        unclaimedHosts.length = 0
       }
       // count mismatch → remaining unclaimed hosts stay NEW (INSERT candidates)
     }
@@ -2534,7 +2678,7 @@ export class FormulaStateStore {
               sourceRevision: prior.authoritativeSourceRevision,
               desiredTag: prior.desiredTag,
               sourceState: prior.sourceState,
-              alignment: claim.rebind ? 'POSITIONAL_COUNT_PARITY' : 'REFERENCE_CHANGED',
+              alignment: claim.alignment,
               decision: 'REBIND',
               reason: null,
               runtimeMarker: R54315_RUNTIME_MARKER,
@@ -2699,8 +2843,9 @@ export class FormulaStateStore {
       rootToken: this._editorRootToken,
       committedSlotCount: committed.length,
       hostCount: hosts.length,
-      exactMatchCount: claimedByHost.size - alignedRebindCount,
-      positionalRebindCount: alignedRebindCount,
+      exactMatchCount: claimedByHost.size - causalRebindCount,
+      causalRebindCount,
+      positionalRebindCount: 0,
       newSlotCount: slots.length - claimedByHost.size,
       exceptionCount,
       decision: exceptionCount === 0 ? 'PASS' : 'PARTIAL',
@@ -3132,7 +3277,7 @@ export class FormulaStateStore {
   private _countOrderChanges(
     before: CommittedFormulaDocumentState,
     after: CommittedFormulaDocumentState,
-    survivingIdentities: Array<string | number>,
+    survivingIdentities: FormulaStableIdentity[],
   ): number {
     let count = 0
     for (const id of survivingIdentities) {
@@ -3148,7 +3293,7 @@ export class FormulaStateStore {
   private _countScopeChanges(
     before: CommittedFormulaDocumentState,
     after: CommittedFormulaDocumentState,
-    survivingIdentities: Array<string | number>,
+    survivingIdentities: FormulaStableIdentity[],
   ): number {
     let count = 0
     for (const id of survivingIdentities) {
@@ -3186,7 +3331,7 @@ export class FormulaStateStore {
   private _countManagedChanges(
     before: CommittedFormulaDocumentState,
     after: CommittedFormulaDocumentState,
-    survivingIdentities: Array<string | number>,
+    survivingIdentities: FormulaStableIdentity[],
   ): number {
     let count = 0
     for (const id of survivingIdentities) {

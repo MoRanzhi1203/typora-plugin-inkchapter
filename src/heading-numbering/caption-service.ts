@@ -160,6 +160,7 @@ import {
   editorRootTokenFor,
   replaySourceReadyProjection,
   R54316_BUILD_ID,
+  productionCallCounters,
 } from './formula-state-machine-wiring'
 import { R54315_RUNTIME_MARKER, getFormulaStateStore, isFormulaEmptySource } from './formula-state-store'
 import {
@@ -1252,11 +1253,11 @@ export class CaptionService {
               const afterStableIdentities: Array<number | 'AMBIGUOUS' | null> = []
               for (const entry of refreshResult.previousSnapshot?.entries ?? []) {
                 if (entry.stableFormulaIdentity !== 'AMBIGUOUS')
-                  beforeStableIdentities.push(entry.stableFormulaIdentity)
+                  beforeStableIdentities.push(entry.formulaRuntimeToken)
               }
               for (const entry of snapshot.entries) {
                 if (entry.stableFormulaIdentity !== 'AMBIGUOUS')
-                  afterStableIdentities.push(entry.stableFormulaIdentity)
+                  afterStableIdentities.push(entry.formulaRuntimeToken)
               }
 
               // Compute suffix frontier
@@ -1340,7 +1341,7 @@ export class CaptionService {
               if (reprojection.desiredTagChangedCount > 0) {
                 const changedIdentities = reprojection.diffs
                   .filter((d) => d.changeKinds.includes('DESIRED_TAG_CHANGED'))
-                  .map((d) => d.stableFormulaIdentity)
+                  .map((d) => d.formulaRuntimeToken)
 
                 emitCascadeProjectionDispatch({
                   projectionBatchId: `cb-${batch.batchId}`,
@@ -1478,7 +1479,7 @@ export class CaptionService {
               formulaHostToken: tokenFor(target.root),
               documentKey: this.currentDocumentKey ?? '',
               generation: this.documentGeneration,
-              stableFormulaIdentity: entry.stableFormulaIdentity === 'AMBIGUOUS' ? -1 : (entry.stableFormulaIdentity ?? -1),
+              stableFormulaIdentity: entry.formulaRuntimeToken ?? -1,
               formulaIndex: entry.formulaIndex,
               desiredTag: entry.desiredTag,
             })
@@ -1489,7 +1490,7 @@ export class CaptionService {
               documentKey: this.currentDocumentKey ?? '',
               documentGeneration: this.documentGeneration,
               editorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
-              stableFormulaIdentity: entry.stableFormulaIdentity === 'AMBIGUOUS' ? null : (entry.stableFormulaIdentity ?? null),
+              stableFormulaIdentity: entry.formulaRuntimeToken ?? null,
               formulaIndex: entry.formulaIndex,
               formulaHost: target.root,
               desiredTag: entry.desiredTag,
@@ -3955,7 +3956,10 @@ export class CaptionService {
       normalizedSourceLength: number
     }>()
     const snapshotInputs: LiveFormulaSemanticEntryInput[] = input.managedFormulas.map((f) => {
-      const stableIdentity = resolveStableFormulaIdentity(f.host)
+      const runtimeHostToken = resolveStableFormulaIdentity(f.host)
+      const store = getFormulaStateStore()
+      const committedSlot = store.lookupCommittedSlotByHost(f.host)
+      const stableIdentity = committedSlot?.stableIdentity ?? runtimeHostToken
       const verifier = verifyFormulaTexSource({
         host: f.host,
         formulaIndex: f.formulaIndex,
@@ -3965,7 +3969,7 @@ export class CaptionService {
       const candidateTex = normalizeTexSource(extractFormulaTexForTrace(f.host))
       const capture = captureOrUpdateAuthoritativeSource({
         documentKey: docKey,
-        stableFormulaIdentity: stableIdentity,
+        stableFormulaIdentity: runtimeHostToken,
         formulaIndex: f.formulaIndex,
         liveFormulaRevision: getLiveFormulaRevision().liveFormulaRevision,
         candidateSourceKind: verifier.sourceKind,
@@ -3976,11 +3980,11 @@ export class CaptionService {
         mutationClassification: this.lastMutationClassification,
         editState: verifier.editState,
       })
-      const authState = getAuthoritativeSourceState(docKey, stableIdentity)
+      const authState = getAuthoritativeSourceState(docKey, runtimeHostToken)
       const hash = authState?.normalizedSourceHash || verifier.sourceHash
       if (authState) {
         authoritativeByIndex.set(f.formulaIndex, {
-          stableFormulaIdentity: stableIdentity,
+          stableFormulaIdentity: runtimeHostToken,
           formulaContentRevision: authState.formulaContentRevision,
           hash,
           sourceKind: authState.authoritativeSourceKind,
@@ -3994,7 +3998,6 @@ export class CaptionService {
           const isUnknown = verifier.decision === 'UNAVAILABLE' && (authState.authoritativeRawSource ?? '') === ''
           const sourceState = isUnknown ? 'UNKNOWN'
             : (isFormulaEmptySource(authState.authoritativeRawSource ?? '') ? 'EMPTY' : 'NONEMPTY')
-          const store = getFormulaStateStore()
           store.hydrateFormulaSourceAuthority({
             documentKey: docKey,
             generation: this.documentGeneration,
@@ -4023,6 +4026,8 @@ export class CaptionService {
       const r = input.resultByIndex.get(f.formulaIndex)
       return {
         host: f.host,
+        canonicalStableIdentity: stableIdentity,
+        formulaRuntimeToken: runtimeHostToken,
         formulaIndex: f.formulaIndex,
         documentOrder: f.formulaIndex,
         desiredTag: f.desiredTag,
@@ -4248,23 +4253,23 @@ export class CaptionService {
         this.invalidationInProgress = true
         setInvalidationInProgress(true)
         for (const d of diffs) {
-          if (!d.requiresRenderInvalidation || d.stableFormulaIdentity === null || d.stableFormulaIdentity === 'AMBIGUOUS') continue
+          if (!d.requiresRenderInvalidation || d.formulaRuntimeToken === null) continue
           if (d.previousDesiredTag === d.nextDesiredTag) {
             // Order/context shift without tag change → visible tag already correct.
-            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'SAFE_SKIPPED')
-            safeSkippedIdentities.push(d.stableFormulaIdentity)
+            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.formulaRuntimeToken, 'SAFE_SKIPPED')
+            safeSkippedIdentities.push(d.formulaRuntimeToken)
             continue
           }
           requestFormulaRenderInvalidation({
             liveFormulaRevision: currentRev.liveFormulaRevision,
-            stableFormulaIdentity: d.stableFormulaIdentity,
+            stableFormulaIdentity: d.formulaRuntimeToken,
             formulaIndex: d.nextFormulaIndex ?? d.previousFormulaIndex ?? -1,
             previousDesiredTag: d.previousDesiredTag,
             nextDesiredTag: d.nextDesiredTag ?? '',
             reason: d.changeKinds.join(','),
             triggerName: triggerAudit.triggerName,
           })
-          setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'PENDING')
+          setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.formulaRuntimeToken, 'PENDING')
           invalidatedExistingFormulaCount++
         }
         emitLoopBarrier(currentRev.liveFormulaRevision)
@@ -4274,12 +4279,12 @@ export class CaptionService {
         // No safe Typora-owned rerender trigger → honest terminal BLOCKED.
         typoraRenderInvalidationAuthority = 'BLOCK'
         for (const d of diffs) {
-          if (!d.requiresRenderInvalidation || d.stableFormulaIdentity === null || d.stableFormulaIdentity === 'AMBIGUOUS') continue
+          if (!d.requiresRenderInvalidation || d.formulaRuntimeToken === null) continue
           if (d.previousDesiredTag === d.nextDesiredTag) {
-            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'SAFE_SKIPPED')
-            safeSkippedIdentities.push(d.stableFormulaIdentity)
+            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.formulaRuntimeToken, 'SAFE_SKIPPED')
+            safeSkippedIdentities.push(d.formulaRuntimeToken)
           } else {
-            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'BLOCKED')
+            setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.formulaRuntimeToken, 'BLOCKED')
           }
         }
         emitRuntimeAudit('R54_1-TYPORA-FORMULA-RERENDER-TRIGGER', {
@@ -4295,8 +4300,8 @@ export class CaptionService {
     }
     // ADDED new formulas → PENDING until their own tex2svg catchup closure.
     for (const d of diffs) {
-      if (d.changeKinds.includes('ADDED') && d.stableFormulaIdentity !== null && d.stableFormulaIdentity !== 'AMBIGUOUS') {
-        setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.stableFormulaIdentity, 'PENDING')
+      if (d.changeKinds.includes('ADDED') && d.formulaRuntimeToken !== null) {
+        setLiveUpdateTerminalState(currentRev.liveFormulaRevision, d.formulaRuntimeToken, 'PENDING')
       }
     }
 
@@ -4314,9 +4319,14 @@ export class CaptionService {
       duplicateOutputCount: visible.duplicateOutputCount,
       sourceMutationDetected: this.liveUpdateSourceMutationDetected,
     })
+    const affectedRuntimeIdentities = affected.affectedStableFormulaIdentities.map((id) =>
+      id === 'AMBIGUOUS' || id === null
+        ? null
+        : this.lastLiveSemanticSnapshot?.entries.find((e) => e.stableFormulaIdentity === id)?.formulaRuntimeToken ?? null,
+    )
     const accounting = computeLiveUpdateAccounting({
       liveFormulaRevision: currentRev.liveFormulaRevision,
-      affectedIdentities: affected.affectedStableFormulaIdentities,
+      affectedIdentities: affectedRuntimeIdentities,
       safeSkippedIdentities,
       allDesiredTagsVisible: visible.allDesiredTagsVisible,
     })
@@ -4490,7 +4500,7 @@ export class CaptionService {
           const r = resultByIndex.get(fi)
           if (!r) continue
           const key = r.scopeKey ?? 'unknown'
-          const identity = this.lastLiveSemanticSnapshot?.entries.find((e) => e.formulaIndex === fi)?.stableFormulaIdentity ?? null
+          const identity = this.lastLiveSemanticSnapshot?.entries.find((e) => e.formulaIndex === fi)?.formulaRuntimeToken ?? null
           if (!byScope.has(key)) byScope.set(key, [])
           byScope.get(key)!.push({ identity, seq: r.sequenceValue, reset: !!r.resetApplied })
         }
@@ -4775,7 +4785,7 @@ export class CaptionService {
       // snapshot (Typora natural render before FORMULA_ADDED/adoption).
       const entry = snapshot.entries.find((e) => e.formulaIndex === tIdx)
       const desiredTag = entry?.desiredTag ?? ''
-      const stableIdentity = entry?.stableFormulaIdentity ?? null
+      const stableIdentity = entry?.formulaRuntimeToken ?? null
       const formulaIndex = entry?.formulaIndex ?? null
       // R5.4.3.8 P0: structural slot authority — formula existence is decided by
       // canonical host, not by rawTex non-empty. Emit slot markers for every
@@ -4814,7 +4824,8 @@ export class CaptionService {
       // mount / MJX-CONTAINER replacement) are NONSEMANTIC — they never commit
       // source. Report the transition for the latched edit session.
       const activeSession = getActiveEditSession()
-      if (activeSession && stableIdentity !== null && stableIdentity !== 'AMBIGUOUS'
+      if (activeSession && stableIdentity !== null
+        && typeof activeSession.stableFormulaIdentity === 'number'
         && activeSession.stableFormulaIdentity === stableIdentity) {
         emitNonsemanticEditTransition({
           sessionId: activeSession.sessionId,
@@ -4876,7 +4887,7 @@ export class CaptionService {
       })
       if (visible.decision === 'MATCH') continue
       reconcileRequestedCount++
-      if (stableIdentity === null || stableIdentity === 'AMBIGUOUS' || formulaIndex === null) {
+      if (stableIdentity === null || formulaIndex === null) {
         continue
       }
       resolvedStableIdentityCount++
@@ -4946,105 +4957,99 @@ export class CaptionService {
     const docKey = this.currentDocumentKey
     const root = this.currentEditorRoot
     if (!docKey || !root) return
-    const targets = this.formulaAdapter.collectFormulaTargets()
-    let reconcileCalledCount = 0
-    let providerAvailableCount = 0
+    const store = getFormulaStateStore()
+    const storeState = store.committedState
+    if (!storeState) return
+
+    // R5.4.3.22 P0-B: affected existing formula is now an ADAPTER that routes
+    // through the unified Store ProjectionTransaction → ProjectionExecutor.
+    // It no longer directly calls requestFormulaProjectionFulfillment or
+    // perform its own DOM replacement.
+    let requestedCount = 0
     let fulfilledCount = 0
     let appliedCount = 0
     let visibleVerifiedCount = 0
     let failedCount = 0
     let pendingCount = 0
-    const providerAvailable = !!getOriginalTex2svgPromise()
     const allAffectedCount = affected.affectedStableFormulaIdentities.length
     const promises: Promise<void>[] = []
-    for (const identity of affected.affectedStableFormulaIdentities) {
-      if (identity === null || identity === 'AMBIGUOUS') continue
-      const entry = snapshot.entries.find((e) => e.stableFormulaIdentity === identity)
-      if (!entry) continue
-      const target = targets.find((t) => t.ordinal === entry.formulaIndex)
-      if (!target) continue
-      const visible = readVisibleFormulaTag(target.root, entry.desiredTag)
-      if (visible.decision === 'MATCH') { visibleVerifiedCount++; continue }
-      reconcileCalledCount++
-      if (providerAvailable) {
-        providerAvailableCount++
-        const options = getNaturalRenderOptions(identity)
-        // Use the production fulfillment provider as requestFulfillment callback.
-        promises.push(
-          requestFormulaProjectionFulfillment({
-            stableFormulaIdentity: identity,
-            formulaIndex: entry.formulaIndex,
-            rawTex: extractFormulaTexForTrace(target.root),
-            desiredTag: entry.desiredTag,
-            planRevision: 0,
-            liveFormulaRevision: 0,
-            documentKey: docKey,
-            generation: this.documentGeneration,
-            rootToken: this.editorRootTokenFor(root),
-          }, options ?? undefined).then((res) => {
-            if (res.fulfilled && res.resultNode) {
-              fulfilledCount++
-              const old = target.root.querySelector('mjx-container')
-              if (old && old.parentNode) {
-                // R5.4.3.11 P0-D: Use composite visual owner for slot check
-                const compositeOwner = resolveFormulaCompositeVisualOwner(target.root, root)
+    const beforeVisibleTags: string[] = []
+    const targetDesiredTags: string[] = []
+    const afterVisibleTags: string[] = []
 
-                // Use the composite owner's native output for slot check
-                const slotCheck = checkNativeSlotOwnership({
-                  formulaHost: target.root,
-                  targetNode: compositeOwner.nativeMjxOutput ?? old,
-                })
-                if (!slotCheck.allowed) {
-                  failedCount++
-                  return
-                }
-                const visualBefore = captureVisualIntegritySnapshot(target.root, root)
-                old.replaceWith(res.resultNode)
-                appliedCount++
-                const visualAfter = verifyVisualIntegrity(target.root, root, visualBefore)
-                if (visualAfter.decision !== 'PASS') {
-                  // Rollback: restore the original native output.
-                  const newMjx = target.root.querySelector('mjx-container')
-                  if (newMjx && newMjx.parentNode) {
-                    newMjx.replaceWith(old)
-                  }
-                  failedCount++
-                  return
-                }
-                // Register the natural render correlation binding
-                settleNaturalRenderCorrelation(res.resultNode, target.root)
-                const after = readVisibleFormulaTag(target.root, entry.desiredTag)
-                if (after.decision === 'MATCH') visibleVerifiedCount++
-              }
-            } else {
-              failedCount++
-            }
-          }),
-        )
-      } else {
-        pendingCount++
+    for (const identity of affected.affectedStableFormulaIdentities) {
+      if (identity === null || identity === 'AMBIGUOUS' || typeof identity !== 'string') {
+        failedCount++
+        continue
       }
+      // Resolve to Store slot (current source of truth for desiredTag/source).
+      const slot = storeState.slotByStableIdentity.get(identity)
+      if (!slot) {
+        failedCount++
+        continue
+      }
+      if (!slot.managedForNumbering || slot.desiredTag === null) continue
+      const visible = readVisibleFormulaTag(slot.canonicalHost, slot.desiredTag)
+      beforeVisibleTags.push(visible.visibleTagText ?? '')
+      targetDesiredTags.push(slot.desiredTag)
+      if (visible.decision === 'MATCH') { visibleVerifiedCount++; continue }
+      requestedCount++
+      const txs = store.createProjectionTransactionsFromCommittedSlots({
+        stableIdentities: [identity],
+        reason,
+        operationId: `affected-current-slot-${Date.now()}`,
+      })
+      if (txs.length === 0) { failedCount++; continue }
+      // Execute via the unified executor (freshness → detached validation → commit → verify).
+      promises.push(
+        executeProjectionTransactions(txs, root).then((exec) => {
+          for (let i = 0; i < exec.visibleVerifiedCount; i++) visibleVerifiedCount++
+          for (let i = 0; i < exec.settledCount; i++) fulfilledCount++
+          for (let i = 0; i < exec.committedCount; i++) appliedCount++
+          if (exec.failedCount > 0) failedCount++
+          // Read actual visible tag after executor.
+          const afterSlot = store.committedState?.slotByStableIdentity.get(identity)
+          if (afterSlot) {
+            const afterVis = readVisibleFormulaTag(afterSlot.canonicalHost, afterSlot.desiredTag ?? '')
+            afterVisibleTags.push(afterVis.visibleTagText ?? '')
+          } else {
+            afterVisibleTags.push('')
+          }
+        }),
+      )
     }
 
-    // Emit DISPATCH with initial counts
-    emitRuntimeAudit('FORMULA-AFFECTED-EXISTING-PROJECTION-DISPATCH', {
-      affectedCount: allAffectedCount,
-      requestedCount: reconcileCalledCount,
-      providerAvailableCount,
-      promiseCount: promises.length,
-      reason,
+    // Wait for all promises
+    await Promise.allSettled(promises)
+    pendingCount = allAffectedCount - (requestedCount + visibleVerifiedCount)
+
+    // R5.4.3.22 P0-G: emit FORMULA-AFFECTED-SURVIVOR-VISIBLE-CLOSURE
+    const finalPass = failedCount === 0 && pendingCount === 0 && visibleVerifiedCount >= allAffectedCount
+    emitRuntimeAudit('FORMULA-AFFECTED-SURVIVOR-VISIBLE-CLOSURE', {
+      operationId: `affected-survivor-${Date.now()}`,
+      affectedStableIdentities: affected.affectedStableFormulaIdentities.filter((id): id is string => typeof id === 'string'),
+      affectedFormulaIndices: affected.affectedStableFormulaIdentities
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => storeState.slotByStableIdentity.get(id)?.documentOrder ?? -1),
+      beforeVisibleTags,
+      targetDesiredTags,
+      afterVisibleTags,
+      requestedCount,
+      fulfilledCount,
+      appliedCount,
+      visibleVerifiedCount,
+      decision: finalPass ? 'PASS' : (failedCount > 0 ? 'FAIL' : 'PARTIAL'),
+      reason: finalPass ? null
+        : (failedCount > 0 ? 'FULFILLMENT_FAILED' : 'PENDING_OR_NOT_VERIFIED'),
       runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
     })
+    productionCallCounters.affectedSurvivorClosureCount++
 
-    // Wait for all promises to settle
-    await Promise.allSettled(promises)
-
-    // Emit FINAL with final counts
-    const finalPass = failedCount === 0 && pendingCount === 0 && visibleVerifiedCount >= reconcileCalledCount
+    // Emit FINAL (legacy compatibility marker)
     emitRuntimeAudit('FORMULA-AFFECTED-EXISTING-PROJECTION-FINAL', {
       affectedCount: allAffectedCount,
-      requestedCount: reconcileCalledCount,
-      providerAvailableCount,
+      requestedCount,
+      providerAvailableCount: 0,
       fulfilledCount,
       appliedCount,
       visibleVerifiedCount,
@@ -5054,8 +5059,7 @@ export class CaptionService {
       allDesiredTagsVisible: finalPass,
       decision: finalPass ? 'PASS' : (failedCount > 0 ? 'FAIL' : 'PARTIAL'),
       reason: finalPass ? null
-        : (!providerAvailable ? 'PRODUCTION_FULFILLMENT_PROVIDER_UNAVAILABLE'
-          : (failedCount > 0 ? 'FULFILLMENT_FAILED' : 'PENDING_OR_NOT_VERIFIED')),
+        : (failedCount > 0 ? 'FULFILLMENT_FAILED' : 'PENDING_OR_NOT_VERIFIED'),
       runtimeMarker: 'FORMULA-ATOMIC-TRANSACTION-RENDER-PROJECTION-V2.5.7-R5.4.3.9',
     })
   }

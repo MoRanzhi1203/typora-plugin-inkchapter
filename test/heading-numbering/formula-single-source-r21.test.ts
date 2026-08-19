@@ -72,6 +72,21 @@ function makeContext(docKey: string, gen: number, editorRoot: HTMLElement): Form
   return { documentKey: docKey, documentGeneration: gen, editorRoot, editorRootToken: editorRootTokenFor(editorRoot) }
 }
 
+function registerTestCausalRendererRebind(oldHost: HTMLElement, newHost: HTMLElement, reason: string): void {
+  const store = getFormulaStateStore()
+  const slot = store.lookupCommittedSlotByHost(oldHost)
+  expect(slot).not.toBeNull()
+  const registered = store.registerRendererCausalRebindTicket({
+    stableIdentity: slot!.stableIdentity,
+    oldCanonicalHost: oldHost,
+    newCanonicalHost: newHost,
+    renderTransactionId: `test-render-rebind-${nextToken++}`,
+    projectionTransactionId: null,
+    reason,
+  })
+  expect(registered).toBe(true)
+}
+
 /** Baseline: 2 existing formulas numbered 5.3.1 / 5.3.2 with source ready. */
 async function baselineTwoFormulas(ctx: FormulaRuntimeContext, root: HTMLElement, hosts: HTMLElement[]): Promise<void> {
   await initializeBaseline(ctx, hosts, [], undefined, root)
@@ -517,8 +532,10 @@ describe('R21-09 — STRUCTURAL_HOST_REBIND preserves logical identity', () => {
     const bindingBefore = s1Before.bindingRevision ?? 1
 
     // Typora edit-mode recreation: h1 is replaced by a NEW element at the same
-    // structural position (h1' has a fresh DOM reference / host token).
+    // structural position (h1' has a fresh DOM reference / host token). R23
+    // requires this inheritance to be backed by an explicit causal ticket.
     const h1p = makeHost('p=1')
+    registerTestCausalRendererRebind(h1, h1p, 'r21-host-replacement')
     root.replaceChild(h1p, h1)
 
     const result = processFormulaSemanticEventR21(
@@ -548,6 +565,7 @@ describe('R21-09 — STRUCTURAL_HOST_REBIND preserves logical identity', () => {
     const store = getFormulaStateStore()
     const identityBefore = String(store.lookupCommittedSlotByHost(h1)!.stableIdentity)
     const h1p = makeHost('p=1')
+    registerTestCausalRendererRebind(h1, h1p, 'r21-noop-binding-host-replacement')
     root.replaceChild(h1p, h1)
     const result = processFormulaSemanticEventR21('FORMULA_SOURCE_CHANGED', root, ctx, [h1p, h2])
     expect(result.transaction!.operationKind).toBe('STRUCTURAL_HOST_REBIND')
@@ -670,6 +688,7 @@ describe('R21-11 — EMPTY→p→p=→p=1→exit-edit→projection→final DOM t
 
     // 3) Exit edit mode: Typora replaces the editing host with a preview host.
     const hPreview = makeHost('p=1', false, '(3)')
+    registerTestCausalRendererRebind(hEdit, hPreview, 'r21-exit-edit-host-replacement')
     root.replaceChild(hPreview, hEdit)
     const rebind = processFormulaSemanticEventR21('FORMULA_SOURCE_CHANGED', root, ctx, [h1, h2, hPreview])
     // Logical identity/source/tag survive the host rebind.

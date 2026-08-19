@@ -276,6 +276,37 @@ export function resolveFormulaCallOwner(input: {
   }
 }
 
+function authorizeKnownManagedOwner(input: {
+  auth: PreCallAuthorizationResult
+  ownerIdentity: number | null
+  plan: FormulaRenderAuthorizationPlan | null
+  authorityKind: PreCallAuthorityKind
+  fallbackFormulaIndex?: number | null
+}): PreCallAuthorizationResult {
+  if (input.auth.decision === 'AUTHORIZED' || input.ownerIdentity === null || !input.plan) return input.auth
+  const ownerEntry = input.plan.entries.find((e) => e.stableFormulaIdentity === input.ownerIdentity)
+    ?? (input.fallbackFormulaIndex !== null && input.fallbackFormulaIndex !== undefined
+      ? input.plan.entries.find((e) => e.formulaIndex === input.fallbackFormulaIndex)
+      : null)
+  if (!ownerEntry || !ownerEntry.managedEligible || !ownerEntry.desiredTag) return input.auth
+  return {
+    ...input.auth,
+    decision: 'AUTHORIZED',
+    uniqueAuthorizedFormulaIndex: ownerEntry.formulaIndex,
+    authorityKind: input.authorityKind,
+    desiredTag: ownerEntry.desiredTag,
+    reason: null,
+    candidateManagedFormulaCount: Math.max(input.auth.candidateManagedFormulaCount, 1),
+    uniqueAuthorizedStableFormulaIdentity: ownerEntry.stableFormulaIdentity,
+  }
+}
+
+function normalizeOwnerComparableTex(tex: string): string {
+  return normalizeTexSource(normalizeTyporaFormulaRenderInput(tex).normalizedBaseRawSource)
+    .replace(/\\operatorname\s*\{([^}]*)\}/g, '$1')
+    .replace(/\s+/g, '')
+}
+
 // ── Types ───────────────────────────────────────────────────────────────
 
 export type PreCallAuthorityKind =
@@ -859,6 +890,137 @@ export interface Tex2svgPreCallResult {
   decision: PreCallDecision
 }
 
+export type FormulaRenderCallEligibility =
+  | 'TARGET_BLOCK_FORMULA'
+  | 'NON_TARGET_INLINE_MATH'
+  | 'FOREIGN_MATH_CALL'
+  | 'UNKNOWN_UNRESOLVED'
+
+interface RenderCallEligibilityAuthority {
+  eligibility: FormulaRenderCallEligibility
+  inlineMathRejected: boolean
+  foreignMathRejected: boolean
+  managedAuthorizationAllowed: boolean
+  tagInjectionAllowed: boolean
+  sourceCommitAllowed: boolean
+  editingHostElement: HTMLElement | null
+  evidenceKind: string
+  evidenceToken: number | null
+  reason: string | null
+}
+
+function readDisplayOption(args: unknown[]): boolean | null {
+  const options = args[1]
+  if (options && typeof options === 'object' && 'display' in options) {
+    const display = (options as { display?: unknown }).display
+    return typeof display === 'boolean' ? display : null
+  }
+  return null
+}
+
+function resolveRenderCallEligibility(input: {
+  args: unknown[]
+  inputTex: string
+  editorRoot: HTMLElement | null
+  plan: FormulaRenderAuthorizationPlan | null
+  currentTx: CurrentFormulaTransaction | null
+}): RenderCallEligibilityAuthority {
+  const displayOption = readDisplayOption(input.args)
+  const editingHostElement = findCurrentEditingHostElement(input.editorRoot)
+  const editingSource = editingHostElement
+    ? verifyFormulaTexSource({ host: editingHostElement, formulaIndex: 0, editorRoot: input.editorRoot })
+    : null
+  const inputComparable = normalizeOwnerComparableTex(input.inputTex)
+  const editingSourceComparable = editingSource && editingSource.decision !== 'UNAVAILABLE'
+    ? normalizeOwnerComparableTex(editingSource.sourcePrefix)
+    : ''
+  const exactEditingSourceMatch = !!editingHostElement
+    && editingSourceComparable.length > 0
+    && inputComparable === editingSourceComparable
+  const txComparable = input.currentTx ? normalizeOwnerComparableTex(input.currentTx.rawTex) : ''
+  const exactCurrentTxMatch = !!input.currentTx
+    && txComparable.length > 0
+    && inputComparable === txComparable
+  const planExactMatchCount = input.plan?.entries.filter((entry) => {
+    const entryComparable = normalizeOwnerComparableTex(entry.normalizedSourcePrefix)
+    return entryComparable.length > 0 && entryComparable === inputComparable
+  }).length ?? 0
+
+  if (exactCurrentTxMatch) {
+    return {
+      eligibility: 'TARGET_BLOCK_FORMULA',
+      inlineMathRejected: false,
+      foreignMathRejected: false,
+      managedAuthorizationAllowed: true,
+      tagInjectionAllowed: true,
+      sourceCommitAllowed: true,
+      editingHostElement,
+      evidenceKind: 'CURRENT_RENDER_TRANSACTION_EXACT_SOURCE',
+      evidenceToken: input.currentTx?.formulaHostToken ?? null,
+      reason: null,
+    }
+  }
+
+  if (exactEditingSourceMatch) {
+    return {
+      eligibility: 'TARGET_BLOCK_FORMULA',
+      inlineMathRejected: false,
+      foreignMathRejected: false,
+      managedAuthorizationAllowed: true,
+      tagInjectionAllowed: true,
+      sourceCommitAllowed: true,
+      editingHostElement,
+      evidenceKind: 'EXACT_EDIT_SOURCE_CONTAINER',
+      evidenceToken: null,
+      reason: null,
+    }
+  }
+
+  const noBlockFormulaEvidence = planExactMatchCount === 0
+  if (noBlockFormulaEvidence && displayOption === false) {
+    return {
+      eligibility: 'NON_TARGET_INLINE_MATH',
+      inlineMathRejected: true,
+      foreignMathRejected: true,
+      managedAuthorizationAllowed: false,
+      tagInjectionAllowed: false,
+      sourceCommitAllowed: false,
+      editingHostElement,
+      evidenceKind: 'NO_EXACT_BLOCK_OWNER_WITH_INLINE_DISPLAY_DIAGNOSTIC',
+      evidenceToken: null,
+      reason: 'CROSS_KIND_NON_TARGET_RENDER_CALL',
+    }
+  }
+
+  if (editingHostElement && noBlockFormulaEvidence && editingSourceComparable.length > 0) {
+    return {
+      eligibility: 'FOREIGN_MATH_CALL',
+      inlineMathRejected: false,
+      foreignMathRejected: true,
+      managedAuthorizationAllowed: false,
+      tagInjectionAllowed: false,
+      sourceCommitAllowed: false,
+      editingHostElement,
+      evidenceKind: 'ACTIVE_BLOCK_SOURCE_MISMATCH_WITHOUT_PLAN_OWNER',
+      evidenceToken: null,
+      reason: 'CROSS_KIND_FOREIGN_RENDER_CALL',
+    }
+  }
+
+  return {
+    eligibility: planExactMatchCount > 0 ? 'TARGET_BLOCK_FORMULA' : 'UNKNOWN_UNRESOLVED',
+    inlineMathRejected: false,
+    foreignMathRejected: false,
+    managedAuthorizationAllowed: true,
+    tagInjectionAllowed: true,
+    sourceCommitAllowed: planExactMatchCount > 0,
+    editingHostElement,
+    evidenceKind: planExactMatchCount > 0 ? 'AUTHORIZATION_PLAN_EXACT_SOURCE' : 'NO_EXACT_CALL_KIND_EVIDENCE',
+    evidenceToken: null,
+    reason: null,
+  }
+}
+
 function collectEditingHostSourceHashes(root: HTMLElement | null): string[] {
   if (!root) return []
   const hashes: string[] = []
@@ -1002,6 +1164,63 @@ export function handleTex2svgPreCall(
   // before the mutation-driven refresh rebuilt the plan is re-authorized against
   // a plan synchronously rebuilt from the CURRENT live editor (no timer, no
   // polling, no active MathJax call, no Markdown write).
+  const callEligibility = resolveRenderCallEligibility({
+    args,
+    inputTex,
+    editorRoot,
+    plan,
+    currentTx: getCurrentTransaction(),
+  })
+  emitRuntimeAudit('FORMULA-RENDER-CALL-KIND-AUTHORITY', {
+    callOrdinal,
+    inputLength: inputTex.length,
+    inputHash,
+    displayOption: readDisplayOption(args),
+    candidateCanonicalHostToken: null,
+    callerHostStableIdentity: null,
+    inlineMathRejected: callEligibility.inlineMathRejected,
+    foreignMathRejected: callEligibility.foreignMathRejected,
+    eligibility: callEligibility.eligibility,
+    eligibilityEvidenceKind: callEligibility.evidenceKind,
+    eligibilityEvidenceToken: callEligibility.evidenceToken,
+    decision: callEligibility.managedAuthorizationAllowed ? 'PASS' : 'PASS_THROUGH',
+    reason: callEligibility.reason,
+    runtimeMarker: R54_RUNTIME_MARKER,
+  })
+  if (!callEligibility.managedAuthorizationAllowed) {
+    nonTargetPassThroughCount++
+    emitRuntimeAudit('FORMULA-CROSS-KIND-OWNER-ISOLATION', {
+      callOrdinal,
+      eligibility: callEligibility.eligibility,
+      currentEditingStableIdentity: null,
+      editSessionStableIdentity: getActiveEditSession()?.stableFormulaIdentity ?? null,
+      callerHostStableIdentity: null,
+      candidateManagedOwnerStableIdentity: null,
+      selectedManagedOwnerStableIdentity: null,
+      catchupAttempted: false,
+      catchupChangedEligibility: false,
+      managedAuthorizationAllowed: false,
+      tagInjectionAllowed: false,
+      sourceCommitAllowed: false,
+      decision: 'PASS',
+      reason: callEligibility.reason,
+      runtimeMarker: R54_RUNTIME_MARKER,
+    })
+    emitRuntimeAudit('MATHJAX-TEX2SVG-NONTARGET-PASS-THROUGH', {
+      callOrdinal,
+      inputHash,
+      candidateManagedFormulaCount: plan?.entries.length ?? 0,
+      uniqueAuthorizedFormulaIndex: null,
+      originalArgsPassed: true,
+      inputUnchanged: true,
+      returnIdentityPreserved: true,
+      decision: 'PASS_THROUGH',
+      reason: callEligibility.reason ?? 'RENDER_CALL_NOT_ELIGIBLE_FOR_MANAGED_BLOCK_FORMULA',
+      runtimeMarker: R54_RUNTIME_MARKER,
+    })
+    return { applyArgs: args, injection: null, decision: 'PASS_THROUGH' }
+  }
+
   const currentLiveFormulaRevision = ctx?.getCurrentLiveFormulaRevision?.() ?? null
   const currentSemanticSignature = ctx?.getCurrentSemanticSignature?.() ?? null
   const planLiveFormulaRevision = plan?.planLiveFormulaRevision ?? 0
@@ -1574,6 +1793,32 @@ export function handleTex2svgPreCall(
   // Resolve call owner BEFORE any transaction/authorization binding.
   // The call owner determines which formula this tex2svg input truly belongs to,
   // independent of the current editing host focus.
+  const currentTxMatchesCallInput = currentTx
+    ? normalizeOwnerComparableTex(inputTex) === normalizeOwnerComparableTex(currentTx.rawTex)
+    : false
+  const immutableCurrentTxOwner = currentTx && currentTx.desiredTag !== null && currentTx.desiredTag !== '' && currentTxMatchesCallInput
+    ? currentTx
+    : null
+  if (immutableCurrentTxOwner) {
+    auth = authorizeKnownManagedOwner({
+      auth,
+      ownerIdentity: immutableCurrentTxOwner.stableFormulaIdentity,
+      plan: authPlan,
+      authorityKind: 'STABLE_IDENTITY_AUTHORITATIVE_SOURCE_MATCH',
+      fallbackFormulaIndex: immutableCurrentTxOwner.formulaIndex,
+    })
+  } else if (auth.decision !== 'AUTHORIZED' && authPlan && authPlan.entries.length === 1
+    && normalizeOwnerComparableTex(inputTex) === normalizeOwnerComparableTex(authPlan.entries[0].normalizedSourcePrefix)) {
+    const onlyEntry = authPlan.entries[0]
+    auth = authorizeKnownManagedOwner({
+      auth,
+      ownerIdentity: onlyEntry.stableFormulaIdentity,
+      plan: authPlan,
+      authorityKind: 'CALLER_CONTEXT_HOST_PLUS_EXACT_SOURCE_MATCH',
+      fallbackFormulaIndex: onlyEntry.formulaIndex,
+    })
+  }
+
   const preCallOwner = resolveFormulaCallOwner({
     uniqueSourceMatchedIdentity: auth.uniqueAuthorizedStableFormulaIdentity ?? null,
     currentEditingIdentity: editingHostIdentity?.stableFormulaIdentity === 'AMBIGUOUS' ? null : (editingHostIdentity?.stableFormulaIdentity ?? null),

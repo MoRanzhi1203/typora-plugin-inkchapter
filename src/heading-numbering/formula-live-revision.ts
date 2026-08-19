@@ -51,6 +51,12 @@ export type PlanDiffKind =
 
 export interface LiveFormulaSemanticEntryInput {
   host: HTMLElement
+  /**
+   * R23: canonical business identity when the current host has an exact
+   * committed Store binding. The WeakMap token remains runtime diagnostics only.
+   */
+  canonicalStableIdentity?: string | number | null
+  formulaRuntimeToken?: number | null
   formulaIndex: number
   documentOrder: number
   desiredTag: string
@@ -68,7 +74,8 @@ export interface LiveFormulaSemanticEntryInput {
 }
 
 export interface LiveFormulaSemanticEntry {
-  stableFormulaIdentity: number | 'AMBIGUOUS'
+  stableFormulaIdentity: string | number | 'AMBIGUOUS'
+  formulaRuntimeToken: number
   formulaHostToken: number
   documentOrder: number
   formulaIndex: number
@@ -100,7 +107,7 @@ export interface LiveFormulaSemanticSnapshot {
 const hostIdentityTokens = new WeakMap<HTMLElement, number>()
 let nextIdentityToken = 1
 
-/** Canonical host object identity is the primary stable identity (A). */
+/** Runtime host/session token. Not a business Store identity. */
 export function resolveStableFormulaIdentity(host: HTMLElement): number {
   let t = hostIdentityTokens.get(host)
   if (t === undefined) {
@@ -155,7 +162,8 @@ export function buildLiveFormulaSemanticSnapshot(input: {
   entries: LiveFormulaSemanticEntryInput[]
 }): LiveFormulaSemanticSnapshot {
   const entries: LiveFormulaSemanticEntry[] = input.entries.map((e) => ({
-    stableFormulaIdentity: resolveStableFormulaIdentity(e.host),
+    stableFormulaIdentity: e.canonicalStableIdentity ?? resolveStableFormulaIdentity(e.host),
+    formulaRuntimeToken: e.formulaRuntimeToken ?? resolveStableFormulaIdentity(e.host),
     formulaHostToken: e.formulaIndex + 1,
     documentOrder: e.documentOrder,
     formulaIndex: e.formulaIndex,
@@ -424,7 +432,8 @@ export function emitSemanticSnapshotMarkers(snapshot: LiveFormulaSemanticSnapsho
 // ── Plan Diff + Affected Set ───────────────────────────────────────────
 
 export interface LivePlanDiffEntry {
-  stableFormulaIdentity: number | 'AMBIGUOUS' | null
+  stableFormulaIdentity: string | number | 'AMBIGUOUS' | null
+  formulaRuntimeToken: number | null
   previousFormulaIndex: number | null
   nextFormulaIndex: number | null
   previousSourceHash: string | null
@@ -445,9 +454,9 @@ export function diffLiveFormulaPlans(
   previous: LiveFormulaSemanticSnapshot | null,
   current: LiveFormulaSemanticSnapshot,
 ): LivePlanDiffEntry[] {
-  const prevByIdentity = new Map<number, LiveFormulaSemanticEntry>()
+  const prevByIdentity = new Map<string | number, LiveFormulaSemanticEntry>()
   const prevAmbiguous: LiveFormulaSemanticEntry[] = []
-  const currByIdentity = new Map<number, LiveFormulaSemanticEntry>()
+  const currByIdentity = new Map<string | number, LiveFormulaSemanticEntry>()
   const currAmbiguous: LiveFormulaSemanticEntry[] = []
 
   for (const e of previous?.entries ?? []) {
@@ -460,7 +469,7 @@ export function diffLiveFormulaPlans(
   }
 
   const diffs: LivePlanDiffEntry[] = []
-  const allIdentities = new Set<number>([...prevByIdentity.keys(), ...currByIdentity.keys()])
+  const allIdentities = new Set<string | number>([...prevByIdentity.keys(), ...currByIdentity.keys()])
   for (const id of allIdentities) {
     const p = prevByIdentity.get(id)
     const c = currByIdentity.get(id)
@@ -482,6 +491,7 @@ export function diffLiveFormulaPlans(
     const requiresRenderInvalidation = kinds.some((k) => k === 'SOURCE_CHANGED' || k === 'DESIRED_TAG_CHANGED' || k === 'ORDER_CHANGED' || k === 'CONTEXT_CHANGED' || k === 'SCOPE_CHANGED' || k === 'SEQUENCE_CHANGED')
     diffs.push({
       stableFormulaIdentity: id,
+      formulaRuntimeToken: p?.formulaRuntimeToken ?? c?.formulaRuntimeToken ?? null,
       previousFormulaIndex: p?.formulaIndex ?? null,
       nextFormulaIndex: c?.formulaIndex ?? null,
       previousSourceHash: p?.normalizedSourceHash ?? null,
@@ -500,10 +510,10 @@ export function diffLiveFormulaPlans(
   }
   // Ambiguous-identity entries cannot be diffed — mark without guessing.
   for (const e of prevAmbiguous) {
-    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', previousFormulaIndex: e.formulaIndex, nextFormulaIndex: null, previousSourceHash: e.normalizedSourceHash, nextSourceHash: null, previousDesiredTag: e.desiredTag, nextDesiredTag: null, previousContentRevision: e.formulaContentRevision, nextContentRevision: null, previousScopeKey: null, nextScopeKey: null, previousSequenceValue: null, nextSequenceValue: null, changeKinds: ['REMOVED'], requiresRenderInvalidation: false })
+    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', formulaRuntimeToken: null, previousFormulaIndex: e.formulaIndex, nextFormulaIndex: null, previousSourceHash: e.normalizedSourceHash, nextSourceHash: null, previousDesiredTag: e.desiredTag, nextDesiredTag: null, previousContentRevision: e.formulaContentRevision, nextContentRevision: null, previousScopeKey: null, nextScopeKey: null, previousSequenceValue: null, nextSequenceValue: null, changeKinds: ['REMOVED'], requiresRenderInvalidation: false })
   }
   for (const e of currAmbiguous) {
-    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', previousFormulaIndex: null, nextFormulaIndex: e.formulaIndex, previousSourceHash: null, nextSourceHash: e.normalizedSourceHash, previousDesiredTag: null, nextDesiredTag: e.desiredTag, previousContentRevision: null, nextContentRevision: e.formulaContentRevision, previousScopeKey: null, nextScopeKey: null, previousSequenceValue: null, nextSequenceValue: null, changeKinds: ['ADDED'], requiresRenderInvalidation: false })
+    diffs.push({ stableFormulaIdentity: 'AMBIGUOUS', formulaRuntimeToken: null, previousFormulaIndex: null, nextFormulaIndex: e.formulaIndex, previousSourceHash: null, nextSourceHash: e.normalizedSourceHash, previousDesiredTag: null, nextDesiredTag: e.desiredTag, previousContentRevision: null, nextContentRevision: e.formulaContentRevision, previousScopeKey: null, nextScopeKey: null, previousSequenceValue: null, nextSequenceValue: null, changeKinds: ['ADDED'], requiresRenderInvalidation: false })
   }
   return diffs
 }
@@ -517,11 +527,11 @@ export interface AffectedFormulaSet {
   contextChangedCount: number
   affectedNewFormulaCount: number
   affectedExistingFormulaCount: number
-  affectedStableFormulaIdentities: Array<number | 'AMBIGUOUS' | null>
+  affectedStableFormulaIdentities: Array<string | number | 'AMBIGUOUS' | null>
 }
 
 export function computeAffectedFormulaSet(diffs: LivePlanDiffEntry[]): AffectedFormulaSet {
-  const affected = new Set<number | 'AMBIGUOUS' | null>()
+  const affected = new Set<string | number | 'AMBIGUOUS' | null>()
   let addedCount = 0
   let removedCount = 0
   let sourceChangedCount = 0

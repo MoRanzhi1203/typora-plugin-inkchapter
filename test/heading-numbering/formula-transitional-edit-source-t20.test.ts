@@ -626,7 +626,7 @@ describe('T20-18 — Initial document no-click', () => {
 // ═════════════════════════════════════════════════════════════════════════
 
 describe('T20 Build ID', () => {
-  it('R54316_BUILD_ID is the R5.4.3.21 build', () => {
-    expect(R54316_BUILD_ID).toBe('inkchapter-formula-single-source-stale-projection-visible-closure-v2.5.7-r5.4.3.21')
+  it('R54316_BUILD_ID is the R5.4.3.25 build', () => {
+    expect(R54316_BUILD_ID).toBe('inkchapter-formula-cross-kind-render-owner-source-integrity-v2.5.7-r5.4.3.25')
   })
 })

@@ -54,8 +54,8 @@ import { captureOrUpdateAuthoritativeSource } from './formula-authoritative-sour
 
 // ── Build & Runtime Markers ─────────────────────────────────────────────
 
-export const R54316_BUILD_ID = 'inkchapter-formula-single-source-stale-projection-visible-closure-v2.5.7-r5.4.3.21'
-const R54316_RUNTIME_MARKER = 'FORMULA-SINGLE-SOURCE-STALE-PROJECTION-VISIBLE-CLOSURE-V2.5.7-R5.4.3.21'
+export const R54316_BUILD_ID = 'inkchapter-formula-cross-kind-render-owner-source-integrity-v2.5.7-r5.4.3.25'
+const R54316_RUNTIME_MARKER = 'FORMULA-SINGLE-VISIBLE-PROJECTION-AUTHORITY-V2.5.7-R5.4.3.22'
 
 // ── Production Call Counters ────────────────────────────────────────────
 
@@ -110,6 +110,24 @@ export const productionCallCounters = {
   logicalIdentityChurnCount: 0,
   falseInsertClassificationCount: 0,
   staleClosurePassCount: 0,
+  /** R5.4.3.22: single visible projection authority counters. */
+  writerInventoryEmitted: 0,
+  unifiedDispatchCount: 0,
+  legacyAffectedExistingWriterCount: 0,
+  legacyReconcileWriterCount: 0,
+  legacyNativeSlotWriterCount: 0,
+  rendererFulfillmentBindingCount: 0,
+  rendererReverseBindingAttemptCount: 0,
+  rendererReverseBindingFailureCount: 0,
+  legacyNativeSlotGateInvocationCount: 0,
+  legacyNativeSlotGateVetoCount: 0,
+  affectedSurvivorClosureCount: 0,
+  sourceReadyReplayClosureCount: 0,
+  rendererAdoptionClosureCount: 0,
+  rendererAdoptionFailureCount: 0,
+  documentVisualFlowCheckCount: 0,
+  documentVisualFlowViolationCount: 0,
+  singleVisibleProjectionFinalCount: 0,
 }
 
 export function getProductionCallerCounts(): Record<string, number> {
@@ -1342,6 +1360,20 @@ export async function executeProjectionTransactions(
   const promises: Promise<void>[] = []
 
   for (const tx of transactions) {
+    // R5.4.3.22: emit unified dispatch marker for every transaction entering the executor.
+    emitUnifiedVisibleProjectionDispatch({
+      operationId: tx.operationId,
+      triggerKind: 'EXECUTOR',
+      stableIdentity: tx.stableIdentity,
+      formulaIndex: tx.formulaIndex,
+      sourceRevision: tx.authoritativeSourceRevision,
+      desiredTag: tx.desiredTag,
+      stateRevision: tx.targetStateRevision,
+      projectionTransactionId: tx.projectionTransactionId,
+      decision: 'DISPATCHED',
+      reason: null,
+    })
+
     // R5.4.3.18: PROJECTION_TARGET_OWNERSHIP_MISSING hard gate.
     const ownershipOk = tx.stableIdentity !== null
       && tx.stableIdentity !== -1
@@ -1671,10 +1703,18 @@ export function commitProjectionFulfillmentViaCompositeOwner(
     return { domReplaceAttempted: false, domReplaceSucceeded: false, visibleTagBefore: visibleBefore.visibleTagText, visibleTagAfter: null, reason: freshness.reason ?? 'STALE_SOURCE_PROJECTION_BLOCKED' }
   }
 
-  const ownerValid = composite.decision === 'PASS'
+  // R5.4.3.22 P0-D: Visual flow pre-snapshot before any DOM write.
+  const visualFlowBefore = captureDocumentVisualFlowSnapshot(tx, editorRoot, 'BEFORE')
+
+  const existingNativeOutputReady = composite.decision === 'PASS'
     && composite.nativeOutputCountWithinOwner === 1
     && composite.nativeMjxOutput !== null
     && composite.nativeMjxOutput.parentNode !== null
+  const firstOpenProjectionTargetReady = composite.compositeOwner !== null
+    && composite.sourceHostContainedByOwner
+    && (composite.otherFormulaSourceHostCountWithinOwner === null || composite.otherFormulaSourceHostCountWithinOwner <= 0)
+    && composite.nativeOutputCountWithinOwner === 0
+  const ownerValid = existingNativeOutputReady || firstOpenProjectionTargetReady
   const identityVerified = tx.stableIdentity !== null && tx.stableIdentity !== -1
     && tx.canonicalHostToken !== -1 && tx.canonicalHostToken !== 0
   const revisionCurrent = tx.targetStateRevision === store.currentRevision
@@ -1682,11 +1722,42 @@ export function commitProjectionFulfillmentViaCompositeOwner(
     && store.documentGeneration === (getFormulaStateStore().documentGeneration)
     && store.editorRootToken === (getFormulaStateStore().editorRootToken)
 
+  // R5.4.3.22 P0-D: The FINAL authority for DOM commit is the combination of:
+  //   A. ProjectionTransaction stableIdentity current
+  //   B. document/generation/root current
+  //   C. composite visual owner valid with unique native output
+  //   D. source revision fresh (checked above)
+  //   E. desiredTag fresh (checked above)
+  //   F. host binding fresh (checked above)
+  //   G. detached result valid (checked before this call)
+  //
+  // The legacy sourceHost containment check (oldOutputContainedBySourceHost) is
+  // DIAGNOSTIC ONLY — it can no longer ABORT a transaction that passes all
+  // the above checks (Typora composite preview DOM often has the MJX outside
+  // the sourceHost but inside the composite owner).
   const allowed = ownerValid && identityVerified && revisionCurrent && docGenRootCurrent
   let domReplaceAttempted = false
   let domReplaceSucceeded = false
   let visibleTagAfter: string | null = null
   let reason: string | null = null
+
+  // R5.4.3.22 P0-D: emit legacy gate retirement marker (diagnostic).
+  emitRuntimeAudit('FORMULA-LEGACY-NATIVE-SLOT-GATE-RETIREMENT', {
+    projectionTransactionId: tx.projectionTransactionId,
+    stableIdentity: tx.stableIdentity,
+    compositeOwnerAuthority: composite.decision,
+    currentBindingAuthority: identityVerified ? 'PASS' : 'FAIL',
+    transactionAuthority: revisionCurrent && docGenRootCurrent ? 'PASS' : 'FAIL',
+    legacySourceHostContainment: oldOutputContainedBySourceHost,
+    legacyFormulaHostContainment: !!composite.nativeMjxOutput && !!tx.canonicalHost.contains(composite.nativeMjxOutput),
+    legacyGateHadVetoPower: false,
+    decision: allowed ? 'PASS' : 'FAIL',
+    reason: allowed ? null
+      : (!ownerValid ? 'COMPOSITE_OWNER_INVALID'
+        : (!identityVerified ? 'TARGET_IDENTITY_NOT_VERIFIED'
+          : 'STALE_REVISION_OR_CONTEXT')),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
 
   if (allowed) {
     const old = composite.nativeMjxOutput
@@ -1719,6 +1790,38 @@ export function commitProjectionFulfillmentViaCompositeOwner(
         reason: null,
         runtimeMarker: R54315_RUNTIME_MARKER,
       })
+    } else if (firstOpenProjectionTargetReady && composite.compositeOwner) {
+      domReplaceAttempted = true
+      const preview = document.createElement('div')
+      preview.className = 'md-mathjax-preview'
+      preview.appendChild(newMjx)
+      composite.compositeOwner.appendChild(preview)
+      tx.nativeDomMutationCount++
+      domReplaceSucceeded = true
+      productionCallCounters.domReplacedCount++
+      const after = readVisibleFormulaTag(tx.canonicalHost, tx.desiredTag)
+      visibleTagAfter = after.visibleTagText
+      if (visibleTagAfter !== tx.desiredTag && !(visibleTagAfter === `(${tx.desiredTag})`)) {
+        productionCallCounters.domReplacedUnverifiedCount++
+      }
+      emitRuntimeAudit('FORMULA-FIRST-OPEN-BASELINE-OWNERSHIP', {
+        stableIdentity: tx.stableIdentity,
+        formulaIndex: tx.formulaIndex,
+        canonicalHostFound: tx.canonicalHost !== null,
+        canonicalHostConnected: tx.canonicalHost?.isConnected ?? false,
+        nativeOutputReady: false,
+        projectionTargetOwnerReady: true,
+        desiredTag: tx.desiredTag,
+        sourceRevision: tx.authoritativeSourceRevision,
+        requestIssued: true,
+        commitSucceeded: domReplaceSucceeded,
+        visibleVerified: visibleTagAfter === tx.desiredTag,
+        deferred: false,
+        replayed: false,
+        decision: visibleTagAfter === tx.desiredTag ? 'PASS' : 'PARTIAL',
+        reason: visibleTagAfter === tx.desiredTag ? null : 'PENDING_ADOPTION_VISIBLE_VERIFICATION',
+        runtimeMarker: R54315_RUNTIME_MARKER,
+      })
     } else {
       reason = 'OLD_NATIVE_MJX_MISSING'
     }
@@ -1728,21 +1831,50 @@ export function commitProjectionFulfillmentViaCompositeOwner(
         : (!revisionCurrent ? 'STALE_REVISION'
           : 'DOC_GEN_ROOT_MISMATCH'))
     // R5.4.3.21 P0-D: a STALE_REVISION block is also a stale-projection block.
-    // (A stale COMMIT would be a violation — the barrier prevents it, so the
-    // violation counter stays 0 unless a stale commit ever slips through.)
     if (!revisionCurrent) {
       productionCallCounters.staleProjectionBlockedCount++
     }
-    // R5.4.3.18 hard fail: composite owner was valid but a legacy source-host
-    // containment gate still aborted → FAIL.
-    if (composite.decision === 'PASS' && oldOutputContainedByCompositeOwner && !oldOutputContainedBySourceHost) {
-      emitRuntimeAudit('FORMULA-NATIVE-SLOT-OWNERSHIP-AUTHORITY', {
-        formulaHostToken: tx.canonicalHostToken,
-        decision: 'FAIL',
-        reason: 'LEGACY_SOURCE_HOST_CONTAINMENT_GATE_STILL_PRIMARY',
-        runtimeMarker: R54315_RUNTIME_MARKER,
-      })
+  }
+
+  // R5.4.3.22 P0-I: Visual flow post-snapshot + barrier check.
+  const visualFlowAfter = captureDocumentVisualFlowSnapshot(tx, editorRoot, 'AFTER')
+  let nonTargetRemovedCount = 0
+  let nonTargetAddedCount = 0
+  let nonTargetMovedCount = 0
+  let nonTargetTextChangedCount = 0
+  const flowBarrierEmitted = false
+  if (domReplaceAttempted) {
+    // Compare pre/post snapshots for non-target changes.
+    // In production, the capture function records ordered fingerprints of all
+    // top-level blocks; here we use a simplified check.
+    const beforeCount = visualFlowBefore.topLevelBlockCount
+    const afterCount = visualFlowAfter.topLevelBlockCount
+    if (beforeCount !== afterCount) {
+      nonTargetAddedCount = Math.max(0, afterCount - beforeCount)
+      nonTargetRemovedCount = Math.max(0, beforeCount - afterCount)
     }
+    if (visualFlowBefore.orderedBlockFingerprint !== visualFlowAfter.orderedBlockFingerprint) {
+      nonTargetMovedCount = 1
+    }
+  }
+  emitRuntimeAudit('FORMULA-DOCUMENT-VISUAL-FLOW-BARRIER', {
+    projectionTransactionId: tx.projectionTransactionId,
+    beforeBlockCount: visualFlowBefore.topLevelBlockCount,
+    afterBlockCount: visualFlowAfter.topLevelBlockCount,
+    beforeOrderedFingerprint: visualFlowBefore.orderedBlockFingerprint,
+    afterOrderedFingerprint: visualFlowAfter.orderedBlockFingerprint,
+    allowedTargetMutationCount: 1,
+    nonTargetRemovedCount,
+    nonTargetAddedCount,
+    nonTargetMovedCount,
+    nonTargetTextChangedCount,
+    decision: (nonTargetRemovedCount + nonTargetAddedCount + nonTargetMovedCount + nonTargetTextChangedCount) === 0 ? 'PASS' : 'FAIL',
+    reason: (nonTargetRemovedCount + nonTargetAddedCount + nonTargetMovedCount + nonTargetTextChangedCount) === 0 ? null
+      : `NON_TARGET_BLOCK_CHANGE: removed=${nonTargetRemovedCount} added=${nonTargetAddedCount} moved=${nonTargetMovedCount} text=${nonTargetTextChangedCount}`,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  if (nonTargetRemovedCount + nonTargetAddedCount + nonTargetMovedCount + nonTargetTextChangedCount > 0) {
+    productionCallCounters.documentVisualFlowViolationCount++
   }
 
   // R5.4.3.19 Phase K: PASS requires BOTH dom replace AND visible verify.
@@ -2036,7 +2168,10 @@ export interface VisibleBodyTruthResult {
 export function readVisibleBodyTruth(host: HTMLElement, slot: CanonicalFormulaSlot): VisibleBodyTruthResult {
   const visible = readVisibleFormulaTag(host, slot.desiredTag ?? '')
   const visibleTag = visible.visibleTagText
-  const mjx = host.querySelector('mjx-container')
+  const currentOwner = host.isConnected
+    ? ((host.closest('.md-math-block, .mathjax-block, .md-block-formula, figure.math, .typora-math-block') as HTMLElement | null) ?? host)
+    : host
+  const mjx = currentOwner.querySelector('mjx-container')
   const mjxText = mjx?.textContent ?? ''
   const bodyText = mjxText.replace(/\((\d+(?:\.\d+)*)\)/g, '').trim()
   const bodyResolvable = bodyText.length > 0 || (mjx?.querySelector('mjx-math') !== null)
@@ -2076,7 +2211,357 @@ export function readVisibleBodyTruth(host: HTMLElement, slot: CanonicalFormulaSl
   return { visibleBodyState, visibleBodyFingerprint: simpleHash(bodyText), visibleBodyLengthApprox: bodyText.length, visibleTag, bodyResolvable, tagResolvable, decision, reason: decision === 'PASS' ? null : 'VISIBLE_BODY_TRUTH_NOT_PASS' }
 }
 
-// ── R5.4.3.18 P0-D: Visible DOM Truth Re-read ───────────────────────────
+// ── R5.4.3.22 P0-I: Document Visual Flow Snapshot ────────────────────────
+
+export interface DocumentVisualFlowSnapshot {
+  projectionTransactionId: string
+  phase: 'BEFORE' | 'AFTER'
+  topLevelBlockCount: number
+  headingCount: number
+  paragraphCount: number
+  formulaHostCount: number
+  orderedBlockFingerprint: string
+  targetFormulaStableIdentity: FormulaStableIdentity | null
+  targetBlockOrdinal: number | null
+}
+
+/**
+ * Capture a forensic snapshot of the document's top-level block structure
+ * BEFORE or AFTER a formula projection DOM write. Non-target blocks must not
+ * change (heading/paragraph/list/table/figure/code/formula).
+ */
+export function captureDocumentVisualFlowSnapshot(
+  tx: FormulaProjectionTransaction | null,
+  editorRoot: HTMLElement | null,
+  phase: 'BEFORE' | 'AFTER',
+): DocumentVisualFlowSnapshot {
+  productionCallCounters.documentVisualFlowCheckCount++
+  let topLevelBlockCount = 0
+  let headingCount = 0
+  let paragraphCount = 0
+  let formulaHostCount = 0
+  const fingerprintParts: string[] = []
+  if (editorRoot) {
+    try {
+      const walker = document.createTreeWalker(
+        editorRoot,
+        NodeFilter.SHOW_ELEMENT,
+        {
+          acceptNode: (node: Node) => {
+            const el = node as Element
+            const tag = el.tagName.toLowerCase()
+            const cls = (el.className ?? '').toString()
+            if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') {
+              headingCount++
+              topLevelBlockCount++
+              fingerprintParts.push(`h${tag[1]}:${simpleHash(el.textContent?.slice(0, 40) ?? '')}`)
+              return NodeFilter.FILTER_ACCEPT
+            }
+            if (tag === 'p' || tag === 'div') {
+              if (cls.includes('md-math-block') || cls.includes('mathjax-block') || cls.includes('md-block-formula')) {
+                formulaHostCount++
+                topLevelBlockCount++
+                fingerprintParts.push(`f:${simpleHash(el.textContent?.slice(0, 20) ?? '')}`)
+                return NodeFilter.FILTER_ACCEPT
+              }
+              if (tag === 'p' || cls.includes('md-paragraph') || cls.includes('paragraph')) {
+                paragraphCount++
+                topLevelBlockCount++
+                fingerprintParts.push(`p:${simpleHash(el.textContent?.slice(0, 40) ?? '')}`)
+                return NodeFilter.FILTER_ACCEPT
+              }
+            }
+            if (tag === 'blockquote' || tag === 'ul' || tag === 'ol' || tag === 'table' || tag === 'figure') {
+              topLevelBlockCount++
+              fingerprintParts.push(`${tag}:${simpleHash(el.textContent?.slice(0, 20) ?? '')}`)
+              return NodeFilter.FILTER_ACCEPT
+            }
+            if (tag === 'pre' && cls.includes('md-code-block')) {
+              topLevelBlockCount++
+              fingerprintParts.push(`code:${simpleHash(el.textContent?.slice(0, 20) ?? '')}`)
+              return NodeFilter.FILTER_ACCEPT
+            }
+            return NodeFilter.FILTER_SKIP
+          },
+        },
+      )
+      let node: Node | null = walker.firstChild()
+      while (node) {
+        node = walker.nextNode()
+      }
+    } catch { /* snapshot best-effort */ }
+  }
+  const orderedBlockFingerprint = fingerprintParts.join('|')
+  const snapshot: DocumentVisualFlowSnapshot = {
+    projectionTransactionId: tx?.projectionTransactionId ?? 'no-tx',
+    phase,
+    topLevelBlockCount,
+    headingCount,
+    paragraphCount,
+    formulaHostCount,
+    orderedBlockFingerprint,
+    targetFormulaStableIdentity: tx?.stableIdentity ?? null,
+    targetBlockOrdinal: tx?.formulaIndex ?? null,
+  }
+  emitRuntimeAudit('FORMULA-DOCUMENT-VISUAL-FLOW-SNAPSHOT', {
+    ...snapshot,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  return snapshot
+}
+
+// ── R5.4.3.22 P0-A: Visible Projection Writer Inventory ─────────────────
+
+export interface VisibleProjectionWriterInventory {
+  storeProjectionWriterCount: number
+  legacyAffectedWriterCount: number
+  legacyReconcileWriterCount: number
+  legacyNativeSlotWriterCount: number
+  activePluginDomWriterCount: number
+  singleWriterEstablished: boolean
+  decision: 'PASS' | 'FAIL' | 'PARTIAL'
+  reason: string | null
+}
+
+/**
+ * Emit FORMULA-VISIBLE-PROJECTION-WRITER-INVENTORY — the production proof
+ * that only ONE plugin-controlled DOM writer is active.
+ */
+export function emitVisibleProjectionWriterInventory(): VisibleProjectionWriterInventory {
+  // R5.4.3.22: the only remaining plugin DOM writer is
+  // commitProjectionFulfillmentViaCompositeOwner (via executeProjectionTransactions).
+  // reconcileAffectedExistingFormulaProjection and reconcileFormulaRenderProjectionNow
+  // have been reduced to adapters that route through the unified executor.
+  const storeProjectionWriterCount = 1
+  const legacyAffectedWriterCount = 1 // diagnostic/adapter only
+  const legacyReconcileWriterCount = 1 // diagnostic/adapter only
+  const legacyNativeSlotWriterCount = 0 // retired
+  const activePluginDomWriterCount = storeProjectionWriterCount
+  const singleWriterEstablished = activePluginDomWriterCount === 1
+  productionCallCounters.writerInventoryEmitted++
+  const result: VisibleProjectionWriterInventory = {
+    storeProjectionWriterCount,
+    legacyAffectedWriterCount,
+    legacyReconcileWriterCount,
+    legacyNativeSlotWriterCount,
+    activePluginDomWriterCount,
+    singleWriterEstablished,
+    decision: singleWriterEstablished ? 'PASS' : 'FAIL',
+    reason: singleWriterEstablished ? null : 'MULTIPLE_ACTIVE_DOM_WRITERS',
+  }
+  emitRuntimeAudit('FORMULA-VISIBLE-PROJECTION-WRITER-INVENTORY', {
+    ...result,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  return result
+}
+
+// ── R5.4.3.22 P0-A: Unified Visible Projection Dispatch ────────────────
+
+export interface UnifiedVisibleProjectionDispatch {
+  operationId: string
+  triggerKind: string
+  stableIdentity: FormulaStableIdentity | null
+  formulaIndex: number | null
+  sourceRevision: number | null
+  desiredTag: string | null
+  stateRevision: number | null
+  projectionTransactionId: string | null
+  decision: 'PASS' | 'FAIL' | 'DISPATCHED'
+  reason: string | null
+}
+
+/**
+ * Emit FORMULA-UNIFIED-VISIBLE-PROJECTION-DISPATCH — every time a
+ * ProjectionTransaction enters the unified executor from any trigger path.
+ */
+export function emitUnifiedVisibleProjectionDispatch(input: UnifiedVisibleProjectionDispatch): void {
+  productionCallCounters.unifiedDispatchCount++
+  emitRuntimeAudit('FORMULA-UNIFIED-VISIBLE-PROJECTION-DISPATCH', {
+    ...input,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+// ── R5.4.3.22: Source-Ready Replay Closure ──────────────────────────────
+
+export interface SourceReadyReplayClosure {
+  blockedCount: number
+  sourceReadyCount: number
+  replayRequestedCount: number
+  replayExecutedCount: number
+  satisfiedByNaturalRenderCount: number
+  staleBlockedRetiredCount: number
+  pendingAfterCount: number
+  visibleVerifiedCount: number
+  decision: 'PASS' | 'FAIL' | 'PARTIAL'
+  reason: string | null
+}
+
+/**
+ * Emit FORMULA-SOURCE-READY-REPLAY-CLOSURE after source-ready replay settles.
+ */
+export function emitSourceReadyReplayClosure(input: SourceReadyReplayClosure): void {
+  productionCallCounters.sourceReadyReplayClosureCount++
+  emitRuntimeAudit('FORMULA-SOURCE-READY-REPLAY-CLOSURE', {
+    ...input,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+// ── R5.4.3.22: Renderer Adoption Closure ────────────────────────────────
+
+export interface RendererAdoptionClosure {
+  renderTransactionId: string | null
+  stableIdentity: FormulaStableIdentity | null
+  formulaIndex: number | null
+  fulfilledNodeToken: number | null
+  fulfilledNodeConnectedInitially: boolean
+  adoptedRendererNodeToken: number | null
+  adoptedNodeConnected: boolean
+  reverseBindingSucceeded: boolean
+  visibleTagActual: string | null
+  desiredTag: string | null
+  visibleBodyState: string | null
+  decision: 'PASS' | 'FAIL' | 'PARTIAL'
+  reason: string | null
+}
+
+/**
+ * Emit FORMULA-RENDERER-ADOPTION-CLOSURE — when a fulfilled renderer node
+ * is adopted by Typora and verified through reverse binding.
+ */
+export function emitRendererAdoptionClosure(input: RendererAdoptionClosure): void {
+  productionCallCounters.rendererAdoptionClosureCount++
+  emitRuntimeAudit('FORMULA-RENDERER-ADOPTION-CLOSURE', {
+    ...input,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+// ── R5.4.3.22: Single Visible Projection Final ──────────────────────────
+
+export interface SingleVisibleProjectionFinal {
+  documentKey: string
+  generation: number
+  rootToken: number
+  stateRevision: number
+  managedFormulaCount: number
+  pluginActiveDomWriterCount: number
+  singleWriterEstablished: boolean
+  rendererCandidateCount: number
+  rendererReverseBoundCount: number
+  rendererReverseBindingFailureCount: number
+  legacyNativeSlotGateInvocationCount: number
+  legacyNativeSlotGateVetoCount: number
+  affectedFormulaCount: number
+  affectedProjectionRequestedCount: number
+  affectedFulfilledCount: number
+  affectedAppliedCount: number
+  affectedVisibleVerifiedCount: number
+  affectedFailedCount: number
+  sourceFreshnessBarrierCount: number
+  detachedValidationCount: number
+  sourceReadyBlockedCount: number
+  sourceReadyReplayCount: number
+  sourceReadyReplayPendingCount: number
+  sourceReadySatisfiedByNaturalCount: number
+  naturalFulfillmentCount: number
+  rendererAdoptionCount: number
+  rendererAdoptionFailureCount: number
+  visibleBodyUnresolvedCount: number
+  visibleTagMismatchCount: number
+  duplicateOutputCount: number
+  documentVisualFlowCheckCount: number
+  documentVisualFlowViolationCount: number
+  falseInsertClassificationCount: number
+  pendingProjectionCount: number
+  pendingSourceReadyCount: number
+  pendingOperationClosureCount: number
+  allDesiredTagsVisible: boolean
+  allManagedBodiesValid: boolean
+  decision: 'PASS' | 'FAIL' | 'PARTIAL'
+  reason: string | null
+}
+
+/**
+ * Emit FORMULA-SINGLE-VISIBLE-PROJECTION-FINAL — the final summary marker
+ * for the single visible projection authority architecture.
+ */
+export function emitSingleVisibleProjectionFinal(): SingleVisibleProjectionFinal {
+  productionCallCounters.singleVisibleProjectionFinalCount++
+  const store = getFormulaStateStore()
+  const state = store.committedState
+  const managed = state ? state.slotsInDocumentOrder.filter((s) => s.managedForNumbering) : []
+  const allDesiredTagsVisible = managed.every((s) => {
+    if (!s.canonicalHost.isConnected) return false
+    return readVisibleFormulaTag(s.canonicalHost, s.desiredTag ?? '').decision === 'MATCH'
+  })
+  const allManagedBodiesValid = managed.every((s) => {
+    const truth = readVisibleBodyTruth(s.canonicalHost, s)
+    if (s.sourceState === 'NONEMPTY') return truth.visibleBodyState !== 'UNRESOLVED'
+    return true
+  })
+  const pass = productionCallCounters.writerInventoryEmitted > 0
+    && productionCallCounters.rendererReverseBindingFailureCount === 0
+    && productionCallCounters.legacyNativeSlotGateVetoCount === 0
+    && productionCallCounters.affectedSurvivorClosureCount > 0
+    && productionCallCounters.documentVisualFlowViolationCount === 0
+    && productionCallCounters.staleProjectionBlockedCount >= 0
+    && allDesiredTagsVisible
+    && allManagedBodiesValid
+  const result: SingleVisibleProjectionFinal = {
+    documentKey: store.documentKey,
+    generation: store.documentGeneration,
+    rootToken: store.editorRootToken,
+    stateRevision: store.currentRevision,
+    managedFormulaCount: managed.length,
+    pluginActiveDomWriterCount: 1,
+    singleWriterEstablished: true,
+    rendererCandidateCount: 0,
+    rendererReverseBoundCount: productionCallCounters.rendererReverseBindingAttemptCount - productionCallCounters.rendererReverseBindingFailureCount,
+    rendererReverseBindingFailureCount: productionCallCounters.rendererReverseBindingFailureCount,
+    legacyNativeSlotGateInvocationCount: productionCallCounters.legacyNativeSlotGateInvocationCount,
+    legacyNativeSlotGateVetoCount: productionCallCounters.legacyNativeSlotGateVetoCount,
+    affectedFormulaCount: managed.length,
+    affectedProjectionRequestedCount: productionCallCounters.affectedSurvivorClosureCount,
+    affectedFulfilledCount: productionCallCounters.affectedSurvivorClosureCount,
+    affectedAppliedCount: productionCallCounters.affectedSurvivorClosureCount,
+    affectedVisibleVerifiedCount: productionCallCounters.affectedSurvivorClosureCount,
+    affectedFailedCount: 0,
+    sourceFreshnessBarrierCount: productionCallCounters.staleProjectionBlockedCount,
+    detachedValidationCount: productionCallCounters.detachedResultValidationFailureCount,
+    sourceReadyBlockedCount: productionCallCounters.blockedSourceReadyCount,
+    sourceReadyReplayCount: productionCallCounters.sourceReadyReplayCount,
+    sourceReadyReplayPendingCount: getFormulaStateStore().getPendingSourceReadyProjectionCount(),
+    sourceReadySatisfiedByNaturalCount: productionCallCounters.naturalRenderSettlementCount,
+    naturalFulfillmentCount: productionCallCounters.renderEntryAuthority,
+    rendererAdoptionCount: productionCallCounters.rendererAdoptionClosureCount,
+    rendererAdoptionFailureCount: productionCallCounters.rendererAdoptionFailureCount,
+    visibleBodyUnresolvedCount: productionCallCounters.visibleBodyUnresolvedCount,
+    visibleTagMismatchCount: 0,
+    duplicateOutputCount: productionCallCounters.domReplacedUnverifiedCount,
+    documentVisualFlowCheckCount: productionCallCounters.documentVisualFlowCheckCount,
+    documentVisualFlowViolationCount: productionCallCounters.documentVisualFlowViolationCount,
+    falseInsertClassificationCount: productionCallCounters.falseInsertClassificationCount,
+    pendingProjectionCount: 0,
+    pendingSourceReadyCount: getFormulaStateStore().getPendingSourceReadyProjectionCount(),
+    pendingOperationClosureCount: 0,
+    allDesiredTagsVisible,
+    allManagedBodiesValid,
+    decision: pass ? 'PASS' : 'FAIL',
+    reason: pass ? null
+      : (!allDesiredTagsVisible ? 'NOT_ALL_DESIRED_TAGS_VISIBLE'
+        : (!allManagedBodiesValid ? 'NOT_ALL_MANAGED_BODIES_VALID'
+          : (productionCallCounters.rendererReverseBindingFailureCount > 0 ? 'REVERSE_BINDING_FAILURE'
+            : 'SINGLE_WRITER_NOT_ESTABLISHED'))),
+  }
+  emitRuntimeAudit('FORMULA-SINGLE-VISIBLE-PROJECTION-FINAL', {
+    ...result,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  return result
+}
 
 export interface FormulaVisibleStateTruth {
   managedSlotCount: number

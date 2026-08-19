@@ -262,6 +262,7 @@ describe('Live Formula Revision (v2.5.7-R5.4.1)', () => {
       semanticSignature: 's1',
       entries: [{
         stableFormulaIdentity: 'AMBIGUOUS' as const,
+        formulaRuntimeToken: 1,
         formulaHostToken: 1,
         documentOrder: 0,
         formulaIndex: 0,

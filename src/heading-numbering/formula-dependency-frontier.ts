@@ -568,6 +568,7 @@ export function computeOrderedFrontierReprojection(input: {
 
     const diff: LivePlanDiffEntry = {
       stableFormulaIdentity: id,
+      formulaRuntimeToken: typeof id === 'number' ? id : null,
       previousFormulaIndex: before?.index ?? null,
       nextFormulaIndex: after?.index ?? null,
       previousSourceHash: null,
@@ -621,6 +622,7 @@ export function computeOrderedFrontierReprojection(input: {
 
       const diff: LivePlanDiffEntry = {
         stableFormulaIdentity: 'AMBIGUOUS',
+        formulaRuntimeToken: null,
         previousFormulaIndex: before?.index ?? null,
         nextFormulaIndex: after?.index ?? null,
         previousSourceHash: null,
