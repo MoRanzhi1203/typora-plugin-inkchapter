@@ -157,6 +157,8 @@ import {
   executeProjectionTransactions,
   readFormulaVisibleStateTruth,
   getPendingBaselineProjectionCount,
+  editorRootTokenFor,
+  replaySourceReadyProjection,
   R54316_BUILD_ID,
 } from './formula-state-machine-wiring'
 import { R54315_RUNTIME_MARKER, getFormulaStateStore, isFormulaEmptySource } from './formula-state-store'
@@ -872,12 +874,8 @@ export class CaptionService {
   }
 
   private editorRootTokenFor(root: HTMLElement): number {
-    let token = this.editorRootTokens.get(root)
-    if (token === undefined) {
-      token = ++this.nextEditorRootToken
-      this.editorRootTokens.set(root, token)
-    }
-    return token
+    // R5.4.3.20: shared token with the MathJax wrapper (single source).
+    return editorRootTokenFor(root)
   }
 
   // ── R5.4.3.8 P1/P2: Formula edit-session event watchers ──
@@ -3996,7 +3994,8 @@ export class CaptionService {
           const isUnknown = verifier.decision === 'UNAVAILABLE' && (authState.authoritativeRawSource ?? '') === ''
           const sourceState = isUnknown ? 'UNKNOWN'
             : (isFormulaEmptySource(authState.authoritativeRawSource ?? '') ? 'EMPTY' : 'NONEMPTY')
-          getFormulaStateStore().hydrateFormulaSourceAuthority({
+          const store = getFormulaStateStore()
+          store.hydrateFormulaSourceAuthority({
             documentKey: docKey,
             generation: this.documentGeneration,
             editorRootToken: this.currentEditorRoot ? this.editorRootTokenFor(this.currentEditorRoot) : 0,
@@ -4009,6 +4008,14 @@ export class CaptionService {
               authoritativeSourceRevision: sourceState === 'UNKNOWN' ? null : authState.formulaContentRevision,
             },
           })
+          // R5.4.3.20 P0-D: source authority became ready → event-driven replay
+          // of any BLOCKED_SOURCE_NOT_READY projection for this slot.
+          if (sourceState !== 'UNKNOWN' && this.currentEditorRoot) {
+            const slot = store.lookupCommittedSlotByHost(f.host)
+            if (slot) {
+              void replaySourceReadyProjection(slot.stableIdentity, this.currentEditorRoot)
+            }
+          }
         } catch { /* hydration is additive — never block the plan */ }
       }
       const ctx = input.contexts[f.formulaIndex]

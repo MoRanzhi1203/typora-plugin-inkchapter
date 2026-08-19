@@ -143,13 +143,19 @@ function makeTx(slot: CanonicalFormulaSlot, i: number, operationId = 'op'): Form
   }
 }
 
-/** Fake provider that captures every raw input and renders "(tag)". */
+/** Fake provider that captures every raw input and renders body + "(tag)". */
 function installCapturingProvider(captured: string[]): void {
   setOriginalTex2svgPromise((tex: unknown) => {
     captured.push(String(tex))
     const m = String(tex).match(/\\tag\{([^}]*)\}/)
     const node = document.createElement('mjx-container')
-    node.textContent = m ? `(${m[1]})` : '()'
+    const math = document.createElement('mjx-math')
+    const bodyTex = String(tex).replace(/\\tag\{[^}]*\}/, '').trim()
+    math.textContent = bodyTex
+    node.appendChild(math)
+    const label = document.createElement('mjx-label')
+    label.textContent = m ? `(${m[1]})` : ''
+    node.appendChild(label)
     return Promise.resolve(node)
   })
 }
@@ -629,10 +635,10 @@ describe('T20 — Document Switch Stale Promise', () => {
 // T21 — Build ID is R5.4.3.18
 // ═════════════════════════════════════════════════════════════════════════
 
-describe('T21 — Build ID is R5.4.3.19', () => {
-  it('R54316_BUILD_ID includes r5.4.3.19 and authoritative-source', () => {
-    expect(R54316_BUILD_ID).toContain('r5.4.3.19')
-    expect(R54316_BUILD_ID).toContain('authoritative-source')
+describe('T21 — Build ID is R5.4.3.20', () => {
+  it('R54316_BUILD_ID includes r5.4.3.21 and single-source-stale-projection', () => {
+    expect(R54316_BUILD_ID).toContain('r5.4.3.21')
+    expect(R54316_BUILD_ID).toContain('single-source-stale-projection-visible-closure')
   })
 })
 

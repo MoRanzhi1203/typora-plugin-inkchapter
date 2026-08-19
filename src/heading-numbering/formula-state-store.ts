@@ -18,6 +18,7 @@
  */
 
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { simpleHash, normalizeTexSource, normalizeTyporaFormulaRenderInput } from './formula-tex-source-verifier'
 
 // ── Build & Runtime Markers ─────────────────────────────────────────────
 
@@ -45,6 +46,34 @@ export interface FormulaSourceSnapshot {
   authoritativeSourceRevision: number | null
 }
 
+/** R5.4.3.20: result of atomic pre-call structural adoption. */
+export interface HostAdoptionResult {
+  outcome: 'EXISTING_SLOT' | 'ADOPTED' | 'CONTEXT_NOT_READY' | 'SCAN_FAILED' | 'AMBIGUOUS'
+  slot: CanonicalFormulaSlot | null
+  addedIdentityCount: number
+}
+
+/**
+ * R5.4.3.20: PendingSourceReadyProjection — a BLOCKED_SOURCE_NOT_READY
+ * projection waiting for the slot's source authority to become ready.
+ */
+export interface PendingSourceReadyProjection {
+  pendingId: string
+  originProjectionTransactionId: string
+  operationId: string
+  documentKey: string
+  generation: number
+  rootToken: number
+  stableIdentity: FormulaStableIdentity
+  formulaIndex: number
+  canonicalHostToken: number
+  canonicalHost: HTMLElement
+  blockedStateRevision: number
+  blockedDesiredTag: string
+  reason: 'SOURCE_NOT_READY'
+  status: 'PENDING' | 'SATISFIED_BY_NATURAL_RENDER' | 'REPLAYED' | 'RETIRED'
+}
+
 // ── CanonicalFormulaSlot ────────────────────────────────────────────────
 
 /**
@@ -61,6 +90,13 @@ export interface CanonicalFormulaSlot {
   canonicalHost: HTMLElement
   /** Monotonically increasing token tied to the host element reference. */
   canonicalHostToken: number
+  /**
+   * R5.4.3.21 P0-H: structural binding revision — the canonicalHostToken ONLY
+   * belongs to the current binding. Typora edit mode (host A → host B) MUST
+   * advance bindingRevision while stableIdentity/sourceRevision/desiredTag/
+   * formulaIndex stay untouched (STRUCTURAL_HOST_REBIND, never identity churn).
+   */
+  bindingRevision: number
 
   /** Identifies the document this slot belongs to. */
   documentKey: string
@@ -160,6 +196,7 @@ export type FormulaOperationKind =
   | 'NUMBERING_SETTINGS_CHANGE'
   | 'DOCUMENT_SWITCH'
   | 'EDITOR_ROOT_REBIND'
+  | 'STRUCTURAL_HOST_REBIND'
 
 // ── FormulaOperationTransaction ─────────────────────────────────────────
 
@@ -330,6 +367,8 @@ export interface FormulaOperationClosure {
   nativeManagedMismatchCount: number
   pendingProjectionCount: number
   failedProjectionCount: number
+  /** R5.4.3.20: BLOCKED_SOURCE_NOT_READY targets awaiting source authority. */
+  pendingSourceReadyCount: number
   allDesiredTagsVisible: boolean
   decision: 'PASS' | 'FAIL' | 'PARTIAL'
   reason: string | null
@@ -783,10 +822,19 @@ export class FormulaStateStore {
   private readonly _documentStates: Map<number, CommittedFormulaDocumentState> = new Map()
   private readonly _pendingTransactions: Map<string, FormulaOperationTransaction> = new Map()
   private readonly _projectionTransactions: Map<string, FormulaProjectionTransaction> = new Map()
+  /** R5.4.3.20: BLOCKED_SOURCE_NOT_READY → source-ready replay registry. */
+  private readonly _pendingSourceReadyProjections: Map<string, PendingSourceReadyProjection> = new Map()
   private _documentKey: string = ''
   private _documentGeneration: number = 0
   private _editorRootToken: number = 0
   private _headingStateRevision: number = 0
+  /**
+   * R5.4.3.21 P0-H: persistent structural-slot identity counter. A NEW slot's
+   * stableIdentity is `${docKey}:${gen}:${rootToken}:structural-${n}` — NEVER
+   * aliased to the ephemeral canonicalHostToken (host token belongs to the
+   * current binding / bindingRevision only).
+   */
+  private _slotIdentityCounter = 0
 
   // ── Public accessors ──────────────────────────────────────────────────
 
@@ -1186,6 +1234,10 @@ export class FormulaStateStore {
       let scopeChanged = false
       let sourceChanged = false
       let managedChanged = false
+      // R5.4.3.21 P0-H: binding change — canonicalHostToken belongs to the
+      // current binding ONLY; a fresh host with unchanged logical identity is
+      // STRUCTURAL_HOST_REBIND, never identity churn.
+      let bindingChanged = false
 
       for (const id of finalSurviving) {
         const beforeSlot = before.slotByStableIdentity.get(id)
@@ -1196,6 +1248,10 @@ export class FormulaStateStore {
           }
           if (beforeSlot.scopeKey !== afterSlot.scopeKey) {
             scopeChanged = true
+          }
+          if (beforeSlot.canonicalHost !== afterSlot.canonicalHost
+            || beforeSlot.canonicalHostToken !== afterSlot.canonicalHostToken) {
+            bindingChanged = true
           }
           if (beforeSlot.authoritativeRawSource !== afterSlot.authoritativeRawSource) {
             // R5.4.3.19: raw string comparison alone is not enough — a real
@@ -1224,6 +1280,12 @@ export class FormulaStateStore {
       } else if (managedChanged && !sourceChanged && !scopeChanged && !orderChanged) {
         operationKind = 'MANAGED_ELIGIBILITY_CHANGE'
         eventHint = 'MANAGED_ELIGIBILITY_CHANGE'
+      } else if (bindingChanged && !orderChanged && !scopeChanged && !sourceChanged && !managedChanged
+        && before.headingStateRevision === after.headingStateRevision) {
+        // R5.4.3.21 P0-H: semantic NOOP + structural binding change → commit
+        // the fresh binding (never discarded), identity stays untouched.
+        operationKind = 'STRUCTURAL_HOST_REBIND'
+        eventHint = 'STRUCTURAL_HOST_REBIND'
       } else if (before.headingStateRevision !== after.headingStateRevision) {
         // Heading structure changed but no slot-level identity/order/scope/source change
         operationKind = 'HEADING_STRUCTURE_CHANGE'
@@ -1387,6 +1449,7 @@ export class FormulaStateStore {
     const scopeChangedCount = this._countScopeChanges(before, after, finalSurviving)
     const sourceChangedCount = this._countSourceChanges(before, after, finalSurviving)
     const managedChangedCount = this._countManagedChanges(before, after, finalSurviving)
+    const bindingChangedCount = this._countBindingChanges(before, after, finalSurviving)
 
     emitRuntimeAudit('FORMULA-OPERATION-CLASSIFICATION-AUTHORITY', {
       operationId: null,
@@ -1402,6 +1465,7 @@ export class FormulaStateStore {
       scopeChangedCount,
       sourceChangedCount,
       managedChangedCount,
+      bindingChangedCount,
       headingStructureChanged: before.headingStateRevision !== after.headingStateRevision,
       resolvedOperationKind: operationKind,
       decision: 'PASS',
@@ -1433,6 +1497,24 @@ export class FormulaStateStore {
     after: CommittedFormulaDocumentState,
   ): FormulaDependencyFrontier | null {
     if (operationKind === 'NOOP') {
+      return null
+    }
+    // R5.4.3.21 P0-H: STRUCTURAL_HOST_REBIND is a binding-only commit — the
+    // logical identity/source/numbering are untouched, so NO semantic cascade.
+    if (operationKind === 'STRUCTURAL_HOST_REBIND') {
+      emitRuntimeAudit('FORMULA-DEPENDENCY-FRONTIER-FROM-CLASSIFIED-OPERATION', {
+        frontierId: null,
+        operationKind,
+        startDocumentOrder: 0,
+        endDocumentOrder: 0,
+        oldScopeKeys: [],
+        newScopeKeys: [],
+        affectedStableIdentities: [],
+        affectedCount: 0,
+        decision: 'REPROJECT',
+        reason: 'STRUCTURAL_HOST_REBIND_HAS_NO_SEMANTIC_FRONTIER',
+        runtimeMarker: R54315_RUNTIME_MARKER,
+      })
       return null
     }
 
@@ -2028,6 +2110,13 @@ export class FormulaStateStore {
   ): FormulaProjectionTransaction[] {
     const projections: FormulaProjectionTransaction[] = []
 
+    // R5.4.3.21 P0-H: STRUCTURAL_HOST_REBIND commits the binding ONLY — logical
+    // identity/source/desiredTag are untouched, so no projection is created
+    // (avoids a projection feedback loop over surviving formulas).
+    if (transaction.operationKind === 'STRUCTURAL_HOST_REBIND') {
+      return projections
+    }
+
     // Determine which identities need projection
     const identitiesToProject = new Set<string | number>()
 
@@ -2083,6 +2172,10 @@ export class FormulaStateStore {
           status: 'BLOCKED_SOURCE_NOT_READY',
           runtimeMarker: R54315_RUNTIME_MARKER,
         })
+        // R5.4.3.21: the blocked projection MUST reach the caller so the
+        // pending source-ready registry can replay it when the source becomes
+        // ready (never silently swallowed inside the store).
+        projections.push(blockedTx)
         continue
       }
 
@@ -2354,7 +2447,23 @@ export class FormulaStateStore {
     return slots
   }
 
-  /** Build slots from an already-canonical host list (shared by all scan paths). */
+  /**
+   * Build slots from an already-canonical host list (shared by all scan paths).
+   *
+   * R5.4.3.21 P0-H/I/J: logical stable identity is DECOUPLED from the
+   * ephemeral canonicalHostToken.
+   *   1. Exact host reference match → identity/source/numbering carry-forward
+   *      with ZERO binding change.
+   *   2. Remaining hosts + remaining committed slots with COUNT PARITY →
+   *      positional (document-order) alignment rebinds the host WITHOUT
+   *      touching stableIdentity/sourceRevision/desiredTag/formulaIndex
+   *      (STRUCTURAL_HOST_REBIND, bindingRevision+1). This covers Typora
+   *      edit-mode host A→host B replacement.
+   *   3. Remaining hosts with count mismatch → genuinely new slots (INSERT
+   *      candidates via classifyOperation); identity from the persistent
+   *      structural-slot counter, NEVER from host token.
+   * NEVER matches by source equality / hash / sentinel / focus / session.
+   */
   private _slotsFromHosts(
     hosts: HTMLElement[],
     headings: HeadingInfo[],
@@ -2364,6 +2473,41 @@ export class FormulaStateStore {
     const slots: CanonicalFormulaSlot[] = []
     let formulaIndex = 0
     let exceptionCount = 0
+
+    // ── P0-H: logical identity alignment against committed state ──
+    const committed = this._committedState ? this._committedState.slotsInDocumentOrder.slice() : []
+    const committedByHost = new Map<HTMLElement, CanonicalFormulaSlot>()
+    for (const s of committed) committedByHost.set(s.canonicalHost, s)
+    const claimedCommitted = new Set<CanonicalFormulaSlot>()
+    const claimedByHost = new Map<HTMLElement, { slot: CanonicalFormulaSlot; rebind: boolean }>()
+    const unclaimedHosts: HTMLElement[] = []
+
+    // Pass 1: exact host reference match.
+    for (const host of hosts) {
+      const exact = committedByHost.get(host)
+      if (exact) {
+        claimedCommitted.add(exact)
+        claimedByHost.set(host, { slot: exact, rebind: false })
+      } else {
+        unclaimedHosts.push(host)
+      }
+    }
+
+    // Pass 2: positional alignment ONLY when counts are equal (host-replacement
+    // rebind, e.g. Typora edit mode). Both lists are in document order.
+    let alignedRebindCount = 0
+    if (unclaimedHosts.length > 0) {
+      const unclaimedCommitted = committed.filter((s) => !claimedCommitted.has(s))
+      if (unclaimedHosts.length === unclaimedCommitted.length) {
+        for (let i = 0; i < unclaimedHosts.length; i++) {
+          claimedByHost.set(unclaimedHosts[i], { slot: unclaimedCommitted[i], rebind: true })
+        }
+        alignedRebindCount = unclaimedHosts.length
+        unclaimedHosts.length = 0
+      }
+      // count mismatch → remaining unclaimed hosts stay NEW (INSERT candidates)
+    }
+
     for (const host of hosts) {
       try {
         // Hosts arrive in document order (canonical collector / TreeWalker) —
@@ -2371,10 +2515,92 @@ export class FormulaStateStore {
         const documentOrder = formulaIndex
         const scopeInfo = resolveScopeKey(host, host.parentElement ?? host, headings, documentOrder)
 
-        // R5.4.3.17: identity ONLY from structural slot + operation lineage,
-        // using the BOUND runtime context (never :0:0:n).
+        const claim = claimedByHost.get(host)
+        if (claim) {
+          // ── Identity + source + numbering carry-forward (survivor) ──
+          const prior = claim.slot
+          const hostToken = tokenFor(host)
+          const isRebind = claim.rebind || prior.canonicalHost !== host
+          if (isRebind) {
+            // source-equality is NEVER used for duplicate identity — the
+            // rebind below is purely structural (positional/scope alignment).
+            emitRuntimeAudit('FORMULA-STRUCTURAL-HOST-REBIND', {
+              stableIdentity: prior.stableIdentity,
+              formulaIndex: prior.documentOrder,
+              oldCanonicalHostToken: prior.canonicalHostToken,
+              newCanonicalHostToken: hostToken,
+              bindingRevisionBefore: prior.bindingRevision ?? 1,
+              bindingRevisionAfter: (prior.bindingRevision ?? 1) + 1,
+              sourceRevision: prior.authoritativeSourceRevision,
+              desiredTag: prior.desiredTag,
+              sourceState: prior.sourceState,
+              alignment: claim.rebind ? 'POSITIONAL_COUNT_PARITY' : 'REFERENCE_CHANGED',
+              decision: 'REBIND',
+              reason: null,
+              runtimeMarker: R54315_RUNTIME_MARKER,
+            })
+          }
+
+          // Recompute sequence within scope (same as the pre-existing scan
+          // semantics); identity/source stay authoritative. The scope/ordinals
+          // are authoritative from the committed numbering plan — never
+          // re-derived from an incomplete heading scan (would falsely flip
+          // a STRUCTURAL_HOST_REBIND into MOVE_SCOPE).
+          let sequenceValue = 0
+          if (prior.managedForNumbering) {
+            for (const s of slots) {
+              if (s.managedForNumbering && s.scopeKey === prior.scopeKey) sequenceValue++
+            }
+            sequenceValue++ // 1-based
+          }
+
+          // R5.4.3.21 P0-I/J: the trusted numbering override (legacy pipeline)
+          // is applied to SURVIVORS as well — an insert/remove suffix must
+          // renumber h2 5.3.2 → 5.3.3 in the SAME commit (never kept stale).
+          let desiredTag = prior.desiredTag
+          let numberingPlanReady = prior.numberingAuthority?.numberingPlanReady ?? false
+          const trustedTag = desiredTagOverrides?.get(host) ?? null
+          if (trustedTag !== null && trustedTag !== undefined && trustedTag !== '') {
+            desiredTag = trustedTag
+            numberingPlanReady = true
+          }
+          const numberingAuthority: FormulaNumberingAuthorityState = desiredTag !== (prior.desiredTag ?? null)
+            ? {
+                ...prior.numberingAuthority,
+                desiredTag,
+                desiredTagReady: numberingPlanReady && desiredTag !== null,
+                numberingPlanReady,
+              }
+            : prior.numberingAuthority
+
+          const slot: CanonicalFormulaSlot = {
+            ...prior,
+            canonicalHost: host,
+            canonicalHostToken: hostToken,
+            bindingRevision: isRebind ? (prior.bindingRevision ?? 1) + 1 : (prior.bindingRevision ?? 1),
+            documentOrder,
+            // Scope/ordinals come from the committed numbering plan — preserved
+            // verbatim so a pure host rebind never degrades into MOVE_SCOPE.
+            scopeKey: prior.scopeKey,
+            chapterOrdinal: prior.chapterOrdinal,
+            sectionOrdinal: prior.sectionOrdinal,
+            subsectionOrdinal: prior.subsectionOrdinal,
+            sequenceValue,
+            desiredTag,
+            numberingAuthority,
+            renderRevision: prior.renderRevision + (isRebind ? 1 : 0),
+          }
+          slots.push(slot)
+          formulaIndex++
+          continue
+        }
+
+        // ── R5.4.3.17: identity ONLY from structural slot + operation lineage,
+        // using the BOUND runtime context (never :0:0:n). R5.4.3.21 P0-H: the
+        // NEW-slot identity uses the persistent structural counter — it is NOT
+        // aliased to the ephemeral host token. ──
         const hostToken = tokenFor(host)
-        const stableIdentity = `${this._documentKey}:${this._documentGeneration}:${this._editorRootToken}:${hostToken}`
+        const stableIdentity = `${this._documentKey}:${this._documentGeneration}:${this._editorRootToken}:structural-${++this._slotIdentityCounter}`
 
         // R5.4.3.17: stable identity context invariant — identity components MUST
         // match the bound store context; :0:0:n is a hard FAIL.
@@ -2435,6 +2661,7 @@ export class FormulaStateStore {
           stableIdentity,
           canonicalHost: host,
           canonicalHostToken: hostToken,
+          bindingRevision: 1,
           documentKey: this._documentKey,
           documentGeneration: this._documentGeneration,
           editorRootToken: this._editorRootToken,
@@ -2465,6 +2692,22 @@ export class FormulaStateStore {
         exceptionCount++
       }
     }
+
+    emitRuntimeAudit('FORMULA-STRUCTURAL-ALIGNMENT-CLOSURE', {
+      documentKey: this._documentKey,
+      generation: this._documentGeneration,
+      rootToken: this._editorRootToken,
+      committedSlotCount: committed.length,
+      hostCount: hosts.length,
+      exactMatchCount: claimedByHost.size - alignedRebindCount,
+      positionalRebindCount: alignedRebindCount,
+      newSlotCount: slots.length - claimedByHost.size,
+      exceptionCount,
+      decision: exceptionCount === 0 ? 'PASS' : 'PARTIAL',
+      reason: exceptionCount === 0 ? null : 'ALIGNMENT_EXCEPTION',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+
     return slots
   }
 
@@ -2584,6 +2827,245 @@ export class FormulaStateStore {
       runtimeMarker: R54315_RUNTIME_MARKER,
     })
     return true
+  }
+
+  // ── R5.4.3.20: Atomic PreCall Structural Adoption ────────────────────
+
+  /**
+   * R5.4.3.20: ensure a committed Store slot exists for the exact canonical
+   * host BEFORE the first natural render is authorized. If missing, performs a
+   * formula-only synchronous adoption (full canonical scan → INSERT_SLOT
+   * commit). Later MutationObserver re-scans classify the same host as NOOP.
+   */
+  adoptHostIfMissing(
+    editorRoot: HTMLElement,
+    host: HTMLElement,
+    headings: HeadingInfo[],
+    context: FormulaRuntimeContext,
+  ): HostAdoptionResult {
+    const bound = this.bindRuntimeContext(context)
+    if (!bound) return { outcome: 'CONTEXT_NOT_READY', slot: null, addedIdentityCount: 0 }
+    // 1. Existing slot?
+    const existing = this.lookupCommittedSlotByHost(host)
+    if (existing) return { outcome: 'EXISTING_SLOT', slot: existing, addedIdentityCount: 0 }
+
+    // 2. Full canonical scan (formula-only) to place the new host.
+    const after = this.scanAfterCandidate(editorRoot, headings)
+    if (!after) return { outcome: 'SCAN_FAILED', slot: null, addedIdentityCount: 0 }
+    const newSlot = after.slotsInDocumentOrder.find((s) => s.canonicalHost === host) ?? null
+    if (!newSlot) return { outcome: 'SCAN_FAILED', slot: null, addedIdentityCount: 0 }
+
+    // 3. R5.4.3.20: preserve numbering/desiredTag of SURVIVING slots — the
+    // fresh structural scan must never erase the already-committed numbering
+    // of existing formulas (only the newly adopted host is new).
+    const beforeHosts = new Map<HTMLElement, CanonicalFormulaSlot>()
+    if (this._committedState) {
+      for (const s of this._committedState.slotsInDocumentOrder) beforeHosts.set(s.canonicalHost, s)
+    }
+    const preservedAfter: CanonicalFormulaSlot[] = after.slotsInDocumentOrder.map((s) => {
+      const prior = beforeHosts.get(s.canonicalHost)
+      if (prior) {
+        return {
+          ...s,
+          scopeKey: prior.scopeKey,
+          chapterOrdinal: prior.chapterOrdinal,
+          sectionOrdinal: prior.sectionOrdinal,
+          subsectionOrdinal: prior.subsectionOrdinal,
+          sequenceValue: prior.sequenceValue,
+          desiredTag: prior.desiredTag,
+          numberingAuthority: prior.numberingAuthority,
+        }
+      }
+      return s
+    })
+    const preservedAfterState: CommittedFormulaDocumentState = {
+      ...after,
+      slotsInDocumentOrder: preservedAfter,
+      slotByStableIdentity: new Map(preservedAfter.map((s) => [s.stableIdentity, s])),
+      semanticSignature: computeSemanticSignature(preservedAfter),
+      ...buildStateReadiness(preservedAfter, after.headingRevisionUsed, after.numberingPlanRevisionUsed),
+    }
+    const afterForAdoption = preservedAfterState
+
+    // 4. Adopt: commit the structural delta against the current committed state.
+    const before = this._committedState
+    if (before) {
+      const classification = this.classifyOperation(before, afterForAdoption)
+      if (classification.operationKind === 'INSERT_SLOT' && classification.addedIdentities.length === 1) {
+        const tx: FormulaOperationTransaction = {
+          operationId: `precall-adopt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          mutationBatchId: 'precall-structural-adoption',
+          beforeStateRevision: before.stateRevision,
+          beforeState: before,
+          afterCandidate: afterForAdoption,
+          operationKind: 'INSERT_SLOT',
+          addedStableIdentities: classification.addedIdentities,
+          removedStableIdentities: [],
+          survivingStableIdentities: classification.survivingIdentities,
+          primaryStableIdentity: classification.addedIdentities[0],
+          dependencyFrontier: null,
+          affectedStableIdentities: [...classification.addedIdentities, ...classification.survivingIdentities],
+          targetStateRevision: before.stateRevision + 1,
+          status: 'CAPTURED',
+        }
+        this.commitOperation(tx)
+        const adopted = this.lookupCommittedSlotByHost(host)
+        return { outcome: 'ADOPTED', slot: adopted, addedIdentityCount: 1 }
+      }
+    } else {
+      // No committed state yet → the scan IS the baseline.
+      this._currentRevision = afterForAdoption.stateRevision
+      this._committedState = afterForAdoption
+      this._documentStates.set(afterForAdoption.stateRevision, afterForAdoption)
+      return { outcome: 'ADOPTED', slot: newSlot, addedIdentityCount: afterForAdoption.slotsInDocumentOrder.length }
+    }
+    return { outcome: 'AMBIGUOUS', slot: null, addedIdentityCount: 0 }
+  }
+
+  // ── R5.4.3.20: Transitional Current Edit Source ──────────────────────
+
+  /**
+   * Promote the ORIGINAL pre-injection tex2svg raw input as
+   * TRANSITIONAL_CURRENT_EDIT_SOURCE on the exact committed slot.
+   * Revision advances ONLY on a real source delta (same hash → no advance).
+   * rawInput==="" → KNOWN_EMPTY (sourceAuthorityReady=true immediately).
+   */
+  promoteTransitionalCurrentEditSource(
+    host: HTMLElement,
+    rawInput: string,
+    context: FormulaRuntimeContext,
+  ): { ok: boolean; sourceRevisionAfter: number | null; sourceState: FormulaSourceState } {
+    if (!this._committedState) return { ok: false, sourceRevisionAfter: null, sourceState: 'UNKNOWN' }
+    if (context.documentKey !== this._documentKey
+      || context.documentGeneration !== this._documentGeneration
+      || context.editorRootToken !== this._editorRootToken) {
+      emitRuntimeAudit('FORMULA-TRANSITIONAL-EDIT-SOURCE-PROMOTION', {
+        documentKey: context.documentKey,
+        generation: context.documentGeneration,
+        editorRootToken: context.editorRootToken,
+        stableIdentity: null,
+        decision: 'FAIL',
+        reason: 'CONTEXT_MISMATCH',
+        runtimeMarker: R54315_RUNTIME_MARKER,
+      })
+      return { ok: false, sourceRevisionAfter: null, sourceState: 'UNKNOWN' }
+    }
+    const index = this._committedState.slotsInDocumentOrder.findIndex((s) => s.canonicalHost === host)
+    if (index < 0) {
+      emitRuntimeAudit('FORMULA-TRANSITIONAL-EDIT-SOURCE-PROMOTION', {
+        documentKey: context.documentKey,
+        generation: context.documentGeneration,
+        editorRootToken: context.editorRootToken,
+        stableIdentity: null,
+        decision: 'FAIL',
+        reason: 'SLOT_NOT_FOUND_FOR_HOST',
+        runtimeMarker: R54315_RUNTIME_MARKER,
+      })
+      return { ok: false, sourceRevisionAfter: null, sourceState: 'UNKNOWN' }
+    }
+    const slot = this._committedState.slotsInDocumentOrder[index]
+    // R5.4.3.21 P0-A: normalize the real Typora empty sentinel
+    // "<Empty \space Math \space Block>" → KNOWN_EMPTY (never stored as TeX).
+    const normalized = normalizeTyporaFormulaRenderInput(rawInput)
+    const isKnownEmpty = normalized.normalizedSourceState === 'EMPTY'
+    const baseRawSource = normalized.normalizedBaseRawSource
+    const newHash = isKnownEmpty ? '' : simpleHash(normalizeTexSource(baseRawSource))
+    const hashUnchanged = slot.sourceState !== 'UNKNOWN' && slot.authoritativeSourceHash === newHash
+    const newRevision = (slot.authoritativeSourceRevision ?? 0) + (hashUnchanged ? 0 : 1)
+    const beforeKind = slot.sourceAuthorityKind
+    const beforeRevision = slot.authoritativeSourceRevision
+    const updated: CanonicalFormulaSlot = {
+      ...slot,
+      sourceState: isKnownEmpty ? 'EMPTY' : 'NONEMPTY',
+      sourceAuthorityReady: true,
+      sourceAuthorityKind: isKnownEmpty ? 'KNOWN_EMPTY' : 'TRANSITIONAL_CURRENT_EDIT',
+      authoritativeRawSource: isKnownEmpty ? '' : baseRawSource,
+      normalizedSourceHash: newHash === '' ? computeNormalizedSourceHash('') : newHash,
+      authoritativeSourceHash: newHash,
+      authoritativeSourceRevision: newRevision,
+    }
+    const slots = this._committedState.slotsInDocumentOrder.slice()
+    slots[index] = updated
+    this._committedState = {
+      ...this._committedState,
+      slotsInDocumentOrder: slots,
+      slotByStableIdentity: new Map(slots.map((s) => [s.stableIdentity, s])),
+      semanticSignature: computeSemanticSignature(slots),
+    }
+    emitRuntimeAudit('FORMULA-TRANSITIONAL-EDIT-SOURCE-PROMOTION', {
+      documentKey: context.documentKey,
+      generation: context.documentGeneration,
+      editorRootToken: context.editorRootToken,
+      stableIdentity: slot.stableIdentity,
+      formulaIndex: index,
+      canonicalHostToken: slot.canonicalHostToken,
+      sourceStateBefore: slot.sourceState,
+      sourceAuthorityKindBefore: beforeKind,
+      rawInputHash: newHash,
+      rawInputLength: rawInput.length,
+      sourceRevisionBefore: beforeRevision,
+      sourceRevisionAfter: newRevision,
+      sourceAuthorityKindAfter: isKnownEmpty ? 'KNOWN_EMPTY' : 'TRANSITIONAL_CURRENT_EDIT',
+      promotionAllowed: true,
+      decision: 'PASS',
+      reason: hashUnchanged ? 'IDEMPOTENT_REFRESH_NO_REVISION_ADVANCE' : null,
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return { ok: true, sourceRevisionAfter: newRevision, sourceState: isKnownEmpty ? 'EMPTY' : 'NONEMPTY' }
+  }
+
+  // ── R5.4.3.20: PendingSourceReadyProjection Registry ─────────────────
+
+  /** Register a BLOCKED_SOURCE_NOT_READY projection for event-driven replay. */
+  registerPendingSourceReadyProjection(
+    tx: FormulaProjectionTransaction,
+  ): PendingSourceReadyProjection {
+    const pending: PendingSourceReadyProjection = {
+      pendingId: `psrp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      originProjectionTransactionId: tx.projectionTransactionId,
+      operationId: tx.operationId,
+      documentKey: this._documentKey,
+      generation: this._documentGeneration,
+      rootToken: this._editorRootToken,
+      stableIdentity: tx.stableIdentity,
+      formulaIndex: tx.formulaIndex,
+      canonicalHostToken: tx.canonicalHostToken,
+      canonicalHost: tx.canonicalHost,
+      blockedStateRevision: tx.targetStateRevision,
+      blockedDesiredTag: tx.desiredTag,
+      reason: 'SOURCE_NOT_READY',
+      status: 'PENDING',
+    }
+    this._pendingSourceReadyProjections.set(String(tx.stableIdentity), pending)
+    return pending
+  }
+
+  getPendingSourceReadyProjectionCount(): number {
+    let count = 0
+    for (const p of this._pendingSourceReadyProjections.values()) {
+      if (p.status === 'PENDING') count++
+    }
+    return count
+  }
+
+  getPendingSourceReadyProjections(): PendingSourceReadyProjection[] {
+    return [...this._pendingSourceReadyProjections.values()]
+  }
+
+  markPendingSourceReadySatisfiedByNaturalRender(stableIdentity: FormulaStableIdentity): boolean {
+    const pending = this._pendingSourceReadyProjections.get(String(stableIdentity))
+    if (!pending || pending.status !== 'PENDING') return false
+    pending.status = 'SATISFIED_BY_NATURAL_RENDER'
+    this._pendingSourceReadyProjections.delete(String(stableIdentity))
+    return true
+  }
+
+  retirePendingSourceReadyProjection(stableIdentity: FormulaStableIdentity): PendingSourceReadyProjection | null {
+    const pending = this._pendingSourceReadyProjections.get(String(stableIdentity))
+    if (!pending) return null
+    pending.status = 'RETIRED'
+    this._pendingSourceReadyProjections.delete(String(stableIdentity))
+    return pending
   }
 
   /** R5.4.3.17: stable identity MUST embed the bound context; :0:0:n is a FAIL. */
@@ -2711,6 +3193,25 @@ export class FormulaStateStore {
       const beforeSlot = before.slotByStableIdentity.get(id)
       const afterSlot = after.slotByStableIdentity.get(id)
       if (beforeSlot && afterSlot && beforeSlot.managedForNumbering !== afterSlot.managedForNumbering) {
+        count++
+      }
+    }
+    return count
+  }
+
+  /** R5.4.3.21 P0-H: count surviving slots whose canonical host BINDING changed. */
+  private _countBindingChanges(
+    before: CommittedFormulaDocumentState,
+    after: CommittedFormulaDocumentState,
+    survivingIdentities: Array<string | number>,
+  ): number {
+    let count = 0
+    for (const id of survivingIdentities) {
+      const beforeSlot = before.slotByStableIdentity.get(id)
+      const afterSlot = after.slotByStableIdentity.get(id)
+      if (beforeSlot && afterSlot
+        && (beforeSlot.canonicalHost !== afterSlot.canonicalHost
+          || beforeSlot.canonicalHostToken !== afterSlot.canonicalHostToken)) {
         count++
       }
     }

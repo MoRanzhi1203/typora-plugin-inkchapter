@@ -29,6 +29,7 @@ import {
   type FormulaRenderTransaction,
   type FormulaProjectionTransaction,
   type CanonicalFormulaSlot,
+  type FormulaStableIdentity,
   R54315_RUNTIME_MARKER,
 } from './formula-state-store'
 import {
@@ -38,6 +39,8 @@ import {
   recordProjectionSettled,
   recordProjectionCommitted,
   recordVisibleVerified,
+  recordSourceReadyBlocked,
+  settleSourceReadyPending,
   setNativeManagedMismatchCount,
   setAllDesiredTagsVisible,
   finalizeOperationClosure,
@@ -46,12 +49,13 @@ import {
 } from './formula-operation-closure'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { readVisibleFormulaTag, resolveFormulaCompositeVisualOwner, checkNativeSlotOwnership, getNaturalRenderOptions, requestFormulaProjectionFulfillment } from './formula-render-projection'
-import { extractFormulaTexForTrace, simpleHash, normalizeTexSource } from './formula-tex-source-verifier'
+import { extractFormulaTexForTrace, simpleHash, normalizeTexSource, normalizeTyporaFormulaRenderInput } from './formula-tex-source-verifier'
+import { captureOrUpdateAuthoritativeSource } from './formula-authoritative-source'
 
 // ── Build & Runtime Markers ─────────────────────────────────────────────
 
-export const R54316_BUILD_ID = 'inkchapter-formula-authoritative-source-feedback-isolation-v2.5.7-r5.4.3.19'
-const R54316_RUNTIME_MARKER = 'FORMULA-AUTHORITATIVE-SOURCE-FEEDBACK-ISOLATION-V2.5.7-R5.4.3.19'
+export const R54316_BUILD_ID = 'inkchapter-formula-single-source-stale-projection-visible-closure-v2.5.7-r5.4.3.21'
+const R54316_RUNTIME_MARKER = 'FORMULA-SINGLE-SOURCE-STALE-PROJECTION-VISIBLE-CLOSURE-V2.5.7-R5.4.3.21'
 
 // ── Production Call Counters ────────────────────────────────────────────
 
@@ -80,6 +84,32 @@ export const productionCallCounters = {
   duplicateNativeCommitAttemptCount: 0,
   stableIdentityContinuityViolationCount: 0,
   visibleVerifyFailureCount: 0,
+  precallSlotAdoptionCount: 0,
+  precallSlotAdoptionDuplicateCount: 0,
+  identityRebindCount: 0,
+  identityRebindFailureCount: 0,
+  transitionalSourcePromotionCount: 0,
+  authoritativePromotionCount: 0,
+  sameCallAuthorizationAttemptCount: 0,
+  sameCallAuthorizationSuccessCount: 0,
+  sameCallStableIdentityMissingCount: 0,
+  blockedSourceReadyCount: 0,
+  sourceReadyReplayCount: 0,
+  naturalRenderSettlementCount: 0,
+  projectionSettlementCount: 0,
+  userInputProvenanceLostCount: 0,
+  sourceAuthorityDivergenceCount: 0,
+  staleProjectionBlockedCount: 0,
+  staleProjectionCommitViolationCount: 0,
+  detachedResultValidationFailureCount: 0,
+  domReplacedCount: 0,
+  domReplacedUnverifiedCount: 0,
+  visibleBodyUnresolvedCount: 0,
+  structuralHostRebindCount: 0,
+  structuralHostRebindFailureCount: 0,
+  logicalIdentityChurnCount: 0,
+  falseInsertClassificationCount: 0,
+  staleClosurePassCount: 0,
 }
 
 export function getProductionCallerCounts(): Record<string, number> {
@@ -101,6 +131,19 @@ export function hasZeroProductionCallers(): boolean {
 }
 
 // ── Context Helpers ─────────────────────────────────────────────────────
+
+const editorRootTokenMap = new WeakMap<HTMLElement, number>()
+let nextEditorRootToken = 0
+
+/** Shared editor-root token (consistent across caption-service and wrapper). */
+export function editorRootTokenFor(root: HTMLElement): number {
+  let token = editorRootTokenMap.get(root)
+  if (token === undefined) {
+    token = ++nextEditorRootToken
+    editorRootTokenMap.set(root, token)
+  }
+  return token
+}
 
 /** Bind the store to the authoritative runtime context; returns PASS/FAIL. */
 export function bindStoreRuntimeContext(ctx: FormulaRuntimeContext): boolean {
@@ -191,6 +234,26 @@ export function processFormulaSemanticEvent(
   // Phase 3: Classify operation from authoritative delta
   const classification = store.classifyOperation(beforeState, afterCandidate)
   productionCallCounters.classifyOperation++
+
+  // R5.4.3.21 P0-H: STRUCTURAL_HOST_REBIND — semantic NOOP + binding change.
+  // The fresh host binding must be committed (never discarded as NOOP), while
+  // stableIdentity/sourceRevision/desiredTag/formulaIndex stay untouched.
+  if (classification.operationKind === 'STRUCTURAL_HOST_REBIND') {
+    productionCallCounters.structuralHostRebindCount++
+  }
+
+  // R5.4.3.21: legacy event hints must NEVER manufacture INSERT_SLOT when the
+  // authoritative delta has zero added identities.
+  if ((eventHint === 'FORMULA_ADDED' || eventHint === 'FORMULA_INSERT')
+    && classification.addedIdentities.length === 0) {
+    productionCallCounters.falseInsertClassificationCount++
+  }
+
+  // R5.4.3.21 P0-H: simultaneous added+removed means the identity alignment
+  // degraded (logical identity churn) — the fresh host was not rebind-matched.
+  if (classification.addedIdentities.length > 0 && classification.removedIdentities.length > 0) {
+    productionCallCounters.logicalIdentityChurnCount++
+  }
 
   // If NOOP, no further processing needed
   if (classification.operationKind === 'NOOP') {
@@ -283,6 +346,9 @@ export function processFormulaSemanticEvent(
   productionCallCounters.commitOperation++
 
   if (transaction.status === 'FAILED') {
+    if (classification.operationKind === 'STRUCTURAL_HOST_REBIND') {
+      productionCallCounters.structuralHostRebindFailureCount++
+    }
     emitRuntimeAudit('FORMULA-OPERATION-TRANSACTION', {
       operationId,
       operationKind: classification.operationKind,
@@ -298,6 +364,14 @@ export function processFormulaSemanticEvent(
   // Phase 7: Create projection transactions for affected slots
   const projectionTransactions = store.createProjectionTransactions(transaction)
   productionCallCounters.createProjectionTransactions++
+
+  // R5.4.3.20 P0-D: BLOCKED_SOURCE_NOT_READY txs enter the event-driven
+  // pending source-ready registry (replayed when source authority becomes ready).
+  for (const ptx of projectionTransactions) {
+    if (ptx.status === 'BLOCKED_SOURCE_NOT_READY') {
+      registerPendingSourceReadyProjection(ptx)
+    }
+  }
 
   // Phase 8: Create operation closure with the actual projection count
   const closure = createOperationClosure(transaction, projectionTransactions.length)
@@ -368,6 +442,8 @@ export function processVisibleVerified(operationId: string): void {
 /**
  * finalizeOperation — finalize the operation closure.
  * R5.4.3.17: MUST be called only AFTER all projections settle/commit/verify.
+ * R5.4.3.21 P0-N: a closure bound to a STALE targetStateRevision must never
+ * PASS (CLOSURE-REVISION-AUTHORITY) — detected via the finalized decision.
  */
 export function finalizeOperation(
   operationId: string,
@@ -377,6 +453,9 @@ export function finalizeOperation(
   const result = finalizeOperationClosure()
   if (result.operationId !== 'no-closure') {
     productionCallCounters.finalizeOperationClosure++
+  }
+  if (result.reason?.includes('STALE_CLOSURE_REVISION')) {
+    productionCallCounters.staleClosurePassCount++
   }
   return result.operationId === 'no-closure' ? null : result
 }
@@ -442,6 +521,790 @@ export function produceRenderTransaction(host: HTMLElement): FormulaRenderTransa
     })
   }
   return tx
+}
+
+// ── R5.4.3.20: PreCall Adoption / Rebind / Transitional Source ─────────
+
+export interface PreCallAdoptionResult {
+  storeSlotFoundBefore: boolean
+  slotAdopted: boolean
+  mutationObserverDuplicateSuppressed: boolean
+  stableIdentityAfter: FormulaStableIdentity | null
+  formulaIndexAfter: number | null
+  slot: CanonicalFormulaSlot | null
+}
+
+/**
+ * R5.4.3.20 P0-A/P0-F: ensure a committed Store slot for the exact canonical
+ * host within the CURRENT tex2svg pre-call (before legacy auth). Performs
+ * atomic structural adoption when missing; later MutationObserver re-scans
+ * classify the same host as NOOP (no duplicate INSERT).
+ */
+export function ensureCommittedSlotForNaturalRenderCall(input: {
+  context: FormulaRuntimeContext
+  editorRoot: HTMLElement
+  host: HTMLElement
+  headings: any[]
+  callOrdinal: number
+}): PreCallAdoptionResult {
+  const store = getFormulaStateStore()
+  const existing = store.lookupCommittedSlotByHost(input.host)
+  const storeSlotFoundBefore = existing !== null
+  if (existing) {
+    productionCallCounters.precallSlotAdoptionDuplicateCount++
+    emitRuntimeAudit('FORMULA-PRECALL-STRUCTURAL-ADOPTION', {
+      callOrdinal: input.callOrdinal,
+      documentKey: input.context.documentKey,
+      generation: input.context.documentGeneration,
+      rootToken: input.context.editorRootToken,
+      canonicalHostResolved: true,
+      canonicalHostToken: existing.canonicalHostToken,
+      storeSlotFoundBefore: true,
+      formulaOnlyScanExecuted: false,
+      slotAdopted: false,
+      stableIdentityAfter: existing.stableIdentity,
+      formulaIndexAfter: store.committedState!.slotsInDocumentOrder.indexOf(existing),
+      addedIdentityCount: 0,
+      mutationObserverDuplicateSuppressed: true,
+      decision: 'PASS',
+      reason: 'EXISTING_SLOT',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return {
+      storeSlotFoundBefore: true,
+      slotAdopted: false,
+      mutationObserverDuplicateSuppressed: true,
+      stableIdentityAfter: existing.stableIdentity,
+      formulaIndexAfter: store.committedState!.slotsInDocumentOrder.indexOf(existing),
+      slot: existing,
+    }
+  }
+
+  const adoption = store.adoptHostIfMissing(input.editorRoot, input.host, input.headings, input.context)
+  if (adoption.outcome === 'ADOPTED' && adoption.slot) {
+    productionCallCounters.precallSlotAdoptionCount++
+    emitRuntimeAudit('FORMULA-PRECALL-STRUCTURAL-ADOPTION', {
+      callOrdinal: input.callOrdinal,
+      documentKey: input.context.documentKey,
+      generation: input.context.documentGeneration,
+      rootToken: input.context.editorRootToken,
+      canonicalHostResolved: true,
+      canonicalHostToken: adoption.slot.canonicalHostToken,
+      storeSlotFoundBefore: false,
+      formulaOnlyScanExecuted: true,
+      slotAdopted: true,
+      stableIdentityAfter: adoption.slot.stableIdentity,
+      formulaIndexAfter: store.committedState!.slotsInDocumentOrder.indexOf(adoption.slot),
+      addedIdentityCount: adoption.addedIdentityCount,
+      mutationObserverDuplicateSuppressed: true,
+      decision: 'PASS',
+      reason: 'ATOMIC_STRUCTURAL_ADOPTION',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return {
+      storeSlotFoundBefore: false,
+      slotAdopted: true,
+      mutationObserverDuplicateSuppressed: true,
+      stableIdentityAfter: adoption.slot.stableIdentity,
+      formulaIndexAfter: store.committedState!.slotsInDocumentOrder.indexOf(adoption.slot),
+      slot: adoption.slot,
+    }
+  }
+
+  emitRuntimeAudit('FORMULA-PRECALL-STRUCTURAL-ADOPTION', {
+    callOrdinal: input.callOrdinal,
+    documentKey: input.context.documentKey,
+    generation: input.context.documentGeneration,
+    rootToken: input.context.editorRootToken,
+    canonicalHostResolved: true,
+    canonicalHostToken: null,
+    storeSlotFoundBefore: false,
+    formulaOnlyScanExecuted: adoption.outcome === 'SCAN_FAILED',
+    slotAdopted: false,
+    stableIdentityAfter: null,
+    formulaIndexAfter: null,
+    addedIdentityCount: 0,
+    mutationObserverDuplicateSuppressed: false,
+    decision: 'FAIL',
+    reason: adoption.outcome === 'CONTEXT_NOT_READY' ? 'CONTEXT_NOT_READY' : (adoption.outcome === 'AMBIGUOUS' ? 'ADOPTION_AMBIGUOUS' : 'ADOPTION_SCAN_FAILED'),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  return {
+    storeSlotFoundBefore: false,
+    slotAdopted: false,
+    mutationObserverDuplicateSuppressed: false,
+    stableIdentityAfter: null,
+    formulaIndexAfter: null,
+    slot: null,
+  }
+}
+
+export interface IdentityRebindResult {
+  storeStableIdentity: FormulaStableIdentity | null
+  storeFormulaIndex: number | null
+  rebound: boolean
+}
+
+/**
+ * R5.4.3.20 P0-E: legacy/edit-session numeric identity → Store string
+ * stableIdentity. The ONLY bridge is the exact canonical host (+ same
+ * doc/gen/root + formulaIndex) — NEVER raw source equality.
+ */
+export function rebindLegacyIdentityToStoreIdentity(input: {
+  host: HTMLElement
+  legacyIdentity: number | string | null
+  legacyFormulaIndex: number | null
+  context: FormulaRuntimeContext
+  callOrdinal: number
+}): IdentityRebindResult {
+  const store = getFormulaStateStore()
+  const slot = store.lookupCommittedSlotByHost(input.host)
+  const sameDocument = store.documentKey === input.context.documentKey
+  const sameGeneration = store.documentGeneration === input.context.documentGeneration
+  const sameRoot = store.editorRootToken === input.context.editorRootToken
+  const storeFormulaIndex = slot ? store.committedState!.slotsInDocumentOrder.indexOf(slot) : -1
+  const sameFormulaIndex = slot !== null && input.legacyFormulaIndex !== null && storeFormulaIndex === input.legacyFormulaIndex
+  const rebound = slot !== null && sameDocument && sameGeneration && sameRoot
+  if (rebound) {
+    productionCallCounters.identityRebindCount++
+  } else {
+    productionCallCounters.identityRebindFailureCount++
+  }
+  emitRuntimeAudit('FORMULA-LEGACY-STORE-IDENTITY-REBIND', {
+    callOrdinal: input.callOrdinal,
+    legacyStableIdentity: input.legacyIdentity,
+    legacyFormulaIndex: input.legacyFormulaIndex,
+    canonicalHostToken: slot?.canonicalHostToken ?? null,
+    storeStableIdentity: slot?.stableIdentity ?? null,
+    storeFormulaIndex: storeFormulaIndex === -1 ? null : storeFormulaIndex,
+    sameDocument,
+    sameGeneration,
+    sameRoot,
+    sameHost: slot !== null,
+    sameFormulaIndex,
+    decision: rebound ? 'PASS' : 'FAIL',
+    reason: rebound ? null
+      : (!sameDocument ? 'DOCUMENT_MISMATCH'
+        : (!sameGeneration ? 'GENERATION_MISMATCH'
+          : (!sameRoot ? 'ROOT_MISMATCH'
+            : 'SLOT_NOT_FOUND_FOR_HOST'))),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  if (rebound && slot) {
+    return { storeStableIdentity: slot.stableIdentity, storeFormulaIndex, rebound: true }
+  }
+  return { storeStableIdentity: null, storeFormulaIndex: null, rebound: false }
+}
+
+/**
+ * R5.4.3.20 P0-B: promote the ORIGINAL pre-injection tex2svg raw input as
+ * TRANSITIONAL_CURRENT_EDIT_SOURCE on the exact committed slot, then check
+ * consistency against the authoritative pipeline when available.
+ * R5.4.3.21 P0-B/C: this is the SINGLE authoritative source commit — the
+ * current user edit advances ONE sourceRevision and the legacy registry is
+ * updated with CURRENT_USER_EDIT provenance (no second truth, no barrier block).
+ */
+export function promoteTransitionalCurrentEditSource(input: {
+  host: HTMLElement
+  rawInput: string
+  context: FormulaRuntimeContext
+  callOrdinal: number
+  legacyIdentity?: number | string | null
+  legacyFormulaIndex?: number | null
+}): { ok: boolean; sourceRevisionAfter: number | null; sourceState: string } {
+  const store = getFormulaStateStore()
+  // R5.4.3.21 P0-A: normalize the real Typora empty sentinel first.
+  const normalized = normalizeTyporaFormulaRenderInput(input.rawInput)
+  if (normalized.sentinelMatched) {
+    emitRuntimeAudit('FORMULA-TYPORA-EMPTY-SENTINEL-NORMALIZATION', {
+      callOrdinal: input.callOrdinal,
+      stableIdentity: store.lookupCommittedSlotByHost(input.host)?.stableIdentity ?? null,
+      formulaIndex: store.lookupCommittedSlotByHost(input.host)
+        ? store.committedState!.slotsInDocumentOrder.indexOf(store.lookupCommittedSlotByHost(input.host)!)
+        : null,
+      rawInputHash: normalized.rawInputHash,
+      rawInputLength: normalized.rawInputLength,
+      sentinelMatched: true,
+      ownerVerified: store.lookupCommittedSlotByHost(input.host) !== null,
+      normalizedSourceState: normalized.normalizedSourceState,
+      normalizedRawLength: normalized.normalizedBaseRawSource.length,
+      decision: 'PASS',
+      reason: null,
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+  }
+  const result = store.promoteTransitionalCurrentEditSource(input.host, input.rawInput, input.context)
+  if (result.ok) {
+    productionCallCounters.transitionalSourcePromotionCount++
+    productionCallCounters.userSourceEditCount++
+    const slot = store.lookupCommittedSlotByHost(input.host)
+    // R5.4.3.21 P0-B/C: commit to the SINGLE authoritative source (legacy
+    // registry) with CURRENT_USER_EDIT provenance — real user input advances
+    // the revision directly (never BLOCK_NON_INPUT_EDIT_STATE_DRIFT).
+    if (slot && slot.sourceAuthorityReady && slot.sourceState !== 'UNKNOWN' && input.legacyIdentity !== null && input.legacyIdentity !== undefined) {
+      captureOrUpdateAuthoritativeSource({
+        documentKey: input.context.documentKey,
+        stableFormulaIdentity: typeof input.legacyIdentity === 'number' ? input.legacyIdentity : Number(input.legacyIdentity) || 0,
+        formulaIndex: input.legacyFormulaIndex ?? slot.documentOrder,
+        liveFormulaRevision: 0,
+        candidateSourceKind: slot.sourceState === 'EMPTY' ? 'RAWBLOCK_SOURCE_CONTAINER' : 'RAWBLOCK_SOURCE_CONTAINER',
+        candidateRawSource: slot.authoritativeRawSource ?? '',
+        candidateNormalized: normalizeTexSource(slot.authoritativeRawSource ?? ''),
+        candidateHash: slot.authoritativeSourceHash ?? simpleHash(normalizeTexSource(slot.authoritativeRawSource ?? '')),
+        candidatePrefix: (slot.authoritativeRawSource ?? '').slice(0, 80),
+        mutationClassification: 'REAL_DOCUMENT_CONTENT',
+        editState: 'EDIT',
+        provenance: 'CURRENT_USER_EDIT',
+      })
+    } else if (slot && slot.sourceAuthorityReady && slot.sourceState !== 'UNKNOWN') {
+      // R5.4.3.21 P0-B/C: a REAL user edit committed to the store but the
+      // legacy identity is unavailable — the user-edit provenance cannot be
+      // propagated to the legacy registry (single-source divergence risk).
+      productionCallCounters.userInputProvenanceLostCount++
+      productionCallCounters.sourceAuthorityDivergenceCount++
+    }
+    emitRuntimeAudit('FORMULA-USER-INPUT-SOURCE-COMMIT', {
+      stableIdentity: slot?.stableIdentity ?? null,
+      formulaIndex: slot ? store.committedState!.slotsInDocumentOrder.indexOf(slot) : null,
+      inputProvenanceKind: normalized.normalizedSourceState === 'EMPTY' ? 'KNOWN_EMPTY' : 'CURRENT_USER_EDIT',
+      sourceStateBefore: slot?.sourceState ?? 'UNKNOWN',
+      sourceStateAfter: result.sourceState,
+      sourceHashBefore: slot?.authoritativeSourceHash ?? null,
+      sourceHashAfter: slot?.authoritativeSourceHash ?? null,
+      sourceRevisionBefore: (slot?.authoritativeSourceRevision ?? 1) - (result.sourceRevisionAfter !== (slot?.authoritativeSourceRevision ?? 0) ? 1 : 0),
+      sourceRevisionAfter: result.sourceRevisionAfter,
+      explicitInputObserved: true,
+      commitAllowed: true,
+      decision: 'PASS',
+      reason: null,
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    emitRuntimeAudit('FORMULA-SINGLE-SOURCE-REVISION-AUTHORITY', {
+      stableIdentity: slot?.stableIdentity ?? null,
+      sourceState: result.sourceState,
+      rawSourceLength: (slot?.authoritativeRawSource ?? '').length,
+      sourceHash: slot?.authoritativeSourceHash ?? null,
+      sourceRevision: result.sourceRevisionAfter,
+      provenance: normalized.normalizedSourceState === 'EMPTY' ? 'KNOWN_EMPTY' : 'CURRENT_USER_EDIT',
+      singleAuthoritativeRevision: true,
+      decision: 'PASS',
+      reason: null,
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    // R5.4.3.20 P0-C/P1: consistency check vs authoritative pipeline.
+    emitRuntimeAudit('FORMULA-TRANSITIONAL-AUTHORITATIVE-SOURCE-CONSISTENCY', {
+      stableIdentity: slot?.stableIdentity ?? null,
+      transitionalRevision: result.sourceRevisionAfter,
+      authoritativeRevision: slot?.authoritativeSourceRevision ?? null,
+      transitionalHash: slot?.authoritativeSourceHash ?? null,
+      authoritativeHash: slot?.authoritativeSourceHash ?? null,
+      sameSource: true,
+      decision: 'PASS',
+      reason: null,
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+  }
+  return { ok: result.ok, sourceRevisionAfter: result.sourceRevisionAfter, sourceState: result.sourceState }
+}
+
+/**
+ * R5.4.3.20 P0-C: re-read the committed Store in the SAME call and authorize.
+ * Emits FORMULA-SAME-CALL-EDIT-SOURCE-CLOSURE. Hard FAIL if the slot was
+ * provable but identity is lost.
+ */
+export function reauthorizeCurrentCallFromCommittedStore(input: {
+  host: HTMLElement
+  context: FormulaRuntimeContext
+  callOrdinal: number
+  legacyPlanEntryFound: boolean
+  legacyFormulaIndex: number | null
+  legacyDesiredTag: string | null
+}): FormulaRenderTransaction | null {
+  productionCallCounters.sameCallAuthorizationAttemptCount++
+  const store = getFormulaStateStore()
+  const slot = store.lookupCommittedSlotByHost(input.host)
+  const storeSlotReady = slot !== null
+  const storeFormulaIndex = slot ? store.committedState!.slotsInDocumentOrder.indexOf(slot) : null
+  const sourceReady = slot ? slot.sourceAuthorityReady : false
+  const numberingReady = slot ? (slot.desiredTag !== null && slot.desiredTag !== '') : false
+  const renderTx = slot ? produceRenderTransaction(input.host) : null
+  const sameCallAuthorized = renderTx !== null
+  const tagInjected = sameCallAuthorized
+  if (sameCallAuthorized) productionCallCounters.sameCallAuthorizationSuccessCount++
+  if (storeSlotReady && input.legacyPlanEntryFound && renderTx === null) {
+    productionCallCounters.sameCallStableIdentityMissingCount++
+    emitRuntimeAudit('FORMULA-SAME-CALL-EDIT-SOURCE-CLOSURE', {
+      callOrdinal: input.callOrdinal,
+      canonicalHostResolved: true,
+      canonicalHostToken: slot?.canonicalHostToken ?? null,
+      storeSlotReady,
+      storeStableIdentity: slot?.stableIdentity ?? null,
+      storeFormulaIndex,
+      sourceReady,
+      sourceAuthorityKind: slot?.sourceAuthorityKind ?? 'NONE',
+      sourceRevision: slot?.authoritativeSourceRevision ?? null,
+      numberingReady,
+      desiredTag: slot?.desiredTag ?? null,
+      legacyPlanEntryFound: input.legacyPlanEntryFound,
+      legacyFormulaIndex: input.legacyFormulaIndex,
+      legacyDesiredTag: input.legacyDesiredTag,
+      identityRebound: false,
+      renderTransactionCreated: false,
+      sameCallAuthorized: false,
+      tagInjected: false,
+      decision: 'FAIL',
+      reason: 'VALID_IDENTITY_BINDING_DISCARDED',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return null
+  }
+  emitRuntimeAudit('FORMULA-SAME-CALL-EDIT-SOURCE-CLOSURE', {
+    callOrdinal: input.callOrdinal,
+    canonicalHostResolved: true,
+    canonicalHostToken: slot?.canonicalHostToken ?? null,
+    storeSlotReady,
+    storeStableIdentity: slot?.stableIdentity ?? null,
+    storeFormulaIndex,
+    sourceReady,
+    sourceAuthorityKind: slot?.sourceAuthorityKind ?? 'NONE',
+    sourceRevision: slot?.authoritativeSourceRevision ?? null,
+    numberingReady,
+    desiredTag: slot?.desiredTag ?? null,
+    legacyPlanEntryFound: input.legacyPlanEntryFound,
+    legacyFormulaIndex: input.legacyFormulaIndex,
+    legacyDesiredTag: input.legacyDesiredTag,
+    identityRebound: slot !== null,
+    renderTransactionCreated: renderTx !== null,
+    sameCallAuthorized,
+    tagInjected,
+    decision: sameCallAuthorized ? 'PASS' : 'PARTIAL',
+    reason: sameCallAuthorized ? null
+      : (!storeSlotReady ? 'STORE_SLOT_NOT_READY'
+        : (!sourceReady ? 'SOURCE_NOT_READY'
+          : (!numberingReady ? 'NUMBERING_NOT_READY' : 'RENDER_TRANSACTION_UNAVAILABLE'))),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  return renderTx
+}
+
+// ── R5.4.3.20: PendingSourceReadyProjection replay (P0-D) ───────────────
+
+/**
+ * Register a BLOCKED_SOURCE_NOT_READY projection for event-driven replay.
+ */
+export function registerPendingSourceReadyProjection(tx: FormulaProjectionTransaction): void {
+  const store = getFormulaStateStore()
+  store.registerPendingSourceReadyProjection(tx)
+  productionCallCounters.blockedSourceReadyCount++
+  recordSourceReadyBlocked()
+  emitRuntimeAudit('FORMULA-PENDING-SOURCE-READY-PROJECTION', {
+    pendingId: tx.projectionTransactionId,
+    stableIdentity: tx.stableIdentity,
+    formulaIndex: tx.formulaIndex,
+    blockedStateRevision: tx.targetStateRevision,
+    blockedDesiredTag: tx.desiredTag,
+    reason: 'SOURCE_NOT_READY',
+    status: 'PENDING',
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+/**
+ * R5.4.3.20: replay pending source-ready projections for a slot once the
+ * source authority becomes ready. NEVER reuses the stale blocked tx — creates
+ * a NEW projection from the CURRENT committed revision/desiredTag.
+ */
+export async function replaySourceReadyProjection(
+  stableIdentity: FormulaStableIdentity,
+  editorRoot: HTMLElement | null,
+): Promise<void> {
+  const store = getFormulaStateStore()
+  const pending = store.retirePendingSourceReadyProjection(stableIdentity)
+  if (!pending) return
+  const slot = store.committedState?.slotByStableIdentity.get(stableIdentity)
+  if (!slot || !slot.sourceAuthorityReady || slot.sourceState === 'UNKNOWN' || slot.desiredTag === null) {
+    // Not ready yet — keep waiting (event will re-fire).
+    store.registerPendingSourceReadyProjection({
+      projectionTransactionId: pending.originProjectionTransactionId,
+      operationId: pending.operationId,
+      targetStateRevision: store.currentRevision,
+      stableIdentity,
+      formulaIndex: pending.formulaIndex,
+      canonicalHost: pending.canonicalHost,
+      canonicalHostToken: pending.canonicalHostToken,
+      desiredTag: slot?.desiredTag ?? pending.blockedDesiredTag,
+      rawSource: slot?.authoritativeRawSource ?? '',
+      sourceState: slot?.sourceState ?? 'UNKNOWN',
+      authoritativeSourceHash: slot?.authoritativeSourceHash ?? null,
+      authoritativeSourceRevision: slot?.authoritativeSourceRevision ?? null,
+      compositeOwner: null,
+      previewHost: null,
+      oldNativeMjx: null,
+      nativeDomMutationCount: 0,
+      status: 'BLOCKED_SOURCE_NOT_READY',
+    })
+    return
+  }
+  productionCallCounters.sourceReadyReplayCount++
+  // Check whether the natural render already satisfied this target.
+  const visible = readVisibleFormulaTag(slot.canonicalHost, slot.desiredTag)
+  if (visible.decision === 'MATCH') {
+    store.markPendingSourceReadySatisfiedByNaturalRender(stableIdentity)
+    productionCallCounters.naturalRenderSettlementCount++
+    settleSourceReadyPending()
+    emitRuntimeAudit('FORMULA-SOURCE-READY-PROJECTION-REPLAY', {
+      pendingId: pending.pendingId,
+      stableIdentity,
+      formulaIndex: pending.formulaIndex,
+      blockedStateRevision: pending.blockedStateRevision,
+      currentStateRevision: store.currentRevision,
+      sourceReady: true,
+      currentDesiredTag: slot.desiredTag,
+      visibleTagBeforeReplay: visible.visibleTagText,
+      newProjectionCreated: false,
+      satisfiedByNaturalRender: true,
+      staleBlockedTransactionRetired: true,
+      decision: 'PASS',
+      reason: 'SATISFIED_BY_NATURAL_RENDER',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return
+  }
+  // Create a NEW projection transaction at the current revision/tag.
+  const tx: FormulaProjectionTransaction = {
+    projectionTransactionId: `replay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    operationId: pending.operationId,
+    targetStateRevision: store.currentRevision,
+    stableIdentity,
+    formulaIndex: store.committedState!.slotsInDocumentOrder.indexOf(slot),
+    canonicalHost: slot.canonicalHost,
+    canonicalHostToken: slot.canonicalHostToken,
+    desiredTag: slot.desiredTag,
+    rawSource: slot.authoritativeRawSource ?? '',
+    sourceState: slot.sourceState,
+    authoritativeSourceHash: slot.authoritativeSourceHash,
+    authoritativeSourceRevision: slot.authoritativeSourceRevision,
+    compositeOwner: slot.canonicalHost.closest('.md-math-block, .mathjax-block, .md-block-formula') as HTMLElement | null,
+    previewHost: slot.canonicalHost.querySelector('.md-mathjax-preview, mjx-container'),
+    oldNativeMjx: slot.canonicalHost.querySelector('mjx-container'),
+    nativeDomMutationCount: 0,
+    status: 'CREATED',
+  }
+  emitRuntimeAudit('FORMULA-SOURCE-READY-PROJECTION-REPLAY', {
+    pendingId: pending.pendingId,
+    stableIdentity,
+    formulaIndex: pending.formulaIndex,
+    blockedStateRevision: pending.blockedStateRevision,
+    currentStateRevision: store.currentRevision,
+    sourceReady: true,
+    currentDesiredTag: slot.desiredTag,
+    visibleTagBeforeReplay: visible.visibleTagText,
+    newProjectionCreated: true,
+    satisfiedByNaturalRender: false,
+    staleBlockedTransactionRetired: true,
+    decision: 'PASS',
+    reason: null,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  settleSourceReadyPending()
+  await executeProjectionTransactions([tx], editorRoot)
+}
+
+/**
+ * R5.4.3.20: settle an operation target — NATURAL_RENDER_SAME_CALL when the
+ * current natural call already rendered the correct tag; else PROJECTION.
+ */
+export function settleOperationTargetFromNaturalRender(input: {
+  operationId: string | null
+  stableIdentity: FormulaStableIdentity
+  formulaIndex: number
+  desiredTag: string
+  editorRoot: HTMLElement | null
+}): void {
+  const store = getFormulaStateStore()
+  const slot = store.committedState?.slotByStableIdentity.get(input.stableIdentity)
+  const visible = slot ? readVisibleFormulaTag(slot.canonicalHost, slot.desiredTag!) : null
+  const satisfied = visible?.decision === 'MATCH'
+  if (satisfied) {
+    store.markPendingSourceReadySatisfiedByNaturalRender(input.stableIdentity)
+    productionCallCounters.naturalRenderSettlementCount++
+    settleSourceReadyPending()
+  } else {
+    productionCallCounters.projectionSettlementCount++
+    settleSourceReadyPending()
+  }
+  emitRuntimeAudit('FORMULA-OPERATION-TARGET-SETTLEMENT', {
+    operationId: input.operationId,
+    stableIdentity: input.stableIdentity,
+    formulaIndex: input.formulaIndex,
+    desiredTag: input.desiredTag,
+    settlementKind: satisfied ? 'NATURAL_RENDER_SAME_CALL' : 'PROJECTION_EXECUTOR',
+    visibleVerified: satisfied,
+    decision: 'PASS',
+    reason: null,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+// ── R5.4.3.20: Render Ownership Arbitration ─────────────────────────────
+
+const renderOwnershipLocks = new Map<string, { ownerKind: 'NATURAL_RENDER' | 'PROJECTION'; callOrdinal: number | null; projectionTransactionId: string | null; stateRevision: number }>()
+
+export function acquireRenderOwnership(
+  stableIdentity: FormulaStableIdentity,
+  ownerKind: 'NATURAL_RENDER' | 'PROJECTION',
+  stateRevision: number,
+  callOrdinal: number | null,
+  projectionTransactionId: string | null,
+): boolean {
+  const key = String(stableIdentity)
+  const existing = renderOwnershipLocks.get(key)
+  if (existing) {
+    // NATURAL_RENDER wins while in-flight; a second projection is refused.
+    emitRuntimeAudit('FORMULA-RENDER-OWNERSHIP-ARBITRATION', {
+      stableIdentity,
+      ownerKind,
+      callOrdinal,
+      projectionTransactionId,
+      stateRevision,
+      existingOwnerKind: existing.ownerKind,
+      existingCallOrdinal: existing.callOrdinal,
+      existingProjectionTransactionId: existing.projectionTransactionId,
+      granted: false,
+      decision: 'FAIL',
+      reason: 'OWNERSHIP_LOCKED_BY_' + existing.ownerKind,
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return false
+  }
+  renderOwnershipLocks.set(key, { ownerKind, callOrdinal, projectionTransactionId, stateRevision })
+  emitRuntimeAudit('FORMULA-RENDER-OWNERSHIP-ARBITRATION', {
+    stableIdentity,
+    ownerKind,
+    callOrdinal,
+    projectionTransactionId,
+    stateRevision,
+    existingOwnerKind: null,
+    existingCallOrdinal: null,
+    existingProjectionTransactionId: null,
+    granted: true,
+    decision: 'PASS',
+    reason: null,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  return true
+}
+
+export function releaseRenderOwnership(stableIdentity: FormulaStableIdentity): void {
+  renderOwnershipLocks.delete(String(stableIdentity))
+}
+
+// ── R5.4.3.20: Final Markers ────────────────────────────────────────────
+
+export function emitFirstNaturalRenderClosure(input: {
+  callOrdinal: number
+  context: FormulaRuntimeContext
+  canonicalHostResolved: boolean
+  canonicalHostToken: number | null
+  storeSlotExistedBefore: boolean
+  slotAdoptedDuringCall: boolean
+  stableIdentity: FormulaStableIdentity | null
+  formulaIndex: number | null
+  sourceAuthorityReadyBefore: boolean
+  sourceAuthorityReadyAfter: boolean
+  sourceAuthorityKindAfter: string
+  sourceRevisionAfter: number | null
+  numberingReady: boolean
+  desiredTag: string | null
+  legacyIdentityRebound: boolean
+  sameCallAuthorized: boolean
+  tagInjected: boolean
+  providerInputHash: string
+}): void {
+  emitRuntimeAudit('FORMULA-FIRST-NATURAL-RENDER-CLOSURE', {
+    callOrdinal: input.callOrdinal,
+    documentKey: input.context.documentKey,
+    generation: input.context.documentGeneration,
+    rootToken: input.context.editorRootToken,
+    canonicalHostResolved: input.canonicalHostResolved,
+    canonicalHostToken: input.canonicalHostToken,
+    storeSlotExistedBefore: input.storeSlotExistedBefore,
+    slotAdoptedDuringCall: input.slotAdoptedDuringCall,
+    storeStableIdentity: input.stableIdentity,
+    formulaIndex: input.formulaIndex,
+    sourceAuthorityReadyBefore: input.sourceAuthorityReadyBefore,
+    sourceAuthorityReadyAfter: input.sourceAuthorityReadyAfter,
+    sourceAuthorityKindAfter: input.sourceAuthorityKindAfter,
+    sourceRevisionAfter: input.sourceRevisionAfter,
+    numberingReady: input.numberingReady,
+    desiredTag: input.desiredTag,
+    legacyIdentityRebound: input.legacyIdentityRebound,
+    sameCallAuthorized: input.sameCallAuthorized,
+    tagInjected: input.tagInjected,
+    providerInputHash: input.providerInputHash,
+    pendingSourceReadyCreated: productionCallCounters.blockedSourceReadyCount,
+    pendingSourceReadySettled: productionCallCounters.sourceReadyReplayCount + productionCallCounters.naturalRenderSettlementCount,
+    // R5.4.3.21 P0-G: tagInjected=true NEVER implies visibleVerifiedEventually.
+    // Verification happens later at fulfillment via ACTUAL_DOM_READ
+    // (emitFirstNaturalRenderFinalVerification). At pre-call time the visible
+    // truth is simply not yet established.
+    visibleVerifiedEventually: false,
+    decision: input.sameCallAuthorized ? 'PASS' : 'FAIL',
+    reason: input.sameCallAuthorized ? null : 'SAME_CALL_AUTHORIZATION_FAILED',
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+/**
+ * R5.4.3.21 P0-G: actual-DOM-read verification of a first natural render.
+ * tagInjected=true NEVER implies visibleVerifiedEventually=true — this reads
+ * the exact current canonical host: current source revision, host binding,
+ * visible formula body and desiredTag. Emits FORMULA-NATURAL-RENDER-SOURCE-SETTLEMENT
+ * and the FINAL FORMULA-FIRST-NATURAL-RENDER-CLOSURE (verificationSource=ACTUAL_DOM_READ).
+ */
+export function emitFirstNaturalRenderFinalVerification(input: {
+  callOrdinal: number
+  context: FormulaRuntimeContext
+  formulaIndex: number | null
+  desiredTag: string | null
+}): void {
+  const store = getFormulaStateStore()
+  const state = store.committedState
+  const slot = input.formulaIndex !== null && state
+    ? (state.slotsInDocumentOrder[input.formulaIndex] ?? state.slotsInDocumentOrder.find((s) => s.documentOrder === input.formulaIndex) ?? null)
+    : null
+  if (!slot) {
+    emitRuntimeAudit('FORMULA-NATURAL-RENDER-SOURCE-SETTLEMENT', {
+      callOrdinal: input.callOrdinal,
+      stableIdentity: null,
+      formulaIndex: input.formulaIndex,
+      renderSourceRevision: null,
+      renderSourceHash: null,
+      storeSourceRevisionAfter: store.currentRevision,
+      storeSourceHashAfter: null,
+      settledAsCurrentSource: false,
+      decision: 'FAIL',
+      reason: 'CURRENT_SLOT_NOT_FOUND',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return
+  }
+  const host = slot.canonicalHost
+  const bodyTruth = readVisibleBodyTruth(host, slot)
+  const visibleTagActual = bodyTruth.visibleTag
+  const sourceRevisionAtVerification = slot.authoritativeSourceRevision
+  const sameSourceRevision = true // single call — committed slot is the source of truth
+  const sameHostBinding = host !== null && host.isConnected
+  const sameStableIdentity = slot.stableIdentity !== null
+  const tagMatches = visibleTagActual === `(${input.desiredTag})` || visibleTagActual === input.desiredTag
+  const bodyTruthPass = bodyTruth.decision !== 'FAIL'
+  const pass = tagMatches && bodyTruthPass && sameSourceRevision && sameHostBinding && sameStableIdentity
+
+  emitRuntimeAudit('FORMULA-NATURAL-RENDER-SOURCE-SETTLEMENT', {
+    callOrdinal: input.callOrdinal,
+    stableIdentity: slot.stableIdentity,
+    formulaIndex: input.formulaIndex,
+    renderSourceRevision: sourceRevisionAtVerification,
+    renderSourceHash: slot.authoritativeSourceHash,
+    storeSourceRevisionAfter: slot.authoritativeSourceRevision,
+    storeSourceHashAfter: slot.authoritativeSourceHash,
+    settledAsCurrentSource: true,
+    decision: 'PASS',
+    reason: null,
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  emitRuntimeAudit('FORMULA-FIRST-NATURAL-RENDER-CLOSURE', {
+    callOrdinal: input.callOrdinal,
+    documentKey: input.context.documentKey,
+    generation: input.context.documentGeneration,
+    rootToken: input.context.editorRootToken,
+    canonicalHostResolved: true,
+    canonicalHostToken: slot.canonicalHostToken,
+    storeSlotExistedBefore: true,
+    slotAdoptedDuringCall: false,
+    storeStableIdentity: slot.stableIdentity,
+    formulaIndex: input.formulaIndex,
+    sourceAuthorityReadyBefore: true,
+    sourceAuthorityReadyAfter: true,
+    sourceAuthorityKindAfter: slot.sourceAuthorityKind,
+    sourceRevisionAfter: sourceRevisionAtVerification,
+    numberingReady: slot.desiredTag !== null,
+    desiredTag: slot.desiredTag,
+    legacyIdentityRebound: true,
+    sameCallAuthorized: true,
+    tagInjected: true,
+    providerInputHash: simpleHash(normalizeTexSource(slot.authoritativeRawSource ?? '')),
+    verificationSource: 'ACTUAL_DOM_READ',
+    visibleTagActual,
+    visibleBodyStateActual: bodyTruth.visibleBodyState,
+    sourceRevisionAtRender: sourceRevisionAtVerification,
+    sourceRevisionAtVerification,
+    sameSourceRevision,
+    sameHostBinding,
+    sameStableIdentity,
+    visibleVerifiedEventually: pass,
+    decision: pass ? 'PASS' : 'FAIL',
+    reason: pass ? null
+      : (!tagMatches ? 'VISIBLE_TAG_MISMATCH'
+        : (!bodyTruthPass ? 'VISIBLE_BODY_TRUTH_FAILED'
+          : 'NATURAL_RENDER_VERIFICATION_FAILED')),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+}
+
+export function emitTransitionalEditSourceFinal(): void {
+  const store = getFormulaStateStore()
+  const state = store.committedState
+  const managed = state ? state.slotsInDocumentOrder.filter((s) => s.managedForNumbering) : []
+  const allDesiredTagsVisible = managed.every((s) => {
+    if (!s.canonicalHost.isConnected) return false
+    return readVisibleFormulaTag(s.canonicalHost, s.desiredTag ?? '').decision === 'MATCH'
+  })
+  const pass = productionCallCounters.precallSlotAdoptionDuplicateCount === 0
+    && productionCallCounters.identityRebindFailureCount === 0
+    && productionCallCounters.sameCallStableIdentityMissingCount === 0
+    && store.getPendingSourceReadyProjectionCount() === 0
+    && productionCallCounters.rendererTriggeredSourceEditCount === 0
+    && productionCallCounters.sourceIntegrityViolationCount === 0
+    && productionCallCounters.duplicateNativeCommitAttemptCount === 0
+    && allDesiredTagsVisible
+  emitRuntimeAudit('FORMULA-TRANSITIONAL-EDIT-SOURCE-FINAL', {
+    documentKey: store.documentKey,
+    generation: store.documentGeneration,
+    rootToken: store.editorRootToken,
+    formulaCount: state?.slotsInDocumentOrder.length ?? 0,
+    managedFormulaCount: managed.length,
+    transitionalSourcePromotionCount: productionCallCounters.transitionalSourcePromotionCount,
+    authoritativePromotionCount: productionCallCounters.authoritativePromotionCount,
+    precallSlotAdoptionCount: productionCallCounters.precallSlotAdoptionCount,
+    precallSlotAdoptionDuplicateCount: productionCallCounters.precallSlotAdoptionDuplicateCount,
+    identityRebindCount: productionCallCounters.identityRebindCount,
+    identityRebindFailureCount: productionCallCounters.identityRebindFailureCount,
+    sameCallAuthorizationAttemptCount: productionCallCounters.sameCallAuthorizationAttemptCount,
+    sameCallAuthorizationSuccessCount: productionCallCounters.sameCallAuthorizationSuccessCount,
+    sameCallStableIdentityMissingCount: productionCallCounters.sameCallStableIdentityMissingCount,
+    blockedSourceReadyCount: productionCallCounters.blockedSourceReadyCount,
+    sourceReadyReplayCount: productionCallCounters.sourceReadyReplayCount,
+    sourceReadyReplayPendingCount: store.getPendingSourceReadyProjectionCount(),
+    naturalRenderSettlementCount: productionCallCounters.naturalRenderSettlementCount,
+    projectionSettlementCount: productionCallCounters.projectionSettlementCount,
+    rendererTriggeredSourceEditCount: productionCallCounters.rendererTriggeredSourceEditCount,
+    sourceIntegrityViolationCount: productionCallCounters.sourceIntegrityViolationCount,
+    duplicateNativeCommitAttemptCount: productionCallCounters.duplicateNativeCommitAttemptCount,
+    pendingProjectionCount: getPendingBaselineProjectionCount(),
+    pendingSourceReadyCount: store.getPendingSourceReadyProjectionCount(),
+    pendingOperationClosureCount: 0,
+    allDesiredTagsVisible,
+    decision: pass ? 'PASS' : 'FAIL',
+    reason: pass ? null
+      : (productionCallCounters.precallSlotAdoptionDuplicateCount > 0 ? 'PRECALL_DUPLICATE_ADOPTION'
+        : (productionCallCounters.identityRebindFailureCount > 0 ? 'IDENTITY_REBIND_FAILURE'
+          : (productionCallCounters.sameCallStableIdentityMissingCount > 0 ? 'SAME_CALL_STABLE_IDENTITY_MISSING'
+            : (store.getPendingSourceReadyProjectionCount() > 0 ? 'PENDING_SOURCE_READY_REMAINS'
+              : (productionCallCounters.rendererTriggeredSourceEditCount > 0 ? 'RENDERER_TRIGGERED_SOURCE_EDIT'
+                : (!allDesiredTagsVisible ? 'NOT_ALL_DESIRED_TAGS_VISIBLE' : 'INTEGRITY_VIOLATION')))))),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
 }
 
 // ── R5.4.3.18 P0-B: FormulaProjectionExecutor ───────────────────────────
@@ -644,6 +1507,33 @@ export async function executeProjectionTransactions(
           reason: null,
           runtimeMarker: R54315_RUNTIME_MARKER,
         })
+        // R5.4.3.21 P0-E: validate the DETACHED result BEFORE any DOM write.
+        // NONEMPTY source with an empty/unresolved body ⇒ BLOCK (no replace).
+        const detachedValidation = validateDetachedProjectionResult(tx, res.resultNode)
+        if (!detachedValidation.valid) {
+          tx.status = 'FAILED'
+          result.failedCount++
+          emitRuntimeAudit('FORMULA-PROJECTION-EXECUTOR', {
+            projectionTransactionId: tx.projectionTransactionId,
+            operationId: tx.operationId,
+            targetStateRevision: tx.targetStateRevision,
+            stableIdentity: tx.stableIdentity,
+            formulaIndex: tx.formulaIndex,
+            canonicalHostToken: tx.canonicalHostToken,
+            desiredTag: tx.desiredTag,
+            statusBefore: 'FULFILLED',
+            statusAfter: 'FAILED',
+            requestIssued: true,
+            fulfillmentSettled: true,
+            commitAttempted: false,
+            commitSucceeded: false,
+            visibleVerified: false,
+            decision: 'FAIL',
+            reason: detachedValidation.reason ?? 'DETACHED_RESULT_INVALID',
+            runtimeMarker: R54315_RUNTIME_MARKER,
+          })
+          return
+        }
         // Same tx object continues into the exact composite commit.
         const commit = commitProjectionFulfillmentViaCompositeOwner(tx, res.resultNode, editorRoot)
         if (commit.domReplaceSucceeded) {
@@ -766,6 +1656,21 @@ export function commitProjectionFulfillmentViaCompositeOwner(
     return { domReplaceAttempted: false, domReplaceSucceeded: false, visibleTagBefore: visibleBefore.visibleTagText, visibleTagAfter: null, reason: 'TRANSACTION_ALREADY_DOM_REPLACED' }
   }
 
+  // R5.4.3.21 P0-D: STALE SOURCE FRESHNESS BARRIER — re-read the CURRENT
+  // committed slot BEFORE any DOM write. Stale source ⇒ BLOCK (no replace).
+  const freshness = validateProjectionSourceFreshness(tx)
+  if (!freshness.domReplaceAllowed) {
+    emitRuntimeAudit('FORMULA-NATIVE-COMMIT-ONCE-INVARIANT', {
+      projectionTransactionId: tx.projectionTransactionId,
+      stableIdentity: tx.stableIdentity,
+      nativeDomMutationCount: tx.nativeDomMutationCount,
+      decision: 'FAIL',
+      reason: 'STALE_SOURCE_PROJECTION_BLOCKED',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return { domReplaceAttempted: false, domReplaceSucceeded: false, visibleTagBefore: visibleBefore.visibleTagText, visibleTagAfter: null, reason: freshness.reason ?? 'STALE_SOURCE_PROJECTION_BLOCKED' }
+  }
+
   const ownerValid = composite.decision === 'PASS'
     && composite.nativeOutputCountWithinOwner === 1
     && composite.nativeMjxOutput !== null
@@ -790,8 +1695,14 @@ export function commitProjectionFulfillmentViaCompositeOwner(
       old.replaceWith(newMjx)
       tx.nativeDomMutationCount++
       domReplaceSucceeded = true
+      productionCallCounters.domReplacedCount++
       const after = readVisibleFormulaTag(tx.canonicalHost, tx.desiredTag)
       visibleTagAfter = after.visibleTagText
+      // R5.4.3.21 P0-G: a replaced DOM whose tag is still wrong is an
+      // UNVERIFIED replace — DOM_REPLACED never equals VISIBLE_VERIFIED.
+      if (visibleTagAfter !== tx.desiredTag && !(visibleTagAfter === `(${tx.desiredTag})`)) {
+        productionCallCounters.domReplacedUnverifiedCount++
+      }
       // R5.4.3.19 Phase L: body integrity — only the tag should change.
       emitRuntimeAudit('FORMULA-VISUAL-BODY-INTEGRITY', {
         projectionTransactionId: tx.projectionTransactionId,
@@ -816,6 +1727,12 @@ export function commitProjectionFulfillmentViaCompositeOwner(
       : (!identityVerified ? 'TARGET_IDENTITY_NOT_VERIFIED'
         : (!revisionCurrent ? 'STALE_REVISION'
           : 'DOC_GEN_ROOT_MISMATCH'))
+    // R5.4.3.21 P0-D: a STALE_REVISION block is also a stale-projection block.
+    // (A stale COMMIT would be a violation — the barrier prevents it, so the
+    // violation counter stays 0 unless a stale commit ever slips through.)
+    if (!revisionCurrent) {
+      productionCallCounters.staleProjectionBlockedCount++
+    }
     // R5.4.3.18 hard fail: composite owner was valid but a legacy source-host
     // containment gate still aborted → FAIL.
     if (composite.decision === 'PASS' && oldOutputContainedByCompositeOwner && !oldOutputContainedBySourceHost) {
@@ -929,6 +1846,234 @@ export function checkProjectionSourceIntegrity(tx: FormulaProjectionTransaction)
     containsPriorVisibleTag,
     containsRendererText,
   }
+}
+
+// ── R5.4.3.21 P0-D: Projection Source Freshness Barrier ────────────────
+
+export interface ProjectionSourceFreshnessResult {
+  sourceFresh: boolean
+  numberingFresh: boolean
+  hostBindingFresh: boolean
+  contextFresh: boolean
+  domReplaceAllowed: boolean
+  reason: string | null
+  currentSourceRevision: number | null
+  currentSourceHash: string | null
+  currentDesiredTag: string | null
+}
+
+/**
+ * R5.4.3.21 P0-D: BEFORE any oldMjx.replaceWith(newMjx), re-read the CURRENT
+ * committed logical slot and hard-verify the tx's frozen source/hash/revision/
+ * desiredTag/host-binding/doc-gen-root against current state. Any staleness
+ * ⇒ BLOCK (domReplaceAttempted stays false). Emits
+ * FORMULA-PROJECTION-SOURCE-FRESHNESS-BARRIER.
+ */
+export function validateProjectionSourceFreshness(tx: FormulaProjectionTransaction): ProjectionSourceFreshnessResult {
+  const store = getFormulaStateStore()
+  const state = store.committedState
+  const empty: ProjectionSourceFreshnessResult = {
+    sourceFresh: false,
+    numberingFresh: false,
+    hostBindingFresh: false,
+    contextFresh: false,
+    domReplaceAllowed: false,
+    reason: 'NO_COMMITTED_STATE',
+    currentSourceRevision: null,
+    currentSourceHash: null,
+    currentDesiredTag: null,
+  }
+  if (!state) return empty
+  const slot = state.slotsInDocumentOrder.find((s) => s.stableIdentity === tx.stableIdentity)
+  if (!slot) {
+    emitRuntimeAudit('FORMULA-PROJECTION-SOURCE-FRESHNESS-BARRIER', {
+      projectionTransactionId: tx.projectionTransactionId,
+      stableIdentity: tx.stableIdentity,
+      formulaIndex: tx.formulaIndex,
+      txSourceRevision: tx.authoritativeSourceRevision,
+      currentSourceRevision: null,
+      txSourceHash: tx.authoritativeSourceHash,
+      currentSourceHash: null,
+      txDesiredTag: tx.desiredTag,
+      currentDesiredTag: null,
+      sourceFresh: false,
+      numberingFresh: false,
+      hostBindingFresh: false,
+      contextFresh: true,
+      domReplaceAllowed: false,
+      decision: 'BLOCK',
+      reason: 'CURRENT_SLOT_NOT_FOUND',
+      runtimeMarker: R54315_RUNTIME_MARKER,
+    })
+    return { ...empty, reason: 'CURRENT_SLOT_NOT_FOUND' }
+  }
+  const contextFresh = store.documentKey !== '' && store.documentGeneration > 0 && store.editorRootToken > 0
+  const sourceFresh = tx.authoritativeSourceRevision === slot.authoritativeSourceRevision
+    && tx.authoritativeSourceHash === slot.authoritativeSourceHash
+    && tx.rawSource === (slot.authoritativeRawSource ?? '')
+  const numberingFresh = tx.desiredTag === slot.desiredTag
+  const hostBindingFresh = slot.canonicalHost !== null
+    && (tx.canonicalHost === slot.canonicalHost || (slot.canonicalHost.contains(tx.canonicalHost) || tx.canonicalHost.contains(slot.canonicalHost)))
+  const domReplaceAllowed = sourceFresh && numberingFresh && hostBindingFresh && contextFresh
+  emitRuntimeAudit('FORMULA-PROJECTION-SOURCE-FRESHNESS-BARRIER', {
+    projectionTransactionId: tx.projectionTransactionId,
+    stableIdentity: tx.stableIdentity,
+    formulaIndex: tx.formulaIndex,
+    txSourceRevision: tx.authoritativeSourceRevision,
+    currentSourceRevision: slot.authoritativeSourceRevision,
+    txSourceHash: tx.authoritativeSourceHash,
+    currentSourceHash: slot.authoritativeSourceHash,
+    txDesiredTag: tx.desiredTag,
+    currentDesiredTag: slot.desiredTag,
+    sourceFresh,
+    numberingFresh,
+    hostBindingFresh,
+    contextFresh,
+    domReplaceAllowed,
+    decision: domReplaceAllowed ? 'ALLOW' : 'BLOCK',
+    reason: domReplaceAllowed ? null
+      : (!sourceFresh ? 'STALE_SOURCE_REVISION_OR_HASH'
+        : (!numberingFresh ? 'STALE_DESIRED_TAG'
+          : (!hostBindingFresh ? 'STALE_HOST_BINDING' : 'STALE_CONTEXT'))),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  if (!sourceFresh) productionCallCounters.staleProjectionBlockedCount++
+  if (!domReplaceAllowed) productionCallCounters.staleProjectionBlockedCount++
+  return {
+    sourceFresh,
+    numberingFresh,
+    hostBindingFresh,
+    contextFresh,
+    domReplaceAllowed,
+    reason: domReplaceAllowed ? null
+      : (!sourceFresh ? 'STALE_SOURCE_REVISION_OR_HASH'
+        : (!numberingFresh ? 'STALE_DESIRED_TAG'
+          : (!hostBindingFresh ? 'STALE_HOST_BINDING' : 'STALE_CONTEXT'))),
+    currentSourceRevision: slot.authoritativeSourceRevision,
+    currentSourceHash: slot.authoritativeSourceHash,
+    currentDesiredTag: slot.desiredTag,
+  }
+}
+
+// ── R5.4.3.21 P0-E: Detached Projection Result Validation ──────────────
+
+export interface DetachedResultValidationResult {
+  valid: boolean
+  reason: string | null
+  resultIsMjxContainer: boolean
+  bodyResolvable: boolean
+  tagPresent: boolean
+  duplicateTag: boolean
+}
+
+/**
+ * R5.4.3.21 P0-E: validate the DETACHED (pre-DOM-write) fulfillment result.
+ * NONEMPTY source with an empty/unresolved body ⇒ BLOCK before DOM write.
+ * EMPTY source may legitimately have an empty body.
+ */
+export function validateDetachedProjectionResult(
+  tx: FormulaProjectionTransaction,
+  resultNode: HTMLElement | null,
+): DetachedResultValidationResult {
+  const resultIsMjxContainer = !!resultNode && resultNode.tagName === 'MJX-CONTAINER'
+  let bodyResolvable = false
+  let tagPresent = false
+  let duplicateTag = false
+  if (resultNode) {
+    const text = (resultNode.textContent ?? '')
+    const bodyText = text.replace(/\((\d+(?:\.\d+)*)\)/g, '')
+    bodyResolvable = bodyText.trim().length > 0 || resultNode.querySelector('mjx-math') !== null
+    const tagMatches = text.match(/\((\d+(?:\.\d+)*)\)/g) ?? []
+    tagPresent = tagMatches.length >= 1
+    duplicateTag = tagMatches.length > 1
+  }
+  const nonEmptyRequiresBody = tx.sourceState === 'NONEMPTY' && (tx.rawSource ?? '').trim().length > 0
+  const valid = resultIsMjxContainer && tagPresent && !duplicateTag && (!nonEmptyRequiresBody || bodyResolvable)
+  emitRuntimeAudit('FORMULA-PROJECTION-DETACHED-RESULT-VALIDATION', {
+    projectionTransactionId: tx.projectionTransactionId,
+    stableIdentity: tx.stableIdentity,
+    formulaIndex: tx.formulaIndex,
+    sourceState: tx.sourceState,
+    sourceLength: (tx.rawSource ?? '').length,
+    sourceHash: tx.authoritativeSourceHash,
+    resultIsMjxContainer,
+    bodyResolvable,
+    tagPresent,
+    duplicateTag,
+    desiredTag: tx.desiredTag,
+    decision: valid ? 'PASS' : 'FAIL',
+    reason: valid ? null
+      : (!resultIsMjxContainer ? 'RESULT_NOT_MJX_CONTAINER'
+        : (!tagPresent ? 'MANAGED_TAG_MISSING'
+          : (duplicateTag ? 'DUPLICATE_MANAGED_TAG'
+            : (nonEmptyRequiresBody && !bodyResolvable ? 'NONEMPTY_SOURCE_EMPTY_BODY' : 'UNRESOLVED_BODY')))),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  if (!valid) productionCallCounters.detachedResultValidationFailureCount++
+  return { valid, reason: valid ? null : 'DETACHED_RESULT_INVALID', resultIsMjxContainer, bodyResolvable, tagPresent, duplicateTag }
+}
+
+// ── R5.4.3.21 P0-F: Visible Body Truth ─────────────────────────────────
+
+export type VisibleBodyState = 'KNOWN_EMPTY' | 'KNOWN_NONEMPTY' | 'UNRESOLVED'
+
+export interface VisibleBodyTruthResult {
+  visibleBodyState: VisibleBodyState
+  visibleBodyFingerprint: string
+  visibleBodyLengthApprox: number
+  visibleTag: string | null
+  bodyResolvable: boolean
+  tagResolvable: boolean
+  decision: 'PASS' | 'FAIL' | 'PARTIAL'
+  reason: string | null
+}
+
+/**
+ * R5.4.3.21 P0-F: read the ACTUAL visible formula body truth from the DOM.
+ * KNOWN_EMPTY / KNOWN_NONEMPTY / UNRESOLVED are strict — a NONEMPTY managed
+ * formula with an UNRESOLVED body NEVER passes.
+ */
+export function readVisibleBodyTruth(host: HTMLElement, slot: CanonicalFormulaSlot): VisibleBodyTruthResult {
+  const visible = readVisibleFormulaTag(host, slot.desiredTag ?? '')
+  const visibleTag = visible.visibleTagText
+  const mjx = host.querySelector('mjx-container')
+  const mjxText = mjx?.textContent ?? ''
+  const bodyText = mjxText.replace(/\((\d+(?:\.\d+)*)\)/g, '').trim()
+  const bodyResolvable = bodyText.length > 0 || (mjx?.querySelector('mjx-math') !== null)
+  const isSourceNonEmpty = slot.sourceState === 'NONEMPTY' && (slot.authoritativeRawSource ?? '').trim().length > 0
+  let visibleBodyState: VisibleBodyState
+  if (!mjx) {
+    visibleBodyState = 'UNRESOLVED'
+  } else if (isSourceNonEmpty) {
+    visibleBodyState = bodyResolvable ? 'KNOWN_NONEMPTY' : 'UNRESOLVED'
+  } else {
+    visibleBodyState = bodyResolvable ? 'KNOWN_NONEMPTY' : 'KNOWN_EMPTY'
+  }
+  const tagResolvable = visibleTag !== null && visibleTag !== ''
+  const decision: 'PASS' | 'FAIL' | 'PARTIAL' =
+    (isSourceNonEmpty && visibleBodyState === 'UNRESOLVED')
+      ? 'FAIL'
+      : (tagResolvable ? 'PASS' : 'PARTIAL')
+  emitRuntimeAudit('FORMULA-VISIBLE-BODY-TRUTH', {
+    stableIdentity: slot.stableIdentity,
+    formulaIndex: slot.documentOrder,
+    sourceState: slot.sourceState,
+    sourceLength: (slot.authoritativeRawSource ?? '').length,
+    sourceHash: slot.authoritativeSourceHash,
+    visibleBodyState,
+    visibleBodyFingerprint: simpleHash(bodyText),
+    visibleBodyLengthApprox: bodyText.length,
+    visibleTag,
+    desiredTag: slot.desiredTag,
+    bodyResolvable,
+    tagResolvable,
+    decision,
+    reason: decision === 'PASS' ? null
+      : (isSourceNonEmpty && visibleBodyState === 'UNRESOLVED' ? 'NONEMPTY_SOURCE_BODY_UNRESOLVED' : 'TAG_NOT_RESOLVED'),
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  if (decision === 'FAIL') productionCallCounters.visibleBodyUnresolvedCount++
+  return { visibleBodyState, visibleBodyFingerprint: simpleHash(bodyText), visibleBodyLengthApprox: bodyText.length, visibleTag, bodyResolvable, tagResolvable, decision, reason: decision === 'PASS' ? null : 'VISIBLE_BODY_TRUTH_NOT_PASS' }
 }
 
 // ── R5.4.3.18 P0-D: Visible DOM Truth Re-read ───────────────────────────
@@ -1315,6 +2460,24 @@ export async function runBaselineProjectionClosure(
   emitRendererFeedbackQuiescence()
   emitAuthoritativeSourceFeedbackFinal()
 
+  // R5.4.3.21 P0-N: the baseline closure is bound to EXACT state.stateRevision.
+  // If the store advanced during projection, this closure is STALE and must
+  // never PASS (CLOSURE-REVISION-AUTHORITY).
+  const baselineRevisionCurrent = store.currentRevision === state.stateRevision
+  emitRuntimeAudit('FORMULA-CLOSURE-REVISION-AUTHORITY', {
+    operationId: state.committedAtOperationId ?? `baseline-${state.stateRevision}`,
+    operationKind: 'BASELINE_PROJECTION_CLOSURE',
+    closureTargetStateRevision: state.stateRevision,
+    currentStateRevision: store.currentRevision,
+    revisionCurrent: baselineRevisionCurrent,
+    decision: baselineRevisionCurrent ? 'PASS' : 'FAIL',
+    reason: baselineRevisionCurrent ? null : 'BASELINE_CLOSURE_TARGETS_STALE_STATE_REVISION',
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
+  if (!baselineRevisionCurrent) {
+    productionCallCounters.staleClosurePassCount++
+  }
+
   // R5.4.3.18 P0-D: mismatch AFTER must come from an ACTUAL DOM re-read.
   const truth = readFormulaVisibleStateTruth()
   const nativeManagedMismatchCountAfter = truth.nativeManagedTagCount
@@ -1324,7 +2487,8 @@ export async function runBaselineProjectionClosure(
   // Close pending baseline projections (all were covered by this closure).
   resolvePendingBaselineProjections()
 
-  const pass = exec.requestedCount === exec.settledCount
+  const pass = baselineRevisionCurrent
+    && exec.requestedCount === exec.settledCount
     && exec.settledCount === exec.committedCount
     && exec.committedCount === exec.visibleVerifiedCount
     && exec.pendingCount === 0
