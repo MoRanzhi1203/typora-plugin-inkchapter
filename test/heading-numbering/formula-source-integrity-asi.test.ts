@@ -136,7 +136,13 @@ function installProvider(captured: string[]): void {
     captured.push(String(tex))
     const m = String(tex).match(/\\tag\{([^}]*)\}/)
     const node = document.createElement('mjx-container')
-    node.textContent = m ? `(${m[1]})` : '()'
+    const math = document.createElement('mjx-math')
+    const bodyTex = String(tex).replace(/\\tag\{[^}]*\}/, '').trim()
+    math.textContent = bodyTex
+    node.appendChild(math)
+    const label = document.createElement('mjx-label')
+    label.textContent = m ? `(${m[1]})` : ''
+    node.appendChild(label)
     return Promise.resolve(node)
   })
 }
@@ -533,8 +539,8 @@ describe('ASI-18 — Quiescence after renderer projection', () => {
 // ── Build ID ───────────────────────────────────────────────────────────
 
 describe('ASI Build ID', () => {
-  it('R54316_BUILD_ID is the R5.4.3.19 build', () => {
-    expect(R54316_BUILD_ID).toBe('inkchapter-formula-authoritative-source-feedback-isolation-v2.5.7-r5.4.3.19')
+  it('R54316_BUILD_ID is the R5.4.3.21 build', () => {
+    expect(R54316_BUILD_ID).toBe('inkchapter-formula-single-source-stale-projection-visible-closure-v2.5.7-r5.4.3.21')
   })
 })
 

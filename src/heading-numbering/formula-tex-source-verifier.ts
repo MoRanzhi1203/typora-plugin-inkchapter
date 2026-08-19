@@ -214,3 +214,44 @@ export function extractFormulaTexForTrace(host: HTMLElement | null): string {
   // rendered body) MUST NEVER become the authoritative TeX source.
   return ''
 }
+
+// ── R5.4.3.21: Typora Empty Sentinel Normalization ──────────────────────
+
+/** Matches real Typora empty-render sentinels (never stored as raw TeX). */
+export const TYPORA_EMPTY_SENTINEL_RE = /^<\s*Empty\s+Math\s+Block\s*>$/i
+export const TYPORA_EMPTY_SENTINEL_SPACE_RE = /^<Empty\s+\\space\s+Math\s+\\space\s+Block>$/i
+
+export interface TyporaRenderInputNormalization {
+  /** TRUE when the raw input matched a known empty-render sentinel. */
+  sentinelMatched: boolean
+  /** normalized base raw TeX ("" for empty sentinels). */
+  normalizedBaseRawSource: string
+  normalizedSourceState: 'EMPTY' | 'NONEMPTY'
+  rawInputHash: string
+  rawInputLength: number
+}
+
+/**
+ * R5.4.3.21 P0-A: normalize a REAL Typora tex2svg raw input. The sentinel
+ * `<Empty \space Math \space Block>` (and plain `<Empty Math Block>`) MUST be
+ * treated as KNOWN_EMPTY — it is NEVER stored as raw TeX.
+ * NOTE: caller must prove this is an exact block formula call (not inline /
+ * foreign) BEFORE treating the sentinel as EMPTY.
+ */
+export function normalizeTyporaFormulaRenderInput(rawInput: string): TyporaRenderInputNormalization {
+  const trimmed = rawInput.trim()
+  const sentinelMatched = TYPORA_EMPTY_SENTINEL_RE.test(trimmed) || TYPORA_EMPTY_SENTINEL_SPACE_RE.test(trimmed)
+  const empty = sentinelMatched || trimmed === ''
+  return {
+    sentinelMatched,
+    normalizedBaseRawSource: empty ? '' : rawInput,
+    normalizedSourceState: empty ? 'EMPTY' : 'NONEMPTY',
+    rawInputHash: simpleHash(empty ? '' : normalizeTexSource(rawInput)),
+    rawInputLength: rawInput.length,
+  }
+}
+
+export function isEmptyFormulaSentinel(input: string): boolean {
+  const trimmed = input.trim()
+  return TYPORA_EMPTY_SENTINEL_RE.test(trimmed) || TYPORA_EMPTY_SENTINEL_SPACE_RE.test(trimmed)
+}

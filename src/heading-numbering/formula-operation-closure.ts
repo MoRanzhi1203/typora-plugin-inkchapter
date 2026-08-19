@@ -8,6 +8,7 @@
 
 import {
   R54315_RUNTIME_MARKER,
+  getFormulaStateStore,
   type FormulaOperationClosure,
   type FormulaOperationKind,
   type FormulaOperationTransaction,
@@ -31,6 +32,7 @@ interface ClosureState {
   nativeManagedMismatchCount: number
   pendingProjectionCount: number
   failedProjectionCount: number
+  pendingSourceReadyCount: number
   allDesiredTagsVisible: boolean
 }
 
@@ -66,6 +68,7 @@ export function createOperationClosure(
     nativeManagedMismatchCount: 0,
     pendingProjectionCount: projectionCount,
     failedProjectionCount: 0,
+    pendingSourceReadyCount: 0,
     allDesiredTagsVisible: false,
     decision: 'PARTIAL',
     reason: 'CLOSURE_CREATED',
@@ -84,6 +87,7 @@ export function createOperationClosure(
     nativeManagedMismatchCount: 0,
     pendingProjectionCount: projectionCount,
     failedProjectionCount: 0,
+    pendingSourceReadyCount: 0,
     allDesiredTagsVisible: false,
   }
 
@@ -100,6 +104,7 @@ export function createOperationClosure(
     nativeManagedMismatchCount: 0,
     pendingProjectionCount: projectionCount,
     failedProjectionCount: 0,
+    pendingSourceReadyCount: 0,
     allDesiredTagsVisible: false,
     decision: 'PARTIAL',
     reason: 'CLOSURE_CREATED',
@@ -131,6 +136,7 @@ export function markSemanticCommitted(): void {
     nativeManagedMismatchCount: _closureState.nativeManagedMismatchCount,
     pendingProjectionCount: _closureState.pendingProjectionCount,
     failedProjectionCount: _closureState.failedProjectionCount,
+    pendingSourceReadyCount: _closureState.pendingSourceReadyCount,
     allDesiredTagsVisible: _closureState.allDesiredTagsVisible,
     decision: 'PARTIAL',
     reason: 'SEMANTIC_COMMITTED_MARKED',
@@ -182,6 +188,28 @@ export function recordVisibleVerified(): void {
   _closureState.visibleVerifiedCount++
 }
 
+// ── recordSourceReadyBlocked / settleSourceReadyPending (R5.4.3.20) ─────
+
+/**
+ * Record that a projection target is BLOCKED_SOURCE_NOT_READY (awaiting the
+ * slot's source authority). The closure cannot PASS while this is > 0.
+ */
+export function recordSourceReadyBlocked(): void {
+  if (!_closureState) return
+  _closureState.pendingSourceReadyCount++
+}
+
+/**
+ * Settle a source-ready pending target (replayed or satisfied by natural
+ * render). Decrements pendingSourceReadyCount.
+ */
+export function settleSourceReadyPending(): void {
+  if (!_closureState) return
+  if (_closureState.pendingSourceReadyCount > 0) {
+    _closureState.pendingSourceReadyCount--
+  }
+}
+
 // ── setNativeManagedMismatchCount ────────────────────────────────────────
 
 /**
@@ -230,6 +258,7 @@ export function finalizeOperationClosure(): FormulaOperationClosure {
       nativeManagedMismatchCount: 0,
       pendingProjectionCount: 0,
       failedProjectionCount: 0,
+      pendingSourceReadyCount: 0,
       allDesiredTagsVisible: false,
       decision: 'FAIL',
       reason: 'NO_CLOSURE_STATE',
@@ -241,6 +270,13 @@ export function finalizeOperationClosure(): FormulaOperationClosure {
   let decision: 'PASS' | 'FAIL' | 'PARTIAL'
   let reason: string | null
 
+  // R5.4.3.21 P0-N: CLOSURE-REVISION-AUTHORITY — the closure is bound to its
+  // EXACT targetStateRevision. A closure finalized after the store has moved
+  // past that revision is STALE and must NEVER PASS (its projections describe
+  // an obsolete document state).
+  const currentStateRevision = getFormulaStateStore().currentRevision
+  const revisionCurrent = st.targetStateRevision === currentStateRevision
+
   const allProjectionCountsMatch =
     st.projectionRequestedCount === st.projectionSettledCount &&
     st.projectionSettledCount === st.projectionCommittedCount &&
@@ -248,21 +284,25 @@ export function finalizeOperationClosure(): FormulaOperationClosure {
 
   if (
     st.semanticCommitted &&
+    revisionCurrent &&
     allProjectionCountsMatch &&
     st.pendingProjectionCount === 0 &&
     st.failedProjectionCount === 0 &&
     st.nativeManagedMismatchCount === 0 &&
+    st.pendingSourceReadyCount === 0 &&
     st.allDesiredTagsVisible
   ) {
     decision = 'PASS'
     reason = null
   } else if (
     !st.semanticCommitted ||
-    st.failedProjectionCount > 0
+    st.failedProjectionCount > 0 ||
+    !revisionCurrent
   ) {
     decision = 'FAIL'
     const reasons: string[] = []
     if (!st.semanticCommitted) reasons.push('SEMANTIC_NOT_COMMITTED')
+    if (!revisionCurrent) reasons.push('STALE_CLOSURE_REVISION')
     if (st.failedProjectionCount > 0) reasons.push('PROJECTION_FAILED')
     reason = reasons.join(';')
   } else {
@@ -270,10 +310,23 @@ export function finalizeOperationClosure(): FormulaOperationClosure {
     const reasons: string[] = []
     if (!allProjectionCountsMatch) reasons.push('PROJECTION_COUNTS_MISMATCH')
     if (st.pendingProjectionCount > 0) reasons.push('PENDING_PROJECTIONS')
+    if (st.pendingSourceReadyCount > 0) reasons.push('PENDING_SOURCE_READY')
     if (st.nativeManagedMismatchCount > 0) reasons.push('NATIVE_MANAGED_MISMATCH')
     if (!st.allDesiredTagsVisible) reasons.push('NOT_ALL_DESIRED_TAGS_VISIBLE')
     reason = reasons.join(';') || 'UNKNOWN_PARTIAL'
   }
+
+  // R5.4.3.21 P0-N: emit the closure revision authority marker truthfully.
+  emitRuntimeAudit('FORMULA-CLOSURE-REVISION-AUTHORITY', {
+    operationId: st.operationId,
+    operationKind: st.operationKind,
+    closureTargetStateRevision: st.targetStateRevision,
+    currentStateRevision,
+    revisionCurrent,
+    decision: revisionCurrent ? 'PASS' : 'FAIL',
+    reason: revisionCurrent ? null : 'CLOSURE_TARGETS_STALE_STATE_REVISION',
+    runtimeMarker: R54315_RUNTIME_MARKER,
+  })
 
   const closure: FormulaOperationClosure = {
     operationId: st.operationId,
@@ -288,6 +341,7 @@ export function finalizeOperationClosure(): FormulaOperationClosure {
     nativeManagedMismatchCount: st.nativeManagedMismatchCount,
     pendingProjectionCount: st.pendingProjectionCount,
     failedProjectionCount: st.failedProjectionCount,
+    pendingSourceReadyCount: st.pendingSourceReadyCount,
     allDesiredTagsVisible: st.allDesiredTagsVisible,
     decision,
     reason,
@@ -306,6 +360,7 @@ export function finalizeOperationClosure(): FormulaOperationClosure {
     nativeManagedMismatchCount: closure.nativeManagedMismatchCount,
     pendingProjectionCount: closure.pendingProjectionCount,
     failedProjectionCount: closure.failedProjectionCount,
+    pendingSourceReadyCount: closure.pendingSourceReadyCount,
     allDesiredTagsVisible: closure.allDesiredTagsVisible,
     decision: closure.decision,
     reason: closure.reason,

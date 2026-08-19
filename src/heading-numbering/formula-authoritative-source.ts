@@ -113,6 +113,13 @@ export interface AuthoritativeSourceUpdateInput {
   candidatePrefix: string
   mutationClassification: MutationClassification
   editState: 'EDIT' | 'NON_EDIT' | 'UNKNOWN'
+  /**
+   * R5.4.3.21 P0-B/C: provenance of the candidate. When the exact current
+   * block formula host + Store identity rebind prove a REAL user edit (same
+   * tex2svg current edit), 'CURRENT_USER_EDIT' bypasses the non-input edit
+   * barrier and advances the SINGLE authoritative source revision.
+   */
+  provenance?: 'CURRENT_USER_EDIT' | 'TYPORA_CANONICAL_SOURCE'
 }
 
 export interface AuthoritativeSourceUpdateResult {
@@ -308,7 +315,11 @@ export function captureOrUpdateAuthoritativeSource(input: AuthoritativeSourceUpd
   const sessionTargetsThisIdentity = !!activeSession
     && activeSession.documentKey === input.documentKey
     && activeSession.stableFormulaIdentity === input.stableFormulaIdentity
-  if (sessionTargetsThisIdentity) {
+  // R5.4.3.21 P0-B/C: a proven CURRENT_USER_EDIT (exact block host + Store
+  // identity rebind + current tex2svg input) is REAL user input — it must
+  // bypass the non-input edit barrier so the SINGLE source revision advances.
+  const isProvenUserEdit = input.provenance === 'CURRENT_USER_EDIT'
+  if (sessionTargetsThisIdentity && !isProvenUserEdit) {
     const barrier = checkSourceCommitBarrier({
       sessionId: activeSession!.sessionId,
       stableFormulaIdentity: input.stableFormulaIdentity,
@@ -362,8 +373,12 @@ export function captureOrUpdateAuthoritativeSource(input: AuthoritativeSourceUpd
 
   // Only a REAL user TeX edit (real-content mutation while the
   // rawblock is in EDIT state) may advance the content revision.
-  const userSemantic = input.mutationClassification === 'REAL_DOCUMENT_CONTENT' || input.mutationClassification === 'MIXED_CONTENT_AND_RENDERER'
-  if (userSemantic && input.editState === 'EDIT') {
+  // R5.4.3.21: a proven CURRENT_USER_EDIT counts as user semantic regardless
+  // of the mutation classifier (the wrapper proved the exact editing host).
+  const userSemantic = isProvenUserEdit
+    || input.mutationClassification === 'REAL_DOCUMENT_CONTENT'
+    || input.mutationClassification === 'MIXED_CONTENT_AND_RENDERER'
+  if (userSemantic && (isProvenUserEdit || input.editState === 'EDIT')) {
     const updated: AuthoritativeFormulaSourceState = {
       ...next,
       formulaContentRevision: prev.formulaContentRevision + 1,

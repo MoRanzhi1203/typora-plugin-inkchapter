@@ -18,9 +18,51 @@ import {
   setAllDesiredTagsVisible,
   type FormulaOperationClosure,
 } from '../../src/heading-numbering/formula-operation-closure'
-import { R54315_BUILD_MARKER, type FormulaOperationTransaction, type CommittedFormulaDocumentState } from '../../src/heading-numbering/formula-state-store'
+import { R54315_BUILD_MARKER, getFormulaStateStore, type FormulaOperationTransaction, type CommittedFormulaDocumentState } from '../../src/heading-numbering/formula-state-store'
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * R5.4.3.21 P0-N: align the store's current revision with the closure's
+ * targetStateRevision. A closure bound to a STALE stateRevision must never
+ * PASS — these isolated unit tests must therefore bind the closure to a
+ * revision that IS current.
+ */
+function bumpStoreRevisionTo(target: number): void {
+  const store = getFormulaStateStore()
+  let guard = 0
+  while (store.currentRevision < target && guard < 50) {
+    const before = store.captureBeforeState()
+    const after: CommittedFormulaDocumentState = {
+      stateRevision: before.stateRevision + 1,
+      documentKey: 'test-doc',
+      documentGeneration: 1,
+      editorRootToken: 1,
+      headingStateRevision: 0,
+      slotsInDocumentOrder: [],
+      slotByStableIdentity: new Map(),
+      semanticSignature: `empty-${before.stateRevision + 1}`,
+      committedAtOperationId: null,
+    }
+    store.commitOperation({
+      operationId: `unit-bump-${before.stateRevision + 1}`,
+      mutationBatchId: 'unit',
+      beforeStateRevision: before.stateRevision,
+      beforeState: before,
+      afterCandidate: after,
+      operationKind: 'NOOP',
+      addedStableIdentities: [],
+      removedStableIdentities: [],
+      survivingStableIdentities: [],
+      primaryStableIdentity: null,
+      dependencyFrontier: null,
+      affectedStableIdentities: [],
+      targetStateRevision: before.stateRevision + 1,
+      status: 'CAPTURED',
+    })
+    guard++
+  }
+}
 
 function makeEmptySlotMap(): Map<string | number, any> {
   return new Map()
@@ -46,6 +88,9 @@ function makeTransaction(
   beforeRevision: number,
   status: string,
 ): FormulaOperationTransaction {
+  // R5.4.3.21 P0-N: bind the closure to a CURRENT store revision so the
+  // CLOSURE-REVISION-AUTHORITY check is satisfied (target == currentRevision).
+  bumpStoreRevisionTo(beforeRevision + 1)
   const before = makeEmptyState(beforeRevision)
   const after = makeEmptyState(beforeRevision + 1)
   return {

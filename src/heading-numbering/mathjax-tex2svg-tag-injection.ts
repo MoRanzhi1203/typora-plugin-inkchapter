@@ -19,6 +19,7 @@ import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import {
   verifyFormulaTexSource,
   normalizeTexSource,
+  normalizeTyporaFormulaRenderInput,
   simpleHash,
   type FormulaTexSourceKind,
 } from './formula-tex-source-verifier'
@@ -46,8 +47,8 @@ import {
 } from './formula-edit-session'
 import { registerFulfillmentNodeBinding, resolveRendererNodeBinding, type RendererNodeBinding } from './formula-render-projection'
 import { isZeroSource, getReservation, consumeReservation, emitZeroSourceTransactionAuthority, emitZeroSourceSameCallReauthorization, emitAuthorizationDesiredTagInvariant, type EmptyFormulaRenderReservation } from './formula-empty-render-reservation'
-import { produceRenderTransaction, registerPendingBaselineProjection } from './formula-state-machine-wiring'
-import { getFormulaStateStore } from './formula-state-store'
+import { produceRenderTransaction, registerPendingBaselineProjection, ensureCommittedSlotForNaturalRenderCall, rebindLegacyIdentityToStoreIdentity, promoteTransitionalCurrentEditSource, reauthorizeCurrentCallFromCommittedStore, hydrateNumberingAuthorityIntoFormulaStateStore, editorRootTokenFor, emitFirstNaturalRenderClosure, emitFirstNaturalRenderFinalVerification, emitTransitionalEditSourceFinal } from './formula-state-machine-wiring'
+import { getFormulaStateStore, type FormulaRuntimeContext } from './formula-state-store'
 
 export const R54_RUNTIME_MARKER = 'FORMULA-TEX2SVG-PRECALL-TAG-INJECTION-V2.5.7-R5.4'
 export const R54_BUILD_MARKER = 'inkchapter-formula-atomic-transaction-render-projection-v2.5.7-r5.4.3.9'
@@ -1168,6 +1169,135 @@ export function handleTex2svgPreCall(
       if (store.committedState) {
         // Store baseline ready → render transaction from the committed slot.
         storeRenderEntry.renderTransaction = produceRenderTransaction(editingHostElement)
+
+        // ── R5.4.3.20 P0-A/P0-B/P0-C/P0-E: Same-Call Adoption Pipeline ──
+        // If the exact canonical host has no render transaction (slot missing
+        // or source UNKNOWN), adopt the structural slot, rebind the legacy
+        // identity, promote the ORIGINAL pre-injection raw input as
+        // TRANSITIONAL_CURRENT_EDIT_SOURCE, re-read the committed Store, and
+        // reauthorize THIS call — all before legacy auth / PASS_THROUGH.
+        const rootEl = authEditorRoot
+        const callContext = {
+          documentKey: authDocumentKey ?? '',
+          documentGeneration: ctxAuth?.getCurrentGeneration?.() ?? 0,
+          editorRoot: rootEl,
+          editorRootToken: rootEl ? editorRootTokenFor(rootEl) : 0,
+        }
+        const contextGateOk = callContext.documentKey !== '' && callContext.documentGeneration > 0
+          && !!rootEl && rootEl.isConnected && !!callContext.editorRoot
+        if (contextGateOk) {
+          const ctxForCalls: FormulaRuntimeContext = {
+            documentKey: callContext.documentKey,
+            documentGeneration: callContext.documentGeneration,
+            editorRoot: rootEl!,
+            editorRootToken: callContext.editorRootToken,
+          }
+          const legacyIdentity = editingHostIdentity?.stableFormulaIdentity ?? null
+          const legacyFormulaIndex = editingHostIdentity?.formulaIndex ?? null
+          if (!storeRenderEntry.renderTransaction) {
+            // 1. Atomic structural adoption (no MutationObserver wait).
+            const adoption = ensureCommittedSlotForNaturalRenderCall({
+              context: ctxForCalls,
+              editorRoot: rootEl!,
+              host: editingHostElement,
+              headings: [],
+              callOrdinal,
+            })
+            // 2. Legacy/edit-session identity → Store identity rebind.
+            const rebind = rebindLegacyIdentityToStoreIdentity({
+              host: editingHostElement,
+              legacyIdentity,
+              legacyFormulaIndex,
+              context: ctxForCalls,
+              callOrdinal,
+            })
+            // 3. Transitional source promotion (ORIGINAL pre-injection input).
+            if (adoption.slot) {
+              promoteTransitionalCurrentEditSource({
+                host: editingHostElement,
+                rawInput: inputTex,
+                context: ctxForCalls,
+                callOrdinal,
+                legacyIdentity,
+                legacyFormulaIndex,
+              })
+            }
+            // 3b. R5.4.3.20 Phase G: hydrate NUMBERING from the legacy plan
+            // entry when it already knows formulaIndex/desiredTag — closes the
+            // numbering dimension in the SAME call (RenderReady = slot + source
+            // + desiredTag).
+            const legacyEntry = authPlan?.entries.find((e) => e.formulaIndex === legacyFormulaIndex)
+            if (legacyEntry && legacyEntry.desiredTag) {
+              hydrateNumberingAuthorityIntoFormulaStateStore({
+                documentKey: ctxForCalls.documentKey,
+                generation: ctxForCalls.documentGeneration,
+                editorRoot: ctxForCalls.editorRoot,
+                editorRootToken: ctxForCalls.editorRootToken,
+                entries: [{
+                  canonicalHost: editingHostElement,
+                  chapterOrdinal: null,
+                  sectionOrdinal: null,
+                  subsectionOrdinal: null,
+                  sequenceValue: legacyFormulaIndex ?? 0,
+                  scopeKey: 'legacy-plan',
+                  desiredTag: legacyEntry.desiredTag,
+                  managedForNumbering: true,
+                }],
+                headingRevision: authPlan?.planRevision ?? 1,
+                numberingPlanRevision: authPlan?.planRevision ?? 1,
+              })
+            }
+            // 4. Same-call reauthorization from the re-read committed Store.
+            storeRenderEntry.renderTransaction = reauthorizeCurrentCallFromCommittedStore({
+              host: editingHostElement,
+              context: ctxForCalls,
+              callOrdinal,
+              legacyPlanEntryFound: !!(editingHostIdentity?.planEntryFound || legacyEntry),
+              legacyFormulaIndex,
+              legacyDesiredTag: legacyEntry?.desiredTag ?? null,
+            })
+            // 5. First natural render closure marker.
+            const slotAfter = store.lookupCommittedSlotByHost(editingHostElement)
+            emitFirstNaturalRenderClosure({
+              callOrdinal,
+              context: ctxForCalls,
+              canonicalHostResolved: true,
+              canonicalHostToken: slotAfter?.canonicalHostToken ?? null,
+              storeSlotExistedBefore: adoption.storeSlotFoundBefore,
+              slotAdoptedDuringCall: adoption.slotAdopted,
+              stableIdentity: slotAfter?.stableIdentity ?? null,
+              formulaIndex: slotAfter ? store.committedState!.slotsInDocumentOrder.indexOf(slotAfter) : null,
+              sourceAuthorityReadyBefore: false,
+              sourceAuthorityReadyAfter: slotAfter?.sourceAuthorityReady ?? false,
+              sourceAuthorityKindAfter: slotAfter?.sourceAuthorityKind ?? 'NONE',
+              sourceRevisionAfter: slotAfter?.authoritativeSourceRevision ?? null,
+              numberingReady: slotAfter ? slotAfter.desiredTag !== null : false,
+              desiredTag: slotAfter?.desiredTag ?? null,
+              legacyIdentityRebound: rebind.rebound,
+              sameCallAuthorized: storeRenderEntry.renderTransaction !== null,
+              tagInjected: storeRenderEntry.renderTransaction !== null,
+              providerInputHash: simpleHash(normalizeTexSource(inputTex)),
+            })
+          } else {
+            // R5.4.3.21 P0-B/C: the render transaction ALREADY exists — this is
+            // STILL a real user-edit call (editingHostIdentity resolved ⇒ call
+            // owner is the focused formula). Commit the CURRENT raw input to the
+            // SINGLE authoritative source revision (p → p= → p=1 advances the
+            // revision directly; never BLOCK_NON_INPUT_EDIT_STATE_DRIFT).
+            // Same-hash re-renders stay idempotent; the real Typora empty
+            // sentinel is normalized to KNOWN_EMPTY before any TeX commit.
+            if (editingHostIdentity) {
+              promoteTransitionalCurrentEditSource({
+                host: editingHostElement,
+                rawInput: inputTex,
+                context: ctxForCalls,
+                callOrdinal,
+                legacyIdentity,
+                legacyFormulaIndex,
+              })
+            }
+          }
+        }
       } else {
         // Natural render raced the baseline → register a pending projection;
         // the baseline projection closure will replay it automatically.
@@ -1880,7 +2010,11 @@ export function handleTex2svgPreCall(
     runtimeMarker: R54_RUNTIME_MARKER,
   })
 
-  const build = buildInjectedTex(inputTex, auth.desiredTag ?? '')
+  // R5.4.3.21 P0-A: the injected base is the NORMALIZED raw input — the real
+  // Typora empty sentinel "<Empty \space Math \space Block>" must never be
+  // sent to MathJax as base TeX (only the managed tag is injected).
+  const normalizedInput = normalizeTyporaFormulaRenderInput(inputTex)
+  const build = buildInjectedTex(normalizedInput.normalizedBaseRawSource, auth.desiredTag ?? '')
   if (build.decision !== 'INJECT' || !auth.desiredTag) {
     emitRuntimeAudit('MATHJAX-TEX2SVG-NONTARGET-PASS-THROUGH', {
       callOrdinal,
@@ -2053,6 +2187,26 @@ export function reportInjectionFulfillment(callOrdinal: number, value: unknown, 
       fulfillmentObserved: true,
       visibleTagAfter: visibleTag,
     })
+
+    // R5.4.3.21 P0-G: ACTUAL_DOM_READ final verification of the first natural
+    // render — tagInjected=true must never imply visibleVerifiedEventually=true.
+    const ctx2 = injectionContext
+    if (ctx2) {
+      const root = ctx2.getEditorRoot?.() ?? null
+      if (root) {
+        emitFirstNaturalRenderFinalVerification({
+          callOrdinal,
+          context: {
+            documentKey: ctx2.getDocumentKey?.() ?? '',
+            documentGeneration: ctx2.getCurrentGeneration?.() ?? 0,
+            editorRoot: root,
+            editorRootToken: editorRootTokenFor(root),
+          },
+          formulaIndex: entry.formulaIndex,
+          desiredTag: entry.desiredTag,
+        })
+      }
+    }
   }
 }
 

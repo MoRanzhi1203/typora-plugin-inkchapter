@@ -482,20 +482,20 @@ describe('P07 — Zero Production Callers Detected', () => {
 })
 
 // ═════════════════════════════════════════════════════════════════════════
-// P08 — Run ID is R5.4.3.19
+// P08 — Run ID is R5.4.3.21
 // ═════════════════════════════════════════════════════════════════════════
 
-describe('P08 — Run ID is R5.4.3.19', () => {
-  it('R54316_BUILD_ID includes r5.4.3.19', () => {
-    expect(R54316_BUILD_ID).toContain('r5.4.3.19')
+describe('P08 — Run ID is R5.4.3.21', () => {
+  it('R54316_BUILD_ID includes r5.4.3.21', () => {
+    expect(R54316_BUILD_ID).toContain('r5.4.3.21')
   })
 
-  it('R54316_BUILD_ID includes authoritative-source', () => {
-    expect(R54316_BUILD_ID).toContain('authoritative-source')
+  it('R54316_BUILD_ID includes single-source-stale-projection-visible-closure', () => {
+    expect(R54316_BUILD_ID).toContain('single-source-stale-projection-visible-closure')
   })
 
-  it('R54316_BUILD_ID does NOT include r5.4.3.18', () => {
-    expect(R54316_BUILD_ID).not.toContain('r5.4.3.18')
+  it('R54316_BUILD_ID does NOT include r5.4.3.20', () => {
+    expect(R54316_BUILD_ID).not.toContain('r5.4.3.20')
   })
 })
 
