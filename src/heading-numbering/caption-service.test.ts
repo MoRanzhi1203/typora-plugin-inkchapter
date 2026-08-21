@@ -8,6 +8,8 @@ import { setCaptionVaultRootForTesting, clearCaptionVaultRootForTesting, saveCap
 import { DEFAULT_CAPTION_SETTINGS, type CaptionSettings, type CaptionRecord } from './caption-system'
 import { readImageAlt } from './figure-alt-binding'
 import { hashText } from './paragraph-layout-store'
+import { buildHeadingNumberingSnapshotForRevision } from './heading-numbering-snapshot'
+import { DEFAULT_SETTINGS } from '../settings/default-settings'
 
 const TEST_VAULT = (() => {
   const dir = path.join(os.tmpdir(), `inkchapter-caption-svc-${Date.now()}`)
@@ -94,6 +96,7 @@ function createService(root: HTMLElement, docKey: string): CaptionService {
     getActiveFilePath: () => `/vault/${docKey}.md`,
     getDocumentKey: () => docKey,
     getEditorRoot: () => root,
+    getHeadingNumberingSnapshot: () => buildHeadingNumberingSnapshotForRevision([], DEFAULT_SETTINGS.headingNumberingScopes!.globalDefault, undefined, undefined, 1, docKey),
     getMarkdown: md.getMarkdown,
     reloadContent: md.reload,
   }
@@ -109,6 +112,7 @@ function createServiceWithMarkdown(root: HTMLElement, docKey: string): { svc: Ca
     getActiveFilePath: () => `/vault/${docKey}.md`,
     getDocumentKey: () => docKey,
     getEditorRoot: () => root,
+    getHeadingNumberingSnapshot: () => buildHeadingNumberingSnapshotForRevision([], DEFAULT_SETTINGS.headingNumberingScopes!.globalDefault, undefined, undefined, 1, docKey),
     getMarkdown: md.getMarkdown,
     reloadContent: md.reload,
   }

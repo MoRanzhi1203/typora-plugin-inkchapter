@@ -51,6 +51,8 @@ import {
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
 import { resolveHeadingContext, chapterFromHeadingNumber, sectionFromHeadingNumber, type HeadingContextEntry, type ResolvedHeadingContext } from './heading-context-resolver'
 import { FormulaNumberingAdapter, type FormulaReconcileItem } from './formula-numbering-adapter'
+import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
+import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
 
 export interface CaptionServiceContext {
   vaultRoot?: string | null
@@ -58,6 +60,8 @@ export interface CaptionServiceContext {
   getDocumentKey?: () => string | null
   getEditorRoot?: () => HTMLElement | null
   getMarkdown?: () => string
+  /** Phase 6: authoritative heading snapshot consumed for Figure/Table/Code numbering. */
+  getHeadingNumberingSnapshot?: () => HeadingNumberingSnapshot | null
   reloadContent?: (markdown: string) => void
   /** Read the active .md file bytes from disk (for FAW6 persistence evidence). */
   readActiveFileContent?: () => string | null
@@ -1257,28 +1261,44 @@ export class CaptionService {
       tableRenderedPlanned: renderedPlanned.table, imageRenderedPlanned: renderedPlanned.figure, codeRenderedPlanned: renderedPlanned.code,
     })
 
-    // Assign per-type numbers over plan (document order) — independent sequences
-    // via the unified Object Numbering V2 engine (never a per-type ++index here).
-    const numberingConfigs: Record<ObjectNumberingType, ObjectNumberingConfig> = {
-      table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')),
+    // Phase 6: compute Figure/Table/Code desired numbers from the canonical
+    // HeadingNumberingSnapshot (semantic ordinals) — never DOM heading numbers.
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    const headingEls = Array.from(this.currentEditorRoot?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? [])
+
+    const objectEntries: CaptionObjectEntry[] = plan.map(item => {
+      let preceding = 0
+      for (const h of headingEls) {
+        const pos = item.target.root.compareDocumentPosition(h)
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) break
+        preceding++
+      }
+      return {
+        stableIdentity: item.recordId ?? this.runtimeKeyForTarget(item.target, targets),
+        objectKind: item.type,
+        precedingHeadingCount: preceding,
+        name: item.name,
+      }
+    })
+
+    const productionConfigs: ProductionObjectConfigs = {
       figure: migrateObjectNumberingConfig('figure', resolveCaptionTypeSettings(this.captionSettings, 'figure')),
+      table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')),
       code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
-      formula: DEFAULT_OBJECT_NUMBERING_CONFIG.formula,
     }
-    const headingEls = Array.from(this.currentEditorRoot?.querySelectorAll<HTMLElement>('h1,h2,h3') ?? [])
-    const headingEntries = this.buildHeadingContextEntries(headingEls)
-    const numberingTargets: NumberingTarget[] = plan.map((item, i) => ({
-      type: item.type as ObjectNumberingType,
-      documentOrder: i,
-      name: item.name,
-      headingContext: this.headingContextForTargetRoot(item.target.root, headingEls, headingEntries, item.type, this.runtimeKeyForTarget(item.target, targets)),
-    }))
-    const numberingResults = computeObjectNumbers(numberingTargets, { configs: numberingConfigs })
-    const numbered = plan.map((item, i) => ({
-      ...item,
-      number: numberingResults[i].sequenceValue,
-      renderedNumber: numberingResults[i].renderedNumber,
-    }))
+
+    const desiredStates = snapshot
+      ? computeProductionDesiredCaptionStates(snapshot, objectEntries, productionConfigs)
+      : []
+
+    const numbered = plan.map((item, i) => {
+      const desired = desiredStates[i]
+      return {
+        ...item,
+        number: desired?.ordinal ?? 0,
+        renderedNumber: desired?.rawNumber ?? '',
+      }
+    })
     for (let i = 0; i < numbered.length; i++) {
       const item = numbered[i]
       const cfg = resolveCaptionTypeSettings(this.captionSettings, item.type)

@@ -8,6 +8,7 @@ import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { CaptionService } from './heading-numbering/caption-service'
 import type { CaptionServiceContext } from './heading-numbering/caption-service'
+import { DocumentNumberingCoordinator } from './heading-numbering/document-numbering-coordinator'
 import { CaptionContextMenu } from './heading-numbering/caption-context-menu'
 import { generateDocumentKey } from './heading-numbering/heading-numbering-scope-store'
 import { editor, File } from 'typora'
@@ -27,6 +28,7 @@ export default class extends Plugin<InkChapterSettings> {
   private numberingService?: HeadingNumberingService
   private captionService?: CaptionService
   private captionContextMenu?: CaptionContextMenu
+  private numberingCoordinator?: DocumentNumberingCoordinator
 
   onload() {
     console.log(`[InkChapter] onload START  build=${INKCHAPTER_BUILD_ID}`)
@@ -215,6 +217,7 @@ export default class extends Plugin<InkChapterSettings> {
           try { return generateDocumentKey(fp, vr) } catch { return null }
         },
         getEditorRoot: () => document.getElementById('write') as HTMLElement | null,
+        getHeadingNumberingSnapshot: () => this.numberingService?.getCurrentHeadingNumberingSnapshot() ?? null,
         getMarkdown: () => {
           try { return editor.getMarkdown() } catch { return '' }
         },
@@ -242,6 +245,16 @@ export default class extends Plugin<InkChapterSettings> {
       }
       this.captionService = new CaptionService(captionCtx)
       this.captionService.start()
+      // Phase 6B: event-driven coordinator wires heading snapshot lifecycle to
+      // Caption full-logical recompute (no polling, no click/focus dependency).
+      this.numberingCoordinator = new DocumentNumberingCoordinator({
+        getDocumentKey: () => this.numberingService?.getCurrentHeadingNumberingSnapshot()?.documentKey ?? null,
+        getSnapshot: () => this.numberingService?.getCurrentHeadingNumberingSnapshot() ?? null,
+        refresh: (reasons) => this.captionService?.refresh(reasons.join(',')) ?? undefined,
+        onSnapshotCommit: (cb) => this.numberingService?.subscribeHeadingNumberingSnapshot((_s, reason) => { if (reason === 'COMMITTED') cb() }) ?? (() => {}),
+        onSnapshotInvalidate: (cb) => this.numberingService?.subscribeHeadingNumberingSnapshot((_s, reason) => { if (reason.startsWith('INVALIDATED')) cb() }) ?? (() => {}),
+      })
+      this.register(() => this.numberingCoordinator?.dispose())
       this.captionContextMenu = new CaptionContextMenu(this.captionService)
       this.captionContextMenu.attach(() => document.getElementById('write') as HTMLElement | null)
       // Apply persisted caption settings to the runtime service (enabled/position/prefix).
