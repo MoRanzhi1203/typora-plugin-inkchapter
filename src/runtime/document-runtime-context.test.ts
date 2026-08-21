@@ -4,10 +4,10 @@ import { resolveDocumentRuntimeContext } from './document-runtime-context'
 // R58.7 PERSISTED→PERSISTED Document-Switch Scope Authority — DS-1..DS-4
 
 const VAULT = 'D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault'
-const PATH_A = `${VAULT}\\r58-docswitch-scope-a.md`
-const PATH_B = `${VAULT}\\r58-docswitch-scope-b.md`
-const KEY_A = 'r58-docswitch-scope-a.md'
-const KEY_B = 'r58-docswitch-scope-b.md'
+const PATH_A = `${VAULT}\\regression\\r58\\r58-docswitch-scope-a.md`
+const PATH_B = `${VAULT}\\regression\\r58\\r58-docswitch-scope-b.md`
+const KEY_A = 'regression/r58/r58-docswitch-scope-a.md'
+const KEY_B = 'regression/r58/r58-docswitch-scope-b.md'
 const SESSION = 'session-ds'
 const EDITOR = 'editor-1'
 

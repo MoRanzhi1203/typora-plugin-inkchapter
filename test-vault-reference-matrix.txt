@@ -1,0 +1,51 @@
+# test/vault Reference Matrix
+
+Generated: 2026-08-21 (Phase 3)
+
+## 根目录 r58 fixture 引用关系
+
+| FILE | REFERENCED_BY | COUNT | AUTOMATED_TEST | PROPOSED_ACTION |
+|---|---|---|---|---|
+| r58-empty-special-e1-01.md | scenarios.json(E1), authority-document.contract.mjs, authority-document-source.contract.mjs | 3 | yes | MOVE |
+| r58-empty-special-e2-01.md | scenarios.json(E2), document-identity.contract.mjs | 2 | yes | MOVE |
+| r58-empty-special-e3-01.md | scenarios.json(E3), authority-document.contract.mjs | 2 | yes | MOVE |
+| r58-caret-a1-fresh-01.md | scenarios.json(A1-01/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-02.md | scenarios.json(A1-02/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-04.md | scenarios.json(A2-01/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-05.md | scenarios.json(A3-01/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-06.md | scenarios.json(backup/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-07.md | scenarios.json(backup/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-08.md | scenarios.json(backup/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-09.md | scenarios.json(backup/reset) | 1 | yes | MOVE |
+| r58-caret-a1-fresh-10.md | scenarios.json(backup/reset) | 1 | yes | MOVE |
+| r58-empty-special-failure-path-01.md | scenarios.json(FAILURE-PATH), empty-special-test-hook.test.ts | 2 | yes | MOVE |
+| r58-empty-equivalent-raf-race-01.md | scenarios.json(RAF-RACE) | 1 | yes | MOVE |
+| r58-automation-input-smoke.md | scenarios.json(smoke) | 1 | yes | MOVE |
+| r58-docswitch-scope-a.md | document-runtime-context.test.ts | 1 | yes | MOVE |
+| r58-docswitch-scope-b.md | document-runtime-context.test.ts | 1 | yes | MOVE |
+| r58-canonical-transfer-acceptance.md | 未直接匹配 | 0 | no | MOVE(保守) |
+| r58-caret-a1-auto-smoke-01.md | 未直接匹配 | 0 | no | MOVE(保守) |
+| r58-caret-textinput-clean-20260813.md | 未直接匹配 | 0 | no | MOVE(保守) |
+| r58-empty-special-e1-02/03.md, e2-02/03.md, e3-02/03.md | 未直接匹配 | 0 | no | MOVE(保守) |
+| r58-empty-special-e1/e2/e3-clean.md, e2-sanity.md | 未直接匹配 | 0 | no | MOVE(保守) |
+| trae-p0-r58-7-strict-startup-fresh03-formal-clean-r0-gate.md | 未直接匹配 | 0 | no | MOVE(保守) |
+
+## 引用更新目标文件（迁移后必须修改）
+
+| FILE | 需要修改 |
+|---|---|
+| scripts/r58-matrix/fixture-manager.ps1 | Get-R58FixturePath 指向 regression/r58 |
+| scripts/r58-matrix/fixture-manager.mjs | fixturePath 指向 regression/r58（sidecar 仍在 .typora） |
+| scripts/r58-matrix/authority-document.contract.mjs | 硬编码 test\vault\r58-... 路径加 regression\r58 |
+| scripts/r58-matrix/document-identity.contract.mjs | VAULT/ABS 路径加 regression\r58 |
+| src/runtime/document-runtime-context.test.ts | PATH_A/PATH_B 加 regression\r58 |
+| src/heading-numbering/empty-special-test-hook.test.ts | activeFilePath 加 regression\r58 |
+
+## 非文档运行态（DELETE_CANDIDATE）
+
+| FILE | 引用 | 价值 | PROPOSED_ACTION |
+|---|---|---|---|
+| .tmp-fulltest.log | 无 | 临时日志 | DELETE_CANDIDATE |
+| full-test-r6012.log | 无 | 临时日志 | DELETE_CANDIDATE |
+| inkchapter-normal-enter-trace.jsonl | normal-enter-trace.ts(输出路径说明) | 运行态追踪 | DELETE_CANDIDATE |
+| inkchapter-outline-dom-dump.json | 无 | 运行态转储 | DELETE_CANDIDATE |
