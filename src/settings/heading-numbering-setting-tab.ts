@@ -5903,15 +5903,23 @@ export class HeadingNumberingSettingTab extends SettingTab {
     minDigitsInput.addEventListener('input', () => { apply({ minDigits: Math.min(6, Math.max(1, Number(minDigitsInput.value) || 1)) }); refreshPreview() })
     addField('最小位数 ', minDigitsInput)
 
+    const legacyTemplateWrap = el('div', 'inkchapter-caption-setting-detail', row)
+    legacyTemplateWrap.style.display = 'none'
+    legacyTemplateWrap.style.flexWrap = 'wrap'
+    legacyTemplateWrap.style.gap = '8px'
+    legacyTemplateWrap.style.alignItems = 'center'
+
+    const legacyTemplateLabel = el('label', 'inkchapter-caption-setting-control', legacyTemplateWrap)
+    legacyTemplateLabel.appendChild(document.createTextNode('旧版自定义编号格式 '))
     const templateInput = document.createElement('input')
     templateInput.type = 'text'
     templateInput.className = 'inkchapter-caption-setting-input'
     templateInput.style.width = '120px'
     templateInput.value = get().template ?? '{n}'
     templateInput.addEventListener('input', () => { apply({ template: templateInput.value }); refreshPreview() })
-    addField('编号格式 ', templateInput)
+    legacyTemplateLabel.appendChild(templateInput)
 
-    const varHint = el('div', 'inkchapter-caption-setting-detail', row)
+    const varHint = el('div', 'inkchapter-caption-setting-detail', legacyTemplateWrap)
     varHint.textContent = '可用变量：{n} {chapter} {section}'
     varHint.style.fontSize = '11px'
     varHint.style.color = 'var(--text-muted, #888)'
@@ -5926,6 +5934,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const refreshPreview = (): void => {
       const cfg = migrateObjectNumberingConfig(type, get())
+      const isLegacyCustom = cfg.preset === 'legacy-custom'
+      legacyTemplateWrap.style.display = isLegacyCustom ? 'flex' : 'none'
+      if (isLegacyCustom) {
+        templateInput.value = cfg.template ?? '{n}'
+      }
       const preview = buildPresetPreview(
         cfg.preset ?? 'global',
         type,

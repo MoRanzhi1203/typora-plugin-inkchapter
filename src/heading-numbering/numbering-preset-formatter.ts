@@ -41,6 +41,19 @@ export function presetToScopeStyle(preset: NumberingPreset): PresetScopeStyle {
   }
 }
 
+const STANDARD_PRESETS: readonly string[] = ['global', 'chapter-dot', 'section-dot', 'chapter-dash', 'section-dash']
+const OBJECT_NUMBERING_PRESETS: readonly string[] = [...STANDARD_PRESETS, 'legacy-custom']
+
+/** Canonical runtime membership check for the five standard presets. */
+export function isStandardNumberingPreset(value: unknown): value is NumberingPreset {
+  return typeof value === 'string' && STANDARD_PRESETS.includes(value)
+}
+
+/** Canonical runtime membership check for the full object-numbering preset set. */
+export function isObjectNumberingPreset(value: unknown): value is ObjectNumberingPreset {
+  return typeof value === 'string' && OBJECT_NUMBERING_PRESETS.includes(value)
+}
+
 /**
  * CANONICAL raw-number formatter. `minDigits` pads only the object `{n}`
  * ordinal; Chapter / Section are never padded.

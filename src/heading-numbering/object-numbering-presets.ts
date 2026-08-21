@@ -15,6 +15,7 @@
 import type { CaptionScope, NumberingStyle } from './semantic-heading-types'
 import {
   formatObjectNumber,
+  isObjectNumberingPreset,
   presetToScopeStyle,
   type ObjectNumberingPreset,
 } from './numbering-preset-formatter'
@@ -58,12 +59,28 @@ const EXACT_TEMPLATE_TO_PRESET: Record<string, ObjectNumberingPreset> = {
   '{chapter}.{section}-{n}': 'section-dash',
 }
 
+const FORMULA_WRAPPER_TEMPLATE_TO_PRESET: Record<string, ObjectNumberingPreset> = {
+  '({n})': 'global',
+  '({chapter}.{n})': 'chapter-dot',
+  '({chapter}.{section}.{n})': 'section-dot',
+  '({chapter}-{n})': 'chapter-dash',
+  '({chapter}.{section}-{n})': 'section-dash',
+}
+
 /**
  * Map a legacy template string to a public preset, EXACTLY. Anything that is
  * not an exact match is preserved as `legacy-custom` (never silently rewritten).
+ *
+ * For `kind === 'formula'`, exact legacy parenthesized wrapper templates
+ * (e.g. `({n})`) are translated to the SAME standard raw presets; the
+ * parentheses are Formula wrapper behavior, not part of the raw number.
  */
-export function migrateLegacyTemplateToPreset(template: string | undefined): ObjectNumberingPreset {
+export function migrateLegacyTemplateToPreset(template: string | undefined, kind?: 'formula'): ObjectNumberingPreset {
   const t = (template ?? '').trim()
+  if (kind === 'formula') {
+    const formulaPreset = FORMULA_WRAPPER_TEMPLATE_TO_PRESET[t]
+    if (formulaPreset) return formulaPreset
+  }
   return EXACT_TEMPLATE_TO_PRESET[t] ?? 'legacy-custom'
 }
 
@@ -110,8 +127,8 @@ export function normalizeObjectNumberingConfig(raw: unknown): NormalizedObjectNu
   const startNumber = normalizeStartNumber(r.startAt ?? r.startNumber ?? 1)
   const minDigits = normalizeMinDigits(r.minDigits ?? 1)
 
-  if (typeof r.preset === 'string') {
-    const preset = r.preset as ObjectNumberingPreset
+  if (isObjectNumberingPreset(r.preset)) {
+    const preset = r.preset
     if (preset !== 'legacy-custom') {
       return { enabled, preset, startNumber, minDigits }
     }
