@@ -90,7 +90,8 @@ export function computeSemanticHeadingNumbers(
         structuralParentIdentity: role.structuralParentIdentity,
         structuralChapterIdentity: role.structuralChapterIdentity,
         structuralSectionIdentity: role.structuralSectionIdentity,
-        semanticPath: [],
+        ordinalByDepth: [],
+        displayCountedPath: [],
         logicalOrdinal: null,
         chapterOrdinal: null,
         sectionOrdinal: null,
@@ -123,7 +124,8 @@ export function computeSemanticHeadingNumbers(
       currentCounted[i] = null
     }
 
-    const semanticPath = currentCounted.slice(0, depth).filter((v): v is number => v !== null)
+    const ordinalByDepth = currentCounted.slice(0, depth)
+    const displayCountedPath = ordinalByDepth.filter((v): v is number => v !== null)
 
     return {
       stableIdentity: role.stableIdentity,
@@ -133,10 +135,11 @@ export function computeSemanticHeadingNumbers(
       structuralParentIdentity: role.structuralParentIdentity,
       structuralChapterIdentity: role.structuralChapterIdentity,
       structuralSectionIdentity: role.structuralSectionIdentity,
-      semanticPath,
+      ordinalByDepth,
+      displayCountedPath,
       logicalOrdinal: ownOrdinal,
-      chapterOrdinal: currentCounted[0],
-      sectionOrdinal: depth >= 2 ? currentCounted[1] : null,
+      chapterOrdinal: ordinalByDepth[0] ?? null,
+      sectionOrdinal: ordinalByDepth[1] ?? null,
       sourceRevision,
       counted: ownOrdinal !== null,
       countingReason,

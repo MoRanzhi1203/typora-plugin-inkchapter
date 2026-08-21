@@ -64,9 +64,14 @@ export interface SemanticRoleAssignment {
  * Canonical semantic heading number state, produced by
  * `computeSemanticHeadingNumbers` inside the heading-numbering authority.
  *
- * `semanticPath` is the counted path: `[chapter]`, `[chapter, section]`, ...
- * A skipped level is omitted (dense), but `chapterOrdinal` / `sectionOrdinal`
- * remain the authoritative nullable scope inputs.
+ * `ordinalByDepth` is the CANONICAL position-preserving counted path:
+ *   index 0 = Chapter, index 1 = Section, index 2 = Subsection, ...
+ * A skipped level keeps its `null` slot (never filtered away).
+ * `chapterOrdinal` / `sectionOrdinal` are convenience projections of these
+ * canonical slots, not an independent authority.
+ *
+ * `displayCountedPath` is a dense (null-filtered) path kept ONLY for debug /
+ * display; no canonical consumer may treat its indices as Chapter/Section.
  */
 export interface SemanticHeadingNumberState {
   stableIdentity: string
@@ -76,7 +81,8 @@ export interface SemanticHeadingNumberState {
   structuralParentIdentity: string | null
   structuralChapterIdentity: string | null
   structuralSectionIdentity: string | null
-  semanticPath: readonly number[]
+  ordinalByDepth: readonly (number | null)[]
+  displayCountedPath: readonly number[]
   logicalOrdinal: number | null
   chapterOrdinal: number | null
   sectionOrdinal: number | null

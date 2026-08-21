@@ -24,7 +24,7 @@ import type {
   NumberingFormatSource,
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
-import { computeHeadingNumbering } from './numbering-engine'
+import { HeadingNumberingAuthority, type HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
 import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
@@ -1647,6 +1647,10 @@ export class HeadingNumberingService {
   // Settings revision: bumped on save to invalidate caches
   private settingsRevision = 0
 
+  // Heading Numbering Snapshot authority (Phase 4.10): owns monotonic revision
+  // and the current published physical + semantic snapshot.
+  private headingAuthority = new HeadingNumberingAuthority()
+
   // Level Range Enforcer
   private levelRangeEnforcer!: HeadingLevelRangeEnforcer
   private lastEffectiveMaxLevel: HeadingLevel = 6
@@ -2328,6 +2332,32 @@ export class HeadingNumberingService {
   }
 
   /**
+   * Phase 4.11: the authoritative published heading-numbering snapshot
+   * (physical + semantic) owned by this service, with a defensive document-key
+   * check. Returns null until the first successful reconcile commits a snapshot,
+   * and never returns a snapshot computed for a different active document.
+   */
+  getCurrentHeadingNumberingSnapshot(): HeadingNumberingSnapshot | null {
+    const activeKey = this.getDocumentKey()
+    if (!activeKey) return null
+    const snapshot = this.headingAuthority.getCurrent()
+    if (!snapshot) return null
+    if (snapshot.documentKey !== activeKey) return null
+    return snapshot
+  }
+
+  /**
+   * Phase 4.11: subscribe to snapshot commit / invalidation events for
+   * event-driven consumers (future Phase 6 DocumentNumberingCoordinator).
+   * Returns an unsubscribe function.
+   */
+  subscribeHeadingNumberingSnapshot(
+    listener: (snapshot: HeadingNumberingSnapshot | null, reason: import('./heading-numbering-snapshot').HeadingSnapshotChangeReason) => void,
+  ): () => void {
+    return this.headingAuthority.subscribe(listener)
+  }
+
+  /**
    * Single authoritative entry point: drive the OutlineController + Toolbar
    * documentKey from the current Document Runtime Context. Called at startup
    * catch-up, DOCUMENT-CONTEXT-READY, editor-load, file-open, and document
@@ -2391,6 +2421,10 @@ export class HeadingNumberingService {
       + ' showLevelOne=' + this.s.showLevelOneNumber)
     // Notify document change listeners when document key changes
     if (docKey !== oldKey) {
+      // Phase 4.11: proactively invalidate stale snapshot before new document commit.
+      if (oldKey !== null) {
+        this.headingAuthority.invalidate(docKey)
+      }
       this.notifyDocumentChanged(docKey, oldKey)
     }
   }
@@ -3480,53 +3514,11 @@ export class HeadingNumberingService {
       // ── STRICT-FIRST-H1 reactive validation (runs even when numbering off) ──
       this.revalidateStrictFirstH1(reason)
 
-      // Numbering: skip if disabled
-      if (!this.s.enabled) return
-
-      const snapshot = this.adapter.createHeadingSnapshot()
-      const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
-
-      if (!forceRefresh && this.lastSnapshot && this.renderedStates) {
-        // Structure unchanged?
-        if (!this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)) {
-          // Full state check: element refs, class, attr
-          if (this.adapter.isRenderedStateValid(this.renderedStates)) {
-            // Also check gaps — Typora may strip data-inkchapter-heading-gap on Enter
-            if (this.renderedGaps && !this.adapter.areGapsValid(this.renderedGaps)) {
-              this.adapter.applyLabelGaps(this.renderedGaps)
-            }
-            this.lastSnapshot = snapshot
-            return // Everything is fine, skip
-          }
-          // Structure same but decoration lost → repair only (node replaced)
-          const diff = this.adapter.repairDecoration(this.renderedStates)
-          this.renderedStates = this.adapter.buildRenderedStates(
-            this.renderedStates.map(s => s.label),
-          )
-          // Also re-apply gaps after repair
-          if (this.renderedGaps) {
-            this.adapter.applyLabelGaps(this.renderedGaps)
-          }
-          this.logRefresh(reason, snapshot.length, diff, startTime)
-          this.lastSnapshot = snapshot
-          return
-        }
-      }
-
-      // Full refresh
-      this.lastSnapshot = snapshot
-
+      // ── SEMANTIC SNAPSHOT RECONCILE (must precede physical numbering gate) ──
       const headings = this.adapter.collectHeadings()
       snapshotHeadingCollection(headings)
-      if (headings.length === 0) {
-        this.adapter.clearNumbering()
-        this.renderedStates = null
-        this.renderedGaps = null
-        recordRuntimeAudit('doRefresh:end', { headingCount: 0 })
-        return
-      }
 
-      // Snapshot config before computation
+      // Snapshot config before computation (diagnostic)
       snapshotConfigSource('pre-compute', {
         showLevelOneNumber: this.s.showLevelOneNumber,
         preset: this.s.preset,
@@ -3543,18 +3535,63 @@ export class HeadingNumberingService {
         ),
       })
 
-      // Apply effective max level from level range settings
+      // Apply effective max level from level range settings (physical display only)
       const effectiveMax = this.getEffectiveMaxLevel()
       this.s.maxDepth = effectiveMax
 
-      // Build override map from store
+      // Build override map + counter policy (shared with semantic)
       const overrideMap = this.buildOverrideMap(headings)
-
-      // Get counter policy
       const specialSettings = this.getSpecialNumberingSettings()
       const counterPolicy = specialSettings.unnumberedCounterPolicy
 
-      const numbered = computeHeadingNumbering(headings, this.s, overrideMap, counterPolicy)
+      // COMMIT canonical physical + semantic snapshot (atomic, before physical gate)
+      const numberingSnapshot = this.headingAuthority.commit(headings, this.s, overrideMap, counterPolicy, this.getDocumentKey())
+
+      // ── PHYSICAL PROJECTION GATE (semantic already committed) ──
+      if (!this.s.enabled) return
+
+      const snapshot = this.adapter.createHeadingSnapshot()
+      const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
+
+      if (!forceRefresh && this.lastSnapshot && this.renderedStates) {
+        // Structure unchanged?
+        if (!this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)) {
+          // Full state check: element refs, class, attr
+          if (this.adapter.isRenderedStateValid(this.renderedStates)) {
+            // Also check gaps — Typora may strip data-inkchapter-heading-gap on Enter
+            if (this.renderedGaps && !this.adapter.areGapsValid(this.renderedGaps)) {
+              this.adapter.applyLabelGaps(this.renderedGaps)
+            }
+            this.lastSnapshot = snapshot
+            return // physical DOM unchanged → skip projection (semantic already committed)
+          }
+          // Structure same but decoration lost → repair only (node replaced)
+          const diff = this.adapter.repairDecoration(this.renderedStates)
+          this.renderedStates = this.adapter.buildRenderedStates(
+            this.renderedStates.map(s => s.label),
+          )
+          // Also re-apply gaps after repair
+          if (this.renderedGaps) {
+            this.adapter.applyLabelGaps(this.renderedGaps)
+          }
+          this.logRefresh(reason, snapshot.length, diff, startTime)
+          this.lastSnapshot = snapshot
+          return
+        }
+      }
+
+      // Full physical refresh
+      this.lastSnapshot = snapshot
+
+      if (headings.length === 0) {
+        this.adapter.clearNumbering()
+        this.renderedStates = null
+        this.renderedGaps = null
+        recordRuntimeAudit('doRefresh:end', { headingCount: 0 })
+        return
+      }
+
+      const numbered = [...numberingSnapshot.physical]
       const labels = decimalHierarchicalFormatter.format(numbered, this.s)
 
       // Snapshot numbering engine per-heading output
