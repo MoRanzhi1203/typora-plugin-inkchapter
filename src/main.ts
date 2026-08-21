@@ -22,6 +22,7 @@ import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from '
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
+console.log('[InkChapter] INKCHAPTER-BOOT-MODULE-LOAD')
 
 export default class extends Plugin<InkChapterSettings> {
 
@@ -30,7 +31,13 @@ export default class extends Plugin<InkChapterSettings> {
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
 
+  constructor(...args: ConstructorParameters<typeof Plugin>) {
+    super(...args)
+    console.log('[InkChapter] INKCHAPTER-BOOT-CONSTRUCTOR-SUCCESS')
+  }
+
   onload() {
+    console.log('[InkChapter] INKCHAPTER-BOOT-ONLOAD-START')
     console.log(`[InkChapter] onload START  build=${INKCHAPTER_BUILD_ID}`)
 
     // ── Startup SyntaxError attribution ──────────
@@ -692,6 +699,7 @@ export default class extends Plugin<InkChapterSettings> {
       sessionId,
     })
 
+    console.log('[InkChapter] INKCHAPTER-BOOT-ONLOAD-SUCCESS')
     console.log('[InkChapter] 插件已加载')
   }
 
