@@ -44,6 +44,25 @@ export class HeadingDomAdapter {
     return result
   }
 
+  /**
+   * Canonical heading DOM binding — the SAME collection as collectHeadings()
+   * (same exclusion + same elementKey), but retaining the live element so the
+   * Heading authority can resolve "nearest preceding heading" by identity.
+   */
+  collectHeadingBindings(): { key: string; element: HTMLHeadingElement; level: HeadingLevel; text: string }[] {
+    if (!this.editorRoot) return []
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const result: { key: string; element: HTMLHeadingElement; level: HeadingLevel; text: string }[] = []
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      const level = parseInt(el.tagName.charAt(1), 10)
+      if (level < 1 || level > 6) continue
+      result.push({ key: this.elementKey(el, i), element: el, level: level as HeadingLevel, text: el.textContent ?? '' })
+    }
+    return result
+  }
+
   createHeadingSnapshot(preCollected?: HeadingDescriptor[]): HeadingSnapshot[] {
     if (preCollected) {
       return preCollected.map(h => ({ key: h.key, level: h.level }))

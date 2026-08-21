@@ -13,6 +13,7 @@
  */
 
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export type ReconcileReason =
   | 'initial-reconcile'
@@ -38,9 +39,27 @@ export class DocumentNumberingCoordinator {
   private unsubscribes: (() => void)[] = []
 
   constructor(private readonly deps: DocumentNumberingCoordinatorDeps) {
-    this.unsubscribes.push(deps.onSnapshotCommit(() => this.schedule('snapshot-commit')))
-    this.unsubscribes.push(deps.onSnapshotInvalidate(() => this.schedule('snapshot-invalidated')))
+    emitRuntimeAudit('RUNTIME-CODEPATH', { site: 'COORDINATOR_CONSTRUCTED' })
+    this.unsubscribes.push(deps.onSnapshotCommit(() => {
+      this.logSnapshotEvent('COMMITTED')
+      this.schedule('snapshot-commit')
+    }))
+    this.unsubscribes.push(deps.onSnapshotInvalidate(() => {
+      this.logSnapshotEvent('INVALIDATED')
+      this.schedule('snapshot-invalidated')
+    }))
+    emitRuntimeAudit('RUNTIME-CODEPATH', { site: 'COORDINATOR_STARTED' })
     this.schedule('initial-reconcile')
+  }
+
+  private logSnapshotEvent(event: string): void {
+    const snapshot = this.deps.getSnapshot()
+    emitRuntimeAudit('RUNTIME-CODEPATH', {
+      site: 'HEADING_SNAPSHOT_EVENT',
+      event,
+      documentKey: snapshot?.documentKey ?? 'none',
+      revision: snapshot?.revision ?? -1,
+    })
   }
 
   /** Event coalescing: multiple synchronous reasons collapse into one microtask reconcile. */
@@ -66,6 +85,12 @@ export class DocumentNumberingCoordinator {
     if (this.disposed) return
     const docKey = this.deps.getDocumentKey()
     const snapshot = this.deps.getSnapshot()
+    emitRuntimeAudit('RUNTIME-CODEPATH', {
+      site: 'COORDINATOR_RECONCILE',
+      reason: reasons.join('+'),
+      documentKey: docKey ?? 'none',
+      revision: snapshot?.revision ?? -1,
+    })
     // Never project across documents; defer until a current snapshot exists.
     if (!docKey || !snapshot || snapshot.documentKey !== docKey) return
 

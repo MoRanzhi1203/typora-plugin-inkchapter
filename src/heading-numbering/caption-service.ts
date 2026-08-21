@@ -62,6 +62,13 @@ export interface CaptionServiceContext {
   getMarkdown?: () => string
   /** Phase 6: authoritative heading snapshot consumed for Figure/Table/Code numbering. */
   getHeadingNumberingSnapshot?: () => HeadingNumberingSnapshot | null
+  /** Phase 6.1: canonical identity-based nearest-preceding-heading resolver. */
+  resolvePrecedingSemanticHeading?: (target: HTMLElement) => {
+    documentKey: string
+    revision: number
+    headingStableIdentity: string
+    semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
+  } | null
   reloadContent?: (markdown: string) => void
   /** Read the active .md file bytes from disk (for FAW6 persistence evidence). */
   readActiveFileContent?: () => string | null
@@ -1261,22 +1268,55 @@ export class CaptionService {
       tableRenderedPlanned: renderedPlanned.table, imageRenderedPlanned: renderedPlanned.figure, codeRenderedPlanned: renderedPlanned.code,
     })
 
-    // Phase 6: compute Figure/Table/Code desired numbers from the canonical
-    // HeadingNumberingSnapshot (semantic ordinals) — never DOM heading numbers.
+    // Phase 6.1R: compute Figure/Table/Code desired numbers from the canonical
+    // HeadingNumberingSnapshot via identity-based binding — never raw DOM index.
+    // Document-context coherence gate: only project when all document keys agree.
+    const activeDocumentKey = this.ctx.getDocumentKey?.() ?? null
     const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
-    const headingEls = Array.from(this.currentEditorRoot?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? [])
+
+    const snapshotDocumentKey = snapshot?.documentKey ?? 'none'
+    const coordinatorDocumentKey = docKey ?? 'none'
+    // Aligned = active and caption belong to the same document; when a heading
+    // snapshot IS present it must belong to the same document too (snapshot-less
+    // projection is allowed → GLOBAL fallback, never a mixed document).
+    const contextAligned = !!activeDocumentKey
+      && activeDocumentKey === coordinatorDocumentKey
+      && (!snapshot || activeDocumentKey === snapshotDocumentKey)
+
+    emitRuntimeAudit('CAPTION-DOCUMENT-CONTEXT-FORENSIC', {
+      activeDocumentKey: activeDocumentKey ?? 'none',
+      captionDocumentKey: coordinatorDocumentKey,
+      snapshotDocumentKey,
+      coordinatorDocumentKey,
+      snapshotRevision: snapshot?.revision ?? -1,
+      decision: contextAligned ? 'ALIGNED' : 'DEFER_MISMATCH',
+    })
+
+    if (!contextAligned) {
+      // Never project mixed-document state: defer, zero DOM projection writes.
+      emitRuntimeAudit('CAPTION-DEFER-DOCUMENT-MISMATCH', {
+        activeDocumentKey: activeDocumentKey ?? 'none',
+        captionDocumentKey: coordinatorDocumentKey,
+        snapshotDocumentKey,
+        projectionWrites: 0,
+      })
+      return
+    }
 
     const objectEntries: CaptionObjectEntry[] = plan.map(item => {
-      let preceding = 0
-      for (const h of headingEls) {
-        const pos = item.target.root.compareDocumentPosition(h)
-        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) break
-        preceding++
-      }
+      const resolved = this.ctx.resolvePrecedingSemanticHeading?.(item.target.root) ?? null
+      emitRuntimeAudit('CAPTION-HEADING-BINDING-FORENSIC', {
+        targetType: item.type,
+        resolvedHeadingStableIdentity: resolved?.headingStableIdentity ?? 'none',
+        resolvedChapterOrdinal: resolved?.semanticState.chapterOrdinal ?? null,
+        resolvedSectionOrdinal: resolved?.semanticState.sectionOrdinal ?? null,
+        resolvedRevision: resolved?.revision ?? -1,
+        decision: resolved ? 'BOUND' : 'NO_PRECEDING_HEADING',
+      })
       return {
         stableIdentity: item.recordId ?? this.runtimeKeyForTarget(item.target, targets),
         objectKind: item.type,
-        precedingHeadingCount: preceding,
+        precedingHeadingStableIdentity: resolved?.headingStableIdentity ?? null,
         name: item.name,
       }
     })

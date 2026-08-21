@@ -17,14 +17,15 @@ import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset, type ObjectNumberingPreset } from './numbering-preset-formatter'
 import { buildObjectNumberingLabel, renderNumberTemplate, type ObjectNumberingConfig } from './object-numbering-engine'
 import type { CaptionScope } from './semantic-heading-types'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export type ProductionObjectKind = 'figure' | 'table' | 'code'
 
 export interface CaptionObjectEntry {
   stableIdentity: string
   objectKind: ProductionObjectKind
-  /** Number of headings (in snapshot order) that precede this object in document order. */
-  precedingHeadingCount: number
+  /** Canonical stable identity of the nearest preceding heading (NOT a raw index). */
+  precedingHeadingStableIdentity: string | null
   name?: string
 }
 
@@ -82,6 +83,7 @@ export function computeProductionDesiredCaptionStates(
   configs: ProductionObjectConfigs,
 ): ProductionDesiredCaptionState[] {
   const semantic = snapshot.semantic
+  const semanticByIdentity = new Map(semantic.map(s => [s.stableIdentity, s]))
   const counters = new Map<string, number>()
   const results: ProductionDesiredCaptionState[] = []
 
@@ -90,8 +92,8 @@ export function computeProductionDesiredCaptionStates(
     if (!config || !config.enabled) continue
 
     const preset: ObjectNumberingPreset = config.preset ?? 'global'
-    const precedingHeading = obj.precedingHeadingCount > 0
-      ? semantic[obj.precedingHeadingCount - 1]
+    const precedingHeading = obj.precedingHeadingStableIdentity
+      ? semanticByIdentity.get(obj.precedingHeadingStableIdentity)
       : undefined
     const chapterOrdinal = precedingHeading?.chapterOrdinal ?? null
     const sectionOrdinal = precedingHeading?.sectionOrdinal ?? null
@@ -117,6 +119,20 @@ export function computeProductionDesiredCaptionStates(
     }
 
     const renderedLabel = buildObjectNumberingLabel(config.prefix, rawNumber, obj.name ?? '')
+
+    emitRuntimeAudit('RUNTIME-CODEPATH', {
+      site: 'CAPTION_SEMANTIC_BRIDGE',
+      targetType: obj.objectKind,
+      documentKey: snapshot.documentKey,
+      revision: snapshot.revision,
+      preset,
+      requestedScope,
+      effectiveScope: scope.effectiveScope,
+      chapterOrdinal: scope.chapter ?? null,
+      sectionOrdinal: scope.section ?? null,
+      ordinal,
+      rawNumber,
+    })
 
     results.push({
       documentKey: snapshot.documentKey,
