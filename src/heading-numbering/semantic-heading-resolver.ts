@@ -1,10 +1,10 @@
 /**
  * Heading Semantic Resolver — authoritative strict/loose mapping from physical
- * heading levels to semantic ROLES + effective depth.
+ * heading levels to semantic ROLES + effective depth + structural ancestry.
  *
- * IMPORTANT: this module only interprets roles. It does NOT compute chapter /
- * section ordinals — those come from the canonical semantic counter engine in
- * `semantic-heading-numbering.ts`.
+ * IMPORTANT: this module only interprets roles and structural ancestry. It does
+ * NOT compute chapter / section ordinals — those come from the canonical
+ * semantic counter engine in `semantic-heading-numbering.ts`.
  *
  * Strict mode (fixed physical mapping, no compression):
  *   H1 = document-title (effectiveDepth 0)
@@ -16,6 +16,9 @@
  * Loose mode (path-local / branch-local effective depth with compression):
  *   effective depth is derived from the current heading ancestry stack, NOT
  *   from the set of distinct levels present in the whole document.
+ *
+ * Structural ancestry (parent / chapter / section identity) is computed from
+ * the semantic ancestor stack and is independent of counting.
  */
 
 import type {
@@ -36,8 +39,10 @@ export function roleFromEffectiveDepth(depth: number): SemanticHeadingRole {
 }
 
 interface StackEntry {
+  identity: string
   physicalLevel: HeadingLevel
   effectiveDepth: number
+  semanticRole: SemanticHeadingRole
 }
 
 /**
@@ -50,32 +55,48 @@ export function resolveSemanticRoles(
   headings: readonly PhysicalHeading[],
   mode: HeadingStructureMode,
 ): SemanticRoleAssignment[] {
-  if (mode === 'strict') {
-    return headings.map(h => {
-      const effectiveDepth = h.level - 1
+  // Semantic ancestor stack (document-title is excluded from structural ancestry).
+  const stack: StackEntry[] = []
+
+  return headings.map(h => {
+    const isTitle = mode === 'strict' && h.level === 1
+
+    if (isTitle) {
+      stack.length = 0
       return {
         stableIdentity: h.key,
         physicalLevel: h.level,
-        semanticRole: roleFromEffectiveDepth(effectiveDepth),
-        effectiveDepth,
+        semanticRole: 'document-title',
+        effectiveDepth: 0,
+        structuralParentIdentity: null,
+        structuralChapterIdentity: null,
+        structuralSectionIdentity: null,
       }
-    })
-  }
+    }
 
-  // Loose: path-local effective depth from ancestor stack.
-  const stack: StackEntry[] = []
-  return headings.map(h => {
     while (stack.length > 0 && stack[stack.length - 1].physicalLevel >= h.level) {
       stack.pop()
     }
+
     const parent = stack.length > 0 ? stack[stack.length - 1] : null
-    const effectiveDepth = parent ? parent.effectiveDepth + 1 : 1
-    stack.push({ physicalLevel: h.level, effectiveDepth })
+    const effectiveDepth = mode === 'strict'
+      ? h.level - 1
+      : (parent ? parent.effectiveDepth + 1 : 1)
+    const role = roleFromEffectiveDepth(effectiveDepth)
+
+    const chapterAncestor = stack.find(e => e.semanticRole === 'chapter') ?? null
+    const sectionAncestor = stack.find(e => e.semanticRole === 'section') ?? null
+
+    stack.push({ identity: h.key, physicalLevel: h.level, effectiveDepth, semanticRole: role })
+
     return {
       stableIdentity: h.key,
       physicalLevel: h.level,
-      semanticRole: roleFromEffectiveDepth(effectiveDepth),
+      semanticRole: role,
       effectiveDepth,
+      structuralParentIdentity: parent?.identity ?? null,
+      structuralChapterIdentity: chapterAncestor?.identity ?? null,
+      structuralSectionIdentity: sectionAncestor?.identity ?? null,
     }
   })
 }

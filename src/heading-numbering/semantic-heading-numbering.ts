@@ -1,16 +1,22 @@
 /**
- * Canonical Semantic Heading Counter Engine — the missing shared authority that
- * numbers headings by semantic EFFECTIVE DEPTH, not physical H level.
+ * Canonical Semantic Heading Counter Engine — the shared authority that numbers
+ * headings by semantic EFFECTIVE DEPTH, not physical H level.
  *
  * This is the fix for the previously proven SEMANTIC_ORDINAL_AUTHORITY_GAP:
- * physical `counters[level-1]` cannot represent heterogeneous loose roots
- * (e.g. `H2→H3` then `H1→H3`) or same-chapter heterogeneous section levels
- * (e.g. `H1→H3→H2`). Semantic counters keyed by effective depth can.
+ * physical `counters[level-1]` cannot represent heterogeneous loose roots or
+ * same-chapter heterogeneous section levels. Semantic counters keyed by
+ * effective depth can.
  *
  * This lives INSIDE the heading-numbering boundary. It shares stable identity,
  * override map, counter policy and start values with the physical engine, but
  * produces a SEPARATE parallel state. It never parses DOM numbers, visible
  * labels or sidebar text.
+ *
+ * Two independent notions are maintained per heading:
+ *   - STRUCTURAL role + ancestry (from `resolveSemanticRoles`), never lost when
+ *     a heading is unnumbered + skip;
+ *   - COUNTED ordinal state (semanticPath / chapterOrdinal / sectionOrdinal),
+ *     which is null for an unnumbered + skip heading and its own level.
  */
 
 import type { UnnumberedCounterPolicy, HeadingNumberingSettings } from './heading-types'
@@ -42,13 +48,14 @@ function clamp(n: number, min: number, max: number): number {
  *
  * Semantic counters are keyed by effective depth:
  *   depth 1 = chapter, depth 2 = section, depth 3 = subsection, >=4 = item.
- * Deeper depths reset when a shallower depth changes (hierarchical semantic
- * model). `startAt` per depth is supplied explicitly (see `resolveSemanticStartAt`).
+ * Deeper depths reset when a shallower heading appears (structural hierarchy).
  *
- * Shared counting policy:
- * - `overrideMap` marks a heading unnumbered;
- * - `counterPolicy` decides skip (no consume) vs consume (consume, hidden);
- * - document-title never consumes the chapter sequence.
+ * Count policy:
+ * - document-title: never consumes the chapter sequence.
+ * - unnumbered + skip: keeps structural role/ancestry, does NOT consume its own
+ *   ordinal, and descendants do NOT gain a counted ordinal from it.
+ * - unnumbered + consume: consumes its own ordinal (descendants inherit it) but
+ *   is hidden.
  */
 export function computeSemanticHeadingNumbers(
   headings: readonly PhysicalHeading[],
@@ -58,21 +65,31 @@ export function computeSemanticHeadingNumbers(
   const { startAt, sourceRevision, overrideMap, counterPolicy = 'skip' } = options
   const roles = resolveSemanticRoles(headings, mode)
 
-  // counters[i] = running counter for effective depth i+1.
-  const counters: number[] = []
+  // nextOrdinal[i] = next ordinal to assign at effective depth i+1.
+  const nextOrdinal: number[] = []
   for (let i = 0; i < 6; i++) {
-    counters[i] = clamp(startAt[i] ?? 1, 1, 999) - 1
+    nextOrdinal[i] = clamp(startAt[i] ?? 1, 1, 999)
   }
+  // currentCounted[i] = current counted ordinal at effective depth i+1 (null = none).
+  const currentCounted: Array<number | null> = [null, null, null, null, null, null]
 
   return roles.map(role => {
     const depth = role.effectiveDepth
+    const isTitle = role.semanticRole === 'document-title' || depth < 1
 
-    if (role.semanticRole === 'document-title' || depth < 1) {
+    if (isTitle) {
+      for (let i = 0; i < 6; i++) {
+        nextOrdinal[i] = clamp(startAt[i] ?? 1, 1, 999)
+        currentCounted[i] = null
+      }
       return {
         stableIdentity: role.stableIdentity,
         physicalLevel: role.physicalLevel,
         effectiveDepth: depth,
         semanticRole: role.semanticRole,
+        structuralParentIdentity: role.structuralParentIdentity,
+        structuralChapterIdentity: role.structuralChapterIdentity,
+        structuralSectionIdentity: role.structuralSectionIdentity,
         semanticPath: [],
         logicalOrdinal: null,
         chapterOrdinal: null,
@@ -84,42 +101,45 @@ export function computeSemanticHeadingNumbers(
     }
 
     const isUnnumbered = overrideMap?.get(role.stableIdentity) === 'unnumbered'
-    if (isUnnumbered && counterPolicy === 'skip') {
-      return {
-        stableIdentity: role.stableIdentity,
-        physicalLevel: role.physicalLevel,
-        effectiveDepth: depth,
-        semanticRole: role.semanticRole,
-        semanticPath: [],
-        logicalOrdinal: null,
-        chapterOrdinal: null,
-        sectionOrdinal: null,
-        sourceRevision,
-        counted: false,
-        countingReason: 'UNNUMBERED_SKIP',
-      }
+    const isSkip = isUnnumbered && counterPolicy === 'skip'
+
+    let ownOrdinal: number | null
+    let countingReason: string
+
+    if (isSkip) {
+      ownOrdinal = null
+      countingReason = 'UNNUMBERED_SKIP'
+      currentCounted[depth - 1] = null
+    } else {
+      ownOrdinal = nextOrdinal[depth - 1]
+      nextOrdinal[depth - 1]++
+      currentCounted[depth - 1] = ownOrdinal
+      countingReason = isUnnumbered ? 'UNNUMBERED_CONSUME' : 'COUNTED'
     }
 
-    // Consume a sequence position at this depth.
-    counters[depth - 1]++
-    // Reset deeper depths.
-    for (let i = depth; i < counters.length; i++) {
-      counters[i] = clamp(startAt[i] ?? 1, 1, 999) - 1
+    // A new structural heading at this depth starts a fresh deeper sequence.
+    for (let i = depth; i < 6; i++) {
+      nextOrdinal[i] = clamp(startAt[i] ?? 1, 1, 999)
+      currentCounted[i] = null
     }
 
-    const semanticPath = counters.slice(0, depth)
+    const semanticPath = currentCounted.slice(0, depth).filter((v): v is number => v !== null)
+
     return {
       stableIdentity: role.stableIdentity,
       physicalLevel: role.physicalLevel,
       effectiveDepth: depth,
       semanticRole: role.semanticRole,
+      structuralParentIdentity: role.structuralParentIdentity,
+      structuralChapterIdentity: role.structuralChapterIdentity,
+      structuralSectionIdentity: role.structuralSectionIdentity,
       semanticPath,
-      logicalOrdinal: semanticPath[depth - 1] ?? null,
-      chapterOrdinal: semanticPath[0] > 0 ? semanticPath[0] : null,
-      sectionOrdinal: semanticPath.length >= 2 && semanticPath[1] > 0 ? semanticPath[1] : null,
+      logicalOrdinal: ownOrdinal,
+      chapterOrdinal: currentCounted[0],
+      sectionOrdinal: depth >= 2 ? currentCounted[1] : null,
       sourceRevision,
-      counted: true,
-      countingReason: isUnnumbered && counterPolicy === 'consume' ? 'UNNUMBERED_CONSUME' : 'COUNTED',
+      counted: ownOrdinal !== null,
+      countingReason,
     }
   })
 }

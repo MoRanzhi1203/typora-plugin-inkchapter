@@ -10,6 +10,12 @@
  *      heading-numbering boundary. It is the future source for Caption /
  *      Formula / Code numbering.
  *
+ * A semantic heading carries BOTH:
+ *   - structural ancestry (parent / chapter / section identity), which exists
+ *     regardless of whether the heading consumes a number;
+ *   - counted ordinal state (semanticPath / chapterOrdinal / sectionOrdinal),
+ *     which is null when the heading is unnumbered + skip.
+ *
  * The semantic layer NEVER parses DOM numbers, visible labels, or sidebar text.
  */
 
@@ -32,8 +38,12 @@ export interface PhysicalHeading {
 }
 
 /**
- * Role interpretation of a physical heading. This carries NO ordinal value;
+ * Role interpretation of a physical heading. Carries NO counted ordinal value;
  * ordinals are computed separately by the canonical semantic counter engine.
+ *
+ * Structural identities are computed here (from the ancestor stack) and are
+ * INDEPENDENT of counting — an unnumbered/skip heading still has a parent /
+ * chapter / section.
  */
 export interface SemanticRoleAssignment {
   stableIdentity: string
@@ -45,30 +55,36 @@ export interface SemanticRoleAssignment {
    * In loose mode effectiveDepth is path-local (branch-local compression).
    */
   effectiveDepth: number
+  structuralParentIdentity: string | null
+  structuralChapterIdentity: string | null
+  structuralSectionIdentity: string | null
 }
 
 /**
  * Canonical semantic heading number state, produced by
  * `computeSemanticHeadingNumbers` inside the heading-numbering authority.
  *
- * `semanticPath` is the main authority: `[chapter]`, `[chapter, section]`,
- * `[chapter, section, subsection]`, ... The Caption layer will only need
- * `semanticPath[0]` (chapter) and `semanticPath[1]` (section).
+ * `semanticPath` is the counted path: `[chapter]`, `[chapter, section]`, ...
+ * A skipped level is omitted (dense), but `chapterOrdinal` / `sectionOrdinal`
+ * remain the authoritative nullable scope inputs.
  */
 export interface SemanticHeadingNumberState {
   stableIdentity: string
   physicalLevel: HeadingLevel
   effectiveDepth: number
   semanticRole: SemanticHeadingRole
+  structuralParentIdentity: string | null
+  structuralChapterIdentity: string | null
+  structuralSectionIdentity: string | null
   semanticPath: readonly number[]
   logicalOrdinal: number | null
   chapterOrdinal: number | null
   sectionOrdinal: number | null
-  sourceRevision: number
   /** Whether this heading consumed a semantic sequence position. */
   counted: boolean
   /** Why the heading was counted / skipped (diagnostic only). */
   countingReason: string
+  sourceRevision: number
 }
 
 /** Object numbering scope requested by configuration. */
