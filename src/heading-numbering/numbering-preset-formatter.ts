@@ -1,6 +1,8 @@
 /**
- * Numbering Preset Formatter (Phase 4) — the five ordinary presets and the
- * shared format-number function.
+ * Numbering Preset Formatter — the CANONICAL preset id/type and raw-number
+ * formatter. There must be exactly ONE switch/case that maps semantic scope +
+ * style to a raw number string. UI descriptors and migration metadata live in
+ * `object-numbering-presets.ts` and DELEGATE here.
  *
  *   GLOBAL       -> n
  *   CHAPTER_DOT  -> chapter.n
@@ -21,6 +23,9 @@ export type NumberingPreset =
   | 'chapter-dash'
   | 'section-dash'
 
+/** Public standard presets plus the internal `legacy-custom` compatibility state. */
+export type ObjectNumberingPreset = NumberingPreset | 'legacy-custom'
+
 export interface PresetScopeStyle {
   requestedScope: CaptionScope
   style: NumberingStyle
@@ -37,13 +42,8 @@ export function presetToScopeStyle(preset: NumberingPreset): PresetScopeStyle {
 }
 
 /**
- * Format the canonical numeric ordinals into a display number string.
- *
- * @param scope       effective (already-degraded) scope
- * @param style       dot or dash
- * @param chapter     chapter ordinal (null unless scope >= chapter)
- * @param section     section ordinal (null unless scope === section)
- * @param ordinal     1-based ordinal within the effective scope
+ * CANONICAL raw-number formatter. `minDigits` pads only the object `{n}`
+ * ordinal; Chapter / Section are never padded.
  */
 export function formatObjectNumber(
   scope: CaptionScope,
@@ -51,13 +51,15 @@ export function formatObjectNumber(
   chapter: number | null,
   section: number | null,
   ordinal: number,
+  minDigits = 1,
 ): string {
-  if (scope === 'global') return String(ordinal)
+  const n = String(Math.max(0, Math.floor(ordinal))).padStart(Math.max(1, minDigits), '0')
+  if (scope === 'global') return n
   if (scope === 'chapter') {
     const c = chapter ?? 0
-    return style === 'dash' ? `${c}-${ordinal}` : `${c}.${ordinal}`
+    return style === 'dash' ? `${c}-${n}` : `${c}.${n}`
   }
   const c = chapter ?? 0
   const s = section ?? 0
-  return style === 'dash' ? `${c}.${s}-${ordinal}` : `${c}.${s}.${ordinal}`
+  return style === 'dash' ? `${c}.${s}-${n}` : `${c}.${s}.${n}`
 }

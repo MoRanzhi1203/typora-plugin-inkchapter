@@ -7,6 +7,7 @@
  */
 
 import { chapterFromHeadingNumber, sectionFromHeadingNumber } from './heading-context-resolver'
+import type { ObjectNumberingPreset } from './numbering-preset-formatter'
 
 export type ObjectNumberingType = 'table' | 'figure' | 'code' | 'formula'
 
@@ -43,6 +44,8 @@ export interface ObjectNumberingConfig {
   customExpression?: string
   /** formula only: native vs inkchapter numbering implementation. */
   formulaMode?: 'typora-native' | 'inkchapter'
+  /** Phase 5 semantic preset (additive; legacy numberingMode/template retained). */
+  preset?: ObjectNumberingPreset
 }
 
 export interface HeadingContext {
@@ -74,10 +77,10 @@ export interface NumberingResult {
 }
 
 export const DEFAULT_OBJECT_NUMBERING_CONFIG: Record<ObjectNumberingType, ObjectNumberingConfig> = {
-  table: { enabled: true, prefix: '表', position: 'above', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}' },
-  figure: { enabled: true, prefix: '图', position: 'below', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}' },
-  code: { enabled: true, prefix: '代码', position: 'above', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}' },
-  formula: { enabled: false, prefix: '', position: 'right', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '({n})', formulaMode: 'typora-native' },
+  table: { enabled: true, prefix: '表', position: 'above', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}', preset: 'global' },
+  figure: { enabled: true, prefix: '图', position: 'below', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}', preset: 'global' },
+  code: { enabled: true, prefix: '代码', position: 'above', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}', preset: 'global' },
+  formula: { enabled: false, prefix: '', position: 'right', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '({n})', formulaMode: 'typora-native', preset: 'global' },
 }
 
 // ── Number style formatting ──────────────────────────────────────────

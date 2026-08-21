@@ -34,15 +34,17 @@ import type { CaptionService } from '../heading-numbering/caption-service'
 import { DEFAULT_CAPTION_SETTINGS, type CaptionSettings, type CaptionTargetType } from '../heading-numbering/caption-system'
 import {
   DEFAULT_OBJECT_NUMBERING_CONFIG,
-  renderNumberingPreview,
   validateNumberTemplate,
   type ObjectNumberingConfig,
   type ObjectNumberingType,
-  type NumberingMode,
-  type NumberStyle,
   type ObjectPosition,
 } from '../heading-numbering/object-numbering-engine'
 import { migrateObjectNumberingConfig } from '../heading-numbering/object-numbering-settings'
+import {
+  buildPresetPreview,
+  getPublicPresetOptions,
+  type ObjectNumberingPreset,
+} from '../heading-numbering/object-numbering-presets'
 import {
   moveSegmentToResolvedIndex,
   calculateTargetIndexAfterRemoval,
@@ -5876,13 +5878,11 @@ export class HeadingNumberingSettingTab extends SettingTab {
       wrap.appendChild(inputEl)
     }
 
-    const modeSelect = buildSelect<NumberingMode>(NUMBERING_MODE_OPTIONS, (get().numberingMode ?? 'continuous') as NumberingMode, 'inkchapter-caption-setting-select')
-    modeSelect.addEventListener('change', () => { apply({ numberingMode: modeSelect.value }); refreshPreview() })
-    addField('编号方式 ', modeSelect)
+    const presetSelect = buildSelect<ObjectNumberingPreset>(getPublicPresetOptions(), (get().preset ?? 'global') as ObjectNumberingPreset, 'inkchapter-caption-setting-select')
+    presetSelect.addEventListener('change', () => { apply({ preset: presetSelect.value }); refreshPreview() })
+    addField('编号类型 ', presetSelect)
 
-    const styleSelect = buildSelect<NumberStyle>(NUMBER_STYLE_OPTIONS, (get().numberStyle ?? 'arabic') as NumberStyle, 'inkchapter-caption-setting-select')
-    styleSelect.addEventListener('change', () => { apply({ numberStyle: styleSelect.value }); refreshPreview() })
-    addField('序号样式 ', styleSelect)
+    // 序号样式 (Arabic only in ordinary UI) is intentionally hidden.
 
     const startInput = document.createElement('input')
     startInput.type = 'number'
@@ -5926,10 +5926,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     const refreshPreview = (): void => {
       const cfg = migrateObjectNumberingConfig(type, get())
-      const preview = renderNumberingPreview(type, cfg, { n: 1, chapter: '2', section: '3', name: sampleName })
+      const preview = buildPresetPreview(
+        cfg.preset ?? 'global',
+        type,
+        { chapter: 2, section: 1, ordinal: 3, name: sampleName },
+        cfg.startAt ?? 1,
+        cfg.minDigits ?? 1,
+        cfg.template,
+      )
       previewEl.textContent = `预览：${preview}`
-      const validation = validateNumberTemplate(cfg.template)
-      errorEl.textContent = validation.valid ? '' : `编号格式错误：${validation.reason}（必须包含 {n}）`
+      errorEl.textContent = ''
     }
     refreshPreview()
   }
@@ -6140,26 +6146,6 @@ function el(tag: string, cls?: string, parent?: HTMLElement): HTMLElement {
   if (parent) parent.appendChild(e)
   return e
 }
-
-const NUMBERING_MODE_OPTIONS: Array<{ value: NumberingMode; label: string }> = [
-  { value: 'continuous', label: '全文连续' },
-  { value: 'reset-h1', label: '按一级标题重置' },
-  { value: 'reset-h2', label: '按二级标题重置' },
-  { value: 'reset-h3', label: '按三级标题重置' },
-  { value: 'chapter-linked', label: '跟随章节' },
-  { value: 'custom', label: '自定义' },
-]
-
-const NUMBER_STYLE_OPTIONS: Array<{ value: NumberStyle; label: string }> = [
-  { value: 'arabic', label: '1, 2, 3' },
-  { value: 'arabic-padded', label: '01, 02, 03' },
-  { value: 'chinese', label: '一, 二, 三' },
-  { value: 'chinese-financial', label: '壹, 贰, 叁' },
-  { value: 'roman-lower', label: 'i, ii, iii' },
-  { value: 'roman-upper', label: 'I, II, III' },
-  { value: 'alpha-lower', label: 'a, b, c' },
-  { value: 'alpha-upper', label: 'A, B, C' },
-]
 
 function buildSelect<T extends string>(options: Array<{ value: T; label: string }>, selected: T, cls: string): HTMLSelectElement {
   const select = document.createElement('select')

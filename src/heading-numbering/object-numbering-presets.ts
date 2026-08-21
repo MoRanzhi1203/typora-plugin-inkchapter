@@ -1,25 +1,26 @@
 /**
- * Object Numbering Presets (Phase 5) — the shared public preset model, legacy
- * migration, start-number / min-digits formatting, and preview building for
- * Figure / Table / Formula / Code.
+ * Object Numbering Presets — UI descriptor metadata, Chinese labels, previews,
+ * and legacy migration for Figure / Table / Formula / Code.
  *
- * This is the CONFIGURATION + PREVIEW layer only. It does NOT touch the runtime
- * numbering engine (Phase 6) or Formula/MathJax (Phase 7).
+ * This is the CONFIGURATION + PREVIEW layer only. It does NOT reimplement the
+ * standard preset formatting switch/case — that lives in the canonical
+ * `numbering-preset-formatter.ts` (`formatObjectNumber`), and this module
+ * DELEGATES to it.
  *
- * The five public presets use SEMANTIC scopes (GLOBAL / CHAPTER / SECTION), not
- * physical H-level reset modes. Strict/Loose heading structure is inherited from
- * the Heading Authority.
+ * `legacy-custom` is a compatibility state, NOT a public standard preset. Its
+ * preview delegates to the legacy `renderNumberTemplate` so old custom templates
+ * (e.g. `{chapter}/{section}/{n}` → `2/1/3`) remain behaviorally lossless.
  */
 
 import type { CaptionScope, NumberingStyle } from './semantic-heading-types'
+import {
+  formatObjectNumber,
+  presetToScopeStyle,
+  type ObjectNumberingPreset,
+} from './numbering-preset-formatter'
+import { renderNumberTemplate } from './object-numbering-engine'
 
-export type ObjectNumberingPreset =
-  | 'global'
-  | 'chapter-dot'
-  | 'section-dot'
-  | 'chapter-dash'
-  | 'section-dash'
-  | 'legacy-custom'
+export type { ObjectNumberingPreset }
 
 export interface ObjectNumberingPresetDescriptor {
   id: ObjectNumberingPreset
@@ -30,7 +31,7 @@ export interface ObjectNumberingPresetDescriptor {
   preview: readonly string[]
 }
 
-/** Single source of truth for the five public presets. */
+/** Single source of truth for the five public presets (UI + preview). */
 export const PUBLIC_PRESET_DESCRIPTORS: readonly ObjectNumberingPresetDescriptor[] = [
   { id: 'global', label: '全文连续', scope: 'global', style: 'dot', template: '{n}', preview: ['1', '2', '3'] },
   { id: 'chapter-dot', label: '按章·点号', scope: 'chapter', style: 'dot', template: '{chapter}.{n}', preview: ['1.1', '1.2', '2.1'] },
@@ -38,6 +39,16 @@ export const PUBLIC_PRESET_DESCRIPTORS: readonly ObjectNumberingPresetDescriptor
   { id: 'chapter-dash', label: '按章·短横线', scope: 'chapter', style: 'dash', template: '{chapter}-{n}', preview: ['1-1', '1-2', '2-1'] },
   { id: 'section-dash', label: '按节·短横线', scope: 'section', style: 'dash', template: '{chapter}.{section}-{n}', preview: ['1.1-1', '1.1-2', '1.2-1'] },
 ]
+
+export interface PresetOption {
+  value: ObjectNumberingPreset
+  label: string
+}
+
+/** Options consumed by the real settings UI (five ordinary presets only). */
+export function getPublicPresetOptions(): PresetOption[] {
+  return PUBLIC_PRESET_DESCRIPTORS.map(d => ({ value: d.id, label: d.label }))
+}
 
 const EXACT_TEMPLATE_TO_PRESET: Record<string, ObjectNumberingPreset> = {
   '{n}': 'global',
@@ -63,9 +74,7 @@ export interface NormalizedObjectNumberingConfig {
   startNumber: number
   /** Minimum digits applied to the object ordinal `{n}` only. */
   minDigits: number
-  /** Original template preserved for legacy-custom (non-destructive). */
   legacyCustomTemplate?: string
-  /** Full original config payload preserved for legacy-custom (non-destructive). */
   legacyPayload?: unknown
 }
 
@@ -91,11 +100,9 @@ function normalizeMinDigits(v: unknown): number {
 }
 
 /**
- * Normalize a legacy or already-normalized object-numbering config into the
- * Phase 5 shape. Idempotent: normalizing twice yields an equal result.
- *
- * Non-numbering fields (enabled, prefix, position, name, formulaMode) are the
- * caller's responsibility and are NOT destroyed by this function.
+ * Normalize a legacy or already-normalized config into the Phase 5 shape.
+ * Idempotent. Non-numbering fields (enabled, prefix, position, name, formulaMode)
+ * are the caller's responsibility and are NOT destroyed by this function.
  */
 export function normalizeObjectNumberingConfig(raw: unknown): NormalizedObjectNumberingConfig {
   const r = (raw ?? {}) as LegacyObjectNumberingConfigLike
@@ -135,9 +142,9 @@ export function normalizeObjectNumberingConfig(raw: unknown): NormalizedObjectNu
 }
 
 /**
- * Format the raw object number for a preset from canonical semantic ordinals.
- * `startNumber` offsets the object ordinal `{n}`; `minDigits` pads only `{n}`.
- * Chapter / Section ordinals are never padded or offset.
+ * Format the raw object number for a preset. Standard presets delegate to the
+ * canonical `formatObjectNumber`; `legacy-custom` delegates to the legacy
+ * `renderNumberTemplate` so old templates remain behaviorally lossless.
  */
 export function formatPresetNumber(
   preset: ObjectNumberingPreset,
@@ -146,18 +153,18 @@ export function formatPresetNumber(
   ordinal: number,
   startNumber = 1,
   minDigits = 1,
+  legacyCustomTemplate?: string,
 ): string {
-  const n = startNumber + Math.max(0, Math.floor(ordinal) - 1)
-  const padded = String(n).padStart(Math.max(1, minDigits), '0')
-
-  switch (preset) {
-    case 'global': return padded
-    case 'chapter-dot': return `${chapter ?? 0}.${padded}`
-    case 'section-dot': return `${chapter ?? 0}.${section ?? 0}.${padded}`
-    case 'chapter-dash': return `${chapter ?? 0}-${padded}`
-    case 'section-dash': return `${chapter ?? 0}.${section ?? 0}-${padded}`
-    case 'legacy-custom': return padded
+  const effectiveOrdinal = startNumber + Math.max(0, Math.floor(ordinal) - 1)
+  if (preset === 'legacy-custom') {
+    return renderNumberTemplate(legacyCustomTemplate ?? '{n}', {
+      n: String(effectiveOrdinal).padStart(Math.max(1, minDigits), '0'),
+      chapter: String(chapter ?? 0),
+      section: String(section ?? 0),
+    })
   }
+  const { requestedScope, style } = presetToScopeStyle(preset)
+  return formatObjectNumber(requestedScope, style, chapter, section, effectiveOrdinal, minDigits)
 }
 
 export type CaptionObjectKind = 'figure' | 'table' | 'formula' | 'code'
@@ -176,11 +183,12 @@ export function buildPresetPreview(
   sample: PresetPreviewSample = {},
   startNumber = 1,
   minDigits = 1,
+  legacyCustomTemplate?: string,
 ): string {
   const chapter = sample.chapter ?? 2
   const section = sample.section ?? 1
   const ordinal = sample.ordinal ?? 3
-  const raw = formatPresetNumber(preset, chapter, section, ordinal, startNumber, minDigits)
+  const raw = formatPresetNumber(preset, chapter, section, ordinal, startNumber, minDigits, legacyCustomTemplate)
   const name = (sample.name ?? '').trim()
 
   switch (kind) {
