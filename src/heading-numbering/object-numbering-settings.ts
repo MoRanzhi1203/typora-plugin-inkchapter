@@ -17,6 +17,7 @@ import {
   type ObjectPosition,
 } from './object-numbering-engine'
 import { migrateLegacyTemplateToPreset, type ObjectNumberingPreset } from './object-numbering-presets'
+import { isObjectNumberingPreset } from './numbering-preset-formatter'
 
 export interface ObjectNumberingSettings {
   schemaVersion: number
@@ -72,9 +73,9 @@ export function migrateObjectNumberingConfig(
   const resetHeadingLevel = r.resetHeadingLevel === 1 || r.resetHeadingLevel === 2 || r.resetHeadingLevel === 3 ? (r.resetHeadingLevel as 1 | 2 | 3) : base.resetHeadingLevel
   const customExpression = typeof r.customExpression === 'string' ? r.customExpression : base.customExpression
   const formulaMode = r.formulaMode === 'inkchapter' ? 'inkchapter' : (r.formulaMode === 'typora-native' ? 'typora-native' : base.formulaMode)
-  const preset = typeof r.preset === 'string'
-    ? (r.preset as ObjectNumberingPreset)
-    : migrateLegacyTemplateToPreset(template)
+  const preset: ObjectNumberingPreset = isObjectNumberingPreset(r.preset)
+    ? r.preset
+    : migrateLegacyTemplateToPreset(template, type === 'formula' ? 'formula' : undefined)
 
   return {
     enabled,
