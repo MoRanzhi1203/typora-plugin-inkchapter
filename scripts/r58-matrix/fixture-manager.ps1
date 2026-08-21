@@ -11,7 +11,7 @@ $script:SidecarDir = Join-Path $script:DotTypora 'inkchapter\paragraph-layout'
 
 function Get-R58FixturePath {
     param([Parameter(Mandatory = $true)][string]$FixtureName)
-    return Join-Path $script:Vault $FixtureName
+    return Join-Path $script:Vault ("regression\r58\" + $FixtureName)
 }
 
 function Get-R58SidecarPath {

@@ -9,9 +9,9 @@ import {
 function input(overrides = {}) {
   return {
     hook: 'FORCE_VISUAL_VERIFY_FAIL_ONCE',
-    configuredDocument: 'r58-empty-special-failure-path-01.md',
-    activeDocumentKey: 'r58-empty-special-failure-path-01.md',
-    activeFilePath: 'D:/TyporaPluginProjects/typora-plugin-inkchapter/test/vault/r58-empty-special-failure-path-01.md',
+    configuredDocument: 'regression/r58/r58-empty-special-failure-path-01.md',
+    activeDocumentKey: 'regression/r58/r58-empty-special-failure-path-01.md',
+    activeFilePath: 'D:/TyporaPluginProjects/typora-plugin-inkchapter/test/vault/regression/r58/r58-empty-special-failure-path-01.md',
     remaining: 1,
     isTestVault: true,
     originalVisualVerify: true,
@@ -42,7 +42,7 @@ describe('FAILHOOK — EmptySpecial one-shot runtime test hook', () => {
   it('FAILHOOK-4: document mismatch → DOCUMENT_MISMATCH', () => {
     const r = evaluateEmptySpecialTestHook(input({
       configuredDocument: 'other.md',
-      activeDocumentKey: 'r58-empty-special-failure-path-01.md',
+      activeDocumentKey: 'regression/r58/r58-empty-special-failure-path-01.md',
     }))
     expect(r.armed).toBe(false)
     expect(r.reason).toBe('DOCUMENT_MISMATCH')

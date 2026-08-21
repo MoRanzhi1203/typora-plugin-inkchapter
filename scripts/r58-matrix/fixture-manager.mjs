@@ -38,13 +38,13 @@ export function resolveScenario(scenario, scenarios = loadScenarios()) {
 export function fixturePaths(fixture, vault = VAULT) {
   return {
     fixture: fixture,
-    fixturePath: path.join(vault, fixture),
+    fixturePath: path.join(vault, 'regression', 'r58', fixture),
     sidecarPath: path.join(vault, '.typora', 'inkchapter', 'paragraph-layout', fixture + '.json'),
   };
 }
 
 export function verifyFixture(fixture, vault = VAULT) {
-  const p = path.join(vault, fixture);
+  const p = path.join(vault, 'regression', 'r58', fixture);
   if (!fs.existsSync(p)) {
     return { fixture, fixturePath: p, exists: false, bytesHex: null, size: 0 };
   }
@@ -84,7 +84,7 @@ export function cleanSidecar(fixture, vault = VAULT) {
 
 /** Remove sidecar + ensure the fixture .md exists (never rewrites existing content). */
 export function cleanFixture(fixture, vault = VAULT) {
-  const fp = path.join(vault, fixture);
+  const fp = path.join(vault, 'regression', 'r58', fixture);
   const existed = fs.existsSync(fp);
   if (!existed) {
     fs.mkdirSync(path.dirname(fp), { recursive: true });
@@ -108,7 +108,7 @@ export function cleanFixture(fixture, vault = VAULT) {
  * paragraphOverrides with one force-indent record anchored at ordinal 0).
  */
 export function seedHistoricalFixture(fixture, vault = VAULT) {
-  const fp = path.join(vault, fixture);
+  const fp = path.join(vault, 'regression', 'r58', fixture);
   const sp = path.join(vault, '.typora', 'inkchapter', 'paragraph-layout', fixture + '.json');
 
   if (!fs.existsSync(fp)) {
