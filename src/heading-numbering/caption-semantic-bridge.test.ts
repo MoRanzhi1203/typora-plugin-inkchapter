@@ -39,7 +39,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('t', 1), hd('c', 2), hd('s', 3)],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 3 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       configs('section-dash'),
     )
     expect(r[0].chapterOrdinal).toBe(1)
@@ -52,7 +52,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('t', 1)],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 1 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 't' }],
       configs('section-dash'),
     )
     expect(r[0].effectiveScope).toBe('global')
@@ -63,7 +63,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('t', 1), hd('c', 2)],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 2 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 'c' }],
       configs('section-dash'),
     )
     expect(r[0].effectiveScope).toBe('chapter')
@@ -74,7 +74,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('c', 2), hd('s', 4)],
       'loose',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 2 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       configs('section-dash'),
     )
     expect(r[0].chapterOrdinal).toBe(1)
@@ -84,10 +84,10 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
 
   it('6A-AUTH-7: Figure/Table/Code counters are independent', () => {
     const objects: CaptionObjectEntry[] = [
-      { stableIdentity: 'F1', objectKind: 'figure', precedingHeadingCount: 3 },
-      { stableIdentity: 'T1', objectKind: 'table', precedingHeadingCount: 3 },
-      { stableIdentity: 'F2', objectKind: 'figure', precedingHeadingCount: 3 },
-      { stableIdentity: 'C1', objectKind: 'code', precedingHeadingCount: 3 },
+      { stableIdentity: 'F1', objectKind: 'figure', precedingHeadingStableIdentity: 's' },
+      { stableIdentity: 'T1', objectKind: 'table', precedingHeadingStableIdentity: 's' },
+      { stableIdentity: 'F2', objectKind: 'figure', precedingHeadingStableIdentity: 's' },
+      { stableIdentity: 'C1', objectKind: 'code', precedingHeadingStableIdentity: 's' },
     ]
     const r = compute([hd('t', 1), hd('c', 2), hd('s', 3)], 'strict', objects, configs('section-dash'))
     expect(r.map(x => `${x.objectKind}:${x.rawNumber}`)).toEqual([
@@ -107,7 +107,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('t', 1), hd('c', 2), hd('s', 3)],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 3 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       cfg,
     )
     expect(r[0].rawNumber).toBe('1.1-1') // preset wins over legacy template {n}
@@ -122,7 +122,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('t', 1), hd('c', 2), hd('s', 3)],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 3 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       cfg,
     )
     expect(r[0].rawNumber).toBe('1/1/1')
@@ -132,13 +132,13 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const a = compute(
       [hd('t', 1, '一、'), hd('c', 2, '1.1'), hd('s', 3, '(I)')],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 3 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       configs('section-dash'),
     )
     const b = compute(
       [hd('t', 1, 'Document'), hd('c', 2, 'Chapter'), hd('s', 3, 'Section')],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 3 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       configs('section-dash'),
     )
     expect(a[0].rawNumber).toBe(b[0].rawNumber)
@@ -153,7 +153,7 @@ describe('6A-AUTH — production Caption consumes heading snapshot (no DOM parse
     const r = compute(
       [hd('t', 1), hd('c', 2), hd('s', 3)],
       'strict',
-      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingCount: 3 }],
+      [{ stableIdentity: 'f1', objectKind: 'figure', precedingHeadingStableIdentity: 's' }],
       cfg,
     )
     expect(r[0].rawNumber).toBe('1.1-03') // startAt=3 -> ordinal 3; minDigits=2 -> 03

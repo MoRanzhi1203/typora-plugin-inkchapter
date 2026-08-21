@@ -465,6 +465,23 @@ function contextualToMultilevelVariants(
   }
 }
 
+/**
+ * DOM position bitmask constants — DOM spec values (1/2/4).
+ *
+ * MUST NOT use `Node.DOCUMENT_POSITION_*` here: real Typora runtime evidence
+ * (Phase 6.1R) proved those constants resolve to `undefined` inside the plugin
+ * bundle scope, silently making every bitmask test falsy:
+ *   - old positional path: `pos & Node.DOCUMENT_POSITION_FOLLOWING` never true
+ *     → counted ALL headings → selected the LAST semantic entry (+1 bug);
+ *   - canonical resolver: `pos & Node.DOCUMENT_POSITION_FOLLOWING` never true
+ *     → broke at the FIRST binding → NO_PRECEDING_CANDIDATE (null binding).
+ * These local literals are the same values the DOM spec defines and match the
+ * proven-working `caption-dom-adapter` constants.
+ */
+const DOM_POSITION_DISCONNECTED = 1
+const DOM_POSITION_PRECEDING = 2
+const DOM_POSITION_FOLLOWING = 4
+
 export class HeadingNumberingService {
   private adapter: HeadingDomAdapter
   private store: DisposableStore
@@ -2344,6 +2361,160 @@ export class HeadingNumberingService {
     if (!snapshot) return null
     if (snapshot.documentKey !== activeKey) return null
     return snapshot
+  }
+
+  /**
+   * Phase 6.1R: resolve the nearest preceding canonical semantic heading for a
+   * DOM object target, keyed by stableIdentity — NOT by raw DOM heading index.
+   *
+   * Every null exit is classified explicitly for runtime forensics. The target
+   * must be a live connected node inside the current editor root, and the
+   * canonical bindings must be connected nodes of the same root; disconnected
+   * relations are never guessed.
+   */
+  resolvePrecedingSemanticHeading(target: HTMLElement): {
+    documentKey: string
+    revision: number
+    headingStableIdentity: string
+    semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
+  } | null {
+    const activeDocumentKey = this.getDocumentKey()
+    const rawSnapshot = this.headingAuthority.getCurrent()
+    const adapterRoot = this.adapter.getEditorRoot()
+
+    const entry = {
+      targetTag: target.tagName ?? 'unknown',
+      targetClass: (target.className ?? '').slice(0, 40),
+      targetConnected: target.isConnected,
+      activeDocumentKey: activeDocumentKey ?? 'none',
+      headingSnapshotDocumentKey: rawSnapshot?.documentKey ?? 'none',
+      headingSnapshotRevision: rawSnapshot?.revision ?? -1,
+      headingAdapterRootToken: adapterRoot ? `${adapterRoot.tagName}#${adapterRoot.id}` : 'none',
+      headingAdapterRootConnected: adapterRoot ? adapterRoot.isConnected : false,
+    }
+    emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-ENTRY', entry)
+
+    // ── Explicit null exits (never collapsed into one generic reason) ──
+    const decision = (decision: string, extra: Record<string, unknown> = {}): null => {
+      emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-DECISION', { decision, ...extra })
+      return null
+    }
+
+    if (!activeDocumentKey) {
+      return decision('NO_ACTIVE_DOCUMENT', { targetConnected: target.isConnected })
+    }
+    if (!rawSnapshot) {
+      return decision('NO_SNAPSHOT', { activeDocumentKey })
+    }
+    if (rawSnapshot.documentKey !== activeDocumentKey) {
+      return decision('DOCUMENT_KEY_MISMATCH', {
+        snapshotDocumentKey: rawSnapshot.documentKey,
+        activeDocumentKey,
+      })
+    }
+    if (!adapterRoot || !adapterRoot.isConnected) {
+      return decision('NO_EDITOR_ROOT', { adapterRootToken: entry.headingAdapterRootToken })
+    }
+    if (!target.isConnected) {
+      return decision('TARGET_DISCONNECTED', { targetTag: entry.targetTag })
+    }
+    if (!adapterRoot.contains(target)) {
+      return decision('ROOT_MISMATCH', {
+        targetRootToken: target.closest('#write') ? '#write' : (target.parentElement?.tagName ?? 'none'),
+        headingAdapterRootToken: entry.headingAdapterRootToken,
+      })
+    }
+
+    const bindings = this.adapter.collectHeadingBindings()
+    if (bindings.length === 0) {
+      return decision('NO_BINDINGS', { headingAdapterRootToken: entry.headingAdapterRootToken })
+    }
+
+    // Bounded binding inventory (small docs only — avoids log explosion).
+    if (bindings.length <= 12) {
+      for (let i = 0; i < bindings.length; i++) {
+        const b = bindings[i]
+        const pos = b.element.compareDocumentPosition(target)
+        emitRuntimeAudit('CAPTION-CANONICAL-BINDING-INVENTORY', {
+          bindingIndex: i,
+          stableIdentity: b.key,
+          tag: b.element.tagName,
+          level: b.level,
+          textExcerpt: (b.text ?? '').slice(0, 24),
+          elementConnected: b.element.isConnected,
+          elementRootToken: b.element.closest('#write') ? '#write' : (b.element.parentElement?.tagName ?? 'none'),
+          sameEditorRootAsTarget: b.element.isConnected && adapterRoot.contains(b.element),
+          headingCompareTargetBitmask: pos,
+          targetCompareHeadingBitmask: target.compareDocumentPosition(b.element),
+          headingBeforeTarget: Boolean(pos & DOM_POSITION_FOLLOWING),
+          targetBeforeHeading: Boolean(pos & DOM_POSITION_PRECEDING),
+          disconnected: Boolean(pos & DOM_POSITION_DISCONNECTED),
+        })
+      }
+    }
+
+    const semanticByIdentity = new Map(rawSnapshot.semantic.map(s => [s.stableIdentity, s]))
+    let candidate: { key: string; element: HTMLElement } | null = null
+
+    for (const b of bindings) {
+      if (!b.element.isConnected || !adapterRoot.contains(b.element)) {
+        return decision('HEADING_DISCONNECTED', {
+          candidateKey: b.key,
+          bindingConnected: b.element.isConnected,
+        })
+      }
+      const pos = b.element.compareDocumentPosition(target)
+      if (pos & DOM_POSITION_DISCONNECTED) {
+        return decision('COMPARE_DISCONNECTED', {
+          candidateKey: b.key,
+          headingCompareTargetBitmask: pos,
+        })
+      }
+      if (pos & DOM_POSITION_FOLLOWING) {
+        candidate = b
+      } else {
+        break
+      }
+    }
+
+    if (!candidate) {
+      const first = bindings[0]
+      const firstPos = first ? first.element.compareDocumentPosition(target) : 0
+      return decision(
+        first && (firstPos & DOM_POSITION_PRECEDING)
+          ? 'TARGET_BEFORE_FIRST_HEADING'
+          : 'NO_PRECEDING_CANDIDATE',
+        { bindingCount: bindings.length },
+      )
+    }
+
+    const semanticState = semanticByIdentity.get(candidate.key)
+    if (!semanticState) {
+      return decision('CANDIDATE_IDENTITY_MISSING', {
+        candidateStableIdentity: candidate.key,
+        semanticIdentityCount: rawSnapshot.semantic.length,
+      })
+    }
+
+    emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-DECISION', {
+      decision: 'BOUND',
+      candidateStableIdentity: candidate.key,
+      candidateTag: candidate.element.tagName,
+      candidateTextExcerpt: (candidate.element.textContent ?? '').slice(0, 24),
+      semanticFound: true,
+      semanticRole: semanticState.semanticRole,
+      chapterOrdinal: semanticState.chapterOrdinal ?? null,
+      sectionOrdinal: semanticState.sectionOrdinal ?? null,
+      snapshotRevision: rawSnapshot.revision,
+      documentKey: rawSnapshot.documentKey,
+    })
+
+    return {
+      documentKey: rawSnapshot.documentKey,
+      revision: rawSnapshot.revision,
+      headingStableIdentity: candidate.key,
+      semanticState,
+    }
   }
 
   /**
