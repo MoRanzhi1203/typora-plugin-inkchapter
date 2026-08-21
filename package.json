@@ -7,7 +7,7 @@
   "main": "",
   "scripts": {
     "build:dev": "node build.js",
-    "build": "rollup -c rollup.config.js",
+    "build": "node build.js --prod",
     "pack": "pnpm run build && node pack.js",
     "test": "vitest run",
     "test:watch": "vitest"

@@ -60,4 +60,12 @@ if (IS_DEV) {
   await installDevPlugin()
   await closeTypora()
   child_process.exec('Typora ./test/vault/doc.md')
+} else {
+  // esbuild-sass-plugin names the compiled stylesheet after the `main.ts` entry
+  // (`main.css`); the runtime loader and deploy contract expect `style.css`.
+  try {
+    await fs.rename('./dist/main.css', './dist/style.css')
+  } catch {
+    // no compiled stylesheet to rename
+  }
 }
