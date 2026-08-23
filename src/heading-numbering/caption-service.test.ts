@@ -10,6 +10,7 @@ import { readImageAlt } from './figure-alt-binding'
 import { hashText } from './paragraph-layout-store'
 import { buildHeadingNumberingSnapshotForRevision } from './heading-numbering-snapshot'
 import { DEFAULT_SETTINGS } from '../settings/default-settings'
+import { DEFAULT_OBJECT_NUMBERING_CONFIG } from './object-numbering-engine'
 
 const TEST_VAULT = (() => {
   const dir = path.join(os.tmpdir(), `inkchapter-caption-svc-${Date.now()}`)
@@ -833,5 +834,55 @@ describe('classifyCaptionMutationBatch', () => {
       container.appendChild(p)
     })
     expect(classifyCaptionMutationBatch(records)).toBe('MIXED')
+  })
+})
+
+describe('Formula forensic isolation (Phase 7R.2-A1)', () => {
+  function addFormulaBlock(parent: HTMLElement): HTMLElement {
+    const div = document.createElement('div')
+    div.className = 'mathjax-block md-end-block md-math-block md-rawblock'
+    const container = document.createElement('div')
+    container.className = 'md-rawblock-container md-math-container math-jax-postprocess'
+    const mjx = document.createElement('mjx-container')
+    mjx.className = 'MathJax'
+    container.appendChild(mjx)
+    div.appendChild(container)
+    parent.appendChild(div)
+    return div
+  }
+
+  it('FORMULA-FORENSIC-ISOLATION-1: forensic throw never blocks formula reconcile', () => {
+    const root = makeRoot()
+    addFormulaBlock(root)
+    const svc = createService(root, 'formula-isolation')
+    services.push(svc)
+
+    // Make the forensic implementation throw intentionally BEFORE any refresh.
+    const svcAny = svc as unknown as {
+      formulaAdapter: { formulaVisibleProjectionForensic: () => unknown }
+    }
+    svcAny.formulaAdapter.formulaVisibleProjectionForensic = () => {
+      throw new TypeError('intentional forensic throw')
+    }
+
+    const infos: string[] = []
+    const origInfo = console.info
+    console.info = (...args: unknown[]) => { infos.push(args.map(String).join(' ')) }
+    try {
+      // Enabling inkchapter mode triggers refresh → refreshFormulaNumbering.
+      expect(() =>
+        svc.applyFormulaSettings({ ...DEFAULT_OBJECT_NUMBERING_CONFIG.formula, enabled: true, formulaMode: 'inkchapter' }),
+      ).not.toThrow()
+    } finally {
+      console.info = origInfo
+    }
+
+    // Business reconcile still executed: the planned number reached reconcile
+    // and the InkChapter decoration was created.
+    const deco = root.querySelector('[data-inkchapter-formula-number]')
+    expect(deco).not.toBeNull()
+    expect(deco!.textContent).toBeTruthy()
+    // The FORENSIC-ERROR marker was emitted and ignored (projection not blocked).
+    expect(infos.some(l => l.includes('FORMULA-VISIBLE-PROJECTION-FORENSIC-ERROR'))).toBe(true)
   })
 })

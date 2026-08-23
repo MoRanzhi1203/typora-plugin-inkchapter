@@ -49,7 +49,7 @@ import {
   type NumberingTarget,
 } from './object-numbering-engine'
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
-import { FormulaNumberingAdapter, type FormulaReconcileItem } from './formula-numbering-adapter'
+import { FormulaNumberingAdapter, type FormulaReconcileItem, type FormulaTarget } from './formula-numbering-adapter'
 import { planFormulaSemanticNumbers, type FormulaSemanticContext } from './formula-semantic-planner'
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
@@ -78,6 +78,12 @@ export interface CaptionServiceContext {
 }
 
 const REFRESH_DELAY_MS = 0
+
+/** Read-only probe of Typora's global auto-numbering preference (Phase 7R.2 forensic). */
+function readTyporaAutoNumberingForMath(): string | boolean | undefined {
+  const g = globalThis as { File?: { option?: { autoNumberingForMath?: string | boolean } } }
+  return g.File?.option?.autoNumberingForMath
+}
 
 export type CaptionMutationClassification = 'SELF_ONLY' | 'CONTENT_RELEVANT' | 'MIXED'
 
@@ -1439,16 +1445,43 @@ export class CaptionService {
     const items: FormulaReconcileItem[] = []
 
     if (semanticMode) {
-      // Phase 7R: bounded target-cardinality forensic (raw block vs canonical host).
+      // Phase 7R.1-A: bounded Formula host ownership forensic + cardinality gate.
+      // Raw candidates scan the BROAD selector; only LOGICAL_SOURCE_HOST nodes
+      // become business targets. Rendered MathJax output never consumes an ordinal.
       const snap = semanticSnapshot as HeadingNumberingSnapshot
       const rawCandidates = root.querySelectorAll(MATH_HOST_SELECTOR).length
       const uniqueHosts = new Set(formulaTargets.map(t => t.root)).size
+      const renderedMathJaxBusinessTargetCount = formulaTargets.filter(
+        t => t.root.matches('mjx-container') || t.root.classList.contains('MathJax'),
+      ).length
+      const ownership = this.formulaAdapter.formulaHostOwnershipForensic()
+      const logicalHostCount = ownership.filter(e => e.decision === 'ACCEPT_BUSINESS_TARGET').length
+      const renderedMathJaxHostCount = ownership.filter(e => e.candidateRole === 'RENDERED_MATHJAX_HOST').length
       emitRuntimeAudit('FORMULA-TARGET-CARDINALITY', {
         documentKey: snap.documentKey,
         rawCandidateCount: rawCandidates,
         canonicalTargetCount: formulaTargets.length,
         uniqueCanonicalHostCount: uniqueHosts,
+        expectedLogicalFormulaCount: 4,
+        renderedMathJaxBusinessTargetCount: renderedMathJaxBusinessTargetCount,
+        ownershipLogicalHostCount: logicalHostCount,
+        ownershipRenderedMathJaxHostCount: renderedMathJaxHostCount,
       })
+      for (const entry of ownership.slice(0, 24)) {
+        emitRuntimeAudit('FORMULA-HOST-OWNERSHIP-FORENSIC', {
+          documentKey: snap.documentKey,
+          candidateTag: entry.candidateTag,
+          candidateClass: entry.candidateClass,
+          candidateConnected: entry.candidateConnected,
+          candidateRole: entry.candidateRole,
+          candidateParentTag: entry.candidateParentTag,
+          candidateParentClass: entry.candidateParentClass,
+          insideLogicalFormulaHost: entry.insideLogicalFormulaHost,
+          containsMjxContainer: entry.containsMjxContainer,
+          sameLogicalFormulaOwnershipToken: entry.sameLogicalFormulaOwnershipToken,
+          decision: entry.decision,
+        })
+      }
     }
 
     if (!semanticMode) {
@@ -1515,6 +1548,71 @@ export class CaptionService {
       this.formulaAdapter.reconcile(items)
     } finally {
       this.rendering = false
+    }
+
+    // Phase 7R.2-A2: BEST-EFFORT visible-projection forensic — strictly AFTER
+    // business reconcile and fully isolated (try/catch) so it can NEVER block
+    // or abort Formula projection. READ-ONLY observation only.
+    if (semanticMode) {
+      this.emitVisibleProjectionForensic(semanticSnapshot as HeadingNumberingSnapshot, formulaTargets, items, mode)
+    }
+  }
+
+  /** Non-blocking forensic emission; any failure logs and is ignored. */
+  private emitVisibleProjectionForensic(
+    snap: HeadingNumberingSnapshot,
+    formulaTargets: FormulaTarget[],
+    items: FormulaReconcileItem[],
+    mode: string,
+  ): void {
+    try {
+      const visibleProjection = this.formulaAdapter.formulaVisibleProjectionForensic()
+      const autoNumbering = readTyporaAutoNumberingForMath()
+      const mathJaxTagMode = this.readMathJaxTagMode()
+      visibleProjection.slice(0, 12).forEach((entry, i) => {
+        const t = formulaTargets[i]
+        if (!t) return
+        emitRuntimeAudit('FORMULA-VISIBLE-PROJECTION-FORENSIC', {
+          documentKey: snap.documentKey,
+          formulaRuntimeKey: `formula:${t.ordinal}`,
+          desiredRenderedNumber: items[i]?.renderedNumber ?? null,
+          logicalHostTag: entry.logicalHostTag,
+          logicalHostClass: entry.logicalHostClass,
+          typoraAutoNumberingConfigured: autoNumbering ?? null,
+          mathJaxTagMode,
+          mjxContainerCount: entry.mjxContainerCount,
+          svgRootCount: entry.svgRootCount,
+          inkchapterDecorationCount: entry.inkchapterDecorationCount,
+          nativeDetectorFound: entry.nativeDetectorFound,
+          nativeDetectorText: entry.nativeDetectorText,
+          mathJaxTagLikeNodeCount: entry.mathJaxTagLikeNodeCount,
+          mathJaxTagLikeFingerprints: entry.mathJaxTagLikeFingerprints.slice(0, 6),
+          effectiveProjectionChannelsObserved: entry.effectiveProjectionChannelsObserved,
+          decision: entry.decision,
+        })
+      })
+    } catch (error) {
+      // Diagnostic failure must NEVER block Formula reconcile.
+      emitRuntimeAudit('FORMULA-VISIBLE-PROJECTION-FORENSIC-ERROR', {
+        documentKey: snap.documentKey,
+        formulaRuntimeKey: 'all',
+        errorName: error instanceof Error ? error.name : 'UNKNOWN_ERROR',
+        errorMessage: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+        stage: 'emitVisibleProjectionForensic',
+        decision: 'FORENSIC_ERROR_IGNORED',
+        businessProjectionBlocked: false,
+      })
+    }
+  }
+
+  /** Read MathJax `tex.tags` mode via the bundled MathJax config (read-only). */
+  private readMathJaxTagMode(): string | null {
+    try {
+      const g = globalThis as { MathJax?: { config?: { tex?: { tags?: unknown } } } }
+      const tags = g.MathJax?.config?.tex?.tags
+      return typeof tags === 'string' ? tags : tags == null ? null : String(tags)
+    } catch {
+      return null
     }
   }
 

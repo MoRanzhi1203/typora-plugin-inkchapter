@@ -2359,5 +2359,33 @@
   .inkchapter-caption-dialog { background: var(--background-primary, #252525); border-color: rgba(255,255,255,0.1); }
 }
 
+// ── Formula number projection (Phase 7R.1) ─────────────
+// The logical/source formula block host is the business authority; the
+// rendered MathJax output inside it is the PROJECTION host. The InkChapter
+// number is anchored after the rendered math and overlaid at the right edge
+// of the formula block. It is projection state only — never business identity,
+// never a DOM number inside MathJax-managed nodes, never persisted to TeX.
+
+#write .md-rawblock-container.md-math-container {
+  position: relative;
+}
+
+#write .inkchapter-formula-number {
+  position: absolute;
+  right: 0.5em;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-block;
+  font-size: 1em;
+  font-weight: 400;
+  color: var(--text-muted, #666);
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+
 
 
