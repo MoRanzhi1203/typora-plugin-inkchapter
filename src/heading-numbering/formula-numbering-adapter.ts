@@ -21,6 +21,7 @@
  */
 
 import { MATH_HOST_SELECTOR } from './caption-dom-adapter'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export type FormulaTargetDecision =
   | 'ACCEPT_BLOCK_FORMULA'
@@ -158,6 +159,19 @@ export class FormulaNumberingAdapter {
     for (const host of hosts) {
       const { decision, reason } = classifyFormulaHost(host)
       const native = this.detectNativeNumber(host)
+      // Phase 7R bounded discovery diagnostic — distinguishes raw block vs rendered MathJax host.
+      emitRuntimeAudit('FORMULA-TARGET-CANDIDATE', {
+        targetOrdinal: targets.length,
+        targetTag: host.tagName,
+        targetClass: (host.className || '').slice(0, 60),
+        targetConnected: host.isConnected,
+        canonicalHostTag: host.tagName,
+        canonicalHostClass: (host.className || '').slice(0, 60),
+        canonicalHostToken: `${host.tagName}.${(host.className || '').slice(0, 40)}:${host.getAttribute('data-line') ?? 'no-line'}`,
+        logicalSourceBlockToken: host.matches('.md-math-block, .mathjax-block') ? 'RAW_BLOCK' : (host.matches('mjx-container, .MathJax') ? 'RENDERED_MATHJAX' : 'OTHER'),
+        renderedMathJaxToken: host.tagName === 'MJX-CONTAINER' || host.classList.contains('MathJax') ? 'RENDERED' : (host.querySelector('mjx-container') ? 'HAS_MATHJAX_CHILD' : 'NONE'),
+        decision,
+      })
       console.info(
         `[InkChapter Numbering] FORMULA-TARGET tag=${host.tagName} ` +
         `class=${(host.className || '').slice(0, 60)} connected=${host.isConnected} ` +
