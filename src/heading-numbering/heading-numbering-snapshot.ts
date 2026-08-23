@@ -22,7 +22,12 @@ import { computeHeadingNumbering, type HeadingOverrideMap } from './numbering-en
 import { resolveHeadingStructure } from './heading-structure'
 import { computeSemanticHeadingNumbers, resolveSemanticStartAt } from './semantic-heading-numbering'
 import type { HeadingStructureMode, SemanticHeadingNumberState } from './semantic-heading-types'
+import { computeHeadingSemanticFingerprint } from './numbering-fast-path'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { forensicVerboseEnabled } from './document-open-perf'
+import {
+  incHeadingSemanticPerf,
+} from './heading-semantic-perf'
 
 export interface HeadingNumberingSnapshot {
   /** Document identity this snapshot was computed for. */
@@ -89,6 +94,8 @@ export class HeadingNumberingAuthority {
   private currentSnapshot: HeadingNumberingSnapshot | null = null
   private currentDocumentKey: string | null = null
   private listeners = new Set<HeadingSnapshotListener>()
+  /** Phase 7R.3.8-D/E: last committed canonical semantic fingerprint. */
+  private lastCommittedSemanticFingerprint: string | null = null
 
   commit(
     headings: readonly HeadingDescriptor[],
@@ -98,32 +105,98 @@ export class HeadingNumberingAuthority {
     documentKey?: string | null,
   ): HeadingNumberingSnapshot {
     const key = documentKey ?? ''
-    const snapshot = buildHeadingNumberingSnapshotForRevision(
+    incHeadingSemanticPerf('semanticRecomputeAttemptCount')
+    const candidate = buildHeadingNumberingSnapshotForRevision(
       headings,
       settings,
       overrideMap,
       counterPolicy,
-      ++this.revision,
+      this.revision + 1,
       key,
     )
-    this.currentSnapshot = snapshot
+    const fingerprint = computeHeadingSemanticFingerprint(candidate)
+    const unchanged = this.currentSnapshot !== null
+      && this.currentDocumentKey === key
+      && this.lastCommittedSemanticFingerprint === fingerprint
+
+    if (unchanged) {
+      // Phase 7R.3.8-E: semantic NO-OP — do NOT advance the revision, do NOT
+      // notify semantic subscribers, do NOT re-emit the boundary audit. The
+      // caller may still perform renderer-local repair via the returned
+      // snapshot's physical labels.
+      incHeadingSemanticPerf('semanticCommitUnchangedCount')
+      return this.currentSnapshot as HeadingNumberingSnapshot
+    }
+
+    this.revision++
+    incHeadingSemanticPerf('semanticCommitChangedCount')
+    incHeadingSemanticPerf('semanticRevisionAdvanceCount')
+    this.currentSnapshot = candidate
     this.currentDocumentKey = key
-    this.emitStrictBoundaryAudit(snapshot)
-    this.notify(snapshot, 'COMMITTED')
-    return snapshot
+    this.lastCommittedSemanticFingerprint = fingerprint
+    this.emitStrictBoundaryAudit(candidate, fingerprint)
+    this.notify(candidate, 'COMMITTED')
+    incHeadingSemanticPerf('semanticSubscriberNotifyCount')
+    return candidate
   }
 
   /**
-   * Phase 7R.3.7: STRICT-NUMBERING-BOUNDARY audit — walks the canonical
-   * semantic states in document order and records every strict H1 boundary
-   * transition (OPEN_BOUNDARY / CONTINUE_BOUNDARY). Diagnostic only; the
-   * boundary identity itself is carried by each SemanticHeadingNumberState.
+   * Phase 7R.3.7 + 7R.3.8-F: STRICT boundary audit.
+   *
+   * Normal mode emits ONE STRICT-NUMBERING-BOUNDARY-SUMMARY per actual semantic
+   * commit. Per-heading OPEN/CONTINUE_BOUNDARY detail is emitted ONLY when
+   * FORENSIC_VERBOSE=true. On hard boundary failures, targeted per-heading
+   * failure records are emitted so diagnostics are never silently lost.
    */
-  private emitStrictBoundaryAudit(snapshot: HeadingNumberingSnapshot): void {
+  private emitStrictBoundaryAudit(snapshot: HeadingNumberingSnapshot, fingerprint: string): void {
     if (snapshot.structureMode !== 'strict') return
+    const verbose = forensicVerboseEnabled()
+    const boundaryIdentities: string[] = []
+    let boundaryCount = 0
+    let chapterCount = 0
+    let sectionCount = 0
+    let invalidStrictParentCount = 0
     let previousBoundaryIdentity: string | null = null
+    const failures: Array<{ stableIdentity: string; physicalLevel: number; strictBoundaryIdentity: string | null; previousBoundaryIdentity: string | null; decision: string }> = []
+
     for (const s of snapshot.semantic) {
-      if (s.physicalLevel !== 1) {
+      if (s.physicalLevel === 1) {
+        boundaryCount++
+        boundaryIdentities.push(s.strictBoundaryIdentity ?? s.stableIdentity)
+        if (previousBoundaryIdentity !== null && previousBoundaryIdentity === s.strictBoundaryIdentity) {
+          failures.push({ stableIdentity: s.stableIdentity, physicalLevel: 1, strictBoundaryIdentity: s.strictBoundaryIdentity, previousBoundaryIdentity, decision: 'BOUNDARY_IDENTITY_NOT_ADVANCED' })
+        }
+        if (verbose) {
+          incHeadingSemanticPerf('strictBoundaryDetailedRecordCount')
+          emitRuntimeAudit('STRICT-NUMBERING-BOUNDARY', {
+            documentKey: snapshot.documentKey,
+            headingStableIdentity: s.stableIdentity,
+            physicalLevel: 1,
+            strictBoundaryIdentity: s.strictBoundaryIdentity,
+            previousBoundaryIdentity,
+            decision: 'OPEN_BOUNDARY',
+          })
+        }
+        previousBoundaryIdentity = s.strictBoundaryIdentity
+        continue
+      }
+      if (s.semanticRole === 'chapter') chapterCount++
+      if (s.semanticRole === 'section') sectionCount++
+      // Strict missing-parent detection (no fabricated zero path): a heading at
+      // physical level L>=3 requires ordinalByDepth parents [0..L-3].
+      if (s.physicalLevel >= 3) {
+        const requiredParents = s.physicalLevel - 2
+        let missing = false
+        for (let i = 0; i < requiredParents; i++) {
+          if (s.ordinalByDepth[i] === null) { missing = true; break }
+        }
+        if (missing) {
+          invalidStrictParentCount++
+          failures.push({ stableIdentity: s.stableIdentity, physicalLevel: s.physicalLevel, strictBoundaryIdentity: s.strictBoundaryIdentity, previousBoundaryIdentity, decision: 'INVALID_STRICT_PARENT' })
+        }
+      }
+      if (verbose) {
+        incHeadingSemanticPerf('strictBoundaryDetailedRecordCount')
         emitRuntimeAudit('STRICT-NUMBERING-BOUNDARY', {
           documentKey: snapshot.documentKey,
           headingStableIdentity: s.stableIdentity,
@@ -132,17 +205,36 @@ export class HeadingNumberingAuthority {
           previousBoundaryIdentity,
           decision: 'CONTINUE_BOUNDARY',
         })
-        continue
       }
+    }
+
+    incHeadingSemanticPerf('strictBoundarySummaryCount')
+    emitRuntimeAudit('STRICT-NUMBERING-BOUNDARY-SUMMARY', {
+      documentKey: snapshot.documentKey,
+      semanticRevision: snapshot.revision,
+      semanticFingerprint: fingerprint,
+      headingCount: snapshot.semantic.length,
+      boundaryCount,
+      boundaryIdentities,
+      chapterCount,
+      sectionCount,
+      invalidStrictParentCount,
+      zeroFillSuppressedCount: invalidStrictParentCount,
+      decision: 'SEMANTIC_CHANGED',
+    })
+
+    // Hard failure escalation: emit targeted per-heading failure records so
+    // failure diagnostics are available even in normal (non-verbose) mode.
+    for (const f of failures) {
+      incHeadingSemanticPerf('strictBoundaryDetailedRecordCount')
       emitRuntimeAudit('STRICT-NUMBERING-BOUNDARY', {
         documentKey: snapshot.documentKey,
-        headingStableIdentity: s.stableIdentity,
-        physicalLevel: 1,
-        strictBoundaryIdentity: s.strictBoundaryIdentity,
-        previousBoundaryIdentity,
-        decision: 'OPEN_BOUNDARY',
+        headingStableIdentity: f.stableIdentity,
+        physicalLevel: f.physicalLevel,
+        strictBoundaryIdentity: f.strictBoundaryIdentity,
+        previousBoundaryIdentity: f.previousBoundaryIdentity,
+        decision: f.decision,
       })
-      previousBoundaryIdentity = s.strictBoundaryIdentity
     }
   }
 
@@ -154,6 +246,7 @@ export class HeadingNumberingAuthority {
     const key = nextDocumentKey ?? null
     this.currentSnapshot = null
     this.currentDocumentKey = key
+    this.lastCommittedSemanticFingerprint = null
     this.notify(null, 'INVALIDATED_DOCUMENT_SWITCH')
   }
 
@@ -167,6 +260,11 @@ export class HeadingNumberingAuthority {
 
   getCurrentDocumentKey(): string | null {
     return this.currentDocumentKey
+  }
+
+  /** Phase 7R.3.8-D: last committed canonical semantic fingerprint (diagnostics). */
+  getLastCommittedSemanticFingerprint(): string | null {
+    return this.lastCommittedSemanticFingerprint
   }
 
   subscribe(listener: HeadingSnapshotListener): () => void {

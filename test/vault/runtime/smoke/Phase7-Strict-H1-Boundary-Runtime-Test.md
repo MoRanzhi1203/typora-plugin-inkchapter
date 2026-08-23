@@ -12,7 +12,7 @@
 print("boundary-a-section-a1")
 ```
 
-![boundary a figure](boundary-a-figure.png)
+![boundary a figure](assets/phase7-strict-h1-boundary/boundary-a-figure.png)
 
 $$
 E = mc^2
@@ -28,7 +28,7 @@ $$
 print("boundary-a-chapter-a2")
 ```
 
-![boundary a chapter a2 figure](boundary-a-chapter-a2-figure.png)
+![boundary a chapter a2 figure](assets/phase7-strict-h1-boundary/boundary-a-chapter-a2-figure.png)
 
 # Boundary B
 
@@ -48,7 +48,7 @@ $$
 print("boundary-b-section-b1")
 ```
 
-![boundary b figure](boundary-b-figure.png)
+![boundary b figure](assets/phase7-strict-h1-boundary/boundary-b-figure.png)
 
 $$
 \nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}

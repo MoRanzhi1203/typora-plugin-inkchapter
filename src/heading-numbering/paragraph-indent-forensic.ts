@@ -19,10 +19,10 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-strict-h1-numbering-boundary-v7R3.7'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-boundary-runtime-diagnostics-perf-v7R3.8'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r37-strict-h1-boundary'
+export const RUNTIME_GATE_REVISION = 'r7r38-boundary-diagnostics-perf'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

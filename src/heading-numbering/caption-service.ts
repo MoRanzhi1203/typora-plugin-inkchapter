@@ -95,6 +95,10 @@ import {
   type FormulaCandidateCoherenceDecision,
   type FormulaPlanSetPublishDecision,
 } from './formula-plan-set-coherence'
+import {
+  incHeadingSemanticPerf,
+  emitHeadingSemanticPerfSummary,
+} from './heading-semantic-perf'
 
 /**
  * Phase 7R.3.6-H/I: offline Formula plan-set candidate. Built completely OFF to
@@ -1846,6 +1850,7 @@ export class CaptionService {
       resolvedTargetCount: resolvedCount,
       states: desiredStates,
     }
+    incHeadingSemanticPerf('captionSemanticReconcileCount')
     emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
       documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
       snapshotRevision: snapshot?.revision ?? -1,
@@ -2037,15 +2042,32 @@ export class CaptionService {
       const ownership = this.formulaAdapter.formulaHostOwnershipForensic()
       const logicalHostCount = ownership.filter(e => e.decision === 'ACCEPT_BUSINESS_TARGET').length
       const renderedMathJaxHostCount = ownership.filter(e => e.candidateRole === 'RENDERED_MATHJAX_HOST').length
+      // Phase 7R.3.8-C: document-aware cardinality diagnostic. All counts come
+      // from the CURRENT document — the fixture-specific `expected=4` contract
+      // NEVER leaks into the generic production marker. The logical inventory
+      // (ownership forensic ACCEPT_BUSINESS_TARGET) is an independent collection
+      // from the canonical target array, so the comparison is not tautological.
+      const duplicateCanonicalHostCount = Math.max(0, formulaTargets.length - uniqueHosts)
+      const cardinalityDecision: 'CONSISTENT' | 'CARDINALITY_MISMATCH' | 'DUPLICATE_CANONICAL_HOST' | 'RENDERED_NODE_LEAK' =
+        renderedMathJaxBusinessTargetCount > 0
+          ? 'RENDERED_NODE_LEAK'
+          : duplicateCanonicalHostCount > 0
+            ? 'DUPLICATE_CANONICAL_HOST'
+            : logicalHostCount === formulaTargets.length
+              ? 'CONSISTENT'
+              : 'CARDINALITY_MISMATCH'
       emitRuntimeAudit('FORMULA-TARGET-CARDINALITY', {
         documentKey: snap.documentKey,
-        rawCandidateCount: rawCandidates,
-        canonicalTargetCount: formulaTargets.length,
+        logicalFormulaHostCount: logicalHostCount,
+        canonicalFormulaTargetCount: formulaTargets.length,
         uniqueCanonicalHostCount: uniqueHosts,
-        expectedLogicalFormulaCount: 4,
         renderedMathJaxBusinessTargetCount: renderedMathJaxBusinessTargetCount,
-        ownershipLogicalHostCount: logicalHostCount,
-        ownershipRenderedMathJaxHostCount: renderedMathJaxHostCount,
+        duplicateCanonicalHostCount,
+        expectedLogicalFormulaCount: 'NOT_APPLICABLE',
+        expectationSource: 'NONE',
+        decision: cardinalityDecision,
+        renderedMathJaxHostCount,
+        rawCandidates,
       })
       for (const entry of ownership.slice(0, 24)) {
         if (!forensicVerboseEnabled()) break
@@ -2143,6 +2165,7 @@ export class CaptionService {
 
       this.perfTracker.mark('T5')
       this.perfTracker.incFormulaPlanBuild()
+      incHeadingSemanticPerf('formulaSemanticPlanBuildCount')
       formulaTargets.forEach((t) => {
         const renderedNumber = desiredNumberFor(t)
         emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE', { decision: 'PLAN' })
@@ -2931,6 +2954,7 @@ export class CaptionService {
       historicalSignatureIsGatingAuthority: false,
       decision: 'REPORTED',
     })
+    emitHeadingSemanticPerfSummary(this.currentDocumentKey)
     return report
   }
 
