@@ -127,6 +127,28 @@ export interface FormulaCompletePlanSet {
   plans: Map<HTMLElement, FormulaNativeRenderPlan>
 }
 
+/**
+ * Phase 7R.3.7: the ONE live authoritative COMPLETE caption plan set per
+ * document. Built OFF to the side; published ONLY when COMPLETE. While a
+ * candidate is TRANSIENT_UNRESOLVED the previous COMPLETE set stays visible
+ * (projectionWrites=0) — a transient resolver failure NEVER becomes a fake
+ * GLOBAL caption (表 1 / 图 1 / 代码 1).
+ */
+export interface CaptionCompleteCaptionPlanSet {
+  documentKey: string
+  snapshotRevision: number
+  editorStructureEpoch: number
+  headingBindingGeneration: number
+  expectedTargetCount: number
+  resolvedTargetCount: number
+  states: import('./caption-semantic-bridge').ProductionDesiredCaptionState[]
+}
+
+/** Phase 7R.3.7 caption candidate coherence decision (mirrors Formula). */
+export type CaptionCandidateCoherenceDecision =
+  | 'COMPLETE'
+  | 'DEFER_TRANSIENT_UNRESOLVED'
+
 export interface CaptionServiceContext {
   vaultRoot?: string | null
   getActiveFilePath?: () => string | null
@@ -414,12 +436,18 @@ export class CaptionService {
   private lastHeadingBindingGeneration = 0
   /** The LAST COMPLETE Formula plan set (atomic authority, never partial). */
   private lastCompletePlanSet: FormulaCompletePlanSet | null = null
+  /** Phase 7R.3.7: LAST COMPLETE caption plan set (atomic authority). */
+  private lastCompleteCaptionPlanSet: CaptionCompleteCaptionPlanSet | null = null
   /** Last canonical Formula host fingerprint (transient host-set detection). */
   private lastCanonicalFormulaHostFingerprint = ''
   // ── Phase 7R.3.6 gate counters ──────────────────────────────────────
   private transientCandidateDeferCount = 0
   private transientIncompletePlanPublishCount = 0
   private transientGlobalFallbackProjectionCount = 0
+  /** Phase 7R.3.7: caption candidate deferred due to transient unresolved. */
+  private captionTransientCandidateDeferCount = 0
+  /** Phase 7R.3.7: partial caption plan published (must stay 0). */
+  private captionPartialPlanPublishCount = 0
   private livePlanCountZeroWithoutFormulaDeleteCount = 0
   private livePlanCountPartialWithoutFormulaStructureChangeCount = 0
   private historicalSignatureReactivationBlockCount = 0
@@ -1704,7 +1732,12 @@ export class CaptionService {
       batchResolved = this.ctx.resolvePrecedingSemanticHeadingBatch(plan.map(item => item.target.root))
     }
 
-    const objectEntries: CaptionObjectEntry[] = plan.map((item, i) => {
+    // ── Phase 7R.3.7: EXPLICIT per-target semantic resolution (shared contract
+    //    with Formula). Every caption target gets an explicit outcome:
+    //    BOUND / LEGITIMATE_CHAPTER_FALLBACK / LEGITIMATE_GLOBAL_FALLBACK /
+    //    TRANSIENT_UNRESOLVED. CANDIDATE_IDENTITY_MISSING and every other
+    //    transient incoherence NEVER become a fake GLOBAL caption. ──────────
+    const captionResolutions: FormulaSemanticResolution[] = plan.map((item, i) => {
       const raw = batchResolved !== null
         ? batchResolved[i]
         : (() => {
@@ -1713,21 +1746,22 @@ export class CaptionService {
               ? { bound: true as const, documentKey: single.documentKey, revision: single.revision, headingStableIdentity: single.headingStableIdentity, semanticState: single.semanticState }
               : { bound: false as const, reason: 'NO_PRECEDING_HEADING' }
           })()
-      const resolvedHeading = raw !== null && raw.bound === true ? raw : null
+      const res = classifyFormulaSemanticResolution(
+        raw.bound,
+        raw.bound ? null : raw.reason,
+        raw.bound ? raw.headingStableIdentity : null,
+        raw.bound ? raw.semanticState : null,
+      )
       emitRuntimeAudit('CAPTION-HEADING-BINDING-FORENSIC', {
         targetType: item.type,
-        resolvedHeadingStableIdentity: resolvedHeading?.headingStableIdentity ?? 'none',
-        resolvedChapterOrdinal: resolvedHeading?.semanticState.chapterOrdinal ?? null,
-        resolvedSectionOrdinal: resolvedHeading?.semanticState.sectionOrdinal ?? null,
-        resolvedRevision: resolvedHeading?.revision ?? -1,
-        decision: resolvedHeading ? 'BOUND' : 'NO_PRECEDING_HEADING',
+        resolvedHeadingStableIdentity: raw.bound ? raw.headingStableIdentity : 'none',
+        resolvedChapterOrdinal: raw.bound ? raw.semanticState.chapterOrdinal : null,
+        resolvedSectionOrdinal: raw.bound ? raw.semanticState.sectionOrdinal : null,
+        resolvedRevision: raw.bound ? raw.revision : -1,
+        decision: res.decision,
+        transientReason: res.decision === 'TRANSIENT_UNRESOLVED' ? res.reason : null,
       })
-      return {
-        stableIdentity: item.recordId ?? this.runtimeKeyForTarget(item.target, targets),
-        objectKind: item.type,
-        precedingHeadingStableIdentity: resolvedHeading?.headingStableIdentity ?? null,
-        name: item.name,
-      }
+      return res
     })
     this.perfTracker.mark('T3')
 
@@ -1737,9 +1771,93 @@ export class CaptionService {
       code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
     }
 
+    // ── Caption plan-set candidate coherence + ATOMIC publication ────────
+    // A COMPLETE candidate publishes atomically. Any TRANSIENT_UNRESOLVED
+    // target DEFERS the whole candidate and keeps the previous COMPLETE caption
+    // plan visible (projectionWrites=0). A LEGITIMATE_GLOBAL resolution (e.g.
+    // genuinely before the first heading) still publishes GLOBAL.
+    const transientUnresolvedCount = captionResolutions.filter(r => r.decision === 'TRANSIENT_UNRESOLVED').length
+    const resolvedCount = captionResolutions.filter(isResolvedFormulaSemantic).length
+    const legitimateChapterFallbackCount = captionResolutions.filter(r => r.decision === 'LEGITIMATE_CHAPTER_FALLBACK').length
+    const legitimateGlobalFallbackCount = captionResolutions.filter(r => r.decision === 'LEGITIMATE_GLOBAL_FALLBACK').length
+    const captionDecision: CaptionCandidateCoherenceDecision =
+      transientUnresolvedCount > 0 ? 'DEFER_TRANSIENT_UNRESOLVED' : 'COMPLETE'
+
+    this.emitCaptionCandidateCoherence(snapshot, plan.length, resolvedCount, legitimateChapterFallbackCount, legitimateGlobalFallbackCount, transientUnresolvedCount, captionDecision)
+
+    if (captionDecision !== 'COMPLETE') {
+      // DEFER — keep the previous COMPLETE caption plan set (DOM untouched).
+      this.captionTransientCandidateDeferCount++
+      const previous = this.lastCompleteCaptionPlanSet
+      const publishedPlanCount = previous ? previous.states.length : 0
+      emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
+        documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+        snapshotRevision: snapshot?.revision ?? -1,
+        editorStructureEpoch: this.editorStructureEpochValue,
+        headingBindingGeneration: this.ctx.getHeadingBindingGeneration?.() ?? this.lastHeadingBindingGeneration,
+        previousCompletePlanCount: publishedPlanCount,
+        candidatePlanCount: 0,
+        publishedPlanCount,
+        canonicalTargetCount: plan.length,
+        decision: 'DEFER_KEEP_PREVIOUS_COMPLETE_SET',
+        transientUnresolvedCount,
+        projectionWrites: 0,
+      })
+      // Retry via the coalesced scheduler when new semantic information arrives.
+      const liveSnap = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+      if (liveSnap && snapshot && (liveSnap.revision !== snapshot.revision || this.editorStructureEpochValue !== 0)) {
+        this.requestNumberingReconcile({
+          reason: `caption-deferred-candidate:${transientUnresolvedCount}`,
+          invalidation: ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'],
+        })
+      }
+      return
+    }
+
+    const objectEntries: CaptionObjectEntry[] = plan.map((item, i) => {
+      const res = captionResolutions[i]
+      const resolved = res.decision !== 'TRANSIENT_UNRESOLVED'
+      return {
+        stableIdentity: item.recordId ?? this.runtimeKeyForTarget(item.target, targets),
+        objectKind: item.type,
+        precedingHeadingStableIdentity: resolved ? res.headingStableIdentity : null,
+        name: item.name,
+        structureMode: snapshot?.structureMode ?? 'loose',
+        strictBoundaryIdentity: resolved ? res.strictBoundaryIdentity : null,
+        structuralChapterIdentity: resolved ? res.structuralChapterIdentity : null,
+        structuralSectionIdentity: resolved ? res.structuralSectionIdentity : null,
+        chapterOrdinal: resolved ? res.chapterOrdinal : null,
+        sectionOrdinal: resolved ? res.sectionOrdinal : null,
+      }
+    })
+
     const desiredStates = snapshot
       ? computeProductionDesiredCaptionStates(snapshot, objectEntries, productionConfigs)
       : []
+
+    // ATOMIC PUBLISH (only reached with a COMPLETE candidate).
+    const previousCompleteCaptionCount = this.lastCompleteCaptionPlanSet?.states.length ?? 0
+    this.lastCompleteCaptionPlanSet = {
+      documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? '',
+      snapshotRevision: snapshot?.revision ?? -1,
+      editorStructureEpoch: this.editorStructureEpochValue,
+      headingBindingGeneration: this.ctx.getHeadingBindingGeneration?.() ?? this.lastHeadingBindingGeneration,
+      expectedTargetCount: plan.length,
+      resolvedTargetCount: resolvedCount,
+      states: desiredStates,
+    }
+    emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
+      documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+      snapshotRevision: snapshot?.revision ?? -1,
+      editorStructureEpoch: this.editorStructureEpochValue,
+      headingBindingGeneration: this.ctx.getHeadingBindingGeneration?.() ?? this.lastHeadingBindingGeneration,
+      previousCompletePlanCount: previousCompleteCaptionCount,
+      candidatePlanCount: desiredStates.length,
+      publishedPlanCount: desiredStates.length,
+      canonicalTargetCount: plan.length,
+      decision: 'ATOMIC_PUBLISH',
+      transientUnresolvedCount: 0,
+    })
 
     const numbered = plan.map((item, i) => {
       const desired = desiredStates[i]
@@ -2005,6 +2123,9 @@ export class CaptionService {
             headingStableIdentity: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.headingStableIdentity,
             chapterOrdinal: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.chapterOrdinal,
             sectionOrdinal: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.sectionOrdinal,
+            strictBoundaryIdentity: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.strictBoundaryIdentity,
+            structuralChapterIdentity: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.structuralChapterIdentity,
+            structuralSectionIdentity: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.structuralSectionIdentity,
             targetConnected: t.root.isConnected,
           })
         }
@@ -2099,7 +2220,13 @@ export class CaptionService {
       // ── Build plan entries ONLY from resolved contexts, in target order ──
       const planEntries: Array<{ target: FormulaTarget; plan: FormulaNativeRenderPlan }> = []
       if (decision === 'COMPLETE') {
-        const formulaContexts = formulaTargets.map((_t, i) => resolutionToFormulaContext(resolutions[i]) ?? { chapterOrdinal: null, sectionOrdinal: null })
+        // Phase 7R.3.7: each context carries boundary + structural provenance
+        // so Formula scopeKey and projection signature are boundary-aware.
+        const formulaContexts = formulaTargets.map((_t, i) => {
+          const ctx = resolutionToFormulaContext(resolutions[i])
+          if (!ctx) return { chapterOrdinal: null, sectionOrdinal: null, mode: snap.structureMode }
+          return { ...ctx, mode: snap.structureMode }
+        })
         const planned = planFormulaSemanticNumbers(formulaContexts, cfg)
         for (let i = 0; i < formulaTargets.length; i++) {
           const t = formulaTargets[i]
@@ -2127,6 +2254,10 @@ export class CaptionService {
               formulaRuntimeKey: `formula:${t.ordinal}`,
               authority: 'inkchapter-native-transient',
               formulaMode: 'inkchapter',
+              strictBoundaryIdentity: p.strictBoundaryIdentity,
+              structuralChapterIdentity: p.structuralChapterIdentity,
+              structuralSectionIdentity: p.structuralSectionIdentity,
+              effectiveScope: p.effectiveScope,
             },
           })
         }
@@ -2285,6 +2416,31 @@ export class CaptionService {
       transientUnresolvedCount: candidate.transientUnresolvedCount,
       canonicalHostFingerprintBefore: this.lastCanonicalFormulaHostFingerprint,
       canonicalHostFingerprintAfter: candidate.canonicalHostFingerprint,
+      decision,
+    })
+  }
+
+  /** CAPTION-PLAN-CANDIDATE-COHERENCE audit (Phase 7R.3.7 §11). */
+  private emitCaptionCandidateCoherence(
+    snapshot: HeadingNumberingSnapshot | null,
+    canonicalTargetCount: number,
+    resolvedCount: number,
+    legitimateChapterFallbackCount: number,
+    legitimateGlobalFallbackCount: number,
+    transientUnresolvedCount: number,
+    decision: CaptionCandidateCoherenceDecision,
+  ): void {
+    emitRuntimeAudit('CAPTION-PLAN-CANDIDATE-COHERENCE', {
+      documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+      snapshotRevision: snapshot?.revision ?? -1,
+      editorStructureEpoch: this.editorStructureEpochValue,
+      headingBindingGeneration: this.ctx.getHeadingBindingGeneration?.() ?? this.lastHeadingBindingGeneration,
+      canonicalTargetCount,
+      candidatePlanCount: canonicalTargetCount,
+      resolvedCount,
+      legitimateChapterFallbackCount,
+      legitimateGlobalFallbackCount,
+      transientUnresolvedCount,
       decision,
     })
   }
@@ -2756,9 +2912,25 @@ export class CaptionService {
       staleActivationCommitIgnoredCount: stale.staleActivationCommitIgnoredCount,
       staleActivationLookupCount: stale.staleActivationLookupCount,
       adoptedExistingSemanticOutputCount: stale.adoptedExistingSemanticOutputCount,
+      // ── Phase 7R.3.7 caption boundary closure counters ─────────────────
+      captionTransientCandidateDeferCount: this.captionTransientCandidateDeferCount,
+      captionPartialPlanPublishCount: this.captionPartialPlanPublishCount,
+      captionCompletePlanPublishedCount: this.lastCompleteCaptionPlanSet ? this.lastCompleteCaptionPlanSet.states.length : 0,
       decision: 'REPORTED',
     }
     emitRuntimeAudit('PHASE-7R-3-6-GATE-COUNTERS', report)
+    emitRuntimeAudit('PHASE-7R-3-7-BOUNDARY-GATE-COUNTERS', {
+      documentKey: this.currentDocumentKey ?? null,
+      captionTransientGlobalFallbackProjectionCount: this.transientGlobalFallbackProjectionCount,
+      captionPartialPlanPublishCount: this.captionPartialPlanPublishCount,
+      visibleExactMatchWithNullCommitStateCount: this.visibleExactMatchWithNullCommitStateCount,
+      previousSignatureNullOnNonInitialTransitionCount: this.previousSignatureNullOnNonInitialTransitionCount,
+      formulaStuckAfterRepeatedToggleCount: this.formulaStuckAfterRepeatedToggleCount,
+      formulaRenderLoopCount: this.formulaRenderLoopCount,
+      rerenderBudgetAuthority: 'ACTIVATION',
+      historicalSignatureIsGatingAuthority: false,
+      decision: 'REPORTED',
+    })
     return report
   }
 

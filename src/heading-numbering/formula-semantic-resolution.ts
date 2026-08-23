@@ -18,6 +18,7 @@
  */
 
 import type { SemanticHeadingNumberState } from './semantic-heading-types'
+import { chapterScopeIdentityOf, sectionScopeIdentityOf } from './semantic-heading-types'
 
 export type FormulaTransientUnresolvedReason =
   | 'EDITOR_STRUCTURE_EPOCH_CHANGED'
@@ -34,18 +35,27 @@ export type FormulaSemanticResolution =
       headingStableIdentity: string
       chapterOrdinal: number | null
       sectionOrdinal: number | null
+      strictBoundaryIdentity: string | null
+      structuralChapterIdentity: string | null
+      structuralSectionIdentity: string | null
     }
   | {
       decision: 'LEGITIMATE_CHAPTER_FALLBACK'
       headingStableIdentity: string
       chapterOrdinal: number
       sectionOrdinal: null
+      strictBoundaryIdentity: string | null
+      structuralChapterIdentity: string | null
+      structuralSectionIdentity: string | null
     }
   | {
       decision: 'LEGITIMATE_GLOBAL_FALLBACK'
       headingStableIdentity: string | null
       chapterOrdinal: null
       sectionOrdinal: null
+      strictBoundaryIdentity: string | null
+      structuralChapterIdentity: string | null
+      structuralSectionIdentity: string | null
     }
   | {
       decision: 'TRANSIENT_UNRESOLVED'
@@ -53,7 +63,13 @@ export type FormulaSemanticResolution =
     }
 
 /** Batch-resolver "unbound" reasons that indicate a genuinely-before-first-heading Formula. */
-export const LEGITIMATE_GLOBAL_UNBOUND_REASONS = new Set<string>(['NO_PRECEDING_HEADING', 'TARGET_BEFORE_FIRST_HEADING'])
+export const LEGITIMATE_GLOBAL_UNBOUND_REASONS = new Set<string>([
+  'NO_PRECEDING_HEADING',
+  'TARGET_BEFORE_FIRST_HEADING',
+  // A document with NO headings at all is a stable state (not transient):
+  // objects genuinely have no chapter/section → GLOBAL is legitimate.
+  'NO_BINDINGS',
+])
 
 /**
  * Map a batch-resolver unbound reason onto a transient-unresolved reason.
@@ -94,7 +110,15 @@ export function classifyFormulaSemanticResolution(
 ): FormulaSemanticResolution {
   if (!bound) {
     if (headingStableIdentity === null && semanticState === null && LEGITIMATE_GLOBAL_UNBOUND_REASONS.has(unboundReason ?? '')) {
-      return { decision: 'LEGITIMATE_GLOBAL_FALLBACK', headingStableIdentity: null, chapterOrdinal: null, sectionOrdinal: null }
+      return {
+        decision: 'LEGITIMATE_GLOBAL_FALLBACK',
+        headingStableIdentity: null,
+        chapterOrdinal: null,
+        sectionOrdinal: null,
+        strictBoundaryIdentity: null,
+        structuralChapterIdentity: null,
+        structuralSectionIdentity: null,
+      }
     }
     return { decision: 'TRANSIENT_UNRESOLVED', reason: mapUnboundReasonToTransient(unboundReason ?? 'OTHER_TRANSIENT_INCOHERENCE') }
   }
@@ -102,20 +126,68 @@ export function classifyFormulaSemanticResolution(
     return { decision: 'TRANSIENT_UNRESOLVED', reason: 'SNAPSHOT_BINDING_REVISION_MISMATCH' }
   }
   const identity = headingStableIdentity ?? semanticState.stableIdentity
+  const boundary = semanticState.strictBoundaryIdentity
+  // Phase 7R.3.7: chapter/section scope-grouping identities are self-or-ancestor
+  // (a chapter owns its own identity; an object under the first H2 of a boundary
+  // still groups by that H2, never by a fabricated "no-chapter").
+  const chapter = chapterScopeIdentityOf(semanticState)
+  const section = sectionScopeIdentityOf(semanticState)
   if (semanticState.sectionOrdinal != null) {
-    return { decision: 'BOUND', headingStableIdentity: identity, chapterOrdinal: semanticState.chapterOrdinal, sectionOrdinal: semanticState.sectionOrdinal }
+    return {
+      decision: 'BOUND',
+      headingStableIdentity: identity,
+      chapterOrdinal: semanticState.chapterOrdinal,
+      sectionOrdinal: semanticState.sectionOrdinal,
+      strictBoundaryIdentity: boundary,
+      structuralChapterIdentity: chapter,
+      structuralSectionIdentity: section,
+    }
   }
   if (semanticState.chapterOrdinal != null) {
-    return { decision: 'LEGITIMATE_CHAPTER_FALLBACK', headingStableIdentity: identity, chapterOrdinal: semanticState.chapterOrdinal, sectionOrdinal: null }
+    return {
+      decision: 'LEGITIMATE_CHAPTER_FALLBACK',
+      headingStableIdentity: identity,
+      chapterOrdinal: semanticState.chapterOrdinal,
+      sectionOrdinal: null,
+      strictBoundaryIdentity: boundary,
+      structuralChapterIdentity: chapter,
+      structuralSectionIdentity: section,
+    }
   }
   // Heading bound but uncounted (e.g. document-title H1) → legitimately global.
-  return { decision: 'LEGITIMATE_GLOBAL_FALLBACK', headingStableIdentity: identity, chapterOrdinal: null, sectionOrdinal: null }
+  return {
+    decision: 'LEGITIMATE_GLOBAL_FALLBACK',
+    headingStableIdentity: identity,
+    chapterOrdinal: null,
+    sectionOrdinal: null,
+    strictBoundaryIdentity: boundary,
+    structuralChapterIdentity: chapter,
+    structuralSectionIdentity: section,
+  }
 }
 
-/** Planner context consumed by planFormulaSemanticNumbers for a LEGITIMATE resolution. */
-export function resolutionToFormulaContext(res: FormulaSemanticResolution): { chapterOrdinal: number | null; sectionOrdinal: number | null } | null {
+/**
+ * Planner context consumed by planFormulaSemanticNumbers for a LEGITIMATE
+ * resolution (Phase 7R.3.7: carries boundary + structural provenance so the
+ * Formula scopeKey / projection signature are boundary-aware).
+ */
+export function resolutionToFormulaContext(
+  res: FormulaSemanticResolution,
+): {
+  chapterOrdinal: number | null
+  sectionOrdinal: number | null
+  strictBoundaryIdentity: string | null
+  structuralChapterIdentity: string | null
+  structuralSectionIdentity: string | null
+} | null {
   if (res.decision === 'TRANSIENT_UNRESOLVED') return null
-  return { chapterOrdinal: res.chapterOrdinal, sectionOrdinal: res.sectionOrdinal }
+  return {
+    chapterOrdinal: res.chapterOrdinal,
+    sectionOrdinal: res.sectionOrdinal,
+    strictBoundaryIdentity: res.strictBoundaryIdentity,
+    structuralChapterIdentity: res.structuralChapterIdentity,
+    structuralSectionIdentity: res.structuralSectionIdentity,
+  }
 }
 
 /** Whether a resolution is usable for Formula planning (not transient). */

@@ -57,12 +57,17 @@ export function resolveSemanticRoles(
 ): SemanticRoleAssignment[] {
   // Semantic ancestor stack (document-title is excluded from structural ancestry).
   const stack: StackEntry[] = []
+  // Phase 7R.3.7: canonical strict H1 numbering boundary (nearest preceding H1).
+  let currentBoundaryIdentity: string | null = null
+  let currentBoundaryOrdinal = 0
 
   return headings.map(h => {
     const isTitle = mode === 'strict' && h.level === 1
 
     if (isTitle) {
       stack.length = 0
+      currentBoundaryOrdinal++
+      currentBoundaryIdentity = h.key
       return {
         stableIdentity: h.key,
         physicalLevel: h.level,
@@ -71,6 +76,8 @@ export function resolveSemanticRoles(
         structuralParentIdentity: null,
         structuralChapterIdentity: null,
         structuralSectionIdentity: null,
+        strictBoundaryIdentity: currentBoundaryIdentity,
+        strictBoundaryOrdinal: currentBoundaryOrdinal,
       }
     }
 
@@ -97,6 +104,10 @@ export function resolveSemanticRoles(
       structuralParentIdentity: parent?.identity ?? null,
       structuralChapterIdentity: chapterAncestor?.identity ?? null,
       structuralSectionIdentity: sectionAncestor?.identity ?? null,
+      // Phase 7R.3.7: strict mode inherits the current H1 boundary; loose mode
+      // never uses boundaries (strictBoundaryIdentity stays null).
+      strictBoundaryIdentity: mode === 'strict' ? currentBoundaryIdentity : null,
+      strictBoundaryOrdinal: mode === 'strict' ? currentBoundaryOrdinal : null,
     }
   })
 }

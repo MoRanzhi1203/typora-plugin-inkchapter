@@ -58,6 +58,15 @@ export interface SemanticRoleAssignment {
   structuralParentIdentity: string | null
   structuralChapterIdentity: string | null
   structuralSectionIdentity: string | null
+  /**
+   * Phase 7R.3.7: canonical strict H1 numbering boundary identity.
+   * In strict mode equals the nearest preceding H1 stableIdentity (the H1
+   * itself carries its own identity). null in loose mode and before the
+   * first H1. NEVER synthesized from visible heading text.
+   */
+  strictBoundaryIdentity: string | null
+  /** Diagnostic only — MUST NOT become a visible object-number component. */
+  strictBoundaryOrdinal: number | null
 }
 
 /**
@@ -86,6 +95,15 @@ export interface SemanticHeadingNumberState {
   logicalOrdinal: number | null
   chapterOrdinal: number | null
   sectionOrdinal: number | null
+  /**
+   * Phase 7R.3.7: canonical strict H1 numbering boundary identity consumed by
+   * heading display AND every object kind (Figure/Table/Formula/Code).
+   * In strict mode equals the nearest preceding H1 stableIdentity.
+   * null in loose mode and before the first H1.
+   */
+  strictBoundaryIdentity: string | null
+  /** Diagnostic only — MUST NOT become a visible object-number component. */
+  strictBoundaryOrdinal: number | null
   /** Whether this heading consumed a semantic sequence position. */
   counted: boolean
   /** Why the heading was counted / skipped (diagnostic only). */
@@ -99,3 +117,24 @@ export type CaptionScope = 'global' | 'chapter' | 'section'
 export type NumberingStyle = 'dot' | 'dash'
 
 export type CaptionObjectKind = 'figure' | 'table' | 'formula' | 'code'
+
+/**
+ * Phase 7R.3.7: resolve the CHAPTER scope-grouping identity of a bound heading.
+ * A heading that IS a chapter owns its own identity; everything else uses its
+ * nearest chapter ANCESTOR. `structuralChapterIdentity` alone is null for a
+ * chapter itself (no chapter ancestor), so it cannot drive counter grouping.
+ */
+export function chapterScopeIdentityOf(s: SemanticHeadingNumberState): string | null {
+  if (s.semanticRole === 'chapter') return s.stableIdentity
+  return s.structuralChapterIdentity
+}
+
+/**
+ * Phase 7R.3.7: resolve the SECTION scope-grouping identity of a bound heading.
+ * A heading that IS a section owns its own identity; everything else uses its
+ * nearest section ANCESTOR.
+ */
+export function sectionScopeIdentityOf(s: SemanticHeadingNumberState): string | null {
+  if (s.semanticRole === 'section') return s.stableIdentity
+  return s.structuralSectionIdentity
+}

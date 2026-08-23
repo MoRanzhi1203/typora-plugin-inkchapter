@@ -14,7 +14,7 @@ $ProjectMain    = Join-Path $ProjectRoot "dist\main.js"
 $ProjectCss     = Join-Path $ProjectRoot "dist\style.css"
 
 # ── Expected build ID (single source: forensic.ts) ─────────────────────────
-$ExpectedBuildId = "inkchapter-r58-7-persisted-docswitch-scope-authority-dsw2q7"
+$ExpectedBuildId = "inkchapter-strict-h1-numbering-boundary-v7R3.7"
 
 # ── Check required source-of-truth files exist ─────────────────────────────
 $runtimeMainExists = Test-Path $RuntimeMain

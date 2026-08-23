@@ -41,7 +41,8 @@ export function computeHeadingSemanticFingerprint(snapshot: HeadingNumberingSnap
       `${s.stableIdentity}|${s.physicalLevel}|${s.effectiveDepth}|${s.semanticRole}|` +
       `${s.chapterOrdinal ?? '-'}|${s.sectionOrdinal ?? '-'}|` +
       `${s.structuralParentIdentity ?? '-'}|${s.structuralChapterIdentity ?? '-'}|` +
-      `${s.structuralSectionIdentity ?? '-'}|${s.counted ? 1 : 0}`,
+      `${s.structuralSectionIdentity ?? '-'}|${s.strictBoundaryIdentity ?? '-'}|` +
+      `${s.counted ? 1 : 0}`,
     )
   }
   return fastHash(`${snapshot.documentKey}|${snapshot.structureMode}|${parts.join(';')}`)

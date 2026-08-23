@@ -196,6 +196,18 @@ export function computeHeadingNumbering(
         counters[idx] = 0
       }
 
+      // Phase 7R.3.7: strict H1 = hard NUMBERING BOUNDARY. A strict H1 is
+      // unnumbered AND opens a new numbering segment: it resets every deeper
+      // counter (chapter/section/subsection/item) regardless of per-level
+      // restartAfterLevel config so the PHYSICAL display matches the canonical
+      // SEMANTIC boundary (H2 restarts at 1 after every H1).
+      if (isStrict && h.level === 1) {
+        for (let i = idx + 1; i < 6; i++) {
+          const deeperStyle = levelStyles[(i + 1) as HeadingLevel]
+          counters[i] = clamp(deeperStyle?.startAt ?? 1, 1, 999) - 1
+        }
+      }
+
       // Reset deeper levels
       if (!shouldSkipCount) {
         for (let i = idx + 1; i < 6; i++) {
@@ -260,6 +272,18 @@ function buildLabel(
   // Style lookup by actual heading level — H2→H2 config, H3→H3 config
   const style = levelStyles[headingLevel]
   if (!style || !style.enabled) return ''
+
+  // Phase 7R.3.7: strict-mode ZERO-FILL PROHIBITION. A heading whose required
+  // strict parent is missing must NOT render a fabricated zero path (e.g.
+  // `1.0.1`, `0.1`, `1.0`). Keep the physical heading level + diagnostic
+  // information, but suppress the invalid child numeric prefix. Required
+  // parents for a strict heading at physical level L are H2..H(L-1)
+  // (counters[1..L-2]); H1 (index 0) is the invisible boundary itself.
+  if (skipH1 && currentIdx >= 2) {
+    for (let i = 1; i <= currentIdx - 1; i++) {
+      if (activeCounters[i] < 1) return ''
+    }
+  }
 
   // ── New contextual model (schemaVersion >= 8) ───
   // Slot model: effective levels already have correct variant data.

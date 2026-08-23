@@ -22,6 +22,8 @@ function semantic(overrides: Partial<SemanticHeadingNumberState> & { stableIdent
     structuralParentIdentity: null,
     structuralChapterIdentity: 'h1',
     structuralSectionIdentity: null,
+    strictBoundaryIdentity: 'boundary-a',
+    strictBoundaryOrdinal: 1,
     logicalOrdinal: null,
     chapterOrdinal: 1,
     sectionOrdinal: null,
