@@ -50,7 +50,17 @@ import {
 } from './object-numbering-engine'
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
 import { FormulaNumberingAdapter, type FormulaReconcileItem, type FormulaTarget } from './formula-numbering-adapter'
-import { planFormulaSemanticNumbers, type FormulaSemanticContext } from './formula-semantic-planner'
+import { planFormulaSemanticNumbers, type FormulaSemanticContext, type FormulaSemanticPlanEntry } from './formula-semantic-planner'
+import {
+  FormulaProjectionController,
+  classifyFormulaProjectionVerify,
+  hashFormulaSource,
+  normalizeTyporaAutoNumberingPolicy,
+  scanDisplayMathSources,
+  type FormulaNativeRenderPlan,
+  type FormulaProjectionContext,
+} from './formula-projection-controller'
+import { ensureMathJaxRenderInputHook, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
 
@@ -131,6 +141,14 @@ export class CaptionService {
   private registry = new CaptionRegistry()
   private adapter: CaptionDomAdapter
   private formulaAdapter: FormulaNumberingAdapter
+  /** Phase 7R.3: single projection authority arbitrator (native-transient plans). */
+  private readonly projectionController = new FormulaProjectionController()
+  /** Last documentKey for which formula render plans were bound. */
+  private lastFormulaProjectionDocKey: string | null = null
+  /** Phase 7R.3.2: LIVE hook context — updated on every refresh, read per MathJax call. */
+  private hookLiveContext: FormulaProjectionLiveContext = { documentKey: null, controller: this.projectionController, headingSnapshotRevision: null }
+  /** Stable provider reference — the hook installs ONCE and reads this live. */
+  private hookLiveContextProvider = (): FormulaProjectionLiveContext => this.hookLiveContext
   private ctx: CaptionServiceContext
 
   /** captionId → live target root (session-only, survives moves). */
@@ -415,6 +433,8 @@ export class CaptionService {
     for (const d of this.disposers) { try { d() } catch { /* ignore */ } }
     this.disposers = []
     if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null }
+    this.projectionController.clearAll()
+    this.lastFormulaProjectionDocKey = null
     this.started = false
   }
 
@@ -1417,7 +1437,7 @@ export class CaptionService {
    */
   private refreshFormulaNumbering(): void {
     const root = this.currentEditorRoot
-    if (!root) { this.formulaAdapter.clearAll(); return }
+    if (!root) { this.formulaAdapter.clearAll(); this.projectionController.clearAll(); return }
 
     const config = this.formulaConfig
     const mode = config.formulaMode ?? 'typora-native'
@@ -1426,19 +1446,36 @@ export class CaptionService {
 
     const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
     const activeDocKey = this.ctx.getDocumentKey?.() ?? null
+    // Phase 7R.3.2: LIVE hook context is updated here and read fresh per MathJax
+    // call — never frozen into the install-time wrapper closure.
+    this.hookLiveContext = {
+      documentKey: activeDocKey,
+      controller: this.projectionController,
+      headingSnapshotRevision: snapshot?.revision ?? null,
+    }
+    // Phase 7R.3: document switch must never leak a previous document's plan.
+    if (activeDocKey !== this.lastFormulaProjectionDocKey) {
+      this.projectionController.clearAll()
+      this.lastFormulaProjectionDocKey = activeDocKey
+    }
     // Narrowed to a concrete snapshot once the semantic-mode guards pass.
     let semanticSnapshot: HeadingNumberingSnapshot | null = null
 
     if (semanticMode) {
       if (!snapshot) {
+        this.projectionController.clearAll()
         emitRuntimeAudit('FORMULA-SEMANTIC-PROJECTION-DEFER', { reason: 'NO_SNAPSHOT', projectionWrites: 0 })
         return
       }
       if (!activeDocKey || activeDocKey !== snapshot.documentKey) {
+        this.projectionController.clearAll()
         emitRuntimeAudit('FORMULA-SEMANTIC-PROJECTION-DEFER', { reason: 'DOCUMENT_CONTEXT_MISMATCH', projectionWrites: 0 })
         return
       }
       semanticSnapshot = snapshot
+    } else {
+      // typora-native / disabled: InkChapter never owns projection.
+      this.projectionController.clearAll()
     }
 
     const formulaTargets = this.formulaAdapter.collectFormulaTargets()
@@ -1541,6 +1578,11 @@ export class CaptionService {
         emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE', { decision: 'PLAN' })
         items.push({ target: t, renderedNumber: p.renderedNumber, label: p.renderedNumber, mode, enabled: true })
       })
+
+      // Phase 7R.3-B: Formula Projection Arbitration — one authority per
+      // canonical Formula host. Plans are bound via WeakMap to the host and
+      // correlated to MathJax render calls by source hash (never ordinal-only).
+      this.applyFormulaProjectionArbitration(semanticSnapshot as HeadingNumberingSnapshot, formulaTargets, plans, mode, activeDocKey)
     }
 
     this.rendering = true
@@ -1555,6 +1597,281 @@ export class CaptionService {
     // or abort Formula projection. READ-ONLY observation only.
     if (semanticMode) {
       this.emitVisibleProjectionForensic(semanticSnapshot as HeadingNumberingSnapshot, formulaTargets, items, mode)
+    }
+  }
+
+  /**
+   * Phase 7R.3-B: select ONE projection authority per canonical Formula host
+   * and bind a native-transient render plan (WeakMap) when ready. Also ensures
+   * the MathJax render-input hook is installed so the transient `\tag{...}`
+   * reaches the SAME native render pass.
+   */
+  private applyFormulaProjectionArbitration(
+    snap: HeadingNumberingSnapshot,
+    formulaTargets: FormulaTarget[],
+    plans: FormulaSemanticPlanEntry[],
+    mode: string,
+    activeDocKey: string | null,
+  ): void {
+    try {
+      const markdown = this.ctx.getMarkdown?.() ?? ''
+      const sources = scanDisplayMathSources(markdown)
+      const policy = normalizeTyporaAutoNumberingPolicy(readTyporaAutoNumberingForMath())
+      // Phase 7R.3.2: plan-set completeness diagnostics.
+      this.projectionController.setExpectedPlanCount(formulaTargets.length)
+
+      // Phase 7R.3.3-C: compute the complete NEW plan set FIRST, then diff as a
+      // coherent set against the OLD plan set → affected set.
+      const affectedKeys: string[] = []
+      const reasonSummary = new Map<string, number>()
+      const affectedHosts: FormulaTarget[] = []
+
+      formulaTargets.forEach((t, i) => {
+        const p = plans[i]
+        if (!p) return
+        const runtimeKey = `formula:${t.ordinal}`
+        const rendererReady = !!t.root.querySelector('mjx-container, .MathJax')
+        const context: FormulaProjectionContext = {
+          formulaMode: mode === 'inkchapter' ? 'inkchapter' : 'typora-native',
+          typoraAutoNumberingPolicy: policy,
+          snapshotReady: true,
+          documentCoherent: activeDocKey === snap.documentKey,
+          rendererReady,
+        }
+        const authority = this.projectionController.arbitrate(context)
+        const sourceTex = sources[i] ?? ''
+        const sourceHash = hashFormulaSource(sourceTex)
+
+        if (authority === 'inkchapter-native-transient' && sourceTex.length > 0) {
+          const newPlan: FormulaNativeRenderPlan = {
+            documentKey: snap.documentKey,
+            revision: snap.revision,
+            sourceHash,
+            rawNumber: p.rawNumber,
+            renderedNumber: p.renderedNumber,
+            formulaRuntimeKey: runtimeKey,
+            authority: 'inkchapter-native-transient',
+            formulaMode: 'inkchapter',
+          }
+          // Diff OLD vs NEW projection signature + invalidate stale evidence.
+          const diff = this.projectionController.applyProjectionPlan(t.root, newPlan)
+          if (diff.affected) {
+            affectedKeys.push(runtimeKey)
+            affectedHosts.push(t)
+            reasonSummary.set(diff.reason, (reasonSummary.get(diff.reason) ?? 0) + 1)
+          }
+          emitRuntimeAudit('FORMULA-TRANSIENT-PLAN-PUBLISH', {
+            documentKey: snap.documentKey,
+            formulaRuntimeKey: runtimeKey,
+            sourceHash,
+            rawNumber: p.rawNumber,
+            planGeneration: this.projectionController.getPlanGeneration(),
+            snapshotRevision: snap.revision,
+            rendererReadyAtPublish: rendererReady,
+            affected: diff.affected,
+            reason: diff.reason,
+            decision: 'READY',
+          })
+        } else {
+          this.projectionController.clearPlan(t.root)
+          this.projectionController.setExecutionState(t.root, 'idle')
+        }
+
+        emitRuntimeAudit('FORMULA-PROJECTION-POLICY', {
+          documentKey: snap.documentKey,
+          formulaRuntimeKey: runtimeKey,
+          formulaMode: mode,
+          typoraAutoNumberingPolicy: policy,
+          desiredRenderedNumber: p.renderedNumber,
+          selectedAuthority: authority,
+          reason: authority === 'defer' ? 'NO_SNAPSHOT_OR_CONTEXT' : 'OK',
+        })
+      })
+
+      this.projectionController.bumpPlanGeneration()
+
+      // Phase 7R.3.3-C: bounded affected-set summary.
+      emitRuntimeAudit('FORMULA-PROJECTION-AFFECTED-SET', {
+        documentKey: snap.documentKey,
+        previousPlanCount: formulaTargets.length - affectedHosts.length,
+        nextPlanCount: formulaTargets.length,
+        affectedCount: affectedKeys.length,
+        unchangedCount: formulaTargets.length - affectedKeys.length,
+        affectedFormulaRuntimeKeys: affectedKeys,
+        reasonSummary: Object.fromEntries(reasonSummary),
+        decision: affectedKeys.length > 0 ? 'AFFECTED' : 'NO_OP',
+      })
+
+      // The hook is a SINGLE STABLE WRAPPER installed once; it reads the LIVE
+      // context (this.hookLiveContextProvider) on every MathJax call.
+      ensureMathJaxRenderInputHook({ getLiveContext: this.hookLiveContextProvider })
+      emitRuntimeAudit('FORMULA-PROJECTION-LIVE-CONTEXT', {
+        liveDocumentKey: this.hookLiveContext.documentKey,
+        liveSnapshotRevision: this.hookLiveContext.headingSnapshotRevision,
+        activePlanCount: this.projectionController.inventory().planCount,
+        planGeneration: this.projectionController.getPlanGeneration(),
+        decision: this.projectionController.inventory().planCount > 0 ? 'READY' : 'NOT_READY',
+      })
+
+      // Phase 7R.3.3-D: rerender ONLY affected existing Formula hosts with a
+      // renderer, one-shot per projection signature.
+      this.requestControlledRecoveryRenders(affectedHosts, mode, activeDocKey, snap.documentKey)
+    } catch (error) {
+      // Arbitration failure must never abort formula reconcile.
+      emitRuntimeAudit('FORMULA-PROJECTION-ARBITRATION-ERROR', {
+        documentKey: snap.documentKey,
+        errorName: error instanceof Error ? error.name : 'UNKNOWN_ERROR',
+        errorMessage: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+        decision: 'ARBITRATION_ERROR_IGNORED',
+        businessProjectionBlocked: false,
+      })
+    }
+  }
+
+  /**
+   * Phase 7R.3.2-E / 7R.3.3-D: controlled per-Formula render for AFFECTED hosts.
+   * Budget is PER PROJECTION SIGNATURE (a changed signature resets it).
+   * Route = the proven per-block Typora seam `File.editor.mathBlock.renderUnder(
+   * host, true)`.
+   */
+  private requestControlledRecoveryRenders(
+    affectedHosts: FormulaTarget[],
+    mode: string,
+    activeDocKey: string | null,
+    documentKey: string,
+  ): void {
+    if (mode !== 'inkchapter') return
+    for (const t of affectedHosts) {
+      const plan = this.projectionController.getPlan(t.root)
+      if (!plan || plan.documentKey !== documentKey || plan.documentKey !== activeDocKey) continue
+      if (!t.root.isConnected) continue
+      const sigHash = this.projectionController.currentSignatureHash(t.root)
+      const rendererReady = !!t.root.querySelector('mjx-container, .MathJax')
+      if (!rendererReady) {
+        // Phase 7R.3.3 §17: no renderer yet → leave plan-ready for the next
+        // natural MathJax render call; never force a global DOM renderer.
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey: plan.formulaRuntimeKey,
+          projectionSignatureHash: sigHash,
+          previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
+          rawNumber: plan.rawNumber,
+          previousRawNumber: plan.rawNumber,
+          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          route: 'mathBlock.renderUnder',
+          decision: 'SKIPPED_NO_RENDERER',
+        })
+        continue
+      }
+      if (this.projectionController.wasInjectedForCurrentSignature(t.root)) continue
+      const state = this.projectionController.getExecutionState(t.root)
+      if (state === 'committed') {
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey: plan.formulaRuntimeKey,
+          projectionSignatureHash: sigHash,
+          previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
+          rawNumber: plan.rawNumber,
+          previousRawNumber: plan.rawNumber,
+          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          route: 'mathBlock.renderUnder',
+          decision: 'SKIPPED_SAME_SIGNATURE_ALREADY_CORRECT',
+        })
+        continue
+      }
+      if (state === 'render-requested' || state === 'rendering') {
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey: plan.formulaRuntimeKey,
+          projectionSignatureHash: sigHash,
+          previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
+          rawNumber: plan.rawNumber,
+          previousRawNumber: plan.rawNumber,
+          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          route: 'mathBlock.renderUnder',
+          decision: 'SKIPPED_SAME_SIGNATURE_IN_FLIGHT',
+        })
+        continue
+      }
+      if (!this.projectionController.tryReserveRecoveryRender(t.root)) {
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey: plan.formulaRuntimeKey,
+          projectionSignatureHash: sigHash,
+          previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
+          rawNumber: plan.rawNumber,
+          previousRawNumber: plan.rawNumber,
+          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          route: 'mathBlock.renderUnder',
+          decision: 'SKIPPED_SAME_SIGNATURE_BUDGET_EXHAUSTED',
+        })
+        continue
+      }
+      const prevRequestedSig = this.projectionController.lastRenderRequestedSignatureHash(t.root)
+      this.projectionController.setExecutionState(t.root, 'render-requested')
+      this.projectionController.markRenderRequested(t.root)
+      emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+        documentKey,
+        formulaRuntimeKey: plan.formulaRuntimeKey,
+        projectionSignatureHash: sigHash,
+        previousProjectionSignatureHash: prevRequestedSig,
+        rawNumber: plan.rawNumber,
+        previousRawNumber: plan.rawNumber,
+        attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+        route: 'mathBlock.renderUnder',
+        decision: 'REQUESTED',
+      })
+      this.invokeTyporaSingleFormulaRender(t.root, plan.formulaRuntimeKey, documentKey)
+    }
+  }
+
+  /** Narrow, exception-safe invocation of Typora's per-block Formula render seam. */
+  private invokeTyporaSingleFormulaRender(host: HTMLElement, formulaRuntimeKey: string, documentKey: string): void {
+    try {
+      const g = globalThis as {
+        File?: { editor?: { mathBlock?: { renderUnder?: (el: Element, force: boolean) => unknown } } }
+      }
+      const renderUnder = g.File?.editor?.mathBlock?.renderUnder
+      if (typeof renderUnder !== 'function') {
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey,
+          route: 'mathBlock.renderUnder',
+          decision: 'FAILED',
+          reason: 'ROUTE_NOT_AVAILABLE',
+        })
+        return
+      }
+      const result = renderUnder.call(g.File?.editor?.mathBlock, host, true)
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        ;(result as Promise<unknown>).then(
+          () => {
+            emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+              documentKey,
+              formulaRuntimeKey,
+              route: 'mathBlock.renderUnder',
+              decision: 'COMPLETED',
+            })
+          },
+          () => {
+            emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+              documentKey,
+              formulaRuntimeKey,
+              route: 'mathBlock.renderUnder',
+              decision: 'FAILED',
+              reason: 'RENDER_REJECTED',
+            })
+          },
+        )
+      }
+    } catch (error) {
+      emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+        documentKey,
+        formulaRuntimeKey,
+        route: 'mathBlock.renderUnder',
+        decision: 'FAILED',
+        reason: error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120),
+      })
     }
   }
 
@@ -1590,6 +1907,93 @@ export class CaptionService {
           effectiveProjectionChannelsObserved: entry.effectiveProjectionChannelsObserved,
           decision: entry.decision,
         })
+      })
+      // Phase 7R.3.1-A / 7R.3.3-F: single-authority verification. semanticCommitted
+      // requires an EXACT visible tag-token match against the CURRENT planned
+      // rawNumber AND a committed signature equal to the current signature.
+      let customDecorationCount = 0
+      let duplicateVisibleCount = 0
+      let verifiedCount = 0
+      let falsePositiveGuardCount = 0
+      let firstPendingReason: string | null = null
+      visibleProjection.slice(0, 12).forEach((entry, i) => {
+        const t = formulaTargets[i]
+        if (!t) return
+        customDecorationCount += entry.inkchapterDecorationCount
+        const plan = this.projectionController.getPlan(t.root)
+        const injected = this.projectionController.wasInjectedForCurrentSignature(t.root)
+        const committedForCurrentSignature = this.projectionController.isCommittedForCurrentSignature(t.root)
+        const lookup = this.projectionController.lastLookup(t.root)
+        const desired = items[i]?.renderedNumber ?? null
+        // Phase 7R.3.3-F: EXACT visible tag tokens (never substring/includes).
+        const observedTokens = this.formulaAdapter.extractVisibleFormulaTagTokens(t.root)
+        const expectedRawNumber = plan?.rawNumber ?? null
+        const exactMatchCount = expectedRawNumber
+          ? observedTokens.filter(tok => tok === expectedRawNumber).length
+          : 0
+        const otherTagCount = observedTokens.filter(tok => tok !== expectedRawNumber).length
+        const semanticCommitted = exactMatchCount > 0 && committedForCurrentSignature
+        const sequentialCommitted = observedTokens.some(tok => /^\d+$/.test(tok))
+        if (sequentialCommitted && semanticCommitted) duplicateVisibleCount++
+
+        emitRuntimeAudit('FORMULA-VISIBLE-TAG-VERIFY', {
+          documentKey: snap.documentKey,
+          formulaRuntimeKey: `formula:${t.ordinal}`,
+          currentSignatureHash: this.projectionController.currentSignatureHash(t.root),
+          lastCommittedSignatureHash: this.projectionController.lastCommittedSignatureHash(t.root),
+          expectedRawNumber: expectedRawNumber ?? null,
+          observedRawTagTokens: observedTokens,
+          exactMatchCount,
+          otherTagCount,
+          decision: semanticCommitted
+            ? (sequentialCommitted ? 'DUPLICATE_TAGS' : 'EXACT_MATCH')
+            : (observedTokens.length === 0 ? 'NO_VISIBLE_TAG' : (committedForCurrentSignature ? 'NO_MATCH' : 'STALE_COMMIT_SIGNATURE')),
+        })
+
+        const formulaDecision = classifyFormulaProjectionVerify({
+          planExists: !!plan,
+          injected,
+          committedForCurrentSignature,
+          lookupDecision: lookup,
+          semanticCommitted,
+          sequentialCommitted,
+          customDecorationCount: entry.inkchapterDecorationCount,
+        })
+        if (formulaDecision === 'SEMANTIC_VISIBLE_VERIFIED') {
+          verifiedCount++
+          this.projectionController.markCommitted(t.root)
+        } else if (plan) {
+          falsePositiveGuardCount++
+        }
+        if (plan && formulaDecision !== 'SEMANTIC_VISIBLE_VERIFIED' && firstPendingReason === null) {
+          firstPendingReason = `${formulaDecision}@${`formula:${t.ordinal}`}`
+        }
+        emitRuntimeAudit('FORMULA-PROJECTION-VERIFY-FORMULA', {
+          documentKey: snap.documentKey,
+          formulaRuntimeKey: `formula:${t.ordinal}`,
+          desiredRenderedNumber: desired,
+          customDecorationCount: entry.inkchapterDecorationCount,
+          injected,
+          planLookupDecision: lookup ?? null,
+          semanticCommitted,
+          sequentialCommitted,
+          decision: formulaDecision,
+        })
+      })
+      const aggregateDecision =
+        verifiedCount === formulaTargets.length && customDecorationCount === 0 && duplicateVisibleCount === 0
+          ? 'SEMANTIC_VISIBLE_VERIFIED'
+          : (firstPendingReason ?? 'NO_CUSTOM_OVERLAY_ONLY')
+      emitRuntimeAudit('FORMULA-PROJECTION-VERIFY', {
+        documentKey: snap.documentKey,
+        formulaMode: mode,
+        canonicalFormulaTargetCount: formulaTargets.length,
+        customDecorationCount,
+        duplicateVisibleCount,
+        verifiedSemanticCount: verifiedCount,
+        falsePositiveGuardCount,
+        standardInkchapterCustomDecorationActive: customDecorationCount > 0,
+        decision: aggregateDecision,
       })
     } catch (error) {
       // Diagnostic failure must NEVER block Formula reconcile.

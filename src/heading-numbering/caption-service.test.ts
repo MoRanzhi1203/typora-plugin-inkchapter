@@ -877,12 +877,11 @@ describe('Formula forensic isolation (Phase 7R.2-A1)', () => {
       console.info = origInfo
     }
 
-    // Business reconcile still executed: the planned number reached reconcile
-    // and the InkChapter decoration was created.
-    const deco = root.querySelector('[data-inkchapter-formula-number]')
-    expect(deco).not.toBeNull()
-    expect(deco!.textContent).toBeTruthy()
+    // Business reconcile + arbitration still executed despite the forensic throw.
+    expect(infos.some(l => l.includes('FORMULA-PROJECTION-POLICY'))).toBe(true)
     // The FORENSIC-ERROR marker was emitted and ignored (projection not blocked).
     expect(infos.some(l => l.includes('FORMULA-VISIBLE-PROJECTION-FORENSIC-ERROR'))).toBe(true)
+    // Phase 7R.3: no custom decoration is created (native-transient owns projection).
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
   })
 })

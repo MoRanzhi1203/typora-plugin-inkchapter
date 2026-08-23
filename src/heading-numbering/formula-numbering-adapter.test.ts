@@ -404,7 +404,73 @@ describe('safeElementClassName / forensic SVG safety (Phase 7R.2-A1)', () => {
   })
 })
 
-describe('FormulaNumberingAdapter.reconcile — projection authority (Phase 7R.1-B)', () => {
+describe('FormulaNumberingAdapter.extractVisibleFormulaTagTokens (Phase 7R.3.3-F exact verifier)', () => {
+  let root: HTMLElement
+  let adapter: FormulaNumberingAdapter
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    root = makeRoot()
+    adapter = new FormulaNumberingAdapter(() => root)
+  })
+
+  function addTagNode(host: HTMLElement, text: string): void {
+    const mjx = host.querySelector('mjx-container')!
+    const tag = document.createElement('mjx-tag')
+    tag.textContent = text
+    mjx.appendChild(tag)
+  }
+
+  it('VERIFY-EXACT-3: expected 1.1-1 / observed (1.1-1) → token ["1.1-1"] → EXACT PASS', () => {
+    const host = rawBlockFormula(root)
+    addTagNode(host, '(1.1-1)')
+    const tokens = adapter.extractVisibleFormulaTagTokens(host)
+    expect(tokens).toEqual(['1.1-1'])
+    expect(tokens.includes('1.1-1')).toBe(true)
+  })
+
+  it('VERIFY-EXACT-1: expected 1-1 / observed (1.1-1) → token ["1.1-1"] → NOT equal (stale rejected)', () => {
+    const host = rawBlockFormula(root)
+    addTagNode(host, '(1.1-1)')
+    const tokens = adapter.extractVisibleFormulaTagTokens(host)
+    expect(tokens).toEqual(['1.1-1'])
+    // Exact token equality only — substring must never match.
+    expect(tokens.includes('1-1')).toBe(false)
+    expect(tokens.some(t => t === '1-1')).toBe(false)
+  })
+
+  it('VERIFY-EXACT-2: expected 1-2 / observed (1.1-2) → NOT equal', () => {
+    const host = rawBlockFormula(root)
+    addTagNode(host, '(1.1-2)')
+    const tokens = adapter.extractVisibleFormulaTagTokens(host)
+    expect(tokens.includes('1-2')).toBe(false)
+  })
+
+  it('VERIFY-EXACT-4: expected 2-1 / observed (1.2-1) → NOT equal', () => {
+    const host = rawBlockFormula(root)
+    addTagNode(host, '(1.2-1)')
+    const tokens = adapter.extractVisibleFormulaTagTokens(host)
+    expect(tokens.includes('2-1')).toBe(false)
+  })
+
+  it('VERIFY-EXACT-5: semantic + native tags both present → two tokens (DUPLICATE evidence)', () => {
+    const host = rawBlockFormula(root)
+    addTagNode(host, '(1)')
+    addTagNode(host, '(1.1-1)')
+    const tokens = adapter.extractVisibleFormulaTagTokens(host)
+    expect(tokens).toContain('1')
+    expect(tokens).toContain('1.1-1')
+    expect(tokens).toHaveLength(2)
+  })
+
+  it('no visible tag → empty tokens', () => {
+    rawBlockFormula(root)
+    const host = root.querySelector('.md-math-block') as HTMLElement
+    expect(adapter.extractVisibleFormulaTagTokens(host)).toEqual([])
+  })
+})
+
+describe('FormulaNumberingAdapter.reconcile — Phase 7R.3 single-authority cleanup', () => {
   let root: HTMLElement
   let adapter: FormulaNumberingAdapter
 
@@ -431,61 +497,43 @@ describe('FormulaNumberingAdapter.reconcile — projection authority (Phase 7R.1
     expect(double.doubleNumberDetected).toBe(false)
   })
 
-  it('FORMULA-PROJ-3: custom mode reuses native node (UPDATE_TEXT), no double number', () => {
-    rawBlockFormula(root, { nativeText: '(1)' })
+  it('inkchapter standard mode: NO custom decoration created (native-transient owns projection)', () => {
+    rawBlockFormula(root)
     const it = item('(1.1)', 'inkchapter', true)
     const stats = adapter.reconcile([it])
-    expect(stats.updateNativeTextCount).toBe(1)
+    expect(stats.renderCustomCount).toBe(0)
+    expect(stats.updateNativeTextCount).toBe(0)
+    expect(stats.hideNativeRenderCustomCount).toBe(0)
     expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
-    expect(root.textContent).toContain('(1.1)')
+  })
+
+  it('inkchapter + renderer not ready: NO writes, no decoration', () => {
+    rawBlockFormula(root, { withRenderedMath: false })
+    const it = item('(1.1)', 'inkchapter', true)
+    const stats = adapter.reconcile([it])
+    expect(stats.deferredCount).toBe(0)
+    expect(stats.noOpCount).toBe(1)
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
+  })
+
+  it('stale custom decoration is removed when native-transient takes ownership', () => {
+    const host = rawBlockFormula(root)
+    // Simulate a stale Phase 7R.1 custom decoration.
+    const deco = document.createElement('span')
+    deco.setAttribute('data-inkchapter-formula-number', 'true')
+    deco.className = 'inkchapter-formula-number'
+    deco.textContent = '(1.1)'
+    host.querySelector('.md-rawblock-container')!.appendChild(deco)
+    expect(root.querySelector('[data-inkchapter-formula-number]')).not.toBeNull()
+
+    const stats = adapter.reconcile([item('(1.1)', 'inkchapter', true)])
+    expect(stats.restoreNativeCount).toBe(1)
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
     const double = adapter.computeDoubleNumber()
-    expect(double.doubleNumberDetected).toBe(false)
-    expect(double.nativeVisibleCount).toBe(1)
     expect(double.inkchapterVisibleCount).toBe(0)
   })
 
-  it('FORMULA-PROJ-4: no native number node → render custom decoration (NOT blocked)', () => {
-    rawBlockFormula(root)
-    const it = item('(1.1)', 'inkchapter', true)
-    const stats = adapter.reconcile([it])
-    expect(stats.renderCustomCount).toBe(1)
-    expect(stats.blockCustomCount).toBe(0)
-    const deco = root.querySelector('[data-inkchapter-formula-number]')
-    expect(deco).not.toBeNull()
-    expect(deco!.textContent).toBe('(1.1)')
-    // Decoration anchored right after the rendered math host (projection target).
-    const mjx = root.querySelector('mjx-container')!
-    expect(mjx.nextElementSibling).toBe(deco)
-  })
-
-  it('FORMULA-PROJ-1: untagged logical formula produces a visible generated number', () => {
-    rawBlockFormula(root)
-    const it = item('(1.1-1)', 'inkchapter', true)
-    const stats = adapter.reconcile([it])
-    expect(stats.renderCustomCount).toBe(1)
-    const deco = root.querySelector('[data-inkchapter-formula-number]')!
-    expect(deco.textContent).toBe('(1.1-1)')
-    expect(deco.className).toBe('inkchapter-formula-number')
-  })
-
-  it('FORMULA-PROJ-2: renderer not ready → DEFER writes=0; renderer ready → automatic projection', () => {
-    const host = rawBlockFormula(root, { withRenderedMath: false }) // no mjx yet
-    const it = item('(1.1)', 'inkchapter', true)
-    const stats = adapter.reconcile([it])
-    expect(stats.deferredCount).toBe(1)
-    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
-
-    // Renderer becomes ready → next reconcile projects automatically.
-    const container = host.querySelector('.md-rawblock-container')!
-    const mjx = document.createElement('mjx-container')
-    mjx.className = 'MathJax'
-    container.appendChild(mjx)
-    const stats2 = adapter.reconcile([it])
-    expect(stats2.renderCustomCount).toBe(1)
-    expect(root.querySelector('[data-inkchapter-formula-number]')!.textContent).toBe('(1.1)')
-  })
-
-  it('FORMULA-PROJ-5: repeated reconcile → NO_OP when already correct', () => {
+  it('repeated reconcile → NO_OP (idempotent, no DOM mutation)', () => {
     rawBlockFormula(root)
     adapter.reconcile([item('(1.1)', 'inkchapter', true)])
     const snapshot = root.innerHTML
@@ -494,12 +542,12 @@ describe('FormulaNumberingAdapter.reconcile — projection authority (Phase 7R.1
     expect(root.innerHTML).toBe(snapshot)
   })
 
-  it('FORMULA-PROJ-6: MathJax rerender keeps one logical formula → one number (no duplicate target/label)', () => {
+  it('MathJax rerender keeps one logical formula → one business target, no decoration', () => {
     const host = rawBlockFormula(root)
     adapter.reconcile([item('(1.1)', 'inkchapter', true)])
-    expect(root.querySelectorAll('[data-inkchapter-formula-number]')).toHaveLength(1)
+    expect(root.querySelectorAll('[data-inkchapter-formula-number]')).toHaveLength(0)
 
-    // Rerender: container rebuilt with a NEW mjx; old decoration is destroyed with it.
+    // Rerender: container rebuilt with a NEW mjx.
     const container = host.querySelector('.md-rawblock-container')!
     container.innerHTML = ''
     const mjx = document.createElement('mjx-container')
@@ -509,57 +557,52 @@ describe('FormulaNumberingAdapter.reconcile — projection authority (Phase 7R.1
     const targets = adapter.collectFormulaTargets()
     expect(targets).toHaveLength(1) // still one business target
     adapter.reconcile([item('(1.1)', 'inkchapter', true)])
-    expect(root.querySelectorAll('[data-inkchapter-formula-number]')).toHaveLength(1)
-    expect(root.querySelector('[data-inkchapter-formula-number]')!.textContent).toBe('(1.1)')
+    expect(root.querySelectorAll('[data-inkchapter-formula-number]')).toHaveLength(0)
   })
 
-  it('FORMULA-PROJ-7: TeX source unchanged (no source mutation)', () => {
+  it('TeX/MathJax output unchanged by reconcile (no source or render mutation)', () => {
     const host = rawBlockFormula(root)
     const sourceContainer = host.querySelector('.md-rawblock-container')!
     adapter.reconcile([item('(1.1)', 'inkchapter', true)])
-    // Projection decoration is a NEW sibling node; source content untouched.
-    expect(sourceContainer.querySelector('[data-inkchapter-formula-number]')).not.toBeNull()
-    // The mjx (rendered TeX output) content is unchanged.
+    expect(sourceContainer.querySelector('[data-inkchapter-formula-number]')).toBeNull()
     expect(sourceContainer.querySelector('mjx-container svg')!.textContent).toBe('x')
   })
 
-  it('hide-native: unsafe native tag hidden + custom decoration rendered, no double number', () => {
+  it('inkchapter + MathJax native tag (mjx-tag): not hidden, not rewritten (MathJax owns it)', () => {
     rawBlockFormula(root, { mathjaxTagText: '(1)' })
     const it = item('(1.1)', 'inkchapter', true)
     const stats = adapter.reconcile([it])
-    expect(stats.hideNativeRenderCustomCount).toBe(1)
-    expect(root.querySelector('[data-inkchapter-formula-number]')!.textContent).toBe('(1.1)')
+    expect(stats.hideNativeRenderCustomCount).toBe(0)
+    expect(stats.updateNativeTextCount).toBe(0)
     const tag = root.querySelector('mjx-tag') as HTMLElement | null
     expect(tag).not.toBeNull()
-    expect(tag!.style.display).toBe('none')
-    const double = adapter.computeDoubleNumber()
-    expect(double.doubleNumberDetected).toBe(false)
-  })
-
-  it('mode switch native → custom → native restores original native text', () => {
-    rawBlockFormula(root, { nativeText: '(1)' })
-
-    // native
-    adapter.reconcile([item('(1)', 'typora-native', true)])
-    expect(root.textContent).toContain('(1)')
-
-    // custom (reuse)
-    adapter.reconcile([item('(1.1)', 'inkchapter', true)])
-    expect(root.textContent).toContain('(1.1)')
-    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
-
-    // back to native → restore original "(1)"
-    adapter.reconcile([item('(1)', 'typora-native', true)])
-    expect(root.textContent).toContain('(1)')
-    expect(root.textContent).not.toContain('(1.1)')
+    expect(tag!.style.display).not.toBe('none')
     expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
   })
 
-  it('disabled formula restores native and removes any decoration', () => {
+  it('mode switch native → inkchapter → native keeps a single authority (no decoration)', () => {
     rawBlockFormula(root, { nativeText: '(1)' })
+
+    adapter.reconcile([item('(1)', 'typora-native', true)])
+    expect(root.textContent).toContain('(1)')
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
+
     adapter.reconcile([item('(1.1)', 'inkchapter', true)])
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
+
+    adapter.reconcile([item('(1)', 'typora-native', true)])
+    expect(root.textContent).toContain('(1)')
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
+  })
+
+  it('disabled formula restores native and removes any stale decoration', () => {
+    const host = rawBlockFormula(root, { nativeText: '(1)' })
+    const deco = document.createElement('span')
+    deco.setAttribute('data-inkchapter-formula-number', 'true')
+    host.querySelector('.md-rawblock-container')!.appendChild(deco)
     const stats = adapter.reconcile([item('(1)', 'typora-native', false)])
     expect(stats.restoreNativeCount).toBe(1)
     expect(root.textContent).toContain('(1)')
+    expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
   })
 })
