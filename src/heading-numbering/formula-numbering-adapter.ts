@@ -560,82 +560,21 @@ export class FormulaNumberingAdapter {
         continue
       }
 
-      // ── Custom mode ──
-      // Re-evaluate the strategy on every pass so a native tag appearing or
-      // disappearing across MathJax rerenders never leaves a stale decision.
-      const chosen = chooseFormulaStrategy({ nativeNumberFound: !!native, nativeNodeSafe: target.nativeNodeSafe })
-      this.strategyByHost.set(host, chosen)
-
-      if (chosen === 'reuse-native') {
-        if (deco) deco.remove()
-        if (native && native.textContent !== item.renderedNumber) {
-          this.rememberOriginal(native)
-          native.textContent = item.renderedNumber
-          native.setAttribute(MANAGED_ATTR, 'text')
-          stats.updateNativeTextCount++
-          console.info(
-            `[InkChapter Numbering] FORMULA-RECONCILE tag=${host.tagName} mode=${item.mode} ` +
-            `decision=UPDATE_NATIVE_TEXT desired=${JSON.stringify(item.renderedNumber)} reason=REUSE_NATIVE_NODE`,
-          )
-        } else {
-          stats.noOpCount++
-        }
-        continue
-      }
-
-      // hide-native: hide the (unsafe) native tag before rendering our decoration.
-      if (chosen === 'hide-native' && native && native.style.display !== 'none') {
-        this.rememberOriginal(native)
-        native.style.display = 'none'
-        native.setAttribute(MANAGED_ATTR, 'hidden')
-      }
-
-      // ── Custom projection decoration (hide-native + render-custom) ──
-      // The projection node is the rendered MathJax host inside the logical
-      // block; it is PROJECTION output and never becomes a business target.
-      const projectionTarget = this.resolveProjectionTarget(host)
-      if (!projectionTarget) {
-        if (deco) {
-          deco.remove()
-          stats.restoreNativeCount++
-          console.info(
-            `[InkChapter Numbering] FORMULA-RECONCILE tag=${host.tagName} mode=${item.mode} ` +
-            `decision=REMOVE_STALE_CUSTOM reason=RENDERER_NOT_READY`,
-          )
-        } else {
-          stats.deferredCount++
-          console.info(
-            `[InkChapter Numbering] FORMULA-PROJECTION-DEFER tag=${host.tagName} ` +
-            `reason=RENDERER_NOT_READY projectionWrites=0`,
-          )
-          emitRuntimeAudit('FORMULA-PROJECTION-DEFER', {
-            reason: 'RENDERER_NOT_READY',
-            projectionWrites: 0,
-          })
-        }
-        continue
-      }
-
-      let decoration = deco
-      if (!decoration) {
-        decoration = document.createElement('span')
-        decoration.className = 'inkchapter-formula-number'
-        decoration.setAttribute(DECORATION_ATTR, 'true')
-        decoration.setAttribute('contenteditable', 'false')
-        projectionTarget.insertAdjacentElement('afterend', decoration)
-      }
-      if (decoration.textContent !== item.label) {
-        decoration.textContent = item.label
-        if (chosen === 'hide-native') stats.hideNativeRenderCustomCount++
-        else stats.renderCustomCount++
-        console.info(
-          `[InkChapter Numbering] FORMULA-RECONCILE tag=${host.tagName} mode=${item.mode} ` +
-          `decision=${chosen === 'hide-native' ? 'HIDE_NATIVE_RENDER_CUSTOM' : 'RENDER_CUSTOM'} ` +
-          `label=${JSON.stringify(item.label)} reason=${chosen === 'hide-native' ? 'HIDE_NATIVE_RENDER_CUSTOM' : 'NO_NATIVE_NODE_RENDER_CUSTOM'}`,
-        )
-      } else {
-        stats.noOpCount++
-      }
+      // ── Custom mode (inkchapter) ──
+      // Phase 7R.3: the standard InkChapter projection authority is the
+      // NATIVE TRANSIENT `\tag{...}` injected by FormulaProjectionController
+      // through the MathJax render-input hook. The adapter therefore performs
+      // CLEANUP ONLY: it removes any stale custom decoration and restores any
+      // previously-managed native node so exactly ONE projection authority
+      // remains. No `span.inkchapter-formula-number` is created here.
+      const changed = this.restoreNative(host, native, deco)
+      this.strategyByHost.delete(host)
+      console.info(
+        `[InkChapter Numbering] FORMULA-RECONCILE tag=${safeTagName(host)} mode=${item.mode} ` +
+        `decision=${changed ? 'REMOVE_CUSTOM' : 'NO_OP'} reason=NATIVE_TRANSIENT_PROJECTION`,
+      )
+      if (changed) stats.restoreNativeCount++
+      else stats.noOpCount++
     }
 
     return stats
@@ -661,16 +600,6 @@ export class FormulaNumberingAdapter {
     return changed
   }
 
-  /**
-   * PROJECTION target resolution: the rendered MathJax output host inside the
-   * logical block. This node is where the visible InkChapter number is anchored;
-   * it is NOT a business Formula target. Returns null while the renderer is not
-   * ready (formula still in raw/preprocess state) → caller DEFERs writes.
-   */
-  private resolveProjectionTarget(host: HTMLElement): HTMLElement | null {
-    return host.querySelector<HTMLElement>(RENDERED_MATH_SELECTOR)
-  }
-
   private findDecoration(host: HTMLElement): HTMLElement | null {
     return host.querySelector<HTMLElement>(`[${DECORATION_ATTR}]`) ?? null
   }
@@ -679,6 +608,31 @@ export class FormulaNumberingAdapter {
     if (!this.nativeOriginals.has(native)) {
       this.nativeOriginals.set(native, { text: native.textContent ?? '', display: native.style.display })
     }
+  }
+
+  /**
+   * Phase 7R.3.3-F: EXACT visible Formula tag token extraction (read-only).
+   * Inspects the actual MathJax visible tag representation and returns
+   * normalized RAW tag tokens ONLY (e.g. `(1.1-1)` → `["1.1-1"]`,
+   * `(2-1)` → `["2-1"]`, native `(1)` → `["1"]`).
+   * NEVER uses substring/suffix matching. Bounded; no full SVG/TeX dumps.
+   */
+  extractVisibleFormulaTagTokens(host: HTMLElement): string[] {
+    const tokens: string[] = []
+    const tagTextRe = /^\(\s*([\d]+(?:\.[\d]+)*-\d+|\d+)\s*\)$/
+    try {
+      for (const mjx of Array.from(host.querySelectorAll<HTMLElement>(RENDERED_MATH_SELECTOR))) {
+        for (const el of Array.from(mjx.querySelectorAll<HTMLElement>('*'))) {
+          if (el.children.length !== 0) continue
+          const text = safeText(el, 40).replace(/\u00A0/g, ' ').trim()
+          if (!text) continue
+          const m = tagTextRe.exec(text)
+          if (m) tokens.push(m[1])
+          if (tokens.length >= 6) return tokens
+        }
+      }
+    } catch { /* read-only best-effort */ }
+    return tokens
   }
 
   /** Current double-number evidence across all block formula hosts. */
