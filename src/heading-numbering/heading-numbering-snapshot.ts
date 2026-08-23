@@ -22,6 +22,7 @@ import { computeHeadingNumbering, type HeadingOverrideMap } from './numbering-en
 import { resolveHeadingStructure } from './heading-structure'
 import { computeSemanticHeadingNumbers, resolveSemanticStartAt } from './semantic-heading-numbering'
 import type { HeadingStructureMode, SemanticHeadingNumberState } from './semantic-heading-types'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export interface HeadingNumberingSnapshot {
   /** Document identity this snapshot was computed for. */
@@ -107,8 +108,42 @@ export class HeadingNumberingAuthority {
     )
     this.currentSnapshot = snapshot
     this.currentDocumentKey = key
+    this.emitStrictBoundaryAudit(snapshot)
     this.notify(snapshot, 'COMMITTED')
     return snapshot
+  }
+
+  /**
+   * Phase 7R.3.7: STRICT-NUMBERING-BOUNDARY audit — walks the canonical
+   * semantic states in document order and records every strict H1 boundary
+   * transition (OPEN_BOUNDARY / CONTINUE_BOUNDARY). Diagnostic only; the
+   * boundary identity itself is carried by each SemanticHeadingNumberState.
+   */
+  private emitStrictBoundaryAudit(snapshot: HeadingNumberingSnapshot): void {
+    if (snapshot.structureMode !== 'strict') return
+    let previousBoundaryIdentity: string | null = null
+    for (const s of snapshot.semantic) {
+      if (s.physicalLevel !== 1) {
+        emitRuntimeAudit('STRICT-NUMBERING-BOUNDARY', {
+          documentKey: snapshot.documentKey,
+          headingStableIdentity: s.stableIdentity,
+          physicalLevel: s.physicalLevel,
+          strictBoundaryIdentity: s.strictBoundaryIdentity,
+          previousBoundaryIdentity,
+          decision: 'CONTINUE_BOUNDARY',
+        })
+        continue
+      }
+      emitRuntimeAudit('STRICT-NUMBERING-BOUNDARY', {
+        documentKey: snapshot.documentKey,
+        headingStableIdentity: s.stableIdentity,
+        physicalLevel: 1,
+        strictBoundaryIdentity: s.strictBoundaryIdentity,
+        previousBoundaryIdentity,
+        decision: 'OPEN_BOUNDARY',
+      })
+      previousBoundaryIdentity = s.strictBoundaryIdentity
+    }
   }
 
   /**

@@ -86,6 +86,11 @@ export interface FormulaNativeRenderPlan {
   formulaRuntimeKey: string
   authority: 'inkchapter-native-transient'
   formulaMode: 'inkchapter'
+  // ── Phase 7R.3.7 boundary provenance (part of the semantic signature) ──
+  strictBoundaryIdentity?: string | null
+  structuralChapterIdentity?: string | null
+  structuralSectionIdentity?: string | null
+  effectiveScope?: 'global' | 'chapter' | 'section'
 }
 
 /** Phase 7R.3.3: canonical Formula projection signature (semantic, no revision). */
@@ -96,6 +101,12 @@ export interface FormulaProjectionSignature {
   rawNumber: string
   authority: FormulaProjectionAuthority
   formulaMode: 'typora-native' | 'inkchapter'
+  // ── Phase 7R.3.7: boundary-aware provenance — the same visible raw number
+  //    in two H1 boundaries MUST produce different semantic signatures. ────
+  strictBoundaryIdentity: string | null
+  structuralChapterIdentity: string | null
+  structuralSectionIdentity: string | null
+  effectiveScope: 'global' | 'chapter' | 'section' | null
 }
 
 export type FormulaAffectedReason =
@@ -130,6 +141,8 @@ export interface FormulaProjectionActivation {
   planSetEpoch: number
   headingSnapshotRevision: number
   editorStructureEpoch: number
+  // ── Phase 7R.3.7 boundary provenance (diagnostics; signature hash owns it) ─
+  strictBoundaryIdentity: string | null
   // ── Durable commit state (Phase 7R.3.6-L) ───────────────────────────
   lastInjectedActivationId: number | null
   lastInjectedSignatureHash: string | null
@@ -150,6 +163,8 @@ export interface FormulaProjectionTransition {
   currentActivationId: number
   currentSignatureHash: string
   currentRawNumber: string
+  // ── Phase 7R.3.7: boundary provenance carried through every transition ──
+  strictBoundaryIdentity: string | null
   reason:
     | 'NEW_FORMULA'
     | 'SEMANTIC_NUMBER_CHANGED'
@@ -291,7 +306,11 @@ export function normalizeTyporaAutoNumberingPolicy(raw: string | boolean | undef
 
 /** Bounded diagnostic hash of a projection signature (logging only). */
 export function hashProjectionSignature(sig: FormulaProjectionSignature): string {
-  return hashFormulaSource(`${sig.documentKey}|${sig.sourceHash}|${sig.rawNumber}|${sig.authority}|${sig.formulaMode}`)
+  return hashFormulaSource(
+    `${sig.documentKey}|${sig.sourceHash}|${sig.rawNumber}|${sig.authority}|${sig.formulaMode}|` +
+    `${sig.strictBoundaryIdentity ?? 'no-boundary'}|${sig.structuralChapterIdentity ?? 'no-chapter'}|` +
+    `${sig.structuralSectionIdentity ?? 'no-section'}|${sig.effectiveScope ?? 'none'}`,
+  )
 }
 
 /** Signature from a published plan + its host. */
@@ -303,6 +322,10 @@ export function projectionSignatureOf(host: HTMLElement, plan: FormulaNativeRend
     rawNumber: plan.rawNumber,
     authority: plan.authority,
     formulaMode: plan.formulaMode,
+    strictBoundaryIdentity: plan.strictBoundaryIdentity ?? null,
+    structuralChapterIdentity: plan.structuralChapterIdentity ?? null,
+    structuralSectionIdentity: plan.structuralSectionIdentity ?? null,
+    effectiveScope: plan.effectiveScope ?? null,
   }
 }
 
@@ -607,6 +630,7 @@ export class FormulaProjectionController {
       currentActivationId: this.nextActivationId(),
       currentSignatureHash: newSig,
       currentRawNumber: newPlan.rawNumber,
+      strictBoundaryIdentity: newPlan.strictBoundaryIdentity ?? null,
       reason: transitionReasonOf(changeReason),
     }
     // Phase 7R.3.6 §11: historical attempts are recorded for DIAGNOSTICS ONLY.
@@ -626,6 +650,7 @@ export class FormulaProjectionController {
       planSetEpoch: options?.planSetEpoch ?? this.planSetEpochValue,
       headingSnapshotRevision: options?.headingSnapshotRevision ?? newPlan.revision,
       editorStructureEpoch: options?.editorStructureEpoch ?? 0,
+      strictBoundaryIdentity: newPlan.strictBoundaryIdentity ?? null,
       lastInjectedActivationId: null,
       lastInjectedSignatureHash: null,
       lastCommittedActivationId: null,
@@ -657,6 +682,7 @@ export class FormulaProjectionController {
       previousSignatureHash: transition.previousSignatureHash,
       currentRawNumber: newPlan.rawNumber,
       previousRawNumber: transition.previousRawNumber,
+      strictBoundaryIdentity: activation.strictBoundaryIdentity,
       planSetEpoch: activation.planSetEpoch,
       headingSnapshotRevision: activation.headingSnapshotRevision,
       editorStructureEpoch: activation.editorStructureEpoch,
@@ -709,6 +735,7 @@ export class FormulaProjectionController {
         currentActivationId: this.nextActivationId(),
         currentSignatureHash: sig,
         currentRawNumber: plan.rawNumber,
+        strictBoundaryIdentity: plan.strictBoundaryIdentity ?? null,
         reason: transitionReasonOf(act ? 'SEMANTIC_NUMBER_CHANGED' : 'NEW_FORMULA'),
       }
       s.activation = {
@@ -725,6 +752,7 @@ export class FormulaProjectionController {
         planSetEpoch: this.planSetEpochValue,
         headingSnapshotRevision: plan.revision,
         editorStructureEpoch: 0,
+        strictBoundaryIdentity: plan.strictBoundaryIdentity ?? null,
         lastInjectedActivationId: null,
         lastInjectedSignatureHash: null,
         lastCommittedActivationId: null,
@@ -951,6 +979,14 @@ export function classifyPlanChange(old: FormulaNativeRenderPlan | undefined, nex
   if (old.formulaMode !== next.formulaMode) return 'FORMULA_MODE_CHANGED'
   if (old.authority !== next.authority) return 'PROJECTION_AUTHORITY_CHANGED'
   if (old.rawNumber !== next.rawNumber) return 'SEMANTIC_NUMBER_CHANGED'
+  // Phase 7R.3.7: boundary / structural scope provenance is part of the
+  // semantic identity — a changed boundary with the SAME rawNumber (e.g.
+  // Boundary A 1-1 → Boundary B 1-1) is still a SEMANTIC change that must mint
+  // a NEW activation / provenance.
+  if ((old.strictBoundaryIdentity ?? null) !== (next.strictBoundaryIdentity ?? null)) return 'SEMANTIC_NUMBER_CHANGED'
+  if ((old.structuralChapterIdentity ?? null) !== (next.structuralChapterIdentity ?? null)) return 'SEMANTIC_NUMBER_CHANGED'
+  if ((old.structuralSectionIdentity ?? null) !== (next.structuralSectionIdentity ?? null)) return 'SEMANTIC_NUMBER_CHANGED'
+  if ((old.effectiveScope ?? null) !== (next.effectiveScope ?? null)) return 'SEMANTIC_NUMBER_CHANGED'
   if (old.sourceHash !== next.sourceHash) return 'SOURCE_CHANGED'
   return 'UNCHANGED'
 }

@@ -16,7 +16,9 @@ import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset, type ObjectNumberingPreset } from './numbering-preset-formatter'
 import { buildObjectNumberingLabel, renderNumberTemplate, type ObjectNumberingConfig } from './object-numbering-engine'
+import { buildObjectSemanticScopeIdentity, objectScopeKey, type ObjectSemanticScopeIdentity } from './object-semantic-scope'
 import type { CaptionScope } from './semantic-heading-types'
+import { chapterScopeIdentityOf, sectionScopeIdentityOf } from './semantic-heading-types'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export type ProductionObjectKind = 'figure' | 'table' | 'code'
@@ -27,6 +29,14 @@ export interface CaptionObjectEntry {
   /** Canonical stable identity of the nearest preceding heading (NOT a raw index). */
   precedingHeadingStableIdentity: string | null
   name?: string
+  // ── Phase 7R.3.7 boundary provenance (optional; falls back to the semantic
+  //    snapshot lookup by precedingHeadingStableIdentity) ────────────────
+  structureMode?: 'strict' | 'loose'
+  strictBoundaryIdentity?: string | null
+  structuralChapterIdentity?: string | null
+  structuralSectionIdentity?: string | null
+  chapterOrdinal?: number | null
+  sectionOrdinal?: number | null
 }
 
 export interface ProductionDesiredCaptionState {
@@ -43,20 +53,13 @@ export interface ProductionDesiredCaptionState {
   rawNumber: string
   renderedLabel: string
   resolutionStatus: 'exact' | 'degraded'
+  // ── Phase 7R.3.7 boundary provenance ──────────────────────────────────
+  strictBoundaryIdentity: string | null
+  structuralChapterIdentity: string | null
+  structuralSectionIdentity: string | null
 }
 
 export type ProductionObjectConfigs = Record<ProductionObjectKind, ObjectNumberingConfig>
-
-function buildScopeKey(
-  kind: ProductionObjectKind,
-  scope: CaptionScope,
-  chapter: number | null,
-  section: number | null,
-): string {
-  if (scope === 'global') return `${kind}:global`
-  if (scope === 'chapter') return `${kind}:chapter:${chapter ?? 0}`
-  return `${kind}:section:${chapter ?? 0}.${section ?? 0}`
-}
 
 function requestedScopeForPreset(preset: ObjectNumberingPreset, legacyTemplate?: string): CaptionScope {
   if (preset === 'legacy-custom') {
@@ -76,6 +79,10 @@ function requestedScopeForPreset(preset: ObjectNumberingPreset, legacyTemplate?:
  * and effective semantic scope). Formatting uses the EFFECTIVE scope (after
  * SECTION→CHAPTER→GLOBAL degradation), never the requested preset scope, so a
  * degraded SECTION never renders a fabricated zero section level.
+ *
+ * Phase 7R.3.7: counter grouping uses the shared boundary-aware scope identity
+ * (strict mode: boundary + structural identities), so the same visible raw
+ * number across two H1 boundaries belongs to two different scope keys.
  */
 export function computeProductionDesiredCaptionStates(
   snapshot: HeadingNumberingSnapshot,
@@ -95,13 +102,36 @@ export function computeProductionDesiredCaptionStates(
     const precedingHeading = obj.precedingHeadingStableIdentity
       ? semanticByIdentity.get(obj.precedingHeadingStableIdentity)
       : undefined
-    const chapterOrdinal = precedingHeading?.chapterOrdinal ?? null
-    const sectionOrdinal = precedingHeading?.sectionOrdinal ?? null
+    // Phase 7R.3.7: explicit boundary provenance wins; otherwise fall back to
+    // the canonical semantic snapshot lookup (backward-compatible shape).
+    const chapterOrdinal = obj.chapterOrdinal !== undefined ? obj.chapterOrdinal : (precedingHeading?.chapterOrdinal ?? null)
+    const sectionOrdinal = obj.sectionOrdinal !== undefined ? obj.sectionOrdinal : (precedingHeading?.sectionOrdinal ?? null)
+    const strictBoundaryIdentity = obj.strictBoundaryIdentity !== undefined
+      ? obj.strictBoundaryIdentity
+      : (precedingHeading?.strictBoundaryIdentity ?? null)
+    // Phase 7R.3.7: fallback uses self-or-ancestor scope identities so objects
+    // under the first H2 of a boundary group by that H2 (not "no-chapter").
+    const structuralChapterIdentity = obj.structuralChapterIdentity !== undefined
+      ? obj.structuralChapterIdentity
+      : (precedingHeading ? chapterScopeIdentityOf(precedingHeading) : null)
+    const structuralSectionIdentity = obj.structuralSectionIdentity !== undefined
+      ? obj.structuralSectionIdentity
+      : (precedingHeading ? sectionScopeIdentityOf(precedingHeading) : null)
+    const structureMode = obj.structureMode ?? snapshot.structureMode
 
     const requestedScope = requestedScopeForPreset(preset, config.template)
     const scope = resolveCaptionScope(requestedScope, chapterOrdinal, sectionOrdinal)
 
-    const scopeKey = buildScopeKey(obj.objectKind, scope.effectiveScope, scope.chapter, scope.section)
+    const scopeIdentity = buildObjectSemanticScopeIdentity({
+      mode: structureMode,
+      strictBoundaryIdentity,
+      effectiveScope: scope.effectiveScope,
+      structuralChapterIdentity,
+      structuralSectionIdentity,
+      chapterOrdinal: scope.chapter,
+      sectionOrdinal: scope.section,
+    })
+    const scopeKey = objectScopeKey(obj.objectKind, scopeIdentity)
     const ordinal = (counters.get(scopeKey) ?? 0) + 1
     counters.set(scopeKey, ordinal)
 
@@ -130,8 +160,24 @@ export function computeProductionDesiredCaptionStates(
       effectiveScope: scope.effectiveScope,
       chapterOrdinal: scope.chapter ?? null,
       sectionOrdinal: scope.section ?? null,
+      strictBoundaryIdentity,
+      structuralChapterIdentity,
+      structuralSectionIdentity,
+      scopeKey,
       ordinal,
       rawNumber,
+    })
+
+    emitRuntimeAudit('OBJECT-SEMANTIC-SCOPE-IDENTITY', {
+      objectKind: obj.objectKind,
+      runtimeKey: obj.stableIdentity,
+      strictBoundaryIdentity,
+      effectiveScope: scope.effectiveScope,
+      structuralChapterIdentity,
+      structuralSectionIdentity,
+      chapterOrdinal: scope.chapter,
+      sectionOrdinal: scope.section,
+      scopeKey,
     })
 
     results.push({
@@ -148,6 +194,9 @@ export function computeProductionDesiredCaptionStates(
       rawNumber,
       renderedLabel,
       resolutionStatus: scope.degraded ? 'degraded' : 'exact',
+      strictBoundaryIdentity,
+      structuralChapterIdentity,
+      structuralSectionIdentity,
     })
   }
 

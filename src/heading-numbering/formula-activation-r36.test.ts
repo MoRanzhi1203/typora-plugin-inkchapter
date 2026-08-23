@@ -44,6 +44,8 @@ function semanticState(overrides: Partial<SemanticHeadingNumberState> = {}): Sem
     structuralParentIdentity: null,
     structuralChapterIdentity: 'h1',
     structuralSectionIdentity: null,
+    strictBoundaryIdentity: 'boundary-a',
+    strictBoundaryOrdinal: 1,
     logicalOrdinal: null,
     chapterOrdinal: 1,
     sectionOrdinal: null,
@@ -237,7 +239,14 @@ describe('Phase 7R.3.6 explicit resolution + candidate coherence — COHERENCE t
     const res = classifyFormulaSemanticResolution(false, 'NO_PRECEDING_HEADING', null, null)
     expect(res.decision).toBe('LEGITIMATE_GLOBAL_FALLBACK')
     const ctx = resolutionToFormulaContext(res)!
-    expect(ctx).toEqual({ chapterOrdinal: null, sectionOrdinal: null })
+    // Phase 7R.3.7: the context now carries boundary provenance too.
+    expect(ctx).toEqual({
+      chapterOrdinal: null,
+      sectionOrdinal: null,
+      strictBoundaryIdentity: null,
+      structuralChapterIdentity: null,
+      structuralSectionIdentity: null,
+    })
     const planned = planFormulaSemanticNumbers([ctx], config)[0]
     expect(planned.rawNumber).toBe('1')
   })

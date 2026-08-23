@@ -716,11 +716,14 @@ describe('S6 loose extension', () => {
       s6Configured: true,
       levels,
     }
-    const headings = [hd('T', 1, 0), hd('A', 2, 1), hd('B', 6, 2)]
+    // All intermediate strict parents present (H2..H5) so H6 has a valid
+    // numeric path — Phase 7R.3.7 would otherwise suppress a missing-parent
+    // path (no zero-fill), which is not what this test is verifying.
+    const headings = [hd('T', 1, 0), hd('A', 2, 1), hd('C', 3, 2), hd('D', 4, 3), hd('E', 5, 4), hd('B', 6, 5)]
     const result = computeHeadingNumbering(headings, settings)
     // strict H6 → S5 (levels[5]), not S6
     expect(result[0].label).toBe('')
-    expect(result[2].label).not.toBe('')
+    expect(result[5].label).not.toBe('')
   })
 })
 
