@@ -26,12 +26,18 @@ export function fastHash(input: string): string {
 }
 
 /**
- * Semantic fingerprint of the canonical heading snapshot. Includes ONLY fields
- * that change object numbering:
+ * Semantic fingerprint of the canonical heading snapshot (Phase 7R.3.8-D).
+ * Includes EVERY field that can change heading/object numbering semantics:
  *   stableIdentity, physicalLevel, effectiveDepth, semanticRole,
- *   chapterOrdinal, sectionOrdinal, structuralParent/Chapter/Section identity,
- *   counted.
- * Excludes: sourceRevision, debug path strings, transient DOM state.
+ *   ordinalByDepth, logicalOrdinal, chapterOrdinal, sectionOrdinal,
+ *   structuralParent/Chapter/Section identity, strictBoundaryIdentity,
+ *   strictBoundaryOrdinal, counted, countingReason.
+ * Excludes pure publication/provenance fields:
+ *   snapshot revision, sourceRevision, timestamps, audit counters,
+ *   DOM object identity, debug display strings (displayCountedPath).
+ * Same semantic state MUST produce the same fingerprint regardless of
+ * MutationObserver batching / focus / selection / decoration repair /
+ * renderer output.
  */
 export function computeHeadingSemanticFingerprint(snapshot: HeadingNumberingSnapshot | null): string {
   if (!snapshot) return ''
@@ -39,10 +45,11 @@ export function computeHeadingSemanticFingerprint(snapshot: HeadingNumberingSnap
   for (const s of snapshot.semantic) {
     parts.push(
       `${s.stableIdentity}|${s.physicalLevel}|${s.effectiveDepth}|${s.semanticRole}|` +
+      `${s.ordinalByDepth.join(',')}|${s.logicalOrdinal ?? '-'}|` +
       `${s.chapterOrdinal ?? '-'}|${s.sectionOrdinal ?? '-'}|` +
       `${s.structuralParentIdentity ?? '-'}|${s.structuralChapterIdentity ?? '-'}|` +
       `${s.structuralSectionIdentity ?? '-'}|${s.strictBoundaryIdentity ?? '-'}|` +
-      `${s.counted ? 1 : 0}`,
+      `${s.strictBoundaryOrdinal ?? '-'}|${s.counted ? 1 : 0}|${s.countingReason}`,
     )
   }
   return fastHash(`${snapshot.documentKey}|${snapshot.structureMode}|${parts.join(';')}`)
