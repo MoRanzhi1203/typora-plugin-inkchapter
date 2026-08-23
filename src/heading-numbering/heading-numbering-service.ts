@@ -196,6 +196,7 @@ import {
   type RuntimeScopeRef,
 } from '../runtime/document-runtime-context'
 import { emitRuntimeAudit, flushForensicSink } from '../runtime/forensic-log-sink'
+import { forensicVerboseEnabled } from './document-open-perf'
 import { runEditorInputFocusProbeWithSafety } from '../runtime/editor-input-focus-probe'
 import {
   resolveEmptySlot,
@@ -1668,6 +1669,12 @@ export class HeadingNumberingService {
   // and the current published physical + semantic snapshot.
   private headingAuthority = new HeadingNumberingAuthority()
 
+  // Phase 7R.3.6-F: canonical heading BINDING generation — monotonic, bumped
+  // only when the heading bindings (stable identities / levels / order) change.
+  // Text-only heading edits keep the same fingerprint → same generation.
+  private headingBindingGenerationValue = 0
+  private lastBindingsFingerprint: string | null = null
+
   // Level Range Enforcer
   private levelRangeEnforcer!: HeadingLevelRangeEnforcer
   private lastEffectiveMaxLevel: HeadingLevel = 6
@@ -2392,7 +2399,7 @@ export class HeadingNumberingService {
       headingAdapterRootToken: adapterRoot ? `${adapterRoot.tagName}#${adapterRoot.id}` : 'none',
       headingAdapterRootConnected: adapterRoot ? adapterRoot.isConnected : false,
     }
-    emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-ENTRY', entry)
+    if (forensicVerboseEnabled()) emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-ENTRY', entry)
 
     // ── Explicit null exits (never collapsed into one generic reason) ──
     const decision = (decision: string, extra: Record<string, unknown> = {}): null => {
@@ -2430,8 +2437,9 @@ export class HeadingNumberingService {
       return decision('NO_BINDINGS', { headingAdapterRootToken: entry.headingAdapterRootToken })
     }
 
-    // Bounded binding inventory (small docs only — avoids log explosion).
-    if (bindings.length <= 12) {
+    // Bounded binding inventory (small docs only — VERBOSE forensic only;
+    // Phase 7R.3.4-G normal mode keeps summary/gate evidence).
+    if (bindings.length <= 12 && forensicVerboseEnabled()) {
       for (let i = 0; i < bindings.length; i++) {
         const b = bindings[i]
         const pos = b.element.compareDocumentPosition(target)
@@ -2515,6 +2523,131 @@ export class HeadingNumberingService {
       headingStableIdentity: candidate.key,
       semanticState,
     }
+  }
+
+  /**
+   * Phase 7R.3.4-E / 7R.3.6-F: bind MANY object targets in ONE canonical
+   * resolver session.
+   *
+   * Validates document/snapshot/root ONCE, collects canonical heading bindings
+   * ONCE, then forward-sweeps the targets (document order) against the heading
+   * cursor → O(H + O) per reconcile instead of O(H × O). Consumes the SAME
+   * canonical authority (heading stableIdentity → semanticByIdentity); never
+   * re-derives semantics.
+   *
+   * Phase 7R.3.6-G: every target gets an EXPLICIT outcome — `bound:true` with
+   * the canonical state, or `bound:false` with an explicit unbound reason so a
+   * Formula caller can distinguish LEGITIMATE_GLOBAL_FALLBACK (genuinely before
+   * the first counted chapter) from TRANSIENT_UNRESOLVED (never project).
+   *
+   * Also maintains the headingBindingGeneration: bumped ONLY when the canonical
+   * heading bindings (identity/level/order) change — never for text-only edits
+   * or MathJax renderer output.
+   */
+  resolvePrecedingSemanticHeadingBatch(
+    targets: HTMLElement[],
+  ): Array<
+    | {
+        bound: true
+        documentKey: string
+        revision: number
+        headingStableIdentity: string
+        semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
+      }
+    | { bound: false; reason: string }
+  > {
+    const result: Array<
+      | {
+          bound: true
+          documentKey: string
+          revision: number
+          headingStableIdentity: string
+          semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
+        }
+      | { bound: false; reason: string }
+    > = targets.map(() => ({ bound: false as const, reason: 'NO_PRECEDING_HEADING' }))
+
+    const activeDocumentKey = this.getDocumentKey()
+    const rawSnapshot = this.headingAuthority.getCurrent()
+    const adapterRoot = this.adapter.getEditorRoot()
+    if (!activeDocumentKey || !rawSnapshot || !adapterRoot) {
+      const reason = !activeDocumentKey ? 'NO_ACTIVE_DOCUMENT' : (!rawSnapshot ? 'NO_SNAPSHOT' : 'NO_EDITOR_ROOT')
+      return targets.map(() => ({ bound: false as const, reason }))
+    }
+    if (rawSnapshot.documentKey !== activeDocumentKey) {
+      return targets.map(() => ({ bound: false as const, reason: 'DOCUMENT_KEY_MISMATCH' }))
+    }
+
+    const bindings = this.adapter.collectHeadingBindings()
+    if (bindings.length === 0) {
+      return targets.map(() => ({ bound: false as const, reason: 'NO_BINDINGS' }))
+    }
+    // Phase 7R.3.6-F: bump headingBindingGeneration when the canonical binding
+    // set changes (identity/level/order) — the in-flight Formula plan candidate
+    // uses this generation as provenance for its coherence check.
+    const fp = bindings.map(b => `${b.key}@${b.level}`).join('|')
+    if (this.lastBindingsFingerprint !== fp) {
+      this.headingBindingGenerationValue++
+      this.lastBindingsFingerprint = fp
+    }
+    const semanticByIdentity = new Map(rawSnapshot.semantic.map(s => [s.stableIdentity, s]))
+
+    // Forward sweep: headings and targets are both in document order.
+    let headingCursor = 0
+    let candidate: { key: string; element: HTMLElement } | null = null
+    for (let ti = 0; ti < targets.length; ti++) {
+      const target = targets[ti]
+      if (!target.isConnected || !adapterRoot.contains(target)) {
+        result[ti] = { bound: false, reason: !target.isConnected ? 'TARGET_DISCONNECTED' : 'ROOT_MISMATCH' }
+        continue
+      }
+      while (headingCursor < bindings.length) {
+        const b = bindings[headingCursor]
+        const pos = b.element.compareDocumentPosition(target)
+        if (pos & DOM_POSITION_DISCONNECTED) { headingCursor++; continue }
+        if (pos & DOM_POSITION_FOLLOWING) {
+          candidate = b
+          headingCursor++
+        } else {
+          break
+        }
+      }
+      if (!candidate) continue // genuinely before the first heading binding
+      const semanticState = semanticByIdentity.get(candidate.key)
+      if (!semanticState) {
+        result[ti] = { bound: false, reason: 'CANDIDATE_IDENTITY_MISSING' }
+        continue
+      }
+      result[ti] = {
+        bound: true,
+        documentKey: rawSnapshot.documentKey,
+        revision: rawSnapshot.revision,
+        headingStableIdentity: candidate.key,
+        semanticState,
+      }
+    }
+
+    emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-BATCH', {
+      documentKey: rawSnapshot.documentKey,
+      snapshotRevision: rawSnapshot.revision,
+      headingBindingCount: bindings.length,
+      headingBindingGeneration: this.headingBindingGenerationValue,
+      targetCount: targets.length,
+      boundCount: result.filter(r => r.bound).length,
+      unboundCount: result.filter(r => !r.bound).length,
+      unboundReasons: (() => {
+        const m = new Map<string, number>()
+        for (const r of result) if (!r.bound) m.set(r.reason, (m.get(r.reason) ?? 0) + 1)
+        return Object.fromEntries(m)
+      })(),
+      decision: 'SESSION_ONE_FORWARD_SWEEP',
+    })
+    return result
+  }
+
+  /** Phase 7R.3.6-F: current heading binding generation (provenance only). */
+  getHeadingBindingGeneration(): number {
+    return this.headingBindingGenerationValue
   }
 
   /**

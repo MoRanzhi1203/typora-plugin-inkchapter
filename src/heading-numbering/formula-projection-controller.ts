@@ -1,5 +1,5 @@
 /**
- * Formula Projection Controller (Phase 7R.3 / 7R.3.2 / 7R.3.3)
+ * Formula Projection Controller (Phase 7R.3 / 7R.3.2 / 7R.3.3 / 7R.3.6)
  *
  * Single responsibility: FORMULA PROJECTION ARBITRATION.
  *
@@ -37,10 +37,21 @@
  *   - Each Formula plan has an explicit PROJECTION SIGNATURE
  *     (documentKey + host + sourceHash + rawNumber + authority + formulaMode).
  *   - All execution evidence (injected / committed / renderRequested /
- *     recoveryAttempt) is scoped to the EXACT current signature. A changed
- *     signature invalidates old evidence and grants ONE fresh targeted render.
- *   - Old/new plan diff produces an AFFECTED SET; only affected hosts with an
- *     existing renderer are re-rendered (differential, event-driven).
+ *     recoveryAttempt) is scoped to the EXACT current signature.
+ *
+ * Phase 7R.3.6 activation model:
+ *   - The semantic projection signature answers "WHAT should be visible".
+ *   - A separate per-host ACTIVATION answers "WHICH execution transaction is
+ *     current". A changed signature ALWAYS creates a NEW activationId — even if
+ *     that signature appeared historically (A→B→A gives activation 3).
+ *   - Rerender budget is ONE-SHOT PER ACTIVATION, never per historical signature.
+ *     Historical signature attempts remain DIAGNOSTIC ONLY (non-gating).
+ *   - Transition lineage (previousActivationId / previousSignatureHash /
+ *     previousRawNumber) is captured BEFORE the old state is replaced.
+ *   - Durable commit state: lastInjected/lastCommitted ActivationId + SignatureHash
+ *     + RawNumber + PlanSetEpoch are persisted on the CURRENT activation.
+ *   - Stale async MathJax output (old activation resolves after a heading change)
+ *     is STALE_ACTIVATION_COMMIT_IGNORED and never overwrites current authority.
  */
 
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
@@ -98,17 +109,65 @@ export type FormulaAffectedReason =
   | 'REMOVED_FORMULA'
 
 /**
- * Per-host execution state, STRICTLY scoped to the current projection signature
- * (Phase 7R.3.3-B). Old-signature evidence never leaks into a new signature.
+ * Phase 7R.3.6: per-host Formula EXECUTION activation.
+ *
+ * Signature answers WHAT should be visible; activation answers WHICH execution
+ * transaction is current. A new activationId is minted on EVERY signature
+ * change (historical signatures never gate a new activation).
+ */
+export interface FormulaProjectionActivation {
+  activationId: number
+  signatureHash: string
+  previousSignatureHash: string | null
+  documentKey: string
+  sourceHash: string
+  rawNumber: string
+  state: FormulaProjectionExecutionState
+  /** ONE-SHOT rerender budget per activation (Phase 7R.3.6-D). */
+  rerenderAttemptCount: number
+  injected: boolean
+  committed: boolean
+  planSetEpoch: number
+  headingSnapshotRevision: number
+  editorStructureEpoch: number
+  // ── Durable commit state (Phase 7R.3.6-L) ───────────────────────────
+  lastInjectedActivationId: number | null
+  lastInjectedSignatureHash: string | null
+  lastCommittedActivationId: number | null
+  lastCommittedSignatureHash: string | null
+  lastCommittedRawNumber: string | null
+  lastCommittedPlanSetEpoch: number | null
+  lastRenderRequestedActivationId: number | null
+  lastRenderRequestedSignatureHash: string | null
+}
+
+/** Phase 7R.3.6-E: transition lineage captured BEFORE replacing old state. */
+export interface FormulaProjectionTransition {
+  formulaHost: HTMLElement
+  previousActivationId: number | null
+  previousSignatureHash: string | null
+  previousRawNumber: string | null
+  currentActivationId: number
+  currentSignatureHash: string
+  currentRawNumber: string
+  reason:
+    | 'NEW_FORMULA'
+    | 'SEMANTIC_NUMBER_CHANGED'
+    | 'SOURCE_CHANGED'
+    | 'MODE_CHANGED'
+    | 'AUTHORITY_CHANGED'
+    | 'DOCUMENT_CHANGED'
+}
+
+/**
+ * Per-host execution state, activation-scoped (Phase 7R.3.6).
+ * Old-activation evidence never leaks into a new activation.
  */
 export interface HostProjectionState {
   currentPlannedSignatureHash: string
-  lastInjectedSignatureHash: string | null
-  lastCommittedSignatureHash: string | null
-  lastRenderRequestedSignatureHash: string | null
+  activation: FormulaProjectionActivation | null
   lastLookupDecision: FormulaTransientPlanLookupDecision | undefined
   executionState: FormulaProjectionExecutionState
-  recoveryAttempts: Map<string, number>
 }
 
 /**
@@ -133,6 +192,7 @@ export type FormulaTransientPlanLookupDecision =
   | 'HOST_DISCONNECTED'
   | 'DOCUMENT_MISMATCH'
   | 'EXPLICIT_USER_TAG_PRESERVED'
+  | 'STALE_ACTIVATION_LOOKUP'
 
 export type FormulaVerifyDecision =
   | 'SEMANTIC_VISIBLE_VERIFIED'
@@ -151,6 +211,9 @@ export interface FormulaVerifyInput {
   sequentialCommitted: boolean
   customDecorationCount: number
 }
+
+/** One-shot controlled rerender budget per ACTIVATION (Phase 7R.3.6-D §12). */
+export const MAX_CONTROLLED_RERENDER_PER_ACTIVATION = 1
 
 /**
  * Phase 7R.3.1-A / 7R.3.3-F verifier — the ONLY path to SEMANTIC_VISIBLE_VERIFIED.
@@ -179,6 +242,10 @@ export interface FormulaRenderInputDecision {
   injected: boolean
   authority: FormulaProjectionAuthority
   sourceHash: string
+  /** Phase 7R.3.6-K: activation-aware execution identity carried end-to-end. */
+  planSetEpoch?: number
+  activationId?: number | null
+  signatureHash?: string
 }
 
 /** A source-authored explicit `\tag{...}` — must be preserved, never overwritten. */
@@ -239,28 +306,123 @@ export function projectionSignatureOf(host: HTMLElement, plan: FormulaNativeRend
   }
 }
 
+/** Map a plan-change classification onto a transition reason (Phase 7R.3.6-E §15). */
+export function transitionReasonOf(changeReason: FormulaAffectedReason): FormulaProjectionTransition['reason'] {
+  switch (changeReason) {
+    case 'NEW_FORMULA': return 'NEW_FORMULA'
+    case 'SOURCE_CHANGED': return 'SOURCE_CHANGED'
+    case 'SEMANTIC_NUMBER_CHANGED': return 'SEMANTIC_NUMBER_CHANGED'
+    case 'PROJECTION_AUTHORITY_CHANGED': return 'AUTHORITY_CHANGED'
+    case 'FORMULA_MODE_CHANGED': return 'MODE_CHANGED'
+    case 'DOCUMENT_CHANGED': return 'DOCUMENT_CHANGED'
+    default: return 'SEMANTIC_NUMBER_CHANGED'
+  }
+}
+
 export class FormulaProjectionController {
   private plans = new WeakMap<HTMLElement, FormulaNativeRenderPlan>()
   private sourceIndex = new Map<string, Set<HTMLElement>>()
   private stateByHost = new WeakMap<HTMLElement, HostProjectionState>()
   private planGenerationValue = 0
   private expectedPlanCount = 0
+  private activationIdCounter = 0
+  private planSetEpochValue = 0
+  /** Phase 7R.3.6 §11: historical signature attempt counts — DIAGNOSTIC ONLY. */
+  private historicalSignatureAttempts = new Map<string, number>()
+  private staleActivationCommitIgnoredCount = 0
+  private staleActivationLookupCount = 0
+  private adoptedExistingSemanticOutputCount = 0
 
   private stateOf(host: HTMLElement): HostProjectionState {
     let s = this.stateByHost.get(host)
     if (!s) {
       s = {
         currentPlannedSignatureHash: '',
-        lastInjectedSignatureHash: null,
-        lastCommittedSignatureHash: null,
-        lastRenderRequestedSignatureHash: null,
+        activation: null,
         lastLookupDecision: undefined,
         executionState: 'idle',
-        recoveryAttempts: new Map<string, number>(),
       }
       this.stateByHost.set(host, s)
     }
     return s
+  }
+
+  private nextActivationId(): number {
+    return ++this.activationIdCounter
+  }
+
+  // ── Plan-set epoch (Phase 7R.3.6-I §28) ──────────────────────────────
+  getPlanSetEpoch(): number {
+    return this.planSetEpochValue
+  }
+
+  /** Increment ONLY when a COMPLETE candidate is atomically published. */
+  beginPlanSetEpoch(): number {
+    this.planSetEpochValue++
+    return this.planSetEpochValue
+  }
+
+  // ── Activation accessors ─────────────────────────────────────────────
+
+  /** Current activation for a host (null before the first plan publish). */
+  getCurrentActivation(host: HTMLElement): FormulaProjectionActivation | null {
+    return this.stateOf(host).activation
+  }
+
+  getActivationId(host: HTMLElement): number | null {
+    return this.stateOf(host).activation?.activationId ?? null
+  }
+
+  /** Historical attempt count for a signature — diagnostics only, never gating. */
+  getHistoricalSignatureAttemptCount(signatureHash: string): number {
+    return this.historicalSignatureAttempts.get(signatureHash) ?? 0
+  }
+
+  /**
+   * Phase 7R.3.6 §35: check whether an async output transaction is still the
+   * CURRENT activation for its host. Used by the MathJax hook's `.then()`.
+   */
+  isCurrentActivation(host: HTMLElement, activationId: number, planSetEpoch: number): boolean {
+    const act = this.stateOf(host).activation
+    if (!act) return false
+    return act.activationId === activationId && act.planSetEpoch === planSetEpoch
+  }
+
+  /** Resolve host + current activation by source hash (hook async guard). */
+  getHostBySourceHash(sourceHash: string): { host: HTMLElement; activation: FormulaProjectionActivation | null } | null {
+    const hosts = this.sourceIndex.get(sourceHash)
+    if (!hosts || hosts.size !== 1) return null
+    const host = hosts.values().next().value as HTMLElement
+    return { host, activation: this.stateOf(host).activation }
+  }
+
+  markStaleActivationCommitIgnored(documentKey: string, formulaRuntimeKey: string | null, reason: string): void {
+    this.staleActivationCommitIgnoredCount++
+    emitRuntimeAudit('FORMULA-ASYNC-COMMIT-GUARD', {
+      documentKey,
+      formulaRuntimeKey: formulaRuntimeKey ?? null,
+      decision: 'STALE_ACTIVATION_COMMIT_IGNORED',
+      reason,
+      staleActivationCommitIgnoredCount: this.staleActivationCommitIgnoredCount,
+    })
+  }
+
+  markStaleActivationLookup(documentKey: string, formulaRuntimeKey: string | null): void {
+    this.staleActivationLookupCount++
+    emitRuntimeAudit('FORMULA-ASYNC-COMMIT-GUARD', {
+      documentKey,
+      formulaRuntimeKey: formulaRuntimeKey ?? null,
+      decision: 'STALE_ACTIVATION_LOOKUP',
+      staleActivationLookupCount: this.staleActivationLookupCount,
+    })
+  }
+
+  getStaleActivationCounters(): { staleActivationCommitIgnoredCount: number; staleActivationLookupCount: number; adoptedExistingSemanticOutputCount: number } {
+    return {
+      staleActivationCommitIgnoredCount: this.staleActivationCommitIgnoredCount,
+      staleActivationLookupCount: this.staleActivationLookupCount,
+      adoptedExistingSemanticOutputCount: this.adoptedExistingSemanticOutputCount,
+    }
   }
 
   /**
@@ -308,23 +470,25 @@ export class FormulaProjectionController {
     return this.currentSignatureHash(host)
   }
 
-  // ── Signature-scoped execution evidence (Phase 7R.3.3-B) ───────────────
+  // ── Activation-scoped execution evidence (Phase 7R.3.6) ──────────────
   getExecutionState(host: HTMLElement): FormulaProjectionExecutionState {
     return this.stateOf(host).executionState
   }
 
   setExecutionState(host: HTMLElement, state: FormulaProjectionExecutionState): void {
-    this.stateOf(host).executionState = state
+    const s = this.stateOf(host)
+    s.executionState = state
+    if (s.activation) s.activation.state = state
   }
 
   wasInjectedForCurrentSignature(host: HTMLElement): boolean {
-    const s = this.stateOf(host)
-    return s.lastInjectedSignatureHash !== null && s.lastInjectedSignatureHash === s.currentPlannedSignatureHash
+    const act = this.stateOf(host).activation
+    return act !== null && act.injected && act.lastInjectedActivationId === act.activationId
   }
 
   isCommittedForCurrentSignature(host: HTMLElement): boolean {
-    const s = this.stateOf(host)
-    return s.lastCommittedSignatureHash !== null && s.lastCommittedSignatureHash === s.currentPlannedSignatureHash
+    const act = this.stateOf(host).activation
+    return act !== null && act.committed && act.lastCommittedActivationId === act.activationId
   }
 
   lastLookup(host: HTMLElement): FormulaTransientPlanLookupDecision | undefined {
@@ -332,93 +496,177 @@ export class FormulaProjectionController {
   }
 
   lastCommittedSignatureHash(host: HTMLElement): string | null {
-    return this.stateOf(host).lastCommittedSignatureHash
+    return this.stateOf(host).activation?.lastCommittedSignatureHash ?? null
   }
 
   lastRenderRequestedSignatureHash(host: HTMLElement): string | null {
-    return this.stateOf(host).lastRenderRequestedSignatureHash
+    return this.stateOf(host).activation?.lastRenderRequestedSignatureHash ?? null
   }
 
   recoveryAttemptCount(host: HTMLElement): number {
-    const sig = this.currentSignatureHash(host)
-    return this.stateOf(host).recoveryAttempts.get(sig) ?? 0
+    return this.stateOf(host).activation?.rerenderAttemptCount ?? 0
+  }
+
+  /** Durable commit record for the current activation (Phase 7R.3.6-L). */
+  commitState(host: HTMLElement): {
+    currentActivationId: number | null
+    currentSignatureHash: string
+    lastCommittedActivationId: number | null
+    lastCommittedSignatureHash: string | null
+    lastCommittedRawNumber: string | null
+    lastCommittedPlanSetEpoch: number | null
+    planSetEpoch: number
+  } {
+    const s = this.stateOf(host)
+    const act = s.activation
+    return {
+      currentActivationId: act?.activationId ?? null,
+      currentSignatureHash: s.currentPlannedSignatureHash,
+      lastCommittedActivationId: act?.lastCommittedActivationId ?? null,
+      lastCommittedSignatureHash: act?.lastCommittedSignatureHash ?? null,
+      lastCommittedRawNumber: act?.lastCommittedRawNumber ?? null,
+      lastCommittedPlanSetEpoch: act?.lastCommittedPlanSetEpoch ?? null,
+      planSetEpoch: act?.planSetEpoch ?? this.planSetEpochValue,
+    }
   }
 
   /**
-   * One-shot controlled-recovery budget PER PROJECTION SIGNATURE.
-   * A changed signature resets the budget (Phase 7R.3.3-D).
+   * Phase 7R.3.6-D: one-shot controlled-recovery budget PER ACTIVATION.
+   * A NEW activation starts at 0. Historical signature attempts are NOT gating.
+   * The attempt counter increments ONLY when a request is allowed.
    */
   tryReserveRecoveryRender(host: HTMLElement): boolean {
-    const sig = this.currentSignatureHash(host)
-    if (!sig) return false
     const s = this.stateOf(host)
-    const count = s.recoveryAttempts.get(sig) ?? 0
-    if (count >= 1) return false
-    s.recoveryAttempts.set(sig, count + 1)
+    const act = s.activation
+    if (!act) return false
+    if (act.rerenderAttemptCount >= MAX_CONTROLLED_RERENDER_PER_ACTIVATION) {
+      emitRuntimeAudit('FORMULA-RERENDER-BUDGET', {
+        documentKey: act.documentKey,
+        activationId: act.activationId,
+        signatureHash: act.signatureHash,
+        rerenderAttemptCount: act.rerenderAttemptCount,
+        maxControlledRerenderPerActivation: MAX_CONTROLLED_RERENDER_PER_ACTIVATION,
+        authority: 'ACTIVATION',
+        historicalSignatureAttemptCount: this.historicalSignatureAttempts.get(act.signatureHash) ?? 0,
+        decision: 'DENIED',
+      })
+      return false
+    }
+    act.rerenderAttemptCount++
+    emitRuntimeAudit('FORMULA-RERENDER-BUDGET', {
+      documentKey: act.documentKey,
+      activationId: act.activationId,
+      signatureHash: act.signatureHash,
+      rerenderAttemptCount: act.rerenderAttemptCount,
+      maxControlledRerenderPerActivation: MAX_CONTROLLED_RERENDER_PER_ACTIVATION,
+      authority: 'ACTIVATION',
+      historicalSignatureAttemptCount: this.historicalSignatureAttempts.get(act.signatureHash) ?? 0,
+      decision: 'ALLOWED',
+    })
     return true
   }
 
   /**
-   * Phase 7R.3.3-C: replace a host's plan, diffing the OLD vs NEW projection
-   * signature. Returns the affected classification.
-   *   - same signature → UNCHANGED, execution state preserved.
-   *   - changed signature → old execution evidence invalidated, state=plan-ready.
+   * Phase 7R.3.6-C/E/I: publish a host's plan, minting a NEW activation whenever
+   * the semantic signature changes (even for historical signatures). Same
+   * signature reuses the current activation. Transition lineage is captured
+   * BEFORE the old activation is replaced.
    */
-  applyProjectionPlan(host: HTMLElement, newPlan: FormulaNativeRenderPlan, reason?: FormulaAffectedReason): { affected: boolean; reason: FormulaAffectedReason } {
+  applyProjectionPlan(
+    host: HTMLElement,
+    newPlan: FormulaNativeRenderPlan,
+    options?: {
+      reason?: FormulaAffectedReason
+      planSetEpoch?: number
+      headingSnapshotRevision?: number
+      editorStructureEpoch?: number
+    },
+  ): { affected: boolean; reason: FormulaAffectedReason; activation: FormulaProjectionActivation | null; transition: FormulaProjectionTransition | null } {
     const old = this.plans.get(host)
     const oldSig = old ? hashProjectionSignature(projectionSignatureOf(host, old)) : ''
     const newSig = hashProjectionSignature(projectionSignatureOf(host, newPlan))
     const s = this.stateOf(host)
+    const currentActivation = s.activation
 
-    if (old && oldSig === newSig) {
-      // Same semantic signature — refresh the plan object (revision provenance)
-      // but preserve all execution evidence. NO_OP per Phase 7R.3.3-B §8.
+    if (old && oldSig === newSig && currentActivation) {
+      // Phase 7R.3.6 §10: same semantic signature → REUSE the current activation
+      // (snapshot revision / plan generation / coordinator reruns never mint a
+      // new activation). Refresh the plan object only.
       this.plans.set(host, newPlan)
       s.currentPlannedSignatureHash = newSig
-      return { affected: false, reason: 'UNCHANGED' }
+      s.executionState = currentActivation.state
+      return { affected: false, reason: 'UNCHANGED', activation: currentActivation, transition: null }
     }
 
-    const changeReason: FormulaAffectedReason = reason ?? classifyPlanChange(old, newPlan)
-    // Explicit state invalidation for the NEW signature (Phase 7R.3.3-B §7).
+    const changeReason: FormulaAffectedReason = options?.reason ?? classifyPlanChange(old, newPlan)
+    const transition: FormulaProjectionTransition = {
+      formulaHost: host,
+      previousActivationId: currentActivation?.activationId ?? null,
+      previousSignatureHash: currentActivation?.signatureHash ?? null,
+      previousRawNumber: currentActivation?.rawNumber ?? null,
+      currentActivationId: this.nextActivationId(),
+      currentSignatureHash: newSig,
+      currentRawNumber: newPlan.rawNumber,
+      reason: transitionReasonOf(changeReason),
+    }
+    // Phase 7R.3.6 §11: historical attempts are recorded for DIAGNOSTICS ONLY.
+    this.historicalSignatureAttempts.set(newSig, (this.historicalSignatureAttempts.get(newSig) ?? 0) + 1)
+
+    const activation: FormulaProjectionActivation = {
+      activationId: transition.currentActivationId,
+      signatureHash: newSig,
+      previousSignatureHash: transition.previousSignatureHash,
+      documentKey: newPlan.documentKey,
+      sourceHash: newPlan.sourceHash,
+      rawNumber: newPlan.rawNumber,
+      state: 'plan-ready',
+      rerenderAttemptCount: 0,
+      injected: false,
+      committed: false,
+      planSetEpoch: options?.planSetEpoch ?? this.planSetEpochValue,
+      headingSnapshotRevision: options?.headingSnapshotRevision ?? newPlan.revision,
+      editorStructureEpoch: options?.editorStructureEpoch ?? 0,
+      lastInjectedActivationId: null,
+      lastInjectedSignatureHash: null,
+      lastCommittedActivationId: null,
+      lastCommittedSignatureHash: null,
+      lastCommittedRawNumber: null,
+      lastCommittedPlanSetEpoch: null,
+      lastRenderRequestedActivationId: null,
+      lastRenderRequestedSignatureHash: null,
+    }
+
     const oldState = s.executionState
-    s.lastInjectedSignatureHash = null
-    s.lastCommittedSignatureHash = null
-    s.lastRenderRequestedSignatureHash = null
+    // Bind the plan + source index directly (setPlan would double-mint an
+    // activation; the explicit activation below is authoritative).
+    this.plans.set(host, newPlan)
+    const idxHosts = this.sourceIndex.get(newPlan.sourceHash)
+    if (idxHosts) idxHosts.add(host)
+    else this.sourceIndex.set(newPlan.sourceHash, new Set([host]))
+    s.activation = activation
+    s.currentPlannedSignatureHash = newSig
     s.lastLookupDecision = undefined
     s.executionState = 'plan-ready'
-    // Recovery budget is per signature; the NEW signature starts at 0.
-    this.setPlan(host, newPlan)
-    s.currentPlannedSignatureHash = newSig
-    emitRuntimeAudit('FORMULA-PROJECTION-STATE-INVALIDATE', {
+
+    emitRuntimeAudit('FORMULA-PROJECTION-ACTIVATION', {
       documentKey: newPlan.documentKey,
       formulaRuntimeKey: newPlan.formulaRuntimeKey,
-      oldSignatureHash: oldSig,
-      newSignatureHash: newSig,
-      oldRawNumber: old?.rawNumber ?? null,
-      newRawNumber: newPlan.rawNumber,
+      currentActivationId: activation.activationId,
+      previousActivationId: transition.previousActivationId,
+      currentSignatureHash: newSig,
+      previousSignatureHash: transition.previousSignatureHash,
+      currentRawNumber: newPlan.rawNumber,
+      previousRawNumber: transition.previousRawNumber,
+      planSetEpoch: activation.planSetEpoch,
+      headingSnapshotRevision: activation.headingSnapshotRevision,
+      editorStructureEpoch: activation.editorStructureEpoch,
+      rerenderAttemptCount: 0,
       oldExecutionState: oldState,
       newExecutionState: 'plan-ready',
-      resetInjected: true,
-      resetCommitted: true,
-      resetRenderRequested: true,
-      resetRecoveryBudget: true,
       reason: changeReason,
+      decision: 'NEW_ACTIVATION',
     })
-    emitRuntimeAudit('FORMULA-PROJECTION-PLAN-DIFF', {
-      documentKey: newPlan.documentKey,
-      formulaRuntimeKey: newPlan.formulaRuntimeKey,
-      oldSourceHash: old?.sourceHash ?? null,
-      newSourceHash: newPlan.sourceHash,
-      oldRawNumber: old?.rawNumber ?? null,
-      newRawNumber: newPlan.rawNumber,
-      oldSignatureHash: oldSig,
-      newSignatureHash: newSig,
-      oldCommittedSignatureHash: old ? s.lastCommittedSignatureHash : null,
-      newCurrentSignatureHash: newSig,
-      affected: true,
-      reason: changeReason,
-    })
-    return { affected: true, reason: changeReason }
+    return { affected: true, reason: changeReason, activation, transition }
   }
 
   /** Clear all plans + state (mode switch, document switch, dispose). */
@@ -427,9 +675,19 @@ export class FormulaProjectionController {
     this.sourceIndex = new Map<string, Set<HTMLElement>>()
     this.stateByHost = new WeakMap<HTMLElement, HostProjectionState>()
     this.expectedPlanCount = 0
+    // The activation counter / plan-set epoch are MONOTONIC per plugin session —
+    // never reset on document switch (keeps activationIds globally unique).
+    this.historicalSignatureAttempts = new Map<string, number>()
+    this.staleActivationCommitIgnoredCount = 0
+    this.staleActivationLookupCount = 0
+    this.adoptedExistingSemanticOutputCount = 0
   }
 
-  /** Bind (or refresh) a plan for a host (no diff; used at document bootstrap). */
+  /**
+   * Bind (or refresh) a plan for a host (no diff; used at document bootstrap).
+   * Lazily mints an activation whenever the bound signature has no matching
+   * current activation, so the execution model is ALWAYS populated.
+   */
   setPlan(host: HTMLElement, plan: FormulaNativeRenderPlan): void {
     this.plans.set(host, plan)
     let hosts = this.sourceIndex.get(plan.sourceHash)
@@ -438,7 +696,47 @@ export class FormulaProjectionController {
       this.sourceIndex.set(plan.sourceHash, hosts)
     }
     hosts.add(host)
-    this.stateOf(host).currentPlannedSignatureHash = hashProjectionSignature(projectionSignatureOf(host, plan))
+    const s = this.stateOf(host)
+    const sig = hashProjectionSignature(projectionSignatureOf(host, plan))
+    s.currentPlannedSignatureHash = sig
+    const act = s.activation
+    if (!act || act.signatureHash !== sig) {
+      const transition: FormulaProjectionTransition = {
+        formulaHost: host,
+        previousActivationId: act?.activationId ?? null,
+        previousSignatureHash: act?.signatureHash ?? null,
+        previousRawNumber: act?.rawNumber ?? null,
+        currentActivationId: this.nextActivationId(),
+        currentSignatureHash: sig,
+        currentRawNumber: plan.rawNumber,
+        reason: transitionReasonOf(act ? 'SEMANTIC_NUMBER_CHANGED' : 'NEW_FORMULA'),
+      }
+      s.activation = {
+        activationId: transition.currentActivationId,
+        signatureHash: sig,
+        previousSignatureHash: transition.previousSignatureHash,
+        documentKey: plan.documentKey,
+        sourceHash: plan.sourceHash,
+        rawNumber: plan.rawNumber,
+        state: 'plan-ready',
+        rerenderAttemptCount: 0,
+        injected: false,
+        committed: false,
+        planSetEpoch: this.planSetEpochValue,
+        headingSnapshotRevision: plan.revision,
+        editorStructureEpoch: 0,
+        lastInjectedActivationId: null,
+        lastInjectedSignatureHash: null,
+        lastCommittedActivationId: null,
+        lastCommittedSignatureHash: null,
+        lastCommittedRawNumber: null,
+        lastCommittedPlanSetEpoch: null,
+        lastRenderRequestedActivationId: null,
+        lastRenderRequestedSignatureHash: null,
+      }
+      // executionState stays 'idle' until a render is actually requested —
+      // matching the pre-activation model (setPlan never forces plan-ready).
+    }
   }
 
   /** Remove a host's plan (document switch / mode change cleanup). */
@@ -452,11 +750,15 @@ export class FormulaProjectionController {
       }
     }
     this.plans.delete(host)
+    this.stateOf(host).activation = null
+    this.stateOf(host).executionState = 'idle'
   }
 
   /**
    * Prepare the TRANSIENT render input for one MathJax call.
-   * LIVE document context must be passed on every call.
+   * LIVE document context must be passed on every call. The returned decision
+   * carries the planSetEpoch/activationId/signatureHash identity so the async
+   * output can be guarded against stale activations (Phase 7R.3.6-K).
    */
   prepareTransientRenderInput(
     tex: string,
@@ -520,6 +822,17 @@ export class FormulaProjectionController {
       return { tex, injected: false, authority: 'explicit-user-tag-preserved', sourceHash }
     }
 
+    // Phase 7R.3.6 §36: if the current activation no longer matches the CURRENT
+    // plan signature, this lookup is stale — never inject an old activation tag.
+    const sig = hashProjectionSignature(projectionSignatureOf(host, plan))
+    const s = this.stateOf(host)
+    const currentActivation = s.activation
+    if (currentActivation && currentActivation.signatureHash !== sig) {
+      emitLookup(host, 'STALE_ACTIVATION_LOOKUP')
+      this.markStaleActivationLookup(documentKey, plan.formulaRuntimeKey)
+      return { tex, injected: false, authority: 'defer', sourceHash }
+    }
+
     // Phase 7R.3.2-C: revision drift on an identical plan is ACCEPTED.
     const revisionDrift = plan.revision !== liveRevision
     const decision: FormulaTransientPlanLookupDecision = revisionDrift
@@ -527,26 +840,98 @@ export class FormulaProjectionController {
       : 'MATCHED'
 
     const injectedTex = `${tex}\\tag{${plan.rawNumber}}`
-    // Injection evidence is scoped to the CURRENT signature.
-    const sig = hashProjectionSignature(projectionSignatureOf(host, plan))
-    const s = this.stateOf(host)
-    s.lastInjectedSignatureHash = sig
+    s.lastLookupDecision = decision
     s.executionState = 'rendering'
+    if (currentActivation) {
+      currentActivation.injected = true
+      currentActivation.lastInjectedActivationId = currentActivation.activationId
+      currentActivation.lastInjectedSignatureHash = sig
+      currentActivation.state = 'rendering'
+    }
     emitLookup(host, decision)
-    return { tex: injectedTex, injected: true, authority: 'inkchapter-native-transient', sourceHash }
+    return {
+      tex: injectedTex,
+      injected: true,
+      authority: 'inkchapter-native-transient',
+      sourceHash,
+      planSetEpoch: currentActivation?.planSetEpoch ?? this.planSetEpochValue,
+      activationId: currentActivation?.activationId ?? null,
+      signatureHash: sig,
+    }
   }
 
-  /** Mark the CURRENT signature as committed (visible verification passed). */
+  /** Mark the CURRENT activation as durably committed (Phase 7R.3.6-L §38-39). */
   markCommitted(host: HTMLElement): void {
     const s = this.stateOf(host)
-    s.lastCommittedSignatureHash = s.currentPlannedSignatureHash
+    const act = s.activation
+    if (!act) return
+    act.lastCommittedActivationId = act.activationId
+    act.lastCommittedSignatureHash = act.signatureHash
+    act.lastCommittedRawNumber = act.rawNumber
+    act.lastCommittedPlanSetEpoch = act.planSetEpoch
+    act.committed = true
+    act.state = 'committed'
     s.executionState = 'committed'
+    emitRuntimeAudit('FORMULA-COMMIT-STATE', {
+      documentKey: act.documentKey,
+      activationId: act.activationId,
+      signatureHash: act.signatureHash,
+      rawNumber: act.rawNumber,
+      planSetEpoch: act.planSetEpoch,
+      lastCommittedActivationId: act.lastCommittedActivationId,
+      lastCommittedSignatureHash: act.lastCommittedSignatureHash,
+      lastCommittedRawNumber: act.lastCommittedRawNumber,
+      lastCommittedPlanSetEpoch: act.lastCommittedPlanSetEpoch,
+      decision: 'COMMITTED',
+    })
   }
 
-  /** Record a targeted render request for the CURRENT signature. */
+  /**
+   * Phase 7R.3.6 §40: adopt an EXACT already-visible semantic output when the
+   * commit metadata was lost. Requires all guard conditions to be verified by
+   * the caller (connected host / current documentKey / current sourceHash /
+   * inkchapter mode / valid authority / exactly one token / exact match / no
+   * duplicate). Marks the current activation durably committed WITHOUT rerender.
+   */
+  adoptExistingSemanticOutput(host: HTMLElement): boolean {
+    const s = this.stateOf(host)
+    const act = s.activation
+    if (!act) return false
+    act.injected = true
+    act.lastInjectedActivationId = act.activationId
+    act.lastInjectedSignatureHash = act.signatureHash
+    act.lastCommittedActivationId = act.activationId
+    act.lastCommittedSignatureHash = act.signatureHash
+    act.lastCommittedRawNumber = act.rawNumber
+    act.lastCommittedPlanSetEpoch = act.planSetEpoch
+    act.committed = true
+    act.state = 'committed'
+    s.executionState = 'committed'
+    this.adoptedExistingSemanticOutputCount++
+    emitRuntimeAudit('FORMULA-COMMIT-STATE', {
+      documentKey: act.documentKey,
+      activationId: act.activationId,
+      signatureHash: act.signatureHash,
+      rawNumber: act.rawNumber,
+      planSetEpoch: act.planSetEpoch,
+      lastCommittedActivationId: act.lastCommittedActivationId,
+      lastCommittedSignatureHash: act.lastCommittedSignatureHash,
+      lastCommittedRawNumber: act.lastCommittedRawNumber,
+      lastCommittedPlanSetEpoch: act.lastCommittedPlanSetEpoch,
+      decision: 'ADOPTED_EXISTING_SEMANTIC_OUTPUT',
+    })
+    return true
+  }
+
+  /** Record a targeted render request for the CURRENT activation. */
   markRenderRequested(host: HTMLElement): void {
     const s = this.stateOf(host)
-    s.lastRenderRequestedSignatureHash = s.currentPlannedSignatureHash
+    const act = s.activation
+    if (!act) return
+    act.lastRenderRequestedActivationId = act.activationId
+    act.lastRenderRequestedSignatureHash = act.signatureHash
+    act.state = 'render-requested'
+    s.executionState = 'render-requested'
   }
 
   /** Diagnostic inventory (bounded). */

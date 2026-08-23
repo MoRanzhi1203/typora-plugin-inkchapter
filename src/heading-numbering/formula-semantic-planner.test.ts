@@ -134,8 +134,10 @@ describe('Phase 7 source guards — old Formula DOM authority removed, defer pol
   it('FORMULA-SEMANTIC markers present; shared resolver + planner reused', () => {
     expect(src).toContain('resolvePrecedingSemanticHeading')
     expect(src).toContain('planFormulaSemanticNumbers')
-    expect(src).toContain('FORMULA-SEMANTIC-CONTEXT')
-    expect(src).toContain('FORMULA-SEMANTIC-NUMBERING')
+    // Phase 7R.3.6 markers (explicit resolution + atomic plan-set coherence).
+    expect(src).toContain('FORMULA-SEMANTIC-RESOLUTION')
+    expect(src).toContain('FORMULA-PLAN-CANDIDATE-COHERENCE')
+    expect(src).toContain('FORMULA-PLAN-SET-PUBLISH')
     expect(src).toContain('FORMULA-CANONICAL-TARGET')
   })
 })

@@ -27,6 +27,7 @@
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { hashFormulaSource } from './formula-projection-controller'
 import type { FormulaProjectionController } from './formula-projection-controller'
+import { getActivePerfTracker } from './document-open-perf'
 
 export interface FormulaProjectionLiveContext {
   documentKey: string | null
@@ -49,6 +50,33 @@ let installationSuccessCount = 0
 let liveProvider: FormulaProjectionLiveContextProvider | null = null
 /** Install-time document values retained ONLY as forensic evidence. */
 let installForensic: { documentKey: string | null; revision: number | null } | null = null
+let firstCallObserved = false
+
+export type MathJaxHookLifecycle = 'UNINITIALIZED' | 'WAITING_FOR_MATHJAX' | 'INSTALLED'
+
+export function getMathJaxHookLifecycle(): MathJaxHookLifecycle {
+  if (hookInstalled) return 'INSTALLED'
+  return getMathJax() ? 'WAITING_FOR_MATHJAX' : 'UNINITIALIZED'
+}
+
+export function getMathJaxHookCounters(): { installationAttemptCount: number; installationSuccessCount: number } {
+  return { installationAttemptCount, installationSuccessCount }
+}
+
+function markPerfInstallAttempt(): void {
+  getActivePerfTracker()?.incHookInstallAttempt()
+}
+
+function markPerfInstallSuccess(): void {
+  getActivePerfTracker()?.incHookInstallSuccess()
+}
+
+function markPerfFirstCall(): void {
+  if (!firstCallObserved) {
+    firstCallObserved = true
+    getActivePerfTracker()?.mark('T6')
+  }
+}
 
 function getMathJax(): MathJaxLike | null {
   try {
@@ -88,21 +116,13 @@ function scanOutputForTags(node: unknown): { semanticTagEvidenceCount: number; s
  * opportunity (event-driven, no timers).
  */
 export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaProjectionLiveContextProvider }): boolean {
-  installationAttemptCount++
+  // Phase 7R.3.4-F: steady state — once INSTALLED, normal reconciles must NOT
+  // re-enter the installation path (no attempt growth, no audit noise).
   if (hookInstalled) {
-    emitRuntimeAudit('FORMULA-MATHJAX-HOOK-INSTALL', {
-      mathJaxPresent: true,
-      tex2svgPromisePresent: true,
-      tex2svgPresent: !!getMathJax()?.tex2svg,
-      promiseWrapped: true,
-      syncWrapped: !!getMathJax()?.tex2svg,
-      installationAttemptCount,
-      installationSuccessCount,
-      alreadyWrapped: true,
-      decision: 'ALREADY_INSTALLED',
-    })
     return true
   }
+  markPerfInstallAttempt()
+  installationAttemptCount++
   const M = getMathJax()
   if (!M) {
     emitRuntimeAudit('FORMULA-MATHJAX-HOOK-INSTALL', {
@@ -140,7 +160,19 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
   const origPromise = M.tex2svgPromise!
   const origSync = M.tex2svg
 
-  const prepare = (tex: unknown, callKind: 'tex2svgPromise' | 'tex2svg'): { tex: unknown; injected: boolean; inputHashBefore: string; sourceHash: string } => {
+  const prepare = (tex: unknown, callKind: 'tex2svgPromise' | 'tex2svg'): {
+    tex: unknown
+    injected: boolean
+    inputHashBefore: string
+    sourceHash: string
+    /** Phase 7R.3.6-K: activation-aware execution identity for async guarding. */
+    planSetEpoch?: number
+    activationId?: number | null
+    signatureHash?: string
+    documentKey?: string | null
+    formulaRuntimeKey?: string | null
+    rawNumber?: string | null
+  } => {
     const inputHashBefore = typeof tex === 'string' ? hashFormulaSource(tex) : ''
     const inputLength = typeof tex === 'string' ? tex.length : 0
     // LIVE context — read fresh on EVERY call (never the install-time closure).
@@ -173,6 +205,9 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
           inputHashAfter: hashFormulaSource(decision.tex),
           rawNumber: plan?.rawNumber ?? null,
           renderedNumber: plan?.renderedNumber ?? null,
+          planSetEpoch: decision.planSetEpoch ?? null,
+          activationId: decision.activationId ?? null,
+          signatureHash: decision.signatureHash ?? null,
           tagInjected: true,
           sourceMutated: false,
           decision: 'INJECTED',
@@ -181,33 +216,84 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
           callKind,
           inputHashBefore,
           delegatedInputHash: hashFormulaSource(decision.tex),
+          planSetEpoch: decision.planSetEpoch ?? null,
+          activationId: decision.activationId ?? null,
+          signatureHash: decision.signatureHash ?? null,
           tagInjected: true,
           semanticTagTokenHash: hashFormulaSource(`\\tag{${plan?.rawNumber ?? ''}}`),
           decision: 'DELEGATED',
         })
       }
-      return { tex: decision.tex, injected: decision.injected, inputHashBefore, sourceHash: decision.sourceHash }
+      return {
+        tex: decision.tex,
+        injected: decision.injected,
+        inputHashBefore,
+        sourceHash: decision.sourceHash,
+        planSetEpoch: decision.planSetEpoch,
+        activationId: decision.activationId,
+        signatureHash: decision.signatureHash,
+        documentKey: live.documentKey,
+        formulaRuntimeKey: decision.injected ? (live.controller.getPlanBySourceHash(decision.sourceHash)?.formulaRuntimeKey ?? null) : null,
+        rawNumber: decision.injected ? (live.controller.getPlanBySourceHash(decision.sourceHash)?.rawNumber ?? null) : null,
+      }
     } catch {
       return { tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
     }
   }
 
   M.tex2svgPromise = function (tex: unknown, options?: unknown) {
+    markPerfFirstCall()
     const prepared = prepare(tex, 'tex2svgPromise')
     const result = origPromise.call(M, prepared.tex, options)
     if (prepared.injected && result && typeof (result as Promise<unknown>).then === 'function') {
       const sourceHash = prepared.sourceHash
-      const live = liveProvider ? liveProvider() : null
-      const plan = live?.controller?.getPlanBySourceHash(sourceHash)
+      const txnPlanSetEpoch = prepared.planSetEpoch ?? -1
+      const txnActivationId = prepared.activationId ?? -1
+      const txnSignatureHash = prepared.signatureHash ?? ''
+      const txnDocumentKey = prepared.documentKey ?? null
+      const txnFormulaRuntimeKey = prepared.formulaRuntimeKey ?? null
       ;(result as Promise<unknown>).then((node: unknown) => {
+        // Phase 7R.3.6 §35: STALE_ACTIVATION_COMMIT_IGNORED — an old activation's
+        // async output must never commit over the CURRENT activation.
+        const live = liveProvider ? liveProvider() : null
+        if (live?.controller && live.documentKey) {
+          const hostInfo = live.controller.getHostBySourceHash(sourceHash)
+          const current =
+            hostInfo
+            && hostInfo.activation
+            && hostInfo.activation.activationId === txnActivationId
+            && hostInfo.activation.planSetEpoch === txnPlanSetEpoch
+            && hostInfo.activation.signatureHash === txnSignatureHash
+            && txnDocumentKey === live.documentKey
+          if (!current) {
+            live.controller.markStaleActivationCommitIgnored(
+              live.documentKey,
+              txnFormulaRuntimeKey,
+              'ASYNC_OUTPUT_ACTIVATION_CHANGED',
+            )
+            emitRuntimeAudit('FORMULA-MATHJAX-OUTPUT', {
+              formulaRuntimeKey: txnFormulaRuntimeKey,
+              tagInjected: true,
+              outputTagName: 'STALE',
+              txnActivationId,
+              txnPlanSetEpoch,
+              currentActivationId: hostInfo?.activation?.activationId ?? null,
+              currentPlanSetEpoch: hostInfo?.activation?.planSetEpoch ?? null,
+              decision: 'STALE_ACTIVATION_COMMIT_IGNORED',
+            })
+            return
+          }
+        }
         const scan = scanOutputForTags(node)
         emitRuntimeAudit('FORMULA-MATHJAX-OUTPUT', {
-          formulaRuntimeKey: plan?.formulaRuntimeKey ?? null,
+          formulaRuntimeKey: txnFormulaRuntimeKey,
           tagInjected: true,
           outputTagName: scan.outputTagName,
           outputConnectedAtReturn: node instanceof Element ? node.isConnected : null,
           semanticTagEvidenceCount: scan.semanticTagEvidenceCount,
           sequentialTagEvidenceCount: scan.sequentialTagEvidenceCount,
+          txnActivationId,
+          txnPlanSetEpoch,
           decision: scan.semanticTagEvidenceCount > 0
             ? (scan.sequentialTagEvidenceCount > 0 ? 'DUPLICATE_TAGS_IN_RETURNED_OUTPUT' : 'SEMANTIC_TAG_PRESENT')
             : 'NO_SEMANTIC_TAG_IN_RETURNED_OUTPUT',
@@ -227,6 +313,7 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
 
   hookInstalled = true
   installationSuccessCount++
+  markPerfInstallSuccess()
   hookUninstall = () => {
     if (!hookInstalled) return
     const M2 = getMathJax()

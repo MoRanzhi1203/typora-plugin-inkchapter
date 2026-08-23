@@ -54,15 +54,78 @@ import { planFormulaSemanticNumbers, type FormulaSemanticContext, type FormulaSe
 import {
   FormulaProjectionController,
   classifyFormulaProjectionVerify,
+  classifyPlanChange,
   hashFormulaSource,
   normalizeTyporaAutoNumberingPolicy,
   scanDisplayMathSources,
   type FormulaNativeRenderPlan,
   type FormulaProjectionContext,
 } from './formula-projection-controller'
-import { ensureMathJaxRenderInputHook, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
+import { ensureMathJaxRenderInputHook, getMathJaxHookLifecycle, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
+import {
+  NumberingReconcileScheduler,
+  RECONCILE_INVALIDATION,
+  SEMANTIC_STRUCTURAL_INVALIDATION_MASK,
+  type PendingNumberingReconcile,
+  type ReconcileInvalidationKey,
+} from './reconcile-scheduler'
+import {
+  DocumentOpenPerfTracker,
+  forensicVerboseEnabled,
+  getActivePerfTracker,
+  registerActivePerfTracker,
+} from './document-open-perf'
+import {
+  buildObjectStructureFingerprint,
+  computeHeadingSemanticFingerprint,
+  objectStructureFingerprintEqual,
+  type ObjectStructureFingerprint,
+} from './numbering-fast-path'
+import {
+  classifyFormulaSemanticResolution,
+  isResolvedFormulaSemantic,
+  resolutionToFormulaContext,
+  type FormulaSemanticResolution,
+} from './formula-semantic-resolution'
+import {
+  computePlanSetPublish,
+  decideFormulaCandidateCoherence,
+  type FormulaCandidateCoherenceDecision,
+  type FormulaPlanSetPublishDecision,
+} from './formula-plan-set-coherence'
+
+/**
+ * Phase 7R.3.6-H/I: offline Formula plan-set candidate. Built completely OFF to
+ * the side of the live plan map; only a COMPLETE candidate is atomically
+ * published as the current authoritative plan set.
+ */
+export interface FormulaPlanSetCandidate {
+  documentKey: string
+  editorStructureEpoch: number
+  snapshotRevision: number
+  headingBindingGeneration: number
+  canonicalHostFingerprint: string
+  expectedFormulaHostCount: number
+  resolvedFormulaCount: number
+  transientUnresolvedCount: number
+  resolutions: FormulaSemanticResolution[]
+  /** Publishable per-host plans (inkchapter + non-empty source), in target order. */
+  planEntries: Array<{ target: FormulaTarget; plan: FormulaNativeRenderPlan }>
+}
+
+/** The ONE live authoritative COMPLETE plan set per document (Phase 7R.3.6-I §28). */
+export interface FormulaCompletePlanSet {
+  planSetEpoch: number
+  documentKey: string
+  editorStructureEpoch: number
+  snapshotRevision: number
+  headingBindingGeneration: number
+  canonicalHostFingerprint: string
+  targets: FormulaTarget[]
+  plans: Map<HTMLElement, FormulaNativeRenderPlan>
+}
 
 export interface CaptionServiceContext {
   vaultRoot?: string | null
@@ -79,6 +142,20 @@ export interface CaptionServiceContext {
     headingStableIdentity: string
     semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
   } | null
+  /** Phase 7R.3.4-E / 7R.3.6-G: batch resolver — bind many targets in ONE forward
+   *  sweep with an EXPLICIT per-target outcome (bound vs unbound reason). */
+  resolvePrecedingSemanticHeadingBatch?: (targets: HTMLElement[]) => Array<
+    | {
+        bound: true
+        documentKey: string
+        revision: number
+        headingStableIdentity: string
+        semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
+      }
+    | { bound: false; reason: string }
+  >
+  /** Phase 7R.3.6-F: canonical heading binding generation (plan provenance). */
+  getHeadingBindingGeneration?: () => number
   reloadContent?: (markdown: string) => void
   /** Read the active .md file bytes from disk (for FAW6 persistence evidence). */
   readActiveFileContent?: () => string | null
@@ -122,6 +199,150 @@ export function classifyCaptionMutationBatch(records: MutationRecord[]): Caption
   if (captionOnly > 0 && content === 0) return 'SELF_ONLY'
   if (content > 0 && captionOnly === 0) return 'CONTENT_RELEVANT'
   return 'MIXED'
+}
+
+export type EditorMutationClassification =
+  | 'SELF_ONLY'            // InkChapter caption decorations only
+  | 'RENDERER_ONLY'        // MathJax output (mjx-container/.MathJax/preview) only
+  | 'FORMULA_SOURCE_CHANGED' // Formula TeX/source text changed (script inside md-math-block)
+  | 'FORMULA_STRUCTURE_CHANGED' // Genuine logical Formula host add/remove (Phase 7R.3.6)
+  | 'CONTENT_RELEVANT'     // headings / tables / figures / code / anything else
+
+const MATH_RENDERER_SELECTOR = 'mjx-container, .MathJax, .md-mathjax-preview, mjx-assistive-mml, .mjx-chtml'
+const FORMULA_LOGICAL_HOST_SELECTOR_M = '.md-math-block'
+
+/**
+ * Phase 7R.3.4-D / 7R.3.6: classify an editor mutation batch for the reconcile
+ * scheduler.
+ *   - SELF_ONLY: InkChapter caption decoration mutations.
+ *   - RENDERER_ONLY: mutations confined to MathJax OUTPUT nodes. These are
+ *     renderer output, NOT new Formula business targets and NOT source edits.
+ *   - FORMULA_SOURCE_CHANGED: mutations of the Formula SOURCE (the `<script>`
+ *     text inside an `.md-math-block`), which genuinely change Formula TeX.
+ *   - FORMULA_STRUCTURE_CHANGED: a genuine logical Formula host (`.md-math-block`)
+ *     was added or removed — canonical host-set change, distinct from renderer
+ *     output replacement.
+ *   - CONTENT_RELEVANT: anything else.
+ */
+export function classifyEditorMutationBatch(records: MutationRecord[]): EditorMutationClassification {
+  const caption = classifyCaptionMutationBatch(records)
+  if (caption === 'SELF_ONLY') return 'SELF_ONLY'
+  if (records.length === 0) return 'CONTENT_RELEVANT'
+
+  let rendererOnlyCount = 0
+  let sourceChangedCount = 0
+  let structureChangedCount = 0
+  let contentCount = 0
+
+  const inMathSource = (node: Node): boolean => {
+    // A characterData mutation targets the script itself (or its text node).
+    if (!(node instanceof Element)) {
+      const parent = node.parentElement
+      return !!parent && parent.tagName === 'SCRIPT' && !!parent.closest('.md-math-block')
+    }
+    return node.tagName === 'SCRIPT' && !!node.closest('.md-math-block')
+  }
+
+  const inRenderer = (node: Node): boolean => {
+    return node instanceof Element && !!node.closest(MATH_RENDERER_SELECTOR)
+  }
+
+  /** A genuine logical Formula host add/remove (NOT MathJax output inside it). */
+  const isFormulaStructureNode = (node: Node): boolean => {
+    if (!(node instanceof Element)) return false
+    if (node.matches(FORMULA_LOGICAL_HOST_SELECTOR_M)) return true
+    // A subtree containing a `.md-math-block` means a whole formula block moved.
+    if (node.querySelector(FORMULA_LOGICAL_HOST_SELECTOR_M)) return true
+    return false
+  }
+
+  for (const record of records) {
+    // Character data change: a Formula source edit mutates the <script> text.
+    if (record.type === 'characterData') {
+      if (inMathSource(record.target)) {
+        sourceChangedCount++
+        continue
+      }
+      if (record.target.parentElement?.closest?.(MATH_RENDERER_SELECTOR)) {
+        rendererOnlyCount++
+        continue
+      }
+      contentCount++
+      continue
+    }
+
+    // ChildList: first check for a genuine Formula host add/remove.
+    if (record.type === 'childList') {
+      const structural = [...record.addedNodes, ...record.removedNodes].some(n => isFormulaStructureNode(n))
+      if (structural) { structureChangedCount++; continue }
+    }
+
+    const allRenderer = record.addedNodes.length > 0 || record.removedNodes.length > 0
+      ? (() => {
+          const nodes = [...record.addedNodes, ...record.removedNodes]
+          if (nodes.length === 0) return false
+          return nodes.every(n => inRenderer(n) || inMathSource(n))
+        })()
+      : false
+
+    if (allRenderer) {
+      const hasSourceChange = [...record.addedNodes, ...record.removedNodes].some(n => inMathSource(n))
+      if (hasSourceChange) sourceChangedCount++
+      else rendererOnlyCount++
+      continue
+    }
+
+    if (record.type === 'childList') {
+      const targetElement = record.target instanceof Element ? record.target : null
+      const targetInRenderer = targetElement ? !!targetElement.closest(MATH_RENDERER_SELECTOR) : false
+      const targetInSource = targetElement ? targetElement.classList.contains('md-math-block') : false
+      if (targetInRenderer && !targetInSource) { rendererOnlyCount++; continue }
+      if (targetInSource) { sourceChangedCount++; continue }
+    }
+    contentCount++
+  }
+
+  if (structureChangedCount > 0) return 'FORMULA_STRUCTURE_CHANGED'
+  if (sourceChangedCount > 0) return 'FORMULA_SOURCE_CHANGED'
+  if (contentCount === 0 && rendererOnlyCount > 0) return 'RENDERER_ONLY'
+  if (contentCount > 0) return 'CONTENT_RELEVANT'
+  if (rendererOnlyCount > 0) return 'RENDERER_ONLY'
+  return 'CONTENT_RELEVANT'
+}
+
+/**
+ * Phase 7R.3.6-F §17: whether a CONTENT_RELEVANT mutation batch represents a
+ * genuine numbering-relevant STRUCTURE change (heading element add/remove/
+ * level-change, or a Table/Figure/Code business host add/remove). Pure; used to
+ * decide whether to bump the editor structure epoch. Text-only edits
+ * (characterData) and MathJax renderer output never count as structure.
+ */
+export function mutationIndicatesEditorStructureChange(records: MutationRecord[]): boolean {
+  const STRUCTURE_HOST_TAGS = new Set(['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH', 'IMG', 'FIGURE', 'PRE', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
+  for (const record of records) {
+    if (record.type === 'characterData') continue
+    for (const n of [...record.addedNodes, ...record.removedNodes]) {
+      if (!(n instanceof Element)) continue
+      if (STRUCTURE_HOST_TAGS.has(n.tagName)) return true
+      if (n.querySelector('h1,h2,h3,h4,h5,h6,table,img,.md-fences')) return true
+    }
+  }
+  return false
+}
+
+/**
+ * Phase 7R.3.6-H: canonical Formula host fingerprint — ONLY business host
+ * identity/order (tag + class + connected), NEVER MJX-CONTAINER/SVG renderer
+ * output. Used to detect a transient host-set replacement during planning.
+ */
+export function fingerprintFormulaHosts(targets: Array<{ ordinal: number; root: HTMLElement }>): string {
+  return targets
+    .map(t => {
+      let cls = ''
+      try { cls = (t.root.getAttribute('class') ?? t.root.className ?? '').toString().slice(0, 60) } catch { /* ignore */ }
+      return `${t.ordinal}:${t.root.tagName}.${cls}:${t.root.isConnected ? '1' : '0'}`
+    })
+    .join('|')
 }
 
 /** Resolved naming target for a right-clicked element. */
@@ -171,6 +392,42 @@ export class CaptionService {
   private lastScanAt: number | null = null
   private lastRenderAt: number | null = null
   private lastError: string | null = null
+
+  // ── Phase 7R.3.4 performance pipeline ──────────────────────────────
+  /** Single reconcile scheduling authority (coalescing + epoch + max-concurrent=1). */
+  private readonly reconcileScheduler = new NumberingReconcileScheduler()
+  /** One document-open performance transaction per epoch. */
+  private readonly perfTracker = new DocumentOpenPerfTracker()
+  private documentEpochValue = 0
+  /** Last committed heading semantic fingerprint (null → never scanned). */
+  private lastHeadingSemanticFingerprint: string | null = null
+  /** Last committed canonical object-structure fingerprint. */
+  private lastObjectStructureFingerprint: ObjectStructureFingerprint | null = null
+  /** Last formula targets (reused by renderer-output verify-only passes). */
+  private lastFormulaTargets: FormulaTarget[] = []
+  private lastFullScanDocumentKey: string | null = null
+  private lastFormulaVerifyReason = ''
+  // ── Phase 7R.3.6 snapshot/plan atomicity state ──────────────────────
+  /** Monotonic editor structure epoch (Phase 7R.3.6-F §17). */
+  private editorStructureEpochValue = 0
+  /** Last canonical heading binding generation observed from the resolver session. */
+  private lastHeadingBindingGeneration = 0
+  /** The LAST COMPLETE Formula plan set (atomic authority, never partial). */
+  private lastCompletePlanSet: FormulaCompletePlanSet | null = null
+  /** Last canonical Formula host fingerprint (transient host-set detection). */
+  private lastCanonicalFormulaHostFingerprint = ''
+  // ── Phase 7R.3.6 gate counters ──────────────────────────────────────
+  private transientCandidateDeferCount = 0
+  private transientIncompletePlanPublishCount = 0
+  private transientGlobalFallbackProjectionCount = 0
+  private livePlanCountZeroWithoutFormulaDeleteCount = 0
+  private livePlanCountPartialWithoutFormulaStructureChangeCount = 0
+  private historicalSignatureReactivationBlockCount = 0
+  private skippedSameSignatureBudgetExhaustedCount = 0
+  private formulaRenderLoopCount = 0
+  private visibleExactMatchWithNullCommitStateCount = 0
+  private previousSignatureNullOnNonInitialTransitionCount = 0
+  private formulaStuckAfterRepeatedToggleCount = 0
   private captionMutationSelfIgnoredCount = 0
   private captionMutationContentRefreshCount = 0
   private renderStats: ReconcileStats = {
@@ -214,6 +471,9 @@ export class CaptionService {
     this.ctx = ctx
     this.adapter = new CaptionDomAdapter(() => this.currentEditorRoot)
     this.formulaAdapter = new FormulaNumberingAdapter(() => this.currentEditorRoot)
+    // Phase 7R.3.4-B: ONE scheduling authority. The executor runs the coalesced
+    // reconcile (fast-path gate + stale-transaction abort inside the executor).
+    this.reconcileScheduler.attach(pending => this.performNumberingReconcile(pending))
     console.info('[InkChapter Caption] SERVICE-CONSTRUCTED')
     emitRuntimeAudit('CAPTION-SERVICE-CONSTRUCTED', { decision: 'CONSTRUCTED' })
   }
@@ -379,7 +639,10 @@ export class CaptionService {
       decision: 'BOUND',
     })
     // Immediate refresh — static-open documents must show captions without waiting for a mutation.
-    queueMicrotask(() => this.refresh(reason))
+    this.requestNumberingReconcile({
+      reason: `bind:${reason}`,
+      invalidation: ['DOCUMENT_IDENTITY_CHANGED', 'OBJECT_STRUCTURE_CHANGED', 'HEADING_SEMANTICS_CHANGED'],
+    })
   }
 
   private onDocumentChanged(): void {
@@ -391,7 +654,30 @@ export class CaptionService {
       this.flushDocument()
     }
     this.currentDocumentKey = docKey
+    // Phase 7R.3.4-A: a document open/switch begins a NEW perf epoch ONLY when
+    // the document identity actually changes (avoids fragmenting one open).
+    if (changed || this.documentEpochValue === 0) {
+      this.documentEpochValue = this.perfTracker.beginEpoch(docKey)
+      registerActivePerfTracker(this.perfTracker)
+      this.projectionController.clearAll()
+      this.lastHeadingSemanticFingerprint = null
+      this.lastObjectStructureFingerprint = null
+      this.lastFormulaTargets = []
+      this.lastFullScanDocumentKey = null
+      // Phase 7R.3.6-F: document switch is a genuine structure change → bump the
+      // editor structure epoch; the previous document's COMPLETE plan set is
+      // no longer authoritative.
+      this.editorStructureEpochValue++
+      this.lastCompletePlanSet = null
+      this.lastCanonicalFormulaHostFingerprint = ''
+      this.lastHeadingBindingGeneration = 0
+    }
+    if (docKey && this.currentEditorRoot) this.perfTracker.mark('T1')
     this.rehydrate()
+    this.requestNumberingReconcile({
+      reason: 'document-open',
+      invalidation: ['DOCUMENT_IDENTITY_CHANGED', 'HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'],
+    })
   }
 
   private flushDocument(): void {
@@ -403,14 +689,29 @@ export class CaptionService {
     this.disconnectObserver()
     this.mutationObserver = new MutationObserver((records) => {
       if (this.rendering) return
-      const classification = classifyCaptionMutationBatch(records)
+      const classification = classifyEditorMutationBatch(records)
       if (classification === 'SELF_ONLY') {
         this.captionMutationSelfIgnoredCount++
-        console.info('[InkChapter Caption] EDITOR-MUTATION decision=IGNORE reason=CAPTION_DECORATION_SELF_MUTATION')
+        this.perfTracker.incSelfMutationSkip()
         return
       }
       this.captionMutationContentRefreshCount++
-      this.scheduleRefresh()
+      // Phase 7R.3.6-F §17: bump the editor structure epoch ONLY for genuine
+      // numbering-relevant structure changes (heading/Formula/object host
+      // add/remove/level-change). Renderer output and caption/self mutations
+      // never bump it.
+      if (classification === 'FORMULA_STRUCTURE_CHANGED') {
+        this.editorStructureEpochValue++
+      } else if (classification === 'CONTENT_RELEVANT' && mutationIndicatesEditorStructureChange(records)) {
+        this.editorStructureEpochValue++
+      }
+      // Phase 7R.3.4-B/D: map the mutation class onto reconcile invalidation.
+      const invalidation: ReconcileInvalidationKey[] =
+        classification === 'RENDERER_ONLY' ? ['RENDERER_OUTPUT_CHANGED']
+          : classification === 'FORMULA_SOURCE_CHANGED' ? ['FORMULA_SOURCE_CHANGED']
+          : classification === 'FORMULA_STRUCTURE_CHANGED' ? ['FORMULA_STRUCTURE_CHANGED', 'OBJECT_STRUCTURE_CHANGED']
+          : ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED']
+      this.requestNumberingReconcile({ reason: `mutation:${classification}`, invalidation })
     })
     this.mutationObserver.observe(root, { childList: true, subtree: true })
   }
@@ -420,12 +721,96 @@ export class CaptionService {
     this.mutationObserver = null
   }
 
+  /**
+   * Phase 7R.3.4-B: THE single production scheduling entry for numbering
+   * recompute. Coalesces same-epoch requests into ONE executor run.
+   */
+  requestNumberingReconcile(input: {
+    reason: string
+    invalidation: ReconcileInvalidationKey | ReconcileInvalidationKey[]
+    documentEpoch?: number
+    documentKey?: string | null
+  }): void {
+    this.perfTracker.incCoordinatorSchedule()
+    this.reconcileScheduler.request({
+      reason: input.reason,
+      invalidation: input.invalidation,
+      documentEpoch: input.documentEpoch ?? this.documentEpochValue,
+      documentKey: input.documentKey !== undefined ? input.documentKey : this.currentDocumentKey,
+    })
+  }
+
+  /**
+   * Phase 7R.3.4-B/C: the coalesced reconcile executor.
+   *   - ABORT_STALE_TRANSACTION: epoch/document changed before execution.
+   *   - SEMANTIC_NOOP fast path: structural invalidation absent + heading
+   *     semantic fingerprint unchanged → skip the full caption/formula scan.
+   *   - RENDERER_OUTPUT_CHANGED: skip the full scan but still run the Formula
+   *     visible verify on the cached targets (renderer-integrity check).
+   */
+  private performNumberingReconcile(pending: PendingNumberingReconcile): void {
+    this.perfTracker.incCoordinatorExecution()
+    const liveEpoch = this.documentEpochValue
+    const liveDocKey = this.currentDocumentKey ?? null
+    if (pending.documentEpoch !== liveEpoch || (pending.documentKey && pending.documentKey !== liveDocKey)) {
+      emitRuntimeAudit('NUMBERING-RECONCILE-STALE-ABORT', {
+        requestedEpoch: pending.documentEpoch,
+        liveEpoch,
+        requestedDocumentKey: pending.documentKey,
+        liveDocumentKey: liveDocKey,
+        projectionWrites: 0,
+        decision: 'ABORT_STALE_TRANSACTION',
+      })
+      return
+    }
+
+    const structuralMask = pending.invalidationMask & SEMANTIC_STRUCTURAL_INVALIDATION_MASK
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    const fp = computeHeadingSemanticFingerprint(snapshot)
+
+    if (structuralMask === 0 && this.lastHeadingSemanticFingerprint !== null && fp !== '' && fp === this.lastHeadingSemanticFingerprint) {
+      // Early semantic no-op — no structural invalidation and the canonical
+      // heading semantics are unchanged.
+      this.perfTracker.incSemanticNoopSkip()
+      emitRuntimeAudit('NUMBERING-RECONCILE-FAST-PATH', {
+        decision: 'SEMANTIC_NOOP',
+        documentEpoch: liveEpoch,
+        documentKey: liveDocKey,
+        invalidationMask: pending.invalidationMask,
+        reasons: Array.from(pending.reasons),
+        fullCaptionScan: 0,
+        formulaPlanBuild: 0,
+        formulaVisibleForensic: 0,
+      })
+      // Renderer output still warrants a cheap Formula visible verify (unchanged
+      // plans, exact-token check on the cached targets).
+      if ((pending.invalidationMask & 1 << 5) !== 0 && this.lastFormulaTargets.length > 0) {
+        this.runFormulaVisibleVerifyOnly(liveDocKey)
+      }
+      return
+    }
+
+    this.lastHeadingSemanticFingerprint = fp
+    this.refresh(Array.from(pending.reasons).join('+') || 'reconcile', pending.invalidationMask)
+  }
+
+  /** Verify-only pass over cached formula targets (no caption scan, no rerender). */
+  private runFormulaVisibleVerifyOnly(documentKey: string | null): void {
+    if (!documentKey || this.lastFormulaTargets.length === 0) return
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    if (!snapshot || snapshot.documentKey !== documentKey) return
+    const items: FormulaReconcileItem[] = this.lastFormulaTargets.map(t => {
+      const plan = this.projectionController.getPlan(t.root)
+      return { target: t, renderedNumber: plan?.renderedNumber ?? '', label: plan?.renderedNumber ?? '', mode: 'inkchapter', enabled: true }
+    })
+    this.emitVisibleProjectionForensic(snapshot, this.lastFormulaTargets, items, 'inkchapter')
+    this.perfTracker.incFormulaVisibleVerify()
+  }
+
   private scheduleRefresh(): void {
-    if (this.refreshTimer !== null) return
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = null
-      this.refresh()
-    }, REFRESH_DELAY_MS)
+    // Phase 7R.3.4-B: legacy alias — all scheduling funnels through the single
+    // coalescing authority (microtask, no debounce).
+    this.requestNumberingReconcile({ reason: this.lastRefreshReason || 'schedule-refresh', invalidation: ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'] })
   }
 
   dispose(): void {
@@ -433,6 +818,7 @@ export class CaptionService {
     for (const d of this.disposers) { try { d() } catch { /* ignore */ } }
     this.disposers = []
     if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null }
+    this.reconcileScheduler.dispose()
     this.projectionController.clearAll()
     this.lastFormulaProjectionDocKey = null
     this.started = false
@@ -1099,7 +1485,7 @@ export class CaptionService {
   // ── Reconcile / renumber / render ─────────────────────────────────
 
   /** Reconcile bound captions against current DOM, then renumber + render. */
-  refresh(reason = 'manual'): void {
+  refresh(reason = 'manual', invalidationMask = SEMANTIC_STRUCTURAL_INVALIDATION_MASK): void {
     this.lastRefreshReason = reason
     const docKey = this.currentDocumentKey
     const editorRoot = this.currentEditorRoot
@@ -1112,6 +1498,10 @@ export class CaptionService {
     const editorRawPres = editorRoot ? editorRoot.querySelectorAll('pre').length : 0
 
     if (!docKey) { this.adapter.clearAllCaptions(); this.formulaAdapter.clearAll(); return }
+    // Phase 7R.3.4-A: this is a full pipeline scan (only reached past the fast path).
+    this.perfTracker.incFullCaptionScan()
+    this.perfTracker.mark('T1')
+    this.lastFullScanDocumentKey = docKey
 
     const targets = this.adapter.collectTargets()
     const descriptors = this.adapter.toDescriptors(targets)
@@ -1296,23 +1686,50 @@ export class CaptionService {
       return
     }
 
-    const objectEntries: CaptionObjectEntry[] = plan.map(item => {
-      const resolved = this.ctx.resolvePrecedingSemanticHeading?.(item.target.root) ?? null
+    // Phase 7R.3.4-E / 7R.3.6-G: ONE resolver session per reconcile — collect
+    // canonical heading bindings once, bind ALL object targets in one forward
+    // sweep with an explicit bound/unbound outcome per target.
+    this.perfTracker.mark('T2')
+    let batchResolved: Array<
+      | {
+          bound: true
+          documentKey: string
+          revision: number
+          headingStableIdentity: string
+          semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
+        }
+      | { bound: false; reason: string }
+    > | null = null
+    if (this.ctx.resolvePrecedingSemanticHeadingBatch) {
+      batchResolved = this.ctx.resolvePrecedingSemanticHeadingBatch(plan.map(item => item.target.root))
+    }
+
+    const objectEntries: CaptionObjectEntry[] = plan.map((item, i) => {
+      const raw = batchResolved !== null
+        ? batchResolved[i]
+        : (() => {
+            const single = this.ctx.resolvePrecedingSemanticHeading?.(item.target.root) ?? null
+            return single
+              ? { bound: true as const, documentKey: single.documentKey, revision: single.revision, headingStableIdentity: single.headingStableIdentity, semanticState: single.semanticState }
+              : { bound: false as const, reason: 'NO_PRECEDING_HEADING' }
+          })()
+      const resolvedHeading = raw !== null && raw.bound === true ? raw : null
       emitRuntimeAudit('CAPTION-HEADING-BINDING-FORENSIC', {
         targetType: item.type,
-        resolvedHeadingStableIdentity: resolved?.headingStableIdentity ?? 'none',
-        resolvedChapterOrdinal: resolved?.semanticState.chapterOrdinal ?? null,
-        resolvedSectionOrdinal: resolved?.semanticState.sectionOrdinal ?? null,
-        resolvedRevision: resolved?.revision ?? -1,
-        decision: resolved ? 'BOUND' : 'NO_PRECEDING_HEADING',
+        resolvedHeadingStableIdentity: resolvedHeading?.headingStableIdentity ?? 'none',
+        resolvedChapterOrdinal: resolvedHeading?.semanticState.chapterOrdinal ?? null,
+        resolvedSectionOrdinal: resolvedHeading?.semanticState.sectionOrdinal ?? null,
+        resolvedRevision: resolvedHeading?.revision ?? -1,
+        decision: resolvedHeading ? 'BOUND' : 'NO_PRECEDING_HEADING',
       })
       return {
         stableIdentity: item.recordId ?? this.runtimeKeyForTarget(item.target, targets),
         objectKind: item.type,
-        precedingHeadingStableIdentity: resolved?.headingStableIdentity ?? null,
+        precedingHeadingStableIdentity: resolvedHeading?.headingStableIdentity ?? null,
         name: item.name,
       }
     })
+    this.perfTracker.mark('T3')
 
     const productionConfigs: ProductionObjectConfigs = {
       figure: migrateObjectNumberingConfig('figure', resolveCaptionTypeSettings(this.captionSettings, 'figure')),
@@ -1377,6 +1794,7 @@ export class CaptionService {
 
       const result = this.adapter.reconcileCaptions(desired, disabledTypes)
       this.renderStats = result.stats
+      this.perfTracker.mark('T4')
       for (const id of result.createdIds) {
         this.verifyRender(id, labelById.get(id) ?? '')
       }
@@ -1400,7 +1818,13 @@ export class CaptionService {
       })
     }
 
-    this.refreshFormulaNumbering()
+    this.refreshFormulaNumbering(invalidationMask)
+
+    // Phase 7R.3.4-A: documents with no block Formulas become stable right after
+    // the non-formula projection commits (no MathJax dependency to wait for).
+    if (this.lastFormulaTargets.length === 0) {
+      this.perfTracker.finalize(docKey)
+    }
 
     this.save()
   }
@@ -1435,7 +1859,7 @@ export class CaptionService {
    * No DOM heading numbers are parsed. In NO_SNAPSHOT / DOCUMENT_CONTEXT_MISMATCH
    * states the semantic projection DEFERS with zero writes.
    */
-  private refreshFormulaNumbering(): void {
+  private refreshFormulaNumbering(invalidationMask = 0): void {
     const root = this.currentEditorRoot
     if (!root) { this.formulaAdapter.clearAll(); this.projectionController.clearAll(); return }
 
@@ -1479,6 +1903,7 @@ export class CaptionService {
     }
 
     const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+    this.lastFormulaTargets = formulaTargets
     const items: FormulaReconcileItem[] = []
 
     if (semanticMode) {
@@ -1505,6 +1930,7 @@ export class CaptionService {
         ownershipRenderedMathJaxHostCount: renderedMathJaxHostCount,
       })
       for (const entry of ownership.slice(0, 24)) {
+        if (!forensicVerboseEnabled()) break
         emitRuntimeAudit('FORMULA-HOST-OWNERSHIP-FORENSIC', {
           documentKey: snap.documentKey,
           candidateTag: entry.candidateTag,
@@ -1529,60 +1955,78 @@ export class CaptionService {
     } else {
       const snap = semanticSnapshot as HeadingNumberingSnapshot
       const cfg = migrateObjectNumberingConfig('formula', config)
-      const formulaContexts: FormulaSemanticContext[] = []
 
-      for (const t of formulaTargets) {
-        // Positional runtime key for diagnostics ONLY — NOT a stable identity
-        // (full Formula stable-identity hardening is deferred to Phase 8).
+      // Phase 7R.3.4-E: bind ALL formula targets in ONE forward sweep (single
+      // canonical heading bindings session per reconcile).
+      const formulaRoots = formulaTargets.map(t => t.root)
+      const batchFormulaResolved = this.ctx.resolvePrecedingSemanticHeadingBatch
+        ? this.ctx.resolvePrecedingSemanticHeadingBatch(formulaRoots)
+        : null
+
+      // Phase 7R.3.6-G: EXPLICIT per-target semantic resolution — never a silent
+      // chapter=null/section=null → GLOBAL fallback for transient resolver
+      // incoherence. TRANSIENT_UNRESOLVED defers the whole plan-set candidate.
+      const resolutions: FormulaSemanticResolution[] = formulaTargets.map((t, fi) => {
         const runtimeKey = `formula:${t.ordinal}`
-        emitRuntimeAudit('FORMULA-CANONICAL-TARGET', {
-          documentKey: snap.documentKey,
-          formulaRuntimeKey: runtimeKey,
-          targetTag: t.root.tagName,
-          targetClass: (t.root.className || '').slice(0, 40),
-          targetConnected: t.root.isConnected,
-          sameEditorRoot: root.contains(t.root),
-          targetDecision: 'ACCEPT_BLOCK_FORMULA',
-        })
-
-        const resolved = this.ctx.resolvePrecedingSemanticHeading?.(t.root) ?? null
-        const semanticState = resolved?.semanticState ?? null
-        emitRuntimeAudit('FORMULA-SEMANTIC-CONTEXT', {
-          documentKey: snap.documentKey,
-          revision: snap.revision,
-          formulaRuntimeKey: runtimeKey,
-          headingStableIdentity: resolved?.headingStableIdentity ?? 'none',
-          semanticRole: semanticState?.semanticRole ?? 'none',
-          chapterOrdinal: semanticState?.chapterOrdinal ?? null,
-          sectionOrdinal: semanticState?.sectionOrdinal ?? null,
-        })
-        formulaContexts.push({
-          chapterOrdinal: semanticState?.chapterOrdinal ?? null,
-          sectionOrdinal: semanticState?.sectionOrdinal ?? null,
-        })
-      }
-
-      const plans = planFormulaSemanticNumbers(formulaContexts, cfg)
-      formulaTargets.forEach((t, i) => {
-        const p = plans[i]
-        emitRuntimeAudit('FORMULA-SEMANTIC-NUMBERING', {
-          preset: cfg.preset ?? 'global',
-          requestedScope: p.requestedScope,
-          effectiveScope: p.effectiveScope,
-          chapterOrdinal: p.chapterOrdinal,
-          sectionOrdinal: p.sectionOrdinal,
-          ordinal: p.ordinal,
-          rawNumber: p.rawNumber,
-          renderedNumber: p.renderedNumber,
-        })
-        emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE', { decision: 'PLAN' })
-        items.push({ target: t, renderedNumber: p.renderedNumber, label: p.renderedNumber, mode, enabled: true })
+        if (forensicVerboseEnabled()) {
+          emitRuntimeAudit('FORMULA-CANONICAL-TARGET', {
+            documentKey: snap.documentKey,
+            formulaRuntimeKey: runtimeKey,
+            targetTag: t.root.tagName,
+            targetClass: (t.root.className || '').slice(0, 40),
+            targetConnected: t.root.isConnected,
+            sameEditorRoot: root.contains(t.root),
+            targetDecision: 'ACCEPT_BLOCK_FORMULA',
+          })
+        }
+        const resolved = batchFormulaResolved !== null
+          ? batchFormulaResolved[fi]
+          : (this.ctx.resolvePrecedingSemanticHeading?.(t.root)
+              ? (() => {
+                  const single = this.ctx.resolvePrecedingSemanticHeading!(t.root)!
+                  return { bound: true as const, documentKey: single.documentKey, revision: single.revision, headingStableIdentity: single.headingStableIdentity, semanticState: single.semanticState }
+                })()
+              : { bound: false as const, reason: 'NO_PRECEDING_HEADING' })
+        let res: FormulaSemanticResolution
+        if (!resolved) {
+          res = { decision: 'TRANSIENT_UNRESOLVED', reason: 'OTHER_TRANSIENT_INCOHERENCE' }
+        } else if (resolved.bound) {
+          res = classifyFormulaSemanticResolution(true, null, resolved.headingStableIdentity, resolved.semanticState)
+        } else {
+          res = classifyFormulaSemanticResolution(false, resolved.reason, null, null)
+        }
+        if (forensicVerboseEnabled()) {
+          emitRuntimeAudit('FORMULA-SEMANTIC-RESOLUTION', {
+            documentKey: snap.documentKey,
+            revision: snap.revision,
+            formulaRuntimeKey: runtimeKey,
+            decision: res.decision,
+            transientReason: res.decision === 'TRANSIENT_UNRESOLVED' ? res.reason : null,
+            headingStableIdentity: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.headingStableIdentity,
+            chapterOrdinal: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.chapterOrdinal,
+            sectionOrdinal: res.decision === 'TRANSIENT_UNRESOLVED' ? null : res.sectionOrdinal,
+            targetConnected: t.root.isConnected,
+          })
+        }
+        return res
       })
 
-      // Phase 7R.3-B: Formula Projection Arbitration — one authority per
-      // canonical Formula host. Plans are bound via WeakMap to the host and
-      // correlated to MathJax render calls by source hash (never ordinal-only).
-      this.applyFormulaProjectionArbitration(semanticSnapshot as HeadingNumberingSnapshot, formulaTargets, plans, mode, activeDocKey)
+      // Build the COMPLETE plan-set candidate off to the side and atomically
+      // publish ONLY when complete. Deferred candidates keep the previous
+      // COMPLETE plan set (projectionWrites=0) and retry via the coalesced
+      // scheduler (no timers).
+      const explicitFormulaStructureChange = (invalidationMask & RECONCILE_INVALIDATION.FORMULA_STRUCTURE_CHANGED) !== 0
+      const completePlanSet = this.buildAndPublishFormulaPlanSet(snap, formulaTargets, resolutions, cfg, mode, activeDocKey, explicitFormulaStructureChange)
+      const desiredNumberFor = (t: FormulaTarget): string =>
+        completePlanSet?.plans.get(t.root)?.renderedNumber ?? ''
+
+      this.perfTracker.mark('T5')
+      this.perfTracker.incFormulaPlanBuild()
+      formulaTargets.forEach((t) => {
+        const renderedNumber = desiredNumberFor(t)
+        emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE', { decision: 'PLAN' })
+        items.push({ target: t, renderedNumber, label: renderedNumber, mode, enabled: true })
+      })
     }
 
     this.rendering = true
@@ -1601,121 +2045,217 @@ export class CaptionService {
   }
 
   /**
-   * Phase 7R.3-B: select ONE projection authority per canonical Formula host
-   * and bind a native-transient render plan (WeakMap) when ready. Also ensures
-   * the MathJax render-input hook is installed so the transient `\tag{...}`
-   * reaches the SAME native render pass.
+   * Phase 7R.3.6-H/I: build a COMPLETE Formula plan-set candidate OFF to the
+   * side and atomically publish it ONLY when complete.
+   *
+   *   - Provenance (documentKey / editorStructureEpoch / snapshotRevision /
+   *     headingBindingGeneration / canonicalHostFingerprint) is captured at
+   *     candidate start and re-validated before publication.
+   *   - Any TRANSIENT_UNRESOLVED Formula → DEFER_TRANSIENT_UNRESOLVED; the
+   *     previous COMPLETE plan set survives untouched (projectionWrites=0).
+   *   - A COMPLETE candidate increments the plan-set epoch and diff-creates
+   *     activations for changed signatures (ONE-SHOT per activation budget).
    */
-  private applyFormulaProjectionArbitration(
+  private buildAndPublishFormulaPlanSet(
     snap: HeadingNumberingSnapshot,
     formulaTargets: FormulaTarget[],
-    plans: FormulaSemanticPlanEntry[],
+    resolutions: FormulaSemanticResolution[],
+    cfg: ObjectNumberingConfig,
     mode: string,
     activeDocKey: string | null,
-  ): void {
+    explicitFormulaStructureChange: boolean,
+  ): FormulaCompletePlanSet | null {
     try {
       const markdown = this.ctx.getMarkdown?.() ?? ''
       const sources = scanDisplayMathSources(markdown)
       const policy = normalizeTyporaAutoNumberingPolicy(readTyporaAutoNumberingForMath())
-      // Phase 7R.3.2: plan-set completeness diagnostics.
       this.projectionController.setExpectedPlanCount(formulaTargets.length)
 
-      // Phase 7R.3.3-C: compute the complete NEW plan set FIRST, then diff as a
-      // coherent set against the OLD plan set → affected set.
-      const affectedKeys: string[] = []
-      const reasonSummary = new Map<string, number>()
-      const affectedHosts: FormulaTarget[] = []
+      // ── Provenance captured at candidate start (Phase 7R.3.6-F §18-19) ──
+      const headingBindingGeneration = this.ctx.getHeadingBindingGeneration?.() ?? this.lastHeadingBindingGeneration
+      this.lastHeadingBindingGeneration = headingBindingGeneration
+      const candidateStartEpoch = this.editorStructureEpochValue
+      const canonicalHostFingerprint = fingerprintFormulaHosts(formulaTargets)
+      this.lastCanonicalFormulaHostFingerprint = canonicalHostFingerprint
 
-      formulaTargets.forEach((t, i) => {
-        const p = plans[i]
-        if (!p) return
-        const runtimeKey = `formula:${t.ordinal}`
-        const rendererReady = !!t.root.querySelector('mjx-container, .MathJax')
-        const context: FormulaProjectionContext = {
-          formulaMode: mode === 'inkchapter' ? 'inkchapter' : 'typora-native',
-          typoraAutoNumberingPolicy: policy,
-          snapshotReady: true,
-          documentCoherent: activeDocKey === snap.documentKey,
-          rendererReady,
-        }
-        const authority = this.projectionController.arbitrate(context)
-        const sourceTex = sources[i] ?? ''
-        const sourceHash = hashFormulaSource(sourceTex)
+      const transientUnresolvedCount = resolutions.filter(r => r.decision === 'TRANSIENT_UNRESOLVED').length
+      const resolvedCount = resolutions.filter(isResolvedFormulaSemantic).length
 
-        if (authority === 'inkchapter-native-transient' && sourceTex.length > 0) {
-          const newPlan: FormulaNativeRenderPlan = {
-            documentKey: snap.documentKey,
-            revision: snap.revision,
-            sourceHash,
-            rawNumber: p.rawNumber,
-            renderedNumber: p.renderedNumber,
-            formulaRuntimeKey: runtimeKey,
-            authority: 'inkchapter-native-transient',
-            formulaMode: 'inkchapter',
-          }
-          // Diff OLD vs NEW projection signature + invalidate stale evidence.
-          const diff = this.projectionController.applyProjectionPlan(t.root, newPlan)
-          if (diff.affected) {
-            affectedKeys.push(runtimeKey)
-            affectedHosts.push(t)
-            reasonSummary.set(diff.reason, (reasonSummary.get(diff.reason) ?? 0) + 1)
-          }
-          emitRuntimeAudit('FORMULA-TRANSIENT-PLAN-PUBLISH', {
-            documentKey: snap.documentKey,
-            formulaRuntimeKey: runtimeKey,
-            sourceHash,
-            rawNumber: p.rawNumber,
-            planGeneration: this.projectionController.getPlanGeneration(),
-            snapshotRevision: snap.revision,
-            rendererReadyAtPublish: rendererReady,
-            affected: diff.affected,
-            reason: diff.reason,
-            decision: 'READY',
-          })
-        } else {
-          this.projectionController.clearPlan(t.root)
-          this.projectionController.setExecutionState(t.root, 'idle')
-        }
-
-        emitRuntimeAudit('FORMULA-PROJECTION-POLICY', {
-          documentKey: snap.documentKey,
-          formulaRuntimeKey: runtimeKey,
-          formulaMode: mode,
-          typoraAutoNumberingPolicy: policy,
-          desiredRenderedNumber: p.renderedNumber,
-          selectedAuthority: authority,
-          reason: authority === 'defer' ? 'NO_SNAPSHOT_OR_CONTEXT' : 'OK',
-        })
+      // ── Coherence decision (Phase 7R.3.6-I §24, pure helper) ─────────
+      const decision = decideFormulaCandidateCoherence({
+        activeDocumentKey: activeDocKey,
+        snapDocumentKey: snap.documentKey,
+        candidateStartEpoch,
+        liveEpoch: this.editorStructureEpochValue,
+        bindingGenerationAtStart: headingBindingGeneration,
+        bindingGenerationLive: this.ctx.getHeadingBindingGeneration?.() ?? headingBindingGeneration,
+        transientUnresolvedCount,
+        previousCompletePlanSetDocumentKey: this.lastCompletePlanSet?.documentKey ?? null,
+        previousCanonicalHostFingerprint: this.lastCompletePlanSet?.canonicalHostFingerprint ?? '',
+        canonicalHostFingerprint,
+        explicitFormulaStructureChange,
       })
 
+      // ── Build plan entries ONLY from resolved contexts, in target order ──
+      const planEntries: Array<{ target: FormulaTarget; plan: FormulaNativeRenderPlan }> = []
+      if (decision === 'COMPLETE') {
+        const formulaContexts = formulaTargets.map((_t, i) => resolutionToFormulaContext(resolutions[i]) ?? { chapterOrdinal: null, sectionOrdinal: null })
+        const planned = planFormulaSemanticNumbers(formulaContexts, cfg)
+        for (let i = 0; i < formulaTargets.length; i++) {
+          const t = formulaTargets[i]
+          const sourceTex = sources[i] ?? ''
+          if (sourceTex.length === 0) continue
+          const context: FormulaProjectionContext = {
+            formulaMode: mode === 'inkchapter' ? 'inkchapter' : 'typora-native',
+            typoraAutoNumberingPolicy: policy,
+            snapshotReady: true,
+            documentCoherent: activeDocKey === snap.documentKey,
+            rendererReady: !!t.root.querySelector('mjx-container, .MathJax'),
+          }
+          const authority = this.projectionController.arbitrate(context)
+          if (authority !== 'inkchapter-native-transient') continue
+          const p = planned[i]
+          if (!p) continue
+          planEntries.push({
+            target: t,
+            plan: {
+              documentKey: snap.documentKey,
+              revision: snap.revision,
+              sourceHash: hashFormulaSource(sourceTex),
+              rawNumber: p.rawNumber,
+              renderedNumber: p.renderedNumber,
+              formulaRuntimeKey: `formula:${t.ordinal}`,
+              authority: 'inkchapter-native-transient',
+              formulaMode: 'inkchapter',
+            },
+          })
+        }
+      }
+
+      const candidate: FormulaPlanSetCandidate = {
+        documentKey: snap.documentKey,
+        editorStructureEpoch: candidateStartEpoch,
+        snapshotRevision: snap.revision,
+        headingBindingGeneration,
+        canonicalHostFingerprint,
+        expectedFormulaHostCount: formulaTargets.length,
+        resolvedFormulaCount: resolvedCount,
+        transientUnresolvedCount,
+        resolutions,
+        planEntries,
+      }
+      this.emitCandidateCoherence(candidate, decision)
+
+      if (decision !== 'COMPLETE') {
+        this.deferIncompleteCandidate(candidate, decision)
+        // Keep the previous COMPLETE plan set as the desired-number authority.
+        return this.lastCompletePlanSet
+      }
+
+      // ── ATOMIC PUBLISH (Phase 7R.3.6-I §27) ───────────────────────────
+      const previousComplete = this.lastCompletePlanSet
+      const previousPlanSetEpoch = this.projectionController.getPlanSetEpoch()
+      const newPlanSetEpoch = this.projectionController.beginPlanSetEpoch()
+      const newPlans = new Map<HTMLElement, FormulaNativeRenderPlan>()
+      const affectedHosts: FormulaTarget[] = []
+      const affectedKeys: string[] = []
+      const reasonSummary = new Map<string, number>()
+
+      for (const entry of candidate.planEntries) {
+        const diff = this.projectionController.applyProjectionPlan(entry.target.root, entry.plan, {
+          reason: classifyPlanChange(previousComplete?.plans.get(entry.target.root) ?? undefined, entry.plan),
+          planSetEpoch: newPlanSetEpoch,
+          headingSnapshotRevision: snap.revision,
+          editorStructureEpoch: this.editorStructureEpochValue,
+        })
+        newPlans.set(entry.target.root, entry.plan)
+        // Phase 7R.3.6-E: non-initial transitions must never lose previous lineage.
+        if (diff.transition && diff.transition.previousActivationId !== null && diff.transition.previousSignatureHash === null) {
+          this.previousSignatureNullOnNonInitialTransitionCount++
+          emitRuntimeAudit('FORMULA-TRANSITION-LINEAGE', {
+            documentKey: snap.documentKey,
+            formulaRuntimeKey: entry.plan.formulaRuntimeKey,
+            currentActivationId: diff.transition.currentActivationId,
+            previousActivationId: diff.transition.previousActivationId,
+            previousSignatureHash: diff.transition.previousSignatureHash,
+            decision: 'PREVIOUS_SIGNATURE_NULL_ON_NONINITIAL_TRANSITION',
+          })
+        }
+        if (diff.affected) {
+          affectedHosts.push(entry.target)
+          affectedKeys.push(entry.plan.formulaRuntimeKey)
+          reasonSummary.set(diff.reason, (reasonSummary.get(diff.reason) ?? 0) + 1)
+        }
+        emitRuntimeAudit('FORMULA-TRANSIENT-PLAN-PUBLISH', {
+          documentKey: snap.documentKey,
+          formulaRuntimeKey: entry.plan.formulaRuntimeKey,
+          sourceHash: entry.plan.sourceHash,
+          rawNumber: entry.plan.rawNumber,
+          planSetEpoch: newPlanSetEpoch,
+          activationId: diff.activation?.activationId ?? null,
+          planGeneration: this.projectionController.getPlanGeneration(),
+          snapshotRevision: snap.revision,
+          rendererReadyAtPublish: !!entry.target.root.querySelector('mjx-container, .MathJax'),
+          affected: diff.affected,
+          reason: diff.reason,
+          decision: 'ATOMIC_PUBLISH',
+        })
+      }
+
+      const newCompleteSet: FormulaCompletePlanSet = {
+        planSetEpoch: newPlanSetEpoch,
+        documentKey: snap.documentKey,
+        editorStructureEpoch: this.editorStructureEpochValue,
+        snapshotRevision: snap.revision,
+        headingBindingGeneration,
+        canonicalHostFingerprint,
+        targets: formulaTargets,
+        plans: newPlans,
+      }
+      this.lastCompletePlanSet = newCompleteSet
       this.projectionController.bumpPlanGeneration()
 
-      // Phase 7R.3.3-C: bounded affected-set summary.
+      emitRuntimeAudit('FORMULA-PLAN-SET-PUBLISH', {
+        documentKey: snap.documentKey,
+        previousPlanSetEpoch,
+        currentPlanSetEpoch: newPlanSetEpoch,
+        previousCompletePlanCount: previousComplete ? previousComplete.plans.size : 0,
+        candidatePlanCount: candidate.planEntries.length,
+        publishedPlanCount: newPlans.size,
+        canonicalFormulaHostCount: formulaTargets.length,
+        decision: 'ATOMIC_PUBLISH',
+      })
       emitRuntimeAudit('FORMULA-PROJECTION-AFFECTED-SET', {
         documentKey: snap.documentKey,
-        previousPlanCount: formulaTargets.length - affectedHosts.length,
-        nextPlanCount: formulaTargets.length,
+        previousPlanCount: previousComplete ? previousComplete.plans.size : 0,
+        nextPlanCount: newPlans.size,
         affectedCount: affectedKeys.length,
-        unchangedCount: formulaTargets.length - affectedKeys.length,
+        unchangedCount: newPlans.size - affectedKeys.length,
         affectedFormulaRuntimeKeys: affectedKeys,
         reasonSummary: Object.fromEntries(reasonSummary),
+        planSetEpoch: newPlanSetEpoch,
         decision: affectedKeys.length > 0 ? 'AFFECTED' : 'NO_OP',
       })
 
       // The hook is a SINGLE STABLE WRAPPER installed once; it reads the LIVE
-      // context (this.hookLiveContextProvider) on every MathJax call.
-      ensureMathJaxRenderInputHook({ getLiveContext: this.hookLiveContextProvider })
+      // context on every MathJax call. Phase 7R.3.4-F: never re-enter the
+      // install path once INSTALLED.
+      if (getMathJaxHookLifecycle() !== 'INSTALLED') {
+        ensureMathJaxRenderInputHook({ getLiveContext: this.hookLiveContextProvider })
+      }
       emitRuntimeAudit('FORMULA-PROJECTION-LIVE-CONTEXT', {
         liveDocumentKey: this.hookLiveContext.documentKey,
         liveSnapshotRevision: this.hookLiveContext.headingSnapshotRevision,
         activePlanCount: this.projectionController.inventory().planCount,
         planGeneration: this.projectionController.getPlanGeneration(),
+        planSetEpoch: newPlanSetEpoch,
         decision: this.projectionController.inventory().planCount > 0 ? 'READY' : 'NOT_READY',
       })
 
-      // Phase 7R.3.3-D: rerender ONLY affected existing Formula hosts with a
-      // renderer, one-shot per projection signature.
+      // Phase 7R.3.3-D / 7R.3.6-D: rerender ONLY affected hosts, one-shot per
+      // ACTIVATION.
       this.requestControlledRecoveryRenders(affectedHosts, mode, activeDocKey, snap.documentKey)
+      return newCompleteSet
     } catch (error) {
       // Arbitration failure must never abort formula reconcile.
       emitRuntimeAudit('FORMULA-PROJECTION-ARBITRATION-ERROR', {
@@ -1725,12 +2265,78 @@ export class CaptionService {
         decision: 'ARBITRATION_ERROR_IGNORED',
         businessProjectionBlocked: false,
       })
+      return this.lastCompletePlanSet
+    }
+  }
+
+  /** FORMULA-PLAN-CANDIDATE-COHERENCE audit (low-noise: bounded summary). */
+  private emitCandidateCoherence(candidate: FormulaPlanSetCandidate, decision: FormulaCandidateCoherenceDecision): void {
+    emitRuntimeAudit('FORMULA-PLAN-CANDIDATE-COHERENCE', {
+      documentKey: candidate.documentKey,
+      editorStructureEpochStart: candidate.editorStructureEpoch,
+      editorStructureEpochEnd: this.editorStructureEpochValue,
+      snapshotRevision: candidate.snapshotRevision,
+      headingBindingGeneration: candidate.headingBindingGeneration,
+      canonicalFormulaHostCount: candidate.expectedFormulaHostCount,
+      candidatePlanCount: candidate.planEntries.length,
+      resolvedCount: candidate.resolvedFormulaCount,
+      legitimateChapterFallbackCount: candidate.resolutions.filter(r => r.decision === 'LEGITIMATE_CHAPTER_FALLBACK').length,
+      legitimateGlobalFallbackCount: candidate.resolutions.filter(r => r.decision === 'LEGITIMATE_GLOBAL_FALLBACK').length,
+      transientUnresolvedCount: candidate.transientUnresolvedCount,
+      canonicalHostFingerprintBefore: this.lastCanonicalFormulaHostFingerprint,
+      canonicalHostFingerprintAfter: candidate.canonicalHostFingerprint,
+      decision,
+    })
+  }
+
+  /**
+   * Phase 7R.3.6-J: a deferred candidate must NOT publish (projectionWrites=0)
+   * and retries via the existing coalesced scheduler — at most ONE follow-up per
+   * reconcile, only when NEW structure/semantic information actually arrived.
+   */
+  private deferIncompleteCandidate(candidate: FormulaPlanSetCandidate, decision: FormulaCandidateCoherenceDecision): void {
+    this.transientCandidateDeferCount++
+    const previous = this.lastCompletePlanSet
+    const publishedPlanCount = previous ? previous.plans.size : 0
+    const publish = computePlanSetPublish({
+      decision,
+      previousCompletePlanCount: publishedPlanCount,
+      candidatePlanCount: candidate.planEntries.length,
+    })
+    emitRuntimeAudit('FORMULA-PLAN-SET-PUBLISH', {
+      documentKey: candidate.documentKey,
+      previousPlanSetEpoch: previous ? previous.planSetEpoch : this.projectionController.getPlanSetEpoch(),
+      currentPlanSetEpoch: previous ? previous.planSetEpoch : this.projectionController.getPlanSetEpoch(),
+      previousCompletePlanCount: publishedPlanCount,
+      candidatePlanCount: candidate.planEntries.length,
+      publishedPlanCount: publish.publishedPlanCount,
+      canonicalFormulaHostCount: candidate.expectedFormulaHostCount,
+      decision: publish.publishDecision,
+      candidateCoherenceDecision: decision,
+      projectionWrites: 0,
+      activationCreatedCount: 0,
+      controlledRerenderRequestedCount: 0,
+      noOp: publish.noOp,
+    })
+    // Bound the retry: only request a follow-up when the snapshot revision or
+    // structure epoch actually advanced since this candidate was built (avoids
+    // an infinite microtask loop on a permanently-incoherent state).
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    const newInfoArrived =
+      snapshot !== null
+      && (snapshot.revision !== candidate.snapshotRevision || this.editorStructureEpochValue !== candidate.editorStructureEpoch)
+    if (newInfoArrived) {
+      this.requestNumberingReconcile({
+        reason: `deferred-candidate:${decision}`,
+        invalidation: ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'],
+      })
     }
   }
 
   /**
-   * Phase 7R.3.2-E / 7R.3.3-D: controlled per-Formula render for AFFECTED hosts.
-   * Budget is PER PROJECTION SIGNATURE (a changed signature resets it).
+   * Phase 7R.3.2-E / 7R.3.3-D / 7R.3.6-D: controlled per-Formula render for
+   * AFFECTED hosts. The budget is ONE-SHOT PER ACTIVATION (a NEW activation
+   * always starts at 0 — a historical signature never blocks a new activation).
    * Route = the proven per-block Typora seam `File.editor.mathBlock.renderUnder(
    * host, true)`.
    */
@@ -1746,6 +2352,7 @@ export class CaptionService {
       if (!plan || plan.documentKey !== documentKey || plan.documentKey !== activeDocKey) continue
       if (!t.root.isConnected) continue
       const sigHash = this.projectionController.currentSignatureHash(t.root)
+      const activationId = this.projectionController.getActivationId(t.root)
       const rendererReady = !!t.root.querySelector('mjx-container, .MathJax')
       if (!rendererReady) {
         // Phase 7R.3.3 §17: no renderer yet → leave plan-ready for the next
@@ -1754,10 +2361,10 @@ export class CaptionService {
           documentKey,
           formulaRuntimeKey: plan.formulaRuntimeKey,
           projectionSignatureHash: sigHash,
+          activationId,
           previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
           rawNumber: plan.rawNumber,
-          previousRawNumber: plan.rawNumber,
-          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
           route: 'mathBlock.renderUnder',
           decision: 'SKIPPED_NO_RENDERER',
         })
@@ -1770,38 +2377,46 @@ export class CaptionService {
           documentKey,
           formulaRuntimeKey: plan.formulaRuntimeKey,
           projectionSignatureHash: sigHash,
+          activationId,
           previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
           rawNumber: plan.rawNumber,
-          previousRawNumber: plan.rawNumber,
-          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
           route: 'mathBlock.renderUnder',
           decision: 'SKIPPED_SAME_SIGNATURE_ALREADY_CORRECT',
         })
         continue
       }
       if (state === 'render-requested' || state === 'rendering') {
+        const prevReq = this.projectionController.lastRenderRequestedSignatureHash(t.root)
+        // Same transaction stuck in flight → a render loop / stuck state.
+        if (prevReq === sigHash) this.formulaRenderLoopCount++
         emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
           documentKey,
           formulaRuntimeKey: plan.formulaRuntimeKey,
           projectionSignatureHash: sigHash,
-          previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
+          activationId,
+          previousProjectionSignatureHash: prevReq,
           rawNumber: plan.rawNumber,
-          previousRawNumber: plan.rawNumber,
-          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
           route: 'mathBlock.renderUnder',
           decision: 'SKIPPED_SAME_SIGNATURE_IN_FLIGHT',
         })
         continue
       }
       if (!this.projectionController.tryReserveRecoveryRender(t.root)) {
+        // Phase 7R.3.6-D: the CURRENT activation already consumed its one shot.
+        // This must NEVER be caused by a historical signature (new activations
+        // always start at 0). Counted as a hard-gate diagnostic.
+        this.skippedSameSignatureBudgetExhaustedCount++
         emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
           documentKey,
           formulaRuntimeKey: plan.formulaRuntimeKey,
           projectionSignatureHash: sigHash,
+          activationId,
           previousProjectionSignatureHash: this.projectionController.lastRenderRequestedSignatureHash(t.root),
           rawNumber: plan.rawNumber,
-          previousRawNumber: plan.rawNumber,
-          attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+          attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
+          historicalSignatureAttemptCount: this.projectionController.getHistoricalSignatureAttemptCount(sigHash),
           route: 'mathBlock.renderUnder',
           decision: 'SKIPPED_SAME_SIGNATURE_BUDGET_EXHAUSTED',
         })
@@ -1810,14 +2425,15 @@ export class CaptionService {
       const prevRequestedSig = this.projectionController.lastRenderRequestedSignatureHash(t.root)
       this.projectionController.setExecutionState(t.root, 'render-requested')
       this.projectionController.markRenderRequested(t.root)
+      this.perfTracker.incControlledRerender()
       emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
         documentKey,
         formulaRuntimeKey: plan.formulaRuntimeKey,
         projectionSignatureHash: sigHash,
+        activationId,
         previousProjectionSignatureHash: prevRequestedSig,
         rawNumber: plan.rawNumber,
-        previousRawNumber: plan.rawNumber,
-        attemptForSignature: this.projectionController.recoveryAttemptCount(t.root),
+        attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
         route: 'mathBlock.renderUnder',
         decision: 'REQUESTED',
       })
@@ -1886,9 +2502,11 @@ export class CaptionService {
       const visibleProjection = this.formulaAdapter.formulaVisibleProjectionForensic()
       const autoNumbering = readTyporaAutoNumberingForMath()
       const mathJaxTagMode = this.readMathJaxTagMode()
+      const verbose = forensicVerboseEnabled()
       visibleProjection.slice(0, 12).forEach((entry, i) => {
         const t = formulaTargets[i]
         if (!t) return
+        if (!verbose) return
         emitRuntimeAudit('FORMULA-VISIBLE-PROJECTION-FORENSIC', {
           documentKey: snap.documentKey,
           formulaRuntimeKey: `formula:${t.ordinal}`,
@@ -1908,9 +2526,11 @@ export class CaptionService {
           decision: entry.decision,
         })
       })
-      // Phase 7R.3.1-A / 7R.3.3-F: single-authority verification. semanticCommitted
-      // requires an EXACT visible tag-token match against the CURRENT planned
-      // rawNumber AND a committed signature equal to the current signature.
+      // Phase 7R.3.1-A / 7R.3.3-F / 7R.3.6-L: single-authority verification.
+      // semanticCommitted requires an EXACT visible tag-token match against the
+      // CURRENT planned rawNumber AND a durable commit for the CURRENT
+      // activation. If the visible state is exactly right but the commit
+      // metadata was lost, ADOPTED_EXISTING_SEMANTIC_OUTPUT repairs it durably.
       let customDecorationCount = 0
       let duplicateVisibleCount = 0
       let verifiedCount = 0
@@ -1932,15 +2552,55 @@ export class CaptionService {
           ? observedTokens.filter(tok => tok === expectedRawNumber).length
           : 0
         const otherTagCount = observedTokens.filter(tok => tok !== expectedRawNumber).length
+        const commitState = this.projectionController.commitState(t.root)
         const semanticCommitted = exactMatchCount > 0 && committedForCurrentSignature
         const sequentialCommitted = observedTokens.some(tok => /^\d+$/.test(tok))
         if (sequentialCommitted && semanticCommitted) duplicateVisibleCount++
+
+        // Phase 7R.3.6 §40: exact visible semantic output with a LOST/absent
+        // durable commit → adopt the existing output (no rerender) ONLY when
+        // every guard holds: connected host / current documentKey / current
+        // sourceHash / inkchapter mode / valid authority / exactly one token /
+        // exact match / no duplicate.
+        const exactVisibleSingleToken =
+          observedTokens.length === 1
+          && exactMatchCount === 1
+          && otherTagCount === 0
+          && !sequentialCommitted
+          && plan !== undefined
+          && plan.documentKey === snap.documentKey
+          && t.root.isConnected
+          && mode === 'inkchapter'
+          && plan.authority === 'inkchapter-native-transient'
+        if (!semanticCommitted && exactMatchCount > 0 && !committedForCurrentSignature) {
+          this.visibleExactMatchWithNullCommitStateCount++
+        }
+        if (exactVisibleSingleToken && !committedForCurrentSignature && plan) {
+          const adopted = this.projectionController.adoptExistingSemanticOutput(t.root)
+          if (adopted) {
+            emitRuntimeAudit('FORMULA-VISIBLE-TAG-VERIFY', {
+              documentKey: snap.documentKey,
+              formulaRuntimeKey: `formula:${t.ordinal}`,
+              currentSignatureHash: this.projectionController.currentSignatureHash(t.root),
+              lastCommittedSignatureHash: this.projectionController.lastCommittedSignatureHash(t.root),
+              expectedRawNumber: expectedRawNumber ?? null,
+              observedRawTagTokens: observedTokens,
+              exactMatchCount,
+              otherTagCount,
+              decision: 'ADOPTED_EXISTING_SEMANTIC_OUTPUT',
+            })
+          }
+        }
 
         emitRuntimeAudit('FORMULA-VISIBLE-TAG-VERIFY', {
           documentKey: snap.documentKey,
           formulaRuntimeKey: `formula:${t.ordinal}`,
           currentSignatureHash: this.projectionController.currentSignatureHash(t.root),
-          lastCommittedSignatureHash: this.projectionController.lastCommittedSignatureHash(t.root),
+          currentActivationId: commitState.currentActivationId,
+          lastCommittedActivationId: commitState.lastCommittedActivationId,
+          lastCommittedSignatureHash: commitState.lastCommittedSignatureHash,
+          lastCommittedRawNumber: commitState.lastCommittedRawNumber,
+          lastCommittedPlanSetEpoch: commitState.lastCommittedPlanSetEpoch,
           expectedRawNumber: expectedRawNumber ?? null,
           observedRawTagTokens: observedTokens,
           exactMatchCount,
@@ -1964,6 +2624,18 @@ export class CaptionService {
           this.projectionController.markCommitted(t.root)
         } else if (plan) {
           falsePositiveGuardCount++
+          // Phase 7R.3.6: committed for the current activation but the visible
+          // state differs → genuinely stuck (rendered result did not take).
+          if (this.projectionController.isCommittedForCurrentSignature(t.root) && observedTokens.length > 0 && exactMatchCount === 0) {
+            this.formulaStuckAfterRepeatedToggleCount++
+            emitRuntimeAudit('FORMULA-STUCK-DETECTED', {
+              documentKey: snap.documentKey,
+              formulaRuntimeKey: `formula:${t.ordinal}`,
+              expectedRawNumber: expectedRawNumber ?? null,
+              observedRawTagTokens: observedTokens,
+              decision: 'COMMITTED_BUT_VISIBLE_DIFFERS',
+            })
+          }
         }
         if (plan && formulaDecision !== 'SEMANTIC_VISIBLE_VERIFIED' && firstPendingReason === null) {
           firstPendingReason = `${formulaDecision}@${`formula:${t.ordinal}`}`
@@ -1995,6 +2667,12 @@ export class CaptionService {
         standardInkchapterCustomDecorationActive: customDecorationCount > 0,
         decision: aggregateDecision,
       })
+      // Phase 7R.3.4-A: first semantic commit milestone → finalize the open perf.
+      if (verifiedCount > 0) {
+        this.perfTracker.mark('T7')
+        this.perfTracker.finalize(snap.documentKey)
+      }
+      this.perfTracker.incFormulaVisibleVerify()
     } catch (error) {
       // Diagnostic failure must NEVER block Formula reconcile.
       emitRuntimeAudit('FORMULA-VISIBLE-PROJECTION-FORENSIC-ERROR', {
@@ -2046,6 +2724,42 @@ export class CaptionService {
       mode,
       enabled: config.enabled,
     }
+  }
+
+  /**
+   * Phase 7R.3.6 final gate: report the atomic-formula gate counters. Emits a
+   * bounded PHASE-7R-3-6-GATE-COUNTERS audit and returns the counters for the
+   * DevTools probe.
+   */
+  private formulaGateReport(): Record<string, unknown> {
+    const currentPlans = this.lastCompletePlanSet ? this.lastCompletePlanSet.plans.size : 0
+    const canonicalHostCount = this.lastFormulaTargets.length
+    const stale = this.projectionController.getStaleActivationCounters()
+    const report: Record<string, unknown> = {
+      documentKey: this.currentDocumentKey ?? null,
+      editorStructureEpoch: this.editorStructureEpochValue,
+      headingBindingGeneration: this.lastHeadingBindingGeneration,
+      planSetEpoch: this.projectionController.getPlanSetEpoch(),
+      canonicalFormulaHostCount: canonicalHostCount,
+      currentCompletePlanCount: currentPlans,
+      transientCandidateDeferCount: this.transientCandidateDeferCount,
+      transientIncompletePlanPublishCount: this.transientIncompletePlanPublishCount,
+      transientGlobalFallbackProjectionCount: this.transientGlobalFallbackProjectionCount,
+      livePlanCountZeroWithoutFormulaDeleteCount: this.livePlanCountZeroWithoutFormulaDeleteCount,
+      livePlanCountPartialWithoutFormulaStructureChangeCount: this.livePlanCountPartialWithoutFormulaStructureChangeCount,
+      historicalSignatureReactivationBlockCount: this.historicalSignatureReactivationBlockCount,
+      skippedSameSignatureBudgetExhaustedCount: this.skippedSameSignatureBudgetExhaustedCount,
+      formulaRenderLoopCount: this.formulaRenderLoopCount,
+      visibleExactMatchWithNullCommitStateCount: this.visibleExactMatchWithNullCommitStateCount,
+      previousSignatureNullOnNonInitialTransitionCount: this.previousSignatureNullOnNonInitialTransitionCount,
+      formulaStuckAfterRepeatedToggleCount: this.formulaStuckAfterRepeatedToggleCount,
+      staleActivationCommitIgnoredCount: stale.staleActivationCommitIgnoredCount,
+      staleActivationLookupCount: stale.staleActivationLookupCount,
+      adoptedExistingSemanticOutputCount: stale.adoptedExistingSemanticOutputCount,
+      decision: 'REPORTED',
+    }
+    emitRuntimeAudit('PHASE-7R-3-6-GATE-COUNTERS', report)
+    return report
   }
 
   /** Verify a just-created caption node survives + is visible (sync + RAF). */
@@ -2199,6 +2913,7 @@ export class CaptionService {
         }
       }
       ;(window as any).__inkchapter_formula_number_probe__ = () => this.formulaNumberProbe()
+      ;(window as any).__inkchapter_formula_gate_report__ = () => this.formulaGateReport()
       ;(window as any).__inkchapter_caption_set_name__ = (type: CaptionTargetType, index: number, name: string) => {
         const targets = this.adapter.collectTargets().filter(t => t.type === type)
         const target = targets[index]
