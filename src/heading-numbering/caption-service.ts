@@ -23,7 +23,7 @@ import {
   type CaptionSettings,
 } from './caption-system'
 import * as path from 'path'
-import { CaptionDomAdapter, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
+import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
@@ -49,8 +49,8 @@ import {
   type NumberingTarget,
 } from './object-numbering-engine'
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
-import { resolveHeadingContext, chapterFromHeadingNumber, sectionFromHeadingNumber, type HeadingContextEntry, type ResolvedHeadingContext } from './heading-context-resolver'
 import { FormulaNumberingAdapter, type FormulaReconcileItem } from './formula-numbering-adapter'
+import { planFormulaSemanticNumbers, type FormulaSemanticContext } from './formula-semantic-planner'
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
 
@@ -530,39 +530,6 @@ export class CaptionService {
     const fp = this.ctx.getActiveFilePath?.() ?? null
     if (!fp) return null
     try { return path.dirname(fp) } catch { return null }
-  }
-
-  private buildHeadingContextEntries(headingEls: HTMLElement[]): HeadingContextEntry[] {
-    const counts: Record<1 | 2 | 3, number> = { 1: 0, 2: 0, 3: 0 }
-    return headingEls.map((h, i) => {
-      const level = parseInt(h.tagName.charAt(1), 10) as 1 | 2 | 3
-      counts[level]++
-      const number = h.getAttribute('data-inkchapter-heading-number') || String(counts[level])
-      return { level, number, documentOrder: i }
-    })
-  }
-
-  private headingContextForTargetRoot(
-    root: HTMLElement,
-    headingEls: HTMLElement[],
-    entries: HeadingContextEntry[],
-    targetType: string,
-    runtimeKey: string,
-  ): ResolvedHeadingContext {
-    let preceding = 0
-    for (const h of headingEls) {
-      const pos = root.compareDocumentPosition(h)
-      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) break
-      preceding++
-    }
-    const ctx = resolveHeadingContext(entries, preceding)
-    console.info(
-      `[InkChapter Numbering] HEADING-CONTEXT targetType=${targetType} runtimeKey=${runtimeKey} ` +
-      `nearestH1=${ctx.h1 ?? 'none'} nearestH2=${ctx.h2 ?? 'none'} nearestH3=${ctx.h3 ?? 'none'} ` +
-      `chapter=${chapterFromHeadingNumber(ctx.h1)} section=${sectionFromHeadingNumber(ctx.h2)} ` +
-      `source=data-inkchapter-heading-number decision=RESOLVED`,
-    )
-    return ctx
   }
 
   private logFigureTokenLocator(runtimeKey: string, locate: LocateMarkdownImageTokenResult): void {
@@ -1431,8 +1398,16 @@ export class CaptionService {
   }
 
   /**
-   * Formula numbering runtime pass (P0-C). Reuses the SAME heading context
-   * resolver and the SAME shared Numbering Engine — never a second counter.
+   * Formula numbering runtime pass (Phase 7). Formula now consumes the SAME
+   * canonical authority as Figure/Table/Code:
+   *
+   *   formula canonical target → shared resolvePrecedingSemanticHeading()
+   *   → HeadingNumberingSnapshot.semantic → shared scope resolver
+   *   → independent Formula ordinal → shared standard preset formatter
+   *   → rawNumber → "(rawNumber)" wrapper → existing MathJax projection.
+   *
+   * No DOM heading numbers are parsed. In NO_SNAPSHOT / DOCUMENT_CONTEXT_MISMATCH
+   * states the semantic projection DEFERS with zero writes.
    */
   private refreshFormulaNumbering(): void {
     const root = this.currentEditorRoot
@@ -1441,38 +1416,98 @@ export class CaptionService {
     const config = this.formulaConfig
     const mode = config.formulaMode ?? 'typora-native'
     const enabled = config.enabled
-    const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+    const semanticMode = mode === 'inkchapter' && enabled
 
-    const headingEls = Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3'))
-    const headingEntries = this.buildHeadingContextEntries(headingEls)
-    const numberingTargets: NumberingTarget[] = formulaTargets.map((t, i) => ({
-      type: 'formula',
-      documentOrder: i,
-      headingContext: this.headingContextForTargetRoot(t.root, headingEls, headingEntries, 'formula', `formula:${i}`),
-    }))
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    const activeDocKey = this.ctx.getDocumentKey?.() ?? null
+    // Narrowed to a concrete snapshot once the semantic-mode guards pass.
+    let semanticSnapshot: HeadingNumberingSnapshot | null = null
 
-    const configs: Record<ObjectNumberingType, ObjectNumberingConfig> = {
-      table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')),
-      figure: migrateObjectNumberingConfig('figure', resolveCaptionTypeSettings(this.captionSettings, 'figure')),
-      code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')),
-      formula: config,
+    if (semanticMode) {
+      if (!snapshot) {
+        emitRuntimeAudit('FORMULA-SEMANTIC-PROJECTION-DEFER', { reason: 'NO_SNAPSHOT', projectionWrites: 0 })
+        return
+      }
+      if (!activeDocKey || activeDocKey !== snapshot.documentKey) {
+        emitRuntimeAudit('FORMULA-SEMANTIC-PROJECTION-DEFER', { reason: 'DOCUMENT_CONTEXT_MISMATCH', projectionWrites: 0 })
+        return
+      }
+      semanticSnapshot = snapshot
     }
-    const results = computeObjectNumbers(numberingTargets, { configs })
-    const items: FormulaReconcileItem[] = formulaTargets.map((t, i) => ({
-      target: t,
-      renderedNumber: results[i].renderedNumber,
-      label: results[i].label,
-      mode,
-      enabled,
-    }))
 
-    for (let i = 0; i < items.length; i++) {
-      console.info(
-        `[InkChapter Numbering] FORMULA-NUMBERING-RESULT type=formula mode=${config.numberingMode} ` +
-        `startAt=${config.startAt} numberStyle=${config.numberStyle} template=${JSON.stringify(config.template)} ` +
-        `sequenceValue=${results[i].sequenceValue} renderedNumber=${results[i].renderedNumber} ` +
-        `labelJson=${JSON.stringify(results[i].label)}`,
-      )
+    const formulaTargets = this.formulaAdapter.collectFormulaTargets()
+    const items: FormulaReconcileItem[] = []
+
+    if (semanticMode) {
+      // Phase 7R: bounded target-cardinality forensic (raw block vs canonical host).
+      const snap = semanticSnapshot as HeadingNumberingSnapshot
+      const rawCandidates = root.querySelectorAll(MATH_HOST_SELECTOR).length
+      const uniqueHosts = new Set(formulaTargets.map(t => t.root)).size
+      emitRuntimeAudit('FORMULA-TARGET-CARDINALITY', {
+        documentKey: snap.documentKey,
+        rawCandidateCount: rawCandidates,
+        canonicalTargetCount: formulaTargets.length,
+        uniqueCanonicalHostCount: uniqueHosts,
+      })
+    }
+
+    if (!semanticMode) {
+      // Native / disabled: restore Typora native tags, no InkChapter semantic write.
+      for (const t of formulaTargets) {
+        items.push({ target: t, renderedNumber: '', label: '', mode, enabled })
+      }
+    } else {
+      const snap = semanticSnapshot as HeadingNumberingSnapshot
+      const cfg = migrateObjectNumberingConfig('formula', config)
+      const formulaContexts: FormulaSemanticContext[] = []
+
+      for (const t of formulaTargets) {
+        // Positional runtime key for diagnostics ONLY — NOT a stable identity
+        // (full Formula stable-identity hardening is deferred to Phase 8).
+        const runtimeKey = `formula:${t.ordinal}`
+        emitRuntimeAudit('FORMULA-CANONICAL-TARGET', {
+          documentKey: snap.documentKey,
+          formulaRuntimeKey: runtimeKey,
+          targetTag: t.root.tagName,
+          targetClass: (t.root.className || '').slice(0, 40),
+          targetConnected: t.root.isConnected,
+          sameEditorRoot: root.contains(t.root),
+          targetDecision: 'ACCEPT_BLOCK_FORMULA',
+        })
+
+        const resolved = this.ctx.resolvePrecedingSemanticHeading?.(t.root) ?? null
+        const semanticState = resolved?.semanticState ?? null
+        emitRuntimeAudit('FORMULA-SEMANTIC-CONTEXT', {
+          documentKey: snap.documentKey,
+          revision: snap.revision,
+          formulaRuntimeKey: runtimeKey,
+          headingStableIdentity: resolved?.headingStableIdentity ?? 'none',
+          semanticRole: semanticState?.semanticRole ?? 'none',
+          chapterOrdinal: semanticState?.chapterOrdinal ?? null,
+          sectionOrdinal: semanticState?.sectionOrdinal ?? null,
+        })
+        formulaContexts.push({
+          chapterOrdinal: semanticState?.chapterOrdinal ?? null,
+          sectionOrdinal: semanticState?.sectionOrdinal ?? null,
+        })
+      }
+
+      const plans = planFormulaSemanticNumbers(formulaContexts, cfg)
+      formulaTargets.forEach((t, i) => {
+        const p = plans[i]
+        emitRuntimeAudit('FORMULA-SEMANTIC-NUMBERING', {
+          preset: cfg.preset ?? 'global',
+          requestedScope: p.requestedScope,
+          effectiveScope: p.effectiveScope,
+          chapterOrdinal: p.chapterOrdinal,
+          sectionOrdinal: p.sectionOrdinal,
+          ordinal: p.ordinal,
+          rawNumber: p.rawNumber,
+          renderedNumber: p.renderedNumber,
+        })
+        emitRuntimeAudit('FORMULA-PROJECTION-RECONCILE', { decision: 'PLAN' })
+        items.push({ target: t, renderedNumber: p.renderedNumber, label: p.renderedNumber, mode, enabled: true })
+      })
     }
 
     this.rendering = true
