@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { CaptionService, classifyCaptionMutationBatch, type CaptionServiceContext } from './caption-service'
+import { CaptionService, classifyCaptionMutationBatch, classifyEditorMutationBatch, type CaptionServiceContext } from './caption-service'
 import { setCaptionVaultRootForTesting, clearCaptionVaultRootForTesting, saveCaptionStore } from './caption-store'
 import { DEFAULT_CAPTION_SETTINGS, type CaptionSettings, type CaptionRecord } from './caption-system'
 import { readImageAlt } from './figure-alt-binding'
@@ -837,6 +837,80 @@ describe('classifyCaptionMutationBatch', () => {
   })
 })
 
+describe('classifyEditorMutationBatch (Phase 7R.3.4-D self/renderer boundary)', () => {
+  function capture(container: HTMLElement, mutate: () => void): MutationRecord[] {
+    const observer = new MutationObserver(() => {})
+    observer.observe(container, { childList: true, subtree: true, characterData: true })
+    mutate()
+    const records = observer.takeRecords()
+    observer.disconnect()
+    return records
+  }
+
+  function addFormulaHost(parent: HTMLElement): HTMLElement {
+    const div = document.createElement('div')
+    div.className = 'mathjax-block md-end-block md-math-block md-rawblock'
+    const script = document.createElement('script')
+    script.type = 'math/tex'
+    script.textContent = 'E = mc^2'
+    div.appendChild(script)
+    parent.appendChild(div)
+    return div
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('LOG-PERF-1/FAST-4: caption decoration mutation → SELF_ONLY (no semantic recompute)', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const records = capture(container, () => {
+      const caption = document.createElement('div')
+      caption.setAttribute('data-inkchapter-caption', 'true')
+      container.appendChild(caption)
+    })
+    expect(classifyEditorMutationBatch(records)).toBe('SELF_ONLY')
+  })
+
+  it('FAST-3: MathJax output replacement (mjx-container) → RENDERER_ONLY (not a business target)', () => {
+    const container = document.createElement('div')
+    const host = addFormulaHost(container)
+    document.body.appendChild(container)
+    const records = capture(container, () => {
+      const mjx = document.createElement('mjx-container')
+      mjx.className = 'MathJax'
+      host.appendChild(mjx)
+    })
+    expect(classifyEditorMutationBatch(records)).toBe('RENDERER_ONLY')
+  })
+
+  it('Formula source text change → FORMULA_SOURCE_CHANGED (must rescan Formula plans)', () => {
+    const container = document.createElement('div')
+    const host = addFormulaHost(container)
+    document.body.appendChild(container)
+    const script = host.querySelector('script')!
+    const records = capture(container, () => {
+      // Mutate the TeX text node directly → characterData record targeting the script's text.
+      const textNode = script.firstChild
+      if (textNode) (textNode as Text).data = 'F = ma'
+      else script.textContent = 'F = ma'
+    })
+    expect(classifyEditorMutationBatch(records)).toBe('FORMULA_SOURCE_CHANGED')
+  })
+
+  it('heading/content mutation → CONTENT_RELEVANT (full semantic reconcile)', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const records = capture(container, () => {
+      const h = document.createElement('h2')
+      h.textContent = 'Chapter A'
+      container.appendChild(h)
+    })
+    expect(classifyEditorMutationBatch(records)).toBe('CONTENT_RELEVANT')
+  })
+})
+
 describe('Formula forensic isolation (Phase 7R.2-A1)', () => {
   function addFormulaBlock(parent: HTMLElement): HTMLElement {
     const div = document.createElement('div')
@@ -878,7 +952,8 @@ describe('Formula forensic isolation (Phase 7R.2-A1)', () => {
     }
 
     // Business reconcile + arbitration still executed despite the forensic throw.
-    expect(infos.some(l => l.includes('FORMULA-PROJECTION-POLICY'))).toBe(true)
+    // Phase 7R.3.6: the atomic plan-set publication marker proves arbitration ran.
+    expect(infos.some(l => l.includes('FORMULA-PLAN-SET-PUBLISH'))).toBe(true)
     // The FORENSIC-ERROR marker was emitted and ignored (projection not blocked).
     expect(infos.some(l => l.includes('FORMULA-VISIBLE-PROJECTION-FORENSIC-ERROR'))).toBe(true)
     // Phase 7R.3: no custom decoration is created (native-transient owns projection).

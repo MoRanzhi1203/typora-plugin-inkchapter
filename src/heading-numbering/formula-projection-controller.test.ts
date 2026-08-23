@@ -440,7 +440,8 @@ describe('Phase 7R.3.3 — plan diff / signature-scoped state / targeted rerende
     const controller = new FormulaProjectionController()
     controller.applyProjectionPlan(host, planFor(host, '1.1-1', 'E = mc^2', { revision: 3 }))
     const diff = controller.applyProjectionPlan(host, planFor(host, '1.1-1', 'E = mc^2', { revision: 9 }))
-    expect(diff).toEqual({ affected: false, reason: 'UNCHANGED' })
+    expect(diff.affected).toBe(false)
+    expect(diff.reason).toBe('UNCHANGED')
   })
 
   it('DIFF-2: rawNumber 1.1-1 → 2-1 → SEMANTIC_NUMBER_CHANGED + old evidence invalidated', () => {
@@ -451,7 +452,8 @@ describe('Phase 7R.3.3 — plan diff / signature-scoped state / targeted rerende
     controller.markCommitted(host)
     expect(controller.isCommittedForCurrentSignature(host)).toBe(true)
     const diff = controller.applyProjectionPlan(host, planFor(host, '2-1', 'E = mc^2'))
-    expect(diff).toEqual({ affected: true, reason: 'SEMANTIC_NUMBER_CHANGED' })
+    expect(diff.affected).toBe(true)
+    expect(diff.reason).toBe('SEMANTIC_NUMBER_CHANGED')
     // Old commit evidence must NOT leak into the new signature.
     expect(controller.isCommittedForCurrentSignature(host)).toBe(false)
     expect(controller.wasInjectedForCurrentSignature(host)).toBe(false)
@@ -465,7 +467,8 @@ describe('Phase 7R.3.3 — plan diff / signature-scoped state / targeted rerende
     const controller = new FormulaProjectionController()
     controller.applyProjectionPlan(host, planFor(host, '1.1-1', 'E = mc^2'))
     const diff = controller.applyProjectionPlan(host, planFor(host, '1.1-1', 'E = mc^3'))
-    expect(diff).toEqual({ affected: true, reason: 'SOURCE_CHANGED' })
+    expect(diff.affected).toBe(true)
+    expect(diff.reason).toBe('SOURCE_CHANGED')
   })
 
   it('DIFF-4: document changes → old signature invalid', () => {

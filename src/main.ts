@@ -226,6 +226,8 @@ export default class extends Plugin<InkChapterSettings> {
         getEditorRoot: () => document.getElementById('write') as HTMLElement | null,
         getHeadingNumberingSnapshot: () => this.numberingService?.getCurrentHeadingNumberingSnapshot() ?? null,
         resolvePrecedingSemanticHeading: (target) => this.numberingService?.resolvePrecedingSemanticHeading(target) ?? null,
+        resolvePrecedingSemanticHeadingBatch: (targets) => this.numberingService?.resolvePrecedingSemanticHeadingBatch(targets) ?? targets.map(() => ({ bound: false as const, reason: 'NO_SERVICE' })),
+        getHeadingBindingGeneration: () => this.numberingService?.getHeadingBindingGeneration() ?? 0,
         getMarkdown: () => {
           try { return editor.getMarkdown() } catch { return '' }
         },
