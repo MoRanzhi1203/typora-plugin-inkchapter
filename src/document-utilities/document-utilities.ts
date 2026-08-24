@@ -1,0 +1,179 @@
+/**
+ * Phase 7R.3.11 — Document Utilities entry (factory).
+ *
+ * Wires the shared document context + production diagnostic providers from
+ * existing authorities, then creates the singleton overlay host.
+ */
+import * as fs from 'fs'
+import * as path from 'path'
+import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
+import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
+import type { DocumentUtilitiesContext } from './document-utilities-context'
+
+export interface DocumentUtilitiesSources {
+  getActiveFilePath: () => string | null
+  getDocumentKey: () => string | null
+  getMarkdown: () => string | null
+  isStrictMode: () => boolean
+  vaultRoot: string | null
+  getCanonicalHeadingFrame: () => {
+    entries: ReadonlyArray<{ stableIdentity: string; element: HTMLElement | null }>
+  } | null
+  getCaptionTitleForElement: (el: HTMLElement) => string | null
+  getCodeLanguage: (el: HTMLElement) => string | null
+  getFormulaVisibleTagTokens: (host: HTMLElement) => string[]
+  /** Subscribe to document switch (workspace file:open etc.). */
+  onDocumentSwitch: (cb: () => void) => () => void
+}
+
+export interface DocumentUtilities {
+  host: DocumentUtilityOverlayHost
+  mount: () => void
+  dispose: () => void
+}
+
+const VISIBLE_TAG_TOKEN_RE = /^\(\s*([\d]+(?:\.[\d]+)*-\d+|\d+)\s*\)$/
+
+/**
+ * Read-only formula visible-tag token extraction (projection invariant check).
+ * Mirrors the bounded logic of the existing Formula projection authority:
+ * scans rendered MathJax leaf text for `(1.1-1)`-style tokens. It never
+ * derives business state and never mutates anything.
+ */
+export function extractFormulaVisibleTagTokens(host: HTMLElement): string[] {
+  const tokens: string[] = []
+  for (const mjx of Array.from(host.querySelectorAll<HTMLElement>('mjx-container'))) {
+    for (const el of Array.from(mjx.querySelectorAll<HTMLElement>('*'))) {
+      if (el.children.length !== 0) continue
+      const text = (el.textContent ?? '').replace(/\u00A0/g, ' ').trim()
+      const m = VISIBLE_TAG_TOKEN_RE.exec(text)
+      if (m) tokens.push(m[1])
+      if (tokens.length >= 6) return tokens
+    }
+  }
+  return tokens
+}
+
+/** Safe local-relative-link parsing from Markdown (no network). */
+export function parseLocalLinkTargets(markdown: string): string[] {
+  const out: string[] = []
+  const re = /\[[^\]]*\]\(([^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(markdown)) !== null) {
+    const target = m[1].trim().split(/\s+/)[0]
+    if (!target) continue
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue // scheme
+    if (target.startsWith('#')) continue // in-document anchor
+    if (target.startsWith('mailto:')) continue
+    out.push(target)
+  }
+  return out
+}
+
+function isLocalRelative(target: string): boolean {
+  if (!target) return false
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return false
+  if (target.startsWith('#')) return false
+  return true
+}
+
+function imageLocalPath(img: HTMLElement, vaultRoot: string | null): string | null {
+  const src = img.getAttribute('src') ?? ''
+  if (!src) return null
+  if (/^https?:\/\//i.test(src)) return null // remote — never a "missing local file"
+  let candidate: string | null = null
+  if (src.startsWith('file://')) {
+    candidate = decodeURIComponent(src.slice('file://'.length))
+  } else if (path.isAbsolute(src)) {
+    candidate = src
+  } else if (vaultRoot) {
+    candidate = path.resolve(vaultRoot, src)
+  }
+  if (!candidate) return null
+  try {
+    return fs.existsSync(candidate) ? null : candidate
+  } catch {
+    return null
+  }
+}
+
+function linkTargetMissing(target: string, vaultRoot: string | null): boolean {
+  if (!isLocalRelative(target) || !vaultRoot) return false
+  try {
+    const resolved = path.resolve(vaultRoot, target)
+    return !fs.existsSync(resolved)
+  } catch {
+    return false
+  }
+}
+
+export function createDocumentUtilities(sources: DocumentUtilitiesSources): DocumentUtilities {
+  const ctx: DocumentUtilitiesContext = {
+    authority: {
+      getActiveFilePath: sources.getActiveFilePath,
+      getDocumentKey: sources.getDocumentKey,
+      getMarkdown: sources.getMarkdown,
+      isStrictMode: sources.isStrictMode,
+      vaultRoot: sources.vaultRoot,
+      getCanonicalDuplicateIdentities: () => {
+        const frame = sources.getCanonicalHeadingFrame()
+        if (!frame) return []
+        const seen = new Map<string, number>()
+        const dupes: string[] = []
+        for (const e of frame.entries) {
+          if (!e.stableIdentity) continue
+          const n = (seen.get(e.stableIdentity) ?? 0) + 1
+          seen.set(e.stableIdentity, n)
+          if (n === 2) dupes.push(e.stableIdentity)
+        }
+        return dupes
+      },
+      getCaptionDuplicateNames: () => {
+        // Caption-name duplicates are detected structurally in the DOM facts
+        // (same pure compute path); the caption authority here has no extra
+        // aggregate surface. Return empty — the structural scan covers it.
+        return []
+      },
+    },
+    hasActiveDocument: () => sources.getActiveFilePath() != null,
+  }
+
+  const headingIdentityByElement = new WeakMap<HTMLElement, string>()
+  const indexHeadingIdentities = (): void => {
+    const frame = sources.getCanonicalHeadingFrame()
+    if (!frame) return
+    for (const e of frame.entries) {
+      if (e.element && e.stableIdentity) headingIdentityByElement.set(e.element, e.stableIdentity)
+    }
+  }
+  indexHeadingIdentities()
+
+  const providers: DocumentDiagnosticsProviders = {
+    getFormulaVisibleTagTokens: (host) => sources.getFormulaVisibleTagTokens(host) ?? extractFormulaVisibleTagTokens(host),
+    getFigureName: (img) => sources.getCaptionTitleForElement(img),
+    getTableName: (el) => sources.getCaptionTitleForElement(el),
+    getCodeName: (el) => sources.getCaptionTitleForElement(el),
+    getCodeLanguage: (el) => sources.getCodeLanguage(el),
+    resolveImageLocalPath: (img) => ({ localPath: imageLocalPath(img, sources.vaultRoot) }),
+    isLinkTargetMissing: (target) => linkTargetMissing(target, sources.vaultRoot),
+    getHeadingIdentity: (el) => headingIdentityByElement.get(el) ?? null,
+    parseLocalLinkTargets,
+  }
+
+  const host = new DocumentUtilityOverlayHost({
+    ctx,
+    providers,
+    onBindDocument: (bind) => {
+      sources.onDocumentSwitch(() => {
+        indexHeadingIdentities()
+        bind()
+      })
+    },
+  })
+
+  return {
+    host,
+    mount: () => host.mount(),
+    dispose: () => host.dispose(),
+  }
+}

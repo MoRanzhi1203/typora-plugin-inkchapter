@@ -18,11 +18,20 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
 import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
 console.log('[InkChapter] INKCHAPTER-BOOT-MODULE-LOAD')
+
+/** Best-effort fenced code language from the canonical code host. */
+function codeLanguageOf(el: HTMLElement): string | null {
+  const cls = String(el.className || '')
+  const m = cls.match(/(?:^|\s)language-([A-Za-z0-9_+-]+)/)
+  if (m) return m[1]
+  return el.getAttribute('data-lang') ?? el.getAttribute('lang') ?? null
+}
 
 export default class extends Plugin<InkChapterSettings> {
 
@@ -30,6 +39,7 @@ export default class extends Plugin<InkChapterSettings> {
   private captionService?: CaptionService
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
+  private documentUtilities?: DocumentUtilities
 
   constructor(...args: ConstructorParameters<typeof Plugin>) {
     super(...args)
@@ -287,6 +297,44 @@ export default class extends Plugin<InkChapterSettings> {
       console.log('[InkChapter] caption service started')
     } catch (e) {
       console.error('[InkChapter] 题注服务初始化失败，题注功能不可用', e)
+    }
+
+    // ── Phase 7R.3.11: Document Utilities (diagnostics + lock + scroll) ──
+    // Presentation/utility layer only. Mounts editor-shell overlays OUTSIDE
+    // #write so their mutations never enter numbering pipelines.
+    try {
+      this.documentUtilities = createDocumentUtilities({
+        getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+        getDocumentKey: () => {
+          const fp = this.app.workspace.activeFile
+          const vr = vaultRoot ?? ''
+          if (!fp || !vr) return null
+          try { return generateDocumentKey(fp, vr) } catch { return null }
+        },
+        getMarkdown: () => {
+          try { return editor.getMarkdown() } catch { return null }
+        },
+        isStrictMode: () => {
+          try {
+            const store = this.numberingService?.getScopeStore()
+            return (store?.globalDefault?.headingStructureMode ?? 'strict') === 'strict'
+          } catch { return true }
+        },
+        vaultRoot: vaultRoot ?? null,
+        getCanonicalHeadingFrame: () => this.numberingService?.getCanonicalHeadingFrame() ?? null,
+        getCaptionTitleForElement: (el) => this.captionService?.getCaptionForElement(el)?.title ?? null,
+        getCodeLanguage: (el) => codeLanguageOf(el),
+        getFormulaVisibleTagTokens: (host) => extractFormulaVisibleTagTokens(host),
+        onDocumentSwitch: (cb) => {
+          const dispose = this.app.workspace.on('file:open' as never, (() => cb()) as never)
+          this.register(dispose)
+          return dispose
+        },
+      })
+      this.documentUtilities.mount()
+      console.log('[InkChapter] document utilities mounted')
+    } catch (e) {
+      console.error('[InkChapter] 文档工具初始化失败，诊断/锁定/滚动功能不可用', e)
     }
 
     // Register settings tab
@@ -713,6 +761,10 @@ export default class extends Plugin<InkChapterSettings> {
   }
 
   onunload() {
+    if (this.documentUtilities) {
+      this.documentUtilities.dispose()
+      this.documentUtilities = undefined
+    }
     if (this.numberingService) {
       this.numberingService.dispose()
       this.numberingService = undefined
