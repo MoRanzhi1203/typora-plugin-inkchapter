@@ -330,6 +330,14 @@ export default class extends Plugin<InkChapterSettings> {
           this.register(dispose)
           return dispose
         },
+        onCanonicalFrameCommit: (cb) => {
+          if (!this.numberingService) return () => undefined
+          return this.numberingService.subscribeCanonicalHeadingFrame(() => cb(), { emitCurrent: true })
+        },
+        onSettingsChanged: (cb) => {
+          if (!this.numberingService) return () => undefined
+          return this.numberingService.onSettingsChanged(() => cb())
+        },
       })
       this.documentUtilities.mount()
       console.log('[InkChapter] document utilities mounted')

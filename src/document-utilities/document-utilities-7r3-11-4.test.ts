@@ -30,7 +30,7 @@ function mutableContext(initialKey: string | null = 'doc:a'): {
     authority: {
       getActiveFilePath: () => (key ? '/vault/doc.md' : null),
       getDocumentKey: () => key,
-      getMarkdown: () => (key === 'doc:b' ? '# B\n' : '# A\n\n## A2\n\n#### A4\n'),
+      getMarkdown: () => (key === 'doc:b' ? '# B\n\n' : '# A\n\n## A2\n\n#### A4\n\n'),
       isStrictMode: () => true,
       vaultRoot: '/vault',
       getCanonicalDuplicateIdentities: () => [],

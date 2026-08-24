@@ -10,6 +10,7 @@ import { validateStrictFirstH1Topline } from '../heading-numbering/strict-docume
 import type {
   DocumentDiagnostic,
   DocumentDiagnosticCategory,
+  DocumentDiagnosticLocatorDescriptor,
   DocumentDiagnosticSeverity,
   DocumentDiagnosticsSnapshot,
   DocumentDiagnosticsState,
@@ -20,6 +21,16 @@ export interface DiagnosticHeadingFact {
   text: string
   stableIdentity?: string
   element: HTMLElement | null
+}
+
+/**
+ * Phase 7R.3.11.8-B — canonical H1 fact (from the committed CanonicalHeadingFrame
+ * semanticState.physicalLevel === 1). NEVER derived from a bare DOM h1 count.
+ */
+export interface DiagnosticH1Fact {
+  stableIdentity?: string
+  element: HTMLElement | null
+  text?: string
 }
 
 export interface DiagnosticObjectFact {
@@ -50,6 +61,12 @@ export interface DocumentDiagnosticsInput {
   strictMode: boolean
   vaultRoot: string | null
   headings: readonly DiagnosticHeadingFact[]
+  /**
+   * Phase 7R.3.11.8-B — canonical H1 facts from the committed heading frame.
+   * `null`/absent = heading authority not ready (STRICT-SINGLE-H1 WAITS, never
+   * judged against a stale/empty frame); `[]` = committed frame with ZERO H1.
+   */
+  h1Facts?: readonly DiagnosticH1Fact[] | null
   figures: readonly DiagnosticObjectFact[]
   tables: readonly DiagnosticObjectFact[]
   codes: readonly DiagnosticObjectFact[]
@@ -68,6 +85,35 @@ export interface DocumentDiagnosticsComputed {
 
 const DOCUMENT_EMPTY_CODE = 'DOCUMENT_EMPTY'
 const SOURCE_UNAVAILABLE_CODE = 'DOCUMENT_SOURCE_UNAVAILABLE'
+
+// ── Phase 7R.3.11.8-B — DOCUMENT-TRAILING-BLANK-LINE ──────────────────
+export type TrailingBlankLineVerdict = 'PASS' | 'WARNING' | 'SKIP'
+
+/**
+ * Pure trailing-blank-line verdict from the RAW Markdown source.
+ *
+ * A "trailing blank line" exists iff at least TWO line breaks appear after the
+ * last non-blank logical line (i.e. the last content line is followed by a
+ * complete empty/whitespace-only logical line AND its terminating newline).
+ *
+ *   "content\n\n"      → PASS
+ *   "content\r\n\r\n"  → PASS
+ *   "content\n   \n"   → PASS (blank line may contain space/tab)
+ *   "content\n"        → WARNING (a single EOF newline is NOT a blank line)
+ *   "content"          → WARNING
+ *   "" / whitespace    → SKIP (empty-document policy)
+ */
+export function computeDocumentTrailingBlankLine(markdown: string | null | undefined): TrailingBlankLineVerdict {
+  if (markdown == null) return 'SKIP'
+  const lines = markdown.split('\n')
+  let lastNonBlank = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].replace(/\r$/, '').trim() !== '') lastNonBlank = i
+  }
+  if (lastNonBlank === -1) return 'SKIP' // empty / whitespace-only document
+  const lineBreaksAfter = lines.length - 1 - lastNonBlank
+  return lineBreaksAfter >= 2 ? 'PASS' : 'WARNING'
+}
 
 /** Normalize a message so the same root cause deduplicates deterministically. */
 function normalizeIdentity(value: string | undefined | null): string {
@@ -104,9 +150,15 @@ function makeDiagnostic(
     targetIdentity?: string
     element?: HTMLElement | null
     kind?: 'heading' | 'object' | 'formula' | 'link' | 'document'
+    metadata?: Record<string, unknown>
+    /** Phase 7R.3.11.8-B — explicit locator (element OR document-level scroll action). */
+    locator?: DocumentDiagnosticLocatorDescriptor
   } = {},
 ): DocumentDiagnostic {
   const targetIdentity = normalizeIdentity(opts.targetIdentity) || normalizeIdentity(opts.stableIdentity)
+  const locator = opts.locator ?? (opts.element
+    ? { kind: opts.kind ?? category === 'heading' ? 'heading' : 'object', targetElement: opts.element }
+    : undefined)
   return {
     id: `${category}:${code}:${targetIdentity || Math.random().toString(36).slice(2, 8)}`,
     documentKey: input.documentKey ?? '',
@@ -117,9 +169,8 @@ function makeDiagnostic(
     detail: opts.detail,
     stableIdentity: opts.stableIdentity,
     targetIdentity: targetIdentity || undefined,
-    locator: opts.element
-      ? { kind: opts.kind ?? category === 'heading' ? 'heading' : 'object', targetElement: opts.element }
-      : undefined,
+    metadata: opts.metadata,
+    locator,
   }
 }
 
@@ -185,6 +236,65 @@ export function computeDocumentDiagnostics(
         }),
       )
     }
+
+    // ── Phase 7R.3.11.8-B — STRICT-SINGLE-H1 (strict only, canonical frame authority) ──
+    // h1Facts === null means the heading frame is not committed yet → WAIT, never
+    // judge against a stale/empty frame. h1Facts === [] is a REAL zero-H1 doc.
+    if (input.strictMode && input.h1Facts != null) {
+      const h1Count = input.h1Facts.length
+      if (h1Count === 0) {
+        push(
+          makeDiagnostic(input, 'document', 'error', 'STRICT_SINGLE_H1_NO_H1',
+            '严格模式要求全文必须且只能包含一个一级标题（H1），当前未检测到 H1。', {
+            detail: '文档必须且只能包含一个一级标题（H1）。',
+            kind: 'document',
+            targetIdentity: 'single-h1:no-h1',
+            metadata: { ruleId: 'STRICT-SINGLE-H1', h1Count, reason: 'NO_H1', violationFingerprint: 'NO_H1' },
+            locator: { kind: 'document', targetElement: null, action: 'GO_TOP' },
+          }),
+        )
+      } else if (h1Count > 1) {
+        const offending = input.h1Facts[1] // the FIRST offending H1 (second H1)
+        const offendingIdentity = offending?.stableIdentity ?? null
+        push(
+          makeDiagnostic(input, 'document', 'error', 'STRICT_SINGLE_H1_MULTIPLE_H1',
+            `严格模式要求全文只能包含一个一级标题（H1），当前检测到 ${h1Count} 个。`, {
+            detail: '请删除或降级多余的 H1，只保留一个一级标题。',
+            kind: 'heading',
+            stableIdentity: offendingIdentity ?? undefined,
+            element: offending?.element ?? null,
+            targetIdentity: `single-h1:multiple-h1:${offendingIdentity ?? ''}`,
+            metadata: {
+              ruleId: 'STRICT-SINGLE-H1',
+              h1Count,
+              reason: 'MULTIPLE_H1',
+              violationFingerprint: `MULTIPLE_H1:${h1Count}:${offendingIdentity ?? ''}`,
+            },
+            locator: offending?.element
+              ? { kind: 'heading', targetElement: offending.element }
+              : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+          }),
+        )
+      }
+    }
+
+    // ── Phase 7R.3.11.8-B — DOCUMENT-TRAILING-BLANK-LINE (all modes, raw source authority) ──
+    if (input.markdown != null) {
+      const verdict = computeDocumentTrailingBlankLine(input.markdown)
+      if (verdict === 'WARNING') {
+        push(
+          makeDiagnostic(input, 'document', 'warning', 'DOCUMENT_TRAILING_BLANK_LINE',
+            '警告：文档末尾缺少空行', {
+            detail: 'Markdown 文档最后一个非空内容之后应保留至少一个空行。',
+            kind: 'document',
+            targetIdentity: 'document:trailing-blank-line',
+            metadata: { ruleId: 'DOCUMENT-TRAILING-BLANK-LINE', reason: 'MISSING_TRAILING_BLANK_LINE' },
+            locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
+          }),
+        )
+      }
+    }
+
     const isEmpty =
       input.markdown != null && input.markdown.trim() === '' && input.headings.length === 0
     if (isEmpty) {

@@ -62,6 +62,8 @@ export function collectDiagnosticsInput(
   ctx: DocumentUtilitiesContext,
   structural: {
     headings: DocumentDiagnosticsInput['headings']
+    /** Phase 7R.3.11.8-B — canonical H1 facts (null = frame not ready). */
+    h1Facts: DocumentDiagnosticsInput['h1Facts']
     figures: DocumentDiagnosticsInput['figures']
     tables: DocumentDiagnosticsInput['tables']
     codes: DocumentDiagnosticsInput['codes']
@@ -75,6 +77,7 @@ export function collectDiagnosticsInput(
     strictMode: ctx.authority.isStrictMode(),
     vaultRoot: ctx.authority.vaultRoot,
     headings: structural.headings,
+    h1Facts: structural.h1Facts,
     figures: structural.figures,
     tables: structural.tables,
     codes: structural.codes,
