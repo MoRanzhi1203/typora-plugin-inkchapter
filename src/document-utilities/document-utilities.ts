@@ -6,9 +6,11 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
+import type { CanonicalHeadingFrame } from '../heading-numbering/canonical-heading-frame'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
+import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
 
 export interface DocumentUtilitiesSources {
   getActiveFilePath: () => string | null
@@ -16,14 +18,18 @@ export interface DocumentUtilitiesSources {
   getMarkdown: () => string | null
   isStrictMode: () => boolean
   vaultRoot: string | null
-  getCanonicalHeadingFrame: () => {
-    entries: ReadonlyArray<{ stableIdentity: string; element: HTMLElement | null }>
-  } | null
+  /** Phase 7R.3.11.8B.1 — the REAL production CanonicalHeadingFrame. Level lives
+   *  at entry.semanticState.physicalLevel (never a fake flat physicalLevel). */
+  getCanonicalHeadingFrame: () => CanonicalHeadingFrame | null
   getCaptionTitleForElement: (el: HTMLElement) => string | null
   getCodeLanguage: (el: HTMLElement) => string | null
   getFormulaVisibleTagTokens: (host: HTMLElement) => string[]
   /** Subscribe to document switch (workspace file:open etc.). */
   onDocumentSwitch: (cb: () => void) => () => void
+  /** Phase 7R.3.11.8-B — canonical heading frame commit subscription (live diagnostics). */
+  onCanonicalFrameCommit?: (cb: () => void) => () => void
+  /** Phase 7R.3.11.8-B — numbering settings/mode change subscription. */
+  onSettingsChanged?: (cb: () => void) => () => void
 }
 
 export interface DocumentUtilities {
@@ -158,6 +164,13 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     isLinkTargetMissing: (target) => linkTargetMissing(target, sources.vaultRoot),
     getHeadingIdentity: (el) => headingIdentityByElement.get(el) ?? null,
     parseLocalLinkTargets,
+    // Phase 7R.3.11.8B.1 — canonical H1 authority bridge: maps the REAL
+    // CanonicalHeadingFrame (entry.semanticState.physicalLevel) into a
+    // WAIT / INVALID / READY result. NEVER reads a fake top-level physicalLevel.
+    getCanonicalH1Facts: () => mapCanonicalHeadingFrameForDiagnostics(
+      sources.getCanonicalHeadingFrame(),
+      sources.getDocumentKey(),
+    ),
   }
 
   const host = new DocumentUtilityOverlayHost({
@@ -168,6 +181,15 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
         indexHeadingIdentities()
         bind()
       })
+    },
+    // Phase 7R.3.11.8-B — live diagnostics triggers (heading frame commit +
+    // settings/mode change) → lightweight snapshot recompute only.
+    onDiagnosticsTrigger: (recompute) => {
+      sources.onCanonicalFrameCommit?.(() => {
+        indexHeadingIdentities()
+        recompute()
+      })
+      sources.onSettingsChanged?.(() => recompute())
     },
   })
 

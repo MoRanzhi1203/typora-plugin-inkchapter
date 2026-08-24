@@ -10,12 +10,14 @@
 import { computeDocumentDiagnostics } from './document-diagnostics'
 import type {
   DiagnosticFormulaFact,
+  DiagnosticH1Fact,
   DiagnosticHeadingFact,
   DiagnosticLinkFact,
   DiagnosticObjectFact,
 } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { collectDiagnosticsInput, resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
+import type { DiagnosticCanonicalHeadingAuthorityResult } from './document-h1-authority-bridge'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export interface DocumentDiagnosticsProviders {
@@ -34,6 +36,9 @@ export interface DocumentDiagnosticsProviders {
   getHeadingIdentity: (el: HTMLElement) => string | null
   /** Parse markdown into local link targets (authority-driven, no network). */
   parseLocalLinkTargets: (markdown: string) => string[]
+  /** Phase 7R.3.11.8B.1 — canonical H1 authority bridge result (WAIT/INVALID/READY).
+   *  Optional so tests that never exercise STRICT-SINGLE-H1 need no stub. */
+  getCanonicalH1Facts?: () => DiagnosticCanonicalHeadingAuthorityResult
 }
 
 export class DocumentDiagnosticsAuthority {
@@ -41,6 +46,9 @@ export class DocumentDiagnosticsAuthority {
   private revision = 0
   private sourceRevision = 0
   private lastDocumentKey: string | null = null
+  private lastContentFingerprint = ''
+  /** Phase 7R.3.11.8B.1 — H1 authority bridge audit dedup (state-token). */
+  private lastH1BridgeSignature = ''
   private listeners = new Set<(snapshot: DocumentDiagnosticsSnapshot | null) => void>()
 
   constructor(
@@ -80,7 +88,7 @@ export class DocumentDiagnosticsAuthority {
     const computed = computeDocumentDiagnostics(input)
     this.emitHeadingGapInputIfAny(structural.headings, input.documentKey)
     this.revision++
-    this.snapshot = {
+    const nextSnapshot: DocumentDiagnosticsSnapshot = {
       documentKey: input.documentKey,
       revision: this.revision,
       sourceRevision: this.sourceRevision,
@@ -90,6 +98,17 @@ export class DocumentDiagnosticsAuthority {
       warningCount: computed.warningCount,
       infoCount: computed.infoCount,
     }
+    // Phase 7R.3.11.8-B §32 — state-transition logging: identical-state recomputes
+    // (same document + same diagnostic content) do NOT re-publish / re-notify.
+    const fingerprint = `${nextSnapshot.documentKey ?? ''}|${nextSnapshot.diagnostics
+      .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}`)
+      .sort()
+      .join(';')}`
+    if (fingerprint === this.lastContentFingerprint) {
+      return
+    }
+    this.lastContentFingerprint = fingerprint
+    this.snapshot = nextSnapshot
     this.notify()
   }
 
@@ -124,6 +143,7 @@ export class DocumentDiagnosticsAuthority {
 
   private collectStructuralFacts(): {
     headings: DiagnosticHeadingFact[]
+    h1Facts: DiagnosticH1Fact[] | null
     figures: DiagnosticObjectFact[]
     tables: DiagnosticObjectFact[]
     codes: DiagnosticObjectFact[]
@@ -137,6 +157,21 @@ export class DocumentDiagnosticsAuthority {
     const codes: DiagnosticObjectFact[] = []
     const formulas: DiagnosticFormulaFact[] = []
     const links: DiagnosticLinkFact[] = []
+    // Phase 7R.3.11.8B.1 — canonical H1 authority bridge (WAIT/INVALID/READY).
+    // WAIT/INVALID → h1Facts = null (STRICT-SINGLE-H1 must NOT be judged).
+    // READY (even empty) → h1Facts = canonical H1 facts.
+    const authority = this.providers.getCanonicalH1Facts?.()
+    let h1Facts: DiagnosticH1Fact[] | null = null
+    if (authority) {
+      this.emitH1AuthorityAudits(authority)
+      if (authority.state === 'READY') {
+        h1Facts = authority.h1Facts.map(f => ({
+          stableIdentity: f.stableIdentity,
+          element: f.element,
+          text: f.element?.textContent?.trim() ?? undefined,
+        }))
+      }
+    }
 
     if (root) {
       // Headings — level + text only (never re-derived numbering).
@@ -196,6 +231,49 @@ export class DocumentDiagnosticsAuthority {
       }
     }
 
-    return { headings, figures, tables, codes, formulas, links }
+    return { headings, h1Facts, figures, tables, codes, formulas, links }
+  }
+
+  /**
+   * Phase 7R.3.11.8B.1 — low-noise H1 authority audits.
+   *  - DOCUMENT-UTILITY-H1-AUTHORITY-BRIDGE (state-token deduped)
+   *  - DOCUMENT-UTILITY-H1-AUTHORITY-INVARIANT (hard: READY frame whose
+   *    physicalLevels contain 1 but h1Count===0 must FAIL and block false NO_H1)
+   */
+  private emitH1AuthorityAudits(authority: DiagnosticCanonicalHeadingAuthorityResult): void {
+    const signature = `${authority.documentKey ?? ''}|${authority.state}|${authority.reason}|${authority.canonicalEntryCount}|${authority.mappedEntryCount}|${authority.invalidEntryCount}|${authority.physicalLevels.join(',')}|${authority.h1Count}`
+    if (signature !== this.lastH1BridgeSignature) {
+      this.lastH1BridgeSignature = signature
+      emitRuntimeAudit('DOCUMENT-UTILITY-H1-AUTHORITY-BRIDGE', {
+        documentKey: authority.documentKey,
+        activeDocumentKey: this.ctx.authority.getDocumentKey(),
+        framePresent: authority.framePresent,
+        frameDocumentKey: authority.frameDocumentKey,
+        semanticRevision: authority.semanticRevision,
+        frameGeneration: authority.frameGeneration,
+        canonicalEntryCount: authority.canonicalEntryCount,
+        mappedEntryCount: authority.mappedEntryCount,
+        invalidEntryCount: authority.invalidEntryCount,
+        physicalLevels: authority.physicalLevels,
+        h1Count: authority.h1Count,
+        h1StableIdentities: authority.h1StableIdentities,
+        authorityState: authority.state,
+        reason: authority.reason,
+        decision: authority.state,
+      })
+    }
+    // Hard invariant — a READY frame that visibly contains level 1 can NEVER
+    // produce h1Count=0; if it ever does, block false NO_H1 and fail loudly.
+    const invariantViolated = authority.state === 'READY'
+      && authority.physicalLevels.includes(1)
+      && authority.h1Count === 0
+    emitRuntimeAudit('DOCUMENT-UTILITY-H1-AUTHORITY-INVARIANT', {
+      documentKey: authority.documentKey,
+      canonicalEntryCount: authority.canonicalEntryCount,
+      mappedEntryCount: authority.mappedEntryCount,
+      h1Count: authority.h1Count,
+      physicalLevels: authority.physicalLevels,
+      decision: invariantViolated ? 'FAIL' : 'PASS',
+    })
   }
 }

@@ -32,6 +32,10 @@ export interface DocumentUtilitiesOverlayOptions {
   providers: DocumentDiagnosticsProviders
   /** Recompute triggers wired by the caller (document switch etc.). */
   onBindDocument?: (bind: () => void) => void
+  /** Phase 7R.3.11.8-B — light diagnostics recompute triggers (frame commit /
+   *  settings/mode change). Called with a recompute() that ONLY refreshes the
+   *  diagnostics snapshot — no geometry / BCR / scroll rebind churn. */
+  onDiagnosticsTrigger?: (recompute: () => void) => void
 }
 
 const TOOLBAR_TOP_PX = 12
@@ -67,13 +71,29 @@ const UTILITY_WRITE_WINDOW_MS = 100
 /** Phase 7R.3.11.6 — navigator placement tolerance (px) for NAV-PLACEMENT gate. */
 const NAV_PLACEMENT_TOLERANCE_PX = 3
 
-/** Phase 7R.3.11.8 — scroll-nav operation forensic constants. */
-const SCROLL_NAV_TARGET_TOLERANCE_PX = 2
-/** Scroll-event quiescence window: the operation finalizes when no scroll
- *  event arrives for this window (NOT a fixed click-to-success delay). */
-const SCROLL_NAV_QUIESCENCE_MS = 150
-/** Bounded safety deadline — resource leak guard / TIMEOUT classification only. */
-const SCROLL_NAV_SAFETY_DEADLINE_MS = 2500
+/** Phase 7R.3.11.8-B — scroll operation authority constants. */
+export const SCROLL_OP_EPSILON_PX = 1
+/** Quiescence window: the operation finalizes when no scroll event arrives for
+ *  this window (NOT a fixed click-to-success delay). */
+export const SCROLL_OP_QUIESCENCE_MS = 150
+/** Bounded safety deadline — resource leak guard / TIMEOUT classification ONLY. */
+export const SCROLL_OP_SAFETY_DEADLINE_MS = 2000
+/** Bounded corrective recovery: at most ONE auto scroll after a genuine early stop. */
+export const SCROLL_OP_MAX_RECOVERY_ATTEMPTS = 1
+
+export type ScrollOperationSource = 'BUTTON' | 'DIAGNOSTIC_LOCATE'
+
+export type ScrollOperationDecision =
+  | 'PASS'
+  | 'PASS_RECOVERED'
+  | 'PASS_TARGET_REACHED_AT_DEADLINE'
+  | 'FAIL_SETTLED_BEFORE_TARGET'
+  | 'FAIL_CONTAINER_DISCONNECTED'
+  | 'CANCELLED_DOCUMENT_SWITCH'
+  | 'SUPERSEDED'
+  | 'TIMEOUT_BEFORE_SETTLE'
+
+export type ScrollOperationSettleReason = 'SCROLLEND' | 'QUIESCENCE' | 'SAFETY_TIMEOUT'
 
 export type ResizeAttributionVerdict =
   | 'ATTRIBUTED_TO_DOCUMENT_UTILITIES'
@@ -106,18 +126,17 @@ export interface ScrollNavAuditPayload {
   decision: 'PASS' | 'FAIL'
 }
 
-/** Phase 7R.3.11.8-A — scroll operation forensic record (observability only). */
-export type ScrollNavOperationSettleReason = 'SCROLLEND' | 'QUIESCENCE' | 'SAFETY_TIMEOUT' | 'SUPERSEDED'
-
-export interface ScrollNavOperationForensicRecord {
+/**
+ * Phase 7R.3.11.8-B — ONE finite event-driven scroll operation per button click.
+ * The fixed-250ms read is NOT an authority; settle is decided by scrollend /
+ * quiescence + final live target, with at most ONE corrective recovery.
+ */
+export interface ActiveScrollOperation {
   operationId: number
-  action: 'GO_TOP' | 'GO_BOTTOM'
-  source: 'BUTTON'
   documentKey: string | null
-  containerTag: string
-  containerId: string
-  containerClass: string
-  containerConnected: boolean
+  action: 'GO_TOP' | 'GO_BOTTOM'
+  source: ScrollOperationSource
+  container: HTMLElement
   startTs: number
   scrollTopStart: number
   maxScrollTopStart: number
@@ -130,13 +149,14 @@ export interface ScrollNavOperationForensicRecord {
   reversalCount: number
   scrollTopAtLegacyCheck: number | null
   legacyWouldPass: boolean | null
-  scrollTopFinal: number
-  maxScrollTopFinal: number
-  targetReached: boolean
-  elapsedMs: number
-  settleReason: ScrollNavOperationSettleReason
+  recoveryAttemptCount: number
   drawerVisibleAtStart: boolean
   lockedAtStart: boolean
+  settleTimer: ReturnType<typeof setTimeout> | null
+  safetyDeadline: ReturnType<typeof setTimeout> | null
+  legacySampleTimer: ReturnType<typeof setTimeout> | null
+  onScroll: () => void
+  onScrollEnd: (() => void) | null
 }
 
 /** Phase 7R.3.11.5 — scroll navigator BUTTON action audit payload (pure). */
@@ -438,15 +458,16 @@ export class DocumentUtilityOverlayHost {
   readonly locator: DocumentDiagnosticLocator
   readonly editGuard: DocumentEditGuard
   private scrollNav: DocumentScrollNavigator | null = null
-  /** Phase 7R.3.11.8-A — active scroll operation forensic handle (observability). */
+  /** Phase 7R.3.11.8-B — single active finite scroll operation (event-driven). */
   private scrollNavOperationSeq = 0
-  private scrollOpForensic: {
-    record: ScrollNavOperationForensicRecord
-    container: HTMLElement
-    settleTimer: ReturnType<typeof setTimeout> | null
-    safetyDeadline: ReturnType<typeof setTimeout> | null
-    onScroll: () => void
-  } | null = null
+  private activeScrollOperation: ActiveScrollOperation | null = null
+  private scrollOperationEmitCount = 0
+  /** Phase 7R.3.11.8-B §3.6 — STRICT-SINGLE-H1 popup dedup (documentKey → violationFingerprint). */
+  private strictSingleH1PopupTokens = new Map<string, string>()
+  private strictSingleH1PopupEmitCount = 0
+  /** Phase 7R.3.11.8-B §7 — event-driven diagnostics recompute (mutation → rAF, no polling). */
+  private diagnosticsMutationObserver: MutationObserver | null = null
+  private diagnosticsRafPending = false
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   private mounted = false
   private disposed = false
@@ -548,6 +569,7 @@ export class DocumentUtilityOverlayHost {
         return
       }
       this.snapshot = snapshot
+      this.handleStrictSingleH1Popup(snapshot)
       this.renderDiagnosticsButton()
       if (this.drawerOpen) {
         // Drawer stays open and re-renders IN PLACE with the new snapshot.
@@ -573,6 +595,28 @@ export class DocumentUtilityOverlayHost {
 
     // Initial recompute (event-driven — the caller controls further triggers).
     this.diagnostics.recompute()
+
+    // Phase 7R.3.11.8-B §7 — live diagnostics triggers (frame commit / mode
+    // change) → lightweight recompute only.
+    this.opts.onDiagnosticsTrigger?.(() => this.diagnostics.recompute())
+
+    // Phase 7R.3.11.8-B §7 — event-driven editor mutation trigger (rAF-coalesced).
+    // Covers raw source / trailing-blank-line changes and live heading edits.
+    // NEVER a timer/poll: fires only on actual #write mutations. Recompute is
+    // read-only (no DOM write), so there is no feedback loop.
+    const editorRoot = resolveBusinessContentRoot()
+    if (editorRoot && typeof MutationObserver === 'function') {
+      this.diagnosticsMutationObserver = new MutationObserver(() => {
+        if (this.diagnosticsRafPending || this.disposed) return
+        this.diagnosticsRafPending = true
+        requestAnimationFrame(() => {
+          this.diagnosticsRafPending = false
+          if (this.disposed) return
+          this.diagnostics.recompute()
+        })
+      })
+      this.diagnosticsMutationObserver.observe(editorRoot, { childList: true, characterData: true, subtree: true })
+    }
 
     // Bind to the current document.
     this.opts.onBindDocument?.(() => this.bindDocument())
@@ -610,8 +654,12 @@ export class DocumentUtilityOverlayHost {
     }
     this.scrollNav?.dispose()
     this.scrollNav = null
-    // Phase 7R.3.11.8-A: release any in-flight scroll operation forensic.
-    this.finalizeScrollOperationForensic('SUPERSEDED')
+    // Phase 7R.3.11.8-B: release any in-flight scroll operation.
+    this.cancelScrollOperation('SUPERSEDED')
+    // Phase 7R.3.11.8-B: disconnect the diagnostics mutation observer.
+    this.diagnosticsMutationObserver?.disconnect()
+    this.diagnosticsMutationObserver = null
+    this.diagnosticsRafPending = false
     this.editGuard.dispose()
     this.root?.remove()
     this.root = null
@@ -623,6 +671,9 @@ export class DocumentUtilityOverlayHost {
 
   /** Rebind document context (document switch): scroll, diagnostics, lock. */
   bindDocument(): void {
+    // Phase 7R.3.11.8-B §11: a document switch CANCELS any in-flight scroll
+    // operation (old doc must never write final state into the new document).
+    this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
     this.scrollNav?.bind()
     this.diagnostics.rebind()
     this.scheduleGeometrySync('bind-document')
@@ -1073,6 +1124,48 @@ export class DocumentUtilityOverlayHost {
     return toolbar
   }
 
+  /**
+   * Phase 7R.3.11.8-B §3.6 — STRICT-SINGLE-H1 popup with dedup.
+   * Emits once per (documentKey + violationFingerprint) transition:
+   *   NONE→ERROR, PASS→ERROR, SKIP→ERROR (and fingerprint change) → toast once;
+   *   ERROR→PASS → clears the active violation token (re-arm for next ERROR).
+   * State-transition logging only — no per-mutation spam.
+   */
+  private handleStrictSingleH1Popup(snapshot: DocumentDiagnosticsSnapshot | null): void {
+    const docKey = snapshot?.documentKey ?? null
+    if (docKey == null) return
+    const violation = snapshot?.diagnostics.find(d =>
+      d.code === 'STRICT_SINGLE_H1_NO_H1' || d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1') ?? null
+    if (violation) {
+      const fingerprint = (violation.metadata?.violationFingerprint as string | undefined) ?? violation.code
+      const prev = this.strictSingleH1PopupTokens.get(docKey)
+      if (prev !== fingerprint) {
+        this.strictSingleH1PopupTokens.set(docKey, fingerprint)
+        this.strictSingleH1PopupEmitCount++
+        this.showToast(violation.message.split('\n')[0])
+        emitRuntimeAudit('DOCUMENT-UTILITY-STRICT-SINGLE-H1-POPUP', {
+          documentKey: docKey,
+          ruleId: 'STRICT-SINGLE-H1',
+          code: violation.code,
+          violationFingerprint: fingerprint,
+          h1Count: violation.metadata?.h1Count ?? null,
+          reason: violation.metadata?.reason ?? null,
+          decision: 'POPUP_EMITTED',
+        })
+      }
+    } else {
+      // ERROR → PASS / SKIP: clear the active violation token (re-arm).
+      if (this.strictSingleH1PopupTokens.delete(docKey)) {
+        emitRuntimeAudit('DOCUMENT-UTILITY-STRICT-SINGLE-H1-POPUP', {
+          documentKey: docKey,
+          ruleId: 'STRICT-SINGLE-H1',
+          violationFingerprint: null,
+          decision: 'VIOLATION_CLEARED',
+        })
+      }
+    }
+  }
+
   private renderDiagnosticsButton(): void {
     const btn = this.diagButtonEl
     if (!btn) return
@@ -1197,66 +1290,65 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * Phase 7R.3.11.5 — scroll navigator BUTTON action audit.
-   * Only user clicks on ↑/↓ reach this path (never wheel / scroll restore /
-   * document switch). Records scrollTop before, the requested target, and the
-   * settled scrollTop read on a one-shot timer (smooth scroll is async).
-   * Phase 7R.3.11.8-A — the legacy fixed-250ms audit is kept UNCHANGED as a
-   * passive observer; a low-noise operation forensic tracks the real scroll
-   * events + quiescence so the root cause (premature audit vs incomplete
-   * scroll) can be proven WITHOUT altering the business behavior.
+   * Phase 7R.3.11.8-B — scroll navigator action entry (↑/↓ buttons and
+   * diagnostic locate). NO fixed-250ms PASS/FAIL authority: a finite
+   * event-driven ScrollOperation settles on scrollend / quiescence, verifies
+   * the FINAL live target, and performs at most ONE corrective recovery.
    */
-  private handleScrollAction(action: 'GO_TOP' | 'GO_BOTTOM'): void {
+  private handleScrollAction(action: 'GO_TOP' | 'GO_BOTTOM', source: ScrollOperationSource = 'BUTTON'): void {
     const container = getActiveEditorScrollContainer()
     if (!container) return
-    const scrollTopBefore = container.scrollTop
-    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight)
-    if (action === 'GO_TOP') this.scrollNav?.scrollToTop()
-    else this.scrollNav?.scrollToBottom()
-    const drawerVisible = this.drawerOpen
-    const locked = this.editGuard.isLocked()
-    this.startScrollOperationForensic(action, container, scrollTopBefore, maxScrollTop, drawerVisible, locked)
-    const audit = (): void => {
-      const payload = buildScrollNavAudit({
-        documentKey: this.opts.ctx.authority.getDocumentKey(),
+    const documentKey = this.opts.ctx.authority.getDocumentKey()
+    const max = Math.max(0, container.scrollHeight - container.clientHeight)
+    const already = action === 'GO_TOP'
+      ? container.scrollTop <= SCROLL_OP_EPSILON_PX
+      : Math.abs(container.scrollTop - max) <= SCROLL_OP_EPSILON_PX
+    if (already) {
+      // No operation needed — emit an honest PASS (ALREADY_AT_TARGET).
+      this.emitScrollOperationFinal({
+        operationId: ++this.scrollNavOperationSeq,
+        documentKey,
         action,
-        scrollTopBefore,
-        scrollTopAfter: container.scrollTop,
-        maxScrollTop,
-        drawerVisible,
-        locked,
+        source,
+        container,
+        startTs: performance.now(),
+        settleReason: 'QUIESCENCE',
+        scrollTopStart: container.scrollTop,
+        maxScrollTopStart: max,
+        targetAtStart: action === 'GO_TOP' ? 0 : max,
+        scrollEventCount: 0,
+        firstScrollEventTs: null,
+        lastScrollEventTs: null,
+        scrollTopLastObserved: container.scrollTop,
+        maxScrollTopLastObserved: max,
+        reversalCount: 0,
+        scrollTopAtLegacyCheck: null,
+        legacyWouldPass: true,
+        recoveryAttemptCount: 0,
+        drawerVisibleAtStart: this.drawerOpen,
+        lockedAtStart: this.editGuard.isLocked(),
+        decision: 'PASS',
+        targetReached: true,
+        reasonDetail: 'ALREADY_AT_TARGET',
       })
-      emitRuntimeAudit('DOCUMENT-UTILITY-SCROLL-NAV', { ...payload })
-      this.recordScrollOperationLegacyCheck(container.scrollTop, maxScrollTop, payload.decision)
+      return
     }
-    if (typeof setTimeout === 'function') {
-      setTimeout(audit, 250)
-    } else {
-      audit()
-    }
+    this.beginScrollOperation(action, container, source)
   }
 
-  // ── Phase 7R.3.11.8-A — scroll operation forensic (observability only) ──
-  private startScrollOperationForensic(
-    action: 'GO_TOP' | 'GO_BOTTOM',
-    container: HTMLElement,
-    scrollTopStart: number,
-    maxScrollTopStart: number,
-    drawerVisible: boolean,
-    locked: boolean,
-  ): void {
-    // A new click supersedes an in-flight forensic (release listeners/timers).
-    if (this.scrollOpForensic) this.finalizeScrollOperationForensic('SUPERSEDED')
+  /** Begin ONE finite event-driven scroll operation. */
+  private beginScrollOperation(action: 'GO_TOP' | 'GO_BOTTOM', container: HTMLElement, source: ScrollOperationSource): void {
+    // A new click supersedes any in-flight operation (release listeners/timers).
+    this.cancelScrollOperation('SUPERSEDED')
     const operationId = ++this.scrollNavOperationSeq
-    const record: ScrollNavOperationForensicRecord = {
+    const scrollTopStart = container.scrollTop
+    const maxScrollTopStart = Math.max(0, container.scrollHeight - container.clientHeight)
+    const op: ActiveScrollOperation = {
       operationId,
-      action,
-      source: 'BUTTON',
       documentKey: this.opts.ctx.authority.getDocumentKey(),
-      containerTag: container.tagName,
-      containerId: container.id || '',
-      containerClass: String(container.className || '').slice(0, 60),
-      containerConnected: container.isConnected,
+      action,
+      source,
+      container,
       startTs: performance.now(),
       scrollTopStart,
       maxScrollTopStart,
@@ -1269,70 +1361,237 @@ export class DocumentUtilityOverlayHost {
       reversalCount: 0,
       scrollTopAtLegacyCheck: null,
       legacyWouldPass: null,
-      scrollTopFinal: scrollTopStart,
-      maxScrollTopFinal: maxScrollTopStart,
-      targetReached: false,
-      elapsedMs: 0,
-      settleReason: 'SAFETY_TIMEOUT',
-      drawerVisibleAtStart: drawerVisible,
-      lockedAtStart: locked,
+      recoveryAttemptCount: 0,
+      drawerVisibleAtStart: this.drawerOpen,
+      lockedAtStart: this.editGuard.isLocked(),
+      settleTimer: null,
+      safetyDeadline: null,
+      legacySampleTimer: null,
+      onScroll: () => this.onScrollOperationEvent(op),
+      onScrollEnd: null,
     }
-    const onScroll = (): void => {
+    const scrollendSupported = typeof container.addEventListener === 'function' && 'onscrollend' in container
+    if (scrollendSupported) {
+      op.onScrollEnd = () => this.onScrollOperationSettle(op, 'SCROLLEND')
+      container.addEventListener('scrollend', op.onScrollEnd, { passive: true } as AddEventListenerOptions)
+    }
+    container.addEventListener('scroll', op.onScroll, { passive: true })
+    // Legacy 250ms forensic SAMPLE ONLY (authority=false, never decides PASS/FAIL).
+    op.legacySampleTimer = setTimeout(() => {
       const t = container.scrollTop
-      const max = Math.max(0, container.scrollHeight - container.clientHeight)
-      if (record.scrollEventCount > 0) {
-        const movingTowardBottom = t > record.scrollTopLastObserved
-        if ((action === 'GO_BOTTOM' && !movingTowardBottom && t < record.scrollTopLastObserved - 1)
-          || (action === 'GO_TOP' && movingTowardBottom && t > record.scrollTopLastObserved + 1)) {
-          record.reversalCount++
-        }
-      }
-      record.scrollEventCount++
-      if (record.firstScrollEventTs === null) record.firstScrollEventTs = performance.now()
-      record.lastScrollEventTs = performance.now()
-      record.scrollTopLastObserved = t
-      record.maxScrollTopLastObserved = max
-      if (this.scrollOpForensic) {
-        if (this.scrollOpForensic.settleTimer) clearTimeout(this.scrollOpForensic.settleTimer)
-        this.scrollOpForensic.settleTimer = setTimeout(
-          () => this.finalizeScrollOperationForensic('QUIESCENCE'),
-          SCROLL_NAV_QUIESCENCE_MS,
-        )
+      op.scrollTopAtLegacyCheck = t
+      const maxNow = Math.max(0, container.scrollHeight - container.clientHeight)
+      op.legacyWouldPass = action === 'GO_TOP' ? t <= 2 : maxNow <= 2 || t >= maxNow - 2
+    }, 250)
+    op.safetyDeadline = setTimeout(() => this.onScrollOperationSettle(op, 'SAFETY_TIMEOUT'), SCROLL_OP_SAFETY_DEADLINE_MS)
+    this.activeScrollOperation = op
+    if (action === 'GO_TOP') this.scrollNav?.scrollToTop()
+    else this.scrollNav?.scrollToBottom()
+  }
+
+  /** Scroll event handler — memory-only sampling + quiescence debounce. */
+  private onScrollOperationEvent(op: ActiveScrollOperation): void {
+    const t = op.container.scrollTop
+    const max = Math.max(0, op.container.scrollHeight - op.container.clientHeight)
+    if (op.scrollEventCount > 0) {
+      const movingTowardBottom = t > op.scrollTopLastObserved
+      if ((op.action === 'GO_BOTTOM' && !movingTowardBottom && t < op.scrollTopLastObserved - 1)
+        || (op.action === 'GO_TOP' && movingTowardBottom && t > op.scrollTopLastObserved + 1)) {
+        op.reversalCount++
       }
     }
-    container.addEventListener('scroll', onScroll, { passive: true })
-    const safetyDeadline = setTimeout(
-      () => this.finalizeScrollOperationForensic('SAFETY_TIMEOUT'),
-      SCROLL_NAV_SAFETY_DEADLINE_MS,
-    )
-    this.scrollOpForensic = { record, container, settleTimer: null, safetyDeadline, onScroll }
+    op.scrollEventCount++
+    if (op.firstScrollEventTs === null) op.firstScrollEventTs = performance.now()
+    op.lastScrollEventTs = performance.now()
+    op.scrollTopLastObserved = t
+    op.maxScrollTopLastObserved = max
+    if (this.activeScrollOperation === op) {
+      if (op.settleTimer) clearTimeout(op.settleTimer)
+      op.settleTimer = setTimeout(() => this.onScrollOperationSettle(op, 'QUIESCENCE'), SCROLL_OP_QUIESCENCE_MS)
+    }
   }
 
-  private recordScrollOperationLegacyCheck(scrollTopAfter: number, maxScrollTop: number, legacyDecision: 'PASS' | 'FAIL'): void {
-    const op = this.scrollOpForensic
-    if (!op) return
-    op.record.scrollTopAtLegacyCheck = scrollTopAfter
-    op.record.legacyWouldPass = legacyDecision === 'PASS'
-    op.record.maxScrollTopLastObserved = maxScrollTop
+  /** Settle authority: scrollend / quiescence / safety deadline. */
+  private onScrollOperationSettle(op: ActiveScrollOperation, settleReason: ScrollOperationSettleReason): void {
+    if (this.activeScrollOperation !== op) return
+    if (!op.container.isConnected) {
+      this.finalizeScrollOperation(op, settleReason, 'FAIL_CONTAINER_DISCONNECTED')
+      return
+    }
+    const maxNow = Math.max(0, op.container.scrollHeight - op.container.clientHeight)
+    const topNow = op.container.scrollTop
+    const reached = op.action === 'GO_TOP'
+      ? topNow <= SCROLL_OP_EPSILON_PX
+      : Math.abs(topNow - maxNow) <= SCROLL_OP_EPSILON_PX
+    if (reached) {
+      const decision = settleReason === 'SAFETY_TIMEOUT' ? 'PASS_TARGET_REACHED_AT_DEADLINE'
+        : op.recoveryAttemptCount > 0 ? 'PASS_RECOVERED'
+        : 'PASS'
+      this.finalizeScrollOperation(op, settleReason, decision)
+      return
+    }
+    // Genuine early stop → at most ONE corrective recovery (behavior='auto').
+    if (settleReason !== 'SAFETY_TIMEOUT' && op.recoveryAttemptCount < SCROLL_OP_MAX_RECOVERY_ATTEMPTS) {
+      op.recoveryAttemptCount++
+      emitRuntimeAudit('DOCUMENT-UTILITY-SCROLL-RECOVERY', {
+        operationId: op.operationId,
+        documentKey: op.documentKey,
+        action: op.action,
+        source: op.source,
+        attempt: op.recoveryAttemptCount,
+        scrollTopBefore: topNow,
+        maxScrollTop: maxNow,
+        decision: 'CORRECTIVE_AUTO_SCROLL',
+      })
+      op.container.scrollTo({ top: op.action === 'GO_TOP' ? 0 : maxNow, behavior: 'auto' })
+      // Re-arm quiescence (safety deadline already running).
+      if (op.settleTimer) clearTimeout(op.settleTimer)
+      op.settleTimer = setTimeout(() => this.onScrollOperationSettle(op, 'QUIESCENCE'), SCROLL_OP_QUIESCENCE_MS)
+      return
+    }
+    const decision = settleReason === 'SAFETY_TIMEOUT' ? 'TIMEOUT_BEFORE_SETTLE' : 'FAIL_SETTLED_BEFORE_TARGET'
+    this.finalizeScrollOperation(op, settleReason, decision)
   }
 
-  private finalizeScrollOperationForensic(reason: ScrollNavOperationSettleReason): void {
-    const op = this.scrollOpForensic
+  /** Cancel the active operation (document switch / dispose / superseded). */
+  private cancelScrollOperation(decision: 'CANCELLED_DOCUMENT_SWITCH' | 'SUPERSEDED'): void {
+    const op = this.activeScrollOperation
     if (!op) return
-    this.scrollOpForensic = null
+    this.finalizeScrollOperation(op, 'QUIESCENCE', decision)
+  }
+
+  /** Finalize: release resources + emit the SINGLE business authority log. */
+  private finalizeScrollOperation(
+    op: ActiveScrollOperation,
+    settleReason: ScrollOperationSettleReason,
+    decision: ScrollOperationDecision,
+  ): void {
+    if (this.activeScrollOperation !== op) return
+    this.activeScrollOperation = null
     op.container.removeEventListener('scroll', op.onScroll)
+    if (op.onScrollEnd) op.container.removeEventListener('scrollend', op.onScrollEnd)
     if (op.settleTimer) clearTimeout(op.settleTimer)
     if (op.safetyDeadline) clearTimeout(op.safetyDeadline)
-    const r = op.record
-    r.settleReason = reason
-    r.scrollTopFinal = op.container.scrollTop
-    r.maxScrollTopFinal = Math.max(0, op.container.scrollHeight - op.container.clientHeight)
-    const tol = SCROLL_NAV_TARGET_TOLERANCE_PX
-    r.targetReached = r.action === 'GO_TOP'
-      ? Math.abs(r.scrollTopFinal - 0) <= tol
-      : Math.abs(r.scrollTopFinal - r.maxScrollTopFinal) <= tol
-    r.elapsedMs = performance.now() - r.startTs
-    emitRuntimeAudit('DOCUMENT-UTILITY-SCROLL-NAV-FORENSIC', { ...r })
+    if (op.legacySampleTimer) clearTimeout(op.legacySampleTimer)
+    const finalTop = op.container.scrollTop
+    const finalMax = Math.max(0, op.container.scrollHeight - op.container.clientHeight)
+    const targetReached = decision === 'PASS' || decision === 'PASS_RECOVERED' || decision === 'PASS_TARGET_REACHED_AT_DEADLINE'
+    this.emitScrollOperationFinal({
+      operationId: op.operationId,
+      documentKey: op.documentKey,
+      action: op.action,
+      source: op.source,
+      container: op.container,
+      startTs: op.startTs,
+      settleReason,
+      scrollTopStart: op.scrollTopStart,
+      maxScrollTopStart: op.maxScrollTopStart,
+      targetAtStart: op.targetAtStart,
+      scrollEventCount: op.scrollEventCount,
+      firstScrollEventTs: op.firstScrollEventTs,
+      lastScrollEventTs: op.lastScrollEventTs,
+      scrollTopLastObserved: op.scrollTopLastObserved,
+      maxScrollTopLastObserved: op.maxScrollTopLastObserved,
+      reversalCount: op.reversalCount,
+      scrollTopAtLegacyCheck: op.scrollTopAtLegacyCheck,
+      legacyWouldPass: op.legacyWouldPass,
+      recoveryAttemptCount: op.recoveryAttemptCount,
+      drawerVisibleAtStart: op.drawerVisibleAtStart,
+      lockedAtStart: op.lockedAtStart,
+      decision,
+      targetReached,
+      reasonDetail: undefined,
+      finalTop,
+      finalMax,
+    })
+  }
+
+  private emitScrollOperationFinal(input: {
+    operationId: number
+    documentKey: string | null
+    action: 'GO_TOP' | 'GO_BOTTOM'
+    source: ScrollOperationSource
+    container: HTMLElement
+    startTs: number
+    settleReason: ScrollOperationSettleReason
+    scrollTopStart: number
+    maxScrollTopStart: number
+    targetAtStart: number
+    scrollEventCount: number
+    firstScrollEventTs: number | null
+    lastScrollEventTs: number | null
+    scrollTopLastObserved: number
+    maxScrollTopLastObserved: number
+    reversalCount: number
+    scrollTopAtLegacyCheck: number | null
+    legacyWouldPass: boolean | null
+    recoveryAttemptCount: number
+    drawerVisibleAtStart: boolean
+    lockedAtStart: boolean
+    decision: ScrollOperationDecision
+    targetReached: boolean
+    reasonDetail?: string
+    finalTop?: number
+    finalMax?: number
+  }): void {
+    this.scrollOperationEmitCount++
+    const finalTop = input.finalTop ?? input.container.scrollTop
+    const finalMax = input.finalMax ?? Math.max(0, input.container.scrollHeight - input.container.clientHeight)
+    emitRuntimeAudit('DOCUMENT-UTILITY-SCROLL-OPERATION', {
+      operationId: input.operationId,
+      documentKey: input.documentKey,
+      source: input.source,
+      action: input.action,
+      containerIdentity: `${input.container.tagName}#${input.container.id || ''}.${String(input.container.className || '').slice(0, 40)}`,
+      scrollTopStart: input.scrollTopStart,
+      maxScrollTopStart: input.maxScrollTopStart,
+      targetAtStart: input.targetAtStart,
+      scrollEventCount: input.scrollEventCount,
+      firstScrollEventTs: input.firstScrollEventTs,
+      lastScrollEventTs: input.lastScrollEventTs,
+      settleReason: input.settleReason,
+      scrollTopFinal: finalTop,
+      maxScrollTopFinal: finalMax,
+      finalTarget: input.action === 'GO_TOP' ? 0 : finalMax,
+      targetReached: input.targetReached,
+      recoveryAttemptCount: input.recoveryAttemptCount,
+      targetTolerancePx: SCROLL_OP_EPSILON_PX,
+      drawerVisible: input.drawerVisibleAtStart,
+      locked: input.lockedAtStart,
+      reversalCount: input.reversalCount,
+      // Legacy 250ms forensic sample — authority=false, never a decision.
+      legacySampleOnly: true,
+      scrollTopAtLegacyCheck: input.scrollTopAtLegacyCheck,
+      legacyWouldPass: input.legacyWouldPass,
+      elapsedMs: performance.now() - input.startTs,
+      reason: input.reasonDetail ?? null,
+      decision: input.decision,
+    })
+  }
+
+  /** Phase 7R.3.11.8-B — active operation/listener/timer counts (cleanup gate). */
+  getScrollOperationCounters(): {
+    activeOperationCount: number
+    activeScrollListenerCount: number
+    activeScrollendListenerCount: number
+    activeSettleTimerCount: number
+    activeSafetyDeadlineCount: number
+    operationEmitCount: number
+  } {
+    const op = this.activeScrollOperation
+    return {
+      activeOperationCount: op ? 1 : 0,
+      activeScrollListenerCount: op ? 1 : 0,
+      activeScrollendListenerCount: op && op.onScrollEnd ? 1 : 0,
+      activeSettleTimerCount: op && op.settleTimer ? 1 : 0,
+      activeSafetyDeadlineCount: op && op.safetyDeadline ? 1 : 0,
+      operationEmitCount: this.scrollOperationEmitCount,
+    }
+  }
+
+  /** Phase 7R.3.11.8-B — STRICT-SINGLE-H1 popup emission count (dedup gate). */
+  getStrictSingleH1PopupCount(): number {
+    return this.strictSingleH1PopupEmitCount
   }
 
   // ── Drawer ──────────────────────────────────────────
@@ -1464,13 +1723,20 @@ export class DocumentUtilityOverlayHost {
     item.appendChild(body)
 
     const target = d.locator?.targetElement ?? null
-    if (target) {
+    const action = d.locator?.action ?? null
+    if (target || action) {
       const locate = document.createElement('button')
       locate.type = 'button'
       locate.className = 'inkchapter-doc-drawer__item-locate'
       locate.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
       locate.textContent = '定位'
       locate.addEventListener('click', () => {
+        if (action) {
+          // Phase 7R.3.11.8-B §5.5 — document-level locate reuses the ONE
+          // Scroll Operation authority (NO_H1 → top, EOF blank line → bottom).
+          this.handleScrollAction(action, 'DIAGNOSTIC_LOCATE')
+          return
+        }
         const result = this.locator.locate(target)
         if (!result.located) this.showToast('目标已变化，请重新检查')
       })

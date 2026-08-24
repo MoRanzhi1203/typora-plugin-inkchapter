@@ -28,6 +28,9 @@ export interface DocumentDiagnosticLocatorDescriptor {
   kind: DocumentDiagnosticTargetKind
   /** The current DOM target (may be null when the target no longer exists). */
   targetElement: HTMLElement | null
+  /** Phase 7R.3.11.8-B: document-level locate via the shared Scroll Operation
+   *  authority (GO_TOP for NO_H1, GO_BOTTOM for EOF) instead of an element. */
+  action?: 'GO_TOP' | 'GO_BOTTOM'
 }
 
 export interface DocumentDiagnostic {
@@ -46,6 +49,8 @@ export interface DocumentDiagnostic {
   targetIdentity?: string
   /** Locator descriptor (may be null when no DOM target exists). */
   locator?: DocumentDiagnosticLocatorDescriptor
+  /** Phase 7R.3.11.8-B: rule-specific structured metadata (popup fingerprint etc.). */
+  metadata?: Record<string, unknown>
 }
 
 export interface DocumentDiagnosticsSnapshot {

@@ -19,10 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-caption-heading-authority-gate-v7R3.9R'
+/** Phase 7R.3.11.8B.1 — H1 authority bridge closure (real semanticState.physicalLevel). */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-h1-authority-bridge-closure-v7R3.11.8B1'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r39r-caption-heading-authority-gate'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b1-h1-authority-bridge-closure'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
