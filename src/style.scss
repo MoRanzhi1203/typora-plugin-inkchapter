@@ -2265,19 +2265,40 @@
 }
 
 // ── Caption System V1 ─────────────────────────────────
+// Phase 7R.3.10: ONE shared object-caption typography authority.
+// Figure / Table / Code captions consume the same token set; only layout
+// (text-align / placement) remains object-specific. Tokens inherit the active
+// Typora theme — no hardcoded font families, no hardcoded light-only colors.
+
+#write {
+  --inkchapter-object-caption-font-family: inherit;
+  --inkchapter-object-caption-font-size: 0.95em;
+  --inkchapter-object-caption-font-weight: 400;
+  --inkchapter-object-caption-font-style: normal;
+  --inkchapter-object-caption-line-height: 1.5;
+  --inkchapter-object-caption-color: inherit;
+  --inkchapter-object-caption-letter-spacing: normal;
+  --inkchapter-object-caption-inline-gap: 0.35em;
+}
+
 #write .inkchapter-caption {
-  font-size: 0.9em;
-  color: var(--text-muted, #666);
+  font-family: var(--inkchapter-object-caption-font-family);
+  font-size: var(--inkchapter-object-caption-font-size);
+  font-weight: var(--inkchapter-object-caption-font-weight);
+  font-style: var(--inkchapter-object-caption-font-style);
+  line-height: var(--inkchapter-object-caption-line-height);
+  color: var(--inkchapter-object-caption-color);
+  letter-spacing: var(--inkchapter-object-caption-letter-spacing);
   margin: 6px 0;
   padding: 2px 0;
-  line-height: 1.4;
   user-select: none;
   // Caption is the naming entry point: it must receive contextmenu/pointer,
   // but it is NOT editable Markdown (contenteditable=false stays on the DOM).
   pointer-events: auto;
   cursor: context-menu;
 }
-#write .inkchapter-caption-table { text-align: center; font-weight: 600; }
+// Object-specific LAYOUT only — typography is shared via the tokens above.
+#write .inkchapter-caption-table { text-align: center; }
 #write .inkchapter-caption-figure { text-align: center; }
 #write .inkchapter-caption-code { text-align: left; }
 
@@ -2376,9 +2397,11 @@
   top: 50%;
   transform: translateY(-50%);
   display: inline-block;
-  font-size: 1em;
-  font-weight: 400;
-  color: var(--text-muted, #666);
+  // Phase 7R.3.10: typography follows the shared object-caption tokens.
+  font-size: var(--inkchapter-object-caption-font-size, 0.95em);
+  font-weight: var(--inkchapter-object-caption-font-weight, 400);
+  font-style: var(--inkchapter-object-caption-font-style, normal);
+  color: var(--inkchapter-object-caption-color, inherit);
   line-height: 1;
   white-space: nowrap;
   user-select: none;
@@ -2386,6 +2409,18 @@
   pointer-events: none;
 }
 
-
-
+// Phase 7R.3.10: InkChapter-owned Formula tag typography.
+// The visible number is the MathJax output of the transient `\tag{rawNumber}`
+// injected by the Formula projection controller. Typora native numbering uses
+// `\qquad\text{(N)}` → mtext, NOT `mjx-tag`, so any `mjx-tag` under a block
+// math container in a managed document is InkChapter-produced (or a preserved
+// explicit user `\tag`). Typography-only (size/weight/style/color): the
+// MathJax font family, tag geometry and right placement stay untouched. This
+// never targets `mjx-math`, `mjx-container *`, or formula body glyphs.
+#write .md-math-block .md-math-container mjx-container mjx-tag {
+  font-size: var(--inkchapter-object-caption-font-size, 0.95em);
+  font-weight: var(--inkchapter-object-caption-font-weight, 400);
+  font-style: var(--inkchapter-object-caption-font-style, normal);
+  color: var(--inkchapter-object-caption-color, inherit);
+}
 
