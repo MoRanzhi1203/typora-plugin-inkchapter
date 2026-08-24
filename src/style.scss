@@ -2424,3 +2424,259 @@
   color: var(--inkchapter-object-caption-color, inherit);
 }
 
+// ── Phase 7R.3.11: Document Utilities overlay ─────────
+// Editor-shell overlays mounted OUTSIDE #write (never Markdown content).
+// z-index discipline: document-editor layer only (900), below Typora
+// menus/dialogs/DevTools. Theme-inherited tokens — no hardcoded light colors.
+
+#write.inkchapter-document-locked {
+  box-shadow: inset 0 0 0 1px var(--text-accent, #07a);
+}
+
+// Phase 7R.3.11.2 — SELECTOR CONTRACT:
+//   TREE OWNERSHIP ≠ ROOT LAYOUT AUTHORITY.
+// `data-inkchapter-ui-root` marks the WHOLE utility tree (root + toolbar +
+// navigator + drawer + buttons + toast). It must NEVER carry viewport
+// geometry — otherwise every child becomes a 100vw×100vh layer and occludes
+// the editor (accidental fullscreen). Only the UNIQUE root identity carries
+// the viewport portal geometry.
+[data-inkchapter-utility-root="true"] {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 900;
+}
+
+/* ownership marker intentionally carries NO viewport geometry */
+
+.inkchapter-doc-toolbar,
+.inkchapter-doc-navigator,
+.inkchapter-doc-drawer {
+  pointer-events: auto;
+}
+
+.inkchapter-doc-toolbar {
+  width: max-content;
+  max-width: 60vw;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+.inkchapter-doc-toolbar__btn {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary, #ccc);
+  background: transparent;
+  color: var(--text-normal, #333);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+  &:focus-visible { outline: 2px solid var(--text-accent, #07a); outline-offset: 1px; }
+  &.is-healthy { color: var(--text-accent, #07a); }
+  &.has-warnings { color: var(--text-warning, #b58900); }
+  &.has-issues { color: var(--text-error, #d00); }
+  &.is-locked { color: var(--text-error, #d00); border-color: var(--text-error, #d00); }
+}
+
+.inkchapter-doc-navigator {
+  width: fit-content;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+.inkchapter-doc-navigator__btn {
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1;
+  width: 30px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-normal, #333);
+  cursor: pointer;
+  user-select: none;
+  &:hover:not(:disabled) { background: var(--background-modifier-hover, #eee); }
+  &:focus-visible { outline: 2px solid var(--text-accent, #07a); outline-offset: 1px; }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+
+.inkchapter-doc-drawer {
+  width: 360px;
+  max-width: 90vw;
+  flex-direction: column;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.inkchapter-doc-drawer__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-primary, #eee);
+}
+
+.inkchapter-doc-drawer__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.inkchapter-doc-drawer__counts {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-muted, #666);
+}
+
+.inkchapter-doc-drawer__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.inkchapter-doc-drawer__action {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary, #ccc);
+  background: transparent;
+  color: var(--text-normal, #333);
+  cursor: pointer;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+}
+
+.inkchapter-doc-drawer__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inkchapter-doc-drawer__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-primary, #eee);
+  background: var(--background-secondary, #fafafa);
+}
+
+.inkchapter-doc-drawer__item--error { border-left: 3px solid var(--text-error, #d00); }
+.inkchapter-doc-drawer__item--warning { border-left: 3px solid var(--text-warning, #b58900); }
+.inkchapter-doc-drawer__item--info { border-left: 3px solid var(--text-muted, #888); }
+
+.inkchapter-doc-drawer__item-icon {
+  font-size: 13px;
+  line-height: 1.5;
+  width: 16px;
+  text-align: center;
+  flex: none;
+}
+
+.inkchapter-doc-drawer__item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.inkchapter-doc-drawer__item-msg {
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.inkchapter-doc-drawer__item-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted, #666);
+  word-break: break-word;
+}
+
+.inkchapter-doc-drawer__item-locate {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary, #ccc);
+  background: transparent;
+  color: var(--text-accent, #07a);
+  cursor: pointer;
+  flex: none;
+  &:hover { background: var(--background-modifier-hover, #eee); }
+}
+
+.inkchapter-doc-drawer__item--empty {
+  padding: 14px 10px;
+  font-size: 13px;
+  color: var(--text-muted, #666);
+  text-align: center;
+}
+
+.inkchapter-doc-toast {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--border-primary, #ddd);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  color: var(--text-normal, #333);
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  transition: opacity 0.3s ease;
+  opacity: 0;
+}
+
+.inkchapter-diagnostic-highlight {
+  outline: 2px solid var(--text-accent, #07a) !important;
+  outline-offset: 2px;
+  border-radius: 2px;
+  transition: outline-color 0.15s ease;
+}
+
+@media (prefers-color-scheme: dark) {
+  .inkchapter-doc-toolbar,
+  .inkchapter-doc-navigator,
+  .inkchapter-doc-drawer,
+  .inkchapter-doc-toast {
+    background: var(--background-primary, #252525);
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  }
+  .inkchapter-doc-drawer__item {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+  .inkchapter-doc-drawer__title { color: #e6e6e6; }
+  .inkchapter-doc-drawer__counts,
+  .inkchapter-doc-drawer__item-detail { color: #aaa; }
+  .inkchapter-doc-toolbar__btn,
+  .inkchapter-doc-navigator__btn,
+  .inkchapter-doc-drawer__action,
+  .inkchapter-doc-drawer__item-locate { color: #e6e6e6; }
+}
+
