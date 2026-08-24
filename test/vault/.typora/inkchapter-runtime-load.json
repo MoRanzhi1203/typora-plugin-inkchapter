@@ -1,12 +1,12 @@
 {
   "pluginId": "ranzhi.inkchapter",
   "pluginName": "墨章 InkChapter",
-  "buildMarker": "inkchapter-outline-observer-late-bind-v26",
-  "runtimeGateRevision": "r58-lifecycle-repair",
-  "loadedAt": "2026-08-16T18:47:19.980Z",
+  "buildMarker": "inkchapter-caption-heading-authority-gate-v7R3.9R",
+  "runtimeGateRevision": "r7r39r-caption-heading-authority-gate",
+  "loadedAt": "2026-08-24T07:18:08.148Z",
   "pluginRoot": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist",
   "mainJsPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\main.js",
-  "mainJsSha256": "229022B665FA0044BC84F9D6AC5F567621C0057AE0949CC1FFE79A8AFB2C6CCE",
+  "mainJsSha256": "D6F9D362BCCDF83C4028CAC30C7B9A38C7978185C7562020DCEA55F09D078E5A",
   "manifestPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\.typora\\plugins\\dist\\manifest.json",
   "initializationCount": 1,
   "ribbonInjected": false,
@@ -16,6 +16,6 @@
     "hasInfoPanelTabFile": true,
     "hasInfoPanelTabSearch": true,
     "hasInfoPanelTabOutline": true,
-    "sidebarClasses": "stopselect dropmenu sidebar-menu open active-tab-outline"
+    "sidebarClasses": "stopselect dropmenu sidebar-menu open active-tab-files use-file-tree-style"
   }
 }

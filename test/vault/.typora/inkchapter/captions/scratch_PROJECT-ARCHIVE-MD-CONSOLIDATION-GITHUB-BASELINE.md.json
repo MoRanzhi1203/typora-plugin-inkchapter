@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\PROJECT-ARCHIVE-MD-CONSOLIDATION-GITHUB-BASELINE.md",
+  "updatedAt": 1787555969865,
+  "captions": [
+    {
+      "captionId": "caption-mt6wnlom-1",
+      "documentKey": "scratch/PROJECT-ARCHIVE-MD-CONSOLIDATION-GITHUB-BASELINE.md",
+      "type": "code",
+      "title": "代码块",
+      "targetAnchor": {
+        "type": "code",
+        "ordinal": 0,
+        "beforeFingerprint": "p>span",
+        "afterFingerprint": "p>span",
+        "contentSignature": "h1m1at0",
+        "occurrence": 1
+      },
+      "createdAt": 1787555943814,
+      "updatedAt": 1787555969828
+    }
+  ]
+}

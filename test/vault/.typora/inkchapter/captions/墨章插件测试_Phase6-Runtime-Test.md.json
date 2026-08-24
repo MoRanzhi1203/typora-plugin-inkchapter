@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\墨章插件测试\\Phase6-Runtime-Test.md",
+  "updatedAt": 1787556659687,
+  "captions": [
+    {
+      "captionId": "caption-mt60r8fm-1",
+      "documentKey": "墨章插件测试/Phase6-Runtime-Test.md",
+      "type": "table",
+      "title": "表名",
+      "targetAnchor": {
+        "type": "table",
+        "ordinal": 0,
+        "contentSignature": "hh2mliu",
+        "occurrence": 1
+      },
+      "createdAt": 1787502365554,
+      "updatedAt": 1787556659674
+    }
+  ]
+}
