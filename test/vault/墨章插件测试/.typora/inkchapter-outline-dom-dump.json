@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-08-24T07:32:30.808Z",
+  "timestamp": "2026-08-24T08:22:33.684Z",
   "buildMarker": "inkchapter-outline-toolbar-v5.1-compact-row",
   "isOutlinePanelActive": false,
   "tabBar": {
@@ -34,7 +34,7 @@
   "parentElement": {
     "tagName": "DIV",
     "id": "typora-sidebar",
-    "className": "stopselect dropmenu sidebar-menu open active-tab-files use-file-tree-style",
+    "className": "stopselect dropmenu sidebar-menu active-tab-files use-file-tree-style open",
     "isSiblingOfTabBar": true
   },
   "actionsContainerCount": 1,
