@@ -20,7 +20,7 @@ import type { ScrollNavigatorState } from './document-scroll-navigator'
 import { deriveDiagnosticsState } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
-import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { emitRuntimeAudit, emitInkchapterRuntimeAuditSummary } from '../runtime/forensic-log-sink'
 
 export const UTILITY_UI_ROOT_ATTR = 'data-inkchapter-ui-root'
 export const UTILITY_UI_ROOT_VALUE = 'document-utilities'
@@ -52,29 +52,267 @@ export interface OverlayGeometry {
   drawerBottom: number
 }
 
+export interface OverlayGeometryOptions {
+  drawerOpen: boolean
+}
+
+const DRAWER_WIDTH_PX = 360
+/** Drawer↔navigator horizontal gap when the drawer is open (>= 12px). */
+const DRAWER_NAV_GAP_PX = 16
+
+/** Phase 7R.3.11.4 — ResizeObserver attribution windows (single source of truth). */
+const EXTERNAL_RESIZE_WINDOW_MS = 100
+const UTILITY_WRITE_WINDOW_MS = 100
+
+/** Phase 7R.3.11.6 — navigator placement tolerance (px) for NAV-PLACEMENT gate. */
+const NAV_PLACEMENT_TOLERANCE_PX = 3
+
+/** Phase 7R.3.11.8 — scroll-nav operation forensic constants. */
+const SCROLL_NAV_TARGET_TOLERANCE_PX = 2
+/** Scroll-event quiescence window: the operation finalizes when no scroll
+ *  event arrives for this window (NOT a fixed click-to-success delay). */
+const SCROLL_NAV_QUIESCENCE_MS = 150
+/** Bounded safety deadline — resource leak guard / TIMEOUT classification only. */
+const SCROLL_NAV_SAFETY_DEADLINE_MS = 2500
+
+export type ResizeAttributionVerdict =
+  | 'ATTRIBUTED_TO_DOCUMENT_UTILITIES'
+  | 'ATTRIBUTED_TO_EXTERNAL_RESIZE'
+  | 'MIXED'
+  | 'UNPROVEN'
+
+/** Phase 7R.3.11.5 — audit consistency (callback count vs RO epoch). */
+export function computeAuditConsistency(
+  resizeObserverCallbackCount: number,
+  resizeObserverEpoch: number,
+): { resizeObserverCallbackCount: number; resizeObserverEpoch: number; difference: number; decision: 'PASS' | 'FAIL' } {
+  const difference = resizeObserverCallbackCount - resizeObserverEpoch
+  return { resizeObserverCallbackCount, resizeObserverEpoch, difference, decision: difference === 0 ? 'PASS' : 'FAIL' }
+}
+
+export interface ScrollNavAuditPayload {
+  documentKey: string | null
+  source: 'BUTTON'
+  action: 'GO_TOP' | 'GO_BOTTOM'
+  scrollTopBefore: number
+  scrollTopAfter: number
+  maxScrollTop: number
+  atTopBefore: boolean
+  atBottomBefore: boolean
+  atTopAfter: boolean
+  atBottomAfter: boolean
+  drawerVisible: boolean
+  locked: boolean
+  decision: 'PASS' | 'FAIL'
+}
+
+/** Phase 7R.3.11.8-A — scroll operation forensic record (observability only). */
+export type ScrollNavOperationSettleReason = 'SCROLLEND' | 'QUIESCENCE' | 'SAFETY_TIMEOUT' | 'SUPERSEDED'
+
+export interface ScrollNavOperationForensicRecord {
+  operationId: number
+  action: 'GO_TOP' | 'GO_BOTTOM'
+  source: 'BUTTON'
+  documentKey: string | null
+  containerTag: string
+  containerId: string
+  containerClass: string
+  containerConnected: boolean
+  startTs: number
+  scrollTopStart: number
+  maxScrollTopStart: number
+  targetAtStart: number
+  scrollEventCount: number
+  firstScrollEventTs: number | null
+  lastScrollEventTs: number | null
+  scrollTopLastObserved: number
+  maxScrollTopLastObserved: number
+  reversalCount: number
+  scrollTopAtLegacyCheck: number | null
+  legacyWouldPass: boolean | null
+  scrollTopFinal: number
+  maxScrollTopFinal: number
+  targetReached: boolean
+  elapsedMs: number
+  settleReason: ScrollNavOperationSettleReason
+  drawerVisibleAtStart: boolean
+  lockedAtStart: boolean
+}
+
+/** Phase 7R.3.11.5 — scroll navigator BUTTON action audit payload (pure). */
+export function buildScrollNavAudit(opts: {
+  documentKey: string | null
+  action: 'GO_TOP' | 'GO_BOTTOM'
+  scrollTopBefore: number
+  scrollTopAfter: number
+  maxScrollTop: number
+  drawerVisible: boolean
+  locked: boolean
+}): ScrollNavAuditPayload {
+  const { action, scrollTopBefore, scrollTopAfter, maxScrollTop } = opts
+  const atTopBefore = scrollTopBefore <= 2
+  const atBottomBefore = maxScrollTop > 2 && scrollTopBefore >= maxScrollTop - 2
+  const atTopAfter = scrollTopAfter <= 2
+  const atBottomAfter = maxScrollTop > 2 && scrollTopAfter >= maxScrollTop - 2
+  const okTarget = action === 'GO_TOP' ? atTopAfter : maxScrollTop <= 2 || atBottomAfter
+  return {
+    documentKey: opts.documentKey,
+    source: 'BUTTON',
+    action,
+    scrollTopBefore,
+    scrollTopAfter,
+    maxScrollTop,
+    atTopBefore,
+    atBottomBefore,
+    atTopAfter,
+    atBottomAfter,
+    drawerVisible: opts.drawerVisible,
+    locked: opts.locked,
+    decision: okTarget ? 'PASS' : 'FAIL',
+  }
+}
+
 /**
- * Phase 7R.3.11.1 — resolve overlay placements in VIEWPORT coordinates from the
- * editor shell rect. Pure (read-only) — the host applies the result via a
- * single coalesced rAF write. Values are only meaningful when the overlay root
- * is a full-viewport containing block (see Strategy B); a 0×0 root would turn
- * these absolute positions into off-screen coordinates.
+ * Phase 7R.3.11.4 — final attribution verdict from causal evidence. MIXED is
+ * NEVER upgraded to ATTRIBUTED_TO_DOCUMENT_UTILITIES without confirmed causal
+ * proof (feedbackLoopConfirmedCount > 0 AND no external resize epoch change).
+ */
+export function classifyAttribution(opts: {
+  feedbackLoopConfirmedCount: number
+  mixedCorrelationCount: number
+  externalResizeEpoch: number
+  warningCorrelationCount: number
+}): ResizeAttributionVerdict {
+  if (opts.feedbackLoopConfirmedCount > 0) return 'ATTRIBUTED_TO_DOCUMENT_UTILITIES'
+  if (opts.mixedCorrelationCount > 0 && opts.externalResizeEpoch > 0) return 'MIXED'
+  if (opts.externalResizeEpoch > 0 && opts.warningCorrelationCount > 0) return 'ATTRIBUTED_TO_EXTERNAL_RESIZE'
+  return 'UNPROVEN'
+}
+
+/**
+ * Phase 7R.3.11.4 — collision-aware geometry. When the drawer is open the
+ * navigator shifts LEFT of the drawer (never hidden), keeping
+ * intersection(drawer, navigator) = 0 with a >= 12px gap.
  */
 export function computeOverlayGeometry(
   shellRect: { top: number; right: number; bottom: number } | null,
   viewport: { width: number; height: number },
+  opts?: OverlayGeometryOptions,
 ): OverlayGeometry {
+  const drawerOpen = opts?.drawerOpen ?? false
   const right = shellRect && shellRect.right > 0 ? Math.max(0, viewport.width - shellRect.right) : 0
   const top = shellRect && shellRect.top > 0 ? shellRect.top : 0
   const bottomGap = shellRect && shellRect.bottom > 0 ? Math.max(0, viewport.height - shellRect.bottom) : 0
+  const navRight = drawerOpen
+    ? right + DRAWER_RIGHT_PX + DRAWER_WIDTH_PX + DRAWER_NAV_GAP_PX
+    : right + NAV_RIGHT_PX
   return {
     toolbarTop: top + TOOLBAR_TOP_PX,
     toolbarRight: right + TOOLBAR_RIGHT_PX,
-    navRight: right + NAV_RIGHT_PX,
+    navRight,
     navBottom: bottomGap + NAV_BOTTOM_PX,
     drawerTop: top + DRAWER_TOP_PX,
     drawerRight: right + DRAWER_RIGHT_PX,
     drawerBottom: bottomGap + DRAWER_BOTTOM_PX,
   }
+}
+
+/** Rect intersection area (0 when disjoint). */
+export function rectIntersectionArea(
+  a: { left: number; top: number; right: number; bottom: number } | null,
+  b: { left: number; top: number; right: number; bottom: number } | null,
+): number {
+  if (!a || !b) return 0
+  const left = Math.max(a.left, b.left)
+  const top = Math.max(a.top, b.top)
+  const right = Math.min(a.right, b.right)
+  const bottom = Math.min(a.bottom, b.bottom)
+  if (right <= left || bottom <= top) return 0
+  return (right - left) * (bottom - top)
+}
+
+/** Phase 7R.3.11.4 — visible write rect = intersection(writeRect, scrollViewportRect). */
+export function intersectRects(
+  a: { left: number; top: number; right: number; bottom: number } | null,
+  b: { left: number; top: number; right: number; bottom: number } | null,
+): RectRecord | null {
+  if (!a || !b) return null
+  const left = Math.max(a.left, b.left)
+  const top = Math.max(a.top, b.top)
+  const right = Math.min(a.right, b.right)
+  const bottom = Math.min(a.bottom, b.bottom)
+  if (right <= left || bottom <= top) return null
+  return { left, top, right, bottom, width: right - left, height: bottom - top }
+}
+
+export type BcrVerdict =
+  | 'VISIBLE_GEOMETRY'
+  | 'GEOMETRY_PENDING'
+  | 'FAIL_ACCIDENTAL_FULLSCREEN_CHILD'
+  | 'NAVIGATOR_STALE_DRAWER_OFFSET'
+  | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION'
+
+export type NavigatorPlacementFailure = 'NAVIGATOR_STALE_DRAWER_OFFSET' | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION'
+
+/**
+ * Phase 7R.3.11.6 — navigator placement evaluation (pure, single formula).
+ * expectedRight comes from the SAME computeOverlayGeometry authority; the audit
+ * and BCR verdict never duplicate a second business formula.
+ */
+export function evaluateNavigatorPlacement(opts: {
+  drawerOpen: boolean
+  navigatorRect: RectRecord | null
+  shellRect: RectRecord | null
+  viewport: { width: number; height: number }
+  tolerancePx: number
+}): {
+  expectedRight: number
+  actualRight: number
+  rightDelta: number
+  intersectionArea: number
+  gapPx: number
+  decision: 'PASS' | NavigatorPlacementFailure
+} {
+  const g = computeOverlayGeometry(
+    opts.shellRect ? { top: opts.shellRect.top, right: opts.shellRect.right, bottom: opts.shellRect.bottom } : null,
+    opts.viewport,
+    { drawerOpen: opts.drawerOpen },
+  )
+  const expectedRight = g.navRight
+  const actualRight = opts.navigatorRect ? opts.viewport.width - opts.navigatorRect.right : -1
+  const rightDelta = Math.abs(actualRight - expectedRight)
+  const drawerLeft = opts.drawerOpen ? opts.viewport.width - (g.drawerRight + DRAWER_WIDTH_PX) : null
+  const gapPx = drawerLeft != null && opts.navigatorRect ? Math.max(0, drawerLeft - opts.navigatorRect.right) : -1
+  let decision: 'PASS' | NavigatorPlacementFailure = 'PASS'
+  if (rightDelta > opts.tolerancePx) {
+    decision = opts.drawerOpen ? 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION' : 'NAVIGATOR_STALE_DRAWER_OFFSET'
+  }
+  return { expectedRight, actualRight, rightDelta, intersectionArea: 0, gapPx, decision }
+}
+
+/**
+ * Phase 7R.3.11.4/6 — BCR verdict must never claim VISIBLE before the first
+ * geometry commit, before toolbar/navigator are inside the editor shell, and
+ * before the navigator is at its drawer-state-specific expected position.
+ */
+export function computeBcrVerdict(opts: {
+  geometryCommitted: boolean
+  toolbarInsideEditorShell: boolean
+  navigatorInsideEditorShell: boolean
+  toolbarVisible: boolean
+  navigatorVisible: boolean
+  toolbarFullscreen: boolean
+  navigatorFullscreen: boolean
+  drawerFullscreen: boolean
+  stateSpecificPlacementValid: boolean
+  placementFailure: NavigatorPlacementFailure | null
+}): BcrVerdict {
+  if (opts.toolbarFullscreen || opts.navigatorFullscreen || opts.drawerFullscreen) return 'FAIL_ACCIDENTAL_FULLSCREEN_CHILD'
+  if (!opts.geometryCommitted) return 'GEOMETRY_PENDING'
+  if (!opts.toolbarInsideEditorShell || !opts.navigatorInsideEditorShell) return 'GEOMETRY_PENDING'
+  if (!opts.toolbarVisible || !opts.navigatorVisible) return 'GEOMETRY_PENDING'
+  if (!opts.stateSpecificPlacementValid) return opts.placementFailure ?? 'GEOMETRY_PENDING'
+  return 'VISIBLE_GEOMETRY'
 }
 
 /**
@@ -155,9 +393,9 @@ export class DocumentUtilityOverlayHost {
   private drawerOpen = false
   private resizeObserver: ResizeObserver | null = null
   private geometryRafPending = false
+  private pendingGeometryReasons = new Set<string>()
   private lastGeometry: OverlayGeometry | null = null
   private readonly geometryCounters = {
-    callbackCount: 0,
     windowResizeEventCount: 0,
     scheduleCount: 0,
     executionCount: 0,
@@ -165,14 +403,30 @@ export class DocumentUtilityOverlayHost {
     noopCount: 0,
     sameFrameCoalesceCount: 0,
     feedbackLoopSuspectCount: 0,
+    feedbackLoopConfirmedCount: 0,
+    mixedCorrelationCount: 0,
     warningCorrelationCount: 0,
   }
+  private externalResizeEpoch = 0
+  private utilityWriteEpoch = 0
+  private resizeObserverEpoch = 0
   private lastRoCallbackTs: number | null = null
   private lastGeometryWriteTs: number | null = null
   private lastWindowResizeTs: number | null = null
-  private lastViewportWidth = 0
-  private latestRects: { write: RectRecord | null; shell: RectRecord | null; overlayRoot: RectRecord | null; toolbar: RectRecord | null; navigator: RectRecord | null; drawer: RectRecord | null } = {
-    write: null, shell: null, overlayRoot: null, toolbar: null, navigator: null, drawer: null,
+  private lastExternalResizeTs: number | null = null
+  private lastWriteShellRect: RectRecord | null = null
+  private geometryCommitted = false
+  private lastRoSawChangedShell = false
+  private latestRects: {
+    write: RectRecord | null
+    visibleWrite: RectRecord | null
+    shell: RectRecord | null
+    overlayRoot: RectRecord | null
+    toolbar: RectRecord | null
+    navigator: RectRecord | null
+    drawer: RectRecord | null
+  } = {
+    write: null, visibleWrite: null, shell: null, overlayRoot: null, toolbar: null, navigator: null, drawer: null,
   }
   private bcrEmitCount = 0
   private settleTimer: ReturnType<typeof setTimeout> | null = null
@@ -184,6 +438,15 @@ export class DocumentUtilityOverlayHost {
   readonly locator: DocumentDiagnosticLocator
   readonly editGuard: DocumentEditGuard
   private scrollNav: DocumentScrollNavigator | null = null
+  /** Phase 7R.3.11.8-A — active scroll operation forensic handle (observability). */
+  private scrollNavOperationSeq = 0
+  private scrollOpForensic: {
+    record: ScrollNavOperationForensicRecord
+    container: HTMLElement
+    settleTimer: ReturnType<typeof setTimeout> | null
+    safetyDeadline: ReturnType<typeof setTimeout> | null
+    onScroll: () => void
+  } | null = null
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   private mounted = false
   private disposed = false
@@ -199,7 +462,9 @@ export class DocumentUtilityOverlayHost {
         this.showToast('目标已变化，请重新检查')
       },
     })
-    this.editGuard = new DocumentEditGuard()
+    this.editGuard = new DocumentEditGuard({
+      getDocumentKey: () => opts.ctx.authority.getDocumentKey(),
+    })
   }
 
   // ── Mount / dispose ─────────────────────────────────
@@ -234,32 +499,76 @@ export class DocumentUtilityOverlayHost {
     // geometry feedback loop). Callback counters feed the resize attribution.
     const container = getActiveEditorScrollContainer()
     if (container && typeof ResizeObserver !== 'undefined') {
-      this.resizeObserver = new ResizeObserver((entries) => {
-        this.geometryCounters.callbackCount++
+      this.resizeObserver = new ResizeObserver(() => {
+        this.resizeObserverEpoch++
         this.lastRoCallbackTs = this.now()
-        // Feedback-suspect detection: a callback right after a utility write,
-        // with an unchanged viewport, on the same observed shell.
-        const viewportWidthChanged = this.lastViewportWidth !== window.innerWidth
-        this.lastViewportWidth = window.innerWidth
-        const msSinceWrite = this.lastGeometryWriteTs == null ? null : this.now() - this.lastGeometryWriteTs
-        const verdict = classifyResizeSource({ viewportWidthChanged, msSinceUtilityWrite: msSinceWrite, feedbackWindowMs: 80 })
-        if (verdict === 'UTILITY_FEEDBACK_LOOP') {
+        // Phase 7R.3.11.4 — epoch-based attribution (no single-point width
+        // comparison): externalRecent vs utilityWriteRecent within windows.
+        const externalRecent = this.lastExternalResizeTs != null && this.now() - this.lastExternalResizeTs <= EXTERNAL_RESIZE_WINDOW_MS
+        const utilityWriteRecent = this.lastGeometryWriteTs != null && this.now() - this.lastGeometryWriteTs <= UTILITY_WRITE_WINDOW_MS
+        if (externalRecent && utilityWriteRecent) {
+          this.geometryCounters.mixedCorrelationCount++
+        } else if (!externalRecent && utilityWriteRecent) {
           this.geometryCounters.feedbackLoopSuspectCount++
         }
-        void entries
+        // Confirmed causal loop: RO callback right after a utility write AND
+        // the observed shell geometry changed since that write (only provable
+        // when the next utility write arrives without an external resize).
+        const shellRectNow = container.getBoundingClientRect()
+        const changed = this.lastWriteShellRect != null && Math.abs(shellRectNow.width - this.lastWriteShellRect.width) > 0.5
+        if (!externalRecent && utilityWriteRecent && changed) {
+          this.lastRoSawChangedShell = true
+          this.externalEpochAtLoopStart = this.externalResizeEpoch
+        } else if (externalRecent) {
+          this.lastRoSawChangedShell = false
+        }
         this.scheduleGeometrySync('resize-observer')
       })
       this.resizeObserver.observe(container)
     }
     window.addEventListener('resize', this.onWindowResize)
-    this.lastViewportWidth = window.innerWidth
     this.installWarningObserver()
     this.scheduleGeometrySync('mount')
 
-    // Diagnostics subscription → toolbar badge.
+    // Diagnostics subscription → toolbar badge + live drawer re-render.
     this.disposables.push(this.diagnostics.subscribe((snapshot) => {
+      // Phase 7R.3.11.4 — stale-publish guard: a snapshot whose documentKey no
+      // longer matches the active document must be DISCARDED (never rendered).
+      const activeKey = this.opts.ctx.authority.getDocumentKey()
+      if (snapshot && snapshot.documentKey !== activeKey) {
+        emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+          action: 'DISCARDED_STALE',
+          documentKey: snapshot.documentKey,
+          activeDocumentKey: activeKey,
+          revision: snapshot.revision,
+          sourceRevision: snapshot.sourceRevision,
+          itemCount: snapshot.diagnostics.length,
+          decision: 'STALE_DIAGNOSTIC_PUBLISH_DISCARDED',
+        })
+        return
+      }
       this.snapshot = snapshot
       this.renderDiagnosticsButton()
+      if (this.drawerOpen) {
+        // Drawer stays open and re-renders IN PLACE with the new snapshot.
+        this.renderDrawer()
+      }
+      if (snapshot) {
+        emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+          action: 'PUBLISHED',
+          documentKey: snapshot.documentKey,
+          activeDocumentKey: activeKey,
+          revision: snapshot.revision,
+          sourceRevision: snapshot.sourceRevision,
+          drawerVisible: this.drawerOpen,
+          itemCount: snapshot.diagnostics.length,
+          errorCount: snapshot.errorCount,
+          warningCount: snapshot.warningCount,
+          hintCount: snapshot.infoCount,
+          snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
+          decision: snapshot.documentKey === activeKey ? 'PUBLISHED_MATCHES_ACTIVE' : 'PUBLISHED_MISMATCH',
+        })
+      }
     }))
 
     // Initial recompute (event-driven — the caller controls further triggers).
@@ -301,6 +610,8 @@ export class DocumentUtilityOverlayHost {
     }
     this.scrollNav?.dispose()
     this.scrollNav = null
+    // Phase 7R.3.11.8-A: release any in-flight scroll operation forensic.
+    this.finalizeScrollOperationForensic('SUPERSEDED')
     this.editGuard.dispose()
     this.root?.remove()
     this.root = null
@@ -317,6 +628,8 @@ export class DocumentUtilityOverlayHost {
     this.scheduleGeometrySync('bind-document')
     this.renderLockButton()
     this.emitFullBcr('document-switch')
+    // Phase 7R.3.11.7 §32/§33: event-triggered settle summary (no timer).
+    emitInkchapterRuntimeAuditSummary('document-switch-settled')
     emitRuntimeAudit('DOCUMENT-UTILITY-LIFECYCLE', {
       action: 'BIND_DOCUMENT',
       rootCount: document.querySelectorAll(`[${UTILITY_ROOT_IDENTITY_ATTR}="true"]`).length,
@@ -327,7 +640,8 @@ export class DocumentUtilityOverlayHost {
 
   /** Runtime-gate observability: resize/geometry counters (read-only). */
   getGeometryCounters(): {
-    callbackCount: number
+    /** Phase 7R.3.11.5 — derived from resizeObserverEpoch (single authority). */
+    resizeObserverCallbackCount: number
     windowResizeEventCount: number
     scheduleCount: number
     executionCount: number
@@ -335,9 +649,25 @@ export class DocumentUtilityOverlayHost {
     noopCount: number
     sameFrameCoalesceCount: number
     feedbackLoopSuspectCount: number
+    feedbackLoopConfirmedCount: number
+    mixedCorrelationCount: number
     warningCorrelationCount: number
+    externalResizeEpoch: number
+    utilityWriteEpoch: number
+    resizeObserverEpoch: number
   } {
-    return { ...this.geometryCounters }
+    return {
+      resizeObserverCallbackCount: this.resizeObserverEpoch,
+      ...this.geometryCounters,
+      externalResizeEpoch: this.externalResizeEpoch,
+      utilityWriteEpoch: this.utilityWriteEpoch,
+      resizeObserverEpoch: this.resizeObserverEpoch,
+    }
+  }
+
+  /** Runtime-gate observability: first geometry write committed. */
+  isGeometryCommitted(): boolean {
+    return this.geometryCommitted
   }
 
   /** Runtime-gate observability: full-BCR emission count (log-reduction gate). */
@@ -357,8 +687,9 @@ export class DocumentUtilityOverlayHost {
 
   private onWindowResize = (): void => {
     this.geometryCounters.windowResizeEventCount++
+    this.externalResizeEpoch++
     this.lastWindowResizeTs = this.now()
-    this.lastViewportWidth = window.innerWidth
+    this.lastExternalResizeTs = this.now()
     this.scheduleGeometrySync('window-resize')
     this.scheduleResizeSettle()
   }
@@ -401,6 +732,9 @@ export class DocumentUtilityOverlayHost {
   // ── Placement (coalesced, read/write separated) ─────
   private scheduleGeometrySync(reason: string): void {
     if (!this.root) return
+    // Phase 7R.3.11.6 — coalescing must NOT drop drawer-open/close semantics:
+    // every reason is preserved; execution reads the LIVE drawer state.
+    this.pendingGeometryReasons.add(reason)
     if (this.geometryRafPending) {
       this.geometryCounters.sameFrameCoalesceCount++
       return
@@ -409,7 +743,9 @@ export class DocumentUtilityOverlayHost {
     this.geometryCounters.scheduleCount++
     const run = (): void => {
       this.geometryRafPending = false
-      this.applyGeometry(reason)
+      const reasons = new Set(this.pendingGeometryReasons)
+      this.pendingGeometryReasons.clear()
+      this.applyGeometry(reasons)
     }
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(run)
@@ -434,9 +770,13 @@ export class DocumentUtilityOverlayHost {
     const toolbar = this.toolbarEl?.getBoundingClientRect() ?? null
     const navigator = this.navigatorEl?.getBoundingClientRect() ?? null
     const drawer = this.drawerEl?.getBoundingClientRect() ?? null
+    const writeRec = toRectRecord(write)
+    const shellRec = toRectRecord(shell)
     this.latestRects = {
-      write: toRectRecord(write),
-      shell: toRectRecord(shell),
+      write: writeRec,
+      // Phase 7R.3.11.4 — occlusion denominator = VISIBLE write area only.
+      visibleWrite: intersectRects(writeRec, shellRec),
+      shell: shellRec,
       overlayRoot: toRectRecord(overlayRoot),
       toolbar: toRectRecord(toolbar),
       navigator: toRectRecord(navigator),
@@ -444,22 +784,29 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
-  private applyGeometry(reason: string): void {
+  private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
     const container = getActiveEditorScrollContainer()
     const rect = container?.getBoundingClientRect()
+    // Phase 7R.3.11.6 — execution reads the LIVE drawerOpen (never a schedule-time snapshot).
     const next = computeOverlayGeometry(
       rect && rect.width > 0 ? { top: rect.top, right: rect.right, bottom: rect.bottom } : null,
       { width: window.innerWidth, height: window.innerHeight },
+      { drawerOpen: this.drawerOpen },
     )
+    const hasDrawerTransition = reasons.has('drawer-open') || reasons.has('drawer-close')
     const prev = this.lastGeometry
     this.lastGeometry = next
     if (prev && JSON.stringify(prev) === JSON.stringify(next)) {
       this.geometryCounters.noopCount++
+      // State changed but geometry is already correct (e.g. rapid toggle
+      // ending where it started): still report the state-specific placement.
+      if (hasDrawerTransition) this.emitNavigatorPlacementAudit(this.drawerOpen ? 'drawer-open-committed' : 'drawer-close-committed')
       return
     }
     this.geometryCounters.writeCount++
+    this.utilityWriteEpoch++
     this.lastGeometryWriteTs = this.now()
     if (this.toolbarEl) {
       this.toolbarEl.style.top = `${next.toolbarTop}px`
@@ -474,17 +821,43 @@ export class DocumentUtilityOverlayHost {
       this.drawerEl.style.right = `${next.drawerRight}px`
       this.drawerEl.style.bottom = `${next.drawerBottom}px`
     }
+    // Confirmed feedback loop: a previous RO observed a shell change caused by
+    // our write and no external resize happened → this write completes the loop.
+    if (this.lastRoSawChangedShell && this.externalResizeEpoch === this.externalEpochAtLoopStart) {
+      this.geometryCounters.feedbackLoopConfirmedCount++
+    }
+    this.lastRoSawChangedShell = false
+    this.lastWriteShellRect = this.latestRects.shell
+    const firstCommit = !this.geometryCommitted
+    this.geometryCommitted = true
     // In-memory rects stay fresh during bursts; full BCR is milestone-only.
     this.refreshLatestRects()
-    this.emitGeometryAndVisibility(reason, next)
+    this.emitGeometryAndVisibility([...reasons].join(','), next)
+    if (this.drawerOpen) this.emitCollisionAudit()
+    if (firstCommit) {
+      this.emitFullBcr('first-geometry-commit')
+    }
+    // Phase 7R.3.11.6 — POST-COMMIT drawer BCR + NAV-PLACEMENT audit
+    // (never pre-commit: the committed geometry is the final authority).
+    if (hasDrawerTransition) {
+      const commitReason = this.drawerOpen ? 'drawer-open-committed' : 'drawer-close-committed'
+      this.emitFullBcr(commitReason)
+      this.emitNavigatorPlacementAudit(commitReason)
+      // Phase 7R.3.11.7 §32/§33: event-triggered settle summary (no timer).
+      emitInkchapterRuntimeAuditSummary('drawer-transition-settled', { commitReason })
+    }
   }
+
+  private externalEpochAtLoopStart = -1
 
   private emitGeometryAndVisibility(reason: string, g: OverlayGeometry): void {
     const viewport = { width: window.innerWidth, height: window.innerHeight }
     emitRuntimeAudit('DOCUMENT-UTILITY-GEOMETRY', {
       reason,
       viewport,
+      drawerOpen: this.drawerOpen,
       writeRect: this.latestRects.write ? { left: this.latestRects.write.left, top: this.latestRects.write.top, right: this.latestRects.write.right, bottom: this.latestRects.write.bottom, width: this.latestRects.write.width, height: this.latestRects.write.height } : null,
+      visibleWriteRect: this.latestRects.visibleWrite,
       editorShellRect: this.latestRects.shell ? { left: this.latestRects.shell.left, top: this.latestRects.shell.top, right: this.latestRects.shell.right, bottom: this.latestRects.shell.bottom, width: this.latestRects.shell.width, height: this.latestRects.shell.height } : null,
       toolbarRect: this.toolbarEl ? { top: g.toolbarTop, right: g.toolbarRight } : null,
       navigatorRect: this.navigatorEl ? { right: g.navRight, bottom: g.navBottom } : null,
@@ -503,6 +876,8 @@ export class DocumentUtilityOverlayHost {
    * Full BCR audit — milestone-only (mount / document switch / drawer open /
    * drawer close / lock transition / scroll-nav transition / resize-settled).
    * NOT emitted on every geometry write during continuous resize.
+   * Phase 7R.3.11.4 — verdict must be GEOMETRY_PENDING until the first geometry
+   * commit and until toolbar/navigator are actually inside the editor shell.
    */
   private emitFullBcr(reason: string): void {
     this.refreshLatestRects()
@@ -512,11 +887,31 @@ export class DocumentUtilityOverlayHost {
     const toolbarFullscreen = isAccidentalFullscreenChild(r.toolbar, viewport)
     const navigatorFullscreen = isAccidentalFullscreenChild(r.navigator, viewport)
     const drawerFullscreen = r.drawer ? r.drawer.width >= viewport.width * 0.8 && r.drawer.height >= viewport.height * 0.8 : false
+    const toolbarInside = this.isInsideEditorShell(r.toolbar, r.shell)
+    const navigatorInside = this.isInsideEditorShell(r.navigator, r.shell)
+    const toolbarVisible = !!r.toolbar && r.toolbar.width > 0 && r.toolbar.height > 0 && !toolbarFullscreen && toolbarInside
+    const navigatorVisible = !!r.navigator && r.navigator.width > 0 && r.navigator.height > 0 && !navigatorFullscreen && navigatorInside
+    const committed = this.geometryCommitted
+    const placementFailure = this.computePlacementFailure()
+    const decision = computeBcrVerdict({
+      geometryCommitted: committed,
+      toolbarInsideEditorShell: toolbarInside,
+      navigatorInsideEditorShell: navigatorInside,
+      toolbarVisible,
+      navigatorVisible,
+      toolbarFullscreen,
+      navigatorFullscreen,
+      drawerFullscreen,
+      stateSpecificPlacementValid: placementFailure === null,
+      placementFailure,
+    })
     emitRuntimeAudit('DOCUMENT-UTILITY-BCR', {
       reason,
+      geometryCommitted: committed,
       viewportWidth: viewport.width,
       viewportHeight: viewport.height,
       writeRect: r.write,
+      visibleWriteRect: r.visibleWrite,
       editorShellRect: r.shell,
       scrollViewportRect: r.shell,
       overlayRootRect: r.overlayRoot,
@@ -530,9 +925,12 @@ export class DocumentUtilityOverlayHost {
       toolbarWriteOcclusionRatio: computeOcclusionRatio(r.toolbar, r.write),
       navigatorWriteOcclusionRatio: computeOcclusionRatio(r.navigator, r.write),
       drawerWriteOcclusionRatio: computeOcclusionRatio(r.drawer, r.write),
-      toolbarInsideEditorShell: this.isInsideEditorShell(r.toolbar, r.shell),
-      navigatorInsideEditorShell: this.isInsideEditorShell(r.navigator, r.shell),
-      decision: toolbarFullscreen || navigatorFullscreen || drawerFullscreen ? 'FAIL_ACCIDENTAL_FULLSCREEN_CHILD' : 'VISIBLE_GEOMETRY',
+      toolbarVisibleWriteOcclusionRatio: computeOcclusionRatio(r.toolbar, r.visibleWrite),
+      navigatorVisibleWriteOcclusionRatio: computeOcclusionRatio(r.navigator, r.visibleWrite),
+      drawerVisibleWriteOcclusionRatio: computeOcclusionRatio(r.drawer, r.visibleWrite),
+      toolbarInsideEditorShell: toolbarInside,
+      navigatorInsideEditorShell: navigatorInside,
+      decision,
     })
   }
 
@@ -542,16 +940,84 @@ export class DocumentUtilityOverlayHost {
     return child.left >= shell.left - t && child.right <= shell.right + t && child.top >= shell.top - t && child.bottom <= shell.bottom + t
   }
 
+  private emitCollisionAudit(): void {
+    const drawer = this.latestRects.drawer
+    const navigator = this.latestRects.navigator
+    const intersectionArea = rectIntersectionArea(drawer, navigator)
+    emitRuntimeAudit('DOCUMENT-UTILITY-LAYOUT-COLLISION', {
+      drawerVisible: this.drawerOpen,
+      drawerRect: drawer,
+      navigatorRect: navigator,
+      intersectionArea,
+      decision: this.drawerOpen && intersectionArea > 2 ? 'FAIL_COLLISION' : 'PASS',
+    })
+  }
+
+  /**
+   * Phase 7R.3.11.6 — state-specific placement failure detector. Uses the SAME
+   * geometry helper as production (no second formula): expectedRight is the
+   * drawer-state-dependent navRight; actualRight = innerWidth - navRect.right.
+   */
+  private computePlacementFailure(): 'NAVIGATOR_STALE_DRAWER_OFFSET' | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION' | null {
+    const result = evaluateNavigatorPlacement({
+      drawerOpen: this.drawerOpen,
+      navigatorRect: this.latestRects.navigator,
+      shellRect: this.latestRects.shell,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      tolerancePx: NAV_PLACEMENT_TOLERANCE_PX,
+    })
+    return result.decision === 'PASS' ? null : result.decision
+  }
+
+  /** Phase 7R.3.11.6 — NAV-PLACEMENT runtime audit (post-commit only). */
+  private emitNavigatorPlacementAudit(reason: string): void {
+    const viewport = { width: window.innerWidth, height: window.innerHeight }
+    const nav = this.latestRects.navigator
+    const drawer = this.latestRects.drawer
+    const result = evaluateNavigatorPlacement({
+      drawerOpen: this.drawerOpen,
+      navigatorRect: nav,
+      shellRect: this.latestRects.shell,
+      viewport,
+      tolerancePx: NAV_PLACEMENT_TOLERANCE_PX,
+    })
+    const intersectionArea = rectIntersectionArea(drawer, nav)
+    const gapPx = drawer && nav ? Math.max(0, drawer.left - nav.right) : -1
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAV-PLACEMENT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      reason,
+      drawerOpen: this.drawerOpen,
+      geometryCommitted: this.geometryCommitted,
+      viewportWidth: viewport.width,
+      editorShellRight: this.latestRects.shell?.right ?? null,
+      drawerLeft: drawer?.left ?? null,
+      drawerRight: drawer?.right ?? null,
+      drawerWidth: drawer?.width ?? null,
+      navigatorLeft: nav?.left ?? null,
+      navigatorRight: nav?.right ?? null,
+      expectedRight: result.expectedRight,
+      actualRight: result.actualRight,
+      rightDelta: result.rightDelta,
+      intersectionArea,
+      gapPx,
+      decision: result.decision,
+    })
+  }
+
   private emitResizeSummary(): void {
     const viewport = { width: window.innerWidth, height: window.innerHeight }
-    const verdict = this.geometryCounters.feedbackLoopSuspectCount > 0
-      ? 'UTILITY_FEEDBACK_LOOP'
-      : this.geometryCounters.warningCorrelationCount > 0
-        ? 'MIXED_OR_EXTERNAL'
-        : 'UNPROVEN'
+    const verdict = classifyAttribution({
+      feedbackLoopConfirmedCount: this.geometryCounters.feedbackLoopConfirmedCount,
+      mixedCorrelationCount: this.geometryCounters.mixedCorrelationCount,
+      externalResizeEpoch: this.externalResizeEpoch,
+      warningCorrelationCount: this.geometryCounters.warningCorrelationCount,
+    })
+    // Phase 7R.3.11.5 — single callback-count authority: callbackCount derives
+    // from resizeObserverEpoch, so difference is structurally 0.
+    const consistency = computeAuditConsistency(this.resizeObserverEpoch, this.resizeObserverEpoch)
     emitRuntimeAudit('DOCUMENT-UTILITY-RESIZE-SUMMARY', {
       windowMs: Math.round(this.now()),
-      resizeObserverCallbackCount: this.geometryCounters.callbackCount,
+      resizeObserverCallbackCount: consistency.resizeObserverCallbackCount,
       windowResizeEventCount: this.geometryCounters.windowResizeEventCount,
       geometryScheduleCount: this.geometryCounters.scheduleCount,
       geometryExecutionCount: this.geometryCounters.executionCount,
@@ -559,10 +1025,16 @@ export class DocumentUtilityOverlayHost {
       geometryNoopCount: this.geometryCounters.noopCount,
       sameFrameCoalesceCount: this.geometryCounters.sameFrameCoalesceCount,
       feedbackLoopSuspectCount: this.geometryCounters.feedbackLoopSuspectCount,
+      feedbackLoopConfirmedCount: this.geometryCounters.feedbackLoopConfirmedCount,
+      mixedCorrelationCount: this.geometryCounters.mixedCorrelationCount,
       warningCorrelationCount: this.geometryCounters.warningCorrelationCount,
+      externalResizeEpoch: this.externalResizeEpoch,
+      utilityWriteEpoch: this.utilityWriteEpoch,
+      resizeObserverEpoch: this.resizeObserverEpoch,
       attributionVerdict: verdict,
       viewport,
     })
+    emitRuntimeAudit('DOCUMENT-UTILITY-AUDIT-CONSISTENCY', consistency)
     // One full BCR at resize-settled (log-reduction gate).
     this.emitFullBcr('resize-settled')
   }
@@ -689,7 +1161,7 @@ export class DocumentUtilityOverlayHost {
     topBtn.title = '回到文档顶部'
     topBtn.textContent = '↑'
     topBtn.disabled = true
-    topBtn.addEventListener('click', () => this.scrollNav?.scrollToTop())
+    topBtn.addEventListener('click', () => this.handleScrollAction('GO_TOP'))
     this.topBtnEl = topBtn
     nav.appendChild(topBtn)
 
@@ -701,7 +1173,7 @@ export class DocumentUtilityOverlayHost {
     bottomBtn.title = '到达文档底部'
     bottomBtn.textContent = '↓'
     bottomBtn.disabled = true
-    bottomBtn.addEventListener('click', () => this.scrollNav?.scrollToBottom())
+    bottomBtn.addEventListener('click', () => this.handleScrollAction('GO_BOTTOM'))
     this.bottomBtnEl = bottomBtn
     nav.appendChild(bottomBtn)
 
@@ -715,8 +1187,152 @@ export class DocumentUtilityOverlayHost {
     const key = `${state.atTop}|${state.atBottom}|${state.scrollable}`
     if (key !== this.prevNavStateKey) {
       this.prevNavStateKey = key
-      this.emitFullBcr('scroll-nav-transition')
+      // Phase 7R.3.11.7 §34: a plain scroll-nav-transition never emits the full
+      // BCR (geometry/visibility audits already cover the write). Only a
+      // placement FAILURE gets the full BCR (authority preserved).
+      if (this.computePlacementFailure() !== null) {
+        this.emitFullBcr('scroll-nav-transition')
+      }
     }
+  }
+
+  /**
+   * Phase 7R.3.11.5 — scroll navigator BUTTON action audit.
+   * Only user clicks on ↑/↓ reach this path (never wheel / scroll restore /
+   * document switch). Records scrollTop before, the requested target, and the
+   * settled scrollTop read on a one-shot timer (smooth scroll is async).
+   * Phase 7R.3.11.8-A — the legacy fixed-250ms audit is kept UNCHANGED as a
+   * passive observer; a low-noise operation forensic tracks the real scroll
+   * events + quiescence so the root cause (premature audit vs incomplete
+   * scroll) can be proven WITHOUT altering the business behavior.
+   */
+  private handleScrollAction(action: 'GO_TOP' | 'GO_BOTTOM'): void {
+    const container = getActiveEditorScrollContainer()
+    if (!container) return
+    const scrollTopBefore = container.scrollTop
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight)
+    if (action === 'GO_TOP') this.scrollNav?.scrollToTop()
+    else this.scrollNav?.scrollToBottom()
+    const drawerVisible = this.drawerOpen
+    const locked = this.editGuard.isLocked()
+    this.startScrollOperationForensic(action, container, scrollTopBefore, maxScrollTop, drawerVisible, locked)
+    const audit = (): void => {
+      const payload = buildScrollNavAudit({
+        documentKey: this.opts.ctx.authority.getDocumentKey(),
+        action,
+        scrollTopBefore,
+        scrollTopAfter: container.scrollTop,
+        maxScrollTop,
+        drawerVisible,
+        locked,
+      })
+      emitRuntimeAudit('DOCUMENT-UTILITY-SCROLL-NAV', { ...payload })
+      this.recordScrollOperationLegacyCheck(container.scrollTop, maxScrollTop, payload.decision)
+    }
+    if (typeof setTimeout === 'function') {
+      setTimeout(audit, 250)
+    } else {
+      audit()
+    }
+  }
+
+  // ── Phase 7R.3.11.8-A — scroll operation forensic (observability only) ──
+  private startScrollOperationForensic(
+    action: 'GO_TOP' | 'GO_BOTTOM',
+    container: HTMLElement,
+    scrollTopStart: number,
+    maxScrollTopStart: number,
+    drawerVisible: boolean,
+    locked: boolean,
+  ): void {
+    // A new click supersedes an in-flight forensic (release listeners/timers).
+    if (this.scrollOpForensic) this.finalizeScrollOperationForensic('SUPERSEDED')
+    const operationId = ++this.scrollNavOperationSeq
+    const record: ScrollNavOperationForensicRecord = {
+      operationId,
+      action,
+      source: 'BUTTON',
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      containerTag: container.tagName,
+      containerId: container.id || '',
+      containerClass: String(container.className || '').slice(0, 60),
+      containerConnected: container.isConnected,
+      startTs: performance.now(),
+      scrollTopStart,
+      maxScrollTopStart,
+      targetAtStart: action === 'GO_TOP' ? 0 : maxScrollTopStart,
+      scrollEventCount: 0,
+      firstScrollEventTs: null,
+      lastScrollEventTs: null,
+      scrollTopLastObserved: scrollTopStart,
+      maxScrollTopLastObserved: maxScrollTopStart,
+      reversalCount: 0,
+      scrollTopAtLegacyCheck: null,
+      legacyWouldPass: null,
+      scrollTopFinal: scrollTopStart,
+      maxScrollTopFinal: maxScrollTopStart,
+      targetReached: false,
+      elapsedMs: 0,
+      settleReason: 'SAFETY_TIMEOUT',
+      drawerVisibleAtStart: drawerVisible,
+      lockedAtStart: locked,
+    }
+    const onScroll = (): void => {
+      const t = container.scrollTop
+      const max = Math.max(0, container.scrollHeight - container.clientHeight)
+      if (record.scrollEventCount > 0) {
+        const movingTowardBottom = t > record.scrollTopLastObserved
+        if ((action === 'GO_BOTTOM' && !movingTowardBottom && t < record.scrollTopLastObserved - 1)
+          || (action === 'GO_TOP' && movingTowardBottom && t > record.scrollTopLastObserved + 1)) {
+          record.reversalCount++
+        }
+      }
+      record.scrollEventCount++
+      if (record.firstScrollEventTs === null) record.firstScrollEventTs = performance.now()
+      record.lastScrollEventTs = performance.now()
+      record.scrollTopLastObserved = t
+      record.maxScrollTopLastObserved = max
+      if (this.scrollOpForensic) {
+        if (this.scrollOpForensic.settleTimer) clearTimeout(this.scrollOpForensic.settleTimer)
+        this.scrollOpForensic.settleTimer = setTimeout(
+          () => this.finalizeScrollOperationForensic('QUIESCENCE'),
+          SCROLL_NAV_QUIESCENCE_MS,
+        )
+      }
+    }
+    container.addEventListener('scroll', onScroll, { passive: true })
+    const safetyDeadline = setTimeout(
+      () => this.finalizeScrollOperationForensic('SAFETY_TIMEOUT'),
+      SCROLL_NAV_SAFETY_DEADLINE_MS,
+    )
+    this.scrollOpForensic = { record, container, settleTimer: null, safetyDeadline, onScroll }
+  }
+
+  private recordScrollOperationLegacyCheck(scrollTopAfter: number, maxScrollTop: number, legacyDecision: 'PASS' | 'FAIL'): void {
+    const op = this.scrollOpForensic
+    if (!op) return
+    op.record.scrollTopAtLegacyCheck = scrollTopAfter
+    op.record.legacyWouldPass = legacyDecision === 'PASS'
+    op.record.maxScrollTopLastObserved = maxScrollTop
+  }
+
+  private finalizeScrollOperationForensic(reason: ScrollNavOperationSettleReason): void {
+    const op = this.scrollOpForensic
+    if (!op) return
+    this.scrollOpForensic = null
+    op.container.removeEventListener('scroll', op.onScroll)
+    if (op.settleTimer) clearTimeout(op.settleTimer)
+    if (op.safetyDeadline) clearTimeout(op.safetyDeadline)
+    const r = op.record
+    r.settleReason = reason
+    r.scrollTopFinal = op.container.scrollTop
+    r.maxScrollTopFinal = Math.max(0, op.container.scrollHeight - op.container.clientHeight)
+    const tol = SCROLL_NAV_TARGET_TOLERANCE_PX
+    r.targetReached = r.action === 'GO_TOP'
+      ? Math.abs(r.scrollTopFinal - 0) <= tol
+      : Math.abs(r.scrollTopFinal - r.maxScrollTopFinal) <= tol
+    r.elapsedMs = performance.now() - r.startTs
+    emitRuntimeAudit('DOCUMENT-UTILITY-SCROLL-NAV-FORENSIC', { ...r })
   }
 
   // ── Drawer ──────────────────────────────────────────
@@ -773,12 +1389,23 @@ export class DocumentUtilityOverlayHost {
   private renderDrawer(): void {
     if (!this.drawerEl || !this.drawerListEl || !this.drawerCountsEl) return
     const snapshot = this.snapshot
+    const activeKey = this.opts.ctx.authority.getDocumentKey()
     this.drawerCountsEl.textContent = ''
-    if (!snapshot || snapshot.documentKey == null) {
-      const empty = document.createElement('div')
-      empty.className = 'inkchapter-doc-drawer__item--empty'
-      empty.textContent = '没有活动文档'
-      this.drawerListEl.replaceChildren(empty)
+    if (!snapshot || snapshot.documentKey == null || snapshot.documentKey !== activeKey) {
+      // Phase 7R.3.11.4 — never render stale items: show a pending placeholder.
+      const pending = document.createElement('div')
+      pending.className = 'inkchapter-doc-drawer__item--empty'
+      pending.textContent = snapshot && snapshot.documentKey !== activeKey ? '正在刷新当前文档…' : '没有活动文档'
+      this.drawerListEl.replaceChildren(pending)
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+        action: 'DRAWER_RENDERED',
+        documentKey: snapshot?.documentKey ?? null,
+        activeDocumentKey: activeKey,
+        revision: snapshot?.revision ?? null,
+        sourceRevision: snapshot?.sourceRevision ?? null,
+        itemCount: 0,
+        decision: 'DRAWER_RENDER_BLOCKED_STALE_SNAPSHOT',
+      })
       return
     }
     const label = document.createElement('span')
@@ -791,11 +1418,25 @@ export class DocumentUtilityOverlayHost {
       ok.className = 'inkchapter-doc-drawer__item--empty'
       ok.textContent = '未发现问题'
       this.drawerListEl.appendChild(ok)
-      return
+    } else {
+      for (const d of snapshot.diagnostics) {
+        this.drawerListEl.appendChild(this.buildDrawerItem(d))
+      }
     }
-    for (const d of snapshot.diagnostics) {
-      this.drawerListEl.appendChild(this.buildDrawerItem(d))
-    }
+    emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+      action: 'DRAWER_RENDERED',
+      documentKey: snapshot.documentKey,
+      activeDocumentKey: activeKey,
+      revision: snapshot.revision,
+      sourceRevision: snapshot.sourceRevision,
+      drawerVisible: this.drawerOpen,
+      itemCount: snapshot.diagnostics.length,
+      errorCount: snapshot.errorCount,
+      warningCount: snapshot.warningCount,
+      hintCount: snapshot.infoCount,
+      snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
+      decision: 'DRAWER_RENDERED_MATCHES_ACTIVE',
+    })
   }
 
   private buildDrawerItem(d: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement {
@@ -844,13 +1485,24 @@ export class DocumentUtilityOverlayHost {
     else this.openDrawer()
   }
 
+  /**
+   * Phase 7R.3.11.6 — SINGLE Drawer state authority: open and close share this
+   * entry so every state change ALWAYS schedules a geometry recompute. Drawer
+   * methods never write navigator position directly (single write site).
+   */
+  private setDrawerOpen(nextOpen: boolean): void {
+    if (this.drawerOpen === nextOpen) return
+    this.drawerOpen = nextOpen
+    if (this.drawerEl) {
+      this.drawerEl.style.display = nextOpen ? 'flex' : 'none'
+    }
+    this.scheduleGeometrySync(nextOpen ? 'drawer-open' : 'drawer-close')
+  }
+
   private openDrawer(): void {
     if (!this.drawerEl) return
-    this.drawerOpen = true
-    this.drawerEl.style.display = 'flex'
+    this.setDrawerOpen(true)
     this.renderDrawer()
-    this.scheduleGeometrySync('drawer-open')
-    this.emitFullBcr('drawer-open')
     emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER', {
       action: 'OPEN',
       diagnosticCount: this.snapshot?.diagnostics.length ?? 0,
@@ -861,9 +1513,7 @@ export class DocumentUtilityOverlayHost {
 
   private closeDrawer(): void {
     if (!this.drawerEl) return
-    this.drawerOpen = false
-    this.drawerEl.style.display = 'none'
-    this.emitFullBcr('drawer-close')
+    this.setDrawerOpen(false)
     emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER', {
       action: 'CLOSE',
       diagnosticCount: 0,

@@ -25,7 +25,7 @@ import {
 import * as path from 'path'
 import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
-import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
 import { readImageAlt, escapeMarkdownAlt, unescapeMarkdownAlt } from './figure-alt-binding'
 import { imagePathInfo, normalizeLocalImageMarkdownDestination } from './image-path-codec'
@@ -455,6 +455,33 @@ export interface CaptionNamingTarget {
   target: CaptionTarget
 }
 
+export type CaptionPreScanGateVerdict = 'READY' | 'PARK_TRANSITIONAL_MISMATCH' | 'WAIT_HEADING_AUTHORITY'
+
+/**
+ * Phase 7R.3.11.7 — PRE-SCAN document-context gate (pure).
+ * Runs BEFORE any expensive caption scan (CODE-CANDIDATE-SUMMARY / CAPTION-SCAN
+ * / CAPTION-RENDER-PLAN) so a transitional document switch never scans the old
+ * context. Only PARK_TRANSITIONAL_MISMATCH blocks; WAIT_HEADING_AUTHORITY is
+ * informational (the existing authority gate performs the actual WAIT block).
+ */
+export function decideCaptionPreScanGate(input: {
+  activeDocumentKey: string | null
+  coordinatorDocumentKey: string | null
+  frameDocumentKey: string | null
+  framePresent: boolean
+  snapshotDocumentKey: string | null
+}): CaptionPreScanGateVerdict {
+  const active = input.activeDocumentKey
+  const coordinator = input.coordinatorDocumentKey
+  if (active && coordinator && active !== coordinator) {
+    return 'PARK_TRANSITIONAL_MISMATCH'
+  }
+  if (active && coordinator && active === coordinator && (!input.framePresent || input.frameDocumentKey !== active)) {
+    return 'WAIT_HEADING_AUTHORITY'
+  }
+  return 'READY'
+}
+
 export class CaptionService {
   private registry = new CaptionRegistry()
   private adapter: CaptionDomAdapter
@@ -544,6 +571,12 @@ export class CaptionService {
   private captionAuthorityGate = new CaptionHeadingAuthorityGate()
   /** Last CAPTION-HEADING-AUTHORITY-GATE audit signature (bounded output). */
   private lastCaptionAuthorityGateAuditSignature = ''
+
+  // Phase 7R.3.11.7 — pre-scan document-context gate counters.
+  private captionPreScanGateCheckCount = 0
+  private captionPreScanTransitionalParkCount = 0
+  private captionPreScanWaitHeadingCount = 0
+  private lastPreScanVerdictSignature = ''
   /** Phase 7R.3.9R pre-authority counters (must stay 0 in a healthy session). */
   private livePlanCountZeroWithoutFormulaDeleteCount = 0
   private livePlanCountPartialWithoutFormulaStructureChangeCount = 0
@@ -964,6 +997,61 @@ export class CaptionService {
   }
 
   /**
+   * Phase 7R.3.11.7 — PRE-SCAN document-context gate. Called at the earliest
+   * point of every refresh/reconcile, BEFORE collectTargets / CODE candidate
+   * scan / full scan / plan build. During a transitional document switch
+   * (activeDocumentKey changed but caption/coordinator still on the old key)
+   * it PARKS with zero scans. WAIT_HEADING_AUTHORITY is informational only —
+   * the existing authority gate performs the actual WAIT block.
+   */
+  private gateCaptionPreScanDocumentContext(reason: string): boolean {
+    const activeKey = this.ctx.getDocumentKey?.() ?? null
+    const coordinatorKey = this.currentDocumentKey ?? null
+    const frame = this.ctx.getCanonicalHeadingFrame?.() ?? null
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    this.captionPreScanGateCheckCount++
+    const verdict = decideCaptionPreScanGate({
+      activeDocumentKey: activeKey,
+      coordinatorDocumentKey: coordinatorKey,
+      frameDocumentKey: frame?.documentKey ?? null,
+      framePresent: frame !== null,
+      snapshotDocumentKey: snapshot?.documentKey ?? null,
+    })
+    if (verdict === 'PARK_TRANSITIONAL_MISMATCH') this.captionPreScanTransitionalParkCount++
+    if (verdict === 'WAIT_HEADING_AUTHORITY') this.captionPreScanWaitHeadingCount++
+
+    const signature = `${verdict}|${activeKey ?? ''}|${coordinatorKey ?? ''}`
+    if (signature !== this.lastPreScanVerdictSignature || verdict === 'PARK_TRANSITIONAL_MISMATCH') {
+      this.lastPreScanVerdictSignature = signature
+      emitRuntimeAudit('CAPTION-PRE-SCAN-DOCUMENT-GATE', {
+        triggerReason: reason,
+        activeDocumentKey: activeKey ?? null,
+        captionDocumentKey: coordinatorKey,
+        coordinatorDocumentKey: coordinatorKey,
+        framePresent: frame !== null,
+        frameDocumentKey: frame?.documentKey ?? null,
+        snapshotPresent: snapshot !== null,
+        snapshotDocumentKey: snapshot?.documentKey ?? null,
+        decision: verdict,
+      })
+    }
+    return verdict !== 'PARK_TRANSITIONAL_MISMATCH'
+  }
+
+  /** Phase 7R.3.11.7 — pre-scan gate counters (read-only). */
+  getCaptionPreScanGateCounters(): {
+    checkCount: number
+    transitionalParkCount: number
+    waitHeadingCount: number
+  } {
+    return {
+      checkCount: this.captionPreScanGateCheckCount,
+      transitionalParkCount: this.captionPreScanTransitionalParkCount,
+      waitHeadingCount: this.captionPreScanWaitHeadingCount,
+    }
+  }
+
+  /**
    * Phase 7R.3.9R: pre-authority gate — called at the earliest safe point of
    * every Caption reconcile/refresh, BEFORE collectTargets / CODE candidate scan
    * / resolver batch / plan build / retry state machine / PARK / hot-loop fuse /
@@ -1068,9 +1156,16 @@ export class CaptionService {
       return
     }
 
+    // Phase 7R.3.11.7: PRE-SCAN document-context gate at the reconcile ENTRY,
+    // BEFORE the authority gate / semantic fingerprint / any expensive scan.
+    // A transitional document switch (active changed, caption/coordinator still
+    // old) parks with zero scans and must not touch fingerprint state.
+    const reasons = Array.from(pending.reasons)
+    if (!this.gateCaptionPreScanDocumentContext(reasons.join('+') || 'reconcile')) {
+      return
+    }
     // Phase 7R.3.9R: heading-authority barrier BEFORE collectTargets/resolver/
     // retry. WAITING → record ONE coalesced pending intent → return.
-    const reasons = Array.from(pending.reasons)
     if (!this.gateCaptionReconcileBeforeAuthority(reasons.join('+') || 'reconcile', pending.invalidationMask)) {
       return
     }
@@ -1802,6 +1897,11 @@ export class CaptionService {
     const editorRoot = this.currentEditorRoot
 
     if (!docKey) { this.adapter.clearAllCaptions(); this.formulaAdapter.clearAll(); return }
+    // Phase 7R.3.11.7: PRE-SCAN document-context gate FIRST (before the
+    // authority gate): a transitional document switch parks with zero scans.
+    if (!this.gateCaptionPreScanDocumentContext(reason)) {
+      return
+    }
     // Phase 7R.3.9R: belt-and-braces authority gate for DIRECT refresh() callers
     // (applySettings / setCaption / rehydrate-empty / force-refresh). Same
     // guarantee as the scheduler path: no collectTargets before heading READY.
@@ -3231,23 +3331,29 @@ export class CaptionService {
           }
         }
 
-        emitRuntimeAudit('FORMULA-VISIBLE-TAG-VERIFY', {
-          documentKey: snap.documentKey,
-          formulaRuntimeKey: `formula:${t.ordinal}`,
-          currentSignatureHash: this.projectionController.currentSignatureHash(t.root),
-          currentActivationId: commitState.currentActivationId,
-          lastCommittedActivationId: commitState.lastCommittedActivationId,
-          lastCommittedSignatureHash: commitState.lastCommittedSignatureHash,
-          lastCommittedRawNumber: commitState.lastCommittedRawNumber,
-          lastCommittedPlanSetEpoch: commitState.lastCommittedPlanSetEpoch,
-          expectedRawNumber: expectedRawNumber ?? null,
-          observedRawTagTokens: observedTokens,
-          exactMatchCount,
-          otherTagCount,
-          decision: semanticCommitted
-            ? (sequentialCommitted ? 'DUPLICATE_TAGS' : 'EXACT_MATCH')
-            : (observedTokens.length === 0 ? 'NO_VISIBLE_TAG' : (committedForCurrentSignature ? 'NO_MATCH' : 'STALE_COMMIT_SIGNATURE')),
-        })
+        const verifyDecision = semanticCommitted
+          ? (sequentialCommitted ? 'DUPLICATE_TAGS' : 'EXACT_MATCH')
+          : (observedTokens.length === 0 ? 'NO_VISIBLE_TAG' : (committedForCurrentSignature ? 'NO_MATCH' : 'STALE_COMMIT_SIGNATURE'))
+        // Phase 7R.3.11.7: identical-state per-formula verify spam emits once.
+        emitRuntimeAuditStateDedup(
+          'FORMULA-VISIBLE-TAG-VERIFY',
+          `${snap.documentKey}|${t.ordinal}|${expectedRawNumber ?? ''}|${observedTokens.join(',')}|${verifyDecision}|${exactMatchCount}|${committedForCurrentSignature}`,
+          {
+            documentKey: snap.documentKey,
+            formulaRuntimeKey: `formula:${t.ordinal}`,
+            currentSignatureHash: this.projectionController.currentSignatureHash(t.root),
+            currentActivationId: commitState.currentActivationId,
+            lastCommittedActivationId: commitState.lastCommittedActivationId,
+            lastCommittedSignatureHash: commitState.lastCommittedSignatureHash,
+            lastCommittedRawNumber: commitState.lastCommittedRawNumber,
+            lastCommittedPlanSetEpoch: commitState.lastCommittedPlanSetEpoch,
+            expectedRawNumber: expectedRawNumber ?? null,
+            observedRawTagTokens: observedTokens,
+            exactMatchCount,
+            otherTagCount,
+            decision: verifyDecision,
+          },
+        )
 
         const formulaDecision = classifyFormulaProjectionVerify({
           planExists: !!plan,
@@ -3279,17 +3385,21 @@ export class CaptionService {
         if (plan && formulaDecision !== 'SEMANTIC_VISIBLE_VERIFIED' && firstPendingReason === null) {
           firstPendingReason = `${formulaDecision}@${`formula:${t.ordinal}`}`
         }
-        emitRuntimeAudit('FORMULA-PROJECTION-VERIFY-FORMULA', {
-          documentKey: snap.documentKey,
-          formulaRuntimeKey: `formula:${t.ordinal}`,
-          desiredRenderedNumber: desired,
-          customDecorationCount: entry.inkchapterDecorationCount,
-          injected,
-          planLookupDecision: lookup ?? null,
-          semanticCommitted,
-          sequentialCommitted,
-          decision: formulaDecision,
-        })
+        emitRuntimeAuditStateDedup(
+          'FORMULA-PROJECTION-VERIFY-FORMULA',
+          `${snap.documentKey}|${t.ordinal}|${desired ?? ''}|${injected}|${lookup ?? ''}|${formulaDecision}`,
+          {
+            documentKey: snap.documentKey,
+            formulaRuntimeKey: `formula:${t.ordinal}`,
+            desiredRenderedNumber: desired,
+            customDecorationCount: entry.inkchapterDecorationCount,
+            injected,
+            planLookupDecision: lookup ?? null,
+            semanticCommitted,
+            sequentialCommitted,
+            decision: formulaDecision,
+          },
+        )
       })
       const aggregateDecision =
         verifiedCount === formulaTargets.length && customDecorationCount === 0 && duplicateVisibleCount === 0
