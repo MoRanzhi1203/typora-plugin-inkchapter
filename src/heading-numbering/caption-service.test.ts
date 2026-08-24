@@ -885,6 +885,38 @@ describe('classifyEditorMutationBatch (Phase 7R.3.4-D self/renderer boundary)', 
     expect(classifyEditorMutationBatch(records)).toBe('RENDERER_ONLY')
   })
 
+  it('7R3.9: CodeMirror initialization inside a code fence → RENDERER_ONLY (no caption reconcile loop)', () => {
+    const container = document.createElement('div')
+    const fence = document.createElement('pre')
+    fence.className = 'md-fences md-end-block md-fences-with-lineno'
+    fence.textContent = 'code placeholder'
+    container.appendChild(fence)
+    document.body.appendChild(container)
+    const records = capture(container, () => {
+      // Typora replaces the fence placeholder text with the CodeMirror editor.
+      fence.textContent = ''
+      const cm = document.createElement('div')
+      cm.className = 'CodeMirror cm-s-inner cm-s-null-scroll'
+      fence.appendChild(cm)
+      const line = document.createElement('div')
+      line.className = 'CodeMirror-line'
+      cm.appendChild(line)
+    })
+    expect(classifyEditorMutationBatch(records)).toBe('RENDERER_ONLY')
+  })
+
+  it('7R3.9: whole code fence add/remove stays CONTENT_RELEVANT (structural)', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const records = capture(container, () => {
+      const fence = document.createElement('pre')
+      fence.className = 'md-fences'
+      fence.textContent = 'def f(): pass'
+      container.appendChild(fence)
+    })
+    expect(classifyEditorMutationBatch(records)).toBe('CONTENT_RELEVANT')
+  })
+
   it('Formula source text change → FORMULA_SOURCE_CHANGED (must rescan Formula plans)', () => {
     const container = document.createElement('div')
     const host = addFormulaHost(container)

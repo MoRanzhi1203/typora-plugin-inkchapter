@@ -80,6 +80,7 @@ import {
 import {
   buildObjectStructureFingerprint,
   computeHeadingSemanticFingerprint,
+  fastHash,
   objectStructureFingerprintEqual,
   type ObjectStructureFingerprint,
 } from './numbering-fast-path'
@@ -99,6 +100,12 @@ import {
   incHeadingSemanticPerf,
   emitHeadingSemanticPerfSummary,
 } from './heading-semantic-perf'
+import {
+  CaptionDeferredRetryController,
+  buildCaptionReconcileStateToken,
+  buildCaptionFailureSignature,
+  buildCaptionTargetFingerprint,
+} from './caption-reconcile-retry'
 
 /**
  * Phase 7R.3.6-H/I: offline Formula plan-set candidate. Built completely OFF to
@@ -178,10 +185,12 @@ export interface CaptionServiceContext {
         headingStableIdentity: string
         semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
       }
-    | { bound: false; reason: string }
+    | { bound: false; reason: string; candidateStableIdentity?: string }
   >
   /** Phase 7R.3.6-F: canonical heading binding generation (plan provenance). */
   getHeadingBindingGeneration?: () => number
+  /** Phase 7R.3.9: committed canonical heading frame fingerprint (if frame authority exists). */
+  getCanonicalHeadingFrameFingerprint?: () => string
   reloadContent?: (markdown: string) => void
   /** Read the active .md file bytes from disk (for FAW6 persistence evidence). */
   readActiveFileContent?: () => string | null
@@ -236,6 +245,34 @@ export type EditorMutationClassification =
 
 const MATH_RENDERER_SELECTOR = 'mjx-container, .MathJax, .md-mathjax-preview, mjx-assistive-mml, .mjx-chtml'
 const FORMULA_LOGICAL_HOST_SELECTOR_M = '.md-math-block'
+/**
+ * Phase 7R.3.9: code-block renderer internals. Typora initialises one CodeMirror
+ * editor per `.md-fences` fence and re-renders its lines lazily. Those mutations
+ * are renderer output, NOT business content — treating them as CONTENT_RELEVANT
+ * causes an unbounded full-caption reconcile loop on large code-heavy documents.
+ * Only the fence element itself (`.md-fences` add/remove) is a structural change.
+ */
+const CODE_BLOCK_RENDERER_SELECTOR = '.md-fences'
+
+/** Node strictly INSIDE a code-block renderer (never the fence element itself). */
+function inCodeBlockRenderer(node: Node, fallbackTarget?: Node | null): boolean {
+  if (node instanceof Element) {
+    if (node.matches(CODE_BLOCK_RENDERER_SELECTOR)) return false
+    return !!node.closest(CODE_BLOCK_RENDERER_SELECTOR)
+  }
+  // Removed text/BR nodes are already detached from the tree (parentElement is
+  // null by the time the observer delivers the record); fall back to the
+  // mutation target, which is the container the mutation happened in.
+  const parent = node.parentElement ?? (fallbackTarget instanceof Element ? fallbackTarget : null)
+  if (!parent) return false
+  if (parent.matches(CODE_BLOCK_RENDERER_SELECTOR)) return true
+  return !!parent.closest(CODE_BLOCK_RENDERER_SELECTOR)
+}
+
+/** A whole code fence (`.md-fences`) being added/removed = structural change. */
+function isCodeFenceNode(node: Node): boolean {
+  return node instanceof Element && node.matches(CODE_BLOCK_RENDERER_SELECTOR)
+}
 
 /**
  * Phase 7R.3.4-D / 7R.3.6: classify an editor mutation batch for the reconcile
@@ -293,6 +330,12 @@ export function classifyEditorMutationBatch(records: MutationRecord[]): EditorMu
         rendererOnlyCount++
         continue
       }
+      // Phase 7R.3.9: text inside a code-block renderer (CodeMirror line edits
+      // during fence editing) is renderer output, not business content.
+      if (inCodeBlockRenderer(record.target)) {
+        rendererOnlyCount++
+        continue
+      }
       contentCount++
       continue
     }
@@ -307,7 +350,9 @@ export function classifyEditorMutationBatch(records: MutationRecord[]): EditorMu
       ? (() => {
           const nodes = [...record.addedNodes, ...record.removedNodes]
           if (nodes.length === 0) return false
-          return nodes.every(n => inRenderer(n) || inMathSource(n))
+          // A whole code fence being added/removed is structural, never renderer.
+          if (nodes.some(n => isCodeFenceNode(n))) return false
+          return nodes.every(n => inRenderer(n) || inMathSource(n) || inCodeBlockRenderer(n, record.target))
         })()
       : false
 
@@ -324,6 +369,16 @@ export function classifyEditorMutationBatch(records: MutationRecord[]): EditorMu
       const targetInSource = targetElement ? targetElement.classList.contains('md-math-block') : false
       if (targetInRenderer && !targetInSource) { rendererOnlyCount++; continue }
       if (targetInSource) { sourceChangedCount++; continue }
+      // Phase 7R.3.9: childList inside a code-block renderer (target is the
+      // fence itself or a node inside it) is renderer-only unless a whole fence
+      // node moved. Example: `PRE.md-fences` gets a `DIV.CodeMirror` child.
+      if (targetElement && (targetElement.matches(CODE_BLOCK_RENDERER_SELECTOR) || inCodeBlockRenderer(targetElement))) {
+        const nodes = [...record.addedNodes, ...record.removedNodes]
+        if (nodes.length > 0 && !nodes.some(n => isCodeFenceNode(n)) && nodes.every(n => inCodeBlockRenderer(n, record.target))) {
+          rendererOnlyCount++
+          continue
+        }
+      }
     }
     contentCount++
   }
@@ -452,6 +507,21 @@ export class CaptionService {
   private captionTransientCandidateDeferCount = 0
   /** Phase 7R.3.7: partial caption plan published (must stay 0). */
   private captionPartialPlanPublishCount = 0
+  // ── Phase 7R.3.9 caption deferred hot-loop closure ──────────────────
+  /** Deterministic deferred retry state machine (no timers, no self-wake). */
+  private captionDeferredRetry = new CaptionDeferredRetryController()
+  /** Phase 7R.3.9-DIAG: bounded mutation-source attribution budget. */
+  private mutationDiagBudget = 40
+  /** Last reported failure signature (state dedup for detailed forensic). */
+  private lastReportedCaptionFailureSignature = ''
+  /** Phase 7R.3.9 counters exposed through the gate report. */
+  private captionParkedStateSelfWakeCount = 0
+  private captionHotLoopGuardTriggeredCount = 0
+  private captionCanonicalInvariantFailureCount = 0
+  private captionDeferredTimerPollingCount = 0
+  private captionFollowUpCount = 0
+  private captionReconcileInitialCount = 0
+  private captionReconcileFollowUpCount = 0
   private livePlanCountZeroWithoutFormulaDeleteCount = 0
   private livePlanCountPartialWithoutFormulaStructureChangeCount = 0
   private historicalSignatureReactivationBlockCount = 0
@@ -703,6 +773,11 @@ export class CaptionService {
       this.lastCompletePlanSet = null
       this.lastCanonicalFormulaHostFingerprint = ''
       this.lastHeadingBindingGeneration = 0
+      // Phase 7R.3.9: document switch clears deferred retry state and the
+      // previous document's COMPLETE caption plan (never project doc A into B).
+      this.captionDeferredRetry.resetForDocument()
+      this.lastCompleteCaptionPlanSet = null
+      this.lastReportedCaptionFailureSignature = ''
     }
     if (docKey && this.currentEditorRoot) this.perfTracker.mark('T1')
     this.rehydrate()
@@ -726,6 +801,26 @@ export class CaptionService {
         this.captionMutationSelfIgnoredCount++
         this.perfTracker.incSelfMutationSkip()
         return
+      }
+      // Phase 7R.3.9: bounded mutation-source attribution budget. Verbose-only
+      // (a real content mutation is rare after the CodeMirror fix; this helps
+      // attribute any future feedback loop without flooding normal logs).
+      if (this.mutationDiagBudget > 0 && classification !== 'RENDERER_ONLY' && forensicVerboseEnabled()) {
+        this.mutationDiagBudget--
+        emitRuntimeAudit('MUTATION-SOURCE-DIAG', {
+          classification,
+          recordCount: records.length,
+          samples: records.slice(0, 5).map(r => ({
+            type: r.type,
+            targetTag: r.target instanceof Element ? r.target.tagName : r.target.nodeName,
+            targetClass: r.target instanceof Element ? String(r.target.className || '').slice(0, 70) : '',
+            targetId: r.target instanceof Element ? r.target.id : '',
+            addedCount: r.addedNodes.length,
+            removedCount: r.removedNodes.length,
+            addedTags: [...r.addedNodes].slice(0, 3).map(n => (n instanceof Element ? n.tagName + '.' + String(n.className || '').slice(0, 30) : n.nodeName)),
+            removedTags: [...r.removedNodes].slice(0, 3).map(n => (n instanceof Element ? n.tagName + '.' + String(n.className || '').slice(0, 30) : n.nodeName)),
+          })),
+        })
       }
       this.captionMutationContentRefreshCount++
       // Phase 7R.3.6-F §17: bump the editor structure epoch ONLY for genuine
@@ -1644,18 +1739,22 @@ export class CaptionService {
       else if (!target.root.isConnected) { decision = 'SKIP'; reason = 'TARGET_DISCONNECTED' }
       else { decision = 'RENDER'; reason = 'ENABLED_LIVE_TARGET' }
 
-      console.info(
-        `[InkChapter Caption] TARGET-DECISION type=${type} ordinal=${ordinal} ` +
-        `targetConnected=${target.root.isConnected} enabled=${cfg.enabled} ` +
-        `hasCaptionRecord=${hasCaptionRecord} hasName=${hasName} ` +
-        `recordId=${recordId ?? 'none'} resolvedName=${name ?? ''} ` +
-        `decision=${decision} reason=${reason}`,
-      )
-      emitRuntimeAudit('CAPTION-TARGET-DECISION', {
-        type, ordinal, targetConnected: target.root.isConnected, enabled: cfg.enabled,
-        hasCaptionRecord, hasName, recordId: recordId ?? null, resolvedName: name ?? null,
-        decision, reason,
-      })
+      // Phase 7R.3.9: per-target success detail is VERBOSE-ONLY (large documents
+      // must not emit one record per target on every reconcile).
+      if (forensicVerboseEnabled()) {
+        console.info(
+          `[InkChapter Caption] TARGET-DECISION type=${type} ordinal=${ordinal} ` +
+          `targetConnected=${target.root.isConnected} enabled=${cfg.enabled} ` +
+          `hasCaptionRecord=${hasCaptionRecord} hasName=${hasName} ` +
+          `recordId=${recordId ?? 'none'} resolvedName=${name ?? ''} ` +
+          `decision=${decision} reason=${reason}`,
+        )
+        emitRuntimeAudit('CAPTION-TARGET-DECISION', {
+          type, ordinal, targetConnected: target.root.isConnected, enabled: cfg.enabled,
+          hasCaptionRecord, hasName, recordId: recordId ?? null, resolvedName: name ?? null,
+          decision, reason,
+        })
+      }
 
       if (decision === 'SKIP') {
         skippedReasons[type].push(reason)
@@ -1730,7 +1829,7 @@ export class CaptionService {
           headingStableIdentity: string
           semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
         }
-      | { bound: false; reason: string }
+      | { bound: false; reason: string; candidateStableIdentity?: string }
     > | null = null
     if (this.ctx.resolvePrecedingSemanticHeadingBatch) {
       batchResolved = this.ctx.resolvePrecedingSemanticHeadingBatch(plan.map(item => item.target.root))
@@ -1740,7 +1839,10 @@ export class CaptionService {
     //    with Formula). Every caption target gets an explicit outcome:
     //    BOUND / LEGITIMATE_CHAPTER_FALLBACK / LEGITIMATE_GLOBAL_FALLBACK /
     //    TRANSIENT_UNRESOLVED. CANDIDATE_IDENTITY_MISSING and every other
-    //    transient incoherence NEVER become a fake GLOBAL caption. ──────────
+    //    transient incoherence NEVER become a fake GLOBAL caption.
+    //    Phase 7R.3.9: normal mode keeps this forensic VERBOSE-ONLY (large
+    //    documents must not emit one record per target on every reconcile). ──
+    const captionMissingIdentities: string[] = []
     const captionResolutions: FormulaSemanticResolution[] = plan.map((item, i) => {
       const raw = batchResolved !== null
         ? batchResolved[i]
@@ -1756,15 +1858,20 @@ export class CaptionService {
         raw.bound ? raw.headingStableIdentity : null,
         raw.bound ? raw.semanticState : null,
       )
-      emitRuntimeAudit('CAPTION-HEADING-BINDING-FORENSIC', {
-        targetType: item.type,
-        resolvedHeadingStableIdentity: raw.bound ? raw.headingStableIdentity : 'none',
-        resolvedChapterOrdinal: raw.bound ? raw.semanticState.chapterOrdinal : null,
-        resolvedSectionOrdinal: raw.bound ? raw.semanticState.sectionOrdinal : null,
-        resolvedRevision: raw.bound ? raw.revision : -1,
-        decision: res.decision,
-        transientReason: res.decision === 'TRANSIENT_UNRESOLVED' ? res.reason : null,
-      })
+      if (!raw.bound && (raw as { candidateStableIdentity?: string }).candidateStableIdentity) {
+        captionMissingIdentities.push((raw as { candidateStableIdentity: string }).candidateStableIdentity)
+      }
+      if (forensicVerboseEnabled()) {
+        emitRuntimeAudit('CAPTION-HEADING-BINDING-FORENSIC', {
+          targetType: item.type,
+          resolvedHeadingStableIdentity: raw.bound ? raw.headingStableIdentity : 'none',
+          resolvedChapterOrdinal: raw.bound ? raw.semanticState.chapterOrdinal : null,
+          resolvedSectionOrdinal: raw.bound ? raw.semanticState.sectionOrdinal : null,
+          resolvedRevision: raw.bound ? raw.revision : -1,
+          decision: res.decision,
+          transientReason: res.decision === 'TRANSIENT_UNRESOLVED' ? res.reason : null,
+        })
+      }
       return res
     })
     this.perfTracker.mark('T3')
@@ -1790,10 +1897,35 @@ export class CaptionService {
     this.emitCaptionCandidateCoherence(snapshot, plan.length, resolvedCount, legitimateChapterFallbackCount, legitimateGlobalFallbackCount, transientUnresolvedCount, captionDecision)
 
     if (captionDecision !== 'COMPLETE') {
-      // DEFER — keep the previous COMPLETE caption plan set (DOM untouched).
+      // ── Phase 7R.3.9: bounded deferred retry state machine ──────────────
+      // KEEP_PREVIOUS_COMPLETE_SET + projectionWrites=0 ALWAYS. The retry is
+      // EVENT-DRIVEN (one coalesced follow-up max) and never self-wakes a
+      // parked state. No setTimeout / polling exists in this path.
       this.captionTransientCandidateDeferCount++
       const previous = this.lastCompleteCaptionPlanSet
       const publishedPlanCount = previous ? previous.states.length : 0
+      const stateToken = this.computeCaptionStateToken(snapshot, plan)
+      const reasonCounts = new Map<string, number>()
+      for (const r of captionResolutions) {
+        if (r.decision !== 'TRANSIENT_UNRESOLVED') continue
+        reasonCounts.set(r.reason, (reasonCounts.get(r.reason) ?? 0) + 1)
+      }
+      const reasonFingerprint = fastHash([...reasonCounts.keys()].sort().join('|'))
+      const uniqueMissingIdentities = [...new Set(captionMissingIdentities)].sort()
+      const identityFingerprint = fastHash(uniqueMissingIdentities.join('|'))
+      const failureSignature = buildCaptionFailureSignature(stateToken, transientUnresolvedCount, reasonFingerprint, identityFingerprint)
+
+      this.captionDeferredRetry.recordFullReconcile(stateToken, failureSignature)
+      const retryDecision = this.captionDeferredRetry.decide(stateToken, failureSignature)
+
+      // ONE unresolved summary per distinct failure signature (state dedup).
+      this.emitCaptionUnresolvedSummary(snapshot, stateToken, transientUnresolvedCount, reasonCounts, uniqueMissingIdentities, failureSignature, captionMissingIdentities)
+
+      if (retryDecision === 'HOT_LOOP_FUSE_PARK') this.captionHotLoopGuardTriggeredCount++
+      if (retryDecision === 'IGNORE_PARKED_SAME_STATE') this.captionParkedStateSelfWakeCount++
+      if (retryDecision === 'ALLOW_ONE_FOLLOW_UP') this.captionReconcileFollowUpCount++
+
+      const retryState = retryDecision === 'ALLOW_ONE_FOLLOW_UP' ? 'FOLLOW_UP_ALLOWED' : 'PARKED'
       emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
         documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
         snapshotRevision: snapshot?.revision ?? -1,
@@ -1805,11 +1937,37 @@ export class CaptionService {
         canonicalTargetCount: plan.length,
         decision: 'DEFER_KEEP_PREVIOUS_COMPLETE_SET',
         transientUnresolvedCount,
+        retryState,
+        retryDecision,
+        stateToken,
         projectionWrites: 0,
       })
-      // Retry via the coalesced scheduler when new semantic information arrives.
-      const liveSnap = this.ctx.getHeadingNumberingSnapshot?.() ?? null
-      if (liveSnap && snapshot && (liveSnap.revision !== snapshot.revision || this.editorStructureEpochValue !== 0)) {
+
+      // Persistent identity mismatch → CANONICAL_INVARIANT_FAILURE (never an
+      // endless transient). KEEP_PREVIOUS_COMPLETE_SET, projectionWrites=0,
+      // PARK, ONE targeted forensic — no further retry.
+      const allInvariantReasons = [...reasonCounts.keys()].every(r =>
+        r === 'CANDIDATE_IDENTITY_MISSING' || r === 'BINDING_IDENTITY_NOT_IN_SEMANTIC_SET' || r === 'DUPLICATE_HEADING_IDENTITY')
+      const isPersistentInvariant = allInvariantReasons && (retryDecision === 'PARK' || retryDecision === 'HOT_LOOP_FUSE_PARK')
+      if (isPersistentInvariant) {
+        this.captionCanonicalInvariantFailureCount++
+        emitRuntimeAudit('CAPTION-CANONICAL-INVARIANT-FAILURE', {
+          documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+          stateToken,
+          unresolvedTargetCount: transientUnresolvedCount,
+          uniqueMissingIdentityCount: uniqueMissingIdentities.length,
+          missingIdentities: uniqueMissingIdentities.slice(0, 12),
+          reasonCounts: Object.fromEntries(reasonCounts),
+          decision: 'KEEP_PREVIOUS_COMPLETE_SET',
+          projectionWrites: 0,
+          retryState: 'PARKED',
+        })
+      }
+
+      this.emitCaptionReconcilePerf(snapshot, 'DEFER', plan.length, retryDecision, stateToken, previous ? publishedPlanCount : 0, publishedPlanCount)
+
+      if (retryDecision === 'ALLOW_ONE_FOLLOW_UP') {
+        // ONE coalesced follow-up through the existing event-driven scheduler.
         this.requestNumberingReconcile({
           reason: `caption-deferred-candidate:${transientUnresolvedCount}`,
           invalidation: ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'],
@@ -1817,6 +1975,10 @@ export class CaptionService {
       }
       return
     }
+
+    // COMPLETE → IDLE (release any deferred retry state).
+    this.captionDeferredRetry.markComplete()
+    this.captionReconcileInitialCount++
 
     const objectEntries: CaptionObjectEntry[] = plan.map((item, i) => {
       const res = captionResolutions[i]
@@ -1851,6 +2013,7 @@ export class CaptionService {
       states: desiredStates,
     }
     incHeadingSemanticPerf('captionSemanticReconcileCount')
+    this.emitCaptionReconcilePerf(snapshot, 'COMPLETE', plan.length, 'COMPLETE_TO_IDLE', this.computeCaptionStateToken(snapshot, plan), previousCompleteCaptionCount, desiredStates.length)
     emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
       documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
       snapshotRevision: snapshot?.revision ?? -1,
@@ -1872,14 +2035,16 @@ export class CaptionService {
         renderedNumber: desired?.rawNumber ?? '',
       }
     })
-    for (let i = 0; i < numbered.length; i++) {
-      const item = numbered[i]
-      const cfg = resolveCaptionTypeSettings(this.captionSettings, item.type)
-      console.info(
-        `[InkChapter Numbering] NUMBERING-RESULT type=${item.type} mode=${cfg.numberingMode ?? 'continuous'} ` +
-        `startAt=${cfg.startAt ?? 1} numberStyle=${cfg.numberStyle ?? 'arabic'} template=${cfg.template ?? '{n}'} ` +
-        `sequenceValue=${item.number} renderedNumber=${item.renderedNumber} labelJson=${JSON.stringify(buildObjectNumberingLabel(cfg.prefix, item.renderedNumber, item.name ?? ''))}`,
-      )
+    if (forensicVerboseEnabled()) {
+      for (let i = 0; i < numbered.length; i++) {
+        const item = numbered[i]
+        const cfg = resolveCaptionTypeSettings(this.captionSettings, item.type)
+        console.info(
+          `[InkChapter Numbering] NUMBERING-RESULT type=${item.type} mode=${cfg.numberingMode ?? 'continuous'} ` +
+          `startAt=${cfg.startAt ?? 1} numberStyle=${cfg.numberStyle ?? 'arabic'} template=${cfg.template ?? '{n}'} ` +
+          `sequenceValue=${item.number} renderedNumber=${item.renderedNumber} labelJson=${JSON.stringify(buildObjectNumberingLabel(cfg.prefix, item.renderedNumber, item.name ?? ''))}`,
+        )
+      }
     }
     this.lastNumbers = new Map()
     for (const item of numbered) {
@@ -2465,6 +2630,112 @@ export class CaptionService {
       legitimateGlobalFallbackCount,
       transientUnresolvedCount,
       decision,
+    })
+  }
+
+  /**
+   * Phase 7R.3.9: deterministic Caption reconcile state token. Built ONLY from
+   * authorities that can genuinely change the Caption result. No timestamps,
+   * no retry counters, no no-op generations.
+   */
+  private computeCaptionStateToken(
+    snapshot: HeadingNumberingSnapshot | null,
+    plan: Array<{ type: CaptionTargetType }>,
+  ): string {
+    const frameFingerprint = this.ctx.getCanonicalHeadingFrameFingerprint?.() ?? ''
+    return buildCaptionReconcileStateToken({
+      documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+      editorStructureEpoch: this.editorStructureEpochValue,
+      headingSemanticFingerprint: computeHeadingSemanticFingerprint(snapshot),
+      canonicalHeadingFrameFingerprint: frameFingerprint,
+      canonicalTargetFingerprint: buildCaptionTargetFingerprint(plan.map(p => p.type)),
+      settingsSemanticSignature: this.computeCaptionSettingsSignature(),
+    })
+  }
+
+  /** Deterministic semantic signature of the current caption configuration. */
+  private computeCaptionSettingsSignature(): string {
+    const parts: string[] = []
+    for (const type of ['figure', 'table', 'code'] as const) {
+      const cfg = resolveCaptionTypeSettings(this.captionSettings, type)
+      parts.push(`${type}:${cfg.enabled ? 1 : 0}:${cfg.numberingMode ?? 'continuous'}:${cfg.prefix ?? ''}:${cfg.startAt ?? 1}:${cfg.template ?? '{n}'}`)
+    }
+    return fastHash(parts.join('|'))
+  }
+
+  /**
+   * Phase 7R.3.9: ONE CAPTION-UNRESOLVED-SUMMARY per distinct failure signature
+   * (state dedup — never a per-target log storm). Detailed missing-identity
+   * forensic is capped at one per unique identity.
+   */
+  private emitCaptionUnresolvedSummary(
+    snapshot: HeadingNumberingSnapshot | null,
+    stateToken: string,
+    unresolvedTargetCount: number,
+    reasonCounts: Map<string, number>,
+    uniqueMissingIdentities: string[],
+    failureSignature: string,
+    rawMissingIdentities: string[],
+  ): void {
+    if (failureSignature === this.lastReportedCaptionFailureSignature) return
+    this.lastReportedCaptionFailureSignature = failureSignature
+
+    const identityAffected = new Map<string, number>()
+    for (const id of rawMissingIdentities) identityAffected.set(id, (identityAffected.get(id) ?? 0) + 1)
+
+    emitRuntimeAudit('CAPTION-UNRESOLVED-SUMMARY', {
+      documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+      stateToken,
+      unresolvedTargetCount,
+      uniqueMissingHeadingIdentityCount: uniqueMissingIdentities.length,
+      reasonCounts: Object.fromEntries(reasonCounts),
+      missingHeadingIdentities: Object.fromEntries(identityAffected),
+    })
+
+    // One targeted detailed record per UNIQUE missing identity (capped).
+    for (const id of uniqueMissingIdentities.slice(0, 8)) {
+      emitRuntimeAudit('HEADING-CANONICAL-BINDING-DRIFT', {
+        documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+        stableIdentity: id,
+        semanticLookupFound: false,
+        bindingLookupFound: true,
+        sourceCollector: 'CAPTION_UNRESOLVED',
+        affectedTargetCount: identityAffected.get(id) ?? 0,
+      })
+    }
+  }
+
+  /** Phase 7R.3.9: one bounded CAPTION-RECONCILE-PERF record per full reconcile. */
+  private emitCaptionReconcilePerf(
+    snapshot: HeadingNumberingSnapshot | null,
+    phase: 'COMPLETE' | 'DEFER',
+    targetCount: number,
+    retryDecision: string,
+    stateToken: string,
+    previousCompletePlanCount: number,
+    publishedPlanCount: number,
+  ): void {
+    const gates = this.captionDeferredRetry.getGateCounters()
+    emitRuntimeAudit('CAPTION-RECONCILE-PERF', {
+      documentKey: snapshot?.documentKey ?? this.currentDocumentKey ?? null,
+      reason: this.lastRefreshReason ?? 'reconcile',
+      stateToken,
+      retryState: retryDecision === 'ALLOW_ONE_FOLLOW_UP' ? 'FOLLOW_UP_ALLOWED' : (retryDecision === 'COMPLETE_TO_IDLE' ? 'IDLE' : 'PARKED'),
+      targetCount,
+      previousCompletePlanCount,
+      publishedPlanCount,
+      decision: phase === 'COMPLETE' ? 'COMPLETE' : 'DEFER_FOLLOW_UP',
+      gate: {
+        CAPTION_DEFER_TIMER_POLLING_COUNT: this.captionDeferredTimerPollingCount,
+        CAPTION_PARKED_STATE_SELF_WAKE_COUNT: this.captionParkedStateSelfWakeCount,
+        CAPTION_HOT_LOOP_GUARD_TRIGGERED_COUNT: this.captionHotLoopGuardTriggeredCount,
+        CAPTION_CANONICAL_INVARIANT_FAILURE_COUNT: this.captionCanonicalInvariantFailureCount,
+        CAPTION_FOLLOW_UP_COUNT: gates.followUpCount,
+        CAPTION_PARKED_COUNT: gates.parkedCount,
+        MAX_FOLLOW_UP_PER_UNCHANGED_STATE_TOKEN: gates.maxFollowUpPerUnchangedStateToken,
+        CAPTION_RECONCILE_INITIAL_COUNT: this.captionReconcileInitialCount,
+        CAPTION_RECONCILE_FOLLOW_UP_COUNT: this.captionReconcileFollowUpCount,
+      },
     })
   }
 

@@ -19,10 +19,10 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-export const INKCHAPTER_BUILD_ID = 'inkchapter-boundary-runtime-diagnostics-perf-v7R3.8'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-caption-deferred-hot-loop-frame-v7R3.9'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r38-boundary-diagnostics-perf'
+export const RUNTIME_GATE_REVISION = 'r7r39-caption-deferred-hot-loop-frame'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
