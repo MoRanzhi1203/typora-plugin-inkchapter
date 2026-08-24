@@ -17,8 +17,13 @@
  * projection/decoration writes go through direct DOM writes, not these events.
  */
 import { resolveBusinessContentRoot } from './document-utilities-context'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export const LOCKED_EDITOR_CLASS = 'inkchapter-document-locked'
+
+export interface DocumentEditGuardOptions {
+  getDocumentKey?: () => string | null
+}
 
 const BLOCKED_KEYDOWN_KEYS = new Set(['Backspace', 'Delete', 'Enter'])
 const BLOCKED_BEFOREINPUT_INPUT_TYPES = new Set([
@@ -37,6 +42,8 @@ const BLOCKED_BEFOREINPUT_INPUT_TYPES = new Set([
   'historyRedo',
 ])
 
+type EditGuardAuditAction = 'LOCK' | 'UNLOCK' | 'BLOCK' | 'ALLOW'
+
 export class DocumentEditGuard {
   private locked = false
   private boundKeys = false
@@ -45,16 +52,41 @@ export class DocumentEditGuard {
   private boundDrop = false
   private boundInput = false
 
+  constructor(private opts: DocumentEditGuardOptions = {}) {}
+
+  private audit(action: EditGuardAuditAction, detail: {
+    eventType?: string
+    inputType?: string
+    key?: string
+    trusted?: boolean
+    decision?: string
+  }): void {
+    emitRuntimeAudit('DOCUMENT-UTILITY-EDIT-GUARD', {
+      documentKey: this.opts.getDocumentKey?.() ?? null,
+      state: this.locked ? 'LOCKED' : 'EDITABLE',
+      action,
+      eventType: detail.eventType ?? null,
+      inputType: detail.inputType ?? null,
+      key: detail.key ?? null,
+      trusted: detail.trusted ?? null,
+      decision: detail.decision ?? (action === 'BLOCK' ? 'BLOCK' : action === 'ALLOW' ? 'ALLOW' : 'PASS'),
+    })
+  }
+
   private onKeydownCapture = (e: KeyboardEvent): void => {
     if (e.isComposing) return
     if (e.metaKey || e.ctrlKey || e.altKey) {
       // Allow copy (Ctrl+C), select-all (Ctrl+A), and navigation shortcuts.
       const key = e.key.toLowerCase()
+      if (key === 'c') {
+        this.audit('ALLOW', { eventType: 'keydown', key: e.key, trusted: e.isTrusted })
+      }
       if (key === 'c' || key === 'a' || key === 'v' || key === 'x' || key === 's') return
     }
     if (BLOCKED_KEYDOWN_KEYS.has(e.key)) {
       e.preventDefault()
       e.stopImmediatePropagation()
+      this.audit('BLOCK', { eventType: 'keydown', key: e.key, trusted: e.isTrusted })
     }
   }
 
@@ -62,28 +94,33 @@ export class DocumentEditGuard {
     if (BLOCKED_BEFOREINPUT_INPUT_TYPES.has(e.inputType)) {
       e.preventDefault()
       e.stopImmediatePropagation()
+      this.audit('BLOCK', { eventType: 'beforeinput', inputType: e.inputType, trusted: e.isTrusted })
     }
   }
 
   private onPasteCapture = (e: ClipboardEvent): void => {
     e.preventDefault()
     e.stopImmediatePropagation()
+    this.audit('BLOCK', { eventType: 'paste', trusted: e.isTrusted })
   }
 
   private onCutCapture = (e: ClipboardEvent): void => {
     e.preventDefault()
     e.stopImmediatePropagation()
+    this.audit('BLOCK', { eventType: 'cut', trusted: e.isTrusted })
   }
 
   private onDropCapture = (e: DragEvent): void => {
     e.preventDefault()
     e.stopImmediatePropagation()
+    this.audit('BLOCK', { eventType: 'drop', trusted: e.isTrusted })
   }
 
   private onInputCapture = (e: Event): void => {
     // Safety net for engines that bypass beforeinput (e.g. IME commit paths).
     e.preventDefault()
     e.stopImmediatePropagation()
+    this.audit('BLOCK', { eventType: 'input', trusted: (e as InputEvent).isTrusted })
   }
 
   private bindGuards(root: HTMLElement): void {
@@ -137,6 +174,7 @@ export class DocumentEditGuard {
     if (this.locked) return true
     this.bindGuards(root)
     this.locked = true
+    this.audit('LOCK', { eventType: 'transition', decision: 'PASS' })
     return true
   }
 
@@ -146,6 +184,7 @@ export class DocumentEditGuard {
     const root = resolveBusinessContentRoot()
     if (root) this.unbindGuards(root)
     this.locked = false
+    this.audit('UNLOCK', { eventType: 'transition', decision: 'PASS' })
   }
 
   /** Dispose: unlock + remove all guards + remove lock decoration. */

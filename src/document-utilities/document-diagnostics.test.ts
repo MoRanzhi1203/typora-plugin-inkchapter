@@ -48,13 +48,13 @@ describe('DIAG-1 healthy document', () => {
     )
     expect(r.errorCount).toBe(0)
     expect(r.warningCount).toBe(0)
-    const snapshot = { documentKey: 'doc:a', revision: 1, diagnostics: r.diagnostics, errorCount: r.errorCount, warningCount: r.warningCount, infoCount: r.infoCount }
+    const snapshot = { documentKey: 'doc:a', revision: 1, sourceRevision: 1, generatedAt: 0, diagnostics: r.diagnostics, errorCount: r.errorCount, warningCount: r.warningCount, infoCount: r.infoCount }
     expect(deriveDiagnosticsState(snapshot).state).toBe('HEALTHY')
   })
 })
 
 describe('DIAG-2 strict heading gap', () => {
-  it('reports HEADING_GAP for H1→H2→H4 without fabricating a number', () => {
+  it('reports HEADING_LEVEL_GAP for H1→H2→H4 without fabricating a number', () => {
     const r = computeDocumentDiagnostics(
       input({
         markdown: '# H1\n\n## H2\n\n#### H4\n',
@@ -65,11 +65,26 @@ describe('DIAG-2 strict heading gap', () => {
         ],
       }),
     )
-    const gap = r.diagnostics.find(d => d.code === 'HEADING_GAP')
+    const gap = r.diagnostics.find(d => d.code === 'HEADING_LEVEL_GAP')
     expect(gap).toBeTruthy()
     expect(gap!.severity).toBe('warning')
+    expect(gap!.detail).toContain('缺少 H3')
     // No fabricated hierarchical number like 1.0.1 appears anywhere.
     expect(JSON.stringify(r.diagnostics)).not.toMatch(/1\.0\.\d/)
+  })
+
+  it('reports HEADING_LEVEL_GAP even in loose mode (structure lint uses physical levels)', () => {
+    const r = computeDocumentDiagnostics(
+      input({
+        strictMode: false,
+        markdown: '## H2\n\n#### H4\n',
+        headings: [
+          { level: 2, text: 'H2', element: el() },
+          { level: 4, text: 'H4', element: el() },
+        ],
+      }),
+    )
+    expect(r.diagnostics.some(d => d.code === 'HEADING_LEVEL_GAP')).toBe(true)
   })
 })
 

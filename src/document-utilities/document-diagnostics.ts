@@ -242,14 +242,18 @@ export function computeDocumentDiagnostics(
   }
 
   // Strict parent gap: heading jumps more than one level below an existing
-  // previous heading (structural level adjacency — NOT numbering semantics).
-  if (input.strictMode && input.headings.length > 1) {
+  // previous heading. Phase 7R.3.11.4: this is a Markdown STRUCTURE lint and
+  // must use PHYSICAL heading levels regardless of numbering strict mode
+  // (HEADING_LEVEL_GAP). Never gated on strictMode.
+  if (input.headings.length > 1) {
     let prevLevel: number | null = null
     for (const h of input.headings) {
       if (prevLevel != null && h.level > prevLevel + 1) {
+        const missingLevels: number[] = []
+        for (let l = prevLevel + 1; l < h.level; l++) missingLevels.push(l)
         push(
-          makeDiagnostic(input, 'heading', 'warning', 'HEADING_GAP', `标题层级跳级（H${prevLevel} → H${h.level}）`, {
-            detail: '严格模式下 H' + h.level + ' 缺少应有的 H' + (h.level - 1) + ' 父级。',
+          makeDiagnostic(input, 'heading', 'warning', 'HEADING_LEVEL_GAP', `标题层级存在跳级（H${prevLevel} → H${h.level}）`, {
+            detail: `当前标题为 H${h.level}，但前一可用层级为 H${prevLevel}，缺少 ${missingLevels.map(l => `H${l}`).join('、')}。`,
             stableIdentity: h.stableIdentity,
             element: h.element,
             targetIdentity: h.stableIdentity ? `identity:${h.stableIdentity}` : `gap:${prevLevel}>${h.level}:${h.text}`,

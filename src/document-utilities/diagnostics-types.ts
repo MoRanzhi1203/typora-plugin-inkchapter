@@ -50,7 +50,12 @@ export interface DocumentDiagnostic {
 
 export interface DocumentDiagnosticsSnapshot {
   documentKey: string | null
+  /** Monotonic diagnostic recompute revision (per authority). */
   revision: number
+  /** Source generation identity — increments when the document key changes. */
+  sourceRevision: number
+  /** Wall-clock generation time. */
+  generatedAt: number
   diagnostics: readonly DocumentDiagnostic[]
   errorCount: number
   warningCount: number

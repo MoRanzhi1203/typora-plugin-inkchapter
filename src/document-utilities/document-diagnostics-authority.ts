@@ -16,6 +16,7 @@ import type {
 } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { collectDiagnosticsInput, resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export interface DocumentDiagnosticsProviders {
   /** Formula visible tag tokens via the existing projection authority (read-only). */
@@ -38,6 +39,8 @@ export interface DocumentDiagnosticsProviders {
 export class DocumentDiagnosticsAuthority {
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   private revision = 0
+  private sourceRevision = 0
+  private lastDocumentKey: string | null = null
   private listeners = new Set<(snapshot: DocumentDiagnosticsSnapshot | null) => void>()
 
   constructor(
@@ -47,6 +50,11 @@ export class DocumentDiagnosticsAuthority {
 
   getSnapshot(): DocumentDiagnosticsSnapshot | null {
     return this.snapshot
+  }
+
+  /** Current source generation identity (increments on document key change). */
+  getSourceRevision(): number {
+    return this.sourceRevision
   }
 
   subscribe(listener: (snapshot: DocumentDiagnosticsSnapshot | null) => void): () => void {
@@ -65,17 +73,48 @@ export class DocumentDiagnosticsAuthority {
   recompute(): void {
     const structural = this.collectStructuralFacts()
     const input = collectDiagnosticsInput(this.ctx, structural)
+    if (input.documentKey !== this.lastDocumentKey) {
+      this.sourceRevision++
+      this.lastDocumentKey = input.documentKey
+    }
     const computed = computeDocumentDiagnostics(input)
+    this.emitHeadingGapInputIfAny(structural.headings, input.documentKey)
     this.revision++
     this.snapshot = {
       documentKey: input.documentKey,
       revision: this.revision,
+      sourceRevision: this.sourceRevision,
+      generatedAt: Date.now(),
       diagnostics: computed.diagnostics,
       errorCount: computed.errorCount,
       warningCount: computed.warningCount,
       infoCount: computed.infoCount,
     }
     this.notify()
+  }
+
+  /**
+   * Phase 7R.3.11.5 — low-noise heading-input audit: emitted ONLY when a
+   * real heading level gap exists (physical levels), with the exact jump point.
+   */
+  private emitHeadingGapInputIfAny(headings: DiagnosticHeadingFact[], documentKey: string | null): void {
+    let prevLevel: number | null = null
+    for (const h of headings) {
+      if (prevLevel != null && h.level > prevLevel + 1) {
+        const missingLevels: number[] = []
+        for (let l = prevLevel + 1; l < h.level; l++) missingLevels.push(l)
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-HEADING-INPUT', {
+          documentKey,
+          previousLevel: prevLevel,
+          currentLevel: h.level,
+          missingLevels,
+          stableIdentity: h.stableIdentity ?? null,
+          text: h.text,
+          decision: 'HEADING_LEVEL_GAP',
+        })
+      }
+      prevLevel = h.level
+    }
   }
 
   /** Mark snapshot stale for a changed document; recompute immediately. */

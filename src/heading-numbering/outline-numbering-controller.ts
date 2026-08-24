@@ -29,6 +29,7 @@ import {
 } from './outline-numbering-adapter'
 import type { HeadingDescriptor } from './heading-types'
 import { recordRuntimeAudit } from './runtime-audit'
+import { emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 
 interface OutlineNumberCache {
   documentKey: string
@@ -719,9 +720,16 @@ export class OutlineNumberingController {
       this.pendingDocumentKey = expectedDocKey
       this.pendingRevision = expectedRevision
       this.lastAvailabilityReason = 'NO_VISIBLE_OUTLINE_ROOT'
-      console.info(
-        `[InkChapter Numbering] OUTLINE-ROOT-WAIT documentKey=${expectedDocKey} revision=${expectedRevision} ` +
-        `decision=DEFER reason=NO_VISIBLE_OUTLINE_ROOT`,
+      // Phase 7R.3.11.7: identical-state DEFER spam (same doc+revision) emits once.
+      emitRuntimeAuditStateDedup(
+        'OUTLINE-ROOT-WAIT',
+        `${expectedDocKey}|${expectedRevision}|NO_VISIBLE_OUTLINE_ROOT`,
+        {
+          documentKey: expectedDocKey,
+          revision: expectedRevision,
+          decision: 'DEFER',
+          reason: 'NO_VISIBLE_OUTLINE_ROOT',
+        },
       )
       this.ensureRootAvailabilityWatch()
       return
@@ -863,9 +871,15 @@ export class OutlineNumberingController {
     this.availabilityCandidateConnected = candidate ? candidate.isConnected : false
     this.availabilityCandidateVisible = candidate ? candidate.offsetParent !== null : false
     this.lastAvailabilityReason = 'NO_VISIBLE_OUTLINE_ROOT'
-    console.info(
-      `[InkChapter Numbering] OUTLINE-ROOT-CANDIDATE found=${!!candidate} ` +
-      `connected=${this.availabilityCandidateConnected} visible=${this.availabilityCandidateVisible}`,
+    // Phase 7R.3.11.7: identical candidate state emits once (visible=false spam).
+    emitRuntimeAuditStateDedup(
+      'OUTLINE-ROOT-CANDIDATE',
+      `${!!candidate}|${this.availabilityCandidateConnected}|${this.availabilityCandidateVisible}`,
+      {
+        found: !!candidate,
+        connected: this.availabilityCandidateConnected,
+        visible: this.availabilityCandidateVisible,
+      },
     )
 
     // Root available (even hidden) → late-bind the observer now, before it
@@ -998,8 +1012,11 @@ export class OutlineNumberingController {
 
     const root = findOutlineRoot() ?? findOutlineRootRelaxed()
     if (!root || !root.isConnected) {
-      console.info(
-        `[InkChapter Numbering] OUTLINE-OBSERVER-BIND-DECISION reason=${reason} decision=DEFER cause=NO_CONNECTED_ROOT`,
+      // Phase 7R.3.11.7: identical DEFER (no connected root) emits once.
+      emitRuntimeAuditStateDedup(
+        'OUTLINE-OBSERVER-BIND-DECISION',
+        `${reason}|DEFER|NO_CONNECTED_ROOT`,
+        { reason, decision: 'DEFER', cause: 'NO_CONNECTED_ROOT' },
       )
       return { decision: 'DEFER', rootToken: null }
     }
@@ -1009,9 +1026,11 @@ export class OutlineNumberingController {
 
     // Idempotent: already bound to the SAME root node → NO_OP (no observer churn).
     if (this.observer && this.observerRoot === root && this.observedRootToken === newRootToken && this.isObserverActive) {
-      console.info(
-        `[InkChapter Numbering] OUTLINE-OBSERVER-BIND-DECISION reason=${reason} decision=NO_OP ` +
-        `rootToken=${newRootToken} cause=ALREADY_BOUND_CURRENT_ROOT`,
+      // Phase 7R.3.11.7: identical NO_OP (already bound) emits once.
+      emitRuntimeAuditStateDedup(
+        'OUTLINE-OBSERVER-BIND-DECISION',
+        `${reason}|NO_OP|${newRootToken}|ALREADY_BOUND_CURRENT_ROOT`,
+        { reason, decision: 'NO_OP', rootToken: newRootToken, cause: 'ALREADY_BOUND_CURRENT_ROOT' },
       )
       return { decision: 'NO_OP', rootToken: newRootToken }
     }

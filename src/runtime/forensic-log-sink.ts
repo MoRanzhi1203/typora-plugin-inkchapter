@@ -80,6 +80,17 @@ let writtenCount = 0
 let droppedCount = 0
 let errorCount = 0
 
+// ── Phase 7R.3.11.7 — state-token dedup + summary counters ──────────
+// Consecutive identical-state INFO audits (NO_OP / WAIT / DEFER) are emitted
+// ONCE and then counted as suppressed until the state token changes. FAIL /
+// write / identity / LOCK / BLOCK / GO_TOP / GO_BOTTOM authority is preserved:
+// dedup ONLY applies to the events routed through emitRuntimeAuditStateDedup.
+let emittedInfoLogCount = 0
+let suppressedInfoLogCount = 0
+let warnAuditCount = 0
+let errorAuditCount = 0
+const dedupLastSignature = new Map<string, string>()
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatConsoleValue(v: unknown): string {
@@ -215,6 +226,10 @@ function enqueueRecord(event: string, payload?: Record<string, unknown>, level: 
   // Capture the emission timestamp exactly once (NOT at flush time).
   const ts = captureRuntimeLogTimestamp()
 
+  // Phase 7R.3.11.7 — summary level counters (non-info authority preserved).
+  if (level === 'warn') warnAuditCount++
+  else if (level === 'error') errorAuditCount++
+
   // Console mirror always runs — preserves the existing observable stream.
   consoleLog(level, buildConsoleLine(event, payload, ts))
 
@@ -242,6 +257,72 @@ export function emitRuntimeAudit(
   level: AuditLogLevel = 'info',
 ): void {
   enqueueRecord(event, payload, level)
+  scheduleFlush()
+}
+
+// ── Phase 7R.3.11.7 — state-token dedup emission ────────────────────
+/**
+ * State-dedup audit facade. Consecutive identical-state INFO events are
+ * emitted once and counted as suppressed; a state-token CHANGE re-emits.
+ *
+ * AUTHORITY SAFETY: only INFO-level identical-state noise is ever suppressed.
+ * FAIL / write / identity / LOCK / BLOCK / GO_TOP / GO_BOTTOM call sites must
+ * keep using `emitRuntimeAudit` directly (or pass a changing signature), so
+ * their forensic authority is never deduplicated.
+ *
+ * `signature` is the state token (e.g. `${documentKey}|${decision}|${reason}`).
+ * Identical consecutive signatures → suppressed; otherwise emitted.
+ */
+export function emitRuntimeAuditStateDedup(
+  event: string,
+  signature: string,
+  payload?: Record<string, unknown>,
+): void {
+  const last = dedupLastSignature.get(event)
+  if (last === signature) {
+    suppressedInfoLogCount++
+    return
+  }
+  dedupLastSignature.set(event, signature)
+  emittedInfoLogCount++
+  enqueueRecord(event, payload, 'info')
+  scheduleFlush()
+}
+
+/** Forget a dedup state token (safe to call at document-switch boundaries). */
+export function resetAuditStateDedup(event?: string): void {
+  if (event !== undefined) dedupLastSignature.delete(event)
+  else dedupLastSignature.clear()
+}
+
+/** Phase 7R.3.11.7 — read-only dedup counters (for the runtime summary). */
+export function getAuditDedupCounters(): {
+  emittedInfoLogCount: number
+  suppressedInfoLogCount: number
+  warnAuditCount: number
+  errorAuditCount: number
+} {
+  return { emittedInfoLogCount, suppressedInfoLogCount, warnAuditCount, errorAuditCount }
+}
+
+/**
+ * Phase 7R.3.11.7 — event-triggered low-frequency audit summary. MUST only be
+ * called at a settle boundary (document switch settled / drawer transition
+ * settled / DevTools resize settled) — never from a timer or poll.
+ */
+export function emitInkchapterRuntimeAuditSummary(
+  reason: string,
+  extra: Record<string, unknown> = {},
+): void {
+  const { emittedInfoLogCount: emitted, suppressedInfoLogCount: suppressed } = getAuditDedupCounters()
+  enqueueRecord('INKCHAPTER-RUNTIME-AUDIT-SUMMARY', {
+    trigger: reason,
+    emittedInfoLogCount: emitted,
+    suppressedInfoLogCount: suppressed,
+    errorCount,
+    warningCount: warnAuditCount,
+    ...extra,
+  }, 'info')
   scheduleFlush()
 }
 
