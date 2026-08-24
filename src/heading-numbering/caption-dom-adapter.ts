@@ -16,6 +16,8 @@ import type {
   CaptionAnchorDescriptor,
 } from './caption-system'
 import { hashText } from './paragraph-layout-store'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import { forensicVerboseEnabled } from './document-open-perf'
 
 export interface CaptionTarget {
   type: CaptionTargetType
@@ -298,6 +300,7 @@ export class CaptionDomAdapter {
   collectTargets(): CaptionTarget[] {
     const root = this.getEditorRoot()
     if (!root) return []
+    const t0 = performance.now()
 
     interface Raw {
       type: CaptionTargetType
@@ -348,14 +351,16 @@ export class CaptionDomAdapter {
       const closestMath = !!pre.closest(MATH_HOST_SELECTOR)
       const canonicalHost = isCanonicalFence(pre) ? pre : (closestFence ?? null)
 
-      console.info(
-        `[InkChapter Caption] CODE-CANDIDATE-DECISION tag=${pre.tagName} ` +
-        `class=${(pre.className || '').slice(0, 60)} mdtype=${mdtype} connected=${pre.isConnected} ` +
-        `closestFence=${closestFence ? closestFence.tagName + '.' + (closestFence.className || '').slice(0, 40) : 'none'} ` +
-        `closestCodeMirror=${closestCodeMirror} closestMath=${closestMath} ` +
-        `canonicalHost=${canonicalHost ? 'PRE.md-fences' : 'none'} ` +
-        `decision=${decision} reason=${reason}`,
-      )
+      if (forensicVerboseEnabled()) {
+        console.info(
+          `[InkChapter Caption] CODE-CANDIDATE-DECISION tag=${pre.tagName} ` +
+          `class=${(pre.className || '').slice(0, 60)} mdtype=${mdtype} connected=${pre.isConnected} ` +
+          `closestFence=${closestFence ? closestFence.tagName + '.' + (closestFence.className || '').slice(0, 40) : 'none'} ` +
+          `closestCodeMirror=${closestCodeMirror} closestMath=${closestMath} ` +
+          `canonicalHost=${canonicalHost ? 'PRE.md-fences' : 'none'} ` +
+          `decision=${decision} reason=${reason}`,
+        )
+      }
 
       if (decision === 'REJECT_CODEMIRROR_INTERNAL') d.rejectedCodeMirrorInternalCount++
       else if (decision === 'REJECT_MATH_INTERNAL') d.rejectedMathInternalCount++
@@ -368,6 +373,19 @@ export class CaptionDomAdapter {
       raw.push({ type: 'code', root: pre, contentNode: pre })
     }
     d.finalCodeTargetCount = d.canonicalFenceCount
+
+    // Phase 7R.3.9: ONE CODE-CANDIDATE-SUMMARY per scan in normal mode
+    // (per-PRE CODE-CANDIDATE-DECISION detail is verbose/failure-only).
+    emitRuntimeAudit('CODE-CANDIDATE-SUMMARY', {
+      rawPreCount: d.rawPreCount,
+      canonicalCodeTargetCount: d.finalCodeTargetCount,
+      acceptedCanonicalFenceCount: d.canonicalFenceCount,
+      rejectedCodeMirrorInternalCount: d.rejectedCodeMirrorInternalCount,
+      rejectedMathCount: d.rejectedMathInternalCount,
+      rejectedOtherCount: d.rejectedNestedPreCount,
+      durationMs: Math.max(1, Math.round(performance.now() - t0)),
+      decision: 'MEASURED',
+    })
 
     // Sort by document order.
     raw.sort((a, b) => {

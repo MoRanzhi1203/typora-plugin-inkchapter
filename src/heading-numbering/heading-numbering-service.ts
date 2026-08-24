@@ -25,6 +25,11 @@ import type {
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
 import { HeadingNumberingAuthority, type HeadingNumberingSnapshot } from './heading-numbering-snapshot'
+import {
+  buildCanonicalHeadingFrame,
+  type CanonicalFrameInventory,
+  type CanonicalHeadingFrame,
+} from './canonical-heading-frame'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
 import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-formatter'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
@@ -1675,6 +1680,13 @@ export class HeadingNumberingService {
   private headingBindingGenerationValue = 0
   private lastBindingsFingerprint: string | null = null
 
+  // Phase 7R.3.9: committed CanonicalHeadingFrame — the single joined authority
+  // (element + stableIdentity + semanticState). Caption/Formula resolve against
+  // this frame; they never independently re-collect headings.
+  private canonicalHeadingFrame: CanonicalHeadingFrame | null = null
+  private canonicalFrameGeneration = 0
+  private headingStructureEpochValue = 0
+
   // Level Range Enforcer
   private levelRangeEnforcer!: HeadingLevelRangeEnforcer
   private lastEffectiveMaxLevel: HeadingLevel = 6
@@ -2554,7 +2566,7 @@ export class HeadingNumberingService {
         headingStableIdentity: string
         semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
       }
-    | { bound: false; reason: string }
+    | { bound: false; reason: string; candidateStableIdentity?: string }
   > {
     const result: Array<
       | {
@@ -2564,7 +2576,7 @@ export class HeadingNumberingService {
           headingStableIdentity: string
           semanticState: import('./semantic-heading-types').SemanticHeadingNumberState
         }
-      | { bound: false; reason: string }
+      | { bound: false; reason: string; candidateStableIdentity?: string }
     > = targets.map(() => ({ bound: false as const, reason: 'NO_PRECEDING_HEADING' }))
 
     const activeDocumentKey = this.getDocumentKey()
@@ -2592,7 +2604,62 @@ export class HeadingNumberingService {
     }
     const semanticByIdentity = new Map(rawSnapshot.semantic.map(s => [s.stableIdentity, s]))
 
-    // Forward sweep: headings and targets are both in document order.
+    // ── Phase 7R.3.9: prefer the committed CanonicalHeadingFrame — the SINGLE
+    //    joined authority (element + stableIdentity + semanticState). Success
+    //    path never performs `candidate → semanticByIdentity.get()` again. ──
+    const frame = this.canonicalHeadingFrame
+    const useFrame = frame !== null && frame.documentKey === activeDocumentKey && frame.entries.length > 0
+    if (useFrame) {
+      const entries = frame.entries
+      let headingCursor = 0
+      let candidate: import('./canonical-heading-frame').CanonicalHeadingEntry | null = null
+      for (let ti = 0; ti < targets.length; ti++) {
+        const target = targets[ti]
+        if (!target.isConnected || !adapterRoot.contains(target)) {
+          result[ti] = { bound: false, reason: !target.isConnected ? 'TARGET_DISCONNECTED' : 'ROOT_MISMATCH' }
+          continue
+        }
+        while (headingCursor < entries.length) {
+          const b = entries[headingCursor]
+          const pos = b.element.compareDocumentPosition(target)
+          if (pos & DOM_POSITION_DISCONNECTED) { headingCursor++; continue }
+          if (pos & DOM_POSITION_FOLLOWING) {
+            candidate = b
+            headingCursor++
+          } else {
+            break
+          }
+        }
+        if (!candidate) continue // genuinely before the first heading binding
+        result[ti] = {
+          bound: true,
+          documentKey: activeDocumentKey,
+          revision: frame.semanticRevision,
+          headingStableIdentity: candidate.stableIdentity,
+          semanticState: candidate.semanticState,
+        }
+      }
+      emitRuntimeAudit('CAPTION-CANONICAL-RESOLVER-BATCH', {
+        documentKey: activeDocumentKey,
+        snapshotRevision: frame.semanticRevision,
+        headingBindingCount: entries.length,
+        headingBindingGeneration: this.headingBindingGenerationValue,
+        targetCount: targets.length,
+        boundCount: result.filter(r => r.bound).length,
+        unboundCount: result.filter(r => !r.bound).length,
+        unboundReasons: (() => {
+          const m = new Map<string, number>()
+          for (const r of result) if (!r.bound) m.set(r.reason, (m.get(r.reason) ?? 0) + 1)
+          return Object.fromEntries(m)
+        })(),
+        decision: 'SESSION_FRAME_FORWARD_SWEEP',
+      })
+      return result
+    }
+
+    // Fallback: no committed coherent frame yet (very first pass / frame build
+    // failure). One-shot collection — NOT a parallel authority; it only bridges
+    // the brief pre-frame window and never re-joins semantics on success.
     let headingCursor = 0
     let candidate: { key: string; element: HTMLElement } | null = null
     for (let ti = 0; ti < targets.length; ti++) {
@@ -2615,7 +2682,9 @@ export class HeadingNumberingService {
       if (!candidate) continue // genuinely before the first heading binding
       const semanticState = semanticByIdentity.get(candidate.key)
       if (!semanticState) {
-        result[ti] = { bound: false, reason: 'CANDIDATE_IDENTITY_MISSING' }
+        // Phase 7R.3.9: expose the drifting candidate identity so Caption can
+        // build a precise missing-identity fingerprint (never guess).
+        result[ti] = { bound: false, reason: 'CANDIDATE_IDENTITY_MISSING', candidateStableIdentity: candidate.key }
         continue
       }
       result[ti] = {
@@ -2640,7 +2709,7 @@ export class HeadingNumberingService {
         for (const r of result) if (!r.bound) m.set(r.reason, (m.get(r.reason) ?? 0) + 1)
         return Object.fromEntries(m)
       })(),
-      decision: 'SESSION_ONE_FORWARD_SWEEP',
+      decision: 'SESSION_FALLBACK_FORWARD_SWEEP',
     })
     return result
   }
@@ -2648,6 +2717,40 @@ export class HeadingNumberingService {
   /** Phase 7R.3.6-F: current heading binding generation (provenance only). */
   getHeadingBindingGeneration(): number {
     return this.headingBindingGenerationValue
+  }
+
+  /** Phase 7R.3.9: the committed canonical heading frame (joined authority). */
+  getCanonicalHeadingFrame(): CanonicalHeadingFrame | null {
+    return this.canonicalHeadingFrame
+  }
+
+  /** Phase 7R.3.9: frame fingerprint for the Caption reconcile state token. */
+  getCanonicalHeadingFrameFingerprint(): string {
+    return this.canonicalHeadingFrame?.frameFingerprint ?? ''
+  }
+
+  /** Phase 7R.3.9: one targeted drift record per UNIQUE mismatched identity. */
+  private emitCanonicalBindingDrift(inventory: CanonicalFrameInventory): void {
+    for (const id of inventory.bindingOnlyIdentities.slice(0, 8)) {
+      emitRuntimeAudit('HEADING-CANONICAL-BINDING-DRIFT', {
+        documentKey: inventory.documentKey ?? null,
+        stableIdentity: id,
+        semanticLookupFound: false,
+        bindingLookupFound: true,
+        sourceCollector: 'CANONICAL_FRAME_BUILD',
+        decision: inventory.decision,
+      })
+    }
+    for (const id of inventory.semanticOnlyIdentities.slice(0, 8)) {
+      emitRuntimeAudit('HEADING-CANONICAL-BINDING-DRIFT', {
+        documentKey: inventory.documentKey ?? null,
+        stableIdentity: id,
+        semanticLookupFound: true,
+        bindingLookupFound: false,
+        sourceCollector: 'CANONICAL_FRAME_BUILD',
+        decision: inventory.decision,
+      })
+    }
   }
 
   /**
@@ -3819,7 +3922,12 @@ export class HeadingNumberingService {
       this.revalidateStrictFirstH1(reason)
 
       // ── SEMANTIC SNAPSHOT RECONCILE (must precede physical numbering gate) ──
-      const headings = this.adapter.collectHeadings()
+      // Phase 7R.3.9: ONE canonical heading collection (binding retains the live
+      // element). The semantic snapshot + CanonicalHeadingFrame are built from
+      // this SAME collection — the 34-vs-33 two-collector drift cannot occur.
+      const headingBindings = this.adapter.collectHeadingBindings()
+      this.headingStructureEpochValue++
+      const headings = headingBindings.map(b => ({ key: b.key, level: b.level as HeadingLevel, text: b.text }))
       snapshotHeadingCollection(headings)
 
       // Snapshot config before computation (diagnostic)
@@ -3850,6 +3958,28 @@ export class HeadingNumberingService {
 
       // COMMIT canonical physical + semantic snapshot (atomic, before physical gate)
       const numberingSnapshot = this.headingAuthority.commit(headings, this.s, overrideMap, counterPolicy, this.getDocumentKey())
+
+      // Phase 7R.3.9: build + commit the CanonicalHeadingFrame from the SAME
+      // heading bindings + semantic states (one collection, one join).
+      this.canonicalFrameGeneration++
+      const epochStart = this.headingStructureEpochValue
+      const frameBuild = buildCanonicalHeadingFrame({
+        documentKey: numberingSnapshot.documentKey,
+        editorStructureEpoch: epochStart,
+        semanticRevision: numberingSnapshot.revision,
+        frameGeneration: this.canonicalFrameGeneration,
+        epochStart,
+        epochEnd: this.headingStructureEpochValue,
+        bindings: headingBindings,
+        semantic: numberingSnapshot.semantic,
+      })
+      if (frameBuild.decision === 'COHERENT' && frameBuild.frame) {
+        this.canonicalHeadingFrame = frameBuild.frame
+      } else if (frameBuild.decision !== 'STALE_STRUCTURE_EPOCH') {
+        // Keep the previous committed frame for the same document; report drift
+        // per unique mismatched identity (never a per-target storm).
+        this.emitCanonicalBindingDrift(frameBuild.inventory)
+      }
 
       // ── PHYSICAL PROJECTION GATE (semantic already committed) ──
       if (!this.s.enabled) return
