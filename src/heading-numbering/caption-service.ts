@@ -106,6 +106,13 @@ import {
   buildCaptionFailureSignature,
   buildCaptionTargetFingerprint,
 } from './caption-reconcile-retry'
+import {
+  CaptionHeadingAuthorityGate,
+  resolveCaptionHeadingAuthority,
+  type CaptionHeadingAuthorityState,
+  type CaptionAuthorityGateDecision,
+} from './caption-heading-authority'
+import type { CanonicalHeadingFrame } from './canonical-heading-frame'
 
 /**
  * Phase 7R.3.6-H/I: offline Formula plan-set candidate. Built completely OFF to
@@ -191,6 +198,15 @@ export interface CaptionServiceContext {
   getHeadingBindingGeneration?: () => number
   /** Phase 7R.3.9: committed canonical heading frame fingerprint (if frame authority exists). */
   getCanonicalHeadingFrameFingerprint?: () => string
+  /** Phase 7R.3.9R: the committed CanonicalHeadingFrame (readiness authority). */
+  getCanonicalHeadingFrame?: () => CanonicalHeadingFrame | null
+  /** Phase 7R.3.9R: subscribe to CanonicalHeadingFrame commits. emitCurrent=true
+   *  immediately replays the current committed frame (subscribe-first + catch-up,
+   *  so a commit racing the subscription is never missed). */
+  subscribeCanonicalHeadingFrame?: (
+    listener: (frame: CanonicalHeadingFrame | null) => void,
+    opts?: { emitCurrent?: boolean },
+  ) => () => void
   reloadContent?: (markdown: string) => void
   /** Read the active .md file bytes from disk (for FAW6 persistence evidence). */
   readActiveFileContent?: () => string | null
@@ -522,6 +538,13 @@ export class CaptionService {
   private captionFollowUpCount = 0
   private captionReconcileInitialCount = 0
   private captionReconcileFollowUpCount = 0
+  // ── Phase 7R.3.9R caption heading authority gate ───────────────────
+  /** Pre-authority barrier: Caption must not scan/resolve/retry before the
+   *  committed CanonicalHeadingFrame exists for the active document. */
+  private captionAuthorityGate = new CaptionHeadingAuthorityGate()
+  /** Last CAPTION-HEADING-AUTHORITY-GATE audit signature (bounded output). */
+  private lastCaptionAuthorityGateAuditSignature = ''
+  /** Phase 7R.3.9R pre-authority counters (must stay 0 in a healthy session). */
   private livePlanCountZeroWithoutFormulaDeleteCount = 0
   private livePlanCountPartialWithoutFormulaStructureChangeCount = 0
   private historicalSignatureReactivationBlockCount = 0
@@ -681,6 +704,16 @@ export class CaptionService {
     // Register DevTools diagnostic entry points.
     this.registerProbe()
 
+    // Phase 7R.3.9R: subscribe to the canonical heading frame authority BEFORE
+    // the first document-open reconcile. emitCurrent=true replays the current
+    // committed frame (catch-up), so a frame commit that raced our subscription
+    // is never missed → the WAITING→READY release always fires exactly once.
+    if (this.ctx.subscribeCanonicalHeadingFrame) {
+      this.disposers.push(this.ctx.subscribeCanonicalHeadingFrame((frame) => {
+        this.handleCanonicalFrameCommitted(frame)
+      }, { emitCurrent: true }))
+    }
+
     // Set document key + rehydrate (this also triggers the initial refresh).
     this.onDocumentChanged()
   }
@@ -778,6 +811,9 @@ export class CaptionService {
       this.captionDeferredRetry.resetForDocument()
       this.lastCompleteCaptionPlanSet = null
       this.lastReportedCaptionFailureSignature = ''
+      // Phase 7R.3.9R: clear A's pending intent + authority state; B starts
+      // WAITING_FOR_HEADING_AUTHORITY until B's committed frame releases it.
+      this.captionAuthorityGate.resetForDocumentSwitch(docKey)
     }
     if (docKey && this.currentEditorRoot) this.perfTracker.mark('T1')
     this.rehydrate()
@@ -868,8 +904,149 @@ export class CaptionService {
   }
 
   /**
+   * Phase 7R.3.9R: current heading-authority readiness for the ACTIVE document.
+   * READY ⇔ committed CanonicalHeadingFrame exists AND frame.documentKey matches
+   * the active document. A committed empty frame (0 headings) is READY.
+   */
+  private resolveCaptionHeadingAuthorityReadiness(): CaptionHeadingAuthorityState {
+    const docKey = this.currentDocumentKey ?? null
+    const frame = this.ctx.getCanonicalHeadingFrame?.() ?? null
+    return resolveCaptionHeadingAuthority(docKey, frame)
+  }
+
+  /**
+   * Phase 7R.3.9R: canonical frame COMMIT is the single release authority.
+   * WAITING_FOR_HEADING_AUTHORITY → READY → ONE coalesced current-state reconcile.
+   */
+  private handleCanonicalFrameCommitted(frame: CanonicalHeadingFrame | null): void {
+    let targetKey = this.currentDocumentKey ?? null
+    if (!targetKey) {
+      // The Heading frame can commit BEFORE the Caption document context is
+      // wired (Typora renders headings ahead of the file:open leaf event). Fall
+      // back to the gate's WAITING document key / pending intent so the release
+      // is never lost to a docKey race.
+      const st = this.captionAuthorityGate.getState()
+      if (st.state === 'WAITING_FOR_HEADING_AUTHORITY') {
+        targetKey = st.documentKey
+      } else {
+        const pi = this.captionAuthorityGate.getPendingIntent()
+        if (pi) targetKey = pi.documentKey || null
+      }
+    }
+    if (!targetKey) {
+      this.captionAuthorityGate.resetForNoDocument()
+      return
+    }
+    const release = this.captionAuthorityGate.onFrameCommitted(frame, targetKey)
+    if (release.decision === 'RELEASED_ONE_RECONCILE' && release.intent) {
+      const readyState = this.captionAuthorityGate.getState()
+      this.lastCaptionAuthorityGateAuditSignature = ''
+      emitRuntimeAudit('CAPTION-AUTHORITY-READY-RELEASE', {
+        documentKey: targetKey,
+        semanticRevision: readyState.state === 'READY' ? readyState.semanticRevision : -1,
+        frameGeneration: readyState.state === 'READY' ? readyState.frameGeneration : -1,
+        frameFingerprint: readyState.state === 'READY' ? readyState.frameFingerprint : '',
+        coalescedReasonCount: release.intent.reasons.size,
+        coalescedReasons: [...release.intent.reasons],
+        scheduledReconcileCount: 1,
+        decision: 'RELEASE_ONE_RECONCILE',
+      })
+      // ONE coalesced reconcile with the merged invalidation mask. The scheduler
+      // coalesces any concurrent requests, so this is exactly one full scan.
+      const mask = release.intent.invalidationMask
+      const keys = (Object.keys(RECONCILE_INVALIDATION) as (keyof typeof RECONCILE_INVALIDATION)[])
+        .filter(k => (mask & RECONCILE_INVALIDATION[k]) !== 0)
+      this.requestNumberingReconcile({
+        reason: 'authority-ready-release',
+        invalidation: keys.length > 0 ? keys : ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'],
+      })
+    }
+  }
+
+  /**
+   * Phase 7R.3.9R: pre-authority gate — called at the earliest safe point of
+   * every Caption reconcile/refresh, BEFORE collectTargets / CODE candidate scan
+   * / resolver batch / plan build / retry state machine / PARK / hot-loop fuse /
+   * projection writes. Non-READY states record ONE coalesced pending intent and
+   * return false (the caller must not run the expensive pipeline).
+   */
+  private gateCaptionReconcileBeforeAuthority(
+    reason: string,
+    invalidationMask: number,
+  ): boolean {
+    const docKey = this.currentDocumentKey ?? null
+    const frame = this.ctx.getCanonicalHeadingFrame?.() ?? null
+    const decision = this.captionAuthorityGate.decide(docKey, frame, reason, invalidationMask)
+    const st = decision.state
+    const allowed = decision.decision === 'READY' || decision.decision === 'RELEASED_ONE_RECONCILE'
+
+    // Phase 7R.3.9R: a first READY transition releases the ONE coalesced
+    // initial reconcile. Emit the dedicated release marker once.
+    if (decision.decision === 'RELEASED_ONE_RECONCILE' && decision.intent) {
+      this.lastCaptionAuthorityGateAuditSignature = ''
+      emitRuntimeAudit('CAPTION-AUTHORITY-READY-RELEASE', {
+        documentKey: docKey,
+        semanticRevision: st.state === 'READY' ? st.semanticRevision : -1,
+        frameGeneration: st.state === 'READY' ? st.frameGeneration : -1,
+        frameFingerprint: st.state === 'READY' ? st.frameFingerprint : '',
+        coalescedReasonCount: decision.intent.reasons.size,
+        coalescedReasons: [...decision.intent.reasons],
+        scheduledReconcileCount: 1,
+        decision: 'RELEASE_ONE_RECONCILE',
+      })
+    }
+
+    // Bounded authority-gate audit: emit on every transition / release / wait
+    // start, dedup consecutive identical WAITs for the same state.
+    const signature = `${st.state}|${st.state === 'READY' ? st.documentKey : ''}|${allowed ? 'READY' : 'WAIT'}`
+    if (signature !== this.lastCaptionAuthorityGateAuditSignature || decision.decision !== 'WAIT') {
+      this.lastCaptionAuthorityGateAuditSignature = signature
+      const pending = this.captionAuthorityGate.getPendingIntent()
+      const counters = this.captionAuthorityGate.getCounters()
+      emitRuntimeAudit('CAPTION-HEADING-AUTHORITY-GATE', {
+        activeDocumentKey: docKey,
+        captionDocumentKey: this.currentDocumentKey ?? null,
+        framePresent: frame !== null,
+        frameDocumentKey: frame?.documentKey ?? null,
+        semanticRevision: st.state === 'READY' ? st.semanticRevision : -1,
+        frameGeneration: st.state === 'READY' ? st.frameGeneration : -1,
+        state: st.state,
+        triggerReason: reason,
+        pendingReasonCount: pending ? pending.reasons.size : 0,
+        pendingReasons: pending ? [...pending.reasons].slice(0, 8) : [],
+        expensiveScanAllowed: allowed,
+        retryBudgetConsumed: false,
+        decision: allowed ? (decision.decision === 'RELEASED_ONE_RECONCILE' ? 'RELEASE_ONE_RECONCILE' : 'READY') : (decision.decision === 'NO_DOCUMENT' ? 'RESET_DOCUMENT_SWITCH' : 'WAIT'),
+        preauth: {
+          PREAUTH_CAPTION_RECONCILE_REQUEST_COUNT: counters.preAuthReconcileRequestCount,
+          PREAUTH_CAPTION_FULL_SCAN_COUNT: counters.preAuthFullScanCount,
+          PREAUTH_CAPTION_TARGET_DISCOVERY_COUNT: counters.preAuthTargetDiscoveryCount,
+          PREAUTH_CAPTION_PLAN_BUILD_COUNT: counters.preAuthPlanBuildCount,
+          PREAUTH_RETRY_BUDGET_CONSUME_COUNT: counters.preAuthRetryBudgetConsumeCount,
+          PREAUTH_CAPTION_PARK_COUNT: counters.preAuthParkCount,
+          PREAUTH_HOT_LOOP_GUARD_TRIGGER_COUNT: counters.preAuthHotLoopGuardTriggerCount,
+          PREAUTH_CANONICAL_HOST_SET_TRANSIENT_TARGET_COUNT: counters.preAuthCanonicalHostSetTransientTargetCount,
+          AUTHORITY_WAIT_TRIGGER_COUNT: counters.authorityWaitTriggerCount,
+          AUTHORITY_READY_RELEASE_COUNT: counters.authorityReadyReleaseCount,
+          AUTHORITY_READY_RELEASE_RECONCILE_COUNT: counters.authorityReadyReleaseReconcileCount,
+        },
+      })
+    }
+
+    if (!allowed) {
+      // The retry machine must never see a pre-authority request; all prevented
+      // work is counted inside the gate (healthy sessions keep these at 0).
+      // No retry budget / PARK / hot-loop fuse / scan was consumed here.
+      return false
+    }
+    return allowed
+  }
+
+  /**
    * Phase 7R.3.4-B/C: the coalesced reconcile executor.
    *   - ABORT_STALE_TRANSACTION: epoch/document changed before execution.
+   *   - CAPTION-HEADING-AUTHORITY-GATE (Phase 7R.3.9R): before any expensive
+   *     work, require a READY heading authority for the active document.
    *   - SEMANTIC_NOOP fast path: structural invalidation absent + heading
    *     semantic fingerprint unchanged → skip the full caption/formula scan.
    *   - RENDERER_OUTPUT_CHANGED: skip the full scan but still run the Formula
@@ -888,6 +1065,13 @@ export class CaptionService {
         projectionWrites: 0,
         decision: 'ABORT_STALE_TRANSACTION',
       })
+      return
+    }
+
+    // Phase 7R.3.9R: heading-authority barrier BEFORE collectTargets/resolver/
+    // retry. WAITING → record ONE coalesced pending intent → return.
+    const reasons = Array.from(pending.reasons)
+    if (!this.gateCaptionReconcileBeforeAuthority(reasons.join('+') || 'reconcile', pending.invalidationMask)) {
       return
     }
 
@@ -1617,14 +1801,19 @@ export class CaptionService {
     const docKey = this.currentDocumentKey
     const editorRoot = this.currentEditorRoot
 
+    if (!docKey) { this.adapter.clearAllCaptions(); this.formulaAdapter.clearAll(); return }
+    // Phase 7R.3.9R: belt-and-braces authority gate for DIRECT refresh() callers
+    // (applySettings / setCaption / rehydrate-empty / force-refresh). Same
+    // guarantee as the scheduler path: no collectTargets before heading READY.
+    if (!this.gateCaptionReconcileBeforeAuthority(reason, invalidationMask)) {
+      return
+    }
     const documentRawTables = document.querySelectorAll('table').length
     const documentRawImages = document.querySelectorAll('img').length
     const documentRawPres = document.querySelectorAll('pre').length
     const editorRawTables = editorRoot ? editorRoot.querySelectorAll('table').length : 0
     const editorRawImages = editorRoot ? editorRoot.querySelectorAll('img').length : 0
     const editorRawPres = editorRoot ? editorRoot.querySelectorAll('pre').length : 0
-
-    if (!docKey) { this.adapter.clearAllCaptions(); this.formulaAdapter.clearAll(); return }
     // Phase 7R.3.4-A: this is a full pipeline scan (only reached past the fast path).
     this.perfTracker.incFullCaptionScan()
     this.perfTracker.mark('T1')
@@ -3271,7 +3460,12 @@ export class CaptionService {
       this.boundTargets.clear()
       this.orphanIds.clear()
       // Sidecar miss must NOT block render: unnamed objects still auto-number.
-      this.refresh('rehydrate-empty')
+      // Phase 7R.3.9R: funnel through the coalescing scheduler so this request
+      // merges with the concurrent document-open request into ONE reconcile.
+      this.requestNumberingReconcile({
+        reason: 'rehydrate-empty',
+        invalidation: ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED'],
+      })
       return
     }
 

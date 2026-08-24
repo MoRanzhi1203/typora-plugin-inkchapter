@@ -90,6 +90,26 @@ function createMarkdownState(root: HTMLElement): { getMarkdown: () => string; re
   }
 }
 
+function testFrame(docKey: string): import('./canonical-heading-frame').CanonicalHeadingFrame {
+  return {
+    documentKey: docKey,
+    semanticRevision: 1,
+    editorStructureEpoch: 1,
+    frameGeneration: 1,
+    semanticFingerprint: 'test-semantic',
+    frameFingerprint: 'test-frame',
+    entries: [],
+    entryByIdentity: new Map(),
+  }
+}
+
+function flushScheduler(svc: CaptionService): void {
+  // Phase 7R.3.9R: rehydrate-empty/document-open are scheduled via the coalescing
+  // scheduler (microtask). Tests assert synchronously, so flush the pending
+  // reconcile before returning from createService.
+  ;(svc as unknown as { reconcileScheduler: { flushNow(): boolean } }).reconcileScheduler.flushNow()
+}
+
 function createService(root: HTMLElement, docKey: string): CaptionService {
   const md = createMarkdownState(root)
   const ctx: CaptionServiceContext = {
@@ -98,11 +118,13 @@ function createService(root: HTMLElement, docKey: string): CaptionService {
     getDocumentKey: () => docKey,
     getEditorRoot: () => root,
     getHeadingNumberingSnapshot: () => buildHeadingNumberingSnapshotForRevision([], DEFAULT_SETTINGS.headingNumberingScopes!.globalDefault, undefined, undefined, 1, docKey),
+    getCanonicalHeadingFrame: () => testFrame(docKey),
     getMarkdown: md.getMarkdown,
     reloadContent: md.reload,
   }
   const svc = new CaptionService(ctx)
   svc.start()
+  flushScheduler(svc)
   return svc
 }
 
@@ -114,11 +136,13 @@ function createServiceWithMarkdown(root: HTMLElement, docKey: string): { svc: Ca
     getDocumentKey: () => docKey,
     getEditorRoot: () => root,
     getHeadingNumberingSnapshot: () => buildHeadingNumberingSnapshotForRevision([], DEFAULT_SETTINGS.headingNumberingScopes!.globalDefault, undefined, undefined, 1, docKey),
+    getCanonicalHeadingFrame: () => testFrame(docKey),
     getMarkdown: md.getMarkdown,
     reloadContent: md.reload,
   }
   const svc = new CaptionService(ctx)
   svc.start()
+  flushScheduler(svc)
   return { svc, getMarkdown: md.getMarkdown }
 }
 
