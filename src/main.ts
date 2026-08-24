@@ -228,6 +228,12 @@ export default class extends Plugin<InkChapterSettings> {
         resolvePrecedingSemanticHeading: (target) => this.numberingService?.resolvePrecedingSemanticHeading(target) ?? null,
         resolvePrecedingSemanticHeadingBatch: (targets) => this.numberingService?.resolvePrecedingSemanticHeadingBatch(targets) ?? targets.map(() => ({ bound: false as const, reason: 'NO_SERVICE' })),
         getHeadingBindingGeneration: () => this.numberingService?.getHeadingBindingGeneration() ?? 0,
+        getCanonicalHeadingFrame: () => this.numberingService?.getCanonicalHeadingFrame() ?? null,
+        getCanonicalHeadingFrameFingerprint: () => this.numberingService?.getCanonicalHeadingFrameFingerprint() ?? '',
+        subscribeCanonicalHeadingFrame: (listener, opts) => {
+          if (!this.numberingService?.subscribeCanonicalHeadingFrame) return () => {}
+          return this.numberingService.subscribeCanonicalHeadingFrame(listener, opts)
+        },
         getMarkdown: () => {
           try { return editor.getMarkdown() } catch { return '' }
         },

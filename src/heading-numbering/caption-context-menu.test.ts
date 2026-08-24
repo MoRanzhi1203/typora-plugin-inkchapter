@@ -83,11 +83,25 @@ function createService(root: HTMLElement, docKey: string): CaptionService {
     getActiveFilePath: () => `/vault/${docKey}.md`,
     getDocumentKey: () => docKey,
     getEditorRoot: () => root,
+    // Phase 7R.3.9R: authority-ready test context (committed frame for docKey).
+    getCanonicalHeadingFrame: () => ({
+      documentKey: docKey,
+      semanticRevision: 1,
+      editorStructureEpoch: 1,
+      frameGeneration: 1,
+      semanticFingerprint: 'test-semantic',
+      frameFingerprint: 'test-frame',
+      entries: [],
+      entryByIdentity: new Map(),
+    }),
     getMarkdown: md.getMarkdown,
     reloadContent: md.reload,
   }
   const svc = new CaptionService(ctx)
   svc.start()
+  // Phase 7R.3.9R: rehydrate-empty/document-open run through the coalescing
+  // scheduler (microtask); flush so synchronous assertions see the projection.
+  ;(svc as unknown as { reconcileScheduler: { flushNow(): boolean } }).reconcileScheduler.flushNow()
   return svc
 }
 

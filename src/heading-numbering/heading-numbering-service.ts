@@ -1686,6 +1686,8 @@ export class HeadingNumberingService {
   private canonicalHeadingFrame: CanonicalHeadingFrame | null = null
   private canonicalFrameGeneration = 0
   private headingStructureEpochValue = 0
+  /** Phase 7R.3.9R: canonical frame commit subscribers (Caption readiness wake). */
+  private canonicalFrameListeners = new Set<(frame: CanonicalHeadingFrame | null) => void>()
 
   // Level Range Enforcer
   private levelRangeEnforcer!: HeadingLevelRangeEnforcer
@@ -2722,6 +2724,35 @@ export class HeadingNumberingService {
   /** Phase 7R.3.9: the committed canonical heading frame (joined authority). */
   getCanonicalHeadingFrame(): CanonicalHeadingFrame | null {
     return this.canonicalHeadingFrame
+  }
+
+  /**
+   * Phase 7R.3.9R: subscribe to CanonicalHeadingFrame commits. This is the
+   * SINGLE release authority for Caption readiness. `emitCurrent=true` replays
+   * the current committed frame immediately after subscribing (subscribe-first
+   * + catch-up), so a commit that raced the subscription is never missed.
+   */
+  subscribeCanonicalHeadingFrame(
+    listener: (frame: CanonicalHeadingFrame | null) => void,
+    opts?: { emitCurrent?: boolean },
+  ): () => void {
+    this.canonicalFrameListeners.add(listener)
+    if (opts?.emitCurrent && this.canonicalHeadingFrame) {
+      // Catch-up replay of the already-committed frame.
+      queueMicrotask(() => {
+        if (this.canonicalFrameListeners.has(listener)) listener(this.canonicalHeadingFrame)
+      })
+    }
+    return () => {
+      this.canonicalFrameListeners.delete(listener)
+    }
+  }
+
+  /** Phase 7R.3.9R: notify frame subscribers after a commit. */
+  private notifyCanonicalFrameCommitted(frame: CanonicalHeadingFrame | null): void {
+    for (const listener of [...this.canonicalFrameListeners]) {
+      try { listener(frame) } catch { /* subscriber errors never break the authority */ }
+    }
   }
 
   /** Phase 7R.3.9: frame fingerprint for the Caption reconcile state token. */
@@ -3975,6 +4006,10 @@ export class HeadingNumberingService {
       })
       if (frameBuild.decision === 'COHERENT' && frameBuild.frame) {
         this.canonicalHeadingFrame = frameBuild.frame
+        // Phase 7R.3.9R: frame COMMIT is the single release authority for
+        // Caption readiness → notify subscribers (Caption schedules ONE
+        // coalesced reconcile).
+        this.notifyCanonicalFrameCommitted(frameBuild.frame)
       } else if (frameBuild.decision !== 'STALE_STRUCTURE_EPOCH') {
         // Keep the previous committed frame for the same document; report drift
         // per unique mismatched identity (never a per-target storm).
