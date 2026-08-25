@@ -2660,6 +2660,21 @@
   transition: outline-color 0.15s ease;
 }
 
+/* ── Phase 7R.3.11.8B.6 — Document Workspace Minimum Width Guard ─────────────
+   SINGLE width authority: the resolved workspace flex item (scoped class added
+   by the overlay host at mount) carries a declarative min-width. The content
+   paper (#write) is NOT touched — it keeps its theme max-width. When the
+   window cannot fit sidebar + workspace-min, the workspace stays at the
+   minimum and the outer shell clips/overflows horizontally (controlled). */
+:root {
+  --inkchapter-document-workspace-min-width: 520px;
+}
+
+.inkchapter-workspace-host {
+  min-width: var(--inkchapter-document-workspace-min-width, 520px);
+}
+
+
 @media (prefers-color-scheme: dark) {
   .inkchapter-doc-toolbar,
   .inkchapter-doc-navigator,

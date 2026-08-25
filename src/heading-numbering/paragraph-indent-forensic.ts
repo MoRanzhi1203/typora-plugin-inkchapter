@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.5 — Document Diagnostic Universal Location Authority. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-document-diagnostic-universal-location-v7R3.11.8B5'
+/** Phase 7R.3.11.8B.6 — Document Workspace Minimum Width Guard. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-document-workspace-min-width-v7R3.11.8B6'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b5-document-diagnostic-universal-location'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b6-document-workspace-min-width'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

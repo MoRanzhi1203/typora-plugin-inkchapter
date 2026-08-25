@@ -22,6 +22,15 @@ import {
 import { DocumentEditGuard } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
 import type { ScrollNavigatorState } from './document-scroll-navigator'
+import {
+  WORKSPACE_WIDTH_STATE_ATTR,
+  WORKSPACE_HOST_CLASS,
+  DOCUMENT_WORKSPACE_MIN_WIDTH_PX,
+  resolveWorkspaceHost,
+  sampleWorkspaceWidths,
+  type WorkspaceWidthSample,
+  type WorkspaceWidthState,
+} from './document-workspace-width-guard'
 import { deriveDiagnosticsState } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
@@ -550,6 +559,11 @@ export class DocumentUtilityOverlayHost {
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   /** Phase 7R.3.11.8B.5 — multi-target locate cycle cursor per diagnosticId. */
   private multiTargetCursor = new Map<string, number>()
+  /** Phase 7R.3.11.8B.6 — workspace width guard state (write-deduped). */
+  private workspaceWidthState: WorkspaceWidthState | null = null
+  private workspaceHostApplied = false
+  private lastWorkspaceWidthFingerprint = ''
+  private workspaceBelowMinCount = 0
   private mounted = false
   private disposed = false
   private disposables: Array<() => void> = []
@@ -595,6 +609,11 @@ export class DocumentUtilityOverlayHost {
       onStateChange: (s) => this.renderNavState(s),
     })
     this.scrollNav.bind()
+
+    // Phase 7R.3.11.8B.6 — resolve the REAL workspace flex item ONCE and add
+    // the scoped min-width host class (declarative CSS, no inline width
+    // writes). Unresolved → log unsupported, never guess an ancestor.
+    this.applyWorkspaceHost()
 
     // Placement sync — anchored to the editor shell rect. The ResizeObserver
     // callback only schedules ONE coalesced rAF; it never writes styles (no
@@ -756,6 +775,8 @@ export class DocumentUtilityOverlayHost {
     this.scrollNav = null
     // Phase 7R.3.11.8-B: release any in-flight scroll operation.
     this.cancelScrollOperation('SUPERSEDED')
+    // Phase 7R.3.11.8B.6 — remove the workspace host class + state attribute.
+    this.cleanupWorkspaceGuard()
     // Phase 7R.3.11.8-B: disconnect the diagnostics mutation observer.
     this.diagnosticsMutationObserver?.disconnect()
     this.diagnosticsMutationObserver = null
@@ -936,11 +957,149 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  // ── Phase 7R.3.11.8B.6 — Workspace Width Guard ────────
+  /** Resolve the REAL workspace flex item ONCE; add the scoped min-width class. */
+  private applyWorkspaceHost(): void {
+    if (this.workspaceHostApplied || !this.root) return
+    const host = resolveWorkspaceHost()
+    if (!host) {
+      // Forensic dump: the real ancestor chain from #write up to body (tag /
+      // id / class / display / position / flex) so the FIRST_FAILING_LAYER is
+      // provable even when the sidebar selector differs across Typora versions.
+      const chain: Array<Record<string, string>> = []
+      let cursor: HTMLElement | null = document.getElementById('write') as HTMLElement | null
+      const seenCursor = new Set<HTMLElement>()
+      while (cursor && cursor !== document.body && !seenCursor.has(cursor)) {
+        seenCursor.add(cursor)
+        const cs = getComputedStyle(cursor)
+        const id = cursor.id ? `#${cursor.id}` : ''
+        const cls = typeof cursor.className === 'string' && cursor.className.trim()
+          ? `.${cursor.className.trim().split(/\s+/).join('.')}` : ''
+        chain.push({
+          selector: `${cursor.tagName.toLowerCase()}${id}${cls}`,
+          display: cs.display,
+          position: cs.position,
+          flex: cs.flex,
+          flexShrink: cs.flexShrink,
+          minWidth: cs.minWidth,
+          clientWidth: String(cursor.clientWidth),
+        })
+        cursor = cursor.parentElement
+      }
+      emitRuntimeAudit('DOCUMENT-UTILITY-WORKSPACE-WIDTH-GUARD', {
+        documentKey: this.opts.ctx.authority.getDocumentKey(),
+        windowInnerWidth: window.innerWidth,
+        decision: 'UNSUPPORTED',
+        reason: 'WORKSPACE_HOST_NOT_RESOLVED',
+        ancestorChain: chain,
+      })
+      return
+    }
+    // FIRST_FAILING_LAYER evidence: the workspace flex item before the guard
+    // carries min-width auto/0 with flex-shrink:1 — the direct cause of the
+    // extreme collapse. Capture it before adding the scoped class.
+    const cs = getComputedStyle(host)
+    host.classList.add(WORKSPACE_HOST_CLASS)
+    this.workspaceHostApplied = true
+    emitRuntimeAudit('DOCUMENT-UTILITY-WORKSPACE-WIDTH-GUARD', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      decision: 'SUPPORTED',
+      reason: 'WORKSPACE_HOST_RESOLVED',
+      workspaceHostSelector: `${host.tagName.toLowerCase()}${host.id ? `#${host.id}` : ''}${host.className && typeof host.className === 'string' ? `.${host.className.split(' ').filter(Boolean).join('.')}` : ''}`,
+      workspaceHostMinWidthBefore: cs.minWidth,
+      workspaceHostFlexShrink: cs.flexShrink,
+      workspaceHostClientWidth: host.clientWidth,
+      workspaceMinWidth: DOCUMENT_WORKSPACE_MIN_WIDTH_PX,
+    })
+  }
+
+  /**
+   * Sample the workspace chain + derive the width state (NORMAL/COMPACT/
+   * MIN_WIDTH_GUARD). Write-deduped: the state attribute is only touched on an
+   * actual state change; the invariant audit is fingerprint-deduped. All reads,
+   * zero layout writes → cannot feed a ResizeObserver loop.
+   */
+  private updateWorkspaceWidthState(): void {
+    if (!this.root || !this.workspaceHostApplied) return
+    const sample = sampleWorkspaceWidths()
+    const drawerVisible = this.drawerOpen && !!this.drawerEl
+    const navigatorVisible = this.getNavigatorExpectedVisible()
+    const drawerWidth = drawerVisible && this.drawerEl ? this.drawerEl.getBoundingClientRect().width : 0
+    const state = sample.widthState
+    const extremeWrap = sample.workspaceRequestedWidth < DOCUMENT_WORKSPACE_MIN_WIDTH_PX
+    if (extremeWrap) this.workspaceBelowMinCount++
+
+    if (state !== this.workspaceWidthState) {
+      const from: string = this.workspaceWidthState ?? 'n/a'
+      emitRuntimeAudit('DOCUMENT-UTILITY-WORKSPACE-WIDTH-STATE', {
+        documentKey: this.opts.ctx.authority.getDocumentKey(),
+        windowWidth: sample.windowInnerWidth,
+        sidebarWidth: sample.sidebarWidth,
+        requestedWorkspaceWidth: sample.workspaceRequestedWidth,
+        effectiveWorkspaceWidth: sample.workspaceClientWidth,
+        minWidth: DOCUMENT_WORKSPACE_MIN_WIDTH_PX,
+        fromState: from,
+        toState: state,
+        reason: from === 'n/a' ? 'INITIAL' : `THRESHOLD_CROSSING:${from}->${state}`,
+      })
+      // Write-dedup: only touch the attribute when the state actually changed.
+      this.workspaceWidthState = state
+      this.root.setAttribute(WORKSPACE_WIDTH_STATE_ATTR, state)
+    }
+
+    const fp = `${state}|${Math.round(sample.windowInnerWidth)}|${Math.round(sample.sidebarWidth)}|${Math.round(sample.workspaceRequestedWidth)}|${Math.round(sample.workspaceClientWidth)}|${drawerVisible}|${navigatorVisible}`
+    if (fp === this.lastWorkspaceWidthFingerprint) return
+    this.lastWorkspaceWidthFingerprint = fp
+
+    const belowMin = sample.workspaceRequestedWidth < DOCUMENT_WORKSPACE_MIN_WIDTH_PX - 0.5
+      && sample.workspaceClientWidth < DOCUMENT_WORKSPACE_MIN_WIDTH_PX - 0.5
+    const decision = belowMin
+      ? 'FAIL_WORKSPACE_BELOW_MIN'
+      : state === 'normal' ? 'PASS_NORMAL' : state === 'compact' ? 'PASS_COMPACT' : 'PASS_MIN_WIDTH_GUARD'
+    emitRuntimeAudit('DOCUMENT-UTILITY-WORKSPACE-WIDTH-INVARIANT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      windowInnerWidth: sample.windowInnerWidth,
+      sidebarVisible: sample.sidebarVisible,
+      sidebarWidth: sample.sidebarWidth,
+      workspaceRequestedWidth: sample.workspaceRequestedWidth,
+      workspaceClientWidth: sample.workspaceClientWidth,
+      workspaceScrollWidth: sample.workspaceScrollWidth,
+      workspaceMinWidth: DOCUMENT_WORKSPACE_MIN_WIDTH_PX,
+      editorViewportWidth: sample.editorViewportWidth,
+      widthState: state,
+      drawerVisible,
+      drawerWidth,
+      drawerAffectsWorkspaceWidth: false,
+      navigatorVisible,
+      navigatorAffectsWorkspaceWidth: false,
+      extremeWrapDetected: extremeWrap,
+      decision,
+      reason: decision === 'PASS_MIN_WIDTH_GUARD' ? 'WORKSPACE_CLAMPED_TO_MIN' : decision,
+    })
+  }
+
+  /** Remove the workspace host class + state attribute (no DOM pollution). */
+  private cleanupWorkspaceGuard(): void {
+    if (this.workspaceHostApplied) {
+      const host = resolveWorkspaceHost()
+      host?.classList.remove(WORKSPACE_HOST_CLASS)
+      this.workspaceHostApplied = false
+    }
+    this.root?.removeAttribute(WORKSPACE_WIDTH_STATE_ATTR)
+    this.workspaceWidthState = null
+    this.lastWorkspaceWidthFingerprint = ''
+    this.workspaceBelowMinCount = 0
+  }
+
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
     const container = getActiveEditorScrollContainer()
     const rect = container?.getBoundingClientRect()
+    // Phase 7R.3.11.8B.6 — workspace width state (read-only sample + deduped
+    // state-token write). Runs inside the SAME coalesced geometry pass so the
+    // guard observes every real geometry change with zero extra observers.
+    this.updateWorkspaceWidthState()
     // Phase 7R.3.11.8B.3 — live scrollability from the SAME container the
     // Scroll Operation uses (scrollHeight/clientHeight; never字数/block count).
     const scrollHeight = container ? container.scrollHeight : 0
