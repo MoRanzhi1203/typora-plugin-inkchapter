@@ -14,7 +14,7 @@ $ProjectMain    = Join-Path $ProjectRoot "dist\main.js"
 $ProjectCss     = Join-Path $ProjectRoot "dist\style.css"
 
 # ── Expected build ID (single source: forensic.ts) ─────────────────────────
-$ExpectedBuildId = "inkchapter-latent-atx-diagnostics-v7R3.11.8B41"
+$ExpectedBuildId = "inkchapter-outline-duplicate-identity-closure-v7R3.11.8B43"
 
 # ── Check required source-of-truth files exist ─────────────────────────────
 $runtimeMainExists = Test-Path $RuntimeMain
@@ -114,6 +114,43 @@ if ($runtimeLoadExists) {
 
 # ── 15. initializationCount = 1 ────────────────────────────────────────────
 
+# ── 16. Phase 7R.3.11.8B.4.2 — SETTINGS MODE PARITY ───────────────────────
+# persisted headingStructureMode (settings JSON) vs runtime resolved mode
+# (from the audit log's HEADING-STRUCTURE-EFFECTIVE-AUTHORITY event).
+$SettingsFile = Join-Path $ProjectRoot "test\vault\.typora\data\ranzhi.inkchapter.json"
+$persistedMode = ""
+if (Test-Path $SettingsFile) {
+    try {
+        # PS 5.1 ConvertFrom-Json is fragile on the large settings JSON — use a
+        # bounded regex over the globalDefault block instead (robust).
+        $raw = Get-Content $SettingsFile -Raw
+        $gdMatch = [regex]::Match($raw, '"globalDefault"\s*:\s*\{[^}]*')
+        if ($gdMatch.Success) {
+            $gdChunk = $gdMatch.Value
+            $mMode = [regex]::Match($gdChunk, '"headingStructureMode"\s*:\s*"([a-z]+)"')
+            $mLegacy = [regex]::Match($gdChunk, '"showLevelOneNumber"\s*:\s*(true|false)')
+            if ($mMode.Success) { $persistedMode = $mMode.Groups[1].Value }
+            elseif ($mLegacy.Success) { $persistedMode = if ($mLegacy.Groups[1].Value -eq 'true') { 'loose' } else { 'strict' } }
+            else { $persistedMode = 'strict' }
+        } else { $persistedMode = "NO_GLOBAL_DEFAULT" }
+    } catch { $persistedMode = "UNPARSEABLE" }
+} else { $persistedMode = "NO_FILE" }
+
+$runtimeResolvedMode = ""
+$runtimeAuthorityDecision = ""
+$auditDir = Join-Path $ProjectRoot "test\vault\.typora\inkchapter\audit"
+$latestAudit = Get-ChildItem $auditDir -Filter "runtime-*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($latestAudit) {
+    $match = Select-String -Path $latestAudit.FullName -Pattern 'HEADING-STRUCTURE-EFFECTIVE-AUTHORITY' |
+        Select-Object -Last 1
+    if ($match) {
+        if ($match.Line -match '"resolvedMode":"([a-z]+)"') { $runtimeResolvedMode = $Matches[1] }
+        if ($match.Line -match '"decision":"([A-Z_]+)"') { $runtimeAuthorityDecision = $Matches[1] }
+    }
+}
+$settingsModeParity = ($persistedMode -eq $runtimeResolvedMode) -and ($runtimeAuthorityDecision -eq "COHERENT")
+
 # ── Assemble result JSON ───────────────────────────────────────────────────
 $result = [PSCustomObject]@{
     oldProcessExited      = ($runtimeLoadExists -and $initializationCount -eq 1)
@@ -137,6 +174,10 @@ $result = [PSCustomObject]@{
     actualStyleCssPath    = $actualCssPath
     runtimeLoadPath       = $RuntimeLoad
     initializationCount   = $initializationCount
+    persistedMode         = $persistedMode
+    runtimeResolvedMode   = $runtimeResolvedMode
+    runtimeAuthorityDecision = $runtimeAuthorityDecision
+    settingsModeParity    = $settingsModeParity
     all15Passed           = $false
 }
 
@@ -157,6 +198,7 @@ if (-not $result.cssHashMatch)                { $missingItems += 12 }
 if (-not $result.buildIdMatch)                { $missingItems += 13 }
 if ($result.actualMainJsPath -eq "")          { $missingItems += 14 }
 if ($result.initializationCount -ne 1)        { $missingItems += 15 }
+if (-not $result.settingsModeParity)          { $missingItems += 16 }
 
 $result.all15Passed = ($missingItems.Count -eq 0)
 
@@ -168,6 +210,7 @@ Write-Output ""
 # ── Summary ────────────────────────────────────────────────────────────────
 if ($result.all15Passed) {
     Write-Output "ALL 15 ITEMS PASSED"
+    Write-Output "SETTINGS_MODE_PARITY=PASS"
 } else {
     Write-Output "MISSING ITEMS: $($missingItems -join ', ')"
     Write-Output "FINAL VERDICT: launch command sent but not yet confirmed successful."

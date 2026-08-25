@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.4.1 — Latent ATX Heading Marker Diagnostics Closure. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-latent-atx-diagnostics-v7R3.11.8B41'
+/** Phase 7R.3.11.8B.4.3 — Outline Duplicate Identity Mapping Closure. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-outline-duplicate-identity-closure-v7R3.11.8B43'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b41-latent-atx-diagnostics'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b43-outline-duplicate-identity-closure'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

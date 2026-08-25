@@ -1,7 +1,7 @@
 {
-  "timestamp": "2026-08-25T11:19:53.362Z",
+  "timestamp": "2026-08-25T14:13:38.200Z",
   "buildMarker": "inkchapter-outline-toolbar-v5.1-compact-row",
-  "isOutlinePanelActive": false,
+  "isOutlinePanelActive": true,
   "tabBar": {
     "rect": {
       "w": 316,
@@ -18,40 +18,40 @@
   },
   "controlsRow": {
     "rect": {
-      "w": 0,
-      "h": 0,
+      "w": 316,
+      "h": 32,
       "x": 0,
-      "y": 0
+      "y": 16
     },
-    "display": "none",
+    "display": "flex",
     "visibility": "visible"
   },
   "overlapCheck": {
     "tabBarBottom": 16,
-    "controlsRowTop": 0,
-    "noOverlap": false
+    "controlsRowTop": 16,
+    "noOverlap": true
   },
   "parentElement": {
     "tagName": "DIV",
     "id": "typora-sidebar",
-    "className": "stopselect dropmenu sidebar-menu open active-tab-files use-file-tree-style ty-show-search",
+    "className": "stopselect dropmenu sidebar-menu open active-tab-outline",
     "isSiblingOfTabBar": true
   },
   "actionsContainerCount": 1,
   "outlineContent": {
+    "visible": true,
+    "display": "block",
+    "rect": {
+      "w": 316,
+      "h": 728
+    }
+  },
+  "fileLibrary": {
     "visible": false,
     "display": "none",
     "rect": {
       "w": 0,
       "h": 0
-    }
-  },
-  "fileLibrary": {
-    "visible": true,
-    "display": "block",
-    "rect": {
-      "w": 316,
-      "h": 648
     }
   }
 }

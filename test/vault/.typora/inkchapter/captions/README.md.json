@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md",
-  "updatedAt": 1787656793925,
+  "updatedAt": 1787667219357,
   "captions": [
     {
       "captionId": "caption-mt7q1c42-1",
@@ -13,11 +13,11 @@
         "ordinal": 0,
         "beforeFingerprint": "h2>span",
         "afterFingerprint": "h2>span",
-        "contentSignature": "h1dwhe8p",
+        "contentSignature": "h1nv7m0f",
         "occurrence": 1
       },
       "createdAt": 1787605293458,
-      "updatedAt": 1787656793914
+      "updatedAt": 1787667219353
     }
   ]
 }
