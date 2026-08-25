@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.4.3 — Outline Duplicate Identity Mapping Closure. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-outline-duplicate-identity-closure-v7R3.11.8B43'
+/** Phase 7R.3.11.8B.5 — Document Diagnostic Universal Location Authority. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-document-diagnostic-universal-location-v7R3.11.8B5'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b43-outline-duplicate-identity-closure'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b5-document-diagnostic-universal-location'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

@@ -24,6 +24,40 @@ export type DocumentDiagnosticTargetKind =
   | 'formula'
   | 'link'
 
+/**
+ * Phase 7R.3.11.8B.5 — Universal Diagnostic Location.
+ *
+ * Every published diagnostic carries ONE of these stable locators. The locator
+ * NEVER holds a long-lived HTMLElement — it is a stable descriptor that the
+ * universal resolver (`resolveDiagnosticLocation`) re-derives into a LIVE DOM
+ * target at click time.
+ */
+export type DiagnosticLocation =
+  | {
+      kind: 'canonical-node'
+      nodeKind: 'heading'
+      stableIdentity: string
+    }
+  | {
+      kind: 'source-range'
+      startLine: number
+      startColumn: number
+      endLine?: number
+      endColumn?: number
+      sourceFingerprint?: string
+    }
+  | { kind: 'document-start' }
+  | { kind: 'document-end' }
+  | {
+      kind: 'block-node'
+      blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link'
+      stableIdentity: string
+    }
+  | {
+      kind: 'multi-target'
+      targets: readonly DiagnosticLocation[]
+    }
+
 export interface DocumentDiagnosticLocatorDescriptor {
   kind: DocumentDiagnosticTargetKind
   /** The current DOM target (may be null when the target no longer exists). */
@@ -51,6 +85,13 @@ export interface DocumentDiagnostic {
   locator?: DocumentDiagnosticLocatorDescriptor
   /** Phase 7R.3.11.8-B: rule-specific structured metadata (popup fingerprint etc.). */
   metadata?: Record<string, unknown>
+  /**
+   * Phase 7R.3.11.8B.5 — Universal Location Authority. Every published
+   * Error/Warning/Hint diagnostic MUST carry a non-null `location`
+   * (PUBLISHED = LOCATABLE). Producers attach it; the overlay's locate button
+   * resolves it via `resolveDiagnosticLocation`.
+   */
+  location?: DiagnosticLocation
 }
 
 export interface DocumentDiagnosticsSnapshot {
