@@ -99,6 +99,17 @@ export function isStrictHeadingStructure(settings: StructureSettings): boolean {
   return resolveHeadingStructure(settings).mode === 'strict'
 }
 
+/**
+ * Derive the legacy mirror fields for a structure mode.
+ * `headingStructureMode` is the SINGLE authority; `showLevelOneNumber` is a
+ * compatibility mirror ONLY (mode always wins).
+ */
+export function deriveModeMirror(
+  mode: HeadingStructureMode,
+): { headingStructureMode: HeadingStructureMode; showLevelOneNumber: boolean } {
+  return { headingStructureMode: mode, showLevelOneNumber: mode === 'loose' }
+}
+
 // ── Style slot model ──────────────────────────────────
 
 /** Style slot index: 1-5 are shared, 6 is loose-only extension. */

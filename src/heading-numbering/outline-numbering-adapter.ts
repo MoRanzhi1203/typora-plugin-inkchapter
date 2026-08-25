@@ -428,40 +428,73 @@ function findLCA(els: HTMLElement[]): HTMLElement | null {
 
 // ── Outline text elements ─────────────────────────────
 
+/** Trace counters for the collector — populated ONLY when a trace object is passed. */
+export interface OutlineCollectorTrace {
+  strategy: 1 | 2 | 3 | 'none'
+  rawAnchorCount: number
+  anchorEligibleCount: number
+  leafCandidateCount: number
+  leafEligibleCount: number
+  leafChildSkippedCount: number
+  collectedCount: number
+}
+
 /** Find all visible outline entry elements inside the outline root. */
-export function findOutlineTextElements(root: HTMLElement): HTMLElement[] {
-  return findOutlineTextElementsCore(root, true)
+export function findOutlineTextElements(root: HTMLElement, trace?: OutlineCollectorTrace): HTMLElement[] {
+  return findOutlineTextElementsCore(root, true, trace)
 }
 
 /** Find outline entry elements including hidden ones (e.g. when panel is display:none). */
-export function findOutlineTextElementsRelaxed(root: HTMLElement): HTMLElement[] {
-  return findOutlineTextElementsCore(root, false)
+export function findOutlineTextElementsRelaxed(root: HTMLElement, trace?: OutlineCollectorTrace): HTMLElement[] {
+  return findOutlineTextElementsCore(root, false, trace)
 }
 
 /** Core outline text element finder with optional visibility filtering. */
-function findOutlineTextElementsCore(root: HTMLElement, requireVisible: boolean): HTMLElement[] {
+function findOutlineTextElementsCore(
+  root: HTMLElement,
+  requireVisible: boolean,
+  trace?: OutlineCollectorTrace,
+): HTMLElement[] {
   const bodyTexts = getBodyHeadingTexts()
   const items: HTMLElement[] = []
 
   // Strategy 1: Find <a> with href (classic Typora outline)
   const anchors = root.querySelectorAll<HTMLAnchorElement>('a[href]')
+  let anchorEligible = 0
   for (const a of anchors) {
     if (requireVisible && a.offsetParent === null) continue
     if (a.textContent && a.textContent.trim().length > 0) {
       items.push(a)
+      anchorEligible++
     }
   }
-  if (items.length >= 2) return items
+  if (trace) {
+    trace.rawAnchorCount = anchors.length
+    trace.anchorEligibleCount = anchorEligible
+    trace.strategy = items.length >= 2 ? 1 : 'none'
+  }
+  if (items.length >= 2) {
+    if (trace) trace.collectedCount = items.length
+    return items
+  }
 
-  // Strategy 2: Find elements whose text matches body headings
+  // Strategy 2: Find elements whose text matches body headings.
+  // 7R.3.11.8B.4.3 FIX: normalizedText is NOT a unique native-item identity.
+  // Two real native items may share the same text at different levels
+  // (H1 "text" + H2 "text"). Each matching leaf-most element is an independent
+  // item — no Set<normalizedText> dedup. bodyTexts membership (this leaf's text
+  // belongs to SOME canonical heading text) and leaf-most hasMatchingChild are
+  // both preserved.
   const allLeafish = root.querySelectorAll<HTMLElement>('div, span, li, a, p')
-  const seenTexts = new Set<string>()
+  let leafCandidate = 0
+  let leafEligible = 0
+  let leafChildSkipped = 0
   for (const el of allLeafish) {
     if (requireVisible && el.offsetParent === null) continue
     const text = (el.textContent ?? '').trim()
     if (!text || text.length > 200) continue
     if (!bodyTexts.has(text)) continue
-    if (seenTexts.has(text)) continue
+    leafCandidate++
     let hasMatchingChild = false
     for (const child of el.querySelectorAll<HTMLElement>('*')) {
       if (bodyTexts.has((child.textContent ?? '').trim())) {
@@ -469,12 +502,20 @@ function findOutlineTextElementsCore(root: HTMLElement, requireVisible: boolean)
         break
       }
     }
-    if (hasMatchingChild) continue
-    seenTexts.add(text)
+    if (hasMatchingChild) { leafChildSkipped++; continue }
+    leafEligible++
     items.push(el)
   }
-
-  if (items.length >= 2) return items
+  if (trace) {
+    trace.leafCandidateCount = leafCandidate
+    trace.leafEligibleCount = leafEligible
+    trace.leafChildSkippedCount = leafChildSkipped
+    trace.strategy = items.length >= 2 ? 2 : trace.strategy
+  }
+  if (items.length >= 2) {
+    if (trace) trace.collectedCount = items.length
+    return items
+  }
 
   // Strategy 3: Find all leaf elements with non-empty text
   const allEls = root.querySelectorAll<HTMLElement>('span, div, p, li, a')
@@ -486,23 +527,225 @@ function findOutlineTextElementsCore(root: HTMLElement, requireVisible: boolean)
     if (el.matches('button, input, textarea, [data-action], [role="button"]')) continue
     items.push(el)
   }
+  if (trace) {
+    trace.strategy = items.length > 0 ? 3 : trace.strategy
+    trace.collectedCount = items.length
+  }
 
   return items
 }
 
+// ── Raw native DOM inventory (forensic, read-only) ────
+
+export interface RawNativeInventoryItem {
+  rawIndex: number
+  nodeIdentity: string
+  nodeConnected: boolean
+  nodeVisible: boolean
+  tagName: string
+  className: string
+  ariaLevel: string | null
+  dataLevel: string | null
+  inferredDepth: number
+  rawText: string
+  normalizedText: string
+  parentIdentity: string
+  previousSiblingIdentity: string | null
+  nextSiblingIdentity: string | null
+}
+
+export interface RawNativeInventory {
+  rawNativeDomItemCount: number
+  items: RawNativeInventoryItem[]
+}
+
+function nodeIdentity(el: HTMLElement): string {
+  return `${el.tagName}#${el.id || ''}.${(el.className || '').split(' ').slice(0, 2).join('.')}`
+}
+
+/**
+ * Phase 7R.3.11.8B.4.3 — collect the RAW native outline DOM inventory BEFORE any
+ * eligibility filter / dedup / matching. Uses Typora's real `.outline-item-wrapper`
+ * structure (with `outline-hN` level class) as the primary raw item authority,
+ * falling back to `a[href]` when wrappers are absent.
+ */
+export function collectRawNativeOutlineInventory(root: HTMLElement): RawNativeInventory {
+  const wrappers = Array.from(root.querySelectorAll<HTMLElement>('.outline-item-wrapper'))
+  const items: RawNativeInventoryItem[] = []
+
+  if (wrappers.length > 0) {
+    wrappers.forEach((w, i) => {
+      const dm = w.className.match(/outline-h(\d)/)
+      const aria = w.getAttribute('aria-level')
+      const anchor = w.querySelector<HTMLAnchorElement>('a[href]')
+      const textEl = anchor ?? w.querySelector('.outline-label') ?? w
+      const normalized = (textEl.textContent ?? '').replace(/\s+/g, ' ').trim()
+      items.push({
+        rawIndex: i,
+        nodeIdentity: nodeIdentity(w),
+        nodeConnected: w.isConnected,
+        nodeVisible: w.offsetParent !== null,
+        tagName: w.tagName,
+        className: w.className || '',
+        ariaLevel: aria,
+        dataLevel: w.getAttribute('data-level'),
+        inferredDepth: dm ? parseInt(dm[1], 10) : (aria ? parseInt(aria, 10) : 0),
+        rawText: normalized,
+        normalizedText: normalized,
+        parentIdentity: w.parentElement ? nodeIdentity(w.parentElement) : '',
+        previousSiblingIdentity: w.previousElementSibling ? nodeIdentity(w.previousElementSibling as HTMLElement) : null,
+        nextSiblingIdentity: w.nextElementSibling ? nodeIdentity(w.nextElementSibling as HTMLElement) : null,
+      })
+    })
+  } else {
+    const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href]'))
+    anchors.forEach((a, i) => {
+      const normalized = (a.textContent ?? '').replace(/\s+/g, ' ').trim()
+      items.push({
+        rawIndex: i,
+        nodeIdentity: nodeIdentity(a),
+        nodeConnected: a.isConnected,
+        nodeVisible: a.offsetParent !== null,
+        tagName: a.tagName,
+        className: a.className || '',
+        ariaLevel: a.getAttribute('aria-level'),
+        dataLevel: a.getAttribute('data-level'),
+        inferredDepth: 0,
+        rawText: normalized,
+        normalizedText: normalized,
+        parentIdentity: a.parentElement ? nodeIdentity(a.parentElement) : '',
+        previousSiblingIdentity: a.previousElementSibling ? nodeIdentity(a.previousElementSibling as HTMLElement) : null,
+        nextSiblingIdentity: a.nextElementSibling ? nodeIdentity(a.nextElementSibling as HTMLElement) : null,
+      })
+    })
+  }
+
+  return { rawNativeDomItemCount: items.length, items }
+}
+
+/** Compute duplicate-normalized-text groups from the raw inventory. */
+export function computeDuplicateGroups(
+  items: ReadonlyArray<{ normalizedText: string; rawIndex: number; inferredDepth: number }>,
+): { uniqueNormalizedTextCount: number; duplicateNormalizedTextGroupCount: number; duplicateCollapsedCount: number; duplicateGroups: Array<{ normalizedText: string; rawIndexes: number[]; levels: number[] }> } {
+  const byText = new Map<string, Array<{ rawIndex: number; depth: number }>>()
+  for (const it of items) {
+    const arr = byText.get(it.normalizedText) ?? []
+    arr.push({ rawIndex: it.rawIndex, depth: it.inferredDepth })
+    byText.set(it.normalizedText, arr)
+  }
+  const duplicateGroups: Array<{ normalizedText: string; rawIndexes: number[]; levels: number[] }> = []
+  let duplicateCollapsedCount = 0
+  for (const [text, arr] of byText) {
+    if (arr.length > 1) {
+      duplicateGroups.push({
+        normalizedText: text,
+        rawIndexes: arr.map(a => a.rawIndex),
+        levels: arr.map(a => a.depth),
+      })
+      duplicateCollapsedCount += arr.length - 1
+    }
+  }
+  return {
+    uniqueNormalizedTextCount: byText.size,
+    duplicateNormalizedTextGroupCount: duplicateGroups.length,
+    duplicateCollapsedCount,
+    duplicateGroups,
+  }
+}
+
 // ── Matching ──────────────────────────────────────────
+
+/** Match-decision trace — populated ONLY when a trace object is passed. */
+export interface OutlineMatchTraceEntry {
+  headingIndex: number
+  level: number
+  text: string
+  sameTextOccurrenceOrdinal: number
+  candidateNativeIndexes: number[]
+  candidateLevels: number[]
+  candidateConsumedStates: boolean[]
+  selectedNativeIndex: number | null
+  selectedNativeLevel: number
+  method: 'id' | 'text' | 'index' | 'none'
+  decision: 'MATCH' | 'NO_NATIVE_CANDIDATE' | 'DUPLICATE_OCCURRENCE_EXHAUSTED' | 'LEVEL_MISMATCH' | 'ORDER_MISMATCH' | 'ALREADY_CONSUMED' | 'SKIP'
+}
+
+/**
+ * Phase 7R.3.11.8B.4.3 — native outline depth/level authority.
+ * Priority (never padding-left): .outline-item-wrapper `outline-hN` class →
+ * aria-level → data-level → DOM nesting depth → unknown (0).
+ */
+export function nativeDepthOf(el: HTMLElement): number {
+  const wrapper = el.closest('.outline-item-wrapper') as HTMLElement | null
+  if (wrapper) {
+    const dm = wrapper.className.match(/outline-h(\d)/)
+    if (dm) {
+      const n = parseInt(dm[1], 10)
+      if (n >= 1 && n <= 6) return n
+    }
+  }
+  const ariaEl = el.closest('[aria-level]') as HTMLElement | null
+  if (ariaEl) {
+    const n = parseInt(ariaEl.getAttribute('aria-level') ?? '', 10)
+    if (n >= 1 && n <= 6) return n
+  }
+  const dataEl = el.closest('[data-level]') as HTMLElement | null
+  if (dataEl) {
+    const n = parseInt(dataEl.getAttribute('data-level') ?? '', 10)
+    if (n >= 1 && n <= 6) return n
+  }
+  // DOM nesting: count nested .outline-item-wrapper ancestors (relative depth).
+  let depth = 0
+  let cur = el.parentElement
+  while (cur && cur !== el.ownerDocument.body) {
+    if (cur.classList.contains('outline-item-wrapper')) depth++
+    cur = cur.parentElement
+  }
+  return depth
+}
 
 /**
  * Match body headings to outline items.
- * Priority: ID match → text+level+occurrence match → index match (when counts equal).
+ * Priority: ID match → text+level+occurrence+order+consumed match → index match.
  */
 export function matchHeadingsToOutline(
   bodyHeadings: readonly { level: HeadingLevel; text: string }[],
   bodyLabels: readonly string[],
   outlineElements: HTMLElement[],
+  trace?: OutlineMatchTraceEntry[],
 ): Array<{ element: HTMLElement; label: string; method: 'id' | 'text' | 'index' | 'none' }> {
   const result: Array<{ element: HTMLElement; label: string; method: 'id' | 'text' | 'index' | 'none' }> = []
   const usedOutlineIndices = new Set<number>()
+
+  // Forensics (7R.3.11.8B.4.3): per-heading decision ledger.
+  const headingTextOccurrence = new Map<string, number>()
+  const traceEntry = (bi: number, method: 'id' | 'text' | 'index' | 'none', decision: OutlineMatchTraceEntry['decision'], selectedNativeIndex: number | null, selectedNativeLevel: number): void => {
+    if (!trace) return
+    const text = bodyHeadings[bi].text.trim()
+    const occ = headingTextOccurrence.get(text) ?? 1
+    const candidates: number[] = []
+    const candidateLevels: number[] = []
+    const candidateConsumedStates: boolean[] = []
+    for (let oi = 0; oi < outlineElements.length; oi++) {
+      if ((outlineElements[oi].textContent ?? '').trim() !== text) continue
+      candidates.push(oi)
+      candidateLevels.push(nativeDepthOf(outlineElements[oi]))
+      candidateConsumedStates.push(usedOutlineIndices.has(oi))
+    }
+    trace.push({
+      headingIndex: bi,
+      level: bodyHeadings[bi].level,
+      text,
+      sameTextOccurrenceOrdinal: occ,
+      candidateNativeIndexes: candidates,
+      candidateLevels,
+      candidateConsumedStates,
+      selectedNativeIndex,
+      selectedNativeLevel,
+      method,
+      decision,
+    })
+  }
 
   // Phase 1: ID-based matching
   const write = document.getElementById('write')
@@ -510,10 +753,12 @@ export function matchHeadingsToOutline(
 
   if (headingEls.length > 0) {
     const idToLabel = new Map<string, string>()
+    const labelToHeadingIndex = new Map<string, number>()
     for (let i = 0; i < bodyHeadings.length && i < bodyLabels.length; i++) {
       const el = headingEls[i]
       if (el?.id && bodyLabels[i]) {
         idToLabel.set(el.id, bodyLabels[i])
+        labelToHeadingIndex.set(bodyLabels[i], i)
       }
     }
 
@@ -524,42 +769,64 @@ export function matchHeadingsToOutline(
         const id = href.slice(1)
         const label = idToLabel.get(id)
         if (label !== undefined) {
+          const bi = labelToHeadingIndex.get(label) ?? -1
           result.push({ element: el, label, method: 'id' })
           usedOutlineIndices.add(oi)
+          if (bi >= 0) traceEntry(bi, 'id', 'MATCH', oi, nativeDepthOf(el))
         }
       }
     }
   }
 
-  // Phase 2: Text-based matching with occurrence index for duplicates
+  // Phase 2: text + level/depth + occurrence + order + consumed matching.
   if (result.length < outlineElements.length) {
-    // Build outline text → indices map
     const outlineTexts = outlineElements.map(el => (el.textContent ?? '').trim())
-
-    // For each body heading, find matching outline element by text + occurrence
-    const textOccurrenceOutline = new Map<string, number>()
-    const textOccurrenceBody = new Map<string, number>()
+    const outlineDepths = outlineElements.map(el => nativeDepthOf(el))
+    // Body-side occurrence counted PER LEVEL for a text — so H2 A / H3 A / H2 A
+    // each align to the correct native occurrence at its own level.
+    const textLevelOccurrenceBody = new Map<string, Map<number, number>>()
 
     for (let bi = 0; bi < bodyHeadings.length && bi < bodyLabels.length; bi++) {
       const bodyText = bodyHeadings[bi].text.trim()
       if (!bodyText) continue
+      const bodyLevel = bodyHeadings[bi].level
 
-      // Count occurrence of this text in body headings so far
-      const bodyOccurrence = (textOccurrenceBody.get(bodyText) ?? 0)
-      textOccurrenceBody.set(bodyText, bodyOccurrence + 1)
+      const levelMap = textLevelOccurrenceBody.get(bodyText) ?? new Map<number, number>()
+      const withinLevelOccurrence = levelMap.get(bodyLevel) ?? 0
+      levelMap.set(bodyLevel, withinLevelOccurrence + 1)
+      textLevelOccurrenceBody.set(bodyText, levelMap)
+      headingTextOccurrence.set(bodyText, (headingTextOccurrence.get(bodyText) ?? 0) + 1)
 
-      // Find the Nth occurrence of this text in outline elements
-      let outlineOccurrence = 0
+      // Candidates: unused native items with the same normalized text and a
+      // COMPATIBLE level — known depth equal to physicalLevel, or unknown depth.
+      // Known level mismatch is never force-matched (LEVEL_MISMATCH).
+      const exact: number[] = []
+      const unknown: number[] = []
       for (let oi = 0; oi < outlineElements.length; oi++) {
         if (usedOutlineIndices.has(oi)) continue
-        if (outlineTexts[oi] === bodyText) {
-          if (outlineOccurrence === bodyOccurrence) {
-            result.push({ element: outlineElements[oi], label: bodyLabels[bi], method: 'text' })
-            usedOutlineIndices.add(oi)
-            break
-          }
-          outlineOccurrence++
-        }
+        if (outlineTexts[oi] !== bodyText) continue
+        const od = outlineDepths[oi]
+        if (od === 0) unknown.push(oi)
+        else if (od === bodyLevel) exact.push(oi)
+      }
+      const candidates = exact.length > 0 ? exact : unknown
+      let selectedOi = -1
+      if (candidates.length > 0) {
+        selectedOi = candidates[Math.min(withinLevelOccurrence, candidates.length - 1)]
+        result.push({ element: outlineElements[selectedOi], label: bodyLabels[bi], method: 'text' })
+        usedOutlineIndices.add(selectedOi)
+        traceEntry(bi, 'text', 'MATCH', selectedOi, outlineDepths[selectedOi])
+      } else {
+        const hasKnownMismatch = outlineElements.some((_, oi) =>
+          !usedOutlineIndices.has(oi) && outlineTexts[oi] === bodyText && outlineDepths[oi] > 0 && outlineDepths[oi] !== bodyLevel,
+        )
+        traceEntry(
+          bi,
+          'text',
+          hasKnownMismatch ? 'LEVEL_MISMATCH' : 'NO_NATIVE_CANDIDATE',
+          null,
+          0,
+        )
       }
     }
   }
@@ -595,6 +862,7 @@ export function matchHeadingsToOutline(
         label: bodyLabels[unmatchedBody[i]],
         method: 'index',
       })
+      if (trace) traceEntry(unmatchedBody[i], 'index', 'MATCH', unmatchedOutline[i], nativeDepthOf(outlineElements[unmatchedOutline[i]]))
     }
   }
 

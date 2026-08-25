@@ -35,8 +35,15 @@ import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-form
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
-import { resolveHeadingStructure, resolveStyleSlot } from './heading-structure'
+import { resolveHeadingStructure, resolveStyleSlot, deriveModeMirror } from './heading-structure'
 import type { HeadingStructureMode } from './heading-structure'
+import {
+  readPersistedSettingsMode,
+  emitHeadingStructureEffectiveAuthority,
+  emitHeadingNumberingMappingInvariant,
+  emitHeadingModeTransitionCleanup,
+  collectHeadingProjectionFacts,
+} from './heading-structure-audit'
 import {
   validateStrictFirstH1Topline,
   computeDocumentStartSignature,
@@ -2241,8 +2248,7 @@ export class HeadingNumberingService {
 
     const snapshot: HeadingNumberingSettings = {
       enabled: format.settings.enabled,
-      headingStructureMode: currentMode,
-      showLevelOneNumber: currentMode === 'loose',
+      ...deriveModeMirror(currentMode),
       preset: 'custom',
       maxDepth: format.settings.maxDepth,
       levels: format.settings.levels,
@@ -2290,8 +2296,7 @@ export class HeadingNumberingService {
     const levels = getPresetLevels(presetId as HeadingNumberingPreset)
     const snapshot: HeadingNumberingSettings = {
       enabled: true,
-      headingStructureMode: currentMode,
-      showLevelOneNumber: currentMode === 'loose',
+      ...deriveModeMirror(currentMode),
       preset: presetId as HeadingNumberingPreset,
       maxDepth: 6,
       levels,
@@ -2318,6 +2323,43 @@ export class HeadingNumberingService {
   // ── Convenience accessor for effective settings ──
   private get s(): HeadingNumberingSettings {
     return this.docContext.effectiveSettings
+  }
+
+  /**
+   * Phase 7R.3.11.8B.4.2 — pure-observability structure authority audits.
+   * Reads the persisted settings file, scope store, effective settings and the
+   * projected DOM; emits state-deduped audits. NEVER mutates any authority and
+   * never throws into the numbering path.
+   */
+  private emitStructureAuthorityAudits(): void {
+    try {
+      const docKey = this.getDocumentKey()
+      const persisted = readPersistedSettingsMode(this.ctx.vaultRoot ?? null)
+      const gd = this.scopeStore.globalDefault
+      const override = docKey ? this.scopeStore.documentOverrides[docKey] : undefined
+      const rawEffectiveMode = this.s.headingStructureMode ?? 'strict'
+      const resolved = resolveHeadingStructure(this.s)
+      const facts = collectHeadingProjectionFacts(this.adapter.getEditorRoot())
+
+      emitHeadingStructureEffectiveAuthority({
+        documentKey: docKey,
+        persistedGlobalMode: persisted.mode,
+        persistedGlobalLegacyH1: persisted.legacyH1,
+        runtimeGlobalMode: gd.headingStructureMode ?? 'strict',
+        runtimeGlobalLegacyH1: gd.showLevelOneNumber ?? false,
+        documentOverridePresent: !!override,
+        documentOverrideMode: override?.settings.headingStructureMode ?? null,
+        documentOverrideLegacyH1: typeof override?.settings.showLevelOneNumber === 'boolean' ? override.settings.showLevelOneNumber : null,
+        effectiveMode: rawEffectiveMode,
+        effectiveLegacyH1: this.s.showLevelOneNumber ?? false,
+        resolvedMode: resolved.mode,
+        resolvedShowLevelOneNumber: resolved.showLevelOneNumber,
+        numberingRootPhysicalLevel: resolved.numberingRootPhysicalLevel,
+      })
+
+      emitHeadingNumberingMappingInvariant({ documentKey: docKey, mode: resolved.mode, headingElements: facts })
+      emitHeadingModeTransitionCleanup(docKey, resolved.mode, facts)
+    } catch { /* observability only — never affects numbering */ }
   }
 
   /** Generate vault-relative document key for the current file. */
@@ -4112,6 +4154,10 @@ export class HeadingNumberingService {
 
       // Sync outline sidebar numbering — pass the authoritative documentKey.
       this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, labels, gaps)
+
+      // Phase 7R.3.11.8B.4.2 — pure-observability structure authority audits
+      // (state-deduped; never mutates settings/store/DOM/outline).
+      this.emitStructureAuthorityAudits()
 
       // Output H2 diagnostic in dev mode (first load only)
       if (reason === 'initial-load' || reason === 'file-open') {

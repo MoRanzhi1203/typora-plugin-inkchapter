@@ -25,11 +25,15 @@ import {
   clearOutlineNumberBoldStyle,
   syncOutlineNumberBoldStyle,
   isApplyingOutlineBoldStyle,
+  collectRawNativeOutlineInventory,
+  computeDuplicateGroups,
   type SyncResult,
+  type OutlineCollectorTrace,
+  type OutlineMatchTraceEntry,
 } from './outline-numbering-adapter'
 import type { HeadingDescriptor } from './heading-types'
 import { recordRuntimeAudit } from './runtime-audit'
-import { emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
+import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 
 interface OutlineNumberCache {
   documentKey: string
@@ -163,6 +167,9 @@ export class OutlineNumberingController {
     reason: string
   } | null = null
   private lastVerify: { expectedCount: number; actualCount: number; decision: string } | null = null
+
+  // Phase 7R.3.11.8B.4.3 — last emitted forensic signature (noise gate).
+  private lastOutlineForensicSignature = ''
 
   // Root identity — real HTMLElement reference + generation/token (never selector string).
   // rootToken: WeakMap-derived DOM node identity. null = no root, 1+ = concrete node.
@@ -791,8 +798,18 @@ export class OutlineNumberingController {
 
     this.isWriting = true
     try {
-      const items = findOutlineTextElements(root)
-      const matches = matchHeadingsToOutline(this.cache.headings, this.cache.labels, items)
+      // ── Phase 7R.3.11.8B.4.3 forensic: raw → eligible → collector → matcher ──
+      // Read-only counts; never affects the production collection/matching below.
+      const collectorTrace: OutlineCollectorTrace = {
+        strategy: 'none', rawAnchorCount: 0, anchorEligibleCount: 0,
+        leafCandidateCount: 0, leafEligibleCount: 0,
+        leafChildSkippedCount: 0, collectedCount: 0,
+      }
+      const matchTrace: OutlineMatchTraceEntry[] = []
+      const rawInventory = collectRawNativeOutlineInventory(root)
+
+      const items = findOutlineTextElements(root, collectorTrace)
+      const matches = matchHeadingsToOutline(this.cache.headings, this.cache.labels, items, matchTrace)
       const attrResult = applyNumberingAttributes(matches.map((m, i) => ({
         element: m.element,
         label: m.label,
@@ -810,6 +827,18 @@ export class OutlineNumberingController {
       const unmatchedHeading = Math.max(0, this.cache.headings.length - matches.length)
       const unmatchedOutline = Math.max(0, items.length - matches.length)
       const staleDecorationCount = Math.max(0, actualDecorations - expectedNumbered)
+
+      this.emitOutlineMappingForensic(
+        expectedDocKey,
+        expectedRevision,
+        root,
+        rawInventory,
+        collectorTrace,
+        items,
+        matches,
+        matchTrace,
+        { expectedNumbered, actualDecorations, unmatchedHeading, unmatchedOutline, staleDecorationCount },
+      )
 
       this.lastApply = {
         matchedCount: matches.length,
@@ -849,6 +878,101 @@ export class OutlineNumberingController {
     }
 
     this.scheduleVerify(expectedDocKey, expectedRevision)
+  }
+
+  /**
+   * Phase 7R.3.11.8B.4.3 — OUTLINE-MAPPING-CARDINALITY-INVARIANT (+ detail).
+   * Pure observability; never mutates DOM/state. Detail is emitted only when
+   * the cardinality signature changes, the document changes, or cardinality
+   * FAILs — stable PASS states stay as one summary line.
+   */
+  private emitOutlineMappingForensic(
+    documentKey: string,
+    revision: number,
+    root: HTMLElement,
+    rawInventory: import('./outline-numbering-adapter').RawNativeInventory,
+    collectorTrace: OutlineCollectorTrace,
+    items: HTMLElement[],
+    matches: Array<{ element: HTMLElement; label: string; method: 'id' | 'text' | 'index' | 'none' }>,
+    matchTrace: OutlineMatchTraceEntry[],
+    decoration: { expectedNumbered: number; actualDecorations: number; unmatchedHeading: number; unmatchedOutline: number; staleDecorationCount: number },
+  ): void {
+    const dup = computeDuplicateGroups(rawInventory.items)
+    const matchedNativeCount = matches.length
+    // Actual collection collapse: how many raw native items the collector lost.
+    // With the 7R.3.11.8B.4.3 fix (no text dedup) this is 0 when raw == collector.
+    const duplicateCollapsedCount = Math.max(0, rawInventory.rawNativeDomItemCount - items.length)
+    const cardinalityFail =
+      rawInventory.rawNativeDomItemCount !== this.cache.headings.length ||
+      items.length !== this.cache.headings.length ||
+      matches.length !== this.cache.headings.length ||
+      decoration.unmatchedHeading > 0 ||
+      decoration.unmatchedOutline > 0 ||
+      decoration.actualDecorations !== decoration.expectedNumbered
+
+    const summarySignature = `${documentKey}|${revision}|${this.cache.headings.length}|${rawInventory.rawNativeDomItemCount}|${items.length}|${matches.length}|${decoration.expectedNumbered}|${decoration.actualDecorations}|${cardinalityFail ? 'FAIL' : 'PASS'}`
+
+    // Summary invariant — state-deduped (stable PASS → one line).
+    emitRuntimeAuditStateDedup('OUTLINE-MAPPING-CARDINALITY-INVARIANT', summarySignature, {
+      documentKey,
+      revision,
+      canonicalHeadingCount: this.cache.headings.length,
+      rawNativeDomItemCount: rawInventory.rawNativeDomItemCount,
+      eligibleNativeItemCount: items.length,
+      collectorNativeItemCount: items.length,
+      uniqueNormalizedTextCount: dup.uniqueNormalizedTextCount,
+      duplicateNormalizedTextGroupCount: dup.duplicateNormalizedTextGroupCount,
+      duplicateCollapsedCount,
+      matchedHeadingCount: matches.length,
+      matchedNativeCount,
+      unmatchedHeadingCount: decoration.unmatchedHeading,
+      unmatchedNativeCount: decoration.unmatchedOutline,
+      expectedNumberedCount: decoration.expectedNumbered,
+      actualNumberDecorationCount: decoration.actualDecorations,
+      strategy: collectorTrace.strategy,
+      decision: cardinalityFail ? 'FAIL' : 'PASS',
+    })
+
+    // Detail — only on signature change / doc change / FAIL.
+    if (this.lastOutlineForensicSignature !== summarySignature) {
+      this.lastOutlineForensicSignature = summarySignature
+      emitRuntimeAudit('OUTLINE-RAW-NATIVE-INVENTORY', {
+        documentKey,
+        revision,
+        rootIdentity: `${root.tagName}#${root.id || ''}`,
+        rawNativeDomItemCount: rawInventory.rawNativeDomItemCount,
+        items: rawInventory.items.map(it => ({
+          rawIndex: it.rawIndex,
+          nodeIdentity: it.nodeIdentity,
+          nodeConnected: it.nodeConnected,
+          nodeVisible: it.nodeVisible,
+          tagName: it.tagName,
+          className: it.className,
+          ariaLevel: it.ariaLevel,
+          inferredDepth: it.inferredDepth,
+          normalizedText: it.normalizedText,
+        })),
+      })
+      emitRuntimeAudit('OUTLINE-COLLECTOR-INVENTORY', {
+        documentKey,
+        revision,
+        rawNativeDomItemCount: rawInventory.rawNativeDomItemCount,
+        eligibleNativeItemCount: items.length,
+        collectorNativeItemCount: items.length,
+        uniqueNormalizedTextCount: dup.uniqueNormalizedTextCount,
+        duplicateNormalizedTextGroupCount: dup.duplicateNormalizedTextGroupCount,
+        duplicateCollapsedCount,
+        duplicateGroups: dup.duplicateGroups,
+        collectorTrace: { ...collectorTrace },
+      })
+      emitRuntimeAudit('OUTLINE-HEADING-MATCH-DETAIL', {
+        documentKey,
+        revision,
+        canonicalHeadingCount: this.cache.headings.length,
+        headingLabels: this.cache.labels.map((l, i) => ({ headingIndex: i, label: l })),
+        matchTrace,
+      })
+    }
   }
 
   private scheduleVerify(docKey: string, revision: number): void {
@@ -1331,6 +1455,35 @@ export class OutlineNumberingController {
   private registerProbe(): void {
     try {
       ;(window as any).__inkchapter_outline_sync_probe__ = () => this.outlineSyncProbe()
+      // Phase 7R.3.11.8B.4.3 — duplicate-identity forensic probe (read-only).
+      ;(window as any).__inkchapter_outline_forensic__ = () => {
+        const root = findOutlineRoot() ?? findOutlineRootRelaxed()
+        if (!root) return { rootFound: false }
+        const rawInventory = collectRawNativeOutlineInventory(root)
+        const trace: OutlineCollectorTrace = {
+          strategy: 'none', rawAnchorCount: 0, anchorEligibleCount: 0,
+          leafCandidateCount: 0, leafEligibleCount: 0,
+          leafChildSkippedCount: 0, collectedCount: 0,
+        }
+        const items = findOutlineTextElements(root, trace)
+        const matchTrace: OutlineMatchTraceEntry[] = []
+        const matches = matchHeadingsToOutline(this.cache.headings, this.cache.labels, items, matchTrace)
+        const dup = computeDuplicateGroups(rawInventory.items)
+        return {
+          rootFound: true,
+          rootIdentity: `${root.tagName}#${root.id || ''}`,
+          canonicalHeadingCount: this.cache.headings.length,
+          rawNativeDomItemCount: rawInventory.rawNativeDomItemCount,
+          collectorNativeItemCount: items.length,
+          duplicateCollapsedCount: Math.max(0, rawInventory.rawNativeDomItemCount - items.length),
+          uniqueNormalizedTextCount: dup.uniqueNormalizedTextCount,
+          duplicateGroups: dup.duplicateGroups,
+          matchedHeadingCount: matches.length,
+          matchTrace,
+          collectorTrace: { ...trace },
+          rawItems: rawInventory.items,
+        }
+      }
     } catch { /* ignore */ }
   }
 
