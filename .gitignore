@@ -13,6 +13,23 @@ plugin.zip
 # logs
 *.log
 
+# backup / cache / temp
+.backup-*
+.pnpm-store/
+*.bak
+*.tmp
+*.tsbuildinfo
+coverage/
+
+# one-off diagnostics / historical audit artifacts
+scripts/diag/
+artifacts/
+
+# runtime generated sidecars (regenerated on Typora run)
+test/vault/.typora/inkchapter/audit/
+test/vault/.typora/inkchapter/captions/regression_*
+test/vault/.typora/inkchapter/captions/fixtures_*
+
 # trae
 .trae/
 

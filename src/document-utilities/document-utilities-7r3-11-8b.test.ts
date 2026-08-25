@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
-import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
+import type { DocumentDiagnosticsAuthority, DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import type { DiagnosticCanonicalHeadingAuthorityResult } from './document-h1-authority-bridge'
 
@@ -28,17 +28,20 @@ function waitH1Result(): DiagnosticCanonicalHeadingAuthorityResult {
   return {
     state: 'WAIT', reason: 'FRAME_NOT_READY', documentKey: null, framePresent: false,
     frameDocumentKey: null, semanticRevision: 0, frameGeneration: 0, canonicalEntryCount: 0,
-    mappedEntryCount: 0, invalidEntryCount: 0, physicalLevels: [], h1Facts: [], h1Count: 0, h1StableIdentities: [],
+    mappedEntryCount: 0, invalidEntryCount: 0, physicalLevels: [], headingFacts: [], h1Facts: [], h1Count: 0, h1StableIdentities: [],
   }
 }
 
 function readyH1Result(facts: readonly TestCanonicalH1Fact[], documentKey: string): DiagnosticCanonicalHeadingAuthorityResult {
-  const h1Facts = facts.filter(f => f.physicalLevel === 1)
+  const withText = facts.map(f => ({ stableIdentity: f.stableIdentity, element: f.element, physicalLevel: f.physicalLevel, text: '' }))
+  const h1Facts = withText.filter(f => f.physicalLevel === 1)
   return {
     state: 'READY', reason: 'READY', documentKey, framePresent: true, frameDocumentKey: documentKey,
     semanticRevision: 1, frameGeneration: 1, canonicalEntryCount: facts.length,
     mappedEntryCount: facts.length, invalidEntryCount: 0,
-    physicalLevels: facts.map(f => f.physicalLevel), h1Facts,
+    physicalLevels: facts.map(f => f.physicalLevel),
+    headingFacts: withText,
+    h1Facts,
     h1Count: h1Facts.length, h1StableIdentities: h1Facts.map(f => f.stableIdentity),
   }
 }
@@ -490,5 +493,117 @@ describe('SCROLL-OP finite operation authority', () => {
     expect(h.getScrollOperationCounters().activeScrollListenerCount).toBe(0)
     expect(h.getScrollOperationCounters().activeSafetyDeadlineCount).toBe(0)
     vi.useRealTimers()
+  })
+})
+
+// ── Phase 7R.3.11.8B.2 — SCROLL-LOCK locked navigation ──────────────────
+describe('SCROLL-LOCK locked scroll permitted', () => {
+  it('SCROLL-LOCK-1: locked GO_TOP permitted → PASS with locked=true', () => {
+    vi.useFakeTimers()
+    const { container, setTop } = makeScrollContainer(2356, 0, 2000)
+    const h = makeOperationHost()
+    ;(h as unknown as { editGuard: { lock(): void } }).editGuard.lock()
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    ;(h as unknown as { handleScrollAction(a: 'GO_TOP'): void }).handleScrollAction('GO_TOP')
+    setTop(0)
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(150)
+    const logs = operationLogs(info)
+    const final = logs[logs.length - 1]
+    expect(final).toContain('source=BUTTON')
+    expect(final).toContain('locked=true')
+    expect(final).toContain('action=GO_TOP')
+    expect(final).toContain('decision=PASS')
+    vi.useRealTimers()
+  })
+
+  it('SCROLL-LOCK-2: locked GO_BOTTOM permitted → PASS with locked=true', () => {
+    vi.useFakeTimers()
+    const { container, setTop } = makeScrollContainer(2356, 0, 0)
+    const h = makeOperationHost()
+    ;(h as unknown as { editGuard: { lock(): void } }).editGuard.lock()
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    ;(h as unknown as { handleScrollAction(a: 'GO_BOTTOM'): void }).handleScrollAction('GO_BOTTOM')
+    setTop(2356)
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(150)
+    const logs = operationLogs(info)
+    const final = logs[logs.length - 1]
+    expect(final).toContain('source=BUTTON')
+    expect(final).toContain('locked=true')
+    expect(final).toContain('action=GO_BOTTOM')
+    expect(final).toContain('decision=PASS')
+    vi.useRealTimers()
+  })
+
+  it('SCROLL-LOCK-3: operation cleanup after settle → active=0', () => {
+    vi.useFakeTimers()
+    const { container, setTop } = makeScrollContainer(2356, 0, 0)
+    const h = makeOperationHost()
+    ;(h as unknown as { editGuard: { lock(): void } }).editGuard.lock()
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    ;(h as unknown as { handleScrollAction(a: 'GO_BOTTOM'): void }).handleScrollAction('GO_BOTTOM')
+    setTop(2356)
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(150)
+    expect(h.getScrollOperationCounters().activeOperationCount).toBe(0)
+    expect(h.getScrollOperationCounters().activeScrollListenerCount).toBe(0)
+    expect(h.getScrollOperationCounters().activeSafetyDeadlineCount).toBe(0)
+    vi.useRealTimers()
+  })
+})
+
+// ── Phase 7R.3.11.8B.2 — EOF live mutation closure ──────────────────────
+function hasTrailingWarning(snap: ReturnType<DocumentDiagnosticsAuthority['getSnapshot']>): boolean {
+  return snap?.diagnostics.some(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE') ?? false
+}
+
+describe('EOF live mutation (authority recompute)', () => {
+  it('EOF-1: valid trailing blank line → warning 0', () => {
+    const state = makeMutableState({ markdown: '# H1\n\n' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(false)
+    h.dispose()
+  })
+
+  it('EOF-2: remove blank line → DOCUMENT_TRAILING_BLANK_LINE warning appears', () => {
+    const state = makeMutableState({ markdown: '# H1\n\n' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(false)
+    state.markdown = '# H1\n' // delete the trailing blank line
+    h.diagnostics.recompute()
+    const snap = h.diagnostics.getSnapshot()
+    expect(hasTrailingWarning(snap)).toBe(true)
+    const item = snap?.diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')
+    expect(item?.metadata?.reason).toBe('MISSING_TRAILING_BLANK_LINE')
+    h.dispose()
+  })
+
+  it('EOF-3: restore blank line → warning cleared', () => {
+    const state = makeMutableState({ markdown: '# H1\n' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(true)
+    state.markdown = '# H1\n\n'
+    h.diagnostics.recompute()
+    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(false)
+    h.dispose()
+  })
+
+  it('EOF-4: document switch A(missing blank)→B(valid) → B shows no stale warning', () => {
+    const state = makeMutableState({ documentKey: 'doc:A', markdown: '# A\n' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(true)
+    state.documentKey = 'doc:B'
+    state.markdown = '# B\n\n'
+    state.h1Facts = [{ stableIdentity: 'b1', element: null, physicalLevel: 1 }]
+    h.diagnostics.recompute()
+    const snap = h.diagnostics.getSnapshot()
+    expect(snap?.documentKey).toBe('doc:B')
+    expect(hasTrailingWarning(snap)).toBe(false) // A's warning must not leak to B
+    h.dispose()
   })
 })

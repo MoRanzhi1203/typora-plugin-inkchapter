@@ -30,6 +30,8 @@ export interface DiagnosticCanonicalHeadingFact {
   stableIdentity: string
   element: HTMLElement | null
   physicalLevel: number
+  /** Normalized heading text (trimmed element text). "" = canonical EMPTY_HEADING. */
+  text: string
 }
 
 export interface DiagnosticCanonicalHeadingAuthorityResult {
@@ -44,6 +46,13 @@ export interface DiagnosticCanonicalHeadingAuthorityResult {
   mappedEntryCount: number
   invalidEntryCount: number
   physicalLevels: number[]
+  /**
+   * Phase 7R.3.11.8B.4 — ALL canonical heading facts in canonical document
+   * order (every level). This is the ONLY diagnostics heading sequence —
+   * plain-text hash markers never appear here.
+   */
+  headingFacts: readonly DiagnosticCanonicalHeadingFact[]
+  /** Subset of headingFacts whose physicalLevel === 1 (STRICT-SINGLE-H1). */
   h1Facts: readonly DiagnosticCanonicalHeadingFact[]
   h1Count: number
   h1StableIdentities: string[]
@@ -70,6 +79,7 @@ export function mapCanonicalHeadingFrameForDiagnostics(
     mappedEntryCount: 0,
     invalidEntryCount: 0,
     physicalLevels: [],
+    headingFacts: [],
     h1Facts: [],
     h1Count: 0,
     h1StableIdentities: [],
@@ -103,6 +113,7 @@ export function mapCanonicalHeadingFrameForDiagnostics(
       stableIdentity: entry.stableIdentity,
       element: entry.element ?? null,
       physicalLevel: level,
+      text: (entry.element?.textContent ?? '').trim(),
     }
     headings.push(fact)
     physicalLevels.push(level)
@@ -117,6 +128,7 @@ export function mapCanonicalHeadingFrameForDiagnostics(
       mappedEntryCount: headings.length,
       invalidEntryCount,
       physicalLevels,
+      headingFacts: headings,
       h1Facts,
       h1Count: h1Facts.length,
       h1StableIdentities: h1Facts.map(f => f.stableIdentity),
@@ -130,6 +142,7 @@ export function mapCanonicalHeadingFrameForDiagnostics(
     mappedEntryCount: headings.length,
     invalidEntryCount: 0,
     physicalLevels,
+    headingFacts: headings,
     h1Facts,
     h1Count: h1Facts.length,
     h1StableIdentities: h1Facts.map(f => f.stableIdentity),
