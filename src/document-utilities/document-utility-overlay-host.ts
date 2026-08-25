@@ -45,6 +45,15 @@ const NAV_BOTTOM_PX = 64
 const DRAWER_TOP_PX = 56
 const DRAWER_RIGHT_PX = 12
 const DRAWER_BOTTOM_PX = 16
+/**
+ * Phase 7R.3.11.8B.3 — vertical space reserved below the drawer for the
+ * right-bottom navigator zone (navigator height ~66px + safety gap). The
+ * drawer may only grow down to `viewport - drawerTop - this` before its body
+ * scrolls internally. The navigator NEVER moves to resolve conflicts.
+ */
+const DRAWER_BOTTOM_RESERVED_PX = 140
+/** Phase 7R.3.11.8B.3 — scrollability epsilon (px). maxScrollTop <= this ⇒ short document. */
+const SCROLLABLE_EPSILON_PX = 1
 
 export interface OverlayGeometry {
   toolbarTop: number
@@ -54,14 +63,23 @@ export interface OverlayGeometry {
   drawerTop: number
   drawerRight: number
   drawerBottom: number
+  /** Phase 7R.3.11.8B.3 — scrollability from the REAL scroll container. */
+  scrollable: boolean
+  navigatorVisible: boolean
+  /** Phase 7R.3.11.8B.3 — drawer may not exceed this (viewport − top − reserved). */
+  drawerMaxHeight: number
 }
 
 export interface OverlayGeometryOptions {
   drawerOpen: boolean
+  /** Phase 7R.3.11.8B.3 — live scroll container metrics (scrollability authority). */
+  scrollHeight?: number
+  clientHeight?: number
 }
 
 const DRAWER_WIDTH_PX = 360
-/** Drawer↔navigator horizontal gap when the drawer is open (>= 12px). */
+/** Legacy Drawer↔navigator horizontal gap constant (kept; not used for
+ *  positioning since 7R.3.11.8B.3 — the navigator is an independent anchor). */
 const DRAWER_NAV_GAP_PX = 16
 
 /** Phase 7R.3.11.4 — ResizeObserver attribution windows (single source of truth). */
@@ -210,9 +228,9 @@ export function classifyAttribution(opts: {
 }
 
 /**
- * Phase 7R.3.11.4 — collision-aware geometry. When the drawer is open the
- * navigator shifts LEFT of the drawer (never hidden), keeping
- * intersection(drawer, navigator) = 0 with a >= 12px gap.
+ * Phase 7R.3.11.8B.3 — drawer and navigator are INDEPENDENT overlay anchors:
+ * the navigator right/bottom never depend on the drawer; the drawer is capped
+ * at `viewport − top − reserved` so it can never reach the navigator zone.
  */
 export function computeOverlayGeometry(
   shellRect: { top: number; right: number; bottom: number } | null,
@@ -223,17 +241,29 @@ export function computeOverlayGeometry(
   const right = shellRect && shellRect.right > 0 ? Math.max(0, viewport.width - shellRect.right) : 0
   const top = shellRect && shellRect.top > 0 ? shellRect.top : 0
   const bottomGap = shellRect && shellRect.bottom > 0 ? Math.max(0, viewport.height - shellRect.bottom) : 0
-  const navRight = drawerOpen
-    ? right + DRAWER_RIGHT_PX + DRAWER_WIDTH_PX + DRAWER_NAV_GAP_PX
-    : right + NAV_RIGHT_PX
+  // Phase 7R.3.11.8B.3 — the navigator is an INDEPENDENT overlay anchor: its
+  // right/bottom depend ONLY on the shell/viewport, never on the drawer.
+  const navRight = right + NAV_RIGHT_PX
+  // Scrollability from the REAL scroll container (scrollHeight/clientHeight).
+  const scrollHeight = opts?.scrollHeight ?? 0
+  const clientHeight = opts?.clientHeight ?? 0
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight)
+  const scrollable = maxScrollTop > SCROLLABLE_EPSILON_PX
+  const drawerTopPx = top + DRAWER_TOP_PX
+  // Phase 7R.3.11.8B.3 — drawer may only grow down to the reserved navigator
+  // zone; beyond that its body scrolls internally (never push the navigator).
+  const drawerMaxHeight = Math.max(0, viewport.height - drawerTopPx - DRAWER_BOTTOM_RESERVED_PX)
   return {
     toolbarTop: top + TOOLBAR_TOP_PX,
     toolbarRight: right + TOOLBAR_RIGHT_PX,
     navRight,
     navBottom: bottomGap + NAV_BOTTOM_PX,
-    drawerTop: top + DRAWER_TOP_PX,
+    drawerTop: drawerTopPx,
     drawerRight: right + DRAWER_RIGHT_PX,
     drawerBottom: bottomGap + DRAWER_BOTTOM_PX,
+    scrollable,
+    navigatorVisible: scrollable,
+    drawerMaxHeight,
   }
 }
 
@@ -268,19 +298,29 @@ export function intersectRects(
 export type BcrVerdict =
   | 'VISIBLE_GEOMETRY'
   | 'GEOMETRY_PENDING'
+  | 'GEOMETRY_VALID_NAV_EXPECTED_HIDDEN'
   | 'FAIL_ACCIDENTAL_FULLSCREEN_CHILD'
   | 'NAVIGATOR_STALE_DRAWER_OFFSET'
   | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION'
+  | 'NAVIGATOR_POSITION_DRIFT'
 
-export type NavigatorPlacementFailure = 'NAVIGATOR_STALE_DRAWER_OFFSET' | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION'
+export type NavigatorPlacementFailure = 'NAVIGATOR_STALE_DRAWER_OFFSET' | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION' | 'NAVIGATOR_POSITION_DRIFT'
 
 /**
- * Phase 7R.3.11.6 — navigator placement evaluation (pure, single formula).
- * expectedRight comes from the SAME computeOverlayGeometry authority; the audit
- * and BCR verdict never duplicate a second business formula.
+ * Phase 7R.3.11.8B.3 — navigator placement evaluation (pure, single formula).
+ * The navigator is an INDEPENDENT anchor: expectedRight is `right + NAV_RIGHT_PX`
+ * regardless of drawer state. Opening/closing the drawer must not move it
+ * (deltaX/deltaY <= tolerance). The drawer's vertical growth is capped by
+ * drawerMaxHeight instead, so no horizontal conflict can arise.
+ *
+ * Phase 7R.3.11.8B.3.1 — when `navigatorExpectedVisible=false` the navigator is
+ * legally hidden (short document): the placement is NOT_EVALUATED with
+ * reason NAVIGATOR_EXPECTED_HIDDEN and no expectedRight/actualRight/rightDelta
+ * computation runs (a hidden navigator's BCR is 0×0 and must not drift-FAIL).
  */
 export function evaluateNavigatorPlacement(opts: {
   drawerOpen: boolean
+  navigatorExpectedVisible: boolean
   navigatorRect: RectRecord | null
   shellRect: RectRecord | null
   viewport: { width: number; height: number }
@@ -291,8 +331,20 @@ export function evaluateNavigatorPlacement(opts: {
   rightDelta: number
   intersectionArea: number
   gapPx: number
-  decision: 'PASS' | NavigatorPlacementFailure
+  decision: 'PASS' | NavigatorPlacementFailure | 'NOT_EVALUATED'
+  reason: string | null
 } {
+  if (!opts.navigatorExpectedVisible) {
+    return {
+      expectedRight: -1,
+      actualRight: -1,
+      rightDelta: -1,
+      intersectionArea: 0,
+      gapPx: -1,
+      decision: 'NOT_EVALUATED',
+      reason: 'NAVIGATOR_EXPECTED_HIDDEN',
+    }
+  }
   const g = computeOverlayGeometry(
     opts.shellRect ? { top: opts.shellRect.top, right: opts.shellRect.right, bottom: opts.shellRect.bottom } : null,
     opts.viewport,
@@ -303,11 +355,11 @@ export function evaluateNavigatorPlacement(opts: {
   const rightDelta = Math.abs(actualRight - expectedRight)
   const drawerLeft = opts.drawerOpen ? opts.viewport.width - (g.drawerRight + DRAWER_WIDTH_PX) : null
   const gapPx = drawerLeft != null && opts.navigatorRect ? Math.max(0, drawerLeft - opts.navigatorRect.right) : -1
-  let decision: 'PASS' | NavigatorPlacementFailure = 'PASS'
+  let decision: 'PASS' | NavigatorPlacementFailure | 'NOT_EVALUATED' = 'PASS'
   if (rightDelta > opts.tolerancePx) {
-    decision = opts.drawerOpen ? 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION' : 'NAVIGATOR_STALE_DRAWER_OFFSET'
+    decision = 'NAVIGATOR_POSITION_DRIFT'
   }
-  return { expectedRight, actualRight, rightDelta, intersectionArea: 0, gapPx, decision }
+  return { expectedRight, actualRight, rightDelta, intersectionArea: 0, gapPx, decision, reason: decision === 'PASS' ? 'POSITION_STABLE' : 'POSITION_DRIFT' }
 }
 
 /**
@@ -321,6 +373,7 @@ export function computeBcrVerdict(opts: {
   navigatorInsideEditorShell: boolean
   toolbarVisible: boolean
   navigatorVisible: boolean
+  navigatorExpectedVisible: boolean
   toolbarFullscreen: boolean
   navigatorFullscreen: boolean
   drawerFullscreen: boolean
@@ -329,8 +382,20 @@ export function computeBcrVerdict(opts: {
 }): BcrVerdict {
   if (opts.toolbarFullscreen || opts.navigatorFullscreen || opts.drawerFullscreen) return 'FAIL_ACCIDENTAL_FULLSCREEN_CHILD'
   if (!opts.geometryCommitted) return 'GEOMETRY_PENDING'
-  if (!opts.toolbarInsideEditorShell || !opts.navigatorInsideEditorShell) return 'GEOMETRY_PENDING'
-  if (!opts.toolbarVisible || !opts.navigatorVisible) return 'GEOMETRY_PENDING'
+  if (!opts.toolbarInsideEditorShell) return 'GEOMETRY_PENDING'
+  // Phase 7R.3.11.8B.3.1 — a legally EXPECTED-hidden navigator is 0×0, so its
+  // "inside editor shell" check is naturally false and must NOT gate the BCR.
+  if (opts.navigatorExpectedVisible && !opts.navigatorInsideEditorShell) return 'GEOMETRY_PENDING'
+  if (!opts.toolbarVisible) return 'GEOMETRY_PENDING'
+  // Phase 7R.3.11.8B.3.1 — a navigator that is legally EXPECTED hidden (short
+  // document) must NOT put the whole Document Utilities into GEOMETRY_PENDING:
+  // the toolbar alone can still be valid. A 0×0 navigator with
+  // expectedVisible=true is the real pending/missing case.
+  if (!opts.navigatorVisible && !opts.navigatorExpectedVisible) {
+    if (opts.stateSpecificPlacementValid) return 'GEOMETRY_VALID_NAV_EXPECTED_HIDDEN'
+    return opts.placementFailure ?? 'GEOMETRY_VALID_NAV_EXPECTED_HIDDEN'
+  }
+  if (!opts.navigatorVisible) return 'GEOMETRY_PENDING'
   if (!opts.stateSpecificPlacementValid) return opts.placementFailure ?? 'GEOMETRY_PENDING'
   return 'VISIBLE_GEOMETRY'
 }
@@ -424,6 +489,7 @@ export class DocumentUtilityOverlayHost {
     sameFrameCoalesceCount: 0,
     feedbackLoopSuspectCount: 0,
     feedbackLoopConfirmedCount: 0,
+    utilityResizeEchoCount: 0,
     mixedCorrelationCount: 0,
     warningCorrelationCount: 0,
   }
@@ -436,7 +502,15 @@ export class DocumentUtilityOverlayHost {
   private lastExternalResizeTs: number | null = null
   private lastWriteShellRect: RectRecord | null = null
   private geometryCommitted = false
+  /** Phase 7R.3.11.8B.3 — DOCUMENT-UTILITY-OVERLAY-LAYOUT state-token dedup. */
+  private lastOverlayLayoutSignature = ''
   private lastRoSawChangedShell = false
+  /** Phase 7R.3.11.8B.3.1 — causal-token evidence for a confirmed loop. */
+  private lastShellChangeObservedWriteEpoch = -1
+  private lastGeometryWriteExternalEpoch = -1
+  /** Phase 7R.3.11.8B.3.1 — read-only drawer content audit (rAF + DOM read only). */
+  private drawerContentAuditRafPending = false
+  private lastDrawerContentAuditSignature = ''
   private latestRects: {
     write: RectRecord | null
     visibleWrite: RectRecord | null
@@ -532,20 +606,31 @@ export class DocumentUtilityOverlayHost {
         } else if (!externalRecent && utilityWriteRecent) {
           this.geometryCounters.feedbackLoopSuspectCount++
         }
-        // Confirmed causal loop: RO callback right after a utility write AND
-        // the observed shell geometry changed since that write (only provable
-        // when the next utility write arrives without an external resize).
+        // Phase 7R.3.11.8B.3.1 — a shell change can ONLY be attributed to OUR
+        // write when no external resize occurred since that write (otherwise
+        // the change is the lingering effect of an external resize → §5 B
+        // FALSE_POSITIVE_ATTRIBUTION). The causal token (write epoch observed)
+        // is recorded so `confirmed` can later require a NEW write2.
         const shellRectNow = container.getBoundingClientRect()
         const changed = this.lastWriteShellRect != null && Math.abs(shellRectNow.width - this.lastWriteShellRect.width) > 0.5
-        if (!externalRecent && utilityWriteRecent && changed) {
+        const attributableToUtility = changed && this.lastGeometryWriteExternalEpoch === this.externalResizeEpoch
+        if (!externalRecent && utilityWriteRecent && attributableToUtility) {
           this.lastRoSawChangedShell = true
           this.externalEpochAtLoopStart = this.externalResizeEpoch
+          this.lastShellChangeObservedWriteEpoch = this.utilityWriteEpoch
         } else if (externalRecent) {
           this.lastRoSawChangedShell = false
         }
         this.scheduleGeometrySync('resize-observer')
       })
       this.resizeObserver.observe(container)
+    }
+    // Phase 7R.3.11.8B.3 — observe the CONTENT root too: its box grows with
+    // content, so short→long/long→short navigator visibility stays live
+    // without any polling (same RO, same coalesced rAF, no new observer).
+    const contentRoot = resolveBusinessContentRoot()
+    if (contentRoot && this.resizeObserver && typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver.observe(contentRoot)
     }
     window.addEventListener('resize', this.onWindowResize)
     this.installWarningObserver()
@@ -587,6 +672,9 @@ export class DocumentUtilityOverlayHost {
           errorCount: snapshot.errorCount,
           warningCount: snapshot.warningCount,
           hintCount: snapshot.infoCount,
+          // Phase 7R.3.11.8B.4.1 — per-item codes for runtime acceptance
+          // (observability only; never affects layout/geometry).
+          codes: snapshot.diagnostics.map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? ''}`),
           snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
           decision: snapshot.documentKey === activeKey ? 'PUBLISHED_MATCHES_ACTIVE' : 'PUBLISHED_MISMATCH',
         })
@@ -607,13 +695,18 @@ export class DocumentUtilityOverlayHost {
     const editorRoot = resolveBusinessContentRoot()
     if (editorRoot && typeof MutationObserver === 'function') {
       this.diagnosticsMutationObserver = new MutationObserver(() => {
-        if (this.diagnosticsRafPending || this.disposed) return
-        this.diagnosticsRafPending = true
-        requestAnimationFrame(() => {
-          this.diagnosticsRafPending = false
-          if (this.disposed) return
-          this.diagnostics.recompute()
-        })
+        if (this.disposed) return
+        // Phase 7R.3.11.8B.3 — content mutation also re-measures navigator
+        // visibility (event-driven, rAF-coalesced; never a timer/poll).
+        if (!this.diagnosticsRafPending) {
+          this.diagnosticsRafPending = true
+          requestAnimationFrame(() => {
+            this.diagnosticsRafPending = false
+            if (this.disposed) return
+            this.diagnostics.recompute()
+            this.scheduleGeometrySync('content-mutation')
+          })
+        }
       })
       this.diagnosticsMutationObserver.observe(editorRoot, { childList: true, characterData: true, subtree: true })
     }
@@ -701,6 +794,7 @@ export class DocumentUtilityOverlayHost {
     sameFrameCoalesceCount: number
     feedbackLoopSuspectCount: number
     feedbackLoopConfirmedCount: number
+    utilityResizeEchoCount: number
     mixedCorrelationCount: number
     warningCorrelationCount: number
     externalResizeEpoch: number
@@ -840,41 +934,75 @@ export class DocumentUtilityOverlayHost {
     this.geometryCounters.executionCount++
     const container = getActiveEditorScrollContainer()
     const rect = container?.getBoundingClientRect()
+    // Phase 7R.3.11.8B.3 — live scrollability from the SAME container the
+    // Scroll Operation uses (scrollHeight/clientHeight; never字数/block count).
+    const scrollHeight = container ? container.scrollHeight : 0
+    const clientHeight = container ? container.clientHeight : 0
     // Phase 7R.3.11.6 — execution reads the LIVE drawerOpen (never a schedule-time snapshot).
     const next = computeOverlayGeometry(
       rect && rect.width > 0 ? { top: rect.top, right: rect.right, bottom: rect.bottom } : null,
       { width: window.innerWidth, height: window.innerHeight },
-      { drawerOpen: this.drawerOpen },
+      { drawerOpen: this.drawerOpen, scrollHeight, clientHeight },
     )
     const hasDrawerTransition = reasons.has('drawer-open') || reasons.has('drawer-close')
     const prev = this.lastGeometry
     this.lastGeometry = next
     if (prev && JSON.stringify(prev) === JSON.stringify(next)) {
       this.geometryCounters.noopCount++
+      // Phase 7R.3.11.8B.3.1 — §5 C UTILITY_RESIZE_ECHO: a write → one RO
+      // callback → geometry noop terminates the causal token. This is NOT a
+      // loop; the flag is cleared so an unrelated later write can never confirm.
+      if (this.lastRoSawChangedShell) {
+        this.geometryCounters.utilityResizeEchoCount++
+        this.lastRoSawChangedShell = false
+      }
       // State changed but geometry is already correct (e.g. rapid toggle
       // ending where it started): still report the state-specific placement.
-      if (hasDrawerTransition) this.emitNavigatorPlacementAudit(this.drawerOpen ? 'drawer-open-committed' : 'drawer-close-committed')
+      if (hasDrawerTransition) {
+        const commitReason = this.drawerOpen ? 'drawer-open-committed' : 'drawer-close-committed'
+        // Phase 7R.3.11.6 — drawer open/close is a BCR milestone even when the
+        // geometry object is unchanged (8B.3 independent anchors make the
+        // drawer transition a noop; the milestone audit must still fire).
+        this.emitFullBcr(commitReason)
+        this.emitNavigatorPlacementAudit(commitReason)
+      }
+      this.emitOverlayLayoutAudit(next, scrollHeight, clientHeight)
       return
     }
     this.geometryCounters.writeCount++
     this.utilityWriteEpoch++
     this.lastGeometryWriteTs = this.now()
+    // Phase 7R.3.11.8B.3.1 — record the external epoch at this write so the RO
+    // callback can tell whether an external resize invalidates attribution.
+    this.lastGeometryWriteExternalEpoch = this.externalResizeEpoch
     if (this.toolbarEl) {
       this.toolbarEl.style.top = `${next.toolbarTop}px`
       this.toolbarEl.style.right = `${next.toolbarRight}px`
     }
     if (this.navigatorEl) {
+      // Phase 7R.3.11.8B.3 — hidden when the real container is not scrollable;
+      // display:none removes hit-targets, focus and keyboard reachability.
+      this.navigatorEl.style.display = next.navigatorVisible ? 'flex' : 'none'
       this.navigatorEl.style.right = `${next.navRight}px`
       this.navigatorEl.style.bottom = `${next.navBottom}px`
     }
     if (this.drawerEl) {
+      // Phase 7R.3.11.8B.3 — drawer is top-right anchored, content-sized
+      // (height:auto), capped by maxHeight; never stretched by a bottom offset.
       this.drawerEl.style.top = `${next.drawerTop}px`
       this.drawerEl.style.right = `${next.drawerRight}px`
-      this.drawerEl.style.bottom = `${next.drawerBottom}px`
+      this.drawerEl.style.bottom = ''
+      this.drawerEl.style.maxHeight = `${next.drawerMaxHeight}px`
     }
-    // Confirmed feedback loop: a previous RO observed a shell change caused by
-    // our write and no external resize happened → this write completes the loop.
-    if (this.lastRoSawChangedShell && this.externalResizeEpoch === this.externalEpochAtLoopStart) {
+    // Phase 7R.3.11.8B.3.1 — §5 A TRUE_FEEDBACK_LOOP requires the full causal
+    // token write1 → RO callback → write2: the current write must be a NEW
+    // write strictly after the callback observed the change (utilityWriteEpoch
+    // increased), and no external resize may have intervened.
+    if (
+      this.lastRoSawChangedShell
+      && this.utilityWriteEpoch > this.lastShellChangeObservedWriteEpoch
+      && this.externalResizeEpoch === this.externalEpochAtLoopStart
+    ) {
       this.geometryCounters.feedbackLoopConfirmedCount++
     }
     this.lastRoSawChangedShell = false
@@ -884,6 +1012,7 @@ export class DocumentUtilityOverlayHost {
     // In-memory rects stay fresh during bursts; full BCR is milestone-only.
     this.refreshLatestRects()
     this.emitGeometryAndVisibility([...reasons].join(','), next)
+    this.emitOverlayLayoutAudit(next, scrollHeight, clientHeight)
     if (this.drawerOpen) this.emitCollisionAudit()
     if (firstCommit) {
       this.emitFullBcr('first-geometry-commit')
@@ -896,6 +1025,92 @@ export class DocumentUtilityOverlayHost {
       this.emitNavigatorPlacementAudit(commitReason)
       // Phase 7R.3.11.7 §32/§33: event-triggered settle summary (no timer).
       emitInkchapterRuntimeAuditSummary('drawer-transition-settled', { commitReason })
+    }
+  }
+
+  /**
+   * Phase 7R.3.11.8B.3 — low-noise overlay layout audit (state-token deduped).
+   * Suppresses identical (documentKey, scrollable, navigatorVisible, drawerVisible,
+   * drawerItemCount, rendered-height bucket) repeats; transitions always emit.
+   */
+  private emitOverlayLayoutAudit(g: OverlayGeometry, scrollHeight: number, clientHeight: number): void {
+    const drawerItemCount = this.drawerEl ? this.drawerEl.querySelectorAll('.inkchapter-doc-drawer__item').length : 0
+    const renderedHeight = this.drawerEl ? this.drawerEl.getBoundingClientRect().height : 0
+    const heightBucket = Math.round(renderedHeight / 20)
+    const signature = `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${g.scrollable}|${g.navigatorVisible}|${this.drawerOpen}|${drawerItemCount}|${heightBucket}`
+    if (signature === this.lastOverlayLayoutSignature) return
+    this.lastOverlayLayoutSignature = signature
+    const decision = !g.navigatorVisible
+      ? 'SHORT_DOCUMENT_NAV_HIDDEN'
+      : this.drawerOpen
+        ? (g.drawerMaxHeight > 0 && renderedHeight >= g.drawerMaxHeight - 2 ? 'DRAWER_MAX_HEIGHT_SCROLL' : 'DRAWER_CONTENT_FIT')
+        : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
+    emitRuntimeAudit('DOCUMENT-UTILITY-OVERLAY-LAYOUT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      scrollHeight,
+      clientHeight,
+      maxScrollTop: Math.max(0, scrollHeight - clientHeight),
+      scrollable: g.scrollable,
+      navigatorVisible: g.navigatorVisible,
+      navigatorRight: g.navRight,
+      navigatorBottom: g.navBottom,
+      drawerVisible: this.drawerOpen,
+      drawerItemCount,
+      drawerContentHeight: renderedHeight,
+      drawerMaxHeight: g.drawerMaxHeight,
+      drawerRenderedHeight: renderedHeight,
+      drawerBodyScrollable: this.drawerOpen && g.drawerMaxHeight > 0 && renderedHeight >= g.drawerMaxHeight - 2,
+      decision,
+    })
+  }
+
+  /**
+   * Phase 7R.3.11.8B.3.1 — Drawer rerender read-only layout audit.
+   * After renderDrawer() the DOM is authoritative; this schedules ONE rAF that
+   * ONLY reads the drawer box + list scroll metrics and emits the latest state.
+   * It NEVER calls applyGeometry and never writes styles → geometryWriteDelta=0.
+   * State-token dedup suppresses identical (docKey, drawerVisible, itemCount,
+   * rendered-height bucket, bodyScrollable) repeats.
+   */
+  private scheduleDrawerContentAudit(): void {
+    if (this.drawerContentAuditRafPending || this.disposed) return
+    this.drawerContentAuditRafPending = true
+    const run = (): void => {
+      this.drawerContentAuditRafPending = false
+      if (this.disposed || !this.drawerEl || !this.drawerListEl) return
+      const writeCountBefore = this.geometryCounters.writeCount
+      const drawerRect = this.drawerEl.getBoundingClientRect()
+      const listScrollHeight = this.drawerListEl.scrollHeight
+      const listClientHeight = this.drawerListEl.clientHeight
+      const itemCount = this.drawerEl.querySelectorAll('.inkchapter-doc-drawer__item').length
+      const renderedHeight = drawerRect.height
+      const maxHeight = this.drawerEl.style.maxHeight ? Number.parseInt(this.drawerEl.style.maxHeight) : 0
+      const bodyScrollable = maxHeight > 0 && listScrollHeight > listClientHeight && renderedHeight >= maxHeight - 2
+      const heightBucket = Math.round(renderedHeight / 20)
+      const signature = `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${this.drawerOpen}|${itemCount}|${heightBucket}|${bodyScrollable}`
+      const writeCountAfter = this.geometryCounters.writeCount
+      if (signature !== this.lastDrawerContentAuditSignature) {
+        this.lastDrawerContentAuditSignature = signature
+        emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER-CONTENT-LAYOUT', {
+          documentKey: this.opts.ctx.authority.getDocumentKey(),
+          drawerVisible: this.drawerOpen,
+          itemCount,
+          drawerRenderedHeight: renderedHeight,
+          drawerMaxHeight: maxHeight,
+          listScrollHeight,
+          listClientHeight,
+          drawerBodyScrollable: bodyScrollable,
+          geometryWriteBefore: writeCountBefore,
+          geometryWriteAfter: writeCountAfter,
+          geometryWriteDelta: writeCountAfter - writeCountBefore,
+          readOnly: true,
+        })
+      }
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(run)
+    } else {
+      run()
     }
   }
 
@@ -943,6 +1158,7 @@ export class DocumentUtilityOverlayHost {
     const toolbarVisible = !!r.toolbar && r.toolbar.width > 0 && r.toolbar.height > 0 && !toolbarFullscreen && toolbarInside
     const navigatorVisible = !!r.navigator && r.navigator.width > 0 && r.navigator.height > 0 && !navigatorFullscreen && navigatorInside
     const committed = this.geometryCommitted
+    const navigatorExpectedVisible = this.getNavigatorExpectedVisible()
     const placementFailure = this.computePlacementFailure()
     const decision = computeBcrVerdict({
       geometryCommitted: committed,
@@ -950,6 +1166,7 @@ export class DocumentUtilityOverlayHost {
       navigatorInsideEditorShell: navigatorInside,
       toolbarVisible,
       navigatorVisible,
+      navigatorExpectedVisible,
       toolbarFullscreen,
       navigatorFullscreen,
       drawerFullscreen,
@@ -959,6 +1176,7 @@ export class DocumentUtilityOverlayHost {
     emitRuntimeAudit('DOCUMENT-UTILITY-BCR', {
       reason,
       geometryCommitted: committed,
+      navigatorExpectedVisible,
       viewportWidth: viewport.width,
       viewportHeight: viewport.height,
       writeRect: r.write,
@@ -1005,19 +1223,30 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * Phase 7R.3.11.8B.3.1 — SINGLE scrollability authority reused by every audit
+   * (placement / BCR / invariant). Never a second scrollability computation.
+   */
+  private getNavigatorExpectedVisible(): boolean {
+    return this.lastGeometry?.navigatorVisible ?? false
+  }
+
+  /**
    * Phase 7R.3.11.6 — state-specific placement failure detector. Uses the SAME
    * geometry helper as production (no second formula): expectedRight is the
    * drawer-state-dependent navRight; actualRight = innerWidth - navRect.right.
+   * Phase 7R.3.11.8B.3.1 — a legally-hidden navigator (expectedVisible=false)
+   * is NOT a placement failure.
    */
-  private computePlacementFailure(): 'NAVIGATOR_STALE_DRAWER_OFFSET' | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION' | null {
+  private computePlacementFailure(): NavigatorPlacementFailure | null {
     const result = evaluateNavigatorPlacement({
       drawerOpen: this.drawerOpen,
+      navigatorExpectedVisible: this.getNavigatorExpectedVisible(),
       navigatorRect: this.latestRects.navigator,
       shellRect: this.latestRects.shell,
       viewport: { width: window.innerWidth, height: window.innerHeight },
       tolerancePx: NAV_PLACEMENT_TOLERANCE_PX,
     })
-    return result.decision === 'PASS' ? null : result.decision
+    return result.decision === 'PASS' ? null : (result.decision === 'NOT_EVALUATED' ? null : result.decision)
   }
 
   /** Phase 7R.3.11.6 — NAV-PLACEMENT runtime audit (post-commit only). */
@@ -1025,8 +1254,10 @@ export class DocumentUtilityOverlayHost {
     const viewport = { width: window.innerWidth, height: window.innerHeight }
     const nav = this.latestRects.navigator
     const drawer = this.latestRects.drawer
+    const expectedVisible = this.getNavigatorExpectedVisible()
     const result = evaluateNavigatorPlacement({
       drawerOpen: this.drawerOpen,
+      navigatorExpectedVisible: expectedVisible,
       navigatorRect: nav,
       shellRect: this.latestRects.shell,
       viewport,
@@ -1038,6 +1269,7 @@ export class DocumentUtilityOverlayHost {
       documentKey: this.opts.ctx.authority.getDocumentKey(),
       reason,
       drawerOpen: this.drawerOpen,
+      navigatorExpectedVisible: expectedVisible,
       geometryCommitted: this.geometryCommitted,
       viewportWidth: viewport.width,
       editorShellRight: this.latestRects.shell?.right ?? null,
@@ -1052,8 +1284,55 @@ export class DocumentUtilityOverlayHost {
       intersectionArea,
       gapPx,
       decision: result.decision,
+      decisionReason: result.reason,
+    })
+    // Phase 7R.3.11.8B.3 — NAVIGATOR-POSITION-INVARIANT: opening/closing the
+    // drawer must NOT move the navigator (deltaX/deltaY <= 1px). State-token
+    // deduped; transitions + FAIL always emit.
+    const afterNav = this.latestRects.navigator
+    const before = this.navRectBeforeDrawerToggle
+    const navHidden = !afterNav || afterNav.width <= 0 || afterNav.height <= 0
+    const deltaX = before && afterNav && !navHidden ? Math.abs(afterNav.right - before.right) : null
+    const deltaY = before && afterNav && !navHidden ? Math.abs(afterNav.bottom - before.bottom) : null
+    const pass = deltaX != null && deltaY != null && deltaX <= 1 && deltaY <= 1
+    const invariantDecision = navHidden ? 'NOT_EVALUATED' : (pass ? 'PASS' : 'FAIL')
+    const invariantReason = navHidden ? 'NAVIGATOR_HIDDEN' : (pass ? 'POSITION_STABLE' : 'POSITION_DRIFT')
+    const signature = `${invariantReason}|${invariantDecision}|${deltaX}|${deltaY}|${this.drawerOpen}`
+    if (signature !== this.lastNavPositionInvariantSignature) {
+      this.lastNavPositionInvariantSignature = signature
+      emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-POSITION-INVARIANT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey(),
+        drawerVisibleBefore: !this.drawerOpen,
+        drawerVisibleAfter: this.drawerOpen,
+        rightBefore: before?.right ?? null,
+        rightAfter: afterNav?.right ?? null,
+        bottomBefore: before?.bottom ?? null,
+        bottomAfter: afterNav?.bottom ?? null,
+        deltaX,
+        deltaY,
+        decision: invariantDecision,
+        reason: invariantReason,
+      })
+    }
+    // Phase 7R.3.11.8B.3.1 — DOCUMENT-UTILITY-NAVIGATOR-AUDIT-INVARIANT:
+    // a legally-hidden navigator must be NOT_EVALUATED everywhere; a hidden
+    // navigator reporting POSITION_DRIFT is an audit invariant FAIL.
+    const overlayDecision = !expectedVisible ? 'SHORT_DOCUMENT_NAV_HIDDEN' : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
+    const auditPass = !expectedVisible ? result.decision === 'NOT_EVALUATED' : result.decision !== 'NOT_EVALUATED'
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-AUDIT-INVARIANT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      expectedVisible,
+      overlayDecision,
+      placementDecision: result.decision,
+      positionInvariantDecision: invariantDecision,
+      decision: auditPass ? 'PASS' : 'FAIL',
     })
   }
+
+  /** Phase 7R.3.11.8B.3 — navigator position captured before a drawer toggle. */
+  private navRectBeforeDrawerToggle: { right: number; bottom: number } | null = null
+  /** Phase 7R.3.11.8B.3 — NAVIGATOR-POSITION-INVARIANT state-token dedup. */
+  private lastNavPositionInvariantSignature = ''
 
   private emitResizeSummary(): void {
     const viewport = { width: window.innerWidth, height: window.innerHeight }
@@ -1077,6 +1356,7 @@ export class DocumentUtilityOverlayHost {
       sameFrameCoalesceCount: this.geometryCounters.sameFrameCoalesceCount,
       feedbackLoopSuspectCount: this.geometryCounters.feedbackLoopSuspectCount,
       feedbackLoopConfirmedCount: this.geometryCounters.feedbackLoopConfirmedCount,
+      utilityResizeEchoCount: this.geometryCounters.utilityResizeEchoCount,
       mixedCorrelationCount: this.geometryCounters.mixedCorrelationCount,
       warningCorrelationCount: this.geometryCounters.warningCorrelationCount,
       externalResizeEpoch: this.externalResizeEpoch,
@@ -1665,6 +1945,8 @@ export class DocumentUtilityOverlayHost {
         itemCount: 0,
         decision: 'DRAWER_RENDER_BLOCKED_STALE_SNAPSHOT',
       })
+      // Phase 7R.3.11.8B.3.1 — read-only layout audit follows every re-render.
+      this.scheduleDrawerContentAudit()
       return
     }
     const label = document.createElement('span')
@@ -1696,6 +1978,9 @@ export class DocumentUtilityOverlayHost {
       snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
       decision: 'DRAWER_RENDERED_MATCHES_ACTIVE',
     })
+    // Phase 7R.3.11.8B.3.1 — read-only layout audit follows every re-render
+    // (rAF + DOM read only; geometryWriteDelta stays 0 by construction).
+    this.scheduleDrawerContentAudit()
   }
 
   private buildDrawerItem(d: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement {
@@ -1758,6 +2043,10 @@ export class DocumentUtilityOverlayHost {
    */
   private setDrawerOpen(nextOpen: boolean): void {
     if (this.drawerOpen === nextOpen) return
+    // Phase 7R.3.11.8B.3 — capture the navigator position BEFORE the toggle so
+    // the position-invariant audit can prove deltaX/deltaY <= 1px.
+    const navRectBefore = this.latestRects.navigator
+    this.navRectBeforeDrawerToggle = navRectBefore ? { right: navRectBefore.right, bottom: navRectBefore.bottom } : null
     this.drawerOpen = nextOpen
     if (this.drawerEl) {
       this.drawerEl.style.display = nextOpen ? 'flex' : 'none'

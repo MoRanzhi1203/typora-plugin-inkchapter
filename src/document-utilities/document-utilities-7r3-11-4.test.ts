@@ -16,6 +16,7 @@ import {
 } from './document-utility-overlay-host'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
+import type { DiagnosticCanonicalHeadingAuthorityResult } from './document-h1-authority-bridge'
 import { computeDocumentDiagnostics } from './document-diagnostics'
 
 const rootIdentity = `[${UTILITY_ROOT_IDENTITY_ATTR}="true"]`
@@ -44,7 +45,7 @@ function mutableContext(initialKey: string | null = 'doc:a'): {
   }
 }
 
-function fakeProviders(): DocumentDiagnosticsProviders {
+function fakeProviders(overrides: Partial<DocumentDiagnosticsProviders> = {}): DocumentDiagnosticsProviders {
   return {
     getFormulaVisibleTagTokens: () => [],
     getFigureName: () => null,
@@ -55,6 +56,31 @@ function fakeProviders(): DocumentDiagnosticsProviders {
     isLinkTargetMissing: () => false,
     getHeadingIdentity: () => null,
     parseLocalLinkTargets: () => [],
+    ...overrides,
+  }
+}
+
+/** Phase 7R.3.11.8B.4 — READY canonical heading result (levels in document order). */
+function canonicalHeadingResult(
+  levels: number[],
+  docKey: string,
+  texts: string[] = [],
+  lineOffsets: number[] = [],
+): DiagnosticCanonicalHeadingAuthorityResult {
+  const headingFacts = levels.map((level, i) => {
+    const el = document.createElement(`h${level}`)
+    if (lineOffsets[i] != null) el.setAttribute('data-line', String(lineOffsets[i]))
+    el.textContent = texts[i] ?? `H${level}`
+    return { stableIdentity: `H:${docKey}:${i}`, element: el, physicalLevel: level, text: el.textContent ?? '' }
+  })
+  const h1Facts = headingFacts.filter(f => f.physicalLevel === 1)
+  return {
+    state: 'READY', reason: 'READY', documentKey: docKey, framePresent: true, frameDocumentKey: docKey,
+    semanticRevision: 1, frameGeneration: 1, canonicalEntryCount: headingFacts.length,
+    mappedEntryCount: headingFacts.length, invalidEntryCount: 0,
+    physicalLevels: headingFacts.map(f => f.physicalLevel),
+    headingFacts, h1Facts,
+    h1Count: h1Facts.length, h1StableIdentities: h1Facts.map(f => f.stableIdentity),
   }
 }
 
@@ -71,6 +97,23 @@ function mountHost(ctx: DocumentUtilitiesContext): DocumentUtilityOverlayHost {
   return h
 }
 
+/**
+ * Phase 7R.3.11.8B.4 — heading gap tests run through the HOST must drive the
+ * diagnostics heading sequence from the canonical authority (never DOM-only).
+ */
+function mountHostWithCanonicalHeadings(ctx: DocumentUtilitiesContext): DocumentUtilityOverlayHost {
+  const providers = fakeProviders({
+    getCanonicalH1Facts: () => {
+      const key = ctx.authority.getDocumentKey()
+      if (key === 'doc:b') return canonicalHeadingResult([1], 'doc:b', ['B'], [0])
+      return canonicalHeadingResult([1, 2, 4], 'doc:a', ['A', 'A2', 'A4'], [0, 2, 4])
+    },
+  })
+  const h = new DocumentUtilityOverlayHost({ ctx, providers, onBindDocument: () => {} })
+  h.mount()
+  return h
+}
+
 describe('SNAPSHOT-1 drawer auto-refreshes across document switch', () => {
   it('drawer renders doc A warnings, then switches to doc B and re-renders in place', () => {
     const { ctx, setKey } = mutableContext('doc:a')
@@ -78,7 +121,7 @@ describe('SNAPSHOT-1 drawer auto-refreshes across document switch', () => {
     write.id = 'write'
     write.innerHTML = '<h1>A</h1><h2>A2</h2><h4>A4</h4>'
     document.body.appendChild(write)
-    const h = mountHost(ctx)
+    const h = mountHostWithCanonicalHeadings(ctx)
 
     // Open drawer → doc A warnings (heading gap 2→4).
     const diag = document.querySelector('.inkchapter-doc-toolbar__btn--diag') as HTMLButtonElement
@@ -127,31 +170,29 @@ describe('HEADING-GAP-1/2 physical level structure lint', () => {
   })
 })
 
-describe('COLLISION-1/2 drawer/navigator avoidance', () => {
+describe('COLLISION-1/2 drawer/navigator independent anchors (7R.3.11.8B.3)', () => {
   const viewport = { width: 1920, height: 1080 }
   const shell = { top: 100, right: 1400, bottom: 900 }
 
-  it('drawer closed → navigator at normal right position', () => {
-    const g = computeOverlayGeometry(shell, viewport, { drawerOpen: false })
+  it('drawer closed → navigator at base right position', () => {
+    const g = computeOverlayGeometry(shell, viewport, { drawerOpen: false, scrollHeight: 2000, clientHeight: 800 })
     expect(g.navRight).toBe(520 + 28)
+    expect(g.navigatorVisible).toBe(true)
   })
 
-  it('drawer open → navigator shifts LEFT of the drawer with a >= 12px gap', () => {
-    const closed = computeOverlayGeometry(shell, viewport, { drawerOpen: false })
-    const open = computeOverlayGeometry(shell, viewport, { drawerOpen: true })
-    // right = 1920-1400 = 520; open navRight = 520 + 12 (drawerRight) + 360 + 16 (gap).
-    expect(open.navRight).toBe(520 + 12 + 360 + 16)
-    // The navigator moved left by the drawer width relative to its closed spot.
-    expect(open.navRight - closed.navRight).toBe(360)
-    // Verify intersection area = 0 with realistic rects + gap >= 12px.
-    const drawerRect = { left: viewport.width - (open.drawerRight + 360), top: open.drawerTop, right: viewport.width - open.drawerRight, bottom: open.drawerBottom }
-    const navRect = { left: viewport.width - (open.navRight + 38), top: open.navBottom - 66, right: viewport.width - open.navRight, bottom: open.navBottom }
-    expect(rectIntersectionArea(drawerRect, navRect)).toBe(0)
-    expect(drawerRect.left - navRect.right).toBeGreaterThanOrEqual(12)
+  it('drawer open → navigator position UNCHANGED (independent anchor, delta 0)', () => {
+    const closed = computeOverlayGeometry(shell, viewport, { drawerOpen: false, scrollHeight: 2000, clientHeight: 800 })
+    const open = computeOverlayGeometry(shell, viewport, { drawerOpen: true, scrollHeight: 2000, clientHeight: 800 })
+    expect(open.navRight).toBe(520 + 28)
+    expect(open.navRight - closed.navRight).toBe(0)
+    expect(open.navBottom - closed.navBottom).toBe(0)
+    // Drawer is capped above the reserved navigator zone: vertical conflict is
+    // resolved by drawerMaxHeight, never by pushing the navigator.
+    expect(open.drawerMaxHeight).toBe(1080 - (100 + 56) - 140)
   })
 
-  it('drawer close → navigator returns to the normal position', () => {
-    const g = computeOverlayGeometry(shell, viewport, { drawerOpen: false })
+  it('drawer close → navigator still at base position', () => {
+    const g = computeOverlayGeometry(shell, viewport, { drawerOpen: false, scrollHeight: 2000, clientHeight: 800 })
     expect(g.navRight).toBe(520 + 28)
   })
 })
@@ -179,7 +220,7 @@ describe('RESIZE-ATTR-1..4 final attribution verdicts', () => {
 })
 
 describe('BCR-1/2 verdict accuracy', () => {
-  const base = { toolbarFullscreen: false, navigatorFullscreen: false, drawerFullscreen: false }
+  const base = { toolbarFullscreen: false, navigatorFullscreen: false, drawerFullscreen: false, navigatorExpectedVisible: true }
 
   it('pre-layout / not committed → GEOMETRY_PENDING (never VISIBLE)', () => {
     const v = computeBcrVerdict({
@@ -219,6 +260,29 @@ describe('BCR-1/2 verdict accuracy', () => {
       stateSpecificPlacementValid: false, placementFailure: 'NAVIGATOR_STALE_DRAWER_OFFSET',
     })
     expect(v).toBe('NAVIGATOR_STALE_DRAWER_OFFSET')
+  })
+
+  it('expected-hidden navigator (0×0, not inside shell) → GEOMETRY_VALID_NAV_EXPECTED_HIDDEN, never GEOMETRY_PENDING', () => {
+    const v = computeBcrVerdict({
+      ...base,
+      navigatorExpectedVisible: false,
+      // The real hidden navigator is 0×0 → its "inside shell" check is false.
+      geometryCommitted: true, toolbarInsideEditorShell: true, navigatorInsideEditorShell: false,
+      toolbarVisible: true, navigatorVisible: false,
+      stateSpecificPlacementValid: true, placementFailure: null,
+    })
+    expect(v).toBe('GEOMETRY_VALID_NAV_EXPECTED_HIDDEN')
+  })
+
+  it('expected-visible but navigator 0×0 → GEOMETRY_PENDING (real missing case)', () => {
+    const v = computeBcrVerdict({
+      ...base,
+      navigatorExpectedVisible: true,
+      geometryCommitted: true, toolbarInsideEditorShell: true, navigatorInsideEditorShell: true,
+      toolbarVisible: true, navigatorVisible: false,
+      stateSpecificPlacementValid: true, placementFailure: null,
+    })
+    expect(v).toBe('GEOMETRY_PENDING')
   })
 })
 

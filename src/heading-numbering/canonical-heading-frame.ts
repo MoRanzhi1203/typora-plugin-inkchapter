@@ -21,6 +21,10 @@ import { fastHash } from './numbering-fast-path'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { forensicVerboseEnabled } from './document-open-perf'
 
+/** Phase 7R.3.11.8B.2 — HEADING-CANONICAL-FRAME-INVENTORY state-token dedup
+ *  (logging-only; identical inventory + decision repeats are suppressed). */
+let lastCanonicalFrameInventorySignature = ''
+
 export interface CanonicalHeadingBinding {
   key: string
   element: HTMLElement
@@ -147,26 +151,32 @@ export function buildCanonicalHeadingFrame(input: {
   }
 
   const verbose = forensicVerboseEnabled()
-  emitRuntimeAudit('HEADING-CANONICAL-FRAME-INVENTORY', {
-    documentKey: input.documentKey ?? null,
-    editorStructureEpoch: input.editorStructureEpoch,
-    semanticRevision: input.semanticRevision,
-    committedFrameGeneration: inventory.committedFrameGeneration,
-    semanticHeadingCount: inventory.semanticHeadingCount,
-    bindingHeadingCount: inventory.bindingHeadingCount,
-    canonicalEntryCount: inventory.canonicalEntryCount,
-    semanticIdentityCount: inventory.semanticIdentityCount,
-    bindingIdentityCount: inventory.bindingIdentityCount,
-    semanticOnlyIdentityCount: inventory.semanticOnlyIdentityCount,
-    bindingOnlyIdentityCount: inventory.bindingOnlyIdentityCount,
-    ...(verbose || decision !== 'COHERENT' ? {
-      semanticOnlyIdentities: inventory.semanticOnlyIdentities.slice(0, 24),
-      bindingOnlyIdentities: inventory.bindingOnlyIdentities.slice(0, 24),
-      duplicateSemanticIdentities: inventory.duplicateSemanticIdentities.slice(0, 12),
-      duplicateBindingIdentities: inventory.duplicateBindingIdentities.slice(0, 12),
-    } : {}),
-    decision,
-  })
+  // Phase 7R.3.11.8B.2 — state-token dedup: identical inventory + decision
+  // repeats are suppressed; transitions / failures / verbose always emit.
+  const inventorySignature = `${input.documentKey ?? ''}|${decision}|${inventory.semanticHeadingCount}|${inventory.bindingHeadingCount}|${inventory.canonicalEntryCount}|${inventory.committedFrameGeneration}|${inventory.duplicateSemanticIdentities.length}|${inventory.duplicateBindingIdentities.length}`
+  if (verbose || decision !== 'COHERENT' || inventorySignature !== lastCanonicalFrameInventorySignature) {
+    lastCanonicalFrameInventorySignature = inventorySignature
+    emitRuntimeAudit('HEADING-CANONICAL-FRAME-INVENTORY', {
+      documentKey: input.documentKey ?? null,
+      editorStructureEpoch: input.editorStructureEpoch,
+      semanticRevision: input.semanticRevision,
+      committedFrameGeneration: inventory.committedFrameGeneration,
+      semanticHeadingCount: inventory.semanticHeadingCount,
+      bindingHeadingCount: inventory.bindingHeadingCount,
+      canonicalEntryCount: inventory.canonicalEntryCount,
+      semanticIdentityCount: inventory.semanticIdentityCount,
+      bindingIdentityCount: inventory.bindingIdentityCount,
+      semanticOnlyIdentityCount: inventory.semanticOnlyIdentityCount,
+      bindingOnlyIdentityCount: inventory.bindingOnlyIdentityCount,
+      ...(verbose || decision !== 'COHERENT' ? {
+        semanticOnlyIdentities: inventory.semanticOnlyIdentities.slice(0, 24),
+        bindingOnlyIdentities: inventory.bindingOnlyIdentities.slice(0, 24),
+        duplicateSemanticIdentities: inventory.duplicateSemanticIdentities.slice(0, 12),
+        duplicateBindingIdentities: inventory.duplicateBindingIdentities.slice(0, 12),
+      } : {}),
+      decision,
+    })
+  }
 
   if (decision !== 'COHERENT') {
     return { decision, frame: null, inventory }

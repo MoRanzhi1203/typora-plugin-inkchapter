@@ -55,6 +55,79 @@ export interface DiagnosticLinkFact {
   element: HTMLElement | null
 }
 
+/**
+ * Phase 7R.3.11.8B.4 — Heading Diagnostics Authority invariant.
+ *
+ * Only a READY canonical frame may drive heading structure diagnostics. When
+ * the diagnostic heading sequence deviates from the canonical sequence
+ * (count mismatch / non-canonical entries included / canonical entries
+ * missing) the decision is FAIL and the structure rules (gap / empty heading /
+ * duplicate text) must NOT publish from the polluted sequence.
+ */
+export type HeadingDiagnosticAuthorityDecision = 'PASS' | 'FAIL' | 'NOT_EVALUATED'
+
+export interface HeadingDiagnosticAuthority {
+  canonicalHeadingCount: number
+  diagnosticHeadingCount: number
+  canonicalStableIdentities: readonly string[]
+  diagnosticStableIdentities: readonly string[]
+  nonCanonicalIncludedCount: number
+  missingCanonicalCount: number
+  decision: HeadingDiagnosticAuthorityDecision
+  reason?: string
+}
+
+/**
+ * Phase 7R.3.11.8B.4.1 — latent ATX heading marker fact (Source Syntax
+ * Diagnostics). Pure source-syntax input; NEVER structural.
+ */
+export interface LatentAtxMarkerInput {
+  /** 0-based source line index. */
+  line: number
+  markerLevel: number
+  markerText: string
+  text: string
+}
+
+/**
+ * Phase 7R.3.11.8B.4 — Document Diagnostic Severity Policy (single authority).
+ *
+ * ALL diagnostics severities flow through this entry point. Mode-dependent
+ * rules (HEADING_LEVEL_GAP / HEADING_EMPTY_TEXT) resolve by strict/loose;
+ * constant rules keep their fixed matrix value from Phase 7R.3.11.8-B.
+ */
+export function resolveDocumentDiagnosticSeverity(
+  code: string,
+  strictMode: boolean,
+): DocumentDiagnosticSeverity {
+  switch (code) {
+    // ── Strict vs Loose mode-dependent rules ──
+    case 'HEADING_LEVEL_GAP':
+      return strictMode ? 'error' : 'warning'
+    case 'HEADING_EMPTY_TEXT':
+      return strictMode ? 'error' : 'warning'
+    // ── Constant ERROR rules ──
+    case 'STRICT_SINGLE_H1_NO_H1':
+    case 'STRICT_SINGLE_H1_MULTIPLE_H1':
+    case 'FIGURE_LOCAL_IMAGE_MISSING':
+    case 'FORMULA_DUPLICATE_VISIBLE_TAG':
+    case 'HEADING_DUPLICATE_IDENTITY':
+      return 'error'
+    // ── Constant INFO rules ──
+    case 'DOCUMENT_EMPTY':
+    case 'DOCUMENT_INACTIVE':
+    case 'DOCUMENT_SOURCE_UNAVAILABLE':
+      return 'info'
+    default:
+      // Phase 7R.3.11.8B.4.1 — latent source syntax risk: strict=WARNING,
+      // loose=HINT ('info'). Codes are level-suffixed
+      // (LATENT_ATX_HEADING_MARKER_LEVEL_2), so match the ruleId prefix.
+      // NEVER error — a latent marker is not a current structure defect.
+      if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return strictMode ? 'warning' : 'info'
+      return code.startsWith('STRICT_FIRST_H1_') ? 'error' : 'warning'
+  }
+}
+
 export interface DocumentDiagnosticsInput {
   documentKey: string | null
   markdown: string | null
@@ -67,6 +140,18 @@ export interface DocumentDiagnosticsInput {
    * judged against a stale/empty frame); `[]` = committed frame with ZERO H1.
    */
   h1Facts?: readonly DiagnosticH1Fact[] | null
+  /**
+   * Phase 7R.3.11.8B.4 — canonical heading authority invariant. Absent = pure
+   * compute callers feed the sequence directly (structure rules allowed).
+   * decision=FAIL blocks structure rules derived from the polluted sequence.
+   */
+  headingAuthority?: HeadingDiagnosticAuthority
+  /**
+   * Phase 7R.3.11.8B.4.1 — Source Syntax Diagnostics input. Latent ATX heading
+   * markers are STRICTLY isolated from structural diagnostics: they never
+   * affect h1Count / gap / boundaries / outline / caption / formula scope.
+   */
+  latentAtxMarkers?: readonly LatentAtxMarkerInput[]
   figures: readonly DiagnosticObjectFact[]
   tables: readonly DiagnosticObjectFact[]
   codes: readonly DiagnosticObjectFact[]
@@ -141,7 +226,6 @@ export function deduplicateDiagnostics(
 function makeDiagnostic(
   input: DocumentDiagnosticsInput,
   category: DocumentDiagnosticCategory,
-  severity: DocumentDiagnosticSeverity,
   code: string,
   message: string,
   opts: {
@@ -155,6 +239,8 @@ function makeDiagnostic(
     locator?: DocumentDiagnosticLocatorDescriptor
   } = {},
 ): DocumentDiagnostic {
+  // Phase 7R.3.11.8B.4 — severity ALWAYS comes from the single policy entry.
+  const severity = resolveDocumentDiagnosticSeverity(code, input.strictMode)
   const targetIdentity = normalizeIdentity(opts.targetIdentity) || normalizeIdentity(opts.stableIdentity)
   const locator = opts.locator ?? (opts.element
     ? { kind: opts.kind ?? category === 'heading' ? 'heading' : 'object', targetElement: opts.element }
@@ -222,7 +308,7 @@ export function computeDocumentDiagnostics(
   if (input.documentKey == null || (input.markdown == null && input.headings.length === 0)) {
     // No active business document: NOT a scary plugin error.
     push(
-      makeDiagnostic(input, 'document', 'info', 'DOCUMENT_INACTIVE', '当前没有活动文档', {
+      makeDiagnostic(input, 'document', 'DOCUMENT_INACTIVE', '当前没有活动文档', {
         detail: '打开一个 Markdown 文档后即可检查其结构。',
       }),
     )
@@ -230,7 +316,7 @@ export function computeDocumentDiagnostics(
     const topline = validateStrictFirstH1Topline(input.markdown, input.strictMode ? 'strict' : 'loose')
     if (!topline.skipped && !topline.passed && topline.message) {
       push(
-        makeDiagnostic(input, 'document', 'error', `STRICT_FIRST_H1_${topline.reason}`, topline.message, {
+        makeDiagnostic(input, 'document', `STRICT_FIRST_H1_${topline.reason}`, topline.message, {
           detail: topline.documentStartState === 'DOCUMENT_EMPTY' ? '文档为空，无法满足严格模式首行 H1。' : undefined,
           kind: 'document',
         }),
@@ -244,7 +330,7 @@ export function computeDocumentDiagnostics(
       const h1Count = input.h1Facts.length
       if (h1Count === 0) {
         push(
-          makeDiagnostic(input, 'document', 'error', 'STRICT_SINGLE_H1_NO_H1',
+          makeDiagnostic(input, 'document', 'STRICT_SINGLE_H1_NO_H1',
             '严格模式要求全文必须且只能包含一个一级标题（H1），当前未检测到 H1。', {
             detail: '文档必须且只能包含一个一级标题（H1）。',
             kind: 'document',
@@ -257,7 +343,7 @@ export function computeDocumentDiagnostics(
         const offending = input.h1Facts[1] // the FIRST offending H1 (second H1)
         const offendingIdentity = offending?.stableIdentity ?? null
         push(
-          makeDiagnostic(input, 'document', 'error', 'STRICT_SINGLE_H1_MULTIPLE_H1',
+          makeDiagnostic(input, 'document', 'STRICT_SINGLE_H1_MULTIPLE_H1',
             `严格模式要求全文只能包含一个一级标题（H1），当前检测到 ${h1Count} 个。`, {
             detail: '请删除或降级多余的 H1，只保留一个一级标题。',
             kind: 'heading',
@@ -283,7 +369,7 @@ export function computeDocumentDiagnostics(
       const verdict = computeDocumentTrailingBlankLine(input.markdown)
       if (verdict === 'WARNING') {
         push(
-          makeDiagnostic(input, 'document', 'warning', 'DOCUMENT_TRAILING_BLANK_LINE',
+          makeDiagnostic(input, 'document', 'DOCUMENT_TRAILING_BLANK_LINE',
             '警告：文档末尾缺少空行', {
             detail: 'Markdown 文档最后一个非空内容之后应保留至少一个空行。',
             kind: 'document',
@@ -295,11 +381,37 @@ export function computeDocumentDiagnostics(
       }
     }
 
+    // ── Phase 7R.3.11.8B.4.1 — LATENT-ATX-HEADING-MARKER (Source Syntax
+    //    Diagnostics). Strictly isolated from structural diagnostics: these
+    //    items NEVER affect h1Count / gap / boundary / outline / caption /
+    //    formula scope. severity: strict=WARNING, loose=HINT('info').
+    for (const latent of input.latentAtxMarkers ?? []) {
+      const marker = latent.markerText || `#`.repeat(Math.max(1, latent.markerLevel))
+      const levelLabel = `H${latent.markerLevel}`
+      push(
+        makeDiagnostic(input, 'heading', `LATENT_ATX_HEADING_MARKER_LEVEL_${latent.markerLevel}`,
+          `检测到未转义的潜在标题标记「${marker}」`, {
+          detail: `当前该行尚未被 Typora 识别为标题，但后续重新解析时可能成为 ${levelLabel}。若希望始终作为普通文本，请使用 \\${marker}。`,
+          kind: 'heading',
+          targetIdentity: `latent-atx:line:${latent.line}:${marker}`,
+          metadata: {
+            ruleId: 'LATENT-ATX-HEADING-MARKER',
+            markerLevel: latent.markerLevel,
+            markerText: marker,
+            line: latent.line,
+            sourceRange: { line: latent.line, column: 0 },
+            fixable: true,
+            fixKind: 'ESCAPE_HEADING_MARKER',
+          },
+        }),
+      )
+    }
+
     const isEmpty =
       input.markdown != null && input.markdown.trim() === '' && input.headings.length === 0
     if (isEmpty) {
       push(
-        makeDiagnostic(input, 'document', 'info', DOCUMENT_EMPTY_CODE, '文档为空', {
+        makeDiagnostic(input, 'document', DOCUMENT_EMPTY_CODE, '文档为空', {
           detail: '当前文档没有内容。',
           kind: 'document',
         }),
@@ -307,7 +419,7 @@ export function computeDocumentDiagnostics(
     }
     if (input.markdown == null) {
       push(
-        makeDiagnostic(input, 'document', 'info', SOURCE_UNAVAILABLE_CODE, '无法读取文档源码', {
+        makeDiagnostic(input, 'document', SOURCE_UNAVAILABLE_CODE, '无法读取文档源码', {
           detail: '部分源码相关的检查将跳过。',
           kind: 'document',
         }),
@@ -319,7 +431,7 @@ export function computeDocumentDiagnostics(
   // Multiple H1 in strict mode is a VALID numbering boundary — never an error here.
   for (const identity of input.canonicalDuplicateIdentities) {
     push(
-      makeDiagnostic(input, 'heading', 'error', 'HEADING_DUPLICATE_IDENTITY', '标题存在重复的规范身份', {
+      makeDiagnostic(input, 'heading', 'HEADING_DUPLICATE_IDENTITY', '标题存在重复的规范身份', {
         detail: `规范身份 ${identity} 出现多次，可能导致编号与定位不稳定。`,
         stableIdentity: identity,
         targetIdentity: `identity:${identity}`,
@@ -327,51 +439,66 @@ export function computeDocumentDiagnostics(
     )
   }
 
-  const headingTexts = input.headings.map(h => h.text)
-  for (const name of duplicateNames(headingTexts)) {
-    push(
-      makeDiagnostic(input, 'heading', 'warning', 'HEADING_DUPLICATE_TEXT', `重复的标题文字「${name}」`, {
-        detail: '多个标题使用相同文字，建议区分以避免混淆。',
-        targetIdentity: `text:${name.toLowerCase()}`,
-      }),
-    )
-  }
+  // Phase 7R.3.11.8B.4 — heading structure rules (duplicate text / empty
+  // heading / level gap) are gated on the canonical heading authority. When
+  // the invariant FAILs (non-canonical headings mixed into the sequence) these
+  // rules MUST NOT publish from the polluted sequence.
+  const headingStructureAllowed =
+    input.headingAuthority == null || input.headingAuthority.decision !== 'FAIL'
 
-  for (const h of input.headings) {
-    if ((h.text ?? '').trim() === '') {
+  if (headingStructureAllowed) {
+    const headingTexts = input.headings.map(h => h.text)
+    for (const name of duplicateNames(headingTexts)) {
       push(
-        makeDiagnostic(input, 'heading', 'warning', 'HEADING_EMPTY_TEXT', '存在空标题', {
-          detail: '标题没有文字内容。',
-          stableIdentity: h.stableIdentity,
-          element: h.element,
-          targetIdentity: h.stableIdentity ? `identity:${h.stableIdentity}` : undefined,
-          kind: 'heading',
+        makeDiagnostic(input, 'heading', 'HEADING_DUPLICATE_TEXT', `重复的标题文字「${name}」`, {
+          detail: '多个标题使用相同文字，建议区分以避免混淆。',
+          targetIdentity: `text:${name.toLowerCase()}`,
         }),
       )
     }
-  }
 
-  // Strict parent gap: heading jumps more than one level below an existing
-  // previous heading. Phase 7R.3.11.4: this is a Markdown STRUCTURE lint and
-  // must use PHYSICAL heading levels regardless of numbering strict mode
-  // (HEADING_LEVEL_GAP). Never gated on strictMode.
-  if (input.headings.length > 1) {
-    let prevLevel: number | null = null
     for (const h of input.headings) {
-      if (prevLevel != null && h.level > prevLevel + 1) {
-        const missingLevels: number[] = []
-        for (let l = prevLevel + 1; l < h.level; l++) missingLevels.push(l)
+      if ((h.text ?? '').trim() === '') {
         push(
-          makeDiagnostic(input, 'heading', 'warning', 'HEADING_LEVEL_GAP', `标题层级存在跳级（H${prevLevel} → H${h.level}）`, {
-            detail: `当前标题为 H${h.level}，但前一可用层级为 H${prevLevel}，缺少 ${missingLevels.map(l => `H${l}`).join('、')}。`,
+          makeDiagnostic(input, 'heading', 'HEADING_EMPTY_TEXT', '存在空标题', {
+            detail: '标题没有文字内容。',
             stableIdentity: h.stableIdentity,
             element: h.element,
-            targetIdentity: h.stableIdentity ? `identity:${h.stableIdentity}` : `gap:${prevLevel}>${h.level}:${h.text}`,
+            targetIdentity: h.stableIdentity ? `identity:${h.stableIdentity}` : undefined,
             kind: 'heading',
           }),
         )
       }
-      prevLevel = h.level
+    }
+
+    // Forward level gap: nextLevel > previousLevel + 1 (backtracking to any
+    // higher heading level is a NORMAL structure close — never a gap).
+    // Phase 7R.3.11.4: this is a Markdown STRUCTURE lint and uses PHYSICAL
+    // heading levels regardless of numbering strict mode (HEADING_LEVEL_GAP).
+    if (input.headings.length > 1) {
+      let prevLevel: number | null = null
+      for (const h of input.headings) {
+        if (prevLevel != null && h.level > prevLevel + 1) {
+          const missingLevels: number[] = []
+          for (let l = prevLevel + 1; l < h.level; l++) missingLevels.push(l)
+          push(
+            makeDiagnostic(input, 'heading', 'HEADING_LEVEL_GAP', `标题层级存在跳级（H${prevLevel} → H${h.level}）`, {
+              detail: `当前标题为 H${h.level}，但前一可用层级为 H${prevLevel}，缺少 ${missingLevels.map(l => `H${l}`).join('、')}。`,
+              stableIdentity: h.stableIdentity,
+              element: h.element,
+              targetIdentity: h.stableIdentity ? `identity:${h.stableIdentity}` : `gap:${prevLevel}>${h.level}:${h.text}`,
+              kind: 'heading',
+              metadata: {
+                ruleId: 'HEADING-LEVEL-GAP',
+                previousLevel: prevLevel,
+                currentLevel: h.level,
+                missingLevels,
+              },
+            }),
+          )
+        }
+        prevLevel = h.level
+      }
     }
   }
 
@@ -379,7 +506,7 @@ export function computeDocumentDiagnostics(
   const figureNames = input.figures.map(f => f.name)
   for (const name of duplicateNames(figureNames)) {
     push(
-      makeDiagnostic(input, 'figure', 'warning', 'FIGURE_DUPLICATE_NAME', `重复的图名「${name}」`, {
+      makeDiagnostic(input, 'figure', 'FIGURE_DUPLICATE_NAME', `重复的图名「${name}」`, {
         detail: '多张图片使用相同图名。',
         targetIdentity: `name:${name.toLowerCase()}`,
       }),
@@ -389,7 +516,7 @@ export function computeDocumentDiagnostics(
     const identity = f.targetIdentity ?? undefined
     if ((f.name ?? '').trim() === '') {
       push(
-        makeDiagnostic(input, 'figure', 'warning', 'FIGURE_MISSING_NAME', '图片缺少图名', {
+        makeDiagnostic(input, 'figure', 'FIGURE_MISSING_NAME', '图片缺少图名', {
           detail: '建议为图片命名。',
           element: f.element,
           targetIdentity: identity,
@@ -400,7 +527,7 @@ export function computeDocumentDiagnostics(
     // Local resource check only for resolvable local relative paths.
     if (f.localPath && isLocalRelativePath(f.localPath)) {
       push(
-        makeDiagnostic(input, 'figure', 'error', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
+        makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
           detail: '相对路径无法解析到现有文件。',
           element: f.element,
           targetIdentity: `local:${f.localPath}`,
@@ -414,7 +541,7 @@ export function computeDocumentDiagnostics(
   const tableNames = input.tables.map(t => t.name)
   for (const name of duplicateNames(tableNames)) {
     push(
-      makeDiagnostic(input, 'table', 'warning', 'TABLE_DUPLICATE_NAME', `重复的表名「${name}」`, {
+      makeDiagnostic(input, 'table', 'TABLE_DUPLICATE_NAME', `重复的表名「${name}」`, {
         detail: '多张表格使用相同表名。',
         targetIdentity: `name:${name.toLowerCase()}`,
       }),
@@ -423,7 +550,7 @@ export function computeDocumentDiagnostics(
   for (const t of input.tables) {
     if ((t.name ?? '').trim() === '') {
       push(
-        makeDiagnostic(input, 'table', 'warning', 'TABLE_MISSING_NAME', '表格缺少表名', {
+        makeDiagnostic(input, 'table', 'TABLE_MISSING_NAME', '表格缺少表名', {
           detail: '建议为表格命名。',
           element: t.element,
           targetIdentity: t.targetIdentity ?? undefined,
@@ -437,7 +564,7 @@ export function computeDocumentDiagnostics(
   const codeNames = input.codes.map(c => c.name)
   for (const name of duplicateNames(codeNames)) {
     push(
-      makeDiagnostic(input, 'code', 'warning', 'CODE_DUPLICATE_NAME', `重复的代码名称「${name}」`, {
+      makeDiagnostic(input, 'code', 'CODE_DUPLICATE_NAME', `重复的代码名称「${name}」`, {
         detail: '多个代码块使用相同名称。',
         targetIdentity: `name:${name.toLowerCase()}`,
       }),
@@ -446,7 +573,7 @@ export function computeDocumentDiagnostics(
   for (const c of input.codes) {
     if ((c.name ?? '').trim() === '') {
       push(
-        makeDiagnostic(input, 'code', 'warning', 'CODE_MISSING_NAME', '代码块缺少名称', {
+        makeDiagnostic(input, 'code', 'CODE_MISSING_NAME', '代码块缺少名称', {
           detail: '建议为代码块命名。',
           element: c.element,
           targetIdentity: c.targetIdentity ?? undefined,
@@ -456,7 +583,7 @@ export function computeDocumentDiagnostics(
     }
     if ((c.language ?? '').trim() === '') {
       push(
-        makeDiagnostic(input, 'code', 'warning', 'CODE_MISSING_LANGUAGE', '代码块缺少语言标识', {
+        makeDiagnostic(input, 'code', 'CODE_MISSING_LANGUAGE', '代码块缺少语言标识', {
           detail: '未指定代码语言（如 python / ts）。',
           element: c.element,
           targetIdentity: c.targetIdentity ? `${c.targetIdentity}:lang` : undefined,
@@ -471,7 +598,7 @@ export function computeDocumentDiagnostics(
     const tokenSet = new Set(f.visibleTagTokens.map(t => t.trim()))
     if (f.visibleTagTokens.length > tokenSet.size) {
       push(
-        makeDiagnostic(input, 'formula', 'error', 'FORMULA_DUPLICATE_VISIBLE_TAG', '公式出现重复可见编号', {
+        makeDiagnostic(input, 'formula', 'FORMULA_DUPLICATE_VISIBLE_TAG', '公式出现重复可见编号', {
           detail: '同一公式宿主内检测到重复的可见编号标签。',
           element: f.element,
           targetIdentity: f.targetIdentity ?? undefined,
@@ -485,7 +612,7 @@ export function computeDocumentDiagnostics(
   for (const l of input.links) {
     if (!isLocalRelativePath(l.target)) continue
     push(
-      makeDiagnostic(input, 'link', 'warning', 'LINK_LOCAL_TARGET_MISSING', `本地链接目标不存在：${l.target}`, {
+      makeDiagnostic(input, 'link', 'LINK_LOCAL_TARGET_MISSING', `本地链接目标不存在：${l.target}`, {
         detail: '链接指向的本地文件无法解析。',
         element: l.element,
         targetIdentity: `local:${l.target}`,

@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-08-24T08:22:33.684Z",
+  "timestamp": "2026-08-25T11:20:10.327Z",
   "buildMarker": "inkchapter-outline-toolbar-v5.1-compact-row",
   "isOutlinePanelActive": false,
   "tabBar": {
@@ -34,7 +34,7 @@
   "parentElement": {
     "tagName": "DIV",
     "id": "typora-sidebar",
-    "className": "stopselect dropmenu sidebar-menu active-tab-files use-file-tree-style open",
+    "className": "stopselect dropmenu sidebar-menu open active-tab-files use-file-tree-style ty-show-search",
     "isSiblingOfTabBar": true
   },
   "actionsContainerCount": 1,
@@ -51,7 +51,7 @@
     "display": "block",
     "rect": {
       "w": 316,
-      "h": 698
+      "h": 648
     }
   }
 }

@@ -11,12 +11,14 @@
  * field-path bug that caused README's false h1Count=0.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { CanonicalHeadingEntry, CanonicalHeadingFrame } from '../heading-numbering/canonical-heading-frame'
 import type { SemanticHeadingNumberState } from '../heading-numbering/semantic-heading-types'
-import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
+import { mapCanonicalHeadingFrameForDiagnostics, type DiagnosticCanonicalHeadingAuthorityResult } from './document-h1-authority-bridge'
 import { computeDocumentDiagnostics } from './document-diagnostics'
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
+import { DocumentDiagnosticsAuthority, type DocumentDiagnosticsProviders } from './document-diagnostics-authority'
+import type { DocumentUtilitiesContext } from './document-utilities-context'
 
 function makeSemanticState(identity: string, physicalLevel: number): SemanticHeadingNumberState {
   return {
@@ -216,5 +218,124 @@ describe('H1-BRIDGE production bridge', () => {
     expect(result.h1Count).toBe(0)
     const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame) }))
     expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
+  })
+})
+
+// ── Phase 7R.3.11.8B.2 — H1-AUTHORITY-INVARIANT audit semantics ──────────
+function makeInvariantCtx(docKey = 'doc:a'): DocumentUtilitiesContext {
+  return {
+    authority: {
+      getActiveFilePath: () => '/vault/doc.md',
+      getDocumentKey: () => docKey,
+      getMarkdown: () => '# H1\n\n',
+      isStrictMode: () => true,
+      vaultRoot: '/vault',
+      getCanonicalDuplicateIdentities: () => [],
+      getCaptionDuplicateNames: () => [],
+    },
+    hasActiveDocument: () => true,
+  }
+}
+
+function makeInvariantProviders(result: DiagnosticCanonicalHeadingAuthorityResult): DocumentDiagnosticsProviders {
+  return {
+    getFormulaVisibleTagTokens: () => [],
+    getFigureName: () => null,
+    getTableName: () => null,
+    getCodeName: () => null,
+    getCodeLanguage: () => null,
+    resolveImageLocalPath: () => ({ localPath: null }),
+    isLinkTargetMissing: () => false,
+    getHeadingIdentity: () => null,
+    parseLocalLinkTargets: () => [],
+    getCanonicalH1Facts: () => result,
+  }
+}
+
+function lastInvariant(infoSpy: { mock: { calls: Array<Array<unknown>> } }): string | null {
+  const lines = infoSpy.mock.calls.map(c => String(c[0])).filter(l => l.includes('DOCUMENT-UTILITY-H1-AUTHORITY-INVARIANT'))
+  return lines.length > 0 ? lines[lines.length - 1] : null
+}
+
+describe('H1-INVARIANT audit semantics (7R.3.11.8B.2)', () => {
+  it('H1-INVARIANT-1: bridge WAIT → invariant NOT_EVALUATED (AUTHORITY_NOT_READY)', () => {
+    const result = mapCanonicalHeadingFrameForDiagnostics(null, 'doc:a')
+    const authority = new DocumentDiagnosticsAuthority(makeInvariantCtx(), makeInvariantProviders(result))
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    authority.recompute()
+    const line = lastInvariant(info)
+    expect(line).toBeTruthy()
+    expect(line).toContain('decision=NOT_EVALUATED')
+    expect(line).toContain('reason=AUTHORITY_NOT_READY')
+    vi.restoreAllMocks()
+  })
+
+  it('H1-INVARIANT-2: bridge INVALID → invariant NOT_EVALUATED (AUTHORITY_INVALID)', () => {
+    const bad = makeEntry('bad', 7)
+    const frame = makeFrame('doc:a', [makeEntry('h1', 1), bad, makeEntry('h2', 2)])
+    const result = mapCanonicalHeadingFrameForDiagnostics(frame, 'doc:a')
+    expect(result.state).toBe('INVALID')
+    const authority = new DocumentDiagnosticsAuthority(makeInvariantCtx(), makeInvariantProviders(result))
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    authority.recompute()
+    const line = lastInvariant(info)
+    expect(line).toBeTruthy()
+    expect(line).toContain('decision=NOT_EVALUATED')
+    expect(line).toContain('reason=AUTHORITY_INVALID')
+    vi.restoreAllMocks()
+  })
+
+  it('H1-INVARIANT-3: READY [1,2,2] → PASS', () => {
+    const frame = makeFrame('doc:a', [makeEntry('H1:idx:0', 1), makeEntry('h2-a', 2), makeEntry('h2-b', 2)])
+    const result = mapCanonicalHeadingFrameForDiagnostics(frame, 'doc:a')
+    const authority = new DocumentDiagnosticsAuthority(makeInvariantCtx(), makeInvariantProviders(result))
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    authority.recompute()
+    const line = lastInvariant(info)
+    expect(line).toBeTruthy()
+    expect(line).toContain('decision=PASS')
+    vi.restoreAllMocks()
+  })
+
+  it('H1-INVARIANT-4: READY but internal count mismatch (level 1 present, h1Count=0) → FAIL', () => {
+    // The production bridge never emits this; the audit must still catch it.
+    const broken = mapCanonicalHeadingFrameForDiagnostics(makeFrame('doc:a', [makeEntry('h1', 1)]), 'doc:a')
+    const result: DiagnosticCanonicalHeadingAuthorityResult = {
+      ...broken,
+      state: 'READY',
+      physicalLevels: [1, 2, 2],
+      h1Count: 0,
+      h1StableIdentities: [],
+    }
+    const authority = new DocumentDiagnosticsAuthority(makeInvariantCtx(), makeInvariantProviders(result))
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    authority.recompute()
+    const line = lastInvariant(info)
+    expect(line).toBeTruthy()
+    expect(line).toContain('decision=FAIL')
+    expect(line).toContain('reason=COUNT_MISMATCH')
+    vi.restoreAllMocks()
+  })
+
+  it('LOG-DEDUP-1/2: identical invariant token suppressed; transition re-emits', () => {
+    const frame = makeFrame('doc:a', [makeEntry('h1', 1), makeEntry('h2', 2)])
+    const result = mapCanonicalHeadingFrameForDiagnostics(frame, 'doc:a')
+    const authority = new DocumentDiagnosticsAuthority(makeInvariantCtx(), makeInvariantProviders(result))
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    authority.recompute()
+    authority.recompute() // identical state → suppressed
+    authority.recompute()
+    const emitted = info.mock.calls.map(c => String(c[0])).filter(l => l.includes('DOCUMENT-UTILITY-H1-AUTHORITY-INVARIANT'))
+    expect(emitted.length).toBe(1)
+    // Transition: READY [1,2] → INVALID → re-emits NOT_EVALUATED.
+    const bad = makeEntry('bad', 7)
+    const badResult = mapCanonicalHeadingFrameForDiagnostics(makeFrame('doc:a', [makeEntry('h1', 1), bad]), 'doc:a')
+    const prov2 = makeInvariantProviders(badResult)
+    const authority2 = new DocumentDiagnosticsAuthority(makeInvariantCtx(), prov2)
+    authority2.recompute()
+    const emitted2 = info.mock.calls.map(c => String(c[0])).filter(l => l.includes('DOCUMENT-UTILITY-H1-AUTHORITY-INVARIANT'))
+    expect(emitted2.length).toBe(2) // transition must emit
+    expect(emitted2[emitted2.length - 1]).toContain('decision=NOT_EVALUATED')
+    vi.restoreAllMocks()
   })
 })

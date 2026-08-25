@@ -69,8 +69,10 @@ describe('DIAG-2 strict heading gap', () => {
     )
     const gap = r.diagnostics.find(d => d.code === 'HEADING_LEVEL_GAP')
     expect(gap).toBeTruthy()
-    expect(gap!.severity).toBe('warning')
+    // Phase 7R.3.11.8B.4 — strict mode → HEADING_LEVEL_GAP severity = ERROR.
+    expect(gap!.severity).toBe('error')
     expect(gap!.detail).toContain('缺少 H3')
+    expect(gap!.metadata?.missingLevels).toEqual([3])
     // No fabricated hierarchical number like 1.0.1 appears anywhere.
     expect(JSON.stringify(r.diagnostics)).not.toMatch(/1\.0\.\d/)
   })
@@ -86,7 +88,10 @@ describe('DIAG-2 strict heading gap', () => {
         ],
       }),
     )
-    expect(r.diagnostics.some(d => d.code === 'HEADING_LEVEL_GAP')).toBe(true)
+    const gap = r.diagnostics.find(d => d.code === 'HEADING_LEVEL_GAP')
+    expect(gap).toBeTruthy()
+    // Phase 7R.3.11.8B.4 — loose mode → HEADING_LEVEL_GAP severity = WARNING.
+    expect(gap!.severity).toBe('warning')
   })
 })
 

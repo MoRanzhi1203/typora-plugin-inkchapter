@@ -64,6 +64,10 @@ export function collectDiagnosticsInput(
     headings: DocumentDiagnosticsInput['headings']
     /** Phase 7R.3.11.8-B — canonical H1 facts (null = frame not ready). */
     h1Facts: DocumentDiagnosticsInput['h1Facts']
+    /** Phase 7R.3.11.8B.4 — canonical heading authority invariant. */
+    headingAuthority: DocumentDiagnosticsInput['headingAuthority']
+    /** Phase 7R.3.11.8B.4.1 — latent ATX source-syntax facts (isolated). */
+    latentAtxMarkers: DocumentDiagnosticsInput['latentAtxMarkers']
     figures: DocumentDiagnosticsInput['figures']
     tables: DocumentDiagnosticsInput['tables']
     codes: DocumentDiagnosticsInput['codes']
@@ -78,6 +82,8 @@ export function collectDiagnosticsInput(
     vaultRoot: ctx.authority.vaultRoot,
     headings: structural.headings,
     h1Facts: structural.h1Facts,
+    headingAuthority: structural.headingAuthority,
+    latentAtxMarkers: structural.latentAtxMarkers,
     figures: structural.figures,
     tables: structural.tables,
     codes: structural.codes,
