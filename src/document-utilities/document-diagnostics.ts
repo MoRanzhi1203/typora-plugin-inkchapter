@@ -8,6 +8,7 @@
  */
 import { validateStrictFirstH1Topline } from '../heading-numbering/strict-document-validator'
 import type {
+  DiagnosticLocation,
   DocumentDiagnostic,
   DocumentDiagnosticCategory,
   DocumentDiagnosticLocatorDescriptor,
@@ -84,6 +85,8 @@ export interface HeadingDiagnosticAuthority {
 export interface LatentAtxMarkerInput {
   /** 0-based source line index. */
   line: number
+  /** 0-based source column of the marker start. */
+  column?: number
   markerLevel: number
   markerText: string
   text: string
@@ -124,7 +127,9 @@ export function resolveDocumentDiagnosticSeverity(
       // (LATENT_ATX_HEADING_MARKER_LEVEL_2), so match the ruleId prefix.
       // NEVER error — a latent marker is not a current structure defect.
       if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return strictMode ? 'warning' : 'info'
-      return code.startsWith('STRICT_FIRST_H1_') ? 'error' : 'warning'
+      // Phase 7R.3.11.8B.5 — STRICT_FIRST_H1 severity is WARNING (positional
+      // naming/format lint, not a structural break).
+      return 'warning'
   }
 }
 
@@ -237,6 +242,13 @@ function makeDiagnostic(
     metadata?: Record<string, unknown>
     /** Phase 7R.3.11.8-B — explicit locator (element OR document-level scroll action). */
     locator?: DocumentDiagnosticLocatorDescriptor
+    /**
+     * Phase 7R.3.11.8B.5 — Universal Location. Every published diagnostic MUST
+     * carry a non-null `location` (PUBLISHED = LOCATABLE). When absent, a
+     * best-effort derivation runs (see deriveDefaultLocation) so the location
+     * contract audit stays enforceable in production AND in pure tests.
+     */
+    location?: DiagnosticLocation
   } = {},
 ): DocumentDiagnostic {
   // Phase 7R.3.11.8B.4 — severity ALWAYS comes from the single policy entry.
@@ -257,7 +269,51 @@ function makeDiagnostic(
     targetIdentity: targetIdentity || undefined,
     metadata: opts.metadata,
     locator,
+    location: opts.location ?? deriveDefaultLocation(category, opts),
   }
+}
+
+/**
+ * Phase 7R.3.11.8B.5 — best-effort location derivation when a producer does not
+ * pass an explicit `location`. NEVER holds a long-lived element: canonical-node
+ * from stableIdentity, source-range from Typora `data-line`, block-node from
+ * targetIdentity, document boundary for document-level rules.
+ */
+function deriveDefaultLocation(
+  category: DocumentDiagnosticCategory,
+  opts: {
+    stableIdentity?: string
+    targetIdentity?: string
+    element?: HTMLElement | null
+    kind?: 'heading' | 'object' | 'formula' | 'link' | 'document'
+  },
+): DiagnosticLocation | undefined {
+  if (opts.kind === 'heading') {
+    if (opts.stableIdentity) return { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: opts.stableIdentity }
+    const line = opts.element?.getAttribute?.('data-line')
+    if (line != null && line !== '') {
+      const n = Number.parseInt(line, 10)
+      if (Number.isFinite(n)) return { kind: 'source-range', startLine: n, startColumn: 0 }
+    }
+    return { kind: 'document-start' }
+  }
+  if (opts.kind === 'object' || opts.kind === 'formula' || opts.kind === 'link') {
+    if (opts.targetIdentity) {
+      const blockKind = category === 'figure' ? 'figure'
+        : category === 'table' ? 'table'
+          : category === 'code' ? 'code'
+            : category === 'formula' ? 'formula'
+              : 'link'
+      return { kind: 'block-node', blockKind, stableIdentity: opts.targetIdentity }
+    }
+    const line = opts.element?.getAttribute?.('data-line')
+    if (line != null && line !== '') {
+      const n = Number.parseInt(line, 10)
+      if (Number.isFinite(n)) return { kind: 'source-range', startLine: n, startColumn: 0 }
+    }
+    return { kind: 'document-start' }
+  }
+  return { kind: 'document-start' }
 }
 
 /** Count duplicate text names (case-insensitive, trimmed, non-empty). */
@@ -273,6 +329,30 @@ function duplicateNames(names: readonly (string | null | undefined)[]): string[]
     if (n === 2) dupes.push(name)
   }
   return dupes
+}
+
+/**
+ * Phase 7R.3.11.8B.5 — build MULTI-TARGET block-node locations for duplicate
+ * object names: the FIRST occurrence is the baseline, the 2nd..Nth are the
+ * offending targets (block ordinal identity from the authority).
+ */
+function duplicateOccurrenceTargets(
+  items: ReadonlyArray<{ name?: string | null; targetIdentity?: string; index: number }>,
+  blockKind: 'figure' | 'table' | 'code',
+  duplicateName: string,
+): DiagnosticLocation[] {
+  const targets: DiagnosticLocation[] = []
+  let first = false
+  for (const it of items) {
+    if ((it.name ?? '').trim().toLowerCase() !== duplicateName.toLowerCase()) continue
+    if (!first) { first = true; continue }
+    targets.push({
+      kind: 'block-node',
+      blockKind,
+      stableIdentity: it.targetIdentity ?? `block:${blockKind}:${it.index}`,
+    })
+  }
+  return targets
 }
 
 /** True when the path is a safe-to-check local relative path (no scheme). */
@@ -315,10 +395,23 @@ export function computeDocumentDiagnostics(
   } else {
     const topline = validateStrictFirstH1Topline(input.markdown, input.strictMode ? 'strict' : 'loose')
     if (!topline.skipped && !topline.passed && topline.message) {
+      // Phase 7R.3.11.8B.5 — locate the H1 ITSELF (canonical-node when the frame
+      // provides a stable identity, source-range from data-line otherwise).
+      const firstH1 = input.headings.find(h => h.level === 1)
+      let firstH1Location: DiagnosticLocation = { kind: 'document-start' }
+      if (firstH1?.stableIdentity) {
+        firstH1Location = { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: firstH1.stableIdentity }
+      } else if (firstH1?.element) {
+        const fl = firstH1.element.getAttribute('data-line')
+        if (fl != null && fl !== '') {
+          firstH1Location = { kind: 'source-range', startLine: Number.parseInt(fl, 10), startColumn: 0 }
+        }
+      }
       push(
         makeDiagnostic(input, 'document', `STRICT_FIRST_H1_${topline.reason}`, topline.message, {
           detail: topline.documentStartState === 'DOCUMENT_EMPTY' ? '文档为空，无法满足严格模式首行 H1。' : undefined,
           kind: 'document',
+          location: firstH1Location,
         }),
       )
     }
@@ -342,6 +435,15 @@ export function computeDocumentDiagnostics(
       } else if (h1Count > 1) {
         const offending = input.h1Facts[1] // the FIRST offending H1 (second H1)
         const offendingIdentity = offending?.stableIdentity ?? null
+        // Phase 7R.3.11.8B.5 — MULTI-TARGET: H1 #2..#N are the offending
+        // targets; the FIRST H1 stays the baseline candidate. Each target is a
+        // canonical-node (stableIdentity) with source-range fallback.
+        const multiTargets: DiagnosticLocation[] = input.h1Facts.slice(1).map(f => {
+          if (f.stableIdentity) return { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: f.stableIdentity }
+          const line = f.element?.getAttribute?.('data-line')
+          if (line != null && line !== '') return { kind: 'source-range', startLine: Number.parseInt(line, 10), startColumn: 0 }
+          return { kind: 'document-start' }
+        })
         push(
           makeDiagnostic(input, 'document', 'STRICT_SINGLE_H1_MULTIPLE_H1',
             `严格模式要求全文只能包含一个一级标题（H1），当前检测到 ${h1Count} 个。`, {
@@ -359,6 +461,7 @@ export function computeDocumentDiagnostics(
             locator: offending?.element
               ? { kind: 'heading', targetElement: offending.element }
               : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+            location: { kind: 'multi-target', targets: multiTargets },
           }),
         )
       }
@@ -376,6 +479,7 @@ export function computeDocumentDiagnostics(
             targetIdentity: 'document:trailing-blank-line',
             metadata: { ruleId: 'DOCUMENT-TRAILING-BLANK-LINE', reason: 'MISSING_TRAILING_BLANK_LINE' },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
+            location: { kind: 'document-end' },
           }),
         )
       }
@@ -388,21 +492,26 @@ export function computeDocumentDiagnostics(
     for (const latent of input.latentAtxMarkers ?? []) {
       const marker = latent.markerText || `#`.repeat(Math.max(1, latent.markerLevel))
       const levelLabel = `H${latent.markerLevel}`
+      // Phase 7R.3.11.8B.5 — every LATENT item carries its OWN source-range
+      // (line + column) so identical markers at different lines never collide.
+      const line = latent.line
+      const column = latent.column ?? 0
       push(
         makeDiagnostic(input, 'heading', `LATENT_ATX_HEADING_MARKER_LEVEL_${latent.markerLevel}`,
           `检测到未转义的潜在标题标记「${marker}」`, {
           detail: `当前该行尚未被 Typora 识别为标题，但后续重新解析时可能成为 ${levelLabel}。若希望始终作为普通文本，请使用 \\${marker}。`,
           kind: 'heading',
-          targetIdentity: `latent-atx:line:${latent.line}:${marker}`,
+          targetIdentity: `latent-atx:line:${line}:${marker}`,
           metadata: {
             ruleId: 'LATENT-ATX-HEADING-MARKER',
             markerLevel: latent.markerLevel,
             markerText: marker,
-            line: latent.line,
-            sourceRange: { line: latent.line, column: 0 },
+            line,
+            sourceRange: { line, column },
             fixable: true,
             fixKind: 'ESCAPE_HEADING_MARKER',
           },
+          location: { kind: 'source-range', startLine: line, startColumn: column, sourceFingerprint: `latent:${line}:${marker}` },
         }),
       )
     }
@@ -435,6 +544,7 @@ export function computeDocumentDiagnostics(
         detail: `规范身份 ${identity} 出现多次，可能导致编号与定位不稳定。`,
         stableIdentity: identity,
         targetIdentity: `identity:${identity}`,
+        location: { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: identity },
       }),
     )
   }
@@ -448,11 +558,31 @@ export function computeDocumentDiagnostics(
 
   if (headingStructureAllowed) {
     const headingTexts = input.headings.map(h => h.text)
+    // Phase 7R.3.11.8B.5 — HEADING_DUPLICATE_TEXT is MULTI-TARGET: the first
+    // occurrence is the baseline, the 2nd..Nth are the offending targets
+    // (canonical-node / source-range each). Never a text-only find.
     for (const name of duplicateNames(headingTexts)) {
+      const dupTargets: DiagnosticLocation[] = []
+      let firstSkipped = false
+      for (const h of input.headings) {
+        if ((h.text ?? '').trim() !== name) continue
+        if (!firstSkipped) { firstSkipped = true; continue } // baseline occurrence
+        if (h.stableIdentity) {
+          dupTargets.push({ kind: 'canonical-node', nodeKind: 'heading', stableIdentity: h.stableIdentity })
+        } else {
+          const line = h.element?.getAttribute?.('data-line')
+          if (line != null && line !== '') {
+            dupTargets.push({ kind: 'source-range', startLine: Number.parseInt(line, 10), startColumn: 0 })
+          }
+        }
+      }
       push(
         makeDiagnostic(input, 'heading', 'HEADING_DUPLICATE_TEXT', `重复的标题文字「${name}」`, {
           detail: '多个标题使用相同文字，建议区分以避免混淆。',
           targetIdentity: `text:${name.toLowerCase()}`,
+          location: dupTargets.length > 0
+            ? { kind: 'multi-target', targets: dupTargets }
+            : { kind: 'document-start' },
         }),
       )
     }
@@ -505,10 +635,16 @@ export function computeDocumentDiagnostics(
   // ── Figure diagnostics ──────────────────────────────
   const figureNames = input.figures.map(f => f.name)
   for (const name of duplicateNames(figureNames)) {
+    const dupTargets = duplicateOccurrenceTargets(
+      input.figures.map((f, i) => ({ name: f.name, targetIdentity: f.targetIdentity, index: i })),
+      'figure',
+      name,
+    )
     push(
       makeDiagnostic(input, 'figure', 'FIGURE_DUPLICATE_NAME', `重复的图名「${name}」`, {
         detail: '多张图片使用相同图名。',
         targetIdentity: `name:${name.toLowerCase()}`,
+        location: dupTargets.length > 0 ? { kind: 'multi-target', targets: dupTargets } : { kind: 'document-start' },
       }),
     )
   }
@@ -526,12 +662,18 @@ export function computeDocumentDiagnostics(
     }
     // Local resource check only for resolvable local relative paths.
     if (f.localPath && isLocalRelativePath(f.localPath)) {
+      const figLine = f.element?.getAttribute?.('data-line')
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
           detail: '相对路径无法解析到现有文件。',
           element: f.element,
           targetIdentity: `local:${f.localPath}`,
           kind: 'object',
+          location: f.targetIdentity
+            ? { kind: 'block-node', blockKind: 'figure', stableIdentity: f.targetIdentity }
+            : figLine != null && figLine !== ''
+              ? { kind: 'source-range', startLine: Number.parseInt(figLine, 10), startColumn: 0 }
+              : { kind: 'document-start' },
         }),
       )
     }
@@ -540,10 +682,16 @@ export function computeDocumentDiagnostics(
   // ── Table diagnostics ───────────────────────────────
   const tableNames = input.tables.map(t => t.name)
   for (const name of duplicateNames(tableNames)) {
+    const dupTargets = duplicateOccurrenceTargets(
+      input.tables.map((t, i) => ({ name: t.name, targetIdentity: t.targetIdentity, index: i })),
+      'table',
+      name,
+    )
     push(
       makeDiagnostic(input, 'table', 'TABLE_DUPLICATE_NAME', `重复的表名「${name}」`, {
         detail: '多张表格使用相同表名。',
         targetIdentity: `name:${name.toLowerCase()}`,
+        location: dupTargets.length > 0 ? { kind: 'multi-target', targets: dupTargets } : { kind: 'document-start' },
       }),
     )
   }
@@ -563,10 +711,16 @@ export function computeDocumentDiagnostics(
   // ── Code diagnostics ────────────────────────────────
   const codeNames = input.codes.map(c => c.name)
   for (const name of duplicateNames(codeNames)) {
+    const dupTargets = duplicateOccurrenceTargets(
+      input.codes.map((c, i) => ({ name: c.name, targetIdentity: c.targetIdentity, index: i })),
+      'code',
+      name,
+    )
     push(
       makeDiagnostic(input, 'code', 'CODE_DUPLICATE_NAME', `重复的代码名称「${name}」`, {
         detail: '多个代码块使用相同名称。',
         targetIdentity: `name:${name.toLowerCase()}`,
+        location: dupTargets.length > 0 ? { kind: 'multi-target', targets: dupTargets } : { kind: 'document-start' },
       }),
     )
   }
@@ -588,6 +742,11 @@ export function computeDocumentDiagnostics(
           element: c.element,
           targetIdentity: c.targetIdentity ? `${c.targetIdentity}:lang` : undefined,
           kind: 'object',
+          // Phase 7R.3.11.8B.5 — the LOCATION points at the SAME code block
+          // (block ordinal), even though the dedup key carries a :lang suffix.
+          location: c.targetIdentity
+            ? { kind: 'block-node', blockKind: 'code', stableIdentity: c.targetIdentity }
+            : undefined,
         }),
       )
     }

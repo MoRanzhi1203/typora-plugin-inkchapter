@@ -29,6 +29,10 @@ import {
   collectCanonicalHeadingTextKeys,
   type LatentAtxMarkerFact,
 } from './latent-atx-heading-marker'
+import {
+  computeDiagnosticLocationContract,
+  getRuleMeta,
+} from './document-diagnostic-location'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 
 export interface DocumentDiagnosticsProviders {
@@ -131,6 +135,55 @@ export class DocumentDiagnosticsAuthority {
     this.lastContentFingerprint = fingerprint
     this.snapshot = nextSnapshot
     this.notify()
+    // Phase 7R.3.11.8B.5 — low-noise rule snapshot + location contract audit
+    // (emitted only when the committed content fingerprint actually changed).
+    this.emitDocumentDiagnosticRuleSnapshot(nextSnapshot)
+    this.emitDocumentDiagnosticLocationContract(nextSnapshot)
+  }
+
+  /**
+   * Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-RULE-SNAPSHOT. One summary per
+   * committed content change: severity sums + per-record ruleId/location kind.
+   */
+  private emitDocumentDiagnosticRuleSnapshot(snapshot: DocumentDiagnosticsSnapshot): void {
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-RULE-SNAPSHOT', {
+      documentKey: snapshot.documentKey,
+      revision: snapshot.revision,
+      errorCount: snapshot.errorCount,
+      warningCount: snapshot.warningCount,
+      hintCount: snapshot.infoCount,
+      totalCount: snapshot.diagnostics.length,
+      records: snapshot.diagnostics.map(d => ({
+        diagnosticId: d.id,
+        ruleId: getRuleMeta(d.code)?.ruleId ?? d.code,
+        severity: d.severity,
+        category: d.category,
+        locationKind: d.location?.kind ?? null,
+        targetCount: d.location?.kind === 'multi-target' ? d.location.targets.length : 1,
+      })),
+    })
+  }
+
+  /**
+   * Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-LOCATION-CONTRACT.
+   * PUBLISHED = LOCATABLE: diagnosticCount == locatableCount, unlocatable = 0.
+   */
+  private emitDocumentDiagnosticLocationContract(snapshot: DocumentDiagnosticsSnapshot): void {
+    const contract = computeDiagnosticLocationContract(snapshot)
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATION-CONTRACT', {
+      documentKey: snapshot.documentKey,
+      revision: snapshot.revision,
+      diagnosticCount: contract.diagnosticCount,
+      locatableDiagnosticCount: contract.locatableDiagnosticCount,
+      unlocatableDiagnosticCount: contract.unlocatableDiagnosticCount,
+      canonicalNodeLocationCount: contract.canonicalNodeLocationCount,
+      sourceRangeLocationCount: contract.sourceRangeLocationCount,
+      documentStartLocationCount: contract.documentStartLocationCount,
+      documentEndLocationCount: contract.documentEndLocationCount,
+      blockNodeLocationCount: contract.blockNodeLocationCount,
+      multiTargetLocationCount: contract.multiTargetLocationCount,
+      decision: contract.decision,
+    })
   }
 
   /**
@@ -220,6 +273,7 @@ export class DocumentDiagnosticsAuthority {
       : { latent: [] as LatentAtxMarkerFact[], escaped: [] as LatentAtxMarkerFact[], canonicalLines: [] as number[] }
     const latentAtxMarkers: LatentAtxMarkerInput[] = latentAtxScan.latent.map(f => ({
       line: f.line,
+      column: f.column ?? 0,
       markerLevel: f.markerLevel,
       markerText: f.markerText,
       text: f.text,
@@ -235,6 +289,9 @@ export class DocumentDiagnosticsAuthority {
 
     if (root) {
       // Figures — images outside captions; local missing paths only.
+      // Phase 7R.3.11.8B.5 — block ordinal identity (`block:figure:<n>`) is the
+      // stable locator for figure diagnostics; re-derived at locate time.
+      let figureOrdinal = 0
       for (const img of Array.from(root.querySelectorAll<HTMLElement>('img'))) {
         if (img.closest('[data-inkchapter-caption]')) continue
         const { localPath } = this.providers.resolveImageLocalPath(img)
@@ -242,30 +299,36 @@ export class DocumentDiagnosticsAuthority {
           name: this.providers.getFigureName(img),
           localPath: localPath ?? undefined,
           element: img,
+          targetIdentity: `block:figure:${figureOrdinal++}`,
         })
       }
 
       // Tables.
+      let tableOrdinal = 0
       for (const el of Array.from(root.querySelectorAll<HTMLElement>('table'))) {
         if (el.closest('[data-inkchapter-caption]')) continue
-        tables.push({ name: this.providers.getTableName(el), element: el })
+        tables.push({ name: this.providers.getTableName(el), element: el, targetIdentity: `block:table:${tableOrdinal++}` })
       }
 
       // Code — canonical fence host only; CodeMirror renderer descendants are
       // never treated as separate code blocks.
+      let codeOrdinal = 0
       for (const el of Array.from(root.querySelectorAll<HTMLElement>('pre.md-fences'))) {
         codes.push({
           name: this.providers.getCodeName(el),
           language: this.providers.getCodeLanguage(el),
           element: el,
+          targetIdentity: `block:code:${codeOrdinal++}`,
         })
       }
 
       // Formula — block math hosts; projection invariants only.
+      let formulaOrdinal = 0
       for (const host of Array.from(root.querySelectorAll<HTMLElement>('.md-math-block'))) {
         formulas.push({
           visibleTagTokens: this.providers.getFormulaVisibleTagTokens(host),
           element: host,
+          targetIdentity: `block:formula:${formulaOrdinal++}`,
         })
       }
     }

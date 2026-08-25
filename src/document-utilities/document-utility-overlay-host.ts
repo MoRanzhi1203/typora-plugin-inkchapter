@@ -14,6 +14,11 @@ import { DocumentDiagnosticsAuthority } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import { DocumentDiagnosticLocator, prefersReducedMotion } from './document-diagnostic-locator'
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
+import {
+  resolveDiagnosticLocation,
+  getRuleMeta,
+  type DiagnosticLocationResolveContext,
+} from './document-diagnostic-location'
 import { DocumentEditGuard } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
 import type { ScrollNavigatorState } from './document-scroll-navigator'
@@ -543,6 +548,8 @@ export class DocumentUtilityOverlayHost {
   private diagnosticsMutationObserver: MutationObserver | null = null
   private diagnosticsRafPending = false
   private snapshot: DocumentDiagnosticsSnapshot | null = null
+  /** Phase 7R.3.11.8B.5 — multi-target locate cycle cursor per diagnosticId. */
+  private multiTargetCursor = new Map<string, number>()
   private mounted = false
   private disposed = false
   private disposables: Array<() => void> = []
@@ -1983,6 +1990,144 @@ export class DocumentUtilityOverlayHost {
     this.scheduleDrawerContentAudit()
   }
 
+  /**
+   * Phase 7R.3.11.8B.5 — UNIVERSAL locate action. Every drawer 定位 button
+   * routes here (single authority — never per-item scrollIntoView/querySelector).
+   * Flow: latest snapshot → diagnosticId present → documentKey match →
+   * resolveDiagnosticLocation → scroll (element or GO_TOP/GO_BOTTOM) →
+   * temporary highlight → locate audit. Bounded stale recovery: at most ONE
+   * diagnostics refresh. Read-only: never edits Markdown, never bypasses the
+   * edit guard into a write.
+   */
+  private locateDiagnostic(diagnosticId: string): void {
+    const snapshot = this.diagnostics.getSnapshot()
+    let diag = snapshot?.diagnostics.find(d => d.id === diagnosticId) ?? null
+    let refreshed = false
+    if (!diag) {
+      this.diagnostics.recompute()
+      refreshed = true
+      diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
+      if (!diag) {
+        this.showToast('该问题已修复，请重新检查')
+        this.emitLocateAudit(diagnosticId, null, 'NOT_FOUND', 'DIAGNOSTIC_GONE_AFTER_BOUNDED_REFRESH', 0)
+        return
+      }
+    }
+    const currentKey = this.opts.ctx.authority.getDocumentKey()
+    if (diag.documentKey && currentKey && diag.documentKey !== currentKey) {
+      if (!refreshed) {
+        this.diagnostics.recompute()
+        diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
+      }
+      if (!diag || (diag.documentKey && currentKey && diag.documentKey !== currentKey)) {
+        this.showToast('文档已切换，已刷新诊断')
+        this.emitLocateAudit(diagnosticId, diag, 'WRONG_DOCUMENT', 'DIAGNOSTIC_BELONGS_TO_ANOTHER_DOCUMENT', 0)
+        return
+      }
+    }
+
+    // Multi-target cycle: advance the per-diagnostic cursor.
+    let targetIndex = 0
+    if (diag.location?.kind === 'multi-target' && diag.location.targets.length > 0) {
+      targetIndex = (this.multiTargetCursor.get(diagnosticId) ?? 0) % diag.location.targets.length
+      this.multiTargetCursor.set(diagnosticId, targetIndex + 1)
+    }
+
+    const resolveCtx: DiagnosticLocationResolveContext = {
+      documentKey: currentKey,
+      getRoot: () => resolveBusinessContentRoot(),
+      resolveHeadingIdentity: (id) => this.resolveHeadingIdentity(id),
+      resolveSourceLine: (line) => this.resolveSourceLine(line),
+      resolveBlockIdentity: (kind, stableId) => this.resolveBlockIdentity(kind, stableId),
+    }
+    const result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
+
+    if (result.decision === 'RESOLVED') {
+      if (result.scrollAction) {
+        // Document-boundary locate reuses the ONE Scroll Operation authority.
+        this.handleScrollAction(result.scrollAction, 'DIAGNOSTIC_LOCATE')
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex)
+        return
+      }
+      if (result.element) {
+        const lr = this.locator.locate(result.element)
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', lr.located ? 'SCROLLED' : 'NO_TARGET', targetIndex)
+        if (!lr.located) this.showToast('目标已变化，请重新检查')
+        return
+      }
+    }
+    this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'UNRESOLVED', targetIndex)
+    this.showToast('目标已变化，请重新检查')
+  }
+
+  /** stableIdentity → live heading element (re-derived from the CURRENT frame). */
+  private resolveHeadingIdentity(stableIdentity: string): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6'))) {
+      try {
+        if (this.opts.providers.getHeadingIdentity(el) === stableIdentity) return el
+      } catch { /* keep scanning */ }
+    }
+    return null
+  }
+
+  /** 0-based source line → live element carrying Typora `data-line`. */
+  private resolveSourceLine(line: number): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    return root.querySelector<HTMLElement>(`[data-line="${line}"]`)
+  }
+
+  /** block kind + `block:<kind>:<ordinal>` (or `local:<target>` for links) → live element. */
+  private resolveBlockIdentity(
+    blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link',
+    stableIdentity: string,
+  ): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    if (blockKind === 'link') {
+      const target = stableIdentity.replace(/^local:/, '')
+      if (!target) return null
+      for (const a of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
+        if (a.getAttribute('href') === target) return a
+      }
+      return null
+    }
+    const m = /^block:(\w+):(\d+)$/.exec(stableIdentity)
+    if (!m) return null
+    const ordinal = Number.parseInt(m[2], 10)
+    const selector = blockKind === 'figure' ? 'img'
+      : blockKind === 'table' ? 'table'
+        : blockKind === 'code' ? 'pre.md-fences'
+          : '.md-math-block'
+    return Array.from(root.querySelectorAll<HTMLElement>(selector))[ordinal] ?? null
+  }
+
+  /** Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-LOCATE-AUDIT (one record per locate). */
+  private emitLocateAudit(
+    diagnosticId: string,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    resolveDecision: string,
+    reason: string,
+    targetIndex: number,
+  ): void {
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-AUDIT', {
+      documentKey: diag?.documentKey ?? this.opts.ctx.authority.getDocumentKey(),
+      diagnosticId,
+      ruleId: diag ? (getRuleMeta(diag.code)?.ruleId ?? diag.code) : null,
+      severity: diag?.severity ?? null,
+      locationKind: diag?.location?.kind ?? null,
+      targetCount: diag?.location?.kind === 'multi-target' ? diag.location.targets.length : 1,
+      targetIndex,
+      resolveDecision,
+      scrollDecision: resolveDecision === 'RESOLVED' ? (reason === 'SCROLLED' || reason === 'SCROLL_ACTION' ? 'PASS' : 'N/A') : 'N/A',
+      highlightDecision: resolveDecision === 'RESOLVED' && reason === 'SCROLLED' ? 'PASS' : 'N/A',
+      decision: resolveDecision === 'RESOLVED' ? 'PASS' : 'FAIL',
+      reason,
+    })
+  }
+
   private buildDrawerItem(d: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement {
     const item = document.createElement('div')
     item.className = `inkchapter-doc-drawer__item inkchapter-doc-drawer__item--${d.severity}`
@@ -2007,26 +2152,18 @@ export class DocumentUtilityOverlayHost {
     }
     item.appendChild(body)
 
-    const target = d.locator?.targetElement ?? null
-    const action = d.locator?.action ?? null
-    if (target || action) {
-      const locate = document.createElement('button')
-      locate.type = 'button'
-      locate.className = 'inkchapter-doc-drawer__item-locate'
-      locate.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-      locate.textContent = '定位'
-      locate.addEventListener('click', () => {
-        if (action) {
-          // Phase 7R.3.11.8-B §5.5 — document-level locate reuses the ONE
-          // Scroll Operation authority (NO_H1 → top, EOF blank line → bottom).
-          this.handleScrollAction(action, 'DIAGNOSTIC_LOCATE')
-          return
-        }
-        const result = this.locator.locate(target)
-        if (!result.located) this.showToast('目标已变化，请重新检查')
-      })
-      item.appendChild(locate)
-    }
+    // Phase 7R.3.11.8B.5 — EVERY published diagnostic has a location
+    // (PUBLISHED = LOCATABLE) → the 定位 button is always present and routes
+    // through the ONE universal `locateDiagnostic` action authority.
+    const locate = document.createElement('button')
+    locate.type = 'button'
+    locate.className = 'inkchapter-doc-drawer__item-locate'
+    locate.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    locate.textContent = '定位'
+    locate.addEventListener('click', () => {
+      this.locateDiagnostic(d.id)
+    })
+    item.appendChild(locate)
 
     return item
   }
