@@ -7,8 +7,10 @@
  * No timers, no polling — the caller decides WHEN to compute.
  */
 import { validateStrictFirstH1Topline } from '../heading-numbering/strict-document-validator'
+import { normalizeResourcePath } from './document-diagnostic-location'
 import type {
   DiagnosticLocation,
+  DiagnosticValidityFingerprint,
   DocumentDiagnostic,
   DocumentDiagnosticCategory,
   DocumentDiagnosticLocatorDescriptor,
@@ -54,6 +56,29 @@ export interface DiagnosticFormulaFact {
 export interface DiagnosticLinkFact {
   target: string
   element: HTMLElement | null
+  /**
+   * Phase 7R.3.11.8B.7.3 — occurrence ordinal of this destination among ALL
+   * local references in the document (0-based). Same destination twice →
+   * two diagnostics, each locatable to its own occurrence.
+   */
+  index: number
+  /**
+   * Phase 7R.3.11.8B.7.3 — 'image' when the Markdown reference is an image
+   * (`![..](..)`), 'link' for plain links. The DOM target differs (img vs a).
+   */
+  resourceKind?: 'image' | 'link'
+  /**
+   * Phase 7R.3.11.8B.7.3 — stable per-occurrence locator identity
+   * (e.g. `local:phase6-test.png:1`); also used as the block-node stableIdentity.
+   */
+  targetIdentity?: string
+  /**
+   * Phase 7R.3.11.8B.7.4 — Semantic Resource Identity: the vault-relative
+   * canonical (decoded) path of the resource, resolved against the DOCUMENT
+   * base directory. Raw `target` (Source Token Identity) stays untouched —
+   * validity compares tokens; DOM resolution compares this semantic identity.
+   */
+  semanticDestination?: string
 }
 
 /**
@@ -90,6 +115,12 @@ export interface LatentAtxMarkerInput {
   markerLevel: number
   markerText: string
   text: string
+  /**
+   * Scan-time raw text of the source line (as captured from the Markdown at
+   * scan time). The locate resolver uses it to verify the DOM block and to
+   * re-anchor by text context (source-only diagnostics have no Heading DOM).
+   */
+  rawText?: string
 }
 
 /**
@@ -249,6 +280,11 @@ function makeDiagnostic(
      * contract audit stays enforceable in production AND in pure tests.
      */
     location?: DiagnosticLocation
+    /**
+     * Phase 7R.3.11.8B.7.3 — scan-time source validity fingerprint
+     * (VALIDITY ≠ DOM RESOLUTION). Carried by source-syntax / resource rules.
+     */
+    validityFingerprint?: DiagnosticValidityFingerprint
   } = {},
 ): DocumentDiagnostic {
   // Phase 7R.3.11.8B.4 — severity ALWAYS comes from the single policy entry.
@@ -268,6 +304,7 @@ function makeDiagnostic(
     stableIdentity: opts.stableIdentity,
     targetIdentity: targetIdentity || undefined,
     metadata: opts.metadata,
+    validityFingerprint: opts.validityFingerprint,
     locator,
     location: opts.location ?? deriveDefaultLocation(category, opts),
   }
@@ -361,6 +398,130 @@ function isLocalRelativePath(target: string): boolean {
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return false // scheme (http:, file:, data:, ...)
   if (target.startsWith('#') || target.startsWith('mailto:')) return false
   return true
+}
+
+/**
+ * Phase 7R.3.11.8B.7.3 — derive the vault-relative destination from a Typora
+ * DOM image src (file:// / absolute / relative). Returns null when the src
+ * cannot be reduced to a vault-relative identity.
+ */
+export function resourceSrcToVaultRelative(src: string, vaultRoot: string | null): string | null {
+  if (!src) return null
+  if (/^https?:\/\//i.test(src)) return null
+  let value = src
+  if (/^file:\/\//i.test(value)) value = value.slice('file://'.length).replace(/^\/+/, '')
+  try { value = decodeURIComponent(value) } catch { /* keep raw */ }
+  value = value.replace(/\\/g, '/')
+  while (value.startsWith('./')) value = value.slice(2)
+  if (vaultRoot) {
+    const root = vaultRoot.replace(/\\/g, '/').replace(/\/+$/, '')
+    const rootNorm = root.replace(/^([a-z]):/i, (_m, d: string) => `${d.toUpperCase()}:`)
+    value = value.replace(/^([a-z]):/i, (_m, d: string) => `${d.toUpperCase()}:`)
+    const prefix = rootNorm.endsWith('/') ? rootNorm : `${rootNorm}/`
+    if (value.startsWith(prefix)) return value.slice(prefix.length)
+    return null
+  }
+  return value === '' ? null : value
+}
+
+/**
+ * Phase 7R.3.11.8B.7.4 — resolve a Markdown resource token to its Semantic
+ * Resource Identity. The token is resolved PHYSICALLY against the active
+ * document directory (absolute path), then reduced to the vault-relative form
+ * when it stays inside the vault — or kept absolute when it escapes the vault
+ * (e.g. `../../../Downloads/...`). This is the ONE comparison space shared
+ * with the DOM side (`normalizeDomSrcToVaultRelative`). Pure lexical work —
+ * never touches the filesystem.
+ */
+export function resolveResourceSemanticPath(
+  rawToken: string,
+  activeFilePath: string | null,
+  vaultRoot: string | null,
+): string {
+  const token = (rawToken ?? '').trim()
+  if (activeFilePath == null || /^[a-z][a-z0-9+.-]*:/i.test(token) && !/^file:\/\//i.test(token)) {
+    return normalizeResourceToken(token)
+  }
+  const dir = (activeFilePath.replace(/\\/g, '/').replace(/[\\/][^\\/]*$/, '')).replace(/\/+$/, '')
+  const joined = `${dir}/${token}`
+  const physical = normalizeResourceToken(joined)
+  if (vaultRoot) {
+    const rootN = normalizeResourceToken(vaultRoot)
+    if (physical === rootN) return '.'
+    const prefix = rootN.endsWith('/') ? rootN : `${rootN}/`
+    if (physical.startsWith(prefix)) return physical.slice(prefix.length)
+  }
+  // Escapes the vault (or no vault root) — the absolute form IS the identity.
+  return physical
+}
+
+/**
+ * Phase 7R.3.11.8B.7.4 — source-token canonical form (single authority:
+ * `normalizeResourcePath` in document-diagnostic-location). Decodes bounded,
+ * never resolves a base directory — two Markdown spellings of one resource
+ * (`a%20b.png` vs `a b.png`) collapse; different resources never do.
+ */
+export function normalizeResourceToken(raw: string | null | undefined): string {
+  return normalizeResourcePath(raw)
+}
+
+/**
+ * Phase 7R.3.11.8B.7.4 — vault-relative directory of the active document
+ * (e.g. "fixtures/figure" for ".../vault/fixtures/figure/x.md"). Null when the
+ * document lives outside the vault.
+ */
+export function resourceDirVaultRelative(activeFilePath: string, vaultRoot: string): string | null {
+  const dir = activeFilePath.replace(/[\\/][^\\/]*$/, '')
+  const root = vaultRoot.replace(/\\/g, '/').replace(/\/+$/, '')
+  const dirNorm = dir.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (dirNorm === root) return ''
+  const prefix = root.endsWith('/') ? root : `${root}/`
+  if (dirNorm.startsWith(prefix)) return dirNorm.slice(prefix.length)
+  return null
+}
+
+/**
+ * Phase 7R.3.11.8B.7.3 — occurrence ordinal (0-based) of `factIndex` within the
+ * facts whose destination equals `target`. Occurrence-aware identity for
+ * diagnostics AND for the locator's resource semantic resolution.
+ */
+/**
+ * Phase 7R.3.11.8B.7.3 — occurrence ordinal (0-based) of `factIndex` within the
+ * facts whose destination equals `target`. Occurrence-aware identity for
+ * diagnostics AND for the locator's resource semantic resolution.
+ */
+export function linkOccurrenceIndex(
+  links: readonly { target: string }[],
+  target: string,
+  factIndex: number,
+): number {
+  let occurrence = 0
+  for (let i = 0; i < factIndex && i < links.length; i++) {
+    if (links[i].target === target) occurrence++
+  }
+  return occurrence
+}
+
+/**
+ * Phase 7R.3.11.8B.7.4 — occurrence ordinal (0-based) of a figure among the
+ * figures sharing the SAME semantic destination (identity-key separation —
+ * the ordinal NEVER merges into the destination path).
+ */
+export function figureDestinationOccurrenceIndex(
+  figures: readonly { element: HTMLElement | null; localPath?: string | null }[],
+  fact: { element: HTMLElement | null; localPath?: string | null },
+  destRel: string | undefined | null,
+  vaultRoot: string | null,
+): number {
+  if (!destRel) return 0
+  let occurrence = 0
+  for (const f of figures) {
+    if (f === fact) break
+    const src = f.element?.getAttribute?.('src') ?? ''
+    const otherRel = resourceSrcToVaultRelative(src, vaultRoot) ?? (f.localPath || null)
+    if (otherRel === destRel) occurrence++
+  }
+  return occurrence
 }
 
 /**
@@ -496,6 +657,7 @@ export function computeDocumentDiagnostics(
       // (line + column) so identical markers at different lines never collide.
       const line = latent.line
       const column = latent.column ?? 0
+      const rawLineText = latent.rawText ?? marker
       push(
         makeDiagnostic(input, 'heading', `LATENT_ATX_HEADING_MARKER_LEVEL_${latent.markerLevel}`,
           `检测到未转义的潜在标题标记「${marker}」`, {
@@ -511,7 +673,24 @@ export function computeDocumentDiagnostics(
             fixable: true,
             fixKind: 'ESCAPE_HEADING_MARKER',
           },
-          location: { kind: 'source-range', startLine: line, startColumn: column, sourceFingerprint: `latent:${line}:${marker}` },
+          location: {
+            kind: 'source-range',
+            startLine: line,
+            startColumn: column,
+            sourceFingerprint: `latent:${line}:${marker}`,
+            // Phase 7R.3.11.8B.7.2 — scan-time raw line text is the content
+            // anchor: the resolver verifies the DOM block against it and
+            // re-anchors by text context (no Heading DOM required).
+            rawText: rawLineText,
+          },
+          // Phase 7R.3.11.8B.7.3 — VALIDITY fingerprint: this source line must
+          // still carry the same text for the diagnostic to stay valid. UI /
+          // outline / numbering mutations never touch it.
+          validityFingerprint: {
+            kind: 'source-text',
+            line,
+            text: rawLineText,
+          },
         }),
       )
     }
@@ -663,12 +842,33 @@ export function computeDocumentDiagnostics(
     // Local resource check only for resolvable local relative paths.
     if (f.localPath && isLocalRelativePath(f.localPath)) {
       const figLine = f.element?.getAttribute?.('data-line')
+      // Phase 7R.3.11.8B.7.3/7.4 — Semantic Resource Identity = the
+      // vault-relative canonical destination derived from the DOM src. The
+      // resolver re-derives the img from the CURRENT frame by this identity —
+      // an ordinal drift or wrapper insertion never turns it stale. Duplicate
+      // images of the SAME destination get a per-occurrence ordinal that never
+      // merges into the path (block-node ordinal location already targets the
+      // correct img; occurrenceIndex only drives the semantic fallback).
+      const src = f.element?.getAttribute?.('src') ?? ''
+      const destRel = resourceSrcToVaultRelative(src, input.vaultRoot) ?? (f.localPath || undefined)
+      const occurrenceIndex = figureDestinationOccurrenceIndex(input.figures, f, destRel, input.vaultRoot)
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
           detail: '相对路径无法解析到现有文件。',
           element: f.element,
-          targetIdentity: `local:${f.localPath}`,
+          targetIdentity: destRel
+            ? `local:${destRel}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`
+            : `local:${f.localPath}`,
           kind: 'object',
+          metadata: {
+            ruleId: 'FIGURE-LOCAL-IMAGE-MISSING',
+            resourceKind: 'image',
+            // Semantic Resource Identity (decoded, vault-relative canonical).
+            destination: destRel,
+            // Source Token Identity: the raw DOM src captured at scan time.
+            rawDestination: src || undefined,
+            occurrenceIndex,
+          },
           location: f.targetIdentity
             ? { kind: 'block-node', blockKind: 'figure', stableIdentity: f.targetIdentity }
             : figLine != null && figLine !== ''
@@ -768,14 +968,46 @@ export function computeDocumentDiagnostics(
   }
 
   // ── Link diagnostics (safe local resolution only; no network) ──
-  for (const l of input.links) {
+  // Phase 7R.3.11.8B.7.3/7.4 — THREE-LAYER identity separation:
+  //   rawDestination  = Source Token Identity (exact Markdown token; validity)
+  //   destination     = Semantic Resource Identity (vault-relative canonical,
+  //                     resolved from the document base; DOM resolution)
+  //   occurrenceIndex = duplicate ordinal, NEVER merged into the path
+  // The `#2`/`:2` display suffix is UI text only and never a real path.
+    for (const l of input.links) {
     if (!isLocalRelativePath(l.target)) continue
+    const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index)
+    const occurrenceLabel = occurrenceIndex > 0 ? `（第 ${occurrenceIndex + 1} 处）` : ''
+    const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
     push(
-      makeDiagnostic(input, 'link', 'LINK_LOCAL_TARGET_MISSING', `本地链接目标不存在：${l.target}`, {
+      makeDiagnostic(input, 'link', 'LINK_LOCAL_TARGET_MISSING', `本地链接目标不存在：${l.target}${occurrenceLabel}`, {
         detail: '链接指向的本地文件无法解析。',
         element: l.element,
-        targetIdentity: `local:${l.target}`,
+        targetIdentity: `local:${l.target}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`,
         kind: 'link',
+        metadata: {
+          ruleId: 'LINK-LOCAL-TARGET-MISSING',
+          resourceKind: l.resourceKind ?? 'link',
+          // Semantic Resource Identity for DOM resolution (decoded canonical).
+          destination: semanticDestination,
+          // Source Token Identity for source-layer validity (raw, untouched).
+          rawDestination: l.target,
+          occurrenceIndex,
+        },
+        location: {
+          kind: 'block-node',
+          blockKind: l.resourceKind === 'image' ? 'figure' : 'link',
+          stableIdentity: l.targetIdentity ?? `local:${l.target}`,
+        },
+        // Phase 7R.3.11.8B.7.4 — validity lives on the SOURCE TOKEN layer:
+        // the current Markdown must still reference the same token
+        // (occurrence-aware). Path representation differences (percent-encoded
+        // vs decoded DOM forms) never reach this verdict.
+        validityFingerprint: {
+          kind: 'resource',
+          path: normalizeResourceToken(l.target),
+          occurrence: occurrenceIndex,
+        },
       }),
     )
   }

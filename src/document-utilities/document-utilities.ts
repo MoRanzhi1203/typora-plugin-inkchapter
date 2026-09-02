@@ -65,18 +65,34 @@ export function extractFormulaVisibleTagTokens(host: HTMLElement): string[] {
   return tokens
 }
 
-/** Safe local-relative-link parsing from Markdown (no network). */
-export function parseLocalLinkTargets(markdown: string): string[] {
-  const out: string[] = []
-  const re = /\[[^\]]*\]\(([^)]+)\)/g
+/**
+ * Phase 7R.3.11.8B.7.3 — local resource reference fact.
+ * `resourceKind` distinguishes image Markdown (`![..](dest)`, rendered as an
+ * `<img>` block) from plain links (`[..](dest)`, rendered as an `<a>`).
+ */
+export interface LocalResourceReference {
+  target: string
+  resourceKind?: 'image' | 'link'
+}
+
+/**
+ * Safe local-relative resource parsing from Markdown (no network).
+ * Every occurrence of a local destination is returned in document order;
+ * identical destinations appear once per occurrence.
+ */
+export function parseLocalLinkTargets(markdown: string): Array<string | LocalResourceReference> {
+  const out: Array<string | LocalResourceReference> = []
+  const re = /(!?)\[([^\]]*)\]\(([^)]+)\)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(markdown)) !== null) {
-    const target = m[1].trim().split(/\s+/)[0]
+    const target = m[3].trim().split(/\s+/)[0]
     if (!target) continue
     if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue // scheme
     if (target.startsWith('#')) continue // in-document anchor
     if (target.startsWith('mailto:')) continue
-    out.push(target)
+    const isImage = m[1] === '!'
+    if (isImage) out.push({ target, resourceKind: 'image' })
+    else out.push({ target, resourceKind: 'link' })
   }
   return out
 }

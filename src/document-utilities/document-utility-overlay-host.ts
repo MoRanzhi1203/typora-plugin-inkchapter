@@ -17,7 +17,10 @@ import type { DiagnosticLocateResult } from './document-diagnostic-locator'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
+  normalizeSourceAnchorText,
+  normalizeResourcePath,
   type DiagnosticLocationResolveContext,
+  type DiagnosticLocationResolveResult,
 } from './document-diagnostic-location'
 import { DocumentEditGuard } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
@@ -71,8 +74,48 @@ const DRAWER_BOTTOM_PX = 16
  * scrolls internally. The navigator NEVER moves to resolve conflicts.
  */
 const DRAWER_BOTTOM_RESERVED_PX = 140
+/**
+ * Phase 7R.3.11.8B.7.2 — vertical gap between the diagnostics drawer's bottom
+ * edge and the right-bottom navigator's top edge (measured from the REAL
+ * navigator rect). The drawer max-height reserve is
+ * `viewport − navigatorRect.top + this` — never a hardcoded pixel block.
+ */
+export const DRAWER_NAV_SAFE_GAP_PX = 12
+/** Phase 7R.3.11.8B.7.2 — below this drawer height the navigator is
+ *  temporarily hidden (last-resort small-viewport policy, §16): the panel
+ *  keeps internal scroll, every 定位 button stays clickable. */
+export const MIN_DRAWER_USABLE_HEIGHT_PX = 96
 /** Phase 7R.3.11.8B.3 — scrollability epsilon (px). maxScrollTop <= this ⇒ short document. */
 const SCROLLABLE_EPSILON_PX = 1
+
+/**
+ * Phase 7R.3.11.8B.7.2 — Diagnostics Panel Bottom Safe Area (single formula).
+ *
+ * The reserved vertical zone below the drawer is derived from the REAL
+ * navigator box:
+ *
+ *   reserve = navigatorBottomOffset + navigatorHeight + safe gap
+ *
+ * When the navigator is hidden (short document / small-viewport suppression)
+ * there is nothing to collide with, so only the shell bottom gap + a small
+ * padding is reserved. Callers without a live navigator measurement keep the
+ * legacy fixed reserve via `navigatorHeightPx = null` + `bottomGap` (the
+ * pre-8B.7.2 behavior is the fallback, never a guessed pixel block).
+ */
+export function computeDrawerBottomReserve(opts: {
+  /** Navigator bottom offset from the viewport bottom (geometry navBottom). */
+  navBottom: number
+  navigatorVisible: boolean
+  /** REAL measured navigator box height (null before the first measurement). */
+  navigatorHeightPx: number | null
+  /** Gap between the editor shell bottom edge and the viewport bottom. */
+  bottomGap: number
+}): number {
+  if (opts.navigatorVisible && opts.navigatorHeightPx != null && opts.navigatorHeightPx > 0) {
+    return opts.navBottom + opts.navigatorHeightPx + DRAWER_NAV_SAFE_GAP_PX
+  }
+  return opts.bottomGap + DRAWER_BOTTOM_PX + DRAWER_NAV_SAFE_GAP_PX
+}
 
 export interface OverlayGeometry {
   toolbarTop: number
@@ -85,6 +128,10 @@ export interface OverlayGeometry {
   /** Phase 7R.3.11.8B.3 — scrollability from the REAL scroll container. */
   scrollable: boolean
   navigatorVisible: boolean
+  /** Phase 7R.3.11.8B.7.2 — true when the navigator is hidden because the
+   *  open drawer would otherwise be squeezed below the usable minimum
+   *  (small-viewport policy, never a "short document" mislabel). */
+  navigatorSuppressed: boolean
   /** Phase 7R.3.11.8B.3 — drawer may not exceed this (viewport − top − reserved). */
   drawerMaxHeight: number
 }
@@ -97,6 +144,35 @@ export interface OverlayGeometryOptions {
 }
 
 const DRAWER_WIDTH_PX = 360
+
+/**
+ * Phase 7R.3.11.8B.7.4 — Source Token Identity of a resource diagnostic
+ * (metadata.rawDestination) or null.
+ */
+function diagRawToken(diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null): string | null {
+  if (!diag?.metadata) return null
+  const raw = (diag.metadata as Record<string, unknown>).rawDestination
+  return typeof raw === 'string' && raw !== '' ? raw : null
+}
+
+/**
+ * Phase 7R.3.11.8B.7.4 — parse Markdown image/link resource references for the
+ * resource validity re-scan (occurrence-aware). Local refs only — schemes and
+ * in-document anchors are skipped (mirrors the diagnostic producer).
+ */
+export function parseLocalResourceRefs(markdown: string): Array<{ target: string; resourceKind?: 'image' | 'link' }> {
+  const out: Array<{ target: string; resourceKind?: 'image' | 'link' }> = []
+  const re = /(!?)\[([^\]]*)\]\(([^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(markdown)) !== null) {
+    const target = m[3].trim().split(/\s+/)[0]
+    if (!target) continue
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
+    if (target.startsWith('#') || target.startsWith('mailto:')) continue
+    out.push({ target, resourceKind: m[1] === '!' ? 'image' : 'link' })
+  }
+  return out
+}
 /** Legacy Drawer↔navigator horizontal gap constant (kept; not used for
  *  positioning since 7R.3.11.8B.3 — the navigator is an independent anchor). */
 const DRAWER_NAV_GAP_PX = 16
@@ -282,6 +358,9 @@ export function computeOverlayGeometry(
     drawerBottom: bottomGap + DRAWER_BOTTOM_PX,
     scrollable,
     navigatorVisible: scrollable,
+    // Phase 7R.3.11.8B.7.2 — suppression is a LIVE host decision (measured
+    // navigator rect); the pure fallback formula never suppresses.
+    navigatorSuppressed: false,
     drawerMaxHeight,
   }
 }
@@ -499,6 +578,12 @@ export class DocumentUtilityOverlayHost {
   private geometryRafPending = false
   private pendingGeometryReasons = new Set<string>()
   private lastGeometry: OverlayGeometry | null = null
+  /**
+   * Phase 7R.3.11.8B.7.2 — REAL navigator box height, refreshed from the live
+   * rect after every geometry write pass (read-only). Feeds the drawer bottom
+   * safe-area reserve; null until the first measurable navigator frame.
+   */
+  private lastNavigatorHeightPx: number | null = null
   private readonly geometryCounters = {
     windowResizeEventCount: 0,
     scheduleCount: 0,
@@ -1126,6 +1211,35 @@ export class DocumentUtilityOverlayHost {
       { width: window.innerWidth, height: window.innerHeight },
       { drawerOpen: this.drawerOpen, scrollHeight, clientHeight },
     )
+    // Phase 7R.3.11.8B.7.2 — Diagnostics Panel Bottom Safe Area (ONE live
+    // authority). With the drawer open, the reserve below it derives from the
+    // REAL navigator box (navBottom + measured height + safe gap). The height
+    // cache is refreshed from the live rect after every write pass — the
+    // navigator box never depends on the drawer, so this cannot feed a layout
+    // loop. Before the first measurement the legacy 140px estimate applies.
+    // If the panel would be squeezed below the usable minimum, the navigator
+    // is temporarily hidden instead of colliding (small-viewport policy).
+    if (this.drawerOpen && next.scrollable && this.lastNavigatorHeightPx != null) {
+      const bottomGap = rect && rect.bottom > 0 ? Math.max(0, window.innerHeight - rect.bottom) : 0
+      const liveReserve = computeDrawerBottomReserve({
+        navBottom: next.navBottom,
+        navigatorVisible: true,
+        navigatorHeightPx: this.lastNavigatorHeightPx,
+        bottomGap,
+      })
+      let drawerMaxHeight = Math.max(0, window.innerHeight - next.drawerTop - liveReserve)
+      if (drawerMaxHeight < MIN_DRAWER_USABLE_HEIGHT_PX) {
+        next.navigatorSuppressed = true
+        next.navigatorVisible = false
+        drawerMaxHeight = Math.max(0, window.innerHeight - next.drawerTop - computeDrawerBottomReserve({
+          navBottom: next.navBottom,
+          navigatorVisible: false,
+          navigatorHeightPx: null,
+          bottomGap,
+        }))
+      }
+      next.drawerMaxHeight = drawerMaxHeight
+    }
     const hasDrawerTransition = reasons.has('drawer-open') || reasons.has('drawer-close')
     const prev = this.lastGeometry
     this.lastGeometry = next
@@ -1162,11 +1276,14 @@ export class DocumentUtilityOverlayHost {
       this.toolbarEl.style.right = `${next.toolbarRight}px`
     }
     if (this.navigatorEl) {
-      // Phase 7R.3.11.8B.3 — hidden when the real container is not scrollable;
+      // Phase 7R.3.11.8B.3 — hidden when the real container is not scrollable
+      // (or temporarily suppressed by the drawer safe-area policy);
       // display:none removes hit-targets, focus and keyboard reachability.
-      this.navigatorEl.style.display = next.navigatorVisible ? 'flex' : 'none'
+      // Position is written first, display second, so the safe-area
+      // measurement above always saw the navigator in its final place.
       this.navigatorEl.style.right = `${next.navRight}px`
       this.navigatorEl.style.bottom = `${next.navBottom}px`
+      this.navigatorEl.style.display = next.navigatorVisible ? 'flex' : 'none'
     }
     if (this.drawerEl) {
       // Phase 7R.3.11.8B.3 — drawer is top-right anchored, content-sized
@@ -1175,6 +1292,13 @@ export class DocumentUtilityOverlayHost {
       this.drawerEl.style.right = `${next.drawerRight}px`
       this.drawerEl.style.bottom = ''
       this.drawerEl.style.maxHeight = `${next.drawerMaxHeight}px`
+    }
+    // Phase 7R.3.11.8B.7.2 — refresh the navigator height cache from the REAL
+    // committed rect (read-only; the navigator box never depends on the drawer,
+    // so this measurement cannot re-enter the geometry write path).
+    if (next.navigatorVisible && this.navigatorEl) {
+      const navRect = this.navigatorEl.getBoundingClientRect()
+      if (navRect.height > 0) this.lastNavigatorHeightPx = navRect.height
     }
     // Phase 7R.3.11.8B.3.1 — §5 A TRUE_FEEDBACK_LOOP requires the full causal
     // token write1 → RO callback → write2: the current write must be a NEW
@@ -1222,11 +1346,13 @@ export class DocumentUtilityOverlayHost {
     const signature = `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${g.scrollable}|${g.navigatorVisible}|${this.drawerOpen}|${drawerItemCount}|${heightBucket}`
     if (signature === this.lastOverlayLayoutSignature) return
     this.lastOverlayLayoutSignature = signature
-    const decision = !g.navigatorVisible
-      ? 'SHORT_DOCUMENT_NAV_HIDDEN'
-      : this.drawerOpen
-        ? (g.drawerMaxHeight > 0 && renderedHeight >= g.drawerMaxHeight - 2 ? 'DRAWER_MAX_HEIGHT_SCROLL' : 'DRAWER_CONTENT_FIT')
-        : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
+    const decision = g.navigatorSuppressed
+      ? 'DRAWER_SUPPRESSED_NAVIGATOR_SMALL_VIEWPORT'
+      : !g.navigatorVisible
+        ? 'SHORT_DOCUMENT_NAV_HIDDEN'
+        : this.drawerOpen
+          ? (g.drawerMaxHeight > 0 && renderedHeight >= g.drawerMaxHeight - 2 ? 'DRAWER_MAX_HEIGHT_SCROLL' : 'DRAWER_CONTENT_FIT')
+          : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
     emitRuntimeAudit('DOCUMENT-UTILITY-OVERLAY-LAYOUT', {
       documentKey: this.opts.ctx.authority.getDocumentKey(),
       scrollHeight,
@@ -1234,8 +1360,12 @@ export class DocumentUtilityOverlayHost {
       maxScrollTop: Math.max(0, scrollHeight - clientHeight),
       scrollable: g.scrollable,
       navigatorVisible: g.navigatorVisible,
+      navigatorSuppressed: g.navigatorSuppressed,
       navigatorRight: g.navRight,
       navigatorBottom: g.navBottom,
+      // Phase 7R.3.11.8B.7.2 — the safe-area inputs (REAL measured navigator
+      // height + the reserve it produced), so runtime evidence is traceable.
+      navigatorHeightPx: this.lastNavigatorHeightPx,
       drawerVisible: this.drawerOpen,
       drawerItemCount,
       drawerContentHeight: renderedHeight,
@@ -2173,6 +2303,13 @@ export class DocumentUtilityOverlayHost {
    * temporary highlight → locate audit. Bounded stale recovery: at most ONE
    * diagnostics refresh. Read-only: never edits Markdown, never bypasses the
    * edit guard into a write.
+   *
+   * Phase 7R.3.11.8B.7.2 — decision semantics (no blanket STALE):
+   *   TARGET_CHANGED — the anchored source line really changed/deleted →
+   *     "目标已变化，请重新检查" + one bounded refresh.
+   *   UNRESOLVED     — source unchanged but the line cannot be mapped to DOM →
+   *     one bounded refresh; still unresolved → an honest
+   *     "无法定位到该问题所在行" (never claims the target changed).
    */
   private locateDiagnostic(diagnosticId: string): void {
     const snapshot = this.diagnostics.getSnapshot()
@@ -2184,7 +2321,7 @@ export class DocumentUtilityOverlayHost {
       diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
       if (!diag) {
         this.showToast('该问题已修复，请重新检查')
-        this.emitLocateAudit(diagnosticId, null, 'NOT_FOUND', 'DIAGNOSTIC_GONE_AFTER_BOUNDED_REFRESH', 0)
+        this.emitLocateAudit(diagnosticId, null, 'NOT_FOUND', 'DIAGNOSTIC_GONE_AFTER_BOUNDED_REFRESH', 0, null)
         return
       }
     }
@@ -2196,7 +2333,7 @@ export class DocumentUtilityOverlayHost {
       }
       if (!diag || (diag.documentKey && currentKey && diag.documentKey !== currentKey)) {
         this.showToast('文档已切换，已刷新诊断')
-        this.emitLocateAudit(diagnosticId, diag, 'WRONG_DOCUMENT', 'DIAGNOSTIC_BELONGS_TO_ANOTHER_DOCUMENT', 0)
+        this.emitLocateAudit(diagnosticId, diag, 'WRONG_DOCUMENT', 'DIAGNOSTIC_BELONGS_TO_ANOTHER_DOCUMENT', 0, null)
         return
       }
     }
@@ -2214,25 +2351,127 @@ export class DocumentUtilityOverlayHost {
       resolveHeadingIdentity: (id) => this.resolveHeadingIdentity(id),
       resolveSourceLine: (line) => this.resolveSourceLine(line),
       resolveBlockIdentity: (kind, stableId) => this.resolveBlockIdentity(kind, stableId),
+      // Phase 7R.3.11.8B.7.2 — content authority for source-range resolution:
+      // current source line text (TARGET_CHANGED classification) + text-context
+      // re-anchor for source-only diagnostics (LATENT_ATX_HEADING_MARKER).
+      getSourceLineText: (line) => this.getSourceLineTextAt(line),
+      findBlockByText: (rawText, nearLine) => this.findBlockByTextInRoot(rawText, nearLine),
+      // Phase 7R.3.11.8B.7.3 — resource semantic resolution + identity
+      // normalization + resource validity re-scan (resource diagnostics).
+      // The raw source token accompanies the semantic identity so Typora's
+      // broken-image text render (which carries the RAW token) still resolves.
+      resolveResource: (kind, normalizedDestination, occurrenceIndex) =>
+        this.resolveResourceInRoot(kind, normalizedDestination, occurrenceIndex, diagRawToken(diag)),
+      normalizeResourcePath: (raw) => normalizeResourcePath(raw),
+      resourceDestinationPresent: (normalizedDestination, occurrenceIndex) =>
+        this.resourceDestinationStillPresent(normalizedDestination, occurrenceIndex),
     }
-    const result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
+    let result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
 
     if (result.decision === 'RESOLVED') {
-      if (result.scrollAction) {
-        // Document-boundary locate reuses the ONE Scroll Operation authority.
-        this.handleScrollAction(result.scrollAction, 'DIAGNOSTIC_LOCATE')
-        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex)
-        return
+      this.performLocatedScroll(result, diag, diagnosticId, targetIndex)
+      return
+    }
+    if (result.decision === 'TARGET_CHANGED') {
+      // Real source mutation: refresh once so the user sees current state.
+      if (!refreshed) {
+        this.diagnostics.recompute('LOCATE_BOUNDED_REFRESH')
+        refreshed = true
+        const nextDiag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
+        if (nextDiag) {
+          const retry = resolveDiagnosticLocation(nextDiag, nextDiag.location, resolveCtx, targetIndex)
+          if (retry.decision === 'RESOLVED') {
+            this.performLocatedScroll(retry, nextDiag, diagnosticId, targetIndex)
+            return
+          }
+          result = retry
+          diag = nextDiag
+        }
       }
-      if (result.element) {
-        const lr = this.locator.locate(result.element)
-        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', lr.located ? 'SCROLLED' : 'NO_TARGET', targetIndex)
-        if (!lr.located) this.showToast('目标已变化，请重新检查')
-        return
+      this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'TARGET_CHANGED', targetIndex, result)
+      this.showToast('目标已变化，请重新检查')
+      return
+    }
+    if (result.decision === 'UNRESOLVED') {
+      // Source unchanged — a DOM-mapping failure, NOT a changed target. One
+      // bounded refresh may re-sync the frame; never claim the target changed.
+      if (!refreshed) {
+        this.diagnostics.recompute('LOCATE_BOUNDED_REFRESH')
+        refreshed = true
+        const nextDiag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
+        if (nextDiag) {
+          const retry = resolveDiagnosticLocation(nextDiag, nextDiag.location, resolveCtx, targetIndex)
+          if (retry.decision === 'RESOLVED') {
+            this.performLocatedScroll(retry, nextDiag, diagnosticId, targetIndex)
+            return
+          }
+          result = retry
+          diag = nextDiag
+        }
+      }
+      this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'SOURCE_ANCHOR_NOT_MAPPED_TO_DOM', targetIndex, result)
+      this.showToast('无法定位到该问题所在行，请重新检查')
+      return
+    }
+    this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'UNRESOLVED', targetIndex, result)
+    this.showToast('目标已变化，请重新检查')
+  }
+
+  /** Phase 7R.3.11.8B.5 — the ONE locate-success path (element or boundary scroll). */
+  private performLocatedScroll(
+    result: DiagnosticLocationResolveResult,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+  ): void {
+    if (result.scrollAction) {
+      // Document-boundary locate reuses the ONE Scroll Operation authority.
+      this.handleScrollAction(result.scrollAction, 'DIAGNOSTIC_LOCATE')
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex, result)
+      return
+    }
+    if (result.element) {
+      const lr = this.locator.locate(result.element)
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', lr.located ? 'SCROLLED' : 'NO_TARGET', targetIndex, result)
+      if (!lr.located) this.showToast('目标已变化，请重新检查')
+      return
+    }
+    this.emitLocateAudit(diagnosticId, diag, 'UNRESOLVED', 'RESOLVED_WITHOUT_TARGET', targetIndex, result)
+  }
+
+  /** Current Markdown source line text at a 0-based index (null when unavailable). */
+  private getSourceLineTextAt(line: number): string | null {
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    if (markdown == null || !Number.isFinite(line) || line < 0) return null
+    const lines = markdown.split('\n')
+    return line < lines.length ? lines[line] : null
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7.2 — text-context re-anchor: the live block whose
+   * normalized text equals the scan-time raw line text. Prefers the block
+   * whose Typora `data-line` is closest to `nearLine`. This is the source-only
+   * diagnostic path — a plain paragraph/block is a valid target, no Heading
+   * DOM required.
+   */
+  private findBlockByTextInRoot(rawText: string, nearLine?: number): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const needle = normalizeSourceAnchorText(rawText)
+    if (needle === '') return null
+    let best: HTMLElement | null = null
+    let bestDistance = Number.MAX_SAFE_INTEGER
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,h1,h2,h3,h4,h5,h6,li,pre'))) {
+      if (normalizeSourceAnchorText(el.textContent) !== needle) continue
+      const dl = el.getAttribute('data-line')
+      const line = dl != null ? Number.parseInt(dl, 10) : Number.NaN
+      const distance = nearLine != null && Number.isFinite(line) ? Math.abs(line - nearLine) : Number.MAX_SAFE_INTEGER - 1
+      if (distance < bestDistance) {
+        bestDistance = distance
+        best = el
       }
     }
-    this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'UNRESOLVED', targetIndex)
-    this.showToast('目标已变化，请重新检查')
+    return best
   }
 
   /** stableIdentity → live heading element (re-derived from the CURRENT frame). */
@@ -2254,6 +2493,102 @@ export class DocumentUtilityOverlayHost {
     return root.querySelector<HTMLElement>(`[data-line="${line}"]`)
   }
 
+  /**
+   * Phase 7R.3.11.8B.7.3 — resource semantic resolution against the CURRENT
+   * DOM: find the occurrence-th live element whose normalized destination
+   * equals the diagnostic's. For 'image' the element is the <img> (broken
+   * images keep their img block); for 'link' it is the <a>. Never compares
+   * raw Markdown syntax with rendered DOM — both sides go through the ONE
+   * normalization function first.
+   */
+  private resolveResourceInRoot(
+    kind: 'image' | 'link',
+    normalizedDestination: string,
+    occurrenceIndex: number,
+    rawToken?: string | null,
+  ): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root || !normalizedDestination) return null
+    // Normal render: <img src> / <a href> with a resource reference. DOM
+    // attributes are normalized against the vault root and compared with the
+    // SEMANTIC identity (decoded canonical).
+    const selectors = kind === 'image' ? ['img[src]', 'img'] : ['a[href]']
+    let occurrence = 0
+    for (const selector of selectors) {
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+        const attr = kind === 'image' ? el.getAttribute('src') : el.getAttribute('href')
+        if (!attr) continue
+        const normalized = this.normalizeDomSrcToVaultRelative(attr)
+        if (normalized !== normalizedDestination) continue
+        if (occurrence++ < occurrenceIndex) continue
+        return el
+      }
+    }
+    // Phase 7R.3.11.8B.7.3 — Typora broken-image / unresolved-source render:
+    // a local image that cannot be loaded is NOT an <img>; Typora shows the
+    // raw Markdown reference in a text block. The block text carries the RAW
+    // source token (`![x](dup.png)`), while img-src matching used the
+    // vault-relative semantic path — so text-context matching accepts BOTH
+    // identities (deterministic, occurrence-aware, never a fuzzy whole-page
+    // match).
+    const needles = [normalizedDestination, rawToken ?? ''].filter(n => n !== '')
+    if (needles.length === 0) return null
+    let textOccurrence = 0
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,div,span'))) {
+      const text = el.textContent ?? ''
+      if (!needles.some(n => text.includes(n))) continue
+      // Skip containers that merely wrap a matched descendant (use the
+      // smallest element whose own text is the reference line).
+      if (el.querySelector('img, a')) continue
+      if (textOccurrence++ < occurrenceIndex) continue
+      return el
+    }
+    return null
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7.3 — normalize a Typora DOM src/href (which may be a
+   * file:// URL, a typora:// app URL, an absolute path or a vault-relative
+   * path) to the same comparison identity the diagnostic anchored on. The
+   * diagnostic stores the RAW Markdown destination (e.g.
+   * "assets/phase7/.../boundary-a-figure.png"); DOM references are made
+   * vault-relative by stripping the vault root / app prefix.
+   */
+  private normalizeDomSrcToVaultRelative(raw: string): string {
+    // Typora renders unresolved local links as typora://app/typemark/<rel>.
+    if (/^typora:\/\/app\/typemark\//i.test(raw)) {
+      return normalizeResourcePath(raw.slice('typora://app/typemark/'.length))
+    }
+    const norm = normalizeResourcePath(raw)
+    const vaultRoot = this.opts.ctx.authority.vaultRoot
+    if (vaultRoot) {
+      const rootNorm = normalizeResourcePath(vaultRoot)
+      if (norm === rootNorm) return '.'
+      const prefix = rootNorm.endsWith('/') ? rootNorm : `${rootNorm}/`
+      if (norm.startsWith(prefix)) return norm.slice(prefix.length)
+    }
+    return norm
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7.3 — resource validity re-scan: true when the CURRENT
+   * Markdown still contains the occurrence-th (0-based) reference whose
+   * normalized destination equals the diagnostic's. Only a REAL source change
+   * (target removed/rewritten) turns the diagnostic stale.
+   */
+  private resourceDestinationStillPresent(normalizedDestination: string, occurrenceIndex: number): boolean {
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    if (markdown == null) return false
+    let occurrence = 0
+    for (const ref of parseLocalResourceRefs(markdown)) {
+      const norm = normalizeResourcePath(ref.target)
+      if (norm !== normalizedDestination) continue
+      if (occurrence++ < occurrenceIndex) continue
+      return true
+    }
+    return false
+  }
+
   /** block kind + `block:<kind>:<ordinal>` (or `local:<target>` for links) → live element. */
   private resolveBlockIdentity(
     blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link',
@@ -2262,10 +2597,13 @@ export class DocumentUtilityOverlayHost {
     const root = resolveBusinessContentRoot()
     if (!root) return null
     if (blockKind === 'link') {
-      const target = stableIdentity.replace(/^local:/, '')
+      const target = stableIdentity.replace(/^local:/, '').replace(/:\d+$/, '')
       if (!target) return null
+      const targetNorm = normalizeResourcePath(target)
       for (const a of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
-        if (a.getAttribute('href') === target) return a
+        const href = a.getAttribute('href')
+        if (!href) continue
+        if (this.normalizeDomSrcToVaultRelative(href) === targetNorm) return a
       }
       return null
     }
@@ -2279,25 +2617,83 @@ export class DocumentUtilityOverlayHost {
     return Array.from(root.querySelectorAll<HTMLElement>(selector))[ordinal] ?? null
   }
 
-  /** Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-LOCATE-AUDIT (one record per locate). */
+  /** Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-LOCATE-AUDIT (one record per locate).
+   *  Phase 7R.3.11.8B.7.2 — carries the anchor provenance (primary/fallback),
+   *  the resolved node identity and the source revisions so a PASS can be told
+   *  apart from a TARGET_CHANGED / UNRESOLVED by evidence, not by guessing.
+   *  Phase 7R.3.11.8B.7.3 — carries the VALIDITY verdict (STILL_VALID vs CHANGED)
+   *  separated from the DOM resolution decision. */
   private emitLocateAudit(
     diagnosticId: string,
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
     resolveDecision: string,
     reason: string,
     targetIndex: number,
+    result: DiagnosticLocationResolveResult | null,
   ): void {
+    const snapshot = this.diagnostics.getSnapshot()
+    const scrollDecision = resolveDecision === 'RESOLVED' ? (reason === 'SCROLLED' || reason === 'SCROLL_ACTION' ? 'PASS' : 'N/A') : 'N/A'
+    const highlightDecision = resolveDecision === 'RESOLVED' && reason === 'SCROLLED' ? 'PASS' : 'N/A'
+    // VALIDITY verdict — separated from DOM resolution (§13).
+    let validityDecision: string = 'NOT_EVALUATED'
+    let validityReason: string | null = null
+    if (diag?.validityFingerprint) {
+      if (resolveDecision === 'TARGET_CHANGED') {
+        validityDecision = 'CHANGED'
+        validityReason = reason
+      } else if (resolveDecision === 'WRONG_DOCUMENT' || resolveDecision === 'NOT_FOUND') {
+        validityDecision = 'DOCUMENT_SWITCHED'
+        validityReason = reason
+      } else {
+        validityDecision = 'STILL_VALID'
+      }
+    }
+    const metadata = diag?.metadata as Record<string, unknown> | undefined
+    const semanticAnchorKind = metadata && typeof metadata.destination === 'string' ? 'resource'
+      : (diag?.code ?? '').startsWith('LATENT_ATX') ? 'source-text'
+        : null
+    // Phase 7R.3.11.8B.7.4 — Resource Semantic Identity audit fields: the raw
+    // source token, the decoded token and the canonical (vault-relative)
+    // destination stay distinct; occurrenceIndex is an ordinal, never a path
+    // suffix; resolvedOccurrenceIndex = the occurrence the resolver used.
+    const rawDestination = typeof metadata?.rawDestination === 'string' ? metadata.rawDestination : null
+    const canonicalDestination = typeof metadata?.destination === 'string' ? metadata.destination : null
+    const decodedDestination = canonicalDestination ?? (rawDestination != null ? normalizeResourcePath(rawDestination) : null)
+    const resourceKind = typeof metadata?.resourceKind === 'string' ? metadata.resourceKind : null
+    const occurrenceIndex = typeof metadata?.occurrenceIndex === 'number' ? metadata.occurrenceIndex : null
+    const isLocal = resourceKind != null
+      ? !/^[a-z][a-z0-9+.-]*:\/\//i.test(rawDestination ?? '') || /^file:\/\//i.test(rawDestination ?? '')
+      : null
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-AUDIT', {
       documentKey: diag?.documentKey ?? this.opts.ctx.authority.getDocumentKey(),
       diagnosticId,
       ruleId: diag ? (getRuleMeta(diag.code)?.ruleId ?? diag.code) : null,
+      diagnosticKind: diag?.code ?? null,
       severity: diag?.severity ?? null,
       locationKind: diag?.location?.kind ?? null,
+      rawDestination,
+      decodedDestination,
+      canonicalDestination,
+      resourceKind,
+      isLocal,
+      occurrenceIndex,
+      sourceRevisionAtScan: snapshot?.sourceRevision ?? null,
+      sourceRevisionAtLocate: snapshot?.sourceRevision ?? null,
+      validityDecision,
+      validityReason,
       targetCount: diag?.location?.kind === 'multi-target' ? diag.location.targets.length : 1,
       targetIndex,
+      primaryAnchor: result?.primaryAnchor ?? null,
+      fallbackAnchor: result?.fallbackAnchor ?? null,
+      semanticAnchorKind,
       resolveDecision,
-      scrollDecision: resolveDecision === 'RESOLVED' ? (reason === 'SCROLLED' || reason === 'SCROLL_ACTION' ? 'PASS' : 'N/A') : 'N/A',
-      highlightDecision: resolveDecision === 'RESOLVED' && reason === 'SCROLLED' ? 'PASS' : 'N/A',
+      resolveReason: reason,
+      resolvedNodeKind: result?.resolvedNodeKind ?? null,
+      resolvedBlockIdentity: result?.resolvedBlockIdentity ?? null,
+      resolvedOccurrenceIndex: result?.primaryAnchor === 'resource-semantic' ? occurrenceIndex : null,
+      scrollDecision,
+      highlightDecision,
+      finalDecision: resolveDecision === 'RESOLVED' ? 'PASS' : 'FAIL',
       decision: resolveDecision === 'RESOLVED' ? 'PASS' : 'FAIL',
       reason,
     })

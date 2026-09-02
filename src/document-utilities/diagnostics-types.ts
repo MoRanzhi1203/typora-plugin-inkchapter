@@ -45,6 +45,14 @@ export type DiagnosticLocation =
       endLine?: number
       endColumn?: number
       sourceFingerprint?: string
+      /**
+       * Scan-time raw text of the anchored source line. The resolver uses it
+       * to verify that the element found at `startLine` still carries the
+       * scanned content (real source mutation → TARGET_CHANGED) and to
+       * re-anchor by text context when the line cannot map to DOM directly
+       * (source-only diagnostics such as LATENT_ATX_HEADING_MARKER).
+       */
+      rawText?: string
     }
   | { kind: 'document-start' }
   | { kind: 'document-end' }
@@ -56,6 +64,51 @@ export type DiagnosticLocation =
   | {
       kind: 'multi-target'
       targets: readonly DiagnosticLocation[]
+    }
+
+/**
+ * Phase 7R.3.11.8B.7.3 — Diagnostic semantic anchor kinds.
+ *
+ * A semantic anchor is a STRONGER-than-line identity for a diagnostic target,
+ * derived from the diagnostic predicate itself (not from the DOM at scan
+ * time). It survives DOM reshapes (wrapper insertion, paragraph splits,
+ * decorated caption DOM) because resolution re-derives it from the CURRENT
+ * frame at click time.
+ */
+export type DiagnosticSemanticAnchorKind =
+  /** Source text block — the predicate is "line contains a latent marker". */
+  | 'source-text'
+  /** Local resource — the predicate is "local resource target missing". */
+  | 'resource'
+
+/**
+ * Phase 7R.3.11.8B.7.3 — diagnostic scan-time source validity fingerprint.
+ *
+ * VALIDITY ≠ DOM RESOLUTION. Every locatable diagnostic carries a fingerprint
+ * over the MINIMAL scan-time source fact its predicate depends on:
+ *
+ *   latent-atx / source-range  → rawText of the anchored source line
+ *   resource (missing local)   → the raw Markdown destination path
+ *
+ * At click time the overlay re-reads the CURRENT Markdown at the same
+ * position and recomputes the fingerprint. A MISMATCH is a REAL source-level
+ * change (STALE); a MATCH means the diagnostic is STILL_VALID even when the
+ * DOM cannot be resolved right now (UNRESOLVED, never STALE).
+ */
+export type DiagnosticValidityFingerprint =
+  | {
+      kind: 'source-text'
+      /** 0-based source line whose text must still equal `text`. */
+      line: number
+      /** Normalized scan-time raw text of that line. */
+      text: string
+    }
+  | {
+      kind: 'resource'
+      /** Normalized scan-time Markdown destination (e.g. "phase6-test.png"). */
+      path: string
+      /** Resource occurrence ordinal (1-based) among identical destinations. */
+      occurrence: number
     }
 
 export interface DocumentDiagnosticLocatorDescriptor {
@@ -85,6 +138,13 @@ export interface DocumentDiagnostic {
   locator?: DocumentDiagnosticLocatorDescriptor
   /** Phase 7R.3.11.8-B: rule-specific structured metadata (popup fingerprint etc.). */
   metadata?: Record<string, unknown>
+  /**
+   * Phase 7R.3.11.8B.7.3 — scan-time source validity fingerprint. Absent =
+   * the diagnostic is treated as always-valid until a live recompute retires
+   * it (structure rules with canonical identities). Source-syntax and
+   * resource rules MUST carry one so "target changed" is a PROVEN verdict.
+   */
+  validityFingerprint?: DiagnosticValidityFingerprint
   /**
    * Phase 7R.3.11.8B.5 — Universal Location Authority. Every published
    * Error/Warning/Hint diagnostic MUST carry a non-null `location`
