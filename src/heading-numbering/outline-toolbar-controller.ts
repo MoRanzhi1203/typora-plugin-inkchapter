@@ -12,11 +12,18 @@
 
 import { clearFileTreeNumberingAttributes } from './outline-numbering-adapter'
 import type { HeadingDescriptor } from './heading-types'
+import type { HeadingStructureMode } from './heading-structure'
 
 export interface OutlineToolbarCallbacks {
   isNumberingEnabled: () => boolean
   toggleNumbering: () => void
+  /** Phase 7R.3.11.8B.7 — EFFECTIVE mode (single authority read). */
+  getEffectiveHeadingMode: () => HeadingStructureMode
+  /** Phase 7R.3.11.8B.7 — toggle via the single document-scope write authority. */
+  toggleHeadingStructureMode: () => void
+  /** @deprecated legacy mirror read (kept for secondary menu bits). */
   isShowLevelOne: () => boolean
+  /** @deprecated legacy toggle (kept for secondary menu bits). */
   toggleLevelOneNumber: () => void
   writeDiagnosticFile?: (filename: string, data: string) => void
   getHeadings?: () => readonly HeadingDescriptor[]
@@ -514,11 +521,13 @@ export class OutlineToolbarController {
     menu.setAttribute('aria-label', '大纲操作')
 
     const enabled = this.callbacks.isNumberingEnabled()
-    const showL1 = this.callbacks.isShowLevelOne()
+    // Phase 7R.3.11.8B.7 — the menu label reads EFFECTIVE mode ONLY (never the
+    // legacy H1 flag / global / draft / click cache).
+    const effectiveMode = this.callbacks.getEffectiveHeadingMode()
 
     const items: MenuItem[] = [
       { type: 'checkbox', label: '在文档中显示标题编号', checked: enabled, action: () => this.callbacks.toggleNumbering() },
-      { type: 'action', label: enabled ? (showL1 ? '切换为严格模式' : '切换为宽松模式') : '标题结构（需先启用编号）', disabled: !enabled, action: () => { if (!enabled) return; this.callbacks.toggleLevelOneNumber() } },
+      { type: 'action', label: enabled ? (effectiveMode === 'strict' ? '切换为宽松模式' : '切换为严格模式') : '标题结构（需先启用编号）', disabled: !enabled, action: () => { if (!enabled) return; this.callbacks.toggleHeadingStructureMode() } },
       { type: 'divider' },
       { type: 'action', label: this.getCollapseLabel(), action: () => { this.executeCollapseExpand() } },
     ]

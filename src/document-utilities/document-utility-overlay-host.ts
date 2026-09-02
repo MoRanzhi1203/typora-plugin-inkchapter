@@ -49,7 +49,12 @@ export interface DocumentUtilitiesOverlayOptions {
   /** Phase 7R.3.11.8-B — light diagnostics recompute triggers (frame commit /
    *  settings/mode change). Called with a recompute() that ONLY refreshes the
    *  diagnostics snapshot — no geometry / BCR / scroll rebind churn. */
-  onDiagnosticsTrigger?: (recompute: () => void) => void
+  /**
+   * Phase 7R.3.11.8-B — external diagnostics trigger subscription (canonical
+   * frame commit / settings/mode change). Phase 7R.3.11.8B.7.1 — the reason
+   * string flows to the PUBLISHED audit (HEADING_STRUCTURE_MODE_CHANGED etc.).
+   */
+  onDiagnosticsTrigger?: (recompute: (reason: string) => void) => void
 }
 
 const TOOLBAR_TOP_PX = 12
@@ -574,13 +579,19 @@ export class DocumentUtilityOverlayHost {
       getContainer: () => getActiveEditorScrollContainer(),
       onStale: () => {
         // Target changed: refresh diagnostics and surface a stale notice.
-        this.diagnostics.recompute()
+        this.diagnostics.recompute('LOCATE_STALE_TARGET')
         this.showToast('目标已变化，请重新检查')
       },
     })
     this.editGuard = new DocumentEditGuard({
       getDocumentKey: () => opts.ctx.authority.getDocumentKey(),
     })
+  }
+
+  /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only
+   *  authority for the control-surface invariant / stale-snapshot detection). */
+  getSnapshot(): DocumentDiagnosticsSnapshot | null {
+    return this.diagnostics.getSnapshot()
   }
 
   // ── Mount / dispose ─────────────────────────────────
@@ -698,6 +709,10 @@ export class DocumentUtilityOverlayHost {
           errorCount: snapshot.errorCount,
           warningCount: snapshot.warningCount,
           hintCount: snapshot.infoCount,
+          // Phase 7R.3.11.8B.7.1 — mode provenance + publish reason.
+          effectiveMode: snapshot.effectiveMode ?? null,
+          effectiveModeRevision: snapshot.effectiveModeRevision ?? null,
+          reason: this.diagnostics.lastPublishReason,
           // Phase 7R.3.11.8B.4.1 — per-item codes for runtime acceptance
           // (observability only; never affects layout/geometry).
           codes: snapshot.diagnostics.map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? ''}`),
@@ -711,8 +726,9 @@ export class DocumentUtilityOverlayHost {
     this.diagnostics.recompute()
 
     // Phase 7R.3.11.8-B §7 — live diagnostics triggers (frame commit / mode
-    // change) → lightweight recompute only.
-    this.opts.onDiagnosticsTrigger?.(() => this.diagnostics.recompute())
+    // change) → lightweight recompute only. Phase 7R.3.11.8B.7.1 — the reason
+    // flows through to the PUBLISHED audit (HEADING_STRUCTURE_MODE_CHANGED etc.).
+    this.opts.onDiagnosticsTrigger?.((reason) => this.diagnostics.recompute(reason))
 
     // Phase 7R.3.11.8-B §7 — event-driven editor mutation trigger (rAF-coalesced).
     // Covers raw source / trailing-blank-line changes and live heading edits.
@@ -729,7 +745,7 @@ export class DocumentUtilityOverlayHost {
           requestAnimationFrame(() => {
             this.diagnosticsRafPending = false
             if (this.disposed) return
-            this.diagnostics.recompute()
+            this.diagnostics.recompute('DOCUMENT_MUTATION')
             this.scheduleGeometrySync('content-mutation')
           })
         }
@@ -2068,7 +2084,7 @@ export class DocumentUtilityOverlayHost {
     recheck.className = 'inkchapter-doc-drawer__action'
     recheck.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
     recheck.textContent = '重新检查'
-    recheck.addEventListener('click', () => this.diagnostics.recompute())
+    recheck.addEventListener('click', () => this.diagnostics.recompute('MANUAL_RECHECK'))
     const close = document.createElement('button')
     close.type = 'button'
     close.className = 'inkchapter-doc-drawer__action'
@@ -2163,7 +2179,7 @@ export class DocumentUtilityOverlayHost {
     let diag = snapshot?.diagnostics.find(d => d.id === diagnosticId) ?? null
     let refreshed = false
     if (!diag) {
-      this.diagnostics.recompute()
+      this.diagnostics.recompute('LOCATE_BOUNDED_REFRESH')
       refreshed = true
       diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
       if (!diag) {
@@ -2175,7 +2191,7 @@ export class DocumentUtilityOverlayHost {
     const currentKey = this.opts.ctx.authority.getDocumentKey()
     if (diag.documentKey && currentKey && diag.documentKey !== currentKey) {
       if (!refreshed) {
-        this.diagnostics.recompute()
+        this.diagnostics.recompute('LOCATE_BOUNDED_REFRESH')
         diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
       }
       if (!diag || (diag.documentKey && currentKey && diag.documentKey !== currentKey)) {

@@ -210,6 +210,10 @@ export default class extends Plugin<InkChapterSettings> {
       setCursorOffset: (offset: number) => {
         try { this.app.features.markdownEditor.selection.setCursor(offset) } catch { /* fail-open */ }
       },
+      // Phase 7R.3.11.8B.7.1 — the SERVICE reads the latest PUBLISHED
+      // diagnostic snapshot for the CONTROL-SURFACE-INVARIANT (closes the
+      // stale-snapshot false PASS).
+      getDiagnosticSnapshot: () => this.documentUtilities?.getSnapshot() ?? null,
     }
 
     // Init heading numbering (safe: service is optional)
@@ -315,10 +319,14 @@ export default class extends Plugin<InkChapterSettings> {
           try { return editor.getMarkdown() } catch { return null }
         },
         isStrictMode: () => {
+          // Phase 7R.3.11.8B.7.1 — the diagnostics mode input MUST be the
+          // EFFECTIVE mode (document override ?? global), never global-only.
           try {
-            const store = this.numberingService?.getScopeStore()
-            return (store?.globalDefault?.headingStructureMode ?? 'strict') === 'strict'
+            return this.numberingService?.getEffectiveHeadingMode() === 'strict'
           } catch { return true }
+        },
+        getEffectiveHeadingModeRevision: () => {
+          try { return this.numberingService?.getEffectiveHeadingModeRevision() ?? 0 } catch { return 0 }
         },
         vaultRoot: vaultRoot ?? null,
         getCanonicalHeadingFrame: () => this.numberingService?.getCanonicalHeadingFrame() ?? null,
