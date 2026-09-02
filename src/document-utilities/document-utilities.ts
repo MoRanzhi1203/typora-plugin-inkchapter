@@ -8,6 +8,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { CanonicalHeadingFrame } from '../heading-numbering/canonical-heading-frame'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
+import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
@@ -30,12 +31,16 @@ export interface DocumentUtilitiesSources {
   onCanonicalFrameCommit?: (cb: () => void) => () => void
   /** Phase 7R.3.11.8-B — numbering settings/mode change subscription. */
   onSettingsChanged?: (cb: () => void) => () => void
+  /** Phase 7R.3.11.8B.7.1 — effective-mode transition revision (real transitions). */
+  getEffectiveHeadingModeRevision?: () => number
 }
 
 export interface DocumentUtilities {
   host: DocumentUtilityOverlayHost
   mount: () => void
   dispose: () => void
+  /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only). */
+  getSnapshot: () => DocumentDiagnosticsSnapshot | null
 }
 
 const VISIBLE_TAG_TOKEN_RE = /^\(\s*([\d]+(?:\.[\d]+)*-\d+|\d+)\s*\)$/
@@ -120,6 +125,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       getDocumentKey: sources.getDocumentKey,
       getMarkdown: sources.getMarkdown,
       isStrictMode: sources.isStrictMode,
+      getEffectiveHeadingModeRevision: () => sources.getEffectiveHeadingModeRevision?.() ?? 0,
       vaultRoot: sources.vaultRoot,
       getCanonicalDuplicateIdentities: () => {
         const frame = sources.getCanonicalHeadingFrame()
@@ -173,6 +179,10 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     ),
   }
 
+  // Phase 7R.3.11.8B.7.1 — settings/mode recompute is rAF-coalesced so one mode
+  // transaction produces AT MOST ONE final recompute/publish.
+  let settingsRecomputePending = false
+
   const host = new DocumentUtilityOverlayHost({
     ctx,
     providers,
@@ -187,9 +197,16 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     onDiagnosticsTrigger: (recompute) => {
       sources.onCanonicalFrameCommit?.(() => {
         indexHeadingIdentities()
-        recompute()
+        recompute('CANONICAL_FRAME_CHANGED')
       })
-      sources.onSettingsChanged?.(() => recompute())
+      sources.onSettingsChanged?.(() => {
+        if (settingsRecomputePending) return
+        settingsRecomputePending = true
+        requestAnimationFrame(() => {
+          settingsRecomputePending = false
+          recompute('HEADING_STRUCTURE_MODE_CHANGED')
+        })
+      })
     },
   })
 
@@ -197,5 +214,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     host,
     mount: () => host.mount(),
     dispose: () => host.dispose(),
+    // Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only,
+    // consumed by the control-surface invariant).
+    getSnapshot: () => host.getSnapshot(),
   }
 }

@@ -24,6 +24,13 @@ import type {
 import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
 import { resolveHeadingStructure, resolveStyleSlot, resolvePhysicalHeadingForStyleSlot, validateHeadingStructure } from '../heading-numbering/heading-structure'
 import type { HeadingStructureMode, StyleSlot } from '../heading-numbering/heading-structure'
+import {
+  computeHeadingDraftState,
+  deriveLegacyShowLevelOneNumber,
+  type DocumentHeadingScopeState,
+  type HeadingDraftState,
+  type HeadingDraftModel,
+} from '../heading-numbering/heading-structure-control-sync'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
@@ -228,6 +235,15 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private headingScope: HeadingSettingsScope = 'document'
   private headingDraft: HeadingNumberingSettings | null = null
   private headingDraftOriginal: HeadingNumberingSettings | null = null
+  /**
+   * Phase 7R.3.11.8B.7 — draft scope selection for the CURRENT-document
+   * structure controls (inherit / strict / loose). null = no draft yet.
+   */
+  private headingDraftScopeMode: DocumentHeadingScopeState | null = null
+  /** Phase 7R.3.11.8B.7 — saved scope mode at draft init (lifecycle baseline). */
+  private headingDraftBaseMode: import('../heading-numbering/heading-structure').HeadingStructureMode | null = null
+  /** Phase 7R.3.11.8B.7 — draft lifecycle state (CLEAN/DIRTY/CONFLICTED). */
+  private headingDraftLifecycleState: HeadingDraftState = 'CLEAN'
 
   // ── Heading layout draft (independent of numbering draft) ──
   /** Current in-memory layout draft. null = no unsaved changes. */
@@ -453,18 +469,90 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
   /**
    * Called when settings change externally (menu toggle, F1 command, etc.).
-   * Updates the draft (if any) with external changes, then re-renders the UI.
+   * Phase 7R.3.11.8B.7 — CLEAN/DIRTY/CONFLICTED lifecycle:
+   *   CLEAN           → auto-rebase the draft onto the new saved state
+   *   DIRTY + same    → CLEAN (external made the same change)
+   *   DIRTY + differs → CONFLICTED: keep the draft, show an explicit notice,
+   *                     NEVER silently overwrite the draft.
    */
   private syncFromExternalChange(): void {
     const effective = this.numberingService.getEffectiveSettings()
+    const savedMode = this.readCurrentSavedScopeMode()
+    const draftIntent = this.readDraftModeIntent()
+
     if (this.headingDraft) {
-      // Merge external toggle changes into draft without losing other edits
-      this.headingDraft.enabled = effective.enabled
-      this.headingDraft.showLevelOneNumber = effective.showLevelOneNumber
-      this.headingDraft.headingStructureMode = effective.headingStructureMode
+      const model: HeadingDraftModel = {
+        scope: this.headingScope,
+        documentKey: this.numberingService.getDocumentKey(),
+        baseSavedModeAtInit: this.headingDraftBaseMode,
+        currentSavedMode: savedMode,
+        draftMode: draftIntent,
+      }
+      const nextState = computeHeadingDraftState(model)
+      if (nextState === 'CONFLICTED') {
+        // Keep the user's unsaved draft; mark CONFLICTED + notify (no overwrite).
+        if (this.headingDraftLifecycleState !== 'CONFLICTED') {
+          this.emitDraftLifecycle(this.headingDraftLifecycleState, 'CONFLICTED')
+          this.headingDraftLifecycleState = 'CONFLICTED'
+        }
+        Notice.info('当前标题设置已被其它入口更新；你的未保存修改仍保留。')
+      } else {
+        // CLEAN / DIRTY-same → rebase the draft mode onto the newest saved state.
+        const nextScopeMode = this.headingScope === 'document' ? this.readSavedDocumentScopeState() : (savedMode as DocumentHeadingScopeState)
+        const prevState = this.headingDraftLifecycleState
+        this.headingDraftScopeMode = nextScopeMode
+        this.headingDraftBaseMode = savedMode
+        this.headingDraft.headingStructureMode = savedMode
+        this.headingDraft.showLevelOneNumber = deriveLegacyShowLevelOneNumber(savedMode)
+        this.headingDraft.enabled = effective.enabled
+        if (this.headingDraftLifecycleState !== 'CLEAN') {
+          this.emitDraftLifecycle(this.headingDraftLifecycleState, 'CLEAN')
+          this.headingDraftLifecycleState = 'CLEAN'
+        }
+        if (prevState !== 'CLEAN') this.rerender()
+      }
     }
     this.cancelDrag('settings-changed')
     this.onshow()
+  }
+
+  /** Read the SAVED scope mode for the current view (document override or global). */
+  private readCurrentSavedScopeMode(): HeadingStructureMode {
+    if (this.headingScope === 'global') {
+      const gd = this.numberingService.getScopeStore().globalDefault
+      return gd.headingStructureMode ?? (gd.showLevelOneNumber ? 'loose' : 'strict')
+    }
+    const docKey = this.numberingService.getDocumentKey()
+    const override = docKey ? this.numberingService.getScopeStore().documentOverrides[docKey] : undefined
+    return override?.settings.headingStructureMode ?? this.numberingService.getScopeStore().globalDefault.headingStructureMode
+      ?? (this.numberingService.getScopeStore().globalDefault.showLevelOneNumber ? 'loose' : 'strict')
+  }
+
+  /** Read the SAVED document scope state (inherit/strict/loose). */
+  private readSavedDocumentScopeState(): DocumentHeadingScopeState {
+    const docKey = this.numberingService.getDocumentKey()
+    const override = docKey ? this.numberingService.getScopeStore().documentOverrides[docKey] : undefined
+    return override?.settings.headingStructureMode ?? 'inherit'
+  }
+
+  /** Read the user's UNSAVED mode intent from the draft scope selection / draft. */
+  private readDraftModeIntent(): HeadingStructureMode | null {
+    if (this.headingDraftScopeMode && this.headingDraftScopeMode !== 'inherit') {
+      return this.headingDraftScopeMode
+    }
+    return this.headingDraft?.headingStructureMode ?? null
+  }
+
+  /** Phase 7R.3.11.8B.7 — HEADING-STRUCTURE-DRAFT-LIFECYCLE audit (transitions only). */
+  private emitDraftLifecycle(from: HeadingDraftState, to: HeadingDraftState): void {
+    emitRuntimeAudit('HEADING-STRUCTURE-DRAFT-LIFECYCLE', {
+      documentKey: this.numberingService.getDocumentKey(),
+      scope: this.headingScope,
+      fromState: from,
+      toState: to,
+      draftMode: this.headingDraft?.headingStructureMode ?? null,
+      savedMode: this.readCurrentSavedScopeMode(),
+    })
   }
 
   /**
@@ -476,6 +564,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Clear all document-specific draft state — new document means new settings
     this.headingDraft = null
     this.headingDraftOriginal = null
+    // Phase 8B7 — never carry the mode draft across documents.
+    this.headingDraftScopeMode = null
+    this.headingDraftBaseMode = null
+    this.headingDraftLifecycleState = 'CLEAN'
     this.formatDraft = null
     this.savedFormatBaseline = null
     this.selectedFormatId = null
@@ -3085,6 +3177,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (this.headingDraft) return
     this.headingDraftOriginal = this.numberingService.getEffectiveSettings()
     this.headingDraft = deepCloneSettings(this.headingDraftOriginal)
+    // Phase 8B7 — init the mode draft baseline + scope selection on first edit.
+    if (this.headingDraftBaseMode == null) {
+      this.headingDraftBaseMode = this.readCurrentSavedScopeMode()
+    }
+    if (this.headingScope === 'document' && this.headingDraftScopeMode == null) {
+      this.headingDraftScopeMode = this.readSavedDocumentScopeState()
+    }
   }
 
   // ── Layout draft (independent of numbering draft) ──
@@ -3366,6 +3465,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const newSettings = this.numberingService.getEffectiveSettings()
       this.headingDraft = deepCloneSettings(newSettings)
       this.headingDraftOriginal = deepCloneSettings(newSettings)
+      // Phase 8B7 — re-init the mode draft for the CURRENT-document scope.
+      this.headingDraftScopeMode = this.readSavedDocumentScopeState()
+      this.headingDraftBaseMode = this.readCurrentSavedScopeMode()
+      this.headingDraftLifecycleState = 'CLEAN'
       this.rerender()
     }
 
@@ -3378,6 +3481,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const newSettings = this.numberingService.getScopeStore().globalDefault
       this.headingDraft = deepCloneSettings(newSettings)
       this.headingDraftOriginal = deepCloneSettings(newSettings)
+      // Phase 8B7 — global view has no inherit; the mode draft mirrors global.
+      this.headingDraftScopeMode = null
+      this.headingDraftBaseMode = this.readCurrentSavedScopeMode()
+      this.headingDraftLifecycleState = 'CLEAN'
       this.rerender()
     }
 
@@ -3441,8 +3548,18 @@ export class HeadingNumberingSettingTab extends SettingTab {
     enableLabel.appendChild(enableCb)
     enableLabel.appendChild(document.createTextNode(' 启用标题编号'))
 
-    // ── Heading structure mode (strict / loose) ──
+    // ── Heading structure mode ──
+    // Phase 7R.3.11.8B.7 — CURRENT-document scope is THREE-state
+    // (继承全局默认 / 严格模式 / 宽松模式); the GLOBAL scope is two-state.
     const structure = this.resolveStructureFromDraft(s)
+    const isDocumentScope = this.headingScope === 'document'
+    // The DRAFT scope selection wins for the active button; otherwise the
+    // SAVED scope state is shown.
+    const draftScope = this.headingDraftScopeMode ?? (isDocumentScope ? this.readSavedDocumentScopeState() : null)
+    const activeScopeMode: DocumentHeadingScopeState = isDocumentScope
+      ? (draftScope ?? 'inherit')
+      : (structure.mode === 'strict' ? 'strict' : 'loose')
+
     const structureRow = el('div', '', checksRow.parentElement ?? checksRow)
     structureRow.style.cssText = 'margin-top:10px;'
     const structureLabel = el('span', '', structureRow)
@@ -3450,32 +3567,63 @@ export class HeadingNumberingSettingTab extends SettingTab {
     structureLabel.style.cssText = 'font-size:13px;font-weight:500;margin-right:8px;'
 
     const structureControls = el('div', '', structureRow)
-    structureControls.style.cssText = 'display:flex;gap:4px;'
+    structureControls.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;'
+
+    // Phase 8B7 — set the draft scope selection + mode intent (single draft path).
+    const setDraftScopeMode = (next: DocumentHeadingScopeState): void => {
+      this.ensureDraft()
+      if (this.headingDraftLifecycleState === 'CLEAN' && this.headingDraftScopeMode !== next) {
+        this.emitDraftLifecycle('CLEAN', 'DIRTY')
+        this.headingDraftLifecycleState = 'DIRTY'
+      }
+      this.headingDraftScopeMode = next
+      if (next === 'strict') {
+        this.headingDraft!.headingStructureMode = 'strict'
+        this.headingDraft!.showLevelOneNumber = false
+        if (this.expandedLevel === 1) this.expandedLevel = 2
+      } else if (next === 'loose') {
+        this.headingDraft!.headingStructureMode = 'loose'
+        this.headingDraft!.showLevelOneNumber = true
+      }
+      this.rerender()
+    }
+
+    if (isDocumentScope) {
+      const inheritBtn = el('button', 'inkchapter-range-doc-seg-btn', structureControls) as HTMLButtonElement
+      inheritBtn.textContent = '继承全局默认'
+      inheritBtn.title = '当前文档跟随全局默认；清除文档覆盖'
+      if (activeScopeMode === 'inherit') inheritBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+      inheritBtn.onclick = () => { if (activeScopeMode === 'inherit') return; setDraftScopeMode('inherit') }
+    }
 
     const strictBtn = el('button', 'inkchapter-range-doc-seg-btn', structureControls) as HTMLButtonElement
     strictBtn.textContent = '严格模式'
     strictBtn.title = 'H1 作为唯一文档题目，不参与编号；正文编号从 H2 开始'
-    if (structure.mode === 'strict') strictBtn.classList.add('inkchapter-range-doc-seg-btn--active')
-    strictBtn.onclick = () => {
-      if (structure.mode === 'strict') return
-      this.ensureDraft()
-      this.headingDraft!.headingStructureMode = 'strict'
-      this.headingDraft!.showLevelOneNumber = false
-      // Bump expandedLevel from H1 to H2 if currently viewing H1
-      if (this.expandedLevel === 1) this.expandedLevel = 2
-      this.rerender()
-    }
+    if (activeScopeMode === 'strict') strictBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    strictBtn.onclick = () => { if (activeScopeMode === 'strict') return; setDraftScopeMode('strict') }
 
     const looseBtn = el('button', 'inkchapter-range-doc-seg-btn', structureControls) as HTMLButtonElement
     looseBtn.textContent = '宽松模式'
     looseBtn.title = 'H1 作为普通一级标题参与编号；H1 数量不限'
-    if (structure.mode === 'loose') looseBtn.classList.add('inkchapter-range-doc-seg-btn--active')
-    looseBtn.onclick = () => {
-      if (structure.mode === 'loose') return
-      this.ensureDraft()
-      this.headingDraft!.headingStructureMode = 'loose'
-      this.headingDraft!.showLevelOneNumber = true
-      this.rerender()
+    if (activeScopeMode === 'loose') looseBtn.classList.add('inkchapter-range-doc-seg-btn--active')
+    looseBtn.onclick = () => { if (activeScopeMode === 'loose') return; setDraftScopeMode('loose') }
+
+    // Phase 8B7 — source summary: scope source + current effective mode.
+    const modeSourceRow = el('div', '', structureRow)
+    modeSourceRow.style.cssText = 'font-size:12px;color:var(--text-muted,#888);margin-top:6px;display:flex;flex-direction:column;gap:2px;'
+    const scopeSourceText = isDocumentScope
+      ? (activeScopeMode === 'inherit' ? '来源：继承全局默认' : `来源：当前文档覆盖（${activeScopeMode === 'strict' ? '严格' : '宽松'}）`)
+      : '来源：全局默认'
+    const modeSourceLine = el('span', '', modeSourceRow)
+    modeSourceLine.textContent = scopeSourceText
+    const modeEffectiveLine = el('span', '', modeSourceRow)
+    modeEffectiveLine.textContent = `当前有效：${structure.mode === 'strict' ? '严格模式' : '宽松模式'}`
+
+    // Phase 8B7 — CONFLICTED draft hint (never stale UI, never silent overwrite).
+    if (this.headingDraftLifecycleState === 'CONFLICTED') {
+      const conflictRow = el('div', '', structureRow)
+      conflictRow.style.cssText = 'margin-top:6px;font-size:12px;color:var(--color-orange,#e65100);'
+      conflictRow.textContent = '当前标题设置已被其它入口更新；你的未保存修改仍保留。'
     }
 
     // Mode description
@@ -6027,6 +6175,13 @@ export class HeadingNumberingSettingTab extends SettingTab {
           this.headingDraft = null
           this.headingDraftOriginal = null
         }
+        // Phase 8B7 — cancel also resets the mode draft lifecycle to CLEAN.
+        if (this.headingDraftLifecycleState !== 'CLEAN') {
+          this.emitDraftLifecycle(this.headingDraftLifecycleState, 'CLEAN')
+          this.headingDraftLifecycleState = 'CLEAN'
+        }
+        this.headingDraftScopeMode = null
+        this.headingDraftBaseMode = null
         cancelled = true
       }
       if (this.headingLayoutDraft && this.savedLayoutDraft) {
@@ -6065,9 +6220,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (this.headingDraft && this.selectedFormatType !== 'built-in') {
         const scope = this.headingScope
         const key = scope === 'document' ? (docKey ?? null) : null
-        this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
+        // Phase 8B7 — document-scope 'inherit' clears the override through the
+        // SINGLE write authority; strict/loose writes the draft via the scoped
+        // save. Either way the draft lifecycle returns to CLEAN.
+        if (scope === 'document' && key && this.headingDraftScopeMode === 'inherit') {
+          this.numberingService.clearDocumentHeadingStructureOverride({ documentKey: key, source: 'SETTINGS_CURRENT_DOCUMENT' })
+        } else {
+          this.numberingService.saveHeadingNumberingScoped(scope, key, deepCloneSettings(this.headingDraft))
+        }
+        if (this.headingDraftLifecycleState !== 'CLEAN') {
+          this.emitDraftLifecycle(this.headingDraftLifecycleState, 'CLEAN')
+        }
+        this.headingDraftLifecycleState = 'CLEAN'
         this.headingDraft = null
         this.headingDraftOriginal = null
+        this.headingDraftScopeMode = null
+        this.headingDraftBaseMode = null
       }
       // Save layout draft if dirty
       if (this.headingLayoutDraft && docKey && this.hasLayoutDirty()) {

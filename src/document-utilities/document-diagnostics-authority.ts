@@ -97,7 +97,7 @@ export class DocumentDiagnosticsAuthority {
   }
 
   /** Recompute from current authorities. Event-driven only. */
-  recompute(): void {
+  recompute(reason: string = 'AUTO'): void {
     const structural = this.collectStructuralFacts()
     const input = collectDiagnosticsInput(this.ctx, structural)
     if (input.documentKey !== this.lastDocumentKey) {
@@ -113,6 +113,11 @@ export class DocumentDiagnosticsAuthority {
       this.emitHeadingGapInputIfAny(structural.headings, input.documentKey)
     }
     this.revision++
+    // Phase 7R.3.11.8B.7.1 — mode provenance: the snapshot records the
+    // effective heading structure mode + transition revision it was computed
+    // with. CONTENT UNCHANGED + MODE CHANGED = NEW AUTHORITATIVE SNAPSHOT.
+    const effectiveMode: 'strict' | 'loose' = input.strictMode ? 'strict' : 'loose'
+    const effectiveModeRevision = this.ctx.authority.getEffectiveHeadingModeRevision?.() ?? 0
     const nextSnapshot: DocumentDiagnosticsSnapshot = {
       documentKey: input.documentKey,
       revision: this.revision,
@@ -122,10 +127,13 @@ export class DocumentDiagnosticsAuthority {
       errorCount: computed.errorCount,
       warningCount: computed.warningCount,
       infoCount: computed.infoCount,
+      effectiveMode,
+      effectiveModeRevision,
     }
-    // Phase 7R.3.11.8-B §32 — state-transition logging: identical-state recomputes
-    // (same document + same diagnostic content) do NOT re-publish / re-notify.
-    const fingerprint = `${nextSnapshot.documentKey ?? ''}|${nextSnapshot.diagnostics
+    // Phase 7R.3.11.8B.7.1 — the semantic fingerprint MUST include the mode
+    // provenance: same content + different mode = different fingerprint.
+    // Phase 7R.3.11.8-B §32 — identical-state recomputes do NOT re-publish.
+    const fingerprint = `${nextSnapshot.documentKey ?? ''}|mode:${effectiveMode}:${effectiveModeRevision}|${nextSnapshot.diagnostics
       .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}`)
       .sort()
       .join(';')}`
@@ -133,12 +141,60 @@ export class DocumentDiagnosticsAuthority {
       return
     }
     this.lastContentFingerprint = fingerprint
+    const previous = this.snapshot
     this.snapshot = nextSnapshot
+    this.lastPublishReason = reason
     this.notify()
     // Phase 7R.3.11.8B.5 — low-noise rule snapshot + location contract audit
     // (emitted only when the committed content fingerprint actually changed).
     this.emitDocumentDiagnosticRuleSnapshot(nextSnapshot)
     this.emitDocumentDiagnosticLocationContract(nextSnapshot)
+    // Phase 7R.3.11.8B.7.1 — snapshot diff audit on mode transitions only.
+    this.emitSnapshotDiffIfModeChanged(previous, nextSnapshot)
+  }
+
+  /** Phase 7R.3.11.8B.7.1 — reason of the LAST published snapshot. */
+  lastPublishReason = 'AUTO'
+
+  /**
+   * Phase 7R.3.11.8B.7.1 — DOCUMENT-DIAGNOSTIC-SNAPSHOT-DIFF (mode transition
+   * only): which rules appeared/disappeared/changed severity, and whether any
+   * location moved. Observability only.
+   */
+  private emitSnapshotDiffIfModeChanged(previous: DocumentDiagnosticsSnapshot | null, next: DocumentDiagnosticsSnapshot): void {
+    if (!previous || previous.effectiveMode === next.effectiveMode) return
+    const prevById = new Map(previous.diagnostics.map(d => [d.id, d]))
+    const nextById = new Map(next.diagnostics.map(d => [d.id, d]))
+    const added: string[] = []
+    const removed: string[] = []
+    let severityChanged = 0
+    let locationChanged = 0
+    for (const [id, nd] of nextById) {
+      const pd = prevById.get(id)
+      if (!pd) added.push(getRuleMeta(nd.code)?.ruleId ?? nd.code)
+      else if (pd.severity !== nd.severity) severityChanged++
+    }
+    for (const [id, pd] of prevById) {
+      if (!nextById.has(id)) removed.push(getRuleMeta(pd.code)?.ruleId ?? pd.code)
+    }
+    for (const [id, nd] of nextById) {
+      const pd = prevById.get(id)
+      if (!pd) continue
+      const pk = JSON.stringify(pd.location)
+      const nk = JSON.stringify(nd.location)
+      if (pk !== nk) locationChanged++
+    }
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-SNAPSHOT-DIFF', {
+      documentKey: next.documentKey,
+      previousRevision: previous.revision,
+      nextRevision: next.revision,
+      previousMode: previous.effectiveMode,
+      nextMode: next.effectiveMode,
+      addedRuleIds: added,
+      removedRuleIds: removed,
+      severityChangedCount: severityChanged,
+      locationChangedCount: locationChanged,
+    })
   }
 
   /**

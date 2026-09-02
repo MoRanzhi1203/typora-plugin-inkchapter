@@ -6,6 +6,7 @@
  * never query DOM or resolve authority facts independently.
  */
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
+import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 
 export interface DocumentUtilitiesAuthorityContext {
   getActiveFilePath: () => string | null
@@ -13,6 +14,14 @@ export interface DocumentUtilitiesAuthorityContext {
   getMarkdown: () => string | null
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
+  /**
+   * Phase 7R.3.11.8B.7.1 — effective-mode transition revision (increments on
+   * REAL strict<->loose transitions only; idempotent/shielded writes do not).
+   * Optional so tests that never exercise the mode pipeline need no stub.
+   */
+  getEffectiveHeadingModeRevision?: () => number
+  /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (invariant). */
+  getDiagnosticSnapshot?: () => DocumentDiagnosticsSnapshot | null
   vaultRoot: string | null
   /** Optional canonical heading frame duplicate identities. */
   getCanonicalDuplicateIdentities: () => string[]

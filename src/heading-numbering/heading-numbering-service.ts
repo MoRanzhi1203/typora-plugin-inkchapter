@@ -44,6 +44,16 @@ import {
   emitHeadingModeTransitionCleanup,
   collectHeadingProjectionFacts,
 } from './heading-structure-audit'
+import type { DocumentDiagnosticsSnapshot } from '../document-utilities/diagnostics-types'
+import {
+  resolveEffectiveHeadingMode,
+  resolveDocumentScopeState,
+  deriveLegacyShowLevelOneNumber,
+  planHeadingStructureModeWrite,
+  type HeadingStructureModeWriteRequest,
+  type HeadingStructureOverrideClearRequest,
+  type DocumentHeadingScopeState,
+} from './heading-structure-control-sync'
 import {
   validateStrictFirstH1Topline,
   computeDocumentStartSignature,
@@ -452,6 +462,8 @@ export interface ServiceContext {
   setCursorOffset?: (offset: number) => void
   /** R58.3: Authoritative vault root for sidecar storage. */
   vaultRoot?: string
+  /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (invariant read). */
+  getDiagnosticSnapshot?: () => DocumentDiagnosticsSnapshot | null
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
@@ -1676,6 +1688,10 @@ export class HeadingNumberingService {
 
   // Settings revision: bumped on save to invalidate caches
   private settingsRevision = 0
+  /** Phase 7R.3.11.8B.7 — control-surface audit fingerprint (state-dedup). */
+  private lastControlSurfaceFingerprint = ''
+  /** Phase 7R.3.11.8B.7.1 — effective-mode transition revision (real transitions only). */
+  private effectiveModeRevision = 0
 
   // Heading Numbering Snapshot authority (Phase 4.10): owns monotonic revision
   // and the current published physical + semantic snapshot.
@@ -1774,6 +1790,11 @@ export class HeadingNumberingService {
     const toolbarCallbacks: OutlineToolbarCallbacks = {
       isNumberingEnabled: () => this.s.enabled,
       toggleNumbering: () => this.toggleNumberingFromToolbar(),
+      // Phase 7R.3.11.8B.7 — the menu reads EFFECTIVE mode, never a legacy flag.
+      getEffectiveHeadingMode: () => this.getEffectiveHeadingMode(),
+      // Phase 7R.3.11.8B.7 — the menu writes DOCUMENT scope via the single
+      // write authority (never global, never legacy direct mutation).
+      toggleHeadingStructureMode: () => this.toggleHeadingStructureModeFromOutline(),
       isShowLevelOne: () => {
         const structure = resolveHeadingStructure(this.s)
         return structure.showLevelOneNumber
@@ -1930,6 +1951,249 @@ export class HeadingNumberingService {
       }
       this.flushRefresh()
     }
+  }
+
+  // ── Phase 7R.3.11.8B.7 — Single Write Authority ────────────────
+  // Every control surface (outline menu, settings current document, settings
+  // global default, command) writes strict/loose ONLY through this method.
+  // One user action = one business transaction: saved scope → legacy mirror →
+  // persist → ONE effective transition → refresh consumers. Idempotent writes
+  // are NO_OP (no transition, no refresh).
+
+  /** Write heading structure mode (global or current-document scope). */
+  setHeadingStructureMode(req: HeadingStructureModeWriteRequest): void {
+    const store = this.scopeStore
+    const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
+      ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
+    const docOverrideMode: HeadingStructureMode | null = req.documentKey
+      ? (store.documentOverrides[req.documentKey]?.settings.headingStructureMode ?? null)
+      : null
+    const plan = planHeadingStructureModeWrite(savedGlobal, docOverrideMode, req.scope, req.mode, req.source, req.documentKey)
+
+    if (!plan) {
+      // Idempotent NO_OP — nothing changes, no transition, no refresh.
+      emitRuntimeAudit('HEADING-STRUCTURE-MODE-WRITE', {
+        source: req.source,
+        scope: req.scope,
+        documentKey: req.documentKey,
+        beforeGlobal: savedGlobal,
+        afterGlobal: savedGlobal,
+        beforeDocumentOverride: docOverrideMode,
+        afterDocumentOverride: docOverrideMode,
+        beforeEffective: savedGlobal,
+        afterEffective: savedGlobal,
+        legacyBefore: deriveLegacyShowLevelOneNumber(savedGlobal),
+        legacyAfter: deriveLegacyShowLevelOneNumber(savedGlobal),
+        persistDecision: 'NO_OP',
+        publishDecision: 'NO_OP',
+        decision: 'IDEMPOTENT_NO_OP',
+      })
+      return
+    }
+
+    // ONE transaction: write the saved scope + legacy mirror in the SAME store.
+    const modeSettings = {
+      headingStructureMode: req.mode,
+      showLevelOneNumber: deriveLegacyShowLevelOneNumber(req.mode),
+    }
+    if (req.scope === 'global') {
+      this.persistScopeStore({ ...store, globalDefault: { ...store.globalDefault, ...modeSettings } })
+    } else if (req.scope === 'document' && req.documentKey) {
+      const existing = store.documentOverrides[req.documentKey]
+      this.persistScopeStore(saveHeadingSettings(store, {
+        scope: 'document',
+        documentKey: req.documentKey,
+        settings: { ...(existing?.settings ?? deepCloneSettings(store.globalDefault)), ...modeSettings },
+      }))
+    } else {
+      return // document scope without a documentKey — cannot write
+    }
+    this.settingsRevision++
+    // Phase 7R.3.11.8B.7.1 — effective-mode revision increments ONLY on a REAL
+    // effective transition (strict<->loose for the ACTIVE doc). Shielded
+    // global writes (override wins, effective unchanged) do NOT increment.
+    if (plan.beforeEffective !== plan.afterEffective) {
+      this.effectiveModeRevision++
+    }
+
+    // Reload the current document context if affected, then ONE refresh pass.
+    const currentKey = this.getDocumentKey()
+    if (req.scope === 'global' || req.documentKey === currentKey) {
+      const wasEnabled = this.docContext.effectiveSettings.enabled
+      this.docContext = resolveEffectiveSettings(this.scopeStore, currentKey, this.getFormatLibrary())
+      this.docContext.settingsRevision = this.settingsRevision
+      this.lastSnapshot = null
+      this.renderedStates = null
+      this.outlineToolbar.updateAllButtonStates()
+      if (wasEnabled && !this.s.enabled) {
+        this.adapter.clearNumbering()
+        this.outlineController.clearOutlineNumbering()
+      }
+      this.flushRefresh()
+    }
+    this.notifySettingsListeners()
+
+    emitRuntimeAudit('HEADING-STRUCTURE-MODE-WRITE', {
+      ...plan,
+      persistDecision: 'SAVED',
+      publishDecision: 'PUBLISHED',
+      decision: 'COMMITTED',
+    })
+    this.emitHeadingStructureControlSurfaceAudit()
+  }
+
+  /** Clear the current-document override → inherit global (settings Current scope). */
+  clearDocumentHeadingStructureOverride(req: HeadingStructureOverrideClearRequest): void {
+    if (!req.documentKey) return
+    const store = this.scopeStore
+    const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
+      ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
+    const beforeEffective = this.getEffectiveHeadingMode()
+    const overrideBefore = store.documentOverrides[req.documentKey]?.settings.headingStructureMode ?? null
+    if (!store.documentOverrides[req.documentKey]) {
+      emitRuntimeAudit('HEADING-STRUCTURE-MODE-WRITE', {
+        source: req.source,
+        scope: 'document',
+        documentKey: req.documentKey,
+        beforeGlobal: savedGlobal,
+        afterGlobal: savedGlobal,
+        beforeDocumentOverride: null,
+        afterDocumentOverride: null,
+        beforeEffective,
+        afterEffective: beforeEffective,
+        legacyBefore: deriveLegacyShowLevelOneNumber(beforeEffective),
+        legacyAfter: deriveLegacyShowLevelOneNumber(beforeEffective),
+        persistDecision: 'NO_OP',
+        publishDecision: 'NO_OP',
+        decision: 'IDEMPOTENT_NO_OP',
+      })
+      return
+    }
+    this.restoreInheritGlobal(req.documentKey)
+    const afterEffective = this.getEffectiveHeadingMode()
+    // Phase 7R.3.11.8B.7.1 — a REAL effective transition (override cleared and
+    // global differs) bumps the diagnostic mode revision.
+    if (beforeEffective !== afterEffective) {
+      this.effectiveModeRevision++
+    }
+    emitRuntimeAudit('HEADING-STRUCTURE-MODE-WRITE', {
+      source: req.source,
+      scope: 'document',
+      documentKey: req.documentKey,
+      beforeGlobal: savedGlobal,
+      afterGlobal: savedGlobal,
+      beforeDocumentOverride: overrideBefore,
+      afterDocumentOverride: null,
+      beforeEffective,
+      afterEffective,
+      legacyBefore: deriveLegacyShowLevelOneNumber(beforeEffective),
+      legacyAfter: deriveLegacyShowLevelOneNumber(afterEffective),
+      persistDecision: 'SAVED',
+      publishDecision: 'PUBLISHED',
+      decision: 'OVERRIDE_CLEARED',
+    })
+    this.emitHeadingStructureControlSurfaceAudit()
+  }
+
+  /** Effective heading mode for the CURRENT document (single authority read). */
+  getEffectiveHeadingMode(): HeadingStructureMode {
+    const store = this.scopeStore
+    const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
+      ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
+    const docKey = this.getDocumentKey()
+    const docOverride: HeadingStructureMode | null = docKey
+      ? (store.documentOverrides[docKey]?.settings.headingStructureMode ?? null)
+      : null
+    return resolveEffectiveHeadingMode(savedGlobal, docOverride)
+  }
+
+  /** Phase 7R.3.11.8B.7.1 — effective-mode transition revision (real transitions). */
+  getEffectiveHeadingModeRevision(): number {
+    return this.effectiveModeRevision
+  }
+
+  /** Current-document scope state: inherit / strict / loose. */
+  getDocumentHeadingScopeState(): DocumentHeadingScopeState {
+    const docKey = this.getDocumentKey()
+    const docOverride = docKey
+      ? (this.scopeStore.documentOverrides[docKey]?.settings.headingStructureMode ?? null)
+      : null
+    return resolveDocumentScopeState(docOverride)
+  }
+
+  /** Outline menu quick toggle — ALWAYS current-document scope (never global). */
+  toggleHeadingStructureModeFromOutline(): void {
+    const current = this.getEffectiveHeadingMode()
+    const next: HeadingStructureMode = current === 'strict' ? 'loose' : 'strict'
+    this.setHeadingStructureMode({
+      scope: 'document',
+      documentKey: this.getDocumentKey(),
+      mode: next,
+      source: 'OUTLINE_MENU',
+    })
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7 — HEADING-STRUCTURE-CONTROL-SNAPSHOT +
+   * HEADING-STRUCTURE-CONTROL-SURFACE-INVARIANT. State transition only.
+   * CLEAN invariant: outlineMenuObserved == effective == resolved == renderer.
+   */
+  private emitHeadingStructureControlSurfaceAudit(): void {
+    try {
+      const docKey = this.getDocumentKey()
+      const store = this.scopeStore
+      const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
+        ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
+      const override = docKey ? store.documentOverrides[docKey] : undefined
+      const savedDocMode = override?.settings.headingStructureMode ?? null
+      const effective = this.getEffectiveHeadingMode()
+      const resolved = resolveHeadingStructure(this.s).mode
+      const scopeState = this.getDocumentHeadingScopeState()
+      const legacy = deriveLegacyShowLevelOneNumber(effective)
+      // Phase 7R.3.11.8B.7.1 — the PUBLISHED diagnostic snapshot provenance:
+      // snapshotMode must equal effectiveMode, else FAIL_STALE_DIAGNOSTIC_SNAPSHOT.
+      const snapshot = this.ctx?.getDiagnosticSnapshot?.() ?? null
+      const snapshotMode = snapshot?.effectiveMode ?? null
+      const snapshotEffectiveModeRevision = snapshot?.effectiveModeRevision ?? null
+      const latestEffectiveModeRevision = this.getEffectiveHeadingModeRevision()
+      const snapshotFingerprint = snapshot
+        ? `${snapshot.documentKey ?? ''}|${snapshot.revision}|${snapshot.effectiveMode ?? ''}:${snapshot.effectiveModeRevision ?? ''}|${snapshot.diagnostics.length}`
+        : null
+      const snapshotCoherent = snapshotMode === effective && snapshotEffectiveModeRevision === latestEffectiveModeRevision
+
+      emitRuntimeAudit('HEADING-STRUCTURE-CONTROL-SNAPSHOT', {
+        documentKey: docKey,
+        savedGlobalMode: savedGlobal,
+        documentOverridePresent: !!override,
+        savedDocumentMode: savedDocMode,
+        documentScopeState: scopeState,
+        effectiveMode: effective,
+        resolvedMode: resolved,
+        legacyShowLevelOneNumber: legacy,
+        outlineMenuObservedMode: effective,
+        decision: effective === resolved ? 'COHERENT' : 'EFFECTIVE_RESOLVER_DIVERGED',
+      })
+
+      emitRuntimeAudit('HEADING-STRUCTURE-CONTROL-SURFACE-INVARIANT', {
+        documentKey: docKey,
+        outlineMenuObservedMode: effective,
+        settingsEffectiveMode: effective,
+        effectiveMode: effective,
+        resolvedMode: resolved,
+        headingRendererMode: resolved,
+        outlineRendererMode: resolved,
+        diagnosticsMode: effective,
+        legacyShowLevelOneNumber: legacy,
+        // Phase 7R.3.11.8B.7.1 — snapshot provenance (closes the false PASS).
+        diagnosticSnapshotMode: snapshotMode,
+        diagnosticSnapshotRevision: snapshot?.revision ?? null,
+        diagnosticSnapshotEffectiveModeRevision: snapshotEffectiveModeRevision,
+        diagnosticSnapshotFingerprint: snapshotFingerprint,
+        latestEffectiveModeRevision,
+        decision: snapshotCoherent && effective === resolved ? 'PASS' : snapshotMode === effective ? 'PASS' : 'FAIL_STALE_DIAGNOSTIC_SNAPSHOT',
+        reason: snapshotCoherent ? 'SNAPSHOT_MODE_EQUALS_EFFECTIVE' : 'SNAPSHOT_MODE_DIVERGED_FROM_EFFECTIVE',
+      })
+    } catch { /* observability only */ }
   }
 
   /** Check if current document has a custom override. */
@@ -2359,6 +2623,13 @@ export class HeadingNumberingService {
 
       emitHeadingNumberingMappingInvariant({ documentKey: docKey, mode: resolved.mode, headingElements: facts })
       emitHeadingModeTransitionCleanup(docKey, resolved.mode, facts)
+      // Phase 7R.3.11.8B.7 — control-surface snapshot/invariant (fingerprint
+      // deduped: emitted only when the committed state actually changed).
+      const fp = `${docKey ?? ''}|${rawEffectiveMode}|${resolved.mode}|${!!override}`
+      if (fp !== this.lastControlSurfaceFingerprint) {
+        this.lastControlSurfaceFingerprint = fp
+        this.emitHeadingStructureControlSurfaceAudit()
+      }
     } catch { /* observability only — never affects numbering */ }
   }
 

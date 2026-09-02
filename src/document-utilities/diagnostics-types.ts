@@ -106,6 +106,14 @@ export interface DocumentDiagnosticsSnapshot {
   errorCount: number
   warningCount: number
   infoCount: number
+  /**
+   * Phase 7R.3.11.8B.7.1 — Mode provenance. The snapshot is ONLY authoritative
+   * for the effective heading structure mode it was computed with. A mode
+   * change MUST produce a new snapshot even when the content is unchanged.
+   */
+  effectiveMode?: 'strict' | 'loose'
+  /** Effective-mode transition revision (increments on REAL transitions only). */
+  effectiveModeRevision?: number
 }
 
 export interface DocumentDiagnosticsState {
