@@ -156,7 +156,7 @@ describe('DIAG-6 local broken link', () => {
     const r = computeDocumentDiagnostics(
       input({
         markdown: '[丢失](missing-file.md)',
-        links: [{ target: 'missing-file.md', element: null }],
+        links: [{ target: 'missing-file.md', element: null, index: 0 }],
       }),
     )
     expect(r.diagnostics.some(d => d.code === 'LINK_LOCAL_TARGET_MISSING')).toBe(true)

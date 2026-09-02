@@ -29,6 +29,7 @@ import {
   collectCanonicalHeadingTextKeys,
   type LatentAtxMarkerFact,
 } from './latent-atx-heading-marker'
+import { linkOccurrenceIndex, resolveResourceSemanticPath } from './document-diagnostics'
 import {
   computeDiagnosticLocationContract,
   getRuleMeta,
@@ -49,8 +50,10 @@ export interface DocumentDiagnosticsProviders {
   isLinkTargetMissing: (target: string) => boolean
   /** Canonical heading stable identity by element (from the canonical frame). */
   getHeadingIdentity: (el: HTMLElement) => string | null
-  /** Parse markdown into local link targets (authority-driven, no network). */
-  parseLocalLinkTargets: (markdown: string) => string[]
+  /** Parse markdown into local link targets (authority-driven, no network).
+   *  Phase 7R.3.11.8B.7.3 — facts may carry `resourceKind: 'image' | 'link'`
+   *  (image Markdown → img DOM target). */
+  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link' }>
   /** Phase 7R.3.11.8B.1 — canonical H1 authority bridge result (WAIT/INVALID/READY).
    *  Optional so tests that never exercise STRICT-SINGLE-H1 need no stub. */
   getCanonicalH1Facts?: () => DiagnosticCanonicalHeadingAuthorityResult
@@ -333,6 +336,9 @@ export class DocumentDiagnosticsAuthority {
       markerLevel: f.markerLevel,
       markerText: f.markerText,
       text: f.text,
+      // Phase 7R.3.11.8B.7.2 — scan-time raw line text (content anchor for
+      // the locate resolver: DOM verification + text-context re-anchor).
+      rawText: sourceMarkdown != null ? (sourceMarkdown.split('\n')[f.line] ?? undefined) : undefined,
     }))
     // Authority separation audit (canonical vs structural vs source-syntax).
     this.emitAuthoritySeparationAudit(authority, latentAtxScan, latentAtxMarkers)
@@ -390,12 +396,39 @@ export class DocumentDiagnosticsAuthority {
     }
 
     // Links — safe local targets only (no network), missing targets only.
+    // Phase 7R.3.11.8B.7.3 — each local reference is a SEPARATE fact carrying
+    // its occurrence ordinal + resource kind (image vs link) so diagnostics
+    // dedup per occurrence and locate the correct DOM target.
+    // Phase 7R.3.11.8B.7.4 — Source Token / Semantic Resource separation: the
+    // RAW Markdown token stays the source-layer identity (validity), while
+    // `semanticDestination` is the vault-relative canonical path resolved from
+    // the DOCUMENT base directory (DOM-layer comparison).
     const markdown = this.ctx.authority.getMarkdown()
+    const activeFilePath = this.ctx.authority.getActiveFilePath()
+    const vaultRoot = this.ctx.authority.vaultRoot
     if (markdown != null) {
-      for (const target of this.providers.parseLocalLinkTargets(markdown)) {
-        if (this.providers.isLinkTargetMissing(target)) {
-          links.push({ target, element: null })
-        }
+      const rawFacts = this.providers.parseLocalLinkTargets(markdown)
+      const normFacts: Array<{ target: string; resourceKind?: 'image' | 'link' }> = rawFacts.map(f =>
+        typeof f === 'string' ? { target: f } : f,
+      )
+      for (let i = 0; i < normFacts.length; i++) {
+        const fact = normFacts[i]
+        const target = fact.target
+        if (!this.providers.isLinkTargetMissing(target)) continue
+        const occurrenceIndex = linkOccurrenceIndex(normFacts, target, i)
+        // Semantic identity: raw token physically resolved against the active
+        // document directory → vault-relative canonical when inside the vault,
+        // absolute canonical when the resource escapes the vault. Shared with
+        // the DOM comparison space (single identity).
+        const semanticDestination = resolveResourceSemanticPath(target, activeFilePath, vaultRoot)
+        links.push({
+          target,
+          element: null,
+          index: i,
+          resourceKind: fact.resourceKind,
+          semanticDestination,
+          targetIdentity: `local:${target}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`,
+        })
       }
     }
 
