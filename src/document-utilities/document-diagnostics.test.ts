@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   computeDocumentDiagnostics,
-  computeDocumentTrailingBlankLine,
+  computeEofNewlinePolicy,
   deduplicateDiagnostics,
   deriveDiagnosticsState,
 } from './document-diagnostics'
@@ -290,41 +290,53 @@ describe('SINGLE-H1 strict single-H1 rule', () => {
   })
 })
 
-// ── Phase 7R.3.11.8-B — DOCUMENT-TRAILING-BLANK-LINE ─────────────────────
-describe('EOF-BLANK trailing blank line rule', () => {
-  it('EOF-BLANK-1: "content\\n\\n" → PASS', () => {
-    expect(computeDocumentTrailingBlankLine('content\n\n')).toBe('PASS')
+// ── Phase 7R.3.11.8B.8 — Standard EOF newline policy ─────────────────────
+describe('EOF-NEWLINE standard file-level newline policy', () => {
+  it('EOF-NEWLINE-1: "content\\n" → PASS (terminal newline, 0 extra blank)', () => {
+    expect(computeEofNewlinePolicy('content\n').verdict).toBe('PASS')
+    expect(computeEofNewlinePolicy('content\n').hasTerminalNewline).toBe(true)
+    expect(computeEofNewlinePolicy('content\n').extraTrailingBlankLineCount).toBe(0)
   })
-  it('EOF-BLANK-2: "content\\r\\n\\r\\n" → PASS', () => {
-    expect(computeDocumentTrailingBlankLine('content\r\n\r\n')).toBe('PASS')
+  it('EOF-NEWLINE-2: "content\\r\\n" → PASS (CRLF terminal newline, 0 extra blank)', () => {
+    expect(computeEofNewlinePolicy('content\r\n').verdict).toBe('PASS')
+    expect(computeEofNewlinePolicy('content\r\n').hasTerminalNewline).toBe(true)
   })
-  it('EOF-BLANK-3: "content\\n" → WARNING', () => {
-    expect(computeDocumentTrailingBlankLine('content\n')).toBe('WARNING')
+  it('EOF-NEWLINE-3: "content" → MISSING_TERMINAL_NEWLINE (no line break at EOF)', () => {
+    expect(computeEofNewlinePolicy('content').verdict).toBe('MISSING_TERMINAL_NEWLINE')
+    expect(computeEofNewlinePolicy('content').hasTerminalNewline).toBe(false)
   })
-  it('EOF-BLANK-4: "content" → WARNING', () => {
-    expect(computeDocumentTrailingBlankLine('content')).toBe('WARNING')
+  it('EOF-NEWLINE-4: "content\\n   \\n" → PASS (1 whitespace-only blank line is legal)', () => {
+    expect(computeEofNewlinePolicy('content\n   \n').verdict).toBe('PASS')
+    expect(computeEofNewlinePolicy('content\n   \n').extraTrailingBlankLineCount).toBe(1)
   })
-  it('EOF-BLANK-5: "content\\n   \\n" → PASS (blank line may contain spaces)', () => {
-    expect(computeDocumentTrailingBlankLine('content\n   \n')).toBe('PASS')
+  it('EOF-NEWLINE-9: empty / whitespace-only → SKIP', () => {
+    expect(computeEofNewlinePolicy('').verdict).toBe('SKIP')
+    expect(computeEofNewlinePolicy('   \n  ').verdict).toBe('SKIP')
+    expect(computeEofNewlinePolicy(null).verdict).toBe('SKIP')
   })
-  it('EOF-BLANK-9: empty / whitespace-only → SKIP', () => {
-    expect(computeDocumentTrailingBlankLine('')).toBe('SKIP')
-    expect(computeDocumentTrailingBlankLine('   \n  ')).toBe('SKIP')
-    expect(computeDocumentTrailingBlankLine(null)).toBe('SKIP')
-  })
-  it('diagnostics item: missing blank line → WARNING DOCUMENT_TRAILING_BLANK_LINE (locate → GO_BOTTOM)', () => {
-    const r = computeDocumentDiagnostics(input({ markdown: 'content\n' }))
-    const item = r.diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')
+  it('diagnostics item: missing terminal newline → WARNING DOCUMENT_TERMINAL_NEWLINE_MISSING (locate → GO_BOTTOM)', () => {
+    const r = computeDocumentDiagnostics(input({ markdown: 'content' }))
+    const item = r.diagnostics.find(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')
     expect(item).toBeTruthy()
     expect(item!.severity).toBe('warning')
+    expect(item!.message).toContain('文档末尾缺少换行符')
+    expect(item!.detail).toContain('应以一个换行符结束')
     expect(item!.locator?.action).toBe('GO_BOTTOM')
   })
-  it('present blank line → no WARNING', () => {
-    const r = computeDocumentDiagnostics(input({ markdown: 'content\n\n' }))
-    expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')).toBe(false)
+  it('standard EOF "content\\n" / "content\\n\\n" → NO warning at all', () => {
+    for (const md of ['content\n', 'content\n\n']) {
+      const r = computeDocumentDiagnostics(input({ markdown: md }))
+      expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')).toBe(false)
+      expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')).toBe(false)
+    }
   })
-  it('EOF-BLANK-10: loose mode also applies (all Markdown docs)', () => {
-    const r = computeDocumentDiagnostics(input({ strictMode: false, markdown: 'content\n' }))
-    expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')).toBe(true)
+  it('two extra blank lines → WARNING DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE (never MISSING)', () => {
+    const r = computeDocumentDiagnostics(input({ markdown: 'content\n\n\n' }))
+    expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')).toBe(true)
+    expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')).toBe(false)
+  })
+  it('EOF-NEWLINE-10: loose mode also applies (all Markdown docs)', () => {
+    const r = computeDocumentDiagnostics(input({ strictMode: false, markdown: 'content' }))
+    expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')).toBe(true)
   })
 })

@@ -46,7 +46,8 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   DOCUMENT_INACTIVE: { ruleId: 'DOCUMENT_INACTIVE', category: 'document', locationStrategy: 'document-start' },
   DOCUMENT_EMPTY: { ruleId: 'DOCUMENT_EMPTY', category: 'document', locationStrategy: 'document-start' },
   DOCUMENT_SOURCE_UNAVAILABLE: { ruleId: 'DOCUMENT_SOURCE_UNAVAILABLE', category: 'document', locationStrategy: 'document-start' },
-  DOCUMENT_TRAILING_BLANK_LINE: { ruleId: 'DOCUMENT_TRAILING_BLANK_LINE', category: 'document', locationStrategy: 'document-end' },
+  DOCUMENT_TERMINAL_NEWLINE_MISSING: { ruleId: 'DOCUMENT_TERMINAL_NEWLINE_MISSING', category: 'document', locationStrategy: 'document-end' },
+  DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: { ruleId: 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', category: 'document', locationStrategy: 'document-end' },
   // Strict H1 (canonical frame authority)
   STRICT_SINGLE_H1_NO_H1: { ruleId: 'STRICT_SINGLE_H1_NO_H1', category: 'document', locationStrategy: 'document-start' },
   STRICT_SINGLE_H1_MULTIPLE_H1: { ruleId: 'STRICT_SINGLE_H1_MULTIPLE_H1', category: 'document', locationStrategy: 'multi-target' },

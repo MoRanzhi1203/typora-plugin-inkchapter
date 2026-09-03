@@ -278,11 +278,11 @@ describe('SEV severity policy', () => {
     expect(looseR.diagnostics.find(d => d.code === 'CODE_MISSING_NAME')?.severity).toBe('warning')
   })
 
-  it('SEV-7: trailing blank line → WARNING in strict AND loose', () => {
-    const strictR = computeDocumentDiagnostics(pureInput({ markdown: 'content\n' }))
-    const looseR = computeDocumentDiagnostics(pureInput({ strictMode: false, markdown: 'content\n' }))
-    expect(strictR.diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')?.severity).toBe('warning')
-    expect(looseR.diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')?.severity).toBe('warning')
+  it('SEV-7: missing terminal newline → WARNING in strict AND loose', () => {
+    const strictR = computeDocumentDiagnostics(pureInput({ markdown: 'content' }))
+    const looseR = computeDocumentDiagnostics(pureInput({ strictMode: false, markdown: 'content' }))
+    expect(strictR.diagnostics.find(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')?.severity).toBe('warning')
+    expect(looseR.diagnostics.find(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')?.severity).toBe('warning')
   })
 
   it('SEV-8: code language missing → WARNING in strict AND loose', () => {

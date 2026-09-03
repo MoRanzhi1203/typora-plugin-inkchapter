@@ -240,6 +240,14 @@ export interface HeadingNumberingSettings {
    * Always ignored in strict mode.
    */
   s6Configured?: boolean
+  /**
+   * Phase 7R.3.11.8B.9 — whether the global heading STRUCTURE policy was
+   * EXPLICITLY configured by the user (settings select / structure write
+   * authority / legacy migration). A fresh/default install stays unconfigured,
+   * so Document Diagnostics never enforces strict-H1 constraints without user
+   * intent. `headingStructureMode` is the legacy default seed, NOT a user choice.
+   */
+  headingStructureConfigured?: boolean
 }
 
 // ── Runtime types ────────────────────────────────────────

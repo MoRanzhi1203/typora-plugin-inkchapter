@@ -1971,7 +1971,23 @@ export class HeadingNumberingService {
     const plan = planHeadingStructureModeWrite(savedGlobal, docOverrideMode, req.scope, req.mode, req.source, req.documentKey)
 
     if (!plan) {
-      // Idempotent NO_OP — nothing changes, no transition, no refresh.
+      // Phase 7R.3.11.8B.9 — even an IDEMPOTENT global structure write is an
+      // EXPLICIT user choice. When the legacy default already equals the
+      // requested mode (e.g. picking 'strict' while unconfigured defaults to
+      // strict), we must still persist the user-configured bit so Document
+      // Diagnostics can activate the strict policy.
+      if (req.scope === 'global' && store.globalDefault.headingStructureConfigured !== true) {
+        this.persistScopeStore({
+          ...store,
+          globalDefault: { ...store.globalDefault, headingStructureConfigured: true },
+        })
+        this.settingsRevision++
+        this.docContext = resolveEffectiveSettings(this.scopeStore, this.getDocumentKey(), this.getFormatLibrary())
+        this.docContext.settingsRevision = this.settingsRevision
+        this.outlineToolbar.updateAllButtonStates()
+        this.notifySettingsListeners()
+      }
+      // Idempotent NO_OP — no mode transition, no structural refresh.
       emitRuntimeAudit('HEADING-STRUCTURE-MODE-WRITE', {
         source: req.source,
         scope: req.scope,
@@ -1997,7 +2013,13 @@ export class HeadingNumberingService {
       showLevelOneNumber: deriveLegacyShowLevelOneNumber(req.mode),
     }
     if (req.scope === 'global') {
-      this.persistScopeStore({ ...store, globalDefault: { ...store.globalDefault, ...modeSettings } })
+      // Phase 7R.3.11.8B.9 — an explicit GLOBAL structure write marks the
+      // heading policy as user-configured (fresh defaults never do). Without
+      // this bit Document Diagnostics must NOT enforce strict-H1 rules.
+      this.persistScopeStore({
+        ...store,
+        globalDefault: { ...store.globalDefault, ...modeSettings, headingStructureConfigured: true },
+      })
     } else if (req.scope === 'document' && req.documentKey) {
       const existing = store.documentOverrides[req.documentKey]
       this.persistScopeStore(saveHeadingSettings(store, {
@@ -3282,6 +3304,8 @@ export class HeadingNumberingService {
     const s = this.s
     s.headingStructureMode = enabled ? 'loose' : 'strict'
     s.showLevelOneNumber = enabled
+    // Phase 7R.3.11.8B.9 — legacy checkbox is an explicit user policy choice.
+    s.headingStructureConfigured = true
     this.saveHeadingNumberingScoped(this.docContext.source, this.getDocumentKey(), s)
     this.lastSnapshot = null
     this.renderedStates = null

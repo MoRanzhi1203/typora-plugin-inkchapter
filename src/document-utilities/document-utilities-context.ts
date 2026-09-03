@@ -8,12 +8,44 @@
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 
+export interface HeadingPolicyActivationState {
+  /** Global heading-numbering feature master switch (enabled ≠ configured). */
+  enabled: boolean
+  /** User EXPLICITLY configured a heading structure policy (never default). */
+  configured: boolean
+  /** Effective structure mode resolved by the numbering authority. */
+  effectiveMode: 'strict' | 'loose' | 'custom' | null
+  /** enabled && configured && effectiveMode === 'strict'. */
+  strictPolicyActive: boolean
+  // ── Phase 7R.3.11.8B.10 authority fields (full audit; stubs may omit) ──
+  /** Stored structure mode (default/legacy seed is JUST a stored value). */
+  storedMode?: 'strict' | 'loose' | 'custom' | null
+  /** storedMode === 'strict' — still NOT activation. */
+  storedStrictRequire?: boolean
+  /** Global scope explicitly activated (write-authority bit). */
+  globalScopeEnabled?: boolean
+  /** Current document carries an explicit override. */
+  documentScopeEnabled?: boolean
+  documentOverride?: 'strict' | 'loose' | null
+  activationSource?: 'none' | 'global-explicit' | 'document-explicit' | 'inherited'
+  effectivePolicyActive?: boolean
+  effectiveStrictRequire?: boolean
+}
+
 export interface DocumentUtilitiesAuthorityContext {
   getActiveFilePath: () => string | null
   getDocumentKey: () => string | null
   getMarkdown: () => string | null
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
+  /**
+   * Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation. Only when this
+   * reports strictPolicyActive === true may Document Diagnostics emit
+   * strict-policy rules (must exist H1 / single H1 / start-with-H1 / no pre-H1
+   * body). Optional so pure tests that never exercise the settings pipeline
+   * keep the legacy strictMode boolean semantics.
+   */
+  getHeadingPolicyState?: () => HeadingPolicyActivationState
   /**
    * Phase 7R.3.11.8B.7.1 — effective-mode transition revision (increments on
    * REAL strict<->loose transitions only; idempotent/shielded writes do not).
@@ -84,10 +116,17 @@ export function collectDiagnosticsInput(
     links: DocumentDiagnosticsInput['links']
   },
 ): DocumentDiagnosticsInput {
+  // Phase 7R.3.11.8B.9 — conditional strict-policy activation. When the
+  // provider exists, its three-state policy decides strict-policy rule gating;
+  // without it (pure/legacy consumers) strictMode keeps its old semantics.
+  const policy = ctx.authority.getHeadingPolicyState?.()
   return {
     documentKey: ctx.authority.getDocumentKey(),
     markdown: ctx.authority.getMarkdown(),
     strictMode: ctx.authority.isStrictMode(),
+    headingPolicyEnabled: policy?.enabled,
+    headingPolicyConfigured: policy?.configured,
+    strictPolicyActive: policy?.strictPolicyActive,
     vaultRoot: ctx.authority.vaultRoot,
     headings: structural.headings,
     h1Facts: structural.h1Facts,

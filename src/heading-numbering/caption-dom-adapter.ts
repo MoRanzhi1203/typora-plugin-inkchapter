@@ -196,6 +196,20 @@ export class CaptionDomAdapter {
 
   constructor(private getEditorRoot: () => HTMLElement | null) {}
 
+  /**
+   * Phase 7R.3.11.8B.7.6 — owner root → its rendered caption HOST element.
+   * The caption projection carries the target-key attribute; the key is the
+   * reverse index (captionOwnerRoots is a WeakMap and cannot be iterated).
+   * Returns null when the object is not captioned / the caption is not rendered.
+   */
+  findCaptionHostForRoot(root: HTMLElement): HTMLElement | null {
+    const key = this.targetKeysByRoot.get(root)
+    if (!key) return null
+    const editorRoot = this.getEditorRoot()
+    if (!editorRoot) return null
+    return editorRoot.querySelector<HTMLElement>(`[${CAPTION_TARGET_KEY_ATTR}="${key}"]`)
+  }
+
   /** Latest code-scan diagnostics (populated by collectTargets). */
   getCodeDiagnostics(): CodeDiagnostics {
     return { ...this.codeDiagnostics }
