@@ -2344,7 +2344,9 @@
           "type": "custom",
           "formatId": "mseumucm-ft7bbc6j",
           "version": 41
-        }
+        },
+        "headingStructureConfigured": false,
+        "headingStructureMode": "strict"
       },
       "documentOverrides": {
         "01-中文学术论文模板.md": {

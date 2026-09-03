@@ -18,11 +18,26 @@ export interface DocumentUtilitiesSources {
   getDocumentKey: () => string | null
   getMarkdown: () => string | null
   isStrictMode: () => boolean
+  /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
+   *  (enabled && explicitly-configured && effective strict). Optional so
+   *  legacy/test callers keep the isStrictMode-only semantics. */
+  getHeadingPolicyState?: () => {
+    enabled: boolean
+    configured: boolean
+    effectiveMode: 'strict' | 'loose' | 'custom' | null
+    strictPolicyActive: boolean
+  }
   vaultRoot: string | null
   /** Phase 7R.3.11.8B.1 — the REAL production CanonicalHeadingFrame. Level lives
    *  at entry.semanticState.physicalLevel (never a fake flat physicalLevel). */
   getCanonicalHeadingFrame: () => CanonicalHeadingFrame | null
   getCaptionTitleForElement: (el: HTMLElement) => string | null
+  /** Phase 7R.3.11.8B.7.6 — rendered caption host for an object element
+   *  (compound missing-name locator). Optional. */
+  getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
+  /** Phase 7R.3.11.8B.7.7 — Markdown SOURCE change subscription (markdownEditor
+   *  'edit'). The live-reconcile authority for document-level diagnostics. */
+  onSourceEdit?: (cb: () => void) => () => void
   getCodeLanguage: (el: HTMLElement) => string | null
   getFormulaVisibleTagTokens: (host: HTMLElement) => string[]
   /** Subscribe to document switch (workspace file:open etc.). */
@@ -104,17 +119,29 @@ function isLocalRelative(target: string): boolean {
   return true
 }
 
-function imageLocalPath(img: HTMLElement, vaultRoot: string | null): string | null {
+/**
+ * Phase 7R.3.11.8B.7.6 — resource base authority: the ACTIVE DOCUMENT's
+ * directory (dirname(currentMarkdownFile)). Relative Markdown destinations are
+ * resolved against it — NEVER against vaultRoot / cwd / plugin root. Falls
+ * back to the vault root only when no active document path exists.
+ */
+function resourceBaseDir(activeFilePath: string | null, vaultRoot: string | null): string | null {
+  if (activeFilePath) return path.dirname(activeFilePath)
+  return vaultRoot
+}
+
+function imageLocalPath(img: HTMLElement, baseDir: string | null): string | null {
   const src = img.getAttribute('src') ?? ''
   if (!src) return null
   if (/^https?:\/\//i.test(src)) return null // remote — never a "missing local file"
   let candidate: string | null = null
   if (src.startsWith('file://')) {
-    candidate = decodeURIComponent(src.slice('file://'.length))
+    // file:///D:/... and file://D:/... → strip scheme and any leading slash.
+    candidate = decodeURIComponent(src.slice('file://'.length).replace(/^\/+/, ''))
   } else if (path.isAbsolute(src)) {
     candidate = src
-  } else if (vaultRoot) {
-    candidate = path.resolve(vaultRoot, src)
+  } else if (baseDir) {
+    candidate = path.resolve(baseDir, src)
   }
   if (!candidate) return null
   try {
@@ -124,10 +151,10 @@ function imageLocalPath(img: HTMLElement, vaultRoot: string | null): string | nu
   }
 }
 
-function linkTargetMissing(target: string, vaultRoot: string | null): boolean {
-  if (!isLocalRelative(target) || !vaultRoot) return false
+function linkTargetMissing(target: string, baseDir: string | null): boolean {
+  if (!isLocalRelative(target) || !baseDir) return false
   try {
-    const resolved = path.resolve(vaultRoot, target)
+    const resolved = path.resolve(baseDir, target)
     return !fs.existsSync(resolved)
   } catch {
     return false
@@ -141,6 +168,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       getDocumentKey: sources.getDocumentKey,
       getMarkdown: sources.getMarkdown,
       isStrictMode: sources.isStrictMode,
+      getHeadingPolicyState: sources.getHeadingPolicyState,
       getEffectiveHeadingModeRevision: () => sources.getEffectiveHeadingModeRevision?.() ?? 0,
       vaultRoot: sources.vaultRoot,
       getCanonicalDuplicateIdentities: () => {
@@ -178,14 +206,19 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
 
   const providers: DocumentDiagnosticsProviders = {
     getFormulaVisibleTagTokens: (host) => sources.getFormulaVisibleTagTokens(host) ?? extractFormulaVisibleTagTokens(host),
+    // Phase 7R.3.11.8B.7.6 — every local-resource existence check resolves
+    // against the ACTIVE DOCUMENT directory (dirname of the current markdown),
+    // never the vault root. Dynamic per call so document switches stay correct.
     getFigureName: (img) => sources.getCaptionTitleForElement(img),
     getTableName: (el) => sources.getCaptionTitleForElement(el),
     getCodeName: (el) => sources.getCaptionTitleForElement(el),
     getCodeLanguage: (el) => sources.getCodeLanguage(el),
-    resolveImageLocalPath: (img) => ({ localPath: imageLocalPath(img, sources.vaultRoot) }),
-    isLinkTargetMissing: (target) => linkTargetMissing(target, sources.vaultRoot),
+    resolveImageLocalPath: (img) => ({ localPath: imageLocalPath(img, resourceBaseDir(sources.getActiveFilePath(), sources.vaultRoot)) }),
+    isLinkTargetMissing: (target) => linkTargetMissing(target, resourceBaseDir(sources.getActiveFilePath(), sources.vaultRoot)),
     getHeadingIdentity: (el) => headingIdentityByElement.get(el) ?? null,
     parseLocalLinkTargets,
+    // Phase 7R.3.11.8B.7.6 — compound locator caption host (optional).
+    getObjectCaptionHost: sources.getObjectCaptionHost,
     // Phase 7R.3.11.8B.1 — canonical H1 authority bridge: maps the REAL
     // CanonicalHeadingFrame (entry.semanticState.physicalLevel) into a
     // WAIT / INVALID / READY result. NEVER reads a fake top-level physicalLevel.
@@ -198,6 +231,12 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
   // Phase 7R.3.11.8B.7.1 — settings/mode recompute is rAF-coalesced so one mode
   // transaction produces AT MOST ONE final recompute/publish.
   let settingsRecomputePending = false
+  // Phase 7R.3.11.8B.7.7 — source-edit recompute is rAF-coalesced. The Markdown
+  // SOURCE (markdownEditor 'edit') is the authority for document-level rules
+  // (EOF trailing blank lines etc.) — EOF whitespace changes may not produce
+  // any ordinary DOM block mutation, so we must not rely on the MutationObserver
+  // alone to retire/add those diagnostics.
+  let sourceRecomputePending = false
 
   const host = new DocumentUtilityOverlayHost({
     ctx,
@@ -221,6 +260,18 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
         requestAnimationFrame(() => {
           settingsRecomputePending = false
           recompute('HEADING_STRUCTURE_MODE_CHANGED')
+        })
+      })
+      // Phase 7R.3.11.8B.7.7 — Markdown SOURCE change is the live-reconcile
+      // authority for document-level diagnostics (EOF blank lines). Recompute
+      // is pure + fingerprint-gated, so identical state never re-publishes and
+      // a real 0→1 / 1→2 / 2→1 / 1→0 transition auto ADD/REMOVE the warning.
+      sources.onSourceEdit?.(() => {
+        if (sourceRecomputePending) return
+        sourceRecomputePending = true
+        requestAnimationFrame(() => {
+          sourceRecomputePending = false
+          recompute('DOCUMENT_SOURCE_CHANGED')
         })
       })
     },

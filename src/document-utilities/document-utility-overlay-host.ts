@@ -649,6 +649,25 @@ export class DocumentUtilityOverlayHost {
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   /** Phase 7R.3.11.8B.5 — multi-target locate cycle cursor per diagnosticId. */
   private multiTargetCursor = new Map<string, number>()
+  /**
+   * Phase 7R.3.11.8B.7.7 — Locate TRANSACTION lock. A single locate is a
+   * NON-REENTRANT transaction IDLE → RESOLVING → SCROLLING → HIGHLIGHTING →
+   * IDLE. While active, every further 定位 click is IGNORE_BUSY (never queued,
+   * never advances the targetIndex). The multi-target cursor is committed ONLY
+   * after the real scroll settles + highlight is applied.
+   */
+  private locateTxIdSeq = 0
+  private activeLocateTx: {
+    id: number
+    documentKey: string | null
+    diagnosticId: string
+    targetIndex: number
+    targetCount: number
+    startedAt: number
+    state: 'RESOLVING' | 'SCROLLING' | 'HIGHLIGHTING'
+  } | null = null
+  private locateTxSettleCancel: (() => void) | null = null
+  private locateTxWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Phase 7R.3.11.8B.6 — workspace width guard state (write-deduped). */
   private workspaceWidthState: WorkspaceWidthState | null = null
   private workspaceHostApplied = false
@@ -876,6 +895,8 @@ export class DocumentUtilityOverlayHost {
     this.scrollNav = null
     // Phase 7R.3.11.8-B: release any in-flight scroll operation.
     this.cancelScrollOperation('SUPERSEDED')
+    // Phase 7R.3.11.8B.7.7 — dispose cancels any active locate transaction.
+    this.cancelActiveLocateTransaction('HOST_DISPOSED')
     // Phase 7R.3.11.8B.6 — remove the workspace host class + state attribute.
     this.cleanupWorkspaceGuard()
     // Phase 7R.3.11.8-B: disconnect the diagnostics mutation observer.
@@ -896,6 +917,9 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8-B §11: a document switch CANCELS any in-flight scroll
     // operation (old doc must never write final state into the new document).
     this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
+    // Phase 7R.3.11.8B.7.7 — document switch cancels any active locate
+    // transaction (no stale scroll completion may commit into the new doc).
+    this.cancelActiveLocateTransaction('DOCUMENT_SWITCH')
     this.scrollNav?.bind()
     this.diagnostics.rebind()
     this.scheduleGeometrySync('bind-document')
@@ -2312,6 +2336,46 @@ export class DocumentUtilityOverlayHost {
    *     "无法定位到该问题所在行" (never claims the target changed).
    */
   private locateDiagnostic(diagnosticId: string): void {
+    // Phase 7R.3.11.8B.7.7 — NON-REENTRANT gate. A busy transaction rejects
+    // every further 定位 click BEFORE touching the cursor or any target state.
+    const busyTx = this.activeLocateTx
+    if (busyTx) {
+      this.emitLocateTransactionAudit({
+        transactionId: busyTx.id,
+        clickDecision: 'IGNORE_BUSY',
+        targetIndexUnchanged: true,
+      })
+      return
+    }
+    const tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']> = {
+      id: ++this.locateTxIdSeq,
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      diagnosticId,
+      targetIndex: 0,
+      targetCount: 1,
+      startedAt: Date.now(),
+      state: 'RESOLVING',
+    }
+    this.activeLocateTx = tx
+    this.updateLocateBusyUi(true)
+    this.emitLocateTransactionAudit({
+      transactionId: tx.id,
+      clickDecision: 'ACCEPT',
+      state: 'RESOLVING',
+    })
+    try {
+      this.runLocateTransaction(tx, diagnosticId)
+    } catch (err) {
+      this.abortLocateTransaction(tx, 'INTERNAL_ERROR', String(err))
+    }
+  }
+
+  /** Executes one locate transaction. Sync failures unlock immediately; async
+   *  scroll-settle completion unlocks inside the settle callback. */
+  private runLocateTransaction(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diagnosticId: string,
+  ): void {
     const snapshot = this.diagnostics.getSnapshot()
     let diag = snapshot?.diagnostics.find(d => d.id === diagnosticId) ?? null
     let refreshed = false
@@ -2322,6 +2386,7 @@ export class DocumentUtilityOverlayHost {
       if (!diag) {
         this.showToast('该问题已修复，请重新检查')
         this.emitLocateAudit(diagnosticId, null, 'NOT_FOUND', 'DIAGNOSTIC_GONE_AFTER_BOUNDED_REFRESH', 0, null)
+        this.finishLocateTransaction(tx, false, 'DIAGNOSTIC_GONE')
         return
       }
     }
@@ -2334,16 +2399,22 @@ export class DocumentUtilityOverlayHost {
       if (!diag || (diag.documentKey && currentKey && diag.documentKey !== currentKey)) {
         this.showToast('文档已切换，已刷新诊断')
         this.emitLocateAudit(diagnosticId, diag, 'WRONG_DOCUMENT', 'DIAGNOSTIC_BELONGS_TO_ANOTHER_DOCUMENT', 0, null)
+        this.finishLocateTransaction(tx, false, 'WRONG_DOCUMENT')
         return
       }
     }
 
-    // Multi-target cycle: advance the per-diagnostic cursor.
+    // Phase 7R.3.11.8B.7.7 — READ the committed target index; the cursor is
+    // advanced ONLY on successful completion (real scroll settle + highlight).
     let targetIndex = 0
-    if (diag.location?.kind === 'multi-target' && diag.location.targets.length > 0) {
-      targetIndex = (this.multiTargetCursor.get(diagnosticId) ?? 0) % diag.location.targets.length
-      this.multiTargetCursor.set(diagnosticId, targetIndex + 1)
+    const targetCount = diag.location?.kind === 'multi-target' && diag.location.targets.length > 0
+      ? diag.location.targets.length
+      : 1
+    if (diag.location?.kind === 'multi-target' && targetCount > 0) {
+      targetIndex = (this.multiTargetCursor.get(diagnosticId) ?? 0) % targetCount
     }
+    tx.targetIndex = targetIndex
+    tx.targetCount = targetCount
 
     const resolveCtx: DiagnosticLocationResolveContext = {
       documentKey: currentKey,
@@ -2369,7 +2440,7 @@ export class DocumentUtilityOverlayHost {
     let result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
 
     if (result.decision === 'RESOLVED') {
-      this.performLocatedScroll(result, diag, diagnosticId, targetIndex)
+      this.performLocateScrollTransaction(tx, result, diag, diagnosticId, targetIndex)
       return
     }
     if (result.decision === 'TARGET_CHANGED') {
@@ -2381,7 +2452,7 @@ export class DocumentUtilityOverlayHost {
         if (nextDiag) {
           const retry = resolveDiagnosticLocation(nextDiag, nextDiag.location, resolveCtx, targetIndex)
           if (retry.decision === 'RESOLVED') {
-            this.performLocatedScroll(retry, nextDiag, diagnosticId, targetIndex)
+            this.performLocateScrollTransaction(tx, retry, nextDiag, diagnosticId, targetIndex)
             return
           }
           result = retry
@@ -2390,6 +2461,7 @@ export class DocumentUtilityOverlayHost {
       }
       this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'TARGET_CHANGED', targetIndex, result)
       this.showToast('目标已变化，请重新检查')
+      this.finishLocateTransaction(tx, false, 'TARGET_CHANGED')
       return
     }
     if (result.decision === 'UNRESOLVED') {
@@ -2402,7 +2474,7 @@ export class DocumentUtilityOverlayHost {
         if (nextDiag) {
           const retry = resolveDiagnosticLocation(nextDiag, nextDiag.location, resolveCtx, targetIndex)
           if (retry.decision === 'RESOLVED') {
-            this.performLocatedScroll(retry, nextDiag, diagnosticId, targetIndex)
+            this.performLocateScrollTransaction(tx, retry, nextDiag, diagnosticId, targetIndex)
             return
           }
           result = retry
@@ -2411,32 +2483,274 @@ export class DocumentUtilityOverlayHost {
       }
       this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'SOURCE_ANCHOR_NOT_MAPPED_TO_DOM', targetIndex, result)
       this.showToast('无法定位到该问题所在行，请重新检查')
+      this.finishLocateTransaction(tx, false, 'UNRESOLVED')
       return
     }
     this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'UNRESOLVED', targetIndex, result)
     this.showToast('目标已变化，请重新检查')
+    this.finishLocateTransaction(tx, false, result.decision)
   }
 
-  /** Phase 7R.3.11.8B.5 — the ONE locate-success path (element or boundary scroll). */
-  private performLocatedScroll(
+  /** Phase 7R.3.11.8B.7.7 — Locate TRANSACTION scroll path (RESOLVED). Starts
+   *  the scroll (element / compound caption-primary / document boundary),
+   *  waits for the REAL scroll settle (scrollend / rAF-stable frames), then
+   *  highlights and commits the next target index + unlocks. */
+  private performLocateScrollTransaction(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
     result: DiagnosticLocationResolveResult,
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
     diagnosticId: string,
     targetIndex: number,
   ): void {
+    const container = getActiveEditorScrollContainer()
+    tx.state = 'SCROLLING'
+
+    // Build the highlight set + the element to scroll first.
+    let primary: HTMLElement | null = null
+    const highlightTargets: HTMLElement[] = []
     if (result.scrollAction) {
       // Document-boundary locate reuses the ONE Scroll Operation authority.
       this.handleScrollAction(result.scrollAction, 'DIAGNOSTIC_LOCATE')
-      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex, result)
+      // Boundary scroll still needs its own settle gate (the nav op engine has
+      // its own finalize; our gate also watches the real container quiescence).
+      if (!container) {
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex, result)
+        this.finishLocateTransaction(tx, true, 'SCROLL_ACTION_NO_CONTAINER')
+        return
+      }
+    } else if (result.element) {
+      const caption = this.resolveObjectCaptionHost(result.element, diag)
+      primary = caption ?? result.element
+      highlightTargets.push(caption ?? result.element)
+      if (caption && caption !== result.element) highlightTargets.push(result.element)
+    } else {
+      this.emitLocateAudit(diagnosticId, diag, 'UNRESOLVED', 'RESOLVED_WITHOUT_TARGET', targetIndex, result)
+      this.finishLocateTransaction(tx, false, 'NO_TARGET')
       return
     }
-    if (result.element) {
-      const lr = this.locator.locate(result.element)
-      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', lr.located ? 'SCROLLED' : 'NO_TARGET', targetIndex, result)
-      if (!lr.located) this.showToast('目标已变化，请重新检查')
+
+    // Trigger the scroll (no highlight yet — SCROLLING precedes HIGHLIGHTING).
+    if (primary) this.locator.scrollTarget(primary)
+    if (!container) {
+      // No container → no real scroll possible; highlight + finish immediately.
+      this.applyLocateHighlight(tx, highlightTargets)
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : 'SCROLLED', targetIndex, result)
+      this.finishLocateTransaction(tx, true, 'NO_CONTAINER_IMMEDIATE')
       return
     }
-    this.emitLocateAudit(diagnosticId, diag, 'UNRESOLVED', 'RESOLVED_WITHOUT_TARGET', targetIndex, result)
+
+    // Phase 7R.3.11.8B.7.7 — REAL settle gate (scrollend / rAF-stable frames /
+    // target-already-settled) + a one-shot watchdog that is NEVER the normal
+    // completion path (only an abnormal escape hatch so the lock can never hang).
+    let settled = false
+    let lastTop = container.scrollTop
+    let stableFrames = 0
+    let rafHandle = 0
+    const scrollendSupported = typeof container.addEventListener === 'function' && 'onscrollend' in container
+    const onSettled = (completionReason: string): void => {
+      if (settled || !this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+      settled = true
+      this.cancelLocateSettleWatch()
+      this.applyLocateHighlight(tx, highlightTargets)
+      const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result)
+      this.finishLocateTransaction(tx, true, completionReason)
+    }
+    const onScroll = (): void => {
+      lastTop = container.scrollTop
+      stableFrames = 0 // a new scroll frame arrived → not stable yet
+    }
+    const onScrollEnd = (): void => { onSettled('SCROLLEND') }
+    const tick = (): void => {
+      if (settled || !this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+      const top = container.scrollTop
+      if (Math.abs(top - lastTop) < 0.5) stableFrames++
+      else { lastTop = top; stableFrames = 0 }
+      // Scroll settled: 2 consecutive stable frames (a smooth scroll in motion
+      // never holds two zero-delta frames). Target-already-settled (no scroll
+      // activity) also satisfies this on the first frames.
+      if (stableFrames >= 2) { onSettled('SCROLL_STABLE_FRAMES'); return }
+      rafHandle = requestAnimationFrame(tick)
+    }
+    if (scrollendSupported) container.addEventListener('scrollend', onScrollEnd, { passive: true } as AddEventListenerOptions)
+    container.addEventListener('scroll', onScroll, { passive: true })
+    rafHandle = requestAnimationFrame(tick)
+    this.locateTxSettleCancel = () => {
+      if (rafHandle) cancelAnimationFrame(rafHandle)
+      container.removeEventListener('scrollend', onScrollEnd)
+      container.removeEventListener('scroll', onScroll)
+    }
+    // Watchdog: abnormal escape only — never the normal completion basis.
+    this.locateTxWatchdog = setTimeout(() => {
+      if (!settled && this.activeLocateTx && this.activeLocateTx.id === tx.id) {
+        settled = true
+        this.cancelLocateSettleWatch()
+        this.applyLocateHighlight(tx, highlightTargets)
+        const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result)
+        this.finishLocateTransaction(tx, true, 'WATCHDOG_FALLBACK')
+      }
+    }, 2500)
+  }
+
+  /** HIGHLIGHTING step: transient highlight on the resolved targets. */
+  private applyLocateHighlight(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    targets: HTMLElement[],
+  ): void {
+    tx.state = 'HIGHLIGHTING'
+    this.locator.highlightTargets(targets)
+  }
+
+  /** Release the settle watch (listeners / rAF / watchdog). */
+  private cancelLocateSettleWatch(): void {
+    if (this.locateTxSettleCancel) {
+      try { this.locateTxSettleCancel() } catch { /* noop */ }
+      this.locateTxSettleCancel = null
+    }
+    if (this.locateTxWatchdog) {
+      clearTimeout(this.locateTxWatchdog)
+      this.locateTxWatchdog = null
+    }
+  }
+
+  /**
+   * Finish a transaction and unlock. `commit` advances the multi-target cursor
+   * ONLY on a successfully settled + highlighted locate.
+   */
+  private finishLocateTransaction(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    commit: boolean,
+    completionReason: string,
+  ): void {
+    if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+    this.cancelLocateSettleWatch()
+    if (commit && tx.targetCount > 1) {
+      // Commit the NEXT index (targetIndex+1 mod count) for the following click.
+      this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
+    }
+    const committedNext = commit && tx.targetCount > 1 ? (tx.targetIndex + 1) % tx.targetCount : null
+    this.activeLocateTx = null
+    this.updateLocateBusyUi(false)
+    this.emitLocateTransactionAudit({
+      transactionId: tx.id,
+      clickDecision: 'ACCEPT',
+      state: 'IDLE',
+      completionReason,
+      committedNextTargetIndex: committedNext,
+      decision: commit ? 'PASS' : 'FAIL',
+    })
+  }
+
+  /** Abort (error path): unlock without commit. */
+  private abortLocateTransaction(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    completionReason: string,
+    detail: string,
+  ): void {
+    if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+    this.cancelLocateSettleWatch()
+    this.locator.clearHighlight()
+    this.activeLocateTx = null
+    this.updateLocateBusyUi(false)
+    this.emitLocateTransactionAudit({
+      transactionId: tx.id,
+      clickDecision: 'ACCEPT',
+      state: 'IDLE',
+      completionReason,
+      detail,
+      decision: 'FAIL',
+    })
+  }
+
+  /** Phase 7R.3.11.8B.7.7 — cancel on document switch / drawer close / dispose.
+   *  Clears highlight, releases the lock, NEVER commits the target index. */
+  private cancelActiveLocateTransaction(reason: string): void {
+    const tx = this.activeLocateTx
+    if (!tx) return
+    this.cancelLocateSettleWatch()
+    this.locator.clearHighlight()
+    this.activeLocateTx = null
+    this.updateLocateBusyUi(false)
+    this.emitLocateTransactionAudit({
+      transactionId: tx.id,
+      clickDecision: 'ACCEPT',
+      state: 'IDLE',
+      completionReason: reason,
+      committedNextTargetIndex: null,
+      decision: 'CANCELLED',
+    })
+  }
+
+  /** Public observability: whether a locate transaction is currently active. */
+  isLocateTransactionActive(): boolean {
+    return this.activeLocateTx !== null
+  }
+
+  /** Update every drawer 定位 button to the busy ("定位中…", disabled) state. */
+  private updateLocateBusyUi(active: boolean): void {
+    if (!this.drawerEl) return
+    for (const btn of Array.from(this.drawerEl.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-drawer__item-locate'))) {
+      btn.disabled = active
+      btn.setAttribute('aria-disabled', active ? 'true' : 'false')
+      if (active) btn.textContent = '定位中…'
+      else btn.textContent = '定位'
+    }
+  }
+
+  /** Phase 7R.3.11.8B.7.7 — [DOCUMENT-DIAGNOSTIC-LOCATE-TRANSACTION] audit. */
+  private emitLocateTransactionAudit(payload: {
+    transactionId: number
+    clickDecision: 'ACCEPT' | 'IGNORE_BUSY'
+    state?: string
+    targetIndexUnchanged?: boolean
+    completionReason?: string
+    committedNextTargetIndex?: number | null
+    detail?: string
+    decision?: string
+  }): void {
+    const tx = this.activeLocateTx
+    const container = getActiveEditorScrollContainer()
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-TRANSACTION', {
+      transactionId: payload.transactionId,
+      documentKey: tx?.documentKey ?? this.opts.ctx.authority.getDocumentKey(),
+      diagnosticId: tx?.diagnosticId ?? null,
+      targetCount: tx?.targetCount ?? 1,
+      targetIndex: tx?.targetIndex ?? null,
+      clickDecision: payload.clickDecision,
+      state: payload.state ?? (tx?.state ?? 'IDLE'),
+      scrollContainerIdentity: container
+        ? `${container.tagName}#${container.id || ''}.${String(container.className || '').slice(0, 40)}`
+        : null,
+      activeTransactionId: this.activeLocateTx?.id ?? null,
+      targetIndexUnchanged: payload.targetIndexUnchanged ?? null,
+      completionReason: payload.completionReason ?? null,
+      highlightDecision: payload.decision === 'PASS' ? 'PASS' : 'N/A',
+      committedNextTargetIndex: payload.committedNextTargetIndex ?? null,
+      detail: payload.detail ?? null,
+      decision: payload.decision ?? 'PASS',
+    })
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7.6 — caption host for a missing-NAME object diagnostic.
+   * Only FIGURE/TABLE/CODE missing-NAME rules compound (object + caption);
+   * other rules keep single-object locate. Null when no caption host exists.
+   */
+  private resolveObjectCaptionHost(
+    objectEl: HTMLElement,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): HTMLElement | null {
+    const code = diag.code
+    const isMissingNameRule = code === 'FIGURE_MISSING_NAME' || code === 'TABLE_MISSING_NAME' || code === 'CODE_MISSING_NAME'
+    if (!isMissingNameRule) return null
+    const getHost = this.opts.providers.getObjectCaptionHost
+    if (typeof getHost !== 'function') return null
+    try {
+      return getHost(objectEl)
+    } catch {
+      return null
+    }
   }
 
   /** Current Markdown source line text at a 0-based index (null when unavailable). */
@@ -2632,8 +2946,8 @@ export class DocumentUtilityOverlayHost {
     result: DiagnosticLocationResolveResult | null,
   ): void {
     const snapshot = this.diagnostics.getSnapshot()
-    const scrollDecision = resolveDecision === 'RESOLVED' ? (reason === 'SCROLLED' || reason === 'SCROLL_ACTION' ? 'PASS' : 'N/A') : 'N/A'
-    const highlightDecision = resolveDecision === 'RESOLVED' && reason === 'SCROLLED' ? 'PASS' : 'N/A'
+    const scrollDecision = resolveDecision === 'RESOLVED' ? (reason === 'SCROLLED' || reason === 'SCROLL_ACTION' || reason === 'COMPOUND_SCROLLED' ? 'PASS' : 'N/A') : 'N/A'
+    const highlightDecision = resolveDecision === 'RESOLVED' && (reason === 'SCROLLED' || reason === 'COMPOUND_SCROLLED') ? 'PASS' : 'N/A'
     // VALIDITY verdict — separated from DOM resolution (§13).
     let validityDecision: string = 'NOT_EVALUATED'
     let validityReason: string | null = null
@@ -2776,6 +3090,9 @@ export class DocumentUtilityOverlayHost {
 
   private closeDrawer(): void {
     if (!this.drawerEl) return
+    // Phase 7R.3.11.8B.7.7 — closing the diagnostics panel cancels any active
+    // locate transaction (release lock, no target-index commit, clear highlight).
+    this.cancelActiveLocateTransaction('PANEL_CLOSED')
     this.setDrawerOpen(false)
     emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER', {
       action: 'CLOSE',

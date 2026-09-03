@@ -553,57 +553,79 @@ describe('SCROLL-LOCK locked scroll permitted', () => {
   })
 })
 
-// ── Phase 7R.3.11.8B.2 — EOF live mutation closure ──────────────────────
-function hasTrailingWarning(snap: ReturnType<DocumentDiagnosticsAuthority['getSnapshot']>): boolean {
-  return snap?.diagnostics.some(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE') ?? false
+// ── Phase 7R.3.11.8B.2+8B.8 — EOF live mutation closure ────────────────
+function hasEofWarning(snap: ReturnType<DocumentDiagnosticsAuthority['getSnapshot']>): boolean {
+  return snap?.diagnostics.some(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING' || d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE') ?? false
 }
 
 describe('EOF live mutation (authority recompute)', () => {
-  it('EOF-1: valid trailing blank line → warning 0', () => {
+  it('EOF-1: valid standard EOF (terminal newline + 1 extra blank) → warning 0', () => {
     const state = makeMutableState({ markdown: '# H1\n\n' })
     const h = makeHost(state)
     h.mount()
-    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(false)
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(false)
     h.dispose()
   })
 
-  it('EOF-2: remove blank line → DOCUMENT_TRAILING_BLANK_LINE warning appears', () => {
-    const state = makeMutableState({ markdown: '# H1\n\n' })
-    const h = makeHost(state)
-    h.mount()
-    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(false)
-    state.markdown = '# H1\n' // delete the trailing blank line
-    h.diagnostics.recompute()
-    const snap = h.diagnostics.getSnapshot()
-    expect(hasTrailingWarning(snap)).toBe(true)
-    const item = snap?.diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINE')
-    expect(item?.metadata?.reason).toBe('MISSING_TRAILING_BLANK_LINE')
-    h.dispose()
-  })
-
-  it('EOF-3: restore blank line → warning cleared', () => {
+  it('EOF-1b: valid standard EOF (terminal newline, 0 extra blank) → warning 0', () => {
     const state = makeMutableState({ markdown: '# H1\n' })
     const h = makeHost(state)
     h.mount()
-    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(true)
-    state.markdown = '# H1\n\n'
-    h.diagnostics.recompute()
-    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(false)
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(false)
     h.dispose()
   })
 
-  it('EOF-4: document switch A(missing blank)→B(valid) → B shows no stale warning', () => {
-    const state = makeMutableState({ documentKey: 'doc:A', markdown: '# A\n' })
+  it('EOF-2: delete the terminal newline → DOCUMENT_TERMINAL_NEWLINE_MISSING appears', () => {
+    const state = makeMutableState({ markdown: '# H1\n\n' })
     const h = makeHost(state)
     h.mount()
-    expect(hasTrailingWarning(h.diagnostics.getSnapshot())).toBe(true)
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(false)
+    state.markdown = '# H1' // remove the trailing newline entirely
+    h.diagnostics.recompute()
+    const snap = h.diagnostics.getSnapshot()
+    expect(hasEofWarning(snap)).toBe(true)
+    const item = snap?.diagnostics.find(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')
+    expect(item?.metadata?.reason).toBe('MISSING_TERMINAL_NEWLINE')
+    h.dispose()
+  })
+
+  it('EOF-2c: 2 extra blank lines → DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE appears', () => {
+    const state = makeMutableState({ markdown: '# H1\n' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(false)
+    state.markdown = '# H1\n\n\n' // append 2 extra blank lines
+    h.diagnostics.recompute()
+    const snap = h.diagnostics.getSnapshot()
+    const item = snap?.diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')
+    expect(item).toBeTruthy()
+    expect(item?.metadata?.reason).toBe('EXCESSIVE_TRAILING_BLANK_LINES')
+    h.dispose()
+  })
+
+  it('EOF-3: restore standard EOF → warning cleared', () => {
+    const state = makeMutableState({ markdown: '# H1' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(true)
+    state.markdown = '# H1\n\n'
+    h.diagnostics.recompute()
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(false)
+    h.dispose()
+  })
+
+  it('EOF-4: document switch A(missing terminal newline)→B(standard) → B shows no stale warning', () => {
+    const state = makeMutableState({ documentKey: 'doc:A', markdown: '# A' })
+    const h = makeHost(state)
+    h.mount()
+    expect(hasEofWarning(h.diagnostics.getSnapshot())).toBe(true)
     state.documentKey = 'doc:B'
     state.markdown = '# B\n\n'
     state.h1Facts = [{ stableIdentity: 'b1', element: null, physicalLevel: 1 }]
     h.diagnostics.recompute()
     const snap = h.diagnostics.getSnapshot()
     expect(snap?.documentKey).toBe('doc:B')
-    expect(hasTrailingWarning(snap)).toBe(false) // A's warning must not leak to B
+    expect(hasEofWarning(snap)).toBe(false) // A's warning must not leak to B
     h.dispose()
   })
 })

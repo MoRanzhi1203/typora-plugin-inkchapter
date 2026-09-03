@@ -4,6 +4,7 @@ import type { InkChapterSettings } from './settings/settings-model'
 import { DEFAULT_SETTINGS } from './settings/default-settings'
 import { HeadingNumberingService } from './heading-numbering/heading-numbering-service'
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
+import { resolveHeadingPolicyActivation } from './heading-numbering/heading-policy-activation'
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { CaptionService } from './heading-numbering/caption-service'
@@ -323,18 +324,78 @@ export default class extends Plugin<InkChapterSettings> {
           // EFFECTIVE mode (document override ?? global), never global-only.
           try {
             return this.numberingService?.getEffectiveHeadingMode() === 'strict'
-          } catch { return true }
+          } catch { return false }
+        },
+        // Phase 7R.3.11.8B.10 — Heading Policy Activation Authority. Stored
+        // mode ('strict' legacy seed) NEVER implies activation. The resolver
+        // separates featureEnabled / explicit-global / explicit-document and
+        // reports effectiveMode=null while the policy is inactive.
+        getHeadingPolicyState: () => {
+          try {
+            const svc = this.numberingService
+            if (!svc) {
+              return {
+                enabled: false, configured: false, effectiveMode: null, strictPolicyActive: false,
+                storedMode: null, storedStrictRequire: false, globalScopeEnabled: false,
+                documentScopeEnabled: false, documentOverride: null, activationSource: 'none' as const,
+                effectivePolicyActive: false, effectiveStrictRequire: false,
+              }
+            }
+            const store = svc.getScopeStore()
+            const fp = this.app.workspace.activeFile
+            const vr = vaultRoot ?? ''
+            let docKey: string | null = null
+            if (fp && vr) { try { docKey = generateDocumentKey(fp, vr) } catch { docKey = null } }
+            const docOverrideMode = docKey != null
+              ? (store.documentOverrides[docKey]?.settings?.headingStructureMode ?? null)
+              : null
+            const policy = resolveHeadingPolicyActivation(store.globalDefault, docOverrideMode)
+            return {
+              enabled: policy.featureEnabled,
+              configured: policy.globalScopeEnabled || policy.documentScopeEnabled,
+              effectiveMode: policy.effectiveMode,
+              strictPolicyActive: policy.effectivePolicyActive && policy.effectiveMode === 'strict',
+              storedMode: policy.storedMode,
+              storedStrictRequire: policy.storedStrictRequire,
+              globalScopeEnabled: policy.globalScopeEnabled,
+              documentScopeEnabled: policy.documentScopeEnabled,
+              documentOverride: policy.documentOverride,
+              activationSource: policy.activationSource,
+              effectivePolicyActive: policy.effectivePolicyActive,
+              effectiveStrictRequire: policy.effectiveStrictRequire,
+            }
+          } catch {
+            return {
+              enabled: false, configured: false, effectiveMode: null, strictPolicyActive: false,
+              storedMode: null, storedStrictRequire: false, globalScopeEnabled: false,
+              documentScopeEnabled: false, documentOverride: null, activationSource: 'none' as const,
+              effectivePolicyActive: false, effectiveStrictRequire: false,
+            }
+          }
         },
         getEffectiveHeadingModeRevision: () => {
           try { return this.numberingService?.getEffectiveHeadingModeRevision() ?? 0 } catch { return 0 }
         },
         vaultRoot: vaultRoot ?? null,
         getCanonicalHeadingFrame: () => this.numberingService?.getCanonicalHeadingFrame() ?? null,
-        getCaptionTitleForElement: (el) => this.captionService?.getCaptionForElement(el)?.title ?? null,
+        // Phase 7R.3.11.8B.7.5 — unified semantic-name authority: figure →
+        // Markdown alt; table/code → caption registry title (name-only). The
+        // rendered "type + number" prefix never counts as a name.
+        getCaptionTitleForElement: (el) => this.captionService?.getSemanticNameForElement(el) ?? null,
+        // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
+        getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
         getCodeLanguage: (el) => codeLanguageOf(el),
         getFormulaVisibleTagTokens: (host) => extractFormulaVisibleTagTokens(host),
         onDocumentSwitch: (cb) => {
           const dispose = this.app.workspace.on('file:open' as never, (() => cb()) as never)
+          this.register(dispose)
+          return dispose
+        },
+        // Phase 7R.3.11.8B.7.7 — Markdown SOURCE change authority (editor 'edit'
+        // fires on every real source edit incl. EOF blank-line toggles that may
+        // produce no ordinary DOM block change).
+        onSourceEdit: (cb) => {
+          const dispose = this.app.features.markdownEditor.on('edit', (() => cb()) as never)
           this.register(dispose)
           return dispose
         },
@@ -352,6 +413,65 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] 文档工具初始化失败，诊断/锁定/滚动功能不可用', e)
     }
+
+    // ── Phase 7R.3.11.8B.9 — runtime heading-policy probes ──
+    // Debug/UI-driver hooks only. They reuse the SINGLE write authority +
+    // existing persist/notify pipelines (never bypass), so live diagnostics
+    // refresh exactly as a real settings toggle would.
+    try {
+      const w = window as {
+        __inkchapter_heading_policy_probe__?: unknown
+        __inkchapter_heading_set_global_mode__?: unknown
+        __inkchapter_heading_toggle_enabled__?: unknown
+      }
+      w.__inkchapter_heading_policy_probe__ = () => {
+        try {
+          const svc = this.numberingService
+          if (!svc) return { available: false }
+          const store = svc.getScopeStore()
+          const enabled = store.globalDefault.enabled !== false
+          const fp = this.app.workspace.activeFile
+          const vr = vaultRoot ?? ''
+          let docKey: string | null = null
+          if (fp && vr) { try { docKey = generateDocumentKey(fp, vr) } catch { docKey = null } }
+          const globalConfigured = store.globalDefault.headingStructureConfigured === true
+          const overrideConfigured = docKey != null
+            && store.documentOverrides[docKey]?.settings?.headingStructureMode != null
+          const configured = globalConfigured || overrideConfigured
+          const effectiveMode = svc.getEffectiveHeadingMode()
+          return {
+            available: true,
+            documentKey: docKey,
+            featureEnabled: enabled,
+            configured,
+            globalConfigured,
+            overrideConfigured,
+            effectiveMode,
+            strictPolicyActive: enabled && configured && effectiveMode === 'strict',
+          }
+        } catch (e) {
+          return { error: String((e as Error)?.message ?? e) }
+        }
+      }
+      w.__inkchapter_heading_set_global_mode__ = (mode: 'strict' | 'loose') => {
+        try {
+          this.numberingService?.setHeadingStructureMode({
+            scope: 'global', documentKey: null, mode, source: 'RUNTIME_TEST',
+          })
+          return 'OK'
+        } catch (e) {
+          return String((e as Error)?.message ?? e)
+        }
+      }
+      w.__inkchapter_heading_toggle_enabled__ = () => {
+        try {
+          this.numberingService?.toggle()
+          return 'OK'
+        } catch (e) {
+          return String((e as Error)?.message ?? e)
+        }
+      }
+    } catch { /* probe hooks are best-effort */ }
 
     // Register settings tab
     if (this.numberingService) {

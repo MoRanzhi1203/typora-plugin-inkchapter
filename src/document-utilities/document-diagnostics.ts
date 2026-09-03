@@ -168,6 +168,18 @@ export interface DocumentDiagnosticsInput {
   documentKey: string | null
   markdown: string | null
   strictMode: boolean
+  /**
+   * Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation.
+   * strict-policy rules (must-exist-H1 / exactly-one-H1 / start-with-H1 /
+   * no-pre-H1-body) run ONLY when this is true. Absent (pure/legacy callers)
+   * falls back to the legacy `strictMode` boolean so existing tests keep their
+   * semantics; the runtime authority always supplies the real three-state gate.
+   */
+  strictPolicyActive?: boolean
+  /** Phase 7R.3.11.8B.9 — heading-numbering feature master switch (audit). */
+  headingPolicyEnabled?: boolean
+  /** Phase 7R.3.11.8B.9 — explicit user heading-policy configuration (audit). */
+  headingPolicyConfigured?: boolean
   vaultRoot: string | null
   headings: readonly DiagnosticHeadingFact[]
   /**
@@ -207,33 +219,71 @@ export interface DocumentDiagnosticsComputed {
 const DOCUMENT_EMPTY_CODE = 'DOCUMENT_EMPTY'
 const SOURCE_UNAVAILABLE_CODE = 'DOCUMENT_SOURCE_UNAVAILABLE'
 
-// ── Phase 7R.3.11.8-B — DOCUMENT-TRAILING-BLANK-LINE ──────────────────
-export type TrailingBlankLineVerdict = 'PASS' | 'WARNING' | 'SKIP'
+// ── Standard EOF newline policy (Phase 7R.3.11.8B.8) ────────────────────
+// Supersedes the "exactly one trailing blank line" rule (7R.3.11.8B.7.x).
+// The EOF contract is a FILE-level newline rule over the serialized Markdown
+// SOURCE (markdownEditor.getMarkdown()). A "visual empty paragraph" in the
+// Live editor is an UI state, never a file-standard condition — EOF detection
+// therefore NEVER reads the Live DOM and NEVER uses Source+DOM max(...).
+//
+// Two quantities are deliberately split:
+//   hasTerminalNewline         — does the file end with a line break?
+//   extraTrailingBlankLineCount — how many whitespace-only LOGICAL lines sit
+//                                AFTER the last content line (once the file is
+//                                known to end with a terminal newline).
+//
+//   "" / whitespace-only       → SKIP (empty-document policy)
+//   "a"                        → terminal newline missing        → MISSING
+//   "a\n" / "a\r\n"            → terminal newline, 0 extra blank → PASS
+//   "a\n\n" / "a\r\n\r\n"      → terminal newline, 1 extra blank → PASS
+//   "a\n\n\n" / "a\r\n\r\n\r\n"→ terminal newline, 2 extra blank→ EXCESSIVE
+//
+// A blank line is a whitespace-only LOGICAL line ("" / "   " / "\t" / " \t ")
+// AFTER the last non-empty logical line. Trailing spaces on a CONTENT line
+// never count as a blank line. Interior blank lines never count.
+export type EofNewlineVerdict =
+  | 'MISSING_TERMINAL_NEWLINE'
+  | 'PASS'
+  | 'EXCESSIVE_TRAILING_BLANK_LINES'
+  | 'SKIP'
 
-/**
- * Pure trailing-blank-line verdict from the RAW Markdown source.
- *
- * A "trailing blank line" exists iff at least TWO line breaks appear after the
- * last non-blank logical line (i.e. the last content line is followed by a
- * complete empty/whitespace-only logical line AND its terminating newline).
- *
- *   "content\n\n"      → PASS
- *   "content\r\n\r\n"  → PASS
- *   "content\n   \n"   → PASS (blank line may contain space/tab)
- *   "content\n"        → WARNING (a single EOF newline is NOT a blank line)
- *   "content"          → WARNING
- *   "" / whitespace    → SKIP (empty-document policy)
- */
-export function computeDocumentTrailingBlankLine(markdown: string | null | undefined): TrailingBlankLineVerdict {
-  if (markdown == null) return 'SKIP'
-  const lines = markdown.split('\n')
-  let lastNonBlank = -1
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].replace(/\r$/, '').trim() !== '') lastNonBlank = i
+export interface EofNewlinePolicyResult {
+  verdict: EofNewlineVerdict
+  hasTerminalNewline: boolean
+  /** Terminal line-break count at the very end (LF-normalized, informational). */
+  terminalNewlineCount: number
+  /** Whitespace-only logical lines after the last content line (file-level). */
+  extraTrailingBlankLineCount: number
+}
+
+export function computeEofNewlinePolicy(markdown: string | null | undefined): EofNewlinePolicyResult {
+  if (markdown == null || markdown.replace(/\r/g, '').trim() === '') {
+    return { verdict: 'SKIP', hasTerminalNewline: false, terminalNewlineCount: 0, extraTrailingBlankLineCount: 0 }
   }
-  if (lastNonBlank === -1) return 'SKIP' // empty / whitespace-only document
-  const lineBreaksAfter = lines.length - 1 - lastNonBlank
-  return lineBreaksAfter >= 2 ? 'PASS' : 'WARNING'
+  // Universal line splitting (LF / CRLF / bare CR). When the source ends with a
+  // line break the split produces a final '' element — that marker is the
+  // terminal newline, NOT an extra blank line.
+  const lines = markdown.split(/\r\n|\r|\n/)
+  const hasTerminalNewline = markdown.endsWith('\n') || markdown.endsWith('\r')
+  const lastIndex = hasTerminalNewline ? lines.length - 2 : lines.length - 1
+  let lastNonBlank = -1
+  for (let i = 0; i <= lastIndex; i++) {
+    if (lines[i].trim() !== '') lastNonBlank = i
+  }
+  if (lastNonBlank === -1) {
+    return { verdict: 'SKIP', hasTerminalNewline, terminalNewlineCount: 0, extraTrailingBlankLineCount: 0 }
+  }
+  const extraTrailingBlankLineCount = lastIndex - lastNonBlank
+  const lfOnly = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const terminalMatch = lfOnly.match(/\n+$/)
+  const terminalNewlineCount = terminalMatch ? terminalMatch[0].length : 0
+  if (!hasTerminalNewline) {
+    return { verdict: 'MISSING_TERMINAL_NEWLINE', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
+  }
+  if (extraTrailingBlankLineCount >= 2) {
+    return { verdict: 'EXCESSIVE_TRAILING_BLANK_LINES', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
+  }
+  return { verdict: 'PASS', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
 }
 
 /** Normalize a message so the same root cause deduplicates deterministically. */
@@ -545,6 +595,13 @@ export function computeDocumentDiagnostics(
     else infos.push(d)
   }
 
+  // Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation. The four
+  // strict-policy rules (must-exist-H1 / exactly-one-H1 / start-with-H1 /
+  // no-pre-H1-body) are gated on this flag alone. The runtime authority feeds
+  // the real three-state gate (feature enabled && explicitly configured &&
+  // effective mode strict); absent (pure/legacy callers) keeps strictMode.
+  const strictPolicyActive = input.strictPolicyActive ?? input.strictMode
+
   // ── Document-level ──────────────────────────────────
   if (input.documentKey == null || (input.markdown == null && input.headings.length === 0)) {
     // No active business document: NOT a scary plugin error.
@@ -554,33 +611,41 @@ export function computeDocumentDiagnostics(
       }),
     )
   } else {
-    const topline = validateStrictFirstH1Topline(input.markdown, input.strictMode ? 'strict' : 'loose')
-    if (!topline.skipped && !topline.passed && topline.message) {
-      // Phase 7R.3.11.8B.5 — locate the H1 ITSELF (canonical-node when the frame
-      // provides a stable identity, source-range from data-line otherwise).
-      const firstH1 = input.headings.find(h => h.level === 1)
-      let firstH1Location: DiagnosticLocation = { kind: 'document-start' }
-      if (firstH1?.stableIdentity) {
-        firstH1Location = { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: firstH1.stableIdentity }
-      } else if (firstH1?.element) {
-        const fl = firstH1.element.getAttribute('data-line')
-        if (fl != null && fl !== '') {
-          firstH1Location = { kind: 'source-range', startLine: Number.parseInt(fl, 10), startColumn: 0 }
+    // Phase 7R.3.11.8B.10 — when the committed frame confirms ZERO H1, the
+    // missing-H1 diagnostic is the SINGLE authoritative strict error; the
+    // "must start with H1 / no pre-H1 body" lint is redundant for a headingless
+    // document and must not double-report the same activation failure.
+    const frameHasZeroH1 = input.h1Facts?.length === 0
+    if (strictPolicyActive && !frameHasZeroH1) {
+      const topline = validateStrictFirstH1Topline(input.markdown, 'strict')
+      if (!topline.skipped && !topline.passed && topline.message) {
+        // Phase 7R.3.11.8B.5 — locate the H1 ITSELF (canonical-node when the frame
+        // provides a stable identity, source-range from data-line otherwise).
+        const firstH1 = input.headings.find(h => h.level === 1)
+        let firstH1Location: DiagnosticLocation = { kind: 'document-start' }
+        if (firstH1?.stableIdentity) {
+          firstH1Location = { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: firstH1.stableIdentity }
+        } else if (firstH1?.element) {
+          const fl = firstH1.element.getAttribute('data-line')
+          if (fl != null && fl !== '') {
+            firstH1Location = { kind: 'source-range', startLine: Number.parseInt(fl, 10), startColumn: 0 }
+          }
         }
+        push(
+          makeDiagnostic(input, 'document', `STRICT_FIRST_H1_${topline.reason}`, topline.message, {
+            detail: topline.documentStartState === 'DOCUMENT_EMPTY' ? '文档为空，无法满足严格模式首行 H1。' : undefined,
+            kind: 'document',
+            location: firstH1Location,
+          }),
+        )
       }
-      push(
-        makeDiagnostic(input, 'document', `STRICT_FIRST_H1_${topline.reason}`, topline.message, {
-          detail: topline.documentStartState === 'DOCUMENT_EMPTY' ? '文档为空，无法满足严格模式首行 H1。' : undefined,
-          kind: 'document',
-          location: firstH1Location,
-        }),
-      )
     }
 
-    // ── Phase 7R.3.11.8-B — STRICT-SINGLE-H1 (strict only, canonical frame authority) ──
-    // h1Facts === null means the heading frame is not committed yet → WAIT, never
-    // judge against a stale/empty frame. h1Facts === [] is a REAL zero-H1 doc.
-    if (input.strictMode && input.h1Facts != null) {
+    // ── Phase 7R.3.11.8-B — STRICT-SINGLE-H1 (strict policy active only,
+    //    canonical frame authority). h1Facts === null means the heading frame
+    //    is not committed yet → WAIT, never judge against a stale/empty frame;
+    //    h1Facts === [] is a REAL zero-H1 doc.
+    if (strictPolicyActive && input.h1Facts != null) {
       const h1Count = input.h1Facts.length
       if (h1Count === 0) {
         push(
@@ -628,17 +693,45 @@ export function computeDocumentDiagnostics(
       }
     }
 
-    // ── Phase 7R.3.11.8-B — DOCUMENT-TRAILING-BLANK-LINE (all modes, raw source authority) ──
+    // ── Phase 7R.3.11.8B.8 — Standard EOF newline policy (all modes, raw
+    //    source authority). The file MUST end with a terminal newline; 0~1
+    //    extra trailing blank lines are legal; >=2 extra blank lines warn.
+    //    MISSING_TERMINAL_NEWLINE and EXCESSIVE are MUTUALLY EXCLUSIVE by
+    //    construction (one policy verdict). Both anchor at document-end
+    //    (GO_BOTTOM) — an EOF diagnostic never pretends to own a regular DOM
+    //    block, so it can never hit SOURCE_LINE_NOT_FOUND/STALE.
     if (input.markdown != null) {
-      const verdict = computeDocumentTrailingBlankLine(input.markdown)
-      if (verdict === 'WARNING') {
+      const policy = computeEofNewlinePolicy(input.markdown)
+      if (policy.verdict === 'MISSING_TERMINAL_NEWLINE') {
         push(
-          makeDiagnostic(input, 'document', 'DOCUMENT_TRAILING_BLANK_LINE',
-            '警告：文档末尾缺少空行', {
-            detail: 'Markdown 文档最后一个非空内容之后应保留至少一个空行。',
+          makeDiagnostic(input, 'document', 'DOCUMENT_TERMINAL_NEWLINE_MISSING',
+            '警告：文档末尾缺少换行符', {
+            detail: 'Markdown 文档应以一个换行符结束。',
             kind: 'document',
-            targetIdentity: 'document:trailing-blank-line',
-            metadata: { ruleId: 'DOCUMENT-TRAILING-BLANK-LINE', reason: 'MISSING_TRAILING_BLANK_LINE' },
+            targetIdentity: 'document:terminal-newline-missing',
+            metadata: {
+              ruleId: 'DOCUMENT-TERMINAL-NEWLINE-MISSING',
+              reason: 'MISSING_TERMINAL_NEWLINE',
+              hasTerminalNewline: policy.hasTerminalNewline,
+              extraTrailingBlankLineCount: policy.extraTrailingBlankLineCount,
+            },
+            locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
+            location: { kind: 'document-end' },
+          }),
+        )
+      } else if (policy.verdict === 'EXCESSIVE_TRAILING_BLANK_LINES') {
+        push(
+          makeDiagnostic(input, 'document', 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
+            '警告：文档末尾存在过多空行', {
+            detail: 'Markdown 文档末尾存在多个连续空行，建议删除多余空行。',
+            kind: 'document',
+            targetIdentity: 'document:trailing-blank-lines-excessive',
+            metadata: {
+              ruleId: 'DOCUMENT-TRAILING-BLANK-LINES-EXCESSIVE',
+              reason: 'EXCESSIVE_TRAILING_BLANK_LINES',
+              hasTerminalNewline: policy.hasTerminalNewline,
+              extraTrailingBlankLineCount: policy.extraTrailingBlankLineCount,
+            },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
             location: { kind: 'document-end' },
           }),

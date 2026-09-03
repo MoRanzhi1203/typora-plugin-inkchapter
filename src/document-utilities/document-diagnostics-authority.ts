@@ -7,7 +7,7 @@
  * polling. It consumes existing authorities and never derives numbering
  * semantics itself.
  */
-import { computeDocumentDiagnostics } from './document-diagnostics'
+import { computeDocumentDiagnostics, computeEofNewlinePolicy } from './document-diagnostics'
 import type {
   DiagnosticFormulaFact,
   DiagnosticH1Fact,
@@ -29,7 +29,7 @@ import {
   collectCanonicalHeadingTextKeys,
   type LatentAtxMarkerFact,
 } from './latent-atx-heading-marker'
-import { linkOccurrenceIndex, resolveResourceSemanticPath } from './document-diagnostics'
+import { linkOccurrenceIndex, resolveResourceSemanticPath, normalizeResourceToken } from './document-diagnostics'
 import {
   computeDiagnosticLocationContract,
   getRuleMeta,
@@ -57,6 +57,9 @@ export interface DocumentDiagnosticsProviders {
   /** Phase 7R.3.11.8B.1 — canonical H1 authority bridge result (WAIT/INVALID/READY).
    *  Optional so tests that never exercise STRICT-SINGLE-H1 need no stub. */
   getCanonicalH1Facts?: () => DiagnosticCanonicalHeadingAuthorityResult
+  /** Phase 7R.3.11.8B.7.6 — rendered caption host for a business object
+   *  element (img/table/pre) — compound missing-name locator. Optional. */
+  getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
 }
 
 export class DocumentDiagnosticsAuthority {
@@ -140,6 +143,15 @@ export class DocumentDiagnosticsAuthority {
       .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}`)
       .sort()
       .join(';')}`
+    // Phase 7R.3.11.8B.9 — HEADING-POLICY-DIAGNOSTIC-AUDIT: records the real
+    // three-state activation gate behind every strict-policy decision so a
+    // DISABLED/UNCONFIGURED doc can never silently emit strict-H1 rules.
+    this.emitHeadingPolicyDiagnosticAudit(nextSnapshot, input, structural.h1Facts)
+    // Phase 7R.3.11.8B.7.7+ — DOCUMENT-TRAILING-BLANK-AUDIT: records the REAL
+    // source tail observed at recompute time so a DIRECT 0→1 failure can be
+    // classified (source authority vs counter vs reconcile/publish vs timing).
+    const publishDecision = fingerprint === this.lastContentFingerprint ? 'NOOP' : 'PUBLISHED'
+    this.emitTrailingBlankAudit(input.markdown, this.sourceRevision, this.snapshot, nextSnapshot, publishDecision)
     if (fingerprint === this.lastContentFingerprint) {
       return
     }
@@ -152,12 +164,132 @@ export class DocumentDiagnosticsAuthority {
     // (emitted only when the committed content fingerprint actually changed).
     this.emitDocumentDiagnosticRuleSnapshot(nextSnapshot)
     this.emitDocumentDiagnosticLocationContract(nextSnapshot)
+    // Phase 7R.3.11.8B.7.5 — OBJECT-CAPTION-DIAGNOSTIC-AUDIT (publish-time
+    // only; never per-mutation). Each figure/table/code records its semantic
+    // name verdict so a name-bearing object never silently looks missing.
+    this.emitObjectCaptionDiagnosticAudit(structural, input.documentKey)
     // Phase 7R.3.11.8B.7.1 — snapshot diff audit on mode transitions only.
     this.emitSnapshotDiffIfModeChanged(previous, nextSnapshot)
   }
 
-  /** Phase 7R.3.11.8B.7.1 — reason of the LAST published snapshot. */
+  /** Phase 7R.3.11.8B.7.7 — reason of the LAST published snapshot. */
   lastPublishReason = 'AUTO'
+
+  /** EOF-related diagnostic codes of a snapshot (for diff). */
+  private eofCodes(snapshot: DocumentDiagnosticsSnapshot | null): string[] {
+    if (!snapshot) return []
+    return snapshot.diagnostics
+      .filter(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING' || d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')
+      .map(d => d.code)
+      .sort()
+  }
+
+  /**
+   * Phase 7R.3.11.8B.8 — DOCUMENT-TRAILING-BLANK-AUDIT (one per recompute;
+   * recompute is event-driven, never a poll). Records the REAL observed source
+   * tail + the two split quantities (hasTerminalNewline /
+   * extraTrailingBlankLineCount) so a Runtime failure is classifiable:
+   *   1. EOF_SOURCE_AUTHORITY_MISMATCH  (visual tail ≠ getMarkdown tail)
+   *   2. EOF_COUNTER_BUG                (counter disagrees with the tail)
+   *   3. DIAGNOSTIC_RECONCILE_PUBLISH_BUG (policy flipped but no publish)
+   *   4. EDIT_EVENT_PRE_COMMIT_TIMING_BUG (edit read old source)
+   */
+  private emitTrailingBlankAudit(
+    markdown: string | null | undefined,
+    sourceRevision: number,
+    previous: DocumentDiagnosticsSnapshot | null,
+    next: DocumentDiagnosticsSnapshot,
+    publishDecision: 'PUBLISHED' | 'NOOP',
+  ): void {
+    const raw = markdown ?? ''
+    const policy = computeEofNewlinePolicy(raw)
+    const lineEnding = this.detectLineEnding(raw)
+    const prevCodes = this.eofCodes(previous)
+    const nextCodes = this.eofCodes(next)
+    const diagnosticDiff = prevCodes.length === 0 && nextCodes.length === 0 ? 'NONE'
+      : prevCodes.length === 0 ? `ADD:${nextCodes.join(',')}`
+        : nextCodes.length === 0 ? `REMOVE:${prevCodes.join(',')}`
+          : `REPLACE:${prevCodes.join('>')}->${nextCodes.join(',')}`
+    emitRuntimeAudit('DOCUMENT-TRAILING-BLANK-AUDIT', {
+      documentKey: next.documentKey,
+      trigger: this.lastPublishReason,
+      sourceRevision,
+      sourceTailEscaped: JSON.stringify(raw.slice(-16)),
+      sourceLength: raw.length,
+      lineEnding,
+      hasTerminalNewline: policy.hasTerminalNewline,
+      terminalNewlineCount: policy.terminalNewlineCount,
+      extraTrailingBlankLineCount: policy.extraTrailingBlankLineCount,
+      policyDecision: policy.verdict,
+      previousDiagnostic: prevCodes.length ? prevCodes : null,
+      nextDiagnostic: nextCodes.length ? nextCodes : null,
+      diagnosticDiff,
+      publishDecision,
+      decision: nextCodes.length === 0 ? 'PASS' : nextCodes.join(','),
+    })
+  }
+
+  private detectLineEnding(raw: string): 'LF' | 'CRLF' | 'CR' | 'MIXED' | 'NONE' {
+    if (raw === '') return 'NONE'
+    const hasCrlf = raw.includes('\r\n')
+    const withoutCrlf = raw.replace(/\r\n/g, '')
+    const hasLoneLf = withoutCrlf.includes('\n')
+    const hasLoneCr = withoutCrlf.includes('\r')
+    if (hasCrlf) return hasLoneLf || hasLoneCr ? 'MIXED' : 'CRLF'
+    if (hasLoneLf) return 'LF'
+    if (hasLoneCr) return 'CR'
+    return 'NONE'
+  }
+
+  /**
+   * Phase 7R.3.11.8B.10 — HEADING-POLICY-AUTHORITY-AUDIT (event-driven, one per
+   * recompute). Records the FULL activation authority for the active document:
+   * stored mode vs effective activation are deliberately separate. The critical
+   * state (storedMode=strict, no user activation) logs:
+   *   featureEnabled/globalScopeEnabled/documentScopeEnabled=false,
+   *   activationSource=none, effectivePolicyActive=false, effectiveMode=null,
+   *   strictDiagnosticsActive=false, decision=SKIP reason=STRICT_POLICY_INACTIVE.
+   */
+  private emitHeadingPolicyDiagnosticAudit(
+    snapshot: DocumentDiagnosticsSnapshot,
+    input: ReturnType<typeof collectDiagnosticsInput>,
+    h1Facts: readonly DiagnosticH1Fact[] | null | undefined,
+  ): void {
+    if (!input.documentKey) return
+    const h1Count = h1Facts === undefined || h1Facts === null ? -1 : h1Facts.length
+    const strictCodes = snapshot.diagnostics
+      .filter(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_') || d.code === 'STRICT_H1_MISSING')
+      .map(d => d.code)
+    const state = this.ctx.authority.getHeadingPolicyState?.()
+    if (!state) {
+      // Legacy consumers without the activation provider: emit nothing rather
+      // than guess activation from stored settings.
+      return
+    }
+    const active = state.strictPolicyActive === true
+    const emitted = strictCodes.length > 0
+    const reason = !active
+      ? (state.enabled ? (state.configured ? 'MODE_NOT_STRICT' : 'STRICT_POLICY_INACTIVE') : 'FEATURE_DISABLED')
+      : (emitted ? 'EMIT_STRICT_POLICY' : 'ACTIVE_NO_VIOLATION')
+    emitRuntimeAudit('HEADING-POLICY-AUTHORITY-AUDIT', {
+      documentKey: input.documentKey,
+      storedMode: state.storedMode ?? null,
+      storedStrictRequire: state.storedStrictRequire ?? (state.storedMode === 'strict'),
+      featureEnabled: state.enabled,
+      globalScopeEnabled: state.globalScopeEnabled ?? false,
+      documentScopeEnabled: state.documentScopeEnabled ?? false,
+      documentOverride: state.documentOverride ?? null,
+      activationSource: state.activationSource ?? (active ? 'global-explicit' : 'none'),
+      effectivePolicyActive: state.effectivePolicyActive ?? active,
+      effectiveMode: state.effectiveMode,
+      effectiveStrictRequire: state.effectiveStrictRequire ?? active,
+      h1Count,
+      strictDiagnosticsActive: active,
+      diagnosticCode: strictCodes.length ? strictCodes : null,
+      decision: emitted ? 'EMIT' : 'SKIP',
+      reason,
+    })
+  }
 
   /**
    * Phase 7R.3.11.8B.7.1 — DOCUMENT-DIAGNOSTIC-SNAPSHOT-DIFF (mode transition
@@ -222,6 +354,76 @@ export class DocumentDiagnosticsAuthority {
       })),
     })
   }
+
+  /**
+   * Phase 7R.3.11.8B.7.5 — OBJECT-CAPTION-DIAGNOSTIC-AUDIT (publish-time only).
+   * One record per figure/table/code carrying its semantic-name verdict so a
+   * name-bearing object can never silently look "missing". semanticName is the
+   * unified authority result (figure=alt, table/code=registry title); the
+   * rendered "type + number" prefix is NEVER treated as a name.
+   */
+  private emitObjectCaptionDiagnosticAudit(
+    structural: ReturnType<DocumentDiagnosticsAuthority['collectStructuralFacts']>,
+    documentKey: string | null,
+  ): void {
+    const row = (objectType: 'figure' | 'table' | 'code', f: { name: string | null; targetIdentity?: string }): void => {
+      const semanticName = (f.name ?? '').trim()
+      const hasSemanticName = semanticName !== ''
+      emitRuntimeAudit('OBJECT-CAPTION-DIAGNOSTIC-AUDIT', {
+        documentKey,
+        objectType,
+        objectIdentity: f.targetIdentity ?? null,
+        number: null, // numbering lives in the caption system; never re-derived here
+        semanticName,
+        hasSemanticName,
+        nameSource: objectType === 'figure' ? 'MARKDOWN_ALT' : 'CAPTION_REGISTRY',
+        diagnosticDecision: hasSemanticName ? 'NO_MISSING_NAME' : 'MISSING_NAME',
+        reason: hasSemanticName ? 'semantic-name-present' : 'type-number-only-or-empty',
+      })
+    }
+    for (const f of structural.figures) row('figure', f)
+    for (const t of structural.tables) row('table', t)
+    for (const c of structural.codes) row('code', c)
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7.6 — RESOURCE-RESOLUTION-AUDIT (state-deduped).
+   * Records the base authority (ACTIVE DOCUMENT directory) and the resolved
+   * absolute path + existence for every local Markdown resource reference.
+   * A normal document-relative asset (Phase7) shows exists=true with
+   * baseAuthority=document-dir; a deliberately-missing fixture stays exists=false.
+   */
+  private emitResourceResolutionAudit(
+    resourceKind: string | undefined,
+    rawDestination: string,
+    exists: boolean,
+    documentDir: string | null,
+    vaultRoot: string | null,
+  ): void {
+    const resolvedAbsolutePath = documentDir && !/^[a-z][a-z0-9+.-]*:/i.test(rawDestination)
+      ? normalizeResourceToken(`${documentDir}/${rawDestination.replace(/^\.\//, '')}`)
+      : (vaultRoot ? normalizeResourceToken(`${vaultRoot.replace(/\\/g, '/').replace(/\/+$/, '')}/${rawDestination.replace(/^\.\//, '')}`) : rawDestination)
+    const signature = `${this.ctx.authority.getDocumentKey() ?? ''}|${resourceKind ?? ''}|${rawDestination}|${exists}`
+    if (signature === this.lastResourceResolutionSignature) return
+    this.lastResourceResolutionSignature = signature
+    emitRuntimeAudit('RESOURCE-RESOLUTION-AUDIT', {
+      documentKey: this.ctx.authority.getDocumentKey(),
+      documentPath: this.ctx.authority.getActiveFilePath(),
+      documentDir,
+      rawDestination,
+      decodedDestination: normalizeResourceToken(rawDestination),
+      normalizedDestination: normalizeResourceToken(rawDestination),
+      resolvedAbsolutePath,
+      baseAuthority: documentDir ? 'document-dir' : 'vault-root-fallback',
+      exists,
+      resourceKind: resourceKind ?? null,
+      renderDecision: 'DOM-RENDER', // image render authority is the DOM <img> (file URI)
+      diagnosticDecision: exists ? 'NO_MISSING_RESOURCE' : 'LOCAL_LINK_TARGET_NOT_FOUND',
+    })
+  }
+
+  /** Phase 7R.3.11.8B.7.6 — resource-resolution audit dedup token. */
+  private lastResourceResolutionSignature = ''
 
   /**
    * Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-LOCATION-CONTRACT.
@@ -411,10 +613,19 @@ export class DocumentDiagnosticsAuthority {
       const normFacts: Array<{ target: string; resourceKind?: 'image' | 'link' }> = rawFacts.map(f =>
         typeof f === 'string' ? { target: f } : f,
       )
+      const documentDir = activeFilePath
+        ? activeFilePath.replace(/\\/g, '/').replace(/[\\/][^\\/]*$/, '')
+        : null
       for (let i = 0; i < normFacts.length; i++) {
         const fact = normFacts[i]
         const target = fact.target
-        if (!this.providers.isLinkTargetMissing(target)) continue
+        const targetExists = !this.providers.isLinkTargetMissing(target)
+        // Phase 7R.3.11.8B.7.6 — RESOURCE-RESOLUTION-AUDIT (state-deduped,
+        // low-noise): the base authority must be the ACTIVE DOCUMENT directory.
+        this.emitResourceResolutionAudit(fact.resourceKind, target, targetExists, documentDir, vaultRoot)
+        // Only MISSING local targets become diagnostics (present assets are
+        // healthy — Phase7 images resolved against the document dir exist).
+        if (targetExists) continue
         const occurrenceIndex = linkOccurrenceIndex(normFacts, target, i)
         // Semantic identity: raw token physically resolved against the active
         // document directory → vault-relative canonical when inside the vault,

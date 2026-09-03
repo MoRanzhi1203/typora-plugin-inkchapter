@@ -1,21 +1,6 @@
 {
   "schemaVersion": 1,
   "documentPath": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md",
-  "updatedAt": 1788375415244,
-  "captions": [
-    {
-      "captionId": "caption-mtkgjpv5-1",
-      "documentKey": "runtime/smoke/Phase7-Strict-H1-Boundary-Runtime-Test.md",
-      "type": "table",
-      "title": "test",
-      "targetAnchor": {
-        "type": "table",
-        "ordinal": 2,
-        "contentSignature": "hsefjro",
-        "occurrence": 1
-      },
-      "createdAt": 1788375415217,
-      "updatedAt": 1788375415224
-    }
-  ]
+  "updatedAt": 1788385320116,
+  "captions": []
 }

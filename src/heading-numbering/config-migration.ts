@@ -705,6 +705,15 @@ function doMigrate(
     enabled,
     showLevelOneNumber,
     headingStructureMode,
+    // Phase 7R.3.11.8B.9 — a LEGACY file that already carried an explicit
+    // structure choice (headingStructureMode or showLevelOneNumber) is
+    // "explicitly configured"; a raw file without those fields is a fresh/
+    // unconfigured install and must NOT inherit strict-policy enforcement.
+    headingStructureConfigured:
+      (s as any)?.headingStructureMode === 'strict' || (s as any)?.headingStructureMode === 'loose'
+        || Object.prototype.hasOwnProperty.call(s, 'showLevelOneNumber')
+        ? true
+        : undefined,
     preset,
     maxDepth,
     levels,

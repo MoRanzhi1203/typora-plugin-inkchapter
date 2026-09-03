@@ -159,9 +159,9 @@ describe('LOC — producer location attachment (six kinds)', () => {
     expect(out.diagnostics.filter(x => x.code.startsWith('LATENT_ATX_HEADING_MARKER'))).toHaveLength(0)
   })
 
-  it('EOF: trailing blank line missing → document-end', () => {
+  it('EOF: terminal newline missing → document-end', () => {
     const out = computeDocumentDiagnostics(baseInput({ markdown: '# 标题\n\n正文' }))
-    const d = findCode(out.diagnostics, 'DOCUMENT_TRAILING_BLANK_LINE')
+    const d = findCode(out.diagnostics, 'DOCUMENT_TERMINAL_NEWLINE_MISSING')
     expect(d.location?.kind).toBe('document-end')
   })
 
@@ -261,7 +261,7 @@ describe('LOC — universal resolver', () => {
   it('WRONG_DOCUMENT when the diagnostic belongs to another document', () => {
     const diag: DocumentDiagnostic = {
       id: 'd1', documentKey: 'doc:A', severity: 'warning', category: 'document',
-      code: 'DOCUMENT_TRAILING_BLANK_LINE', message: 'x', location: { kind: 'document-end' },
+      code: 'DOCUMENT_TERMINAL_NEWLINE_MISSING', message: 'x', location: { kind: 'document-end' },
     }
     const r = resolveDiagnosticLocation(diag, diag.location, {
       documentKey: 'doc:B', getRoot: () => document.body,
@@ -310,7 +310,7 @@ describe('LOC — universal resolver', () => {
     expect(rTop.scrollAction).toBe('GO_TOP')
     const dEnd: DocumentDiagnostic = {
       id: 'd2', documentKey: 'doc:key', severity: 'warning', category: 'document',
-      code: 'DOCUMENT_TRAILING_BLANK_LINE', message: 'x', location: { kind: 'document-end' },
+      code: 'DOCUMENT_TERMINAL_NEWLINE_MISSING', message: 'x', location: { kind: 'document-end' },
     }
     const rBottom = resolveDiagnosticLocation(dEnd, dEnd.location, {
       documentKey: 'doc:key', getRoot: () => document.body,

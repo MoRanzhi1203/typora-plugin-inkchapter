@@ -1849,6 +1849,42 @@ export class CaptionService {
     return this.getCaptionForTarget(target)
   }
 
+  /**
+   * Phase 7R.3.11.8B.7.5 — unified SEMANTIC-NAME authority (silent, single
+   * source for Rendered Caption AND Document Diagnostics).
+   *
+   *   figure → Markdown alt (trimmed; alt is the canonical figure name)
+   *   table/code → CaptionRegistry record title (name-only, never "表 3 x")
+   *
+   * Returns null when the element is not a caption target or has NO semantic
+   * name. The rendered "type + number" prefix (e.g. `图 1.1-1`) is NEVER a
+   * name — only the text after the number (alt / record title) counts, so a
+   * number-only caption resolves to null (→ MISSING-name diagnostic stands).
+   */
+  getSemanticNameForElement(el: Element): string | null {
+    const target = this.adapter.resolveTargetForElement(el)
+    if (!target) return null
+    if (target.type === 'figure') {
+      const alt = (target.alt ?? '').trim()
+      return alt !== '' ? alt : null
+    }
+    const id = this.captionIdForRoot(target.root)
+    const record = id ? this.registry.getById(id) : null
+    const title = record && record.title.trim() !== '' ? record.title : null
+    return title
+  }
+
+  /**
+   * Phase 7R.3.11.8B.7.6 — rendered caption HOST for a business object element
+   * (img / table / pre.md-fences). Used by the compound missing-name locator
+   * to highlight object + caption together. Null when not captioned/rendered.
+   */
+  getObjectCaptionHost(el: Element): HTMLElement | null {
+    const target = this.adapter.resolveTargetForElement(el)
+    if (!target) return null
+    return this.adapter.findCaptionHostForRoot(target.root)
+  }
+
   getCaptionCount(): number {
     return this.registry.listByDocument(this.currentDocumentKey ?? '').length
   }

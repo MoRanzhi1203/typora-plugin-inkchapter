@@ -73,6 +73,7 @@ export function deepCloneSettings(s: HeadingNumberingSettings): HeadingNumbering
     suffix: s.suffix,
     showTrailingSeparator: s.showTrailingSeparator,
     s6Configured: s.s6Configured,
+    headingStructureConfigured: s.headingStructureConfigured,
   }
   if (s.headingLayouts) {
     cloned.headingLayouts = deepCloneLayouts(s.headingLayouts)

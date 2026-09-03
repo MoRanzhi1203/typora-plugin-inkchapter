@@ -209,7 +209,7 @@ describe('LAYOUT drawer/navigator isolation (host level)', () => {
       generatedAt: 0,
       diagnostics: [
         { id: 'd1', documentKey: 'doc:key', category: 'code', code: 'CODE_MISSING_NAME', severity: 'warning', message: '代码块缺少名称'.repeat(30), detail: 'x'.repeat(200) },
-        { id: 'd2', documentKey: 'doc:key', category: 'document', code: 'DOCUMENT_TRAILING_BLANK_LINE', severity: 'warning', message: '文档末尾缺少空行'.repeat(30), detail: 'y'.repeat(200) },
+        { id: 'd2', documentKey: 'doc:key', category: 'document', code: 'DOCUMENT_TERMINAL_NEWLINE_MISSING', severity: 'warning', message: '文档末尾缺少换行符'.repeat(30), detail: 'y'.repeat(200) },
       ],
       errorCount: 0,
       warningCount: 2,

@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.7.4 — Resource Semantic Identity Closure. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-resource-semantic-identity-closure-v7R3.11.8B7.4'
+/** Phase 7R.3.11.8B.10 — Heading Policy Activation Authority closure. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-heading-policy-activation-closure-v7R3.11.8B10'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b74-resource-semantic-identity-closure'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b10-heading-policy-activation-closure'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
