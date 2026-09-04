@@ -108,8 +108,13 @@ function codes(snapshot: DocumentDiagnosticsSnapshot): string {
 
 describe('PURE severity semantics (frozen policy; mode only switches severity)', () => {
   it('M15 strict-only STRICT_SINGLE_H1_MULTIPLE_H1 exists strict, absent loose', () => {
-    const strict = computeDocumentDiagnostics(baseInput({ h1Facts: [{ stableIdentity: 'h1-a', element: null }, { stableIdentity: 'h1-b', element: null }] }))
-    const loose = computeDocumentDiagnostics(baseInput({ strictMode: false, h1Facts: [{ stableIdentity: 'h1-a', element: null }, { stableIdentity: 'h1-b', element: null }] }))
+    const headings = [
+      { level: 1 as const, text: 'A', element: null },
+      { level: 1 as const, text: 'B', element: null },
+    ]
+    const h1Facts = [{ stableIdentity: 'h1-a', element: null }, { stableIdentity: 'h1-b', element: null }]
+    const strict = computeDocumentDiagnostics(baseInput({ headings, h1Facts }))
+    const loose = computeDocumentDiagnostics(baseInput({ strictMode: false, headings, h1Facts }))
     expect(strict.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(true)
     expect(loose.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(false)
   })

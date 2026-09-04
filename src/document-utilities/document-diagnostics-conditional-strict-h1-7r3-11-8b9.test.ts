@@ -1,57 +1,41 @@
 // @vitest-environment jsdom
 /**
- * Phase 7R.3.11.8B.9 — Conditional Strict H1 Policy activation.
+ * Phase 7R.3.11.8B.11 — Plain-Body-Only Strict Heading Exemption.
  *
- * Runtime-proven problem: DISABLED/UNCONFIGURED installs were still forced to
- * satisfy "must have exactly one H1 / must start with H1 / no pre-H1 body",
- * because diagnostics gated strict rules on the legacy effective mode alone
- * (whose default resolved to 'strict'). Locked here:
- *   strict-policy rules run ONLY when strictPolicyActive === true
- *   (feature enabled && explicitly configured && effective mode strict).
- * Generic heading STRUCTURE diagnostics (gap / empty / duplicate) stay active
- * regardless of the strict-policy gate.
+ * The ONLY strict-H1 exemption is DOCUMENT SHAPE: the whole document is plain
+ * body text (headingCount across H1..H6 === 0, meaningful body present).
+ *
+ *   plain body only            → no missing-H1 / first-H1 errors  (exempt)
+ *   body + any heading (H1..H6)→ exemption ends, strict rules resume
+ *   body + H1 + H1             → multiple-H1 returns too
+ *   headings removed → back to plain body → strict errors auto-gone
+ *
+ * The exemption is independent of heading-policy enabled/configured/
+ * activationSource: stored strict mode must NOT keep plain docs complaining,
+ * and a heading document must NOT be silenced by "policy inactive".
  */
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { computeDocumentDiagnostics, type DocumentDiagnosticsInput } from './document-diagnostics'
-import { DocumentDiagnosticsAuthority, type DocumentDiagnosticsProviders } from './document-diagnostics-authority'
-import type { DocumentUtilitiesContext } from './document-utilities-context'
-import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
-import type { DiagnosticCanonicalHeadingAuthorityResult } from './document-h1-authority-bridge'
-
-// ── Pure matrix helpers ─────────────────────────────────
-
-interface Policy {
-  enabled: boolean
-  configured: boolean
-  strictPolicyActive: boolean
-}
-
-interface PureCase {
-  strictMode?: boolean
-  policy?: Policy
-  markdown?: string
-  h1Count?: number
-  headings?: DocumentDiagnosticsInput['headings']
-}
 
 function el(tag: string): HTMLElement {
   return document.createElement(tag)
 }
 
-function compute(cfg: PureCase = {}) {
-  const h1Count = cfg.h1Count ?? 0
-  const markdown = cfg.markdown ?? (h1Count === 0 ? '纯正文。\n' : h1Count === 1 ? '# A\n' : '# A\n\n# B\n')
-  const h1Facts = Array.from({ length: h1Count }, (_, i) => ({ stableIdentity: `h1-${i}`, element: null }))
+interface ShapeCase {
+  strictMode?: boolean
+  markdown: string
+  headings?: DocumentDiagnosticsInput['headings']
+  h1Facts?: DocumentDiagnosticsInput['h1Facts']
+}
+
+function compute(cfg: ShapeCase) {
   const input: DocumentDiagnosticsInput = {
     documentKey: 'doc:key',
-    markdown,
+    markdown: cfg.markdown,
     strictMode: cfg.strictMode ?? true,
-    headingPolicyEnabled: cfg.policy?.enabled,
-    headingPolicyConfigured: cfg.policy?.configured,
-    strictPolicyActive: cfg.policy?.strictPolicyActive,
     vaultRoot: '/vault',
     headings: cfg.headings ?? [],
-    h1Facts,
+    h1Facts: cfg.h1Facts ?? [],
     figures: [],
     tables: [],
     codes: [],
@@ -63,212 +47,81 @@ function compute(cfg: PureCase = {}) {
   return computeDocumentDiagnostics(input)
 }
 
+const h1 = (text: string) => ({ level: 1 as const, text, element: el('h1') })
+const h2 = (text: string) => ({ level: 2 as const, text, element: el('h2') })
+const h3 = (text: string) => ({ level: 3 as const, text, element: el('h3') })
+
 function hasStrictCode(r: { diagnostics: Array<{ code: string }> }): boolean {
-  return r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_'))
+  return r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_') || d.code === 'STRICT_H1_MISSING')
 }
 
-// ── Matrix ──────────────────────────────────────────────
-
-describe('CONDITIONAL strict H1 policy — pure matrix', () => {
-  it('UNCONFIGURED_ZERO_H1_NO_STRICT_ERROR: feature on, NOT configured, 0 H1 → no strict error', () => {
-    const r = compute({ policy: { enabled: true, configured: false, strictPolicyActive: false } })
+describe('PLAIN-BODY-ONLY exemption — pure matrix', () => {
+  it('PLAIN_BODY_EXEMPT: pure body + stored strict mode + no policy → NO strict error', () => {
+    const r = compute({ strictMode: true, markdown: '纯正文。\n第二段。\n' })
     expect(hasStrictCode(r)).toBe(false)
     expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(false)
   })
 
-  it('DISABLED_ZERO_H1_NO_STRICT_ERROR: feature OFF + legacy mode strict + 0 H1 → no strict error', () => {
-    // strictMode stays true (legacy effective strict), the real gate is closed.
-    const r = compute({
-      strictMode: true,
-      policy: { enabled: false, configured: false, strictPolicyActive: false },
-    })
-    expect(hasStrictCode(r)).toBe(false)
+  it('BODY_THEN_H1: heading appears → exemption ends → first-H1 violation returns', () => {
+    const r = compute({ markdown: '纯正文。\n\n# 题目1\n', headings: [h1('题目1')], h1Facts: [{ stableIdentity: 'h1-0', element: el('h1') }] })
+    expect(r.diagnostics.some(d => d.code.startsWith('STRICT_FIRST_H1_'))).toBe(true)
+    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(false)
   })
 
-  it('DISABLED_MULTI_H1_NO_SINGLE_H1_ERROR: feature OFF, 3 H1 → no exactly-one-H1 error', () => {
+  it('BODY_THEN_H1_THEN_H1: two H1 → multiple-H1 error returns', () => {
     const r = compute({
-      policy: { enabled: false, configured: false, strictPolicyActive: false },
-      h1Count: 3,
-      markdown: '# A\n\n# B\n\n# C\n',
+      markdown: '纯正文。\n\n# 题目1\n\n# 题目2\n',
+      headings: [h1('题目1'), h1('题目2')],
+      h1Facts: [
+        { stableIdentity: 'h1-0', element: el('h1') },
+        { stableIdentity: 'h1-1', element: el('h1') },
+      ],
     })
-    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(false)
-    expect(hasStrictCode(r)).toBe(false)
+    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(true)
   })
 
-  it('STRICT_ZERO_H1_ERROR: explicitly configured strict + 0 H1 → STRICT_SINGLE_H1_NO_H1 present', () => {
-    const r = compute({ policy: { enabled: true, configured: true, strictPolicyActive: true } })
+  it('BODY_THEN_H2: H2 only → exemption ends → missing-H1 error returns', () => {
+    const r = compute({ markdown: '纯正文。\n\n## 小节\n', headings: [h2('小节')], h1Facts: [] })
     expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
   })
 
-  it('STRICT_SINGLE_H1_PASS: explicitly configured strict + 1 H1 → no strict error', () => {
-    const r = compute({
-      policy: { enabled: true, configured: true, strictPolicyActive: true },
-      h1Count: 1,
-      markdown: '# A\n',
-    })
+  it('SINGLE_H1_TOP: heading-only doc with one H1 at top → strict PASS (no error)', () => {
+    const r = compute({ markdown: '# 题目\n', headings: [h1('题目')], h1Facts: [{ stableIdentity: 'h1-0', element: el('h1') }] })
     expect(hasStrictCode(r)).toBe(false)
   })
 
-  it('STRICT_MULTI_H1_ERROR: explicitly configured strict + 3 H1 → STRICT_SINGLE_H1_MULTIPLE_H1 present (multi-target)', () => {
-    const r = compute({
-      policy: { enabled: true, configured: true, strictPolicyActive: true },
-      h1Count: 3,
-      markdown: '# A\n\n# B\n\n# C\n',
-    })
-    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(true)
-    const item = r.diagnostics.find(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')
-    expect(item?.location?.kind).toBe('multi-target')
-  })
-
-  it('LOOSE_ZERO_H1 + LOOSE_MULTI_H1: loose NEVER emits strict errors', () => {
-    const zero = compute({
-      strictMode: false,
-      policy: { enabled: true, configured: true, strictPolicyActive: false },
-    })
+  it('LOOSE isolation: loose + multi H1 or H2-only → no strict rules', () => {
     const multi = compute({
       strictMode: false,
-      policy: { enabled: true, configured: true, strictPolicyActive: false },
-      h1Count: 3,
-      markdown: '# A\n\n# B\n\n# C\n',
+      markdown: '# A\n\n# B\n',
+      headings: [h1('A'), h1('B')],
+      h1Facts: [{ stableIdentity: 'a', element: el('h1') }, { stableIdentity: 'b', element: el('h1') }],
     })
-    expect(hasStrictCode(zero)).toBe(false)
+    const h2only = compute({ strictMode: false, markdown: '## 小节\n', headings: [h2('小节')], h1Facts: [] })
     expect(hasStrictCode(multi)).toBe(false)
+    expect(hasStrictCode(h2only)).toBe(false)
   })
 
-  it('CUSTOM_POLICY_ISOLATION: non-strict effective mode NEVER falls back to strict', () => {
-    const r = compute({
-      strictMode: false,
-      policy: { enabled: true, configured: true, strictPolicyActive: false },
-      h1Count: 0,
-    })
-    expect(hasStrictCode(r)).toBe(false)
+  it('HEADING_DOC_IGNORES_ACTIVATION: stored strict + NO policy flags + heading → strict rules still run', () => {
+    // Regression for the revoked wrong gate: heading docs must not be silenced
+    // by an "unconfigured" activation state.
+    const r = compute({ markdown: '## 小节\n', headings: [h2('小节')], h1Facts: [] })
+    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
   })
 
-  it('GENERIC_HEADING_SKIP_STILL_ACTIVE: H1→H3 gap stays while strict policy is OFF', () => {
+  it('DELETE_TO_PLAIN: after removing headings the doc is exempt again (0 strict)', () => {
+    const plain = compute({ markdown: '只剩正文。\n', headings: [], h1Facts: [] })
+    expect(hasStrictCode(plain)).toBe(false)
+  })
+
+  it('GENERIC_HEADING_SKIP_STILL_ACTIVE: H1→H3 gap stays while plain/exempt or heading docs', () => {
     const r = compute({
-      policy: { enabled: false, configured: false, strictPolicyActive: false },
       markdown: '# A\n\n### C\n',
-      headings: [
-        { level: 1, text: 'A', stableIdentity: 'h1-0', element: el('h1') },
-        { level: 3, text: 'C', stableIdentity: 'h3-0', element: el('h3') },
-      ],
-      h1Count: 1,
+      headings: [h1('A'), h3('C')],
+      h1Facts: [{ stableIdentity: 'h1-0', element: el('h1') }],
     })
-    expect(hasStrictCode(r)).toBe(false)
     const gap = r.diagnostics.find(d => d.code === 'HEADING_LEVEL_GAP')
     expect(gap).toBeTruthy()
     expect(gap?.message).toContain('H1')
-  })
-
-  it('absent policy fields keep the legacy strictMode semantics (pure/legacy callers)', () => {
-    const strict = compute({ strictMode: true, h1Count: 0 })
-    const loose = compute({ strictMode: false, h1Count: 0 })
-    expect(strict.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
-    expect(loose.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(false)
-  })
-})
-
-// ── Authority live gate toggle (OFF ⇄ strict) ───────────
-
-interface State {
-  docKey: string
-  markdown: string
-  enabled: boolean
-  configured: boolean
-  mode: 'strict' | 'loose'
-}
-
-function makeCtx(state: State): DocumentUtilitiesContext {
-  return {
-    authority: {
-      getActiveFilePath: () => `/vault/${state.docKey}.md`,
-      getDocumentKey: () => state.docKey,
-      getMarkdown: () => state.markdown,
-      isStrictMode: () => state.mode === 'strict',
-      getHeadingPolicyState: () => ({
-        enabled: state.enabled,
-        configured: state.configured,
-        effectiveMode: state.mode,
-        strictPolicyActive: state.enabled && state.configured && state.mode === 'strict',
-      }),
-      getEffectiveHeadingModeRevision: () => (state.mode === 'strict' ? 2 : 1),
-      vaultRoot: '/vault',
-      getCanonicalDuplicateIdentities: () => [],
-      getCaptionDuplicateNames: () => [],
-    },
-    hasActiveDocument: () => true,
-  }
-}
-
-function emptyH1Authority(state: State): DiagnosticCanonicalHeadingAuthorityResult {
-  return {
-    state: 'READY', reason: 'READY', documentKey: state.docKey, framePresent: true,
-    frameDocumentKey: state.docKey, semanticRevision: 1, frameGeneration: 1,
-    canonicalEntryCount: 0, mappedEntryCount: 0, invalidEntryCount: 0,
-    physicalLevels: [], headingFacts: [], h1Facts: [], h1Count: 0, h1StableIdentities: [],
-  }
-}
-
-function makeProviders(state: State): DocumentDiagnosticsProviders {
-  return {
-    getFormulaVisibleTagTokens: () => [],
-    getFigureName: () => null,
-    getTableName: () => null,
-    getCodeName: () => null,
-    getCodeLanguage: () => null,
-    resolveImageLocalPath: () => ({ localPath: null }),
-    isLinkTargetMissing: () => false,
-    getHeadingIdentity: () => null,
-    parseLocalLinkTargets: () => [],
-    getCanonicalH1Facts: () => emptyH1Authority(state),
-  }
-}
-
-function strictCodes(snap: DocumentDiagnosticsSnapshot): string[] {
-  return snap.diagnostics
-    .filter(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_'))
-    .map(d => d.code)
-}
-
-describe('AUTHORITY settings live toggle (OFF ⇄ strict)', () => {
-  beforeEach(() => {
-    document.body.innerHTML = ''
-    const write = document.createElement('div')
-    write.id = 'write'
-    document.body.appendChild(write)
-  })
-
-  it('OFF(unconfigured)→strict→OFF: strict diagnostics auto ADD then REMOVE across recomputes', () => {
-    const state: State = {
-      docKey: 'doc:plain',
-      markdown: '纯正文。\n',
-      enabled: true,
-      configured: false,
-      mode: 'strict', // legacy effective mode stays strict even when unconfigured
-    }
-    const authority = new DocumentDiagnosticsAuthority(makeCtx(state), makeProviders(state))
-    authority.recompute()
-    expect(strictCodes(authority.getSnapshot()!)).toEqual([]) // OFF → absent
-
-    state.configured = true // user explicitly configures strict
-    authority.recompute()
-    expect(strictCodes(authority.getSnapshot()!)).toContain('STRICT_SINGLE_H1_NO_H1') // auto-add
-
-    state.configured = false // policy OFF again
-    authority.recompute()
-    expect(strictCodes(authority.getSnapshot()!)).toEqual([]) // auto-remove
-  })
-
-  it('feature master OFF keeps strict rules absent even when configured + effective strict', () => {
-    const state: State = {
-      docKey: 'doc:plain',
-      markdown: '纯正文。\n',
-      enabled: false,
-      configured: true,
-      mode: 'strict',
-    }
-    const authority = new DocumentDiagnosticsAuthority(makeCtx(state), makeProviders(state))
-    authority.recompute()
-    expect(strictCodes(authority.getSnapshot()!)).toEqual([])
   })
 })

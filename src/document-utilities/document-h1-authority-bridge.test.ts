@@ -87,6 +87,16 @@ function h1FactsFromFrame(frame: CanonicalHeadingFrame | null): DocumentDiagnost
   return result.state === 'READY' ? result.h1Facts.map(f => ({ stableIdentity: f.stableIdentity, element: f.element, text: undefined })) : null
 }
 
+/** Full canonical heading facts (H1..H6) so strict shape rules see the heading. */
+function headingsFromFrame(frame: CanonicalHeadingFrame | null): DocumentDiagnosticsInput['headings'] {
+  if (!frame) return []
+  return frame.entries.map(e => ({
+    level: e.semanticState.physicalLevel,
+    text: e.stableIdentity ?? '',
+    element: e.element ?? null,
+  }))
+}
+
 describe('H1-BRIDGE production bridge', () => {
   it('H1-BRIDGE-1: real [1,2,2] → READY h1Count=1, STRICT-SINGLE-H1 PASS, no errors', () => {
     const frame = makeFrame('doc:a', [makeEntry('H1:idx:0', 1), makeEntry('H1:idx:1', 2), makeEntry('H1:idx:2', 2)])
@@ -113,7 +123,7 @@ describe('H1-BRIDGE production bridge', () => {
     const result = mapCanonicalHeadingFrameForDiagnostics(frame, 'doc:a')
     expect(result.state).toBe('READY')
     expect(result.h1Count).toBe(2)
-    const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame) }))
+    const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame), headings: headingsFromFrame(frame) }))
     const item = r.diagnostics.find(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')
     expect(item).toBeTruthy()
     expect(item!.stableIdentity).toBe('h1-b')
@@ -125,7 +135,7 @@ describe('H1-BRIDGE production bridge', () => {
     const result = mapCanonicalHeadingFrameForDiagnostics(frame, 'doc:a')
     expect(result.state).toBe('READY')
     expect(result.h1Count).toBe(0)
-    const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame) }))
+    const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame), headings: headingsFromFrame(frame) }))
     expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
   })
 
@@ -186,19 +196,19 @@ describe('H1-BRIDGE production bridge', () => {
 
   it('H1-BRIDGE-10: [2,2] → [1,2,2] → ERROR cleared (NO_H1 disappears on recovery)', () => {
     const zero = makeFrame('doc:a', [makeEntry('h2-a', 2), makeEntry('h2-b', 2)])
-    const r0 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(zero) }))
+    const r0 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(zero), headings: headingsFromFrame(zero) }))
     expect(r0.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
     const fixed = makeFrame('doc:a', [makeEntry('h1', 1), makeEntry('h2-a', 2), makeEntry('h2-b', 2)])
-    const r1 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(fixed) }))
+    const r1 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(fixed), headings: headingsFromFrame(fixed) }))
     expect(r1.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_'))).toBe(false)
   })
 
   it('H1-BRIDGE-11: recovery then re-violation [1,2,2] → [1,1,2] → MULTIPLE_H1 again', () => {
     const good = makeFrame('doc:a', [makeEntry('h1', 1), makeEntry('h2-a', 2)])
-    const r0 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(good) }))
+    const r0 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(good), headings: headingsFromFrame(good) }))
     expect(r0.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_'))).toBe(false)
     const bad = makeFrame('doc:a', [makeEntry('h1-a', 1), makeEntry('h1-b', 1), makeEntry('h2', 2)])
-    const r1 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(bad) }))
+    const r1 = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(bad), headings: headingsFromFrame(bad) }))
     expect(r1.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(true)
   })
 
@@ -210,14 +220,16 @@ describe('H1-BRIDGE production bridge', () => {
     expect(result.physicalLevels).toEqual([1])
   })
 
-  it('READY empty frame (0 entries) → h1Count=0 is a REAL zero-H1 document', () => {
+  it('READY empty frame (0 entries) → EXEMPT plain-body document (no strict NO_H1)', () => {
+    // B11: a document with ZERO headings is the plain-body-only exemption —
+    // strict H1 requirements do not apply to it.
     const frame = makeFrame('doc:a', [])
     const result = mapCanonicalHeadingFrameForDiagnostics(frame, 'doc:a')
     expect(result.state).toBe('READY')
     expect(result.canonicalEntryCount).toBe(0)
     expect(result.h1Count).toBe(0)
-    const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame) }))
-    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(true)
+    const r = computeDocumentDiagnostics(input({ h1Facts: h1FactsFromFrame(frame), headings: headingsFromFrame(frame) }))
+    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(false)
   })
 })
 

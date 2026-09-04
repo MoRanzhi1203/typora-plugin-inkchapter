@@ -206,11 +206,24 @@ describe('DIAG extra: figure local image missing + strict first H1', () => {
     expect(r.diagnostics.some(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING')).toBe(false)
   })
 
-  it('reports strict first-H1 violation for a leading paragraph', () => {
+  it('B11: pure body (no heading) is EXEMPT — no strict first-H1 error', () => {
     const r = computeDocumentDiagnostics(
       input({
         markdown: '正文开头\n',
         headings: [],
+        h1Facts: [],
+      }),
+    )
+    expect(r.diagnostics.some(d => d.code.startsWith('STRICT_FIRST_H1_'))).toBe(false)
+    expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_NO_H1')).toBe(false)
+  })
+
+  it('B11: body THEN H1 → exemption ends, strict first-H1 violation returns', () => {
+    const r = computeDocumentDiagnostics(
+      input({
+        markdown: '正文开头\n\n# 题目\n',
+        headings: [{ level: 1, text: '题目', element: el() }],
+        h1Facts: [{ stableIdentity: 'h1-x', element: el() }],
       }),
     )
     expect(r.diagnostics.some(d => d.code.startsWith('STRICT_FIRST_H1_'))).toBe(true)
@@ -227,13 +240,21 @@ describe('DIAG extra: figure local image missing + strict first H1', () => {
 const h1 = (identity: string): { stableIdentity: string; element: HTMLElement } => ({ stableIdentity: identity, element: el() })
 
 describe('SINGLE-H1 strict single-H1 rule', () => {
-  it('SINGLE-H1-1: strict + exactly one H1 → no STRICT_SINGLE_H1 error', () => {
-    const r = computeDocumentDiagnostics(input({ h1Facts: [h1('h1-1')] }))
+  it('SINGLE-H1-1: strict + exactly one H1 at top → no STRICT_SINGLE_H1 error', () => {
+    const r = computeDocumentDiagnostics(input({
+      markdown: '# H1\n\n正文\n',
+      headings: [{ level: 1, text: 'H1', element: el() }],
+      h1Facts: [h1('h1-1')],
+    }))
     expect(r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_'))).toBe(false)
   })
 
-  it('SINGLE-H1-2: strict + zero H1 → ERROR NO_H1 (locate → GO_TOP)', () => {
-    const r = computeDocumentDiagnostics(input({ h1Facts: [] }))
+  it('SINGLE-H1-2: strict + heading present but zero H1 (H2-only shape) → ERROR NO_H1 (locate → GO_TOP)', () => {
+    const r = computeDocumentDiagnostics(input({
+      markdown: '## 二级\n\n正文\n',
+      headings: [{ level: 2, text: '二级', element: el() }],
+      h1Facts: [],
+    }))
     const item = r.diagnostics.find(d => d.code === 'STRICT_SINGLE_H1_NO_H1')
     expect(item).toBeTruthy()
     expect(item!.severity).toBe('error')
@@ -245,7 +266,14 @@ describe('SINGLE-H1 strict single-H1 rule', () => {
   it('SINGLE-H1-3: strict + two H1 → ERROR MULTIPLE_H1 (locate → SECOND H1)', () => {
     const first = el()
     const second = el()
-    const r = computeDocumentDiagnostics(input({ h1Facts: [{ stableIdentity: 'h1-a', element: first }, { stableIdentity: 'h1-b', element: second }] }))
+    const r = computeDocumentDiagnostics(input({
+      markdown: '# A\n\n# B\n',
+      headings: [
+        { level: 1, text: 'A', element: first },
+        { level: 1, text: 'B', element: second },
+      ],
+      h1Facts: [{ stableIdentity: 'h1-a', element: first }, { stableIdentity: 'h1-b', element: second }],
+    }))
     const item = r.diagnostics.find(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')
     expect(item).toBeTruthy()
     expect(item!.severity).toBe('error')
@@ -268,6 +296,10 @@ describe('SINGLE-H1 strict single-H1 rule', () => {
   it('SINGLE-H1-10: first line H1 + second H1 → STRICT-FIRST-H1 PASS + STRICT-SINGLE-H1 ERROR', () => {
     const r = computeDocumentDiagnostics(input({
       markdown: '# H1\n\n# H2\n\n',
+      headings: [
+        { level: 1, text: 'H1', element: el() },
+        { level: 1, text: 'H2', element: el() },
+      ],
       h1Facts: [h1('a'), h1('b')],
     }))
     expect(r.diagnostics.some(d => d.code.startsWith('STRICT_FIRST_H1_'))).toBe(false) // first line IS H1
@@ -277,6 +309,7 @@ describe('SINGLE-H1 strict single-H1 rule', () => {
   it('SINGLE-H1-11: one H1 but leading blank line → STRICT-SINGLE-H1 PASS + STRICT-FIRST-H1 FAIL', () => {
     const r = computeDocumentDiagnostics(input({
       markdown: '\n# H1\n\n',
+      headings: [{ level: 1, text: 'H1', element: el() }],
       h1Facts: [h1('a')],
     }))
     expect(r.diagnostics.some(d => d.code === 'STRICT_SINGLE_H1_MULTIPLE_H1')).toBe(false)

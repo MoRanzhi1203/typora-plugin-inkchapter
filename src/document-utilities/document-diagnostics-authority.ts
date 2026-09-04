@@ -143,10 +143,15 @@ export class DocumentDiagnosticsAuthority {
       .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}`)
       .sort()
       .join(';')}`
+    // Phase 7R.3.11.8B.11 — HEADING-DOCUMENT-SHAPE-AUDIT: the shape decision
+    // (headingCount across H1..H6 / plainBodyOnly) that drives the ONLY
+    // strict-H1 exemption. Documented so a plain-body doc never double-reports
+    // and any heading immediately ends the exemption.
+    this.emitHeadingDocumentShapeAudit(input.markdown, structural.headings)
     // Phase 7R.3.11.8B.9 — HEADING-POLICY-DIAGNOSTIC-AUDIT: records the real
     // three-state activation gate behind every strict-policy decision so a
     // DISABLED/UNCONFIGURED doc can never silently emit strict-H1 rules.
-    this.emitHeadingPolicyDiagnosticAudit(nextSnapshot, input, structural.h1Facts)
+    this.emitHeadingPolicyDiagnosticAudit(nextSnapshot, input, structural.h1Facts, structural.headings)
     // Phase 7R.3.11.8B.7.7+ — DOCUMENT-TRAILING-BLANK-AUDIT: records the REAL
     // source tail observed at recompute time so a DIRECT 0→1 failure can be
     // classified (source authority vs counter vs reconcile/publish vs timing).
@@ -242,6 +247,56 @@ export class DocumentDiagnosticsAuthority {
   }
 
   /**
+   * Phase 7R.3.11.8B.11 — HEADING-DOCUMENT-SHAPE-AUDIT (event-driven, one per
+   * recompute). Exposes the DOCUMENT SHAPE that drives the plain-body-only
+   * strict-H1 exemption: headingCount covers H1..H6 (never just h1Count), and
+   * plainBodyOnly is true only when the whole doc is ordinary body text.
+   * Any heading (headingCount > 0) ends the exemption → strictRuleSetDecision
+   * becomes STRICT_RULES_ACTIVE (or LOOSE_NO_STRICT_RULES in loose mode).
+   */
+  private emitHeadingDocumentShapeAudit(
+    markdown: string | null | undefined,
+    headings: readonly DiagnosticHeadingFact[],
+  ): void {
+    const docKey = this.ctx.authority.getDocumentKey()
+    if (!docKey) return
+    const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
+    for (const h of headings) {
+      const lv = h.level
+      if (lv >= 1 && lv <= 6) counts[lv] = (counts[lv] ?? 0) + 1
+    }
+    const headingCount = headings.length
+    const hasMeaningfulBodyContent = markdown != null && markdown.trim() !== ''
+    const plainBodyOnly = headingCount === 0 && hasMeaningfulBodyContent
+    const firstHeadingLevel = headingCount > 0 ? (headings[0]?.level ?? null) : null
+    // Body-before-first-H1 is a SHAPE fact for the audit: any non-blank line
+    // before the first ATX heading, or a first heading that is not H1 after a
+    // leading body paragraph.
+    const lines = (markdown ?? '').split(/\r\n|\r|\n/)
+    const firstAtxLine = lines.findIndex(l => /^\s*#{1,6}\s/.test(l))
+    const bodyBeforeFirstHeading = firstAtxLine > 0 && lines.slice(0, firstAtxLine).some(l => l.trim() !== '')
+    const hasBodyBeforeFirstH1 = bodyBeforeFirstHeading || (firstHeadingLevel != null && firstHeadingLevel !== 1)
+    const strictRuleSetDecision = plainBodyOnly
+      ? 'PLAIN_BODY_ONLY_EXEMPT'
+      : (this.ctx.authority.isStrictMode() ? 'STRICT_RULES_ACTIVE' : 'LOOSE_NO_STRICT_RULES')
+    emitRuntimeAudit('HEADING-DOCUMENT-SHAPE-AUDIT', {
+      documentKey: docKey,
+      headingCount,
+      h1Count: counts[1] ?? 0,
+      h2Count: counts[2] ?? 0,
+      h3Count: counts[3] ?? 0,
+      h4Count: counts[4] ?? 0,
+      h5Count: counts[5] ?? 0,
+      h6Count: counts[6] ?? 0,
+      hasMeaningfulBodyContent,
+      plainBodyOnly,
+      firstHeadingLevel,
+      hasBodyBeforeFirstH1,
+      strictRuleSetDecision,
+    })
+  }
+
+  /**
    * Phase 7R.3.11.8B.10 — HEADING-POLICY-AUTHORITY-AUDIT (event-driven, one per
    * recompute). Records the FULL activation authority for the active document:
    * stored mode vs effective activation are deliberately separate. The critical
@@ -254,37 +309,38 @@ export class DocumentDiagnosticsAuthority {
     snapshot: DocumentDiagnosticsSnapshot,
     input: ReturnType<typeof collectDiagnosticsInput>,
     h1Facts: readonly DiagnosticH1Fact[] | null | undefined,
+    headings: readonly DiagnosticHeadingFact[],
   ): void {
     if (!input.documentKey) return
     const h1Count = h1Facts === undefined || h1Facts === null ? -1 : h1Facts.length
     const strictCodes = snapshot.diagnostics
       .filter(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_') || d.code === 'STRICT_H1_MISSING')
       .map(d => d.code)
+    // Phase 7R.3.11.8B.11 — activation is SHAPE-driven (plain-body-only
+    // exemption). The activation-authority fields below remain observable but
+    // no longer act as a permanent SKIP gate for heading documents.
+    const hasMeaningfulBody = input.markdown != null && input.markdown.trim() !== ''
+    const plainBodyOnly = headings.length === 0 && hasMeaningfulBody
+    const strictDiagnosticsActive = input.strictMode && !plainBodyOnly
     const state = this.ctx.authority.getHeadingPolicyState?.()
-    if (!state) {
-      // Legacy consumers without the activation provider: emit nothing rather
-      // than guess activation from stored settings.
-      return
-    }
-    const active = state.strictPolicyActive === true
     const emitted = strictCodes.length > 0
-    const reason = !active
-      ? (state.enabled ? (state.configured ? 'MODE_NOT_STRICT' : 'STRICT_POLICY_INACTIVE') : 'FEATURE_DISABLED')
+    const reason = !strictDiagnosticsActive
+      ? (plainBodyOnly ? 'PLAIN_BODY_ONLY_EXEMPT' : 'MODE_NOT_STRICT')
       : (emitted ? 'EMIT_STRICT_POLICY' : 'ACTIVE_NO_VIOLATION')
     emitRuntimeAudit('HEADING-POLICY-AUTHORITY-AUDIT', {
       documentKey: input.documentKey,
-      storedMode: state.storedMode ?? null,
-      storedStrictRequire: state.storedStrictRequire ?? (state.storedMode === 'strict'),
-      featureEnabled: state.enabled,
-      globalScopeEnabled: state.globalScopeEnabled ?? false,
-      documentScopeEnabled: state.documentScopeEnabled ?? false,
-      documentOverride: state.documentOverride ?? null,
-      activationSource: state.activationSource ?? (active ? 'global-explicit' : 'none'),
-      effectivePolicyActive: state.effectivePolicyActive ?? active,
-      effectiveMode: state.effectiveMode,
-      effectiveStrictRequire: state.effectiveStrictRequire ?? active,
+      storedMode: state?.storedMode ?? null,
+      storedStrictRequire: state?.storedStrictRequire ?? (state?.storedMode === 'strict'),
+      featureEnabled: state?.enabled ?? true,
+      globalScopeEnabled: state?.globalScopeEnabled ?? false,
+      documentScopeEnabled: state?.documentScopeEnabled ?? false,
+      documentOverride: state?.documentOverride ?? null,
+      activationSource: state?.activationSource ?? 'none',
+      effectivePolicyActive: state?.effectivePolicyActive ?? false,
+      effectiveMode: state?.effectiveMode ?? null,
+      effectiveStrictRequire: state?.effectiveStrictRequire ?? false,
       h1Count,
-      strictDiagnosticsActive: active,
+      strictDiagnosticsActive,
       diagnosticCode: strictCodes.length ? strictCodes : null,
       decision: emitted ? 'EMIT' : 'SKIP',
       reason,
