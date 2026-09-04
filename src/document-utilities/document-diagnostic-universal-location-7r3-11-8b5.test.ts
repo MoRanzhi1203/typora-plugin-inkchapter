@@ -74,7 +74,12 @@ describe('LOC — producer location attachment (six kinds)', () => {
   })
 
   it('ZERO-H1: STRICT_SINGLE_H1_NO_H1 → document-start', () => {
-    const out = computeDocumentDiagnostics(baseInput({ h1Facts: [] }))
+    // Shape: heading exists (H2) → NOT plain-body-only → strict missing-H1 fires.
+    const out = computeDocumentDiagnostics(baseInput({
+      markdown: '## 二级\n\n正文\n',
+      headings: [{ level: 2, text: '二级', element: document.createElement('h2') }],
+      h1Facts: [],
+    }))
     const d = findCode(out.diagnostics, 'STRICT_SINGLE_H1_NO_H1')
     expect(d.severity).toBe('error')
     expect(d.location?.kind).toBe('document-start')
@@ -82,6 +87,12 @@ describe('LOC — producer location attachment (six kinds)', () => {
 
   it('MULTI-H1: 3 H1s → one aggregate multi-target with H1 #2..#3', () => {
     const out = computeDocumentDiagnostics(baseInput({
+      markdown: '# A\n\n# B\n\n# C\n',
+      headings: [
+        { level: 1, text: 'A', element: null },
+        { level: 1, text: 'B', element: null },
+        { level: 1, text: 'C', element: null },
+      ],
       h1Facts: [
         { stableIdentity: 'h1-a', element: null },
         { stableIdentity: 'h1-b', element: null },

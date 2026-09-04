@@ -595,12 +595,18 @@ export function computeDocumentDiagnostics(
     else infos.push(d)
   }
 
-  // Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation. The four
-  // strict-policy rules (must-exist-H1 / exactly-one-H1 / start-with-H1 /
-  // no-pre-H1-body) are gated on this flag alone. The runtime authority feeds
-  // the real three-state gate (feature enabled && explicitly configured &&
-  // effective mode strict); absent (pure/legacy callers) keeps strictMode.
-  const strictPolicyActive = input.strictPolicyActive ?? input.strictMode
+  // Phase 7R.3.11.8B.11 — PLAIN-BODY-ONLY exemption (the ONLY strict-H1
+  // exemption). Strict heading norms are waived solely when the WHOLE document
+  // is ordinary body text: canonical headingCount (H1..H6) === 0 AND there is
+  // meaningful body content. This is a DOCUMENT SHAPE decision and is
+  // independent of heading-policy enabled/configured/activationSource — a
+  // legacy stored 'strict' mode must NOT keep plain-body docs complaining, and
+  // the moment ANY heading appears (headingCount > 0) the exemption ends and
+  // every strict heading rule resumes.
+  const hasMeaningfulBody = input.markdown != null && input.markdown.trim() !== ''
+  const canonicalHeadingCount = input.headings.length
+  const plainBodyOnly = canonicalHeadingCount === 0 && hasMeaningfulBody
+  const strictHeadingRulesActive = input.strictMode && !plainBodyOnly
 
   // ── Document-level ──────────────────────────────────
   if (input.documentKey == null || (input.markdown == null && input.headings.length === 0)) {
@@ -611,12 +617,10 @@ export function computeDocumentDiagnostics(
       }),
     )
   } else {
-    // Phase 7R.3.11.8B.10 — when the committed frame confirms ZERO H1, the
-    // missing-H1 diagnostic is the SINGLE authoritative strict error; the
-    // "must start with H1 / no pre-H1 body" lint is redundant for a headingless
-    // document and must not double-report the same activation failure.
-    const frameHasZeroH1 = input.h1Facts?.length === 0
-    if (strictPolicyActive && !frameHasZeroH1) {
+    // Phase 7R.3.11.8B.11 — first-H1 / pre-H1-body lint runs whenever strict
+    // heading rules are active. It is naturally skipped for plain-body-only
+    // docs (exemption above), so a headingless document never double-reports.
+    if (strictHeadingRulesActive) {
       const topline = validateStrictFirstH1Topline(input.markdown, 'strict')
       if (!topline.skipped && !topline.passed && topline.message) {
         // Phase 7R.3.11.8B.5 — locate the H1 ITSELF (canonical-node when the frame
@@ -641,11 +645,11 @@ export function computeDocumentDiagnostics(
       }
     }
 
-    // ── Phase 7R.3.11.8-B — STRICT-SINGLE-H1 (strict policy active only,
-    //    canonical frame authority). h1Facts === null means the heading frame
-    //    is not committed yet → WAIT, never judge against a stale/empty frame;
-    //    h1Facts === [] is a REAL zero-H1 doc.
-    if (strictPolicyActive && input.h1Facts != null) {
+    // ── Phase 7R.3.11.8-B/8B.11 — STRICT-SINGLE-H1 (strict heading rules
+    //    active only; canonical frame authority). h1Facts === null means the
+    //    heading frame is not committed yet → WAIT, never judge against a
+    //    stale/empty frame; h1Facts === [] is a REAL zero-H1 doc.
+    if (strictHeadingRulesActive && input.h1Facts != null) {
       const h1Count = input.h1Facts.length
       if (h1Count === 0) {
         push(

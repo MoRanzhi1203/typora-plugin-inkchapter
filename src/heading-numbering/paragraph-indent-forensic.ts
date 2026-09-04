@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.10 — Heading Policy Activation Authority closure. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-heading-policy-activation-closure-v7R3.11.8B10'
+/** Phase 7R.3.11.8B.11 — Plain-Body-Only Strict Heading Exemption closure. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-plain-body-only-exemption-closure-v7R3.11.8B11'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b10-heading-policy-activation-closure'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b11-plain-body-only-exemption-closure'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
