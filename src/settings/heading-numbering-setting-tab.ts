@@ -4627,13 +4627,20 @@ export class HeadingNumberingSettingTab extends SettingTab {
     const btnRow = el('div', 'inkchapter-dialog-buttons', dialog)
     const cancelBtn = el('button', 'inkchapter-btn', btnRow)
     cancelBtn.textContent = '取消'
-    cancelBtn.onclick = () => overlay.remove()
+    cancelBtn.onclick = () => this.closeModalOverlay(overlay)
     const confirmBtn = el('button', 'inkchapter-btn', btnRow)
     confirmBtn.textContent = confirmLabel
     confirmBtn.onclick = () => {
       onConfirm()
-      overlay.remove()
+      this.closeModalOverlay(overlay)
     }
+  }
+
+  /** Remove a modal overlay AND its document keydown (Escape) listener. */
+  private closeModalOverlay(overlay: HTMLElement): void {
+    const detach = (overlay as unknown as { __inkchapterDetachKey?: () => void }).__inkchapterDetachKey
+    if (typeof detach === 'function') detach()
+    overlay.remove()
   }
 
   private showModalOverlay(): HTMLElement {
@@ -4641,11 +4648,14 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (existing) existing.remove()
     const overlay = el('div', 'inkchapter-dialog-overlay')
     overlay.onclick = (e) => {
-      if (e.target === overlay) overlay.remove()
+      if (e.target === overlay) this.closeModalOverlay(overlay)
     }
-    // Close on Escape
+    // Close on Escape — ALWAYS detached together with the overlay.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey) }
+      if (e.key === 'Escape') this.closeModalOverlay(overlay)
+    }
+    ;(overlay as unknown as { __inkchapterDetachKey?: () => void }).__inkchapterDetachKey = () => {
+      document.removeEventListener('keydown', onKey)
     }
     document.addEventListener('keydown', onKey)
     document.body.appendChild(overlay)

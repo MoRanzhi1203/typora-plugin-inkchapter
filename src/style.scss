@@ -2452,6 +2452,39 @@
 
 /* ownership marker intentionally carries NO viewport geometry */
 
+/* ── Phase UI-2 — scoped design tokens (plugin namespace only) ────────────
+   Typora-derived semantic tokens inherited by every utility overlay child.
+   Component rules below reference tokens ONLY; the dark-theme block overrides
+   the token values so nothing hardcodes a bare hex/color for these surfaces. */
+[data-inkchapter-utility-root="true"] {
+  --ink-ui-font-xs: 12px;
+  --ink-ui-font-sm: 13px;
+  --ink-ui-font-md: 14px;
+  --ink-ui-space-1: 4px;
+  --ink-ui-space-2: 6px;
+  --ink-ui-space-3: 8px;
+  --ink-ui-space-4: 12px;
+  --ink-ui-radius-sm: 6px;
+  --ink-ui-radius-md: 8px;
+  --ink-ui-control-h-sm: 28px;
+  --ink-ui-icon-size-sm: 14px;
+  --ink-ui-icon-size-md: 16px;
+  --ink-ui-bg-surface: var(--background-primary, #fff);
+  --ink-ui-bg-hover: var(--background-modifier-hover, #ececec);
+  --ink-ui-bg-active: var(--background-modifier-active-hover, #e2e2e2);
+  --ink-ui-border: var(--border-primary, #ddd);
+  --ink-ui-border-strong: var(--border-primary, #c9c9c9);
+  --ink-ui-text: var(--text-normal, #333);
+  --ink-ui-text-muted: var(--text-muted, #666);
+  --ink-ui-primary: var(--text-accent, #07a);
+  --ink-ui-warning: var(--text-warning, #b58900);
+  --ink-ui-danger: var(--text-error, #d00);
+  --ink-ui-shadow-float: 0 2px 10px rgba(0, 0, 0, 0.12);
+  --ink-ui-shadow-pop: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+/* Vertical group: diagnostics + edit/lock belong together (same state tools). */
+
 .inkchapter-doc-toolbar,
 .inkchapter-doc-navigator,
 .inkchapter-doc-drawer {
@@ -2463,107 +2496,115 @@
   max-width: 60vw;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px;
-  background: var(--background-primary, #fff);
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  gap: var(--ink-ui-space-2, 6px);
+  padding: var(--ink-ui-space-1, 4px);
+  background: var(--ink-ui-bg-surface, #fff);
+  border: 1px solid var(--ink-ui-border, #ddd);
+  border-radius: var(--ink-ui-radius-md, 8px);
+  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, 0.12));
 }
 
 .inkchapter-doc-toolbar__btn {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--ink-ui-font-xs, 12px);
   line-height: 1.4;
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border-primary, #ccc);
+  min-height: var(--ink-ui-control-h-sm, 28px);
+  padding: var(--ink-ui-space-1, 4px) 10px;
+  border-radius: var(--ink-ui-radius-sm, 6px);
+  border: 1px solid var(--ink-ui-border-strong, #c9c9c9);
   background: transparent;
-  color: var(--text-normal, #333);
+  color: var(--ink-ui-text, #333);
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
-  &:hover { background: var(--background-modifier-hover, #eee); }
-  &:focus-visible { outline: 2px solid var(--text-accent, #07a); outline-offset: 1px; }
-  &.is-healthy { color: var(--text-accent, #07a); }
-  &.has-warnings { color: var(--text-warning, #b58900); }
-  &.has-issues { color: var(--text-error, #d00); }
-  &.is-locked { color: var(--text-error, #d00); border-color: var(--text-error, #d00); }
 }
 
+.inkchapter-doc-toolbar__btn:hover { background: var(--ink-ui-bg-hover, #ececec); }
+.inkchapter-doc-toolbar__btn:active { background: var(--ink-ui-bg-active, #e2e2e2); }
+.inkchapter-doc-toolbar__btn:focus-visible { outline: 2px solid var(--ink-ui-primary, #07a); outline-offset: 1px; }
+.inkchapter-doc-toolbar__btn.is-healthy { color: var(--ink-ui-primary, #07a); }
+.inkchapter-doc-toolbar__btn.has-warnings { color: var(--ink-ui-warning, #b58900); }
+.inkchapter-doc-toolbar__btn.has-issues { color: var(--ink-ui-danger, #d00); }
+/* Vertical floating group (right side, bottom). One container, two buttons. */
+
+.inkchapter-doc-toolbar__btn.is-locked { color: var(--ink-ui-danger, #d00); border-color: var(--ink-ui-danger, #d00); }
 .inkchapter-doc-navigator {
   width: fit-content;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 3px;
-  background: var(--background-primary, #fff);
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  gap: var(--ink-ui-space-1, 4px);
+  padding: var(--ink-ui-space-1, 4px);
+  background: var(--ink-ui-bg-surface, #fff);
+  border: 1px solid var(--ink-ui-border, #ddd);
+  border-radius: var(--ink-ui-radius-md, 8px);
+  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, 0.12));
 }
 
 .inkchapter-doc-navigator__btn {
   font-family: inherit;
-  font-size: 16px;
+  font-size: var(--ink-ui-icon-size-md, 16px);
   line-height: 1;
   width: 30px;
-  height: 28px;
-  border-radius: 6px;
+  min-height: var(--ink-ui-control-h-sm, 28px);
+  border-radius: var(--ink-ui-radius-sm, 6px);
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-normal, #333);
+  color: var(--ink-ui-text, #333);
   cursor: pointer;
   user-select: none;
-  &:hover:not(:disabled) { background: var(--background-modifier-hover, #eee); }
-  &:focus-visible { outline: 2px solid var(--text-accent, #07a); outline-offset: 1px; }
-  &:disabled { opacity: 0.4; cursor: default; }
 }
+
+.inkchapter-doc-navigator__btn:hover:not(:disabled) { background: var(--ink-ui-bg-hover, #ececec); }
+.inkchapter-doc-navigator__btn:active:not(:disabled) { background: var(--ink-ui-bg-active, #e2e2e2); }
+.inkchapter-doc-navigator__btn:focus-visible { outline: 2px solid var(--ink-ui-primary, #07a); outline-offset: 1px; }
+.inkchapter-doc-navigator__btn:disabled { opacity: 0.4; cursor: default; }
 
 .inkchapter-doc-drawer {
   width: 360px;
   max-width: 90vw;
   height: auto;
   flex-direction: column;
-  background: var(--background-primary, #fff);
-  border: 1px solid var(--border-primary, #ddd);
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  background: var(--ink-ui-bg-surface, #fff);
+  border: 1px solid var(--ink-ui-border, #ddd);
+  border-radius: var(--ink-ui-radius-md, 8px);
+  box-shadow: var(--ink-ui-shadow-pop, 0 8px 32px rgba(0, 0, 0, 0.18));
   overflow: hidden;
 }
 
 .inkchapter-doc-drawer__header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border-primary, #eee);
+  gap: var(--ink-ui-space-3, 8px);
+  padding: var(--ink-ui-space-3, 8px) var(--ink-ui-space-4, 12px);
+  border-bottom: 1px solid var(--ink-ui-border, #eee);
 }
 
 .inkchapter-doc-drawer__title {
-  font-size: 14px;
+  font-size: var(--ink-ui-font-md, 14px);
   font-weight: 600;
+  color: var(--ink-ui-text, #333);
 }
 
 .inkchapter-doc-drawer__counts {
   flex: 1;
-  font-size: 12px;
-  color: var(--text-muted, #666);
+  font-size: var(--ink-ui-font-xs, 12px);
+  color: var(--ink-ui-text-muted, #666);
 }
 
 .inkchapter-doc-drawer__actions {
   display: flex;
-  gap: 6px;
+  gap: var(--ink-ui-space-2, 6px);
 }
 
 .inkchapter-doc-drawer__action {
   font-family: inherit;
-  font-size: 12px;
-  padding: 3px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border-primary, #ccc);
+  font-size: var(--ink-ui-font-xs, 12px);
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: var(--ink-ui-radius-sm, 6px);
+  border: 1px solid var(--ink-ui-border-strong, #c9c9c9);
   background: transparent;
-  color: var(--text-normal, #333);
+  color: var(--ink-ui-text, #333);
   cursor: pointer;
   &:hover { background: var(--background-modifier-hover, #eee); }
 }
@@ -2676,6 +2717,22 @@
 
 
 @media (prefers-color-scheme: dark) {
+  /* Phase UI-2 — token-level dark values so token-driven controls adapt
+     consistently; component overrides below remain as a final guard. */
+  [data-inkchapter-utility-root="true"] {
+    --ink-ui-bg-surface: var(--background-primary, #252525);
+    --ink-ui-bg-hover: rgba(255, 255, 255, 0.08);
+    --ink-ui-bg-active: rgba(255, 255, 255, 0.12);
+    --ink-ui-border: rgba(255, 255, 255, 0.14);
+    --ink-ui-border-strong: rgba(255, 255, 255, 0.2);
+    --ink-ui-text: #e6e6e6;
+    --ink-ui-text-muted: #aaa;
+    --ink-ui-primary: #58a6ff;
+    --ink-ui-warning: #e3b341;
+    --ink-ui-danger: #f47067;
+    --ink-ui-shadow-float: 0 2px 10px rgba(0, 0, 0, 0.5);
+    --ink-ui-shadow-pop: 0 8px 32px rgba(0, 0, 0, 0.6);
+  }
   .inkchapter-doc-toolbar,
   .inkchapter-doc-navigator,
   .inkchapter-doc-drawer,
