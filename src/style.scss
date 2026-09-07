@@ -2754,3 +2754,34 @@
   .inkchapter-doc-drawer__item-locate { color: #e6e6e6; }
 }
 
+
+/* ── Phase 2-B — responsive presentation (editor-geometry driven) ─────────
+   Classes are set by the overlay host from REAL editor content width and the
+   right gutter (#write vs scroll viewport). Pure visual; no business change. */
+
+.inkchapter-doc-toolbar[data-density="compact"] {
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--ink-ui-radius-sm, 6px);
+}
+.inkchapter-doc-toolbar[data-density="compact"] .inkchapter-doc-toolbar__btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  min-height: 24px;
+}
+
+/* Narrow Diagnostics: full-width bottom sheet instead of top-right popover. */
+.inkchapter-doc-drawer[data-mode="sheet"] {
+  left: 8px !important;
+  right: 8px !important;
+  width: auto !important;
+  max-width: none !important;
+  top: auto !important;
+  bottom: 8px !important;
+  max-height: 70vh !important;
+  border-radius: var(--ink-ui-radius-md, 8px);
+}
+.inkchapter-doc-toolbar[data-density="compact"] .inkchapter-doc-toolbar__btn {
+  min-width: 26px;
+  text-align: center;
+}
