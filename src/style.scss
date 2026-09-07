@@ -2785,3 +2785,41 @@
   min-width: 26px;
   text-align: center;
 }
+
+/* ── Phase 2-C — Settings Workbench Shell (Typora native-ish, compact) ───── */
+.inkchapter-wb-summary {
+  font-size: 12px;
+  color: var(--text-muted, #777);
+  padding: 2px 2px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inkchapter-wb-tabs {
+  display: flex;
+  gap: 18px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--border-primary, rgba(0,0,0,0.12));
+  margin-bottom: 10px;
+}
+.inkchapter-wb-tab {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text-muted, #666);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.inkchapter-wb-tab:hover { color: var(--text-normal, #333); }
+.inkchapter-wb-tab.is-active {
+  color: var(--text-normal, #333);
+  font-weight: 600;
+  border-bottom-color: var(--text-accent, #07a);
+}
+.inkchapter-wb-panel[hidden] { display: none !important; }
+/* Phase 2-B1 — suppressed toolbar (hidden, node kept; restored automatically). */
+.inkchapter-doc-toolbar[hidden] { display: none !important; }

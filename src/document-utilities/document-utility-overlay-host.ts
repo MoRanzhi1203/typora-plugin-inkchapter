@@ -75,11 +75,60 @@ export const MIN_NAVIGATOR_GUTTER_PX = 44
 export const NAV_FOOTPRINT_PX = 40
 /** Editor content width below which the toolbar switches to compact density. */
 export const TOOLBAR_COMPACT_THRESHOLD_PX = 520
+/** Editor content width at/below which the toolbar must be suppressed entirely
+ *  (real collapsed editor — never UNKNOWN geometry). */
+export const TOOLBAR_SUPPRESSED_THRESHOLD_PX = 280
 /** Editor content width below which Diagnostics switches to the sheet mode. */
 export const DIAGNOSTICS_SHEET_THRESHOLD_PX = 520
 
 export type ToolbarDensity = 'full' | 'compact'
+export type ToolbarPresentation = 'full' | 'compact' | 'suppressed'
 export type DiagnosticsPresentation = 'desktop' | 'sheet'
+
+
+export type NavigatorPresentation = 'gutter' | 'inset' | 'hidden'
+
+/**
+ * Phase 2-B.3 — Navigator presentation (pure). Whether to show depends ONLY
+ * on real scrollability; WHERE depends on visible editor geometry.
+ */
+export function decideNavigatorPresentation(args: {
+  scrollable: boolean
+  rightGutter: number | null
+  insetSafeWidth: number | null
+  requiredGutter: number
+}): { presentation: NavigatorPresentation; reason: string } {
+  if (!args.scrollable) return { presentation: 'hidden', reason: 'NOT_SCROLLABLE' }
+  if (args.rightGutter != null && args.rightGutter >= args.requiredGutter) return { presentation: 'gutter', reason: 'GUTTER_AVAILABLE' }
+  if (args.insetSafeWidth != null && args.insetSafeWidth >= args.requiredGutter) return { presentation: 'inset', reason: 'INSET_AVAILABLE' }
+  return { presentation: 'hidden', reason: 'NO_SAFE_PLACEMENT' }
+}
+/** Phase 2-B.2 — viewport-clipped visible editor width (pure). Null = unknown. */
+export function computeEditorVisibleWidth(
+  layout: { left: number; right: number } | null,
+  viewportRight: number,
+): number | null {
+  if (layout == null) return null
+  const l = Math.max(layout.left, 0)
+  const r = Math.min(layout.right, viewportRight)
+  return Math.max(0, r - l)
+}
+
+/**
+ * Phase 2-B1 — three-tier toolbar presentation from the REAL editor content
+ * width. UNKNOWN (null/jsdom) geometry is treated as full — never collapsed;
+ * only a KNOWN measured width below the suppressed threshold hides the toolbar.
+ */
+export function decideToolbarPresentation(
+  editorContentWidth: number | null,
+  compactThreshold: number = TOOLBAR_COMPACT_THRESHOLD_PX,
+  suppressedThreshold: number = TOOLBAR_SUPPRESSED_THRESHOLD_PX,
+): ToolbarPresentation {
+  if (editorContentWidth == null) return 'full' // UNKNOWN_GEOMETRY → not suppressed
+  if (editorContentWidth < suppressedThreshold) return 'suppressed'
+  if (editorContentWidth < compactThreshold) return 'compact'
+  return 'full'
+}
 
 /** Gutter-aware navigator visibility (NOT viewport-width based). */
 export function decideNavigatorGutterVisible(
@@ -1259,25 +1308,40 @@ export class DocumentUtilityOverlayHost {
     this.workspaceBelowMinCount = 0
   }
 
-  /** Phase 2-B — last applied responsive classes (write-deduped). */
+  /** Phase 2-B1 — last applied responsive classes (write-deduped). */
   private lastToolbarDensity: ToolbarDensity = 'full'
+  private lastToolbarPresentation: ToolbarPresentation = 'full'
+  /** Phase 2-B.2 — last visible-editor geometry (invariant observability). */
+  private lastVisibleEditor: {
+    layoutWidth: number | null
+    visibleWidth: number | null
+    presentation: ToolbarPresentation
+  } = { layoutWidth: null, visibleWidth: null, presentation: 'full' }
+  /** Phase 2-B.3 — final navigator presentation state (single authority). */
+  private lastNavVis: { presentation: NavigatorPresentation; reason: string; insetRightPx: number | null } =
+    { presentation: 'hidden', reason: 'NOT_SCROLLABLE', insetRightPx: null }
   private lastDiagnosticsPresentation: DiagnosticsPresentation = 'desktop'
-  /** Phase 2-B — last measured responsive state (observability, no polling). */
-  private lastResponsiveProbe: {
-    gutter: number | null
-    gutterOk: boolean
-    editorWidth: number | null
-    density: ToolbarDensity
-    presentation: DiagnosticsPresentation
-  } = { gutter: null, gutterOk: true, editorWidth: null, density: 'full', presentation: 'desktop' }
 
-  /** Phase 2-B — reclass toolbar/drawer from REAL editor content width. */
-  private applyResponsiveClasses(editorContentWidth: number | null): void {
-    const density = decideToolbarDensity(editorContentWidth)
-    if (this.toolbarEl && this.lastToolbarDensity !== density) {
+  /** Phase 2-B1 — centralized toolbar writer (single source of truth). */
+  private applyToolbarPresentation(presentation: ToolbarPresentation): void {
+    if (!this.toolbarEl) return
+    const density: ToolbarDensity = presentation === 'full' ? 'full' : 'compact'
+    if (this.lastToolbarDensity !== density) {
       this.toolbarEl.dataset.density = density
       this.lastToolbarDensity = density
     }
+    if (this.lastToolbarPresentation !== presentation) {
+      this.toolbarEl.dataset.presentation = presentation
+      // suppressed hides WITHOUT destroying the node (single instance kept).
+      this.toolbarEl.hidden = presentation === 'suppressed'
+      this.toolbarEl.setAttribute('aria-hidden', String(presentation === 'suppressed'))
+      this.lastToolbarPresentation = presentation
+    }
+  }
+
+  /** Phase 2-B — reclass toolbar/drawer from REAL editor content width. */
+  private applyResponsiveClasses(editorContentWidth: number | null): void {
+    this.applyToolbarPresentation(decideToolbarPresentation(editorContentWidth))
     const presentation = decideDiagnosticsPresentation(editorContentWidth)
     if (this.drawerEl && this.lastDiagnosticsPresentation !== presentation) {
       this.drawerEl.dataset.mode = presentation
@@ -1285,6 +1349,93 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /** Phase 2-B.3 — inset rail from REAL #write padding + safe gap. */
+  private computeNavigatorRail(
+    rect: DOMRect | null | undefined,
+    rightGutter: number | null,
+    editorVisibleWidth: number | null,
+  ): { insetSafeWidth: number | null; canInset: boolean; contentMeasured: boolean; insetRightPx: number } {
+    let contentRight: number | null = null
+    let contentLeft: number | null = null
+    const writeEl = document.getElementById('write')
+    if (writeEl) {
+      const cs = getComputedStyle(writeEl)
+      const wr = writeEl.getBoundingClientRect()
+      const pl = /^([d.]+)px$/.exec(cs.paddingLeft || '')
+      const pr = /^([d.]+)px$/.exec(cs.paddingRight || '')
+      const padL = pl ? parseFloat(pl[1]) : 0
+      const padR = pr ? parseFloat(pr[1]) : 0
+      contentLeft = wr.left + padL
+      contentRight = wr.right - padR
+    } else if (rightGutter != null && rect) {
+      contentRight = rect.right - rightGutter
+    }
+    const navWidth = this.navigatorEl ? (this.navigatorEl.offsetWidth || NAV_FOOTPRINT_PX) : NAV_FOOTPRINT_PX
+    const viewportRight = window.innerWidth
+    const minGap = 8
+    const contentMeasured = contentRight != null && contentLeft != null
+    const fitsMeasured = contentMeasured && editorVisibleWidth != null && editorVisibleWidth > 0
+      && (contentRight! + minGap + navWidth + 2) <= viewportRight
+      && contentRight! > contentLeft!
+    // UNKNOWN content (no measurable #write) with a visible editor keeps the
+    // navigator visible (inset) but never overrides the pure geometry anchor.
+    const unknownVisible = !contentMeasured && editorVisibleWidth != null && editorVisibleWidth > 0
+    const canInset = fitsMeasured || unknownVisible
+    const railEnd = contentRight != null ? contentRight + minGap + navWidth + 2 : null
+    const insetRightPx = fitsMeasured && railEnd != null ? Math.max(8, viewportRight - railEnd) : NAV_RIGHT_PX
+    return {
+      insetSafeWidth: canInset && contentRight != null ? Math.max(0, viewportRight - contentRight - minGap) : (unknownVisible ? editorVisibleWidth : null),
+      canInset,
+      contentMeasured,
+      insetRightPx,
+    }
+  }  /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
+  private applyNavigatorPresentation(presentation: NavigatorPresentation, insetRightPx: number | null): void {
+    if (!this.navigatorEl) return
+    this.navigatorEl.dataset.rail = presentation
+    this.navigatorEl.hidden = presentation === 'hidden'
+    this.navigatorEl.setAttribute('aria-hidden', String(presentation === 'hidden'))
+    if (presentation === 'inset' && insetRightPx != null) {
+      this.navigatorEl.style.right = `${insetRightPx}px`
+    }
+  }
+
+  /** Phase 2-B.2 — VISIBLE-EDITOR invariant (commit-time, low noise). */
+  private emitVisibleEditorInvariant(): void {
+    const docKey = this.opts.ctx.authority.getDocumentKey()
+    if (!docKey) return
+    const g = this.lastVisibleEditor
+    const contained = g.visibleWidth != null && g.visibleWidth > 0 && g.presentation !== 'suppressed'
+    emitRuntimeAudit('DOCUMENT-UTILITY-VISIBLE-EDITOR-INVARIANT', {
+      documentKey: docKey,
+      editorLayoutWidth: g.layoutWidth,
+      editorVisibleWidth: g.visibleWidth,
+      toolbarPresentation: g.presentation,
+      toolbarContained: contained,
+      decision: g.presentation === 'suppressed' ? 'SUPPRESSED_OUT_OF_VIEW_OR_COLLAPSED' : (contained ? 'TOOLBAR_WITHIN_VISIBLE_EDITOR' : 'CONTAINMENT_CHECK_PENDING'),
+    })
+  }
+
+  /** Phase 2-B.3 — navigator visibility invariant (commit-time). */
+  private emitNavigatorVisibilityInvariant(g: { scrollable: boolean; navigatorVisible: boolean; navigatorSuppressed: boolean }): void {
+    const docKey = this.opts.ctx.authority.getDocumentKey()
+    if (!docKey) return
+    const nv = this.lastNavVis
+    let navRect: DOMRect | null = null
+    if (this.navigatorEl && !this.navigatorEl.hidden) { try { navRect = this.navigatorEl.getBoundingClientRect() } catch { navRect = null } }
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-VISIBILITY-INVARIANT', {
+      documentKey: docKey,
+      scrollable: g.scrollable,
+      navigatorVisible: g.navigatorVisible,
+      drawerVisible: this.drawerOpen,
+      presentation: nv.presentation,
+      reason: nv.reason,
+      editorVisibleWidth: this.lastVisibleEditor.visibleWidth,
+      rightGutter: this.lastVisibleEditor.visibleWidth,
+      navigatorRect: navRect ? { left: Math.round(navRect.left), top: Math.round(navRect.top), width: Math.round(navRect.width), height: Math.round(navRect.height) } : null,
+      decision: g.navigatorVisible ? 'VISIBLE' : 'HIDDEN',
+    })
+  }
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
@@ -1298,18 +1449,30 @@ export class DocumentUtilityOverlayHost {
     // Scroll Operation uses (scrollHeight/clientHeight; never字数/block count).
     const scrollHeight = container ? container.scrollHeight : 0
     const clientHeight = container ? container.clientHeight : 0
-    // Phase 7R.3.11.6 — execution reads the LIVE drawerOpen (never a schedule-time snapshot).
+    // Phase 2-B.2 — VISIBLE editor geometry (viewport-clipped), separate from
+    // the layout rect that workspace min-width may clamp to 520 even when the
+    // window is 150px wide. Toolbar presentation MUST use the visible width.
+    const viewportRight = window.innerWidth
+    const layoutEditable = rect != null && rect.width > 0
+    const layoutLeft = layoutEditable ? rect.left : null
+    const layoutRight = layoutEditable ? rect.right : null
+    const editorVisibleWidth = computeEditorVisibleWidth(
+      layoutLeft != null && layoutRight != null ? { left: layoutLeft, right: layoutRight } : null,
+      viewportRight,
+    )
+    // Toolbar anchor: visible editor rect (clip the off-viewport layout right).
+    const geometryRight = layoutEditable ? Math.min(rect.right, viewportRight) : null
     const next = computeOverlayGeometry(
-      rect && rect.width > 0 ? { top: rect.top, right: rect.right, bottom: rect.bottom } : null,
+      layoutEditable && geometryRight != null ? { top: rect.top, right: geometryRight, bottom: rect.bottom } : null,
       { width: window.innerWidth, height: window.innerHeight },
       { drawerOpen: this.drawerOpen, scrollHeight, clientHeight },
     )
-    // ── Phase 2-B — RESPONSIVE from REAL editor geometry (never viewport width).
-    // 1) Toolbar density + Diagnostics presentation from the editor content width.
+    // ── Phase 2-B — RESPONSIVE from REAL visible editor geometry.
+    // 1) Toolbar density + Diagnostics presentation from the VISIBLE editor width.
     // 2) Navigator gutter-aware visibility from the REAL right gutter
     //    (scroll viewport right − #write content right). Applied BEFORE the
     //    noop comparison so width-only changes still reclass without geometry churn.
-    const editorContentWidth = rect && rect.width > 0 ? rect.width : null
+    const toolbarPresentation = decideToolbarPresentation(editorVisibleWidth)
     let rightGutter: number | null = null
     const writeEl = document.getElementById('write')
     if (rect && writeEl) {
@@ -1319,26 +1482,40 @@ export class DocumentUtilityOverlayHost {
       if (wr.width > 0 || wr.right > rect.right) rightGutter = rect.right - wr.right
     }
     const gutterOk = decideNavigatorGutterVisible(rightGutter)
-    this.applyResponsiveClasses(editorContentWidth)
-    this.lastResponsiveProbe = {
-      gutter: rightGutter,
-      gutterOk,
-      editorWidth: editorContentWidth,
-      density: decideToolbarDensity(editorContentWidth),
-      presentation: decideDiagnosticsPresentation(editorContentWidth),
+    this.applyResponsiveClasses(editorVisibleWidth)
+    this.lastVisibleEditor = {
+      layoutWidth: layoutEditable ? rect.width : null,
+      visibleWidth: editorVisibleWidth,
+      presentation: toolbarPresentation,
     }
-    if (!gutterOk) {
+    // Phase 2-B.3 — final Navigator authority (single write point).
+    // Show depends ONLY on scrollability; placement depends on visible
+    // editor geometry (gutter → inset rail → hidden/NO_SAFE_PLACEMENT).
+    if (next.scrollable) {
+      const rail = this.computeNavigatorRail(rect, rightGutter, editorVisibleWidth)
+      const pres = decideNavigatorPresentation({
+        scrollable: true,
+        rightGutter,
+        insetSafeWidth: rail.insetSafeWidth,
+        requiredGutter: MIN_NAVIGATOR_GUTTER_PX,
+      })
+      // Phase 2-B.3.1 — inset only when the FULL navigator fits the real safe
+      // rail (right of main content, clear of scrollbar, inside visible editor).
+      const useInsetRail = pres.presentation === 'inset' && rail.canInset && rail.contentMeasured
+      const insetPx = useInsetRail ? rail.insetRightPx : null
+      this.lastNavVis = { presentation: pres.presentation, reason: pres.reason, insetRightPx: insetPx }
+      if (this.navigatorEl) this.applyNavigatorPresentation(pres.presentation, insetPx)
+      next.navigatorVisible = pres.presentation !== 'hidden'
+      next.navigatorSuppressed = pres.presentation === 'hidden'
+    } else {
+      this.lastNavVis = { presentation: 'hidden', reason: 'NOT_SCROLLABLE', insetRightPx: null }
+      if (this.navigatorEl) this.applyNavigatorPresentation('hidden', null)
       next.navigatorVisible = false
       next.navigatorSuppressed = true
     }
-    // Phase 7R.3.11.8B.7.2 — Diagnostics Panel Bottom Safe Area (ONE live
-    // authority). With the drawer open, the reserve below it derives from the
-    // REAL navigator box (navBottom + measured height + safe gap). The height
-    // cache is refreshed from the live rect after every write pass — the
-    // navigator box never depends on the drawer, so this cannot feed a layout
-    // loop. Before the first measurement the legacy 140px estimate applies.
-    // If the panel would be squeezed below the usable minimum, the navigator
-    // is temporarily hidden instead of colliding (small-viewport policy).
+
+    // Drawer bottom safe-area reserve (no navigator suppression):
+    // the drawer simply ends above the navigator box.
     if (this.drawerOpen && next.scrollable && this.lastNavigatorHeightPx != null) {
       const bottomGap = rect && rect.bottom > 0 ? Math.max(0, window.innerHeight - rect.bottom) : 0
       const liveReserve = computeDrawerBottomReserve({
@@ -1349,14 +1526,7 @@ export class DocumentUtilityOverlayHost {
       })
       let drawerMaxHeight = Math.max(0, window.innerHeight - next.drawerTop - liveReserve)
       if (drawerMaxHeight < MIN_DRAWER_USABLE_HEIGHT_PX) {
-        next.navigatorSuppressed = true
-        next.navigatorVisible = false
-        drawerMaxHeight = Math.max(0, window.innerHeight - next.drawerTop - computeDrawerBottomReserve({
-          navBottom: next.navBottom,
-          navigatorVisible: false,
-          navigatorHeightPx: null,
-          bottomGap,
-        }))
+        drawerMaxHeight = Math.max(0, window.innerHeight - next.drawerTop - 8)
       }
       next.drawerMaxHeight = drawerMaxHeight
     }
@@ -1383,6 +1553,8 @@ export class DocumentUtilityOverlayHost {
         this.emitNavigatorPlacementAudit(commitReason)
       }
       this.emitOverlayLayoutAudit(next, scrollHeight, clientHeight)
+    this.emitVisibleEditorInvariant()
+    this.emitNavigatorVisibilityInvariant(next)
       return
     }
     this.geometryCounters.writeCount++
@@ -1401,9 +1573,10 @@ export class DocumentUtilityOverlayHost {
       // display:none removes hit-targets, focus and keyboard reachability.
       // Position is written first, display second, so the safe-area
       // measurement above always saw the navigator in its final place.
-      this.navigatorEl.style.right = `${next.navRight}px`
+      const nv = this.lastNavVis
+      this.navigatorEl.style.right = `${nv.presentation === 'inset' && nv.insetRightPx != null ? nv.insetRightPx : next.navRight}px`
       this.navigatorEl.style.bottom = `${next.navBottom}px`
-      this.navigatorEl.style.display = next.navigatorVisible ? 'flex' : 'none'
+      this.navigatorEl.style.display = nv.presentation === 'hidden' ? 'none' : 'flex'
     }
     if (this.drawerEl) {
       // Phase 7R.3.11.8B.3 — drawer is top-right anchored, content-sized
@@ -1466,8 +1639,9 @@ export class DocumentUtilityOverlayHost {
     const signature = `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${g.scrollable}|${g.navigatorVisible}|${this.drawerOpen}|${drawerItemCount}|${heightBucket}`
     if (signature === this.lastOverlayLayoutSignature) return
     this.lastOverlayLayoutSignature = signature
+    const navReason = this.lastNavVis?.reason ?? 'UNKNOWN'
     const decision = g.navigatorSuppressed
-      ? 'DRAWER_SUPPRESSED_NAVIGATOR_SMALL_VIEWPORT'
+      ? (g.scrollable ? (navReason === 'NO_SAFE_PLACEMENT' ? 'NAVIGATOR_HIDDEN_NO_SAFE_PLACEMENT' : 'NAVIGATOR_HIDDEN') : 'SHORT_DOCUMENT_NAV_HIDDEN')
       : !g.navigatorVisible
         ? 'SHORT_DOCUMENT_NAV_HIDDEN'
         : this.drawerOpen
@@ -1749,7 +1923,7 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.3.1 — DOCUMENT-UTILITY-NAVIGATOR-AUDIT-INVARIANT:
     // a legally-hidden navigator must be NOT_EVALUATED everywhere; a hidden
     // navigator reporting POSITION_DRIFT is an audit invariant FAIL.
-    const overlayDecision = !expectedVisible ? 'SHORT_DOCUMENT_NAV_HIDDEN' : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
+    const overlayDecision = !(this.lastGeometry?.scrollable) ? 'SHORT_DOCUMENT_NAV_HIDDEN' : (this.lastNavVis.presentation === 'hidden' ? 'NAVIGATOR_HIDDEN_NO_SAFE_PLACEMENT' : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE')
     const auditPass = !expectedVisible ? result.decision === 'NOT_EVALUATED' : result.decision !== 'NOT_EVALUATED'
     emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-AUDIT-INVARIANT', {
       documentKey: this.opts.ctx.authority.getDocumentKey(),

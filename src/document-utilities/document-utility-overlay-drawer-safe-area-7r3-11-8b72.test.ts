@@ -172,13 +172,15 @@ describe('SAFE-2/3/4/5: host-level safe area', () => {
     const h = mountHost()
     expect(h['lastNavigatorHeightPx']).toBe(NAV_HEIGHT)
     openDrawer()
-    // navBottom = bottomGap(0) + 64 = 64; reserve = 64 + 66 + 12 = 142
-    // drawerTop = 156 → maxHeight = 300 − 156 − 142 = 2 < MIN_USABLE → suppress
-    expect(navigatorDisplay(h)).toBe('none')
-    // Suppressed reserve = 0 + 16 + 12 = 28 → maxHeight = 300 − 156 − 28 = 116
+    // Phase 2-B.3: the drawer NEVER blanket-suppresses the navigator. In this
+    // jsdom shell #write is not measurable, so placement falls back to the
+    // visible-width inset rail — visible regardless of drawer state.
+    expect(navigatorDisplay(h)).toBe('flex')
+    expect(h['lastNavVis'].presentation).toBe('inset')
+    // Drawer stays usable: bottom safe-area reserve keeps it above the nav box
+    // and clamps to a usable minimum instead of hiding the navigator.
     const maxH = Number.parseInt(drawerStyle(h).maxHeight)
     expect(maxH).toBeGreaterThanOrEqual(MIN_DRAWER_USABLE_HEIGHT_PX)
-    expect(maxH).toBe(116)
     h.dispose()
   })
 
@@ -188,9 +190,13 @@ describe('SAFE-2/3/4/5: host-level safe area', () => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 })
     const h = mountHost()
     openDrawer()
-    expect(navigatorDisplay(h)).toBe('none')
-    closeDrawer()
     expect(navigatorDisplay(h)).toBe('flex')
+    closeDrawer()
+    // Phase 2-B.3: closing the drawer must NOT change navigator presentation
+    // (no drawer-driven hide/restore). Placement stays on the inset rail; no
+    // stale toggling is allowed.
+    expect(navigatorDisplay(h)).toBe('flex')
+    expect(h['lastNavVis'].presentation).toBe('inset')
     h.dispose()
   })
 

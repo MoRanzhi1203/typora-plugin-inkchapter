@@ -731,6 +731,96 @@ export class HeadingNumberingSettingTab extends SettingTab {
     return this.selectedCardKey === key && this.selectedCardIsPreset === isPreset
   }
 
+  // ── Phase 2-C — Settings Workbench Shell (pure UI state, never persisted) ──
+
+  private activeWorkbenchTab: 'scheme' | 'heading' | 'rules' | 'objects' = 'scheme'
+  private workbenchPanels: Record<'scheme' | 'heading' | 'rules' | 'objects', HTMLElement | null> = {
+    scheme: null, heading: null, rules: null, objects: null,
+  }
+  private readonly WORKBENCH_TABS: Array<{ key: 'scheme' | 'heading' | 'rules' | 'objects'; label: string }> = [
+    { key: 'scheme', label: '编号方案' },
+    { key: 'heading', label: '标题格式' },
+    { key: 'rules', label: '文档规则' },
+    { key: 'objects', label: '图表对象' },
+  ]
+
+  /**
+   * Phase 2-C — every existing card renderer keeps running (init/listeners
+   * preserved). This helper moves ONLY the direct children the renderer just
+   * appended into the target panel. Portals / menu layer / modal / tooltip
+   * nodes that are not direct container children are never touched.
+   */
+  private renderIntoWorkbenchPanel(panel: HTMLElement, renderFn: () => void): void {
+    const before = this.containerEl.childNodes.length
+    renderFn()
+    const kids = Array.from(this.containerEl.childNodes)
+    for (let i = before; i < kids.length; i++) {
+      const node = kids[i]
+      if (node.nodeType !== Node.ELEMENT_NODE) continue
+      const elNode = node as HTMLElement
+      if (elNode.classList.contains('inkchapter-menu-layer')) continue
+      panel.appendChild(elNode)
+    }
+  }
+
+  /** Render the shell (compact summary + 4 tabs + 4 empty panels). */
+  private renderWorkbenchShell(): void {
+    const summary = document.createElement('div')
+    summary.className = 'inkchapter-wb-summary'
+    try {
+      const info = this.getAppliedFormatInfo()
+      const name = this.getCurrentFormatDisplayNameV2(info)
+      const source = info.inheritsGlobal ? '来源：全局默认' : '来源：当前文档'
+      const enabled = (this.headingDraft ?? this.numberingService.getEffectiveSettings()).enabled
+      summary.textContent = `${name} · ${source} · 标题编号：${enabled ? '已启用' : '已关闭'}`
+    } catch { /* summary is best-effort */ }
+    this.containerEl.appendChild(summary)
+
+    const tabBar = document.createElement('div')
+    tabBar.className = 'inkchapter-wb-tabs'
+    tabBar.setAttribute('role', 'tablist')
+    for (const t of this.WORKBENCH_TABS) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'inkchapter-wb-tab'
+      btn.setAttribute('role', 'tab')
+      btn.dataset.wbTab = t.key
+      btn.setAttribute('aria-selected', String(this.activeWorkbenchTab === t.key))
+      btn.textContent = t.label
+      btn.addEventListener('click', () => this.activateWorkbenchTab(t.key))
+      tabBar.appendChild(btn)
+    }
+    this.containerEl.appendChild(tabBar)
+
+    for (const t of this.WORKBENCH_TABS) {
+      const panel = document.createElement('div')
+      panel.className = 'inkchapter-wb-panel'
+      panel.dataset.wbPanel = t.key
+      panel.setAttribute('role', 'tabpanel')
+      this.workbenchPanels[t.key] = panel
+      this.containerEl.appendChild(panel)
+    }
+  }
+
+  /** Sync panel visibility + tab aria/classes to the active tab (NO rerender). */
+  private syncWorkbenchTabUI(): void {
+    for (const t of this.WORKBENCH_TABS) {
+      const panel = this.workbenchPanels[t.key]
+      if (panel) panel.hidden = t.key !== this.activeWorkbenchTab
+      const btn = this.containerEl.querySelector<HTMLElement>(`.inkchapter-wb-tab[data-wb-tab="${t.key}"]`)
+      if (btn) {
+        btn.classList.toggle('is-active', t.key === this.activeWorkbenchTab)
+        btn.setAttribute('aria-selected', String(t.key === this.activeWorkbenchTab))
+      }
+    }
+  }
+
+  /** Tab click: lightweight visibility switch only — never a full rerender. */
+  private activateWorkbenchTab(tab: 'scheme' | 'heading' | 'rules' | 'objects'): void {
+    this.activeWorkbenchTab = tab
+    this.syncWorkbenchTabUI()
+  }
+
   private render(): void {
     const s = this.headingSettings
     if (!s?.levels) {
@@ -753,22 +843,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
       this.containerEl.appendChild(menuLayer)
     }
 
-    // === A. Scope Card (current scope + basic settings) ===
-    this.renderScopeCard(s)
+    // === Phase 2-C — Workbench Shell: summary + tabs + panels; every existing
+    // card renderer STILL runs (init/listeners preserved); panels only hide. ===
+    this.renderWorkbenchShell()
+    this.renderIntoWorkbenchPanel(this.workbenchPanels.scheme!, () => this.renderScopeCard(s))
+    this.renderIntoWorkbenchPanel(this.workbenchPanels.scheme!, () => this.renderFormatLibraryCard(s))
+    this.renderIntoWorkbenchPanel(this.workbenchPanels.heading!, () => this.renderCustomEditorCard(s))
+    this.renderIntoWorkbenchPanel(this.workbenchPanels.rules!, () => this.renderAdvancedSettingsCard(s))
+    this.renderIntoWorkbenchPanel(this.workbenchPanels.objects!, () => this.renderCaptionCard())
+    this.syncWorkbenchTabUI()
 
-    // === B. Format Library Card ===
-    this.renderFormatLibraryCard(s)
-
-    // === C. Format Content Settings Card (editor + spacing) ===
-    this.renderCustomEditorCard(s)
-
-    // === D. Document-level Advanced Settings Card ===
-    this.renderAdvancedSettingsCard(s)
-
-    // === E. Caption & Object Numbering Card ===
-    this.renderCaptionCard()
-
-    // === Bottom sticky action bar ===
+    // === Bottom sticky action bar (kept as the single global footer) ===
     this.renderBottomActionBar()
   }
 
@@ -6414,3 +6499,4 @@ function multilevelFormatSummary(format: readonly MultilevelFormatSegment[], tpl
   })
   return parts.join('') + (tpl ? ` · 令牌=${tpl.tokenStyle}` : '')
 }
+
