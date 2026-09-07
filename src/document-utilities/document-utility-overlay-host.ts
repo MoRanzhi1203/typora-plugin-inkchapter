@@ -67,6 +67,49 @@ const NAV_BOTTOM_PX = 64
 const DRAWER_TOP_PX = 56
 const DRAWER_RIGHT_PX = 12
 const DRAWER_BOTTOM_PX = 16
+
+// ── Phase 2-B — responsive layout constants (editor-geometry based) ──────
+/** Semantic min right-gutter required before the floating navigator may show. */
+export const MIN_NAVIGATOR_GUTTER_PX = 44
+/** Navigator estimated footprint (button 30px + 2×padding + gap + safety). */
+export const NAV_FOOTPRINT_PX = 40
+/** Editor content width below which the toolbar switches to compact density. */
+export const TOOLBAR_COMPACT_THRESHOLD_PX = 520
+/** Editor content width below which Diagnostics switches to the sheet mode. */
+export const DIAGNOSTICS_SHEET_THRESHOLD_PX = 520
+
+export type ToolbarDensity = 'full' | 'compact'
+export type DiagnosticsPresentation = 'desktop' | 'sheet'
+
+/** Gutter-aware navigator visibility (NOT viewport-width based). */
+export function decideNavigatorGutterVisible(
+  rightGutter: number | null,
+  minGutter: number = MIN_NAVIGATOR_GUTTER_PX,
+): boolean {
+  // null = geometry not measurable (headless/jsdom): no evidence of crowding,
+  // so the legacy visible behavior is preserved. Only a MEASURED gutter below
+  // the requirement hides the navigator.
+  return rightGutter == null || rightGutter >= minGutter
+}
+
+/** Toolbar density from the REAL editor content width. */
+export function decideToolbarDensity(
+  editorContentWidth: number | null,
+  threshold: number = TOOLBAR_COMPACT_THRESHOLD_PX,
+): ToolbarDensity {
+  if (editorContentWidth == null) return 'full'
+  return editorContentWidth < threshold ? 'compact' : 'full'
+}
+
+/** Diagnostics presentation from the REAL editor content width. */
+export function decideDiagnosticsPresentation(
+  editorContentWidth: number | null,
+  threshold: number = DIAGNOSTICS_SHEET_THRESHOLD_PX,
+): DiagnosticsPresentation {
+  if (editorContentWidth == null) return 'desktop'
+  return editorContentWidth < threshold ? 'sheet' : 'desktop'
+}
+
 /**
  * Phase 7R.3.11.8B.3 — vertical space reserved below the drawer for the
  * right-bottom navigator zone (navigator height ~66px + safety gap). The
@@ -1216,6 +1259,32 @@ export class DocumentUtilityOverlayHost {
     this.workspaceBelowMinCount = 0
   }
 
+  /** Phase 2-B — last applied responsive classes (write-deduped). */
+  private lastToolbarDensity: ToolbarDensity = 'full'
+  private lastDiagnosticsPresentation: DiagnosticsPresentation = 'desktop'
+  /** Phase 2-B — last measured responsive state (observability, no polling). */
+  private lastResponsiveProbe: {
+    gutter: number | null
+    gutterOk: boolean
+    editorWidth: number | null
+    density: ToolbarDensity
+    presentation: DiagnosticsPresentation
+  } = { gutter: null, gutterOk: true, editorWidth: null, density: 'full', presentation: 'desktop' }
+
+  /** Phase 2-B — reclass toolbar/drawer from REAL editor content width. */
+  private applyResponsiveClasses(editorContentWidth: number | null): void {
+    const density = decideToolbarDensity(editorContentWidth)
+    if (this.toolbarEl && this.lastToolbarDensity !== density) {
+      this.toolbarEl.dataset.density = density
+      this.lastToolbarDensity = density
+    }
+    const presentation = decideDiagnosticsPresentation(editorContentWidth)
+    if (this.drawerEl && this.lastDiagnosticsPresentation !== presentation) {
+      this.drawerEl.dataset.mode = presentation
+      this.lastDiagnosticsPresentation = presentation
+    }
+  }
+
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
@@ -1235,6 +1304,33 @@ export class DocumentUtilityOverlayHost {
       { width: window.innerWidth, height: window.innerHeight },
       { drawerOpen: this.drawerOpen, scrollHeight, clientHeight },
     )
+    // ── Phase 2-B — RESPONSIVE from REAL editor geometry (never viewport width).
+    // 1) Toolbar density + Diagnostics presentation from the editor content width.
+    // 2) Navigator gutter-aware visibility from the REAL right gutter
+    //    (scroll viewport right − #write content right). Applied BEFORE the
+    //    noop comparison so width-only changes still reclass without geometry churn.
+    const editorContentWidth = rect && rect.width > 0 ? rect.width : null
+    let rightGutter: number | null = null
+    const writeEl = document.getElementById('write')
+    if (rect && writeEl) {
+      const wr = writeEl.getBoundingClientRect()
+      // Only trust real layout (jsdom/hidden → 0 width): unknown gutter keeps
+      // the legacy behavior instead of hiding the navigator in tests.
+      if (wr.width > 0 || wr.right > rect.right) rightGutter = rect.right - wr.right
+    }
+    const gutterOk = decideNavigatorGutterVisible(rightGutter)
+    this.applyResponsiveClasses(editorContentWidth)
+    this.lastResponsiveProbe = {
+      gutter: rightGutter,
+      gutterOk,
+      editorWidth: editorContentWidth,
+      density: decideToolbarDensity(editorContentWidth),
+      presentation: decideDiagnosticsPresentation(editorContentWidth),
+    }
+    if (!gutterOk) {
+      next.navigatorVisible = false
+      next.navigatorSuppressed = true
+    }
     // Phase 7R.3.11.8B.7.2 — Diagnostics Panel Bottom Safe Area (ONE live
     // authority). With the drawer open, the reserve below it derives from the
     // REAL navigator box (navBottom + measured height + safe gap). The height
