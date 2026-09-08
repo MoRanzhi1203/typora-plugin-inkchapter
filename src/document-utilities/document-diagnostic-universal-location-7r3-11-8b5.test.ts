@@ -415,17 +415,21 @@ describe('LOC — highlight + overlay locate interaction', () => {
 
     const before = write.textContent
     const drawer = document.querySelector('.inkchapter-doc-drawer') as HTMLElement
-    const locateButtons = Array.from(drawer.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-drawer__item-locate'))
-    // Every published diagnostic item carries a locate button.
+    // V1.1 — no standalone locate buttons; every row carries data-diagnostic-id.
+    const locateButtons = Array.from(drawer.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))
     expect(locateButtons.length).toBeGreaterThan(0)
 
-    // Click the CODE_MISSING_LANGUAGE item's locate (block target = the <pre>).
+    // Pre: segment click may have filtered the drawer — reset to 全部 so every
+    // published diagnostic row is visible (filter state is shared, Text Tabs).
+    const allTab = drawer.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__filter-tab[data-filter="all"]')
+    allTab?.click()
+
+    // Click the CODE_MISSING_LANGUAGE row (block target = the <pre>).
     const pre = write.querySelector('pre') as HTMLElement
-    const items = Array.from(drawer.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item'))
+    const items = Array.from(drawer.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))
     const langItem = items.find(el => (el.textContent ?? '').includes('代码块缺少语言标识')) ?? items[0]
-    const langLocate = langItem.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__item-locate')
-    expect(langLocate).toBeTruthy()
-    langLocate!.click()
+    expect(langItem).toBeTruthy()
+    langItem.click()
     vi.advanceTimersByTime(50)
     expect(pre.classList.contains(DIAGNOSTIC_HIGHLIGHT_CLASS)).toBe(true)
     // Read-only: the Markdown CONTENT is untouched; only the temporary

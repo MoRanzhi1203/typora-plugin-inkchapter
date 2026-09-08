@@ -38,17 +38,57 @@ import { deriveDiagnosticsState } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
 import { emitRuntimeAudit, emitInkchapterRuntimeAuditSummary } from '../runtime/forensic-log-sink'
+import {
+  resolveActiveDocumentPresence,
+  normalizeActiveLeafDocumentPath,
+  type ActiveDocumentPresenceDecision,
+  type ActiveLeafDocumentFacts,
+} from './document-active-leaf-presence'
 
 export const UTILITY_UI_ROOT_ATTR = 'data-inkchapter-ui-root'
 export const UTILITY_UI_ROOT_VALUE = 'document-utilities'
 /** Root-identity attribute (the whole tree shares UTILITY_UI_ROOT_ATTR). */
 export const UTILITY_ROOT_IDENTITY_ATTR = 'data-inkchapter-utility-root'
 
+/** Diagnostics severity filter — shared between Toolbar segments and Drawer Text Tabs. */
+export type DiagnosticsSeverityFilter = 'all' | 'error' | 'warning' | 'info'
+
+/** UI Visual Consolidation V1.1 — inline SVG icon set (stroke=currentColor). */
+const INK_ICONS: Record<string, string> = {
+  error:
+    '<circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>',
+  warning:
+    '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>',
+  info: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>',
+  check: '<polyline points="20 6 9 17 4 12"></polyline>',
+  refresh:
+    '<polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>',
+  close: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>',
+  pencil:
+    '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path>',
+  'chevron-up': '<polyline points="18 15 12 9 6 15"></polyline>',
+  'chevron-down': '<polyline points="6 9 12 15 18 9"></polyline>',
+}
+function setIcon(el: HTMLElement, name: string, cls = 'inkchapter-ic'): void {
+  const body = INK_ICONS[name] ?? ''
+  el.innerHTML =
+    `<svg class="${cls}" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+    `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`
+}
+
 export interface DocumentUtilitiesOverlayOptions {
   ctx: DocumentUtilitiesContext
   providers: DocumentDiagnosticsProviders
   /** Recompute triggers wired by the caller (document switch etc.). */
   onBindDocument?: (bind: () => void) => void
+  /**
+   * V3 — ACTIVE-leaf lifecycle triggers wired by the caller. Primary triggers:
+   * real workspace `active-leaf:change` and workspace-tabs `tab:toggle`. The
+   * host reacts SYNCHRONOUSLY (never waits for resize/scroll/geometry or an
+   * unrelated DOM mutation). Returns a dispose for the whole subscription.
+   */
+  onActiveLeafLifecycle?: (onTransition: (reason: ActiveLeafTransitionReason) => void) => () => void
   /** Phase 7R.3.11.8-B — light diagnostics recompute triggers (frame commit /
    *  settings/mode change). Called with a recompute() that ONLY refreshes the
    *  diagnostics snapshot — no geometry / BCR / scroll rebind churn. */
@@ -73,6 +113,9 @@ const DRAWER_BOTTOM_PX = 16
 export const MIN_NAVIGATOR_GUTTER_PX = 44
 /** Navigator estimated footprint (button 30px + 2×padding + gap + safety). */
 export const NAV_FOOTPRINT_PX = 40
+/** Navigator visual width — MUST match the CSS shell width (30px). Used ONLY
+ *  when a hidden navigator cannot be measured (rect.width = 0). */
+export const NAVIGATOR_VISUAL_WIDTH_PX = 30
 /** Editor content width below which the toolbar switches to compact density. */
 export const TOOLBAR_COMPACT_THRESHOLD_PX = 520
 /** Editor content width at/below which the toolbar must be suppressed entirely
@@ -85,6 +128,9 @@ export type ToolbarDensity = 'full' | 'compact'
 export type ToolbarPresentation = 'full' | 'compact' | 'suppressed'
 export type DiagnosticsPresentation = 'desktop' | 'sheet'
 
+/** V3 — real active-leaf lifecycle trigger that invoked a presence transition. */
+export type ActiveLeafTransitionReason = 'ACTIVE_LEAF_CHANGE' | 'TAB_TOGGLE'
+
 
 export type NavigatorPresentation = 'gutter' | 'inset' | 'hidden'
 
@@ -94,13 +140,31 @@ export type NavigatorPresentation = 'gutter' | 'inset' | 'hidden'
  */
 export function decideNavigatorPresentation(args: {
   scrollable: boolean
-  rightGutter: number | null
-  insetSafeWidth: number | null
-  requiredGutter: number
+  /** Visible-editor availability gate (highest precedence). */
+  hasVisibleEditor?: boolean
+  /** The visible editor is wide enough to contain the navigator. */
+  editorCanContainNavigator?: boolean
+  /** gutter candidate validity (navigator fully right of contentRight + 8px). */
+  gutterCandidateValid: boolean
+  /** inset candidate validity (real candidate rect inside editor, overlap ≤ 12px). */
+  insetCandidateValid: boolean
+  /** edge-inset fallback validity (full nav inside visible editor, clear of scrollbar). */
+  edgeInsetCandidateValid?: boolean
+  /** false when geometry could not be measured → visible fallback, never NO_SAFE. */
+  geometryKnown: boolean
 }): { presentation: NavigatorPresentation; reason: string } {
+  // NO_VISIBLE_EDITOR outranks GEOMETRY_PENDING / UNKNOWN fallback /
+  // lastStablePresentation / every candidate mode.
+  if (args.hasVisibleEditor === false || args.editorCanContainNavigator === false) {
+    return { presentation: 'hidden', reason: 'NO_VISIBLE_EDITOR' }
+  }
   if (!args.scrollable) return { presentation: 'hidden', reason: 'NOT_SCROLLABLE' }
-  if (args.rightGutter != null && args.rightGutter >= args.requiredGutter) return { presentation: 'gutter', reason: 'GUTTER_AVAILABLE' }
-  if (args.insetSafeWidth != null && args.insetSafeWidth >= args.requiredGutter) return { presentation: 'inset', reason: 'INSET_AVAILABLE' }
+  if (args.gutterCandidateValid) return { presentation: 'gutter', reason: 'GUTTER_AVAILABLE' }
+  if (args.insetCandidateValid) return { presentation: 'inset', reason: 'INSET_AVAILABLE' }
+  if (args.edgeInsetCandidateValid === true) return { presentation: 'inset', reason: 'INSET_EDGE_FALLBACK' }
+  // UNKNOWN_GEOMETRY is never collapsed: a scrollable doc whose rail inputs
+  // could not be measured stays visible on an inset fallback (no anchor override).
+  if (!args.geometryKnown) return { presentation: 'inset', reason: 'INSET_UNKNOWN_FALLBACK' }
   return { presentation: 'hidden', reason: 'NO_SAFE_PLACEMENT' }
 }
 /** Phase 2-B.2 — viewport-clipped visible editor width (pure). Null = unknown. */
@@ -109,6 +173,7 @@ export function computeEditorVisibleWidth(
   viewportRight: number,
 ): number | null {
   if (layout == null) return null
+  if (!Number.isFinite(layout.left) || !Number.isFinite(layout.right)) return null
   const l = Math.max(layout.left, 0)
   const r = Math.min(layout.right, viewportRight)
   return Math.max(0, r - l)
@@ -128,6 +193,147 @@ export function decideToolbarPresentation(
   if (editorContentWidth < suppressedThreshold) return 'suppressed'
   if (editorContentWidth < compactThreshold) return 'compact'
   return 'full'
+}
+
+// ── Phase 7R.3.11.8B.NO-ACTIVE-DOC — active-document visibility gate ───────
+
+/**
+ * Active-document existence — single authority. A "New tab" / empty workspace
+ * may still have tabCount=1: tab presence never implies a document. The
+ * positive evidence set is: a real document key + an active file path + the
+ * shared ctx authority agreeing a document is active; the #write root, when it
+ * exists, must stay connected. Headless (root=null) keeps positive identity.
+ */
+export function resolveActiveDocumentExistence(input: {
+  documentKey: string | null
+  activeFilePath: string | null
+  ctxHasActiveDocument: boolean
+  rootConnected: boolean | null
+}): boolean {
+  const noDocEvidence = input.documentKey == null || input.activeFilePath == null || input.ctxHasActiveDocument === false
+  if (noDocEvidence) return false
+  if (input.rootConnected === false) return false
+  return true
+}
+
+/**
+ * Highest-precedence gate: the Document Problems Control is a UI OF the active
+ * Markdown document. Without a real active document it must be SUPPRESSED
+ * regardless of geometry / last-stable / workspace fallback.
+ */
+export function decideActiveDocumentSuppression(input: {
+  hasActiveDocument: boolean
+}): { presentation: ToolbarPresentation; reason: string; geometryFallbackBlocked: boolean; lastStableBlocked: boolean } {
+  if (!input.hasActiveDocument) {
+    return { presentation: 'suppressed', reason: 'NO_ACTIVE_DOCUMENT', geometryFallbackBlocked: true, lastStableBlocked: true }
+  }
+  return { presentation: 'full', reason: 'ACTIVE_DOCUMENT_PRESENT', geometryFallbackBlocked: false, lastStableBlocked: false }
+}
+
+export interface ActiveDocumentVisibilityInput {
+  documentKey: string | null
+  hasActiveDocument: boolean
+  activeDocumentRootConnected: boolean
+  toolbarPresentation: ToolbarPresentation
+  toolbarVisible: boolean
+  drawerVisible: boolean
+  pendingLocateTarget: string | null
+}
+
+export function evaluateActiveDocumentVisibility(input: ActiveDocumentVisibilityInput): { decision: 'PASS' | 'FAIL'; reason: string } {
+  if (!input.hasActiveDocument && input.toolbarVisible) {
+    return { decision: 'FAIL', reason: 'TOOLBAR_VISIBLE_WITHOUT_ACTIVE_DOCUMENT' }
+  }
+  if (!input.hasActiveDocument && input.drawerVisible) {
+    return { decision: 'FAIL', reason: 'DIAGNOSTICS_DRAWER_VISIBLE_WITHOUT_ACTIVE_DOCUMENT' }
+  }
+  if (!input.hasActiveDocument && input.pendingLocateTarget != null) {
+    return { decision: 'FAIL', reason: 'LOCATE_TARGET_WITHOUT_ACTIVE_DOCUMENT' }
+  }
+  return { decision: 'PASS', reason: input.hasActiveDocument ? 'ACTIVE_DOCUMENT_PRESENT' : 'NO_ACTIVE_DOCUMENT_SUPPRESSED' }
+}
+
+/** True rendered visibility — never trusts `hidden` alone (V2). */
+export function isRenderedVisible(el: HTMLElement | null): boolean {
+  if (!el || !el.isConnected) return false
+  const style = window.getComputedStyle(el)
+  const rect = el.getBoundingClientRect()
+  const opacity = Number.parseFloat(style.opacity || '1')
+  return (
+    style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    Number.isFinite(opacity) &&
+    opacity > 0 &&
+    rect.width > 0 &&
+    rect.height > 0 &&
+    el.getClientRects().length > 0
+  )
+}
+
+export interface ToolbarRenderedVisibilityFacts {
+  documentKey: string | null
+  hasActiveDocument: boolean
+  toolbarDomCount: number
+  problemsControlDomCount: number
+  hiddenAttr: boolean
+  ariaHidden: boolean
+  presentation: string | null
+  computedDisplay: string
+  computedVisibility: string
+  computedOpacity: string
+  rectWidth: number
+  rectHeight: number
+  clientRectCount: number
+  renderedToolbarCount: number
+  renderedProblemsControlCount: number
+  projectedErrorCount: number
+  projectedWarningCount: number
+  projectedHintCount: number
+  projectedEditState: 'LOCKED' | 'EDITABLE' | 'NONE'
+  measureMode: 'REAL' | 'HEADLESS'
+}
+
+export function evaluateToolbarRenderedVisibility(
+  f: ToolbarRenderedVisibilityFacts,
+): { decision: 'PASS' | 'FAIL' | 'NA'; reason: string } {
+  if (f.toolbarDomCount > 1) return { decision: 'FAIL', reason: 'DUPLICATE_OR_ORPHAN_TOOLBAR' }
+  const hiddenOverride = f.hiddenAttr && f.computedDisplay !== 'none' && isRenderedVisibleFrom(f.computedDisplay, f.computedVisibility, f.computedOpacity, f.rectWidth, f.rectHeight, f.clientRectCount)
+  if (hiddenOverride) return { decision: 'FAIL', reason: 'HIDDEN_ATTRIBUTE_OVERRIDDEN_BY_CSS' }
+
+  // Headless layout: BCR/clientRects are all zero — never certify a visual.
+  const visuallyProven = f.rectWidth > 0 && f.rectHeight > 0 && f.clientRectCount > 0
+  const real = f.measureMode === 'REAL' || f.computedDisplay === 'none' || visuallyProven
+  if (!real) return { decision: 'NA', reason: 'NO_REAL_LAYOUT' }
+
+  if (!f.hasActiveDocument) {
+    if (f.renderedToolbarCount > 0) return { decision: 'FAIL', reason: 'RENDERED_TOOLBAR_WITHOUT_ACTIVE_DOCUMENT' }
+    if (f.toolbarDomCount === 1 && f.renderedToolbarCount === 0 && f.renderedProblemsControlCount > 0) {
+      return { decision: 'FAIL', reason: 'ORPHAN_PROBLEMS_CONTROL' }
+    }
+    if (f.projectedErrorCount > 0 || f.projectedWarningCount > 0 || f.projectedHintCount > 0 || f.projectedEditState !== 'NONE') {
+      return { decision: 'FAIL', reason: 'STALE_DOCUMENT_TOOLBAR_PROJECTION' }
+    }
+    const emptyChain =
+      f.hiddenAttr && f.ariaHidden && f.presentation === 'suppressed' && f.computedDisplay === 'none' &&
+      f.rectWidth === 0 && f.rectHeight === 0 && f.clientRectCount === 0 &&
+      f.renderedToolbarCount === 0 && f.renderedProblemsControlCount === 0
+    return emptyChain
+      ? { decision: 'PASS', reason: 'NO_ACTIVE_DOCUMENT_NOT_RENDERED' }
+      : { decision: 'FAIL', reason: 'EMPTY_STATE_RENDER_CHAIN_INCOMPLETE' }
+  }
+
+  // Active document: must be genuinely rendered (REAL layout only).
+  if (f.hiddenAttr || f.computedDisplay === 'none') return { decision: 'FAIL', reason: 'ACTIVE_DOCUMENT_NOT_RENDERED' }
+  const activeRendered = f.renderedToolbarCount >= 1 && f.computedDisplay !== 'none' && f.renderedProblemsControlCount >= 1
+  if (!visuallyProven) return { decision: 'NA', reason: 'NO_REAL_LAYOUT' }
+  return activeRendered
+    ? { decision: 'PASS', reason: 'ACTIVE_DOCUMENT_RENDERED' }
+    : { decision: 'FAIL', reason: 'ACTIVE_DOCUMENT_NOT_RENDERED' }
+}
+
+function isRenderedVisibleFrom(display: string, visibility: string, opacity: string, w: number, h: number, rects: number): boolean {
+  const o = Number.parseFloat(opacity || '1')
+  return display !== 'none' && visibility !== 'hidden' && Number.isFinite(o) && o > 0 && w > 0 && h > 0 && rects > 0
 }
 
 /** Gutter-aware navigator visibility (NOT viewport-width based). */
@@ -496,6 +702,254 @@ export type BcrVerdict =
 
 export type NavigatorPlacementFailure = 'NAVIGATOR_STALE_DRAWER_OFFSET' | 'NAVIGATOR_NOT_AT_AVOIDANCE_POSITION' | 'NAVIGATOR_POSITION_DRIFT'
 
+/** V1.1 Drift reason codes (audit-level FAIL classification). */
+export type NavigatorDriftCode =
+  | 'OUTSIDE_SAFE_RAIL'
+  | 'TOO_CLOSE_TO_CONTENT'
+  | 'TOO_CLOSE_TO_SCROLLBAR'
+  | 'OUTSIDE_VISIBLE_EDITOR'
+  | 'WIDTH_NO_LONGER_FITS'
+  | 'ANCHOR_MISMATCH'
+export type NavigatorDriftVerdict = 'PASS' | NavigatorDriftCode
+
+/**
+ * V1.1 — Position Drift FAIL classification (pure). Consumes the REAL existing
+ * geometry (visible content right, safe rail, scrollbar-safe right). The
+ * navigator must sit inside its rail while staying clear of content and the
+ * scrollbar; tolerance is 1px (never widen to mask a real regression).
+ */
+export interface NavigatorDriftInput {
+  left: number
+  right: number
+  top: number
+  bottom: number
+  width: number
+  viewportLeft: number
+  viewportRight: number
+  viewportTop: number
+  viewportBottom: number
+  /** visible write-content right edge (null = content not measurable). */
+  contentRight: number | null
+  contentGap: number
+  safeRailLeft: number
+  safeRailRight: number
+  /** right edge the navigator may touch the scrollbar (null = unknown). */
+  scrollbarSafeRight: number | null
+  tolerancePx?: number
+}
+export function classifyNavigatorPositionDrift(input: NavigatorDriftInput): NavigatorDriftVerdict {
+  const tol = input.tolerancePx ?? 1
+  const finite = [input.left, input.right, input.top, input.bottom, input.width,
+    input.safeRailLeft, input.safeRailRight].every(Number.isFinite)
+  if (!finite) return 'ANCHOR_MISMATCH'
+  if (input.width <= 0) return 'WIDTH_NO_LONGER_FITS'
+  if (input.left < input.viewportLeft - tol || input.right > input.viewportRight + tol ||
+      input.top < input.viewportTop - tol || input.bottom > input.viewportBottom + tol) {
+    return 'OUTSIDE_VISIBLE_EDITOR'
+  }
+  if (input.contentRight != null && input.left < input.contentRight + input.contentGap - tol) {
+    return 'TOO_CLOSE_TO_CONTENT'
+  }
+  if (input.scrollbarSafeRight != null && input.right > input.scrollbarSafeRight + tol) {
+    return 'TOO_CLOSE_TO_SCROLLBAR'
+  }
+  if (input.left < input.safeRailLeft - tol || input.right > input.safeRailRight + tol) {
+    return 'OUTSIDE_SAFE_RAIL'
+  }
+  return 'PASS'
+}
+
+/**
+ * V1.1 — read-only Rail Facts captured from the REAL geometry measurement.
+ * Drift classification reads THESE facts; it never re-derives a second rail.
+ */
+export interface NavigatorRailFacts {
+  knowledge: 'known' | 'unknown'
+  contentLeft: number | null
+  contentRight: number | null
+  safeRailLeft: number | null
+  safeRailRight: number | null
+  /** measured: scrollbarSafeRight = containerRect.right − scrollbarWidth − gap. */
+  scrollbarKnowledge: 'known' | 'unknown'
+  scrollbarWidth: number | null
+  scrollbarSafeRight: number | null
+  insetSafeWidth: number | null
+  expectedRight: number | null
+}
+
+/** V1.1 — default content gap used when classifying the live navigator audit. */
+const NAV_CONTENT_SAFE_GAP_PX = 8
+/** V1.1 — measured scrollbar clearance gap (scrollbarSafeRight = rect.right − sb − gap). */
+const NAV_SCROLLBAR_SAFE_GAP_PX = 2
+/** True-Inset — rail may overlap #write's right edge by at most this much (px). */
+export const NAV_INSET_MAX_CONTENT_OVERLAP_PX = 12
+/** Edge-Inset fallback — navigator hugs the visible editor's right edge with
+ *  this much clearance (px). Only editor bounds + scrollbar apply here. */
+export const NAV_EDGE_INSET_GAP_PX = 2
+
+/**
+ * True-Inset — pure fit math (used by the rail and by real-case tests):
+ * the navigator first uses the free space right of #write, then is allowed to
+ * overlap the content edge by at most NAV_INSET_MAX_CONTENT_OVERLAP_PX.
+ */
+export function computeTrueInsetFit(
+  navWidth: number,
+  contentRight: number | null,
+  scrollbarSafeRight: number | null,
+): { externalFreeWidth: number | null; requiredInsetOverlap: number | null; canFit: boolean } {
+  const measured = contentRight != null && scrollbarSafeRight != null && Number.isFinite(contentRight) && Number.isFinite(scrollbarSafeRight)
+  const externalFreeWidth = measured ? Math.max(0, scrollbarSafeRight! - contentRight!) : null
+  const requiredInsetOverlap = externalFreeWidth != null ? Math.max(0, navWidth - externalFreeWidth) : null
+  const canFit = requiredInsetOverlap != null && requiredInsetOverlap <= NAV_INSET_MAX_CONTENT_OVERLAP_PX
+  return { externalFreeWidth, requiredInsetOverlap, canFit }
+}
+
+/**
+ * Real Candidate-Rect placement (authority). Each presentation uses its OWN
+ * candidate rect — NOT one rail width tested against two thresholds.
+ *
+ * gutter: navigator sits fully right of `contentRight + NAV_CONTENT_SAFE_GAP_PX`
+ *         (checked separately in the decision with `rightGutter`, unchanged).
+ * inset:  navigator is pinned at the right edge = scrollbarSafeRight and may
+ *         overlap the content by at most NAV_INSET_MAX_CONTENT_OVERLAP_PX;
+ *         it must stay inside the visible editor rect.
+ */
+export function computeNavigatorPlacementCandidate(args: {
+  editorLeft: number
+  editorRight: number
+  contentRight: number
+  scrollbarSafeRight: number
+  navigatorWidth: number
+  maxContentOverlap?: number
+}): {
+  candidateLeft: number
+  candidateRight: number
+  contentOverlap: number
+  insideEditor: boolean
+  valid: boolean
+} {
+  const maxOverlap = args.maxContentOverlap ?? NAV_INSET_MAX_CONTENT_OVERLAP_PX
+  const candidateRight = args.scrollbarSafeRight
+  const candidateLeft = candidateRight - args.navigatorWidth
+  const contentOverlap = Math.max(0, args.contentRight - candidateLeft)
+  const insideEditor = candidateLeft >= args.editorLeft && candidateRight <= args.editorRight
+  return { candidateLeft, candidateRight, contentOverlap, insideEditor, valid: insideEditor && contentOverlap <= maxOverlap }
+}
+
+/**
+ * Edge-Inset fallback (not a 4th presentation — still `inset`). Used when the
+ * normal safe inset cannot fit right of the content (no 12px overlap budget).
+ * Only constraints: the navigator stays fully inside the VISIBLE editor and its
+ * right edge never crosses the measured scrollbar-safe boundary.
+ */
+export function computeNavigatorEdgeInsetCandidate(args: {
+  editorLeft: number
+  editorRight: number
+  scrollbarSafeRight: number
+  navigatorWidth: number
+  edgeGap?: number
+}): {
+  candidateLeft: number
+  candidateRight: number
+  insideEditor: boolean
+  valid: boolean
+} {
+  const edgeGap = args.edgeGap ?? NAV_EDGE_INSET_GAP_PX
+  const candidateRight = Math.min(args.scrollbarSafeRight, args.editorRight - edgeGap)
+  const candidateLeft = candidateRight - args.navigatorWidth
+  const insideEditor = candidateLeft >= args.editorLeft + edgeGap && candidateRight <= args.editorRight - edgeGap
+  const valid = Number.isFinite(candidateLeft) && Number.isFinite(candidateRight)
+    && args.navigatorWidth > 0 && insideEditor
+  return { candidateLeft, candidateRight, insideEditor, valid }
+}
+
+/** Monotonic visibility invariant: a scrollable doc whose edge candidate fits
+ *  must NEVER land on hidden (no intermediate visibility hole). */
+export function auditNavigatorMonotonicVisibility(input: {
+  scrollable: boolean
+  edgeInsetCandidateValid: boolean
+  finalPresentation: NavigatorPresentation
+}): { decision: 'PASS' | 'FAIL_NON_MONOTONIC_VISIBILITY_HOLE' } {
+  const hole = input.scrollable && input.edgeInsetCandidateValid && input.finalPresentation === 'hidden'
+  return { decision: hole ? 'FAIL_NON_MONOTONIC_VISIBILITY_HOLE' : 'PASS' }
+}
+
+/**
+ * Chevron V3 — Navigator icon visibility invariant (pure). When a scrollable
+ * navigator is visible there must be at least one ENABLED button whose SVG is
+ * actually renderable (≥12×12, visible, opacity ≥ .70, non-transparent stroke).
+ */
+export function auditNavigatorIconVisibility(input: {
+  scrollable: boolean
+  navigatorVisible: boolean
+  enabledButtonCount: number
+  svgWidth: number | null
+  svgHeight: number | null
+  svgDisplay: string | null
+  svgVisibility: string | null
+  svgOpacity: number | null
+  strokeTransparent: boolean
+}): { decision: 'PASS' | 'FAIL_NAV_ICON_EFFECTIVELY_INVISIBLE'; reason: string } {
+  if (!input.scrollable || !input.navigatorVisible) return { decision: 'PASS', reason: 'NAV_NOT_VISIBLE_SKIP' }
+  if (input.enabledButtonCount < 1) return { decision: 'FAIL_NAV_ICON_EFFECTIVELY_INVISIBLE', reason: 'NO_ENABLED_BUTTON' }
+  const svgOk = input.svgWidth != null && input.svgWidth >= 12
+    && input.svgHeight != null && input.svgHeight >= 12
+    && input.svgDisplay != null && input.svgDisplay !== 'none'
+    && input.svgVisibility != null && input.svgVisibility !== 'hidden'
+    && input.svgOpacity != null && input.svgOpacity >= 0.7
+    && !input.strokeTransparent
+  if (!svgOk) return { decision: 'FAIL_NAV_ICON_EFFECTIVELY_INVISIBLE', reason: 'SVG_EFFECTIVELY_INVISIBLE' }
+  return { decision: 'PASS', reason: 'ICONS_VISIBLE' }
+}
+
+/**
+ * V1.4 — Resize Stabilization Gate (pure). During DevTools/Electron resize the
+ * FIRST transient frame must never jump a scrollable document from visible
+ * straight into NO_SAFE_PLACEMENT: it holds the last stable VISIBLE
+ * presentation exactly once and requests a single next-frame remeasure.
+ * `lastStableVisiblePresentation` is continuity ONLY — the follow-up frame
+ * always re-enters the real decideNavigatorPresentation.
+ */
+export interface NavigatorStabilizationInput {
+  scrollable: boolean
+  presentation: NavigatorPresentation
+  reason: string
+  lastStableVisible: 'gutter' | 'inset' | null
+  remeasureScheduled: boolean
+}
+export interface NavigatorStabilizationResult {
+  presentation: NavigatorPresentation
+  reason: string
+  lastStableVisible: 'gutter' | 'inset' | null
+  scheduleRemeasure: boolean
+}
+export function applyNavigatorStabilization(input: NavigatorStabilizationInput): NavigatorStabilizationResult {
+  if (!input.scrollable) {
+    // Not scrollable → immediate hidden/NOT_SCROLLABLE (authority preserved).
+    return { presentation: 'hidden', reason: 'NOT_SCROLLABLE', lastStableVisible: null, scheduleRemeasure: false }
+  }
+  if (input.presentation !== 'hidden') {
+    // A real visible decision refreshes the stable baseline and cancels the gate.
+    return {
+      presentation: input.presentation,
+      reason: input.reason,
+      lastStableVisible: input.presentation as 'gutter' | 'inset',
+      scheduleRemeasure: false,
+    }
+  }
+  // hidden / NO_SAFE_PLACEMENT — but only a coherent STABLE frame may commit it.
+  const heldVisible = input.lastStableVisible !== null && !input.remeasureScheduled
+  if (heldVisible) {
+    return {
+      presentation: input.lastStableVisible!,
+      reason: 'STABILIZING_ONE_FRAME',
+      lastStableVisible: input.lastStableVisible,
+      scheduleRemeasure: true,
+    }
+  }
+  return { presentation: 'hidden', reason: input.reason, lastStableVisible: input.lastStableVisible, scheduleRemeasure: false }
+}
+
 /**
  * Phase 7R.3.11.8B.3 — navigator placement evaluation (pure, single formula).
  * The navigator is an INDEPENDENT anchor: expectedRight is `right + NAV_RIGHT_PX`
@@ -661,8 +1115,14 @@ export class DocumentUtilityOverlayHost {
   private navigatorEl: HTMLDivElement | null = null
   private drawerEl: HTMLDivElement | null = null
   private drawerListEl: HTMLDivElement | null = null
-  private diagButtonEl: HTMLButtonElement | null = null
+  private problemsControlEl: HTMLDivElement | null = null
   private lockButtonEl: HTMLButtonElement | null = null
+  /** V1.1 — Drawer severity filter, shared with the Toolbar status segments. */
+  private drawerFilter: DiagnosticsSeverityFilter = 'all'
+  private drawerFiltersEl: HTMLDivElement | null = null
+  private drawerEmptyEl: HTMLDivElement | null = null
+  /** V1.1 — most-recent located diagnostic row highlight (neutral/accent). */
+  private lastLocatedDiagnosticId: string | null = null
   private topBtnEl: HTMLButtonElement | null = null
   private bottomBtnEl: HTMLButtonElement | null = null
   private drawerOpen = false
@@ -768,6 +1228,12 @@ export class DocumentUtilityOverlayHost {
   private mounted = false
   private disposed = false
   private disposables: Array<() => void> = []
+  /** Phase 7R.3.11.8B.NO-ACTIVE-DOC — event-driven tab structure watch. */
+  private tabStructureObserver: MutationObserver | null = null
+  /** V3 — last ACTIVE-LEAF presence decision (identity-conflict observability). */
+  private lastActiveLeafPresence: ActiveDocumentPresenceDecision | null = null
+  /** V3 — real active-leaf lifecycle subscription (workspace + tabs). */
+  private activeLeafLifecycleDispose: (() => void) | null = null
 
   constructor(private opts: DocumentUtilitiesOverlayOptions) {
     this.diagnostics = new DocumentDiagnosticsAuthority(opts.ctx, opts.providers)
@@ -821,6 +1287,7 @@ export class DocumentUtilityOverlayHost {
     // the scoped min-width host class (declarative CSS, no inline width
     // writes). Unresolved → log unsupported, never guess an ancestor.
     this.applyWorkspaceHost()
+    this.ensureTabStructureObserver()
 
     // Placement sync — anchored to the editor shell rect. The ResizeObserver
     // callback only schedules ONE coalesced rAF; it never writes styles (no
@@ -952,6 +1419,20 @@ export class DocumentUtilityOverlayHost {
     // Bind to the current document.
     this.opts.onBindDocument?.(() => this.bindDocument())
 
+    // V3 — primary active-leaf lifecycle (workspace `active-leaf:change` +
+    // workspace-tabs `tab:toggle`). The host reacts to the REAL leaf state
+    // synchronously: close-last-tab → immediate EMPTY suppression, reopen →
+    // automatic restore. Registered into this.disposables so dispose removes it.
+    this.activeLeafLifecycleDispose = this.opts.onActiveLeafLifecycle?.((reason) => {
+      this.handleActiveLeafLifecycle(reason)
+    }) ?? null
+    if (this.activeLeafLifecycleDispose) {
+      this.disposables.push(() => {
+        this.activeLeafLifecycleDispose?.()
+        this.activeLeafLifecycleDispose = null
+      })
+    }
+
     emitRuntimeAudit('DOCUMENT-UTILITY-LIFECYCLE', {
       action: 'MOUNTED',
       rootCount: document.querySelectorAll(`[${UTILITY_ROOT_IDENTITY_ATTR}="true"]`).length,
@@ -1012,11 +1493,21 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.7.7 — document switch cancels any active locate
     // transaction (no stale scroll completion may commit into the new doc).
     this.cancelActiveLocateTransaction('DOCUMENT_SWITCH')
+    this.ensureTabStructureObserver()
+    // Phase 7R.3.11.8B.NO-ACTIVE-DOC — immediate suppression when the switch
+    // lands on an empty/New-tab state (no real Markdown document).
+    if (!this.resolveHasActiveDocument()) {
+      this.applyNoActiveDocumentState()
+    }
     this.scrollNav?.bind()
     this.diagnostics.rebind()
     this.scheduleGeometrySync('bind-document')
     this.renderLockButton()
     this.emitFullBcr('document-switch')
+    // V3 — publish the ACTIVE-LEAF presence invariant on every real document
+    // switch (recorded after rebind; the empty/unknown branches already emit
+    // inside applyNoActiveDocumentState when applicable).
+    if (this.resolveHasActiveDocument()) this.emitActiveLeafDocumentInvariant('BIND_DOCUMENT')
     // Phase 7R.3.11.7 §32/§33: event-triggered settle summary (no timer).
     emitInkchapterRuntimeAuditSummary('document-switch-settled')
     emitRuntimeAudit('DOCUMENT-UTILITY-LIFECYCLE', {
@@ -1320,7 +1811,376 @@ export class DocumentUtilityOverlayHost {
   /** Phase 2-B.3 — final navigator presentation state (single authority). */
   private lastNavVis: { presentation: NavigatorPresentation; reason: string; insetRightPx: number | null } =
     { presentation: 'hidden', reason: 'NOT_SCROLLABLE', insetRightPx: null }
+  /** V1.1 — read-only Rail Facts captured during geometry (Drift consumes them). */
+  private lastRailFacts: NavigatorRailFacts | null = null
+  /** Chevron V3 — icon visibility invariant counter (FAIL only). */
+  private navIconVisibilityFailCount = 0
+  /** Edge-Inset — monotonic visibility hole counter (FAIL only). */
+  private monotonicVisibilityHoleCount = 0
+  /** Visible-editor containment invariant counter (FAIL only). */
+  private editorContainmentFailCount = 0
+  /** True-Inset — presentation-aware content gap for Drift (gutter +8 / inset −12). */
+  private lastDriftContentGap = NAV_CONTENT_SAFE_GAP_PX
+  /** V1.4 — resize-stabilization continuity (NOT a second authority). */
+  private lastStableNavigatorPresentation: 'gutter' | 'inset' | null = null
+  private stabilizationRemeasurePending = false
+  /** V1.5 — any legacy drawer/small-viewport/second-writer suppression emission. */
+  private legacySuppressionEmissionCount = 0
+  private lastNavigatorAuthoritySig = ''
   private lastDiagnosticsPresentation: DiagnosticsPresentation = 'desktop'
+
+  // ── V3 Active-Document Presence authority (ACTIVE / EMPTY / UNKNOWN) ──────
+  // The ACTIVE workspace leaf (`activeLeaf.state.path`) is the HIGHEST
+  // authority. An EXPLICIT EMPTY leaf (known + path='') HARD-VETOES every stale
+  // workspace.activeFile / documentKey fallback. Legacy fallback participates
+  // ONLY when the leaf state is unreadable (UNKNOWN). This fixes
+  // EXPLICIT_EMPTY_ACTIVE_LEAF_IS_OVERRIDDEN_BY_STALE_ACTIVE_FILE_OR_DOCUMENT_KEY.
+
+  /** Read + normalize the REAL active workspace leaf facts. */
+  private readActiveLeafFacts(): ActiveLeafDocumentFacts {
+    try {
+      const getter = this.opts.ctx.authority.getActiveLeafState
+      if (typeof getter !== 'function') return { leafStateKnown: false, leafPath: null }
+      const f = getter()
+      if (!f || typeof f !== 'object') return { leafStateKnown: false, leafPath: null }
+      return {
+        leafStateKnown: f.leafStateKnown === true,
+        leafPath: normalizeActiveLeafDocumentPath(f.leafPath),
+      }
+    } catch {
+      return { leafStateKnown: false, leafPath: null }
+    }
+  }
+
+  private readLegacyPresenceFacts(): { file: string | null; key: string | null } {
+    const ctx = this.opts.ctx
+    try {
+      const file = typeof ctx.authority.getActiveFilePath === 'function' ? ctx.authority.getActiveFilePath() : null
+      const key = typeof ctx.authority.getDocumentKey === 'function' ? ctx.authority.getDocumentKey() : null
+      return { file: file ?? null, key: key ?? null }
+    } catch {
+      return { file: null, key: null }
+    }
+  }
+
+  /**
+   * Single ACTIVE-LEAF presence evaluation.
+   *  - EMPTY / ACTIVE decide directly from the pure three-state model.
+   *  - UNKNOWN merges the legacy ctx + #write-root gate (previous authority).
+   */
+  private evaluateActiveDocumentPresence(): {
+    presence: ActiveDocumentPresenceDecision
+    hasActiveDocument: boolean
+    legacyUsed: boolean
+  } {
+    const leaf = this.readActiveLeafFacts()
+    const legacy = this.readLegacyPresenceFacts()
+    const presence = resolveActiveDocumentPresence({
+      leafStateKnown: leaf.leafStateKnown,
+      leafPath: leaf.leafPath,
+      workspaceActiveFilePath: legacy.file,
+      documentKey: legacy.key,
+    })
+    this.lastActiveLeafPresence = presence
+    if (presence.state !== 'UNKNOWN') {
+      return { presence, hasActiveDocument: presence.state === 'ACTIVE', legacyUsed: false }
+    }
+    try {
+      const ctx = this.opts.ctx
+      const ctxSaysActive = typeof ctx.hasActiveDocument === 'function' ? ctx.hasActiveDocument() : legacy.file != null
+      const root = resolveBusinessContentRoot()
+      const hasActiveDocument = resolveActiveDocumentExistence({
+        documentKey: legacy.key,
+        activeFilePath: legacy.file,
+        ctxHasActiveDocument: ctxSaysActive,
+        rootConnected: root ? root.isConnected : null,
+      })
+      return { presence, hasActiveDocument, legacyUsed: true }
+    } catch {
+      return { presence, hasActiveDocument: false, legacyUsed: true }
+    }
+  }
+
+  /**
+   * Document Problems Control belongs to the ACTIVE Markdown document.
+   * The active workspace leaf decides; EMPTY never falls back to a stale
+   * activeFile/documentKey. UNKNOWN keeps the legacy ctx+#write-root gate so
+   * headless/jsdom and legacy consumers behave exactly as before.
+   */
+  private resolveHasActiveDocument(): boolean {
+    return this.evaluateActiveDocumentPresence().hasActiveDocument
+  }
+
+  /**
+   * V3 — SYNCHRONOUS reaction to a real active-leaf lifecycle transition.
+   *  - path=''   → immediate identity invalidation + suppression. Never waits
+   *                for resize / scroll / geometry / unrelated DOM mutation.
+   *  - path=doc  → automatic restore (no click/scroll/resize/restart needed).
+   *  - unknown   → legacy fallback (explicitly logged).
+   */
+  private handleActiveLeafLifecycle(reason: ActiveLeafTransitionReason): void {
+    if (this.disposed) return
+    try {
+      const ev = this.evaluateActiveDocumentPresence()
+      const p = ev.presence
+      emitRuntimeAudit('DOCUMENT-UTILITY-ACTIVE-LEAF-TRANSITION', {
+        trigger: reason,
+        activeLeafStateKnown: p.state !== 'UNKNOWN',
+        activeLeafPath: p.state === 'ACTIVE' && p.path != null ? p.path : '',
+        presenceState: p.state,
+        presenceSource: p.source,
+        identityConflict: p.identityConflict,
+        legacyFallbackUsed: p.legacyFallbackUsed,
+        hasActiveDocument: ev.hasActiveDocument,
+        decision: 'EVALUATED',
+      })
+      if (p.state === 'EMPTY') {
+        // Close-last-tab / New tab: EMPTY leaf wins over stale identity.
+        this.applyNoActiveDocumentState() // clears projection + suppresses + emits invariants
+        return
+      }
+      if (p.state === 'ACTIVE') {
+        // Reopen transition: cancel stale locate, then let the next coalesced
+        // geometry pass restore full/compact (bindDocument on file:open also
+        // recomputes diagnostics — automatic, no user click required).
+        this.cancelActiveLocateTransaction('ACTIVE_LEAF_REOPEN')
+        this.scheduleGeometrySync('active-leaf-active')
+        this.emitActiveLeafDocumentInvariant(`TRANSITION:${reason}`)
+        return
+      }
+      // ONLY UNKNOWN → legacy fallback decides (never silent).
+      if (ev.hasActiveDocument) {
+        this.scheduleGeometrySync('active-leaf-legacy-active')
+      } else {
+        this.applyNoActiveDocumentState()
+      }
+      this.emitActiveLeafDocumentInvariant(`TRANSITION:${reason}`)
+    } catch { /* best-effort observability */ }
+  }
+
+  /**
+   * DOCUMENT-UTILITY-ACTIVE-LEAF-DOCUMENT-INVARIANT — runtime gate. FAILs:
+   *  - STALE_ACTIVE_FILE_OVERRIDES_EMPTY_LEAF (leaf="" but hasActiveDocument)
+   *  - EMPTY_LEAF_WITH_RENDERED_TOOLBAR (EMPTY yet toolbar still rendered)
+   */
+  private emitActiveLeafDocumentInvariant(trigger: string): void {
+    try {
+      const ev = this.evaluateActiveDocumentPresence()
+      const p = ev.presence
+      const legacy = this.readLegacyPresenceFacts()
+      const documentKey = this.opts.ctx.authority.getDocumentKey?.() ?? legacy.key
+      const toolbarFacts = this.measureToolbarRenderedFacts()
+      const drawerVisible = this.drawerOpen
+      const pendingLocateTarget = this.activeLocateTx?.diagnosticId ?? this.lastLocatedDiagnosticId ?? null
+      const activeLeafStateKnown = p.state !== 'UNKNOWN'
+      const activeLeafPath = p.state === 'ACTIVE' && p.path != null ? p.path : ''
+      let decision: 'PASS' | 'FAIL' = 'PASS'
+      let reason: string
+      if (activeLeafStateKnown && activeLeafPath === '' && ev.hasActiveDocument) {
+        decision = 'FAIL'
+        reason = 'STALE_ACTIVE_FILE_OVERRIDES_EMPTY_LEAF'
+      } else if (p.state === 'EMPTY' && toolbarFacts.renderedToolbarCount > 0) {
+        decision = 'FAIL'
+        reason = 'EMPTY_LEAF_WITH_RENDERED_TOOLBAR'
+      } else if (p.state === 'EMPTY') {
+        reason = 'EXPLICIT_EMPTY_LEAF_SUPPRESSED'
+      } else if (p.state === 'ACTIVE') {
+        reason = 'ACTIVE_LEAF_DOCUMENT_PRESENT'
+      } else {
+        reason = 'UNKNOWN_LEAF_LEGACY_FALLBACK'
+      }
+      emitRuntimeAudit('DOCUMENT-UTILITY-ACTIVE-LEAF-DOCUMENT-INVARIANT', {
+        trigger,
+        activeLeafStateKnown,
+        activeLeafPath,
+        workspaceActiveFilePath: legacy.file,
+        documentKey,
+        presenceState: p.state,
+        presenceSource: p.source,
+        identityConflict: p.identityConflict,
+        legacyFallbackUsed: p.legacyFallbackUsed,
+        legacyFallbackSource: p.legacyFallbackSource,
+        hasActiveDocument: ev.hasActiveDocument,
+        toolbarPresentation: toolbarFacts.presentation ?? this.lastToolbarPresentation,
+        toolbarRenderedVisible: toolbarFacts.renderedToolbarCount > 0,
+        renderedToolbarCount: toolbarFacts.renderedToolbarCount,
+        drawerVisible,
+        pendingLocateTarget,
+        decision,
+        reason,
+      })
+    } catch { /* best-effort */ }
+  }
+
+  /** NO_ACTIVE_DOCUMENT state: clear stale projection + suppress + clean locate. */
+  private applyNoActiveDocumentState(): void {
+    // Order: clear projected DOM first, then hide (per §12) — never a re-scan.
+    this.clearToolbarProjection()
+    this.applyToolbarPresentation('suppressed') // keeps the single toolbar instance
+    if (this.drawerOpen) this.setDrawerOpen(false)
+    if (this.activeLocateTx) this.cancelActiveLocateTransaction('NO_ACTIVE_DOCUMENT')
+    this.lastLocatedDiagnosticId = null
+    this.multiTargetCursor.clear()
+    this.emitActiveDocumentVisibilityInvariant()
+    this.emitToolbarRenderedVisibilityInvariant()
+    this.emitActiveLeafDocumentInvariant('NO_ACTIVE_DOCUMENT')
+  }
+
+  /** Empty-document projection cleanup: counts → 0, edit text → empty. */
+  private clearToolbarProjection(): void {
+    if (this.problemsControlEl) this.problemsControlEl.replaceChildren()
+    if (this.toolbarEl) {
+      for (const el of this.toolbarEl.querySelectorAll<HTMLElement>('.inkchapter-toolbar-segment__count')) el.textContent = '0'
+      const lockLabel = this.toolbarEl.querySelector<HTMLElement>('.inkchapter-editlock__label')
+      if (lockLabel) lockLabel.textContent = ''
+      if (this.lockButtonEl) this.lockButtonEl.classList.remove('is-locked')
+    }
+  }
+
+  /** Read the REAL rendered-visibility chain for toolbar + problems control. */
+  private measureToolbarRenderedFacts(): ToolbarRenderedVisibilityFacts {
+    const toolbarEls = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-toolbar'))
+    const problemsEls = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-problems-control'))
+    const tracked = this.toolbarEl && toolbarEls.includes(this.toolbarEl) ? this.toolbarEl : toolbarEls[0] ?? null
+    let display = 'none'
+    let visibility = ''
+    let opacity = ''
+    let rectWidth = 0
+    let rectHeight = 0
+    let clientRectCount = 0
+    let hiddenAttr = true
+    let ariaHidden = true
+    let presentation: string | null = 'suppressed'
+    let projectedError = 0
+    let projectedWarning = 0
+    let projectedHint = 0
+    let projectedEdit: 'LOCKED' | 'EDITABLE' | 'NONE' = 'NONE'
+    if (tracked) {
+      hiddenAttr = tracked.hidden
+      ariaHidden = tracked.getAttribute('aria-hidden') === 'true'
+      presentation = tracked.dataset.presentation ?? null
+      const style = window.getComputedStyle(tracked)
+      display = style.display
+      visibility = style.visibility
+      opacity = style.opacity
+      const rect = tracked.getBoundingClientRect()
+      rectWidth = rect.width
+      rectHeight = rect.height
+      clientRectCount = tracked.getClientRects().length
+      const counts = tracked.querySelectorAll<HTMLElement>('.inkchapter-toolbar-segment__count')
+      const nums = Array.from(counts).map(el => Number.parseInt(el.textContent ?? '0', 10)).filter(n => Number.isFinite(n))
+      projectedError = nums[0] ?? 0
+      projectedWarning = nums[1] ?? 0
+      const lockLabel = tracked.querySelector<HTMLElement>('.inkchapter-editlock__label')?.textContent ?? ''
+      if (tracked.querySelector('.inkchapter-editlock.is-locked') || /锁定/.test(lockLabel)) projectedEdit = 'LOCKED'
+      else if (lockLabel.trim() !== '') projectedEdit = 'EDITABLE'
+    }
+    const renderedToolbarCount = toolbarEls.filter(isRenderedVisible).length
+    const renderedProblemsControlCount = problemsEls.filter(isRenderedVisible).length
+    const visuallyProven = rectWidth > 0 && rectHeight > 0 && clientRectCount > 0
+    const measureMode: 'REAL' | 'HEADLESS' = display === 'none' || visuallyProven ? 'REAL' : 'HEADLESS'
+    return {
+      documentKey: this.opts.ctx.authority.getDocumentKey?.() ?? null,
+      hasActiveDocument: this.resolveHasActiveDocument(),
+      toolbarDomCount: toolbarEls.length,
+      problemsControlDomCount: problemsEls.length,
+      hiddenAttr,
+      ariaHidden,
+      presentation,
+      computedDisplay: display,
+      computedVisibility: visibility,
+      computedOpacity: opacity,
+      rectWidth,
+      rectHeight,
+      clientRectCount,
+      renderedToolbarCount,
+      renderedProblemsControlCount,
+      projectedErrorCount: projectedError,
+      projectedWarningCount: projectedWarning,
+      projectedHintCount: projectedHint,
+      projectedEditState: projectedEdit,
+      measureMode,
+    }
+  }
+
+  private emitToolbarRenderedVisibilityInvariant(): void {
+    try {
+      const facts = this.measureToolbarRenderedFacts()
+      const out = evaluateToolbarRenderedVisibility(facts)
+      emitRuntimeAudit('DOCUMENT-UTILITY-TOOLBAR-RENDERED-VISIBILITY-INVARIANT', {
+        documentKey: facts.documentKey,
+        hasActiveDocument: facts.hasActiveDocument,
+        toolbarDomCount: facts.toolbarDomCount,
+        problemsControlDomCount: facts.problemsControlDomCount,
+        hiddenAttr: facts.hiddenAttr,
+        ariaHidden: facts.ariaHidden,
+        presentation: facts.presentation,
+        computedDisplay: facts.computedDisplay,
+        computedVisibility: facts.computedVisibility,
+        computedOpacity: facts.computedOpacity,
+        rectWidth: facts.rectWidth,
+        rectHeight: facts.rectHeight,
+        clientRectCount: facts.clientRectCount,
+        renderedVisible: facts.renderedToolbarCount > 0,
+        renderedToolbarCount: facts.renderedToolbarCount,
+        renderedProblemsControlCount: facts.renderedProblemsControlCount,
+        projectedErrorCount: facts.projectedErrorCount,
+        projectedWarningCount: facts.projectedWarningCount,
+        projectedHintCount: facts.projectedHintCount,
+        projectedEditState: facts.projectedEditState,
+        measureMode: facts.measureMode,
+        decision: out.decision,
+        reason: out.reason,
+      })
+    } catch { /* best-effort */ }
+  }
+
+  private emitActiveDocumentVisibilityInvariant(): void {
+    try {
+      const documentKey = this.opts.ctx.authority.getDocumentKey?.() ?? null
+      const hasActiveDocument = this.resolveHasActiveDocument()
+      const root = resolveBusinessContentRoot()
+      const toolbarPresentation: ToolbarPresentation = this.lastToolbarPresentation
+      const toolbarVisible = this.toolbarEl ? !this.toolbarEl.hidden : false
+      const drawerVisible = this.drawerOpen
+      const pendingLocateTarget = this.activeLocateTx?.diagnosticId ?? null
+      const evalOut = evaluateActiveDocumentVisibility({
+        documentKey,
+        hasActiveDocument,
+        activeDocumentRootConnected: root?.isConnected ?? false,
+        toolbarPresentation,
+        toolbarVisible,
+        drawerVisible,
+        pendingLocateTarget,
+      })
+      emitRuntimeAudit('DOCUMENT-UTILITY-ACTIVE-DOCUMENT-VISIBILITY-INVARIANT', {
+        documentKey,
+        hasActiveDocument,
+        activeDocumentRootConnected: root?.isConnected ?? false,
+        toolbarPresentation,
+        toolbarPresentationReason: hasActiveDocument ? undefined : 'NO_ACTIVE_DOCUMENT',
+        toolbarVisible,
+        drawerVisible,
+        selectedDiagnosticId: this.lastLocatedDiagnosticId,
+        pendingLocateTarget,
+        decision: evalOut.decision,
+        reason: evalOut.reason,
+      })
+    } catch { /* best-effort */ }
+  }
+
+  /** Tab-structure observer → immediate geometry re-evaluation on open/close. */
+  private ensureTabStructureObserver(): void {
+    if (this.tabStructureObserver || this.disposed) return
+    const tabStrips = Array.from(document.querySelectorAll<HTMLElement>('.typ-workspace-tabs .typ-tabs, .typ-workspace-tab-header .typ-tabs'))
+    if (!tabStrips.length) return
+    this.tabStructureObserver = new MutationObserver(() => this.scheduleGeometrySync('tabs-structure-change'))
+    for (const strip of tabStrips) this.tabStructureObserver.observe(strip, { childList: true })
+    this.disposables.push(() => {
+      this.tabStructureObserver?.disconnect()
+      this.tabStructureObserver = null
+    })
+  }
 
   /** Phase 2-B1 — centralized toolbar writer (single source of truth). */
   private applyToolbarPresentation(presentation: ToolbarPresentation): void {
@@ -1347,16 +2207,79 @@ export class DocumentUtilityOverlayHost {
       this.drawerEl.dataset.mode = presentation
       this.lastDiagnosticsPresentation = presentation
     }
+    this.emitActiveDocumentVisibilityInvariant()
+    this.emitToolbarRenderedVisibilityInvariant()
   }
 
-  /** Phase 2-B.3 — inset rail from REAL #write padding + safe gap. */
+  /**
+   * Navigator visual width. When the element is hidden (`display:none`) its
+   * getBoundingClientRect().width is 0 — never fall back to a gutter-width
+   * constant here. Resolution: rect.width → computed style width → 30px.
+   */
+  private measureNavigatorVisualWidth(): number {
+    const el = this.navigatorEl
+    if (!el) return NAVIGATOR_VISUAL_WIDTH_PX
+    const rectWidth = el.getBoundingClientRect().width
+    if (rectWidth > 0) return rectWidth
+    const cssWidth = parseFloat(getComputedStyle(el).width || '')
+    if (cssWidth > 0) return cssWidth
+    return NAVIGATOR_VISUAL_WIDTH_PX
+  }
+
+  /** Chevron V3 — real-DOM icon visibility invariant (scrollable + visible). */
+  private emitNavigatorIconVisibilityInvariant(visible: boolean, scrollable: boolean): void {
+    const btns = this.navigatorEl
+      ? Array.from(this.navigatorEl.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-navigator__btn'))
+      : []
+    const enabled = btns.filter(b => !b.disabled)
+    const svg = enabled[0] ? enabled[0].querySelector('svg') : null
+    const cs = svg ? getComputedStyle(svg) : null
+    const stroke = cs ? cs.stroke : ''
+    const decision = auditNavigatorIconVisibility({
+      scrollable,
+      navigatorVisible: visible,
+      enabledButtonCount: enabled.length,
+      svgWidth: svg ? parseFloat(getComputedStyle(svg).width || '0') : null,
+      svgHeight: svg ? parseFloat(getComputedStyle(svg).height || '0') : null,
+      svgDisplay: cs ? cs.display : null,
+      svgVisibility: cs ? cs.visibility : null,
+      svgOpacity: cs ? parseFloat(cs.opacity || '1') : null,
+      strokeTransparent: stroke === 'transparent' || stroke === 'rgba(0, 0, 0, 0)',
+    })
+    if (decision.decision !== 'PASS') {
+      this.navIconVisibilityFailCount++
+      console.log(`[InkChapter] DOCUMENT-UTILITY-NAVIGATOR-ICON-VISIBILITY-INVARIANT: decision=${decision.decision} reason=${decision.reason} enabledButtonCount=${enabled.length}`)
+    }
+  }
+
+  /**
+   * Phase 2-B.3 / True-Inset — REAL safe-rail for the navigator.
+   * Coherence gate: layout content beyond the visible viewport (DevTools
+   * transient) is INCOHERENT → UNKNOWN visible fallback, never measured
+   * NO_SAFE_PLACEMENT. Inset may overlap #write's right edge by at most
+   * NAV_INSET_MAX_CONTENT_OVERLAP_PX (true inset, controlled overlap).
+   */
   private computeNavigatorRail(
     rect: DOMRect | null | undefined,
     rightGutter: number | null,
     editorVisibleWidth: number | null,
-  ): { insetSafeWidth: number | null; canInset: boolean; contentMeasured: boolean; insetRightPx: number } {
+    scrollbarKnowledge: 'known' | 'unknown',
+    scrollbarSafeRight: number | null,
+  ): {
+    insetSafeWidth: number | null
+    canInset: boolean
+    insetCanFit: boolean
+    contentMeasured: boolean
+    contentLeft: number | null
+    contentRight: number | null
+    externalFreeWidth: number | null
+    requiredInsetOverlap: number | null
+    insetRailRight: number | null
+    insetRightPx: number
+  } {
     let contentRight: number | null = null
     let contentLeft: number | null = null
+    let writeVisibleWithinViewport = rect == null || (rect.left >= 0 && rect.right >= 0)
     const writeEl = document.getElementById('write')
     if (writeEl) {
       const cs = getComputedStyle(writeEl)
@@ -1367,26 +2290,49 @@ export class DocumentUtilityOverlayHost {
       const padR = pr ? parseFloat(pr[1]) : 0
       contentLeft = wr.left + padL
       contentRight = wr.right - padR
+      writeVisibleWithinViewport = wr.left >= 0 && wr.right >= 0 && wr.width > 0
     } else if (rightGutter != null && rect) {
       contentRight = rect.right - rightGutter
     }
-    const navWidth = this.navigatorEl ? (this.navigatorEl.offsetWidth || NAV_FOOTPRINT_PX) : NAV_FOOTPRINT_PX
+    const navWidth = this.measureNavigatorVisualWidth()
     const viewportRight = window.innerWidth
-    const minGap = 8
-    const contentMeasured = contentRight != null && contentLeft != null
-    const fitsMeasured = contentMeasured && editorVisibleWidth != null && editorVisibleWidth > 0
-      && (contentRight! + minGap + navWidth + 2) <= viewportRight
-      && contentRight! > contentLeft!
-    // UNKNOWN content (no measurable #write) with a visible editor keeps the
-    // navigator visible (inset) but never overrides the pure geometry anchor.
-    const unknownVisible = !contentMeasured && editorVisibleWidth != null && editorVisibleWidth > 0
-    const canInset = fitsMeasured || unknownVisible
-    const railEnd = contentRight != null ? contentRight + minGap + navWidth + 2 : null
-    const insetRightPx = fitsMeasured && railEnd != null ? Math.max(8, viewportRight - railEnd) : NAV_RIGHT_PX
+    // Visible content edge = clip the LAYOUT content edge to the viewport.
+    const clippedContentRight = contentRight != null ? Math.min(contentRight, viewportRight) : null
+    const coherent = contentLeft != null && clippedContentRight != null
+      && clippedContentRight > contentLeft && navWidth > 0 && writeVisibleWithinViewport
+    if (coherent) contentRight = clippedContentRight
+    else { contentLeft = null; contentRight = null }
+    const contentMeasured = coherent
+    // True-Inset overlap math (requires measured scrollbar-safe right).
+    const fit = computeTrueInsetFit(
+      navWidth,
+      coherent && scrollbarKnowledge === 'known' ? contentRight : null,
+      scrollbarKnowledge === 'known' ? scrollbarSafeRight : null,
+    )
+    const externalFreeWidth = fit.externalFreeWidth
+    const requiredInsetOverlap = fit.requiredInsetOverlap
+    const insetCanFit = coherent && fit.canFit
+    const insetSafeWidth = coherent && insetCanFit ? externalFreeWidth : null
+    // UNKNOWN / incoherent content with a visible editor keeps the navigator
+    // visible (inset fallback) but never overrides the pure geometry anchor.
+    const unknownVisible = !coherent && editorVisibleWidth != null && editorVisibleWidth > 0
+    const canInset = insetCanFit || unknownVisible
+    const insetRailRight = scrollbarKnowledge === 'known' && scrollbarSafeRight != null
+      ? scrollbarSafeRight
+      : (coherent ? viewportRight - 2 : null)
+    const insetRightPx = canInset && insetRailRight != null
+      ? Math.max(0, viewportRight - insetRailRight)
+      : NAV_RIGHT_PX
     return {
-      insetSafeWidth: canInset && contentRight != null ? Math.max(0, viewportRight - contentRight - minGap) : (unknownVisible ? editorVisibleWidth : null),
+      insetSafeWidth: canInset && externalFreeWidth != null ? externalFreeWidth : (unknownVisible ? editorVisibleWidth : null),
       canInset,
+      insetCanFit: canInset && (unknownVisible || insetCanFit),
       contentMeasured,
+      contentLeft,
+      contentRight,
+      externalFreeWidth,
+      requiredInsetOverlap,
+      insetRailRight,
       insetRightPx,
     }
   }  /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
@@ -1423,22 +2369,118 @@ export class DocumentUtilityOverlayHost {
     const nv = this.lastNavVis
     let navRect: DOMRect | null = null
     if (this.navigatorEl && !this.navigatorEl.hidden) { try { navRect = this.navigatorEl.getBoundingClientRect() } catch { navRect = null } }
+    const container = getActiveEditorScrollContainer()
+    const scrollHeight = container ? container.scrollHeight : 0
+    const clientHeight = container ? container.clientHeight : 0
+    const driftDecision = this.classifyNavigatorDrift(navRect)
+    const facts = this.lastRailFacts
+    const round2 = (n: number | null): number | null => (n == null ? null : Math.round(n * 100) / 100)
     emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-VISIBILITY-INVARIANT', {
       documentKey: docKey,
       scrollable: g.scrollable,
       navigatorVisible: g.navigatorVisible,
       drawerVisible: this.drawerOpen,
+      scrollHeight,
+      clientHeight,
+      maxScrollTop: Math.max(0, scrollHeight - clientHeight),
       presentation: nv.presentation,
-      reason: nv.reason,
+      presentationReason: nv.reason,
       editorVisibleWidth: this.lastVisibleEditor.visibleWidth,
-      rightGutter: this.lastVisibleEditor.visibleWidth,
-      navigatorRect: navRect ? { left: Math.round(navRect.left), top: Math.round(navRect.top), width: Math.round(navRect.width), height: Math.round(navRect.height) } : null,
+      navigatorRect: navRect
+        ? { left: Math.round(navRect.left), right: Math.round(navRect.right), top: Math.round(navRect.top), bottom: Math.round(navRect.bottom), width: Math.round(navRect.width), height: Math.round(navRect.height) }
+        : null,
+      rail: facts
+        ? {
+            knowledge: facts.knowledge,
+            contentRight: round2(facts.contentRight),
+            safeRailLeft: round2(facts.safeRailLeft),
+            safeRailRight: round2(facts.safeRailRight),
+            scrollbarKnowledge: facts.scrollbarKnowledge,
+            scrollbarWidth: facts.scrollbarWidth,
+            scrollbarSafeRight: round2(facts.scrollbarSafeRight),
+            insetSafeWidth: round2(facts.insetSafeWidth),
+            expectedRight: round2(facts.expectedRight),
+          }
+        : null,
+      drift: { tolerancePx: 1, decision: driftDecision, reason: driftDecision === 'PASS' ? 'POSITION_STABLE' : driftDecision },
       decision: g.navigatorVisible ? 'VISIBLE' : 'HIDDEN',
     })
   }
+
+  /** V1.5 — final Navigator authority invariant (legacy-leak detection). */
+  private emitNavigatorAuthorityInvariant(g: OverlayGeometry): void {
+    const pres = this.lastNavVis.presentation
+    const reason = this.lastNavVis.reason ?? 'UNKNOWN'
+    const domHidden = this.navigatorEl ? this.navigatorEl.hidden : true
+    const legacyLeak = (g.scrollable && (reason === 'SHORT_DOCUMENT_NAV_HIDDEN'))
+      || (pres !== 'hidden' && !g.navigatorVisible)
+      || (g.scrollable && g.navigatorVisible && domHidden)
+    if (legacyLeak) this.legacySuppressionEmissionCount++
+    const sig = `${g.scrollable}|${g.navigatorVisible}|${g.navigatorSuppressed}|${pres}|${reason}|${domHidden}`
+    if (sig === this.lastNavigatorAuthoritySig) return
+    this.lastNavigatorAuthoritySig = sig
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-AUTHORITY-INVARIANT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      scrollable: g.scrollable,
+      baseNavigatorEligible: g.scrollable,
+      presentation: pres,
+      presentationReason: reason,
+      navigatorVisible: g.navigatorVisible,
+      navigatorSuppressed: g.navigatorSuppressed,
+      navigatorDomHidden: domHidden,
+      navigatorDomAriaHidden: this.navigatorEl ? this.navigatorEl.getAttribute('aria-hidden') : null,
+      legacySuppressionEmissionCount: this.legacySuppressionEmissionCount,
+      decision: legacyLeak ? 'FAIL_LEGACY_NAVIGATOR_SUPPRESSION_LEAK' : 'PASS',
+    })
+  }
+
+  /** V1.1 — Drift classification consuming the ONE captured Rail Facts set. */
+  private classifyNavigatorDrift(navRect: DOMRect | null): string {
+    if (!navRect) return 'NA'
+    const facts = this.lastRailFacts
+    if (!facts || facts.knowledge !== 'known' || facts.contentRight == null ||
+        facts.safeRailLeft == null || facts.safeRailRight == null) {
+      // UNKNOWN geometry must NEVER be misread as a safe-rail FAIL.
+      return 'NA_UNKNOWN_GEOMETRY'
+    }
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const verdict = classifyNavigatorPositionDrift({
+      left: navRect.left,
+      right: navRect.right,
+      top: navRect.top,
+      bottom: navRect.bottom,
+      width: navRect.width,
+      viewportLeft: 0,
+      viewportRight: vw,
+      viewportTop: 0,
+      viewportBottom: vh,
+      contentRight: facts.contentRight,
+      contentGap: this.lastDriftContentGap,
+      safeRailLeft: facts.safeRailLeft,
+      safeRailRight: facts.safeRailRight,
+      // Only feed a MEASURED scrollbar boundary; unknown → sub-check is skipped.
+      scrollbarSafeRight: facts.scrollbarKnowledge === 'known' ? facts.scrollbarSafeRight : null,
+    })
+    if (verdict === 'PASS' && facts.scrollbarKnowledge !== 'known') {
+      // Without a measured scrollbar edge we cannot certify scrollbar clearance —
+      // never claim a deterministic FAIL or a silent PASS for that boundary.
+      return 'NA_SCROLLBAR_GEOMETRY'
+    }
+    return verdict
+  }
+
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
+    this.ensureTabStructureObserver()
+    // Phase 7R.3.11.8B.NO-ACTIVE-DOC — highest-precedence gate. Without a real
+    // active Markdown document no geometry / last-stable / workspace fallback
+    // may ever make the Document Problems Control visible.
+    if (!this.resolveHasActiveDocument()) {
+      this.applyNoActiveDocumentState()
+      return
+    }
     const container = getActiveEditorScrollContainer()
     const rect = container?.getBoundingClientRect()
     // Phase 7R.3.11.8B.6 — workspace width state (read-only sample + deduped
@@ -1492,27 +2534,159 @@ export class DocumentUtilityOverlayHost {
     // Show depends ONLY on scrollability; placement depends on visible
     // editor geometry (gutter → inset rail → hidden/NO_SAFE_PLACEMENT).
     if (next.scrollable) {
-      const rail = this.computeNavigatorRail(rect, rightGutter, editorVisibleWidth)
-      const pres = decideNavigatorPresentation({
+      // True-Inset — measure the REAL scrollbar boundary BEFORE the rail.
+      let scrollbarKnowledge: 'known' | 'unknown' = 'unknown'
+      let scrollbarWidth: number | null = null
+      let scrollbarSafeRight: number | null = null
+      if (container && rect && rect.width > 0 && container.offsetWidth > 0 && container.clientWidth > 0 && Number.isFinite(rect.right)) {
+        scrollbarWidth = Math.max(0, container.offsetWidth - container.clientWidth)
+        scrollbarSafeRight = rect.right - scrollbarWidth - NAV_SCROLLBAR_SAFE_GAP_PX
+        scrollbarKnowledge = 'known'
+      }
+      const rail = this.computeNavigatorRail(rect, rightGutter, computeEditorVisibleWidth(rect ? { left: rect.left, right: rect.right } : null, viewportRight), scrollbarKnowledge, scrollbarSafeRight)
+      // Real Candidate-Rect decision — the ONLY placement authority.
+      // inset validity comes from an actual candidate rect (right pinned to the
+      // measured scrollbarSafeRight, overlap ≤ NAV_INSET_MAX_CONTENT_OVERLAP_PX,
+      // fully inside the visible editor). NO insetSafeWidth ≥ 44 gate exists.
+      // Visible-editor containment (highest precedence): every placement mode —
+      // gutter, safe-inset, edge-inset, GEOMETRY_PENDING, UNKNOWN fallback and
+      // lastStablePresentation — must yield when the Markdown editor itself is
+      // not visible or is too narrow to contain the 30px navigator.
+      const editorLeftRaw = rect ? rect.left : null
+      const editorRightRaw = rect ? rect.right : null
+      const editorLeft = editorLeftRaw != null ? Math.max(editorLeftRaw, 0) : null
+      const editorRight = editorRightRaw != null ? Math.min(editorRightRaw, viewportRight) : null
+      const editorTopRaw = rect ? rect.top : null
+      const editorBottomRaw = rect ? rect.bottom : null
+      const editorVisibleHeight = editorTopRaw != null && editorBottomRaw != null
+        ? Math.min(editorBottomRaw, window.innerHeight) - Math.max(editorTopRaw, 0) : 0
+      const navVisualWidth = this.measureNavigatorVisualWidth()
+      const editorVisibleWidth = editorLeft != null && editorRight != null ? editorRight - editorLeft : 0
+      const hasVisibleEditor = rect != null && editorVisibleWidth > 0.5 && editorVisibleHeight > 0.5
+      const editorCanContainNavigator = editorVisibleWidth >= navVisualWidth + 2 * NAV_EDGE_INSET_GAP_PX
+      const geometryKnown = rail.contentMeasured && rail.contentRight != null && editorLeft != null && editorRight != null
+        && scrollbarKnowledge === 'known' && scrollbarSafeRight != null
+      const gutterCandidateValid = geometryKnown && rail.contentRight != null && editorRight != null
+        && editorRight - (rail.contentRight + NAV_CONTENT_SAFE_GAP_PX) >= navVisualWidth
+      const insetCandidate = geometryKnown
+        ? computeNavigatorPlacementCandidate({
+            editorLeft: editorLeft!,
+            editorRight: editorRight!,
+            contentRight: rail.contentRight!,
+            scrollbarSafeRight: scrollbarSafeRight!,
+            navigatorWidth: navVisualWidth,
+          })
+        : null
+      // Edge-Inset fallback — still `inset`, NOT a 4th presentation. Applies
+      // when the content-overlap-safe inset cannot fit but the FULL navigator
+      // still fits inside the visible editor clear of the scrollbar.
+      const edgeInsetCandidate = geometryKnown
+        ? computeNavigatorEdgeInsetCandidate({
+            editorLeft: editorLeft!,
+            editorRight: editorRight!,
+            scrollbarSafeRight: scrollbarSafeRight!,
+            navigatorWidth: navVisualWidth,
+          })
+        : null
+      const rawPres = decideNavigatorPresentation({
         scrollable: true,
-        rightGutter,
-        insetSafeWidth: rail.insetSafeWidth,
-        requiredGutter: MIN_NAVIGATOR_GUTTER_PX,
+        hasVisibleEditor,
+        editorCanContainNavigator,
+        gutterCandidateValid,
+        insetCandidateValid: insetCandidate?.valid ?? false,
+        edgeInsetCandidateValid: edgeInsetCandidate?.valid ?? false,
+        geometryKnown,
       })
-      // Phase 2-B.3.1 — inset only when the FULL navigator fits the real safe
-      // rail (right of main content, clear of scrollbar, inside visible editor).
-      const useInsetRail = pres.presentation === 'inset' && rail.canInset && rail.contentMeasured
+      // V1.4 — Resize Stabilization Gate: a scrollable doc never jumps straight
+      // visible → NO_SAFE_PLACEMENT on the first transient frame. One hold +
+      // exactly one next-frame remeasure, then the REAL decision commits.
+      // NO_VISIBLE_EDITOR is NOT transient: it immediately cancels any held
+      // visible presentation — no one-frame hold, no stale lastStable visible.
+      if (rawPres.reason === 'NO_VISIBLE_EDITOR') {
+        this.lastStableNavigatorPresentation = null
+        this.stabilizationRemeasurePending = false
+      }
+      const stab = applyNavigatorStabilization({
+        scrollable: true,
+        presentation: rawPres.presentation,
+        reason: rawPres.reason,
+        lastStableVisible: this.lastStableNavigatorPresentation,
+        remeasureScheduled: this.stabilizationRemeasurePending,
+      })
+      this.lastStableNavigatorPresentation = stab.lastStableVisible
+      if (rawPres.presentation !== 'hidden') this.stabilizationRemeasurePending = false
+      if (stab.scheduleRemeasure && !this.stabilizationRemeasurePending) {
+        this.stabilizationRemeasurePending = true
+        this.scheduleGeometrySync('navigator-stabilize-remeasure')
+      }
+      const effPres = stab.presentation
+      // True-Inset — inset only when the rail proved the FULL navigator fits
+      // (external free space + allowed content overlap ≤ NAV_INSET_MAX…).
+      const useInsetRail = effPres === 'inset' && rail.contentMeasured && rail.canInset
       const insetPx = useInsetRail ? rail.insetRightPx : null
-      this.lastNavVis = { presentation: pres.presentation, reason: pres.reason, insetRightPx: insetPx }
-      if (this.navigatorEl) this.applyNavigatorPresentation(pres.presentation, insetPx)
-      next.navigatorVisible = pres.presentation !== 'hidden'
-      next.navigatorSuppressed = pres.presentation === 'hidden'
+      this.lastNavVis = { presentation: effPres, reason: stab.reason, insetRightPx: insetPx }
+      if (this.navigatorEl) this.applyNavigatorPresentation(effPres, insetPx)
+      if (effPres !== 'hidden') {
+        this.emitNavigatorIconVisibilityInvariant(true, true)
+        // Containment invariant — a VISIBLE navigator must sit fully inside the
+        // visible editor rect (never over the file/outline sidebar or DevTools).
+        const navRect = this.navigatorEl ? this.navigatorEl.getBoundingClientRect() : null
+        const editorL = editorLeftRaw ?? editorLeft
+        const editorR = editorRightRaw ?? editorRight
+        const contained = navRect != null && hasVisibleEditor && navRect.width > 0
+          && navRect.left >= editorL! - 1 && navRect.right <= editorR! + 1
+        if (navRect && hasVisibleEditor && !contained) {
+          this.editorContainmentFailCount++
+          console.log(`[InkChapter] DOCUMENT-UTILITY-NAVIGATOR-EDITOR-CONTAINMENT-INVARIANT: decision=FAIL_NAVIGATOR_OUTSIDE_VISIBLE_EDITOR left=${navRect.left} right=${navRect.right} editorLeft=${editorL} editorRight=${editorR}`)
+        }
+      }
+      // True-Inset — capture the SAME measured rail facts the Drift audit
+      // consumes. safeRailLeft/right + contentGap are presentation-aware:
+      // gutter keeps contentRight+8; inset may sit at contentRight−12 and
+      // rides up to the measured scrollbarSafeRight.
+      const edgeMode = effPres === 'inset' && stab.reason === 'INSET_EDGE_FALLBACK'
+      const insetPres = effPres === 'inset' || (stab.reason === 'STABILIZING_ONE_FRAME' && this.lastStableNavigatorPresentation === 'inset')
+      // Edge mode: content overlap rules do NOT apply — only editor bounds +
+      // scrollbar (Drift content-left check skipped via contentRight:null).
+      const gapPx = insetPres ? (edgeMode ? 0 : -NAV_INSET_MAX_CONTENT_OVERLAP_PX) : NAV_CONTENT_SAFE_GAP_PX
+      this.lastRailFacts = !edgeMode && rail.contentMeasured && rail.contentLeft != null && rail.contentRight != null
+        ? {
+            knowledge: 'known',
+            contentLeft: rail.contentLeft,
+            contentRight: rail.contentRight,
+            safeRailLeft: insetPres ? rail.contentRight - NAV_INSET_MAX_CONTENT_OVERLAP_PX : rail.contentRight + NAV_CONTENT_SAFE_GAP_PX,
+            safeRailRight: insetPres && rail.insetRailRight != null ? rail.insetRailRight : viewportRight - 2,
+            scrollbarKnowledge,
+            scrollbarWidth,
+            scrollbarSafeRight,
+            insetSafeWidth: rail.insetSafeWidth,
+            expectedRight: useInsetRail ? rail.insetRailRight : (rightGutter != null ? next.navRight : null),
+          }
+        : edgeMode && scrollbarSafeRight != null
+          ? { knowledge: 'known', contentLeft: null, contentRight: null, safeRailLeft: null, safeRailRight: scrollbarSafeRight, scrollbarKnowledge, scrollbarWidth, scrollbarSafeRight, insetSafeWidth: null, expectedRight: scrollbarSafeRight }
+          : { knowledge: 'unknown', contentLeft: null, contentRight: null, safeRailLeft: null, safeRailRight: null, scrollbarKnowledge: 'unknown', scrollbarWidth: null, scrollbarSafeRight: null, insetSafeWidth: rail.insetSafeWidth, expectedRight: null }
+      this.lastDriftContentGap = gapPx
+      // Monotonic visibility invariant — edge fit ⇒ never hidden.
+      const mono = auditNavigatorMonotonicVisibility({ scrollable: true, edgeInsetCandidateValid: edgeInsetCandidate?.valid ?? false, finalPresentation: effPres })
+      if (mono.decision !== 'PASS') {
+        this.monotonicVisibilityHoleCount++
+        console.log(`[InkChapter] DOCUMENT-UTILITY-NAVIGATOR-MONOTONIC-VISIBILITY-INVARIANT: decision=${mono.decision} finalPresentation=${effPres} edgeInsetCandidateValid=${edgeInsetCandidate?.valid}`)
+      }
+      next.navigatorVisible = effPres !== 'hidden'
+      next.navigatorSuppressed = effPres === 'hidden'
     } else {
       this.lastNavVis = { presentation: 'hidden', reason: 'NOT_SCROLLABLE', insetRightPx: null }
+      this.lastRailFacts = null
+      this.lastStableNavigatorPresentation = null
+      this.stabilizationRemeasurePending = false
+      this.lastDriftContentGap = NAV_CONTENT_SAFE_GAP_PX
       if (this.navigatorEl) this.applyNavigatorPresentation('hidden', null)
       next.navigatorVisible = false
       next.navigatorSuppressed = true
     }
+    // V1.5 — Navigator AUTHORITY invariant: any legacy drawer/small-viewport /
+    // second-writer suppression leaking into the final state is a hard FAIL.
+    this.emitNavigatorAuthorityInvariant(next)
 
     // Drawer bottom safe-area reserve (no navigator suppression):
     // the drawer simply ends above the navigator box.
@@ -1640,13 +2814,23 @@ export class DocumentUtilityOverlayHost {
     if (signature === this.lastOverlayLayoutSignature) return
     this.lastOverlayLayoutSignature = signature
     const navReason = this.lastNavVis?.reason ?? 'UNKNOWN'
-    const decision = g.navigatorSuppressed
-      ? (g.scrollable ? (navReason === 'NO_SAFE_PLACEMENT' ? 'NAVIGATOR_HIDDEN_NO_SAFE_PLACEMENT' : 'NAVIGATOR_HIDDEN') : 'SHORT_DOCUMENT_NAV_HIDDEN')
-      : !g.navigatorVisible
-        ? 'SHORT_DOCUMENT_NAV_HIDDEN'
-        : this.drawerOpen
-          ? (g.drawerMaxHeight > 0 && renderedHeight >= g.drawerMaxHeight - 2 ? 'DRAWER_MAX_HEIGHT_SCROLL' : 'DRAWER_CONTENT_FIT')
-          : 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
+    // V1.5 — SHORT_DOCUMENT_NAV_HIDDEN is ONLY legal when !scrollable.
+    let decision: string
+    if (g.navigatorSuppressed) {
+      decision = g.scrollable
+        ? (navReason === 'NO_SAFE_PLACEMENT' ? 'NAVIGATOR_HIDDEN_NO_SAFE_PLACEMENT' : 'NAVIGATOR_HIDDEN')
+        : 'SHORT_DOCUMENT_NAV_HIDDEN'
+    } else if (!g.navigatorVisible) {
+      decision = g.scrollable ? 'NAVIGATOR_HIDDEN_NO_SAFE_PLACEMENT' : 'SHORT_DOCUMENT_NAV_HIDDEN'
+    } else if (this.drawerOpen) {
+      decision = g.drawerMaxHeight > 0 && renderedHeight >= g.drawerMaxHeight - 2 ? 'DRAWER_MAX_HEIGHT_SCROLL' : 'DRAWER_CONTENT_FIT'
+    } else {
+      decision = 'SCROLLABLE_DOCUMENT_NAV_VISIBLE'
+    }
+    if (g.scrollable && decision === 'SHORT_DOCUMENT_NAV_HIDDEN') {
+      this.legacySuppressionEmissionCount++
+      decision = 'FAIL_LEGACY_NAVIGATOR_SUPPRESSION_LEAK'
+    }
     emitRuntimeAudit('DOCUMENT-UTILITY-OVERLAY-LAYOUT', {
       documentKey: this.opts.ctx.authority.getDocumentKey(),
       scrollHeight,
@@ -1976,7 +3160,7 @@ export class DocumentUtilityOverlayHost {
     this.emitFullBcr('resize-settled')
   }
 
-  // ── Toolbar ─────────────────────────────────────────
+  // ── Toolbar (Document Problems Control, V1.1) ──────
   private buildToolbar(root: HTMLDivElement): HTMLDivElement {
     const toolbar = document.createElement('div')
     toolbar.className = 'inkchapter-doc-toolbar'
@@ -1984,30 +3168,90 @@ export class DocumentUtilityOverlayHost {
     toolbar.style.position = 'absolute'
     toolbar.style.pointerEvents = 'auto'
 
-    const diagBtn = document.createElement('button')
-    diagBtn.type = 'button'
-    diagBtn.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag'
-    diagBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    diagBtn.setAttribute('aria-label', '文档检测')
-    diagBtn.title = '文档检测'
-    diagBtn.textContent = '文档检测'
-    diagBtn.addEventListener('click', () => this.toggleDrawer())
-    this.diagButtonEl = diagBtn
-    toolbar.appendChild(diagBtn)
+    // DocumentProblemsControl = StatusSegment(error) + StatusSegment(warning)
+    // + Divider + EditLockAction inside ONE shell. Segments are rebuilt on every
+    // diagnostics publish by renderDiagnosticsButton (Smart Summary).
+    const control = document.createElement('div')
+    control.className = 'inkchapter-problems-control'
+    control.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    this.problemsControlEl = control
+    toolbar.appendChild(control)
 
     const lockBtn = document.createElement('button')
     lockBtn.type = 'button'
-    lockBtn.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--lock'
+    lockBtn.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--lock inkchapter-editlock'
     lockBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
     lockBtn.setAttribute('aria-label', '编辑 / 已锁定')
     lockBtn.title = '编辑 / 已锁定'
-    lockBtn.textContent = '编辑'
     lockBtn.addEventListener('click', () => this.toggleLock())
     this.lockButtonEl = lockBtn
     toolbar.appendChild(lockBtn)
 
     root.appendChild(toolbar)
+    this.renderLockButton()
     return toolbar
+  }
+
+  /** V1.1 — build ONE clickable status segment (icon + plain count text). */
+  private buildProblemsSegment(severity: 'error' | 'warning', count: number): HTMLButtonElement {
+    const seg = document.createElement('button')
+    seg.type = 'button'
+    seg.className =
+      `inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag ` +
+      `inkchapter-toolbar-segment inkchapter-toolbar-segment--${severity}`
+    seg.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    seg.setAttribute('data-severity', severity)
+    const icon = document.createElement('span')
+    icon.className = 'inkchapter-toolbar-segment__icon'
+    setIcon(icon, severity)
+    const num = document.createElement('span')
+    num.className = 'inkchapter-toolbar-segment__count'
+    num.textContent = String(count)
+    seg.setAttribute('aria-label', severity === 'error' ? `错误 ${count}` : `警告 ${count}`)
+    seg.title = seg.getAttribute('aria-label') ?? ''
+    seg.append(icon, num)
+    seg.addEventListener('click', () => this.openDrawer(severity))
+    return seg
+  }
+
+  /** V1.1 — Smart Summary: renders only the non-zero segments (never 错误0/警告0). */
+  private renderDiagnosticsButton(): void {
+    const control = this.problemsControlEl
+    if (!control) return
+    control.replaceChildren()
+    const state = deriveDiagnosticsState(this.snapshot)
+    const noDoc = state.state === 'NO_ACTIVE_DOCUMENT' || state.state === 'EMPTY_DOCUMENT'
+    if (noDoc) {
+      const entry = document.createElement('button')
+      entry.type = 'button'
+      entry.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry'
+      entry.setAttribute('aria-label', '文档检测')
+      entry.title = '文档检测'
+      const label = document.createElement('span')
+      label.textContent = '文档检测'
+      entry.append(label)
+      entry.addEventListener('click', () => this.openDrawer('all'))
+      control.appendChild(entry)
+      return
+    }
+    if (state.errorCount > 0) control.appendChild(this.buildProblemsSegment('error', state.errorCount))
+    if (state.warningCount > 0) control.appendChild(this.buildProblemsSegment('warning', state.warningCount))
+    if (state.errorCount === 0 && state.warningCount === 0) {
+      // HEALTHY — check icon + 文档正常 (no zero counters).
+      const entry = document.createElement('button')
+      entry.type = 'button'
+      entry.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry is-healthy'
+      entry.setAttribute('aria-label', '文档检测')
+      entry.title = '文档检测'
+      const icon = document.createElement('span')
+      icon.className = 'inkchapter-toolbar-segment__icon'
+      setIcon(icon, 'check')
+      const label = document.createElement('span')
+      label.textContent = '文档检测'
+      entry.append(icon, label)
+      entry.addEventListener('click', () => this.openDrawer('all'))
+      control.appendChild(entry)
+    }
   }
 
   /**
@@ -2052,31 +3296,6 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
-  private renderDiagnosticsButton(): void {
-    const btn = this.diagButtonEl
-    if (!btn) return
-    const state = deriveDiagnosticsState(this.snapshot)
-    btn.textContent = ''
-    const label = document.createElement('span')
-    if (state.state === 'NO_ACTIVE_DOCUMENT' || state.state === 'EMPTY_DOCUMENT') {
-      label.textContent = '文档检测'
-      btn.classList.remove('has-issues', 'has-warnings', 'is-healthy')
-    } else if (state.state === 'HEALTHY') {
-      label.textContent = '✓ 文档检测'
-      btn.classList.add('is-healthy')
-      btn.classList.remove('has-issues', 'has-warnings')
-    } else if (state.errorCount === 0) {
-      label.textContent = `⚠ ${state.warningCount}`
-      btn.classList.add('has-warnings')
-      btn.classList.remove('has-issues', 'is-healthy')
-    } else {
-      label.textContent = `✕ ${state.errorCount}  ⚠ ${state.warningCount}`
-      btn.classList.add('has-issues')
-      btn.classList.remove('has-warnings', 'is-healthy')
-    }
-    btn.appendChild(label)
-  }
-
   private toggleLock(): void {
     if (!this.opts.ctx.authority.getDocumentKey()) {
       this.showToast('无活动文档，无法锁定')
@@ -2114,7 +3333,16 @@ export class DocumentUtilityOverlayHost {
     if (!btn) return
     const key = this.opts.ctx.authority.getDocumentKey()
     const locked = key != null && (this.lockState.get(key) ?? false)
-    btn.textContent = locked ? '已锁定' : '编辑'
+    // V1.1 — unified pencil / lock action. Lock is a neutral state, NOT an error:
+    // the severity color never applies (CSS uses normal/muted; see style.scss).
+    btn.replaceChildren()
+    const icon = document.createElement('span')
+    icon.className = 'inkchapter-editlock__icon'
+    setIcon(icon, locked ? 'lock' : 'pencil')
+    const label = document.createElement('span')
+    label.className = 'inkchapter-editlock__label'
+    label.textContent = locked ? '已锁定' : '编辑'
+    btn.append(icon, label)
     btn.classList.toggle('is-locked', locked)
     if (locked && !this.editGuard.isLocked()) {
       // Re-assert the guard when the button state says locked (e.g. switch back).
@@ -2138,7 +3366,7 @@ export class DocumentUtilityOverlayHost {
     topBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
     topBtn.setAttribute('aria-label', '回到文档顶部')
     topBtn.title = '回到文档顶部'
-    topBtn.textContent = '↑'
+    setIcon(topBtn, 'chevron-up')
     topBtn.disabled = true
     topBtn.addEventListener('click', () => this.handleScrollAction('GO_TOP'))
     this.topBtnEl = topBtn
@@ -2150,7 +3378,7 @@ export class DocumentUtilityOverlayHost {
     bottomBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
     bottomBtn.setAttribute('aria-label', '到达文档底部')
     bottomBtn.title = '到达文档底部'
-    bottomBtn.textContent = '↓'
+    setIcon(bottomBtn, 'chevron-down')
     bottomBtn.disabled = true
     bottomBtn.addEventListener('click', () => this.handleScrollAction('GO_BOTTOM'))
     this.bottomBtnEl = bottomBtn
@@ -2491,33 +3719,40 @@ export class DocumentUtilityOverlayHost {
 
     const header = document.createElement('div')
     header.className = 'inkchapter-doc-drawer__header'
+    // Row 1 — title + icon-only actions (V1.1: no text buttons).
+    const titleRow = document.createElement('div')
+    titleRow.className = 'inkchapter-doc-drawer__titlerow'
     const title = document.createElement('div')
     title.className = 'inkchapter-doc-drawer__title'
     title.textContent = '文档检测'
-    header.appendChild(title)
-
-    const counts = document.createElement('div')
-    counts.className = 'inkchapter-doc-drawer__counts'
-    this.drawerCountsEl = counts
-    header.appendChild(counts)
-
+    titleRow.appendChild(title)
     const actions = document.createElement('div')
     actions.className = 'inkchapter-doc-drawer__actions'
     const recheck = document.createElement('button')
     recheck.type = 'button'
-    recheck.className = 'inkchapter-doc-drawer__action'
+    recheck.className = 'inkchapter-doc-drawer__action inkchapter-doc-drawer__action--refresh inkchapter-icon-btn'
     recheck.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    recheck.textContent = '重新检查'
+    recheck.setAttribute('aria-label', '重新检查文档')
+    recheck.title = '重新检查文档'
+    setIcon(recheck, 'refresh')
     recheck.addEventListener('click', () => this.diagnostics.recompute('MANUAL_RECHECK'))
     const close = document.createElement('button')
     close.type = 'button'
-    close.className = 'inkchapter-doc-drawer__action'
+    close.className = 'inkchapter-doc-drawer__action inkchapter-doc-drawer__action--close inkchapter-icon-btn'
     close.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    close.textContent = '关闭'
+    close.setAttribute('aria-label', '关闭文档检测')
+    close.title = '关闭文档检测'
+    setIcon(close, 'close')
     close.addEventListener('click', () => this.closeDrawer())
     actions.appendChild(recheck)
     actions.appendChild(close)
-    header.appendChild(actions)
+    titleRow.appendChild(actions)
+    header.appendChild(titleRow)
+    // Row 2 — severity filter Text Tabs (rendered by renderDrawer).
+    const filters = document.createElement('div')
+    filters.className = 'inkchapter-doc-drawer__filters'
+    this.drawerFiltersEl = filters
+    header.appendChild(filters)
     drawer.appendChild(header)
 
     const list = document.createElement('div')
@@ -2529,14 +3764,55 @@ export class DocumentUtilityOverlayHost {
     return drawer
   }
 
-  private drawerCountsEl: HTMLDivElement | null = null
+  /** V1.1 — severity filter Text Tabs in the drawer header (hint tab hidden at 0). */
+  private renderDrawerFilterTabs(snapshot: DocumentDiagnosticsSnapshot | null, visible: boolean): void {
+    const filtersEl = this.drawerFiltersEl
+    if (!filtersEl) return
+    filtersEl.replaceChildren()
+    filtersEl.hidden = !visible
+    if (!visible || !snapshot) return
+    const tabs: Array<{ key: DiagnosticsSeverityFilter; label: string; n: number }> = [
+      { key: 'all', label: '全部', n: snapshot.diagnostics.length },
+      { key: 'error', label: '错误', n: snapshot.errorCount },
+      { key: 'warning', label: '警告', n: snapshot.warningCount },
+    ]
+    if (snapshot.infoCount > 0) tabs.push({ key: 'info', label: '提示', n: snapshot.infoCount })
+    const list = document.createElement('div')
+    list.className = 'inkchapter-doc-drawer__filter-list'
+    list.setAttribute('role', 'tablist')
+    list.setAttribute('aria-label', '按严重程度筛选')
+    for (const tab of tabs) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'inkchapter-doc-drawer__filter-tab'
+      btn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+      btn.setAttribute('role', 'tab')
+      btn.setAttribute('data-filter', tab.key)
+      const isActive = this.drawerFilter === tab.key
+      btn.classList.toggle('is-active', isActive)
+      btn.setAttribute('aria-selected', String(isActive))
+      const label = document.createElement('span')
+      label.className = 'inkchapter-doc-drawer__filter-label'
+      label.textContent = tab.label
+      const count = document.createElement('span')
+      count.className = 'inkchapter-doc-drawer__filter-count'
+      count.textContent = String(tab.n)
+      btn.append(label, count)
+      btn.addEventListener('click', () => {
+        this.drawerFilter = tab.key
+        this.renderDrawer()
+      })
+      list.appendChild(btn)
+    }
+    filtersEl.appendChild(list)
+  }
 
   private renderDrawer(): void {
-    if (!this.drawerEl || !this.drawerListEl || !this.drawerCountsEl) return
+    if (!this.drawerEl || !this.drawerListEl) return
     const snapshot = this.snapshot
     const activeKey = this.opts.ctx.authority.getDocumentKey()
-    this.drawerCountsEl.textContent = ''
     if (!snapshot || snapshot.documentKey == null || snapshot.documentKey !== activeKey) {
+      this.renderDrawerFilterTabs(snapshot, false)
       // Phase 7R.3.11.4 — never render stale items: show a pending placeholder.
       const pending = document.createElement('div')
       pending.className = 'inkchapter-doc-drawer__item--empty'
@@ -2555,19 +3831,34 @@ export class DocumentUtilityOverlayHost {
       this.scheduleDrawerContentAudit()
       return
     }
-    const label = document.createElement('span')
-    label.textContent = `错误 ${snapshot.errorCount}   警告 ${snapshot.warningCount}   提示 ${snapshot.infoCount}`
-    this.drawerCountsEl.appendChild(label)
 
+    this.renderDrawerFilterTabs(snapshot, snapshot.diagnostics.length > 0)
     this.drawerListEl.replaceChildren()
     if (snapshot.diagnostics.length === 0) {
       const ok = document.createElement('div')
       ok.className = 'inkchapter-doc-drawer__item--empty'
-      ok.textContent = '未发现问题'
+      const icon = document.createElement('span')
+      icon.className = 'inkchapter-doc-drawer__empty-icon'
+      setIcon(icon, 'check')
+      const label = document.createElement('span')
+      label.textContent = '未发现问题'
+      ok.append(icon, label)
       this.drawerListEl.appendChild(ok)
     } else {
-      for (const d of snapshot.diagnostics) {
-        this.drawerListEl.appendChild(this.buildDrawerItem(d))
+      const filter = this.drawerFilter
+      const items = filter === 'all'
+        ? snapshot.diagnostics
+        : snapshot.diagnostics.filter(d => d.severity === filter)
+      if (items.length === 0) {
+        // Current filter yields nothing after a live refresh — show neutral hint.
+        const none = document.createElement('div')
+        none.className = 'inkchapter-doc-drawer__item--empty'
+        none.textContent = '当前筛选下没有问题'
+        this.drawerListEl.appendChild(none)
+      } else {
+        for (const d of items) {
+          this.drawerListEl.appendChild(this.buildDrawerItem(d))
+        }
       }
     }
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
@@ -2581,6 +3872,7 @@ export class DocumentUtilityOverlayHost {
       errorCount: snapshot.errorCount,
       warningCount: snapshot.warningCount,
       hintCount: snapshot.infoCount,
+      filter: this.drawerFilter,
       snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
       decision: 'DRAWER_RENDERED_MATCHES_ACTIVE',
     })
@@ -2957,14 +4249,22 @@ export class DocumentUtilityOverlayHost {
     return this.activeLocateTx !== null
   }
 
-  /** Update every drawer 定位 button to the busy ("定位中…", disabled) state. */
+  /**
+   * V1.1 — busy/selected state on FLAT rows (no per-item locate buttons).
+   * While a locate transaction is active every row is aria-disabled + is-busy;
+   * on completion the located row gets the neutral `is-selected` tint.
+   */
   private updateLocateBusyUi(active: boolean): void {
     if (!this.drawerEl) return
-    for (const btn of Array.from(this.drawerEl.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-drawer__item-locate'))) {
-      btn.disabled = active
-      btn.setAttribute('aria-disabled', active ? 'true' : 'false')
-      if (active) btn.textContent = '定位中…'
-      else btn.textContent = '定位'
+    const focusId = active
+      ? (this.activeLocateTx?.diagnosticId ?? this.lastLocatedDiagnosticId)
+      : this.lastLocatedDiagnosticId
+    if (active && focusId) this.lastLocatedDiagnosticId = focusId
+    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+      row.setAttribute('aria-disabled', String(active))
+      row.classList.toggle('is-busy', active)
+      const isFocus = !active && focusId != null && row.getAttribute('data-diagnostic-id') === focusId
+      row.classList.toggle('is-selected', isFocus)
     }
   }
 
@@ -3283,14 +4583,24 @@ export class DocumentUtilityOverlayHost {
     })
   }
 
+  /**
+   * V1.1 — FLAT problems list row. No standalone [定位] button: the whole row
+   * is the locate target (click / Enter). Multi-target rows render `1/2`-style
+   * metadata while keeping the existing cycling logic untouched.
+   */
   private buildDrawerItem(d: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement {
     const item = document.createElement('div')
     item.className = `inkchapter-doc-drawer__item inkchapter-doc-drawer__item--${d.severity}`
     item.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    item.setAttribute('data-diagnostic-id', d.id)
+    item.setAttribute('role', 'button')
+    item.setAttribute('tabindex', '0')
+    item.setAttribute('aria-label', `${d.detail ? d.detail + '，' : ''}${d.message}`)
+    if (this.lastLocatedDiagnosticId === d.id) item.classList.add('is-selected')
 
     const icon = document.createElement('span')
     icon.className = 'inkchapter-doc-drawer__item-icon'
-    icon.textContent = d.severity === 'error' ? '✕' : d.severity === 'warning' ? '⚠' : 'ℹ'
+    setIcon(icon, d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info')
     item.appendChild(icon)
 
     const body = document.createElement('div')
@@ -3307,25 +4617,43 @@ export class DocumentUtilityOverlayHost {
     }
     item.appendChild(body)
 
-    // Phase 7R.3.11.8B.5 — EVERY published diagnostic has a location
-    // (PUBLISHED = LOCATABLE) → the 定位 button is always present and routes
-    // through the ONE universal `locateDiagnostic` action authority.
-    const locate = document.createElement('button')
-    locate.type = 'button'
-    locate.className = 'inkchapter-doc-drawer__item-locate'
-    locate.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    locate.textContent = '定位'
-    locate.addEventListener('click', () => {
-      this.locateDiagnostic(d.id)
-    })
-    item.appendChild(locate)
+    // Right-hand metadata: multi-target position (1/2 …) when available.
+    const meta = document.createElement('div')
+    meta.className = 'inkchapter-doc-drawer__item-meta'
+    const targetCount = d.location?.kind === 'multi-target' && d.location.targets.length > 1
+      ? d.location.targets.length
+      : 0
+    if (targetCount > 0) {
+      const idx = (this.multiTargetCursor.get(d.id) ?? 0) % targetCount
+      const span = document.createElement('span')
+      span.className = 'inkchapter-doc-drawer__item-target'
+      span.textContent = `${idx + 1}/${targetCount}`
+      meta.appendChild(span)
+    }
+    // Optional hover jump affordance (non-interactive decoration only).
+    const go = document.createElement('span')
+    go.className = 'inkchapter-doc-drawer__item-go'
+    setIcon(go, 'info', 'inkchapter-doc-drawer__item-go-icon')
+    meta.appendChild(go)
+    item.appendChild(meta)
 
+    const activate = (): void => this.locateDiagnostic(d.id)
+    item.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      activate()
+    })
+    item.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault()
+        activate()
+      }
+    })
     return item
   }
 
   private toggleDrawer(): void {
     if (this.drawerOpen) this.closeDrawer()
-    else this.openDrawer()
+    else this.openDrawer(this.drawerFilter)
   }
 
   /**
@@ -3346,8 +4674,10 @@ export class DocumentUtilityOverlayHost {
     this.scheduleGeometrySync(nextOpen ? 'drawer-open' : 'drawer-close')
   }
 
-  private openDrawer(): void {
+  /** V1.1 — open drawer with a severity filter (segments/tabs share this state). */
+  private openDrawer(filter: DiagnosticsSeverityFilter = 'all'): void {
     if (!this.drawerEl) return
+    this.drawerFilter = filter
     this.setDrawerOpen(true)
     this.renderDrawer()
     emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER', {
@@ -3355,6 +4685,7 @@ export class DocumentUtilityOverlayHost {
       diagnosticCount: this.snapshot?.diagnostics.length ?? 0,
       errorCount: this.snapshot?.errorCount ?? 0,
       warningCount: this.snapshot?.warningCount ?? 0,
+      filter: this.drawerFilter,
     })
   }
 

@@ -164,7 +164,7 @@ describe('LAYOUT drawer/navigator isolation (host level)', () => {
     ;(document.querySelector('.inkchapter-doc-toolbar__btn--diag') as HTMLButtonElement).click()
   }
   function closeDrawer(): void {
-    const close = Array.from(document.querySelectorAll('.inkchapter-doc-drawer__action')).find(b => b.textContent === '关闭') as HTMLButtonElement
+    const close = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
     close.click()
   }
 

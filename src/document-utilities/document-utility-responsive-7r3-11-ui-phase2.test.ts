@@ -99,25 +99,27 @@ describe('RESPONSIVE — visible editor width (Phase 2-B.2)', () => {
 
 // Phase 2-B.3 — Navigator presentation (gutter | inset | hidden)
 describe('RESPONSIVE — navigator presentation (Phase 2-B.3)', () => {
-  const g = (o = {}) => decideNavigatorPresentation({ scrollable: true, rightGutter: 120, insetSafeWidth: 200, requiredGutter: 44, ...o })
+  // Candidate-flag interface: validity is computed from real Candidate Rects at
+  // runtime; here each test feeds the resulting flags directly.
+  const g = (o = {}) => decideNavigatorPresentation({ scrollable: true, gutterCandidateValid: true, insetCandidateValid: false, geometryKnown: true, ...o })
   it('short doc → hidden NOT_SCROLLABLE', () => {
-    const r = decideNavigatorPresentation({ scrollable: false, rightGutter: 500, insetSafeWidth: 500, requiredGutter: 44 })
+    const r = decideNavigatorPresentation({ scrollable: false, gutterCandidateValid: true, insetCandidateValid: true, geometryKnown: true })
     expect(r).toEqual({ presentation: 'hidden', reason: 'NOT_SCROLLABLE' })
   })
   it('scrollable + gutter enough → gutter', () => {
     expect(g().presentation).toBe('gutter')
   })
   it('DevTools-like medium: gutter short but inset safe → inset', () => {
-    const r = g({ rightGutter: 20 })
+    const r = g({ gutterCandidateValid: false, insetCandidateValid: true })
     expect(r).toEqual({ presentation: 'inset', reason: 'INSET_AVAILABLE' })
   })
   it('no safe gutter/inset → hidden NO_SAFE_PLACEMENT', () => {
-    const r = g({ rightGutter: 0, insetSafeWidth: 10 })
+    const r = g({ gutterCandidateValid: false, insetCandidateValid: false, geometryKnown: true })
     expect(r).toEqual({ presentation: 'hidden', reason: 'NO_SAFE_PLACEMENT' })
   })
   it('gutter → inset → gutter roundtrip (reversible, scrollable stays true)', () => {
-    expect(g({ rightGutter: 120 }).presentation).toBe('gutter')
-    expect(g({ rightGutter: 10 }).presentation).toBe('inset')
-    expect(g({ rightGutter: 120 }).presentation).toBe('gutter')
+    expect(g({ gutterCandidateValid: true, insetCandidateValid: false }).presentation).toBe('gutter')
+    expect(g({ gutterCandidateValid: false, insetCandidateValid: true }).presentation).toBe('inset')
+    expect(g({ gutterCandidateValid: true, insetCandidateValid: false }).presentation).toBe('gutter')
   })
 })

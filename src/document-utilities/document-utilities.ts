@@ -11,11 +11,21 @@ import type { DocumentDiagnosticsProviders } from './document-diagnostics-author
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
+import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
 
 export interface DocumentUtilitiesSources {
   getActiveFilePath: () => string | null
   getDocumentKey: () => string | null
+  /**
+   * V3 — ACTIVE workspace leaf document facts. Optional so legacy / headless
+   * consumers keep the old file/document-key-only authority (leaf UNKNOWN).
+   */
+  getActiveLeafState?: () => ActiveLeafDocumentFacts | null | undefined
+  /** V3 — workspace `active-leaf:change` primary lifecycle trigger. */
+  onActiveLeafChanged?: (cb: () => void) => () => void
+  /** V3 — workspace-tabs `tab:toggle` primary lifecycle trigger. */
+  onTabToggle?: (cb: () => void) => () => void
   getMarkdown: () => string | null
   isStrictMode: () => boolean
   /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
@@ -166,6 +176,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     authority: {
       getActiveFilePath: sources.getActiveFilePath,
       getDocumentKey: sources.getDocumentKey,
+      getActiveLeafState: sources.getActiveLeafState,
       getMarkdown: sources.getMarkdown,
       isStrictMode: sources.isStrictMode,
       getHeadingPolicyState: sources.getHeadingPolicyState,
@@ -246,6 +257,18 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
         indexHeadingIdentities()
         bind()
       })
+    },
+    // V3 — real active-leaf lifecycle as PRIMARY triggers. Both the workspace
+    // `active-leaf:change` event and the workspace-tabs `tab:toggle` event drive
+    // the host's synchronous presence re-evaluation; the tab DOM MutationObserver
+    // remains only a fallback trigger, never an identity authority.
+    onActiveLeafLifecycle: (onTransition) => {
+      const disposes: Array<() => void> = []
+      const disposeChanged = sources.onActiveLeafChanged?.(() => onTransition('ACTIVE_LEAF_CHANGE'))
+      if (disposeChanged) disposes.push(disposeChanged)
+      const disposeToggle = sources.onTabToggle?.(() => onTransition('TAB_TOGGLE'))
+      if (disposeToggle) disposes.push(disposeToggle)
+      return () => { for (const d of disposes) d() }
     },
     // Phase 7R.3.11.8-B — live diagnostics triggers (heading frame commit +
     // settings/mode change) → lightweight snapshot recompute only.

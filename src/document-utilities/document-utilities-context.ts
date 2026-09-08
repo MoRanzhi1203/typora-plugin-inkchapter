@@ -7,6 +7,7 @@
  */
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 
 export interface HeadingPolicyActivationState {
   /** Global heading-numbering feature master switch (enabled ≠ configured). */
@@ -35,6 +36,17 @@ export interface HeadingPolicyActivationState {
 export interface DocumentUtilitiesAuthorityContext {
   getActiveFilePath: () => string | null
   getDocumentKey: () => string | null
+  /**
+   * V3 — ACTIVE workspace leaf document facts (highest-priority ACTIVE
+   * DOCUMENT PRESENCE authority). When supplied, an EXPLICIT EMPTY leaf
+   * (known=true + path='') HARD-VETOES every stale `getActiveFilePath()` /
+   * `getDocumentKey()` fallback; only when the leaf is unreadable
+   * (known=false) may the legacy file/document-key sources participate.
+   * Absent in legacy/headless consumers → the leaf is treated as UNKNOWN and
+   * the legacy fallback keeps its exact previous behavior.
+   */
+  getActiveLeafState?: () => ActiveLeafDocumentFacts | null | undefined
+
   getMarkdown: () => string | null
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
