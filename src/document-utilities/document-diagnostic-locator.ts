@@ -46,6 +46,17 @@ function scrollTargetIntoView(target: HTMLElement, container: HTMLElement | null
  * Returns the number of DOM mutations performed (must be 0 for gate checks —
  * highlight is a class toggle, reported separately via highlightApplied()).
  */
+function targetKindFromElement(el: HTMLElement): 'block' | 'inline' | 'structural' {
+  const t = el.tagName
+  if (t === 'TABLE' || t === 'PRE' || t === 'BLOCKQUOTE' || t === 'UL' || t === 'OL' || t === 'LI' || /^H[1-6]$/.test(t) || t === 'P' || t === 'DIV') return 'block'
+  if (t === 'IMG' || t === 'A' || t === 'SPAN' || t === 'STRONG' || t === 'EM' || t === 'CODE') return 'inline'
+  return 'structural'
+}
+
+function applyTargetKindVisual(el: HTMLElement): void {
+  el.setAttribute('data-ink-target-kind', targetKindFromElement(el))
+}
+
 export class DocumentDiagnosticLocator {
   private highlightTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -62,7 +73,11 @@ export class DocumentDiagnosticLocator {
       clearTimeout(this.highlightTimer)
       this.highlightTimer = null
     }
-    document.querySelectorAll(`.${DIAGNOSTIC_HIGHLIGHT_CLASS}`).forEach(el => el.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS))
+    document.querySelectorAll(`.${DIAGNOSTIC_HIGHLIGHT_CLASS}`).forEach(el => {
+      el.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS)
+      el.removeAttribute('data-ink-target-kind')
+      el.removeAttribute('data-ink-severity')
+    })
   }
 
   /**
@@ -81,9 +96,11 @@ export class DocumentDiagnosticLocator {
     }
     const container = this.opts.getContainer()
     scrollTargetIntoView(target, container)
+    applyTargetKindVisual(target)
     target.classList.add(DIAGNOSTIC_HIGHLIGHT_CLASS)
     this.highlightTimer = setTimeout(() => {
       target.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS)
+      target.removeAttribute('data-ink-target-kind')
       this.highlightTimer = null
     }, DIAGNOSTIC_HIGHLIGHT_MS)
     return { located: true, reason: 'SCROLLED' }
@@ -106,9 +123,12 @@ export class DocumentDiagnosticLocator {
     }
     const container = this.opts.getContainer()
     scrollTargetIntoView(primary ?? targets[0], container)
-    for (const el of targets) el.classList.add(DIAGNOSTIC_HIGHLIGHT_CLASS)
+    for (const el of targets) { applyTargetKindVisual(el); el.classList.add(DIAGNOSTIC_HIGHLIGHT_CLASS) }
     this.highlightTimer = setTimeout(() => {
-      for (const el of targets) el.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS)
+      for (const el of targets) {
+        el.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS)
+        el.removeAttribute('data-ink-target-kind')
+      }
       this.highlightTimer = null
     }, DIAGNOSTIC_HIGHLIGHT_MS)
     return targets.length
@@ -131,13 +151,21 @@ export class DocumentDiagnosticLocator {
    * targets AFTER the scroll has settled (HIGHLIGHTING step). Clears any
    * previous highlight first; auto-removes after the bounded window.
    */
-  highlightTargets(targets: Array<HTMLElement | null>): number {
+  highlightTargets(targets: Array<HTMLElement | null>, severity?: 'error' | 'warning' | 'info'): number {
     this.clearHighlight()
     const connected = targets.filter((el): el is HTMLElement => !!el && el.isConnected)
     if (connected.length === 0) return 0
-    for (const el of connected) el.classList.add(DIAGNOSTIC_HIGHLIGHT_CLASS)
+    for (const el of connected) {
+      applyTargetKindVisual(el)
+      if (severity) el.setAttribute('data-ink-severity', severity)
+      el.classList.add(DIAGNOSTIC_HIGHLIGHT_CLASS)
+    }
     this.highlightTimer = setTimeout(() => {
-      for (const el of connected) el.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS)
+      for (const el of connected) {
+        el.classList.remove(DIAGNOSTIC_HIGHLIGHT_CLASS)
+        el.removeAttribute('data-ink-target-kind')
+        el.removeAttribute('data-ink-severity')
+      }
       this.highlightTimer = null
     }, DIAGNOSTIC_HIGHLIGHT_MS)
     return connected.length
