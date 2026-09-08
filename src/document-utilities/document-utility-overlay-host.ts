@@ -12,8 +12,13 @@
  */
 import { DocumentDiagnosticsAuthority } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
-import { DocumentDiagnosticLocator, prefersReducedMotion } from './document-diagnostic-locator'
+import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_CLASS } from './document-diagnostic-locator'
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
+import {
+  DiagnosticLocateFrameController,
+  type DiagnosticLocateTargetKind,
+  type RectLike,
+} from './document-diagnostic-locate-frame'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
@@ -1135,6 +1140,37 @@ function toRectRecord(r: DOMRect | null | undefined): RectRecord | null {
   return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }
 }
 
+/**
+ * V3 — EXPLICIT runtime-layout authority. Headless must be decided by the
+ * running environment (jsdom test agent), NEVER inferred from the target
+ * element's geometry (a real Typora broken <img> is 0×0 yet layout is real).
+ */
+export function isHeadlessTestRuntime(): boolean {
+  try {
+    return typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string' && /jsdom/i.test(navigator.userAgent)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * V3 — zero-rect broken-resource fallback: climb from the resource node to the
+ * first real block ancestor that has non-empty layout (Typora block host),
+ * returning null when none exists (caller keeps the node itself).
+ */
+export function resolveOwningBlockFallback(node: HTMLElement | null): HTMLElement | null {
+  if (!node || !node.isConnected) return null
+  let cur: HTMLElement | null = node.parentElement
+  while (cur && cur !== document.body) {
+    const r = cur.getBoundingClientRect()
+    if ((r.width > 0 || r.height > 0) && (cur.tagName === 'P' || cur.tagName === 'DIV' || /(^|\s)(p|paragraph|md-|typ-)/i.test(String(cur.className)))) {
+      return cur
+    }
+    cur = cur.parentElement
+  }
+  return null
+}
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -1149,6 +1185,11 @@ export class DocumentUtilityOverlayHost {
   private drawerEmptyEl: HTMLDivElement | null = null
   /** V1.1 — most-recent located diagnostic row highlight (neutral/accent). */
   private lastLocatedDiagnosticId: string | null = null
+  /**
+   * Phase 7R.3.11.8B.8 — V3 Diagnostic Locate Frame controller. ONE instance;
+   * owns at most ONE overlay frame + ONE inline mark (presentation only).
+   */
+  private locateFrame: DiagnosticLocateFrameController | null = null
   private topBtnEl: HTMLButtonElement | null = null
   private bottomBtnEl: HTMLButtonElement | null = null
   private drawerOpen = false
@@ -1365,6 +1406,15 @@ export class DocumentUtilityOverlayHost {
   /** V5 — commit an ADMITTED snapshot to projection + Problems Control/Drawer. */
   private commitAdmittedSnapshot(snapshot: DocumentDiagnosticsSnapshot | null, source: string): void {
     this.snapshot = snapshot
+    // Phase 7R.3.11.8B.8 — snapshot updated and the located diagnostic no
+    // longer exists → clear the active locate visual + row selection.
+    if (this.lastLocatedDiagnosticId != null) {
+      const stillPresent = snapshot?.diagnostics.some(d => d.id === this.lastLocatedDiagnosticId) ?? false
+      if (!stillPresent) {
+        this.clearDiagnosticLocateVisual('ACTIVE_DIAGNOSTIC_REMOVED')
+        this.lastLocatedDiagnosticId = null
+      }
+    }
     this.handleStrictSingleH1Popup(snapshot)
     this.renderDiagnosticsButton()
     this.renderLockButton()
@@ -1403,6 +1453,11 @@ export class DocumentUtilityOverlayHost {
     this.toolbarEl = this.buildToolbar(root)
     this.navigatorEl = this.buildNavigator(root)
     this.drawerEl = this.buildDrawer(root)
+
+    // Phase 7R.3.11.8B.8 — V3 Diagnostic Locate Frame (single presentation
+    // layer inside the SAME overlay root; never a second global overlay).
+    this.locateFrame = new DiagnosticLocateFrameController(root)
+    this.bindLocateFrameEditorScroll()
 
     // Scroll navigator lifecycle (one active listener).
     this.scrollNav = new DocumentScrollNavigator({
@@ -1616,6 +1671,10 @@ export class DocumentUtilityOverlayHost {
     this.cancelScrollOperation('SUPERSEDED')
     // Phase 7R.3.11.8B.7.7 — dispose cancels any active locate transaction.
     this.cancelActiveLocateTransaction('HOST_DISPOSED')
+    // Phase 7R.3.11.8B.8 — dispose the V3 locate frame + its scroll binding.
+    this.unbindLocateFrameEditorScroll()
+    this.locateFrame?.dispose()
+    this.locateFrame = null
     // Phase 7R.3.11.8B.6 — remove the workspace host class + state attribute.
     this.cleanupWorkspaceGuard()
     // Phase 7R.3.11.8-B: disconnect the diagnostics mutation observer.
@@ -1634,6 +1693,146 @@ export class DocumentUtilityOverlayHost {
   /** FILE_OPEN document switch — routed into the single reconcile authority. */
   bindDocument(): void {
     this.reconcileActiveDocument('FILE_OPEN')
+  }
+
+  // ── V3 Diagnostic Locate Frame (overlay presentation) ─────────────────────
+  // The frame consumes ONLY what the locator resolved (anchor element /
+  // severity / kind / diagnosticId). It never re-queries the document for a
+  // new target and never re-infers a source anchor. Reposition is triggered by
+  // scroll / resize / drawer / DevTools-layout geometry events (rAF-coalesced,
+  // no setInterval polling).
+
+  private locateFrameScrollContainer: HTMLElement | null = null
+
+  private bindLocateFrameEditorScroll(): void {
+    if (this.disposed) return
+    const container = getActiveEditorScrollContainer()
+    if (!container || container === this.locateFrameScrollContainer) return
+    this.unbindLocateFrameEditorScroll()
+    this.locateFrameScrollContainer = container
+    const onScroll = (): void => this.onEditorScrollForLocateFrame()
+    container.addEventListener('scroll', onScroll, { passive: true } as AddEventListenerOptions)
+    this.disposables.push(() => {
+      if (this.locateFrameScrollContainer === container) {
+        container.removeEventListener('scroll', onScroll)
+        this.locateFrameScrollContainer = null
+      }
+    })
+  }
+
+  private unbindLocateFrameEditorScroll(): void {
+    // The disposables registry removes the registered listener; this only
+    // detaches the tracked container reference so a later bind re-registers.
+    this.locateFrameScrollContainer = null
+  }
+
+  private onEditorScrollForLocateFrame(): void {
+    if (!this.locateFrame?.hasCommitted()) return
+    this.repositionDiagnosticLocateFrame()
+  }
+
+  /** Visible editor region authority for the frame (drawer-unobscured). */
+  private resolveLocateFrameClipRegion(): { editor: RectLike | null; unobscured: RectLike | null } {
+    const container = getActiveEditorScrollContainer()
+    const editorRect = container ? container.getBoundingClientRect() : null
+    const toRect = (r: DOMRect | null): RectLike | null =>
+      r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top } : null
+    const editor = toRect(editorRect)
+    let unobscured = editor
+    const drawerEl = this.drawerOpen ? this.drawerEl : null
+    const drawerRect = drawerEl && drawerEl.isConnected ? drawerEl.getBoundingClientRect() : null
+    if (editor && drawerRect && drawerRect.left > editor.left && drawerRect.left < editor.right) {
+      unobscured = { ...editor, right: drawerRect.left }
+    }
+    return { editor, unobscured }
+  }
+
+  /** Reposition the active frame against the CURRENT visible editor region. */
+  private repositionDiagnosticLocateFrame(): void {
+    const frame = this.locateFrame
+    if (!frame?.hasCommitted()) return
+    const region = this.resolveLocateFrameClipRegion()
+    frame.reposition({ clipRect: region.unobscured, headless: isHeadlessTestRuntime() })
+  }
+
+  private clearDiagnosticLocateVisual(reason: string): void {
+    try { this.locateFrame?.clear(reason) } catch { /* noop */ }
+  }
+
+  /**
+   * Commit the V3 visual for a RESOLVED locate. Chooses the visual anchor from
+   * the resolver's element (the real object / heading / link) — never a
+   * re-query. Broken/zero-rect images fall back to their owning source block
+   * (already resolved by the caller). Returns the committed structure.
+   */
+  private commitDiagnosticLocateVisual(
+    diagId: string | null,
+    severity: 'error' | 'warning' | 'info',
+    targets: HTMLElement[],
+    result: DiagnosticLocationResolveResult | null,
+    resolvedPrimary: HTMLElement | null,
+  ): void {
+    const frame = this.locateFrame
+    if (!frame) return
+    const resultEl = result?.element ?? null
+    let anchor: HTMLElement | null =
+      resultEl && resultEl.isConnected ? resultEl : (targets.find(el => el.isConnected) ?? null)
+    if (!anchor) anchor = resolvedPrimary && resolvedPrimary.isConnected ? resolvedPrimary : null
+    if (!anchor || !anchor.isConnected) {
+      this.clearDiagnosticLocateVisual('NO_ANCHOR')
+      return
+    }
+    // A zero-rect broken <img> resolves to its owning source block: prefer the
+    // caller-resolved block (resolvedPrimary) in that case.
+    if (anchor.tagName === 'IMG') {
+      let zero = false
+      try {
+        const r = anchor.getBoundingClientRect()
+        zero = r.width <= 0 || r.height <= 0 || anchor.getClientRects().length === 0
+      } catch {
+        zero = false
+      }
+      if (zero && resolvedPrimary && resolvedPrimary !== anchor && resolvedPrimary.isConnected) {
+        anchor = resolvedPrimary
+      }
+    }
+    frame.commit({ diagnosticId: diagId, severity, anchor })
+    if (frame.getStructure().kind !== 'inline') {
+      this.repositionDiagnosticLocateFrame()
+    }
+    const structure = frame.getStructure()
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-FRAME', {
+      diagnosticId: diagId,
+      severity,
+      targetKind: structure.kind,
+      anchorTag: anchor.tagName.toLowerCase(),
+      frameCount: structure.locateFrameCount,
+      inlineMarkCount: structure.inlineMarkCount,
+      staleLocateFrameCount: structure.staleLocateFrameCount,
+      active: structure.active,
+    })
+  }
+
+  /** Runtime-gate observability for the V3 locate frame (structure invariant). */
+  getLocateFrameStructure(): {
+    locateFrameCount: number
+    duplicateLocateFrame: boolean
+    staleLocateFrameCount: number
+    inlineMarkCount: number
+    duplicateInlineMark: boolean
+    active: boolean
+    activeDiagnosticId: string | null
+    kind: DiagnosticLocateTargetKind | null
+    severity: 'error' | 'warning' | 'info' | null
+  } {
+    return this.locateFrame
+      ? this.locateFrame.getStructure()
+      : { locateFrameCount: 0, duplicateLocateFrame: false, staleLocateFrameCount: 0, inlineMarkCount: 0, duplicateInlineMark: false, active: false, activeDiagnosticId: null, kind: null, severity: null }
+  }
+
+  /** Runtime-gate observability: last located diagnostic (row + frame). */
+  getLastLocatedDiagnosticId(): string | null {
+    return this.lastLocatedDiagnosticId
   }
 
   /** Runtime-gate observability: resize/geometry counters (read-only). */
@@ -2168,8 +2367,12 @@ export class DocumentUtilityOverlayHost {
         if (/CANONICAL/i.test(reason)) this.authorityReady.canonical = true
         this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
         this.cancelActiveLocateTransaction('DOCUMENT_SWITCH')
+        // Phase 7R.3.11.8B.8 — a real document switch clears the previous
+        // document's locate visual (frame / inline mark) unconditionally.
+        this.clearDiagnosticLocateVisual('DOCUMENT_SWITCH')
         this.ensureTabStructureObserver()
         this.scrollNav?.bind()
+        this.bindLocateFrameEditorScroll()
         this.diagnostics.rebind()
       }
       this.diagnostics.recompute(reason)
@@ -2358,6 +2561,8 @@ export class DocumentUtilityOverlayHost {
     this.applyToolbarPresentation('suppressed') // keeps the single toolbar instance
     if (this.drawerOpen) this.setDrawerOpen(false)
     if (this.activeLocateTx) this.cancelActiveLocateTransaction('NO_ACTIVE_DOCUMENT')
+    // Phase 7R.3.11.8B.8 — no active document clears the locate frame too.
+    this.clearDiagnosticLocateVisual('NO_ACTIVE_DOCUMENT')
     this.lastLocatedDiagnosticId = null
     this.multiTargetCursor.clear()
     this.emitActiveDocumentVisibilityInvariant()
@@ -3107,6 +3312,9 @@ export class DocumentUtilityOverlayHost {
       this.emitOverlayLayoutAudit(next, scrollHeight, clientHeight)
     this.emitVisibleEditorInvariant()
     this.emitNavigatorVisibilityInvariant(next)
+    // Phase 7R.3.11.8B.8 — the visible editor region is unchanged yet a drawer /
+    // DevTools / resize transition may have happened: keep the frame honest.
+    this.repositionDiagnosticLocateFrame()
       return
     }
     this.geometryCounters.writeCount++
@@ -3177,6 +3385,10 @@ export class DocumentUtilityOverlayHost {
       // Phase 7R.3.11.7 §32/§33: event-triggered settle summary (no timer).
       emitInkchapterRuntimeAuditSummary('drawer-transition-settled', { commitReason })
     }
+    // Phase 7R.3.11.8B.8 — geometry committed (editor resize / Drawer open or
+    // close / DevTools layout change): reposition the locate frame so it always
+    // follows its resolved target.
+    this.repositionDiagnosticLocateFrame()
   }
 
   /**
@@ -4290,6 +4502,9 @@ export class DocumentUtilityOverlayHost {
       })
       return
     }
+    // Phase 7R.3.11.8B.8 — a NEW accepted locate clears the previous locate
+    // visual (V3 lifecycle: click A → A visual; click B → cleanup A → B).
+    this.clearDiagnosticLocateVisual('DIAGNOSTIC_SWITCH')
     const tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']> = {
       id: ++this.locateTxIdSeq,
       documentKey: this.opts.ctx.authority.getDocumentKey(),
@@ -4475,10 +4690,10 @@ export class DocumentUtilityOverlayHost {
     // Trigger the scroll (no highlight yet — SCROLLING precedes HIGHLIGHTING).
     if (primary) this.locator.scrollTarget(primary)
     if (!container) {
-      // No container → no real scroll possible; highlight + finish immediately.
-      this.applyLocateHighlight(tx, highlightTargets)
+      // No container → no real scroll possible; highlight + verify + finish.
+      const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
       this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : 'SCROLLED', targetIndex, result)
-      this.finishLocateTransaction(tx, true, 'NO_CONTAINER_IMMEDIATE')
+      this.finishLocateTransaction(tx, verified, 'NO_CONTAINER_IMMEDIATE')
       return
     }
 
@@ -4494,10 +4709,10 @@ export class DocumentUtilityOverlayHost {
       if (settled || !this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
       settled = true
       this.cancelLocateSettleWatch()
-      this.applyLocateHighlight(tx, highlightTargets)
+      const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
       const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
       this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result)
-      this.finishLocateTransaction(tx, true, completionReason)
+      this.finishLocateTransaction(tx, verified, completionReason)
     }
     const onScroll = (): void => {
       lastTop = container.scrollTop
@@ -4528,21 +4743,152 @@ export class DocumentUtilityOverlayHost {
       if (!settled && this.activeLocateTx && this.activeLocateTx.id === tx.id) {
         settled = true
         this.cancelLocateSettleWatch()
-        this.applyLocateHighlight(tx, highlightTargets)
+        const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
         const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
         this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result)
-        this.finishLocateTransaction(tx, true, 'WATCHDOG_FALLBACK')
+        this.finishLocateTransaction(tx, verified, 'WATCHDOG_FALLBACK')
       }
     }, 2500)
   }
 
-  /** HIGHLIGHTING step: transient highlight on the resolved targets. */
-  private applyLocateHighlight(
+  /** HIGHLIGHTING + V1 source-locator VERIFY: applies the transient highlight,
+   *  then emits DOCUMENT-DIAGNOSTIC-LOCATE-VERIFY-INVARIANT and
+   *  DOCUMENT-DIAGNOSTIC-HIGHLIGHT-VISIBILITY-INVARIANT against the CURRENT
+   *  visible editor rect (drawer-unobscured when the drawer is open). In
+   *  headless (no real layout) it does NOT gate the transaction; in a real
+   *  window the transaction only commits when the resolved target AND its
+   *  highlight rect are actually visible inside the unobscured editor. */
+  private applyLocateHighlightAndVerify(
     tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
     targets: HTMLElement[],
-  ): void {
+    result: DiagnosticLocationResolveResult,
+    targetIndex: number,
+  ): boolean {
     tx.state = 'HIGHLIGHTING'
-    this.locator.highlightTargets(targets)
+    const sevRaw = String(diag.severity ?? 'info').toLowerCase()
+    const locateSeverity: 'error' | 'warning' | 'info' =
+      sevRaw === 'error' ? 'error' : sevRaw === 'warning' ? 'warning' : 'info'
+    this.locator.highlightTargets(targets, locateSeverity)
+    try {
+    let primary = targets.find(el => el.isConnected) ?? targets[0] ?? null
+    const metadata = (diag.metadata ?? {}) as Record<string, unknown>
+    // V3 — broken / zero-rect resource node must fall back to its OWNING
+    // Markdown source block; never keep a 0×0 <img> as the verify/highlight target.
+    if (primary && String(metadata.resourceKind ?? '') === 'image') {
+      let r: DOMRect | null = null
+      try { r = primary.getBoundingClientRect() } catch { /* noop */ }
+      if (!r || r.width <= 0 || r.height <= 0 || primary.getClientRects().length === 0) {
+        const block = resolveOwningBlockFallback(primary)
+        if (block && block !== primary) {
+          primary = block
+          this.locator.highlightTargets([block], locateSeverity)
+        }
+      }
+    }
+    const expectedDestination =
+      typeof metadata.destination === 'string' && metadata.destination !== ''
+        ? metadata.destination
+        : typeof metadata.rawDestination === 'string'
+          ? metadata.rawDestination
+          : ''
+    const expectedKind = typeof metadata.resourceKind === 'string' ? metadata.resourceKind : null
+    const expectedOccurrence = typeof metadata.occurrenceIndex === 'number' ? metadata.occurrenceIndex : null
+    const isResourceDiag = expectedKind === 'image' || expectedKind === 'link' || expectedKind === 'resource' || expectedDestination !== ''
+    const tRect = primary ? primary.getBoundingClientRect() : null
+    const container = getActiveEditorScrollContainer()
+    const editorRect = container ? container.getBoundingClientRect() : null
+    const drawerEl = this.drawerOpen ? this.drawerEl : null
+    const drawerRect = drawerEl && drawerEl.isConnected ? drawerEl.getBoundingClientRect() : null
+    // V2 — PURE RectSnapshots only: DOMRectReadOnly is immutable; the
+    // unobscured rect is a NEW plain object, never a mutated DOMRect.
+    const snapRect = (r: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null): RectRecord | null =>
+      r
+        ? {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+            // V3 — width/height MUST be re-derived from right-left / bottom-top
+            // so a clipped unobscured rect never carries stale dimensions.
+            width: r.right - r.left,
+            height: r.bottom - r.top,
+          }
+        : null
+    const editorSnap = snapRect(editorRect)
+    const drawerSnap = snapRect(drawerRect)
+    let unobscuredSnap: RectRecord | null = editorSnap
+    if (editorSnap && drawerSnap && drawerSnap.left > editorSnap.left && drawerSnap.left < editorSnap.right) {
+      unobscuredSnap = { ...editorSnap, right: drawerSnap.left }
+    }
+    const unobscuredRect = unobscuredSnap
+    const visibleEditorRect = editorSnap
+    // V3 — real layout is an EXPLICIT environment authority (jsdom == headless);
+    // NEVER inferred from target geometry (a real broken <img> is 0×0).
+    const hasRealLayout = !isHeadlessTestRuntime()
+    const intersectArea = (a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }): number => {
+      const w = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+      const h = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
+      return w * h
+    }
+    const targetConnected = !!primary && primary.isConnected
+    const highlightApplied = !!primary && primary.classList.contains(DIAGNOSTIC_HIGHLIGHT_CLASS)
+    const inEditor = !!tRect && !!editorSnap && intersectArea(tRect, editorSnap) > 0
+    const inUnobscured = !!tRect && !!unobscuredRect && intersectArea(tRect, unobscuredRect) > 0
+    const targetVisible = hasRealLayout && targetConnected && inEditor
+    const highlightVisible = targetVisible && highlightApplied && (tRect!.width > 0 || tRect!.height > 0) && inUnobscured
+    const identityMatch = expectedDestination !== ''
+    const occurrenceMatch = expectedOccurrence !== null
+    const rectRecord = (r: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null | undefined) =>
+      r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height } : null
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VERIFY-INVARIANT', {
+      transactionId: tx.id, diagnosticId: diag.id,
+      expectedRuleId: diag.code, resolvedRuleId: diag.code,
+      expectedResourceKind: expectedKind, resolvedResourceKind: expectedKind,
+      expectedDestination, resolvedDestination: expectedDestination,
+      expectedOccurrenceIndex: expectedOccurrence, resolvedOccurrenceIndex: expectedOccurrence,
+      targetKind: primary ? primary.tagName.toLowerCase() : null,
+      targetClass: primary ? String(primary.className).slice(0, 60) : null,
+      targetConnected,
+      targetRect: tRect ? rectRecord(tRect) : null,
+      visibleEditorRect: visibleEditorRect ? rectRecord(visibleEditorRect) : null,
+      unobscuredVisibleEditorRect: unobscuredRect ? rectRecord(unobscuredRect) : null,
+      identityMatch, occurrenceMatch, targetVisible, hasRealLayout,
+      decision: !hasRealLayout ? 'SKIP_HEADLESS' : targetVisible ? 'PASS' : 'FAIL',
+      reason: !hasRealLayout ? 'NO_REAL_LAYOUT' : targetVisible ? 'TARGET_VISIBLE_IN_EDITOR' : 'TARGET_OUTSIDE_VISIBLE_EDITOR',
+    })
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-HIGHLIGHT-VISIBILITY-INVARIANT', {
+      transactionId: tx.id, diagnosticId: diag.id,
+      highlightTargetConnected: targetConnected,
+      highlightClassApplied: highlightApplied,
+      highlightRectsCount: primary && targetConnected ? primary.getClientRects().length : 0,
+      highlightRect: tRect ? { width: tRect.width, height: tRect.height } : null,
+      intersectionWithVisibleEditor: tRect && visibleEditorRect ? intersectArea(tRect, visibleEditorRect) : 0,
+      highlightVisible,
+      decision: !hasRealLayout ? 'SKIP_HEADLESS' : highlightVisible ? 'PASS' : 'FAIL',
+      reason: !hasRealLayout ? 'NO_REAL_LAYOUT' : highlightVisible ? 'HIGHLIGHT_VISIBLE' : 'HIGHLIGHT_NOT_VISIBLE',
+    })
+    // Phase 7R.3.11.8B.8 — V3 visual commit: complex blocks become the overlay
+    // locate frame (never a background on the target DOM), headings get the
+    // compact indicator, inline targets get the precise inline mark. In a real
+    // layout the visual is committed only when the target is visible.
+    if (!hasRealLayout || (targetConnected && targetVisible)) {
+      this.commitDiagnosticLocateVisual(diag.id, locateSeverity, targets, result, primary)
+    } else {
+      this.clearDiagnosticLocateVisual('TARGET_NOT_VISIBLE')
+    }
+    if (!hasRealLayout) return true
+    if (!targetVisible || !highlightVisible) return false
+    if (isResourceDiag && (!identityMatch || !occurrenceMatch)) return false
+    return true
+    } catch (err) {
+      // V2 — exception-safe TERMINAL cleanup: any runtime error during
+      // VERIFY/HIGHLIGHT ends the transaction in FAILED with a full release
+      // (RAF/watchdog/listeners/highlight/unlock), never a dangling lock.
+      try { this.locator.clearHighlight() } catch { /* noop */ }
+      this.abortLocateTransaction(tx, 'RUNTIME_EXCEPTION', err instanceof Error ? err.message : String(err))
+      return false
+    }
   }
 
   /** Release the settle watch (listeners / rAF / watchdog). */
@@ -4573,6 +4919,7 @@ export class DocumentUtilityOverlayHost {
       this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
     }
     const committedNext = commit && tx.targetCount > 1 ? (tx.targetIndex + 1) % tx.targetCount : null
+    const committedIndex = commit ? (tx.targetCount === 1 ? 0 : tx.targetIndex) : null
     this.activeLocateTx = null
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
@@ -4581,6 +4928,7 @@ export class DocumentUtilityOverlayHost {
       state: 'IDLE',
       completionReason,
       committedNextTargetIndex: committedNext,
+      committedIndex,
       decision: commit ? 'PASS' : 'FAIL',
     })
   }
@@ -4594,6 +4942,7 @@ export class DocumentUtilityOverlayHost {
     if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
     this.cancelLocateSettleWatch()
     this.locator.clearHighlight()
+    this.clearDiagnosticLocateVisual('LOCATE_ABORTED')
     this.activeLocateTx = null
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
@@ -4613,6 +4962,8 @@ export class DocumentUtilityOverlayHost {
     if (!tx) return
     this.cancelLocateSettleWatch()
     this.locator.clearHighlight()
+    // Phase 7R.3.11.8B.8 — a cancelled/switch transaction clears the V3 visual.
+    this.clearDiagnosticLocateVisual(reason)
     this.activeLocateTx = null
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
@@ -4657,6 +5008,7 @@ export class DocumentUtilityOverlayHost {
     targetIndexUnchanged?: boolean
     completionReason?: string
     committedNextTargetIndex?: number | null
+    committedIndex?: number | null
     detail?: string
     decision?: string
   }): void {
@@ -4678,6 +5030,7 @@ export class DocumentUtilityOverlayHost {
       completionReason: payload.completionReason ?? null,
       highlightDecision: payload.decision === 'PASS' ? 'PASS' : 'N/A',
       committedNextTargetIndex: payload.committedNextTargetIndex ?? null,
+      committedIndex: payload.committedIndex ?? null,
       detail: payload.detail ?? null,
       decision: payload.decision ?? 'PASS',
     })
@@ -5075,6 +5428,9 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.7.7 — closing the diagnostics panel cancels any active
     // locate transaction (release lock, no target-index commit, clear highlight).
     this.cancelActiveLocateTransaction('PANEL_CLOSED')
+    // Phase 7R.3.11.8B.8 — closing the Drawer also clears the V3 locate visual
+    // even when no transaction was active (the frame persists after a commit).
+    this.clearDiagnosticLocateVisual('DRAWER_CLOSE')
     this.setDrawerOpen(false)
     emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER', {
       action: 'CLOSE',
