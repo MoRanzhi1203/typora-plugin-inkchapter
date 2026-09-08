@@ -22,6 +22,7 @@ import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from '
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
+import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-empty-workspace-controller'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
@@ -74,6 +75,37 @@ function readWorkspaceActiveLeafState(workspace: ActiveLeafWorkspaceShape): { le
     return { leafStateKnown: true, leafPath: normalizeLeafPathForPresence(leaf.state?.path) }
   } catch {
     return { leafStateKnown: false, leafPath: null }
+  }
+}
+
+/**
+ * V2 — EMPTY Workspace SURFACE AUTHORITY. The surface is resolved from the
+ * CURRENT active workspace leaf's own view container (`leaf.view.containerEl`),
+ * never from the stale Markdown `#write` business root. Ownership is inherent
+ * because the element comes straight off `workspace.activeLeaf.view`. The view
+ * type is NOT assumed — in real Typora the empty placeholder leaf can be a
+ * `core.empty` EmptyView or a `core.markdown` leaf with an empty path.
+ */
+function readActiveEmptyWorkspaceSurface(workspace: {
+  activeLeaf?: { viewType?: string; view?: { containerEl?: unknown } } | null
+}): EmptyWorkspaceSurfaceFacts | null {
+  try {
+    const leaf = workspace?.activeLeaf ?? null
+    if (!leaf) {
+      return { surface: null, source: 'NO_ACTIVE_LEAF', activeLeafExists: false, activeLeafViewType: null }
+    }
+    const viewType = leaf.viewType ?? null
+    const container = leaf.view?.containerEl instanceof HTMLElement ? leaf.view.containerEl : null
+    if (!container) {
+      return { surface: null, source: 'VIEW_CONTAINER_MISSING', activeLeafExists: true, activeLeafViewType: viewType }
+    }
+    // The stale Markdown business root itself must NEVER become the surface.
+    if (container === document.getElementById('write')) {
+      return { surface: null, source: 'NOT_EMPTY_VIEW', activeLeafExists: true, activeLeafViewType: viewType }
+    }
+    return { surface: container, source: 'ACTIVE_EMPTY_LEAF_VIEW', activeLeafExists: true, activeLeafViewType: viewType }
+  } catch {
+    return { surface: null, source: 'NO_ACTIVE_LEAF', activeLeafExists: false, activeLeafViewType: null }
   }
 }
 
@@ -518,6 +550,74 @@ export default class extends Plugin<InkChapterSettings> {
         onSettingsChanged: (cb) => {
           if (!this.numberingService) return () => undefined
           return this.numberingService.onSettingsChanged(() => cb())
+        },
+        // Empty Workspace UX V1 — injected platform for EMPTY-state dblclick
+        // .md creation. Directory identity comes ONLY from the file-tree root /
+        // selection (never hard-coded / cwd); creation is exclusive ('wx'); the
+        // created file opens through the framework App.openFile (real API).
+        emptyWorkspace: {
+          contentEditableBoundaryAllowed: true,
+          resolveEmptySurface: () => readActiveEmptyWorkspaceSurface(
+            this.app.workspace as unknown as { activeLeaf?: { viewType?: string; view?: { containerEl?: unknown } } | null },
+          ),
+          platform: {
+            getFileTreeRoot: () => {
+              try {
+                const mf = typeof File.getMountFolder === 'function' ? File.getMountFolder() : ''
+                if (mf) return mf
+                return vaultRoot ?? null
+              } catch {
+                return vaultRoot ?? null
+              }
+            },
+            statKind: (absolutePath) => {
+              try {
+                const s = fs.statSync(absolutePath)
+                return s.isDirectory() ? 'directory' : s.isFile() ? 'file' : null
+              } catch {
+                return null
+              }
+            },
+            markdownExists: (absolutePath) => {
+              try { return fs.existsSync(absolutePath) } catch { return false }
+            },
+            createExclusiveMarkdown: (directory, fileName) => {
+              const absolutePath = path.join(directory, fileName)
+              try {
+                const fd = fs.openSync(absolutePath, 'wx')
+                fs.closeSync(fd)
+                return { ok: true, path: absolutePath, code: 'OK' }
+              } catch (e) {
+                const code = (e as NodeJS.ErrnoException)?.code
+                return { ok: false, path: null, code: code === 'EEXIST' ? 'EXISTS' : 'ERROR' }
+              }
+            },
+            openCreatedFile: async (absolutePath) => {
+              const appOpen = (this.app as unknown as { openFile?: (fp: string) => Promise<unknown> }).openFile
+              if (typeof appOpen !== 'function') {
+                throw new Error('NO_NATIVE_OPEN_FILE_API')
+              }
+              await appOpen(absolutePath)
+            },
+            revealInFileTree: (absolutePath) => {
+              try {
+                const lib = (editor as { library?: unknown }).library as {
+                  revealInFileTree?: (p: string, ...rest: unknown[]) => unknown
+                  revealInFileList?: (p: string, ...rest: unknown[]) => unknown
+                  revealInSidebar?: (p: string, ...rest: unknown[]) => unknown
+                } | undefined
+                const fn = lib?.revealInFileTree ?? lib?.revealInFileList ?? lib?.revealInSidebar
+                if (typeof fn !== 'function') return false
+                fn.call(lib, absolutePath)
+                return true
+              } catch {
+                return false
+              }
+            },
+            notice: (message) => {
+              try { Notice.info(message) } catch { /* fail-open */ }
+            },
+          },
         },
       })
       this.documentUtilities.mount()

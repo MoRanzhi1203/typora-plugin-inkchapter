@@ -3204,3 +3204,17 @@
   background-color: rgba(128, 128, 128, 0.14);
   border-radius: 4px;
 }
+
+/* ── Empty Workspace UX V1 — EMPTY placeholder ("New tab") is NOT a closeable
+   document, so its × slot is folded (display:none). The marker
+   data-ink-empty-placeholder="true" is written by the SINGLE writer
+   applyEmptyPlaceholderTabState and never lands on a real Markdown tab — the
+   real-document hover/focus-only × block above stays untouched. Hover / focus
+   on the placeholder can never reveal an × because the element is gone. */
+.typ-workspace-tabs .typ-tab[data-ink-empty-placeholder="true"] .typ-icon.typ-close,
+.typ-workspace-tab-header .typ-tab[data-ink-empty-placeholder="true"] .typ-icon.typ-close {
+  display: none;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
