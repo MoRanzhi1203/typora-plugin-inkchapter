@@ -44,6 +44,18 @@ import {
   type ActiveDocumentPresenceDecision,
   type ActiveLeafDocumentFacts,
 } from './document-active-leaf-presence'
+import {
+  computeActiveDocumentReadiness,
+  evaluateDiagnosticsCommitGate,
+  type ActiveDocumentReadinessState,
+} from './document-active-document-readiness'
+import { EmptyWorkspaceUxController } from './document-empty-workspace-controller'
+import type {
+  EmptyWorkspacePresence,
+  EmptyWorkspaceSurfaceFacts,
+  EmptyWorkspaceUxControllerOptions,
+  EmptyWorkspaceUxPlatform,
+} from './document-empty-workspace-controller'
 
 export const UTILITY_UI_ROOT_ATTR = 'data-inkchapter-ui-root'
 export const UTILITY_UI_ROOT_VALUE = 'document-utilities'
@@ -98,6 +110,18 @@ export interface DocumentUtilitiesOverlayOptions {
    * string flows to the PUBLISHED audit (HEADING_STRUCTURE_MODE_CHANGED etc.).
    */
   onDiagnosticsTrigger?: (recompute: (reason: string) => void) => void
+  /**
+   * Empty Workspace UX V1 — optional platform wiring. When present, the host
+   * owns the single EMPTY-placeholder marker writer and the single scoped
+   * empty-workspace dblclick listener (create + open .md via injected API).
+   */
+  emptyWorkspace?: {
+    platform: EmptyWorkspaceUxPlatform
+    contentEditableBoundaryAllowed?: boolean
+    /** V2 — authoritative empty-workspace surface resolver (active EMPTY leaf
+     *  view container). Never falls back to the stale #write business root. */
+    resolveEmptySurface?(): EmptyWorkspaceSurfaceFacts | null
+  }
 }
 
 const TOOLBAR_TOP_PX = 12
@@ -1234,6 +1258,13 @@ export class DocumentUtilityOverlayHost {
   private lastActiveLeafPresence: ActiveDocumentPresenceDecision | null = null
   /** V3 — real active-leaf lifecycle subscription (workspace + tabs). */
   private activeLeafLifecycleDispose: (() => void) | null = null
+  /** Empty Workspace UX V1 — single marker writer + scoped dblclick listener. */
+  private emptyWorkspaceUx: EmptyWorkspaceUxController | null = null
+  /** V2 — active document reconcile coordinator (single authoritative chain). */
+  private activeDocumentEpoch = 0
+  private lastReconcileIdentity: { state: string; path: string | null; key: string | null } | null = null
+  private authorityReady = { canonical: false, caption: false }
+  private reconcileTotalCount = 0
 
   constructor(private opts: DocumentUtilitiesOverlayOptions) {
     this.diagnostics = new DocumentDiagnosticsAuthority(opts.ctx, opts.providers)
@@ -1353,6 +1384,40 @@ export class DocumentUtilityOverlayHost {
         })
         return
       }
+      // V3 readiness barrier + epoch/presence gate — a diagnostics result may
+      // only commit against the CURRENT document identity/epoch while ACTIVE.
+      // FINAL flag is off for live publishes (provisional allowed); the FINAL
+      // hard gate (readiness===READY) is enforced by reconcileActiveDocument.
+      if (snapshot) {
+        const presenceEval = this.evaluateActiveDocumentPresence()
+        const presenceActive =
+          presenceEval.presence.state === 'ACTIVE' ||
+          (presenceEval.presence.state === 'UNKNOWN' && presenceEval.hasActiveDocument)
+        const readiness = this.computeActiveDocumentReadiness()
+        const gate = evaluateDiagnosticsCommitGate({
+          snapshotDocumentKey: snapshot.documentKey,
+          currentDocumentKey: activeKey,
+          snapshotEpoch: this.activeDocumentEpoch,
+          currentEpoch: this.activeDocumentEpoch,
+          presenceActive,
+          readiness,
+          finalRequired: false,
+        })
+        if (!gate.commit) {
+          emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+            action: 'DISCARDED_STALE',
+            documentKey: snapshot.documentKey,
+            activeDocumentKey: activeKey,
+            revision: snapshot.revision,
+            sourceRevision: snapshot.sourceRevision,
+            itemCount: snapshot.diagnostics.length,
+            readiness,
+            decision: gate.decision,
+            reason: gate.reason,
+          })
+          return
+        }
+      }
       this.snapshot = snapshot
       this.handleStrictSingleH1Popup(snapshot)
       this.renderDiagnosticsButton()
@@ -1385,13 +1450,16 @@ export class DocumentUtilityOverlayHost {
       }
     }))
 
-    // Initial recompute (event-driven — the caller controls further triggers).
-    this.diagnostics.recompute()
+    // Phase 7R.3.11.8-B — initial reconcile (BUG-2). If a document is already
+    // ACTIVE at mount, reconcileActiveDocument runs NOW — it never waits for a
+    // later file:open / tab:toggle / user click. If EMPTY/UNKNOWN-inactive the
+    // reconcile path applies the NO_ACTIVE_DOCUMENT state.
+    this.reconcileActiveDocument('INITIAL_ACTIVE_DOCUMENT')
 
     // Phase 7R.3.11.8-B §7 — live diagnostics triggers (frame commit / mode
     // change) → lightweight recompute only. Phase 7R.3.11.8B.7.1 — the reason
     // flows through to the PUBLISHED audit (HEADING_STRUCTURE_MODE_CHANGED etc.).
-    this.opts.onDiagnosticsTrigger?.((reason) => this.diagnostics.recompute(reason))
+    this.opts.onDiagnosticsTrigger?.((reason) => this.reconcileActiveDocument(reason))
 
     // Phase 7R.3.11.8-B §7 — event-driven editor mutation trigger (rAF-coalesced).
     // Covers raw source / trailing-blank-line changes and live heading edits.
@@ -1431,6 +1499,39 @@ export class DocumentUtilityOverlayHost {
         this.activeLeafLifecycleDispose?.()
         this.activeLeafLifecycleDispose = null
       })
+    }
+
+    // Empty Workspace UX V1 — single EMPTY-placeholder marker writer + single
+    // scoped empty-workspace dblclick listener (create/open .md). Driven by the
+    // SAME EMPTY authority; disposes with the host.
+    if (this.opts.emptyWorkspace && typeof document !== 'undefined') {
+      try {
+        const emptyUx = new EmptyWorkspaceUxController({
+          platform: this.opts.emptyWorkspace.platform,
+          contentEditableBoundaryAllowed: this.opts.emptyWorkspace.contentEditableBoundaryAllowed,
+          getPresence: () => this.readEmptyWorkspacePresence(),
+          // V2 — surface authority = the ACTIVE EMPTY leaf view container,
+          // injected by the workspace adapter. The stale #write root is NEVER
+          // used as the empty surface.
+          ...(this.opts.emptyWorkspace.resolveEmptySurface
+            ? { resolveEmptySurface: this.opts.emptyWorkspace.resolveEmptySurface }
+            : {}),
+        })
+        emptyUx.sync(this.readEmptyWorkspacePresence())
+        this.emptyWorkspaceUx = emptyUx
+        this.disposables.push(() => {
+          emptyUx.dispose()
+          this.emptyWorkspaceUx = null
+        })
+        emitRuntimeAudit('DOCUMENT-UTILITY-EMPTY-WORKSPACE-RUNTIME-STRUCTURE', {
+          action: 'MOUNTED',
+          dblclickListenerCount: emptyUx.getRuntimeFacts().dblclickListenerCount,
+          emptyPlaceholderMarkerCount: emptyUx.getRuntimeFacts().emptyPlaceholderMarkerCount,
+          duplicateMount: false,
+        })
+      } catch (e) {
+        console.error('[InkChapter] Empty Workspace UX 初始化失败', e)
+      }
     }
 
     emitRuntimeAudit('DOCUMENT-UTILITY-LIFECYCLE', {
@@ -1485,37 +1586,9 @@ export class DocumentUtilityOverlayHost {
     })
   }
 
-  /** Rebind document context (document switch): scroll, diagnostics, lock. */
+  /** FILE_OPEN document switch — routed into the single reconcile authority. */
   bindDocument(): void {
-    // Phase 7R.3.11.8-B §11: a document switch CANCELS any in-flight scroll
-    // operation (old doc must never write final state into the new document).
-    this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
-    // Phase 7R.3.11.8B.7.7 — document switch cancels any active locate
-    // transaction (no stale scroll completion may commit into the new doc).
-    this.cancelActiveLocateTransaction('DOCUMENT_SWITCH')
-    this.ensureTabStructureObserver()
-    // Phase 7R.3.11.8B.NO-ACTIVE-DOC — immediate suppression when the switch
-    // lands on an empty/New-tab state (no real Markdown document).
-    if (!this.resolveHasActiveDocument()) {
-      this.applyNoActiveDocumentState()
-    }
-    this.scrollNav?.bind()
-    this.diagnostics.rebind()
-    this.scheduleGeometrySync('bind-document')
-    this.renderLockButton()
-    this.emitFullBcr('document-switch')
-    // V3 — publish the ACTIVE-LEAF presence invariant on every real document
-    // switch (recorded after rebind; the empty/unknown branches already emit
-    // inside applyNoActiveDocumentState when applicable).
-    if (this.resolveHasActiveDocument()) this.emitActiveLeafDocumentInvariant('BIND_DOCUMENT')
-    // Phase 7R.3.11.7 §32/§33: event-triggered settle summary (no timer).
-    emitInkchapterRuntimeAuditSummary('document-switch-settled')
-    emitRuntimeAudit('DOCUMENT-UTILITY-LIFECYCLE', {
-      action: 'BIND_DOCUMENT',
-      rootCount: document.querySelectorAll(`[${UTILITY_ROOT_IDENTITY_ATTR}="true"]`).length,
-      toolbarCount: document.querySelectorAll('.inkchapter-doc-toolbar').length,
-      navigatorCount: document.querySelectorAll('.inkchapter-doc-navigator').length,
-    })
+    this.reconcileActiveDocument('FILE_OPEN')
   }
 
   /** Runtime-gate observability: resize/geometry counters (read-only). */
@@ -1911,6 +1984,188 @@ export class DocumentUtilityOverlayHost {
     return this.evaluateActiveDocumentPresence().hasActiveDocument
   }
 
+  /** Empty Workspace UX V1 — minimal presence snapshot for the controller. */
+  private readEmptyWorkspacePresence(): EmptyWorkspacePresence {
+    const ev = this.evaluateActiveDocumentPresence()
+    return { state: ev.presence.state, path: ev.presence.path, source: ev.presence.source }
+  }
+
+  /** Empty Workspace UX V1 — re-sync marker + surface listener. Idempotent. */
+  private syncEmptyWorkspaceUx(): void {
+    if (this.disposed || !this.emptyWorkspaceUx) return
+    try {
+      this.emptyWorkspaceUx.sync(this.readEmptyWorkspacePresence())
+    } catch { /* best-effort */ }
+  }
+
+  // ── V2 — ACTIVE DOCUMENT RECONCILE COORDINATOR (single authoritative chain) ─
+
+  /** Epoch of the current active document identity (EMPTY↔ACTIVE / A↔B bumps). */
+  getActiveDocumentEpoch(): number {
+    return this.activeDocumentEpoch
+  }
+
+  /** Read-only reconcile identity (tests / runtime structure). */
+  getReconcileRuntimeFacts(): { reconcileCoordinatorCount: number; epoch: number } {
+    return { reconcileCoordinatorCount: 1, epoch: this.activeDocumentEpoch }
+  }
+
+  /** Public coordinator count (single chain). */
+  getReconcileCoordinatorCount(): number {
+    return 1
+  }
+
+  /** V3 — current Active Document Readiness Barrier state. */
+  getActiveDocumentReadiness(): ActiveDocumentReadinessState {
+    return this.computeActiveDocumentReadiness()
+  }
+
+  private computeActiveDocumentReadiness(): ActiveDocumentReadinessState {
+    try {
+      const ev = this.evaluateActiveDocumentPresence()
+      const p = ev.presence
+      const presenceActive = p.state === 'ACTIVE' || (p.state === 'UNKNOWN' && ev.hasActiveDocument)
+      const key = this.opts.ctx.authority.getDocumentKey() ?? null
+      const identityMatch = presenceActive && p.path != null && p.path !== '' && key != null
+      const editorRootConnected = resolveBusinessContentRoot()?.isConnected ?? false
+      let sourceAvailable = false
+      try {
+        const md = this.opts.ctx.authority.getMarkdown?.()
+        sourceAvailable = md != null
+      } catch { sourceAvailable = false }
+      return computeActiveDocumentReadiness({
+        presenceActive,
+        identityMatch,
+        editorRootConnected,
+        sourceAvailable,
+        canonicalReady: this.authorityReady.canonical,
+        stale: false,
+      })
+    } catch {
+      return 'STALE'
+    }
+  }
+
+  private trackIdentityTransition(p: { state: string; path: string | null }): boolean {
+    const key = this.opts.ctx.authority.getDocumentKey() ?? null
+    const prev = this.lastReconcileIdentity
+    const changed = !prev || prev.state !== p.state || (p.path ?? '') !== (prev.path ?? '') || key !== prev.key
+    if (!prev) {
+      this.lastReconcileIdentity = { state: p.state, path: p.path, key }
+      // A document already active at first observation counts as one identity.
+      if (p.state === 'ACTIVE' || (p.state === 'UNKNOWN' && key != null)) this.activeDocumentEpoch++
+      return true
+    }
+    if (changed) {
+      this.activeDocumentEpoch++
+      this.lastReconcileIdentity = { state: p.state, path: p.path, key }
+      return true
+    }
+    return false
+  }
+
+  /**
+   * BUG-2 INITIAL_ACTIVE_DOCUMENT_RECONCILE_MISSING — the SINGLE authoritative
+   * entry for document-level reconcile. Every trigger (INITIAL_ACTIVE_DOCUMENT,
+   * ACTIVE_LEAF_CHANGED, ACTIVE_TAB_CHANGED, FILE_OPEN, CANONICAL_FRAME_READY,
+   * CAPTION_REHYDRATED, settings/source change) funnels through here. It does:
+   * presence → identity/epoch → editor root → binding → recompute → snapshot
+   * commit → Problems Control/Drawer refresh (via the diagnostics publish). No
+   * timeout/resize/second-document tricks are ever needed.
+   */
+  reconcileActiveDocument(reason: string): void {
+    if (this.disposed) return
+    try {
+      this.reconcileTotalCount++
+      const ev = this.evaluateActiveDocumentPresence()
+      const p = ev.presence
+      const key = this.opts.ctx.authority.getDocumentKey() ?? null
+
+      if (p.state === 'EMPTY' || (p.state === 'UNKNOWN' && !ev.hasActiveDocument)) {
+        this.trackIdentityTransition(p)
+        this.cancelActiveLocateTransaction('DOCUMENT_SWITCH')
+        this.applyNoActiveDocumentState()
+        this.syncEmptyWorkspaceUx()
+        this.emitReconcileInvariant(reason, 'EMPTY_OR_INACTIVE', null)
+        return
+      }
+
+      // ACTIVE (or legacy-active UNKNOWN) — full or refresh reconcile.
+      const identityChanged = this.trackIdentityTransition(p)
+      if (/CANONICAL/i.test(reason)) this.authorityReady.canonical = true
+      if (/CAPTION|OBJECT/i.test(reason)) this.authorityReady.caption = true
+      const DOC_SWITCH_REASONS = new Set([
+        'INITIAL_ACTIVE_DOCUMENT',
+        'ACTIVE_LEAF_CHANGED',
+        'ACTIVE_TAB_CHANGED',
+        'FILE_OPEN',
+        'LEGACY_ACTIVE_DOCUMENT',
+      ])
+      const full = identityChanged || DOC_SWITCH_REASONS.has(reason)
+      if (full) {
+        this.authorityReady = { canonical: false, caption: false }
+        if (/CANONICAL/i.test(reason)) this.authorityReady.canonical = true
+        this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
+        this.cancelActiveLocateTransaction('DOCUMENT_SWITCH')
+        this.ensureTabStructureObserver()
+        this.scrollNav?.bind()
+        this.diagnostics.rebind()
+      }
+      this.diagnostics.recompute(reason)
+      this.renderLockButton()
+      this.scheduleGeometrySync(`reconcile:${reason}`)
+      this.syncEmptyWorkspaceUx()
+      this.emitReconcileInvariant(reason, 'ACTIVE_RECONCILED', this.diagnostics.getSnapshot())
+    } catch { /* best-effort */ }
+  }
+
+  private emitReconcileInvariant(
+    triggerReason: string,
+    outcome: 'ACTIVE_RECONCILED' | 'EMPTY_OR_INACTIVE',
+    snapshot: DocumentDiagnosticsSnapshot | null,
+  ): void {
+    try {
+      const ev = this.evaluateActiveDocumentPresence()
+      const p = ev.presence
+      const key = this.opts.ctx.authority.getDocumentKey() ?? null
+      const editorRootConnected = resolveBusinessContentRoot()?.isConnected ?? false
+      const snapshotCounts = snapshot
+        ? { e: snapshot.errorCount, w: snapshot.warningCount, h: snapshot.infoCount }
+        : { e: 0, w: 0, h: 0 }
+      const projected = snapshotCounts
+      const decision = outcome === 'ACTIVE_RECONCILED' ? 'PASS' : 'PASS'
+      emitRuntimeAudit('DOCUMENT-UTILITY-ACTIVE-DOCUMENT-RECONCILE-INVARIANT', {
+        triggerReason,
+        presenceState: p.state,
+        activeLeafPath: p.path ?? '',
+        documentKey: key,
+        documentEpoch: this.activeDocumentEpoch,
+        editorRootConnected,
+        canonicalFrameState: this.authorityReady.canonical ? 'READY' : 'WAITING',
+        canonicalFrameDocumentKey: key,
+        captionState: this.authorityReady.caption ? 'READY' : 'WAITING',
+        readinessState: this.computeActiveDocumentReadiness(),
+        reconcileRequested: true,
+        reconcileCoalesced: false,
+        recomputeStarted: outcome === 'ACTIVE_RECONCILED',
+        recomputeCompleted: outcome === 'ACTIVE_RECONCILED',
+        snapshotDocumentKey: snapshot?.documentKey ?? null,
+        snapshotEpoch: snapshot ? this.activeDocumentEpoch : null,
+        snapshotRevision: snapshot?.revision ?? null,
+        projectedErrorCount: projected.e,
+        projectedWarningCount: projected.w,
+        projectedHintCount: projected.h,
+        toolbarErrorCount: projected.e,
+        toolbarWarningCount: projected.w,
+        drawerVisible: this.drawerOpen,
+        drawerSnapshotRevision: this.drawerOpen && snapshot ? snapshot.revision : null,
+        staleResultDiscarded: false,
+        decision,
+        reason: outcome === 'ACTIVE_RECONCILED' ? 'ACTIVE_DOCUMENT_RECONCILED' : 'NO_ACTIVE_DOCUMENT',
+      })
+    } catch { /* best-effort */ }
+  }
+
   /**
    * V3 — SYNCHRONOUS reaction to a real active-leaf lifecycle transition.
    *  - path=''   → immediate identity invalidation + suppression. Never waits
@@ -1934,24 +2189,27 @@ export class DocumentUtilityOverlayHost {
         hasActiveDocument: ev.hasActiveDocument,
         decision: 'EVALUATED',
       })
+      // BUG-2 — every active leaf transition funnels into the SINGLE reconcile
+      // coordinator (never a second render chain). EMPTY keeps the suppression
+      // path; ACTIVE always reconciles (mount INITIAL_ACTIVE_DOCUMENT included).
       if (p.state === 'EMPTY') {
-        // Close-last-tab / New tab: EMPTY leaf wins over stale identity.
-        this.applyNoActiveDocumentState() // clears projection + suppresses + emits invariants
+        this.trackIdentityTransition(p)
+        this.applyNoActiveDocumentState()
         return
       }
+      this.syncEmptyWorkspaceUx()
       if (p.state === 'ACTIVE') {
-        // Reopen transition: cancel stale locate, then let the next coalesced
-        // geometry pass restore full/compact (bindDocument on file:open also
-        // recomputes diagnostics — automatic, no user click required).
         this.cancelActiveLocateTransaction('ACTIVE_LEAF_REOPEN')
-        this.scheduleGeometrySync('active-leaf-active')
+        const reconcileReason = reason === 'TAB_TOGGLE' ? 'ACTIVE_TAB_CHANGED' : 'ACTIVE_LEAF_CHANGED'
+        this.reconcileActiveDocument(reconcileReason)
         this.emitActiveLeafDocumentInvariant(`TRANSITION:${reason}`)
         return
       }
       // ONLY UNKNOWN → legacy fallback decides (never silent).
       if (ev.hasActiveDocument) {
-        this.scheduleGeometrySync('active-leaf-legacy-active')
+        this.reconcileActiveDocument('LEGACY_ACTIVE_DOCUMENT')
       } else {
+        this.trackIdentityTransition(p)
         this.applyNoActiveDocumentState()
       }
       this.emitActiveLeafDocumentInvariant(`TRANSITION:${reason}`)
@@ -2024,6 +2282,9 @@ export class DocumentUtilityOverlayHost {
     this.emitActiveDocumentVisibilityInvariant()
     this.emitToolbarRenderedVisibilityInvariant()
     this.emitActiveLeafDocumentInvariant('NO_ACTIVE_DOCUMENT')
+    // Empty Workspace UX V1 — EMPTY → apply placeholder marker + surface
+    // dblclick listener (idempotent; runs after the DOM state settles).
+    this.syncEmptyWorkspaceUx()
   }
 
   /** Empty-document projection cleanup: counts → 0, edit text → empty. */
@@ -2174,7 +2435,12 @@ export class DocumentUtilityOverlayHost {
     if (this.tabStructureObserver || this.disposed) return
     const tabStrips = Array.from(document.querySelectorAll<HTMLElement>('.typ-workspace-tabs .typ-tabs, .typ-workspace-tab-header .typ-tabs'))
     if (!tabStrips.length) return
-    this.tabStructureObserver = new MutationObserver(() => this.scheduleGeometrySync('tabs-structure-change'))
+    this.tabStructureObserver = new MutationObserver(() => {
+      this.scheduleGeometrySync('tabs-structure-change')
+      // Empty Workspace UX V1 — Typora may re-create the empty placeholder tab
+      // DOM after closing tabs; re-apply the marker from the same authority.
+      this.syncEmptyWorkspaceUx()
+    })
     for (const strip of tabStrips) this.tabStructureObserver.observe(strip, { childList: true })
     this.disposables.push(() => {
       this.tabStructureObserver?.disconnect()

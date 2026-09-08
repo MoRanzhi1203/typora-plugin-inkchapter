@@ -26,6 +26,12 @@ export interface DocumentUtilitiesSources {
   onActiveLeafChanged?: (cb: () => void) => () => void
   /** V3 — workspace-tabs `tab:toggle` primary lifecycle trigger. */
   onTabToggle?: (cb: () => void) => () => void
+  /** Empty Workspace UX V1 — optional platform (create/open .md on dblclick). */
+  emptyWorkspace?: {
+    platform: import('./document-empty-workspace-controller').EmptyWorkspaceUxPlatform
+    contentEditableBoundaryAllowed?: boolean
+    resolveEmptySurface?(): import('./document-empty-workspace-controller').EmptyWorkspaceSurfaceFacts | null
+  }
   getMarkdown: () => string | null
   isStrictMode: () => boolean
   /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
@@ -270,6 +276,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       if (disposeToggle) disposes.push(disposeToggle)
       return () => { for (const d of disposes) d() }
     },
+    emptyWorkspace: sources.emptyWorkspace,
     // Phase 7R.3.11.8-B — live diagnostics triggers (heading frame commit +
     // settings/mode change) → lightweight snapshot recompute only.
     onDiagnosticsTrigger: (recompute) => {
