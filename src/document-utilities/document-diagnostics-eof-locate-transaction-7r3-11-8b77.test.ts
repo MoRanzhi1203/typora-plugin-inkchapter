@@ -159,8 +159,9 @@ describe('LOCATE — non-reentrant transaction', () => {
     return diag.id
   }
 
-  function firstLocateButton(): HTMLButtonElement | null {
-    return document.querySelector('.inkchapter-doc-drawer__item-locate')
+  function firstLocateButton(): HTMLElement | null {
+    // V1.1 — no standalone locate button: the whole FLAT row is the locate target.
+    return document.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]')
   }
 
   beforeEach(() => {
@@ -204,9 +205,9 @@ describe('LOCATE — non-reentrant transaction', () => {
     btn.click()
     // Transaction is now RESOLVING/SCROLLING (settle still pending).
     expect(host.isLocateTransactionActive()).toBe(true)
-    // UI busy state.
-    expect(btn.disabled).toBe(true)
-    expect(btn.textContent).toBe('定位中…')
+    // UI busy state: rows are aria-disabled + is-busy (V1.1 no locate button).
+    expect(btn.getAttribute('aria-disabled')).toBe('true')
+    expect(btn.classList.contains('is-busy')).toBe(true)
     // 9 more controller-level clicks while busy → IGNORE_BUSY.
     for (let i = 0; i < 9; i++) host['locateDiagnostic'](id)
     expect(countTx('IGNORE_BUSY')).toBe(9)
@@ -217,8 +218,9 @@ describe('LOCATE — non-reentrant transaction', () => {
     expect(host.isLocateTransactionActive()).toBe(false)
     expect(host['multiTargetCursor'].get(id)).toBe(1)
     // UI restored.
-    expect(firstLocateButton()!.disabled).toBe(false)
-    expect(firstLocateButton()!.textContent).toBe('定位')
+    const restored = firstLocateButton()
+    expect(restored?.getAttribute('aria-disabled')).toBe('false')
+    expect(restored?.classList.contains('is-busy')).toBe(false)
     // The completed transaction commits the next index exactly once.
     expect(host['multiTargetCursor'].get(id)).toBe(1)
   })

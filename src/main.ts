@@ -20,6 +20,8 @@ import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
 import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
+import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
+import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
@@ -34,6 +36,96 @@ function codeLanguageOf(el: HTMLElement): string | null {
   return el.getAttribute('data-lang') ?? el.getAttribute('lang') ?? null
 }
 
+// ── V3 — ACTIVE workspace leaf document-facts helpers ──────────────────────
+// The current workspace leaf (`activeLeaf.state.path`) is the highest-priority
+// ACTIVE DOCUMENT PRESENCE authority. `''` means the active leaf holds NO real
+// Markdown document (New tab / empty view / untitled) and HARD-VETOES any stale
+// `workspace.activeFile` / `documentKey`. Only an unreadable leaf yields
+// known=false → UNKNOWN → legacy fallback.
+function normalizeLeafPathForPresence(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return ''
+  const s = String(raw)
+  if (s === '') return ''
+  if (s.startsWith('typ://')) return '' // framework New-tab / empty view
+  return s
+}
+
+interface ActiveLeafWorkspaceShape {
+  activeLeaf?: { state?: { path?: unknown } } | null
+  activeFile?: unknown
+}
+
+/**
+ * Read the ACTIVE workspace leaf document facts.
+ *  - leaf present          → leafStateKnown=true (path normalized; '' = empty).
+ *  - leaf absent but NO file identity → leafStateKnown=true, path='' (provably empty).
+ *  - leaf absent AND a file identity still exists → leafStateKnown=false (UNKNOWN) so
+ *    the legacy fallback decides during framework-startup transients.
+ */
+function readWorkspaceActiveLeafState(workspace: ActiveLeafWorkspaceShape): { leafStateKnown: boolean; leafPath: string | null } {
+  try {
+    const leaf = workspace.activeLeaf ?? null
+    const file = workspace.activeFile ?? null
+    if (!leaf) {
+      const filePresent = file != null && String(file) !== ''
+      if (!filePresent) return { leafStateKnown: true, leafPath: '' }
+      return { leafStateKnown: false, leafPath: null }
+    }
+    return { leafStateKnown: true, leafPath: normalizeLeafPathForPresence(leaf.state?.path) }
+  } catch {
+    return { leafStateKnown: false, leafPath: null }
+  }
+}
+
+interface ActiveLeafTabsNodeShape {
+  type?: string
+  on?: (event: string, listener: (leaf: unknown) => void) => () => void
+}
+
+interface ActiveLeafWorkspaceLifecycleShape {
+  activeLeaf?: { state?: { path?: unknown }; parent?: ActiveLeafTabsNodeShape } | null
+  activeFile?: unknown
+  on?: (event: string, listener: () => void) => () => void
+}
+
+/**
+ * Subscribe to the REAL workspace-tabs `tab:toggle` of the CURRENT active tabs
+ * node. Workspace-tabs events do NOT bubble, and the active tabs node can change
+ * (split layout / close-last re-root), so the subscription re-arms itself on
+ * every workspace `active-leaf:change`. Returns a single dispose.
+ */
+function subscribeActiveTabsTabToggle(
+  workspace: ActiveLeafWorkspaceLifecycleShape,
+  onTogglePath: (path: string | null) => void,
+): () => void {
+  let currentTabs: ActiveLeafTabsNodeShape | null = null
+  let disposeTabs: (() => void) | null = null
+  let disposed = false
+
+  const readToggleLeaf = (leaf: unknown): void => {
+    if (disposed) return
+    const state = (leaf as { state?: { path?: unknown } } | null)?.state
+    onTogglePath(normalizeLeafPathForPresence(state?.path))
+  }
+
+  const attach = (): void => {
+    if (disposed) return
+    const parent = workspace.activeLeaf?.parent ?? null
+    if (!parent || parent.type !== 'tabs' || parent === currentTabs) return
+    disposeTabs?.()
+    currentTabs = parent
+    disposeTabs = parent.on?.('tab:toggle', readToggleLeaf) ?? null
+  }
+
+  attach()
+  const disposeReArm = workspace.on?.('active-leaf:change', () => attach()) ?? (() => undefined)
+  return () => {
+    disposed = true
+    disposeTabs?.()
+    disposeReArm()
+  }
+}
+
 export default class extends Plugin<InkChapterSettings> {
 
   private numberingService?: HeadingNumberingService
@@ -41,6 +133,8 @@ export default class extends Plugin<InkChapterSettings> {
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
   private documentUtilities?: DocumentUtilities
+  private docViewMenu?: DocumentViewContextMenu
+  private tabCloseVisibility?: TabCloseVisibilityEnhancer
 
   constructor(...args: ConstructorParameters<typeof Plugin>) {
     super(...args)
@@ -316,6 +410,24 @@ export default class extends Plugin<InkChapterSettings> {
           if (!fp || !vr) return null
           try { return generateDocumentKey(fp, vr) } catch { return null }
         },
+        // V3 — ACTIVE workspace leaf facts (highest authority) + real
+        // lifecycle triggers: workspace `active-leaf:change` and workspace-tabs
+        // `tab:toggle`. After a TRUE close of the last tab, the leaf state turns
+        // empty and HARD-VETOES the still-stale activeFile/documentKey above.
+        getActiveLeafState: () => readWorkspaceActiveLeafState(this.app.workspace as unknown as ActiveLeafWorkspaceShape),
+        onActiveLeafChanged: (cb) => {
+          const dispose = this.app.workspace.on('active-leaf:change' as never, (() => cb()) as never)
+          this.register(dispose)
+          return dispose
+        },
+        onTabToggle: (cb) => {
+          const dispose = subscribeActiveTabsTabToggle(
+            this.app.workspace as unknown as ActiveLeafWorkspaceLifecycleShape,
+            () => cb(),
+          )
+          this.register(dispose)
+          return dispose
+        },
         getMarkdown: () => {
           try { return editor.getMarkdown() } catch { return null }
         },
@@ -412,6 +524,180 @@ export default class extends Plugin<InkChapterSettings> {
       console.log('[InkChapter] document utilities mounted')
     } catch (e) {
       console.error('[InkChapter] 文档工具初始化失败，诊断/锁定/滚动功能不可用', e)
+    }
+
+    // ── Document View context menu (墨章 · 文档查看, tab right-click V1) ──
+    // Presentation only: reuses the current Typora file-tree root as the
+    // relative-path base, the framework workspace tabs as the right-click
+    // target, native close controls, and a safe Explorer process spawn.
+    try {
+      const appPlatform = (this.app as { platform?: string }).platform
+      const docViewPlatform: DocViewPlatform = {
+        isWindows: appPlatform === 'win32',
+        getFileTreeRoot: () => {
+          try {
+            const mf = typeof File.getMountFolder === 'function' ? File.getMountFolder() : ''
+            return mf ? mf : (vaultRoot ?? null)
+          } catch {
+            return vaultRoot ?? null
+          }
+        },
+        fileExists: (p) => {
+          try { return fs.existsSync(p) } catch { return false }
+        },
+        copyText: (text) => {
+          try {
+            editor.UserOp.setClipboard(null, null, text, true)
+          } catch {
+            try { void navigator.clipboard?.writeText(text) } catch { /* fail-open */ }
+          }
+        },
+        revealInExplorer: (absolutePath) => new Promise<boolean>((resolve) => {
+          try {
+            const cp = require('child_process') as typeof import('child_process')
+            const child = cp.spawn('explorer.exe', [`/select,"${absolutePath}"`])
+            let settled = false
+            const finish = (ok: boolean): void => { if (!settled) { settled = true; resolve(ok) } }
+            child.on('error', () => finish(false))
+            child.on('exit', () => finish(true))
+            setTimeout(() => finish(true), 2000)
+          } catch {
+            resolve(false)
+          }
+        }),
+        showFileTree: () => {
+          try {
+            const library = (editor as { library?: unknown }).library as {
+              show?: (tab?: string) => void
+              showSidebar?: () => void
+              isSidebarShown?: () => boolean
+              switch?: (view?: string, param?: unknown) => void
+            } | undefined
+            try { library?.show?.('file-tree') } catch { /* best-effort */ }
+            const sidebar = document.getElementById('typora-sidebar')
+            if (sidebar && !sidebar.classList.contains('open')) {
+              try { library?.showSidebar?.() } catch { /* best-effort */ }
+            }
+            try { library?.switch?.('', true) } catch { /* best-effort */ }
+            document.getElementById('info-panel-tab-file')?.click()
+            if (sidebar?.classList.contains('use-file-list-style')) {
+              document.getElementById('switch-file-list-btn')?.click()
+            }
+          } catch { /* best-effort */ }
+        },
+        nativeRevealInFileTree: (absolutePath) => {
+          try {
+            const lib = (editor as { library?: unknown }).library as {
+              revealInFileTree?: (p: string, ...rest: unknown[]) => unknown
+              revealInFileList?: (p: string, ...rest: unknown[]) => unknown
+              revealInSidebar?: (p: string, ...rest: unknown[]) => unknown
+            } | undefined
+            const fn = lib?.revealInFileTree ?? lib?.revealInFileList ?? lib?.revealInSidebar
+            if (typeof fn !== 'function') return false
+            fn.call(lib, absolutePath)
+            return true
+          } catch {
+            return false
+          }
+        },
+        notice: (message) => {
+          try { Notice.info(message) } catch { /* fail-open */ }
+        },
+        onInvariant: (event, payload) => {
+          emitRuntimeAudit(event, payload)
+        },
+      }
+      this.docViewMenu = new DocumentViewContextMenu(docViewPlatform)
+      this.docViewMenu.attach()
+      this.register(() => {
+        this.docViewMenu?.dispose()
+        this.docViewMenu = undefined
+      })
+      const invariant = this.docViewMenu.getInvariant()
+      console.log('[InkChapter] document view context menu ready', invariant)
+    } catch (e) {
+      console.error('[InkChapter] 文档查看右键菜单初始化失败', e)
+    }
+
+    // ── Workspace tab close × — hover/focus-only (CSS) enhancer (V1) ──
+    // Visibility itself is CSS-only; this enhancer only guards single mount and
+    // emits the DEFAULT state invariant (0 × visible) after tabs settle.
+    try {
+      this.tabCloseVisibility = new TabCloseVisibilityEnhancer()
+      this.tabCloseVisibility.attach()
+      this.register(() => {
+        this.tabCloseVisibility?.dispose()
+        this.tabCloseVisibility = undefined
+      })
+      setTimeout(() => {
+        if (!this.tabCloseVisibility) return
+        try {
+          const m = measureTabCloseVisibility(document)
+          const result = evaluateTabCloseVisibility({
+            tabCount: m.tabCount,
+            activeIndex: m.activeIndex,
+            hoveredOrFocusedIndex: -1,
+            visibleIndices: m.visibleIndices,
+            origin: 'none',
+            layout: { tabWidthDeltaPx: null, titleWidthDeltaPx: null, titleLeftDeltaPx: null },
+          })
+          emitRuntimeAudit('DOCUMENT-UTILITY-TAB-CLOSE-VISIBILITY-INVARIANT', {
+            tabCloseEnhancerCount: this.tabCloseVisibility.getInvariant().tabCloseEnhancerCount,
+            duplicateListener: this.tabCloseVisibility.getInvariant().duplicateListener,
+            tabCount: m.tabCount,
+            activeTabIndex: m.activeIndex,
+            hoveredTabIndex: -1,
+            visibleCloseCount: result.visibleCloseCount,
+            otherVisibleCloseCount: result.otherVisibleCloseCount,
+            closeSlotWidthsPx: m.closeSlotWidthsPx,
+            defaultStateOk: result.defaultStateOk,
+            decision: result.decision,
+            reason: result.reason,
+          })
+          const c = measureTabCloseCentering(document)
+          if (c.closeRect && c.computed && c.pseudo) {
+            const inlineFlex = c.computed.display === 'inline-flex'
+            const alignCenter = c.computed.alignItems === 'center'
+            const justifyCenter = c.computed.justifyContent === 'center'
+            const paddingZero = /^0px( 0px)*$/.test(c.computed.padding.trim())
+            const marginZero = /^0px( 0px)*$/.test(c.computed.margin.trim())
+            const pseudoNoOffset = c.pseudo.transform === 'none' && c.pseudo.top === 'auto' && c.pseudo.left === 'auto' && c.pseudo.padding === '0px' && c.pseudo.margin === '0px'
+            const square = Math.abs(c.closeRect.width - c.closeRect.height) <= 1 && c.closeRect.width >= 18 && c.closeRect.width <= 22
+            const centering = evaluateTabCloseCentering({
+              deltaCenterX: null,
+              deltaCenterY: null,
+              widthPx: c.closeRect.width,
+              heightPx: c.closeRect.height,
+              paddingZero,
+              marginZero,
+              inlineFlex,
+              alignItemsCenter: alignCenter,
+              justifyContentCenter: justifyCenter,
+              square,
+              pseudoNoOffset,
+              slotWidthDefault: c.closeRect.width,
+              slotWidthHover: c.closeRect.width,
+              tabWidthDeltaPx: null,
+              titleWidthDeltaPx: null,
+              titleLeftDeltaPx: null,
+            })
+            emitRuntimeAudit('DOCUMENT-UTILITY-TAB-CLOSE-CENTERING-INVARIANT', {
+              closeRect: { width: c.closeRect.width, height: c.closeRect.height },
+              closeComputed: c.computed,
+              closePseudo: c.pseudo,
+              glyphAuthority: 'PSEUDO_ELEMENT ::before content:"×"',
+              hitboxFlags: { inlineFlex, alignCenter, justifyCenter, paddingZero, marginZero, square, pseudoNoOffset },
+              measureMode: centering.measureMode,
+              deltaCenterX: null,
+              deltaCenterY: null,
+              decision: centering.decision,
+              reason: centering.reason,
+            })
+          }
+        } catch { /* best-effort */ }
+      }, 7000)
+    } catch (e) {
+      console.error('[InkChapter] 标签关闭按钮增强初始化失败', e)
     }
 
     // ── Phase 7R.3.11.8B.9 — runtime heading-policy probes ──
@@ -897,6 +1183,14 @@ export default class extends Plugin<InkChapterSettings> {
   }
 
   onunload() {
+    if (this.tabCloseVisibility) {
+      this.tabCloseVisibility.dispose()
+      this.tabCloseVisibility = undefined
+    }
+    if (this.docViewMenu) {
+      this.docViewMenu.dispose()
+      this.docViewMenu = undefined
+    }
     if (this.documentUtilities) {
       this.documentUtilities.dispose()
       this.documentUtilities = undefined

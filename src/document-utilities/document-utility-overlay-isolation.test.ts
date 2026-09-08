@@ -224,7 +224,7 @@ describe('OVERLAY-ISO-5/6 drawer bounded + #write untouched', () => {
     expect(drawer.getAttribute('style')).toContain('display: flex')
     // Drawer width contract enforced by CSS (not inline fullscreen).
     expect(drawer.style.width).not.toBe('100vw')
-    const close = Array.from(document.querySelectorAll('.inkchapter-doc-drawer__action')).find(b => b.textContent === '关闭') as HTMLButtonElement
+    const close = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
     close.click()
     expect(write.innerHTML).toBe(before)
     expect(drawer.getAttribute('style')).toContain('display: none')

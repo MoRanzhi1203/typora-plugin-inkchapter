@@ -89,7 +89,7 @@ function openDrawer(h: DocumentUtilityOverlayHost): void {
 }
 
 function closeDrawer(h: DocumentUtilityOverlayHost): void {
-  const close = Array.from(document.querySelectorAll('.inkchapter-doc-drawer__action')).find(b => b.textContent === '关闭') as HTMLButtonElement
+  const close = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
   close.click()
 }
 

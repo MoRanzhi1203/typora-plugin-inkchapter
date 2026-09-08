@@ -165,7 +165,7 @@ describe('UI-VIS-6 drawer open/close never mutates #write', () => {
     const diag = document.querySelector('.inkchapter-doc-toolbar__btn--diag') as HTMLButtonElement
     diag.click()
     expect(write.innerHTML).toBe(before)
-    const close = Array.from(document.querySelectorAll('.inkchapter-doc-drawer__action')).find(b => b.textContent === '关闭') as HTMLButtonElement
+    const close = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
     close.click()
     expect(write.innerHTML).toBe(before)
   })

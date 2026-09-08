@@ -82,7 +82,7 @@ describe('INTERACTION-1 drawer open/close', () => {
     expect(drawer.getAttribute('style')).toContain('display: flex')
     expect(document.querySelectorAll(rootIdentity)).toHaveLength(rootsBefore)
     expect(write.innerHTML).toBe(before)
-    const close = Array.from(document.querySelectorAll('.inkchapter-doc-drawer__action')).find(b => b.textContent === '关闭') as HTMLButtonElement
+    const close = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
     close.click()
     expect(drawer.getAttribute('style')).toContain('display: none')
     expect(write.innerHTML).toBe(before)

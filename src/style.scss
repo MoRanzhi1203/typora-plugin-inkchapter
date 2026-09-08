@@ -2491,73 +2491,6 @@
   pointer-events: auto;
 }
 
-.inkchapter-doc-toolbar {
-  width: max-content;
-  max-width: 60vw;
-  display: flex;
-  align-items: center;
-  gap: var(--ink-ui-space-2, 6px);
-  padding: var(--ink-ui-space-1, 4px);
-  background: var(--ink-ui-bg-surface, #fff);
-  border: 1px solid var(--ink-ui-border, #ddd);
-  border-radius: var(--ink-ui-radius-md, 8px);
-  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, 0.12));
-}
-
-.inkchapter-doc-toolbar__btn {
-  font-family: inherit;
-  font-size: var(--ink-ui-font-xs, 12px);
-  line-height: 1.4;
-  min-height: var(--ink-ui-control-h-sm, 28px);
-  padding: var(--ink-ui-space-1, 4px) 10px;
-  border-radius: var(--ink-ui-radius-sm, 6px);
-  border: 1px solid var(--ink-ui-border-strong, #c9c9c9);
-  background: transparent;
-  color: var(--ink-ui-text, #333);
-  cursor: pointer;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.inkchapter-doc-toolbar__btn:hover { background: var(--ink-ui-bg-hover, #ececec); }
-.inkchapter-doc-toolbar__btn:active { background: var(--ink-ui-bg-active, #e2e2e2); }
-.inkchapter-doc-toolbar__btn:focus-visible { outline: 2px solid var(--ink-ui-primary, #07a); outline-offset: 1px; }
-.inkchapter-doc-toolbar__btn.is-healthy { color: var(--ink-ui-primary, #07a); }
-.inkchapter-doc-toolbar__btn.has-warnings { color: var(--ink-ui-warning, #b58900); }
-.inkchapter-doc-toolbar__btn.has-issues { color: var(--ink-ui-danger, #d00); }
-/* Vertical floating group (right side, bottom). One container, two buttons. */
-
-.inkchapter-doc-toolbar__btn.is-locked { color: var(--ink-ui-danger, #d00); border-color: var(--ink-ui-danger, #d00); }
-.inkchapter-doc-navigator {
-  width: fit-content;
-  display: flex;
-  flex-direction: column;
-  gap: var(--ink-ui-space-1, 4px);
-  padding: var(--ink-ui-space-1, 4px);
-  background: var(--ink-ui-bg-surface, #fff);
-  border: 1px solid var(--ink-ui-border, #ddd);
-  border-radius: var(--ink-ui-radius-md, 8px);
-  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, 0.12));
-}
-
-.inkchapter-doc-navigator__btn {
-  font-family: inherit;
-  font-size: var(--ink-ui-icon-size-md, 16px);
-  line-height: 1;
-  width: 30px;
-  min-height: var(--ink-ui-control-h-sm, 28px);
-  border-radius: var(--ink-ui-radius-sm, 6px);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--ink-ui-text, #333);
-  cursor: pointer;
-  user-select: none;
-}
-
-.inkchapter-doc-navigator__btn:hover:not(:disabled) { background: var(--ink-ui-bg-hover, #ececec); }
-.inkchapter-doc-navigator__btn:active:not(:disabled) { background: var(--ink-ui-bg-active, #e2e2e2); }
-.inkchapter-doc-navigator__btn:focus-visible { outline: 2px solid var(--ink-ui-primary, #07a); outline-offset: 1px; }
-.inkchapter-doc-navigator__btn:disabled { opacity: 0.4; cursor: default; }
 
 .inkchapter-doc-drawer {
   width: 360px;
@@ -2659,19 +2592,6 @@
   word-break: break-word;
 }
 
-.inkchapter-doc-drawer__item-locate {
-  font-family: inherit;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--border-primary, #ccc);
-  background: transparent;
-  color: var(--text-accent, #07a);
-  cursor: pointer;
-  flex: none;
-  &:hover { background: var(--background-modifier-hover, #eee); }
-}
-
 .inkchapter-doc-drawer__item--empty {
   padding: 14px 10px;
   font-size: 13px;
@@ -2733,8 +2653,6 @@
     --ink-ui-shadow-float: 0 2px 10px rgba(0, 0, 0, 0.5);
     --ink-ui-shadow-pop: 0 8px 32px rgba(0, 0, 0, 0.6);
   }
-  .inkchapter-doc-toolbar,
-  .inkchapter-doc-navigator,
   .inkchapter-doc-drawer,
   .inkchapter-doc-toast {
     background: var(--background-primary, #252525);
@@ -2748,10 +2666,7 @@
   .inkchapter-doc-drawer__title { color: #e6e6e6; }
   .inkchapter-doc-drawer__counts,
   .inkchapter-doc-drawer__item-detail { color: #aaa; }
-  .inkchapter-doc-toolbar__btn,
-  .inkchapter-doc-navigator__btn,
-  .inkchapter-doc-drawer__action,
-  .inkchapter-doc-drawer__item-locate { color: #e6e6e6; }
+  .inkchapter-doc-drawer__action { color: #e6e6e6; }
 }
 
 
@@ -2815,6 +2730,205 @@
   cursor: pointer;
 }
 .inkchapter-wb-tab:hover { color: var(--text-normal, #333); }
+
+/* ══ InkChapter Right Utility Rail — Authoritative Visual Styles (V2) ════════
+   SINGLE definition for the Toolbar (Document Problems Control) and the
+   Compact Navigator. Right/bottom geometry is RUNTIME-inline authoritative;
+   the tokens below are VISUAL fallback only (never !important over inline).
+   Low presence is expressed per-part (shell surface alpha / border / icon
+   opacity / hover / disabled) — NEVER as parent opacity.                  */
+[data-inkchapter-utility-root="true"] {
+  --ink-ui-utility-right: 30px;
+  --ink-ui-utility-bottom-safe: 60px;
+  --ink-ui-utility-surface: var(--ink-ui-bg-surface, #fff);
+  --ink-ui-utility-border: var(--ink-ui-border, #ddd);
+  --ink-ui-utility-radius-toolbar: 7px;
+  --ink-ui-utility-radius-nav: 6px;
+  --ink-ui-presence-nav-icon: 0.8;
+  --ink-ui-presence-nav-icon-disabled: 0.36;
+}
+
+.inkchapter-doc-toolbar {
+  /* visual-height contract (32px, border-box); content/bounded sized shell. */
+  box-sizing: border-box;
+  max-width: 60vw;
+  height: 32px;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 1px 4px; /* horizontal density: 4px (was 2px 6px) */
+  background: var(--ink-ui-utility-surface, #fff);
+  border: 1px solid var(--ink-ui-utility-border, #ddd);
+  border-radius: var(--ink-ui-utility-radius-toolbar, 6px);
+  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, 0.12));
+}
+
+/* Problems control = status group, then ONE status/action divider.
+   error/warning separator is pure spacing (no divider): divider count 0. */
+.inkchapter-problems-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px; /* error↔warning group gap only — ERROR_WARNING_DIVIDER_COUNT=0 */
+  margin: 0;
+  padding-right: 5px; /* divider breathing (5px left of STATUS_ACTION divider) */
+  border-right: 1px solid var(--ink-ui-utility-border, #ddd); /* STATUS_ACTION_DIVIDER_COUNT=1 */
+}
+
+/* Shared diag base (segments + smart entry). */
+.inkchapter-doc-toolbar__btn--diag {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 4px; /* horizontal density: 4px (was 0 6px) */
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ink-ui-text, #333);
+}
+.inkchapter-doc-toolbar__btn--diag:hover { background: var(--ink-ui-bg-hover, #ececec); }
+.inkchapter-doc-toolbar__btn--diag:active { background: var(--ink-ui-bg-active, #e2e2e2); }
+.inkchapter-doc-toolbar__btn--diag:focus-visible,
+.inkchapter-doc-toolbar__btn--lock:focus-visible,
+.inkchapter-editlock:focus-visible { outline: 2px solid var(--ink-ui-primary, #07a); outline-offset: 1px; }
+
+/* error→warning separation comes from the control group gap (4px), NEVER a
+   margin/border/pseudo divider — ERROR_WARNING_DIVIDER_COUNT=0. */
+.inkchapter-toolbar-segment,
+.inkchapter-toolbar-entry {
+  margin: 0;
+  min-width: 0;
+}
+.inkchapter-toolbar-segment {
+  gap: 3px; /* icon–count optical gap (density 3px) */
+}
+.inkchapter-toolbar-entry {
+  gap: 4px; /* icon–text optical gap */
+}
+.inkchapter-toolbar-segment__icon,
+.inkchapter-toolbar-segment__icon svg {
+  display: inline-flex;
+}
+.inkchapter-toolbar-segment__icon { line-height: 0; }
+.inkchapter-toolbar-segment__icon svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.5;
+  vertical-align: middle;
+}
+.inkchapter-toolbar-segment__count {
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--ink-ui-text, #333); /* plain text; severity color is icon-only */
+}
+.inkchapter-toolbar-segment--error .inkchapter-toolbar-segment__icon { color: var(--ink-ui-danger, #d00); }
+.inkchapter-toolbar-segment--warning .inkchapter-toolbar-segment__icon { color: var(--ink-ui-warning, #b58900); }
+.inkchapter-toolbar-entry.is-healthy { color: var(--ink-ui-text-muted, #666); }
+
+/* Edit/lock = neutral action slot (never red). Divider lives on the status
+   group border-right (above); margin-left keeps ~5px right breathing. */
+.inkchapter-doc-toolbar__btn--lock,
+.inkchapter-editlock {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px; /* pencil–text optical gap (density 4px) */
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  min-width: 0;
+  margin-left: 5px; /* divider right breathing */
+  padding: 0 6px; /* horizontal density: 6px (was 0 8px) */
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--ink-ui-text, #333);
+}
+.inkchapter-doc-toolbar__btn--lock:hover,
+.inkchapter-editlock:hover { background: var(--ink-ui-bg-hover, #ececec); }
+.inkchapter-doc-toolbar__btn--lock svg,
+.inkchapter-editlock svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.5;
+}
+.inkchapter-doc-toolbar__btn--lock.is-locked,
+.inkchapter-editlock.is-locked {
+  color: var(--ink-ui-text-muted, #666);
+  border-color: var(--ink-ui-utility-border, #ddd);
+}
+.inkchapter-doc-toolbar__btn--lock.is-locked svg,
+.inkchapter-editlock.is-locked svg { color: var(--ink-ui-text-muted, #666); }
+
+.inkchapter-doc-navigator {
+  /* one 30×~57 shell; shell opacity is ALWAYS 1. Chevrons are the FIRST visual
+     layer — low presence is per-icon only (≈.80 idle, 1.00 hover, ≈.36 disabled). */
+  box-sizing: border-box;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  background: var(--ink-ui-utility-surface, #fff); /* != transparent */
+  border: 1px solid var(--ink-ui-utility-border, #ddd);
+  border-color: var(--ink-ui-utility-border, #ddd); /* != transparent */
+  border-radius: var(--ink-ui-utility-radius-nav, 6px);
+  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, 0.12));
+  opacity: 1; /* NO parent-level opacity — parent opacity removed */
+}
+.inkchapter-doc-navigator:hover { opacity: 1; }
+
+.inkchapter-doc-navigator__btn {
+  /* Full native-button reset — appearance/border/outline/shadow all gone. */
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border-radius: 0;
+  font-size: 0; /* chevrons are SVG only */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--ink-ui-text, #333); /* explicit foreground — SVG inherits it */
+}
+.inkchapter-doc-navigator__btn:first-child { border-radius: var(--ink-ui-utility-radius-nav, 6px) var(--ink-ui-utility-radius-nav, 6px) 0 0; }
+.inkchapter-doc-navigator__btn:last-child { border-radius: 0 0 var(--ink-ui-utility-radius-nav, 6px) var(--ink-ui-utility-radius-nav, 6px); }
+/* Single divider only between the two buttons — WEAKER than the shell border. */
+.inkchapter-doc-navigator__btn + .inkchapter-doc-navigator__btn { border-top: 1px solid color-mix(in srgb, var(--ink-ui-text, #333) 18%, transparent); } /* dividerCount=1 */
+.inkchapter-doc-navigator__btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.75;
+  stroke: currentColor;
+  fill: none;
+  opacity: var(--ink-ui-presence-nav-icon, 0.8); /* enabled idle ≈.80 */
+  transition: opacity 0.15s ease;
+}
+.inkchapter-doc-navigator__btn:hover:not(:disabled) svg { opacity: 1; } /* hover = 1.00 */
+.inkchapter-doc-navigator__btn:disabled { cursor: default; }
+.inkchapter-doc-navigator__btn:disabled svg { opacity: var(--ink-ui-presence-nav-icon-disabled, 0.36); } /* disabled ≈.36 */
+.inkchapter-doc-navigator__btn:active:not(:disabled) { background: var(--ink-ui-bg-active, #e2e2e2); }
+/* Subtle accent inset focus ring — no default UA black ring, no BCR change. */
+.inkchapter-doc-navigator__btn:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--ink-ui-primary, #07a);
+}
+
+/* Visual floor vs status bar — inline bottom stays authoritative (fallback only). */
+[data-inkchapter-utility-root="true"] .inkchapter-doc-navigator {
+  bottom: var(--ink-ui-utility-bottom-safe, 60px);
+}
+
 .inkchapter-wb-tab.is-active {
   color: var(--text-normal, #333);
   font-weight: 600;
@@ -2823,3 +2937,270 @@
 .inkchapter-wb-panel[hidden] { display: none !important; }
 /* Phase 2-B1 — suppressed toolbar (hidden, node kept; restored automatically). */
 .inkchapter-doc-toolbar[hidden] { display: none !important; }
+
+/* ── InkChapter Native+ Consolidation (UI-FIRST pass) ─────────────────────
+   Navigator / Toolbar visuals are defined ONCE in the Authoritative V2 block
+   above; only non-RUR consolidation stays below.                              */
+
+/* ＊ Diagnostics drawer: flat problems list (row + divider, no card wall). */
+.inkchapter-doc-drawer__item {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--ink-ui-border, rgba(0,0,0,0.08));
+  cursor: pointer;
+}
+.inkchapter-doc-drawer__item:hover { background: var(--ink-ui-bg-hover, rgba(0,0,0,0.04)); }
+.inkchapter-doc-drawer__item.is-selected,
+.inkchapter-doc-drawer__item.is-active { background: var(--ink-ui-bg-active, rgba(0,0,0,0.06)); }
+
+/* ＊ Settings workbench: flat sections — underline tabs, fewer shadows.    */
+.inkchapter-wb-panel > .inkchapter-section,
+.inkchapter-wb-panel > [class*='inkchapter-'] { box-shadow: none; }
+.inkchapter-wb-panel .inkchapter-current-format-summary,
+.inkchapter-wb-panel .inkchapter-levelrange-card,
+.inkchapter-wb-panel .inkchapter-caption-card { box-shadow: none; border-radius: var(--ink-ui-radius-sm, 6px); }
+
+/* ── V1.1 Structural UI pass (TS/DOM first, CSS second) ─────────────────────
+   Real DOM now: DocumentProblemsControl(segments + lock) + two-row Diagnostics
+   header (icon actions + Text Tabs) + FLAT issue rows (no standalone locate). */
+
+/* Neutral "selected" token (accent tint, never severity red/yellow). */
+[data-inkchapter-utility-root="true"] {
+  --ink-ui-bg-selected: rgba(0, 0, 0, 0.05);
+  --ink-ui-bg-selected-line: var(--ink-ui-primary, #07a);
+}
+@media (prefers-color-scheme: dark) {
+  [data-inkchapter-utility-root="true"] {
+    --ink-ui-bg-selected: rgba(255, 255, 255, 0.09);
+  }
+}
+
+/* 1) Locked editor: remove the plugin's big blue inset frame. Lock is conveyed
+      only by the toolbar lock icon + the light transient toast.               */
+#write.inkchapter-document-locked {
+  box-shadow: none;
+}
+
+/* Document Problems Control visual (segments/entry/severity) — single source
+   lives in the Authoritative V2 block above; nothing overrides it below. */
+
+/* EditLock children (icon/label) — visual only; shell rules are in the
+   Authoritative V2 block (neutral, never severity-colored). */
+.inkchapter-editlock__icon { display: inline-flex; }
+.inkchapter-editlock__label { font-size: 12px; }
+
+/* 4) Drawer header: title+actions row, then Text-Tab filter row.             */
+.inkchapter-doc-drawer__header {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 6px 4px;
+  border-bottom: 1px solid var(--ink-ui-border, rgba(0, 0, 0, 0.08));
+}
+.inkchapter-doc-drawer__titlerow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.inkchapter-doc-drawer__actions { display: inline-flex; align-items: center; gap: 2px; }
+/* icon-only 28×28 actions */
+.inkchapter-doc-drawer__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ink-ui-radius-sm, 6px);
+  color: var(--ink-ui-text-muted, #666);
+  background: transparent;
+  font-size: 0;
+}
+.inkchapter-doc-drawer__action:hover { background: var(--ink-ui-bg-hover, rgba(0, 0, 0, 0.05)); color: var(--ink-ui-text, #333); }
+
+/* Text Tabs (全部/错误/警告[/提示]) — never pills/badges.                     */
+.inkchapter-doc-drawer__filters { padding: 2px 6px 4px; }
+.inkchapter-doc-drawer__filters[hidden] { display: none; }
+.inkchapter-doc-drawer__filter-list { display: flex; align-items: center; gap: 2px; }
+.inkchapter-doc-drawer__filter-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 8px 5px;
+  border: none;
+  background: transparent;
+  border-radius: 4px 4px 0 0;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink-ui-text-muted, #666);
+  cursor: pointer;
+}
+.inkchapter-doc-drawer__filter-tab:hover { background: var(--ink-ui-bg-hover, rgba(0, 0, 0, 0.04)); }
+.inkchapter-doc-drawer__filter-tab.is-active {
+  color: var(--ink-ui-text, #333);
+  font-weight: 500;
+  box-shadow: inset 0 -2px 0 var(--ink-ui-primary, #07a);
+}
+.inkchapter-doc-drawer__filter-count { font-size: 11px; color: var(--ink-ui-text-muted, #888); }
+
+/* 5) FLAT problems list rows (no Card wrapper, no standalone [定位]).         */
+.inkchapter-doc-drawer__list { gap: 0; padding: 2px 6px 6px; }
+.inkchapter-doc-drawer__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  outline: none;
+  transition: background 0.12s ease;
+}
+.inkchapter-doc-drawer__item--error,
+.inkchapter-doc-drawer__item--warning,
+.inkchapter-doc-drawer__item--info { border-left-width: 0; }
+.inkchapter-doc-drawer__item:focus-visible { box-shadow: inset 0 0 0 1px var(--ink-ui-primary, #07a); }
+.inkchapter-doc-drawer__item:hover { background: var(--ink-ui-bg-hover, rgba(0, 0, 0, 0.045)); }
+.inkchapter-doc-drawer__item.is-selected {
+  background: var(--ink-ui-bg-selected, rgba(0, 0, 0, 0.05));
+  box-shadow: inset 2px 0 0 var(--ink-ui-bg-selected-line, #07a);
+}
+.inkchapter-doc-drawer__item.is-busy { opacity: 0.55; pointer-events: none; }
+.inkchapter-doc-drawer__item-icon { display: inline-flex; width: 16px; height: 16px; margin-top: 1px; flex: none; }
+.inkchapter-doc-drawer__item--error .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-danger, #d00); }
+.inkchapter-doc-drawer__item--warning .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-warning, #b58900); }
+.inkchapter-doc-drawer__item--info .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-text-muted, #888); }
+.inkchapter-doc-drawer__item-msg { font-size: 13px; line-height: 1.4; }
+.inkchapter-doc-drawer__item-detail { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--ink-ui-text-muted, #666); }
+.inkchapter-doc-drawer__item-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: 4px;
+}
+.inkchapter-doc-drawer__item-target { font-size: 11px; color: var(--ink-ui-text-muted, #888); white-space: nowrap; }
+.inkchapter-doc-drawer__item-go { display: inline-flex; opacity: 0; transition: opacity 0.12s ease; }
+.inkchapter-doc-drawer__item:hover .inkchapter-doc-drawer__item-go { opacity: 0.55; }
+.inkchapter-doc-drawer__empty-icon { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--ink-ui-text-muted, #888); }
+.inkchapter-doc-drawer__item--empty { display: flex; align-items: center; justify-content: center; }
+
+/* 6) Locate highlight — subtle accent bg + hairline + fade (no fat blue box). */
+.inkchapter-diagnostic-highlight {
+  outline: none !important;
+  background: rgba(7, 112, 170, 0.08);
+  outline: 1px solid rgba(7, 112, 170, 0.25);
+  outline-offset: 1px;
+  border-radius: 3px;
+  animation: inkchapter-locate-fade 1.6s ease;
+}
+@keyframes inkchapter-locate-fade {
+  0% { background: rgba(7, 112, 170, 0.12); }
+  100% { background: transparent; }
+}
+
+/* Navigator visuals are defined ONCE in the Authoritative V2 block above
+   (shell opacity = 1; icon-level presence only) — nothing overrides it. */
+
+/* 8) Toast — short, light, muted (lock/unlock feedback only).                 */
+.inkchapter-doc-toast {
+  font-size: 12px;
+  height: 30px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
+  color: var(--ink-ui-text-muted, #666);
+  background: var(--ink-ui-bg-surface, #fff);
+  display: inline-flex;
+  align-items: center;
+}
+@media (prefers-color-scheme: dark) {
+  .inkchapter-doc-toast { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); }
+}
+
+/* Toolbar/Navigator final polish already merged into the Authoritative V2
+   block; this file ends here with no further Right Utility Rail overrides. */
+
+/* ── InkChapter · Document View tab menu (V2 flat + V3 native alignment) ────
+   Items are plain `li.typ-menuitem > a` living inside the native/framework
+   context menu, so padding / row height / font / hover / divider all inherit
+   the Typora row — InkChapter adds NO own horizontal padding, margins,
+   text-indent, min-width or wrapper. Only the disabled affordance and the
+   file-tree locate flash (InkChapter-only class) are defined below. */
+.ink-docview-disabled > a {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Transient file-tree locate feedback — NEVER touches Typora native border /
+   outline / background / active / selected state; cleanup removes only this
+   single InkChapter class. */
+.inkchapter-file-locate-flash {
+  box-shadow: inset 0 0 0 1px var(--ink-ui-primary, #07a);
+  transition: box-shadow 0.2s ease;
+}
+
+/* ── InkChapter · workspace tab close × — hover/focus only + 20×20 center (V2)
+   REAL DOM (framework workspace tabs): .typ-tab (draggable) contains
+   i.typ-file-icon + span.typ-file-basename(+.typ-file-ext) + i.typ-icon.typ-close.
+   Glyph authority (verified): × = .typ-close::before { content:"×" } — the native
+   rule adds an asymmetric `padding-left:6px` inline pseudo; this block normalizes
+   the × into a 20×20 inline-flex box whose single pseudo item is centered by the
+   parent flex (no top/left/translate/negative-margin compensation anywhere).
+   The close LAYOUT SLOT is always reserved (visibility-only switching, never
+   display:none/block), so tab width / title never shift. Active tab gets no
+   permanent ×. Hover/focus-only visibility + centering + hover background live
+   HERE — single authoritative block for tab-close visuals. */
+.typ-workspace-root .typ-workspace-tabs .typ-tab .typ-icon.typ-close,
+.typ-workspace-root .typ-workspace-tab-header .typ-tab .typ-icon.typ-close {
+  /* 20×20 square hitbox (slot is always reserved). */
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  flex: 0 0 20px;
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 4px;
+
+  /* flex centering of the × glyph. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  line-height: 1;
+
+  /* hover/focus-only visibility (frozen from V1). */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+.typ-workspace-root .typ-workspace-tabs .typ-tab .typ-icon.typ-close::before,
+.typ-workspace-root .typ-workspace-tab-header .typ-tab .typ-icon.typ-close::before {
+  content: '×';
+  display: block;
+  padding: 0;
+  margin: 0;
+  font-style: normal;
+  font-size: 13px;
+  line-height: 1;
+}
+.typ-workspace-root .typ-workspace-tabs .typ-tab:hover .typ-icon.typ-close,
+.typ-workspace-root .typ-workspace-tabs .typ-tab:focus-within .typ-icon.typ-close,
+.typ-workspace-root .typ-workspace-tab-header .typ-tab:hover .typ-icon.typ-close,
+.typ-workspace-root .typ-workspace-tab-header .typ-tab:focus-within .typ-icon.typ-close {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+/* × itself hovered: background is exactly the 20×20 hitbox (no outer shift). */
+.typ-workspace-root .typ-workspace-tabs .typ-tab .typ-icon.typ-close:hover,
+.typ-workspace-root .typ-workspace-tab-header .typ-tab .typ-icon.typ-close:hover {
+  background-color: rgba(128, 128, 128, 0.14);
+  border-radius: 4px;
+}
