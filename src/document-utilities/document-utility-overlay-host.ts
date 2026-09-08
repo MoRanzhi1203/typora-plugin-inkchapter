@@ -35,6 +35,8 @@ import {
   type WorkspaceWidthState,
 } from './document-workspace-width-guard'
 import { deriveDiagnosticsState } from './document-diagnostics'
+import { deriveDocumentProblemsProjection } from './document-problems-projection'
+import type { CurrentProblemsProjection } from './document-problems-projection'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
 import { emitRuntimeAudit, emitInkchapterRuntimeAuditSummary } from '../runtime/forensic-log-sink'
@@ -1287,6 +1289,101 @@ export class DocumentUtilityOverlayHost {
     return this.diagnostics.getSnapshot()
   }
 
+  /** V4 — single current problems projection (Toolbar/Drawer parity). */
+  getCurrentProblemsProjection(): CurrentProblemsProjection {
+    return this.currentProblemsProjection
+  }
+
+  /** V5 — consumer admission observability (tests / runtime). */
+  getAdmissionCounters(): { admitted: number; alreadyAdmitted: number; pendingActiveLeaf: number; staleDiscard: number } {
+    return { ...this.admissionCounters }
+  }
+
+  getLastAdmittedSnapshotFingerprint(): string | null {
+    return this.lastAdmittedSnapshotFingerprint
+  }
+
+  /**
+   * V5 — SINGLE consumer admission gate. Both producers (diagnostics
+   * subscription publishes AND reconcile-direct results) MUST pass through
+   * here before anything reaches CurrentProblemsProjection / Toolbar / Drawer.
+   * Producer PUBLISHED/NOOP/DEDUPED is fully separate from the consumer
+   * ADMITTED/ALREADY_ADMITTED decision — a producer NOOP can never skip a
+   * not-yet-admitted snapshot.
+   */
+  private admitDiagnosticsSnapshot(
+    snapshot: DocumentDiagnosticsSnapshot | null,
+    source: string,
+  ): { decision: 'ADMITTED' | 'ALREADY_ADMITTED' | 'PENDING_ACTIVE_LEAF' | 'DISCARD_STALE_DIAGNOSTICS_RESULT' | 'DISCARD_PRESENCE_INACTIVE'; reason: string } {
+    if (!snapshot) {
+      return { decision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'NULL_SNAPSHOT' }
+    }
+    const activeKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    if (snapshot.documentKey !== activeKey) {
+      this.admissionCounters.staleDiscard++
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, consumerAdmissionDecision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'DOCUMENT_IDENTITY_MISMATCH' })
+      return { decision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'DOCUMENT_IDENTITY_MISMATCH' }
+    }
+    const presenceEval = this.evaluateActiveDocumentPresence()
+    const empty = presenceEval.presence.state === 'EMPTY'
+    const presenceActive =
+      presenceEval.presence.state === 'ACTIVE' ||
+      (presenceEval.presence.state === 'UNKNOWN' && presenceEval.hasActiveDocument)
+    // Startup restore split-brain: leaf EMPTY but real file identity already
+    // resolved for THIS documentKey → PENDING_ACTIVE_LEAF (admitted later, not
+    // displayed now). It is NOT a permanent EMPTY discard.
+    const fileIdentityPresent = (() => {
+      try {
+        const fp = this.opts.ctx.authority.getActiveFilePath?.()
+        return fp != null && fp !== ''
+      } catch { return false }
+    })()
+    if (empty && activeKey != null && activeKey === snapshot.documentKey && fileIdentityPresent) {
+      this.pendingActiveLeafDocumentKey = activeKey
+      this.admissionCounters.pendingActiveLeaf++
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, consumerAdmissionDecision: 'PENDING_ACTIVE_LEAF', reason: 'ACTIVE_DOCUMENT_RESTORE_PENDING' })
+      return { decision: 'PENDING_ACTIVE_LEAF', reason: 'ACTIVE_DOCUMENT_RESTORE_PENDING' }
+    }
+    if (!presenceActive) {
+      this.admissionCounters.staleDiscard++
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, consumerAdmissionDecision: 'DISCARD_PRESENCE_INACTIVE', reason: 'EMPTY_WITHOUT_RESTORE_IDENTITY' })
+      return { decision: 'DISCARD_PRESENCE_INACTIVE', reason: 'EMPTY_WITHOUT_RESTORE_IDENTITY' }
+    }
+    const fingerprint = `${snapshot.documentKey}@${this.activeDocumentEpoch}#${snapshot.revision}:${snapshot.sourceRevision}`
+    if (this.lastAdmittedSnapshotFingerprint === fingerprint) {
+      this.admissionCounters.alreadyAdmitted++
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, fingerprint, consumerAdmissionDecision: 'ALREADY_ADMITTED', reason: 'CONSUMER_DEDUPE' })
+      return { decision: 'ALREADY_ADMITTED', reason: 'CONSUMER_DEDUPE' }
+    }
+    this.lastAdmittedSnapshotFingerprint = fingerprint
+    this.pendingActiveLeafDocumentKey = null
+    this.admissionCounters.admitted++
+    emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, fingerprint, consumerAdmissionDecision: 'ADMITTED', reason: 'CONSUMER_ADMISSION' })
+    return { decision: 'ADMITTED', reason: 'CONSUMER_ADMISSION' }
+  }
+
+  /** V5 — commit an ADMITTED snapshot to projection + Problems Control/Drawer. */
+  private commitAdmittedSnapshot(snapshot: DocumentDiagnosticsSnapshot | null, source: string): void {
+    this.snapshot = snapshot
+    this.handleStrictSingleH1Popup(snapshot)
+    this.renderDiagnosticsButton()
+    this.renderLockButton()
+    if (this.drawerOpen) this.renderDrawer()
+    emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+      action: source === 'RECONCILE' ? 'RECONCILE_COMMITTED' : 'PUBLISHED',
+      documentKey: snapshot?.documentKey ?? null,
+      activeDocumentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      revision: snapshot?.revision ?? null,
+      sourceRevision: snapshot?.sourceRevision ?? null,
+      drawerVisible: this.drawerOpen,
+      itemCount: snapshot?.diagnostics.length ?? 0,
+      errorCount: snapshot?.errorCount ?? 0,
+      warningCount: snapshot?.warningCount ?? 0,
+      hintCount: snapshot?.infoCount ?? 0,
+      consumerAdmissionDecision: 'ADMITTED',
+    })
+  }
+
   // ── Mount / dispose ─────────────────────────────────
   mount(): void {
     if (this.mounted || this.disposed) return
@@ -1384,69 +1481,17 @@ export class DocumentUtilityOverlayHost {
         })
         return
       }
-      // V3 readiness barrier + epoch/presence gate — a diagnostics result may
-      // only commit against the CURRENT document identity/epoch while ACTIVE.
-      // FINAL flag is off for live publishes (provisional allowed); the FINAL
-      // hard gate (readiness===READY) is enforced by reconcileActiveDocument.
       if (snapshot) {
-        const presenceEval = this.evaluateActiveDocumentPresence()
-        const presenceActive =
-          presenceEval.presence.state === 'ACTIVE' ||
-          (presenceEval.presence.state === 'UNKNOWN' && presenceEval.hasActiveDocument)
-        const readiness = this.computeActiveDocumentReadiness()
-        const gate = evaluateDiagnosticsCommitGate({
-          snapshotDocumentKey: snapshot.documentKey,
-          currentDocumentKey: activeKey,
-          snapshotEpoch: this.activeDocumentEpoch,
-          currentEpoch: this.activeDocumentEpoch,
-          presenceActive,
-          readiness,
-          finalRequired: false,
-        })
-        if (!gate.commit) {
-          emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
-            action: 'DISCARDED_STALE',
-            documentKey: snapshot.documentKey,
-            activeDocumentKey: activeKey,
-            revision: snapshot.revision,
-            sourceRevision: snapshot.sourceRevision,
-            itemCount: snapshot.diagnostics.length,
-            readiness,
-            decision: gate.decision,
-            reason: gate.reason,
-          })
-          return
+        // V5 — SINGLE consumer admission gate: subscription publishes are one
+        // producer; the consumer decision (ADMITTED / ALREADY_ADMITTED /
+        // PENDING_ACTIVE_LEAF / DISCARD_*) is made here and is independent of
+        // the producer's PUBLISHED/NOOP/DEDUPED outcome.
+        const admission = this.admitDiagnosticsSnapshot(snapshot, 'DIAGNOSTICS_PUBLISH')
+        if (admission.decision === 'ADMITTED') {
+          this.commitAdmittedSnapshot(snapshot, 'SUBSCRIPTION')
         }
-      }
-      this.snapshot = snapshot
-      this.handleStrictSingleH1Popup(snapshot)
-      this.renderDiagnosticsButton()
-      if (this.drawerOpen) {
-        // Drawer stays open and re-renders IN PLACE with the new snapshot.
-        this.renderDrawer()
-      }
-      if (snapshot) {
-        emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
-          action: 'PUBLISHED',
-          documentKey: snapshot.documentKey,
-          activeDocumentKey: activeKey,
-          revision: snapshot.revision,
-          sourceRevision: snapshot.sourceRevision,
-          drawerVisible: this.drawerOpen,
-          itemCount: snapshot.diagnostics.length,
-          errorCount: snapshot.errorCount,
-          warningCount: snapshot.warningCount,
-          hintCount: snapshot.infoCount,
-          // Phase 7R.3.11.8B.7.1 — mode provenance + publish reason.
-          effectiveMode: snapshot.effectiveMode ?? null,
-          effectiveModeRevision: snapshot.effectiveModeRevision ?? null,
-          reason: this.diagnostics.lastPublishReason,
-          // Phase 7R.3.11.8B.4.1 — per-item codes for runtime acceptance
-          // (observability only; never affects layout/geometry).
-          codes: snapshot.diagnostics.map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? ''}`),
-          snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
-          decision: snapshot.documentKey === activeKey ? 'PUBLISHED_MATCHES_ACTIVE' : 'PUBLISHED_MISMATCH',
-        })
+        // PENDING_ACTIVE_LEAF / ALREADY_ADMITTED / DISCARD_* are audited inside
+        // admitDiagnosticsSnapshot and never reach the projection/Toolbar here.
       }
     }))
 
@@ -1875,6 +1920,22 @@ export class DocumentUtilityOverlayHost {
   /** Phase 2-B1 — last applied responsive classes (write-deduped). */
   private lastToolbarDensity: ToolbarDensity = 'full'
   private lastToolbarPresentation: ToolbarPresentation = 'full'
+  /** V4 — single projection store: Toolbar/Drawer consume it (no own cache). */
+  private currentProblemsProjection: CurrentProblemsProjection = {
+    documentKey: null,
+    revision: null,
+    sourceRevision: null,
+    errorCount: 0,
+    warningCount: 0,
+    hintCount: 0,
+    totalCount: 0,
+    healthy: false,
+    hasProjection: false,
+  }
+  /** V5 — consumer admission dedupe (documentKey+epoch+revision+sourceRevision). */
+  private lastAdmittedSnapshotFingerprint: string | null = null
+  private pendingActiveLeafDocumentKey: string | null = null
+  private admissionCounters = { admitted: 0, alreadyAdmitted: 0, pendingActiveLeaf: 0, staleDiscard: 0 }
   /** Phase 2-B.2 — last visible-editor geometry (invariant observability). */
   private lastVisibleEditor: {
     layoutWidth: number | null
@@ -2112,8 +2173,28 @@ export class DocumentUtilityOverlayHost {
         this.diagnostics.rebind()
       }
       this.diagnostics.recompute(reason)
+      // V5 — reconcile DIRECT admission: the authoritative snapshot is handed
+      // to the consumer NOW, even when the producer deduped (NOOP) and would
+      // never emit another publish. Consumer dedupe (ALREADY_ADMITTED) keeps
+      // this idempotent.
+      {
+        const authoritative = this.diagnostics.getSnapshot()
+        const admission = this.admitDiagnosticsSnapshot(authoritative, 'ACTIVE_DOCUMENT_RECONCILE')
+        if (admission.decision === 'ADMITTED') {
+          this.commitAdmittedSnapshot(authoritative, 'RECONCILE')
+        }
+      }
       this.renderLockButton()
+      // V4 BUG-A — never reuse the stale EMPTY `suppressed` presentation after
+      // EMPTY→ACTIVE: recompute it now (geometry pass refines width later).
+      if (this.lastToolbarPresentation === 'suppressed') {
+        this.applyResponsiveClasses(null)
+      }
       this.scheduleGeometrySync(`reconcile:${reason}`)
+      // V4 — EMPTY→ACTIVE: after presentation restore (geometry apply) the
+      // problems projection is replayed; do it here too as the idempotent
+      // safety net (no dependency on a new diagnostics event).
+      this.renderToolbarFromCurrentState()
       this.syncEmptyWorkspaceUx()
       this.emitReconcileInvariant(reason, 'ACTIVE_RECONCILED', this.diagnostics.getSnapshot())
     } catch { /* best-effort */ }
@@ -2328,10 +2409,18 @@ export class DocumentUtilityOverlayHost {
       rectWidth = rect.width
       rectHeight = rect.height
       clientRectCount = tracked.getClientRects().length
-      const counts = tracked.querySelectorAll<HTMLElement>('.inkchapter-toolbar-segment__count')
-      const nums = Array.from(counts).map(el => Number.parseInt(el.textContent ?? '0', 10)).filter(n => Number.isFinite(n))
-      projectedError = nums[0] ?? 0
-      projectedWarning = nums[1] ?? 0
+      // V5/V4 — severity projection MUST come from data-severity, never from
+      // segment order / position.
+      const segs = tracked.querySelectorAll<HTMLElement>('.inkchapter-toolbar-segment')
+      for (const seg of segs) {
+        const sev = seg.getAttribute('data-severity')
+        const n = Number.parseInt(seg.querySelector<HTMLElement>('.inkchapter-toolbar-segment__count')?.textContent ?? '0', 10)
+        const value = Number.isFinite(n) ? n : 0
+        if (sev === 'error') projectedError = value
+        else if (sev === 'warning') projectedWarning = value
+        else if (sev === 'hint' || sev === 'info') projectedHint = value
+        // unknown severity → skipped (never positional).
+      }
       const lockLabel = tracked.querySelector<HTMLElement>('.inkchapter-editlock__label')?.textContent ?? ''
       if (tracked.querySelector('.inkchapter-editlock.is-locked') || /锁定/.test(lockLabel)) projectedEdit = 'LOCKED'
       else if (lockLabel.trim() !== '') projectedEdit = 'EDITABLE'
@@ -2419,7 +2508,9 @@ export class DocumentUtilityOverlayHost {
         hasActiveDocument,
         activeDocumentRootConnected: root?.isConnected ?? false,
         toolbarPresentation,
-        toolbarPresentationReason: hasActiveDocument ? undefined : 'NO_ACTIVE_DOCUMENT',
+        toolbarPresentationReason: hasActiveDocument
+          ? (toolbarPresentation === 'suppressed' ? 'SUPPRESSED_TRANSITION_PENDING' : toolbarPresentation === 'compact' ? 'COMPACT_LAYOUT' : 'ACTIVE_DOCUMENT_PRESENT')
+          : 'NO_ACTIVE_DOCUMENT',
         toolbarVisible,
         drawerVisible,
         selectedDiagnosticId: this.lastLocatedDiagnosticId,
@@ -2456,13 +2547,34 @@ export class DocumentUtilityOverlayHost {
       this.toolbarEl.dataset.density = density
       this.lastToolbarDensity = density
     }
-    if (this.lastToolbarPresentation !== presentation) {
+    const presentationChanged = this.lastToolbarPresentation !== presentation
+    if (presentationChanged) {
       this.toolbarEl.dataset.presentation = presentation
       // suppressed hides WITHOUT destroying the node (single instance kept).
       this.toolbarEl.hidden = presentation === 'suppressed'
       this.toolbarEl.setAttribute('aria-hidden', String(presentation === 'suppressed'))
       this.lastToolbarPresentation = presentation
     }
+    // V4 — EMPTY→ACTIVE presentation restore MUST replay the problems
+    // projection immediately (no dependency on a fresh diagnostics event).
+    if (presentationChanged && presentation !== 'suppressed') {
+      this.renderToolbarFromCurrentState()
+    }
+  }
+
+  /** V4 — replay Problems Control + Edit/Lock from the CURRENT projection. */
+  private replayCurrentProblemsProjection(): void {
+    if (this.disposed || !this.toolbarEl) return
+    if (!this.resolveHasActiveDocument()) return
+    this.renderDiagnosticsButton()
+    this.renderLockButton()
+  }
+
+  /** V4 — idempotent render from current state (presence/presentation/...). */
+  private renderToolbarFromCurrentState(): void {
+    if (this.disposed || !this.toolbarEl) return
+    if (this.lastToolbarPresentation === 'suppressed') return
+    this.replayCurrentProblemsProjection()
   }
 
   /** Phase 2-B — reclass toolbar/drawer from REAL editor content width. */
@@ -3485,8 +3597,11 @@ export class DocumentUtilityOverlayHost {
     const control = this.problemsControlEl
     if (!control) return
     control.replaceChildren()
+    // V4 — SINGLE projection authority: Toolbar never keeps its own counts.
+    const projection = deriveDocumentProblemsProjection(this.snapshot)
+    this.currentProblemsProjection = projection
     const state = deriveDiagnosticsState(this.snapshot)
-    const noDoc = state.state === 'NO_ACTIVE_DOCUMENT' || state.state === 'EMPTY_DOCUMENT'
+    const noDoc = state.state === 'NO_ACTIVE_DOCUMENT' || state.state === 'EMPTY_DOCUMENT' || !projection.hasProjection
     if (noDoc) {
       const entry = document.createElement('button')
       entry.type = 'button'
@@ -3500,9 +3615,9 @@ export class DocumentUtilityOverlayHost {
       control.appendChild(entry)
       return
     }
-    if (state.errorCount > 0) control.appendChild(this.buildProblemsSegment('error', state.errorCount))
-    if (state.warningCount > 0) control.appendChild(this.buildProblemsSegment('warning', state.warningCount))
-    if (state.errorCount === 0 && state.warningCount === 0) {
+    if (projection.errorCount > 0) control.appendChild(this.buildProblemsSegment('error', projection.errorCount))
+    if (projection.warningCount > 0) control.appendChild(this.buildProblemsSegment('warning', projection.warningCount))
+    if (projection.totalCount === 0) {
       // HEALTHY — check icon + 文档正常 (no zero counters).
       const entry = document.createElement('button')
       entry.type = 'button'
