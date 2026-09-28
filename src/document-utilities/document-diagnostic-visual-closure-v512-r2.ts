@@ -18,6 +18,9 @@
  * No DOM access, no host state.
  */
 
+// V5.12-R4 §25 — the shared inline position-drift acceptance band.
+import { INLINE_POSITION_DRIFT_HARD_PX } from './document-diagnostic-inline-document-space-v512-r4'
+
 export const VISUAL_CLOSURE_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-VISUAL-CLOSURE-AUDIT'
 
 /** §10.2 — same-visual-line adjacent client rects may be merged up to this gap. */
@@ -184,6 +187,20 @@ export interface LocateVisualCommitInput {
   /** block only: wrapper coverage. */
   blockCoverage: number | null
   staleGeometry: boolean
+  /**
+   * V5.12-R4 §25 — inline only: the DOCUMENT-SPACE coordinate authority. Absent
+   * (or null) for block/heading targets. Coverage alone can never prove that the
+   * painted fragments sit ON the source range, so the position drift is a gate.
+   */
+  inlineDocumentSpace?: {
+    documentLocalFragmentCount: number
+    meaningfulFragmentCount: number
+    actualPaintedFragmentCount: number
+    maxPositionDriftPx: number | null
+    scrollWriteCount: number
+    preScrollGeometryInvalidated: boolean
+    postScrollGeometryFresh: boolean
+  } | null
 }
 
 export interface LocateVisualCommitDecision {
@@ -211,6 +228,27 @@ export function canCommitLocateVisual(input: LocateVisualCommitInput): LocateVis
   if (input.inlineFragmentCoverage != null && input.inlineFragmentCoverage < VISUAL_COVERAGE_FLOOR) failed.push('INLINE_FRAGMENT_COVERAGE_LT_098')
   if (input.blockCoverage != null && input.blockCoverage < VISUAL_COVERAGE_FLOOR) failed.push('BLOCK_COVERAGE_LT_098')
   if (input.staleGeometry) failed.push('STALE_GEOMETRY')
+  // ── V5.12-R4 §25 — the inline DOCUMENT-SPACE coordinate authority ────────
+  const id = input.inlineDocumentSpace
+  if (id) {
+    if (id.documentLocalFragmentCount < 1) failed.push('INLINE_COMMITTED_WITH_EMPTY_DOCUMENT_LOCAL_RECTS')
+    else if (id.documentLocalFragmentCount !== id.meaningfulFragmentCount) {
+      failed.push('INLINE_VIEWPORT_LOCAL_FRAGMENT_COUNT_MISMATCH')
+    }
+    if (id.actualPaintedFragmentCount !== id.meaningfulFragmentCount) {
+      failed.push('INLINE_LOCAL_PAINTED_FRAGMENT_COUNT_MISMATCH')
+    }
+    // NaN → fail (never a silent pass).
+    if (id.maxPositionDriftPx != null && !(id.maxPositionDriftPx <= INLINE_POSITION_DRIFT_HARD_PX)) {
+      failed.push('INLINE_EXPECTED_ACTUAL_POSITION_DRIFT_GT_1_5PX')
+    }
+    if (id.scrollWriteCount > 0 && !id.preScrollGeometryInvalidated) {
+      failed.push('INLINE_STALE_PRE_SCROLL_GEOMETRY')
+    }
+    if (id.scrollWriteCount > 0 && !id.postScrollGeometryFresh) {
+      failed.push('INLINE_POST_SCROLL_GEOMETRY_NOT_FRESH')
+    }
+  }
   if (failed.length === 0) return { canCommit: true, reason: 'FULL_GEOMETRY_OK', failedChecks: [] }
   return { canCommit: false, reason: failed.join(','), failedChecks: failed }
 }

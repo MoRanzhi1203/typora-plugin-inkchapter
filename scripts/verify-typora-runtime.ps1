@@ -14,7 +14,7 @@ $ProjectMain    = Join-Path $ProjectRoot "dist\main.js"
 $ProjectCss     = Join-Path $ProjectRoot "dist\style.css"
 
 # ── Expected build ID (single source: forensic.ts) ─────────────────────────
-$ExpectedBuildId = "inkchapter-drawer-persistence-v5.12-r3"
+$ExpectedBuildId = "inkchapter-inline-document-space-v5.12-r4"
 
 # ── Check required source-of-truth files exist ─────────────────────────────
 $runtimeMainExists = Test-Path $RuntimeMain

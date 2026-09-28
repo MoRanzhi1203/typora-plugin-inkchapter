@@ -16,6 +16,7 @@ import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_C
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
 import {
   DiagnosticLocateFrameController,
+  DIAGNOSTIC_INLINE_FRAGMENT_CLASS,
   classifyDiagnosticLocateElement,
   type DiagnosticLocateTargetKind,
   type RectLike,
@@ -171,6 +172,19 @@ import {
   type DrawerPresentationModeV3,
   type DrawerViewportClass,
 } from './document-diagnostic-drawer-persistence-v512-r3'
+// ── V5.12-R4 — inline DOCUMENT-SPACE coordinate authority ──────────────────
+import {
+  INLINE_COORDINATE_AUTHORITY_AUDIT_EVENT,
+  INLINE_COORDINATE_NORMALIZER_ID,
+  INLINE_POSITION_DRIFT_HARD_PX,
+  createInlineDocumentSpaceV512R4Counters,
+  evaluateInlineCoordinateAuthority,
+  evaluateInlineDocumentSpaceGates,
+  formatInlineDocumentSpaceGateReport,
+  measureInlineFragmentPositionDrift,
+  projectDocumentLocalRectToViewport,
+  type InlineDocumentSpaceV512R4GateKey,
+} from './document-diagnostic-inline-document-space-v512-r4'
 import { emitRuntimeAudit, emitInkchapterRuntimeAuditSummary } from '../runtime/forensic-log-sink'
 import {
   resolveActiveDocumentPresence,
@@ -2306,6 +2320,11 @@ export class DocumentUtilityOverlayHost {
       try { this.locateDocCarrier.remove() } catch { /* noop */ }
       this.locateDocCarrier = null
     }
+    // V5.12-R4 §3 — the document-space INLINE fragment carriers go with it.
+    for (const el of this.locateDocInlineEls) {
+      try { el.remove() } catch { /* noop */ }
+    }
+    this.locateDocInlineEls = []
     this.locateCommittedVisual = null
   }
 
@@ -2380,9 +2399,84 @@ export class DocumentUtilityOverlayHost {
       }
       frame.releaseViewportCarrier()
     }
-    // Inline marks live on the DOCUMENT node itself → already document space.
+    // ── V5.12-R4 §3 — inline exact fragments enter the SAME document-space ────
+    // pipeline and carrier. There is NO inline-private viewport render path: the
+    // Range viewport rects are normalized by the shared `viewportRectToDocumentLocalRect`
+    // (identical to the block path, never a second helper, never +/- scrollTop),
+    // mounted into the SAME document-space layer, and the viewport carrier is
+    // detached before the transaction terminates.
     const inlineLocal: DocumentSpaceRect[] = []
-    if (inlineEl) {
+    const headless = this.isHeadlessLayoutSafe()
+    // V5.12-R4 §13 — the inline coordinate evidence carried into the
+    // document-space audit (hoisted so the audit reflects the real measurement).
+    let inlineExpectedViewport: DocumentSpaceRect[] = []
+    let inlineReprojectedViewportRects: DocumentSpaceRect[] = []
+    let inlineActualPaintedViewportRects: DocumentSpaceRect[] = []
+    let inlineDrift: ReturnType<typeof measureInlineFragmentPositionDrift> | null = null
+    let inlineReprojectedDrift: ReturnType<typeof measureInlineFragmentPositionDrift> | null = null
+    const inlineFacts = frame.getStructure().kind === 'inline' ? frame.getInlineCoordinateFacts() : null
+    if (inlineFacts && (inlineFacts.viewportFragments.length > 0 || inlineFacts.expectedViewportRects.length > 0)) {
+      const expectedViewport = inlineFacts.viewportFragments.map(f =>
+        makeDocumentSpaceRect({ left: f.left, top: f.top, right: f.right, bottom: f.bottom }),
+      )
+      for (const f of expectedViewport) {
+        const local = viewportRectToDocumentLocalRect({ viewportRect: f, contentHostRect: hostRect })
+        if (!local) continue
+        // Mount ONE document-space carrier per visual line (sub-pixel preserved so
+        // the reprojection stays inside the 1.5px band).
+        const el = document.createElement('div')
+        el.className = DIAGNOSTIC_INLINE_FRAGMENT_CLASS
+        el.setAttribute('data-severity', String(diag.severity ?? 'info'))
+        el.setAttribute('data-target-kind', 'inline')
+        el.setAttribute('aria-hidden', 'true')
+        el.style.cssText = `position:absolute;left:${local.left}px;top:${local.top}px;width:${local.width}px;height:${local.height}px;pointer-events:none;`
+        layer.appendChild(el)
+        this.locateDocInlineEls.push(el)
+        inlineLocal.push(local)
+      }
+      const reprojectedViewportRects = inlineLocal
+        .map(local => projectDocumentLocalRectToViewport({ localRect: local, documentHostRect: hostRect }))
+        .filter((r): r is DocumentSpaceRect => r != null)
+      // The REAL painted overlay rects (viewport space) — this is the genuine
+      // expected-vs-actual evidence, never a reprojection of the expected value.
+      const actualPaintedViewportRects = inlineFacts.paintedViewportRects.map(r =>
+        makeDocumentSpaceRect({ left: r.left, top: r.top, right: r.right, bottom: r.bottom }),
+      )
+      const drift = measureInlineFragmentPositionDrift({
+        expectedViewport,
+        actualViewport: headless ? [] : actualPaintedViewportRects,
+      })
+      const reprojectedDrift = measureInlineFragmentPositionDrift({
+        expectedViewport,
+        actualViewport: reprojectedViewportRects,
+      })
+      inlineExpectedViewport = expectedViewport
+      inlineReprojectedViewportRects = reprojectedViewportRects
+      inlineActualPaintedViewportRects = actualPaintedViewportRects
+      inlineDrift = drift
+      inlineReprojectedDrift = reprojectedDrift
+      // §3/§24 — the viewport inline carrier must NOT survive the COMMIT.
+      const releasedViewportCarrier = frame.releaseViewportInlineCarrier()
+      if (!releasedViewportCarrier && inlineFacts.paintedFragmentElementCount > 0) {
+        this.countersInlineV512R4.inlinePrivateViewportRenderPath++
+      }
+      this.emitInlineCoordinateAuthorityAudit({
+        tx,
+        diag,
+        host,
+        hostRect,
+        expectedViewport,
+        expectedViewportRects: inlineFacts.expectedViewportRects,
+        documentLocalRects: inlineLocal,
+        reprojectedViewportRects,
+        actualPaintedViewportRects,
+        drift,
+        reprojectedDrift,
+        facts: inlineFacts,
+      })
+    } else if (inlineEl) {
+      // No exact source range → the class-based element mark IS the carrier and it
+      // already lives on the document node (document space).
       const vp = this.measureLocateRect(inlineEl)
       const local = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
       if (local) inlineLocal.push(local)
@@ -2420,6 +2514,30 @@ export class DocumentUtilityOverlayHost {
       documentLocalPrimaryRects: primaryLocal ? [primaryLocal] : [],
       documentLocalSecondaryRects: secondaryLocal ? [secondaryLocal] : [],
       documentLocalInlineRects: inlineLocal,
+      // ── V5.12-R4 §13 — inline coordinate-space evidence ─────────────────────
+      visualTargetKind: frame.getStructure().kind,
+      scrollContainerIdentity: getActiveEditorScrollContainer()
+        ? `${getActiveEditorScrollContainer()!.tagName}.${getActiveEditorScrollContainer()!.className.split(' ')[0] || ''}`
+        : null,
+      scrollTopAtResolve: tx.oneClick?.initialScrollTop ?? null,
+      scrollTopAtPaint: inlineFacts ? inlineFacts.measuredScrollTop : null,
+      viewportInlineRects: inlineExpectedViewport,
+      reprojectedViewportInlineRects: inlineReprojectedViewportRects,
+      actualPaintedInlineViewportRects: inlineActualPaintedViewportRects,
+      expectedFragmentCount: inlineExpectedViewport.length,
+      documentLocalFragmentCount: inlineLocal.length,
+      paintedFragmentCount: inlineActualPaintedViewportRects.length,
+      maxDeltaLeft: inlineDrift ? inlineDrift.maxDeltaLeft : null,
+      maxDeltaTop: inlineDrift ? inlineDrift.maxDeltaTop : null,
+      maxDeltaRight: inlineDrift ? inlineDrift.maxDeltaRight : null,
+      maxDeltaBottom: inlineDrift ? inlineDrift.maxDeltaBottom : null,
+      maxPositionDrift: inlineDrift ? inlineDrift.maxPositionDrift : null,
+      reprojectedMaxPositionDrift: inlineReprojectedDrift ? inlineReprojectedDrift.maxPositionDrift : null,
+      positionDriftTolerancePx: INLINE_POSITION_DRIFT_HARD_PX,
+      coordinateNormalizerId: INLINE_COORDINATE_NORMALIZER_ID,
+      scrollCompensationMode: 'NONE_DOCUMENT_HOST_RECT_ONLY',
+      preScrollGeometryInvalidated: inlineFacts ? inlineFacts.preScrollGeometryInvalidated : null,
+      postScrollGeometryFresh: inlineFacts ? inlineFacts.postScrollGeometryFresh : null,
       presentationKind: this.locateCommittedVisual.presentationKind,
       scrollLeaseStateAtCommit: this.locateScrollLease?.state ?? null,
       scrollLeaseReleasedAfterCommit: true,
@@ -2438,6 +2556,181 @@ export class DocumentUtilityOverlayHost {
       reason: 'DOCUMENT_SPACE_CARRIER_COMMITTED',
     })
     return true
+  }
+
+  /**
+   * §13/§14 — DOCUMENT-DIAGNOSTIC-INLINE-COORDINATE-AUTHORITY-AUDIT.
+   *
+   * Proves the exact inline fragments went through the ONE shared
+   * viewport → document-local normalizer and that the painted geometry really
+   * sits ON the source Range (never merely "coverage=1").
+   */
+  private emitInlineCoordinateAuthorityAudit(input: {
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number]
+    host: HTMLElement
+    hostRect: SimpleRect
+    expectedViewport: DocumentSpaceRect[]
+    expectedViewportRects: Array<{ left: number; top: number; right: number; bottom: number }>
+    documentLocalRects: DocumentSpaceRect[]
+    reprojectedViewportRects: DocumentSpaceRect[]
+    actualPaintedViewportRects: DocumentSpaceRect[]
+    drift: ReturnType<typeof measureInlineFragmentPositionDrift>
+    reprojectedDrift: ReturnType<typeof measureInlineFragmentPositionDrift>
+    facts: ReturnType<DiagnosticLocateFrameController['getInlineCoordinateFacts']>
+  }): void {
+    const { tx, diag, host, hostRect, facts } = input
+    const headless = this.isHeadlessLayoutSafe()
+    const scrollWriteCount = tx.oneClick?.scrollWriteCount ?? 0
+    const maxPositionDriftPx = headless || input.drift.comparedFragmentCount === 0
+      ? null
+      : input.drift.maxPositionDrift
+    const reprojectedDriftPx = input.reprojectedDrift.comparedFragmentCount === 0
+      ? null
+      : input.reprojectedDrift.maxPositionDrift
+    const authority = evaluateInlineCoordinateAuthority({
+      kindIsInline: true,
+      exactInlinePresent: true,
+      documentLocalFragmentCount: input.documentLocalRects.length,
+      meaningfulFragmentCount: input.expectedViewport.length,
+      actualPaintedFragmentCount: headless ? input.documentLocalRects.length : input.actualPaintedViewportRects.length,
+      maxPositionDriftPx,
+      scrollWriteCount,
+      preScrollGeometryInvalidated: facts.preScrollGeometryInvalidated,
+      postScrollGeometryFresh: facts.postScrollGeometryFresh,
+      manualScrollOffsetApplied: false,
+      privateViewportRenderPath: false,
+      reprojectedDriftPx,
+    })
+    // §24 — hard-gate accounting (only real violations increment).
+    for (const check of authority.failedChecks) {
+      switch (check) {
+        case 'INLINE_COMMITTED_WITH_EMPTY_DOCUMENT_LOCAL_RECTS':
+          this.countersInlineV512R4.inlineCommittedWithEmptyDocumentLocalRects++
+          break
+        case 'INLINE_VIEWPORT_LOCAL_FRAGMENT_COUNT_MISMATCH':
+          this.countersInlineV512R4.inlineViewportLocalFragmentCountMismatch++
+          break
+        case 'INLINE_LOCAL_PAINTED_FRAGMENT_COUNT_MISMATCH':
+          this.countersInlineV512R4.inlineLocalPaintedFragmentCountMismatch++
+          break
+        case 'INLINE_STALE_PRE_SCROLL_GEOMETRY':
+        case 'INLINE_POST_SCROLL_GEOMETRY_NOT_FRESH':
+          this.countersInlineV512R4.inlineStalePreScrollGeometryCommit++
+          break
+        case 'INLINE_MANUAL_SCROLL_OFFSET_APPLIED':
+          this.countersInlineV512R4.inlineManualScrollOffsetApplied++
+          break
+        case 'INLINE_PRIVATE_VIEWPORT_RENDER_PATH':
+          this.countersInlineV512R4.inlinePrivateViewportRenderPath++
+          break
+        case 'INLINE_EXPECTED_ACTUAL_POSITION_DRIFT_GT_1_5PX':
+          this.countersInlineV512R4.inlineExpectedActualPositionDriftGt1_5px++
+          break
+        case 'INLINE_REPROJECTED_VIEWPORT_DRIFT_GT_1_5PX':
+          this.countersInlineV512R4.inlineReprojectedViewportDriftGt1_5px++
+          break
+        default:
+          break
+      }
+    }
+    const payload: Record<string, unknown> = {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      transactionId: tx.id,
+      diagnosticId: diag.id,
+      sourceRangeIdentity: this.locateCommittedVisual?.secondaryAnchorIdentity
+        ?? this.locateCommittedVisual?.semanticAnchorIdentity
+        ?? null,
+      rangeResolved: input.expectedViewportRects.length > 0,
+      rangeClientRectCount: input.expectedViewportRects.length,
+      viewportRects: input.expectedViewport,
+      documentLocalRects: input.documentLocalRects,
+      actualPaintedRects: input.actualPaintedViewportRects,
+      actualPaintedViewportRects: input.actualPaintedViewportRects,
+      reprojectedViewportRects: input.reprojectedViewportRects,
+      documentHostIdentity: `${host.tagName}#${host.id || ''}`,
+      documentHostRect: hostRect,
+      workspaceScrollTop: facts.measuredScrollTop,
+      scrollWriteCount,
+      normalizerAuthority: INLINE_COORDINATE_NORMALIZER_ID,
+      coordinateNormalizerId: INLINE_COORDINATE_NORMALIZER_ID,
+      manualScrollOffsetApplied: false,
+      scrollCompensationMode: 'NONE_DOCUMENT_HOST_RECT_ONLY',
+      preScrollGeometryGeneration: facts.generationAtInvalidation,
+      postScrollGeometryGeneration: facts.generation,
+      preScrollGeometryInvalidated: facts.preScrollGeometryInvalidated,
+      postScrollGeometryFresh: facts.postScrollGeometryFresh,
+      invalidationReason: facts.invalidationReason,
+      expectedFragmentCount: input.expectedViewport.length,
+      documentLocalFragmentCount: input.documentLocalRects.length,
+      paintedFragmentCount: input.actualPaintedViewportRects.length,
+      maxDeltaLeft: input.drift.maxDeltaLeft,
+      maxDeltaTop: input.drift.maxDeltaTop,
+      maxDeltaRight: input.drift.maxDeltaRight,
+      maxDeltaBottom: input.drift.maxDeltaBottom,
+      maxPositionDrift: input.drift.maxPositionDrift,
+      maxPositionDriftPx,
+      reprojectedMaxPositionDriftPx: reprojectedDriftPx,
+      positionDriftTolerancePx: INLINE_POSITION_DRIFT_HARD_PX,
+      measureMode: headless ? 'HEADLESS' : 'REAL',
+      decision: authority.decision,
+      reason: authority.reason,
+      failedChecks: authority.failedChecks,
+      inlineCoordinateGateCounters: { ...this.countersInlineV512R4 },
+      inlineCoordinateGateDecision: evaluateInlineDocumentSpaceGates(this.countersInlineV512R4).decision,
+    }
+    this.lastInlineCoordinateAudit = payload
+    emitRuntimeAudit(INLINE_COORDINATE_AUTHORITY_AUDIT_EVENT, payload)
+  }
+
+  /**
+   * §25 — the inline document-space facts the UNIQUE commit gate consumes. Every
+   * value is measured from the CURRENT (post-scroll, post-restore) paint, so a
+   * stale pre-scroll fragment or an offset paint can never pass.
+   */
+  private measureInlineDocumentSpaceGateFacts(): {
+    documentLocalFragmentCount: number
+    meaningfulFragmentCount: number
+    actualPaintedFragmentCount: number
+    maxPositionDriftPx: number | null
+    scrollWriteCount: number
+    preScrollGeometryInvalidated: boolean
+    postScrollGeometryFresh: boolean
+  } | null {
+    const frame = this.locateFrame
+    if (!frame || frame.getStructure().kind !== 'inline') return null
+    const facts = frame.getInlineCoordinateFacts()
+    // §9/§25 — the gate applies to an EXACT inline range only. A class-mark carrier
+    // (no precise range) is not asserted here, but an exact range that produced NO
+    // document-local rect is a hard failure — never a silently skipped gate.
+    if (!facts.exactInlinePresent) return null
+    const host = this.locateDocLayerHost
+    const hostRect = host ? this.measureLocateRect(host) : null
+    let documentLocalFragmentCount = 0
+    if (hostRect) {
+      for (const f of facts.viewportFragments) {
+        if (viewportRectToDocumentLocalRect({ viewportRect: f, contentHostRect: hostRect })) documentLocalFragmentCount++
+      }
+    }
+    const headless = this.isHeadlessLayoutSafe()
+    const actualPainted = headless ? facts.paintedFragmentElementCount : facts.paintedViewportRects.length
+    const drift = measureInlineFragmentPositionDrift({
+      expectedViewport: facts.viewportFragments.map(f =>
+        makeDocumentSpaceRect({ left: f.left, top: f.top, right: f.right, bottom: f.bottom }),
+      ),
+      actualViewport: headless
+        ? []
+        : facts.paintedViewportRects.map(r => makeDocumentSpaceRect({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })),
+    })
+    return {
+      documentLocalFragmentCount,
+      meaningfulFragmentCount: facts.viewportFragments.length,
+      actualPaintedFragmentCount: actualPainted,
+      maxPositionDriftPx: headless || drift.comparedFragmentCount === 0 ? null : drift.maxPositionDrift,
+      scrollWriteCount: this.activeLocateTx?.oneClick?.scrollWriteCount ?? 0,
+      preScrollGeometryInvalidated: facts.preScrollGeometryInvalidated,
+      postScrollGeometryFresh: facts.postScrollGeometryFresh,
+    }
   }
 
   /**
@@ -2465,6 +2758,28 @@ export class DocumentUtilityOverlayHost {
       // V5.12-R2 §18 — a document-local drift means two coordinate spaces were
       // mixed in the same computation chain.
       this.countersClosureV512R2.mixedCoordinateSpace++
+    }
+    // ── V5.12-R4 §26/E — the inline fragments are document-local too: read the
+    // mounted carriers back and prove a user scroll never moved them.
+    let inlineDrift: number | null = null
+    if (c.inlineLocal.length > 0 && this.locateDocInlineEls.length === c.inlineLocal.length) {
+      let max = 0
+      for (let i = 0; i < this.locateDocInlineEls.length; i++) {
+        const el = this.locateDocInlineEls[i]
+        const l = Number.parseFloat(el.style.left)
+        const t = Number.parseFloat(el.style.top)
+        const w = Number.parseFloat(el.style.width)
+        const h = Number.parseFloat(el.style.height)
+        if (![l, t, w, h].every(Number.isFinite)) continue
+        const readBack = makeDocumentSpaceRect({ left: l, top: t, right: l + w, bottom: t + h })
+        const d = documentLocalDrift(c.inlineLocal[i], readBack)
+        if (d != null) max = Math.max(max, d)
+      }
+      inlineDrift = max
+      if (max > DOCUMENT_SPACE_DRIFT_HARD_PX) {
+        this.countersDocSpaceV511.documentSpaceOverlayScrollDrift++
+        this.countersClosureV512R2.mixedCoordinateSpace++
+      }
     }
     // A scroll is NEVER a layout reflow (§21).
     emitRuntimeAudit(LOCATE_DOCUMENT_SPACE_AUDIT_EVENT, {
@@ -2495,6 +2810,8 @@ export class DocumentUtilityOverlayHost {
       layoutFingerprintAfter: c.fingerprint ? layoutFingerprintKey(c.fingerprint) : null,
       layoutReconcileTriggered: false,
       localDriftPx: drift,
+      inlineLocalDriftPx: inlineDrift,
+      documentLocalInlineRectCount: c.inlineLocal.length,
       decision: 'PASS',
       reason: 'POST_COMMIT_USER_SCROLL_INERT',
     })
@@ -2541,6 +2858,27 @@ export class DocumentUtilityOverlayHost {
   private lastVisualClosureAudit: Record<string, unknown> | null = null
   /** §16 — the last V5.12-R3 Drawer-persistence audit payload. */
   private lastDrawerPersistenceAudit: Record<string, unknown> | null = null
+  /** §24 — the V5.12-R4 inline document-space hard-gate counters. */
+  private countersInlineV512R4 = createInlineDocumentSpaceV512R4Counters()
+  /** §14 — the last inline coordinate authority audit payload. */
+  private lastInlineCoordinateAudit: Record<string, unknown> | null = null
+  /** §3 — the document-space inline fragment carriers (one per visual line). */
+  private locateDocInlineEls: HTMLElement[] = []
+
+  /** §24 — read-only V5.12-R4 inline document-space hard-gate counters. */
+  getInlineDocumentSpaceCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersInlineV512R4 }
+  }
+
+  /** §24 — the exact `NAME=value` inline document-space gate report lines. */
+  getInlineDocumentSpaceGateReport(): string[] {
+    return formatInlineDocumentSpaceGateReport(this.countersInlineV512R4)
+  }
+
+  /** §14 — the last inline coordinate authority audit payload (observability). */
+  getLastInlineCoordinateAudit(): Readonly<Record<string, unknown>> | null {
+    return this.lastInlineCoordinateAudit
+  }
 
   /** §18 — read-only V5.12-R2 hard-gate counters. */
   getVisualClosureCounters(): Readonly<Record<string, number>> {
@@ -3266,6 +3604,36 @@ export class DocumentUtilityOverlayHost {
     const hostRect = this.measureLocateRect(host)
     const frameEl = this.locateDocCarrier
     const anchorVp = this.measureLocateRect(anchor)
+    // ── V5.12-R4 §19 — an inline target reflows with the text: the SOURCE RANGE
+    // is re-measured (no viewport repaint) and the document-space fragments are
+    // repositioned, so a drawer width change can never shift the visual off the
+    // glyphs. This is a LAYOUT reflow only — a user scroll never reaches here.
+    if (hostRect && frame.getStructure().kind === 'inline' && this.locateDocInlineEls.length > 0) {
+      const freshInline = frame.remeasureInlineGeometry()
+      const nextLocal: DocumentSpaceRect[] = []
+      for (let i = 0; i < freshInline.fragments.length; i++) {
+        const local = viewportRectToDocumentLocalRect({
+          viewportRect: freshInline.fragments[i],
+          contentHostRect: hostRect,
+        })
+        if (!local) continue
+        nextLocal.push(local)
+        const el = this.locateDocInlineEls[i]
+        if (el) {
+          el.style.left = `${local.left}px`
+          el.style.top = `${local.top}px`
+          el.style.width = `${local.width}px`
+          el.style.height = `${local.height}px`
+        }
+      }
+      // A reflow may reduce the visual-line count → drop the surplus carriers.
+      for (let i = nextLocal.length; i < this.locateDocInlineEls.length; i++) {
+        const el = this.locateDocInlineEls[i]
+        if (el) { try { el.remove() } catch { /* noop */ } }
+      }
+      this.locateDocInlineEls.length = nextLocal.length
+      c.inlineLocal = nextLocal
+    }
     if (hostRect && frameEl && anchorVp) {
       const local = viewportRectToDocumentLocalRect({ viewportRect: anchorVp, contentHostRect: hostRect })
       if (local) {
@@ -8366,6 +8734,15 @@ export class DocumentUtilityOverlayHost {
     }
     facts.requestedScrollTop = facts.requestedScrollTop ?? desired
     facts.scrollWriteCount++
+    // ── V5.12-R4 §7.1/§8 — the locator just wrote scroll: the PRE-scroll inline
+    // Range geometry is now INVALID and must be re-measured after the settle.
+    // Without this the fragments measured during `commit()` survived to COMMIT
+    // (deltaTop ≈ scrollWriteDistance). This ONLY ever runs inside the locate
+    // transaction — a post-COMMIT user scroll never reaches this method (§7.2).
+    if (this.locateFrame?.getStructure().kind === 'inline') {
+      this.locateFrame.invalidateInlineGeometry('PROGRAMMATIC_LOCATE_SCROLL')
+      facts.preScrollGeometryInvalidated = true
+    }
     try { container.scrollTop = desired } catch { /* keep current */ }
     const after = Number.isFinite(container.scrollTop) ? container.scrollTop : 0
     facts.actualScrollTopAfterWrite = after
@@ -9286,6 +9663,14 @@ export class DocumentUtilityOverlayHost {
       facts.postRecoveryRemeasured = true
       if (phase === 'PHASE_B') facts.remeasuredAfterDrawerRestore = true
       tx.state = 'FINAL_REPAINTING'
+      // ── V5.12-R4 §7.1/§8 — a programmatic locate scroll makes the PRE-scroll
+      // Range geometry stale. This is enforced HERE (deterministically, in the
+      // settled layout) instead of relying on the scroll-write call site, so an
+      // inline fragment measured before the scroll can never reach the gate.
+      if (facts.scrollWriteCount > 0 && this.locateFrame?.getStructure().kind === 'inline') {
+        this.locateFrame.invalidateInlineGeometry('PROGRAMMATIC_LOCATE_SCROLL')
+        facts.preScrollGeometryInvalidated = true
+      }
       this.repositionDiagnosticLocateFrame()
       const painted = this.measureActualPaintedLocateVisual(result)
       facts.actualPaintedPrimaryRect = painted.primary
@@ -9523,6 +9908,9 @@ export class DocumentUtilityOverlayHost {
       inlineFragmentCoverage: isInline && !headless && inlineFacts ? inlineFacts.coverage : null,
       blockCoverage: isBlock && !headless ? (geom ? geom.horizontalCoverage : null) : null,
       staleGeometry: false,
+      // V5.12-R4 §25 — inline targets additionally prove the DOCUMENT-SPACE
+      // coordinate authority (coverage can never detect a whole-fragment shift).
+      inlineDocumentSpace: isInline ? this.measureInlineDocumentSpaceGateFacts() : null,
     })
   }
 
