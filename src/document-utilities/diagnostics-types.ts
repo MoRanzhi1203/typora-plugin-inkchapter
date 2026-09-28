@@ -53,6 +53,24 @@ export type DiagnosticLocation =
        * (source-only diagnostics such as LATENT_ATX_HEADING_MARKER).
        */
       rawText?: string
+      /**
+       * V5.12-R5 §5 — the EXACT source range + its identity. A duplicate
+       * resource (`![](same.png)` twice) must be resolved by THIS range, never
+       * by the first text match. Additive: every existing source-range
+       * consumer keeps working when these are absent.
+       */
+      sourceStart?: number | null
+      sourceEnd?: number | null
+      sourceRangeIdentity?: string | null
+      resourceKind?: 'image' | 'link'
+      canonicalDestination?: string
+      rawDestination?: string
+      /** Expected occurrence ordinal (the clicked diagnostic's own fact). */
+      occurrenceIndex?: number
+      /** §8.2 — 0-based source-block ordinal among identical raw source lines. */
+      rawLineOrdinal?: number
+      /** §8.2 — 0-based token ordinal inside the owning source block. */
+      occurrenceWithinLine?: number
     }
   | { kind: 'document-start' }
   | { kind: 'document-end' }

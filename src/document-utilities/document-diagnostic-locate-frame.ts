@@ -88,6 +88,12 @@ export interface DiagnosticLocateVisualCommit {
    * block-sized union rectangle.
    */
   preciseTextPrefix?: string | null
+  /**
+   * V5.12-R5 §8.2 — which occurrence of the source token inside the owning block
+   * this target IS (0-based, verified). A duplicate destination must measure its
+   * OWN token; the default 0 keeps every single-occurrence path unchanged.
+   */
+  preciseOccurrenceWithinAnchor?: number
   /** V4 — render as an inline mark even for an owning block target. */
   forceInlineMark?: boolean
   /** V4 — caption / expected-name host rect (missing-name diagnostics). */
@@ -214,6 +220,8 @@ export class DiagnosticLocateFrameController {
   private preciseRectOverride: { left: number; top: number; right: number; bottom: number } | null = null
   /** V5.12-R2 §10 — the exact source token whose TEXT RANGE is the inline visual. */
   private preciseTextPrefixOverride: string | null = null
+  /** V5.12-R5 §8.2 — the verified token ordinal inside the resolved anchor. */
+  private preciseOccurrenceWithinAnchor = 0
   private forceInlineMarkOverride = false
   private captionHostRectOverride: { left: number; top: number; right: number; bottom: number } | null = null
   /** V4 — last committed visual geometry decision (audit/tests). */
@@ -379,6 +387,7 @@ export class DiagnosticLocateFrameController {
     this.diagnosticId = diagnosticId
     this.preciseRectOverride = input.preciseRect ?? null
     this.preciseTextPrefixOverride = input.preciseTextPrefix ?? null
+    this.preciseOccurrenceWithinAnchor = Math.max(0, Math.floor(input.preciseOccurrenceWithinAnchor ?? 0))
     this.forceInlineMarkOverride = input.forceInlineMark === true
     this.captionHostRectOverride = input.captionHostRect ?? null
     // ── V5.12-R2 §5/§4 — HEADING: scroll authority ≠ visual authority. ──────
@@ -441,7 +450,11 @@ export class DiagnosticLocateFrameController {
     // range so a wrapped token yields ONE FRAGMENT PER VISUAL LINE. Measuring
     // the owning element instead would return a single block-sized rect (a
     // forbidden cross-line union covering the full text column).
-    const measured = measureTextFragmentRects(anchor, this.preciseTextPrefixOverride)
+    const measured = measureTextFragmentRects(
+      anchor,
+      this.preciseTextPrefixOverride,
+      this.preciseOccurrenceWithinAnchor,
+    )
     // Only the EXACT source-range fragments may be painted; without a
     // measurable range the class-based inline mark stays the carrier.
     if (measured.expected.length === 0 || measured.fragments.length === 0) return
@@ -491,7 +504,11 @@ export class DiagnosticLocateFrameController {
     if (!anchor || !anchor.isConnected || !this.preciseRectOverride) {
       return { fragments: [...this.lastInlineFragments], expected: [...this.lastInlineExpected] }
     }
-    const measured = measureTextFragmentRects(anchor, this.preciseTextPrefixOverride)
+    const measured = measureTextFragmentRects(
+      anchor,
+      this.preciseTextPrefixOverride,
+      this.preciseOccurrenceWithinAnchor,
+    )
     if (measured.expected.length === 0 || measured.fragments.length === 0) {
       return { fragments: [...this.lastInlineFragments], expected: [...this.lastInlineExpected] }
     }
@@ -932,6 +949,7 @@ export class DiagnosticLocateFrameController {
     this.lastHeadingLegacyFrameRender = false
     this.preciseRectOverride = null
     this.preciseTextPrefixOverride = null
+    this.preciseOccurrenceWithinAnchor = 0
     this.forceInlineMarkOverride = false
     this.captionHostRectOverride = null
     this.lastVisualPresentation = null

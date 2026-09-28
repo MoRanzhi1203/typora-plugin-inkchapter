@@ -28,7 +28,7 @@ import {
   validateRectInvariants,
   type RectSnapshot,
 } from './document-locate-rect-v4'
-import { measureTextRects } from './document-locate-visual-geometry-v4'
+import { measureTextRects, measureTextFragmentRects, countTokenInElement } from './document-locate-visual-geometry-v4'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
@@ -36,7 +36,22 @@ import {
   normalizeResourcePath,
   type DiagnosticLocationResolveContext,
   type DiagnosticLocationResolveResult,
+  type ResolvedSourceOccurrenceHint,
 } from './document-diagnostic-location'
+import {
+  DUPLICATE_OCCURRENCES_COLLAPSED_TO_SAME_RANGE_REASON,
+  SOURCE_OCCURRENCE_AUTHORITY_AUDIT_EVENT,
+  buildSourceRangeIdentity,
+  createSourceOccurrenceV512R5Counters,
+  evaluateSourceOccurrenceAuthority,
+  evaluateSourceOccurrenceV512R5Gates,
+  findTokenOffsets,
+  formatSourceOccurrenceV512R5GateReport,
+  selectOccurrenceOffset,
+  sourceOccurrenceGateKeyForCheck,
+  sourceOccurrenceGroupKey,
+  type SourceResourceKind,
+} from './document-diagnostic-source-occurrence-v512-r5'
 import { DocumentEditGuard } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
 import type { ScrollNavigatorState } from './document-scroll-navigator'
@@ -1304,6 +1319,30 @@ export interface RectRecord {
   height: number
 }
 
+/**
+ * V5.12-R5 §11/§12 — the SOURCE OCCURRENCE facts for one locate + the hard-gate
+ * decision. `expected*` come from the clicked diagnostic; `resolved*` come from
+ * the resolver's OWN matched occurrence — never the same fact source (§10).
+ */
+interface LocateSourceOccurrenceEvaluation {
+  isResource: boolean
+  isDuplicateGroup: boolean
+  /** When true the visual COMMIT is forbidden (a wrong token is never painted). */
+  blocksCommit: boolean
+  gate: { decision: 'PASS' | 'FAIL'; reason: string; failedChecks: string[] }
+  audit: Record<string, unknown>
+  facts: {
+    expectedOccurrenceIndex: number | null
+    resolvedOccurrenceIndex: number | null
+    expectedSourceRangeIdentity: string | null
+    resolvedSourceRangeIdentity: string | null
+    expectedSourceStart: number | null
+    expectedSourceEnd: number | null
+    resolvedSourceStart: number | null
+    resolvedSourceEnd: number | null
+  }
+}
+
 function toRectRecord(r: DOMRect | null | undefined): RectRecord | null {
   if (!r) return null
   return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }
@@ -1599,6 +1638,20 @@ export class DocumentUtilityOverlayHost {
   } | null = null
   private locateTxSettleCancel: (() => void) | null = null
   private locateTxWatchdog: ReturnType<typeof setTimeout> | null = null
+  /**
+   * V5.12-R5 §12 — SOURCE OCCURRENCE authority counters (session cumulative).
+   * All must remain 0 for a PASS.
+   */
+  private countersSourceOccurrenceV512R5 = createSourceOccurrenceV512R5Counters()
+  /**
+   * V5.12-R5 §13 — the LAST committed inline range per occurrence GROUP
+   * (`resourceKind + canonicalDestination`). A different sibling occurrence
+   * that collapses onto the SAME visual range is a hard failure.
+   */
+  private r5OccurrenceRangeByGroup = new Map<
+    string,
+    { occurrenceIndex: number; unionRect: RectRecord | null; sourceRangeIdentity: string | null }
+  >()
   /** Phase 7R.3.11.8B.6 — workspace width guard state (write-deduped). */
   private workspaceWidthState: WorkspaceWidthState | null = null
   private workspaceHostApplied = false
@@ -2903,6 +2956,21 @@ export class DocumentUtilityOverlayHost {
   /** §16 — the last Drawer-persistence audit payload (observability). */
   getLastDrawerPersistenceAudit(): Readonly<Record<string, unknown>> | null {
     return this.lastDrawerPersistenceAudit
+  }
+
+  /** V5.12-R5 §12 — read-only source-occurrence authority hard-gate counters. */
+  getSourceOccurrenceV512R5Counters(): Readonly<Record<string, number>> {
+    return { ...this.countersSourceOccurrenceV512R5 }
+  }
+
+  /** V5.12-R5 §12 — the exact `NAME=value` source-occurrence gate report lines. */
+  getSourceOccurrenceV512R5GateReport(): string[] {
+    return formatSourceOccurrenceV512R5GateReport(this.countersSourceOccurrenceV512R5)
+  }
+
+  /** V5.12-R5 §12 — the source-occurrence authority gate decision. */
+  getSourceOccurrenceV512R5GateDecision(): { decision: 'PASS' | 'FAIL'; failing: string[] } {
+    return evaluateSourceOccurrenceV512R5Gates(this.countersSourceOccurrenceV512R5)
   }
 
   /** §3.1 — the current document layout epoch (observability). */
@@ -4264,6 +4332,12 @@ export class DocumentUtilityOverlayHost {
     const code = diag?.code ?? null
     const meta = (diag?.metadata ?? {}) as Record<string, unknown>
     const rawDest = typeof meta.rawDestination === 'string' && meta.rawDestination !== '' ? meta.rawDestination : null
+    // V5.12-R5 §8 — the EXACT resolved source occurrence drives the range build:
+    // the resolved token + the verified nth occurrence INSIDE the owning block.
+    // `preciseTextPrefix` alone is never an identity for a duplicate destination.
+    const occHint = result?.sourceOccurrence ?? null
+    const occWithin = occHint ? Math.max(0, Math.floor(occHint.occurrenceWithinAnchor)) : 0
+    const rangeToken = occHint?.rangeText ?? rawDest
     // V4/V5 — Missing-Image fallback ladder: L1 exact source token → L2
     // source-line marker → L3 owning-block corner. A visual FAIL on L1 must
     // NEVER end invisible — L2/L3 still produce a guaranteed visible marker.
@@ -4271,7 +4345,7 @@ export class DocumentUtilityOverlayHost {
     let forceInline = false
     let fallbackLevel: 0 | 1 | 2 = 2
     if (code === 'FIGURE_LOCAL_IMAGE_MISSING' && anchor.tagName !== 'IMG') {
-      const raw = rawDest ? measureTextRects(anchor, rawDest) : { exact: null, foundToken: false }
+      const raw = rangeToken ? measureTextRects(anchor, rangeToken, occWithin) : { exact: null, foundToken: false }
       const line = measureTextRects(anchor)
       if (raw.exact && raw.foundToken) {
         preciseRect = raw.exact
@@ -4314,7 +4388,10 @@ export class DocumentUtilityOverlayHost {
       // V5.12-R2 §10 (runtime closure) — hand the controller the EXACT source
       // token so a wrapped destination is painted as one fragment per visual
       // line instead of a block-sized union rectangle.
-      preciseTextPrefix: rawDest,
+      preciseTextPrefix: rangeToken,
+      // V5.12-R5 §8.2 — the verified nth occurrence INSIDE the owning block, so
+      // a duplicate destination paints the CORRECT token (never the 1st match).
+      preciseOccurrenceWithinAnchor: occWithin,
     })
     const kindNow = frame.getStructure().kind
     if (kindNow !== 'inline') {
@@ -8245,6 +8322,10 @@ export class DocumentUtilityOverlayHost {
       // re-anchor for source-only diagnostics (LATENT_ATX_HEADING_MARKER).
       getSourceLineText: (line) => this.getSourceLineTextAt(line),
       findBlockByText: (rawText, nearLine) => this.findBlockByTextInRoot(rawText, nearLine),
+      // V5.12-R5 §7 — exact source-occurrence resolution for source resource
+      // diagnostics: verified owning block + verified nth token inside it. A
+      // duplicate destination can never collapse onto the first text match.
+      resolveSourceOccurrence: (input) => this.resolveSourceOccurrenceInRoot(input),
       // Phase 7R.3.11.8B.7.3 — resource semantic resolution + identity
       // normalization + resource validity re-scan (resource diagnostics).
       // The raw source token accompanies the semantic identity so Typora's
@@ -10154,6 +10235,252 @@ export class DocumentUtilityOverlayHost {
     })
   }
 
+  // ── V5.12-R5 §11/§12/§13 — SOURCE OCCURRENCE authority ────────────────────
+
+  /**
+   * §6/§13 — siblings of `diag` inside the SAME occurrence group
+   * (`resourceKind + canonicalDestination`). Only those may collide.
+   */
+  private r5SiblingSourceFacts(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    resourceKind: SourceResourceKind | null,
+    canonicalDestination: string | null,
+  ): { duplicateGroupSize: number; sameIdentityAsSiblingOccurrence: boolean; sameRangeAsSiblingOccurrence: boolean } {
+    if (!resourceKind || !canonicalDestination) {
+      return { duplicateGroupSize: 1, sameIdentityAsSiblingOccurrence: false, sameRangeAsSiblingOccurrence: false }
+    }
+    const groupKey = sourceOccurrenceGroupKey(resourceKind, canonicalDestination)
+    const loc = (diag.location ?? null) as Record<string, unknown> | null
+    const selfIdentity = typeof loc?.sourceRangeIdentity === 'string' ? loc.sourceRangeIdentity : null
+    const selfStart = typeof loc?.sourceStart === 'number' ? loc.sourceStart : null
+    const selfEnd = typeof loc?.sourceEnd === 'number' ? loc.sourceEnd : null
+    let size = 1
+    let sameIdentity = false
+    let sameRange = false
+    for (const d of this.diagnostics.getSnapshot()?.diagnostics ?? []) {
+      if (d.id === diag.id) continue
+      const m = (d.metadata ?? {}) as Record<string, unknown>
+      const k = typeof m.resourceKind === 'string' ? (m.resourceKind as SourceResourceKind) : null
+      const c = typeof m.canonicalDestination === 'string'
+        ? m.canonicalDestination
+        : (typeof m.destination === 'string' ? m.destination : null)
+      if (!k || !c || sourceOccurrenceGroupKey(k, c) !== groupKey) continue
+      size++
+      const dl = (d.location ?? null) as Record<string, unknown> | null
+      if (selfIdentity != null && typeof dl?.sourceRangeIdentity === 'string' && dl.sourceRangeIdentity === selfIdentity) {
+        sameIdentity = true
+      }
+      if (
+        selfStart != null && selfEnd != null
+        && typeof dl?.sourceStart === 'number' && typeof dl?.sourceEnd === 'number'
+        && dl.sourceStart === selfStart && dl.sourceEnd === selfEnd
+      ) {
+        sameRange = true
+      }
+    }
+    return { duplicateGroupSize: size, sameIdentityAsSiblingOccurrence: sameIdentity, sameRangeAsSiblingOccurrence: sameRange }
+  }
+
+  /** Union of a set of rects (null when empty / non-finite). */
+  private r5UnionRect(rects: readonly { left: number; top: number; right: number; bottom: number }[]): RectRecord | null {
+    if (rects.length === 0) return null
+    let left = Infinity
+    let top = Infinity
+    let right = -Infinity
+    let bottom = -Infinity
+    for (const r of rects) {
+      left = Math.min(left, r.left)
+      top = Math.min(top, r.top)
+      right = Math.max(right, r.right)
+      bottom = Math.max(bottom, r.bottom)
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) return null
+    return { left, top, right, bottom, width: right - left, height: bottom - top }
+  }
+
+  /** §13 — two rects describe the SAME visual range (R4 drift tolerance). */
+  private r5RectClose(a: RectRecord, b: RectRecord): boolean {
+    const t = 1.5
+    return (
+      Math.abs(a.left - b.left) <= t && Math.abs(a.top - b.top) <= t
+      && Math.abs(a.right - b.right) <= t && Math.abs(a.bottom - b.bottom) <= t
+    )
+  }
+
+  /**
+   * V5.12-R5 §11/§12 — build the SOURCE OCCURRENCE facts for one locate and
+   * evaluate the hard gate. It consumes the resolver's OWN facts
+   * (`result.sourceOccurrence`) as `resolved*` and the clicked diagnostic's
+   * metadata as `expected*` — never the same source (§10). The gate runs BEFORE
+   * the visual commit: a perfect R4 document-space rect on the WRONG token is
+   * still a failure.
+   */
+  private evaluateLocateSourceOccurrence(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult | null,
+  ): LocateSourceOccurrenceEvaluation {
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const resourceKind = typeof meta.resourceKind === 'string' ? (meta.resourceKind as SourceResourceKind) : null
+    const rawDestination = typeof meta.rawDestination === 'string' ? meta.rawDestination : null
+    const canonicalDestination = typeof meta.canonicalDestination === 'string'
+      ? meta.canonicalDestination
+      : (typeof meta.destination === 'string' ? meta.destination : null)
+    const hint = result?.sourceOccurrence ?? null
+    const isResource = resourceKind === 'image' || resourceKind === 'link'
+    if (!isResource && hint == null) {
+      return {
+        isResource: false,
+        isDuplicateGroup: false,
+        blocksCommit: false,
+        gate: { decision: 'PASS', reason: 'NOT_A_SOURCE_RESOURCE_DIAGNOSTIC', failedChecks: [] },
+        audit: {},
+        facts: {
+          expectedOccurrenceIndex: null,
+          resolvedOccurrenceIndex: null,
+          expectedSourceRangeIdentity: null,
+          resolvedSourceRangeIdentity: null,
+          expectedSourceStart: null,
+          expectedSourceEnd: null,
+          resolvedSourceStart: null,
+          resolvedSourceEnd: null,
+        },
+      }
+    }
+    const loc = (diag.location ?? null) as Record<string, unknown> | null
+    const num = (a: unknown, b: unknown): number | null => (typeof a === 'number' ? a : (typeof b === 'number' ? b : null))
+    const str = (a: unknown, b: unknown): string | null => (typeof a === 'string' ? a : (typeof b === 'string' ? b : null))
+
+    const expectedOccurrenceIndex = num(meta.occurrenceIndex, loc?.occurrenceIndex)
+    const expectedSourceRangeIdentity = str(meta.sourceRangeIdentity, loc?.sourceRangeIdentity)
+    const expectedSourceStart = num(meta.sourceStart, loc?.sourceStart)
+    const expectedSourceEnd = num(meta.sourceEnd, loc?.sourceEnd)
+    const expectedStartLine = num(meta.startLine, loc?.startLine)
+    const expectedEndLine = num(meta.endLine, loc?.endLine)
+    const resolvedOccurrenceIndex = hint?.resolvedOccurrenceIndex ?? null
+    const resolvedSourceRangeIdentity = hint?.resolvedSourceRangeIdentity ?? null
+    const resolvedSourceStart = hint?.resolvedSourceStart ?? null
+    const resolvedSourceEnd = hint?.resolvedSourceEnd ?? null
+
+    const siblings = this.r5SiblingSourceFacts(diag, resourceKind, canonicalDestination)
+    const duplicateGroupSize = siblings.duplicateGroupSize
+
+    // §11 — this occurrence's exact inline range, MEASURED (never painted).
+    let rangeClientRectCount = 0
+    let rangeUnionRect: RectRecord | null = null
+    if (hint) {
+      const frag = measureTextFragmentRects(hint.element, hint.rangeText, hint.occurrenceWithinAnchor)
+      rangeClientRectCount = frag.expected.length
+      rangeUnionRect = this.r5UnionRect(frag.expected)
+    }
+
+    // §13 — the sibling's LAST committed range in the same occurrence group.
+    const groupKey = resourceKind && canonicalDestination
+      ? sourceOccurrenceGroupKey(resourceKind, canonicalDestination)
+      : null
+    const prev = groupKey ? this.r5OccurrenceRangeByGroup.get(groupKey) : undefined
+    const collapseIndex = resolvedOccurrenceIndex ?? expectedOccurrenceIndex
+    const rangeCollapsedToSibling = !!(
+      prev && prev.unionRect && rangeUnionRect
+      && prev.occurrenceIndex !== collapseIndex
+      && this.r5RectClose(prev.unionRect, rangeUnionRect)
+    )
+    const sameRangeAsSiblingOccurrence = siblings.sameRangeAsSiblingOccurrence || rangeCollapsedToSibling
+
+    const decision = evaluateSourceOccurrenceAuthority({
+      duplicateGroupSize,
+      resourceKind: resourceKind ?? 'image',
+      expectedOccurrenceIndex,
+      resolvedOccurrenceIndex,
+      expectedSourceRangeIdentity,
+      resolvedSourceRangeIdentity,
+      expectedSourceStart,
+      expectedSourceEnd,
+      resolvedSourceStart,
+      resolvedSourceEnd,
+      ambiguousFirstMatchFallback: false,
+      sameRangeAsSiblingOccurrence,
+      sameIdentityAsSiblingOccurrence: siblings.sameIdentityAsSiblingOccurrence,
+    })
+    const reason = rangeCollapsedToSibling && decision.decision === 'FAIL'
+      ? `${decision.reason},${DUPLICATE_OCCURRENCES_COLLAPSED_TO_SAME_RANGE_REASON}`
+      : decision.reason
+    const blocksCommit = decision.decision === 'FAIL' && duplicateGroupSize > 1
+
+    const audit: Record<string, unknown> = {
+      documentKey: diag.documentKey ?? this.opts.ctx.authority.getDocumentKey(),
+      transactionId: tx.id,
+      diagnosticId: diag.id,
+      ruleCode: diag.code,
+      resourceKind,
+      rawDestination,
+      canonicalDestination,
+      duplicateGroupSize,
+      expectedOccurrenceIndex,
+      resolvedOccurrenceIndex,
+      expectedSourceRangeIdentity,
+      resolvedSourceRangeIdentity,
+      expectedSourceStart,
+      expectedSourceEnd,
+      resolvedSourceStart,
+      resolvedSourceEnd,
+      expectedStartLine,
+      expectedEndLine,
+      resolvedStartLine: hint?.resolvedStartLine ?? null,
+      resolvedEndLine: hint?.resolvedEndLine ?? null,
+      anchorIdentity: hint?.anchorIdentity ?? null,
+      anchorTag: hint?.anchorTag ?? null,
+      matchCountWithinAnchor: hint?.matchCountWithinAnchor ?? 0,
+      occurrenceWithinAnchor: hint?.occurrenceWithinAnchor ?? null,
+      rangeResolved: rangeUnionRect != null,
+      rangeText: hint?.rangeText ?? null,
+      rangeClientRectCount,
+      rangeUnionRect,
+      sameIdentityAsSiblingOccurrence: siblings.sameIdentityAsSiblingOccurrence,
+      sameRangeAsSiblingOccurrence,
+      decision: decision.decision,
+      reason,
+      failedChecks: decision.failedChecks,
+    }
+    return {
+      isResource,
+      isDuplicateGroup: duplicateGroupSize > 1,
+      blocksCommit,
+      gate: { decision: decision.decision, reason, failedChecks: decision.failedChecks },
+      audit,
+      facts: {
+        expectedOccurrenceIndex,
+        resolvedOccurrenceIndex,
+        expectedSourceRangeIdentity,
+        resolvedSourceRangeIdentity,
+        expectedSourceStart,
+        expectedSourceEnd,
+        resolvedSourceStart,
+        resolvedSourceEnd,
+      },
+    }
+  }
+
+  /**
+   * V5.12-R5 §13 — remember the committed occurrence's range for the SAME
+   * occurrence group so a later sibling occurrence can detect a collapse onto
+   * the exact same visual range.
+   */
+  private r5RememberOccurrenceRange(r5: LocateSourceOccurrenceEvaluation): void {
+    const kind = r5.audit.resourceKind
+    const canonical = r5.audit.canonicalDestination
+    if (typeof kind !== 'string' || typeof canonical !== 'string' || canonical === '') return
+    const idx = (r5.audit.resolvedOccurrenceIndex ?? r5.audit.expectedOccurrenceIndex) as number | null | undefined
+    if (typeof idx !== 'number') return
+    const unionRaw = r5.audit.rangeUnionRect as RectRecord | null | undefined
+    const identityRaw = r5.audit.resolvedSourceRangeIdentity
+    this.r5OccurrenceRangeByGroup.set(sourceOccurrenceGroupKey(kind as SourceResourceKind, canonical), {
+      occurrenceIndex: idx,
+      unionRect: unionRaw ?? null,
+      sourceRangeIdentity: typeof identityRaw === 'string' ? identityRaw : null,
+    })
+  }
+
   /** HIGHLIGHTING + V1 source-locator VERIFY: applies the transient highlight,
    *  then emits DOCUMENT-DIAGNOSTIC-LOCATE-VERIFY-INVARIANT and
    *  DOCUMENT-DIAGNOSTIC-HIGHLIGHT-VISIBILITY-INVARIANT against the CURRENT
@@ -10245,8 +10572,41 @@ export class DocumentUtilityOverlayHost {
     const inUnobscured = !!tRect && !!unobscuredRect && intersectArea(tRect, unobscuredRect) > 0
     const targetVisible = hasRealLayout && targetConnected && inEditor
     const highlightVisible = targetVisible && highlightApplied && (tRect!.width > 0 || tRect!.height > 0) && inUnobscured
+    // ── V5.12-R5 §10 — VERIFY-INVARIANT consumes the resolver's OWN resolved
+    // facts. `expected*` come from the clicked diagnostic; `resolved*` come from
+    // the resolver (`result.sourceOccurrence`). They are NEVER the same source:
+    // the old code compared `expectedOccurrence === expectedOccurrence`.
+    const r5 = this.evaluateLocateSourceOccurrence(tx, diag, result)
+    const r5VerifyApplies = result?.sourceOccurrence != null
+    const resolvedOccurrenceIndex = r5.facts.resolvedOccurrenceIndex
+    const sourceRangeInPlay = r5VerifyApplies
+      && (r5.facts.expectedSourceRangeIdentity != null || r5.facts.expectedSourceStart != null)
+    const sourceRangeIdentityMatch = !sourceRangeInPlay
+      ? true
+      : (
+          r5.facts.expectedSourceRangeIdentity != null
+          && r5.facts.resolvedSourceRangeIdentity != null
+          && r5.facts.expectedSourceRangeIdentity === r5.facts.resolvedSourceRangeIdentity
+        )
+    const sourceRangeOffsetMatch = !sourceRangeInPlay
+      ? true
+      : (
+          r5.facts.expectedSourceStart != null && r5.facts.expectedSourceEnd != null
+          && r5.facts.resolvedSourceStart != null && r5.facts.resolvedSourceEnd != null
+          && r5.facts.expectedSourceStart === r5.facts.resolvedSourceStart
+          && r5.facts.expectedSourceEnd === r5.facts.resolvedSourceEnd
+        )
     const identityMatch = expectedDestination !== ''
-    const occurrenceMatch = expectedOccurrence !== null
+    const occurrenceMatch = r5VerifyApplies
+      ? (
+          r5.facts.expectedOccurrenceIndex != null
+          && resolvedOccurrenceIndex != null
+          && r5.facts.expectedOccurrenceIndex === resolvedOccurrenceIndex
+        )
+      : expectedOccurrence !== null
+    const sourceOccurrenceVerifyOk = !r5VerifyApplies
+      ? true
+      : (identityMatch && occurrenceMatch && sourceRangeIdentityMatch && sourceRangeOffsetMatch)
     const rectRecord = (r: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null | undefined) =>
       r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height } : null
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VERIFY-INVARIANT', {
@@ -10254,7 +10614,15 @@ export class DocumentUtilityOverlayHost {
       expectedRuleId: diag.code, resolvedRuleId: diag.code,
       expectedResourceKind: expectedKind, resolvedResourceKind: expectedKind,
       expectedDestination, resolvedDestination: expectedDestination,
-      expectedOccurrenceIndex: expectedOccurrence, resolvedOccurrenceIndex: expectedOccurrence,
+      expectedOccurrenceIndex: r5.facts.expectedOccurrenceIndex ?? expectedOccurrence,
+      resolvedOccurrenceIndex,
+      expectedSourceRangeIdentity: r5.facts.expectedSourceRangeIdentity,
+      resolvedSourceRangeIdentity: r5.facts.resolvedSourceRangeIdentity,
+      expectedSourceStart: r5.facts.expectedSourceStart,
+      expectedSourceEnd: r5.facts.expectedSourceEnd,
+      resolvedSourceStart: r5.facts.resolvedSourceStart,
+      resolvedSourceEnd: r5.facts.resolvedSourceEnd,
+      sourceRangeIdentityMatch, sourceRangeOffsetMatch,
       targetKind: primary ? primary.tagName.toLowerCase() : null,
       targetClass: primary ? String(primary.className).slice(0, 60) : null,
       targetConnected,
@@ -10262,7 +10630,8 @@ export class DocumentUtilityOverlayHost {
       visibleEditorRect: visibleEditorRect ? rectRecord(visibleEditorRect) : null,
       unobscuredVisibleEditorRect: unobscuredRect ? rectRecord(unobscuredRect) : null,
       identityMatch, occurrenceMatch, targetVisible, hasRealLayout,
-      decision: !hasRealLayout ? 'SKIP_HEADLESS' : targetVisible ? 'PASS' : 'FAIL',
+      sourceOccurrenceDecision: sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL',
+      decision: !hasRealLayout ? 'SKIP_HEADLESS' : (targetVisible && sourceOccurrenceVerifyOk) ? 'PASS' : 'FAIL',
       reason: !hasRealLayout ? 'NO_REAL_LAYOUT' : targetVisible ? 'TARGET_VISIBLE_IN_EDITOR' : 'TARGET_OUTSIDE_VISIBLE_EDITOR',
     })
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-HIGHLIGHT-VISIBILITY-INVARIANT', {
@@ -10280,15 +10649,36 @@ export class DocumentUtilityOverlayHost {
     // locate frame (never a background on the target DOM), headings get the
     // compact indicator, inline targets get the precise inline mark. In a real
     // layout the visual is committed only when the target is visible.
-    if (!hasRealLayout || (targetConnected && targetVisible)) {
+    //
+    // V5.12-R5 §12 — the SOURCE OCCURRENCE gate runs BEFORE the visual commit: a
+    // perfect R4 document-space rect on the WRONG token is still a failure. A
+    // failed gate NEVER commits (so no wrong marker can ever be painted).
+    const visualCommitted = !r5.blocksCommit && (!hasRealLayout || (targetConnected && targetVisible))
+    if (r5.blocksCommit) {
+      for (const check of r5.gate.failedChecks) {
+        const key = sourceOccurrenceGateKeyForCheck(check)
+        if (key) this.countersSourceOccurrenceV512R5[key]++
+      }
+      this.lastLocateVisualGateOk = false
+      this.clearDiagnosticLocateVisual('SOURCE_OCCURRENCE_GATE_FAIL')
+    } else if (!hasRealLayout || (targetConnected && targetVisible)) {
       this.commitDiagnosticLocateVisual(diag.id, locateSeverity, targets, result, primary, diag)
     } else {
       this.lastLocateVisualGateOk = false
       this.clearDiagnosticLocateVisual('TARGET_NOT_VISIBLE')
     }
+    // §11 — the independent SOURCE OCCURRENCE audit (expected vs resolved).
+    if (r5.isResource && Object.keys(r5.audit).length > 0) {
+      emitRuntimeAudit(SOURCE_OCCURRENCE_AUTHORITY_AUDIT_EVENT, r5.audit)
+    }
+    // §13 — remember the committed occurrence's range for sibling-collision.
+    if (visualCommitted) this.r5RememberOccurrenceRange(r5)
     if (!hasRealLayout) return true
     if (!targetVisible || !highlightVisible) return false
     if (isResourceDiag && (!identityMatch || !occurrenceMatch)) return false
+    // V5.12-R5 §10 — a duplicate source occurrence whose resolved range does not
+    // match the expected one must FAIL (never a false PASS).
+    if (r5VerifyApplies && !(sourceRangeIdentityMatch && sourceRangeOffsetMatch)) return false
     // V4 — a FULL locate PASS requires the INDEPENDENT visual presentation
     // gate too: a visual FAIL must never be reported as a full PASS.
     return this.lastLocateVisualGateOk !== false
@@ -10583,6 +10973,215 @@ export class DocumentUtilityOverlayHost {
     return best
   }
 
+  /**
+   * V5.12-R5 §5/§8.2 — the `ordinal`-th live block (DOM order) whose normalized
+   * text equals `needle`. This is the source-ordinal projection that replaces
+   * the ambiguous "closest data-line / first match" block selection.
+   */
+  private findBlockByOrdinalInRoot(needle: string, ordinal: number): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root || needle === '') return null
+    const matches: HTMLElement[] = []
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,h1,h2,h3,h4,h5,h6,li,pre'))) {
+      if (normalizeSourceAnchorText(el.textContent) === needle) matches.push(el)
+    }
+    return matches[ordinal] ?? null
+  }
+
+  /** Absolute Markdown offset of a 0-based source line's first character. */
+  private sourceLineStartOffset(markdown: string, line: number): number {
+    let offset = 0
+    for (let i = 0; i < line; i++) {
+      const nl = markdown.indexOf('\n', offset)
+      if (nl < 0) return markdown.length
+      offset = nl + 1
+    }
+    return offset
+  }
+
+  /**
+   * V5.12-R5 §5 — SOURCE-side line projection of `rawLineOrdinal`: the
+   * `ordinal`-th source line whose normalized text equals the raw line. This is
+   * the exact same ordinal semantics `computeSourceOccurrenceOrdinals` assigns,
+   * so the resolved line is derived from the Markdown — never from expected
+   * metadata and never from the ambiguous closest-data-line guess.
+   */
+  private resolveSourceLineByOrdinal(markdown: string, rawText: string, ordinal: number): number | null {
+    const needle = normalizeSourceAnchorText(rawText)
+    if (needle === '') return null
+    const lines = markdown.split('\n')
+    let seen = 0
+    for (let i = 0; i < lines.length; i++) {
+      if (normalizeSourceAnchorText(lines[i]) !== needle) continue
+      if (seen === ordinal) return i
+      seen++
+    }
+    return null
+  }
+
+  /**
+   * V5.12-R5 §5/§7 — the resource-reference span (`![alt](dest)` / `[alt](dest)`)
+   * on `lineText` that CONTAINS `tokenIndexInLine`. Resolved source offsets use
+   * the SAME coordinate as the scanner (the whole Markdown construct), so the
+   * resolved identity is directly comparable to the expected one.
+   */
+  private resourceReferenceSpanAt(lineText: string, tokenIndexInLine: number): { start: number; end: number } | null {
+    const re = /(!?)\[[^\]]*\]\(([^)]+)\)/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(lineText)) !== null) {
+      const start = m.index
+      const end = m.index + m[0].length
+      if (tokenIndexInLine >= start && tokenIndexInLine < end) return { start, end }
+    }
+    return null
+  }
+
+  /** How many matching (resourceKind + raw destination) references precede `beforeOffset`. */
+  private countMatchingResourceReferencesBefore(
+    markdown: string,
+    resourceKind: SourceResourceKind,
+    rawDestination: string,
+    beforeOffset: number,
+  ): number {
+    const re = /(!?)\[[^\]]*\]\(([^)]+)\)/g
+    let count = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(markdown)) !== null) {
+      if (m.index >= beforeOffset) break
+      if ((m[1] === '!') !== (resourceKind === 'image')) continue
+      if (m[2].trim().split(/\s+/)[0] !== rawDestination) continue
+      count++
+    }
+    return count
+  }
+
+  /**
+   * V5.12-R5 §7/§8 — resolve the EXACT source occurrence for a source resource
+   * diagnostic: the verified owning block (raw-line ordinal) PLUS the verified
+   * nth token inside that block (`occurrenceWithinAnchor`). It returns the
+   * resolver's OWN facts — real source offsets and a real occurrence index
+   * recomputed from the CURRENT Markdown — never the diagnostic's expected
+   * metadata. Null = genuine ambiguity: the caller must report UNRESOLVED and
+   * NEVER silently highlight the first matching token (§8.3).
+   */
+  private resolveSourceOccurrenceInRoot(input: {
+    startLine: number
+    sourceStart: number | null
+    sourceEnd: number | null
+    sourceRangeIdentity: string | null
+    rawText?: string
+    rawLineOrdinal: number
+    occurrenceWithinLine: number
+    rawDestination: string | null
+    canonicalDestination: string | null
+    resourceKind: 'image' | 'link' | null
+    expectedOccurrenceIndex: number | null
+  }): ResolvedSourceOccurrenceHint | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const resourceKind: SourceResourceKind = input.resourceKind ?? 'image'
+    const token =
+      (input.rawDestination != null && input.rawDestination !== '' ? input.rawDestination : null)
+      ?? (input.canonicalDestination != null && input.canonicalDestination !== '' ? input.canonicalDestination : null)
+    if (!token) return null
+
+    // ── 1. SOURCE-side owning line — the rawLineOrdinal-th source line whose
+    //      normalized text equals the raw line (independent of DOM + expected).
+    const needle = normalizeSourceAnchorText(input.rawText ?? '')
+    const ordinal = Math.max(0, Math.floor(input.rawLineOrdinal))
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    const resolvedStartLine =
+      (markdown != null ? this.resolveSourceLineByOrdinal(markdown, input.rawText ?? '', ordinal) : null)
+      ?? input.startLine
+    if (!Number.isFinite(resolvedStartLine)) return null
+
+    // ── 2. DOM owning block for that line — exact data-line fast path
+    //      (content-verified), else the rawLineOrdinal-th block, else the
+    //      content-verified text context. NEVER a bare "first text match".
+    let anchor: HTMLElement | null = null
+    const byLine = this.resolveSourceLine(resolvedStartLine)
+    if (byLine && (needle === '' || normalizeSourceAnchorText(byLine.textContent) === needle)) {
+      anchor = byLine
+    }
+    if (!anchor && needle !== '') {
+      const byOrdinal = this.findBlockByOrdinalInRoot(needle, ordinal)
+      if (byOrdinal && (byOrdinal.textContent ?? '').includes(token)) anchor = byOrdinal
+    }
+    if (!anchor && needle !== '') {
+      const byText = this.findBlockByTextInRoot(input.rawText ?? '', resolvedStartLine)
+      if (byText && (byText.textContent ?? '').includes(token)) anchor = byText
+    }
+    if (!anchor) return null
+
+    // ── 3. occurrenceWithinAnchor — the nth token INSIDE this block (§8.2).
+    const matchCount = countTokenInElement(anchor, token)
+    if (matchCount === 0) return null
+    const within = Math.max(0, Math.floor(input.occurrenceWithinLine))
+    const sel = selectOccurrenceOffset(anchor.textContent ?? '', token, within)
+    if (!sel) {
+      // §8.3 — multi-match with no verifiable nth → explicit ambiguity, never
+      // a first-match fallback.
+      this.countersSourceOccurrenceV512R5.duplicateOccurrenceFirstMatchFallback++
+      return null
+    }
+
+    // ── 4. RESOLVED source offsets — recomputed from the CURRENT Markdown in the
+    //      scanner's OWN coordinate (the whole resource construct), so the
+    //      resolved identity is directly comparable to the expected one.
+    let resolvedSourceStart: number | null = null
+    let resolvedSourceEnd: number | null = null
+    let resolvedOccurrenceIndex: number | null = null
+    if (markdown != null) {
+      const lineText = this.getSourceLineTextAt(resolvedStartLine)
+      if (lineText != null) {
+        const tokenIndexInLine = findTokenOffsets(lineText, token)[within]
+        if (tokenIndexInLine != null) {
+          const span = this.resourceReferenceSpanAt(lineText, tokenIndexInLine)
+          if (span) {
+            const lineStartOffset = this.sourceLineStartOffset(markdown, resolvedStartLine)
+            resolvedSourceStart = lineStartOffset + span.start
+            resolvedSourceEnd = lineStartOffset + span.end
+            resolvedOccurrenceIndex = this.countMatchingResourceReferencesBefore(
+              markdown,
+              resourceKind,
+              input.rawDestination ?? token,
+              resolvedSourceStart,
+            )
+          }
+        }
+      }
+    }
+    const canonicalDestination = input.canonicalDestination ?? token
+    const documentKey = this.opts.ctx.authority.getDocumentKey()
+    const resolvedSourceRangeIdentity =
+      resolvedSourceStart != null && resolvedSourceEnd != null && resolvedOccurrenceIndex != null
+        ? buildSourceRangeIdentity({
+            documentKey,
+            sourceRevision: null,
+            resourceKind,
+            canonicalDestination,
+            sourceStart: resolvedSourceStart,
+            sourceEnd: resolvedSourceEnd,
+            occurrenceIndex: resolvedOccurrenceIndex,
+          })
+        : null
+    return {
+      element: anchor,
+      anchorIdentity: `block:${anchor.tagName.toLowerCase()}#data-line-${resolvedStartLine}`,
+      anchorTag: anchor.tagName.toLowerCase(),
+      matchCountWithinAnchor: matchCount,
+      occurrenceWithinAnchor: within,
+      decision: resolvedSourceStart != null ? 'EXACT_SOURCE_RANGE' : 'EXACT_SOURCE_LINE',
+      rangeText: token,
+      resolvedSourceStart,
+      resolvedSourceEnd,
+      resolvedSourceRangeIdentity,
+      resolvedOccurrenceIndex,
+      resolvedStartLine,
+      resolvedEndLine: resolvedStartLine,
+    }
+  }
+
   /** stableIdentity → live heading element (re-derived from the CURRENT frame). */
   private resolveHeadingIdentity(stableIdentity: string): HTMLElement | null {
     const root = resolveBusinessContentRoot()
@@ -10806,7 +11405,10 @@ export class DocumentUtilityOverlayHost {
       resolveReason: reason,
       resolvedNodeKind: result?.resolvedNodeKind ?? null,
       resolvedBlockIdentity: result?.resolvedBlockIdentity ?? null,
-      resolvedOccurrenceIndex: result?.primaryAnchor === 'resource-semantic' ? occurrenceIndex : null,
+      // V5.12-R5 §7 — the REAL resolved occurrence index from the source
+      // resolver (never the diagnostic's own expected metadata).
+      resolvedOccurrenceIndex: result?.sourceOccurrence?.resolvedOccurrenceIndex
+        ?? (result?.primaryAnchor === 'resource-semantic' ? occurrenceIndex : null),
       scrollDecision,
       highlightDecision,
       visualPresentationDecision: finalVisualOk == null ? 'N/A' : finalVisualOk ? 'PASS' : 'FAIL',

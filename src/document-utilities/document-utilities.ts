@@ -116,6 +116,12 @@ export interface LocalResourceReference {
   /** 0-based source line span of the reference. */
   startLine?: number
   endLine?: number
+  /**
+   * V5.12-R5 §5 — 0-based column offsets derived ONCE from the Markdown source
+   * (line start), carried with the occurrence fact. Never inferred from the DOM.
+   */
+  startColumn?: number
+  endColumn?: number
   /** Full raw text of the source line that contains the reference. */
   rawText?: string
 }
@@ -151,6 +157,9 @@ export function parseLocalLinkTargets(markdown: string): Array<string | LocalRes
     const nextNl = markdown.indexOf('\n', sourceEnd)
     const rawText = markdown.slice(lineStart, nextNl < 0 ? markdown.length : nextNl)
     const isImage = m[1] === '!'
+    // V5.12-R5 §5 — column offsets are computed ONCE here (source-side) so the
+    // exact source range can travel to the resolver / Range builder intact.
+    const endLineStart = markdown.lastIndexOf('\n', Math.max(0, sourceEnd - 1)) + 1
     out.push({
       target,
       resourceKind: isImage ? 'image' : 'link',
@@ -158,6 +167,8 @@ export function parseLocalLinkTargets(markdown: string): Array<string | LocalRes
       sourceEnd,
       startLine,
       endLine,
+      startColumn: Math.max(0, sourceStart - lineStart),
+      endColumn: Math.max(0, sourceEnd - endLineStart),
       rawText,
     })
   }

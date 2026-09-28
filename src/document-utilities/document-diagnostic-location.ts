@@ -20,6 +20,8 @@ import type {
   DocumentDiagnosticCategory,
   DocumentDiagnosticsSnapshot,
 } from './diagnostics-types'
+// V5.12-R5 — the explicit ambiguity failure reason (never a silent first match).
+import { AMBIGUOUS_DUPLICATE_INLINE_RANGE_REASON } from './document-diagnostic-source-occurrence-v512-r5'
 
 // ── Rule Registry ─────────────────────────────────────────
 
@@ -167,6 +169,35 @@ export type DiagnosticResolveAnchor =
   | 'source-text-context'
   | 'resource-semantic'
   | 'document-boundary'
+  /** V5.12-R5 §7 — the EXACT source occurrence (never a first-text-match). */
+  | 'source-occurrence'
+
+/**
+ * V5.12-R5 §7 — the resolver's OWN output for a source occurrence. It must be
+ * derived from the actual matched source block + token, never copied from the
+ * diagnostic's expected metadata.
+ */
+export interface ResolvedSourceOccurrenceHint {
+  element: HTMLElement
+  /** Stable identity of the owning block (e.g. `p#data-line-14`). */
+  anchorIdentity: string
+  anchorTag: string
+  /** How many times the destination token occurs inside the owning block. */
+  matchCountWithinAnchor: number
+  /** Which of those matches this occurrence IS (0-based, verified). */
+  occurrenceWithinAnchor: number
+  decision: 'EXACT_SOURCE_RANGE' | 'EXACT_SOURCE_LINE'
+  /** Actual token text measured inside the block (never the expected value). */
+  rangeText: string
+  resolvedSourceStart: number | null
+  resolvedSourceEnd: number | null
+  resolvedSourceRangeIdentity: string | null
+  resolvedOccurrenceIndex: number | null
+  /** Source line the resolved block actually carries (null when unknown). */
+  resolvedStartLine: number | null
+  /** Source end line the resolved block actually carries (null when unknown). */
+  resolvedEndLine: number | null
+}
 
 export interface DiagnosticLocationResolveResult {
   decision: DiagnosticLocationResolveDecision
@@ -185,6 +216,8 @@ export interface DiagnosticLocationResolveResult {
   resolvedNodeKind?: string | null
   /** Stable identity of the resolved element (data-line or canonical identity). */
   resolvedBlockIdentity?: string | null
+  /** V5.12-R5 §7 — the resolver's OWN source-occurrence facts (when applicable). */
+  sourceOccurrence?: ResolvedSourceOccurrenceHint | null
 }
 
 export interface DiagnosticLocationResolveContext {
@@ -235,6 +268,27 @@ export interface DiagnosticLocationResolveContext {
    * intact (fallback = never falsely stale).
    */
   resourceDestinationPresent?: (normalizedDestination: string, occurrenceIndex: number) => boolean
+  /**
+   * V5.12-R5 §7 — SOURCE OCCURRENCE resolution. When the location carries an
+   * exact source range (sourceStart/sourceEnd + rawLineOrdinal/
+   * occurrenceWithinLine), the resolver resolves the ACTUAL source occurrence
+   * (verified block ordinal + verified token ordinal) instead of falling back
+   * to the first matching text. Returns null when it cannot be verified — the
+   * caller then reports UNRESOLVED (never a silent first-match).
+   */
+  resolveSourceOccurrence?: (input: {
+    startLine: number
+    sourceStart: number | null
+    sourceEnd: number | null
+    sourceRangeIdentity: string | null
+    rawText?: string
+    rawLineOrdinal: number
+    occurrenceWithinLine: number
+    rawDestination: string | null
+    canonicalDestination: string | null
+    resourceKind: 'image' | 'link' | null
+    expectedOccurrenceIndex: number | null
+  }) => ResolvedSourceOccurrenceHint | null
 }
 
 /** Normalize source text for anchor comparison (trim + collapse whitespace). */
@@ -414,6 +468,48 @@ export function resolveDiagnosticLocation(
       }
     }
     case 'source-range': {
+      // ── V5.12-R5 §7/§8.3 — a source occurrence carrying its EXACT source range
+      // resolves through the occurrence authority FIRST, so a duplicate
+      // destination can never collapse onto the first text match. The authority
+      // internally keeps the (safe) unique-match fallback; it returns null only
+      // for a genuine ambiguity — which must be an explicit failure, never a
+      // silent highlight of the first token.
+      if (
+        typeof ctx.resolveSourceOccurrence === 'function'
+        && (location.sourceRangeIdentity != null || typeof location.sourceStart === 'number')
+      ) {
+        const hint = ctx.resolveSourceOccurrence({
+          startLine: location.startLine,
+          sourceStart: typeof location.sourceStart === 'number' ? location.sourceStart : null,
+          sourceEnd: typeof location.sourceEnd === 'number' ? location.sourceEnd : null,
+          sourceRangeIdentity: location.sourceRangeIdentity ?? null,
+          rawText: location.rawText,
+          rawLineOrdinal: typeof location.rawLineOrdinal === 'number' ? location.rawLineOrdinal : 0,
+          occurrenceWithinLine: typeof location.occurrenceWithinLine === 'number' ? location.occurrenceWithinLine : 0,
+          rawDestination: location.rawDestination ?? null,
+          canonicalDestination: location.canonicalDestination ?? null,
+          resourceKind: location.resourceKind ?? null,
+          expectedOccurrenceIndex: typeof location.occurrenceIndex === 'number' ? location.occurrenceIndex : null,
+        })
+        if (hint) {
+          const resolved = resolvedResult(hint.element, targetIndex, 'source-occurrence', null)
+          return {
+            ...resolved,
+            resolvedNodeKind: hint.anchorTag,
+            resolvedBlockIdentity: hint.anchorIdentity,
+            sourceOccurrence: hint,
+          }
+        }
+        return {
+          decision: 'UNRESOLVED',
+          element: null,
+          scrollAction: null,
+          targetIndex,
+          primaryAnchor: 'source-occurrence',
+          fallbackAnchor: null,
+          reason: AMBIGUOUS_DUPLICATE_INLINE_RANGE_REASON,
+        }
+      }
       const anchorText = normalizeSourceAnchorText(location.rawText ?? ctx.getSourceLineText?.(location.startLine) ?? '')
       const hasContentAuthority = typeof ctx.getSourceLineText === 'function'
       const hasTextAnchor = anchorText !== ''

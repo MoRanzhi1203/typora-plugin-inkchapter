@@ -53,7 +53,7 @@ export interface DocumentDiagnosticsProviders {
   /** Parse markdown into local link targets (authority-driven, no network).
    *  Phase 7R.3.11.8B.7.3 — facts may carry `resourceKind: 'image' | 'link'`
    *  (image Markdown → img DOM target). */
-  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link'; sourceStart?: number; sourceEnd?: number; startLine?: number; endLine?: number; rawText?: string }>
+  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link'; sourceStart?: number; sourceEnd?: number; startLine?: number; endLine?: number; startColumn?: number; endColumn?: number; rawText?: string }>
   /** Phase 7R.3.11.8B.1 — canonical H1 authority bridge result (WAIT/INVALID/READY).
    *  Optional so tests that never exercise STRICT-SINGLE-H1 need no stub. */
   getCanonicalH1Facts?: () => DiagnosticCanonicalHeadingAuthorityResult
@@ -673,6 +673,8 @@ export class DocumentDiagnosticsAuthority {
         sourceEnd?: number
         startLine?: number
         endLine?: number
+        startColumn?: number
+        endColumn?: number
         rawText?: string
       }> = rawFacts.map(f => (typeof f === 'string' ? { target: f } : f))
       const documentDir = activeFilePath
@@ -688,12 +690,20 @@ export class DocumentDiagnosticsAuthority {
         // Only MISSING local targets become diagnostics (present assets are
         // healthy — Phase7 images resolved against the document dir exist).
         if (targetExists) continue
-        const occurrenceIndex = linkOccurrenceIndex(normFacts, target, i)
         // Semantic identity: raw token physically resolved against the active
         // document directory → vault-relative canonical when inside the vault,
         // absolute canonical when the resource escapes the vault. Shared with
         // the DOM comparison space (single identity).
         const semanticDestination = resolveResourceSemanticPath(target, activeFilePath, vaultRoot)
+        // V5.12-R5 §6 — the occurrence GROUP is (resourceKind + canonical
+        // destination), never the raw destination alone.
+        const occurrenceIndex = linkOccurrenceIndex(
+          normFacts,
+          target,
+          i,
+          fact.resourceKind,
+          semanticDestination,
+        )
         links.push({
           target,
           element: null,
@@ -706,6 +716,8 @@ export class DocumentDiagnosticsAuthority {
           sourceEnd: fact.sourceEnd,
           startLine: fact.startLine,
           endLine: fact.endLine,
+          startColumn: fact.startColumn,
+          endColumn: fact.endColumn,
           rawText: fact.rawText,
           targetIdentity: `local:${target}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`,
         })

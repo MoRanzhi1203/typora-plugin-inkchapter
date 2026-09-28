@@ -7,7 +7,9 @@
  * No timers, no polling — the caller decides WHEN to compute.
  */
 import { validateStrictFirstH1Topline } from '../heading-numbering/strict-document-validator'
-import { normalizeResourcePath } from './document-diagnostic-location'
+import { normalizeResourcePath, normalizeSourceAnchorText } from './document-diagnostic-location'
+// V5.12-R5 §4 — the SOURCE RANGE IDENTITY authority (pure, no DOM).
+import { buildSourceRangeIdentity } from './document-diagnostic-source-occurrence-v512-r5'
 import type {
   DiagnosticLocation,
   DiagnosticValidityFingerprint,
@@ -86,6 +88,9 @@ export interface DiagnosticLinkFact {
   sourceEnd?: number
   startLine?: number
   endLine?: number
+  /** V5.12-R5 §5 — source columns (computed once from the Markdown source). */
+  startColumn?: number
+  endColumn?: number
   rawText?: string
 }
 
@@ -544,18 +549,68 @@ export function resourceDirVaultRelative(activeFilePath: string, vaultRoot: stri
  * diagnostics AND for the locator's resource semantic resolution.
  */
 /**
+ * V5.12-R5 §5/§8.2 — SOURCE-side occurrence ordinals for duplicate resources.
+ *
+ * Computed ONCE from the Markdown facts (never from the DOM):
+ *   - `rawLineOrdinal`   — ordinal of this occurrence's SOURCE LINE among the
+ *                          occurrences sharing the same normalized raw line
+ *                          (Typora renders one block per source line, so this
+ *                          selects the owning block without any DOM guessing);
+ *   - `occurrenceWithinLine` — ordinal of this occurrence among the same-line
+ *                          occurrences of the SAME (resourceKind, canonical
+ *                          destination) group (selects the token in the block).
+ *
+ * These two are the ONLY duplicate disambiguation inputs. `occurrenceIndex`
+ * alone is never a location identity.
+ */
+export function computeSourceOccurrenceOrdinals(
+  links: readonly DiagnosticLinkFact[],
+): Array<{ rawLineOrdinal: number; occurrenceWithinLine: number }> {
+  const out = links.map(() => ({ rawLineOrdinal: 0, occurrenceWithinLine: 0 }))
+  const nextBlockOrdinalByText = new Map<string, number>()
+  const blockOrdinalByLine = new Map<string, number>()
+  const nextWithinLine = new Map<string, number>()
+  for (let i = 0; i < links.length; i++) {
+    const l = links[i]
+    if (l.resourceKind !== 'image') continue
+    if (!isLocalRelativePath(l.target)) continue
+    const lineText = normalizeSourceAnchorText(l.rawText ?? '')
+    const lineKey = `${lineText}\u0000${l.startLine ?? -1}`
+    let blockOrdinal = blockOrdinalByLine.get(lineKey)
+    if (blockOrdinal == null) {
+      blockOrdinal = nextBlockOrdinalByText.get(lineText) ?? 0
+      nextBlockOrdinalByText.set(lineText, blockOrdinal + 1)
+      blockOrdinalByLine.set(lineKey, blockOrdinal)
+    }
+    const group = `${lineKey}\u0000${normalizeResourceToken(l.semanticDestination || l.target)}`
+    const within = nextWithinLine.get(group) ?? 0
+    nextWithinLine.set(group, within + 1)
+    out[i] = { rawLineOrdinal: blockOrdinal, occurrenceWithinLine: within }
+  }
+  return out
+}
+
+/**
  * Phase 7R.3.11.8B.7.3 — occurrence ordinal (0-based) of `factIndex` within the
  * facts whose destination equals `target`. Occurrence-aware identity for
  * diagnostics AND for the locator's resource semantic resolution.
  */
 export function linkOccurrenceIndex(
-  links: readonly { target: string }[],
+  links: readonly { target: string; resourceKind?: 'image' | 'link'; semanticDestination?: string }[],
   target: string,
   factIndex: number,
+  resourceKind?: 'image' | 'link',
+  canonicalDestination?: string | null,
 ): number {
+  // V5.12-R5 §6 — the occurrence GROUP is (resourceKind + canonicalDestination),
+  // never the raw destination alone: `image same.png` and `link same.png` are
+  // DIFFERENT groups and must never share an occurrence ordinal.
+  const keyOf = (l: { target: string; resourceKind?: 'image' | 'link'; semanticDestination?: string }): string =>
+    `${l.resourceKind ?? 'link'}\u0000${normalizeResourceToken(l.semanticDestination || l.target)}`
+  const self = `${resourceKind ?? 'link'}\u0000${normalizeResourceToken(canonicalDestination || target)}`
   let occurrence = 0
   for (let i = 0; i < factIndex && i < links.length; i++) {
-    if (links[i].target === target) occurrence++
+    if (keyOf(links[i]) === self) occurrence++
   }
   return occurrence
 }
@@ -939,10 +994,13 @@ export function computeDocumentDiagnostics(
   // (Typora strips broken images, so a DOM-only scan can never see them).
   // Source = identity / location authority; DOM = rendered target / fallback.
   const sourceImageCovered = new Set<string>()
-  for (const l of input.links) {
+  // ── V5.12-R5 §5/§8.2 — source-side occurrence ordinals (never DOM-derived).
+  const sourceOrdinals = computeSourceOccurrenceOrdinals(input.links)
+  for (let linkIdx = 0; linkIdx < input.links.length; linkIdx++) {
+    const l = input.links[linkIdx]
     if (l.resourceKind !== 'image') continue
     if (!isLocalRelativePath(l.target)) continue
-    const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index)
+    const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index, 'image', l.semanticDestination)
     const occurrenceLabel = occurrenceIndex > 0 ? `（第 ${occurrenceIndex + 1} 处）` : ''
     const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
     const destKey = normalizeResourceToken(semanticDestination || l.target)
@@ -951,6 +1009,22 @@ export function computeDocumentDiagnostics(
     const sourceEnd = typeof l.sourceEnd === 'number' ? l.sourceEnd : null
     const startLine = typeof l.startLine === 'number' ? l.startLine : null
     const endLine = typeof l.endLine === 'number' ? l.endLine : null
+    const startColumn = typeof l.startColumn === 'number' ? l.startColumn : null
+    const endColumn = typeof l.endColumn === 'number' ? l.endColumn : null
+    // V5.12-R5 §4 — the SOURCE RANGE IDENTITY is the location authority; it is
+    // built from the source facts ONLY (never a DOM node / rect / scroll).
+    const sourceRangeIdentity = sourceStart != null && sourceEnd != null
+      ? buildSourceRangeIdentity({
+          documentKey: input.documentKey,
+          sourceRevision: null,
+          resourceKind: 'image',
+          canonicalDestination: destKey || l.target,
+          sourceStart,
+          sourceEnd,
+          occurrenceIndex,
+        })
+      : null
+    const ordinals = sourceOrdinals[linkIdx] ?? { rawLineOrdinal: 0, occurrenceWithinLine: 0 }
     const fingerprint = `${occurrenceIndex}:${startLine ?? -1}:${destKey || l.target}`
     push(
       makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${l.target}${occurrenceLabel}`, {
@@ -963,9 +1037,19 @@ export function computeDocumentDiagnostics(
           resourceKind: 'image',
           destination: semanticDestination,
           rawDestination: l.target,
+          // V5.12-R5 §4/§5 — the full source occurrence fact travels intact.
+          canonicalDestination: destKey || l.target,
+          sourceRangeIdentity,
           occurrenceIndex,
+          rawLineOrdinal: ordinals.rawLineOrdinal,
+          occurrenceWithinLine: ordinals.occurrenceWithinLine,
           sourceStart,
           sourceEnd,
+          startLine,
+          endLine,
+          startColumn,
+          endColumn,
+          rawText: l.rawText,
           sourceRevision: null,
           fingerprint,
         },
@@ -973,10 +1057,21 @@ export function computeDocumentDiagnostics(
           ? {
               kind: 'source-range',
               startLine,
-              startColumn: 0,
+              startColumn: startColumn ?? 0,
               endLine: endLine ?? startLine,
+              endColumn: endColumn ?? undefined,
               sourceFingerprint: fingerprint,
               rawText: l.rawText,
+              // V5.12-R5 §5 — the exact source range survives into the location.
+              sourceStart,
+              sourceEnd,
+              sourceRangeIdentity,
+              resourceKind: 'image',
+              canonicalDestination: destKey || l.target,
+              rawDestination: l.target,
+              occurrenceIndex,
+              rawLineOrdinal: ordinals.rawLineOrdinal,
+              occurrenceWithinLine: ordinals.occurrenceWithinLine,
             }
           : { kind: 'document-start' },
         validityFingerprint: { kind: 'resource', path: normalizeResourceToken(l.target), occurrence: occurrenceIndex },
@@ -1142,7 +1237,7 @@ export function computeDocumentDiagnostics(
     for (const l of input.links) {
     if (!isLocalRelativePath(l.target)) continue
     if (l.resourceKind === 'image') continue
-    const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index)
+    const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index, 'link', l.semanticDestination)
     const occurrenceLabel = occurrenceIndex > 0 ? `（第 ${occurrenceIndex + 1} 处）` : ''
     const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
     push(
