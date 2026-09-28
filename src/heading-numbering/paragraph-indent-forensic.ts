@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.97 — Inline Document-Space Coordinate Closure V5.12-R4. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-inline-document-space-v5.12-r4'
+/** Phase 7R.3.11.8B.98 — Duplicate Occurrence / Source-Range Authority V5.12-R5. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-source-occurrence-authority-v5.12-r5'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b97-inline-document-space-v5-12-r4'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b98-source-occurrence-authority-v5-12-r5'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

@@ -283,17 +283,23 @@ function clampValid(r: RectSnapshot): RectSnapshot {
 export function measureTextFragmentRects(
   el: Element | null,
   textPrefix?: string | null,
+  occurrenceIndex = 0,
 ): { expected: DOMRect[]; fragments: ClosureRect[]; foundToken: boolean } {
   if (!el) return { expected: [], fragments: [], foundToken: false }
   try {
     const range = document.createRange()
     const wanted = textPrefix && textPrefix.length > 0 ? textPrefix : null
     if (wanted) {
-      const node = findTextNodeContaining(el, wanted)
-      if (node) {
-        const start = node.nodeValue!.indexOf(wanted)
-        range.setStart(node, Math.max(0, start))
-        range.setEnd(node, start + wanted.length)
+      // V5.12-R5 §8.2 — occurrence-aware exact range: the `occurrenceIndex`-th
+      // token match, never a silent first match for a duplicate destination.
+      const occurrence = Math.max(0, Math.floor(occurrenceIndex))
+      const match = findTokenMatch(el, wanted, occurrence)
+      if (match) {
+        range.setStart(match.node, match.offset)
+        range.setEnd(match.node, match.offset + wanted.length)
+      } else if (occurrence > 0) {
+        // The Nth occurrence does not exist → NO geometry (never the 1st match).
+        return { expected: [], fragments: [], foundToken: false }
       } else {
         range.selectNodeContents(el)
       }
@@ -316,17 +322,21 @@ export function measureTextFragmentRects(
 export function measureTextRects(
   el: Element | null,
   textPrefix?: string | null,
+  occurrenceIndex = 0,
 ): { exact: RectSnapshot | null; foundToken: boolean } {
   if (!el) return { exact: null, foundToken: false }
   try {
     const range = document.createRange()
     const wanted = textPrefix && textPrefix.length > 0 ? textPrefix : null
     if (wanted) {
-      const node = findTextNodeContaining(el, wanted)
-      if (node) {
-        const start = node.nodeValue!.indexOf(wanted)
-        range.setStart(node, Math.max(0, start))
-        range.setEnd(node, start + wanted.length)
+      const occurrence = Math.max(0, Math.floor(occurrenceIndex))
+      const match = findTokenMatch(el, wanted, occurrence)
+      if (match) {
+        range.setStart(match.node, match.offset)
+        range.setEnd(match.node, match.offset + wanted.length)
+      } else if (occurrence > 0) {
+        // V5.12-R5 §8.2 — an unmeasurable nth occurrence is an explicit miss.
+        return { exact: null, foundToken: false }
       } else {
         range.selectNodeContents(el)
       }
@@ -341,14 +351,49 @@ export function measureTextRects(
   }
 }
 
-function findTextNodeContaining(el: Element, text: string): Text | null {
+/**
+ * V5.12-R5 §8.2 — the `occurrenceIndex`-th match of `text` inside `el`, walking
+ * text nodes in DOCUMENT ORDER. Returns null when that occurrence does not
+ * exist (the caller must never fall back to the first match for occurrence > 0).
+ */
+function findTokenMatch(
+  el: Element,
+  text: string,
+  occurrenceIndex: number,
+): { node: Text; offset: number } | null {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  let seen = 0
   let n: Node | null = walker.nextNode()
   while (n) {
-    if (n.nodeValue && n.nodeValue.includes(text)) return n as Text
+    const value = n.nodeValue ?? ''
+    if (value !== '') {
+      let from = 0
+      for (;;) {
+        const idx = value.indexOf(text, from)
+        if (idx < 0) break
+        if (seen === occurrenceIndex) return { node: n as Text, offset: idx }
+        seen++
+        from = idx + text.length
+      }
+    }
     n = walker.nextNode()
   }
   return null
+}
+
+/** V5.12-R5 §11 — how many times `text` occurs in the element's rendered text. */
+export function countTokenInElement(el: Element | null, text: string): number {
+  if (!el || !text) return 0
+  const hay = el.textContent ?? ''
+  let count = 0
+  let from = 0
+  for (;;) {
+    const idx = hay.indexOf(text, from)
+    if (idx < 0) break
+    count++
+    from = idx + text.length
+  }
+  return count
 }
 
 function foundTokenIn(el: Element, text: string): boolean {
