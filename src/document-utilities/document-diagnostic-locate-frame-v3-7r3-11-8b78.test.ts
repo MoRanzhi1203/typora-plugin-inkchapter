@@ -154,15 +154,15 @@ describe('FRAME — single overlay locate frame', () => {
 
   it('FRAME-2 + VIS-V3-10: switching diagnostic reuses/replaces while staying <= 1', () => {
     const { h, write } = mountHost()
-    write.innerHTML = '<table><tr><td>1</td></tr></table><h2>标题</h2>'
+    write.innerHTML = '<table><tr><td>1</td></tr></table><pre class="md-fences"><code>x</code></pre>'
     const table = write.querySelector('table') as HTMLElement
-    const h2 = write.querySelector('h2') as HTMLElement
+    const pre = write.querySelector('pre') as HTMLElement
     commitLocate(h, table, { id: 'a', severity: 'warning', code: 'A' })
     const first = frameEls()[0]
-    commitLocate(h, h2, { id: 'b', severity: 'error', code: 'B' })
+    commitLocate(h, pre, { id: 'b', severity: 'error', code: 'B' })
     const frames = frameEls()
     expect(frames).toHaveLength(1)
-    expect(frames[0].getAttribute('data-target-kind')).toBe('heading')
+    expect(frames[0].getAttribute('data-target-kind')).toBe('code')
     expect(frames[0].getAttribute('data-severity')).toBe('error')
     expect(h.getLocateFrameStructure().activeDiagnosticId).toBe('b')
     expect(h.getLocateFrameStructure().locateFrameCount).toBeLessThanOrEqual(1)
@@ -184,9 +184,9 @@ describe('FRAME — single overlay locate frame', () => {
 
   it('FRAME-4: document switch clears the frame', () => {
     const { h, write } = mountHost()
-    write.innerHTML = '<h2>标题</h2>'
-    const h2 = write.querySelector('h2') as HTMLElement
-    commitLocate(h, h2, { id: 'd1', severity: 'warning', code: 'DUPLICATE_HEADING' })
+    write.innerHTML = '<table><tr><td>1</td></tr></table>'
+    const table = write.querySelector('table') as HTMLElement
+    commitLocate(h, table, { id: 'd1', severity: 'warning', code: 'DUPLICATE_HEADING' })
     expect(frameEls()).toHaveLength(1)
     h.bindDocument() // doc switch / reconcile
     expect(frameEls()).toHaveLength(0)
@@ -267,28 +267,34 @@ describe('CODE-FRAME — overlay frame only, code inner untouched', () => {
 })
 
 // ── HEADING-FRAME ────────────────────────────────────────
-describe('HEADING-FRAME — no full-width band, indicator only', () => {
-  it('HEADING-FRAME-1/2: heading locate -> heading indicator frame, zero fill on the element', () => {
+describe('HEADING-FRAME — no full-width band, TEXT-TIGHT marker only', () => {
+  it('HEADING-FRAME-1/2: heading locate -> NO legacy frame; the marker is the carrier, zero fill on the element', () => {
     const { h, write } = mountHost()
     write.innerHTML = '<h2 id="x">章节标题</h2>'
     const h2 = write.querySelector('h2') as HTMLElement
     commitLocate(h, h2, { id: 'h', severity: 'error', code: 'HEADING_LEVEL' })
-    const frames = frameEls()
-    expect(frames).toHaveLength(1)
-    expect(frames[0].getAttribute('data-target-kind')).toBe('heading')
+    // V5.12-R2 §5 — a heading is NEVER carried by a legacy full-width frame:
+    // scroll authority (block rect) ≠ visual authority (text-tight marker).
+    expect(frameEls()).toHaveLength(0)
+    const structure = h.getLocateFrameStructure()
+    expect(structure.headingMarkerCarrier).toBe(true)
+    expect(h.getVisualClosureCounters().headingLegacyVisualRender).toBe(0)
     // The heading element keeps its own background/color (no direct paint).
     expect(h2.style.background).toBe('')
     expect(h2.style.color).toBe('')
   })
 
   it('HEADING-FRAME-3: CSS shows no full-width colored band + inline native heading preserved', () => {
-    // CSS contract: the heading carrier draws ONLY a compact left indicator.
-    const headIdx = scss.indexOf(".inkchapter-diagnostic-locate-frame[data-target-kind='heading']")
+    // V4 — the heading carrier is the TEXT-TIGHT presentation: border none,
+    // transparent, width capped by the measured text (never a full band).
+    const headIdx = scss.indexOf(".inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']")
     expect(headIdx).toBeGreaterThan(-1)
-    const headingRule = scss.slice(headIdx, headIdx + 240)
+    const headingRule = scss.slice(headIdx, headIdx + 520)
     expect(headingRule).toContain('border: none')
     expect(headingRule).toContain('background: transparent')
-    expect(headingRule).toContain('inset 2px 0 0')
+    expect(headingRule).not.toContain('box-shadow')
+    // Text-tight corner cap uses a bounded 10–16px heading corner width.
+    expect(scss).toMatch(/width: var\(--ink-heading-corner/)
     // No legacy direct body paint survives.
     expect(scss).not.toContain('rgba(7, 112, 170')
   })
@@ -330,12 +336,16 @@ describe('INLINE-VIS — precise inline mark', () => {
     expect(a.getAttribute('data-target-kind')).toBe('inline')
   })
 
-  it('INLINE-VIS-2: mark is a precise rounded underline tint, not a filled native selection', () => {
-    // CSS contract: 6% tint + inset bottom underline + radius — never a solid
-    // ::selection-like fill, and no ::selection override exists anywhere.
+  it('INLINE-VIS-2: mark is a precise rounded severity tint with a 2px keyline, not a native selection', () => {
+    // V5.2 CSS contract: severity fill (--ink-locate-inline-bg) + 2px gradient
+    // lower keyline (no box-shadow/glow) + radius — never a solid ::selection
+    // lookalike, and no ::selection override exists anywhere.
     const markBlock = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark'))
-    expect(markBlock).toContain('color-mix(in srgb, var(--ink-locate-color) 6%, transparent)')
-    expect(markBlock).toContain('inset 0 -1px 0')
+    expect(markBlock).toContain('--ink-locate-inline-bg')
+    expect(markBlock).toContain('background-image: linear-gradient(')
+    expect(markBlock).toContain('2px')
+    expect(markBlock).toContain("[data-severity='warning']")
+    expect(markBlock).not.toContain('inset 0 -1px 0')
     expect(scss).not.toContain('::selection {')
   })
 
@@ -373,11 +383,11 @@ describe('LIFECYCLE — active visual state cleanup', () => {
 
   it('anchor disconnect clears the frame (no stale frame left behind)', () => {
     const { h, write } = mountHost()
-    write.innerHTML = '<h2>标题</h2>'
-    const h2 = write.querySelector('h2') as HTMLElement
-    commitLocate(h, h2, { id: 'l3', severity: 'info', code: 'X' })
+    write.innerHTML = '<table><tr><td>1</td></tr></table>'
+    const table = write.querySelector('table') as HTMLElement
+    commitLocate(h, table, { id: 'l3', severity: 'info', code: 'X' })
     expect(frameEls()).toHaveLength(1)
-    h2.remove() // Typora re-render replaced the node
+    table.remove() // Typora re-render replaced the node
     ;(h as unknown as { repositionDiagnosticLocateFrame(): void }).repositionDiagnosticLocateFrame()
     expect(frameEls()).toHaveLength(0)
     expect(h.getLocateFrameStructure().staleLocateFrameCount).toBe(0)
@@ -386,38 +396,43 @@ describe('LIFECYCLE — active visual state cleanup', () => {
 
 // ── responsive ───────────────────────────────────────────
 describe('RESPONSIVE — frame follows target on scroll / resize / drawer geometry', () => {
-  it('scroll repositions the frame onto the live anchor rect', () => {
+  it('scroll schedules a single rAF repaint onto the live anchor rect (V5.5)', async () => {
     const { h, write, shell } = mountHost()
-    write.innerHTML = '<h2>标题</h2>'
-    const h2 = write.querySelector('h2') as HTMLElement
+    write.innerHTML = '<table><tr><td>1</td></tr></table>'
+    const target = write.querySelector('table') as HTMLElement
     const rect = { left: 100, top: 200, right: 400, bottom: 240, width: 300, height: 40 }
-    Object.defineProperty(h2, 'getBoundingClientRect', { configurable: true, value: () => rect })
-    commitLocate(h, h2, { id: 'r1', severity: 'warning', code: 'X' })
+    Object.defineProperty(target, 'getBoundingClientRect', { configurable: true, value: () => rect })
+    commitLocate(h, target, { id: 'r1', severity: 'warning', code: 'X' })
     const frame = frameEls()[0]
     expect(frame.style.display).toBe('block')
-    expect(frame.style.left).toBe('100px')
-    expect(frame.style.top).toBe('200px')
-    // Scroll the container -> target moves up 60px.
+    expect(frame.style.left).toBe('98px')
+    expect(frame.style.top).toBe('198px')
+    // Scroll the container -> target moves up 60px. Repaint is rAF-coalesced.
     rect.top = 140
     rect.bottom = 180
     rect.left = 120
     shell.dispatchEvent(new Event('scroll'))
-    expect(frame.style.left).toBe('120px')
-    expect(frame.style.top).toBe('140px')
+    await new Promise<void>(resolve => {
+      const raf = globalThis.requestAnimationFrame
+      if (typeof raf === 'function') raf(() => raf(() => resolve()))
+      else resolve()
+    })
+    expect(frame.style.left).toBe('118px')
+    expect(frame.style.top).toBe('138px')
   })
 
   it('window resize (DevTools layout change) repositions via geometry sync', () => {
     const { h, write } = mountHost()
-    write.innerHTML = '<h2>标题</h2>'
-    const h2 = write.querySelector('h2') as HTMLElement
+    write.innerHTML = '<table><tr><td>1</td></tr></table>'
+    const target = write.querySelector('table') as HTMLElement
     const rect = { left: 50, top: 80, right: 350, bottom: 120, width: 300, height: 40 }
-    Object.defineProperty(h2, 'getBoundingClientRect', { configurable: true, value: () => rect })
-    commitLocate(h, h2, { id: 'r2', severity: 'info', code: 'X' })
+    Object.defineProperty(target, 'getBoundingClientRect', { configurable: true, value: () => rect })
+    commitLocate(h, target, { id: 'r2', severity: 'info', code: 'X' })
     const frame = frameEls()[0]
     rect.left = 240 // narrow editor moved the anchor right
     rect.right = 540
     window.dispatchEvent(new Event('resize'))
-    expect(frame.style.left).toBe('240px')
+    expect(frame.style.left).toBe('238px')
   })
 
   it('drawer open does not destroy the frame; close clears it (VIS-V3-12 path)', () => {
@@ -445,14 +460,14 @@ describe('DARK MODE — tokenized severity palette (no big independent override)
     expect(after).toContain('--ink-ui-sev-info')
   })
 
-  it('V3 frame CSS exists and caps wash at <= 2%', () => {
+  it('V3 frame CSS exists and caps context wash at <= 3% (V4)', () => {
     expect(scss).toContain('.inkchapter-diagnostic-locate-frame')
-    // Severity washes: every wash mix stays <= 2%.
-    const washMatches = scss.match(/--ink-locate-wash: color-mix\(in srgb, var\(--ink-ui-sev-[a-z]+[^)]*\) (\d+)%, transparent\)/g) ?? []
+    // V4 severity washes: error 3%, warning 2.5%, info 2% — all <= 3%.
+    const washMatches = scss.match(/--ink-locate-wash: color-mix\(in srgb, var\(--ink-ui-sev-[a-z]+[^)]*\) ([\d.]+)%, transparent\)/g) ?? []
     expect(washMatches.length).toBeGreaterThanOrEqual(3)
     for (const m of washMatches) {
-      const pct = Number(/(\d+)%/.exec(m)?.[1] ?? 99)
-      expect(pct).toBeLessThanOrEqual(2)
+      const pct = Number(/([\d.]+)%/.exec(m)?.[1] ?? 99)
+      expect(pct).toBeLessThanOrEqual(3)
     }
   })
 })

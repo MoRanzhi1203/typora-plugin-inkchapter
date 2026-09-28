@@ -4,11 +4,23 @@
 
 正文段落。
 
-![缺失图片诊断目标](missing-assets/generic-locator-missing.png)
+
+
+
+
+
+
+
+
+![缺失图片诊断目标](missing-assets/__inkchapter_v31_missing_image__.png)
+
+
+
+
 
 ## 章节 B
 
-![同一目标第二次出现](missing-assets/generic-locator-missing.png)
+![同一目标第二次出现](missing-assets/__inkchapter_v31_missing_image__.png)
 
 ## 章节 C
 

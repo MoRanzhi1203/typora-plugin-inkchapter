@@ -112,7 +112,7 @@ describe('SEMANTIC — token → semantic resource identity (document base)', ()
   })
 })
 
-describe('PRODUCER — three-layer separation on LINK_LOCAL diagnostics', () => {
+describe('PRODUCER — three-layer separation on FIGURE_LOCAL_IMAGE_MISSING (V4 source-first)', () => {
   beforeEach(() => { document.body.innerHTML = '' })
 
   const fact = (target: string, i: number): { target: string; element: null; index: number; resourceKind: 'image' } => ({
@@ -125,30 +125,32 @@ describe('PRODUCER — three-layer separation on LINK_LOCAL diagnostics', () => 
       fact('dup.png', 1),
       fact('dup.png', 2),
     ]))
-    const linkDiags = findCode(r.diagnostics, 'LINK_LOCAL_TARGET_MISSING')
-    expect(linkDiags).toHaveLength(3)
-    const pct = linkDiags.find(d => (d.metadata?.rawDestination as string) === 'a%20b.png')!
+    const imgDiags = findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')
+    expect(imgDiags).toHaveLength(3)
+    const pct = imgDiags.find(d => (d.metadata?.rawDestination as string) === 'a%20b.png')!
     expect(pct.metadata?.destination).toBe('a b.png') // no base here → token canonical
     // occurrence is an ORDINAL field — never merged into the destination.
-    const dup1 = linkDiags.find(d => (d.metadata?.rawDestination as string) === 'dup.png' && d.metadata?.occurrenceIndex === 0)!
-    const dup2 = linkDiags.find(d => (d.metadata?.rawDestination as string) === 'dup.png' && d.metadata?.occurrenceIndex === 1)!
+    const dup1 = imgDiags.find(d => (d.metadata?.rawDestination as string) === 'dup.png' && d.metadata?.occurrenceIndex === 0)!
+    const dup2 = imgDiags.find(d => (d.metadata?.rawDestination as string) === 'dup.png' && d.metadata?.occurrenceIndex === 1)!
     expect(dup1.metadata?.destination).toBe('dup.png')
     expect(dup2.metadata?.destination).toBe('dup.png')
     expect(String(dup1.metadata?.destination)).not.toContain('#2')
     expect(String(dup1.metadata?.destination)).not.toContain(':2')
+    // V4: image facts never leak into the LINK rule.
+    expect(findCode(r.diagnostics, 'LINK_LOCAL_TARGET_MISSING')).toHaveLength(0)
   })
 
   it('occurrence-aware identities differ (dup.png occurrence 0 vs 1)', () => {
     const r = computeDocumentDiagnostics(input([fact('dup.png', 0), fact('dup.png', 1)]))
-    const dup = findCode(r.diagnostics, 'LINK_LOCAL_TARGET_MISSING')
+    const dup = findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')
     expect(dup).toHaveLength(2)
     expect(dup[0].id).not.toBe(dup[1].id)
     expect(dup.map(d => d.metadata?.occurrenceIndex)).toEqual([0, 1])
   })
 
-  it('HTTP image never produces LINK_LOCAL_TARGET_MISSING', () => {
+  it('HTTP image never produces FIGURE_LOCAL_IMAGE_MISSING', () => {
     const r = computeDocumentDiagnostics(input([fact('https://example.com/remote%20image.png', 0)]))
-    expect(findCode(r.diagnostics, 'LINK_LOCAL_TARGET_MISSING')).toHaveLength(0)
+    expect(findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')).toHaveLength(0)
   })
 })
 

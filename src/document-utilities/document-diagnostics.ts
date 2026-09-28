@@ -79,6 +79,14 @@ export interface DiagnosticLinkFact {
    * validity compares tokens; DOM resolution compares this semantic identity.
    */
   semanticDestination?: string
+  /** V4 — SOURCE anchor (Markdown offsets + line span + raw line text). Lets
+   *  the missing-image rule run source-first with a real Source Anchor even
+   *  when no rendered <img> exists. */
+  sourceStart?: number
+  sourceEnd?: number
+  startLine?: number
+  endLine?: number
+  rawText?: string
 }
 
 /**
@@ -924,6 +932,58 @@ export function computeDocumentDiagnostics(
       }),
     )
   }
+
+  // ── V4 Missing-Image SOURCE-FIRST ─────────────────────
+  // Missing-image diagnostics are produced from the Markdown SOURCE resource
+  // facts (resourceKind === 'image') — NEVER gated on a live <img> existing
+  // (Typora strips broken images, so a DOM-only scan can never see them).
+  // Source = identity / location authority; DOM = rendered target / fallback.
+  const sourceImageCovered = new Set<string>()
+  for (const l of input.links) {
+    if (l.resourceKind !== 'image') continue
+    if (!isLocalRelativePath(l.target)) continue
+    const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index)
+    const occurrenceLabel = occurrenceIndex > 0 ? `（第 ${occurrenceIndex + 1} 处）` : ''
+    const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
+    const destKey = normalizeResourceToken(semanticDestination || l.target)
+    if (destKey) sourceImageCovered.add(destKey)
+    const sourceStart = typeof l.sourceStart === 'number' ? l.sourceStart : null
+    const sourceEnd = typeof l.sourceEnd === 'number' ? l.sourceEnd : null
+    const startLine = typeof l.startLine === 'number' ? l.startLine : null
+    const endLine = typeof l.endLine === 'number' ? l.endLine : null
+    const fingerprint = `${occurrenceIndex}:${startLine ?? -1}:${destKey || l.target}`
+    push(
+      makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${l.target}${occurrenceLabel}`, {
+        detail: '图片引用的本地文件无法解析。',
+        element: null,
+        targetIdentity: destKey ? `local:${destKey}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}` : `local:${l.target}`,
+        kind: 'object',
+        metadata: {
+          ruleId: 'FIGURE-LOCAL-IMAGE-MISSING',
+          resourceKind: 'image',
+          destination: semanticDestination,
+          rawDestination: l.target,
+          occurrenceIndex,
+          sourceStart,
+          sourceEnd,
+          sourceRevision: null,
+          fingerprint,
+        },
+        location: startLine != null
+          ? {
+              kind: 'source-range',
+              startLine,
+              startColumn: 0,
+              endLine: endLine ?? startLine,
+              sourceFingerprint: fingerprint,
+              rawText: l.rawText,
+            }
+          : { kind: 'document-start' },
+        validityFingerprint: { kind: 'resource', path: normalizeResourceToken(l.target), occurrence: occurrenceIndex },
+      }),
+    )
+  }
+
   for (const f of input.figures) {
     const identity = f.targetIdentity ?? undefined
     if ((f.name ?? '').trim() === '') {
@@ -948,6 +1008,11 @@ export function computeDocumentDiagnostics(
       // correct img; occurrenceIndex only drives the semantic fallback).
       const src = f.element?.getAttribute?.('src') ?? ''
       const destRel = resourceSrcToVaultRelative(src, input.vaultRoot) ?? (f.localPath || undefined)
+      // V4 dedup — the SOURCE-first image pass (resourceKind=image facts) is the
+      // identity/location authority for a missing image. When this DOM figure
+      // resolves to the SAME missing destination, it must NOT double-report.
+      const domImageKey = normalizeResourceToken(destRel ?? f.localPath ?? '')
+      if (domImageKey && sourceImageCovered.has(domImageKey)) continue
       const occurrenceIndex = figureDestinationOccurrenceIndex(input.figures, f, destRel, input.vaultRoot)
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
@@ -1071,8 +1136,12 @@ export function computeDocumentDiagnostics(
   //                     resolved from the document base; DOM resolution)
   //   occurrenceIndex = duplicate ordinal, NEVER merged into the path
   // The `#2`/`:2` display suffix is UI text only and never a real path.
+  // V4 — LINK_LOCAL_TARGET_MISSING consumes ONLY resourceKind='link'. Image
+  // facts are owned by the SOURCE-FIRST FIGURE_LOCAL_IMAGE_MISSING pass above;
+  // an image token must never be miscounted as a missing link.
     for (const l of input.links) {
     if (!isLocalRelativePath(l.target)) continue
+    if (l.resourceKind === 'image') continue
     const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index)
     const occurrenceLabel = occurrenceIndex > 0 ? `（第 ${occurrenceIndex + 1} 处）` : ''
     const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
@@ -1093,7 +1162,7 @@ export function computeDocumentDiagnostics(
         },
         location: {
           kind: 'block-node',
-          blockKind: l.resourceKind === 'image' ? 'figure' : 'link',
+          blockKind: 'link',
           stableIdentity: l.targetIdentity ?? `local:${l.target}`,
         },
         // Phase 7R.3.11.8B.7.4 — validity lives on the SOURCE TOKEN layer:

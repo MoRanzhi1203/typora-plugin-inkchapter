@@ -14,7 +14,7 @@ $ProjectMain    = Join-Path $ProjectRoot "dist\main.js"
 $ProjectCss     = Join-Path $ProjectRoot "dist\style.css"
 
 # ── Expected build ID (single source: forensic.ts) ─────────────────────────
-$ExpectedBuildId = "inkchapter-plain-body-only-exemption-closure-v7R3.11.8B11"
+$ExpectedBuildId = "inkchapter-drawer-persistence-v5.12-r3"
 
 # ── Check required source-of-truth files exist ─────────────────────────────
 $runtimeMainExists = Test-Path $RuntimeMain

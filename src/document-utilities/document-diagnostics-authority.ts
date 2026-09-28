@@ -53,7 +53,7 @@ export interface DocumentDiagnosticsProviders {
   /** Parse markdown into local link targets (authority-driven, no network).
    *  Phase 7R.3.11.8B.7.3 — facts may carry `resourceKind: 'image' | 'link'`
    *  (image Markdown → img DOM target). */
-  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link' }>
+  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link'; sourceStart?: number; sourceEnd?: number; startLine?: number; endLine?: number; rawText?: string }>
   /** Phase 7R.3.11.8B.1 — canonical H1 authority bridge result (WAIT/INVALID/READY).
    *  Optional so tests that never exercise STRICT-SINGLE-H1 need no stub. */
   getCanonicalH1Facts?: () => DiagnosticCanonicalHeadingAuthorityResult
@@ -666,9 +666,15 @@ export class DocumentDiagnosticsAuthority {
     const vaultRoot = this.ctx.authority.vaultRoot
     if (markdown != null) {
       const rawFacts = this.providers.parseLocalLinkTargets(markdown)
-      const normFacts: Array<{ target: string; resourceKind?: 'image' | 'link' }> = rawFacts.map(f =>
-        typeof f === 'string' ? { target: f } : f,
-      )
+      const normFacts: Array<{
+        target: string
+        resourceKind?: 'image' | 'link'
+        sourceStart?: number
+        sourceEnd?: number
+        startLine?: number
+        endLine?: number
+        rawText?: string
+      }> = rawFacts.map(f => (typeof f === 'string' ? { target: f } : f))
       const documentDir = activeFilePath
         ? activeFilePath.replace(/\\/g, '/').replace(/[\\/][^\\/]*$/, '')
         : null
@@ -694,6 +700,13 @@ export class DocumentDiagnosticsAuthority {
           index: i,
           resourceKind: fact.resourceKind,
           semanticDestination,
+          // V4 — SOURCE anchor passthrough (missing-image diagnostics become
+          // source-first: no rendered <img> is required to emit or locate them).
+          sourceStart: fact.sourceStart,
+          sourceEnd: fact.sourceEnd,
+          startLine: fact.startLine,
+          endLine: fact.endLine,
+          rawText: fact.rawText,
           targetIdentity: `local:${target}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`,
         })
       }
