@@ -27594,7 +27594,7 @@
           }
         },
         "README.md": {
-          "updatedAt": 1787681235469,
+          "updatedAt": 1788873629983,
           "settings": {
             "enabled": true,
             "headingStructureMode": "strict",
@@ -28492,7 +28492,8 @@
                 },
                 "numberTitleSpacing": "space"
               }
-            }
+            },
+            "headingStructureConfigured": false
           }
         }
       },

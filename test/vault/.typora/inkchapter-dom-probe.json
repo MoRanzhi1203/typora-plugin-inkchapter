@@ -1,0 +1,65 @@
+{
+  "bodyClasses": "typora-node native-window no-collapse-outline allow-file-tree-scroll pin-outline show-footer os-windows os-windows-10 typora-maxmized",
+  "workspaceRoot": true,
+  "workspaceTabsCount": 1,
+  "tabCount": 1,
+  "firstTab": "<div class=\"typ-tab active\" data-id=\"\" draggable=\"true\" title=\"Untitled\"><i class=\"typ-file-icon fa fa-file-o fa-file-text-o\"></i><span class=\"typ-file-basename\">Untitled</span><i class=\"typ-icon typ-close\"></i></div>",
+  "firstTabData": {
+    "id": "",
+    "title": "Untitled",
+    "cls": "typ-tab active"
+  },
+  "sidebarId": "stopselect dropmenu sidebar-menu open active-tab-files use-file-tree-style",
+  "fileLibraryExists": true,
+  "fileLibraryTreeChildren": 1,
+  "firstTreeNode": "<div class=\"file-library-node file-tree-node file-node-root\" data-path=\"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\" data-has-sub=\"false\" tabindex=\"-1\" data-is-directory=\"true\"> <div class=\"file-node-background\"> </div> <div class=\"file-node-content\" draggable=\"true\"> <i class=\"file-node-icon fa fa-folder\"></i> <span class=\"file-node-title\" title=\"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\"><span class=\"file-node-title-name-part\">vault</span><span class=\"file-nod",
+  "treeNodeClasses": [
+    {
+      "cls": "file-library-node file-tree-node file-node-root",
+      "path": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault",
+      "dataState": null,
+      "hasSub": "false",
+      "isDir": "true"
+    },
+    {
+      "cls": "file-library-node file-tree-node file-node-collapsed",
+      "path": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\墨章插件测试",
+      "dataState": null,
+      "hasSub": "true",
+      "isDir": "true"
+    },
+    {
+      "cls": "file-library-node file-tree-node file-node-collapsed",
+      "path": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\fixtures",
+      "dataState": null,
+      "hasSub": "true",
+      "isDir": "true"
+    },
+    {
+      "cls": "file-library-node file-tree-node file-node-collapsed",
+      "path": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\regression",
+      "dataState": null,
+      "hasSub": "true",
+      "isDir": "true"
+    },
+    {
+      "cls": "file-library-node file-tree-node file-node-collapsed",
+      "path": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime",
+      "dataState": null,
+      "hasSub": "true",
+      "isDir": "true"
+    },
+    {
+      "cls": "file-library-node file-tree-node file-node-collapsed",
+      "path": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch",
+      "dataState": null,
+      "hasSub": "true",
+      "isDir": "true"
+    }
+  ],
+  "contextMenuCount": 13,
+  "tabMenuLike": "<ul class=\"dropdown-menu context-menu ext-context-menu\" id=\"block-style-menu\" role=\"menu\"><li data-block-auto-disable=\"\" data-key=\"\"><a role=\"menuitem\" data-block=\"header1\" class=\"state-off\"><span data-localize=\"Heading 1\" data-lg=\"Menu\">一级标题</span><span class=\"ty-menu-shortcut\">Ctrl+1</span></a></l",
+  "writeParentClass": "typ-workspace-binding inkchapter-workspace-host",
+  "writeGrandClass": "typora-node native-window no-collapse-outline allow-file-tree-scroll pin-outline show-footer os-windows os-windows-10 typora-maxmized",
+  "currentPath": ""
+}

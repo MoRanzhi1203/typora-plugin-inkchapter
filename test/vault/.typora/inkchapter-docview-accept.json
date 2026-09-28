@@ -1,0 +1,87 @@
+{
+  "step": [
+    {
+      "tabs-initial": [
+        {
+          "id": "",
+          "active": true
+        }
+      ]
+    },
+    {
+      "tabs-after-open-two": [
+        {
+          "id": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md",
+          "active": false
+        },
+        {
+          "id": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md",
+          "active": true
+        }
+      ]
+    },
+    {
+      "right-click-target": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"
+    },
+    {
+      "relative-expected": "runtime/smoke/7R-3-11-8B-Strict-H1-EOF-Test.md"
+    },
+    {
+      "menu-injected": {
+        "before": 0,
+        "after": 1,
+        "groupLabel": "墨章 · 文档查看",
+        "subItems": [
+          {
+            "label": "关闭全部标签",
+            "disabled": false,
+            "title": ""
+          },
+          {
+            "label": "复制完整路径",
+            "disabled": false,
+            "title": ""
+          },
+          {
+            "label": "复制相对路径",
+            "disabled": false,
+            "title": ""
+          },
+          {
+            "label": "在文件树中定位",
+            "disabled": false,
+            "title": ""
+          },
+          {
+            "label": "在文件资源管理器中显示",
+            "disabled": false,
+            "title": ""
+          }
+        ]
+      }
+    },
+    {
+      "docview-invariant": {
+        "contextMenuEnhancerCount": 1,
+        "duplicateListenerCount": 0
+      }
+    },
+    {
+      "nested-abs": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"
+    },
+    {
+      "nested-file-exists": true
+    },
+    {
+      "root": "D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault"
+    },
+    {
+      "tabs-after-close-all": [
+        {
+          "id": "typ://core.empty/1/New tab",
+          "active": true
+        }
+      ]
+    }
+  ]
+}

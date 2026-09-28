@@ -100,16 +100,38 @@ export function extractFormulaVisibleTagTokens(host: HTMLElement): string[] {
  * Phase 7R.3.11.8B.7.3 — local resource reference fact.
  * `resourceKind` distinguishes image Markdown (`![..](dest)`, rendered as an
  * `<img>` block) from plain links (`[..](dest)`, rendered as an `<a>`).
+ *
+ * V4 — every fact additionally carries its SOURCE ANCHOR (absolute Markdown
+ * offsets + line span + the full raw source line). This lets missing-image
+ * diagnostics be produced from the Markdown SOURCE alone — a broken image whose
+ * live `<img>` is stripped by Typora still yields FIGURE_LOCAL_IMAGE_MISSING
+ * and stays locatable through the source-range anchor.
  */
 export interface LocalResourceReference {
   target: string
   resourceKind?: 'image' | 'link'
+  /** Absolute [start,end) offset of the reference token inside the Markdown. */
+  sourceStart?: number
+  sourceEnd?: number
+  /** 0-based source line span of the reference. */
+  startLine?: number
+  endLine?: number
+  /** Full raw text of the source line that contains the reference. */
+  rawText?: string
+}
+
+function countLineBreaks(text: string): number {
+  let n = 0
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++
+  return n
 }
 
 /**
  * Safe local-relative resource parsing from Markdown (no network).
  * Every occurrence of a local destination is returned in document order;
- * identical destinations appear once per occurrence.
+ * identical destinations appear once per occurrence. Each occurrence carries
+ * its resource kind plus a source anchor (offset range + line span + raw line
+ * text) so downstream rules never depend on a rendered DOM node existing.
  */
 export function parseLocalLinkTargets(markdown: string): Array<string | LocalResourceReference> {
   const out: Array<string | LocalResourceReference> = []
@@ -121,9 +143,23 @@ export function parseLocalLinkTargets(markdown: string): Array<string | LocalRes
     if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue // scheme
     if (target.startsWith('#')) continue // in-document anchor
     if (target.startsWith('mailto:')) continue
+    const sourceStart = m.index
+    const sourceEnd = m.index + m[0].length
+    const startLine = countLineBreaks(markdown.slice(0, sourceStart))
+    const endLine = startLine + countLineBreaks(m[0])
+    const lineStart = markdown.lastIndexOf('\n', sourceStart - 1) + 1
+    const nextNl = markdown.indexOf('\n', sourceEnd)
+    const rawText = markdown.slice(lineStart, nextNl < 0 ? markdown.length : nextNl)
     const isImage = m[1] === '!'
-    if (isImage) out.push({ target, resourceKind: 'image' })
-    else out.push({ target, resourceKind: 'link' })
+    out.push({
+      target,
+      resourceKind: isImage ? 'image' : 'link',
+      sourceStart,
+      sourceEnd,
+      startLine,
+      endLine,
+      rawText,
+    })
   }
   return out
 }

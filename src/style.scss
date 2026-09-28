@@ -2614,84 +2614,484 @@
   opacity: 0;
 }
 
-/* ── Diagnostic Locate Visual V3 — complex Block = Overlay Frame ──────────
+/* ── Diagnostic Locate Visual V3.1 — complex Block = Overlay Frame ────────
    Complex objects (table / code / figure / formula / blockquote / block) are
    NEVER painted on their own DOM. ONE severity-aware overlay frame lives in the
    single document-utilities overlay root and only wraps the locator-resolved
    rect. Heading = compact severity left indicator (no full-width band).
    Inline = precise severity-aware mark. Native selections / table cells /
-   code tokens / theme surfaces stay untouched. wash <= 2%; complex best = 0. */
+   code tokens / theme surfaces stay untouched. wash <= 1.5% (general block
+   context only); complex block background = transparent.
+   Geometry (left/top/width/height) is NEVER transitioned — only the severity
+   border-color/background-color may fade (no scroll trailing). */
 .inkchapter-diagnostic-locate-frame {
-  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 42%, transparent);
-  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 70%, transparent);
-  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 2%, transparent);
+  /* V5.3 — severity decides COLOR (error=muted red / warning=muted amber /
+     info=muted slate); presentation decides GEOMETRY. Visual hierarchy:
+     keyline > border > primary fill > context fill. Percentages are alpha.
+     Defaults are info; per-severity overrides below re-tune the tokens. */
+  --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 90%, transparent);
+  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 70%, transparent);
+  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 90%, transparent);
+  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 2%, transparent);
+  --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 16%, transparent);
+  --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 9%, transparent);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 16%, transparent);
 
   position: absolute;
   pointer-events: none;
   box-sizing: border-box;
   display: none;
-  border: 1px solid var(--ink-locate-border);
-  border-radius: 5px;
+  border: none;
   background: transparent;
-  box-shadow: inset 2px 0 0 var(--ink-locate-indicator);
+  box-shadow: none;
   transition:
-    left 120ms ease,
-    top 120ms ease,
-    width 120ms ease,
-    height 120ms ease,
-    border-color 120ms ease;
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+/* Shared compact severity bar (indicator) — full/open-right/text-tight only. */
+.inkchapter-diagnostic-locate-frame::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--ink-locate-indicator);
+  pointer-events: none;
 }
 .inkchapter-diagnostic-locate-frame[data-severity='error'] {
-  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) 42%, transparent);
-  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) 78%, transparent);
-  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) 2%, transparent);
+  --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 96%, transparent);
+  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 78%, transparent);
+  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 96%, transparent);
+  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 3%, transparent);
+  --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 20%, transparent);
+  --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 11%, transparent);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 22%, transparent);
 }
 .inkchapter-diagnostic-locate-frame[data-severity='warning'] {
-  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) 40%, transparent);
-  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) 76%, transparent);
-  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) 2%, transparent);
+  --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 96%, transparent);
+  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 78%, transparent);
+  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 96%, transparent);
+  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 2.5%, transparent);
+  --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 21%, transparent);
+  --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 12%, transparent);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 22%, transparent);
 }
 .inkchapter-diagnostic-locate-frame[data-severity='info'] {
-  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 34%, transparent);
-  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 70%, transparent);
-  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 2%, transparent);
+  --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 90%, transparent);
+  --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 70%, transparent);
+  --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 90%, transparent);
+  --ink-locate-wash: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 2%, transparent);
+  --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 16%, transparent);
+  --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 9%, transparent);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-info, #5d7181) 16%, transparent);
 }
-/* Table / code / figure / formula / blockquote / block — outer frame ONLY.
-   A <=2% wash is the absolute ceiling; the inner cells / tokens / lines /
-   native stripes keep their own theme surfaces (never repainted here). */
-.inkchapter-diagnostic-locate-frame[data-target-kind='table'],
-.inkchapter-diagnostic-locate-frame[data-target-kind='code'],
-.inkchapter-diagnostic-locate-frame[data-target-kind='figure'],
-.inkchapter-diagnostic-locate-frame[data-target-kind='formula'],
-.inkchapter-diagnostic-locate-frame[data-target-kind='blockquote'] {
+/* V5.3 — dark theme: same muted hues but stronger presence (no neon/glow).
+   Custom props are re-declared AFTER the light severity tokens so the darker
+   window wins on the same elements. */
+@media (prefers-color-scheme: dark) {
+  .inkchapter-diagnostic-locate-frame {
+    --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 92%, transparent);
+    --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 76%, transparent);
+    --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 92%, transparent);
+    --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 20%, transparent);
+    --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 12%, transparent);
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 20%, transparent);
+  }
+  .inkchapter-diagnostic-locate-frame[data-severity='error'] {
+    --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-error, #c77c7a) 96%, transparent);
+    --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-error, #c77c7a) 82%, transparent);
+    --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-error, #c77c7a) 96%, transparent);
+    --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-error, #c77c7a) 26%, transparent);
+    --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-error, #c77c7a) 15%, transparent);
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-error, #c77c7a) 28%, transparent);
+  }
+  .inkchapter-diagnostic-locate-frame[data-severity='warning'] {
+    --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-warning, #c69a56) 96%, transparent);
+    --ink-locate-border: color-mix(in srgb, var(--ink-ui-sev-warning, #c69a56) 82%, transparent);
+    --ink-locate-indicator: color-mix(in srgb, var(--ink-ui-sev-warning, #c69a56) 96%, transparent);
+    --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #c69a56) 26%, transparent);
+    --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #c69a56) 15%, transparent);
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #c69a56) 28%, transparent);
+  }
+  .inkchapter-diagnostic-locate-frame[data-severity='info'] {
+    --ink-locate-primary-bg: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 20%, transparent);
+    --ink-locate-context-bg: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 12%, transparent);
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-ui-sev-info, #93a6c0) 20%, transparent);
+  }
+}
+
+/* FULL_OBJECT_FRAME — only when the whole semantic object is visible.
+   Secondary context wash is provided per object kind below; border 1.5px. */
+.inkchapter-diagnostic-locate-frame[data-presentation='full-frame'] {
+  border: 1.5px solid var(--ink-locate-border);
+  border-radius: 4px;
   background: transparent;
 }
-.inkchapter-diagnostic-locate-frame[data-target-kind='block'] {
-  background: var(--ink-locate-wash);
+/* OCCLUDED right — left/top/bottom borders live, right border is NEVER drawn
+   (no fake closed edge in front of the Drawer) and right corners are 0. */
+.inkchapter-diagnostic-locate-frame[data-presentation='open-right-frame'] {
+  border: 1.5px solid var(--ink-locate-border);
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+  background: transparent;
 }
-/* Heading — NO full-width colored band. Compact severity left indicator only
-   (2px inset), zero fill, no border, native heading style preserved. */
-.inkchapter-diagnostic-locate-frame[data-target-kind='heading'] {
+/* Very light continuation cue at the open side — the object continues behind
+   the panel. No arrow / badge / text. */
+.inkchapter-diagnostic-locate-frame[data-presentation='open-right-frame']::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  pointer-events: none;
+  background: linear-gradient(to left, var(--ink-locate-border) 0%, transparent 100%);
+  opacity: 0.35;
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame'] {
+  border: 1.5px solid var(--ink-locate-border);
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  background: transparent;
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame']::before {
+  content: none; /* no left indicator when the left edge is open */
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame']::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  pointer-events: none;
+  background: linear-gradient(to right, var(--ink-locate-border) 0%, transparent 100%);
+  opacity: 0.35;
+}
+
+/* V5.2 — Table / Code get the SECONDARY object-context wash (independent
+   overlay carrier: never a background on td/th/tr/tbody/pre/code/token).
+   Media objects (figure/formula/blockquote) stay transparent so a real
+   picture is never tinted. */
+.inkchapter-diagnostic-locate-frame[data-target-kind='table'],
+.inkchapter-diagnostic-locate-frame[data-target-kind='code'] {
+  background: var(--ink-locate-context-bg);
+}
+.inkchapter-diagnostic-locate-frame[data-target-kind='figure'],
+.inkchapter-diagnostic-locate-frame[data-target-kind='formula'],
+.inkchapter-diagnostic-locate-frame[data-target-kind='blockquote'],
+.inkchapter-diagnostic-locate-frame[data-target-kind='block'] {
+  background: transparent;
+}
+
+/* Heading — GUARANTEED corner bracket marker (V5). NO full-width fill, NO
+   full-width border, NO whole-text underline. Visual = 3px vertical marker +
+   a 10–16px bottom-left corner cap (--ink-heading-corner set by the controller
+   from the measured heading text; block-left fallback when text is unknown). */
+.inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker'] {
   border: none;
   border-radius: 0;
   background: transparent;
-  box-shadow: inset 2px 0 0 var(--ink-locate-indicator);
 }
+.inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::before {
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--ink-locate-indicator);
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  bottom: 4px;
+  height: 2px;
+  width: var(--ink-heading-corner, 16px);
+  border-radius: 999px;
+  background: var(--ink-locate-border);
+  pointer-events: none;
+}
+
+/* Precise inline / source-line mark geometry (sourceRange-exact missing-image
+   / text box): PRIMARY fill + 2px lower severity keyline painted through the
+   SAME overlay frame element as an inline mark — no wide paragraph frame, no
+   left indicator. The lower edge is a gradient layer, never a box-shadow. */
+.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'] {
+  border: none;
+  border-radius: 3px;
+  background-image: linear-gradient(
+    to top,
+    var(--ink-locate-keyline) 0,
+    var(--ink-locate-keyline) 2px,
+    transparent 2px
+  );
+  background-color: var(--ink-locate-inline-bg);
+  background-blend-mode: normal;
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark']::before {
+  content: none;
+}
+
+/* V5.2 — Caption / expected-name slot = PRIMARY. The marker becomes a compact
+   slot fill (0.11–0.15) with a 2–3px bottom keyline. `top-edge` (no measured
+   slot) stays a thin 2px keyline only. Fill never touches td/th/pre/code. */
+.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='caption-host'] {
+  position: absolute;
+  border-radius: 3px;
+  background: var(--ink-locate-primary-bg);
+  pointer-events: none;
+  opacity: 1;
+}
+.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='caption-host']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ink-locate-keyline);
+  pointer-events: none;
+}
+.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='top-edge'] {
+  position: absolute;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ink-locate-indicator);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+/* V5 — Missing-Name: PRIMARY = Expected Name Slot. The name-keyline cue is the
+   strong marker; the surrounding context frame is intentionally SECONDARY (a
+   quieter border). Only the frame's own border changes — never td/th/pre. */
+.inkchapter-diagnostic-locate-frame[data-name-primary='true'] {
+  --ink-locate-context: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) 34%, transparent);
+  border-color: var(--ink-locate-context);
+}
+.inkchapter-diagnostic-locate-frame[data-name-primary='true'][data-severity='error'] {
+  --ink-locate-context: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) 38%, transparent);
+}
+/* top-edge cue (no measured name slot) carries the strong severity keyline. */
+.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='top-edge'][data-severity='warning'] {
+  background: var(--ink-locate-indicator);
+  opacity: 1;
+}
+
+/* V5 — Missing-Image L3 owning-block corner fallback: even when no text line
+   can be measured, the WIDE frame must stay transparent — only the left marker
+   and a 10–16px corner cap are painted. No full-width closed block frame. */
+.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2'] {
+  background: transparent;
+  box-shadow: none;
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2']::before {
+  content: '';
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--ink-locate-indicator);
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2']::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  bottom: 4px;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ink-locate-border);
+}
+
+/* V5 — Drawer LOCATE_COLLAPSE: while a diagnostic object is being located, the
+   open Drawer list yields so the FULL object becomes visible (complete object
+   > drawer docked). No transition (no drift). */
+.inkchapter-doc-drawer[data-locate-collapsed='true'] {
+  display: none !important;
+}
+
+/* ── V5.12-R3 §9 — TRANSIENT COMPACT presentation ─────────────────────────
+   The Drawer stays VISIBLE and usable while giving the target more room. This
+   is a bounded width reduction only (no truncation of the highlight, no z-index
+   override, no clipping of the document). */
+.inkchapter-doc-drawer[data-locate-compact='true'] {
+  --ink-drawer-locate-compact-width: 240px;
+  max-width: var(--ink-drawer-locate-compact-width);
+  flex: 0 0 auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .inkchapter-diagnostic-locate-frame { transition: none; }
 }
 
-/* Inline — precise severity-aware mark, never a native-selection lookalike.
-   (underline + 6% tint + rounded corners; ::selection is untouched.) */
+/* Inline element mark — precise severity-aware mark, never a native-selection
+   lookalike. V5.2: severity fill + a 2px lower keyline via gradient layers
+   (no box-shadow / glow; ::selection untouched). */
 .inkchapter-diagnostic-inline-mark {
-  --ink-locate-color: var(--ink-ui-sev-info, #6d8191);
+  --ink-locate-color: var(--ink-ui-sev-info, #5d7181);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 16%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 90%, transparent);
   border-radius: 3px;
-  background: color-mix(in srgb, var(--ink-locate-color) 6%, transparent);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink-locate-color) 55%, transparent);
+  pointer-events: none;
+  background-image: linear-gradient(
+    to top,
+    var(--ink-locate-inline-edge) 0,
+    var(--ink-locate-inline-edge) 2px,
+    transparent 2px
+  );
+  background-color: var(--ink-locate-inline-bg);
 }
-.inkchapter-diagnostic-inline-mark[data-severity='error'] { --ink-locate-color: var(--ink-ui-sev-error, #b96767); }
-.inkchapter-diagnostic-inline-mark[data-severity='warning'] { --ink-locate-color: var(--ink-ui-sev-warning, #ad8748); }
-.inkchapter-diagnostic-inline-mark[data-severity='info'] { --ink-locate-color: var(--ink-ui-sev-info, #6d8191); }
+.inkchapter-diagnostic-inline-mark[data-severity='error'] {
+  --ink-locate-color: var(--ink-ui-sev-error, #b55454);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 22%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
+}
+.inkchapter-diagnostic-inline-mark[data-severity='warning'] {
+  --ink-locate-color: var(--ink-ui-sev-warning, #a87932);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 22%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
+}
+.inkchapter-diagnostic-inline-mark[data-severity='info'] {
+  --ink-locate-color: var(--ink-ui-sev-info, #5d7181);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 16%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 90%, transparent);
+}
+
+/* ── V5.12-R2 §10 — inline source range PER VISUAL LINE fragments ──────────
+   One overlay child per visual line. Same V5.3 colour tokens as the class-based
+   inline mark (frozen colour set); NEVER a cross-line union rectangle. */
+.inkchapter-diagnostic-inline-fragment {
+  --ink-locate-color: var(--ink-ui-sev-info, #5d7181);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 16%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 90%, transparent);
+  border-radius: 3px;
+  background-image: linear-gradient(
+    to top,
+    var(--ink-locate-inline-edge) 0,
+    var(--ink-locate-inline-edge) 2px,
+    transparent 2px
+  );
+  background-color: var(--ink-locate-inline-bg);
+}
+.inkchapter-diagnostic-inline-fragment[data-severity='error'] {
+  --ink-locate-color: var(--ink-ui-sev-error, #b55454);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 22%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
+}
+.inkchapter-diagnostic-inline-fragment[data-severity='warning'] {
+  --ink-locate-color: var(--ink-ui-sev-warning, #a87932);
+  --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 22%, transparent);
+  --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
+}
+
+/* ── V5.12-R1 — Heading Diagnostic In-Document Marker ─────────────────────
+   Level 1 Passive: external gutter severity marker (icon + 2px rail) only.
+   NEVER a full-width / block wash; the heading text keeps its native styling. */
+.inkchapter-heading-diagnostic-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.inkchapter-heading-diagnostic-marker {
+  pointer-events: none;
+}
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='error'] {
+  --ink-heading-sev: var(--ink-ui-diagnostic-error, var(--ink-ui-sev-error, #b55454));
+  --ink-heading-sev-soft: color-mix(in srgb, var(--ink-heading-sev) 7%, transparent);
+}
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] {
+  --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
+  --ink-heading-sev-soft: color-mix(in srgb, var(--ink-heading-sev) 7%, transparent);
+}
+.inkchapter-heading-diagnostic-marker__rail {
+  border-radius: 999px;
+  background: var(--ink-heading-sev, #b55454);
+  transition: background-color 140ms ease;
+}
+.inkchapter-heading-diagnostic-marker__icon {
+  background-color: var(--ink-heading-sev, #b55454);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  transition: background-color 140ms ease;
+}
+/* Error icon = circle-x; Warning icon = triangle-warning (shape, not colour). */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-marker__icon {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1a7 7 0 100 14A7 7 0 008 1zm2.6 9.4l-1.2 1.2L8 10.2l-1.4 1.4-1.2-1.2L6.8 9 5.4 7.6l1.2-1.2L8 7.8l1.4-1.4 1.2 1.2L9.2 9l1.4 1.4z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1a7 7 0 100 14A7 7 0 008 1zm2.6 9.4l-1.2 1.2L8 10.2l-1.4 1.4-1.2-1.2L6.8 9 5.4 7.6l1.2-1.2L8 7.8l1.4-1.4 1.2 1.2L9.2 9l1.4 1.4z'/%3E%3C/svg%3E");
+}
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-marker__icon {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.6l6.4 11.2H1.6L8 1.6zm0 3.4a.8.8 0 00-.8.8v3a.8.8 0 001.6 0v-3A.8.8 0 008 5zm0 6.6a.9.9 0 100 1.8.9.9 0 000-1.8z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.6l6.4 11.2H1.6L8 1.6zm0 3.4a.8.8 0 00-.8.8v3a.8.8 0 001.6 0v-3A.8.8 0 008 5zm0 6.6a.9.9 0 100 1.8.9.9 0 000-1.8z'/%3E%3C/svg%3E");
+}
+/* Level 2 Active: rail 2px → 3px + text-tight tint fragments + keyline. */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-marker__rail {
+  width: 3px;
+}
+.inkchapter-heading-diagnostic-active {
+  pointer-events: none;
+}
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='error'] {
+  --ink-heading-sev: var(--ink-ui-diagnostic-error, var(--ink-ui-sev-error, #b55454));
+}
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] {
+  --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
+}
+.inkchapter-heading-diagnostic-active__fragment {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink-heading-sev, #b55454) 7%, transparent);
+  transition: background-color 140ms ease;
+}
+.inkchapter-heading-diagnostic-active__keyline {
+  background: var(--ink-heading-sev, #b55454);
+}
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-active__keyline {
+  background-image: linear-gradient(to right, var(--ink-heading-sev) 0 4px, transparent 4px 7px);
+  background-size: 7px 100%;
+  background-color: transparent;
+}
+/* Level 3 Active reason chip: overlay only, never in the heading layout flow. */
+.inkchapter-heading-diagnostic-reason {
+  pointer-events: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-ui-diagnostic-chip-text, var(--ink-ui-text-muted, #6b7280));
+  background: var(--ink-ui-diagnostic-chip-bg, color-mix(in srgb, var(--ink-ui-surface, #ffffff) 88%, transparent));
+  border: 1px solid var(--ink-ui-diagnostic-neutral-border, color-mix(in srgb, currentColor 18%, transparent));
+  transition: opacity 140ms ease;
+}
+/* V5.3 — dark inline mark: brighter edge + stronger fill (still muted, no
+   neon/glow). */
+@media (prefers-color-scheme: dark) {
+  .inkchapter-diagnostic-inline-mark {
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 20%, transparent);
+    --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 92%, transparent);
+  }
+  .inkchapter-diagnostic-inline-mark[data-severity='error'] {
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 28%, transparent);
+    --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
+  }
+  .inkchapter-diagnostic-inline-mark[data-severity='warning'] {
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 28%, transparent);
+    --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
+  }
+  .inkchapter-diagnostic-inline-mark[data-severity='info'] {
+    --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 20%, transparent);
+    --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 92%, transparent);
+  }
+}
 
 /* ── Phase 7R.3.11.8B.6 — Document Workspace Minimum Width Guard ─────────────
    SINGLE width authority: the resolved workspace flex item (scoped class added
@@ -2951,6 +3351,14 @@
   opacity: 1; /* NO parent-level opacity — parent opacity removed */
 }
 .inkchapter-doc-navigator:hover { opacity: 1; }
+/* Ghost-control V1 — the author `display:flex` would otherwise override the
+   UA `[hidden]` rule, keeping a stale navigator rendered in EMPTY/Untitled
+   workspaces. `hidden` (and data-rail=hidden) is the ONLY hiding contract:
+   no opacity/pointer-events-only hiding, no left-bottom fallback shell. */
+.inkchapter-doc-navigator[hidden],
+.inkchapter-doc-navigator[data-rail='hidden'] {
+  display: none !important;
+}
 
 .inkchapter-doc-navigator__btn {
   /* Full native-button reset — appearance/border/outline/shadow all gone. */
@@ -3039,35 +3447,40 @@
   background: var(--ink-ui-accent, #4f7cac);
   pointer-events: none;
 }
-/* V2 — Diagnostics ACTIVE row follows SEVERITY (low-sat wash + severity
-   indicator); Hover stays neutral gray. Never full-width red/yellow band. */
+/* V3.1/V5.2 — Diagnostics ACTIVE row follows SEVERITY (moderate wash + 2px
+   severity rail ::before); Hover stays neutral gray. Active wash is bounded
+   (--ink-drawer-active-wash light 6% <= .065) and always BELOW the document
+   Secondary context wash (Primary > Secondary > Drawer active > Hover). */
+.inkchapter-doc-drawer__item {
+  --ink-drawer-active-wash: 7%;
+}
 .inkchapter-doc-drawer__item--error.is-selected,
 .inkchapter-doc-drawer__item--error.is-active {
-  background: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) 3%, transparent);
+  background: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) var(--ink-drawer-active-wash, 6%), transparent);
 }
 .inkchapter-doc-drawer__item--error.is-selected::before,
 .inkchapter-doc-drawer__item--error.is-active::before {
-  background: var(--ink-ui-sev-error, #c05c5c);
+  background: var(--ink-ui-sev-error, #b96767);
 }
 .inkchapter-doc-drawer__item--warning.is-selected,
 .inkchapter-doc-drawer__item--warning.is-active {
-  background: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) 3%, transparent);
+  background: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) var(--ink-drawer-active-wash, 6%), transparent);
 }
 .inkchapter-doc-drawer__item--warning.is-selected::before,
 .inkchapter-doc-drawer__item--warning.is-active::before {
-  background: var(--ink-ui-sev-warning, #ab7f2f);
+  background: var(--ink-ui-sev-warning, #ad8748);
 }
 .inkchapter-doc-drawer__item--info.is-selected,
 .inkchapter-doc-drawer__item--info.is-active,
 .inkchapter-doc-drawer__item--hint.is-selected,
 .inkchapter-doc-drawer__item--hint.is-active {
-  background: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) 3%, transparent);
+  background: color-mix(in srgb, var(--ink-ui-sev-info, #6d8191) var(--ink-drawer-active-wash, 6%), transparent);
 }
 .inkchapter-doc-drawer__item--info.is-selected::before,
 .inkchapter-doc-drawer__item--info.is-active::before,
 .inkchapter-doc-drawer__item--hint.is-selected::before,
 .inkchapter-doc-drawer__item--hint.is-active::before {
-  background: var(--ink-ui-sev-info, #6b7a93);
+  background: var(--ink-ui-sev-info, #6d8191);
 }
 
 /* ＊ Settings workbench: flat sections — underline tabs, fewer shadows.    */
@@ -3098,9 +3511,9 @@
    overlay frame + drawer rows. Light = Typora Native+ muted red / amber /
    slate. Dark = low-glow equivalents (error not harsh, warning not glowing). */
 :root {
-  --ink-ui-sev-error: #b96767;
-  --ink-ui-sev-warning: #ad8748;
-  --ink-ui-sev-info: #6d8191;
+  --ink-ui-sev-error: #b55454;
+  --ink-ui-sev-warning: #a87932;
+  --ink-ui-sev-info: #5d7181;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -3200,17 +3613,17 @@
 .inkchapter-doc-drawer__item--error,
 .inkchapter-doc-drawer__item--warning,
 .inkchapter-doc-drawer__item--info { border-left-width: 0; }
-.inkchapter-doc-drawer__item--error { --ink-drawer-row-sev: var(--ink-ui-sev-error, #b96767); }
-.inkchapter-doc-drawer__item--warning { --ink-drawer-row-sev: var(--ink-ui-sev-warning, #ad8748); }
+.inkchapter-doc-drawer__item--error { --ink-drawer-row-sev: var(--ink-ui-sev-error, #b55454); --ink-drawer-active-wash: 9%; }
+.inkchapter-doc-drawer__item--warning { --ink-drawer-row-sev: var(--ink-ui-sev-warning, #a87932); --ink-drawer-active-wash: 9%; }
 .inkchapter-doc-drawer__item--info,
-.inkchapter-doc-drawer__item--hint { --ink-drawer-row-sev: var(--ink-ui-sev-info, #6d8191); }
+.inkchapter-doc-drawer__item--hint { --ink-drawer-row-sev: var(--ink-ui-sev-info, #5d7181); --ink-drawer-active-wash: 7%; }
 .inkchapter-doc-drawer__item:focus-visible { box-shadow: inset 0 0 0 1px var(--ink-ui-primary, #07a); }
-.inkchapter-doc-drawer__item:hover { background: var(--ink-ui-bg-hover, rgba(0, 0, 0, 0.045)); }
-/* V3 — ACTIVE diagnostic row: 2px severity indicator + 2~3% severity wash.
-   No color border, no heavy shadow, no big background, no large radius. */
+.inkchapter-doc-drawer__item:hover { background: var(--ink-ui-bg-hover, rgba(0, 0, 0, 0.04)); }
+/* V5.3/V3.1 — ACTIVE diagnostic row: 2px severity rail (::before) + bounded
+   severity wash. No colored four-side border, no box shadow, no big fill. */
 .inkchapter-doc-drawer__item.is-selected {
-  background: color-mix(in srgb, var(--ink-drawer-row-sev, var(--ink-ui-accent, #4f7cac)) 3%, transparent);
-  box-shadow: inset 2px 0 0 var(--ink-drawer-row-sev, var(--ink-ui-accent, #4f7cac));
+  background: color-mix(in srgb, var(--ink-drawer-row-sev, var(--ink-ui-accent, #4f7cac)) var(--ink-drawer-active-wash, 7%), transparent);
+  box-shadow: none;
 }
 .inkchapter-doc-drawer__item.is-busy { opacity: 0.55; pointer-events: none; }
 .inkchapter-doc-drawer__item-icon { display: inline-flex; width: 16px; height: 16px; margin-top: 1px; flex: none; }
@@ -3231,6 +3644,14 @@
 .inkchapter-doc-drawer__item:hover .inkchapter-doc-drawer__item-go { opacity: 0.55; }
 .inkchapter-doc-drawer__empty-icon { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--ink-ui-text-muted, #888); }
 .inkchapter-doc-drawer__item--empty { display: flex; align-items: center; justify-content: center; }
+
+/* V5.3 — dark drawer active row (stronger but below the dark doc Secondary). */
+@media (prefers-color-scheme: dark) {
+  .inkchapter-doc-drawer__item--error { --ink-drawer-active-wash: 12%; }
+  .inkchapter-doc-drawer__item--warning { --ink-drawer-active-wash: 12%; }
+  .inkchapter-doc-drawer__item--info,
+  .inkchapter-doc-drawer__item--hint { --ink-drawer-active-wash: 10%; }
+}
 
 /* 6) Locate presentation — V3 overlay owns every document visual. The legacy
       transient `.inkchapter-diagnostic-highlight` class stays a pure DOM hook

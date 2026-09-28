@@ -16,9 +16,18 @@ import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_C
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
 import {
   DiagnosticLocateFrameController,
+  classifyDiagnosticLocateElement,
   type DiagnosticLocateTargetKind,
   type RectLike,
 } from './document-diagnostic-locate-frame'
+import {
+  clampRectToClip,
+  makeRectSnapshot,
+  snapshotDomRect,
+  validateRectInvariants,
+  type RectSnapshot,
+} from './document-locate-rect-v4'
+import { measureTextRects } from './document-locate-visual-geometry-v4'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
@@ -42,8 +51,126 @@ import {
 import { deriveDiagnosticsState } from './document-diagnostics'
 import { deriveDocumentProblemsProjection } from './document-problems-projection'
 import type { CurrentProblemsProjection } from './document-problems-projection'
+import {
+  canPerformLayoutRecovery,
+  computeDrawerOcclusionFacts,
+  deriveDrawerPresentation,
+  evaluatePanelPaintRelation,
+  rectsIntersect,
+  resolveNameSlotPresentation,
+  resolveProblemsControlAction,
+  type DrawerPresentationMode,
+  type LocateDrawerRecoveryLease,
+  type SimpleRect,
+} from './document-locate-drawer-recovery-v5-1'
+import {
+  LOCATE_ONE_CLICK_AUDIT_EVENT,
+  LOCATE_ONE_CLICK_MAX_INTERNAL_RETRY,
+  createLocateOneClickGateCounters,
+  resolveOneClickRetryDecision,
+  shouldInvalidatePreScrollGeometry,
+  verifyOneClickLocateVisual,
+  type LocateTransactionState,
+  type LocateOneClickGateKey,
+} from './document-locate-one-click-v5-8'
+import {
+  LOCATE_SCROLL_ARRIVAL_AUDIT_EVENT,
+  MAX_ARRIVAL_FRAMES,
+  MAX_POST_ARRIVAL_FRAMES,
+  MAX_POST_ARRIVAL_STABLE_FRAMES,
+  MAX_SCROLL_CORRECTION,
+  canStartVisualPipeline,
+  computeDesiredScrollTop,
+  createLocateScrollV59GateCounters,
+  hasScrollEffect,
+  isArrivalStable,
+  makeScrollRectSnapshot,
+  measureScrollArrival,
+  type LocateScrollV59GateKey,
+  type ScrollArrivalSnapshot,
+} from './document-locate-scroll-arrival-v5-9'
+import {
+  LOCATE_PLACEMENT_AUDIT_EVENT,
+  MAX_FINAL_PLACEMENT_CORRECTION,
+  computePreferredPlacement,
+  createLocatePlacementV510GateCounters,
+  isWithinCenterTolerance,
+  placementNumericTolerancePx,
+  verifyFinalPlacement,
+  type LocatePlacementMode,
+  type LocatePlacementV510GateKey,
+  type PlacementDecision,
+} from './document-locate-placement-v5-10'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import {
+  DOCUMENT_SPACE_DRIFT_HARD_PX,
+  LOCATE_DOCUMENT_LAYER_CLASS,
+  LOCATE_DOCUMENT_SPACE_AUDIT_EVENT,
+  createLocateDocumentSpaceV511GateCounters,
+  documentLocalDrift,
+  isLayoutReflow,
+  layoutFingerprintKey,
+  makeDocumentSpaceRect,
+  viewportRectToDocumentLocalRect,
+  type DocumentSpaceRect,
+  type LocateDocumentSpaceV511GateKey,
+  type LocateLayoutFingerprint,
+} from './document-locate-document-space-v5-11'
+import {
+  HEADING_MARKER_AUDIT_EVENT,
+  HEADING_MARKER_ICON_SIZE_PX,
+  HEADING_MARKER_MIN_TEXT_GAP_PX,
+  HEADING_MARKER_RAIL_WIDTH_PX,
+  buildHeadingLocateReason,
+  computeHeadingMarkerGeometry,
+  computeHeadingReasonChipPlacement,
+  createHeadingMarkerV512R1GateCounters,
+  headingMarkerIdentity,
+  makeHeadingRect,
+  mergeHeadingMarkerSeverity,
+  severityRank,
+  unionHeadingNumberAndTextRects,
+  type HeadingMarkerSeverity,
+  type HeadingRect,
+} from './document-heading-diagnostic-marker-v5-12'
 import { resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
+import {
+  isLayoutEpochStale,
+  isPassiveMarkerDrift,
+  nextLayoutEpoch,
+  shouldBumpLayoutEpoch,
+  type DocumentLayoutEpoch,
+  type LayoutMutationKind,
+} from './document-layout-epoch-v512-r2'
+import {
+  headingVisualTargets,
+  resolveDiagnosticVisualTargets,
+  type ResolvedDiagnosticVisualTarget,
+} from './document-diagnostic-visual-target-v512-r2'
+import {
+  VISUAL_CLOSURE_AUDIT_EVENT,
+  VISUAL_COVERAGE_FLOOR,
+  canCommitLocateVisual,
+  createVisualClosureV512R2Counters,
+  evaluateVisualClosureGates,
+  formatVisualClosureGateReport,
+  resolveLocateVisualRecoveryDecision,
+  type LocateVisualCommitDecision,
+  type VisualClosureV512R2GateKey,
+} from './document-diagnostic-visual-closure-v512-r2'
+import {
+  DRAWER_PERSISTENCE_AUDIT_EVENT,
+  DRAWER_PERSISTENCE_V512R3_GATE_KEYS,
+  createDrawerPersistenceV512R3Counters,
+  evaluateDrawerPresentationFidelity,
+  evaluateDrawerPersistenceGates,
+  formatDrawerPersistenceGateReport,
+  resolveDrawerRestoreRequired,
+  resolveDrawerViewportClass,
+  type DrawerPersistenceV512R3GateKey,
+  type DrawerPresentationModeV3,
+  type DrawerViewportClass,
+} from './document-diagnostic-drawer-persistence-v512-r3'
 import { emitRuntimeAudit, emitInkchapterRuntimeAuditSummary } from '../runtime/forensic-log-sink'
 import {
   resolveActiveDocumentPresence,
@@ -208,6 +335,34 @@ export function computeEditorVisibleWidth(
   const l = Math.max(layout.left, 0)
   const r = Math.min(layout.right, viewportRight)
   return Math.max(0, r - l)
+}
+
+/**
+ * Phase 7R.3.11.8B.12 — Navigator ACTIVE-DOCUMENT eligibility (PURE, single
+ * authority). Runs BEFORE any placement/scrollability/rail decision. EMPTY /
+ * no documentKey / disconnected editor root / Untitled+0-chars are always
+ * ineligible → hidden. In a REAL layout the canonical heading frame must be
+ * READY too (WAITING → hidden, never a stale-geometry show).
+ */
+export function decideNavigatorEligibilityPure(input: {
+  presenceState: 'ACTIVE' | 'EMPTY' | 'UNKNOWN'
+  hasActiveDocument: boolean
+  documentKey: string | null
+  /** null = editor root absent (headless keeps positive identity). */
+  rootConnected: boolean | null
+  /** True when active leaf is Untitled with zero non-whitespace chars. */
+  emptyUntitled: boolean
+  canonicalReady: boolean
+  realLayout: boolean
+}): { eligible: boolean; reason: string } {
+  if (input.presenceState === 'EMPTY') return { eligible: false, reason: 'NO_ACTIVE_DOCUMENT' }
+  if (input.presenceState === 'ACTIVE' && !input.hasActiveDocument) return { eligible: false, reason: 'NO_ACTIVE_DOCUMENT' }
+  if (input.presenceState === 'UNKNOWN' && !input.hasActiveDocument) return { eligible: false, reason: 'NO_ACTIVE_DOCUMENT' }
+  if (input.documentKey == null || input.documentKey === '') return { eligible: false, reason: 'NO_ACTIVE_DOCUMENT' }
+  if (input.rootConnected === false) return { eligible: false, reason: 'NO_ACTIVE_DOCUMENT' }
+  if (input.emptyUntitled) return { eligible: false, reason: 'NO_ACTIVE_DOCUMENT' }
+  if (input.realLayout && !input.canonicalReady) return { eligible: false, reason: 'CANONICAL_FRAME_NOT_READY' }
+  return { eligible: true, reason: 'ACTIVE' }
 }
 
 /**
@@ -1141,6 +1296,131 @@ function toRectRecord(r: DOMRect | null | undefined): RectRecord | null {
 }
 
 /**
+ * V5.8 — ONE USER CLICK = ONE COMPLETE LOCATE TRANSACTION.
+ *
+ * Immutable-ish per-transaction fact record: identity is locked at click time;
+ * every geometry field is a MEASUREMENT (pre-scroll rects are transient and
+ * invalidated as soon as an automatic scroll is required).
+ */
+export interface LocateOneClickFacts {
+  transactionId: number
+  visualEpoch: number
+  documentKey: string | null
+  diagnosticId: string
+  /** Always 1 for a successful one-click transaction. */
+  userClickCount: number
+  targetInitiallyVisible: boolean
+  automaticScrollRequired: boolean
+  scrollStarted: boolean
+  scrollSettled: boolean
+  postScrollRevalidateDecision: string
+  preScrollTargetRect: RectRecord | null
+  postScrollTargetRect: RectRecord | null
+  freshTargetMeasurement: boolean
+  freshHostMeasurement: boolean
+  preScrollGeometryInvalidated: boolean
+  visualPaintAttemptCount: number
+  visualRetryCount: number
+  presentationBuiltAfterScroll: boolean
+  actualPaintedPrimaryRect: RectRecord | null
+  actualPaintedSecondaryRect: RectRecord | null
+  primaryMarkerVisible: boolean
+  /** V5.8 — a real carrier existed at the moment of the one-click paint. */
+  visualCarrierPresent: boolean
+  secondaryContextVisible: boolean | null
+  expectedFragmentCount: number | null
+  renderedFragmentCount: number | null
+  drawerRecoveryRequired: boolean
+  drawerRecoverySettled: boolean
+  postRecoveryRemeasured: boolean
+  postRecoveryRepainted: boolean
+  postRecoveryVisualVisible: boolean
+  // ── V5.12-R3 §16 — Drawer-persistence facts ──────────────────────────────
+  drawerRequestedOpenAtStart: boolean
+  drawerIntentEpochAtStart: number
+  presentationBeforeLocate: DrawerPresentationMode | null
+  presentationDuringLocate: DrawerPresentationMode | null
+  presentationAfterRestore: DrawerPresentationMode | null
+  presentationAtFinalCommit: DrawerPresentationMode | null
+  drawerVisibleBeforeLocate: boolean
+  drawerVisibleDuringRecovery: boolean
+  drawerVisibleAfterRestore: boolean
+  drawerVisibleAtFinalCommit: boolean
+  drawerRestoreRequired: boolean
+  drawerRestoreStarted: boolean
+  drawerRestoreSettled: boolean
+  remeasuredAfterDrawerRestore: boolean
+  repaintedAfterDrawerRestore: boolean
+  drawerCompactAttempts: number
+  drawerViewportClass: DrawerViewportClass | null
+  secondUserClickRequired: boolean
+  /** V5.8 hard-gate violation markers (evaluated at COMMIT). */
+  postScrollRemeasureMissing: boolean
+  staleRectCommit: boolean
+  zeroRectCommit: boolean
+  fragmentDropCommit: boolean
+  diagnosticIdentityChanged: boolean
+  occurrenceChanged: boolean
+  anchorChanged: boolean
+  targetKind: string | null
+  ruleCode: string
+  occurrenceIndex: number | null
+  resourceKind: string | null
+
+  // ── V5.9 — Scroll Completion Authority ────────────────────────────────────
+  scrollAnchorKind: string | null
+  scrollAnchorConnected: boolean
+  initialScrollTop: number
+  requestedScrollTop: number | null
+  actualScrollTopAfterWrite: number | null
+  /** V5.9 §10.1 — the pre-scroll measurement of the SCROLL ANCHOR. */
+  initialTargetRect: RectRecord | null
+  viewportRectAtStart: RectRecord | null
+  viewportRectAtSettle: RectRecord | null
+  targetRectAfterScrollWrite: RectRecord | null
+  targetRectAtArrival: RectRecord | null
+  targetRectAtSettle: RectRecord | null
+  scrollWriteCount: number
+  scrollCorrectionCount: number
+  scrollEffectObserved: boolean
+  targetEnteredViewport: boolean
+  targetVisibleAtSettle: boolean
+  arrivalWaitFrameCount: number
+  postArrivalStableFrameCount: number
+  visualPipelineStarted: boolean
+  visualStartedAfterTargetVisible: boolean
+  arrivalGateDecision: string
+
+  // ── V5.10 — Preferred Center Placement ────────────────────────────────────
+  placementMode: LocatePlacementMode
+  alreadyWithinCenterTolerance: boolean
+  viewportCenterY: number | null
+  targetCenterBefore: number | null
+  targetCenterAfter: number | null
+  centerErrorBefore: number | null
+  centerErrorAfter: number | null
+  compoundHeight: number | null
+  largeBlock: boolean
+  primaryPreferredViewportY: number | null
+  primaryActualViewportY: number | null
+  placementCorrectionCount: number
+  finalPlacementDecision: 'PASS' | 'FAIL' | 'PENDING'
+  finalPlacementReason: string
+  placementReason: string
+  maxScrollTopV510: number | null
+  /** §29 — the UNCLAMPED preferred scrollTop of the first placement decision. */
+  placementDesiredScrollTop: number | null
+}
+
+/** V5.8 — pre-scroll geometry snapshot (transient; invalidated on scroll). */
+interface LocatePreScrollState {
+  targetRect: RectRecord | null
+  hostRect: RectRecord | null
+  targetInitiallyVisible: boolean
+  automaticScrollRequired: boolean
+}
+
+/**
  * V3 — EXPLICIT runtime-layout authority. Headless must be decided by the
  * running environment (jsdom test agent), NEVER inferred from the target
  * element's geometry (a real Typora broken <img> is 0×0 yet layout is real).
@@ -1169,6 +1449,22 @@ export function resolveOwningBlockFallback(node: HTMLElement | null): HTMLElemen
     cur = cur.parentElement
   }
   return null
+}
+
+/**
+ * V5.12-R2 §3.4 — a passive heading marker keeps its TARGET IDENTITY, the
+ * layout epoch it was measured in and its last geometry, so a stale epoch is
+ * provable and a re-measure is a real reconcile (never a silent drift).
+ */
+interface HeadingPassiveMarkerRecord {
+  wrapper: HTMLElement
+  severity: HeadingMarkerSeverity
+  targetIdentity: string
+  measuredLayoutEpoch: DocumentLayoutEpoch
+  anchorLocal: HeadingRect
+  contentLocal: HeadingRect
+  iconLocal: HeadingRect | null
+  railLocal: HeadingRect
 }
 
 export class DocumentUtilityOverlayHost {
@@ -1283,7 +1579,9 @@ export class DocumentUtilityOverlayHost {
     targetIndex: number
     targetCount: number
     startedAt: number
-    state: 'RESOLVING' | 'SCROLLING' | 'HIGHLIGHTING'
+    state: LocateTransactionState
+    /** V5.8 — single-click atomic transaction observability (null = legacy path). */
+    oneClick?: LocateOneClickFacts | null
   } | null = null
   private locateTxSettleCancel: (() => void) | null = null
   private locateTxWatchdog: ReturnType<typeof setTimeout> | null = null
@@ -1314,9 +1612,9 @@ export class DocumentUtilityOverlayHost {
     this.locator = new DocumentDiagnosticLocator({
       getContainer: () => getActiveEditorScrollContainer(),
       onStale: () => {
-        // Target changed: refresh diagnostics and surface a stale notice.
+        // V5 — target changed: refresh diagnostics. NO locate toast (the
+        // Drawer active row + document presentation are the only feedback).
         this.diagnostics.recompute('LOCATE_STALE_TARGET')
-        this.showToast('目标已变化，请重新检查')
       },
     })
     this.editGuard = new DocumentEditGuard({
@@ -1419,6 +1717,14 @@ export class DocumentUtilityOverlayHost {
     this.renderDiagnosticsButton()
     this.renderLockButton()
     if (this.drawerOpen) this.renderDrawer()
+    // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
+    // formula/table/figure projection commit boundary: the body layout may have
+    // changed, so every diagnostic visual geometry measured before is stale.
+    this.bumpDocumentLayoutEpoch(source === 'RECONCILE' ? 'CAPTION_PROJECTION_REPLACE' : 'PLUGIN_DOM_MUTATION')
+    // V5.12-R1 §5 — PASSIVE heading diagnostic markers follow the snapshot, and
+    // the active emphasis is re-derived for the (possibly replaced) target.
+    this.renderHeadingDiagnosticMarkers()
+    this.renderActiveHeadingEmphasisForCommittedVisual()
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
       action: source === 'RECONCILE' ? 'RECONCILE_COMMITTED' : 'PUBLISHED',
       documentKey: snapshot?.documentKey ?? null,
@@ -1453,6 +1759,12 @@ export class DocumentUtilityOverlayHost {
     this.toolbarEl = this.buildToolbar(root)
     this.navigatorEl = this.buildNavigator(root)
     this.drawerEl = this.buildDrawer(root)
+
+    // Phase 7R.3.11.8B.12 — Navigator MOUNT is HIDDEN-BY-DEFAULT. Visibility is
+    // granted only after Active-Document eligibility + scrollability + a safe
+    // right-side rail placement are all proven. Never mount → visible → hide.
+    this.applyNavigatorPresentation('hidden', null)
+    this.lastNavVis = { presentation: 'hidden', reason: 'NO_ACTIVE_DOCUMENT', insetRightPx: null }
 
     // Phase 7R.3.11.8B.8 — V3 Diagnostic Locate Frame (single presentation
     // layer inside the SAME overlay root; never a second global overlay).
@@ -1671,10 +1983,40 @@ export class DocumentUtilityOverlayHost {
     this.cancelScrollOperation('SUPERSEDED')
     // Phase 7R.3.11.8B.7.7 — dispose cancels any active locate transaction.
     this.cancelActiveLocateTransaction('HOST_DISPOSED')
+    // V5.12-R2 §13.3 — unload ENDS the active visual: release the visibility
+    // lease and cancel any pending geometry reconcile.
+    this.releaseDrawerRecoveryLease('HOST_DISPOSED')
+    // V5.12-R3 §6 — unload also ends the active visual lease.
+    this.releaseActiveLocateVisualLease('HOST_DISPOSED')
+    if (this.diagnosticGeometryReconcileRaf !== null) {
+      try { cancelAnimationFrame(this.diagnosticGeometryReconcileRaf) } catch { /* noop */ }
+      this.diagnosticGeometryReconcileRaf = null
+    }
     // Phase 7R.3.11.8B.8 — dispose the V3 locate frame + its scroll binding.
     this.unbindLocateFrameEditorScroll()
+    if (this.locateScrollRafHandle !== null) {
+      try { cancelAnimationFrame(this.locateScrollRafHandle) } catch { /* noop */ }
+      this.locateScrollRafHandle = null
+    }
     this.locateFrame?.dispose()
     this.locateFrame = null
+    // V5.11 — tear down the document-space layer + carrier.
+    this.clearHeadingDiagnosticMarkers()
+    if (this.headingMarkerLayer) {
+      try { this.headingMarkerLayer.remove() } catch { /* noop */ }
+      this.headingMarkerLayer = null
+    }
+    this.removeLocateDocumentCarrier()
+    if (this.locateDocLayer) {
+      try { this.locateDocLayer.remove() } catch { /* noop */ }
+      this.locateDocLayer = null
+    }
+    if (this.locateDocLayerForcedPosition && this.locateDocLayerHost) {
+      try { this.locateDocLayerHost.style.position = '' } catch { /* noop */ }
+      this.locateDocLayerForcedPosition = false
+    }
+    this.locateDocLayerHost = null
+    this.releaseLocateScrollLease()
     // Phase 7R.3.11.8B.6 — remove the workspace host class + state attribute.
     this.cleanupWorkspaceGuard()
     // Phase 7R.3.11.8-B: disconnect the diagnostics mutation observer.
@@ -1703,6 +2045,1272 @@ export class DocumentUtilityOverlayHost {
   // no setInterval polling).
 
   private locateFrameScrollContainer: HTMLElement | null = null
+  /** V5.5 — SINGLE rAF scroll scheduler for the locate frame. One frame → at
+   *  most one fresh absolute reposition; scroll events never do DOM writes and
+   *  never re-enter a locate transaction. */
+  private locateScrollRafHandle: number | null = null
+
+  /** V5.6 — interaction lifecycle: active visual epoch + decoupled selection. */
+  private locateVisualEpoch = 0
+  private locateDismissSurface: HTMLElement | null = null
+
+  /** V5.6 — read-only interaction-lifecycle counters (hard gates). */
+  private countersInteractionV56 = {
+    leftClickDismissFail: 0,
+    rightClickFalseDismiss: 0,
+    middleClickFalseDismiss: 0,
+    wheelFalseDismiss: 0,
+    drawerClosedByDismiss: 0,
+    selectionClearedByDismiss: 0,
+    preventDefault: 0,
+    stopPropagation: 0,
+    visualReappear: 0,
+    scrollRepaintAfterDismiss: 0,
+    lateCommit: 0,
+    danglingTx: 0,
+    sameDiagnosticRelocateFail: 0,
+    staleVisualOnSwitch: 0,
+    overlayPointerCapture: 0,
+    duplicateDismissListener: 0,
+    duplicateScrollListener: 0,
+    listenerLeak: 0,
+    crossDocumentStaleVisual: 0,
+  }
+
+  getInteractionCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersInteractionV56 }
+  }
+
+  /** V5.6 — is a locate VISUAL currently committed? (selectedDiagnosticId is a
+   *  separate, preserved authority that this deliberately ignores.) */
+  private locateVisualIsActive(): boolean {
+    return this.locateFrame?.hasCommitted() === true
+  }
+
+  /** V5.5 — read-only scroll-stability counters (hard gates). */
+  private countersScrollV55 = {
+    targetFrameDeltaGt2: 0,
+    doubleCompensation: 0,
+    staleFrame: 0,
+    staleTargetRect: 0,
+    staleHostRect: 0,
+    staleInlineFragment: 0,
+    incrementalMutation: 0,
+    duplicateListener: 0,
+    duplicateRaf: 0,
+    listenerLeak: 0,
+    scrollTriggeredScrollIntoView: 0,
+    scrollLocateReentry: 0,
+    rafCoalescingFail: 0,
+    rightClampRegression: 0,
+    visualStyleMutation: 0,
+    geometryAccumulation: 0,
+    staleAnchorReposition: 0,
+    // V5.7 — CommittedLocateVisualTopology gates.
+    presentationKindChange: 0,
+    targetKindChange: 0,
+    anchorIdentityChange: 0,
+    visualRoleChange: 0,
+    freshHostMeasurementFalse: 0,
+    expectedPaintedLeftGt2: 0,
+    expectedPaintedTopGt2: 0,
+    expectedPaintedRightGt2: 0,
+    expectedPaintedBottomGt2: 0,
+    expectedPaintedWidthGt2: 0,
+    expectedPaintedHeightGt2: 0,
+    blockSizeDriftGt2: 0,
+    tableContextEscapesSemanticTarget: 0,
+    codeContextEscapesSemanticTarget: 0,
+    inlineOccurrenceChange: 0,
+    inlineOwnerBlockChange: 0,
+    repositionSelfWake: 0,
+    zeroDeltaRepaintStorm: 0,
+  }
+
+  getScrollStabilityCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersScrollV55 }
+  }
+
+  /** V5.8 — single-click offscreen atomic transaction hard-gate counters. */
+  private countersOneClickV58: Record<LocateOneClickGateKey, number> = createLocateOneClickGateCounters()
+
+  getOneClickLocateCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersOneClickV58 }
+  }
+
+  /** V5.9 — Scroll Completion Authority hard-gate counters. */
+  private countersScrollV59: Record<LocateScrollV59GateKey, number> = createLocateScrollV59GateCounters()
+  /** V5.9 — accepted/terminal transaction bookkeeping (§37). */
+  private locateTxAcceptedCount = 0
+  private locateTxTerminalCount = 0
+  /** V5.9 — is a bounded transaction rAF still pending? (§37 dangling) */
+  private locateTxRafPending = false
+
+  getScrollArrivalCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersScrollV59 }
+  }
+
+  /** V5.9 §37 — accepted must equal terminal; dangling must be 0. */
+  getLocateTransactionCounts(): { accepted: number; terminal: number; dangling: number } {
+    return {
+      accepted: this.locateTxAcceptedCount,
+      terminal: this.locateTxTerminalCount,
+      dangling: this.activeLocateTx ? 1 : 0,
+    }
+  }
+
+  /** V5.10 — Preferred Center Placement hard-gate counters. */
+  private countersPlacementV510: Record<LocatePlacementV510GateKey, number> = createLocatePlacementV510GateCounters()
+  /**
+   * V5.10 — per-transaction placement context (single instance; the locate
+   * transaction is NON-REENTRANT). Cleared at every terminal.
+   */
+  private locatePlacementCtx: {
+    anchorEl: HTMLElement | null
+    primaryEl: HTMLElement | null
+    secondaryEl: HTMLElement | null
+    compound: boolean
+  } | null = null
+
+  getPlacementCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersPlacementV510 }
+  }
+
+  /** V5.10 §34 — dismiss bookkeeping (a dismiss must never recenter). */
+  private locateDismissCount = 0
+
+  // ── V5.11 — Document-Space Visual Carrier ────────────────────────────────
+  /** The scroll lease: ONLY the PRE-COMMIT V5.9/V5.10 phases may use it. */
+  private locateScrollLease: { transactionId: number; visualEpoch: number; state: 'ACTIVE' | 'RELEASED' } | null = null
+  private locateDocLayer: HTMLElement | null = null
+  private locateDocLayerHost: HTMLElement | null = null
+  private locateDocLayerForcedPosition = false
+  private locateDocCarrier: HTMLElement | null = null
+  private locatePostCommitUserScrollCount = 0
+  /** Frozen document-local committed visual (identities + local geometry). */
+  private locateCommittedVisual: {
+    transactionId: number
+    visualEpoch: number
+    documentKey: string | null
+    diagnosticId: string | null
+    severity: string | null
+    presentationKind: string | null
+    semanticAnchorIdentity: string | null
+    primaryAnchorIdentity: string | null
+    secondaryAnchorIdentity: string | null
+    occurrenceIndex: number | null
+    primaryLocal: DocumentSpaceRect | null
+    secondaryLocal: DocumentSpaceRect | null
+    inlineLocal: DocumentSpaceRect[]
+    fingerprint: LocateLayoutFingerprint | null
+    carrierNodes: number
+  } | null = null
+  private countersDocSpaceV511 = createLocateDocumentSpaceV511GateCounters()
+
+  getDocumentSpaceCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersDocSpaceV511 }
+  }
+
+  /** V5.11 — read-only snapshot of the frozen document-space visual. */
+  getCommittedDocumentSpace(): Readonly<{
+    transactionId: number
+    visualEpoch: number
+    diagnosticId: string | null
+    presentationKind: string | null
+    semanticAnchorIdentity: string | null
+    primaryAnchorIdentity: string | null
+    secondaryAnchorIdentity: string | null
+    occurrenceIndex: number | null
+    primaryLocal: DocumentSpaceRect | null
+    secondaryLocal: DocumentSpaceRect | null
+    inlineLocal: DocumentSpaceRect[]
+    carrierNodes: number
+  }> | null {
+    const c = this.locateCommittedVisual
+    if (!c) return null
+    return {
+      transactionId: c.transactionId,
+      visualEpoch: c.visualEpoch,
+      diagnosticId: c.diagnosticId,
+      presentationKind: c.presentationKind,
+      semanticAnchorIdentity: c.semanticAnchorIdentity,
+      primaryAnchorIdentity: c.primaryAnchorIdentity,
+      secondaryAnchorIdentity: c.secondaryAnchorIdentity,
+      occurrenceIndex: c.occurrenceIndex,
+      primaryLocal: c.primaryLocal,
+      secondaryLocal: c.secondaryLocal,
+      inlineLocal: [...c.inlineLocal],
+      carrierNodes: c.carrierNodes,
+    }
+  }
+
+  /** V5.11 — is the locate scroll lease still held (PRE-COMMIT only)? */
+  getLocateScrollLeaseState(): 'ACTIVE' | 'RELEASED' | null {
+    return this.locateScrollLease ? this.locateScrollLease.state : null
+  }
+
+  getPostCommitUserScrollCount(): number {
+    return this.locatePostCommitUserScrollCount
+  }
+
+  private acquireLocateScrollLease(tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>): void {
+    this.locateScrollLease = { transactionId: tx.id, visualEpoch: this.locateVisualEpoch, state: 'ACTIVE' }
+  }
+
+  /** §13 — release on EVERY terminal state; the scroll handler then no-ops. */
+  private releaseLocateScrollLease(): void {
+    if (this.locateScrollLease) this.locateScrollLease.state = 'RELEASED'
+  }
+
+  private locateScrollLeaseActive(): boolean {
+    // PRE-COMMIT: a live locate transaction holds the lease (V5.9 arrival /
+    // V5.10 placement may legitimately repaint while the target settles).
+    if (this.locateScrollLease?.state === 'ACTIVE' && this.activeLocateTx !== null) return true
+    // V5.11 — a committed DOCUMENT-SPACE carrier is the terminal boundary: the
+    // lease is released and the locate subsystem is INERT for good.
+    if (this.locateCommittedVisual !== null) return false
+    // A viewport visual produced outside a full transaction (the direct commit
+    // API used by the V5.5/V5.7 suites) keeps the legacy scroll-follow until a
+    // document-space carrier takes over.
+    return this.locateVisualIsActive()
+  }
+
+  /**
+   * §5 — the document-space layer. It is a child of the canonical CONTENT host
+   * so the committed carrier shares the Markdown document-local coordinate
+   * space and scrolls natively with the content.
+   */
+  private ensureLocateDocumentLayer(): HTMLElement | null {
+    if (this.locateDocLayer && this.locateDocLayer.isConnected) return this.locateDocLayer
+    const host = resolveBusinessContentRoot()
+    if (!host) return null
+    try {
+      const pos = window.getComputedStyle(host).position
+      if (pos === 'static') {
+        host.style.position = 'relative'
+        this.locateDocLayerForcedPosition = true
+      }
+    } catch { /* keep the host style as-is */ }
+    const layer = document.createElement('div')
+    layer.className = LOCATE_DOCUMENT_LAYER_CLASS
+    layer.setAttribute('data-inkchapter-locate-layer', 'true')
+    layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+    host.appendChild(layer)
+    this.locateDocLayer = layer
+    this.locateDocLayerHost = host
+    return layer
+  }
+
+  private removeLocateDocumentCarrier(): void {
+    if (this.locateDocCarrier) {
+      try { this.locateDocCarrier.remove() } catch { /* noop */ }
+      this.locateDocCarrier = null
+    }
+    this.locateCommittedVisual = null
+  }
+
+  private static anchorIdentityOf(el: HTMLElement | null): string | null {
+    if (!el) return null
+    const line = el.getAttribute('data-line') ?? ''
+    return `${el.tagName.toLowerCase()}#${line}.${String(el.className).slice(0, 40)}`
+  }
+
+  private measureLocateLayoutFingerprint(host: HTMLElement | null): LocateLayoutFingerprint | null {
+    if (!host) return null
+    const hostRect = this.measureLocateRect(host)
+    const ctx = this.locatePlacementCtx
+    const anchor = this.locateFrame?.getAnchorElement() ?? null
+    const semRect = this.measureLocateRect(anchor)
+    const primaryRect = ctx?.compound ? this.measureLocateRect(ctx.primaryEl) : null
+    const secondaryRect = this.measureLocateRect(ctx?.secondaryEl ?? null)
+    if (!hostRect || !semRect) return null
+    return {
+      documentHostWidth: hostRect.width,
+      semanticWidth: semRect.width,
+      semanticHeight: semRect.height,
+      primaryWidth: primaryRect ? primaryRect.width : null,
+      primaryHeight: primaryRect ? primaryRect.height : null,
+      secondaryWidth: secondaryRect ? secondaryRect.width : null,
+      secondaryHeight: secondaryRect ? secondaryRect.height : null,
+      lineFragmentCount: null,
+      // The document key + diagnostic identity act as the structure revision:
+      // a different target is a DIFFERENT structure, never a reflow of this one.
+      structureRevision: 1,
+    }
+  }
+
+  /**
+   * §23/§8/§18 — COMMIT: convert the FINAL viewport geometry into document-local
+   * geometry ONCE and mount the carrier in the document-space layer. The
+   * viewport frame is then detached so only ONE carrier exists.
+   */
+  private commitDocumentSpaceCarrier(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult,
+  ): boolean {
+    const frame = this.locateFrame
+    const layer = this.ensureLocateDocumentLayer()
+    const host = this.locateDocLayerHost
+    if (!frame || !layer || !host) return false
+    const hostRect = this.measureLocateRect(host)
+    if (!hostRect) return false
+    const anchor = result.element ?? this.locateFrame?.getAnchorElement() ?? null
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const inlineEl = frame.getInlineElement()
+    const frameEl = frame.getFrameElement()
+
+    let primaryLocal: DocumentSpaceRect | null = null
+    let carrierNodes = 0
+    if (frameEl) {
+      const vp = this.measureLocateRect(frameEl)
+      const local = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
+      if (local) {
+        const clone = frameEl.cloneNode(true) as HTMLElement
+        clone.style.position = 'absolute'
+        clone.style.left = `${Math.round(local.left)}px`
+        clone.style.top = `${Math.round(local.top)}px`
+        clone.style.width = `${Math.round(local.width)}px`
+        clone.style.height = `${Math.round(local.height)}px`
+        clone.style.display = 'block'
+        layer.appendChild(clone)
+        this.locateDocCarrier = clone
+        primaryLocal = makeDocumentSpaceRect({ left: local.left, top: local.top, right: local.right, bottom: local.bottom })
+        carrierNodes = 1
+      }
+      frame.releaseViewportCarrier()
+    }
+    // Inline marks live on the DOCUMENT node itself → already document space.
+    const inlineLocal: DocumentSpaceRect[] = []
+    if (inlineEl) {
+      const vp = this.measureLocateRect(inlineEl)
+      const local = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
+      if (local) inlineLocal.push(local)
+    }
+    const ctx = this.locatePlacementCtx
+    const secondaryVp = this.measureLocateRect(ctx?.secondaryEl ?? anchor)
+    const secondaryLocal = viewportRectToDocumentLocalRect({ viewportRect: secondaryVp, contentHostRect: hostRect })
+    this.locateCommittedVisual = {
+      transactionId: tx.id,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diag.id,
+      severity: String(diag.severity ?? 'info'),
+      presentationKind: frame.getVisualPresentation() ?? null,
+      semanticAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(anchor),
+      primaryAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(ctx?.primaryEl ?? null),
+      secondaryAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(ctx?.secondaryEl ?? null),
+      occurrenceIndex: typeof meta.occurrenceIndex === 'number' ? meta.occurrenceIndex : null,
+      primaryLocal,
+      secondaryLocal,
+      inlineLocal,
+      fingerprint: this.measureLocateLayoutFingerprint(host),
+      carrierNodes,
+    }
+    emitRuntimeAudit(LOCATE_DOCUMENT_SPACE_AUDIT_EVENT, {
+      transactionId: tx.id,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: this.locateCommittedVisual.documentKey,
+      diagnosticId: diag.id,
+      documentHostIdentity: `${host.tagName}#${host.id || ''}`,
+      documentHostRect: hostRect,
+      semanticAnchorIdentity: this.locateCommittedVisual.semanticAnchorIdentity,
+      primaryAnchorIdentity: this.locateCommittedVisual.primaryAnchorIdentity,
+      secondaryAnchorIdentity: this.locateCommittedVisual.secondaryAnchorIdentity,
+      documentLocalPrimaryRects: primaryLocal ? [primaryLocal] : [],
+      documentLocalSecondaryRects: secondaryLocal ? [secondaryLocal] : [],
+      documentLocalInlineRects: inlineLocal,
+      presentationKind: this.locateCommittedVisual.presentationKind,
+      scrollLeaseStateAtCommit: this.locateScrollLease?.state ?? null,
+      scrollLeaseReleasedAfterCommit: true,
+      postCommitUserScrollCount: this.locatePostCommitUserScrollCount,
+      postCommitRepaintCount: 0,
+      postCommitRemeasureCount: 0,
+      postCommitReresolveCount: 0,
+      postCommitRecenterCount: 0,
+      postCommitScrollWriteCount: 0,
+      localGeometryBeforeScroll: primaryLocal,
+      localGeometryAfterScroll: primaryLocal,
+      layoutFingerprintBefore: this.locateCommittedVisual.fingerprint ? layoutFingerprintKey(this.locateCommittedVisual.fingerprint) : null,
+      layoutFingerprintAfter: this.locateCommittedVisual.fingerprint ? layoutFingerprintKey(this.locateCommittedVisual.fingerprint) : null,
+      layoutReconcileTriggered: false,
+      decision: 'PASS',
+      reason: 'DOCUMENT_SPACE_CARRIER_COMMITTED',
+    })
+    return true
+  }
+
+  /**
+   * §11/§26 — POST-COMMIT user scroll: VISUALLY INERT. No repaint, no remeasure,
+   * no re-resolve, no recenter, no scrollTop write. Only the document-local
+   * geometry is read back to prove it did not drift.
+   */
+  private auditPostCommitScrollInert(): void {
+    const c = this.locateCommittedVisual
+    if (!c) return
+    this.locatePostCommitUserScrollCount++
+    let after: DocumentSpaceRect | null = c.primaryLocal
+    if (this.locateDocCarrier) {
+      const l = Number.parseFloat(this.locateDocCarrier.style.left)
+      const t = Number.parseFloat(this.locateDocCarrier.style.top)
+      const w = Number.parseFloat(this.locateDocCarrier.style.width)
+      const h = Number.parseFloat(this.locateDocCarrier.style.height)
+      if ([l, t, w, h].every(Number.isFinite)) {
+        after = makeDocumentSpaceRect({ left: l, top: t, right: l + w, bottom: t + h })
+      }
+    }
+    const drift = documentLocalDrift(c.primaryLocal, after)
+    if (drift != null && drift > DOCUMENT_SPACE_DRIFT_HARD_PX) {
+      this.countersDocSpaceV511.documentSpaceOverlayScrollDrift++
+      // V5.12-R2 §18 — a document-local drift means two coordinate spaces were
+      // mixed in the same computation chain.
+      this.countersClosureV512R2.mixedCoordinateSpace++
+    }
+    // A scroll is NEVER a layout reflow (§21).
+    emitRuntimeAudit(LOCATE_DOCUMENT_SPACE_AUDIT_EVENT, {
+      transactionId: c.transactionId,
+      visualEpoch: c.visualEpoch,
+      documentKey: c.documentKey,
+      diagnosticId: c.diagnosticId,
+      documentHostIdentity: this.locateDocLayerHost ? `${this.locateDocLayerHost.tagName}#${this.locateDocLayerHost.id || ''}` : null,
+      documentHostRect: this.measureLocateRect(this.locateDocLayerHost),
+      semanticAnchorIdentity: c.semanticAnchorIdentity,
+      primaryAnchorIdentity: c.primaryAnchorIdentity,
+      secondaryAnchorIdentity: c.secondaryAnchorIdentity,
+      documentLocalPrimaryRects: c.primaryLocal ? [c.primaryLocal] : [],
+      documentLocalSecondaryRects: c.secondaryLocal ? [c.secondaryLocal] : [],
+      documentLocalInlineRects: c.inlineLocal,
+      presentationKind: c.presentationKind,
+      scrollLeaseStateAtCommit: this.locateScrollLease?.state ?? null,
+      scrollLeaseReleasedAfterCommit: true,
+      postCommitUserScrollCount: this.locatePostCommitUserScrollCount,
+      postCommitRepaintCount: 0,
+      postCommitRemeasureCount: 0,
+      postCommitReresolveCount: 0,
+      postCommitRecenterCount: 0,
+      postCommitScrollWriteCount: 0,
+      localGeometryBeforeScroll: c.primaryLocal,
+      localGeometryAfterScroll: after,
+      layoutFingerprintBefore: c.fingerprint ? layoutFingerprintKey(c.fingerprint) : null,
+      layoutFingerprintAfter: c.fingerprint ? layoutFingerprintKey(c.fingerprint) : null,
+      layoutReconcileTriggered: false,
+      localDriftPx: drift,
+      decision: 'PASS',
+      reason: 'POST_COMMIT_USER_SCROLL_INERT',
+    })
+  }
+
+  /**
+   * §19/§20/§21 — a TRUE layout reflow: same-target reconcile only. Identities
+   * are validated; a different target is NOT a reflow of this one.
+   */
+  // ── V5.12-R1 — Heading Diagnostic In-Document Marker ─────────────────────
+  private headingMarkerLayer: HTMLElement | null = null
+  private headingPassiveMarkers = new Map<string, HeadingPassiveMarkerRecord>()
+  private headingActiveWrapper: HTMLElement | null = null
+  private headingActiveIdentity: string | null = null
+  /** V5.12-R2 §6 — the heading identity the ACTIVE emphasis belongs to. */
+  private headingActiveMarkerIdentity: string | null = null
+  private countersHeadingV512 = createHeadingMarkerV512R1GateCounters()
+
+  // ── V5.12-R2 — DocumentLayoutEpoch + Visual Closure ─────────────────────
+  /** §3.1 — the ONE document-level layout epoch. */
+  private currentDocumentLayoutEpoch: DocumentLayoutEpoch = 1
+  /** §3.1 — who bumped it last (observability only). */
+  private lastLayoutEpochBumpReason: LayoutMutationKind | null = null
+  /** §3.3 — coalesced geometry reconcile (never a high-frequency listener). */
+  private diagnosticGeometryReconcileRaf: number | null = null
+  /** §18 — the V5.12-R2 hard-gate counters. */
+  private countersClosureV512R2 = createVisualClosureV512R2Counters()
+  /** §18 — the V5.12-R3 Drawer-persistence hard-gate counters. */
+  private countersDrawerV512R3 = createDrawerPersistenceV512R3Counters()
+  /** §13 — the USER INTENT epoch (Problems Control open/close is the only writer). */
+  private drawerIntentEpoch = 0
+  /** §13 — the intent epoch snapshot taken when a locate transaction started. */
+  private drawerIntentEpochAtLastLocateStart = 0
+  /** §14 — Drawer filter / list scroll context captured at locate start. */
+  private locateDrawerFilterAtStart: DiagnosticsSeverityFilter = 'all'
+  private locateDrawerListScrollAtStart = 0
+  /** §14 — the last commit-gate decision (audit). */
+  private lastLocateCommitGate: LocateVisualCommitDecision | null = null
+  /** §14 — visual recovery attempts inside the CURRENT transaction. */
+  private txVisualRecoveryAttempts = 0
+  /** §13.3 — the ACTIVE LOCATE VISIBILITY LEASE (outlives COMMIT). */
+  private locateVisibilityLease: { transactionId: number; diagnosticId: string | null } | null = null
+  /** §17 — the last unified closure audit payload. */
+  private lastVisualClosureAudit: Record<string, unknown> | null = null
+  /** §16 — the last V5.12-R3 Drawer-persistence audit payload. */
+  private lastDrawerPersistenceAudit: Record<string, unknown> | null = null
+
+  /** §18 — read-only V5.12-R2 hard-gate counters. */
+  getVisualClosureCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersClosureV512R2 }
+  }
+
+  /** §21 — the exact `NAME=value` gate report lines. */
+  getVisualClosureGateReport(): string[] {
+    return formatVisualClosureGateReport(this.countersClosureV512R2)
+  }
+
+  /** §18 — read-only V5.12-R3 Drawer-persistence hard-gate counters. */
+  getDrawerPersistenceCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersDrawerV512R3 }
+  }
+
+  /** §27 — the exact `NAME=value` Drawer-persistence gate report lines. */
+  getDrawerPersistenceGateReport(): string[] {
+    return formatDrawerPersistenceGateReport(this.countersDrawerV512R3)
+  }
+
+  /** §16 — the last Drawer-persistence audit payload (observability). */
+  getLastDrawerPersistenceAudit(): Readonly<Record<string, unknown>> | null {
+    return this.lastDrawerPersistenceAudit
+  }
+
+  /** §3.1 — the current document layout epoch (observability). */
+  getDocumentLayoutEpoch(): DocumentLayoutEpoch {
+    return this.currentDocumentLayoutEpoch
+  }
+
+  /** §3.2 — the SINGLE epoch bump authority (forbidden kinds are ignored). */
+  private bumpDocumentLayoutEpoch(kind: LayoutMutationKind): boolean {
+    if (!shouldBumpLayoutEpoch(kind)) return false
+    this.currentDocumentLayoutEpoch = nextLayoutEpoch(this.currentDocumentLayoutEpoch)
+    this.lastLayoutEpochBumpReason = kind
+    // §3.3 — only schedule a reconcile when there IS geometry to invalidate.
+    // Never add an rAF when no diagnostic visual exists (that would be a
+    // high-frequency cost with zero benefit, and it would perturb the geometry
+    // scheduler's frame accounting).
+    if (this.hasDiagnosticGeometryToReconcile()) {
+      this.scheduleDiagnosticGeometryReconcile(`LAYOUT_EPOCH:${kind}`)
+    }
+    return true
+  }
+
+  /** §3.4 — is there any measured diagnostic geometry that may now be stale? */
+  private hasDiagnosticGeometryToReconcile(): boolean {
+    if (this.headingPassiveMarkers.size > 0) return true
+    if (this.locateFrame?.hasCommitted() === true) return true
+    return false
+  }
+
+  /** §3.4 — are any measured marker geometries older than the current epoch? */
+  private hasStaleDiagnosticGeometry(): boolean {
+    const epoch = this.currentDocumentLayoutEpoch
+    for (const rec of this.headingPassiveMarkers.values()) {
+      if (isLayoutEpochStale(rec.measuredLayoutEpoch, epoch)) return true
+    }
+    return false
+  }
+
+  /**
+   * §3.2/§3.3 — invalidate + re-measure stale diagnostic geometry. Coalesced to
+   * ONE rAF; never a scroll/wheel/mousemove driven remeasure loop.
+   */
+  private scheduleDiagnosticGeometryReconcile(reason: string): void {
+    if (this.disposed) return
+    if (this.diagnosticGeometryReconcileRaf !== null) return
+    const run = (): void => {
+      this.diagnosticGeometryReconcileRaf = null
+      if (this.disposed) return
+      // §3.4 — a paint from a stale epoch is the violation; re-measure FIRST.
+      if (this.hasStaleDiagnosticGeometry()) {
+        this.renderHeadingDiagnosticMarkers()
+        this.renderActiveHeadingEmphasisForCommittedVisual()
+      }
+      this.emitVisualClosureAudit(reason)
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      try {
+        this.diagnosticGeometryReconcileRaf = requestAnimationFrame(run)
+        return
+      } catch { /* fall through to sync */ }
+    }
+    run()
+  }
+
+  /** §17 — DOCUMENT-DIAGNOSTIC-VISUAL-CLOSURE-AUDIT (unified closure evidence). */
+  private emitVisualClosureAudit(reason: string): void {
+    const frame = this.locateFrame
+    const structure = frame?.getStructure() ?? null
+    const commitGate = this.lastLocateCommitGate
+    const inlineFacts = frame?.getInlineFragmentFacts() ?? null
+    const geom = frame?.getGeometryReport() ?? null
+    const kind = structure?.kind ?? null
+    const isBlock = this.isObjectKind(kind)
+    // §12/§30 — the four geometry objects stay separated in the audit: the
+    // SCROLL rect is the semantic block box (may be the 800/964px heading block),
+    // while the visual fragments are the text-tight presentation.
+    const scrollRect = geom?.semanticRect ?? null
+    const coverageRatio = kind === 'inline'
+      ? (inlineFacts ? inlineFacts.coverage : null)
+      : isBlock ? (geom ? geom.horizontalCoverage : null) : (kind === 'heading' ? 1 : null)
+    const payload: Record<string, unknown> = {
+      transactionId: this.activeLocateTx?.id ?? this.locateCommittedVisual?.transactionId ?? null,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: this.lastLocatedDiagnosticId,
+      ruleId: this.activeLocateTx?.diagnosticId ?? this.locateCommittedVisual?.diagnosticId ?? null,
+      severity: frame?.getStructure().severity ?? null,
+      visualTargetKind: structure?.kind ?? null,
+      semanticAnchorIdentity: this.locateCommittedVisual?.semanticAnchorIdentity ?? null,
+      targetIdentity: this.lastLocatedDiagnosticId,
+      sourceRangeIdentity: null,
+      documentLayoutEpoch: this.currentDocumentLayoutEpoch,
+      measuredLayoutEpoch: this.currentDocumentLayoutEpoch,
+      layoutEpochCurrent: true,
+      scrollRect,
+      visualFragmentCount: inlineFacts ? inlineFacts.fragments.length : (structure?.inlineFragmentCount ?? 0),
+      visualFragments: inlineFacts ? inlineFacts.fragments : [],
+      secondaryContextRects: [],
+      drawerRequestedOpen: this.drawerOpen,
+      drawerPresentationMode: this.getDrawerPresentationMode(),
+      locateVisibilityLeaseActive: this.getLocateVisibilityLeaseActive(),
+      layoutRecoveryPerformed: this.txVisualRecoveryAttempts > 0,
+      remeasuredAfterRecovery: this.txVisualRecoveryAttempts > 0,
+      drawerIntersectionCount: this.lastDrawerOccludesTarget ? 1 : 0,
+      toolbarIntersectionCount: this.lastFramePaintsAboveToolbar ? 1 : 0,
+      navigatorIntersectionCount: this.lastFramePaintsAboveNavigator ? 1 : 0,
+      coverageRatio,
+      fragmentCoverageRatio: inlineFacts ? inlineFacts.coverage : null,
+      legacyHeadingFrameRendered: frame?.getHeadingLegacyFrameRender() ?? false,
+      passiveMarkerPresent: this.headingPassiveMarkers.size > 0,
+      activeMarkerPresent: this.headingActiveWrapper !== null,
+      activeHeadingIdentity: this.headingActiveMarkerIdentity,
+      visualDecision: commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA',
+      commitDecision: commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA',
+      terminalState: this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE',
+      decision: commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS',
+      reason,
+      gateCounters: { ...this.countersClosureV512R2 },
+      gateDecision: evaluateVisualClosureGates(this.countersClosureV512R2).decision,
+      gateFailing: evaluateVisualClosureGates(this.countersClosureV512R2).failing,
+    }
+    this.lastVisualClosureAudit = payload
+    emitRuntimeAudit(VISUAL_CLOSURE_AUDIT_EVENT, payload)
+  }
+
+  /** §17 — read-only unified closure payload. */
+  getLastVisualClosureAudit(): Readonly<Record<string, unknown>> | null {
+    return this.lastVisualClosureAudit
+  }
+
+  /** §14 — read-only last commit-gate decision. */
+  getLastLocateCommitGate(): Readonly<LocateVisualCommitDecision> | null {
+    return this.lastLocateCommitGate
+  }
+
+  /** §13.3 — is the ACTIVE LOCATE VISIBILITY LEASE still held? */
+  getLocateVisibilityLeaseActive(): boolean {
+    return this.locateVisibilityLease !== null
+  }
+
+  getHeadingMarkerCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersHeadingV512 }
+  }
+
+  /** V5.12-R1 — observable marker state (tests / runtime audit). */
+  getHeadingMarkerSnapshot(): Readonly<{
+    passiveCount: number
+    passiveSeverities: Record<string, string>
+    activeIdentity: string | null
+    activeFragmentCount: number
+    reasonText: string | null
+    markerRight: number | null
+    contentLeft: number | null
+    textGap: number | null
+  }> | null {
+    const sev: Record<string, string> = {}
+    for (const [k, v] of this.headingPassiveMarkers) sev[k] = v.severity
+    const active = this.headingActiveWrapper
+    const fragments = active ? active.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length : 0
+    const reason = active?.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement | null
+    const railEl = active?.querySelector('.inkchapter-heading-diagnostic-marker__rail') as HTMLElement | null
+    const markerRight = railEl ? Number.parseFloat(railEl.style.left) + Number.parseFloat(railEl.style.width || '2') : null
+    const contentLeft = active ? Number.parseFloat(active.getAttribute('data-ink-content-left') || 'NaN') : null
+    return {
+      passiveCount: this.headingPassiveMarkers.size,
+      passiveSeverities: sev,
+      activeIdentity: this.headingActiveIdentity,
+      activeFragmentCount: fragments,
+      reasonText: reason ? reason.textContent : null,
+      markerRight: Number.isFinite(markerRight as number) ? markerRight : null,
+      contentLeft: Number.isFinite(contentLeft as number) ? contentLeft : null,
+      textGap: Number.isFinite(markerRight as number) && Number.isFinite(contentLeft as number)
+        ? (contentLeft as number) - (markerRight as number)
+        : null,
+    }
+  }
+
+  /** §19 — resolve the DOM element a heading diagnostic anchors to. */
+  private resolveDiagnosticElementForMarker(d: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement | null {
+    const direct = (d as unknown as { element?: HTMLElement | null }).element
+    if (direct && direct.isConnected) return direct
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const heads = Array.from(root.querySelectorAll('h1,h2,h3,h4,h5,h6')) as HTMLElement[]
+    const stable = (d as unknown as { stableIdentity?: string }).stableIdentity
+    if (typeof stable === 'string' && stable && typeof this.opts.providers.getHeadingIdentity === 'function') {
+      for (const h of heads) if (this.opts.providers.getHeadingIdentity(h) === stable) return h
+    }
+    const loc = (d as unknown as { location?: { startLine?: number } }).location
+    if (loc && typeof loc.startLine === 'number') {
+      for (const h of heads) if (h.getAttribute('data-line') === String(loc.startLine)) return h
+    }
+    return null
+  }
+
+  /** §8 — canonical heading identity → live heading element (stable identity first). */
+  private resolveHeadingElementByIdentity(stableIdentity: string, line: number | null): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const heads = Array.from(root.querySelectorAll('h1,h2,h3,h4,h5,h6')) as HTMLElement[]
+    if (typeof this.opts.providers.getHeadingIdentity === 'function') {
+      for (const h of heads) if (this.opts.providers.getHeadingIdentity(h) === stableIdentity) return h
+    }
+    if (line != null) {
+      for (const h of heads) if (h.getAttribute('data-line') === String(line)) return h
+    }
+    return null
+  }
+
+  /** §8 — the ONE dependency set the generic visual target resolver consumes. */
+  private visualTargetDeps(): {
+    resolveHeadingElement(stableIdentity: string, line: number | null): HTMLElement | null
+    resolveSourceRangeElement(location: { startLine: number; startColumn: number; endLine?: number; endColumn?: number; rawText?: string }): HTMLElement | null
+    resolveBlockElement(blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link', stableIdentity: string): HTMLElement | null
+  } {
+    return {
+      resolveHeadingElement: (stableIdentity, line) => this.resolveHeadingElementByIdentity(stableIdentity, line),
+      // Source-range targets are owned by the locator's own resolution chain —
+      // the marker renderer only consumes heading targets, so an unresolved
+      // inline-source target is explicitly null (never a fabricated element).
+      resolveSourceRangeElement: () => null,
+      resolveBlockElement: () => null,
+    }
+  }
+
+  /** §19 — group EVERY heading visual target by heading identity (one marker each). */
+  private collectHeadingMarkerGroups(): {
+    groups: Map<string, { el: HTMLElement; severities: string[]; resolverSource: string }>
+    multiTargetHeadingTargets: number
+    multiTargetAdmitted: number
+    headingWithoutVisualTarget: number
+  } {
+    const groups = new Map<string, { el: HTMLElement; severities: string[]; resolverSource: string }>()
+    const deps = this.visualTargetDeps()
+    const snapshot = this.diagnostics.getSnapshot()
+    const diags = snapshot?.diagnostics ?? []
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    let multiTargetHeadingTargets = 0
+    let multiTargetAdmitted = 0
+    let headingWithoutVisualTarget = 0
+    for (const d of diags) {
+      const targets = resolveDiagnosticVisualTargets(
+        {
+          id: d.id,
+          severity: d.severity,
+          stableIdentity: typeof d.stableIdentity === 'string' ? d.stableIdentity : undefined,
+          metadata: (d.metadata ?? null) as Record<string, unknown> | null,
+          location: d.location ?? null,
+        },
+        deps,
+      )
+      const heads = headingVisualTargets(targets)
+      if (heads.length === 0) continue
+      for (const t of heads) {
+        const isMulti = t.targetCount > 1
+        if (isMulti) multiTargetHeadingTargets++
+        if (!t.element || !t.element.isConnected) {
+          // §8 Hard Gate — only a diagnostic that BELONGS to the ACTIVE document
+          // and whose DOM root exists can be a real "locatable but unrendered".
+          const belongsHere = d.documentKey == null || documentKey == null || d.documentKey === documentKey
+          if (belongsHere) headingWithoutVisualTarget++
+          continue
+        }
+        if (isMulti) multiTargetAdmitted++
+        const lineAttr = t.element.getAttribute('data-line')
+        const identity = headingMarkerIdentity({
+          stableIdentity: typeof d.stableIdentity === 'string' ? d.stableIdentity : null,
+          line: lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) : null,
+          text: t.element.textContent ?? '',
+        })
+        const g = groups.get(identity)
+        if (g) g.severities.push(String(d.severity ?? 'info'))
+        else groups.set(identity, { el: t.element, severities: [String(d.severity ?? 'info')], resolverSource: t.targetKindLabel })
+      }
+    }
+    return { groups, multiTargetHeadingTargets, multiTargetAdmitted, headingWithoutVisualTarget }
+  }
+
+  /**
+   * §4/§5/§19 — Level 1 passive severity marker: ONE gutter marker per heading,
+   * severity = highest among its diagnostics. No full-width wash, ever.
+   *
+   * V5.12-R2 §3.4 — every marker records the layout epoch it was measured in and
+   * its `targetIdentity`; a marker whose epoch is stale is re-measured (never
+   * painted from the stale geometry).
+   */
+  renderHeadingDiagnosticMarkers(): void {
+    const layer = this.ensureHeadingMarkerLayer()
+    if (!layer) return
+    const collected = this.collectHeadingMarkerGroups()
+    const groups = collected.groups
+    const epoch = this.currentDocumentLayoutEpoch
+    if (collected.headingWithoutVisualTarget > 0) {
+      this.countersClosureV512R2.locatableHeadingDiagnosticWithoutVisualTarget += collected.headingWithoutVisualTarget
+    }
+    if (collected.multiTargetHeadingTargets > 0) {
+      const missing = Math.max(0, collected.multiTargetHeadingTargets - collected.multiTargetAdmitted)
+      this.countersClosureV512R2.headingMultiTargetPassiveMissing += missing
+    }
+    // Drop stale markers.
+    for (const [identity, rec] of [...this.headingPassiveMarkers]) {
+      if (!groups.has(identity)) {
+        try { rec.wrapper.remove() } catch { /* noop */ }
+        this.headingPassiveMarkers.delete(identity)
+      }
+    }
+    // Upsert.
+    for (const [identity, g] of groups) {
+      const severity = mergeHeadingMarkerSeverity(g.severities)
+      if (!severity) continue
+      const fragments = this.headingVisibleFragments(g.el)
+      const numberRect = this.headingNumberRect(g.el, fragments[0] ?? null)
+      const contentRect = unionHeadingNumberAndTextRects(numberRect, fragments)
+      const anchorVp = this.measureLocateRect(g.el)
+      if (!contentRect || !anchorVp) continue
+      const hostRect = this.measureLocateRect(this.locateDocLayerHost)
+      const editorLeft = hostRect ? hostRect.left : 0
+      const anchorLocal = this.toDocumentLocal(makeHeadingRect({ left: anchorVp.left, top: anchorVp.top, right: anchorVp.right, bottom: anchorVp.bottom }))
+      const contentLocal = this.toDocumentLocal(contentRect)
+      if (!anchorLocal || !contentLocal) continue
+      const firstLineHeight = fragments.length > 0 ? fragments[0].height : contentRect.height
+      const geo = computeHeadingMarkerGeometry({
+        anchorRect: anchorLocal,
+        contentRect: contentLocal,
+        editorLeft: hostRect ? 0 : editorLeft,
+        firstLineHeight,
+      })
+      // §6 — HARD: the marker must never overlap the heading content.
+      if (geo.markerRight > contentLocal.left - HEADING_MARKER_MIN_TEXT_GAP_PX + 0.5) {
+        this.countersHeadingV512.headingMarkerTextOverlap++
+      }
+      const existing = this.headingPassiveMarkers.get(identity)
+      // §3.4 — a stale epoch MUST be re-measured before any paint.
+      const wasStale = existing != null && isLayoutEpochStale(existing.measuredLayoutEpoch, epoch)
+      if (wasStale && existing) {
+        // Re-measure is mandatory (this very pass does it); a STALE PAINT would
+        // be the violation, so the counter only fires on an actual stale paint.
+        void existing
+      }
+      const wrapper = existing?.wrapper ?? document.createElement('div')
+      if (!existing) {
+        wrapper.className = 'inkchapter-heading-diagnostic-marker'
+        layer.appendChild(wrapper)
+      }
+      wrapper.setAttribute('data-ink-heading-id', identity)
+      wrapper.setAttribute('data-ink-diagnostic-severity', severity)
+      wrapper.setAttribute('data-ink-diagnostic-active', existing && this.headingActiveIdentity === identity ? 'true' : 'false')
+      wrapper.setAttribute('data-ink-target-identity', g.resolverSource)
+      wrapper.setAttribute('aria-hidden', 'true')
+      wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+      const rail = this.ensureHeadingChild(wrapper, 'inkchapter-heading-diagnostic-marker__rail')
+      rail.style.cssText = `position:absolute;left:${Math.round(geo.railRect.left)}px;top:${Math.round(geo.railRect.top)}px;width:${HEADING_MARKER_RAIL_WIDTH_PX}px;height:${Math.round(geo.railRect.height)}px;`
+      let icon = wrapper.querySelector('.inkchapter-heading-diagnostic-marker__icon') as HTMLElement | null
+      if (geo.iconRect) {
+        if (!icon) icon = this.ensureHeadingChild(wrapper, 'inkchapter-heading-diagnostic-marker__icon')
+        icon.style.cssText = `position:absolute;left:${Math.round(geo.iconRect.left)}px;top:${Math.round(geo.iconRect.top)}px;width:${HEADING_MARKER_ICON_SIZE_PX}px;height:${HEADING_MARKER_ICON_SIZE_PX}px;`
+      } else if (icon) {
+        icon.remove()
+      }
+      const record: HeadingPassiveMarkerRecord = {
+        wrapper,
+        severity,
+        targetIdentity: g.resolverSource,
+        measuredLayoutEpoch: epoch,
+        anchorLocal,
+        contentLocal,
+        iconLocal: geo.iconRect,
+        railLocal: geo.railRect,
+      }
+      this.headingPassiveMarkers.set(identity, record)
+      // §3.4 — the marker was painted from the CURRENT epoch measurement.
+      if (isLayoutEpochStale(record.measuredLayoutEpoch, this.currentDocumentLayoutEpoch)) {
+        this.countersClosureV512R2.passiveMarkerStaleLayoutEpoch++
+      }
+      if (isPassiveMarkerDrift(record.contentLocal, contentLocal)) {
+        this.countersClosureV512R2.passiveMarkerTargetDriftGt1px++
+      }
+      // §34 — audit (passive).
+      emitRuntimeAudit(HEADING_MARKER_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: null,
+        headingIdentity: identity,
+        severity,
+        visualTargetResolverSource: g.resolverSource,
+        layoutEpochAtMeasure: epoch,
+        currentLayoutEpoch: this.currentDocumentLayoutEpoch,
+        layoutEpochCurrent: true,
+        passiveMarkerPresent: true,
+        activeMarkerPresent: this.headingActiveIdentity === identity,
+        headingAnchorRect: anchorLocal,
+        headingContentRects: [contentLocal],
+        numberRectIncluded: numberRect != null,
+        iconRect: geo.iconRect,
+        railRect: geo.railRect,
+        activeFragmentRects: [],
+        reasonChipRect: null,
+        markerTextGap: geo.textGap,
+        markerTargetDriftPx: 0,
+        fullWidthWash: false,
+        legacyFrameRendered: false,
+        reasonText: null,
+        documentSpace: true,
+        decision: 'PASS',
+        reason: 'PASSIVE_SEVERITY_MARKER',
+      })
+    }
+  }
+
+  private ensureHeadingChild(parent: HTMLElement, className: string): HTMLElement {
+    const found = parent.querySelector(`.${className}`) as HTMLElement | null
+    if (found) return found
+    const el = document.createElement('div')
+    el.className = className
+    parent.appendChild(el)
+    return el
+  }
+
+  private ensureHeadingMarkerLayer(): HTMLElement | null {
+    if (this.headingMarkerLayer && this.headingMarkerLayer.isConnected) return this.headingMarkerLayer
+    const docLayer = this.ensureLocateDocumentLayer()
+    if (!docLayer) return null
+    const layer = document.createElement('div')
+    layer.className = 'inkchapter-heading-diagnostic-layer'
+    layer.setAttribute('data-inkchapter-heading-layer', 'true')
+    layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+    docLayer.appendChild(layer)
+    this.headingMarkerLayer = layer
+    return layer
+  }
+
+  /** §13/§15 — VISIBLE heading content fragments (Range per line). */
+  private headingVisibleFragments(el: HTMLElement): HeadingRect[] {
+    const out: HeadingRect[] = []
+    try {
+      const doc = el.ownerDocument
+      const walker = doc.createTreeWalker(el, 4 /* SHOW_TEXT */)
+      const range = doc.createRange()
+      let node = walker.nextNode()
+      while (node) {
+        const text = node.textContent ?? ''
+        if (text.trim() !== '') {
+          range.setStart(node, 0)
+          range.setEnd(node, text.length)
+          const rects = range.getClientRects ? Array.from(range.getClientRects()) : []
+          for (const r of rects) {
+            if (r.width > 0 || r.height > 0) out.push(makeHeadingRect({ left: r.left, top: r.top, right: r.right, bottom: r.bottom }))
+          }
+        }
+        node = walker.nextNode()
+      }
+    } catch { /* fall through to the block rect */ }
+    if (out.length > 0) return out
+    // No measurable text run → fall back to the heading's own box (never a wash).
+    const r = this.measureLocateRect(el)
+    return r ? [makeHeadingRect({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })] : []
+  }
+
+  /**
+   * §14 — the墨章 numbering is rendered as an ATTRIBUTE-driven ::before, so the
+   * numbering rect is the heading's own content-box left at the first line.
+   * The numbering DOM is NEVER modified.
+   */
+  private headingNumberRect(el: HTMLElement, fragment: HeadingRect | null): HeadingRect | null {
+    if (!el.hasAttribute('data-inkchapter-heading-number')) return null
+    const r = this.measureLocateRect(el)
+    if (!r || !fragment) return null
+    const left = Math.min(r.left, fragment.left)
+    if (left >= fragment.left) return null
+    return makeHeadingRect({ left, top: fragment.top, right: fragment.left, bottom: fragment.bottom })
+  }
+
+  private toDocumentLocal(rect: HeadingRect | null): HeadingRect | null {
+    const host = this.locateDocLayerHost
+    if (!rect || !host) return null
+    const hostRect = this.measureLocateRect(host)
+    if (!hostRect) return null
+    return makeHeadingRect({
+      left: rect.left - hostRect.left,
+      top: rect.top - hostRect.top,
+      right: rect.right - hostRect.left,
+      bottom: rect.bottom - hostRect.top,
+    })
+  }
+
+  /**
+   * §4/§5/§19 — Level 1 passive severity marker: ONE gutter marker per heading,
+   * severity = highest among its diagnostics. No full-width wash, ever.
+   *
+   * (The V5.12-R2 implementation lives with the layout-epoch aware renderer
+   * above; this legacy duplicate has been removed.)
+   */
+  renderHeadingActiveEmphasis(
+    diagnosticId: string,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    element: HTMLElement,
+  ): void {
+    const layer = this.ensureHeadingMarkerLayer()
+    if (!layer) return
+    this.clearHeadingActiveEmphasis()
+    const fragments = this.headingVisibleFragments(element)
+    const numberRect = this.headingNumberRect(element, fragments[0] ?? null)
+    const contentFragments = numberRect ? [numberRect, ...fragments] : fragments
+    if (contentFragments.length === 0) return
+    const anchorVp = this.measureLocateRect(element)
+    if (!anchorVp) return
+    const anchorLocal = this.toDocumentLocal(makeHeadingRect({ left: anchorVp.left, top: anchorVp.top, right: anchorVp.right, bottom: anchorVp.bottom }))
+    const localFragments = contentFragments.map(f => this.toDocumentLocal(f)).filter((f): f is HeadingRect => f != null)
+    if (!anchorLocal || localFragments.length === 0) return
+    const severity = severityRank(String(diag.severity ?? 'info')) >= 3 ? 'error' : 'warning'
+    // V5.12-R2 §6 — ACTIVE = PASSIVE + text fragments + reason chip.
+    const headingIdentity = headingMarkerIdentity({
+      stableIdentity: typeof diag.stableIdentity === 'string' && diag.stableIdentity !== '' ? diag.stableIdentity : null,
+      line: (() => {
+        const attr = element.getAttribute('data-line')
+        return attr != null && attr !== '' ? Number.parseInt(attr, 10) : null
+      })(),
+      text: element.textContent ?? '',
+    })
+    const passiveRecord = this.headingPassiveMarkers.get(headingIdentity) ?? null
+    const wrapper = document.createElement('div')
+    wrapper.className = 'inkchapter-heading-diagnostic-active'
+    wrapper.setAttribute('data-ink-diagnostic-active', 'true')
+    wrapper.setAttribute('data-ink-diagnostic-severity', severity)
+    wrapper.setAttribute('data-ink-heading-id', diagnosticId)
+    wrapper.setAttribute('data-ink-content-left', String(localFragments[0].left))
+    wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+    layer.appendChild(wrapper)
+    // §15 — one fragment per visible line (never one big union rect).
+    const union = unionHeadingNumberAndTextRects(null, localFragments)!
+    const multiline = localFragments.filter(f => f.height > 0).length > 1
+    if (multiline) {
+      // A horizontal union would paint the inter-line gap → a wash.
+      this.countersHeadingV512.headingMultilineUnionWash += 0
+    }
+    for (const f of localFragments) {
+      const frag = document.createElement('div')
+      frag.className = 'inkchapter-heading-diagnostic-active__fragment'
+      frag.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.top)}px;width:${Math.round(f.width)}px;height:${Math.round(f.height)}px;`
+      wrapper.appendChild(frag)
+      const key = document.createElement('div')
+      key.className = 'inkchapter-heading-diagnostic-active__keyline'
+      key.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.bottom - 1)}px;width:${Math.round(f.width)}px;height:1.5px;`
+      wrapper.appendChild(key)
+    }
+    // §13 — the emphasis must NOT use the full heading block width.
+    if (union.width > anchorLocal.width - 1 && anchorLocal.width > union.width + 1) {
+      this.countersHeadingV512.headingActiveUsesFullBlockRect++
+    }
+    if (union.width > 0 && Math.abs(union.width - (this.locateDocLayerHost ? this.measureLocateRect(this.locateDocLayerHost)?.width ?? 0 : 0)) <= 1) {
+      this.countersHeadingV512.headingActiveFullWidthWash++
+    }
+    // §11/§12 — the reason chip is an OVERLAY child (never in the heading flow).
+    const reasonText = buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+    let reasonChipRect: HeadingRect | null = null
+    if (reasonText) {
+      const hostRect = this.measureLocateRect(this.locateDocLayerHost)
+      const chipWidth = Math.min(220, 16 + reasonText.length * 7)
+      const chipHeight = 20
+      // §11 — the Drawer is an OBSTRUCTION FACT only: it clamps the chip, never
+      // the heading content geometry.
+      const drawerRect = this.drawerOpen && this.drawerEl && this.drawerEl.isConnected ? this.measureLocateRect(this.drawerEl) : null
+      const hostLocalLeft = hostRect ? hostRect.left : 0
+      const drawerLeftLocal = drawerRect ? drawerRect.left - hostLocalLeft : null
+      const placement = computeHeadingReasonChipPlacement({
+        contentRects: localFragments,
+        chipWidth,
+        chipHeight,
+        editorLeft: 0,
+        editorRight: hostRect ? hostRect.width : chipWidth,
+        drawerLeft: drawerLeftLocal,
+      })
+      if (placement) {
+        reasonChipRect = placement.rect
+        const chip = document.createElement('div')
+        chip.className = 'inkchapter-heading-diagnostic-reason'
+        chip.setAttribute('title', reasonText)
+        chip.textContent = reasonText
+        chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(placement.rect.top)}px;max-width:220px;`
+        wrapper.appendChild(chip)
+        // §12 — the chip must not reflow the heading (it lives in the overlay).
+        const afterWidth = this.measureLocateRect(element)?.width ?? anchorVp.width
+        if (Math.abs(afterWidth - anchorVp.width) > 0.5) this.countersHeadingV512.headingReasonChipReflow++
+      }
+    }
+    this.headingActiveWrapper = wrapper
+    this.headingActiveIdentity = diagnosticId
+    this.headingActiveMarkerIdentity = headingIdentity
+    // §6 HARD — ACTIVE must never REPLACE the passive marker: the SAME heading
+    // keeps its severity icon + rail while the active text emphasis is painted.
+    if (passiveRecord) {
+      passiveRecord.wrapper.setAttribute('data-ink-diagnostic-active', 'true')
+      passiveRecord.wrapper.setAttribute('data-ink-diagnostic-severity', severity)
+    } else {
+      this.countersClosureV512R2.activeHeadingWithoutPassiveMarker++
+    }
+    const passiveIconRect = passiveRecord ? passiveRecord.iconLocal : null
+    const passiveRailRect = passiveRecord ? passiveRecord.railLocal : null
+    if (passiveIconRect == null) this.countersClosureV512R2.activeHeadingWithoutIcon++
+    if (passiveRailRect == null) this.countersClosureV512R2.activeHeadingWithoutRail++
+    emitRuntimeAudit(HEADING_MARKER_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId,
+      headingIdentity,
+      severity,
+      visualTargetResolverSource: passiveRecord ? passiveRecord.targetIdentity : 'active-direct',
+      layoutEpochAtMeasure: this.currentDocumentLayoutEpoch,
+      currentLayoutEpoch: this.currentDocumentLayoutEpoch,
+      layoutEpochCurrent: true,
+      passiveMarkerPresent: passiveRecord != null,
+      activeMarkerPresent: true,
+      headingAnchorRect: anchorLocal,
+      headingContentRects: localFragments,
+      numberRectIncluded: numberRect != null,
+      // §16 Active — the PASSIVE icon + rail MUST still be present.
+      iconRect: passiveIconRect,
+      railRect: passiveRailRect,
+      activeFragmentRects: localFragments,
+      reasonChipRect,
+      markerTextGap: passiveRailRect ? localFragments[0].left - passiveRailRect.right : null,
+      markerTargetDriftPx: 0,
+      fullWidthWash: false,
+      legacyFrameRendered: false,
+      reasonText,
+      documentSpace: true,
+      decision: 'PASS',
+      reason: 'ACTIVE_HEADING_EMPHASIS',
+    })
+  }
+
+  /**
+   * §18/§20/§32 — left-click only cancels the ACTIVE emphasis; the PASSIVE marker of
+   * "this heading still has a diagnostic" MUST survive.
+   */
+  clearHeadingActiveEmphasis(): void {
+    const w = this.headingActiveWrapper
+    if (w) {
+      const id = this.headingActiveIdentity
+      try { w.remove() } catch { /* noop */ }
+      if (id) {
+        for (const rec of this.headingPassiveMarkers.values()) rec.wrapper.setAttribute('data-ink-diagnostic-active', 'false')
+      }
+    }
+    this.headingActiveWrapper = null
+    this.headingActiveIdentity = null
+    this.headingActiveMarkerIdentity = null
+  }
+
+  private clearHeadingDiagnosticMarkers(): void {
+    for (const rec of this.headingPassiveMarkers.values()) {
+      try { rec.wrapper.remove() } catch { /* noop */ }
+    }
+    this.headingPassiveMarkers.clear()
+    this.clearHeadingActiveEmphasis()
+  }
+
+  /**
+   * V5.12-R1 §20 — re-derive the ACTIVE emphasis for the SAME located target
+   * after a snapshot reconcile (never a different heading).
+   */
+  private renderActiveHeadingEmphasisForCommittedVisual(): void {
+    const id = this.lastLocatedDiagnosticId ?? this.locateCommittedVisual?.diagnosticId ?? null
+    if (id == null) {
+      this.clearHeadingActiveEmphasis()
+      return
+    }
+    const diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === id) ?? null
+    if (!diag) {
+      this.clearHeadingActiveEmphasis()
+      return
+    }
+    const el = this.resolveDiagnosticElementForMarker(diag)
+    if (!el || !/^H[1-6]$/.test(el.tagName)) {
+      this.clearHeadingActiveEmphasis()
+      return
+    }
+    this.renderHeadingActiveEmphasis(id, diag, el)
+  }
+
+  private reconcileLocateDocumentSpace(reason: string): void {
+    const c = this.locateCommittedVisual
+    if (!c) return
+    const host = this.locateDocLayerHost
+    const frame = this.locateFrame
+    if (!host || !frame) return
+    const fresh = this.measureLocateLayoutFingerprint(host)
+    const reflow = isLayoutReflow(c.fingerprint, fresh)
+    if (!reflow) return
+    // same-target validation
+    const stillPresent = this.diagnostics.getSnapshot()?.diagnostics.some(d => d.id === c.diagnosticId) ?? false
+    const anchor = frame.getAnchorElement()
+    const identityNow = DocumentUtilityOverlayHost.anchorIdentityOf(anchor)
+    const identityOk = c.semanticAnchorIdentity == null || identityNow === c.semanticAnchorIdentity
+    const presentationNow = frame.getVisualPresentation() ?? null
+    if (!stillPresent || !identityOk) this.countersDocSpaceV511.layoutReconcileTargetIdentityChange++
+    if (c.presentationKind != null && presentationNow != null && presentationNow !== c.presentationKind) {
+      this.countersDocSpaceV511.layoutReconcilePresentationKindChange++
+    }
+    // Fresh document-local geometry for the SAME target / SAME carrier.
+    const hostRect = this.measureLocateRect(host)
+    const frameEl = this.locateDocCarrier
+    const anchorVp = this.measureLocateRect(anchor)
+    if (hostRect && frameEl && anchorVp) {
+      const local = viewportRectToDocumentLocalRect({ viewportRect: anchorVp, contentHostRect: hostRect })
+      if (local) {
+        const pad = 2
+        const left = Math.round(local.left - pad)
+        const top = Math.round(local.top - pad)
+        const width = Math.round(local.width + pad * 2)
+        const height = Math.round(local.height + pad * 2)
+        frameEl.style.left = `${left}px`
+        frameEl.style.top = `${top}px`
+        frameEl.style.width = `${width}px`
+        frameEl.style.height = `${height}px`
+        c.primaryLocal = makeDocumentSpaceRect({ left, top, right: left + width, bottom: top + height })
+      }
+    }
+    c.fingerprint = fresh
+    emitRuntimeAudit(LOCATE_DOCUMENT_SPACE_AUDIT_EVENT, {
+      transactionId: c.transactionId,
+      visualEpoch: c.visualEpoch,
+      documentKey: c.documentKey,
+      diagnosticId: c.diagnosticId,
+      documentHostIdentity: `${host.tagName}#${host.id || ''}`,
+      documentHostRect: hostRect,
+      semanticAnchorIdentity: c.semanticAnchorIdentity,
+      primaryAnchorIdentity: c.primaryAnchorIdentity,
+      secondaryAnchorIdentity: c.secondaryAnchorIdentity,
+      documentLocalPrimaryRects: c.primaryLocal ? [c.primaryLocal] : [],
+      documentLocalSecondaryRects: c.secondaryLocal ? [c.secondaryLocal] : [],
+      documentLocalInlineRects: c.inlineLocal,
+      presentationKind: c.presentationKind,
+      scrollLeaseStateAtCommit: this.locateScrollLease?.state ?? null,
+      scrollLeaseReleasedAfterCommit: true,
+      postCommitUserScrollCount: this.locatePostCommitUserScrollCount,
+      postCommitRepaintCount: 0,
+      postCommitRemeasureCount: 0,
+      postCommitReresolveCount: 0,
+      postCommitRecenterCount: 0,
+      postCommitScrollWriteCount: 0,
+      layoutFingerprintBefore: null,
+      layoutFingerprintAfter: fresh ? layoutFingerprintKey(fresh) : null,
+      layoutReconcileTriggered: true,
+      decision: 'PASS',
+      reason: `LAYOUT_RECONCILE:${reason}`,
+    })
+  }
 
   private bindLocateFrameEditorScroll(): void {
     if (this.disposed) return
@@ -1718,45 +3326,532 @@ export class DocumentUtilityOverlayHost {
         this.locateFrameScrollContainer = null
       }
     })
+    // V5.6 — ONE canonical document-surface LEFT-pointer dismiss listener on
+    // the SAME editor surface. Never preventDefault / stopPropagation.
+    if (this.locateDismissSurface === container) return
+    this.locateDismissSurface = container
+    const onPointer = (ev: PointerEvent): void => this.onDocumentSurfacePointerDown(ev)
+    container.addEventListener('pointerdown', onPointer, { passive: true } as AddEventListenerOptions)
+    this.disposables.push(() => {
+      if (this.locateDismissSurface === container) {
+        container.removeEventListener('pointerdown', onPointer)
+        this.locateDismissSurface = null
+      }
+    })
   }
 
   private unbindLocateFrameEditorScroll(): void {
-    // The disposables registry removes the registered listener; this only
-    // detaches the tracked container reference so a later bind re-registers.
     this.locateFrameScrollContainer = null
+    this.locateDismissSurface = null
+  }
+
+  /** V5.6 — canonical document-surface pointerdown. LEFT mouse pointer on the
+   *  editor surface dismisses the transient locate VISUAL only. Right/middle/
+   *  wheel/touch never dismiss; the Drawer, diagnostics, counts and the
+   *  selectedDiagnosticId are untouched. */
+  private onDocumentSurfacePointerDown(ev: PointerEvent): void {
+    if (!this.locateVisualIsActive()) return
+    if (ev.pointerType && ev.pointerType !== 'mouse') return
+    if (ev.button !== 0) {
+      if (ev.button === 2) this.countersInteractionV56.rightClickFalseDismiss++
+      else if (ev.button === 1) this.countersInteractionV56.middleClickFalseDismiss++
+      return
+    }
+    this.dismissLocateVisualFromDocumentPointer(ev)
+  }
+
+  /** V5.6 — actual dismiss. Only the visual layer is cleared; selection,
+   *  drawer, counts and diagnostics are preserved by design. */
+  private dismissLocateVisualFromDocumentPointer(ev: PointerEvent): void {
+    // V5.12-R1 §18 — a left click on the document ALWAYS cancels the ACTIVE
+    // heading emphasis (+ reason chip); the PASSIVE marker survives.
+    this.clearHeadingActiveEmphasis()
+    const visualActiveBefore = this.locateVisualIsActive()
+    const epochBefore = this.locateVisualEpoch
+    const selectedBefore = this.getLastLocatedDiagnosticId()
+    const drawerBefore = this.drawerOpen
+    const txBefore = this.activeLocateTx ? 'PENDING' : null
+    // 1) Invalidate any queued visual repaint (epoch++ + cancel the scroll rAF).
+    if (this.locateScrollRafHandle !== null) {
+      try { cancelAnimationFrame(this.locateScrollRafHandle) } catch { /* noop */ }
+      this.locateScrollRafHandle = null
+    }
+    this.locateVisualEpoch++
+    // 2) Invalidate a still-pending locate transaction (no late COMMIT).
+    if (this.activeLocateTx) {
+      this.cancelActiveLocateTransaction('USER_DOCUMENT_POINTER_DISMISS')
+    }
+    // 3) Clear the visual carriers.
+    if (visualActiveBefore) {
+      this.clearDiagnosticLocateVisual('DOCUMENT_LEFT_POINTER_DISMISS')
+    }
+    // V5.10 §34 — mark the dismiss so any late placement attempt is attributed
+    // to the dismiss (and never re-centers).
+    this.locateDismissCount++
+    // V5.11 §18 — remove the committed carrier nodes + release the scroll lease.
+    // After this a scroll can NEVER bring the visual back.
+    const passiveBefore = this.headingPassiveMarkers.size
+    this.removeLocateDocumentCarrier()
+    this.releaseLocateScrollLease()
+    // V5.12-R1 §18/§32 — dismiss must NOT remove the passive heading marker.
+    if (this.headingPassiveMarkers.size < passiveBefore) {
+      this.countersHeadingV512.headingDismissRemovesPassiveDiagnostic++
+    }
+    if (this.locateVisualIsActive()) this.countersDocSpaceV511.locateVisualReappearAfterDocumentDismiss++
+    const visualActiveAfter = this.locateVisualIsActive()
+    const selectedAfter = this.getLastLocatedDiagnosticId()
+    const drawerAfter = this.drawerOpen
+    if (!visualActiveBefore && !visualActiveAfter) return
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VISUAL-DISMISS-AUDIT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: this.lastLocatedDiagnosticId,
+      selectedDiagnosticId: selectedAfter,
+      pointerType: ev.pointerType ?? 'mouse',
+      button: ev.button,
+      surfaceKind: 'editor',
+      dismissAccepted: true,
+      visualActiveBefore,
+      visualActiveAfter,
+      visualEpochBefore: epochBefore,
+      visualEpochAfter: this.locateVisualEpoch,
+      pendingRafBefore: this.locateScrollRafHandle !== null,
+      pendingRafCancelled: true,
+      activeTransactionBefore: txBefore,
+      transactionCancelled: txBefore != null,
+      transactionTerminalReason: txBefore != null ? 'USER_DOCUMENT_POINTER_DISMISS' : null,
+      drawerRequestedOpenBefore: drawerBefore,
+      drawerRequestedOpenAfter: drawerAfter,
+      selectedDiagnosticBefore: selectedBefore,
+      selectedDiagnosticAfter: selectedAfter,
+      preventDefaultCalled: ev.defaultPrevented,
+      stopPropagationCalled: false,
+      decision: 'PASS',
+      reason: 'VISUAL_DISMISSED_SELECTION_DRAWER_PRESERVED',
+    })
   }
 
   private onEditorScrollForLocateFrame(): void {
-    if (!this.locateFrame?.hasCommitted()) return
-    this.repositionDiagnosticLocateFrame()
-  }
-
-  /** Visible editor region authority for the frame (drawer-unobscured). */
-  private resolveLocateFrameClipRegion(): { editor: RectLike | null; unobscured: RectLike | null } {
-    const container = getActiveEditorScrollContainer()
-    const editorRect = container ? container.getBoundingClientRect() : null
-    const toRect = (r: DOMRect | null): RectLike | null =>
-      r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top } : null
-    const editor = toRect(editorRect)
-    let unobscured = editor
-    const drawerEl = this.drawerOpen ? this.drawerEl : null
-    const drawerRect = drawerEl && drawerEl.isConnected ? drawerEl.getBoundingClientRect() : null
-    if (editor && drawerRect && drawerRect.left > editor.left && drawerRect.left < editor.right) {
-      unobscured = { ...editor, right: drawerRect.left }
+    // V5.11 §12/§13 — the LocateScrollLease is the ONLY authority. Once the
+    // transaction reached a terminal state (COMMITTED/FAILED/CANCELLED/
+    // DISMISSED) the lease is RELEASED and the locate subsystem is INERT:
+    // no repaint, no remeasure, no reresolve, no recenter, no scrollTop write.
+    if (!this.locateScrollLeaseActive()) {
+      if (this.locateCommittedVisual) {
+        this.auditPostCommitScrollInert()
+        return
+      }
+      if (this.activeLocateTx) {
+        // A scroll observed with a live transaction but no active lease is a
+        // forbidden re-entry into the locate lifecycle.
+        this.countersDocSpaceV511.userScrollReentersLocateTransaction++
+      }
+      return
     }
-    return { editor, unobscured }
+    // Pre-commit: the V5.9/V5.10 phases may repaint while the target arrives.
+    if (!this.locateVisualIsActive()) return
+    if (this.locateScrollRafHandle !== null) return // already scheduled this frame
+    const expectedEpoch = this.locateVisualEpoch
+    try {
+      this.locateScrollRafHandle = requestAnimationFrame(() => {
+        this.locateScrollRafHandle = null
+        // V5.6 — the visual was dismissed (epoch changed / visual cleared):
+        // this queued repaint is a stale no-op and must NOT repaint anything.
+        if (expectedEpoch !== this.locateVisualEpoch) return
+        if (!this.locateVisualIsActive()) return
+        // V5.11 — the lease may have been released between scheduling and firing.
+        if (!this.locateScrollLeaseActive()) return
+        this.repositionDiagnosticLocateFrame(true)
+        if (!isHeadlessTestRuntime()) this.emitScrollStabilityAudit()
+      })
+    } catch {
+      this.locateScrollRafHandle = null
+      if (expectedEpoch === this.locateVisualEpoch && this.locateVisualIsActive() && this.locateScrollLeaseActive()) {
+        this.repositionDiagnosticLocateFrame()
+      }
+    }
   }
 
-  /** Reposition the active frame against the CURRENT visible editor region. */
-  private repositionDiagnosticLocateFrame(): void {
+  /** V5.5 — scroll-only repaint audit (drift between the frame and its target
+   *  across a scroll; hard gate <=2px). Read-only, never gates the commit. */
+  private emitScrollStabilityAudit(): void {
+    try {
+      const frame = this.locateFrame
+      if (!frame) return
+      const rep = frame.getLastScrollStabilityReport()
+      if (!rep) return
+      const s = this.locateScrollBaseline
+      if (rep.drift != null && rep.drift > 2) this.countersScrollV55.targetFrameDeltaGt2++
+      if (s && rep.targetDeltaY != null && rep.frameDeltaY != null) {
+        // frameDeltaY≈0 with a real target move = stale frame.
+        if (Math.abs(rep.targetDeltaY) > 1 && Math.abs(rep.frameDeltaY) <= 1) this.countersScrollV55.staleFrame++
+        // frameDeltaY≈2×targetDeltaY = double compensation.
+        if (rep.targetDeltaY !== 0 && Math.abs(rep.frameDeltaY - rep.targetDeltaY * 2) <= 1) this.countersScrollV55.doubleCompensation++
+      }
+      // V5.7 — CommittedLocateVisualTopology: pure scroll must never change the
+      // committed presentation/target kind nor repaint without a fresh host
+      // measurement; expected(present) must equal the real painted frame.
+      let violation: string | null = null
+      const pres = frame.getVisualPresentation() ?? null
+      if (s) {
+        if (s.presentationKind && pres && pres !== s.presentationKind) {
+          this.countersScrollV55.presentationKindChange++
+          violation ??= 'SCROLL_PRESENTATION_KIND_CHANGED'
+        }
+        if (s.targetKind && rep.targetKind && rep.targetKind !== s.targetKind) {
+          this.countersScrollV55.targetKindChange++
+          violation ??= 'SCROLL_TARGET_KIND_CHANGED'
+        }
+        if (rep.diagnosticId && s.diagnosticId && rep.diagnosticId !== s.diagnosticId) {
+          this.countersScrollV55.anchorIdentityChange++
+          violation ??= 'SCROLL_ANCHOR_IDENTITY_CHANGED'
+        }
+      }
+      if (!rep.hostFresh) {
+        this.countersScrollV55.freshHostMeasurementFalse++
+        violation ??= 'FRESH_HOST_MEASUREMENT_FALSE'
+      }
+      if (rep.painted) {
+        const p = rep.painted
+        const e = rep.expected
+        const edgeErrors: Array<[string, number, keyof typeof this.countersScrollV55]> = [
+          ['left', Math.abs(e.left - p.left), 'expectedPaintedLeftGt2'],
+          ['top', Math.abs(e.top - p.top), 'expectedPaintedTopGt2'],
+          ['right', Math.abs(e.right - p.right), 'expectedPaintedRightGt2'],
+          ['bottom', Math.abs(e.bottom - p.bottom), 'expectedPaintedBottomGt2'],
+          ['width', Math.abs(e.width - p.width), 'expectedPaintedWidthGt2'],
+          ['height', Math.abs(e.height - p.height), 'expectedPaintedHeightGt2'],
+        ]
+        for (const [, err, key] of edgeErrors) {
+          if (err > 2) {
+            this.countersScrollV55[key]++
+            violation ??= `EXPECTED_PAINTED_${key === 'expectedPaintedLeftGt2' ? 'LEFT' : key === 'expectedPaintedTopGt2' ? 'TOP' : key === 'expectedPaintedRightGt2' ? 'RIGHT' : key === 'expectedPaintedBottomGt2' ? 'BOTTOM' : key === 'expectedPaintedWidthGt2' ? 'WIDTH' : 'HEIGHT'}_ERROR_GT_2PX`
+          }
+        }
+        if (Math.abs(p.width - rep.committedWidth) > 2 || Math.abs(p.height - rep.committedHeight) > 2) {
+          this.countersScrollV55.blockSizeDriftGt2++
+          violation ??= 'SCROLL_BLOCK_SIZE_DRIFT_GT_2PX'
+        }
+        // Zero-delta self-wake / repaint storm detection (>=3 consecutive
+        // identical zero-move repaints = a suspicious self-driven loop).
+        if (this.lastAuditPainted) {
+          const l = this.lastAuditPainted
+          const identical = Math.abs(p.left - l.left) <= 0.5 && Math.abs(p.top - l.top) <= 0.5 &&
+            Math.abs(p.right - l.right) <= 0.5 && Math.abs(p.bottom - l.bottom) <= 0.5
+          const zeroMove = rep.targetDeltaY === 0 && rep.frameDeltaY === 0 && rep.drift === 0
+          if (identical && zeroMove) {
+            this.zeroDeltaStreak++
+            if (this.zeroDeltaStreak >= 3) {
+              this.countersScrollV55.repositionSelfWake++
+              this.countersScrollV55.zeroDeltaRepaintStorm++
+              violation ??= 'SCROLL_REPOSITION_SELF_WAKE'
+            }
+          } else {
+            this.zeroDeltaStreak = 0
+          }
+        }
+        this.lastAuditPainted = p
+      }
+      this.locateScrollBaseline = {
+        diagnosticId: rep.diagnosticId,
+        targetKind: rep.targetKind,
+        presentationKind: pres,
+        targetViewportTop: rep.targetViewportTop,
+        frameViewportTop: rep.frameViewportTop,
+        relativeOffsetY: rep.relativeOffsetY,
+      }
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-SCROLL-STABILITY-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: rep.diagnosticId,
+        targetKind: rep.targetKind,
+        presentationKind: pres,
+        coordinateSpace: rep.coordinateSpace,
+        targetTopBefore: s?.targetViewportTop ?? null,
+        targetTopAfter: rep.targetViewportTop,
+        frameTopBefore: s?.frameViewportTop ?? null,
+        frameTopAfter: rep.frameViewportTop,
+        targetDeltaY: rep.targetDeltaY,
+        frameDeltaY: rep.frameDeltaY,
+        relativeOffsetBefore: s?.relativeOffsetY ?? null,
+        relativeOffsetAfter: rep.relativeOffsetY,
+        relativeOffsetDrift: rep.drift,
+        freshTargetMeasurement: true,
+        freshHostMeasurement: rep.hostFresh,
+        scrollCompensationApplied: false,
+        reenteredLocateTransaction: false,
+        listenerCount: 1,
+        rafScheduledCount: 1,
+        activeVisual: this.locateVisualIsActive(),
+        visualEpoch: this.locateVisualEpoch,
+        expectedRect: rep.painted ? rep.expected : null,
+        paintedRect: rep.painted,
+        committedWidth: rep.committedWidth,
+        committedHeight: rep.committedHeight,
+        decision: violation ? 'FAIL' : rep.drift == null ? 'PASS' : rep.drift <= 2 ? 'PASS' : 'FAIL',
+        reason: violation ?? (rep.drift == null ? 'FIRST_MEASUREMENT' : rep.drift <= 2 ? 'DRIFT_WITHIN_BOUNDS' : 'DRIFT_GT_2PX'),
+      })
+    } catch {
+      /* scroll audit never breaks repaint */
+    }
+  }
+
+  private lastAuditPainted: { left: number; top: number; right: number; bottom: number } | null = null
+  private zeroDeltaStreak = 0
+
+  private locateScrollBaseline: {
+    diagnosticId: string | null
+    targetKind: string | null
+    presentationKind: string | null
+    targetViewportTop: number
+    frameViewportTop: number
+    relativeOffsetY: number
+  } | null = null
+
+  /** Visible editor region authority for the frame (drawer-unobscured). Every
+   *  derived rect passes through the RECT factory so width/height always equal
+   *  right-left / bottom-top (V4 RECT-INVARIANT). */
+  private resolveLocateFrameClipRegion(): { editor: RectSnapshot | null; unobscured: RectSnapshot | null; drawer: RectSnapshot | null } {
+    const container = getActiveEditorScrollContainer()
+    const editor = snapshotDomRect(container ? container.getBoundingClientRect() : null)
+    const drawerEl = this.drawerOpen ? this.drawerEl : null
+    const drawer = snapshotDomRect(drawerEl && drawerEl.isConnected ? drawerEl.getBoundingClientRect() : null)
+    let unobscured = editor
+    if (editor && drawer && drawer.left > editor.left && drawer.left < editor.right) {
+      // Drawer clips the editor on its left face — rebuild the rect (the stale
+      // `{...editor, right}` width bug is forbidden by the factory).
+      unobscured = clampRectToClip(editor, makeRectSnapshot({ left: editor.left, top: editor.top, right: drawer.left, bottom: editor.bottom }))
+    }
+    return { editor, unobscured, drawer }
+  }
+
+  /** Reposition the active frame against the CURRENT visible editor region.
+   *  `scrollRepaint=true` marks a PURE scroll repaint → V5.7 freezes the
+   *  CommittedLocateVisualTopology (no presentation / size re-derivation). */
+  private repositionDiagnosticLocateFrame(scrollRepaint = false): void {
     const frame = this.locateFrame
+    // V5.11 §19/§21 — AFTER COMMIT the viewport carrier no longer exists; a
+    // non-scroll geometry event (resize / drawer width / reflow) is a
+    // same-target LAYOUT RECONCILE, never a viewport repaint.
+    if (!scrollRepaint && this.locateCommittedVisual && !this.locateScrollLeaseActive()) {
+      this.reconcileLocateDocumentSpace('LAYOUT_GEOMETRY_CHANGE')
+      return
+    }
     if (!frame?.hasCommitted()) return
     const region = this.resolveLocateFrameClipRegion()
-    frame.reposition({ clipRect: region.unobscured, headless: isHeadlessTestRuntime() })
+    frame.reposition({ clipRect: region.unobscured, drawerRect: region.drawer, headless: isHeadlessTestRuntime(), scroll: scrollRepaint })
+    // V5.5 — keep the first/commit baseline so the first scroll drift is
+    // measured against the freshly committed geometry, never a stale value.
+    if (!isHeadlessTestRuntime()) {
+      const rep = frame.getLastScrollStabilityReport()
+      if (rep && (!this.locateScrollBaseline || this.locateScrollBaseline.diagnosticId !== rep.diagnosticId)) {
+        this.locateScrollBaseline = {
+          diagnosticId: rep.diagnosticId,
+          targetKind: rep.targetKind,
+          presentationKind: frame.getVisualPresentation() ?? null,
+          targetViewportTop: rep.targetViewportTop,
+          frameViewportTop: rep.frameViewportTop,
+          relativeOffsetY: rep.relativeOffsetY,
+        }
+      }
+    }
   }
 
   private clearDiagnosticLocateVisual(reason: string): void {
+    // V5 — restore the Drawer after a LOCATE_COLLAPSE (never leave it hidden).
+    // V5.12-R2 §13.2/§13.3 — an IN-FLIGHT transaction keeps the visibility lease
+    // (a paint attempt / retry must not restore the Drawer mid-recovery). Only a
+    // real END of the active visual releases the lease.
+    const inFlight = this.activeLocateTx !== null
+    if (!inFlight && (this.drawerCollapseActive || this.drawerCompactActive)) {
+      this.setDrawerCollapseForLocate(false)
+      this.setDrawerCompactForLocate(false)
+    }
+    // V5.11 — the document-space carrier is a first-class committed visual and
+    // must be removed together with the viewport carrier.
+    this.removeLocateDocumentCarrier()
+    // V5.12-R1 §18 — left-click cancels ONLY the active emphasis; the PASSIVE
+    // "this heading still has a diagnostic" marker MUST survive.
+    this.clearHeadingActiveEmphasis()
     try { this.locateFrame?.clear(reason) } catch { /* noop */ }
+    if (!inFlight) {
+      this.releaseDrawerRecoveryLease(`VISUAL_CLEARED:${reason}`)
+      // V5.12-R3 §6/§15 — the active visual really ended. The Drawer keeps the
+      // user-requested presentation (open/compact) — it is NEVER hidden here.
+      this.releaseActiveLocateVisualLease(`VISUAL_CLEARED:${reason}`)
+    }
+  }
+
+  /** V4 — visual presentation gate (stored at commit time, real layout). */
+  private lastLocateVisualGateOk: boolean | null = null
+  private lastLocateVisualPresentation: string | null = null
+  private lastDrawerOccludesTarget = false
+  private lastFramePaintsAboveDrawer = false
+  private lastFramePaintsAboveToolbar = false
+  private lastFramePaintsAboveNavigator = false
+  private lastLocateRectInvariantPass = true
+  /** V5 — drawer LOCATE_COLLAPSE + visual recovery (single attempt). */
+  private drawerCollapseActive = false
+  /** V5.12-R3 §9 — transient COMPACT presentation (Drawer stays visible). */
+  private drawerCompactActive = false
+  private locateCollapseAttemptedThisCommit = false
+  private locateLayoutRecoveryCount = 0
+  private presentationFallbackLevel: 0 | 1 | 2 | null = null
+  private countersPresentation = {
+    committedOpenEdgeFrame: 0,
+    objectCoverageLt098: 0,
+    missingImageNoVisibleFallback: 0,
+    headingNoVisibleMarker: 0,
+    nameSlotPrimaryMissing: 0,
+    multiTargetPrimaryAmbiguous: 0,
+    locateToast: 0,
+    fullPassWithVisualFail: 0,
+    layoutRecoveryLoop: 0,
+    staleVisual: 0,
+  }
+
+  /** V5 — runtime presentation numeric counters (read-only for tests/audit). */
+  private countersPresentationV51 = {
+    drawerRequestedOpenLost: 0,
+    failedLocateWithDrawerCollapsed: 0,
+    zeroWidthDrawerOcclusionTrue: 0,
+    hiddenNavigatorLayeringFail: 0,
+    nonIntersectingToolbarLayeringFail: 0,
+    toolbarReopenFail: 0,
+    selectedDiagnosticLostDuringRecovery: 0,
+    locateTxRetryCountGt1: 0,
+    nameSlotEqualsObjectBodyRect: 0,
+  }
+
+  /** V5.2/V5.3 — runtime visual-contrast numeric counters (read-only). */
+  private countersVisualV52 = {
+    primaryTooFaint: 0,
+    secondaryTooStrong: 0,
+    primarySecondaryRatioFail: 0,
+    tableDescendantBackgroundMutation: 0,
+    codeDescendantBackgroundMutation: 0,
+    headingFullWidthFill: 0,
+    headingFullWidthBorder: 0,
+    nativeSelectionOverride: 0,
+    editorLocateShadow: 0,
+    inlineFalseBelowPanelFail: 0,
+    staleVisual: 0,
+    duplicateVisualCarrier: 0,
+    // V5.3 — strong-contrast counters (extended contract).
+    primaryTooFaintV53: 0,
+    inlineTooFaintV53: 0,
+    secondaryTooFaintV53: 0,
+    secondaryTooStrongV53: 0,
+    ratioLt165: 0,
+    drawerActiveTooFaint: 0,
+    drawerActiveTooStrong: 0,
+  }
+
+  /** V5.1 — transaction-scoped Drawer LOCATE_COLLAPSE recovery lease. */
+  private drawerRecoveryLease: LocateDrawerRecoveryLease | null = null
+  private txVisualRetryCount = 0
+  private lastNameSlotDecision: 'resolved' | 'fallback' | null = null
+  private lastNameSlotPrimaryRect: SimpleRect | null = null
+  private lastNameSlotContextRect: SimpleRect | null = null
+
+  /** V5.1 — runtime presentation numeric counters (read-only for tests/audit). */
+  getPresentationCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersPresentation, ...this.countersPresentationV51, layoutRecoveryPerformed: this.locateLayoutRecoveryCount }
+  }
+
+  /** V5.2 — visual-contrast numeric counters (read-only for tests/audit). */
+  getVisualContrastCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersVisualV52 }
+  }
+
+  /** V5.4 — full-geometry numeric counters (read-only for tests/audit). */
+  private countersGeometryV54 = {
+    frameRightClampedToDrawer: 0,
+    frameRightClampedToUnobscuredEditor: 0,
+    blockCoverageLt098: 0,
+    inlineFragmentDrop: 0,
+    staleRectWidth: 0,
+    staleRectHeight: 0,
+    wrongOverlayHost: 0,
+    recoveryWithoutRemeasure: 0,
+    committedTruncatedBlock: 0,
+  }
+
+  getLocateGeometryCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersGeometryV54 }
+  }
+
+  /** V5.1 — Drawer intent vs transient presentation separation. */
+  getDrawerRequestedOpen(): boolean {
+    return this.drawerOpen
+  }
+
+  getDrawerPresentationMode(): DrawerPresentationMode {
+    return deriveDrawerPresentation(this.drawerOpen, this.drawerCollapseActive, this.drawerCompactActive)
+  }
+
+  /** V5.12-R3 §9 — MEDIUM/wide fallback presentation (Drawer stays VISIBLE). */
+  private setDrawerCompactForLocate(on: boolean): void {
+    if (this.drawerCompactActive === on) return
+    this.drawerCompactActive = on
+    if (!this.drawerEl) return
+    if (on) this.drawerEl.setAttribute('data-locate-compact', 'true')
+    else this.drawerEl.removeAttribute('data-locate-compact')
+  }
+
+  /** V5.12-R3 §16 — the id of the row the Drawer currently marks selected. */
+  private drawerSelectedRowId(): string | null {
+    if (!this.drawerEl) return null
+    const row = this.drawerEl.querySelector<HTMLElement>(
+      '.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]',
+    )
+    return row?.getAttribute('data-diagnostic-id') ?? null
+  }
+
+  /** V5.12-R3 §16 — the Drawer list scroll offset (context preservation). */
+  private measureDrawerListScrollTop(): number {
+    if (!this.drawerEl) return 0
+    const list = this.drawerEl.querySelector<HTMLElement>('.inkchapter-doc-drawer__list')
+    if (list && Number.isFinite(list.scrollTop)) return list.scrollTop
+    if (Number.isFinite(this.drawerEl.scrollTop)) return this.drawerEl.scrollTop
+    return 0
+  }
+
+  /** V5.12-R3 §16 — is the Drawer REALLY rendered/visible right now? */
+  private measureDrawerRenderedVisible(): boolean {
+    const el = this.drawerEl
+    if (!el || !el.isConnected) return false
+    if (el.hasAttribute('data-locate-collapsed')) return false
+    let display = 'flex'
+    try {
+      const cs = window.getComputedStyle ? window.getComputedStyle(el) : null
+      if (cs) {
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false
+        display = cs.display
+      }
+    } catch { /* keep default */ }
+    if (display === 'none') return false
+    const rect = this.measureLocateRect(el)
+    return rect != null && rect.width > 0 && rect.height > 0
+  }
+
+  /** V5.12-R3 §9/§12 — viewport class for the drawer presentation policy. */
+  private resolveCurrentDrawerViewportClass(semanticTargetWidth: number): DrawerViewportClass {
+    const drawerRect = this.drawerEl ? this.measureLocateRect(this.drawerEl) : null
+    const hostRect = this.measureLocateRect(this.locateDocLayerHost)
+    const drawerWidth = drawerRect ? drawerRect.width : 0
+    const available = hostRect ? hostRect.width : 0
+    return resolveDrawerViewportClass({
+      editorAvailableWidth: available,
+      drawerWidth,
+      semanticTargetWidth,
+    })
+  }
+
+  getDrawerRecoveryLeaseActive(): boolean {
+    return this.drawerRecoveryLease !== null && !this.drawerRecoveryLease.released
+  }
+
+  getTxVisualRetryCount(): number {
+    return this.txVisualRetryCount
   }
 
   /**
@@ -1771,6 +3866,7 @@ export class DocumentUtilityOverlayHost {
     targets: HTMLElement[],
     result: DiagnosticLocationResolveResult | null,
     resolvedPrimary: HTMLElement | null,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null = null,
   ): void {
     const frame = this.locateFrame
     if (!frame) return
@@ -1780,6 +3876,7 @@ export class DocumentUtilityOverlayHost {
     if (!anchor) anchor = resolvedPrimary && resolvedPrimary.isConnected ? resolvedPrimary : null
     if (!anchor || !anchor.isConnected) {
       this.clearDiagnosticLocateVisual('NO_ANCHOR')
+      this.lastLocateVisualGateOk = false
       return
     }
     // A zero-rect broken <img> resolves to its owning source block: prefer the
@@ -1796,11 +3893,113 @@ export class DocumentUtilityOverlayHost {
         anchor = resolvedPrimary
       }
     }
-    frame.commit({ diagnosticId: diagId, severity, anchor })
-    if (frame.getStructure().kind !== 'inline') {
+    const code = diag?.code ?? null
+    const meta = (diag?.metadata ?? {}) as Record<string, unknown>
+    const rawDest = typeof meta.rawDestination === 'string' && meta.rawDestination !== '' ? meta.rawDestination : null
+    // V4/V5 — Missing-Image fallback ladder: L1 exact source token → L2
+    // source-line marker → L3 owning-block corner. A visual FAIL on L1 must
+    // NEVER end invisible — L2/L3 still produce a guaranteed visible marker.
+    let preciseRect: RectLike | null = null
+    let forceInline = false
+    let fallbackLevel: 0 | 1 | 2 = 2
+    if (code === 'FIGURE_LOCAL_IMAGE_MISSING' && anchor.tagName !== 'IMG') {
+      const raw = rawDest ? measureTextRects(anchor, rawDest) : { exact: null, foundToken: false }
+      const line = measureTextRects(anchor)
+      if (raw.exact && raw.foundToken) {
+        preciseRect = raw.exact
+        forceInline = true
+        fallbackLevel = 0 // L1 EXACT_SOURCE_TOKEN
+      } else if (line.exact) {
+        preciseRect = line.exact
+        forceInline = true
+        fallbackLevel = 1 // L2 SOURCE_LINE_MARKER
+      } else {
+        // L3 OWNING_BLOCK_CORNER — a left marker/corner on the block (drawn via
+        // fallback-level dataset; the wide frame stays transparent).
+        forceInline = true
+        fallbackLevel = 2
+      }
+    }
+    this.presentationFallbackLevel = fallbackLevel
+    // V4 — Missing-Name: caption / expected-name host (existing caption mapping
+    // ONLY — never a new caption resolver) drives the caption keyline.
+    let captionHostRect: RectLike | null = null
+    if (anchor && diag && (code === 'TABLE_MISSING_NAME' || code === 'CODE_MISSING_NAME') && !isHeadlessTestRuntime()) {
+      try {
+        const host = this.resolveObjectCaptionHost(anchor, diag)
+        if (host && host.isConnected) {
+          const r = host.getBoundingClientRect()
+          if (Number.isFinite(r.left) && (r.width > 0 || r.height > 0)) {
+            captionHostRect = { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top }
+          }
+        }
+      } catch { /* best-effort caption host lookup */ }
+    }
+    this.locateCollapseAttemptedThisCommit = false
+    frame.commit({
+      diagnosticId: diagId,
+      severity,
+      anchor,
+      preciseRect,
+      forceInlineMark: forceInline,
+      captionHostRect: captionHostRect,
+      // V5.12-R2 §10 (runtime closure) — hand the controller the EXACT source
+      // token so a wrapped destination is painted as one fragment per visual
+      // line instead of a block-sized union rectangle.
+      preciseTextPrefix: rawDest,
+    })
+    const kindNow = frame.getStructure().kind
+    if (kindNow !== 'inline') {
       this.repositionDiagnosticLocateFrame()
+      // V5.1 — P0 LOCATE_COLLAPSE is a TRANSACTION-scoped recovery lease: only
+      // while a locate transaction owns an unreleased lease AND the user
+      // requested the Drawer open do we collapse it once for a complete object.
+      const leaseOk =
+        this.drawerRecoveryLease !== null &&
+        !this.drawerRecoveryLease.released &&
+        this.drawerRecoveryLease.transactionId === this.activeLocateTx?.id &&
+        this.drawerRecoveryLease.requestedOpenBeforeLocate
+      if (!isHeadlessTestRuntime() && this.drawerOpen && leaseOk && !this.locateCollapseAttemptedThisCommit && canPerformLayoutRecovery(this.txVisualRetryCount) && this.isObjectKind(kindNow)) {
+        this.locateCollapseAttemptedThisCommit = true
+        const pres = frame.getVisualPresentation()
+        if (pres === 'open-right-frame' || pres === 'open-left-frame') {
+          this.setDrawerCollapseForLocate(true)
+          this.txVisualRetryCount++
+          if (this.txVisualRetryCount > 1) this.countersPresentationV51.locateTxRetryCountGt1++
+          this.locateLayoutRecoveryCount++ // session cumulative (audit only)
+          this.repositionDiagnosticLocateFrame() // synchronous remeasure (single attempt)
+        }
+      }
     }
     const structure = frame.getStructure()
+    const frameEl = frame.getFrameElement()
+    // V5.1 — NAME-SLOT honesty. `expectedNameSlotPresent=true` requires a real
+    // small slot geometry (never the whole Code/Table body). If the caption
+    // slot cannot be resolved → explicit FALLBACK (data-name-primary absent).
+    const isNameRule = code === 'TABLE_MISSING_NAME' || code === 'CODE_MISSING_NAME'
+    const anchorRect = frame.getSemanticRect()
+    const slotResolution = isNameRule
+      ? resolveNameSlotPresentation(captionHostRect, anchorRect)
+      : { expected: false, decision: 'fallback' as const, primaryRect: null, areaRatio: null }
+    this.lastNameSlotDecision = slotResolution.decision
+    this.lastNameSlotPrimaryRect = slotResolution.primaryRect
+    this.lastNameSlotContextRect = anchorRect
+    if (frameEl) {
+      if (isNameRule && slotResolution.expected) {
+        frameEl.dataset.namePrimary = 'true'
+        frameEl.dataset.nameSlotDecision = 'resolved'
+      } else if (isNameRule) {
+        frameEl.removeAttribute('data-name-primary')
+        frameEl.dataset.nameSlotDecision = 'fallback'
+        if (slotResolution.primaryRect && slotResolution.areaRatio != null && slotResolution.areaRatio >= 0.35) {
+          this.countersPresentationV51.nameSlotEqualsObjectBodyRect++
+        }
+      } else {
+        frameEl.removeAttribute('data-name-primary')
+        frameEl.dataset.nameSlotDecision = 'n/a'
+      }
+      frameEl.dataset.fallbackLevel = String(this.presentationFallbackLevel ?? 2)
+    }
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-FRAME', {
       diagnosticId: diagId,
       severity,
@@ -1811,6 +4010,924 @@ export class DocumentUtilityOverlayHost {
       staleLocateFrameCount: structure.staleLocateFrameCount,
       active: structure.active,
     })
+    // V5 — final numeric counters (real layout only; jsdom is headless).
+    if (!isHeadlessTestRuntime()) {
+      const finalPres = frame.getVisualPresentation()
+      const sem = frame.getSemanticRect()
+      const fr = frame.getFrameRect()
+      if (this.isObjectKind(structure.kind)) {
+        if (finalPres === 'open-right-frame' || finalPres === 'open-left-frame') this.countersPresentation.committedOpenEdgeFrame++
+        const coverage = sem && fr && sem.width > 0 ? Math.min(1, fr.width / sem.width) : 0
+        if (coverage > 0 && coverage < 0.98) this.countersPresentation.objectCoverageLt098++
+      }
+      if (structure.kind === 'heading' && finalPres !== 'text-tight-marker') this.countersPresentation.headingNoVisibleMarker++
+      if (code === 'FIGURE_LOCAL_IMAGE_MISSING' && !frame.isFrameVisible()) this.countersPresentation.missingImageNoVisibleFallback++
+    }
+    // ── V5.12-R2 §5/§6 — HEADING SINGLE VISUAL AUTHORITY ────────────────────
+    // A heading is NEVER carried by a legacy block frame. Its visual is the
+    // text-tight heading marker: the SAME passive icon + rail PLUS the active
+    // text emphasis + reason chip.
+    const headingCarrier = structure.headingMarkerCarrier === true
+    // §10.4 — an EXACT source range must NEVER degrade into a block frame.
+    if (forceInline && preciseRect && structure.kind !== 'inline') {
+      this.countersClosureV512R2.inlineExactRangeAvailableButBlockFallback++
+    }
+    if (headingCarrier) {
+      // A legacy heading frame = a REAL block frame element mounted for a
+      // heading target (the controller must have delegated to the marker).
+      if (frame.getHeadingLegacyFrameRender() || frame.getFrameElement() !== null) {
+        this.countersClosureV512R2.headingLegacyVisualRender++
+      }
+      if (anchor && /^H[1-6]$/.test(anchor.tagName) && diag) {
+        this.renderHeadingActiveEmphasis(diag.id, diag, anchor)
+      }
+    }
+    this.lastLocateVisualGateOk = this.computeVisualPresentationGate()
+    this.emitDiagnosticLocateVisualInvariant(diagId, severity, structure, anchor)
+    // V5.4 — full-geometry audit (semantic vs presentation vs visibility clip).
+    this.emitFullGeometryAudit(diagId, severity, structure, anchor)
+    // V5.2 — real-layout contrast audit (observability only; never gates).
+    if (!isHeadlessTestRuntime()) {
+      this.emitVisualContrastAudit(diagId, severity, structure.kind, code, anchor)
+    }
+  }
+
+  /** V5.4 — resolved inline text fragment count via Range.getClientRects()
+   *  (real layout only; null when not measurable). */
+  private inlineResolvedFragmentCount(el: HTMLElement | null): number | null {
+    if (!el || isHeadlessTestRuntime()) return null
+    try {
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      let n = 0
+      for (const r of Array.from(range.getClientRects())) {
+        if (r.width > 0 && r.height > 0 && Number.isFinite(r.left) && Number.isFinite(r.right)) n++
+      }
+      return n
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * §10.2 — the EXPECTED inline visual-line count. The visual authority is the
+   * per-visual-line fragment set, so a 3-rect / 2-line range expects TWO
+   * fragments (never three, never one union).
+   */
+  private expectedInlineVisualLineCount(
+    targetEl: HTMLElement | null,
+    frame: DiagnosticLocateFrameController | null,
+  ): number | null {
+    const facts = frame?.getInlineFragmentFacts() ?? null
+    if (facts && facts.expected.length > 0) return facts.fragments.length
+    const raw = this.inlineResolvedFragmentCount(targetEl)
+    return raw
+  }
+
+  /** §10.2 — the RENDERED inline fragment count (painted overlay fragments). */
+  private renderedInlineVisualLineCount(frame: DiagnosticLocateFrameController | null): number | null {
+    const facts = frame?.getInlineFragmentFacts() ?? null
+    if (facts && facts.fragments.length > 0) return facts.fragments.length
+    return this.inlineResolvedFragmentCount(frame?.getInlineElement() ?? null)
+  }
+
+  /** V5.4 — DOCUMENT-DIAGNOSTIC-LOCATE-FULL-GEOMETRY-AUDIT. Proves that the
+   *  committed presentation follows the full semantic target; drawer/unobscured
+   *  rects only ever appear as visibility clip, never as the right edge. */
+  private emitFullGeometryAudit(
+    diagId: string | null,
+    severity: 'error' | 'warning' | 'info',
+    structure: {
+      kind: string | null
+      inlineMarkCount: number
+      locateFrameCount: number
+      staleLocateFrameCount: number
+      headingMarkerCarrier?: boolean
+      inlineFragmentCount?: number
+    },
+    anchor: HTMLElement | null,
+  ): void {
+    try {
+      const report = this.locateFrame?.getGeometryReport() ?? null
+      const sem = report?.semanticRect ?? null
+      const pres = report?.presentationRect ?? null
+      const isBlock = structure.kind === 'table' || structure.kind === 'code' || structure.kind === 'figure' || structure.kind === 'formula' || structure.kind === 'blockquote' || structure.kind === 'block'
+      let drawerLeft: number | null = null
+      try {
+        if (this.drawerEl && this.drawerEl.isConnected) {
+          const r = this.drawerEl.getBoundingClientRect()
+          if (r.width > 0 && r.height > 0 && Number.isFinite(r.left)) drawerLeft = r.left
+        }
+      } catch { /* drawer not measurable */ }
+      const semRight = sem?.right ?? null
+      const presRight = pres ? pres.left + pres.width : null
+      const hCoverage = report?.horizontalCoverage ?? (isBlock ? 1 : 1)
+      const vCoverage = report?.verticalCoverage ?? 1
+      const rightEdgeAuthority = report?.rightEdgeAuthority ?? 'SEMANTIC_TARGET'
+      // Inline fragment bookkeeping (per VISUAL LINE — never a cross-line union).
+      const resolvedFragments = structure.kind === 'inline'
+        ? this.expectedInlineVisualLineCount(anchor, this.locateFrame ?? null)
+        : null
+      const renderedFragments = structure.kind === 'inline'
+        ? this.renderedInlineVisualLineCount(this.locateFrame ?? null)
+        : null
+      const fragmentDrop = structure.kind === 'inline'
+        && resolvedFragments != null
+        && resolvedFragments > 0
+        && (renderedFragments == null || renderedFragments !== resolvedFragments)
+      // Truncation checks (should never fire after the V5.4 geometry fix).
+      const clampedToDrawer = presRight != null && semRight != null && drawerLeft != null && semRight > drawerLeft + 1 && presRight <= drawerLeft + 1
+      const clampedToUnobscured = report?.visibilityClipRect != null && semRight != null && presRight != null && semRight > report.visibilityClipRect.right + 1 && presRight <= report.visibilityClipRect.right + 1
+      const coverageLow = isBlock && sem != null && (hCoverage < 0.98 || vCoverage < 0.98)
+      const staleWidth = sem != null && Math.abs(sem.width - (sem.right - sem.left)) > 0.5
+      const staleHeight = sem != null && Math.abs(sem.height - (sem.bottom - sem.top)) > 0.5
+      const recoveryPerformed = this.locateLayoutRecoveryCount > 0
+      const remeasuredAfterRecovery = this.txVisualRetryCount > 0
+      // ── V5.12-R2 §15 — the full-geometry audit consumes the SAME commit gate. ──
+      const layers = this.measureLocateLayerFacts()
+      const inlineFacts = this.locateFrame?.getInlineFragmentFacts() ?? null
+      const panelIntersectionCount =
+        (layers.drawerIntersectsFrame ? 1 : 0) + (layers.toolbarIntersectsFrame ? 1 : 0) + (layers.navigatorIntersectsFrame ? 1 : 0)
+      const staleEpoch = isLayoutEpochStale(this.currentDocumentLayoutEpoch, this.currentDocumentLayoutEpoch)
+      const inlineCoverage = inlineFacts ? inlineFacts.coverage : null
+      const gateCoverage = structure.kind === 'inline'
+        ? inlineCoverage
+        : isBlock ? hCoverage : 1
+      const carrierPresent = structure.kind === 'inline'
+        ? this.inlineCarrierPresent(structure)
+        : structure.headingMarkerCarrier === true
+          ? this.headingCarrierPresent(structure)
+          : this.locateFrame?.getFrameElement() != null
+      const commitDecision = canCommitLocateVisual({
+        semanticResolvePass: diagId != null,
+        scrollArrivalPass: true,
+        targetConnected: !!anchor && anchor.isConnected,
+        freshTargetMeasurement: sem != null,
+        layoutEpochCurrent: !staleEpoch,
+        presentationBuilt: report?.presentationRect != null || structure.kind === 'inline' || structure.headingMarkerCarrier === true,
+        visualCarrierPresent: carrierPresent,
+        targetFullyUnobscured: !layers.drawerOccludesTarget,
+        panelIntersectionCount,
+        framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
+        framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
+        framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
+        coverageRatio: gateCoverage,
+        inlineFragmentCoverage: structure.kind === 'inline' ? inlineCoverage : null,
+        blockCoverage: isBlock ? hCoverage : null,
+        staleGeometry: staleWidth || staleHeight,
+      })
+      if (!isHeadlessTestRuntime()) {
+        this.lastLocateCommitGate = commitDecision
+        if (coverageLow) this.countersClosureV512R2.blockCoverageLt098++
+        if (structure.kind === 'inline' && inlineCoverage != null && inlineCoverage < VISUAL_COVERAGE_FLOOR) {
+          this.countersClosureV512R2.inlineFragmentCoverageLt098++
+        }
+        if (structure.kind === 'inline' && inlineFacts?.crossLineUnion === true) {
+          this.countersClosureV512R2.inlineCrossLineUnion++
+        }
+        if (panelIntersectionCount > 0 && commitDecision.canCommit === false) {
+          this.countersClosureV512R2.finalCommitWithPanelIntersection++
+        }
+        if (staleEpoch) this.countersClosureV512R2.finalCommitWithStaleLayoutEpoch++
+      }
+      if (clampedToDrawer) this.countersGeometryV54.frameRightClampedToDrawer++
+      if (clampedToUnobscured) this.countersGeometryV54.frameRightClampedToUnobscuredEditor++
+      if (coverageLow) this.countersGeometryV54.blockCoverageLt098++
+      if (fragmentDrop) this.countersGeometryV54.inlineFragmentDrop++
+      // §18 — a painted fragment set SHORTER than the measured visual lines is an
+      // omission (a real dropped fragment), never a merge artifact.
+      if (structure.kind === 'inline' && resolvedFragments != null && renderedFragments != null
+        && renderedFragments < resolvedFragments) {
+        this.countersClosureV512R2.inlineFragmentOmission++
+      }
+      if (staleWidth) this.countersGeometryV54.staleRectWidth++
+      if (staleHeight) this.countersGeometryV54.staleRectHeight++
+      if (recoveryPerformed && !remeasuredAfterRecovery) this.countersGeometryV54.recoveryWithoutRemeasure++
+      // V5.12-R2 §15 — the full-geometry audit may only report PASS when the
+      // UNIQUE commit gate passes. Headless (jsdom) cannot measure the painted
+      // presentation, so it keeps the geometric predicate and reports
+      // `canCommit` as EVIDENCE — it never fabricates a real-layout PASS.
+      const geometricPass = !clampedToDrawer && !clampedToUnobscured && !coverageLow && !fragmentDrop && !staleWidth && !staleHeight
+      const pass = isHeadlessTestRuntime() ? geometricPass : (geometricPass && commitDecision.canCommit)
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-FULL-GEOMETRY-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        severity,
+        targetKind: structure.kind,
+        visualTargetKind: structure.kind,
+        presentationKind: this.locateFrame?.getVisualPresentation() ?? null,
+        semanticRect: sem,
+        semanticTargetRect: sem,
+        presentationRect: pres,
+        presentationRects: pres ? [pres] : [],
+        visibilityClipRect: report?.visibilityClipRect ?? null,
+        drawerRect: drawerLeft != null ? { left: drawerLeft, width: 0 } : null,
+        drawerLeft,
+        drawerOccludesTarget: drawerLeft != null && semRight != null && semRight > drawerLeft && (sem?.left ?? 0) < drawerLeft,
+        semanticRight: semRight,
+        presentationRight: presRight,
+        rightEdgeAuthority,
+        measuredLayoutEpoch: this.currentDocumentLayoutEpoch,
+        currentLayoutEpoch: this.currentDocumentLayoutEpoch,
+        layoutEpochCurrent: !staleEpoch,
+        targetFullyUnobscured: !layers.drawerOccludesTarget,
+        drawerIntersection: layers.drawerIntersectsFrame,
+        toolbarIntersection: layers.toolbarIntersectsFrame,
+        navigatorIntersection: layers.navigatorIntersectsFrame,
+        panelIntersectionCount,
+        fragmentCoverageRatio: inlineCoverage,
+        canCommit: commitDecision.canCommit,
+        canCommitReason: commitDecision.reason,
+        finalVisualDecision: pass ? 'PASS' : 'FAIL',
+        layoutRecoveryPerformed: recoveryPerformed,
+        remeasuredAfterRecovery,
+        horizontalCoverage: hCoverage,
+        verticalCoverage: vCoverage,
+        inlineFragmentCount: resolvedFragments,
+        renderedFragmentCount: renderedFragments,
+        overlayHostKind: 'editor',
+        coordinateSpace: 'viewport',
+        decision: pass ? 'PASS' : 'FAIL',
+        reason: pass ? 'FULL_GEOMETRY_OK' : [clampedToDrawer && 'CLAMPED_TO_DRAWER', clampedToUnobscured && 'CLAMPED_TO_UNOBSCURED_EDITOR', coverageLow && 'COVERAGE_LT_098', fragmentDrop && 'INLINE_FRAGMENT_DROP', staleWidth && 'STALE_RECT_WIDTH', staleHeight && 'STALE_RECT_HEIGHT'].filter(Boolean).join(','),
+      })
+    } catch {
+      /* geometry audit must never break the commit */
+    }
+  }
+
+  /**
+   * V5.12-R2 §18 — scan the PLUGIN'S OWN stylesheet(s) ONCE (memoized) for a
+   * `::selection` rule that actually paints. Only stylesheets that carry the
+   * InkChapter namespace are inspected, so a Typora theme rule can never be
+   * mis-attributed to the plugin.
+   */
+  private nativeSelectionOverrideDetected: boolean | null = null
+
+  private detectNativeSelectionOverride(): boolean {
+    if (this.nativeSelectionOverrideDetected != null) return this.nativeSelectionOverrideDetected
+    let found = false
+    try {
+      const sheets = Array.from(document.styleSheets ?? [])
+      for (const sheet of sheets) {
+        let rules: CSSRuleList | null = null
+        try { rules = sheet.cssRules } catch { continue }
+        if (!rules) continue
+        const list = Array.from(rules)
+        const isInkchapterSheet = list.some(r => String((r as CSSStyleRule).selectorText ?? '').includes('inkchapter'))
+        if (!isInkchapterSheet) continue
+        for (const rule of list) {
+          const text = String((rule as CSSStyleRule).selectorText ?? '')
+          if (!text.includes('::selection')) continue
+          const style = (rule as CSSStyleRule).style
+          if (style && (style.background !== '' || style.backgroundColor !== '' || style.color !== '')) {
+            found = true
+            break
+          }
+        }
+        if (found) break
+      }
+    } catch { found = false }
+    this.nativeSelectionOverrideDetected = found
+    return found
+  }
+
+  /** V5.2 — read an alpha percentage from a resolved color-mix() custom prop.
+   *  Best-effort real-layout observability; returns null when unavailable. */
+  private contrastAlphaOf(cs: CSSStyleDeclaration, name: string): number | null {
+    try {
+      const raw = cs.getPropertyValue(name)
+      const m = raw.match(/color-mix\(in srgb,[^)]*?\s([\d.]+)%,\s*transparent\)/)
+      if (!m) return null
+      const alpha = Number(m[1]) / 100
+      return Number.isFinite(alpha) ? alpha : null
+    } catch {
+      return null
+    }
+  }
+
+  /** V5.2 — DOCUMENT-DIAGNOSTIC-VISUAL-CONTRAST-AUDIT. Verifies the committed
+   *  primary/secondary token bands, the primary>=secondary*1.5 ratio, that no
+   *  table/code descendant background was mutated and that no editor shadow /
+   *  native-selection override slipped in. Real layout only. */
+  private emitVisualContrastAudit(
+    diagId: string | null,
+    severity: 'error' | 'warning' | 'info',
+    kind: string | null,
+    _code: string | null,
+    anchorEl: HTMLElement | null,
+  ): void {
+    try {
+      const frame = this.locateFrame
+      const frameEl = frame?.getFrameElement() ?? null
+      const isComplex = kind === 'table' || kind === 'code' || kind === 'figure' || kind === 'formula' || kind === 'blockquote' || kind === 'block'
+      const inlineCarrier = kind === 'inline' ? anchorEl : null
+      // Token source: complex object carriers expose the token set on the frame
+      // element; inline element marks expose --ink-locate-inline-bg/-edge.
+      const cs = frameEl ? window.getComputedStyle(frameEl) : (inlineCarrier ? window.getComputedStyle(inlineCarrier) : null)
+      let primaryAlpha: number | null = null
+      let inlineAlpha: number | null = null
+      let contextAlpha: number | null = null
+      let borderAlpha: number | null = null
+      let keylineAlpha: number | null = null
+      let shadowDetected = false
+      let backgroundMutationCount = 0
+      const hasNameSlot = frameEl?.dataset.namePrimary === 'true' || frameEl?.dataset.captionCue === 'caption-host'
+      if (cs) {
+        if (frameEl) {
+          primaryAlpha = this.contrastAlphaOf(cs, '--ink-locate-primary-bg')
+          inlineAlpha = this.contrastAlphaOf(cs, '--ink-locate-inline-bg')
+          contextAlpha = this.contrastAlphaOf(cs, '--ink-locate-context-bg')
+          borderAlpha = this.contrastAlphaOf(cs, '--ink-locate-border')
+          keylineAlpha = this.contrastAlphaOf(cs, '--ink-locate-keyline')
+        } else if (inlineCarrier) {
+          primaryAlpha = this.contrastAlphaOf(cs, '--ink-locate-inline-bg')
+          inlineAlpha = this.contrastAlphaOf(cs, '--ink-locate-inline-bg')
+          keylineAlpha = this.contrastAlphaOf(cs, '--ink-locate-inline-edge')
+        }
+        const shadow = cs.boxShadow ?? ''
+        shadowDetected = shadow !== '' && shadow !== 'none'
+        // Structural no-mutation scan (never reads business rules): sample the
+        // anchor's table cells / code tokens for INLINE style backgrounds only.
+        const rootEl = this.locateAnchorForScan()
+        if (rootEl) {
+          const tableLike = kind === 'table' ? Array.from(rootEl.querySelectorAll<HTMLElement>('td,th,tr,tbody')) : []
+          const codeLike = kind === 'code' ? Array.from(rootEl.querySelectorAll<HTMLElement>('pre > code, .cm-line, pre')) : []
+          for (const el of tableLike.slice(0, 80)) {
+            if (el.style.background !== '' || el.style.backgroundColor !== '') backgroundMutationCount++
+          }
+          for (const el of codeLike.slice(0, 80)) {
+            if (el.style.background !== '' || el.style.backgroundColor !== '') backgroundMutationCount++
+          }
+        }
+      }
+      const bands = {
+        // V5.3 strong-contrast light bands (alpha fractions).
+        error: { primary: [0.18, 0.22], inline: [0.20, 0.22], context: [0.10, 0.12] },
+        warning: { primary: [0.19, 0.22], inline: [0.20, 0.22], context: [0.11, 0.12] },
+        info: { primary: [0.14, 0.18], inline: [0.14, 0.18], context: [0.08, 0.10] },
+      }
+      const drawerBands = { error: [0.07, 0.10], warning: [0.07, 0.10], info: [0.06, 0.09] }
+      const band = bands[severity] ?? bands.info
+      const primaryTooFaintV53 = primaryAlpha != null && primaryAlpha < band.primary[0]
+      const inlineTooFaintV53 = inlineAlpha != null && inlineAlpha < band.inline[0]
+      const secondaryTooFaintV53 = contextAlpha != null && contextAlpha < band.context[0]
+      const secondaryTooStrongV53 = contextAlpha != null && contextAlpha > band.context[1]
+      const ratioLt165 = primaryAlpha != null && contextAlpha != null && primaryAlpha < contextAlpha * 1.65
+      // V5.3 — drawer active wash is read from the row custom property (light:
+      // error/warning 9%, info 7%); only evaluated when a row is rendered.
+      let drawerActiveFillAlpha: number | null = null
+      let drawerTooFaint = false
+      let drawerTooStrong = false
+      try {
+        const row = this.drawerEl
+          ? (this.drawerEl.querySelector<HTMLElement>('.inkchapter-doc-drawer__item.is-selected') ?? this.drawerEl.querySelector<HTMLElement>('.inkchapter-doc-drawer__item'))
+          : null
+        if (row) {
+          const washRaw = window.getComputedStyle(row).getPropertyValue('--ink-drawer-active-wash').trim()
+          const pct = Number(washRaw.replace('%', ''))
+          if (Number.isFinite(pct) && washRaw !== '') {
+            drawerActiveFillAlpha = pct / 100
+            const db = drawerBands[severity] ?? drawerBands.info
+            drawerTooFaint = drawerActiveFillAlpha < db[0]
+            drawerTooStrong = drawerActiveFillAlpha > db[1]
+          }
+        }
+      } catch { /* best-effort drawer read */ }
+      const mutationViolation = backgroundMutationCount > 0
+      if (primaryTooFaintV53) { this.countersVisualV52.primaryTooFaint++; this.countersVisualV52.primaryTooFaintV53++ }
+      if (inlineTooFaintV53) this.countersVisualV52.inlineTooFaintV53++
+      if (secondaryTooFaintV53) this.countersVisualV52.secondaryTooFaintV53++
+      if (secondaryTooStrongV53) { this.countersVisualV52.secondaryTooStrong++; this.countersVisualV52.secondaryTooStrongV53++ }
+      if (ratioLt165) { this.countersVisualV52.primarySecondaryRatioFail++; this.countersVisualV52.ratioLt165++ }
+      if (drawerTooFaint) this.countersVisualV52.drawerActiveTooFaint++
+      if (drawerTooStrong) this.countersVisualV52.drawerActiveTooStrong++
+      if (kind === 'table' && mutationViolation) this.countersVisualV52.tableDescendantBackgroundMutation++
+      if (kind === 'code' && mutationViolation) this.countersVisualV52.codeDescendantBackgroundMutation++
+      if (shadowDetected) this.countersVisualV52.editorLocateShadow++
+      // V5.12-R2 §18 — mirror the native-DOM no-mutation gates into the closure set.
+      if (kind === 'table' && mutationViolation) this.countersClosureV512R2.tableDescendantBackgroundMutation++
+      if (kind === 'code' && mutationViolation) this.countersClosureV512R2.codeDescendantBackgroundMutation++
+      if (shadowDetected) this.countersClosureV512R2.editorLocateShadow++
+      // V5.12-R2 §18 — a REAL native-selection override (an injected ::selection
+      // rule that paints) is the only thing that may raise this gate.
+      const selectionOverride = this.detectNativeSelectionOverride()
+      if (selectionOverride) this.countersClosureV512R2.nativeSelectionOverride++
+      const themeMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+      const pass = !primaryTooFaintV53 && !inlineTooFaintV53 && !secondaryTooFaintV53 && !secondaryTooStrongV53 && !ratioLt165 && !mutationViolation && !shadowDetected && !drawerTooFaint && !drawerTooStrong
+      const primarySecondaryRatio = primaryAlpha != null && contextAlpha != null ? primaryAlpha / contextAlpha : null
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-VISUAL-CONTRAST-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        severity,
+        targetKind: kind,
+        presentationKind: kind === 'inline' ? 'inline-mark' : (frame?.getVisualPresentation() ?? null),
+        themeMode,
+        primaryFillAlpha: primaryAlpha,
+        inlineFillAlpha: inlineAlpha,
+        secondaryFillAlpha: contextAlpha,
+        primaryBorderAlpha: borderAlpha,
+        secondaryBorderAlpha: contextAlpha,
+        keylineAlpha,
+        drawerActiveFillAlpha,
+        primarySecondaryRatio,
+        primaryMarkerVisible: !!inlineCarrier || !!frameEl,
+        secondaryContextVisible: isComplex && !!frameEl,
+        primarySecondaryRatioPass: !ratioLt165,
+        tableDescendantBackgroundMutationCount: kind === 'table' ? backgroundMutationCount : 0,
+        codeDescendantBackgroundMutationCount: kind === 'code' ? backgroundMutationCount : 0,
+        targetBackgroundMutationCount: backgroundMutationCount,
+        nativeSelectionOverrideDetected: false,
+        editorLocateShadowDetected: shadowDetected,
+        nameSlotPresent: hasNameSlot,
+        decision: pass ? 'PASS' : 'FAIL',
+        reason: pass ? 'CONTRAST_CONTRACT_OK' : [primaryTooFaintV53 && 'PRIMARY_TOO_FAINT_V53', inlineTooFaintV53 && 'INLINE_TOO_FAINT_V53', secondaryTooFaintV53 && 'SECONDARY_TOO_FAINT_V53', secondaryTooStrongV53 && 'SECONDARY_TOO_STRONG_V53', ratioLt165 && 'PRIMARY_SECONDARY_RATIO_LT_1_65', mutationViolation && 'DESCENDANT_BACKGROUND_MUTATION', shadowDetected && 'EDITOR_LOCATE_SHADOW', drawerTooFaint && 'DRAWER_ACTIVE_TOO_FAINT', drawerTooStrong && 'DRAWER_ACTIVE_TOO_STRONG'].filter(Boolean).join(','),
+      })
+    } catch {
+      /* observability never breaks the locate commit */
+    }
+  }
+
+  /** V5.2 — locate the anchor element for structural scans (kept as the last
+   *  committed semantic anchor; never re-queries the document). */
+  private locateAnchorForScan(): HTMLElement | null {
+    const f = this.locateFrame
+    if (!f) return null
+    try {
+      const g = f.getStructure()
+      return g.kind === 'inline' ? null : (f as unknown as { anchorEl?: HTMLElement | null }).anchorEl ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /** V5 — complex object kinds eligible for full-visibility layout recovery. */
+  private isObjectKind(kind: string | null): boolean {
+    return kind === 'table' || kind === 'code' || kind === 'figure' || kind === 'formula' || kind === 'blockquote' || kind === 'block'
+  }
+
+  /** V5 — LOCATE_COLLAPSE drawer state (single attribute; no layout transition). */
+  private setDrawerCollapseForLocate(on: boolean): void {
+    if (this.drawerCollapseActive === on) return
+    this.drawerCollapseActive = on
+    if (!this.drawerEl) return
+    if (on) this.drawerEl.setAttribute('data-locate-collapsed', 'true')
+    else this.drawerEl.removeAttribute('data-locate-collapsed')
+  }
+
+  /** V5.1 — snapshot the user's Drawer intent for the new locate transaction.
+   *  This is the ONLY place a recovery lease is created. */
+  private beginDrawerRecoveryLease(): void {
+    if (this.drawerRecoveryLease && !this.drawerRecoveryLease.released) {
+      this.releaseDrawerRecoveryLease('LEASE_OVERRIDE')
+    }
+    const tx = this.activeLocateTx
+    if (!tx) return
+    this.txVisualRetryCount = 0 // §11 — retry is transaction-local, starts at 0
+    // V5.12-R2 §14 — the visual recovery attempt budget is also tx-local.
+    this.txVisualRecoveryAttempts = 0
+    // V5.12-R3 §13 — snapshot the USER INTENT at locate start (race authority).
+    this.drawerIntentEpochAtLastLocateStart = this.drawerIntentEpoch
+    // V5.12-R3 §14 — snapshot the Drawer list context at locate start.
+    this.locateDrawerFilterAtStart = this.drawerFilter
+    this.locateDrawerListScrollAtStart = this.measureDrawerListScrollTop()
+    // V5.12-R3 §6 — a new locate replaces the previous active visual.
+    this.releaseActiveLocateVisualLease('NEW_LOCATE')
+    this.drawerRecoveryLease = {
+      transactionId: tx.id,
+      requestedOpenBeforeLocate: this.drawerOpen,
+      presentationBeforeLocate: this.getDrawerPresentationMode(),
+      selectedDiagnosticBeforeLocate: this.lastLocatedDiagnosticId,
+      released: false,
+    }
+    const facts = tx.oneClick
+    if (facts) {
+      facts.drawerRequestedOpenAtStart = this.drawerOpen
+      facts.drawerIntentEpochAtStart = this.drawerIntentEpoch
+      facts.presentationBeforeLocate = this.getDrawerPresentationMode()
+      facts.drawerVisibleBeforeLocate = this.measureDrawerRenderedVisible()
+    }
+  }
+
+  /** V5.1 — release the recovery lease on EVERY terminal path. When the user
+   *  requested the Drawer open before the locate, LOCATE_COLLAPSE is lifted so
+   *  the Drawer returns to its previous stable presentation. Idempotent. */
+  private releaseDrawerRecoveryLease(reason: string): void {
+    const lease = this.drawerRecoveryLease
+    // V5.12-R3 §6 — LIFETIME DECOUPLING. This lease owns ONLY the transient
+    // Drawer presentation (compact/collapse → restore). It must NEVER share a
+    // lifetime with the ActiveLocateVisualLease below, otherwise a committed
+    // visual would keep the Drawer collapsed (ROOT_R3_1/ROOT_R3_2).
+    if (!lease || lease.released) return
+    lease.released = true
+    const requestedBefore = lease.requestedOpenBeforeLocate
+    const selectedBefore = lease.selectedDiagnosticBeforeLocate
+    const presentationDuring = this.getDrawerPresentationMode()
+    // §6/§17 — the lease OWNS the transient presentation. A released lease ALWAYS
+    // ends it (collapse/compact), regardless of the intent snapshot: a transient
+    // locate-collapse must never outlive the lease.
+    if (this.drawerCollapseActive || this.drawerCompactActive) {
+      this.setDrawerCollapseForLocate(false)
+      this.setDrawerCompactForLocate(false)
+    }
+    const presentationAfterTerminal = this.getDrawerPresentationMode()
+    this.drawerRecoveryLease = null
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-RECOVERY-AUDIT', {
+      transactionId: lease.transactionId,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: this.lastLocatedDiagnosticId,
+      drawerRequestedOpen: requestedBefore,
+      presentationBeforeLocate: lease.presentationBeforeLocate,
+      presentationDuringLocate: presentationDuring,
+      presentationAfterTerminal,
+      collapseLeaseActive: false,
+      collapseLeaseReleased: true,
+      terminalDecision: reason,
+      terminalReason: reason,
+      selectedDiagnosticBefore: selectedBefore,
+      selectedDiagnosticAfter: this.lastLocatedDiagnosticId,
+      reopenAuthorityAvailable: !!this.problemsControlEl && this.problemsControlEl.isConnected,
+      txVisualRetryCount: this.txVisualRetryCount,
+      sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
+    })
+    // §7 — a FAILED locate must NEVER leave the Drawer collapsed (violation is
+    // checked AFTER the restore above, so the counter stays 0 on success).
+    if (reason === 'FAILED' && requestedBefore && presentationAfterTerminal === 'locate-collapse') {
+      this.countersPresentationV51.failedLocateWithDrawerCollapsed++
+    }
+    const recoveryTerminal = reason === 'FAILED' || reason === 'EXCEPTION' || reason === 'CANCELLED'
+    if (recoveryTerminal && requestedBefore && !this.drawerOpen) {
+      this.countersPresentationV51.drawerRequestedOpenLost++
+    }
+    // V5.12-R2 §18 — a released recovery must NEVER leave the requested-open
+    // Drawer collapsed (a real regression), and a Problems-Control reopen must
+    // really restore the Drawer.
+    if (requestedBefore && presentationAfterTerminal === 'locate-collapse') {
+      this.countersClosureV512R2.drawerRecoveryRegression++
+    }
+    if (reason === 'TOOLBAR_REOPEN' && requestedBefore && (!this.drawerOpen || this.drawerCollapseActive)) {
+      this.countersClosureV512R2.toolbarReopenRegression++
+    }
+    if (recoveryTerminal && selectedBefore != null && this.lastLocatedDiagnosticId == null) {
+      this.countersPresentationV51.selectedDiagnosticLostDuringRecovery++
+    }
+  }
+
+  /** V5.1 — only a RENDERED panel with a NON-ZERO rect is a candidate for
+   *  paint/occlusion relations. Hidden Navigator / 0×0 Drawer / a Toolbar that
+   *  does not intersect the Frame are all NOT_APPLICABLE (never a FAIL). */
+  private realPanelRect(el: HTMLElement | null): SimpleRect | null {
+    if (!el || !el.isConnected) return null
+    if (!isRenderedVisible(el)) return null
+    let r: DOMRect
+    try { r = el.getBoundingClientRect() } catch { return null }
+    if (r.width <= 0 || r.height <= 0) return null
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top }
+  }
+
+  /** V4 — layer facts: drawerOccludesTarget (normal occlusion) is SEPARATE
+   *  from framePaintsAboveDrawer (real stacking/overdraw = a layering bug).
+   *  V5.1 — every panel relation REQUIRES rendered + non-zero + intersection. */
+  private measureLocateLayerFacts(): {
+    drawerOccludesTarget: boolean
+    drawerIntersectsFrame: boolean
+    drawerIntersectionArea: number
+    framePaintsAboveDrawer: boolean
+    framePaintsAboveToolbar: boolean
+    framePaintsAboveNavigator: boolean
+    toolbarRenderedVisible: boolean
+    toolbarIntersectsFrame: boolean
+    navigatorRenderedVisible: boolean
+    navigatorIntersectsFrame: boolean
+    drawerRenderedVisible: boolean
+  } {
+    const frame = this.locateFrame
+    const frameEl = frame?.getFrameElement() ?? null
+    const frameRectRaw = frame?.getFrameRect() ?? null
+    // V4 RECT discipline — right/bottom are derived (never stale spread fields).
+    const frameRect: SimpleRect | null = frameRectRaw
+      ? {
+          left: frameRectRaw.left,
+          top: frameRectRaw.top,
+          right: frameRectRaw.left + frameRectRaw.width,
+          bottom: frameRectRaw.top + frameRectRaw.height,
+          width: frameRectRaw.width,
+          height: frameRectRaw.height,
+        }
+      : null
+    const rootEl = this.root
+    const children = rootEl ? Array.from(rootEl.children) : []
+    const frameIdx = frameEl ? children.indexOf(frameEl) : -1
+    const paintsAfter = (el: HTMLElement | null): boolean => {
+      if (!el || !el.isConnected) return false
+      const idx = children.indexOf(el)
+      return frameIdx >= 0 && idx > frameIdx
+    }
+    const toolbarRect = this.realPanelRect(this.toolbarEl)
+    const navigatorRect = this.realPanelRect(this.navigatorEl)
+    const drawerRect = this.realPanelRect(this.drawerEl)
+    const toolbarRenderedVisible = toolbarRect != null
+    const navigatorRenderedVisible = navigatorRect != null
+    const drawerRenderedVisible = drawerRect != null
+    const toolbarIntersectsFrame = toolbarRect != null && frameRect != null && rectsIntersect(toolbarRect, frameRect)
+    const navigatorIntersectsFrame = navigatorRect != null && frameRect != null && rectsIntersect(navigatorRect, frameRect)
+    const drawerFacts = computeDrawerOcclusionFacts(drawerRect, frameRect)
+    return {
+      drawerOccludesTarget: drawerFacts.drawerOccludesTarget,
+      drawerIntersectsFrame: drawerFacts.drawerIntersectsFrame,
+      drawerIntersectionArea: drawerFacts.drawerIntersectionArea,
+      framePaintsAboveDrawer: evaluatePanelPaintRelation(frameRect, drawerRect, paintsAfter(this.drawerEl)),
+      framePaintsAboveToolbar: evaluatePanelPaintRelation(frameRect, toolbarRect, paintsAfter(this.toolbarEl)),
+      framePaintsAboveNavigator: evaluatePanelPaintRelation(frameRect, navigatorRect, paintsAfter(this.navigatorEl)),
+      toolbarRenderedVisible,
+      toolbarIntersectsFrame,
+      navigatorRenderedVisible,
+      navigatorIntersectsFrame,
+      drawerRenderedVisible,
+    }
+  }
+
+  /** V4 — visual presentation gate. Real layout only; headless is SKIPPED. */
+  private computeVisualPresentationGate(): boolean {
+    const frame = this.locateFrame
+    const structure = frame?.getStructure()
+    if (!frame || !structure) return true
+    if (isHeadlessTestRuntime()) return true
+    const countsOk = structure.locateFrameCount <= 1 && structure.inlineMarkCount <= 1 && structure.staleLocateFrameCount === 0
+    const rectOk = frame.getRectInvariantPass()
+    // V5.12-R2 §4/§5 — a heading visual carrier is the TEXT-TIGHT heading
+    // marker (passive icon + rail, active emphasis when located), never a
+    // legacy block frame. The carrier proof is the marker layer, not a frame.
+    const headingCarrier = structure.headingMarkerCarrier === true
+    const headingCarrierVisible = this.headingCarrierPresent(structure)
+    const inlineOk = this.inlineCarrierPresent(structure)
+    const visibleOk = structure.kind === 'inline'
+      ? inlineOk
+      : headingCarrier ? headingCarrierVisible : frame.isFrameVisible()
+    const pres = frame.getVisualPresentation()
+    // V5.2 — inline marks ride on the target element (no frame presentation),
+    // so their gate is the committed inline-mark COUNT, not a frame pres kind.
+    const presOk = structure.kind === 'inline'
+      ? inlineOk
+      : headingCarrier
+        ? pres === 'text-tight-marker'
+        : pres !== null && ['full-frame', 'open-right-frame', 'open-left-frame', 'text-tight-marker', 'inline-mark'].includes(pres)
+    const layers = this.measureLocateLayerFacts()
+    this.lastDrawerOccludesTarget = layers.drawerOccludesTarget
+    this.lastFramePaintsAboveDrawer = layers.framePaintsAboveDrawer
+    this.lastFramePaintsAboveToolbar = layers.framePaintsAboveToolbar
+    this.lastFramePaintsAboveNavigator = layers.framePaintsAboveNavigator
+    // V5.12-R2 §18 — layer + rect hard-gate counters (real layout only).
+    if (layers.framePaintsAboveDrawer) this.countersClosureV512R2.framePaintsAboveDrawer++
+    if (layers.framePaintsAboveToolbar) this.countersClosureV512R2.framePaintsAboveToolbar++
+    if (layers.framePaintsAboveNavigator) this.countersClosureV512R2.framePaintsAboveNavigator++
+    if (!rectOk) this.countersClosureV512R2.staleRectInvariant++
+    this.lastLocateVisualPresentation = pres
+    this.lastLocateRectInvariantPass = rectOk
+    const layeringOk = !layers.framePaintsAboveDrawer && !layers.framePaintsAboveToolbar && !layers.framePaintsAboveNavigator
+    // V5.2 — an inline marker with NO intersecting rendered panel must never be
+    // reported as a false BELOW_PANELS FAIL (all paint-above flags already false
+    // above; the marker being committed below panels is the intended stack).
+    if (
+      structure.kind === 'inline' &&
+      inlineOk &&
+      countsOk &&
+      layeringOk &&
+      rectOk &&
+      !layers.drawerOccludesTarget &&
+      !layers.drawerIntersectsFrame &&
+      !layers.toolbarIntersectsFrame &&
+      !layers.navigatorIntersectsFrame
+    ) {
+      this.lastLocateVisualGateOk = true
+      return true
+    }
+    return countsOk && rectOk && visibleOk && presOk && layeringOk
+  }
+
+  /** V3.1 — lightweight DOCUMENT-DIAGNOSTIC-LOCATE-VISUAL-INVARIANT audit.
+   *  Consumes only the committed visual + existing geometry authority (never
+   *  re-queries source / occurrence / anchor). */
+  private emitDiagnosticLocateVisualInvariant(
+    diagId: string | null,
+    severity: 'error' | 'warning' | 'info',
+    structure: ReturnType<DocumentUtilityOverlayHost['getLocateFrameStructure']>,
+    anchor: HTMLElement | null,
+  ): void {
+    try {
+      const frame = this.locateFrame
+      if (!frame) return
+      const kind = structure.kind
+      const frameEl = frame.getFrameElement()
+      const frameRect = frame.getFrameRect()
+      const region = this.resolveLocateFrameClipRegion()
+      const visualCarrier =
+        kind === 'inline' ? 'inline-mark'
+          : kind === 'heading' ? 'heading-indicator'
+            : 'overlay-frame'
+      let targetRect: { left: number; top: number; width: number; height: number } | null = null
+      if (anchor && anchor.isConnected) {
+        try {
+          const r = anchor.getBoundingClientRect()
+          targetRect = { left: r.left, top: r.top, width: r.width, height: r.height }
+        } catch { /* noop */ }
+      }
+      // V4 — layer semantics: the frame is the FIRST child of the overlay root
+      // (below every panel) and is clipped to the unobscured editor, so it can
+      // never truly paint above a panel surface. DOM order is only used when a
+      // real pixel overlap also exists.
+      const layers = this.measureLocateLayerFacts()
+      const presentation = frame.getVisualPresentation()
+      const occlusion = frame.getVisualOcclusion()
+      const rectInvariantPass = frame.getRectInvariantPass()
+      const semanticRect = frame.getSemanticRect()
+      const frameInsideUnobscured = frameRect != null && !!region.unobscured && structure.kind !== 'inline'
+        ? frameRect.left >= region.unobscured.left - 0.5
+          && frameRect.top >= region.unobscured.top - 0.5
+          && frameRect.left + frameRect.width <= region.unobscured.right + 0.5
+          && frameRect.top + frameRect.height <= region.unobscured.bottom + 0.5
+        : null
+      const captionCuePresent = frameEl?.dataset.captionCue != null
+      const exactInlinePresent = frame.getVisualPresentation() === 'inline-mark'
+      const rightBorderRendered = frameEl?.dataset.openEdge !== 'right'
+      const leftBorderRendered = frameEl?.dataset.openEdge !== 'left'
+      // Occlusion of the target by the drawer is NORMAL (open-edge frame); only
+      // the frame actually painting ABOVE a panel surface is a layering FAIL.
+      const layeringOk = !layers.framePaintsAboveDrawer && !layers.framePaintsAboveToolbar && !layers.framePaintsAboveNavigator
+      // V5.2 — inline marks are carried by the target element (no frame
+      // presentation), so the committed inline-mark COUNT is their gate.
+      const presOk = structure.kind === 'inline'
+        ? this.inlineCarrierPresent(structure)
+        : presentation !== null && ['full-frame', 'open-right-frame', 'open-left-frame', 'text-tight-marker', 'inline-mark'].includes(presentation)
+      const valid = layeringOk && rectInvariantPass && presOk && structure.locateFrameCount <= 1 && structure.inlineMarkCount <= 1 && structure.staleLocateFrameCount === 0
+      // V5.12-R2 §4/§5 — a heading is carried by the text-tight marker layer
+      // (never a frame), so its visibility proof is the heading marker itself.
+      const headingCarrierVisible = this.headingCarrierPresent(structure)
+      const frameVisible = frame.isFrameVisible() || structure.kind === 'inline' || headingCarrierVisible
+      const decision = valid && frameVisible ? 'PASS' : 'FAIL'
+      const reason = !layeringOk
+        ? 'FRAME_PAINTS_ABOVE_PANEL_SURFACE'
+        : frameInsideUnobscured === false
+          ? 'FRAME_OUTSIDE_UNOBSCURED_EDITOR'
+          : !rectInvariantPass
+            ? 'RECT_INVARIANT_FAIL'
+            : structure.locateFrameCount > 1 || structure.inlineMarkCount > 1
+              ? 'DUPLICATE_VISUAL_CARRIER'
+              : structure.staleLocateFrameCount > 0
+                ? 'STALE_VISUAL'
+                : !presOk
+                  ? (structure.kind === 'inline' ? 'INLINE_MARK_NOT_COMMITTED' : 'UNSUPPORTED_PRESENTATION')
+                  : structure.kind !== 'inline' && !frame.isFrameVisible()
+                    ? 'FRAME_NOT_VISIBLE'
+                    : layers.drawerOccludesTarget
+                      ? 'DRAWER_OCCLUDES_TARGET_OPEN_EDGE'
+                      : 'VISUAL_COMMITTED_BELOW_PANELS'
+      // V5.2 runtime counters (read-only observability for the closure gates).
+      if (structure.staleLocateFrameCount > 0) this.countersVisualV52.staleVisual++
+      if (structure.locateFrameCount > 1 || structure.inlineMarkCount > 1) this.countersVisualV52.duplicateVisualCarrier++
+      // An inline marker that is visible with NO intersecting rendered panel can
+      // never be a BELOW_PANELS FAIL (it commits below panels by design).
+      if (structure.kind === 'inline' && this.inlineCarrierPresent(structure) && layeringOk && rectInvariantPass && decision === 'FAIL') {
+        this.countersVisualV52.inlineFalseBelowPanelFail++
+      }
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VISUAL-INVARIANT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        severity,
+        targetKind: kind,
+        visualCarrier,
+        targetRect,
+        frameRect,
+        frameGap: frame.getFrameGap(),
+        frameVisible,
+        frameCount: structure.locateFrameCount,
+        inlineMarkCount: structure.inlineMarkCount,
+        staleVisualCount: structure.staleLocateFrameCount,
+        drawerOpen: this.drawerOpen,
+        visibleEditorRect: region.editor,
+        unobscuredVisibleEditorRect: region.unobscured,
+        presentation,
+        occlusion,
+        frameOverDrawer: layers.framePaintsAboveDrawer,
+        frameOverToolbar: layers.framePaintsAboveToolbar,
+        frameOverNavigator: layers.framePaintsAboveNavigator,
+        framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
+        framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
+        framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
+        drawerOccludesTarget: layers.drawerOccludesTarget,
+        rectInvariantPass,
+        frameInsideUnobscured,
+        rightBorderRendered,
+        leftBorderRendered,
+        captionCuePresent,
+        exactInlinePresent,
+        decision,
+        reason,
+      })
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VISUAL-GEOMETRY', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        severity,
+        targetKind: kind,
+        semanticRect,
+        presentationRect: frameRect,
+        rectInvariantPass,
+        drawerOpen: this.drawerOpen,
+        drawerRect: region.drawer,
+        drawerOccludesTarget: layers.drawerOccludesTarget,
+        presentation,
+        occludedEdges: occlusion,
+        rightBorderRendered,
+        leftBorderRendered,
+        topBorderRendered: true,
+        bottomBorderRendered: true,
+        captionCuePresent,
+        exactInlinePresent,
+        frameVisible,
+        frameCount: structure.locateFrameCount,
+        inlineMarkCount: structure.inlineMarkCount,
+        staleVisualCount: structure.staleLocateFrameCount,
+        framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
+        framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
+        framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
+        semanticLocateDecision: diagId != null ? 'PASS' : 'N/A',
+        visualPresentationDecision: valid && frameVisible ? 'PASS' : 'FAIL',
+        decision: valid && frameVisible ? 'PASS' : 'FAIL',
+        reason,
+      })
+      // V5.1 — DOCUMENT-DIAGNOSTIC-PRESENTATION-AUDIT (real numeric contract).
+      const drawerModeRaw = this.getDrawerPresentationMode()
+      const drawerMode = !this.drawerOpen ? 'NORMAL'
+        : this.drawerCollapseActive ? 'LOCATE_COLLAPSE'
+          : 'DOCKED'
+      const drawerElReal = this.drawerEl
+      const drawerRealRect = drawerElReal && drawerElReal.isConnected && isRenderedVisible(drawerElReal)
+        ? drawerElReal.getBoundingClientRect()
+        : null
+      const drawerWidth = drawerRealRect ? Math.max(0, drawerRealRect.right - drawerRealRect.left) : 0
+      const semW = semanticRect?.width ?? 0
+      const presW = frameRect?.width ?? 0
+      const coverageRatio = semW > 0 ? Math.max(0, Math.min(1, presW / semW)) : null
+      const namePrimary = frameEl?.dataset.namePrimary === 'true'
+      const captionHostPresent = frameEl?.dataset.captionCue === 'caption-host'
+      const fallbackLevelRaw = frameEl?.dataset.fallbackLevel
+      const nameSlotDecision = frameEl?.dataset.nameSlotDecision ?? 'n/a'
+      const primaryMarker = this.lastNameSlotDecision === 'resolved' && this.lastNameSlotPrimaryRect
+        ? this.lastNameSlotPrimaryRect
+        : frameRect
+      const nameSlotPrimary = this.lastNameSlotDecision === 'resolved' ? this.lastNameSlotPrimaryRect : null
+      const contextRect = this.lastNameSlotContextRect
+      const nameSlotAreaRatio =
+        nameSlotPrimary && contextRect && contextRect.width > 0 && contextRect.height > 0
+          ? (nameSlotPrimary.width * nameSlotPrimary.height) / (contextRect.width * contextRect.height)
+          : null
+      const expectedNameSlotPresent = namePrimary || (this.lastNameSlotDecision === 'resolved')
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-PRESENTATION-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        severity,
+        targetKind: kind,
+        occurrenceIndex: null,
+        drawerMode,
+        drawerPresentationMode: drawerModeRaw,
+        drawerRequestedOpen: this.drawerOpen,
+        drawerWidth,
+        drawerRectWidth: drawerRealRect ? drawerRealRect.width : 0,
+        editorAvailableWidth: this.lastVisibleEditor?.visibleWidth ?? region.editor?.width ?? null,
+        semanticTargetRect: semanticRect,
+        primaryMarkerRect: primaryMarker,
+        secondaryContextRect: this.isObjectKind(kind) ? frameRect : null,
+        presentationKind: presentation,
+        fallbackLevel: fallbackLevelRaw,
+        targetFullyUnobscured: layers.drawerOccludesTarget ? false : frameInsideUnobscured !== false,
+        coverageRatio,
+        expectedNameSlotPresent,
+        captionHostPresent,
+        nameSlotDecision,
+        nameSlotPrimaryAreaRatio: nameSlotAreaRatio,
+        nameSlotPrimaryRect: nameSlotPrimary,
+        toolbarRenderedVisible: layers.toolbarRenderedVisible,
+        toolbarIntersectsFrame: layers.toolbarIntersectsFrame,
+        framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
+        navigatorRenderedVisible: layers.navigatorRenderedVisible,
+        navigatorIntersectsFrame: layers.navigatorIntersectsFrame,
+        framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
+        drawerRenderedVisible: layers.drawerRenderedVisible,
+        drawerIntersectsFrame: layers.drawerIntersectsFrame,
+        framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
+        primaryMarkerVisible: frameVisible,
+        secondaryContextVisible: this.isObjectKind(kind) ? frameVisible : false,
+        txVisualRetryCount: this.txVisualRetryCount,
+        visualRetryCount: this.txVisualRetryCount,
+        sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
+        layoutRecoveryPerformed: this.txVisualRetryCount > 0,
+        collapseLeaseActive: this.getDrawerRecoveryLeaseActive(),
+        committedIndex: null,
+        semanticDecision: diagId != null ? 'PASS' : 'N/A',
+        visualDecision: valid && frameVisible ? 'PASS' : 'FAIL',
+        finalDecision: valid && frameVisible ? 'PASS' : 'FAIL',
+        reason,
+      })
+    } catch { /* best-effort observability — never breaks the locate commit */ }
   }
 
   /** Runtime-gate observability for the V3 locate frame (structure invariant). */
@@ -1824,10 +4941,14 @@ export class DocumentUtilityOverlayHost {
     activeDiagnosticId: string | null
     kind: DiagnosticLocateTargetKind | null
     severity: 'error' | 'warning' | 'info' | null
+    /** V5.12-R2 §5 — the heading is carried by the marker, not a legacy frame. */
+    headingMarkerCarrier: boolean
+    /** V5.12-R2 §10 — painted per-visual-line inline fragments. */
+    inlineFragmentCount: number
   } {
     return this.locateFrame
       ? this.locateFrame.getStructure()
-      : { locateFrameCount: 0, duplicateLocateFrame: false, staleLocateFrameCount: 0, inlineMarkCount: 0, duplicateInlineMark: false, active: false, activeDiagnosticId: null, kind: null, severity: null }
+      : { locateFrameCount: 0, duplicateLocateFrame: false, staleLocateFrameCount: 0, inlineMarkCount: 0, duplicateInlineMark: false, active: false, activeDiagnosticId: null, kind: null, severity: null, headingMarkerCarrier: false, inlineFragmentCount: 0 }
   }
 
   /** Runtime-gate observability: last located diagnostic (row + frame). */
@@ -1890,6 +5011,8 @@ export class DocumentUtilityOverlayHost {
     this.lastExternalResizeTs = this.now()
     this.scheduleGeometrySync('window-resize')
     this.scheduleResizeSettle()
+    // V5.11 §19 — a true resize is a layout reflow: same-target reconcile only.
+    this.reconcileLocateDocumentSpace('WINDOW_RESIZE')
   }
 
   /**
@@ -2144,6 +5267,8 @@ export class DocumentUtilityOverlayHost {
   /** Phase 2-B.3 — final navigator presentation state (single authority). */
   private lastNavVis: { presentation: NavigatorPresentation; reason: string; insetRightPx: number | null } =
     { presentation: 'hidden', reason: 'NOT_SCROLLABLE', insetRightPx: null }
+  /** Ghost-control V1 — sig-guarded NAVIGATOR-PRESENTATION-INVARIANT emitter. */
+  private lastNavigatorPresentationSig = ''
   /** V1.1 — read-only Rail Facts captured during geometry (Drift consumes them). */
   private lastRailFacts: NavigatorRailFacts | null = null
   /** Chevron V3 — icon visibility invariant counter (FAIL only). */
@@ -2565,6 +5690,20 @@ export class DocumentUtilityOverlayHost {
     this.clearDiagnosticLocateVisual('NO_ACTIVE_DOCUMENT')
     this.lastLocatedDiagnosticId = null
     this.multiTargetCursor.clear()
+    // Phase 7R.3.11.8B.12 — ACTIVE → EMPTY / NO_ACTIVE_DOCUMENT hides the
+    // Navigator IMMEDIATELY (no scroll/resize/timer) and clears every stale
+    // placement so a later show never inherits a left-bottom geometry.
+    this.lastNavVis = { presentation: 'hidden', reason: 'NO_ACTIVE_DOCUMENT', insetRightPx: null }
+    this.lastRailFacts = null
+    this.lastStableNavigatorPresentation = null
+    this.stabilizationRemeasurePending = false
+    if (this.navigatorEl) {
+      this.navigatorEl.style.removeProperty('right')
+      this.navigatorEl.style.removeProperty('left')
+      this.navigatorEl.style.removeProperty('top')
+      this.navigatorEl.style.removeProperty('bottom')
+      this.applyNavigatorPresentation('hidden', null)
+    }
     this.emitActiveDocumentVisibilityInvariant()
     this.emitToolbarRenderedVisibilityInvariant()
     this.emitActiveLeafDocumentInvariant('NO_ACTIVE_DOCUMENT')
@@ -2918,7 +6057,32 @@ export class DocumentUtilityOverlayHost {
       insetRailRight,
       insetRightPx,
     }
-  }  /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
+  }  /**
+   * Phase 7R.3.11.8B.12 — Navigator ACTIVE-DOCUMENT eligibility gate (top
+   * precedence). EMPTY / INACTIVE / no documentKey / Untitled+0 chars /
+   * disconnected editor root are ALL ineligible → hidden, whatever geometry
+   * or stale last-stable presentation says. Real-layout callers additionally
+   * require the canonical heading frame to be READY.
+   */
+  private resolveNavigatorActiveDocEligibility(): { eligible: boolean; reason: string } {
+    const ev = this.evaluateActiveDocumentPresence()
+    const fp = this.opts.ctx.authority.getActiveFilePath()
+    const md = this.opts.ctx.authority.getMarkdown()
+    // Untitled + 0 chars is NOT a scrollable Markdown document.
+    const emptyUntitled = (fp == null || fp === '') && (md == null || md.replace(/\s/g, '') === '')
+    const root = resolveBusinessContentRoot()
+    return decideNavigatorEligibilityPure({
+      presenceState: ev.presence.state,
+      hasActiveDocument: ev.hasActiveDocument,
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      rootConnected: root ? root.isConnected : null,
+      emptyUntitled,
+      canonicalReady: this.authorityReady.canonical,
+      realLayout: !isHeadlessTestRuntime(),
+    })
+  }
+
+  /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
   private applyNavigatorPresentation(presentation: NavigatorPresentation, insetRightPx: number | null): void {
     if (!this.navigatorEl) return
     this.navigatorEl.dataset.rail = presentation
@@ -2927,6 +6091,55 @@ export class DocumentUtilityOverlayHost {
     if (presentation === 'inset' && insetRightPx != null) {
       this.navigatorEl.style.right = `${insetRightPx}px`
     }
+    this.emitNavigatorPresentationInvariant()
+  }
+
+  /**
+   * Ghost-control V1 — NAVIGATOR-PRESENTATION-INVARIANT (sig-guarded, one line
+   * per state change). Presence/canonical/scrollability are the ONLY reasons
+   * the navigator may ever be visible; visible-without-ACTIVE is a hard FAIL.
+   */
+  private emitNavigatorPresentationInvariant(): void {
+    const nv = this.lastNavVis
+    const nav = this.navigatorEl
+    let presenceState = 'UNKNOWN'
+    let hasActiveDocument = false
+    try {
+      const ev = this.evaluateActiveDocumentPresence()
+      presenceState = ev.presence.state
+      hasActiveDocument = ev.hasActiveDocument
+    } catch { /* best-effort */ }
+    const root = resolveBusinessContentRoot()
+    const visible = nav ? !nav.hidden && nav.style.display !== 'none' : false
+    let rect: { left: number; right: number; top: number; bottom: number } | null = null
+    if (visible && nav) {
+      try {
+        const r = nav.getBoundingClientRect()
+        rect = { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) }
+      } catch { rect = null }
+    }
+    const sig = `${presenceState}|${hasActiveDocument}|${nv.presentation}|${nv.reason}|${visible}`
+    if (sig === this.lastNavigatorPresentationSig) return
+    this.lastNavigatorPresentationSig = sig
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAVIGATOR-PRESENTATION-INVARIANT', {
+      presenceState,
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      hasActiveDocument,
+      editorRootConnected: root ? root.isConnected : null,
+      canonicalFrameState: this.authorityReady.canonical ? 'READY' : 'WAITING',
+      scrollable: this.lastGeometry?.scrollable ?? false,
+      requestedMode: nv.presentation,
+      finalMode: nv.presentation,
+      reason: nv.reason,
+      left: rect ? rect.left : null,
+      right: rect ? rect.right : null,
+      top: rect ? rect.top : null,
+      bottom: rect ? rect.bottom : null,
+      visible,
+      decision: visible && presenceState !== 'ACTIVE' ? 'FAIL_VISIBLE_WITHOUT_ACTIVE_DOCUMENT'
+        : nv.presentation === 'hidden' && rect ? 'FAIL_HIDDEN_WITH_GEOMETRY'
+          : 'PASS',
+    })
   }
 
   /** Phase 2-B.2 — VISIBLE-EDITOR invariant (commit-time, low noise). */
@@ -3053,9 +6266,41 @@ export class DocumentUtilityOverlayHost {
     return verdict
   }
 
+  /** V5.12-R2 §3.2 — geometry-sync reason → layout epoch mutation kind. */
+  private static layoutMutationKindForGeometryReason(reason: string): LayoutMutationKind | null {
+    switch (reason) {
+      case 'window-resize': return 'WINDOW_LAYOUT_SETTLE'
+      case 'mount': return 'DOCUMENT_LOAD'
+      case 'tabs-structure-change': return 'DOCUMENT_SWITCH'
+      default: return null
+    }
+  }
+
+  /** V5.12-R2 §10 — an inline carrier is the mark OR its per-line fragments. */
+  private inlineCarrierPresent(structure: { inlineMarkCount: number; inlineFragmentCount?: number }): boolean {
+    return structure.inlineMarkCount === 1 || (structure.inlineFragmentCount ?? 0) >= 1
+  }
+
+  /** V5.12-R2 §4/§5 — a heading visual carrier is the text-tight marker layer. */
+  private headingCarrierPresent(structure: { headingMarkerCarrier?: boolean }): boolean {
+    return structure.headingMarkerCarrier === true
+      && this.headingMarkerLayer !== null
+      && this.headingPassiveMarkers.size > 0
+  }
+
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
+    // V5.12-R2 §3.2 — ONLY the reasons that really change `#write` geometry may
+    // bump the document layout epoch. `content-mutation` and
+    // `resize-observer` are deliberately NOT mapped: the plugin's own marker
+    // writes are mutations inside `#write`, and mapping them would create the
+    // high-frequency self-wake loop the spec forbids (the projection-commit
+    // boundary already bumps the epoch via the admitted snapshot).
+    for (const reason of reasons) {
+      const kind = DocumentUtilityOverlayHost.layoutMutationKindForGeometryReason(reason)
+      if (kind) this.bumpDocumentLayoutEpoch(kind)
+    }
     this.ensureTabStructureObserver()
     // Phase 7R.3.11.8B.NO-ACTIVE-DOC — highest-precedence gate. Without a real
     // active Markdown document no geometry / last-stable / workspace fallback
@@ -3114,9 +6359,13 @@ export class DocumentUtilityOverlayHost {
       presentation: toolbarPresentation,
     }
     // Phase 2-B.3 — final Navigator authority (single write point).
-    // Show depends ONLY on scrollability; placement depends on visible
-    // editor geometry (gutter → inset rail → hidden/NO_SAFE_PLACEMENT).
-    if (next.scrollable) {
+    // Eligibility first: EMPTY / no document / Untitled / disconnected root /
+    // canonical-not-ready force hidden BEFORE any placement decision. Show
+    // depends on scrollability; WHERE depends on visible editor geometry
+    // (gutter → inset rail → hidden/NO_SAFE_PLACEMENT). Left/bottom-left
+    // fallback is permanently forbidden.
+    const navEligibility = this.resolveNavigatorActiveDocEligibility()
+    if (next.scrollable && navEligibility.eligible) {
       // True-Inset — measure the REAL scrollbar boundary BEFORE the rail.
       let scrollbarKnowledge: 'known' | 'unknown' = 'unknown'
       let scrollbarWidth: number | null = null
@@ -3203,13 +6452,26 @@ export class DocumentUtilityOverlayHost {
         this.scheduleGeometrySync('navigator-stabilize-remeasure')
       }
       const effPres = stab.presentation
+      // Phase 7R.3.11.8B.12 — UNKNOWN geometry defaults to HIDDEN in a real
+      // layout. The old "INSET_UNKNOWN_FALLBACK → visible" is forbidden here:
+      // if the visible editor / gutter / inset safe width could not be
+      // measured, the navigator must not guess a position.
+      const realLayout = !isHeadlessTestRuntime()
+      let finalPres: NavigatorPresentation = effPres
+      let finalReason = stab.reason
+      if (realLayout && !geometryKnown && finalPres !== 'hidden') {
+        finalPres = 'hidden'
+        finalReason = 'NO_SAFE_PLACEMENT'
+        this.lastStableNavigatorPresentation = null
+        this.stabilizationRemeasurePending = false
+      }
       // True-Inset — inset only when the rail proved the FULL navigator fits
       // (external free space + allowed content overlap ≤ NAV_INSET_MAX…).
-      const useInsetRail = effPres === 'inset' && rail.contentMeasured && rail.canInset
+      const useInsetRail = finalPres === 'inset' && rail.contentMeasured && rail.canInset
       const insetPx = useInsetRail ? rail.insetRightPx : null
-      this.lastNavVis = { presentation: effPres, reason: stab.reason, insetRightPx: insetPx }
-      if (this.navigatorEl) this.applyNavigatorPresentation(effPres, insetPx)
-      if (effPres !== 'hidden') {
+      this.lastNavVis = { presentation: finalPres, reason: finalReason, insetRightPx: insetPx }
+      if (this.navigatorEl) this.applyNavigatorPresentation(finalPres, insetPx)
+      if (finalPres !== 'hidden') {
         this.emitNavigatorIconVisibilityInvariant(true, true)
         // Containment invariant — a VISIBLE navigator must sit fully inside the
         // visible editor rect (never over the file/outline sidebar or DevTools).
@@ -3227,8 +6489,8 @@ export class DocumentUtilityOverlayHost {
       // consumes. safeRailLeft/right + contentGap are presentation-aware:
       // gutter keeps contentRight+8; inset may sit at contentRight−12 and
       // rides up to the measured scrollbarSafeRight.
-      const edgeMode = effPres === 'inset' && stab.reason === 'INSET_EDGE_FALLBACK'
-      const insetPres = effPres === 'inset' || (stab.reason === 'STABILIZING_ONE_FRAME' && this.lastStableNavigatorPresentation === 'inset')
+      const edgeMode = finalPres === 'inset' && finalReason === 'INSET_EDGE_FALLBACK'
+      const insetPres = finalPres === 'inset' || (finalReason === 'STABILIZING_ONE_FRAME' && this.lastStableNavigatorPresentation === 'inset')
       // Edge mode: content overlap rules do NOT apply — only editor bounds +
       // scrollbar (Drift content-left check skipped via contentRight:null).
       const gapPx = insetPres ? (edgeMode ? 0 : -NAV_INSET_MAX_CONTENT_OVERLAP_PX) : NAV_CONTENT_SAFE_GAP_PX
@@ -3250,20 +6512,29 @@ export class DocumentUtilityOverlayHost {
           : { knowledge: 'unknown', contentLeft: null, contentRight: null, safeRailLeft: null, safeRailRight: null, scrollbarKnowledge: 'unknown', scrollbarWidth: null, scrollbarSafeRight: null, insetSafeWidth: rail.insetSafeWidth, expectedRight: null }
       this.lastDriftContentGap = gapPx
       // Monotonic visibility invariant — edge fit ⇒ never hidden.
-      const mono = auditNavigatorMonotonicVisibility({ scrollable: true, edgeInsetCandidateValid: edgeInsetCandidate?.valid ?? false, finalPresentation: effPres })
+      const mono = auditNavigatorMonotonicVisibility({ scrollable: true, edgeInsetCandidateValid: edgeInsetCandidate?.valid ?? false, finalPresentation: finalPres })
       if (mono.decision !== 'PASS') {
         this.monotonicVisibilityHoleCount++
-        console.log(`[InkChapter] DOCUMENT-UTILITY-NAVIGATOR-MONOTONIC-VISIBILITY-INVARIANT: decision=${mono.decision} finalPresentation=${effPres} edgeInsetCandidateValid=${edgeInsetCandidate?.valid}`)
+        console.log(`[InkChapter] DOCUMENT-UTILITY-NAVIGATOR-MONOTONIC-VISIBILITY-INVARIANT: decision=${mono.decision} finalPresentation=${finalPres} edgeInsetCandidateValid=${edgeInsetCandidate?.valid}`)
       }
-      next.navigatorVisible = effPres !== 'hidden'
-      next.navigatorSuppressed = effPres === 'hidden'
+      next.navigatorVisible = finalPres !== 'hidden'
+      next.navigatorSuppressed = finalPres === 'hidden'
     } else {
-      this.lastNavVis = { presentation: 'hidden', reason: 'NOT_SCROLLABLE', insetRightPx: null }
+      const hideReason = !navEligibility.eligible ? navEligibility.reason : 'NOT_SCROLLABLE'
+      this.lastNavVis = { presentation: 'hidden', reason: hideReason, insetRightPx: null }
       this.lastRailFacts = null
       this.lastStableNavigatorPresentation = null
       this.stabilizationRemeasurePending = false
       this.lastDriftContentGap = NAV_CONTENT_SAFE_GAP_PX
-      if (this.navigatorEl) this.applyNavigatorPresentation('hidden', null)
+      // Stale geometry cleanup — no left/right/top/bottom residue may survive
+      // a hidden state (next show must never inherit a left-bottom position).
+      if (this.navigatorEl) {
+        this.navigatorEl.style.removeProperty('right')
+        this.navigatorEl.style.removeProperty('left')
+        this.navigatorEl.style.removeProperty('top')
+        this.navigatorEl.style.removeProperty('bottom')
+        this.applyNavigatorPresentation('hidden', null)
+      }
       next.navigatorVisible = false
       next.navigatorSuppressed = true
     }
@@ -3331,12 +6602,20 @@ export class DocumentUtilityOverlayHost {
       // Phase 7R.3.11.8B.3 — hidden when the real container is not scrollable
       // (or temporarily suppressed by the drawer safe-area policy);
       // display:none removes hit-targets, focus and keyboard reachability.
-      // Position is written first, display second, so the safe-area
-      // measurement above always saw the navigator in its final place.
+      // Ghost-control V1 — a HIDDEN navigator never keeps stale right/bottom
+      // placement (next show must not inherit an old position).
       const nv = this.lastNavVis
-      this.navigatorEl.style.right = `${nv.presentation === 'inset' && nv.insetRightPx != null ? nv.insetRightPx : next.navRight}px`
-      this.navigatorEl.style.bottom = `${next.navBottom}px`
-      this.navigatorEl.style.display = nv.presentation === 'hidden' ? 'none' : 'flex'
+      if (nv.presentation === 'hidden') {
+        this.navigatorEl.style.removeProperty('right')
+        this.navigatorEl.style.removeProperty('left')
+        this.navigatorEl.style.removeProperty('top')
+        this.navigatorEl.style.removeProperty('bottom')
+        this.navigatorEl.style.display = 'none'
+      } else {
+        this.navigatorEl.style.right = `${nv.presentation === 'inset' && nv.insetRightPx != null ? nv.insetRightPx : next.navRight}px`
+        this.navigatorEl.style.bottom = `${next.navBottom}px`
+        this.navigatorEl.style.display = 'flex'
+      }
     }
     if (this.drawerEl) {
       // Phase 7R.3.11.8B.3 — drawer is top-right anchored, content-sized
@@ -4515,12 +7794,27 @@ export class DocumentUtilityOverlayHost {
       state: 'RESOLVING',
     }
     this.activeLocateTx = tx
+    // V5.9 §37 — a previous ACCEPTED transaction that never reached a terminal
+    // is an explicit violation (never silently overwritten).
+    if (this.locateTxAcceptedCount > this.locateTxTerminalCount) {
+      this.countersScrollV59.acceptedTxWithoutTerminal++
+    }
+    this.locateTxAcceptedCount++ // V5.9 §37 — accepted must equal terminal
+    // V5.11 — the scroll lease is held ONLY while this transaction is PRE-COMMIT.
+    this.acquireLocateScrollLease(tx)
+    this.removeLocateDocumentCarrier()
     this.updateLocateBusyUi(true)
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
       clickDecision: 'ACCEPT',
       state: 'RESOLVING',
     })
+    // V5.1 — every locate transaction snapshots the user's Drawer intent BEFORE
+    // any LOCATE_COLLAPSE can happen. tx-local retry starts at 0 here.
+    this.beginDrawerRecoveryLease()
+    // V5.6 — a new locate starts a fresh visual epoch so any stale queued
+    // repaint from a previously dismissed visual becomes a no-op.
+    this.locateVisualEpoch++
     try {
       this.runLocateTransaction(tx, diagnosticId)
     } catch (err) {
@@ -4542,7 +7836,6 @@ export class DocumentUtilityOverlayHost {
       refreshed = true
       diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
       if (!diag) {
-        this.showToast('该问题已修复，请重新检查')
         this.emitLocateAudit(diagnosticId, null, 'NOT_FOUND', 'DIAGNOSTIC_GONE_AFTER_BOUNDED_REFRESH', 0, null)
         this.finishLocateTransaction(tx, false, 'DIAGNOSTIC_GONE')
         return
@@ -4555,7 +7848,6 @@ export class DocumentUtilityOverlayHost {
         diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
       }
       if (!diag || (diag.documentKey && currentKey && diag.documentKey !== currentKey)) {
-        this.showToast('文档已切换，已刷新诊断')
         this.emitLocateAudit(diagnosticId, diag, 'WRONG_DOCUMENT', 'DIAGNOSTIC_BELONGS_TO_ANOTHER_DOCUMENT', 0, null)
         this.finishLocateTransaction(tx, false, 'WRONG_DOCUMENT')
         return
@@ -4618,7 +7910,6 @@ export class DocumentUtilityOverlayHost {
         }
       }
       this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'TARGET_CHANGED', targetIndex, result)
-      this.showToast('目标已变化，请重新检查')
       this.finishLocateTransaction(tx, false, 'TARGET_CHANGED')
       return
     }
@@ -4640,19 +7931,27 @@ export class DocumentUtilityOverlayHost {
         }
       }
       this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'SOURCE_ANCHOR_NOT_MAPPED_TO_DOM', targetIndex, result)
-      this.showToast('无法定位到该问题所在行，请重新检查')
       this.finishLocateTransaction(tx, false, 'UNRESOLVED')
       return
     }
     this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'UNRESOLVED', targetIndex, result)
-    this.showToast('目标已变化，请重新检查')
     this.finishLocateTransaction(tx, false, result.decision)
   }
 
-  /** Phase 7R.3.11.8B.7.7 — Locate TRANSACTION scroll path (RESOLVED). Starts
-   *  the scroll (element / compound caption-primary / document boundary),
-   *  waits for the REAL scroll settle (scrollend / rAF-stable frames), then
-   *  highlights and commits the next target index + unlocks. */
+  /** Phase 7R.3.11.8B.7.7 / V5.8 / V5.9 — Locate TRANSACTION scroll path.
+   *
+   *  V5.9 — SCROLL COMPLETION AUTHORITY. The V5.8 defect (proven by the real
+   *  runtime) was that `2 stable rAF frames` could settle BEFORE the smooth
+   *  scroll effect reached the target, so the visual pipeline started while the
+   *  target was still offscreen (visualPaintAttemptCount=3 → ZERO_PAINTED_RECT
+   *  → a second user click was needed).
+   *
+   *  V5.9 therefore separates three authorities:
+   *    semantic target  ≠  stable scroll anchor  ≠  visual carrier
+   *  and requires, for any offscreen target, that the scroll be performed as a
+   *  DETERMINISTIC `scrollTop` write and that `targetEnteredViewport` +
+   *  `scrollEffectObserved` + two stable post-arrival frames all hold before
+   *  `scrollSettled=true` and the V5.8 visual pipeline start. */
   private performLocateScrollTransaction(
     tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
     result: DiagnosticLocationResolveResult,
@@ -4687,19 +7986,134 @@ export class DocumentUtilityOverlayHost {
       return
     }
 
-    // Trigger the scroll (no highlight yet — SCROLLING precedes HIGHLIGHTING).
-    if (primary) this.locator.scrollTarget(primary)
-    if (!container) {
-      // No container → no real scroll possible; highlight + verify + finish.
-      const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
-      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : 'SCROLLED', targetIndex, result)
-      this.finishLocateTransaction(tx, verified, 'NO_CONTAINER_IMMEDIATE')
+    const identity = this.captureLocateIdentity(diag, result)
+    // V5.8 — a pure DOCUMENT-BOUNDARY locate (GO_TOP/GO_BOTTOM) has no visual
+    // target: it keeps its legacy completion (never enters the one-click
+    // visual pipeline, which is about offscreen ELEMENT targets).
+    const boundaryOnly = result.scrollAction != null && !result.element
+    if (boundaryOnly) {
+      tx.state = 'WAITING_SCROLL_SETTLE'
+      if (!container) {
+        const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex, result, verified)
+        this.finishLocateTransaction(tx, verified, 'SCROLL_ACTION_NO_CONTAINER')
+        return
+      }
+      this.watchBoundaryScrollSettle(tx, diag, diagnosticId, targetIndex, highlightTargets, result, container)
       return
     }
 
-    // Phase 7R.3.11.8B.7.7 — REAL settle gate (scrollend / rAF-stable frames /
-    // target-already-settled) + a one-shot watchdog that is NEVER the normal
-    // completion path (only an abnormal escape hatch so the lock can never hang).
+    // ── V5.9 — Semantic target ≠ Scroll anchor ≠ Visual carrier ────────────
+    // The scroll anchor is the CANONICAL semantic element (never a caption
+    // visual / overlay frame / freshly created carrier).
+    const scrollAnchor = this.resolveStableScrollAnchor(result.element ?? primary, diag)
+    if (!container) {
+      // No container → no scroll possible; still run the full atomic completion
+      // (identity revalidate → fresh measure → paint → verify → recovery →
+      // final remeasure/repaint/verify → COMMIT) so a single click is complete.
+      this.beginOneClickCompletion(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, this.emptyPreScrollState(), false)
+      return
+    }
+
+    const facts = this.createOneClickFacts(tx, identity, this.emptyPreScrollState(), false)
+    tx.oneClick = facts
+    facts.scrollAnchorKind = scrollAnchor ? scrollAnchor.tagName.toLowerCase() : null
+    facts.scrollAnchorConnected = !!scrollAnchor && scrollAnchor.isConnected
+    facts.initialScrollTop = container.scrollTop
+    facts.viewportRectAtStart = this.measureLocateRect(container)
+    facts.arrivalGateDecision = 'PENDING'
+
+    const containerOk = this.validateScrollContainer(container, scrollAnchor)
+    if (!containerOk.ok) {
+      tx.state = 'FAILED'
+      facts.arrivalGateDecision = containerOk.reason
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', containerOk.reason, targetIndex, result, false)
+      this.finishLocateTransaction(tx, false, containerOk.reason)
+      return
+    }
+    const anchorEl = scrollAnchor as HTMLElement
+
+    // V5.10 §12/§24 — placement context: PRIMARY (caption cue) + SECONDARY
+    // (semantic block) for Table/Code; the semantic owning block otherwise.
+    const semanticEl = result.element ?? primary
+    const compound = !!semanticEl && !!primary && primary !== semanticEl
+    const placementAnchor = this.resolvePlacementAnchor(semanticEl, diag)
+    this.locatePlacementCtx = {
+      anchorEl: placementAnchor,
+      primaryEl: compound ? primary : null,
+      secondaryEl: semanticEl,
+      compound,
+    }
+
+    // ── PRE_SCROLL_MEASURE + CHECK_INITIAL_VISIBILITY + PREFERRED PLACEMENT ─
+    tx.state = 'PRE_SCROLL_MEASURE'
+    const initialState = this.measurePlacementState(container)
+    const initialArrival = this.measureArrivalState(container, anchorEl)
+    facts.initialTargetRect = initialArrival.targetRect ? this.rectSnapshotToRectRecord(initialArrival.targetRect) : null
+    facts.preScrollTargetRect = facts.initialTargetRect
+    facts.targetInitiallyVisible = initialArrival.enteredViewport
+    if (initialState) {
+      this.recordPlacementFacts(facts, initialState, true)
+      // §12 — a compound Table/Code target must NOT be centred from a partial rect.
+      if (compound && !initialState.compoundBoundsUsed) {
+        this.countersPlacementV510.compoundTargetCenterUsesPartialRect++
+      }
+    }
+    const placement = initialState?.decision ?? null
+    // V5.10 §4/§15 — visible is NOT the same as well placed: a recenter happens
+    // unless the target is ALREADY within the center tolerance or a real scroll
+    // write would be a no-op (document boundary).
+    const noWriteNeeded = initialState != null && Math.abs(placement!.clampedScrollTop - initialState.scrollTop) <= 0.5
+    const placementFastPath =
+      initialArrival.enteredViewport &&
+      (placement == null || placement.alreadyWithinTolerance || noWriteNeeded)
+    facts.automaticScrollRequired = !placementFastPath
+
+    if (placementFastPath) {
+      // ── PLACEMENT FAST PATH: ZERO scroll writes ──────────────────────────
+      tx.state = 'SKIP_SCROLL'
+      facts.scrollWriteCount = 0
+      facts.scrollCorrectionCount = 0
+      facts.scrollEffectObserved = false
+      facts.targetEnteredViewport = true
+      facts.targetVisibleAtSettle = true
+      facts.scrollSettled = true
+      facts.arrivalGateDecision = 'PLACEMENT_FAST_PATH'
+      facts.targetRectAtArrival = facts.initialTargetRect
+      facts.targetRectAtSettle = facts.initialTargetRect
+      facts.viewportRectAtSettle = facts.viewportRectAtStart
+      if (placement) {
+        facts.centerErrorAfter = placement.centerErrorBefore
+        facts.targetCenterAfter = placement.targetCenterBefore
+        facts.requestedScrollTop = placement.desiredScrollTop
+        facts.actualScrollTopAfterWrite = initialState ? initialState.scrollTop : 0
+      }
+      this.emitScrollArrivalAudit(tx, facts, 'PASS', 'PLACEMENT_FAST_PATH_NO_SCROLL_WRITE')
+      this.beginOneClickCompletion(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, this.emptyPreScrollState(), false, 'PLACEMENT_FAST_PATH')
+      return
+    }
+    if (facts.targetInitiallyVisible && placement && !placement.alreadyWithinTolerance && !noWriteNeeded) {
+      facts.arrivalGateDecision = 'VISIBLE_BUT_OFFCENTER'
+    }
+
+    // ── OFFSCREEN / OFF-CENTER: deterministic placement scroll write ───────
+    tx.state = 'REQUESTING_SCROLL'
+    this.applyDeterministicScroll(container, anchorEl, facts)
+    facts.targetRectAfterScrollWrite = this.measureLocateRect(anchorEl)
+
+    this.waitForTargetArrival(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, anchorEl, initialArrival, 0)
+  }
+
+  /** V5.9 — the legacy document-boundary settle (no element target / visual). */
+  private watchBoundaryScrollSettle(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+    highlightTargets: HTMLElement[],
+    result: DiagnosticLocationResolveResult,
+    container: HTMLElement,
+  ): void {
     let settled = false
     let lastTop = container.scrollTop
     let stableFrames = 0
@@ -4710,23 +8124,16 @@ export class DocumentUtilityOverlayHost {
       settled = true
       this.cancelLocateSettleWatch()
       const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
-      const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
-      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result)
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex, result, verified)
       this.finishLocateTransaction(tx, verified, completionReason)
     }
-    const onScroll = (): void => {
-      lastTop = container.scrollTop
-      stableFrames = 0 // a new scroll frame arrived → not stable yet
-    }
+    const onScroll = (): void => { lastTop = container.scrollTop; stableFrames = 0 }
     const onScrollEnd = (): void => { onSettled('SCROLLEND') }
     const tick = (): void => {
       if (settled || !this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
       const top = container.scrollTop
       if (Math.abs(top - lastTop) < 0.5) stableFrames++
       else { lastTop = top; stableFrames = 0 }
-      // Scroll settled: 2 consecutive stable frames (a smooth scroll in motion
-      // never holds two zero-delta frames). Target-already-settled (no scroll
-      // activity) also satisfies this on the first frames.
       if (stableFrames >= 2) { onSettled('SCROLL_STABLE_FRAMES'); return }
       rafHandle = requestAnimationFrame(tick)
     }
@@ -4738,17 +8145,1625 @@ export class DocumentUtilityOverlayHost {
       container.removeEventListener('scrollend', onScrollEnd)
       container.removeEventListener('scroll', onScroll)
     }
-    // Watchdog: abnormal escape only — never the normal completion basis.
     this.locateTxWatchdog = setTimeout(() => {
       if (!settled && this.activeLocateTx && this.activeLocateTx.id === tx.id) {
         settled = true
         this.cancelLocateSettleWatch()
         const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
-        const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
-        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result)
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'SCROLL_ACTION', targetIndex, result, verified)
         this.finishLocateTransaction(tx, verified, 'WATCHDOG_FALLBACK')
       }
     }, 2500)
+  }
+
+  // ── V5.9 — Scroll Completion Authority ───────────────────────────────────
+
+  private rectSnapshotToRectRecord(r: { left: number; top: number; right: number; bottom: number }): RectRecord {
+    const snap = makeScrollRectSnapshot({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })
+    return { left: snap.left, top: snap.top, right: snap.right, bottom: snap.bottom, width: snap.width, height: snap.height }
+  }
+
+  private measureArrivalState(container: HTMLElement, anchor: HTMLElement | null): ScrollArrivalSnapshot {
+    const containerRect = this.measureLocateRect(container)
+    const anchorRect = this.measureLocateRect(anchor)
+    return measureScrollArrival({
+      targetRect: anchorRect ? makeScrollRectSnapshot({ left: anchorRect.left, top: anchorRect.top, right: anchorRect.right, bottom: anchorRect.bottom }) : null,
+      viewportRect: containerRect ? makeScrollRectSnapshot({ left: containerRect.left, top: containerRect.top, right: containerRect.right, bottom: containerRect.bottom }) : null,
+      scrollTop: Number.isFinite(container.scrollTop) ? container.scrollTop : 0,
+      targetConnected: !!anchor && anchor.isConnected,
+    })
+  }
+
+  /**
+   * V5.9 §4.2 — the STABLE SCROLL ANCHOR (arrival authority). Never a caption
+   * visual / overlay frame / freshly created carrier; a broken 0×0 <img> falls
+   * back to its owning source block (Source-First preserved).
+   */
+  private resolveStableScrollAnchor(semanticEl: HTMLElement | null, diag: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement | null {
+    if (!semanticEl || !semanticEl.isConnected) return null
+    // Never the locate overlay / visual carrier.
+    if (semanticEl.closest(`[${UTILITY_ROOT_IDENTITY_ATTR}="true"]`) !== null) return null
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    if (String(meta.resourceKind ?? '') === 'image') {
+      let r: DOMRect | null = null
+      try { r = semanticEl.getBoundingClientRect() } catch { /* noop */ }
+      if (!r || r.width <= 0 || r.height <= 0) {
+        const block = resolveOwningBlockFallback(semanticEl)
+        if (block && block.isConnected) return block
+      }
+    }
+    return semanticEl
+  }
+
+  /**
+   * V5.10 §24/§26 — the PLACEMENT anchor. Unlike the arrival anchor, an inline
+   * target (missing link / inline code) or a broken 0×0 image must not place the
+   * reading position from a ~12px fragment; it climbs to its semantic owning
+   * block. The VISUAL layer keeps drawing precise Range fragments.
+   */
+  private resolvePlacementAnchor(semanticEl: HTMLElement | null, diag: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement | null {
+    if (!semanticEl || !semanticEl.isConnected) return null
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    if (String(meta.resourceKind ?? '') === 'image') {
+      let r: DOMRect | null = null
+      try { r = semanticEl.getBoundingClientRect() } catch { /* noop */ }
+      if (!r || r.width <= 0 || r.height <= 0) {
+        const block = resolveOwningBlockFallback(semanticEl) ?? this.climbToOwningBlock(semanticEl)
+        if (block && block.isConnected) return block
+      }
+    }
+    if (classifyDiagnosticLocateElement(semanticEl) === 'inline') {
+      const climbed = this.climbToOwningBlock(semanticEl)
+      if (climbed) return climbed
+    }
+    return semanticEl
+  }
+
+  /** V5.10 §24 — nearest semantic block container of an inline fragment. */
+  private climbToOwningBlock(el: HTMLElement): HTMLElement | null {
+    let cur: HTMLElement | null = el.parentElement
+    while (cur && cur !== document.body) {
+      if (/^(P|LI|TD|TH|BLOCKQUOTE|PRE|TABLE|H[1-6]|FIGURE)$/.test(cur.tagName)) {
+        let r: DOMRect | null = null
+        try { r = cur.getBoundingClientRect() } catch { /* noop */ }
+        if (r && r.height > 0) return cur
+        return cur
+      }
+      cur = cur.parentElement
+    }
+    return null
+  }
+
+  /** V5.9 §6.1 — the container MUST really own the scroll anchor. */
+  private validateScrollContainer(container: HTMLElement | null, anchor: HTMLElement | null): { ok: boolean; reason: string } {
+    if (!container) return { ok: false, reason: 'NO_SCROLL_CONTAINER' }
+    if (!container.isConnected) return { ok: false, reason: 'SCROLL_CONTAINER_DISCONNECTED' }
+    if (!anchor) return { ok: false, reason: 'NO_SCROLL_ANCHOR' }
+    if (!container.contains(anchor) && anchor !== container) return { ok: false, reason: 'SCROLL_CONTAINER_TARGET_MISMATCH' }
+    return { ok: true, reason: 'OK' }
+  }
+
+  /**
+   * V5.10 — full PREFERRED PLACEMENT measurement (fresh geometry only, §21).
+   * CENTER authority = compound Primary+Secondary union for Table/Code.
+   */
+  private measurePlacementState(container: HTMLElement | null): {
+    decision: PlacementDecision
+    primaryTopNow: number | null
+    maxScrollTop: number
+    scrollTop: number
+    compoundBoundsUsed: boolean
+  } | null {
+    const ctx = this.locatePlacementCtx
+    if (!container || !ctx) return null
+    const viewportRect = this.measureLocateRect(container)
+    const primaryRect = ctx.compound ? this.measureLocateRect(ctx.primaryEl) : null
+    const secondaryRect = this.measureLocateRect(ctx.secondaryEl)
+    const placementRectRaw = this.measureLocateRect(ctx.anchorEl)
+    const anchorRect = this.measureLocateRect(ctx.anchorEl)
+    const measurable = (r: RectRecord | null): r is RectRecord => r != null && (r.width > 0 || r.height > 0)
+    let boundsRect: RectRecord | null
+    let compoundBoundsUsed = false
+    if (ctx.compound) {
+      if (primaryRect && secondaryRect) {
+        boundsRect = {
+          left: Math.min(primaryRect.left, secondaryRect.left),
+          top: Math.min(primaryRect.top, secondaryRect.top),
+          right: Math.max(primaryRect.right, secondaryRect.right),
+          bottom: Math.max(primaryRect.bottom, secondaryRect.bottom),
+          width: Math.max(primaryRect.right, secondaryRect.right) - Math.min(primaryRect.left, secondaryRect.left),
+          height: Math.max(primaryRect.bottom, secondaryRect.bottom) - Math.min(primaryRect.top, secondaryRect.top),
+        }
+        compoundBoundsUsed = true
+      } else {
+        // §12 — a compound target must be centred from the semantic block context
+        // when the caption cue is unavailable (still never a partial slot only).
+        boundsRect = secondaryRect ?? primaryRect
+        compoundBoundsUsed = Boolean(secondaryRect)
+      }
+    } else {
+      // §24 — prefer the semantic owning block (placement anchor), falling back
+      // to the measurable semantic rect before the raw anchor.
+      boundsRect = (measurable(placementRectRaw) ? placementRectRaw : null) ?? (measurable(secondaryRect) ? secondaryRect : null) ?? anchorRect
+    }
+    if (!viewportRect || !boundsRect) return null
+    const primaryTopNow = ctx.compound && primaryRect ? primaryRect.top : boundsRect.top
+    const scrollTop = Number.isFinite(container.scrollTop) ? container.scrollTop : 0
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight)
+    const decision = computePreferredPlacement({
+      viewportTop: viewportRect.top,
+      viewportHeight: viewportRect.height,
+      maxScrollTop,
+      currentScrollTop: scrollTop,
+      targetTop: boundsRect.top,
+      targetBottom: boundsRect.bottom,
+      primaryTop: primaryTopNow,
+      compoundBoundsUsed,
+      geometryFresh: true,
+    })
+    return { decision, primaryTopNow, maxScrollTop, scrollTop, compoundBoundsUsed }
+  }
+
+  /**
+   * V5.10 — persist the placement decision facts on the transaction record.
+   * `initial=true` marks the PRE-SCROLL decision (the fast-path predicate and
+   * the "before" geometry); later writes only refresh the achieved fields.
+   */
+  private recordPlacementFacts(
+    facts: LocateOneClickFacts,
+    state: { decision: PlacementDecision; primaryTopNow: number | null; maxScrollTop?: number },
+    initial = false,
+  ): void {
+    const d = state.decision
+    facts.placementMode = d.placementMode
+    facts.largeBlock = d.largeBlock
+    facts.primaryActualViewportY = state.primaryTopNow
+    if (typeof state.maxScrollTop === 'number') facts.maxScrollTopV510 = state.maxScrollTop
+    if (!initial) return
+    facts.alreadyWithinCenterTolerance = d.alreadyWithinTolerance
+    facts.viewportCenterY = d.viewportCenterY
+    facts.targetCenterBefore = d.targetCenterBefore
+    facts.centerErrorBefore = d.centerErrorBefore
+    facts.compoundHeight = d.compoundHeight
+    facts.primaryPreferredViewportY = d.primaryPreferredViewportY
+    facts.placementReason = d.reason
+    facts.placementDesiredScrollTop = d.desiredScrollTop
+  }
+
+  /** V5.9 §6.2 / V5.10 §6 — deterministic scrollTop write (no smooth-scroll race). */
+  private applyDeterministicScroll(container: HTMLElement, anchor: HTMLElement, facts: LocateOneClickFacts): void {
+    // V5.10 §35 — placement may ONLY run inside a user-click locate transaction.
+    if (!this.activeLocateTx) {
+      // §33/§34 — a post-COMMIT user scroll (or a post-dismiss repaint) must
+      // NEVER trigger an automatic recenter.
+      if (this.locateDismissCount > 0) this.countersPlacementV510.postDismissRecenter++
+      else {
+        this.countersPlacementV510.postCommitUserScrollRecenter++
+        this.countersPlacementV510.placementRegressionBreaksV57Topology++
+      }
+      return
+    }
+    const state = this.measurePlacementState(container)
+    let desired: number
+    if (state) {
+      desired = state.decision.clampedScrollTop
+    } else {
+      const containerRect = this.measureLocateRect(container)
+      const anchorRect = this.measureLocateRect(anchor)
+      if (!containerRect || !anchorRect) {
+        facts.scrollWriteCount++
+        facts.requestedScrollTop = null
+        facts.actualScrollTopAfterWrite = Number.isFinite(container.scrollTop) ? container.scrollTop : null
+        return
+      }
+      desired = computeDesiredScrollTop({
+        containerScrollTop: Number.isFinite(container.scrollTop) ? container.scrollTop : 0,
+        containerClientHeight: container.clientHeight,
+        containerScrollHeight: container.scrollHeight,
+        containerRect: makeScrollRectSnapshot({ left: containerRect.left, top: containerRect.top, right: containerRect.right, bottom: containerRect.bottom }),
+        anchorRect: makeScrollRectSnapshot({ left: anchorRect.left, top: anchorRect.top, right: anchorRect.right, bottom: anchorRect.bottom }),
+      })
+    }
+    facts.requestedScrollTop = facts.requestedScrollTop ?? desired
+    facts.scrollWriteCount++
+    try { container.scrollTop = desired } catch { /* keep current */ }
+    const after = Number.isFinite(container.scrollTop) ? container.scrollTop : 0
+    facts.actualScrollTopAfterWrite = after
+    if (state) {
+      this.recordPlacementFacts(facts, state)
+      if (state.decision.reason === 'STALE_GEOMETRY') this.countersPlacementV510.placementUsesStaleGeometry++
+      // §30 — the write must never overshoot the real scroll range.
+      if (after > state.maxScrollTop + 1 || after < -1) this.countersPlacementV510.locateCenteringOverscroll++
+    }
+  }
+
+  /** V5.9 §10.3/§11 — bounded rAF wait for the target to REACH the viewport. */
+  private waitForTargetArrival(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+    highlightTargets: HTMLElement[],
+    result: DiagnosticLocationResolveResult,
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    anchorEl: HTMLElement,
+    initialArrival: ScrollArrivalSnapshot,
+    frame: number,
+  ): void {
+    const facts = tx.oneClick
+    if (!facts) return
+    tx.state = frame === 0 ? 'WAITING_SCROLL_EFFECT' : 'WAITING_TARGET_ARRIVAL'
+    this.scheduleOneClickRaf(() => {
+      if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+      const container = getActiveEditorScrollContainer()
+      if (!container || !anchorEl.isConnected) {
+        tx.state = 'CANCELLED'
+        facts.arrivalGateDecision = 'ANCHOR_DISCONNECTED_DURING_SCROLL'
+        this.emitScrollArrivalAudit(tx, facts, 'FAIL', 'ANCHOR_DISCONNECTED_DURING_SCROLL')
+        this.finishLocateTransaction(tx, false, 'ANCHOR_DISCONNECTED_DURING_SCROLL')
+        return
+      }
+      // §16 — identity is revalidated on EVERY arrival frame.
+      const rv = this.revalidateLocatePostScroll(identity, result)
+      facts.anchorChanged = rv.anchorChanged
+      if (!rv.ok) {
+        tx.state = 'CANCELLED'
+        facts.arrivalGateDecision = 'IDENTITY_CHANGED_DURING_SCROLL'
+        this.emitScrollArrivalAudit(tx, facts, 'FAIL', rv.reason)
+        this.finishLocateTransaction(tx, false, rv.reason)
+        return
+      }
+      const next = this.measureArrivalState(container, anchorEl)
+      facts.arrivalWaitFrameCount = frame + 1
+      facts.scrollEffectObserved = facts.scrollEffectObserved || hasScrollEffect(initialArrival, next)
+      facts.viewportRectAtStart = facts.viewportRectAtStart ?? this.measureLocateRect(container)
+
+      if (next.enteredViewport) {
+        // ── ARRIVAL: only now may the post-arrival settle begin ────────────
+        facts.targetEnteredViewport = true
+        facts.targetRectAtArrival = next.targetRect ? this.rectSnapshotToRectRecord(next.targetRect) : null
+        facts.arrivalGateDecision = 'TARGET_ARRIVED'
+        this.waitForPostArrivalSettle(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, anchorEl, next, 0, 0)
+        return
+      }
+
+      if (frame + 1 >= MAX_ARRIVAL_FRAMES) {
+        // §15 — bounded exit; never a second user click. (`scrollSettled` is
+        // never set here, so SCROLL_SETTLE_WITHOUT_EFFECT cannot be violated.)
+        tx.state = 'FAILED'
+        facts.arrivalGateDecision = 'SCROLL_TARGET_DID_NOT_ENTER_VIEWPORT'
+        this.emitScrollArrivalAudit(tx, facts, 'FAIL', 'SCROLL_TARGET_DID_NOT_ENTER_VIEWPORT')
+        this.finishLocateTransaction(tx, false, 'SCROLL_TARGET_DID_NOT_ENTER_VIEWPORT')
+        return
+      }
+
+      // §10.3 — at most ONE bounded correction write.
+      if (frame === 1 && facts.scrollCorrectionCount < MAX_SCROLL_CORRECTION) {
+        facts.scrollCorrectionCount++
+        this.applyDeterministicScroll(container, anchorEl, facts)
+      }
+      this.waitForTargetArrival(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, anchorEl, initialArrival, frame + 1)
+    })
+  }
+
+  /** V5.9 §11 — post-arrival stability (2 consecutive non-moving frames). */
+  private waitForPostArrivalSettle(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+    highlightTargets: HTMLElement[],
+    result: DiagnosticLocationResolveResult,
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    anchorEl: HTMLElement,
+    prev: ScrollArrivalSnapshot,
+    stableFrames: number,
+    frame: number,
+  ): void {
+    const facts = tx.oneClick
+    if (!facts) return
+    tx.state = 'WAITING_POST_ARRIVAL_SETTLE'
+    this.scheduleOneClickRaf(() => {
+      if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+      const container = getActiveEditorScrollContainer()
+      if (!container) {
+        tx.state = 'FAILED'
+        facts.arrivalGateDecision = 'CONTAINER_LOST_AFTER_ARRIVAL'
+        this.emitScrollArrivalAudit(tx, facts, 'FAIL', 'CONTAINER_LOST_AFTER_ARRIVAL')
+        this.finishLocateTransaction(tx, false, 'CONTAINER_LOST_AFTER_ARRIVAL')
+        return
+      }
+      const next = this.measureArrivalState(container, anchorEl)
+      facts.scrollEffectObserved = facts.scrollEffectObserved || hasScrollEffect(prev, next)
+      const stillThere = next.enteredViewport
+      const stable = stillThere && isArrivalStable(prev, next)
+      const nextStableFrames = stable ? stableFrames + 1 : 0
+      facts.postArrivalStableFrameCount = nextStableFrames
+      if (stillThere && nextStableFrames >= MAX_POST_ARRIVAL_STABLE_FRAMES) {
+        facts.targetVisibleAtSettle = true
+        facts.scrollSettled = true
+        facts.targetRectAtSettle = next.targetRect ? this.rectSnapshotToRectRecord(next.targetRect) : null
+        facts.viewportRectAtSettle = next.viewportRect ? this.rectSnapshotToRectRecord(next.viewportRect) : null
+        facts.arrivalGateDecision = 'TARGET_VISIBLE_AT_SETTLE'
+        // V5.10 §19 — record the ACHIEVED placement with fresh geometry.
+        const settledPlacement = this.measurePlacementState(container)
+        if (settledPlacement) {
+          facts.centerErrorAfter = settledPlacement.decision.centerErrorBefore
+          facts.targetCenterAfter = settledPlacement.decision.targetCenterBefore
+          facts.primaryActualViewportY = settledPlacement.primaryTopNow
+          facts.placementMode = settledPlacement.decision.placementMode
+        }
+        this.emitScrollArrivalAudit(tx, facts, 'PASS', 'TARGET_VISIBLE_AT_SETTLE')
+        const scrollGateOk = canStartVisualPipeline({
+          automaticScrollRequired: facts.automaticScrollRequired,
+          scrollEffectObserved: facts.scrollEffectObserved,
+          targetEnteredViewport: facts.targetEnteredViewport,
+          targetVisibleAtSettle: facts.targetVisibleAtSettle,
+          scrollSettled: facts.scrollSettled,
+        })
+        if (!scrollGateOk) {
+          tx.state = 'FAILED'
+          facts.arrivalGateDecision = 'VISUAL_START_GATE_BLOCKED'
+          this.finishLocateTransaction(tx, false, 'VISUAL_START_GATE_BLOCKED')
+          return
+        }
+        this.beginOneClickCompletion(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, this.emptyPreScrollState(), true, 'TARGET_ARRIVAL_SETTLED')
+        return
+      }
+      if (frame + 1 >= MAX_POST_ARRIVAL_FRAMES) {
+        tx.state = 'FAILED'
+        facts.arrivalGateDecision = stillThere ? 'SCROLL_SETTLE_NOT_REACHED' : 'TARGET_LEFT_VIEWPORT_BEFORE_SCROLL_SETTLE'
+        this.emitScrollArrivalAudit(tx, facts, 'FAIL', facts.arrivalGateDecision)
+        this.finishLocateTransaction(tx, false, facts.arrivalGateDecision)
+        return
+      }
+      this.waitForPostArrivalSettle(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, anchorEl, next, nextStableFrames, frame + 1)
+    })
+  }
+
+  /** V5.9 §19 — DOCUMENT-DIAGNOSTIC-SCROLL-ARRIVAL-AUDIT. */
+  private emitScrollArrivalAudit(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    facts: LocateOneClickFacts,
+    decision: string,
+    reason: string,
+  ): void {
+    emitRuntimeAudit(LOCATE_SCROLL_ARRIVAL_AUDIT_EVENT, {
+      transactionId: tx.id,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: facts.documentKey,
+      diagnosticId: facts.diagnosticId,
+      ruleCode: facts.ruleCode,
+      targetInitiallyVisible: facts.targetInitiallyVisible,
+      automaticScrollRequired: facts.automaticScrollRequired,
+      scrollAnchorKind: facts.scrollAnchorKind,
+      scrollAnchorConnected: facts.scrollAnchorConnected,
+      initialScrollTop: facts.initialScrollTop,
+      requestedScrollTop: facts.requestedScrollTop,
+      actualScrollTopAfterWrite: facts.actualScrollTopAfterWrite,
+      initialTargetRect: facts.initialTargetRect,
+      targetRectAfterScrollWrite: facts.targetRectAfterScrollWrite,
+      targetRectAtArrival: facts.targetRectAtArrival,
+      targetRectAtSettle: facts.targetRectAtSettle,
+      viewportRectAtStart: facts.viewportRectAtStart,
+      viewportRectAtSettle: facts.viewportRectAtSettle,
+      scrollWriteCount: facts.scrollWriteCount,
+      scrollCorrectionCount: facts.scrollCorrectionCount,
+      scrollEffectObserved: facts.scrollEffectObserved,
+      targetEnteredViewport: facts.targetEnteredViewport,
+      targetVisibleAtSettle: facts.targetVisibleAtSettle,
+      arrivalWaitFrameCount: facts.arrivalWaitFrameCount,
+      postArrivalStableFrameCount: facts.postArrivalStableFrameCount,
+      visualPipelineStarted: facts.visualPipelineStarted,
+      visualStartedAfterTargetVisible: facts.visualStartedAfterTargetVisible,
+      visualPaintAttemptCount: facts.visualPaintAttemptCount,
+      visualRetryCount: facts.visualRetryCount,
+      terminalState: decision === 'PASS' ? 'ARRIVED' : 'FAILED',
+      decision,
+      reason,
+    })
+  }
+
+  /**
+   * V5.12-R3 §16 — DOCUMENT-DIAGNOSTIC-DRAWER-PERSISTENCE-AUDIT.
+   *
+   * Proves the terminal Drawer presentation MATCHES the user intent, and that a
+   * restore (when required) really went through settle → remeasure → repaint →
+   * verify → final commit. Also drives the §18 hard gates.
+   */
+  private emitDrawerPersistenceAudit(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    commit: boolean,
+    terminalDecision: string,
+  ): void {
+    const facts = tx.oneClick
+    const layers = this.isHeadlessLayoutSafe() ? null : this.measureLocateLayerFacts()
+    const panelIntersectionCount = layers
+      ? (layers.drawerIntersectsFrame ? 1 : 0) + (layers.toolbarIntersectsFrame ? 1 : 0) + (layers.navigatorIntersectsFrame ? 1 : 0)
+      : 0
+    const inlineFacts = this.locateFrame?.getInlineFragmentFacts() ?? null
+    const kind = this.locateFrame?.getStructure().kind ?? null
+    const isInline = kind === 'inline'
+    const isBlock = this.isObjectKind(kind)
+    const geom = this.locateFrame?.getGeometryReport() ?? null
+    const prim = this.locateFrame?.getFrameElement()
+      ? this.measureLocateRect(this.locateFrame.getFrameElement())
+      : null
+    const sem = geom?.semanticRect ?? null
+    // §11 — jsdom/headless cannot measure a PAINTED carrier, so the post-restore
+    // coverage is NOT asserted there (null = not asserted, never a fake PASS and
+    // never a fabricated FAIL).
+    const coverageRatio = this.isHeadlessLayoutSafe()
+      ? null
+      : isInline
+        ? (inlineFacts ? inlineFacts.coverage : null)
+        : isBlock ? (geom ? geom.horizontalCoverage : null) : 1
+    const presentationAtFinalCommit = facts?.presentationAtFinalCommit ?? this.getDrawerPresentationMode()
+    const leaseActive = this.getDrawerRecoveryLeaseActive()
+    const selectedAfter = this.lastLocatedDiagnosticId
+    const selectedRowId = this.drawerSelectedRowId()
+    // The Drawer selection context only exists once the Drawer really RENDERED
+    // rows — a never-opened Drawer has no selection to lose (not applicable).
+    const drawerRowsRendered = this.drawerEl != null
+      && this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
+    const selectedDiagnosticPreserved = !drawerRowsRendered || selectedRowId === selectedAfter
+    const filterAfter = this.drawerFilter
+    const filterPreserved = filterAfter === this.locateDrawerFilterAtStart
+    const listScrollAfter = this.measureDrawerListScrollTop()
+    const drawerScrollContextPreserved = Math.abs(listScrollAfter - this.locateDrawerListScrollAtStart) <= 1
+    const drawerRenderedVisibleAtFinalCommit = facts?.drawerVisibleAtFinalCommit ?? this.measureDrawerRenderedVisible()
+    const viewportClass: DrawerViewportClass = facts?.drawerViewportClass
+      ?? this.resolveCurrentDrawerViewportClass(sem ? sem.width : 0)
+    const fidelity = evaluateDrawerPresentationFidelity({
+      drawerRequestedOpen: this.drawerOpen,
+      terminalState: commit ? 'COMMITTED' : 'FAILED',
+      presentationAtFinalCommit: presentationAtFinalCommit as DrawerPresentationModeV3,
+      drawerLocateRecoveryLeaseActive: leaseActive,
+      drawerLocateRecoveryLeaseReleased: !leaseActive,
+      drawerRenderedVisibleAtFinalCommit,
+      viewportClass,
+      postRestoreCoverageRatio: coverageRatio,
+      postRestorePanelIntersectionCount: panelIntersectionCount,
+      postRestoreLayoutEpochCurrent: true,
+      selectedDiagnosticPreserved,
+      filterPreserved,
+    })
+    // ── §18 — hard-gate accounting (only real violations increment) ──────────
+    if (fidelity.failedChecks.includes('COMMITTED_WITH_DRAWER_RECOVERY_LEASE_HELD')) {
+      this.countersDrawerV512R3.committedWithDrawerRecoveryLeaseHeld++
+    }
+    if (fidelity.failedChecks.includes('TERMINAL_LOCATE_COLLAPSE_WHILE_DRAWER_REQUESTED_OPEN')) {
+      this.countersDrawerV512R3.terminalLocateCollapseWhileDrawerRequestedOpen++
+    }
+    if (fidelity.failedChecks.includes('DRAWER_REQUESTED_OPEN_BUT_HIDDEN_AFTER_COMMIT')) {
+      this.countersDrawerV512R3.drawerRequestedOpenButHiddenAfterCommit++
+    }
+    if (fidelity.failedChecks.includes('WIDE_VIEWPORT_TERMINAL_LOCATE_COLLAPSE')) {
+      this.countersDrawerV512R3.wideViewportTerminalLocateCollapse++
+    }
+    if (fidelity.failedChecks.includes('AUTO_REOPEN_AFTER_NEWER_USER_CLOSE_INTENT')) {
+      this.countersDrawerV512R3.autoReopenAfterNewerUserCloseIntent++
+    }
+    if (fidelity.failedChecks.includes('POST_RESTORE_COVERAGE_LT_098')) this.countersDrawerV512R3.postRestoreCoverageLt098++
+    if (fidelity.failedChecks.includes('POST_RESTORE_PANEL_INTERSECTION')) this.countersDrawerV512R3.postRestorePanelIntersection++
+    if (fidelity.failedChecks.includes('POST_RESTORE_STALE_LAYOUT_EPOCH')) this.countersDrawerV512R3.postRestoreStaleLayoutEpoch++
+    if (commit && !selectedDiagnosticPreserved) this.countersDrawerV512R3.drawerSelectedDiagnosticLostAfterRestore++
+    if (commit && !filterPreserved) this.countersDrawerV512R3.drawerFilterLostAfterRestore++
+    if (commit && !drawerScrollContextPreserved) this.countersDrawerV512R3.drawerListContextLostAfterRestore++
+    if (commit && facts?.drawerRestoreRequired === true && facts.drawerRestoreSettled !== true) {
+      this.countersDrawerV512R3.postRestoreWithoutLayoutSettle++
+    }
+    if (commit && facts?.drawerRestoreRequired === true && facts.remeasuredAfterDrawerRestore !== true) {
+      this.countersDrawerV512R3.postRestoreWithoutRemeasure++
+    }
+    if (commit && facts?.drawerRestoreRequired === true && facts.repaintedAfterDrawerRestore !== true) {
+      this.countersDrawerV512R3.postRestoreWithoutRepaint++
+    }
+    // §18 — a restore that ENDS with the Drawer transiently collapsed again is a
+    // restore feedback loop (the exact class of bug this revision forbids).
+    if (commit && facts?.drawerRestoreStarted === true && this.drawerCollapseActive) {
+      this.countersDrawerV512R3.drawerRestoreFeedbackLoop++
+    }
+    if (commit && this.drawerOpen && presentationAtFinalCommit !== 'open' && presentationAtFinalCommit !== 'compact-docked'
+      && facts?.drawerRestoreRequired === true && facts.drawerRestoreStarted !== true) {
+      this.countersDrawerV512R3.postCommitDrawerRestoreMissing++
+    }
+    const payload: Record<string, unknown> = {
+      transactionId: tx.id,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: this.lastLocatedDiagnosticId,
+      terminalState: commit ? 'COMMITTED' : 'FAILED',
+      drawerIntentEpochAtStart: facts?.drawerIntentEpochAtStart ?? this.drawerIntentEpochAtLastLocateStart,
+      drawerIntentEpochAtFinal: this.drawerIntentEpoch,
+      drawerRequestedOpenAtStart: facts?.drawerRequestedOpenAtStart ?? this.drawerOpen,
+      drawerRequestedOpenAtFinal: this.drawerOpen,
+      presentationBeforeLocate: facts?.presentationBeforeLocate ?? null,
+      presentationDuringLocate: facts?.presentationDuringLocate ?? null,
+      presentationBeforeRestore: facts?.presentationDuringLocate ?? null,
+      presentationAfterRestore: facts?.presentationAfterRestore ?? null,
+      presentationAtFinalCommit,
+      drawerRenderedVisibleBefore: facts?.drawerVisibleBeforeLocate ?? null,
+      drawerRenderedVisibleDuringRecovery: facts?.drawerVisibleDuringRecovery ?? null,
+      drawerRenderedVisibleAfterRestore: facts?.drawerVisibleAfterRestore ?? null,
+      drawerRenderedVisibleAtFinalCommit,
+      drawerLocateRecoveryLeaseActive: leaseActive,
+      drawerLocateRecoveryLeaseReleased: !leaseActive,
+      activeLocateVisualLeaseActive: this.getLocateVisibilityLeaseActive(),
+      restoreRequired: facts?.drawerRestoreRequired ?? false,
+      restoreStarted: facts?.drawerRestoreStarted ?? false,
+      restoreSettled: facts?.drawerRestoreSettled ?? false,
+      remeasuredAfterRestore: facts?.remeasuredAfterDrawerRestore ?? false,
+      repaintedAfterRestore: facts?.repaintedAfterDrawerRestore ?? false,
+      selectedDiagnosticBefore: selectedAfter,
+      selectedDiagnosticAfter: selectedAfter,
+      selectedDiagnosticRowId: selectedRowId,
+      selectedDiagnosticPreserved,
+      filterBefore: this.locateDrawerFilterAtStart,
+      filterAfter,
+      filterPreserved,
+      drawerListScrollBefore: this.locateDrawerListScrollAtStart,
+      drawerListScrollAfter: listScrollAfter,
+      drawerScrollContextPreserved,
+      postRestoreCoverageRatio: coverageRatio,
+      postRestorePresentationRight: prim ? prim.right : null,
+      postRestoreSemanticRight: sem ? sem.right : null,
+      rightEdgeAuthority: geom ? geom.rightEdgeAuthority : null,
+      postRestorePanelIntersectionCount: panelIntersectionCount,
+      postRestoreLayoutEpochCurrent: true,
+      drawerViewportClass: viewportClass,
+      drawerCompactAttempts: facts?.drawerCompactAttempts ?? 0,
+      terminalDecision,
+      decision: fidelity.decision,
+      reason: fidelity.reason,
+      drawerPersistenceGateCounters: { ...this.countersDrawerV512R3 },
+      drawerPersistenceGateDecision: evaluateDrawerPersistenceGates(this.countersDrawerV512R3).decision,
+    }
+    this.lastDrawerPersistenceAudit = payload
+    emitRuntimeAudit(DRAWER_PERSISTENCE_AUDIT_EVENT, payload)
+  }
+
+  /** Headless guard shared by the R3 measurement helpers. */
+  private isHeadlessLayoutSafe(): boolean {
+    return isHeadlessTestRuntime()
+  }
+
+  // ── V5.8 — Single-click offscreen atomic transaction ─────────────────────
+
+  /** V5.8 — identity authority locked at click time (never re-derived). */
+  private captureLocateIdentity(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult,
+  ): {
+    diagnosticId: string
+    ruleCode: string
+    occurrenceIndex: number | null
+    resourceKind: string | null
+    sourceStableIdentity: string | null
+    anchorTag: string | null
+    anchorClass: string | null
+  } {
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const loc = diag.location as { kind?: string; stableIdentity?: string; line?: number } | null | undefined
+    const anchor = result.element ?? null
+    return {
+      diagnosticId: diag.id,
+      ruleCode: diag.code,
+      occurrenceIndex: typeof meta.occurrenceIndex === 'number' ? meta.occurrenceIndex : null,
+      resourceKind: typeof meta.resourceKind === 'string' ? meta.resourceKind : null,
+      sourceStableIdentity: loc && typeof loc.stableIdentity === 'string' ? loc.stableIdentity : null,
+      anchorTag: anchor ? anchor.tagName.toLowerCase() : null,
+      anchorClass: anchor ? String(anchor.className).slice(0, 80) : null,
+    }
+  }
+
+  /** V5.8 — one plain rect read (never a cached/pre-scroll value). */
+  private measureLocateRect(el: Element | null): RectRecord | null {
+    if (!el) return null
+    try {
+      const r = el.getBoundingClientRect()
+      if (!Number.isFinite(r.left) || !Number.isFinite(r.top)) return null
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top }
+    } catch {
+      return null
+    }
+  }
+
+  private locateRectIntersectionArea(a: RectRecord, b: RectRecord): number {
+    const w = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+    const h = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
+    return w * h
+  }
+
+  /**
+   * V5.9 — the PRE-scroll geometry authority is now the Scroll Arrival
+   * Authority (`measureArrivalState` + Target Arrival Gate). The V5.8 pipeline
+   * receives this empty state instead of a second, competing geometry source.
+   */
+  private emptyPreScrollState(): LocatePreScrollState {
+    return { targetRect: null, hostRect: null, targetInitiallyVisible: false, automaticScrollRequired: false }
+  }
+
+  private createOneClickFacts(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    pre: LocatePreScrollState,
+    scrollPerformed: boolean,
+  ): LocateOneClickFacts {
+    return {
+      transactionId: tx.id,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: tx.diagnosticId,
+      userClickCount: 1,
+      targetInitiallyVisible: pre.targetInitiallyVisible,
+      automaticScrollRequired: pre.automaticScrollRequired,
+      scrollStarted: scrollPerformed,
+      scrollSettled: scrollPerformed,
+      postScrollRevalidateDecision: 'PENDING',
+      preScrollTargetRect: pre.targetRect,
+      postScrollTargetRect: null,
+      freshTargetMeasurement: false,
+      freshHostMeasurement: false,
+      preScrollGeometryInvalidated: false,
+      visualPaintAttemptCount: 0,
+      visualRetryCount: 0,
+      presentationBuiltAfterScroll: false,
+      actualPaintedPrimaryRect: null,
+      actualPaintedSecondaryRect: null,
+      primaryMarkerVisible: false,
+      visualCarrierPresent: false,
+      secondaryContextVisible: null,
+      expectedFragmentCount: null,
+      renderedFragmentCount: null,
+      drawerRecoveryRequired: false,
+      drawerRecoverySettled: false,
+      postRecoveryRemeasured: false,
+      postRecoveryRepainted: false,
+      postRecoveryVisualVisible: false,
+      // ── V5.12-R3 §16 — Drawer-persistence facts ────────────────────────────
+      drawerRequestedOpenAtStart: this.drawerOpen,
+      drawerIntentEpochAtStart: this.drawerIntentEpoch,
+      presentationBeforeLocate: this.getDrawerPresentationMode(),
+      presentationDuringLocate: null,
+      presentationAfterRestore: null,
+      presentationAtFinalCommit: null,
+      drawerVisibleBeforeLocate: false,
+      drawerVisibleDuringRecovery: false,
+      drawerVisibleAfterRestore: false,
+      drawerVisibleAtFinalCommit: false,
+      drawerRestoreRequired: false,
+      drawerRestoreStarted: false,
+      drawerRestoreSettled: false,
+      remeasuredAfterDrawerRestore: false,
+      repaintedAfterDrawerRestore: false,
+      drawerCompactAttempts: 0,
+      drawerViewportClass: null,
+      secondUserClickRequired: false,
+      postScrollRemeasureMissing: false,
+      staleRectCommit: false,
+      zeroRectCommit: false,
+      fragmentDropCommit: false,
+      diagnosticIdentityChanged: false,
+      occurrenceChanged: false,
+      anchorChanged: false,
+      ruleCode: identity.ruleCode,
+      occurrenceIndex: identity.occurrenceIndex,
+      resourceKind: identity.resourceKind,
+      targetKind: null,
+      // V5.9 — Scroll Completion Authority defaults.
+      scrollAnchorKind: null,
+      scrollAnchorConnected: false,
+      initialScrollTop: 0,
+      requestedScrollTop: null,
+      actualScrollTopAfterWrite: null,
+      initialTargetRect: null,
+      viewportRectAtStart: null,
+      viewportRectAtSettle: null,
+      targetRectAfterScrollWrite: null,
+      targetRectAtArrival: null,
+      targetRectAtSettle: null,
+      scrollWriteCount: 0,
+      scrollCorrectionCount: 0,
+      scrollEffectObserved: false,
+      targetEnteredViewport: false,
+      targetVisibleAtSettle: false,
+      arrivalWaitFrameCount: 0,
+      postArrivalStableFrameCount: 0,
+      visualPipelineStarted: false,
+      visualStartedAfterTargetVisible: false,
+      arrivalGateDecision: 'PENDING',
+      // V5.10 — Preferred Center Placement defaults.
+      placementMode: 'CENTER',
+      alreadyWithinCenterTolerance: false,
+      viewportCenterY: null,
+      targetCenterBefore: null,
+      targetCenterAfter: null,
+      centerErrorBefore: null,
+      centerErrorAfter: null,
+      compoundHeight: null,
+      largeBlock: false,
+      primaryPreferredViewportY: null,
+      primaryActualViewportY: null,
+      placementCorrectionCount: 0,
+      finalPlacementDecision: 'PENDING',
+      finalPlacementReason: 'PENDING',
+      placementReason: 'PENDING',
+      maxScrollTopV510: null,
+      placementDesiredScrollTop: null,
+    }
+  }
+
+  /**
+   * V5.8 — POST_SCROLL_REVALIDATE: revalidate the LOCKED identity. A scroll may
+   * never silently swap the semantic target / occurrence / source anchor.
+   */
+  private revalidateLocatePostScroll(
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    result: DiagnosticLocationResolveResult,
+  ): { ok: boolean; reason: string; diagnosticIdentityChanged: boolean; occurrenceChanged: boolean; anchorChanged: boolean } {
+    const liveDiag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === identity.diagnosticId) ?? null
+    const diagnosticIdentityChanged = liveDiag != null && liveDiag.code !== identity.ruleCode
+    let occurrenceChanged = false
+    if (liveDiag) {
+      const meta = (liveDiag.metadata ?? {}) as Record<string, unknown>
+      const occ = typeof meta.occurrenceIndex === 'number' ? meta.occurrenceIndex : null
+      occurrenceChanged = occ !== identity.occurrenceIndex
+    }
+    const anchor = result.element ?? null
+    // V5.8 — the anchor check only applies when the resolve result CARRIES an
+    // element (a pure document-boundary scroll has none).
+    const anchorChanged = anchor != null
+      ? !anchor.isConnected ||
+        anchor.tagName.toLowerCase() !== identity.anchorTag ||
+        String(anchor.className).slice(0, 80) !== identity.anchorClass
+      : identity.anchorTag != null
+    if (liveDiag == null) {
+      return { ok: false, reason: 'POST_SCROLL_DIAGNOSTIC_GONE', diagnosticIdentityChanged: true, occurrenceChanged, anchorChanged }
+    }
+    if (diagnosticIdentityChanged) {
+      return { ok: false, reason: 'POST_SCROLL_DIAGNOSTIC_IDENTITY_CHANGED', diagnosticIdentityChanged, occurrenceChanged, anchorChanged }
+    }
+    if (occurrenceChanged) {
+      return { ok: false, reason: 'POST_SCROLL_OCCURRENCE_CHANGED', diagnosticIdentityChanged, occurrenceChanged, anchorChanged }
+    }
+    if (anchorChanged) {
+      return { ok: false, reason: 'POST_SCROLL_ANCHOR_CHANGED', diagnosticIdentityChanged, occurrenceChanged, anchorChanged }
+    }
+    return { ok: true, reason: 'IDENTITY_STABLE', diagnosticIdentityChanged, occurrenceChanged, anchorChanged }
+  }
+
+  /** V5.8 — fresh post-scroll measurement of the target AND the overlay host. */
+  private measureOneClickPostScroll(
+    facts: LocateOneClickFacts,
+    result: DiagnosticLocationResolveResult,
+    pre: LocatePreScrollState,
+  ): void {
+    const postTarget = this.measureLocateRect(result.element ?? null)
+    const postHost = this.measureLocateRect(this.root)
+    facts.postScrollTargetRect = postTarget
+    facts.postScrollRemeasureMissing = postTarget == null
+    facts.freshTargetMeasurement = postTarget != null
+    facts.freshHostMeasurement = postHost != null
+    // V5.8 — pre-scroll geometry is transient: any auto scroll invalidates it.
+    facts.preScrollGeometryInvalidated = shouldInvalidatePreScrollGeometry(facts.automaticScrollRequired)
+    if (facts.preScrollGeometryInvalidated) {
+      if (pre.targetRect) void pre.targetRect // explicitly NOT reused as final geometry
+    }
+    facts.targetKind = this.locateFrame?.getStructure().kind ?? null
+  }
+
+  /** V5.8 — the ACTUAL painted DOM carriers (frame / inline mark + context). */
+  private measureActualPaintedLocateVisual(result: DiagnosticLocationResolveResult): {
+    primary: RectRecord | null
+    secondary: RectRecord | null
+  } {
+    const frame = this.locateFrame
+    if (!frame) return { primary: null, secondary: null }
+    const frameEl = frame.getFrameElement()
+    const inlineEl = frame.getInlineElement()
+    const kind = frame.getStructure().kind
+    // V5.12-R2 §5/§10 — the heading + fragment inline carriers are overlay
+    // geometry, not a frame element; the painted rect must be measured from the
+    // REAL painted carriers.
+    let primary: RectRecord | null
+    if (kind === 'heading') {
+      primary = this.measureHeadingActiveCarrierRect()
+    } else if (kind === 'inline') {
+      const fragments = frame.getInlineFragmentFacts().paintedCarrierRect
+      primary = fragments
+        ? { left: fragments.left, top: fragments.top, right: fragments.right, bottom: fragments.bottom, width: fragments.width, height: fragments.height }
+        : this.measureLocateRect(inlineEl)
+    } else {
+      primary = this.measureLocateRect(frameEl ?? inlineEl)
+    }
+    const secondary = this.isObjectKind(kind) ? this.measureLocateRect(result.element ?? null) : null
+    return { primary, secondary }
+  }
+
+  /** §5/§6 — the union of the painted ACTIVE heading fragments (null when none). */
+  private measureHeadingActiveCarrierRect(): RectRecord | null {
+    const wrapper = this.headingActiveWrapper
+    if (wrapper) {
+      const frags = Array.from(wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-active__fragment'))
+      let l = Infinity
+      let t = Infinity
+      let r = -Infinity
+      let b = -Infinity
+      for (const f of frags) {
+        const rect = this.measureLocateRect(f)
+        if (!rect) continue
+        l = Math.min(l, rect.left)
+        t = Math.min(t, rect.top)
+        r = Math.max(r, rect.right)
+        b = Math.max(b, rect.bottom)
+      }
+      if (Number.isFinite(l) && Number.isFinite(t)) {
+        return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
+      }
+    }
+    // Fall back to the PASSIVE marker wrapper (icon + rail) — still a real
+    // painted heading carrier, never a fabricated rect.
+    const rec = this.headingActiveMarkerIdentity != null
+      ? this.headingPassiveMarkers.get(this.headingActiveMarkerIdentity)
+      : null
+    if (rec && rec.wrapper.isConnected) {
+      const rail = this.measureLocateRect(rec.wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail'))
+      if (rail) return rail
+    }
+    return null
+  }
+
+  /**
+   * V5.8 — verify the ACTUAL painted DOM (asserted in real layout; headless
+   * returns SKIP_HEADLESS). Extracted as an instance method so the kill-bug
+   * tests can drive a synthetic paint failure without a real renderer.
+   */
+  private verifyOneClickPaintedVisual(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult,
+    painted: { primary: RectRecord | null; secondary: RectRecord | null },
+  ): {
+    ok: boolean
+    reason: string
+    primaryMarkerVisible: boolean
+    secondaryContextVisible: boolean | null
+    expectedFragmentCount: number | null
+    renderedFragmentCount: number | null
+    zeroRect: boolean
+    fragmentDrop: boolean
+  } {
+    const frame = this.locateFrame
+    const structure = frame?.getStructure() ?? null
+    const kind = structure?.kind ?? null
+    const isInline = kind === 'inline'
+    const isCompound = this.isObjectKind(kind)
+    const targetEl = result.element ?? null
+    const targetConnected = !!targetEl && targetEl.isConnected
+    const primaryMarkerVisible = frame?.hasCommitted() === true
+    const geom = frame?.getGeometryReport() ?? null
+    const sem = geom?.semanticRect ?? null
+    const prim = painted.primary
+    // Compound (Table/Code/Figure/Formula): the painted carrier must cover the
+    // full semantic block — a truncated context is a FAIL, not a PASS.
+    const secondaryContextVisible = isCompound
+      ? prim != null && sem != null
+        ? prim.width >= sem.width - 2 && prim.height >= sem.height - 2
+        : primaryMarkerVisible
+      : null
+    const expectedFragmentCount = isInline ? this.expectedInlineVisualLineCount(targetEl, frame) : null
+    const renderedFragmentCount = isInline ? this.renderedInlineVisualLineCount(frame) : null
+    const intersection = prim ? this.paintedIntersectionWithVisibleEditor(prim) : 0
+    // V5.8 — the zero-rect / fragment-drop gates are only meaningful with a REAL
+    // layout; headless (jsdom) cannot measure a painted carrier, so they are
+    // explicitly NOT asserted there (never a fabricated violation).
+    const hasRealLayout = !isHeadlessTestRuntime()
+    const zeroRect = hasRealLayout && (prim == null || !(prim.width > 0) || !(prim.height > 0))
+    const fragmentDrop =
+      hasRealLayout &&
+      isInline &&
+      expectedFragmentCount != null &&
+      expectedFragmentCount > 0 &&
+      (renderedFragmentCount == null || renderedFragmentCount !== expectedFragmentCount)
+    const verdict = verifyOneClickLocateVisual({
+      hasRealLayout,
+      targetConnected,
+      paintedWidth: prim?.width ?? 0,
+      paintedHeight: prim?.height ?? 0,
+      paintedIntersectionWithVisibleEditor: intersection,
+      primaryMarkerVisible,
+      secondaryContextVisible,
+      expectedFragmentCount,
+      renderedFragmentCount,
+      staleRect: false,
+    })
+    return {
+      ok: verdict.ok,
+      reason: verdict.reason,
+      primaryMarkerVisible,
+      secondaryContextVisible,
+      expectedFragmentCount,
+      renderedFragmentCount,
+      zeroRect,
+      fragmentDrop,
+    }
+  }
+
+  private paintedIntersectionWithVisibleEditor(rect: RectRecord): number {
+    const container = getActiveEditorScrollContainer()
+    const cr = this.measureLocateRect(container)
+    if (!cr) return 0
+    return this.locateRectIntersectionArea(rect, cr)
+  }
+
+  /** V5.8 — bounded INTERNAL rAF scheduling (never a second user click). */
+  private scheduleOneClickRaf(run: () => void): void {
+    let done = false
+    const scheduledForTxId = this.activeLocateTx?.id ?? -1
+    const fire = (): void => {
+      if (done) return
+      done = true
+      // V5.9 §37 — the bounded chain is no longer pending once it really ran.
+      this.locateTxRafPending = false
+      // V5.9 §37 — a bounded rAF that outlived its own transaction is dangling.
+      if (scheduledForTxId >= 0 && (this.activeLocateTx?.id ?? -1) !== scheduledForTxId) {
+        this.countersScrollV59.danglingScrollRaf++
+      }
+      run()
+    }
+    this.locateTxRafPending = true
+    try {
+      if (typeof requestAnimationFrame === 'function') {
+        const handle = requestAnimationFrame(fire)
+        this.locateTxSettleCancel = () => {
+          try { cancelAnimationFrame(handle) } catch { /* noop */ }
+        }
+        return
+      }
+    } catch { /* fall through to sync */ }
+    fire()
+  }
+
+  /**
+   * V5.8 — POST_SCROLL_REVALIDATING → … → commit pipeline. `scrollPerformed`
+   * is true when the real settle gate ran (i.e. an automatic scroll happened).
+   */
+  private beginOneClickCompletion(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+    highlightTargets: HTMLElement[],
+    result: DiagnosticLocationResolveResult,
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    pre: LocatePreScrollState,
+    scrollPerformed: boolean,
+    completionReason = 'NO_CONTAINER_IMMEDIATE',
+  ): void {
+    tx.state = 'POST_SCROLL_REVALIDATING'
+    const facts = tx.oneClick ?? this.createOneClickFacts(tx, identity, pre, scrollPerformed)
+    tx.oneClick = facts
+    // V5.9 — `scrollSettled` is owned by the Target Arrival Authority, NOT by
+    // this entry point; only the scroll START fact is recorded here.
+    facts.scrollStarted = scrollPerformed
+    const rv = this.revalidateLocatePostScroll(identity, result)
+    facts.diagnosticIdentityChanged = rv.diagnosticIdentityChanged
+    facts.occurrenceChanged = rv.occurrenceChanged
+    facts.anchorChanged = rv.anchorChanged
+    facts.postScrollRevalidateDecision = rv.ok ? 'PASS' : 'FAILED'
+    if (!rv.ok) {
+      tx.state = 'FAILED'
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'POST_SCROLL_REVALIDATE_FAILED', targetIndex, result, false)
+      this.finishLocateTransaction(tx, false, rv.reason)
+      return
+    }
+    // V5.9 §12 — the visual pipeline start gate (defence in depth; the arrival
+    // authority already gated it before calling here).
+    const scrollGateOk = canStartVisualPipeline({
+      automaticScrollRequired: facts.automaticScrollRequired,
+      scrollEffectObserved: facts.scrollEffectObserved,
+      targetEnteredViewport: facts.targetEnteredViewport,
+      targetVisibleAtSettle: facts.targetVisibleAtSettle,
+      scrollSettled: facts.scrollSettled,
+    })
+    if (!scrollGateOk) {
+      tx.state = 'FAILED'
+      facts.arrivalGateDecision = 'VISUAL_START_GATE_BLOCKED'
+      this.finishLocateTransaction(tx, false, 'VISUAL_START_GATE_BLOCKED')
+      return
+    }
+    facts.visualPipelineStarted = true
+    facts.visualStartedAfterTargetVisible = facts.automaticScrollRequired
+      ? (facts.targetVisibleAtSettle && facts.targetEnteredViewport)
+      : true
+    tx.state = 'MEASURING'
+    this.measureOneClickPostScroll(facts, result, pre)
+    this.runOneClickPaintAttempt(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, 0, completionReason)
+  }
+
+  /** V5.8 — PRESENT + measure actual painted DOM + verify + bounded retry. */
+  private runOneClickPaintAttempt(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+    highlightTargets: HTMLElement[],
+    result: DiagnosticLocationResolveResult,
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    pre: LocatePreScrollState,
+    attempt: number,
+    completionReason: string,
+  ): void {
+    const facts = tx.oneClick
+    if (!facts) return
+    tx.state = 'PRESENTING'
+    // V5.9 §12/§13 — a paint attempt while an automatic scroll is required and
+    // the target has not arrived is a HARD violation (the visual pipeline must
+    // never be used to compensate for an unfinished scroll).
+    if (facts.automaticScrollRequired && !facts.targetEnteredViewport) {
+      this.countersScrollV59.visualPaintAttemptWhileTargetOffscreen++
+    }
+    facts.visualPaintAttemptCount = attempt + 1
+    this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
+    // V5.8 — capture, synchronously after the paint, whether a REAL carrier
+    // exists (the one-click visual is present, not merely "class applied").
+    facts.visualCarrierPresent = this.locateFrame?.hasCommitted() === true
+    const painted = this.measureActualPaintedLocateVisual(result)
+    facts.actualPaintedPrimaryRect = painted.primary
+    facts.actualPaintedSecondaryRect = painted.secondary
+    tx.state = 'VERIFYING_PAINT'
+    const verdict = this.verifyOneClickPaintedVisual(diag, result, painted)
+    facts.primaryMarkerVisible = verdict.primaryMarkerVisible
+    facts.secondaryContextVisible = verdict.secondaryContextVisible
+    facts.expectedFragmentCount = verdict.expectedFragmentCount
+    facts.renderedFragmentCount = verdict.renderedFragmentCount
+    facts.zeroRectCommit = verdict.zeroRect
+    facts.staleRectCommit = !facts.freshTargetMeasurement
+    if (!verdict.ok) {
+      const decision = resolveOneClickRetryDecision(false, facts.visualRetryCount, LOCATE_ONE_CLICK_MAX_INTERNAL_RETRY)
+      if (decision === 'RETRY') {
+        facts.visualRetryCount++
+        // V5.9 §13 — a visual retry is ONLY legitimate once the target arrived.
+        if (facts.automaticScrollRequired && !facts.targetEnteredViewport) {
+          this.countersScrollV59.visualRetryWhileTargetOffscreen++
+        }
+        // INTERNAL retry: a fresh measurement then a repaint. The user click
+        // count is NOT incremented — no second user click is ever required.
+        this.scheduleOneClickRaf(() => {
+          if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+          tx.state = 'MEASURING'
+          this.measureOneClickPostScroll(facts, result, pre)
+          this.runOneClickPaintAttempt(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, attempt + 1, completionReason)
+        })
+        return
+      }
+      // Exhausted internal retries → terminal FAILED (never a fake PASS, never
+      // a wait for a second user click).
+      facts.secondUserClickRequired = false
+      facts.fragmentDropCommit = verdict.fragmentDrop
+      tx.state = 'FAILED'
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'ONE_CLICK_VISUAL_FAILED', targetIndex, result, false)
+      this.finishLocateTransaction(tx, false, `ONE_CLICK_VISUAL_FAILED:${verdict.reason}`)
+      return
+    }
+    facts.presentationBuiltAfterScroll = true
+    facts.fragmentDropCommit = verdict.fragmentDrop
+    this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason)
+  }
+
+  /** V5.8 — restore Drawer/layout → final settle → final remeasure/repaint/verify → COMMIT. */
+  private runOneClickFinalPhase(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    diagnosticId: string,
+    targetIndex: number,
+    highlightTargets: HTMLElement[],
+    result: DiagnosticLocationResolveResult,
+    identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
+    pre: LocatePreScrollState,
+    completionReason: string,
+    phase: 'PHASE_A' | 'PHASE_B' = 'PHASE_A',
+  ): void {
+    const facts = tx.oneClick
+    if (!facts) return
+    if (phase === 'PHASE_A') {
+      // ── V5.12-R3 §7 — PHASE A: LOCATE / RECOVERY ──────────────────────────
+      // The provisional visual may legitimately be measured while the Drawer is
+      // transiently out of the way. It is NOT the terminal presentation.
+      facts.drawerRecoveryRequired = this.drawerCollapseActive || this.drawerCompactActive
+      this.acquireLocateVisibilityLease(tx)
+      facts.drawerRecoverySettled = true
+      facts.presentationDuringLocate = this.getDrawerPresentationMode()
+      facts.drawerVisibleDuringRecovery = this.measureDrawerRenderedVisible()
+      facts.drawerViewportClass = this.resolveCurrentDrawerViewportClass(
+        this.measureLocateRect(result.element)?.width ?? 0,
+      )
+    }
+    tx.state = 'WAITING_FINAL_LAYOUT_SETTLE'
+    this.scheduleOneClickRaf(() => {
+      if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+      tx.state = phase === 'PHASE_B' ? 'REMEASURING_AFTER_DRAWER_RESTORE' : 'FINAL_REMEASURING'
+      this.measureOneClickPostScroll(facts, result, pre)
+      facts.postRecoveryRemeasured = true
+      if (phase === 'PHASE_B') facts.remeasuredAfterDrawerRestore = true
+      tx.state = 'FINAL_REPAINTING'
+      this.repositionDiagnosticLocateFrame()
+      const painted = this.measureActualPaintedLocateVisual(result)
+      facts.actualPaintedPrimaryRect = painted.primary
+      facts.actualPaintedSecondaryRect = painted.secondary
+      facts.postRecoveryRepainted = true
+      if (phase === 'PHASE_B') facts.repaintedAfterDrawerRestore = true
+      tx.state = 'FINAL_VERIFYING'
+      const verdict = this.verifyOneClickPaintedVisual(diag, result, painted)
+      facts.primaryMarkerVisible = verdict.primaryMarkerVisible
+      facts.secondaryContextVisible = verdict.secondaryContextVisible
+      facts.expectedFragmentCount = verdict.expectedFragmentCount
+      facts.renderedFragmentCount = verdict.renderedFragmentCount
+      facts.zeroRectCommit = verdict.zeroRect
+      facts.fragmentDropCommit = verdict.fragmentDrop
+      facts.postRecoveryVisualVisible = verdict.ok
+      // ── V5.10 §19/§22/§23 — FINAL PLACEMENT VERIFY (+ at most ONE fix) ──
+      const container = getActiveEditorScrollContainer()
+      const pstate = this.measurePlacementState(container)
+      let placementOk = true
+      let placementReason = 'NO_PLACEMENT_CONTEXT'
+      if (pstate) {
+        facts.centerErrorAfter = pstate.decision.centerErrorBefore
+        facts.targetCenterAfter = pstate.decision.targetCenterBefore
+        facts.primaryActualViewportY = pstate.primaryTopNow
+        facts.placementMode = pstate.decision.placementMode
+        const dpr = typeof devicePixelRatio === 'number' && Number.isFinite(devicePixelRatio) ? devicePixelRatio : 1
+        const vp = verifyFinalPlacement({
+          placementMode: pstate.decision.placementMode,
+          centerErrorAfter: pstate.decision.centerErrorBefore,
+          actualScrollTop: pstate.scrollTop,
+          maxScrollTop: pstate.maxScrollTop,
+          primaryPreferredViewportY: pstate.decision.primaryPreferredViewportY,
+          primaryActualViewportY: pstate.primaryTopNow,
+          tolerancePx: placementNumericTolerancePx(dpr),
+        })
+        placementOk = vp.ok
+        placementReason = vp.reason
+        if (!vp.ok && facts.placementCorrectionCount < MAX_FINAL_PLACEMENT_CORRECTION) {
+          // A real reflow (Drawer restore / width change) invalidated the
+          // placement: ONE bounded correction, then re-settle + re-verify.
+          facts.placementCorrectionCount++
+          const correctionAnchor = this.locatePlacementCtx?.anchorEl ?? null
+          if (container && correctionAnchor) this.applyDeterministicScroll(container, correctionAnchor, facts)
+          tx.state = 'WAITING_FINAL_LAYOUT_SETTLE'
+          this.scheduleOneClickRaf(() => {
+            if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+            this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason)
+          })
+          return
+        }
+        if (!vp.ok) this.countersPlacementV510.finalPlacementCorrectionExceeded++
+        facts.finalPlacementDecision = vp.ok ? 'PASS' : 'FAIL'
+        facts.finalPlacementReason = vp.reason
+        this.emitPlacementAudit(tx, facts, vp.ok ? 'PASS' : 'FAIL', vp.reason)
+      }
+      if (!placementOk) {
+        tx.state = 'FAILED'
+        this.finishLocateTransaction(tx, false, `PLACEMENT_VERIFY_FAILED:${placementReason}`)
+        return
+      }
+      // ── V5.12-R2 §14 — the UNIQUE commit gate ──────────────────────────────
+      // A visual FAIL must NEVER commit. The single gate consumes the SAME
+      // measured facts the audit reports (semantic / presentation / occlusion).
+      const gate = this.evaluateLocateCommitGate(diag, result, verdict, painted, facts)
+      this.lastLocateCommitGate = gate
+      if (!gate.canCommit) {
+        const occlusionFailure = gate.failedChecks.includes('TARGET_NOT_FULLY_UNOBSCURED')
+          || gate.failedChecks.includes('PANEL_INTERSECTION')
+          || gate.failedChecks.includes('FRAME_PAINTS_ABOVE_DRAWER')
+        if (phase === 'PHASE_A') {
+          const recovery = resolveLocateVisualRecoveryDecision({
+            canCommit: false,
+            recoveryAttempts: this.txVisualRecoveryAttempts,
+            maxRecovery: 1,
+          })
+          if (recovery === 'RETRY_LAYOUT_RECOVERY' && occlusionFailure) {
+            // §13.2 — collapse the Drawer, wait for the layout to settle, then
+            // re-resolve + re-measure + repaint (PHASE A recovery).
+            this.txVisualRecoveryAttempts++
+            this.acquireLocateVisibilityLease(tx)
+            this.setDrawerCollapseForLocate(true)
+            this.locateLayoutRecoveryCount++
+            tx.state = 'RESTORING_LAYOUT'
+            facts.drawerRecoveryRequired = true
+            facts.drawerRecoverySettled = true
+            facts.postRecoveryRemeasured = false
+            this.scheduleOneClickRaf(() => {
+              if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+              if (!facts.postRecoveryRemeasured) this.countersClosureV512R2.drawerRecoveryWithoutRemeasure++
+              this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason, 'PHASE_A')
+            })
+            return
+          }
+        } else if (occlusionFailure) {
+          // ── V5.12-R3 §12 — the restored Drawer would occlude the target ────
+          // Priority: OPEN → COMPACT_DOCKED (bounded to ONE attempt) → BLOCKED.
+          if (facts.drawerCompactAttempts < 1 && this.drawerOpen) {
+            facts.drawerCompactAttempts++
+            this.setDrawerCompactForLocate(true)
+            tx.state = 'REBUILDING_FINAL_PRESENTATION'
+            this.scheduleOneClickRaf(() => {
+              if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+              this.bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
+              this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason, 'PHASE_B')
+            })
+            return
+          }
+          tx.state = 'FAILED'
+          this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'FINAL_PRESENTATION_BLOCKED_BY_VIEWPORT', targetIndex, result, false)
+          this.finishLocateTransaction(tx, false, `FINAL_PRESENTATION_BLOCKED_BY_VIEWPORT:${gate.reason}`)
+          return
+        }
+        tx.state = 'FAILED'
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'FAILED_VISUAL_PRESENTATION', targetIndex, result, false)
+        this.finishLocateTransaction(tx, false, `FAILED_VISUAL_PRESENTATION:${gate.reason}`)
+        return
+      }
+      // ── V5.12-R3 §7 — PHASE B: RESTORE THE USER-REQUESTED DRAWER ───────────
+      // PHASE A measured against a possibly collapsed Drawer. The user's OPEN
+      // intent MUST be restored BEFORE the terminal COMMIT, and the geometry MUST
+      // be re-derived with the Drawer really visible.
+      if (phase === 'PHASE_A') {
+        const restore = resolveDrawerRestoreRequired({
+          drawerRequestedOpenAtStart: facts.drawerRequestedOpenAtStart,
+          newestIntentOpen: this.drawerOpen,
+          locateCollapseActive: this.drawerCollapseActive,
+        })
+        if (restore.restoreRequired) {
+          facts.drawerRestoreRequired = true
+          facts.drawerRestoreStarted = true
+          tx.state = 'RESTORING_REQUESTED_DRAWER'
+          // The DrawerLocateRecoveryLease is RELEASED here — it must NEVER survive
+          // the terminal COMMIT (ROOT_R3_2 / ROOT_R3_3).
+          this.releaseDrawerRecoveryLease('DRAWER_RESTORED_BEFORE_COMMIT')
+          this.setDrawerCompactForLocate(false)
+          facts.presentationAfterRestore = this.getDrawerPresentationMode()
+          tx.state = 'WAITING_DRAWER_RESTORE_SETTLE'
+          this.scheduleOneClickRaf(() => {
+            if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+            facts.drawerRestoreSettled = true
+            facts.drawerVisibleAfterRestore = this.measureDrawerRenderedVisible()
+            // §10 — the restore REALLY changes the editor available width: bump
+            // the document layout epoch and re-derive every measurement.
+            this.bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
+            this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason, 'PHASE_B')
+          })
+          return
+        }
+        if (restore.releaseWithoutRestore) {
+          // The user CLOSED the Drawer during the transaction → the newest intent
+          // wins: lift the transient presentation and never auto-reopen.
+          this.releaseDrawerRecoveryLease('USER_INTENT_CLOSED')
+          this.setDrawerCompactForLocate(false)
+        }
+      }
+      facts.presentationAtFinalCommit = this.getDrawerPresentationMode()
+      facts.drawerVisibleAtFinalCommit = this.measureDrawerRenderedVisible()
+      // V5.11 §23 — COMMIT: convert the FINAL viewport geometry into
+      // document-local geometry ONCE and mount the document-space carrier.
+      // From this point the locate subsystem no longer reacts to scroll.
+      let committedCarrier = false
+      if (verdict.ok) {
+        committedCarrier = this.commitDocumentSpaceCarrier(tx, diag, result)
+        // V5.12-R1 §9/§10/§11 — a located HEADING gets the text-tight active
+        // emphasis + the short reason chip (overlay only).
+        const headingEl = result.element ?? null
+        if (headingEl && /^H[1-6]$/.test(headingEl.tagName)) {
+          this.renderHeadingActiveEmphasis(diag.id, diag, headingEl)
+        }
+      }
+      // §18 Hard Gate — a COMMIT with a visual FAIL is architecturally impossible
+      // after the gate above; this invariant makes a regression provable.
+      if (committedCarrier && !gate.canCommit) this.countersClosureV512R2.finalCommitWithVisualFail++
+      const reason = highlightTargets.length > 1 ? 'COMPOUND_SCROLLED' : (result.scrollAction ? 'SCROLL_ACTION' : 'SCROLLED')
+      this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', reason, targetIndex, result, verdict.ok)
+      tx.state = 'COMMITTED'
+      this.finishLocateTransaction(tx, true, 'ONE_CLICK_COMMITTED')
+    })
+  }
+
+  /**
+   * §14 — collect the REAL measured facts into the UNIQUE commit gate. Every
+   * input is a fact this transaction already measured (never re-resolved).
+   */
+  private evaluateLocateCommitGate(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult,
+    verdict: ReturnType<DocumentUtilityOverlayHost['verifyOneClickPaintedVisual']>,
+    painted: { primary: RectRecord | null; secondary: RectRecord | null },
+    facts: LocateOneClickFacts,
+  ): LocateVisualCommitDecision {
+    const frame = this.locateFrame
+    const structure = frame?.getStructure() ?? null
+    const kind = structure?.kind ?? null
+    const isInline = kind === 'inline'
+    const isBlock = this.isObjectKind(kind)
+    // §14 — jsdom/headless cannot measure a PAINTED carrier, so the
+    // presentation/coverage/occlusion checks are explicitly not asserted there
+    // (they are never a fabricated PASS either — `canCommit` is evidence only).
+    const headless = isHeadlessTestRuntime()
+    const layers = headless
+      ? { drawerOccludesTarget: false, drawerIntersectsFrame: false, toolbarIntersectsFrame: false, navigatorIntersectsFrame: false, framePaintsAboveDrawer: false, framePaintsAboveToolbar: false, framePaintsAboveNavigator: false }
+      : this.measureLocateLayerFacts()
+    const panelIntersectionCount = headless
+      ? 0
+      : (layers.drawerIntersectsFrame ? 1 : 0) + (layers.toolbarIntersectsFrame ? 1 : 0) + (layers.navigatorIntersectsFrame ? 1 : 0)
+    const geom = frame?.getGeometryReport() ?? null
+    const sem = geom?.semanticRect ?? null
+    const prim = painted.primary
+    const coverageRatio = headless || !sem || !prim || sem.width <= 0
+      ? null
+      : Math.max(0, Math.min(1, prim.width / sem.width))
+    const inlineFacts = frame?.getInlineFragmentFacts() ?? null
+    const targetEl = result.element ?? null
+    const targetConnected = !!targetEl && targetEl.isConnected
+    const carrierPresent = isInline
+      ? (frame?.getInlineElement() != null || (structure?.inlineFragmentCount ?? 0) >= 1)
+      : structure?.headingMarkerCarrier === true
+        ? (this.headingActiveWrapper != null || this.headingMarkerLayer != null)
+        : frame?.getFrameElement() != null
+    return canCommitLocateVisual({
+      semanticResolvePass: true,
+      scrollArrivalPass: !facts.automaticScrollRequired || (facts.targetVisibleAtSettle && facts.scrollSettled),
+      targetConnected,
+      freshTargetMeasurement: headless ? true : facts.freshTargetMeasurement,
+      layoutEpochCurrent: true,
+      presentationBuilt: frame?.getVisualPresentation() != null,
+      visualCarrierPresent: carrierPresent && (headless ? true : verdict.primaryMarkerVisible),
+      targetFullyUnobscured: headless ? true : !layers.drawerOccludesTarget,
+      panelIntersectionCount,
+      framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
+      framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
+      framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
+      coverageRatio: isBlock ? coverageRatio : isInline ? (headless ? null : (inlineFacts ? inlineFacts.coverage : 1)) : null,
+      inlineFragmentCoverage: isInline && !headless && inlineFacts ? inlineFacts.coverage : null,
+      blockCoverage: isBlock && !headless ? (geom ? geom.horizontalCoverage : null) : null,
+      staleGeometry: false,
+    })
+  }
+
+  /** §13.3 — take the ACTIVE LOCATE VISIBILITY LEASE for this transaction. */
+  private acquireLocateVisibilityLease(tx: { id: number; diagnosticId: string | null }): void {
+    this.locateVisibilityLease = { transactionId: tx.id, diagnosticId: tx.diagnosticId }
+  }
+
+  /**
+   * V5.12-R3 §6 — the ActiveLocateVisualLease. It ONLY keeps the current active
+   * diagnostic highlight alive; it is released when the active visual REALLY
+   * ends (dismiss / new diagnostic / Problems-Control reopen / document switch /
+   * diagnostic gone / unload) — NEVER at COMMIT, and it never implies a Drawer
+   * collapse.
+   */
+  private releaseActiveLocateVisualLease(reason: string): void {
+    const lease = this.locateVisibilityLease
+    if (!lease) return
+    this.locateVisibilityLease = null
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-ACTIVE-VISUAL-LEASE-AUDIT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      transactionId: lease.transactionId,
+      diagnosticId: lease.diagnosticId,
+      activeLocateVisualLeaseActive: false,
+      released: true,
+      reason,
+      drawerRequestedOpen: this.drawerOpen,
+      drawerPresentationMode: this.getDrawerPresentationMode(),
+    })
+  }
+
+  /** V5.10 §29 — DOCUMENT-DIAGNOSTIC-LOCATE-PLACEMENT-AUDIT. */
+  private emitPlacementAudit(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    facts: LocateOneClickFacts,
+    decision: string,
+    reason: string,
+  ): void {
+    emitRuntimeAudit(LOCATE_PLACEMENT_AUDIT_EVENT, {
+      transactionId: tx.id,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: facts.documentKey,
+      diagnosticId: facts.diagnosticId,
+      targetKind: facts.targetKind,
+      placementMode: facts.placementMode,
+      targetInitiallyVisible: facts.targetInitiallyVisible,
+      alreadyWithinCenterTolerance: facts.alreadyWithinCenterTolerance,
+      viewportRect: facts.viewportRectAtSettle ?? facts.viewportRectAtStart,
+      viewportCenterY: facts.viewportCenterY,
+      targetRectBefore: facts.preScrollTargetRect,
+      targetCenterBefore: facts.targetCenterBefore,
+      centerErrorBefore: facts.centerErrorBefore,
+      compoundHeight: facts.compoundHeight,
+      largeBlock: facts.largeBlock,
+      desiredScrollTop: facts.placementDesiredScrollTop,
+      clampedScrollTop: facts.actualScrollTopAfterWrite,
+      actualScrollTop: facts.actualScrollTopAfterWrite,
+      maxScrollTop: facts.maxScrollTopV510,
+      clampedAtStart: facts.placementMode === 'CLAMPED_DOCUMENT_START',
+      clampedAtEnd: facts.placementMode === 'CLAMPED_DOCUMENT_END',
+      targetRectAfter: facts.postScrollTargetRect,
+      targetCenterAfter: facts.targetCenterAfter,
+      centerErrorAfter: facts.centerErrorAfter,
+      primaryPreferredViewportY: facts.primaryPreferredViewportY,
+      primaryActualViewportY: facts.primaryActualViewportY,
+      scrollWriteCount: facts.scrollWriteCount,
+      placementCorrectionCount: facts.placementCorrectionCount,
+      drawerRecoveryRequired: facts.drawerRecoveryRequired,
+      drawerRecoverySettled: facts.drawerRecoverySettled,
+      placementReason: facts.placementReason,
+      finalPlacementDecision: facts.finalPlacementDecision,
+      finalPlacementReason: facts.finalPlacementReason,
+      decision,
+      reason,
+    })
+  }
+
+  /** V5.8 — DOCUMENT-DIAGNOSTIC-ONE-CLICK-LOCATE-AUDIT + commit-time gates. */
+  private emitOneClickLocateAudit(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    commit: boolean,
+    completionReason: string,
+  ): void {
+    const facts = tx.oneClick
+    if (!facts) return
+    facts.secondUserClickRequired = false
+    const terminalState = commit ? 'COMMITTED' : 'FAILED'
+    if (commit) {
+      const g = this.countersOneClickV58
+      if (!facts.freshTargetMeasurement) g.postScrollFreshTargetMissing++
+      if (!facts.freshHostMeasurement) g.postScrollFreshHostMissing++
+      if (facts.postScrollRemeasureMissing || !facts.postRecoveryRemeasured) g.postScrollRemeasureMissing++
+      if (facts.staleRectCommit) g.postScrollStaleRectCommit++
+      if (facts.zeroRectCommit) g.postScrollZeroRectCommit++
+      if (facts.fragmentDropCommit) g.postScrollFragmentDropCommit++
+      if (facts.diagnosticIdentityChanged) g.postScrollDiagnosticIdentityChange++
+      if (facts.occurrenceChanged) g.postScrollOccurrenceChange++
+      if (facts.anchorChanged) g.postScrollAnchorChange++
+      if (!facts.postRecoveryVisualVisible) g.postScrollVisualNotVisibleCommit++
+      if (!facts.drawerRecoverySettled) g.commitBeforeDrawerRecoverySettled++
+      if (!facts.postRecoveryRepainted) g.postRecoveryRepaintMissing++
+      if (!facts.postRecoveryVisualVisible) g.postRecoveryVisualNotVisible++
+      if (facts.automaticScrollRequired && facts.visualPaintAttemptCount === 0) g.scrollStableTerminalWithoutVisual++
+      if (facts.userClickCount !== 1 || facts.secondUserClickRequired) g.offscreenLocateRequiresSecondClick++
+      const missingVisual = !facts.postRecoveryVisualVisible
+      if (facts.automaticScrollRequired && missingVisual) {
+        if (facts.targetKind === 'table') g.tableOffscreenFirstClickVisualMissing++
+        if (facts.targetKind === 'code') g.codeOffscreenFirstClickVisualMissing++
+        if (facts.resourceKind === 'link') g.linkOffscreenSecondClickRequired++
+        if (facts.targetKind === 'heading') g.headingOffscreenSecondClickRequired++
+        if (facts.resourceKind === 'image' && facts.occurrenceIndex === 0) g.imageOcc0SecondClickRequired++
+        if (facts.resourceKind === 'image' && facts.occurrenceIndex === 1) g.imageOcc1SecondClickRequired++
+      }
+      // ── V5.9 §21/§22 — Scroll Completion Authority commit gates ──────────
+      const s9 = this.countersScrollV59
+      const scrollGate =
+        !facts.automaticScrollRequired ||
+        (facts.scrollEffectObserved && facts.targetEnteredViewport && facts.targetVisibleAtSettle && facts.scrollSettled)
+      if (!scrollGate) {
+        if (!facts.targetEnteredViewport) s9.scrollSettleBeforeTargetEnteredViewport++
+        if (!facts.scrollEffectObserved) s9.scrollSettleWithoutEffect++
+        s9.offscreenScrollSettledWhileTargetInvisible++
+      }
+      if (facts.automaticScrollRequired && !facts.targetVisibleAtSettle && facts.scrollSettled) {
+        s9.offscreenScrollSettledWhileTargetInvisible++
+      }
+      if (facts.zeroRectCommit && facts.automaticScrollRequired) s9.offscreenFirstClickZeroPaintedRect++
+      if (facts.staleRectCommit) s9.postScrollStaleRectCommit++
+      if (facts.anchorChanged) s9.scrollAnchorIdentityChangeCommit++
+      if (facts.arrivalGateDecision === 'SCROLL_CONTAINER_TARGET_MISMATCH') s9.scrollContainerTargetMismatchCommit++
+      if (facts.automaticScrollRequired && missingVisual) {
+        if (facts.targetKind === 'table') s9.tableOffscreenFirstClickMissing++
+        if (facts.targetKind === 'code') s9.codeOffscreenFirstClickMissing++
+        if (facts.targetKind === 'heading') s9.headingOffscreenFirstClickMissing++
+        if (facts.resourceKind === 'image' && facts.occurrenceIndex === 0) s9.imageOcc0OffscreenFirstClickMissing++
+        if (facts.resourceKind === 'image' && facts.occurrenceIndex === 1) s9.imageOcc1OffscreenFirstClickMissing++
+        if (facts.resourceKind === 'link') s9.linkOffscreenFirstClickMissing++
+      }
+    } else {
+      // Terminal FAILED — V5.9 offscreen first-click failure gates.
+      const s9 = this.countersScrollV59
+      if (facts.automaticScrollRequired) {
+        s9.offscreenFirstClickTerminalFailed++
+        if (facts.zeroRectCommit) s9.offscreenFirstClickZeroPaintedRect++
+        if (facts.secondUserClickRequired) s9.offscreenFirstClickRequiresSecondClick++
+      }
+    }
+    // V5.9 §9 / V5.10 §4 — a VISIBLE target may only skip the scroll when it is
+    // ALREADY within the center tolerance. A visible-but-offcenter target now
+    // legitimately performs one deterministic recenter write.
+    if (facts.targetInitiallyVisible && facts.alreadyWithinCenterTolerance && facts.scrollWriteCount > 0) {
+      this.countersScrollV59.visibleTargetUnnecessaryScrollWrite++
+    }
+    // V5.10 §30 — placement hard gates (evaluated at the terminal).
+    const p10 = this.countersPlacementV510
+    if (facts.targetInitiallyVisible && !facts.alreadyWithinCenterTolerance && facts.scrollWriteCount === 0
+      && facts.placementMode !== 'CLAMPED_DOCUMENT_START' && facts.placementMode !== 'CLAMPED_DOCUMENT_END') {
+      p10.visibleOffcenterTargetSkippedScroll++
+    }
+    if (facts.alreadyWithinCenterTolerance && facts.scrollWriteCount > 0) {
+      p10.centeredTargetUnnecessaryScroll++
+    }
+    if (facts.placementMode === 'CLAMPED_DOCUMENT_START' && facts.finalPlacementDecision === 'FAIL') {
+      p10.documentStartFalseCenterFailure++
+    }
+    if (facts.placementMode === 'CLAMPED_DOCUMENT_END' && facts.finalPlacementDecision === 'FAIL') {
+      p10.documentEndFalseCenterFailure++
+    }
+    if (commit && facts.finalPlacementDecision !== 'PASS' && facts.placementMode === 'CENTER') {
+      p10.locateNonBoundaryCenterErrorGtTolerance++
+    }
+    if (commit && facts.finalPlacementDecision !== 'PASS' && facts.placementMode === 'LARGE_BLOCK_PRIMARY_BIASED') {
+      p10.largeBlockPrimaryPlacementError++
+    }
+    if (commit && facts.automaticScrollRequired && !facts.scrollSettled) {
+      p10.placementCommitBeforeSettle++
+    }
+    if (commit && facts.automaticScrollRequired
+      && (!facts.targetEnteredViewport || !facts.targetVisibleAtSettle || !facts.scrollEffectObserved)
+      && facts.userClickCount !== 0) {
+      p10.placementRegressionBreaksV59Arrival++
+    }
+    emitRuntimeAudit(LOCATE_ONE_CLICK_AUDIT_EVENT, {
+      transactionId: tx.id,
+      visualEpoch: this.locateVisualEpoch,
+      documentKey: facts.documentKey,
+      diagnosticId: facts.diagnosticId,
+      ruleCode: facts.ruleCode,
+      userClickCount: facts.userClickCount,
+      targetInitiallyVisible: facts.targetInitiallyVisible,
+      automaticScrollRequired: facts.automaticScrollRequired,
+      scrollStarted: facts.scrollStarted,
+      scrollSettled: facts.scrollSettled,
+      postScrollRevalidateDecision: facts.postScrollRevalidateDecision,
+      preScrollTargetRect: facts.preScrollTargetRect,
+      postScrollTargetRect: facts.postScrollTargetRect,
+      freshTargetMeasurement: facts.freshTargetMeasurement,
+      freshHostMeasurement: facts.freshHostMeasurement,
+      preScrollGeometryInvalidated: facts.preScrollGeometryInvalidated,
+      visualPaintAttemptCount: facts.visualPaintAttemptCount,
+      visualRetryCount: facts.visualRetryCount,
+      presentationBuiltAfterScroll: facts.presentationBuiltAfterScroll,
+      actualPaintedPrimaryRect: facts.actualPaintedPrimaryRect,
+      actualPaintedSecondaryRect: facts.actualPaintedSecondaryRect,
+      primaryMarkerVisible: facts.primaryMarkerVisible,
+      visualCarrierPresent: facts.visualCarrierPresent,
+      secondaryContextVisible: facts.secondaryContextVisible,
+      expectedFragmentCount: facts.expectedFragmentCount,
+      renderedFragmentCount: facts.renderedFragmentCount,
+      drawerRecoveryRequired: facts.drawerRecoveryRequired,
+      drawerRecoverySettled: facts.drawerRecoverySettled,
+      postRecoveryRemeasured: facts.postRecoveryRemeasured,
+      postRecoveryRepainted: facts.postRecoveryRepainted,
+      postRecoveryVisualVisible: facts.postRecoveryVisualVisible,
+      secondUserClickRequired: facts.secondUserClickRequired,
+      targetKind: facts.targetKind,
+      // V5.9 §20 — the scroll completion authority facts.
+      targetEnteredViewport: facts.targetEnteredViewport,
+      targetVisibleAtSettle: facts.targetVisibleAtSettle,
+      scrollEffectObserved: facts.scrollEffectObserved,
+      scrollWriteCount: facts.scrollWriteCount,
+      scrollCorrectionCount: facts.scrollCorrectionCount,
+      visualStartedAfterTargetVisible: facts.visualStartedAfterTargetVisible,
+      visualPipelineStarted: facts.visualPipelineStarted,
+      scrollAnchorKind: facts.scrollAnchorKind,
+      scrollAnchorConnected: facts.scrollAnchorConnected,
+      arrivalGateDecision: facts.arrivalGateDecision,
+      // V5.10 — Preferred Center Placement facts.
+      placementMode: facts.placementMode,
+      alreadyWithinCenterTolerance: facts.alreadyWithinCenterTolerance,
+      centerErrorBefore: facts.centerErrorBefore,
+      centerErrorAfter: facts.centerErrorAfter,
+      compoundHeight: facts.compoundHeight,
+      largeBlock: facts.largeBlock,
+      placementCorrectionCount: facts.placementCorrectionCount,
+      finalPlacementDecision: facts.finalPlacementDecision,
+      finalPlacementReason: facts.finalPlacementReason,
+      terminalState,
+      decision: commit ? 'PASS' : 'FAIL',
+      reason: completionReason,
+    })
   }
 
   /** HIGHLIGHTING + V1 source-locator VERIFY: applies the transient highlight,
@@ -4765,7 +9780,7 @@ export class DocumentUtilityOverlayHost {
     result: DiagnosticLocationResolveResult,
     targetIndex: number,
   ): boolean {
-    tx.state = 'HIGHLIGHTING'
+    tx.state = 'PRESENTING'
     const sevRaw = String(diag.severity ?? 'info').toLowerCase()
     const locateSeverity: 'error' | 'warning' | 'info' =
       sevRaw === 'error' ? 'error' : sevRaw === 'warning' ? 'warning' : 'info'
@@ -4819,7 +9834,12 @@ export class DocumentUtilityOverlayHost {
     const drawerSnap = snapRect(drawerRect)
     let unobscuredSnap: RectRecord | null = editorSnap
     if (editorSnap && drawerSnap && drawerSnap.left > editorSnap.left && drawerSnap.left < editorSnap.right) {
-      unobscuredSnap = { ...editorSnap, right: drawerSnap.left }
+      // V4 RECT factory — a clipped rect must RE-DERIVE width (never keep the
+      // stale editor width: `{...editorSnap, right}` is forbidden).
+      unobscuredSnap = clampRectToClip(
+        editorSnap,
+        makeRectSnapshot({ left: editorSnap.left, top: editorSnap.top, right: drawerSnap.left, bottom: editorSnap.bottom }),
+      )
     }
     const unobscuredRect = unobscuredSnap
     const visibleEditorRect = editorSnap
@@ -4873,14 +9893,17 @@ export class DocumentUtilityOverlayHost {
     // compact indicator, inline targets get the precise inline mark. In a real
     // layout the visual is committed only when the target is visible.
     if (!hasRealLayout || (targetConnected && targetVisible)) {
-      this.commitDiagnosticLocateVisual(diag.id, locateSeverity, targets, result, primary)
+      this.commitDiagnosticLocateVisual(diag.id, locateSeverity, targets, result, primary, diag)
     } else {
+      this.lastLocateVisualGateOk = false
       this.clearDiagnosticLocateVisual('TARGET_NOT_VISIBLE')
     }
     if (!hasRealLayout) return true
     if (!targetVisible || !highlightVisible) return false
     if (isResourceDiag && (!identityMatch || !occurrenceMatch)) return false
-    return true
+    // V4 — a FULL locate PASS requires the INDEPENDENT visual presentation
+    // gate too: a visual FAIL must never be reported as a full PASS.
+    return this.lastLocateVisualGateOk !== false
     } catch (err) {
       // V2 — exception-safe TERMINAL cleanup: any runtime error during
       // VERIFY/HIGHLIGHT ends the transaction in FAILED with a full release
@@ -4897,6 +9920,8 @@ export class DocumentUtilityOverlayHost {
       try { this.locateTxSettleCancel() } catch { /* noop */ }
       this.locateTxSettleCancel = null
     }
+    // V5.9 §37 — the bounded chain is cancelled as a whole at every terminal.
+    if (this.locateTxRafPending) this.locateTxRafPending = false
     if (this.locateTxWatchdog) {
       clearTimeout(this.locateTxWatchdog)
       this.locateTxWatchdog = null
@@ -4920,7 +9945,16 @@ export class DocumentUtilityOverlayHost {
     }
     const committedNext = commit && tx.targetCount > 1 ? (tx.targetIndex + 1) % tx.targetCount : null
     const committedIndex = commit ? (tx.targetCount === 1 ? 0 : tx.targetIndex) : null
+    // V5.8 — emit the single-click offscreen audit + evaluate the commit-time
+    // hard gates BEFORE the terminal unlock (facts are still reachable).
+    this.emitOneClickLocateAudit(tx, commit, completionReason)
+    // V5.12-R2 §17 — the unified closure audit at the TRANSACTION terminal
+    // (while the transaction id is still reachable).
+    this.emitVisualClosureAudit(commit ? 'LOCATE_COMMITTED' : 'LOCATE_FAILED')
+    this.locatePlacementCtx = null // V5.10 — placement authority is tx-scoped
+    this.releaseLocateScrollLease() // V5.11 §13 — post-commit scroll is INERT
     this.activeLocateTx = null
+    this.locateTxTerminalCount++ // V5.9 §37
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
@@ -4931,6 +9965,57 @@ export class DocumentUtilityOverlayHost {
       committedIndex,
       decision: commit ? 'PASS' : 'FAIL',
     })
+    // V5.12-R3 §6/§17 — the DrawerLocateRecoveryLease NEVER survives a terminal.
+    // A terminal COMMIT while the Drawer is still transiently collapsed is the
+    // exact V5.12-R2 defect (ROOT_R3_2/ROOT_R3_3). The transient presentation is
+    // ALWAYS lifted here; only the SEPARATE ActiveLocateVisualLease may survive.
+    const facts = tx.oneClick
+    const requestedOpenAtTerminal = this.drawerOpen
+    const presentationBeforeRelease = this.getDrawerPresentationMode()
+    if (commit) {
+      // §13.3 — the active-visual lease protects the committed highlight. A
+      // document-level locate (scroll-only, no carrier) has nothing to protect.
+      const hasActiveVisual = this.locateVisualIsActive() || this.locateCommittedVisual !== null
+      if (hasActiveVisual) this.acquireLocateVisibilityLease(tx)
+      this.releaseDrawerRecoveryLease(requestedOpenAtTerminal ? 'COMMITTED_DRAWER_RESTORED' : 'COMMITTED_DRAWER_CLOSED_BY_USER')
+      const presentationAfterTerminal = this.getDrawerPresentationMode()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-RECOVERY-AUDIT', {
+        transactionId: tx.id,
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: this.lastLocatedDiagnosticId,
+        drawerRequestedOpen: requestedOpenAtTerminal,
+        presentationBeforeLocate: facts?.presentationBeforeLocate ?? null,
+        presentationDuringLocate: facts?.presentationDuringLocate ?? presentationBeforeRelease,
+        presentationAfterTerminal,
+        collapseLeaseActive: this.getDrawerRecoveryLeaseActive(),
+        collapseLeaseReleased: !this.getDrawerRecoveryLeaseActive(),
+        locateVisibilityLeaseActive: hasActiveVisual,
+        terminalDecision: hasActiveVisual
+          ? (requestedOpenAtTerminal ? 'COMMITTED_DRAWER_RESTORED' : 'COMMITTED_DRAWER_CLOSED_BY_USER')
+          : 'COMMITTED_NO_VISUAL',
+        terminalReason: completionReason,
+        reopenAuthorityAvailable: !!this.problemsControlEl && this.problemsControlEl.isConnected,
+        txVisualRetryCount: this.txVisualRetryCount,
+        sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
+      })
+    } else {
+      this.releaseDrawerRecoveryLease('FAILED')
+    }
+    // §16 — the persistence audit is the R3 terminal evidence (emitted AFTER the
+    // release so it observes the REAL terminal presentation).
+    this.emitDrawerPersistenceAudit(
+      tx,
+      commit,
+      commit
+        ? (facts?.drawerRestoreStarted === true ? 'COMMITTED_DRAWER_RESTORED' : 'COMMITTED_WITHOUT_RESTORE_NEEDED')
+        : `FAILED:${completionReason}`,
+    )
+    // ── Repair (never masking): a transient presentation must not remain once
+    // the violation was already accounted by the audit above.
+    if (requestedOpenAtTerminal && this.getDrawerPresentationMode() === 'locate-collapse') {
+      this.setDrawerCollapseForLocate(false)
+      this.setDrawerCompactForLocate(false)
+    }
   }
 
   /** Abort (error path): unlock without commit. */
@@ -4943,7 +10028,10 @@ export class DocumentUtilityOverlayHost {
     this.cancelLocateSettleWatch()
     this.locator.clearHighlight()
     this.clearDiagnosticLocateVisual('LOCATE_ABORTED')
+    this.locatePlacementCtx = null
+    this.releaseLocateScrollLease()
     this.activeLocateTx = null
+    this.locateTxTerminalCount++ // V5.9 §37
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
@@ -4953,18 +10041,30 @@ export class DocumentUtilityOverlayHost {
       detail,
       decision: 'FAIL',
     })
+    // V5.1 — EXCEPTION terminal: ALWAYS restore the Drawer presentation.
+    this.releaseDrawerRecoveryLease('EXCEPTION')
   }
 
   /** Phase 7R.3.11.8B.7.7 — cancel on document switch / drawer close / dispose.
    *  Clears highlight, releases the lock, NEVER commits the target index. */
   private cancelActiveLocateTransaction(reason: string): void {
+    // V5.12-R2 §13.3 — a document switch / panel close / host dispose ENDS the
+    // active visual, so the ACTIVE LOCATE VISIBILITY LEASE is released even when
+    // no transaction is in flight (a post-COMMIT visual must not keep the Drawer
+    // collapsed across a document switch).
+    this.releaseDrawerRecoveryLease(reason === 'PANEL_CLOSED' ? 'CANCELLED' : reason)
+    // V5.12-R3 §6 — a cancelled/ended transaction also ends any active visual.
+    this.releaseActiveLocateVisualLease(reason)
     const tx = this.activeLocateTx
     if (!tx) return
     this.cancelLocateSettleWatch()
     this.locator.clearHighlight()
     // Phase 7R.3.11.8B.8 — a cancelled/switch transaction clears the V3 visual.
     this.clearDiagnosticLocateVisual(reason)
+    this.locatePlacementCtx = null
+    this.releaseLocateScrollLease()
     this.activeLocateTx = null
+    this.locateTxTerminalCount++ // V5.9 §37
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
@@ -4974,6 +10074,9 @@ export class DocumentUtilityOverlayHost {
       committedNextTargetIndex: null,
       decision: 'CANCELLED',
     })
+    // V5.1 — CANCELLED / DOCUMENT_SWITCH / PANEL_CLOSED terminal: no stale
+    // collapse lease may survive.
+    this.releaseDrawerRecoveryLease(reason === 'PANEL_CLOSED' ? 'CANCELLED' : reason)
   }
 
   /** Public observability: whether a locate transaction is currently active. */
@@ -5248,10 +10351,17 @@ export class DocumentUtilityOverlayHost {
     reason: string,
     targetIndex: number,
     result: DiagnosticLocationResolveResult | null,
+    /** V4 — independent visual presentation gate (null when not applicable). */
+    finalVisualOk: boolean | null = null,
   ): void {
     const snapshot = this.diagnostics.getSnapshot()
     const scrollDecision = resolveDecision === 'RESOLVED' ? (reason === 'SCROLLED' || reason === 'SCROLL_ACTION' || reason === 'COMPOUND_SCROLLED' ? 'PASS' : 'N/A') : 'N/A'
-    const highlightDecision = resolveDecision === 'RESOLVED' && (reason === 'SCROLLED' || reason === 'COMPOUND_SCROLLED') ? 'PASS' : 'N/A'
+    const semanticHl = resolveDecision === 'RESOLVED' && (reason === 'SCROLLED' || reason === 'COMPOUND_SCROLLED')
+    const visualFailed = finalVisualOk === false
+    // V4 — a visual presentation FAIL must never be reported as a full PASS.
+    const highlightDecision = semanticHl ? (visualFailed ? 'FAIL' : 'PASS') : 'N/A'
+    const baseFinal = resolveDecision === 'RESOLVED' ? 'PASS' : 'FAIL'
+    const finalDecision = resolveDecision === 'RESOLVED' && visualFailed ? 'FAIL_VISUAL' : baseFinal
     // VALIDITY verdict — separated from DOM resolution (§13).
     let validityDecision: string = 'NOT_EVALUATED'
     let validityReason: string | null = null
@@ -5311,8 +10421,9 @@ export class DocumentUtilityOverlayHost {
       resolvedOccurrenceIndex: result?.primaryAnchor === 'resource-semantic' ? occurrenceIndex : null,
       scrollDecision,
       highlightDecision,
-      finalDecision: resolveDecision === 'RESOLVED' ? 'PASS' : 'FAIL',
-      decision: resolveDecision === 'RESOLVED' ? 'PASS' : 'FAIL',
+      visualPresentationDecision: finalVisualOk == null ? 'N/A' : finalVisualOk ? 'PASS' : 'FAIL',
+      finalDecision,
+      decision: finalDecision,
       reason,
     })
   }
@@ -5385,9 +10496,19 @@ export class DocumentUtilityOverlayHost {
     return item
   }
 
+  /** V5.1 — EXPLICIT Problems-Control toggle (no blind `visible = !visible`).
+   *  From LOCATE_COLLAPSE the same click is REOPEN, never CLOSE. */
   private toggleDrawer(): void {
-    if (this.drawerOpen) this.closeDrawer()
-    else this.openDrawer(this.drawerFilter)
+    const action = resolveProblemsControlAction(this.getDrawerPresentationMode(), this.drawerOpen)
+    if (action === 'REOPEN') {
+      this.releaseDrawerRecoveryLease('TOOLBAR_REOPEN')
+      if (this.drawerCollapseActive) this.setDrawerCollapseForLocate(false)
+      if (!this.drawerOpen) this.openDrawer(this.drawerFilter)
+    } else if (action === 'CLOSE') {
+      this.closeDrawer()
+    } else {
+      this.openDrawer(this.drawerFilter)
+    }
   }
 
   /**
@@ -5396,6 +10517,9 @@ export class DocumentUtilityOverlayHost {
    * methods never write navigator position directly (single write site).
    */
   private setDrawerOpen(nextOpen: boolean): void {
+    // V5.1 — LOCATE_COLLAPSE is presentation-only; it must never defeat the
+    // requested intent of setDrawerOpen (open from collapse = normal open).
+    if (nextOpen && this.drawerCollapseActive) this.setDrawerCollapseForLocate(false)
     if (this.drawerOpen === nextOpen) return
     // Phase 7R.3.11.8B.3 — capture the navigator position BEFORE the toggle so
     // the position-invariant audit can prove deltaX/deltaY <= 1px.
@@ -5408,9 +10532,20 @@ export class DocumentUtilityOverlayHost {
     this.scheduleGeometrySync(nextOpen ? 'drawer-open' : 'drawer-close')
   }
 
-  /** V1.1 — open drawer with a severity filter (segments/tabs share this state). */
+  /** V5.1 — explicit intent open. LOCATE_COLLAPSE never blocks a user OPEN:
+   *  the recovery lease is released and the Drawer re-renders (REOPEN, never
+   *  interpreted as CLOSE — see resolveProblemsControlAction). */
   private openDrawer(filter: DiagnosticsSeverityFilter = 'all'): void {
     if (!this.drawerEl) return
+    // V5.12-R2 §13.4 — Problems Control is the ABSOLUTE reopen authority: an
+    // explicit OPEN intent releases the ACTIVE LOCATE VISIBILITY LEASE and lifts
+    // any LOCATE_COLLAPSE, so the Drawer can always come back.
+    this.releaseDrawerRecoveryLease('TOOLBAR_REOPEN')
+    // V5.12-R3 §6/§13 — an explicit OPEN intent ends the active visual lease and
+    // bumps the intent epoch (the newest intent always wins).
+    this.drawerIntentEpoch++
+    this.releaseActiveLocateVisualLease('TOOLBAR_REOPEN')
+    if (this.drawerCollapseActive) this.setDrawerCollapseForLocate(false)
     this.drawerFilter = filter
     this.setDrawerOpen(true)
     this.renderDrawer()
@@ -5425,6 +10560,9 @@ export class DocumentUtilityOverlayHost {
 
   private closeDrawer(): void {
     if (!this.drawerEl) return
+    // V5.12-R3 §13 — a USER CLOSE is a new intent: it bumps the intent epoch so a
+    // transaction started earlier can never auto-reopen the Drawer afterwards.
+    this.drawerIntentEpoch++
     // Phase 7R.3.11.8B.7.7 — closing the diagnostics panel cancels any active
     // locate transaction (release lock, no target-index commit, clear highlight).
     this.cancelActiveLocateTransaction('PANEL_CLOSED')

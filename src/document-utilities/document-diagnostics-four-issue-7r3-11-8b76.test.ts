@@ -231,30 +231,35 @@ describe('RESOURCE — document-dir base authority (filesystem truth)', () => {
     fs.writeFileSync(path.join(docDir, 'assets', 'phase7-strict-h1-boundary', 'boundary-a-figure.png'), 'x')
   }
 
-  function linkCodes(s: { diagnostics: readonly { code: string }[] } | null): string {
+  function resourceCodes(s: { diagnostics: readonly { code: string }[] } | null): string {
     if (!s) return ''
-    return s.diagnostics.filter(d => d.code === 'LINK_LOCAL_TARGET_MISSING').map(d => d.code).join(',')
+    return s.diagnostics
+      .filter(d => d.code === 'LINK_LOCAL_TARGET_MISSING' || d.code === 'FIGURE_LOCAL_IMAGE_MISSING')
+      .map(d => d.code)
+      .join(',')
   }
 
-  it('PHASE7_NORMAL_IMAGE_NO_WARNING: asset under DOCUMENT dir exists → no LINK_LOCAL_TARGET_NOT_FOUND', () => {
+  it('PHASE7_NORMAL_IMAGE_NO_WARNING: asset under DOCUMENT dir exists → no missing-resource warning (link or image)', () => {
     mountDoc()
     const authority = new DocumentDiagnosticsAuthority(makeCtx(), makeProviders())
     let last = ''
-    const dispose = authority.subscribe(s => { last = linkCodes(s) })
+    const dispose = authority.subscribe(s => { last = resourceCodes(s) })
     authority.recompute('TEST')
     expect(last).toBe('')
     dispose()
   })
 
-  it('GENERIC_LOCATOR_MISSING_IMAGE_WARNING: file truly absent under DOCUMENT dir → warning stays', () => {
+  it('GENERIC_LOCATOR_MISSING_IMAGE_WARNING: file truly absent under DOCUMENT dir → FIGURE_LOCAL_IMAGE_MISSING (V4 source-first, no live img required)', () => {
     // No asset created under the document dir → the referenced image is missing.
     const authority = new DocumentDiagnosticsAuthority(makeCtx(), makeProviders())
     let last = ''
-    const dispose = authority.subscribe(s => { last = linkCodes(s) })
+    const dispose = authority.subscribe(s => { last = resourceCodes(s) })
     authority.recompute('TEST')
     // eslint-disable-next-line no-console
     console.log('ALL_CODES', authority.getSnapshot()?.diagnostics.map(d => d.code).join(',') ?? '(null)')
-    expect(last).toContain('LINK_LOCAL_TARGET_MISSING')
+    expect(last).toContain('FIGURE_LOCAL_IMAGE_MISSING')
+    // V4 — an image token must NEVER be misreported as a missing link.
+    expect(last).not.toContain('LINK_LOCAL_TARGET_MISSING')
     dispose()
   })
 })
