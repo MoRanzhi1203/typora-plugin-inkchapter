@@ -264,6 +264,18 @@ export class DiagnosticLocateFrameController {
   private lastInlineExpected: ClosureRect[] = []
   private lastInlineFragmentCoverage = 1
   private lastInlineCrossLineUnion = false
+  // ── V5.12-R4 §8 — inline geometry generation / pre-scroll invalidation ────
+  /** Bumped on EVERY real inline paint (a new, fresh measurement). */
+  private inlineGeometryGeneration = 0
+  /** Generation of the geometry the locator invalidated by writing scroll. */
+  private inlineGenerationAtInvalidation: number | null = null
+  /** True once a programmatic locate scroll made the pre-scroll range stale. */
+  private preScrollInlineGeometryInvalidated = false
+  /** True when a paint happened AFTER the invalidation (fresh geometry). */
+  private postScrollInlineGeometryFresh = false
+  private inlineInvalidationReason: string | null = null
+  /** The scroll offset the current inline geometry was measured at. */
+  private inlineMeasuredScrollTop: number | null = null
   private lastHeadingLegacyFrameRender = false
 
   constructor(private readonly root: HTMLElement | null) {}
@@ -353,6 +365,11 @@ export class DiagnosticLocateFrameController {
   commit(input: DiagnosticLocateVisualCommit): boolean {
     if (this.disposed) return false
     this.clear('NEW_LOCATE')
+    // V5.12-R4 §8 — a NEW locate starts a fresh inline geometry generation.
+    this.preScrollInlineGeometryInvalidated = false
+    this.postScrollInlineGeometryFresh = false
+    this.inlineGenerationAtInvalidation = null
+    this.inlineInvalidationReason = null
     const { anchor, severity, diagnosticId } = input
     if (!anchor || !anchor.isConnected) return false
     const kind = input.kind ?? classifyDiagnosticLocateElement(anchor)
@@ -444,8 +461,118 @@ export class DiagnosticLocateFrameController {
       this.lastInlineExpected.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height })
     }
     this.lastInlineFragments = measured.fragments
+    this.inlineGeometryGeneration++
+    this.inlineMeasuredScrollTop = this.currentScrollTop()
+    // §7.1/§8 — a paint AFTER the programmatic-scroll invalidation is the FRESH
+    // (post-scroll) geometry the terminal COMMIT is allowed to use.
+    if (this.preScrollInlineGeometryInvalidated) this.postScrollInlineGeometryFresh = true
     this.lastInlineFragmentCoverage = fragmentCoverageRatio(measured.expected, measured.fragments)
     this.lastInlineCrossLineUnion = hasCrossLineUnion(measured.expected, measured.fragments)
+  }
+
+  /** §7.1/§8 — a programmatic locate scroll INVALIDATES the pre-scroll range. */
+  invalidateInlineGeometry(reason: string): void {
+    this.inlineGenerationAtInvalidation = this.inlineGeometryGeneration
+    this.preScrollInlineGeometryInvalidated = true
+    this.postScrollInlineGeometryFresh = false
+    this.inlineInvalidationReason = reason
+    // The stale pre-scroll fragments must never survive into the final paint.
+    this.removeInlineFragments()
+  }
+
+  /**
+   * V5.12-R4 §19 — re-measure the source Range WITHOUT painting a viewport
+   * carrier. Used by the post-COMMIT layout reflow (drawer width change /
+   * resize / DevTools dock) where the DOCUMENT-SPACE fragments are repositioned
+   * by the host instead of a viewport repaint.
+   */
+  remeasureInlineGeometry(): { fragments: ClosureRect[]; expected: ClosureRect[] } {
+    const anchor = this.anchorEl
+    if (!anchor || !anchor.isConnected || !this.preciseRectOverride) {
+      return { fragments: [...this.lastInlineFragments], expected: [...this.lastInlineExpected] }
+    }
+    const measured = measureTextFragmentRects(anchor, this.preciseTextPrefixOverride)
+    if (measured.expected.length === 0 || measured.fragments.length === 0) {
+      return { fragments: [...this.lastInlineFragments], expected: [...this.lastInlineExpected] }
+    }
+    this.lastInlineExpected = measured.expected.map(r => ({
+      left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height,
+    }))
+    this.lastInlineFragments = measured.fragments
+    this.inlineGeometryGeneration++
+    this.inlineMeasuredScrollTop = this.currentScrollTop()
+    this.lastInlineFragmentCoverage = fragmentCoverageRatio(measured.expected, measured.fragments)
+    this.lastInlineCrossLineUnion = hasCrossLineUnion(measured.expected, measured.fragments)
+    return { fragments: [...measured.fragments], expected: [...this.lastInlineExpected] }
+  }
+
+  /**
+   * §3/§14 — detach the VIEWPORT inline carrier at COMMIT. The measured geometry
+   * (viewport fragments / expected) is preserved for the document-space
+   * conversion + audit; only the private viewport render path is removed.
+   */
+  releaseViewportInlineCarrier(): boolean {
+    const had = this.inlineFragmentEls.length > 0
+    for (const el of this.inlineFragmentEls) {
+      try { el.remove() } catch { /* noop */ }
+    }
+    this.inlineFragmentEls = []
+    if (this.inlineEl) this.removeInlineMark(this.inlineEl)
+    this.inlineEl = null
+    return had
+  }
+
+  /** §8/§14 — inline document-space coordinate facts (audit + commit gate). */
+  getInlineCoordinateFacts(): {
+    generation: number
+    preScrollGeometryInvalidated: boolean
+    postScrollGeometryFresh: boolean
+    invalidationReason: string | null
+    generationAtInvalidation: number | null
+    measuredScrollTop: number | null
+    /** §9/§25 — an EXACT source range really exists (the gate only applies then). */
+    exactInlinePresent: boolean
+    /** Grouped per-visual-line fragments (the final visual authority). */
+    viewportFragments: ClosureRect[]
+    /** Raw meaningful Range client rects (viewport space). */
+    expectedViewportRects: ClosureRect[]
+    paintedFragmentElementCount: number
+    /** Real painted overlay rects (viewport space; empty in headless). */
+    paintedViewportRects: ClosureRect[]
+  } {
+    return {
+      generation: this.inlineGeometryGeneration,
+      preScrollGeometryInvalidated: this.preScrollInlineGeometryInvalidated,
+      postScrollGeometryFresh: this.postScrollInlineGeometryFresh,
+      invalidationReason: this.inlineInvalidationReason,
+      generationAtInvalidation: this.inlineGenerationAtInvalidation,
+      measuredScrollTop: this.inlineMeasuredScrollTop,
+      exactInlinePresent: this.preciseRectOverride != null,
+      viewportFragments: [...this.lastInlineFragments],
+      expectedViewportRects: [...this.lastInlineExpected],
+      paintedFragmentElementCount: this.inlineFragmentEls.length,
+      paintedViewportRects: this.measureInlineFragmentElementRects(),
+    }
+  }
+
+  /** §11 — the REAL painted overlay rects (viewport space) of the fragments. */
+  measureInlineFragmentElementRects(): ClosureRect[] {
+    const out: ClosureRect[] = []
+    for (const el of this.inlineFragmentEls) {
+      if (!el.isConnected) continue
+      let r: DOMRect
+      try { r = el.getBoundingClientRect() } catch { continue }
+      if (!Number.isFinite(r.left) || !Number.isFinite(r.top)) continue
+      if (r.width <= 0 && r.height <= 0) continue
+      out.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height })
+    }
+    return out
+  }
+
+  private currentScrollTop(): number | null {
+    const scroller = this.root?.ownerDocument?.scrollingElement as HTMLElement | null
+    if (scroller && Number.isFinite(scroller.scrollTop)) return scroller.scrollTop
+    return null
   }
 
   private removeInlineFragments(): void {
@@ -553,6 +680,15 @@ export class DiagnosticLocateFrameController {
     if (this.disposed) return
     if (this.anchorEl && !this.anchorEl.isConnected) {
       this.clear('ANCHOR_DISCONNECTED')
+      return
+    }
+    // ── V5.12-R4 §3/§7.1 — the exact-fragment inline carrier owns NO frame ────
+    // element, so `reposition()` used to early-return and the fragments measured
+    // during `commit()` (PRE-scroll viewport geometry) survived to COMMIT —
+    // exactly the "deltaTop ≈ scrollWriteDistance" defect. A reposition MUST
+    // re-measure the source Range in the CURRENT scroll state instead.
+    if (!this.frameEl && this.kind === 'inline' && this.anchorEl?.isConnected) {
+      if (this.preciseRectOverride) this.paintInlineFragments(this.anchorEl)
       return
     }
     const frame = this.frameEl

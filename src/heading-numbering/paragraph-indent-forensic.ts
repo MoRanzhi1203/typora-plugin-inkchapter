@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.96 — Diagnostic Drawer Persistence V5.12-R3. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-drawer-persistence-v5.12-r3'
+/** Phase 7R.3.11.8B.97 — Inline Document-Space Coordinate Closure V5.12-R4. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-inline-document-space-v5.12-r4'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b96-drawer-persistence-v5-12-r3'
+export const RUNTIME_GATE_REVISION = 'r7r3-11-8b97-inline-document-space-v5-12-r4'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
