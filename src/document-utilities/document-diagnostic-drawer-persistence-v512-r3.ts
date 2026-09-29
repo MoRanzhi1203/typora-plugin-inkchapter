@@ -72,10 +72,20 @@ export interface DrawerPresentationFidelityInput {
   drawerRenderedVisibleAtFinalCommit: boolean
   viewportClass: DrawerViewportClass
   postRestoreCoverageRatio: number | null
-  postRestorePanelIntersectionCount: number
+  /**
+   * V5.12-R9 §5 — a PURE overlay intersection after the restore (the Drawer
+   * paints over part of the target). Reported, never fatal.
+   */
+  postRestorePanelOverlayIntersectionCount: number
+  /** V5.12-R9 §5/§7 — the restored panel really CLIPPED the target geometry. FATAL. */
+  postRestorePanelGeometryClipCount: number
   postRestoreLayoutEpochCurrent: boolean
   selectedDiagnosticPreserved: boolean
   filterPreserved: boolean
+  /** V5.12-R9 §8 — the final geometry snapshot belongs to the final layout epoch. */
+  finalSnapshotEpochCurrent?: boolean
+  /** V5.12-R9 §3 — the presentation drifted during the restore (never allowed). */
+  presentationDriftedDuringRestore?: boolean
 }
 
 export interface DrawerPresentationFidelityDecision {
@@ -114,12 +124,28 @@ export function evaluateDrawerPresentationFidelity(
   if (input.postRestoreCoverageRatio != null && input.postRestoreCoverageRatio < 0.98) {
     failed.push('POST_RESTORE_COVERAGE_LT_098')
   }
-  if (input.postRestorePanelIntersectionCount > 0) failed.push('POST_RESTORE_PANEL_INTERSECTION')
+  // V5.12-R9 §5/§7 — ONLY a REAL geometry clip is fatal. A pure overlay
+  // intersection (Drawer painting over a complete target) is EXPECTED and is
+  // reported as its own reason instead of a failure.
+  if (input.postRestorePanelGeometryClipCount > 0) failed.push('POST_RESTORE_PANEL_GEOMETRY_CLIP')
+  // V5.12-R9 §3 — a presentation drift during LOCATE_COLLAPSED/RESTORING is a
+  // hard failure (the presentation lease must freeze the mode).
+  if (input.presentationDriftedDuringRestore === true) failed.push('DRAWER_PRESENTATION_DRIFT_DURING_RESTORE')
+  // V5.12-R9 §8 — the final gate must consume the FINAL layout epoch snapshot.
+  if (input.finalSnapshotEpochCurrent === false) failed.push('FINAL_REASON_SNAPSHOT_MISMATCH')
   if (committed && !input.postRestoreLayoutEpochCurrent) failed.push('POST_RESTORE_STALE_LAYOUT_EPOCH')
   if (committed && !input.selectedDiagnosticPreserved) failed.push('DRAWER_SELECTED_DIAGNOSTIC_LOST_AFTER_RESTORE')
   if (committed && !input.filterPreserved) failed.push('DRAWER_FILTER_LOST_AFTER_RESTORE')
   if (failed.length === 0) {
-    return { decision: 'PASS', reason: committed ? 'COMMITTED_DRAWER_RESTORED' : 'TERMINAL_OK', failedChecks: [] }
+    const overlayExpected = input.postRestorePanelOverlayIntersectionCount > 0
+      && input.postRestorePanelGeometryClipCount === 0
+    return {
+      decision: 'PASS',
+      reason: committed
+        ? (overlayExpected ? 'EXPECTED_DRAWER_OVERLAY_OCCLUSION' : 'COMMITTED_DRAWER_RESTORED')
+        : 'TERMINAL_OK',
+      failedChecks: [],
+    }
   }
   return { decision: 'FAIL', reason: failed.join(','), failedChecks: failed }
 }
@@ -135,7 +161,7 @@ export const DRAWER_PERSISTENCE_V512R3_GATE_KEYS = [
   'postRestoreWithoutRemeasure',
   'postRestoreWithoutRepaint',
   'postRestoreStaleLayoutEpoch',
-  'postRestorePanelIntersection',
+  'postRestorePanelGeometryClip',
   'postRestoreCoverageLt098',
   'drawerSelectedDiagnosticLostAfterRestore',
   'drawerFilterLostAfterRestore',
@@ -143,6 +169,15 @@ export const DRAWER_PERSISTENCE_V512R3_GATE_KEYS = [
   'autoReopenAfterNewerUserCloseIntent',
   'wideViewportTerminalLocateCollapse',
   'drawerRestoreFeedbackLoop',
+  // ── V5.12-R9 §5/§8 — locate-COMMIT-then-restore ordering gates ──────────
+  'restoreBeforeLocateCommit',
+  'drawerPresentationDriftDuringRestore',
+  'stalePreRestoreGeometryUsedForFinalGate',
+  'postRestoreFullCoveragePanelIntersectionFatal',
+  'postRestoreSemanticCoverageLt098',
+  'postRestoreVisualPaintsAboveDrawer',
+  'finalReasonSnapshotMismatch',
+  'locateCommittedThenRetroactivelyFailedByDrawer',
 ] as const
 
 export type DrawerPersistenceV512R3GateKey = typeof DRAWER_PERSISTENCE_V512R3_GATE_KEYS[number]
@@ -156,7 +191,7 @@ export const DRAWER_PERSISTENCE_V512R3_GATE_LABELS: Record<DrawerPersistenceV512
   postRestoreWithoutRemeasure: 'POST_RESTORE_WITHOUT_REMEASURE_COUNT',
   postRestoreWithoutRepaint: 'POST_RESTORE_WITHOUT_REPAINT_COUNT',
   postRestoreStaleLayoutEpoch: 'POST_RESTORE_STALE_LAYOUT_EPOCH_COUNT',
-  postRestorePanelIntersection: 'POST_RESTORE_PANEL_INTERSECTION_COUNT',
+  postRestorePanelGeometryClip: 'POST_RESTORE_PANEL_GEOMETRY_CLIP_COUNT',
   postRestoreCoverageLt098: 'POST_RESTORE_COVERAGE_LT_098_COUNT',
   drawerSelectedDiagnosticLostAfterRestore: 'DRAWER_SELECTED_DIAGNOSTIC_LOST_AFTER_RESTORE_COUNT',
   drawerFilterLostAfterRestore: 'DRAWER_FILTER_LOST_AFTER_RESTORE_COUNT',
@@ -164,6 +199,15 @@ export const DRAWER_PERSISTENCE_V512R3_GATE_LABELS: Record<DrawerPersistenceV512
   autoReopenAfterNewerUserCloseIntent: 'AUTO_REOPEN_AFTER_NEWER_USER_CLOSE_INTENT_COUNT',
   wideViewportTerminalLocateCollapse: 'WIDE_VIEWPORT_TERMINAL_LOCATE_COLLAPSE_COUNT',
   drawerRestoreFeedbackLoop: 'DRAWER_RESTORE_FEEDBACK_LOOP_COUNT',
+  // ── V5.12-R9 ────────────────────────────────────────────────────────────
+  restoreBeforeLocateCommit: 'RESTORE_BEFORE_LOCATE_COMMIT_COUNT',
+  drawerPresentationDriftDuringRestore: 'DRAWER_PRESENTATION_DRIFT_DURING_RESTORE_COUNT',
+  stalePreRestoreGeometryUsedForFinalGate: 'STALE_PRE_RESTORE_GEOMETRY_USED_FOR_FINAL_GATE_COUNT',
+  postRestoreFullCoveragePanelIntersectionFatal: 'POST_RESTORE_FULL_COVERAGE_PANEL_INTERSECTION_FATAL_COUNT',
+  postRestoreSemanticCoverageLt098: 'POST_RESTORE_SEMANTIC_COVERAGE_LT_098_COUNT',
+  postRestoreVisualPaintsAboveDrawer: 'POST_RESTORE_VISUAL_PAINTS_ABOVE_DRAWER_COUNT',
+  finalReasonSnapshotMismatch: 'FINAL_REASON_SNAPSHOT_MISMATCH_COUNT',
+  locateCommittedThenRetroactivelyFailedByDrawer: 'LOCATE_COMMITTED_THEN_RETROACTIVELY_FAILED_BY_DRAWER_COUNT',
 }
 
 export function createDrawerPersistenceV512R3Counters(): Record<DrawerPersistenceV512R3GateKey, number> {

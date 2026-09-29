@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.100 — Fill-Only Diagnostic Locate Marker V5.12-R7. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-code-caption-figure-diagnostics-v5.12-r8'
+/** Phase 7R.3.11.8B.106 — Document-End text-column anchor + accent V5.13-R3. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-document-end-text-column-anchor-v5.13-r3'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r8r3-11-8b101-code-caption-figure-diagnostics-v5-12-r8'
+export const RUNTIME_GATE_REVISION = 'r13r3-11-8b106-document-end-text-column-anchor-v5-13-r3'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

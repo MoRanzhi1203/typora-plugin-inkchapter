@@ -14,7 +14,7 @@ $ProjectMain    = Join-Path $ProjectRoot "dist\main.js"
 $ProjectCss     = Join-Path $ProjectRoot "dist\style.css"
 
 # ── Expected build ID (single source: forensic.ts) ─────────────────────────
-$ExpectedBuildId = "inkchapter-code-caption-figure-diagnostics-v5.12-r8"
+$ExpectedBuildId = "inkchapter-document-end-text-column-anchor-v5.13-r3"
 
 # ── Check required source-of-truth files exist ─────────────────────────────
 $runtimeMainExists = Test-Path $RuntimeMain

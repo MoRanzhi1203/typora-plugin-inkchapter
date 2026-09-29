@@ -176,7 +176,23 @@ export interface LocateVisualCommitInput {
   presentationBuilt: boolean
   visualCarrierPresent: boolean
   targetFullyUnobscured: boolean
+  /**
+   * @deprecated V5.12-R9 §5 — legacy combined intersection count. It is now
+   * mapped to the OVERLAY count (a panel merely painting over the target), so it
+   * is NEVER fatal. Kept so pre-R9 callers keep compiling/behaving sanely.
+   */
   panelIntersectionCount: number
+  /**
+   * V5.12-R9 §5 — a PURE overlay intersection: the Drawer/panel paints over the
+   * target while the target geometry stays complete. EXPECTED, never fatal.
+   */
+  panelOverlayIntersectionCount?: number
+  /**
+   * V5.12-R9 §5/§7 — the panel really CLIPPED the target geometry (the drawn
+   * geometry stops before the semantic target edge). This is the ONLY fatal
+   * panel relationship.
+   */
+  panelGeometryClipCount?: number
   framePaintsAboveDrawer: boolean
   framePaintsAboveToolbar: boolean
   framePaintsAboveNavigator: boolean
@@ -220,7 +236,13 @@ export function canCommitLocateVisual(input: LocateVisualCommitInput): LocateVis
   if (!input.presentationBuilt) failed.push('PRESENTATION_NOT_BUILT')
   if (!input.visualCarrierPresent) failed.push('VISUAL_CARRIER_MISSING')
   if (!input.targetFullyUnobscured) failed.push('TARGET_NOT_FULLY_UNOBSCURED')
-  if (input.panelIntersectionCount > 0) failed.push('PANEL_INTERSECTION')
+  // ── V5.12-R9 §5/§6/§7 — PANEL OVERLAY OCCLUSION vs GEOMETRY CLIP ─────────
+  // A panel (Drawer) painting OVER the target is an EXPECTED overlay occlusion:
+  // it never blocks COMMIT. Only a REAL geometry clip (the drawn geometry stops
+  // before the semantic target edge) is fatal.
+  const panelOverlayIntersectionCount = input.panelOverlayIntersectionCount ?? input.panelIntersectionCount ?? 0
+  const panelGeometryClipCount = input.panelGeometryClipCount ?? 0
+  if (panelGeometryClipCount > 0) failed.push('PANEL_GEOMETRY_CLIP')
   if (input.framePaintsAboveDrawer) failed.push('FRAME_PAINTS_ABOVE_DRAWER')
   if (input.framePaintsAboveToolbar) failed.push('FRAME_PAINTS_ABOVE_TOOLBAR')
   if (input.framePaintsAboveNavigator) failed.push('FRAME_PAINTS_ABOVE_NAVIGATOR')
@@ -249,7 +271,23 @@ export function canCommitLocateVisual(input: LocateVisualCommitInput): LocateVis
       failed.push('INLINE_POST_SCROLL_GEOMETRY_NOT_FRESH')
     }
   }
-  if (failed.length === 0) return { canCommit: true, reason: 'FULL_GEOMETRY_OK', failedChecks: [] }
+  if (failed.length === 0) {
+    // V5.12-R9 §6 — a full-coverage target that is merely PAINTED OVER by the
+    // Drawer commits with an explicit, honest reason (never a generic PASS and
+    // never a retroactive FAIL). Every precondition is already enforced above
+    // (coverage >= 0.98, layoutEpochCurrent, !framePaintsAboveDrawer), so this
+    // flag can only be true when those all hold.
+    const overlayOcclusionExpected = panelOverlayIntersectionCount > 0
+      && panelGeometryClipCount === 0
+      && (input.coverageRatio == null || input.coverageRatio >= VISUAL_COVERAGE_FLOOR)
+      && input.layoutEpochCurrent
+      && !input.framePaintsAboveDrawer
+    return {
+      canCommit: true,
+      reason: overlayOcclusionExpected ? 'EXPECTED_DRAWER_OVERLAY_OCCLUSION' : 'FULL_GEOMETRY_OK',
+      failedChecks: [],
+    }
+  }
   return { canCommit: false, reason: failed.join(','), failedChecks: failed }
 }
 

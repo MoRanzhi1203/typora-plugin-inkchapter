@@ -126,8 +126,10 @@ describe('CONTRAST-V52 — strong-contrast token bands + primary/secondary hiera
     const b = frameRegion()
     expect(b).toContain('box-shadow: none')
     expect(b).not.toMatch(/box-shadow:[^;]*(0px 0px|drop-shadow|blur)/)
+    // The slice intentionally spans the heading marker block too: the inline fill
+    // strength and the text-tight `border-radius: 2px` carriers both live there.
     const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
-    expect(inline).not.toMatch(/box-shadow:/)
+    for (const m of inline.matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
   })
 
   it('CONTRAST-V52-6: no ::selection override and every block kind is FILL-only', () => {
@@ -283,6 +285,8 @@ describe('LINK-V52 — inline warning fill + no false BELOW_PANELS', () => {
   }
 
   it('LINK-V52-1/2: inline warning fill >= .12 with a 2px lower keyline', () => {
+    // The slice intentionally spans the heading marker block too (the text-tight
+    // `border-radius: 2px` carriers live there).
     const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
     const warnBlock = inline.slice(inline.indexOf("[data-severity='warning']"))
     const warnEnd = warnBlock.indexOf('\n}')
@@ -290,7 +294,7 @@ describe('LINK-V52 — inline warning fill + no false BELOW_PANELS', () => {
     const bg = body.split('\n').find(l => l.includes('--ink-locate-inline-bg:')) ?? ''
     expect(parsePct(bg) / 100).toBeGreaterThanOrEqual(0.12)
     expect(inline).toContain('2px')
-    expect(inline).not.toContain('box-shadow:')
+    for (const m of inline.matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
   })
 
   it('LINK-V52-3/4: a committed inline marker is not gated by frame presentation — the VISUAL-INVARIANT passes', () => {

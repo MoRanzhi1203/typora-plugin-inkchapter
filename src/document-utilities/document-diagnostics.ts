@@ -969,6 +969,9 @@ export function computeDocumentDiagnostics(
               ruleId: 'DOCUMENT-TRAILING-BLANK-LINES-EXCESSIVE',
               reason: 'EXCESSIVE_TRAILING_BLANK_LINES',
               hasTerminalNewline: policy.hasTerminalNewline,
+              // V5.13-R2 §7 — the EOF facts are carried on the diagnostic record so
+              // the locate/visual/closure audits never re-derive them from the DOM.
+              terminalNewlineCount: policy.terminalNewlineCount,
               extraTrailingBlankLineCount: policy.extraTrailingBlankLineCount,
             },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },

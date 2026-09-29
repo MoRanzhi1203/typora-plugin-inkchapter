@@ -41,6 +41,8 @@ import {
   resolveDrawerViewportClass,
 } from './document-diagnostic-drawer-persistence-v512-r3'
 import type { DrawerPresentationFidelityInput } from './document-diagnostic-drawer-persistence-v512-r3'
+// V5.12-R9 §5/§7 — the unique commit gate (overlay vs geometry clip).
+import { canCommitLocateVisual } from './document-diagnostic-visual-closure-v512-r2'
 
 // ── rAF harness ────────────────────────────────────────────────────────────
 let rafTasks = new Map<number, FrameRequestCallback>()
@@ -322,7 +324,8 @@ describe('R3-1/2 — WIDE viewport + requested-open Drawer survives the locate',
     expect(audit.remeasuredAfterRestore).toBe(true)
     expect(audit.repaintedAfterRestore).toBe(true)
     expect(audit.postRestoreCoverageRatio).toBeNull() // headless: not asserted
-    expect(audit.postRestorePanelIntersectionCount).toBe(0)
+    expect(audit.postRestorePanelOverlayIntersectionCount).toBe(0)
+    expect(audit.postRestorePanelGeometryClipCount).toBe(0)
     expect(audit.postRestoreLayoutEpochCurrent).toBe(true)
     expect(audit.drawerCompactAttempts).toBe(0) // WIDE needs no compact fallback
     expectAllR3GatesZero(host)
@@ -488,19 +491,26 @@ describe('R3-7 — pure contract: viewport class / restore decision / fidelity g
       drawerRenderedVisibleAtFinalCommit: true,
       viewportClass: 'WIDE',
       postRestoreCoverageRatio: 1,
-      postRestorePanelIntersectionCount: 0,
+      postRestorePanelOverlayIntersectionCount: 0,
+      postRestorePanelGeometryClipCount: 0,
       postRestoreLayoutEpochCurrent: true,
       selectedDiagnosticPreserved: true,
       filterPreserved: true,
     }
     expect(evaluateDrawerPresentationFidelity(base).decision).toBe('PASS')
+    // V5.12-R9 §5/§6 — a PURE overlay intersection on a full-coverage target is
+    // an EXPECTED overlay occlusion: PASS with the explicit reason.
+    expect(evaluateDrawerPresentationFidelity({ ...base, postRestorePanelOverlayIntersectionCount: 1 }))
+      .toEqual({ decision: 'PASS', reason: 'EXPECTED_DRAWER_OVERLAY_OCCLUSION', failedChecks: [] })
 
     const cases: Array<[string, Partial<DrawerPresentationFidelityInput>, string]> = [
       ['lease held', { drawerLocateRecoveryLeaseActive: true, drawerLocateRecoveryLeaseReleased: false }, 'COMMITTED_WITH_DRAWER_RECOVERY_LEASE_HELD'],
       ['terminal collapse', { presentationAtFinalCommit: 'locate-collapse' }, 'TERMINAL_LOCATE_COLLAPSE_WHILE_DRAWER_REQUESTED_OPEN'],
       ['hidden after commit', { drawerRenderedVisibleAtFinalCommit: false }, 'DRAWER_REQUESTED_OPEN_BUT_HIDDEN_AFTER_COMMIT'],
       ['coverage', { postRestoreCoverageRatio: 0.9 }, 'POST_RESTORE_COVERAGE_LT_098'],
-      ['panel', { postRestorePanelIntersectionCount: 1 }, 'POST_RESTORE_PANEL_INTERSECTION'],
+      ['geometry clip', { postRestorePanelGeometryClipCount: 1 }, 'POST_RESTORE_PANEL_GEOMETRY_CLIP'],
+      ['presentation drift', { presentationDriftedDuringRestore: true }, 'DRAWER_PRESENTATION_DRIFT_DURING_RESTORE'],
+      ['snapshot mismatch', { finalSnapshotEpochCurrent: false }, 'FINAL_REASON_SNAPSHOT_MISMATCH'],
       ['selection', { selectedDiagnosticPreserved: false }, 'DRAWER_SELECTED_DIAGNOSTIC_LOST_AFTER_RESTORE'],
       ['filter', { filterPreserved: false }, 'DRAWER_FILTER_LOST_AFTER_RESTORE'],
     ]
@@ -515,11 +525,28 @@ describe('R3-7 — pure contract: viewport class / restore decision / fidelity g
     expect(autoReopen.failedChecks).toContain('AUTO_REOPEN_AFTER_NEWER_USER_CLOSE_INTENT')
   })
 
-  it('R3-7d: the 16 §18 hard gates report exactly and PASS when clean', () => {
-    expect(DRAWER_PERSISTENCE_V512R3_GATE_KEYS).toHaveLength(16)
+  it('R3-7d: the §18 hard gates (16 + the 8 V5.12-R9 gates) report exactly and PASS when clean', () => {
+    // V5.12-R9 §5 — `postRestorePanelIntersection` was SPLIT: the overlay count is
+    // reported but NOT fatal, the geometry clip is the fatal gate; the 8 R9
+    // locate-COMMIT-then-restore ordering gates were added.
+    expect(DRAWER_PERSISTENCE_V512R3_GATE_KEYS).toHaveLength(24)
+    expect(DRAWER_PERSISTENCE_V512R3_GATE_KEYS).not.toContain('postRestorePanelIntersection' as never)
+    expect(DRAWER_PERSISTENCE_V512R3_GATE_KEYS).toContain('postRestorePanelGeometryClip')
+    for (const label of [
+      'RESTORE_BEFORE_LOCATE_COMMIT_COUNT',
+      'DRAWER_PRESENTATION_DRIFT_DURING_RESTORE_COUNT',
+      'STALE_PRE_RESTORE_GEOMETRY_USED_FOR_FINAL_GATE_COUNT',
+      'POST_RESTORE_FULL_COVERAGE_PANEL_INTERSECTION_FATAL_COUNT',
+      'POST_RESTORE_SEMANTIC_COVERAGE_LT_098_COUNT',
+      'POST_RESTORE_VISUAL_PAINTS_ABOVE_DRAWER_COUNT',
+      'FINAL_REASON_SNAPSHOT_MISMATCH_COUNT',
+      'LOCATE_COMMITTED_THEN_RETROACTIVELY_FAILED_BY_DRAWER_COUNT',
+    ]) {
+      expect(Object.values(DRAWER_PERSISTENCE_V512R3_GATE_LABELS)).toContain(label)
+    }
     const counters = createDrawerPersistenceV512R3Counters()
     const report = formatDrawerPersistenceGateReport(counters)
-    expect(report).toHaveLength(16)
+    expect(report).toHaveLength(24)
     for (const key of DRAWER_PERSISTENCE_V512R3_GATE_KEYS) {
       expect(report).toContain(`${DRAWER_PERSISTENCE_V512R3_GATE_LABELS[key]}=0`)
     }
@@ -533,5 +560,95 @@ describe('R3-7 — pure contract: viewport class / restore decision / fidelity g
     expect(deriveDrawerPresentation(true, false, false)).toBe('open')
     expect(deriveDrawerPresentation(true, true, false)).toBe('locate-collapse')
     expect(deriveDrawerPresentation(true, false, true)).toBe('compact-docked')
+  })
+})
+
+// ── V5.12-R9 — locate COMMIT then Drawer restore ───────────────────────────
+
+describe('R9 — locate COMMIT always precedes the Drawer restore', () => {
+  it('R9-ORDER-1: a full-coverage overlay occlusion commits with the explicit reason; only a clip fails', () => {
+    // §5/§6 — EXPECTED overlay occlusion.
+    const overlay = canCommitLocateVisual({
+      semanticResolvePass: true, scrollArrivalPass: true, targetConnected: true,
+      freshTargetMeasurement: true, layoutEpochCurrent: true, presentationBuilt: true,
+      visualCarrierPresent: true,
+      // the target is painted over by the Drawer but its geometry is COMPLETE
+      targetFullyUnobscured: true,
+      panelIntersectionCount: 1, panelOverlayIntersectionCount: 1, panelGeometryClipCount: 0,
+      framePaintsAboveDrawer: false, framePaintsAboveToolbar: false, framePaintsAboveNavigator: false,
+      coverageRatio: 1, inlineFragmentCoverage: null, blockCoverage: null, staleGeometry: false,
+    })
+    expect(overlay).toEqual({ canCommit: true, reason: 'EXPECTED_DRAWER_OVERLAY_OCCLUSION', failedChecks: [] })
+    // §7 — a REAL clip still blocks, and so do the coverage / paint-above failures.
+    const clipped = canCommitLocateVisual({
+      semanticResolvePass: true, scrollArrivalPass: true, targetConnected: true,
+      freshTargetMeasurement: true, layoutEpochCurrent: true, presentationBuilt: true,
+      visualCarrierPresent: true, targetFullyUnobscured: false,
+      panelIntersectionCount: 1, panelOverlayIntersectionCount: 1, panelGeometryClipCount: 1,
+      framePaintsAboveDrawer: false, framePaintsAboveToolbar: false, framePaintsAboveNavigator: false,
+      coverageRatio: 1, inlineFragmentCoverage: null, blockCoverage: null, staleGeometry: false,
+    })
+    expect(clipped.canCommit).toBe(false)
+    expect(clipped.failedChecks).toContain('PANEL_GEOMETRY_CLIP')
+    for (const bad of [
+      { coverageRatio: 0.97 }, { framePaintsAboveDrawer: true }, { layoutEpochCurrent: false },
+    ]) {
+      const r = canCommitLocateVisual({
+        semanticResolvePass: true, scrollArrivalPass: true, targetConnected: true,
+        freshTargetMeasurement: true, layoutEpochCurrent: true, presentationBuilt: true,
+        visualCarrierPresent: true, targetFullyUnobscured: true,
+        panelIntersectionCount: 1, panelOverlayIntersectionCount: 1, panelGeometryClipCount: 0,
+        framePaintsAboveDrawer: false, framePaintsAboveToolbar: false, framePaintsAboveNavigator: false,
+        coverageRatio: 1, inlineFragmentCoverage: null, blockCoverage: null, staleGeometry: false,
+        ...bad,
+      })
+      expect(r.canCommit, JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it('R9-ORDER-2: the host commits the locate BEFORE restoring the Drawer', async () => {
+    const mounted = makeHost()
+    host = mounted.h
+    mounted.write.innerHTML = '<table><tr><td>x</td></tr></table>'
+    const table = mounted.write.querySelector('table') as HTMLElement
+    stubRect(table, () => ({ ...ONSCREEN }))
+    injectSnapshot(host, tableDiag())
+    renderWideDrawer(mounted)
+    openDrawerViaProblemsControl()
+
+    const arm = armOcclusionOncePerTx(host)
+    arm.reset()
+    await clickLocate(host, 'T1')
+
+    const audit = host.getLastDrawerPersistenceAudit()!
+    // §1/§2 — the locate was really committed, and the restore ran afterwards.
+    expect(audit.terminalState).toBe('COMMITTED')
+    expect(audit.locateCommittedThisTransaction).toBe(true)
+    expect(audit.restoreRanBeforeLocateCommit).toBe(false)
+    expect(audit.restoreStarted).toBe(true)
+    expect(audit.presentationAtFinalCommit).toBe('open')
+    expect(audit.drawerRenderedVisibleAtFinalCommit).toBe(true)
+    expect(audit.decision).toBe('PASS')
+    // §5/§7 — the split panel gates: the overlay count may be reported, the clip
+    // count is the ONLY fatal one, and every R9 gate stays 0.
+    expect(audit.postRestorePanelGeometryClipCount).toBe(0)
+    expect(audit.postRestorePanelOverlayIntersectionCount).toBe(0)
+    const counters = host.getDrawerPersistenceCounters()
+    for (const label of [
+      'restoreBeforeLocateCommit',
+      'drawerPresentationDriftDuringRestore',
+      'stalePreRestoreGeometryUsedForFinalGate',
+      'postRestoreFullCoveragePanelIntersectionFatal',
+      'postRestoreSemanticCoverageLt098',
+      'postRestoreVisualPaintsAboveDrawer',
+      'finalReasonSnapshotMismatch',
+      'locateCommittedThenRetroactivelyFailedByDrawer',
+    ] as const) {
+      expect(counters[label], label).toBe(0)
+    }
+    expectAllR3GatesZero(host)
+    // The Drawer is still the user's OPEN Drawer (never permanently collapsed).
+    expect(host.getDrawerPresentationMode()).toBe('open')
+    expect(document.querySelector('.inkchapter-doc-drawer')!.hasAttribute('data-locate-collapsed')).toBe(false)
   })
 })

@@ -241,9 +241,11 @@ describe('R2-EPOCH — DocumentLayoutEpoch authority', () => {
     await flushRaf()
     // Both bumps coalesced into ONE re-measure.
     expect(render.mock.calls.length).toBe(1)
-    const rail = document.querySelector('.inkchapter-heading-diagnostic-marker__rail') as HTMLElement
-    // The marker followed the heading (never left at the old coordinate).
-    expect(Number.parseFloat(rail.style.top)).toBeGreaterThan(240)
+    // V5.12-R9 §3/§5 — the passive carrier is the text-tight fill fragment (the
+    // rail is gone), and it FOLLOWED the heading (it really moved down).
+    const passiveFill = document.querySelector('.inkchapter-heading-diagnostic-passive__fragment') as HTMLElement
+    expect(passiveFill).not.toBeNull()
+    expect(Number.parseFloat(passiveFill.style.top)).toBeGreaterThan(150)
     const counters = host.getVisualClosureCounters()
     expect(counters.passiveMarkerStaleLayoutEpoch).toBe(0)
     expect(counters.passiveMarkerTargetDriftGt1px).toBe(0)
@@ -258,11 +260,15 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     host = w.h
     inject(host, [headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })])
     api(host).renderHeadingDiagnosticMarkers()
-    const rail = document.querySelector('.inkchapter-heading-diagnostic-marker__rail') as HTMLElement
     const audits = readAudits(infoSpy!, 'DOCUMENT-DIAGNOSTIC-HEADING-MARKER-AUDIT').filter(a => a.reason === 'PASSIVE_SEVERITY_MARKER')
     expect(audits.length).toBe(1)
-    // The heading BLOCK is 900 wide; the marker sits in the gutter (< content left).
-    expect(Number.parseFloat(rail.style.left)).toBeLessThan(200)
+    // V5.12-R9 §3/§5 — the passive carrier is TEXT-TIGHT: it sits ON the heading
+    // text (the 900px block stays the scroll authority), never in a gutter.
+    const passiveFill = document.querySelector('.inkchapter-heading-diagnostic-passive__fragment') as HTMLElement
+    expect(passiveFill).not.toBeNull()
+    expect(Number.parseFloat(passiveFill.style.left)).toBeGreaterThanOrEqual(200)
+    // …and the heading never becomes a full-width band.
+    expect(Number.parseFloat(passiveFill.style.width)).toBeLessThanOrEqual(801)
     expect(audits[0].headingContentRects).toContain('200')
     expect(audits[0].legacyFrameRendered).toBe('false')
     expect(audits[0].fullWidthWash).toBe('false')
@@ -270,34 +276,37 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     expect(host.getVisualClosureCounters().headingLegacyVisualRender).toBe(0)
   })
 
-  it('R2-HEADING-2: ACTIVE = PASSIVE + fragments + chip (icon + rail are NEVER dropped)', () => {
+  it('R2-HEADING-2 / V5.12-R9 §9: ACTIVE = R7 fill + chip while the PASSIVE fill is suspended', () => {
     const w = makeWorld()
     host = w.h
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
     api(host).renderHeadingDiagnosticMarkers()
-    // PASSIVE first.
+    // PASSIVE first: text-tight fill + chip, and NO icon / rail any more.
     let audits = readAudits(infoSpy!, 'DOCUMENT-DIAGNOSTIC-HEADING-MARKER-AUDIT').filter(a => a.reason === 'PASSIVE_SEVERITY_MARKER')
-    expect(audits[0].iconRect).not.toBe('null')
-    expect(audits[0].railRect).not.toBe('null')
-    // ACTIVE keeps BOTH.
+    expect(audits[0].iconRect).toBe('null')
+    expect(audits[0].railRect).toBe('null')
+    expect(Number(audits[0].fillFragmentCount ?? 0)).toBeGreaterThan(0)
+    expect(audits[0].passiveFillSuppressed).toBe('false')
+    // ACTIVE: the R7 fill is the ONLY fill — the passive fill is SUSPENDED.
     api(host).renderHeadingActiveEmphasis('E1', d as never, w.heading)
     audits = readAudits(infoSpy!, 'DOCUMENT-DIAGNOSTIC-HEADING-MARKER-AUDIT').filter(a => a.reason === 'ACTIVE_HEADING_EMPHASIS')
     expect(audits.length).toBe(1)
     expect(audits[0].passiveMarkerPresent).toBe('true')
-    expect(audits[0].iconRect).not.toBe('null')
-    expect(audits[0].railRect).not.toBe('null')
+    expect(audits[0].iconRect).toBe('null')
+    expect(audits[0].railRect).toBe('null')
     expect(audits[0].legacyFrameRendered).toBe('false')
     expect(Number(audits[0].activeFragmentRects ? 1 : 0)).toBe(1)
-    // The PASSIVE wrapper survives the active state.
+    // The PASSIVE wrapper survives the active state…
     const marker = document.querySelector('.inkchapter-heading-diagnostic-marker') as HTMLElement
     expect(marker).not.toBeNull()
     expect(marker.getAttribute('data-ink-diagnostic-active')).toBe('true')
-    expect(marker.querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(1)
+    expect(marker.querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(0)
+    // …and the two fills NEVER stack (V5.12-R9 §9 hard gate).
+    expect(document.querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBe(0)
+    expect(document.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length).toBeGreaterThan(0)
     const counters = host.getVisualClosureCounters()
     expect(counters.activeHeadingWithoutPassiveMarker).toBe(0)
-    expect(counters.activeHeadingWithoutIcon).toBe(0)
-    expect(counters.activeHeadingWithoutRail).toBe(0)
   })
 })
 
@@ -508,7 +517,12 @@ describe('R2-COMMIT — Visual FAIL always blocks COMMIT', () => {
   it('R2-COMMIT-1: canCommit is true only when EVERY condition holds', () => {
     expect(canCommitLocateVisual(base).canCommit).toBe(true)
     expect(canCommitLocateVisual(base).reason).toBe('FULL_GEOMETRY_OK')
-    expect(canCommitLocateVisual({ ...base, panelIntersectionCount: 1 }).canCommit).toBe(false)
+    // V5.12-R9 §5/§6/§7 — a PURE overlay intersection is EXPECTED (PASS with the
+    // explicit reason); only a REAL geometry clip still blocks COMMIT.
+    expect(canCommitLocateVisual({ ...base, panelIntersectionCount: 1 }))
+      .toEqual({ canCommit: true, reason: 'EXPECTED_DRAWER_OVERLAY_OCCLUSION', failedChecks: [] })
+    expect(canCommitLocateVisual({ ...base, panelIntersectionCount: 1, panelGeometryClipCount: 1 }).canCommit).toBe(false)
+    expect(canCommitLocateVisual({ ...base, panelGeometryClipCount: 1 }).failedChecks).toContain('PANEL_GEOMETRY_CLIP')
     expect(canCommitLocateVisual({ ...base, framePaintsAboveDrawer: true }).canCommit).toBe(false)
     expect(canCommitLocateVisual({ ...base, targetFullyUnobscured: false }).canCommit).toBe(false)
     expect(canCommitLocateVisual({ ...base, coverageRatio: 0.97 }).canCommit).toBe(false)
