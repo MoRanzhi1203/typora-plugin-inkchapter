@@ -215,16 +215,39 @@ import {
   EOF_COORDINATE_SPACE,
   EOF_FILL_EMPHASIS_CLASS_LOW,
   EOF_MARKER_KIND_DOCUMENT_END_WARNING,
+  DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_KEYS,
+  DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_LABELS,
+  EOF_BLANK_LINE_HEIGHT_SOURCE_ACTUAL_BLANK_NODE,
+  EOF_BLANK_LINE_HEIGHT_SOURCE_EDITOR_BASE,
+  EOF_BLANK_LINE_HEIGHT_SOURCE_NONE,
+  EOF_EXCESS_ZONE_COVERAGE_MIN,
+  EOF_EXCESS_ZONE_DRIFT_MAX_PX,
+  EOF_PRESENTATION_HEIGHT_SOURCE_ACTUAL_TRAILING_BLANK_GEOMETRY,
+  EOF_PRESENTATION_HEIGHT_SOURCE_EXTRA_COUNT_X_LINE_HEIGHT,
   EOF_PANEL_OVERLAY_OCCLUSION_REASON,
-  EOF_PRESENTATION_HARD_MAX_HEIGHT_PX,
   EOF_VISIBLE_HEIGHT_RATIO_MIN,
+  STRICT_MULTI_H1_VISUAL_AUDIT_EVENT,
+  STRICT_SINGLE_H1_MULTIPLE_H1_RULE_ID,
+  computeMultiH1ExpectedExcessCount,
+  computeExcessZoneCoverage,
   computeSyntheticEofGeometry,
+  createDocumentEndExcessCoverageV513R4Counters,
+  createDocumentEndRealGeometryV513R5Counters,
   createDocumentEndTextColumnV513R3Counters,
   createDocumentEndVisualV513R1Counters,
   createDocumentEndVisualV513R2Counters,
+  createStrictMultiH1VisualV513R5Counters,
+  evaluateDocumentEndExcessCoverageV513R4Gates,
+  evaluateDocumentEndRealGeometryV513R5Gates,
   evaluateDocumentEndTextColumnV513R3Gates,
   evaluateDocumentEndVisualV513R1Gates,
   evaluateDocumentEndVisualV513R2Gates,
+  evaluateStrictMultiH1VisualV513R5Gates,
+  formatDocumentEndExcessCoverageV513R4GateReport,
+  formatDocumentEndRealGeometryV513R5GateReport,
+  formatStrictMultiH1VisualV513R5GateReport,
+  isForbiddenBlankLineHeightSource,
+  resolveDiagnosticTargetGroupSize,
   formatDocumentEndTextColumnV513R3GateReport,
   formatDocumentEndVisualV513R1GateReport,
   formatDocumentEndVisualV513R2GateReport,
@@ -236,9 +259,12 @@ import {
   pickDocumentTextColumnLeft,
   presentationVisibleHeightRatio,
   readExtraTrailingBlankLineCount,
+  type DocumentEndExcessCoverageV513R4Counters,
+  type DocumentEndRealGeometryV513R5Counters,
   type DocumentEndTextColumnV513R3Counters,
   type DocumentEndVisualV513R1Counters,
   type DocumentEndVisualV513R2Counters,
+  type StrictMultiH1VisualV513R5Counters,
 } from './document-diagnostic-document-end-visual-v513-r1'
 import {
   HEADING_MARKER_AUDIT_EVENT,
@@ -1813,6 +1839,8 @@ export class DocumentUtilityOverlayHost {
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   /** Phase 7R.3.11.8B.5 — multi-target locate cycle cursor per diagnosticId. */
   private multiTargetCursor = new Map<string, number>()
+  /** V5.13-R5 §26 — the last locate transaction's target count per diagnosticId. */
+  private lastLocateTargetCounts = new Map<string, number>()
   /**
    * Phase 7R.3.11.8B.7.7 — Locate TRANSACTION lock. A single locate is a
    * NON-REENTRANT transaction IDLE → RESOLVING → SCROLLING → HIGHLIGHTING →
@@ -3833,6 +3861,10 @@ export class DocumentUtilityOverlayHost {
         sourceRevision: eof.sourceRevision,
         terminalNewlineCount: eof.terminalNewlineCount,
         extraTrailingBlankLineCount: eof.extraTrailingBlankLineCount,
+        // V5.13-R4 §9 — the excessive-blank coverage facts travel with the closure.
+        excessiveTrailingBlankLineCount: this.lastDocEndVisual?.excessiveTrailingBlankLineCount ?? null,
+        excessiveCoverageRatio: this.lastDocEndVisual?.excessiveCoverageRatio ?? null,
+        presentationHeightSource: this.lastDocEndVisual?.presentationHeightSource ?? EOF_PRESENTATION_HEIGHT_SOURCE_ACTUAL_TRAILING_BLANK_GEOMETRY,
         documentLayoutEpoch: this.currentDocumentLayoutEpoch,
         measuredLayoutEpoch: measuredEpoch,
         layoutEpochCurrent: measuredEpoch === this.currentDocumentLayoutEpoch,
@@ -4039,6 +4071,26 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * V5.13-R5 §20 / ROOT_H1_R5_1 — the marker identity for ONE resolved heading
+   * target. It MUST come from the TARGET's OWN identity, never from the
+   * diagnostic's `stableIdentity`: a multi-target diagnostic carries ONE
+   * `stableIdentity` (the FIRST offending H1), so consuming it collapsed every
+   * target into a SINGLE passive marker.
+   */
+  private headingTargetMarkerIdentity(t: ResolvedDiagnosticVisualTarget): string | null {
+    if (!t.element) return null
+    const lineAttr = t.element.getAttribute('data-line')
+    const stable = t.kind === 'heading' && t.targetIdentity.startsWith('heading:')
+      ? t.targetIdentity.slice('heading:'.length)
+      : null
+    return headingMarkerIdentity({
+      stableIdentity: stable,
+      line: lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) : null,
+      text: t.element.textContent ?? '',
+    })
+  }
+
   /** §19 — group EVERY heading visual target by heading identity (one marker each). */
   private collectHeadingMarkerGroups(): {
     groups: Map<string, { el: HTMLElement; severities: string[]; resolverSource: string; reasonText: string | null; topRank: number }>
@@ -4078,12 +4130,8 @@ export class DocumentUtilityOverlayHost {
           continue
         }
         if (isMulti) multiTargetAdmitted++
-        const lineAttr = t.element.getAttribute('data-line')
-        const identity = headingMarkerIdentity({
-          stableIdentity: typeof d.stableIdentity === 'string' ? d.stableIdentity : null,
-          line: lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) : null,
-          text: t.element.textContent ?? '',
-        })
+        const identity = this.headingTargetMarkerIdentity(t)
+        if (identity == null) continue
         const g = groups.get(identity)
         const rank = severityRank(String(d.severity ?? 'info'))
         const reason = buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
@@ -4179,7 +4227,7 @@ export class DocumentUtilityOverlayHost {
       }
       wrapper.setAttribute('data-ink-heading-id', identity)
       wrapper.setAttribute('data-ink-diagnostic-severity', severity)
-      wrapper.setAttribute('data-ink-diagnostic-active', existing && this.headingActiveIdentity === identity ? 'true' : 'false')
+      wrapper.setAttribute('data-ink-diagnostic-active', existing && this.headingActiveMarkerIdentity === identity ? 'true' : 'false')
       wrapper.setAttribute('data-ink-target-identity', g.resolverSource)
       wrapper.setAttribute('aria-hidden', 'true')
       wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
@@ -4201,7 +4249,9 @@ export class DocumentUtilityOverlayHost {
       const fillTargets = textLocal.length > 0 ? textLocal : [contentLocal]
       // §9 — while this heading is ACTIVE the passive fill is SUSPENDED: the R7
       // active fill is the only fill, so the two can never stack.
-      const isActiveHeading = this.headingActiveIdentity === identity && this.headingActiveMarkerIdentity === identity
+      // V5.13-R5 §24 — the comparison is against the ACTIVE HEADING identity
+      // (`headingActiveMarkerIdentity`), never the diagnostic id.
+      const isActiveHeading = this.headingActiveMarkerIdentity === identity
       const fillLocal: HeadingRect[] = []
       const existingFills = Array.from(wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-passive__fragment'))
       if (isActiveHeading) {
@@ -4347,7 +4397,7 @@ export class DocumentUtilityOverlayHost {
         currentLayoutEpoch: this.currentDocumentLayoutEpoch,
         layoutEpochCurrent: true,
         passiveMarkerPresent: true,
-        activeMarkerPresent: this.headingActiveIdentity === identity,
+        activeMarkerPresent: this.headingActiveMarkerIdentity === identity,
         headingAnchorRect: anchorLocal,
         headingContentRects: [contentLocal],
         numberRectIncluded: numberRect != null,
@@ -4380,8 +4430,125 @@ export class DocumentUtilityOverlayHost {
         reason: 'PASSIVE_SEVERITY_MARKER',
       })
     }
+    // V5.13-R5 §27/§28 — the Strict Multi-H1 visual Authority audit + gates.
+    this.emitStrictMultiH1VisualAudit()
     // §21 — measure the REAL resulting surface (DOM + computed style) and audit it.
     this.commitHeadingMarkerSurfaceGates()
+  }
+
+  private headingStableIdentityOf(el: HTMLElement | null): string | null {
+    if (!el) return null
+    try {
+      return typeof this.opts.providers.getHeadingIdentity === 'function'
+        ? this.opts.providers.getHeadingIdentity(el)
+        : null
+    } catch { return null }
+  }
+
+  /** §25 — the FIRST `<h1>` in document order is the legal primary. */
+  private resolvePrimaryH1Element(): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const h1 = root.querySelector('h1')
+    return h1 instanceof HTMLElement ? h1 : null
+  }
+
+  /**
+   * V5.13-R5 §27/§28 — DOCUMENT-DIAGNOSTIC-STRICT-MULTI-H1-VISUAL-AUDIT.
+   *
+   * ONE cardinality authority: the declared multi-target group IS the excess set.
+   * EVERY excess target must own a passive marker; the legal primary H1 must own
+   * none; at most ONE target may carry the active state (and it must be an excess
+   * target). A single diagnostic is never split into several errors.
+   */
+  private emitStrictMultiH1VisualAudit(): void {
+    const snapshot = this.diagnostics.getSnapshot()
+    const multiDiags = (snapshot?.diagnostics ?? []).filter(d => d.code === STRICT_SINGLE_H1_MULTIPLE_H1_RULE_ID)
+    if (multiDiags.length === 0) return
+    const deps = this.visualTargetDeps()
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    const layer = this.headingMarkerLayer
+    const activeCount = layer ? layer.querySelectorAll('.inkchapter-heading-diagnostic-active').length : 0
+    if (activeCount > 1) this.countersMultiH1V513R5.activeMarkerCountGt1 += activeCount - 1
+    // §24 — an ACTIVE carrier must never keep a stacked passive fill.
+    if (layer) {
+      for (const w of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
+        if (w.getAttribute('data-ink-diagnostic-active') === 'true'
+          && w.querySelector('.inkchapter-heading-diagnostic-passive__fragment')) {
+          this.countersMultiH1V513R5.passiveActiveFillStack++
+        }
+      }
+    }
+    const passiveSet = new Set(this.headingPassiveMarkers.keys())
+    const primaryEl = this.resolvePrimaryH1Element()
+    const primaryStable = this.headingStableIdentityOf(primaryEl)
+    const primaryIdentity = primaryEl
+      ? headingMarkerIdentity({
+        stableIdentity: primaryStable != null && primaryStable !== '' ? primaryStable : null,
+        line: (() => {
+          const attr = primaryEl.getAttribute('data-line')
+          return attr != null && attr !== '' ? Number.parseInt(attr, 10) : null
+        })(),
+        text: primaryEl.textContent ?? '',
+      })
+      : null
+    for (const d of multiDiags) {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      const h1Count = typeof meta.h1Count === 'number' ? meta.h1Count : 0
+      const expectedExcess = computeMultiH1ExpectedExcessCount(h1Count)
+      const declared = resolveDiagnosticTargetGroupSize(d.location ?? null)
+      const heads = headingVisualTargets(resolveDiagnosticVisualTargets({
+        id: d.id,
+        severity: d.severity,
+        stableIdentity: typeof d.stableIdentity === 'string' ? d.stableIdentity : undefined,
+        metadata: meta,
+        location: d.location ?? null,
+      }, deps))
+      const excessIdentities = heads
+        .map(t => this.headingTargetMarkerIdentity(t))
+        .filter((v): v is string => v != null)
+      const excessSet = new Set(excessIdentities)
+      const passiveForExcess = excessIdentities.filter(id => passiveSet.has(id))
+      const missing = excessIdentities.filter(id => !passiveSet.has(id))
+      if (expectedExcess !== declared || expectedExcess !== excessIdentities.length) {
+        this.countersMultiH1V513R5.expectedExtraTargetCountMismatch++
+      }
+      if (passiveForExcess.length !== expectedExcess) this.countersMultiH1V513R5.passiveMarkerCountMismatch++
+      if (missing.length > 0) this.countersMultiH1V513R5.siblingPassiveMarkerLost += missing.length
+      // §26 — ONE cardinality authority across diagnostic / visual / transaction.
+      const txCount = this.lastLocateTargetCounts.get(d.id)
+      if (txCount != null && txCount !== declared) this.countersMultiH1V513R5.transactionTargetCountCollapse++
+      const activeIdentity = this.headingActiveMarkerIdentity
+      const activeInExcess = activeIdentity != null && excessSet.has(activeIdentity)
+      if (activeIdentity != null && !activeInExcess) this.countersMultiH1V513R5.activeTargetNotInExcessSet++
+      // §25 — the legal primary H1 must never carry a marker.
+      const primaryMarked = !!(primaryIdentity && passiveSet.has(primaryIdentity) && !excessSet.has(primaryIdentity))
+      if (primaryMarked) this.countersMultiH1V513R5.validPrimaryH1Marked++
+      emitRuntimeAudit(STRICT_MULTI_H1_VISUAL_AUDIT_EVENT, {
+        documentKey,
+        diagnosticId: d.id,
+        ruleId: STRICT_SINGLE_H1_MULTIPLE_H1_RULE_ID,
+        h1Count,
+        validPrimaryH1Identity: primaryStable,
+        expectedExcessTargetCount: expectedExcess,
+        diagnosticTargetCount: declared,
+        visualTargetCount: excessIdentities.length,
+        locateTargetCount: txCount ?? null,
+        auditTargetCount: excessIdentities.length,
+        excessTargetIdentities: excessIdentities,
+        passiveMarkerIdentities: passiveForExcess,
+        passiveMarkerCount: passiveForExcess.length,
+        activeTargetIdentity: activeIdentity,
+        activeTargetIndex: this.multiTargetCursor.get(d.id) ?? null,
+        activeMarkerCount: activeCount,
+        validPrimaryMarked: primaryMarked,
+        siblingPassiveLostCount: missing.length,
+        passiveActiveFillStackCount: this.countersMultiH1V513R5.passiveActiveFillStack,
+        gateCountersV513R5: { ...this.countersMultiH1V513R5 },
+        decision: 'PASS',
+        reason: 'MULTI_H1_ALL_EXCESS_TARGETS_MARKED',
+      })
+    }
   }
 
   // ── V5.12-R9 §21 — Heading Diagnostic Marker Surface gates ────────────────
@@ -4473,6 +4640,12 @@ export class DocumentUtilityOverlayHost {
   private countersDocEndV513R2 = createDocumentEndVisualV513R2Counters()
   /** V5.13-R3 §21 — the text-column anchor / accent hard gates. */
   private countersDocEndV513R3 = createDocumentEndTextColumnV513R3Counters()
+  /** V5.13-R4 §7 — full excessive-blank coverage hard gates. Every one must stay 0. */
+  private countersDocEndV513R4 = createDocumentEndExcessCoverageV513R4Counters()
+  /** V5.13-R5 §15 — real trailing-blank geometry hard gates. Every one must stay 0. */
+  private countersDocEndV513R5 = createDocumentEndRealGeometryV513R5Counters()
+  /** V5.13-R5 §28 — Strict Multi-H1 visual Authority gates. Every one must stay 0. */
+  private countersMultiH1V513R5 = createStrictMultiH1VisualV513R5Counters()
   /** §5 Priority 3 — stable cache (documentKey|layout width → text column left). */
   private docTextColumnCache = new Map<string, number>()
   /** §15 — the last resolved text-column anchor (drift gate + audit). */
@@ -4514,6 +4687,14 @@ export class DocumentUtilityOverlayHost {
     /** V5.13-R3 §3/§20 — the resolved document text-column anchor. */
     textColumnLeft?: number | null
     textColumnSource?: string
+    /** V5.13-R4 §5/§9 — the excessive-blank presentation facts. */
+    presentationHeightSource?: string
+    requiredTrailingBlankLineCount?: number
+    excessiveTrailingBlankLineCount?: number
+    requiredBlankZoneRect?: RectLike | null
+    excessiveBlankZoneRect?: RectLike | null
+    excessiveCoverageRatio?: number
+    requiredBlankPainted?: boolean
   } | null = null
   /**
    * V5.13-R2 §6 — the generic VISUAL-CLOSURE facts for a committed synthetic EOF
@@ -4563,6 +4744,45 @@ export class DocumentUtilityOverlayHost {
     return evaluateDocumentEndTextColumnV513R3Gates(this.countersDocEndV513R3)
   }
 
+  /** V5.13-R4 §7 — full excessive-blank coverage gate report. */
+  getDocumentEndExcessCoverageV513R4GateReport(): string[] {
+    return formatDocumentEndExcessCoverageV513R4GateReport(this.countersDocEndV513R4)
+  }
+
+  getDocumentEndExcessCoverageV513R4GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateDocumentEndExcessCoverageV513R4Gates(this.countersDocEndV513R4)
+  }
+
+  getDocumentEndExcessCoverageV513R4Counters(): Readonly<DocumentEndExcessCoverageV513R4Counters> {
+    return { ...this.countersDocEndV513R4 }
+  }
+
+  /** V5.13-R5 §15 — real trailing-blank geometry gate report. */
+  getDocumentEndRealGeometryV513R5GateReport(): string[] {
+    return formatDocumentEndRealGeometryV513R5GateReport(this.countersDocEndV513R5)
+  }
+
+  getDocumentEndRealGeometryV513R5GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateDocumentEndRealGeometryV513R5Gates(this.countersDocEndV513R5)
+  }
+
+  getDocumentEndRealGeometryV513R5Counters(): Readonly<DocumentEndRealGeometryV513R5Counters> {
+    return { ...this.countersDocEndV513R5 }
+  }
+
+  /** V5.13-R5 §28 — Strict Multi-H1 visual Authority gate report. */
+  getStrictMultiH1VisualV513R5GateReport(): string[] {
+    return formatStrictMultiH1VisualV513R5GateReport(this.countersMultiH1V513R5)
+  }
+
+  getStrictMultiH1VisualV513R5GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateStrictMultiH1VisualV513R5Gates(this.countersMultiH1V513R5)
+  }
+
+  getStrictMultiH1VisualV513R5Counters(): Readonly<StrictMultiH1VisualV513R5Counters> {
+    return { ...this.countersMultiH1V513R5 }
+  }
+
   /** §20 — the last resolved DocumentLayoutAnchors (runtime verification helper). */
   getLastDocumentLayoutAnchors(): Readonly<{
     documentTextColumnLeft: number
@@ -4589,6 +4809,11 @@ export class DocumentUtilityOverlayHost {
     presentationVisibleHeightRatio: number
     expectedPanelOcclusion: boolean
     geometrySource: string
+    presentationHeightSource: string
+    requiredTrailingBlankLineCount: number
+    excessiveTrailingBlankLineCount: number
+    excessiveCoverageRatio: number
+    requiredBlankPainted: boolean
   }> | null {
     const v = this.lastDocEndVisual
     if (!v) return null
@@ -4600,6 +4825,11 @@ export class DocumentUtilityOverlayHost {
       presentationVisibleHeightRatio: v.presentationVisibleHeightRatio ?? 0,
       expectedPanelOcclusion: v.expectedPanelOcclusion === true,
       geometrySource: v.geometrySource,
+      presentationHeightSource: v.presentationHeightSource ?? EOF_PRESENTATION_HEIGHT_SOURCE_ACTUAL_TRAILING_BLANK_GEOMETRY,
+      requiredTrailingBlankLineCount: v.requiredTrailingBlankLineCount ?? 0,
+      excessiveTrailingBlankLineCount: v.excessiveTrailingBlankLineCount ?? 0,
+      excessiveCoverageRatio: v.excessiveCoverageRatio ?? 0,
+      requiredBlankPainted: v.requiredBlankPainted === true,
     }
   }
 
@@ -4705,8 +4935,18 @@ export class DocumentUtilityOverlayHost {
     if (!anchorLocal || localFragments.length === 0) return
     const severity = severityRank(String(diag.severity ?? 'info')) >= 3 ? 'error' : 'warning'
     // V5.12-R2 §6 — ACTIVE = PASSIVE + text fragments + reason chip.
+    // ── V5.13-R5 §21 / ROOT_H1_R5_2 — the ACTIVE identity must come from the
+    // RESOLVED TARGET element (never the diagnostic's `stableIdentity`, which is
+    // always the FIRST offending H1 → the active state attached to the wrong H1).
+    const elementStable = (() => {
+      try {
+        return typeof this.opts.providers.getHeadingIdentity === 'function'
+          ? this.opts.providers.getHeadingIdentity(element)
+          : null
+      } catch { return null }
+    })()
     const headingIdentity = headingMarkerIdentity({
-      stableIdentity: typeof diag.stableIdentity === 'string' && diag.stableIdentity !== '' ? diag.stableIdentity : null,
+      stableIdentity: elementStable != null && elementStable !== '' ? elementStable : null,
       line: (() => {
         const attr = element.getAttribute('data-line')
         return attr != null && attr !== '' ? Number.parseInt(attr, 10) : null
@@ -4810,6 +5050,9 @@ export class DocumentUtilityOverlayHost {
     } else {
       this.countersClosureV512R2.activeHeadingWithoutPassiveMarker++
     }
+    // V5.13-R5 §27 — the audit is emitted by the marker renderer at load time; this
+    // keeps it truthful after a LOCATE-TIME active switch as well.
+    this.emitStrictMultiH1VisualAudit()
     // V5.12-R9 §10 — the passive gutter icon + rail no longer exist by design, so
     // their absence is NO LONGER a violation (the legacy counters stay 0).
     const passiveIconRect = passiveRecord ? passiveRecord.iconLocal : null
@@ -4860,6 +5103,10 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveWrapper = null
     this.headingActiveIdentity = null
     this.headingActiveMarkerIdentity = null
+    // V5.13-R5 §27 — re-emit ONLY while the passive markers still exist: during
+    // `clearHeadingDiagnosticMarkers()` they are intentionally already gone, so an
+    // emission there would be a false "sibling passive marker lost".
+    if (this.headingPassiveMarkers.size > 0) this.emitStrictMultiH1VisualAudit()
   }
 
   private clearHeadingDiagnosticMarkers(): void {
@@ -7463,6 +7710,7 @@ export class DocumentUtilityOverlayHost {
     this.clearDiagnosticLocateVisual('NO_ACTIVE_DOCUMENT')
     this.lastLocatedDiagnosticId = null
     this.multiTargetCursor.clear()
+    this.lastLocateTargetCounts.clear()
     // Phase 7R.3.11.8B.12 — ACTIVE → EMPTY / NO_ACTIVE_DOCUMENT hides the
     // Navigator IMMEDIATELY (no scroll/resize/timer) and clears every stale
     // placement so a later show never inherits a left-bottom geometry.
@@ -9647,6 +9895,7 @@ export class DocumentUtilityOverlayHost {
     }
     tx.targetIndex = targetIndex
     tx.targetCount = targetCount
+    this.lastLocateTargetCounts.set(diagnosticId, targetCount)
 
     const resolveCtx: DiagnosticLocationResolveContext = {
       documentKey: currentKey,
@@ -9976,20 +10225,89 @@ export class DocumentUtilityOverlayHost {
     return applies ? extra : null
   }
 
-  /** §6.3 — the LAST meaningful content block (vertical EOF baseline). */
+  /**
+   * V5.13-R5 §4 — the LAST meaningful content block (the vertical EOF baseline).
+   *
+   * Uses the NARROW accessory check on purpose: the plugin stamps its own
+   * typography classes onto REAL Typora blocks (`<p class="md-end-block md-p
+   * inkchapter-…">`), so the broad `includes('inkchapter')` check would skip every
+   * real block and return null on a NON-empty document (ROOT_EOF_R5_3).
+   */
   private measureLastMeaningfulBlockRect(): RectLike | null {
+    return this.collectLastMeaningfulBlock()?.rect ?? null
+  }
+
+  private contentBlockIdentity(el: HTMLElement): string {
+    try {
+      if (/^H[1-6]$/.test(el.tagName) && typeof this.opts.providers.getHeadingIdentity === 'function') {
+        const id = this.opts.providers.getHeadingIdentity(el)
+        if (id) return `heading:${id}`
+      }
+    } catch { /* fall through to the line/text identity */ }
+    const line = el.getAttribute('data-line')
+    if (line != null && line !== '') return `${el.tagName.toLowerCase()}:line:${line}`
+    return `${el.tagName.toLowerCase()}:${(el.textContent ?? '').trim().slice(0, 24)}`
+  }
+
+  private collectLastMeaningfulBlock(): { rect: RectLike; element: HTMLElement; identity: string } | null {
     const root = resolveBusinessContentRoot()
     if (!root) return null
     const children = Array.from(root.children) as HTMLElement[]
     for (let i = children.length - 1; i >= 0; i--) {
       const el = children[i]
-      if (this.isInkChapterOverlayNode(el)) continue
+      if (this.isInkChapterAccessoryNode(el)) continue
       if ((el.textContent ?? '').trim() === '') continue
       const r = this.measureLocateRect(el)
       if (!r || r.width <= 0 || r.height <= 0) continue
-      return r
+      return { rect: r, element: el, identity: this.contentBlockIdentity(el) }
     }
     return null
+  }
+
+  /**
+   * V5.13-R5 §4/§6/§8 — the REAL trailing blank geometry: the last meaningful
+   * content block plus the REAL empty trailing block rects that follow it. The
+   * vertical zone is NEVER derived from `extraTrailingBlankLineCount`.
+   */
+  private measureTrailingBlankGeometry(): {
+    documentIsNonEmpty: boolean
+    lastMeaningful: { rect: RectLike; element: HTMLElement; identity: string } | null
+    trailingBlankRects: RectLike[]
+    meaningfulRects: RectLike[]
+  } {
+    const root = resolveBusinessContentRoot()
+    if (!root) {
+      return { documentIsNonEmpty: false, lastMeaningful: null, trailingBlankRects: [], meaningfulRects: [] }
+    }
+    const documentIsNonEmpty = (root.textContent ?? '').trim().length > 0
+    const meaningful: RectLike[] = []
+    const blanks: RectLike[] = []
+    let lastMeaningfulEl: HTMLElement | null = null
+    let lastMeaningfulRect: RectLike | null = null
+    for (const el of Array.from(root.children) as HTMLElement[]) {
+      if (this.isInkChapterAccessoryNode(el)) continue
+      const r = this.measureLocateRect(el)
+      if (!r || r.width <= 0 || r.height <= 0) continue
+      if ((el.textContent ?? '').trim() === '') {
+        blanks.push(r)
+      } else {
+        meaningful.push(r)
+        lastMeaningfulEl = el
+        lastMeaningfulRect = r
+      }
+    }
+    // §8 — ONLY the blank blocks AFTER the last meaningful block are the tail.
+    const trailingBlankRects = lastMeaningfulRect
+      ? blanks.filter(b => b.top >= lastMeaningfulRect!.bottom - 1)
+      : []
+    return {
+      documentIsNonEmpty,
+      lastMeaningful: lastMeaningfulEl && lastMeaningfulRect
+        ? { rect: lastMeaningfulRect, element: lastMeaningfulEl, identity: this.contentBlockIdentity(lastMeaningfulEl) }
+        : null,
+      trailingBlankRects,
+      meaningfulRects: meaningful,
+    }
   }
 
   /**
@@ -10152,17 +10470,57 @@ export class DocumentUtilityOverlayHost {
     return { left: picked.left, source: picked.source }
   }
 
-  /** §6.1 — the resolved editor line height (null → contract fallback 24px). */
-  private measureEditorLineHeight(): number | null {
+  /**
+   * V5.13-R5 §11 — the trailing-blank line height + its HONEST source.
+   *
+   * A HEADING's line height must never leak into the blank geometry, so the probe
+   * excludes `h1..h6` entirely (ROOT_EOF_R5_2: the old `p,pre,li,td,th,h1,h2,h3`
+   * probe hit the document's FIRST element — an `<h1>` — and returned 43.2px).
+   */
+  private measureBlankLineHeight(): { lineHeight: number | null; source: string } {
     const root = resolveBusinessContentRoot()
-    if (!root) return null
-    const probe = (root.querySelector('p,pre,li,td,th,h1,h2,h3') as HTMLElement | null) ?? root
+    if (!root) return { lineHeight: null, source: EOF_BLANK_LINE_HEIGHT_SOURCE_NONE }
+    const probe = root.querySelector('p,li,td,th,blockquote,pre') as HTMLElement | null
+    const probeLh = probe ? this.computedLineHeightOf(probe) : null
+    if (probeLh != null) return { lineHeight: probeLh, source: EOF_BLANK_LINE_HEIGHT_SOURCE_EDITOR_BASE }
+    const bodyLh = document.body ? this.computedLineHeightOf(document.body) : null
+    if (bodyLh != null) return { lineHeight: bodyLh, source: EOF_BLANK_LINE_HEIGHT_SOURCE_EDITOR_BASE }
+    return { lineHeight: null, source: EOF_BLANK_LINE_HEIGHT_SOURCE_NONE }
+  }
+
+  private computedLineHeightOf(el: HTMLElement): number | null {
     try {
-      const cs = window.getComputedStyle(probe)
+      const cs = window.getComputedStyle(el)
       const lh = Number.parseFloat(cs.lineHeight)
       if (Number.isFinite(lh) && lh > 0) return lh
     } catch { /* no layout backend */ }
     return null
+  }
+
+  /**
+   * V5.13-R5 §11 — prefer a REAL trailing blank node's own height; otherwise the
+   * heading-free editor base line height. Never a heading's line height.
+   */
+  private resolveBlankLineHeight(rects: readonly RectLike[]): { lineHeight: number | null; source: string } {
+    const first = rects.find(r => Number.isFinite(r.height) && r.height > 0)
+    if (first) return { lineHeight: first.height, source: EOF_BLANK_LINE_HEIGHT_SOURCE_ACTUAL_BLANK_NODE }
+    return this.measureBlankLineHeight()
+  }
+
+  /**
+   * V5.13-R5 §31 — the EOF fill must NEVER intersect a heading marker target: the
+   * heading marker owns heading TEXT geometry, the EOF band owns trailing blank
+   * geometry. Document-local comparison (same space as the marker records).
+   */
+  private eofFillIntersectsHeadingMarkerTargetLocal(
+    band: { left: number; top: number; right: number; bottom: number },
+  ): boolean {
+    for (const rec of this.headingPassiveMarkers.values()) {
+      const r = rec.contentLocal
+      if (!r) continue
+      if (!(r.right <= band.left || r.left >= band.right || r.bottom <= band.top || r.top >= band.bottom)) return true
+    }
+    return false
   }
 
   /**
@@ -10236,6 +10594,8 @@ export class DocumentUtilityOverlayHost {
     const c = this.countersDocEndV513R1
     const c2 = this.countersDocEndV513R2
     const c3 = this.countersDocEndV513R3
+    const c4 = this.countersDocEndV513R4
+    const c5 = this.countersDocEndV513R5
     const headless = this.isHeadlessLayoutSafe()
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
     // §7 — the diagnostic facts flow THROUGH the transaction (never re-parsed).
@@ -10251,21 +10611,44 @@ export class DocumentUtilityOverlayHost {
     const hostRect = this.measureLocateRect(host)
     const container = getActiveEditorScrollContainer()
     const editorRect = this.measureLocateRect(container)
-    const lastMeaningful = this.measureLastMeaningfulBlockRect()
     const contentColumn = this.measureSemanticContentColumnRect()
     // V5.13-R3 §3/§5 — ONE document-level text-column anchor (never per-block).
     const textColumn = this.measureDocumentTextColumnLeft(contentColumn)
-    const lineHeight = this.measureEditorLineHeight()
+    // ── V5.13-R5 §3/§4/§6 — Source truth ≠ Visual geometry: the zone is MEASURED
+    // from the REAL last meaningful block + the REAL trailing blank DOM/tail space.
+    const tail = this.measureTrailingBlankGeometry()
+    const blankLh = this.resolveBlankLineHeight(tail.trailingBlankRects)
     const layoutEpochAtMeasure = this.currentDocumentLayoutEpoch
     const geo = computeSyntheticEofGeometry({
-      lastMeaningfulRect: lastMeaningful,
+      documentIsNonEmpty: tail.documentIsNonEmpty,
+      lastMeaningfulRect: tail.lastMeaningful ? tail.lastMeaningful.rect : null,
+      trailingBlankRects: tail.trailingBlankRects,
+      meaningfulRects: tail.meaningfulRects,
       contentBoundsRect: contentColumn,
       editorContentRect: editorRect,
-      lineHeight,
+      blankLineHeight: blankLh.lineHeight,
+      blankLineHeightSource: blankLh.source,
       extraTrailingBlankLineCount,
-      viewportClampRect: editorRect,
       textColumnLeft: textColumn.left,
     })
+    // ── V5.13-R5 §15/§31 — real-geometry hard gates (every one must stay 0) ──
+    if (tail.documentIsNonEmpty && !tail.lastMeaningful) c5.lastMeaningfulRectNullOnNonempty++
+    if (geo.meaningfulIntersectionCount > 0) c5.fillIntersectsMeaningfulContent++
+    if (geo.meaningfulIntersectionArea > 0) c5.meaningfulIntersectionAreaGt0++
+    if (geo.lastMeaningfulRect && geo.rect && geo.rect.top < geo.lastMeaningfulRect.bottom - 0.5) {
+      c5.zoneTopBeforeLastMeaningfulBottom++
+    }
+    if (isForbiddenBlankLineHeightSource(blankLh.source)) c5.blankLineHeightFromHeading++
+    if (geo.rect != null && geo.lastMeaningfulRect == null) c5.syntheticBackProjectionIntoContent++
+    if (geo.presentationHeightSource === EOF_PRESENTATION_HEIGHT_SOURCE_EXTRA_COUNT_X_LINE_HEIGHT) {
+      c5.presentationFromExtraCountXGuessedLineHeight++
+    }
+    const bandLocalProbe = geo.rect && hostRect
+      ? viewportRectToDocumentLocalRect({ viewportRect: geo.rect, contentHostRect: hostRect })
+      : null
+    if (bandLocalProbe && this.eofFillIntersectsHeadingMarkerTargetLocal(bandLocalProbe)) {
+      c5.fillIntersectsHeadingMarkerTarget++
+    }
     // §14 — a locatable document-end diagnostic that yields no geometry is a
     // REAL violation (never silently "resolved by scrolling").
     if (!geo.rect) {
@@ -10278,15 +10661,28 @@ export class DocumentUtilityOverlayHost {
         rightEdgeAuthority: geo.rightEdgeAuthority,
         writeContentRect: contentColumn ? this.localOrNull(contentColumn) : null,
         lastMeaningfulRect: geo.lastMeaningfulRect,
+        lastMeaningfulIdentity: tail.lastMeaningful ? tail.lastMeaningful.identity : null,
+        documentIsNonEmpty: tail.documentIsNonEmpty,
+        documentEndBottom: geo.documentEndBottom,
+        actualTrailingBlankVisualRect: geo.actualTrailingBlankVisualRect,
+        blankLineHeightSource: geo.blankLineHeightSource,
+        presentationTopMinusLastMeaningfulBottom: geo.presentationTopMinusLastMeaningfulBottom,
+        meaningfulIntersectionCount: geo.meaningfulIntersectionCount,
+        meaningfulIntersectionArea: geo.meaningfulIntersectionArea,
         viewportClamped: geo.viewportClamped,
         semanticZoneRect: null, presentationRect: null, syntheticLocalRect: null,
         presentationHeight: geo.presentationHeight,
+        requiredTrailingBlankLineCount: geo.requiredTrailingBlankLineCount,
+        excessiveTrailingBlankLineCount: geo.excessiveTrailingBlankLineCount,
+        requiredBlankZoneRect: null, excessiveBlankZoneRect: null,
+        excessiveCoverageRatio: 0, requiredBlankPainted: false,
+        presentationHeightSource: geo.presentationHeightSource,
         visibleEditorRect: editorRect, layoutEpochAtMeasure,
         presentationVisibleHeightRatio: 0, expectedPanelOcclusion: false,
         panelGeometryClipCount: 0, paintAboveDrawerCount: 0,
         scrollSettled: true, remeasuredAfterScroll, fillCount: 0, fillVisible: false,
         drawerIntersectionCount: 0, toolbarIntersectionCount: 0, navigatorIntersectionCount: 0,
-        finalDecision: 'FAIL', reason: 'NO_SYNTHETIC_EOF_GEOMETRY',
+        finalDecision: 'FAIL', reason: geo.failClosed ? 'NO_LAST_MEANINGFUL_CONTENT_FAIL_CLOSED' : 'NO_SYNTHETIC_EOF_GEOMETRY',
       })
       return false
     }
@@ -10307,8 +10703,8 @@ export class DocumentUtilityOverlayHost {
       c.locatableWithoutVisualTarget++
       return false
     }
-    // §1.1 — the presentation band is HARD-bounded (never a big card).
-    if (localRect.height > EOF_PRESENTATION_HARD_MAX_HEIGHT_PX + 0.5) c2.presentationHeightGt48px++
+    // V5.13-R4 §8 — the fixed 36/48px presentation bound is ABOLISHED: the band
+    // height IS the excessive blank zone, so it must never be capped or gated here.
     // §2.2 — the right edge must be the DOCUMENT CONTENT edge in BOTH layers.
     const drawerProbe = this.realPanelRect(this.drawerEl)
     if (isDrawerRightEdgeAuthority({
@@ -10373,9 +10769,9 @@ export class DocumentUtilityOverlayHost {
     // §7/§8/§21 — the left edge must be the TEXT COLUMN, never the page edge and
     // never another rect's left.
     if (editorRect && geo.rect.left <= editorRect.left + 1) c3.leftAnchorAtPageEdge++
-    if (lastMeaningful && textColumn.left != null
-      && Math.abs(geo.rect.left - lastMeaningful.left) <= 0.5
-      && Math.abs(lastMeaningful.left - textColumn.left) > 0.5) c3.fromLastMeaningfulRect++
+    if (geo.lastMeaningfulRect && textColumn.left != null
+      && Math.abs(geo.rect.left - geo.lastMeaningfulRect.left) <= 0.5
+      && Math.abs(geo.lastMeaningfulRect.left - textColumn.left) > 0.5) c3.fromLastMeaningfulRect++
     if (geo.semanticZoneRect && textColumn.left != null
       && Math.abs(geo.rect.left - geo.semanticZoneRect.left) <= 0.5
       && Math.abs(geo.semanticZoneRect.left - textColumn.left) > 0.5) c3.fromSemanticZoneLeft++
@@ -10409,13 +10805,21 @@ export class DocumentUtilityOverlayHost {
       && presentationVisibleHeightRatio(painted, editorRect) < EOF_VISIBLE_HEIGHT_RATIO_MIN) {
       this.txVisualRetryCount++
       this.setDrawerCollapseForLocate(true)
+      // V5.13-R5 §3/§6 — the retry RE-MEASURES the real trailing blank geometry
+      // (never a re-derived `extra × lineHeight`).
+      const retryTail = this.measureTrailingBlankGeometry()
+      const retryLh = this.resolveBlankLineHeight(retryTail.trailingBlankRects)
       const retry = computeSyntheticEofGeometry({
-        lastMeaningfulRect: this.measureLastMeaningfulBlockRect(),
+        documentIsNonEmpty: retryTail.documentIsNonEmpty,
+        lastMeaningfulRect: retryTail.lastMeaningful ? retryTail.lastMeaningful.rect : null,
+        trailingBlankRects: retryTail.trailingBlankRects,
+        meaningfulRects: retryTail.meaningfulRects,
         contentBoundsRect: this.measureSemanticContentColumnRect(),
         editorContentRect: this.measureLocateRect(container),
-        lineHeight: this.measureEditorLineHeight(),
+        blankLineHeight: retryLh.lineHeight,
+        blankLineHeightSource: retryLh.source,
         extraTrailingBlankLineCount,
-        viewportClampRect: this.measureLocateRect(container),
+        textColumnLeft: textColumn.left,
       })
       const retryHost = this.measureLocateRect(host)
       const retryLocal = retry.rect && retryHost
@@ -10436,6 +10840,33 @@ export class DocumentUtilityOverlayHost {
     const visible = headless ? true : visibleHeightRatio >= EOF_VISIBLE_HEIGHT_RATIO_MIN
     // §3 — a Drawer that merely paints OVER the band is EXPECTED (never a clip).
     const expectedPanelOcclusion = !!painted && rectsIntersect(painted, drawerRect)
+
+    // ── V5.13-R4/R5 §6/§7/§10 — excessive-zone SPAN gates (all must stay 0) ──
+    // The painted band must SPAN the whole excessive trailing blank zone; the
+    // legal required line stays unpainted. jsdom cannot paint, so the headless
+    // path compares the INTENDED geometry (exact by construction).
+    // V5.13-R5 note: the two "count" gates are span gates, because the zone is now
+    // MEASURED (never `extraCount × lineHeight`), so a simulated line count no
+    // longer exists — a real span miss still fires, a sub-pixel rounding does not.
+    const coverageBand = headless ? geo.rect : painted
+    const excessZone = geo.excessiveBlankZoneRect
+    const requiredZone = geo.requiredBlankZoneRect
+    const spanTopDrift = coverageBand && excessZone ? Math.abs(coverageBand.top - excessZone.top) : Number.POSITIVE_INFINITY
+    const spanBottomDrift = coverageBand && excessZone ? Math.abs(coverageBand.bottom - excessZone.bottom) : Number.POSITIVE_INFINITY
+    const spanCoverage = computeExcessZoneCoverage(coverageBand, excessZone)
+    const spanOk = spanCoverage >= EOF_EXCESS_ZONE_COVERAGE_MIN
+      && spanTopDrift <= EOF_EXCESS_ZONE_DRIFT_MAX_PX
+      && spanBottomDrift <= EOF_EXCESS_ZONE_DRIFT_MAX_PX
+    if (!spanOk) c4.excessZoneCoverageLt098++
+    if (spanTopDrift > EOF_EXCESS_ZONE_DRIFT_MAX_PX) c4.excessZoneTopDriftGt1px++
+    if (spanBottomDrift > EOF_EXCESS_ZONE_DRIFT_MAX_PX) c4.excessZoneBottomDriftGt1px++
+    if (!spanOk) c4.extraBlankCountMismatch++
+    if (coverageBand && excessZone && coverageBand.bottom < excessZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX) {
+      c4.excessBlankLineOmitted++
+    }
+    if (coverageBand && requiredZone && coverageBand.top < requiredZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX) {
+      c4.requiredBlankLinePainted++
+    }
 
     // §8 step 8/9 — the FILL_ONLY presentation gates measure the REAL painted
     // carrier (R7 authority reused verbatim; the same 12 counters).
@@ -10461,7 +10892,7 @@ export class DocumentUtilityOverlayHost {
       syntheticHeight: localRect.height,
       editorContentHeight: editorRect ? editorRect.height : null,
       semanticBlankCount: extraTrailingBlankLineCount,
-      lineHeight,
+      lineHeight: blankLh.lineHeight,
     })) c.falseNativePaddingCoverage++
     if (layoutEpochAtMeasure !== this.currentDocumentLayoutEpoch) {
       c.staleLayoutEpoch++
@@ -10488,6 +10919,14 @@ export class DocumentUtilityOverlayHost {
       accentWidthPx,
       textColumnLeft: textColumn.left,
       textColumnSource: textColumn.source,
+      presentationHeightSource: geo.presentationHeightSource,
+      requiredTrailingBlankLineCount: geo.requiredTrailingBlankLineCount,
+      excessiveTrailingBlankLineCount: geo.excessiveTrailingBlankLineCount,
+      requiredBlankZoneRect: geo.requiredBlankZoneRect,
+      excessiveBlankZoneRect: geo.excessiveBlankZoneRect,
+      excessiveCoverageRatio: spanCoverage,
+      requiredBlankPainted: coverageBand != null && requiredZone != null
+        && coverageBand.top < requiredZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX,
     }
     // §11 — a document-space committed visual releases the scroll lease for good:
     // a later user scroll only MOVES the carrier (native), never a repaint.
@@ -10517,10 +10956,27 @@ export class DocumentUtilityOverlayHost {
       rightEdgeAuthority: geo.rightEdgeAuthority,
       writeContentRect: this.localOrNull(contentColumn),
       lastMeaningfulRect: geo.lastMeaningfulRect,
+      lastMeaningfulIdentity: tail.lastMeaningful ? tail.lastMeaningful.identity : null,
+      documentIsNonEmpty: tail.documentIsNonEmpty,
+      documentEndBottom: geo.documentEndBottom,
+      actualTrailingBlankVisualRect: geo.actualTrailingBlankVisualRect
+        ? this.localOrNull(geo.actualTrailingBlankVisualRect) : null,
+      blankLineHeightSource: geo.blankLineHeightSource,
+      presentationTopMinusLastMeaningfulBottom: geo.presentationTopMinusLastMeaningfulBottom,
+      meaningfulIntersectionCount: geo.meaningfulIntersectionCount,
+      meaningfulIntersectionArea: geo.meaningfulIntersectionArea,
       viewportClamped: geo.viewportClamped,
       semanticZoneRect: geo.semanticZoneRect ? this.localOrNull(geo.semanticZoneRect) : null,
       presentationRect: painted, syntheticLocalRect: localRect,
       presentationHeight: localRect.height,
+      requiredTrailingBlankLineCount: geo.requiredTrailingBlankLineCount,
+      excessiveTrailingBlankLineCount: geo.excessiveTrailingBlankLineCount,
+      requiredBlankZoneRect: geo.requiredBlankZoneRect ? this.localOrNull(geo.requiredBlankZoneRect) : null,
+      excessiveBlankZoneRect: geo.excessiveBlankZoneRect ? this.localOrNull(geo.excessiveBlankZoneRect) : null,
+      excessiveCoverageRatio: spanCoverage,
+      requiredBlankPainted: coverageBand != null && requiredZone != null
+        && coverageBand.top < requiredZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX,
+      presentationHeightSource: geo.presentationHeightSource,
       visibleEditorRect: editorRect, layoutEpochAtMeasure,
       presentationVisibleHeightRatio: visibleHeightRatio,
       expectedPanelOcclusion, panelGeometryClipCount: 0, paintAboveDrawerCount: 0,
@@ -10577,6 +11033,15 @@ export class DocumentUtilityOverlayHost {
     rightEdgeAuthority: string
     writeContentRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
     lastMeaningfulRect: RectLike | null
+    /** V5.13-R5 §13 — the resolved last meaningful content identity + empty-ness. */
+    lastMeaningfulIdentity: string | null
+    documentIsNonEmpty: boolean
+    documentEndBottom: number
+    actualTrailingBlankVisualRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    blankLineHeightSource: string
+    presentationTopMinusLastMeaningfulBottom: number
+    meaningfulIntersectionCount: number
+    meaningfulIntersectionArea: number
     /** §5 — an explicit bottom-aligned fallback (never a silent partial PASS). */
     viewportClamped: boolean
     semanticZoneRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
@@ -10586,6 +11051,14 @@ export class DocumentUtilityOverlayHost {
     visibleEditorRect: RectLike | null
     layoutEpochAtMeasure: number
     presentationVisibleHeightRatio: number
+    /** V5.13-R4 §5/§9 — the excessive-blank coverage facts. */
+    requiredTrailingBlankLineCount: number
+    excessiveTrailingBlankLineCount: number
+    requiredBlankZoneRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    excessiveBlankZoneRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    excessiveCoverageRatio: number
+    requiredBlankPainted: boolean
+    presentationHeightSource: string
     expectedPanelOcclusion: boolean
     panelGeometryClipCount: number
     paintAboveDrawerCount: number
@@ -10615,12 +11088,30 @@ export class DocumentUtilityOverlayHost {
       coordinateSpace: EOF_COORDINATE_SPACE,
       writeContentRect: input.writeContentRect,
       lastMeaningfulRect: input.lastMeaningfulRect,
+      // ── V5.13-R5 §13 — the real trailing-blank geometry authority ───────────
+      lastMeaningfulIdentity: input.lastMeaningfulIdentity,
+      documentIsEmpty: !input.documentIsNonEmpty,
+      documentIsNonEmpty: input.documentIsNonEmpty,
+      documentEndBottom: input.documentEndBottom,
+      actualTrailingBlankVisualRect: input.actualTrailingBlankVisualRect,
+      blankLineHeightSource: input.blankLineHeightSource,
+      presentationTopMinusLastMeaningfulBottom: input.presentationTopMinusLastMeaningfulBottom,
+      meaningfulIntersectionCount: input.meaningfulIntersectionCount,
+      meaningfulIntersectionArea: input.meaningfulIntersectionArea,
       semanticZoneRect: input.semanticZoneRect,
       presentationRect: input.presentationRect,
       syntheticRect: input.presentationRect,
       syntheticLocalRect: input.syntheticLocalRect,
       presentationHeight: input.presentationHeight,
       visualHeight: input.presentationHeight,
+      // ── V5.13-R4 §9 — the excessive-blank coverage authority ────────────────
+      requiredTrailingBlankLineCount: input.requiredTrailingBlankLineCount,
+      excessiveTrailingBlankLineCount: input.excessiveTrailingBlankLineCount,
+      requiredBlankZoneRect: input.requiredBlankZoneRect,
+      excessiveBlankZoneRect: input.excessiveBlankZoneRect,
+      excessiveCoverageRatio: input.excessiveCoverageRatio,
+      requiredBlankPainted: input.requiredBlankPainted,
+      presentationHeightSource: input.presentationHeightSource,
       visibleEditorRect: input.visibleEditorRect,
       scrollTargetReached: true,
       scrollSettled: input.scrollSettled,
@@ -10663,6 +11154,8 @@ export class DocumentUtilityOverlayHost {
       gateCountersV513R1: { ...this.countersDocEndV513R1 },
       gateCountersV513R2: { ...this.countersDocEndV513R2 },
       gateCountersV513R3: { ...this.countersDocEndV513R3 },
+      gateCountersV513R4: { ...this.countersDocEndV513R4 },
+      gateCountersV513R5: { ...this.countersDocEndV513R5 },
       finalDecision: input.finalDecision,
       reason: input.reason,
     })

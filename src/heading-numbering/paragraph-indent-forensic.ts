@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.106 — Document-End text-column anchor + accent V5.13-R3. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-document-end-text-column-anchor-v5.13-r3'
+/** Phase 7R.3.11.8B.108 — EOF real blank geometry + Strict Multi-H1 V5.13-R5. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-eof-multih1-visual-authority-v5.13-r5'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r13r3-11-8b106-document-end-text-column-anchor-v5-13-r3'
+export const RUNTIME_GATE_REVISION = 'r13r5-11-8b108-eof-multih1-visual-authority-v5-13-r5'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID
