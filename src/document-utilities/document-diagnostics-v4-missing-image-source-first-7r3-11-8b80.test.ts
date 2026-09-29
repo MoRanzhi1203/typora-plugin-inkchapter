@@ -121,10 +121,13 @@ describe('SOURCE-IMAGE — Markdown source first, no live <img> required', () =>
   })
 
   it('SOURCE-IMAGE-2: same destination twice → 2 diagnostics, distinct occurrenceIndex + distinct source ranges', () => {
+    // V5.12-R6 — the markdown MUST be non-empty: an empty (whitespace-only)
+    // source is a TERMINAL DOCUMENT_EMPTY snapshot by contract, so a fixture
+    // asserting content diagnostics has to carry the matching source.
     const r = computeDocumentDiagnostics(pureInput([
       imgFact('dup.png', 0, { startLine: 2, sourceStart: 12, sourceEnd: 40, rawText: '![A](dup.png)' }),
       imgFact('dup.png', 1, { startLine: 4, sourceStart: 44, sourceEnd: 72, rawText: '![B](dup.png)' }),
-    ]))
+    ], [], '# T\n\n![A](dup.png)\n\n![B](dup.png)\n'))
     const imgs = findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')
     expect(imgs).toHaveLength(2)
     expect(imgs.map(d => d.metadata?.occurrenceIndex)).toEqual([0, 1])
@@ -160,6 +163,7 @@ describe('SOURCE-IMAGE — Markdown source first, no live <img> required', () =>
     const r = computeDocumentDiagnostics(pureInput(
       [imgFact('img.png', 0, { startLine: 1, sourceStart: 4, sourceEnd: 20 })],
       [{ name: null, localPath: 'img.png', element: img }],
+      '![A](img.png)\n',
     ))
     expect(findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')).toHaveLength(1)
   })
@@ -167,7 +171,7 @@ describe('SOURCE-IMAGE — Markdown source first, no live <img> required', () =>
   it('SOURCE-IMAGE-6: source-only image diagnostic uses source-range location and is locatable', () => {
     const r = computeDocumentDiagnostics(pureInput([
       imgFact('missing.png', 0, { startLine: 3, sourceStart: 20, sourceEnd: 45, rawText: '![A](missing.png)' }),
-    ]))
+    ], [], '# T\n\n![A](missing.png)\n'))
     const [d] = findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')
     expect(d).toBeTruthy()
     expect(d.location?.kind).toBe('source-range')
@@ -206,7 +210,7 @@ describe('LINK-KIND — link rule only consumes resourceKind=link', () => {
   it('image metadata carries the Source Anchor (destination/occurrence/sourceStart/sourceEnd/revision/fingerprint)', () => {
     const r = computeDocumentDiagnostics(pureInput([
       imgFact('x.png', 0, { startLine: 5, sourceStart: 80, sourceEnd: 105, rawText: '![x](x.png)' }),
-    ]))
+    ], [], '# T\n\n![x](x.png)\n'))
     const [d] = findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')
     const md = d.metadata ?? {}
     expect(md.resourceKind).toBe('image')

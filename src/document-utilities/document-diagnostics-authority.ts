@@ -29,7 +29,14 @@ import {
   collectCanonicalHeadingTextKeys,
   type LatentAtxMarkerFact,
 } from './latent-atx-heading-marker'
-import { linkOccurrenceIndex, resolveResourceSemanticPath, normalizeResourceToken } from './document-diagnostics'
+import {
+  buildFigureSourceOccurrences,
+  linkOccurrenceIndex,
+  resolveResourceSemanticPath,
+  normalizeResourceToken,
+  type FigureSourceOccurrence,
+} from './document-diagnostics'
+import type { ImageSourceOccurrence, ResourceClass } from './document-resource-scanner'
 import {
   computeDiagnosticLocationContract,
   getRuleMeta,
@@ -53,7 +60,14 @@ export interface DocumentDiagnosticsProviders {
   /** Parse markdown into local link targets (authority-driven, no network).
    *  Phase 7R.3.11.8B.7.3 — facts may carry `resourceKind: 'image' | 'link'`
    *  (image Markdown → img DOM target). */
-  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link'; sourceStart?: number; sourceEnd?: number; startLine?: number; endLine?: number; startColumn?: number; endColumn?: number; rawText?: string }>
+  parseLocalLinkTargets: (markdown: string) => Array<string | { target: string; resourceKind?: 'image' | 'link'; sourceStart?: number; sourceEnd?: number; startLine?: number; endLine?: number; startColumn?: number; endColumn?: number; rawText?: string; destinationStart?: number; destinationEnd?: number; rawToken?: string; altText?: string; resourceClass?: ResourceClass }>
+  /**
+   * V5.12-R8 §4 — EVERY Markdown image occurrence (full token range +
+   * destination range + alt text + resource class), from the SINGLE scanner
+   * authority. Optional: when absent, figure missing-name falls back to the
+   * legacy DOM-figure facts (pure/legacy callers only).
+   */
+  parseImageSourceOccurrences?: (markdown: string) => ImageSourceOccurrence[]
   /** Phase 7R.3.11.8B.1 — canonical H1 authority bridge result (WAIT/INVALID/READY).
    *  Optional so tests that never exercise STRICT-SINGLE-H1 need no stub. */
   getCanonicalH1Facts?: () => DiagnosticCanonicalHeadingAuthorityResult
@@ -493,6 +507,7 @@ export class DocumentDiagnosticsAuthority {
       diagnosticCount: contract.diagnosticCount,
       locatableDiagnosticCount: contract.locatableDiagnosticCount,
       unlocatableDiagnosticCount: contract.unlocatableDiagnosticCount,
+      nonLocatableNoticeCount: contract.nonLocatableNoticeCount,
       canonicalNodeLocationCount: contract.canonicalNodeLocationCount,
       sourceRangeLocationCount: contract.sourceRangeLocationCount,
       documentStartLocationCount: contract.documentStartLocationCount,
@@ -538,6 +553,7 @@ export class DocumentDiagnosticsAuthority {
     headingAuthority: HeadingDiagnosticAuthority
     latentAtxMarkers: LatentAtxMarkerInput[]
     figures: DiagnosticObjectFact[]
+    figureSourceOccurrences?: FigureSourceOccurrence[]
     tables: DiagnosticObjectFact[]
     codes: DiagnosticObjectFact[]
     formulas: DiagnosticFormulaFact[]
@@ -664,6 +680,22 @@ export class DocumentDiagnosticsAuthority {
     const markdown = this.ctx.authority.getMarkdown()
     const activeFilePath = this.ctx.authority.getActiveFilePath()
     const vaultRoot = this.ctx.authority.vaultRoot
+    // ── V5.12-R8 §4 — unified Figure Source Occurrences (ONE scanner) ──────
+    // Built from the SAME scanner as `parseLocalLinkTargets`, so the two figure
+    // rules agree on the occurrence and each consumes its own range:
+    //   FIGURE_MISSING_NAME        → full token range
+    //   FIGURE_LOCAL_IMAGE_MISSING → destination range
+    let figureSourceOccurrences: FigureSourceOccurrence[] | undefined
+    if (markdown != null && typeof this.providers.parseImageSourceOccurrences === 'function') {
+      figureSourceOccurrences = buildFigureSourceOccurrences({
+        scanned: this.providers.parseImageSourceOccurrences(markdown),
+        documentKey: this.ctx.authority.getDocumentKey(),
+        resolveCanonicalDestination: (rawDestination, isLocal) => isLocal
+          ? resolveResourceSemanticPath(rawDestination, activeFilePath, vaultRoot)
+          : rawDestination,
+        isLocalFileMissing: (rawDestination) => this.providers.isLinkTargetMissing(rawDestination),
+      })
+    }
     if (markdown != null) {
       const rawFacts = this.providers.parseLocalLinkTargets(markdown)
       const normFacts: Array<{
@@ -676,6 +708,11 @@ export class DocumentDiagnosticsAuthority {
         startColumn?: number
         endColumn?: number
         rawText?: string
+        destinationStart?: number
+        destinationEnd?: number
+        rawToken?: string
+        altText?: string
+        resourceClass?: ResourceClass
       }> = rawFacts.map(f => (typeof f === 'string' ? { target: f } : f))
       const documentDir = activeFilePath
         ? activeFilePath.replace(/\\/g, '/').replace(/[\\/][^\\/]*$/, '')
@@ -719,12 +756,18 @@ export class DocumentDiagnosticsAuthority {
           startColumn: fact.startColumn,
           endColumn: fact.endColumn,
           rawText: fact.rawText,
+          // V5.12-R8 §4 — destination/path range + full token travel together.
+          destinationStart: fact.destinationStart,
+          destinationEnd: fact.destinationEnd,
+          rawToken: fact.rawToken,
+          altText: fact.altText,
+          resourceClass: fact.resourceClass,
           targetIdentity: `local:${target}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`,
         })
       }
     }
 
-    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, tables, codes, formulas, links }
+    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, figureSourceOccurrences, tables, codes, formulas, links }
   }
 
   /** Phase 7R.3.11.8B.4.1 — LATENT-ATX marker transition log (state-deduped). */

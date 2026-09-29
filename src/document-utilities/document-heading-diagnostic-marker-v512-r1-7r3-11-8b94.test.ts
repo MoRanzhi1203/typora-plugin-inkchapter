@@ -222,14 +222,17 @@ describe('V512R1-1/2/4 — passive gutter marker never touches the glyphs', () =
 
 // ── V512R1-3 ───────────────────────────────────────────────────────────────
 describe('V512R1-3 — Error / Warning differ by shape, not only colour', () => {
-  it('V512R1-3: distinct icons + solid vs dashed keyline', () => {
+  it('V512R1-3: distinct icons, error/warning differ by shape not colour', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const errorIcon = css.indexOf(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-marker__icon")
     const warnIcon = css.indexOf(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-marker__icon")
     expect(errorIcon).toBeGreaterThan(0)
     expect(warnIcon).toBeGreaterThan(errorIcon)
-    // Warning keyline is dashed via a gradient; error keyline is solid.
-    expect(css).toContain(".inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-active__keyline")
+    // V5.12-R7 §9 — the ACTIVE heading keyline (solid/dashed underline) is GONE:
+    // the active emphasis is now the fill-only `__fragment`. Error vs warning
+    // still differ by ICON SHAPE (circle-x vs triangle-warning) above.
+    expect(css).not.toContain('__keyline')
+    expect(css).toContain('.inkchapter-heading-diagnostic-active__fragment')
     expect(HEADING_MARKER_RAIL_WIDTH_PX).toBe(2)
     expect(HEADING_MARKER_ICON_SIZE_PX).toBe(13)
     expect(HEADING_MARKER_ICON_RAIL_GAP_PX).toBe(6)

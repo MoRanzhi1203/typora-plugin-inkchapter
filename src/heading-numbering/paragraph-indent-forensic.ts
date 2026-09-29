@@ -19,11 +19,11 @@ import * as path from 'path'
 
 // ── Build Marker ─────────────────────────────────────────────────────
 
-/** Phase 7R.3.11.8B.98 — Duplicate Occurrence / Source-Range Authority V5.12-R5. */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-source-occurrence-authority-v5.12-r5'
+/** Phase 7R.3.11.8B.100 — Fill-Only Diagnostic Locate Marker V5.12-R7. */
+export const INKCHAPTER_BUILD_ID = 'inkchapter-code-caption-figure-diagnostics-v5.12-r8'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
-export const RUNTIME_GATE_REVISION = 'r7r3-11-8b98-source-occurrence-authority-v5-12-r5'
+export const RUNTIME_GATE_REVISION = 'r8r3-11-8b101-code-caption-figure-diagnostics-v5-12-r8'
 
 // Legacy alias for backward compatibility
 export const FORENSIC_BUILD_MARKER = INKCHAPTER_BUILD_ID

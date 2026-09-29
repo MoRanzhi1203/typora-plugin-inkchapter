@@ -29,15 +29,68 @@ import {
   type RectSnapshot,
 } from './document-locate-rect-v4'
 import { measureTextRects, measureTextFragmentRects, countTokenInElement } from './document-locate-visual-geometry-v4'
+// V5.12-R8 §6 — the SINGLE Markdown reference scanner (no second parser).
+import { findReferenceSpanAt, type ReferenceSpan } from './document-resource-scanner'
+import type { DiagnosticRangeRole } from './diagnostics-types'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
+  hasLocatableLocation,
   normalizeSourceAnchorText,
   normalizeResourcePath,
   type DiagnosticLocationResolveContext,
   type DiagnosticLocationResolveResult,
   type ResolvedSourceOccurrenceHint,
 } from './document-diagnostic-location'
+import {
+  DOCUMENT_EMPTY_DIAGNOSTIC_CODE,
+  EMPTY_DOCUMENT_EXCLUSIVE_REASON,
+  EMPTY_DOCUMENT_SHORT_CIRCUIT_AUDIT_EVENT,
+  EMPTY_DOCUMENT_V512R6_GATE_KEYS,
+  createEmptyDocumentV512R6Counters,
+  evaluateEmptyDocumentV512R6Gates,
+  formatEmptyDocumentV512R6GateReport,
+  measureEmptyDocumentShortCircuit,
+} from './document-diagnostic-empty-short-circuit-v512-r6'
+import {
+  ACTIVE_LOCATE_FILL_ONLY_GATE_KEYS,
+  ACTIVE_LOCATE_LINE_SOURCE,
+  ACTIVE_LOCATE_MIN_FILL_COUNT,
+  ACTIVE_LOCATE_PRESENTATION_FILL_ONLY,
+  FILL_ONLY_LOCATE_AUDIT_EVENT,
+  createActiveLocateFillOnlyCounters,
+  emptyActiveLocateFillOnlyFacts,
+  evaluateActiveLocateFillOnlyGates,
+  formatActiveLocateFillOnlyGateReport,
+  isHorizontalLineBar,
+  isVerticalLineBar,
+  measureActiveLocateFillOnlyGates,
+  type ActiveLocateFillOnlyFacts,
+} from './document-diagnostic-locate-fill-only-v512-r7'
+import {
+  FIGURE_MISSING_NAME_RANGE_ROLE,
+  FIGURE_LOCAL_IMAGE_MISSING_RANGE_ROLE,
+  FIGURE_TARGET_AUTHORITY_AUDIT_EVENT,
+  FIGURE_TARGET_V512R8_GATE_KEYS,
+  FIGURE_TARGET_V512R8_PER_CLICK_GATE_KEYS,
+  createFigureTargetV512R8Counters,
+  evaluateFigureTargetAuthority,
+  evaluateFigureTargetSnapshotGates,
+  evaluateFigureTargetV512R8Gates,
+  figureRangeRoleForRule,
+  formatFigureTargetV512R8GateReport,
+  type FigureRangeRole,
+  type FigureSnapshotDiagnosticView,
+  type FigureTargetAuthorityFacts,
+} from './document-diagnostic-figure-target-v512-r8'
+import {
+  CAPTION_CODE_SPACING_AUDIT_EVENT,
+  createCaptionCodeSpacingV512R8Counters,
+  evaluateCaptionCodeSpacingGap,
+  evaluateCaptionCodeSpacingV512R8Gates,
+  formatCaptionCodeSpacingV512R8GateReport,
+  type CaptionCodeSpacingFacts,
+} from './document-caption-code-spacing-v512-r8'
 import {
   DUPLICATE_OCCURRENCES_COLLAPSED_TO_SAME_RANGE_REASON,
   SOURCE_OCCURRENCE_AUTHORITY_AUDIT_EVENT,
@@ -250,6 +303,61 @@ function setIcon(el: HTMLElement, name: string, cls = 'inkchapter-ic'): void {
   el.innerHTML =
     `<svg class="${cls}" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
     `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`
+}
+
+// ── V5.12-R7 §12 — computed-style probes for the FILL_ONLY gate measurement ──
+/** True when a computed colour actually paints (alpha > 0). */
+function colorIsVisible(color: string | null | undefined): boolean {
+  if (color == null) return false
+  const value = color.trim().toLowerCase()
+  if (value === '' || value === 'transparent') return false
+  const alpha = /rgba?\([^)]*,\s*([0-9.]+)\s*\)$/.exec(value)
+  if (alpha) return Number.parseFloat(alpha[1]) > 0
+  return true
+}
+
+/**
+ * True when ANY of the four computed borders would actually PAINT. A border
+ * with `border-*-style: none` never paints (the used width is 0), which is how
+ * the initial `medium` width must be interpreted.
+ */
+function borderIsPainted(cs: CSSStyleDeclaration): boolean {
+  const sides: Array<[string, string]> = [
+    [cs.borderTopStyle, cs.borderTopWidth],
+    [cs.borderRightStyle, cs.borderRightWidth],
+    [cs.borderBottomStyle, cs.borderBottomWidth],
+    [cs.borderLeftStyle, cs.borderLeftWidth],
+  ]
+  for (const [style, width] of sides) {
+    const s = (style ?? 'none').trim().toLowerCase()
+    if (s === '' || s === 'none' || s === 'hidden') continue
+    const n = Number.parseFloat(width ?? '0')
+    if (Number.isFinite(n) && n > 0) return true
+  }
+  return false
+}
+
+/** True when a computed outline would paint a visible line. */
+function outlineIsPainted(cs: CSSStyleDeclaration): boolean {
+  const style = (cs.outlineStyle ?? 'none').trim().toLowerCase()
+  if (style === '' || style === 'none') return false
+  const width = Number.parseFloat(cs.outlineWidth ?? '0')
+  return Number.isFinite(width) && width > 0
+}
+
+/** True when a computed box-shadow would paint (an inset shadow = a fake line). */
+function shadowIsPainted(cs: CSSStyleDeclaration): boolean {
+  const shadow = (cs.boxShadow ?? '').trim().toLowerCase()
+  return shadow !== '' && shadow !== 'none'
+}
+
+/** True when a ::before / ::after pseudo element paints content. */
+function pseudoIsPainted(view: Window, el: HTMLElement, pseudo: '::before' | '::after'): boolean {
+  let cs: CSSStyleDeclaration | null = null
+  try { cs = view.getComputedStyle(el, pseudo) } catch { return false }
+  if (!cs) return false
+  const content = (cs.content ?? '').trim().toLowerCase()
+  return content !== '' && content !== 'none' && content !== 'normal'
 }
 
 export interface DocumentUtilitiesOverlayOptions {
@@ -1652,6 +1760,42 @@ export class DocumentUtilityOverlayHost {
     string,
     { occurrenceIndex: number; unionRect: RectRecord | null; sourceRangeIdentity: string | null }
   >()
+  /**
+   * V5.12-R6 §15 — EMPTY DOCUMENT short-circuit hard-gate counters.
+   * All must remain 0 (the empty snapshot is exclusively `[DOCUMENT_EMPTY]`).
+   */
+  private countersEmptyDocumentV512R6 = createEmptyDocumentV512R6Counters()
+  /** V5.12-R6 §14 — admission key/revision of the last committed snapshot. */
+  private lastAdmittedSnapshotKey: string | null = null
+  private lastAdmittedSnapshotRevision: number | null = null
+  /** V5.12-R6 §19 — did the last admission reject a stale (older) revision? */
+  private lastAdmissionStaleRevisionRejected = false
+  private lastEmptyShortCircuitAuditSignature = ''
+  /**
+   * V5.12-R7 §13/§14 — ACTIVE_LOCATE_VISUAL = FILL_ONLY hard-gate counters.
+   * All must remain 0 (line decorations are never painted again).
+   */
+  private countersActiveLocateFillOnlyV512R7 = createActiveLocateFillOnlyCounters()
+  /** V5.12-R7 §13 — last committed locate fill count (ACTIVE_LOCATE_FILL_COUNT >= 1). */
+  private lastActiveLocateFillCount = 0
+  /**
+   * V5.12-R8 §14 — Figure target / existence authority counters (session).
+   * All must remain 0.
+   */
+  private countersFigureTargetV512R8 = createFigureTargetV512R8Counters()
+  /** V5.12-R8 §14 — Code caption → body spacing counters (session). All 0. */
+  private countersCaptionCodeSpacingV512R8 = createCaptionCodeSpacingV512R8Counters()
+  /** V5.12-R8 §15 — last measured code caption spacing facts (state-deduped). */
+  private lastCaptionCodeSpacingSignature = ''
+  /**
+   * V5.12-R8 §8 — how the LAST figure locate reached its target: was the exact
+   * source token available as DOM text, and which ladder level painted it.
+   */
+  private lastFigureTargetVisual = { exactTokenAvailable: false, exactTokenUsed: false, usedBlockFallback: false }
+  /** V5.12-R8 §15 — snapshot figure-gate audit dedup signature. */
+  private lastFigureTargetSnapshotSignature = ''
+  /** V5.12-R8 §15 — deferred per-click figure audit (emitted at COMMIT). */
+  private pendingFigureTargetAudit: { payload: Record<string, unknown> } | null = null
   /** Phase 7R.3.11.8B.6 — workspace width guard state (write-deduped). */
   private workspaceWidthState: WorkspaceWidthState | null = null
   private workspaceHostApplied = false
@@ -1724,11 +1868,28 @@ export class DocumentUtilityOverlayHost {
     if (!snapshot) {
       return { decision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'NULL_SNAPSHOT' }
     }
+    this.lastAdmissionStaleRevisionRejected = false
     const activeKey = this.opts.ctx.authority.getDocumentKey() ?? null
     if (snapshot.documentKey !== activeKey) {
       this.admissionCounters.staleDiscard++
       emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, consumerAdmissionDecision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'DOCUMENT_IDENTITY_MISMATCH' })
       return { decision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'DOCUMENT_IDENTITY_MISMATCH' }
+    }
+    // V5.12-R6 §14 — a STALE (older-revision) snapshot of the SAME
+    // document/epoch must never overwrite a newer committed one: the
+    // empty <-> non-empty switch is an ATOMIC snapshot replacement, so a late
+    // result is rejected outright rather than allowed to revive old
+    // errors/warnings after the document became empty (and vice versa).
+    const snapshotEpochKey = `${snapshot.documentKey}@${this.activeDocumentEpoch}`
+    if (
+      this.lastAdmittedSnapshotKey === snapshotEpochKey
+      && this.lastAdmittedSnapshotRevision != null
+      && snapshot.revision < this.lastAdmittedSnapshotRevision
+    ) {
+      this.admissionCounters.staleDiscard++
+      this.lastAdmissionStaleRevisionRejected = true
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, lastAdmittedRevision: this.lastAdmittedSnapshotRevision, sourceRevision: snapshot.sourceRevision, consumerAdmissionDecision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'STALE_REVISION' })
+      return { decision: 'DISCARD_STALE_DIAGNOSTICS_RESULT', reason: 'STALE_REVISION' }
     }
     const presenceEval = this.evaluateActiveDocumentPresence()
     const empty = presenceEval.presence.state === 'EMPTY'
@@ -1762,6 +1923,10 @@ export class DocumentUtilityOverlayHost {
       return { decision: 'ALREADY_ADMITTED', reason: 'CONSUMER_DEDUPE' }
     }
     this.lastAdmittedSnapshotFingerprint = fingerprint
+    // V5.12-R6 §14 — remember the committed key/revision so a later STALE
+    // (older-revision) result can be rejected instead of overwriting it.
+    this.lastAdmittedSnapshotKey = snapshotEpochKey
+    this.lastAdmittedSnapshotRevision = snapshot.revision
     this.pendingActiveLeafDocumentKey = null
     this.admissionCounters.admitted++
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-ADMISSION', { source, documentKey: snapshot.documentKey, activeDocumentKey: activeKey, revision: snapshot.revision, sourceRevision: snapshot.sourceRevision, fingerprint, consumerAdmissionDecision: 'ADMITTED', reason: 'CONSUMER_ADMISSION' })
@@ -1770,6 +1935,9 @@ export class DocumentUtilityOverlayHost {
 
   /** V5 — commit an ADMITTED snapshot to projection + Problems Control/Drawer. */
   private commitAdmittedSnapshot(snapshot: DocumentDiagnosticsSnapshot | null, source: string): void {
+    // V5.12-R6 §13 — capture the PREVIOUS snapshot's diagnostic ids BEFORE the
+    // atomic replacement so a stale residue can be proven (never assumed).
+    const previousDiagnosticIds = this.snapshot?.diagnostics.map(d => d.id) ?? []
     this.snapshot = snapshot
     // Phase 7R.3.11.8B.8 — snapshot updated and the located diagnostic no
     // longer exists → clear the active locate visual + row selection.
@@ -1783,6 +1951,10 @@ export class DocumentUtilityOverlayHost {
     this.handleStrictSingleH1Popup(snapshot)
     this.renderDiagnosticsButton()
     this.renderLockButton()
+    // V5.12-R6 §11/§15/§19 — the empty-document short-circuit gates + audit are
+    // measured at this SINGLE commit boundary (after the projection is derived
+    // from the SAME snapshot, so UI-count parity is a real measurement).
+    this.commitEmptyDocumentShortCircuit(snapshot, previousDiagnosticIds)
     if (this.drawerOpen) this.renderDrawer()
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
@@ -1804,6 +1976,440 @@ export class DocumentUtilityOverlayHost {
       warningCount: snapshot?.warningCount ?? 0,
       hintCount: snapshot?.infoCount ?? 0,
       consumerAdmissionDecision: 'ADMITTED',
+    })
+  }
+
+  /**
+   * V5.12-R6 §11/§15/§19 — measure + audit the EMPTY DOCUMENT terminal
+   * short-circuit at the SINGLE admitted-snapshot commit boundary.
+   *
+   * The UI counters are PROJECTED from this same snapshot (never hand-written),
+   * so `EMPTY_DOCUMENT_UI_COUNT_SNAPSHOT_MISMATCH_COUNT` is a real measurement
+   * of data-layer/UI parity rather than an assumption.
+   */
+  private commitEmptyDocumentShortCircuit(
+    snapshot: DocumentDiagnosticsSnapshot | null,
+    previousDiagnosticIds: readonly string[],
+  ): void {
+    const diags = snapshot?.diagnostics ?? []
+    const shortCircuitActive = diags.some(d => d.code === DOCUMENT_EMPTY_DIAGNOSTIC_CODE)
+    const projection = deriveDocumentProblemsProjection(snapshot)
+    const measured = measureEmptyDocumentShortCircuit({
+      shortCircuitActive,
+      diagnostics: diags.map(d => ({
+        id: d.id,
+        code: d.code,
+        severity: d.severity,
+        locatable: hasLocatableLocation(d.location),
+      })),
+      errorCount: snapshot?.errorCount ?? 0,
+      warningCount: snapshot?.warningCount ?? 0,
+      hintCount: snapshot?.infoCount ?? 0,
+      uiErrorCount: projection.errorCount,
+      uiWarningCount: projection.warningCount,
+      uiHintCount: projection.hintCount,
+      uiTotalCount: projection.totalCount,
+      // §13 — only meaningful for the empty short-circuit: the ids that were
+      // published by the PREVIOUS snapshot (stale-residue proof).
+      previousDiagnosticIds: shortCircuitActive ? previousDiagnosticIds : [],
+    })
+    if (shortCircuitActive) {
+      for (const key of EMPTY_DOCUMENT_V512R6_GATE_KEYS) {
+        const value = measured[key]
+        if (value > 0) this.countersEmptyDocumentV512R6[key] += value
+      }
+    }
+
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    const gate = evaluateEmptyDocumentV512R6Gates(this.countersEmptyDocumentV512R6)
+    const signature = `${snapshot?.documentKey ?? ''}|empty:${shortCircuitActive}|n:${diags.length}|e:${snapshot?.errorCount ?? 0}|w:${snapshot?.warningCount ?? 0}|h:${snapshot?.infoCount ?? 0}|stale:${this.lastAdmissionStaleRevisionRejected}`
+    if (signature === this.lastEmptyShortCircuitAuditSignature) return
+    this.lastEmptyShortCircuitAuditSignature = signature
+    emitRuntimeAudit(EMPTY_DOCUMENT_SHORT_CIRCUIT_AUDIT_EVENT, {
+      documentKey: snapshot?.documentKey ?? null,
+      documentRevision: snapshot?.revision ?? null,
+      sourceLength: markdown != null ? markdown.length : null,
+      trimmedSourceLength: markdown != null ? markdown.trim().length : null,
+      isSemanticallyEmpty: shortCircuitActive,
+      shortCircuitActivated: shortCircuitActive,
+      diagnosticCount: diags.length,
+      errorCount: snapshot?.errorCount ?? 0,
+      warningCount: snapshot?.warningCount ?? 0,
+      hintCount: snapshot?.infoCount ?? 0,
+      documentEmptyCount: diags.filter(d => d.code === DOCUMENT_EMPTY_DIAGNOSTIC_CODE).length,
+      headingRuleExecuted: !shortCircuitActive,
+      objectRuleExecuted: !shortCircuitActive,
+      resourceRuleExecuted: !shortCircuitActive,
+      eofRuleExecuted: !shortCircuitActive,
+      staleResultRejected: this.lastAdmissionStaleRevisionRejected,
+      decision: shortCircuitActive && gate.decision === 'FAIL' ? 'FAIL' : 'PASS',
+      reason: shortCircuitActive ? EMPTY_DOCUMENT_EXCLUSIVE_REASON : 'NON_EMPTY_DOCUMENT_PIPELINE',
+    })
+  }
+
+  /**
+   * V5.12-R7 §12/§13/§14 — measure the ACTIVE locate surface and record the
+   * FILL_ONLY hard gates. The measurement reads the REAL painted carrier
+   * (computed style + geometry) so "no line" is proven, never assumed.
+   */
+  private measureActiveLocateFillOnlyFacts(): ActiveLocateFillOnlyFacts {
+    const facts = emptyActiveLocateFillOnlyFacts()
+    const root = this.root
+    if (!root) return facts
+    const view = root.ownerDocument?.defaultView ?? (typeof window !== 'undefined' ? window : null)
+    if (!view) return facts
+    const carrierSelector = [
+      '.inkchapter-diagnostic-locate-frame',
+      '.inkchapter-diagnostic-inline-fragment',
+      '.inkchapter-diagnostic-inline-mark',
+      '.inkchapter-diagnostic-locate-marker',
+      '.inkchapter-heading-diagnostic-active__fragment',
+    ].join(',')
+    const carriers = Array.from(root.querySelectorAll<HTMLElement>(carrierSelector))
+    for (const el of carriers) {
+      let cs: CSSStyleDeclaration | null = null
+      try { cs = view.getComputedStyle(el) } catch { cs = null }
+      if (cs) {
+        if (colorIsVisible(cs.backgroundColor) || (cs.backgroundImage ?? '').includes('gradient(')) facts.fillCount++
+        if (borderIsPainted(cs)) facts.borderCount++
+        if (outlineIsPainted(cs)) facts.outlineCount++
+        if ((cs.backgroundImage ?? '').includes('gradient(')) facts.keylineCount++
+        if (shadowIsPainted(cs)) facts.editorShadowCount++
+        const before = pseudoIsPainted(view, el, '::before')
+        const after = pseudoIsPainted(view, el, '::after')
+        if (before || after) facts.linePseudoElementCount++
+      }
+      const rect = el.getBoundingClientRect()
+      if (isHorizontalLineBar({ width: rect.width, height: rect.height })) facts.horizontalLineCount++
+      if (isVerticalLineBar({ width: rect.width, height: rect.height })) facts.verticalLineCount++
+      // SVG strokes are counted ONLY inside a locate carrier: the overlay's own
+      // UI icons are stroked SVGs and must never be mistaken for a locate line.
+      for (const svg of Array.from(el.querySelectorAll<Element>('svg,path,line,polyline'))) {
+        let scs: CSSStyleDeclaration | null = null
+        try { scs = view.getComputedStyle(svg) } catch { scs = null }
+        if (scs && scs.stroke && scs.stroke !== 'none' && scs.strokeWidth !== '0px') facts.svgStrokeLineCount++
+      }
+    }
+    // Line-ish DOM children anywhere on the active surface (keyline / line /
+    // corner cap). None must exist under FILL_ONLY. The selectors are DELIBER-
+    // ATELY narrow: a loose `[class*=arm]` would match `--warning` and a loose
+    // `[class*=line]` would match unrelated overlay chrome.
+    const nodeList = root.querySelectorAll<HTMLElement>(
+      '[class*="keyline"],[class*="__line"],[class*="marker-line"],[class*="hline"],[class*="vline"],[data-cue-type="top-edge"]',
+    )
+    facts.lineDomChildCount = nodeList.length
+    facts.cornerArmCount = root.querySelectorAll<HTMLElement>('[class*="corner-arm"],[class*="continuation-arm"]').length
+    // §14 — the PASSIVE heading gutter marker must survive the active cleanup.
+    const headingDiagCount = this.snapshot?.diagnostics.filter(d => d.category === 'heading').length ?? 0
+    const railCount = root.querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length
+    facts.passiveHeadingMarkerRemoved = headingDiagCount > 0 && railCount === 0
+    // §14 — a DIAGNOSTIC Drawer row severity indicator must never be removed.
+    // The indicator authority is the row's severity CLASS (which drives the
+    // `::before` rail), not a data attribute; `--empty` placeholder rows carry
+    // no diagnostic and are excluded.
+    const rows = Array.from(root.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item'))
+      .filter(el => el.getAttribute('data-diagnostic-id') != null)
+    facts.drawerSeverityIndicatorRemoved = rows.length > 0 && rows.some(el =>
+      !el.classList.contains('inkchapter-doc-drawer__item--error')
+      && !el.classList.contains('inkchapter-doc-drawer__item--warning')
+      && !el.classList.contains('inkchapter-doc-drawer__item--info'))
+    return facts
+  }
+
+  /** V5.12-R7 §13 — fold the measured facts into the session counters + audit. */
+  private commitActiveLocateFillOnlyGates(committed: boolean, diagnosticId: string): void {
+    const facts = this.measureActiveLocateFillOnlyFacts()
+    const { counters, fillOk } = measureActiveLocateFillOnlyGates(facts, committed)
+    if (committed) {
+      for (const key of ACTIVE_LOCATE_FILL_ONLY_GATE_KEYS) {
+        const value = counters[key]
+        if (value > 0) this.countersActiveLocateFillOnlyV512R7[key] += value
+      }
+      this.lastActiveLocateFillCount = facts.fillCount
+    }
+    const gate = evaluateActiveLocateFillOnlyGates(this.countersActiveLocateFillOnlyV512R7)
+    emitRuntimeAudit(FILL_ONLY_LOCATE_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId,
+      committed,
+      presentationMode: ACTIVE_LOCATE_PRESENTATION_FILL_ONLY,
+      lineSource: ACTIVE_LOCATE_LINE_SOURCE,
+      fillCount: facts.fillCount,
+      fillGateSatisfied: fillOk && facts.fillCount >= ACTIVE_LOCATE_MIN_FILL_COUNT,
+      verticalLineCount: facts.verticalLineCount,
+      horizontalLineCount: facts.horizontalLineCount,
+      borderCount: facts.borderCount,
+      outlineCount: facts.outlineCount,
+      keylineCount: facts.keylineCount,
+      cornerArmCount: facts.cornerArmCount,
+      linePseudoElementCount: facts.linePseudoElementCount,
+      lineDomChildCount: facts.lineDomChildCount,
+      svgStrokeLineCount: facts.svgStrokeLineCount,
+      editorShadowCount: facts.editorShadowCount,
+      passiveHeadingMarkerRemoved: facts.passiveHeadingMarkerRemoved,
+      drawerSeverityIndicatorRemoved: facts.drawerSeverityIndicatorRemoved,
+      decision: committed && (!fillOk || gate.decision === 'FAIL') ? 'FAIL' : 'PASS',
+      reason: committed ? 'ACTIVE_LOCATE_FILL_ONLY' : 'NOT_COMMITTED',
+    })
+  }
+
+  /**
+   * V5.12-R8 §14/§15 — figure target / existence authority for ONE locate.
+   *
+   * Consumes the SAME expected/resolved facts as the R5 source-occurrence gate
+   * (which is FROZEN) and adds the R8 decision: WHICH range role this rule must
+   * target, whether that role was really resolved, and whether a real visual
+   * fragment was painted (never a click without visual).
+   */
+  private commitFigureTargetAuthority(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    r5: LocateSourceOccurrenceEvaluation,
+    visualCommitted: boolean,
+  ): void {
+    const role = figureRangeRoleForRule(diag.code)
+    if (role == null) return
+    const audit = r5.audit
+    const asNum = (v: unknown): number | null => (typeof v === 'number' ? v : null)
+    const asStr = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+    const inlineFacts = this.locateFrame?.getInlineCoordinateFacts() ?? null
+    const visualFragmentCount = inlineFacts ? inlineFacts.paintedFragmentElementCount : 0
+    const facts: FigureTargetAuthorityFacts = {
+      ruleCode: diag.code,
+      occurrenceIndex: r5.facts.resolvedOccurrenceIndex ?? r5.facts.expectedOccurrenceIndex ?? null,
+      sourceRangeIdentity: r5.facts.resolvedSourceRangeIdentity ?? r5.facts.expectedSourceRangeIdentity ?? null,
+      rawToken: asStr(audit.rawToken),
+      rawDestination: asStr(audit.rawDestination),
+      canonicalDestination: asStr(audit.canonicalDestination),
+      expectedRangeRole: role,
+      resolvedRangeRole: (asStr(audit.resolvedRangeRole) as FigureRangeRole | null) ?? null,
+      expectedSourceStart: r5.facts.expectedSourceStart,
+      expectedSourceEnd: r5.facts.expectedSourceEnd,
+      resolvedSourceStart: r5.facts.resolvedSourceStart,
+      resolvedSourceEnd: r5.facts.resolvedSourceEnd,
+      rangeClientRectCount: asNum(audit.rangeClientRectCount) ?? 0,
+      visualFragmentCount,
+      documentLocalRectCount: this.getCommittedDocumentSpace()?.inlineLocal.length ?? 0,
+      severity: asStr(audit.severity),
+      localFileExists: typeof audit.localFileExists === 'boolean' ? audit.localFileExists : null,
+      resourceClass: asStr(audit.resourceClass),
+      exactTokenAvailable: this.lastFigureTargetVisual.exactTokenAvailable,
+      exactTokenUsed: this.lastFigureTargetVisual.exactTokenUsed,
+      usedBlockFallback: this.lastFigureTargetVisual.usedBlockFallback,
+      decision: 'PASS',
+      reason: '',
+    }
+    const verdict = evaluateFigureTargetAuthority(facts)
+    if (visualCommitted) {
+      if (verdict.decision === 'FAIL' && verdict.reason === 'CLICK_WITHOUT_VISUAL') {
+        if (role === FIGURE_MISSING_NAME_RANGE_ROLE) this.countersFigureTargetV512R8.missingNameClickWithoutVisual++
+        else this.countersFigureTargetV512R8.localImageMissingClickWithoutVisual++
+      }
+      if (role === FIGURE_MISSING_NAME_RANGE_ROLE) {
+        if (verdict.reason === 'EXACT_TOKEN_AVAILABLE_BUT_NOT_USED') this.countersFigureTargetV512R8.missingNameExactTokenAvailableButNotUsed++
+        if (verdict.reason === 'BLOCK_FALLBACK_WHILE_TOKEN_AVAILABLE') this.countersFigureTargetV512R8.missingNameBlockFallbackWhileTokenAvailable++
+        if (this.lastFigureTargetVisual.exactTokenAvailable && !this.lastFigureTargetVisual.exactTokenUsed && this.lastFigureTargetVisual.usedBlockFallback) {
+          this.countersFigureTargetV512R8.missingNameBlockFallbackWhileTokenAvailable++
+        }
+      }
+      if (role === FIGURE_LOCAL_IMAGE_MISSING_RANGE_ROLE) {
+        if (facts.expectedRangeRole !== FIGURE_LOCAL_IMAGE_MISSING_RANGE_ROLE
+          || asStr(audit.expectedRangeRole) !== FIGURE_LOCAL_IMAGE_MISSING_RANGE_ROLE) {
+          this.countersFigureTargetV512R8.localImageMissingFullTokenMarkInsteadOfPath++
+        }
+        if (facts.resolvedSourceStart != null && asNum(audit.destinationStart) != null
+          && facts.resolvedSourceStart === asNum(audit.destinationStart)) {
+          // The resolved range IS the destination range (never the whole token).
+        } else if (facts.resolvedSourceStart != null && asNum(audit.tokenStart) != null
+          && facts.resolvedSourceStart === asNum(audit.tokenStart)) {
+          this.countersFigureTargetV512R8.localImageMissingFullTokenMarkInsteadOfPath++
+        }
+      }
+    }
+    // Deferred to the transaction terminal so the R4 document-space carrier
+    // (committed AFTER the visual) contributes the REAL document-local count.
+    this.pendingFigureTargetAudit = {
+      payload: {
+        documentKey: diag.documentKey ?? this.opts.ctx.authority.getDocumentKey() ?? null,
+        transactionId: tx.id,
+        diagnosticId: diag.id,
+        ...facts,
+        visualCommitted,
+        decision: verdict.decision,
+        reason: verdict.reason,
+        gateDecision: evaluateFigureTargetV512R8Gates(this.countersFigureTargetV512R8).decision,
+      },
+    }
+  }
+
+  /**
+   * V5.12-R8 §15 — emit the pending figure target authority audit at the
+   * transaction terminal, where the R4 document-space carrier (committed AFTER
+   * the visual) is available. `documentLocalRectCount` is therefore the REAL
+   * document-local fragment count, never an assumption.
+   *
+   * `documentLocalRectCount === null` → read the just-committed carrier;
+   * a number → use it verbatim (0 when no carrier was committed).
+   */
+  private emitPendingFigureTargetAudit(documentLocalRectCount: number | null): void {
+    const pending = this.pendingFigureTargetAudit
+    if (!pending) return
+    this.pendingFigureTargetAudit = null
+    emitRuntimeAudit(FIGURE_TARGET_AUTHORITY_AUDIT_EVENT, {
+      ...pending.payload,
+      documentLocalRectCount: documentLocalRectCount
+        ?? (this.getCommittedDocumentSpace()?.inlineLocal.length ?? 0),
+    })
+  }
+
+  /**
+   * V5.12-R8 §14 — SNAPSHOT-scoped figure gates. These describe the CURRENT
+   * document (a missing-NAME warning must always be locatable, a local-missing
+   * warning must always be a `warning` with a destination range, remote/data
+   * URLs must never be reported, and both rules must survive dedupe). The
+   * snapshot-scoped counters are ASSIGNED; the per-click counters accumulate.
+   */
+  private commitFigureTargetSnapshotGates(snapshot: DocumentDiagnosticsSnapshot): void {
+    const num = (v: unknown): number | null => (typeof v === 'number' ? v : null)
+    const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+    const views: FigureSnapshotDiagnosticView[] = []
+    for (const d of snapshot.diagnostics) {
+      if (d.code !== 'FIGURE_MISSING_NAME' && d.code !== 'FIGURE_LOCAL_IMAGE_MISSING') continue
+      const m = (d.metadata ?? {}) as Record<string, unknown>
+      const loc = (d.location ?? null) as Record<string, unknown> | null
+      views.push({
+        code: d.code,
+        severity: String(d.severity ?? ''),
+        resourceKind: str(m.resourceKind),
+        resourceClass: str(m.resourceClass),
+        altText: str(m.altText),
+        canonicalDestination: str(m.canonicalDestination) ?? str(m.destination),
+        occurrenceIndex: num(m.occurrenceIndex),
+        localFileExists: typeof m.localFileExists === 'boolean' ? m.localFileExists : null,
+        rangeRole: str(m.rangeRole) ?? (loc ? str(loc.rangeRole) : null),
+        locatableSourceRange: !!loc && loc.kind === 'source-range' && typeof loc.startLine === 'number',
+        sourceStart: num(m.sourceStart) ?? (loc ? num(loc.sourceStart) : null),
+        sourceEnd: num(m.sourceEnd) ?? (loc ? num(loc.sourceEnd) : null),
+        destinationStart: num(m.destinationStart) ?? (loc ? num(loc.destinationStart) : null),
+        destinationEnd: num(m.destinationEnd) ?? (loc ? num(loc.destinationEnd) : null),
+      })
+    }
+    const counts = evaluateFigureTargetSnapshotGates(views)
+    for (const key of FIGURE_TARGET_V512R8_GATE_KEYS) {
+      if (FIGURE_TARGET_V512R8_PER_CLICK_GATE_KEYS.has(key)) continue
+      this.countersFigureTargetV512R8[key] = counts[key] ?? 0
+    }
+    const signature = `${snapshot.documentKey ?? ''}|${views.map(v => `${v.code}:${v.rangeRole}:${v.destinationStart ?? ''}:${v.sourceStart ?? ''}`).join(',')}`
+    if (signature === this.lastFigureTargetSnapshotSignature) return
+    this.lastFigureTargetSnapshotSignature = signature
+    emitRuntimeAudit(FIGURE_TARGET_AUTHORITY_AUDIT_EVENT, {
+      documentKey: snapshot.documentKey,
+      revision: snapshot.revision,
+      scope: 'SNAPSHOT',
+      figureDiagnosticCount: views.length,
+      gateReport: formatFigureTargetV512R8GateReport(this.countersFigureTargetV512R8),
+      decision: evaluateFigureTargetV512R8Gates(this.countersFigureTargetV512R8).decision,
+    })
+  }
+
+  getFigureTargetV512R8GateReport(): string[] {
+    return formatFigureTargetV512R8GateReport(this.countersFigureTargetV512R8)
+  }
+
+  getFigureTargetV512R8GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateFigureTargetV512R8Gates(this.countersFigureTargetV512R8)
+  }
+
+  getCaptionCodeSpacingV512R8GateReport(): string[] {
+    return formatCaptionCodeSpacingV512R8GateReport(this.countersCaptionCodeSpacingV512R8)
+  }
+
+  getCaptionCodeSpacingV512R8GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateCaptionCodeSpacingV512R8Gates(this.countersCaptionCodeSpacingV512R8)
+  }
+
+  /**
+   * V5.12-R8 §11/§15 — measure the REAL Code Caption → Code Body gap.
+   *
+   * ONLY an InkChapter code caption is considered, and only against the code
+   * block it directly precedes (`.inkchapter-caption-code + pre.md-fences`).
+   * Global Typora `pre` margin, code line-height and the code block's internal
+   * padding are NEVER touched — this is a pure measurement.
+   */
+  measureCaptionCodeSpacing(): CaptionCodeSpacingFacts[] {
+    const facts: CaptionCodeSpacingFacts[] = []
+    const root: HTMLElement | null = resolveBusinessContentRoot()
+    if (!root) return facts
+    const num = (v: string): number | null => {
+      const n = Number.parseFloat(v)
+      return Number.isFinite(n) ? n : null
+    }
+    for (const caption of Array.from(root.querySelectorAll<HTMLElement>('.inkchapter-caption-code'))) {
+      const body = caption.nextElementSibling as HTMLElement | null
+      if (!body || body.tagName !== 'PRE' || !body.classList.contains('md-fences')) {
+        facts.push({
+          captionRect: null, codeBodyRect: null, effectiveGapPx: null,
+          captionMarginBottom: null, codeMarginTop: null, wrapperGap: null,
+          decision: 'NOT_APPLICABLE',
+        })
+        continue
+      }
+      let cr: DOMRect
+      let br: DOMRect
+      try {
+        cr = caption.getBoundingClientRect()
+        br = body.getBoundingClientRect()
+      } catch {
+        continue
+      }
+      const cs = window.getComputedStyle(caption)
+      const bs = window.getComputedStyle(body)
+      const effectiveGapPx = br.top - cr.bottom
+      const gapDecision = evaluateCaptionCodeSpacingGap(effectiveGapPx)
+      facts.push({
+        captionRect: { left: cr.left, top: cr.top, right: cr.right, bottom: cr.bottom },
+        codeBodyRect: { left: br.left, top: br.top, right: br.right, bottom: br.bottom },
+        effectiveGapPx,
+        captionMarginBottom: num(cs.marginBottom),
+        codeMarginTop: num(bs.marginTop),
+        // No wrapper element is inserted between an InkChapter caption and its
+        // code block (the caption is an immediate sibling) — reported honestly.
+        wrapperGap: null,
+        decision: gapDecision.decision,
+      })
+    }
+    return facts
+  }
+
+  /** V5.12-R8 §14/§15 — fold the measured spacing into counters + audit. */
+  private commitCaptionCodeSpacingAudit(): void {
+    let factsList: CaptionCodeSpacingFacts[]
+    try {
+      factsList = this.measureCaptionCodeSpacing()
+    } catch {
+      return
+    }
+    const measured = factsList.filter(f => f.effectiveGapPx != null)
+    if (measured.length === 0) return
+    this.countersCaptionCodeSpacingV512R8.gapGt6px = measured.filter(f => f.decision === 'FAIL' && (f.effectiveGapPx ?? 0) > 6).length
+    this.countersCaptionCodeSpacingV512R8.gapLt1px = measured.filter(f => f.decision === 'FAIL' && (f.effectiveGapPx ?? 0) < 1).length
+    const first = measured[0]
+    const signature = measured
+      .map(f => `${(f.effectiveGapPx ?? 0).toFixed(2)}:${f.captionMarginBottom ?? ''}:${f.codeMarginTop ?? ''}`)
+      .join('|')
+    if (signature === this.lastCaptionCodeSpacingSignature) return
+    this.lastCaptionCodeSpacingSignature = signature
+    emitRuntimeAudit(CAPTION_CODE_SPACING_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      captionRect: first.captionRect,
+      codeBodyRect: first.codeBodyRect,
+      effectiveGapPx: first.effectiveGapPx,
+      captionMarginBottom: first.captionMarginBottom,
+      codeMarginTop: first.codeMarginTop,
+      wrapperGap: first.wrapperGap,
+      pairCount: measured.length,
+      gateReport: formatCaptionCodeSpacingV512R8GateReport(this.countersCaptionCodeSpacingV512R8),
+      decision: evaluateCaptionCodeSpacingV512R8Gates(this.countersCaptionCodeSpacingV512R8).decision,
     })
   }
 
@@ -1924,6 +2530,8 @@ export class DocumentUtilityOverlayHost {
         if (admission.decision === 'ADMITTED') {
           this.commitAdmittedSnapshot(snapshot, 'SUBSCRIPTION')
         }
+        // V5.12-R8 §14 — snapshot-scoped figure target/existence gates.
+        this.commitFigureTargetSnapshotGates(snapshot)
         // PENDING_ACTIVE_LEAF / ALREADY_ADMITTED / DISCARD_* are audited inside
         // admitDiagnosticsSnapshot and never reach the projection/Toolbar here.
       }
@@ -2973,6 +3581,46 @@ export class DocumentUtilityOverlayHost {
     return evaluateSourceOccurrenceV512R5Gates(this.countersSourceOccurrenceV512R5)
   }
 
+  /** V5.12-R6 §15 — read-only empty-document short-circuit hard-gate counters. */
+  getEmptyDocumentV512R6Counters(): Readonly<Record<string, number>> {
+    return { ...this.countersEmptyDocumentV512R6 }
+  }
+
+  /** V5.12-R6 §15 — the exact `NAME=value` empty-document gate report lines. */
+  getEmptyDocumentV512R6GateReport(): string[] {
+    return formatEmptyDocumentV512R6GateReport(this.countersEmptyDocumentV512R6)
+  }
+
+  /** V5.12-R6 §15 — the empty-document short-circuit gate decision. */
+  getEmptyDocumentV512R6GateDecision(): { decision: 'PASS' | 'FAIL'; failing: string[] } {
+    return evaluateEmptyDocumentV512R6Gates(this.countersEmptyDocumentV512R6)
+  }
+
+  /** V5.12-R7 §13 — read-only FILL_ONLY active-locate hard-gate counters. */
+  getActiveLocateFillOnlyV512R7Counters(): Readonly<Record<string, number>> {
+    return { ...this.countersActiveLocateFillOnlyV512R7 }
+  }
+
+  /** V5.12-R7 §13 — the exact `NAME=value` FILL_ONLY gate report lines. */
+  getActiveLocateFillOnlyV512R7GateReport(): string[] {
+    return formatActiveLocateFillOnlyGateReport(this.countersActiveLocateFillOnlyV512R7)
+  }
+
+  /** V5.12-R7 §13 — the FILL_ONLY active-locate gate decision. */
+  getActiveLocateFillOnlyV512R7GateDecision(): { decision: 'PASS' | 'FAIL'; failing: string[] } {
+    return evaluateActiveLocateFillOnlyGates(this.countersActiveLocateFillOnlyV512R7)
+  }
+
+  /** V5.12-R7 §13 — the last committed active-locate fill count (>= 1 required). */
+  getActiveLocateFillCount(): number {
+    return this.lastActiveLocateFillCount
+  }
+
+  /** V5.12-R7 §13 — the ACTIVE locate presentation mode (fixed: FILL_ONLY). */
+  getActiveLocatePresentationMode(): string {
+    return ACTIVE_LOCATE_PRESENTATION_FILL_ONLY
+  }
+
   /** §3.1 — the current document layout epoch (observability). */
   getDocumentLayoutEpoch(): DocumentLayoutEpoch {
     return this.currentDocumentLayoutEpoch
@@ -3510,10 +4158,10 @@ export class DocumentUtilityOverlayHost {
       frag.className = 'inkchapter-heading-diagnostic-active__fragment'
       frag.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.top)}px;width:${Math.round(f.width)}px;height:${Math.round(f.height)}px;`
       wrapper.appendChild(frag)
-      const key = document.createElement('div')
-      key.className = 'inkchapter-heading-diagnostic-active__keyline'
-      key.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.bottom - 1)}px;width:${Math.round(f.width)}px;height:1.5px;`
-      wrapper.appendChild(key)
+      // V5.12-R7 §5A/§9 — the ACTIVE heading locate is FILL_ONLY: the 1.5px
+      // underline keyline is no longer CREATED here (it was a real painted line).
+      // The PASSIVE gutter marker (icon + rail) is a separate component and is
+      // untouched.
     }
     // §13 — the emphasis must NOT use the full heading block width.
     if (union.width > anchorLocal.width - 1 && anchorLocal.width > union.width + 1) {
@@ -4341,12 +4989,22 @@ export class DocumentUtilityOverlayHost {
     // V4/V5 — Missing-Image fallback ladder: L1 exact source token → L2
     // source-line marker → L3 owning-block corner. A visual FAIL on L1 must
     // NEVER end invisible — L2/L3 still produce a guaranteed visible marker.
+    //
+    // V5.12-R8 §8/§12 — FIGURE_MISSING_NAME (whole Markdown image token) uses
+    // the SAME ladder: its resolved `rangeText` is the full `![alt](dest)`
+    // token, so L1 paints exactly that token (one fragment per visual line,
+    // fill-only). A RENDERED image (`<img>`) keeps its object frame instead —
+    // the token is not text there, so the block context IS the exact target.
     let preciseRect: RectLike | null = null
     let forceInline = false
     let fallbackLevel: 0 | 1 | 2 = 2
-    if (code === 'FIGURE_LOCAL_IMAGE_MISSING' && anchor.tagName !== 'IMG') {
+    const isSourceRangeFigureRule =
+      code === 'FIGURE_LOCAL_IMAGE_MISSING' || code === 'FIGURE_MISSING_NAME'
+    this.lastFigureTargetVisual = { exactTokenAvailable: false, exactTokenUsed: false, usedBlockFallback: false }
+    if (isSourceRangeFigureRule && anchor.tagName !== 'IMG') {
       const raw = rangeToken ? measureTextRects(anchor, rangeToken, occWithin) : { exact: null, foundToken: false }
       const line = measureTextRects(anchor)
+      this.lastFigureTargetVisual.exactTokenAvailable = !!raw.exact && raw.foundToken
       if (raw.exact && raw.foundToken) {
         preciseRect = raw.exact
         forceInline = true
@@ -4361,6 +5019,8 @@ export class DocumentUtilityOverlayHost {
         forceInline = true
         fallbackLevel = 2
       }
+      this.lastFigureTargetVisual.exactTokenUsed = fallbackLevel === 0
+      this.lastFigureTargetVisual.usedBlockFallback = fallbackLevel === 2
     }
     this.presentationFallbackLevel = fallbackLevel
     // V4 — Missing-Name: caption / expected-name host (existing caption mapping
@@ -5512,6 +6172,9 @@ export class DocumentUtilityOverlayHost {
       const reasons = new Set(this.pendingGeometryReasons)
       this.pendingGeometryReasons.clear()
       this.applyGeometry(reasons)
+      // V5.12-R8 §15 — the layout is settled here: measure the real code
+      // caption → code body gap and audit it (state-deduped, no DOM write).
+      this.commitCaptionCodeSpacingAudit()
     }
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(run)
@@ -7553,18 +8216,27 @@ export class DocumentUtilityOverlayHost {
     }
     if (projection.errorCount > 0) control.appendChild(this.buildProblemsSegment('error', projection.errorCount))
     if (projection.warningCount > 0) control.appendChild(this.buildProblemsSegment('warning', projection.warningCount))
-    if (projection.totalCount === 0) {
-      // HEALTHY — check icon + 文档正常 (no zero counters).
+    if (projection.errorCount === 0 && projection.warningCount === 0) {
+      // HEALTHY (0/0/0) — check icon + 文档检测.
+      // V5.12-R6 §1/§11 — HINT-ONLY (e.g. the empty-document terminal notice:
+      // 全部1 / 错误0 / 警告0 / 提示1) MUST stay reachable: without an entry the
+      // Problems Control would render NOTHING and the Drawer could never be
+      // opened. The hint entry shows the REAL hint count — a zero counter is
+      // still never rendered.
+      const hintOnly = projection.hintCount > 0
       const entry = document.createElement('button')
       entry.type = 'button'
-      entry.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry is-healthy'
-      entry.setAttribute('aria-label', '文档检测')
-      entry.title = '文档检测'
+      entry.className =
+        'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry' +
+        (hintOnly ? '' : ' is-healthy')
+      const entryLabel = hintOnly ? `提示 ${projection.hintCount}` : '文档检测'
+      entry.setAttribute('aria-label', entryLabel)
+      entry.title = entryLabel
       const icon = document.createElement('span')
       icon.className = 'inkchapter-toolbar-segment__icon'
-      setIcon(icon, 'check')
+      setIcon(icon, hintOnly ? 'info' : 'check')
       const label = document.createElement('span')
-      label.textContent = '文档检测'
+      label.textContent = entryLabel
       entry.append(icon, label)
       entry.addEventListener('click', () => this.openDrawer('all'))
       control.appendChild(entry)
@@ -9909,6 +10581,9 @@ export class DocumentUtilityOverlayHost {
       }
       facts.presentationAtFinalCommit = this.getDrawerPresentationMode()
       facts.drawerVisibleAtFinalCommit = this.measureDrawerRenderedVisible()
+      // V5.12-R8 §15 — the figure target authority audit is emitted at the
+      // COMMIT, where the R4 document-space carrier is already available.
+      const figureAuditPending = this.pendingFigureTargetAudit != null
       // V5.11 §23 — COMMIT: convert the FINAL viewport geometry into
       // document-local geometry ONCE and mount the document-space carrier.
       // From this point the locate subsystem no longer reacts to scroll.
@@ -9922,6 +10597,7 @@ export class DocumentUtilityOverlayHost {
           this.renderHeadingActiveEmphasis(diag.id, diag, headingEl)
         }
       }
+      if (figureAuditPending) this.emitPendingFigureTargetAudit(committedCarrier ? null : 0)
       // §18 Hard Gate — a COMMIT with a visual FAIL is architecturally impossible
       // after the gate above; this invariant makes a regression provable.
       if (committedCarrier && !gate.canCommit) this.countersClosureV512R2.finalCommitWithVisualFail++
@@ -10438,6 +11114,19 @@ export class DocumentUtilityOverlayHost {
       rangeUnionRect,
       sameIdentityAsSiblingOccurrence: siblings.sameIdentityAsSiblingOccurrence,
       sameRangeAsSiblingOccurrence,
+      // V5.12-R8 §15 — figure target / existence facts (expected side; the
+      // resolved side comes from the resolver's OWN hint).
+      expectedRangeRole: str(meta.rangeRole, loc?.rangeRole),
+      resolvedRangeRole: hint?.resolvedRangeRole ?? null,
+      fixedRangeRole: figureRangeRoleForRule(diag.code),
+      rawToken: str(meta.rawToken, loc?.rawToken),
+      tokenStart: num(meta.tokenStart, loc?.tokenStart),
+      tokenEnd: num(meta.tokenEnd, loc?.tokenEnd),
+      destinationStart: num(meta.destinationStart, loc?.destinationStart),
+      destinationEnd: num(meta.destinationEnd, loc?.destinationEnd),
+      severity: String(diag.severity ?? ''),
+      localFileExists: typeof meta.localFileExists === 'boolean' ? meta.localFileExists : null,
+      resourceClass: typeof meta.resourceClass === 'string' ? meta.resourceClass : null,
       decision: decision.decision,
       reason,
       failedChecks: decision.failedChecks,
@@ -10671,8 +11360,13 @@ export class DocumentUtilityOverlayHost {
     if (r5.isResource && Object.keys(r5.audit).length > 0) {
       emitRuntimeAudit(SOURCE_OCCURRENCE_AUTHORITY_AUDIT_EVENT, r5.audit)
     }
+    // V5.12-R8 §14/§15 — figure target / existence authority (per-click).
+    this.commitFigureTargetAuthority(tx, diag, r5, visualCommitted)
     // §13 — remember the committed occurrence's range for sibling-collision.
     if (visualCommitted) this.r5RememberOccurrenceRange(r5)
+    // V5.12-R7 §13/§14 — FILL_ONLY presentation gates, measured on the REAL
+    // painted active locate carrier (never assumed from the CSS source).
+    this.commitActiveLocateFillOnlyGates(visualCommitted, diag.id)
     if (!hasRealLayout) return true
     if (!targetVisible || !highlightVisible) return false
     if (isResourceDiag && (!identityMatch || !occurrenceMatch)) return false
@@ -10717,6 +11411,8 @@ export class DocumentUtilityOverlayHost {
   ): void {
     if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
     this.cancelLocateSettleWatch()
+    // V5.12-R8 §15 — a failure path must never lose a pending figure audit.
+    if (this.pendingFigureTargetAudit) this.emitPendingFigureTargetAudit(0)
     if (commit && tx.targetCount > 1) {
       // Commit the NEXT index (targetIndex+1 mod count) for the following click.
       this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
@@ -11020,20 +11716,14 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * V5.12-R5 §5/§7 — the resource-reference span (`![alt](dest)` / `[alt](dest)`)
-   * on `lineText` that CONTAINS `tokenIndexInLine`. Resolved source offsets use
-   * the SAME coordinate as the scanner (the whole Markdown construct), so the
-   * resolved identity is directly comparable to the expected one.
+   * V5.12-R5 §5/§7 / V5.12-R8 §6 — the resource-reference span
+   * (`![alt](dest)` / `[alt](dest)`) on `lineText` that CONTAINS
+   * `tokenIndexInLine`. Delegates to the SINGLE Markdown scanner authority, so
+   * the resolved offsets live in the SAME coordinate as the diagnostic's own
+   * source range and are directly comparable.
    */
-  private resourceReferenceSpanAt(lineText: string, tokenIndexInLine: number): { start: number; end: number } | null {
-    const re = /(!?)\[[^\]]*\]\(([^)]+)\)/g
-    let m: RegExpExecArray | null
-    while ((m = re.exec(lineText)) !== null) {
-      const start = m.index
-      const end = m.index + m[0].length
-      if (tokenIndexInLine >= start && tokenIndexInLine < end) return { start, end }
-    }
-    return null
+  private resourceReferenceSpanAt(lineText: string, tokenIndexInLine: number): ReferenceSpan | null {
+    return findReferenceSpanAt(lineText, tokenIndexInLine)
   }
 
   /** How many matching (resourceKind + raw destination) references precede `beforeOffset`. */
@@ -11076,6 +11766,8 @@ export class DocumentUtilityOverlayHost {
     canonicalDestination: string | null
     resourceKind: 'image' | 'link' | null
     expectedOccurrenceIndex: number | null
+    /** V5.12-R8 §5 — which part of the image token to resolve. */
+    rangeRole?: DiagnosticRangeRole
   }): ResolvedSourceOccurrenceHint | null {
     const root = resolveBusinessContentRoot()
     if (!root) return null
@@ -11099,6 +11791,7 @@ export class DocumentUtilityOverlayHost {
     //      (content-verified), else the rawLineOrdinal-th block, else the
     //      content-verified text context. NEVER a bare "first text match".
     let anchor: HTMLElement | null = null
+    let anchorByResource = false
     const byLine = this.resolveSourceLine(resolvedStartLine)
     if (byLine && (needle === '' || normalizeSourceAnchorText(byLine.textContent) === needle)) {
       anchor = byLine
@@ -11111,26 +11804,50 @@ export class DocumentUtilityOverlayHost {
       const byText = this.findBlockByTextInRoot(input.rawText ?? '', resolvedStartLine)
       if (byText && (byText.textContent ?? '').includes(token)) anchor = byText
     }
+    if (!anchor && resourceKind === 'image') {
+      // V5.12-R8 §8 — the image may be RENDERED (no raw token text in the DOM).
+      // Resolve it by resource semantic identity, at the SAME occurrence
+      // ordinal, so a click always reaches a real visual target. The source
+      // range is still re-derived from the CURRENT Markdown below.
+      const canonical = input.canonicalDestination ?? input.rawDestination
+      if (canonical) {
+        const byResource = this.resolveResourceInRoot(
+          'image',
+          normalizeResourcePath(canonical),
+          Math.max(0, input.expectedOccurrenceIndex ?? 0),
+          input.rawDestination,
+        )
+        if (byResource) {
+          anchor = byResource
+          anchorByResource = true
+        }
+      }
+    }
     if (!anchor) return null
 
     // ── 3. occurrenceWithinAnchor — the nth token INSIDE this block (§8.2).
     const matchCount = countTokenInElement(anchor, token)
-    if (matchCount === 0) return null
     const within = Math.max(0, Math.floor(input.occurrenceWithinLine))
-    const sel = selectOccurrenceOffset(anchor.textContent ?? '', token, within)
-    if (!sel) {
-      // §8.3 — multi-match with no verifiable nth → explicit ambiguity, never
-      // a first-match fallback.
-      this.countersSourceOccurrenceV512R5.duplicateOccurrenceFirstMatchFallback++
-      return null
+    if (!anchorByResource) {
+      if (matchCount === 0) return null
+      const sel = selectOccurrenceOffset(anchor.textContent ?? '', token, within)
+      if (!sel) {
+        // §8.3 — multi-match with no verifiable nth → explicit ambiguity, never
+        // a first-match fallback.
+        this.countersSourceOccurrenceV512R5.duplicateOccurrenceFirstMatchFallback++
+        return null
+      }
     }
 
     // ── 4. RESOLVED source offsets — recomputed from the CURRENT Markdown in the
-    //      scanner's OWN coordinate (the whole resource construct), so the
-    //      resolved identity is directly comparable to the expected one.
+    //      scanner's OWN coordinate, so the resolved identity is directly
+    //      comparable to the expected one. §5 — the resolved span depends on
+    //      WHICH part of the token this rule targets.
     let resolvedSourceStart: number | null = null
     let resolvedSourceEnd: number | null = null
     let resolvedOccurrenceIndex: number | null = null
+    let rangeText = token
+    let resolvedRangeRole: DiagnosticRangeRole | undefined
     if (markdown != null) {
       const lineText = this.getSourceLineTextAt(resolvedStartLine)
       if (lineText != null) {
@@ -11138,15 +11855,25 @@ export class DocumentUtilityOverlayHost {
         if (tokenIndexInLine != null) {
           const span = this.resourceReferenceSpanAt(lineText, tokenIndexInLine)
           if (span) {
+            const useDestination = input.rangeRole === 'figure-destination'
             const lineStartOffset = this.sourceLineStartOffset(markdown, resolvedStartLine)
-            resolvedSourceStart = lineStartOffset + span.start
-            resolvedSourceEnd = lineStartOffset + span.end
+            resolvedSourceStart = lineStartOffset + (useDestination ? span.destinationStart : span.tokenStart)
+            resolvedSourceEnd = lineStartOffset + (useDestination ? span.destinationEnd : span.tokenEnd)
             resolvedOccurrenceIndex = this.countMatchingResourceReferencesBefore(
               markdown,
               resourceKind,
               input.rawDestination ?? token,
-              resolvedSourceStart,
+              lineStartOffset + span.tokenStart,
             )
+            resolvedRangeRole = input.rangeRole
+            // §5/§6 — the measure token is the FULL image token for the
+            // full-token rule, the destination otherwise. Derived from the
+            // CURRENT source, never copied from the diagnostic.
+            rangeText = useDestination
+              ? span.rawDestination
+              : input.rangeRole === 'figure-full-token'
+                ? span.rawToken
+                : token
           }
         }
       }
@@ -11172,13 +11899,14 @@ export class DocumentUtilityOverlayHost {
       matchCountWithinAnchor: matchCount,
       occurrenceWithinAnchor: within,
       decision: resolvedSourceStart != null ? 'EXACT_SOURCE_RANGE' : 'EXACT_SOURCE_LINE',
-      rangeText: token,
+      rangeText,
       resolvedSourceStart,
       resolvedSourceEnd,
       resolvedSourceRangeIdentity,
       resolvedOccurrenceIndex,
       resolvedStartLine,
       resolvedEndLine: resolvedStartLine,
+      resolvedRangeRole,
     }
   }
 

@@ -2302,6 +2302,25 @@
 #write .inkchapter-caption-figure { text-align: center; }
 #write .inkchapter-caption-code { text-align: left; }
 
+// V5.12-R8 §11 — Code Caption → Code Body scoped spacing.
+//
+// ROOT CAUSE: the code-block theme rule (`.md-fences { margin-top: 15px }`,
+// e.g. the GitHub theme) COLLAPSES with the caption's `margin-bottom: 6px`, so
+// the effective gap was the theme's 15px. Only the one duplicated layer is
+// removed, and ONLY for an InkChapter CODE caption followed by ITS code block:
+//   - the caption's own bottom margin/padding is zeroed;
+//   - the code block immediately after a code caption gets a 3px top margin.
+// FROZEN: global `pre` / `code` / `.md-fences` margins, the code block's
+// internal padding, the code line-height, and the Table/Figure/Formula caption
+// spacing are NOT touched.
+#write .inkchapter-caption-code {
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+#write .inkchapter-caption-code + pre.md-fences {
+  margin-top: 3px;
+}
+
 // Context menu
 .inkchapter-caption-menu {
   position: fixed;
@@ -2648,17 +2667,15 @@
     border-color 120ms ease,
     background-color 120ms ease;
 }
-/* Shared compact severity bar (indicator) — full/open-right/text-tight only. */
-.inkchapter-diagnostic-locate-frame::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 6px;
-  bottom: 6px;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--ink-locate-indicator);
-  pointer-events: none;
+/* V5.12-R7 §3/§19 — ACTIVE_LOCATE_VISUAL = FILL_ONLY.
+   NO decorative pseudo element is ever painted on the locate carrier: the old
+   2px left indicator bar and the open-edge / corner continuation arms are GONE
+   — stopped at the renderer/presentation layer, never hidden with opacity:0.
+   The V5.3 severity colour TOKENS are unchanged; only LINEAR decoration is no
+   longer used. */
+.inkchapter-diagnostic-locate-frame::before,
+.inkchapter-diagnostic-locate-frame::after {
+  content: none;
 }
 .inkchapter-diagnostic-locate-frame[data-severity='error'] {
   --ink-locate-keyline: color-mix(in srgb, var(--ink-ui-sev-error, #b55454) 96%, transparent);
@@ -2722,121 +2739,64 @@
   }
 }
 
-/* FULL_OBJECT_FRAME — only when the whole semantic object is visible.
-   Secondary context wash is provided per object kind below; border 1.5px. */
+/* V5.12-R7 §2/§7 — every block presentation is the SAME fill-only surface over
+   the full block presentation rect. The frame topology (full / open-right /
+   open-left) still decides the GEOMETRY (untouched — V5.4/V5.7 authority); only
+   the closed border, the open-edge continuation arm and the corner keyline are
+   gone. */
 .inkchapter-diagnostic-locate-frame[data-presentation='full-frame'] {
-  border: 1.5px solid var(--ink-locate-border);
+  border: 0;
   border-radius: 4px;
-  background: transparent;
-}
-/* OCCLUDED right — left/top/bottom borders live, right border is NEVER drawn
-   (no fake closed edge in front of the Drawer) and right corners are 0. */
-.inkchapter-diagnostic-locate-frame[data-presentation='open-right-frame'] {
-  border: 1.5px solid var(--ink-locate-border);
-  border-right: none;
-  border-radius: 4px 0 0 4px;
-  background: transparent;
-}
-/* Very light continuation cue at the open side — the object continues behind
-   the panel. No arrow / badge / text. */
-.inkchapter-diagnostic-locate-frame[data-presentation='open-right-frame']::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 0;
-  width: 10px;
-  pointer-events: none;
-  background: linear-gradient(to left, var(--ink-locate-border) 0%, transparent 100%);
-  opacity: 0.35;
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame'] {
-  border: 1.5px solid var(--ink-locate-border);
-  border-left: none;
-  border-radius: 0 4px 4px 0;
-  background: transparent;
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame']::before {
-  content: none; /* no left indicator when the left edge is open */
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame']::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 10px;
-  pointer-events: none;
-  background: linear-gradient(to right, var(--ink-locate-border) 0%, transparent 100%);
-  opacity: 0.35;
-}
-
-/* V5.2 — Table / Code get the SECONDARY object-context wash (independent
-   overlay carrier: never a background on td/th/tr/tbody/pre/code/token).
-   Media objects (figure/formula/blockquote) stay transparent so a real
-   picture is never tinted. */
-.inkchapter-diagnostic-locate-frame[data-target-kind='table'],
-.inkchapter-diagnostic-locate-frame[data-target-kind='code'] {
   background: var(--ink-locate-context-bg);
 }
+.inkchapter-diagnostic-locate-frame[data-presentation='open-right-frame'] {
+  border: 0;
+  border-radius: 4px;
+  background: var(--ink-locate-context-bg);
+}
+.inkchapter-diagnostic-locate-frame[data-presentation='open-left-frame'] {
+  border: 0;
+  border-radius: 4px;
+  background: var(--ink-locate-context-bg);
+}
+
+/* V5.12-R7 §7 — EVERY block target kind is expressed as the SAME severity fill
+   over the full block presentation rect (fill-only supersedes the earlier
+   "media objects stay transparent" rule: without a frame line an unpainted
+   carrier would be invisible). Colour tokens are reused, never redefined, and
+   the fill is ALWAYS an overlay carrier — pre/code/table/td native backgrounds
+   are never touched. */
+.inkchapter-diagnostic-locate-frame[data-target-kind='table'],
+.inkchapter-diagnostic-locate-frame[data-target-kind='code'],
 .inkchapter-diagnostic-locate-frame[data-target-kind='figure'],
 .inkchapter-diagnostic-locate-frame[data-target-kind='formula'],
 .inkchapter-diagnostic-locate-frame[data-target-kind='blockquote'],
 .inkchapter-diagnostic-locate-frame[data-target-kind='block'] {
-  background: transparent;
+  background: var(--ink-locate-context-bg);
 }
 
-/* Heading — GUARANTEED corner bracket marker (V5). NO full-width fill, NO
-   full-width border, NO whole-text underline. Visual = 3px vertical marker +
-   a 10–16px bottom-left corner cap (--ink-heading-corner set by the controller
-   from the measured heading text; block-left fallback when text is unknown). */
+/* V5.12-R7 §9 — Heading ACTIVE locate = FILL_ONLY over the measured heading text
+   rect. The 3px vertical marker bar and the bottom-left corner cap are GONE.
+   The PASSIVE heading gutter marker (icon + rail, V5.12-R1 above) is a SEPARATE
+   component and is deliberately untouched. */
 .inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker'] {
   border: none;
-  border-radius: 0;
-  background: transparent;
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::before {
-  top: 4px;
-  bottom: 4px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--ink-locate-indicator);
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::after {
-  content: '';
-  position: absolute;
-  left: 8px;
-  bottom: 4px;
-  height: 2px;
-  width: var(--ink-heading-corner, 16px);
-  border-radius: 999px;
-  background: var(--ink-locate-border);
-  pointer-events: none;
+  border-radius: 3px;
+  background: var(--ink-locate-context-bg);
 }
 
-/* Precise inline / source-line mark geometry (sourceRange-exact missing-image
-   / text box): PRIMARY fill + 2px lower severity keyline painted through the
-   SAME overlay frame element as an inline mark — no wide paragraph frame, no
-   left indicator. The lower edge is a gradient layer, never a box-shadow. */
+/* V5.12-R7 §8 — Precise inline / source-line mark = FILL_ONLY fragment(s) over
+   the exact measured Range rect. The 2px lower severity keyline (a painted
+   underline) is GONE; only the inline severity fill remains — never a wide
+   paragraph frame, never a left indicator, never a cross-line border. */
 .inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'] {
   border: none;
   border-radius: 3px;
-  background-image: linear-gradient(
-    to top,
-    var(--ink-locate-keyline) 0,
-    var(--ink-locate-keyline) 2px,
-    transparent 2px
-  );
   background-color: var(--ink-locate-inline-bg);
-  background-blend-mode: normal;
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark']::before {
-  content: none;
 }
 
-/* V5.2 — Caption / expected-name slot = PRIMARY. The marker becomes a compact
-   slot fill (0.11–0.15) with a 2–3px bottom keyline. `top-edge` (no measured
-   slot) stays a thin 2px keyline only. Fill never touches td/th/pre/code. */
+/* V5.12-R7 §7 — Caption / expected-name slot = PRIMARY FILL only (the previous
+   2–3px bottom keyline cue is gone). Fill never touches td/th/pre/code. */
 .inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='caption-host'] {
   position: absolute;
   border-radius: 3px;
@@ -2844,67 +2804,23 @@
   pointer-events: none;
   opacity: 1;
 }
-.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='caption-host']::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--ink-locate-keyline);
-  pointer-events: none;
-}
-.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='top-edge'] {
-  position: absolute;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--ink-locate-indicator);
-  opacity: 0.9;
-  pointer-events: none;
-}
 
-/* V5 — Missing-Name: PRIMARY = Expected Name Slot. The name-keyline cue is the
-   strong marker; the surrounding context frame is intentionally SECONDARY (a
-   quieter border). Only the frame's own border changes — never td/th/pre. */
-.inkchapter-diagnostic-locate-frame[data-name-primary='true'] {
-  --ink-locate-context: color-mix(in srgb, var(--ink-ui-sev-warning, #ad8748) 34%, transparent);
-  border-color: var(--ink-locate-context);
-}
-.inkchapter-diagnostic-locate-frame[data-name-primary='true'][data-severity='error'] {
-  --ink-locate-context: color-mix(in srgb, var(--ink-ui-sev-error, #b96767) 38%, transparent);
-}
-/* top-edge cue (no measured name slot) carries the strong severity keyline. */
-.inkchapter-diagnostic-locate-marker[data-marker-kind='caption-edge'][data-cue-type='top-edge'][data-severity='warning'] {
-  background: var(--ink-locate-indicator);
-  opacity: 1;
-}
-
-/* V5 — Missing-Image L3 owning-block corner fallback: even when no text line
-   can be measured, the WIDE frame must stay transparent — only the left marker
-   and a 10–16px corner cap are painted. No full-width closed block frame. */
+/* V5.12-R7 §2/§10 — Missing-Image L3 owning-block fallback: the wide carrier
+   must stay a plain fill (the corner cap / left marker are gone with the
+   fill-only contract). No full-width closed block frame, no shadow. */
 .inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2'] {
-  background: transparent;
   box-shadow: none;
 }
-.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2']::before {
-  content: '';
-  left: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--ink-locate-indicator);
-}
-.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2']::after {
-  content: '';
-  position: absolute;
-  left: 6px;
-  bottom: 4px;
-  width: 14px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--ink-locate-border);
+
+/* V5.12-R7 §7 — Missing-Name: the expected-name slot is a FILL (see the
+   caption-edge rule above). The old stronger `border-color` emphasis on the
+   surrounding frame is gone with the fill-only contract: the frame is a plain
+   severity fill and never a stronger keyline; td/th/pre are still untouched. */
+
+/* V5.12-R7 §2/§10 — Missing-Image L3 owning-block fallback = plain fill only.
+   The wide carrier never paints a left marker / corner cap / shadow. */
+.inkchapter-diagnostic-locate-frame[data-presentation='inline-mark'][data-fallback-level='2'] {
+  box-shadow: none;
 }
 
 /* V5 — Drawer LOCATE_COLLAPSE: while a diagnostic object is being located, the
@@ -2928,21 +2844,15 @@
   .inkchapter-diagnostic-locate-frame { transition: none; }
 }
 
-/* Inline element mark — precise severity-aware mark, never a native-selection
-   lookalike. V5.2: severity fill + a 2px lower keyline via gradient layers
-   (no box-shadow / glow; ::selection untouched). */
+/* V5.12-R7 §8 — Inline element mark = FILL_ONLY (no lower keyline / underline).
+   The V5.3 severity colour tokens are unchanged; only the 2px edge line is no
+   longer painted. Never a native-selection lookalike (::selection untouched). */
 .inkchapter-diagnostic-inline-mark {
   --ink-locate-color: var(--ink-ui-sev-info, #5d7181);
   --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 16%, transparent);
   --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 90%, transparent);
   border-radius: 3px;
   pointer-events: none;
-  background-image: linear-gradient(
-    to top,
-    var(--ink-locate-inline-edge) 0,
-    var(--ink-locate-inline-edge) 2px,
-    transparent 2px
-  );
   background-color: var(--ink-locate-inline-bg);
 }
 .inkchapter-diagnostic-inline-mark[data-severity='error'] {
@@ -2961,20 +2871,15 @@
   --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 90%, transparent);
 }
 
-/* ── V5.12-R2 §10 — inline source range PER VISUAL LINE fragments ──────────
-   One overlay child per visual line. Same V5.3 colour tokens as the class-based
-   inline mark (frozen colour set); NEVER a cross-line union rectangle. */
+/* ── V5.12-R2 §10 / V5.12-R7 §8 — inline source range PER VISUAL LINE fragments
+   One overlay child per visual line, each a FILL-ONLY fragment (no underline /
+   bottom rule / cap line / cross-line union border). Same V5.3 colour tokens as
+   the class-based inline mark (frozen colour set). */
 .inkchapter-diagnostic-inline-fragment {
   --ink-locate-color: var(--ink-ui-sev-info, #5d7181);
   --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 16%, transparent);
   --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 90%, transparent);
   border-radius: 3px;
-  background-image: linear-gradient(
-    to top,
-    var(--ink-locate-inline-edge) 0,
-    var(--ink-locate-inline-edge) 2px,
-    transparent 2px
-  );
   background-color: var(--ink-locate-inline-bg);
 }
 .inkchapter-diagnostic-inline-fragment[data-severity='error'] {
@@ -3031,10 +2936,10 @@
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.6l6.4 11.2H1.6L8 1.6zm0 3.4a.8.8 0 00-.8.8v3a.8.8 0 001.6 0v-3A.8.8 0 008 5zm0 6.6a.9.9 0 100 1.8.9.9 0 000-1.8z'/%3E%3C/svg%3E");
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.6l6.4 11.2H1.6L8 1.6zm0 3.4a.8.8 0 00-.8.8v3a.8.8 0 001.6 0v-3A.8.8 0 008 5zm0 6.6a.9.9 0 100 1.8.9.9 0 000-1.8z'/%3E%3C/svg%3E");
 }
-/* Level 2 Active: rail 2px → 3px + text-tight tint fragments + keyline. */
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-marker__rail {
-  width: 3px;
-}
+/* V5.12-R7 §9 — Level 2 Active heading locate = FILL_ONLY: the text-tight tint
+   fragments are the whole active emphasis. The active rail thickening (2px→3px)
+   and the active keyline (solid/dashed underline) are GONE; the PASSIVE gutter
+   marker keeps its own 2px rail + icon (V5.12-R1, never removed here). */
 .inkchapter-heading-diagnostic-active {
   pointer-events: none;
 }
@@ -3048,14 +2953,6 @@
   border-radius: 2px;
   background: color-mix(in srgb, var(--ink-heading-sev, #b55454) 7%, transparent);
   transition: background-color 140ms ease;
-}
-.inkchapter-heading-diagnostic-active__keyline {
-  background: var(--ink-heading-sev, #b55454);
-}
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-active__keyline {
-  background-image: linear-gradient(to right, var(--ink-heading-sev) 0 4px, transparent 4px 7px);
-  background-size: 7px 100%;
-  background-color: transparent;
 }
 /* Level 3 Active reason chip: overlay only, never in the heading layout flow. */
 .inkchapter-heading-diagnostic-reason {

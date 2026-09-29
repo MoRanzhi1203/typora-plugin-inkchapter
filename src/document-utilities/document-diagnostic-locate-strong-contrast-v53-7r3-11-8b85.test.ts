@@ -112,15 +112,18 @@ describe('CONTRAST-V53 — strong light + dark bands', () => {
 
 // ── IMAGE-V53 ───────────────────────────────────────────
 describe('IMAGE-V53 — strong error source-line, clean fallback', () => {
-  it('IMAGE-V53-1/2: exact/source-line error inline fill >= 20% and fallback stays clean', () => {
+  it('IMAGE-V53-1/2: exact/source-line error inline fill >= 20% and fill-only fallback', () => {
     const r = visualRegion()
     const inlineBlock = r.slice(r.indexOf("[data-presentation='inline-mark']"))
     expect(inlineBlock).toContain('background-color: var(--ink-locate-inline-bg)')
     const err = lightSev('error')
     expect(pctOf(err, 'inline-bg') / 100).toBeGreaterThanOrEqual(0.20)
     expect(pctOf(err, 'inline-bg') / 100).toBeLessThanOrEqual(0.22)
-    // owning-block fallback never gets a broad wash
-    expect(scss).toMatch(/inline-mark'\]\[data-fallback-level='2'\] \{[\s\S]{0,120}background: transparent/)
+    // V5.12-R7 §10 — the owning-block fallback is a plain fill (no transparent
+    // wash, no corner cap / left marker line).
+    expect(scss).not.toMatch(/inline-mark'\]\[data-fallback-level='2'\] \{[\s\S]{0,120}background: transparent/)
+    expect(scss).not.toMatch(/inline-mark'\]\[data-fallback-level='2'\]::(before|after)/)
+    // V5.3 colour token authority unchanged.
     expect(pctOf(err, 'keyline') / 100).toBeGreaterThanOrEqual(0.90)
   })
 
@@ -133,12 +136,14 @@ describe('IMAGE-V53 — strong error source-line, clean fallback', () => {
 
 // ── LINK-V53 ────────────────────────────────────────────
 describe('LINK-V53 — strong warning inline', () => {
-  it('LINK-V53-1/2: warning inline fill 20–22% with a 2px keyline', () => {
+  it('LINK-V53-1/2: warning inline fill 20–22%, FILL_ONLY (no 2px keyline)', () => {
     expect(pctInInlines('warning', 'inline-bg') / 100).toBeGreaterThanOrEqual(0.20)
     expect(pctInInlines('warning', 'inline-bg') / 100).toBeLessThanOrEqual(0.22)
     expect(pctInInlines('warning', 'inline-edge') / 100).toBeGreaterThanOrEqual(0.90)
     const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
-    expect(inline).toContain('2px')
+    // V5.12-R7 §8 — the 2px lower keyline gradient is GONE; only the fill stays.
+    expect(inline).not.toContain('background-image: linear-gradient(')
+    expect(inline).toContain('background-color: var(--ink-locate-inline-bg)')
   })
 
   it('LINK-V53-3/4: ::selection + native hover untouched and V5.2 inline gate unchanged', () => {
@@ -222,13 +227,17 @@ describe('TABLE-V53 / CODE-V53 — name-slot PRIMARY over full context, zero mut
 
 // ── HEADING-V53 ─────────────────────────────────────────
 describe('HEADING-V53 — marker/corner only', () => {
-  it('HEADING-V53-1: keyline strong (>= 90) and no full-width fill/border', () => {
+  it('HEADING-V53-1: marker/corner authority kept, active carrier is FILL-only', () => {
     const err = lightSev('error')
+    // V5.3 colour token authority unchanged.
     expect(pctOf(err, 'keyline') / 100).toBeGreaterThanOrEqual(0.90)
     const headIdx = scss.indexOf(".inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']")
     const head = scss.slice(headIdx, headIdx + 260)
     expect(head).toContain('border: none')
-    expect(head).toContain('background: transparent')
+    // V5.12-R7 §9 — the heading active carrier is a FILL (never a full-width band
+    // and never a corner cap / keyline).
+    expect(head).toContain('background: var(--ink-locate-context-bg)')
+    expect(scss).not.toContain('var(--ink-heading-corner')
     expect(scss).not.toMatch(/text-tight-marker[\s\S]{0,200}width: 100%/)
     expect(scss).not.toMatch(/text-tight-marker[\s\S]{0,200}border: 1px/)
   })

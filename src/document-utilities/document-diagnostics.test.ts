@@ -192,13 +192,14 @@ describe('DIAG-7 deduplication', () => {
 })
 
 describe('DIAG extra: figure local image missing + strict first H1', () => {
-  it('reports FIGURE_LOCAL_IMAGE_MISSING as error for a missing local path', () => {
+  it('reports FIGURE_LOCAL_IMAGE_MISSING as warning for a missing local path (V5.12-R8 §9)', () => {
     const r = computeDocumentDiagnostics(
       input({
         figures: [{ name: '图', localPath: 'images/not-exists.png', element: el() }],
       }),
     )
-    expect(r.diagnostics.some(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING' && d.severity === 'error')).toBe(true)
+    expect(r.diagnostics.some(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING' && d.severity === 'warning')).toBe(true)
+    expect(r.diagnostics.some(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING' && d.severity === 'error')).toBe(false)
   })
 
   it('does not flag remote images as missing local files', () => {

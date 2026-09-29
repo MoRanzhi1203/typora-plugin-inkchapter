@@ -134,7 +134,7 @@ describe('TABLE-V4 / CODE-V4 — caption cue + native content untouched', () => 
     expect(anchor.style.background).toBe('')
   })
 
-  it('CODE-V4: no caption host → top-edge keyline fallback; pre untouched; occluded → open-right', () => {
+  it('CODE-V4: no caption host → NO cue line (fill-only); pre untouched; occluded → open-right', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     const anchor = document.createElement('pre')
@@ -146,7 +146,10 @@ describe('TABLE-V4 / CODE-V4 — caption cue + native content untouched', () => 
     const frame = root.querySelector('.inkchapter-diagnostic-locate-frame') as HTMLElement
     expect(frame.dataset.presentation).toBe('open-right-frame')
     expect(frame.dataset.openEdge).toBe('right')
-    expect(frame.dataset.captionCue).toBe('top-edge')
+    // V5.12-R7 §5A — the 2px `top-edge` keyline cue is NO LONGER CREATED: the
+    // frame's own severity fill is the whole locate visual.
+    expect(frame.dataset.captionCue).toBeUndefined()
+    expect(frame.querySelectorAll('[data-marker-kind="caption-edge"]').length).toBe(0)
     expect(anchor.style.background).toBe('')
   })
 })
@@ -194,12 +197,13 @@ describe('IMAGE-V4 — sourceRange-exact inline geometry', () => {
 
 // ── HEADING-V4 ─────────────────────────────────────────
 describe('HEADING-V4 — text-tight marker', () => {
-  it('HEADING-V4-1/2: heading never becomes a full-width fill/border frame', () => {
+  it('HEADING-V4-1/2: heading carrier is a text-tight FILL, never a full-width band/border', () => {
     const g = buildLocateVisualGeometryV4({ kind: 'heading', semanticRect: { left: 200, top: 100, right: 1000, bottom: 150 }, unobscuredRect: { left: 200, top: 0, right: 1400, bottom: 900 }, headless: false })
     expect(g.presentation).toBe('text-tight-marker')
-    // CSS: border none + transparent for the text-tight presentation.
+    // V5.12-R7 §9 — CSS: border none + a severity FILL (no corner cap / keyline).
     expect(scss).toMatch(/text-tight-marker[\s\S]{0,200}border: none/)
-    expect(scss).toMatch(/width: var\(--ink-heading-corner/)
+    expect(scss).toMatch(/text-tight-marker[\s\S]{0,240}background: var\(--ink-locate-context-bg\)/)
+    expect(scss).not.toContain(".inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::after")
   })
 
   it('HEADING-V4-3: text geometry unavailable → marker-only fallback (still text-tight)', () => {

@@ -122,6 +122,8 @@ export function collectDiagnosticsInput(
     /** Phase 7R.3.11.8B.4.1 — latent ATX source-syntax facts (isolated). */
     latentAtxMarkers: DocumentDiagnosticsInput['latentAtxMarkers']
     figures: DocumentDiagnosticsInput['figures']
+    /** V5.12-R8 §4 — unified figure source occurrences (optional). */
+    figureSourceOccurrences?: DocumentDiagnosticsInput['figureSourceOccurrences']
     tables: DocumentDiagnosticsInput['tables']
     codes: DocumentDiagnosticsInput['codes']
     formulas: DocumentDiagnosticsInput['formulas']
@@ -145,6 +147,7 @@ export function collectDiagnosticsInput(
     headingAuthority: structural.headingAuthority,
     latentAtxMarkers: structural.latentAtxMarkers,
     figures: structural.figures,
+    figureSourceOccurrences: structural.figureSourceOccurrences,
     tables: structural.tables,
     codes: structural.codes,
     formulas: structural.formulas,

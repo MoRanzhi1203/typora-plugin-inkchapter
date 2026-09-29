@@ -10,6 +10,10 @@ import { validateStrictFirstH1Topline } from '../heading-numbering/strict-docume
 import { normalizeResourcePath, normalizeSourceAnchorText } from './document-diagnostic-location'
 // V5.12-R5 §4 — the SOURCE RANGE IDENTITY authority (pure, no DOM).
 import { buildSourceRangeIdentity } from './document-diagnostic-source-occurrence-v512-r5'
+// V5.12-R6 §7 — the ONE empty-document predicate (pure, no DOM / no runtime).
+import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
+// V5.12-R8 §4 — resource classification + the unified figure occurrence model.
+import type { ResourceClass, ImageSourceOccurrence } from './document-resource-scanner'
 import type {
   DiagnosticLocation,
   DiagnosticValidityFingerprint,
@@ -46,6 +50,45 @@ export interface DiagnosticObjectFact {
   language?: string | null
   element: HTMLElement | null
   targetIdentity?: string
+}
+
+/**
+ * V5.12-R8 §4 — the UNIFIED Figure Source Occurrence.
+ *
+ * ONE occurrence carries BOTH source ranges — the full Markdown image token
+ * (`![alt](dest)`) AND the destination/path (`dest`) — plus the occurrence
+ * identity and the resource semantics. The two figure rules therefore never
+ * re-parse the Markdown and never disagree about which occurrence they mean:
+ *
+ *   FIGURE_MISSING_NAME        → FIGURE_FULL_TOKEN  (tokenStart/tokenEnd)
+ *   FIGURE_LOCAL_IMAGE_MISSING → FIGURE_DESTINATION (destinationStart/End)
+ */
+export interface FigureSourceOccurrence {
+  rawToken: string
+  rawDestination: string
+  altText: string
+  /** 'local' | 'remote' | 'data' | 'other' — remote/data are never "missing local". */
+  resourceClass: ResourceClass
+  isLocal: boolean
+  /** Whole `![alt](dest "title")`. */
+  tokenStart: number
+  tokenEnd: number
+  /** Destination/path only (excludes an optional `"title"`). */
+  destinationStart: number
+  destinationEnd: number
+  startLine: number
+  endLine: number
+  startColumn: number
+  endColumn: number
+  rawText: string
+  canonicalDestination: string
+  occurrenceIndex: number
+  rawLineOrdinal: number
+  occurrenceWithinLine: number
+  /** Resolved local file existence (null for remote / data / other). */
+  localFileExists: boolean | null
+  /** Identity of the FULL TOKEN range (the FIGURE_MISSING_NAME authority). */
+  sourceRangeIdentity: string | null
 }
 
 export interface DiagnosticFormulaFact {
@@ -92,6 +135,15 @@ export interface DiagnosticLinkFact {
   startColumn?: number
   endColumn?: number
   rawText?: string
+  /** V5.12-R8 §4 — destination/path span (the FIGURE_LOCAL_IMAGE_MISSING target). */
+  destinationStart?: number
+  destinationEnd?: number
+  /** V5.12-R8 §4 — the full Markdown reference token (`![alt](dest)`). */
+  rawToken?: string
+  /** V5.12-R8 §4 — Markdown alt text (the canonical figure name). */
+  altText?: string
+  /** V5.12-R8 §4 — resource class (local | remote | data | other). */
+  resourceClass?: ResourceClass
 }
 
 /**
@@ -156,10 +208,15 @@ export function resolveDocumentDiagnosticSeverity(
     // ── Constant ERROR rules ──
     case 'STRICT_SINGLE_H1_NO_H1':
     case 'STRICT_SINGLE_H1_MULTIPLE_H1':
-    case 'FIGURE_LOCAL_IMAGE_MISSING':
     case 'FORMULA_DUPLICATE_VISIBLE_TAG':
     case 'HEADING_DUPLICATE_IDENTITY':
       return 'error'
+    // ── Constant WARNING rules ──
+    // V5.12-R8 §9 — a missing local image is a resource-level WARNING (the
+    // document structure is intact; only a referenced asset is absent), never
+    // an error. Remote / data URLs can never reach this rule.
+    case 'FIGURE_LOCAL_IMAGE_MISSING':
+      return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
     case 'DOCUMENT_INACTIVE':
@@ -214,6 +271,13 @@ export interface DocumentDiagnosticsInput {
    */
   latentAtxMarkers?: readonly LatentAtxMarkerInput[]
   figures: readonly DiagnosticObjectFact[]
+  /**
+   * V5.12-R8 §4 — unified figure source occurrences (ONE scanner authority).
+   * When provided, FIGURE_MISSING_NAME is produced SOURCE-FIRST from these
+   * occurrences (full Markdown token target, broken images included). Absent =
+   * the legacy DOM-figure fallback keeps pure/legacy callers unchanged.
+   */
+  figureSourceOccurrences?: readonly FigureSourceOccurrence[]
   tables: readonly DiagnosticObjectFact[]
   codes: readonly DiagnosticObjectFact[]
   formulas: readonly DiagnosticFormulaFact[]
@@ -344,6 +408,13 @@ function makeDiagnostic(
      */
     location?: DiagnosticLocation
     /**
+     * V5.12-R6 §9 — publish an explicitly NON-LOCATABLE document notice (no
+     * location at all). Only the empty-document terminal `DOCUMENT_EMPTY` uses
+     * this: there is no source target to scroll to, so a derived
+     * `document-start` target would be a fake locator.
+     */
+    nonLocatableNotice?: boolean
+    /**
      * Phase 7R.3.11.8B.7.3 — scan-time source validity fingerprint
      * (VALIDITY ≠ DOM RESOLUTION). Carried by source-syntax / resource rules.
      */
@@ -369,8 +440,25 @@ function makeDiagnostic(
     metadata: opts.metadata,
     validityFingerprint: opts.validityFingerprint,
     locator,
-    location: opts.location ?? deriveDefaultLocation(category, opts),
+    // V5.12-R6 §9 — a declared non-locatable notice carries NO location.
+    location: opts.nonLocatableNotice === true ? undefined : (opts.location ?? deriveDefaultLocation(category, opts)),
+    nonLocatableNotice: opts.nonLocatableNotice === true ? true : undefined,
   }
+}
+
+/**
+ * V5.12-R6 §9 — the ONE diagnostic an empty document publishes.
+ *
+ * `severity = info`, `code = DOCUMENT_EMPTY`, message/detail keep the existing
+ * user-facing copy. `locatable = false` (§9): no location, no fake source
+ * target — clicking it must never scroll to an H1 / paragraph / EOF.
+ */
+function createDocumentEmptyDiagnostic(input: DocumentDiagnosticsInput): DocumentDiagnostic {
+  return makeDiagnostic(input, 'document', DOCUMENT_EMPTY_CODE, '文档为空', {
+    detail: '当前文档没有内容。',
+    kind: 'document',
+    nonLocatableNotice: true,
+  })
 }
 
 /**
@@ -564,7 +652,13 @@ export function resourceDirVaultRelative(activeFilePath: string, vaultRoot: stri
  * alone is never a location identity.
  */
 export function computeSourceOccurrenceOrdinals(
-  links: readonly DiagnosticLinkFact[],
+  links: readonly {
+    resourceKind?: 'image' | 'link'
+    target: string
+    rawText?: string
+    startLine?: number
+    semanticDestination?: string
+  }[],
 ): Array<{ rawLineOrdinal: number; occurrenceWithinLine: number }> {
   const out = links.map(() => ({ rawLineOrdinal: 0, occurrenceWithinLine: 0 }))
   const nextBlockOrdinalByText = new Map<string, number>()
@@ -616,6 +710,65 @@ export function linkOccurrenceIndex(
 }
 
 /**
+ * V5.12-R8 §4 — build the UNIFIED Figure Source Occurrences from the SINGLE
+ * scanner output. Every occurrence gets its full-token range, its
+ * destination/path range, the occurrence ordinal (grouped by resourceKind +
+ * canonical destination) and the source-range identity of the FULL TOKEN.
+ *
+ * Pure: the caller supplies the canonical-destination resolver and the local
+ * file existence check (the only effects).
+ */
+export function buildFigureSourceOccurrences(input: {
+  scanned: readonly ImageSourceOccurrence[]
+  documentKey: string | null
+  resolveCanonicalDestination: (rawDestination: string, isLocal: boolean) => string
+  isLocalFileMissing: (rawDestination: string) => boolean
+}): FigureSourceOccurrence[] {
+  const ordinalInputs = input.scanned.map(img => ({
+    resourceKind: 'image' as const,
+    target: img.rawDestination,
+    rawText: img.rawText,
+    startLine: img.startLine,
+    semanticDestination: input.resolveCanonicalDestination(img.rawDestination, img.isLocal),
+  }))
+  const ordinals = computeSourceOccurrenceOrdinals(ordinalInputs)
+  return input.scanned.map((img, i) => {
+    const canonicalDestination = ordinalInputs[i].semanticDestination
+    const occurrenceIndex = linkOccurrenceIndex(ordinalInputs, img.rawDestination, i, 'image', canonicalDestination)
+    return {
+      rawToken: img.rawToken,
+      rawDestination: img.rawDestination,
+      altText: img.altText,
+      resourceClass: img.resourceClass,
+      isLocal: img.isLocal,
+      tokenStart: img.tokenStart,
+      tokenEnd: img.tokenEnd,
+      destinationStart: img.destinationStart,
+      destinationEnd: img.destinationEnd,
+      startLine: img.startLine,
+      endLine: img.endLine,
+      startColumn: img.startColumn,
+      endColumn: img.endColumn,
+      rawText: img.rawText,
+      canonicalDestination,
+      occurrenceIndex,
+      rawLineOrdinal: ordinals[i]?.rawLineOrdinal ?? 0,
+      occurrenceWithinLine: ordinals[i]?.occurrenceWithinLine ?? 0,
+      localFileExists: img.isLocal ? !input.isLocalFileMissing(img.rawDestination) : null,
+      sourceRangeIdentity: buildSourceRangeIdentity({
+        documentKey: input.documentKey,
+        sourceRevision: null,
+        resourceKind: 'image',
+        canonicalDestination,
+        sourceStart: img.tokenStart,
+        sourceEnd: img.tokenEnd,
+        occurrenceIndex,
+      }),
+    }
+  })
+}
+
+/**
  * Phase 7R.3.11.8B.7.4 — occurrence ordinal (0-based) of a figure among the
  * figures sharing the SAME semantic destination (identity-key separation —
  * the ordinal NEVER merges into the destination path).
@@ -646,6 +799,25 @@ export function figureDestinationOccurrenceIndex(
 export function computeDocumentDiagnostics(
   input: DocumentDiagnosticsInput,
 ): DocumentDiagnosticsComputed {
+  // ── V5.12-R6 §2/§8 — SEMANTIC EMPTY DOCUMENT = TERMINAL SHORT-CIRCUIT ────
+  // An empty (whitespace-only) Markdown source is a TERMINAL state of the whole
+  // Document Diagnostics authority: NO content-level rule producer may run. The
+  // snapshot published for an empty document is EXCLUSIVELY `[DOCUMENT_EMPTY]`.
+  //
+  // This is a pipeline short-circuit — never a UI filter, never a ruleId
+  // blacklist, and never conflated with the `headingCount === 0` plain-body
+  // exemption (a body-only document is NOT empty and keeps its exemption).
+  // The cheap path also means: no heading scan / table scan / block scan /
+  // resource scan / locator-fact construction for an empty document.
+  if (input.documentKey != null && isSemanticallyEmptyDocument(input.markdown)) {
+    return {
+      diagnostics: [createDocumentEmptyDiagnostic(input)],
+      errorCount: 0,
+      warningCount: 0,
+      infoCount: 1,
+    }
+  }
+
   const diagnostics: DocumentDiagnostic[] = []
   const errors: DocumentDiagnostic[] = []
   const warnings: DocumentDiagnostic[] = []
@@ -855,16 +1027,9 @@ export function computeDocumentDiagnostics(
       )
     }
 
-    const isEmpty =
-      input.markdown != null && input.markdown.trim() === '' && input.headings.length === 0
-    if (isEmpty) {
-      push(
-        makeDiagnostic(input, 'document', DOCUMENT_EMPTY_CODE, '文档为空', {
-          detail: '当前文档没有内容。',
-          kind: 'document',
-        }),
-      )
-    }
+    // V5.12-R6 — the empty-document notice is published EXCLUSIVELY by the
+    // terminal short-circuit at the head of this function; it is deliberately
+    // NOT a peer diagnostic here (that was ROOT_R6_1/ROOT_R6_4).
     if (input.markdown == null) {
       push(
         makeDiagnostic(input, 'document', SOURCE_UNAVAILABLE_CODE, '无法读取文档源码', {
@@ -1005,8 +1170,19 @@ export function computeDocumentDiagnostics(
     const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
     const destKey = normalizeResourceToken(semanticDestination || l.target)
     if (destKey) sourceImageCovered.add(destKey)
-    const sourceStart = typeof l.sourceStart === 'number' ? l.sourceStart : null
-    const sourceEnd = typeof l.sourceEnd === 'number' ? l.sourceEnd : null
+    const tokenStart = typeof l.sourceStart === 'number' ? l.sourceStart : null
+    const tokenEnd = typeof l.sourceEnd === 'number' ? l.sourceEnd : null
+    const destStart = typeof l.destinationStart === 'number' ? l.destinationStart : null
+    const destEnd = typeof l.destinationEnd === 'number' ? l.destinationEnd : null
+    const rawToken = typeof l.rawToken === 'string' ? l.rawToken : null
+    // V5.12-R8 §5/§7 — THIS rule targets the DESTINATION/PATH range. Legacy
+    // facts without a destination span keep the previous (token) range AND no
+    // range role, so no existing consumer changes behavior.
+    const sourceStart = destStart ?? tokenStart
+    const sourceEnd = destEnd ?? tokenEnd
+    const rangeRole: 'figure-destination' | undefined = destStart != null && destEnd != null
+      ? 'figure-destination'
+      : undefined
     const startLine = typeof l.startLine === 'number' ? l.startLine : null
     const endLine = typeof l.endLine === 'number' ? l.endLine : null
     const startColumn = typeof l.startColumn === 'number' ? l.startColumn : null
@@ -1035,6 +1211,8 @@ export function computeDocumentDiagnostics(
         metadata: {
           ruleId: 'FIGURE-LOCAL-IMAGE-MISSING',
           resourceKind: 'image',
+          // V5.12-R8 §5 — the fixed range semantics for this rule.
+          rangeRole,
           destination: semanticDestination,
           rawDestination: l.target,
           // V5.12-R5 §4/§5 — the full source occurrence fact travels intact.
@@ -1043,8 +1221,17 @@ export function computeDocumentDiagnostics(
           occurrenceIndex,
           rawLineOrdinal: ordinals.rawLineOrdinal,
           occurrenceWithinLine: ordinals.occurrenceWithinLine,
+          // V5.12-R8 §4 — BOTH ranges travel on the same occurrence.
           sourceStart,
           sourceEnd,
+          tokenStart,
+          tokenEnd,
+          destinationStart: destStart,
+          destinationEnd: destEnd,
+          rawToken,
+          altText: typeof l.altText === 'string' ? l.altText : undefined,
+          resourceClass: typeof l.resourceClass === 'string' ? l.resourceClass : 'local',
+          localFileExists: false,
           startLine,
           endLine,
           startColumn,
@@ -1056,6 +1243,8 @@ export function computeDocumentDiagnostics(
         location: startLine != null
           ? {
               kind: 'source-range',
+              // V5.12-R8 §5 — FIGURE_LOCAL_IMAGE_MISSING → FIGURE_DESTINATION.
+              rangeRole,
               startLine,
               startColumn: startColumn ?? 0,
               endLine: endLine ?? startLine,
@@ -1072,6 +1261,11 @@ export function computeDocumentDiagnostics(
               occurrenceIndex,
               rawLineOrdinal: ordinals.rawLineOrdinal,
               occurrenceWithinLine: ordinals.occurrenceWithinLine,
+              rawToken: rawToken ?? undefined,
+              tokenStart,
+              tokenEnd,
+              destinationStart: destStart,
+              destinationEnd: destEnd,
             }
           : { kind: 'document-start' },
         validityFingerprint: { kind: 'resource', path: normalizeResourceToken(l.target), occurrence: occurrenceIndex },
@@ -1079,9 +1273,93 @@ export function computeDocumentDiagnostics(
     )
   }
 
+  // ── V5.12-R8 §4/§8 — FIGURE_MISSING_NAME (SOURCE-FIRST) ────────────────
+  // The figure name IS the Markdown alt text (ONE authority). When the unified
+  // figure source occurrences are available the rule is produced from the
+  // SOURCE, so:
+  //   - a broken image (`![](a.png)`, no rendered <img>) still yields it, and
+  //   - the click target is the WHOLE Markdown image token (`![](a.png)`),
+  //     never the path and never the owning paragraph.
+  const sourceFigureOccurrences = input.figureSourceOccurrences ?? null
+  if (sourceFigureOccurrences) {
+    for (const occ of sourceFigureOccurrences) {
+      if ((occ.altText ?? '').trim() !== '') continue
+      const occIdx = occ.occurrenceIndex
+      const sourceRangeIdentity = occ.sourceRangeIdentity ?? buildSourceRangeIdentity({
+        documentKey: input.documentKey,
+        sourceRevision: null,
+        resourceKind: 'image',
+        canonicalDestination: occ.canonicalDestination,
+        sourceStart: occ.tokenStart,
+        sourceEnd: occ.tokenEnd,
+        occurrenceIndex: occIdx,
+      })
+      push(
+        makeDiagnostic(input, 'figure', 'FIGURE_MISSING_NAME', '图片缺少图名', {
+          detail: '建议为图片命名。',
+          targetIdentity: `missing-name:${occ.canonicalDestination}${occIdx > 0 ? `:${occIdx + 1}` : ''}`,
+          kind: 'object',
+          metadata: {
+            ruleId: 'FIGURE-MISSING-NAME',
+            resourceKind: 'image',
+            // V5.12-R8 §5 — FIGURE_MISSING_NAME → FIGURE_FULL_TOKEN.
+            rangeRole: 'figure-full-token',
+            destination: occ.canonicalDestination,
+            rawDestination: occ.rawDestination,
+            canonicalDestination: occ.canonicalDestination,
+            rawToken: occ.rawToken,
+            sourceRangeIdentity,
+            occurrenceIndex: occIdx,
+            rawLineOrdinal: occ.rawLineOrdinal,
+            occurrenceWithinLine: occ.occurrenceWithinLine,
+            sourceStart: occ.tokenStart,
+            sourceEnd: occ.tokenEnd,
+            tokenStart: occ.tokenStart,
+            tokenEnd: occ.tokenEnd,
+            destinationStart: occ.destinationStart,
+            destinationEnd: occ.destinationEnd,
+            startLine: occ.startLine,
+            endLine: occ.endLine,
+            rawText: occ.rawText,
+            altText: occ.altText,
+            resourceClass: occ.resourceClass,
+            localFileExists: occ.localFileExists,
+            sourceRevision: null,
+          },
+          location: {
+            kind: 'source-range',
+            rangeRole: 'figure-full-token',
+            startLine: occ.startLine,
+            startColumn: occ.startColumn,
+            endLine: occ.endLine,
+            endColumn: occ.endColumn,
+            rawText: occ.rawText,
+            sourceStart: occ.tokenStart,
+            sourceEnd: occ.tokenEnd,
+            sourceRangeIdentity,
+            resourceKind: 'image',
+            canonicalDestination: occ.canonicalDestination,
+            rawDestination: occ.rawDestination,
+            occurrenceIndex: occIdx,
+            rawLineOrdinal: occ.rawLineOrdinal,
+            occurrenceWithinLine: occ.occurrenceWithinLine,
+            rawToken: occ.rawToken,
+            tokenStart: occ.tokenStart,
+            tokenEnd: occ.tokenEnd,
+            destinationStart: occ.destinationStart,
+            destinationEnd: occ.destinationEnd,
+          },
+        }),
+      )
+    }
+  }
+
   for (const f of input.figures) {
     const identity = f.targetIdentity ?? undefined
-    if ((f.name ?? '').trim() === '') {
+    // V5.12-R8 §8 — with the source-occurrence authority present the missing-NAME
+    // rule is SOURCE-FIRST only (one target authority, no DOM/paragraph guess).
+    // Legacy pure callers without it keep the DOM-figure behavior unchanged.
+    if (!sourceFigureOccurrences && (f.name ?? '').trim() === '') {
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_MISSING_NAME', '图片缺少图名', {
           detail: '建议为图片命名。',
@@ -1111,7 +1389,7 @@ export function computeDocumentDiagnostics(
       const occurrenceIndex = figureDestinationOccurrenceIndex(input.figures, f, destRel, input.vaultRoot)
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
-          detail: '相对路径无法解析到现有文件。',
+          detail: '图片引用的本地文件无法解析。',
           element: f.element,
           targetIdentity: destRel
             ? `local:${destRel}${occurrenceIndex > 0 ? `:${occurrenceIndex + 1}` : ''}`

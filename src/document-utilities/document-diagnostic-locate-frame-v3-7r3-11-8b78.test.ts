@@ -284,17 +284,19 @@ describe('HEADING-FRAME — no full-width band, TEXT-TIGHT marker only', () => {
     expect(h2.style.color).toBe('')
   })
 
-  it('HEADING-FRAME-3: CSS shows no full-width colored band + inline native heading preserved', () => {
-    // V4 — the heading carrier is the TEXT-TIGHT presentation: border none,
-    // transparent, width capped by the measured text (never a full band).
+  it('HEADING-FRAME-3: CSS shows a FILL-ONLY text-tight carrier + inline native heading preserved', () => {
+    // V5.12-R7 — the heading carrier is the TEXT-TIGHT presentation: no border,
+    // a severity FILL capped by the measured text (never a full-width band), and
+    // NO keyline / corner cap (the active locate visual is fill-only).
     const headIdx = scss.indexOf(".inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']")
     expect(headIdx).toBeGreaterThan(-1)
     const headingRule = scss.slice(headIdx, headIdx + 520)
     expect(headingRule).toContain('border: none')
-    expect(headingRule).toContain('background: transparent')
+    expect(headingRule).toContain('background: var(--ink-locate-context-bg)')
     expect(headingRule).not.toContain('box-shadow')
-    // Text-tight corner cap uses a bounded 10–16px heading corner width.
-    expect(scss).toMatch(/width: var\(--ink-heading-corner/)
+    // V5.12-R7 §9 — the corner cap + the active keyline are gone.
+    expect(scss).not.toContain('var(--ink-heading-corner')
+    expect(scss).not.toContain('__keyline')
     // No legacy direct body paint survives.
     expect(scss).not.toContain('rgba(7, 112, 170')
   })
@@ -336,14 +338,14 @@ describe('INLINE-VIS — precise inline mark', () => {
     expect(a.getAttribute('data-target-kind')).toBe('inline')
   })
 
-  it('INLINE-VIS-2: mark is a precise rounded severity tint with a 2px keyline, not a native selection', () => {
-    // V5.2 CSS contract: severity fill (--ink-locate-inline-bg) + 2px gradient
-    // lower keyline (no box-shadow/glow) + radius — never a solid ::selection
-    // lookalike, and no ::selection override exists anywhere.
+  it('INLINE-VIS-2: mark is a precise rounded severity FILL (fill-only), not a native selection', () => {
+    // V5.12-R7 §8 contract: severity fill only (--ink-locate-inline-bg) + radius —
+    // the 2px gradient lower keyline is GONE (no box-shadow/glow substitute),
+    // never a solid ::selection lookalike, and no ::selection override exists.
     const markBlock = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark'))
     expect(markBlock).toContain('--ink-locate-inline-bg')
-    expect(markBlock).toContain('background-image: linear-gradient(')
-    expect(markBlock).toContain('2px')
+    expect(markBlock).toContain('background-color: var(--ink-locate-inline-bg)')
+    expect(markBlock).not.toContain('background-image: linear-gradient(')
     expect(markBlock).toContain("[data-severity='warning']")
     expect(markBlock).not.toContain('inset 0 -1px 0')
     expect(scss).not.toContain('::selection {')
