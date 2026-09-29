@@ -528,6 +528,11 @@ export default class extends Plugin<InkChapterSettings> {
         getCaptionTitleForElement: (el) => this.captionService?.getSemanticNameForElement(el) ?? null,
         // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
         getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
+        // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline
+        // (painted only on a COMMITTED outline mapping).
+        publishOutlineHeadingDiagnostics: (targets) => {
+          this.numberingService?.setHeadingDiagnosticTargets(targets)
+        },
         getCodeLanguage: (el) => codeLanguageOf(el),
         getFormulaVisibleTagTokens: (host) => extractFormulaVisibleTagTokens(host),
         onDocumentSwitch: (cb) => {

@@ -67,6 +67,7 @@ import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-lev
 import { HeadingOverrideStore } from './heading-override-store'
 import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
+import type { OutlineDiagnosticTargetInput } from '../document-utilities/document-diagnostic-outline-projection-v514-r2'
 import { OutlineToolbarController } from './outline-toolbar-controller'
 import type { OutlineToolbarCallbacks } from './outline-toolbar-controller'
 import { registerOutlineClickForensic } from './outline-click-forensic'
@@ -3159,6 +3160,14 @@ export class HeadingNumberingService {
       `authoritativeKey=${authoritativeKey ?? 'none'} businessReady=${businessReady} ` +
       `toolbarKey=${this.outlineToolbar.getDocumentKey() || 'none'}`,
     )
+  }
+
+  /**
+   * V5.14-R2 §P8 — the document-diagnostics layer publishes the CURRENT heading
+   * diagnostic occurrences here; the outline mirrors them (COMMITTED mappings only).
+   */
+  setHeadingDiagnosticTargets(targets: readonly OutlineDiagnosticTargetInput[]): void {
+    this.outlineController.setHeadingDiagnosticTargets(targets)
   }
 
   /** R58.7 Phase A.1: Scope-aware key for in-memory operations (EPHEMERAL uses scopeId, PERSISTED uses documentKey). */

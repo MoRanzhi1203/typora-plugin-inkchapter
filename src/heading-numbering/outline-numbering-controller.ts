@@ -34,6 +34,32 @@ import {
 import type { HeadingDescriptor } from './heading-types'
 import { recordRuntimeAudit } from './runtime-audit'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
+// V5.14-R2 §P7 — Outline mapping PRE-COMMIT settle gate.
+import {
+  OUTLINE_PRECOMMIT_MAPPING_AUDIT_EVENT,
+  buildOutlineMappingSnapshot,
+  createOutlinePrecommitV514R2Counters,
+  evaluateOutlinePrecommitGate,
+  evaluateOutlinePrecommitV514R2Gates,
+  formatOutlinePrecommitV514R2GateReport,
+  outlineMappingRetryKey,
+} from './outline-mapping-precommit-v514-r2'
+// V5.14-R2 §P8 — Left-outline Heading Diagnostic projection (COMMITTED-only).
+import {
+  OUTLINE_DIAGNOSTIC_PROJECTION_AUDIT_EVENT,
+  OUTLINE_DIAGNOSTIC_PROJECTION_V514R2_GATE_KEYS,
+  createOutlineDiagnosticProjectionV514R2Counters,
+  canonicalHeadingMarkerIdentity,
+  evaluateOutlineDiagnosticProjectionV514R2Gates,
+  formatOutlineDiagnosticProjectionV514R2GateReport,
+  outlineDiagnosticReconciliationToGateCounters,
+  projectOutlineDiagnostics,
+  reconcileOutlineDiagnosticProjections,
+  type OutlineDiagnosticMarkerFact,
+  type OutlineDiagnosticProjection,
+  type OutlineDiagnosticTargetInput,
+  type OutlineHeadingMappingEntry,
+} from '../document-utilities/document-diagnostic-outline-projection-v514-r2'
 
 interface OutlineNumberCache {
   documentKey: string
@@ -182,7 +208,33 @@ export class OutlineNumberingController {
     root: HTMLElement
     rootToken: number | null
     rootGeneration: number
+    /** §P7 — this transaction only exists because the PRECOMMIT gate PASSed. */
+    precommitVerified: boolean
+    /** §P7 — the root generation the precommit snapshot was measured in. */
+    outlineGenerationAtPrecommit: number
   } | null = null
+
+  // §P7 — precommit gate counters + the ONE pending retry identity per
+  // (documentKey, sourceRevision, outlineGeneration) so a settle wait can never
+  // become a retry storm.
+  private countersOutlinePrecommitV514R2 = createOutlinePrecommitV514R2Counters()
+  private outlinePrecommitRetriedKeys = new Set<string>()
+  private outlineSettleRetryPending = false
+
+  // §P8 — the left-outline heading diagnostic projection. The projection only
+  // ever exists on a COMMITTED mapping; anything else clears it.
+  private countersOutlineDiagnosticV514R2 = createOutlineDiagnosticProjectionV514R2Counters()
+  private outlineDiagnosticTargets: OutlineDiagnosticTargetInput[] = []
+  private committedOutlineMapping: {
+    documentKey: string
+    sourceRevision: number
+    outlineGeneration: number
+    entries: OutlineHeadingMappingEntry[]
+    elements: Map<string, HTMLElement>
+  } | null = null
+  private appliedOutlineDiagnostics = new Map<string, { element: HTMLElement; fact: OutlineDiagnosticMarkerFact }>()
+  /** our OWN class writes must never be classified as a native mutation. */
+  private isApplyingOutlineDiagnosticProjection = false
 
   // Root availability wait (NO_VISIBLE_OUTLINE_ROOT → DEFER + wakeup).
   private pendingForVisibleRoot = false
@@ -310,6 +362,13 @@ export class OutlineNumberingController {
     const before = this.currentDocumentKey
     if (key === before) return { decision: 'NO_OP', before, after: before }
     this.currentDocumentKey = key
+    // §P7 — the ONE-pending-retry budget is per document identity.
+    this.outlinePrecommitRetriedKeys.clear()
+    this.outlineSettleRetryPending = false
+    // §P8 — document switch clears the stored targets + every outline marker.
+    this.outlineDiagnosticTargets = []
+    this.committedOutlineMapping = null
+    this.clearOutlineDiagnosticProjection()
     // Document switch: any pending visible-root wait belongs to the previous
     // document. Make it stale so a later root-available can never wake an old
     // document's snapshot (T10 / pending-cleanup-on-document-switch).
@@ -700,6 +759,187 @@ export class OutlineNumberingController {
     return removed
   }
 
+  // ── §P8 — left-outline heading diagnostic projection ───────────────────────
+
+  /**
+   * The heading diagnostic occurrences the EDITOR is currently showing. The
+   * outline mirrors them — but only onto a COMMITTED mapping (P7).
+   */
+  setHeadingDiagnosticTargets(targets: readonly OutlineDiagnosticTargetInput[]): void {
+    this.outlineDiagnosticTargets = targets
+      .filter(t => t.documentKey === this.currentDocumentKey)
+      .map(t => ({ ...t }))
+    this.reprojectOutlineDiagnostics()
+  }
+
+  private outlineDiagnosticClassNames(el: HTMLElement): string[] {
+    return Array.from(el.classList).filter(c => c.startsWith('inkchapter-outline-diagnostic'))
+  }
+
+  /** Drop every applied outline diagnostic marker (document switch / settle wait). */
+  private clearOutlineDiagnosticProjection(): void {
+    if (this.appliedOutlineDiagnostics.size === 0) return
+    this.isApplyingOutlineDiagnosticProjection = true
+    try {
+      for (const { element } of this.appliedOutlineDiagnostics.values()) {
+        for (const c of this.outlineDiagnosticClassNames(element)) element.classList.remove(c)
+      }
+    } finally {
+      this.isApplyingOutlineDiagnosticProjection = false
+    }
+    this.appliedOutlineDiagnostics.clear()
+  }
+
+  /**
+   * §P8 — the ONLY projection write. Idempotent by construction: the class set of
+   * an item is only mutated when it differs from the DESIRED set, so the
+   * projection can never feed the outline observer a change loop.
+   */
+  private reprojectOutlineDiagnostics(): void {
+    const committed = this.committedOutlineMapping
+    const authorityOk = committed != null
+      && committed.documentKey === this.currentDocumentKey
+      && committed.sourceRevision === this.cache.revision
+      && committed.outlineGeneration === this.rootGeneration
+    const result = projectOutlineDiagnostics({
+      documentKey: this.currentDocumentKey,
+      sourceRevision: this.cache.revision,
+      layoutEpoch: this.nativeMutationEpoch,
+      outlineGeneration: this.rootGeneration,
+      mappingCommitted: authorityOk,
+      targets: this.outlineDiagnosticTargets,
+      mapping: authorityOk && committed ? committed.entries : [],
+    })
+
+    const severityRankOf: Record<string, number> = { info: 0, warning: 1, error: 2 }
+    const desiredByElement = new Map<HTMLElement, Set<string>>()
+    const elementByKey = new Map<string, HTMLElement>()
+    const severityByElement = new Map<HTMLElement, string>()
+    const activeByElement = new Map<HTMLElement, boolean>()
+    if (result.state === 'COMMITTED' && committed) {
+      for (const p of result.projections) {
+        const element = committed.elements.get(p.outlineItemIdentity)
+        if (!element || !element.isConnected) continue
+        elementByKey.set(p.key, element)
+        const prev = severityByElement.get(element)
+        if (prev == null || severityRankOf[p.severity] > severityRankOf[prev]) {
+          severityByElement.set(element, p.severity)
+        }
+        if (p.active) activeByElement.set(element, true)
+      }
+      for (const [element, severity] of severityByElement) {
+        const set = new Set<string>(['inkchapter-outline-diagnostic', `inkchapter-outline-diagnostic--${severity}`])
+        if (activeByElement.get(element)) set.add('inkchapter-outline-diagnostic--active')
+        desiredByElement.set(element, set)
+      }
+    }
+
+    let textMutation = 0
+    this.isApplyingOutlineDiagnosticProjection = true
+    try {
+      // remove: previously applied but no longer desired / disconnected
+      for (const [key, applied] of [...this.appliedOutlineDiagnostics]) {
+        if (!desiredByElement.has(applied.element) || !applied.element.isConnected) {
+          for (const c of this.outlineDiagnosticClassNames(applied.element)) applied.element.classList.remove(c)
+          this.appliedOutlineDiagnostics.delete(key)
+        }
+      }
+      // upsert: mutate ONLY when the namespaced class set really differs
+      for (const [element, desired] of desiredByElement) {
+        const current = this.outlineDiagnosticClassNames(element)
+        const same = current.length === desired.size && current.every(c => desired.has(c))
+        if (same) continue
+        const before = element.textContent ?? ''
+        for (const c of current) element.classList.remove(c)
+        for (const c of desired) element.classList.add(c)
+        if ((element.textContent ?? '') !== before) textMutation++
+      }
+    } finally {
+      this.isApplyingOutlineDiagnosticProjection = false
+    }
+
+    // rebuild the applied-map from the DOM truth for the reconciliation
+    this.appliedOutlineDiagnostics.clear()
+    for (const p of result.projections) {
+      const element = elementByKey.get(p.key)
+      if (!element) continue
+      if (!element.isConnected) continue
+      if (!element.classList.contains('inkchapter-outline-diagnostic')) continue
+      this.appliedOutlineDiagnostics.set(p.key, { element, fact: this.outlineDiagnosticFactOf(p) })
+    }
+
+    const actualFacts = [...this.appliedOutlineDiagnostics.values()].map(a => a.fact)
+    const recon = reconcileOutlineDiagnosticProjections(
+      result.projections,
+      actualFacts,
+      this.rootGeneration,
+      this.cache.revision,
+    )
+    const gateCounters = outlineDiagnosticReconciliationToGateCounters(recon, {
+      textMutation,
+      reasonText: 0,
+      badge: 0,
+      preSettlePaint: 0,
+    })
+    for (const key of OUTLINE_DIAGNOSTIC_PROJECTION_V514R2_GATE_KEYS) {
+      this.countersOutlineDiagnosticV514R2[key] += gateCounters[key]
+    }
+    // §P8 — one audit line per projected marker.
+    for (const p of result.projections) {
+      const applied = this.appliedOutlineDiagnostics.get(p.key)
+      emitRuntimeAudit(OUTLINE_DIAGNOSTIC_PROJECTION_AUDIT_EVENT, {
+        documentKey: p.documentKey,
+        diagnosticId: p.diagnosticId,
+        targetIndex: p.targetIndex,
+        stableHeadingIdentity: p.stableHeadingIdentity,
+        outlineItemIdentity: p.outlineItemIdentity,
+        severity: p.severity,
+        active: p.active,
+        passive: p.passive,
+        layoutEpoch: p.layoutEpoch,
+        outlineGeneration: p.outlineGeneration,
+        sourceRevision: p.sourceRevision,
+        markerPresent: !!applied,
+        textMutated: false,
+        reasonTextPresent: false,
+        badgePresent: false,
+        decision: applied ? 'PASS' : 'DEFER',
+        reason: result.reason,
+      })
+    }
+    emitRuntimeAudit(OUTLINE_DIAGNOSTIC_PROJECTION_AUDIT_EVENT, {
+      documentKey: this.currentDocumentKey,
+      sourceRevision: this.cache.revision,
+      outlineGeneration: this.rootGeneration,
+      state: result.state,
+      expectedCount: recon.expectedCount,
+      actualCount: recon.actualCount,
+      missingKeys: recon.missingKeys,
+      extraKeys: recon.extraKeys,
+      duplicateKeys: recon.duplicateKeys,
+      unmappedTargetKeys: result.unmappedTargetKeys,
+      gateCounters: { ...this.countersOutlineDiagnosticV514R2 },
+      gateReport: formatOutlineDiagnosticProjectionV514R2GateReport(this.countersOutlineDiagnosticV514R2),
+      decision: evaluateOutlineDiagnosticProjectionV514R2Gates(this.countersOutlineDiagnosticV514R2).decision,
+      reason: result.reason,
+    })
+  }
+
+  private outlineDiagnosticFactOf(p: OutlineDiagnosticProjection): OutlineDiagnosticMarkerFact {
+    return {
+      key: p.key,
+      documentKey: p.documentKey,
+      diagnosticId: p.diagnosticId,
+      targetIndex: p.targetIndex,
+      stableHeadingIdentity: p.stableHeadingIdentity,
+      outlineItemIdentity: p.outlineItemIdentity,
+      severity: p.severity,
+      active: p.active,
+      outlineGeneration: p.outlineGeneration,
+      sourceRevision: p.sourceRevision,
+    }
+  }
+
   /** Apply the latest snapshot against the CURRENT VISIBLE outline root (idempotent). */
   private applyLatestSnapshot(reasons: string[]): void {
     console.info(
@@ -707,6 +947,8 @@ export class OutlineNumberingController {
       `implId=${OUTLINE_CONTROLLER_IMPL_ID} instanceId=${this.instanceId} revision=${this.cache.revision}`,
     )
     if (this.isWriting) return
+    // §P7 — this apply run consumes any pending settle retry.
+    this.outlineSettleRetryPending = false
 
     const expectedDocKey = this.currentDocumentKey
     const expectedRevision = this.cache.revision
@@ -782,6 +1024,8 @@ export class OutlineNumberingController {
       root,
       rootToken: this.rootToken,
       rootGeneration: this.rootGeneration,
+      precommitVerified: false,
+      outlineGenerationAtPrecommit: this.rootGeneration,
     }
 
     // Record the native subtree generation at apply so the post-apply stability
@@ -810,6 +1054,85 @@ export class OutlineNumberingController {
 
       const items = findOutlineTextElements(root, collectorTrace)
       const matches = matchHeadingsToOutline(this.cache.headings, this.cache.labels, items, matchTrace)
+
+      // ── V5.14-R2 §P7 — PRECOMMIT_CARDINALITY_GATE ─────────────────────────
+      // The mapping is built FIRST and submitted to the settle gate BEFORE a
+      // single node is written. When Typora's native outline is still rebuilding
+      // the cardinality does not match; the state is then WAITING_OUTLINE_SETTLE
+      // with DOM_WRITE_COUNT = 0 (a transient mis-mapped frame can never reach
+      // the real UI — the old "apply first, verify later" order is gone).
+      const precommitSnapshot = buildOutlineMappingSnapshot({
+        documentKey: expectedDocKey,
+        sourceRevision: expectedRevision,
+        layoutEpoch: this.nativeMutationEpoch,
+        outlineRootToken: applyRootToken,
+        outlineGeneration: this.rootGeneration,
+        expectedHeadingCount: this.cache.headings.length,
+        nativeOutlineItemCount: rawInventory.rawNativeDomItemCount,
+        matchedHeadingCount: matches.length,
+        unmatchedHeadingCount: Math.max(0, this.cache.headings.length - matches.length),
+        unmatchedOutlineCount: Math.max(0, items.length - matches.length),
+        rootConnected: root.isConnected,
+        rootVisible: root.offsetParent !== null,
+      })
+      // The authority may have moved on while the mapping was built.
+      const authorityStillCurrent =
+        this.currentDocumentKey === expectedDocKey && this.cache.revision === expectedRevision
+      if (!authorityStillCurrent) {
+        this.countersOutlinePrecommitV514R2.outlineStaleRevisionCommit++
+      }
+      const precommitGate = authorityStillCurrent
+        ? evaluateOutlinePrecommitGate(precommitSnapshot, {
+            documentKey: this.currentDocumentKey,
+            sourceRevision: this.cache.revision,
+          })
+        : { state: 'WAITING_OUTLINE_SETTLE' as const, unmetConditions: ['SOURCE_REVISION_NOT_CURRENT'], reason: 'SOURCE_REVISION_NOT_CURRENT' }
+      emitRuntimeAudit(OUTLINE_PRECOMMIT_MAPPING_AUDIT_EVENT, {
+        ...precommitSnapshot,
+        // the gate itself is a ZERO-WRITE decision point: the precommit audit can
+        // never report a DOM write, PASS or WAITING.
+        domWriteCount: 0,
+        state: precommitGate.state,
+        unmetConditions: precommitGate.unmetConditions,
+        gateCounters: { ...this.countersOutlinePrecommitV514R2 },
+        gateReport: formatOutlinePrecommitV514R2GateReport(this.countersOutlinePrecommitV514R2),
+        decision: evaluateOutlinePrecommitV514R2Gates(this.countersOutlinePrecommitV514R2).decision,
+        reason: precommitGate.reason,
+      })
+      if (precommitGate.state !== 'PASS') {
+        // WAITING_OUTLINE_SETTLE — NO DOM WRITE happens below.
+        // §P8 — a settle wait invalidates the committed mapping: any outline
+        // diagnostic projection is dropped (never painted from a stale mapping).
+        this.committedOutlineMapping = null
+        this.clearOutlineDiagnosticProjection()
+        this.countersOutlinePrecommitV514R2.outlineUnstableMappingCommit++
+        if (precommitSnapshot.unmatchedHeadingCount !== 0
+          || precommitSnapshot.unmatchedOutlineCount !== 0
+          || precommitSnapshot.matchedHeadingCount !== precommitSnapshot.expectedHeadingCount
+          || precommitSnapshot.expectedHeadingCount !== precommitSnapshot.nativeOutlineItemCount) {
+          this.countersOutlinePrecommitV514R2.outlineCardinalityMismatchCommit++
+        }
+        // At most ONE pending retry per (documentKey, sourceRevision, outlineGeneration).
+        // A second settle retry for the SAME identity is refused (never a storm);
+        // a re-entrant schedule while one is still pending IS a storm and counted.
+        const retryKey = outlineMappingRetryKey(precommitSnapshot)
+        if (this.outlineSettleRetryPending || this.outlinePrecommitRetriedKeys.has(retryKey)) {
+          if (this.outlineSettleRetryPending) {
+            this.countersOutlinePrecommitV514R2.outlineMappingRetryStorm++
+          }
+        } else {
+          this.outlinePrecommitRetriedKeys.add(retryKey)
+          this.outlineSettleRetryPending = true
+          this.scheduleApply('outline-waiting-settle')
+        }
+        return
+      }
+      this.lastApplyTransaction = {
+        ...(this.lastApplyTransaction as NonNullable<typeof this.lastApplyTransaction>),
+        precommitVerified: true,
+        outlineGenerationAtPrecommit: precommitSnapshot.outlineGeneration,
+      }
+
       const attrResult = applyNumberingAttributes(matches.map((m, i) => ({
         element: m.element,
         label: m.label,
@@ -821,6 +1144,42 @@ export class OutlineNumberingController {
       // longer part of the matched set (e.g. a heading was deleted).
       const matchedSet = new Set(matches.map(m => m.element))
       const staleRemoved = this.removeStaleDecorations(root, matchedSet)
+
+      // §P7 — the outline root must not have been replaced between the precommit
+      // snapshot and this write (a mid-commit generation change would mean the
+      // mapping was committed onto a different native subtree).
+      const generationChangedDuringCommit = this.rootGeneration !== precommitSnapshot.outlineGeneration
+      if (generationChangedDuringCommit) {
+        this.countersOutlinePrecommitV514R2.outlineRootGenerationChangedDuringCommit++
+        this.committedOutlineMapping = null
+      } else {
+        // ── V5.14-R2 §P8 — ONLY a COMMITTED mapping may carry an outline
+        // diagnostic projection. The mapping is the ONE heading-identity →
+        // outline-item authority (from the matcher's own trace, never re-guessed).
+        const entries: OutlineHeadingMappingEntry[] = []
+        const elements = new Map<string, HTMLElement>()
+        for (const tr of matchTrace) {
+          if (tr.decision !== 'MATCH' || tr.selectedNativeIndex == null) continue
+          const heading = this.cache.headings[tr.headingIndex]
+          const el = items[tr.selectedNativeIndex]
+          if (!heading || !el) continue
+          const outlineItemIdentity = `outline-item:${tr.selectedNativeIndex}`
+          // §P8 — the editor speaks the canonical heading-MARKER identity, so the
+          // mapping must too (never the bare canonical key).
+          entries.push({
+            stableHeadingIdentity: canonicalHeadingMarkerIdentity({ stableIdentity: heading.key, line: null, text: '' }),
+            outlineItemIdentity,
+          })
+          elements.set(outlineItemIdentity, el)
+        }
+        this.committedOutlineMapping = {
+          documentKey: expectedDocKey,
+          sourceRevision: expectedRevision,
+          outlineGeneration: precommitSnapshot.outlineGeneration,
+          entries,
+          elements,
+        }
+      }
 
       const expectedNumbered = this.cache.labels.filter(l => l !== '').length
       const actualDecorations = root.querySelectorAll<HTMLElement>('[data-inkchapter-number]').length
@@ -873,6 +1232,8 @@ export class OutlineNumberingController {
           this.scheduleApply('outline-decoration-lost')
         }
       }
+      // §P8 — (re)project the heading diagnostics onto the COMMITTED mapping.
+      this.reprojectOutlineDiagnostics()
     } finally {
       this.isWriting = false
     }
@@ -1044,6 +1405,24 @@ export class OutlineNumberingController {
     if (revision !== this.cache.revision) return
 
     const tx = this.lastApplyTransaction
+    // ── V5.14-R2 §P7 — POSTCOMMIT_VERIFY is only meaningful for a transaction
+    // whose PRECOMMIT gate PASSed. A verify reaching an unverified apply means an
+    // apply slipped past the settle gate — never silently tolerated.
+    if (tx && !tx.precommitVerified) {
+      this.countersOutlinePrecommitV514R2.outlineApplyBeforePrecommitVerify++
+      emitRuntimeAudit(OUTLINE_PRECOMMIT_MAPPING_AUDIT_EVENT, {
+        documentKey: docKey,
+        sourceRevision: revision,
+        state: 'WAITING_OUTLINE_SETTLE',
+        domWriteCount: 0,
+        postcommitVerifySkipped: true,
+        gateCounters: { ...this.countersOutlinePrecommitV514R2 },
+        gateReport: formatOutlinePrecommitV514R2GateReport(this.countersOutlinePrecommitV514R2),
+        decision: evaluateOutlinePrecommitV514R2Gates(this.countersOutlinePrecommitV514R2).decision,
+        reason: 'POSTCOMMIT_VERIFY_WITHOUT_PRECOMMIT',
+      })
+      return
+    }
     const currentRoot = findOutlineRoot() // visible only — NEVER global document.querySelectorAll
 
     const expectedNumbered = this.cache.labels.filter(l => l !== '').length
@@ -1092,6 +1471,12 @@ export class OutlineNumberingController {
 
     this.lastVerify = { expectedCount: expectedNumbered, actualCount: actualDecorations, decision }
 
+    // §P7 — a FAILED postcommit verify that leaves number decorations in the LIVE
+    // outline is exactly the "transient frame reached the real UI" symptom.
+    if (decision === 'FAIL' && actualDecorations > 0) {
+      this.countersOutlinePrecommitV514R2.outlinePostcommitVerifyFailLeftDecoration++
+    }
+
     console.info(
       `[InkChapter Numbering] OUTLINE-VERIFY documentKey=${docKey} revision=${revision} ` +
       `expectedNumberedCount=${expectedNumbered} actualNumberDecorationCount=${actualDecorations} ` +
@@ -1109,6 +1494,12 @@ export class OutlineNumberingController {
       `nativeGenerationChangedAfterApply=${nativeGenerationChangedAfterApply} ` +
       `decision=${decision} reason=${reason}`,
     )
+
+    if (decision !== 'PASS') {
+      // §P8 — a failed/retried verify invalidates the committed mapping.
+      this.committedOutlineMapping = null
+      this.clearOutlineDiagnosticProjection()
+    }
 
     if (decision === 'RETRY') {
       if (reason === 'NATIVE_OUTLINE_MUTATED_AFTER_APPLY') {
@@ -1268,6 +1659,9 @@ export class OutlineNumberingController {
 
         if (m.type === 'attributes') {
           if (isApplyingOutlineBoldStyle) continue
+          // §P8 — the outline diagnostic projection writes ONLY namespaced
+          // classes on native items; those are OUR OWN writes, never native.
+          if (this.isApplyingOutlineDiagnosticProjection) continue
           if (target instanceof HTMLElement && target.hasAttribute('data-inkchapter-number')) {
             this.lastInkchapterMutationAt = performance.now()
             console.info('[InkChapter Numbering] OUTLINE-MUTATION-CLASSIFY source=INKCHAPTER_SELF reason=DECORATION_ATTRIBUTE')
@@ -1533,8 +1927,28 @@ export class OutlineNumberingController {
             snapshotRevision: this.lastApplyTransaction.snapshotRevision,
             rootToken: this.lastApplyTransaction.rootToken,
             rootGeneration: this.lastApplyTransaction.rootGeneration,
+            precommitVerified: this.lastApplyTransaction.precommitVerified,
+            outlineGenerationAtPrecommit: this.lastApplyTransaction.outlineGenerationAtPrecommit,
           }
         : null,
+      // §P7 — the outline PRE-COMMIT settle-gate observability surface.
+      precommit: {
+        gateCounters: { ...this.countersOutlinePrecommitV514R2 },
+        gateDecision: evaluateOutlinePrecommitV514R2Gates(this.countersOutlinePrecommitV514R2).decision,
+        gateReport: formatOutlinePrecommitV514R2GateReport(this.countersOutlinePrecommitV514R2),
+        retriedKeys: [...this.outlinePrecommitRetriedKeys],
+        settleRetryPending: this.outlineSettleRetryPending,
+      },
+      // §P8 — the left-outline diagnostic projection observability surface.
+      outlineDiagnosticProjection: {
+        committedMapping: this.committedOutlineMapping != null,
+        targetCount: this.outlineDiagnosticTargets.length,
+        appliedCount: this.appliedOutlineDiagnostics.size,
+        appliedKeys: [...this.appliedOutlineDiagnostics.keys()],
+        gateCounters: { ...this.countersOutlineDiagnosticV514R2 },
+        gateDecision: evaluateOutlineDiagnosticProjectionV514R2Gates(this.countersOutlineDiagnosticV514R2).decision,
+        gateReport: formatOutlineDiagnosticProjectionV514R2GateReport(this.countersOutlineDiagnosticV514R2),
+      },
       lastApply: this.lastApply,
       lastVerify: this.lastVerify,
       waiting: this.pendingForVisibleRoot,

@@ -2858,6 +2858,44 @@
   flex: 0 0 auto;
 }
 
+/* ── V5.14-R2 §P8 — LEFT-OUTLINE heading diagnostic projection ────────────────
+   A class-ONLY projection on the MAPPED native outline item: a lightweight
+   low-saturation scribble surface + a 1.5–2px underline. `background` only —
+   never `border` / `padding` / `margin` / `font-*` / `line-height` — so the
+   outline row height can NEVER change, and the native text is never touched.
+   Muted red / amber / blue-gray to stay inside Typora Native+. */
+.inkchapter-outline-diagnostic {
+  --ink-outline-diag: var(--ink-ui-diagnostic-info, var(--ink-ui-sev-info, #5b6b7c));
+  border-radius: 3px;
+  background-image: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--ink-outline-diag) 42%, transparent) 0 1.5px,
+    transparent 1.5px
+  );
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 100% 100%;
+  background-color: color-mix(in srgb, var(--ink-outline-diag) 7%, transparent);
+}
+.inkchapter-outline-diagnostic--error {
+  --ink-outline-diag: var(--ink-ui-diagnostic-error, var(--ink-ui-sev-error, #b55454));
+}
+.inkchapter-outline-diagnostic--warning {
+  --ink-outline-diag: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
+}
+.inkchapter-outline-diagnostic--info {
+  --ink-outline-diag: var(--ink-ui-diagnostic-info, var(--ink-ui-sev-info, #5b6b7c));
+}
+/* The ACTIVE occurrence may be slightly stronger — never a card, never a wash. */
+.inkchapter-outline-diagnostic--active {
+  background-color: color-mix(in srgb, var(--ink-outline-diag) 13%, transparent);
+  background-image: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--ink-outline-diag) 62%, transparent) 0 2px,
+    transparent 2px
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .inkchapter-diagnostic-locate-frame { transition: none; }
 }
