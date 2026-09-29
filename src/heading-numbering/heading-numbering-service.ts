@@ -31,7 +31,20 @@ import {
   type CanonicalHeadingFrame,
 } from './canonical-heading-frame'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
-import { decimalHierarchicalFormatter, extractLabelGaps } from './numbering-formatter'
+import { decimalHierarchicalFormatter } from './numbering-formatter'
+// V5.14-R4 — Heading Number + Gap ATOMIC reconcile contract.
+import {
+  HEADING_NUMBER_DECORATION_AUDIT_EVENT,
+  HEADING_DECORATION_V514R4_GATE_KEYS,
+  buildHeadingDecorationProjections,
+  createHeadingDecorationV514R4Counters,
+  evaluateHeadingDecorationV514R4Gates,
+  formatHeadingDecorationV514R4GateReport,
+  headingDecorationMatches,
+  normalizeDecorationGap,
+  type HeadingDecorationProjection,
+  type HeadingDecorationV514R4Counters,
+} from './heading-decoration-projection-v514-r4'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
@@ -525,6 +538,17 @@ export class HeadingNumberingService {
   private lastSnapshot: HeadingSnapshot[] | null = null
   private renderedStates: RenderedHeadingState[] | null = null
   private renderedGaps: string[] | null = null
+  /**
+   * V5.14-R4 — the SINGLE decoration projection this refresh committed. Repair
+   * and fast-path validation read THIS (one snapshot, one generation), never a
+   * re-derived label/gap pair.
+   */
+  private renderedProjections: HeadingDecorationProjection[] | null = null
+  /** V5.14-R4 §15 — monotonic projection generation (one per atomic commit). */
+  private decorationProjectionGeneration = 0
+  private countersHeadingDecorationV514R4: HeadingDecorationV514R4Counters = createHeadingDecorationV514R4Counters()
+  /** V5.14-R4 §13 — previous audited settings revision (drift attribution). */
+  private lastAuditedSettingsRevision: number | null = null
   private isInComposition = false
   private mutationObserver: MutationObserver | null = null
 
@@ -1830,6 +1854,12 @@ export class HeadingNumberingService {
         this.runEditorInputFocusProbe(phase as any)
       }
       ;(window as any).__inkchapter_format_sync_probe__ = () => this.formatSyncProbe()
+      // V5.14-R4 §15 — the atomic heading decoration (label + gap) gate surface.
+      ;(window as any).__inkchapter_heading_decoration_probe__ = () => ({
+        counters: this.getHeadingDecorationV514R4Counters(),
+        gateReport: this.getHeadingDecorationV514R4GateReport(),
+        gateDecision: this.getHeadingDecorationV514R4GateDecision(),
+      })
       ;(window as any).__inkchapter_outline_sync_probe__ = () => ({
         authoritativeDocumentKey: this.getDocumentKey() ?? null,
         activeFilePath: this.getActiveFilePath() ?? null,
@@ -4368,30 +4398,31 @@ export class HeadingNumberingService {
       const snapshot = this.adapter.createHeadingSnapshot()
       const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
 
-      if (!forceRefresh && this.lastSnapshot && this.renderedStates) {
+      if (!forceRefresh && this.lastSnapshot && this.renderedStates && this.renderedProjections) {
         // Structure unchanged?
         if (!this.adapter.hasStructureChanged(this.lastSnapshot, snapshot)) {
-          // Full state check: element refs, class, attr
+          // ── V5.14-R4 §11 — FAST_PATH_SKIP is only allowed when class + label
+          // AND gap are all still valid from the SAME projection. The gap is now
+          // validated inside `isRenderedStateValid` (the state carries it), so a
+          // "label valid but gap invalid" DOM can never be fast-path accepted.
           if (this.adapter.isRenderedStateValid(this.renderedStates)) {
-            // Also check gaps — Typora may strip data-inkchapter-heading-gap on Enter
-            if (this.renderedGaps && !this.adapter.areGapsValid(this.renderedGaps)) {
-              this.adapter.applyLabelGaps(this.renderedGaps)
-            }
             this.lastSnapshot = snapshot
+            this.emitHeadingDecorationAudit(reason, 'FAST_PATH_SKIP', null, numberingSnapshot.revision)
             return // physical DOM unchanged → skip projection (semantic already committed)
           }
-          // Structure same but decoration lost → repair only (node replaced)
-          const diff = this.adapter.repairDecoration(this.renderedStates)
-          this.renderedStates = this.adapter.buildRenderedStates(
-            this.renderedStates.map(s => s.label),
-          )
-          // Also re-apply gaps after repair
-          if (this.renderedGaps) {
-            this.adapter.applyLabelGaps(this.renderedGaps)
+          // Structure same but the ATOMIC decoration drifted (node replaced, gap
+          // stripped by Typora, …) → DECORATION_REPAIR: ONE projection reconcile.
+          // This is NOT a full semantic recompute: only the DOM projection is
+          // rewritten, from the SAME projection snapshot.
+          const repairProjections = this.renderedProjections
+          if (repairProjections) {
+            const diff = this.adapter.reconcileHeadingDecorations(repairProjections)
+            this.syncRenderedDecorationCache(repairProjections)
+            this.logRefresh(reason, snapshot.length, diff, startTime)
+            this.emitHeadingDecorationAudit(reason, 'DECORATION_REPAIR', repairProjections, numberingSnapshot.revision, diff)
+            this.lastSnapshot = snapshot
+            return
           }
-          this.logRefresh(reason, snapshot.length, diff, startTime)
-          this.lastSnapshot = snapshot
-          return
         }
       }
 
@@ -4402,12 +4433,19 @@ export class HeadingNumberingService {
         this.adapter.clearNumbering()
         this.renderedStates = null
         this.renderedGaps = null
+        this.renderedProjections = null
         recordRuntimeAudit('doRefresh:end', { headingCount: 0 })
         return
       }
 
       const numbered = [...numberingSnapshot.physical]
       const labels = decimalHierarchicalFormatter.format(numbered, this.s)
+
+      // ── V5.14-R4 §8/§9 — the ONE projection for this refresh. label + gap are
+      // two projections of the SAME business result and are committed together.
+      const projections = buildHeadingDecorationProjections(
+        numbered.map((h, i) => ({ key: h.key, label: labels[i] ?? h.label, labelGap: h.labelGap })),
+      )
 
       // Snapshot numbering engine per-heading output
       const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {
@@ -4432,13 +4470,12 @@ export class HeadingNumberingService {
       })
       snapshotNumberingEngine(this.s, engineEntries)
 
-      const diff = this.adapter.applyNumberingDiff(labels)
-      this.renderedStates = this.adapter.buildRenderedStates(labels)
+      const previousProjections = this.renderedProjections
+      const diff = this.adapter.reconcileHeadingDecorations(projections)
+      this.syncRenderedDecorationCache(projections)
 
-      // Apply per-heading label gaps (number-to-title spacing)
-      const gaps = extractLabelGaps(numbered)
-      this.adapter.applyLabelGaps(gaps)
-      this.renderedGaps = [...gaps]
+      const gaps = projections.map(p => p.gap)
+      this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff)
 
       // Snapshot apply-diff
       const headingEls = this.adapter.getEditorRoot()?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []
@@ -4456,8 +4493,10 @@ export class HeadingNumberingService {
       }
       snapshotApplyDiff(labels, diffEntries, labels.length, headingEls.length)
 
-      // Sync outline sidebar numbering — pass the authoritative documentKey.
-      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, labels, gaps)
+      // Sync outline sidebar numbering — pass the authoritative documentKey AND
+      // the SAME projection snapshot (V5.14-R4 §12: the outline consumes the
+      // identical label+gap, never a re-derived one).
+      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, labels, gaps, projections)
 
       // Phase 7R.3.11.8B.4.2 — pure-observability structure authority audits
       // (state-deduped; never mutates settings/store/DOM/outline).
@@ -8979,6 +9018,133 @@ export class HeadingNumberingService {
       firstLineIndentEm: 0,
     }
     return { h1: { ...def }, h2: { ...def }, h3: { ...def }, h4: { ...def }, h5: { ...def }, h6: { ...def } }
+  }
+
+  /**
+   * V5.14-R4 §9 — commit the ONE decoration projection and cache it as the
+   * AUTHORITY that repair / fast-path validation / diagnostics read back.
+   */
+  private syncRenderedDecorationCache(projections: readonly HeadingDecorationProjection[]): void {
+    this.renderedProjections = [...projections]
+    this.renderedStates = this.adapter.buildRenderedStates(
+      projections.map(p => p.label),
+      projections.map(p => p.gap),
+    )
+    this.renderedGaps = projections.map(p => p.gap)
+    this.decorationProjectionGeneration++
+  }
+
+  /**
+   * V5.14-R4 §14 — `HEADING-NUMBER-DECORATION-AUDIT`. One line per heading with
+   * the EXPECTED and the ACTUALLY OBSERVED decoration (class + label + gap) so a
+   * gap drift is provable from the runtime log alone.
+   */
+  private emitHeadingDecorationAudit(
+    reason: string,
+    decision: 'FULL_REFRESH' | 'DECORATION_REPAIR' | 'FAST_PATH_SKIP',
+    previous: readonly HeadingDecorationProjection[] | null,
+    numberingRevision: number | null,
+    diff?: { labelMismatch: number; gapMismatch: number; classMismatch: number },
+  ): void {
+    const root = this.adapter.getEditorRoot()
+    const projections = this.renderedProjections
+    if (!root || !projections) return
+    const documentKey = this.getDocumentKey() ?? ''
+    const settingsRevision = this.docContext?.settingsRevision ?? null
+    const settingsChanged = settingsRevision != null && settingsRevision !== this.lastAuditedSettingsRevision
+    const previousByIdentity = new Map((previous ?? []).map(p => [p.stableIdentity, p]))
+    const els = root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6')
+    let idx = 0
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (idx >= projections.length) break
+      const expected = projections[idx]
+      idx++
+      const actual = this.adapter.readHeadingDecoration(el)
+      const wantGap = expected.label === '' ? 'none' : expected.gap
+      const classOk = expected.label === '' ? !actual.numberedClass : actual.numberedClass
+      const labelOk = expected.label === '' ? actual.label === null : actual.label === expected.label
+      const gapOk = actual.gap === wantGap
+      if (!classOk) this.countersHeadingDecorationV514R4.headingNumberClassMismatch++
+      if (!labelOk) this.countersHeadingDecorationV514R4.headingNumberLabelMismatch++
+      if (!gapOk) {
+        this.countersHeadingDecorationV514R4.headingNumberGapAttrMismatch++
+        if (decision === 'FAST_PATH_SKIP') this.countersHeadingDecorationV514R4.fastPathAcceptedWithGapMismatch++
+        // §10 — a committed label that lost its required spacing is exactly the
+        // "partial repair" the R4 gates forbid (one decoration, two projections).
+        if (labelOk && actual.label !== null && wantGap === 'space') {
+          this.countersHeadingDecorationV514R4.decorationRepairPartialLabelWithoutGap++
+        }
+        // a gap present without the matching label
+        if (gapOk && !labelOk) {
+          this.countersHeadingDecorationV514R4.decorationRepairPartialGapWithoutLabel++
+        }
+      }
+      // a stale gap on a heading that must carry NO decoration at all
+      if (expected.label === '' && actual.gap !== 'none') {
+        this.countersHeadingDecorationV514R4.staleGapSurvivedReconcile++
+      }
+      // §13 — gap drift with an UNCHANGED label and UNCHANGED settings
+      const prev = previousByIdentity.get(expected.stableIdentity)
+      if (prev && prev.label !== '' && expected.label !== '' && !settingsChanged) {
+        if (prev.label === expected.label && prev.gap !== expected.gap) {
+          this.countersHeadingDecorationV514R4.numberLabelStableButGapChanged++
+          this.countersHeadingDecorationV514R4.headingGapChangedWithoutSettingsChange++
+        }
+      }
+      if (!classOk || !labelOk || !gapOk || decision !== 'FAST_PATH_SKIP') {
+        emitRuntimeAudit(HEADING_NUMBER_DECORATION_AUDIT_EVENT, {
+          documentKey,
+          revision: numberingRevision,
+          stableHeadingIdentity: expected.stableIdentity,
+          physicalLevel: Number.parseInt(el.tagName.charAt(1), 10),
+          expectedLabel: expected.label,
+          actualLabel: actual.label,
+          expectedGap: wantGap,
+          actualGap: actual.gap,
+          numberedClassExpected: expected.label !== '',
+          numberedClassActual: actual.numberedClass,
+          settingsRevision,
+          numberingSnapshotRevision: numberingRevision,
+          projectionGeneration: this.decorationProjectionGeneration,
+          mode: decision,
+          trigger: reason,
+          repairedLabelMismatch: diff?.labelMismatch ?? 0,
+          repairedGapMismatch: diff?.gapMismatch ?? 0,
+          repairedClassMismatch: diff?.classMismatch ?? 0,
+          decision: classOk && labelOk && gapOk ? 'PASS' : 'FAIL',
+          reason: classOk && labelOk && gapOk ? 'ATOMIC_DECORATION_SETTLED' : 'DECORATION_MISMATCH_AFTER_RECONCILE',
+        })
+      }
+    }
+    this.lastAuditedSettingsRevision = settingsRevision
+  }
+
+  /** V5.14-R4 §15 — the heading decoration gate report (all zero = PASS). */
+  getHeadingDecorationV514R4Counters(): HeadingDecorationV514R4Counters {
+    // §12 — the outline owns its own parity counters; the report is the SUM of
+    // the body counters and the outline counters (disjoint key sets).
+    const merged: HeadingDecorationV514R4Counters = { ...this.countersHeadingDecorationV514R4 }
+    try {
+      const outline = this.outlineController.getOutlineDecorationV514R4Counters()
+      for (const key of HEADING_DECORATION_V514R4_GATE_KEYS) {
+        merged[key] += outline[key] ?? 0
+      }
+    } catch { /* controller not ready */ }
+    return merged
+  }
+
+  getHeadingDecorationV514R4GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateHeadingDecorationV514R4Gates(this.getHeadingDecorationV514R4Counters())
+  }
+
+  getHeadingDecorationV514R4GateReport(): string[] {
+    return formatHeadingDecorationV514R4GateReport(this.getHeadingDecorationV514R4Counters())
+  }
+
+  /** V5.14-R4 §15 — a document switch must not let a stale gap survive. */
+  noteDocumentSwitchStaleGap(count: number): void {
+    if (count > 0) this.countersHeadingDecorationV514R4.staleGapSurvivedDocumentSwitch += count
   }
 
   private logRefresh(reason: RefreshReason, headingCount: number, diff: { scanned: number; repaired: number; updated: number; removed: number }, startTime: number): void {

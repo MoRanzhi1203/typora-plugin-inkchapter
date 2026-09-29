@@ -10,6 +10,12 @@
  */
 
 import type { HeadingDescriptor, HeadingLevel } from './heading-types'
+// V5.14-R4 §12 — the ONE decoration projection authority shared with the body.
+import {
+  outlineGapForBodyIndex,
+  type HeadingDecorationGap,
+  type HeadingDecorationProjection,
+} from './heading-decoration-projection-v514-r4'
 
 // ── Selectors ─────────────────────────────────────────
 
@@ -74,6 +80,10 @@ export interface SyncResult {
   matchedByIdx: number
   attributeApplied: number
   unmatchedCount: number
+  /** V5.14-R4 §12 — per-item label parity (read back from the outline DOM). */
+  labelMismatch?: number
+  /** V5.14-R4 §12 — per-item gap parity (read back from the outline DOM). */
+  gapMismatch?: number
 }
 
 // ── DOM helpers ───────────────────────────────────────
@@ -908,9 +918,14 @@ export function applyNumberingAttributes(
 
 export function clearAllNumberingAttributes(root: HTMLElement | null): number {
   if (!root) return 0
-  const els = root.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
+  // V5.14-R4 — the gap attribute is part of the decoration: clearing only the
+  // number would leave a stale gap behind on a document switch.
+  const els = root.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}], [${GAP_ATTR}]`)
   let count = els.length
-  els.forEach(el => el.removeAttribute(NUMBER_ATTR))
+  els.forEach(el => {
+    el.removeAttribute(NUMBER_ATTR)
+    el.removeAttribute(GAP_ATTR)
+  })
   return count
 }
 
@@ -974,6 +989,7 @@ export function fullSyncOutline(
   bodyLabels: readonly string[],
   callback: (log: string) => void,
   labelGaps?: readonly string[],
+  projections?: readonly HeadingDecorationProjection[],
 ): SyncResult {
   const root = findOutlineRoot()
   callback(`rootFound=${String(!!root)}`)
@@ -986,16 +1002,36 @@ export function fullSyncOutline(
   const items = findOutlineTextElements(root)
   callback(`outlineItemCount=${items.length}`)
 
-  const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items)
+  const trace: OutlineMatchTraceEntry[] = []
+  const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items, trace)
   const idCount = matches.filter(m => m.method === 'id').length
   const textCount = matches.filter(m => m.method === 'text').length
   const idxCount = matches.filter(m => m.method === 'index').length
   callback(`matchedCount=${matches.length} (id=${idCount} text=${textCount} idx=${idxCount})`)
 
-  const attrResult = applyNumberingAttributes(
-    matches.map((m, i) => ({ element: m.element, label: m.label, labelGap: labelGaps?.[i] ?? '' }))
-  )
+  // ── V5.14-R4 §12 — the outline consumes the SAME projection snapshot as the
+  // body, keyed by the BODY HEADING index from the matcher's own trace. The old
+  // `labelGaps[matchOrdinal]` re-derived the gap in a DIFFERENT index space
+  // (any unmatched heading shifted every later gap), and `?? ''` silently
+  // degraded a missing entry to "no gap".
+  const paired = pairOutlineItemsWithProjections({
+    trace, items, bodyLabels, projections, labelGaps,
+  })
+  const ordered: OutlineDecorationPair[] = paired.length >= matches.length
+    ? paired
+    : matches.map((m, i) => ({
+        bodyIndex: i,
+        stableIdentity: projections?.[i]?.stableIdentity ?? m.element.getAttribute('href') ?? `outline-match-index:${i}`,
+        element: m.element,
+        label: m.label,
+        labelGap: outlineGapForBodyIndex(projections, i, labelGaps),
+      }))
+
+  const attrResult = applyNumberingAttributes(ordered)
   callback(`attributeAppliedCount=${attrResult.applied + attrResult.updated}`)
+
+  // §12 — per-item LABEL + GAP parity verification (never a count-only verdict).
+  const verified = verifyOutlineDecorationParity(ordered)
 
   // Sync bold state on numbering prefixes to match title text boldness
   syncOutlineNumberBoldStyle()
@@ -1011,8 +1047,75 @@ export function fullSyncOutline(
     matchedByIdx: idxCount,
     attributeApplied: attrResult.applied + attrResult.updated,
     unmatchedCount: unmatched,
+    labelMismatch: verified.labelMismatch,
+    gapMismatch: verified.gapMismatch,
   }
 }
+
+export interface OutlineDecorationPair {
+  bodyIndex: number
+  stableIdentity: string
+  element: HTMLElement
+  label: string
+  labelGap: HeadingDecorationGap
+}
+
+/** Read the REAL outline decoration of one item (label + gap, one state). */
+export function readOutlineDecoration(el: HTMLElement): { label: string | null; gap: HeadingDecorationGap } {
+  return { label: el.getAttribute(NUMBER_ATTR), gap: (el.getAttribute(GAP_ATTR) === 'space' ? 'space' : 'none') }
+}
+
+/**
+ * §12 — pair each matched outline item with the BODY projection of the heading
+ * it matched (by the matcher trace's `headingIndex`), so the label and the gap
+ * always come from one and the same business result.
+ */
+export function pairOutlineItemsWithProjections(input: {
+  trace: readonly OutlineMatchTraceEntry[]
+  items: readonly HTMLElement[]
+  bodyLabels: readonly string[]
+  projections?: readonly HeadingDecorationProjection[]
+  labelGaps?: readonly string[]
+}): OutlineDecorationPair[] {
+  const byBodyIndex = new Map<number, OutlineDecorationPair>()
+  for (const t of input.trace) {
+    if (t.decision !== 'MATCH' || t.selectedNativeIndex == null) continue
+    const element = input.items[t.selectedNativeIndex]
+    if (!element) continue
+    const projection = input.projections?.[t.headingIndex]
+    const label = projection ? projection.label : (input.bodyLabels[t.headingIndex] ?? '')
+    const gap: HeadingDecorationGap = projection
+      ? (label === '' ? 'none' : projection.gap)
+      : outlineGapForBodyIndex(null, t.headingIndex, input.labelGaps)
+    byBodyIndex.set(t.headingIndex, {
+      bodyIndex: t.headingIndex,
+      stableIdentity: projection?.stableIdentity ?? element.getAttribute('href') ?? `outline-body-index:${t.headingIndex}`,
+      element,
+      label,
+      labelGap: gap,
+    })
+  }
+  return [...byBodyIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v)
+}
+
+/**
+ * §12 — read the REAL outline decoration back and compare label + gap per item.
+ */
+export function verifyOutlineDecorationParity(
+  ordered: readonly OutlineDecorationPair[],
+): { labelMismatch: number; gapMismatch: number } {
+  let labelMismatch = 0
+  let gapMismatch = 0
+  for (const p of ordered) {
+    const actual = readOutlineDecoration(p.element)
+    const wantLabel = p.label === '' ? null : p.label
+    const wantGap = p.label !== '' && p.labelGap === 'space' ? 'space' : null
+    if (actual.label !== wantLabel) labelMismatch++
+    if ((actual.gap === 'space' ? 'space' : null) !== wantGap) gapMismatch++
+  }
+  return { labelMismatch, gapMismatch }
+}
+
 
 // ── Quick sync ────────────────────────────────────────
 
@@ -1038,13 +1141,16 @@ export function quickSyncOutline(
   LOG(`[InkChapter OUTLINE] quickSync: found ${items.length} text elements, first=${items[0]?.textContent?.trim().slice(0, 30) ?? 'none'}`)
   if (items.length === 0) return { matched: 0, applied: 0 }
 
-  const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items)
+  const trace: OutlineMatchTraceEntry[] = []
+  const matches = matchHeadingsToOutline(bodyHeadings, bodyLabels, items, trace)
   LOG(`[InkChapter OUTLINE] quickSync: ${matches.length} matches (body=${bodyHeadings.length} labels=${bodyLabels.length} items=${items.length})`)
   if (matches.length === 0) return { matched: 0, applied: 0 }
 
-  const attrResult = applyNumberingAttributes(
-    matches.map((m, i) => ({ element: m.element, label: m.label, labelGap: labelGaps?.[i] ?? '' }))
-  )
+  // §12 — the gap comes from the SAME body-index projection as the label.
+  const ordered = pairOutlineItemsWithProjections({
+    trace, items, bodyLabels, projections: undefined, labelGaps,
+  })
+  const attrResult = applyNumberingAttributes(ordered)
 
   // Sync bold state on numbering prefixes to match title text boldness
   syncOutlineNumberBoldStyle()
@@ -1065,8 +1171,12 @@ export function clearFileTreeNumberingAttributes(): number {
     const els = document.querySelectorAll(sel)
     els.forEach(ft => {
       ft.removeAttribute('data-inkchapter-exclude')
-      const marked = ft.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}]`)
-      marked.forEach(el => { el.removeAttribute(NUMBER_ATTR); count++ })
+      const marked = ft.querySelectorAll<HTMLElement>(`[${NUMBER_ATTR}], [${GAP_ATTR}]`)
+      marked.forEach(el => {
+        el.removeAttribute(NUMBER_ATTR)
+        el.removeAttribute(GAP_ATTR)
+        count++
+      })
     })
   }
   return count

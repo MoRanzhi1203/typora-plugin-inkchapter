@@ -188,7 +188,7 @@ describe('R9-HEADING-01 — Multi H1 Passive (Conditional-Strict-Multi-H1 fixtur
 
 // ── R9-HEADING-02 — Multi H1 Active ────────────────────────────────────────
 describe('R9-HEADING-02 — Multi H1 Active', () => {
-  it('R7 active fill present, passive fill suppressed, reason chip remains', () => {
+  it('R7 active fill present, passive fill RETAINED (V5.14-R3 P10), reason chip remains', () => {
     const w = makeWorld()
     host = w.h
     const d = multiH1()
@@ -197,8 +197,10 @@ describe('R9-HEADING-02 — Multi H1 Active', () => {
     expect(passiveFragmentCount()).toBe(1)
     api().renderHeadingActiveEmphasis('E1', d as never, w.heading)
     expect(activeFragmentCount()).toBe(1)
-    // the passive fill is SUSPENDED (really removed), never stacked.
-    expect(passiveFragmentCount()).toBe(0)
+    // ── V5.14-R3 §P10 §4/§24 — the PASSIVE marker is PERMANENT: the active
+    // emphasis is ADDITIVE and never removes the passive fill (the legacy R9
+    // "suspend while active" was the P10 root cause).
+    expect(passiveFragmentCount()).toBe(1)
     expect(chipCount()).toBe(1)
     expect(api().getHeadingMarkerSurfaceCounters().activePassiveFillStack).toBe(0)
   })
