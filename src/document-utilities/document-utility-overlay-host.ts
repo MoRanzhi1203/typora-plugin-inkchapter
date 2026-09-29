@@ -267,6 +267,38 @@ import {
   type StrictMultiH1VisualV513R5Counters,
 } from './document-diagnostic-document-end-visual-v513-r1'
 import {
+  DRAWER_ORDER_AUDIT_EVENT,
+  buildDrawerOrderAuditEntries,
+  countDocumentOrderDriftWithoutSourceChange,
+  countDocumentOrderInversions,
+  countMultiTargetGroupedInsteadOfPositionSorted,
+  createDrawerOrderV514R1Counters,
+  evaluateDrawerOrderV514R1Gates,
+  filterProjectionsBySeverity,
+  flattenDiagnosticsToProjections,
+  formatDrawerOrderV514R1GateReport,
+  isOrderPreservingSubsequence,
+  sortProjectionsByDocumentPosition,
+  summarizeDrawerOrderAudit,
+  type DiagnosticTargetProjection,
+  type DocumentPositionContext,
+  type DrawerOrderV514R1Counters,
+} from './document-diagnostic-drawer-order-v514-r1'
+import {
+  HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT,
+  buildHeadingDiagnosticVisualSnapshot,
+  buildHeadingVisualSnapshotAuditEntry,
+  chipOverlapsHeadingText,
+  createHeadingVisualSnapshotV514R1Counters,
+  evaluateHeadingVisualSnapshotConsistency,
+  evaluateHeadingVisualSnapshotV514R1Gates,
+  formatHeadingVisualSnapshotV514R1GateReport,
+  shouldRebuildForNumberRectFlip,
+  type HeadingDiagnosticVisualSnapshot,
+  type HeadingVisualSeverity,
+  type HeadingVisualSnapshotV514R1Counters,
+} from './document-heading-visual-snapshot-v514-r1'
+import {
   HEADING_MARKER_AUDIT_EVENT,
   HEADING_MARKER_ICON_SIZE_PX,
   HEADING_MARKER_MIN_TEXT_GAP_PX,
@@ -2062,6 +2094,7 @@ export class DocumentUtilityOverlayHost {
       if (!stillPresent) {
         this.clearDiagnosticLocateVisual('ACTIVE_DIAGNOSTIC_REMOVED')
         this.lastLocatedDiagnosticId = null
+        this.lastLocatedTargetIndex = null
       }
     }
     this.handleStrictSingleH1Popup(snapshot)
@@ -4283,6 +4316,32 @@ export class DocumentUtilityOverlayHost {
       const chipAnchorRects = textLocal.length > 0 ? textLocal : [contentLocal]
       const chipAnchor = chipAnchorRects[chipAnchorRects.length - 1]
       const chipAnchorCenterY = chipAnchor.top + chipAnchor.height / 2
+      // ── V5.14-R1 §13/§15 — ONE HeadingDiagnosticVisualSnapshot; the passive fill
+      // AND the reason chip BOTH consume THIS object, so they can never bind to
+      // different headings or different layout epochs.
+      const headingVisualSnapshot = buildHeadingDiagnosticVisualSnapshot({
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+        stableHeadingIdentity: identity,
+        layoutEpoch: epoch,
+        headingRect: anchorLocal,
+        textRect: chipAnchor,
+        numberRect,
+        severity: severity as HeadingVisualSeverity,
+        passive: !isActiveHeading,
+        active: isActiveHeading,
+      })
+      const previousVisualSnapshot = this.lastHeadingVisualSnapshots.get(identity) ?? null
+      // §15 — the numbering rect entered the settled content for THIS heading
+      // (the numbering controller stamps `data-inkchapter-heading-number` after the
+      // first paint): drop the stale chip so the block below rebuilds it ONCE from
+      // the new content right edge. Old chip geometry never survives.
+      const numberRectFlipRebuilt = shouldRebuildForNumberRectFlip(previousVisualSnapshot, headingVisualSnapshot)
+      if (numberRectFlipRebuilt && chip) {
+        try { chip.remove() } catch { /* noop */ }
+        chip = null
+        chipLocal = null
+      }
+      this.lastHeadingVisualSnapshots.set(identity, headingVisualSnapshot)
       if (g.reasonText) {
         const chipWidth = Math.min(220, 16 + g.reasonText.length * 7)
         const chipHeight = HEADING_REASON_CHIP_HEIGHT_PX
@@ -4352,6 +4411,30 @@ export class DocumentUtilityOverlayHost {
       const chipGap = evaluateHeadingChipGap(chipGapPx)
       if (chipGap.gapLt4) this.countersHeadingSurfaceV512R9.chipGapLt4px++
       if (chipGap.gapGt12) this.countersHeadingSurfaceV512R9.chipGapGt12px++
+      // ── V5.14-R1 §41 — Heading visual-snapshot hard gates ──────────────────
+      const headingGates = this.countersHeadingVisualV514R1
+      const snapshotConsistency = evaluateHeadingVisualSnapshotConsistency(headingVisualSnapshot, {
+        fillIdentity: fillLocal.length > 0 ? identity : null,
+        chipIdentity: chipLocal ? identity : null,
+        paintLayoutEpoch: headingVisualSnapshot.layoutEpoch,
+        domHeadingIdentity: wrapper.getAttribute('data-ink-heading-id'),
+      })
+      if (snapshotConsistency.fillChipIdentityMismatch) headingGates.fillChipIdentityMismatch++
+      if (snapshotConsistency.fillChipLayoutEpochMismatch) headingGates.fillChipLayoutEpochMismatch++
+      if (chipOverlapsHeadingText(chipLocal, chipAnchorRects)) headingGates.reasonChipOverlapText++
+      if (chipGap.gapLt4) headingGates.reasonChipGapLt4px++
+      emitRuntimeAudit(HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT, {
+        snapshotRevision: this.snapshot?.revision ?? null,
+        ...buildHeadingVisualSnapshotAuditEntry({
+          snapshot: headingVisualSnapshot,
+          chipRect: chipLocal,
+          chipGapPx,
+          numberRectFlipRebuilt,
+        }),
+        gateCounters: { ...headingGates },
+        decision: evaluateHeadingVisualSnapshotV514R1Gates(headingGates).decision,
+        reason: 'HEADING_FILL_CHIP_SHARE_ONE_SNAPSHOT',
+      })
       // §8 — chip vertical centering (only meaningful beside the title).
       if (chipCenterDriftPx != null && chipCenterDriftPx > HEADING_CHIP_CENTER_TOLERANCE_PX) {
         this.countersHeadingSurfaceV512R9.chipCenterDriftGt2px++
@@ -4646,6 +4729,16 @@ export class DocumentUtilityOverlayHost {
   private countersDocEndV513R5 = createDocumentEndRealGeometryV513R5Counters()
   /** V5.13-R5 §28 — Strict Multi-H1 visual Authority gates. Every one must stay 0. */
   private countersMultiH1V513R5 = createStrictMultiH1VisualV513R5Counters()
+  /** V5.14-R1 §41 — Drawer document-position ordering gates. Every one must stay 0. */
+  private countersDrawerOrderV514R1 = createDrawerOrderV514R1Counters()
+  /** V5.14-R1 §6 — the previous render's projections (order-drift detection). */
+  private lastDrawerOrderProjections: DiagnosticTargetProjection[] = []
+  /** V5.14-R1 §33 — the SELECTED occurrence (stable across refreshes). */
+  private lastLocatedTargetIndex: number | null = null
+  /** V5.14-R1 §41 — Heading fill/chip snapshot gates. Every one must stay 0. */
+  private countersHeadingVisualV514R1 = createHeadingVisualSnapshotV514R1Counters()
+  /** V5.14-R1 §15 — the last heading visual snapshot per heading identity. */
+  private lastHeadingVisualSnapshots = new Map<string, HeadingDiagnosticVisualSnapshot>()
   /** §5 Priority 3 — stable cache (documentKey|layout width → text column left). */
   private docTextColumnCache = new Map<string, number>()
   /** §15 — the last resolved text-column anchor (drift gate + audit). */
@@ -4781,6 +4874,109 @@ export class DocumentUtilityOverlayHost {
 
   getStrictMultiH1VisualV513R5Counters(): Readonly<StrictMultiH1VisualV513R5Counters> {
     return { ...this.countersMultiH1V513R5 }
+  }
+
+  /** V5.14-R1 §41 — the Drawer document-position ordering gate report. */
+  getDrawerOrderV514R1GateReport(): string[] {
+    return formatDrawerOrderV514R1GateReport(this.countersDrawerOrderV514R1)
+  }
+
+  getDrawerOrderV514R1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateDrawerOrderV514R1Gates(this.countersDrawerOrderV514R1)
+  }
+
+  getDrawerOrderV514R1Counters(): Readonly<DrawerOrderV514R1Counters> {
+    return { ...this.countersDrawerOrderV514R1 }
+  }
+
+  /** V5.14-R1 §41 — Heading fill/chip snapshot gate report. */
+  getHeadingVisualSnapshotV514R1GateReport(): string[] {
+    return formatHeadingVisualSnapshotV514R1GateReport(this.countersHeadingVisualV514R1)
+  }
+
+  getHeadingVisualSnapshotV514R1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateHeadingVisualSnapshotV514R1Gates(this.countersHeadingVisualV514R1)
+  }
+
+  getHeadingVisualSnapshotV514R1Counters(): Readonly<HeadingVisualSnapshotV514R1Counters> {
+    return { ...this.countersHeadingVisualV514R1 }
+  }
+
+  /**
+   * V5.14-R1 §3/§7 — the ONE projection list every DRAWER entry is built from.
+   * Sorted strictly by document position (multi-target occurrences may interleave
+   * with other diagnostics; the business diagnostic is never split).
+   */
+  getDrawerProjections(): readonly DiagnosticTargetProjection[] {
+    return this.buildDrawerProjections()
+  }
+
+  private buildDocumentPositionContext(): DocumentPositionContext {
+    const root = resolveBusinessContentRoot()
+    if (!root) return {}
+    const headings = Array.from(root.querySelectorAll('h1,h2,h3,h4,h5,h6')) as HTMLElement[]
+    const indexOf = new Map<string, number>()
+    headings.forEach((h, i) => {
+      const id = this.headingStableIdentityOf(h)
+      if (id) indexOf.set(id, i)
+    })
+    return {
+      headingIndexOfStableIdentity: id => (indexOf.has(id) ? indexOf.get(id)! : null),
+      lineOfStableIdentity: id => {
+        const idx = indexOf.get(id)
+        if (idx == null) return null
+        const attr = headings[idx].getAttribute('data-line')
+        const n = attr != null && attr !== '' ? Number.parseInt(attr, 10) : Number.NaN
+        return Number.isFinite(n) ? n : null
+      },
+    }
+  }
+
+  private buildDrawerProjections(): DiagnosticTargetProjection[] {
+    const diagnostics = this.snapshot?.diagnostics ?? []
+    return sortProjectionsByDocumentPosition(
+      flattenDiagnosticsToProjections(diagnostics, this.buildDocumentPositionContext()),
+    )
+  }
+
+  private diagnosticById(id: string): DocumentDiagnosticsSnapshot['diagnostics'][number] | null {
+    const diagnostics = this.snapshot?.diagnostics ?? []
+    return diagnostics.find(d => d.id === id) ?? null
+  }
+
+  /**
+   * V5.14-R1 §6/§32/§38 — record the ordering facts of ONE render. `all` is the
+   * sorted full set, `filtered` the severity-filtered subset that was painted.
+   */
+  private recordDrawerOrderFacts(
+    all: readonly DiagnosticTargetProjection[],
+    filtered: readonly DiagnosticTargetProjection[],
+  ): void {
+    const c = this.countersDrawerOrderV514R1
+    if (countDocumentOrderInversions(all) > 0) c.documentOrderInversion++
+    if (!isOrderPreservingSubsequence(all, filtered)) c.filterRelativeOrderMutation++
+    const grouped = countMultiTargetGroupedInsteadOfPositionSorted(
+      sortProjectionsByDocumentPosition(all), all,
+    )
+    if (grouped > 0) c.multiTargetGroupedInsteadOfPositionSorted += grouped
+    const drift = countDocumentOrderDriftWithoutSourceChange(this.lastDrawerOrderProjections, all)
+    if (drift > 0) c.documentOrderDriftWithoutSourceChange += drift
+    const previous = this.lastDrawerOrderProjections
+    const summary = summarizeDrawerOrderAudit(previous, all)
+    this.lastDrawerOrderProjections = all.map(p => ({ ...p }))
+    emitRuntimeAudit(DRAWER_ORDER_AUDIT_EVENT, {
+      documentKey: this.snapshot?.documentKey ?? null,
+      snapshotRevision: this.snapshot?.revision ?? null,
+      filter: this.drawerFilter,
+      entryCount: summary.entryCount,
+      entries: buildDrawerOrderAuditEntries(all),
+      isMonotonicDocumentOrder: summary.isMonotonicDocumentOrder,
+      tieBreakCount: summary.tieBreakCount,
+      driftWithoutSourceChange: summary.driftWithoutSourceChange,
+      gateCounters: { ...c },
+      decision: evaluateDrawerOrderV514R1Gates(c).decision,
+      reason: 'DRAWER_POSITION_SORTED_OCCURRENCE_ENTRIES',
+    })
   }
 
   /** §20 — the last resolved DocumentLayoutAnchors (runtime verification helper). */
@@ -7711,6 +7907,7 @@ export class DocumentUtilityOverlayHost {
     this.lastLocatedDiagnosticId = null
     this.multiTargetCursor.clear()
     this.lastLocateTargetCounts.clear()
+    this.lastHeadingVisualSnapshots.clear()
     // Phase 7R.3.11.8B.12 — ACTIVE → EMPTY / NO_ACTIVE_DOCUMENT hides the
     // Navigator IMMEDIATELY (no scroll/resize/timer) and clears every stale
     // placement so a later show never inherits a left-bottom geometry.
@@ -9747,19 +9944,21 @@ export class DocumentUtilityOverlayHost {
       ok.append(icon, label)
       this.drawerListEl.appendChild(ok)
     } else {
-      const filter = this.drawerFilter
-      const items = filter === 'all'
-        ? snapshot.diagnostics
-        : snapshot.diagnostics.filter(d => d.severity === filter)
-      if (items.length === 0) {
+      // V5.14-R1 §3/§4/§5/§32 — ONE occurrence-level projection per real target,
+      // ordered strictly by document position (multi-target occurrences interleave
+      // with other diagnostics). The severity filter only REMOVES entries.
+      const projections = this.buildDrawerProjections()
+      const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
+      this.recordDrawerOrderFacts(projections, filtered)
+      if (filtered.length === 0) {
         // Current filter yields nothing after a live refresh — show neutral hint.
         const none = document.createElement('div')
         none.className = 'inkchapter-doc-drawer__item--empty'
         none.textContent = '当前筛选下没有问题'
         this.drawerListEl.appendChild(none)
       } else {
-        for (const d of items) {
-          this.drawerListEl.appendChild(this.buildDrawerItem(d))
+        for (const p of filtered) {
+          this.drawerListEl.appendChild(this.buildDrawerItem(p))
         }
       }
     }
@@ -9799,7 +9998,7 @@ export class DocumentUtilityOverlayHost {
    *     one bounded refresh; still unresolved → an honest
    *     "无法定位到该问题所在行" (never claims the target changed).
    */
-  private locateDiagnostic(diagnosticId: string): void {
+  private locateDiagnostic(diagnosticId: string, targetIndexOverride?: number): void {
     // Phase 7R.3.11.8B.7.7 — NON-REENTRANT gate. A busy transaction rejects
     // every further 定位 click BEFORE touching the cursor or any target state.
     const busyTx = this.activeLocateTx
@@ -9846,7 +10045,7 @@ export class DocumentUtilityOverlayHost {
     // repaint from a previously dismissed visual becomes a no-op.
     this.locateVisualEpoch++
     try {
-      this.runLocateTransaction(tx, diagnosticId)
+      this.runLocateTransaction(tx, diagnosticId, targetIndexOverride)
     } catch (err) {
       this.abortLocateTransaction(tx, 'INTERNAL_ERROR', String(err))
     }
@@ -9857,6 +10056,7 @@ export class DocumentUtilityOverlayHost {
   private runLocateTransaction(
     tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
     diagnosticId: string,
+    targetIndexOverride?: number,
   ): void {
     const snapshot = this.diagnostics.getSnapshot()
     let diag = snapshot?.diagnostics.find(d => d.id === diagnosticId) ?? null
@@ -9891,7 +10091,11 @@ export class DocumentUtilityOverlayHost {
       ? diag.location.targets.length
       : 1
     if (diag.location?.kind === 'multi-target' && targetCount > 0) {
-      targetIndex = (this.multiTargetCursor.get(diagnosticId) ?? 0) % targetCount
+      // V5.14-R1 §5/§33 — a Drawer occurrence row locates ITS OWN target; only a
+      // row-less (legacy) call falls back to the cycling cursor.
+      targetIndex = targetIndexOverride != null && Number.isFinite(targetIndexOverride)
+        ? Math.max(0, Math.min(targetCount - 1, Math.floor(targetIndexOverride)))
+        : (this.multiTargetCursor.get(diagnosticId) ?? 0) % targetCount
     }
     tx.targetIndex = targetIndex
     tx.targetCount = targetCount
@@ -13547,11 +13751,18 @@ export class DocumentUtilityOverlayHost {
     const focusId = active
       ? (this.activeLocateTx?.diagnosticId ?? this.lastLocatedDiagnosticId)
       : this.lastLocatedDiagnosticId
-    if (active && focusId) this.lastLocatedDiagnosticId = focusId
+    if (active && focusId) {
+      this.lastLocatedDiagnosticId = focusId
+      // §33 — pin the SELECTED occurrence, not just the diagnostic.
+      this.lastLocatedTargetIndex = this.activeLocateTx?.targetIndex ?? null
+    }
     for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
       row.setAttribute('aria-disabled', String(active))
       row.classList.toggle('is-busy', active)
-      const isFocus = !active && focusId != null && row.getAttribute('data-diagnostic-id') === focusId
+      const rowTargetIndex = Number.parseInt(row.getAttribute('data-target-index') ?? '0', 10)
+      const isFocus = !active && focusId != null
+        && row.getAttribute('data-diagnostic-id') === focusId
+        && (this.lastLocatedTargetIndex == null || rowTargetIndex === this.lastLocatedTargetIndex)
       row.classList.toggle('is-selected', isFocus)
     }
   }
@@ -14130,28 +14341,40 @@ export class DocumentUtilityOverlayHost {
    * is the locate target (click / Enter). Multi-target rows render `1/2`-style
    * metadata while keeping the existing cycling logic untouched.
    */
-  private buildDrawerItem(d: DocumentDiagnosticsSnapshot['diagnostics'][number]): HTMLElement {
+  /**
+   * V5.14-R1 §4/§5/§33 — build ONE row from ONE target OCCURRENCE projection.
+   * A multi-target diagnostic yields several rows (one per target), each carrying
+   * its own `targetIndex`/`targetCount`, so occurrences can interleave with other
+   * diagnostics while the underlying business diagnostic stays intact.
+   */
+  private buildDrawerItem(p: DiagnosticTargetProjection): HTMLElement {
+    const d = this.diagnosticById(p.diagnosticId)
     const item = document.createElement('div')
-    item.className = `inkchapter-doc-drawer__item inkchapter-doc-drawer__item--${d.severity}`
+    item.className = `inkchapter-doc-drawer__item inkchapter-doc-drawer__item--${p.severity}`
     item.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    item.setAttribute('data-diagnostic-id', d.id)
+    item.setAttribute('data-diagnostic-id', p.diagnosticId)
+    item.setAttribute('data-target-index', String(p.targetIndex))
     item.setAttribute('role', 'button')
     item.setAttribute('tabindex', '0')
-    item.setAttribute('aria-label', `${d.detail ? d.detail + '，' : ''}${d.message}`)
-    if (this.lastLocatedDiagnosticId === d.id) item.classList.add('is-selected')
+    const message = d?.message ?? p.ruleId
+    item.setAttribute('aria-label', `${d?.detail ? d.detail + '，' : ''}${message}`)
+    // §33 — the SELECTED occurrence is the (diagnosticId, targetIndex) PAIR, so a
+    // refresh can never make the active row jump to another occurrence.
+    if (this.lastLocatedDiagnosticId === p.diagnosticId
+      && (this.lastLocatedTargetIndex ?? 0) === p.targetIndex) item.classList.add('is-selected')
 
     const icon = document.createElement('span')
     icon.className = 'inkchapter-doc-drawer__item-icon'
-    setIcon(icon, d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info')
+    setIcon(icon, p.severity === 'error' ? 'error' : p.severity === 'warning' ? 'warning' : 'info')
     item.appendChild(icon)
 
     const body = document.createElement('div')
     body.className = 'inkchapter-doc-drawer__item-body'
     const msg = document.createElement('div')
     msg.className = 'inkchapter-doc-drawer__item-msg'
-    msg.textContent = d.message
+    msg.textContent = message
     body.appendChild(msg)
-    if (d.detail) {
+    if (d?.detail) {
       const detail = document.createElement('div')
       detail.className = 'inkchapter-doc-drawer__item-detail'
       detail.textContent = d.detail
@@ -14159,17 +14382,13 @@ export class DocumentUtilityOverlayHost {
     }
     item.appendChild(body)
 
-    // Right-hand metadata: multi-target position (1/2 …) when available.
+    // Right-hand metadata: the THIS-occurrence position (1/N …) from the projection.
     const meta = document.createElement('div')
     meta.className = 'inkchapter-doc-drawer__item-meta'
-    const targetCount = d.location?.kind === 'multi-target' && d.location.targets.length > 1
-      ? d.location.targets.length
-      : 0
-    if (targetCount > 0) {
-      const idx = (this.multiTargetCursor.get(d.id) ?? 0) % targetCount
+    if (p.targetCount > 1) {
       const span = document.createElement('span')
       span.className = 'inkchapter-doc-drawer__item-target'
-      span.textContent = `${idx + 1}/${targetCount}`
+      span.textContent = `${p.targetIndex + 1}/${p.targetCount}`
       meta.appendChild(span)
     }
     // Optional hover jump affordance (non-interactive decoration only).
@@ -14179,7 +14398,7 @@ export class DocumentUtilityOverlayHost {
     meta.appendChild(go)
     item.appendChild(meta)
 
-    const activate = (): void => this.locateDiagnostic(d.id)
+    const activate = (): void => this.locateDiagnostic(p.diagnosticId, p.targetIndex)
     item.addEventListener('click', (ev) => {
       ev.preventDefault()
       activate()

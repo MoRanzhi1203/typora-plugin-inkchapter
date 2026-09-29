@@ -265,9 +265,10 @@ describe('V1.1 diagnostics header + flat rows (DH/DI)', () => {
     const h = mountHost()
     injectSnapshot(h, [makeDiag('warning', 'w1', '警告一')])
     const row = document.querySelector<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]')!
-    const spy = vi.spyOn(h as unknown as { locateDiagnostic: (id: string) => void }, 'locateDiagnostic')
+    const spy = vi.spyOn(h as unknown as { locateDiagnostic: (id: string, targetIndex?: number) => void }, 'locateDiagnostic')
     row.click()
-    expect(spy).toHaveBeenCalledWith('w1')
+    // V5.14-R1 §5 — a row locates ITS OWN occurrence (targetIndex 0 here).
+    expect(spy).toHaveBeenCalledWith('w1', 0)
     row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(spy).toHaveBeenCalledTimes(2)
     expect(row.getAttribute('tabindex')).toBe('0')
