@@ -225,19 +225,28 @@ describe('LOCATE — non-reentrant transaction', () => {
     expect(host['multiTargetCursor'].get(id)).toBe(1)
   })
 
-  it('MULTI_H1_NORMAL_CYCLE: settle then re-click advances target 0→1→2→0', () => {
+  it('MULTI_H1_NORMAL_CYCLE: each occurrence ROW locates its OWN target (V5.14-R1 §5)', () => {
     injectMultiH1Snapshot()
     const id = 'multi-h1'
-    const clickAndSettle = (): void => {
-      const btn = firstLocateButton()!
-      btn.click()
+    // V5.14-R1 §4/§5 — one Drawer row per occurrence, each carrying its index;
+    // clicking a row never implicitly cycles to a sibling occurrence.
+    const clickRow = (i: number): void => {
+      const list = Array.from(
+        document.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'),
+      )
+      expect(list[i].getAttribute('data-target-index')).toBe(String(i))
+      list[i].click()
       vi.advanceTimersByTime(40)
       expect(host.isLocateTransactionActive()).toBe(false)
     }
-    clickAndSettle()
+    clickRow(0)
     expect(host['multiTargetCursor'].get(id)).toBe(1)
-    clickAndSettle()
-    expect(host['multiTargetCursor'].get(id)).toBe(0) // 2 targets: 1→(commit)→0
+    // the SAME 1/2 row always targets occurrence 0 (no implicit cycling)
+    clickRow(0)
+    expect(host['multiTargetCursor'].get(id)).toBe(1)
+    // the 2/2 row targets occurrence 1
+    clickRow(1)
+    expect(host['multiTargetCursor'].get(id)).toBe(0)
     expect(host['multiTargetCursor'].get(id)).not.toBeUndefined()
   })
 
