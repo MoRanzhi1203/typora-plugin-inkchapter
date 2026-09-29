@@ -31,31 +31,45 @@ export const EOF_COORDINATE_SPACE = 'HOST_LOCAL_DOCUMENT_SPACE'
 /** Where the synthetic vertical geometry came from (§6.3 — never silent). */
 export const EOF_GEOMETRY_SOURCE_LAST_MEANINGFUL_BLOCK = 'LAST_MEANINGFUL_BLOCK'
 export const EOF_GEOMETRY_SOURCE_EDITOR_END_BASELINE = 'EDITOR_DOCUMENT_END_BASELINE'
+/**
+ * V5.13-R5 §6 — the REAL trailing blank geometry sources. The zone is measured
+ * from the DOM / editor tail, NEVER back-projected from the source blank count.
+ */
+export const EOF_GEOMETRY_SOURCE_ACTUAL_TRAILING_DOM_BLANK_ZONE = 'ACTUAL_TRAILING_DOM_BLANK_ZONE'
+export const EOF_GEOMETRY_SOURCE_EDITOR_TAIL_SPACE = 'EDITOR_TAIL_SPACE'
+export const EOF_GEOMETRY_SOURCE_COMPACT_SAFE_FALLBACK = 'COMPACT_SAFE_FALLBACK'
+/** V5.13-R5 §11 — the ONLY legal blank-line-height sources (never a heading). */
+export const EOF_BLANK_LINE_HEIGHT_SOURCE_ACTUAL_BLANK_NODE = 'ACTUAL_BLANK_NODE_GEOMETRY'
+export const EOF_BLANK_LINE_HEIGHT_SOURCE_EDITOR_BASE = 'EDITOR_BASE_LINE_HEIGHT'
+export const EOF_BLANK_LINE_HEIGHT_SOURCE_NONE = 'NONE'
+export const EOF_PRESENTATION_HEIGHT_SOURCE_ACTUAL_TRAILING_BLANK_GEOMETRY = 'ACTUAL_TRAILING_BLANK_GEOMETRY'
+/** V5.13-R5 §3/§35 — the FORBIDDEN height formula (kept only as a gate token). */
+export const EOF_PRESENTATION_HEIGHT_SOURCE_EXTRA_COUNT_X_LINE_HEIGHT = 'EXTRA_COUNT_X_LINE_HEIGHT'
+/** V5.13-R5 §8 — a collapsed DOM tail still yields a bounded, safe marker. */
+export const EOF_COMPACT_SAFE_TAIL_MAX_LINES = 2
 
-/** §6.1 — the marker is compact: never hundreds of pixels for 20 blank lines. */
+/** §6.1 — degenerate-guard only: a real zone is always taller than this. */
 export const EOF_VISUAL_MIN_HEIGHT_PX = 28
-export const EOF_VISUAL_MAX_HEIGHT_PX = 48
-/** §6.3 — inner gap after the last meaningful content block. */
+/** §6.3 — inner gap between the required zone and the excessive zone. */
 export const EOF_VISUAL_GAP_PX = 6
 /** Fallback line height when the editor exposes no resolvable line-height. */
 export const EOF_FALLBACK_LINE_HEIGHT_PX = 24
 /** §6.2 — a degenerate narrow content column still yields a visible marker. */
 export const EOF_MIN_CONTENT_WIDTH_PX = 24
 
-// ── V5.13-R2 §1/§2 — Semantic Zone / Presentation Band split ───────────────
+// ── V5.13-R2/R4 §1/§2/§4/§5 — Required zone / Excessive zone / Presentation ─
 
 /** §2.2 — the presentation right edge comes from the DOCUMENT CONTENT column. */
 export const DOCUMENT_END_RIGHT_EDGE_AUTHORITY_DOCUMENT_CONTENT = 'DOCUMENT_CONTENT'
-/** §2.1 — the legal first trailing blank line is NEVER painted. */
+/** §2.1/§4 — the legal trailing blank line(s) are NEVER painted. */
 export const EOF_ONE_TRAILING_BLANK_ALLOWANCE_LINES = 1
-/** §1.1 — compact presentation mapping (NOT linear in the blank count). */
-export const EOF_PRESENTATION_BASE_HEIGHT_PX = 30
-export const EOF_PRESENTATION_STEP_PX = 3
-export const EOF_PRESENTATION_MAX_STEP_LINES = 4
-export const EOF_PRESENTATION_MIN_HEIGHT_PX = 28
-export const EOF_PRESENTATION_MAX_HEIGHT_PX = 44
-/** §1.1 — the hard presentation bound (never a big card). */
-export const EOF_PRESENTATION_HARD_MAX_HEIGHT_PX = 48
+/** V5.13-R4 §4 — the required (legal) trailing blank line count. */
+export const EOF_REQUIRED_TRAILING_BLANK_LINE_COUNT = EOF_ONE_TRAILING_BLANK_ALLOWANCE_LINES
+/** V5.13-R4 §5 — the presentation height authority is the EXCESSIVE blank zone. */
+export const EOF_PRESENTATION_HEIGHT_SOURCE_EXCESSIVE_BLANK_ZONE = 'EXCESSIVE_BLANK_ZONE'
+/** V5.13-R4 §6 — the band must fully cover the excessive zone. */
+export const EOF_EXCESS_ZONE_COVERAGE_MIN = 0.98
+export const EOF_EXCESS_ZONE_DRIFT_MAX_PX = 1
 /** §5 — the band must really be inside the viewport after the page-end settle. */
 export const EOF_VISIBLE_HEIGHT_RATIO_MIN = 0.90
 export const EOF_VISIBLE_HEIGHT_RATIO_TARGET = 0.95
@@ -63,15 +77,23 @@ export const EOF_VISIBLE_HEIGHT_RATIO_TARGET = 0.95
 export const EOF_PANEL_OVERLAY_OCCLUSION_REASON = 'EXPECTED_PANEL_OVERLAY_OCCLUSION'
 export const EOF_BOTTOM_ALIGNED_FALLBACK_REASON = 'BOTTOM_ALIGNED_FALLBACK'
 
-/** §1.1 — compact height: base + a few small steps, hard-bounded at 48px. */
-export function computeEofPresentationHeight(extraTrailingBlankLineCount: number): number {
-  const count = Math.max(1, Math.floor(extraTrailingBlankLineCount))
-  const steps = Math.min(count - 1, EOF_PRESENTATION_MAX_STEP_LINES)
-  const raw = EOF_PRESENTATION_BASE_HEIGHT_PX + steps * EOF_PRESENTATION_STEP_PX
-  return Math.min(
-    EOF_PRESENTATION_HARD_MAX_HEIGHT_PX,
-    Math.min(EOF_PRESENTATION_MAX_HEIGHT_PX, Math.max(EOF_PRESENTATION_MIN_HEIGHT_PX, raw)),
-  )
+/**
+ * V5.13-R4 §4/§5/§6 — the presentation height IS the FULL excessive blank zone:
+ * `extraTrailingBlankLineCount × lineHeight`. There is NO fixed 36/48px cap any
+ * more (`presentationHeight = 36` / `Math.min(semanticHeight, 48)` are forbidden):
+ * the warning fill must cover EVERY excessive trailing blank line.
+ */
+export function computeEofPresentationHeight(
+  extraTrailingBlankLineCount: number,
+  lineHeight: number | null = null,
+): number {
+  const count = Math.max(0, Math.floor(extraTrailingBlankLineCount))
+  const lh = lineHeight != null && Number.isFinite(lineHeight) && lineHeight > 0
+    ? lineHeight
+    : EOF_FALLBACK_LINE_HEIGHT_PX
+  // §4 — a fixed presentation height is FORBIDDEN; the excessive zone height is
+  // the authority. The MIN only guards a degenerate (0-line) zone.
+  return Math.max(EOF_VISUAL_MIN_HEIGHT_PX, count * lh)
 }
 
 // ── §14 — hard gates (all must stay 0) ─────────────────────────────────────
@@ -197,25 +219,31 @@ export function isDocumentEndTrailingBlankDiagnostic(input: {
 
 // ── §6 — synthetic EOF geometry ────────────────────────────────────────────
 
-/** §6.1 — clamp the raw semantic height into the compact 24..72 band. */
-export function clampEofVisualHeight(rawHeight: number): number {
-  if (!Number.isFinite(rawHeight) || rawHeight <= 0) return EOF_VISUAL_MIN_HEIGHT_PX
-  return Math.min(EOF_VISUAL_MAX_HEIGHT_PX, Math.max(EOF_VISUAL_MIN_HEIGHT_PX, rawHeight))
-}
-
 export interface SyntheticEofGeometryInput {
+  /** V5.13-R5 §5 — a NON-empty document MUST resolve its last meaningful content. */
+  documentIsNonEmpty: boolean
   /** Viewport rect of the LAST meaningful content block (null when unmeasurable). */
   lastMeaningfulRect: RectLike | null
-  /** Viewport rect of the visible semantic CONTENT bounds (never drawer/viewport). */
+  /**
+   * V5.13-R5 §6/§8 — the REAL empty trailing block rects AFTER the last meaningful
+   * block, in document order. This is the ONLY vertical authority for the zone.
+   */
+  trailingBlankRects: RectLike[]
+  /** V5.13-R5 §10/§15 — every meaningful (non-empty) top-level block rect. */
+  meaningfulRects: RectLike[]
+  /**
+   * V5.13-R3 §8 (frozen) — the real MARKDOWN CONTENT column: the ONLY horizontal
+   * authority (left = text column, right = its right edge). Never a drawer edge.
+   */
   contentBoundsRect: RectLike | null
-  /** Viewport rect of the editor content column (fallback horizontal authority). */
+  /** Viewport rect of the editor content column (vertical tail cap). */
   editorContentRect: RectLike | null
-  /** Resolved editor line height (null → fallback). */
-  lineHeight: number | null
+  /** V5.13-R5 §11 — the REAL trailing-blank line height (never a heading's). */
+  blankLineHeight: number | null
+  /** V5.13-R5 §11 — ACTUAL_BLANK_NODE_GEOMETRY / EDITOR_BASE_LINE_HEIGHT / NONE. */
+  blankLineHeightSource: string
   extraTrailingBlankLineCount: number
   gapPx?: number
-  /** §5 — the visible editor rect used for the bottom-aligned fallback. */
-  viewportClampRect?: RectLike | null
   /**
    * V5.13-R3 §8 — the DOCUMENT-LEVEL text column left (the stable prose column).
    * Never the page/write outer left, the last block, the semantic zone, a selected
@@ -225,88 +253,200 @@ export interface SyntheticEofGeometryInput {
 }
 
 export interface SyntheticEofGeometry {
-  /** §2.2 — the PAINTED presentation band (viewport space; may be viewport-clamped). */
+  /** §5 — the PAINTED presentation band (= the excessive trailing blank zone). */
   rect: RectLike | null
-  /** §2.1 — the semantic excessive-blank zone (never drawer-clipped). */
+  /** §2.1 — same extent as the band (R2 continuity). */
   semanticZoneRect: RectLike | null
+  /** V5.13-R4 §5 / R5 §9 — the REQUIRED (legal) blank zone; never the painted zone. */
+  requiredBlankZoneRect: RectLike | null
+  /** V5.13-R4 §5 / R5 §6 — the excessive trailing blank zone the band spans. */
+  excessiveBlankZoneRect: RectLike | null
+  /** V5.13-R5 §6 — the REAL trailing blank visual zone (DOM / editor tail). */
+  actualTrailingBlankVisualRect: RectLike | null
+  documentEndBottom: number
+  lastMeaningfulRect: RectLike | null
+  requiredTrailingBlankLineCount: number
+  excessiveTrailingBlankLineCount: number
+  /** V5.13-R5 §3 — always ACTUAL_TRAILING_BLANK_GEOMETRY (never EXTRA_COUNT_X_…). */
+  presentationHeightSource: string
   presentationHeight: number
   geometrySource: string
+  /** V5.13-R5 §11 — never a heading-derived line height. */
+  blankLineHeightSource: string
   /** §2.2 — always DOCUMENT_CONTENT (never DRAWER / UNOBSCURED_VIEWPORT). */
   rightEdgeAuthority: string
-  lastMeaningfulRect: RectLike | null
-  /** true when the raw semantic height had to be clamped into the band. */
-  heightClamped: boolean
-  /** true when the band was moved so it fully enters the viewport (§5 fallback). */
+  /** V5.13-R5 §10 — |band.top − lastMeaningfulRect.bottom| (viewport space). */
+  presentationTopMinusLastMeaningfulBottom: number
+  /** V5.13-R5 §15 — meaningful blocks the band intersects (must be 0). */
+  meaningfulIntersectionCount: number
+  meaningfulIntersectionArea: number
+  /** V5.13-R4 — the band is NEVER moved off the zone → always false. */
   viewportClamped: boolean
+  /** V5.13-R5 §5 — a NON-empty doc that cannot resolve its last content FAILS CLOSED. */
+  failClosed: boolean
 }
 
 /**
- * §2/§6 — build the layered document-end geometry.
+ * V5.13-R5 §3/§6/§7/§9 — build the layered document-end geometry.
  *
- * SemanticZone   = from AFTER the legal 1st trailing blank line to EOF, at the
- *                  real DOCUMENT CONTENT width (never drawer.left / unobscured).
- * PresentationBand = a compact fill band at the top of the semantic zone; its
- *                  height is compact-mapped (28~48px), NEVER linear in the
- *                  blank count.
+ * Source Truth  : `extraTrailingBlankLineCount` (never a geometry input).
+ * Visual Truth  : the REAL last meaningful content rect + the REAL trailing blank
+ *                 DOM / editor tail space. The zone is NEVER back-projected as
+ *                 `extraCount × guessedLineHeight`, and it can never reach back up
+ *                 into meaningful content.
  */
 export function computeSyntheticEofGeometry(input: SyntheticEofGeometryInput): SyntheticEofGeometry {
   const count = Math.max(0, Math.floor(input.extraTrailingBlankLineCount))
-  const lineHeight = input.lineHeight != null && Number.isFinite(input.lineHeight) && input.lineHeight > 0
-    ? input.lineHeight
+  const requiredLines = EOF_REQUIRED_TRAILING_BLANK_LINE_COUNT
+  const lh = input.blankLineHeight != null && Number.isFinite(input.blankLineHeight) && input.blankLineHeight > 0
+    ? input.blankLineHeight
     : EOF_FALLBACK_LINE_HEIGHT_PX
-  const presentationHeight = computeEofPresentationHeight(count)
-  const rawSemanticHeight = count * lineHeight
-  const heightClamped = rawSemanticHeight > EOF_PRESENTATION_HARD_MAX_HEIGHT_PX
+  const empty = (over: Partial<SyntheticEofGeometry>): SyntheticEofGeometry => ({
+    rect: null, semanticZoneRect: null, requiredBlankZoneRect: null, excessiveBlankZoneRect: null,
+    actualTrailingBlankVisualRect: null, documentEndBottom: 0,
+    lastMeaningfulRect: input.lastMeaningfulRect,
+    requiredTrailingBlankLineCount: requiredLines, excessiveTrailingBlankLineCount: count,
+    presentationHeightSource: EOF_PRESENTATION_HEIGHT_SOURCE_ACTUAL_TRAILING_BLANK_GEOMETRY,
+    presentationHeight: 0,
+    geometrySource: EOF_GEOMETRY_SOURCE_COMPACT_SAFE_FALLBACK,
+    blankLineHeightSource: input.blankLineHeightSource,
+    rightEdgeAuthority: DOCUMENT_END_RIGHT_EDGE_AUTHORITY_DOCUMENT_CONTENT,
+    presentationTopMinusLastMeaningfulBottom: 0,
+    meaningfulIntersectionCount: 0, meaningfulIntersectionArea: 0,
+    viewportClamped: false, failClosed: false,
+    ...over,
+  })
 
   const last = input.lastMeaningfulRect
+  // §5 — a missing baseline must NEVER become a huge synthetic zone.
+  if (!last) return empty({ failClosed: input.documentIsNonEmpty })
+
   const content = input.contentBoundsRect ?? input.editorContentRect
-  if (!content) {
-    return {
-      rect: null, semanticZoneRect: null, presentationHeight,
-      geometrySource: EOF_GEOMETRY_SOURCE_EDITOR_END_BASELINE,
-      rightEdgeAuthority: DOCUMENT_END_RIGHT_EDGE_AUTHORITY_DOCUMENT_CONTENT,
-      lastMeaningfulRect: last, heightClamped, viewportClamped: false,
-    }
-  }
-  const gap = input.gapPx ?? EOF_VISUAL_GAP_PX
-  const geometrySource = last ? EOF_GEOMETRY_SOURCE_LAST_MEANINGFUL_BLOCK : EOF_GEOMETRY_SOURCE_EDITOR_END_BASELINE
-  // §2.1 — the legal 1st trailing blank line is skipped: the semantic zone starts
-  // at the 2nd trailing blank line (never at the last content itself).
-  const legalAllowance = lineHeight * EOF_ONE_TRAILING_BLANK_ALLOWANCE_LINES
-  const semanticTop = last
-    ? last.bottom + legalAllowance + gap
-    : content.bottom - presentationHeight
-  // §8 — the LEFT edge is the document text column; the RIGHT edge stays the
-  // document CONTENT edge (V5.13-R2 authority).
   const left = input.textColumnLeft != null && Number.isFinite(input.textColumnLeft)
     ? input.textColumnLeft
-    : content.left
-  const right = Math.max(left + EOF_MIN_CONTENT_WIDTH_PX, content.right)
-  const semanticZoneRect = makeRectLike(left, semanticTop, right, semanticTop + Math.max(rawSemanticHeight, presentationHeight))
-  let band = makeRectLike(left, semanticTop, right, semanticTop + presentationHeight)
-  // §5 — the band must really enter the viewport; a bottom-aligned clamp is an
-  // explicit, audited fallback (never a silent partial PASS).
-  let viewportClamped = false
-  const clamp = input.viewportClampRect
-  if (clamp && clamp.height >= presentationHeight) {
-    const maxTop = clamp.bottom - presentationHeight
-    const minTop = clamp.top
-    const target = Math.min(Math.max(band.top, minTop), maxTop)
-    if (Math.abs(target - band.top) > 0.5) {
-      viewportClamped = true
-      band = makeRectLike(left, target, right, target + presentationHeight)
+    : (content ? content.left : last.left)
+  const right = Math.max(left + EOF_MIN_CONTENT_WIDTH_PX, content ? content.right : last.right)
+  const gap = input.gapPx ?? EOF_VISUAL_GAP_PX
+  const blanks = input.trailingBlankRects.filter(r => Number.isFinite(r.top) && Number.isFinite(r.bottom))
+
+  // §9 — the FIRST real trailing blank line is the legal one and is NOT the zone.
+  const requiredTop = last.bottom
+  const requiredBottom = blanks.length > 0
+    ? Math.max(requiredTop + 1, blanks[0].bottom)
+    : requiredTop + requiredLines * lh
+  const requiredBlankZoneRect = makeRectLike(left, requiredTop, right, requiredBottom)
+
+  // §6/§7/§8 — the excessive zone is MEASURED, never simulated.
+  const tailCap = input.editorContentRect ? input.editorContentRect.bottom : null
+  const boundedTail = (from: number): number => {
+    const raw = from + EOF_COMPACT_SAFE_TAIL_MAX_LINES * lh
+    return tailCap != null && Number.isFinite(tailCap) ? Math.min(raw, Math.max(tailCap, from)) : raw
+  }
+  let documentEndBottom: number
+  let geometrySource: string
+  if (blanks.length > 1) {
+    documentEndBottom = blanks[blanks.length - 1].bottom
+    geometrySource = EOF_GEOMETRY_SOURCE_ACTUAL_TRAILING_DOM_BLANK_ZONE
+  } else if (blanks.length === 1) {
+    documentEndBottom = boundedTail(requiredBottom)
+    geometrySource = EOF_GEOMETRY_SOURCE_EDITOR_TAIL_SPACE
+  } else {
+    documentEndBottom = boundedTail(requiredBottom)
+    geometrySource = EOF_GEOMETRY_SOURCE_COMPACT_SAFE_FALLBACK
+  }
+
+  // §10 HARD — the band top may never rise above the last meaningful bottom.
+  const zoneTop = Math.max(requiredBottom + gap, last.bottom + gap)
+  const zoneBottom = Math.max(zoneTop + EOF_VISUAL_MIN_HEIGHT_PX, documentEndBottom)
+  const band = makeRectLike(left, zoneTop, right, zoneBottom)
+  const actualTrailingBlankVisualRect = makeRectLike(
+    left,
+    blanks.length > 0 ? blanks[0].top : requiredTop,
+    right,
+    Math.max((blanks.length > 0 ? blanks[0].top : requiredTop) + 1, documentEndBottom),
+  )
+
+  // §10/§15 — the fill must NEVER intersect meaningful content.
+  let meaningfulIntersectionCount = 0
+  let meaningfulIntersectionArea = 0
+  for (const m of input.meaningfulRects) {
+    const top = Math.max(band.top, m.top)
+    const bottom = Math.min(band.bottom, m.bottom)
+    const l = Math.max(band.left, m.left)
+    const r = Math.min(band.right, m.right)
+    const h = bottom - top
+    const w = r - l
+    if (h > 0.5 && w > 0.5) {
+      meaningfulIntersectionCount++
+      meaningfulIntersectionArea += h * w
     }
   }
+
   return {
     rect: band,
-    semanticZoneRect,
-    presentationHeight,
-    geometrySource,
-    rightEdgeAuthority: DOCUMENT_END_RIGHT_EDGE_AUTHORITY_DOCUMENT_CONTENT,
+    semanticZoneRect: band,
+    requiredBlankZoneRect,
+    excessiveBlankZoneRect: band,
+    actualTrailingBlankVisualRect,
+    documentEndBottom,
     lastMeaningfulRect: last,
-    heightClamped,
-    viewportClamped,
+    requiredTrailingBlankLineCount: requiredLines,
+    excessiveTrailingBlankLineCount: count,
+    presentationHeightSource: EOF_PRESENTATION_HEIGHT_SOURCE_ACTUAL_TRAILING_BLANK_GEOMETRY,
+    presentationHeight: band.height,
+    geometrySource,
+    blankLineHeightSource: input.blankLineHeightSource,
+    rightEdgeAuthority: DOCUMENT_END_RIGHT_EDGE_AUTHORITY_DOCUMENT_CONTENT,
+    presentationTopMinusLastMeaningfulBottom: band.top - last.bottom,
+    meaningfulIntersectionCount,
+    meaningfulIntersectionArea,
+    viewportClamped: false,
+    failClosed: false,
   }
+}
+
+/**
+ * V5.13-R4 §6 — how much of the EXCESSIVE zone the painted band really covers.
+ * 1.0 = the band spans the whole excessive zone.
+ */
+export function computeExcessZoneCoverage(
+  presentationRect: RectLike | null,
+  excessiveBlankZoneRect: RectLike | null,
+): number {
+  if (!presentationRect || !excessiveBlankZoneRect) return 0
+  if (excessiveBlankZoneRect.height <= 0) return 0
+  const overlapTop = Math.max(presentationRect.top, excessiveBlankZoneRect.top)
+  const overlapBottom = Math.min(presentationRect.bottom, excessiveBlankZoneRect.bottom)
+  const overlap = Math.max(0, overlapBottom - overlapTop)
+  return Math.max(0, Math.min(1, overlap / excessiveBlankZoneRect.height))
+}
+
+/**
+ * V5.13-R4 §6/§10 — how many excessive blank lines the painted band covers. A flat
+ * integer so `N painted ≡ N excessive` is directly checkable.
+ *
+ * The painted carrier is pixel-rounded (`Math.round`), so the band can be < 1px
+ * shorter than the zone. That rounding must NEVER be able to drop a whole line:
+ * the same §6 drift tolerance is applied to the covered height.
+ */
+export function countPaintedExcessBlankLines(
+  presentationRect: RectLike | null,
+  excessiveBlankZoneRect: RectLike | null,
+  lineHeight: number | null,
+  driftTolerancePx: number = EOF_EXCESS_ZONE_DRIFT_MAX_PX,
+): number {
+  const lh = lineHeight != null && Number.isFinite(lineHeight) && lineHeight > 0
+    ? lineHeight
+    : EOF_FALLBACK_LINE_HEIGHT_PX
+  if (!presentationRect || !excessiveBlankZoneRect) return 0
+  const zone = excessiveBlankZoneRect
+  if (zone.height <= 0) return 0
+  const overlapTop = Math.max(presentationRect.top, zone.top)
+  const overlapBottom = Math.min(presentationRect.bottom, zone.bottom)
+  const coveredHeight = Math.max(0, overlapBottom - overlapTop)
+  const zoneLines = Math.max(0, Math.round(zone.height / lh))
+  const coveredLines = Math.floor((coveredHeight + Math.max(0, driftTolerancePx)) / lh + 1e-6)
+  return Math.max(0, Math.min(zoneLines, coveredLines))
 }
 
 /** §5 — how much of the band's HEIGHT really sits inside the visible editor. */
@@ -332,7 +472,10 @@ export function isFalseNativePaddingCoverage(input: {
   const editorH = input.editorContentHeight
   if (editorH == null || !Number.isFinite(editorH) || editorH <= 0) return false
   const lineHeight = input.lineHeight != null && input.lineHeight > 0 ? input.lineHeight : EOF_FALLBACK_LINE_HEIGHT_PX
-  const semantic = clampEofVisualHeight(input.semanticBlankCount * lineHeight)
+  // V5.13-R4 — the semantic reference is the RAW excessive height (never clamped):
+  // a full-coverage band legitimately equals the excessive zone, so it must not be
+  // mistaken for a whole-editor "native padding wash".
+  const semantic = Math.max(EOF_VISUAL_MIN_HEIGHT_PX, input.semanticBlankCount * lineHeight)
   // A "native padding wash" is a marker whose height is BOTH the whole editor
   // content column AND far larger than the semantic band.
   return input.syntheticHeight >= editorH - 1 && input.syntheticHeight > semantic + 1
@@ -352,10 +495,11 @@ export function isDrawerRightEdgeAuthority(input: {
 
 // ── V5.13-R2 §9 — the refinement hard gates (all must stay 0) ───────────────
 
+/** §9 — the R2 gates. V5.13-R4 §8 ABOLISHED `presentationHeightGt48px`: a fixed
+ *  36/48px presentation bound must NEVER block full excessive-blank coverage. */
 export const DOCUMENT_END_VISUAL_V513R2_GATE_KEYS = [
   'semanticRightFromDrawer',
   'presentationRightFromDrawer',
-  'presentationHeightGt48px',
   'presentationVisibleHeightRatioLt090',
   'panelGeometryClip',
   'visualPaintsAboveDrawer',
@@ -375,7 +519,6 @@ export type DocumentEndVisualV513R2GateKey = typeof DOCUMENT_END_VISUAL_V513R2_G
 export const DOCUMENT_END_VISUAL_V513R2_GATE_LABELS: Readonly<Record<DocumentEndVisualV513R2GateKey, string>> = {
   semanticRightFromDrawer: 'DOCUMENT_END_SEMANTIC_RIGHT_FROM_DRAWER_COUNT',
   presentationRightFromDrawer: 'DOCUMENT_END_PRESENTATION_RIGHT_FROM_DRAWER_COUNT',
-  presentationHeightGt48px: 'DOCUMENT_END_PRESENTATION_HEIGHT_GT_48PX_COUNT',
   presentationVisibleHeightRatioLt090: 'DOCUMENT_END_PRESENTATION_VISIBLE_HEIGHT_RATIO_LT_0_90_COUNT',
   panelGeometryClip: 'DOCUMENT_END_PANEL_GEOMETRY_CLIP_COUNT',
   visualPaintsAboveDrawer: 'DOCUMENT_END_VISUAL_PAINTS_ABOVE_DRAWER_COUNT',
@@ -584,4 +727,231 @@ export function isSurfaceLeftAccentOnly(input: {
     && input.topWidth <= 0.01
     && input.rightWidth <= 0.01
     && input.bottomWidth <= 0.01
+}
+
+// ── V5.13-R4 §7/§8 — full excessive-blank coverage hard gates (all must be 0) ─
+
+export const DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_KEYS = [
+  'excessZoneCoverageLt098',
+  'excessZoneTopDriftGt1px',
+  'excessZoneBottomDriftGt1px',
+  'extraBlankCountMismatch',
+  'requiredBlankLinePainted',
+  'excessBlankLineOmitted',
+] as const
+
+export type DocumentEndExcessCoverageV513R4GateKey = typeof DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_KEYS[number]
+
+export const DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_LABELS: Readonly<Record<DocumentEndExcessCoverageV513R4GateKey, string>> = {
+  excessZoneCoverageLt098: 'DOCUMENT_END_EXCESS_ZONE_COVERAGE_LT_098_COUNT',
+  excessZoneTopDriftGt1px: 'DOCUMENT_END_EXCESS_ZONE_TOP_DRIFT_GT_1PX_COUNT',
+  excessZoneBottomDriftGt1px: 'DOCUMENT_END_EXCESS_ZONE_BOTTOM_DRIFT_GT_1PX_COUNT',
+  extraBlankCountMismatch: 'DOCUMENT_END_EXTRA_BLANK_COUNT_MISMATCH_COUNT',
+  requiredBlankLinePainted: 'DOCUMENT_END_REQUIRED_BLANK_LINE_PAINTED_COUNT',
+  excessBlankLineOmitted: 'DOCUMENT_END_EXCESS_BLANK_LINE_OMITTED_COUNT',
+}
+
+export type DocumentEndExcessCoverageV513R4Counters = Record<DocumentEndExcessCoverageV513R4GateKey, number>
+
+export function createDocumentEndExcessCoverageV513R4Counters(): DocumentEndExcessCoverageV513R4Counters {
+  return DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_KEYS.reduce((acc, k) => {
+    acc[k] = 0
+    return acc
+  }, {} as DocumentEndExcessCoverageV513R4Counters)
+}
+
+export function formatDocumentEndExcessCoverageV513R4GateReport(
+  counters: Readonly<DocumentEndExcessCoverageV513R4Counters>,
+): string[] {
+  return DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_KEYS.map(
+    k => `${DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_LABELS[k]}=${counters[k] ?? 0}`,
+  )
+}
+
+export function evaluateDocumentEndExcessCoverageV513R4Gates(
+  counters: Readonly<DocumentEndExcessCoverageV513R4Counters>,
+): { decision: 'PASS' | 'FAIL'; failedChecks: DocumentEndExcessCoverageV513R4GateKey[] } {
+  const failedChecks = DOCUMENT_END_EXCESS_COVERAGE_V513R4_GATE_KEYS.filter(k => (counters[k] ?? 0) !== 0)
+  return { decision: failedChecks.length === 0 ? 'PASS' : 'FAIL', failedChecks }
+}
+
+/**
+ * V5.13-R4 §3/§8 — the full coverage verdict for ONE committed band.
+ *
+ * `requiredBlankPainted` = the painted band starts INSIDE the required (legal) zone.
+ * `excessBlankLineOmitted` = the band misses a whole excessive line.
+ */
+export function evaluateEofExcessCoverage(input: {
+  presentationRect: RectLike | null
+  excessiveBlankZoneRect: RectLike | null
+  requiredBlankZoneRect: RectLike | null
+  excessiveTrailingBlankLineCount: number
+  lineHeight: number | null
+  driftTolerancePx?: number
+}): {
+  coverageRatio: number
+  topDriftPx: number
+  bottomDriftPx: number
+  paintedExcessBlankLineCount: number
+  requiredBlankPainted: boolean
+  coverageOk: boolean
+  topDriftOk: boolean
+  bottomDriftOk: boolean
+  countMismatch: boolean
+  excessBlankLineOmitted: boolean
+} {
+  const tol = input.driftTolerancePx ?? EOF_EXCESS_ZONE_DRIFT_MAX_PX
+  const band = input.presentationRect
+  const zone = input.excessiveBlankZoneRect
+  const coverageRatio = computeExcessZoneCoverage(band, zone)
+  const topDriftPx = band && zone ? Math.abs(band.top - zone.top) : Number.POSITIVE_INFINITY
+  const bottomDriftPx = band && zone ? Math.abs(band.bottom - zone.bottom) : Number.POSITIVE_INFINITY
+  const paintedExcessBlankLineCount = countPaintedExcessBlankLines(band, zone, input.lineHeight)
+  const required = input.requiredBlankZoneRect
+  // §3 — the required (legal) line must NEVER be painted: the band may not start
+  // above the required zone's bottom edge.
+  const requiredBlankPainted = !!(band && required && band.top < required.bottom - tol)
+  return {
+    coverageRatio,
+    topDriftPx,
+    bottomDriftPx,
+    paintedExcessBlankLineCount,
+    requiredBlankPainted,
+    coverageOk: coverageRatio >= EOF_EXCESS_ZONE_COVERAGE_MIN,
+    topDriftOk: topDriftPx <= tol,
+    bottomDriftOk: bottomDriftPx <= tol,
+    countMismatch: paintedExcessBlankLineCount !== Math.max(0, Math.floor(input.excessiveTrailingBlankLineCount)),
+    excessBlankLineOmitted: paintedExcessBlankLineCount < Math.max(0, Math.floor(input.excessiveTrailingBlankLineCount)),
+  }
+}
+
+// ── V5.13-R5 §15/§28 — real-geometry + multi-H1 visual Authority gates ──────
+
+/** §15 — every one must stay 0. */
+export const DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_KEYS = [
+  'lastMeaningfulRectNullOnNonempty',
+  'fillIntersectsMeaningfulContent',
+  'zoneTopBeforeLastMeaningfulBottom',
+  'blankLineHeightFromHeading',
+  'syntheticBackProjectionIntoContent',
+  'presentationFromExtraCountXGuessedLineHeight',
+  'meaningfulIntersectionAreaGt0',
+  /** §31 cross gate — the EOF fill must never touch a heading marker target. */
+  'fillIntersectsHeadingMarkerTarget',
+] as const
+
+export type DocumentEndRealGeometryV513R5GateKey = typeof DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_KEYS[number]
+
+export const DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_LABELS: Readonly<Record<DocumentEndRealGeometryV513R5GateKey, string>> = {
+  lastMeaningfulRectNullOnNonempty: 'DOCUMENT_END_LAST_MEANINGFUL_RECT_NULL_ON_NONEMPTY_COUNT',
+  fillIntersectsMeaningfulContent: 'DOCUMENT_END_FILL_INTERSECTS_MEANINGFUL_CONTENT_COUNT',
+  zoneTopBeforeLastMeaningfulBottom: 'DOCUMENT_END_ZONE_TOP_BEFORE_LAST_MEANINGFUL_BOTTOM_COUNT',
+  blankLineHeightFromHeading: 'DOCUMENT_END_BLANK_LINE_HEIGHT_FROM_HEADING_COUNT',
+  syntheticBackProjectionIntoContent: 'DOCUMENT_END_SYNTHETIC_BACK_PROJECTION_INTO_CONTENT_COUNT',
+  presentationFromExtraCountXGuessedLineHeight: 'DOCUMENT_END_PRESENTATION_FROM_EXTRA_COUNT_X_GUESSED_LINE_HEIGHT_COUNT',
+  meaningfulIntersectionAreaGt0: 'DOCUMENT_END_MEANINGFUL_INTERSECTION_AREA_GT_0_COUNT',
+  fillIntersectsHeadingMarkerTarget: 'EOF_FILL_INTERSECTS_HEADING_MARKER_TARGET_COUNT',
+}
+
+export type DocumentEndRealGeometryV513R5Counters = Record<DocumentEndRealGeometryV513R5GateKey, number>
+
+export function createDocumentEndRealGeometryV513R5Counters(): DocumentEndRealGeometryV513R5Counters {
+  return DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_KEYS.reduce((acc, k) => {
+    acc[k] = 0
+    return acc
+  }, {} as DocumentEndRealGeometryV513R5Counters)
+}
+
+export function formatDocumentEndRealGeometryV513R5GateReport(
+  counters: Readonly<DocumentEndRealGeometryV513R5Counters>,
+): string[] {
+  return DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_KEYS.map(
+    k => `${DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_LABELS[k]}=${counters[k] ?? 0}`,
+  )
+}
+
+export function evaluateDocumentEndRealGeometryV513R5Gates(
+  counters: Readonly<DocumentEndRealGeometryV513R5Counters>,
+): { decision: 'PASS' | 'FAIL'; failedChecks: DocumentEndRealGeometryV513R5GateKey[] } {
+  const failedChecks = DOCUMENT_END_REAL_GEOMETRY_V513R5_GATE_KEYS.filter(k => (counters[k] ?? 0) !== 0)
+  return { decision: failedChecks.length === 0 ? 'PASS' : 'FAIL', failedChecks }
+}
+
+/** §11 — the ONLY legal blank-line-height sources (a heading's is FORBIDDEN). */
+export function isForbiddenBlankLineHeightSource(source: string): boolean {
+  const s = String(source).toUpperCase()
+  return s.includes('HEADING') || s.includes('H1_LINE') || s === 'LAST_MEANINGFUL_BLOCK_LINE_HEIGHT'
+}
+
+// ── V5.13-R5 §27/§28 — Strict Multi-H1 visual Authority audit + gates ───────
+
+export const STRICT_MULTI_H1_VISUAL_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-STRICT-MULTI-H1-VISUAL-AUDIT'
+export const STRICT_SINGLE_H1_MULTIPLE_H1_RULE_ID = 'STRICT_SINGLE_H1_MULTIPLE_H1'
+
+export const STRICT_MULTI_H1_VISUAL_V513R5_GATE_KEYS = [
+  'expectedExtraTargetCountMismatch',
+  'passiveMarkerCountMismatch',
+  'validPrimaryH1Marked',
+  'transactionTargetCountCollapse',
+  'activeTargetNotInExcessSet',
+  'activeMarkerCountGt1',
+  'siblingPassiveMarkerLost',
+  'passiveActiveFillStack',
+] as const
+
+export type StrictMultiH1VisualV513R5GateKey = typeof STRICT_MULTI_H1_VISUAL_V513R5_GATE_KEYS[number]
+
+export const STRICT_MULTI_H1_VISUAL_V513R5_GATE_LABELS: Readonly<Record<StrictMultiH1VisualV513R5GateKey, string>> = {
+  expectedExtraTargetCountMismatch: 'STRICT_MULTI_H1_EXPECTED_EXTRA_TARGET_COUNT_MISMATCH',
+  passiveMarkerCountMismatch: 'STRICT_MULTI_H1_PASSIVE_MARKER_COUNT_MISMATCH',
+  validPrimaryH1Marked: 'STRICT_MULTI_H1_VALID_PRIMARY_H1_MARKED_COUNT',
+  transactionTargetCountCollapse: 'STRICT_MULTI_H1_TRANSACTION_TARGET_COUNT_COLLAPSE',
+  activeTargetNotInExcessSet: 'STRICT_MULTI_H1_ACTIVE_TARGET_NOT_IN_EXCESS_SET_COUNT',
+  activeMarkerCountGt1: 'STRICT_MULTI_H1_ACTIVE_MARKER_COUNT_GT1',
+  siblingPassiveMarkerLost: 'STRICT_MULTI_H1_SIBLING_PASSIVE_MARKER_LOST_COUNT',
+  passiveActiveFillStack: 'STRICT_MULTI_H1_PASSIVE_ACTIVE_FILL_STACK_COUNT',
+}
+
+export type StrictMultiH1VisualV513R5Counters = Record<StrictMultiH1VisualV513R5GateKey, number>
+
+export function createStrictMultiH1VisualV513R5Counters(): StrictMultiH1VisualV513R5Counters {
+  return STRICT_MULTI_H1_VISUAL_V513R5_GATE_KEYS.reduce((acc, k) => {
+    acc[k] = 0
+    return acc
+  }, {} as StrictMultiH1VisualV513R5Counters)
+}
+
+export function formatStrictMultiH1VisualV513R5GateReport(
+  counters: Readonly<StrictMultiH1VisualV513R5Counters>,
+): string[] {
+  return STRICT_MULTI_H1_VISUAL_V513R5_GATE_KEYS.map(
+    k => `${STRICT_MULTI_H1_VISUAL_V513R5_GATE_LABELS[k]}=${counters[k] ?? 0}`,
+  )
+}
+
+export function evaluateStrictMultiH1VisualV513R5Gates(
+  counters: Readonly<StrictMultiH1VisualV513R5Counters>,
+): { decision: 'PASS' | 'FAIL'; failedChecks: StrictMultiH1VisualV513R5GateKey[] } {
+  const failedChecks = STRICT_MULTI_H1_VISUAL_V513R5_GATE_KEYS.filter(k => (counters[k] ?? 0) !== 0)
+  return { decision: failedChecks.length === 0 ? 'PASS' : 'FAIL', failedChecks }
+}
+
+/**
+ * V5.13-R5 §18/§19 — the ONE aggregate diagnostic keeps its complete target group.
+ * `h1Count` H1s ⇒ the FIRST is the legal primary, the remaining `h1Count - 1` are
+ * the excess targets (frozen declared order).
+ */
+export function computeMultiH1ExpectedExcessCount(h1Count: number): number {
+  const n = Number.isFinite(h1Count) ? Math.floor(h1Count) : 0
+  return Math.max(0, n - 1)
+}
+
+/** V5.13-R5 §26 — ONE cardinality authority: the declared target group size. */
+export function resolveDiagnosticTargetGroupSize(location: {
+  kind?: string
+  targets?: readonly unknown[]
+} | null | undefined): number {
+  if (!location) return 1
+  if (location.kind === 'multi-target') return Array.isArray(location.targets) ? location.targets.length : 0
+  return 1
 }
