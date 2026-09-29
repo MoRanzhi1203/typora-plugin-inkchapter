@@ -2963,6 +2963,31 @@
 .inkchapter-heading-diagnostic-marker {
   pointer-events: none;
 }
+/* ── V5.14-R3 §P12 — ACTIVE / PASSIVE colour scale ────────────────────────────
+   The PASSIVE surface stays muted (low-saturation soft fill). The ACTIVE surface
+   must be OBVIOUSLY brighter and uses a SEPARATE token whose alpha is >= 2.4x the
+   passive alpha (error 0.32/0.12 = 2.67, warning 0.38/0.13 = 2.92) — the active
+   fill NEVER reuses the passive token. Still fill-only: no rail, no keyline, no
+   outline, no shadow, no glow, no card. */
+:root {
+  --ink-diagnostic-error-passive-bg: rgba(181, 84, 84, 0.12);
+  --ink-diagnostic-error-active-bg: rgba(235, 55, 55, 0.32);
+  --ink-diagnostic-error-active-accent: rgba(220, 35, 35, 0.95);
+  --ink-diagnostic-error-active-chip-bg: rgba(235, 55, 55, 0.34);
+  --ink-diagnostic-error-active-chip-text: #6d1010;
+
+  --ink-diagnostic-warning-passive-bg: rgba(168, 121, 50, 0.13);
+  --ink-diagnostic-warning-active-bg: rgba(255, 190, 20, 0.38);
+  --ink-diagnostic-warning-active-accent: rgba(225, 150, 0, 0.95);
+  --ink-diagnostic-warning-active-chip-bg: rgba(255, 190, 20, 0.38);
+  --ink-diagnostic-warning-active-chip-text: #5f3f06;
+
+  --ink-diagnostic-info-passive-bg: rgba(93, 113, 129, 0.07);
+  --ink-diagnostic-info-active-bg: rgba(93, 113, 129, 0.18);
+  --ink-diagnostic-info-active-accent: rgba(70, 95, 115, 0.95);
+  --ink-diagnostic-info-active-chip-bg: rgba(93, 113, 129, 0.22);
+  --ink-diagnostic-info-active-chip-text: #2f3c47;
+}
 /* ── V5.12-R9 §3/§5/§10 — HEADING_DIAGNOSTIC_MARKER = SOFT_TEXT_SURFACE +
    REASON_CHIP ──────────────────────────────────────────────────────────────
    Removed for good (the DOM is no longer CREATED and these rules are gone):
@@ -2991,13 +3016,23 @@
 }
 .inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='error'] {
   --ink-heading-sev: var(--ink-ui-diagnostic-error, var(--ink-ui-sev-error, #b55454));
+  --ink-heading-sev-active: var(--ink-diagnostic-error-active-bg);
+  --ink-heading-sev-active-accent: var(--ink-diagnostic-error-active-accent);
+  --ink-heading-sev-active-chip-bg: var(--ink-diagnostic-error-active-chip-bg);
+  --ink-heading-sev-active-chip-text: var(--ink-diagnostic-error-active-chip-text);
 }
 .inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] {
   --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
+  --ink-heading-sev-active: var(--ink-diagnostic-warning-active-bg);
+  --ink-heading-sev-active-accent: var(--ink-diagnostic-warning-active-accent);
+  --ink-heading-sev-active-chip-bg: var(--ink-diagnostic-warning-active-chip-bg);
+  --ink-heading-sev-active-chip-text: var(--ink-diagnostic-warning-active-chip-text);
 }
+/* V5.14-R3 §P12 — the ACTIVE fill uses the ACTIVE token ONLY (never the passive
+   severity token), so the active/passive alpha ratio is >= 2.4 by construction. */
 .inkchapter-heading-diagnostic-active__fragment {
   border-radius: 2px;
-  background: color-mix(in srgb, var(--ink-heading-sev, #b55454) 7%, transparent);
+  background: var(--ink-heading-sev-active, var(--ink-diagnostic-info-active-bg));
   transition: background-color 140ms ease;
 }
 /* Level 3 Reason chip: overlay only, never in the heading layout flow.
@@ -3033,6 +3068,19 @@
 .inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason {
   color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 64%, #5f5f5f);
   background-color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 14%, transparent);
+}
+/* V5.14-R3 §P12 §21 — while ACTIVE the reason chip is clearly stronger (bright
+   pill + deep text) so the selected occurrence is unmistakable; it stays a
+   compact pill (no shadow, no heavy border). */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-reason,
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-reason {
+  background-color: var(--ink-diagnostic-error-active-chip-bg);
+  color: var(--ink-diagnostic-error-active-chip-text);
+}
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason,
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason {
+  background-color: var(--ink-diagnostic-warning-active-chip-bg);
+  color: var(--ink-diagnostic-warning-active-chip-text);
 }
 /* V5.3 — dark inline mark: brighter edge + stronger fill (still muted, no
    neon/glow). */

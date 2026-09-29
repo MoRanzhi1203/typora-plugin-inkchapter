@@ -280,6 +280,11 @@ export interface RenderedHeadingState {
   key: string
   level: HeadingLevel
   label: string
+  /**
+   * V5.14-R4 — the gap is part of the SAME decoration state as the label. When
+   * present, validation / repair MUST treat `label + gap` as one atomic unit.
+   */
+  gap?: 'space' | 'none'
 }
 
 export interface DiffResult {

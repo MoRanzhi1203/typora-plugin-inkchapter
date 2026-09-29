@@ -27,11 +27,24 @@ import {
   isApplyingOutlineBoldStyle,
   collectRawNativeOutlineInventory,
   computeDuplicateGroups,
+  pairOutlineItemsWithProjections,
+  readOutlineDecoration,
+  verifyOutlineDecorationParity,
   type SyncResult,
   type OutlineCollectorTrace,
   type OutlineMatchTraceEntry,
+  type OutlineDecorationPair,
 } from './outline-numbering-adapter'
 import type { HeadingDescriptor } from './heading-types'
+// V5.14-R4 §12/§14/§15 — the outline consumes the SAME decoration projection
+// as the body; its label/gap parity is a first-class hard gate.
+import {
+  OUTLINE_NUMBER_DECORATION_AUDIT_EVENT,
+  createHeadingDecorationV514R4Counters,
+  verifyBodyOutlineParity,
+  type HeadingDecorationProjection,
+  type HeadingDecorationV514R4Counters,
+} from './heading-decoration-projection-v514-r4'
 import { recordRuntimeAudit } from './runtime-audit'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 // V5.14-R2 §P7 — Outline mapping PRE-COMMIT settle gate.
@@ -61,12 +74,31 @@ import {
   type OutlineHeadingMappingEntry,
 } from '../document-utilities/document-diagnostic-outline-projection-v514-r2'
 
+/** V5.14-R4 §12 — per-item outline decoration (label + gap) parity measurement. */
+interface OutlineDecorationParityMeasurement {
+  labelMismatch: number
+  gapMismatch: number
+  bodyOutlineLabelMismatch: number
+  bodyOutlineGapMismatch: number
+  observed: Array<{
+    bodyIndex: number
+    stableIdentity: string
+    outlineItemIdentity: string
+    expectedLabel: string
+    actualLabel: string | null
+    expectedGap: string
+    actualGap: string
+  }>
+}
+
 interface OutlineNumberCache {
   documentKey: string
   revision: number
   headings: readonly HeadingDescriptor[]
   labels: readonly string[]
   labelGaps: readonly string[]
+  /** V5.14-R4 §12 — the SAME label+gap projection the body committed. */
+  projections: readonly HeadingDecorationProjection[]
 }
 
 /** Event chain entry for structured logging. */
@@ -176,9 +208,16 @@ export class OutlineNumberingController {
   private rafId: number | null = null
   private isObserverActive = false
   private isWriting = false
-  private cache: OutlineNumberCache = { documentKey: '', revision: 0, headings: [], labels: [], labelGaps: [] }
+  private cache: OutlineNumberCache = { documentKey: '', revision: 0, headings: [], labels: [], labelGaps: [], projections: [] }
   private currentDocumentKey = ''
   private renderVersion = 0
+
+  // V5.14-R4 §12/§14/§15 — outline decoration parity (label + gap) authority.
+  // This counter object only ever accumulates the OUTLINE-scoped gate keys; the
+  // heading service merges it into its own report (body keys stay body-side).
+  private countersOutlineDecorationV514R4: HeadingDecorationV514R4Counters = createHeadingDecorationV514R4Counters()
+  /** the decoration pairs written by the last committed apply (DOM read-back source). */
+  private lastAppliedOutlinePairs: OutlineDecorationPair[] = []
 
   // Live reapply state
   private pendingReasons = new Set<string>()
@@ -333,7 +372,24 @@ export class OutlineNumberingController {
     clearAllNumberingAttributes(root)
     clearFileTreeNumberingAttributes()
     clearOutlineNumberBoldStyle()
-    this.cache = { documentKey: '', revision: 0, headings: [], labels: [], labelGaps: [] }
+    // §15 — after the clear a gap attribute must NEVER survive without its number.
+    this.countersOutlineDecorationV514R4.staleGapSurvivedDocumentSwitch += this.countStaleOutlineGapRemnants()
+    this.lastAppliedOutlinePairs = []
+    this.cache = { documentKey: '', revision: 0, headings: [], labels: [], labelGaps: [], projections: [] }
+  }
+
+  /**
+   * §15 — count gap attributes left behind WITHOUT their number decoration in
+   * the current outline root (a stale gap). Zero after a correct clear.
+   */
+  private countStaleOutlineGapRemnants(): number {
+    const root = findOutlineRoot() ?? findOutlineRootRelaxed()
+    if (!root) return 0
+    let stale = 0
+    root.querySelectorAll<HTMLElement>('[data-inkchapter-number-gap]').forEach(el => {
+      if (!el.hasAttribute('data-inkchapter-number')) stale++
+    })
+    return stale
   }
 
   /** Get cached headings for level mapping (used by collapse depth filter). */
@@ -369,6 +425,10 @@ export class OutlineNumberingController {
     this.outlineDiagnosticTargets = []
     this.committedOutlineMapping = null
     this.clearOutlineDiagnosticProjection()
+    // §15 — a document switch must not let a stale gap survive on an item that
+    // still carries no number decoration.
+    this.countersOutlineDecorationV514R4.staleGapSurvivedDocumentSwitch += this.countStaleOutlineGapRemnants()
+    this.lastAppliedOutlinePairs = []
     // Document switch: any pending visible-root wait belongs to the previous
     // document. Make it stale so a later root-available can never wake an old
     // document's snapshot (T10 / pending-cleanup-on-document-switch).
@@ -422,6 +482,7 @@ export class OutlineNumberingController {
     headings: readonly HeadingDescriptor[],
     labels: readonly string[],
     labelGaps?: readonly string[],
+    projections?: readonly HeadingDecorationProjection[],
   ): void {
     console.info(
       `[InkChapter Numbering] OUTLINE-CODEPATH-MARKER site=SYNC_AFTER_REFRESH ` +
@@ -451,6 +512,7 @@ export class OutlineNumberingController {
       headings,
       labels,
       labelGaps: labelGaps ?? [],
+      projections: projections ?? [],
     }
 
     console.info(
@@ -480,7 +542,13 @@ export class OutlineNumberingController {
 
   /** Full sync with diagnostic output (for manual command). */
   manualSync(callback: (log: string) => void): SyncResult {
-    return fullSyncOutline(this.cache.headings, this.cache.labels, callback, this.cache.labelGaps)
+    return fullSyncOutline(
+      this.cache.headings,
+      this.cache.labels,
+      callback,
+      this.cache.labelGaps,
+      this.cache.projections,
+    )
   }
 
   /** Run diagnostic probe (for manual command). */
@@ -1133,11 +1201,20 @@ export class OutlineNumberingController {
         outlineGenerationAtPrecommit: precommitSnapshot.outlineGeneration,
       }
 
-      const attrResult = applyNumberingAttributes(matches.map((m, i) => ({
-        element: m.element,
-        label: m.label,
-        labelGap: this.cache.labelGaps[i] ?? '',
-      })))
+      // ── V5.14-R4 §12 — the outline consumes the SAME projection snapshot as
+      // the body, paired by the matcher trace's BODY heading index. The old
+      // `labelGaps[matchOrdinal]` re-derived the gap in a different index space
+      // (any unmatched heading shifted every later gap), and `?? ''` silently
+      // degraded a missing entry to "no gap".
+      const orderedPairs = pairOutlineItemsWithProjections({
+        trace: matchTrace,
+        items,
+        bodyLabels: this.cache.labels,
+        projections: this.cache.projections,
+        labelGaps: this.cache.labelGaps,
+      })
+      this.lastAppliedOutlinePairs = orderedPairs
+      const attrResult = applyNumberingAttributes(orderedPairs)
       syncOutlineNumberBoldStyle()
 
       // Stale decoration cleanup: remove decorations on native items that are no
@@ -1442,6 +1519,11 @@ export class OutlineNumberingController {
     const nativeEpochChangedAfterApply = this.nativeMutationEpoch !== this.postApplyEpochAtApply
     const nativeGenerationChangedAfterApply = this.nativeSubtreeGeneration !== this.postApplyGenerationAtApply
 
+    // ── V5.14-R4 §12 — per-item label + gap parity read back from the LIVE DOM.
+    // A count-only verdict can never catch a label/gap drift.
+    const decorationParity = this.measureOutlineDecorationParity(currentRoot)
+    this.recordOutlineDecorationParity(decorationParity, docKey, revision)
+
     let decision: 'PASS' | 'FAIL' | 'RETRY'
     let reason: string
 
@@ -1465,6 +1547,12 @@ export class OutlineNumberingController {
     } else if (nativeEpochChangedAfterApply || nativeGenerationChangedAfterApply) {
       // Post-apply stability barrier: Typora rebuilt native items after apply.
       decision = 'RETRY'; reason = 'NATIVE_OUTLINE_MUTATED_AFTER_APPLY'
+    } else if (decorationParity.labelMismatch > 0) {
+      // ── V5.14-R4 §12 — the count can match while the per-item LABEL drifts.
+      decision = 'FAIL'; reason = 'OUTLINE_LABEL_MISMATCH'
+    } else if (decorationParity.gapMismatch > 0) {
+      // ── V5.14-R4 §12 — the number is right but its gap state is not.
+      decision = 'FAIL'; reason = 'OUTLINE_GAP_MISMATCH'
     } else {
       decision = 'PASS'; reason = 'OK'
     }
@@ -1515,6 +1603,100 @@ export class OutlineNumberingController {
         this.scheduleApply('outline-root-replaced')
       }
     }
+  }
+
+  // ── V5.14-R4 §12/§14/§15 — outline decoration (label + gap) parity ─────────
+
+  /**
+   * Read every applied outline decoration back from the LIVE DOM and compare
+   * label + gap (a) against what was written and (b) against the BODY
+   * projection the outline was built from.
+   */
+  private measureOutlineDecorationParity(currentRoot: HTMLElement | null): OutlineDecorationParityMeasurement {
+    const pairs = this.lastAppliedOutlinePairs.filter(p =>
+      p.element.isConnected && (!currentRoot || currentRoot.contains(p.element)),
+    )
+    const local = verifyOutlineDecorationParity(pairs)
+    const outlineState = pairs.map(p => {
+      const read = readOutlineDecoration(p.element)
+      return { stableIdentity: p.stableIdentity, label: read.label ?? '', gap: read.gap }
+    })
+    const parity = verifyBodyOutlineParity(this.cache.projections, outlineState)
+    const observed = pairs.map(p => {
+      const read = readOutlineDecoration(p.element)
+      const wantGap = p.label !== '' && p.labelGap === 'space' ? 'space' : 'none'
+      return {
+        bodyIndex: p.bodyIndex,
+        stableIdentity: p.stableIdentity,
+        outlineItemIdentity: p.element.getAttribute('href') ?? `outline-item:${p.bodyIndex}`,
+        expectedLabel: p.label,
+        actualLabel: read.label,
+        expectedGap: wantGap,
+        actualGap: read.gap,
+      }
+    })
+    return {
+      labelMismatch: local.labelMismatch,
+      gapMismatch: local.gapMismatch,
+      bodyOutlineLabelMismatch: parity.labelMismatch,
+      bodyOutlineGapMismatch: parity.gapMismatch,
+      observed,
+    }
+  }
+
+  /** §14/§15 — accumulate the outline-scoped gate counters + emit the audit. */
+  private recordOutlineDecorationParity(
+    measured: OutlineDecorationParityMeasurement,
+    docKey: string,
+    revision: number,
+  ): void {
+    this.countersOutlineDecorationV514R4.outlineNumberLabelMismatch += measured.labelMismatch
+    this.countersOutlineDecorationV514R4.outlineNumberGapAttrMismatch += measured.gapMismatch
+    this.countersOutlineDecorationV514R4.bodyOutlineLabelParityMismatch += measured.bodyOutlineLabelMismatch
+    this.countersOutlineDecorationV514R4.bodyOutlineGapParityMismatch += measured.bodyOutlineGapMismatch
+
+    // §14 — one line per drifting item (never emitted when the item is correct).
+    for (const o of measured.observed) {
+      const wantLabel = o.expectedLabel === '' ? null : o.expectedLabel
+      const wantGap = o.expectedGap === 'space' ? 'space' : null
+      const actualGap = o.actualGap === 'space' ? 'space' : null
+      if (o.actualLabel === wantLabel && actualGap === wantGap) continue
+      emitRuntimeAudit(OUTLINE_NUMBER_DECORATION_AUDIT_EVENT, {
+        documentKey: docKey,
+        revision,
+        bodyIndex: o.bodyIndex,
+        stableHeadingIdentity: o.stableIdentity,
+        outlineItemIdentity: o.outlineItemIdentity,
+        expectedLabel: o.expectedLabel,
+        actualLabel: o.actualLabel,
+        expectedGap: o.expectedGap,
+        actualGap: o.actualGap,
+        projectionGeneration: this.cache.revision,
+        decision: 'FAIL',
+        reason: 'OUTLINE_DECORATION_MISMATCH',
+      })
+    }
+
+    // §14 — one summary line per verify (carries the live gate counters).
+    emitRuntimeAudit(OUTLINE_NUMBER_DECORATION_AUDIT_EVENT, {
+      documentKey: docKey,
+      revision,
+      itemCount: measured.observed.length,
+      labelMismatch: measured.labelMismatch,
+      gapMismatch: measured.gapMismatch,
+      bodyOutlineLabelMismatch: measured.bodyOutlineLabelMismatch,
+      bodyOutlineGapMismatch: measured.bodyOutlineGapMismatch,
+      gateCounters: { ...this.countersOutlineDecorationV514R4 },
+      decision: measured.labelMismatch === 0 && measured.gapMismatch === 0
+        && measured.bodyOutlineLabelMismatch === 0 && measured.bodyOutlineGapMismatch === 0
+        ? 'PASS' : 'FAIL',
+      reason: 'OUTLINE_DECORATION_PARITY_VERIFY',
+    })
+  }
+
+  /** §15 — the outline-scoped decoration gate counters (merged by the service). */
+  getOutlineDecorationV514R4Counters(): HeadingDecorationV514R4Counters {
+    return { ...this.countersOutlineDecorationV514R4 }
   }
 
   // ── Observer ──────────────────────────────────────
@@ -1948,6 +2130,12 @@ export class OutlineNumberingController {
         gateCounters: { ...this.countersOutlineDiagnosticV514R2 },
         gateDecision: evaluateOutlineDiagnosticProjectionV514R2Gates(this.countersOutlineDiagnosticV514R2).decision,
         gateReport: formatOutlineDiagnosticProjectionV514R2GateReport(this.countersOutlineDiagnosticV514R2),
+      },
+      // §V5.14-R4 — the outline decoration (label + gap) parity surface.
+      outlineDecorationV514R4: {
+        projectionCount: this.cache.projections.length,
+        appliedPairCount: this.lastAppliedOutlinePairs.length,
+        counters: { ...this.countersOutlineDecorationV514R4 },
       },
       lastApply: this.lastApply,
       lastVerify: this.lastVerify,

@@ -20,7 +20,7 @@ import * as path from 'path'
 // ── Build Marker ─────────────────────────────────────────────────────
 
 /** Phase 7R.3.11.8B.109 — diagnostics multi-view Authority V5.14-R1 (drawer order + heading snapshot). */
-export const INKCHAPTER_BUILD_ID = 'inkchapter-diagnostics-v5.14-r2-p5-p8-closure'
+export const INKCHAPTER_BUILD_ID = 'inkchapter-heading-number-gap-atomic-reconcile-v5.14-r4'
 
 /** Runtime gate revision — infrastructure only, no business logic changes. */
 export const RUNTIME_GATE_REVISION = 'r14r1-11-8b109-diagnostics-multiview-authority-v5-14-r1'

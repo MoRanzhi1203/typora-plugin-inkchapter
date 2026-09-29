@@ -6,11 +6,31 @@ import type {
   DiffResult,
   HeadingLayoutSettings,
 } from '../heading-numbering/heading-types'
+import {
+  HEADING_DECORATION_NUMBERED_CLASS_V514R4,
+  decorationGapAttributeValue,
+  decorationMismatchKind,
+  normalizeDecorationGap,
+  type ActualHeadingDecoration,
+  type DecorationMismatchKind,
+  type HeadingDecorationProjection,
+} from '../heading-numbering/heading-decoration-projection-v514-r4'
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
-const NUMBERED_CLASS = 'inkchapter-numbered-heading'
+const NUMBERED_CLASS = HEADING_DECORATION_NUMBERED_CLASS_V514R4
 const NUMBER_ATTR = 'data-inkchapter-heading-number'
 const GAP_ATTR = 'data-inkchapter-heading-gap'
+
+/** V5.14-R4 — one atomic decoration reconcile result (label + gap + class). */
+export interface DecorationReconcileResult extends DiffResult {
+  labelMismatch: number
+  gapMismatch: number
+  classMismatch: number
+  /** headings whose FULL decoration was stripped (incl. the gap attribute). */
+  cleared: number
+  /** stale gap attributes removed from headings with no decoration at all. */
+  staleGapRemoved: number
+}
 
 // Layout class names — must match CSS in style.scss
 const LAYOUT_CLASSES = [
@@ -90,7 +110,10 @@ export class HeadingDomAdapter {
 
   /**
    * Check if rendered state is still valid.
-   * Each element must: still be connected, have the class, have correct attr value.
+   * Each element must: still be connected, have the class, have the correct
+   * attribute value(s). V5.14-R4 — when the state carries a `gap`, the gap
+   * attribute is validated as part of the SAME check, so a label-valid but
+   * gap-invalid DOM can never be accepted by the fast path.
    */
   isRenderedStateValid(states: RenderedHeadingState[]): boolean {
     if (!this.editorRoot) return false
@@ -103,21 +126,31 @@ export class HeadingDomAdapter {
       const state = states[idx]
       if (state.element !== el) return false
       if (!state.element.isConnected) return false
+      const expectedGap = state.gap == null ? null : normalizeDecorationGap(state.gap)
       if (state.label === '') {
-        // Un-numbered heading: must NOT have class or attr
+        // Un-numbered heading: must NOT have class or attr (nor a stale gap)
         if (el.classList.contains(NUMBERED_CLASS)) return false
         if (el.hasAttribute(NUMBER_ATTR)) return false
+        if (expectedGap != null && el.hasAttribute(GAP_ATTR)) return false
       } else {
         if (!el.classList.contains(NUMBERED_CLASS)) return false
         if (el.getAttribute(NUMBER_ATTR) !== state.label) return false
+        if (expectedGap != null) {
+          const wanted = decorationGapAttributeValue(expectedGap)
+          if (wanted != null) {
+            if (el.getAttribute(GAP_ATTR) !== wanted) return false
+          } else if (el.hasAttribute(GAP_ATTR)) {
+            return false
+          }
+        }
       }
       idx++
     }
     return idx === states.length
   }
 
-  /** Build rendered states from current DOM + computed labels. */
-  buildRenderedStates(labels: readonly string[]): RenderedHeadingState[] {
+  /** Build rendered states from current DOM + computed labels (+ optional gaps). */
+  buildRenderedStates(labels: readonly string[], gaps?: readonly (string | null | undefined)[]): RenderedHeadingState[] {
     if (!this.editorRoot) return []
     const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     const result: RenderedHeadingState[] = []
@@ -132,6 +165,7 @@ export class HeadingDomAdapter {
         key: this.elementKey(el, i),
         level: level as HeadingLevel,
         label: labels[labelIdx],
+        gap: normalizeDecorationGap(gaps?.[labelIdx]),
       })
       labelIdx++
     }
@@ -204,11 +238,117 @@ export class HeadingDomAdapter {
   }
 
   /**
+   * §10 — read the ACTUAL decoration of a heading as one state.
+   */
+  readHeadingDecoration(el: HTMLElement): ActualHeadingDecoration {
+    return {
+      numberedClass: el.classList.contains(NUMBERED_CLASS),
+      label: el.getAttribute(NUMBER_ATTR),
+      gap: normalizeDecorationGap(el.getAttribute(GAP_ATTR)),
+    }
+  }
+
+  /**
+   * §9/§10 — the ONE atomic projection write for a single heading: class +
+   * number attribute + gap attribute are committed inside the SAME statement
+   * block, so a caller can never observe (or leave behind) a label without its
+   * gap. Returns the mismatch kinds it actually repaired.
+   */
+  private applyHeadingDecoration(
+    el: HTMLElement,
+    expected: HeadingDecorationProjection,
+  ): { changed: boolean; labelMismatch: boolean; gapMismatch: boolean; classMismatch: boolean; mismatchKind: DecorationMismatchKind } {
+    const actual = this.readHeadingDecoration(el)
+    const mismatchKind = decorationMismatchKind(expected, actual)
+    if (expected.label === '') {
+      if (mismatchKind === 'none') {
+        return { changed: false, labelMismatch: false, gapMismatch: false, classMismatch: false, mismatchKind }
+      }
+      if (actual.numberedClass) el.classList.remove(NUMBERED_CLASS)
+      if (actual.label !== null) el.removeAttribute(NUMBER_ATTR)
+      // the gap is ALWAYS stripped together with the number — never left behind
+      if (actual.gap !== 'none') el.removeAttribute(GAP_ATTR)
+      return {
+        changed: true,
+        labelMismatch: actual.label !== null,
+        gapMismatch: actual.gap !== 'none',
+        classMismatch: actual.numberedClass,
+        mismatchKind,
+      }
+    }
+    const labelMismatch = actual.label !== expected.label
+    const gapMismatch = actual.gap !== expected.gap
+    const classMismatch = !actual.numberedClass
+    if (!labelMismatch && !gapMismatch && !classMismatch) {
+      return { changed: false, labelMismatch: false, gapMismatch: false, classMismatch: false, mismatchKind }
+    }
+    if (classMismatch) el.classList.add(NUMBERED_CLASS)
+    if (labelMismatch) el.setAttribute(NUMBER_ATTR, expected.label)
+    const gapAttr = decorationGapAttributeValue(expected.gap)
+    if (gapAttr != null) {
+      if (gapMismatch) el.setAttribute(GAP_ATTR, gapAttr)
+    } else if (gapMismatch) {
+      el.removeAttribute(GAP_ATTR)
+    }
+    return { changed: true, labelMismatch, gapMismatch, classMismatch, mismatchKind }
+  }
+
+  /**
+   * §9 — the ATOMIC heading decoration reconcile. ONE projection snapshot in,
+   * class + label + gap committed per heading in one pass. There is no code path
+   * in which the number attribute can be written without the gap being resolved
+   * from the SAME projection.
+   */
+  reconcileHeadingDecorations(projections: readonly HeadingDecorationProjection[]): DecorationReconcileResult {
+    const result: DecorationReconcileResult = {
+      scanned: 0, repaired: 0, updated: 0, removed: 0,
+      labelMismatch: 0, gapMismatch: 0, classMismatch: 0, cleared: 0, staleGapRemoved: 0,
+    }
+    if (!this.editorRoot) return result
+
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const handled = new Set<HTMLElement>()
+    let idx = 0
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (idx >= projections.length) break
+      const expected = projections[idx]
+      idx++
+      handled.add(el)
+      result.scanned++
+      const applied = this.applyHeadingDecoration(el, expected)
+      if (applied.labelMismatch) result.labelMismatch++
+      if (applied.gapMismatch) result.gapMismatch++
+      if (applied.classMismatch) result.classMismatch++
+      if (applied.changed) result.repaired++
+      if (expected.label === '') result.cleared++
+    }
+
+    // Headings beyond the projection: strip the FULL decoration (incl. the gap).
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (this.isInsideExcluded(el)) continue
+      if (handled.has(el)) continue
+      const actual = this.readHeadingDecoration(el)
+      if (!actual.numberedClass && actual.label === null && actual.gap === 'none') continue
+      el.classList.remove(NUMBERED_CLASS)
+      el.removeAttribute(NUMBER_ATTR)
+      if (actual.gap !== 'none') {
+        el.removeAttribute(GAP_ATTR)
+        result.staleGapRemoved++
+      }
+      result.removed++
+    }
+
+    return result
+  }
+
+  /**
    * Apply label gap (number-to-title spacing) to all heading elements.
-   * Stores an enumeration value ("space"/"none") so that CSS attribute
-   * selectors can deterministically apply spacing without fragile
-   * trailing-space characters.
-   * Must be called after applyNumberingDiff or repairDecoration.
+   * V5.14-R4 — legacy compatibility only: the service now routes through
+   * `reconcileHeadingDecorations`. Never call this as a separate step after a
+   * label commit.
    */
   applyLabelGaps(gaps: readonly string[]): void {
     if (!this.editorRoot) return
@@ -244,6 +384,10 @@ export class HeadingDomAdapter {
   /**
    * Repair numbering decoration without recomputing labels.
    * Used when: node replaced but snapshot structure unchanged.
+   * V5.14-R4 — the repair is ATOMIC: it commits class + label + gap in the same
+   * per-element block, so a repaired heading can never end up with a label but
+   * no gap. When the state does not carry a gap, the element's CURRENT gap is
+   * preserved (legacy callers keep their semantics, but never lose parity).
    */
   repairDecoration(states: RenderedHeadingState[]): DiffResult {
     let scanned = 0, repaired = 0, updated = 0, removed = 0
@@ -258,39 +402,34 @@ export class HeadingDomAdapter {
       if (this.isInsideExcluded(el)) continue
 
       if (labelIdx < states.length) {
-        const label = states[labelIdx].label
+        const state = states[labelIdx]
         scanned++
         repairedSet.add(el)
         labelIdx++
 
-        if (label === '') {
-          // Un-numbered: ensure decoration is removed
-          if (el.classList.contains(NUMBERED_CLASS)) {
-            el.classList.remove(NUMBERED_CLASS)
-            removed++
-          }
-          if (el.hasAttribute(NUMBER_ATTR)) {
-            el.removeAttribute(NUMBER_ATTR)
-          }
-          continue
-        }
-
-        const currentLabel = el.getAttribute(NUMBER_ATTR)
-        const hasClass = el.classList.contains(NUMBERED_CLASS)
-
-        if (!hasClass || currentLabel !== label) {
-          if (!hasClass) { el.classList.add(NUMBERED_CLASS); repaired++ }
-          if (currentLabel !== label) { el.setAttribute(NUMBER_ATTR, label); updated++ }
-        }
+        const expectedGap = state.gap == null
+          ? normalizeDecorationGap(el.getAttribute(GAP_ATTR))
+          : normalizeDecorationGap(state.gap)
+        const applied = this.applyHeadingDecoration(el, {
+          stableIdentity: state.key,
+          label: state.label,
+          gap: state.label === '' ? 'none' : expectedGap,
+        })
+        if (applied.classMismatch) repaired++
+        if (applied.labelMismatch) updated++
+        if (state.label === '') removed++
       }
     }
 
     for (let i = 0; i < els.length; i++) {
       const el = els[i]
       if (this.isInsideExcluded(el)) continue
-      if (!repairedSet.has(el) && el.classList.contains(NUMBERED_CLASS)) {
+      if (!repairedSet.has(el)) {
+        const actual = this.readHeadingDecoration(el)
+        if (!actual.numberedClass && actual.label === null && actual.gap === 'none') continue
         el.classList.remove(NUMBERED_CLASS)
         el.removeAttribute(NUMBER_ATTR)
+        el.removeAttribute(GAP_ATTR)
         removed++
       }
     }
@@ -298,18 +437,28 @@ export class HeadingDomAdapter {
     return { scanned, repaired, updated, removed }
   }
 
+  /**
+   * Clear ALL numbering decoration — class + number attribute + gap attribute.
+   * V5.14-R4 — the gap is part of the decoration: leaving it behind after a
+   * document switch is exactly the stale-gap the R4 gates forbid.
+   */
   clearNumbering(): void {
     if (!this.editorRoot) return
-    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(`.${NUMBERED_CLASS}`)
+    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     for (let i = 0; i < els.length; i++) {
-      els[i].classList.remove(NUMBERED_CLASS)
-      els[i].removeAttribute(NUMBER_ATTR)
+      const el = els[i]
+      if (!el.classList.contains(NUMBERED_CLASS) && !el.hasAttribute(NUMBER_ATTR) && !el.hasAttribute(GAP_ATTR)) continue
+      el.classList.remove(NUMBERED_CLASS)
+      el.removeAttribute(NUMBER_ATTR)
+      el.removeAttribute(GAP_ATTR)
     }
   }
 
   /**
    * Validate that all heading elements still carry their expected gap attributes.
-   * Used by the fast-path to detect gap loss without a full refresh.
+   * V5.14-R4 — this is now a STRICT parity check: the number of non-excluded
+   * headings must equal the projection length (the previous early `return true`
+   * accepted a short array as "valid", i.e. a gap mismatch escaped the fast path).
    */
   areGapsValid(gaps: readonly string[]): boolean {
     if (!this.editorRoot) return true
@@ -318,7 +467,7 @@ export class HeadingDomAdapter {
     for (let i = 0; i < els.length; i++) {
       const el = els[i]
       if (this.isInsideExcluded(el)) continue
-      if (gapIdx >= gaps.length) return true
+      if (gapIdx >= gaps.length) return false
       const expected = gaps[gapIdx]
       gapIdx++
       if (expected === 'space') {
@@ -327,7 +476,7 @@ export class HeadingDomAdapter {
         if (el.hasAttribute(GAP_ATTR)) return false
       }
     }
-    return true
+    return gapIdx === gaps.length
   }
 
   // ── Layout (alignment + indent) ─────────────────────

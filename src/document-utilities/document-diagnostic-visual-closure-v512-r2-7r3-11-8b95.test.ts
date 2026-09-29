@@ -276,7 +276,7 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     expect(host.getVisualClosureCounters().headingLegacyVisualRender).toBe(0)
   })
 
-  it('R2-HEADING-2 / V5.12-R9 §9: ACTIVE = R7 fill + chip while the PASSIVE fill is suspended', () => {
+  it('R2-HEADING-2 / V5.14-R3 P10: ACTIVE = R7 fill + chip while the PASSIVE fill is RETAINED', () => {
     const w = makeWorld()
     host = w.h
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
@@ -288,7 +288,7 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     expect(audits[0].railRect).toBe('null')
     expect(Number(audits[0].fillFragmentCount ?? 0)).toBeGreaterThan(0)
     expect(audits[0].passiveFillSuppressed).toBe('false')
-    // ACTIVE: the R7 fill is the ONLY fill — the passive fill is SUSPENDED.
+    // ACTIVE: the R7 emphasis is ADDITIVE — the passive fill is RETAINED.
     api(host).renderHeadingActiveEmphasis('E1', d as never, w.heading)
     audits = readAudits(infoSpy!, 'DOCUMENT-DIAGNOSTIC-HEADING-MARKER-AUDIT').filter(a => a.reason === 'ACTIVE_HEADING_EMPHASIS')
     expect(audits.length).toBe(1)
@@ -302,8 +302,10 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     expect(marker).not.toBeNull()
     expect(marker.getAttribute('data-ink-diagnostic-active')).toBe('true')
     expect(marker.querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(0)
-    // …and the two fills NEVER stack (V5.12-R9 §9 hard gate).
-    expect(document.querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBe(0)
+    // ── V5.14-R3 §P10 §4/§24 — the PASSIVE fill MUST survive the active
+    // emphasis (the legacy R9 "suspend the passive fill" was the P10 root cause:
+    // it deleted the passive DOM and replaced it with a temporary active node).
+    expect(document.querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBe(1)
     expect(document.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length).toBeGreaterThan(0)
     const counters = host.getVisualClosureCounters()
     expect(counters.activeHeadingWithoutPassiveMarker).toBe(0)

@@ -324,6 +324,24 @@ import {
 } from './document-diagnostic-visual-closure-target-v514-r2'
 // V5.14-R2 §P8 — the ONE heading-diagnostic → left-outline target projection.
 import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
+// V5.14-R3 §P10/P11/P12 — Passive/Active decoupling + live-edit invalidation +
+// Active high-contrast colour scale.
+import {
+  ACTIVE_CONTRAST_AUDIT_EVENT,
+  HEADING_EDIT_GEOMETRY_AUDIT_EVENT,
+  HEADING_CONTENT_FINGERPRINT_EXCLUDED_SELECTORS,
+  PASSIVE_ACTIVE_STATE_AUDIT_EVENT,
+  PASSIVE_ACTIVE_V514R3_GATE_KEYS,
+  activeContrastToGateCounters,
+  computeHeadingContentFingerprint,
+  createPassiveActiveV514R3Counters,
+  evaluateActiveContrast,
+  evaluatePassiveActiveV514R3Gates,
+  formatPassiveActiveV514R3GateReport,
+  passiveTextCoverageOk,
+  type HeadingVisualRevisionKey,
+  type PassiveActiveV514R3Counters,
+} from './document-diagnostic-passive-active-v514-r3'
 import {
   HEADING_MARKER_AUDIT_EVENT,
   HEADING_MARKER_ICON_SIZE_PX,
@@ -1782,10 +1800,18 @@ interface HeadingPassiveMarkerRecord {
   chipLocal?: HeadingRect | null
   /** V5.12-R9 §8 — measured gap between the heading text and the chip. */
   chipGapPx?: number | null
-  /** V5.12-R9 §9 — the passive fill is suspended because this heading is ACTIVE. */
+  /** V5.12-R9 §9 — kept for compatibility; V5.14-R3 §P10 no longer suspends it. */
   passiveFillSuppressed?: boolean
   /** V5.12-R9 §8 — heading content centerY (chip alignment authority). */
   contentCenterY?: number
+  /** V5.14-R3 §P11 — the heading ELEMENT this marker was measured from. */
+  element?: HTMLElement
+  /** V5.14-R3 §P11 — content fingerprint of the text this geometry was measured on. */
+  contentFingerprint?: string
+  /** V5.14-R3 §P11 — the visual revision key this geometry belongs to. */
+  visualRevisionKey?: HeadingVisualRevisionKey
+  /** V5.14-R3 §P10 — the visual target keys this ONE passive marker represents. */
+  visualTargetKeys?: string[]
 }
 
 /** V5.12-R9 §6 — reason chip height (18~20px band). */
@@ -2824,6 +2850,11 @@ export class DocumentUtilityOverlayHost {
             this.diagnosticsRafPending = false
             if (this.disposed) return
             this.diagnostics.recompute('DOCUMENT_MUTATION')
+            // ── V5.14-R3 §P11 §10 — a real heading content edit marks the visual
+            // dirty HERE (the single content-mutation authority), so the stale
+            // fill width / chip anchor is invalidated + rebuilt once even when the
+            // diagnostics publish is a NOOP.
+            this.reconcileHeadingContentEdits('DOCUMENT_MUTATION')
             this.scheduleGeometrySync('content-mutation')
           })
         }
@@ -3775,6 +3806,19 @@ export class DocumentUtilityOverlayHost {
   private countersClosureV512R2 = createVisualClosureV512R2Counters()
   /** §P6 — the V5.14-R2 REAL-DOM visual-closure reconciliation counters. */
   private countersVisualClosureV514R2 = createVisualClosureTargetV514R2Counters()
+  /** §P10/P11/P12 — the V5.14-R3 passive/active + live-edit + contrast counters. */
+  private countersPassiveActiveV514R3: PassiveActiveV514R3Counters = createPassiveActiveV514R3Counters()
+  /**
+   * §P10 — the PASSIVE authority is the document's own target set: the number of
+   * passive targets that must exist for the CURRENT diagnostic revision. It is
+   * never derived from the selection.
+   */
+  private passiveTargetKeySet = new Set<string>()
+  private passiveTargetDiagnosticRevision = -1
+  /** §P10 — the ACTIVE emphasis' target keys (a subset of the passive set). */
+  private activeVisualTargetKeySet = new Set<string>()
+  /** §P11 — last measured heading content fingerprint per heading identity. */
+  private headingContentFingerprints = new Map<string, string>()
   /** §18 — the V5.12-R3 Drawer-persistence hard-gate counters. */
   private countersDrawerV512R3 = createDrawerPersistenceV512R3Counters()
   /** §13 — the USER INTENT epoch (Problems Control open/close is the only writer). */
@@ -4380,7 +4424,13 @@ export class DocumentUtilityOverlayHost {
         void existing
       }
       const wrapper = existing?.wrapper ?? document.createElement('div')
-      if (!existing) {
+      // ── V5.14-R3 §P10 (ROOT_P10_R3_1) — a business-root / layer rebuild
+      // ORPHANS every passive wrapper while its record survives. Reusing the
+      // detached node without re-attaching it made EVERY passive marker invisible
+      // (only a freshly created ACTIVE node stayed on screen). The wrapper is
+      // therefore re-attached to the CURRENT layer whenever it is off-layer.
+      const wrapperOnLayer = wrapper.parentElement === layer
+      if (!existing || !wrapperOnLayer) {
         wrapper.className = 'inkchapter-heading-diagnostic-marker'
         layer.appendChild(wrapper)
       }
@@ -4421,32 +4471,31 @@ export class DocumentUtilityOverlayHost {
       // gets its text-tight surface from the CONTENT box — never a gutter fallback
       // and never the full heading block.
       const fillTargets = textLocal.length > 0 ? textLocal : [contentLocal]
-      // §9 — while this heading is ACTIVE the passive fill is SUSPENDED: the R7
-      // active fill is the only fill, so the two can never stack.
+      // ── V5.14-R3 §P10 §4/§24 (ROOT_P10_R3_4) — the PASSIVE marker is
+      // PERMANENT: "this heading still has a problem". Selecting one of the
+      // document's diagnostics may only ADD an active emphasis; it must NEVER
+      // remove another (or even the same) heading's passive fill. The legacy R9
+      // "suspend the passive fill while active" is therefore gone.
       // V5.13-R5 §24 — the comparison is against the ACTIVE HEADING identity
       // (`headingActiveMarkerIdentity`), never the diagnostic id.
       const isActiveHeading = this.headingActiveMarkerIdentity === identity
       const fillLocal: HeadingRect[] = []
       const existingFills = Array.from(wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-passive__fragment'))
-      if (isActiveHeading) {
-        for (const old of existingFills) { try { old.remove() } catch { /* noop */ } }
-      } else {
-        // §5/§15 — ONE text-tight carrier per visible line (never a union rect):
-        // a multi-line heading never becomes a full-width band.
-        for (let i = 0; i < fillTargets.length; i++) {
-          const r = fillTargets[i]
-          let frag = existingFills[i] ?? null
-          if (!frag) {
-            frag = document.createElement('div')
-            frag.className = 'inkchapter-heading-diagnostic-passive__fragment'
-            wrapper.appendChild(frag)
-          }
-          frag.style.cssText = `position:absolute;left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${Math.round(r.width)}px;height:${Math.round(r.height)}px;`
-          fillLocal.push(r)
+      // §5/§15 — ONE text-tight carrier per visible line (never a union rect):
+      // a multi-line heading never becomes a full-width band.
+      for (let i = 0; i < fillTargets.length; i++) {
+        const r = fillTargets[i]
+        let frag = existingFills[i] ?? null
+        if (!frag) {
+          frag = document.createElement('div')
+          frag.className = 'inkchapter-heading-diagnostic-passive__fragment'
+          wrapper.appendChild(frag)
         }
-        for (let i = fillTargets.length; i < existingFills.length; i++) {
-          try { existingFills[i].remove() } catch { /* noop */ }
-        }
+        frag.style.cssText = `position:absolute;left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${Math.round(r.width)}px;height:${Math.round(r.height)}px;`
+        fillLocal.push(r)
+      }
+      for (let i = fillTargets.length; i < existingFills.length; i++) {
+        try { existingFills[i].remove() } catch { /* noop */ }
       }
       // §6/§8 — the compact reason chip (overlay only, never in the heading flow).
       let chip = wrapper.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement | null
@@ -4676,13 +4725,37 @@ export class DocumentUtilityOverlayHost {
       if (chipCenterDriftPx != null && chipCenterDriftPx > HEADING_CHIP_CENTER_TOLERANCE_PX) {
         this.countersHeadingSurfaceV512R9.chipCenterDriftGt2px++
       }
-      // §9 — while ACTIVE this heading's passive fill MUST be suspended: the two
-      // fills must never coexist on the SAME heading (never a stacked double fill).
-      if (isActiveHeading && wrapper.querySelector('.inkchapter-heading-diagnostic-passive__fragment')) {
+      // ── V5.14-R3 §P10 §4/§24 — the legacy R9 "stack" gate is re-pointed to the
+      // REAL P10 violation: the ACTIVE heading has NO passive marker at all (the
+      // passive set was replaced by the selection). Coexistence of the passive
+      // fill with the active emphasis is now REQUIRED, never a violation.
+      if (isActiveHeading && !this.headingPassiveMarkers.has(identity) && fillLocal.length === 0) {
         this.countersHeadingSurfaceV512R9.activePassiveFillStack++
       }
       // §13/§27 — typography stays Typora's own: never mutate the heading element
       // itself (no color / size / weight / margin / line-height writes).
+      // ── V5.14-R3 §P11 — the CONTENT fingerprint this geometry was measured on.
+      // `stableHeadingIdentity` only means "the same heading node"; the geometry
+      // is valid only while this fingerprint (text + level + numbering token) and
+      // the layout epoch are unchanged.
+      const contentFingerprint = this.headingContentFingerprintOf(g.el)
+      const numberAttrToken = g.el.getAttribute('data-inkchapter-heading-number')
+      const visualRevisionKey: HeadingVisualRevisionKey = {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+        stableHeadingIdentity: identity,
+        contentFingerprint,
+        sourceRevision: this.snapshot?.sourceRevision ?? null,
+        layoutEpoch: epoch,
+        numberingGeneration: null,
+        numberingToken: numberAttrToken,
+      }
+      const previousRecord = this.headingPassiveMarkers.get(identity)
+      const fingerprintChanged = previousRecord?.contentFingerprint != null
+        && previousRecord.contentFingerprint !== contentFingerprint
+      if (fingerprintChanged) {
+        // the geometry was rebuilt from the CURRENT text in this very pass.
+        this.headingContentFingerprints.set(identity, contentFingerprint)
+      }
       const record: HeadingPassiveMarkerRecord = {
         wrapper,
         severity,
@@ -4695,10 +4768,55 @@ export class DocumentUtilityOverlayHost {
         fillLocal,
         chipLocal,
         chipGapPx,
-        passiveFillSuppressed: isActiveHeading,
+        passiveFillSuppressed: false,
         contentCenterY: contentLocal.top + contentLocal.height / 2,
+        element: g.el,
+        contentFingerprint,
+        visualRevisionKey,
+        visualTargetKeys: [...(collected.groupTargetKeys.get(identity) ?? [])],
       }
       this.headingPassiveMarkers.set(identity, record)
+      // ── V5.14-R3 §P11 §13/§14 — the AUDIT must carry the REAL fragment rects and
+      // prove the text-tight coverage against the CURRENT heading text (a deleted
+      // text run must leave no residual fill beyond the tolerance).
+      const currentTextUnion = unionHeadingNumberAndTextRects(null, textLocal)
+      const passiveUnion = fillLocal.length > 0 ? unionHeadingNumberAndTextRects(null, fillLocal) : null
+      const coverageOk = passiveTextCoverageOk({
+        passiveUnionRight: passiveUnion?.right ?? null,
+        currentTextRight: currentTextUnion?.right ?? null,
+      })
+      if (!coverageOk) {
+        this.countersPassiveActiveV514R3.passiveFragmentTextCoverageMismatch++
+        this.countersPassiveActiveV514R3.passiveFragmentExtendsIntoDeletedTextArea++
+        this.countersPassiveActiveV514R3.passiveFragmentRectStaleAfterTextEdit++
+      }
+      emitRuntimeAudit(HEADING_EDIT_GEOMETRY_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: g.primaryDiagnosticId,
+        targetIndex: g.primaryTargetIndex,
+        stableHeadingIdentity: identity,
+        contentFingerprintBefore: previousRecord?.contentFingerprint ?? null,
+        contentFingerprintAfter: contentFingerprint,
+        contentChanged: fingerprintChanged,
+        sourceRevisionBefore: previousRecord?.visualRevisionKey?.sourceRevision ?? null,
+        sourceRevisionAfter: visualRevisionKey.sourceRevision,
+        layoutEpochBefore: previousRecord?.measuredLayoutEpoch ?? null,
+        layoutEpochAfter: epoch,
+        currentHeadingTextRects: textLocal,
+        passiveFragmentRects: fillLocal,
+        activeFragmentRects: isActiveHeading ? fillLocal : [],
+        currentTextUnionRect: currentTextUnion,
+        passiveUnionRect: passiveUnion,
+        activeUnionRect: isActiveHeading ? passiveUnion : null,
+        reasonChipRect: chipLocal,
+        reasonChipAnchorX: headingLabelGeometry?.reasonChipAnchorX ?? null,
+        visualInvalidated: fingerprintChanged,
+        passiveRebuilt: fingerprintChanged,
+        activeRebuilt: fingerprintChanged && isActiveHeading,
+        chipRebuilt: fingerprintChanged,
+        decision: coverageOk ? 'PASS' : 'FAIL',
+        reason: coverageOk ? 'TEXT_TIGHT_COVERAGE_OK' : 'PASSIVE_FRAGMENT_EXTENDS_BEYOND_CURRENT_TEXT',
+      })
       // §3.4 — the marker was painted from the CURRENT epoch measurement.
       if (isLayoutEpochStale(record.measuredLayoutEpoch, this.currentDocumentLayoutEpoch)) {
         this.countersClosureV512R2.passiveMarkerStaleLayoutEpoch++
@@ -4754,10 +4872,140 @@ export class DocumentUtilityOverlayHost {
     // reconciled against the REAL rendered passive markers read back from the
     // plugin's OWN overlay DOM (never the resolver's admitted count).
     this.reconcileHeadingVisualClosure(collected)
+    // ── V5.14-R3 §P10 — the PASSIVE/ACTIVE state authority audit. The passive
+    // set is the DOCUMENT's own target set; the active emphasis is separate.
+    this.emitPassiveActiveStateAudit(collected.expectedTargets.map(t => t.visualTargetKey))
+    // ── V5.14-R3 §3 — the reconcile ORDER: after the PASSIVE set is reconciled,
+    // 4. resolve the selected target, 5. reconcile ONE active emphasis. Doing it
+    // here means a resolved diagnostic can never leave a stale active node.
+    this.renderActiveHeadingEmphasisForCommittedVisual()
+    // §12 — AFTER both authorities: no stale heading visual may survive.
+    this.verifyNoStaleHeadingVisuals(new Set(groups.keys()))
     // V5.13-R5 §27/§28 — the Strict Multi-H1 visual Authority audit + gates.
     this.emitStrictMultiH1VisualAudit()
     // §21 — measure the REAL resulting surface (DOM + computed style) and audit it.
     this.commitHeadingMarkerSurfaceGates()
+  }
+
+  /**
+   * §12 — after every reconcile NO stale heading visual may survive: a marker
+   * whose heading has no diagnostic left, a chip without a marker, or an active
+   * emphasis whose diagnostic was resolved.
+   */
+  private verifyNoStaleHeadingVisuals(liveIdentities: ReadonlySet<string>): void {
+    const layer = this.headingMarkerLayer
+    if (!layer) return
+    for (const w of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
+      const id = w.getAttribute('data-ink-heading-id')
+      if (id == null || liveIdentities.has(id)) continue
+      this.countersPassiveActiveV514R3.staleHeadingPassiveMarkerAfterDiagnosticResolved++
+      if (w.querySelector('.inkchapter-heading-diagnostic-reason')) {
+        this.countersPassiveActiveV514R3.staleHeadingReasonChipAfterDiagnosticResolved++
+      }
+    }
+    const activeW = this.headingActiveWrapper
+    if (activeW && activeW.isConnected) {
+      const activeId = this.headingActiveIdentity
+      const stillPresent = activeId != null
+        && (this.snapshot?.diagnostics ?? []).some(d => d.id === activeId)
+      if (!stillPresent) this.countersPassiveActiveV514R3.staleHeadingActiveMarkerAfterDiagnosticResolved++
+    }
+  }
+
+  /**
+   * §27 — DOCUMENT-DIAGNOSTIC-PASSIVE-ACTIVE-STATE-AUDIT.
+   *
+   * The PASSIVE set is derived ONLY from the document's currently valid target
+   * projections; the ACTIVE emphasis is a SEPARATE authority that may never
+   * change it. The audit proves `passiveSetChangedByActive === false` and that
+   * the active key belongs to the passive set.
+   */
+  private emitPassiveActiveStateAudit(expectedKeys: readonly string[]): void {
+    const actualPassiveKeys: string[] = []
+    for (const rec of this.headingPassiveMarkers.values()) {
+      for (const key of rec.visualTargetKeys ?? []) actualPassiveKeys.push(key)
+    }
+    const expectedSet = new Set(expectedKeys)
+    const actualSet = new Set(actualPassiveKeys)
+    const missingKeys = [...expectedSet].filter(k => !actualSet.has(k))
+    const extraKeys = [...actualSet].filter(k => !expectedSet.has(k))
+
+    // ── §P10 — the passive set MUST equal the document's projection. A mismatch
+    // that survives a full reconcile (the loops above already rebuilt every
+    // required marker) while the diagnostic revision did NOT change is the
+    // "the selection ate my passive markers" violation.
+    const diagnosticRevision = this.snapshot?.revision ?? -1
+    const diagnosticChanged = diagnosticRevision !== this.passiveTargetDiagnosticRevision
+    const passiveInvariantBroken = missingKeys.length > 0 || extraKeys.length > 0
+    if (!diagnosticChanged && passiveInvariantBroken) {
+      this.countersPassiveActiveV514R3.passiveTargetCountChangedWithoutDiagnosticChange++
+      this.countersPassiveActiveV514R3.passiveMarkerRemovedByActiveLocate++
+    }
+    // §24 — while an ACTIVE emphasis exists, a passive sibling may not disappear
+    // unless the diagnostic set itself changed.
+    if (!diagnosticChanged && this.activeVisualTargetKeySet.size > 0) {
+      const lostSiblings = [...this.passiveTargetKeySet].filter(k => !actualSet.has(k))
+      if (lostSiblings.length > 0) {
+        this.countersPassiveActiveV514R3.siblingPassiveMarkerLostAfterActiveSwitch += lostSiblings.length
+        this.countersPassiveActiveV514R3.activeSelectChangedPassiveTargetSet++
+      }
+    }
+    if (this.activeVisualTargetKeySet.size > 0) {
+      for (const key of this.activeVisualTargetKeySet) {
+        if (!actualSet.has(key)) this.countersPassiveActiveV514R3.activeVisualTargetNotInPassiveSet++
+      }
+    }
+    const passiveCountBeforeActive = this.passiveTargetKeySet.size
+    this.passiveTargetKeySet = actualSet
+    this.passiveTargetDiagnosticRevision = diagnosticRevision
+
+    const activeKey = [...this.activeVisualTargetKeySet][0] ?? null
+    const passiveSetChangedByActive = this.activeVisualTargetKeySet.size > 0 && passiveInvariantBroken
+    emitRuntimeAudit(PASSIVE_ACTIVE_STATE_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      snapshotRevision: this.snapshot?.revision ?? null,
+      diagnosticRevision,
+      expectedPassiveKeys: expectedKeys,
+      actualPassiveKeys,
+      missingPassiveKeys: missingKeys,
+      extraPassiveKeys: extraKeys,
+      activeVisualTargetKey: activeKey,
+      activeInPassiveSet: activeKey == null ? true : actualSet.has(activeKey),
+      selectedDiagnosticId: this.lastLocatedDiagnosticId,
+      selectedTargetIndex: this.lastLocatedTargetIndex,
+      passiveCountBeforeActive,
+      passiveCountAfterActive: actualSet.size,
+      passiveSetChangedByActive,
+      gateCounters: { ...this.countersPassiveActiveV514R3 },
+      gateReport: formatPassiveActiveV514R3GateReport(this.countersPassiveActiveV514R3),
+      decision: evaluatePassiveActiveV514R3Gates(this.countersPassiveActiveV514R3).decision,
+      reason: passiveSetChangedByActive ? 'ACTIVE_CHANGED_PASSIVE_SET' : 'PASSIVE_SET_IS_DOCUMENT_AUTHORITY',
+    })
+    this.emitActiveContrastAudit()
+  }
+
+  /**
+   * §29 — DOCUMENT-DIAGNOSTIC-ACTIVE-CONTRAST-AUDIT. The ACTIVE fill must use the
+   * ACTIVE token with an alpha at least 2.4× the PASSIVE alpha.
+   */
+  private emitActiveContrastAudit(): void {
+    const decisions = [evaluateActiveContrast('error'), evaluateActiveContrast('warning')]
+    const contrastCounters = activeContrastToGateCounters(decisions)
+    for (const key of Object.keys(contrastCounters) as Array<keyof typeof contrastCounters>) {
+      this.countersPassiveActiveV514R3[key] += contrastCounters[key]
+    }
+    for (const d of decisions) {
+      emitRuntimeAudit(ACTIVE_CONTRAST_AUDIT_EVENT, {
+        severity: d.severity,
+        passiveFillAlpha: d.passiveFillAlpha,
+        activeFillAlpha: d.activeFillAlpha,
+        activePassiveRatio: d.activePassiveRatio,
+        activeToken: d.activeToken,
+        passiveToken: d.passiveToken,
+        activeReusesPassiveToken: d.activeReusesPassiveToken,
+        decision: d.contrastOk ? 'PASS' : 'FAIL',
+      })
+    }
   }
 
   /**
@@ -4887,11 +5135,13 @@ export class DocumentUtilityOverlayHost {
     const layer = this.headingMarkerLayer
     const activeCount = layer ? layer.querySelectorAll('.inkchapter-heading-diagnostic-active').length : 0
     if (activeCount > 1) this.countersMultiH1V513R5.activeMarkerCountGt1 += activeCount - 1
-    // §24 — an ACTIVE carrier must never keep a stacked passive fill.
+    // ── §24 — re-pointed by V5.14-R3 §P10: the PASSIVE marker is PERMANENT, so
+    // an ACTIVE heading KEEPING its passive fill is the REQUIRED state. The
+    // violation is now the opposite: an ACTIVE heading with NO passive fill.
     if (layer) {
       for (const w of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
         if (w.getAttribute('data-ink-diagnostic-active') === 'true'
-          && w.querySelector('.inkchapter-heading-diagnostic-passive__fragment')) {
+          && !w.querySelector('.inkchapter-heading-diagnostic-passive__fragment')) {
           this.countersMultiH1V513R5.passiveActiveFillStack++
         }
       }
@@ -4975,6 +5225,35 @@ export class DocumentUtilityOverlayHost {
 
   getHeadingMarkerSurfaceV512R9GateReport(): string[] {
     return formatHeadingMarkerSurfaceV512R9GateReport(this.countersHeadingSurfaceV512R9)
+  }
+
+  /** V5.14-R3 §P10/P11/P12 — the passive/active + live-edit + contrast gates. */
+  getPassiveActiveV514R3Counters(): PassiveActiveV514R3Counters {
+    return { ...this.countersPassiveActiveV514R3 }
+  }
+
+  getPassiveActiveV514R3GateReport(): string[] {
+    return formatPassiveActiveV514R3GateReport(this.countersPassiveActiveV514R3)
+  }
+
+  getPassiveActiveV514R3GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluatePassiveActiveV514R3Gates(this.countersPassiveActiveV514R3)
+  }
+
+  /** V5.14-R3 §P10 — the passive / active target-key authorities (observability). */
+  getPassiveActiveVisualStateV514R3(): {
+    passiveKeys: readonly string[]
+    activeKeys: readonly string[]
+    passiveCount: number
+    activeInPassiveSet: boolean
+  } {
+    const activeKeys = [...this.activeVisualTargetKeySet]
+    return {
+      passiveKeys: [...this.passiveTargetKeySet],
+      activeKeys,
+      passiveCount: this.passiveTargetKeySet.size,
+      activeInPassiveSet: activeKeys.every(k => this.passiveTargetKeySet.has(k)),
+    }
   }
 
   getHeadingMarkerSurfaceV512R9GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
@@ -5390,6 +5669,76 @@ export class DocumentUtilityOverlayHost {
     return layer
   }
 
+  /**
+   * §P11 — the heading's SEMANTIC content fingerprint. Plugin-owned overlay /
+   * utility nodes never participate (they live outside the heading, but the
+   * exclusion list makes the authority explicit and testable).
+   */
+  private headingContentFingerprintOf(el: HTMLElement): string {
+    const runs: string[] = []
+    try {
+      const walker = el.ownerDocument.createTreeWalker(el, 4 /* SHOW_TEXT */)
+      let node = walker.nextNode()
+      while (node) {
+        const parent = (node as Text).parentElement
+        const owned = parent != null
+          && HEADING_CONTENT_FINGERPRINT_EXCLUDED_SELECTORS.some(sel => {
+            try { return parent.closest(sel) != null || parent.matches(sel) } catch { return false }
+          })
+        if (!owned) runs.push(node.textContent ?? '')
+        node = walker.nextNode()
+      }
+    } catch { /* fall back to textContent */ }
+    if (runs.length === 0) runs.push(el.textContent ?? '')
+    const levelAttr = /^H([1-6])$/.exec(el.tagName)?.[1] ?? null
+    return computeHeadingContentFingerprint({
+      textRuns: runs,
+      level: levelAttr != null ? Number.parseInt(levelAttr, 10) : null,
+      numberingToken: el.getAttribute('data-inkchapter-heading-number'),
+    })
+  }
+
+  /**
+   * §P11 §10 — a REAL heading content edit must invalidate the old passive /
+   * active / chip geometry and rebuild it once, even when the diagnostic set did
+   * not change (a NOOP diagnostics publish produces no marker re-render, which is
+   * exactly how the stale width survived).
+   */
+  private reconcileHeadingContentEdits(triggerReason: string): void {
+    if (this.headingPassiveMarkers.size === 0) return
+    let changed = false
+    for (const [identity, rec] of this.headingPassiveMarkers) {
+      const el = rec.element
+      if (!el || !el.isConnected) continue
+      const fingerprint = this.headingContentFingerprintOf(el)
+      if (rec.contentFingerprint == null || rec.contentFingerprint === fingerprint) continue
+      changed = true
+      // hard-invalidate every geometry authority bound to the OLD text
+      this.lastHeadingVisualSnapshots.delete(identity)
+      this.lastHeadingLabelGeometry.delete(identity)
+      this.headingContentFingerprints.set(identity, fingerprint)
+    }
+    if (!changed) return
+    const layer = this.ensureHeadingMarkerLayer()
+    if (!layer) {
+      this.countersPassiveActiveV514R3.headingTextChangedWithoutVisualInvalidation++
+      return
+    }
+    // §10 — invalidate → re-measure → rebuild affected markers EXACTLY once.
+    this.renderHeadingDiagnosticMarkers()
+    this.renderActiveHeadingEmphasisForCommittedVisual()
+    emitRuntimeAudit(HEADING_EDIT_GEOMETRY_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      trigger: triggerReason,
+      visualInvalidated: true,
+      passiveRebuilt: true,
+      activeRebuilt: this.headingActiveMarkerIdentity != null,
+      chipRebuilt: true,
+      decision: 'PASS',
+      reason: 'HEADING_CONTENT_CHANGED_REBUILT_ONCE',
+    })
+  }
+
   /** §13/§15 — VISIBLE heading content fragments (Range per line). */
   private headingVisibleFragments(el: HTMLElement): HeadingRect[] {
     const out: HeadingRect[] = []
@@ -5568,22 +5917,30 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveWrapper = wrapper
     this.headingActiveIdentity = diagnosticId
     this.headingActiveMarkerIdentity = headingIdentity
-    // §6 HARD — ACTIVE must never REPLACE the passive marker: the SAME heading
-    // keeps its passive SOFT TEXT SURFACE + reason chip while the active text
-    // emphasis is painted.
+    // §6 HARD (re-pointed by V5.14-R3 §P10) — ACTIVE must NEVER replace the
+    // passive marker. The SAME heading keeps its passive SOFT TEXT SURFACE +
+    // reason chip while the active emphasis is painted; the legacy R9
+    // "suspend the passive fill" removed the passive carriers and is GONE.
     if (passiveRecord) {
       passiveRecord.wrapper.setAttribute('data-ink-diagnostic-active', 'true')
       passiveRecord.wrapper.setAttribute('data-ink-diagnostic-severity', severity)
-      // V5.12-R9 §9 — the R7 active fill is the ONLY fill: the passive fill is
-      // SUSPENDED here (its carriers are really removed, never merely hidden) so
-      // the two fills can never stack into a darker block.
-      passiveRecord.passiveFillSuppressed = true
-      for (const old of Array.from(passiveRecord.wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-passive__fragment'))) {
-        try { old.remove() } catch { /* noop */ }
-      }
-      passiveRecord.fillLocal = []
+      passiveRecord.passiveFillSuppressed = false
     } else {
+      // §4 — the ACTIVE target MUST belong to the PASSIVE set. An active
+      // emphasis with no passive marker is the P10 violation.
       this.countersClosureV512R2.activeHeadingWithoutPassiveMarker++
+      this.countersPassiveActiveV514R3.activeVisualTargetNotInPassiveSet++
+    }
+    // §P10 §4 — the active emphasis is a SUBSET view of the passive set.
+    this.activeVisualTargetKeySet = new Set(passiveRecord?.visualTargetKeys ?? [])
+    // §27 — an ACTIVE change is its own audit boundary (the passive set audit is
+    // otherwise only emitted on a marker reconcile).
+    {
+      const expected: string[] = []
+      for (const rec of this.headingPassiveMarkers.values()) {
+        for (const key of rec.visualTargetKeys ?? []) expected.push(key)
+      }
+      this.emitPassiveActiveStateAudit(expected)
     }
     // V5.13-R5 §27 — the audit is emitted by the marker renderer at load time; this
     // keeps it truthful after a LOCATE-TIME active switch as well.
@@ -5638,6 +5995,8 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveWrapper = null
     this.headingActiveIdentity = null
     this.headingActiveMarkerIdentity = null
+    // §P10 — clearing the ACTIVE emphasis clears ONLY the active authority.
+    this.activeVisualTargetKeySet.clear()
     // V5.13-R5 §27 — re-emit ONLY while the passive markers still exist: during
     // `clearHeadingDiagnosticMarkers()` they are intentionally already gone, so an
     // emission there would be a false "sibling passive marker lost".
@@ -5657,7 +6016,14 @@ export class DocumentUtilityOverlayHost {
    * after a snapshot reconcile (never a different heading).
    */
   private renderActiveHeadingEmphasisForCommittedVisual(): void {
-    const id = this.lastLocatedDiagnosticId ?? this.locateCommittedVisual?.diagnosticId ?? null
+    // ── V5.14-R3 §3/§25 — the ACTIVE emphasis is re-derived for whoever is
+    // CURRENTLY active: the committed locate authority first, then the active
+    // emphasis already painted (so a content-edit rebuild re-anchors it). When
+    // neither exists the active pass is a no-op clear.
+    const id = this.lastLocatedDiagnosticId
+      ?? this.locateCommittedVisual?.diagnosticId
+      ?? this.headingActiveIdentity
+      ?? null
     if (id == null) {
       this.clearHeadingActiveEmphasis()
       return
@@ -5858,6 +6224,9 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R1 §18/§32 — dismiss must NOT remove the passive heading marker.
     if (this.headingPassiveMarkers.size < passiveBefore) {
       this.countersHeadingV512.headingDismissRemovesPassiveDiagnostic++
+      // V5.14-R3 §P10 §5 — a document left-click may clear ONLY the active
+      // emphasis; clearing a passive marker is the P10 violation.
+      this.countersPassiveActiveV514R3.documentClickClearedPassiveMarker++
     }
     if (this.locateVisualIsActive()) this.countersDocSpaceV511.locateVisualReappearAfterDocumentDismiss++
     const visualActiveAfter = this.locateVisualIsActive()
@@ -8251,6 +8620,12 @@ export class DocumentUtilityOverlayHost {
     // documents, so a carried-over snapshot would be a stale-revision authority).
     this.lastHeadingLabelGeometry.clear()
     this.headingLabelFlipRebuildCounts.clear()
+    // V5.14-R3 §P10/§P11 — the passive/active authorities + content fingerprints
+    // are per document: a document switch must not inherit either.
+    this.passiveTargetKeySet.clear()
+    this.passiveTargetDiagnosticRevision = -1
+    this.activeVisualTargetKeySet.clear()
+    this.headingContentFingerprints.clear()
     // Phase 7R.3.11.8B.12 — ACTIVE → EMPTY / NO_ACTIVE_DOCUMENT hides the
     // Navigator IMMEDIATELY (no scroll/resize/timer) and clears every stale
     // placement so a later show never inherits a left-bottom geometry.
@@ -8852,6 +9227,10 @@ export class DocumentUtilityOverlayHost {
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
+    // ── V5.14-R3 §P11 §10 — a REAL heading content edit runs FIRST: the old
+    // passive / active / chip geometry is invalidated and rebuilt from the
+    // CURRENT text, independent of whether the diagnostics re-published.
+    this.reconcileHeadingContentEdits([...reasons].join(',') || 'geometry')
     // V5.12-R2 §3.2 — ONLY the reasons that really change `#write` geometry may
     // bump the document layout epoch. `content-mutation` and
     // `resize-observer` are deliberately NOT mapped: the plugin's own marker
