@@ -844,14 +844,9 @@ export class DiagnosticLocateFrameController {
     frame.style.top = `${Math.round(present.top - hostT)}px`
     frame.style.width = `${Math.round(present.width)}px`
     frame.style.height = `${Math.round(present.height)}px`
-    // Caption / expected-name keyline — drawn INSIDE the frame (single child,
+    // Caption / expected-name FILL slot — drawn INSIDE the frame (single child,
     // removed together with the frame; count invariant <=1 preserved).
-    this.syncCaptionCue(frame, present, withCaption, caption)
-    // V5 — heading corner cap is 10–16px (never a whole-text underline).
-    if (this.kind === 'heading' && headingTextRight > 0) {
-      const corner = Math.max(10, Math.min(16, Math.round(headingTextRight - 6)))
-      frame.style.setProperty('--ink-heading-corner', `${corner}px`)
-    }
+    this.syncCaptionCue(frame, present, caption)
     // V5.5 — drift report (viewport space; absolute per repaint).
     if (present.height > 0) {
       let frameViewportTop = present.top
@@ -990,24 +985,27 @@ export class DiagnosticLocateFrameController {
     el.setAttribute('data-target-kind', kind)
   }
 
-  /** V4/V5.2 — caption / expected-name PRIMARY slot, ONE child inside the frame
-   *  (count invariant <=1). When a measured name-slot (caption host) exists the
-   *  child is a compact slot FILL (stronger than the secondary context frame);
-   *  without one it is a thin top-edge keyline. Removed with the frame. */
+  /** V4/V5.2 / V5.12-R7 — caption / expected-name PRIMARY slot, ONE child inside
+   *  the frame (count invariant <=1). FILL_ONLY: the cue exists only when a real
+   *  measured name slot exists — the old no-slot `top-edge` 2px keyline is a
+   *  horizontal line and is therefore NO LONGER CREATED (the frame's own
+   *  severity fill remains the locate visual). Removed with the frame. */
   private syncCaptionCue(
     frame: HTMLDivElement,
     present: { left: number; top: number; width: number; height: number },
-    semantic: RectSnapshot,
     caption: { left: number; top: number; right: number; bottom: number } | null,
   ): void {
     const old = frame.querySelector<HTMLElement>(`:scope > .${DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS}`)
     if (old) old.remove()
     frame.removeAttribute('data-caption-cue')
     if (this.kind !== 'table' && this.kind !== 'code') return
-    const cueType = caption ? 'caption-host' : 'top-edge'
-    const relLeftRaw = caption ? caption.left - present.left : semantic.left - present.left + 2
-    const relTopRaw = caption ? caption.top - present.top : 3
-    let cueWidth = caption ? Math.max(12, caption.right - caption.left) : Math.min(64, present.width - 8)
+    // V5.12-R7 §5A/§19 — stop CREATING the line at the renderer: without a
+    // measured name slot there is no cue at all (never a 2px keyline).
+    if (!caption) return
+    const cueType = 'caption-host'
+    const relLeftRaw = caption.left - present.left
+    const relTopRaw = caption.top - present.top
+    let cueWidth = Math.max(12, caption.right - caption.left)
     if (relLeftRaw < -2 || relTopRaw < -2 || relTopRaw > present.height + 2 || cueWidth < 6) return
     const maxW = present.width - Math.max(relLeftRaw, 0) - 2
     if (maxW < 6) return
@@ -1020,18 +1018,13 @@ export class DiagnosticLocateFrameController {
     cue.style.left = `${Math.round(Math.max(relLeftRaw, 0))}px`
     cue.style.top = `${Math.round(Math.max(relTopRaw, 0))}px`
     cue.style.width = `${Math.round(cueWidth)}px`
-    if (caption) {
-      // V5.2 — the primary name slot is a compact fill whose bottom carries the
-      // strong keyline (see ::after). Height = measured slot height (min 12px),
-      // clamped so it never exceeds the visible frame.
-      const slotTop = Math.max(relTopRaw, 0)
-      const slotH = Math.max(12, Math.min(caption.bottom - caption.top, present.height - slotTop - 2))
-      cue.style.height = `${Math.round(slotH)}px`
-    } else {
-      cue.style.height = '2px'
-    }
+    // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured
+    // slot height, min 12px, clamped to the visible frame). No bottom keyline.
+    const slotTop = Math.max(relTopRaw, 0)
+    const slotH = Math.max(12, Math.min(caption.bottom - caption.top, present.height - slotTop - 2))
+    cue.style.height = `${Math.round(slotH)}px`
     frame.appendChild(cue)
-    frame.setAttribute('data-caption-cue', caption ? 'caption-host' : 'top-edge')
+    frame.setAttribute('data-caption-cue', cueType)
   }
 
   private applyInlineMark(el: HTMLElement): void {

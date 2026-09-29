@@ -25,6 +25,14 @@ export type DocumentDiagnosticTargetKind =
   | 'link'
 
 /**
+ * V5.12-R8 §5 — which part of a Markdown image token a source range points at.
+ * Fixed semantics:
+ *   FIGURE_MISSING_NAME        → 'figure-full-token'
+ *   FIGURE_LOCAL_IMAGE_MISSING → 'figure-destination'
+ */
+export type DiagnosticRangeRole = 'figure-full-token' | 'figure-destination'
+
+/**
  * Phase 7R.3.11.8B.5 — Universal Diagnostic Location.
  *
  * Every published diagnostic carries ONE of these stable locators. The locator
@@ -71,6 +79,21 @@ export type DiagnosticLocation =
       rawLineOrdinal?: number
       /** §8.2 — 0-based token ordinal inside the owning source block. */
       occurrenceWithinLine?: number
+      /**
+       * V5.12-R8 §5 — WHICH part of the Markdown image token this location
+       * points at. `figure-full-token` = the whole `![alt](dest)` (the
+       * FIGURE_MISSING_NAME target); `figure-destination` = the `dest` path
+       * only (the FIGURE_LOCAL_IMAGE_MISSING target). Absent = legacy range.
+       */
+      rangeRole?: DiagnosticRangeRole
+      /** V5.12-R8 §4 — the full Markdown token text (`![alt](dest)`). */
+      rawToken?: string
+      /** V5.12-R8 §4 — absolute offsets of the full token range. */
+      tokenStart?: number | null
+      tokenEnd?: number | null
+      /** V5.12-R8 §4 — absolute offsets of the destination/path range. */
+      destinationStart?: number | null
+      destinationEnd?: number | null
     }
   | { kind: 'document-start' }
   | { kind: 'document-end' }
@@ -170,6 +193,17 @@ export interface DocumentDiagnostic {
    * resolves it via `resolveDiagnosticLocation`.
    */
   location?: DiagnosticLocation
+  /**
+   * V5.12-R6 §9 — an explicitly NON-LOCATABLE document notice.
+   *
+   * The empty-document terminal state publishes exactly one diagnostic
+   * (`DOCUMENT_EMPTY`) which must NOT be locatable: there is no source target
+   * to scroll to, and a bogus H1 / paragraph / EOF target is forbidden. Such a
+   * diagnostic carries `nonLocatableNotice: true` and NO `location`; the
+   * location contract counts it as a declared notice (never as an unlocatable
+   * violation of PUBLISHED = LOCATABLE).
+   */
+  nonLocatableNotice?: true
 }
 
 export interface DocumentDiagnosticsSnapshot {

@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-14T05:56:17.211Z",
+  "timestamp": "2026-09-29T07:53:23.010Z",
   "buildMarker": "inkchapter-outline-toolbar-v5.1-compact-row",
   "isOutlinePanelActive": false,
   "tabBar": {
@@ -51,7 +51,7 @@
     "display": "block",
     "rect": {
       "w": 278,
-      "h": 698
+      "h": 564
     }
   }
 }

@@ -16,6 +16,7 @@
  */
 import type {
   DiagnosticLocation,
+  DiagnosticRangeRole,
   DocumentDiagnostic,
   DocumentDiagnosticCategory,
   DocumentDiagnosticsSnapshot,
@@ -61,9 +62,9 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   HEADING_DUPLICATE_TEXT: { ruleId: 'HEADING_DUPLICATE_TEXT', category: 'heading', locationStrategy: 'multi-target' },
   HEADING_DUPLICATE_IDENTITY: { ruleId: 'HEADING_DUPLICATE_IDENTITY', category: 'heading', locationStrategy: 'canonical-node' },
   // Figure / table / code / formula / link (block node)
-  FIGURE_MISSING_NAME: { ruleId: 'FIGURE_MISSING_NAME', category: 'figure', locationStrategy: 'block-node' },
+  FIGURE_MISSING_NAME: { ruleId: 'FIGURE_MISSING_NAME', category: 'figure', locationStrategy: 'source-range' },
   FIGURE_DUPLICATE_NAME: { ruleId: 'FIGURE_DUPLICATE_NAME', category: 'figure', locationStrategy: 'multi-target' },
-  FIGURE_LOCAL_IMAGE_MISSING: { ruleId: 'FIGURE_LOCAL_IMAGE_MISSING', category: 'figure', locationStrategy: 'block-node' },
+  FIGURE_LOCAL_IMAGE_MISSING: { ruleId: 'FIGURE_LOCAL_IMAGE_MISSING', category: 'figure', locationStrategy: 'source-range' },
   TABLE_MISSING_NAME: { ruleId: 'TABLE_MISSING_NAME', category: 'table', locationStrategy: 'block-node' },
   TABLE_DUPLICATE_NAME: { ruleId: 'TABLE_DUPLICATE_NAME', category: 'table', locationStrategy: 'multi-target' },
   CODE_MISSING_NAME: { ruleId: 'CODE_MISSING_NAME', category: 'code', locationStrategy: 'block-node' },
@@ -89,6 +90,12 @@ export interface DiagnosticLocationContract {
   diagnosticCount: number
   locatableDiagnosticCount: number
   unlocatableDiagnosticCount: number
+  /**
+   * V5.12-R6 §9 — declared NON-LOCATABLE document notices (e.g. the
+   * empty-document terminal `DOCUMENT_EMPTY`). These are excluded from
+   * `unlocatableDiagnosticCount` by declaration, never by silent omission.
+   */
+  nonLocatableNoticeCount: number
   canonicalNodeLocationCount: number
   sourceRangeLocationCount: number
   documentStartLocationCount: number
@@ -123,8 +130,14 @@ export function computeDiagnosticLocationContract(
   let blockNode = 0
   let multiTarget = 0
   let locatable = 0
+  let nonLocatableNotice = 0
   for (const d of diags) {
-    if (!hasLocatableLocation(d.location)) continue
+    if (!hasLocatableLocation(d.location)) {
+      // V5.12-R6 §9 — a DECLARED non-locatable notice (empty-document terminal
+      // state) is intentional, never a PUBLISHED = LOCATABLE violation.
+      if (d.nonLocatableNotice === true) nonLocatableNotice++
+      continue
+    }
     locatable++
     switch (d.location!.kind) {
       case 'canonical-node': canonicalNode++; break
@@ -135,11 +148,12 @@ export function computeDiagnosticLocationContract(
       case 'multi-target': multiTarget++; break
     }
   }
-  const unlocatable = diags.length - locatable
+  const unlocatable = diags.length - locatable - nonLocatableNotice
   return {
     diagnosticCount: diags.length,
     locatableDiagnosticCount: locatable,
     unlocatableDiagnosticCount: unlocatable,
+    nonLocatableNoticeCount: nonLocatableNotice,
     canonicalNodeLocationCount: canonicalNode,
     sourceRangeLocationCount: sourceRange,
     documentStartLocationCount: documentStart,
@@ -197,6 +211,12 @@ export interface ResolvedSourceOccurrenceHint {
   resolvedStartLine: number | null
   /** Source end line the resolved block actually carries (null when unknown). */
   resolvedEndLine: number | null
+  /**
+   * V5.12-R8 §5 — which part of the Markdown image token the resolved range
+   * covers. The gate compares expected vs resolved and reports this in the
+   * figure target authority audit.
+   */
+  resolvedRangeRole?: DiagnosticRangeRole
 }
 
 export interface DiagnosticLocationResolveResult {
@@ -288,6 +308,8 @@ export interface DiagnosticLocationResolveContext {
     canonicalDestination: string | null
     resourceKind: 'image' | 'link' | null
     expectedOccurrenceIndex: number | null
+    /** V5.12-R8 §5 — which part of the image token to resolve. */
+    rangeRole?: DiagnosticRangeRole
   }) => ResolvedSourceOccurrenceHint | null
 }
 
@@ -490,6 +512,9 @@ export function resolveDiagnosticLocation(
           canonicalDestination: location.canonicalDestination ?? null,
           resourceKind: location.resourceKind ?? null,
           expectedOccurrenceIndex: typeof location.occurrenceIndex === 'number' ? location.occurrenceIndex : null,
+          // V5.12-R8 §5 — the range role selects WHICH part of the image token
+          // the resolver must resolve (full token vs destination/path).
+          rangeRole: location.rangeRole,
         })
         if (hint) {
           const resolved = resolvedResult(hint.element, targetIndex, 'source-occurrence', null)

@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 /**
  * Phase 7R.3.11.8B.15 — Diagnostic Locate Visual Contrast V5.2 kill-bugs.
  *
@@ -130,9 +130,11 @@ describe('CONTRAST-V52 — strong-contrast token bands + primary/secondary hiera
     expect(inline).not.toMatch(/box-shadow:/)
   })
 
-  it('CONTRAST-V52-6: no ::selection override and media-kind frames stay transparent', () => {
+  it('CONTRAST-V52-6: no ::selection override and every block kind is FILL-only', () => {
     expect(scss).not.toContain('::selection {')
-    expect(scss).toMatch(/data-target-kind='figure'\],[\s\S]*?data-target-kind='block'\] \{\s*background: transparent;/)
+    // V5.12-R7 §7 — the old "media stays transparent" rule is superseded: with
+    // the frame line gone, every block kind carries the severity FILL.
+    expect(scss).not.toMatch(/data-target-kind='(table|code|figure|formula|blockquote|block)'\][^{}]*\{\s*background: transparent;/)
   })
 })
 
@@ -241,13 +243,15 @@ describe('TABLE-V52 / CODE-V52 — overlay context wash + untouched descendants'
 
 // ── IMAGE-V52 ───────────────────────────────────────────
 describe('IMAGE-V52 — source-line PRIMARY error fill, no broad wash', () => {
-  it('IMAGE-V52-1/4: frame inline-mark uses the ERROR inline fill token (>= .20) and the fallback stays transparent', () => {
+  it('IMAGE-V52-1/4: frame inline-mark uses the ERROR inline fill token (>= .20), fill-only fallback', () => {
     const b = visualRegion()
     const inlineBlock = b.slice(b.indexOf("[data-presentation='inline-mark']"))
     // primary/source-line inline carrier uses the INLINE fill token (V5.3 22%)
     expect(inlineBlock).toContain('var(--ink-locate-inline-bg)')
-    // no broad paragraph wash: the fallback-level-2 owning-block corner is transparent
-    expect(scss).toMatch(/inline-mark'\]\[data-fallback-level='2'\] \{[\s\S]{0,120}background: transparent/)
+    // V5.12-R7 §10 — the L3 owning-block fallback is a plain FILL: it no longer
+    // declares a transparent background and paints no line decoration.
+    expect(scss).not.toMatch(/inline-mark'\]\[data-fallback-level='2'\] \{[\s\S]{0,120}background: transparent/)
+    expect(scss).not.toMatch(/inline-mark'\]\[data-fallback-level='2'\]::(before|after)/)
     const errStart = b.indexOf(`[data-severity='error']`)
     const err = b.slice(errStart)
     const errEnd = err.indexOf('\n}')

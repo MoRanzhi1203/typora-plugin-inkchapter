@@ -96,84 +96,13 @@ export function extractFormulaVisibleTagTokens(host: HTMLElement): string[] {
   return tokens
 }
 
-/**
- * Phase 7R.3.11.8B.7.3 — local resource reference fact.
- * `resourceKind` distinguishes image Markdown (`![..](dest)`, rendered as an
- * `<img>` block) from plain links (`[..](dest)`, rendered as an `<a>`).
- *
- * V4 — every fact additionally carries its SOURCE ANCHOR (absolute Markdown
- * offsets + line span + the full raw source line). This lets missing-image
- * diagnostics be produced from the Markdown SOURCE alone — a broken image whose
- * live `<img>` is stripped by Typora still yields FIGURE_LOCAL_IMAGE_MISSING
- * and stays locatable through the source-range anchor.
- */
-export interface LocalResourceReference {
-  target: string
-  resourceKind?: 'image' | 'link'
-  /** Absolute [start,end) offset of the reference token inside the Markdown. */
-  sourceStart?: number
-  sourceEnd?: number
-  /** 0-based source line span of the reference. */
-  startLine?: number
-  endLine?: number
-  /**
-   * V5.12-R5 §5 — 0-based column offsets derived ONCE from the Markdown source
-   * (line start), carried with the occurrence fact. Never inferred from the DOM.
-   */
-  startColumn?: number
-  endColumn?: number
-  /** Full raw text of the source line that contains the reference. */
-  rawText?: string
-}
-
-function countLineBreaks(text: string): number {
-  let n = 0
-  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++
-  return n
-}
-
-/**
- * Safe local-relative resource parsing from Markdown (no network).
- * Every occurrence of a local destination is returned in document order;
- * identical destinations appear once per occurrence. Each occurrence carries
- * its resource kind plus a source anchor (offset range + line span + raw line
- * text) so downstream rules never depend on a rendered DOM node existing.
- */
-export function parseLocalLinkTargets(markdown: string): Array<string | LocalResourceReference> {
-  const out: Array<string | LocalResourceReference> = []
-  const re = /(!?)\[([^\]]*)\]\(([^)]+)\)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(markdown)) !== null) {
-    const target = m[3].trim().split(/\s+/)[0]
-    if (!target) continue
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue // scheme
-    if (target.startsWith('#')) continue // in-document anchor
-    if (target.startsWith('mailto:')) continue
-    const sourceStart = m.index
-    const sourceEnd = m.index + m[0].length
-    const startLine = countLineBreaks(markdown.slice(0, sourceStart))
-    const endLine = startLine + countLineBreaks(m[0])
-    const lineStart = markdown.lastIndexOf('\n', sourceStart - 1) + 1
-    const nextNl = markdown.indexOf('\n', sourceEnd)
-    const rawText = markdown.slice(lineStart, nextNl < 0 ? markdown.length : nextNl)
-    const isImage = m[1] === '!'
-    // V5.12-R5 §5 — column offsets are computed ONCE here (source-side) so the
-    // exact source range can travel to the resolver / Range builder intact.
-    const endLineStart = markdown.lastIndexOf('\n', Math.max(0, sourceEnd - 1)) + 1
-    out.push({
-      target,
-      resourceKind: isImage ? 'image' : 'link',
-      sourceStart,
-      sourceEnd,
-      startLine,
-      endLine,
-      startColumn: Math.max(0, sourceStart - lineStart),
-      endColumn: Math.max(0, sourceEnd - endLineStart),
-      rawText,
-    })
-  }
-  return out
-}
+// V5.12-R8 §6 — the Markdown resource scanner lives in ONE module
+// (`document-resource-scanner.ts`). This file re-exports it so the historical
+// provider contract (`parseLocalLinkTargets` / `LocalResourceReference`) stays
+// intact while the offset authority stays single.
+export { parseLocalLinkTargets, parseImageSourceOccurrences }
+export type { LocalResourceReference, ImageSourceOccurrence, ResourceClass } from './document-resource-scanner'
+import { parseLocalLinkTargets, parseImageSourceOccurrences } from './document-resource-scanner'
 
 function isLocalRelative(target: string): boolean {
   if (!target) return false
@@ -281,6 +210,9 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     isLinkTargetMissing: (target) => linkTargetMissing(target, resourceBaseDir(sources.getActiveFilePath(), sources.vaultRoot)),
     getHeadingIdentity: (el) => headingIdentityByElement.get(el) ?? null,
     parseLocalLinkTargets,
+    // V5.12-R8 §4 — EVERY image occurrence (full token range + destination
+    // range), the single scanner authority for figure diagnostics.
+    parseImageSourceOccurrences,
     // Phase 7R.3.11.8B.7.6 — compound locator caption host (optional).
     getObjectCaptionHost: sources.getObjectCaptionHost,
     // Phase 7R.3.11.8B.1 — canonical H1 authority bridge: maps the REAL

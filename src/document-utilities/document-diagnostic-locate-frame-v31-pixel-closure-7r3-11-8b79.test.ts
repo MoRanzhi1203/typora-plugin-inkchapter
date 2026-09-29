@@ -94,17 +94,17 @@ describe('V31-VIS — active row wash bounded', () => {
 describe('V31-FRAME — surgical frame visual', () => {
   const frameBlock = (): string => scss.slice(scss.indexOf('.inkchapter-diagnostic-locate-frame {'), scss.indexOf('@media (prefers-reduced-motion'))
 
-  it('V31-FRAME-1: table/code get the bounded context wash; media objects stay transparent', () => {
+  it('V31-FRAME-1: EVERY block kind carries the bounded severity fill (V5.12-R7 fill-only)', () => {
     const kindsBlock = scss.slice(scss.indexOf(".inkchapter-diagnostic-locate-frame[data-target-kind='table']"))
-    // V5.2 — Table/Code SECONDARY context wash comes from the dedicated token.
+    // V5.2 — the object fill still comes from the dedicated token.
     expect(kindsBlock).toContain('background: var(--ink-locate-context-bg)')
     expect(kindsBlock).toContain("data-target-kind='code'")
     expect(kindsBlock).toContain("data-target-kind='figure'")
-    // V4/V5.2 — no COMPLEX-KIND rule may ever use the legacy context wash as
-    // its own background (wash token is retired for object carriers).
+    // V4/V5.2 — no COMPLEX-KIND rule may ever use the legacy context wash token.
     expect(scss).not.toMatch(/data-target-kind='(table|code|figure|formula|blockquote)'[^{}]*\{\s*background: var\(--ink-locate-wash\)/)
-    // media objects never get tinted (a real picture stays clean).
-    expect(scss).toMatch(/data-target-kind='figure'\],[\s\S]*?data-target-kind='block'\] \{\s*background: transparent;/)
+    // V5.12-R7 §7 — no kind is transparent any more: with the frame line gone an
+    // unpainted carrier would be invisible, so the FILL is the locate visual.
+    expect(scss).not.toMatch(/data-target-kind='(table|code|figure|formula|blockquote|block)'\][^{}]*\{\s*background: transparent;/)
   })
 
   it('V31-FRAME-2: geometry properties have NO transition (only color fades)', () => {
@@ -223,28 +223,26 @@ describe('V31-HEADING — text-tight marker only', () => {
     return scss.slice(idx, idx + 260)
   }
 
-  it('V31-HEADING-1/2: no full-width fill and no full-width border', () => {
+  it('V31-HEADING-1/2: text-tight carrier is a FILL only (no border, no bar, no corner cap)', () => {
     const r = headRule()
     expect(r).toContain('border: none')
-    expect(r).toContain('background: transparent')
+    expect(r).toContain('background: var(--ink-locate-context-bg)')
     expect(r).not.toContain('box-shadow')
-    // ::before is the ONLY indicator, and its ::before block stays compact
-    // (2px, inset 4px) — never a full-height hard edge.
-    const beforeIdx = scss.indexOf('.inkchapter-diagnostic-locate-frame::before')
-    const before = scss.slice(beforeIdx, beforeIdx + 220)
-    expect(before).toContain('width: 2px')
-    expect(before).toContain('top: 6px')
-    expect(before).toContain('bottom: 6px')
+    // V5.12-R7 §9 — the text-tight pseudo elements (vertical marker bar +
+    // corner cap) no longer exist at all.
+    expect(scss).not.toContain(".inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::before")
+    expect(scss).not.toContain(".inkchapter-diagnostic-locate-frame[data-presentation='text-tight-marker']::after")
   })
 })
 
 // ── V31-INLINE ──────────────────────────────────────────
 describe('V31-INLINE — precise mark weight', () => {
-  it('V31-INLINE-1/2: severity fill >= 22% warning with a 2px gradient keyline, no box-shadow', () => {
+  it('V31-INLINE-1/2: severity fill only — no gradient keyline, no box-shadow', () => {
     const mark = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'))
     expect(mark).toContain('--ink-locate-inline-bg')
-    expect(mark).toContain('background-image: linear-gradient(')
-    expect(mark).toContain('2px')
+    expect(mark).toContain('background-color: var(--ink-locate-inline-bg)')
+    // V5.12-R7 §8 — the 2px lower keyline gradient is GONE (fill-only).
+    expect(mark).not.toContain('background-image: linear-gradient(')
     expect(mark).not.toContain('inset 0 -1px 0')
     expect(mark).not.toContain(') 4%, transparent)')
     expect(mark).toMatch(/data-severity='warning'[\s\S]{0,260}--ink-locate-inline-bg: color-mix\(in srgb, var\(--ink-locate-color\) 2[0-4]%, transparent\)/)

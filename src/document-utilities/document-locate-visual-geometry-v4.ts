@@ -292,16 +292,11 @@ export function measureTextFragmentRects(
     if (wanted) {
       // V5.12-R5 §8.2 — occurrence-aware exact range: the `occurrenceIndex`-th
       // token match, never a silent first match for a duplicate destination.
-      const occurrence = Math.max(0, Math.floor(occurrenceIndex))
-      const match = findTokenMatch(el, wanted, occurrence)
-      if (match) {
-        range.setStart(match.node, match.offset)
-        range.setEnd(match.node, match.offset + wanted.length)
-      } else if (occurrence > 0) {
+      // V5.12-R8 §6 — the token may span SEVERAL text nodes (whole image token).
+      const decision = applyTokenRange(range, el, wanted, occurrenceIndex)
+      if (decision === 'miss') {
         // The Nth occurrence does not exist → NO geometry (never the 1st match).
         return { expected: [], fragments: [], foundToken: false }
-      } else {
-        range.selectNodeContents(el)
       }
     } else {
       range.selectNodeContents(el)
@@ -329,16 +324,12 @@ export function measureTextRects(
     const range = document.createRange()
     const wanted = textPrefix && textPrefix.length > 0 ? textPrefix : null
     if (wanted) {
-      const occurrence = Math.max(0, Math.floor(occurrenceIndex))
-      const match = findTokenMatch(el, wanted, occurrence)
-      if (match) {
-        range.setStart(match.node, match.offset)
-        range.setEnd(match.node, match.offset + wanted.length)
-      } else if (occurrence > 0) {
+      // V5.12-R5 §8.2 / V5.12-R8 §6 — occurrence-aware exact range, possibly
+      // spanning several text nodes (whole Markdown image token).
+      const decision = applyTokenRange(range, el, wanted, occurrenceIndex)
+      if (decision === 'miss') {
         // V5.12-R5 §8.2 — an unmeasurable nth occurrence is an explicit miss.
         return { exact: null, foundToken: false }
-      } else {
-        range.selectNodeContents(el)
       }
     } else {
       range.selectNodeContents(el)
@@ -379,6 +370,101 @@ function findTokenMatch(
     n = walker.nextNode()
   }
   return null
+}
+
+/**
+ * V5.12-R8 §6/§13 — CROSS-TEXT-NODE token range.
+ *
+ * Typora renders a Markdown image token as SEVERAL text nodes (`![](` +
+ * `a.png` + `)`), so a whole-token highlight (`![](a.png)`) can never be
+ * measured inside a single text node. This matcher concatenates the element's
+ * text nodes in document order, finds the `occurrenceIndex`-th match in the
+ * CONCATENATION and maps both ends back to `(node, offset)` — producing a real
+ * DOM Range. Multi-line matches then yield one fragment per visual line via
+ * `Range.getClientRects()` (never a cross-line union).
+ *
+ * Used only when the single-text-node matcher misses, so no existing
+ * occurrence ordinal changes.
+ */
+function findTokenNodeRange(
+  el: Element,
+  text: string,
+  occurrenceIndex: number,
+): { startNode: Text; startOffset: number; endNode: Text; endOffset: number } | null {
+  if (!text) return null
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  const starts: number[] = []
+  const lengths: number[] = []
+  let flat = ''
+  let n: Node | null = walker.nextNode()
+  while (n) {
+    const value = n.nodeValue ?? ''
+    if (value !== '') {
+      starts.push(flat.length)
+      lengths.push(value.length)
+      nodes.push(n as Text)
+      flat += value
+    }
+    n = walker.nextNode()
+  }
+  if (nodes.length === 0) return null
+  const locate = (flatIndex: number): { node: Text; offset: number } | null => {
+    for (let i = 0; i < nodes.length; i++) {
+      if (flatIndex >= starts[i] && flatIndex < starts[i] + lengths[i]) {
+        return { node: nodes[i], offset: flatIndex - starts[i] }
+      }
+    }
+    return null
+  }
+  let seen = 0
+  let from = 0
+  for (;;) {
+    const idx = flat.indexOf(text, from)
+    if (idx < 0) return null
+    if (seen === occurrenceIndex) {
+      const start = locate(idx)
+      const end = locate(idx + text.length - 1)
+      if (!start || !end) return null
+      return { startNode: start.node, startOffset: start.offset, endNode: end.node, endOffset: end.offset + 1 }
+    }
+    seen++
+    from = idx + text.length
+  }
+}
+
+/**
+ * Set a Range to the `occurrenceIndex`-th occurrence of `wanted` inside `el`.
+ * Returns 'set' (exact range), 'miss' (that occurrence does not exist) or
+ * 'whole' (no token requested / no occurrence anywhere → element contents).
+ */
+function applyTokenRange(
+  range: Range,
+  el: Element,
+  wanted: string | null,
+  occurrenceIndex: number,
+): 'set' | 'miss' | 'whole' {
+  if (!wanted) {
+    range.selectNodeContents(el)
+    return 'whole'
+  }
+  const occurrence = Math.max(0, Math.floor(occurrenceIndex))
+  const match = findTokenMatch(el, wanted, occurrence)
+  if (match) {
+    range.setStart(match.node, match.offset)
+    range.setEnd(match.node, match.offset + wanted.length)
+    return 'set'
+  }
+  // V5.12-R8 §6 — the token may be split across text nodes (broken images).
+  const span = findTokenNodeRange(el, wanted, occurrence)
+  if (span) {
+    range.setStart(span.startNode, span.startOffset)
+    range.setEnd(span.endNode, span.endOffset)
+    return 'set'
+  }
+  if (occurrence > 0) return 'miss'
+  range.selectNodeContents(el)
+  return 'whole'
 }
 
 /** V5.12-R5 §11 — how many times `text` occurs in the element's rendered text. */
