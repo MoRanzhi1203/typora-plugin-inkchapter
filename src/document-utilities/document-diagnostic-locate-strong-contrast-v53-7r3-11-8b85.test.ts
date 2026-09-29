@@ -38,7 +38,7 @@ function pctOf(block: string, token: string): number {
 }
 
 function pctInInlines(sev: 'error' | 'warning' | 'info', token: string): number {
-  const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
+  const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── V5.12-R1 — Heading Diagnostic'))
   const start = inline.indexOf(`[data-severity='${sev}']`)
   const body = inline.slice(start, inline.indexOf('\n}', start))
   return pctOf(body, token)
@@ -92,8 +92,8 @@ describe('CONTRAST-V53 — strong light + dark bands', () => {
   it('CONTRAST-V53-8: no editor shadow / glow anywhere on the carriers', () => {
     const r = visualRegion()
     expect(r).toContain('box-shadow: none')
-    const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
-    expect(inline).not.toContain('box-shadow:')
+    const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── V5.12-R1 — Heading Diagnostic'))
+    for (const m of inline.matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
   })
 
   it('CONTRAST-V53-9: dark token split exists with stronger dark fills (no neon caps)', () => {
@@ -140,7 +140,7 @@ describe('LINK-V53 — strong warning inline', () => {
     expect(pctInInlines('warning', 'inline-bg') / 100).toBeGreaterThanOrEqual(0.20)
     expect(pctInInlines('warning', 'inline-bg') / 100).toBeLessThanOrEqual(0.22)
     expect(pctInInlines('warning', 'inline-edge') / 100).toBeGreaterThanOrEqual(0.90)
-    const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
+    const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── V5.12-R1 — Heading Diagnostic'))
     // V5.12-R7 §8 — the 2px lower keyline gradient is GONE; only the fill stays.
     expect(inline).not.toContain('background-image: linear-gradient(')
     expect(inline).toContain('background-color: var(--ink-locate-inline-bg)')

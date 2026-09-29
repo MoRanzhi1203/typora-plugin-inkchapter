@@ -97,8 +97,11 @@ describe('R7-SCSS — the linear decoration is gone at the source', () => {
     expect(fragment.slice(0, 900)).toContain('background-color: var(--ink-locate-inline-bg)')
     // The heading ACTIVE keyline rule is gone; the ACTIVE fill fragment stays.
     expect(scss).not.toContain('.inkchapter-heading-diagnostic-active__keyline')
-    // The heading ACTIVE rail thickening (a linear emphasis) is gone too.
-    expect(scss).not.toContain(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-marker__rail")
+    // V5.12-R9 §10/§19 — the PASSIVE gutter icon + rail are GONE too: neither the
+    // DOM class nor its CSS survives (the marker is SOFT_TEXT_SURFACE + CHIP).
+    expect(scss).not.toContain('.inkchapter-heading-diagnostic-marker__rail')
+    expect(scss).not.toContain('.inkchapter-heading-diagnostic-marker__icon')
+    expect(scss).toContain('.inkchapter-heading-diagnostic-passive__fragment')
     expect(scss).toContain('.inkchapter-heading-diagnostic-active__fragment')
   })
 
@@ -272,11 +275,15 @@ describe('R7-GATE — the FILL_ONLY hard-gate measurement', () => {
 })
 
 describe('R7-PASSIVE — the passive indicator rules survive', () => {
-  it('R7-PASSIVE-1: the heading passive marker (icon + rail) rules are still present', () => {
-    expect(scss).toContain('.inkchapter-heading-diagnostic-marker__rail')
-    expect(scss).toContain('.inkchapter-heading-diagnostic-marker__icon')
+  it('R7-PASSIVE-1 / V5.12-R9 §10: the passive marker is a SOFT TEXT SURFACE + CHIP (no icon / no rail)', () => {
+    // V5.12-R9 — the passive gutter marker's icon + rail were REMOVED by design;
+    // the passive indicator is now the text-tight fill fragment + the reason chip.
+    expect(scss).not.toContain('.inkchapter-heading-diagnostic-marker__rail')
+    expect(scss).not.toContain('.inkchapter-heading-diagnostic-marker__icon')
+    expect(scss).toContain('.inkchapter-heading-diagnostic-passive__fragment')
+    expect(scss).toContain('.inkchapter-heading-diagnostic-reason')
     expect(scss).toContain('.inkchapter-heading-diagnostic-marker {')
-    // The drawer row severity rail is untouched.
+    // The drawer row severity rail is untouched (this round never touches Drawer).
     expect(scss).toContain('.inkchapter-doc-drawer__item.is-selected')
   })
 })

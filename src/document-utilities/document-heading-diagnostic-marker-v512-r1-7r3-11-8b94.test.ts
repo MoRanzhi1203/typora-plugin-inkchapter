@@ -222,22 +222,22 @@ describe('V512R1-1/2/4 — passive gutter marker never touches the glyphs', () =
 
 // ── V512R1-3 ───────────────────────────────────────────────────────────────
 describe('V512R1-3 — Error / Warning differ by shape, not only colour', () => {
-  it('V512R1-3: distinct icons, error/warning differ by shape not colour', () => {
+  it('V512R1-3 / V5.12-R9 §10: error vs warning differ by severity FILL + CHIP — the shape icons are gone', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
-    const errorIcon = css.indexOf(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-marker__icon")
-    const warnIcon = css.indexOf(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-marker__icon")
-    expect(errorIcon).toBeGreaterThan(0)
-    expect(warnIcon).toBeGreaterThan(errorIcon)
+    // V5.12-R9 §10/§19 — the standalone circle icon + the rails were REMOVED at
+    // the source (no DOM is created and no CSS remains): a shape icon must NOT
+    // exist, so error vs warning can no longer differ by icon shape.
+    expect(css).not.toContain('.inkchapter-heading-diagnostic-marker__icon')
+    expect(css).not.toContain('.inkchapter-heading-diagnostic-marker__rail')
+    // The severity semantics now live in the text-tight soft fill + the chip.
+    expect(css).toContain(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='error']")
+    expect(css).toContain(".inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning']")
+    expect(css).toContain('.inkchapter-heading-diagnostic-passive__fragment')
+    expect(css).toContain('--ink-heading-sev-soft')
     // V5.12-R7 §9 — the ACTIVE heading keyline (solid/dashed underline) is GONE:
-    // the active emphasis is now the fill-only `__fragment`. Error vs warning
-    // still differ by ICON SHAPE (circle-x vs triangle-warning) above.
+    // the active emphasis is the fill-only `__fragment`.
     expect(css).not.toContain('__keyline')
     expect(css).toContain('.inkchapter-heading-diagnostic-active__fragment')
-    expect(HEADING_MARKER_RAIL_WIDTH_PX).toBe(2)
-    expect(HEADING_MARKER_ICON_SIZE_PX).toBe(13)
-    expect(HEADING_MARKER_ICON_RAIL_GAP_PX).toBe(6)
-    expect(HEADING_MARKER_PREFERRED_TEXT_GAP_PX).toBe(7)
-    expect(HEADING_ACTIVE_FILL_ALPHA).toBeLessThanOrEqual(0.08)
   })
 })
 
@@ -345,7 +345,10 @@ describe('V512R1-9/10 — dismiss keeps passive; multiple diagnostics merge', ()
     const markers = document.querySelectorAll('.inkchapter-heading-diagnostic-marker')
     expect(markers.length).toBe(1)
     expect(markers[0].getAttribute('data-ink-diagnostic-severity')).toBe('error')
-    expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(1)
+    // V5.12-R9 §10 — one marker, and NO gutter rail/icon child any more.
+    expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(0)
+    expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-marker__icon').length).toBe(0)
+    expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBeGreaterThan(0)
     expect(headingHost().getHeadingMarkerCounters().multipleHeadingMarkerOverlap).toBe(0)
     // The active reason shows the CURRENTLY clicked diagnostic.
     headingHost().renderHeadingActiveEmphasis('W1', headingDiag('W1', 'HEADING_LEVEL_GAP', 'warning', { previousLevel: 2, currentLevel: 4, missingLevels: [3] }) as never, w.heading)
