@@ -96,6 +96,12 @@ describe('OutlineNumberingController — live reapply', () => {
     a3.href = '#h3'
     a3.textContent = '第三章'
     outline.appendChild(a3)
+    // jsdom has no layout — the new native item must be "visible" like the others.
+    Object.defineProperty(a3, 'offsetParent', { get: () => outline, configurable: true })
+    // V5.14-R2 §P7 — a NEW native item makes the mapping unsettled; Typora's own
+    // heading rescan (which always accompanies the outline rebuild) provides the
+    // matching snapshot, and only then may the numbering be committed.
+    ctrl.syncAfterRefresh('doc-a', [...headings, { key: 'h3', level: 2, text: '第三章' }], [...labels, '三、'])
     await nextFrames()
 
     expect(outline.querySelectorAll('[data-inkchapter-number]').length).toBeGreaterThan(0)

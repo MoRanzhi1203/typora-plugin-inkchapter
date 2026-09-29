@@ -18,6 +18,7 @@ import type {
   LatentAtxMarkerInput,
 } from './document-diagnostics'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { collectDiagnosticsInput, resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
 import type {
   DiagnosticCanonicalHeadingAuthorityResult,
@@ -74,6 +75,11 @@ export interface DocumentDiagnosticsProviders {
   /** Phase 7R.3.11.8B.7.6 — rendered caption host for a business object
    *  element (img/table/pre) — compound missing-name locator. Optional. */
   getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
+  /**
+   * V5.14-R2 §P8 — publish the CURRENT heading diagnostic occurrences so the
+   * left outline can mirror them (COMMITTED mappings only). Optional.
+   */
+  publishOutlineHeadingDiagnostics?: (targets: readonly OutlineDiagnosticTargetInput[]) => void
 }
 
 export class DocumentDiagnosticsAuthority {

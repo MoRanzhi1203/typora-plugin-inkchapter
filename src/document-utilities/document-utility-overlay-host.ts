@@ -299,6 +299,32 @@ import {
   type HeadingVisualSnapshotV514R1Counters,
 } from './document-heading-visual-snapshot-v514-r1'
 import {
+  buildHeadingLabelGeometrySnapshot,
+  createHeadingLabelGeometryV514R2Counters,
+  evaluateHeadingChipAnchorAuthority,
+  evaluateHeadingLabelGeometryV514R2Gates,
+  formatHeadingLabelGeometryV514R2GateReport,
+  HEADING_LABEL_CHIP_GAP_PX,
+  HEADING_LABEL_GEOMETRY_AUDIT_EVENT,
+  type HeadingLabelGeometryV514R2Counters,
+  type HeadingLabelRect,
+} from './document-heading-label-geometry-v514-r2'
+// V5.14-R2 §P6 — Multi-target VISUAL CLOSURE against the REAL rendered passive markers.
+import {
+  VISUAL_CLOSURE_TARGET_AUDIT_EVENT,
+  VISUAL_CLOSURE_TARGET_V514R2_GATE_KEYS,
+  buildDiagnosticVisualTargetKey,
+  createVisualClosureTargetV514R2Counters,
+  evaluateVisualClosureTargetV514R2Gates,
+  formatVisualClosureTargetV514R2GateReport,
+  reconcileExpectedVisualTargets,
+  visualClosureReconciliationToGateCounters,
+  type ExpectedVisualTarget,
+  type PassiveMarkerFact,
+} from './document-diagnostic-visual-closure-target-v514-r2'
+// V5.14-R2 §P8 — the ONE heading-diagnostic → left-outline target projection.
+import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
+import {
   HEADING_MARKER_AUDIT_EVENT,
   HEADING_MARKER_ICON_SIZE_PX,
   HEADING_MARKER_MIN_TEXT_GAP_PX,
@@ -1764,6 +1790,65 @@ interface HeadingPassiveMarkerRecord {
 
 /** V5.12-R9 §6 — reason chip height (18~20px band). */
 const HEADING_REASON_CHIP_HEIGHT_PX = 20
+
+/**
+ * §P6 — ONE heading marker group. A single heading can be the target of SEVERAL
+ * heading diagnostics; they merge into ONE painted marker (severity = highest,
+ * chip = highest rank) while still owning a SET of visual target keys, so the
+ * closure reconciliation stays per-(diagnostic,target) exact.
+ */
+interface HeadingMarkerGroup {
+  el: HTMLElement
+  severities: string[]
+  resolverSource: string
+  reasonText: string | null
+  topRank: number
+  /** The owning diagnostic of the marker's PRIMARY key (chip/audit authority). */
+  primaryDiagnosticId: string
+  primaryTargetIndex: number
+}
+
+/** §P8 — normalize a diagnostic severity to the outline projection union. */
+function normalizeOutlineDiagnosticSeverity(severity: unknown): 'error' | 'warning' | 'info' {
+  return severity === 'error' || severity === 'warning' ? severity : 'info'
+}
+
+/** §P6 — parse the marker's declared visual-target-key set (never throws). */
+function parseVisualTargetKeys(raw: string | null): string[] {
+  if (raw == null || raw === '') return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((v): v is string => typeof v === 'string' && v !== '')
+  } catch {
+    return []
+  }
+}
+
+/**
+ * §P6 — best-effort split of `documentKey::diagnosticId::targetIndex::stableIdentity`.
+ * Only used as a fallback for keys the current projection does not know (an EXTRA
+ * marker); the authoritative diagnosticId/targetIndex/stableIdentity always come
+ * from the expected target or the marker's own attributes.
+ */
+function splitVisualTargetKey(key: string): {
+  documentKey: string
+  diagnosticId: string
+  targetIndex: number
+  stableIdentity: string
+} {
+  const parts = key.split('::')
+  if (parts.length < 4) {
+    return { documentKey: '', diagnosticId: '', targetIndex: 0, stableIdentity: '' }
+  }
+  const targetIndex = Number.parseInt(parts[2], 10)
+  return {
+    documentKey: parts[0],
+    diagnosticId: parts[1],
+    targetIndex: Number.isFinite(targetIndex) ? targetIndex : 0,
+    stableIdentity: parts.slice(3).join('::'),
+  }
+}
 
 /** V5.12-R9 §21 — computed style with a hard guard (a headless DOM may not have it). */
 function computedStyleOf(el: Element): CSSStyleDeclaration | null {
@@ -3688,6 +3773,8 @@ export class DocumentUtilityOverlayHost {
   private diagnosticGeometryReconcileRaf: number | null = null
   /** §18 — the V5.12-R2 hard-gate counters. */
   private countersClosureV512R2 = createVisualClosureV512R2Counters()
+  /** §P6 — the V5.14-R2 REAL-DOM visual-closure reconciliation counters. */
+  private countersVisualClosureV514R2 = createVisualClosureTargetV514R2Counters()
   /** §18 — the V5.12-R3 Drawer-persistence hard-gate counters. */
   private countersDrawerV512R3 = createDrawerPersistenceV512R3Counters()
   /** §13 — the USER INTENT epoch (Problems Control open/close is the only writer). */
@@ -4126,18 +4213,24 @@ export class DocumentUtilityOverlayHost {
 
   /** §19 — group EVERY heading visual target by heading identity (one marker each). */
   private collectHeadingMarkerGroups(): {
-    groups: Map<string, { el: HTMLElement; severities: string[]; resolverSource: string; reasonText: string | null; topRank: number }>
-    multiTargetHeadingTargets: number
-    multiTargetAdmitted: number
+    groups: Map<string, HeadingMarkerGroup>
     headingWithoutVisualTarget: number
+    /** §P6 — ONE expected visual target per (diagnostic, heading occurrence). */
+    expectedTargets: ExpectedVisualTarget[]
+    /** §P6 — heading identity → the visual target keys its ONE marker represents. */
+    groupTargetKeys: Map<string, string[]>
+    /** §P8 — the heading diagnostic occurrences the outline must mirror. */
+    outlineDiagnosticTargets: OutlineDiagnosticTargetInput[]
   } {
-    const groups = new Map<string, { el: HTMLElement; severities: string[]; resolverSource: string; reasonText: string | null; topRank: number }>()
+    const groups = new Map<string, HeadingMarkerGroup>()
     const deps = this.visualTargetDeps()
     const snapshot = this.diagnostics.getSnapshot()
     const diags = snapshot?.diagnostics ?? []
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
-    let multiTargetHeadingTargets = 0
-    let multiTargetAdmitted = 0
+    const documentKeyForTarget = documentKey ?? ''
+    const expectedTargets: ExpectedVisualTarget[] = []
+    const groupTargetKeys = new Map<string, string[]>()
+    const outlineDiagnosticTargets: OutlineDiagnosticTargetInput[] = []
     let headingWithoutVisualTarget = 0
     for (const d of diags) {
       const targets = resolveDiagnosticVisualTargets(
@@ -4154,7 +4247,6 @@ export class DocumentUtilityOverlayHost {
       if (heads.length === 0) continue
       for (const t of heads) {
         const isMulti = t.targetCount > 1
-        if (isMulti) multiTargetHeadingTargets++
         if (!t.element || !t.element.isConnected) {
           // §8 Hard Gate — only a diagnostic that BELONGS to the ACTIVE document
           // and whose DOM root exists can be a real "locatable but unrendered".
@@ -4162,9 +4254,37 @@ export class DocumentUtilityOverlayHost {
           if (belongsHere) headingWithoutVisualTarget++
           continue
         }
-        if (isMulti) multiTargetAdmitted++
         const identity = this.headingTargetMarkerIdentity(t)
         if (identity == null) continue
+        const targetIndex = t.targetIndex ?? 0
+        const visualTargetKey = buildDiagnosticVisualTargetKey({
+          documentKey: documentKeyForTarget,
+          diagnosticId: d.id,
+          targetIndex,
+          stableIdentity: identity,
+        })
+        expectedTargets.push({
+          visualTargetKey,
+          documentKey: documentKeyForTarget,
+          diagnosticId: d.id,
+          targetIndex,
+          stableIdentity: identity,
+          multiTarget: isMulti,
+        })
+        const keys = groupTargetKeys.get(identity)
+        if (keys) {
+          if (!keys.includes(visualTargetKey)) keys.push(visualTargetKey)
+        } else {
+          groupTargetKeys.set(identity, [visualTargetKey])
+        }
+        outlineDiagnosticTargets.push({
+          documentKey: documentKeyForTarget,
+          diagnosticId: d.id,
+          targetIndex,
+          stableHeadingIdentity: identity,
+          severity: normalizeOutlineDiagnosticSeverity(d.severity),
+          active: this.headingActiveMarkerIdentity === identity,
+        })
         const g = groups.get(identity)
         const rank = severityRank(String(d.severity ?? 'info'))
         const reason = buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
@@ -4175,13 +4295,23 @@ export class DocumentUtilityOverlayHost {
           if (reason && (g.reasonText == null || rank > g.topRank)) {
             g.reasonText = reason
             g.topRank = rank
+            g.primaryDiagnosticId = d.id
+            g.primaryTargetIndex = targetIndex
           }
         } else {
-          groups.set(identity, { el: t.element, severities: [String(d.severity ?? 'info')], resolverSource: t.targetKindLabel, reasonText: reason, topRank: rank })
+          groups.set(identity, {
+            el: t.element,
+            severities: [String(d.severity ?? 'info')],
+            resolverSource: t.targetKindLabel,
+            reasonText: reason,
+            topRank: rank,
+            primaryDiagnosticId: d.id,
+            primaryTargetIndex: targetIndex,
+          })
         }
       }
     }
-    return { groups, multiTargetHeadingTargets, multiTargetAdmitted, headingWithoutVisualTarget }
+    return { groups, headingWithoutVisualTarget, expectedTargets, groupTargetKeys, outlineDiagnosticTargets }
   }
 
   /**
@@ -4198,13 +4328,9 @@ export class DocumentUtilityOverlayHost {
     const collected = this.collectHeadingMarkerGroups()
     const groups = collected.groups
     const epoch = this.currentDocumentLayoutEpoch
-    if (collected.headingWithoutVisualTarget > 0) {
-      this.countersClosureV512R2.locatableHeadingDiagnosticWithoutVisualTarget += collected.headingWithoutVisualTarget
-    }
-    if (collected.multiTargetHeadingTargets > 0) {
-      const missing = Math.max(0, collected.multiTargetHeadingTargets - collected.multiTargetAdmitted)
-      this.countersClosureV512R2.headingMultiTargetPassiveMissing += missing
-    }
+    // ── V5.14-R2 §P8 — publish the heading diagnostic occurrences to the LEFT
+    // OUTLINE. The outline only paints them onto a COMMITTED mapping (P7).
+    this.opts.providers.publishOutlineHeadingDiagnostics?.(collected.outlineDiagnosticTargets)
     // Drop stale markers.
     for (const [identity, rec] of [...this.headingPassiveMarkers]) {
       if (!groups.has(identity)) {
@@ -4262,6 +4388,21 @@ export class DocumentUtilityOverlayHost {
       wrapper.setAttribute('data-ink-diagnostic-severity', severity)
       wrapper.setAttribute('data-ink-diagnostic-active', existing && this.headingActiveMarkerIdentity === identity ? 'true' : 'false')
       wrapper.setAttribute('data-ink-target-identity', g.resolverSource)
+      // ── V5.14-R2 §P6 — STRUCTURAL target-key authority on the plugin's OWN
+      // overlay DOM. ONE marker may represent several expected targets (a heading
+      // can be hit by several heading diagnostics), so the FULL key set is
+      // declared; the closure reconciliation reads THIS, never the resolver.
+      const markerTargetKeys = collected.groupTargetKeys.get(identity) ?? []
+      const markerPrimaryKey = markerTargetKeys[0] ?? null
+      wrapper.setAttribute('data-ink-document-key', this.opts.ctx.authority.getDocumentKey() ?? '')
+      wrapper.setAttribute('data-ink-marker-role', this.headingActiveMarkerIdentity === identity ? 'active' : 'passive')
+      wrapper.setAttribute('data-ink-stable-identity', identity)
+      wrapper.setAttribute('data-ink-diagnostic-id', g.primaryDiagnosticId)
+      wrapper.setAttribute('data-ink-target-index', String(g.primaryTargetIndex))
+      if (markerPrimaryKey) wrapper.setAttribute('data-ink-visual-target-key', markerPrimaryKey)
+      else wrapper.removeAttribute('data-ink-visual-target-key')
+      if (markerTargetKeys.length > 0) wrapper.setAttribute('data-ink-visual-target-keys', JSON.stringify(markerTargetKeys))
+      else wrapper.removeAttribute('data-ink-visual-target-keys')
       wrapper.setAttribute('aria-hidden', 'true')
       wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
       const rail = wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail') as HTMLElement | null
@@ -4313,13 +4454,38 @@ export class DocumentUtilityOverlayHost {
       let chipGapPx: number | null = null
       let chipCenterDriftPx: number | null = null
       const hostRectForChip = this.measureLocateRect(this.locateDocLayerHost)
-      const chipAnchorRects = textLocal.length > 0 ? textLocal : [contentLocal]
+      // ── V5.14-R2 §P5-R2 — Heading LABEL geometry authority (ONE per heading).
+      // ROOT_P5_R2: the墨章 number is an attribute-driven `::before` PREFIX gutter
+      // measured on the FIRST line band (`headingNumberRect()` = headingBox.left →
+      // firstFragment.left), so `Math.max(number.right, text.right)` mixes two line
+      // bands and is NOT a valid label right edge. Placement is classified FIRST and
+      // the chip anchor is derived from that classification; the fill, the chip and
+      // every audit field consume THIS one object.
+      const headingLabelGeometry = buildHeadingLabelGeometrySnapshot({
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+        stableHeadingIdentity: identity,
+        layoutEpoch: epoch,
+        textRects: textLocal,
+        numberRect,
+        gapPx: HEADING_LABEL_CHIP_GAP_PX,
+      })
+      if (headingLabelGeometry) this.lastHeadingLabelGeometry.set(identity, headingLabelGeometry)
+      const labelAnchorRect: HeadingRect | null = headingLabelGeometry
+        ? {
+            ...headingLabelGeometry.lastTextRect,
+            x: headingLabelGeometry.lastTextRect.left,
+            y: headingLabelGeometry.lastTextRect.top,
+          }
+        : null
+      const chipAnchorRects: HeadingRect[] = labelAnchorRect
+        ? [labelAnchorRect]
+        : (textLocal.length > 0 ? textLocal : [contentLocal])
       const chipAnchor = chipAnchorRects[chipAnchorRects.length - 1]
       const chipAnchorCenterY = chipAnchor.top + chipAnchor.height / 2
       // ── V5.14-R1 §13/§15 — ONE HeadingDiagnosticVisualSnapshot; the passive fill
       // AND the reason chip BOTH consume THIS object, so they can never bind to
       // different headings or different layout epochs.
-      const headingVisualSnapshot = buildHeadingDiagnosticVisualSnapshot({
+      const headingVisualSnapshotBase = buildHeadingDiagnosticVisualSnapshot({
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
         stableHeadingIdentity: identity,
         layoutEpoch: epoch,
@@ -4330,13 +4496,24 @@ export class DocumentUtilityOverlayHost {
         passive: !isActiveHeading,
         active: isActiveHeading,
       })
+      // §P5-R2 — `contentRight` / `reasonChipAnchorX` are the LABEL authority's values,
+      // never the mixed max(gutter, text) they used to be.
+      const headingVisualSnapshot = headingLabelGeometry
+        ? {
+            ...headingVisualSnapshotBase,
+            contentRight: headingLabelGeometry.visualLabelRight,
+            reasonChipAnchorX: headingLabelGeometry.reasonChipAnchorX,
+          }
+        : headingVisualSnapshotBase
       const previousVisualSnapshot = this.lastHeadingVisualSnapshots.get(identity) ?? null
       // §15 — the numbering rect entered the settled content for THIS heading
       // (the numbering controller stamps `data-inkchapter-heading-number` after the
       // first paint): drop the stale chip so the block below rebuilds it ONCE from
       // the new content right edge. Old chip geometry never survives.
       const numberRectFlipRebuilt = shouldRebuildForNumberRectFlip(previousVisualSnapshot, headingVisualSnapshot)
+      let previousChipForFlipElement: HTMLElement | null = null
       if (numberRectFlipRebuilt && chip) {
+        previousChipForFlipElement = chip
         try { chip.remove() } catch { /* noop */ }
         chip = null
         chipLocal = null
@@ -4435,6 +4612,66 @@ export class DocumentUtilityOverlayHost {
         decision: evaluateHeadingVisualSnapshotV514R1Gates(headingGates).decision,
         reason: 'HEADING_FILL_CHIP_SHARE_ONE_SNAPSHOT',
       })
+      // ── V5.14-R2 §P5-R2 — Heading LABEL geometry hard gates ────────────────
+      const labelGates = this.countersHeadingLabelV514R2
+      const labelAuthorityEval = headingLabelGeometry
+        ? evaluateHeadingChipAnchorAuthority({
+            snapshot: headingLabelGeometry,
+            actualChipLeft: chipLocal ? chipLocal.left : null,
+            actualChipGapPx: chipGapPx,
+            paintLayoutEpoch: epoch,
+          })
+        : null
+      if (labelAuthorityEval && headingLabelGeometry) {
+        if (!labelAuthorityEval.anchorAuthorityOk) labelGates.reasonChipAnchorAuthorityMismatch++
+        if (!labelAuthorityEval.anchorFromSettledGeometry) labelGates.reasonChipAnchorNotFromSettledGeometry++
+        if (labelAuthorityEval.detachedUsedAsAnchor) labelGates.numberRectDetachedUsedAsAnchor++
+        if (labelAuthorityEval.suffixIgnored) labelGates.numberRectSuffixIgnored++
+        if (labelAuthorityEval.prefixPushedChip) labelGates.numberRectPrefixPushedChip++
+        // a measured number rect that cannot be classified is a semantic mismatch
+        if (headingLabelGeometry.numberRectIncluded
+          && headingLabelGeometry.numberPlacement === 'INVALID') {
+          labelGates.numberRectSemanticMismatch++
+        }
+      }
+      // §P5-R2 — the flip must rebuild ONCE and must never leave the stale chip behind.
+      let labelFlipRebuildCount = this.headingLabelFlipRebuildCounts.get(identity) ?? 0
+      if (numberRectFlipRebuilt) {
+        if (previousChipForFlipElement && previousChipForFlipElement.isConnected) {
+          labelGates.numberRectFlipStaleChipSurvived++
+        }
+        labelFlipRebuildCount++
+        this.headingLabelFlipRebuildCounts.set(identity, labelFlipRebuildCount)
+        if (labelFlipRebuildCount > 1) labelGates.numberRectFlipRebuildGtOne++
+      }
+      emitRuntimeAudit(HEADING_LABEL_GEOMETRY_AUDIT_EVENT, {
+        snapshotRevision: this.snapshot?.revision ?? null,
+        documentKey: headingLabelGeometry?.documentKey ?? null,
+        diagnosticId: (g as { diagnosticId?: string }).diagnosticId ?? null,
+        targetIndex: (g as { targetIndex?: number }).targetIndex ?? null,
+        stableHeadingIdentity: identity,
+        layoutEpoch: epoch,
+        severity,
+        textRects: headingLabelGeometry?.textRects ?? [],
+        lastTextRect: headingLabelGeometry?.lastTextRect ?? null,
+        numberRect,
+        numberPlacement: headingLabelGeometry?.numberPlacement ?? null,
+        numberRectIncluded: headingLabelGeometry?.numberRectIncluded ?? false,
+        numberRectParticipatesInAnchor: headingLabelGeometry?.numberRectParticipatesInAnchor ?? false,
+        visualLabelRight: headingLabelGeometry?.visualLabelRight ?? null,
+        reasonChipAnchorX: headingLabelGeometry?.reasonChipAnchorX ?? null,
+        chipLeft: chipLocal ? Math.round(chipLocal.left * 100) / 100 : null,
+        chipGapPx,
+        numberRectFlipRebuilt,
+        rebuildCount: labelFlipRebuildCount,
+        staleChipSurvived: previousChipForFlipElement
+          ? previousChipForFlipElement.isConnected
+          : false,
+        gateCounters: { ...labelGates },
+        gateReport: formatHeadingLabelGeometryV514R2GateReport(labelGates),
+        decision: evaluateHeadingLabelGeometryV514R2Gates(labelGates).decision,
+        reason: 'HEADING_LABEL_ANCHOR_FROM_PLACEMENT_CLASSIFICATION',
+      })
       // §8 — chip vertical centering (only meaningful beside the title).
       if (chipCenterDriftPx != null && chipCenterDriftPx > HEADING_CHIP_CENTER_TOLERANCE_PX) {
         this.countersHeadingSurfaceV512R9.chipCenterDriftGt2px++
@@ -4513,10 +4750,107 @@ export class DocumentUtilityOverlayHost {
         reason: 'PASSIVE_SEVERITY_MARKER',
       })
     }
+    // ── V5.14-R2 §P6 — the ONE closure: expected DiagnosticTargetProjection keys
+    // reconciled against the REAL rendered passive markers read back from the
+    // plugin's OWN overlay DOM (never the resolver's admitted count).
+    this.reconcileHeadingVisualClosure(collected)
     // V5.13-R5 §27/§28 — the Strict Multi-H1 visual Authority audit + gates.
     this.emitStrictMultiH1VisualAudit()
     // §21 — measure the REAL resulting surface (DOM + computed style) and audit it.
     this.commitHeadingMarkerSurfaceGates()
+  }
+
+  /**
+   * §P6 — Multi-target Visual Closure against the REAL passive markers.
+   *
+   * The old closure compared `expanded target count` vs `resolver admitted count`,
+   * so it could not see a marker that was never painted (false PASS), nor a
+   * duplicate/stale marker. Here the expected keys come from the resolved heading
+   * targets and the ACTUAL keys are read back from the painted overlay DOM.
+   */
+  private reconcileHeadingVisualClosure(collected: {
+    headingWithoutVisualTarget: number
+    expectedTargets: ExpectedVisualTarget[]
+  }): void {
+    const layer = this.headingMarkerLayer
+    const currentDocumentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    const expectedByKey = new Map(collected.expectedTargets.map(t => [t.visualTargetKey, t]))
+    const facts: PassiveMarkerFact[] = []
+    const wrappers = layer
+      ? Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))
+      : []
+    for (const wrapper of wrappers) {
+      const role = wrapper.getAttribute('data-ink-marker-role') === 'active' ? 'active' : 'passive'
+      const connected = wrapper.isConnected
+      // the document the marker was PAINTED for (never the current authority) —
+      // this is what makes a stale-document marker detectable.
+      const paintedDocumentKey = wrapper.getAttribute('data-ink-document-key') ?? ''
+      const declaredKeys = parseVisualTargetKeys(wrapper.getAttribute('data-ink-visual-target-keys'))
+      const primaryKey = wrapper.getAttribute('data-ink-visual-target-key')
+      const keys = declaredKeys.length > 0 ? declaredKeys : (primaryKey != null && primaryKey !== '' ? [primaryKey] : [])
+      const fallbackIdentity = wrapper.getAttribute('data-ink-stable-identity') ?? ''
+      const fallbackDiagnosticId = wrapper.getAttribute('data-ink-diagnostic-id') ?? ''
+      for (const key of keys) {
+        const expectedTarget = expectedByKey.get(key)
+        const parsed = splitVisualTargetKey(key)
+        facts.push({
+          visualTargetKey: key,
+          documentKey: paintedDocumentKey,
+          diagnosticId: expectedTarget?.diagnosticId ?? (parsed.diagnosticId !== '' ? parsed.diagnosticId : fallbackDiagnosticId),
+          targetIndex: expectedTarget?.targetIndex ?? parsed.targetIndex,
+          stableIdentity: expectedTarget?.stableIdentity ?? (parsed.stableIdentity !== '' ? parsed.stableIdentity : fallbackIdentity),
+          role,
+          connected,
+        })
+      }
+    }
+    // The ACTIVE heading's key set — R9 suspends its passive fill, so those keys
+    // are legitimately carried by the ACTIVE marker instead.
+    const activeKeySet = new Set(
+      facts.filter(f => f.role === 'active' && f.connected).map(f => f.visualTargetKey),
+    )
+    const recon = reconcileExpectedVisualTargets(
+      collected.expectedTargets,
+      facts,
+      currentDocumentKey,
+      activeKeySet.size > 0 ? activeKeySet : null,
+    )
+    const closureCounters = visualClosureReconciliationToGateCounters(
+      recon,
+      collected.headingWithoutVisualTarget,
+    )
+    if (closureCounters.locatableHeadingDiagnosticWithoutVisualTarget > 0) {
+      this.countersClosureV512R2.locatableHeadingDiagnosticWithoutVisualTarget += closureCounters.locatableHeadingDiagnosticWithoutVisualTarget
+    }
+    if (closureCounters.headingMultiTargetPassiveMissing > 0) {
+      this.countersClosureV512R2.headingMultiTargetPassiveMissing += closureCounters.headingMultiTargetPassiveMissing
+    }
+    for (const key of VISUAL_CLOSURE_TARGET_V514R2_GATE_KEYS) {
+      this.countersVisualClosureV514R2[key] += closureCounters[key]
+    }
+    emitRuntimeAudit(VISUAL_CLOSURE_TARGET_AUDIT_EVENT, {
+      snapshotRevision: this.snapshot?.revision ?? null,
+      documentKey: currentDocumentKey,
+      expectedKeys: recon.expectedCount,
+      expectedKeyList: collected.expectedTargets.map(t => t.visualTargetKey),
+      actualPassiveKeys: recon.actualCount,
+      actualPassiveKeyList: facts.filter(f => f.role === 'passive' && f.connected).map(f => f.visualTargetKey),
+      missingKeys: recon.missingKeys,
+      extraKeys: recon.extraKeys,
+      duplicateKeys: recon.duplicateKeys,
+      identityMismatchKeys: recon.identityMismatchKeys,
+      targetIndexMismatchKeys: recon.targetIndexMismatchKeys,
+      staleDocumentKeys: recon.staleDocumentKeys,
+      expectedCount: recon.expectedCount,
+      actualCount: recon.actualCount,
+      activeVisualTargetKeys: recon.activeVisualTargetKeys,
+      activeSatisfied: recon.activeSatisfied,
+      locatableHeadingDiagnosticWithoutVisualTarget: closureCounters.locatableHeadingDiagnosticWithoutVisualTarget,
+      gateCounters: { ...this.countersVisualClosureV514R2 },
+      gateReport: formatVisualClosureTargetV514R2GateReport(this.countersVisualClosureV514R2),
+      decision: evaluateVisualClosureTargetV514R2Gates(this.countersVisualClosureV514R2).decision,
+      reason: 'REAL_DOM_PASSIVE_MARKER_RECONCILIATION',
+    })
   }
 
   private headingStableIdentityOf(el: HTMLElement | null): string | null {
@@ -4739,6 +5073,11 @@ export class DocumentUtilityOverlayHost {
   private countersHeadingVisualV514R1 = createHeadingVisualSnapshotV514R1Counters()
   /** V5.14-R1 §15 — the last heading visual snapshot per heading identity. */
   private lastHeadingVisualSnapshots = new Map<string, HeadingDiagnosticVisualSnapshot>()
+  /** V5.14-R2 §P5-R2 — per-heading LABEL geometry authority (placement + chip anchor). */
+  private countersHeadingLabelV514R2: HeadingLabelGeometryV514R2Counters = createHeadingLabelGeometryV514R2Counters()
+  private lastHeadingLabelGeometry = new Map<string, ReturnType<typeof buildHeadingLabelGeometrySnapshot>>()
+  /** §P5-R2 — how many times the numberRect flip rebuilt THIS heading's chip. */
+  private headingLabelFlipRebuildCounts = new Map<string, number>()
   /** §5 Priority 3 — stable cache (documentKey|layout width → text column left). */
   private docTextColumnCache = new Map<string, number>()
   /** §15 — the last resolved text-column anchor (drift gate + audit). */
@@ -7908,6 +8247,10 @@ export class DocumentUtilityOverlayHost {
     this.multiTargetCursor.clear()
     this.lastLocateTargetCounts.clear()
     this.lastHeadingVisualSnapshots.clear()
+    // §P5-R2 — the LABEL authority is per-document too (identities collide across
+    // documents, so a carried-over snapshot would be a stale-revision authority).
+    this.lastHeadingLabelGeometry.clear()
+    this.headingLabelFlipRebuildCounts.clear()
     // Phase 7R.3.11.8B.12 — ACTIVE → EMPTY / NO_ACTIVE_DOCUMENT hides the
     // Navigator IMMEDIATELY (no scroll/resize/timer) and clears every stale
     // placement so a later show never inherits a left-bottom geometry.

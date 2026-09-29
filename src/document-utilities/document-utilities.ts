@@ -9,6 +9,7 @@ import * as path from 'path'
 import type { CanonicalHeadingFrame } from '../heading-numbering/canonical-heading-frame'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
@@ -51,6 +52,8 @@ export interface DocumentUtilitiesSources {
   /** Phase 7R.3.11.8B.7.6 — rendered caption host for an object element
    *  (compound missing-name locator). Optional. */
   getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
+  /** V5.14-R2 §P8 — heading diagnostic occurrences → LEFT OUTLINE mirror. Optional. */
+  publishOutlineHeadingDiagnostics?: (targets: readonly OutlineDiagnosticTargetInput[]) => void
   /** Phase 7R.3.11.8B.7.7 — Markdown SOURCE change subscription (markdownEditor
    *  'edit'). The live-reconcile authority for document-level diagnostics. */
   onSourceEdit?: (cb: () => void) => () => void
@@ -215,6 +218,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     parseImageSourceOccurrences,
     // Phase 7R.3.11.8B.7.6 — compound locator caption host (optional).
     getObjectCaptionHost: sources.getObjectCaptionHost,
+    // V5.14-R2 §P8 — heading diagnostics → LEFT OUTLINE projection publisher.
+    publishOutlineHeadingDiagnostics: sources.publishOutlineHeadingDiagnostics,
     // Phase 7R.3.11.8B.1 — canonical H1 authority bridge: maps the REAL
     // CanonicalHeadingFrame (entry.semanticState.physicalLevel) into a
     // WAIT / INVALID / READY result. NEVER reads a fake top-level physicalLevel.
