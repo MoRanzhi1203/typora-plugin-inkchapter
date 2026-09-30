@@ -1310,16 +1310,16 @@ describe('V5.13-R5 §29 — Strict Multi-H1: EVERY excess target is marked', () 
     injectSnapshot({ h } as unknown as World, [diag])
     h.renderHeadingDiagnosticMarkers()
     const internals = h as unknown as {
-      renderHeadingActiveEmphasis: (id: string, d: Record<string, unknown>, el: HTMLElement) => void
+      renderHeadingActiveEmphasisForTest: (id: string, d: Record<string, unknown>, el: HTMLElement) => void
     }
     const layer = document.querySelector('.inkchapter-heading-diagnostic-layer')!
     // first click → H1:idx:1 active
-    internals.renderHeadingActiveEmphasis(diag.id as string, diag, heads[1])
+    internals.renderHeadingActiveEmphasisForTest(diag.id as string, diag, heads[1])
     expect(layer.querySelectorAll('.inkchapter-heading-diagnostic-active').length).toBe(1)
     h.renderHeadingDiagnosticMarkers()
     expect(layer.querySelectorAll('.inkchapter-heading-diagnostic-marker').length).toBe(2)
     // second click → active switches to H1:idx:2; the sibling stays passive
-    internals.renderHeadingActiveEmphasis(diag.id as string, diag, heads[2])
+    internals.renderHeadingActiveEmphasisForTest(diag.id as string, diag, heads[2])
     expect(layer.querySelectorAll('.inkchapter-heading-diagnostic-active').length).toBe(1)
     h.renderHeadingDiagnosticMarkers()
     const counters = h.getStrictMultiH1VisualV513R5Counters()

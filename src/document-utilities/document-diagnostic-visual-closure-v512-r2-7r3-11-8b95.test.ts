@@ -125,7 +125,7 @@ function readAudits(spy: InfoSpy, event: string): Array<Record<string, string>> 
 
 type HostApi = {
   renderHeadingDiagnosticMarkers(): void
-  renderHeadingActiveEmphasis(id: string, diag: unknown, el: HTMLElement): void
+  renderHeadingActiveEmphasisForTest(id: string, diag: unknown, el: HTMLElement): void
   getHeadingMarkerSnapshot(): { passiveCount: number; activeIdentity: string | null; activeFragmentCount: number } | null
   bumpDocumentLayoutEpoch(kind: string): boolean
   getDocumentLayoutEpoch(): number
@@ -289,7 +289,7 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     expect(Number(audits[0].fillFragmentCount ?? 0)).toBeGreaterThan(0)
     expect(audits[0].passiveFillSuppressed).toBe('false')
     // ACTIVE: the R7 emphasis is ADDITIVE — the passive fill is RETAINED.
-    api(host).renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    api(host).renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     audits = readAudits(infoSpy!, 'DOCUMENT-DIAGNOSTIC-HEADING-MARKER-AUDIT').filter(a => a.reason === 'ACTIVE_HEADING_EMPHASIS')
     expect(audits.length).toBe(1)
     expect(audits[0].passiveMarkerPresent).toBe('true')

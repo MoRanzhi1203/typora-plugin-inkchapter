@@ -37,6 +37,21 @@ import {
   resolveCanonicalTargetIndexAuthority,
   type HeadingActiveVisualFacts,
 } from './document-diagnostic-heading-active-persistence-v1'
+import {
+  HEADING_MULTI_TARGET_V2_COVERAGE_KEYS,
+  HEADING_MULTI_TARGET_V2_GATE_KEYS,
+  createHeadingMultiTargetV2Counters,
+  createHeadingMultiTargetV2CoverageCounters,
+  evaluateActiveTargetAuthority,
+  evaluateHeadingMultiTargetV2Coverage,
+  evaluateHeadingMultiTargetV2Gates,
+  evaluateStrictMultiH1CurrentSnapshot,
+  formatHeadingMultiTargetV2CoverageReport,
+  formatHeadingMultiTargetV2GateReport,
+  parseCanonicalTargetKeyIdentityV2,
+  parseCanonicalTargetKeyIndexV2,
+  resolveCanonicalActiveHeadingTarget,
+} from './document-diagnostic-canonical-active-target-v2'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'

@@ -213,7 +213,7 @@ function fakeProviders(): DocumentDiagnosticsProviders {
 
 type HostApi = {
   renderHeadingDiagnosticMarkers(): void
-  renderHeadingActiveEmphasis(id: string, diag: unknown, el: HTMLElement): void
+  renderHeadingActiveEmphasisForTest(id: string, diag: unknown, el: HTMLElement): void
   clearHeadingActiveEmphasis(): void
   dismissLocateVisualFromDocumentPointer(ev: PointerEvent): void
   getPassiveActiveV514R3Counters(): Record<string, number>
@@ -300,12 +300,12 @@ describe('V5.14-R3 §30 — Passive / Active (host wiring)', () => {
     expect(markerCount()).toBe(3)
     expect(passiveFragmentCount()).toBe(3)
 
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', diagEl('E1'), w.headings[0])
     expect(markerCount()).toBe(3)
     expect(activeFragmentCount()).toBe(1)
     expect(api().getPassiveActiveVisualStateV514R3().passiveCount).toBe(3)
 
-    api().renderHeadingActiveEmphasis('W1', diagEl('W1'), w.headings[1])
+    api().renderHeadingActiveEmphasisForTest('W1', diagEl('W1'), w.headings[1])
     expect(markerCount()).toBe(3)
     // ── V5.14-R4 §11 — the SELECTED target (H-B) presents ONE atomic surface, so its
     // passive FILL is replaced by the active emphasis (2 sibling passive fills remain).
@@ -326,7 +326,7 @@ describe('V5.14-R3 §30 — Passive / Active (host wiring)', () => {
     host = w.h
     inject(host, threeDiags())
     api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', diagEl('E1'), w.headings[0])
     expect(activeFragmentCount()).toBe(1)
 
     api().clearHeadingActiveEmphasis()
@@ -350,7 +350,7 @@ describe('V5.14-R3 §30 — Passive / Active (host wiring)', () => {
     expect(markerCount()).toBe(3)
     expect(passiveFragmentCount()).toBe(3)
 
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', diagEl('E1'), w.headings[0])
     expect(markerCount()).toBe(3)
     expect(activeFragmentCount()).toBe(1)
     expect(api().getPassiveActiveV514R3GateDecision().failedChecks)
@@ -362,7 +362,7 @@ describe('V5.14-R3 §30 — Passive / Active (host wiring)', () => {
     host = w.h
     inject(host, threeDiags())
     api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', diagEl('E1'), w.headings[0])
     expect(markerCount()).toBe(3)
 
     inject(host, [], 2)
@@ -431,7 +431,7 @@ describe('V5.14-R3 §30 — heading live edit (host wiring)', () => {
     host = w.h
     inject(host, threeDiags().slice(0, 2))
     api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', diagEl('E1'), w.headings[0])
     expect(markerCount()).toBe(2)
     expect(activeFragmentCount()).toBe(1)
 
