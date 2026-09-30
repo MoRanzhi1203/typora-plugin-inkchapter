@@ -30,9 +30,11 @@ import {
   type PostSettleClosureFacts,
 } from './document-diagnostic-active-state-machine-v2'
 
-const A = { diagnosticId: 'E1', targetKey: 'doc::E1::0::H-A', targetIndex: 0 }
-const B = { diagnosticId: 'W1', targetKey: 'doc::W1::0::H-B', targetIndex: 0 }
-const B2 = { diagnosticId: 'W1', targetKey: 'doc::W1::1::H-C', targetIndex: 1 }
+// V1 — the click carries BOTH namespaces: the canonical diagnostic index and the
+// (narrowed) transaction-local index.
+const A = { diagnosticId: 'E1', targetKey: 'doc::E1::0::H-A', diagnosticTargetIndex: 0, transactionLocalTargetIndex: 0 }
+const B = { diagnosticId: 'W1', targetKey: 'doc::W1::0::H-B', diagnosticTargetIndex: 0, transactionLocalTargetIndex: 0 }
+const B2 = { diagnosticId: 'W1', targetKey: 'doc::W1::1::H-C', diagnosticTargetIndex: 1, transactionLocalTargetIndex: 0 }
 
 describe('V5.14-R8 §4 — the every-click-versioning reducer', () => {
   it('IDLE + A → ACTIVE(A); ACTIVE(A) + A → IDLE; ACTIVE(A) + B → ACTIVE(B)', () => {
@@ -49,7 +51,7 @@ describe('V5.14-R8 §4 — the every-click-versioning reducer', () => {
     expect(t2.next.phase).toBe('IDLE')
     expect(t2.next.diagnosticId).toBeNull()
     expect(t2.next.targetKey).toBeNull()
-    expect(t2.next.targetIndex).toBeNull()
+    expect(t2.next.diagnosticTargetIndex).toBeNull()
     expect(t2.next.transactionId).toBeNull()
     expect(t2.next.leaseToken).toBeNull()
 
@@ -77,7 +79,7 @@ describe('V5.14-R8 §4 — the every-click-versioning reducer', () => {
     const t1 = reduceDiagnosticClick(emptyDiagnosticInteractionState(), B, 1, null)
     const t2 = reduceDiagnosticClick(t1.next, B2, 2, null)
     expect(t2.action).toBe('SWITCH')
-    expect(t2.next.targetIndex).toBe(1)
+    expect(t2.next.diagnosticTargetIndex).toBe(1)
     const t3 = reduceDiagnosticClick(t2.next, B2, 3, null)
     expect(t3.action).toBe('DEACTIVATE')
   })

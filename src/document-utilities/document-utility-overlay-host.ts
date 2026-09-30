@@ -42,7 +42,87 @@ import {
   type DiagnosticLocationResolveContext,
   type DiagnosticLocationResolveResult,
   type ResolvedSourceOccurrenceHint,
+  type SourceBlockBinding,
 } from './document-diagnostic-location'
+// V1 — Figure Diagnostic Locator Authority (block binding / occurrence identity / runtime gates).
+import {
+  FIGURE_DIAGNOSTIC_LOCATOR_AUDIT,
+  FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT,
+  FIGURE_DIAGNOSTIC_LOCATOR_V1_COVERAGE_KEYS,
+  buildDomBlockIdentity,
+  computeCleanupClosureDecision,
+  computeFeatureLocateDecision,
+  computeLocateDecision,
+  createFigureDiagnosticLocatorV1Counters,
+  createFigureDiagnosticLocatorV1CoverageCounters,
+  evaluateFigureDiagnosticLocatorV1Coverage,
+  evaluateFigureDiagnosticLocatorV1Gates,
+  figureDiagnosticLocatorKindForRule,
+  figureOccurrenceIdentityIsStable,
+  formatFigureDiagnosticLocatorV1CoverageReport,
+  formatFigureDiagnosticLocatorV1GateReport,
+  isBlockLevelFigureRule,
+  isResolvableDomBlockIdentity,
+  type FigureDiagnosticLocatorV1Counters,
+  type FigureDiagnosticLocatorV1CoverageCounters,
+} from './document-diagnostic-locator-authority-v1'
+// V1-FIXTURE — Figure Diagnostic Fixture Resource Closure (manifest / preflight / gates).
+import {
+  FIGURE_DIAGNOSTIC_FIXTURE_RESOURCE_PREFLIGHT,
+  FIGURE_DIAGNOSTIC_FIXTURE_RESOURCE_AUDIT,
+  FIGURE_LOCATOR_V1_FIXTURE_RELATIVE_PATH,
+  FIXTURE_RESOURCE_V1_COVERAGE_KEYS,
+  FIXTURE_RESOURCE_V1_COVERAGE_LABELS,
+  FIXTURE_RESOURCE_V1_GATE_LABELS,
+  classifyFigureLocateKind,
+  createFixtureResourceV1Counters,
+  createFixtureResourceV1CoverageCounters,
+  evaluateFixtureResourcePreflight,
+  evaluateFixtureResourceV1Coverage,
+  evaluateFixtureResourceV1Gates,
+  evaluateRenderedOccurrenceLocate,
+  extractFixtureImageReferences,
+  formatFixtureResourceV1CoverageReport,
+  formatFixtureResourceV1GateReport,
+  isLegacyNonexistentFixturePath,
+  observationProvesRenderedImage,
+  EXPECTED_MISSING_FIGURE_RESOURCES,
+  type FixtureResourceObservation,
+  type FixtureResourcePreflightResult,
+  type FixtureResourceV1Counters,
+  type FixtureResourceV1CoverageCounters,
+} from './document-diagnostic-fixture-resource-preflight-v1'
+// V1 — Markdown literal exclusion (inline code / fenced code / indented code).
+import {
+  computeMarkdownLiteralRanges,
+  isSourceRangeLiteral,
+} from './document-markdown-literal-exclusion-v1'
+// V1 — Heading Diagnostic Active Persistence (state-derived active projection + target identity).
+import {
+  HEADING_ACTIVE_PERSISTENCE_AUDIT_EVENT,
+  HEADING_ACTIVE_PERSISTENCE_V1_COVERAGE_KEYS,
+  HEADING_ACTIVE_PERSISTENCE_V1_COVERAGE_LABELS,
+  HEADING_ACTIVE_PERSISTENCE_V1_GATE_LABELS,
+  HEADING_LEVEL_GAP_SCOPE_AUDIT_EVENT,
+  HEADING_POST_RECONCILE_CLOSURE_EVENT,
+  TARGET_INDEX_AUTHORITY_AUDIT_EVENT,
+  activeTargetScopeForDiagnostic,
+  buildCanonicalDrawerRowKey,
+  createHeadingActivePersistenceV1Counters,
+  createHeadingActivePersistenceV1CoverageCounters,
+  evaluateActiveVisualReadiness,
+  evaluateHeadingActivePersistenceV1Coverage,
+  evaluateHeadingActivePersistenceV1Gates,
+  evaluateHeadingMarkerAuditDecision,
+  evaluateHeadingPostReconcileClosure,
+  formatHeadingActivePersistenceV1CoverageReport,
+  formatHeadingActivePersistenceV1GateReport,
+  parseCanonicalTargetKeyIndex,
+  resolveCanonicalTargetIndexAuthority,
+  type HeadingActivePersistenceV1Counters,
+  type HeadingActivePersistenceV1CoverageCounters,
+  type HeadingActiveVisualFacts,
+} from './document-diagnostic-heading-active-persistence-v1'
 import {
   DOCUMENT_EMPTY_DIAGNOSTIC_CODE,
   EMPTY_DOCUMENT_EXCLUSIVE_REASON,
@@ -171,7 +251,7 @@ import {
   type LocatePlacementV510GateKey,
   type PlacementDecision,
 } from './document-locate-placement-v5-10'
-import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type { DiagnosticFigureOccurrenceIdentity, DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import {
   DOCUMENT_SPACE_DRIFT_HARD_PX,
   LOCATE_DOCUMENT_LAYER_CLASS,
@@ -1072,11 +1152,15 @@ function diagRawToken(diag: DocumentDiagnosticsSnapshot['diagnostics'][number] |
  */
 export function parseLocalResourceRefs(markdown: string): Array<{ target: string; resourceKind?: 'image' | 'link' }> {
   const out: Array<{ target: string; resourceKind?: 'image' | 'link' }> = []
+  // V1 — the SAME literal exclusion as the resource scanner: a token inside an
+  // inline-code span / fence / indented code is TEXT, never a resource reference.
+  const literalRanges = computeMarkdownLiteralRanges(markdown)
   const re = /(!?)\[([^\]]*)\]\(([^)]+)\)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(markdown)) !== null) {
     const target = m[3].trim().split(/\s+/)[0]
     if (!target) continue
+    if (isSourceRangeLiteral(literalRanges, m.index, m.index + m[0].length)) continue
     if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
     if (target.startsWith('#') || target.startsWith('mailto:')) continue
     out.push({ target, resourceKind: m[1] === '!' ? 'image' : 'link' })
@@ -2044,6 +2128,14 @@ function computedStyleOf(el: Element): CSSStyleDeclaration | null {
   }
 }
 
+/**
+ * V1-FIXTURE §20 — the BOUNDED settle budget for the fixture `<img>` decode
+ * proof. A snapshot publish can precede the image load events; a small bounded
+ * retry (plus one-shot load/error listeners) is allowed, an infinite poll is not.
+ */
+const FIGURE_FIXTURE_DECODE_MAX_ATTEMPTS = 12
+const FIGURE_FIXTURE_DECODE_RETRY_MS = 200
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -2206,6 +2298,78 @@ export class DocumentUtilityOverlayHost {
    * All must remain 0.
    */
   private countersFigureTargetV512R8 = createFigureTargetV512R8Counters()
+  /**
+   * V1 §29/§30 — Figure Diagnostic Locator runtime gates + coverage.
+   * Every gate count must stay 0; every coverage counter must reach its minimum.
+   */
+  private countersFigureLocatorV1: FigureDiagnosticLocatorV1Counters = createFigureDiagnosticLocatorV1Counters()
+  private coverageFigureLocatorV1: FigureDiagnosticLocatorV1CoverageCounters =
+    createFigureDiagnosticLocatorV1CoverageCounters()
+  /** V1 §27 — pending Source ↔ DOM binding audit payload (emitted per locate). */
+  private pendingFigureBindingAudit: Record<string, unknown> | null = null
+  /** V1 §26/§51D — the last locate / cleanup / feature decisions, kept SEPARATE. */
+  private lastLocateDecision: 'PASS' | 'FAIL' | 'N/A' = 'N/A'
+  private lastCleanupClosureDecision: 'PASS' | 'FAIL' | 'N/A' = 'N/A'
+  private lastFeatureLocateDecision: 'PASS' | 'FAIL' = 'FAIL'
+  /** V1 — the facts of the last emitted locate audit (consumed at the terminal). */
+  private lastLocateAuditContext: {
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null
+    result: DiagnosticLocationResolveResult | null
+    resolveDecision: string
+    reason: string
+    scrollDecision: 'PASS' | 'FAIL' | 'N/A'
+    highlightDecision: 'PASS' | 'FAIL' | 'N/A'
+    finalDecision: string
+  } | null = null
+  /**
+   * V1-FIXTURE §21/§31/§33/§36/§37 — Fixture resource + rendered-occurrence
+   * runtime gates and the positive coverage they must reach.
+   */
+  private countersFixtureResourceV1: FixtureResourceV1Counters = createFixtureResourceV1Counters()
+  private coverageFixtureResourceV1: FixtureResourceV1CoverageCounters =
+    createFixtureResourceV1CoverageCounters()
+  /** §18 — the last fixture preflight decision (null = document is not the fixture). */
+  private lastFixtureResourcePreflight: FixtureResourcePreflightResult | null = null
+  /** §20 — the bounded decode-settle budget + pending retry (fixture document only). */
+  private fixturePreflightAttempts = 0
+  /**
+   * V1 §23/§28 — the STATE-DERIVED active heading visual facts, keyed by heading
+   * identity. `activeMarkerPresent` and the passive-suppression permission are
+   * both read from HERE (never from a bare identity comparison).
+   */
+  private headingActiveVisualFacts = new Map<string, HeadingActiveVisualFacts>()
+  /** V1 §34 — the BEFORE side of the persistence audit (the previous commit). */
+  private lastHeadingProjectionFacts: {
+    layoutEpoch: number
+    geometryGeneration: number
+    diagnosticId: string | null
+    headingIdentity: string | null
+    activeFragmentCount: number
+    activeFillCount: number
+    drawerActiveRowCount: number
+    passiveFillSuppressed: boolean
+    leaseToken: string | null
+  } | null = null
+  /** V1 §38/§39 — the active-persistence hard gates + positive coverage. */
+  private countersHeadingActiveV1: HeadingActivePersistenceV1Counters = createHeadingActivePersistenceV1Counters()
+  private coverageHeadingActiveV1: HeadingActivePersistenceV1CoverageCounters =
+    createHeadingActivePersistenceV1CoverageCounters()
+  /** V1 §39 — the distinct subtargets REALLY activated, per diagnostic. */
+  private headingActivatedKeysByDiagnostic = new Map<string, Set<string>>()
+  private fixturePreflightTimer: ReturnType<typeof setTimeout> | null = null
+  private fixtureDecodeListenerAttached = false
+  private fixturePreflightDocumentKey: string | null = null
+  /** §19 — dedupe identical preflight emissions (the bounded retry re-runs). */
+  private lastFixturePreflightEmitSignature = ''
+  /**
+   * §33 — per-destination rendered-occurrence facts: the DISTINCT source blocks,
+   * occurrence identities and resolved DOM images observed for one destination.
+   */
+  private figureRenderedTargetByDestination = new Map<string, {
+    sourceBlockIdentities: Set<string>
+    occurrenceIdentities: Set<string>
+    domElementIdentities: Set<string>
+  }>()
   /** V5.12-R8 §14 — Code caption → body spacing counters (session). All 0. */
   private countersCaptionCodeSpacingV512R8 = createCaptionCodeSpacingV512R8Counters()
   /** V5.12-R8 §15 — last measured code caption spacing facts (state-deduped). */
@@ -2384,7 +2548,8 @@ export class DocumentUtilityOverlayHost {
           phase: 'IDLE',
           diagnosticId: null,
           targetKey: null,
-          targetIndex: null,
+          diagnosticTargetIndex: null,
+          transactionLocalTargetIndex: null,
           transactionId: null,
           leaseToken: null,
         }
@@ -2758,6 +2923,11 @@ export class DocumentUtilityOverlayHost {
       if (d.code !== 'FIGURE_MISSING_NAME' && d.code !== 'FIGURE_LOCAL_IMAGE_MISSING') continue
       const m = (d.metadata ?? {}) as Record<string, unknown>
       const loc = (d.location ?? null) as Record<string, unknown> | null
+      // V1 — the figure warnings now carry a `figure-occurrence` locator (which
+      // is locatable exactly like its source range); legacy `source-range` stays
+      // accepted so older snapshots keep evaluating.
+      const locatable = !!loc && typeof loc.startLine === 'number'
+        && (loc.kind === 'source-range' || loc.kind === 'figure-occurrence')
       views.push({
         code: d.code,
         severity: String(d.severity ?? ''),
@@ -2768,7 +2938,7 @@ export class DocumentUtilityOverlayHost {
         occurrenceIndex: num(m.occurrenceIndex),
         localFileExists: typeof m.localFileExists === 'boolean' ? m.localFileExists : null,
         rangeRole: str(m.rangeRole) ?? (loc ? str(loc.rangeRole) : null),
-        locatableSourceRange: !!loc && loc.kind === 'source-range' && typeof loc.startLine === 'number',
+        locatableSourceRange: locatable,
         sourceStart: num(m.sourceStart) ?? (loc ? num(loc.sourceStart) : null),
         sourceEnd: num(m.sourceEnd) ?? (loc ? num(loc.sourceEnd) : null),
         destinationStart: num(m.destinationStart) ?? (loc ? num(loc.destinationStart) : null),
@@ -3013,6 +3183,8 @@ export class DocumentUtilityOverlayHost {
         }
         // V5.12-R8 §14 — snapshot-scoped figure target/existence gates.
         this.commitFigureTargetSnapshotGates(snapshot)
+        // V1-FIXTURE §18/§19 — the Fixture Resource Preflight (V1 fixture only).
+        this.runFixtureResourcePreflight(snapshot)
         // PENDING_ACTIVE_LEAF / ALREADY_ADMITTED / DISCARD_* are audited inside
         // admitDiagnosticsSnapshot and never reach the projection/Toolbar here.
       }
@@ -3161,6 +3333,11 @@ export class DocumentUtilityOverlayHost {
     if (this.settleTimer) {
       clearTimeout(this.settleTimer)
       this.settleTimer = null
+    }
+    // V1-FIXTURE §20 — dispose cancels the bounded decode-settle retry.
+    if (this.fixturePreflightTimer != null) {
+      clearTimeout(this.fixturePreflightTimer)
+      this.fixturePreflightTimer = null
     }
     this.scrollNav?.dispose()
     this.scrollNav = null
@@ -5141,17 +5318,23 @@ export class DocumentUtilityOverlayHost {
       // "suspend the passive fill while active" is therefore gone.
       // V5.13-R5 §24 — the comparison is against the ACTIVE HEADING identity
       // (`headingActiveMarkerIdentity`), never the diagnostic id.
-      const isActiveHeading = this.headingActiveMarkerIdentity === identity
+      const isActiveHeading = this.activeHeadingOwnershipFor(identity)
+      // ── V1 §21/§23/§28 — the passive fill may only be suppressed once the
+      // ACTIVE visual REALLY exists AND is current for this heading. Deriving the
+      // suppression from the identity alone produced the vacuum
+      // (`activeFragmentRects=[]` + `fillFragmentCount=0` + suppressed=true).
+      const activeReadiness = this.activeHeadingVisualReadiness(identity)
+      const suppressPassiveFill = isActiveHeading && activeReadiness.ready
       // ── V5.14-R4 §11 — the SELECTED target must present ONE atomic surface.
       // While it is active the ACTIVE emphasis REPLACES this passive FILL; the
       // marker record, the semantic target keys and the reason chip all stay, and
       // a dismiss restores the passive presentation. The visual override is NEVER
       // implemented by deleting a semantic passive key.
       const fillPresentation = passiveFillPresentationForActiveTarget({
-        isActiveHeading,
+        isActiveHeading: suppressPassiveFill,
         passiveMarkerExists: existing != null,
       })
-      if (isActiveHeading && fillPresentation.paintPassiveFill) {
+      if (suppressPassiveFill && fillPresentation.paintPassiveFill) {
         this.countersVisualReflowV514R4.headingActivePassiveFillStack++
       }
       const fillLocal: HeadingRect[] = []
@@ -5807,6 +5990,28 @@ export class DocumentUtilityOverlayHost {
         this.countersClosureV512R2.passiveMarkerTargetDriftGt1px++
       }
       // §34 — audit (passive).
+      // ── V1 §27/§28 — `activeMarkerPresent` is derived from the REAL active
+      // fragment DOM, never from an identity comparison, and the audit FAILS when
+      // a marker is claimed with zero fragments/fill.
+      const markerAuditDecision = evaluateHeadingMarkerAuditDecision({
+        activeOwned: isActiveHeading,
+        activeMarkerPresent: activeReadiness.fragmentCount >= 1,
+        activeFragmentCount: activeReadiness.fragmentCount,
+        activeFillCount: activeReadiness.fragmentCount,
+        activeFragmentMeasurable: activeReadiness.fragmentCount >= 1
+          && (this.headingActiveVisualFacts.get(identity)?.fragmentRects ?? []).some(r => r.width > 0 && r.height > 0),
+        activeFragmentVisible: activeReadiness.fragmentCount >= 1
+          && this.headingActiveWrapper != null
+          && this.headingActiveWrapper.isConnected,
+        activeFragmentHeadingIdentityMatches: !isActiveHeading
+          || this.headingActiveMarkerIdentity === identity,
+        activeFragmentLayoutEpochCurrent: activeReadiness.reason !== 'ACTIVE_VISUAL_LAYOUT_EPOCH_STALE',
+        activeFragmentGeometryGenerationCurrent: activeReadiness.reason !== 'ACTIVE_VISUAL_GEOMETRY_GENERATION_STALE',
+        passiveFillSuppressed: suppressPassiveFill,
+      })
+      // ── V1 §27/§28/§62 — the passive pass runs BEFORE the active re-projection,
+      // so its active judgement is OBSERVATIONAL only; the authoritative counting
+      // happens in the POST-RECONCILE closure (§32/§63) after the re-projection.
       emitRuntimeAudit(HEADING_MARKER_AUDIT_EVENT, {
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
         diagnosticId: null,
@@ -5818,19 +6023,25 @@ export class DocumentUtilityOverlayHost {
         // V5.14-R4 §14 — the REAL epoch verdict (never a hardcoded true).
         layoutEpochCurrent: !isLayoutEpochStale(epoch, this.currentDocumentLayoutEpoch),
         passiveMarkerPresent: true,
-        activeMarkerPresent: this.headingActiveMarkerIdentity === identity,
+        activeMarkerPresent: activeReadiness.fragmentCount >= 1,
         headingAnchorRect: anchorLocal,
         headingContentRects: [contentLocal],
         numberRectIncluded: numberRect != null,
         // V5.12-R9 §10 — the gutter icon + rail no longer EXIST (not hidden).
         iconRect: null,
         railRect: null,
-        activeFragmentRects: [],
+        // ── V1 §28 — the REAL active fragment rects (the identity-derived boolean
+        // is no longer the authority; the previous hardcoded `[]` hid the vacuum).
+        activeFragmentRects: this.headingActiveVisualFacts.get(identity)?.fragmentRects ?? [],
+        activeFragmentCount: activeReadiness.fragmentCount,
+        activeFragmentLayoutEpoch: this.headingActiveVisualFacts.get(identity)?.layoutEpoch ?? null,
+        activeFragmentGeometryGeneration: this.headingActiveVisualFacts.get(identity)?.geometryGeneration ?? null,
         reasonChipRect: chipLocal,
         // V5.12-R9 §3/§5/§6/§9 — SOFT_TEXT_SURFACE + REASON_CHIP evidence.
         fillFragmentRects: fillLocal,
         fillFragmentCount: fillLocal.length,
-        passiveFillSuppressed: isActiveHeading,
+        passiveFillSuppressed: suppressPassiveFill,
+        activeReadinessReason: activeReadiness.reason,
         chipGapPx,
         chipCenterDriftPx,
         leftIconPresent: false,
@@ -5880,6 +6091,11 @@ export class DocumentUtilityOverlayHost {
     this.commitHeadingMarkerSurfaceGates()
     // ── V5.14-R5 §13/§14/§15/§19 — the inline-presentation cross-regression gates.
     this.commitInlinePresentationGates()
+    // ── V1 §30/§31/§63 — the POST-RECONCILE closure: the state after EVERY
+    // heading projection commit (not just the click settle) must hold again. When
+    // the ACTIVE pass itself requested this rebuild the emphasis is re-projected by
+    // the CALLER, so the closure is emitted there instead (§22/§32).
+    if (!skipActiveEmphasis) this.emitHeadingPostReconcileClosure('HEADING_VISUAL_PROJECTION_COMMITTED')
   }
 
   /**
@@ -6152,9 +6368,67 @@ export class DocumentUtilityOverlayHost {
    * none; at most ONE target may carry the active state (and it must be an excess
    * target). A single diagnostic is never split into several errors.
    */
+  /**
+   * V1 §37 — the HEADING_LEVEL_GAP mirror of the cross-diagnostic active scope.
+   * A level-gap audit may only read the ACTIVE target when the ACTIVE interaction
+   * belongs to THAT diagnostic; a foreign Active that happens to sit on one of its
+   * own headings must never be adopted (the H1 → H3 leak).
+   */
+  private emitHeadingLevelGapScopeAudit(snapshot: DocumentDiagnosticsSnapshot | null): void {
+    const gapDiags = (snapshot?.diagnostics ?? []).filter(d => d.code === 'HEADING_LEVEL_GAP')
+    if (gapDiags.length === 0) return
+    const deps = this.visualTargetDeps()
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    for (const d of gapDiags) {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      const own = new Set(
+        headingVisualTargets(resolveDiagnosticVisualTargets({
+          id: d.id,
+          severity: d.severity,
+          stableIdentity: typeof d.stableIdentity === 'string' ? d.stableIdentity : undefined,
+          metadata: meta,
+          location: d.location ?? null,
+        }, deps))
+          .map(t => this.headingTargetMarkerIdentity(t))
+          .filter((v): v is string => v != null),
+      )
+      const scope = activeTargetScopeForDiagnostic({
+        phase: this.diagnosticInteractionState.phase,
+        activeDiagnosticId: this.diagnosticInteractionState.diagnosticId,
+        activeTargetKey: this.diagnosticInteractionState.targetKey,
+        activeHeadingIdentity: this.headingActiveMarkerIdentity,
+        activeDiagnosticTargetIndex: this.diagnosticInteractionState.diagnosticTargetIndex,
+        diagnosticId: d.id,
+      })
+      const rawActiveIdentity = this.headingActiveMarkerIdentity
+      const foreignActiveTarget = rawActiveIdentity != null
+        && !scope.belongsToDiagnostic
+        && own.has(rawActiveIdentity)
+      if (foreignActiveTarget) this.countersHeadingActiveV1.headingLevelGapAuditForeignActiveTarget++
+      emitRuntimeAudit(HEADING_LEVEL_GAP_SCOPE_AUDIT_EVENT, {
+        documentKey,
+        diagnosticId: d.id,
+        activeDiagnosticId: this.diagnosticInteractionState.diagnosticId,
+        phase: this.diagnosticInteractionState.phase,
+        activeTargetKey: this.diagnosticInteractionState.targetKey,
+        rawActiveHeadingIdentity: rawActiveIdentity,
+        ownTargetIdentities: [...own],
+        activeTargetBelongsToAudit: scope.belongsToDiagnostic,
+        scopedActiveHeadingIdentity: scope.activeHeadingIdentity,
+        decision: foreignActiveTarget ? 'FAIL' : 'PASS',
+        reason: foreignActiveTarget
+          ? 'LEVEL_GAP_AUDIT_ADOPTED_FOREIGN_ACTIVE_TARGET'
+          : 'LEVEL_GAP_AUDIT_SCOPED_TO_OWN_TARGET',
+      })
+    }
+  }
+
   private emitStrictMultiH1VisualAudit(): void {
     const snapshot = this.diagnostics.getSnapshot()
     const multiDiags = (snapshot?.diagnostics ?? []).filter(d => d.code === STRICT_SINGLE_H1_MULTIPLE_H1_RULE_ID)
+    // ── V1 §37 — the HEADING_LEVEL_GAP mirror runs for the heading-structure
+    // family even when the document carries NO multi-H1 diagnostic.
+    this.emitHeadingLevelGapScopeAudit(snapshot)
     if (multiDiags.length === 0) return
     const deps = this.visualTargetDeps()
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
@@ -6213,9 +6487,25 @@ export class DocumentUtilityOverlayHost {
       // §26 — ONE cardinality authority across diagnostic / visual / transaction.
       const txCount = this.lastLocateTargetCounts.get(d.id)
       if (txCount != null && txCount !== declared) this.countersMultiH1V513R5.transactionTargetCountCollapse++
-      const activeIdentity = this.headingActiveMarkerIdentity
+      // ── V1 §24/§25/§37 — CROSS-DIAGNOSTIC SCOPE. The active target may ONLY be
+      // read when the ACTIVE interaction belongs to THIS diagnostic; the legacy
+      // global read let a `HEADING_LEVEL_GAP` H3 leak into this audit.
+      const scope = activeTargetScopeForDiagnostic({
+        phase: this.diagnosticInteractionState.phase,
+        activeDiagnosticId: this.diagnosticInteractionState.diagnosticId,
+        activeTargetKey: this.diagnosticInteractionState.targetKey,
+        activeHeadingIdentity: this.headingActiveMarkerIdentity,
+        activeDiagnosticTargetIndex: this.diagnosticInteractionState.diagnosticTargetIndex,
+        diagnosticId: d.id,
+      })
+      const activeIdentity = scope.activeHeadingIdentity
       const activeInExcess = activeIdentity != null && excessSet.has(activeIdentity)
-      if (activeIdentity != null && !activeInExcess) this.countersMultiH1V513R5.activeTargetNotInExcessSet++
+      if (activeIdentity != null && !activeInExcess) {
+        this.countersMultiH1V513R5.activeTargetNotInExcessSet++
+        this.countersHeadingActiveV1.crossDiagnosticActiveTargetLeak++
+        this.countersHeadingActiveV1.strictMultiH1AuditForeignActiveTarget++
+        this.countersHeadingActiveV1.multiTargetHeadingWrongSubtargetActive++
+      }
       // §25 — the legal primary H1 must never carry a marker.
       const primaryMarked = !!(primaryIdentity && passiveSet.has(primaryIdentity) && !excessSet.has(primaryIdentity))
       if (primaryMarked) this.countersMultiH1V513R5.validPrimaryH1Marked++
@@ -6239,9 +6529,21 @@ export class DocumentUtilityOverlayHost {
         validPrimaryMarked: primaryMarked,
         siblingPassiveLostCount: missing.length,
         passiveActiveFillStackCount: this.countersMultiH1V513R5.passiveActiveFillStack,
+        // ── V1 §26/§37 — the active scope facts (never a foreign target) + a REAL
+        // decision derived from this diagnostic's own counters.
+        activeTargetBelongsToAudit: scope.belongsToDiagnostic,
+        activeDiagnosticTargetIndex: scope.activeDiagnosticTargetIndex,
         gateCountersV513R5: { ...this.countersMultiH1V513R5 },
-        decision: 'PASS',
-        reason: 'MULTI_H1_ALL_EXCESS_TARGETS_MARKED',
+        decision: (
+          missing.length === 0
+          && this.countersMultiH1V513R5.activeTargetNotInExcessSet === 0
+          && this.countersMultiH1V513R5.siblingPassiveMarkerLost === 0
+          && this.countersMultiH1V513R5.expectedExtraTargetCountMismatch === 0
+          && this.countersMultiH1V513R5.passiveActiveFillStack === 0
+        ) ? 'PASS' : 'FAIL',
+        reason: this.countersMultiH1V513R5.activeTargetNotInExcessSet > 0
+          ? 'ACTIVE_TARGET_NOT_IN_EXCESS_SET'
+          : (missing.length === 0 ? 'MULTI_H1_ALL_EXCESS_TARGETS_MARKED' : 'SIBLING_PASSIVE_MARKER_LOST'),
       })
     }
   }
@@ -6336,7 +6638,7 @@ export class DocumentUtilityOverlayHost {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
       diagnosticId: st.diagnosticId,
       targetKey: st.targetKey,
-      targetIndex: st.targetIndex ?? 0,
+      targetIndex: st.diagnosticTargetIndex ?? 0,
       transactionId: st.transactionId,
       leaseToken: st.leaseToken,
       phase: 'active',
@@ -7125,6 +7427,9 @@ export class DocumentUtilityOverlayHost {
     // reconcile) publishes the ONE Active authority when none exists, so the
     // state stays consistent no matter which entry produced the emphasis.
     this.ensureActiveDiagnosticStateFor(diagnosticId)
+    // ── V1 §53 — the owner this write is FOR, captured at entry. A commit that
+    // ends up with a DIFFERENT current owner is a stale heading write.
+    const ownerDiagnosticAtEntry = this.diagnosticInteractionState.diagnosticId
     // ── V5.14-R4 §11 — ROOT_R4_5: the active pass used to re-measure its own
     // fragments while ADOPTING the passive record's `chipLocal` from an earlier
     // pass, so `activeFragmentRects` (fresh) and `reasonChipRect` (stale) could be
@@ -7143,25 +7448,20 @@ export class DocumentUtilityOverlayHost {
       }
       this.renderHeadingDiagnosticMarkers(true)
     }
-    // ── V5.14-R4 §11/§21 — re-rendering the SAME active target must NOT go
-    // through the clear-and-restore round trip: the passive fill of that target is
-    // already suppressed, and a restore would schedule another reconcile for a
-    // visual that is about to be repainted (a self-wake loop). Only a real target
-    // CHANGE (or a dismiss) restores the previous target's passive fill.
+    // ── V1 §15/§16 — build the NEW emphasis FIRST and only retire the previous
+    // one on SUCCESS. The legacy code removed the old wrapper up-front, so a
+    // failed re-measure (the very case the layoutEpoch rebuild produced) left the
+    // heading with `activeMarkerPresent=true` and ZERO fragments.
+    let previousActiveWrapper = this.headingActiveWrapper
     const sameTargetActive = this.headingActiveMarkerIdentity === headingIdentity
-      && this.headingActiveWrapper != null
-    if (sameTargetActive) {
-      try { this.headingActiveWrapper?.remove() } catch { /* noop */ }
-      this.headingActiveWrapper = null
-    } else {
-      // V5.14-R7 — an internal ACTIVE re-paint must NOT retire the Active authority.
+      && previousActiveWrapper != null
+    if (!sameTargetActive) {
+      // a real target CHANGE keeps the legacy owner-scoped retirement path.
       this.clearHeadingActiveEmphasisVisual()
-    }
-    // ── V5.14-R7 — a COALESCED reconcile inside the clear above may already have
-    // re-derived THIS target's emphasis; never end up with two active wrappers.
-    if (this.headingActiveMarkerIdentity === headingIdentity && this.headingActiveWrapper != null) {
-      try { this.headingActiveWrapper.remove() } catch { /* noop */ }
-      this.headingActiveWrapper = null
+      // ── V5.14-R7 — a COALESCED reconcile inside the clear above may already have
+      // re-derived THIS target's emphasis; that node is the one the new build
+      // replaces, so it must never survive as a second wrapper.
+      previousActiveWrapper = this.headingActiveWrapper
     }
     const fragments = this.headingVisibleFragments(element)
     const numberRect = this.headingNumberRect(element, fragments[0] ?? null)
@@ -7180,6 +7480,7 @@ export class DocumentUtilityOverlayHost {
     let localFragments: HeadingRect[]
     if (sharedCoverage) {
       localFragments = sharedCoverage.semanticFragmentRects.map(fromCoverageRect)
+      {
       // §10/§11 — the PASSIVE and the ACTIVE consume the SAME per-diagnostic
       // snapshot, so the policy / mask / fragment count / rects must agree.
       const passiveSnapshot = this.headingCoverageSnapshots.get(`${headingIdentity}::${diagnosticId}`) ?? null
@@ -7202,6 +7503,7 @@ export class DocumentUtilityOverlayHost {
       if (sharedCoverage.coveragePolicy === 'FULL_VISIBLE_HEADING' && sharedCoverage.numberRect != null) {
         const startsAtNumber = sharedCoverage.semanticFragmentRects.some(f => f.left <= sharedCoverage.numberRect!.left + 0.5)
         if (!startsAtNumber) this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
+      }
       }
     } else {
       // no passive snapshot (the P10 "active without passive marker" violation) —
@@ -7333,6 +7635,93 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveIdentity = diagnosticId
     this.headingActiveMarkerIdentity = headingIdentity
     this.headingActiveDiagnosticId = diagnosticId
+    // ── V1 §15/§16 — only NOW is the previous emphasis retired (build-then-swap).
+    if (previousActiveWrapper != null && previousActiveWrapper !== wrapper) {
+      try { previousActiveWrapper.remove() } catch { /* noop */ }
+    }
+    // ── V1 §23/§28 — commit the STATE-DERIVED active facts: these are the ONLY
+    // source for `activeMarkerPresent`, the passive-suppression permission and the
+    // post-reconcile closure.
+    const previousFacts = this.lastHeadingProjectionFacts
+    const committedFacts: HeadingActiveVisualFacts = {
+      fragmentCount: localFragments.length,
+      fragmentRects: localFragments.map(f => ({ left: f.left, top: f.top, width: f.width, height: f.height })),
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      geometryGeneration: activeGeometryGeneration,
+      diagnosticId,
+      targetKey: this.diagnosticInteractionState.targetKey,
+    }
+    this.headingActiveVisualFacts.set(headingIdentity, committedFacts)
+    // ── V1 §53 — the two stale-write detectors. Both must stay 0: a heading
+    // visual may only be committed for the CURRENT Active owner AND for geometry
+    // of the CURRENT generation.
+    {
+      const stAtCommit = this.diagnosticInteractionState
+      if (stAtCommit.phase === 'ACTIVE' && ownerDiagnosticAtEntry != null
+        && stAtCommit.diagnosticId !== ownerDiagnosticAtEntry) {
+        this.countersHeadingActiveV1.staleHeadingVisualCallbackApplied++
+      }
+      if (this.visualGeometryGeneration !== activeGeometryGeneration) {
+        this.countersHeadingActiveV1.staleHeadingGeometryCommitted++
+      }
+    }
+    const rebuiltAfterLayoutEpoch = previousFacts != null
+      && previousFacts.layoutEpoch !== committedFacts.layoutEpoch
+      && localFragments.length >= 1
+    const rebuiltAfterGeometry = previousFacts != null
+      && previousFacts.geometryGeneration !== committedFacts.geometryGeneration
+      && localFragments.length >= 1
+    if (rebuiltAfterLayoutEpoch) this.coverageHeadingActiveV1.activeHeadingRebuiltAfterLayoutEpoch++
+    if (rebuiltAfterGeometry) this.coverageHeadingActiveV1.activeHeadingRebuiltAfterGeometryGeneration++
+    this.lastHeadingProjectionFacts = {
+      layoutEpoch: committedFacts.layoutEpoch,
+      geometryGeneration: committedFacts.geometryGeneration,
+      diagnosticId,
+      headingIdentity,
+      activeFragmentCount: localFragments.length,
+      activeFillCount: localFragments.length,
+      drawerActiveRowCount: this.drawerActiveRowCountNow(),
+      passiveFillSuppressed: true,
+      leaseToken: null,
+    }
+    // ── V1 §34 — DOCUMENT-DIAGNOSTIC-HEADING-ACTIVE-PERSISTENCE-AUDIT.
+    if (localFragments.length < 1) {
+      this.countersHeadingActiveV1.activeHeadingWithZeroFragment++
+      this.countersHeadingActiveV1.activeHeadingWithZeroFill++
+    }
+    emitRuntimeAudit(HEADING_ACTIVE_PERSISTENCE_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      interactionVersion: this.diagnosticInteractionState.version,
+      diagnosticId,
+      diagnosticTargetIndex: this.diagnosticInteractionState.diagnosticTargetIndex,
+      transactionLocalTargetIndex: this.diagnosticInteractionState.transactionLocalTargetIndex,
+      targetKey: this.diagnosticInteractionState.targetKey,
+      headingIdentity,
+      phase: this.diagnosticInteractionState.phase,
+      layoutEpochBefore: previousFacts?.layoutEpoch ?? null,
+      layoutEpochAfter: committedFacts.layoutEpoch,
+      geometryGenerationBefore: previousFacts?.geometryGeneration ?? null,
+      geometryGenerationAfter: committedFacts.geometryGeneration,
+      activeOwnerBefore: previousFacts?.headingIdentity ?? null,
+      activeOwnerAfter: headingIdentity,
+      activeLeaseTokenBefore: previousFacts?.leaseToken ?? null,
+      activeLeaseTokenAfter: null,
+      drawerActiveRowCountBefore: previousFacts?.drawerActiveRowCount ?? 0,
+      drawerActiveRowCountAfter: this.drawerActiveRowCountNow(),
+      activeFragmentCountBefore: previousFacts?.activeFragmentCount ?? 0,
+      activeFragmentCountAfter: localFragments.length,
+      activeFillCountBefore: previousFacts?.activeFillCount ?? 0,
+      activeFillCountAfter: localFragments.length,
+      passiveFillSuppressedBefore: previousFacts?.passiveFillSuppressed ?? false,
+      passiveFillSuppressedAfter: true,
+      activeRebuildRequired: previousFacts != null && (
+        previousFacts.layoutEpoch !== committedFacts.layoutEpoch
+        || previousFacts.geometryGeneration !== committedFacts.geometryGeneration),
+      activeRebuildPerformed: true,
+      targetIndexNamespace: 'DIAGNOSTIC',
+      decision: localFragments.length >= 1 ? 'PASS' : 'FAIL',
+      reason: localFragments.length >= 1 ? 'ACTIVE_VISUAL_REPROJECTED' : 'ACTIVE_VISUAL_EMPTY',
+    })
     // §6 HARD (re-pointed by V5.14-R3 §P10) — ACTIVE must NEVER replace the
     // passive marker. The SAME heading keeps its passive SOFT TEXT SURFACE +
     // reason chip while the active emphasis is painted; the legacy R9
@@ -7467,7 +7856,8 @@ export class DocumentUtilityOverlayHost {
       // V5.14-R4 §14 — the REAL epoch verdict (never a hardcoded true).
       layoutEpochCurrent: true,
       passiveMarkerPresent: passiveRecord != null,
-      activeMarkerPresent: true,
+      // ── V1 §27/§28 — derived from the REAL painted fragments, never a constant.
+      activeMarkerPresent: localFragments.length >= 1,
       headingAnchorRect: anchorLocal,
       headingContentRects: localFragments,
       numberRectIncluded: numberRect != null,
@@ -7490,7 +7880,8 @@ export class DocumentUtilityOverlayHost {
       legacyFrameRendered: false,
       reasonText,
       documentSpace: true,
-      decision: 'PASS',
+      // ── V1 §62 — a marker with ZERO painted fragments can never PASS.
+      decision: localFragments.length >= 1 ? 'PASS' : 'FAIL',
       reason: 'ACTIVE_HEADING_EMPHASIS',
     })
   }
@@ -7513,7 +7904,8 @@ export class DocumentUtilityOverlayHost {
         phase: 'IDLE',
         diagnosticId: null,
         targetKey: null,
-        targetIndex: null,
+        diagnosticTargetIndex: null,
+        transactionLocalTargetIndex: null,
         transactionId: null,
         leaseToken: null,
       }
@@ -7533,6 +7925,10 @@ export class DocumentUtilityOverlayHost {
         for (const rec of this.headingPassiveMarkers.values()) rec.wrapper.setAttribute('data-ink-diagnostic-active', 'false')
       }
     }
+    // ── V1 §20/§28 — the STATE-DERIVED facts are retired with the visual, so an
+    // audit can never read a phantom active fragment set.
+    if (this.headingActiveMarkerIdentity != null) this.headingActiveVisualFacts.delete(this.headingActiveMarkerIdentity)
+    this.headingActiveVisualFacts.clear()
     this.headingActiveWrapper = null
     this.headingActiveIdentity = null
     this.headingActiveMarkerIdentity = null
@@ -7571,6 +7967,274 @@ export class DocumentUtilityOverlayHost {
     this.headingPassiveMarkers.clear()
     // V5.14-R8 §7.3 — teardown ends the ACTIVE interaction authority (version++).
     this.clearHeadingActiveEmphasis()
+  }
+
+  // ── V1 — Heading Active Persistence helpers (§20/§21/§23/§28) ─────────────
+
+  /**
+   * V1 §24 — is this heading the ACTIVE target right now? Derived from the
+   * interaction STATE (diagnosticId + the painted owner), never from a bare
+   * identity comparison against a possibly stale marker field.
+   */
+  private activeHeadingOwnershipFor(identity: string): boolean {
+    const st = this.diagnosticInteractionState
+    if (st.phase !== 'ACTIVE' || st.diagnosticId == null) return false
+    if (this.headingActiveMarkerIdentity !== identity) return false
+    return this.headingActiveDiagnosticId == null || this.headingActiveDiagnosticId === st.diagnosticId
+  }
+
+  /**
+   * V1 §21/§28 — the ONE readiness authority: is there a REAL, current active
+   * fragment set for this heading? Passive suppression AND `activeMarkerPresent`
+   * both read THIS.
+   */
+  private activeHeadingVisualReadiness(identity: string): { ready: boolean; fragmentCount: number; reason: string } {
+    return evaluateActiveVisualReadiness({
+      facts: this.headingActiveVisualFacts.get(identity) ?? null,
+      wrapperConnected: this.headingActiveWrapper != null && this.headingActiveWrapper.isConnected,
+      currentLayoutEpoch: this.currentDocumentLayoutEpoch,
+      currentGeometryGeneration: this.visualGeometryGeneration,
+    })
+  }
+
+  /**
+   * V1 §55 — the Drawer Active row count (real DOM). The ACTIVE row is the row
+   * the SINGLE V2 authority selected (`refreshDrawerActiveRow` / `buildDrawerItem`
+   * both write `.is-selected`), so the count reads THAT — never a legacy
+   * `.inkchapter-drawer__row` class that no component renders.
+   */
+  private drawerActiveRowCountNow(): number {
+    if (!this.drawerEl) return 0
+    return this.drawerEl.querySelectorAll('.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]').length
+  }
+
+  /** V1 §33 — whether the Drawer REALLY rendered at least one diagnostic row. */
+  private drawerRowsRenderedNow(): boolean {
+    return this.drawerEl != null
+      && this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
+  }
+
+  /** V1 §35 — DOCUMENT-DIAGNOSTIC-TARGET-INDEX-AUTHORITY-AUDIT. */
+  private emitTargetIndexAuthorityAudit(input: {
+    diagnosticId: string
+    diagnosticTargetIndex: number
+    transactionLocalTargetIndex: number | null
+    targetKey: string
+    stableHeadingIdentity: string | null
+    stage: string
+  }): void {
+    const targetKeyEncodedIndex = parseCanonicalTargetKeyIndex(input.targetKey)
+    const authority = resolveCanonicalTargetIndexAuthority({
+      diagnosticTargetIndex: input.diagnosticTargetIndex,
+      transactionLocalTargetIndex: input.transactionLocalTargetIndex,
+      transactionTargetCount: input.transactionLocalTargetIndex == null ? null : 1,
+      // V1 §43/§65 — the ACTUAL index the key encodes. When a narrowed transaction
+      // (local 0) leaked into the canonical key of the SECOND subtarget, the key
+      // encodes 0 while the diagnostic index is 1 — the alias is DETECTED here.
+      reportedCanonicalIndex: targetKeyEncodedIndex,
+    })
+    if (authority.aliased) this.countersHeadingActiveV1.diagnosticTargetIndexTransactionLocalIndexAlias++
+    const activeEncodedIndex = parseCanonicalTargetKeyIndex(this.diagnosticInteractionState.targetKey)
+    if (targetKeyEncodedIndex != null && targetKeyEncodedIndex !== input.diagnosticTargetIndex) {
+      this.countersHeadingActiveV1.headingVisualCanonicalTargetIndexMismatch++
+    }
+    if (activeEncodedIndex != null
+      && this.diagnosticInteractionState.diagnosticId === input.diagnosticId
+      && this.diagnosticInteractionState.phase === 'ACTIVE'
+      // V1 §36 — only the key that IS the current Active key is judged here; a
+      // CLICK_DISPATCH audit runs BEFORE the transition commits, so comparing the
+      // pre-click state against the new click would be a false mismatch.
+      && this.diagnosticInteractionState.targetKey === input.targetKey
+      && activeEncodedIndex !== input.diagnosticTargetIndex) {
+      this.countersHeadingActiveV1.multiTargetHeadingActiveTargetKeyMismatch++
+    }
+    emitRuntimeAudit(TARGET_INDEX_AUTHORITY_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: input.diagnosticId,
+      stableHeadingIdentity: input.stableHeadingIdentity,
+      stage: input.stage,
+      diagnosticTargetIndex: input.diagnosticTargetIndex,
+      transactionLocalTargetIndex: input.transactionLocalTargetIndex,
+      targetKeyEncodedIndex,
+      drawerRowEncodedIndex: input.stableHeadingIdentity == null
+        ? null
+        : parseCanonicalTargetKeyIndex(buildCanonicalDrawerRowKey({
+            diagnosticId: input.diagnosticId,
+            diagnosticTargetIndex: input.diagnosticTargetIndex,
+            stableHeadingIdentity: input.stableHeadingIdentity,
+          })),
+      activeStateEncodedIndex: activeEncodedIndex,
+      decision: authority.aliased ? 'FAIL' : 'PASS',
+      reason: authority.reason,
+    })
+  }
+
+  /**
+   * V1 §30/§32/§33/§63 — DOCUMENT-DIAGNOSTIC-HEADING-POST-RECONCILE-CLOSURE.
+   * Emitted AFTER every heading projection commit (never a timer), so the
+   * post-layout state — not just the click settle — is verified.
+   */
+  private emitHeadingPostReconcileClosure(reason: string): void {
+    const st = this.diagnosticInteractionState
+    const activeId = st.phase === 'ACTIVE' ? st.diagnosticId : null
+    const diag = activeId != null ? this.diagnosticById(activeId) : null
+    const targetKey = st.targetKey
+    const identityFromTargetKey = targetKey != null ? targetKey.split('::').slice(3).join('::') : null
+    // ── V1 §32 — the targetKey carries the RAW stable identity; the painted marker
+    // identity is its dedupe key (`id:<stable>`). Both forms must compare equal so
+    // a genuine match is never reported as ACTIVE_HEADING_IDENTITY_MISMATCH.
+    const markerIdentityFromTargetKey = identityFromTargetKey != null && identityFromTargetKey !== ''
+      ? headingMarkerIdentity({ stableIdentity: identityFromTargetKey, line: null, text: '' })
+      : null
+    const headingIdentityMatchesTargetKey = identityFromTargetKey == null
+      || this.headingActiveMarkerIdentity === identityFromTargetKey
+      || this.headingActiveMarkerIdentity === markerIdentityFromTargetKey
+    // §32 — the active target is a HEADING when a heading visual is committed for
+    // it (or the resolved element is an H1..H6).
+    const activeTargetIsHeading = (this.headingActiveMarkerIdentity != null
+      && (identityFromTargetKey == null || headingIdentityMatchesTargetKey))
+      || (diag != null && /^H[1-6]$/.test(this.resolveDiagnosticElementForMarker(diag)?.tagName ?? ''))
+    const readiness = this.headingActiveMarkerIdentity != null
+      ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
+      : { ready: false, fragmentCount: 0, reason: 'NO_ACTIVE_HEADING' }
+    const drawerActiveRowCount = this.drawerActiveRowCountNow()
+    const drawerRowsRendered = this.drawerRowsRenderedNow()
+    const closure = evaluateHeadingPostReconcileClosure({
+      phase: st.phase,
+      activeTargetIsHeading,
+      selectedActiveRowCount: drawerActiveRowCount,
+      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
+      activeHeadingFragmentCount: readiness.fragmentCount,
+      activeFillCount: readiness.fragmentCount,
+      activeLeasePresent: this.locateVisibilityLease != null,
+      activeTargetKeyMatchesState: targetKey == null
+        || this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity ?? '')?.targetKey === targetKey
+        || headingIdentityMatchesTargetKey,
+      activeHeadingIdentityMatchesTargetKey: headingIdentityMatchesTargetKey,
+      activeFragmentLayoutEpochCurrent: readiness.reason !== 'ACTIVE_VISUAL_LAYOUT_EPOCH_STALE',
+      activeFragmentGeometryGenerationCurrent: readiness.reason !== 'ACTIVE_VISUAL_GEOMETRY_GENERATION_STALE',
+      drawerActiveRowCount,
+      drawerRowsRendered,
+    })
+    // ── V1 §38/§53/§62 — the AUTHORITATIVE active-persistence gates. They are
+    // counted AFTER the active re-projection of this pass, so a stale judgement
+    // made before the re-projection can never inflate them.
+    if (closure.failedChecks.includes('ACTIVE_HEADING_FRAGMENT_COUNT_ZERO')) {
+      this.countersHeadingActiveV1.activeHeadingWithZeroFragment++
+      this.countersHeadingActiveV1.activeHeadingReconcileSkipped++
+    }
+    if (closure.failedChecks.includes('ACTIVE_FILL_COUNT_ZERO')) {
+      this.countersHeadingActiveV1.activeHeadingWithZeroFill++
+    }
+    if (closure.failedChecks.includes('ACTIVE_FRAGMENT_LAYOUT_EPOCH_STALE')) {
+      this.countersHeadingActiveV1.activeHeadingVisualLostAfterLayoutEpoch++
+    }
+    if (closure.failedChecks.includes('ACTIVE_FRAGMENT_GEOMETRY_GENERATION_STALE')) {
+      this.countersHeadingActiveV1.activeHeadingVisualLostAfterGeometryGeneration++
+    }
+    if (this.headingActiveMarkerIdentity != null && readiness.fragmentCount < 1) {
+      this.countersHeadingActiveV1.activeHeadingMarkerBooleanWithoutFragment++
+    }
+    for (const rec of this.headingPassiveMarkers.values()) {
+      if (rec.passiveFillSuppressed !== true) continue
+      const recReadiness = this.activeHeadingVisualReadiness(rec.wrapper.getAttribute('data-ink-heading-id') ?? '')
+      if (recReadiness.fragmentCount < 1) {
+        this.countersHeadingActiveV1.activeHeadingPassiveSuppressedWithoutActiveFill++
+      }
+    }
+    if (closure.decision === 'PASS' && activeTargetIsHeading && readiness.fragmentCount < 1) {
+      this.countersHeadingActiveV1.headingActiveVisualFalsePass++
+      this.countersHeadingActiveV1.headingAuditPassWithZeroActiveFill++
+    }
+    if (drawerActiveRowCount === 1 && readiness.fragmentCount < 1) {
+      this.countersHeadingActiveV1.drawerActiveRowWithoutHeadingActiveVisual++
+    }
+    if (drawerRowsRendered && readiness.fragmentCount >= 1 && drawerActiveRowCount !== 1) {
+      this.countersHeadingActiveV1.headingActiveVisualWithoutDrawerActiveRow++
+    }
+    if (st.phase === 'IDLE'
+      && [...this.headingPassiveMarkers.values()].some(r => r.passiveFillSuppressed === true)) {
+      this.countersHeadingActiveV1.idleWithPassiveFillSuppressed++
+    }
+    emitRuntimeAudit(HEADING_POST_RECONCILE_CLOSURE_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      trigger: reason,
+      interactionVersion: st.version,
+      phase: st.phase,
+      diagnosticId: activeId,
+      diagnosticTargetIndex: st.diagnosticTargetIndex,
+      transactionLocalTargetIndex: st.transactionLocalTargetIndex,
+      targetKey,
+      headingIdentity: this.headingActiveMarkerIdentity,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      geometryGeneration: this.visualGeometryGeneration,
+      selectedActiveRowCount: drawerActiveRowCount,
+      drawerActiveRowCount,
+      drawerRowsRendered,
+      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
+      activeHeadingFragmentCount: readiness.fragmentCount,
+      activeFillCount: readiness.fragmentCount,
+      activeLeasePresent: this.locateVisibilityLease != null,
+      activeFragmentRects: this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity ?? '')?.fragmentRects ?? [],
+      activeReadinessReason: readiness.reason,
+      decision: closure.decision,
+      reason: closure.reason,
+    })
+  }
+
+  /** V1 §38/§39 — the active-persistence gate + coverage surface. */
+  getHeadingActivePersistenceV1GateReport(): string[] {
+    return formatHeadingActivePersistenceV1GateReport(this.countersHeadingActiveV1)
+  }
+
+  getHeadingActivePersistenceV1CoverageReport(): string[] {
+    return formatHeadingActivePersistenceV1CoverageReport(this.coverageHeadingActiveV1)
+  }
+
+  getHeadingActivePersistenceV1GateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+  } {
+    const gates = evaluateHeadingActivePersistenceV1Gates(this.countersHeadingActiveV1)
+    const coverage = evaluateHeadingActivePersistenceV1Coverage(this.coverageHeadingActiveV1)
+    return {
+      decision: gates.decision === 'PASS' && coverage.decision === 'PASS' ? 'PASS' : 'FAIL',
+      failedChecks: gates.failedChecks.map(k => HEADING_ACTIVE_PERSISTENCE_V1_GATE_LABELS[k]),
+      unmetCoverage: coverage.unmet.map(k => HEADING_ACTIVE_PERSISTENCE_V1_COVERAGE_LABELS[k]),
+      gateDecision: gates.decision,
+      coverageDecision: coverage.decision,
+    }
+  }
+
+  /** V1 §34 — the last committed heading projection facts (persistence audit). */
+  getHeadingActivePersistenceFacts(): Readonly<HeadingActiveVisualFacts> | null {
+    const identity = this.headingActiveMarkerIdentity
+    return identity == null ? null : (this.headingActiveVisualFacts.get(identity) ?? null)
+  }
+
+  /** V1 §39 — register a real activation of ONE canonical subtarget. */
+  private registerHeadingActivationCoverage(action: string, targetKey: string | null): void {
+    if (targetKey != null) {
+      // `<documentKey>::<diagnosticId>::<index>::<identity>`
+      const diagnosticId = targetKey.split('::')[1] ?? ''
+      const set = this.headingActivatedKeysByDiagnostic.get(diagnosticId) ?? new Set<string>()
+      set.add(targetKey)
+      this.headingActivatedKeysByDiagnostic.set(diagnosticId, set)
+      // §61 — the DISTINCT subtargets of ONE multi-target diagnostic. A single
+      // diagnostic reaching 2 distinct canonical subtargets is the positive
+      // coverage of the isolated target-index namespace.
+      for (const keys of this.headingActivatedKeysByDiagnostic.values()) {
+        if (keys.size >= 2) {
+          this.coverageHeadingActiveV1.multiTargetHeadingDistinctSubtargetActivation =
+            Math.max(this.coverageHeadingActiveV1.multiTargetHeadingDistinctSubtargetActivation, keys.size)
+        }
+      }
+    }
+    if (action === 'ACTIVATE') this.coverageHeadingActiveV1.activeHeadingInitialActivateRuntime++
+    if (action === 'SWITCH') this.coverageHeadingActiveV1.activeHeadingSwitchRuntime++
   }
 
   /**
@@ -12450,7 +13114,8 @@ export class DocumentUtilityOverlayHost {
       phase: 'IDLE',
       diagnosticId: null,
       targetKey: null,
-      targetIndex: null,
+      diagnosticTargetIndex: null,
+      transactionLocalTargetIndex: null,
       transactionId: null,
       leaseToken: null,
     }
@@ -12637,7 +13302,7 @@ export class DocumentUtilityOverlayHost {
       previousActiveTargetKey: input.previous.targetKey,
       clickedDiagnosticId: input.click.diagnosticId,
       clickedTargetKey: input.click.targetKey,
-      clickedTargetIndex: input.click.targetIndex,
+      clickedTargetIndex: input.click.diagnosticTargetIndex,
       severity: input.severity,
       classifiedAction: input.action,
       sameDiagnostic: input.sameDiagnostic,
@@ -12679,6 +13344,16 @@ export class DocumentUtilityOverlayHost {
   /** §6 — DROP + count a stale callback (it must mutate nothing at all). */
   private dropStaleCallbackV2(site: string, owner: DiagnosticVisualOwnerV2 | null): void {
     this.staleCallbackDropCountSinceClick++
+    // ── V1 §53 — a stale VISUAL/LEASE clear that would have removed the CURRENT
+    // Active owner's heading visual is the "cleared the new active" defect. It is
+    // DROPPED above, so this can only be observed — never applied.
+    if (site === 'releaseActiveLocateVisualLease'
+      && this.diagnosticInteractionState.phase === 'ACTIVE'
+      && this.diagnosticInteractionState.diagnosticId != null
+      && owner?.diagnosticId != null
+      && owner.diagnosticId !== this.diagnosticInteractionState.diagnosticId) {
+      this.countersHeadingActiveV1.staleHeadingVisualCallbackClearedNewActive++
+    }
     emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STALE_CALLBACK_DROPPED_V2, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       site,
@@ -12732,7 +13407,8 @@ export class DocumentUtilityOverlayHost {
       phase: 'IDLE',
       diagnosticId: null,
       targetKey: null,
-      targetIndex: null,
+      diagnosticTargetIndex: null,
+      transactionLocalTargetIndex: null,
       transactionId: null,
       leaseToken: null,
     }
@@ -12781,7 +13457,11 @@ export class DocumentUtilityOverlayHost {
       phase: 'ACTIVE',
       diagnosticId,
       targetKey,
-      targetIndex,
+      // V1 §7/§8 — the DIRECT re-derivation uses the CANONICAL diagnostic target
+      // index (the targetKey is built from it above); the transaction-local index
+      // is transaction-scoped and therefore reset here.
+      diagnosticTargetIndex: targetIndex,
+      transactionLocalTargetIndex: null,
       transactionId: this.activeLocateTx?.id ?? null,
       leaseToken: existing.leaseToken,
     }
@@ -12796,11 +13476,21 @@ export class DocumentUtilityOverlayHost {
       const rowIndex = Number.parseInt(row.getAttribute('data-target-index') ?? '0', 10)
       const isActiveRow = activeId != null
         && row.getAttribute('data-diagnostic-id') === activeId
-        && (st.targetIndex == null || rowIndex === st.targetIndex)
+        && (st.diagnosticTargetIndex == null || rowIndex === st.diagnosticTargetIndex)
       row.classList.toggle('is-selected', isActiveRow)
       // §9 — the FOCUS ring is a SEPARATE authority from the ACTIVE row.
       row.classList.toggle('is-focused', this.focusedDiagnosticId != null
         && row.getAttribute('data-diagnostic-id') === this.focusedDiagnosticId)
+    }
+    // ── V1 §36 — the Drawer Active row must encode the SAME canonical index the
+    // Active targetKey encodes (one namespace across Drawer / Active / Heading).
+    const canonicalFromKey = parseCanonicalTargetKeyIndex(st.targetKey)
+    if (activeId != null && canonicalFromKey != null) {
+      for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]'))) {
+        if (row.getAttribute('data-diagnostic-id') !== activeId) continue
+        const encoded = Number.parseInt(row.getAttribute('data-target-index') ?? '0', 10)
+        if (encoded !== canonicalFromKey) this.countersHeadingActiveV1.drawerRowCanonicalTargetIndexMismatch++
+      }
     }
   }
 
@@ -12824,7 +13514,13 @@ export class DocumentUtilityOverlayHost {
       this.focusedDiagnosticId = transition.next.diagnosticId
       // DEMOTED observational mirror (never an authority any more).
       this.lastLocatedDiagnosticId = transition.next.diagnosticId
-      this.lastLocatedTargetIndex = transition.next.targetIndex
+      this.lastLocatedTargetIndex = transition.next.diagnosticTargetIndex ?? null
+      // ── V1 §39 — the POSITIVE coverage of a real activation/switch.
+      this.registerHeadingActivationCoverage(transition.action, transition.next.targetKey)
+    } else {
+      // V1 §39/§49 — a same-target DEACTIVATE really retired the Active owner.
+      this.coverageHeadingActiveV1.headingSameTargetDeactivateRuntime++
+      this.emitHeadingPostReconcileClosure('SAME_TARGET_DEACTIVATE')
     }
     this.refreshDrawerActiveRow()
     this.auditActiveStateInvariants()
@@ -12839,8 +13535,8 @@ export class DocumentUtilityOverlayHost {
       diagnosticAfter: transition.next.diagnosticId,
       targetKeyBefore: transition.previous.targetKey,
       targetKeyAfter: transition.next.targetKey,
-      targetIndexBefore: transition.previous.targetIndex,
-      targetIndexAfter: transition.next.targetIndex,
+      targetIndexBefore: transition.previous.diagnosticTargetIndex,
+      targetIndexAfter: transition.next.diagnosticTargetIndex,
       transactionIdBefore: transition.previous.transactionId,
       transactionIdAfter: transition.next.transactionId,
       leaseTokenBefore: transition.previous.leaseToken,
@@ -13068,6 +13764,19 @@ export class DocumentUtilityOverlayHost {
       visualTransactionV21GateDecision: this.getVisualTransactionV21GateDecision().decision,
       visualTransactionV21GateReport: this.getVisualTransactionV21GateReport(),
       visualTransactionV21CoverageReport: this.getVisualTransactionV21CoverageReport(),
+      // ── V1 §31/§32/§51D — locate ≠ cleanup ≠ feature (never one merged PASS).
+      locateDecisionV1: this.lastLocateDecision,
+      cleanupClosureDecisionV1: this.lastCleanupClosureDecision,
+      featureFigureDiagnosticLocatorV1: this.lastFeatureLocateDecision,
+      figureLocatorV1GateReport: this.getFigureLocatorV1GateReport(),
+      figureLocatorV1CoverageReport: this.getFigureLocatorV1CoverageReport(),
+      figureLocatorV1GateDecision: this.getFigureLocatorV1GateDecision().decision,
+      // ── V1-FIXTURE §21/§23 — the fixture resource closure surface.
+      fixtureResourcePreflightDecision: this.lastFixtureResourcePreflight?.decision ?? 'N/A',
+      fixtureResourcePreflightReason: this.lastFixtureResourcePreflight?.reason ?? 'NOT_THE_V1_FIXTURE',
+      fixtureResourceV1GateReport: this.getFixtureResourceV1GateReport(),
+      fixtureResourceV1CoverageReport: this.getFixtureResourceV1CoverageReport(),
+      fixtureResourceV1GateDecision: this.getFixtureResourceV1GateDecision().decision,
       decision: verdict.decision,
       reasons: verdict.reasons.join('|') || 'CLOSURE_OK',
     })
@@ -13122,7 +13831,28 @@ export class DocumentUtilityOverlayHost {
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
     const clickedTargetIndex = this.resolveClickedTargetIndex(diagnosticId, targetIndexOverride)
     const clickedTargetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, clickedTargetIndex)
-    const click: DiagnosticClick = { diagnosticId, targetKey: clickedTargetKey, targetIndex: clickedTargetIndex }
+    // ── V1 §7 — TWO namespaces. The narrowed transaction may legitimately carry
+    // only ONE target (local index 0); the CANONICAL index stays the diagnostic's
+    // own target index (never overwritten by the local one).
+    const indexAuthority = resolveCanonicalTargetIndexAuthority({
+      diagnosticTargetIndex: clickedTargetIndex,
+      transactionLocalTargetIndex: 0,
+      transactionTargetCount: 1,
+    })
+    const click: DiagnosticClick = {
+      diagnosticId,
+      targetKey: clickedTargetKey,
+      diagnosticTargetIndex: indexAuthority.canonicalDiagnosticTargetIndex,
+      transactionLocalTargetIndex: indexAuthority.transactionLocalTargetIndex,
+    }
+    this.emitTargetIndexAuthorityAudit({
+      diagnosticId,
+      diagnosticTargetIndex: click.diagnosticTargetIndex,
+      transactionLocalTargetIndex: click.transactionLocalTargetIndex,
+      targetKey: clickedTargetKey,
+      stableHeadingIdentity: null,
+      stage: 'CLICK_DISPATCH',
+    })
     const previous = this.diagnosticInteractionState
     const severity = this.diagnosticById(diagnosticId)?.severity ?? null
     const sameDiagnostic = previous.diagnosticId === diagnosticId
@@ -13296,6 +14026,8 @@ export class DocumentUtilityOverlayHost {
     const resolveCtx: DiagnosticLocationResolveContext = {
       documentKey: currentKey,
       getRoot: () => resolveBusinessContentRoot(),
+      // V1 §21 — the CURRENT source generation for the stale-revision guard.
+      getSourceRevision: () => this.diagnostics.getSnapshot()?.sourceRevision ?? null,
       resolveHeadingIdentity: (id) => this.resolveHeadingIdentity(id),
       resolveSourceLine: (line) => this.resolveSourceLine(line),
       resolveBlockIdentity: (kind, stableId) => this.resolveBlockIdentity(kind, stableId),
@@ -13317,6 +14049,12 @@ export class DocumentUtilityOverlayHost {
       normalizeResourcePath: (raw) => normalizeResourcePath(raw),
       resourceDestinationPresent: (normalizedDestination, occurrenceIndex) =>
         this.resourceDestinationStillPresent(normalizedDestination, occurrenceIndex),
+      // V1 §6/§16 — the EXPLICIT locator dispatch: a block-level structure
+      // diagnostic resolves the WHOLE owning block (never the inline occurrence
+      // resolver), and an image warning resolves ONE verified occurrence through
+      // that same block binding.
+      resolveSourceBlock: (input) => this.resolveSourceBlockInRoot(input),
+      resolveFigureOccurrence: (input) => this.resolveFigureOccurrenceInRoot(input),
     }
     let result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
 
@@ -16916,6 +17654,30 @@ export class DocumentUtilityOverlayHost {
       }
     }
     this.updateLocateBusyUi(false)
+    // ── V1 §31/§32/§51D — SEPARATE the locate decision from the cleanup closure.
+    // A clean atomic rollback (cleanup PASS) must NEVER be reported as a locate
+    // PASS, and the feature fails on either.
+    const auditCtx = this.lastLocateAuditContext
+    const locateDecision: 'PASS' | 'FAIL' | 'N/A' = auditCtx
+      ? computeLocateDecision({
+          resolveDecision: auditCtx.resolveDecision,
+          scrollDecision: auditCtx.scrollDecision,
+          highlightDecision: auditCtx.highlightDecision,
+          finalDecision: auditCtx.finalDecision,
+        })
+      : 'N/A'
+    const cleanupClosureDecision = computeCleanupClosureDecision(this.buildCleanupClosureFactsV1())
+    const featureDecision: 'PASS' | 'FAIL' = locateDecision === 'N/A'
+      ? 'FAIL'
+      : computeFeatureLocateDecision(locateDecision, cleanupClosureDecision)
+    this.lastLocateDecision = locateDecision
+    this.lastCleanupClosureDecision = cleanupClosureDecision
+    this.lastFeatureLocateDecision = featureDecision
+    if (auditCtx) {
+      // V1 §29/§30 — the REAL runtime accounting (resolve + binding + coverage).
+      this.accountFigureLocatorRuntime(auditCtx.diag, auditCtx.result, auditCtx.resolveDecision, auditCtx.reason, commit)
+    }
+    this.lastLocateAuditContext = null
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
       clickDecision: 'ACCEPT',
@@ -16924,6 +17686,9 @@ export class DocumentUtilityOverlayHost {
       committedNextTargetIndex: committedNext,
       committedIndex,
       decision: commit ? 'PASS' : 'FAIL',
+      locateDecision,
+      cleanupClosureDecision,
+      featureFigureDiagnosticLocator: featureDecision,
     })
     // V5.12-R3 §6/§17 — the DrawerLocateRecoveryLease NEVER survives a terminal.
     // A terminal COMMIT while the Drawer is still transiently collapsed is the
@@ -17081,6 +17846,10 @@ export class DocumentUtilityOverlayHost {
     committedIndex?: number | null
     detail?: string
     decision?: string
+    /** V1 §31/§51D — the locate decision, kept SEPARATE from cleanup closure. */
+    locateDecision?: 'PASS' | 'FAIL' | 'N/A'
+    cleanupClosureDecision?: 'PASS' | 'FAIL' | 'N/A'
+    featureFigureDiagnosticLocator?: 'PASS' | 'FAIL'
   }): void {
     const tx = this.activeLocateTx
     const container = getActiveEditorScrollContainer()
@@ -17103,6 +17872,11 @@ export class DocumentUtilityOverlayHost {
       committedIndex: payload.committedIndex ?? null,
       detail: payload.detail ?? null,
       decision: payload.decision ?? 'PASS',
+      // V1 §31/§32 — the terminal separates locate from cleanup: a cleanup PASS
+      // must never mask a locate FAIL.
+      locateDecision: payload.locateDecision ?? null,
+      cleanupClosureDecision: payload.cleanupClosureDecision ?? null,
+      featureFigureDiagnosticLocator: payload.featureFigureDiagnosticLocator ?? null,
     })
   }
 
@@ -17546,6 +18320,870 @@ export class DocumentUtilityOverlayHost {
     return Array.from(root.querySelectorAll<HTMLElement>(selector))[ordinal] ?? null
   }
 
+  /**
+   * V1 §6/§8/§27 — Source ↔ DOM owning-block binding.
+   *
+   * Resolves the Markdown owning block behind a `source-block` location into
+   * ONE live DOM block plus its STABLE DOM block identity. Never `dom-block:p:na`:
+   * the identity is derived from a Typora runtime id / `data-line` / element id,
+   * with a deterministic structural fallback.
+   */
+  private resolveSourceBlockInRoot(input: {
+    startLine: number
+    endLine: number
+    sourceStart: number
+    sourceEnd: number
+    sourceBlockIdentity: string
+    sourceBlockOrdinal: number
+  }): SourceBlockBinding | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    // 1. exact Typora `data-line` stamp (the block's owning source line).
+    const byLine = this.resolveSourceLine(input.startLine)
+    if (byLine) return this.bindAndAuditSourceBlock(byLine, 1, 'data-line', input)
+    // 2. text signature (+ the block ordinal for byte-identical blocks).
+    const firstLine = this.getSourceLineTextAt(input.startLine)
+    const needle = normalizeSourceAnchorText(firstLine ?? '')
+    if (needle !== '') {
+      const matches: HTMLElement[] = []
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,figure,blockquote,li,pre,h1,h2,h3,h4,h5,h6,table'))) {
+        if (normalizeSourceAnchorText(el.textContent) === needle) matches.push(el)
+      }
+      if (matches.length > 1) {
+        // §9 — the source block ordinal disambiguates byte-identical blocks
+        // deterministically (never a random / first pick).
+        const idx = Math.max(0, Math.min(matches.length - 1, Math.floor(input.sourceBlockOrdinal)))
+        return this.bindAndAuditSourceBlock(matches[idx], matches.length, 'text-ordinal', input)
+      }
+      if (matches.length === 1) return this.bindAndAuditSourceBlock(matches[0], 1, 'text', input)
+    }
+    // §27 — the MISSING binding is audited too (never a silent null).
+    emitRuntimeAudit(FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      sourceRevision: this.diagnostics.getSnapshot()?.sourceRevision ?? null,
+      sourceBlockIdentity: input.sourceBlockIdentity,
+      sourceStart: input.sourceStart,
+      sourceEnd: input.sourceEnd,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      domBlockIdentity: null,
+      domTag: null,
+      runtimeId: null,
+      bindingAuthority: 'none',
+      candidateCount: 0,
+      decision: 'MISSING',
+      reason: 'DOM_BLOCK_IDENTITY_UNRESOLVABLE',
+    })
+    return {
+      element: null,
+      domBlockIdentity: '',
+      domTag: '',
+      candidateCount: 0,
+      decision: 'MISSING',
+      bindingAuthority: 'none',
+    }
+  }
+
+  /** Build the binding record AND emit the ONE Source↔DOM binding audit (§27). */
+  private bindAndAuditSourceBlock(
+    el: HTMLElement,
+    candidateCount: number,
+    authority: string,
+    input: { sourceBlockIdentity: string; sourceStart: number; sourceEnd: number; startLine: number; endLine: number },
+  ): SourceBlockBinding {
+    const binding = this.makeSourceBlockBinding(el, candidateCount, authority)
+    emitRuntimeAudit(FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      sourceRevision: this.diagnostics.getSnapshot()?.sourceRevision ?? null,
+      sourceBlockIdentity: input.sourceBlockIdentity,
+      sourceStart: input.sourceStart,
+      sourceEnd: input.sourceEnd,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      domBlockIdentity: binding.domBlockIdentity,
+      domTag: binding.domTag,
+      runtimeId: el.getAttribute('data-node-id') ?? el.getAttribute('data-block-id') ?? null,
+      bindingAuthority: binding.bindingAuthority,
+      candidateCount: binding.candidateCount,
+      decision: binding.decision,
+      reason: isResolvableDomBlockIdentity(binding.domBlockIdentity)
+        ? 'DOM_BLOCK_IDENTITY_RESOLVABLE'
+        : 'DOM_BLOCK_IDENTITY_UNRESOLVABLE',
+    })
+    return binding
+  }
+
+  /** Build a binding record with the STABLE DOM block identity (§7). */
+  private makeSourceBlockBinding(el: HTMLElement, candidateCount: number, authority: string): SourceBlockBinding {
+    const parent = el.parentElement
+    const ordinal = parent ? Array.from(parent.children).indexOf(el) : 0
+    const firstImage = el.querySelector<HTMLElement>('img')
+    const domBlockIdentity = buildDomBlockIdentity({
+      tag: el.tagName,
+      runtimeId: el.getAttribute('data-node-id') ?? el.getAttribute('data-block-id'),
+      dataLine: el.getAttribute('data-line'),
+      elementId: el.id !== '' ? el.id : null,
+      ordinal,
+      structuralSignature: `${el.querySelectorAll('img').length}:${firstImage?.getAttribute('src') ?? ''}`,
+    })
+    return {
+      element: el,
+      domBlockIdentity,
+      domTag: el.tagName.toLowerCase(),
+      candidateCount,
+      decision: candidateCount === 1 ? 'BOUND' : 'AMBIGUOUS',
+      bindingAuthority: authority,
+    }
+  }
+
+  /** V1 §26/§51A — emit the ONE figure locator audit (locator kind + runtime facts). */
+  private emitFigureLocatorAudit(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    result: DiagnosticLocationResolveResult | null,
+    resolveDecision: string,
+    reason: string,
+    visualCommitted: boolean | null,
+  ): void {
+    if (!diag) return
+    const locatorKind = figureDiagnosticLocatorKindForRule(diag.code)
+    if (locatorKind === 'other') return
+    const occurrenceIdentity = diag.location?.kind === 'figure-occurrence'
+      ? diag.location.occurrenceIdentity
+      : null
+    const sourceBlockIdentity = diag.location?.kind === 'source-block'
+      ? diag.location.sourceBlockIdentity
+      : (occurrenceIdentity?.sourceBlockIdentity ?? null)
+    const binding = result?.sourceBlockBinding ?? null
+    const hint = result?.sourceOccurrence ?? null
+    const sourceRevisionAtScan = this.diagnostics.getSnapshot()?.sourceRevision ?? null
+    const sourceRevisionAtLocate = this.diagnostics.getSnapshot()?.sourceRevision ?? null
+    emitRuntimeAudit(FIGURE_DIAGNOSTIC_LOCATOR_AUDIT, {
+      documentKey: diag.documentKey ?? this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diag.id,
+      ruleId: getRuleMeta(diag.code)?.ruleId ?? diag.code,
+      locatorKind,
+      sourceRevisionAtScan,
+      sourceRevisionAtLocate,
+      sourceBlockIdentity,
+      sourceStart: diag.location?.kind === 'source-block'
+        ? diag.location.sourceStart
+        : (hint?.resolvedSourceStart ?? null),
+      sourceEnd: diag.location?.kind === 'source-block'
+        ? diag.location.sourceEnd
+        : (hint?.resolvedSourceEnd ?? null),
+      figureOccurrenceIdentity: occurrenceIdentity != null
+        ? `${occurrenceIdentity.sourceBlockIdentity}#${occurrenceIdentity.tokenStart ?? 'n'}`
+        : null,
+      domBlockIdentity: binding?.domBlockIdentity ?? hint?.domBlockIdentity ?? null,
+      resolvedNodeKind: result?.resolvedNodeKind ?? null,
+      resolvedBlockIdentity: result?.resolvedBlockIdentity ?? null,
+      candidateCount: binding?.candidateCount ?? 0,
+      duplicateCandidateCount: locatorKind === 'figure-occurrence' && hint != null
+        ? Math.max(0, hint.matchCountWithinAnchor - 1)
+        : 0,
+      usedDestinationMatch: locatorKind === 'figure-occurrence' && hint?.usedSourceBlockFallback === false,
+      usedOccurrenceIdentity: occurrenceIdentity != null,
+      usedBlockBinding: binding != null && binding.decision === 'BOUND',
+      usedFallback: hint?.usedSourceBlockFallback === true,
+      resolveDecision,
+      resolveReason: reason,
+      scrollDecision: resolveDecision === 'RESOLVED' ? 'PASS' : 'N/A',
+      highlightDecision: visualCommitted == null ? 'N/A' : (visualCommitted ? 'PASS' : 'FAIL'),
+      finalDecision: resolveDecision === 'RESOLVED' && visualCommitted !== false ? 'PASS' : 'FAIL',
+    })
+  }
+
+  /**
+   * V1 §29/§30 — account ONE figure locate result against the RUNTIME gates and
+   * the positive coverage. This is what makes the gates REAL: they consume the
+   * actual resolve / binding outcome, never just the presence of metadata.
+   */
+  private accountFigureLocatorRuntime(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    result: DiagnosticLocationResolveResult | null,
+    resolveDecision: string,
+    reason: string,
+    committed: boolean,
+  ): void {
+    if (!diag) return
+    const locatorKind = figureDiagnosticLocatorKindForRule(diag.code)
+    if (locatorKind === 'other') return
+    const isStructure = isBlockLevelFigureRule(diag.code)
+    const unresolved = resolveDecision !== 'RESOLVED'
+    const ambiguousInline = reason === 'AMBIGUOUS_DUPLICATE_INLINE_RANGE'
+      || reason === 'SOURCE_BLOCK_BINDING_AMBIGUOUS'
+    // §41.4 — a structure rule must NEVER report the inline duplicate reason.
+    if (isStructure && reason === 'AMBIGUOUS_DUPLICATE_INLINE_RANGE') {
+      this.countersFigureLocatorV1.structureAmbiguousDuplicateInlineRange++
+    }
+    if (isStructure && unresolved) this.countersFigureLocatorV1.structureRuntimeUnresolved++
+    if (!isStructure && unresolved) this.countersFigureLocatorV1.warningRuntimeUnresolved++
+    if (!isStructure && ambiguousInline) this.countersFigureLocatorV1.warningDuplicateDestinationAmbiguity++
+    const binding = result?.sourceBlockBinding ?? null
+    if (isStructure) {
+      if (!binding || binding.decision === 'MISSING') this.countersFigureLocatorV1.structureBlockBindingMissing++
+      if (binding?.decision === 'AMBIGUOUS') this.countersFigureLocatorV1.structureBlockBindingAmbiguous++
+      if (binding?.domBlockIdentity != null && !isResolvableDomBlockIdentity(binding.domBlockIdentity)) {
+        this.countersFigureLocatorV1.structureBlockBindingMissing++
+      }
+    } else {
+      const occurrenceIdentity = diag.location?.kind === 'figure-occurrence'
+        ? diag.location.occurrenceIdentity
+        : null
+      if (!figureOccurrenceIdentityIsStable(occurrenceIdentity)) {
+        this.countersFigureLocatorV1.occurrenceIdentityMissing++
+      }
+    }
+    const hint = result?.sourceOccurrence ?? null
+    // §20 — a committed local-missing locate whose image DOM is absent must have
+    // used the source-block fallback.
+    if (diag.code === 'FIGURE_LOCAL_IMAGE_MISSING' && committed) {
+      const imageDomAbsent = hint != null
+        && hint.usedSourceBlockFallback !== true
+        && result?.resolvedNodeKind != null
+        && result.resolvedNodeKind !== 'img'
+      if (imageDomAbsent) this.countersFigureLocatorV1.localImageMissingWithoutSourceBlockFallback++
+    }
+    // §28/§52 — a locate cannot be PASS without a real, committed visual.
+    if (resolveDecision === 'RESOLVED' && committed && result?.element == null && result?.scrollAction == null) {
+      this.countersFigureLocatorV1.runtimeLocateFalsePass++
+    }
+    // ── §30 — POSITIVE runtime coverage.
+    if (resolveDecision === 'RESOLVED' && committed) {
+      if (isStructure) {
+        this.coverageFigureLocatorV1.structureBlockLocateRuntime++
+      } else {
+        const destination = String(
+          (diag.metadata as Record<string, unknown> | undefined)?.canonicalDestination
+          ?? (diag.metadata as Record<string, unknown> | undefined)?.destination
+          ?? '',
+        )
+        // §30 — a committed locate of an occurrence BELONGS to a duplicate
+        // destination group when the CURRENT snapshot publishes more than one
+        // diagnostic for the same rule + destination. Two such locates (e.g.
+        // `![](same.png)` twice) therefore satisfy the >= 2 requirement.
+        const siblingCount = (this.diagnostics.getSnapshot()?.diagnostics ?? [])
+          .filter(d => d.code === diag.code && String(
+            (d.metadata as Record<string, unknown> | undefined)?.canonicalDestination
+            ?? (d.metadata as Record<string, unknown> | undefined)?.destination
+            ?? '',
+          ) === destination)
+          .length
+        if (diag.code === 'FIGURE_MISSING_NAME') {
+          this.coverageFigureLocatorV1.missingNameOccurrenceLocateRuntime++
+        } else if (diag.code === 'FIGURE_LOCAL_IMAGE_MISSING') {
+          this.coverageFigureLocatorV1.localImageMissingLocateRuntime++
+        }
+        if (siblingCount >= 2) {
+          this.coverageFigureLocatorV1.duplicateDestinationDistinctOccurrenceLocateRuntime++
+        }
+        // ── V1-FIXTURE §27/§31/§33/§36/§37 — RENDERED vs FALLBACK classification.
+        this.accountFixtureRenderedOccurrence(diag, result, resolveDecision, reason, committed, destination, siblingCount)
+      }
+    }
+  }
+
+  /**
+   * V1-FIXTURE §27/§31/§33/§36/§37/§38 — classify ONE figure warning locate as
+   * RENDERED_OCCURRENCE / MISSING_IMAGE_FALLBACK and account it. A fallback
+   * locate is NEVER counted as a rendered occurrence.
+   */
+  private accountFixtureRenderedOccurrence(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult | null,
+    resolveDecision: string,
+    reason: string,
+    committed: boolean,
+    destination: string,
+    siblingCount: number,
+  ): void {
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const resourceExists = typeof meta.localFileExists === 'boolean' ? meta.localFileExists : null
+    const hint = result?.sourceOccurrence ?? null
+    const usedFallback = hint?.usedSourceBlockFallback === true
+    const kind = classifyFigureLocateKind({ ruleCode: diag.code, usedSourceBlockFallback: usedFallback })
+    const element = result?.element ?? null
+    const imgFacts = this.measureRenderedImgFacts(element)
+    const resolvedTag = (result?.resolvedNodeKind ?? '').toLowerCase()
+
+    if (resourceExists === false) {
+      // §36 — the missing-image fallback path.
+      if (resolveDecision !== 'RESOLVED') {
+        this.countersFixtureResourceV1.missingImageFallbackUnresolved++
+      } else if (committed) {
+        if (!usedFallback) this.countersFixtureResourceV1.missingImageFallbackWrongBlock++
+        else this.coverageFixtureResourceV1.missingImageSourceBlockFallbackRuntimeCount++
+      }
+      // §37 — a missing resource must NEVER be counted as a rendered occurrence.
+      if (kind === 'RENDERED_OCCURRENCE') {
+        this.countersFixtureResourceV1.brokenImageFallbackCountedAsRenderedOccurrence++
+      }
+      return
+    }
+
+    if (kind !== 'RENDERED_OCCURRENCE') return
+
+    if (resolveDecision !== 'RESOLVED') {
+      this.countersFixtureResourceV1.renderedFigureOccurrenceRuntimeUnresolved++
+      return
+    }
+    if (!committed) return
+
+    // §31 — a VISIBLE resource must resolve to a real, decoded <img> with no fallback.
+    if (usedFallback) this.countersFixtureResourceV1.renderedFigureOccurrenceFallbackUsed++
+    if (resolvedTag !== 'img') this.countersFixtureResourceV1.renderedFigureOccurrenceNonImgTarget++
+    if (!imgFacts.imgComplete || imgFacts.naturalWidth <= 0 || imgFacts.naturalHeight <= 0) {
+      this.countersFixtureResourceV1.renderedFigureOccurrenceDecodeFail++
+    }
+
+    // §33/§34 — duplicate-destination distinctness (the REAL DOM element identity).
+    const occurrenceIdentity = diag.location?.kind === 'figure-occurrence'
+      ? diag.location.occurrenceIdentity
+      : null
+    const occurrenceKey = occurrenceIdentity != null
+      ? `${occurrenceIdentity.sourceBlockIdentity}#${occurrenceIdentity.tokenStart ?? 'n'}`
+      : `${destination}#${String(meta.occurrenceIndex ?? 0)}`
+    const sourceBlockKey = occurrenceIdentity?.sourceBlockIdentity ?? `block:${String(meta.startLine ?? 'n')}`
+    const domIdentity = this.domImageIdentity(element)
+    const group = this.figureRenderedTargetByDestination.get(destination)
+      ?? { sourceBlockIdentities: new Set<string>(), occurrenceIdentities: new Set<string>(), domElementIdentities: new Set<string>() }
+    if (group.occurrenceIdentities.size > 0
+      && !group.occurrenceIdentities.has(occurrenceKey)
+      && domIdentity != null
+      && group.domElementIdentities.has(domIdentity)) {
+      // §34 — a DIFFERENT occurrence resolved onto an ALREADY used DOM image.
+      this.countersFixtureResourceV1.duplicateDestinationWrongFirstMatch++
+      this.countersFixtureResourceV1.renderedFigureOccurrenceWrongTarget++
+    }
+    group.occurrenceIdentities.add(occurrenceKey)
+    group.sourceBlockIdentities.add(sourceBlockKey)
+    if (domIdentity != null) group.domElementIdentities.add(domIdentity)
+    this.figureRenderedTargetByDestination.set(destination, group)
+    if (siblingCount >= 2) {
+      const cov = this.coverageFixtureResourceV1
+      cov.duplicateDestinationVisibleOccurrenceCount = Math.max(cov.duplicateDestinationVisibleOccurrenceCount, group.occurrenceIdentities.size)
+      cov.duplicateDestinationDistinctSourceBlockIdentityCount = Math.max(cov.duplicateDestinationDistinctSourceBlockIdentityCount, group.sourceBlockIdentities.size)
+      cov.duplicateDestinationDistinctOccurrenceIdentityCount = Math.max(cov.duplicateDestinationDistinctOccurrenceIdentityCount, group.occurrenceIdentities.size)
+      cov.duplicateDestinationDistinctResolvedDomElementCount = Math.max(cov.duplicateDestinationDistinctResolvedDomElementCount, group.domElementIdentities.size)
+    }
+
+    // §38 — a successful resolution alone is NOT acceptance.
+    const correctOccurrence = !(group.occurrenceIdentities.size > 1 && domIdentity == null)
+    const verdict = evaluateRenderedOccurrenceLocate({
+      resourceExists,
+      resolvedNodeTag: result?.resolvedNodeKind ?? null,
+      usedSourceBlockFallback: usedFallback,
+      imgComplete: imgFacts.imgComplete,
+      naturalWidth: imgFacts.naturalWidth,
+      naturalHeight: imgFacts.naturalHeight,
+      resolveDecision,
+      correctOccurrence,
+    })
+    if (verdict.decision === 'PASS') {
+      this.coverageFixtureResourceV1.renderedFigureOccurrenceLocateRuntimeCount++
+    } else if (verdict.failedChecks.includes('WRONG_TARGET')) {
+      this.countersFixtureResourceV1.renderedFigureOccurrenceWrongTarget++
+    }
+    if (siblingCount >= 2 && (reason.includes('AMBIGUOUS') || verdict.failedChecks.includes('WRONG_TARGET'))) {
+      this.countersFixtureResourceV1.duplicateDestinationAmbiguity++
+    }
+  }
+
+  /** §20/§51 — the REAL `<img>` decode facts of a resolved target. */
+  private measureRenderedImgFacts(el: HTMLElement | null): {
+    domImgPresent: boolean
+    imgComplete: boolean
+    naturalWidth: number
+    naturalHeight: number
+  } {
+    const img = el != null && el.tagName === 'IMG' ? el as HTMLImageElement : null
+    if (!img) return { domImgPresent: false, imgComplete: false, naturalWidth: 0, naturalHeight: 0 }
+    return {
+      domImgPresent: true,
+      imgComplete: img.complete === true,
+      naturalWidth: Number(img.naturalWidth ?? 0),
+      naturalHeight: Number(img.naturalHeight ?? 0),
+    }
+  }
+
+  /** §33/§34 — the stable DOM identity of one rendered image (root image ordinal). */
+  private domImageIdentity(el: HTMLElement | null): string | null {
+    if (el == null || el.tagName !== 'IMG') return null
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const images = Array.from(root.querySelectorAll<HTMLElement>('img'))
+    const ordinal = images.indexOf(el)
+    if (ordinal < 0) return null
+    return `dom-img:${ordinal}`
+  }
+
+  /**
+   * V1 §29/§30/§48 — the ONE runtime gate report. It combines the session gate
+   * counters with the positive coverage requirement so a document that never
+   * exercises a locator path can never look like a PASS.
+   */
+  getFigureLocatorV1GateReport(): string[] {
+    return formatFigureDiagnosticLocatorV1GateReport(this.countersFigureLocatorV1)
+  }
+
+  getFigureLocatorV1CoverageReport(): string[] {
+    return formatFigureDiagnosticLocatorV1CoverageReport(this.coverageFigureLocatorV1)
+  }
+
+  getFigureLocatorV1GateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+  } {
+    const gates = evaluateFigureDiagnosticLocatorV1Gates(this.countersFigureLocatorV1)
+    const coverage = evaluateFigureDiagnosticLocatorV1Coverage(this.coverageFigureLocatorV1)
+    return {
+      decision: gates.decision === 'PASS' && coverage.decision === 'PASS' ? 'PASS' : 'FAIL',
+      failedChecks: gates.failedChecks,
+      unmetCoverage: coverage.unmet,
+      gateDecision: gates.decision,
+      coverageDecision: coverage.decision,
+    }
+  }
+
+  /** V1 §51D — the last locate / cleanup / feature decisions, kept independent. */
+  getFigureLocateDecisions(): {
+    locateDecision: 'PASS' | 'FAIL' | 'N/A'
+    cleanupClosureDecision: 'PASS' | 'FAIL' | 'N/A'
+    featureDecision: 'PASS' | 'FAIL'
+  } {
+    return {
+      locateDecision: this.lastLocateDecision,
+      cleanupClosureDecision: this.lastCleanupClosureDecision,
+      featureDecision: this.lastFeatureLocateDecision,
+    }
+  }
+
+  // ── V1-FIXTURE — Fixture Resource Closure (§18/§19/§21/§23) ──────────────
+
+  private fixtureResourceDiagnosticFor(
+    snapshot: DocumentDiagnosticsSnapshot,
+    relativeDestination: string,
+  ): 'NONE' | 'FIGURE_LOCAL_IMAGE_MISSING' {
+    const needle = normalizeResourcePath(relativeDestination)
+    const basename = needle.slice(needle.lastIndexOf('/') + 1)
+    for (const d of snapshot.diagnostics) {
+      if (d.code !== 'FIGURE_LOCAL_IMAGE_MISSING') continue
+      const m = (d.metadata ?? {}) as Record<string, unknown>
+      const raw = String(m.rawDestination ?? m.destination ?? '')
+      const canon = String(m.canonicalDestination ?? '')
+      const normRaw = normalizeResourcePath(raw)
+      if (normRaw === needle || normRaw === basename
+        || normalizeResourcePath(canon) === needle || normalizeResourcePath(canon) === basename) {
+        return 'FIGURE_LOCAL_IMAGE_MISSING'
+      }
+    }
+    return 'NONE'
+  }
+
+  /**
+   * §18/§19/§23 — the Fixture Resource Preflight.
+   *
+   * Runs for EVERY admitted diagnostics snapshot, but ONLY for the V1 runtime
+   * fixture document. For each image reference it records the EXPECTED state,
+   * the REAL filesystem existence (the SAME authority the diagnostics use) and
+   * the REAL `<img>` DOM + decode facts, then evaluates the resource gates.
+   */
+  private runFixtureResourcePreflight(snapshot: DocumentDiagnosticsSnapshot): void {
+    const documentKey = (snapshot.documentKey ?? '').replace(/\\/g, '/')
+    if (!documentKey.endsWith(FIGURE_LOCATOR_V1_FIXTURE_RELATIVE_PATH)) {
+      this.lastFixtureResourcePreflight = null
+      return
+    }
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    if (markdown == null) return
+    const references = extractFixtureImageReferences(markdown)
+    if (references.length === 0) return
+
+    // §20 — a NEW fixture document restarts the bounded decode-settle budget.
+    if (this.fixturePreflightDocumentKey !== snapshot.documentKey) {
+      this.fixturePreflightDocumentKey = snapshot.documentKey
+      this.fixturePreflightAttempts = 0
+      this.fixtureDecodeListenerAttached = false
+    }
+
+    const fixtureDir = FIGURE_LOCATOR_V1_FIXTURE_RELATIVE_PATH.replace(/[^/]*$/, '')
+    const root = resolveBusinessContentRoot()
+    const images = root ? Array.from(root.querySelectorAll<HTMLElement>('img')) : []
+    const vaultRoot = this.opts.ctx.authority.vaultRoot
+    const observations: FixtureResourceObservation[] = []
+
+    for (const ref of references) {
+      const vaultRelative = normalizeResourcePath(`${fixtureDir}${ref.relativeDestination}`)
+      const absolute = vaultRoot ? `${vaultRoot.replace(/[\\/]+$/, '')}/${vaultRelative}` : vaultRelative
+      // REAL filesystem authority (the SAME predicate the diagnostics use).
+      const missing = typeof this.opts.providers.isLinkTargetMissing === 'function'
+        ? this.opts.providers.isLinkTargetMissing(ref.rawDestination)
+        : false
+      const img = images.find(el =>
+        this.normalizeDomSrcToVaultRelative(el.getAttribute('src') ?? '') === vaultRelative) ?? null
+      const facts = this.measureRenderedImgFacts(img)
+      const diagnostic = this.fixtureResourceDiagnosticFor(snapshot, ref.relativeDestination)
+      const observation: FixtureResourceObservation = {
+        caseId: ref.caseId,
+        rawDestination: ref.rawDestination,
+        relativeDestination: ref.relativeDestination,
+        expectedState: ref.expectedState,
+        resolvedAbsolutePath: absolute,
+        fsExists: !missing,
+        domImgPresent: facts.domImgPresent,
+        imgComplete: facts.imgComplete,
+        naturalWidth: facts.naturalWidth,
+        naturalHeight: facts.naturalHeight,
+        resourceDiagnostic: diagnostic,
+      }
+      observations.push(observation)
+    }
+
+    // §20 — decide the bounded decode-settle retry BEFORE emitting: a transient
+    // "not rendered yet" state must never be published as a resource FAIL.
+    const undecoded = observations.filter(o =>
+      o.expectedState === 'VISIBLE' && o.domImgPresent && !observationProvesRenderedImage(o))
+    const domMissing = observations.filter(o => o.expectedState === 'VISIBLE' && !o.domImgPresent).length
+    const willRetry = (undecoded.length > 0 || domMissing > 0)
+      && this.fixturePreflightAttempts < FIGURE_FIXTURE_DECODE_MAX_ATTEMPTS
+
+    // §19 — one emission per DISTINCT settled fact set (never a transient state).
+    const emitSignature = observations
+      .map(o => `${o.caseId}|${o.relativeDestination}|${o.fsExists}|${o.domImgPresent}|${o.imgComplete}|${o.naturalWidth}x${o.naturalHeight}|${o.resourceDiagnostic}`)
+      .join('||')
+    const emitAudits = !willRetry && emitSignature !== this.lastFixturePreflightEmitSignature
+    if (emitAudits) this.lastFixturePreflightEmitSignature = emitSignature
+    if (emitAudits) {
+      for (const observation of observations) {
+        emitRuntimeAudit(FIGURE_DIAGNOSTIC_FIXTURE_RESOURCE_AUDIT, {
+          documentKey: snapshot.documentKey,
+          caseId: observation.caseId,
+          rawDestination: observation.rawDestination,
+          normalizedDestination: observation.relativeDestination,
+          resolvedAbsolutePath: observation.resolvedAbsolutePath,
+          expectedState: observation.expectedState,
+          fsExists: observation.fsExists,
+          domImgPresent: observation.domImgPresent,
+          imgComplete: observation.imgComplete,
+          naturalWidth: observation.naturalWidth,
+          naturalHeight: observation.naturalHeight,
+          resourceDiagnostic: observation.resourceDiagnostic,
+          decision: observation.expectedState === 'VISIBLE'
+            ? (observationProvesRenderedImage(observation) ? 'PASS' : 'FAIL')
+            : (observation.fsExists ? 'FAIL' : 'PASS'),
+          reason: observation.expectedState === 'VISIBLE'
+            ? (observationProvesRenderedImage(observation) ? 'EXPECTED_VISIBLE_RENDERED' : 'EXPECTED_VISIBLE_NOT_RENDERED')
+            : (observation.fsExists ? 'EXPECTED_MISSING_BUT_EXISTS' : 'EXPECTED_MISSING_CONFIRMED'),
+        })
+      }
+    }
+
+    const preflight = evaluateFixtureResourcePreflight({
+      documentKey: snapshot.documentKey,
+      references,
+      observations,
+    })
+    this.lastFixtureResourcePreflight = preflight
+
+    // ── §21 — assign the SNAPSHOT-scoped resource gates (they describe the
+    // current document, never a cumulative click history).
+    const g = this.countersFixtureResourceV1
+    const visibleObs = observations.filter(o => o.expectedState === 'VISIBLE')
+    g.unexpectedMissingImageInVisibleFixture = preflight.unexpectedMissingReferences.length
+    g.unexpectedExistingImageInExpectedMissingCase = preflight.unexpectedExistingExpectedMissingReferences.length
+    g.fixtureResourceUnknownPolicy = preflight.unknownPolicyReferences.length
+    g.visibleFixtureImageDomMissing = Math.max(0, preflight.expectedVisibleReferenceCount - preflight.expectedVisibleRenderedImgCount)
+    g.visibleFixtureImageDecodeFail = Math.max(0, preflight.expectedVisibleReferenceCount - preflight.expectedVisibleDecodedImgCount)
+    g.visibleFixtureLocalImageMissingDiagnostic =
+      visibleObs.filter(o => o.resourceDiagnostic === 'FIGURE_LOCAL_IMAGE_MISSING').length
+    g.legacyNonexistentFixturePathReference =
+      references.filter(r => isLegacyNonexistentFixturePath(r.rawDestination)).length
+    g.unexpectedFigureLocalImageMissing = snapshot.diagnostics.filter(d => {
+      if (d.code !== 'FIGURE_LOCAL_IMAGE_MISSING') return false
+      const m = (d.metadata ?? {}) as Record<string, unknown>
+      const raw = normalizeResourcePath(String(m.rawDestination ?? m.destination ?? ''))
+      const basename = raw.slice(raw.lastIndexOf('/') + 1)
+      return !EXPECTED_MISSING_FIGURE_RESOURCES.has(raw) && !EXPECTED_MISSING_FIGURE_RESOURCES.has(basename)
+    }).length
+
+    // ── §22 — the positive fixture coverage.
+    const cov = this.coverageFixtureResourceV1
+    cov.visibleFixtureImageReferenceCount = preflight.expectedVisibleReferenceCount
+    cov.visibleFixtureRenderedImageDomCount = preflight.expectedVisibleRenderedImgCount
+    cov.expectedMissingImageCaseCount = preflight.expectedMissingReferenceCount
+    cov.expectedMissingImageDiagnosticCount = snapshot.diagnostics.filter(d => {
+      if (d.code !== 'FIGURE_LOCAL_IMAGE_MISSING') return false
+      const m = (d.metadata ?? {}) as Record<string, unknown>
+      const raw = normalizeResourcePath(String(m.rawDestination ?? m.destination ?? ''))
+      const basename = raw.slice(raw.lastIndexOf('/') + 1)
+      return EXPECTED_MISSING_FIGURE_RESOURCES.has(raw) || EXPECTED_MISSING_FIGURE_RESOURCES.has(basename)
+    }).length
+
+    const gateDecision = evaluateFixtureResourceV1Gates(g)
+    const coverageDecision = evaluateFixtureResourceV1Coverage(cov)
+    if (emitAudits) {
+      emitRuntimeAudit(FIGURE_DIAGNOSTIC_FIXTURE_RESOURCE_PREFLIGHT, {
+        ...preflight,
+        gateReport: formatFixtureResourceV1GateReport(g),
+        coverageReport: formatFixtureResourceV1CoverageReport(cov),
+        gateDecision: gateDecision.decision,
+        // §23 — the FIXTURE RESOURCE preflight decision (resources + resource
+        // gates). The locator COVERAGE (clicks) is reported separately so a
+        // not-yet-clicked fixture can never be mistaken for a resource FAIL.
+        decision: preflight.decision === 'PASS' && gateDecision.decision === 'PASS' ? 'PASS' : 'FAIL',
+        locatorCoverageDecision: coverageDecision.decision,
+        decodeSettleAttempt: this.fixturePreflightAttempts,
+      })
+    }
+
+    // §20 — a bounded LOAD settle wait for the REAL `<img>` decode (never an
+    // infinite poll): a bounded attempt budget + a one-shot load/error listener.
+    if (willRetry) {
+      this.fixturePreflightAttempts++
+      this.scheduleFixturePreflightRetry(snapshot)
+    }
+  }
+
+  /** §20 — ONE bounded decode-settle retry (immediate on img load / error). */
+  private scheduleFixturePreflightRetry(snapshot: DocumentDiagnosticsSnapshot): void {
+    const root = resolveBusinessContentRoot()
+    if (root && !this.fixtureDecodeListenerAttached) {
+      this.fixtureDecodeListenerAttached = true
+      const onSettled = (): void => {
+        if (this.fixturePreflightTimer != null) {
+          clearTimeout(this.fixturePreflightTimer)
+          this.fixturePreflightTimer = null
+        }
+        if (!this.disposed) this.runFixtureResourcePreflight(snapshot)
+      }
+      for (const img of Array.from(root.querySelectorAll<HTMLElement>('img'))) {
+        img.addEventListener('load', onSettled, { once: true })
+        img.addEventListener('error', onSettled, { once: true })
+      }
+    }
+    if (this.fixturePreflightTimer != null) return
+    this.fixturePreflightTimer = setTimeout(() => {
+      this.fixturePreflightTimer = null
+      if (this.disposed) return
+      this.runFixtureResourcePreflight(snapshot)
+    }, FIGURE_FIXTURE_DECODE_RETRY_MS)
+  }
+
+  /** §21/§31/§33/§36/§37 — the fixture resource gate report. */
+  getFixtureResourceV1GateReport(): string[] {
+    return formatFixtureResourceV1GateReport(this.countersFixtureResourceV1)
+  }
+
+  getFixtureResourceV1CoverageReport(): string[] {
+    return formatFixtureResourceV1CoverageReport(this.coverageFixtureResourceV1)
+  }
+
+  getFixtureResourceV1GateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+  } {
+    const gates = evaluateFixtureResourceV1Gates(this.countersFixtureResourceV1)
+    const coverage = evaluateFixtureResourceV1Coverage(this.coverageFixtureResourceV1)
+    return {
+      decision: gates.decision === 'PASS' && coverage.decision === 'PASS' ? 'PASS' : 'FAIL',
+      failedChecks: gates.failedChecks.map(k => FIXTURE_RESOURCE_V1_GATE_LABELS[k]),
+      unmetCoverage: coverage.unmet.map(k => FIXTURE_RESOURCE_V1_COVERAGE_LABELS[k]),
+      gateDecision: gates.decision,
+      coverageDecision: coverage.decision,
+    }
+  }
+
+  /** §18/§23/§58 — the last Fixture Resource Preflight result (null = not the fixture). */
+  getFixtureResourcePreflight(): FixtureResourcePreflightResult | null {
+    return this.lastFixtureResourcePreflight
+  }
+
+  /** §22 — the fixture coverage key list (observability for the runtime report). */
+  getFixtureResourceV1CoverageKeys(): readonly string[] {
+    return FIXTURE_RESOURCE_V1_COVERAGE_KEYS
+  }
+
+  /**
+   * V1 §31 — the CLEANUP closure facts. A committed locate intentionally keeps
+   * its ACTIVE visual, so the teardown requirement only applies to a FAILED
+   * locate (IDLE + fill 0 + lease false + marker 0 + transaction closed).
+   */
+  private buildCleanupClosureFactsV1(): {
+    rollbackCompleted: boolean
+    rollbackFillRemoved: boolean
+    rollbackLeaseReleased: boolean
+    rollbackMarkerRemoved: boolean
+    rollbackTransactionClosed: boolean
+  } {
+    const st = this.diagnosticInteractionState
+    if (st.phase === 'ACTIVE') {
+      return {
+        rollbackCompleted: true,
+        rollbackFillRemoved: true,
+        rollbackLeaseReleased: true,
+        rollbackMarkerRemoved: true,
+        rollbackTransactionClosed: true,
+      }
+    }
+    return {
+      rollbackCompleted: st.phase === 'IDLE',
+      rollbackFillRemoved: this.countActiveOwnerFillNodes() === 0,
+      rollbackLeaseReleased: this.locateVisibilityLease == null,
+      rollbackMarkerRemoved: this.countActiveOwnerMarkerNodes() === 0,
+      rollbackTransactionClosed: this.activeLocateTx == null,
+    }
+  }
+
+  /**
+   * V1 §10/§12/§20/§27 — Figure OCCURRENCE resolution through the owning BLOCK.
+   *
+   *   FigureOccurrenceIdentity → source block binding → DOM owning block
+   *   → the Nth image inside that block → exact image DOM
+   *   → (image DOM absent) the owning source block itself (source fallback).
+   *
+   * Returns the SAME `ResolvedSourceOccurrenceHint` shape the R5/R8 gates already
+   * consume, so those gates keep measuring the REAL resolved facts.
+   */
+  private resolveFigureOccurrenceInRoot(input: {
+    occurrenceIdentity: DiagnosticFigureOccurrenceIdentity
+    rangeRole: DiagnosticRangeRole
+    startLine: number
+    sourceStart: number | null
+    sourceEnd: number | null
+    destinationStart: number | null
+    tokenStart: number | null
+    sourceRangeIdentity: string | null
+    rawText?: string
+    rawDestination: string
+    canonicalDestination: string
+    occurrenceIndex: number
+    rawLineOrdinal: number
+    occurrenceWithinLine: number
+    expectedOccurrenceIndex: number | null
+  }): ResolvedSourceOccurrenceHint | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const identity = input.occurrenceIdentity
+    const resourceKind: SourceResourceKind = 'image'
+    const token = (input.rawDestination || input.canonicalDestination || '').trim()
+    if (token === '') return null
+
+    // 1. SOURCE-side owning line (verified ordinal, never the expected line).
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    const ordinal = Math.max(0, Math.floor(input.rawLineOrdinal))
+    const resolvedStartLine =
+      (markdown != null ? this.resolveSourceLineByOrdinal(markdown, input.rawText ?? '', ordinal) : null)
+      ?? input.startLine
+    if (!Number.isFinite(resolvedStartLine)) return null
+
+    // 2. Source ↔ DOM owning block binding.
+    const binding = this.resolveSourceBlockInRoot({
+      startLine: resolvedStartLine,
+      endLine: resolvedStartLine,
+      sourceStart: input.sourceStart ?? 0,
+      sourceEnd: input.sourceEnd ?? 0,
+      sourceBlockIdentity: identity.sourceBlockIdentity,
+      sourceBlockOrdinal: identity.sourceBlockOrdinal,
+    })
+    const blockEl = binding?.element ?? this.resolveSourceLine(resolvedStartLine)
+    if (!blockEl) return null
+
+    // 3. the Nth image INSIDE the owning block (never a whole-document match).
+    const blockImages = Array.from(blockEl.querySelectorAll<HTMLElement>('img'))
+      .filter(el => el.closest('[data-inkchapter-caption]') == null)
+    const within = Math.max(0, Math.floor(input.occurrenceWithinLine))
+    let element: HTMLElement | null = blockImages[within] ?? null
+    let usedSourceBlockFallback = false
+    if (!element && blockImages.length === 0) {
+      // §20 — the image DOM is ABSENT (broken local image): the owning source
+      // block is the fallback target. Never UNRESOLVED for this reason.
+      element = blockEl
+      usedSourceBlockFallback = true
+    }
+    if (!element) element = blockEl
+
+    // 4. RESOLVED source offsets recomputed from the CURRENT Markdown so the
+    //    expected-vs-resolved comparison stays real (§5/§21).
+    let resolvedSourceStart: number | null = null
+    let resolvedSourceEnd: number | null = null
+    let resolvedOccurrenceIndex: number | null = null
+    let rangeText = token
+    let resolvedRangeRole: DiagnosticRangeRole | undefined
+    if (markdown != null) {
+      const lineText = this.getSourceLineTextAt(resolvedStartLine)
+      if (lineText != null) {
+        const tokenIndexInLine = findTokenOffsets(lineText, token)[within]
+        if (tokenIndexInLine != null) {
+          const span = this.resourceReferenceSpanAt(lineText, tokenIndexInLine)
+          if (span) {
+            // V5.12-R8 §5 — resolve the SAME span the diagnostic's own source
+            // range targets: the destination span only when the location really
+            // carries one (legacy facts without a destination span stay on the
+            // token range, so expected and resolved offsets can never diverge).
+            const useDestination = input.rangeRole === 'figure-destination'
+              && input.destinationStart != null
+              && (input.sourceStart == null || input.sourceStart === input.destinationStart)
+            const lineStartOffset = this.sourceLineStartOffset(markdown, resolvedStartLine)
+            resolvedSourceStart = lineStartOffset + (useDestination ? span.destinationStart : span.tokenStart)
+            resolvedSourceEnd = lineStartOffset + (useDestination ? span.destinationEnd : span.tokenEnd)
+            resolvedOccurrenceIndex = this.countMatchingResourceReferencesBefore(
+              markdown,
+              resourceKind,
+              input.rawDestination || token,
+              lineStartOffset + span.tokenStart,
+            )
+            resolvedRangeRole = input.rangeRole
+            rangeText = useDestination
+              ? span.rawDestination
+              : input.rangeRole === 'figure-full-token'
+                ? span.rawToken
+                : token
+          }
+        }
+      }
+    }
+    const canonicalDestination = input.canonicalDestination || token
+    const documentKey = this.opts.ctx.authority.getDocumentKey()
+    const resolvedSourceRangeIdentity =
+      resolvedSourceStart != null && resolvedSourceEnd != null && resolvedOccurrenceIndex != null
+        ? buildSourceRangeIdentity({
+            documentKey,
+            sourceRevision: null,
+            resourceKind,
+            canonicalDestination,
+            sourceStart: resolvedSourceStart,
+            sourceEnd: resolvedSourceEnd,
+            occurrenceIndex: resolvedOccurrenceIndex,
+          })
+        : null
+    return {
+      element,
+      anchorIdentity: binding != null && binding.domBlockIdentity !== ''
+        ? binding.domBlockIdentity
+        : `block:${element.tagName.toLowerCase()}#data-line-${resolvedStartLine}`,
+      anchorTag: element.tagName.toLowerCase(),
+      matchCountWithinAnchor: blockImages.length,
+      occurrenceWithinAnchor: within,
+      decision: resolvedSourceStart != null ? 'EXACT_SOURCE_RANGE' : 'EXACT_SOURCE_LINE',
+      rangeText,
+      resolvedSourceStart,
+      resolvedSourceEnd,
+      resolvedSourceRangeIdentity,
+      resolvedOccurrenceIndex,
+      resolvedStartLine,
+      resolvedEndLine: resolvedStartLine,
+      resolvedRangeRole,
+      domBlockIdentity: binding?.domBlockIdentity ?? null,
+      usedSourceBlockFallback,
+    }
+  }
+
   /** Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-LOCATE-AUDIT (one record per locate).
    *  Phase 7R.3.11.8B.7.2 — carries the anchor provenance (primary/fallback),
    *  the resolved node identity and the source revisions so a PASS can be told
@@ -17637,6 +19275,18 @@ export class DocumentUtilityOverlayHost {
       decision: finalDecision,
       reason,
     })
+    // V1 §26/§31 — keep the REAL decision facts for the terminal, and emit the
+    // figure locator audit (locator kind + runtime resolve / binding facts).
+    this.lastLocateAuditContext = {
+      diag,
+      result,
+      resolveDecision,
+      reason,
+      scrollDecision: scrollDecision as 'PASS' | 'FAIL' | 'N/A',
+      highlightDecision: highlightDecision as 'PASS' | 'FAIL' | 'N/A',
+      finalDecision,
+    }
+    this.emitFigureLocatorAudit(diag, result, resolveDecision, reason, finalVisualOk)
   }
 
   /**
@@ -17681,7 +19331,7 @@ export class DocumentUtilityOverlayHost {
     // the row in the SAME render. The FOCUS ring is a SEPARATE authority.
     const stForRow = this.diagnosticInteractionState
     if (stForRow.phase === 'ACTIVE' && stForRow.diagnosticId === p.diagnosticId
-      && (stForRow.targetIndex == null || stForRow.targetIndex === p.targetIndex)) {
+      && (stForRow.diagnosticTargetIndex == null || stForRow.diagnosticTargetIndex === p.targetIndex)) {
       item.classList.add('is-selected')
     }
     if (this.focusedDiagnosticId != null && this.focusedDiagnosticId === p.diagnosticId) {

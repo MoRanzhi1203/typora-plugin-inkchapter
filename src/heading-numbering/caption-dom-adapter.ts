@@ -18,6 +18,14 @@ import type {
 import { hashText } from './paragraph-layout-store'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { forensicVerboseEnabled } from './document-open-perf'
+// V5.15 — Standalone Object Block Invariant: ONE business object = ONE
+// standalone owning block = ONE canonical target. A structurally invalid image
+// block is excluded HERE, before any ordinal / caption is produced.
+import {
+  analyzeFigureBlockStructureDom,
+  noteFigureBlockAdmission,
+  FIGURE_BLOCK_STRUCTURE_AUDIT,
+} from '../document-utilities/document-standalone-object-block-invariant-v515'
 
 export interface CaptionTarget {
   type: CaptionTargetType
@@ -334,6 +342,34 @@ export class CaptionDomAdapter {
     root.querySelectorAll<HTMLElement>('img').forEach(img => {
       if (isInside(img, 'pre, code, .md-codeblock, table')) return
       if (isInside(img, `[${CAPTION_ATTR}]`)) return
+      // ── V5.15 §6/§9/§10/§24 — STANDALONE OBJECT BLOCK GATE ──────────────
+      // An invalid image owning block is never admitted as a normal figure
+      // target: it is excluded BEFORE the per-type ordinal assignment below, so
+      // it can never be numbered / captioned and the surviving valid figures
+      // renumber consecutively. The structure ERROR is published by the document
+      // diagnostics authority (source authority), never here.
+      const structure = analyzeFigureBlockStructureDom(img)
+      if (structure.decision !== 'VALID_STANDALONE_FIGURE') {
+        noteFigureBlockAdmission(structure, false)
+        emitRuntimeAudit(FIGURE_BLOCK_STRUCTURE_AUDIT, {
+          documentKey: null,
+          owningBlockIdentity: structure.owningBlockIdentity,
+          imageOccurrenceCount: structure.imageOccurrenceCount,
+          hasNonImageSemanticContent: structure.hasNonImageSemanticContent,
+          nonImageContentSummary: structure.nonImageContentSummary,
+          containerKind: structure.containerKind,
+          decision: structure.decision,
+          violations: structure.violationCodes.join('|'),
+          figureCanonicalTargetCount: 0,
+          figureCaptionTargetCount: 0,
+          figureStructureDiagnosticCount: 0,
+          normalBusinessTargetAdmitted: false,
+          structuralDiagnosticPublished: false,
+          reason: 'FIGURE_STRUCTURE_GATE_EXCLUDED_FROM_NORMAL_TARGETS',
+        })
+        return
+      }
+      noteFigureBlockAdmission(structure, true)
       const block = img.closest<HTMLElement>('p, figure') ?? img
       raw.push({ type: 'figure', root: block, contentNode: img })
     })

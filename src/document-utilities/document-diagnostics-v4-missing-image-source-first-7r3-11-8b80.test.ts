@@ -132,7 +132,7 @@ describe('SOURCE-IMAGE — Markdown source first, no live <img> required', () =>
     expect(imgs).toHaveLength(2)
     expect(imgs.map(d => d.metadata?.occurrenceIndex)).toEqual([0, 1])
     expect(imgs[0].metadata?.sourceStart).not.toBe(imgs[1].metadata?.sourceStart)
-    expect(imgs.map(d => (d.location as { kind: string }).kind)).toEqual(['source-range', 'source-range'])
+    expect(imgs.map(d => (d.location as { kind: string }).kind)).toEqual(['figure-occurrence', 'figure-occurrence'])
     expect((imgs[0].location as { startLine: number }).startLine).not.toBe((imgs[1].location as { startLine: number }).startLine)
     expect(imgs[0].id).not.toBe(imgs[1].id)
   })
@@ -168,13 +168,13 @@ describe('SOURCE-IMAGE — Markdown source first, no live <img> required', () =>
     expect(findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')).toHaveLength(1)
   })
 
-  it('SOURCE-IMAGE-6: source-only image diagnostic uses source-range location and is locatable', () => {
+  it('SOURCE-IMAGE-6: source-only image diagnostic uses figure-occurrence location and is locatable', () => {
     const r = computeDocumentDiagnostics(pureInput([
       imgFact('missing.png', 0, { startLine: 3, sourceStart: 20, sourceEnd: 45, rawText: '![A](missing.png)' }),
     ], [], '# T\n\n![A](missing.png)\n'))
     const [d] = findCode(r.diagnostics, 'FIGURE_LOCAL_IMAGE_MISSING')
     expect(d).toBeTruthy()
-    expect(d.location?.kind).toBe('source-range')
+    expect(d.location?.kind).toBe('figure-occurrence')
     expect(hasLocatableLocation(d.location)).toBe(true)
   })
 

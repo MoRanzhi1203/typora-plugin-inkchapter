@@ -22,6 +22,13 @@
 
 export type ResourceKind = 'image' | 'link'
 
+/**
+ * V1 — Parser Exclusion Before Candidate Discovery. Literal/code regions
+ * (inline code spans, fenced code blocks, indented code) are resolved FIRST and
+ * every token that INTERSECTS such a region is excluded from the candidate set.
+ */
+import { computeMarkdownLiteralRanges, isSourceRangeLiteral } from './document-markdown-literal-exclusion-v1'
+
 /** V5.12-R8 §4 — resource classification (remote/data must never be "local missing"). */
 export type ResourceClass = 'local' | 'remote' | 'data' | 'other'
 
@@ -149,6 +156,9 @@ interface ScannedReference extends ReferenceSpan {
 function scanMarkdownReferences(markdown: string): ScannedReference[] {
   const out: ScannedReference[] = []
   if (!markdown) return out
+  // §3/§12/§13 — the ONE literal exclusion authority. A token that OVERLAPS a
+  // literal/code range is TEXT, never a resource candidate.
+  const literalRanges = computeMarkdownLiteralRanges(markdown)
   const re = createReferencePattern()
   let m: RegExpExecArray | null
   while ((m = re.exec(markdown)) !== null) {
@@ -159,6 +169,7 @@ function scanMarkdownReferences(markdown: string): ScannedReference[] {
     if (!rawDestination) continue
     const sourceStart = m.index
     const sourceEnd = m.index + m[0].length
+    if (isSourceRangeLiteral(literalRanges, sourceStart, sourceEnd)) continue
     // Destination/path span: the raw destination text sits immediately before
     // the closing `)`, and the path is its first whitespace-separated token.
     const destinationTextStart = sourceEnd - 1 - destinationText.length
@@ -192,6 +203,37 @@ function scanMarkdownReferences(markdown: string): ScannedReference[] {
     })
   }
   return out
+}
+
+/**
+ * V1 §31 — the scanner's REAL admitted candidate counts (image + link), i.e.
+ * AFTER the literal exclusion. The literal-exclusion gate compares these with
+ * the literal-derived expectation so a real token can never be silently dropped.
+ */
+export function scanAdmittedReferenceCounts(markdown: string): { imageCount: number; linkCount: number } {
+  let imageCount = 0
+  let linkCount = 0
+  for (const ref of scanMarkdownReferences(markdown ?? '')) {
+    if (ref.resourceKind === 'image') imageCount++
+    else linkCount++
+  }
+  return { imageCount, linkCount }
+}
+
+/**
+ * V1 §27/§31 — the admitted reference SPANS (absolute offsets, post-exclusion).
+ * Used by the literal-exclusion gate to decide whether a block-level structure
+ * diagnostic really owns a REAL image (a legitimate mixed block) or owns nothing
+ * but literal text (a false positive).
+ */
+export function scanAdmittedReferenceSpans(
+  markdown: string,
+): Array<{ start: number; end: number; resourceKind: ResourceKind }> {
+  return scanMarkdownReferences(markdown ?? '').map(r => ({
+    start: r.sourceStart,
+    end: r.sourceEnd,
+    resourceKind: r.resourceKind,
+  }))
 }
 
 /**

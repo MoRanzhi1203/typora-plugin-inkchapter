@@ -104,6 +104,22 @@ function projectOne(
       sourceLine = numOrNull(loc.startLine)
       sourceColumn = numOrNull(loc.startColumn)
       stableIdentity = sourceIdentityOf(loc)
+    } else if (loc.kind === 'figure-occurrence') {
+      // V1 — the occurrence locator orders exactly like its source range.
+      sourceStartOffset = numOrNull(loc.sourceStart)
+      sourceEndOffset = numOrNull(loc.sourceEnd)
+      sourceLine = numOrNull(loc.startLine)
+      sourceColumn = numOrNull(loc.startColumn)
+      stableIdentity = typeof loc.sourceRangeIdentity === 'string' && loc.sourceRangeIdentity !== ''
+        ? loc.sourceRangeIdentity
+        : `figure-occurrence:${loc.occurrenceIdentity.sourceBlockIdentity}:${loc.occurrenceIdentity.tokenStart ?? 'n'}`
+    } else if (loc.kind === 'source-block') {
+      // V1 — the block locator orders by the owning block's first source line.
+      sourceStartOffset = numOrNull(loc.sourceStart)
+      sourceEndOffset = numOrNull(loc.sourceEnd)
+      sourceLine = numOrNull(loc.startLine)
+      sourceColumn = 0
+      stableIdentity = `block:${loc.sourceBlockIdentity}`
     } else if (loc.kind === 'canonical-node') {
       stableIdentity = loc.stableIdentity
       canonicalHeadingIndex = ctx.headingIndexOfStableIdentity?.(stableIdentity) ?? null

@@ -15,6 +15,7 @@
  * is handled by the caller (overlay) via `targetIndex`.
  */
 import type {
+  DiagnosticFigureOccurrenceIdentity,
   DiagnosticLocation,
   DiagnosticRangeRole,
   DocumentDiagnostic,
@@ -33,6 +34,10 @@ export type DiagnosticLocationStrategy =
   | 'document-end'
   | 'block-node'
   | 'multi-target'
+  /** V1 — the WHOLE owning Markdown block (structure errors). */
+  | 'source-block'
+  /** V1 — ONE verified figure source occurrence (image warnings). */
+  | 'figure-occurrence'
 
 export interface DocumentDiagnosticRuleMeta {
   ruleId: string
@@ -62,9 +67,13 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   HEADING_DUPLICATE_TEXT: { ruleId: 'HEADING_DUPLICATE_TEXT', category: 'heading', locationStrategy: 'multi-target' },
   HEADING_DUPLICATE_IDENTITY: { ruleId: 'HEADING_DUPLICATE_IDENTITY', category: 'heading', locationStrategy: 'canonical-node' },
   // Figure / table / code / formula / link (block node)
-  FIGURE_MISSING_NAME: { ruleId: 'FIGURE_MISSING_NAME', category: 'figure', locationStrategy: 'source-range' },
+  FIGURE_MISSING_NAME: { ruleId: 'FIGURE_MISSING_NAME', category: 'figure', locationStrategy: 'figure-occurrence' },
   FIGURE_DUPLICATE_NAME: { ruleId: 'FIGURE_DUPLICATE_NAME', category: 'figure', locationStrategy: 'multi-target' },
-  FIGURE_LOCAL_IMAGE_MISSING: { ruleId: 'FIGURE_LOCAL_IMAGE_MISSING', category: 'figure', locationStrategy: 'source-range' },
+  FIGURE_LOCAL_IMAGE_MISSING: { ruleId: 'FIGURE_LOCAL_IMAGE_MISSING', category: 'figure', locationStrategy: 'figure-occurrence' },
+  // V5.15 / V1 — a structurally invalid picture block owns a BLOCK-level
+  // locator: the target is the WHOLE owning block (never one image token) and
+  // the rule never enters the inline occurrence / duplicate-range resolver.
+  FIGURE_BLOCK_STRUCTURE_INVALID: { ruleId: 'FIGURE_BLOCK_STRUCTURE_INVALID', category: 'figure', locationStrategy: 'source-block' },
   TABLE_MISSING_NAME: { ruleId: 'TABLE_MISSING_NAME', category: 'table', locationStrategy: 'block-node' },
   TABLE_DUPLICATE_NAME: { ruleId: 'TABLE_DUPLICATE_NAME', category: 'table', locationStrategy: 'multi-target' },
   CODE_MISSING_NAME: { ruleId: 'CODE_MISSING_NAME', category: 'code', locationStrategy: 'block-node' },
@@ -98,6 +107,10 @@ export interface DiagnosticLocationContract {
   nonLocatableNoticeCount: number
   canonicalNodeLocationCount: number
   sourceRangeLocationCount: number
+  /** V1 — block-level structure locators. */
+  sourceBlockLocationCount: number
+  /** V1 — figure occurrence locators. */
+  figureOccurrenceLocationCount: number
   documentStartLocationCount: number
   documentEndLocationCount: number
   blockNodeLocationCount: number
@@ -111,6 +124,18 @@ export function hasLocatableLocation(location: DiagnosticLocation | undefined | 
   if (location.kind === 'canonical-node') return location.stableIdentity.trim() !== ''
   if (location.kind === 'block-node') return location.stableIdentity.trim() !== ''
   if (location.kind === 'source-range') return Number.isFinite(location.startLine)
+  // V1 — a block locator is locatable when it carries a real owning block span.
+  if (location.kind === 'source-block') {
+    return Number.isFinite(location.startLine)
+      && Number.isFinite(location.sourceStart)
+      && Number.isFinite(location.sourceEnd)
+      && location.sourceBlockIdentity.trim() !== ''
+  }
+  // V1 — an occurrence locator is locatable when its identity is verifiable.
+  if (location.kind === 'figure-occurrence') {
+    return Number.isFinite(location.startLine)
+      && location.occurrenceIdentity.sourceBlockIdentity.trim() !== ''
+  }
   if (location.kind === 'multi-target') return location.targets.length > 0
   return true // document-start / document-end
 }
@@ -125,6 +150,8 @@ export function computeDiagnosticLocationContract(
   const diags = snapshot?.diagnostics ?? []
   let canonicalNode = 0
   let sourceRange = 0
+  let sourceBlock = 0
+  let figureOccurrence = 0
   let documentStart = 0
   let documentEnd = 0
   let blockNode = 0
@@ -142,6 +169,8 @@ export function computeDiagnosticLocationContract(
     switch (d.location!.kind) {
       case 'canonical-node': canonicalNode++; break
       case 'source-range': sourceRange++; break
+      case 'source-block': sourceBlock++; break
+      case 'figure-occurrence': figureOccurrence++; break
       case 'document-start': documentStart++; break
       case 'document-end': documentEnd++; break
       case 'block-node': blockNode++; break
@@ -156,6 +185,8 @@ export function computeDiagnosticLocationContract(
     nonLocatableNoticeCount: nonLocatableNotice,
     canonicalNodeLocationCount: canonicalNode,
     sourceRangeLocationCount: sourceRange,
+    sourceBlockLocationCount: sourceBlock,
+    figureOccurrenceLocationCount: figureOccurrence,
     documentStartLocationCount: documentStart,
     documentEndLocationCount: documentEnd,
     blockNodeLocationCount: blockNode,
@@ -185,6 +216,12 @@ export type DiagnosticResolveAnchor =
   | 'document-boundary'
   /** V5.12-R5 §7 — the EXACT source occurrence (never a first-text-match). */
   | 'source-occurrence'
+  /** V1 — the WHOLE owning Markdown block (structure errors). */
+  | 'owning-block'
+  /** V1 — ONE verified figure occurrence (image warnings). */
+  | 'figure-occurrence'
+  /** V1 — the owning source block used because the image DOM is absent. */
+  | 'source-block-fallback'
 
 /**
  * V5.12-R5 §7 — the resolver's OWN output for a source occurrence. It must be
@@ -217,6 +254,28 @@ export interface ResolvedSourceOccurrenceHint {
    * figure target authority audit.
    */
   resolvedRangeRole?: DiagnosticRangeRole
+  /** V1 §27 — the live DOM owning-block identity the occurrence resolved in. */
+  domBlockIdentity?: string | null
+  /** V1 §20 — true when the image DOM was absent and the source block was used. */
+  usedSourceBlockFallback?: boolean
+}
+
+/**
+ * V1 §6/§27 — the Source ↔ DOM owning-block binding.
+ *
+ * `BOUND`      — exactly ONE live DOM block owns this source block.
+ * `AMBIGUOUS`  — more than one candidate matched (never a silent first pick).
+ * `MISSING`    — no candidate at all (the caller reports UNRESOLVED).
+ */
+export interface SourceBlockBinding {
+  element: HTMLElement | null
+  /** Stable DOM block identity (`dom-block:<tag>:<authority>:<value>`). */
+  domBlockIdentity: string
+  domTag: string
+  candidateCount: number
+  decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'
+  /** How the binding was established (`data-line` / `runtime-id` / `text` / `ordinal`). */
+  bindingAuthority: string
 }
 
 export interface DiagnosticLocationResolveResult {
@@ -238,11 +297,21 @@ export interface DiagnosticLocationResolveResult {
   resolvedBlockIdentity?: string | null
   /** V5.12-R5 §7 — the resolver's OWN source-occurrence facts (when applicable). */
   sourceOccurrence?: ResolvedSourceOccurrenceHint | null
+  /** V1 §27 — the Source ↔ DOM owning-block binding facts (source-block locator). */
+  sourceBlockBinding?: SourceBlockBinding | null
+  /** V1 §26 — the figure occurrence identity used by the occurrence locator. */
+  figureOccurrenceIdentity?: string | null
 }
 
 export interface DiagnosticLocationResolveContext {
   documentKey: string | null
   getRoot: () => HTMLElement | null
+  /**
+   * V1 §21 — the CURRENT source generation. A `source-block` /
+   * `figure-occurrence` location whose scan revision differs is STALE (the
+   * caller refreshes the diagnostics and retries the user intent ONCE).
+   */
+  getSourceRevision?: () => number | null
   /** stableIdentity → live heading element (re-derived from the CURRENT frame). */
   resolveHeadingIdentity: (stableIdentity: string) => HTMLElement | null
   /** source line (0-based) → live element carrying Typora `data-line`. */
@@ -311,11 +380,67 @@ export interface DiagnosticLocationResolveContext {
     /** V5.12-R8 §5 — which part of the image token to resolve. */
     rangeRole?: DiagnosticRangeRole
   }) => ResolvedSourceOccurrenceHint | null
+  /**
+   * V1 §6/§8 — Source ↔ DOM owning-block binding. Resolves the Markdown owning
+   * block behind a `source-block` location into ONE live DOM block plus its
+   * stable DOM block identity. Returns null when no DOM block can be verified.
+   */
+  resolveSourceBlock?: (input: {
+    startLine: number
+    endLine: number
+    sourceStart: number
+    sourceEnd: number
+    sourceBlockIdentity: string
+    sourceBlockOrdinal: number
+  }) => SourceBlockBinding | null
+  /**
+   * V1 §10/§12/§20 — figure occurrence resolution through the owning BLOCK:
+   * block binding first, then the Nth image inside that block; when the image
+   * DOM is absent (broken local image) the source block itself is the fallback.
+   * Null = genuine failure — the caller reports UNRESOLVED (never a silent
+   * whole-document destination match).
+   */
+  resolveFigureOccurrence?: (input: {
+    occurrenceIdentity: DiagnosticFigureOccurrenceIdentity
+    rangeRole: DiagnosticRangeRole
+    startLine: number
+    sourceStart: number | null
+    sourceEnd: number | null
+    /** V5.12-R8 §5 — used to decide WHICH span the diagnostic really targets. */
+    destinationStart: number | null
+    tokenStart: number | null
+    sourceRangeIdentity: string | null
+    rawText?: string
+    rawDestination: string
+    canonicalDestination: string
+    occurrenceIndex: number
+    rawLineOrdinal: number
+    occurrenceWithinLine: number
+    expectedOccurrenceIndex: number | null
+  }) => ResolvedSourceOccurrenceHint | null
 }
 
 /** Normalize source text for anchor comparison (trim + collapse whitespace). */
 export function normalizeSourceAnchorText(text: string | null | undefined): string {
   return (text ?? '').replace(/\r/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/** V1 §21 — the explicit stale-generation failure reason. */
+export const STALE_SOURCE_REVISION_REASON = 'STALE_SOURCE_REVISION'
+
+/**
+ * V1 §21 — is the location's scan-time source generation older than the CURRENT
+ * one? Only fires when BOTH revisions are known — the caller then refreshes the
+ * diagnostics and retries the user intent ONCE (never an infinite loop).
+ */
+export function isStaleSourceRevision(
+  sourceRevisionAtScan: number | null | undefined,
+  ctx: { getSourceRevision?: () => number | null },
+): boolean {
+  if (sourceRevisionAtScan == null) return false
+  const atLocate = ctx.getSourceRevision?.()
+  if (atLocate == null) return false
+  return sourceRevisionAtScan !== atLocate
 }
 
 /** True when the element's rendered text still matches the scan-time anchor text. */
@@ -488,6 +613,153 @@ export function resolveDiagnosticLocation(
         fallbackAnchor: null,
         reason: 'CANONICAL_NODE_NOT_FOUND',
       }
+    }
+    case 'source-block': {
+      // V1 §4/§5/§16 — a BLOCK-level locator. The target is the WHOLE illegal
+      // owning block: it resolves source block → owning DOM block and NEVER
+      // enters the inline occurrence / duplicate-range resolver (the multiple
+      // inline occurrences ARE the violation, so `AMBIGUOUS_DUPLICATE_INLINE_RANGE`
+      // must be structurally unreachable here).
+      // §21 — a stale source generation must never be located with old offsets.
+      const staleBlock = isStaleSourceRevision(location.sourceRevision, ctx)
+      if (staleBlock) {
+        return {
+          decision: 'TARGET_CHANGED', element: null, scrollAction: null, targetIndex,
+          primaryAnchor: 'owning-block', fallbackAnchor: null, reason: STALE_SOURCE_REVISION_REASON,
+          sourceBlockBinding: null,
+        }
+      }
+      const resolveBlock = ctx.resolveSourceBlock
+      if (typeof resolveBlock === 'function') {
+        const binding = resolveBlock({
+          startLine: location.startLine,
+          endLine: location.endLine,
+          sourceStart: location.sourceStart,
+          sourceEnd: location.sourceEnd,
+          sourceBlockIdentity: location.sourceBlockIdentity,
+          sourceBlockOrdinal: location.sourceBlockOrdinal,
+        })
+        if (binding && binding.decision === 'BOUND' && binding.element) {
+          const resolved = resolvedResult(binding.element, targetIndex, 'owning-block', null)
+          return {
+            ...resolved,
+            resolvedNodeKind: binding.domTag,
+            resolvedBlockIdentity: binding.domBlockIdentity,
+            sourceBlockBinding: binding,
+          }
+        }
+        return {
+          decision: 'UNRESOLVED',
+          element: null,
+          scrollAction: null,
+          targetIndex,
+          primaryAnchor: 'owning-block',
+          fallbackAnchor: null,
+          reason: binding?.decision === 'AMBIGUOUS'
+            ? 'SOURCE_BLOCK_BINDING_AMBIGUOUS'
+            : 'SOURCE_BLOCK_BINDING_MISSING',
+          sourceBlockBinding: binding ?? null,
+        }
+      }
+      // Legacy (no binding authority): resolve the owning source line directly.
+      // A block locator NEVER falls back to the inline occurrence resolver.
+      const blockEl = ctx.resolveSourceLine(location.startLine)
+      if (blockEl) return resolvedResult(blockEl, targetIndex, 'owning-block', 'source-line')
+      return {
+        decision: 'UNRESOLVED',
+        element: null,
+        scrollAction: null,
+        targetIndex,
+        primaryAnchor: 'owning-block',
+        fallbackAnchor: 'source-line',
+        reason: 'SOURCE_BLOCK_BINDING_MISSING',
+        sourceBlockBinding: null,
+      }
+    }
+    case 'figure-occurrence': {
+      // V1 §10/§12/§16 — an OCCURRENCE-level locator. The target is ONE verified
+      // image occurrence: owning block binding first, then the Nth image inside
+      // that block. When the image DOM is absent (`FIGURE_LOCAL_IMAGE_MISSING`)
+      // the resolver falls back to the owning source block — never UNRESOLVED,
+      // and never a whole-document destination match.
+      // §21 — a stale source generation must never be located with old offsets.
+      if (isStaleSourceRevision(location.occurrenceIdentity.sourceRevision, ctx)) {
+        return {
+          decision: 'TARGET_CHANGED', element: null, scrollAction: null, targetIndex,
+          primaryAnchor: 'figure-occurrence', fallbackAnchor: null, reason: STALE_SOURCE_REVISION_REASON,
+          figureOccurrenceIdentity: location.occurrenceIdentity.sourceBlockIdentity,
+        }
+      }
+      const resolveOccurrence = ctx.resolveFigureOccurrence
+      if (typeof resolveOccurrence === 'function') {
+        const hint = resolveOccurrence({
+          occurrenceIdentity: location.occurrenceIdentity,
+          rangeRole: location.rangeRole,
+          startLine: location.startLine,
+          sourceStart: location.sourceStart,
+          sourceEnd: location.sourceEnd,
+          destinationStart: location.destinationStart,
+          tokenStart: location.tokenStart,
+          sourceRangeIdentity: location.sourceRangeIdentity,
+          rawText: location.rawText,
+          rawDestination: location.rawDestination,
+          canonicalDestination: location.canonicalDestination,
+          occurrenceIndex: location.occurrenceIndex,
+          rawLineOrdinal: location.rawLineOrdinal,
+          occurrenceWithinLine: location.occurrenceWithinLine,
+          expectedOccurrenceIndex: typeof location.occurrenceIndex === 'number' ? location.occurrenceIndex : null,
+        })
+        if (hint) {
+          const resolved = resolvedResult(
+            hint.element,
+            targetIndex,
+            hint.usedSourceBlockFallback ? 'source-block-fallback' : 'figure-occurrence',
+            null,
+          )
+          return {
+            ...resolved,
+            resolvedNodeKind: hint.anchorTag,
+            resolvedBlockIdentity: hint.anchorIdentity,
+            sourceOccurrence: hint,
+            figureOccurrenceIdentity: location.occurrenceIdentity.sourceBlockIdentity,
+          }
+        }
+        return {
+          decision: 'UNRESOLVED',
+          element: null,
+          scrollAction: null,
+          targetIndex,
+          primaryAnchor: 'figure-occurrence',
+          fallbackAnchor: null,
+          reason: 'FIGURE_OCCURRENCE_NOT_MAPPED_TO_DOM',
+          figureOccurrenceIdentity: location.occurrenceIdentity.sourceBlockIdentity,
+        }
+      }
+      // Legacy (no occurrence authority): degrade to the equivalent source-range
+      // behavior so pure consumers keep working.
+      return resolveDiagnosticLocation(diagnostic, {
+        kind: 'source-range',
+        rangeRole: location.rangeRole,
+        startLine: location.startLine,
+        startColumn: location.startColumn,
+        endLine: location.endLine,
+        endColumn: location.endColumn,
+        rawText: location.rawText,
+        sourceStart: location.sourceStart,
+        sourceEnd: location.sourceEnd,
+        sourceRangeIdentity: location.sourceRangeIdentity,
+        resourceKind: location.resourceKind,
+        canonicalDestination: location.canonicalDestination,
+        rawDestination: location.rawDestination,
+        occurrenceIndex: location.occurrenceIndex,
+        rawLineOrdinal: location.rawLineOrdinal,
+        occurrenceWithinLine: location.occurrenceWithinLine,
+        rawToken: location.rawToken,
+        tokenStart: location.tokenStart,
+        tokenEnd: location.tokenEnd,
+        destinationStart: location.destinationStart,
+        destinationEnd: location.destinationEnd,
+      }, ctx, targetIndex)
     }
     case 'source-range': {
       // ── V5.12-R5 §7/§8.3 — a source occurrence carrying its EXACT source range

@@ -214,8 +214,9 @@ describe('R8-FIGURE — FIGURE_MISSING_NAME → FIGURE_FULL_TOKEN', () => {
     expect(diags).toHaveLength(1)
     const d = diags[0]
     expect(d.severity).toBe('warning')
-    expect(d.location?.kind).toBe('source-range')
-    if (d.location?.kind !== 'source-range') throw new Error('not source-range')
+    // V1 — FIGURE_MISSING_NAME now carries the explicit figure-occurrence locator.
+    expect(d.location?.kind).toBe('figure-occurrence')
+    if (d.location?.kind !== 'figure-occurrence') throw new Error('not figure-occurrence')
     expect(d.location.rangeRole).toBe(FIGURE_MISSING_NAME_RANGE_ROLE)
     expect(md.slice(d.location.sourceStart ?? 0, d.location.sourceEnd ?? 0)).toBe('![](a.png)')
     expect(d.metadata?.rawToken).toBe('![](a.png)')
@@ -272,7 +273,8 @@ describe('R8-FIGURE — FIGURE_LOCAL_IMAGE_MISSING → FIGURE_DESTINATION', () =
     const md = '![](a.png)\n'
     const d = byCode(inputOf(md), 'FIGURE_LOCAL_IMAGE_MISSING')[0]
     expect(d.severity).toBe('warning')
-    if (d.location?.kind !== 'source-range') throw new Error('not source-range')
+    // V1 — FIGURE_LOCAL_IMAGE_MISSING now carries the explicit figure-occurrence locator.
+    if (d.location?.kind !== 'figure-occurrence') throw new Error('not figure-occurrence')
     expect(d.location.rangeRole).toBe(FIGURE_LOCAL_IMAGE_MISSING_RANGE_ROLE)
     expect(md.slice(d.location.sourceStart ?? 0, d.location.sourceEnd ?? 0)).toBe('a.png')
     // The whole token is still carried on the SAME occurrence.

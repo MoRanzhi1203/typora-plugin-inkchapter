@@ -33,6 +33,34 @@ export type DocumentDiagnosticTargetKind =
 export type DiagnosticRangeRole = 'figure-full-token' | 'figure-destination'
 
 /**
+ * V1 (Figure Diagnostic Locator) — the stable identity of ONE Figure source
+ * occurrence.
+ *
+ * `src` / `destination` alone can NEVER identify an occurrence (`![](same.png)`
+ * twice is two legal figures). The identity is the owning source block + the
+ * exact token range + the within-block ordinal, all derived from the Markdown
+ * SOURCE (never from the DOM, never from a viewport rect).
+ */
+export interface DiagnosticFigureOccurrenceIdentity {
+  documentKey: string | null
+  /** Source generation the identity was computed against. */
+  sourceRevision: number | null
+  /** `src-block:<startLine>` — the owning Markdown block identity. */
+  sourceBlockIdentity: string
+  /** 0-based ordinal of the owning block among identical source blocks. */
+  sourceBlockOrdinal: number
+  /** Absolute offset of the `![alt](dest)` token (null when unknown). */
+  tokenStart: number | null
+  tokenEnd: number | null
+  /** Ordinal of the owning source line among identical raw lines. */
+  rawLineOrdinal: number
+  /** Ordinal of this token among same-line occurrences of the same group. */
+  occurrenceWithinLine: number
+  /** Canonical (normalized) destination — display / fallback only, never identity. */
+  destination: string
+}
+
+/**
  * Phase 7R.3.11.8B.5 — Universal Diagnostic Location.
  *
  * Every published diagnostic carries ONE of these stable locators. The locator
@@ -97,6 +125,57 @@ export type DiagnosticLocation =
     }
   | { kind: 'document-start' }
   | { kind: 'document-end' }
+  /**
+   * V1 — Diagnostic BLOCK locator (Locator A). The diagnostic target is the
+   * WHOLE illegal owning block, never one image token inside it. Used by
+   * `FIGURE_BLOCK_STRUCTURE_INVALID`, whose owning block may legitimately
+   * contain several inline occurrences (that IS the violation).
+   */
+  | {
+      kind: 'source-block'
+      objectKind: 'figure'
+      /** `src-block:<startLine>` — the owning Markdown block identity. */
+      sourceBlockIdentity: string
+      /** 0-based ordinal of the owning block among identical source blocks. */
+      sourceBlockOrdinal: number
+      /** Absolute source span of the WHOLE owning block (the locate target). */
+      sourceStart: number
+      sourceEnd: number
+      startLine: number
+      endLine: number
+      sourceRevision: number | null
+      locatorStrategy: 'OWNING_BLOCK'
+    }
+  /**
+   * V1 — Figure OCCURRENCE locator (Locator B). The target is ONE image
+   * occurrence, identified by `FigureOccurrenceIdentity` (owning block +
+   * token range + within-block ordinal) — never by destination alone.
+   */
+  | {
+      kind: 'figure-occurrence'
+      occurrenceIdentity: DiagnosticFigureOccurrenceIdentity
+      resourceKind: 'image'
+      /** Which part of the Markdown token this rule targets. */
+      rangeRole: DiagnosticRangeRole
+      startLine: number
+      startColumn: number
+      endLine?: number
+      endColumn?: number
+      rawText?: string
+      sourceStart: number | null
+      sourceEnd: number | null
+      sourceRangeIdentity: string | null
+      canonicalDestination: string
+      rawDestination: string
+      occurrenceIndex: number
+      rawLineOrdinal: number
+      occurrenceWithinLine: number
+      rawToken?: string
+      tokenStart: number | null
+      tokenEnd: number | null
+      destinationStart: number | null
+      destinationEnd: number | null
+    }
   | {
       kind: 'block-node'
       blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link'

@@ -158,6 +158,35 @@ export function resolveDiagnosticVisualTargets(
       })
       return
     }
+    if (loc.kind === 'source-block' || loc.kind === 'figure-occurrence') {
+      // V1 — the block / occurrence locators render through the SAME inline
+      // source carrier the classic source-range used (the owning block element),
+      // so the passive/active visual pipeline is unchanged.
+      const isOccurrence = loc.kind === 'figure-occurrence'
+      const startColumn = isOccurrence ? loc.startColumn : 0
+      const identity = loc.kind === 'source-block'
+        ? `block:${loc.sourceBlockIdentity}`
+        : (loc.sourceRangeIdentity ?? `figure-occurrence:${loc.occurrenceIdentity.sourceBlockIdentity}:${loc.occurrenceIdentity.tokenStart ?? 'n'}`)
+      const el = deps.resolveSourceRangeElement({
+        startLine: loc.startLine,
+        startColumn,
+        endLine: loc.endLine,
+        endColumn: isOccurrence ? loc.endColumn : undefined,
+        rawText: isOccurrence ? loc.rawText : undefined,
+      })
+      push({
+        kind: 'inline-source',
+        ...makeBase(identity, targetIndex, targetCount, loc.kind),
+        element: el,
+        sourceRange: {
+          startLine: loc.startLine,
+          startColumn,
+          endLine: loc.endLine ?? null,
+          endColumn: (isOccurrence ? loc.endColumn : null) ?? null,
+        },
+      })
+      return
+    }
     if (loc.kind === 'block-node') {
       const identity = `${loc.blockKind}:${loc.stableIdentity}`
       const el = deps.resolveBlockElement(loc.blockKind, loc.stableIdentity)

@@ -17,7 +17,18 @@ import type {
   HeadingDiagnosticAuthority,
   LatentAtxMarkerInput,
 } from './document-diagnostics'
+import type { DocumentDiagnostic } from './diagnostics-types'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+// V1 — Markdown literal exclusion: the runtime audit + hard gates that prove
+// inline code / fenced code syntax never reaches the business layer.
+import {
+  FIGURE_LITERAL_EXCLUSION_AUDIT,
+  MARKDOWN_LITERAL_EXCLUSION_AUDIT,
+  evaluateFigureLiteralExclusionV1Gates,
+  evaluateLiteralExclusionAgainstDiagnostics,
+  formatFigureLiteralExclusionV1GateReport,
+} from './document-markdown-literal-exclusion-v1'
+import { scanAdmittedReferenceCounts, scanAdmittedReferenceSpans } from './document-resource-scanner'
 import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { collectDiagnosticsInput, resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
 import type {
@@ -38,6 +49,18 @@ import {
   type FigureSourceOccurrence,
 } from './document-diagnostics'
 import type { ImageSourceOccurrence, ResourceClass } from './document-resource-scanner'
+// V5.15 — Standalone Object Block Invariant (DOM projection of the gate).
+import {
+  analyzeFigureBlockStructureDom,
+  noteFigureBlockAdmission,
+  beginFigureBlockStructureV515DomPass,
+  getFigureBlockStructureV515GateReport,
+  getFigureBlockStructureV515CoverageReport,
+  getFigureBlockStructureV515GateDecision,
+  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  DOCUMENT_DIAGNOSTIC_STANDALONE_OBJECT_BLOCK_AUDIT,
+  type FigureBlockStructureResult,
+} from './document-standalone-object-block-invariant-v515'
 import {
   computeDiagnosticLocationContract,
   getRuleMeta,
@@ -94,6 +117,10 @@ export class DocumentDiagnosticsAuthority {
   private lastH1InvariantSignature = ''
   /** Phase 7R.3.11.8B.4.1 — latent ATX marker transition dedup (state-token). */
   private lastLatentAtxSignature = ''
+  /** V1 — literal-exclusion audit dedupe (state-token). */
+  private lastLiteralExclusionSignature = ''
+  /** V5.15 — the figure owning-block structure results of the last DOM pass. */
+  private lastFigureStructureResults: FigureBlockStructureResult[] = []
   private listeners = new Set<(snapshot: DocumentDiagnosticsSnapshot | null) => void>()
 
   constructor(
@@ -130,9 +157,18 @@ export class DocumentDiagnosticsAuthority {
       this.sourceRevision++
       this.lastDocumentKey = input.documentKey
     }
+    // V1 §21 — the figure locator records the EXACT source generation this
+    // compute runs against, so a later click can detect a stale revision.
+    input.sourceRevision = this.sourceRevision
     // Phase 7R.3.11.8B.4 — severity transition log (strict/loose switch only).
     this.emitHeadingSeverityTransition(input.documentKey, input.strictMode)
     const computed = computeDocumentDiagnostics(input)
+    // V5.15 §16/§17 — ONE standalone-object-block audit per recompute, emitted
+    // AFTER the source structure diagnostics were computed, so the gate report
+    // and the coverage report always describe the SAME snapshot.
+    this.emitStandaloneObjectBlockInvariantAudit(computed.diagnostics)
+    // V1 §26/§27 — the literal exclusion audit + hard gates (inline / fenced code).
+    this.emitLiteralExclusionAudit(input.markdown, computed.diagnostics)
     // Only a PASSING canonical authority may emit the real-gap audit — a
     // polluted sequence (invariant FAIL) must never publish gap facts.
     if (structural.headingAuthority?.decision === 'PASS') {
@@ -412,6 +448,119 @@ export class DocumentDiagnosticsAuthority {
    * Phase 7R.3.11.8B.5 — DOCUMENT-DIAGNOSTIC-RULE-SNAPSHOT. One summary per
    * committed content change: severity sums + per-record ruleId/location kind.
    */
+  /**
+   * V5.15 §16/§17 — the Standalone Object Block Invariant runtime audit.
+   *
+   * Emitted ONCE per recompute with the per-block figure decisions plus the
+   * hard-gate / coverage report, so a forbidden count is readable straight from
+   * the runtime log and always describes the current snapshot.
+   */
+  private emitStandaloneObjectBlockInvariantAudit(
+    diagnostics: readonly DocumentDiagnostic[],
+  ): void {
+    const results = this.lastFigureStructureResults
+    const documentKey = this.ctx.authority.getDocumentKey() ?? null
+    const gate = getFigureBlockStructureV515GateDecision()
+    const admittedCount = results.filter(r => r.decision === 'VALID_STANDALONE_FIGURE').length
+    const blocked = results
+      .filter(r => r.decision !== 'VALID_STANDALONE_FIGURE')
+      .map(r => `${r.owningBlockIdentity}:${r.decision}`)
+    const structureDiagnosticCount = diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE).length
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STANDALONE_OBJECT_BLOCK_AUDIT, {
+      documentKey,
+      objectKind: 'figure',
+      rawObjectCount: results.reduce((n, r) => n + r.imageOccurrenceCount, 0),
+      canonicalObjectCount: admittedCount,
+      figureBlockCount: results.length,
+      normalBusinessTargetAdmittedCount: admittedCount,
+      excludedFromNormalTargetCount: blocked.length,
+      excludedBlocks: blocked.join('|') || 'NONE',
+      containerKinds: results.map(r => `${r.owningBlockIdentity}:${r.containerKind}`).join('|') || 'NONE',
+      violations: results
+        .flatMap(r => r.violationCodes)
+        .filter((v, i, all) => all.indexOf(v) === i)
+        .join('|') || 'NONE',
+      figureCanonicalTargetCount: admittedCount,
+      figureStructureDiagnosticCount: structureDiagnosticCount,
+      normalBusinessTargetAdmitted: admittedCount > 0,
+      structuralDiagnosticPublished: structureDiagnosticCount > 0,
+      gateDecision: gate.decision,
+      gateFailing: gate.failedChecks.join('|') || 'NONE',
+      gateReport: getFigureBlockStructureV515GateReport(),
+      coverageReport: getFigureBlockStructureV515CoverageReport(),
+      decision: gate.decision,
+      reason: 'FIGURE_STANDALONE_BLOCK_INVARIANT_EVALUATED',
+    })
+  }
+
+  /**
+   * V1 §26/§27 — the Markdown literal exclusion audit + the Figure literal
+   * exclusion hard gates.
+   *
+   * Emitted ONCE per recompute. The gate is REAL: it consumes the markdown, the
+   * literal ranges and the COMPUTED diagnostics — a diagnostic whose source range
+   * overlaps a literal region is a measured false positive, never a heuristic.
+   */
+  private emitLiteralExclusionAudit(
+    markdown: string | null,
+    diagnostics: readonly DocumentDiagnostic[],
+  ): void {
+    const admitted = scanAdmittedReferenceCounts(markdown ?? '')
+    const evaluated = evaluateLiteralExclusionAgainstDiagnostics({
+      markdown,
+      diagnostics,
+      admittedImageCount: admitted.imageCount,
+      admittedLinkCount: admitted.linkCount,
+      admittedSpans: scanAdmittedReferenceSpans(markdown ?? ''),
+    })
+    const gate = evaluateFigureLiteralExclusionV1Gates(evaluated.counters)
+    const facts = evaluated.facts
+    const figureDiagnostics = diagnostics.filter(d =>
+      d.code === 'FIGURE_MISSING_NAME'
+      || d.code === 'FIGURE_LOCAL_IMAGE_MISSING'
+      || d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID').length
+    const signature = [
+      this.ctx.authority.getDocumentKey() ?? '',
+      facts.inlineCodeRangeCount, facts.fencedCodeRangeCount, facts.indentedCodeRangeCount,
+      facts.rawImageSyntaxMatchCount, facts.rawLinkSyntaxMatchCount,
+      facts.excludedImageCandidateCount, facts.admittedImageCandidateCount,
+      gate.decision, evaluated.literalFalsePositiveDiagnosticIds.join(','),
+    ].join('|')
+    if (signature === this.lastLiteralExclusionSignature) return
+    this.lastLiteralExclusionSignature = signature
+
+    emitRuntimeAudit(MARKDOWN_LITERAL_EXCLUSION_AUDIT, {
+      documentKey: this.ctx.authority.getDocumentKey() ?? null,
+      sourceRevision: this.sourceRevision,
+      inlineCodeRangeCount: facts.inlineCodeRangeCount,
+      fencedCodeRangeCount: facts.fencedCodeRangeCount,
+      indentedCodeRangeCount: facts.indentedCodeRangeCount,
+      rawImageSyntaxMatchCount: facts.rawImageSyntaxMatchCount,
+      rawLinkSyntaxMatchCount: facts.rawLinkSyntaxMatchCount,
+      excludedImageCandidateCount: facts.excludedImageCandidateCount,
+      excludedLinkCandidateCount: facts.excludedLinkCandidateCount,
+      admittedImageCandidateCount: admitted.imageCount,
+      admittedLinkCandidateCount: admitted.linkCount,
+      decision: gate.decision,
+      reason: gate.decision === 'PASS' ? 'LITERAL_EXCLUSION_OK' : gate.failedChecks.join(','),
+    })
+    emitRuntimeAudit(FIGURE_LITERAL_EXCLUSION_AUDIT, {
+      documentKey: this.ctx.authority.getDocumentKey() ?? null,
+      rawFigureLikeSyntaxCount: facts.rawImageSyntaxMatchCount,
+      excludedByInlineCodeCount: facts.excludedImageByInlineCodeCount,
+      excludedByFenceCount: facts.excludedImageByFenceCount,
+      excludedByOtherLiteralCount: facts.excludedImageByIndentedCodeCount,
+      realFigureOccurrenceCount: admitted.imageCount,
+      figureCanonicalTargetCount: admitted.imageCount,
+      figureDiagnosticCount: figureDiagnostics,
+      figureResourceResolutionCount: diagnostics.filter(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING').length,
+      literalFalsePositiveDiagnosticIds: evaluated.literalFalsePositiveDiagnosticIds.join('|') || 'NONE',
+      gateReport: formatFigureLiteralExclusionV1GateReport(evaluated.counters),
+      decision: gate.decision,
+      reason: gate.decision === 'PASS' ? 'FIGURE_LITERAL_EXCLUSION_OK' : gate.failedChecks.join(','),
+    })
+  }
+
   private emitDocumentDiagnosticRuleSnapshot(snapshot: DocumentDiagnosticsSnapshot): void {
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-RULE-SNAPSHOT', {
       documentKey: snapshot.documentKey,
@@ -634,15 +783,33 @@ export class DocumentDiagnosticsAuthority {
       // Phase 7R.3.11.8B.5 — block ordinal identity (`block:figure:<n>`) is the
       // stable locator for figure diagnostics; re-derived at locate time.
       let figureOrdinal = 0
+      // V5.15 §16/§18 — open the DOM admission pass: the gate + coverage
+      // counters describe THIS document state, never a stale earlier pass.
+      beginFigureBlockStructureV515DomPass()
+      this.lastFigureStructureResults = []
+      const figureStructureResults = this.lastFigureStructureResults
       for (const img of Array.from(root.querySelectorAll<HTMLElement>('img'))) {
         if (img.closest('[data-inkchapter-caption]')) continue
+        // V5.15 §6/§10 — the ordinal is consumed FIRST so the surviving valid
+        // figures keep the exact `block:figure:<n>` identity the locate resolver
+        // re-derives from the live DOM (querySelectorAll('img')[ordinal]).
+        const blockOrdinal = figureOrdinal++
+        // V5.15 — a structurally invalid image owning block is NOT a normal
+        // figure target: it never enters numbering / caption / naming / locate.
+        const structure = analyzeFigureBlockStructureDom(img)
+        figureStructureResults.push(structure)
+        if (structure.decision !== 'VALID_STANDALONE_FIGURE') {
+          noteFigureBlockAdmission(structure, false)
+          continue
+        }
         const { localPath } = this.providers.resolveImageLocalPath(img)
         figures.push({
           name: this.providers.getFigureName(img),
           localPath: localPath ?? undefined,
           element: img,
-          targetIdentity: `block:figure:${figureOrdinal++}`,
+          targetIdentity: `block:figure:${blockOrdinal}`,
         })
+        noteFigureBlockAdmission(structure, true)
       }
 
       // Tables.
