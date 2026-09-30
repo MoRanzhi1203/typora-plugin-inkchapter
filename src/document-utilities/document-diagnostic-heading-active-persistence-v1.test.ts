@@ -121,6 +121,8 @@ function facts(over: Partial<HeadingActiveVisualFacts> = {}): HeadingActiveVisua
   return {
     fragmentCount: 1, fragmentRects: [{ left: 0, top: 0, width: 10, height: 10 }],
     layoutEpoch: 5, geometryGeneration: 9, diagnosticId: 'E1', targetKey: 'doc::E1::0::H-A',
+    diagnosticTargetIndex: 0, transactionLocalTargetIndex: 0,
+    stableHeadingIdentity: 'H-A', headingIdentity: 'id:H-A', interactionVersion: 1,
     ...over,
   }
 }
@@ -391,6 +393,30 @@ type HostApi = {
     gateDecision: 'PASS' | 'FAIL'
     coverageDecision: 'PASS' | 'FAIL'
   }
+  getActiveTargetAuthoritySnapshot(): {
+    decision: 'PASS' | 'FAIL'
+    reason: string
+    failedChecks: readonly string[]
+    matches: {
+      diagnosticIdMatch: boolean
+      diagnosticTargetIndexMatch: boolean
+      targetKeyMatch: boolean
+      stableHeadingIdentityMatch: boolean
+      drawerAuthorityMatch: boolean
+      leaseAuthorityMatch: boolean
+    }
+    visualOnForeignHeading: boolean
+  }
+  getMultiTargetV2Counters(): Record<string, number>
+  getMultiTargetV2GateReport(): string[]
+  getMultiTargetV2CoverageReport(): string[]
+  getMultiTargetV2GateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+  }
 }
 type MatrixInternals = {
   locateDiagnostic(id: string, targetIndex?: number): void
@@ -465,69 +491,293 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('V1-HOST — the active fill is a STATE-DERIVED projection', () => {
-  const three = () => [
-    diagFor('E1', 'H-A', 'error', 'HEADING_LEVEL_GAP'),
-    diagFor('W1', 'H-B', 'warning', 'HEADING_DUPLICATE_TEXT'),
-    diagFor('W2', 'H-C', 'warning', 'HEADING_DUPLICATE_TEXT'),
-  ]
-
-  it('V1-HOST-1 — the active fill SURVIVES a layoutEpoch rebuild (§20/§46/§67)', () => {
-    const w = makeWorld()
+describe('V2-HOST — the ACTIVE visual belongs to the CANONICAL multi-target', () => {
+  it('TEST-V2-2 — 2/2 initial activate binds State / Drawer / Visual to H-C', async () => {
+    const w = matrixWorld()
     host = w.h
-    inject(host, three())
-    api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
+    inject(host, matrixDiags(), 11)
+    matrixInternals(host).renderDrawer()
 
-    expect(activeFragmentCount()).toBe(1)
-    const before = host.getHeadingActivePersistenceFacts()
-    expect(before).not.toBeNull()
-    expect(before!.fragmentCount).toBe(1)
-    expect(before!.diagnosticId).toBe('E1')
-
-    // a REAL layout mutation (never a user interaction) bumps the epoch.
-    api().currentDocumentLayoutEpoch = before!.layoutEpoch + 1
-    api().renderHeadingDiagnosticMarkers()
-
-    // the ACTIVE visual was REBUILT, not dropped.
+    await clickDrawerRow('MH', 1)
+    const st = api().getDiagnosticInteractionStateV2()
+    expect(st.diagnosticTargetIndex).toBe(1)
+    expect(parseCanonicalTargetKeyIndexV2(st.targetKey)).toBe(1)
+    expect(parseCanonicalTargetKeyIdentityV2(st.targetKey)).toBe('H-C')
+    // the Drawer selected the 2/2 row, never the 1/2 row
+    expect(rowEl('MH', 1)!.classList.contains('is-selected')).toBe(true)
+    expect(rowEl('MH', 0)!.classList.contains('is-selected')).toBe(false)
+    // the ACTIVE facts are SELF-IDENTIFYING
+    const facts = api().getHeadingActivePersistenceFacts()
+    expect(facts).not.toBeNull()
+    expect(facts!.diagnosticTargetIndex).toBe(1)
+    expect(facts!.stableHeadingIdentity).toBe('H-C')
+    expect(facts!.headingIdentity).toBe('id:H-C')
+    expect(facts!.targetKey).toBe(st.targetKey)
+    // the ACTIVE DOM wrapper carries the canonical authority (State -> DOM)
+    const active = document.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-active')
+    expect(active).not.toBeNull()
+    expect(active!.getAttribute('data-ink-diagnostic-target-index')).toBe('1')
+    expect(active!.getAttribute('data-ink-heading-identity')).toBe('id:H-C')
+    expect(active!.getAttribute('data-ink-target-key')).toBe(st.targetKey)
     expect(activeFragmentCount()).toBeGreaterThanOrEqual(1)
-    const after = host.getHeadingActivePersistenceFacts()
+    const authority = api().getActiveTargetAuthoritySnapshot()
+    expect(authority.matches.targetKeyMatch).toBe(true)
+    expect(authority.matches.diagnosticTargetIndexMatch).toBe(true)
+    expect(authority.matches.stableHeadingIdentityMatch).toBe(true)
+    expect(authority.matches.drawerAuthorityMatch).toBe(true)
+  })
+
+  it('TEST-V2-3 — 2/2 SURVIVES a layoutEpoch rebuild (never falls back to 1/2)', async () => {
+    const w = matrixWorld()
+    host = w.h
+    inject(host, matrixDiags(), 12)
+    matrixInternals(host).renderDrawer()
+    await clickDrawerRow('MH', 1)
+    const before = api().getHeadingActivePersistenceFacts()!
+    expect(before.stableHeadingIdentity).toBe('H-C')
+
+    matrixInternals(host).bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
+    api().renderHeadingDiagnosticMarkers()
+    await flushRaf()
+
+    const after = api().getHeadingActivePersistenceFacts()
     expect(after).not.toBeNull()
+    expect(after!.stableHeadingIdentity).toBe('H-C')
+    expect(after!.diagnosticTargetIndex).toBe(1)
+    expect(after!.targetKey).toBe(before.targetKey)
     expect(after!.fragmentCount).toBeGreaterThanOrEqual(1)
-    expect(after!.layoutEpoch).toBe(before!.layoutEpoch + 1)
-    expect(after!.diagnosticId).toBe('E1')
-    expect(host.getHeadingActivePersistenceV1CoverageReport())
-      .toContain('ACTIVE_HEADING_REBUILT_AFTER_LAYOUT_EPOCH_COUNT=1')
+    expect(api().getActiveTargetAuthoritySnapshot().matches.stableHeadingIdentityMatch).toBe(true)
+    expect(api().getMultiTargetV2GateDecision().gateDecision, api().getMultiTargetV2GateReport().join(' | ')).toBe('PASS')
   })
 
-  it('V1-HOST-2 — the active fill SURVIVES a geometryGeneration rebuild (§48)', () => {
-    const w = makeWorld()
+  it('TEST-V2-4 — 2/2 SURVIVES a geometryGeneration rebuild', async () => {
+    const w = matrixWorld()
     host = w.h
-    inject(host, three())
+    inject(host, matrixDiags(), 13)
+    matrixInternals(host).renderDrawer()
+    await clickDrawerRow('MH', 1)
+    const before = api().getHeadingActivePersistenceFacts()!
     api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('W1', diagEl('W1'), w.headings[1])
-    const before = host.getHeadingActivePersistenceFacts()
-    expect(before!.geometryGeneration).toBeGreaterThanOrEqual(0)
+    await flushRaf()
+    const after = api().getHeadingActivePersistenceFacts()
+    expect(after).not.toBeNull()
+    expect(after!.stableHeadingIdentity).toBe('H-C')
+    expect(after!.geometryGeneration).toBeGreaterThanOrEqual(before.geometryGeneration)
+    expect(api().getActiveTargetAuthoritySnapshot().matches.stableHeadingIdentityMatch).toBe(true)
+  })
 
-    api().renderHeadingDiagnosticMarkers()
-    const after = host.getHeadingActivePersistenceFacts()
-    expect(after!.fragmentCount).toBeGreaterThanOrEqual(1)
-    expect(after!.geometryGeneration).toBeGreaterThanOrEqual(before!.geometryGeneration)
+  it('TEST-V2-5 — 1/2 → 2/2 → 1/2 keeps the EXACT identity at every step', async () => {
+    const w = matrixWorld()
+    host = w.h
+    inject(host, matrixDiags(), 14)
+    matrixInternals(host).renderDrawer()
+
+    await clickDrawerRow('MH', 0)
+    const one = api().getHeadingActivePersistenceFacts()!
+    expect(one.stableHeadingIdentity).toBe('H-B')
+    expect(one.diagnosticTargetIndex).toBe(0)
+
+    await clickDrawerRow('MH', 1)
+    const two = api().getHeadingActivePersistenceFacts()!
+    expect(two.stableHeadingIdentity).toBe('H-C')
+    expect(two.diagnosticTargetIndex).toBe(1)
+    expect(two.targetKey).not.toBe(one.targetKey)
+
+    await clickDrawerRow('MH', 0)
+    const back = api().getHeadingActivePersistenceFacts()!
+    expect(back.stableHeadingIdentity).toBe('H-B')
+    expect(back.diagnosticTargetIndex).toBe(0)
+    expect(back.targetKey).toBe(one.targetKey)
     expect(activeFragmentCount()).toBeGreaterThanOrEqual(1)
   })
 
-  it('V1-HOST-3 — a same-target clear retires the facts (no phantom marker)', () => {
-    const w = makeWorld()
+  it('TEST-V2-8 — same-target DEACTIVATE tears down ATOMICALLY (closure after teardown)', async () => {
+    const w = matrixWorld()
     host = w.h
-    inject(host, three())
-    api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', diagEl('E1'), w.headings[0])
-    expect(host.getHeadingActivePersistenceFacts()).not.toBeNull()
+    inject(host, matrixDiags(), 15)
+    matrixInternals(host).renderDrawer()
+    await clickDrawerRow('MH', 1)
+    expect(isSelectedRowCount()).toBe(1)
 
-    api().clearHeadingActiveEmphasis()
-    expect(host.getHeadingActivePersistenceFacts()).toBeNull()
-    api().renderHeadingDiagnosticMarkers()
+    await clickDrawerRow('MH', 1)
+    const st = api().getDiagnosticInteractionStateV2()
+    expect(st.phase).toBe('IDLE')
+    expect(isSelectedRowCount()).toBe(0)
     expect(activeFragmentCount()).toBe(0)
+    expect(api().getHeadingActivePersistenceFacts()).toBeNull()
+    const closure = lastAuditWith('DOCUMENT-DIAGNOSTIC-HEADING-POST-RECONCILE-CLOSURE', 'trigger', 'SAME_TARGET_DEACTIVATE_TEARDOWN_COMMITTED')
+    expect(closure.decision).toBe('PASS')
+    expect(closure.phase).toBe('IDLE')
+    expect(closure.activeFillCount).toBe('0')
+    expect(closure.activeLeasePresent).toBe('false')
+    expect(api().getMultiTargetV2Counters().deactivateClosureBeforeTeardownCommit).toBe(0)
+    expect(api().getMultiTargetV2Counters().idleWithActiveFill).toBe(0)
+    expect(api().getMultiTargetV2Counters().idleWithActiveLease).toBe(0)
+  })
+
+  it('TEST-V2-7 — the visual projection NEVER mutates the interaction state', async () => {
+    const w = matrixWorld()
+    host = w.h
+    inject(host, matrixDiags(), 16)
+    matrixInternals(host).renderDrawer()
+    await clickDrawerRow('MH', 1)
+
+    const before = api().getDiagnosticInteractionStateV2()
+    api().renderHeadingDiagnosticMarkers()
+    api().renderHeadingDiagnosticMarkers()
+    await flushRaf()
+    const after = api().getDiagnosticInteractionStateV2()
+    expect(after).toEqual(before)
+    expect(api().getMultiTargetV2Counters().visualProjectionWroteInteractionState).toBe(0)
+    expect(api().getMultiTargetV2Counters().visualProjectionAttemptedWithoutActiveState).toBe(0)
+  })
+
+  it('TEST-V2-10 — cross-diagnostic: the strict multi-H1 audit never reads the GAP target', async () => {
+    const w = matrixWorld()
+    host = w.h
+    inject(host, matrixDiags(), 17)
+    matrixInternals(host).renderDrawer()
+    await clickDrawerRow('GAP', 0)
+    const strictAudit = lastAudit('STRICT-MULTI-H1-VISUAL-AUDIT')
+    expect(strictAudit.activeTargetIdentity).toBe('null')
+    expect(strictAudit.activeTargetBelongsToAudit).toBe('false')
+    expect(api().getMultiTargetV2Counters().activeStateVisualHeadingIdentityMismatch).toBe(0)
+  })
+})
+
+describe('V2-PURE — the canonical resolver / identity closure / current snapshot', () => {
+  const state = (over: Partial<{ phase: 'IDLE' | 'ACTIVE'; diagnosticId: string | null; targetKey: string | null; diagnosticTargetIndex: number | null }> = {}) => ({
+    phase: 'ACTIVE' as const,
+    diagnosticId: 'MH',
+    targetKey: 'doc:key::MH::1::H-C',
+    diagnosticTargetIndex: 1,
+    transactionLocalTargetIndex: 0,
+    ...over,
+  })
+  const projections = [
+    { diagnosticId: 'MH', targetIndex: 0, stableIdentity: 'H-B' },
+    { diagnosticId: 'MH', targetIndex: 1, stableIdentity: 'H-C' },
+  ]
+  const element = () => {
+    const el = document.createElement('h1')
+    el.setAttribute('data-id', 'H-C')
+    // the resolver FAILS CLOSED on a disconnected target, so mount it.
+    document.body.appendChild(el)
+    return el
+  }
+
+  it('TEST-V2-1 — targetIndex 1 resolves H-C (never H-B / targets[0])', () => {
+    const r = resolveCanonicalActiveHeadingTarget({
+      state: state(),
+      documentKey: 'doc:key',
+      diagnostic: { id: 'MH', severity: 'error', stableIdentity: 'H-B', isMultiTarget: true },
+      projections,
+      resolveHeadingElement: () => element(),
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.target.stableHeadingIdentity).toBe('H-C')
+    expect(r.target.diagnosticTargetIndex).toBe(1)
+    expect(r.target.headingIdentity).toBe('id:H-C')
+  })
+
+  it('TEST-V2-1b — a targetKey that encodes the WRONG index FAILS CLOSED', () => {
+    const r = resolveCanonicalActiveHeadingTarget({
+      state: state({ targetKey: 'doc:key::MH::0::H-B' }),
+      documentKey: 'doc:key',
+      diagnostic: { id: 'MH', severity: 'error', stableIdentity: 'H-B', isMultiTarget: true },
+      projections,
+      resolveHeadingElement: () => element(),
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe('TARGET_KEY_INDEX_MISMATCH')
+  })
+
+  it('TEST-V2-1c — a targetKey whose identity disagrees with the projection FAILS CLOSED', () => {
+    const r = resolveCanonicalActiveHeadingTarget({
+      state: state({ targetKey: 'doc:key::MH::1::H-B' }),
+      documentKey: 'doc:key',
+      diagnostic: { id: 'MH', severity: 'error', stableIdentity: 'H-B', isMultiTarget: true },
+      projections,
+      resolveHeadingElement: () => element(),
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe('TARGET_KEY_IDENTITY_MISMATCH')
+  })
+
+  it('TEST-V2-6 — an EXISTING fill on the WRONG heading FAILS the identity closure', () => {
+    const base = {
+      phase: 'ACTIVE' as const,
+      activeTargetIsHeading: true,
+      stateDiagnosticId: 'MH',
+      stateDiagnosticTargetIndex: 1,
+      stateTargetKey: 'doc:key::MH::1::H-C',
+      stateHeadingIdentity: 'id:H-C',
+      visualDiagnosticId: 'MH',
+      visualDiagnosticTargetIndex: 1,
+      visualTargetKey: 'doc:key::MH::1::H-C',
+      visualHeadingIdentity: 'id:H-C',
+      drawerTargetKey: 'doc:key::MH::1::H-C',
+      leaseTargetKey: 'doc:key::MH::1::H-C',
+      fragmentCount: 1,
+      fillCount: 1,
+      activeLeasePresent: true,
+      activeTargetCount: 1,
+      selectedActiveRowCount: 1,
+      drawerActiveRowCount: 1,
+      drawerRowsRendered: true,
+      layoutEpochCurrent: true,
+      geometryGenerationCurrent: true,
+    }
+    expect(evaluateActiveTargetAuthority(base).decision).toBe('PASS')
+    // the SAME fill count, but painted on the FIRST subtarget → FAIL
+    const wrong = evaluateActiveTargetAuthority({
+      ...base,
+      visualDiagnosticTargetIndex: 0,
+      visualTargetKey: 'doc:key::MH::0::H-B',
+      visualHeadingIdentity: 'id:H-B',
+      drawerTargetKey: 'doc:key::MH::0::H-B',
+      leaseTargetKey: 'doc:key::MH::0::H-B',
+    })
+    expect(wrong.decision).toBe('FAIL')
+    expect(wrong.failedChecks).toContain('ACTIVE_STATE_VISUAL_TARGET_KEY_MISMATCH')
+    expect(wrong.failedChecks).toContain('ACTIVE_STATE_VISUAL_HEADING_IDENTITY_MISMATCH')
+    expect(wrong.visualOnForeignHeading).toBe(true)
+  })
+
+  it('TEST-V2-9 — the Strict Multi-H1 decision uses the CURRENT snapshot only', () => {
+    const agree = evaluateStrictMultiH1CurrentSnapshot({
+      expectedExcessTargetCount: 2, diagnosticTargetCount: 2, visualTargetCount: 2,
+      locateTargetCount: 2, auditTargetCount: 2, passiveMarkerCount: 2,
+      siblingPassiveLostCount: 0, activeTargetNotInExcessSet: false,
+      passiveActiveFillStackCount: 0, activeMarkerCountGt1: 0,
+    })
+    expect(agree.decision).toBe('PASS')
+    expect(agree.currentExpectedCountMismatch).toBe(0)
+    expect(agree.currentPassiveCountMismatch).toBe(0)
+    const mismatch = evaluateStrictMultiH1CurrentSnapshot({
+      expectedExcessTargetCount: 2, diagnosticTargetCount: 2, visualTargetCount: 2,
+      locateTargetCount: 2, auditTargetCount: 2, passiveMarkerCount: 1,
+      siblingPassiveLostCount: 0, activeTargetNotInExcessSet: false,
+      passiveActiveFillStackCount: 0, activeMarkerCountGt1: 0,
+    })
+    expect(mismatch.decision).toBe('FAIL')
+    expect(mismatch.currentPassiveCountMismatch).toBe(1)
+  })
+
+  it('V2-GATE — every V2 fatal counter is 0 by default and a V2 coverage minimum is enforced', () => {
+    const counters = createHeadingMultiTargetV2Counters()
+    expect(formatHeadingMultiTargetV2GateReport(counters).length)
+      .toBe(HEADING_MULTI_TARGET_V2_GATE_KEYS.length)
+    expect(evaluateHeadingMultiTargetV2Gates(counters).decision).toBe('PASS')
+    counters.activeStateVisualTargetKeyMismatch = 1
+    expect(evaluateHeadingMultiTargetV2Gates(counters).decision).toBe('FAIL')
+    const coverage = createHeadingMultiTargetV2CoverageCounters()
+    expect(evaluateHeadingMultiTargetV2Coverage(coverage).decision).toBe('FAIL')
+    expect(formatHeadingMultiTargetV2CoverageReport(coverage).length)
+      .toBe(HEADING_MULTI_TARGET_V2_COVERAGE_KEYS.length)
   })
 })
 
@@ -546,6 +796,17 @@ const lastAudit = (event: string): Record<string, string> => {
   const out: Record<string, string> = {}
   for (const m of body.matchAll(/([A-Za-z_][A-Za-z0-9_]*)=(\S*)/g)) out[m[1]] = m[2]
   return out
+}
+/** the LAST audit line of `event` whose `key` equals `value`. */
+const lastAuditWith = (event: string, key: string, value: string): Record<string, string> => {
+  const lines = (infoSpy?.mock.calls ?? []).map(c => String(c[0] ?? '')).filter(l => l.includes(event))
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const body = lines[i].slice(lines[i].indexOf(event) + event.length).replace(/^:\s*/, '')
+    const out: Record<string, string> = {}
+    for (const m of body.matchAll(/([A-Za-z_][A-Za-z0-9_]*)=(\S*)/g)) out[m[1]] = m[2]
+    if (out[key] === value) return out
+  }
+  return {}
 }
 const isSelectedRowCount = (): number =>
   document.querySelectorAll('.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]').length
@@ -654,10 +915,12 @@ describe('V1-RUNTIME-MATRIX — the full A–G sequence through the production p
     expect(strictAudit.activeTargetBelongsToAudit).toBe('false')
     expect(activeFragmentCount()).toBeGreaterThanOrEqual(1)
 
-    // ── D. Back to MH 1/2, then a REAL layoutEpoch rebuild ────────────────
-    await clickDrawerRow('MH', 0)
+    // ── D. Back to the SECOND subtarget (2/2), then a REAL layoutEpoch rebuild ──
+    await clickDrawerRow('MH', 1)
     const beforeD = api().getHeadingActivePersistenceFacts()!
     expect(beforeD.diagnosticId).toBe('MH')
+    expect(beforeD.stableHeadingIdentity).toBe('H-C')
+    expect(beforeD.diagnosticTargetIndex).toBe(1)
     matrixInternals(host).bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
     api().renderHeadingDiagnosticMarkers()
     await flushRaf()
@@ -666,16 +929,28 @@ describe('V1-RUNTIME-MATRIX — the full A–G sequence through the production p
     expect(afterD!.fragmentCount).toBeGreaterThanOrEqual(1)
     expect(afterD!.layoutEpoch).toBe(beforeD.layoutEpoch + 1)
     expect(afterD!.diagnosticId).toBe('MH')
+    // the 2/2 subtarget NEVER falls back to 1/2 across a layout reconcile.
+    expect(afterD!.stableHeadingIdentity).toBe('H-C')
+    expect(afterD!.targetKey).toBe(beforeD.targetKey)
     expect(activeFragmentCount()).toBeGreaterThanOrEqual(1)
 
-    // ── E. A REAL geometryGeneration rebuild ──────────────────────────────
+    // ── E. A REAL geometryGeneration rebuild (still 2/2) ──────────────────
     api().renderHeadingDiagnosticMarkers()
     await flushRaf()
     const afterE = api().getHeadingActivePersistenceFacts()
     expect(afterE).not.toBeNull()
     expect(afterE!.fragmentCount).toBeGreaterThanOrEqual(1)
     expect(afterE!.geometryGeneration).toBeGreaterThan(afterD!.geometryGeneration)
+    expect(afterE!.stableHeadingIdentity).toBe('H-C')
     expect(activeFragmentCount()).toBeGreaterThanOrEqual(1)
+
+    // ── E2. 2/2 → 1/2 (an exact switch back to the FIRST subtarget) ───────
+    await clickDrawerRow('MH', 0)
+    const afterE2 = api().getHeadingActivePersistenceFacts()!
+    expect(afterE2.stableHeadingIdentity).toBe('H-B')
+    expect(afterE2.diagnosticTargetIndex).toBe(0)
+    expect(rowEl('MH', 0)!.classList.contains('is-selected')).toBe(true)
+    expect(rowEl('MH', 1)!.classList.contains('is-selected')).toBe(false)
 
     // ── F. Same-target DEACTIVATE (click the SAME 1/2 row again) ──────────
     await clickDrawerRow('MH', 0)
@@ -687,7 +962,7 @@ describe('V1-RUNTIME-MATRIX — the full A–G sequence through the production p
     expect(api().getHeadingActivePersistenceFacts()).toBeNull()
     // the PASSIVE marker of the diagnosed headings is restored (never lost).
     expect(document.querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBeGreaterThanOrEqual(1)
-    expect(lastAudit('DOCUMENT-DIAGNOSTIC-HEADING-POST-RECONCILE-CLOSURE').decision).toBe('PASS')
+    expect(lastAuditWith('DOCUMENT-DIAGNOSTIC-HEADING-POST-RECONCILE-CLOSURE', 'trigger', 'SAME_TARGET_DEACTIVATE_TEARDOWN_COMMITTED').decision).toBe('PASS')
 
     // ── every hard gate 0 AND every positive coverage met ─────────────────
     const gateReport = api().getHeadingActivePersistenceV1GateReport()
@@ -707,6 +982,22 @@ describe('V1-RUNTIME-MATRIX — the full A–G sequence through the production p
     expect(coverageValue('ACTIVE_HEADING_REBUILT_AFTER_GEOMETRY_GENERATION_COUNT')).toBeGreaterThanOrEqual(1)
     expect(coverageValue('MULTI_TARGET_HEADING_DISTINCT_SUBTARGET_ACTIVATION_COUNT')).toBe(2)
     expect(coverageValue('HEADING_SAME_TARGET_DEACTIVATE_RUNTIME_COUNT')).toBeGreaterThanOrEqual(1)
+
+    // ── V2 §12 — the multi-target canonical coverage of THIS round.
+    const v2Report = api().getMultiTargetV2CoverageReport()
+    const v2Value = (label: string): number =>
+      Number.parseInt(v2Report.find(l => l.startsWith(label))!.split('=')[1], 10)
+    expect(v2Value('MULTI_TARGET_FIRST_SUBTARGET_ACTIVATION_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('MULTI_TARGET_SECOND_SUBTARGET_ACTIVATION_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('MULTI_TARGET_SECOND_SUBTARGET_REBUILT_AFTER_LAYOUT_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('MULTI_TARGET_SECOND_SUBTARGET_REBUILT_AFTER_GEOMETRY_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('MULTI_TARGET_SWITCH_1_TO_2_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('MULTI_TARGET_SWITCH_2_TO_1_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('CROSS_DIAGNOSTIC_HEADING_SWITCH_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('SAME_TARGET_DEACTIVATE_AFTER_MULTI_TARGET_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(v2Value('CANONICAL_ACTIVE_TARGET_EXACT_RESOLUTION_COUNT'), v2Report.join(' | ')).toBeGreaterThanOrEqual(1)
+    expect(api().getMultiTargetV2GateDecision().coverageDecision).toBe('PASS')
+    expect(api().getMultiTargetV2GateDecision().failedChecks, api().getMultiTargetV2GateReport().join(' | ')).toEqual([])
   })
 
   it('§73 — 1/2 and 2/2 use DISTINCT canonical rowKey / targetKey / heading identity', async () => {
