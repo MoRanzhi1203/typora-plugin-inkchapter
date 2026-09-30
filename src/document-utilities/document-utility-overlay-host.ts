@@ -6515,6 +6515,9 @@ export class DocumentUtilityOverlayHost {
       const excessSet = new Set(excessIdentities)
       const passiveForExcess = excessIdentities.filter(id => passiveSet.has(id))
       const missing = excessIdentities.filter(id => !passiveSet.has(id))
+      // ── V2 §10.1 — the per-frame facts are computed ONCE and the decision is
+      // derived from THEM. The cumulative per-diagnostic counters below are
+      // TELEMETRY ONLY (never a decision input).
       if (expectedExcess !== declared || expectedExcess !== excessIdentities.length) {
         this.countersMultiH1V513R5.expectedExtraTargetCountMismatch++
       }
@@ -6536,7 +6539,8 @@ export class DocumentUtilityOverlayHost {
       })
       const activeIdentity = scope.activeHeadingIdentity
       const activeInExcess = activeIdentity != null && excessSet.has(activeIdentity)
-      if (activeIdentity != null && !activeInExcess) {
+      const currentActiveNotInExcess = activeIdentity != null && !activeInExcess
+      if (currentActiveNotInExcess) {
         this.countersMultiH1V513R5.activeTargetNotInExcessSet++
         this.countersHeadingActiveV1.crossDiagnosticActiveTargetLeak++
         this.countersHeadingActiveV1.strictMultiH1AuditForeignActiveTarget++
@@ -6545,6 +6549,40 @@ export class DocumentUtilityOverlayHost {
       // §25 — the legal primary H1 must never carry a marker.
       const primaryMarked = !!(primaryIdentity && passiveSet.has(primaryIdentity) && !excessSet.has(primaryIdentity))
       if (primaryMarked) this.countersMultiH1V513R5.validPrimaryH1Marked++
+      // ── V2 §10.1 — the CURRENT-frame facts of THIS diagnostic only. A stacked
+      // fill or a duplicate active marker belonging to ANOTHER diagnostic must
+      // never fail this one.
+      const activeMarkersForDiagnostic = layer
+        ? Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-active'))
+          .filter(w => excessSet.has(w.getAttribute('data-ink-heading-id') ?? '')).length
+        : 0
+      const passiveActiveFillStackForDiagnostic = layer
+        ? Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active="true"]'))
+          .filter(w => excessSet.has(w.getAttribute('data-ink-heading-id') ?? '')
+            && w.querySelector('.inkchapter-heading-diagnostic-passive__fragment') != null).length
+        : 0
+      const currentSnapshot = evaluateStrictMultiH1CurrentSnapshot({
+        expectedExcessTargetCount: expectedExcess,
+        diagnosticTargetCount: declared,
+        visualTargetCount: excessIdentities.length,
+        locateTargetCount: txCount ?? null,
+        auditTargetCount: excessIdentities.length,
+        passiveMarkerCount: passiveForExcess.length,
+        siblingPassiveLostCount: missing.length,
+        activeTargetNotInExcessSet: currentActiveNotInExcess,
+        passiveActiveFillStackCount: passiveActiveFillStackForDiagnostic,
+        activeMarkerCountGt1: activeMarkersForDiagnostic > 1 ? activeMarkersForDiagnostic - 1 : 0,
+      })
+      // ── V2 §11 — the anti-contamination invariant: the emitted decision MUST be
+      // the CURRENT-snapshot decision. A divergence means a historical/cumulative
+      // counter was wired back into the decision (the ROOT_V2_6 defect).
+      if (currentSnapshot.currentExpectedCountMismatch !== (expectedExcess === declared
+        && expectedExcess === excessIdentities.length ? 0 : 1)) {
+        this.countersMultiTargetV2.strictMultiH1StaleCounterContamination++
+      }
+      if (currentSnapshot.currentPassiveCountMismatch !== (passiveForExcess.length === expectedExcess ? 0 : 1)) {
+        this.countersMultiTargetV2.strictMultiH1StaleCounterContamination++
+      }
       emitRuntimeAudit(STRICT_MULTI_H1_VISUAL_AUDIT_EVENT, {
         documentKey,
         diagnosticId: d.id,
@@ -6560,26 +6598,23 @@ export class DocumentUtilityOverlayHost {
         passiveMarkerIdentities: passiveForExcess,
         passiveMarkerCount: passiveForExcess.length,
         activeTargetIdentity: activeIdentity,
-        activeTargetIndex: this.multiTargetCursor.get(d.id) ?? null,
-        activeMarkerCount: activeCount,
+        // ── V2 §10.3 — the EXACT committed subtarget index (never the nav cursor).
+        activeTargetIndex: scope.activeDiagnosticTargetIndex,
+        activeMarkerCount: activeMarkersForDiagnostic,
         validPrimaryMarked: primaryMarked,
         siblingPassiveLostCount: missing.length,
-        passiveActiveFillStackCount: this.countersMultiH1V513R5.passiveActiveFillStack,
-        // ── V1 §26/§37 — the active scope facts (never a foreign target) + a REAL
-        // decision derived from this diagnostic's own counters.
+        passiveActiveFillStackCount: passiveActiveFillStackForDiagnostic,
+        // ── V1 §26/§37 — the active scope facts (never a foreign target).
         activeTargetBelongsToAudit: scope.belongsToDiagnostic,
         activeDiagnosticTargetIndex: scope.activeDiagnosticTargetIndex,
+        // ── V2 §10.1 — the CURRENT snapshot facts drive the decision.
+        currentExpectedCountMismatch: currentSnapshot.currentExpectedCountMismatch,
+        currentPassiveCountMismatch: currentSnapshot.currentPassiveCountMismatch,
+        currentSnapshotChecks: currentSnapshot.failedChecks,
+        // historical / cumulative telemetry (NEVER a decision input).
         gateCountersV513R5: { ...this.countersMultiH1V513R5 },
-        decision: (
-          missing.length === 0
-          && this.countersMultiH1V513R5.activeTargetNotInExcessSet === 0
-          && this.countersMultiH1V513R5.siblingPassiveMarkerLost === 0
-          && this.countersMultiH1V513R5.expectedExtraTargetCountMismatch === 0
-          && this.countersMultiH1V513R5.passiveActiveFillStack === 0
-        ) ? 'PASS' : 'FAIL',
-        reason: this.countersMultiH1V513R5.activeTargetNotInExcessSet > 0
-          ? 'ACTIVE_TARGET_NOT_IN_EXCESS_SET'
-          : (missing.length === 0 ? 'MULTI_H1_ALL_EXCESS_TARGETS_MARKED' : 'SIBLING_PASSIVE_MARKER_LOST'),
+        decision: currentSnapshot.decision,
+        reason: currentSnapshot.reason,
       })
     }
   }
