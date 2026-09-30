@@ -28,7 +28,16 @@ export interface DiagnosticInteractionState {
 
   diagnosticId: string | null
   targetKey: string | null
-  targetIndex: number | null
+  /**
+   * V1 §6/§7 — the CANONICAL index of the target inside the diagnostic's OWN
+   * `location.targets`. It is NEVER a transaction-local index.
+   */
+  diagnosticTargetIndex: number | null
+  /**
+   * V1 §7 — the index inside the NARROWED locate transaction (usually 0). It is
+   * transaction-scoped and must never be written back as the canonical index.
+   */
+  transactionLocalTargetIndex: number | null
 
   transactionId: number | null
   leaseToken: string | null
@@ -40,7 +49,8 @@ export function emptyDiagnosticInteractionState(): DiagnosticInteractionState {
     phase: 'IDLE',
     diagnosticId: null,
     targetKey: null,
-    targetIndex: null,
+    diagnosticTargetIndex: null,
+    transactionLocalTargetIndex: null,
     transactionId: null,
     leaseToken: null,
   }
@@ -49,7 +59,10 @@ export function emptyDiagnosticInteractionState(): DiagnosticInteractionState {
 export interface DiagnosticClick {
   diagnosticId: string
   targetKey: string
-  targetIndex: number
+  /** V1 §7 — the canonical diagnostic target index (never the local one). */
+  diagnosticTargetIndex: number
+  /** V1 §7 — the narrowed-transaction local index (null when not narrowed). */
+  transactionLocalTargetIndex: number | null
 }
 
 export type DiagnosticTransitionAction = 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH'
@@ -89,7 +102,8 @@ export function reduceDiagnosticClick(
         phase: 'IDLE',
         diagnosticId: null,
         targetKey: null,
-        targetIndex: null,
+        diagnosticTargetIndex: null,
+        transactionLocalTargetIndex: null,
         transactionId: null,
         leaseToken: null,
       },
@@ -104,7 +118,8 @@ export function reduceDiagnosticClick(
       phase: 'ACTIVE',
       diagnosticId: click.diagnosticId,
       targetKey: click.targetKey,
-      targetIndex: click.targetIndex,
+      diagnosticTargetIndex: click.diagnosticTargetIndex,
+      transactionLocalTargetIndex: click.transactionLocalTargetIndex,
       transactionId: nextTransactionId,
       leaseToken: nextLeaseToken,
     },

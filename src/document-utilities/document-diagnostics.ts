@@ -14,7 +14,17 @@ import { buildSourceRangeIdentity } from './document-diagnostic-source-occurrenc
 import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
 // V5.12-R8 §4 — resource classification + the unified figure occurrence model.
 import type { ResourceClass, ImageSourceOccurrence } from './document-resource-scanner'
+// V5.15 — Standalone Object Block Invariant (figure structure gate).
+import {
+  analyzeFigureStandaloneSourceBlocks,
+  beginFigureStructureDiagnosticPass,
+  figureStructureUserCopy,
+  noteFigureStructureDiagnosticPublished,
+  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  type FigureStandaloneSourceBlock,
+} from './document-standalone-object-block-invariant-v515'
 import type {
+  DiagnosticFigureOccurrenceIdentity,
   DiagnosticLocation,
   DiagnosticValidityFingerprint,
   DocumentDiagnostic,
@@ -24,6 +34,11 @@ import type {
   DocumentDiagnosticsSnapshot,
   DocumentDiagnosticsState,
 } from './diagnostics-types'
+// V1 — Figure Diagnostic Locator Authority (identity builders, pure).
+import {
+  buildFigureOccurrenceIdentity,
+  buildSourceBlockIdentity,
+} from './document-diagnostic-locator-authority-v1'
 
 export interface DiagnosticHeadingFact {
   level: number
@@ -211,6 +226,11 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FORMULA_DUPLICATE_VISIBLE_TAG':
     case 'HEADING_DUPLICATE_IDENTITY':
       return 'error'
+    // V5.15 §26 — a structurally invalid picture block breaks the Figure
+    // business model itself (occurrence identity / numbering / caption /
+    // locate / visual target), so it is an ERROR, never a Warning.
+    case 'FIGURE_BLOCK_STRUCTURE_INVALID':
+      return 'error'
     // ── Constant WARNING rules ──
     // V5.12-R8 §9 — a missing local image is a resource-level WARNING (the
     // document structure is intact; only a referenced asset is absent), never
@@ -237,6 +257,13 @@ export function resolveDocumentDiagnosticSeverity(
 export interface DocumentDiagnosticsInput {
   documentKey: string | null
   markdown: string | null
+  /**
+   * V1 §21 — the source generation this compute runs against. The figure
+   * locator records it on every `source-block` / `figure-occurrence` location
+   * so a click can detect a STALE source revision instead of locating with an
+   * outdated offset.
+   */
+  sourceRevision?: number | null
   strictMode: boolean
   /**
    * Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation.
@@ -1139,6 +1166,92 @@ export function computeDocumentDiagnostics(
     }
   }
 
+  // ── V5.15 §6/§9 — STANDALONE OBJECT BLOCK INVARIANT (figure structure gate) ──
+  // The gate runs BEFORE every normal figure business rule. An invalid owning
+  // block never reaches figure numbering / naming / resource diagnostics: it
+  // publishes exactly ONE merged structural ERROR instead (per owning block),
+  // and the diagnostic itself stays locatable on the WHOLE owning block.
+  const structureSourceText = typeof input.markdown === 'string' ? input.markdown : null
+  const structureOccurrences = input.figureSourceOccurrences ?? null
+  // V5.15 §18 — duplicate detection is scoped to THIS compute.
+  beginFigureStructureDiagnosticPass()
+  const figureStructureBlocks: FigureStandaloneSourceBlock[] =
+    structureSourceText != null && structureOccurrences != null && structureOccurrences.length > 0
+      ? analyzeFigureStandaloneSourceBlocks({
+          source: structureSourceText,
+          occurrences: structureOccurrences.map(o => ({ tokenStart: o.tokenStart, tokenEnd: o.tokenEnd })),
+        })
+      : []
+  const invalidFigureTokenStarts = new Set<number>()
+  const invalidFigureDestinations = new Set<string>()
+  // §9 — 0-based ordinal among owning blocks carrying the SAME raw block text,
+  // so two byte-identical invalid blocks never share a binding identity.
+  const structureBlockOrdinalByText = new Map<string, number>()
+  for (const block of figureStructureBlocks) {
+    // §14 — an image token inside a fenced / indented code block is NOT an image
+    // object at all: it sits outside the figure business model, so the standalone
+    // structure gate never fires there (the DOM caption chain excludes code
+    // containers the same way).
+    if (block.containerKind === 'code') continue
+    if (block.result.decision === 'VALID_STANDALONE_FIGURE') continue
+    const blockOrdinal = structureBlockOrdinalByText.get(block.rawText) ?? 0
+    structureBlockOrdinalByText.set(block.rawText, blockOrdinal + 1)
+    for (const tokenStart of block.tokenStarts) invalidFigureTokenStarts.add(tokenStart)
+    for (const occ of structureOccurrences ?? []) {
+      if (!invalidFigureTokenStarts.has(occ.tokenStart)) continue
+      const dest = normalizeResourceToken(occ.canonicalDestination || occ.rawDestination)
+      if (dest) invalidFigureDestinations.add(dest)
+    }
+    const copy = figureStructureUserCopy(block.result)
+    push(
+      makeDiagnostic(input, 'figure', FIGURE_BLOCK_STRUCTURE_INVALID_CODE, copy.title, {
+        detail: copy.detail,
+        targetIdentity: `structure:${block.owningBlockIdentity}`,
+        kind: 'object',
+        metadata: {
+          ruleId: 'FIGURE-BLOCK-STRUCTURE-INVALID',
+          resourceKind: 'image',
+          // §16/§17 — the standalone-object audit fields.
+          owningBlockIdentity: block.owningBlockIdentity,
+          sourceBlockIdentity: block.owningBlockIdentity,
+          sourceBlockOrdinal: blockOrdinal,
+          containerKind: block.containerKind,
+          rawObjectCount: block.imageOccurrenceCount,
+          canonicalObjectCount: 0,
+          nonObjectSemanticContentCount: block.nonImageContentSummary.length,
+          violations: block.result.violationCodes.join('|'),
+          violationKinds: block.result.violations.join('|'),
+          normalBusinessTargetAdmitted: false,
+          structuralDiagnosticPublished: true,
+          sourceStart: block.blockStart,
+          sourceEnd: block.blockEnd,
+          startLine: block.startLine,
+          endLine: block.endLine,
+        },
+        // V1 §4/§5 — a BLOCK-level locator: the target is the WHOLE illegal
+        // owning block. The structure rule must NEVER enter the inline
+        // occurrence / duplicate-range resolver.
+        location: {
+          kind: 'source-block',
+          objectKind: 'figure',
+          sourceBlockIdentity: block.owningBlockIdentity,
+          sourceBlockOrdinal: blockOrdinal,
+          sourceStart: block.blockStart,
+          sourceEnd: block.blockEnd,
+          startLine: block.startLine,
+          endLine: block.endLine,
+          sourceRevision: input.sourceRevision ?? null,
+          locatorStrategy: 'OWNING_BLOCK',
+        },
+      }),
+    )
+    noteFigureStructureDiagnosticPublished({
+      owningBlockIdentity: block.owningBlockIdentity,
+      violationCount: block.result.violations.length,
+      locatable: Number.isFinite(block.startLine),
+    })
+  }
+
   // ── Figure diagnostics ──────────────────────────────
   const figureNames = input.figures.map(f => f.name)
   for (const name of duplicateNames(figureNames)) {
@@ -1168,6 +1281,8 @@ export function computeDocumentDiagnostics(
     const l = input.links[linkIdx]
     if (l.resourceKind !== 'image') continue
     if (!isLocalRelativePath(l.target)) continue
+    // V5.15 §6/§9 — an invalid owning block never reaches a normal figure rule.
+    if (typeof l.sourceStart === 'number' && invalidFigureTokenStarts.has(l.sourceStart)) continue
     const occurrenceIndex = linkOccurrenceIndex(input.links, l.target, l.index, 'image', l.semanticDestination)
     const occurrenceLabel = occurrenceIndex > 0 ? `（第 ${occurrenceIndex + 1} 处）` : ''
     const semanticDestination = l.semanticDestination || normalizeResourceToken(l.target)
@@ -1205,6 +1320,21 @@ export function computeDocumentDiagnostics(
       : null
     const ordinals = sourceOrdinals[linkIdx] ?? { rawLineOrdinal: 0, occurrenceWithinLine: 0 }
     const fingerprint = `${occurrenceIndex}:${startLine ?? -1}:${destKey || l.target}`
+    // V1 §6/§9 — the owning source block identity (documentKey + revision +
+    // span + block ordinal), never raw block text alone.
+    const sourceBlockIdentity = buildSourceBlockIdentity(startLine ?? 0)
+    const sourceBlockOrdinal = ordinals.rawLineOrdinal
+    const occurrenceIdentity: DiagnosticFigureOccurrenceIdentity = {
+      documentKey: input.documentKey ?? null,
+      sourceRevision: input.sourceRevision ?? null,
+      sourceBlockIdentity,
+      sourceBlockOrdinal,
+      tokenStart,
+      tokenEnd,
+      rawLineOrdinal: ordinals.rawLineOrdinal,
+      occurrenceWithinLine: ordinals.occurrenceWithinLine,
+      destination: destKey || l.target,
+    }
     push(
       makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${l.target}${occurrenceLabel}`, {
         detail: '图片引用的本地文件无法解析。',
@@ -1224,6 +1354,10 @@ export function computeDocumentDiagnostics(
           occurrenceIndex,
           rawLineOrdinal: ordinals.rawLineOrdinal,
           occurrenceWithinLine: ordinals.occurrenceWithinLine,
+          // V1 §6/§11 — the owning source block identity + its ordinal.
+          sourceBlockIdentity,
+          sourceBlockOrdinal,
+          figureOccurrenceIdentity: buildFigureOccurrenceIdentity(occurrenceIdentity),
           // V5.12-R8 §4 — BOTH ranges travel on the same occurrence.
           sourceStart,
           sourceEnd,
@@ -1243,22 +1377,25 @@ export function computeDocumentDiagnostics(
           sourceRevision: null,
           fingerprint,
         },
+        // V1 §10/§12/§20 — an OCCURRENCE-level locator. When the <img> is not
+        // rendered (broken local image) the resolver falls back to the owning
+        // source block, so a missing image is NEVER unlocatable.
         location: startLine != null
           ? {
-              kind: 'source-range',
+              kind: 'figure-occurrence',
+              occurrenceIdentity,
+              resourceKind: 'image',
               // V5.12-R8 §5 — FIGURE_LOCAL_IMAGE_MISSING → FIGURE_DESTINATION.
-              rangeRole,
+              rangeRole: rangeRole ?? 'figure-destination',
               startLine,
               startColumn: startColumn ?? 0,
               endLine: endLine ?? startLine,
               endColumn: endColumn ?? undefined,
-              sourceFingerprint: fingerprint,
               rawText: l.rawText,
               // V5.12-R5 §5 — the exact source range survives into the location.
               sourceStart,
               sourceEnd,
               sourceRangeIdentity,
-              resourceKind: 'image',
               canonicalDestination: destKey || l.target,
               rawDestination: l.target,
               occurrenceIndex,
@@ -1287,6 +1424,10 @@ export function computeDocumentDiagnostics(
   if (sourceFigureOccurrences) {
     for (const occ of sourceFigureOccurrences) {
       if ((occ.altText ?? '').trim() !== '') continue
+      // V5.15 §6/§9 — the structure gate owns an invalid block: no normal figure
+      // naming diagnostic may be produced for it (FIGURE_MISSING_NAME is
+      // suppressed and replaced by the merged structure ERROR).
+      if (invalidFigureTokenStarts.has(occ.tokenStart)) continue
       const occIdx = occ.occurrenceIndex
       const sourceRangeIdentity = occ.sourceRangeIdentity ?? buildSourceRangeIdentity({
         documentKey: input.documentKey,
@@ -1297,6 +1438,19 @@ export function computeDocumentDiagnostics(
         sourceEnd: occ.tokenEnd,
         occurrenceIndex: occIdx,
       })
+      // V1 §6/§11 — the owning source block identity + the stable occurrence identity.
+      const sourceBlockIdentity = buildSourceBlockIdentity(occ.startLine)
+      const occurrenceIdentity: DiagnosticFigureOccurrenceIdentity = {
+        documentKey: input.documentKey ?? null,
+        sourceRevision: input.sourceRevision ?? null,
+        sourceBlockIdentity,
+        sourceBlockOrdinal: occ.rawLineOrdinal,
+        tokenStart: occ.tokenStart,
+        tokenEnd: occ.tokenEnd,
+        rawLineOrdinal: occ.rawLineOrdinal,
+        occurrenceWithinLine: occ.occurrenceWithinLine,
+        destination: occ.canonicalDestination,
+      }
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_MISSING_NAME', '图片缺少图名', {
           detail: '建议为图片命名。',
@@ -1315,6 +1469,10 @@ export function computeDocumentDiagnostics(
             occurrenceIndex: occIdx,
             rawLineOrdinal: occ.rawLineOrdinal,
             occurrenceWithinLine: occ.occurrenceWithinLine,
+            // V1 §6/§11 — the owning source block identity + its ordinal.
+            sourceBlockIdentity,
+            sourceBlockOrdinal: occ.rawLineOrdinal,
+            figureOccurrenceIdentity: buildFigureOccurrenceIdentity(occurrenceIdentity),
             sourceStart: occ.tokenStart,
             sourceEnd: occ.tokenEnd,
             tokenStart: occ.tokenStart,
@@ -1330,7 +1488,9 @@ export function computeDocumentDiagnostics(
             sourceRevision: null,
           },
           location: {
-            kind: 'source-range',
+            kind: 'figure-occurrence',
+            occurrenceIdentity,
+            resourceKind: 'image',
             rangeRole: 'figure-full-token',
             startLine: occ.startLine,
             startColumn: occ.startColumn,
@@ -1340,7 +1500,6 @@ export function computeDocumentDiagnostics(
             sourceStart: occ.tokenStart,
             sourceEnd: occ.tokenEnd,
             sourceRangeIdentity,
-            resourceKind: 'image',
             canonicalDestination: occ.canonicalDestination,
             rawDestination: occ.rawDestination,
             occurrenceIndex: occIdx,
@@ -1389,6 +1548,9 @@ export function computeDocumentDiagnostics(
       // resolves to the SAME missing destination, it must NOT double-report.
       const domImageKey = normalizeResourceToken(destRel ?? f.localPath ?? '')
       if (domImageKey && sourceImageCovered.has(domImageKey)) continue
+      // V5.15 §6/§9 — the DOM projection of an invalid owning block is excluded
+      // from the normal figure resource rule as well.
+      if (domImageKey && invalidFigureDestinations.has(domImageKey)) continue
       const occurrenceIndex = figureDestinationOccurrenceIndex(input.figures, f, destRel, input.vaultRoot)
       push(
         makeDiagnostic(input, 'figure', 'FIGURE_LOCAL_IMAGE_MISSING', `本地图片不存在：${f.localPath}`, {
