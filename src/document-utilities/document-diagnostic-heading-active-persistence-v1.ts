@@ -120,8 +120,19 @@ export interface HeadingActiveVisualFacts {
   fragmentRects: ReadonlyArray<{ left: number; top: number; width: number; height: number }>
   layoutEpoch: number
   geometryGeneration: number
-  diagnosticId: string
+  diagnosticId: string | null
   targetKey: string | null
+  // ── V2 §5 — the CANONICAL TARGET AUTHORITY. Facts keyed only by heading
+  // identity lose the multi-target index, so a wrong-target Active could never be
+  // detected. These fields make the facts self-identifying.
+  diagnosticTargetIndex: number | null
+  transactionLocalTargetIndex: number | null
+  /** the RAW stable identity of the target the facts were painted for. */
+  stableHeadingIdentity: string
+  /** the marker dedupe identity (`id:H1:idx:6`). */
+  headingIdentity: string
+  /** the interaction version the facts were committed under (§53 stale guard). */
+  interactionVersion: number
 }
 
 /**

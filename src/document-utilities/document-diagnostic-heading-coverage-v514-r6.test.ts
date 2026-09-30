@@ -254,7 +254,7 @@ function fakeProviders(): DocumentDiagnosticsProviders {
 
 type HostApi = {
   renderHeadingDiagnosticMarkers(skipActiveEmphasis?: boolean): void
-  renderHeadingActiveEmphasis(id: string, diag: unknown, el: HTMLElement): void
+  renderHeadingActiveEmphasisForTest(id: string, diag: unknown, el: HTMLElement): void
   getHeadingCoverageSnapshot(identity: string, diagnosticId?: string): HeadingDiagnosticTargetSnapshot | null
   getHeadingCoverageV514R6Counters(): Record<string, number>
   getHeadingCoverageV514R6GateReport(): string[]
@@ -459,7 +459,7 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     const identity = markerIdentity()
     const passive = api().getHeadingCoverageSnapshot(identity, 'W1')!
     const passiveRects = passive.semanticFragmentRects.map(r => ({ ...r }))
-    api().renderHeadingActiveEmphasis('W1', headingDiag('HEADING_DUPLICATE_TEXT') as never, w.heading)
+    api().renderHeadingActiveEmphasisForTest('W1', headingDiag('HEADING_DUPLICATE_TEXT') as never, w.heading)
     const active = api().getHeadingCoverageSnapshot(identity, 'W1')!
     expect(active.coveragePolicy).toBe('TITLE_ONLY')
     expect(active.coverageMask).toBe(passive.coverageMask)

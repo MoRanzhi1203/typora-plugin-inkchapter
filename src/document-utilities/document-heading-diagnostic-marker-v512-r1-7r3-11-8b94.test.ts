@@ -147,7 +147,7 @@ function headingDiag(id: string, code: string, severity: string, metadata: Recor
 }
 type HostApi = {
   renderHeadingDiagnosticMarkers(): void
-  renderHeadingActiveEmphasis(id: string, diag: unknown, el: HTMLElement): void
+  renderHeadingActiveEmphasisForTest(id: string, diag: unknown, el: HTMLElement): void
   getHeadingMarkerSnapshot(): {
     passiveCount: number
     passiveSeverities: Record<string, string>
@@ -249,7 +249,7 @@ describe('V512R1-5/6/7 — active emphasis is text-tight (fragments, numbering, 
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
     headingHost().renderHeadingDiagnosticMarkers()
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     const snap = headingHost().getHeadingMarkerSnapshot()!
     expect(snap.activeFragmentCount).toBe(1)
     expect(snap.contentLeft).toBe(200)
@@ -267,7 +267,7 @@ describe('V512R1-5/6/7 — active emphasis is text-tight (fragments, numbering, 
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
     headingHost().renderHeadingDiagnosticMarkers()
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     const audits = readAudits(infoSpy!, HEADING_MARKER_AUDIT_EVENT).filter(a => a.reason === 'ACTIVE_HEADING_EMPHASIS')
     expect(audits.length).toBe(1)
     expect(audits[0].numberRectIncluded).toBe('true')
@@ -287,7 +287,7 @@ describe('V512R1-5/6/7 — active emphasis is text-tight (fragments, numbering, 
     stubRect(w.heading, () => ({ left: 100, top: 200, right: 1000, bottom: 262 }))
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     const frags = document.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment')
     expect(frags.length).toBe(2)
     const tops = Array.from(frags).map(f => Number.parseFloat((f as HTMLElement).style.top))
@@ -303,7 +303,7 @@ describe('V512R1-8 — the reason chip is short and overlay-only', () => {
     host = w.h
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     const chip = document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement
     expect(chip).not.toBeNull()
     expect(chip.textContent).toBe('H4 → H6 · 缺 H5')
@@ -323,7 +323,7 @@ describe('V512R1-9/10 — dismiss keeps passive; multiple diagnostics merge', ()
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
     headingHost().renderHeadingDiagnosticMarkers()
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     expect(document.querySelector('.inkchapter-heading-diagnostic-active')).not.toBeNull()
 
     ;(host as unknown as { dismissLocateVisualFromDocumentPointer: (ev: PointerEvent) => void })
@@ -351,7 +351,7 @@ describe('V512R1-9/10 — dismiss keeps passive; multiple diagnostics merge', ()
     expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBeGreaterThan(0)
     expect(headingHost().getHeadingMarkerCounters().multipleHeadingMarkerOverlap).toBe(0)
     // The active reason shows the CURRENTLY clicked diagnostic.
-    headingHost().renderHeadingActiveEmphasis('W1', headingDiag('W1', 'HEADING_LEVEL_GAP', 'warning', { previousLevel: 2, currentLevel: 4, missingLevels: [3] }) as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('W1', headingDiag('W1', 'HEADING_LEVEL_GAP', 'warning', { previousLevel: 2, currentLevel: 4, missingLevels: [3] }) as never, w.heading)
     expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('H2 → H4 · 缺 H3')
   })
 })
@@ -364,12 +364,12 @@ describe('V512R1-11/12 — document-space inertness + same-target reflow', () =>
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
     headingHost().renderHeadingDiagnosticMarkers()
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     const markerBefore = (document.querySelector('.inkchapter-heading-diagnostic-marker') as HTMLElement).innerHTML
     const fragBefore = (document.querySelector('.inkchapter-heading-diagnostic-active__fragment') as HTMLElement).getAttribute('style')
 
     const render = vi.spyOn(host as unknown as { renderHeadingDiagnosticMarkers: () => void }, 'renderHeadingDiagnosticMarkers')
-    const active = vi.spyOn(host as unknown as { renderHeadingActiveEmphasis: () => void }, 'renderHeadingActiveEmphasis')
+    const active = vi.spyOn(host as unknown as { renderHeadingActiveEmphasisForTest: () => void }, 'renderHeadingActiveEmphasisForTest')
     // A canonical user scroll (no locate transaction, no lease).
     document.dispatchEvent(new Event('scroll', { bubbles: true }))
     w.write.dispatchEvent(new Event('scroll', { bubbles: true }))
@@ -392,7 +392,7 @@ describe('V512R1-11/12 — document-space inertness + same-target reflow', () =>
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
     inject(host, [d])
     headingHost().renderHeadingDiagnosticMarkers()
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     expect(document.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length).toBe(1)
 
     // The heading really re-wraps into two lines.
@@ -403,7 +403,7 @@ describe('V512R1-11/12 — document-space inertness + same-target reflow', () =>
     stubRect(w.heading, () => ({ left: 100, top: 200, right: 1000, bottom: 262 }))
     window.dispatchEvent(new Event('resize'))
     // Same-target reconcile: the SAME heading identity is re-emphasised.
-    headingHost().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
 
     expect(document.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length).toBe(2)
     expect(document.querySelectorAll('.inkchapter-heading-diagnostic-marker').length).toBe(1)
@@ -488,7 +488,7 @@ describe('V512R1-CONTRACT — pure marker surface', () => {
   it('V512R1-CONTRACT-5: production source keeps the heading marker document-space', () => {
     const hostSrc = readFileSync(resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
     expect(hostSrc).toContain('renderHeadingDiagnosticMarkers')
-    expect(hostSrc).toContain('renderHeadingActiveEmphasis')
+    expect(hostSrc).toContain('renderHeadingActiveEmphasisForTest')
     expect(hostSrc).toContain('clearHeadingActiveEmphasis')
     expect(hostSrc).toContain('HEADING_MARKER_AUDIT_EVENT')
     expect(hostSrc).toContain('ensureHeadingMarkerLayer')

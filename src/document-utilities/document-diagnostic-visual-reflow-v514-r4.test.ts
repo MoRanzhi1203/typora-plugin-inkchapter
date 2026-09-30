@@ -245,7 +245,7 @@ function fakeProviders(): DocumentDiagnosticsProviders {
 
 type HostApi = {
   renderHeadingDiagnosticMarkers(skipActiveEmphasis?: boolean): void
-  renderHeadingActiveEmphasis(id: string, diag: unknown, el: HTMLElement): void
+  renderHeadingActiveEmphasisForTest(id: string, diag: unknown, el: HTMLElement): void
   clearHeadingActiveEmphasis(): void
   invalidateDiagnosticVisualGeometry(reason: string): void
   getVisualReflowV514R4Counters(): Record<string, number>
@@ -447,7 +447,7 @@ describe('V5.14-R4 §7/§9 — reflow invalidation (host wiring)', () => {
     host = w.h
     inject(host, singleDiag())
     api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', { id: 'E1', severity: 'error', code: 'HEADING_LEVEL_GAP', message: 'm', metadata: {} }, w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', { id: 'E1', severity: 'error', code: 'HEADING_LEVEL_GAP', message: 'm', metadata: {} }, w.headings[0])
     expect(activeFragmentCount()).toBe(1)
     w.moveHeading(0, 40)
     api().invalidateDiagnosticVisualGeometry('EDITOR_REFLOW')
@@ -468,7 +468,7 @@ describe('V5.14-R4 §7/§9 — reflow invalidation (host wiring)', () => {
     inject(host, singleDiag())
     api().renderHeadingDiagnosticMarkers()
     expect(passiveFragmentCount()).toBe(1)
-    api().renderHeadingActiveEmphasis('E1', { id: 'E1', severity: 'error', code: 'HEADING_LEVEL_GAP', message: 'm', metadata: {} }, w.headings[0])
+    api().renderHeadingActiveEmphasisForTest('E1', { id: 'E1', severity: 'error', code: 'HEADING_LEVEL_GAP', message: 'm', metadata: {} }, w.headings[0])
     // §11 — ONE atomic surface while active
     expect(passiveFragmentCount()).toBe(0)
     expect(api().getVisualReflowV514R4Counters().headingActivePassiveFillStack).toBe(0)

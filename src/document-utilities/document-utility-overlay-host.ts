@@ -123,6 +123,27 @@ import {
   type HeadingActivePersistenceV1CoverageCounters,
   type HeadingActiveVisualFacts,
 } from './document-diagnostic-heading-active-persistence-v1'
+// V2 — Canonical Active Heading Target Authority (exact multi-target identity).
+import {
+  ACTIVE_TARGET_AUTHORITY_AUDIT_EVENT,
+  HEADING_MULTI_TARGET_V2_GATE_LABELS,
+  createHeadingMultiTargetV2Counters,
+  createHeadingMultiTargetV2CoverageCounters,
+  evaluateActiveTargetAuthority,
+  evaluateHeadingMultiTargetV2Coverage,
+  evaluateHeadingMultiTargetV2Gates,
+  evaluateStrictMultiH1CurrentSnapshot,
+  formatHeadingMultiTargetV2CoverageReport,
+  formatHeadingMultiTargetV2GateReport,
+  markerIdentityOfStableIdentity,
+  parseCanonicalTargetKeyIdentityV2,
+  parseCanonicalTargetKeyIndexV2,
+  resolveCanonicalActiveHeadingTarget,
+  type ActiveTargetAuthorityFacts,
+  type CanonicalActiveHeadingTarget,
+  type HeadingMultiTargetV2Counters,
+  type HeadingMultiTargetV2CoverageCounters,
+} from './document-diagnostic-canonical-active-target-v2'
 import {
   DOCUMENT_EMPTY_DIAGNOSTIC_CODE,
   EMPTY_DOCUMENT_EXCLUSIVE_REASON,

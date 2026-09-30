@@ -120,7 +120,7 @@ function headingDiag(id: string, code: string, severity: string, metadata: Recor
 
 type HostApi = {
   renderHeadingDiagnosticMarkers(): void
-  renderHeadingActiveEmphasis(id: string, diag: unknown, el: HTMLElement): void
+  renderHeadingActiveEmphasisForTest(id: string, diag: unknown, el: HTMLElement): void
   dismissLocateVisualFromDocumentPointer(ev: PointerEvent): void
   getHeadingMarkerSnapshot(): { passiveCount: number } | null
   getHeadingMarkerSurfaceV512R9GateReport(): string[]
@@ -195,7 +195,7 @@ describe('R9-HEADING-02 — Multi H1 Active', () => {
     inject(host, [d])
     api().renderHeadingDiagnosticMarkers()
     expect(passiveFragmentCount()).toBe(1)
-    api().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    api().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     expect(activeFragmentCount()).toBe(1)
     // ── V5.14-R4 §11 (supersedes the V5.14-R3 "ADDITIVE passive fill" rule for the
     // SELECTED target) — the selected target presents ONE atomic surface: the active
@@ -322,7 +322,7 @@ describe('R9-HEADING-08 — Dismiss Active', () => {
     const d = multiH1()
     inject(host, [d])
     api().renderHeadingDiagnosticMarkers()
-    api().renderHeadingActiveEmphasis('E1', d as never, w.heading)
+    api().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     expect(activeFragmentCount()).toBe(1)
     api().dismissLocateVisualFromDocumentPointer(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse', cancelable: true }))
     expect(activeFragmentCount()).toBe(0)
