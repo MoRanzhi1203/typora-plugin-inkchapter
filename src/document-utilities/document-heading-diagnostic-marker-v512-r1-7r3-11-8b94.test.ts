@@ -461,12 +461,18 @@ describe('V512R1-CONTRACT — pure marker surface', () => {
   })
 
   it('V512R1-CONTRACT-4: reason builder + severity merge + identity', () => {
+    // ── V5.14-R5 §4/§5/§17 — the inline chip is GENERATED from the DiagnosticCode
+    // (never a slice of the long message); an unmapped code yields a short CATEGORY
+    // label instead of the truncated severity sentence.
     expect(buildHeadingLocateReason({ code: 'HEADING_LEVEL_GAP', metadata: { previousLevel: 4, currentLevel: 6, missingLevels: [5] } })).toBe('H4 → H6 · 缺 H5')
     expect(buildHeadingLocateReason({ code: 'HEADING_LEVEL_GAP', metadata: { previousLevel: 1, currentLevel: 3, missingLevels: [2] } })).toBe('H1 → H3 · 缺 H2')
     expect(buildHeadingLocateReason({ code: 'STRICT_SINGLE_H1_MULTIPLE_H1', metadata: { h1Count: 2, reason: 'MULTIPLE_H1' } })).toBe('多余 H1')
-    expect(buildHeadingLocateReason({ code: 'X', metadata: { reason: 'H1_NOT_FIRST' } })).toBe('H1 未位于文首')
-    expect(buildHeadingLocateReason({ code: 'UNKNOWN', message: 'A'.repeat(40), metadata: {} })!.length).toBeLessThanOrEqual(18)
-    expect(buildHeadingLocateReason({ code: 'UNKNOWN', message: '', metadata: {} })).toBeNull()
+    expect(buildHeadingLocateReason({ code: 'X', metadata: { reason: 'H1_NOT_FIRST' } })).toBe('H1 非首项')
+    // V5.14-R5 §21 — an unknown code never leaks a long / severity-bearing message.
+    const unknown = buildHeadingLocateReason({ code: 'UNKNOWN', message: 'A'.repeat(40), metadata: {} })!
+    expect(unknown.length).toBeLessThanOrEqual(10)
+    expect(unknown).toBe('文档问题')
+    expect(buildHeadingLocateReason({ code: 'UNKNOWN', message: '', metadata: {} })).toBe('文档问题')
 
     expect(severityRank('error')).toBeGreaterThan(severityRank('warning'))
     expect(mergeHeadingMarkerSeverity(['warning', 'error', 'info'])).toBe('error')

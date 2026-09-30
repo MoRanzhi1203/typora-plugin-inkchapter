@@ -302,12 +302,17 @@ describe('R2-HEADING — scroll authority ≠ visual authority', () => {
     expect(marker).not.toBeNull()
     expect(marker.getAttribute('data-ink-diagnostic-active')).toBe('true')
     expect(marker.querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(0)
-    // ── V5.14-R3 §P10 §4/§24 — the PASSIVE fill MUST survive the active
-    // emphasis (the legacy R9 "suspend the passive fill" was the P10 root cause:
-    // it deleted the passive DOM and replaced it with a temporary active node).
-    expect(document.querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBe(1)
+    // ── V5.14-R4 §11 (supersedes the V5.14-R3 "RETAINED passive fill" rule for
+    // the SELECTED target) — the selected target presents ONE atomic surface: the
+    // active emphasis REPLACES its passive FILL, so a passive and an active fill of
+    // the SAME target are never stacked (nor committed from different geometry
+    // generations). The passive MARKER itself survives (see the assertions above:
+    // `data-ink-diagnostic-active="true"` on the passive wrapper), and a dismiss
+    // restores the passive presentation.
+    expect(document.querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBe(0)
     expect(document.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length).toBeGreaterThan(0)
     const counters = host.getVisualClosureCounters()
+    // the active target still BELONGS to the passive set (semantic authority intact)
     expect(counters.activeHeadingWithoutPassiveMarker).toBe(0)
   })
 })

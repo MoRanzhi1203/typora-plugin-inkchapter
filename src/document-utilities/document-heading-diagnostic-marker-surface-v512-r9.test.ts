@@ -188,7 +188,7 @@ describe('R9-HEADING-01 — Multi H1 Passive (Conditional-Strict-Multi-H1 fixtur
 
 // ── R9-HEADING-02 — Multi H1 Active ────────────────────────────────────────
 describe('R9-HEADING-02 — Multi H1 Active', () => {
-  it('R7 active fill present, passive fill RETAINED (V5.14-R3 P10), reason chip remains', () => {
+  it('R7 active fill present, passive fill REPLACED by the active presentation (V5.14-R4 §11), reason chip remains', () => {
     const w = makeWorld()
     host = w.h
     const d = multiH1()
@@ -197,12 +197,17 @@ describe('R9-HEADING-02 — Multi H1 Active', () => {
     expect(passiveFragmentCount()).toBe(1)
     api().renderHeadingActiveEmphasis('E1', d as never, w.heading)
     expect(activeFragmentCount()).toBe(1)
-    // ── V5.14-R3 §P10 §4/§24 — the PASSIVE marker is PERMANENT: the active
-    // emphasis is ADDITIVE and never removes the passive fill (the legacy R9
-    // "suspend while active" was the P10 root cause).
-    expect(passiveFragmentCount()).toBe(1)
+    // ── V5.14-R4 §11 (supersedes the V5.14-R3 "ADDITIVE passive fill" rule for the
+    // SELECTED target) — the selected target presents ONE atomic surface: the active
+    // emphasis REPLACES its passive FILL so a passive and an active fill of the same
+    // target can never be stacked (or committed from different geometry
+    // generations). The passive MARKER / semantic key set / chip stay intact and a
+    // dismiss restores the passive presentation.
+    expect(passiveFragmentCount()).toBe(0)
     expect(chipCount()).toBe(1)
     expect(api().getHeadingMarkerSurfaceCounters().activePassiveFillStack).toBe(0)
+    // the passive MARKER (semantic key) survives the selection
+    expect(api().getHeadingMarkerSnapshot()!.passiveCount).toBe(1)
   })
 })
 
@@ -227,7 +232,7 @@ describe('R9-HEADING-03 — Heading Gap (warning severity)', () => {
 
 // ── R9-HEADING-04 — Duplicate Heading ──────────────────────────────────────
 describe('R9-HEADING-04 — Duplicate Heading', () => {
-  it('a duplicate-text heading gets the SAME soft fill + "重复标题文字" chip', () => {
+  it('a duplicate-text heading gets the SAME soft fill + "重复标题" chip (V5.14-R5 §4)', () => {
     const w = makeWorld()
     host = w.h
     inject(host, [headingDiag('D1', 'HEADING_DUPLICATE_TEXT', 'error', { text: '乙' })])
@@ -235,7 +240,7 @@ describe('R9-HEADING-04 — Duplicate Heading', () => {
     const wrapper = document.querySelector('.inkchapter-heading-diagnostic-marker') as HTMLElement
     expect(wrapper.getAttribute('data-ink-diagnostic-severity')).toBe('error')
     expect(passiveFragmentCount()).toBe(1)
-    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('重复标题文字')
+    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('重复标题')
     expect(wrapper.querySelector('.inkchapter-heading-diagnostic-marker__icon')).toBeNull()
     expect(wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail')).toBeNull()
   })
