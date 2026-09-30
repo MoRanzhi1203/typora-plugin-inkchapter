@@ -2377,6 +2377,21 @@ export class DocumentUtilityOverlayHost {
     createHeadingActivePersistenceV1CoverageCounters()
   /** V1 §39 — the distinct subtargets REALLY activated, per diagnostic. */
   private headingActivatedKeysByDiagnostic = new Map<string, Set<string>>()
+  // ── V2 §11/§12 — the canonical multi-target authority gates + coverage.
+  private countersMultiTargetV2: HeadingMultiTargetV2Counters = createHeadingMultiTargetV2Counters()
+  private coverageMultiTargetV2: HeadingMultiTargetV2CoverageCounters =
+    createHeadingMultiTargetV2CoverageCounters()
+  /** §ROOT_V2_4 — the last committed (subtarget, heading) pair for the Active owner. */
+  private lastCommittedActiveSubtarget: {
+    targetKey: string
+    headingIdentity: string
+    diagnosticTargetIndex: number
+    version: number
+  } | null = null
+  /** §ROOT_V2_4 — set once the DEACTIVATE teardown really committed. */
+  private deactivateTeardownCommitted = true
+  /** §12 — the observed (diagnosticTargetIndex, heading) pairs of the multi-target diagnostic. */
+  private multiTargetSubtargetsByDiagnostic = new Map<string, Set<number>>()
   private fixturePreflightTimer: ReturnType<typeof setTimeout> | null = null
   private fixtureDecodeListenerAttached = false
   private fixturePreflightDocumentKey: string | null = null
@@ -7419,36 +7434,64 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * V2 §4.2/§8 — the public Active entry is a READ-ONLY consumer of the ONE Active
+   * authority. It resolves the EXACT canonical target from the interaction state
+   * (never from a parameter, never from a historical mirror) and delegates to the
+   * authority painter. It can no longer CREATE or MUTATE the interaction state.
+   */
   renderHeadingActiveEmphasis(
     diagnosticId: string,
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
-    element: HTMLElement,
+    _element?: HTMLElement,
   ): void {
+    const authority = this.resolveActiveHeadingAuthority(diag)
+    if (authority.ok) {
+      this.renderHeadingActiveEmphasisFromAuthority(authority.target, diag)
+      return
+    }
+    // ── V2 §8 — a projection attempted WITHOUT a legitimate ACTIVE state for this
+    // diagnostic is a defect, not a reason to invent one (the legacy
+    // `ensureActiveDiagnosticStateFor` reverse write).
+    const st = this.diagnosticInteractionState
+    if (st.phase !== 'ACTIVE' || st.diagnosticId !== diagnosticId) {
+      this.countersMultiTargetV2.visualProjectionAttemptedWithoutActiveState++
+      return
+    }
+    // the state IS active for this diagnostic but the EXACT subtarget could not be
+    // resolved: FAIL CLOSED (never paint another heading).
+    this.countersMultiTargetV2.canonicalActiveTargetResolveFailed++
+  }
+
+  /**
+   * V2 §8 TEST SEAM — prepare a LEGITIMATE ACTIVE state (headless-only, see
+   * `publishActiveDiagnosticStateForTest`) and then run the READ-ONLY Active
+   * projection. Production never calls this: the reducer commits the state first
+   * and the locate path calls `renderHeadingActiveEmphasis` directly.
+   */
+  renderHeadingActiveEmphasisForTest(
+    diagnosticId: string,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    element?: HTMLElement,
+  ): void {
+    this.publishActiveDiagnosticStateForTest(diagnosticId, this.resolveClickedTargetIndex(diagnosticId))
+    this.renderHeadingActiveEmphasis(diagnosticId, diag, element)
+  }
+
+  /**
+   * V2 §4 — paint the ACTIVE emphasis for ONE canonical subtarget. The target
+   * index / identity are NEVER re-derived here.
+   */
+  private renderHeadingActiveEmphasisFromAuthority(
+    target: CanonicalActiveHeadingTarget,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): void {
+    const diagnosticId = target.diagnosticId
+    const element = target.element
+    const headingIdentity = target.headingIdentity
     const layer = this.ensureHeadingMarkerLayer()
     if (!layer) return
-    // ── V5.14-R4 §11 — the target identity is derived FIRST so the PASSIVE
-    // snapshot for THIS target can be verified (and refreshed) BEFORE the active
-    // emphasis and the reason chip are derived from it.
-    const elementStable = (() => {
-      try {
-        return typeof this.opts.providers.getHeadingIdentity === 'function'
-          ? this.opts.providers.getHeadingIdentity(element)
-          : null
-      } catch { return null }
-    })()
-    const headingIdentity = headingMarkerIdentity({
-      stableIdentity: elementStable != null && elementStable !== '' ? elementStable : null,
-      line: (() => {
-        const attr = element.getAttribute('data-line')
-        return attr != null && attr !== '' ? Number.parseInt(attr, 10) : null
-      })(),
-      text: element.textContent ?? '',
-    })
-    // ── V5.14-R7 §7.1 — a DIRECT active render (tests / re-derivation after a
-    // reconcile) publishes the ONE Active authority when none exists, so the
-    // state stays consistent no matter which entry produced the emphasis.
-    this.ensureActiveDiagnosticStateFor(diagnosticId)
-    // ── V1 §53 — the owner this write is FOR, captured at entry. A commit that
+    // ── V2 §53 — the owner this write is FOR, captured at entry. A commit that
     // ends up with a DIFFERENT current owner is a stale heading write.
     const ownerDiagnosticAtEntry = this.diagnosticInteractionState.diagnosticId
     // ── V5.14-R4 §11 — ROOT_R4_5: the active pass used to re-measure its own
@@ -7656,13 +7699,21 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveIdentity = diagnosticId
     this.headingActiveMarkerIdentity = headingIdentity
     this.headingActiveDiagnosticId = diagnosticId
+    // ── V2 §4.3 — the ACTIVE DOM wrapper carries the canonical authority, so the
+    // Runtime closure can verify State -> DOM instead of trusting memory.
+    wrapper.setAttribute('data-ink-active-diagnostic-id', diagnosticId)
+    wrapper.setAttribute('data-ink-heading-id', headingIdentity)
+    wrapper.setAttribute('data-ink-diagnostic-target-index', String(target.diagnosticTargetIndex))
+    wrapper.setAttribute('data-ink-target-key', target.targetKey)
+    wrapper.setAttribute('data-ink-heading-identity', headingIdentity)
+    wrapper.setAttribute('data-ink-interaction-version', String(this.diagnosticInteractionState.version))
     // ── V1 §15/§16 — only NOW is the previous emphasis retired (build-then-swap).
     if (previousActiveWrapper != null && previousActiveWrapper !== wrapper) {
       try { previousActiveWrapper.remove() } catch { /* noop */ }
     }
-    // ── V1 §23/§28 — commit the STATE-DERIVED active facts: these are the ONLY
-    // source for `activeMarkerPresent`, the passive-suppression permission and the
-    // post-reconcile closure.
+    // ── V1 §23/§28 + V2 §5 — commit the STATE-DERIVED active facts: these are the
+    // ONLY source for `activeMarkerPresent`, the passive-suppression permission and
+    // the post-reconcile closure. They are SELF-IDENTIFYING (canonical subtarget).
     const previousFacts = this.lastHeadingProjectionFacts
     const committedFacts: HeadingActiveVisualFacts = {
       fragmentCount: localFragments.length,
@@ -7670,9 +7721,31 @@ export class DocumentUtilityOverlayHost {
       layoutEpoch: this.currentDocumentLayoutEpoch,
       geometryGeneration: activeGeometryGeneration,
       diagnosticId,
-      targetKey: this.diagnosticInteractionState.targetKey,
+      targetKey: target.targetKey,
+      diagnosticTargetIndex: target.diagnosticTargetIndex,
+      transactionLocalTargetIndex: target.transactionLocalTargetIndex,
+      stableHeadingIdentity: target.stableHeadingIdentity,
+      headingIdentity,
+      interactionVersion: this.diagnosticInteractionState.version,
     }
     this.headingActiveVisualFacts.set(headingIdentity, committedFacts)
+    // ── V2 §3/§ROOT_V2_1 — the wrong-target detectors. The state committed the
+    // canonical subtarget; the PAINTED heading must be that very subtarget.
+    {
+      const stateKeyIdentity = parseCanonicalTargetKeyIdentityV2(this.diagnosticInteractionState.targetKey)
+      if (stateKeyIdentity != null && target.stableHeadingIdentity !== stateKeyIdentity) {
+        this.countersMultiTargetV2.multiTargetActiveReprojectFellBackToFirstTarget++
+      }
+      const previousSubtarget = this.lastCommittedActiveSubtarget
+      const stNow = this.diagnosticInteractionState
+      if (previousSubtarget != null
+        && previousSubtarget.targetKey !== target.targetKey
+        && previousSubtarget.version === stNow.version) {
+        // the SAME interaction version re-projected a DIFFERENT subtarget: the
+        // user never asked for it (the exact real-runtime defect).
+        this.countersMultiTargetV2.multiTargetActiveTargetChangedWithoutUserIntent++
+      }
+    }
     // ── V1 §53 — the two stale-write detectors. Both must stay 0: a heading
     // visual may only be committed for the CURRENT Active owner AND for geometry
     // of the CURRENT generation.
@@ -7694,6 +7767,18 @@ export class DocumentUtilityOverlayHost {
       && localFragments.length >= 1
     if (rebuiltAfterLayoutEpoch) this.coverageHeadingActiveV1.activeHeadingRebuiltAfterLayoutEpoch++
     if (rebuiltAfterGeometry) this.coverageHeadingActiveV1.activeHeadingRebuiltAfterGeometryGeneration++
+    // ── V2 §12 — the SECOND subtarget must survive the SAME rebuilds (the exact
+    // real-runtime regression: 2/2 silently became 1/2).
+    if (target.diagnosticTargetIndex >= 1 && localFragments.length >= 1) {
+      if (rebuiltAfterLayoutEpoch) this.coverageMultiTargetV2.multiTargetSecondSubtargetRebuiltAfterLayoutCount++
+      if (rebuiltAfterGeometry) this.coverageMultiTargetV2.multiTargetSecondSubtargetRebuiltAfterGeometryCount++
+    }
+    this.lastCommittedActiveSubtarget = {
+      targetKey: target.targetKey,
+      headingIdentity,
+      diagnosticTargetIndex: target.diagnosticTargetIndex,
+      version: this.diagnosticInteractionState.version,
+    }
     this.lastHeadingProjectionFacts = {
       layoutEpoch: committedFacts.layoutEpoch,
       geometryGeneration: committedFacts.geometryGeneration,
@@ -7705,10 +7790,22 @@ export class DocumentUtilityOverlayHost {
       passiveFillSuppressed: true,
       leaseToken: null,
     }
-    // ── V1 §34 — DOCUMENT-DIAGNOSTIC-HEADING-ACTIVE-PERSISTENCE-AUDIT.
+    // ── V1 §34 + V2 §6 — DOCUMENT-DIAGNOSTIC-HEADING-ACTIVE-PERSISTENCE-AUDIT.
+    // It is no longer an EXISTENCE audit: PASS requires the ACTIVE visual to belong
+    // to the canonical subtarget the state committed.
+    const persistenceAuthority = this.emitActiveTargetAuthorityAudit('HEADING_ACTIVE_PERSISTENCE_COMMIT', false)
+    const identityOk = persistenceAuthority.matches.targetKeyMatch
+      && persistenceAuthority.matches.diagnosticTargetIndexMatch
+      && persistenceAuthority.matches.stableHeadingIdentityMatch
+      && persistenceAuthority.matches.diagnosticIdMatch
+      && persistenceAuthority.matches.drawerAuthorityMatch
+    const persistencePass = localFragments.length >= 1 && identityOk
     if (localFragments.length < 1) {
       this.countersHeadingActiveV1.activeHeadingWithZeroFragment++
       this.countersHeadingActiveV1.activeHeadingWithZeroFill++
+    }
+    if (persistencePass && persistenceAuthority.visualOnForeignHeading) {
+      this.countersMultiTargetV2.headingActivePersistenceFalsePass++
     }
     emitRuntimeAudit(HEADING_ACTIVE_PERSISTENCE_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
@@ -7719,6 +7816,23 @@ export class DocumentUtilityOverlayHost {
       targetKey: this.diagnosticInteractionState.targetKey,
       headingIdentity,
       phase: this.diagnosticInteractionState.phase,
+      // ── V2 §6 — the identity closure fields (State vs Visual vs Drawer).
+      stateDiagnosticId: persistenceAuthority.matches.diagnosticIdMatch ? diagnosticId : null,
+      stateDiagnosticTargetIndex: target.diagnosticTargetIndex,
+      stateTargetKey: target.targetKey,
+      stateStableHeadingIdentity: target.stableHeadingIdentity,
+      visualDiagnosticId: diagnosticId,
+      visualDiagnosticTargetIndex: committedFacts.diagnosticTargetIndex,
+      visualTargetKey: committedFacts.targetKey,
+      visualHeadingIdentity: headingIdentity,
+      drawerTargetKey: persistenceAuthority.matches.drawerAuthorityMatch ? target.targetKey : null,
+      leaseTargetKey: persistenceAuthority.matches.leaseAuthorityMatch ? target.targetKey : null,
+      diagnosticIdMatch: persistenceAuthority.matches.diagnosticIdMatch,
+      diagnosticTargetIndexMatch: persistenceAuthority.matches.diagnosticTargetIndexMatch,
+      targetKeyMatch: persistenceAuthority.matches.targetKeyMatch,
+      stableHeadingIdentityMatch: persistenceAuthority.matches.stableHeadingIdentityMatch,
+      drawerAuthorityMatch: persistenceAuthority.matches.drawerAuthorityMatch,
+      leaseAuthorityMatch: persistenceAuthority.matches.leaseAuthorityMatch,
       layoutEpochBefore: previousFacts?.layoutEpoch ?? null,
       layoutEpochAfter: committedFacts.layoutEpoch,
       geometryGenerationBefore: previousFacts?.geometryGeneration ?? null,
@@ -7740,8 +7854,10 @@ export class DocumentUtilityOverlayHost {
         || previousFacts.geometryGeneration !== committedFacts.geometryGeneration),
       activeRebuildPerformed: true,
       targetIndexNamespace: 'DIAGNOSTIC',
-      decision: localFragments.length >= 1 ? 'PASS' : 'FAIL',
-      reason: localFragments.length >= 1 ? 'ACTIVE_VISUAL_REPROJECTED' : 'ACTIVE_VISUAL_EMPTY',
+      decision: persistencePass ? 'PASS' : 'FAIL',
+      reason: persistencePass
+        ? 'ACTIVE_VISUAL_REPROJECTED_EXACT_TARGET'
+        : (localFragments.length < 1 ? 'ACTIVE_VISUAL_EMPTY' : 'ACTIVE_CANONICAL_TARGET_IDENTITY_MISMATCH'),
     })
     // §6 HARD (re-pointed by V5.14-R3 §P10) — ACTIVE must NEVER replace the
     // passive marker. The SAME heading keeps its passive SOFT TEXT SURFACE +
@@ -7950,6 +8066,8 @@ export class DocumentUtilityOverlayHost {
     // audit can never read a phantom active fragment set.
     if (this.headingActiveMarkerIdentity != null) this.headingActiveVisualFacts.delete(this.headingActiveMarkerIdentity)
     this.headingActiveVisualFacts.clear()
+    // ── V2 §ROOT_V2_4 — the committed subtarget mirror dies with the visual.
+    this.lastCommittedActiveSubtarget = null
     this.headingActiveWrapper = null
     this.headingActiveIdentity = null
     this.headingActiveMarkerIdentity = null
@@ -8033,6 +8151,135 @@ export class DocumentUtilityOverlayHost {
   private drawerRowsRenderedNow(): boolean {
     return this.drawerEl != null
       && this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
+  }
+
+  /** V2 §6 — the canonical targetKey of the ACTIVE Drawer row (or null). */
+  private drawerActiveTargetKeyNow(): string | null {
+    const rows = this.drawerEl?.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]')
+    if (rows == null || rows.length !== 1) return null
+    const row = rows[0]
+    const id = row.getAttribute('data-diagnostic-id') ?? ''
+    if (id === '') return null
+    const idx = Number.parseInt(row.getAttribute('data-target-index') ?? '0', 10)
+    const projection = this.buildDrawerProjections().find(p => p.diagnosticId === id && p.targetIndex === idx) ?? null
+    const stable = projection?.stableIdentity ?? this.diagnosticById(id)?.stableIdentity ?? ''
+    return buildDiagnosticVisualTargetKey({
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+      diagnosticId: id,
+      targetIndex: idx,
+      stableIdentity: stable,
+    })
+  }
+
+  /**
+   * V2 §6 — the ACTIVE visual's OWN identity. Read from the committed facts, with
+   * the ACTIVE DOM wrapper's authority attributes as the independent DOM witness.
+   */
+  private visualActiveTargetIdentityNow(): {
+    diagnosticId: string | null
+    diagnosticTargetIndex: number | null
+    targetKey: string | null
+    headingIdentity: string | null
+    fragmentCount: number
+  } {
+    const headingIdentity = this.headingActiveMarkerIdentity
+    const facts = headingIdentity != null ? (this.headingActiveVisualFacts.get(headingIdentity) ?? null) : null
+    const wrapper = this.headingActiveWrapper
+    const domIndexAttr = wrapper?.getAttribute('data-ink-diagnostic-target-index') ?? null
+    return {
+      diagnosticId: facts?.diagnosticId ?? wrapper?.getAttribute('data-ink-active-diagnostic-id') ?? null,
+      diagnosticTargetIndex: facts?.diagnosticTargetIndex
+        ?? (domIndexAttr != null && domIndexAttr !== '' ? Number.parseInt(domIndexAttr, 10) : null),
+      targetKey: facts?.targetKey ?? wrapper?.getAttribute('data-ink-target-key') ?? null,
+      headingIdentity,
+      fragmentCount: facts?.fragmentCount ?? 0,
+    }
+  }
+
+  /** V2 §6/§7 — the ONE authority-fact snapshot (State vs Visual vs Drawer vs Lease). */
+  private computeActiveTargetAuthorityFacts(): ActiveTargetAuthorityFacts {
+    const st = this.diagnosticInteractionState
+    const stateKeyIdentity = parseCanonicalTargetKeyIdentityV2(st.targetKey)
+    const visual = this.visualActiveTargetIdentityNow()
+    const readiness = this.headingActiveMarkerIdentity != null
+      ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
+      : { ready: false, fragmentCount: 0, reason: 'NO_ACTIVE_HEADING' }
+    const lease = this.locateVisibilityLease
+    const diag = st.diagnosticId != null ? this.diagnosticById(st.diagnosticId) : null
+    const activeTargetIsHeading = this.headingActiveMarkerIdentity != null
+      || (diag != null && /^H[1-6]$/.test(this.resolveDiagnosticElementForMarker(diag)?.tagName ?? ''))
+    const drawerActiveRowCount = this.drawerActiveRowCountNow()
+    return {
+      phase: st.phase,
+      activeTargetIsHeading,
+      stateDiagnosticId: st.diagnosticId,
+      stateDiagnosticTargetIndex: st.diagnosticTargetIndex,
+      stateTargetKey: st.targetKey,
+      stateHeadingIdentity: markerIdentityOfStableIdentity(stateKeyIdentity),
+      visualDiagnosticId: visual.diagnosticId,
+      visualDiagnosticTargetIndex: visual.diagnosticTargetIndex,
+      visualTargetKey: visual.targetKey,
+      visualHeadingIdentity: visual.headingIdentity,
+      drawerTargetKey: this.drawerActiveTargetKeyNow(),
+      // the lease belongs to the CURRENT owner only when its diagnostic matches.
+      leaseTargetKey: lease != null && lease.diagnosticId === st.diagnosticId ? st.targetKey : null,
+      fragmentCount: readiness.fragmentCount,
+      fillCount: readiness.fragmentCount,
+      activeLeasePresent: lease != null,
+      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
+      selectedActiveRowCount: drawerActiveRowCount,
+      drawerActiveRowCount,
+      drawerRowsRendered: this.drawerRowsRenderedNow(),
+      layoutEpochCurrent: readiness.reason !== 'ACTIVE_VISUAL_LAYOUT_EPOCH_STALE',
+      geometryGenerationCurrent: readiness.reason !== 'ACTIVE_VISUAL_GEOMETRY_GENERATION_STALE',
+    }
+  }
+
+  /**
+   * V2 §22 — DOCUMENT-DIAGNOSTIC-ACTIVE-TARGET-AUTHORITY-AUDIT. When `countGates`
+   * is true this is the ONE place the V2 fatal counters are incremented (the
+   * authoritative post-reconcile boundary).
+   */
+  private emitActiveTargetAuthorityAudit(trigger: string, countGates: boolean): ReturnType<typeof evaluateActiveTargetAuthority> {
+    const facts = this.computeActiveTargetAuthorityFacts()
+    const evaluation = evaluateActiveTargetAuthority(facts)
+    if (countGates) {
+      const c = this.countersMultiTargetV2
+      const failed = evaluation.failedChecks
+      if (failed.includes('ACTIVE_STATE_VISUAL_TARGET_KEY_MISMATCH')) c.activeStateVisualTargetKeyMismatch++
+      if (failed.includes('ACTIVE_STATE_VISUAL_DIAGNOSTIC_TARGET_INDEX_MISMATCH')) c.activeStateVisualDiagnosticTargetIndexMismatch++
+      if (failed.includes('ACTIVE_STATE_VISUAL_HEADING_IDENTITY_MISMATCH')) c.activeStateVisualHeadingIdentityMismatch++
+      if (failed.includes('ACTIVE_DRAWER_TARGET_KEY_MISMATCH')) c.activeDrawerTargetKeyMismatch++
+      if (failed.includes('ACTIVE_LEASE_TARGET_KEY_MISMATCH')) c.activeLeaseTargetKeyMismatch++
+    }
+    const st = this.diagnosticInteractionState
+    emitRuntimeAudit(ACTIVE_TARGET_AUTHORITY_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      trigger,
+      interactionVersion: st.version,
+      phase: facts.phase,
+      stateDiagnosticId: facts.stateDiagnosticId,
+      stateDiagnosticTargetIndex: facts.stateDiagnosticTargetIndex,
+      stateTargetKey: facts.stateTargetKey,
+      stateHeadingIdentity: facts.stateHeadingIdentity,
+      visualDiagnosticId: facts.visualDiagnosticId,
+      visualDiagnosticTargetIndex: facts.visualDiagnosticTargetIndex,
+      visualTargetKey: facts.visualTargetKey,
+      visualHeadingIdentity: facts.visualHeadingIdentity,
+      drawerTargetKey: facts.drawerTargetKey,
+      leaseTargetKey: facts.leaseTargetKey,
+      diagnosticIdMatch: evaluation.matches.diagnosticIdMatch,
+      diagnosticTargetIndexMatch: evaluation.matches.diagnosticTargetIndexMatch,
+      targetKeyMatch: evaluation.matches.targetKeyMatch,
+      headingIdentityMatch: evaluation.matches.stableHeadingIdentityMatch,
+      drawerAuthorityMatch: evaluation.matches.drawerAuthorityMatch,
+      leaseAuthorityMatch: evaluation.matches.leaseAuthorityMatch,
+      activeFragmentCount: facts.fragmentCount,
+      activeFillCount: facts.fillCount,
+      decision: evaluation.decision,
+      reason: evaluation.reason,
+    })
+    return evaluation
   }
 
   /** V1 §35 — DOCUMENT-DIAGNOSTIC-TARGET-INDEX-AUTHORITY-AUDIT. */
@@ -8234,6 +8481,43 @@ export class DocumentUtilityOverlayHost {
   getHeadingActivePersistenceFacts(): Readonly<HeadingActiveVisualFacts> | null {
     const identity = this.headingActiveMarkerIdentity
     return identity == null ? null : (this.headingActiveVisualFacts.get(identity) ?? null)
+  }
+
+  // ── V2 §11/§12 — the canonical multi-target authority gates + coverage ────
+
+  getMultiTargetV2GateReport(): string[] {
+    return formatHeadingMultiTargetV2GateReport(this.countersMultiTargetV2)
+  }
+
+  getMultiTargetV2Counters(): Readonly<HeadingMultiTargetV2Counters> {
+    return { ...this.countersMultiTargetV2 }
+  }
+
+  getMultiTargetV2CoverageReport(): string[] {
+    return formatHeadingMultiTargetV2CoverageReport(this.coverageMultiTargetV2)
+  }
+
+  getMultiTargetV2GateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+  } {
+    const gates = evaluateHeadingMultiTargetV2Gates(this.countersMultiTargetV2)
+    const coverage = evaluateHeadingMultiTargetV2Coverage(this.coverageMultiTargetV2)
+    return {
+      decision: gates.decision === 'PASS' && coverage.decision === 'PASS' ? 'PASS' : 'FAIL',
+      failedChecks: gates.failedChecks.map(k => HEADING_MULTI_TARGET_V2_GATE_LABELS[k]),
+      unmetCoverage: coverage.unmet.map(k => k),
+      gateDecision: gates.decision,
+      coverageDecision: coverage.decision,
+    }
+  }
+
+  /** V2 §22 — the LIVE authority facts (State / Visual / Drawer / Lease) + verdict. */
+  getActiveTargetAuthoritySnapshot(): ReturnType<typeof evaluateActiveTargetAuthority> {
+    return evaluateActiveTargetAuthority(this.computeActiveTargetAuthorityFacts())
   }
 
   /** V1 §39 — register a real activation of ONE canonical subtarget. */
@@ -13463,29 +13747,71 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * §4 — a DIRECT active render (tests / re-derivation) publishes the V2 authority
-   * when a DIFFERENT diagnostic is rendered, so a direct render and a real click
-   * always agree on the same target.
+   * V2 §3 — the ONE canonical Active heading target resolver. It reads the
+   * interaction state (READ ONLY — the visual layer has no write authority) and the
+   * CURRENT target projections, and returns the EXACT subtarget. It never falls
+   * back to `targets[0]` and never reads a historical selection mirror.
    */
-  private ensureActiveDiagnosticStateFor(diagnosticId: string): void {
-    const existing = this.diagnosticInteractionState
-    if (existing.phase === 'ACTIVE' && existing.diagnosticId === diagnosticId) return
+  private resolveActiveHeadingAuthority(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> {
+    const st = this.diagnosticInteractionState
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
-    const targetIndex = this.lastLocatedTargetIndex ?? 0
-    const targetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, targetIndex)
+    const projections = this.buildDrawerProjections()
+      .filter(p => p.diagnosticId === diag.id)
+      .map(p => ({ diagnosticId: p.diagnosticId, targetIndex: p.targetIndex, stableIdentity: p.stableIdentity }))
+    const resolution = resolveCanonicalActiveHeadingTarget({
+      state: {
+        phase: st.phase,
+        diagnosticId: st.diagnosticId,
+        targetKey: st.targetKey,
+        diagnosticTargetIndex: st.diagnosticTargetIndex,
+        transactionLocalTargetIndex: st.transactionLocalTargetIndex,
+      },
+      documentKey,
+      diagnostic: {
+        id: diag.id,
+        severity: String(diag.severity ?? 'info'),
+        stableIdentity: typeof (diag as { stableIdentity?: unknown }).stableIdentity === 'string'
+          ? (diag as { stableIdentity: string }).stableIdentity
+          : null,
+        isMultiTarget: diag.location?.kind === 'multi-target',
+      },
+      projections,
+      resolveHeadingElement: stable => this.resolveHeadingElementByIdentity(stable, null),
+    })
+    if (resolution.ok) this.coverageMultiTargetV2.canonicalActiveTargetExactResolutionCount++
+    return resolution
+  }
+
+  /**
+   * V2 §8 — TEST SEAM. Publishes the ACTIVE interaction state the reducer WOULD
+   * have produced, so a visual-projection test can prepare a LEGITIMATE state
+   * before calling the (now read-only) painter.
+   *
+   * It is NOT a production path: outside a headless test runtime the publication is
+   * REFUSED and counted as VISUAL_PROJECTION_WROTE_INTERACTION_STATE.
+   */
+  publishActiveDiagnosticStateForTest(diagnosticId: string, targetIndex = 0): void {
+    if (!isHeadlessTestRuntime()) {
+      this.countersMultiTargetV2.visualProjectionWroteInteractionState++
+      return
+    }
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const index = this.resolveClickedTargetIndex(diagnosticId, targetIndex)
+    const targetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, index)
+    const previous = this.diagnosticInteractionState
     this.diagnosticInteractionState = {
-      version: existing.version + 1,
+      version: previous.version + 1,
       phase: 'ACTIVE',
       diagnosticId,
       targetKey,
-      // V1 §7/§8 — the DIRECT re-derivation uses the CANONICAL diagnostic target
-      // index (the targetKey is built from it above); the transaction-local index
-      // is transaction-scoped and therefore reset here.
-      diagnosticTargetIndex: targetIndex,
-      transactionLocalTargetIndex: null,
-      transactionId: this.activeLocateTx?.id ?? null,
-      leaseToken: existing.leaseToken,
+      diagnosticTargetIndex: index,
+      transactionLocalTargetIndex: 0,
+      transactionId: previous.transactionId,
+      leaseToken: previous.leaseToken,
     }
+    this.refreshDrawerActiveRow()
   }
 
   /** §9/§11 — the Drawer ACTIVE row follows the V2 authority (single writer). */
