@@ -8373,49 +8373,35 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * V1 §30/§32/§33/§63 — DOCUMENT-DIAGNOSTIC-HEADING-POST-RECONCILE-CLOSURE.
-   * Emitted AFTER every heading projection commit (never a timer), so the
-   * post-layout state — not just the click settle — is verified.
+   * V1 §30/§32/§33/§63 + V2 §7 — DOCUMENT-DIAGNOSTIC-HEADING-POST-RECONCILE-CLOSURE.
+   * Emitted AFTER every heading projection commit (never a timer) AND after the
+   * same-target DEACTIVATE teardown has really committed, so the post-layout state
+   * — including the CANONICAL TARGET IDENTITY — is verified.
    */
   private emitHeadingPostReconcileClosure(reason: string): void {
     const st = this.diagnosticInteractionState
+    // ── V2 §22 — the ONE authoritative boundary: this is where the V2 fatal gates
+    // are counted (the identity facts are read AFTER the projection committed).
+    const authority = this.emitActiveTargetAuthorityAudit(reason, true)
+    const facts = this.computeActiveTargetAuthorityFacts()
     const activeId = st.phase === 'ACTIVE' ? st.diagnosticId : null
-    const diag = activeId != null ? this.diagnosticById(activeId) : null
     const targetKey = st.targetKey
-    const identityFromTargetKey = targetKey != null ? targetKey.split('::').slice(3).join('::') : null
-    // ── V1 §32 — the targetKey carries the RAW stable identity; the painted marker
-    // identity is its dedupe key (`id:<stable>`). Both forms must compare equal so
-    // a genuine match is never reported as ACTIVE_HEADING_IDENTITY_MISMATCH.
-    const markerIdentityFromTargetKey = identityFromTargetKey != null && identityFromTargetKey !== ''
-      ? headingMarkerIdentity({ stableIdentity: identityFromTargetKey, line: null, text: '' })
-      : null
-    const headingIdentityMatchesTargetKey = identityFromTargetKey == null
-      || this.headingActiveMarkerIdentity === identityFromTargetKey
-      || this.headingActiveMarkerIdentity === markerIdentityFromTargetKey
-    // §32 — the active target is a HEADING when a heading visual is committed for
-    // it (or the resolved element is an H1..H6).
-    const activeTargetIsHeading = (this.headingActiveMarkerIdentity != null
-      && (identityFromTargetKey == null || headingIdentityMatchesTargetKey))
-      || (diag != null && /^H[1-6]$/.test(this.resolveDiagnosticElementForMarker(diag)?.tagName ?? ''))
-    const readiness = this.headingActiveMarkerIdentity != null
-      ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
-      : { ready: false, fragmentCount: 0, reason: 'NO_ACTIVE_HEADING' }
-    const drawerActiveRowCount = this.drawerActiveRowCountNow()
-    const drawerRowsRendered = this.drawerRowsRenderedNow()
+    const activeTargetIsHeading = facts.activeTargetIsHeading
+    const readiness = { fragmentCount: facts.fragmentCount }
+    const drawerActiveRowCount = facts.drawerActiveRowCount
+    const drawerRowsRendered = facts.drawerRowsRendered
     const closure = evaluateHeadingPostReconcileClosure({
       phase: st.phase,
       activeTargetIsHeading,
-      selectedActiveRowCount: drawerActiveRowCount,
-      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
-      activeHeadingFragmentCount: readiness.fragmentCount,
-      activeFillCount: readiness.fragmentCount,
-      activeLeasePresent: this.locateVisibilityLease != null,
-      activeTargetKeyMatchesState: targetKey == null
-        || this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity ?? '')?.targetKey === targetKey
-        || headingIdentityMatchesTargetKey,
-      activeHeadingIdentityMatchesTargetKey: headingIdentityMatchesTargetKey,
-      activeFragmentLayoutEpochCurrent: readiness.reason !== 'ACTIVE_VISUAL_LAYOUT_EPOCH_STALE',
-      activeFragmentGeometryGenerationCurrent: readiness.reason !== 'ACTIVE_VISUAL_GEOMETRY_GENERATION_STALE',
+      selectedActiveRowCount: facts.selectedActiveRowCount,
+      activeTargetCount: facts.activeTargetCount,
+      activeHeadingFragmentCount: facts.fragmentCount,
+      activeFillCount: facts.fillCount,
+      activeLeasePresent: facts.activeLeasePresent,
+      activeTargetKeyMatchesState: authority.matches.targetKeyMatch,
+      activeHeadingIdentityMatchesTargetKey: authority.matches.stableHeadingIdentityMatch,
+      activeFragmentLayoutEpochCurrent: facts.layoutEpochCurrent,
+      activeFragmentGeometryGenerationCurrent: facts.geometryGenerationCurrent,
       drawerActiveRowCount,
       drawerRowsRendered,
     })
@@ -8459,6 +8445,29 @@ export class DocumentUtilityOverlayHost {
       && [...this.headingPassiveMarkers.values()].some(r => r.passiveFillSuppressed === true)) {
       this.countersHeadingActiveV1.idleWithPassiveFillSuppressed++
     }
+    // ── V2 §7/§11 — the IDENTITY closure on top of the V1 closure: a PASS may
+    // never be reported while State / Visual / Drawer / Lease disagree.
+    const identityClosureOk = authority.decision === 'PASS'
+    const decision = closure.decision === 'PASS' && identityClosureOk ? 'PASS' : 'FAIL'
+    if (st.phase === 'ACTIVE' && activeTargetIsHeading && decision === 'PASS'
+      && (!authority.matches.targetKeyMatch
+        || !authority.matches.drawerAuthorityMatch
+        || !authority.matches.leaseAuthorityMatch)) {
+      this.countersMultiTargetV2.postReconcileIdentityFalsePass++
+    }
+    // ── V2 §11/§ROOT_V2_4 — an IDLE closure that still observes Active leftovers
+    // ran BEFORE the teardown committed (the ordering defect).
+    if (st.phase !== 'ACTIVE' && !this.deactivateTeardownCommitted
+      && (facts.fragmentCount !== 0 || facts.fillCount !== 0
+        || facts.activeLeasePresent || facts.selectedActiveRowCount !== 0)) {
+      this.countersMultiTargetV2.deactivateClosureBeforeTeardownCommit++
+    }
+    if (st.phase !== 'ACTIVE') {
+      if (facts.selectedActiveRowCount !== 0) this.countersMultiTargetV2.idleWithSelectedActiveRow++
+      if (facts.fillCount !== 0) this.countersMultiTargetV2.idleWithActiveFill++
+      if (facts.fragmentCount !== 0) this.countersMultiTargetV2.idleWithActiveHeadingFragment++
+      if (facts.activeLeasePresent) this.countersMultiTargetV2.idleWithActiveLease++
+    }
     emitRuntimeAudit(HEADING_POST_RECONCILE_CLOSURE_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       trigger: reason,
@@ -8468,20 +8477,29 @@ export class DocumentUtilityOverlayHost {
       diagnosticTargetIndex: st.diagnosticTargetIndex,
       transactionLocalTargetIndex: st.transactionLocalTargetIndex,
       targetKey,
-      headingIdentity: this.headingActiveMarkerIdentity,
+      headingIdentity: facts.visualHeadingIdentity,
+      stateTargetKey: facts.stateTargetKey,
+      visualTargetKey: facts.visualTargetKey,
+      drawerTargetKey: facts.drawerTargetKey,
+      leaseTargetKey: facts.leaseTargetKey,
+      targetKeyMatch: authority.matches.targetKeyMatch,
+      diagnosticTargetIndexMatch: authority.matches.diagnosticTargetIndexMatch,
+      headingIdentityMatch: authority.matches.stableHeadingIdentityMatch,
       layoutEpoch: this.currentDocumentLayoutEpoch,
       geometryGeneration: this.visualGeometryGeneration,
-      selectedActiveRowCount: drawerActiveRowCount,
+      selectedActiveRowCount: facts.selectedActiveRowCount,
       drawerActiveRowCount,
       drawerRowsRendered,
-      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
-      activeHeadingFragmentCount: readiness.fragmentCount,
-      activeFillCount: readiness.fragmentCount,
-      activeLeasePresent: this.locateVisibilityLease != null,
+      activeTargetCount: facts.activeTargetCount,
+      activeHeadingFragmentCount: facts.fragmentCount,
+      activeFillCount: facts.fillCount,
+      activeLeasePresent: facts.activeLeasePresent,
       activeFragmentRects: this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity ?? '')?.fragmentRects ?? [],
-      activeReadinessReason: readiness.reason,
-      decision: closure.decision,
-      reason: closure.reason,
+      activeReadinessReason: this.headingActiveMarkerIdentity != null
+        ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity).reason
+        : 'NO_ACTIVE_HEADING',
+      decision,
+      reason: decision === 'PASS' ? 'POST_RECONCILE_IDENTITY_CLOSURE_OK' : `${closure.reason}|${authority.reason}`,
     })
   }
 
@@ -13899,10 +13917,44 @@ export class DocumentUtilityOverlayHost {
       this.lastLocatedTargetIndex = transition.next.diagnosticTargetIndex ?? null
       // ── V1 §39 — the POSITIVE coverage of a real activation/switch.
       this.registerHeadingActivationCoverage(transition.action, transition.next.targetKey)
+      // ── V2 §12 — the multi-target scenarios must be PROVEN (coverage only).
+      const next = transition.next
+      const nextDiag = next.diagnosticId != null ? this.diagnosticById(next.diagnosticId) : null
+      const isMultiTarget = nextDiag?.location?.kind === 'multi-target'
+      const nextIndex = next.diagnosticTargetIndex
+      if (isMultiTarget && nextIndex != null && next.diagnosticId != null) {
+        if (nextIndex === 0) this.coverageMultiTargetV2.multiTargetFirstSubtargetActivationCount++
+        if (nextIndex >= 1) this.coverageMultiTargetV2.multiTargetSecondSubtargetActivationCount++
+        const seen = this.multiTargetSubtargetsByDiagnostic.get(next.diagnosticId) ?? new Set<number>()
+        seen.add(nextIndex)
+        this.multiTargetSubtargetsByDiagnostic.set(next.diagnosticId, seen)
+      }
+      if (transition.action === 'SWITCH') {
+        const prev = transition.previous
+        const sameDiagnostic = prev.diagnosticId === next.diagnosticId
+        if (sameDiagnostic && isMultiTarget) {
+          if (prev.diagnosticTargetIndex === 0 && nextIndex === 1) {
+            this.coverageMultiTargetV2.multiTargetSwitch1To2Count++
+          }
+          if (prev.diagnosticTargetIndex === 1 && nextIndex === 0) {
+            this.coverageMultiTargetV2.multiTargetSwitch2To1Count++
+          }
+        }
+        if (!sameDiagnostic && prev.diagnosticId != null && next.diagnosticId != null) {
+          this.coverageMultiTargetV2.crossDiagnosticHeadingSwitchCount++
+        }
+      }
     } else {
       // V1 §39/§49 — a same-target DEACTIVATE really retired the Active owner.
       this.coverageHeadingActiveV1.headingSameTargetDeactivateRuntime++
-      this.emitHeadingPostReconcileClosure('SAME_TARGET_DEACTIVATE')
+      // V2 §12 — the deactivate that followed a MULTI-TARGET activation.
+      const prevDiagId = transition.previous.diagnosticId
+      const prevDiag = prevDiagId != null ? this.diagnosticById(prevDiagId) : null
+      if (prevDiag?.location?.kind === 'multi-target') {
+        this.coverageMultiTargetV2.sameTargetDeactivateAfterMultiTargetCount++
+      }
+      // ── V2 §ROOT_V2_4 — the closure is NOT emitted here: it must run AFTER the
+      // teardown commits (see `locateDiagnostic`).
     }
     this.refreshDrawerActiveRow()
     this.auditActiveStateInvariants()
@@ -14287,11 +14339,16 @@ export class DocumentUtilityOverlayHost {
 
     // ── §7 — DEACTIVATE: commit IDLE (version++) FIRST, then retire the old
     // owner's OWN presentation. No locate transaction is created at all.
+    // V2 §ROOT_V2_4 — the ORDER is atomic: the post-reconcile closure is emitted
+    // ONLY after the teardown really committed (never before it).
     if (committed.action === 'DEACTIVATE') {
+      this.deactivateTeardownCommitted = false
       this.retireActiveVisualForDeactivate(previousOwner, click)
       this.emitActiveInteractionAudit({
         action: committed.action, previous, click, severity, sameDiagnostic, sameTarget, newTransactionId: null,
       })
+      this.deactivateTeardownCommitted = true
+      this.emitHeadingPostReconcileClosure('SAME_TARGET_DEACTIVATE_TEARDOWN_COMMITTED')
       this.schedulePostSettleClosureV2(clickSequence)
       return
     }
