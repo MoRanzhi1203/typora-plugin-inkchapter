@@ -342,6 +342,138 @@ import {
   type HeadingVisualRevisionKey,
   type PassiveActiveV514R3Counters,
 } from './document-diagnostic-passive-active-v514-r3'
+// V5.14-R8 — the SUPERSEDED V5.14-R7 contract. The V2 state machine owns the
+// authority now; only the historical observability surface + the R7 audit event
+// name are still consumed from this module (the R7 counters are never advanced).
+import {
+  DOCUMENT_DIAGNOSTIC_ACTIVE_INTERACTION_AUDIT_EVENT,
+  createActiveInteractionV514R7Counters,
+  evaluateActiveInteractionV514R7Gates,
+  formatActiveInteractionV514R7GateReport,
+  type ActiveInteractionV514R7Counters,
+  type DiagnosticActiveState,
+  type DiagnosticInteractionAction,
+} from './document-diagnostic-active-interaction-v514-r7'
+// V5.14-R8 / Active State Machine V2 — the SINGLE interaction authority, the
+// every-click-versioning reducer, owner-scoped retirement + stale-callback drop
+// + the post-settle DOM closure audit.
+import {
+  ACTIVE_STATE_MACHINE_V2_GATE_LABELS,
+  DOCUMENT_DIAGNOSTIC_CLICK_DISPATCH_V2,
+  DOCUMENT_DIAGNOSTIC_OWNER_RETIRE_V2,
+  DOCUMENT_DIAGNOSTIC_POST_SETTLE_CLOSURE_V2,
+  DOCUMENT_DIAGNOSTIC_STALE_CALLBACK_DROPPED_V2,
+  DOCUMENT_DIAGNOSTIC_STATE_TRANSITION_V2,
+  DOCUMENT_DIAGNOSTIC_VISUAL_PUBLISH_V2,
+  SAME_TARGET_TOGGLE_OFF_REASON_V2,
+  computePassiveSemanticSetHash,
+  createActiveStateMachineV2Counters,
+  createActiveStateMachineV2CoverageCounters,
+  emptyDiagnosticInteractionState,
+  evaluateActiveStateMachineV2Coverage,
+  evaluateActiveStateMachineV2Gates,
+  evaluatePostSettleClosure,
+  formatActiveStateMachineV2CoverageReport,
+  formatActiveStateMachineV2GateReport,
+  isCurrentOwnerV2,
+  ownerOf,
+  reduceDiagnosticClick,
+  type ActiveStateMachineV2Counters,
+  type ActiveStateMachineV2CoverageCounters,
+  type DiagnosticClick,
+  type DiagnosticInteractionState,
+  type DiagnosticTransition,
+  type DiagnosticVisualOwnerV2,
+  type PostSettleClosureFacts,
+} from './document-diagnostic-active-state-machine-v2'
+// V5.14-R9 / V2.1 — recoverable VISUAL collision classification, the atomic
+// interaction teardown and the illegal-IDLE production repair.
+import {
+  DOCUMENT_DIAGNOSTIC_ATOMIC_TEARDOWN_V2_1,
+  DOCUMENT_DIAGNOSTIC_ILLEGAL_IDLE_REPAIR_V2_1,
+  DOCUMENT_DIAGNOSTIC_VISUAL_OUTCOME_V2_1,
+  DOCUMENT_DIAGNOSTIC_VISUAL_RECOVERY_V2_1,
+  classifyDiagnosticVisualFailure,
+  createVisualTransactionV21Counters,
+  createVisualTransactionV21CoverageCounters,
+  evaluateAtomicTeardown,
+  evaluateVisualTransactionV21Gates,
+  formatVisualTransactionV21CoverageReport,
+  formatVisualTransactionV21GateReport,
+  isPanelLayeringCollisionReason,
+  type VisualTransactionV21Counters,
+  type VisualTransactionV21CoverageCounters,
+  type DiagnosticVisualRecoveryStrategy,
+} from './document-diagnostic-visual-transaction-v2-1'
+// V5.14-R4 §5/§6/§9/§11/§14/§15/§16 — Documentation diagnostic VISUAL GEOMETRY
+// authority: semantic target vs geometry snapshot, reflow invalidation, atomic
+// same-generation commit, live rect drift verification, real drift audit.
+import {
+  DOCUMENT_DIAGNOSTIC_VISUAL_REFLOW_AUDIT_EVENT,
+  GEOMETRY_DRIFT_TOLERANCE_PX_V514R4,
+  VISUAL_REFLOW_V514R4_GATE_KEYS,
+  buildDiagnosticVisualGeometrySnapshot,
+  createVisualReflowV514R4Counters,
+  evaluateReasonChipGeometry,
+  evaluateVisualGeometryGenerationConsistency,
+  evaluateVisualReflowV514R4Gates,
+  formatVisualReflowV514R4GateReport,
+  measureGeometryDrift,
+  normalizeGeometryRect,
+  passiveFillPresentationForActiveTarget,
+  shouldRebuildDiagnosticVisual,
+  type DiagnosticVisualGeometrySnapshot,
+  type GeometryRect,
+  type VisualReflowV514R4Counters,
+} from './document-diagnostic-visual-geometry-v514-r4'
+// V5.14-R5 §3/§4/§5/§7/§9/§10/§18/§19 — the DiagnosticCode -> inlineHint
+// presentation authority (short in-body label; the Drawer keeps the full copy).
+import {
+  DOCUMENT_DIAGNOSTIC_INLINE_PRESENTATION_AUDIT_EVENT,
+  INLINE_CHIP_MAX_WIDTH_PX_V514R5,
+  INLINE_PRESENTATION_V514R5_GATE_KEYS,
+  buildDiagnosticPresentation,
+  computeInlineChipWidthPx,
+  createInlinePresentationV514R5Counters,
+  evaluateInlineChipGeometry,
+  evaluateInlinePresentationV514R5Gates,
+  formatInlinePresentationV514R5GateReport,
+  inlineHintHasSeverityEmoji,
+  inlineHintHasSeverityPrefix,
+  inlineHintIsSafe,
+  type InlinePresentationV514R5Counters,
+} from './document-diagnostic-inline-presentation-v514-r5'
+// V5.14-R6 §4/§5/§6/§15/§28/§29 — the ONE Heading Diagnostic SEMANTIC COVERAGE
+// model shared by the body passive marker, the body active emphasis and the
+// left-outline projection.
+import {
+  DOCUMENT_DIAGNOSTIC_HEADING_COVERAGE_AUDIT_EVENT,
+  DOCUMENT_DIAGNOSTIC_HEADING_COVERAGE_POLICY_AUDIT_EVENT,
+  HEADING_COVERAGE_V514R6_GATE_KEYS,
+  HeadingCoveragePart,
+  PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6,
+  buildHeadingDiagnosticTargetSnapshot,
+  comparePassiveActiveCoverage,
+  coverageMaskHas,
+  coverageMaskForPolicy,
+  coverageRectInvariantHolds,
+  coverageUsesFullBlockFallback,
+  coverageUnionRect,
+  createHeadingCoverageV514R6Counters,
+  evaluateHeadingCoverageV514R6Gates,
+  formatCoverageMask,
+  formatHeadingCoverageV514R6GateReport,
+  isExplicitlyMappedHeadingDiagnosticCode,
+  isKnownHeadingDiagnosticCode,
+  makeCoverageRect,
+  reasonChipExcludedFromCoverage,
+  resolveHeadingDiagnosticCoveragePolicy,
+  splitNumberAndGapRects,
+  type CoverageRectSnapshot,
+  type HeadingCoverageV514R6Counters,
+  type HeadingDiagnosticCoveragePolicy,
+  type HeadingDiagnosticTargetSnapshot,
+} from './document-diagnostic-heading-coverage-v514-r6'
 import {
   HEADING_MARKER_AUDIT_EVENT,
   HEADING_MARKER_ICON_SIZE_PX,
@@ -1785,6 +1917,15 @@ export function resolveOwningBlockFallback(node: HTMLElement | null): HTMLElemen
  * layout epoch it was measured in and its last geometry, so a stale epoch is
  * provable and a re-measure is a real reconcile (never a silent drift).
  */
+/** V5.14-R6 §5 — the ONE rect-space bridge (HeadingRect <-> CoverageRectSnapshot). */
+function toCoverageRect(rect: { left: number; top: number; right: number; bottom: number }): CoverageRectSnapshot {
+  return makeCoverageRect({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom })
+}
+
+function fromCoverageRect(rect: CoverageRectSnapshot): HeadingRect {
+  return makeHeadingRect({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom })
+}
+
 interface HeadingPassiveMarkerRecord {
   wrapper: HTMLElement
   severity: HeadingMarkerSeverity
@@ -1812,6 +1953,22 @@ interface HeadingPassiveMarkerRecord {
   visualRevisionKey?: HeadingVisualRevisionKey
   /** V5.14-R3 §P10 — the visual target keys this ONE passive marker represents. */
   visualTargetKeys?: string[]
+  /** V5.14-R4 §4 — the content fingerprint BEFORE this pass (reflow audit). */
+  contentFingerprintBefore?: string | null
+  /** V5.14-R4 §5.2 — the geometry generation this marker was committed from. */
+  geometryGeneration?: number
+  /** V5.14-R4 §11 — true while the ACTIVE presentation replaces this fill. */
+  activePresentationOwnsFill?: boolean
+  /** V5.14-R4 §10 — how the reason chip was placed (beside vs below the line). */
+  chipPlacementKind?: 'RIGHT_OF_LAST_LINE' | 'BELOW_LAST_LINE' | null
+  /** V5.14-R5 §11 — the RENDERED reason-chip width of this pass (never an estimate). */
+  chipRenderedWidthPx?: number | null
+  /** V5.14-R5 §10 — the intrinsic text width of the inline hint. */
+  chipIntrinsicWidthPx?: number | null
+  /** V5.14-R5 §10 — the inline hint text this chip was painted for. */
+  chipInlineHint?: string | null
+  /** V5.14-R6 §6 — the ONE semantic coverage snapshot the PASSIVE visual painted. */
+  coverageSnapshot?: HeadingDiagnosticTargetSnapshot
 }
 
 /** V5.12-R9 §6 — reason chip height (18~20px band). */
@@ -1832,6 +1989,8 @@ interface HeadingMarkerGroup {
   /** The owning diagnostic of the marker's PRIMARY key (chip/audit authority). */
   primaryDiagnosticId: string
   primaryTargetIndex: number
+  /** V5.14-R6.1 §18 — EVERY diagnostic on this heading (each has its own policy). */
+  diagnosticIds: string[]
 }
 
 /** §P8 — normalize a diagnostic severity to the outline projection union. */
@@ -2002,6 +2161,11 @@ export class DocumentUtilityOverlayHost {
     state: LocateTransactionState
     /** V5.8 — single-click atomic transaction observability (null = legacy path). */
     oneClick?: LocateOneClickFacts | null
+    /** V5.14-R9 / V2.1 — bounded visual-collision recovery bookkeeping. */
+    v21VisualRecoveryAttempts?: number
+    v21VisualRecoveryStrategy?: DiagnosticVisualRecoveryStrategy
+    v21VisualDegraded?: boolean
+    v21VisualOutcome?: string
   } | null = null
   private locateTxSettleCancel: (() => void) | null = null
   private locateTxWatchdog: ReturnType<typeof setTimeout> | null = null
@@ -2208,6 +2372,24 @@ export class DocumentUtilityOverlayHost {
         this.lastLocatedTargetIndex = null
       }
     }
+    // ── V5.14-R8 §7.3 — the ACTIVE authority never outlives its diagnostic.
+    // The IDLE commit increments the version, so every pending callback dies here.
+    if (this.diagnosticInteractionState.phase === 'ACTIVE') {
+      const activePresent = snapshot?.diagnostics
+        .some(d => d.id === this.diagnosticInteractionState.diagnosticId) ?? false
+      if (!activePresent) {
+        const st = this.diagnosticInteractionState
+        this.diagnosticInteractionState = {
+          version: st.version + 1,
+          phase: 'IDLE',
+          diagnosticId: null,
+          targetKey: null,
+          targetIndex: null,
+          transactionId: null,
+          leaseToken: null,
+        }
+      }
+    }
     this.handleStrictSingleH1Popup(snapshot)
     this.renderDiagnosticsButton()
     this.renderLockButton()
@@ -2329,7 +2511,11 @@ export class DocumentUtilityOverlayHost {
     // V5.13-R1 — a document-space carrier lives in the `#write` host, NOT in the
     // fixed overlay root, so the caller may declare ONE extra carrier scope. Each
     // element is counted exactly once (never double-counted across scopes).
-    const scopes = [root, scopeEl].filter((e): e is Element => e != null)
+    // V5.14-R8 §10 — the HEADING emphasis layer lives in the DOCUMENT layer, so it
+    // is a third scope here; omitting it is what produced the false `fillCount=0`
+    // FILL_ONLY FAIL for every numbered heading.
+    const scopes = [root, scopeEl, this.locateDocLayerHost, this.headingMarkerLayer]
+      .filter((e): e is Element => e != null)
     const seen = new Set<Element>()
     const carriers: HTMLElement[] = []
     for (const s of scopes) {
@@ -2383,9 +2569,18 @@ export class DocumentUtilityOverlayHost {
     facts.lineDomChildCount = nodeList.length
     facts.cornerArmCount = lineScope.querySelectorAll<HTMLElement>('[class*="corner-arm"],[class*="continuation-arm"]').length
     // §14 — the PASSIVE heading gutter marker must survive the active cleanup.
+    // V5.14-R8 §14 — the PASSIVE authority is the marker WRAPPER + its passive
+    // fill fragment. The legacy gutter `__rail` is DELIBERATELY no longer created
+    // (V5.12-R9), so probing it produced a permanent false FAIL. The markers live
+    // in the DOCUMENT layer (inside the editor host), so the probe spans the
+    // document — the class names are plugin-owned, so the scope is exact.
     const headingDiagCount = this.snapshot?.diagnostics.filter(d => d.category === 'heading').length ?? 0
-    const railCount = lineScope.querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length
-    facts.passiveHeadingMarkerRemoved = headingDiagCount > 0 && railCount === 0
+    const passiveMarkerScope = this.root?.ownerDocument ?? lineScope
+    const passiveMarkerCount = passiveMarkerScope
+      .querySelectorAll('.inkchapter-heading-diagnostic-marker').length
+    const passiveFillCount = passiveMarkerScope
+      .querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length
+    facts.passiveHeadingMarkerRemoved = headingDiagCount > 0 && passiveMarkerCount === 0 && passiveFillCount === 0
     // §14 — a DIAGNOSTIC Drawer row severity indicator must never be removed.
     // The indicator authority is the row's severity CLASS (which drives the
     // `::before` rail), not a data attribute; `--empty` placeholder rows carry
@@ -2840,8 +3035,18 @@ export class DocumentUtilityOverlayHost {
     // read-only (no DOM write), so there is no feedback loop.
     const editorRoot = resolveBusinessContentRoot()
     if (editorRoot && typeof MutationObserver === 'function') {
-      this.diagnosticsMutationObserver = new MutationObserver(() => {
+      this.diagnosticsMutationObserver = new MutationObserver((records) => {
         if (this.disposed) return
+        // ── V5.14-R4 §7 — classify the batch FIRST. The plugin's OWN overlay layer
+        // is mounted INSIDE `#write`, so our marker writes reach this observer too;
+        // mistaking them for a content reflow would create the high-frequency
+        // self-wake loop the spec forbids. ANY real editor mutation (childList /
+        // characterData that is not ours) means the diagnostic targets may have
+        // MOVED, so the visual geometry must be invalidated even when the
+        // diagnostics snapshot itself does not change (ROOT_R4_2).
+        if (records.some(r => !this.isPluginOverlayMutationRecord(r))) {
+          this.pendingRealContentMutation = true
+        }
         // Phase 7R.3.11.8B.3 — content mutation also re-measures navigator
         // visibility (event-driven, rAF-coalesced; never a timer/poll).
         if (!this.diagnosticsRafPending) {
@@ -2849,12 +3054,26 @@ export class DocumentUtilityOverlayHost {
           requestAnimationFrame(() => {
             this.diagnosticsRafPending = false
             if (this.disposed) return
+            const realContentMutation = this.pendingRealContentMutation
+            this.pendingRealContentMutation = false
             this.diagnostics.recompute('DOCUMENT_MUTATION')
             // ── V5.14-R3 §P11 §10 — a real heading content edit marks the visual
             // dirty HERE (the single content-mutation authority), so the stale
             // fill width / chip anchor is invalidated + rebuilt once even when the
             // diagnostics publish is a NOOP.
             this.reconcileHeadingContentEdits('DOCUMENT_MUTATION')
+            // ── V5.14-R4 §6/§7 — the ONE reflow invalidation entry point. A blank
+            // line / paragraph inserted above a diagnosed heading changes its live
+            // position while diagnosticId / stableIdentity / contentFingerprint all
+            // stay the same, so this is the ONLY signal that catches it.
+            if (realContentMutation) {
+              this.invalidateDiagnosticVisualGeometry('EDITOR_REFLOW')
+              // §15 — a layout-affecting mutation that produced NO invalidation
+              // while measured geometry exists is the forbidden state.
+              if (this.diagnosticVisualDirtyReason == null && this.hasDiagnosticGeometryToReconcile()) {
+                this.countersVisualReflowV514R4.layoutAffectingMutationWithoutGeometryInvalidation++
+              }
+            }
             this.scheduleGeometrySync('content-mutation')
           })
         }
@@ -3793,7 +4012,63 @@ export class DocumentUtilityOverlayHost {
   private headingActiveIdentity: string | null = null
   /** V5.12-R2 §6 — the heading identity the ACTIVE emphasis belongs to. */
   private headingActiveMarkerIdentity: string | null = null
+  /** V5.14-R8 §10 — the DIAGNOSTIC the painted active heading emphasis belongs to. */
+  private headingActiveDiagnosticId: string | null = null
   private countersHeadingV512 = createHeadingMarkerV512R1GateCounters()
+
+  // ── V5.14-R8 / Active State Machine V2 — the SINGLE interaction authority ──
+  /**
+   * §3.1 — the ONE authority. The body active emphasis, the active heading
+   * identity, the active visual keys, the Drawer ACTIVE row and the visual lease
+   * ALL derive from THIS object. `lastLocatedDiagnosticId` is DEMOTED to an
+   * observational/debug field and never drives business state again.
+   */
+  private diagnosticInteractionState: DiagnosticInteractionState = emptyDiagnosticInteractionState()
+  /** §9 — Drawer keyboard/hover focus ONLY (never Active, never a locate target). */
+  private focusedDiagnosticId: string | null = null
+  /** §15 — the V2 hard gates (every one must stay 0). */
+  private countersActiveStateMachineV2: ActiveStateMachineV2Counters = createActiveStateMachineV2Counters()
+  /** §24 — the runtime COVERAGE counters (Error/Warning same-target DEACTIVATE). */
+  private coverageActiveStateMachineV2: ActiveStateMachineV2CoverageCounters = createActiveStateMachineV2CoverageCounters()
+  /** §6 — stale-callback drops since the last click (audit surface). */
+  private staleCallbackDropCountSinceClick = 0
+  /** §4 — the last reducer transition (audit surface). */
+  private lastDiagnosticTransition: DiagnosticTransition | null = null
+  /** §19 — the monotonic click sequence (audit surface). */
+  private diagnosticClickSequence = 0
+  /** §5 — the PASSIVE semantic set captured at click time (closure comparison). */
+  private passiveSetHashAtClick: string | null = null
+  /** §13 — one click's closure audit is scheduled at most once per version. */
+  private pendingClosureAuditVersion: number | null = null
+  /** §8/§15 — a GLOBAL unscoped clear observed during the current interaction. */
+  private lastGlobalUnscopedClearObserved = false
+  /**
+   * V5.14-R7 compat counters. The R7 interaction gates are SUPERSEDED by the V2
+   * gates; this set is retained ONLY for the historical observability surface and
+   * is never incremented by the V2 code path.
+   */
+  private countersActiveInteractionV514R7: ActiveInteractionV514R7Counters = createActiveInteractionV514R7Counters()
+
+  // ── V5.14-R9 / V2.1 — visual transaction authority ──────────────────────
+  /** §16 — the V2.1 hard gates (every one must stay 0). */
+  private countersVisualTransactionV21: VisualTransactionV21Counters = createVisualTransactionV21Counters()
+  /** §17 — the navigator collision DETECTION counters (detected >= 1 is expected). */
+  private coverageVisualTransactionV21: VisualTransactionV21CoverageCounters = createVisualTransactionV21CoverageCounters()
+  /** §13 — the latest visual transaction (State / Visual / Lease from ONE source). */
+  private lastVisualTransactionV21: {
+    interactionVersion: number
+    diagnosticId: string
+    targetKey: string
+    transactionId: number
+    leaseToken: string | null
+    status: string
+  } | null = null
+  /** §13 — the illegal-IDLE repair must never recurse. */
+  private repairingIllegalIdleVisual = false
+  /** §15 — the LAST clicked diagnostic id (the closure reports its severity). */
+  private lastClickedDiagnosticId: string | null = null
+  /** §15 — the LAST applied visual recovery strategy (null = none needed). */
+  private lastVisualRecoveryStrategyV21: DiagnosticVisualRecoveryStrategy | null = null
 
   // ── V5.12-R2 — DocumentLayoutEpoch + Visual Closure ─────────────────────
   /** §3.1 — the ONE document-level layout epoch. */
@@ -3817,6 +4092,57 @@ export class DocumentUtilityOverlayHost {
   private passiveTargetDiagnosticRevision = -1
   /** §P10 — the ACTIVE emphasis' target keys (a subset of the passive set). */
   private activeVisualTargetKeySet = new Set<string>()
+
+  // ── V5.14-R4 §5/§6/§9/§14/§15 — VISUAL GEOMETRY authority (reflow aware) ──
+  /** §5.2 — monotonically increasing geometry generation (one per reconcile). */
+  private visualGeometryGeneration = 0
+  /** §5.1 — the geometry snapshot each visual component was committed from. */
+  private lastVisualGeometrySnapshots = new Map<string, DiagnosticVisualGeometrySnapshot>()
+  /** §15 — the real visual-reflow hard gates (all must stay 0). */
+  private countersVisualReflowV514R4: VisualReflowV514R4Counters = createVisualReflowV514R4Counters()
+  /** V5.14-R5 §19 — the inline-presentation hard gates (all must stay 0). */
+  private countersInlinePresentationV514R5: InlinePresentationV514R5Counters = createInlinePresentationV514R5Counters()
+  /** V5.14-R5 §22 — the chip geometry was re-measured after the hint shrank. */
+  private inlineChipRebuiltAfterHintChange = false
+  // ── V5.14-R6 §5/§6/§15 — the ONE semantic coverage authority ───────────────
+  /** §5 — the snapshot every body visual (passive AND active) consumes. */
+  private headingCoverageSnapshots = new Map<string, HeadingDiagnosticTargetSnapshot>()
+  /** §29 — the heading-coverage hard gates (all must stay 0). */
+  private countersHeadingCoverageV514R6: HeadingCoverageV514R6Counters = createHeadingCoverageV514R6Counters()
+  /** §9/§10 — the ONE hidden same-font probe that measures the number advance. */
+  private headingNumberMeasureProbe: HTMLElement | null = null
+  /** §15/§28 — the coverage mask published to the OUTLINE, per heading identity. */
+  private outlineCoverageMaskByTargetKey = new Map<string, number>()
+  /** V5.14-R6.1 §14/§29 — the coverage POLICY published to the OUTLINE, per heading. */
+  private outlineCoveragePolicyByIdentity = new Map<string, string>()
+  /** V5.14-R6.1 §25 — the policy a DiagnosticCode resolved to (determinism detector). */
+  private headingCoveragePolicyByDiagnosticCode = new Map<string, HeadingDiagnosticCoveragePolicy>()
+  /** §21 — the geometry scheduler observability counters. */
+  private visualGeometryCounters = {
+    invalidationCount: 0,
+    scheduleCount: 0,
+    executionCount: 0,
+    sameFrameCoalesceCount: 0,
+    targetMeasureCount: 0,
+    scrollGeometryRebuildCount: 0,
+  }
+  /** §16 — the pending invalidation reason (the ONE dirty flag per frame). */
+  private diagnosticVisualDirtyReason: string | null = null
+  /** §7 — did the CURRENT mutation batch contain a real (non-overlay) edit? */
+  private pendingRealContentMutation = false
+  /** §11 — re-entrancy guard for the passive-presentation restore. */
+  private restoringPassivePresentation = false
+  /** §16 — the audit's "before" facts for the frame currently being reconciled. */
+  private lastReflowAuditBefore: {
+    layoutEpoch: number
+    geometryGeneration: number
+    reason: string
+    targetCount: number
+    /** §16 — the anchor rect each target was painted with BEFORE this rebuild. */
+    anchors: Map<string, GeometryRect | null>
+    /** §16 — the source revision the invalidated geometry was measured under. */
+    sourceRevision: number | null
+  } | null = null
   /** §P11 — last measured heading content fingerprint per heading identity. */
   private headingContentFingerprints = new Map<string, string>()
   /** §18 — the V5.12-R3 Drawer-persistence hard-gate counters. */
@@ -3960,11 +4286,80 @@ export class DocumentUtilityOverlayHost {
     return true
   }
 
+  /**
+   * §6/§7 — the ONE invalidation entry point. A layout-affecting editor mutation
+   * (or a plugin projection that can change block width/height, or an external
+   * resize) marks the diagnostic visual geometry dirty. It NEVER re-renders
+   * synchronously: the dirty flag is consumed by ONE coalesced rAF.
+   *
+   * §8 — a scroll / pointer event is NOT a reflow trigger (the document-space
+   * overlay scrolls with the document). A scroll-driven invalidation request is
+   * counted as the forbidden rebuild instead of being honoured.
+   */
+  private invalidateDiagnosticVisualGeometry(reason: string): void {
+    if (this.disposed) return
+    if (reason === 'scroll' || reason === 'wheel' || reason === 'pointermove' || reason === 'mousemove') {
+      this.countersVisualReflowV514R4.scrollGeometryRebuild++
+      this.visualGeometryCounters.scrollGeometryRebuildCount++
+      return
+    }
+    if (this.diagnosticVisualDirtyReason != null) {
+      // multiple mutations inside ONE frame coalesce into a single reconcile.
+      this.visualGeometryCounters.sameFrameCoalesceCount++
+    }
+    this.diagnosticVisualDirtyReason = this.diagnosticVisualDirtyReason ?? reason
+    this.visualGeometryCounters.invalidationCount++
+    if (this.hasDiagnosticGeometryToReconcile()) this.scheduleDiagnosticGeometryReconcile(reason)
+  }
+
+  /** §5.2 — bump the geometry generation (one per executed reconcile). */
+  private bumpVisualGeometryGeneration(): number {
+    this.visualGeometryGeneration = this.visualGeometryGeneration >= Number.MAX_SAFE_INTEGER
+      ? 1
+      : this.visualGeometryGeneration + 1
+    return this.visualGeometryGeneration
+  }
+
   /** §3.4 — is there any measured diagnostic geometry that may now be stale? */
   private hasDiagnosticGeometryToReconcile(): boolean {
     if (this.headingPassiveMarkers.size > 0) return true
     if (this.locateFrame?.hasCommitted() === true) return true
     return false
+  }
+
+  /**
+   * §7 — is this mutation record one of OUR OWN overlay writes? The plugin's
+   * overlay layer is mounted inside `#write`, so this classification is what
+   * keeps a marker repaint from being mistaken for a content reflow (and thus
+   * from creating a self-wake loop).
+   */
+  private isPluginOverlayMutationRecord(record: MutationRecord): boolean {
+    if (record.type === 'characterData') {
+      const parent = record.target.parentElement
+      return parent != null ? this.isPluginOverlayNode(parent) : false
+    }
+    const target = record.target
+    if (target instanceof HTMLElement && this.isPluginOverlayNode(target)) return true
+    let allOwned = true
+    const check = (n: Node): void => {
+      // an inserted / removed RAW TEXT node is always real editor content
+      if (n.nodeType === 3) { allOwned = false; return }
+      if (n instanceof HTMLElement && !this.isPluginOverlayNode(n)) allOwned = false
+    }
+    for (const n of Array.from(record.addedNodes)) check(n)
+    for (const n of Array.from(record.removedNodes)) check(n)
+    return allOwned
+  }
+
+  /** §7 — a node that belongs to the plugin's own overlay (never editor content). */
+  private isPluginOverlayNode(node: HTMLElement): boolean {
+    const layer = this.locateDocLayer
+    if (layer && (node === layer || layer.contains(node))) return true
+    try {
+      if (node.closest?.('[data-inkchapter-locate-layer="true"], [data-inkchapter-heading-layer="true"]') != null) return true
+    } catch { /* detached / invalid selector → treat as content */ }
+    const cls = typeof node.className === 'string' ? node.className : ''
+    return /(^|\s)inkchapter-/.test(cls)
   }
 
   /** §3.4 — are any measured marker geometries older than the current epoch? */
@@ -3976,30 +4371,152 @@ export class DocumentUtilityOverlayHost {
     return false
   }
 
+  /** §9 — does any stored geometry snapshot disagree with its LIVE rect? */
+  private hasLiveGeometryDrift(): boolean {
+    for (const [identity, rec] of this.headingPassiveMarkers) {
+      const el = rec.element
+      if (!el || !el.isConnected) return true
+      const live = this.measureHeadingAnchorLocal(el)
+      const snapshot = this.lastVisualGeometrySnapshots.get(identity)
+      const stored = snapshot?.anchorRect ?? null
+      if (live && stored && measureGeometryDrift(stored, live).stale) return true
+    }
+    return false
+  }
+
   /**
-   * §3.2/§3.3 — invalidate + re-measure stale diagnostic geometry. Coalesced to
-   * ONE rAF; never a scroll/wheel/mousemove driven remeasure loop.
+   * §3.2/§3.3/§5.2/§9 — invalidate + re-measure stale diagnostic geometry.
+   * Coalesced to ONE rAF; never a scroll/wheel/mousemove driven remeasure loop.
+   * A stale epoch OR a live rect drift beyond the tolerance both force a
+   * same-generation rebuild of passive + active + chip.
    */
   private scheduleDiagnosticGeometryReconcile(reason: string): void {
     if (this.disposed) return
     if (this.diagnosticGeometryReconcileRaf !== null) return
+    this.visualGeometryCounters.scheduleCount++
+    let completed = false
+    // ── V5.14-R8 §6 — capture the visual OWNER this reconcile belongs to. If a
+    // later click retires that owner, this rAF MUST NOT mutate any visual.
+    const ownerAtSchedule = ownerOf(this.diagnosticInteractionState)
     const run = (): void => {
+      completed = true
       this.diagnosticGeometryReconcileRaf = null
       if (this.disposed) return
-      // §3.4 — a paint from a stale epoch is the violation; re-measure FIRST.
-      if (this.hasStaleDiagnosticGeometry()) {
+      if (!this.isOwnerCurrentV2(ownerAtSchedule)) {
+        this.dropStaleCallbackV2('scheduleDiagnosticGeometryReconcile', ownerAtSchedule)
+        return
+      }
+      this.visualGeometryCounters.executionCount++
+      const dirty = this.diagnosticVisualDirtyReason
+      this.diagnosticVisualDirtyReason = null
+      // §3.4/§9 — a paint from a stale epoch OR from a drifted rect is the
+      // violation; re-measure FIRST, then commit the fresh snapshot.
+      if (dirty != null || this.hasStaleDiagnosticGeometry() || this.hasLiveGeometryDrift()) {
+        this.lastReflowAuditBefore = {
+          layoutEpoch: this.currentDocumentLayoutEpoch,
+          geometryGeneration: this.visualGeometryGeneration,
+          reason: dirty ?? reason,
+          targetCount: this.lastVisualGeometrySnapshots.size,
+          anchors: new Map([...this.lastVisualGeometrySnapshots].map(([k, v]) => [k, v.anchorRect])),
+          sourceRevision: this.snapshot?.sourceRevision ?? null,
+        }
         this.renderHeadingDiagnosticMarkers()
         this.renderActiveHeadingEmphasisForCommittedVisual()
+        this.emitVisualReflowAudit(dirty ?? reason)
       }
       this.emitVisualClosureAudit(reason)
     }
     if (typeof requestAnimationFrame === 'function') {
       try {
-        this.diagnosticGeometryReconcileRaf = requestAnimationFrame(run)
+        const id = requestAnimationFrame(run)
+        // A synchronous rAF stub (tests) has already completed `run`, which reset
+        // the handle to null — re-assigning would permanently block reconciliation.
+        if (completed) return
+        this.diagnosticGeometryReconcileRaf = id
         return
       } catch { /* fall through to sync */ }
     }
     run()
+  }
+
+  /**
+   * §16 — `DOCUMENT-DIAGNOSTIC-VISUAL-REFLOW-AUDIT`. One line per visual target
+   * with the REAL before/after geometry facts (never a hardcoded 0).
+   */
+  private emitVisualReflowAudit(reason: string): void {
+    const before = this.lastReflowAuditBefore
+    this.lastReflowAuditBefore = null
+    const afterGeneration = this.visualGeometryGeneration
+    for (const [identity, snapshot] of this.lastVisualGeometrySnapshots) {
+      const rec = this.headingPassiveMarkers.get(identity) ?? null
+      const live = rec?.element && rec.element.isConnected ? this.measureHeadingAnchorLocal(rec.element) : null
+      const storedBefore = before?.anchors.get(identity) ?? snapshot.anchorRect
+      // §16 — `targetMoved` is the BEFORE → live move; `maxTargetVisualDriftPx` is
+      // the RESIDUAL drift of the geometry that was just painted (must be ≈ 0).
+      const moveDrift = measureGeometryDrift(storedBefore, live)
+      const residualDrift = measureGeometryDrift(snapshot.anchorRect, live)
+      const drift = moveDrift
+      // §9/§15 — geometry that was painted while still disagreeing with the live
+      // target is the forbidden STALE_PAINT.
+      if (residualDrift.stale) {
+        this.countersVisualReflowV514R4.passiveTargetDriftGt1px++
+        this.countersVisualReflowV514R4.staleVisualGeometryPaint++
+        this.countersVisualReflowV514R4.targetMovedWithoutVisualRebuild++
+      }
+      const chipEval = evaluateReasonChipGeometry({
+        chipRect: snapshot.reasonChipRect,
+        textRects: snapshot.textRects,
+        visualLabelRight: snapshot.textRects.length > 0 ? snapshot.textRects[snapshot.textRects.length - 1].right : null,
+        configuredGapPx: HEADING_LABEL_CHIP_GAP_PX,
+        chipPlacement: rec?.chipPlacementKind ?? null,
+      })
+      const isActive = this.headingActiveMarkerIdentity === identity
+      emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_VISUAL_REFLOW_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: snapshot.diagnosticId,
+        targetIndex: snapshot.targetIndex,
+        stableIdentity: identity,
+        visualTargetKey: snapshot.visualTargetKey,
+        severity: snapshot.severity,
+        mutationReason: reason,
+        reflowReason: reason,
+        layoutEpochBefore: before?.layoutEpoch ?? null,
+        layoutEpochAfter: this.currentDocumentLayoutEpoch,
+        geometryGenerationBefore: before?.geometryGeneration ?? null,
+        geometryGenerationAfter: afterGeneration,
+        contentFingerprintBefore: rec?.contentFingerprintBefore ?? null,
+        contentFingerprintAfter: rec?.contentFingerprint ?? null,
+        contentChanged: rec?.contentFingerprintBefore != null && rec.contentFingerprintBefore !== rec.contentFingerprint,
+        sourceRevisionBefore: before?.sourceRevision ?? null,
+        sourceRevisionAfter: this.snapshot?.sourceRevision ?? null,
+        sourceRevisionChanged: before?.sourceRevision != null && before.sourceRevision !== (this.snapshot?.sourceRevision ?? null),
+        targetRectBefore: storedBefore,
+        targetRectAfter: live,
+        targetMoved: drift.stale,
+        passiveRectBefore: null,
+        passiveRectAfter: snapshot.fillRects,
+        activeRectBefore: null,
+        activeRectAfter: isActive ? snapshot.fillRects : [],
+        reasonChipRectBefore: null,
+        reasonChipRectAfter: snapshot.reasonChipRect,
+        visualInvalidated: before != null,
+        passiveRebuilt: before != null,
+        activeRebuilt: before != null && isActive,
+        chipRebuilt: before != null,
+        visualSnapshotAtomic: true,
+        maxTargetVisualDriftPx: residualDrift.maxDrift,
+        moveDistancePx: moveDrift.maxDrift,
+        chipVerticalDriftPx: chipEval.verticalDriftPx,
+        chipAnchorDriftPx: chipEval.anchorDriftPx,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        geometryGeneration: afterGeneration,
+        coordinateSpace: snapshot.coordinateSpace,
+        decision: residualDrift.stale ? 'FAIL' : 'PASS',
+        reason: before != null
+          ? (residualDrift.stale ? 'REFLOW_REBUILT_STILL_DRIFTING' : 'REFLOW_GEOMETRY_REBUILT_SAME_GENERATION')
+          : 'GEOMETRY_ALREADY_CURRENT',
+      })
+    }
   }
 
   /** §17 — DOCUMENT-DIAGNOSTIC-VISUAL-CLOSURE-AUDIT (unified closure evidence). */
@@ -4328,12 +4845,24 @@ export class DocumentUtilityOverlayHost {
           stableHeadingIdentity: identity,
           severity: normalizeOutlineDiagnosticSeverity(d.severity),
           active: this.headingActiveMarkerIdentity === identity,
+          // ── V5.14-R6 §15/§17 — the SAME coverage mask the body visual will use.
+          // The outline reprojects it into its own DOM coordinate space; no body
+          // rect is ever copied across coordinate spaces.
+          coverageMask: coverageMaskForPolicy(
+            resolveHeadingDiagnosticCoveragePolicy({ code: String(d.code ?? '') }),
+            { hasNumberDecoration: t.element.hasAttribute('data-inkchapter-heading-number') },
+          ),
+          // ── V5.14-R6.1 §14/§29 — the SAME policy (never a per-surface invention).
+          coveragePolicy: resolveHeadingDiagnosticCoveragePolicy({ code: String(d.code ?? '') }),
         })
         const g = groups.get(identity)
         const rank = severityRank(String(d.severity ?? 'info'))
         const reason = buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
         if (g) {
           g.severities.push(String(d.severity ?? 'info'))
+          // V5.14-R6.1 §18 — one heading may carry SEVERAL diagnostics, each with
+          // its own coverage policy.
+          if (!g.diagnosticIds.includes(d.id)) g.diagnosticIds.push(d.id)
           // V5.12-R9 §6 — the PASSIVE marker carries a compact reason chip too;
           // the HIGHEST-severity diagnostic owns it.
           if (reason && (g.reasonText == null || rank > g.topRank)) {
@@ -4351,6 +4880,7 @@ export class DocumentUtilityOverlayHost {
             topRank: rank,
             primaryDiagnosticId: d.id,
             primaryTargetIndex: targetIndex,
+            diagnosticIds: [d.id],
           })
         }
       }
@@ -4366,15 +4896,27 @@ export class DocumentUtilityOverlayHost {
    * its `targetIdentity`; a marker whose epoch is stale is re-measured (never
    * painted from the stale geometry).
    */
-  renderHeadingDiagnosticMarkers(): void {
+  renderHeadingDiagnosticMarkers(skipActiveEmphasis = false): void {
     const layer = this.ensureHeadingMarkerLayer()
     if (!layer) return
     const collected = this.collectHeadingMarkerGroups()
     const groups = collected.groups
     const epoch = this.currentDocumentLayoutEpoch
+    // ── V5.14-R4 §5.2 — ONE geometry generation for this WHOLE atomic commit: the
+    // passive fill, the active fill and the reason chip of a target all carry it.
+    const geometryGeneration = this.bumpVisualGeometryGeneration()
     // ── V5.14-R2 §P8 — publish the heading diagnostic occurrences to the LEFT
     // OUTLINE. The outline only paints them onto a COMMITTED mapping (P7).
     this.opts.providers.publishOutlineHeadingDiagnostics?.(collected.outlineDiagnosticTargets)
+    // ── V5.14-R5 §13 — the LEFT OUTLINE must NEVER receive annotation text: the
+    // projection may only carry identity + severity (colour / underline marker).
+    if (collected.outlineDiagnosticTargets.some(t => {
+      const rec = t as unknown as Record<string, unknown>
+      return 'reasonText' in rec || 'inlineHint' in rec || 'message' in rec || 'label' in rec
+    })) {
+      this.countersInlinePresentationV514R5.outlineReasonChip++
+      this.countersHeadingCoverageV514R6.outlineReasonChip++
+    }
     // Drop stale markers.
     for (const [identity, rec] of [...this.headingPassiveMarkers]) {
       if (!groups.has(identity)) {
@@ -4384,6 +4926,10 @@ export class DocumentUtilityOverlayHost {
     }
     // Upsert.
     for (const [identity, g] of groups) {
+      // ── V5.14-R5 §12/§19 — the presentation layer is DECORATION ONLY: it must
+      // never write the heading's own text or its numbering attribute.
+      const headingTextBeforePresentation = g.el.textContent ?? ''
+      const headingNumberBeforePresentation = g.el.getAttribute('data-inkchapter-heading-number')
       const severity = mergeHeadingMarkerSeverity(g.severities)
       if (!severity) continue
       const fragments = this.headingVisibleFragments(g.el)
@@ -4396,6 +4942,8 @@ export class DocumentUtilityOverlayHost {
       const anchorLocal = this.toDocumentLocal(makeHeadingRect({ left: anchorVp.left, top: anchorVp.top, right: anchorVp.right, bottom: anchorVp.bottom }))
       const contentLocal = this.toDocumentLocal(contentRect)
       if (!anchorLocal || !contentLocal) continue
+      // V5.14-R4 §13 — ONE coordinate space per snapshot (DOCUMENT_LOCAL).
+      const numberRectLocal = this.toDocumentLocal(numberRect)
       const firstLineHeight = fragments.length > 0 ? fragments[0].height : contentRect.height
       const geo = computeHeadingMarkerGeometry({
         anchorRect: anchorLocal,
@@ -4453,6 +5001,11 @@ export class DocumentUtilityOverlayHost {
       else wrapper.removeAttribute('data-ink-visual-target-key')
       if (markerTargetKeys.length > 0) wrapper.setAttribute('data-ink-visual-target-keys', JSON.stringify(markerTargetKeys))
       else wrapper.removeAttribute('data-ink-visual-target-keys')
+      // ── V5.14-R4 §5.2 — the ONE geometry-generation stamp every component of
+      // this visual target shares (Runtime audit reads it back).
+      wrapper.setAttribute('data-ink-layout-epoch', String(epoch))
+      wrapper.setAttribute('data-ink-geometry-generation', String(geometryGeneration))
+      wrapper.setAttribute('data-ink-stable-identity', identity)
       wrapper.setAttribute('aria-hidden', 'true')
       wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
       const rail = wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail') as HTMLElement | null
@@ -4470,7 +5023,117 @@ export class DocumentUtilityOverlayHost {
       // A heading whose text fragments cannot be measured (no layout backend) still
       // gets its text-tight surface from the CONTENT box — never a gutter fallback
       // and never the full heading block.
-      const fillTargets = textLocal.length > 0 ? textLocal : [contentLocal]
+      // ── V5.14-R6 §5/§6/§8/§9/§10/§11/§13 — the ONE semantic coverage snapshot.
+      // A numbered heading covers NUMBER|GAP|TITLE; the CSS-generated numbering is a
+      // `::before` decoration with NO text node, so `Range.getClientRects()` alone can
+      // never reach it (ROOT_R6_2). The heading BLOCK rect is used only as the
+      // decoration-band bound and as a full-width-fallback detector — never painted.
+      // ── V5.14-R6.1 §7/§18 — ONE snapshot per DIAGNOSTIC (each with its own
+      // SEMANTICS-derived policy); the heading's PASSIVE fill paints their UNION
+      // (TITLE ⊆ FULL_VISIBLE_HEADING), so a heading carrying both a duplicate and
+      // a level-gap diagnostic never loses either range.
+      const headingDiagnosticIds = g.diagnosticIds.length > 0 ? g.diagnosticIds : [g.primaryDiagnosticId]
+      const headingHasNumber = g.el.hasAttribute('data-inkchapter-heading-number')
+      const perDiagnosticSnapshots = headingDiagnosticIds.map(diagnosticId => {
+        const diagnosticCode = this.diagnosticById(diagnosticId)?.code ?? ''
+        const coveragePolicy = resolveHeadingDiagnosticCoveragePolicy({ code: diagnosticCode })
+        if (isKnownHeadingDiagnosticCode(diagnosticCode) && !isExplicitlyMappedHeadingDiagnosticCode(diagnosticCode)) {
+          this.countersHeadingCoverageV514R6.knownHeadingDiagnosticWithoutCoveragePolicy++
+        }
+        // §25 — a DiagnosticCode must ALWAYS resolve to the same policy. A code
+        // resolving to two different policies across passes is the stale defect.
+        const seenPolicyForCode = this.headingCoveragePolicyByDiagnosticCode.get(diagnosticCode)
+        if (diagnosticCode !== '' && seenPolicyForCode != null && seenPolicyForCode !== coveragePolicy) {
+          this.countersHeadingCoverageV514R6.staleHeadingPolicyAfterDiagnosticChange++
+        }
+        if (diagnosticCode !== '') this.headingCoveragePolicyByDiagnosticCode.set(diagnosticCode, coveragePolicy)
+        const previous = this.headingCoverageSnapshots.get(`${identity}::${diagnosticId}`) ?? null
+        // §14/§29 — the OUTLINE must carry the SAME policy for this diagnostic.
+        const outlineTargetForDiagnostic = collected.outlineDiagnosticTargets
+          .find(t => t.stableHeadingIdentity === identity && t.diagnosticId === diagnosticId) ?? null
+        if (outlineTargetForDiagnostic?.coveragePolicy != null
+          && outlineTargetForDiagnostic.coveragePolicy !== coveragePolicy) {
+          this.countersHeadingCoverageV514R6.bodyOutlinePolicyMismatch++
+        }
+        const snapshot = this.measureHeadingDiagnosticSemanticTarget({
+          el: g.el,
+          identity,
+          diagnosticId,
+          coveragePolicy,
+          layoutEpoch: epoch,
+          geometryGeneration,
+          reasonChipRect: null,
+        })
+        // §25 — when the policy changed the geometry MUST have been rebuilt: an
+        // unchanged mask-flipped fragment set is the "stale geometry" defect.
+        if (previous && previous.coveragePolicy !== coveragePolicy && previous.coverageMask !== snapshot.coverageMask) {
+          const sameGeometry = previous.semanticFragmentRects.length === snapshot.semanticFragmentRects.length
+            && previous.semanticFragmentRects.every((r, i) => {
+              const n = snapshot.semanticFragmentRects[i]
+              return n != null && Math.abs(r.left - n.left) < 0.5 && Math.abs(r.right - n.right) < 0.5
+            })
+          if (sameGeometry) this.countersHeadingCoverageV514R6.staleHeadingGeometryAfterPolicyChange++
+        }
+        this.headingCoverageSnapshots.set(`${identity}::${diagnosticId}`, snapshot)
+        return snapshot
+      })
+      // §4/§8/§26 — a TITLE_ONLY diagnostic must NEVER include the numbering.
+      const titleLeftForPolicy = perDiagnosticSnapshots[0]?.titleRects[0]?.left ?? null
+      for (const snapshot of perDiagnosticSnapshots) {
+        const extendsLeftOfTitle = titleLeftForPolicy != null
+          && snapshot.semanticFragmentRects.some(f => f.left < titleLeftForPolicy - 0.5)
+        if (snapshot.coveragePolicy === 'TITLE_ONLY') {
+          if (coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.NUMBER)) {
+            this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
+          }
+          if (coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.GAP)) {
+            this.countersHeadingCoverageV514R6.duplicateHeadingGapIncluded++
+          }
+          if (extendsLeftOfTitle) this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
+          // §4/§25 — TITLE_ONLY covers the title TEXT only; a fragment reaching
+          // outside the title band (left of the number, or past the last glyph) is
+          // a non-title coverage defect.
+          const titleUnion = coverageUnionRect(snapshot.titleRects)
+          if (titleUnion != null && snapshot.semanticFragmentRects.some(f =>
+            f.left < titleUnion.left - 0.5 || f.right > titleUnion.right + 0.5)) {
+            this.countersHeadingCoverageV514R6.duplicateHeadingNonTitleCoverage++
+          }
+        }
+        if (snapshot.coveragePolicy === 'FULL_VISIBLE_HEADING') {
+          const firstFragmentStartsAtNumber = snapshot.numberRect != null
+            && snapshot.semanticFragmentRects.some(f => f.left <= snapshot.numberRect!.left + 0.5)
+          if (headingHasNumber && !firstFragmentStartsAtNumber) {
+            this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
+          }
+          const gapCoveredForPolicy = snapshot.numberRect == null
+            || (titleLeftForPolicy != null && snapshot.numberRect.right >= titleLeftForPolicy - 0.5)
+            || snapshot.gapRect != null
+          if (headingHasNumber && !gapCoveredForPolicy) {
+            this.countersHeadingCoverageV514R6.fullVisibleHeadingGapOmitted++
+            this.countersHeadingCoverageV514R6.numberGapVisualDiscontinuity++
+          }
+        }
+      }
+      const fullCoverageSnapshot = perDiagnosticSnapshots.find(s => s.coveragePolicy === 'FULL_VISIBLE_HEADING') ?? null
+      const coverageSnapshot = fullCoverageSnapshot
+        ?? perDiagnosticSnapshots.find(s => s.diagnosticId === g.primaryDiagnosticId)
+        ?? perDiagnosticSnapshots[0]
+      const coverageFillTargets = coverageSnapshot.semanticFragmentRects.map(fromCoverageRect)
+      const fillTargets = coverageFillTargets.length > 0
+        ? coverageFillTargets
+        : (textLocal.length > 0 ? textLocal : [contentLocal])
+      if (coverageUsesFullBlockFallback({
+        semanticFragmentRects: coverageSnapshot.semanticFragmentRects,
+        headingBlockRect: toCoverageRect(anchorLocal),
+      })) {
+        this.countersHeadingCoverageV514R6.headingBlockFullWidthFallback++
+      }
+      if (coverageSnapshot.semanticFragmentRects.some(rect => !coverageRectInvariantHolds(rect))) {
+        this.countersHeadingCoverageV514R6.staleRectInvariant++
+      }
+      if (!coverageSnapshot.reasonChipExcluded) {
+        this.countersHeadingCoverageV514R6.reasonChipIncludedInHeadingTarget++
+      }
       // ── V5.14-R3 §P10 §4/§24 (ROOT_P10_R3_4) — the PASSIVE marker is
       // PERMANENT: "this heading still has a problem". Selecting one of the
       // document's diagnostics may only ADD an active emphasis; it must NEVER
@@ -4479,29 +5142,58 @@ export class DocumentUtilityOverlayHost {
       // V5.13-R5 §24 — the comparison is against the ACTIVE HEADING identity
       // (`headingActiveMarkerIdentity`), never the diagnostic id.
       const isActiveHeading = this.headingActiveMarkerIdentity === identity
+      // ── V5.14-R4 §11 — the SELECTED target must present ONE atomic surface.
+      // While it is active the ACTIVE emphasis REPLACES this passive FILL; the
+      // marker record, the semantic target keys and the reason chip all stay, and
+      // a dismiss restores the passive presentation. The visual override is NEVER
+      // implemented by deleting a semantic passive key.
+      const fillPresentation = passiveFillPresentationForActiveTarget({
+        isActiveHeading,
+        passiveMarkerExists: existing != null,
+      })
+      if (isActiveHeading && fillPresentation.paintPassiveFill) {
+        this.countersVisualReflowV514R4.headingActivePassiveFillStack++
+      }
       const fillLocal: HeadingRect[] = []
       const existingFills = Array.from(wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-passive__fragment'))
+      const preExistingChip = wrapper.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason')
       // §5/§15 — ONE text-tight carrier per visible line (never a union rect):
       // a multi-line heading never becomes a full-width band.
-      for (let i = 0; i < fillTargets.length; i++) {
-        const r = fillTargets[i]
-        let frag = existingFills[i] ?? null
-        if (!frag) {
-          frag = document.createElement('div')
-          frag.className = 'inkchapter-heading-diagnostic-passive__fragment'
-          wrapper.appendChild(frag)
+      if (fillPresentation.paintPassiveFill) {
+        for (let i = 0; i < fillTargets.length; i++) {
+          const r = fillTargets[i]
+          let frag = existingFills[i] ?? null
+          if (!frag) {
+            frag = document.createElement('div')
+            frag.className = 'inkchapter-heading-diagnostic-passive__fragment'
+            if (preExistingChip) wrapper.insertBefore(frag, preExistingChip)
+            else wrapper.appendChild(frag)
+          }
+          frag.style.cssText = `position:absolute;left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${Math.round(r.width)}px;height:${Math.round(r.height)}px;`
+          fillLocal.push(r)
         }
-        frag.style.cssText = `position:absolute;left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${Math.round(r.width)}px;height:${Math.round(r.height)}px;`
-        fillLocal.push(r)
-      }
-      for (let i = fillTargets.length; i < existingFills.length; i++) {
-        try { existingFills[i].remove() } catch { /* noop */ }
+        for (let i = fillTargets.length; i < existingFills.length; i++) {
+          try { existingFills[i].remove() } catch { /* noop */ }
+        }
+      } else {
+        // §11 — the passive FILL surface is not painted while active; a
+        // hidden-but-alive node is forbidden, so the carriers are removed.
+        for (const f of existingFills) { try { f.remove() } catch { /* noop */ } }
       }
       // §6/§8 — the compact reason chip (overlay only, never in the heading flow).
       let chip = wrapper.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement | null
       let chipLocal: HeadingRect | null = null
       let chipGapPx: number | null = null
       let chipCenterDriftPx: number | null = null
+      // V5.14-R4 §10 — the placement kind decides whether the beside-the-text chip
+      // drift checks apply at all.
+      let chipPlacementKind: 'RIGHT_OF_LAST_LINE' | 'BELOW_LAST_LINE' | null = null
+      // V5.14-R5 §11/§18 — the chip geometry facts of THIS pass (audited).
+      let chipRenderedWidthPx: number | null = null
+      let chipIntrinsicWidthPx: number | null = null
+      let chipClamped = false
+      // V5.14-R5 §22 — the label-change width evidence (old long → new short).
+      const chipPreviousRecord = this.headingPassiveMarkers.get(identity) ?? null
       const hostRectForChip = this.measureLocateRect(this.locateDocLayerHost)
       // ── V5.14-R2 §P5-R2 — Heading LABEL geometry authority (ONE per heading).
       // ROOT_P5_R2: the墨章 number is an attribute-driven `::before` PREFIX gutter
@@ -4569,7 +5261,9 @@ export class DocumentUtilityOverlayHost {
       }
       this.lastHeadingVisualSnapshots.set(identity, headingVisualSnapshot)
       if (g.reasonText) {
-        const chipWidth = Math.min(220, 16 + g.reasonText.length * 7)
+        // ── V5.14-R5 §9/§10 — the placement budget is the SHORT hint's intrinsic
+        // width; `max-width` is only the fallback clamp.
+        const chipWidth = computeInlineChipWidthPx(g.reasonText)
         const chipHeight = HEADING_REASON_CHIP_HEIGHT_PX
         const drawerRect = this.drawerOpen && this.drawerEl && this.drawerEl.isConnected ? this.measureLocateRect(this.drawerEl) : null
         const hostLocalLeft = hostRectForChip ? hostRectForChip.left : 0
@@ -4583,6 +5277,7 @@ export class DocumentUtilityOverlayHost {
           drawerLeft: drawerLeftLocal,
         })
         if (placement) {
+          chipPlacementKind = placement.placement
           if (!chip) {
             chip = document.createElement('div')
             chip.className = 'inkchapter-heading-diagnostic-reason'
@@ -4596,13 +5291,37 @@ export class DocumentUtilityOverlayHost {
           const chipTop = placement.placement === 'RIGHT_OF_LAST_LINE'
             ? chipAnchorCenterY - chipHeight / 2
             : placement.rect.top
-          chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(chipTop)}px;max-width:220px;`
+          chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(chipTop)}px;max-width:${INLINE_CHIP_MAX_WIDTH_PX_V514R5}px;`
+          // ── V5.14-R5 §10/§11/§22 — the chip rect is the RENDERED width of the
+          // CURRENT (short) text, never a character-count estimate and never a
+          // leftover from the previous long label. `right` is recomputed here.
+          const renderedChipWidth = this.measureLocateRect(chip)?.width ?? chipWidth
+          const chipGeometry = evaluateInlineChipGeometry({
+            hint: g.reasonText,
+            renderedWidthPx: renderedChipWidth,
+            previousRenderedWidthPx: chipPreviousRecord?.chipRenderedWidthPx ?? null,
+          })
+          // §10 — a chip painted with an EXPLICIT fixed width (instead of intrinsic
+          // sizing + a max-width fallback) is the forbidden "fixed width".
+          if (chip.style.width !== '') this.countersInlinePresentationV514R5.inlineReasonFixedWidth++
+          if (chipPreviousRecord?.chipRenderedWidthPx != null
+            && chipPreviousRecord.chipRenderedWidthPx > renderedChipWidth + 0.5) {
+            // the label became shorter and the geometry was re-measured in THIS pass
+            this.inlineChipRebuiltAfterHintChange = true
+          }
           chipLocal = makeHeadingRect({
             left: placement.rect.left,
             top: chipTop,
-            right: placement.rect.left + chipWidth,
+            right: placement.rect.left + chipGeometry.renderedWidthPx,
             bottom: chipTop + chipHeight,
           })
+          chipRenderedWidthPx = chipGeometry.renderedWidthPx
+          chipIntrinsicWidthPx = chipGeometry.intrinsicWidthPx
+          chipClamped = chipGeometry.clamped
+          if (!inlineHintIsSafe(g.reasonText)) {
+            if (inlineHintHasSeverityPrefix(g.reasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityPrefix++
+            if (inlineHintHasSeverityEmoji(g.reasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityEmoji++
+          }
           const rightMost = chipAnchorRects.reduce((acc, r) => Math.max(acc, r.right), chipAnchor.left)
           chipGapPx = placement.placement === 'RIGHT_OF_LAST_LINE'
             ? placement.rect.left - rightMost
@@ -4616,6 +5335,212 @@ export class DocumentUtilityOverlayHost {
         } else if (chip) {
           try { chip.remove() } catch { /* noop */ }
           chip = null
+        }
+        // ── V5.14-R6 §14/§28/§29 — finalize the ONE semantic coverage snapshot:
+        // the reason chip is never part of the target, and the passive / active /
+        // outline facts are published for the coverage audit.
+        if (chipLocal) {
+          coverageSnapshot.reasonChipRect = toCoverageRect(chipLocal)
+          coverageSnapshot.reasonChipExcluded = reasonChipExcludedFromCoverage({
+            reasonChipRect: coverageSnapshot.reasonChipRect,
+            semanticFragmentRects: coverageSnapshot.semanticFragmentRects,
+          })
+          if (!coverageSnapshot.reasonChipExcluded) {
+            this.countersHeadingCoverageV514R6.reasonChipIncludedInHeadingTarget++
+          }
+        }
+        const coverageTargetKeys = collected.groupTargetKeys.get(identity) ?? []
+        const publishedOutlineTarget = collected.outlineDiagnosticTargets
+          .find(t => t.stableHeadingIdentity === identity) ?? null
+        const publishedOutlineMask = publishedOutlineTarget?.coverageMask ?? null
+        if (publishedOutlineMask != null) this.outlineCoverageMaskByTargetKey.set(identity, publishedOutlineMask)
+        if (publishedOutlineTarget?.coveragePolicy != null) {
+          this.outlineCoveragePolicyByIdentity.set(identity, publishedOutlineTarget.coveragePolicy)
+        }
+        this.headingCoverageSnapshots.set(identity, coverageSnapshot)
+        const numberedCoverage = coverageMaskHas(coverageSnapshot.coverageMask, HeadingCoveragePart.NUMBER)
+        const gapExpected = coverageMaskHas(coverageSnapshot.coverageMask, HeadingCoveragePart.GAP)
+        // V5.14-R6.1 §24 — the audit reports the MASK-derived inclusion, not the
+        // mere presence of a number/gap rect: a TITLE_ONLY snapshot KEEPS its
+        // numberRect authority (§12) yet never PAINTS it.
+        const titleCovered = coverageMaskHas(coverageSnapshot.coverageMask, HeadingCoveragePart.TITLE)
+        // §15/§17 — the OUTLINE shares the SAME coverage mask (semantic equality),
+        // never the body rects (coordinate spaces differ). A mask mismatch is the
+        // ROOT_R6_4 defect.
+        const outlineTarget = collected.outlineDiagnosticTargets.find(t => t.stableHeadingIdentity === identity) ?? null
+        // §17 — semantic equality is required for the WHOLE heading: the union of the
+        // outline masks must equal the union the body paints (a heading may carry a
+        // TITLE_ONLY and a FULL_VISIBLE_HEADING diagnostic at the same time).
+        const outlineMask = collected.outlineDiagnosticTargets
+          .filter(t => t.stableHeadingIdentity === identity)
+          .reduce((acc, t) => acc | (t.coverageMask ?? 0), 0)
+        if (outlineMask === 0 || outlineMask !== coverageSnapshot.coverageMask) {
+          this.countersHeadingCoverageV514R6.bodyOutlineSemanticCoverageMismatch++
+        }
+        // §26 — the R6 "every numbered heading's OUTLINE must include NUMBER/GAP"
+        // gate became policy-aware: it only fires for a FULL_VISIBLE_HEADING body
+        // snapshot (a DUPLICATE heading legitimately omits the numbering there too).
+        if (coverageSnapshot.coveragePolicy === 'FULL_VISIBLE_HEADING' && numberedCoverage
+          && !coverageMaskHas(outlineMask, HeadingCoveragePart.NUMBER)) {
+          this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
+        }
+        if (coverageSnapshot.coveragePolicy === 'FULL_VISIBLE_HEADING' && gapExpected
+          && !coverageMaskHas(outlineMask, HeadingCoveragePart.GAP)) {
+          this.countersHeadingCoverageV514R6.fullVisibleHeadingGapOmitted++
+        }
+        emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_HEADING_COVERAGE_AUDIT_EVENT, {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          diagnosticId: g.primaryDiagnosticId,
+          diagnosticCode: this.diagnosticById(g.primaryDiagnosticId)?.code ?? null,
+          stableIdentity: identity,
+          headingLevel: /^H([1-6])$/.exec(g.el.tagName)?.[1] ?? null,
+          layoutEpoch: epoch,
+          geometryGeneration,
+          // §8/§11 — the REAL numbering facts this coverage was built from
+          numberVisible: headingHasNumber,
+          numberLabel: g.el.getAttribute('data-inkchapter-heading-number'),
+          labelGap: g.el.getAttribute('data-inkchapter-heading-gap'),
+          // ── V5.14-R6.1 §24 — the DiagnosticCode-derived policy of every surface.
+          coveragePolicy: coverageSnapshot.coveragePolicy,
+          bodyPassivePolicy: coverageSnapshot.coveragePolicy,
+          bodyActivePolicy: this.headingActiveMarkerIdentity === identity ? coverageSnapshot.coveragePolicy : null,
+          outlinePolicy: this.outlineCoveragePolicyByIdentity.get(identity) ?? null,
+          expectedCoverageMask: formatCoverageMask(coverageSnapshot.coverageMask),
+          bodyPassiveCoverageMask: formatCoverageMask(coverageSnapshot.coverageMask),
+          bodyActiveCoverageMask: formatCoverageMask(this.headingActiveMarkerIdentity === identity
+            ? (this.headingCoverageSnapshots.get(identity)?.coverageMask ?? coverageSnapshot.coverageMask)
+            : 0),
+          outlineCoverageMask: formatCoverageMask(outlineMask),
+          bodyPassiveNumberIncluded: numberedCoverage,
+          bodyActiveNumberIncluded: this.headingActiveMarkerIdentity === identity && numberedCoverage,
+          outlineNumberIncluded: coverageMaskHas(outlineMask, HeadingCoveragePart.NUMBER),
+          bodyPassiveGapIncluded: gapExpected,
+          bodyActiveGapIncluded: this.headingActiveMarkerIdentity === identity && gapExpected,
+          outlineGapIncluded: coverageMaskHas(outlineMask, HeadingCoveragePart.GAP),
+          bodyPassiveTitleIncluded: titleCovered,
+          bodyActiveTitleIncluded: this.headingActiveMarkerIdentity === identity && titleCovered,
+          outlineTitleIncluded: coverageMaskHas(outlineMask, HeadingCoveragePart.TITLE),
+          bodyPassiveRects: coverageSnapshot.semanticFragmentRects,
+          bodyActiveRects: this.headingActiveMarkerIdentity === identity ? coverageSnapshot.semanticFragmentRects : [],
+          outlineRects: [],
+          reasonChipExcluded: coverageSnapshot.reasonChipExcluded,
+          passiveActiveRectDeltaMaxPx: 0,
+          passiveActiveFragmentCountEqual: true,
+          decision: coverageSnapshot.reasonChipExcluded && outlineMask === coverageSnapshot.coverageMask ? 'PASS' : 'FAIL',
+          reason: coverageSnapshot.reasonChipExcluded && outlineMask === coverageSnapshot.coverageMask
+            ? 'SEMANTIC_COVERAGE_FROM_NUMBER_GAP_TITLE'
+            : (coverageSnapshot.reasonChipExcluded
+              ? 'BODY_OUTLINE_COVERAGE_MASK_MISMATCH'
+              : 'REASON_CHIP_INSIDE_TARGET_COVERAGE'),
+        })
+        // ── V5.14-R6.1 §24 — the PER-DIAGNOSTIC coverage policy audit. A heading
+        // may carry several diagnostics (each with its OWN policy), so the policy
+        // decision is recorded per diagnosticId, never as one heading-level fact.
+        const isActiveHeadingForPolicy = this.headingActiveMarkerIdentity === identity
+        for (const snapshot of perDiagnosticSnapshots) {
+          const outlineTargetForPolicy = collected.outlineDiagnosticTargets
+            .find(t => t.stableHeadingIdentity === identity && t.diagnosticId === snapshot.diagnosticId) ?? null
+          const snapshotOutlinePolicy = outlineTargetForPolicy?.coveragePolicy ?? null
+          const policyConsistent = snapshotOutlinePolicy == null || snapshotOutlinePolicy === snapshot.coveragePolicy
+          emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_HEADING_COVERAGE_POLICY_AUDIT_EVENT, {
+            documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+            diagnosticId: snapshot.diagnosticId,
+            diagnosticCode: this.diagnosticById(snapshot.diagnosticId)?.code ?? null,
+            stableIdentity: identity,
+            headingLevel: /^H([1-6])$/.exec(g.el.tagName)?.[1] ?? null,
+            coveragePolicy: snapshot.coveragePolicy,
+            coverageMask: formatCoverageMask(snapshot.coverageMask),
+            numberVisible: headingHasNumber,
+            numberIncluded: coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.NUMBER),
+            gapIncluded: coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.GAP),
+            titleIncluded: coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.TITLE),
+            bodyPassivePolicy: snapshot.coveragePolicy,
+            bodyActivePolicy: isActiveHeadingForPolicy ? snapshot.coveragePolicy : null,
+            outlinePolicy: snapshotOutlinePolicy,
+            bodyPassiveRects: snapshot.semanticFragmentRects,
+            bodyActiveRects: isActiveHeadingForPolicy ? snapshot.semanticFragmentRects : [],
+            // §14/§29 — the outline reprojects into its OWN coordinates; it never
+            // copies a body rect, so the outline rect list is intentionally empty.
+            outlineRects: [],
+            reasonChipExcluded: snapshot.reasonChipExcluded,
+            passiveActiveMaxRectDeltaPx: 0,
+            decision: policyConsistent && snapshot.reasonChipExcluded ? 'PASS' : 'FAIL',
+            reason: !snapshot.reasonChipExcluded
+              ? 'REASON_CHIP_INSIDE_TARGET_COVERAGE'
+              : (policyConsistent ? 'COVERAGE_POLICY_FROM_DIAGNOSTIC_CODE' : 'BODY_OUTLINE_POLICY_MISMATCH'),
+          })
+        }
+        // ── V5.14-R5 §18/§19 — the INLINE PRESENTATION audit + hard gates. The
+        // in-body label must come from the DiagnosticCode, never from the full
+        // diagnostic title/message, and must never carry severity text.
+        {
+          const srcDiag = this.diagnosticById(g.primaryDiagnosticId)
+          const presentation = srcDiag
+            ? buildDiagnosticPresentation({
+                code: srcDiag.code,
+                severity: srcDiag.severity,
+                message: srcDiag.message,
+                detail: srcDiag.detail,
+                category: (srcDiag as { category?: string }).category ?? null,
+                metadata: (srcDiag.metadata ?? {}) as Record<string, unknown>,
+              })
+            : null
+          const rawMessage = String(srcDiag?.message ?? '').trim()
+          const inlineText = g.reasonText ?? ''
+          const usesFullMessage = rawMessage !== '' && inlineText === rawMessage
+          const hintSafe = inlineHintIsSafe(inlineText)
+          if (usesFullMessage) this.countersInlinePresentationV514R5.inlineReasonUsesFullDiagnosticMessage++
+          if (usesFullMessage && presentation != null && presentation.inlineHintSource !== 'MESSAGE_FALLBACK') {
+            this.countersInlinePresentationV514R5.inlineReasonUsesFullDiagnosticTitleWhenMapped++
+          }
+          if (presentation != null
+            && presentation.inlineHintSource !== 'MAPPED'
+            && presentation.inlineHintSource !== 'DYNAMIC') {
+            this.countersInlinePresentationV514R5.knownDiagnosticWithoutInlineHintMapping++
+          }
+          if (!hintSafe) {
+            if (inlineHintHasSeverityPrefix(inlineText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityPrefix++
+            if (inlineHintHasSeverityEmoji(inlineText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityEmoji++
+          }
+          // §12 — decoration only: the heading text / numbering must be untouched.
+          if ((g.el.textContent ?? '') !== headingTextBeforePresentation) {
+            this.countersInlinePresentationV514R5.inlinePresentationMutatedHeadingText++
+          }
+          if (g.el.getAttribute('data-inkchapter-heading-number') !== headingNumberBeforePresentation) {
+            this.countersInlinePresentationV514R5.inlinePresentationMutatedHeadingNumber++
+          }
+          // §11/§22 — a chip whose rendered width did NOT follow a shrunken label is
+          // exactly the stale-width defect.
+          if (chipRenderedWidthPx != null
+            && chipPreviousRecord?.chipRenderedWidthPx != null
+            && chipPreviousRecord.chipInlineHint !== inlineText
+            && computeInlineChipWidthPx(inlineText) < chipPreviousRecord.chipRenderedWidthPx - 0.5
+            && Math.abs(chipRenderedWidthPx - chipPreviousRecord.chipRenderedWidthPx) < 0.5) {
+            this.countersInlinePresentationV514R5.inlineReasonStaleWidthAfterLabelChange++
+          }
+          emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_INLINE_PRESENTATION_AUDIT_EVENT, {
+            documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+            diagnosticId: g.primaryDiagnosticId,
+            diagnosticCode: srcDiag?.code ?? null,
+            severity,
+            inlineHint: inlineText,
+            inlineHintLength: inlineText.length,
+            inlineHintSource: presentation?.inlineHintSource ?? null,
+            drawerTitle: presentation?.drawerTitle ?? null,
+            drawerDetailPresent: presentation?.drawerDetail != null,
+            containsSeverityPrefix: inlineHintHasSeverityPrefix(inlineText),
+            containsSeverityEmoji: inlineHintHasSeverityEmoji(inlineText),
+            fallbackUsed: presentation != null
+              && (presentation.inlineHintSource === 'CATEGORY_FALLBACK' || presentation.inlineHintSource === 'MESSAGE_FALLBACK'),
+            chipRect: chipLocal,
+            chipIntrinsicWidth: chipIntrinsicWidthPx,
+            chipRenderedWidth: chipRenderedWidthPx,
+            chipClamped,
+            chipRebuiltAfterHintChange: this.inlineChipRebuiltAfterHintChange,
+            geometryGeneration,
+            decision: hintSafe ? 'PASS' : 'FAIL',
+            reason: hintSafe ? 'INLINE_HINT_FROM_DIAGNOSTIC_CODE' : 'INLINE_HINT_UNSAFE',
+          })
         }
       } else if (chip) {
         try { chip.remove() } catch { /* noop */ }
@@ -4725,6 +5650,28 @@ export class DocumentUtilityOverlayHost {
       if (chipCenterDriftPx != null && chipCenterDriftPx > HEADING_CHIP_CENTER_TOLERANCE_PX) {
         this.countersHeadingSurfaceV512R9.chipCenterDriftGt2px++
       }
+      // ── V5.14-R4 §10/§15 — the reason chip must be reached from THIS pass's
+      // geometry (the same generation as the fill), and its anchor must sit the
+      // configured gap beside the text and be vertically centred on the anchor
+      // line. The label authority's RAW right edge is the comparison base (its
+      // `reasonChipAnchorX` already includes the gap).
+      {
+        const chipEval = evaluateReasonChipGeometry({
+          chipRect: chipLocal ? normalizeGeometryRect(chipLocal) : null,
+          textRects: textLocal.map(normalizeGeometryRect),
+          visualLabelRight: headingLabelGeometry?.visualLabelRight ?? null,
+          configuredGapPx: HEADING_LABEL_CHIP_GAP_PX,
+          chipPlacement: chipPlacementKind,
+        })
+        if (!chipEval.verticalOk) this.countersVisualReflowV514R4.reasonChipVerticalDriftGt2px++
+        if (!chipEval.anchorOk) this.countersVisualReflowV514R4.reasonChipAnchorDriftGt2px++
+      }
+      // ── V5.14-R4 §9/§12 — a passive fill left from an EARLIER generation would be
+      // a stale paint. This pass rebuilt every rect from the CURRENT measurement,
+      // so a fill/measure count mismatch is the only way it could go wrong.
+      if (fillLocal.length !== fillTargets.length) {
+        this.countersVisualReflowV514R4.passiveFragmentRectStaleAfterTextEdit++
+      }
       // ── V5.14-R3 §P10 §4/§24 — the legacy R9 "stack" gate is re-pointed to the
       // REAL P10 violation: the ACTIVE heading has NO passive marker at all (the
       // passive set was replaced by the selection). Coexistence of the passive
@@ -4768,14 +5715,49 @@ export class DocumentUtilityOverlayHost {
         fillLocal,
         chipLocal,
         chipGapPx,
-        passiveFillSuppressed: false,
+        passiveFillSuppressed: !fillPresentation.paintPassiveFill,
         contentCenterY: contentLocal.top + contentLocal.height / 2,
         element: g.el,
         contentFingerprint,
         visualRevisionKey,
         visualTargetKeys: [...(collected.groupTargetKeys.get(identity) ?? [])],
+        // ── V5.14-R4 §4/§5.2/§11 — the reflow audit facts + the ONE geometry
+        // generation shared by this target's fill / chip / (optional) active fill.
+        contentFingerprintBefore: previousRecord?.contentFingerprint ?? null,
+        geometryGeneration,
+        activePresentationOwnsFill: !fillPresentation.paintPassiveFill,
+        chipPlacementKind,
+        chipRenderedWidthPx,
+        chipIntrinsicWidthPx,
+        chipInlineHint: g.reasonText,
+        coverageSnapshot,
       }
       this.headingPassiveMarkers.set(identity, record)
+      // ── V5.14-R4 §5.1/§5.2 — the ONE immutable geometry snapshot this visual
+      // target was committed from (anchor + text + fill + number + reason chip).
+      const previousGeometrySnapshot = this.lastVisualGeometrySnapshots.get(identity) ?? null
+      const reflowDrift = previousGeometrySnapshot
+        ? measureGeometryDrift(previousGeometrySnapshot.anchorRect, normalizeGeometryRect(anchorLocal))
+        : null
+      this.visualGeometryCounters.targetMeasureCount++
+      this.lastVisualGeometrySnapshots.set(identity, buildDiagnosticVisualGeometrySnapshot({
+        visualTargetKey: markerPrimaryKey ?? `heading-visual:${identity}`,
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+        stableHeadingIdentity: identity,
+        diagnosticId: g.primaryDiagnosticId ?? null,
+        targetIndex: g.primaryTargetIndex ?? 0,
+        severity: severity as 'error' | 'warning' | 'info',
+        layoutEpoch: epoch,
+        geometryGeneration,
+        measuredAt: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+        anchorRect: normalizeGeometryRect(anchorLocal),
+        textRects: textLocal.map(normalizeGeometryRect),
+        fillRects: fillLocal.map(normalizeGeometryRect),
+        numberRect: numberRectLocal ? normalizeGeometryRect(numberRectLocal) : null,
+        reasonChipRect: chipLocal ? normalizeGeometryRect(chipLocal) : null,
+        targetFingerprint: contentFingerprint,
+        targetConnected: g.el.isConnected,
+      }))
       // ── V5.14-R3 §P11 §13/§14 — the AUDIT must carry the REAL fragment rects and
       // prove the text-tight coverage against the CURRENT heading text (a deleted
       // text run must leave no residual fill beyond the tolerance).
@@ -4833,7 +5815,8 @@ export class DocumentUtilityOverlayHost {
         visualTargetResolverSource: g.resolverSource,
         layoutEpochAtMeasure: epoch,
         currentLayoutEpoch: this.currentDocumentLayoutEpoch,
-        layoutEpochCurrent: true,
+        // V5.14-R4 §14 — the REAL epoch verdict (never a hardcoded true).
+        layoutEpochCurrent: !isLayoutEpochStale(epoch, this.currentDocumentLayoutEpoch),
         passiveMarkerPresent: true,
         activeMarkerPresent: this.headingActiveMarkerIdentity === identity,
         headingAnchorRect: anchorLocal,
@@ -4859,7 +5842,14 @@ export class DocumentUtilityOverlayHost {
         fullWidthFillPresent: fillLocal.some(r => hostRectForChip != null && r.width >= hostRectForChip.width - 1),
         textColorMutated: false,
         markerTextGap: chipGapPx,
-        markerTargetDriftPx: 0,
+        // V5.14-R4 §14 — the REAL live drift between the stored snapshot and this
+        // pass's fresh measurement (never a hardcoded 0). The ROOT_R4_4 defect was
+        // exactly this field being a constant 0 while the marker was 40.8px off.
+        markerTargetDriftPx: reflowDrift ? reflowDrift.maxDrift : 0,
+        targetAnchorDriftX: reflowDrift ? reflowDrift.leftDrift : 0,
+        targetAnchorDriftY: reflowDrift ? reflowDrift.topDrift : 0,
+        geometryGeneration,
+        layoutEpochAtMeasureReal: epoch,
         fullWidthWash: false,
         legacyFrameRendered: false,
         reasonText: null,
@@ -4878,13 +5868,34 @@ export class DocumentUtilityOverlayHost {
     // ── V5.14-R3 §3 — the reconcile ORDER: after the PASSIVE set is reconciled,
     // 4. resolve the selected target, 5. reconcile ONE active emphasis. Doing it
     // here means a resolved diagnostic can never leave a stale active node.
-    this.renderActiveHeadingEmphasisForCommittedVisual()
+    // V5.14-R4 §11 — when the ACTIVE pass itself requested this rebuild (its
+    // passive snapshot was stale) the active emphasis is rendered by the CALLER
+    // from the SAME fresh generation, so it is not rendered twice here.
+    if (!skipActiveEmphasis) this.renderActiveHeadingEmphasisForCommittedVisual()
     // §12 — AFTER both authorities: no stale heading visual may survive.
-    this.verifyNoStaleHeadingVisuals(new Set(groups.keys()))
+    this.verifyNoStaleHeadingVisuals(new Set(groups.keys()), skipActiveEmphasis)
     // V5.13-R5 §27/§28 — the Strict Multi-H1 visual Authority audit + gates.
     this.emitStrictMultiH1VisualAudit()
     // §21 — measure the REAL resulting surface (DOM + computed style) and audit it.
     this.commitHeadingMarkerSurfaceGates()
+    // ── V5.14-R5 §13/§14/§15/§19 — the inline-presentation cross-regression gates.
+    this.commitInlinePresentationGates()
+  }
+
+  /**
+   * V5.14-R5 §19 — the inline-presentation CROSS-REGRESSION gates. The change is
+   * text-only, so these must stay 0: they are derived from the EXISTING
+   * authorities (passive/active R3 gates, drawer document-order R4-R1 gates) plus
+   * the structural outline-projection guard.
+   */
+  private commitInlinePresentationGates(): void {
+    const r5 = this.countersInlinePresentationV514R5
+    if (evaluatePassiveActiveV514R3Gates(this.countersPassiveActiveV514R3).decision === 'FAIL') {
+      r5.passiveActiveRegression++
+    }
+    if (evaluateDrawerOrderV514R1Gates(this.countersDrawerOrderV514R1).decision === 'FAIL') {
+      r5.diagnosticDocumentOrderRegression++
+    }
   }
 
   /**
@@ -4892,15 +5903,18 @@ export class DocumentUtilityOverlayHost {
    * whose heading has no diagnostic left, a chip without a marker, or an active
    * emphasis whose diagnostic was resolved.
    */
-  private verifyNoStaleHeadingVisuals(liveIdentities: ReadonlySet<string>): void {
+  private verifyNoStaleHeadingVisuals(liveIdentities: ReadonlySet<string>, skipActiveCheck = false): void {
     const layer = this.headingMarkerLayer
     if (!layer) return
     for (const w of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
       const id = w.getAttribute('data-ink-heading-id')
       if (id == null || liveIdentities.has(id)) continue
       this.countersPassiveActiveV514R3.staleHeadingPassiveMarkerAfterDiagnosticResolved++
+      // ── V5.14-R4 §12/§15 — a marker left after a REFLOW must also be counted.
+      this.countersVisualReflowV514R4.stalePassiveMarkerAfterReflow++
       if (w.querySelector('.inkchapter-heading-diagnostic-reason')) {
         this.countersPassiveActiveV514R3.staleHeadingReasonChipAfterDiagnosticResolved++
+        this.countersVisualReflowV514R4.staleReasonChipAfterReflow++
       }
     }
     const activeW = this.headingActiveWrapper
@@ -4908,7 +5922,19 @@ export class DocumentUtilityOverlayHost {
       const activeId = this.headingActiveIdentity
       const stillPresent = activeId != null
         && (this.snapshot?.diagnostics ?? []).some(d => d.id === activeId)
-      if (!stillPresent) this.countersPassiveActiveV514R3.staleHeadingActiveMarkerAfterDiagnosticResolved++
+      if (!stillPresent) {
+        this.countersPassiveActiveV514R3.staleHeadingActiveMarkerAfterDiagnosticResolved++
+        this.countersVisualReflowV514R4.staleActiveMarkerAfterReflow++
+      }
+      // §5.2/§15 — an active component whose generation is behind the current one
+      // is a mixed-generation commit (it was never re-measured after the reflow).
+      // When the ACTIVE pass itself requested this rebuild it re-renders from the
+      // SAME fresh generation immediately afterwards, so the check is skipped.
+      if (skipActiveCheck) return
+      const activeGeneration = Number(activeW.getAttribute('data-ink-geometry-generation') ?? '')
+      if (Number.isFinite(activeGeneration) && activeGeneration !== this.visualGeometryGeneration) {
+        this.countersVisualReflowV514R4.visualComponentMixedGeometryGeneration++
+      }
     }
   }
 
@@ -5135,13 +6161,15 @@ export class DocumentUtilityOverlayHost {
     const layer = this.headingMarkerLayer
     const activeCount = layer ? layer.querySelectorAll('.inkchapter-heading-diagnostic-active').length : 0
     if (activeCount > 1) this.countersMultiH1V513R5.activeMarkerCountGt1 += activeCount - 1
-    // ── §24 — re-pointed by V5.14-R3 §P10: the PASSIVE marker is PERMANENT, so
-    // an ACTIVE heading KEEPING its passive fill is the REQUIRED state. The
-    // violation is now the opposite: an ACTIVE heading with NO passive fill.
+    // ── §24 — re-pointed by V5.14-R3 §P10, then refined by V5.14-R4 §11:
+    // the PASSIVE MARKER is PERMANENT (the semantic key is never deleted by a
+    // selection), but the SELECTED target must present ONE atomic surface — its
+    // active emphasis REPLACES the passive FILL. Painting BOTH surfaces of the
+    // same target is now the violation (double-darkening / mixed generation).
     if (layer) {
       for (const w of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
         if (w.getAttribute('data-ink-diagnostic-active') === 'true'
-          && !w.querySelector('.inkchapter-heading-diagnostic-passive__fragment')) {
+          && w.querySelector('.inkchapter-heading-diagnostic-passive__fragment') != null) {
           this.countersMultiH1V513R5.passiveActiveFillStack++
         }
       }
@@ -5238,6 +6266,163 @@ export class DocumentUtilityOverlayHost {
 
   getPassiveActiveV514R3GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
     return evaluatePassiveActiveV514R3Gates(this.countersPassiveActiveV514R3)
+  }
+
+  // ── V5.14-R8 / Active State Machine V2 — the SINGLE authority observability ─
+
+  /** §3.1 — the ONE interaction authority (observability). */
+  getDiagnosticInteractionStateV2(): DiagnosticInteractionState {
+    return { ...this.diagnosticInteractionState }
+  }
+
+  /** §3.1 — the ACTIVE diagnostic id, or null when IDLE (observability). */
+  getActiveDiagnosticIdV2(): string | null {
+    return this.diagnosticInteractionState.phase === 'ACTIVE' ? this.diagnosticInteractionState.diagnosticId : null
+  }
+
+  getActiveStateMachineV2Counters(): ActiveStateMachineV2Counters {
+    return { ...this.countersActiveStateMachineV2 }
+  }
+
+  getActiveStateMachineV2GateReport(): string[] {
+    return formatActiveStateMachineV2GateReport(this.countersActiveStateMachineV2)
+  }
+
+  getActiveStateMachineV2GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateActiveStateMachineV2Gates(this.countersActiveStateMachineV2)
+  }
+
+  /** §24 — the runtime COVERAGE counters (same-target DEACTIVATE per severity). */
+  getActiveStateMachineV2CoverageReport(): string[] {
+    return formatActiveStateMachineV2CoverageReport(this.coverageActiveStateMachineV2)
+  }
+
+  getActiveStateMachineV2CoverageDecision(): { decision: 'PASS' | 'FAIL'; missing: string[] } {
+    return evaluateActiveStateMachineV2Coverage(this.coverageActiveStateMachineV2)
+  }
+
+  // ── V5.14-R9 / V2.1 — visual transaction observability + hard gates ───────
+
+  getVisualTransactionV21Counters(): VisualTransactionV21Counters {
+    return { ...this.countersVisualTransactionV21 }
+  }
+
+  getVisualTransactionV21GateReport(): string[] {
+    return formatVisualTransactionV21GateReport(this.countersVisualTransactionV21)
+  }
+
+  getVisualTransactionV21GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateVisualTransactionV21Gates(this.countersVisualTransactionV21)
+  }
+
+  /** §17 — the collision DETECTION/coverage surface (detected >= 1 is expected). */
+  getVisualTransactionV21CoverageReport(): string[] {
+    return formatVisualTransactionV21CoverageReport(this.coverageVisualTransactionV21)
+  }
+
+  getVisualTransactionV21CoverageCounters(): VisualTransactionV21CoverageCounters {
+    return { ...this.coverageVisualTransactionV21 }
+  }
+
+  /**
+   * V5.14-R7 compat — the R7-shaped projection of the SAME V2 authority. Kept so
+   * the R7 observability surface never becomes a second authority.
+   */
+  getActiveDiagnosticStateV514R7(): DiagnosticActiveState | null {
+    const st = this.diagnosticInteractionState
+    if (st.phase !== 'ACTIVE' || st.diagnosticId == null || st.targetKey == null) return null
+    return {
+      interactionEpoch: st.version,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+      diagnosticId: st.diagnosticId,
+      targetKey: st.targetKey,
+      targetIndex: st.targetIndex ?? 0,
+      transactionId: st.transactionId,
+      leaseToken: st.leaseToken,
+      phase: 'active',
+    }
+  }
+
+  getActiveInteractionV514R7Counters(): ActiveInteractionV514R7Counters {
+    return { ...this.countersActiveInteractionV514R7 }
+  }
+
+  getActiveInteractionV514R7GateReport(): string[] {
+    return formatActiveInteractionV514R7GateReport(this.countersActiveInteractionV514R7)
+  }
+
+  getActiveInteractionV514R7GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateActiveInteractionV514R7Gates(this.countersActiveInteractionV514R7)
+  }
+
+  /** V5.14-R4 §15 — the visual-reflow hard gates (all must be 0). */
+  getVisualReflowV514R4Counters(): VisualReflowV514R4Counters {
+    return { ...this.countersVisualReflowV514R4 }
+  }
+
+  getVisualReflowV514R4GateReport(): string[] {
+    return formatVisualReflowV514R4GateReport(this.countersVisualReflowV514R4)
+  }
+
+  getVisualReflowV514R4GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateVisualReflowV514R4Gates(this.countersVisualReflowV514R4)
+  }
+
+  /** V5.14-R4 §21 — the geometry scheduler observability counters (perf evidence). */
+  getVisualGeometrySchedulerCounters(): Record<string, number> {
+    return { ...this.visualGeometryCounters }
+  }
+
+  /** V5.14-R4 §5.1 — the current geometry generation (observability). */
+  getVisualGeometryGeneration(): number {
+    return this.visualGeometryGeneration
+  }
+
+  /** V5.14-R4 §5.1 — the geometry snapshot of one target (Runtime probe). */
+  getVisualGeometrySnapshot(identity: string): DiagnosticVisualGeometrySnapshot | null {
+    return this.lastVisualGeometrySnapshots.get(identity) ?? null
+  }
+
+  /** V5.14-R5 §19 — the inline-presentation hard gates (all must be 0). */
+  getInlinePresentationV514R5Counters(): InlinePresentationV514R5Counters {
+    return { ...this.countersInlinePresentationV514R5 }
+  }
+
+  getInlinePresentationV514R5GateReport(): string[] {
+    return formatInlinePresentationV514R5GateReport(this.countersInlinePresentationV514R5)
+  }
+
+  getInlinePresentationV514R5GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateInlinePresentationV514R5Gates(this.countersInlinePresentationV514R5)
+  }
+
+  /** V5.14-R5 §11/§22 — the chip geometry was re-measured after the hint shrank. */
+  getInlineChipRebuiltAfterHintChange(): boolean {
+    return this.inlineChipRebuiltAfterHintChange
+  }
+
+  /** V5.14-R6 §29 — the heading-coverage hard gates (all must be 0). */
+  getHeadingCoverageV514R6Counters(): HeadingCoverageV514R6Counters {
+    return { ...this.countersHeadingCoverageV514R6 }
+  }
+
+  getHeadingCoverageV514R6GateReport(): string[] {
+    return formatHeadingCoverageV514R6GateReport(this.countersHeadingCoverageV514R6)
+  }
+
+  getHeadingCoverageV514R6GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateHeadingCoverageV514R6Gates(this.countersHeadingCoverageV514R6)
+  }
+
+  /**
+   * V5.14-R6 §5 / R6.1 §18 — the ONE semantic coverage snapshot of a heading.
+   * With a `diagnosticId` it returns that DIAGNOSTIC's snapshot (one heading may
+   * carry several diagnostics, each with its own policy); without one it returns
+   * the heading-level snapshot (the FULL_VISIBLE_HEADING union when present).
+   */
+  getHeadingCoverageSnapshot(identity: string, diagnosticId?: string): HeadingDiagnosticTargetSnapshot | null {
+    if (diagnosticId != null) return this.headingCoverageSnapshots.get(`${identity}::${diagnosticId}`) ?? null
+    return this.headingCoverageSnapshots.get(identity) ?? null
   }
 
   /** V5.14-R3 §P10 — the passive / active target-key authorities (observability). */
@@ -5739,6 +6924,93 @@ export class DocumentUtilityOverlayHost {
     })
   }
 
+  /**
+   * §9/§10 — the ONE authority that measures the RENDERED number advance. The
+   * number is a CSS `::before` prefix fed by the attribute, so it has no text node
+   * and no `Range` rect; a hidden same-font probe in the plugin's OWN UI root
+   * measures the real advance (never a character-count guess, never fixed px).
+   */
+  private measureHeadingNumberTextWidth(label: string, el: HTMLElement): number {
+    const text = String(label ?? '').trim()
+    if (text === '') return 0
+    const root = this.root
+    if (!root) return 0
+    let probe = this.headingNumberMeasureProbe
+    if (!probe || !probe.isConnected) {
+      probe = document.createElement('span')
+      probe.className = 'inkchapter-heading-number-measure'
+      probe.setAttribute('aria-hidden', 'true')
+      probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:pre;pointer-events:none;'
+      root.appendChild(probe)
+      this.headingNumberMeasureProbe = probe
+    }
+    try {
+      const numberStyle = window.getComputedStyle(el, '::before')
+      const headingStyle = computedStyleOf(el)
+      probe.style.fontFamily = numberStyle?.fontFamily || headingStyle?.fontFamily || ''
+      probe.style.fontSize = numberStyle?.fontSize || headingStyle?.fontSize || ''
+      probe.style.fontWeight = numberStyle?.fontWeight || headingStyle?.fontWeight || ''
+      probe.style.letterSpacing = numberStyle?.letterSpacing || 'normal'
+      probe.textContent = text
+      const width = probe.getBoundingClientRect().width
+      return Number.isFinite(width) && width > 0 ? width : 0
+    } catch { return 0 }
+  }
+
+  /**
+   * §5/§8/§9/§10/§11/§13 — the ONE measurement of a diagnostic heading's SEMANTIC
+   * TARGET: NUMBER | GAP | TITLE for a numbered heading, TITLE otherwise. The
+   * reason chip is never part of it. The heading BLOCK rect is used only to bound
+   * the decoration band — never as the paint geometry.
+   */
+  private measureHeadingDiagnosticSemanticTarget(input: {
+    el: HTMLElement
+    identity: string
+    /** V5.14-R6.1 §11/§18 — the diagnostic this snapshot belongs to. */
+    diagnosticId: string
+    /** V5.14-R6.1 §7 — the SEMANTICS-derived policy for that diagnostic. */
+    coveragePolicy: HeadingDiagnosticCoveragePolicy
+    layoutEpoch: number
+    geometryGeneration: number
+    reasonChipRect: HeadingRect | null
+  }): HeadingDiagnosticTargetSnapshot {
+    const el = input.el
+    const fragments = this.headingVisibleFragments(el)
+    const blockRect = this.measureLocateRect(el)
+    const numberLabel = el.getAttribute('data-inkchapter-heading-number')
+    const hasNumber = numberLabel != null && numberLabel !== ''
+    const gapMode: 'space' | 'none' = el.getAttribute('data-inkchapter-heading-gap') === 'space' ? 'space' : 'none'
+    // the REAL decoration band = [heading box left, first title glyph left]
+    let bandLocal: HeadingRect | null = null
+    if (hasNumber && blockRect && fragments.length > 0 && fragments[0].left > blockRect.left + 0.5) {
+      bandLocal = this.toDocumentLocal(makeHeadingRect({
+        left: blockRect.left, top: fragments[0].top, right: fragments[0].left, bottom: fragments[0].bottom,
+      }))
+    }
+    const numberWidth = hasNumber ? this.measureHeadingNumberTextWidth(numberLabel ?? '', el) : 0
+    const split = splitNumberAndGapRects({
+      decorationBand: bandLocal ? toCoverageRect(bandLocal) : null,
+      numberTextWidthPx: numberWidth > 0 ? numberWidth : null,
+      gapMode,
+    })
+    const titleRects = fragments
+      .map(f => this.toDocumentLocal(makeHeadingRect({ left: f.left, top: f.top, right: f.right, bottom: f.bottom })))
+      .filter((r): r is HeadingRect => r != null)
+      .map(toCoverageRect)
+    return buildHeadingDiagnosticTargetSnapshot({
+      diagnosticId: input.diagnosticId,
+      coveragePolicy: input.coveragePolicy,
+      stableIdentity: input.identity,
+      layoutEpoch: input.layoutEpoch,
+      geometryGeneration: input.geometryGeneration,
+      hasNumberDecoration: hasNumber,
+      numberRect: split.numberRect,
+      gapRect: split.gapRect,
+      titleRects,
+      reasonChipRect: input.reasonChipRect ? toCoverageRect(input.reasonChipRect) : null,
+    })
+  }
+
   /** §13/§15 — VISIBLE heading content fragments (Range per line). */
   private headingVisibleFragments(el: HTMLElement): HeadingRect[] {
     const out: HeadingRect[] = []
@@ -5780,6 +7052,14 @@ export class DocumentUtilityOverlayHost {
     return makeHeadingRect({ left, top: fragment.top, right: fragment.left, bottom: fragment.bottom })
   }
 
+  /** V5.14-R4 §9 — the LIVE document-local anchor rect of a heading (drift check). */
+  private measureHeadingAnchorLocal(el: HTMLElement | null): HeadingRect | null {
+    if (!el || !el.isConnected) return null
+    const vp = this.measureLocateRect(el)
+    if (!vp) return null
+    return this.toDocumentLocal(makeHeadingRect({ left: vp.left, top: vp.top, right: vp.right, bottom: vp.bottom }))
+  }
+
   private toDocumentLocal(rect: HeadingRect | null): HeadingRect | null {
     const host = this.locateDocLayerHost
     if (!rect || !host) return null
@@ -5794,12 +7074,28 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * §4/§5/§19 — Level 1 passive severity marker: ONE gutter marker per heading,
-   * severity = highest among its diagnostics. No full-width wash, ever.
-   *
-   * (The V5.12-R2 implementation lives with the layout-epoch aware renderer
-   * above; this legacy duplicate has been removed.)
+   * §11 — is the PASSIVE geometry snapshot of `identity` still current w.r.t. the
+   * LIVE layout? A stale snapshot must be rebuilt BEFORE the active emphasis (and
+   * the adopted reason chip) are derived from it.
    */
+  private evaluatePassiveGeometryStaleness(
+    identity: string,
+    element: HTMLElement,
+  ): { rebuild: boolean; mixedEpoch: boolean; mixedGeneration: boolean; liveDriftPx: number } {
+    const snapshot = this.lastVisualGeometrySnapshots.get(identity)
+    if (!snapshot) return { rebuild: false, mixedEpoch: false, mixedGeneration: false, liveDriftPx: 0 }
+    const live = this.measureHeadingAnchorLocal(element)
+    const drift = measureGeometryDrift(snapshot.anchorRect, live)
+    const mixedEpoch = snapshot.layoutEpoch !== this.currentDocumentLayoutEpoch
+    const mixedGeneration = snapshot.geometryGeneration !== this.visualGeometryGeneration
+    return {
+      rebuild: drift.stale || mixedEpoch,
+      mixedEpoch,
+      mixedGeneration,
+      liveDriftPx: drift.maxDrift,
+    }
+  }
+
   renderHeadingActiveEmphasis(
     diagnosticId: string,
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
@@ -5807,21 +7103,9 @@ export class DocumentUtilityOverlayHost {
   ): void {
     const layer = this.ensureHeadingMarkerLayer()
     if (!layer) return
-    this.clearHeadingActiveEmphasis()
-    const fragments = this.headingVisibleFragments(element)
-    const numberRect = this.headingNumberRect(element, fragments[0] ?? null)
-    const contentFragments = numberRect ? [numberRect, ...fragments] : fragments
-    if (contentFragments.length === 0) return
-    const anchorVp = this.measureLocateRect(element)
-    if (!anchorVp) return
-    const anchorLocal = this.toDocumentLocal(makeHeadingRect({ left: anchorVp.left, top: anchorVp.top, right: anchorVp.right, bottom: anchorVp.bottom }))
-    const localFragments = contentFragments.map(f => this.toDocumentLocal(f)).filter((f): f is HeadingRect => f != null)
-    if (!anchorLocal || localFragments.length === 0) return
-    const severity = severityRank(String(diag.severity ?? 'info')) >= 3 ? 'error' : 'warning'
-    // V5.12-R2 §6 — ACTIVE = PASSIVE + text fragments + reason chip.
-    // ── V5.13-R5 §21 / ROOT_H1_R5_2 — the ACTIVE identity must come from the
-    // RESOLVED TARGET element (never the diagnostic's `stableIdentity`, which is
-    // always the FIRST offending H1 → the active state attached to the wrong H1).
+    // ── V5.14-R4 §11 — the target identity is derived FIRST so the PASSIVE
+    // snapshot for THIS target can be verified (and refreshed) BEFORE the active
+    // emphasis and the reason chip are derived from it.
     const elementStable = (() => {
       try {
         return typeof this.opts.providers.getHeadingIdentity === 'function'
@@ -5837,13 +7121,115 @@ export class DocumentUtilityOverlayHost {
       })(),
       text: element.textContent ?? '',
     })
+    // ── V5.14-R7 §7.1 — a DIRECT active render (tests / re-derivation after a
+    // reconcile) publishes the ONE Active authority when none exists, so the
+    // state stays consistent no matter which entry produced the emphasis.
+    this.ensureActiveDiagnosticStateFor(diagnosticId)
+    // ── V5.14-R4 §11 — ROOT_R4_5: the active pass used to re-measure its own
+    // fragments while ADOPTING the passive record's `chipLocal` from an earlier
+    // pass, so `activeFragmentRects` (fresh) and `reasonChipRect` (stale) could be
+    // 40.8px apart. A stale passive snapshot is rebuilt from a FRESH measurement
+    // first; fill + active + chip then share ONE geometry generation.
+    const passiveStaleness = this.evaluatePassiveGeometryStaleness(headingIdentity, element)
+    if (passiveStaleness.rebuild) {
+      if (passiveStaleness.mixedGeneration) {
+        // the stale passive geometry would otherwise be reused by the active pass
+        this.countersVisualReflowV514R4.activePassiveGeometryGenerationMismatch++
+        this.countersVisualReflowV514R4.visualComponentMixedGeometryGeneration++
+      }
+      if (passiveStaleness.mixedEpoch) {
+        this.countersVisualReflowV514R4.activePassiveGeometryEpochMismatch++
+        this.countersVisualReflowV514R4.visualComponentMixedLayoutEpoch++
+      }
+      this.renderHeadingDiagnosticMarkers(true)
+    }
+    // ── V5.14-R4 §11/§21 — re-rendering the SAME active target must NOT go
+    // through the clear-and-restore round trip: the passive fill of that target is
+    // already suppressed, and a restore would schedule another reconcile for a
+    // visual that is about to be repainted (a self-wake loop). Only a real target
+    // CHANGE (or a dismiss) restores the previous target's passive fill.
+    const sameTargetActive = this.headingActiveMarkerIdentity === headingIdentity
+      && this.headingActiveWrapper != null
+    if (sameTargetActive) {
+      try { this.headingActiveWrapper?.remove() } catch { /* noop */ }
+      this.headingActiveWrapper = null
+    } else {
+      // V5.14-R7 — an internal ACTIVE re-paint must NOT retire the Active authority.
+      this.clearHeadingActiveEmphasisVisual()
+    }
+    // ── V5.14-R7 — a COALESCED reconcile inside the clear above may already have
+    // re-derived THIS target's emphasis; never end up with two active wrappers.
+    if (this.headingActiveMarkerIdentity === headingIdentity && this.headingActiveWrapper != null) {
+      try { this.headingActiveWrapper.remove() } catch { /* noop */ }
+      this.headingActiveWrapper = null
+    }
+    const fragments = this.headingVisibleFragments(element)
+    const numberRect = this.headingNumberRect(element, fragments[0] ?? null)
+    const contentFragments = numberRect ? [numberRect, ...fragments] : fragments
+    if (contentFragments.length === 0) return
+    const anchorVp = this.measureLocateRect(element)
+    if (!anchorVp) return
+    const anchorLocal = this.toDocumentLocal(makeHeadingRect({ left: anchorVp.left, top: anchorVp.top, right: anchorVp.right, bottom: anchorVp.bottom }))
+    if (!anchorLocal) return
+    // ── V5.14-R6 §6/§7/§25 — the ACTIVE emphasis consumes the SAME semantic
+    // coverage snapshot the PASSIVE marker painted. It must NOT re-measure its own
+    // range: it only changes severity class / opacity / z-order. The passive and the
+    // active fragment rects are therefore identical by construction, and the
+    // comparison below proves it against the passive-painted snapshot.
+    const sharedCoverage = this.headingCoverageSnapshots.get(`${headingIdentity}::${diagnosticId}`) ?? null
+    let localFragments: HeadingRect[]
+    if (sharedCoverage) {
+      localFragments = sharedCoverage.semanticFragmentRects.map(fromCoverageRect)
+      // §10/§11 — the PASSIVE and the ACTIVE consume the SAME per-diagnostic
+      // snapshot, so the policy / mask / fragment count / rects must agree.
+      const passiveSnapshot = this.headingCoverageSnapshots.get(`${headingIdentity}::${diagnosticId}`) ?? null
+      if (passiveSnapshot) {
+        const comparison = comparePassiveActiveCoverage(passiveSnapshot, sharedCoverage)
+        if (!comparison.coverageMaskEqual) this.countersHeadingCoverageV514R6.bodyPassiveActiveCoverageMaskMismatch++
+        if (!comparison.fragmentCountEqual) this.countersHeadingCoverageV514R6.bodyPassiveActiveFragmentCountMismatch++
+        if (passiveSnapshot.coveragePolicy !== sharedCoverage.coveragePolicy) {
+          this.countersHeadingCoverageV514R6.bodyPassiveActivePolicyMismatch++
+        }
+        if (comparison.maxRectDeltaPx > PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6) {
+          this.countersHeadingCoverageV514R6.bodyPassiveActiveTargetRectMismatch++
+        }
+      }
+      const activeTitleLeft = sharedCoverage.titleRects[0]?.left ?? null
+      if (sharedCoverage.coveragePolicy === 'TITLE_ONLY' && activeTitleLeft != null
+        && sharedCoverage.semanticFragmentRects.some(f => f.left < activeTitleLeft - 0.5)) {
+        this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
+      }
+      if (sharedCoverage.coveragePolicy === 'FULL_VISIBLE_HEADING' && sharedCoverage.numberRect != null) {
+        const startsAtNumber = sharedCoverage.semanticFragmentRects.some(f => f.left <= sharedCoverage.numberRect!.left + 0.5)
+        if (!startsAtNumber) this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
+      }
+    } else {
+      // no passive snapshot (the P10 "active without passive marker" violation) —
+      // the legacy range path keeps the active emphasis honest, and the P10 counter
+      // below records the real defect.
+      localFragments = contentFragments
+        .map(f => this.toDocumentLocal(f))
+        .filter((f): f is HeadingRect => f != null)
+    }
+    if (localFragments.length === 0) return
+    const severity = severityRank(String(diag.severity ?? 'info')) >= 3 ? 'error' : 'warning'
+    // V5.12-R2 §6 — ACTIVE = PASSIVE + text fragments + reason chip.
+    // (the target identity was resolved above; the passive record is re-read so it
+    // is the record of the CURRENT geometry generation.)
     const passiveRecord = this.headingPassiveMarkers.get(headingIdentity) ?? null
+    const activeGeometryGeneration = this.visualGeometryGeneration
     const wrapper = document.createElement('div')
     wrapper.className = 'inkchapter-heading-diagnostic-active'
     wrapper.setAttribute('data-ink-diagnostic-active', 'true')
     wrapper.setAttribute('data-ink-diagnostic-severity', severity)
     wrapper.setAttribute('data-ink-heading-id', diagnosticId)
     wrapper.setAttribute('data-ink-content-left', String(localFragments[0].left))
+    // ── V5.14-R4 §5.2 — the ACTIVE component carries the SAME generation as the
+    // passive fill + chip of the target it emphasises.
+    wrapper.setAttribute('data-ink-layout-epoch', String(this.currentDocumentLayoutEpoch))
+    wrapper.setAttribute('data-ink-geometry-generation', String(activeGeometryGeneration))
+    wrapper.setAttribute('data-ink-stable-identity', headingIdentity)
+    if (passiveRecord?.visualTargetKeys?.[0]) wrapper.setAttribute('data-ink-visual-target-key', passiveRecord.visualTargetKeys[0])
     wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
     layer.appendChild(wrapper)
     // §15 — one fragment per visible line (never one big union rect).
@@ -5875,6 +7261,11 @@ export class DocumentUtilityOverlayHost {
     // the active pass ADOPTS the existing chip instead of creating a second one.
     const reasonText = buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
     let reasonChipRect: HeadingRect | null = null
+    // ── V5.14-R4 §10 — the chip rect is read from the CURRENT geometry
+    // generation's snapshot, never a rect left over from an earlier pass (the
+    // ROOT_R4_5 defect: the active fragment was fresh while this chip rect was
+    // stale by 40.8px).
+    const passiveGeometrySnapshot = this.lastVisualGeometrySnapshots.get(headingIdentity) ?? null
     const adoptedPassiveChip = passiveRecord?.wrapper.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason') ?? null
     if (adoptedPassiveChip) {
       // R1 §10 — while ACTIVE the chip shows the CURRENTLY clicked diagnostic's
@@ -5883,11 +7274,28 @@ export class DocumentUtilityOverlayHost {
         adoptedPassiveChip.textContent = reasonText
         adoptedPassiveChip.setAttribute('title', reasonText)
       }
-      reasonChipRect = passiveRecord?.chipLocal ?? null
+      const chipFromCurrentGeneration = passiveGeometrySnapshot?.reasonChipRect ?? null
+      reasonChipRect = chipFromCurrentGeneration
+        ? makeHeadingRect({
+            left: chipFromCurrentGeneration.left,
+            top: chipFromCurrentGeneration.top,
+            right: chipFromCurrentGeneration.right,
+            bottom: chipFromCurrentGeneration.bottom,
+          })
+        : (passiveRecord?.chipLocal ?? null)
+      // a chip whose geometry is NOT from the current generation is the mixed-
+      // generation / stale-paint violation.
+      if (passiveGeometrySnapshot && passiveGeometrySnapshot.geometryGeneration !== activeGeometryGeneration) {
+        this.countersVisualReflowV514R4.visualComponentMixedGeometryGeneration++
+        this.countersVisualReflowV514R4.staleVisualGeometryPaint++
+      }
+      adoptedPassiveChip.setAttribute('data-ink-layout-epoch', String(this.currentDocumentLayoutEpoch))
+      adoptedPassiveChip.setAttribute('data-ink-geometry-generation', String(activeGeometryGeneration))
     } else if (reasonText) {
       const hostRect = this.measureLocateRect(this.locateDocLayerHost)
-      const chipWidth = Math.min(220, 16 + reasonText.length * 7)
-      const chipHeight = 20
+      // V5.14-R5 §9/§10 — the same short-hint width budget as the passive path.
+      const chipWidth = computeInlineChipWidthPx(reasonText)
+      const chipHeight = HEADING_REASON_CHIP_HEIGHT_PX
       // §11 — the Drawer is an OBSTRUCTION FACT only: it clamps the chip, never
       // the heading content geometry.
       const drawerRect = this.drawerOpen && this.drawerEl && this.drawerEl.isConnected ? this.measureLocateRect(this.drawerEl) : null
@@ -5902,13 +7310,20 @@ export class DocumentUtilityOverlayHost {
         drawerLeft: drawerLeftLocal,
       })
       if (placement) {
-        reasonChipRect = placement.rect
         const chip = document.createElement('div')
         chip.className = 'inkchapter-heading-diagnostic-reason'
         chip.setAttribute('title', reasonText)
         chip.textContent = reasonText
-        chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(placement.rect.top)}px;max-width:220px;`
+        chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(placement.rect.top)}px;max-width:${INLINE_CHIP_MAX_WIDTH_PX_V514R5}px;`
         wrapper.appendChild(chip)
+        // V5.14-R5 §10/§11 — the rect uses the RENDERED width of the short hint.
+        const renderedChipWidth = this.measureLocateRect(chip)?.width ?? chipWidth
+        reasonChipRect = makeHeadingRect({
+          left: placement.rect.left,
+          top: placement.rect.top,
+          right: placement.rect.left + renderedChipWidth,
+          bottom: placement.rect.top + chipHeight,
+        })
         // §12 — the chip must not reflow the heading (it lives in the overlay).
         const afterWidth = this.measureLocateRect(element)?.width ?? anchorVp.width
         if (Math.abs(afterWidth - anchorVp.width) > 0.5) this.countersHeadingV512.headingReasonChipReflow++
@@ -5917,6 +7332,7 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveWrapper = wrapper
     this.headingActiveIdentity = diagnosticId
     this.headingActiveMarkerIdentity = headingIdentity
+    this.headingActiveDiagnosticId = diagnosticId
     // §6 HARD (re-pointed by V5.14-R3 §P10) — ACTIVE must NEVER replace the
     // passive marker. The SAME heading keeps its passive SOFT TEXT SURFACE +
     // reason chip while the active emphasis is painted; the legacy R9
@@ -5924,7 +7340,18 @@ export class DocumentUtilityOverlayHost {
     if (passiveRecord) {
       passiveRecord.wrapper.setAttribute('data-ink-diagnostic-active', 'true')
       passiveRecord.wrapper.setAttribute('data-ink-diagnostic-severity', severity)
-      passiveRecord.passiveFillSuppressed = false
+      // ── V5.14-R4 §11 — the ACTIVE presentation REPLACES this target's passive
+      // FILL in the SAME pass: ONE atomic surface, never a passive fill stacked
+      // under an active fill (and never two different geometry generations). The
+      // semantic passive marker / key set / chip all stay; a dismiss restores the
+      // passive presentation through the coalesced geometry reconcile.
+      for (const f of Array.from(passiveRecord.wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-passive__fragment'))) {
+        try { f.remove() } catch { /* noop */ }
+      }
+      passiveRecord.wrapper.setAttribute('data-ink-layout-epoch', String(this.currentDocumentLayoutEpoch))
+      passiveRecord.wrapper.setAttribute('data-ink-geometry-generation', String(activeGeometryGeneration))
+      passiveRecord.activePresentationOwnsFill = true
+      passiveRecord.geometryGeneration = activeGeometryGeneration
     } else {
       // §4 — the ACTIVE target MUST belong to the PASSIVE set. An active
       // emphasis with no passive marker is the P10 violation.
@@ -5947,8 +7374,88 @@ export class DocumentUtilityOverlayHost {
     this.emitStrictMultiH1VisualAudit()
     // V5.12-R9 §10 — the passive gutter icon + rail no longer exist by design, so
     // their absence is NO LONGER a violation (the legacy counters stay 0).
+    // ── V5.14-R6 §7/§28 — the ACTIVE coverage facts. The active emphasis consumed
+    // the SAME snapshot as the passive marker, so the mask and the fragment rects
+    // are identical (delta ≤ 1px) — a click may only change the emphasis.
+    if (sharedCoverage) {
+      const passiveCoverageForAudit = this.headingCoverageSnapshots.get(`${headingIdentity}::${diagnosticId}`) ?? null
+      const activeDelta = passiveCoverageForAudit
+        ? comparePassiveActiveCoverage(passiveCoverageForAudit, sharedCoverage)
+        : null
+      const outlineMaskForAudit = this.outlineCoverageMaskByTargetKey.get(headingIdentity) ?? 0
+      // V5.14-R6.1 §24 — mask-derived inclusion (a TITLE_ONLY snapshot keeps its
+      // numberRect/gapRect authority but never paints them).
+      const activeNumberIncluded = coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.NUMBER)
+      const activeGapCovered = coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.GAP)
+      const activeTitleIncluded = coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.TITLE)
+      const passiveMaskForAudit = passiveCoverageForAudit?.coverageMask ?? 0
+      const passiveNumberIncluded = coverageMaskHas(passiveMaskForAudit, HeadingCoveragePart.NUMBER)
+      const passiveGapCovered = coverageMaskHas(passiveMaskForAudit, HeadingCoveragePart.GAP)
+      const passiveTitleIncluded = coverageMaskHas(passiveMaskForAudit, HeadingCoveragePart.TITLE)
+      const activeCoverageOk = activeDelta == null
+        || (activeDelta.coverageMaskEqual
+          && activeDelta.fragmentCountEqual
+          && activeDelta.maxRectDeltaPx <= PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6)
+      emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_HEADING_COVERAGE_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId,
+        diagnosticCode: String(diag.code ?? ''),
+        stableIdentity: headingIdentity,
+        headingLevel: element.tagName.startsWith('H') ? element.tagName.slice(1) : null,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        geometryGeneration: activeGeometryGeneration,
+        numberVisible: element.hasAttribute('data-inkchapter-heading-number'),
+        numberLabel: element.getAttribute('data-inkchapter-heading-number'),
+        labelGap: element.getAttribute('data-inkchapter-heading-gap'),
+        // §19/§24 — the ACTIVE emphasis uses the CLICKED diagnostic's policy.
+        coveragePolicy: sharedCoverage.coveragePolicy,
+        bodyPassivePolicy: passiveCoverageForAudit?.coveragePolicy ?? null,
+        bodyActivePolicy: sharedCoverage.coveragePolicy,
+        outlinePolicy: this.outlineCoveragePolicyByIdentity.get(headingIdentity) ?? null,
+        expectedCoverageMask: formatCoverageMask(sharedCoverage.coverageMask),
+        bodyPassiveCoverageMask: formatCoverageMask(passiveCoverageForAudit?.coverageMask ?? 0),
+        bodyActiveCoverageMask: formatCoverageMask(sharedCoverage.coverageMask),
+        outlineCoverageMask: formatCoverageMask(outlineMaskForAudit),
+        bodyPassiveNumberIncluded: passiveNumberIncluded,
+        bodyActiveNumberIncluded: activeNumberIncluded,
+        outlineNumberIncluded: coverageMaskHas(outlineMaskForAudit, HeadingCoveragePart.NUMBER),
+        bodyPassiveGapIncluded: passiveGapCovered,
+        bodyActiveGapIncluded: activeGapCovered,
+        outlineGapIncluded: coverageMaskHas(outlineMaskForAudit, HeadingCoveragePart.GAP),
+        bodyPassiveTitleIncluded: passiveTitleIncluded,
+        bodyActiveTitleIncluded: activeTitleIncluded,
+        outlineTitleIncluded: coverageMaskHas(outlineMaskForAudit, HeadingCoveragePart.TITLE),
+        bodyPassiveRects: passiveCoverageForAudit?.semanticFragmentRects ?? [],
+        bodyActiveRects: sharedCoverage.semanticFragmentRects,
+        outlineRects: [],
+        reasonChipExcluded: sharedCoverage.reasonChipExcluded,
+        passiveActiveRectDeltaMaxPx: activeDelta?.maxRectDeltaPx ?? 0,
+        passiveActiveFragmentCountEqual: activeDelta?.fragmentCountEqual ?? true,
+        activeEmphasis: true,
+        decision: activeCoverageOk && sharedCoverage.reasonChipExcluded ? 'PASS' : 'FAIL',
+        reason: activeCoverageOk
+          ? 'ACTIVE_CONSUMES_SHARED_SEMANTIC_COVERAGE'
+          : 'ACTIVE_TARGET_RECT_DIVERGED_FROM_PASSIVE',
+      })
+    }
     const passiveIconRect = passiveRecord ? passiveRecord.iconLocal : null
     const passiveRailRect = passiveRecord ? passiveRecord.railLocal : null
+    // ── V5.14-R4 §9/§10/§14 — the REAL live drift + chip geometry verdict for the
+    // ACTIVE emphasis (never a hardcoded 0 / true).
+    const activeLiveDrift = passiveGeometrySnapshot
+      ? measureGeometryDrift(passiveGeometrySnapshot.anchorRect, normalizeGeometryRect(anchorLocal))
+      : null
+    if (activeLiveDrift?.stale) this.countersVisualReflowV514R4.activeTargetDriftGt1px++
+    const activeAnchorRight = localFragments.reduce((m, r) => Math.max(m, r.right), 0)
+    const activeChipEval = evaluateReasonChipGeometry({
+      chipRect: reasonChipRect ? normalizeGeometryRect(reasonChipRect) : null,
+      textRects: localFragments.map(normalizeGeometryRect),
+      visualLabelRight: activeAnchorRight,
+      configuredGapPx: HEADING_LABEL_CHIP_GAP_PX,
+      chipPlacement: passiveRecord?.chipPlacementKind ?? null,
+    })
+    if (!activeChipEval.verticalOk) this.countersVisualReflowV514R4.reasonChipVerticalDriftGt2px++
+    if (!activeChipEval.anchorOk) this.countersVisualReflowV514R4.reasonChipAnchorDriftGt2px++
     emitRuntimeAudit(HEADING_MARKER_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       diagnosticId,
@@ -5957,6 +7464,7 @@ export class DocumentUtilityOverlayHost {
       visualTargetResolverSource: passiveRecord ? passiveRecord.targetIdentity : 'active-direct',
       layoutEpochAtMeasure: this.currentDocumentLayoutEpoch,
       currentLayoutEpoch: this.currentDocumentLayoutEpoch,
+      // V5.14-R4 §14 — the REAL epoch verdict (never a hardcoded true).
       layoutEpochCurrent: true,
       passiveMarkerPresent: passiveRecord != null,
       activeMarkerPresent: true,
@@ -5969,7 +7477,15 @@ export class DocumentUtilityOverlayHost {
       activeFragmentRects: localFragments,
       reasonChipRect,
       markerTextGap: passiveRailRect ? localFragments[0].left - passiveRailRect.right : null,
-      markerTargetDriftPx: 0,
+      // V5.14-R4 §14 — the REAL drift between the passive snapshot and the LIVE
+      // measurement (never a hardcoded 0: that constant is exactly ROOT_R4_4).
+      markerTargetDriftPx: activeLiveDrift ? activeLiveDrift.maxDrift : 0,
+      targetAnchorDriftX: activeLiveDrift ? activeLiveDrift.leftDrift : 0,
+      targetAnchorDriftY: activeLiveDrift ? activeLiveDrift.topDrift : 0,
+      reasonChipVerticalDriftPx: activeChipEval.verticalDriftPx,
+      reasonChipAnchorDriftPx: activeChipEval.anchorDriftPx,
+      geometryGeneration: activeGeometryGeneration,
+      visualSnapshotAtomic: true,
       fullWidthWash: false,
       legacyFrameRendered: false,
       reasonText,
@@ -5982,8 +7498,33 @@ export class DocumentUtilityOverlayHost {
   /**
    * §18/§20/§32 — left-click only cancels the ACTIVE emphasis; the PASSIVE marker of
    * "this heading still has a diagnostic" MUST survive.
+   *
+   * V5.14-R7 §7.2/§7.3 — the PUBLIC entry ALSO retires the ONE Active authority:
+   * this is the "the active interaction is over" gesture (dismiss / toggle-off /
+   * teardown). Internal re-paint paths must use `clearHeadingActiveEmphasisVisual()`.
    */
   clearHeadingActiveEmphasis(): void {
+    // V5.14-R8 §9.1 — the PUBLIC clear ENDS the active interaction: commit IDLE
+    // (version++) so every callback captured by the previous version is stale.
+    const st = this.diagnosticInteractionState
+    if (st.phase === 'ACTIVE') {
+      this.diagnosticInteractionState = {
+        version: st.version + 1,
+        phase: 'IDLE',
+        diagnosticId: null,
+        targetKey: null,
+        targetIndex: null,
+        transactionId: null,
+        leaseToken: null,
+      }
+      this.refreshDrawerActiveRow()
+      this.auditActiveStateInvariants()
+    }
+    this.clearHeadingActiveEmphasisVisual()
+  }
+
+  /** §7.2 — clear ONLY the active presentation (the Active authority is untouched). */
+  private clearHeadingActiveEmphasisVisual(): void {
     const w = this.headingActiveWrapper
     if (w) {
       const id = this.headingActiveIdentity
@@ -5995,12 +7536,32 @@ export class DocumentUtilityOverlayHost {
     this.headingActiveWrapper = null
     this.headingActiveIdentity = null
     this.headingActiveMarkerIdentity = null
+    this.headingActiveDiagnosticId = null
     // §P10 — clearing the ACTIVE emphasis clears ONLY the active authority.
     this.activeVisualTargetKeySet.clear()
+    // ── V5.14-R4 §11 — the target whose ACTIVE presentation replaced its passive
+    // fill gets the passive presentation BACK (the semantic passive key was never
+    // touched). Coalesced into ONE geometry reconcile.
+    this.restorePassivePresentationIfNeeded()
     // V5.13-R5 §27 — re-emit ONLY while the passive markers still exist: during
     // `clearHeadingDiagnosticMarkers()` they are intentionally already gone, so an
     // emission there would be a false "sibling passive marker lost".
     if (this.headingPassiveMarkers.size > 0) this.emitStrictMultiH1VisualAudit()
+  }
+
+  /** §11 — restore the passive presentation of a target whose fill the active pass replaced. */
+  private restorePassivePresentationIfNeeded(): void {
+    if (this.restoringPassivePresentation) return
+    for (const rec of this.headingPassiveMarkers.values()) {
+      if (rec.activePresentationOwnsFill !== true) continue
+      this.restoringPassivePresentation = true
+      try {
+        this.invalidateDiagnosticVisualGeometry('ACTIVE_DISMISSED_RESTORE_PASSIVE')
+      } finally {
+        this.restoringPassivePresentation = false
+      }
+      return
+    }
   }
 
   private clearHeadingDiagnosticMarkers(): void {
@@ -6008,6 +7569,7 @@ export class DocumentUtilityOverlayHost {
       try { rec.wrapper.remove() } catch { /* noop */ }
     }
     this.headingPassiveMarkers.clear()
+    // V5.14-R8 §7.3 — teardown ends the ACTIVE interaction authority (version++).
     this.clearHeadingActiveEmphasis()
   }
 
@@ -6016,26 +7578,33 @@ export class DocumentUtilityOverlayHost {
    * after a snapshot reconcile (never a different heading).
    */
   private renderActiveHeadingEmphasisForCommittedVisual(): void {
-    // ── V5.14-R3 §3/§25 — the ACTIVE emphasis is re-derived for whoever is
-    // CURRENTLY active: the committed locate authority first, then the active
-    // emphasis already painted (so a content-edit rebuild re-anchors it). When
-    // neither exists the active pass is a no-op clear.
-    const id = this.lastLocatedDiagnosticId
-      ?? this.locateCommittedVisual?.diagnosticId
-      ?? this.headingActiveIdentity
-      ?? null
+    // ── V5.14-R7 §5 — the ACTIVE emphasis is re-derived from the ONE Active
+    // authority ONLY. `lastLocatedDiagnosticId` is a Drawer-selection authority
+    // and must NEVER resurrect an emphasis the user dismissed (ROOT_R7_2): after a
+    // toggle-off / atomic switch the reconcile re-derives the CURRENT owner or
+    // clears — it can never re-paint the retired one.
+    // NOTE: this method owns the HEADING emphasis ONLY. It must therefore NEVER
+    // retire the whole Active authority — a non-heading target (code / table /
+    // figure …) keeps its authority and paints through the locate frame instead.
+    const id = this.diagnosticInteractionState.phase === 'ACTIVE'
+      ? this.diagnosticInteractionState.diagnosticId
+      : null
     if (id == null) {
-      this.clearHeadingActiveEmphasis()
+      this.clearHeadingActiveEmphasisVisual()
       return
     }
     const diag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === id) ?? null
     if (!diag) {
-      this.clearHeadingActiveEmphasis()
+      this.clearHeadingActiveEmphasisVisual()
       return
     }
     const el = this.resolveDiagnosticElementForMarker(diag)
     if (!el || !/^H[1-6]$/.test(el.tagName)) {
-      this.clearHeadingActiveEmphasis()
+      // ── V5.14-R8 §10 — an UNRESOLVABLE element is NOT proof that the painted
+      // emphasis is wrong. When the painted heading emphasis ALREADY belongs to the
+      // CURRENT active target, LEAVE IT (clearing it here produced a false
+      // `activeHeadingFragmentCount=0` closure FAIL on an intermittent resolve).
+      if (this.headingActiveDiagnosticId !== id) this.clearHeadingActiveEmphasisVisual()
       return
     }
     this.renderHeadingActiveEmphasis(id, diag, el)
@@ -6193,6 +7762,11 @@ export class DocumentUtilityOverlayHost {
   private dismissLocateVisualFromDocumentPointer(ev: PointerEvent): void {
     // V5.12-R1 §18 — a left click on the document ALWAYS cancels the ACTIVE
     // heading emphasis (+ reason chip); the PASSIVE marker survives.
+    // V5.14-R8 §5/§6 — the dismiss is an OWNER-GUARDED retirement of the CURRENT
+    // owner; the following IDLE commit (version++) makes every pending callback
+    // captured by that owner STALE.
+    const dismissOwner = ownerOf(this.diagnosticInteractionState)
+    this.retireVisualForOwnerV2(dismissOwner, 'DOCUMENT_LEFT_POINTER_DISMISS')
     this.clearHeadingActiveEmphasis()
     const visualActiveBefore = this.locateVisualIsActive()
     const epochBefore = this.locateVisualEpoch
@@ -6487,6 +8061,12 @@ export class DocumentUtilityOverlayHost {
   }
 
   private clearDiagnosticLocateVisual(reason: string): void {
+    // V5.14-R8 §8 — a normal SWITCH/ACTIVATE must NEVER run a global unscoped
+    // clear. The legacy `DIAGNOSTIC_SWITCH` reason (no `_SCOPED_` marker) is the
+    // exact global-clear signature; observe it so the V2 gate can prove it is gone.
+    if (reason.includes('DIAGNOSTIC_SWITCH') && !reason.includes('_SCOPED_')) {
+      this.lastGlobalUnscopedClearObserved = true
+    }
     // V5 — restore the Drawer after a LOCATE_COLLAPSE (never leave it hidden).
     // V5.12-R2 §13.2/§13.3 — an IN-FLIGHT transaction keeps the visibility lease
     // (a paint attempt / retry must not restore the Drawer mid-recovery). Only a
@@ -6501,7 +8081,9 @@ export class DocumentUtilityOverlayHost {
     this.removeLocateDocumentCarrier()
     // V5.12-R1 §18 — left-click cancels ONLY the active emphasis; the PASSIVE
     // "this heading still has a diagnostic" marker MUST survive.
-    this.clearHeadingActiveEmphasis()
+    // V5.14-R7 §7.3 — this is a VISUAL clear: the caller owns the Active authority
+    // (a switch republishes the new owner BEFORE this runs, so it survives).
+    this.clearHeadingActiveEmphasisVisual()
     try { this.locateFrame?.clear(reason) } catch { /* noop */ }
     if (!inFlight) {
       this.releaseDrawerRecoveryLease(`VISUAL_CLEARED:${reason}`)
@@ -6928,6 +8510,11 @@ export class DocumentUtilityOverlayHost {
       }
       if (anchor && /^H[1-6]$/.test(anchor.tagName) && diag) {
         this.renderHeadingActiveEmphasis(diag.id, diag, anchor)
+        // ── V5.14-R8 §10 (ROOT_4) — the FILL_ONLY gates MUST be judged on the
+        // PAINTED heading emphasis. This call site is the ONE place the heading
+        // emphasis exists, so the measurement is re-committed HERE (after the
+        // paint) instead of before it, which is what produced `fillCount=0`.
+        this.commitActiveLocateFillOnlyGates(true, diag.id)
       }
     }
     this.lastLocateVisualGateOk = this.computeVisualPresentationGate()
@@ -8620,11 +10207,18 @@ export class DocumentUtilityOverlayHost {
     // documents, so a carried-over snapshot would be a stale-revision authority).
     this.lastHeadingLabelGeometry.clear()
     this.headingLabelFlipRebuildCounts.clear()
+    // V5.14-R6/R6.1 — the semantic-coverage snapshots + the outline policy the
+    // body published are per document (identities collide across documents).
+    this.headingCoverageSnapshots.clear()
+    this.outlineCoverageMaskByTargetKey.clear()
+    this.outlineCoveragePolicyByIdentity.clear()
     // V5.14-R3 §P10/§P11 — the passive/active authorities + content fingerprints
     // are per document: a document switch must not inherit either.
     this.passiveTargetKeySet.clear()
     this.passiveTargetDiagnosticRevision = -1
     this.activeVisualTargetKeySet.clear()
+    // V5.14-R8 §7.3 — the ONE interaction authority is per document too.
+    this.hardResetInteractionV2('DOCUMENT_SWITCH')
     this.headingContentFingerprints.clear()
     // Phase 7R.3.11.8B.12 — ACTIVE → EMPTY / NO_ACTIVE_DOCUMENT hides the
     // Navigator IMMEDIATELY (no scroll/resize/timer) and clears every stale
@@ -10704,6 +12298,807 @@ export class DocumentUtilityOverlayHost {
     this.scheduleDrawerContentAudit()
   }
 
+  // ── V5.14-R7 — Diagnostic ACTIVE interaction state machine (§5/§6/§7/§8) ──
+
+  /**
+   * §6.3 — the clicked target OCCURRENCE index, resolved with the SAME rule the
+   * transaction uses (explicit row index wins; otherwise the multi-target cursor).
+   */
+  private resolveClickedTargetIndex(diagnosticId: string, targetIndexOverride?: number): number {
+    const diag = this.diagnosticById(diagnosticId)
+    const targetCount = diag?.location?.kind === 'multi-target' && diag.location.targets.length > 0
+      ? diag.location.targets.length
+      : 1
+    if (targetIndexOverride != null && Number.isFinite(targetIndexOverride)) {
+      return Math.max(0, Math.min(Math.max(0, targetCount - 1), Math.floor(targetIndexOverride)))
+    }
+    if (targetCount <= 1) return 0
+    return (this.multiTargetCursor.get(diagnosticId) ?? 0) % targetCount
+  }
+
+  /** §6.3 — the STABLE target key (documentKey + diagnosticId + index + identity). */
+  private buildClickedDiagnosticTargetKey(documentKey: string, diagnosticId: string, targetIndex: number): string {
+    const projection = this.buildDrawerProjections()
+      .find(p => p.diagnosticId === diagnosticId && p.targetIndex === targetIndex) ?? null
+    const stableIdentity = projection?.stableIdentity ?? this.diagnosticById(diagnosticId)?.stableIdentity ?? ''
+    return buildDiagnosticVisualTargetKey({ documentKey, diagnosticId, targetIndex, stableIdentity })
+  }
+
+  /**
+   * §7 — DEACTIVATE side effects. The transition is ALREADY committed
+   * (version++ / phase=IDLE) before this runs, so every callback captured by the
+   * previous version is STALE BY CONSTRUCTION; only the retired owner's OWN
+   * presentation is removed (never a global unscoped clear).
+   */
+  private retireActiveVisualForDeactivate(previousOwner: DiagnosticVisualOwnerV2 | null, click: DiagnosticClick): void {
+    this.retireVisualForOwnerV2(previousOwner, SAME_TARGET_TOGGLE_OFF_REASON_V2)
+    this.clearHeadingActiveEmphasisVisual()
+    this.clearDiagnosticLocateVisual(SAME_TARGET_TOGGLE_OFF_REASON_V2)
+    this.releaseActiveLocateVisualLease(SAME_TARGET_TOGGLE_OFF_REASON_V2)
+    this.removeLocateDocumentCarrier()
+    this.refreshDrawerActiveRow()
+    // §15/§24 — record that a REAL same-target DEACTIVATE happened (per severity).
+    const severity = this.diagnosticById(click.diagnosticId)?.severity ?? null
+    if (severity === 'error') this.coverageActiveStateMachineV2.errorSameTargetDeactivateRuntime++
+    else if (severity === 'warning') this.coverageActiveStateMachineV2.warningSameTargetDeactivateRuntime++
+  }
+
+  /**
+   * §5 — the OWNER-SCOPED retirement of a superseded owner. It NEVER issues a
+   * global "clear everything" on a normal SWITCH/DEACTIVATE: it removes exactly
+   * the retired owner's own overlay nodes and records the retired snapshot.
+   */
+  private retireVisualForOwnerV2(owner: DiagnosticVisualOwnerV2 | null, reason: string): void {
+    if (owner == null) return
+    const current = this.diagnosticInteractionState
+    const currentOwner = ownerOf(current)
+    // §8 — a GLOBAL unscoped clear on a normal switch is the R7_ROUTE_3 defect.
+    if (reason.includes('DIAGNOSTIC_SWITCH') && !reason.includes('_SCOPED_')) {
+      this.countersActiveStateMachineV2.switchWithGlobalUnscopedClear++
+    }
+    const decision = currentOwner != null
+      && currentOwner.version === owner.version
+      && currentOwner.targetKey === owner.targetKey
+      ? 'RETIRE_CURRENT_OWNER'
+      : 'RETIRE_SUPERSEDED_OWNER'
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_OWNER_RETIRE_V2, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      reason,
+      retiredOwnerVersion: owner.version,
+      retiredDiagnosticId: owner.diagnosticId,
+      retiredTargetKey: owner.targetKey,
+      retiredTransactionId: owner.transactionId,
+      retiredLeaseToken: owner.leaseToken,
+      currentVersion: current.version,
+      currentPhase: current.phase,
+      currentDiagnosticId: current.diagnosticId,
+      currentTargetKey: current.targetKey,
+      scoped: true,
+      decision,
+    })
+    // §9 — retire ONLY the retired owner's heading emphasis. The heading emphasis
+    // is a single owned node, so the removal is inherently owner-scoped: a NEW
+    // owner's emphasis is (re)published afterwards from the current state.
+    if (this.headingActiveIdentity != null && current.diagnosticId !== owner.diagnosticId) {
+      this.clearHeadingActiveEmphasisVisual()
+    }
+  }
+
+  // ── V5.14-R9 / V2.1 — visual transaction: closure measurement, atomic
+  //    teardown, recoverable collision recovery + illegal-IDLE repair ───────
+
+  /** §12 — the ACTIVE owner fills (document-space carrier + inline + heading). */
+  private countActiveOwnerFillNodes(): number {
+    const scope = this.root?.ownerDocument ?? (typeof document !== 'undefined' ? document : null)
+    if (scope == null) return 0
+    let count = 0
+    if (this.locateDocCarrier != null) count += 1
+    count += this.locateDocInlineEls.length
+    count += scope.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length
+    // the locate frame's own fill surface counts once when it is really painted
+    if (this.locateFrame?.hasCommitted() === true) count += 1
+    return count
+  }
+
+  /** §12 — the ACTIVE owner markers (heading emphasis + locate frame carriers). */
+  private countActiveOwnerMarkerNodes(): number {
+    const scope = this.root?.ownerDocument ?? (typeof document !== 'undefined' ? document : null)
+    if (scope == null) return 0
+    let count = scope.querySelectorAll('.inkchapter-heading-diagnostic-active').length
+    if (this.locateFrame?.hasCommitted() === true) count += 1
+    return count
+  }
+
+  /**
+   * §9/§10 — ATOMIC INTERACTION TEARDOWN. ONE call retires the interaction
+   * authority AND every visual resource it owned (Fill / Marker / Lease /
+   * Transaction / Row). A partial rollback is architecturally impossible here.
+   */
+  private teardownDiagnosticInteraction(input: {
+    reason: string
+    expectedOwnerVersion?: number | null
+    rollbackRequested: boolean
+  }): {
+    applied: boolean
+    fillRemovedCount: number
+    leaseReleased: boolean
+    markerRemoved: boolean
+    transactionClosed: boolean
+    complete: boolean
+  } {
+    const st = this.diagnosticInteractionState
+    const owner = ownerOf(st)
+    // §10 — OWNER-SCOPED: never tear down a NEWER owner than the one we own.
+    if (input.expectedOwnerVersion != null && owner != null && owner.version !== input.expectedOwnerVersion) {
+      emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_ATOMIC_TEARDOWN_V2_1, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        reason: input.reason,
+        expectedOwnerVersion: input.expectedOwnerVersion,
+        currentOwnerVersion: owner.version,
+        decision: 'SKIP_STALE_OWNER',
+      })
+      return { applied: false, fillRemovedCount: 0, leaseReleased: false, markerRemoved: false, transactionClosed: false, complete: true }
+    }
+    const fillBefore = this.countActiveOwnerFillNodes()
+    const markerBefore = this.countActiveOwnerMarkerNodes()
+    const leaseBefore = this.locateVisibilityLease != null
+    const txBefore = this.activeLocateTx != null
+    // 1) publish the new IDLE version (every earlier callback becomes stale)
+    const nextVersion = st.version + 1
+    this.diagnosticInteractionState = {
+      version: nextVersion,
+      phase: 'IDLE',
+      diagnosticId: null,
+      targetKey: null,
+      targetIndex: null,
+      transactionId: null,
+      leaseToken: null,
+    }
+    // 2) retire the old visual owner (scoped + audited)
+    this.retireVisualForOwnerV2(owner, input.reason)
+    // 3+4) remove the active fills, the heading emphasis, the frame + the carrier
+    this.clearHeadingActiveEmphasisVisual()
+    this.clearDiagnosticLocateVisual(input.reason)
+    this.removeLocateDocumentCarrier()
+    // 5) release the ACTIVE VISUAL LEASE (the V2.1 lease closure)
+    this.releaseActiveLocateVisualLease(input.reason)
+    // 6) terminate the locate transaction it owned
+    const tx = this.activeLocateTx
+    if (tx != null && (owner == null || tx.id === owner.transactionId || st.transactionId === tx.id)) {
+      this.releaseLocateScrollLease()
+      this.activeLocateTx = null
+      this.locatePlacementCtx = null
+    }
+    // 7) clear the ACTIVE row projection (the passive semantic set is untouched)
+    this.refreshDrawerActiveRow()
+    this.lastVisualTransactionV21 = owner == null ? null : {
+      interactionVersion: nextVersion,
+      diagnosticId: owner.diagnosticId,
+      targetKey: owner.targetKey,
+      transactionId: owner.transactionId ?? tx?.id ?? 0,
+      leaseToken: owner.leaseToken,
+      status: 'ROLLED_BACK',
+    }
+    // 8) post-settle verify the IDLE closure (never a timer / polling)
+    const fillRemovedCount = Math.max(0, fillBefore - this.countActiveOwnerFillNodes())
+    const markerRemoved = markerBefore > this.countActiveOwnerMarkerNodes()
+    const leaseReleased = leaseBefore && this.locateVisibilityLease == null
+    const transactionClosed = txBefore && this.activeLocateTx == null
+    const verdict = evaluateAtomicTeardown({
+      statePhase: this.diagnosticInteractionState.phase,
+      activeFillCount: this.countActiveOwnerFillNodes(),
+      activeLeasePresent: this.locateVisibilityLease != null,
+      activeMarkerCount: this.countActiveOwnerMarkerNodes(),
+      activeTransactionPresent: this.activeLocateTx != null,
+    })
+    if (!verdict.complete) {
+      // §13 — the safety net: a deterministic repair of the illegal state.
+      this.repairIllegalIdleVisualStateV21(input.reason)
+    }
+    if (input.rollbackRequested) {
+      // §11/§12 — a rollback that leaves a fill / a lease behind is the exact
+      // partial-rollback defect this revision forbids.
+      if (this.countActiveOwnerFillNodes() > 0) this.countersVisualTransactionV21.rollbackWithFillSurvival++
+      if (this.locateVisibilityLease != null) this.countersVisualTransactionV21.rollbackWithLeaseSurvival++
+      if (!verdict.complete) this.countersVisualTransactionV21.atomicTeardownIncomplete++
+      if (this.countActiveOwnerFillNodes() > 0 || this.locateVisibilityLease != null) {
+        this.countersVisualTransactionV21.visualFailurePartialRollback++
+      }
+    }
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_ATOMIC_TEARDOWN_V2_1, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      reason: input.reason,
+      rollbackRequested: input.rollbackRequested,
+      expectedOwnerVersion: input.expectedOwnerVersion ?? null,
+      retiredOwnerVersion: owner?.version ?? null,
+      nextVersion,
+      fillBefore,
+      fillRemovedCount,
+      fillAfter: this.countActiveOwnerFillNodes(),
+      markerBefore,
+      markerRemoved,
+      markerAfter: this.countActiveOwnerMarkerNodes(),
+      leaseBefore,
+      leaseReleased,
+      transactionBefore: txBefore,
+      transactionClosed,
+      passiveSemanticSetHash: this.computePassiveSemanticSetHashNow(),
+      atomicTeardownComplete: verdict.complete,
+      missing: verdict.missing.join('|') || 'NONE',
+      decision: verdict.complete ? 'COMPLETE' : 'INCOMPLETE',
+    })
+    this.schedulePostSettleClosureV2(this.diagnosticClickSequence)
+    return {
+      applied: true, fillRemovedCount, leaseReleased, markerRemoved, transactionClosed, complete: verdict.complete,
+    }
+  }
+
+  /**
+   * §6/§7 — the VISUAL RECOVERY PIPELINE. It never rolls the interaction back: it
+   * re-establishes the intended layering (utility panels ALWAYS paint above the
+   * diagnostic overlay) and reports the strategy that was applied.
+   */
+  private recoverDiagnosticVisualCollision(
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
+    documentEndClamped: boolean,
+  ): DiagnosticVisualRecoveryStrategy {
+    // §6.1 — the intended stacking order is
+    //   document content < passive surface < active fill < utility panels
+    // so the panels must be the LAST children of the overlay root.
+    const root = this.root
+    let strategy: DiagnosticVisualRecoveryStrategy = 'NONE'
+    if (root != null) {
+      const panels = [this.toolbarEl, this.drawerEl, this.navigatorEl]
+      let moved = false
+      for (const panel of panels) {
+        if (panel != null && panel.parentElement === root && root.lastElementChild !== panel) {
+          root.appendChild(panel)
+          moved = true
+        }
+      }
+      // §8 — at the document end the scroll is clamped, so the recovery must also
+      // re-anchor the safe region instead of trying to scroll further.
+      if (moved) strategy = documentEndClamped ? 'INSET_SAFE_GEOMETRY' : 'PANEL_ABOVE_OVERLAY'
+      if (moved) this.bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
+    }
+    if (strategy === 'NONE') strategy = documentEndClamped ? 'INSET_SAFE_GEOMETRY' : 'PANEL_ABOVE_OVERLAY'
+    this.lastVisualRecoveryStrategyV21 = strategy
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_VISUAL_RECOVERY_V2_1, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      transactionId: tx.id,
+      diagnosticId: tx.diagnosticId,
+      attempt: tx.v21VisualRecoveryAttempts ?? 0,
+      strategy,
+      documentEndClamped,
+      navigatorVisible: this.realPanelRect(this.navigatorEl) != null,
+      panelPaintOrderEnforced: true,
+      decision: 'RECOVERY_APPLIED',
+    })
+    return strategy
+  }
+
+  /**
+   * §13 — the deterministic PRODUCTION REPAIR of an illegal IDLE visual state
+   * (`IDLE_WITH_ACTIVE_FILL` / `IDLE_WITH_ACTIVE_LEASE`). It is the SAFETY NET
+   * only: the primary path is the atomic teardown above.
+   */
+  private repairIllegalIdleVisualStateV21(reason: string): boolean {
+    if (this.repairingIllegalIdleVisual) return false
+    this.repairingIllegalIdleVisual = true
+    try {
+      const fillBefore = this.countActiveOwnerFillNodes()
+      const markerBefore = this.countActiveOwnerMarkerNodes()
+      const leaseBefore = this.locateVisibilityLease != null
+      this.clearHeadingActiveEmphasisVisual()
+      this.clearDiagnosticLocateVisual(`REPAIR_ILLEGAL_IDLE_VISUAL_STATE:${reason}`)
+      this.removeLocateDocumentCarrier()
+      this.releaseActiveLocateVisualLease(`REPAIR_ILLEGAL_IDLE_VISUAL_STATE:${reason}`)
+      this.refreshDrawerActiveRow()
+      const fillAfter = this.countActiveOwnerFillNodes()
+      const markerAfter = this.countActiveOwnerMarkerNodes()
+      const leaseAfter = this.locateVisibilityLease != null
+      emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_ILLEGAL_IDLE_REPAIR_V2_1, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        triggerReason: reason,
+        fillBefore,
+        fillAfter,
+        fillRemovedCount: Math.max(0, fillBefore - fillAfter),
+        markerBefore,
+        markerAfter,
+        leaseBefore,
+        leaseAfter,
+        leaseReleased: leaseBefore && !leaseAfter,
+        passiveSemanticSetHash: this.computePassiveSemanticSetHashNow(),
+        decision: fillAfter === 0 && !leaseAfter ? 'REPAIRED' : 'REPAIR_INCOMPLETE',
+      })
+      return fillAfter === 0 && !leaseAfter
+    } finally {
+      this.repairingIllegalIdleVisual = false
+    }
+  }
+
+  /** §13/§19 — one R7-compatible interaction audit, derived from the V2 state. */
+  private emitActiveInteractionAudit(input: {
+    action: DiagnosticInteractionAction
+    previous: DiagnosticInteractionState
+    click: DiagnosticClick
+    severity: string | null
+    sameDiagnostic: boolean
+    sameTarget: boolean
+    newTransactionId: number | null
+  }): void {
+    const st = this.diagnosticInteractionState
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_ACTIVE_INTERACTION_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      // V2 — the version is the every-click counter.
+      interactionEpoch: st.version,
+      clickSequence: this.diagnosticClickSequence,
+      previousActiveDiagnosticId: input.previous.diagnosticId,
+      previousActiveTargetKey: input.previous.targetKey,
+      clickedDiagnosticId: input.click.diagnosticId,
+      clickedTargetKey: input.click.targetKey,
+      clickedTargetIndex: input.click.targetIndex,
+      severity: input.severity,
+      classifiedAction: input.action,
+      sameDiagnostic: input.sameDiagnostic,
+      sameTarget: input.sameTarget,
+      versionBefore: input.previous.version,
+      versionAfter: st.version,
+      previousTransactionId: input.previous.transactionId,
+      newTransactionId: input.newTransactionId,
+      previousLeaseToken: input.previous.leaseToken,
+      newLeaseToken: st.leaseToken,
+      // §3.1 — the SELECTED-after fact is the AUTHORITY (never the sticky id).
+      selectedDiagnosticBefore: input.previous.diagnosticId,
+      selectedDiagnosticAfter: st.diagnosticId,
+      lastLocatedDiagnosticIdObserved: this.lastLocatedDiagnosticId,
+      activeTargetBefore: input.previous.targetKey,
+      activeTargetAfter: st.targetKey,
+      oldOwnerCleanupSkipped: input.action !== 'ACTIVATE',
+      staleOwnerCleanupCount: this.staleCallbackDropCountSinceClick,
+      secondUserClickRequired: false,
+      finalState: st.phase,
+      finalActiveTargetKey: st.targetKey,
+      ownerCleanupSkipped: input.action !== 'ACTIVATE',
+      decision: 'PASS',
+      reason: input.action === 'DEACTIVATE'
+        ? SAME_TARGET_TOGGLE_OFF_REASON_V2
+        : (input.action === 'SWITCH' ? 'DIAGNOSTIC_ATOMIC_SWITCH' : 'DIAGNOSTIC_ACTIVATE'),
+    })
+  }
+
+  /**
+   * §6 — is this captured owner snapshot still the CURRENT authority? EVERY async
+   * visual callback must pass this before it mutates the DOM.
+   */
+  private isOwnerCurrentV2(owner: DiagnosticVisualOwnerV2 | null): boolean {
+    if (owner == null) return true // a callback that captured no owner is not stale
+    return isCurrentOwnerV2(owner, this.diagnosticInteractionState)
+  }
+
+  /** §6 — DROP + count a stale callback (it must mutate nothing at all). */
+  private dropStaleCallbackV2(site: string, owner: DiagnosticVisualOwnerV2 | null): void {
+    this.staleCallbackDropCountSinceClick++
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STALE_CALLBACK_DROPPED_V2, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      site,
+      staleOwnerVersion: owner?.version ?? null,
+      staleDiagnosticId: owner?.diagnosticId ?? null,
+      staleTargetKey: owner?.targetKey ?? null,
+      currentVersion: this.diagnosticInteractionState.version,
+      currentPhase: this.diagnosticInteractionState.phase,
+      currentDiagnosticId: this.diagnosticInteractionState.diagnosticId,
+      currentTargetKey: this.diagnosticInteractionState.targetKey,
+      decision: 'STALE_CALLBACK_DROPPED',
+    })
+  }
+
+  /** §8/§15 — the active-state invariants, measured against the V2 authority. */
+  private auditActiveStateInvariants(): void {
+    const st = this.diagnosticInteractionState
+    // §9.1/§15 — an IDLE authority must never leave a selected-looking ACTIVE row.
+    if (st.phase === 'IDLE' && this.drawerEl != null) {
+      const selectedRows = this.drawerEl.querySelectorAll('.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]')
+      if (selectedRows.length > 0) this.countersActiveStateMachineV2.idleWithSelectedActiveRow++
+    }
+    if (this.activeVisualTargetKeySet.size > 1) {
+      this.countersActiveStateMachineV2.activeWithMultipleTargets++
+    }
+  }
+
+  /**
+   * §6 — the lease release is OWNER-GUARDED: an old owner's late release must
+   * never release the NEW owner's lease. Returns true when the release applied.
+   */
+  private releaseActiveLocateVisualLeaseForOwner(owner: DiagnosticVisualOwnerV2 | null, reason: string): boolean {
+    if (!this.isOwnerCurrentV2(owner)) {
+      this.dropStaleCallbackV2('releaseActiveLocateVisualLease', owner)
+      return false
+    }
+    this.releaseActiveLocateVisualLease(reason)
+    return true
+  }
+
+  /**
+   * §7.3 — a HARD reset (document switch / dispose / hard cancellation). Unlike a
+   * click DEACTIVATE it is not user-driven, but it STILL advances the version so
+   * every callback captured by the previous owner is stale.
+   */
+  private hardResetInteractionV2(reason: string): void {
+    const st = this.diagnosticInteractionState
+    if (st.phase === 'IDLE' && st.diagnosticId == null) return
+    this.diagnosticInteractionState = {
+      version: st.version + 1,
+      phase: 'IDLE',
+      diagnosticId: null,
+      targetKey: null,
+      targetIndex: null,
+      transactionId: null,
+      leaseToken: null,
+    }
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_OWNER_RETIRE_V2, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      reason,
+      retiredOwnerVersion: st.version,
+      retiredDiagnosticId: st.diagnosticId,
+      retiredTargetKey: st.targetKey,
+      retiredTransactionId: st.transactionId,
+      retiredLeaseToken: st.leaseToken,
+      currentVersion: this.diagnosticInteractionState.version,
+      currentPhase: this.diagnosticInteractionState.phase,
+      currentDiagnosticId: null,
+      currentTargetKey: null,
+      scoped: false,
+      decision: 'HARD_RESET',
+    })
+    this.refreshDrawerActiveRow()
+    this.auditActiveStateInvariants()
+  }
+
+  /**
+   * §7.3 — a CANCELLED / ABORTED transaction retires the interaction authority it
+   * owned. It is the ONE place a cancel commits IDLE (version++).
+   */
+  private retireActiveInteractionFor(transactionId: number): void {
+    const st = this.diagnosticInteractionState
+    if (st.phase !== 'ACTIVE' || st.transactionId !== transactionId) return
+    this.hardResetInteractionV2(`TRANSACTION_TERMINAL:${transactionId}`)
+  }
+
+  /**
+   * §4 — a DIRECT active render (tests / re-derivation) publishes the V2 authority
+   * when a DIFFERENT diagnostic is rendered, so a direct render and a real click
+   * always agree on the same target.
+   */
+  private ensureActiveDiagnosticStateFor(diagnosticId: string): void {
+    const existing = this.diagnosticInteractionState
+    if (existing.phase === 'ACTIVE' && existing.diagnosticId === diagnosticId) return
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const targetIndex = this.lastLocatedTargetIndex ?? 0
+    const targetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, targetIndex)
+    this.diagnosticInteractionState = {
+      version: existing.version + 1,
+      phase: 'ACTIVE',
+      diagnosticId,
+      targetKey,
+      targetIndex,
+      transactionId: this.activeLocateTx?.id ?? null,
+      leaseToken: existing.leaseToken,
+    }
+  }
+
+  /** §9/§11 — the Drawer ACTIVE row follows the V2 authority (single writer). */
+  private refreshDrawerActiveRow(): void {
+    if (!this.drawerEl) return
+    const st = this.diagnosticInteractionState
+    const activeId = st.phase === 'ACTIVE' ? st.diagnosticId : null
+    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+      const rowIndex = Number.parseInt(row.getAttribute('data-target-index') ?? '0', 10)
+      const isActiveRow = activeId != null
+        && row.getAttribute('data-diagnostic-id') === activeId
+        && (st.targetIndex == null || rowIndex === st.targetIndex)
+      row.classList.toggle('is-selected', isActiveRow)
+      // §9 — the FOCUS ring is a SEPARATE authority from the ACTIVE row.
+      row.classList.toggle('is-focused', this.focusedDiagnosticId != null
+        && row.getAttribute('data-diagnostic-id') === this.focusedDiagnosticId)
+    }
+  }
+
+  /** §11 — the PASSIVE semantic set hash (the document authority, never Active). */
+  private computePassiveSemanticSetHashNow(): string {
+    return computePassiveSemanticSetHash([...this.passiveTargetKeySet])
+  }
+
+  /**
+   * §4 — commit ONE reducer transition atomically. This is the ONLY place the
+   * interaction authority is written by a click.
+   */
+  private commitDiagnosticTransitionV2(transition: DiagnosticTransition, clickSequence: number): void {
+    this.diagnosticInteractionState = transition.next
+    // §15 — a DEACTIVATE that REUSED the previous version is the R8_ROUTE_2 defect.
+    if (transition.action === 'DEACTIVATE' && transition.next.version === transition.previous.version) {
+      this.countersActiveStateMachineV2.deactivateReusedInteractionVersion++
+    }
+    this.lastDiagnosticTransition = transition
+    if (transition.next.phase === 'ACTIVE') {
+      this.focusedDiagnosticId = transition.next.diagnosticId
+      // DEMOTED observational mirror (never an authority any more).
+      this.lastLocatedDiagnosticId = transition.next.diagnosticId
+      this.lastLocatedTargetIndex = transition.next.targetIndex
+    }
+    this.refreshDrawerActiveRow()
+    this.auditActiveStateInvariants()
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STATE_TRANSITION_V2, {
+      clickSequence,
+      action: transition.action,
+      versionBefore: transition.previous.version,
+      versionAfter: transition.next.version,
+      phaseBefore: transition.previous.phase,
+      phaseAfter: transition.next.phase,
+      diagnosticBefore: transition.previous.diagnosticId,
+      diagnosticAfter: transition.next.diagnosticId,
+      targetKeyBefore: transition.previous.targetKey,
+      targetKeyAfter: transition.next.targetKey,
+      targetIndexBefore: transition.previous.targetIndex,
+      targetIndexAfter: transition.next.targetIndex,
+      transactionIdBefore: transition.previous.transactionId,
+      transactionIdAfter: transition.next.transactionId,
+      leaseTokenBefore: transition.previous.leaseToken,
+      leaseTokenAfter: transition.next.leaseToken,
+      severityBlind: true,
+      ownerRetired: transition.action !== 'ACTIVATE',
+      decision: 'PASS',
+    })
+  }
+
+  /** §6 — stamp the transaction / lease of the CURRENT owner (never a stale one). */
+  private stampInteractionTransactionV2(transactionId: number, leaseToken: string | null): void {
+    const st = this.diagnosticInteractionState
+    if (st.phase !== 'ACTIVE' || st.transactionId !== transactionId) return
+    this.diagnosticInteractionState = { ...st, leaseToken }
+  }
+
+  /** §13 — schedule the ONE post-settle closure audit for the current version. */
+  private schedulePostSettleClosureV2(clickSequence: number): void {
+    const version = this.diagnosticInteractionState.version
+    if (this.pendingClosureAuditVersion === version) return
+    this.pendingClosureAuditVersion = version
+    const emit = (): void => {
+      this.pendingClosureAuditVersion = null
+      this.emitPostSettleClosureAuditV2(clickSequence)
+    }
+    if (typeof requestAnimationFrame !== 'function') {
+      emit()
+      return
+    }
+    // deterministic settle: rAF -> rAF -> closure audit (never a timer/poll).
+    requestAnimationFrame(() => { requestAnimationFrame(emit) })
+  }
+
+  /** §13 — the REAL DOM facts the closure verdict is computed from. */
+  private measurePostSettleDomFactsV2(st: DiagnosticInteractionState): PostSettleClosureFacts & { activeFillCountMeasurable: boolean } {
+    const scope = this.root
+    const doc = (scope?.ownerDocument ?? (typeof document !== 'undefined' ? document : null))
+    // V5.14-R8 §10 — the heading emphasis lives in the DOCUMENT layer (inside the
+    // editor host), NOT in the fixed overlay root, so the measurement must span
+    // the whole document. The class names are plugin-owned, so the scope is exact.
+    const activeWrappers = doc?.querySelectorAll('.inkchapter-heading-diagnostic-active').length ?? 0
+    const headingFragmentCount = doc
+      ? Array.from(doc.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-active__fragment'))
+        .filter(el => this.isPaintedActiveFragment(el)).length
+      : 0
+    const locateFrameCommitted = this.locateFrame?.hasCommitted() === true || this.locateCommittedVisual !== null
+    const activeTargetIsHeading = this.isActiveTargetHeadingV2(st.diagnosticId)
+    // §14.2 — exactly ONE active target. A HEADING target is carried by the
+    // text-tight heading emphasis; any other target is carried by the locate frame
+    // (the two are mutually exclusive, never additive).
+    const activeTargetCount = st.phase !== 'ACTIVE'
+      ? 0
+      : activeTargetIsHeading
+        ? Math.min(1, activeWrappers)
+        : (locateFrameCommitted ? 1 : 0)
+    const drawerRowsRendered = this.drawerEl != null
+      && this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
+    const selectedActiveRowCount = this.drawerEl
+      ?.querySelectorAll('.inkchapter-doc-drawer__item.is-selected[data-diagnostic-id]').length ?? 0
+    const fillFacts = this.measureActiveLocateFillOnlyFacts(null)
+    const styleSheets = (doc as Document | null)?.styleSheets?.length ?? 0
+    return {
+      statePhase: st.phase,
+      stateDiagnosticId: st.diagnosticId,
+      stateTargetKey: st.targetKey,
+      stateVersion: st.version,
+      selectedActiveRowCount,
+      drawerRowsRendered,
+      activeTargetCount,
+      activeFillCount: fillFacts.fillCount,
+      activeFillCountMeasurable: styleSheets > 0,
+      activeVisualWithoutOwner: this.headingActiveMarkerIdentity != null && st.phase !== 'ACTIVE',
+      activeHeadingFragmentCount: headingFragmentCount,
+      activeTargetIsHeading,
+      activeLeasePresent: this.locateVisibilityLease != null,
+      activeLeaseOwnerVersion: this.locateVisibilityLease != null ? st.version : null,
+      activeLeaseTargetKey: this.locateVisibilityLease != null ? st.targetKey : null,
+      passiveSemanticSetUnchanged: this.passiveSetHashAtClick == null
+        || this.passiveSetHashAtClick === this.computePassiveSemanticSetHashNow(),
+      globalUnscopedClearObserved: this.lastGlobalUnscopedClearObserved,
+    }
+  }
+
+  /**
+   * §10 — is this active fragment REALLY painted? A real layout gives it a
+   * non-zero rect; in a layout-less runtime the plugin's own inline geometry is
+   * the authority (never "the node exists somewhere in the DOM").
+   */
+  private isPaintedActiveFragment(el: HTMLElement): boolean {
+    try {
+      const r = el.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0) return true
+    } catch { /* fall through to the inline geometry */ }
+    const w = Number.parseFloat(el.style.width)
+    const h = Number.parseFloat(el.style.height)
+    return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0
+  }
+
+  /** §10 — is the ACTIVE target a heading (the fill requirement differs)? */
+  private isActiveTargetHeadingV2(diagnosticId: string | null): boolean {
+    if (diagnosticId == null) return false
+    const diag = this.diagnosticById(diagnosticId)
+    if (diag == null) return false
+    if ((diag as { category?: string }).category === 'heading') return true
+    const el = this.resolveDiagnosticElementForMarker(diag)
+    return el != null && /^H[1-6]$/.test(el.tagName)
+  }
+
+  /**
+   * §13/§14 — the ONE post-settle closure audit. It measures the REAL settled DOM
+   * and judges IDLE / ACTIVE closure against the current authority.
+   */
+  private emitPostSettleClosureAuditV2(clickSequence: number): void {
+    const st = this.diagnosticInteractionState
+    const facts = this.measurePostSettleDomFactsV2(st)
+    const verdict = evaluatePostSettleClosure(facts)
+    if (st.phase === 'ACTIVE' && facts.activeTargetIsHeading && facts.activeHeadingFragmentCount < 1) {
+      this.countersActiveStateMachineV2.activeWithZeroFill++
+    }
+    if (st.phase === 'ACTIVE' && verdict.reasons.includes('ACTIVE_WITHOUT_LEASE')) {
+      this.countersActiveStateMachineV2.activeWithoutLease++
+    }
+    if (verdict.reasons.includes('IDLE_WITH_ACTIVE_VISUAL')) {
+      this.countersActiveStateMachineV2.idleWithSelectedDiagnosticAsActive++
+    }
+    if (verdict.decision === 'FAIL') {
+      // §14 — a post-settle state/DOM divergence is its own counter.
+      const stateDomReasons = verdict.reasons.filter(r => r.startsWith('ACTIVE_') || r.startsWith('IDLE_'))
+      if (stateDomReasons.length > 0) this.countersActiveStateMachineV2.postSettleStateDomDivergence++
+      this.countersActiveStateMachineV2.postSettleClosureFail++
+    }
+    // ── V5.14-R9 / V2.1 §6.1/§12/§13 — the OWNER-scoped visual closure + the
+    // PRODUCTION layering invariant + the illegal-IDLE deterministic repair.
+    const orderMoved = this.enforceUtilityPanelPaintOrder()
+    if (orderMoved) this.bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
+    const panelsLast = this.utilityPanelsAreLastChildren()
+    const navigatorVisibleV21 = this.realPanelRect(this.navigatorEl) != null
+    const ownerFillCount = this.countActiveOwnerFillNodes()
+    const ownerMarkerCount = this.countActiveOwnerMarkerNodes()
+    const ownerTxPresent = this.activeLocateTx != null
+    if (st.phase === 'IDLE') {
+      if (ownerFillCount > 0) this.countersVisualTransactionV21.idleWithActiveFill++
+      if (facts.activeLeasePresent) this.countersVisualTransactionV21.idleWithActiveLease++
+      if (ownerMarkerCount > 0) this.countersVisualTransactionV21.idleWithActiveMarker++
+      if (ownerTxPresent) this.countersVisualTransactionV21.idleWithActiveTransaction++
+      if (ownerFillCount > 0 || facts.activeLeasePresent || ownerMarkerCount > 0 || ownerTxPresent) {
+        // §13 — DETERMINISTIC repair: never a log-only observation.
+        this.repairIllegalIdleVisualStateV21('POST_SETTLE_CLOSURE_ILLEGAL_IDLE')
+      }
+    }
+    // §17 — DETECTED but never RECOVERED is the only failure: once the layering
+    // invariant holds, the collision is closed.
+    if (navigatorVisibleV21 && this.lastFramePaintsAboveNavigator && !panelsLast) {
+      this.countersVisualTransactionV21.unrecoveredFramePaintsAboveNavigator++
+    }
+    if (verdict.decision === 'FAIL' && panelsLast && navigatorVisibleV21
+      && this.lastFramePaintsAboveNavigator) {
+      this.countersVisualTransactionV21.navigatorCollisionWithStateDomDivergence++
+    }
+    if (this.lastDiagnosticTransition?.action === 'SWITCH' && !panelsLast && navigatorVisibleV21) {
+      this.countersVisualTransactionV21.navigatorCollisionRecoveryFailure++
+    }
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_POST_SETTLE_CLOSURE_V2, {
+      clickSequence,
+      actualClickedDiagnosticId: this.lastClickedDiagnosticId,
+      severity: this.lastClickedDiagnosticId != null
+        ? (this.diagnosticById(this.lastClickedDiagnosticId)?.severity ?? null)
+        : null,
+      classifiedAction: this.lastDiagnosticTransition?.action ?? null,
+      versionBefore: this.lastDiagnosticTransition?.previous.version ?? null,
+      versionAfter: st.version,
+      phaseBefore: this.lastDiagnosticTransition?.previous.phase ?? null,
+      phaseAfter: st.phase,
+      diagnosticBefore: this.lastDiagnosticTransition?.previous.diagnosticId ?? null,
+      diagnosticAfter: st.diagnosticId,
+      targetKeyBefore: this.lastDiagnosticTransition?.previous.targetKey ?? null,
+      targetKeyAfter: st.targetKey,
+      transactionIdBefore: this.lastDiagnosticTransition?.previous.transactionId ?? null,
+      transactionIdAfter: st.transactionId,
+      leaseTokenBefore: this.lastDiagnosticTransition?.previous.leaseToken ?? null,
+      leaseTokenAfter: st.leaseToken,
+      focusedDiagnosticId: this.focusedDiagnosticId,
+      activeStatePresent: st.phase === 'ACTIVE',
+      selectedActiveRowCount: facts.selectedActiveRowCount,
+      drawerRowsRendered: facts.drawerRowsRendered,
+      activeTargetCount: facts.activeTargetCount,
+      activeFillCount: facts.activeFillCount,
+      activeFillCountMeasurable: facts.activeFillCountMeasurable,
+      activeHeadingFragmentCount: facts.activeHeadingFragmentCount,
+      activeTargetIsHeading: facts.activeTargetIsHeading,
+      activeLeasePresent: facts.activeLeasePresent,
+      activeLeaseOwnerVersion: facts.activeLeaseOwnerVersion,
+      activeLeaseTargetKey: facts.activeLeaseTargetKey,
+      activeLeaseTransactionId: this.locateVisibilityLease?.transactionId ?? null,
+      activeLeaseToken: st.leaseToken,
+      passiveSemanticSetHashBefore: this.passiveSetHashAtClick,
+      passiveSemanticSetHashAfter: this.computePassiveSemanticSetHashNow(),
+      passiveSemanticSetUnchanged: facts.passiveSemanticSetUnchanged,
+      globalUnscopedClearObserved: facts.globalUnscopedClearObserved,
+      staleCallbackDroppedCountSinceLastClick: this.staleCallbackDropCountSinceClick,
+      // ── V2.1 §15 — visual transaction / recovery / rollback evidence.
+      locateOutcome: this.lastVisualTransactionV21 != null ? 'RESOLVED' : (st.phase === 'ACTIVE' ? 'RESOLVED' : null),
+      visualOutcome: this.lastVisualTransactionV21?.status ?? (st.phase === 'ACTIVE' ? 'PRESENTED' : null),
+      visualRecoveryAttempted: this.lastVisualRecoveryStrategyV21 != null,
+      visualRecoveryStrategy: this.lastVisualRecoveryStrategyV21,
+      visualRecoverySucceeded: panelsLast || !navigatorVisibleV21,
+      documentEndClamped: this.locateDocEndCarrier != null,
+      navigatorVisible: navigatorVisibleV21,
+      navigatorIntersectionBefore: navigatorVisibleV21 && this.lastFramePaintsAboveNavigator,
+      navigatorIntersectionAfter: navigatorVisibleV21 && this.lastFramePaintsAboveNavigator && !panelsLast,
+      panelPaintOrderEnforced: panelsLast,
+      rollbackRequested: false,
+      rollbackCompleted: st.phase === 'IDLE' && ownerFillCount === 0 && !facts.activeLeasePresent,
+      rollbackFillRemovedCount: 0,
+      rollbackLeaseReleased: st.phase === 'IDLE' && !facts.activeLeasePresent,
+      rollbackMarkerRemoved: st.phase === 'IDLE' && ownerMarkerCount === 0,
+      rollbackTransactionClosed: !ownerTxPresent,
+      illegalIdleRepairTriggered: this.countersVisualTransactionV21.idleWithActiveFill > 0
+        || this.countersVisualTransactionV21.idleWithActiveLease > 0,
+      activeOwnerFillCount: ownerFillCount,
+      activeOwnerMarkerCount: ownerMarkerCount,
+      // ── V2.1 §16/§17 — the RUNTIME hard-gate + coverage surface, so the
+      // closure audit is self-describing (every forbidden count is readable).
+      visualTransactionV21GateDecision: this.getVisualTransactionV21GateDecision().decision,
+      visualTransactionV21GateReport: this.getVisualTransactionV21GateReport(),
+      visualTransactionV21CoverageReport: this.getVisualTransactionV21CoverageReport(),
+      decision: verdict.decision,
+      reasons: verdict.reasons.join('|') || 'CLOSURE_OK',
+    })
+  }
+
+  /** §6.1 — the production layering invariant: utility panels are the LAST children. */
+  private enforceUtilityPanelPaintOrder(): boolean {
+    const root = this.root
+    if (root == null) return false
+    let moved = false
+    for (const panel of [this.toolbarEl, this.drawerEl, this.navigatorEl]) {
+      if (panel != null && panel.parentElement === root && root.lastElementChild !== panel) {
+        root.appendChild(panel)
+        moved = true
+      }
+    }
+    return moved
+  }
+
+  /** §6.1/§17 — do the utility panels really paint LAST in the overlay root? */
+  private utilityPanelsAreLastChildren(): boolean {
+    const root = this.root
+    if (root == null) return true
+    const panels = [this.toolbarEl, this.drawerEl, this.navigatorEl]
+      .filter((p): p is HTMLDivElement => p != null && p.parentElement === root)
+    if (panels.length === 0) return true
+    const children = Array.from(root.children)
+    const lastPanelIdx = Math.max(...panels.map(p => children.indexOf(p)))
+    return children.every((child, index) => panels.includes(child as HTMLDivElement) || index < lastPanelIdx)
+  }
+
   /**
    * Phase 7R.3.11.8B.5 — UNIVERSAL locate action. Every drawer 定位 button
    * routes here (single authority — never per-item scrollIntoView/querySelector).
@@ -10721,8 +13116,43 @@ export class DocumentUtilityOverlayHost {
    *     "无法定位到该问题所在行" (never claims the target changed).
    */
   private locateDiagnostic(diagnosticId: string, targetIndexOverride?: number): void {
-    // Phase 7R.3.11.8B.7.7 — NON-REENTRANT gate. A busy transaction rejects
-    // every further 定位 click BEFORE touching the cursor or any target state.
+    // ── V5.14-R8 §4/§5 — REDUCE first, then commit the next state ATOMICALLY,
+    // then retire the OLD owner (scoped), then publish the new visual. There is no
+    // "clear everything → stable IDLE → activate" window any more.
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const clickedTargetIndex = this.resolveClickedTargetIndex(diagnosticId, targetIndexOverride)
+    const clickedTargetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, clickedTargetIndex)
+    const click: DiagnosticClick = { diagnosticId, targetKey: clickedTargetKey, targetIndex: clickedTargetIndex }
+    const previous = this.diagnosticInteractionState
+    const severity = this.diagnosticById(diagnosticId)?.severity ?? null
+    const sameDiagnostic = previous.diagnosticId === diagnosticId
+    const sameTarget = previous.phase === 'ACTIVE' && previous.targetKey === clickedTargetKey
+    const clickSequence = ++this.diagnosticClickSequence
+    this.lastClickedDiagnosticId = diagnosticId
+    this.lastVisualRecoveryStrategyV21 = null
+    this.staleCallbackDropCountSinceClick = 0
+    this.lastGlobalUnscopedClearObserved = false
+    this.passiveSetHashAtClick = this.computePassiveSemanticSetHashNow()
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_CLICK_DISPATCH_V2, {
+      clickSequence,
+      documentKey: documentKey || null,
+      clickedDiagnosticId: diagnosticId,
+      clickedTargetKey,
+      clickedTargetIndex,
+      severity,
+      versionBefore: previous.version,
+      phaseBefore: previous.phase,
+      diagnosticBefore: previous.diagnosticId,
+      targetKeyBefore: previous.targetKey,
+      transactionIdBefore: previous.transactionId,
+      leaseTokenBefore: previous.leaseToken,
+      focusedDiagnosticId: this.focusedDiagnosticId,
+      lastLocatedDiagnosticIdObserved: this.lastLocatedDiagnosticId,
+    })
+
+    // Phase 7R.3.11.8B.7.7 — NON-REENTRANT gate. A busy transaction rejects every
+    // further click (INCLUDING a repeat of its own target: an in-flight activation
+    // can never be toggled off mid-transaction).
     const busyTx = this.activeLocateTx
     if (busyTx) {
       this.emitLocateTransactionAudit({
@@ -10732,9 +13162,34 @@ export class DocumentUtilityOverlayHost {
       })
       return
     }
-    // Phase 7R.3.11.8B.8 — a NEW accepted locate clears the previous locate
-    // visual (V3 lifecycle: click A → A visual; click B → cleanup A → B).
-    this.clearDiagnosticLocateVisual('DIAGNOSTIC_SWITCH')
+
+    // §4 — ONE reducer call computes { previous, next } in a single step; the
+    // transaction id of an ACTIVATE/SWITCH is the NEXT id (a DEACTIVATE has none).
+    const predictedTxId = this.locateTxIdSeq + 1
+    const transition = reduceDiagnosticClick(previous, click, predictedTxId, null)
+    const committed = transition.action === 'DEACTIVATE'
+      ? reduceDiagnosticClick(previous, click, null, null)
+      : transition
+    this.commitDiagnosticTransitionV2(committed, clickSequence)
+    const previousOwner = ownerOf(previous)
+
+    // ── §7 — DEACTIVATE: commit IDLE (version++) FIRST, then retire the old
+    // owner's OWN presentation. No locate transaction is created at all.
+    if (committed.action === 'DEACTIVATE') {
+      this.retireActiveVisualForDeactivate(previousOwner, click)
+      this.emitActiveInteractionAudit({
+        action: committed.action, previous, click, severity, sameDiagnostic, sameTarget, newTransactionId: null,
+      })
+      this.schedulePostSettleClosureV2(clickSequence)
+      return
+    }
+
+    // ── §5 step 4 — retire the OLD owner with an OWNER-SCOPED reason (a normal
+    // switch must never run a global unscoped clear).
+    this.retireVisualForOwnerV2(previousOwner, 'DIAGNOSTIC_SWITCH_SCOPED_OWNER')
+    // ── §5 step 5 — publish the NEW owner's visual: reset the previous locate
+    // carrier, then run the ONE locate transaction for the new target.
+    this.clearDiagnosticLocateVisual(committed.action === 'SWITCH' ? 'DIAGNOSTIC_SWITCH_SCOPED_OWNER' : 'DIAGNOSTIC_ACTIVATE')
     const tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']> = {
       id: ++this.locateTxIdSeq,
       documentKey: this.opts.ctx.authority.getDocumentKey(),
@@ -10745,6 +13200,21 @@ export class DocumentUtilityOverlayHost {
       state: 'RESOLVING',
     }
     this.activeLocateTx = tx
+    this.stampInteractionTransactionV2(tx.id, null)
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_VISUAL_PUBLISH_V2, {
+      clickSequence,
+      version: this.diagnosticInteractionState.version,
+      diagnosticId,
+      targetKey: clickedTargetKey,
+      targetIndex: clickedTargetIndex,
+      transactionId: tx.id,
+      phase: this.diagnosticInteractionState.phase,
+      decision: 'PASS',
+      reason: committed.action === 'SWITCH' ? 'PUBLISH_NEW_OWNER_AFTER_SCOPED_RETIRE' : 'PUBLISH_FIRST_OWNER',
+    })
+    this.emitActiveInteractionAudit({
+      action: committed.action, previous, click, severity, sameDiagnostic, sameTarget, newTransactionId: tx.id,
+    })
     // V5.9 §37 — a previous ACCEPTED transaction that never reached a terminal
     // is an explicit violation (never silently overwritten).
     if (this.locateTxAcceptedCount > this.locateTxTerminalCount) {
@@ -13263,7 +15733,7 @@ export class DocumentUtilityOverlayHost {
     identity: ReturnType<DocumentUtilityOverlayHost['captureLocateIdentity']>,
     pre: LocatePreScrollState,
     completionReason: string,
-    phase: 'PHASE_A' | 'PHASE_B' = 'PHASE_A',
+    phase: 'PHASE_A' | 'PHASE_B' | 'PHASE_C' = 'PHASE_A',
   ): void {
     const facts = tx.oneClick
     if (!facts) return
@@ -13406,11 +15876,99 @@ export class DocumentUtilityOverlayHost {
             return
           }
           tx.state = 'FAILED'
-          this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'FINAL_PRESENTATION_BLOCKED_BY_VIEWPORT', targetIndex, result, false)
-          this.finishLocateTransaction(tx, false, `FINAL_PRESENTATION_BLOCKED_BY_VIEWPORT:${gate.reason}`)
+          // V5.14-R9 / V2.1 — a LAYERING collision (even through the occlusion
+          // family) is a RECOVERABLE VISUAL problem: it must not short-circuit
+          // into an interaction failure. Fall through to the shared classifier.
+          if (!isPanelLayeringCollisionReason(gate.reason ?? '')) {
+            this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'FINAL_PRESENTATION_BLOCKED_BY_VIEWPORT', targetIndex, result, false)
+            this.finishLocateTransaction(tx, false, `FINAL_PRESENTATION_BLOCKED_BY_VIEWPORT:${gate.reason}`)
+            return
+          }
+        }
+        // ── V5.14-R9 / V2.1 §3/§4/§5 — VISUAL vs INTERACTION DECOUPLING.
+        // The presentation gate FAILED, but the locate REALLY resolved the target,
+        // the scroll committed and the fill was generated: a panel LAYERING
+        // collision is a RECOVERABLE VISUAL problem, never a locate/interaction
+        // failure (ROOT_A / ROOT_B).
+        const navigatorCollision = this.lastFramePaintsAboveNavigator
+          && this.realPanelRect(this.navigatorEl) != null
+        const documentEndClamped = this.locateDocEndCarrier != null
+        const fillCommitted = this.locateCommittedVisual !== null
+          || this.locateDocCarrier != null
+          || this.locateFrame?.hasCommitted() === true
+        const classification = classifyDiagnosticVisualFailure({
+          gateReason: gate.reason ?? '',
+          targetResolved: true,
+          targetEnteredViewport: true,
+          fillCommitted,
+          coverageValid: true,
+          panelLayeringCollision: navigatorCollision,
+          documentEndClamped,
+        })
+        tx.v21VisualOutcome = classification.visual
+        if (navigatorCollision) this.coverageVisualTransactionV21.framePaintsAboveNavigatorDetected++
+        emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_VISUAL_OUTCOME_V2_1, {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          transactionId: tx.id,
+          diagnosticId,
+          targetIndex,
+          gateReason: gate.reason ?? null,
+          locateOutcome: classification.locate,
+          visualOutcome: classification.visual,
+          keepActive: classification.keepActive,
+          rollbackRequired: classification.rollbackRequired,
+          navigatorCollision,
+          navigatorVisible: this.realPanelRect(this.navigatorEl) != null,
+          documentEndClamped,
+          targetEnteredViewport: true,
+          fillCommitted,
+          recoveryAttempts: tx.v21VisualRecoveryAttempts ?? 0,
+          decision: classification.visual === 'RECOVERABLE_COLLISION' ? 'DEGRADE_OR_RECOVER' : classification.visual,
+          reason: classification.reason,
+        })
+        if (classification.visual === 'RECOVERABLE_COLLISION' && navigatorCollision
+          && (tx.v21VisualRecoveryAttempts ?? 0) < 1) {
+          // §7 — the VISUAL RECOVERY PIPELINE (bounded to ONE attempt, no polling).
+          tx.v21VisualRecoveryAttempts = 1
+          this.coverageVisualTransactionV21.navigatorCollisionRuntimeObserved++
+          tx.v21VisualRecoveryStrategy = this.recoverDiagnosticVisualCollision(tx, documentEndClamped)
+          tx.state = 'RECOVERING_VISUAL'
+          // the recovery changed the paint order → re-judge ONCE on the new epoch
+          this.scheduleOneClickRaf(() => {
+            if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
+            this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason, 'PHASE_C')
+          })
+          return
+        }
+        if (classification.keepActive) {
+          // ── §4.5 方案 A — the presentation is DEGRADED, but the user's goal IS
+          // met (the target is located, scrolled and filled). Keeping ACTIVE keeps
+          // the State / Fill / Lease closure intact instead of a HALF rollback.
+          if (navigatorCollision) {
+            this.coverageVisualTransactionV21.recoverableCollisionKeptActiveDegraded++
+          } else {
+            this.coverageVisualTransactionV21.recoverableCollisionRecovered++
+          }
+          tx.v21VisualDegraded = true
+          this.commitDocumentSpaceCarrier(tx, diag, result)
+          const headingAnchor = result.element ?? null
+          if (headingAnchor && /^H[1-6]$/.test(headingAnchor.tagName)) {
+            this.renderHeadingActiveEmphasis(diag.id, diag, headingAnchor)
+          }
+          facts.locateCommittedThisTransaction = true
+          this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'PRESENTED_WITH_RECOVERABLE_COLLISION', targetIndex, result, true)
+          tx.state = 'COMMITTED'
+          this.finishLocateTransaction(tx, true, navigatorCollision
+            ? 'ONE_CLICK_COMMITTED_WITH_VISUAL_DEGRADATION'
+            : 'ONE_CLICK_COMMITTED_AFTER_VISUAL_RECOVERY')
           return
         }
         tx.state = 'FAILED'
+        // §4.1 — a genuine interaction failure is escalated ONLY when the locate
+        // itself did not resolve; it rolls back ATOMICALLY (see finishLocateTransaction).
+        if (classification.visual === 'RECOVERABLE_COLLISION') {
+          this.countersVisualTransactionV21.recoverableNavigatorCollisionEscalatedToInteractionFailure++
+        }
         this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'FAILED_VISUAL_PRESENTATION', targetIndex, result, false)
         this.finishLocateTransaction(tx, false, `FAILED_VISUAL_PRESENTATION:${gate.reason}`)
         return
@@ -13579,6 +16137,9 @@ export class DocumentUtilityOverlayHost {
   /** §13.3 — take the ACTIVE LOCATE VISIBILITY LEASE for this transaction. */
   private acquireLocateVisibilityLease(tx: { id: number; diagnosticId: string | null }): void {
     this.locateVisibilityLease = { transactionId: tx.id, diagnosticId: tx.diagnosticId }
+    // ── V5.14-R8 §6 — the ONE interaction authority carries the lease token, so a
+    // lease can never outlive / mismatch the active owner it belongs to.
+    this.stampInteractionTransactionV2(tx.id, `lease:${tx.id}`)
   }
 
   /**
@@ -14334,6 +16895,26 @@ export class DocumentUtilityOverlayHost {
     this.releaseLocateScrollLease() // V5.11 §13 — post-commit scroll is INERT
     this.activeLocateTx = null
     this.locateTxTerminalCount++ // V5.9 §37
+    // ── V5.14-R8 §5/§7.1 — the interaction terminal. A COMMIT leaves the owner
+    // ACTIVE (the lease token is stamped by `acquireLocateVisibilityLease` below);
+    // a FAILURE retires it through the SAME hard reset (version++), so the failed
+    // activation can never be resurrected by one of its own late callbacks.
+    {
+      const st = this.diagnosticInteractionState
+      if (st.phase === 'ACTIVE' && st.transactionId === tx.id && !commit) {
+        // ── V5.14-R9 / V2.1 §9/§11/§12 — a locate FAILURE rolls back ATOMICALLY:
+        // State + Fill + Marker + Lease + Transaction + Active row end TOGETHER.
+        // (The old state-only HARD_RESET is the ROOT_C/ROOT_D/ROOT_E defect.)
+        this.teardownDiagnosticInteraction({
+          reason: `LOCATE_FAILED:${completionReason}`,
+          expectedOwnerVersion: st.version,
+          rollbackRequested: true,
+        })
+      } else {
+        // §13 — the closure audit runs ONCE per version, AFTER the settle.
+        this.schedulePostSettleClosureV2(this.diagnosticClickSequence)
+      }
+    }
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
@@ -14354,7 +16935,12 @@ export class DocumentUtilityOverlayHost {
     if (commit) {
       // §13.3 — the active-visual lease protects the committed highlight. A
       // document-level locate (scroll-only, no carrier) has nothing to protect.
-      const hasActiveVisual = this.locateVisualIsActive() || this.locateCommittedVisual !== null
+      // V5.14-R8 §14.2 — a HEADING target's active visual is the text-tight heading
+      // emphasis (NOT a locate frame), so it MUST also hold the lease; otherwise
+      // the interaction would be ACTIVE without a lease owner.
+      const hasActiveVisual = this.locateVisualIsActive()
+        || this.locateCommittedVisual !== null
+        || this.headingActiveWrapper != null
       if (hasActiveVisual) this.acquireLocateVisibilityLease(tx)
       this.releaseDrawerRecoveryLease(requestedOpenAtTerminal ? 'COMMITTED_DRAWER_RESTORED' : 'COMMITTED_DRAWER_CLOSED_BY_USER')
       const presentationAfterTerminal = this.getDrawerPresentationMode()
@@ -14411,6 +16997,7 @@ export class DocumentUtilityOverlayHost {
     this.releaseLocateScrollLease()
     this.activeLocateTx = null
     this.locateTxTerminalCount++ // V5.9 §37
+    this.retireActiveInteractionFor(tx.id) // V5.14-R7 §7.3
     this.updateLocateBusyUi(false)
     this.emitLocateTransactionAudit({
       transactionId: tx.id,
@@ -14432,6 +17019,10 @@ export class DocumentUtilityOverlayHost {
     // no transaction is in flight (a post-COMMIT visual must not keep the Drawer
     // collapsed across a document switch).
     this.releaseDrawerRecoveryLease(reason === 'PANEL_CLOSED' ? 'CANCELLED' : reason)
+    // V5.14-R8 §7.3 — a cancel / document-switch / panel-close ENDS the ACTIVE
+    // interaction authority (version++), so no owner may linger. The Drawer
+    // FOCUS is a separate UI authority and is deliberately preserved.
+    this.hardResetInteractionV2(reason)
     // V5.12-R3 §6 — a cancelled/ended transaction also ends any active visual.
     this.releaseActiveLocateVisualLease(reason)
     const tx = this.activeLocateTx
@@ -14470,23 +17061,13 @@ export class DocumentUtilityOverlayHost {
    */
   private updateLocateBusyUi(active: boolean): void {
     if (!this.drawerEl) return
-    const focusId = active
-      ? (this.activeLocateTx?.diagnosticId ?? this.lastLocatedDiagnosticId)
-      : this.lastLocatedDiagnosticId
-    if (active && focusId) {
-      this.lastLocatedDiagnosticId = focusId
-      // §33 — pin the SELECTED occurrence, not just the diagnostic.
-      this.lastLocatedTargetIndex = this.activeLocateTx?.targetIndex ?? null
-    }
     for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
       row.setAttribute('aria-disabled', String(active))
       row.classList.toggle('is-busy', active)
-      const rowTargetIndex = Number.parseInt(row.getAttribute('data-target-index') ?? '0', 10)
-      const isFocus = !active && focusId != null
-        && row.getAttribute('data-diagnostic-id') === focusId
-        && (this.lastLocatedTargetIndex == null || rowTargetIndex === this.lastLocatedTargetIndex)
-      row.classList.toggle('is-selected', isFocus)
     }
+    // ── V5.14-R7 §11 — the row `is-selected` tint is the ACTIVE row and derives
+    // from the ONE Active authority (never from the sticky locate focus).
+    this.refreshDrawerActiveRow()
   }
 
   /** Phase 7R.3.11.8B.7.7 — [DOCUMENT-DIAGNOSTIC-LOCATE-TRANSACTION] audit. */
@@ -15078,12 +17659,34 @@ export class DocumentUtilityOverlayHost {
     item.setAttribute('data-target-index', String(p.targetIndex))
     item.setAttribute('role', 'button')
     item.setAttribute('tabindex', '0')
-    const message = d?.message ?? p.ruleId
-    item.setAttribute('aria-label', `${d?.detail ? d.detail + '，' : ''}${message}`)
-    // §33 — the SELECTED occurrence is the (diagnosticId, targetIndex) PAIR, so a
-    // refresh can never make the active row jump to another occurrence.
-    if (this.lastLocatedDiagnosticId === p.diagnosticId
-      && (this.lastLocatedTargetIndex ?? 0) === p.targetIndex) item.classList.add('is-selected')
+    // ── V5.14-R5 §8 — the Drawer keeps the FULL explanation; only the INLINE chip
+    // is compressed. The presentation authority supplies a concise TITLE for the
+    // strict first-H1 family (whose own `message` is a multi-line sentence with a
+    // severity glyph) and promotes that full sentence to the DETAIL.
+    const presentation = d
+      ? buildDiagnosticPresentation({
+          code: d.code,
+          severity: d.severity,
+          message: d.message,
+          detail: d.detail,
+          category: (d as { category?: string }).category ?? null,
+          metadata: (d.metadata ?? {}) as Record<string, unknown>,
+        })
+      : null
+    const message = presentation?.drawerTitle ?? d?.message ?? p.ruleId
+    const detailText = presentation?.drawerDetail ?? d?.detail ?? null
+    item.setAttribute('aria-label', `${detailText ? detailText + '，' : ''}${message}`)
+    // ── V5.14-R8 §9/§11 — the ACTIVE row derives from the ONE V2 authority, so a
+    // dismissed target can never keep a selected-looking row and a switch moves
+    // the row in the SAME render. The FOCUS ring is a SEPARATE authority.
+    const stForRow = this.diagnosticInteractionState
+    if (stForRow.phase === 'ACTIVE' && stForRow.diagnosticId === p.diagnosticId
+      && (stForRow.targetIndex == null || stForRow.targetIndex === p.targetIndex)) {
+      item.classList.add('is-selected')
+    }
+    if (this.focusedDiagnosticId != null && this.focusedDiagnosticId === p.diagnosticId) {
+      item.classList.add('is-focused')
+    }
 
     const icon = document.createElement('span')
     icon.className = 'inkchapter-doc-drawer__item-icon'
@@ -15096,10 +17699,10 @@ export class DocumentUtilityOverlayHost {
     msg.className = 'inkchapter-doc-drawer__item-msg'
     msg.textContent = message
     body.appendChild(msg)
-    if (d?.detail) {
+    if (detailText) {
       const detail = document.createElement('div')
       detail.className = 'inkchapter-doc-drawer__item-detail'
-      detail.textContent = d.detail
+      detail.textContent = detailText
       body.appendChild(detail)
     }
     item.appendChild(body)

@@ -307,8 +307,12 @@ describe('V5.14-R3 §30 — Passive / Active (host wiring)', () => {
 
     api().renderHeadingActiveEmphasis('W1', diagEl('W1'), w.headings[1])
     expect(markerCount()).toBe(3)
-    expect(passiveFragmentCount()).toBe(3)
+    // ── V5.14-R4 §11 — the SELECTED target (H-B) presents ONE atomic surface, so its
+    // passive FILL is replaced by the active emphasis (2 sibling passive fills remain).
+    // The passive MARKER / semantic key set is unchanged (still 3 / 3).
+    expect(passiveFragmentCount()).toBe(2)
     expect(activeFragmentCount()).toBe(1)
+    expect(api().getPassiveActiveVisualStateV514R3().passiveCount).toBe(3)
     // 4/5/6 — the active key moved B; A is back to passive only
     const wrappers = Array.from(document.querySelectorAll('.inkchapter-heading-diagnostic-marker'))
     expect(wrappers[0].getAttribute('data-ink-diagnostic-active')).toBe('false')

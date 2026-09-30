@@ -37,6 +37,9 @@ export const HEADING_ACTIVE_FILL_ALPHA_MAX = 0.12
 /** §11 — the reason chip stays short. */
 export const HEADING_REASON_CHIP_MAX_CHARS = 18
 
+// V5.14-R5 §3/§4/§5/§7 — the ONE DiagnosticCode -> inlineHint authority.
+import { inlineHintCategoryForCode, inlineHintIsSafe, resolveInlineHint } from './document-diagnostic-inline-presentation-v514-r5'
+
 export interface HeadingRect {
   x: number
   y: number
@@ -234,31 +237,24 @@ export interface HeadingReasonFacts {
   metadata?: Record<string, unknown> | null
 }
 
-/** §17 — a SHORT reason chip, built only from existing diagnostic facts. */
+/**
+ * §17 — a SHORT reason chip.
+ *
+ * V5.14-R5 §3/§4/§5/§7 — the inline text is GENERATED from the DiagnosticCode by
+ * the ONE presentation authority (`document-diagnostic-inline-presentation-v514-r5`).
+ * It is never a slice of the long diagnostic message (the previous fallback sliced
+ * the strict validator's own `message`, which starts with `⚠ 严格模式结构错误：…`,
+ * so the chip leaked both the severity glyph and a full sentence). An unmapped
+ * code yields a short CATEGORY label instead.
+ */
 export function buildHeadingLocateReason(diagnostic: HeadingReasonFacts): string | null {
-  const meta = diagnostic.metadata ?? {}
-  const code = diagnostic.code
-  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-  const prev = num(meta.previousLevel)
-  const cur = num(meta.currentLevel)
-  if (code === 'HEADING_LEVEL_GAP' && prev != null && cur != null) {
-    const missing = Array.isArray(meta.missingLevels) ? (meta.missingLevels as unknown[]).map(n => num(n)).filter((n): n is number => n != null) : []
-    const missLabel = missing.length > 0 ? missing.map(l => `H${l}`).join('、') : null
-    return missLabel ? `H${prev} → H${cur} · 缺 ${missLabel}` : `H${prev} → H${cur}`
-  }
-  if (code === 'STRICT_SINGLE_H1_MULTIPLE_H1') return '多余 H1'
-  if (code === 'STRICT_SINGLE_H1_NO_H1') return '缺少 H1'
-  const reason = typeof meta.reason === 'string' ? meta.reason : null
-  if (reason === 'H1_NOT_FIRST') return 'H1 未位于文首'
-  if (code === 'HEADING_EMPTY_TEXT') return '空标题'
-  if (code === 'HEADING_DUPLICATE_TEXT') return '重复标题文字'
-  if (code === 'HEADING_DUPLICATE_IDENTITY') return '重复标题身份'
-  if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return '疑似未生效标题'
-  // §17 — a structured-fact-free diagnostic falls back to a SHORT message slice.
-  const msg = String(diagnostic.message ?? '').trim()
-  if (!msg) return null
-  const short = msg.length <= HEADING_REASON_CHIP_MAX_CHARS ? msg : `${msg.slice(0, HEADING_REASON_CHIP_MAX_CHARS - 1)}…`
-  return short
+  const { hint, source } = resolveInlineHint({
+    code: diagnostic.code,
+    message: diagnostic.message,
+    metadata: (diagnostic.metadata ?? {}) as Record<string, unknown>,
+  })
+  if (source === 'MESSAGE_FALLBACK') return inlineHintCategoryForCode(diagnostic.code)
+  return inlineHintIsSafe(hint) ? hint : inlineHintCategoryForCode(diagnostic.code)
 }
 
 /** §27 — passive marker dedupe key (one marker per heading element). */

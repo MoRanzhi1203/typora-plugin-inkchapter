@@ -448,8 +448,8 @@ describe('ONECLICK-V58-6/7 — bounded INTERNAL retry (never a second user click
 })
 
 // ── ONECLICK-V58-8 ─────────────────────────────────────────────────────────
-describe('ONECLICK-V58-8 — a later click on the same diagnostic is a NEW relocate action', () => {
-  it('ONECLICK-V58-8: the second click opens a fresh one-click transaction', async () => {
+describe('ONECLICK-V58-8 — V5.14-R7: a second click on the SAME target toggles it OFF', () => {
+  it('ONECLICK-V58-8: the second click deactivates and creates NO new transaction', async () => {
     const mounted = makeHost()
     host = mounted.h
     mounted.write.innerHTML = '<table><tr><td>x</td></tr></table>'
@@ -462,24 +462,16 @@ describe('ONECLICK-V58-8 — a later click on the same diagnostic is a NEW reloc
     const first = readAudit(infoSpy!, LOCATE_ONE_CLICK_AUDIT_EVENT, 0)
     expect(first).not.toBeNull()
     expect(first!.terminalState).toBe('COMMITTED')
-    const epoch1 = Number(first!.visualEpoch)
 
-    // Re-inject (a live reconcile may have published a fresh snapshot); the
-    // relocate starts offscreen again, so it must arrive by itself too.
-    live.top = OFFSCREEN_BELOW.top
-    live.bottom = OFFSCREEN_BELOW.bottom
+    // ── V5.14-R7 §7.2 (ROOT_R7_1) — the SAME target clicked again is a
+    // DEACTIVATE: the visual is retired and NO new one-click transaction starts.
     injectSnapshot(host, tableDiag())
+    const txsBefore = countAudit(infoSpy!, 'DOCUMENT-DIAGNOSTIC-LOCATE-TRANSACTION')
     await clickLocateArriving(host, 'T1', live)
-    expect(countAudit(infoSpy!, LOCATE_ONE_CLICK_AUDIT_EVENT)).toBe(2)
-    const second = readAudit(infoSpy!, LOCATE_ONE_CLICK_AUDIT_EVENT, 1)
-    expect(second).not.toBeNull()
-    expect(Number(second!.transactionId)).toBeGreaterThan(Number(first!.transactionId))
-    expect(Number(second!.visualEpoch)).toBeGreaterThan(epoch1)
-    // The relocate is a COMPLETE one-click transaction again.
-    expect(second!.userClickCount).toBe('1')
-    expect(second!.terminalState).toBe('COMMITTED')
-    expect(second!.decision).toBe('PASS')
-    expect(second!.secondUserClickRequired).toBe('false')
+    expect(countAudit(infoSpy!, LOCATE_ONE_CLICK_AUDIT_EVENT)).toBe(1)
+    expect(countAudit(infoSpy!, 'DOCUMENT-DIAGNOSTIC-LOCATE-TRANSACTION')).toBe(txsBefore)
+    expect(host.getActiveDiagnosticStateV514R7()).toBeNull()
+    await flushRaf()
     expect(host.getLocateFrameStructure().staleLocateFrameCount).toBe(0)
     expectAllV58GatesZero(host)
   })

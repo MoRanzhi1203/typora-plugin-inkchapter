@@ -53,6 +53,18 @@ export interface OutlineDiagnosticTargetInput {
   severity: OutlineDiagnosticSeverity
   /** the ONLY occurrence that may be strengthened. */
   active: boolean
+  /**
+   * V5.14-R6 §15/§17 — the SAME semantic coverage mask the body uses
+   * (NUMBER|GAP|TITLE for a numbered heading, TITLE otherwise). The outline
+   * reprojects this mask into its OWN DOM coordinate space; body rects are never
+   * copied across coordinate spaces.
+   */
+  coverageMask?: number
+  /**
+   * V5.14-R6.1 §14 — the SAME coverage POLICY resolved from the DiagnosticCode.
+   * The outline reprojects it against its own DOM text; body rects are never copied.
+   */
+  coveragePolicy?: string
 }
 
 /** stableHeadingIdentity → the COMMITTED outline item it maps to. */
