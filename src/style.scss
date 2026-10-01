@@ -114,19 +114,25 @@ body.native-window::before {
   pointer-events: none;
 }
 
-/* ── §5.3 tab strip ↔ editor body (stronger than the tab-to-tab separator) ── */
-/* A 1px background strip at the bottom edge: zero layout impact, no box-shadow,
-   no real border, nothing to intercept. */
-.typ-workspace-tabs,
-.typ-workspace-tab-header {
-  background-image: linear-gradient(
-    to bottom,
-    transparent calc(100% - 1px),
-    var(--ink-divider-major) calc(100% - 1px)
-  );
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
-}
+/* ── §5.3 tab strip ↔ editor body — V5: NATIVE AUTHORITY, nothing added ────── */
+/* V1–V4 painted a 1px gradient here. Forensics against the framework source
+   (`packages/core/src/ui/components/tabs.scss`) show that is wrong twice over:
+     * `%typ-tabs__child{border-bottom:1px solid var(--typ-tab-border-color)}` is
+       inherited by `.typ-tab` AND by `.typ-tabs::after{content:'';flex:1}`, so the
+       tab-strip bottom line ALREADY exists natively and spans the full row;
+     * `.typ-workspace-tabs` is the whole workspace COLUMN
+       (`layout/tabs/index.scss`: `flex-direction:column` holding
+       `.typ-workspace-tab-content` → `.typ-workspace-leaf`), not the tab bar — a
+       divider there would land at the bottom of the EDITOR and would be a second
+       line (DIVIDER_DOUBLE_LINE_COUNT).
+   ⇒ the rule was removed; the native border stays the single authority. */
+
+/* V5 — the tab row itself. `.typ-tabs-wrapper` is the REAL horizontal scroll
+   owner (framework `tabs.scss`: `overflow-x:auto; overflow-y:hidden`, with its
+   own `&::-webkit-scrollbar{height:6px}`); `.typ-tabs` only lays the tabs out
+   (`display:flex; min-width:100%`) and never scrolls.
+   NOTE: no `scrollbar-width` is declared — in Chromium setting it would disable
+   every `::-webkit-scrollbar` rule below. */
 
 /* V3 §6/§7 — ACTIVE TAB ↔ BODY CONNECTION, native authority only.
    No new border and no card feel: the native `.active` background is simply
@@ -183,48 +189,52 @@ body.native-window::before {
   width: 5px;
 }
 
-/* ── V4 §6 — TAB STRIP horizontal scrollbar: slim + hover-reveal ──────────── */
-/* §8 of V1 — KEPT and FUNCTIONAL, only visually reduced. Never `display:none` /
-   `scrollbar-width:none` / `height:0`, so there is NO layout shift when it
-   appears (TAB_SCROLLBAR_LAYOUT_SHIFT_COUNT) and the 4px hit area stays draggable.
-   The track is fully transparent, so the structure divider below can never stack
-   into a grey band (TAB_SCROLLBAR_DOUBLE_LINE_WITH_BOTTOM_DIVIDER_COUNT).
-   V4 §6.2/§6.3 — default thumb is ~2% (near invisible); hovering the strip
-   reveals it; thumb hover / drag goes strongest. Pure CSS `:hover` on both the
-   outer strip and the inner scroller — no observer, no interval, no class
-   switching state machine. */
-.typ-workspace-tabs .typ-tabs::-webkit-scrollbar,
-.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar {
+/* ── V5 — TAB STRIP horizontal scrollbar: correct OWNER + reveal authority ─── */
+/* FORENSIC CORRECTION. V1–V4 styled `.typ-tabs`, but the framework source proves
+   `.typ-tabs` never scrolls (`components/tabs.scss`: `.typ-tabs{display:flex;
+   min-width:100%}`, with a `::after{flex:1}` filler) — the real horizontal scroll
+   owner is its parent `.typ-tabs-wrapper` (`overflow-x:auto; overflow-y:hidden`),
+   whose own native 6px bar (Typora global `::-webkit-scrollbar-thumb{
+   background:rgba(0,0,0,.3)}`) is the grey grip that stayed visible. Everything
+   below is therefore re-targeted at the REAL owner.
+   Reveal authority is NOT `:hover` on the STRIP-OWNING COLUMN: `.typ-workspace-tabs`
+   is the whole workspace COLUMN (it contains the editor leaf), so hovering the
+   document would have kept it true. V5.1 — the authority is `.typ-tabs-wrapper`
+   itself, i.e. the entire tab bar and nothing else. There is NO JS controller:
+   no scroll/wheel listener, no inactivity timer, no activity class. A pure
+   `:hover` is sufficient and is exactly the requested behaviour (hover anywhere in
+   the bar ⇒ visible, even with no scrolling at all, and it never auto-hides).
+   Sizing is unchanged and never toggled: 4px hit area, ~2px visual pill, fully
+   transparent track — so revealing cannot shift layout. */
+.typ-tabs-wrapper::-webkit-scrollbar {
   height: 4px;
   width: 4px;
   background: var(--ink-tab-scrollbar-track);
 }
-.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-track,
-.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-track {
+.typ-tabs-wrapper::-webkit-scrollbar-track {
   background: var(--ink-tab-scrollbar-track);
   border: 0;
 }
-.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-thumb,
-.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-thumb {
+.typ-tabs-wrapper::-webkit-scrollbar-thumb {
   /* 4px HIT AREA, ~2px VISUAL: the 1px transparent border is subtracted from the
      painted box by `background-clip: content-box`, so the draggable target stays
      4px while only a ~2px pill is visible. The hit area is never crushed to 2px
      and the scrollbar is never removed. */
-  background-color: var(--ink-scroll-thumb);
+  background-color: transparent;
   background-clip: content-box;
   border: 1px solid transparent;
   border-radius: 999px;
   transition: background-color 0.18s ease;
 }
-.typ-workspace-tabs:hover .typ-tabs::-webkit-scrollbar-thumb,
-.typ-workspace-tab-header:hover .typ-tabs::-webkit-scrollbar-thumb,
-.typ-workspace-tabs .typ-tabs:hover::-webkit-scrollbar-thumb {
+/* V5.1 — REVEAL AUTHORITY = the WHOLE tab bar: `.typ-tabs-wrapper:hover`.
+   Anywhere inside the wrapper (a tab, its title, the close button, the blank
+   area, and the scrollbar itself) keeps it visible; nothing outside does.
+   Colour is the previously accepted one — this round changes ONLY the trigger. */
+.typ-tabs-wrapper:hover::-webkit-scrollbar-thumb {
   background-color: var(--ink-scroll-thumb-hover);
 }
-.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-thumb:hover,
-.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-thumb:active,
-.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-thumb:hover,
-.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-thumb:active {
+.typ-tabs-wrapper::-webkit-scrollbar-thumb:hover,
+.typ-tabs-wrapper::-webkit-scrollbar-thumb:active {
   background-color: var(--ink-scroll-thumb-active);
 }
 
