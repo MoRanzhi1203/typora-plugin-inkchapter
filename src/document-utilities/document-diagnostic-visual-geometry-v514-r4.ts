@@ -170,9 +170,11 @@ export function evaluateReasonChipGeometry(input: {
     return { horizontalGapPx: null, anchorDriftPx: null, verticalDriftPx: null, anchorOk: true, verticalOk: true, gapOk: true }
   }
   const besideLastLine = input.chipPlacement == null || input.chipPlacement === 'RIGHT_OF_LAST_LINE'
-  if (!besideLastLine) {
-    return { horizontalGapPx: null, anchorDriftPx: null, verticalDriftPx: null, anchorOk: true, verticalOk: true, gapOk: true }
-  }
+  void besideLastLine
+  // ── Heading Reason Chip Stable Anchor V2 §10（ROOT_V2_C）—— 旧的“非 RIGHT_OF_LAST_LINE
+  // 即短路返回全 ok”分支已删除：它让 `left = 0 / top = bottom + 4` 的 next-line fallback
+  // 静默通过（Audit False PASS）。V2 起 placement 恒为 `INLINE_RIGHT`，因此本函数**无条件**
+  // 校验 anchor drift / 纵向居中；任何仍在下一行或有水平偏移的 chip 都会 FAIL。
   const tolerance = input.anchorTolerancePx ?? REASON_CHIP_ANCHOR_TOLERANCE_PX_V514R4
   const anchorLine = input.textRects[input.textRects.length - 1]
   const labelRight = input.visualLabelRight ?? anchorLine.right

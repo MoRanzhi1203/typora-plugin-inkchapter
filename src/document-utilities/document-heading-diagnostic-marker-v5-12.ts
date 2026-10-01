@@ -39,6 +39,10 @@ export const HEADING_REASON_CHIP_MAX_CHARS = 18
 
 // V5.14-R5 §3/§4/§5/§7 — the ONE DiagnosticCode -> inlineHint authority.
 import { inlineHintCategoryForCode, inlineHintIsSafe, resolveInlineHint } from './document-diagnostic-inline-presentation-v514-r5'
+import {
+  HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2,
+  computeHeadingReasonChipPlacement as computeCanonicalHeadingReasonChipPlacement,
+} from './document-diagnostic-heading-reason-chip-stability-v2'
 
 export interface HeadingRect {
   x: number
@@ -176,27 +180,46 @@ export interface ReasonChipPlacement {
   clamped: boolean
 }
 
-/** §12/§29 — overlay placement: right of the last line, else below it. */
+/**
+ * §12/§29 — overlay placement。**Heading Reason Chip Stable Anchor V2 重写**：
+ * 现在是一个 thin adapter，唯一 authority 是
+ * `computeHeadingReasonChipPlacement`（`document-diagnostic-heading-reason-chip-stability-v2.ts`）。
+ *
+ * ROOT_V2_A —— 旧实现横向空间不足时返回 `BELOW_LAST_LINE`（`top = last.bottom + 4`、
+ * `left` 可退化为 0）。该 next-line fallback 已被**结构性移除**：chip 恒为
+ * `INLINE_RIGHT`，只做水平 clamp，且 `left >= last.right + 4px` 永成立。
+ */
 export function computeHeadingReasonChipPlacement(input: ReasonChipPlacementInput): ReasonChipPlacement | null {
   if (input.contentRects.length === 0) return null
   const last = input.contentRects[input.contentRects.length - 1]
-  const rightLimit = input.drawerLeft != null ? Math.min(input.editorRight, input.drawerLeft) : input.editorRight
-  const gap = 8
-  const rightOf = last.right + gap
-  if (rightOf + input.chipWidth <= rightLimit) {
-    return {
-      rect: makeHeadingRect({ left: rightOf, top: last.top, right: rightOf + input.chipWidth, bottom: last.top + input.chipHeight }),
-      placement: 'RIGHT_OF_LAST_LINE',
-      clamped: false,
-    }
-  }
-  // §12 — below the last line with a small offset; never over the next body line.
-  const belowTop = last.bottom + 4
-  const left = Math.min(Math.max(input.editorLeft, last.left), Math.max(input.editorLeft, rightLimit - input.chipWidth))
+  // §11 — Drawer 只作为“遮挡事实”收窄安全右界；它**永不**把安全右界压到 chip 宽度以下，
+  // 也不会把 chip 推到文字左侧（V2 canonical 内含结构下限）。
+  const safeRight = input.drawerLeft != null
+    ? Math.max(input.drawerLeft, last.right + HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2)
+    : input.editorRight
+  const placement = computeCanonicalHeadingReasonChipPlacement({
+    lastTextRect: last,
+    headingRect: null,
+    chipWidth: input.chipWidth,
+    chipHeight: input.chipHeight,
+    editorSafeRect: {
+      left: input.editorLeft,
+      top: last.top,
+      right: safeRight,
+      bottom: last.bottom,
+    },
+    preferredGapPx: HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2,
+  })
   return {
-    rect: makeHeadingRect({ left, top: belowTop, right: left + input.chipWidth, bottom: belowTop + input.chipHeight }),
-    placement: 'BELOW_LAST_LINE',
-    clamped: true,
+    rect: makeHeadingRect({
+      left: placement.left,
+      top: placement.top,
+      right: placement.left + input.chipWidth,
+      bottom: placement.top + input.chipHeight,
+    }),
+    // 恒为同行右侧；`BELOW_LAST_LINE` 不再可能产生。
+    placement: 'RIGHT_OF_LAST_LINE',
+    clamped: placement.horizontalClampApplied,
   }
 }
 

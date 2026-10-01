@@ -157,11 +157,14 @@ describe('V5.14-R4 §10 — reason chip geometry', () => {
       chipPlacement: 'RIGHT_OF_LAST_LINE',
     })
     expect(misAnchored.anchorOk).toBe(false)
-    // a below-the-line chip is legitimately not beside the text → no false FAIL
-    expect(evaluateReasonChipGeometry({
+    // ── Heading Reason Chip Stable Anchor V2 §10 —— placement 不再是合法豁免：
+    // 任何仍在标题下一行（或水平错位）的 chip 都必须 FAIL（消除 Audit False PASS）。
+    const belowLine = evaluateReasonChipGeometry({
       chipRect: rect(120, 232, 172, 252), textRects: text, visualLabelRight: 420, configuredGapPx: 8,
       chipPlacement: 'BELOW_LAST_LINE',
-    }).verticalOk).toBe(true)
+    })
+    expect(belowLine.verticalOk).toBe(false)
+    expect(belowLine.anchorOk).toBe(false)
   })
 })
 
