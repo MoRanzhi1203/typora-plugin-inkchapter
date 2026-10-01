@@ -1,3 +1,283 @@
+/* ===========================================================================
+   Typora Region Divider + Tab Separator + Subtle Tab Scrollbar V1
+   ---------------------------------------------------------------------------
+   Purely additive visual layer. Design constraints (all enforced here):
+     * ZERO layout shift — every divider is an INSET box-shadow or a
+       `position:fixed` overlay, never a real border that could change a box
+       size (DIVIDER_LAYOUT_SHIFT_COUNT / DIVIDER_CHANGED_EDITOR_WIDTH_COUNT).
+     * NO second tab system — no cloned/replaced tab node, no tab state machine,
+       no width algorithm change; Tab Width / close / drag / dirty stay native.
+     * NO pointer interception — backgrounds and `pointer-events:none`
+       overlays only (TAB_SEPARATOR_POINTER_INTERCEPT_COUNT).
+     * NO new observer — CSS only (the tab-structure observer already exists).
+
+   Selector evidence (NOT guessed):
+     `#top-titlebar`      — D:\Typora\resources\style\window.css
+                            `#top-titlebar{...box-sizing:border-box;height:24px;
+                             -webkit-app-region:drag}` and, for this build,
+                            `.native-window #top-titlebar{display:none}` +
+                            `.native-window header{height:0}` + `content{top:0}`
+                            (body classes confirm `native-window`, see
+                            test/vault/.typora/inkchapter-dom-probe.json).
+                            => under `native-window` the OS menu bar is drawn
+                               OUTSIDE the renderer, so the region divider is
+                               pinned to the renderer's top edge instead.
+     `#typora-sidebar`    — window.css `#typora-sidebar{...position:fixed}` +
+                            real DOM dumps (inkchapter-outline-dom-dump.json /
+                            inkchapter-dom-probe.json).
+     `.typ-workspace-tabs` / `.typ-workspace-tab-header` (outer strip) and
+     `.typ-tabs` (inner, horizontally scrollable strip) / `.typ-tab` /
+     `.typ-tab.active` / `.typ-icon.typ-close`
+                          — project-verified framework workspace-tab DOM
+                            (document-empty-workspace.ts TAB_STRIPS_SELECTOR,
+                            document-utility-overlay-host.ts tab observer) and
+                            the captured real DOM in inkchapter-dom-probe.json.
+     Editor               — `#write` inside `content.typ-workspace-binding`.
+   =========================================================================== */
+
+:root {
+  /* V3 §2 — REAL theme-aware alpha control.
+     V1/V2 used `var(--border-primary, rgba(...))`: as soon as a typora theme
+     defines `--border-primary` the alpha fallback NEVER participates in
+     rendering, so "0.30 → 0.24" in a report did not actually lighten anything
+     (THEME_DIVIDER_ALPHA_NOT_EFFECTIVE_COUNT). Every divider/scrollbar token is
+     therefore derived from the theme TEXT colour via `color-mix()`, which keeps
+     the alpha genuinely controlled (and auto-adapts to light/dark themes).
+     Declaration order = the spec'd fallback-then-override pattern: the plain
+     rgba() stays first for engines without `color-mix()`. */
+  --ink-divider-major: rgba(128, 128, 128, 0.20);
+  --ink-divider-major: color-mix(in srgb, var(--text-color, #333) 10%, transparent);
+  --ink-divider-secondary: rgba(128, 128, 128, 0.14);
+  --ink-divider-secondary: color-mix(in srgb, var(--text-color, #333) 7%, transparent);
+  --ink-divider-faint: rgba(128, 128, 128, 0.10);
+  --ink-divider-faint: color-mix(in srgb, var(--text-color, #333) 5%, transparent);
+
+  --ink-tab-separator: rgba(128, 128, 128, 0.10);
+  --ink-tab-separator: color-mix(in srgb, var(--text-color, #333) 5%, transparent);
+  --ink-tab-separator-active: rgba(128, 128, 128, 0.04);
+  --ink-tab-separator-active: color-mix(in srgb, var(--text-color, #333) 2%, transparent);
+
+  /* V4.1 §FIX-2 — tab-strip horizontal bar: TRANSPARENT by default (hidden), the
+     strip's `:hover` reveals it, thumb hover / drag goes strongest. */
+  --ink-scroll-thumb: transparent;
+  --ink-scroll-thumb-hover: rgba(128, 128, 128, 0.12);
+  --ink-scroll-thumb-hover: color-mix(in srgb, var(--text-color, #333) 9%, transparent);
+  --ink-scroll-thumb-active: rgba(128, 128, 128, 0.18);
+  --ink-scroll-thumb-active: color-mix(in srgb, var(--text-color, #333) 14%, transparent);
+
+  --ink-tab-scrollbar-track: transparent;
+
+  /* V1/V2 consumer + contract aliases, now pointing at the theme-aware set. */
+  --ink-ui-divider: var(--ink-divider-secondary);
+  --ink-ui-divider-strong: var(--ink-divider-major);
+  --ink-tab-scrollbar-thumb: var(--ink-scroll-thumb);
+  --ink-tab-scrollbar-thumb-hover: var(--ink-scroll-thumb-hover);
+  --ink-tab-scrollbar-thumb-active: var(--ink-scroll-thumb-active);
+}
+
+/* ── §5.1 top bar ↔ workspace ─────────────────────────────────────────────── */
+/* Non-native window builds keep a real in-renderer top bar: border-box is
+   already set by Typora (`#top-titlebar{box-sizing:border-box;height:24px}`),
+   so this border can never change the bar height. */
+/* V3 §15 — the top boundary is the WEAKEST divider (faint). */
+#top-titlebar {
+  border-bottom: 1px solid var(--ink-divider-faint);
+}
+
+/* `native-window` builds (this environment) hide `#top-titlebar` and let the OS
+   draw the menu bar, so the top region divider is a fixed 1px overlay pinned to
+   the renderer's top edge — zero layout impact, never covers menu text. */
+body.native-window::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--ink-divider-faint);
+  pointer-events: none;
+  z-index: 2147483000;
+}
+
+/* ── §5.2 left sidebar ↔ workspace (single side only: no 2px double line) ── */
+/* `#typora-sidebar` is ALREADY `position:fixed` (Typora window.css), so an
+   absolutely positioned 1px overlay is safe and cannot shift the tree.
+   V3 §14 — the sidebar boundary is SECONDARY: perceivable, never a table column. */
+#typora-sidebar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink-divider-secondary);
+  pointer-events: none;
+}
+
+/* ── §5.3 tab strip ↔ editor body (stronger than the tab-to-tab separator) ── */
+/* A 1px background strip at the bottom edge: zero layout impact, no box-shadow,
+   no real border, nothing to intercept. */
+.typ-workspace-tabs,
+.typ-workspace-tab-header {
+  background-image: linear-gradient(
+    to bottom,
+    transparent calc(100% - 1px),
+    var(--ink-divider-major) calc(100% - 1px)
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+/* V3 §6/§7 — ACTIVE TAB ↔ BODY CONNECTION, native authority only.
+   No new border and no card feel: the native `.active` background is simply
+   extended 1px PAST the tab row so it covers the tab-strip bottom divider under
+   the active tab, i.e. the divider is "cut out" there and the active tab reads
+   as the same surface as the document below
+   (──────┐ Active ┌──────). Purely a cover: zero layout impact, and it can never
+   add a second line (TAB_ACTIVE_CONNECTION_DOUBLE_BORDER_COUNT). */
+.typ-workspace-tabs .typ-tab.active,
+.typ-workspace-tab-header .typ-tab.active {
+  box-shadow: 0 1px 0 0 var(--background-primary, transparent);
+}
+
+/* ── §6 tab-to-tab vertical separator ────────────────────────────────────── */
+/* `:not(:last-child)` follows the real DOM order, so reorder / close needs no
+   JS: the LAST tab can never carry a separator (TAB_SEPARATOR_EXTRA_LAST_TAB).
+   A 1px background strip is layout-neutral and can never intercept a pointer
+   event (backgrounds are not hit-tested). */
+/* V3 §4 — 46% of the tab height (42%~48% band): transparent 27% → colour
+   27%..73% → transparent 73%. Still 1px, still vertically centred. */
+.typ-workspace-tabs .typ-tab:not(:last-child),
+.typ-workspace-tab-header .typ-tab:not(:last-child) {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 27%,
+    var(--ink-tab-separator) 27%,
+    var(--ink-tab-separator) 73%,
+    transparent 73%
+  );
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 1px 100%;
+}
+
+/* §6.3 — the ACTIVE tab keeps a LIGHTER right separator so the active tab is
+   never framed by two equally heavy lines. Declared LAST in this block on
+   purpose: the legacy tab-close contract slices from its own selector onwards
+   and asserts no `.typ-tab.active … border*` rule exists below it. */
+
+/* ── V4.1 §FIX-1 — LEFT SIDEBAR (file tree / outline) scrollbar: WIDTH ONLY ── */
+/* Requirement was ONLY "make it narrower". Colour, opacity, track and hover
+   behaviour stay 100% Typora-native: no color-mix thumb, no lowered opacity, no
+   transparent border, no `background-clip: content-box`, no custom
+   default/hover/active alpha, no track override
+   (TREE_SCROLLBAR_COLOR_CHANGED_COUNT / _OPACITY_CHANGED_COUNT /
+   _HOVER_COLOR_CHANGED_COUNT). Only `width` is declared, so Typora's own
+   `::-webkit-scrollbar-thumb` colour rules remain the authority.
+   Evidence: `#file-library{flex:1;overflow-y:auto;…}` is the tree's vertical
+   scroller (Typora window.css); the outline panel is `div.sidebar-content-content`.
+   Both stay scope-locked under `#typora-sidebar`, so the editor, DevTools and
+   every other panel keep their native scrollbars. */
+#typora-sidebar #file-library::-webkit-scrollbar,
+#typora-sidebar div.sidebar-content-content::-webkit-scrollbar {
+  width: 5px;
+}
+
+/* ── V4 §6 — TAB STRIP horizontal scrollbar: slim + hover-reveal ──────────── */
+/* §8 of V1 — KEPT and FUNCTIONAL, only visually reduced. Never `display:none` /
+   `scrollbar-width:none` / `height:0`, so there is NO layout shift when it
+   appears (TAB_SCROLLBAR_LAYOUT_SHIFT_COUNT) and the 4px hit area stays draggable.
+   The track is fully transparent, so the structure divider below can never stack
+   into a grey band (TAB_SCROLLBAR_DOUBLE_LINE_WITH_BOTTOM_DIVIDER_COUNT).
+   V4 §6.2/§6.3 — default thumb is ~2% (near invisible); hovering the strip
+   reveals it; thumb hover / drag goes strongest. Pure CSS `:hover` on both the
+   outer strip and the inner scroller — no observer, no interval, no class
+   switching state machine. */
+.typ-workspace-tabs .typ-tabs::-webkit-scrollbar,
+.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar {
+  height: 4px;
+  width: 4px;
+  background: var(--ink-tab-scrollbar-track);
+}
+.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-track,
+.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-track {
+  background: var(--ink-tab-scrollbar-track);
+  border: 0;
+}
+.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-thumb,
+.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-thumb {
+  /* 4px HIT AREA, ~2px VISUAL: the 1px transparent border is subtracted from the
+     painted box by `background-clip: content-box`, so the draggable target stays
+     4px while only a ~2px pill is visible. The hit area is never crushed to 2px
+     and the scrollbar is never removed. */
+  background-color: var(--ink-scroll-thumb);
+  background-clip: content-box;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition: background-color 0.18s ease;
+}
+.typ-workspace-tabs:hover .typ-tabs::-webkit-scrollbar-thumb,
+.typ-workspace-tab-header:hover .typ-tabs::-webkit-scrollbar-thumb,
+.typ-workspace-tabs .typ-tabs:hover::-webkit-scrollbar-thumb {
+  background-color: var(--ink-scroll-thumb-hover);
+}
+.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-thumb:hover,
+.typ-workspace-tabs .typ-tabs::-webkit-scrollbar-thumb:active,
+.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-thumb:hover,
+.typ-workspace-tab-header .typ-tabs::-webkit-scrollbar-thumb:active {
+  background-color: var(--ink-scroll-thumb-active);
+}
+
+/* ── §5.4 editor ↔ right console ─────────────────────────────────────────── */
+/* The right console is Electron's docked DevTools — a SEPARATE WebContents, so
+   its own DOM can never be styled from here (and must not be). When it is
+   docked the page viewport is shrunk, i.e. the renderer's right edge IS the
+   boundary: the divider is therefore a fixed 1px overlay on that edge, gated by
+   `ink-console-docked` (toggled by a width probe in the existing resize path).
+   With the console closed the class is absent, so NO dangling line remains. */
+body.ink-console-docked::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink-divider-major);
+  pointer-events: none;
+  z-index: 2147483000;
+}
+
+/* §6.3 (declared last) — the ACTIVE tab keeps a LIGHTER right separator so the
+   active tab is never framed by two equally heavy lines. Kept at the very end of
+   this block so the legacy tab-close contract (which slices from its own selector
+   and asserts no `.typ-tab.active … border*` rule exists below it) stays green. */
+.typ-workspace-tabs .typ-tab.active:not(:last-child),
+.typ-workspace-tab-header .typ-tab.active:not(:last-child) {
+  /* V3 §5 — active-adjacent separator ≈ 0.2× the normal one (2% vs 5% mix). */
+  background-image: linear-gradient(
+    to bottom,
+    transparent 27%,
+    var(--ink-tab-separator-active) 27%,
+    var(--ink-tab-separator-active) 73%,
+    transparent 73%
+  );
+}
+
+/* V2 §6 — the ACTIVE tab's LEFT neighbour is softened too, so the active tab can
+   never be framed by two equally heavy lines (the classic "boxed tab" defect).
+   `:has()` is Chromium-only and degrades gracefully: where it is unsupported this
+   rule is simply dropped and only the active tab's own right separator is light. */
+.typ-workspace-tabs .typ-tab:not(:last-child):has(+ .typ-tab.active),
+.typ-workspace-tab-header .typ-tab:not(:last-child):has(+ .typ-tab.active) {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 27%,
+    var(--ink-tab-separator-active) 27%,
+    var(--ink-tab-separator-active) 73%,
+    transparent 73%
+  );
+}
+
 /* Heading numbering via CSS ::before
  * Unified for all H1-H6 levels.
  * Explicitly resets all visual properties to prevent Typora active-heading
