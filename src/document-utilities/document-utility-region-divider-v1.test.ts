@@ -217,13 +217,13 @@ describe('Divider Visual Refinement V2 — hierarchy & separator (§2/§5)', () 
     expect(sep).toBeLessThanOrEqual(0.06)
   })
 
-  it('scrollbar is hidden by default, then hover < active', () => {
-    // §FIX-2 — default must be fully transparent, never a faint grey
-    expect(regionCss()).toMatch(/--ink-scroll-thumb:\s*transparent/)
-    const hover = tokenAlpha('--ink-scroll-thumb-hover')
-    const active = tokenAlpha('--ink-scroll-thumb-active')
-    expect(hover).toBeLessThan(active)
-    expect(hover).toBeGreaterThan(0)
+  it('scrollbar is hidden by default, then matches the sidebar authority', () => {
+    const css = regionCss()
+    // default must be fully transparent, never a faint grey
+    expect(css).toMatch(/--ink-scroll-thumb:\s*transparent/)
+    // V5.3 — visible / drag adopt the sidebar's real native colours verbatim
+    expect(css).toMatch(/--ink-scroll-thumb-hover:\s*rgba\(0, 0, 0, 0\.3\)/)
+    expect(css).toMatch(/--ink-scroll-thumb-active:\s*rgba\(0, 0, 0, 0\.5\)/)
   })
 
   it('separator is 1px wide and 46% tall, vertically centred (§4)', () => {
@@ -473,14 +473,49 @@ describe('Tab Scrollbar Hover-Scope V5.1 — wrong controller removed', () => {
     expect(revealRules[0]).toContain('.typ-tabs-wrapper:hover')
   })
 
-  it('freezes colours: this round changed the trigger only', () => {
+  it('adopts the sidebar scrollbar colours verbatim (V5.3 colour authority)', () => {
     const css = regionCss()
-    // accepted colours untouched; default stays transparent
-    expect(tokenAlpha('--ink-scroll-thumb-hover')).toBe(0.09)
-    expect(tokenAlpha('--ink-scroll-thumb-active')).toBe(0.14)
+    // visible == the sidebar's native thumb value; drag == its :active value
+    expect(css).toMatch(/--ink-scroll-thumb-hover:\s*rgba\(0, 0, 0, 0\.3\)/)
+    expect(css).toMatch(/--ink-scroll-thumb-active:\s*rgba\(0, 0, 0, 0\.5\)/)
+    // nothing bespoke / no colour-mix scale for the scrollbar any more
+    expect(css).not.toMatch(/--ink-scroll-thumb-hover:[^;]*color-mix/)
+    expect(css).not.toMatch(/--ink-scroll-thumb-active:[^;]*color-mix/)
+    // the hidden state stays ours
     expect(css).toMatch(/--ink-scroll-thumb:\s*transparent/)
-    // tree scrollbar still width-only with zero colour/track overrides
+    // the sidebar bar is untouched: width-only, zero colour / track override
     expect(css).toMatch(/#typora-sidebar #file-library::-webkit-scrollbar,[\s\S]{0,90}width:\s*5px/)
     expect(css).not.toMatch(/#typora-sidebar[^{}]*webkit-scrollbar[^{}]*\{[^}]*background/)
+  })
+})
+
+describe('Tab Bar Bottom Breathing Space V5.2 — 2px inside the wrapper', () => {
+  it('reserves 2px as the wrapper OWN transparent bottom border', () => {
+    const css = regionCss()
+    expect(css).toMatch(/\.typ-tabs-wrapper\s*\{\s*border-bottom:\s*2px solid transparent;/)
+    // within the requested 2~3px budget
+    const border = css.match(/\.typ-tabs-wrapper\s*\{\s*border-bottom:\s*(\d+)px solid transparent;/)
+    expect(border).not.toBeNull()
+    expect(Number(border![1])).toBeGreaterThanOrEqual(2)
+    expect(Number(border![1])).toBeLessThanOrEqual(3)
+  })
+
+  it('adds no colour and no external rail (scrollbar stays inside the wrapper)', () => {
+    const css = regionCss()
+    // transparent border ⇒ zero colour delta
+    expect(css).not.toMatch(/\.typ-tabs-wrapper\s*\{[^}]*border-bottom:\s*\d+px solid (?!transparent)/)
+    // the scrollbar is still the wrapper's own pseudo-element, nothing else
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar/)
+    expect(css).not.toMatch(/\.typ-tabs-wrapper-[a-z-]*\{/)
+    expect(css).not.toMatch(/scrollbar-rail|scrollbar-track-el|ink-scrollbar-el/)
+  })
+
+  it('leaves the tab height system and every tab box untouched', () => {
+    const css = regionCss()
+    expect(css).not.toContain('--typ-tabs-height:')
+    expect(css).not.toMatch(/\.typ-tabs\s*\{[^}]*height:/)
+    expect(css).not.toMatch(/\.typ-tabs-wrapper\s*\{[^}]*height:/)
+    expect(css).not.toMatch(/\.typ-tab\s*\{[^}]*height:/)
+    expect(css).not.toMatch(/\.typ-tab\s*\{[^}]*padding/)
   })
 })
