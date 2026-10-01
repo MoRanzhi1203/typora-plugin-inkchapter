@@ -201,6 +201,56 @@ export class CaptionDomAdapter {
   private captionOwnerRoots = new WeakMap<HTMLElement, HTMLElement>()
   /** owner target root → stable target key (rebuilt on collectTargets). */
   private targetKeysByRoot = new Map<HTMLElement, string>()
+  // ── V1 §13/§14 — the code-candidate SEMANTIC CACHE. Within ONE semantic state
+  // (unchanged documentKey / semanticRevision / editorStructureEpoch / canonical
+  // host fingerprint) the whole collectTargets scan is reused, so a single
+  // reconcile pass can no longer re-scan 300+ PRE hosts 100+ times.
+  private collectTargetsCacheKey: string | null = null
+  private collectTargetsCache: CaptionTarget[] | null = null
+  private collectTargetsCacheWitness = ''
+  private codeCandidateCacheHitCount = 0
+  private codeCandidateCacheMissCount = 0
+
+  /**
+   * V1 §13 — the caption-relevant DOM witness. Identity-level only (never a heavy
+   * text extraction), so it stays far cheaper than the full candidate scan while
+   * still catching an alt/name or host-structure change.
+   */
+  private captionHostWitness(root: HTMLElement): string {
+    const parts: string[] = []
+    root.querySelectorAll<HTMLElement>('img').forEach(img => {
+      parts.push(`i|${img.getAttribute('src') ?? ''}|${img.getAttribute('alt') ?? ''}|${img.childElementCount}`)
+    })
+    root.querySelectorAll<HTMLElement>('table').forEach(t => parts.push(`t|${(t as HTMLTableElement).rows.length}`))
+    root.querySelectorAll<HTMLElement>('pre').forEach(p => parts.push(`p|${p.getAttribute('mdtype') ?? ''}|${p.childElementCount}`))
+    return parts.join('\n')
+  }
+
+  /**
+   * V1 §13/§14 — set the semantic cache key for the current pass. A CHANGED key
+   * invalidates the cache; the caller owns the key (documentKey + semantic
+   * revision + editor structure epoch + canonical host fingerprint).
+   */
+  setCollectTargetsCacheKey(key: string | null): void {
+    if (key !== this.collectTargetsCacheKey) {
+      this.collectTargetsCache = null
+      this.collectTargetsCacheKey = key
+    }
+  }
+
+  /** V1 §14 — explicit invalidation (document switch / full reload). */
+  invalidateCollectTargetsCache(): void {
+    this.collectTargetsCache = null
+    this.collectTargetsCacheKey = null
+  }
+
+  getCodeCandidateCacheStats(): { hits: number; misses: number; cached: boolean } {
+    return {
+      hits: this.codeCandidateCacheHitCount,
+      misses: this.codeCandidateCacheMissCount,
+      cached: this.collectTargetsCache != null,
+    }
+  }
 
   constructor(private getEditorRoot: () => HTMLElement | null) {}
 
@@ -322,6 +372,30 @@ export class CaptionDomAdapter {
   collectTargets(): CaptionTarget[] {
     const root = this.getEditorRoot()
     if (!root) return []
+    // ── V1 §13/§14 — SEMANTIC CACHE (single-scan guard). A cached target list
+    // would carry STALE caption metadata (a figure's alt IS its name), so the
+    // cache is only reused while the caller proves the very same state key AND
+    // the caption-relevant DOM witness is byte-identical. The witness is computed
+    // from the live hosts, so an alt/label/style change always misses.
+    if (this.collectTargetsCacheKey != null && this.collectTargetsCache != null) {
+      const witness = this.captionHostWitness(root)
+      if (witness === this.collectTargetsCacheWitness) {
+        this.codeCandidateCacheHitCount++
+        emitRuntimeAudit('CODE-CANDIDATE-SUMMARY', {
+          rawPreCount: this.codeDiagnostics.rawPreCount,
+          canonicalCodeTargetCount: this.codeDiagnostics.finalCodeTargetCount,
+          acceptedCanonicalFenceCount: this.codeDiagnostics.canonicalFenceCount,
+          rejectedCodeMirrorInternalCount: this.codeDiagnostics.rejectedCodeMirrorInternalCount,
+          rejectedMathCount: this.codeDiagnostics.rejectedMathInternalCount,
+          rejectedOtherCount: this.codeDiagnostics.rejectedNestedPreCount,
+          durationMs: 0,
+          cacheKey: this.collectTargetsCacheKey,
+          decision: 'REUSE_CACHED_CODE_CANDIDATES',
+        })
+        return this.collectTargetsCache
+      }
+      this.collectTargetsCache = null
+    }
     const t0 = performance.now()
 
     interface Raw {
@@ -466,6 +540,13 @@ export class CaptionDomAdapter {
     this.targetKeysByRoot.clear()
     for (const t of targets) {
       this.targetKeysByRoot.set(t.root, this.targetKeyForTarget(t, targets))
+    }
+
+    // ── V1 §13 — store the semantic cache for the CURRENT state key + witness.
+    if (this.collectTargetsCacheKey != null) {
+      this.collectTargetsCache = targets
+      this.collectTargetsCacheWitness = this.captionHostWitness(root)
+      this.codeCandidateCacheMissCount++
     }
 
     return targets

@@ -454,9 +454,13 @@ describe('V512R1-CONTRACT — pure marker surface', () => {
     const right = computeHeadingReasonChipPlacement({ contentRects: [text], chipWidth: 120, chipHeight: 20, editorLeft: 0, editorRight: 1200, drawerLeft: null })!
     expect(right.placement).toBe('RIGHT_OF_LAST_LINE')
     expect(right.rect.left).toBe(428)
-    const below = computeHeadingReasonChipPlacement({ contentRects: [text], chipWidth: 600, chipHeight: 20, editorLeft: 0, editorRight: 700, drawerLeft: null })!
-    expect(below.placement).toBe('BELOW_LAST_LINE')
-    expect(below.rect.top).toBeGreaterThan(text.bottom)
+    // ── Heading Reason Chip Stable Anchor V2 §4.2/§4.3 —— 横向空间不足时**只做 clamp**，
+    // 绝不换行（旧的 `BELOW_LAST_LINE` + `top = bottom + 4` + `left` 可归零已被移除）。
+    const clamped = computeHeadingReasonChipPlacement({ contentRects: [text], chipWidth: 600, chipHeight: 20, editorLeft: 0, editorRight: 700, drawerLeft: null })!
+    expect(clamped.placement).toBe('RIGHT_OF_LAST_LINE')
+    expect(clamped.rect.top).toBeLessThan(text.bottom)
+    expect(clamped.rect.left).toBeGreaterThanOrEqual(text.right + 4)
+    expect(clamped.clamped).toBe(true)
     expect(computeHeadingReasonChipPlacement({ contentRects: [], chipWidth: 10, chipHeight: 10, editorLeft: 0, editorRight: 10, drawerLeft: null })).toBeNull()
   })
 

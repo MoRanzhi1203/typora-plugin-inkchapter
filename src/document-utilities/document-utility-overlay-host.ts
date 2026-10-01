@@ -367,6 +367,31 @@ import {
   type DocumentEndVisualV513R2Counters,
   type StrictMultiH1VisualV513R5Counters,
 } from './document-diagnostic-document-end-visual-v513-r1'
+// V2 — Document-End one-click locate: coordinate-space contract + post-scroll
+// freshness authority.
+import {
+  DOC_END_COORDINATE_COVERAGE_LABELS,
+  DOC_END_COORDINATE_GATE_LABELS,
+  DOC_END_SCROLL_TARGET_TOLERANCE_PX,
+  DIAGNOSTIC_CLICK_ISOLATION_GATE_LABELS,
+  DOCUMENT_END_COORDINATE_AUDIT_EVENT,
+  DOCUMENT_END_PROJECTION_DRIFT_TOLERANCE_PX,
+  createDiagnosticClickIsolationCounters,
+  createDocEndCoordinateCounters,
+  createDocEndCoordinateCoverageCounters,
+  evaluateDiagnosticClickIsolationGates,
+  evaluateDocEndCoordinateAudit,
+  evaluateDocEndCoordinateCoverage,
+  evaluateDocEndCoordinateGates,
+  formatDiagnosticClickIsolationGateReport,
+  formatDocEndCoordinateCoverageReport,
+  formatDocEndCoordinateGateReport,
+  projectDocumentLocalToViewport,
+  type DocEndCoordinateCounters,
+  type DocEndCoordinateCoverageCounters,
+  type DocumentEndCoordinateSpace,
+  type DiagnosticClickIsolationCounters,
+} from './document-diagnostic-document-end-coordinate-v2'
 import {
   DRAWER_ORDER_AUDIT_EVENT,
   buildDrawerOrderAuditEntries,
@@ -592,6 +617,17 @@ import {
   type HeadingMarkerSeverity,
   type HeadingRect,
 } from './document-heading-diagnostic-marker-v5-12'
+import {
+  HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT,
+  createHeadingReasonChipStabilityV2Counters,
+  computeHeadingVisualDirtyTargets,
+  evaluateHeadingReasonChipStability,
+  evaluateHeadingReasonChipStabilityV2Gates,
+  formatHeadingReasonChipStabilityV2GateReport,
+  type HeadingReasonChipStabilityFact,
+  type HeadingReasonChipStabilityV2Counters,
+  type HeadingVisualDirtyEntry,
+} from './document-diagnostic-heading-reason-chip-stability-v2'
 import { resolveBusinessContentRoot, type DocumentUtilitiesContext } from './document-utilities-context'
 import {
   isLayoutEpochStale,
@@ -4522,6 +4558,10 @@ export class DocumentUtilityOverlayHost {
     }
     this.diagnosticVisualDirtyReason = this.diagnosticVisualDirtyReason ?? reason
     this.visualGeometryCounters.invalidationCount++
+    // ── V2 §7 —— 只有 plugin-owned presentation 失效才沿用 interaction 的 scoped dirty set；
+    // 真正的编辑器内容 / resize 失效一律强制 FULL reconcile（丢弃陈旧 scope），
+    // 避免 scoped skip 把真实布局变化漏掉。
+    if (!/PLUGIN_DOM_MUTATION|RECONCILE/.test(reason)) this.headingVisualDirtyScope = null
     if (this.hasDiagnosticGeometryToReconcile()) this.scheduleDiagnosticGeometryReconcile(reason)
   }
 
@@ -4636,6 +4676,8 @@ export class DocumentUtilityOverlayHost {
         this.renderHeadingDiagnosticMarkers()
         this.renderActiveHeadingEmphasisForCommittedVisual()
         this.emitVisualReflowAudit(dirty ?? reason)
+        // ── V2 §7 —— consume-once：scoped dirty set 只属于这一轮 reconcile。
+        this.headingVisualDirtyScope = null
       }
       this.emitVisualClosureAudit(reason)
     }
@@ -4650,6 +4692,108 @@ export class DocumentUtilityOverlayHost {
       } catch { /* fall through to sync */ }
     }
     run()
+  }
+
+  // ── Heading Reason Chip Stable Anchor V2 §7/§10/§11 — the ONLY new state:
+  //   * the dirty heading set of the CURRENT reconcile (scoped invalidation, ROOT_V2_D);
+  //   * the per-heading last chip stability fact (post-reflow closure);
+  //   * the 15 hard-gate counters (ROOT_V2_C false-PASS fix).
+  private headingVisualDirtyKeys: Set<string> = new Set()
+  /**
+   * §7 — the SCOPED dirty set of the interaction-driven reconcile. Non-null only
+   * between a diagnostic interaction and the reconcile that consumes it; `null`
+   * means "full reconcile" (mount / document switch / non-interaction layout change).
+   */
+  private headingVisualDirtyScope: Set<string> | null = null
+  private lastHeadingReasonChipStabilityFacts = new Map<string, HeadingReasonChipStabilityFact>()
+  private countersHeadingReasonChipStabilityV2: HeadingReasonChipStabilityV2Counters
+    = createHeadingReasonChipStabilityV2Counters()
+
+  /** §12 — read-only V2 hard-gate counters. */
+  getHeadingReasonChipStabilityV2Counters(): Readonly<HeadingReasonChipStabilityV2Counters> {
+    return { ...this.countersHeadingReasonChipStabilityV2 }
+  }
+
+  /** §11 — the exact `NAME=value` V2 gate report lines. */
+  getHeadingReasonChipStabilityV2GateReport(): string[] {
+    return formatHeadingReasonChipStabilityV2GateReport(this.countersHeadingReasonChipStabilityV2)
+  }
+
+  /** §11 — the V2 hard-gate decision (any counter > 0 → FAIL). */
+  getHeadingReasonChipStabilityV2GateDecision(): { decision: 'PASS' | 'FAIL'; failing: string[] } {
+    const result = evaluateHeadingReasonChipStabilityV2Gates(this.countersHeadingReasonChipStabilityV2)
+    return { decision: result.decision, failing: result.failing }
+  }
+
+  /** §7 — set the dirty heading set for the reconcile that is about to run. */
+  private setHeadingVisualDirtyTargets(entries: readonly HeadingVisualDirtyEntry[]): void {
+    this.headingVisualDirtyKeys = new Set(entries.map(entry => entry.targetKey))
+    this.headingVisualDirtyScope = new Set(this.headingVisualDirtyKeys)
+  }
+
+  /** §7.1/§7.2 — a target key whose stable identity is a heading (`…::id:H4:idx:6`). */
+  private isHeadingDiagnosticTargetKey(targetKey: string | null): boolean {
+    if (!targetKey) return false
+    return /::id:H[1-6]:idx:\d+$/.test(targetKey)
+  }
+
+  /**
+   * §10/§12 — post-reflow REAL closure for ONE reason chip. Emits
+   * `DOCUMENT-DIAGNOSTIC-HEADING-REASON-CHIP-STABILITY-AUDIT` and drives every V2
+   * hard gate. This is what turns `REFLOW_GEOMETRY_REBUILT_SAME_GENERATION` from a
+   * false PASS into a FAIL (ROOT_V2_C).
+   */
+  private recordHeadingReasonChipStability(fact: HeadingReasonChipStabilityFact): void {
+    const verdict = evaluateHeadingReasonChipStability(fact)
+    const c = this.countersHeadingReasonChipStabilityV2
+    for (const check of verdict.failedChecks) {
+      switch (check) {
+        case 'REASON_CHIP_LEFT_ZERO_FALLBACK': c.reasonChipLeftZeroFallback++; break
+        case 'REASON_CHIP_VERTICAL_FALLBACK': c.reasonChipVerticalFallback++; break
+        case 'REASON_CHIP_CENTER_OUTSIDE_TEXT_LINE': c.reasonChipCenterOutsideTextLine++; break
+        case 'REASON_CHIP_ANCHOR_AUTHORITY_MISMATCH':
+        case 'REASON_CHIP_NOT_INLINE_RIGHT': c.reasonChipAnchorAuthorityMismatch++; break
+        case 'NON_DIRTY_HEADING_CHIP_POSITION_CHANGED': c.nonDirtyHeadingReasonChipRebuilt++; break
+        case 'CHIP_POSITION_CHANGED_WITHOUT_CONTENT_CHANGE': c.reasonChipPositionChangedWithoutContentChange++; break
+        case 'CROSS_DOCUMENT_REASON_CHIP': c.crossDocumentReasonChip++; break
+        default: break
+      }
+    }
+    if (!fact.isDirtyTarget && fact.rebuildPerformed) c.nonDirtyHeadingVisualRemeasure++
+    this.lastHeadingReasonChipStabilityFacts.set(fact.stableHeadingIdentity, fact)
+    emitRuntimeAudit(HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT, {
+      documentKey: fact.documentKey,
+      currentDocumentKey: fact.currentDocumentKey,
+      diagnosticId: fact.diagnosticId,
+      stableHeadingIdentity: fact.stableHeadingIdentity,
+      activeDiagnosticId: fact.activeDiagnosticId,
+      isDirtyTarget: fact.isDirtyTarget,
+      contentFingerprintBefore: fact.contentFingerprintBefore,
+      contentFingerprintAfter: fact.contentFingerprintAfter,
+      contentChanged: fact.contentChanged,
+      targetRectBefore: fact.targetRectBefore,
+      targetRectAfter: fact.targetRectAfter,
+      targetMoved: fact.targetMoved,
+      textRectBefore: fact.textRectBefore,
+      textRectAfter: fact.textRectAfter,
+      reasonChipRectBefore: fact.reasonChipRectBefore,
+      reasonChipRectAfter: fact.reasonChipRectAfter,
+      expectedChipLeft: fact.expectedChipLeft,
+      expectedChipTop: fact.expectedChipTop,
+      actualChipLeft: fact.actualChipLeft,
+      actualChipTop: fact.actualChipTop,
+      anchorDriftPx: fact.anchorDriftPx,
+      verticalCenterDriftPx: fact.verticalCenterDriftPx,
+      placementMode: fact.placementMode,
+      horizontalClampApplied: fact.horizontalClampApplied,
+      rebuildRequested: fact.rebuildRequested,
+      rebuildPerformed: fact.rebuildPerformed,
+      rebuildReason: fact.rebuildReason,
+      failedChecks: verdict.failedChecks,
+      gateCounters: { ...c },
+      decision: verdict.decision,
+      reason: verdict.reason,
+    })
   }
 
   /**
@@ -4684,6 +4828,71 @@ export class DocumentUtilityOverlayHost {
         chipPlacement: rec?.chipPlacementKind ?? null,
       })
       const isActive = this.headingActiveMarkerIdentity === identity
+      // ── Heading Reason Chip Stable Anchor V2 §9（ROOT_V2_E）—— cross-document
+      // isolation：fact 的 documentKey 必须等于 CURRENT documentKey，否则不进入审计、
+      // 不参与 reconcile，只记 foreign 计数。
+      const currentDocumentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+      const factDocumentKey = this.lastHeadingVisualSnapshots.get(identity)?.documentKey ?? null
+      if (factDocumentKey != null && currentDocumentKey != null && factDocumentKey !== currentDocumentKey) {
+        this.countersHeadingReasonChipStabilityV2.crossDocumentHeadingVisualFact++
+        this.countersHeadingReasonChipStabilityV2.crossDocumentReflowTarget++
+        continue
+      }
+      // ── V2 §10 —— PASS 不再仅凭 "发生了 rebuild"：chip 必须真正落在同行右侧且与
+      // 最后一行的垂直中心对齐，否则 FAIL（消除 REFLOW_GEOMETRY_REBUILT_SAME_GENERATION
+      // 的 false PASS）。
+      const chipClosureFailed = snapshot.reasonChipRect != null
+        && (!chipEval.anchorOk || !chipEval.verticalOk || snapshot.reasonChipRect.left === 0)
+      const reflowFailed = residualDrift.stale || chipClosureFailed
+      // ── V2 §10/§12 —— REAL post-reflow chip closure (turns the old
+      // `REFLOW_GEOMETRY_REBUILT_SAME_GENERATION` false PASS into a FAIL).
+      {
+        const beforeFact = this.lastHeadingReasonChipStabilityFacts.get(identity) ?? null
+        const lastText = snapshot.textRects.length > 0 ? snapshot.textRects[snapshot.textRects.length - 1] : null
+        const expectedChipLeft = lastText ? lastText.right + HEADING_LABEL_CHIP_GAP_PX : null
+        const chipLeft = snapshot.reasonChipRect ? snapshot.reasonChipRect.left : null
+        const chipTop = snapshot.reasonChipRect ? snapshot.reasonChipRect.top : null
+        this.recordHeadingReasonChipStability({
+          documentKey: factDocumentKey,
+          currentDocumentKey,
+          diagnosticId: snapshot.diagnosticId ?? '',
+          stableHeadingIdentity: identity,
+          activeDiagnosticId: this.headingActiveIdentity,
+          isDirtyTarget: this.headingVisualDirtyKeys.has(identity),
+          contentFingerprintBefore: rec?.contentFingerprintBefore ?? null,
+          contentFingerprintAfter: rec?.contentFingerprint ?? null,
+          contentChanged: rec?.contentFingerprintBefore != null && rec.contentFingerprintBefore !== rec.contentFingerprint,
+          targetRectBefore: storedBefore,
+          targetRectAfter: live,
+          targetMoved: drift.stale,
+          textRectBefore: null,
+          textRectAfter: lastText,
+          reasonChipRectBefore: beforeFact?.reasonChipRectAfter ?? null,
+          reasonChipRectAfter: snapshot.reasonChipRect,
+          expectedChipLeft,
+          expectedChipTop: lastText ? lastText.top + (lastText.height - HEADING_REASON_CHIP_HEIGHT_PX) / 2 : null,
+          actualChipLeft: chipLeft,
+          actualChipTop: chipTop,
+          anchorDriftPx: chipEval.anchorDriftPx,
+          verticalCenterDriftPx: chipEval.verticalDriftPx,
+          placementMode: snapshot.reasonChipRect ? 'INLINE_RIGHT' : null,
+          horizontalClampApplied: chipLeft != null && expectedChipLeft != null
+            && Math.abs(chipLeft - expectedChipLeft) > 0.5,
+          rebuildRequested: before != null,
+          rebuildPerformed: before != null,
+          rebuildReason: reason,
+        })
+        // §8/§11 — plugin-owned presentation mutation must never escalate into a GLOBAL
+        // heading reflow（ROOT_V2_D）；非 heading 诊断切换也不得重建非 active heading。
+        if (!this.headingVisualDirtyKeys.has(identity) && before != null) {
+          if (/PLUGIN_DOM_MUTATION/.test(reason)) {
+            this.countersHeadingReasonChipStabilityV2.pluginDomMutationGlobalHeadingReflow++
+          }
+          if (!this.isHeadingDiagnosticTargetKey(this.diagnosticInteractionState.targetKey)) {
+            this.countersHeadingReasonChipStabilityV2.nonActiveHeadingRebuiltOnNonHeadingSwitch++
+          }
+        }
+      }
       emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_VISUAL_REFLOW_AUDIT_EVENT, {
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
         diagnosticId: snapshot.diagnosticId,
@@ -4724,10 +4933,14 @@ export class DocumentUtilityOverlayHost {
         layoutEpoch: this.currentDocumentLayoutEpoch,
         geometryGeneration: afterGeneration,
         coordinateSpace: snapshot.coordinateSpace,
-        decision: residualDrift.stale ? 'FAIL' : 'PASS',
-        reason: before != null
-          ? (residualDrift.stale ? 'REFLOW_REBUILT_STILL_DRIFTING' : 'REFLOW_GEOMETRY_REBUILT_SAME_GENERATION')
-          : 'GEOMETRY_ALREADY_CURRENT',
+        decision: reflowFailed ? 'FAIL' : 'PASS',
+        reason: before == null
+          ? 'GEOMETRY_ALREADY_CURRENT'
+          : (residualDrift.stale
+              ? 'REFLOW_REBUILT_STILL_DRIFTING'
+              : (chipClosureFailed
+                  ? 'REFLOW_REBUILT_WITH_REASON_CHIP_PLACEMENT_VIOLATION'
+                  : 'REFLOW_GEOMETRY_REBUILT_SAME_GENERATION')),
       })
     }
   }
@@ -5169,6 +5382,15 @@ export class DocumentUtilityOverlayHost {
         this.countersHeadingV512.headingMarkerTextOverlap++
       }
       const existing = this.headingPassiveMarkers.get(identity)
+      // ── Heading Reason Chip Stable Anchor V2 §7（ROOT_V2_D）—— SCOPED reconcile：
+      // 当本次 reconcile 由一次 diagnostic interaction 限定（dirty scope 非空）时，
+      // 非 dirty 且 layoutEpoch 未变的 heading **复用现有 DOM node 与几何**，绝不重建、
+      // 绝不 remeasure、绝不重算 chip placement。
+      if (existing != null && this.headingVisualDirtyScope != null
+        && !this.headingVisualDirtyScope.has(identity)
+        && existing.measuredLayoutEpoch === epoch) {
+        continue
+      }
       // ── V5.12-R9 §7/§13 — heading typography/height as observed BEFORE our
       // paint. We never write to the heading element, so capturing before/after in
       // the SAME pass proves the marker (overlay fill + chip) neither mutates the
@@ -5385,6 +5607,7 @@ export class DocumentUtilityOverlayHost {
           if (!frag) {
             frag = document.createElement('div')
             frag.className = 'inkchapter-heading-diagnostic-passive__fragment'
+            frag.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
             if (preExistingChip) wrapper.insertBefore(frag, preExistingChip)
             else wrapper.appendChild(frag)
           }
@@ -5414,6 +5637,12 @@ export class DocumentUtilityOverlayHost {
       // V5.14-R5 §22 — the label-change width evidence (old long → new short).
       const chipPreviousRecord = this.headingPassiveMarkers.get(identity) ?? null
       const hostRectForChip = this.measureLocateRect(this.locateDocLayerHost)
+      // Heading Reason Chip Stable Anchor V2 §4.2 — the safe-right fallback when the
+      // document-layer host is not (yet) measurable. Never `chipWidth` (that collapsed
+      // the chip to `left = 0`).
+      const fallbackEditorWidth = typeof window !== 'undefined' && window.innerWidth > 0
+        ? window.innerWidth
+        : 1200
       // ── V5.14-R2 §P5-R2 — Heading LABEL geometry authority (ONE per heading).
       // ROOT_P5_R2: the墨章 number is an attribute-driven `::before` PREFIX gutter
       // measured on the FIRST line band (`headingNumberRect()` = headingBox.left →
@@ -5492,7 +5721,12 @@ export class DocumentUtilityOverlayHost {
           chipWidth,
           chipHeight,
           editorLeft: 0,
-          editorRight: hostRectForChip ? hostRectForChip.width : chipWidth,
+          // Heading Reason Chip Stable Anchor V2 §4.2（ROOT_V2_A）—— 未测得 document-layer
+          // host 时**不得**把安全右界退化为 `chipWidth`（那会把 chip 折叠到 left=0）。
+          // 回退到真实视口宽度；canonical placement 内还有 `left >= last.right + 4` 的结构下限。
+          editorRight: hostRectForChip && hostRectForChip.width > 0
+            ? hostRectForChip.width
+            : fallbackEditorWidth,
           drawerLeft: drawerLeftLocal,
         })
         if (placement) {
@@ -5500,16 +5734,18 @@ export class DocumentUtilityOverlayHost {
           if (!chip) {
             chip = document.createElement('div')
             chip.className = 'inkchapter-heading-diagnostic-reason'
+            // §8.1 — plugin-owned presentation identity: MutationObserver treats this
+            // subtree as PLUGIN_PRESENTATION (never semantic / global heading reflow).
+            chip.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
             chip.setAttribute('aria-hidden', 'true')
             wrapper.appendChild(chip)
           }
           if (chip.textContent !== g.reasonText) chip.textContent = g.reasonText
           chip.setAttribute('title', g.reasonText)
-          // §8 — beside the last visible line the chip is VERTICALLY CENTERED on
-          // that line; when it has to drop below the line it keeps its own top.
-          const chipTop = placement.placement === 'RIGHT_OF_LAST_LINE'
-            ? chipAnchorCenterY - chipHeight / 2
-            : placement.rect.top
+          // §4.1 — 唯一纵向规则：与最后一行文本**垂直居中**。Heading Reason Chip
+          // Stable Anchor V2 删除了 `BELOW_LAST_LINE`（`placement.rect.top`）分支，
+          // 因此 initial / passive rebuild / active / restore 五条路径共用同一 top。
+          const chipTop = chipAnchorCenterY - chipHeight / 2
           chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(chipTop)}px;max-width:${INLINE_CHIP_MAX_WIDTH_PX_V514R5}px;`
           // ── V5.14-R5 §10/§11/§22 — the chip rect is the RENDERED width of the
           // CURRENT (short) text, never a character-count estimate and never a
@@ -5542,15 +5778,10 @@ export class DocumentUtilityOverlayHost {
             if (inlineHintHasSeverityEmoji(g.reasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityEmoji++
           }
           const rightMost = chipAnchorRects.reduce((acc, r) => Math.max(acc, r.right), chipAnchor.left)
-          chipGapPx = placement.placement === 'RIGHT_OF_LAST_LINE'
-            ? placement.rect.left - rightMost
-            : placement.rect.top - chipAnchor.bottom
-          // §8 — the chip is only "beside the title" when it sits to the RIGHT of
-          // the last line; the below-line fallback has no horizontal centring to
-          // verify, so vertical centring is checked for the beside case only.
-          chipCenterDriftPx = placement.placement === 'RIGHT_OF_LAST_LINE'
-            ? evaluateHeadingChipCenterDrift(chipAnchorCenterY, chipLocal.top + chipLocal.height / 2)
-            : null
+          // Heading Reason Chip Stable Anchor V2 §4.1/§4.2 —— gap 恒为**水平** gap
+          // （`left − 最后一行文字右缘`）；不再有 BELOW_LAST_LINE 的纵向 gap 语义。
+          chipGapPx = placement.rect.left - rightMost
+          chipCenterDriftPx = evaluateHeadingChipCenterDrift(chipAnchorCenterY, chipLocal.top + chipLocal.height / 2)
         } else if (chip) {
           try { chip.remove() } catch { /* noop */ }
           chip = null
@@ -6898,6 +7129,38 @@ export class DocumentUtilityOverlayHost {
   private countersDocEndV513R4 = createDocumentEndExcessCoverageV513R4Counters()
   /** V5.13-R5 §15 — real trailing-blank geometry hard gates. Every one must stay 0. */
   private countersDocEndV513R5 = createDocumentEndRealGeometryV513R5Counters()
+  // ── V2 — Document-End one-click locate: coordinate-space authority. ────────
+  private countersDocEndCoordV2 = createDocEndCoordinateCounters()
+  private coverageDocEndCoordV2 = createDocEndCoordinateCoverageCounters()
+  private countersDiagnosticClickIsolationV2 = createDiagnosticClickIsolationCounters()
+  /** the last document-end scroll observation (before/after), for the audit. */
+  private lastDocEndScrollObservation: {
+    transactionId: number | null
+    scrollTopBefore: number
+    scrollTopAfter: number
+    maxScrollTopAfter: number
+    scrollDelta: number
+    scrollWriteCount: number
+    scrollSettled: boolean
+    scrollObserved: boolean
+    alreadyAtTarget: boolean
+    layoutEpochBefore: number
+    layoutEpochAfter: number
+    geometryGenerationBefore: number
+    geometryGenerationAfter: number
+  } | null = null
+  /** the geometry the LAST document-end closure actually consumed. */
+  private lastDocEndVisualGeometry: {
+    documentLocalRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    postScrollViewportRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    consumedCoordinateSpace: DocumentEndCoordinateSpace
+    layoutEpoch: number
+    geometryGeneration: number
+    presentationVisibleHeightRatio: number
+    visualDecision: 'PASS' | 'FAIL' | 'NOT_EVALUATED'
+    remeasured: boolean
+    reprojected: boolean
+  } | null = null
   /** V5.13-R5 §28 — Strict Multi-H1 visual Authority gates. Every one must stay 0. */
   private countersMultiH1V513R5 = createStrictMultiH1VisualV513R5Counters()
   /** V5.14-R1 §41 — Drawer document-position ordering gates. Every one must stay 0. */
@@ -14292,6 +14555,17 @@ export class DocumentUtilityOverlayHost {
     const sameDiagnostic = previous.diagnosticId === diagnosticId
     const sameTarget = previous.phase === 'ACTIVE' && previous.targetKey === clickedTargetKey
     const clickSequence = ++this.diagnosticClickSequence
+    // ── Heading Reason Chip Stable Anchor V2 §7（ROOT_V2_D）—— every diagnostic
+    // interaction publishes a SCOPED dirty set: only the old/new active heading (and
+    // genuinely layout/content-changed headings) may be rebuilt. Clicking a NON-heading
+    // diagnostic (table/code/figure/eof) therefore dirties at most the old active heading.
+    this.setHeadingVisualDirtyTargets(computeHeadingVisualDirtyTargets({
+      previousActiveKey: previous.phase === 'ACTIVE' ? previous.targetKey : null,
+      nextActiveKey: clickedTargetKey,
+      previousActiveIsHeading: this.isHeadingDiagnosticTargetKey(previous.targetKey),
+      nextActiveIsHeading: this.isHeadingDiagnosticTargetKey(clickedTargetKey),
+      sameTargetDeactivated: sameTarget,
+    }))
     this.lastClickedDiagnosticId = diagnosticId
     this.lastVisualRecoveryStrategyV21 = null
     this.staleCallbackDropCountSinceClick = 0
@@ -14779,6 +15053,152 @@ export class DocumentUtilityOverlayHost {
     }, 2500)
   }
 
+  /**
+   * §16/§17 — DOCUMENT-DIAGNOSTIC-DOCUMENT-END-COORDINATE-AUDIT. The ONE place the
+   * document-end coordinate gates are judged: a real scroll REQUIRES fresh
+   * post-scroll geometry (projection drift <= 1 px) and may never roll the
+   * interaction back on stale coordinates.
+   */
+  private emitDocEndCoordinateAudit(input: {
+    tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number]
+    completionReason: string
+    scrollTopBefore: number
+    scrollTopAfter: number
+    scrollDelta: number
+    maxScrollTopAfter: number
+    scrollObserved: boolean
+    alreadyAtTarget: boolean
+    visualDecision: 'PASS' | 'FAIL' | 'NOT_EVALUATED'
+  }): void {
+    const observed = this.lastDocEndScrollObservation
+    const geo = this.lastDocEndVisualGeometry
+    // §8 — the canonical projection: document-local geometry + the CURRENT document
+    // host viewport origin. Never a bare `top - scrollTop`.
+    const expectedViewportRect = geo?.documentLocalRect
+      ? projectDocumentLocalToViewport({
+        documentLocalRect: geo.documentLocalRect,
+        hostViewportRect: this.measureLocateRect(this.locateDocLayerHost),
+      })
+      : null
+    const facts = {
+      transactionId: input.tx.id,
+      scrollTopBefore: input.scrollTopBefore,
+      scrollTopAfter: input.scrollTopAfter,
+      maxScrollTopAfter: input.maxScrollTopAfter,
+      scrollDelta: input.scrollDelta,
+      scrollWriteCount: Math.abs(input.scrollDelta) > 0.5 ? 1 : 0,
+      scrollSettled: true,
+      scrollObserved: input.scrollObserved,
+      alreadyAtTarget: input.alreadyAtTarget,
+      documentLocalRect: geo?.documentLocalRect ?? null,
+      preScrollViewportRect: null,
+      postScrollViewportRect: geo?.postScrollViewportRect ?? null,
+      expectedViewportRect,
+      consumedCoordinateSpace: geo?.consumedCoordinateSpace ?? 'VIEWPORT',
+      postScrollRemeasured: geo?.remeasured ?? false,
+      postScrollReprojected: geo?.reprojected ?? false,
+      layoutEpochBefore: observed?.layoutEpochBefore ?? this.currentDocumentLayoutEpoch,
+      layoutEpochAfter: geo?.layoutEpoch ?? this.currentDocumentLayoutEpoch,
+      layoutEpochCurrent: this.currentDocumentLayoutEpoch,
+      geometryGenerationBefore: observed?.geometryGenerationBefore ?? 0,
+      geometryGenerationAfter: geo?.geometryGeneration ?? this.visualGeometryGeneration,
+      presentationVisibleHeightRatio: geo?.presentationVisibleHeightRatio ?? 0,
+      visualDecision: input.visualDecision,
+      interactionRolledBackAfterScroll: false,
+    }
+    const evaluation = evaluateDocEndCoordinateAudit(facts)
+    const c = this.countersDocEndCoordV2
+    const failed = evaluation.failedChecks
+    if (failed.includes('POST_SCROLL_REMEASURE_MISSING')) c.documentEndPostScrollRemeasureMissing++
+    if (failed.includes('DOCUMENT_LOCAL_RECT_USED_AS_VIEWPORT')) c.documentEndDocumentLocalRectUsedAsViewport++
+    if (failed.includes('POST_SCROLL_STALE_LAYOUT_EPOCH')) c.documentEndPostScrollStaleLayoutEpoch++
+    if (failed.includes('VISUAL_CLOSURE_BEFORE_POST_SCROLL_PROJECTION')) c.documentEndVisualClosureBeforePostScrollProjection++
+    if (evaluation.projectionDriftPx != null && evaluation.projectionDriftPx > DOCUMENT_END_PROJECTION_DRIFT_TOLERANCE_PX) {
+      c.documentEndPostScrollCoordinateDriftGt1px++
+      c.documentEndPostScrollStaleGeometry++
+    }
+    if (input.scrollObserved && input.alreadyAtTarget) this.coverageDocEndCoordV2.documentEndAlreadyAtBottomRuntime++
+    if (geo?.remeasured) this.coverageDocEndCoordV2.documentEndPostScrollRemeasureRuntime++
+    if (geo?.reprojected) this.coverageDocEndCoordV2.documentEndPostScrollReprojectRuntime++
+    emitRuntimeAudit(DOCUMENT_END_COORDINATE_AUDIT_EVENT, {
+      transactionId: input.tx.id,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: input.diag.id,
+      completionReason: input.completionReason,
+      scrollTopBefore: input.scrollTopBefore,
+      scrollTopAfter: input.scrollTopAfter,
+      scrollDelta: input.scrollDelta,
+      maxScrollTopAfter: input.maxScrollTopAfter,
+      scrollWriteCount: facts.scrollWriteCount,
+      scrollSettled: true,
+      scrollObserved: input.scrollObserved,
+      alreadyAtTarget: input.alreadyAtTarget,
+      coordinateSpaceBefore: 'DOCUMENT_LOCAL',
+      coordinateSpaceAfter: facts.consumedCoordinateSpace,
+      documentLocalRect: geo?.documentLocalRect ?? null,
+      preScrollViewportRect: null,
+      postScrollViewportRect: geo?.postScrollViewportRect ?? null,
+      expectedViewportRect,
+      postScrollRemeasured: facts.postScrollRemeasured,
+      postScrollReprojected: facts.postScrollReprojected,
+      layoutEpochBefore: facts.layoutEpochBefore,
+      layoutEpochAfter: facts.layoutEpochAfter,
+      geometryGenerationBefore: facts.geometryGenerationBefore,
+      geometryGenerationAfter: facts.geometryGenerationAfter,
+      projectionDriftPx: evaluation.projectionDriftPx,
+      presentationVisibleHeightRatio: facts.presentationVisibleHeightRatio,
+      visualDecision: input.visualDecision,
+      decision: evaluation.decision,
+      reason: evaluation.reason,
+    })
+  }
+
+  /** V2 §18/§19 — the document-end coordinate gate + coverage surface. */
+  getDocEndCoordinateGateReport(): string[] {
+    return formatDocEndCoordinateGateReport(this.countersDocEndCoordV2)
+  }
+
+  getDocEndCoordinateCounters(): Readonly<DocEndCoordinateCounters> {
+    return { ...this.countersDocEndCoordV2 }
+  }
+
+  getDocEndCoordinateCoverageReport(): string[] {
+    return formatDocEndCoordinateCoverageReport(this.coverageDocEndCoordV2)
+  }
+
+  getDocEndCoordinateGateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+  } {
+    const gates = evaluateDocEndCoordinateGates(this.countersDocEndCoordV2)
+    const coverage = evaluateDocEndCoordinateCoverage(this.coverageDocEndCoordV2)
+    return {
+      decision: gates.decision === 'PASS' && coverage.decision === 'PASS' ? 'PASS' : 'FAIL',
+      gateDecision: gates.decision,
+      coverageDecision: coverage.decision,
+      failedChecks: gates.failedChecks.map(k => DOC_END_COORDINATE_GATE_LABELS[k]),
+      unmetCoverage: coverage.unmet.map(k => DOC_END_COORDINATE_COVERAGE_LABELS[k]),
+    }
+  }
+
+  /** V2 §26 — diagnostic-click semantic isolation (must stay 0). */
+  getDiagnosticClickIsolationReport(): string[] {
+    return formatDiagnosticClickIsolationGateReport(this.countersDiagnosticClickIsolationV2)
+  }
+
+  getDiagnosticClickIsolationCounters(): Readonly<DiagnosticClickIsolationCounters> {
+    return { ...this.countersDiagnosticClickIsolationV2 }
+  }
+
+  getDiagnosticClickIsolationDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    const r = evaluateDiagnosticClickIsolationGates(this.countersDiagnosticClickIsolationV2)
+    return { decision: r.decision, failedChecks: r.failedChecks.map(k => DIAGNOSTIC_CLICK_ISOLATION_GATE_LABELS[k]) }
+  }
+
   // ── V5.13-R1 — Synthetic EOF Document-Space Visual Target ───────────────
 
   /**
@@ -15114,21 +15534,98 @@ export class DocumentUtilityOverlayHost {
     let lastTop = container.scrollTop
     let stableFrames = 0
     let rafHandle = 0
+    // ── V5.9-V2 §12/§17 — SCROLL-SETTLE AUTHORITY. `scrollTop` not moving is NOT
+    // proof of "settled": at watcher start the GO_BOTTOM write may not have been
+    // issued yet, so 2 identical frames used to be misread as settle and the
+    // visual closure then measured PRE-SCROLL viewport geometry (real runtime:
+    // rect 739..1271 = document-local + scrollTop, ratio 0.02368 → FAIL →
+    // rollback). The settle gate now requires a REAL scroll (movement observed) or
+    // an already-at-target container before it may declare settle.
+    const scrollStartTop = container.scrollTop
+    const scrollMaxTop = Math.max(0, container.scrollHeight - container.clientHeight)
+    const scrollAlreadyAtTarget = scrollMaxTop - scrollStartTop <= DOC_END_SCROLL_TARGET_TOLERANCE_PX
+    let scrollMovementObserved = false
     const scrollendSupported = typeof container.addEventListener === 'function' && 'onscrollend' in container
     const onSettled = (completionReason: string): void => {
       if (settled || !this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
       settled = true
       this.cancelLocateSettleWatch()
+      // ── §9/§10 — a real scroll invalidates every PRE-scroll viewport rect; the
+      // closure is only allowed to consume geometry measured AFTER the settle.
+      const scrollObserved = scrollMovementObserved || scrollAlreadyAtTarget
+      const movedPx = Math.abs(container.scrollTop - scrollStartTop)
+      if (scrollObserved) this.coverageDocEndCoordV2.documentEndRealScrollRuntime++
+      // §11/§16 — the scroll observation the coordinate audit is judged from.
+      this.lastDocEndVisualGeometry = null
+      this.lastDocEndScrollObservation = {
+        transactionId: tx.id,
+        scrollTopBefore: scrollStartTop,
+        scrollTopAfter: container.scrollTop,
+        maxScrollTopAfter: scrollMaxTop,
+        scrollDelta: movedPx,
+        scrollWriteCount: scrollMovementObserved ? 1 : 0,
+        scrollSettled: true,
+        scrollObserved,
+        alreadyAtTarget: scrollAlreadyAtTarget,
+        layoutEpochBefore: this.currentDocumentLayoutEpoch,
+        layoutEpochAfter: this.currentDocumentLayoutEpoch,
+        geometryGenerationBefore: this.visualGeometryGeneration,
+        geometryGenerationAfter: this.visualGeometryGeneration,
+      }
+      if (!scrollObserved) {
+        // A settle WITHOUT any scroll means the scroll never started: this is a
+        // SCROLL-layer failure, never a visual failure — and never a rollback.
+        this.countersDocEndCoordV2.documentEndVisualClosureBeforePostScrollProjection++
+        this.emitDocEndCoordinateAudit({
+          tx, diag, completionReason: 'POST_SCROLL_GEOMETRY_REQUIRED',
+          scrollTopBefore: scrollStartTop, scrollTopAfter: container.scrollTop, scrollDelta: movedPx,
+          maxScrollTopAfter: scrollMaxTop, scrollObserved, alreadyAtTarget: scrollAlreadyAtTarget,
+          visualDecision: 'NOT_EVALUATED',
+        })
+        // bounded: keep waiting for the real scroll thread (the 2500 ms watchdog
+        // still bounds the transaction) instead of failing on stale geometry.
+        settled = false
+        rafHandle = requestAnimationFrame(tick)
+        return
+      }
       // §8 step 5 — REMEASURE after the scroll settle; never reuse a stale rect.
-      const verified = this.commitSyntheticEofVisual(tx, diag, extraTrailingBlankLineCount, true)
+      // The remeasure flag is the REAL observation (never a literal `true`).
+      const verified = this.commitSyntheticEofVisual(tx, diag, extraTrailingBlankLineCount, scrollObserved)
+      if (scrollObserved && !verified) {
+        // §13/§ROOT_EOF_4 — a successful scroll must NEVER end in an interaction
+        // rollback on stale geometry: these gates are the detectors for it.
+        this.countersDocEndCoordV2.documentEndFirstClickLocateRollback++
+        this.countersDocEndCoordV2.documentEndFirstClickVisualNotVisible++
+        this.countersDocEndCoordV2.documentEndActiveStateRolledBackAfterScrollSuccess++
+        this.countersDocEndCoordV2.documentEndSecondClickRequired++
+      }
+      if (scrollObserved && verified) this.coverageDocEndCoordV2.documentEndOneClickCommittedRuntime++
+      if (verified) this.coverageDocEndCoordV2.documentEndPostScrollReprojectRuntime++
+      this.emitDocEndCoordinateAudit({
+        tx, diag, completionReason,
+        scrollTopBefore: scrollStartTop, scrollTopAfter: container.scrollTop, scrollDelta: movedPx,
+        maxScrollTopAfter: scrollMaxTop, scrollObserved, alreadyAtTarget: scrollAlreadyAtTarget,
+        visualDecision: verified ? 'PASS' : 'FAIL',
+      })
       this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'DOCUMENT_END_SYNTHETIC_EOF', targetIndex, result, verified)
       this.finishLocateTransaction(tx, verified, completionReason)
     }
-    const onScroll = (): void => { lastTop = container.scrollTop; stableFrames = 0 }
+    const onScroll = (): void => {
+      scrollMovementObserved = true
+      lastTop = container.scrollTop
+      stableFrames = 0
+    }
     const onScrollEnd = (): void => { onSettled('DOCUMENT_END_SCROLLEND') }
     const tick = (): void => {
       if (settled || !this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
       const top = container.scrollTop
+      if (Math.abs(top - scrollStartTop) > 0.5) scrollMovementObserved = true
+      // ── §12.A — "scroll finished" ≠ "geometry fresh": never settle before the
+      // scroll has actually started (unless the container is already at target).
+      if (!scrollMovementObserved && !scrollAlreadyAtTarget) {
+        rafHandle = requestAnimationFrame(tick)
+        return
+      }
       if (Math.abs(top - lastTop) < 0.5) stableFrames++
       else { lastTop = top; stableFrames = 0 }
       if (stableFrames >= 2) { onSettled('DOCUMENT_END_SCROLL_STABLE_FRAMES'); return }
@@ -15411,6 +15908,20 @@ export class DocumentUtilityOverlayHost {
     }
     const visibleHeightRatio = presentationVisibleHeightRatio(painted, editorRect)
     const visible = headless ? true : visibleHeightRatio >= EOF_VISIBLE_HEIGHT_RATIO_MIN
+    // ── V2 §7/§11/§16 — record the geometry this closure ACTUALLY consumed, so the
+    // document-end coordinate audit can verify the coordinate SPACE and the
+    // post-scroll projection drift instead of trusting a bare visibility ratio.
+    this.lastDocEndVisualGeometry = {
+      documentLocalRect: localRect,
+      postScrollViewportRect: painted,
+      consumedCoordinateSpace: 'VIEWPORT',
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      geometryGeneration: this.visualGeometryGeneration,
+      presentationVisibleHeightRatio: visibleHeightRatio,
+      visualDecision: headless ? 'PASS' : (visible ? 'PASS' : 'FAIL'),
+      remeasured: remeasuredAfterScroll,
+      reprojected: remeasuredAfterScroll,
+    }
     // §3 — a Drawer that merely paints OVER the band is EXPECTED (never a clip).
     const expectedPanelOcclusion = !!painted && rectsIntersect(painted, drawerRect)
 

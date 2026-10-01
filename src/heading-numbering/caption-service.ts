@@ -113,6 +113,31 @@ import {
   type CaptionAuthorityGateDecision,
 } from './caption-heading-authority'
 import type { CanonicalHeadingFrame } from './canonical-heading-frame'
+// V1 — Document Utility Performance Closure: mutation provenance + semantic
+// reconcile routing (presentation writes must never wake the semantic pipeline).
+import {
+  CAPTION_PLAN_DIFF_AUDIT_EVENT,
+  DOCUMENT_SEMANTIC_RECONCILE_AUDIT_EVENT,
+  DOCUMENT_UTILITY_PERF_COVERAGE_LABELS,
+  DOCUMENT_UTILITY_PERF_GATE_LABELS,
+  EDITOR_MUTATION_PROVENANCE_AUDIT_EVENT,
+  buildExpensiveReconcileKey,
+  classifyMutationProvenance,
+  computeCaptionObserverMutationShape,
+  createDocumentUtilityPerfCounters,
+  createDocumentUtilityPerfCoverageCounters,
+  mutationTouchesBusinessHost,
+  evaluateDocumentUtilityPerfCoverage,
+  evaluateDocumentUtilityPerfGates,
+  evaluateSemanticReconcileDecision,
+  formatDocumentUtilityPerfCoverageReport,
+  formatDocumentUtilityPerfGateReport,
+  type DocumentUtilityPerfCounters,
+  type DocumentUtilityPerfCoverageCounters,
+  type MutationProvenance,
+  type MutationRecordLike,
+  type MutationShapeV1,
+} from './document-utility-mutation-provenance-v1'
 
 /**
  * Phase 7R.3.6-H/I: offline Formula plan-set candidate. Built completely OFF to
@@ -588,6 +613,17 @@ export class CaptionService {
   private formulaStuckAfterRepeatedToggleCount = 0
   private captionMutationSelfIgnoredCount = 0
   private captionMutationContentRefreshCount = 0
+  // ── V1 §35/§36 — the Document Utility performance gates + coverage. ────────
+  private perfCounters: DocumentUtilityPerfCounters = createDocumentUtilityPerfCounters()
+  private perfCoverage: DocumentUtilityPerfCoverageCounters = createDocumentUtilityPerfCoverageCounters()
+  /** the provenance of the LAST mutation batch that reached the reconcile gate. */
+  private lastMutationProvenance: MutationProvenance = 'UNKNOWN'
+  /** §7 — the paragraph shape of the LAST observed mutation batch. */
+  private lastMutationShapeAtObserver: MutationShapeV1 = 'NONE'
+  /** §15 — the last expensive-pass state key (one-state-one-expensive-pass). */
+  private lastExpensiveReconcileStateKey: string | null = null
+  /** §11 — the last caption plan fingerprint (unchanged → NOOP). */
+  private lastCaptionPlanFingerprint: string | null = null
   private renderStats: ReconcileStats = {
     createCount: 0, updateCount: 0, moveCount: 0,
     noOpCount: 0, removeDisabledCount: 0, removeStaleCount: 0,
@@ -859,13 +895,68 @@ export class CaptionService {
   private flushDocument(): void {
     this.boundTargets.clear()
     this.orphanIds.clear()
+    // ── V1 §14 — a document switch / full reload invalidates the semantic cache.
+    this.adapter.invalidateCollectTargetsCache()
+    this.lastExpensiveReconcileStateKey = null
+    this.lastCaptionPlanFingerprint = null
   }
 
   private connectObserver(root: HTMLElement): void {
     this.disconnectObserver()
     this.mutationObserver = new MutationObserver((records) => {
       if (this.rendering) return
+      // ── V1 §4/§7/§8 — MUTATION PROVENANCE IS DECIDED FIRST. The plugin's OWN
+      // presentation DOM (diagnostic marker / active fill / reason chip / locate
+      // visual / drawer projection) must NEVER be reinterpreted as user content.
+      const provenanceResult = classifyMutationProvenance(records as unknown as MutationRecordLike[])
+      const provenance = provenanceResult.provenance
       const classification = classifyEditorMutationBatch(records)
+      const mutationShape = computeCaptionObserverMutationShape(records)
+      const structureChanged = classification === 'FORMULA_STRUCTURE_CHANGED'
+        || (classification === 'CONTENT_RELEVANT' && mutationIndicatesEditorStructureChange(records))
+      // ── V1 §17 — the epoch bumps BEFORE the state key is derived, so a genuine
+      // structural edit always changes the key (a whole fenced code add/remove can
+      // never be mistaken for a duplicate semantic state).
+      if (structureChanged) this.editorStructureEpochValue++
+      const stateKey = this.computeExpensiveReconcileStateKeyNow()
+      const stateChanged = this.lastExpensiveReconcileStateKey !== null
+        && stateKey !== this.lastExpensiveReconcileStateKey
+      const routing = evaluateSemanticReconcileDecision({
+        provenance,
+        mutationShape,
+        sourceRevisionChanged: stateChanged || structureChanged,
+        canonicalStructureChanged: structureChanged,
+        semanticFingerprintChanged: stateChanged,
+        stateKey,
+        previousStateKey: this.lastExpensiveReconcileStateKey,
+        pluginInteractionActive: false,
+        businessHostTouched: mutationTouchesBusinessHost(records as unknown as MutationRecordLike[]),
+      })
+      const c = provenanceResult.counts
+      emitRuntimeAudit(EDITOR_MUTATION_PROVENANCE_AUDIT_EVENT, {
+        batchId: `emp-${Date.now()}`,
+        documentKey: this.currentDocumentKey ?? null,
+        recordCount: c.recordCount,
+        childListCount: c.childListCount,
+        attributeCount: c.attributeCount,
+        characterDataCount: c.characterDataCount,
+        pluginOwnedAddedCount: c.pluginOwnedAddedCount,
+        pluginOwnedRemovedCount: c.pluginOwnedRemovedCount,
+        pluginOwnedTextCount: c.pluginOwnedTextCount,
+        pluginOwnedAttributeDeltaCount: c.pluginOwnedAttributeDeltaCount,
+        userContentMutationCount: c.userContentMutationCount,
+        classification,
+        mutationShape,
+        provenance,
+        stateKey,
+        sameStateKeyAsPrevious: this.lastExpensiveReconcileStateKey !== null
+          && stateKey === this.lastExpensiveReconcileStateKey,
+        semanticReconcileAllowed: routing.semanticReconcileAllowed,
+        decision: routing.decision,
+        reason: routing.reason,
+      })
+      this.lastMutationProvenance = provenance
+      this.lastMutationShapeAtObserver = mutationShape
       if (classification === 'SELF_ONLY') {
         this.captionMutationSelfIgnoredCount++
         this.perfTracker.incSelfMutationSkip()
@@ -891,25 +982,100 @@ export class CaptionService {
           })),
         })
       }
-      this.captionMutationContentRefreshCount++
-      // Phase 7R.3.6-F §17: bump the editor structure epoch ONLY for genuine
-      // numbering-relevant structure changes (heading/Formula/object host
-      // add/remove/level-change). Renderer output and caption/self mutations
-      // never bump it.
-      if (classification === 'FORMULA_STRUCTURE_CHANGED') {
-        this.editorStructureEpochValue++
-      } else if (classification === 'CONTENT_RELEVANT' && mutationIndicatesEditorStructureChange(records)) {
-        this.editorStructureEpochValue++
+      // ── V1 §7/§8 — the HARD short circuits. A plugin presentation write (or a
+      // NONE mutation with an unchanged semantic state) NEVER enters the semantic
+      // pipeline: no epoch bump, no caption scan, no code discovery.
+      if (!routing.semanticReconcileAllowed) {
+        if (classification === 'RENDERER_ONLY') {
+          // A renderer-output change (MathJax / CodeMirror repaint) is a CHEAP
+          // path (no full scan, renderer integrity only) — keep it.
+          this.requestNumberingReconcile({
+            reason: `mutation:${classification}`,
+            invalidation: ['RENDERER_OUTPUT_CHANGED'],
+          })
+          return
+        }
+        if (routing.decision === 'PLUGIN_PRESENTATION_SHORT_CIRCUIT') {
+          this.perfCoverage.pluginPresentationMutationShortCircuit++
+        } else if (routing.decision === 'NO_SEMANTIC_RECONCILE') {
+          this.perfCoverage.noneMutationShortCircuit++
+        }
+        this.perfTracker.incProjectionNoopSkip()
+        return
       }
+      this.captionMutationContentRefreshCount++
+      if (provenance === 'USER_CONTENT') this.perfCoverage.userContentMutationSemanticReconcile++
       // Phase 7R.3.4-B/D: map the mutation class onto reconcile invalidation.
       const invalidation: ReconcileInvalidationKey[] =
         classification === 'RENDERER_ONLY' ? ['RENDERER_OUTPUT_CHANGED']
           : classification === 'FORMULA_SOURCE_CHANGED' ? ['FORMULA_SOURCE_CHANGED']
           : classification === 'FORMULA_STRUCTURE_CHANGED' ? ['FORMULA_STRUCTURE_CHANGED', 'OBJECT_STRUCTURE_CHANGED']
           : ['HEADING_SEMANTICS_CHANGED', 'OBJECT_STRUCTURE_CHANGED']
+      emitRuntimeAudit(DOCUMENT_SEMANTIC_RECONCILE_AUDIT_EVENT, {
+        documentKey: this.currentDocumentKey ?? null,
+        trigger: `mutation:${classification}`,
+        provenance,
+        stateKey,
+        sameStateKeyAsPrevious: this.lastExpensiveReconcileStateKey !== null
+          && stateKey === this.lastExpensiveReconcileStateKey,
+        diagnosticScan: true,
+        captionScan: true,
+        codeCandidateScan: true,
+        formulaScan: classification === 'FORMULA_SOURCE_CHANGED' || classification === 'FORMULA_STRUCTURE_CHANGED',
+        decision: 'SEMANTIC_SCAN_ALLOWED',
+        reason: routing.reason,
+      })
       this.requestNumberingReconcile({ reason: `mutation:${classification}`, invalidation })
     })
     this.mutationObserver.observe(root, { childList: true, subtree: true })
+  }
+
+  /**
+   * V1 §15 — the ONE expensive-pass state key (one-state-one-expensive-pass).
+   */
+  private computeExpensiveReconcileStateKeyNow(): string {
+    const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
+    const fp = computeHeadingSemanticFingerprint(snapshot)
+    const gateState = this.captionAuthorityGate.getState()
+    const semanticRevision = gateState.state === 'READY' ? gateState.semanticRevision : -1
+    return buildExpensiveReconcileKey({
+      documentKey: this.currentDocumentKey ?? '',
+      semanticRevision,
+      editorStructureEpoch: this.editorStructureEpochValue,
+      canonicalHostFingerprint: fp,
+    })
+  }
+
+  // ── V1 §35/§36 — the Document Utility performance gate + coverage surface. ──
+
+  getDocumentUtilityPerfGateReport(): string[] {
+    return formatDocumentUtilityPerfGateReport(this.perfCounters)
+  }
+
+  getDocumentUtilityPerfCounters(): Readonly<DocumentUtilityPerfCounters> {
+    return { ...this.perfCounters }
+  }
+
+  getDocumentUtilityPerfCoverageReport(): string[] {
+    return formatDocumentUtilityPerfCoverageReport(this.perfCoverage)
+  }
+
+  getDocumentUtilityPerfGateDecision(): {
+    decision: 'PASS' | 'FAIL'
+    failedChecks: readonly string[]
+    unmetCoverage: readonly string[]
+    gateDecision: 'PASS' | 'FAIL'
+    coverageDecision: 'PASS' | 'FAIL'
+  } {
+    const gates = evaluateDocumentUtilityPerfGates(this.perfCounters)
+    const coverage = evaluateDocumentUtilityPerfCoverage(this.perfCoverage)
+    return {
+      decision: gates.decision === 'PASS' && coverage.decision === 'PASS' ? 'PASS' : 'FAIL',
+      failedChecks: gates.failedChecks.map(k => DOCUMENT_UTILITY_PERF_GATE_LABELS[k]),
+      unmetCoverage: coverage.unmet.map(k => DOCUMENT_UTILITY_PERF_COVERAGE_LABELS[k]),
+      gateDecision: gates.decision,
+      coverageDecision: coverage.decision,
+    }
   }
 
   private disconnectObserver(): void {
@@ -1142,6 +1308,11 @@ export class CaptionService {
    */
   private performNumberingReconcile(pending: PendingNumberingReconcile): void {
     this.perfTracker.incCoordinatorExecution()
+    // ── V1 §13/§14 — the code-candidate cache is PASS-SCOPED: clearing it here
+    // (before any early return) guarantees that a previous pass can never feed a
+    // stale candidate set into this one, while every collectTargets() call INSIDE
+    // this pass reuses ONE scan.
+    this.adapter.setCollectTargetsCacheKey(null)
     const liveEpoch = this.documentEpochValue
     const liveDocKey = this.currentDocumentKey ?? null
     if (pending.documentEpoch !== liveEpoch || (pending.documentKey && pending.documentKey !== liveDocKey)) {
@@ -1163,6 +1334,51 @@ export class CaptionService {
     const reasons = Array.from(pending.reasons)
     if (!this.gateCaptionPreScanDocumentContext(reasons.join('+') || 'reconcile')) {
       return
+    }
+    // ── V1 §7/§8/§15 — MUTATION-PROVENANCE GUARD at the EXPENSIVE entry. A
+    // presentation-only (or NONE-with-unchanged-semantics) mutation batch must
+    // never reach collectTargets / CODE candidate discovery / caption plan. These
+    // counters are therefore 0 by construction and fire only on a regression.
+    const mutationOnlyReasons = reasons.length > 0 && reasons.every(r => r.startsWith('mutation:'))
+    if (mutationOnlyReasons) {
+      const perf = this.perfCounters
+      if (this.lastMutationProvenance === 'PLUGIN_PRESENTATION') {
+        perf.pluginPresentationMutationTriggeredCaptionReconcile++
+        perf.pluginPresentationMutationTriggeredCaptionScan++
+        perf.pluginPresentationMutationTriggeredCodeDiscovery++
+        perf.pluginPresentationMutationTriggeredDocumentDiagnosticRescan++
+        return
+      }
+      if (this.lastMutationShapeAtObserver === 'NONE') {
+        const noneStateKey = this.computeExpensiveReconcileStateKeyNow()
+        if (noneStateKey === this.lastExpensiveReconcileStateKey) {
+          perf.noneMutationTriggeredContentReconcile++
+          perf.noneMutationTriggeredCaptionScan++
+          perf.noneMutationTriggeredCodeCandidateScan++
+          return
+        }
+      }
+    }
+    // ── V1 §15 — ONE expensive pass per semantic state key. A repeated key is the
+    // `DUPLICATE_EXPENSIVE_RECONCILE_SAME_STATE_KEY` violation (detector only: the
+    // observer already refuses to request a duplicate).
+    const expensiveStateKey = this.computeExpensiveReconcileStateKeyNow()
+    const structuralRequested = (pending.invalidationMask & SEMANTIC_STRUCTURAL_INVALIDATION_MASK) !== 0
+    // Only a MUTATION-driven request can be a duplicate semantic state: an
+    // explicit refresh (settings apply / setCaption / manual recheck) is real user
+    // intent and must always run.
+    if (mutationOnlyReasons && !structuralRequested && this.lastExpensiveReconcileStateKey !== null
+      && expensiveStateKey === this.lastExpensiveReconcileStateKey) {
+      this.perfCounters.duplicateExpensiveReconcileSameStateKey++
+      return
+    }
+    this.lastExpensiveReconcileStateKey = expensiveStateKey
+    // ── V1 §13/§14 — arm the code-candidate semantic cache for THIS state key.
+    this.adapter.setCollectTargetsCacheKey(expensiveStateKey)
+    const cacheStats = this.adapter.getCodeCandidateCacheStats()
+    if (cacheStats.hits > 0) this.perfCoverage.codeCandidateCacheHit = cacheStats.hits
+    if (this.lastMutationProvenance === 'USER_CONTENT') {
+      this.perfCoverage.userContentMutationCaptionScan++
     }
     // Phase 7R.3.9R: heading-authority barrier BEFORE collectTargets/resolver/
     // retry. WAITING → record ONE coalesced pending intent → return.
