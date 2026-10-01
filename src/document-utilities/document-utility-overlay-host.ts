@@ -3224,6 +3224,9 @@ export class DocumentUtilityOverlayHost {
       this.resizeObserver.observe(contentRoot)
     }
     window.addEventListener('resize', this.onWindowResize)
+    // Region Divider V1 §5.4 — probe the docked right console once at mount too
+    // (Typora may start with DevTools already docked).
+    this.syncRegionDividerConsoleDock()
     this.installWarningObserver()
     this.scheduleGeometrySync('mount')
 
@@ -10806,6 +10809,32 @@ export class DocumentUtilityOverlayHost {
     this.scheduleResizeSettle()
     // V5.11 §19 — a true resize is a layout reflow: same-target reconcile only.
     this.reconcileLocateDocumentSpace('WINDOW_RESIZE')
+    // Region Divider V1 §5.4 — the docked right console (DevTools) shrinks the
+    // renderer viewport, so it is detected here (the ONE existing resize path)
+    // instead of adding a second listener / observer.
+    this.syncRegionDividerConsoleDock()
+  }
+
+  /**
+   * Region Divider V1 §5.4 — the right console is Electron's docked DevTools (a
+   * separate WebContents). Its border cannot be styled from the renderer, but
+   * when it is docked the renderer's own right edge IS the boundary, so a fixed
+   * 1px overlay is toggled through `body.ink-console-docked`. Detection is a
+   * pure geometry probe (`outerWidth - innerWidth`): a docked panel is hundreds
+   * of px wide whereas the native frame is ~0-20px. No DOM inside the console is
+   * ever touched, and the class is REMOVED when the console closes, so no
+   * dangling line can remain.
+   */
+  private syncRegionDividerConsoleDock(): void {
+    if (this.disposed || typeof document === 'undefined') return
+    const outer = typeof window !== 'undefined' ? window.outerWidth : 0
+    const inner = typeof window !== 'undefined' ? window.innerWidth : 0
+    const docked = outer > 0 && inner > 0 && outer - inner > 160
+    const body = document.body
+    if (!body) return
+    const has = body.classList.contains('ink-console-docked')
+    if (docked && !has) body.classList.add('ink-console-docked')
+    else if (!docked && has) body.classList.remove('ink-console-docked')
   }
 
   /**
