@@ -67,10 +67,10 @@ describe('Region Divider V1 — tokens (§4)', () => {
     expect(css).not.toContain('rgb(0, 0, 0)')
   })
 
-  it('keeps the tab bottom divider stronger than the tab-to-tab separator (§7)', () => {
+  it('keeps the tab bottom line native and the separator weaker than the dividers (§7)', () => {
     const css = regionCss()
-    // main divider uses the -strong token; the separator uses the light one
-    expect(css).toMatch(/\.typ-workspace-tabs[\s\S]{0,200}--ink-divider-major/)
+    // V5 — the strip bottom line is the framework's own border-bottom, not ours
+    expect(css).not.toMatch(/\.typ-workspace-tabs\s*\{[^}]*--ink-divider-major/)
     expect(css).toMatch(/\.typ-tab:not\(:last-child\)/)
   })
 })
@@ -89,10 +89,11 @@ describe('Region Divider V1 — four region dividers (§5)', () => {
     expect(css).not.toMatch(/\ncontent\s*\{[^}]*border-left/)
   })
 
-  it('tab strip bottom: 1px background strip (no height change)', () => {
+  it('tab strip bottom: V5 removed our duplicate — the framework border is the authority', () => {
     const css = regionCss()
-    expect(css).toMatch(/\.typ-workspace-tabs,\s*\n\.typ-workspace-tab-header\s*\{\s*background-image:\s*linear-gradient/)
-    expect(css).toMatch(/calc\(100% - 1px\)/)
+    expect(css).not.toMatch(/\.typ-workspace-tabs\s*\{[^}]*background-image/)
+    expect(css).not.toMatch(/\.typ-workspace-tab-header\s*\{[^}]*background-image/)
+    expect(css).not.toContain('calc(100% - 1px)')
   })
 
   it('right console: fixed overlay gated by ink-console-docked (no dangling line)', () => {
@@ -170,15 +171,16 @@ describe('Region Divider V1 — subtle but preserved tab scrollbar (§8/§9)', (
     expect(css).not.toMatch(/::-webkit-scrollbar[^{]*\{[^}]*display:\s*none/)
   })
 
-  it('is scoped to the tab strip only, 4px hit area, theme-aware thumbs', () => {
+  it('is scoped to the REAL scroll owner (.typ-tabs-wrapper), 4px hit area', () => {
     const css = regionCss()
-    expect(css).toMatch(/\.typ-workspace-tabs \.typ-tabs::-webkit-scrollbar[\s\S]{0,80}height:\s*4px/)
-    expect(css).toContain('::-webkit-scrollbar-track')
-    expect(css).toMatch(/::-webkit-scrollbar-thumb\s*\{[\s\S]{0,220}--ink-scroll-thumb\)/)
-    expect(css).toMatch(/:hover::-webkit-scrollbar-thumb[\s\S]{0,80}--ink-scroll-thumb-hover\)/)
-    expect(css).toMatch(/::-webkit-scrollbar-thumb:hover[\s\S]{0,160}--ink-scroll-thumb-active\)/)
-    // a transparent thumb colour must never be declared for the tab strip
-    expect(css).not.toMatch(/::-webkit-scrollbar-thumb\s*\{[\s\S]{0,220}background-color:\s*transparent/)
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar\s*\{\s*height:\s*4px/)
+    expect(css).toContain('.typ-tabs-wrapper::-webkit-scrollbar-track')
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar-thumb\s*\{[\s\S]{0,260}background-color:\s*transparent/)
+    expect(css).toMatch(/\.typ-tabs-wrapper:hover::-webkit-scrollbar-thumb/)
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar-thumb:hover[\s\S]{0,120}--ink-scroll-thumb-active\)/)
+    // the inert `.typ-tabs`/`.typ-workspace-tabs` scrollbar rules must be gone
+    expect(css).not.toMatch(/\.typ-tabs::-webkit-scrollbar/)
+    expect(css).not.toMatch(/\.typ-workspace-tabs[^{]*webkit-scrollbar/)
   })
 
   it('adds no extra tab-strip height (§8.7)', () => {
@@ -317,12 +319,11 @@ describe('Divider Theme & Visual Hierarchy V3 — theme-aware tokens (§2)', () 
     }
   })
 
-  it('top < left < tab-strip/console divider (§14/§15/§16)', () => {
+  it('top < left < console divider (§14/§15/§16)', () => {
     const css = regionCss()
-    // top boundary = faint, left = secondary, tab bottom + console = major
+    // top boundary = faint, left = secondary, right console = major
     expect(css).toMatch(/#top-titlebar\s*\{\s*border-bottom:\s*1px solid var\(--ink-divider-faint\)/)
     expect(css).toMatch(/#typora-sidebar::after\s*\{[\s\S]{0,200}background:\s*var\(--ink-divider-secondary\)/)
-    expect(css).toMatch(/\.typ-workspace-tab-header\s*\{[\s\S]{0,200}var\(--ink-divider-major\)/)
     expect(css).toMatch(/body\.ink-console-docked::after\s*\{[\s\S]{0,200}background:\s*var\(--ink-divider-major\)/)
   })
 })
@@ -393,21 +394,28 @@ describe('Scrollbar V4.1 §FIX-1 — tree bar is WIDTH-ONLY (native colours inta
   })
 })
 
-describe('Scrollbar Slimming & Hover-Reveal V4 — tab bar hover-reveal (§6)', () => {
-  it('is near-invisible by default and revealed on strip hover', () => {
+describe('Tab Scrollbar Interaction Authority V5 — owner & reveal authority', () => {
+  it('targets the REAL scroll owner and no longer binds :hover as authority', () => {
     const css = regionCss()
-    // default thumb = the 2% token (never literally removed)
-    expect(css).toMatch(/::-webkit-scrollbar-thumb\s*\{[\s\S]{0,260}background-color:\s*var\(--ink-scroll-thumb\)/)
-    // reveal driven by :hover on the outer strip (and the inner scroller)
-    expect(css).toMatch(/\.typ-workspace-tabs:hover \.typ-tabs::-webkit-scrollbar-thumb/)
-    expect(css).toMatch(/\.typ-workspace-tab-header:hover \.typ-tabs::-webkit-scrollbar-thumb/)
-    expect(css).toMatch(/\.typ-workspace-tabs \.typ-tabs:hover::-webkit-scrollbar-thumb/)
+    // the only scroller is the wrapper (framework `overflow-x:auto`)
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar/)
+    // §forensic-2 — `.typ-workspace-tabs` is the whole workspace COLUMN, so it must
+    // never be a reveal authority (it stays :hover-matched over the document)
+    expect(css).not.toMatch(/\.typ-workspace-tabs:hover/)
+    expect(css).not.toMatch(/\.typ-workspace-tab-header:hover/)
+    expect(css).not.toMatch(/\.typ-tabs:hover/)
   })
 
-  it('holds visible while dragging (thumb :active) and fades with a transition', () => {
+  it('is hidden outside the bar and revealed by hovering the WHOLE bar (V5.1)', () => {
     const css = regionCss()
-    expect(css).toMatch(/::-webkit-scrollbar-thumb:active[\s\S]{0,120}--ink-scroll-thumb-active\)/)
-    expect(css).toMatch(/transition:\s*background-color/)
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar-thumb\s*\{[\s\S]{0,260}background-color:\s*transparent/)
+    // the wrapper ITSELF is the hover authority — not the thumb, not a scroll event
+    expect(css).toMatch(/\.typ-tabs-wrapper:hover::-webkit-scrollbar-thumb\s*\{\s*background-color:\s*var\(--ink-scroll-thumb-hover\)/)
+    expect(css).not.toMatch(/::-webkit-scrollbar-thumb:hover\s*\{[^}]*--ink-scroll-thumb-hover/)
+    // no activity-class authority may remain
+    expect(css).not.toContain('ink-tab-scroll-active')
+    // drag stays visible
+    expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar-thumb:active[\s\S]{0,120}--ink-scroll-thumb-active\)/)
   })
 
   it('never reveals via display / height / width switching (no layout shift)', () => {
@@ -416,15 +424,63 @@ describe('Scrollbar Slimming & Hover-Reveal V4 — tab bar hover-reveal (§6)', 
     expect(css).not.toContain('scrollbar-width: none')
     expect(css).not.toMatch(/::-webkit-scrollbar\s*\{[^}]*height:\s*0/)
     expect(css).not.toMatch(/::-webkit-scrollbar\s*\{[^}]*display/)
-    // reveal is colour-only
-    expect(css).toMatch(/:hover \.typ-tabs::-webkit-scrollbar-thumb[\s\S]{0,200}background-color:\s*var\(--ink-scroll-thumb-hover\)/)
+    // reveal is colour-only, driven by wrapper hover
+    expect(css).toMatch(/\.typ-tabs-wrapper:hover::-webkit-scrollbar-thumb\s*\{\s*background-color:/)
+  })
+})
+
+// ── V5.1 — the mis-scoped V5 controller is GONE (no JS scrollbar state) ──
+
+describe('Tab Scrollbar Hover-Scope V5.1 — wrong controller removed', () => {
+  const host = (): string => hostSrc()
+
+  it('keeps no activity controller of any kind', () => {
+    const src = host()
+    for (const removed of [
+      'onTabScrollbarScroll',
+      'onTabScrollbarWheel',
+      'onTabScrollbarPointerOver',
+      'onTabScrollbarPointerOut',
+      'markTabScrollbarActivity',
+      'hideTabScrollbar',
+      'installTabScrollbarReveal',
+      'teardownTabScrollbarReveal',
+      'tabScrollbarIdleTimer',
+      'tabScrollbarIdleMs',
+      'tabScrollbarRevealBound',
+      'ink-tab-scroll-active',
+      'tabScrollbar',
+    ]) {
+      expect(src, `${removed} must be fully removed`).not.toContain(removed)
+    }
   })
 
-  it('uses no JS state machine / observer for the reveal', () => {
-    const host = hostSrc()
-    expect(host).not.toContain('scrollbarReveal')
-    expect(host).not.toContain('scrollbar-reveal')
-    // the only runtime hook added by the divider work stays the console-dock probe
-    expect(host).toContain('syncRegionDividerConsoleDock')
+  it('adds no tab-bar scroll / wheel / pointer listener and no inactivity timer', () => {
+    const src = host()
+    // the file has unrelated pre-existing listeners, so scope the check to the
+    // tab-scrollbar symbols this round removed (all covered in the test above)
+    expect(src).not.toContain('onTabScrollbar')
+    expect(src).not.toContain('TabScrollbar')
+    expect(src).not.toContain('ink-tab-scroll-active')
+  })
+
+  it('reveal never requires scroll / wheel / thumb-hover (V5.1 gate)', () => {
+    const css = regionCss()
+    expect(css).not.toContain('scroll-active')
+    // the ONLY reveal rule is the wrapper's own :hover
+    const revealRules = css.match(/[^{}]*::-webkit-scrollbar-thumb\s*\{[^}]*--ink-scroll-thumb-hover[^}]*\}/g) ?? []
+    expect(revealRules).toHaveLength(1)
+    expect(revealRules[0]).toContain('.typ-tabs-wrapper:hover')
+  })
+
+  it('freezes colours: this round changed the trigger only', () => {
+    const css = regionCss()
+    // accepted colours untouched; default stays transparent
+    expect(tokenAlpha('--ink-scroll-thumb-hover')).toBe(0.09)
+    expect(tokenAlpha('--ink-scroll-thumb-active')).toBe(0.14)
+    expect(css).toMatch(/--ink-scroll-thumb:\s*transparent/)
+    // tree scrollbar still width-only with zero colour/track overrides
+    expect(css).toMatch(/#typora-sidebar #file-library::-webkit-scrollbar,[\s\S]{0,90}width:\s*5px/)
+    expect(css).not.toMatch(/#typora-sidebar[^{}]*webkit-scrollbar[^{}]*\{[^}]*background/)
   })
 })
