@@ -57,13 +57,18 @@
   --ink-tab-separator-active: rgba(128, 128, 128, 0.04);
   --ink-tab-separator-active: color-mix(in srgb, var(--text-color, #333) 2%, transparent);
 
-  /* V4.1 §FIX-2 — tab-strip horizontal bar: TRANSPARENT by default (hidden), the
-     strip's `:hover` reveals it, thumb hover / drag goes strongest. */
+  /* V5.3 — COLOUR AUTHORITY = the left sidebar (file tree / outline) scrollbar.
+     That scrollbar's colours come from Typora's own global rules and are NOT
+     overridden by this plugin:
+       ::-webkit-scrollbar-thumb        { background: rgba(0,0,0,.3) }
+       ::-webkit-scrollbar-thumb:active { background: rgba(0,0,0,.5) }
+     and Typora declares NO distinct `:hover` thumb colour, so tree normal ==
+     tree hover. The tab bar adopts exactly those two values — no bespoke
+     color-mix, no extra alpha scale — so the two scrollbars cannot drift.
+     Only the hidden state (transparent, shown on wrapper hover) is ours. */
   --ink-scroll-thumb: transparent;
-  --ink-scroll-thumb-hover: rgba(128, 128, 128, 0.12);
-  --ink-scroll-thumb-hover: color-mix(in srgb, var(--text-color, #333) 9%, transparent);
-  --ink-scroll-thumb-active: rgba(128, 128, 128, 0.18);
-  --ink-scroll-thumb-active: color-mix(in srgb, var(--text-color, #333) 14%, transparent);
+  --ink-scroll-thumb-hover: rgba(0, 0, 0, 0.3);
+  --ink-scroll-thumb-active: rgba(0, 0, 0, 0.5);
 
   --ink-tab-scrollbar-track: transparent;
 
@@ -187,6 +192,23 @@ body.native-window::before {
 #typora-sidebar #file-library::-webkit-scrollbar,
 #typora-sidebar div.sidebar-content-content::-webkit-scrollbar {
   width: 5px;
+}
+
+/* ── V5.2 — 2px INTERNAL bottom breathing space (inside `.typ-tabs-wrapper`) ── */
+/* The tab bar's own TRANSPARENT bottom border. For a scroll container the native
+   scrollbar is laid out inside the border edge, so the vertical order becomes
+     tab content -> native horizontal scrollbar -> 2px breathing space -> bottom
+     boundary -> editor body
+   and the wrapper's own `background: var(--bg-color)` shows through the
+   transparent border — i.e. real internal whitespace, not a colour, not a new
+   element, not an external rail, and the scrollbar is still inside
+   `.typ-tabs-wrapper`. Nothing about the tab system changes: `--typ-tabs-height`,
+   each `.typ-tab` box, separators, active styling and every other region are
+   untouched.
+   NOTE: this intentionally grows the bar by 2px (per the request); it is the ONLY
+   geometry delta of this round and it is a single-line revert. */
+.typ-tabs-wrapper {
+  border-bottom: 2px solid transparent;
 }
 
 /* ── V5 — TAB STRIP horizontal scrollbar: correct OWNER + reveal authority ─── */
