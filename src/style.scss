@@ -3722,6 +3722,9 @@ body.ink-console-docked::after {
 }
 .inkchapter-toolbar-segment--error .inkchapter-toolbar-segment__icon { color: var(--ink-ui-danger, #d00); }
 .inkchapter-toolbar-segment--warning .inkchapter-toolbar-segment__icon { color: var(--ink-ui-warning, #b58900); }
+/* VNext Presentation Closure V1.1 §17/§23 — the Toolbar Hint badge reuses the
+   EXISTING Drawer Hint cold gray-blue token (never a fourth color). */
+.inkchapter-toolbar-segment--info .inkchapter-toolbar-segment__icon { color: var(--ink-diagnostic-hint-text, var(--ink-ui-sev-info, #5d7181)); }
 .inkchapter-toolbar-entry.is-healthy { color: var(--ink-ui-text-muted, #666); }
 
 /* Edit/lock = neutral action slot (never red). Divider lives on the status

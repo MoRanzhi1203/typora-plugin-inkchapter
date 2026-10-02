@@ -118,8 +118,10 @@ describe('V1 §24 — existing document rules carry domain=document', () => {
   it('resolves the prefix-derived rules too (latent ATX / strict first-H1)', () => {
     expect(resolveDiagnosticDomain('LATENT_ATX_HEADING_MARKER_LEVEL_2')).toBe('document')
     expect(resolveDiagnosticDomain('STRICT_FIRST_H1_POSITION')).toBe('document')
-    // an UNREGISTERED code has NO domain (a new rule must register one)
-    expect(resolveDiagnosticDomain('SECTION_EMPTY')).toBeNull()
+    // an UNREGISTERED code has NO domain (a new rule must register one).
+    // VNext §18/§29 — a DEFERRED rule is deliberately NOT registered, so it
+    // resolves to null: no invented domain for a rule that is not implemented.
+    expect(resolveDiagnosticDomain('FIGURE_REFERENCE_TARGET_MISSING')).toBeNull()
   })
 
   it('the real producer stamps domain=document on every emitted diagnostic', () => {

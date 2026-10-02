@@ -95,10 +95,16 @@ describe('V1 rule identity — id / severity / copy (§2/§3/§4)', () => {
   })
 
   it('is registered with the document category and a heading locator strategy', () => {
-    expect(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY[HINT]).toEqual({
+    // VNext §9 — the registry entry also carries the domain / area / scope /
+    // presentation metadata (asserted in full by the VNext metadata test).
+    expect(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY[HINT]).toMatchObject({
       ruleId: HINT,
       category: 'document',
       locationStrategy: 'canonical-node',
+      domain: 'document',
+      area: 'document-completeness',
+      scope: 'document',
+      presentation: { reasonChip: false, passiveVisual: true, activeVisual: true },
     })
     expect(getRuleMeta(HINT)?.category).toBe('document')
   })

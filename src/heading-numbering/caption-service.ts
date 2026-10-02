@@ -702,6 +702,20 @@ export class CaptionService {
     return this.captionSettings
   }
 
+  /**
+   * VNext §24 — the ONE object auto-numbering ACTIVATION authority exposed to
+   * Document Diagnostics. It reports `enabled` only; the numbering semantics
+   * stay entirely inside this service (no second numbering authority).
+   */
+  getObjectNumberingEnabledState(): { figure: boolean; table: boolean; code: boolean; formula: boolean } {
+    return {
+      figure: migrateObjectNumberingConfig('figure', resolveCaptionTypeSettings(this.captionSettings, 'figure')).enabled,
+      table: migrateObjectNumberingConfig('table', resolveCaptionTypeSettings(this.captionSettings, 'table')).enabled,
+      code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')).enabled,
+      formula: this.formulaConfig.enabled,
+    }
+  }
+
   /** Apply the (independent) formula ObjectNumberingConfig and re-render. */
   applyFormulaSettings(config: ObjectNumberingConfig): void {
     this.formulaConfig = migrateObjectNumberingConfig('formula', config)

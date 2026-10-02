@@ -529,6 +529,11 @@ export default class extends Plugin<InkChapterSettings> {
         // Markdown alt; table/code → caption registry title (name-only). The
         // rendered "type + number" prefix never counts as a name.
         getCaptionTitleForElement: (el) => this.captionService?.getSemanticNameForElement(el) ?? null,
+        // VNext §24 — the object auto-numbering activation authority for the
+        // manual-number rules (figure/table/code/formula). Reports `enabled`
+        // only; all numbering semantics stay inside the caption service.
+        getObjectNumberingEnabled: () => this.captionService?.getObjectNumberingEnabledState()
+          ?? { figure: false, table: false, code: false, formula: false },
         // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
         getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
         // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline

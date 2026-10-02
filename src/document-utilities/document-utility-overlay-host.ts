@@ -36,6 +36,7 @@ import type { DiagnosticRangeRole } from './diagnostics-types'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
+  resolveRuleActiveVisualMode,
   hasLocatableLocation,
   normalizeSourceAnchorText,
   normalizeResourcePath,
@@ -153,6 +154,7 @@ import {
   resolveCanonicalActiveHeadingTarget,
   type ActiveTargetAuthorityFacts,
   type CanonicalActiveHeadingTarget,
+  type CanonicalActiveTargetResolveFailure,
   type HeadingMultiTargetV2Counters,
   type HeadingMultiTargetV2CoverageCounters,
 } from './document-diagnostic-canonical-active-target-v2'
@@ -432,10 +434,24 @@ import {
   isOrderPreservingSubsequence,
   sortProjectionsByDocumentPosition,
   summarizeDrawerOrderAudit,
+  TARGET_GROUP_STABLE_IDENTITY,
   type DiagnosticTargetProjection,
   type DocumentPositionContext,
   type DrawerOrderV514R1Counters,
 } from './document-diagnostic-drawer-order-v514-r1'
+// Target Group V1 §20 — the ONE provable gate/coverage authority for the
+// `target-group` interaction model (ONE diagnostic / ONE row / N members).
+import {
+  createTargetGroupV1Counters,
+  createTargetGroupV1CoverageCounters,
+  evaluateTargetGroupDrawerFacts,
+  evaluateTargetGroupClosureFacts,
+  evaluateTargetGroupV1Gates,
+  formatTargetGroupV1GateReport,
+  formatTargetGroupV1CoverageReport,
+  type TargetGroupV1Counters,
+  type TargetGroupV1CoverageKey,
+} from './document-diagnostic-target-group-v1'
 import {
   HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT,
   buildHeadingDiagnosticVisualSnapshot,
@@ -2468,6 +2484,31 @@ export class DocumentUtilityOverlayHost {
    * both read from HERE (never from a bare identity comparison).
    */
   private headingActiveVisualFacts = new Map<string, HeadingActiveVisualFacts>()
+  /**
+   * VNext Presentation Closure V1.1 §3/§12/§14 — the SECONDARY active wrappers of
+   * ONE `text-tight-multi-target` activation (the primary/anchor heading stays in
+   * `headingActiveWrapper`). They belong to the SAME active transaction + lease,
+   * and every one is removed by the ONE teardown.
+   */
+  private headingActiveGroupWrappers: HTMLElement[] = []
+  /** §13/§44 — N = the resolved heading target count of the active group (0 = not a group). */
+  private headingActiveGroupTargetCount = 0
+  /** Target Group V1 §20 — the provable gate counters (all must stay 0). */
+  private countersTargetGroupV1: TargetGroupV1Counters = createTargetGroupV1Counters()
+  /** Target Group V1 §19 — the positive coverage counters. */
+  private coverageTargetGroupV1: Record<TargetGroupV1CoverageKey, number> = createTargetGroupV1CoverageCounters()
+  /** Target Group V1 §13 — the member index the last group locate used (0 expected). */
+  private lastTargetGroupLocateMemberIndex = 0
+  /** Target Group V1 §8 — the last measured Drawer projection facts (audit/test seam). */
+  private lastTargetGroupDrawerFacts = {
+    groupDiagnosticCount: 0,
+    groupProjectionCount: 0,
+    groupRowCount: 0,
+    groupOccurrenceBadgeCount: 0,
+    multiTargetDiagnosticCount: 0,
+    multiTargetProjectionCount: 0,
+    multiTargetExpectedProjectionCount: 0,
+  }
   /** V1 §34 — the BEFORE side of the persistence audit (the previous commit). */
   private lastHeadingProjectionFacts: {
     layoutEpoch: number
@@ -5378,7 +5419,7 @@ export class DocumentUtilityOverlayHost {
         // V1 §9/§10 — the PASSIVE reason chip obeys the SAME scope policy as the
         // active one (document-level diagnostics never paint a body chip). The
         // decision is scope/presentation-driven, NEVER severity-driven.
-        const reason = shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown> })
+        const reason = shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown>, code: d.code })
           ? buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
           : null
         if (g) {
@@ -6505,6 +6546,11 @@ export class DocumentUtilityOverlayHost {
       if (!stillPresent) {
         this.countersPassiveActiveV514R3.staleHeadingActiveMarkerAfterDiagnosticResolved++
         this.countersVisualReflowV514R4.staleActiveMarkerAfterReflow++
+        // Target Group V1 §14 — the group diagnostic disappeared: any surviving
+        // group fill is stale (the teardown must have cleared it in the SAME pass).
+        if (this.headingActiveGroupWrappers.length > 0 || this.headingActiveGroupTargetCount > 0) {
+          this.countersTargetGroupV1.targetGroupStaleFillAfterDiagnosticDisappearCount++
+        }
       }
       // §5.2/§15 — an active component whose generation is behind the current one
       // is a mixed-generation commit (it was never re-measured after the reflow).
@@ -7485,6 +7531,140 @@ export class DocumentUtilityOverlayHost {
     )
   }
 
+  /**
+   * Target Group V1 §8/§9/§20 — measure the REAL Drawer projection + row facts and
+   * feed the ONE group gate authority. The gates prove: a group is EXACTLY ONE
+   * projection / ONE painted row / ZERO `1/N` badge, while the ordinary
+   * multi-target keeps its N occurrence projections.
+   */
+  private measureTargetGroupDrawerFacts(
+    projections: readonly DiagnosticTargetProjection[],
+    filtered: readonly DiagnosticTargetProjection[],
+  ): void {
+    const diagnostics = this.documentDiagnostics()
+    const groupIds = new Set(
+      diagnostics.filter(d => d.location?.kind === 'target-group').map(d => d.id),
+    )
+    const multiIds = new Set(
+      diagnostics.filter(d => d.location?.kind === 'multi-target').map(d => d.id),
+    )
+    const renderedGroupRows = filtered.filter(p => groupIds.has(p.diagnosticId)).length
+    let domGroupRows = 0
+    let groupOccurrenceBadgeCount = 0
+    if (this.drawerEl) {
+      for (const el of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+        if (!groupIds.has(el.getAttribute('data-diagnostic-id') ?? '')) continue
+        domGroupRows++
+        if (el.querySelector('.inkchapter-doc-drawer__item-target')) groupOccurrenceBadgeCount++
+      }
+    }
+    const expectations = diagnostics.reduce(
+      (acc, d) => {
+        if (d.location?.kind === 'multi-target') acc.multi += d.location.targets.length
+        return acc
+      },
+      { multi: 0 },
+    )
+    const facts = {
+      groupDiagnosticCount: groupIds.size,
+      groupProjectionCount: projections.filter(p => groupIds.has(p.diagnosticId)).length,
+      groupRowCount: Math.max(renderedGroupRows, domGroupRows),
+      groupOccurrenceBadgeCount,
+      multiTargetDiagnosticCount: multiIds.size,
+      multiTargetProjectionCount: projections.filter(p => multiIds.has(p.diagnosticId)).length,
+      multiTargetExpectedProjectionCount: expectations.multi,
+    }
+    this.lastTargetGroupDrawerFacts = { ...facts }
+    const partial = evaluateTargetGroupDrawerFacts(facts)
+    for (const [k, v] of Object.entries(partial) as Array<[keyof TargetGroupV1Counters, number]>) {
+      this.countersTargetGroupV1[k] = Math.max(this.countersTargetGroupV1[k], v)
+    }
+    if (facts.groupDiagnosticCount > 0 && facts.groupRowCount === 1) {
+      this.coverageTargetGroupV1.targetGroupSingleRowRenderCount++
+    }
+    if (facts.multiTargetDiagnosticCount > 0) {
+      this.coverageTargetGroupV1.multiTargetOccurrenceRowCount = Math.max(
+        this.coverageTargetGroupV1.multiTargetOccurrenceRowCount,
+        facts.multiTargetProjectionCount,
+      )
+    }
+  }
+
+  /**
+   * Target Group V1 §20 — read-only gate/coverage surface (runtime verification).
+   */
+  getTargetGroupV1GateReport(): string[] {
+    return formatTargetGroupV1GateReport(this.countersTargetGroupV1)
+  }
+
+  getTargetGroupV1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateTargetGroupV1Gates(this.countersTargetGroupV1)
+  }
+
+  getTargetGroupV1CoverageReport(): string[] {
+    return formatTargetGroupV1CoverageReport(this.coverageTargetGroupV1)
+  }
+
+  getTargetGroupV1DrawerFacts(): Readonly<typeof this.lastTargetGroupDrawerFacts> {
+    return { ...this.lastTargetGroupDrawerFacts }
+  }
+
+  /** Target Group V1 §8 — the projection authority's group row count (test seam). */
+  getTargetGroupProjectionCount(diagnosticId: string): number {
+    return this.buildDrawerProjections().filter(p => p.diagnosticId === diagnosticId).length
+  }
+
+  /**
+   * Target Group V1 §13/§15/§16/§20 — measure the REAL active group facts at the
+   * post-reconcile boundary and feed the ONE gate authority.
+   */
+  private measureTargetGroupClosureFacts(): void {
+    const st = this.diagnosticInteractionState
+    if (st.diagnosticId == null || !this.isTargetGroupDiagnostic(st.diagnosticId)) return
+    const groupMemberCount = this.targetGroupMemberCount(st.diagnosticId)
+    const memberIdentities: string[] = []
+    for (const [identity, fact] of this.headingActiveVisualFacts.entries()) {
+      if (fact.diagnosticId === st.diagnosticId) memberIdentities.push(identity)
+    }
+    const activeWrapperCount = (this.headingActiveMarkerIdentity != null ? 1 : 0) + this.headingActiveGroupWrappers.length
+    const secondaryFragments = this.headingActiveGroupWrappers
+      .reduce((n, w) => n + w.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length, 0)
+    const readiness = this.headingActiveMarkerIdentity != null
+      ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
+      : { fragmentCount: 0 }
+    const partial = evaluateTargetGroupClosureFacts({
+      groupMemberCount,
+      activeTargetCount: this.computeActiveTargetAuthorityFacts().activeTargetCount,
+      activeMemberIdentities: memberIdentities,
+      activeWrapperCount,
+      activeHeadingFragmentCount: readiness.fragmentCount + secondaryFragments,
+      selectedActiveRowCount: this.drawerActiveRowCountNow(),
+      activeLeaseCount: this.locateVisibilityLease != null ? 1 : 0,
+      locateMemberIndex: this.lastTargetGroupLocateMemberIndex,
+      anchorIdentity: this.headingActiveMarkerIdentity,
+      stateAnchorIdentity: this.resolveGroupAnchorMarkerIdentity(st.diagnosticId),
+      // A group never merges its members into one rect: strictly ONE wrapper per
+      // member is the contract, so "fewer wrappers than distinct members" is the
+      // ONLY way one wrapper could span several headings.
+      singleWrapperSpansMultipleMembers: new Set(memberIdentities).size > activeWrapperCount,
+    })
+    for (const [k, v] of Object.entries(partial) as Array<[keyof TargetGroupV1Counters, number]>) {
+      this.countersTargetGroupV1[k] = Math.max(this.countersTargetGroupV1[k], v)
+    }
+  }
+
+  /**
+   * Target Group V1 §14/§20 — a stale group fill (a leftover secondary wrapper /
+   * group target count) at a teardown boundary. Every path clears them together,
+   * so this must stay 0; the counter makes a leak provable.
+   */
+  private auditTargetGroupStaleFills(stage: 'DEACTIVATE' | 'DOCUMENT_SWITCH' | 'DIAGNOSTIC_DISAPPEAR'): void {
+    if (this.headingActiveGroupWrappers.length <= 0 && this.headingActiveGroupTargetCount <= 0) return
+    if (stage === 'DEACTIVATE') this.countersTargetGroupV1.targetGroupStaleFillAfterDeactivateCount++
+    else if (stage === 'DOCUMENT_SWITCH') this.countersTargetGroupV1.targetGroupStaleFillAfterDocumentSwitchCount++
+    else this.countersTargetGroupV1.targetGroupStaleFillAfterDiagnosticDisappearCount++
+  }
+
   private diagnosticById(id: string): DocumentDiagnosticsSnapshot['diagnostics'][number] | null {
     const diagnostics = this.documentDiagnostics()
     return diagnostics.find(d => d.id === id) ?? null
@@ -7853,6 +8033,11 @@ export class DocumentUtilityOverlayHost {
     const authority = this.resolveActiveHeadingAuthority(diag)
     if (authority.ok) {
       this.renderHeadingActiveEmphasisFromAuthority(authority.target, diag)
+      // Target Group V1 §12/§14 — a `target-group` rule activates the anchor FIRST
+      // and then EVERY other member, all under the SAME active transaction/lease.
+      if (this.isTargetGroupActiveVisual(diag)) {
+        this.paintSecondaryHeadingActiveGroupTargets(diag)
+      }
       return
     }
     // ── V2 §8 — a projection attempted WITHOUT a legitimate ACTIVE state for this
@@ -7866,6 +8051,221 @@ export class DocumentUtilityOverlayHost {
     // the state IS active for this diagnostic but the EXACT subtarget could not be
     // resolved: FAIL CLOSED (never paint another heading).
     this.countersMultiTargetV2.canonicalActiveTargetResolveFailed++
+  }
+
+  /**
+   * Target Group V1 §4/§40/§41 — is this diagnostic's active visual a MULTI-MEMBER
+   * heading GROUP? The decision is the LOCATION KIND (strong type) plus the rule
+   * registry's `activeVisualMode`, never a `code === '...'` special case.
+   */
+  private isTargetGroupActiveVisual(diag: DocumentDiagnosticsSnapshot['diagnostics'][number]): boolean {
+    if (diag.location?.kind !== 'target-group') return false
+    return resolveRuleActiveVisualMode(String(diag.code ?? '')) === 'text-tight-target-group'
+  }
+
+  /** Target Group V1 §11 — the id-keyed form (cursor / locate plumbing). */
+  private isTargetGroupDiagnostic(diagnosticId: string | null): boolean {
+    if (diagnosticId == null) return false
+    const diag = this.diagnosticById(diagnosticId)
+    return diag != null && diag.location?.kind === 'target-group'
+  }
+
+  /** Target Group V1 §11 — the member count of a group diagnostic (0 when not a group). */
+  private targetGroupMemberCount(diagnosticId: string | null): number {
+    if (diagnosticId == null) return 0
+    const loc = this.diagnosticById(diagnosticId)?.location
+    return loc?.kind === 'target-group' ? loc.targets.length : 0
+  }
+
+  /**
+   * Target Group V1 §11/§13 — the marker identity of the group's scroll anchor
+   * (the first member). The group targetKey is a GROUP sentinel, so the STATE
+   * heading identity must be read from the anchor LOCATION instead.
+   */
+  private resolveGroupAnchorMarkerIdentity(diagnosticId: string | null): string | null {
+    if (diagnosticId == null) return null
+    const loc = this.diagnosticById(diagnosticId)?.location
+    if (loc?.kind !== 'target-group') return null
+    const anchor = loc.scrollAnchor
+    if (anchor.kind === 'canonical-node' && anchor.nodeKind === 'heading') {
+      return markerIdentityOfStableIdentity(anchor.stableIdentity)
+    }
+    if (anchor.kind === 'source-range') {
+      const el = this.resolveSourceLine(anchor.startLine)
+      const line = el?.getAttribute?.('data-line')
+      return line != null && line !== '' ? `line:${line}` : null
+    }
+    return null
+  }
+
+  /**
+   * VNext §3/§4/§7/§12/§44 — paint an INDEPENDENT text-tight active fill for every
+   * heading target BEYOND the anchor, under the SAME active transaction. Each
+   * target keeps its own stable identity (canonical-node / source-range), and each
+   * fill is text-tight (never a merged rectangle across the headings).
+   *
+   * The primary (anchor) heading was already painted by the canonical painter; its
+   * `headingActiveWrapper`/`headingActiveMarkerIdentity` stay the SINGLE active
+   * authority (scroll anchor + Drawer row + lease), so the V2 target-authority
+   * gates are untouched.
+   */
+  private paintSecondaryHeadingActiveGroupTargets(diag: DocumentDiagnosticsSnapshot['diagnostics'][number]): void {
+    this.headingActiveGroupTargetCount = 0
+    // A stale grouping (another switch) must never survive into this paint.
+    this.clearHeadingActiveGroupWrappers()
+    const targets = this.headingGroupTargets(diag)
+    if (targets.length <= 1) return
+    for (let i = 1; i < targets.length; i++) {
+      const wrapper = this.paintOneSecondaryHeadingActiveFill(targets[i], diag)
+      if (wrapper != null) this.headingActiveGroupWrappers.push(wrapper)
+    }
+    // §44 — resolvedTargetCount == headingCount is enforced by construction: the
+    // count is the number of heading targets the location declared.
+    this.headingActiveGroupTargetCount = targets.length
+  }
+
+  /**
+   * Target Group V1 §7/§14 — resolve EVERY member of the active `target-group`
+   * diagnostic into a canonical active target (stable identity + live element).
+   * The order is the DECLARED location order (§13: target[0] = scroll anchor).
+   */
+  private headingGroupTargets(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): CanonicalActiveHeadingTarget[] {
+    const location = diag.location
+    if (location?.kind !== 'target-group') return []
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const groupTargetKey = buildDiagnosticVisualTargetKey({
+      documentKey,
+      diagnosticId: diag.id,
+      targetIndex: 0,
+      stableIdentity: TARGET_GROUP_STABLE_IDENTITY,
+    })
+    const out: CanonicalActiveHeadingTarget[] = []
+    for (let i = 0; i < location.targets.length; i++) {
+      const loc = location.targets[i]
+      let stableIdentity = ''
+      let element: HTMLElement | null = null
+      if (loc.kind === 'canonical-node' && loc.nodeKind === 'heading') {
+        stableIdentity = loc.stableIdentity
+        element = this.resolveHeadingElementByIdentity(loc.stableIdentity, null)
+      } else if (loc.kind === 'source-range') {
+        element = this.resolveSourceLine(loc.startLine)
+        stableIdentity = element?.getAttribute?.('data-line') ?? ''
+      }
+      if (!element || !element.isConnected || !/^H[1-6]$/.test(element.tagName)) continue
+      if (stableIdentity === '') continue
+      const headingIdentity = markerIdentityOfStableIdentity(stableIdentity)
+      if (headingIdentity == null) continue
+      out.push({
+        documentKey,
+        diagnosticId: diag.id,
+        diagnosticTargetIndex: i,
+        transactionLocalTargetIndex: i,
+        // §10 — the anchor (member 0) carries the ONE group target key; the other
+        // members carry their own member key (used only for their private facts).
+        targetKey: i === 0
+          ? groupTargetKey
+          : buildDiagnosticVisualTargetKey({ documentKey, diagnosticId: diag.id, targetIndex: i, stableIdentity }),
+        stableHeadingIdentity: stableIdentity,
+        headingIdentity,
+        element,
+      })
+    }
+    return out
+  }
+
+  /**
+   * §4/§45 — ONE text-tight active fill for a SECONDARY heading target. It reuses
+   * the SAME measurement authority the primary active pass consumes (the passive
+   * coverage snapshot when available, the visible text fragments otherwise), so
+   * the geometry is text-tight and never a full-width / merged rectangle.
+   */
+  private paintOneSecondaryHeadingActiveFill(
+    target: CanonicalActiveHeadingTarget,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): HTMLElement | null {
+    const layer = this.ensureHeadingMarkerLayer()
+    if (layer == null) return null
+    const element = target.element
+    const headingIdentity = target.headingIdentity
+    // A secondary target that equals the anchor would double-paint — skip.
+    if (headingIdentity === this.headingActiveMarkerIdentity) return null
+    const sharedCoverage = this.headingCoverageSnapshots.get(`${headingIdentity}::${diag.id}`) ?? null
+    let localFragments: HeadingRect[]
+    if (sharedCoverage) {
+      localFragments = sharedCoverage.semanticFragmentRects.map(fromCoverageRect)
+    } else {
+      const fragments = this.headingVisibleFragments(element)
+      const numberRect = this.headingNumberRect(element, fragments[0] ?? null)
+      const contentFragments = numberRect ? [numberRect, ...fragments] : fragments
+      localFragments = contentFragments
+        .map(f => this.toDocumentLocal(f))
+        .filter((f): f is HeadingRect => f != null)
+    }
+    if (localFragments.length === 0) return null
+    const severity = mergeHeadingMarkerSeverity([String(diag.severity ?? 'info')]) ?? 'info'
+    const geometryGeneration = this.visualGeometryGeneration
+    const wrapper = document.createElement('div')
+    wrapper.className = 'inkchapter-heading-diagnostic-active'
+    wrapper.setAttribute('data-ink-diagnostic-active', 'true')
+    wrapper.setAttribute('data-ink-diagnostic-severity', severity)
+    wrapper.setAttribute('data-ink-active-diagnostic-id', diag.id)
+    // §4.3 — match the PRIMARY wrapper's attribute convention: `data-ink-heading-id`
+    // is the heading's marker identity, and the diagnostic is carried separately.
+    wrapper.setAttribute('data-ink-heading-id', headingIdentity)
+    wrapper.setAttribute('data-ink-content-left', String(localFragments[0].left))
+    wrapper.setAttribute('data-ink-layout-epoch', String(this.currentDocumentLayoutEpoch))
+    wrapper.setAttribute('data-ink-geometry-generation', String(geometryGeneration))
+    wrapper.setAttribute('data-ink-stable-identity', headingIdentity)
+    wrapper.setAttribute('data-ink-diagnostic-target-index', String(target.diagnosticTargetIndex))
+    wrapper.setAttribute('data-ink-target-key', target.targetKey)
+    wrapper.setAttribute('data-ink-heading-identity', headingIdentity)
+    wrapper.setAttribute('data-ink-interaction-version', String(this.diagnosticInteractionState.version))
+    wrapper.setAttribute('data-ink-multi-target-secondary', 'true')
+    wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+    layer.appendChild(wrapper)
+    for (const f of localFragments) {
+      const frag = document.createElement('div')
+      frag.className = 'inkchapter-heading-diagnostic-active__fragment'
+      frag.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.top)}px;width:${Math.round(f.width)}px;height:${Math.round(f.height)}px;`
+      wrapper.appendChild(frag)
+    }
+    // §12 — the STATE-DERIVED facts are committed for this heading too, so a
+    // reconcile re-derives the SAME secondary fill and the teardown clears it.
+    const committedFacts: HeadingActiveVisualFacts = {
+      fragmentCount: localFragments.length,
+      fragmentRects: localFragments.map(f => ({ left: f.left, top: f.top, width: f.width, height: f.height })),
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      geometryGeneration,
+      diagnosticId: diag.id,
+      targetKey: target.targetKey,
+      diagnosticTargetIndex: target.diagnosticTargetIndex,
+      transactionLocalTargetIndex: target.transactionLocalTargetIndex,
+      stableHeadingIdentity: target.stableHeadingIdentity,
+      headingIdentity,
+      interactionVersion: this.diagnosticInteractionState.version,
+    }
+    this.headingActiveVisualFacts.set(headingIdentity, committedFacts)
+    // §9/§P10 — the passive fill of a heading the ACTIVE group now covers is
+    // suppressed exactly like the anchor's (the active visual replaced it).
+    const passiveRecord = this.headingPassiveMarkers.get(headingIdentity) ?? null
+    if (passiveRecord) {
+      passiveRecord.activePresentationOwnsFill = true
+      passiveRecord.geometryGeneration = geometryGeneration
+    }
+    return wrapper
+  }
+
+  /** §14 — remove ONLY the secondary group wrappers (the anchor wrapper is owned elsewhere). */
+  private clearHeadingActiveGroupWrappers(): void {
+    for (const w of this.headingActiveGroupWrappers) {
+      try { w.remove() } catch { /* noop */ }
+      const identity = w.getAttribute('data-ink-heading-identity')
+      if (identity != null) this.headingActiveVisualFacts.delete(identity)
+    }
+    this.headingActiveGroupWrappers = []
+    this.headingActiveGroupTargetCount = 0
   }
 
   /**
@@ -8035,7 +8435,7 @@ export class DocumentUtilityOverlayHost {
     // §11/§12 — the reason chip is an OVERLAY child (never in the heading flow).
     // V5.12-R9 §6 — exactly ONE chip per heading: the PASSIVE marker owns it, so
     // the active pass ADOPTS the existing chip instead of creating a second one.
-    const reasonText = shouldRenderReasonChip({ metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+    const reasonText = shouldRenderReasonChip({ metadata: (diag.metadata ?? {}) as Record<string, unknown>, code: diag.code })
       ? buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
       : null
     let reasonChipRect: HeadingRect | null = null
@@ -8471,6 +8871,10 @@ export class DocumentUtilityOverlayHost {
 
   /** §7.2 — clear ONLY the active presentation (the Active authority is untouched). */
   private clearHeadingActiveEmphasisVisual(): void {
+    // VNext §14 — the MULTI-TARGET secondary fills belong to the SAME active
+    // presentation: they are removed together with the anchor in ONE teardown
+    // (never a stale leftover heading fill).
+    this.clearHeadingActiveGroupWrappers()
     const w = this.headingActiveWrapper
     if (w) {
       const id = this.headingActiveIdentity
@@ -8517,6 +8921,9 @@ export class DocumentUtilityOverlayHost {
   }
 
   private clearHeadingDiagnosticMarkers(): void {
+    // Target Group V1 §14 — a group fill left at a document-switch teardown is
+    // stale. Captured BEFORE the clear so a real leak is provable.
+    this.auditTargetGroupStaleFills('DOCUMENT_SWITCH')
     for (const rec of this.headingPassiveMarkers.values()) {
       try { rec.wrapper.remove() } catch { /* noop */ }
     }
@@ -8617,6 +9024,13 @@ export class DocumentUtilityOverlayHost {
   private computeActiveTargetAuthorityFacts(): ActiveTargetAuthorityFacts {
     const st = this.diagnosticInteractionState
     const stateKeyIdentity = parseCanonicalTargetKeyIdentityV2(st.targetKey)
+    // Target Group V1 §11/§13 — a group's targetKey is a GROUP sentinel (not a
+    // heading identity), so the STATE heading identity is derived from the
+    // location's scroll anchor. This keeps State ↔ Visual identity closure exact
+    // (anchor === visual) with ZERO authority divergence.
+    const groupAnchorIdentity = (st.targetMode === 'group' || this.isTargetGroupDiagnostic(st.diagnosticId))
+      ? this.resolveGroupAnchorMarkerIdentity(st.diagnosticId)
+      : null
     const visual = this.visualActiveTargetIdentityNow()
     const readiness = this.headingActiveMarkerIdentity != null
       ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
@@ -8626,13 +9040,20 @@ export class DocumentUtilityOverlayHost {
     const activeTargetIsHeading = this.headingActiveMarkerIdentity != null
       || (diag != null && /^H[1-6]$/.test(this.resolveDiagnosticElementForMarker(diag)?.tagName ?? ''))
     const drawerActiveRowCount = this.drawerActiveRowCountNow()
+    // VNext §13/§44 — a `text-tight-multi-target` activation owns N independent
+    // heading targets carried by ONE transaction / lease / Drawer row. The
+    // AUTHORITY facts therefore report the real group size; every other rule keeps
+    // the existing single-target semantics (groupCount === 0).
+    const groupCount = this.headingActiveGroupTargetCount
+    const secondaryFillCount = this.headingActiveGroupWrappers
+      .reduce((n, w) => n + w.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length, 0)
     return {
       phase: st.phase,
       activeTargetIsHeading,
       stateDiagnosticId: st.diagnosticId,
       stateDiagnosticTargetIndex: st.diagnosticTargetIndex,
       stateTargetKey: st.targetKey,
-      stateHeadingIdentity: markerIdentityOfStableIdentity(stateKeyIdentity),
+      stateHeadingIdentity: groupAnchorIdentity ?? markerIdentityOfStableIdentity(stateKeyIdentity),
       visualDiagnosticId: visual.diagnosticId,
       visualDiagnosticTargetIndex: visual.diagnosticTargetIndex,
       visualTargetKey: visual.targetKey,
@@ -8641,9 +9062,9 @@ export class DocumentUtilityOverlayHost {
       // the lease belongs to the CURRENT owner only when its diagnostic matches.
       leaseTargetKey: lease != null && lease.diagnosticId === st.diagnosticId ? st.targetKey : null,
       fragmentCount: readiness.fragmentCount,
-      fillCount: readiness.fragmentCount,
+      fillCount: groupCount > 0 ? readiness.fragmentCount + secondaryFillCount : readiness.fragmentCount,
       activeLeasePresent: lease != null,
-      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
+      activeTargetCount: groupCount > 0 ? groupCount : (readiness.fragmentCount >= 1 ? 1 : 0),
       selectedActiveRowCount: drawerActiveRowCount,
       drawerActiveRowCount,
       drawerRowsRendered: this.drawerRowsRenderedNow(),
@@ -8762,6 +9183,9 @@ export class DocumentUtilityOverlayHost {
    */
   private emitHeadingPostReconcileClosure(reason: string): void {
     const st = this.diagnosticInteractionState
+    // Target Group V1 §20 — measure the REAL group member facts for the gates.
+    this.measureTargetGroupClosureFacts()
+    if (st.phase !== 'ACTIVE') this.auditTargetGroupStaleFills('DEACTIVATE')
     // ── V2 §22 — the ONE authoritative boundary: this is where the V2 fatal gates
     // are counted (the identity facts are read AFTER the projection committed).
     const authority = this.emitActiveTargetAuthorityAudit(reason, true)
@@ -8777,6 +9201,10 @@ export class DocumentUtilityOverlayHost {
       activeTargetIsHeading,
       selectedActiveRowCount: facts.selectedActiveRowCount,
       activeTargetCount: facts.activeTargetCount,
+      // VNext §13 — a `text-tight-multi-target` group commits N targets (default 1).
+      activeTargetCountExpected: this.headingActiveGroupTargetCount > 0
+        ? this.headingActiveGroupTargetCount
+        : 1,
       activeHeadingFragmentCount: facts.fragmentCount,
       activeFillCount: facts.fillCount,
       activeLeasePresent: facts.activeLeasePresent,
@@ -8883,6 +9311,31 @@ export class DocumentUtilityOverlayHost {
       decision,
       reason: decision === 'PASS' ? 'POST_RECONCILE_IDENTITY_CLOSURE_OK' : `${closure.reason}|${authority.reason}`,
     })
+    // Target Group V1 §20 — emit the ONE group gate report at the SAME boundary so
+    // the Hard Gates are PROVABLE from the runtime log (never a log-only PASS).
+    if (this.isTargetGroupDiagnostic(st.diagnosticId)) {
+      const groupGate = this.getTargetGroupV1GateDecision()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-TARGET-GROUP-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        trigger: reason,
+        diagnosticId: st.diagnosticId,
+        targetKey: st.targetKey,
+        targetMode: st.targetMode ?? 'single',
+        groupMemberCount: this.targetGroupMemberCount(st.diagnosticId),
+        activeTargetCount: facts.activeTargetCount,
+        activeWrapperCount: (this.headingActiveMarkerIdentity != null ? 1 : 0) + this.headingActiveGroupWrappers.length,
+        activeHeadingFragmentCount: facts.fragmentCount + this.headingActiveGroupWrappers
+          .reduce((n, w) => n + w.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length, 0),
+        selectedActiveRowCount: facts.selectedActiveRowCount,
+        activeLeasePresent: facts.activeLeasePresent,
+        locateMemberIndex: this.lastTargetGroupLocateMemberIndex,
+        drawerFacts: this.lastTargetGroupDrawerFacts,
+        gateReport: this.getTargetGroupV1GateReport(),
+        coverageReport: this.getTargetGroupV1CoverageReport(),
+        decision: groupGate.decision,
+        failedChecks: groupGate.failedChecks,
+      })
+    }
   }
 
   /** V1 §38/§39 — the active-persistence gate + coverage surface. */
@@ -13116,7 +13569,7 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** V1.1 — build ONE clickable status segment (icon + plain count text). */
-  private buildProblemsSegment(severity: 'error' | 'warning', count: number): HTMLButtonElement {
+  private buildProblemsSegment(severity: 'error' | 'warning' | 'info', count: number): HTMLButtonElement {
     const seg = document.createElement('button')
     seg.type = 'button'
     seg.className =
@@ -13130,14 +13583,25 @@ export class DocumentUtilityOverlayHost {
     const num = document.createElement('span')
     num.className = 'inkchapter-toolbar-segment__count'
     num.textContent = String(count)
-    seg.setAttribute('aria-label', severity === 'error' ? `错误 ${count}` : `警告 ${count}`)
+    seg.setAttribute('aria-label', severity === 'error' ? `错误 ${count}` : severity === 'warning' ? `警告 ${count}` : `提示 ${count}`)
     seg.title = seg.getAttribute('aria-label') ?? ''
     seg.append(icon, num)
     seg.addEventListener('click', () => this.openDrawer(severity))
     return seg
   }
 
-  /** V1.1 — Smart Summary: renders only the non-zero segments (never 错误0/警告0). */
+  /**
+   * V1.1 / VNext Presentation Closure V1.1 §17/§18/§19/§21 — Smart Summary.
+   *
+   * Shows an INDEPENDENT Error / Warning / Hint badge for EVERY non-zero severity
+   * (never a zero badge). The `✓ 文档检测` success entry is shown ONLY when ALL
+   * THREE counts are zero (§19 — a document with a Hint is NOT "healthy").
+   *
+   * The counts come from the ONE `deriveDocumentProblemsProjection` authority,
+   * which reads the FULL document snapshot — NEVER the Drawer filter / visible
+   * rows / runtime diagnostics (§20/§22), so switching the Drawer filter can
+   * never change the toolbar summary (§20 `TOOLBAR_COUNT_CHANGED_BY_DRAWER_FILTER=0`).
+   */
   private renderDiagnosticsButton(): void {
     const control = this.problemsControlEl
     if (!control) return
@@ -13160,29 +13624,23 @@ export class DocumentUtilityOverlayHost {
       control.appendChild(entry)
       return
     }
+    // §17 — three independent non-zero severity segments.
     if (projection.errorCount > 0) control.appendChild(this.buildProblemsSegment('error', projection.errorCount))
     if (projection.warningCount > 0) control.appendChild(this.buildProblemsSegment('warning', projection.warningCount))
-    if (projection.errorCount === 0 && projection.warningCount === 0) {
-      // HEALTHY (0/0/0) — check icon + 文档检测.
-      // V5.12-R6 §1/§11 — HINT-ONLY (e.g. the empty-document terminal notice:
-      // 全部1 / 错误0 / 警告0 / 提示1) MUST stay reachable: without an entry the
-      // Problems Control would render NOTHING and the Drawer could never be
-      // opened. The hint entry shows the REAL hint count — a zero counter is
-      // still never rendered.
-      const hintOnly = projection.hintCount > 0
+    if (projection.hintCount > 0) control.appendChild(this.buildProblemsSegment('info', projection.hintCount))
+    if (projection.errorCount === 0 && projection.warningCount === 0 && projection.hintCount === 0) {
+      // §18 row 000 / §19 — `✓ 文档检测` is allowed ONLY at 0/0/0.
       const entry = document.createElement('button')
       entry.type = 'button'
       entry.className =
-        'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry' +
-        (hintOnly ? '' : ' is-healthy')
-      const entryLabel = hintOnly ? `提示 ${projection.hintCount}` : '文档检测'
-      entry.setAttribute('aria-label', entryLabel)
-      entry.title = entryLabel
+        'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry is-healthy'
+      entry.setAttribute('aria-label', '文档检测：未发现问题')
+      entry.title = '文档检测：未发现问题'
       const icon = document.createElement('span')
       icon.className = 'inkchapter-toolbar-segment__icon'
-      setIcon(icon, hintOnly ? 'info' : 'check')
+      setIcon(icon, 'check')
       const label = document.createElement('span')
-      label.textContent = entryLabel
+      label.textContent = '文档检测'
       entry.append(icon, label)
       entry.addEventListener('click', () => this.openDrawer('all'))
       control.appendChild(entry)
@@ -13793,6 +14251,7 @@ export class DocumentUtilityOverlayHost {
       const projections = this.buildDrawerProjections()
       const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
       this.recordDrawerOrderFacts(projections, filtered)
+      this.measureTargetGroupDrawerFacts(projections, filtered)
       if (filtered.length === 0) {
         // Current filter yields nothing after a live refresh — show neutral hint.
         const none = document.createElement('div')
@@ -13833,6 +14292,12 @@ export class DocumentUtilityOverlayHost {
    */
   private resolveClickedTargetIndex(diagnosticId: string, targetIndexOverride?: number): number {
     const diag = this.diagnosticById(diagnosticId)
+    // Target Group V1 §11/§12 — a `target-group` activates the WHOLE group on
+    // every click. Its canonical index is ALWAYS 0 (the scroll anchor), so a
+    // repeated click is a same-target DEACTIVATE; the group NEVER touches the
+    // multi-target cursor and never SWITCHes members. (Strong-type driven:
+    // `location.kind === 'target-group'`.)
+    if (diag != null && diag.location?.kind === 'target-group') return 0
     const targetCount = diag?.location?.kind === 'multi-target' && diag.location.targets.length > 0
       ? diag.location.targets.length
       : 1
@@ -13840,6 +14305,12 @@ export class DocumentUtilityOverlayHost {
       return Math.max(0, Math.min(Math.max(0, targetCount - 1), Math.floor(targetIndexOverride)))
     }
     if (targetCount <= 1) return 0
+    // Target Group V1 §11/§12 — DEFENSIVE: a group must never reach the cursor.
+    // This counter makes a future regression provable.
+    if (this.isTargetGroupDiagnostic(diagnosticId)) {
+      this.countersTargetGroupV1.targetGroupCursorReadCount++
+      return 0
+    }
     return (this.multiTargetCursor.get(diagnosticId) ?? 0) % targetCount
   }
 
@@ -14313,6 +14784,16 @@ export class DocumentUtilityOverlayHost {
   private resolveActiveHeadingAuthority(
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
   ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> {
+    // Target Group V1 §13 — a `target-group` resolves ONLY the scroll anchor
+    // (the FIRST member). The N members share this ONE viewport locate; the
+    // active targetKey stays the ONE group key. This guarantees
+    // `TARGET_GROUP_STATE_LOCATE_AUTHORITY_DIVERGENCE_COUNT = 0` (the state owner
+    // and the locate member are the SAME anchor).
+    if (diag.location?.kind === 'target-group') {
+      const resolution = this.resolveActiveHeadingGroupAuthority(diag)
+      if (resolution.ok) this.coverageMultiTargetV2.canonicalActiveTargetExactResolutionCount++
+      return resolution
+    }
     const st = this.diagnosticInteractionState
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
     const projections = this.buildDrawerProjections()
@@ -14343,6 +14824,57 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * Target Group V1 §13/§14 — the group's canonical active target is its SCROLL
+   * ANCHOR (the first member). The targetKey is the ONE group key (never a member
+   * occurrence key); the element is the anchor heading.
+   */
+  private resolveActiveHeadingGroupAuthority(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> {
+    const st = this.diagnosticInteractionState
+    const fail = (
+      reason: CanonicalActiveTargetResolveFailure,
+    ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> => ({
+      ok: false,
+      reason,
+      diagnosticId: st.diagnosticId,
+      diagnosticTargetIndex: st.diagnosticTargetIndex,
+      expectedHeadingIdentity: null,
+    })
+    if (st.phase !== 'ACTIVE' || st.diagnosticId !== diag.id) return fail('PHASE_NOT_ACTIVE')
+    if (st.targetKey == null || st.targetKey === '') return fail('TARGET_KEY_MISSING')
+    const loc = diag.location
+    if (loc?.kind !== 'target-group') return fail('NO_DIAGNOSTIC')
+    const anchor = loc.scrollAnchor
+    let stableIdentity = ''
+    let element: HTMLElement | null = null
+    if (anchor.kind === 'canonical-node' && anchor.nodeKind === 'heading') {
+      stableIdentity = anchor.stableIdentity
+      element = this.resolveHeadingElementByIdentity(anchor.stableIdentity, null)
+    } else if (anchor.kind === 'source-range') {
+      element = this.resolveSourceLine(anchor.startLine)
+      stableIdentity = element?.getAttribute?.('data-line') ?? ''
+    }
+    if (!element || !element.isConnected) return fail('ELEMENT_NOT_FOUND')
+    const headingIdentity = markerIdentityOfStableIdentity(stableIdentity)
+    if (headingIdentity == null) return fail('PROJECTION_NOT_FOUND')
+    return {
+      ok: true,
+      reason: 'CANONICAL_ACTIVE_TARGET_EXACT',
+      target: {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+        diagnosticId: diag.id,
+        diagnosticTargetIndex: st.diagnosticTargetIndex ?? 0,
+        transactionLocalTargetIndex: st.transactionLocalTargetIndex,
+        targetKey: st.targetKey,
+        stableHeadingIdentity: stableIdentity,
+        headingIdentity,
+        element,
+      },
+    }
+  }
+
+  /**
    * V2 §8 — TEST SEAM. Publishes the ACTIVE interaction state the reducer WOULD
    * have produced, so a visual-projection test can prepare a LEGITIMATE state
    * before calling the (now read-only) painter.
@@ -14359,6 +14891,7 @@ export class DocumentUtilityOverlayHost {
     const index = this.resolveClickedTargetIndex(diagnosticId, targetIndex)
     const targetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, index)
     const previous = this.diagnosticInteractionState
+    const groupMemberCount = this.targetGroupMemberCount(diagnosticId)
     this.diagnosticInteractionState = {
       version: previous.version + 1,
       phase: 'ACTIVE',
@@ -14368,6 +14901,8 @@ export class DocumentUtilityOverlayHost {
       transactionLocalTargetIndex: 0,
       transactionId: previous.transactionId,
       leaseToken: previous.leaseToken,
+      targetMode: groupMemberCount > 0 ? 'group' : 'single',
+      ...(groupMemberCount > 0 ? { groupMemberCount } : {}),
     }
     this.refreshDrawerActiveRow()
   }
@@ -14426,7 +14961,14 @@ export class DocumentUtilityOverlayHost {
       const next = transition.next
       const nextDiag = next.diagnosticId != null ? this.diagnosticById(next.diagnosticId) : null
       const isMultiTarget = nextDiag?.location?.kind === 'multi-target'
+      const isGroupNext = nextDiag?.location?.kind === 'target-group'
       const nextIndex = next.diagnosticTargetIndex
+      // Target Group V1 §19 — positive coverage of the group activation sizes.
+      if (isGroupNext && nextDiag?.location?.kind === 'target-group') {
+        const memberCount = nextDiag.location.targets.length
+        if (memberCount === 2) this.coverageTargetGroupV1.targetGroupTwoMemberActivationCount++
+        if (memberCount >= 3) this.coverageTargetGroupV1.targetGroupThreeMemberActivationCount++
+      }
       if (isMultiTarget && nextIndex != null && next.diagnosticId != null) {
         if (nextIndex === 0) this.coverageMultiTargetV2.multiTargetFirstSubtargetActivationCount++
         if (nextIndex >= 1) this.coverageMultiTargetV2.multiTargetSecondSubtargetActivationCount++
@@ -14437,6 +14979,12 @@ export class DocumentUtilityOverlayHost {
       if (transition.action === 'SWITCH') {
         const prev = transition.previous
         const sameDiagnostic = prev.diagnosticId === next.diagnosticId
+        // Target Group V1 §12 — a group SWITCH (member0 → member1) must NEVER
+        // happen; the same-diagnostic group key makes it a DEACTIVATE instead.
+        if (sameDiagnostic && isGroupNext) {
+          this.countersTargetGroupV1.targetGroupTargetSwitchCount++
+          this.countersTargetGroupV1.targetGroupRepeatedClickNotDeactivateCount++
+        }
         if (sameDiagnostic && isMultiTarget) {
           if (prev.diagnosticTargetIndex === 0 && nextIndex === 1) {
             this.coverageMultiTargetV2.multiTargetSwitch1To2Count++
@@ -14527,11 +15075,15 @@ export class DocumentUtilityOverlayHost {
     // §14.2 — exactly ONE active target. A HEADING target is carried by the
     // text-tight heading emphasis; any other target is carried by the locate frame
     // (the two are mutually exclusive, never additive).
+    // VNext §13 — a `text-tight-multi-target` group owns N heading targets
+    // carried by ONE transaction, so the expected/target count is its real N.
+    const groupCount = this.headingActiveGroupTargetCount
     const activeTargetCount = st.phase !== 'ACTIVE'
       ? 0
       : activeTargetIsHeading
-        ? Math.min(1, activeWrappers)
+        ? (groupCount > 0 ? Math.min(groupCount, activeWrappers) : Math.min(1, activeWrappers))
         : (locateFrameCommitted ? 1 : 0)
+    const activeTargetCountExpected = groupCount > 0 ? groupCount : 1
     const drawerRowsRendered = this.drawerEl != null
       && this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
     const selectedActiveRowCount = this.drawerEl
@@ -14546,6 +15098,7 @@ export class DocumentUtilityOverlayHost {
       selectedActiveRowCount,
       drawerRowsRendered,
       activeTargetCount,
+      activeTargetCountExpected,
       activeFillCount: fillFacts.fillCount,
       activeFillCountMeasurable: styleSheets > 0,
       activeVisualWithoutOwner: this.headingActiveMarkerIdentity != null && st.phase !== 'ACTIVE',
@@ -14796,11 +15349,16 @@ export class DocumentUtilityOverlayHost {
       transactionLocalTargetIndex: 0,
       transactionTargetCount: 1,
     })
+    const groupMemberCount = this.targetGroupMemberCount(diagnosticId)
     const click: DiagnosticClick = {
       diagnosticId,
       targetKey: clickedTargetKey,
       diagnosticTargetIndex: indexAuthority.canonicalDiagnosticTargetIndex,
       transactionLocalTargetIndex: indexAuthority.transactionLocalTargetIndex,
+      // Target Group V1 §11 — carry the interaction MODE onto the state so every
+      // downstream authority (cursor guard / closure count / audit) is mode-explicit.
+      targetMode: groupMemberCount > 0 ? 'group' : 'single',
+      ...(groupMemberCount > 0 ? { groupMemberCount } : {}),
     }
     this.emitTargetIndexAuthorityAudit({
       diagnosticId,
@@ -14995,6 +15553,11 @@ export class DocumentUtilityOverlayHost {
     tx.targetIndex = targetIndex
     tx.targetCount = targetCount
     this.lastLocateTargetCounts.set(diagnosticId, targetCount)
+    // Target Group V1 §13 — the ONE group locate member index (must stay 0 = the
+    // scroll anchor). Recorded so a divergence from the state owner is provable.
+    if (this.isTargetGroupDiagnostic(diagnosticId)) {
+      this.lastTargetGroupLocateMemberIndex = targetIndex
+    }
 
     const resolveCtx: DiagnosticLocationResolveContext = {
       documentKey: currentKey,
@@ -18928,10 +19491,17 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R8 §15 — a failure path must never lose a pending figure audit.
     if (this.pendingFigureTargetAudit) this.emitPendingFigureTargetAudit(0)
     if (commit && tx.targetCount > 1) {
-      // Commit the NEXT index (targetIndex+1 mod count) for the following click.
-      this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
+      // Target Group V1 §12 — DEFENSIVE: a group never advances the cursor.
+      if (this.isTargetGroupDiagnostic(tx.diagnosticId)) {
+        this.countersTargetGroupV1.targetGroupCursorAdvanceCount++
+      } else {
+        // Commit the NEXT index (targetIndex+1 mod count) for the following click.
+        this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
+      }
     }
-    const committedNext = commit && tx.targetCount > 1 ? (tx.targetIndex + 1) % tx.targetCount : null
+    const committedNext = commit && tx.targetCount > 1 && !this.isTargetGroupDiagnostic(tx.diagnosticId)
+      ? (tx.targetIndex + 1) % tx.targetCount
+      : null
     const committedIndex = commit ? (tx.targetCount === 1 ? 0 : tx.targetIndex) : null
     // V5.8 — emit the single-click offscreen audit + evaluate the commit-time
     // hard gates BEFORE the terminal unlock (facts are still reachable).

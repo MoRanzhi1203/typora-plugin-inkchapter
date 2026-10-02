@@ -71,6 +71,12 @@ export interface DocumentUtilitiesAuthorityContext {
   getCanonicalDuplicateIdentities: () => string[]
   /** Caption-service-provided duplicate names across figure/table/code. */
   getCaptionDuplicateNames: () => string[]
+  /**
+   * VNext §24 — which OBJECT auto-numbering systems are ON (figure/table/code/
+   * formula). Optional: without it the manual-number rules stay OFF (a literal
+   * `1.` prefix is then plain text and must never be reported).
+   */
+  getObjectNumberingEnabled?: () => { figure?: boolean; table?: boolean; code?: boolean; formula?: boolean }
 }
 
 export interface DocumentUtilitiesContext {
@@ -154,5 +160,11 @@ export function collectDiagnosticsInput(
     links: structural.links,
     canonicalDuplicateIdentities: ctx.authority.getCanonicalDuplicateIdentities(),
     captionDuplicateNames: ctx.authority.getCaptionDuplicateNames(),
+    // VNext §24 — manual-number rules run ONLY while the matching automatic
+    // numbering is ON (heading policy + object numbering service).
+    numberingEnabled: {
+      heading: policy?.enabled === true,
+      ...(ctx.authority.getObjectNumberingEnabled?.() ?? {}),
+    },
   }
 }

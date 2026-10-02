@@ -187,6 +187,24 @@ export type DiagnosticLocation =
       kind: 'multi-target'
       targets: readonly DiagnosticLocation[]
     }
+  /**
+   * V1 (Target Group closure) — a TARGET GROUP. ONE diagnostic whose semantic
+   * fact is carried by SEVERAL co-equal members (e.g. "the document only owns a
+   * heading structure": every heading is a member of ONE document-level fact).
+   *
+   * It is DELIBERATELY a separate kind from `multi-target`:
+   *   - `multi-target` = N independent OCCURRENCES (1/N … N/N rows, cursor, switch);
+   *   - `target-group` = ONE fact / ONE Drawer row / ONE interaction / ONE lease
+   *     with N semantic + visual members.
+   *
+   * `scrollAnchor` is the SINGLE viewport locate target (the first member);
+   * `targets` are ALL members in document order.
+   */
+  | {
+      kind: 'target-group'
+      scrollAnchor: DiagnosticLocation
+      targets: readonly DiagnosticLocation[]
+    }
 
 /**
  * Phase 7R.3.11.8B.7.3 — Diagnostic semantic anchor kinds.

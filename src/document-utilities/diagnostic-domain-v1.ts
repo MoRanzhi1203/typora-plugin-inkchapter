@@ -110,9 +110,14 @@ export interface DocumentSeverityCounts {
 /**
  * §8 — the ONLY severity counter. It takes the already-selected DOCUMENT set,
  * so a runtime item can never be counted (the selector removes it upstream).
+ *
+ * VNext Presentation Closure V1.1 §21 — this is the ONE severity-count authority
+ * shared by the Drawer tabs AND the Toolbar summary. The severity parameter is a
+ * plain `string` so both consumers feed it directly (`hint` maps to the `info`
+ * count — the project's single "提示" level; §3 forbids a new severity axis).
  */
 export function countDocumentSeverities(
-  diagnostics: readonly { severity: 'error' | 'warning' | 'info' }[],
+  diagnostics: readonly { severity: string }[],
 ): DocumentSeverityCounts {
   let error = 0
   let warning = 0
