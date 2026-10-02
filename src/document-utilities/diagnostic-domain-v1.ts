@@ -190,11 +190,26 @@ export function runtimeIntegrityFindingsFromIdentity(input: {
   projectMainExists?: boolean
   projectMainSha256?: string | null
   shaMatch?: boolean | null
+  /**
+   * §6 (line "deployed artifact != dist artifact") — the SHA of the ACTUAL
+   * deployed artifact. The legacy `pluginMainSha256` deliberately prefers the
+   * project build, so it cannot detect a stale deployment; this field carries
+   * the real deployed-vs-build comparison.
+   */
+  deployedMainSha256?: string | null
+  deployedMainExists?: boolean | null
   buildId?: string | null
   initializationCount?: number | null
 }): RuntimeIntegrityFinding[] {
   const out: RuntimeIntegrityFinding[] = []
-  if (!input.pluginMainExists) {
+  const deployedExists = input.deployedMainExists ?? input.pluginMainExists
+  const projectExists = input.projectMainExists ?? true
+  const deployedSha = input.deployedMainSha256 ?? input.pluginMainSha256 ?? null
+  const projectSha = input.projectMainSha256 ?? null
+  const readable = (sha: string | null | undefined): sha is string =>
+    typeof sha === 'string' && sha !== '' && sha.toUpperCase() !== 'UNKNOWN'
+
+  if (!deployedExists) {
     out.push({
       code: 'RUNTIME_PLUGIN_ARTIFACT_MISSING',
       status: 'FAIL',
@@ -203,15 +218,20 @@ export function runtimeIntegrityFindingsFromIdentity(input: {
       facts: { buildId: input.buildId ?? null },
     })
   }
-  if (input.projectMainExists === true && input.shaMatch === false) {
+  const deployedIsStale = deployedExists
+    && projectExists
+    && readable(deployedSha)
+    && readable(projectSha)
+    && deployedSha !== projectSha
+  if (deployedIsStale || (input.shaMatch === false && !deployedIsStale)) {
     out.push({
       code: 'RUNTIME_IDENTITY_SHA_MISMATCH',
       status: 'FAIL',
       message: '部署产物与构建产物不一致',
-      detail: 'deployed main.js 与 dist/main.js 的 SHA256 不一致。',
+      detail: '部署的 main.js 与 dist/main.js 的 SHA256 不一致（部署已过期）。',
       facts: {
-        pluginMainSha256: input.pluginMainSha256 ?? null,
-        projectMainSha256: input.projectMainSha256 ?? null,
+        deployedMainSha256: deployedSha ?? null,
+        projectMainSha256: projectSha ?? null,
         buildId: input.buildId ?? null,
       },
     })
