@@ -267,6 +267,44 @@ describe('V1 §6/§37 — runtime identity is a runtime-domain concern', () => {
     const findings = runtimeIntegrityFindingsFromIdentity({ pluginMainExists: false, shaMatch: null })
     expect(findings.map(f => f.code)).toContain('RUNTIME_PLUGIN_ARTIFACT_MISSING')
   })
+
+  it('§6 — a STALE DEPLOYED artifact (deployed != dist) is a runtime FAIL', () => {
+    // the legacy `shaMatch` is tautological (it compares the project build with
+    // itself), so the real deployed-vs-build comparison must be its own fact.
+    const findings = runtimeIntegrityFindingsFromIdentity({
+      pluginMainExists: true,
+      pluginMainSha256: 'SAME',
+      projectMainExists: true,
+      projectMainSha256: 'SAME',
+      shaMatch: true,
+      deployedMainExists: true,
+      deployedMainSha256: 'STALE',
+    })
+    expect(findings.map(f => f.code)).toContain('RUNTIME_IDENTITY_SHA_MISMATCH')
+    const diag = toRuntimeDiagnostic(findings[0], 1)
+    expect(diag.domain).toBe('runtime')
+    expect(diag.status).toBe('FAIL')
+  })
+
+  it('a healthy deployment (deployed == dist) yields NO finding', () => {
+    expect(runtimeIntegrityFindingsFromIdentity({
+      pluginMainExists: true,
+      pluginMainSha256: 'X',
+      projectMainExists: true,
+      projectMainSha256: 'X',
+      shaMatch: true,
+      deployedMainExists: true,
+      deployedMainSha256: 'X',
+    })).toEqual([])
+  })
+
+  it('an unreadable SHA ("unknown") never fabricates a mismatch', () => {
+    expect(runtimeIntegrityFindingsFromIdentity({
+      pluginMainExists: true, pluginMainSha256: 'unknown',
+      projectMainExists: true, projectMainSha256: 'unknown',
+      shaMatch: null, deployedMainExists: true, deployedMainSha256: 'unknown',
+    })).toEqual([])
+  })
 })
 
 // ── §19/§20/§9 — no duplicate domain implementation ────────────────────────

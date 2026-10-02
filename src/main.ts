@@ -1289,12 +1289,25 @@ export default class extends Plugin<InkChapterSettings> {
     // Unified Diagnostics Domain V1 §6/§16/§37 — the identity result is a
     // RUNTIME-domain concern (deployment / plugin state). It is collected into
     // the runtime integrity report and NEVER becomes a user document problem.
+    // §6 — the DEPLOYED artifact's own SHA (the legacy `pluginMainSha256` above
+    // prefers the project build, so it cannot see a stale deployment).
+    const deployedMainSha256 = (() => {
+      try {
+        if (pluginExists) {
+          const data = require('fs').readFileSync(pluginArtifactPath, 'utf-8') as string
+          return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
+        }
+        return 'unknown'
+      } catch { return 'unknown' }
+    })()
     const runtimeIntegrity = refreshRuntimeIntegrity(runtimeIntegrityFindingsFromIdentity({
       pluginMainExists: pluginExists,
       pluginMainSha256,
       projectMainExists,
       projectMainSha256,
       shaMatch,
+      deployedMainExists: pluginExists,
+      deployedMainSha256,
       buildId: INKCHAPTER_BUILD_ID,
       initializationCount: initCount,
     }))

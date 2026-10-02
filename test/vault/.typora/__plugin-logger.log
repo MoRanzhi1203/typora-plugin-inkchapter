@@ -49446,3 +49446,857 @@
  D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\README.md
 [2026-10-02T11:04:28.258Z] DEBUG [Events] markdown-editor @edit
 
+[2026-10-02T11:14:16.071Z] DEBUG [Config] Config @switch
+
+[2026-10-02T11:14:16.107Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:14:16.134Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:14:16.134Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:14:16.135Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:14:16.135Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:14:16.136Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:14:16.508Z] DEBUG [Events] markdown-editor @load
+ {"jQuery331053149592850786891":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":358,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-10-02T11:14:17.252Z] DEBUG [Events] app @load
+
+[2026-10-02T11:14:17.254Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-10-02T11:14:17.259Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\README.md
+[2026-10-02T11:14:17.972Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T11:16:32.747Z] DEBUG [Config] Config @switch
+
+[2026-10-02T11:16:32.790Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:16:32.813Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:16:32.813Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:16:32.814Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:16:32.814Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:16:32.814Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:16:33.196Z] DEBUG [Events] markdown-editor @load
+ {"jQuery3310251839802894449071":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":358,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-10-02T11:16:33.920Z] DEBUG [Events] app @load
+
+[2026-10-02T11:16:33.920Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-10-02T11:16:33.922Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\README.md
+[2026-10-02T11:16:34.647Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T11:17:01.001Z] DEBUG [Config] Config @switch
+
+[2026-10-02T11:17:01.030Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:17:01.051Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:17:01.051Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:17:01.052Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:17:01.052Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:17:01.052Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:17:01.435Z] DEBUG [Events] markdown-editor @load
+ {"jQuery3310276789929993007441":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":358,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-10-02T11:17:02.142Z] DEBUG [Events] app @load
+
+[2026-10-02T11:17:02.143Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-10-02T11:17:02.145Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\README.md
+[2026-10-02T11:17:02.846Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T11:19:46.877Z] DEBUG [Config] Config @switch
+
+[2026-10-02T11:19:46.914Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:19:46.940Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:19:46.941Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:19:46.941Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:19:46.941Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T11:19:46.942Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T11:19:47.353Z] DEBUG [Events] markdown-editor @load
+ {"jQuery3310222381805245691621":{"events":{"mousemove":[{"type":"mousemove","origType":"mousemove","guid":19,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mousemove","origType":"mousemove","guid":138,"namespace":""}],"mouseout":[{"type":"mouseout","origType":"mouseleave","guid":20,"selector":".md-image>.md-meta","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":199,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseout","origType":"mouseleave","guid":202,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"click":[{"type":"click","origType":"click","guid":21,"selector":"img","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":137,"selector":"[md-inline='link']>.md-content, .md-def-url","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":155,"selector":".md-align-gp button","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":156,"selector":".md-delete-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":157,"selector":".md-resize-table","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":158,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":162,"selector":".md-table-more","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":189,"selector":".md-math-block .md-rawblock-after, .md-math-block .md-rawblock-before","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":192,"selector":".md-fences-math .md-fences-adv-panel","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":194,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":200,"selector":".md-rawblock-tooltip-edit-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":203,"selector":".md-rawblock-tooltip-ok-btn","needsContext":false,"namespace":""},{"type":"click","origType":"click","guid":141,"namespace":""}],"btn-action":[{"type":"btn-action","origType":"btn-action","guid":22,"selector":".md-image-input-src-btn","needsContext":false,"namespace":""},{"type":"btn-action","origType":"btn-action","guid":23,"selector":".md-image-pick-file-btn","needsContext":false,"namespace":""}],"cursorChange":[{"type":"cursorChange","origType":"cursorChange","guid":24,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":150,"namespace":""},{"type":"cursorChange","origType":"cursorChange","guid":358,"namespace":""}],"change":[{"type":"change","origType":"change","guid":119,"selector":"[type='checkbox']","needsContext":false,"namespace":""}],"keydown":[{"type":"keydown","origType":"keydown","guid":186,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":188,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":190,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""},{"type":"keydown","origType":"keydown","guid":121,"namespace":""}],"keypress":[{"type":"keypress","origType":"keypress","guid":122,"namespace":""}],"keyup":[{"type":"keyup","origType":"keyup","guid":123,"namespace":""}],"compositionend":[{"type":"compositionend","origType":"compositionend","guid":124,"namespace":""}],"compositionstart":[{"type":"compositionstart","origType":"compositionstart","guid":125,"namespace":""}],"compositionupdate":[{"type":"compositionupdate","origType":"compositionupdate","guid":126,"namespace":""}],"beforeinput":[{"type":"beforeinput","origType":"beforeinput","guid":127,"namespace":""}],"input":[{"type":"input","origType":"input","guid":128,"namespace":""}],"drop":[{"type":"drop","origType":"drop","guid":129,"namespace":""}],"dragover":[{"type":"dragover","origType":"dragover","guid":130,"namespace":""}],"dragenter":[{"type":"dragenter","origType":"dragenter","guid":131,"namespace":""}],"mouseover":[{"type":"mouseover","origType":"mouseenter","guid":132,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":133,"selector":"[md-inline='reflink']","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":134,"selector":".footnotes, [mdtype=\"table\"], .md-task-list-item, .md-image","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseover","guid":135,"selector":".td-span","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":173,"selector":"th, td","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":198,"selector":"video","needsContext":false,"namespace":""},{"type":"mouseover","origType":"mouseenter","guid":201,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"mousedown":[{"type":"mousedown","origType":"mousedown","guid":139,"selector":"mjx-container a","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":151,"selector":".md-inline-math mjx-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":159,"selector":".ty-table-edit button","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":182,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":193,"selector":".md-htmlblock-container","needsContext":false,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":136,"namespace":""},{"type":"mousedown","origType":"mousedown","guid":140,"namespace":""}],"dblclick":[{"type":"dblclick","origType":"dblclick","guid":142,"namespace":""}],"mouseup":[{"type":"mouseup","origType":"mouseup","guid":161,"selector":".ty-table-edit","needsContext":false,"namespace":""},{"type":"mouseup","origType":"mouseup","guid":143,"namespace":""}],"refocus":[{"type":"refocus","origType":"refocus","guid":160,"selector":"[mdtype='table']","needsContext":false,"namespace":""},{"type":"refocus","origType":"refocus","guid":178,"selector":".md-diagram","needsContext":false,"namespace":""}],"startedit":[{"type":"startedit","origType":"startedit","guid":183,"selector":".md-math-container","needsContext":false,"namespace":""},{"type":"startedit","origType":"startedit","guid":195,"selector":".md-htmlblock-container","needsContext":false,"namespace":""}],"losefocus":[{"type":"losefocus","origType":"losefocus","guid":184,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"losefocus","origType":"losefocus","guid":196,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"endfocus":[{"type":"endfocus","origType":"endfocus","guid":185,"selector":".md-math-block","needsContext":false,"namespace":""},{"type":"endfocus","origType":"endfocus","guid":197,"selector":".md-htmlblock","needsContext":false,"namespace":""}],"inline-change":[{"type":"inline-change","origType":"inline-change","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"focusout":[{"type":"focusout","origType":"blur","guid":187,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}],"paste":[{"type":"paste","origType":"paste","guid":191,"selector":".md-math-block .ty-input","needsContext":false,"namespace":""}]}}}
+[2026-10-02T11:19:48.200Z] DEBUG [Events] app @load
+
+[2026-10-02T11:19:48.201Z] DEBUG [Vault] vault @mounted
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault
+[2026-10-02T11:19:48.203Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\README.md
+[2026-10-02T11:19:49.069Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:10.148Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\scratch\doc.md
+[2026-10-02T12:04:10.379Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\scratch\doc.md
+[2026-10-02T12:04:10.386Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:10.389Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md"}}
+[2026-10-02T12:04:10.393Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:10.424Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md"}}
+[2026-10-02T12:04:10.425Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md"}}
+[2026-10-02T12:04:10.436Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\README.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:10.437Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md"}}
+[2026-10-02T12:04:10.437Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md"}}
+[2026-10-02T12:04:10.772Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:15.594Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-BodyThenH1-Runtime-Test.md
+[2026-10-02T12:04:15.756Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-BodyThenH1-Runtime-Test.md
+[2026-10-02T12:04:15.759Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:15.761Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md"}}
+[2026-10-02T12:04:15.764Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:15.796Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md"}}
+[2026-10-02T12:04:15.797Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md"}}
+[2026-10-02T12:04:15.807Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\scratch\\doc.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:15.808Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md"}}
+[2026-10-02T12:04:15.808Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md"}}
+[2026-10-02T12:04:16.215Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:17.575Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md
+[2026-10-02T12:04:17.756Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md
+[2026-10-02T12:04:17.759Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:17.762Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md"}}
+[2026-10-02T12:04:17.765Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:17.811Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md"}}
+[2026-10-02T12:04:17.811Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md"}}
+[2026-10-02T12:04:17.822Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenH1-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:17.822Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md"}}
+[2026-10-02T12:04:17.822Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md"}}
+[2026-10-02T12:04:18.760Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-H2Only-Runtime-Test.md
+[2026-10-02T12:04:18.905Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-H2Only-Runtime-Test.md
+[2026-10-02T12:04:18.909Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:18.911Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md"}}
+[2026-10-02T12:04:18.932Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:18.975Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md"}}
+[2026-10-02T12:04:18.976Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md"}}
+[2026-10-02T12:04:18.983Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-BodyThenTwoH1-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:18.984Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md"}}
+[2026-10-02T12:04:18.984Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md"}}
+[2026-10-02T12:04:19.399Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:19.719Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-Multi-H1-Runtime-Test.md
+[2026-10-02T12:04:19.887Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-Multi-H1-Runtime-Test.md
+[2026-10-02T12:04:19.891Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:19.895Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md"}}
+[2026-10-02T12:04:19.899Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:19.956Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md"}}
+[2026-10-02T12:04:19.956Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md"}}
+[2026-10-02T12:04:19.966Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-H2Only-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:19.966Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md"}}
+[2026-10-02T12:04:19.967Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md"}}
+[2026-10-02T12:04:20.316Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:20.746Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-Plain-Text-Runtime-Test.md
+[2026-10-02T12:04:20.826Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Conditional-Strict-Plain-Text-Runtime-Test.md
+[2026-10-02T12:04:20.829Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:20.832Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md"}}
+[2026-10-02T12:04:20.836Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:20.917Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md"}}
+[2026-10-02T12:04:20.918Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md"}}
+[2026-10-02T12:04:20.928Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Multi-H1-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:20.928Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md"}}
+[2026-10-02T12:04:20.929Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md"}}
+[2026-10-02T12:04:21.216Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:23.580Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-ATX-Marker-Test.md
+[2026-10-02T12:04:23.894Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-ATX-Marker-Test.md
+[2026-10-02T12:04:23.897Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:23.900Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md"}}
+[2026-10-02T12:04:23.903Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:23.974Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md"}}
+[2026-10-02T12:04:23.975Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md"}}
+[2026-10-02T12:04:23.989Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Conditional-Strict-Plain-Text-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:23.989Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md"}}
+[2026-10-02T12:04:23.989Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md"}}
+[2026-10-02T12:04:24.805Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:27.806Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Authority-Test.md
+[2026-10-02T12:04:28.049Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Authority-Test.md
+[2026-10-02T12:04:28.051Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:28.054Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md"}}
+[2026-10-02T12:04:28.056Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md","scrollTop":0,"cursorOffset":0}}
+[2026-10-02T12:04:28.113Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md"}}
+[2026-10-02T12:04:28.113Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md"}}
+[2026-10-02T12:04:28.125Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-ATX-Marker-Test.md","scrollTop":0,"cursorOffset":0}}
+[2026-10-02T12:04:28.125Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md"}}
+[2026-10-02T12:04:28.126Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md"}}
+[2026-10-02T12:04:28.804Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:29.364Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md
+[2026-10-02T12:04:29.511Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md
+[2026-10-02T12:04:29.515Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:29.517Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md"}}
+[2026-10-02T12:04:29.521Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:29.617Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md"}}
+[2026-10-02T12:04:29.617Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md"}}
+[2026-10-02T12:04:29.625Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Authority-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:29.625Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md"}}
+[2026-10-02T12:04:29.625Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md"}}
+[2026-10-02T12:04:29.960Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:30.928Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md
+[2026-10-02T12:04:31.138Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md
+[2026-10-02T12:04:31.154Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:31.157Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md"}}
+[2026-10-02T12:04:31.160Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md","scrollTop":0,"cursorOffset":205}}
+[2026-10-02T12:04:31.268Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md"}}
+[2026-10-02T12:04:31.268Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md"}}
+[2026-10-02T12:04:31.284Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-A-Single-H1.md","scrollTop":0,"cursorOffset":205}}
+[2026-10-02T12:04:31.284Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md"}}
+[2026-10-02T12:04:31.284Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md"}}
+[2026-10-02T12:04:31.815Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md
+[2026-10-02T12:04:31.986Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md
+[2026-10-02T12:04:31.990Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:31.995Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md"}}
+[2026-10-02T12:04:32.000Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:32.118Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md"}}
+[2026-10-02T12:04:32.118Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md"}}
+[2026-10-02T12:04:32.125Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-C-Content-Object.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:32.126Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md"}}
+[2026-10-02T12:04:32.126Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md"}}
+[2026-10-02T12:04:32.408Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:32.777Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md
+[2026-10-02T12:04:32.912Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md
+[2026-10-02T12:04:32.915Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:32.917Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md"}}
+[2026-10-02T12:04:32.920Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:33.061Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md"}}
+[2026-10-02T12:04:33.061Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md"}}
+[2026-10-02T12:04:33.069Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-B-With-Body.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:33.070Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md"}}
+[2026-10-02T12:04:33.070Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md"}}
+[2026-10-02T12:04:33.378Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:04:34.182Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Utilities-Dynamic-Layout-Test.md
+[2026-10-02T12:04:34.351Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Utilities-Dynamic-Layout-Test.md
+[2026-10-02T12:04:34.355Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:04:34.358Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md"}}
+[2026-10-02T12:04:34.362Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:34.485Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md"}}
+[2026-10-02T12:04:34.486Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md"}}
+[2026-10-02T12:04:34.493Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:04:34.493Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md"}}
+[2026-10-02T12:04:34.493Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md"}}
+[2026-10-02T12:04:34.800Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:39.340Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:07:40.205Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:07:41.276Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Offscreen-Locate-V59.md
+[2026-10-02T12:07:41.550Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Offscreen-Locate-V59.md
+[2026-10-02T12:07:41.556Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:41.559Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md"}}
+[2026-10-02T12:07:41.562Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:41.691Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md"}}
+[2026-10-02T12:07:41.691Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md"}}
+[2026-10-02T12:07:41.716Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Utilities-Dynamic-Layout-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:41.717Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md"}}
+[2026-10-02T12:07:41.717Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md"}}
+[2026-10-02T12:07:42.380Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md
+[2026-10-02T12:07:42.586Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md
+[2026-10-02T12:07:42.587Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md"}}
+[2026-10-02T12:07:42.590Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:42.598Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:42.599Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:42.609Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Offscreen-Locate-V59.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:42.610Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:42.610Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:43.058Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:43.913Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Formula-End.md
+[2026-10-02T12:07:44.159Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Formula-End.md
+[2026-10-02T12:07:44.162Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:44.163Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:44.164Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":183}}
+[2026-10-02T12:07:44.321Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md"}}
+[2026-10-02T12:07:44.322Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md"}}
+[2026-10-02T12:07:44.330Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Document-Diagnostics-Heading-Only-Hint-D-Single-H2-Strict.md","scrollTop":0,"cursorOffset":183}}
+[2026-10-02T12:07:44.331Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md"}}
+[2026-10-02T12:07:44.331Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md"}}
+[2026-10-02T12:07:44.660Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:44.931Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Formula-End.md
+[2026-10-02T12:07:45.446Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Code-End.md
+[2026-10-02T12:07:45.546Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Code-End.md
+[2026-10-02T12:07:45.550Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:45.553Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md"}}
+[2026-10-02T12:07:45.561Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:45.785Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md"}}
+[2026-10-02T12:07:45.786Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md"}}
+[2026-10-02T12:07:45.799Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Formula-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:45.799Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md"}}
+[2026-10-02T12:07:45.800Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md"}}
+[2026-10-02T12:07:46.341Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Paragraph-End.md
+[2026-10-02T12:07:46.760Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Paragraph-End.md
+[2026-10-02T12:07:46.766Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:46.771Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md"}}
+[2026-10-02T12:07:46.777Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:47.083Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md"}}
+[2026-10-02T12:07:47.084Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md"}}
+[2026-10-02T12:07:47.095Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Code-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:47.095Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md"}}
+[2026-10-02T12:07:47.096Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md"}}
+[2026-10-02T12:07:47.655Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-No-Terminal-Newline-Runtime-Test.md
+[2026-10-02T12:07:47.670Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:47.998Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-No-Terminal-Newline-Runtime-Test.md
+[2026-10-02T12:07:48.005Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:48.009Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md"}}
+[2026-10-02T12:07:48.013Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:48.287Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md"}}
+[2026-10-02T12:07:48.287Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md"}}
+[2026-10-02T12:07:48.296Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Paragraph-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:48.296Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md"}}
+[2026-10-02T12:07:48.296Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md"}}
+[2026-10-02T12:07:48.729Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:48.858Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Heading-End.md
+[2026-10-02T12:07:49.054Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-Newline-Runtime-Heading-End.md
+[2026-10-02T12:07:49.058Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:49.062Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md"}}
+[2026-10-02T12:07:49.065Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:49.323Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md"}}
+[2026-10-02T12:07:49.324Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md"}}
+[2026-10-02T12:07:49.331Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:49.331Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md"}}
+[2026-10-02T12:07:49.332Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md"}}
+[2026-10-02T12:07:51.779Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:52.457Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-No-Terminal-Newline-Runtime-Test.md
+[2026-10-02T12:07:52.557Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Eof-No-Terminal-Newline-Runtime-Test.md
+[2026-10-02T12:07:52.558Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md"}}
+[2026-10-02T12:07:52.561Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:52.573Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:52.574Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:52.585Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-Newline-Runtime-Heading-End.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:52.586Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:52.586Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:53.434Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B-Strict-H1-EOF-Test.md
+[2026-10-02T12:07:53.571Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B-Strict-H1-EOF-Test.md
+[2026-10-02T12:07:53.575Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:53.578Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:53.580Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:53.843Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"}}
+[2026-10-02T12:07:53.844Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"}}
+[2026-10-02T12:07:53.850Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Eof-No-Terminal-Newline-Runtime-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:53.850Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"}}
+[2026-10-02T12:07:53.850Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"}}
+[2026-10-02T12:07:54.142Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:57.434Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B1-Zero-H1-Test.md
+[2026-10-02T12:07:57.573Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B1-Zero-H1-Test.md
+[2026-10-02T12:07:57.577Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:57.580Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md"}}
+[2026-10-02T12:07:57.584Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:57.877Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md"}}
+[2026-10-02T12:07:57.878Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md"}}
+[2026-10-02T12:07:57.886Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:57.887Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md"}}
+[2026-10-02T12:07:57.887Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md"}}
+[2026-10-02T12:07:58.238Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:58.303Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B1-Multi-H1-Test.md
+[2026-10-02T12:07:58.522Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B1-Multi-H1-Test.md
+[2026-10-02T12:07:58.526Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:07:58.529Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md"}}
+[2026-10-02T12:07:58.534Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:58.805Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md"}}
+[2026-10-02T12:07:58.805Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md"}}
+[2026-10-02T12:07:58.812Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Zero-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:58.812Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md"}}
+[2026-10-02T12:07:58.812Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md"}}
+[2026-10-02T12:07:59.029Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B-Strict-H1-EOF-Test.md
+[2026-10-02T12:07:59.174Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:07:59.555Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B-Strict-H1-EOF-Test.md
+[2026-10-02T12:07:59.555Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md"}}
+[2026-10-02T12:07:59.559Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:59.574Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:59.575Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:59.596Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:59.596Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:59.597Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:07:59.800Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B1-Multi-H1-Test.md
+[2026-10-02T12:08:00.049Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:00.233Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B1-Multi-H1-Test.md
+[2026-10-02T12:08:00.233Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.234Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.240Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.240Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.247Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.248Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.248Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:00.683Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:00.923Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B-Strict-H1-EOF-Test.md
+[2026-10-02T12:08:01.119Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\7R-3-11-8B-Strict-H1-EOF-Test.md
+[2026-10-02T12:08:01.120Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.122Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.129Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.130Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.140Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B1-Multi-H1-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.141Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.141Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.487Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Phase7-Strict-H1-Boundary-Runtime-Test.md
+[2026-10-02T12:08:01.529Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:01.886Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Phase7-Strict-H1-Boundary-Runtime-Test.md
+[2026-10-02T12:08:01.889Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:08:01.891Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:01.893Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":0}}
+[2026-10-02T12:08:02.298Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md"}}
+[2026-10-02T12:08:02.299Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md"}}
+[2026-10-02T12:08:02.346Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\7R-3-11-8B-Strict-H1-EOF-Test.md","scrollTop":0,"cursorOffset":0}}
+[2026-10-02T12:08:02.347Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md"}}
+[2026-10-02T12:08:02.347Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md"}}
+[2026-10-02T12:08:02.677Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Heading-Reason-Chip-Stable-Anchor-V2.md
+[2026-10-02T12:08:03.400Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Heading-Reason-Chip-Stable-Anchor-V2.md
+[2026-10-02T12:08:03.404Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:08:03.405Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md"}}
+[2026-10-02T12:08:03.409Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md","scrollTop":0,"cursorOffset":0}}
+[2026-10-02T12:08:03.715Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md"}}
+[2026-10-02T12:08:03.716Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md"}}
+[2026-10-02T12:08:03.725Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Phase7-Strict-H1-Boundary-Runtime-Test.md","scrollTop":0,"cursorOffset":0}}
+[2026-10-02T12:08:03.725Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md"}}
+[2026-10-02T12:08:03.725Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md"}}
+[2026-10-02T12:08:04.268Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Figure-Standalone-Block-Invariant-Test.md
+[2026-10-02T12:08:04.571Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Figure-Standalone-Block-Invariant-Test.md
+[2026-10-02T12:08:04.575Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:08:04.579Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md"}}
+[2026-10-02T12:08:04.582Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:04.924Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md"}}
+[2026-10-02T12:08:04.925Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md"}}
+[2026-10-02T12:08:04.991Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Heading-Reason-Chip-Stable-Anchor-V2.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:04.991Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md"}}
+[2026-10-02T12:08:04.991Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md"}}
+[2026-10-02T12:08:05.446Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\formula-native-render.md
+[2026-10-02T12:08:05.969Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\formula-native-render.md
+[2026-10-02T12:08:05.972Z] DEBUG [Events] undefined @layout-changed
+
+[2026-10-02T12:08:05.975Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md"}}
+[2026-10-02T12:08:05.979Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md","scrollTop":0,"cursorOffset":187}}
+[2026-10-02T12:08:06.331Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md"}}
+[2026-10-02T12:08:06.331Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md"}}
+[2026-10-02T12:08:06.337Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md","scrollTop":0,"cursorOffset":187}}
+[2026-10-02T12:08:06.338Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md"}}
+[2026-10-02T12:08:06.338Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md"}}
+[2026-10-02T12:08:06.936Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\formula-native-render.md
+[2026-10-02T12:08:07.171Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:07.914Z] DEBUG [Events] workspace @file:will-open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Figure-Standalone-Block-Invariant-Test.md
+[2026-10-02T12:08:08.185Z] DEBUG [Events] workspace @file:open
+ D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\runtime\smoke\Figure-Standalone-Block-Invariant-Test.md
+[2026-10-02T12:08:08.185Z] DEBUG [Events] workspace-root @leaf:will-close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md"}}
+[2026-10-02T12:08:08.188Z] DEBUG [Events] workspace-root @leaf:close
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:08.208Z] DEBUG [Events] workspace-root @leaf:open
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md","scrollTop":0,"cursorOffset":187}}
+[2026-10-02T12:08:08.208Z] DEBUG [Events] undefined @tab:toggle
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md","scrollTop":0,"cursorOffset":187}}
+[2026-10-02T12:08:08.255Z] DEBUG [Events] workspace-root @leaf:will-deactive
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\formula-native-render.md","scrollTop":0,"cursorOffset":null}}
+[2026-10-02T12:08:08.256Z] DEBUG [Events] workspace-root @leaf:active
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md","scrollTop":0,"cursorOffset":187}}
+[2026-10-02T12:08:08.256Z] DEBUG [Events] workspace @active-leaf:change
+ {"type":"leaf","state":{"path":"D:\\TyporaPluginProjects\\typora-plugin-inkchapter\\test\\vault\\runtime\\smoke\\Figure-Standalone-Block-Invariant-Test.md","scrollTop":0,"cursorOffset":187}}
+[2026-10-02T12:08:09.069Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:09.496Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:09.735Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:10.503Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:10.748Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:11.445Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:12.096Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:17.054Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:17.284Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:18.085Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:18.320Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:18.794Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:19.033Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:20.130Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:20.865Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:22.059Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:22.308Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:22.870Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:23.124Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:25.175Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:27.113Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:30.094Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:30.326Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:30.806Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:31.044Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:31.318Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:31.565Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:31.824Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:32.067Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:32.360Z] DEBUG [Events] markdown-editor @scroll
+
+[2026-10-02T12:08:32.600Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:33.188Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:34.847Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:35.505Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:37.797Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:38.812Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:49.202Z] DEBUG [Events] markdown-editor @edit
+
+[2026-10-02T12:08:51.049Z] DEBUG [Events] markdown-editor @edit
+
