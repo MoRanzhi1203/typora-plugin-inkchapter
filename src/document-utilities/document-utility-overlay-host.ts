@@ -277,6 +277,14 @@ import {
   type PlacementDecision,
 } from './document-locate-placement-v5-10'
 import type { DiagnosticFigureOccurrenceIdentity, DocumentDiagnosticsSnapshot } from './diagnostics-types'
+// Unified Diagnostics Domain V1 §9/§10/§19 — the ONE domain selector authority.
+// The user-facing Drawer and the body active/locator paths read the DOCUMENT
+// domain selection only; runtime integrity never reaches them.
+import {
+  countDocumentSeverities,
+  selectDocumentDiagnostics,
+} from './diagnostic-domain-v1'
+import type { DocumentDiagnostic } from './diagnostics-types'
 import {
   DOCUMENT_SPACE_DRIFT_HARD_PX,
   LOCATE_DOCUMENT_LAYER_CLASS,
@@ -7400,15 +7408,25 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * Unified Diagnostics Domain V1 §9/§10 — the Drawer's ONLY data source: the
+   * DOCUMENT-domain selection of the current snapshot. The domain filter lives
+   * in ONE authority (`selectDocumentDiagnostics`); no component keeps its own
+   * black/white list, so a runtime item can never be rendered or counted.
+   */
+  private documentDiagnostics(): readonly DocumentDiagnostic[] {
+    return selectDocumentDiagnostics(this.snapshot?.diagnostics ?? [])
+  }
+
   private buildDrawerProjections(): DiagnosticTargetProjection[] {
-    const diagnostics = this.snapshot?.diagnostics ?? []
+    const diagnostics = this.documentDiagnostics()
     return sortProjectionsByDocumentPosition(
       flattenDiagnosticsToProjections(diagnostics, this.buildDocumentPositionContext()),
     )
   }
 
   private diagnosticById(id: string): DocumentDiagnosticsSnapshot['diagnostics'][number] | null {
-    const diagnostics = this.snapshot?.diagnostics ?? []
+    const diagnostics = this.documentDiagnostics()
     return diagnostics.find(d => d.id === id) ?? null
   }
 
@@ -13628,12 +13646,15 @@ export class DocumentUtilityOverlayHost {
     filtersEl.replaceChildren()
     filtersEl.hidden = !visible
     if (!visible || !snapshot) return
+    // §8/§9 — the tabs count the DOCUMENT-domain selection ONLY. A runtime
+    // integrity item can never inflate 全部/错误/警告/提示.
+    const counts = countDocumentSeverities(this.documentDiagnostics())
     const tabs: Array<{ key: DiagnosticsSeverityFilter; label: string; n: number }> = [
-      { key: 'all', label: '全部', n: snapshot.diagnostics.length },
-      { key: 'error', label: '错误', n: snapshot.errorCount },
-      { key: 'warning', label: '警告', n: snapshot.warningCount },
+      { key: 'all', label: '全部', n: counts.total },
+      { key: 'error', label: '错误', n: counts.error },
+      { key: 'warning', label: '警告', n: counts.warning },
     ]
-    if (snapshot.infoCount > 0) tabs.push({ key: 'info', label: '提示', n: snapshot.infoCount })
+    if (counts.info > 0) tabs.push({ key: 'info', label: '提示', n: counts.info })
     const list = document.createElement('div')
     list.className = 'inkchapter-doc-drawer__filter-list'
     list.setAttribute('role', 'tablist')
@@ -13689,9 +13710,13 @@ export class DocumentUtilityOverlayHost {
       return
     }
 
-    this.renderDrawerFilterTabs(snapshot, snapshot.diagnostics.length > 0)
+    // §9/§10 — the Drawer renders the DOCUMENT-domain selection only; §8 — its
+    // severity counts are document-only.
+    const documentDiagnostics = this.documentDiagnostics()
+    const documentCounts = countDocumentSeverities(documentDiagnostics)
+    this.renderDrawerFilterTabs(snapshot, documentDiagnostics.length > 0)
     this.drawerListEl.replaceChildren()
-    if (snapshot.diagnostics.length === 0) {
+    if (documentDiagnostics.length === 0) {
       const ok = document.createElement('div')
       ok.className = 'inkchapter-doc-drawer__item--empty'
       const icon = document.createElement('span')
@@ -13727,10 +13752,10 @@ export class DocumentUtilityOverlayHost {
       revision: snapshot.revision,
       sourceRevision: snapshot.sourceRevision,
       drawerVisible: this.drawerOpen,
-      itemCount: snapshot.diagnostics.length,
-      errorCount: snapshot.errorCount,
-      warningCount: snapshot.warningCount,
-      hintCount: snapshot.infoCount,
+      itemCount: documentCounts.total,
+      errorCount: documentCounts.error,
+      warningCount: documentCounts.warning,
+      hintCount: documentCounts.info,
       filter: this.drawerFilter,
       snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
       decision: 'DRAWER_RENDERED_MATCHES_ACTIVE',

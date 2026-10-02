@@ -6,6 +6,8 @@
  * heading numbering or object scope semantics.
  */
 
+import type { DiagnosticDomain } from './diagnostic-domain-v1'
+
 export type DocumentDiagnosticSeverity = 'error' | 'warning' | 'info'
 
 export type DocumentDiagnosticCategory =
@@ -241,6 +243,15 @@ export interface DocumentDiagnosticLocatorDescriptor {
 }
 
 export interface DocumentDiagnostic {
+  /**
+   * Unified Diagnostics Domain V1 §11 — WHOSE problem this is. Every
+   * `DocumentDiagnostic` is produced by the document authority and therefore
+   * carries `domain: 'document'` (set once in `makeDiagnostic`). The field is
+   * optional in the TYPE only so pre-existing pure-test literals stay valid;
+   * the runtime output of the producer always sets it, and the domain selector
+   * treats a missing value as the document domain.
+   */
+  domain?: DiagnosticDomain
   /** Deterministic identity for deduplication / React keys. */
   id: string
   documentKey: string

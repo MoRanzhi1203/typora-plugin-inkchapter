@@ -24,6 +24,8 @@ import type {
 } from './diagnostics-types'
 // V5.12-R5 — the explicit ambiguity failure reason (never a silent first match).
 import { AMBIGUOUS_DUPLICATE_INLINE_RANGE_REASON } from './document-diagnostic-source-occurrence-v512-r5'
+// Unified Diagnostics Domain V1 §9/§24 — the domain type used by the rule-domain authority.
+import type { DiagnosticDomain } from './diagnostic-domain-v1'
 
 // ── Rule Registry ─────────────────────────────────────────
 
@@ -95,6 +97,30 @@ export function getRuleMeta(code: string): DocumentDiagnosticRuleMeta | null {
     return { ruleId: 'STRICT_FIRST_H1_POSITION', category: 'document', locationStrategy: 'canonical-node' }
   }
   return null
+}
+
+/**
+ * Unified Diagnostics Domain V1 §5/§9/§24 — the ONE rule-domain authority.
+ *
+ * EVERY rule registered here describes a problem the USER can fix by editing
+ * Markdown, so the whole registry belongs to the DOCUMENT domain. Runtime
+ * integrity (plugin code / state / deployment) has its own model and adapter in
+ * `diagnostic-domain-v1` and never appears in this registry.
+ */
+export const DOCUMENT_DIAGNOSTIC_RULE_DOMAIN: DiagnosticDomain = 'document'
+
+/** §24 — explicit code → domain map for every registered rule. */
+export const DOCUMENT_DIAGNOSTIC_RULE_DOMAINS: Readonly<Record<string, DiagnosticDomain>> =
+  Object.fromEntries(
+    Object.keys(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY).map(code => [code, DOCUMENT_DIAGNOSTIC_RULE_DOMAIN]),
+  )
+
+/**
+ * §9 — the SINGLE rule-domain resolver (registry + prefix aware). Returns
+ * `null` for an unregistered code (a new rule MUST register a domain).
+ */
+export function resolveDiagnosticDomain(code: string): DiagnosticDomain | null {
+  return getRuleMeta(code) != null ? DOCUMENT_DIAGNOSTIC_RULE_DOMAIN : null
 }
 
 // ── Location Contract Audit ──────────────────────────────

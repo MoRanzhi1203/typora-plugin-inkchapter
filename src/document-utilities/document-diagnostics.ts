@@ -521,6 +521,9 @@ function makeDiagnostic(
     ? { kind: opts.kind ?? category === 'heading' ? 'heading' : 'object', targetElement: opts.element }
     : undefined)
   return {
+    // §11 — WHOSE problem this is. The document authority only ever produces
+    // the document domain; runtime integrity is a separate model.
+    domain: 'document',
     id: `${category}:${code}:${targetIdentity || Math.random().toString(36).slice(2, 8)}`,
     documentKey: input.documentKey ?? '',
     severity,
