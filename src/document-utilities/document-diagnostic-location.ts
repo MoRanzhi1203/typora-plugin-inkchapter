@@ -306,6 +306,27 @@ export interface SourceBlockBinding {
   decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'
   /** How the binding was established (`data-line` / `runtime-id` / `text` / `ordinal`). */
   bindingAuthority: string
+  // ── V2.3 §6/§9/§36 — SOURCE PROVENANCE that actually participated in
+  // candidate construction. It must never be back-filled from the diagnostic's
+  // expected fields (`SOURCE_PROVENANCE_SELF_ASSERTION_COUNT=0`).
+  sourceBlockIdentity: string
+  sourceStart: number | null
+  sourceEnd: number | null
+  startLine: number
+  endLine: number
+  sourceContainerKind: string
+  /** The source-side DOM-visible semantic text (images contribute nothing). */
+  sourceVisibleSemanticText: string
+  // ── V2.3 §6 — the matching proof for this candidate pair.
+  semanticTextMatch: boolean | 'N/A'
+  containerKindMatch: boolean
+  classOrdinalMatch: boolean | 'N/A'
+  /**
+   * V2.3 §36 — completeness of the source provenance. `decision: 'BOUND'` is
+   * only valid when this is true AND the DOM target is connected; otherwise the
+   * correct verdict is `REJECTED`/`MISSING`, never a proven-but-empty bind.
+   */
+  provenanceComplete: boolean
 }
 
 export interface DiagnosticLocationResolveResult {
@@ -452,7 +473,45 @@ export interface DiagnosticLocationResolveContext {
 
 /** Normalize source text for anchor comparison (trim + collapse whitespace). */
 export function normalizeSourceAnchorText(text: string | null | undefined): string {
-  return (text ?? '').replace(/\r/g, '').replace(/\s+/g, ' ').trim()
+  return (text ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u00A0\u2007\u202F]/g, ' ')  // NBSP family → plain space
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')  // zero-width chars Typora may inject
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * V2.2 §7/§10 — the ONE source→DOM visible-semantic projection.
+ *
+ *   `![alt](dest)`  → ""      (a rendered image contributes NO text content;
+ *                              the alt must NEVER be used as a block-visible
+ *                              signature — it is metadata only)
+ *   `[text](dest)`  → "text"  (a link's label IS visible text)
+ *
+ * Without the image rule the needle is `before B` while the DOM reads `before`,
+ * so no block containing an image can ever bind once the image really loads.
+ */
+export function stripInlineResourceSyntax(text: string | null | undefined): string {
+  return (text ?? '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+}
+
+/**
+ * V2 §6 — strip BLOCK-LEVEL markers (blockquote `>` / list `-` `*` `+` `1.` `1)`)
+ * so a list-item or blockquote block can be compared with its OWNING container.
+ *
+ *   `> ![J](a.png)`  → `![J](a.png)`
+ *   `- ![I](a.png)`  → `![I](a.png)`
+ *
+ * Without this the needle is a bare `>` / `-` which matches no DOM node, so
+ * `- ![](a.png)` / `> ![](a.png)` could never bind their owning block.
+ */
+export function stripBlockLevelMarkers(text: string | null | undefined): string {
+  return (text ?? '')
+    .replace(/^(\s*>\s*)+/, '')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
 }
 
 /** V1 §21 — the explicit stale-generation failure reason. */

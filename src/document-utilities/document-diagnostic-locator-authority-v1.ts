@@ -323,3 +323,216 @@ export function computeFeatureLocateDecision(
 ): 'PASS' | 'FAIL' {
   return locate === 'PASS' && cleanup !== 'FAIL' ? 'PASS' : 'FAIL'
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// V2 — Source-Block Semantic Binding Closure
+// ══════════════════════════════════════════════════════════════════════════
+
+/** §11 — the dedicated source-block semantic audit (never the occurrence one). */
+export const SOURCE_BLOCK_IDENTITY_AUDIT = 'SOURCE-BLOCK-IDENTITY-AUDIT'
+
+/** §3/§6 — the canonical owning-block containers the binding must cover. */
+export type SourceBlockContainerKind = 'paragraph' | 'list-item' | 'blockquote' | 'other'
+
+/**
+ * §6 — classify the CANONICAL owning block of a Markdown block from the DOM tag
+ * the binder is about to accept. A `<p>` inside `<li>` / `<blockquote>` is NOT
+ * the owning block: the list item / blockquote is.
+ */
+export function classifySourceBlockContainer(tag: string, inList = false, inBlockquote = false): SourceBlockContainerKind {
+  const t = tag.toLowerCase()
+  if (inList || t === 'li') return 'list-item'
+  if (inBlockquote || t === 'blockquote') return 'blockquote'
+  if (t === 'p') return 'paragraph'
+  return 'other'
+}
+
+export interface SourceBlockSemanticVerifyInput {
+  expectedSourceBlockIdentity: string | null
+  expectedSourceStart: number | null
+  expectedSourceEnd: number | null
+  resolvedSourceBlockIdentity: string | null
+  resolvedSourceStart: number | null
+  resolvedSourceEnd: number | null
+  candidateCount: number
+  targetVisible: boolean
+}
+
+export type SourceBlockSemanticDecision = 'PASS' | 'FAIL' | 'N/A'
+
+export interface SourceBlockSemanticVerifyResult {
+  applies: boolean
+  identityMatch: boolean
+  /** The resolved span is fully present (both offsets known). */
+  sourceSpanResolved: boolean
+  /** The resolved span equals the expected span (when both are known). */
+  sourceSpanMatch: boolean
+  /** Forbidden: a PASS whose resolved source span is entirely null. */
+  sourceSpanNullPass: boolean
+  semanticDecision: SourceBlockSemanticDecision
+  visibilityDecision: 'PASS' | 'FAIL' | 'N/A'
+  reason: string
+}
+
+/**
+ * §9/§10/§38 — the ONE source-block semantic verifier.
+ *
+ * HARD RULES:
+ *   - `candidateCount !== 1` ⇒ FAIL (0 = MISSING, >1 = AMBIGUOUS);
+ *   - `resolvedSourceBlockIdentity == null` or `!== expected` ⇒ FAIL;
+ *   - a fully-null resolved span ⇒ FAIL (never `SOURCE_SPAN_NULL_PASS`);
+ *   - `targetVisible` may NEVER rescue an identity failure (§10).
+ */
+export function verifySourceBlockIdentity(
+  input: SourceBlockSemanticVerifyInput,
+): SourceBlockSemanticVerifyResult {
+  const applies = input.expectedSourceBlockIdentity != null && input.expectedSourceBlockIdentity !== ''
+  const identityMatch = applies
+    && input.resolvedSourceBlockIdentity != null
+    && input.resolvedSourceBlockIdentity === input.expectedSourceBlockIdentity
+  const sourceSpanResolved = input.resolvedSourceStart != null && input.resolvedSourceEnd != null
+  const bothExpectedKnown = input.expectedSourceStart != null && input.expectedSourceEnd != null
+  const sourceSpanMatch = !bothExpectedKnown
+    ? sourceSpanResolved
+    : (sourceSpanResolved
+      && input.resolvedSourceStart === input.expectedSourceStart
+      && input.resolvedSourceEnd === input.expectedSourceEnd)
+  const visibilityDecision: 'PASS' | 'FAIL' | 'N/A' = input.targetVisible ? 'PASS' : 'FAIL'
+
+  let reason = 'SOURCE_BLOCK_IDENTITY_OK'
+  let semanticDecision: SourceBlockSemanticDecision = 'PASS'
+  if (!applies) {
+    semanticDecision = 'N/A'
+    reason = 'NO_EXPECTED_SOURCE_BLOCK_IDENTITY'
+  } else if (input.candidateCount === 0) {
+    semanticDecision = 'FAIL'
+    reason = 'SOURCE_BLOCK_BINDING_MISSING'
+  } else if (input.candidateCount > 1) {
+    semanticDecision = 'FAIL'
+    reason = 'SOURCE_BLOCK_BINDING_AMBIGUOUS'
+  } else if (!identityMatch) {
+    semanticDecision = 'FAIL'
+    reason = 'SOURCE_BLOCK_IDENTITY_MISMATCH'
+  } else if (!sourceSpanResolved) {
+    semanticDecision = 'FAIL'
+    reason = 'SOURCE_BLOCK_SPAN_NULL'
+  } else if (!sourceSpanMatch) {
+    semanticDecision = 'FAIL'
+    reason = 'SOURCE_BLOCK_SPAN_MISMATCH'
+  }
+  // Forbidden by construction: a PASS with a fully-null resolved span.
+  const sourceSpanNullPass = semanticDecision === 'PASS' && !sourceSpanResolved
+  return {
+    applies,
+    identityMatch,
+    sourceSpanResolved,
+    sourceSpanMatch,
+    sourceSpanNullPass,
+    semanticDecision,
+    visibilityDecision,
+    reason,
+  }
+}
+
+/**
+ * §17/§18 — the interaction closure and the SEMANTIC locate outcome are
+ * SEPARATE decisions; the final decision fails when EITHER fails. A clean
+ * atomic teardown can never mask a semantic locate failure.
+ */
+export function computeInteractionFinalDecision(input: {
+  interactionClosureDecision: 'PASS' | 'FAIL'
+  featureLocateDecision: 'PASS' | 'FAIL' | null | undefined
+}): { decision: 'PASS' | 'FAIL'; reason: string } {
+  const locateFailed = input.featureLocateDecision === 'FAIL'
+  if (input.interactionClosureDecision === 'FAIL') {
+    return { decision: 'FAIL', reason: locateFailed ? 'INTERACTION_CLOSURE_FAIL|SEMANTIC_LOCATE_FAIL' : 'INTERACTION_CLOSURE_FAIL' }
+  }
+  if (locateFailed) {
+    // cleanup may be clean — the locate failure still fails the transaction.
+    return { decision: 'FAIL', reason: 'SEMANTIC_LOCATE_FAIL' }
+  }
+  return { decision: 'PASS', reason: 'CLOSURE_OK' }
+}
+
+// ── §34 — the V2 runtime hard gates (all must be 0) ──────
+
+export const FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_KEYS = [
+  'structureIdentityMismatch',
+  'structureIdentityMismatchFalsePass',
+  'structureVisibleOnlyFalsePass',
+  'structureSourceSpanNullPass',
+  'structureWrongBlock',
+  'structureListItemLocateFail',
+  'structureBlockquoteLocateFail',
+  'currentTransactionFailReportedPass',
+  'locatorGateStaleHistoryPollution',
+  'drawerRestoreChangedSemanticTarget',
+] as const
+
+export type FigureDiagnosticLocatorV2GateKey = typeof FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_KEYS[number]
+
+export const FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_LABELS: Readonly<Record<FigureDiagnosticLocatorV2GateKey, string>> = {
+  structureIdentityMismatch: 'FIGURE_STRUCTURE_IDENTITY_MISMATCH_COUNT',
+  structureIdentityMismatchFalsePass: 'FIGURE_STRUCTURE_IDENTITY_MISMATCH_FALSE_PASS_COUNT',
+  structureVisibleOnlyFalsePass: 'FIGURE_STRUCTURE_VISIBLE_ONLY_FALSE_PASS_COUNT',
+  structureSourceSpanNullPass: 'FIGURE_STRUCTURE_SOURCE_SPAN_NULL_PASS_COUNT',
+  structureWrongBlock: 'FIGURE_STRUCTURE_WRONG_BLOCK_COUNT',
+  structureListItemLocateFail: 'FIGURE_STRUCTURE_LIST_ITEM_LOCATE_FAIL_COUNT',
+  structureBlockquoteLocateFail: 'FIGURE_STRUCTURE_BLOCKQUOTE_LOCATE_FAIL_COUNT',
+  currentTransactionFailReportedPass: 'FIGURE_CURRENT_TRANSACTION_FAIL_REPORTED_PASS_COUNT',
+  locatorGateStaleHistoryPollution: 'FIGURE_LOCATOR_GATE_STALE_HISTORY_POLLUTION_COUNT',
+  drawerRestoreChangedSemanticTarget: 'DRAWER_RESTORE_CHANGED_SEMANTIC_TARGET_COUNT',
+}
+
+export type FigureDiagnosticLocatorV2Counters = Record<FigureDiagnosticLocatorV2GateKey, number>
+
+export function createFigureDiagnosticLocatorV2Counters(): FigureDiagnosticLocatorV2Counters {
+  return FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_KEYS.reduce((acc, k) => {
+    acc[k] = 0
+    return acc
+  }, {} as FigureDiagnosticLocatorV2Counters)
+}
+
+export function formatFigureDiagnosticLocatorV2GateReport(
+  counters: Readonly<FigureDiagnosticLocatorV2Counters>,
+): string[] {
+  return FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_KEYS.map(k => `${FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_LABELS[k]}=${counters[k] ?? 0}`)
+}
+
+export function evaluateFigureDiagnosticLocatorV2Gates(
+  counters: Readonly<FigureDiagnosticLocatorV2Counters>,
+): { decision: 'PASS' | 'FAIL'; failedChecks: FigureDiagnosticLocatorV2GateKey[] } {
+  const failedChecks = FIGURE_DIAGNOSTIC_LOCATOR_V2_GATE_KEYS.filter(k => (counters[k] ?? 0) !== 0)
+  return { decision: failedChecks.length === 0 ? 'PASS' : 'FAIL', failedChecks }
+}
+
+// ── §35 — V2 positive runtime coverage (per container) ───
+
+export const FIGURE_DIAGNOSTIC_LOCATOR_V2_COVERAGE_KEYS = [
+  'paragraphBindingRuntime',
+  'listItemBindingRuntime',
+  'blockquoteBindingRuntime',
+] as const
+
+export type FigureDiagnosticLocatorV2CoverageKey = typeof FIGURE_DIAGNOSTIC_LOCATOR_V2_COVERAGE_KEYS[number]
+
+export const FIGURE_DIAGNOSTIC_LOCATOR_V2_COVERAGE_LABELS: Readonly<Record<FigureDiagnosticLocatorV2CoverageKey, string>> = {
+  paragraphBindingRuntime: 'FIGURE_STRUCTURE_PARAGRAPH_BINDING_RUNTIME_COUNT',
+  listItemBindingRuntime: 'FIGURE_STRUCTURE_LIST_ITEM_BINDING_RUNTIME_COUNT',
+  blockquoteBindingRuntime: 'FIGURE_STRUCTURE_BLOCKQUOTE_BINDING_RUNTIME_COUNT',
+}
+
+export type FigureDiagnosticLocatorV2CoverageCounters = Record<FigureDiagnosticLocatorV2CoverageKey, number>
+
+export function createFigureDiagnosticLocatorV2CoverageCounters(): FigureDiagnosticLocatorV2CoverageCounters {
+  return FIGURE_DIAGNOSTIC_LOCATOR_V2_COVERAGE_KEYS.reduce((acc, k) => {
+    acc[k] = 0
+    return acc
+  }, {} as FigureDiagnosticLocatorV2CoverageCounters)
+}
+
+export function formatFigureDiagnosticLocatorV2CoverageReport(
+  counters: Readonly<FigureDiagnosticLocatorV2CoverageCounters>,
+): string[] {
+  return FIGURE_DIAGNOSTIC_LOCATOR_V2_COVERAGE_KEYS.map(k => `${FIGURE_DIAGNOSTIC_LOCATOR_V2_COVERAGE_LABELS[k]}=${counters[k] ?? 0}`)
+}
