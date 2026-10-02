@@ -102,10 +102,12 @@ describe('Region Divider V1 — four region dividers (§5)', () => {
     expect(css).not.toMatch(/^body::after/m)
   })
 
-  it('is layout-neutral: only the border-box top bar uses a real border (§15)', () => {
+  it('is layout-neutral: exactly one 1px real border + the V5.8 boundary border (§15)', () => {
     const css = regionCss()
     const borderDecls = css.match(/border-(top|left|right|bottom):\s*1px/g) ?? []
-    // only `#top-titlebar { border-bottom }` may be a real border
+    // only `#top-titlebar { border-bottom }` is a 1px real border; the other real
+    // border is the V5.8 tab bar's own 3px TRANSPARENT bottom border (asserted
+    // separately in the V5.8 block) — no second visible edge is introduced here.
     expect(borderDecls).toHaveLength(1)
     expect(css).toMatch(/#top-titlebar\s*\{\s*border-bottom/)
     // every other divider is a decorative overlay / background strip and is
@@ -126,12 +128,13 @@ describe('Region Divider V1 — tab-to-tab separator (§6)', () => {
     expect(css).toMatch(/background-position:\s*right center/)
   })
 
-  it('separator height stays inside the 42%–48% band (§4)', () => {
+  it('separator is FULL height — no partial-height short line (V5.5)', () => {
     const css = regionCss()
-    // transparent 27% → colour 27%..73% → transparent 73%  == 46% of the tab height
-    expect(css).toMatch(/transparent 27%,/)
-    expect(css).toMatch(/73%,/)
-    expect(css).not.toMatch(/transparent 0%/)
+    // the 1px strip now runs the whole tab box: 0 -> 100%, no transparent stops
+    expect(css).toMatch(/var\(--ink-tab-separator\) 0,/)
+    expect(css).toMatch(/var\(--ink-tab-separator\) 100%/)
+    expect(css).not.toMatch(/transparent 27%/)
+    expect(css).not.toMatch(/transparent (2|4|5)\d%/)
   })
 
   it('cannot intercept pointer events and never changes tab width (§16/§10)', () => {
@@ -226,14 +229,17 @@ describe('Divider Visual Refinement V2 — hierarchy & separator (§2/§5)', () 
     expect(css).toMatch(/--ink-scroll-thumb-active:\s*rgba\(0, 0, 0, 0\.5\)/)
   })
 
-  it('separator is 1px wide and 46% tall, vertically centred (§4)', () => {
+  it('separator is a 1px FULL-HEIGHT structural strip (V5.5)', () => {
     const css = regionCss()
     expect(css).toMatch(/background-size:\s*1px 100%/)
     expect(css).not.toMatch(/background-size:\s*2px/)
-    // transparent 27% → colour 27%..73% → transparent 73%  == 46% of the tab height
-    expect(css).toMatch(/transparent 27%,/)
-    expect(css).toMatch(/73%,\s*\n\s*transparent 73%/)
-    expect(css).not.toMatch(/transparent 25%,/)
+    // 0 -> 100%: the strip reaches both edges of the tab box, so TOP_GAP = 0 and
+    // BOTTOM_GAP = 0 by construction — no mid-height short line anywhere
+    const full = css.match(/var\(--ink-tab-separator\) 0,\s*\n\s*var\(--ink-tab-separator\) 100%/g) ?? []
+    expect(full.length).toBeGreaterThanOrEqual(1)
+    // the active-neighbour variant is full height too
+    expect(css).toMatch(/var\(--ink-tab-separator-active\) 0,\s*\n\s*var\(--ink-tab-separator-active\) 100%/)
+    expect(css).not.toMatch(/transparent \d+%,\s*\n\s*var\(--ink-tab-separator/)
   })
 
   it('softens BOTH the active tab and its left neighbour (§6)', () => {
@@ -277,7 +283,7 @@ describe('Divider Visual Refinement V2 — no double line / no layout shift (§1
     expect(css).not.toMatch(/#typora-sidebar\s*\{[^}]*border-(left|top|bottom)/)
   })
 
-  it('keeps the only real border on the border-box top bar (no layout shift)', () => {
+  it('keeps the only 1px real border on the border-box top bar (no layout shift)', () => {
     const css = regionCss()
     const borderDecls = css.match(/border-(top|left|right|bottom):\s*1px/g) ?? []
     expect(borderDecls).toHaveLength(1)
@@ -332,8 +338,10 @@ describe('Divider Theme & Visual Hierarchy V3 — active connectivity (§6/§7)'
   it('cuts the tab-strip divider out under the active tab WITHOUT a new border', () => {
     const css = regionCss()
     expect(css).toMatch(/\.typ-tab\.active\s*\{[\s\S]{0,120}box-shadow:\s*0 1px 0 0 var\(--background-primary/)
-    // the cover must not become a card: no border on the active tab
-    expect(css).not.toMatch(/\.typ-tab\.active[^{]*\{[^}]*border-(left|right|top|bottom)/)
+    // the cover must not become a card: the connection itself adds no side/top
+    // border and no border width (V5.7 only re-colours the native border on hover)
+    expect(css).not.toMatch(/\.typ-tab\.active[^{]*\{[^}]*border-(left|right|top)[^;]*:\s*1px/)
+    expect(css).not.toMatch(/\.typ-tab\.active[^{]*\{[^}]*border-width/)
   })
 
   it('uses only the native .active class (no shadow state / no cloning)', () => {
@@ -400,9 +408,11 @@ describe('Tab Scrollbar Interaction Authority V5 — owner & reveal authority', 
     // the only scroller is the wrapper (framework `overflow-x:auto`)
     expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar/)
     // §forensic-2 — `.typ-workspace-tabs` is the whole workspace COLUMN, so it must
-    // never be a reveal authority (it stays :hover-matched over the document)
+    // never be a reveal authority (it stays :hover-matched over the document).
+    // `.typ-workspace-tab-header` may only hover for the V5.5 BOUNDARY, never for
+    // the scrollbar reveal.
     expect(css).not.toMatch(/\.typ-workspace-tabs:hover/)
-    expect(css).not.toMatch(/\.typ-workspace-tab-header:hover/)
+    expect(css).not.toMatch(/\.typ-workspace-tab-header:hover[^{]*webkit-scrollbar/)
     expect(css).not.toMatch(/\.typ-tabs:hover/)
   })
 
@@ -489,24 +499,153 @@ describe('Tab Scrollbar Hover-Scope V5.1 — wrong controller removed', () => {
   })
 })
 
-describe('Tab Bar Bottom Breathing Space V5.2 — 2px inside the wrapper', () => {
-  it('reserves 2px as the wrapper OWN transparent bottom border', () => {
+describe('Tab Bar Bottom Boundary V5.8 — ordered boundary + Active cut-out', () => {
+  it('paints the SINGLE visible bottom boundary below the native scrollbar', () => {
     const css = regionCss()
-    expect(css).toMatch(/\.typ-tabs-wrapper\s*\{\s*border-bottom:\s*2px solid transparent;/)
-    // within the requested 2~3px budget
-    const border = css.match(/\.typ-tabs-wrapper\s*\{\s*border-bottom:\s*(\d+)px solid transparent;/)
-    expect(border).not.toBeNull()
-    expect(Number(border![1])).toBeGreaterThanOrEqual(2)
-    expect(Number(border![1])).toBeLessThanOrEqual(3)
+    // REAL DOM: `.typ-tabs-wrapper` === `.typ-workspace-tab-header` (one node,
+    // framework `TabContainer.containerEl`), so the boundary carrier and the
+    // scroll owner are the SAME element — there is no outer header shell.
+    expect(css).toMatch(/\.typ-tabs-wrapper\s*\{[\s\S]{0,900}border-bottom:\s*3\.5px solid transparent/)
+    // a scrollbar is laid out between the padding edge and the border edge, so the
+    // bottom border area is the only region that is BELOW it; the 1px boundary is
+    // the last pixel of that border box.
+    expect(css).toMatch(/background-position:\s*left bottom/)
+    expect(css).toMatch(/background-size:\s*100% 1px/)
+    expect(css).toMatch(/background-origin:\s*border-box/)
+    expect(css).toMatch(/background-clip:\s*border-box/)
+    // no external rail / overlay / pseudo scrollbar of any kind
+    expect(css).not.toMatch(/scrollbar-rail|scrollbar-track-el|ink-scrollbar-el/)
+    expect(css).not.toMatch(/\.typ-workspace-tab-header\s*\{/)
   })
 
-  it('adds no colour and no external rail (scrollbar stays inside the wrapper)', () => {
+  it('leaves the framework per-tab border out of visible-boundary authority (V5.8)', () => {
     const css = regionCss()
-    // transparent border ⇒ zero colour delta
-    expect(css).not.toMatch(/\.typ-tabs-wrapper\s*\{[^}]*border-bottom:\s*\d+px solid (?!transparent)/)
-    // the scrollbar is still the wrapper's own pseudo-element, nothing else
+    // colour-only blanking of the per-tab box, the ACTIVE tab and the filler
+    expect(css).toMatch(
+      /\.typ-tabs-wrapper \.typ-tab,[\s\S]{0,120}border-bottom-color:\s*transparent/,
+    )
+    // …width / height / padding / box sizing are untouched, so no tab box moves
+    expect(css).not.toMatch(/\.typ-tabs-wrapper \.typ-tab[^{}]*\{[^}]*border-bottom:\s*\d/)
+    expect(css).not.toMatch(/\.typ-tabs-wrapper \.typ-tab[^{}]*\{[^}]*border-width/)
+    expect(css).not.toMatch(/\.typ-tab(?![\w-])[^{}]*\{[^}]*height:/)
+    expect(css).not.toMatch(/\.typ-tab(?![\w-])[^{}]*\{[^}]*padding/)
+    // the V5.7 per-tab hover restoration is gone
+    expect(css).not.toMatch(/\.typ-tabs-wrapper:hover \.typ-tab\.active/)
+  })
+
+  it('REST — the cut-out gradient blanks only the measured Active visible range', () => {
+    const css = regionCss()
+    expect(css).toMatch(/--ink-active-tab-cut-left, 0px/)
+    expect(css).toMatch(/--ink-active-tab-cut-width, 0px/)
+    expect(css).toMatch(/transparent var\(--ink-active-tab-cut-left, 0px\)/)
+    expect(css).toMatch(
+      /calc\([\s\S]{0,120}var\(--ink-active-tab-cut-left, 0px\) \+ var\(--ink-active-tab-cut-width, 0px\)/,
+    )
+  })
+
+  it('HOVER — pure-CSS cancellation of the cut-out (one continuous boundary)', () => {
+    const css = regionCss()
+    expect(css).toMatch(/\.typ-tabs-wrapper:hover\s*\{\s*\n\s*background-image:\s*linear-gradient\(/)
+    // no class bridge / activity state was needed
+    expect(css).not.toContain('ink-tab-strip-hovered')
+    expect(css).not.toContain('ink-tab-scroll-active')
+  })
+
+  it('internal gap sits BELOW the scrollbar (the V5.7 padding was on the wrong side)', () => {
+    const css = regionCss()
+    expect(css).not.toMatch(/\.typ-workspace-tab-header\s*\{[\s\S]{0,120}padding-bottom/)
+  })
+})
+
+describe('Tab Active Boundary Geometry V5.8 — geometry authority (§9/§20/§22/§25)', () => {
+  const host = (): string => hostSrc()
+  const geometrySrc = (): string =>
+    readFileSync(resolve(process.cwd(), 'src/document-utilities/tab-active-boundary-geometry.ts'), 'utf8')
+
+  it('adds exactly ONE Active-geometry controller, wired to the host lifecycle', () => {
+    const src = host()
+    expect(src).toContain('TabActiveBoundaryGeometryController')
+    expect(src).toMatch(/new TabActiveBoundaryGeometryController\(/)
+    expect(src).toMatch(/this\.tabBoundaryGeometry\?\.unbind\(\)/)
+    // the controller MODULE owns no poller, no body observer, no state machine
+    const geometry = geometrySrc()
+    expect(geometry).not.toMatch(/setInterval/)
+    expect(geometry).not.toMatch(/document\.body/)
+    expect(geometry).not.toMatch(/MutationObserver/)
+    // the host wires no NEW observer / listener for this feature
+    expect(src).toMatch(/private ensureTabBoundaryGeometry\(reason: string\): void \{/)
+  })
+
+  it('reuses the EXISTING tab-structure observer for open/close + Active switch', () => {
+    const src = host()
+    expect(src).toMatch(/TAB_BOUNDARY_STRUCTURE_CHANGE/)
+    // the observer is scoped to the tab strip, and now also sees the `.active` class
+    expect(src).toMatch(/this\.tabStructureObserver\.observe\(strip, \{[\s\S]{0,240}attributeFilter:\s*\['class'\]/)
+  })
+
+  it('re-measures on the EXISTING window-resize path', () => {
+    const src = host()
+    expect(src).toMatch(/TAB_BOUNDARY_WINDOW_RESIZE/)
+  })
+
+  it('keeps the V5.6 wheel handler byte-identical (freeze contract)', () => {
+    const src = host()
+    expect(src).toMatch(/private readonly onTabStripWheel = \(ev: WheelEvent\): void => \{/)
+    expect(src).toMatch(/if \(ev\.deltaX !== 0\) return/)
+    expect(src).toMatch(/if \(ev\.deltaY === 0 \|\| ev\.shiftKey\) return/)
+    expect(src).toMatch(/if \(wrapper\.scrollLeft !== before\) ev\.preventDefault\(\)/)
+  })
+})
+
+describe('Tab Strip Wheel Interaction V5.6 — scoped wheel becomes horizontal scroll', () => {
+  const host = (): string =>
+    readFileSync(resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
+
+  it('binds a non-passive wheel listener to `.typ-tabs-wrapper` only', () => {
+    const src = host()
+    expect(src).toMatch(/querySelectorAll<HTMLElement>\('\.typ-tabs-wrapper'\)/)
+    expect(src).toMatch(/addEventListener\('wheel', this\.onTabStripWheel, \{ passive: false \}\)/)
+    // never global — the listener is scoped to the wrapper element
+    expect(src).not.toMatch(/window\.addEventListener\('wheel'/)
+    expect(src).not.toMatch(/document\.addEventListener\('wheel'/)
+    expect(src).not.toMatch(/body\.addEventListener\('wheel'/)
+    // no poller / timer / observer for this feature
+    // the wheel helper itself adds no poller / timer
+    const wheelRegion = src.slice(
+      src.indexOf('Tab Wheel Interaction V5.6'),
+      src.indexOf('private unbindTabStripWheel'),
+    )
+    expect(wheelRegion.length).toBeGreaterThan(0)
+    expect(wheelRegion).not.toMatch(/setInterval/)
+  })
+
+  it('is idempotent (WeakSet guard) and fully released on dispose', () => {
+    const src = host()
+    expect(src).toMatch(/new WeakSet<HTMLElement>\(\)/)
+    expect(src).toMatch(/if \(this\.tabWheelBound\.has\(wrapper\)\) continue/)
+    expect(src).toMatch(/private unbindTabStripWheel\(\): void/)
+    expect(src).toMatch(/removeEventListener\('wheel', this\.onTabStripWheel\)/)
+    expect(src).toMatch(/this\.unbindTabStripWheel\(\)/)
+  })
+
+  it('intercepts only when real horizontal movement is possible', () => {
+    const src = host()
+    // touchpad deltaX / Shift+wheel are left to the native handler (no double scroll)
+    expect(src).toMatch(/if \(ev\.deltaX !== 0\) return/)
+    expect(src).toMatch(/if \(ev\.deltaY === 0 \|\| ev\.shiftKey\) return/)
+    // no overflow ⇒ never intercepted
+    expect(src).toMatch(/const max = wrapper\.scrollWidth - wrapper\.clientWidth/)
+    expect(src).toMatch(/if \(max <= 0\) return/)
+    // at either boundary ⇒ never swallowed
+    expect(src).toMatch(/if \(next === before\) return/)
+    // consume only AFTER `scrollLeft` actually changed
+    expect(src).toMatch(/if \(wrapper\.scrollLeft !== before\) ev\.preventDefault\(\)/)
+  })
+
+  it('keeps the wrapper as the only scroll owner with no external rail', () => {
+    const css = regionCss()
     expect(css).toMatch(/\.typ-tabs-wrapper::-webkit-scrollbar/)
-    expect(css).not.toMatch(/\.typ-tabs-wrapper-[a-z-]*\{/)
+    expect(css).not.toMatch(/\.typ-workspace-tab-header::-webkit-scrollbar/)
     expect(css).not.toMatch(/scrollbar-rail|scrollbar-track-el|ink-scrollbar-el/)
   })
 

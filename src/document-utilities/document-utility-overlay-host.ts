@@ -211,6 +211,10 @@ import { DocumentEditGuard } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
 import type { ScrollNavigatorState } from './document-scroll-navigator'
 import {
+  TAB_ACTIVE_BOUNDARY_AUDIT_EVENT,
+  TabActiveBoundaryGeometryController,
+} from './tab-active-boundary-geometry'
+import {
   WORKSPACE_WIDTH_STATE_ATTR,
   WORKSPACE_HOST_CLASS,
   DOCUMENT_WORKSPACE_MIN_WIDTH_PX,
@@ -613,6 +617,7 @@ import {
   makeHeadingRect,
   mergeHeadingMarkerSeverity,
   severityRank,
+  shouldRenderReasonChip,
   unionHeadingNumberAndTextRects,
   type HeadingMarkerSeverity,
   type HeadingRect,
@@ -2465,6 +2470,12 @@ export class DocumentUtilityOverlayHost {
   private disposables: Array<() => void> = []
   /** Phase 7R.3.11.8B.NO-ACTIVE-DOC — event-driven tab structure watch. */
   private tabStructureObserver: MutationObserver | null = null
+  /**
+   * V5.8 — the SINGLE Active-geometry controller (one instance). It only measures
+   * the Active tab's visible range inside `.typ-tabs-wrapper` and writes the two
+   * cut-out custom properties; see `tab-active-boundary-geometry.ts`.
+   */
+  private tabBoundaryGeometry: TabActiveBoundaryGeometryController | null = null
   /** V3 — last ACTIVE-LEAF presence decision (identity-conflict observability). */
   private lastActiveLeafPresence: ActiveDocumentPresenceDecision | null = null
   /** V3 — real active-leaf lifecycle subscription (workspace + tabs). */
@@ -3227,6 +3238,10 @@ export class DocumentUtilityOverlayHost {
     // Region Divider V1 §5.4 — probe the docked right console once at mount too
     // (Typora may start with DevTools already docked).
     this.syncRegionDividerConsoleDock()
+    // Tab Strip Wheel V5.6 — scoped to `.typ-tabs-wrapper`, idempotent
+    this.bindTabStripWheel()
+    // V5.8 — Active-Tab bottom-boundary geometry (scoped to `.typ-tabs-wrapper`)
+    this.ensureTabBoundaryGeometry('TAB_BOUNDARY_MOUNT')
     this.installWarningObserver()
     this.scheduleGeometrySync('mount')
 
@@ -3401,6 +3416,12 @@ export class DocumentUtilityOverlayHost {
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
     window.removeEventListener('resize', this.onWindowResize)
+    // Tab Strip Wheel V5.6 — release every scoped listener
+    this.unbindTabStripWheel()
+    // V5.8 — release the Active-geometry controller (listener / observer / rAF /
+    // custom properties) so no stale handle survives a dispose.
+    this.tabBoundaryGeometry?.unbind()
+    this.tabBoundaryGeometry = null
     if (this.onWindowErrorBound) {
       window.removeEventListener('error', this.onWindowErrorCapture, true)
       this.onWindowErrorBound = false
@@ -5286,7 +5307,12 @@ export class DocumentUtilityOverlayHost {
         })
         const g = groups.get(identity)
         const rank = severityRank(String(d.severity ?? 'info'))
-        const reason = buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
+        // V1 §9/§10 — the PASSIVE reason chip obeys the SAME scope policy as the
+        // active one (document-level diagnostics never paint a body chip). The
+        // decision is scope/presentation-driven, NEVER severity-driven.
+        const reason = shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown> })
+          ? buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
+          : null
         if (g) {
           g.severities.push(String(d.severity ?? 'info'))
           // V5.14-R6.1 §18 — one heading may carry SEVERAL diagnostics, each with
@@ -7879,7 +7905,12 @@ export class DocumentUtilityOverlayHost {
         .filter((f): f is HeadingRect => f != null)
     }
     if (localFragments.length === 0) return
-    const severity = severityRank(String(diag.severity ?? 'info')) >= 3 ? 'error' : 'warning'
+    // V1 §3/§19/§21 — the ACTIVE heading visual routes through the SAME severity
+    // authority as the passive marker. The old fold (`rank >= 3 ? error : warning`)
+    // collapsed EVERY `info` diagnostic into the Warning class, so a Hint reused
+    // the amber Warning token. `mergeHeadingMarkerSeverity` is the ONE authority
+    // and yields error / warning / info ⇒ red / amber / blue-gray.
+    const severity = mergeHeadingMarkerSeverity([String(diag.severity ?? 'info')]) ?? 'info'
     // V5.12-R2 §6 — ACTIVE = PASSIVE + text fragments + reason chip.
     // (the target identity was resolved above; the passive record is re-read so it
     // is the record of the CURRENT geometry generation.)
@@ -7926,7 +7957,9 @@ export class DocumentUtilityOverlayHost {
     // §11/§12 — the reason chip is an OVERLAY child (never in the heading flow).
     // V5.12-R9 §6 — exactly ONE chip per heading: the PASSIVE marker owns it, so
     // the active pass ADOPTS the existing chip instead of creating a second one.
-    const reasonText = buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+    const reasonText = shouldRenderReasonChip({ metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+      ? buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+      : null
     let reasonChipRect: HeadingRect | null = null
     // ── V5.14-R4 §10 — the chip rect is read from the CURRENT geometry
     // generation's snapshot, never a rect left over from an earlier pass (the
@@ -7934,7 +7967,12 @@ export class DocumentUtilityOverlayHost {
     // stale by 40.8px).
     const passiveGeometrySnapshot = this.lastVisualGeometrySnapshots.get(headingIdentity) ?? null
     const adoptedPassiveChip = passiveRecord?.wrapper.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason') ?? null
-    if (adoptedPassiveChip) {
+    if (adoptedPassiveChip && !reasonText) {
+      // V1 §7/§13 — a document-level diagnostic carries NO body chip. If a stale
+      // passive chip survived (it must not, but the policy is enforced here too),
+      // drop it without touching the active FILL (fill and chip are decoupled).
+      try { adoptedPassiveChip.remove() } catch { /* noop */ }
+    } else if (adoptedPassiveChip) {
       // R1 §10 — while ACTIVE the chip shows the CURRENTLY clicked diagnostic's
       // reason (the passive pass restores the group reason on dismissal).
       if (reasonText && adoptedPassiveChip.textContent !== reasonText) {
@@ -10813,6 +10851,83 @@ export class DocumentUtilityOverlayHost {
     // renderer viewport, so it is detected here (the ONE existing resize path)
     // instead of adding a second listener / observer.
     this.syncRegionDividerConsoleDock()
+    // Tab Strip Wheel V5.6 — re-asserted on the existing resize path (idempotent)
+    this.bindTabStripWheel()
+    // V5.8 — the tab bar itself may have changed width (window resize / docked
+    // DevTools): re-scan the wrapper and re-measure the Active cut-out.
+    this.ensureTabBoundaryGeometry('TAB_BOUNDARY_WINDOW_RESIZE')
+  }
+
+  /**
+   * Tab Wheel Interaction V5.6 — `.typ-tabs-wrapper` is SCROLL_OWNER, HOVER_OWNER
+   * and WHEEL_OWNER. A plain mouse wheel over ANY part of the tab bar (tab text,
+   * blank area, close button, rail, thumb) drives `scrollLeft`, so the rail never
+   * has to be clicked first.
+   *
+   * The listener is scoped to `.typ-tabs-wrapper` with `{ passive: false }` —
+   * never window/document/body, never a poller, never a timer. It is a
+   * presentation-only helper: it touches nothing but `scrollLeft`.
+   *
+   * Only REAL, POSSIBLE horizontal movement is consumed:
+   *   - `deltaX !== 0` (touchpad / Chromium's Shift+wheel) → left to the native
+   *     handler, so no double scroll;
+   *   - `shiftKey` or `deltaY === 0` → left alone;
+   *   - no horizontal overflow → never intercepted;
+   *   - already at the left/right edge → never swallowed;
+   *   - `preventDefault()` only after `scrollLeft` actually changed.
+   */
+  private readonly tabWheelBound = new WeakSet<HTMLElement>()
+
+  private readonly onTabStripWheel = (ev: WheelEvent): void => {
+    const wrapper = ev.currentTarget as HTMLElement | null
+    if (!wrapper) return
+    // native horizontal gestures (touchpad / Shift+wheel) stay untouched
+    if (ev.deltaX !== 0) return
+    if (ev.deltaY === 0 || ev.shiftKey) return
+    const max = wrapper.scrollWidth - wrapper.clientWidth
+    if (max <= 0) return
+    const before = wrapper.scrollLeft
+    const next = Math.max(0, Math.min(max, before + ev.deltaY))
+    if (next === before) return
+    wrapper.scrollLeft = next
+    if (wrapper.scrollLeft !== before) ev.preventDefault()
+  }
+
+  /** Idempotent bind (WeakSet-guarded ⇒ no duplicate listener can exist). */
+  private bindTabStripWheel(): void {
+    if (this.disposed || typeof document === 'undefined') return
+    for (const wrapper of Array.from(document.querySelectorAll<HTMLElement>('.typ-tabs-wrapper'))) {
+      if (this.tabWheelBound.has(wrapper)) continue
+      wrapper.addEventListener('wheel', this.onTabStripWheel, { passive: false })
+      this.tabWheelBound.add(wrapper)
+    }
+  }
+
+  /** Releases every scoped wheel listener ⇒ no stale listener survives. */
+  private unbindTabStripWheel(): void {
+    if (typeof document === 'undefined') return
+    for (const wrapper of Array.from(document.querySelectorAll<HTMLElement>('.typ-tabs-wrapper'))) {
+      wrapper.removeEventListener('wheel', this.onTabStripWheel)
+      this.tabWheelBound.delete(wrapper)
+    }
+  }
+
+  /**
+   * V5.8 — ACTIVE-TAB BOTTOM-BOUNDARY GEOMETRY. Creates the single controller
+   * once and (re-)binds it idempotently; the controller itself owns only the
+   * scroll listener, ONE scoped ResizeObserver and ONE rAF handle. The tab
+   * lifecycle reuses the EXISTING `.typ-tabs` structure observer (class changes
+   * included) instead of adding a second observer.
+   */
+  private ensureTabBoundaryGeometry(reason: string): void {
+    if (this.disposed || typeof document === 'undefined') return
+    if (!this.tabBoundaryGeometry) {
+      this.tabBoundaryGeometry = new TabActiveBoundaryGeometryController({
+        doc: document,
+        audit: (payload) => emitRuntimeAudit(TAB_ACTIVE_BOUNDARY_AUDIT_EVENT, payload),
+      })
+    }
+    this.tabBoundaryGeometry.bind(reason)
   }
 
   /**
@@ -11716,11 +11831,24 @@ export class DocumentUtilityOverlayHost {
     if (!tabStrips.length) return
     this.tabStructureObserver = new MutationObserver(() => {
       this.scheduleGeometrySync('tabs-structure-change')
+      // V5.8 — the SAME scoped observer drives the Active cut-out: tab open /
+      // close (childList) and Active switch (class) both land here. No second
+      // observer, no body observer, no polling.
+      this.tabBoundaryGeometry?.bind('TAB_BOUNDARY_STRUCTURE_CHANGE')
       // Empty Workspace UX V1 — Typora may re-create the empty placeholder tab
       // DOM after closing tabs; re-apply the marker from the same authority.
       this.syncEmptyWorkspaceUx()
     })
-    for (const strip of tabStrips) this.tabStructureObserver.observe(strip, { childList: true })
+    for (const strip of tabStrips) {
+      this.tabStructureObserver.observe(strip, {
+        childList: true,
+        // `.typ-tab.active` is a CLASS toggle on an existing tab node, so open /
+        // close (childList) alone would miss an Active switch.
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class'],
+      })
+    }
     this.disposables.push(() => {
       this.tabStructureObserver?.disconnect()
       this.tabStructureObserver = null

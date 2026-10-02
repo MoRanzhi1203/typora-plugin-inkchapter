@@ -162,10 +162,8 @@ body.native-window::before {
 .typ-workspace-tab-header .typ-tab:not(:last-child) {
   background-image: linear-gradient(
     to bottom,
-    transparent 27%,
-    var(--ink-tab-separator) 27%,
-    var(--ink-tab-separator) 73%,
-    transparent 73%
+    var(--ink-tab-separator) 0,
+    var(--ink-tab-separator) 100%
   );
   background-repeat: no-repeat;
   background-position: right center;
@@ -194,21 +192,82 @@ body.native-window::before {
   width: 5px;
 }
 
-/* ── V5.2 — 2px INTERNAL bottom breathing space (inside `.typ-tabs-wrapper`) ── */
-/* The tab bar's own TRANSPARENT bottom border. For a scroll container the native
-   scrollbar is laid out inside the border edge, so the vertical order becomes
-     tab content -> native horizontal scrollbar -> 2px breathing space -> bottom
-     boundary -> editor body
-   and the wrapper's own `background: var(--bg-color)` shows through the
-   transparent border — i.e. real internal whitespace, not a colour, not a new
-   element, not an external rail, and the scrollbar is still inside
-   `.typ-tabs-wrapper`. Nothing about the tab system changes: `--typ-tabs-height`,
-   each `.typ-tab` box, separators, active styling and every other region are
-   untouched.
-   NOTE: this intentionally grows the bar by 2px (per the request); it is the ONLY
-   geometry delta of this round and it is a single-line revert. */
+/* ── V5.8 — ORDERED BOTTOM BOUNDARY + ACTIVE-GEOMETRY CUT-OUT ─────────────── */
+/* REAL DOM (framework `packages/core/src/ui/components/tabs.ts`):
+     this.containerEl = html`<div class="typ-tabs-wrapper ${props.className}">`
+   with `className: 'typ-workspace-tab-header'` — i.e. `.typ-tabs-wrapper` and
+   `.typ-workspace-tab-header` are the SAME element. There is NO outer header
+   shell wrapping the scroll owner: the header IS the scroll owner. The bottom
+   boundary is therefore painted by that element itself, and the Active cut-out
+   is measured in exactly the same coordinate space (the wrapper's border box).
+   A scrollbar is laid out BETWEEN the padding edge and the border edge, so the
+   only region that is guaranteed to be BELOW the native horizontal scrollbar is
+   the element's own bottom border area. The resulting order is therefore fixed
+   by the box model (never by guesswork):
+     tab content -> native scrollbar -> 2px internal gap -> 1px boundary -> editor
+   NOTE: V5.7 put `padding-bottom` on this element, which inserts the space ABOVE
+   the scrollbar — the wrong side — and it restored the framework's per-tab
+   bottom border as the visible boundary, which is always at the bottom of the
+   TAB ROW, i.e. above the scrollbar. Both are undone here. */
+
+/* 1. the per-tab box and the `.typ-tabs::after` filler leave VISIBLE
+      bottom-boundary authority. COLOUR ONLY: border width (1px), tab height,
+      padding and box sizing are untouched, so no box geometry moves. */
+.typ-tabs-wrapper .typ-tab,
+.typ-tabs-wrapper .typ-tab.active,
+.typ-tabs-wrapper .typ-tabs::after {
+  border-bottom-color: transparent;
+}
+
+/* 2. the SINGLE visible bottom boundary (~V5.4 authority, correct side). The
+      transparent bottom border is the internal gap BELOW the scrollbar; the 1px
+      gradient strip is painted in the bottom pixel of that border box
+      (`background-origin: border-box`), so the real gap is `border - 1px`.
+      WIDTH 3.5px, NOT 3px: at this machine's 125% display scale
+      (HKCU AppliedDPI=120) Chromium snaps border widths DOWN to whole device
+      pixels, so a 3px border is PAINTED as 3 device px = 2.4 CSS px and the gap
+      would collapse to 1.4px. 3.5px snaps to 4 device px = 3.2 CSS px ⇒ a 2.2px
+      gap, and every other common scale (1.0 → 2.0px, 1.5 → 2.3px, 2.0 → 2.5px)
+      also lands inside the required 2~3px band.
+      The gradient blanks the ACTIVE tab's measured visible range (custom
+      properties written by the V5.8 geometry controller); with no geometry yet
+      (or a fully offscreen Active tab) both default to 0px and the boundary is
+      simply continuous. */
 .typ-tabs-wrapper {
-  border-bottom: 2px solid transparent;
+  --ink-tab-boundary: var(--typ-tab-border-color);
+
+  border-bottom: 3.5px solid transparent;
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 100% 1px;
+  background-origin: border-box;
+  background-clip: border-box;
+  background-image: linear-gradient(
+    to right,
+    var(--ink-tab-boundary) 0,
+    var(--ink-tab-boundary) var(--ink-active-tab-cut-left, 0px),
+    transparent var(--ink-active-tab-cut-left, 0px),
+    transparent calc(
+      var(--ink-active-tab-cut-left, 0px) + var(--ink-active-tab-cut-width, 0px)
+    ),
+    var(--ink-tab-boundary) calc(
+      var(--ink-active-tab-cut-left, 0px) + var(--ink-active-tab-cut-width, 0px)
+    ),
+    var(--ink-tab-boundary) 100%
+  );
+}
+
+/* 3. HOVER — while the tab bar is hovered the cut-out is cancelled and the whole
+      boundary is continuous (the same authority as the scrollbar reveal). Pure
+      CSS: the two custom properties are written INLINE by the controller, so a
+      stylesheet rule can never override them — it overrides the background IMAGE
+      instead, which is the property the gradient is expressed in. */
+.typ-tabs-wrapper:hover {
+  background-image: linear-gradient(
+    to right,
+    var(--ink-tab-boundary) 0,
+    var(--ink-tab-boundary) 100%
+  );
 }
 
 /* ── V5 — TAB STRIP horizontal scrollbar: correct OWNER + reveal authority ─── */
@@ -288,10 +347,8 @@ body.ink-console-docked::after {
   /* V3 §5 — active-adjacent separator ≈ 0.2× the normal one (2% vs 5% mix). */
   background-image: linear-gradient(
     to bottom,
-    transparent 27%,
-    var(--ink-tab-separator-active) 27%,
-    var(--ink-tab-separator-active) 73%,
-    transparent 73%
+    var(--ink-tab-separator-active) 0,
+    var(--ink-tab-separator-active) 100%
   );
 }
 
@@ -303,10 +360,8 @@ body.ink-console-docked::after {
 .typ-workspace-tab-header .typ-tab:not(:last-child):has(+ .typ-tab.active) {
   background-image: linear-gradient(
     to bottom,
-    transparent 27%,
-    var(--ink-tab-separator-active) 27%,
-    var(--ink-tab-separator-active) 73%,
-    transparent 73%
+    var(--ink-tab-separator-active) 0,
+    var(--ink-tab-separator-active) 100%
   );
 }
 
@@ -3299,6 +3354,20 @@ body.ink-console-docked::after {
   --ink-diagnostic-info-active-accent: rgba(70, 95, 115, 0.95);
   --ink-diagnostic-info-active-chip-bg: rgba(93, 113, 129, 0.22);
   --ink-diagnostic-info-active-chip-text: #2f3c47;
+
+  /* V1 §3/§4/§19/§22 — HINT is its OWN visual semantic: cold, LOW-saturation
+     blue-gray. Never an amber/red token, never a high-saturation alert blue.
+     Every alpha is deliberately BELOW its Warning counterpart so the ordering
+     Error > Warning > Hint (fill / edge / chip) holds by construction:
+       passive 0.10 < warning 0.13 | active 0.22 < warning 0.38
+       accent  0.66 < warning 0.95 | chip   0.24 < warning 0.38 */
+  --ink-diagnostic-hint-text: #60778a;
+  --ink-diagnostic-hint-border: rgba(86, 118, 146, 0.72);
+  --ink-diagnostic-hint-passive-bg: rgba(102, 132, 158, 0.10);
+  --ink-diagnostic-hint-active-bg: rgba(96, 130, 160, 0.22);
+  --ink-diagnostic-hint-active-accent: rgba(73, 108, 139, 0.66);
+  --ink-diagnostic-hint-active-chip-bg: rgba(96, 130, 160, 0.24);
+  --ink-diagnostic-hint-active-chip-text: #2f3c47;
 }
 /* ── V5.12-R9 §3/§5/§10 — HEADING_DIAGNOSTIC_MARKER = SOFT_TEXT_SURFACE +
    REASON_CHIP ──────────────────────────────────────────────────────────────
@@ -3313,6 +3382,12 @@ body.ink-console-docked::after {
 .inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] {
   --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
   --ink-heading-sev-soft: color-mix(in srgb, var(--ink-heading-sev) 10%, transparent);
+}
+/* V1 §3/§4/§14 — HINT (info) marker: blue-gray text/chip semantics but NO
+   passive fill (`--ink-heading-sev-soft` deliberately UNSET ⇒ transparent), so a
+   document-level Hint leaves the idle heading visually normal (R1). */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='info'] {
+  --ink-heading-sev: var(--ink-diagnostic-hint-text, #60778a);
 }
 /* The text-tight surface: one carrier per visible line, never a union band. */
 .inkchapter-heading-diagnostic-passive__fragment {
@@ -3340,11 +3415,22 @@ body.ink-console-docked::after {
   --ink-heading-sev-active-chip-bg: var(--ink-diagnostic-warning-active-chip-bg);
   --ink-heading-sev-active-chip-text: var(--ink-diagnostic-warning-active-chip-text);
 }
+/* V1 §3/§5/§19 — HINT (info) ACTIVE heading: the SAME fill-only active shape as
+   Error / Warning, but routed to the DEDICATED blue-gray Hint tokens. Fill and
+   edge are both lighter than Warning (§5 Error > Warning > Hint), and neither an
+   amber nor a saturated alert-blue token is ever referenced. */
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] {
+  --ink-heading-sev: var(--ink-diagnostic-hint-text, #60778a);
+  --ink-heading-sev-active: var(--ink-diagnostic-hint-active-bg);
+  --ink-heading-sev-active-accent: var(--ink-diagnostic-hint-active-accent);
+  --ink-heading-sev-active-chip-bg: var(--ink-diagnostic-hint-active-chip-bg);
+  --ink-heading-sev-active-chip-text: var(--ink-diagnostic-hint-active-chip-text);
+}
 /* V5.14-R3 §P12 — the ACTIVE fill uses the ACTIVE token ONLY (never the passive
    severity token), so the active/passive alpha ratio is >= 2.4 by construction. */
 .inkchapter-heading-diagnostic-active__fragment {
   border-radius: 2px;
-  background: var(--ink-heading-sev-active, var(--ink-diagnostic-info-active-bg));
+  background: var(--ink-heading-sev-active, var(--ink-diagnostic-hint-active-bg));
   transition: background-color 140ms ease;
 }
 /* Level 3 Reason chip: overlay only, never in the heading layout flow.
@@ -3381,6 +3467,14 @@ body.ink-console-docked::after {
   color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 64%, #5f5f5f);
   background-color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 14%, transparent);
 }
+/* V1 §3/§4 — HINT (info) chip tint: the same blue-gray family, lower saturation
+   than Warning (12% vs 14%). Only reached by NON-document-scope hints, since a
+   document-level hint paints no chip at all (policy, not severity). */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason,
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason {
+  color: color-mix(in srgb, var(--ink-heading-sev, #60778a) 62%, #5f5f5f);
+  background-color: color-mix(in srgb, var(--ink-heading-sev, #60778a) 12%, transparent);
+}
 /* V5.14-R3 §P12 §21 — while ACTIVE the reason chip is clearly stronger (bright
    pill + deep text) so the selected occurrence is unmistakable; it stays a
    compact pill (no shadow, no heavy border). */
@@ -3393,6 +3487,13 @@ body.ink-console-docked::after {
 .inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason {
   background-color: var(--ink-diagnostic-warning-active-chip-bg);
   color: var(--ink-diagnostic-warning-active-chip-text);
+}
+/* V1 §3/§19 — HINT (info) active chip uses the dedicated blue-gray Hint token
+   (never the amber Warning active chip). Lower alpha than Warning. */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason,
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason {
+  background-color: var(--ink-diagnostic-hint-active-chip-bg);
+  color: var(--ink-diagnostic-hint-active-chip-text);
 }
 /* V5.3 — dark inline mark: brighter edge + stronger fill (still muted, no
    neon/glow). */
@@ -3951,7 +4052,7 @@ body.ink-console-docked::after {
 .inkchapter-doc-drawer__item-icon { display: inline-flex; width: 16px; height: 16px; margin-top: 1px; flex: none; }
 .inkchapter-doc-drawer__item--error .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-danger, #d00); }
 .inkchapter-doc-drawer__item--warning .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-warning, #b58900); }
-.inkchapter-doc-drawer__item--info .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-text-muted, #888); }
+.inkchapter-doc-drawer__item--info .inkchapter-doc-drawer__item-icon { color: var(--ink-diagnostic-hint-text, var(--ink-ui-sev-info, #5d7181)); }
 .inkchapter-doc-drawer__item-msg { font-size: 13px; line-height: 1.4; }
 .inkchapter-doc-drawer__item-detail { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--ink-ui-text-muted, #666); }
 .inkchapter-doc-drawer__item-meta {

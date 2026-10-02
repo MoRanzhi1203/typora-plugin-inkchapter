@@ -39,6 +39,14 @@ import {
   buildFigureOccurrenceIdentity,
   buildSourceBlockIdentity,
 } from './document-diagnostic-locator-authority-v1'
+// V1 — 单标题无正文 Hint：the canonical-heading source-line authority (Typora
+// `data-line` + the documented ATX text-key safety net). Reused so this rule
+// never builds a second Markdown heading parser.
+import {
+  collectCanonicalHeadingOwnedLines,
+  collectCanonicalHeadingSourceLines,
+  collectCanonicalHeadingTextKeys,
+} from './latent-atx-heading-marker'
 
 export interface DiagnosticHeadingFact {
   level: number
@@ -241,6 +249,10 @@ export function resolveDocumentDiagnosticSeverity(
     case 'DOCUMENT_EMPTY':
     case 'DOCUMENT_INACTIVE':
     case 'DOCUMENT_SOURCE_UNAVAILABLE':
+    // V1 §3 — a document that only owns a title is a completeness HINT, never a
+    // syntax error / structural warning. Constant across strict and loose mode:
+    // an incomplete document is incomplete in both.
+    case DOCUMENT_HEADING_ONLY_NO_BODY_CODE:
       return 'info'
     default:
       // Phase 7R.3.11.8B.4.1 — latent source syntax risk: strict=WARNING,
@@ -323,6 +335,13 @@ export interface DocumentDiagnosticsComputed {
 const DOCUMENT_EMPTY_CODE = 'DOCUMENT_EMPTY'
 const SOURCE_UNAVAILABLE_CODE = 'DOCUMENT_SOURCE_UNAVAILABLE'
 
+/**
+ * V1 §2 — stable, unique, filterable, locatable id of the "a document that is
+ * only a title" completeness hint. Severity is `info` (the project's existing
+ * "提示 / hint" level — §3 forbids a NEW severity axis).
+ */
+export const DOCUMENT_HEADING_ONLY_NO_BODY_CODE = 'DOCUMENT_HEADING_ONLY_NO_BODY'
+
 // ── Standard EOF newline policy (Phase 7R.3.11.8B.8) ────────────────────
 // Supersedes the "exactly one trailing blank line" rule (7R.3.11.8B.7.x).
 // The EOF contract is a FILE-level newline rule over the serialized Markdown
@@ -388,6 +407,53 @@ export function computeEofNewlinePolicy(markdown: string | null | undefined): Eo
     return { verdict: 'EXCESSIVE_TRAILING_BLANK_LINES', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
   }
   return { verdict: 'PASS', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
+}
+
+/**
+ * V1 §5/§6/§7/§8/§9 — "substantive non-heading content" authority for the
+ * `DOCUMENT_HEADING_ONLY_NO_BODY` hint (one boolean, no completeness score).
+ *
+ * SOURCE-based and canonical-heading-authority-driven: a source line counts as
+ * body content only when it is NOT blank and NOT owned by a canonical heading.
+ * The heading line numbers come from the canonical heading elements' Typora
+ * `data-line` — the SAME authority the latent-ATX scanner consumes — so this is
+ * never a second Markdown heading parser. An ATX-looking line inside a fenced
+ * code block, an escaped `\#`, or `#text` is simply NOT a canonical heading
+ * line and therefore stays "body content" (which is exactly what Typora
+ * renders). Plugin-injected DOM can never participate: the decision reads the
+ * SOURCE, never the rendered node count (§8).
+ *
+ * A setext heading's underline line (`===` / `---` directly beneath the heading
+ * text) belongs to the heading above it, so it is not body content either.
+ */
+export function hasSubstantiveNonHeadingContent(
+  markdown: string | null | undefined,
+  canonicalHeadingSourceLines: ReadonlySet<number>,
+): boolean {
+  if (markdown == null) return false
+  const lines = markdown.split('\n')
+  let previousLineWasHeading = false
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    // §7 — blank lines / pure whitespace are never body content.
+    if (line.trim() === '') {
+      previousLineWasHeading = false
+      continue
+    }
+    if (canonicalHeadingSourceLines.has(i)) {
+      previousLineWasHeading = true
+      continue
+    }
+    if (previousLineWasHeading && /^\s{0,3}(?:=+|-+)\s*$/.test(line)) {
+      previousLineWasHeading = false
+      continue
+    }
+    // §6/§24 — paragraph / list / blockquote / code / table / image / formula:
+    // any non-blank source line that no canonical heading owns is substantive.
+    return true
+  }
+  return false
 }
 
 /** Normalize a message so the same root cause deduplicates deterministically. */
@@ -954,6 +1020,90 @@ export function computeDocumentDiagnostics(
               ? { kind: 'heading', targetElement: offending.element }
               : { kind: 'document', targetElement: null, action: 'GO_TOP' },
             location: { kind: 'multi-target', targets: multiTargets },
+          }),
+        )
+      }
+    }
+
+    // ── V1 §5/§10..§13 — DOCUMENT_HEADING_ONLY_NO_BODY (severity = hint) ─────
+    // Document SHAPE hint: the document owns EXACTLY ONE canonical heading and
+    // no substantive non-heading content whatsoever.
+    //
+    // TRIGGER (canonical):
+    //   headingCount === 1
+    //   && substantiveNonHeadingContentCount === 0
+    //   && documentIsEmpty === false
+    // `documentIsEmpty === false` is guaranteed structurally: the
+    // SEMANTIC-EMPTY short-circuit at the top of this function RETURNS BEFORE
+    // any content-level producer runs, so `DOCUMENT_EMPTY` and this hint can
+    // never coexist (§13). `markdown != null` is required because "no body" is
+    // not assertable without a source (a source-less document is the
+    // DOCUMENT_SOURCE_UNAVAILABLE concern, not this one).
+    //
+    // Scope is deliberately EXACTLY ONE heading (§25): a multi-heading document
+    // without body is a different rule and is not emitted here.
+    // Deliberately NOT gated on strictMode (§32): an incomplete document is
+    // equally incomplete in loose mode, and a coexisting higher-severity
+    // strict-H1 diagnostic never swallows this hint.
+    if (input.markdown != null && canonicalHeadingCount === 1) {
+      const onlyHeading = input.headings[0]
+      // The heading's OWN source line is what makes the "no body" verdict
+      // trustworthy: it is the line the body scan must exclude. Two canonical
+      // authorities are reused (never a second heading parser): the Typora
+      // `data-line` stamp and the ATX text-key safety net used by the
+      // latent-ATX scanner.
+      const headingOwnedLines = collectCanonicalHeadingOwnedLines(
+        input.markdown,
+        collectCanonicalHeadingSourceLines(input.headings.map(h => h.element)),
+        collectCanonicalHeadingTextKeys(input.headings.map(h => ({ physicalLevel: h.level, text: h.text }))),
+      )
+      // No owned line ⇒ the canonical heading could not be located in the
+      // source at all ⇒ the shape is UNVERIFIABLE. Stay silent: an unverifiable
+      // verdict must never become a false positive.
+      if (headingOwnedLines.size > 0 && !hasSubstantiveNonHeadingContent(input.markdown, headingOwnedLines)) {
+        // §19 — stable identity comes from the canonical heading frame; the
+        // canonical source line is the fallback anchor (never the heading TEXT).
+        const stableIdentity = normalizeIdentity(onlyHeading?.stableIdentity)
+        const sourceLine = onlyHeading?.element?.getAttribute?.('data-line')
+        const lineNumber = sourceLine != null && sourceLine !== '' ? Number.parseInt(sourceLine, 10) : null
+        const hasLineAnchor = lineNumber != null && Number.isInteger(lineNumber)
+        const targetIdentity = `heading-only:${stableIdentity !== ''
+          ? stableIdentity
+          : hasLineAnchor ? `line:${lineNumber}` : 'single'}`
+        // §18 — the canonical target is the UNIQUE HEADING (never EOF / blank
+        // body / toolbar / drawer).
+        const location: DiagnosticLocation = stableIdentity !== ''
+          ? { kind: 'canonical-node', nodeKind: 'heading', stableIdentity }
+          : hasLineAnchor
+            ? { kind: 'source-range', startLine: lineNumber as number, startColumn: 0 }
+            : { kind: 'document-start' }
+        push(
+          makeDiagnostic(input, 'document', DOCUMENT_HEADING_ONLY_NO_BODY_CODE, '文档仅包含标题', {
+            detail: '当前文档只有一个标题，尚未包含正文内容。',
+            kind: 'heading',
+            stableIdentity: stableIdentity || undefined,
+            element: onlyHeading?.element ?? null,
+            targetIdentity,
+            metadata: {
+              ruleId: 'DOCUMENT-HEADING-ONLY-NO-BODY',
+              reason: 'HEADING_ONLY_NO_BODY',
+              headingCount: canonicalHeadingCount,
+              hasSubstantiveNonHeadingContent: false,
+              // ── V1 §2/§9/§10/§11 — presentation axis (SEPARATE from severity).
+              // This diagnostic is document-level: the Drawer keeps the full
+              // explanation, but the body heading must NOT paint a "仅有标题"
+              // reason chip. The policy is consumed by `shouldRenderReasonChip`
+              // (scope/presentation-driven, explicitly NOT severity-driven) so
+              // object-local hints keep their chips.
+              scope: 'document',
+              reasonChip: false,
+            },
+            // Reuses the EXISTING heading locator + Active State Machine V2 —
+            // no second locator, no second interaction state machine.
+            locator: onlyHeading?.element
+              ? { kind: 'heading', targetElement: onlyHeading.element }
+              : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+            location,
           }),
         )
       }
