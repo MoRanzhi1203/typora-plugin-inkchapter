@@ -19,6 +19,9 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
 import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+// Unified Diagnostics Domain V1 §6/§37 — the plugin's OWN runtime integrity is
+// the `runtime` domain; it is adapted here and never enters the user Drawer.
+import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
@@ -1282,6 +1285,27 @@ export default class extends Plugin<InkChapterSettings> {
       initializationCount: initCount,
       sessionId,
     })
+
+    // Unified Diagnostics Domain V1 §6/§16/§37 — the identity result is a
+    // RUNTIME-domain concern (deployment / plugin state). It is collected into
+    // the runtime integrity report and NEVER becomes a user document problem.
+    const runtimeIntegrity = refreshRuntimeIntegrity(runtimeIntegrityFindingsFromIdentity({
+      pluginMainExists: pluginExists,
+      pluginMainSha256,
+      projectMainExists,
+      projectMainSha256,
+      shaMatch,
+      buildId: INKCHAPTER_BUILD_ID,
+      initializationCount: initCount,
+    }))
+    console.info(
+      `[InkChapter] [DIAGNOSTIC][RUNTIME] ` +
+      `decision=${runtimeIntegrity.decision} ` +
+      `total=${runtimeIntegrity.total} ` +
+      `fail=${runtimeIntegrity.failCount} ` +
+      `degraded=${runtimeIntegrity.degradedCount} ` +
+      `pending=${runtimeIntegrity.pendingCount}`,
+    )
 
     console.log('[InkChapter] INKCHAPTER-BOOT-ONLOAD-SUCCESS')
     console.log('[InkChapter] 插件已加载')
