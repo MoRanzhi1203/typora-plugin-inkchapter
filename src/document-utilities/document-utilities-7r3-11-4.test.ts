@@ -129,15 +129,28 @@ describe('SNAPSHOT-1 drawer auto-refreshes across document switch', () => {
     const list = document.querySelector('.inkchapter-doc-drawer__list') as HTMLElement
     expect(list.textContent).toContain('跳级')
 
-    // Switch to doc B (drawer stays open).
+    // Switch to doc B (drawer stays open). Doc B is "# B" — ONE canonical
+    // heading and no body, which is exactly the V1 单标题无正文 shape.
     setKey('doc:b')
     write.innerHTML = '<h1>B</h1>'
     h.bindDocument()
 
     // Drawer shows doc B content only — no stale doc A warnings.
-    expect(list.textContent).toContain('未发现问题')
     expect(list.textContent).not.toContain('跳级')
     expect(list.textContent).not.toContain('表名')
+    // V1 §16 — the drawer kept doc A's 'warning' filter, so the new HINT is
+    // correctly NOT listed under it (error / warning filters never show a hint)…
+    expect(list.textContent).toContain('当前筛选下没有问题')
+    // …and §14/§15 — the 提示 filter tab now exists and exposes the hint, so the
+    // document can never present itself as "未发现问题" again.
+    const hintTab = document.querySelector(
+      '.inkchapter-doc-drawer__filter-tab[data-filter="info"]',
+    ) as HTMLButtonElement
+    expect(hintTab).toBeTruthy()
+    hintTab.click()
+    expect(list.textContent).toContain('文档仅包含标题')
+    expect(list.textContent).toContain('尚未包含正文内容')
+    expect(list.textContent).not.toContain('未发现问题')
   })
 })
 

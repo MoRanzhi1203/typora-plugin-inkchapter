@@ -7,13 +7,21 @@
  * polling. It consumes existing authorities and never derives numbering
  * semantics itself.
  */
-import { computeDocumentDiagnostics, computeEofNewlinePolicy } from './document-diagnostics'
+import {
+  DOCUMENT_HEADING_ONLY_NO_BODY_CODE,
+  computeDocumentDiagnostics,
+  computeEofNewlinePolicy,
+  hasSubstantiveNonHeadingContent,
+} from './document-diagnostics'
+import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
 import type {
   DiagnosticFormulaFact,
   DiagnosticH1Fact,
   DiagnosticHeadingFact,
   DiagnosticLinkFact,
   DiagnosticObjectFact,
+  DocumentDiagnosticsComputed,
+  DocumentDiagnosticsInput,
   HeadingDiagnosticAuthority,
   LatentAtxMarkerInput,
 } from './document-diagnostics'
@@ -37,6 +45,7 @@ import type {
 } from './document-h1-authority-bridge'
 import {
   detectLatentAtxMarkers,
+  collectCanonicalHeadingOwnedLines,
   collectCanonicalHeadingSourceLines,
   collectCanonicalHeadingTextKeys,
   type LatentAtxMarkerFact,
@@ -163,6 +172,9 @@ export class DocumentDiagnosticsAuthority {
     // Phase 7R.3.11.8B.4 — severity transition log (strict/loose switch only).
     this.emitHeadingSeverityTransition(input.documentKey, input.strictMode)
     const computed = computeDocumentDiagnostics(input)
+    // V1 §37 — low-frequency, state-deduped audit for the single-heading-no-body
+    // hint (never per block, never per mutation).
+    this.emitHeadingOnlyHintAudit(input, computed)
     // V5.15 §16/§17 — ONE standalone-object-block audit per recompute, emitted
     // AFTER the source structure diagnostics were computed, so the gate report
     // and the coverage report always describe the SAME snapshot.
@@ -1096,6 +1108,51 @@ export class DocumentDiagnosticsAuthority {
         reason: 'SEVERITY_TRANSITION',
       })
     }
+  }
+
+  /**
+   * V1 §37 — low-frequency audit for `DOCUMENT_HEADING_ONLY_NO_BODY`.
+   * State-deduped on (documentKey | headingCount | hasBody | empty | emitted):
+   * emitted on TRANSITION only, never per mutation and never per block.
+   */
+  private emitHeadingOnlyHintAudit(
+    input: DocumentDiagnosticsInput,
+    computed: DocumentDiagnosticsComputed,
+  ): void {
+    const headingCount = input.headings.length
+    const documentEmpty = isSemanticallyEmptyDocument(input.markdown)
+    const emittedDiag = computed.diagnostics.find(d => d.code === DOCUMENT_HEADING_ONLY_NO_BODY_CODE) ?? null
+    // Measure the body fact only when the shape is even eligible (cheap scan).
+    // Mirrors the producer's authority exactly: `data-line` + ATX text key.
+    const hasBody = headingCount === 1 && input.markdown != null
+      ? hasSubstantiveNonHeadingContent(
+          input.markdown,
+          collectCanonicalHeadingOwnedLines(
+            input.markdown,
+            collectCanonicalHeadingSourceLines(input.headings.map(h => h.element)),
+            collectCanonicalHeadingTextKeys(input.headings.map(h => ({ physicalLevel: h.level, text: h.text }))),
+          ),
+        )
+      : false
+    const emitted = emittedDiag != null
+    const signature = `${input.documentKey ?? ''}|h${headingCount}|body:${hasBody}|empty:${documentEmpty}|e:${emitted}`
+    emitRuntimeAuditStateDedup('DOCUMENT-DIAGNOSTIC-HEADING-ONLY-AUDIT', signature, {
+      documentKey: input.documentKey,
+      headingCount,
+      hasSubstantiveNonHeadingContent: hasBody,
+      documentEmpty,
+      emitted,
+      diagnosticId: emittedDiag?.id ?? null,
+      targetKey: emittedDiag?.targetIdentity ?? null,
+      decision: emitted ? 'EMIT' : 'SUPPRESS',
+      reason: documentEmpty
+        ? 'DOCUMENT_EMPTY_PRECEDENCE'
+        : emitted
+          ? 'HEADING_ONLY_NO_BODY'
+          : headingCount === 1
+            ? 'HAS_SUBSTANTIVE_BODY'
+            : `HEADING_COUNT_${headingCount}`,
+    })
   }
 
   /**

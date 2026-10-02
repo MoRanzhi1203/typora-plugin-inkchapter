@@ -247,6 +247,40 @@ export function mergeHeadingMarkerSeverity(severities: ReadonlyArray<string | nu
   return best
 }
 
+/**
+ * V1 §2/§9/§10 — the diagnostic presentation SCOPE. Scope is a SEPARATE axis
+ * from severity: a `hint` may be document-level (heading-only) or object-local
+ * ("code block missing language"), and only scope decides reason-chip policy.
+ */
+export type DiagnosticPresentationScope = 'document' | 'heading' | 'block' | 'object' | 'inline'
+
+/**
+ * V1 §10/§25 — the ONE reason-chip presentation authority.
+ *
+ * Chip visibility is decided by diagnostic SCOPE / explicit presentation
+ * metadata — NEVER by severity. §9 explicitly forbids a global
+ * `severity === 'hint' → hideReasonChip()` rule, because object-local hints
+ * (code block missing language, figure missing caption, …) legitimately keep
+ * their short chip.
+ *
+ * Priority (highest first):
+ *   1. explicit `metadata.reasonChip` boolean override
+ *   2. explicit scope (argument or `metadata.scope`): `'document'` ⇒ suppressed
+ *   3. default ⇒ shown
+ */
+export function shouldRenderReasonChip(diagnostic: {
+  scope?: DiagnosticPresentationScope | string | null
+  metadata?: Record<string, unknown> | null
+}): boolean {
+  const meta = diagnostic.metadata ?? null
+  const override = meta?.['reasonChip']
+  if (override === false) return false
+  if (override === true) return true
+  const scope = diagnostic.scope ?? (meta?.['scope'] as string | null | undefined) ?? null
+  if (String(scope ?? '').trim().toLowerCase() === 'document') return false
+  return true
+}
+
 /** §16 — level and severity are INDEPENDENT (never "H6 ⇒ error"). */
 export function headingLevelLabel(level: number | null | undefined): string | null {
   const n = Number(level)

@@ -56,6 +56,10 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   DOCUMENT_SOURCE_UNAVAILABLE: { ruleId: 'DOCUMENT_SOURCE_UNAVAILABLE', category: 'document', locationStrategy: 'document-start' },
   DOCUMENT_TERMINAL_NEWLINE_MISSING: { ruleId: 'DOCUMENT_TERMINAL_NEWLINE_MISSING', category: 'document', locationStrategy: 'document-end' },
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: { ruleId: 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', category: 'document', locationStrategy: 'document-end' },
+  // V1 — 单标题无正文 Hint：the target is the UNIQUE canonical heading (never
+  // EOF / blank body / toolbar / drawer), so its strategy is `canonical-node`
+  // with a `source-range` fallback when the frame carries no stable identity.
+  DOCUMENT_HEADING_ONLY_NO_BODY: { ruleId: 'DOCUMENT_HEADING_ONLY_NO_BODY', category: 'document', locationStrategy: 'canonical-node' },
   // Strict H1 (canonical frame authority)
   STRICT_SINGLE_H1_NO_H1: { ruleId: 'STRICT_SINGLE_H1_NO_H1', category: 'document', locationStrategy: 'document-start' },
   STRICT_SINGLE_H1_MULTIPLE_H1: { ruleId: 'STRICT_SINGLE_H1_MULTIPLE_H1', category: 'document', locationStrategy: 'multi-target' },

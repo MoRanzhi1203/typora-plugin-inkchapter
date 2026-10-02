@@ -174,6 +174,56 @@ export function collectCanonicalHeadingSourceLines(
   return lines
 }
 
+/**
+ * V1 — the set of source lines OWNED by a canonical heading.
+ *
+ * Two authorities, the same two `detectLatentAtxMarkers` already relies on:
+ *   1. the Typora `data-line` stamp, and
+ *   2. the ATX shape + `level:normalizedText` canonical key — the documented
+ *      safety net for builds that do not expose `data-line` at all.
+ *
+ * Only ATX-shaped candidates can be claimed by (2), and fenced-code content is
+ * never scanned, so this can never swallow a real body line: a paragraph that
+ * merely contains '#' is not an ATX candidate. Consumers that need to know
+ * "is this document ONLY a heading?" use this — they must not build a second
+ * Markdown heading parser.
+ */
+export function collectCanonicalHeadingOwnedLines(
+  markdown: string | null | undefined,
+  canonicalHeadingLines: ReadonlySet<number> = new Set(),
+  canonicalHeadingTexts: ReadonlySet<string> = new Set(),
+): Set<number> {
+  const owned = new Set<number>()
+  if (markdown == null) return owned
+  const lines = markdown.split('\n')
+  const fence = createFenceScanState()
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    const fenceMatch = FENCE_RE.exec(line)
+    if (fenceMatch) {
+      const char = fenceMatch[1][0]
+      if (!fence.inFence) {
+        fence.inFence = true
+        fence.fenceChar = char
+      } else if (fence.fenceChar === char) {
+        fence.inFence = false
+      }
+      continue
+    }
+    if (fence.inFence) continue
+    if (canonicalHeadingLines.has(i)) {
+      owned.add(i)
+      continue
+    }
+    const m = ATX_CANDIDATE_RE.exec(line)
+    if (!m) continue
+    const key = `${m[1].length}:${normalizeHeadingText(m[2] ?? '')}`
+    if (canonicalHeadingTexts.has(key)) owned.add(i)
+  }
+  return owned
+}
+
 /** "level:normalizedText" keys of canonical headings (secondary fallback). */
 export function collectCanonicalHeadingTextKeys(
   facts: ReadonlyArray<{ physicalLevel: number; text: string }>,
