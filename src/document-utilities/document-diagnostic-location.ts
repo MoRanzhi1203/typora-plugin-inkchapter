@@ -36,57 +36,274 @@ export type DiagnosticLocationStrategy =
   | 'document-end'
   | 'block-node'
   | 'multi-target'
+  /** V1 — ONE diagnostic whose N member targets form a SINGLE fact (1 Drawer row). */
+  | 'target-group'
   /** V1 — the WHOLE owning Markdown block (structure errors). */
   | 'source-block'
   /** V1 — ONE verified figure source occurrence (image warnings). */
   | 'figure-occurrence'
 
+/**
+ * VNext §9/§30 — the 10 INTERNAL diagnostic areas.
+ *
+ * These are grouping metadata ONLY: the Drawer keeps its severity tabs
+ * (全部 / 错误 / 警告 / 提示) and never exposes one tab per area. `area` is
+ * deliberately SEPARATE from `DocumentDiagnosticCategory`, which stays the
+ * legacy consumer-facing grouping used by the drawer projection / dedup keys.
+ */
+export type DocumentDiagnosticArea =
+  | 'document-state'
+  | 'document-completeness'
+  | 'heading'
+  | 'figure'
+  | 'table'
+  | 'code'
+  | 'formula'
+  | 'caption-numbering'
+  | 'link-anchor'
+  | 'cross-reference'
+
+/** VNext §10/§11 — what the problem acts on (never the severity, never the domain). */
+export type DocumentDiagnosticScope = 'document' | 'heading' | 'block' | 'object' | 'inline'
+
+export const DOCUMENT_DIAGNOSTIC_AREAS: readonly DocumentDiagnosticArea[] = [
+  'document-state',
+  'document-completeness',
+  'heading',
+  'figure',
+  'table',
+  'code',
+  'formula',
+  'caption-numbering',
+  'link-anchor',
+  'cross-reference',
+]
+
+/**
+ * VNext §4/§41 — the ONE active-visual MODE authority.
+ *
+ * `text-tight-single-target` — the default: a click activates the ONE canonical
+ * target of the diagnostic (the existing heading emphasis).
+ *
+ * `text-tight-multi-target` — a DOCUMENT-COMPLETENESS rule whose location is a
+ * `multi-target` heading list: ONE click activates EVERY heading target with an
+ * INDEPENDENT text-tight fill (1 diagnostic → N targets → 1 lease → N fills).
+ * It is NEVER a single merged rectangle and never N separate transactions.
+ */
+export type DocumentDiagnosticActiveVisualMode =
+  | 'text-tight-single-target'
+  | 'text-tight-multi-target'
+  /** V1 — ONE group owner activating N co-equal heading members simultaneously. */
+  | 'text-tight-target-group'
+
+/** VNext §9 — the UI presentation axis (how the Drawer / body render the item). */
+export interface DocumentDiagnosticRulePresentation {
+  /** §11 — paint the short reason chip on the target block/heading. */
+  reasonChip: boolean
+  /** §9 — a passive (non-active) marker may be painted for this rule. */
+  passiveVisual: boolean
+  /** §9 — the rule supports an ACTIVE locate visual on first click. */
+  activeVisual: boolean
+  /** §4 — how the ACTIVE visual covers the rule's canonical target set. */
+  activeVisualMode: DocumentDiagnosticActiveVisualMode
+  /**
+   * Target Group V1 §6/§11 — the interaction authority mode.
+   *   single     — ONE target, repeated click toggles.
+   *   occurrence — N independent occurrences (cursor / switch / 1-N).
+   *   group      — ONE fact with N members (no cursor, repeated click toggles).
+   */
+  interactionMode: DocumentDiagnosticInteractionMode
+  /**
+   * Target Group V1 §6/§8 — how the Drawer flattens this rule.
+   *   single-row       — exactly ONE row (target-group AND ordinary rules).
+   *   occurrence-rows  — one row per occurrence target (multi-target).
+   */
+  drawerProjectionMode: DocumentDiagnosticDrawerProjectionMode
+}
+
+export type DocumentDiagnosticInteractionMode = 'single' | 'occurrence' | 'group'
+export type DocumentDiagnosticDrawerProjectionMode = 'single-row' | 'occurrence-rows'
+
 export interface DocumentDiagnosticRuleMeta {
   ruleId: string
   category: DocumentDiagnosticCategory
   locationStrategy: DiagnosticLocationStrategy
+  /** §9/§32 — WHO owns the problem. Every rule in this registry is `document`. */
+  domain: DiagnosticDomain
+  /** §9/§30 — the 10-way INTERNAL area (never a Drawer tab). */
+  area: DocumentDiagnosticArea
+  /** §10/§11 — WHERE the problem acts; the reason-chip default derives from it. */
+  scope: DocumentDiagnosticScope
+  presentation: DocumentDiagnosticRulePresentation
+}
+
+/** area → scope default (§11: scope=document ⇒ reasonChip=false). */
+const AREA_DEFAULT_SCOPE: Readonly<Record<DocumentDiagnosticArea, DocumentDiagnosticScope>> = {
+  'document-state': 'document',
+  'document-completeness': 'document',
+  heading: 'heading',
+  figure: 'object',
+  table: 'object',
+  code: 'object',
+  formula: 'object',
+  'caption-numbering': 'object',
+  'link-anchor': 'inline',
+  'cross-reference': 'inline',
+}
+
+/** legacy consumer category → internal area default. */
+const CATEGORY_DEFAULT_AREA: Readonly<Record<DocumentDiagnosticCategory, DocumentDiagnosticArea>> = {
+  document: 'document-state',
+  heading: 'heading',
+  figure: 'figure',
+  table: 'table',
+  code: 'code',
+  formula: 'formula',
+  link: 'link-anchor',
 }
 
 /**
- * Real producer ruleId → category + location strategy. Keys mirror the ACTUAL
- * codes emitted by `computeDocumentDiagnostics` (never invented aliases).
+ * §9 — build ONE rule meta entry. Defaults are DERIVED (area → scope →
+ * reasonChip) so every registered rule is complete by construction: a rule can
+ * never be registered without domain / area / scope / presentation metadata
+ * (Hard Gate `DOCUMENT_RULE_WITHOUT_*_COUNT=0`).
+ */
+function rule(
+  ruleId: string,
+  category: DocumentDiagnosticCategory,
+  locationStrategy: DiagnosticLocationStrategy,
+  extra: {
+    area?: DocumentDiagnosticArea
+    scope?: DocumentDiagnosticScope
+    reasonChip?: boolean
+    passiveVisual?: boolean
+    activeVisual?: boolean
+    activeVisualMode?: DocumentDiagnosticActiveVisualMode
+    interactionMode?: DocumentDiagnosticInteractionMode
+    drawerProjectionMode?: DocumentDiagnosticDrawerProjectionMode
+  } = {},
+): DocumentDiagnosticRuleMeta {
+  const area = extra.area ?? CATEGORY_DEFAULT_AREA[category]
+  const scope = extra.scope ?? AREA_DEFAULT_SCOPE[area]
+  // Target Group V1 §6 — the mode is DERIVED from the location strategy so a rule
+  // can never register a contradictory interaction / projection mode.
+  const interactionMode = extra.interactionMode
+    ?? (locationStrategy === 'target-group' ? 'group' : locationStrategy === 'multi-target' ? 'occurrence' : 'single')
+  const drawerProjectionMode = extra.drawerProjectionMode
+    ?? (locationStrategy === 'multi-target' ? 'occurrence-rows' : 'single-row')
+  return {
+    ruleId,
+    category,
+    locationStrategy,
+    domain: 'document',
+    area,
+    scope,
+    presentation: {
+      // §11 — the DEFAULT is scope-driven; a rule may still override explicitly.
+      reasonChip: extra.reasonChip ?? scope !== 'document',
+      passiveVisual: extra.passiveVisual ?? true,
+      activeVisual: extra.activeVisual ?? true,
+      activeVisualMode: extra.activeVisualMode
+        ?? (locationStrategy === 'target-group' ? 'text-tight-target-group' : 'text-tight-single-target'),
+      interactionMode,
+      drawerProjectionMode,
+    },
+  }
+}
+
+/**
+ * Real producer ruleId → category + area + scope + location strategy +
+ * presentation. Keys mirror the ACTUAL codes emitted by
+ * `computeDocumentDiagnostics` (never invented aliases).
  */
 export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosticRuleMeta> = {
   // Document-level
-  DOCUMENT_INACTIVE: { ruleId: 'DOCUMENT_INACTIVE', category: 'document', locationStrategy: 'document-start' },
-  DOCUMENT_EMPTY: { ruleId: 'DOCUMENT_EMPTY', category: 'document', locationStrategy: 'document-start' },
-  DOCUMENT_SOURCE_UNAVAILABLE: { ruleId: 'DOCUMENT_SOURCE_UNAVAILABLE', category: 'document', locationStrategy: 'document-start' },
-  DOCUMENT_TERMINAL_NEWLINE_MISSING: { ruleId: 'DOCUMENT_TERMINAL_NEWLINE_MISSING', category: 'document', locationStrategy: 'document-end' },
-  DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: { ruleId: 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', category: 'document', locationStrategy: 'document-end' },
+  DOCUMENT_INACTIVE: rule('DOCUMENT_INACTIVE', 'document', 'document-start', { area: 'document-state' }),
+  DOCUMENT_EMPTY: rule('DOCUMENT_EMPTY', 'document', 'document-start', { area: 'document-state' }),
+  DOCUMENT_SOURCE_UNAVAILABLE: rule('DOCUMENT_SOURCE_UNAVAILABLE', 'document', 'document-start', { area: 'document-state' }),
+  DOCUMENT_TERMINAL_NEWLINE_MISSING: rule('DOCUMENT_TERMINAL_NEWLINE_MISSING', 'document', 'document-end', { area: 'document-state' }),
+  DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: rule('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', 'document', 'document-end', { area: 'document-state' }),
   // V1 — 单标题无正文 Hint：the target is the UNIQUE canonical heading (never
   // EOF / blank body / toolbar / drawer), so its strategy is `canonical-node`
   // with a `source-range` fallback when the frame carries no stable identity.
-  DOCUMENT_HEADING_ONLY_NO_BODY: { ruleId: 'DOCUMENT_HEADING_ONLY_NO_BODY', category: 'document', locationStrategy: 'canonical-node' },
-  // Strict H1 (canonical frame authority)
-  STRICT_SINGLE_H1_NO_H1: { ruleId: 'STRICT_SINGLE_H1_NO_H1', category: 'document', locationStrategy: 'document-start' },
-  STRICT_SINGLE_H1_MULTIPLE_H1: { ruleId: 'STRICT_SINGLE_H1_MULTIPLE_H1', category: 'document', locationStrategy: 'multi-target' },
+  DOCUMENT_HEADING_ONLY_NO_BODY: rule('DOCUMENT_HEADING_ONLY_NO_BODY', 'document', 'canonical-node', { area: 'document-completeness' }),
+  // VNext §12/§13 / Target Group V1 §4/§6 — 多标题无正文 Hint（与上面严格互斥）。
+  // It is a TARGET GROUP: ONE document-level fact carried by EVERY canonical
+  // heading. ONE diagnostic / ONE Drawer row / ONE interaction / ONE lease with
+  // N co-equal heading members — never an occurrence list (`1/N`).
+  DOCUMENT_HEADINGS_ONLY_NO_BODY: rule('DOCUMENT_HEADINGS_ONLY_NO_BODY', 'document', 'target-group', {
+    area: 'document-completeness',
+  }),
+  STRICT_SINGLE_H1_NO_H1: rule('STRICT_SINGLE_H1_NO_H1', 'document', 'document-start', { area: 'document-state' }),
+  // §10/§11 — the MULTIPLE-H1 violation ACTS ON the offending H1 (its reason
+  // chip is painted on that heading, the frozen V5.14-R5 contract), so its
+  // scope is `heading`, not `document`, even though the RULE is document-level.
+  STRICT_SINGLE_H1_MULTIPLE_H1: rule('STRICT_SINGLE_H1_MULTIPLE_H1', 'document', 'multi-target', { area: 'document-state', scope: 'heading' }),
   // Source syntax
-  LATENT_ATX_HEADING_MARKER: { ruleId: 'LATENT_ATX_HEADING_MARKER', category: 'heading', locationStrategy: 'source-range' },
+  LATENT_ATX_HEADING_MARKER: rule('LATENT_ATX_HEADING_MARKER', 'heading', 'source-range'),
   // Heading structure
-  HEADING_LEVEL_GAP: { ruleId: 'HEADING_LEVEL_GAP', category: 'heading', locationStrategy: 'canonical-node' },
-  HEADING_EMPTY_TEXT: { ruleId: 'HEADING_EMPTY_TEXT', category: 'heading', locationStrategy: 'canonical-node' },
-  HEADING_DUPLICATE_TEXT: { ruleId: 'HEADING_DUPLICATE_TEXT', category: 'heading', locationStrategy: 'multi-target' },
-  HEADING_DUPLICATE_IDENTITY: { ruleId: 'HEADING_DUPLICATE_IDENTITY', category: 'heading', locationStrategy: 'canonical-node' },
+  HEADING_LEVEL_GAP: rule('HEADING_LEVEL_GAP', 'heading', 'canonical-node'),
+  HEADING_EMPTY_TEXT: rule('HEADING_EMPTY_TEXT', 'heading', 'canonical-node'),
+  HEADING_DUPLICATE_TEXT: rule('HEADING_DUPLICATE_TEXT', 'heading', 'multi-target'),
+  HEADING_DUPLICATE_IDENTITY: rule('HEADING_DUPLICATE_IDENTITY', 'heading', 'canonical-node'),
+  // VNext §16/§17 — section completeness (heading-scoped hints).
+  SECTION_EMPTY: rule('SECTION_EMPTY', 'heading', 'canonical-node', { area: 'document-completeness', scope: 'heading', reasonChip: true }),
+  SECTION_ONLY_SUBHEADINGS: rule('SECTION_ONLY_SUBHEADINGS', 'heading', 'canonical-node', { area: 'document-completeness', scope: 'heading', reasonChip: true }),
+  // VNext §24 — user manual numbering while automatic numbering is ON.
+  HEADING_MANUAL_NUMBER_PREFIX: rule('HEADING_MANUAL_NUMBER_PREFIX', 'heading', 'canonical-node', { area: 'caption-numbering', scope: 'heading' }),
   // Figure / table / code / formula / link (block node)
-  FIGURE_MISSING_NAME: { ruleId: 'FIGURE_MISSING_NAME', category: 'figure', locationStrategy: 'figure-occurrence' },
-  FIGURE_DUPLICATE_NAME: { ruleId: 'FIGURE_DUPLICATE_NAME', category: 'figure', locationStrategy: 'multi-target' },
-  FIGURE_LOCAL_IMAGE_MISSING: { ruleId: 'FIGURE_LOCAL_IMAGE_MISSING', category: 'figure', locationStrategy: 'figure-occurrence' },
+  FIGURE_MISSING_NAME: rule('FIGURE_MISSING_NAME', 'figure', 'figure-occurrence'),
+  FIGURE_DUPLICATE_NAME: rule('FIGURE_DUPLICATE_NAME', 'figure', 'multi-target'),
+  FIGURE_LOCAL_IMAGE_MISSING: rule('FIGURE_LOCAL_IMAGE_MISSING', 'figure', 'figure-occurrence'),
   // V5.15 / V1 — a structurally invalid picture block owns a BLOCK-level
   // locator: the target is the WHOLE owning block (never one image token) and
   // the rule never enters the inline occurrence / duplicate-range resolver.
-  FIGURE_BLOCK_STRUCTURE_INVALID: { ruleId: 'FIGURE_BLOCK_STRUCTURE_INVALID', category: 'figure', locationStrategy: 'source-block' },
-  TABLE_MISSING_NAME: { ruleId: 'TABLE_MISSING_NAME', category: 'table', locationStrategy: 'block-node' },
-  TABLE_DUPLICATE_NAME: { ruleId: 'TABLE_DUPLICATE_NAME', category: 'table', locationStrategy: 'multi-target' },
-  CODE_MISSING_NAME: { ruleId: 'CODE_MISSING_NAME', category: 'code', locationStrategy: 'block-node' },
-  CODE_MISSING_LANGUAGE: { ruleId: 'CODE_MISSING_LANGUAGE', category: 'code', locationStrategy: 'block-node' },
-  CODE_DUPLICATE_NAME: { ruleId: 'CODE_DUPLICATE_NAME', category: 'code', locationStrategy: 'multi-target' },
-  FORMULA_DUPLICATE_VISIBLE_TAG: { ruleId: 'FORMULA_DUPLICATE_VISIBLE_TAG', category: 'formula', locationStrategy: 'block-node' },
-  LINK_LOCAL_TARGET_MISSING: { ruleId: 'LINK_LOCAL_TARGET_MISSING', category: 'link', locationStrategy: 'block-node' },
+  FIGURE_BLOCK_STRUCTURE_INVALID: rule('FIGURE_BLOCK_STRUCTURE_INVALID', 'figure', 'source-block'),
+  FIGURE_MANUAL_NUMBER_PREFIX: rule('FIGURE_MANUAL_NUMBER_PREFIX', 'figure', 'figure-occurrence', { area: 'caption-numbering', scope: 'object' }),
+  TABLE_MISSING_NAME: rule('TABLE_MISSING_NAME', 'table', 'block-node'),
+  TABLE_DUPLICATE_NAME: rule('TABLE_DUPLICATE_NAME', 'table', 'multi-target'),
+  // VNext §18 — a table carrying a list/blockquote marker is not a standalone
+  // block (proven by the source parser, never by DOM position).
+  TABLE_BLOCK_STRUCTURE_INVALID: rule('TABLE_BLOCK_STRUCTURE_INVALID', 'table', 'source-range'),
+  TABLE_EMPTY_CONTENT: rule('TABLE_EMPTY_CONTENT', 'table', 'source-range', { area: 'document-completeness', scope: 'object' }),
+  CODE_MISSING_NAME: rule('CODE_MISSING_NAME', 'code', 'block-node'),
+  CODE_MISSING_LANGUAGE: rule('CODE_MISSING_LANGUAGE', 'code', 'block-node'),
+  CODE_DUPLICATE_NAME: rule('CODE_DUPLICATE_NAME', 'code', 'multi-target'),
+  CODE_EMPTY_BLOCK: rule('CODE_EMPTY_BLOCK', 'code', 'source-range', { area: 'document-completeness', scope: 'object' }),
+  FORMULA_DUPLICATE_VISIBLE_TAG: rule('FORMULA_DUPLICATE_VISIBLE_TAG', 'formula', 'block-node'),
+  // VNext §19 — a display formula carrying a list/blockquote marker is not a
+  // standalone block (the formula analogue of FIGURE_BLOCK_STRUCTURE_INVALID).
+  // Located as a source-range over the WHOLE formula block: the figure
+  // `source-block` locator is figure-specific and must not be reused here.
+  FORMULA_BLOCK_STRUCTURE_INVALID: rule('FORMULA_BLOCK_STRUCTURE_INVALID', 'formula', 'source-range'),
+  FORMULA_EMPTY_CONTENT: rule('FORMULA_EMPTY_CONTENT', 'formula', 'source-range', { area: 'document-completeness', scope: 'object' }),
+  BLOCKQUOTE_EMPTY: rule('BLOCKQUOTE_EMPTY', 'document', 'source-range', { area: 'document-completeness', scope: 'block' }),
+  LINK_LOCAL_TARGET_MISSING: rule('LINK_LOCAL_TARGET_MISSING', 'link', 'block-node'),
+}
+
+/** §11 — the ONE scope resolver (registry + prefix aware). */
+export function resolveRuleScope(code: string): DocumentDiagnosticScope | null {
+  return getRuleMeta(code)?.scope ?? null
+}
+
+/** §11 — the ONE reason-chip authority for a rule code (never a code special case). */
+export function resolveRuleReasonChip(code: string): boolean | null {
+  return getRuleMeta(code)?.presentation.reasonChip ?? null
+}
+
+/** §4 — the ONE active-visual-mode authority for a rule code (never a code special case). */
+export function resolveRuleActiveVisualMode(code: string): DocumentDiagnosticActiveVisualMode {
+  return getRuleMeta(code)?.presentation.activeVisualMode ?? 'text-tight-single-target'
+}
+
+/** Target Group V1 §6/§11 — the ONE interaction-mode authority for a rule code. */
+export function resolveRuleInteractionMode(code: string): DocumentDiagnosticInteractionMode {
+  return getRuleMeta(code)?.presentation.interactionMode ?? 'single'
+}
+
+/** Target Group V1 §6/§8 — the ONE drawer-projection-mode authority for a rule code. */
+export function resolveRuleDrawerProjectionMode(code: string): DocumentDiagnosticDrawerProjectionMode {
+  return getRuleMeta(code)?.presentation.drawerProjectionMode ?? 'single-row'
 }
 
 /** Resolve registry meta by the REAL emitted code (prefix match for LATENT levels). */
@@ -94,7 +311,9 @@ export function getRuleMeta(code: string): DocumentDiagnosticRuleMeta | null {
   if (DOCUMENT_DIAGNOSTIC_RULE_REGISTRY[code]) return DOCUMENT_DIAGNOSTIC_RULE_REGISTRY[code]
   if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return DOCUMENT_DIAGNOSTIC_RULE_REGISTRY.LATENT_ATX_HEADING_MARKER
   if (code.startsWith('STRICT_FIRST_H1_')) {
-    return { ruleId: 'STRICT_FIRST_H1_POSITION', category: 'document', locationStrategy: 'canonical-node' }
+    // §11 — the pre-H1 lint acts ON the first H1 (its reason chip is painted on
+    // that heading, the frozen V5.14-R5 contract) ⇒ scope=heading.
+    return rule('STRICT_FIRST_H1_POSITION', 'document', 'canonical-node', { area: 'document-state', scope: 'heading' })
   }
   return null
 }
@@ -145,6 +364,8 @@ export interface DiagnosticLocationContract {
   documentEndLocationCount: number
   blockNodeLocationCount: number
   multiTargetLocationCount: number
+  /** V1 — target-group locators (ONE diagnostic / N members / ONE row). */
+  targetGroupLocationCount: number
   decision: 'PASS' | 'FAIL'
 }
 
@@ -167,6 +388,11 @@ export function hasLocatableLocation(location: DiagnosticLocation | undefined | 
       && location.occurrenceIdentity.sourceBlockIdentity.trim() !== ''
   }
   if (location.kind === 'multi-target') return location.targets.length > 0
+  // Target Group V1 §4 — a group is locatable when its scroll anchor is locatable
+  // (or it declares at least one member).
+  if (location.kind === 'target-group') {
+    return location.targets.length > 0 || hasLocatableLocation(location.scrollAnchor)
+  }
   return true // document-start / document-end
 }
 
@@ -186,6 +412,7 @@ export function computeDiagnosticLocationContract(
   let documentEnd = 0
   let blockNode = 0
   let multiTarget = 0
+  let targetGroup = 0
   let locatable = 0
   let nonLocatableNotice = 0
   for (const d of diags) {
@@ -205,6 +432,7 @@ export function computeDiagnosticLocationContract(
       case 'document-end': documentEnd++; break
       case 'block-node': blockNode++; break
       case 'multi-target': multiTarget++; break
+      case 'target-group': targetGroup++; break
     }
   }
   const unlocatable = diags.length - locatable - nonLocatableNotice
@@ -221,6 +449,7 @@ export function computeDiagnosticLocationContract(
     documentEndLocationCount: documentEnd,
     blockNodeLocationCount: blockNode,
     multiTargetLocationCount: multiTarget,
+    targetGroupLocationCount: targetGroup,
     decision: unlocatable === 0 ? 'PASS' : 'FAIL',
   }
 }
@@ -1029,6 +1258,12 @@ export function resolveDiagnosticLocation(
       }
       const idx = ((targetIndex % location.targets.length) + location.targets.length) % location.targets.length
       return resolveDiagnosticLocation(diagnostic, location.targets[idx], ctx, idx)
+    }
+    case 'target-group': {
+      // Target Group V1 §13 — a group locate is ALWAYS the single scroll anchor
+      // (the first member). The N members share this ONE viewport locate; the
+      // active visual expands to all of them afterwards. A group is NEVER cycled.
+      return resolveDiagnosticLocation(diagnostic, location.scrollAnchor, ctx, 0)
     }
     default:
       return { decision: 'UNSUPPORTED', element: null, scrollAction: null, targetIndex, reason: 'UNKNOWN_LOCATION_KIND' }

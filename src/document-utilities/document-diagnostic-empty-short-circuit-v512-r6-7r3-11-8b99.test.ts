@@ -434,13 +434,16 @@ describe('R6-HOST — empty fixture, atomic switches, audit and stale-revision g
     expect(audit!.eofRuleExecuted).toBe('false')
     expect(audit!.decision).toBe('PASS')
     expect(audit!.reason).toBe(EMPTY_DOCUMENT_EXCLUSIVE_REASON)
-    // §1 — the toolbar stays REACHABLE for a hint-only document: exactly one
-    // entry showing the real hint count (never a zero counter).
-    const entries = document.querySelectorAll('.inkchapter-problems-control .inkchapter-toolbar-entry')
-    expect(entries).toHaveLength(1)
-    expect(entries[0].getAttribute('aria-label')).toBe('提示 1')
-    expect(entries[0].querySelector('.inkchapter-toolbar-segment--error')).toBeNull()
-    expect(entries[0].querySelector('.inkchapter-toolbar-segment--warning')).toBeNull()
+    // VNext Presentation Closure V1.1 §17/§19 — a hint-only document shows an
+    // INDEPENDENT Hint badge (segment) with the real count, and NEVER the `✓`
+    // success entry (a document with a Hint is not "healthy").
+    const infoSegments = document.querySelectorAll('.inkchapter-problems-control .inkchapter-toolbar-segment--info')
+    expect(infoSegments).toHaveLength(1)
+    expect(infoSegments[0].querySelector('.inkchapter-toolbar-segment__count')?.textContent).toBe('1')
+    expect(infoSegments[0].getAttribute('data-severity')).toBe('info')
+    expect(document.querySelector('.inkchapter-problems-control .inkchapter-toolbar-segment--error')).toBeNull()
+    expect(document.querySelector('.inkchapter-problems-control .inkchapter-toolbar-segment--warning')).toBeNull()
+    expect(document.querySelector('.inkchapter-problems-control .inkchapter-toolbar-entry.is-healthy')).toBeNull()
     // No leaked Strict-H1 / first-H1 diagnostic in the drawer rows.
     expect(document.querySelectorAll('[data-diagnostic-id]').length).toBeLessThanOrEqual(1)
     infoSpy.mockRestore()

@@ -41,6 +41,16 @@ export interface DiagnosticInteractionState {
 
   transactionId: number | null
   leaseToken: string | null
+
+  /**
+   * Target Group V1 §11 — the interaction target MODE. `group` means ONE fact with
+   * N co-equal members (`groupMemberCount`); `occurrence` means the ordinary
+   * multi-target cursor model; `single` is the default. OPTIONAL so pre-group
+   * callers/tests keep working (absent === 'single').
+   */
+  targetMode?: 'single' | 'occurrence' | 'group'
+  /** Target Group V1 §11 — the number of co-equal members of a group activation. */
+  groupMemberCount?: number
 }
 
 export function emptyDiagnosticInteractionState(): DiagnosticInteractionState {
@@ -63,6 +73,10 @@ export interface DiagnosticClick {
   diagnosticTargetIndex: number
   /** V1 §7 — the narrowed-transaction local index (null when not narrowed). */
   transactionLocalTargetIndex: number | null
+  /** Target Group V1 §11 — OPTIONAL interaction mode (absent === 'single'). */
+  targetMode?: 'single' | 'occurrence' | 'group'
+  /** Target Group V1 §11 — the group's member count (only for targetMode='group'). */
+  groupMemberCount?: number
 }
 
 export type DiagnosticTransitionAction = 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH'
@@ -122,6 +136,9 @@ export function reduceDiagnosticClick(
       transactionLocalTargetIndex: click.transactionLocalTargetIndex,
       transactionId: nextTransactionId,
       leaseToken: nextLeaseToken,
+      // Target Group V1 §11 — carry the interaction mode (absent === 'single').
+      targetMode: click.targetMode ?? 'single',
+      ...(click.groupMemberCount != null ? { groupMemberCount: click.groupMemberCount } : {}),
     },
   }
 }
@@ -295,6 +312,13 @@ export interface PostSettleClosureFacts {
   /** §14 — the Drawer row requirement only applies once rows were really rendered. */
   drawerRowsRendered: boolean
   activeTargetCount: number
+  /**
+   * VNext Presentation Closure V1.1 §13 — the EXPECTED number of ACTIVE targets.
+   * Absent / 1 = the existing single-target contract (identical behavior).
+   * A `text-tight-multi-target` group activation declares N so the closure proves
+   * "1 diagnostic → N heading targets" instead of a hardcoded 1.
+   */
+  activeTargetCountExpected?: number
   activeFillCount: number
   activeHeadingFragmentCount: number
   /** §10 — a heading target MUST own a painted active fragment + a real fill. */
@@ -334,7 +358,9 @@ export function evaluatePostSettleClosure(facts: PostSettleClosureFacts): PostSe
     if (facts.stateDiagnosticId == null) reasons.push('ACTIVE_WITHOUT_DIAGNOSTIC_ID')
     if (facts.stateTargetKey == null) reasons.push('ACTIVE_WITHOUT_TARGET_KEY')
     if (facts.drawerRowsRendered && facts.selectedActiveRowCount !== 1) reasons.push('ACTIVE_SELECTED_ACTIVE_ROW_NOT_ONE')
-    if (facts.activeTargetCount !== 1) reasons.push('ACTIVE_TARGET_COUNT_NOT_ONE')
+    // VNext §13 — default 1 keeps the single-target contract; a multi-target group
+    // declares its real N so the closure verifies the group size it committed.
+    if (facts.activeTargetCount !== (facts.activeTargetCountExpected ?? 1)) reasons.push('ACTIVE_TARGET_COUNT_NOT_ONE')
     // §10 — an ACTIVE heading target must own a REAL painted fill. The fragment
     // count is GEOMETRY based (a present, non-zero sized active fragment), so the
     // verdict is meaningful in the real runtime AND in the jsdom harness.

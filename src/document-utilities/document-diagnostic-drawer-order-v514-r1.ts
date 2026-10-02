@@ -13,10 +13,11 @@ import type { DiagnosticLocation, DocumentDiagnostic } from './diagnostics-types
 
 export type DiagnosticSeverityV514 = 'error' | 'warning' | 'info'
 
-/**
- * §2 — one real TARGET OCCURRENCE. For `kind:'multi-target'` a diagnostic yields
- * N projections (targetIndex 0..N-1, shared targetCount); for every other kind it
- * yields exactly one (targetIndex 0, targetCount 1).
+/** §2 — one real TARGET OCCURRENCE. For `kind:'multi-target'` a diagnostic yields
+ * N projections (targetIndex 0..N-1, shared targetCount); for `kind:'target-group'`
+ * it yields EXACTLY ONE group projection (targetIndex 0, targetCount 1 — a group is
+ * NOT an occurrence list); for every other kind it yields exactly one
+ * (targetIndex 0, targetCount 1).
  */
 export interface DiagnosticTargetProjection {
   diagnosticId: string
@@ -150,9 +151,66 @@ function projectOne(
 }
 
 /**
+ * Target Group V1 §10 — the stable identity of a TARGET GROUP projection. It is
+ * a SENTINEL (never a member's stable identity), so the group's Drawer / active
+ * target key is `${documentKey}::${diagnosticId}::0::GROUP` — independent of the
+ * scrollAnchor identity and containing NO member target index.
+ */
+export const TARGET_GROUP_STABLE_IDENTITY = 'GROUP'
+
+/**
+ * Target Group V1 §8 — build the ONE projection of a `target-group` diagnostic.
+ * It is ALWAYS exactly one row (`targetIndex: 0`, `targetCount: 1`), so the Drawer
+ * can never paint a `1/N` occurrence badge for a group. The members stay on the
+ * LOCATION (the interaction / visual authorities read them).
+ */
+function buildTargetGroupProjection(
+  d: DocumentDiagnostic,
+  severity: DiagnosticSeverityV514,
+  loc: Extract<DiagnosticLocation, { kind: 'target-group' }>,
+  ctx: DocumentPositionContext,
+): DiagnosticTargetProjection {
+  const anchor = loc.scrollAnchor
+  let sourceLine: number | null = null
+  let sourceColumn: number | null = null
+  let canonicalHeadingIndex: number | null = null
+  if (anchor.kind === 'source-range') {
+    sourceLine = numOrNull(anchor.startLine)
+    sourceColumn = numOrNull(anchor.startColumn)
+  } else if (anchor.kind === 'canonical-node') {
+    canonicalHeadingIndex = ctx.headingIndexOfStableIdentity?.(anchor.stableIdentity) ?? null
+    sourceLine = ctx.lineOfStableIdentity?.(anchor.stableIdentity) ?? null
+  } else if (anchor.kind === 'block-node') {
+    sourceLine = ctx.lineOfStableIdentity?.(anchor.stableIdentity) ?? null
+  }
+  return {
+    diagnosticId: d.id,
+    ruleId: typeof d.code === 'string' && d.code !== '' ? d.code : d.id,
+    severity,
+    // §8 — ONE row: the ordinal badge is driven by targetCount > 1, so 1 ⇒ no badge.
+    targetIndex: 0,
+    targetCount: 1,
+    stableIdentity: TARGET_GROUP_STABLE_IDENTITY,
+    documentKey: d.documentKey,
+    sourceStartOffset: null,
+    sourceEndOffset: null,
+    canonicalBlockIndex: null,
+    canonicalHeadingIndex,
+    sourceLine,
+    sourceColumn,
+    locationKind: 'target-group',
+    active: false,
+  }
+}
+
+/**
  * §4 — flatten the diagnostic list into ONE entry per real target occurrence.
  * The multi-target business diagnostic is preserved (never split into several
  * diagnostics); only its projection is expanded.
+ *
+ * Target Group V1 §8 — a `target-group` diagnostic is NEVER expanded: it yields
+ * EXACTLY ONE projection (ONE Drawer row). Ordinary `multi-target` keeps its N
+ * occurrence projections (regression-protected).
  */
 export function flattenDiagnosticsToProjections(
   diagnostics: readonly DocumentDiagnostic[],
@@ -162,6 +220,11 @@ export function flattenDiagnosticsToProjections(
   for (const d of diagnostics) {
     const severity = normalizeSeverityV514(d.severity)
     const loc = d.location ?? null
+    if (loc && loc.kind === 'target-group') {
+      // §8 — ONE row, never `projectionCount = targets.length`.
+      out.push(buildTargetGroupProjection(d, severity, loc, ctx))
+      continue
+    }
     if (loc && loc.kind === 'multi-target') {
       const targets = loc.targets ?? []
       if (targets.length === 0) continue

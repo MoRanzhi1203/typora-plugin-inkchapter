@@ -415,6 +415,12 @@ export interface HeadingPostReconcileClosureInput {
   activeTargetIsHeading: boolean
   selectedActiveRowCount: number
   activeTargetCount: number
+  /**
+   * VNext Presentation Closure V1.1 §13 — the EXPECTED number of ACTIVE targets.
+   * Absent / 1 = the existing single-target contract (identical behavior).
+   * A `text-tight-multi-target` group activation declares its real N.
+   */
+  activeTargetCountExpected?: number
   activeHeadingFragmentCount: number
   activeFillCount: number
   activeLeasePresent: boolean
@@ -467,7 +473,7 @@ export function evaluateHeadingPostReconcileClosure(input: HeadingPostReconcileC
   const drawerRendered = input.drawerRowsRendered !== false
   if (drawerRendered && input.selectedActiveRowCount !== 1) failed.push('SELECTED_ACTIVE_ROW_COUNT_NOT_ONE')
   if (drawerRendered && input.drawerActiveRowCount !== 1) failed.push('DRAWER_ACTIVE_ROW_COUNT_NOT_ONE')
-  if (input.activeTargetCount !== 1) failed.push('ACTIVE_TARGET_COUNT_NOT_ONE')
+  if (input.activeTargetCount !== (input.activeTargetCountExpected ?? 1)) failed.push('ACTIVE_TARGET_COUNT_NOT_ONE')
   if (input.activeHeadingFragmentCount < 1) failed.push('ACTIVE_HEADING_FRAGMENT_COUNT_ZERO')
   if (input.activeFillCount < 1) failed.push('ACTIVE_FILL_COUNT_ZERO')
   if (!input.activeLeasePresent) failed.push('ACTIVE_LEASE_MISSING')

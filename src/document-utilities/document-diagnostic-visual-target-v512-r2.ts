@@ -131,6 +131,18 @@ export function resolveDiagnosticVisualTargets(
       }
       return
     }
+    if (loc.kind === 'target-group') {
+      // Target Group V1 §14/§17 — the group's N members are INDEPENDENT visual
+      // targets (one passive marker / one active fill each), while the Drawer /
+      // interaction stay ONE. The group expansion is therefore the SAME as the
+      // multi-member expansion here — it only differs in the Drawer projection
+      // and the interaction authority.
+      const targets = loc.targets
+      for (let i = 0; i < targets.length; i++) {
+        collect(targets[i], i, targets.length, push)
+      }
+      return
+    }
     if (loc.kind === 'canonical-node' && loc.nodeKind === 'heading') {
       const identity = `heading:${loc.stableIdentity}`
       const el = deps.resolveHeadingElement(loc.stableIdentity, null)

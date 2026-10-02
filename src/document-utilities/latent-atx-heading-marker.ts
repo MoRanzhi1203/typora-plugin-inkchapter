@@ -77,6 +77,14 @@ function normalizeHeadingText(text: string): string {
 }
 
 /**
+ * VNext §15/§16 — the ONE exported heading-text normalizer (the same function
+ * the ATX scan uses internally, so no consumer ever builds a second one).
+ */
+export function normalizeCanonicalHeadingText(text: string | null | undefined): string {
+  return normalizeHeadingText(text ?? '')
+}
+
+/**
  * Detect latent ATX heading markers in raw Markdown.
  *
  * @param markdown  Raw editor Markdown (may be null → empty result).

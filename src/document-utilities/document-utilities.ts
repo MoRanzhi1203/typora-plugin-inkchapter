@@ -49,6 +49,11 @@ export interface DocumentUtilitiesSources {
    *  at entry.semanticState.physicalLevel (never a fake flat physicalLevel). */
   getCanonicalHeadingFrame: () => CanonicalHeadingFrame | null
   getCaptionTitleForElement: (el: HTMLElement) => string | null
+  /**
+   * VNext §24 — OBJECT auto-numbering activation (figure/table/code/formula).
+   * Optional: absent ⇒ the manual-number rules stay OFF.
+   */
+  getObjectNumberingEnabled?: () => { figure?: boolean; table?: boolean; code?: boolean; formula?: boolean }
   /** Phase 7R.3.11.8B.7.6 — rendered caption host for an object element
    *  (compound missing-name locator). Optional. */
   getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
@@ -186,6 +191,9 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
         // aggregate surface. Return empty — the structural scan covers it.
         return []
       },
+      // VNext §24 — the object auto-numbering activation authority (optional:
+      // absent ⇒ the manual-number rules stay OFF).
+      getObjectNumberingEnabled: sources.getObjectNumberingEnabled,
     },
     hasActiveDocument: () => sources.getActiveFilePath() != null,
   }
