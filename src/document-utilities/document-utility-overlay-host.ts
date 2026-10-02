@@ -52,6 +52,18 @@ import {
   buildDomBlockIdentity,
   computeCleanupClosureDecision,
   computeFeatureLocateDecision,
+  computeInteractionFinalDecision,
+  createFigureDiagnosticLocatorV2Counters,
+  createFigureDiagnosticLocatorV2CoverageCounters,
+  evaluateFigureDiagnosticLocatorV2Gates,
+  formatFigureDiagnosticLocatorV2CoverageReport,
+  formatFigureDiagnosticLocatorV2GateReport,
+  SOURCE_BLOCK_IDENTITY_AUDIT,
+  buildSourceBlockIdentity,
+  classifySourceBlockContainer,
+  verifySourceBlockIdentity,
+  type FigureDiagnosticLocatorV2Counters,
+  type FigureDiagnosticLocatorV2CoverageCounters,
   computeLocateDecision,
   createFigureDiagnosticLocatorV1Counters,
   createFigureDiagnosticLocatorV1CoverageCounters,
@@ -285,6 +297,8 @@ import {
   selectDocumentDiagnostics,
 } from './diagnostic-domain-v1'
 import type { DocumentDiagnostic } from './diagnostics-types'
+// V2 §6 — the source-line → visible-text normalizer used by the owning-block binder.
+import { stripBlockLevelMarkers, stripInlineResourceSyntax } from './document-diagnostic-location'
 import {
   DOCUMENT_SPACE_DRIFT_HARD_PX,
   LOCATE_DOCUMENT_LAYER_CLASS,
@@ -2381,6 +2395,52 @@ export class DocumentUtilityOverlayHost {
   private lastLocateDecision: 'PASS' | 'FAIL' | 'N/A' = 'N/A'
   private lastCleanupClosureDecision: 'PASS' | 'FAIL' | 'N/A' = 'N/A'
   private lastFeatureLocateDecision: 'PASS' | 'FAIL' = 'FAIL'
+  /**
+   * V2 §19/§20 — the ACCEPTANCE counters are a separate scope from the
+   * per-transaction decision: they can be reset explicitly at a matrix start /
+   * fixture switch, so a historical failure can never permanently poison a
+   * later successful transaction (and a historical success can never mask a
+   * current failure — that is the per-transaction decision's job).
+   */
+  private countersFigureLocatorV2: FigureDiagnosticLocatorV2Counters = createFigureDiagnosticLocatorV2Counters()
+  private countersFigureLocatorV2Coverage: FigureDiagnosticLocatorV2CoverageCounters = createFigureDiagnosticLocatorV2CoverageCounters()
+  /**
+   * V2.3 §9 — the CURRENT transaction's full SourceDomBlockBindingResult,
+   * stashed by the binder and consumed by the semantic verify (which must
+   * VERIFY the binding proof, never re-derive source from the DOM).
+   */
+  private lastSourceBlockBindingV2: SourceBlockBinding | null = null
+
+  /** V2 §6 — the canonical owning-block container of a bound DOM block. */
+  private sourceBlockContainerKindOf(el: HTMLElement): string {
+    const inList = el.closest('li') != null
+    const inBlockquote = el.closest('blockquote') != null
+    return classifySourceBlockContainer(el.tagName, inList, inBlockquote)
+  }
+
+  /**
+   * §20 — the EXPLICIT acceptance-counter reset. Called at a runtime matrix
+   * start / fixture switch / explicit developer audit start — never silently
+   * before an ordinary click.
+   */
+  resetFigureDiagnosticLocatorAcceptanceCounters(): void {
+    this.countersFigureLocatorV2 = createFigureDiagnosticLocatorV2Counters()
+    this.countersFigureLocatorV2Coverage = createFigureDiagnosticLocatorV2CoverageCounters()
+    this.countersFigureLocatorV1 = createFigureDiagnosticLocatorV1Counters()
+    this.coverageFigureLocatorV1 = createFigureDiagnosticLocatorV1CoverageCounters()
+  }
+
+  getFigureDiagnosticLocatorV2GateReport(): string[] {
+    return formatFigureDiagnosticLocatorV2GateReport(this.countersFigureLocatorV2)
+  }
+
+  getFigureDiagnosticLocatorV2CoverageReport(): string[] {
+    return formatFigureDiagnosticLocatorV2CoverageReport(this.countersFigureLocatorV2Coverage)
+  }
+
+  getFigureDiagnosticLocatorV2GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateFigureDiagnosticLocatorV2Gates(this.countersFigureLocatorV2)
+  }
   /** V1 — the facts of the last emitted locate audit (consumed at the terminal). */
   private lastLocateAuditContext: {
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null
@@ -14533,6 +14593,14 @@ export class DocumentUtilityOverlayHost {
     const st = this.diagnosticInteractionState
     const facts = this.measurePostSettleDomFactsV2(st)
     const verdict = evaluatePostSettleClosure(facts)
+    // ── V2 §17/§18 — the FINAL decision merges the interaction closure with the
+    // SEMANTIC locate outcome. A clean atomic teardown (cleanup PASS) can no
+    // longer be reported as a successful transaction when the semantic locate
+    // of THIS transaction failed.
+    const finalDecisionV2 = computeInteractionFinalDecision({
+      interactionClosureDecision: verdict.decision,
+      featureLocateDecision: this.lastFeatureLocateDecision,
+    })
     if (st.phase === 'ACTIVE' && facts.activeTargetIsHeading && facts.activeHeadingFragmentCount < 1) {
       this.countersActiveStateMachineV2.activeWithZeroFill++
     }
@@ -14656,8 +14724,18 @@ export class DocumentUtilityOverlayHost {
       fixtureResourceV1GateReport: this.getFixtureResourceV1GateReport(),
       fixtureResourceV1CoverageReport: this.getFixtureResourceV1CoverageReport(),
       fixtureResourceV1GateDecision: this.getFixtureResourceV1GateDecision().decision,
-      decision: verdict.decision,
-      reasons: verdict.reasons.join('|') || 'CLOSURE_OK',
+      // ── V2 §17/§18 — interaction closure and SEMANTIC locate are SEPARATE.
+      // A clean atomic teardown must never mask a semantic locate FAILURE.
+      interactionClosureDecisionV2: verdict.decision,
+      semanticLocateDecisionV2: this.lastFeatureLocateDecision,
+      // ── V2.3.2 §19/§20 — the V2 LOCATOR acceptance surface (runtime
+      // hard-gate + per-container binding coverage), so an acceptance run is
+      // self-describing instead of requiring a separate developer-only call.
+      figureLocatorV2GateReport: this.getFigureDiagnosticLocatorV2GateReport(),
+      figureLocatorV2CoverageReport: this.getFigureDiagnosticLocatorV2CoverageReport(),
+      figureLocatorV2GateDecision: this.getFigureDiagnosticLocatorV2GateDecision().decision,
+      decision: finalDecisionV2.decision,
+      reasons: finalDecisionV2.reason,
     })
   }
 
@@ -18632,6 +18710,82 @@ export class DocumentUtilityOverlayHost {
     const sourceOccurrenceVerifyOk = !r5VerifyApplies
       ? true
       : (identityMatch && occurrenceMatch && sourceRangeIdentityMatch && sourceRangeOffsetMatch)
+    // ── V2 §9/§10/§11/§38 — SOURCE-BLOCK semantic verification.
+    //
+    // A structure diagnostic targets the WHOLE offending Markdown block. "Some
+    // DOM is visible in the editor" is NOT proof that it is the EXPECTED block,
+    // so `targetVisible` may NEVER rescue an identity failure. The occurrence
+    // contract does not apply to a structure block (N/A), and the structure
+    // path must not borrow the occurrence audit's PASS.
+    const locationV2 = diag.location
+    const isSourceBlockV2 = locationV2?.kind === 'source-block'
+    const bindingV2 = this.lastSourceBlockBindingV2
+    const boundForThisBlock = bindingV2 != null && bindingV2.sourceBlockIdentity === (isSourceBlockV2 ? locationV2.sourceBlockIdentity : null)
+    const expectedSourceBlockIdentity = isSourceBlockV2 ? locationV2.sourceBlockIdentity : null
+    // ── V2.3 §10/§13 — the resolved source provenance comes from the BINDING
+    // RESULT (the source record that actually participated in candidate
+    // construction). The verify never re-queries the DOM for a source line, and
+    // it never back-fills from the diagnostic's expected fields.
+    const resolvedSourceBlockIdentity = isSourceBlockV2 && boundForThisBlock ? bindingV2.sourceBlockIdentity : null
+    const resolvedSourceStartV2: number | null = isSourceBlockV2 && boundForThisBlock ? bindingV2.sourceStart : null
+    const resolvedSourceEndV2: number | null = isSourceBlockV2 && boundForThisBlock ? bindingV2.sourceEnd : null
+    // §36 — BOUND additionally requires a complete provenance record (unique
+    // candidate + source identity/span + connected DOM target).
+    const provenanceOk = !isSourceBlockV2
+      || (boundForThisBlock && bindingV2.provenanceComplete)
+    const sourceBlockVerify = verifySourceBlockIdentity({
+      expectedSourceBlockIdentity,
+      expectedSourceStart: isSourceBlockV2 ? locationV2.sourceStart : null,
+      expectedSourceEnd: isSourceBlockV2 ? locationV2.sourceEnd : null,
+      resolvedSourceBlockIdentity,
+      resolvedSourceStart: resolvedSourceStartV2,
+      resolvedSourceEnd: resolvedSourceEndV2,
+      candidateCount: isSourceBlockV2 ? (boundForThisBlock ? bindingV2.candidateCount : 0) : 1,
+      targetVisible,
+    })
+    if (isSourceBlockV2) {
+      emitRuntimeAudit(SOURCE_BLOCK_IDENTITY_AUDIT, {
+        transactionId: tx.id,
+        diagnosticId: diag.id,
+        expectedSourceBlockIdentity,
+        resolvedSourceBlockIdentity,
+        domBlockIdentity: boundForThisBlock ? bindingV2.domBlockIdentity : null,
+        containerKind: boundForThisBlock ? bindingV2.sourceContainerKind : null,
+        provenanceComplete: boundForThisBlock ? bindingV2.provenanceComplete : false,
+        containerKindMatch: boundForThisBlock ? bindingV2.containerKindMatch : false,
+        semanticTextMatch: boundForThisBlock ? bindingV2.semanticTextMatch : null,
+        provenanceOk,
+        expectedSourceStart: locationV2.sourceStart,
+        expectedSourceEnd: locationV2.sourceEnd,
+        resolvedSourceStart: resolvedSourceStartV2,
+        resolvedSourceEnd: resolvedSourceEndV2,
+        identityMatch: sourceBlockVerify.identityMatch,
+        sourceSpanMatch: sourceBlockVerify.sourceSpanMatch,
+        sourceSpanResolved: sourceBlockVerify.sourceSpanResolved,
+        candidateCount: isSourceBlockV2 ? (boundForThisBlock ? bindingV2.candidateCount : 0) : 1,
+        targetVisible,
+        occurrenceMatch: 'N/A',
+        occurrenceApplicable: false,
+        semanticDecision: sourceBlockVerify.semanticDecision,
+        visibilityDecision: sourceBlockVerify.visibilityDecision,
+        decision: sourceBlockVerify.semanticDecision,
+        reason: sourceBlockVerify.reason,
+      })
+      // §34 — the V2 gate accounting (only REAL violations, never a synthetic one).
+      if (sourceBlockVerify.semanticDecision === 'FAIL') {
+        if (sourceBlockVerify.reason === 'SOURCE_BLOCK_IDENTITY_MISMATCH') this.countersFigureLocatorV2.structureIdentityMismatch++
+        if (boundForThisBlock) {
+          if (bindingV2.sourceContainerKind === 'list-item') this.countersFigureLocatorV2.structureListItemLocateFail++
+          if (bindingV2.sourceContainerKind === 'blockquote') this.countersFigureLocatorV2.structureBlockquoteLocateFail++
+        }
+      }
+      if (boundForThisBlock && sourceBlockVerify.semanticDecision === 'PASS') {
+        // §35 — positive per-container coverage (only on a real exact binding).
+        if (bindingV2.sourceContainerKind === 'paragraph') this.countersFigureLocatorV2Coverage.paragraphBindingRuntime++
+        else if (bindingV2.sourceContainerKind === 'list-item') this.countersFigureLocatorV2Coverage.listItemBindingRuntime++
+        else if (bindingV2.sourceContainerKind === 'blockquote') this.countersFigureLocatorV2Coverage.blockquoteBindingRuntime++
+      }
+    }
     const rectRecord = (r: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null | undefined) =>
       r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height } : null
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VERIFY-INVARIANT', {
@@ -18655,9 +18809,25 @@ export class DocumentUtilityOverlayHost {
       visibleEditorRect: visibleEditorRect ? rectRecord(visibleEditorRect) : null,
       unobscuredVisibleEditorRect: unobscuredRect ? rectRecord(unobscuredRect) : null,
       identityMatch, occurrenceMatch, targetVisible, hasRealLayout,
-      sourceOccurrenceDecision: sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL',
-      decision: !hasRealLayout ? 'SKIP_HEADLESS' : (targetVisible && sourceOccurrenceVerifyOk) ? 'PASS' : 'FAIL',
-      reason: !hasRealLayout ? 'NO_REAL_LAYOUT' : targetVisible ? 'TARGET_VISIBLE_IN_EDITOR' : 'TARGET_OUTSIDE_VISIBLE_EDITOR',
+      // V2 §11 — a source-block has NO occurrence contract: report N/A instead
+      // of claiming SOURCE_OCCURRENCE_IDENTITY_OK while every field is null.
+      sourceOccurrenceDecision: isSourceBlockV2 ? 'N/A' : (sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL'),
+      semanticIdentityMatchV2: isSourceBlockV2 ? sourceBlockVerify.identityMatch : null,
+      sourceSpanMatchV2: isSourceBlockV2 ? sourceBlockVerify.sourceSpanMatch : null,
+      semanticDecisionV2: isSourceBlockV2 ? sourceBlockVerify.semanticDecision : null,
+      visibilityDecisionV2: isSourceBlockV2 ? sourceBlockVerify.visibilityDecision : null,
+      // §10/§17 — a semantic identity failure is a FAIL even when the target is
+      // visible (`TARGET_VISIBLE_IN_EDITOR` may never rescue it).
+      decision: !hasRealLayout
+        ? 'SKIP_HEADLESS'
+        : (isSourceBlockV2
+          ? (targetVisible && sourceBlockVerify.semanticDecision === 'PASS' ? 'PASS' : 'FAIL')
+          : (targetVisible && sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL')),
+      reason: !hasRealLayout
+        ? 'NO_REAL_LAYOUT'
+        : (isSourceBlockV2
+          ? sourceBlockVerify.reason
+          : (targetVisible ? 'TARGET_VISIBLE_IN_EDITOR' : 'TARGET_OUTSIDE_VISIBLE_EDITOR')),
     })
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-HIGHLIGHT-VISIBILITY-INVARIANT', {
       transactionId: tx.id, diagnosticId: diag.id,
@@ -18678,6 +18848,14 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R5 §12 — the SOURCE OCCURRENCE gate runs BEFORE the visual commit: a
     // perfect R4 document-space rect on the WRONG token is still a failure. A
     // failed gate NEVER commits (so no wrong marker can ever be painted).
+    // ── V2 §10/§17/§38 — a SOURCE-BLOCK semantic failure is TERMINAL: it can
+    // never be rescued by visibility and never be masked by a clean cleanup.
+    // It is decided BEFORE any visual commit, so a wrong block is never painted.
+    if (isSourceBlockV2 && (sourceBlockVerify.semanticDecision === 'FAIL' || !provenanceOk)) {
+      this.lastLocateVisualGateOk = false
+      this.clearDiagnosticLocateVisual('SOURCE_BLOCK_SEMANTIC_FAIL')
+      return false
+    }
     const visualCommitted = !r5.blocksCommit && (!hasRealLayout || (targetConnected && targetVisible))
     if (r5.blocksCommit) {
       for (const check of r5.gate.failedChecks) {
@@ -19329,6 +19507,38 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * V2 §9 — the SOURCE-side ordinal of an IMAGE-ONLY block (its visible text is
+   * empty) among all PRECEDING image-only blocks.
+   *
+   * An image-only block (`- ![](a.png)`, `> ![](a.png)`, `![](a.png)`) has no
+   * text signature — every such block normalizes to the empty string — so the
+   * ordinal correspondence within that class is the only deterministic
+   * source→DOM link. The caller pairs it with the DOM-side list in document
+   * order and verifySourceBlockIdentity still has the final say.
+   */
+  private countPrecedingImageOnlyBlocks(startLine: number, expectedKind = 'paragraph'): number {
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    if (markdown == null || startLine <= 0) return 0
+    const lines = markdown.split(/\r?\n/)
+    let count = 0
+    for (let i = 0; i < startLine && i < lines.length; i++) {
+      const cur = lines[i]
+      if (cur.trim() === '') continue
+      const prev = i === 0 ? '' : lines[i - 1]
+      const isBlockStart = prev.trim() === '' || /^\s*(?:[-*+]|\d+[.)])\s/.test(cur)
+      if (!isBlockStart) continue
+      if (!/!\[[^\]]*\]\([^)]*\)/.test(cur)) continue
+      if (normalizeSourceAnchorText(stripInlineResourceSyntax(stripBlockLevelMarkers(cur))) !== '') continue
+      // V2.3.2 §1.3 — count within the SAME structural class so the source↔DOM
+      // ordinal correspondence stays cardinality-consistent.
+      const kind = /^\s*>/.test(cur) ? 'blockquote' : (/^\s*(?:[-*+]|\d+[.)])\s/.test(cur) ? 'list-item' : 'paragraph')
+      if (kind !== expectedKind) continue
+      count++
+    }
+    return count
+  }
+
+  /**
    * Phase 7R.3.11.8B.7.3 — resource semantic resolution against the CURRENT
    * DOM: find the occurrence-th live element whose normalized destination
    * equals the diagnostic's. For 'image' the element is the <img> (broken
@@ -19470,24 +19680,132 @@ export class DocumentUtilityOverlayHost {
   }): SourceBlockBinding | null {
     const root = resolveBusinessContentRoot()
     if (!root) return null
+    // §6 — the canonical OWNING block of a Markdown block: a `<p>` inside
+    // `<li>` / `<blockquote>` is NOT the owning block; the list item /
+    // blockquote is. (A `> ![](a.png)` paragraph must bind to its blockquote.)
+    const canonicalOwningBlock = (el: HTMLElement): HTMLElement => {
+      const li = el.closest('li')
+      if (li != null) return li
+      const bq = el.closest('blockquote')
+      if (bq != null) return bq
+      return el
+    }
+    const stashV2 = (_el: HTMLElement, binding: SourceBlockBinding, _decision: string): void => {
+      // V2.3 §9 — the WHOLE binding result (source provenance included) is
+      // carried to the verify stage; the transaction never degrades to
+      // `HTMLElement only` / `domBlockIdentity only`.
+      this.lastSourceBlockBindingV2 = binding
+    }
+    // V2.3 §6 — the SOURCE-side visible-semantic needle (images contribute no
+    // text; block-level markers are stripped). Computed ONCE, so every binding
+    // tier carries the same provenance.
+    const visibleNeedle = normalizeSourceAnchorText(
+      stripInlineResourceSyntax(stripBlockLevelMarkers(this.getSourceLineTextAt(input.startLine) ?? '')),
+    )
     // 1. exact Typora `data-line` stamp (the block's owning source line).
     const byLine = this.resolveSourceLine(input.startLine)
-    if (byLine) return this.bindAndAuditSourceBlock(byLine, 1, 'data-line', input)
-    // 2. text signature (+ the block ordinal for byte-identical blocks).
+    if (byLine) {
+      const owned = canonicalOwningBlock(byLine)
+      const binding = this.bindAndAuditSourceBlock(owned, 1, 'data-line', input, visibleNeedle)
+      stashV2(owned, binding, binding.decision)
+      return binding
+    }
+    // 2. source-text signature — three tiers, in order:
+    //    (a) the RAW line (the pre-existing contract);
+    //    (b) the VISIBLE text (inline image/link syntax stripped) — binds
+    //        `before ![](a.png) after`;
+    //    (c) the IMAGE-ONLY class (visible text is EMPTY): bind the canonical
+    //        owning block at the same SOURCE-side ordinal within that class.
+    //        `data-line` is unavailable in this Typora build, so this ordinal
+    //        correspondence is the only deterministic source→DOM link for
+    //        `- ![](a.png)` / `> ![](a.png)`; a wrong pick is still caught by
+    //        verifySourceBlockIdentity (FAIL — never a silent wrong block).
     const firstLine = this.getSourceLineTextAt(input.startLine)
-    const needle = normalizeSourceAnchorText(firstLine ?? '')
-    if (needle !== '') {
-      const matches: HTMLElement[] = []
+    const rawLineText = firstLine ?? ''
+    const matchBySignature = (needle: string): HTMLElement[] => {
+      if (needle === '') return []
+      const found = new Set<HTMLElement>()
       for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,figure,blockquote,li,pre,h1,h2,h3,h4,h5,h6,table'))) {
-        if (normalizeSourceAnchorText(el.textContent) === needle) matches.push(el)
+        if (normalizeSourceAnchorText(el.textContent) === needle) found.add(canonicalOwningBlock(el))
       }
-      if (matches.length > 1) {
-        // §9 — the source block ordinal disambiguates byte-identical blocks
-        // deterministically (never a random / first pick).
-        const idx = Math.max(0, Math.min(matches.length - 1, Math.floor(input.sourceBlockOrdinal)))
-        return this.bindAndAuditSourceBlock(matches[idx], matches.length, 'text-ordinal', input)
+      return [...found]
+    }
+    let candidates = matchBySignature(normalizeSourceAnchorText(rawLineText))
+    if (candidates.length === 0) candidates = matchBySignature(visibleNeedle)
+    // V2.3.2 §1.3 — the IMAGE-ONLY candidate inventory is captured so an empty
+    // candidate set is never a silent MISSING: the audit records WHAT the DOM
+    // actually exposed (tag / visible text / img count) and what the source
+    // derivation produced.
+    let imageOnlyDiagnostics: {
+      rawLineText: string
+      visibleNeedle: string
+      expectedKind: string
+      restrictedKind: string | null
+      sourceOrdinal: number
+      inventory: Array<{ tag: string; text: string; images: number; containerKind: string }>
+      candidateTags: string[]
+    } | null = null
+    if (candidates.length === 0 && visibleNeedle === '') {
+      // V2.3.2 §1.3 — an IMAGE-ONLY block has no visible text, so the class
+      // signature is (container kind + image-only + structural class). For a
+      // list-item / blockquote the candidate set is RESTRICTED to that container
+      // kind, and the source-side ordinal is counted within the SAME class, so
+      // the ordinal correspondence is cardinality-consistent by construction.
+      const expectedKind = this.sourceBlockContainerKindFromSource(input.sourceBlockIdentity)
+      // Only the two SPECIAL containers constrain the candidate class. Any other
+      // resolution (including an unresolvable source line) must FAIL OPEN and
+      // keep the pre-existing image-only behaviour — a kind filter that can
+      // collapse the candidate set to zero would turn "unknown" into "MISSING".
+      const restrictedKind = expectedKind === 'list-item' || expectedKind === 'blockquote' ? expectedKind : null
+      const imageOnly: HTMLElement[] = []
+      const inventory: Array<{ tag: string; text: string; images: number; containerKind: string }> = []
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,blockquote,li,figure'))) {
+        if (el.querySelector('img') == null) continue
+        const text = normalizeSourceAnchorText(el.textContent)
+        // V2.3.2 §1.3 — the DOM side MUST use the SAME visible-semantic
+        // projection as the source side. In this Typora build an image block
+        // keeps the image's RAW Markdown as (hidden) text content — e.g. the
+        // paragraph of `- ![](a.png)` reads `![](a.png)`, NOT `''`. Comparing
+        // raw `textContent` to `''` therefore never detected an image-only
+        // block, so `- ![](...)` / `> ![](...)` could never bind.
+        const domVisibleText = normalizeSourceAnchorText(stripInlineResourceSyntax(text))
+        const owned = canonicalOwningBlock(el)
+        const ownedKind = this.sourceBlockContainerKindOf(owned)
+        inventory.push({ tag: el.tagName.toLowerCase(), text, images: el.querySelectorAll('img').length, containerKind: ownedKind })
+        if (domVisibleText !== '') continue
+        if (restrictedKind != null && ownedKind !== restrictedKind) continue
+        if (!imageOnly.includes(owned)) imageOnly.push(owned)
       }
-      if (matches.length === 1) return this.bindAndAuditSourceBlock(matches[0], 1, 'text', input)
+      const srcIdx = this.countPrecedingImageOnlyBlocks(input.startLine, restrictedKind ?? 'paragraph')
+      imageOnlyDiagnostics = {
+        rawLineText,
+        visibleNeedle,
+        expectedKind,
+        restrictedKind,
+        sourceOrdinal: srcIdx,
+        inventory,
+        candidateTags: imageOnly.map((el) => el.tagName.toLowerCase()),
+      }
+      if (srcIdx >= 0 && srcIdx < imageOnly.length) candidates = [imageOnly[srcIdx]]
+    }
+    if (candidates.length > 0) {
+      // §8/§9 — ONE candidate is BOUND directly. For byte-identical blocks the
+      // SOURCE-side block ordinal (part of the source identity, never a DOM
+      // ordinal guess) disambiguates deterministically; the semantic identity
+      // verify still has the final say, so a wrong pick can never PASS.
+      const idx = candidates.length === 1
+        ? 0
+        : Math.max(0, Math.min(candidates.length - 1, Math.floor(input.sourceBlockOrdinal)))
+      const binding = this.bindAndAuditSourceBlock(
+        candidates[idx],
+        candidates.length,
+        candidates.length === 1 ? 'semantic-signature' : 'source-ordinal',
+        input,
+        visibleNeedle,
+        candidates.length === 1 ? 'N/A' : true,
+      )
+      stashV2(candidates[idx], binding, binding.decision)
+      return binding
     }
     // §27 — the MISSING binding is audited too (never a silent null).
     emitRuntimeAudit(FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT, {
@@ -19505,25 +19823,48 @@ export class DocumentUtilityOverlayHost {
       candidateCount: 0,
       decision: 'MISSING',
       reason: 'DOM_BLOCK_IDENTITY_UNRESOLVABLE',
+      // V2.3.2 §1.3 — WHY the image-only tier produced nothing (or whether it
+      // was skipped entirely because the source needle was NOT empty).
+      rawLineText,
+      visibleNeedle,
+      imageOnlyDiagnostics,
     })
-    return {
+    // V2.3 §9 — the FULL binding result is stashed so the verify can FAIL on
+    // `candidateCount === 0` (never a visible-only PASS).
+    const missingBinding: SourceBlockBinding = {
       element: null,
       domBlockIdentity: '',
       domTag: '',
       candidateCount: 0,
       decision: 'MISSING',
       bindingAuthority: 'none',
+      // V2.3 §6/§36 — the SOURCE provenance stays complete even when no DOM
+      // candidate was bound; only the DOM side is absent.
+      sourceBlockIdentity: input.sourceBlockIdentity,
+      sourceStart: input.sourceStart,
+      sourceEnd: input.sourceEnd,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      sourceContainerKind: this.sourceBlockContainerKindFromSource(input.sourceBlockIdentity),
+      sourceVisibleSemanticText: '',
+      semanticTextMatch: 'N/A',
+      containerKindMatch: false,
+      classOrdinalMatch: 'N/A',
+      provenanceComplete: false,
     }
+    this.lastSourceBlockBindingV2 = missingBinding
+    return missingBinding
   }
-
   /** Build the binding record AND emit the ONE Source↔DOM binding audit (§27). */
   private bindAndAuditSourceBlock(
     el: HTMLElement,
     candidateCount: number,
     authority: string,
     input: { sourceBlockIdentity: string; sourceStart: number; sourceEnd: number; startLine: number; endLine: number },
+    sourceVisibleSemanticText = '',
+    classOrdinalMatch: boolean | 'N/A' = 'N/A',
   ): SourceBlockBinding {
-    const binding = this.makeSourceBlockBinding(el, candidateCount, authority)
+    const binding = this.makeSourceBlockBinding(el, candidateCount, authority, input, sourceVisibleSemanticText, classOrdinalMatch)
     emitRuntimeAudit(FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       sourceRevision: this.diagnostics.getSnapshot()?.sourceRevision ?? null,
@@ -19541,31 +19882,103 @@ export class DocumentUtilityOverlayHost {
       reason: isResolvableDomBlockIdentity(binding.domBlockIdentity)
         ? 'DOM_BLOCK_IDENTITY_RESOLVABLE'
         : 'DOM_BLOCK_IDENTITY_UNRESOLVABLE',
+      // ── V2.3 §6/§35/§36 — the provenance must be VISIBLE in the same audit,
+      // and `BOUND` is only legitimate when it is complete.
+      sourceVisibleSemanticText: binding.sourceVisibleSemanticText,
+      sourceContainerKind: binding.sourceContainerKind,
+      semanticTextMatch: binding.semanticTextMatch,
+      containerKindMatch: binding.containerKindMatch,
+      classOrdinalMatch: binding.classOrdinalMatch,
+      provenanceComplete: binding.provenanceComplete,
     })
     return binding
   }
 
-  /** Build a binding record with the STABLE DOM block identity (§7). */
-  private makeSourceBlockBinding(el: HTMLElement, candidateCount: number, authority: string): SourceBlockBinding {
-    const parent = el.parentElement
-    const ordinal = parent ? Array.from(parent.children).indexOf(el) : 0
-    const firstImage = el.querySelector<HTMLElement>('img')
+  /** Build a binding record with the STABLE DOM block identity + source provenance (§7). */
+  private makeSourceBlockBinding(
+    el: HTMLElement,
+    candidateCount: number,
+    authority: string,
+    src: { sourceBlockIdentity: string; sourceStart: number; sourceEnd: number; startLine: number; endLine: number },
+    sourceVisibleSemanticText: string,
+    classOrdinalMatch: boolean | 'N/A',
+  ): SourceBlockBinding {
+    const sourceContainerKind = this.sourceBlockContainerKindFromSource(src.sourceBlockIdentity)
+    // ── V2.3.2 §1.3 — CANONICAL OWNING DOM BLOCK AUTHORITY.
+    // paragraph → p / list-item → li / blockquote → blockquote. An inner `<p>`
+    // must never be reported as the owner of a list-item or blockquote block
+    // (`containerKind=list-item` + `dom-block:p` is forbidden).
+    const ownerEl: HTMLElement = sourceContainerKind === 'list-item'
+      ? (el.closest('li') ?? el)
+      : sourceContainerKind === 'blockquote'
+        ? (el.closest('blockquote') ?? el)
+        : el
+    const parent = ownerEl.parentElement
+    const ordinal = parent ? Array.from(parent.children).indexOf(ownerEl) : 0
+    const firstImage = ownerEl.querySelector<HTMLElement>('img')
     const domBlockIdentity = buildDomBlockIdentity({
-      tag: el.tagName,
-      runtimeId: el.getAttribute('data-node-id') ?? el.getAttribute('data-block-id'),
-      dataLine: el.getAttribute('data-line'),
-      elementId: el.id !== '' ? el.id : null,
+      tag: ownerEl.tagName,
+      runtimeId: ownerEl.getAttribute('data-node-id') ?? ownerEl.getAttribute('data-block-id'),
+      dataLine: ownerEl.getAttribute('data-line'),
+      elementId: ownerEl.id !== '' ? ownerEl.id : null,
       ordinal,
-      structuralSignature: `${el.querySelectorAll('img').length}:${firstImage?.getAttribute('src') ?? ''}`,
+      structuralSignature: `${ownerEl.querySelectorAll('img').length}:${firstImage?.getAttribute('src') ?? ''}`,
     })
+    const domVisibleSemanticText = normalizeSourceAnchorText(ownerEl.textContent)
+    const domContainerKind = this.sourceBlockContainerKindOf(ownerEl)
+    // V2.3 §6 — the matching proof: the source-side signature must equal the
+    // DOM-side signature, and the container kind must agree.
+    const semanticTextMatch: boolean | 'N/A' = sourceVisibleSemanticText === ''
+      ? 'N/A'
+      : domVisibleSemanticText === sourceVisibleSemanticText
+    const containerKindMatch = domContainerKind === sourceContainerKind
+    // V2.3 §36 — BOUND requires: unique candidate + COMPLETE SOURCE PROVENANCE
+    // (identity + span + line) + a CONNECTED DOM target. `semanticTextMatch` /
+    // `containerKindMatch` are recorded as PROOF (§6) but are not part of the
+    // completeness rule, so a synthetic/whitespace-different DOM still binds and
+    // the proof remains auditable.
+    const provenanceComplete = src.sourceBlockIdentity !== ''
+      && src.sourceStart != null
+      && src.sourceEnd != null
+      && src.startLine >= 0
+      && ownerEl.isConnected
     return {
-      element: el,
+      element: ownerEl,
       domBlockIdentity,
-      domTag: el.tagName.toLowerCase(),
+      domTag: ownerEl.tagName.toLowerCase(),
       candidateCount,
-      decision: candidateCount === 1 ? 'BOUND' : 'AMBIGUOUS',
+      // §36 — BOUND requires a unique candidate AND complete provenance AND a
+      // connected DOM target; a proven-but-empty bind is never BOUND.
+      decision: candidateCount === 1 && provenanceComplete
+        ? 'BOUND'
+        : (candidateCount > 1 ? 'AMBIGUOUS' : 'MISSING'),
       bindingAuthority: authority,
+      sourceBlockIdentity: src.sourceBlockIdentity,
+      sourceStart: src.sourceStart,
+      sourceEnd: src.sourceEnd,
+      startLine: src.startLine,
+      endLine: src.endLine,
+      sourceContainerKind,
+      sourceVisibleSemanticText,
+      semanticTextMatch,
+      containerKindMatch,
+      classOrdinalMatch,
+      provenanceComplete,
     }
+  }
+
+  /**
+   * V2.3 §6 — the SOURCE-side container kind of a `src-block:<line>` identity,
+   * read from the CURRENT Markdown. This is provenance, not a DOM guess.
+   */
+  private sourceBlockContainerKindFromSource(sourceBlockIdentity: string): string {
+    const m = /^src-block:(\d+)$/.exec(sourceBlockIdentity)
+    if (m == null) return 'other'
+    const text = this.getSourceLineTextAt(Number.parseInt(m[1], 10)) ?? ''
+    if (text.trim() === '') return 'other'
+    if (/^\s*>/.test(text)) return 'blockquote'
+    if (/^\s*(?:[-*+]|\d+[.)])\s/.test(text)) return 'list-item'
+    return 'paragraph'
   }
 
   /** V1 §26/§51A — emit the ONE figure locator audit (locator kind + runtime facts). */
