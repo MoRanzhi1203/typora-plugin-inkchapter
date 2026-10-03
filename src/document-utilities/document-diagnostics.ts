@@ -60,6 +60,16 @@ import {
   detectManualNumberPrefix,
   type SourceBlockSpan,
 } from './document-diagnostics-vnext-authority'
+// Internal Blank-Line Policy V1 §1/§3/§7 — the ONE threshold + block-gap
+// authority for `EXCESSIVE_INTERNAL_BLANK_LINES` (source-only, never DOM).
+import {
+  EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+  EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
+  INTERNAL_BLANK_LINE_POLICY,
+  analyzeInternalBlankLineGaps,
+  internalBlankGapIdentity,
+  internalBlankLineDetail,
+} from './document-diagnostic-internal-blank-lines-v1'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -276,6 +286,11 @@ export function resolveDocumentDiagnosticSeverity(
     // document structure is intact; only a referenced asset is absent), never
     // an error. Remote / data URLs can never reach this rule.
     case 'FIGURE_LOCAL_IMAGE_MISSING':
+      return 'warning'
+    // Internal Blank-Line Policy V1 §2 — 3+ consecutive blank lines INSIDE the
+    // body is a document-FORMAT warning. Fixed across strict and loose mode and
+    // NEVER escalated to an error (a readable document with sloppy spacing).
+    case EXCESSIVE_INTERNAL_BLANK_LINES_CODE:
       return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
@@ -1385,6 +1400,66 @@ export function computeDocumentDiagnostics(
             },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
             location: { kind: 'document-end' },
+          }),
+        )
+      }
+    }
+
+    // ── Internal Blank-Line Policy V1 §1/§7/§8 — EXCESSIVE_INTERNAL_BLANK_LINES
+    //    Source-only candidate scan: a run of blank lines BETWEEN two sibling
+    //    content blocks. The block-gap authority itself already excludes
+    //      · blank lines inside a fenced code block / display formula / front
+    //        matter / HTML block (they are CONTENT — §12/§13/§14),
+    //      · the leading run before the first block (§11),
+    //      · the trailing EOF run (owned by the EOF rules above — §10),
+    //      · a loose list / lazy blockquote interior (§15).
+    //    ONE gap → ONE diagnostic: the stable identity is built from the two
+    //    block identities, never from a line index or the blank count, so
+    //    editing 3 → 4 → 5 → 6 blank lines keeps the SAME record (§20/§29).
+    if (input.markdown != null) {
+      for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
+        const gapIdentity = internalBlankGapIdentity(gap)
+        push(
+          makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
+            detail: internalBlankLineDetail(gap.actualBlankLines),
+            kind: 'document',
+            targetIdentity: gapIdentity,
+            metadata: {
+              ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
+              // §1 — the rule's OWN category / scope vocabulary. `category` on
+              // the record stays the legacy consumer grouping ('document').
+              ruleCategory: 'document-format',
+              scope: 'block-gap',
+              reasonChip: false,
+              passiveVisual: false,
+              activeVisual: true,
+              // §9/§33 — the block-gap facts travel on the record so the Drawer,
+              // the locator and the audits never re-derive them.
+              previousBlockIdentity: gap.previousBlockIdentity,
+              previousBlockKind: gap.previousBlockKind,
+              previousBlockStartLine: gap.previousBlockStartLine,
+              nextBlockIdentity: gap.nextBlockIdentity,
+              nextBlockKind: gap.nextBlockKind,
+              nextBlockStartLine: gap.nextBlockStartLine,
+              previousSourceEnd: gap.previousBlockSourceEnd,
+              nextSourceStart: gap.nextBlockSourceStart,
+              firstBlankLine: gap.firstBlankLine,
+              lastBlankLine: gap.lastBlankLine,
+              actualBlankLines: gap.actualBlankLines,
+              passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+              warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+            },
+            // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
+            // (and the active target) is the NEXT block: its proven VISIBLE text
+            // is the verification anchor, so the click shows the block the excess
+            // blanks precede. `source-range` never paints the whole blank band.
+            location: {
+              kind: 'source-range',
+              startLine: gap.nextBlockStartLine,
+              startColumn: 0,
+              sourceFingerprint: `internal-blank:${gapIdentity}`,
+              rawText: gap.nextBlockAnchorText,
+            },
           }),
         )
       }

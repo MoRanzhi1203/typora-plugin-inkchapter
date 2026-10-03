@@ -452,6 +452,45 @@ import {
   type TargetGroupV1Counters,
   type TargetGroupV1CoverageKey,
 } from './document-diagnostic-target-group-v1'
+// Drawer Viewport Stability V1 — the ONE authority separating ACTIVE_PATCH from
+// STRUCTURAL_RENDER and preserving the Drawer scroll viewport.
+import {
+  createDrawerViewportV1Counters,
+  createDrawerViewportV1CoverageCounters,
+  evaluateDrawerActiveClickFacts,
+  evaluateDrawerStructuralRenderFacts,
+  evaluateDrawerViewportV1Gates,
+  formatDrawerViewportV1GateReport,
+  formatDrawerViewportV1CoverageReport,
+  firstVisibleRowIndex,
+  resolveDrawerUpdateMode,
+  resolveViewportRestore,
+  type DrawerRowRect,
+  type DrawerUpdateMode,
+  type DrawerViewportState,
+  type DrawerViewportV1Counters,
+  type DrawerViewportV1CoverageKey,
+} from './document-diagnostic-drawer-viewport-v1'
+// Internal Blank-Line Policy V1 §34/§35/§36 — the document-FORMAT warning's
+// runtime witness + the single gate / coverage authority.
+import {
+  DOCUMENT_INTERNAL_BLANK_LINE_RUNTIME_AUDIT_EVENT,
+  EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+  createInternalBlankLineV1Counters,
+  createInternalBlankLineV1Coverage,
+  formatInternalBlankLineV1CoverageReport,
+  formatInternalBlankLineV1GateReport,
+  noteInternalBlankLineCoverage,
+  INTERNAL_BLANK_LINE_POLICY,
+  analyzeInternalBlankLineGaps,
+  internalBlankGapIdentity,
+  protectedRegionKindAtLine,
+  firstContentSourceLine,
+  lastContentSourceLine,
+  type DocumentBlockKind,
+  type InternalBlankLineV1Counters,
+  type InternalBlankLineV1Coverage,
+} from './document-diagnostic-internal-blank-lines-v1'
 import {
   HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT,
   buildHeadingDiagnosticVisualSnapshot,
@@ -2497,6 +2536,56 @@ export class DocumentUtilityOverlayHost {
   private countersTargetGroupV1: TargetGroupV1Counters = createTargetGroupV1Counters()
   /** Target Group V1 §19 — the positive coverage counters. */
   private coverageTargetGroupV1: Record<TargetGroupV1CoverageKey, number> = createTargetGroupV1CoverageCounters()
+  // ── Internal Blank-Line Policy V1 (§34/§35/§36) ──────────────────────────
+  /** the ONE `EXCESSIVE_INTERNAL_BLANK_LINES` gate authority (all must stay 0). */
+  private countersInternalBlankLineV1: InternalBlankLineV1Counters = createInternalBlankLineV1Counters()
+  /** the positive coverage counters. */
+  private coverageInternalBlankLineV1: InternalBlankLineV1Coverage = createInternalBlankLineV1Coverage()
+  /** §33 — the source-side audit dedupe token. */
+  private lastInternalBlankLineSourceSignature = ''
+  /** §21 — the last committed gap identity set (per document) for dynamic coverage. */
+  private lastInternalBlankLineIdentityState: { documentKey: string | null; identities: Set<string> } | null = null
+  // ── Drawer Viewport Stability V1 (§5/§6/§8/§12/§13/§20/§30) ──────────────
+  /** the ONE drawer viewport gate authority counters (all must stay 0). */
+  private countersDrawerViewportV1: DrawerViewportV1Counters = createDrawerViewportV1Counters()
+  /** the positive coverage counters. */
+  private coverageDrawerViewportV1: Record<DrawerViewportV1CoverageKey, number> =
+    createDrawerViewportV1CoverageCounters()
+  /** §5/§8 — the signature of the LAST structurally rendered Drawer list. */
+  private lastDrawerStructureSignature: string | null = null
+  /** §12 — the viewport captured at the last structural render / presentation change. */
+  private pendingDrawerViewportCapture: DrawerViewportState | null = null
+  /** §27 — the drawer row mount generation (proves a structural remount). */
+  private drawerRowMountGeneration = 0
+  /** §12 — the list scrollTop saved across a transient locate-collapse. */
+  private drawerListScrollBeforeCollapse: number | null = null
+  /**
+   * §12 — the Drawer list viewport the USER last owned (anchor + offset + the row
+   * mount generation it was captured on). The overlay root's children can be
+   * detached + re-inserted by an EXTERNAL agent (the host framework), which
+   * silently destroys the list scroll box; this memory is what the plugin
+   * re-applies — before paint — so the Drawer never visibly jumps.
+   */
+  private drawerViewportMemory: DrawerViewportState | null = null
+  private drawerViewportMemoryMountGeneration = -1
+  /** §12 — detects an external detach/re-attach of the Drawer subtree. */
+  private drawerReattachObserver: MutationObserver | null = null
+  /** §32 — the last drawer viewport audit facts (runtime verification seam). */
+  private lastDrawerViewportAudit: Record<string, unknown> = {}
+  /** §6/§16 — a structural Drawer render happened since the current click began. */
+  private drawerStructuralRenderSinceClick = false
+  /** §9/§30 — a Drawer ROW `scrollIntoView` was called since the current click began. */
+  private drawerRowScrollIntoViewCalledSinceClick = false
+  /** §25/§30 — a Drawer row `focus()` without `preventScroll` scrolled since the click began. */
+  private drawerFocusCausedScrollSinceClick = false
+  /** §32 — the click-scoped viewport probe (before-state + row/list identity). */
+  private drawerClickViewportProbe: {
+    action: 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH'
+    rowElement: HTMLElement | null
+    listElement: HTMLElement | null
+    rowHeightBefore: number
+    viewportBefore: DrawerViewportState
+  } | null = null
   /** Target Group V1 §13 — the member index the last group locate used (0 expected). */
   private lastTargetGroupLocateMemberIndex = 0
   /** Target Group V1 §8 — the last measured Drawer projection facts (audit/test seam). */
@@ -2755,6 +2844,11 @@ export class DocumentUtilityOverlayHost {
     // from the SAME snapshot, so UI-count parity is a real measurement).
     this.commitEmptyDocumentShortCircuit(snapshot, previousDiagnosticIds)
     if (this.drawerOpen) this.renderDrawer()
+    // Internal Blank-Line Policy V1 §27/§33 — the source audit + the Toolbar
+    // warning-count parity witness at the SAME commit boundary that drives the
+    // Toolbar projection (so the parity measurement is a real one).
+    this.emitInternalBlankLineSourceAudit()
+    this.checkInternalBlankLineToolbarParity(snapshot)
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
     // changed, so every diagnostic visual geometry measured before is stale.
@@ -3275,6 +3369,7 @@ export class DocumentUtilityOverlayHost {
     this.toolbarEl = this.buildToolbar(root)
     this.navigatorEl = this.buildNavigator(root)
     this.drawerEl = this.buildDrawer(root)
+    this.installDrawerReattachGuard()
 
     // Phase 7R.3.11.8B.12 — Navigator MOUNT is HIDDEN-BY-DEFAULT. Visibility is
     // granted only after Active-Document eligibility + scrollability + a safe
@@ -3590,6 +3685,10 @@ export class DocumentUtilityOverlayHost {
     this.diagnosticsMutationObserver?.disconnect()
     this.diagnosticsMutationObserver = null
     this.diagnosticsRafPending = false
+    // §12 — release the Drawer external-move guard.
+    this.drawerReattachObserver?.disconnect()
+    this.drawerReattachObserver = null
+    this.drawerViewportMemory = null
     this.editGuard.dispose()
     this.root?.remove()
     this.root = null
@@ -10222,6 +10321,15 @@ export class DocumentUtilityOverlayHost {
     let fallbackLevel: 0 | 1 | 2 = 2
     const isSourceRangeFigureRule =
       code === 'FIGURE_LOCAL_IMAGE_MISSING' || code === 'FIGURE_MISSING_NAME'
+    // Internal Blank-Line Policy V1 §22/§23 — the scroll anchor is the NEXT
+    // content block. When that block is a HEADING, `classifyDiagnosticLocateElement`
+    // would hand the visual to the HEADING-MARKER carrier, which only the heading
+    // diagnostics own — a document-FORMAT Warning would therefore paint NOTHING
+    // (ZERO_PAINTED_RECT) and the first click would roll back. Reuse the SHARED
+    // text-tight inline carrier instead, so the next block is highlighted exactly
+    // like every other Warning. Scoped to this rule only.
+    const isInternalBlankLineHeadingAnchor =
+      code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE && /^H[1-6]$/.test(anchor.tagName)
     this.lastFigureTargetVisual = { exactTokenAvailable: false, exactTokenUsed: false, usedBlockFallback: false }
     if (isSourceRangeFigureRule && anchor.tagName !== 'IMG') {
       const raw = rangeToken ? measureTextRects(anchor, rangeToken, occWithin) : { exact: null, foundToken: false }
@@ -10264,6 +10372,13 @@ export class DocumentUtilityOverlayHost {
       diagnosticId: diagId,
       severity,
       anchor,
+      // §23 — an EXPLICIT carrier is required: the frame's own `heading` branch
+      // short-circuits BEFORE every other carrier and would hand the visual to the
+      // heading-MARKER layer (owned by the heading diagnostics) — a document-FORMAT
+      // Warning would then paint nothing and roll back. A block-tight overlay frame
+      // is the SHARED generic carrier; it never mutates the heading element, so the
+      // heading-marker authority is left completely untouched. Scoped to this rule.
+      kind: isInternalBlankLineHeadingAnchor ? 'block' : null,
       preciseRect,
       forceInlineMark: forceInline,
       captionHostRect: captionHostRect,
@@ -10805,8 +10920,41 @@ export class DocumentUtilityOverlayHost {
     // post-commit restore closes it (exact replay of presentationBeforeLocate).
     if (on) this.drawerLocatePresentationLeaseActive = true
     if (!this.drawerEl) return
-    if (on) this.drawerEl.setAttribute('data-locate-collapsed', 'true')
-    else this.drawerEl.removeAttribute('data-locate-collapsed')
+    if (on) {
+      // ── Drawer Viewport Stability V1 §12/§13 — the collapse hides the Drawer
+      // (`display:none`), which destroys the list's scroll box. Capture the list
+      // viewport BEFORE hiding so the un-collapse can put the user's first row
+      // back exactly where it was (a presentation change IS a structural change).
+      this.drawerListScrollBeforeCollapse = this.measureDrawerListScrollTop()
+      this.drawerEl.setAttribute('data-locate-collapsed', 'true')
+    } else {
+      this.drawerEl.removeAttribute('data-locate-collapsed')
+      // Restore the list viewport the collapse destroyed (same visible anchor).
+      const saved = this.drawerListScrollBeforeCollapse
+      this.drawerListScrollBeforeCollapse = null
+      if (saved != null && saved > 0 && this.drawerListEl && Number.isFinite(this.drawerListEl.scrollTop)) {
+        try {
+          const list = this.drawerListEl
+          const max = Math.max(0, list.scrollHeight - list.clientHeight)
+          list.scrollTop = Math.max(0, Math.min(max, saved))
+        } catch { /* keep current */ }
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          reason: 'LOCATE_COLLAPSE_PRESENTATION_RESTORED',
+          updateMode: 'STRUCTURAL_RENDER',
+          rowSetChanged: false,
+          filterChanged: false,
+          documentChanged: false,
+          projectionChanged: false,
+          viewportCapturePerformed: true,
+          viewportRestorePerformed: true,
+          viewportRestoreStrategy: 'SCROLL_TOP_FALLBACK',
+          scrollTopBefore: saved,
+          scrollTopAfter: Number.isFinite(this.drawerListEl.scrollTop) ? this.drawerListEl.scrollTop : saved,
+          decision: 'COLLAPSE_PRESENTATION_VIEWPORT_RESTORED',
+        })
+      }
+    }
   }
 
   /** V5.1 — snapshot the user's Drawer intent for the new locate transaction.
@@ -11970,6 +12118,10 @@ export class DocumentUtilityOverlayHost {
         this.scrollNav?.bind()
         this.bindLocateFrameEditorScroll()
         this.diagnostics.rebind()
+        // §22 — a real document switch resets the Drawer viewport baseline: the
+        // previous document's Drawer scroll state must never be applied to the new
+        // document (the new document legitimately starts from its own top).
+        this.resetDrawerViewportBaseline()
       }
       this.diagnostics.recompute(reason)
       // V5 — reconcile DIRECT admission: the authoritative snapshot is handed
@@ -14152,6 +14304,68 @@ export class DocumentUtilityOverlayHost {
     list.className = 'inkchapter-doc-drawer__list'
     this.drawerListEl = list
     drawer.appendChild(list)
+    // ── Drawer Viewport Stability V1 §12 — SCROLL TRACE (observability only).
+    // Any Drawer viewport change emits an audit so the ROOT cause can be proven
+    // at runtime (a stable active click must only ever reach this via the user's
+    // own wheel/keyboard scroll, never as a side effect of a locate).
+    list.addEventListener('scroll', () => {
+      // §12 — every REAL list scroll is the user's viewport becoming the truth.
+      this.rememberDrawerViewport()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-SCROLL-TRACE', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        scrollTop: list.scrollTop,
+        connected: list.isConnected,
+        offsetParentPresent: list.offsetParent != null,
+        drawerDisplay: this.drawerEl ? this.drawerEl.style.display : null,
+        collapseAttr: this.drawerEl ? this.drawerEl.getAttribute('data-locate-collapsed') : null,
+        phase: this.diagnosticInteractionState.phase,
+        activeDiagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      })
+    })
+    // ── Drawer Viewport Stability V1 §12 — viewport WRITE TRAP.
+    // A silent `scrollTop = 0` write is THE failure mode this phase must prove
+    // impossible. Trap it on the instance (shadowing the prototype accessor) and
+    // record the caller stack so the offending code path is attributable.
+    try {
+      const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
+      const host = this
+      if (desc?.get && desc?.set) {
+        const readNative = desc.get
+        const writeNative = desc.set
+        Object.defineProperty(list, 'scrollTop', {
+          configurable: true,
+          enumerable: true,
+          get(this: HTMLElement): number { return readNative.call(this) as number },
+          set(this: HTMLElement, v: number): void {
+            const prev = readNative.call(this) as number
+            if (v === 0 && prev > 1) {
+              emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-SCROLLTOP-WRITE-TRACE', {
+                documentKey: host.opts.ctx.authority.getDocumentKey() ?? null,
+                from: prev,
+                to: v,
+                stack: new Error('drawer-list-scrollTop-write').stack ?? null,
+              })
+            }
+            writeNative.call(this, v)
+          },
+        })
+      }
+    } catch { /* trap is observability only */ }
+    // Focus inside the Drawer must never scroll the list (the ACTIVE row is
+    // focused on click) — prove it: sample the list viewport around every focus.
+    list.addEventListener('focusin', (ev) => {
+      const target = ev.target as HTMLElement | null
+      const before = list.scrollTop
+      const label = target ? `${target.tagName}.${target.className}` : 'null'
+      queueMicrotask(() => {
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-FOCUS-TRACE', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          focusTarget: label,
+          scrollTopBefore: before,
+          scrollTopAfter: list.scrollTop,
+        })
+      })
+    })
 
     root.appendChild(drawer)
     return drawer
@@ -14203,12 +14417,607 @@ export class DocumentUtilityOverlayHost {
     filtersEl.appendChild(list)
   }
 
+  // ── Drawer Viewport Stability V1 §11–§16/§27/§32 ───────────────────────────
+
+  /** §12 — the ordered row rects of the CURRENT list DOM. */
+  private drawerRowRects(): DrawerRowRect[] {
+    if (!this.drawerEl) return []
+    const list = this.drawerListEl
+    const rows = this.drawerEl.querySelectorAll<HTMLElement>(
+      '.inkchapter-doc-drawer__item[data-diagnostic-id]',
+    )
+    // §12/§13 — row offsets MUST be relative to the LIST scroll content, not to
+    // whichever higher ancestor happens to be the `offsetParent`. The list is
+    // statically positioned (`.inkchapter-doc-drawer__list` has `overflow-y:auto`
+    // but no `position`), so a row's raw `offsetTop` also contains the Drawer
+    // header + filter-tab strip height. Comparing that against `scrollTop`
+    // corrupts `firstVisibleRowIndex` by ~one header height and makes the anchor
+    // probe pick a row ABOVE the true first visible row. Normalise to the list.
+    const listOffsetTop = list && Number.isFinite(list.offsetTop) ? list.offsetTop : 0
+    const out: DrawerRowRect[] = []
+    for (const el of Array.from(rows)) {
+      const diagnosticId = el.getAttribute('data-diagnostic-id') ?? ''
+      const targetIndex = Number.parseInt(el.getAttribute('data-target-index') ?? '0', 10)
+      const rawTop = Number.isFinite(el.offsetTop) ? el.offsetTop : 0
+      const offsetTop = list && el.offsetParent !== list ? rawTop - listOffsetTop : rawTop
+      out.push({
+        projectionKey: `${diagnosticId}#${Number.isFinite(targetIndex) ? targetIndex : 0}`,
+        diagnosticId,
+        offsetTop,
+        height: Number.isFinite(el.offsetHeight) ? el.offsetHeight : 0,
+      })
+    }
+    return out
+  }
+
+  /** §12 — capture the Drawer list viewport (scrollTop + first visible anchor + offset). */
+  private captureDrawerViewport(): DrawerViewportState {
+    const list = this.drawerListEl
+    const scrollTop = list && Number.isFinite(list.scrollTop) ? list.scrollTop : this.measureDrawerListScrollTop()
+    const rows = this.drawerRowRects()
+    const idx = firstVisibleRowIndex(rows, scrollTop)
+    const anchor = idx >= 0 ? rows[idx] : null
+    return {
+      scrollTop,
+      firstVisibleDiagnosticId: anchor?.diagnosticId ?? null,
+      firstVisibleProjectionKey: anchor?.projectionKey ?? null,
+      firstVisibleOffsetPx: anchor != null ? anchor.offsetTop - scrollTop : 0,
+      filter: this.drawerFilter,
+    }
+  }
+
+  /** §13 — restore the Drawer list viewport by visible ANCHOR (+ offset), scrollTop as fallback. */
+  private restoreDrawerViewport(state: DrawerViewportState | null): {
+    performed: boolean
+    ok: boolean
+    strategy: string
+    targetScrollTop: number
+    actualScrollTop: number
+  } {
+    const list = this.drawerListEl
+    if (!list || state == null) {
+      return { performed: false, ok: false, strategy: 'NO_CAPTURE', targetScrollTop: 0, actualScrollTop: 0 }
+    }
+    const rows = this.drawerRowRects()
+    const resolution = resolveViewportRestore(state, rows)
+    let actual = state.scrollTop
+    let clamped = false
+    try {
+      const max = Math.max(0, list.scrollHeight - list.clientHeight)
+      const desired = resolution.targetScrollTop
+      const target = Math.max(0, Math.min(max, desired))
+      clamped = target !== desired
+      list.scrollTop = target
+      actual = Number.isFinite(list.scrollTop) ? list.scrollTop : target
+    } catch { /* keep current */ }
+    // §13 — "restored" means the SAVED anchor row sits at the SAVED offset again.
+    // The "first VISIBLE row" probe is deliberately NOT the contract: after a row
+    // set change a taller row that is now present ABOVE the anchor can legitimately
+    // straddle the viewport top, which would mis-classify the probe while the anchor
+    // is in fact positioned exactly where the user left it.
+    const afterRows = this.drawerRowRects()
+    const savedKey = state.firstVisibleProjectionKey
+    const anchorRow = savedKey == null ? null : afterRows.find(r => r.projectionKey === savedKey)
+    // §13 — the ONLY real failure: the restore claimed the EXACT anchor
+    // (`PROJECTION_KEY`) but the row did not land at the saved offset, and the
+    // request was not clamped by the list bounds. When the anchor did not survive
+    // the row-set change, the ordered fallback (same diagnostic → next → previous
+    // → saved scrollTop) is a SPECIFIED, legitimate outcome — never a failure.
+    const anchorPositioned = anchorRow != null
+      && savedKey != null
+      && Math.abs((anchorRow.offsetTop - actual) - state.firstVisibleOffsetPx) <= 1
+    const ok = savedKey == null
+      || resolution.strategy !== 'PROJECTION_KEY'
+      || anchorPositioned
+      || clamped
+    return { performed: true, ok, strategy: resolution.strategy, targetScrollTop: resolution.targetScrollTop, actualScrollTop: actual }
+  }
+
+  /** §7 — the ONE active-patch authority: toggle active state on EXISTING rows only. */
+  private patchDrawerActiveState(): void {
+    this.refreshDrawerActiveRow()
+  }
+
+  /**
+   * §12 — remember the Drawer list viewport the USER owns (anchor + offset + the
+   * row mount generation it belongs to). Updated on every REAL list `scroll`
+   * event and after every render that legitimately positions the list. A silent
+   * external reset produces NO scroll event, so it can never poison this memory.
+   */
+  private rememberDrawerViewport(): void {
+    if (!this.drawerEl || !this.drawerListEl) return
+    this.drawerViewportMemory = this.captureDrawerViewport()
+    this.drawerViewportMemoryMountGeneration = this.drawerRowMountGeneration
+  }
+
+  /**
+   * §12 — install the EXTERNAL-MOVE guard. The overlay root's children
+   * (toolbar / navigator / drawer) can be DETACHED and RE-INSERTED by an agent
+   * outside this host (observed at runtime during a locate). Re-inserting an
+   * element destroys the scroll box of every overflow container inside it, which
+   * is why the Drawer list silently jumped back to the top. A `MutationObserver`
+   * callback is a MICROTASK: it runs before the next paint, so re-applying the
+   * remembered viewport here is INVISIBLE (no top-then-back jump is ever shown).
+   */
+  private installDrawerReattachGuard(): void {
+    if (typeof MutationObserver === 'undefined' || !this.root) return
+    this.drawerReattachObserver?.disconnect()
+    this.drawerReattachObserver = new MutationObserver(() => {
+      this.restoreDrawerViewportAfterExternalMove()
+    })
+    this.drawerReattachObserver.observe(this.root, { childList: true })
+  }
+
+  /**
+   * §12 — re-apply the remembered viewport after an external detach/re-attach of
+   * the Drawer subtree. This is NOT a structural-render repair: it refuses to run
+   * when the ROW SET changed (a new mount generation), and it never re-renders.
+   */
+  private restoreDrawerViewportAfterExternalMove(): void {
+    const list = this.drawerListEl
+    const memory = this.drawerViewportMemory
+    if (!list || !memory || !this.root || !this.root.contains(list)) return
+    if (this.drawerRowMountGeneration !== this.drawerViewportMemoryMountGeneration) return
+    if (memory.scrollTop <= 0) return
+    const before = list.scrollTop
+    if (Math.abs(before - memory.scrollTop) <= 1) return
+    const restored = this.restoreDrawerViewport(memory)
+    const after = Number.isFinite(list.scrollTop) ? list.scrollTop : memory.scrollTop
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-VIEWPORT-AUDIT', {
+      diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      action: 'EXTERNAL_MOVE_REPAIR',
+      updateMode: 'ACTIVE_PATCH',
+      scrollTopBefore: before,
+      scrollTopAfter: after,
+      firstVisibleDiagnosticIdBefore: memory.firstVisibleDiagnosticId,
+      firstVisibleDiagnosticIdAfter: memory.firstVisibleDiagnosticId,
+      firstVisibleProjectionKeyBefore: memory.firstVisibleProjectionKey,
+      firstVisibleProjectionKeyAfter: memory.firstVisibleProjectionKey,
+      firstVisibleOffsetBefore: memory.firstVisibleOffsetPx,
+      firstVisibleOffsetAfter: memory.firstVisibleOffsetPx,
+      scrollContainerRemounted: false,
+      clickedRowRemounted: false,
+      rowScrollIntoViewCalled: false,
+      focusPreventScroll: true,
+      viewportCapturePerformed: restored.performed,
+      viewportRestorePerformed: restored.performed,
+      scrollDelta: after - before,
+      decision: Math.abs(after - memory.scrollTop) <= 1 ? 'PASS' : 'FAIL',
+      reason: 'DRAWER_VIEWPORT_REAPPLIED_AFTER_EXTERNAL_MOVE',
+    })
+  }
+
+  /** §5/§8 — the DRAWER STRUCTURE SIGNATURE (row set + order + content). */
+  private computeDrawerStructureSignature(
+    projections: readonly DiagnosticTargetProjection[],
+  ): string {
+    const parts = projections.map(p => {
+      const diag = this.diagnosticById(p.diagnosticId)
+      const severity = p.severity
+      const code = typeof diag?.code === 'string' ? diag.code : p.ruleId
+      const message = typeof diag?.message === 'string' ? diag.message : ''
+      const detail = typeof diag?.detail === 'string' ? diag.detail : ''
+      return `${p.diagnosticId}#${p.targetIndex}#${severity}#${code}#${message.length}:${detail.length}#${message}`
+    })
+    return `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${this.drawerFilter}|${parts.join('>')}`
+  }
+
+  /** §32/§33 — emit the ONE drawer viewport audit at every render / patch boundary. */
+  private emitDrawerViewportAudit(input: {
+    diagnosticId: string | null
+    action: string
+    updateMode: DrawerUpdateMode
+    scrollTopBefore: number
+    scrollTopAfter: number
+    firstVisibleDiagnosticIdBefore: string | null
+    firstVisibleDiagnosticIdAfter: string | null
+    firstVisibleProjectionKeyBefore: string | null
+    firstVisibleProjectionKeyAfter: string | null
+    firstVisibleOffsetBefore: number
+    firstVisibleOffsetAfter: number
+    scrollContainerRemounted: boolean
+    clickedRowRemounted: boolean
+    rowScrollIntoViewCalled: boolean
+    focusPreventScroll: boolean
+    viewportCapturePerformed: boolean
+    viewportRestorePerformed: boolean
+    decision: 'PASS' | 'FAIL'
+    reason: string
+  }): void {
+    this.lastDrawerViewportAudit = { ...input }
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-VIEWPORT-AUDIT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      ...input,
+      scrollDelta: Math.abs(input.scrollTopAfter - input.scrollTopBefore),
+      // §30/§31/§41 — the PROVABLE gate + coverage report at this boundary.
+      gateReport: this.getDrawerViewportV1GateReport(),
+      coverageReport: this.getDrawerViewportV1CoverageReport(),
+      gateDecision: this.getDrawerViewportV1GateDecision().decision,
+    })
+  }
+
+  /** §22 — a document switch resets the structural baseline (new document = new list). */
+  private resetDrawerViewportBaseline(): void {
+    this.lastDrawerStructureSignature = null
+    this.pendingDrawerViewportCapture = null
+    this.drawerListScrollBeforeCollapse = null
+    this.drawerViewportMemory = null
+    this.drawerViewportMemoryMountGeneration = -1
+  }
+
+  /** §12/§32 — locate the LIVE row element of one projection (diagnosticId + targetIndex). */
+  private findDrawerRowElement(diagnosticId: string, targetIndex: number): HTMLElement | null {
+    if (!this.drawerEl) return null
+    const rows = this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]')
+    for (const el of Array.from(rows)) {
+      if (el.getAttribute('data-diagnostic-id') !== diagnosticId) continue
+      const idx = Number.parseInt(el.getAttribute('data-target-index') ?? '0', 10)
+      if (idx === targetIndex) return el
+    }
+    return null
+  }
+
+  /** §32 — begin the click-scoped Drawer viewport probe (BEFORE the transition). */
+  private beginDrawerClickViewportProbe(
+    action: 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH',
+    diagnosticId: string,
+    targetIndex: number,
+  ): void {
+    this.drawerStructuralRenderSinceClick = false
+    this.drawerRowScrollIntoViewCalledSinceClick = false
+    this.drawerFocusCausedScrollSinceClick = false
+    const rowElement = this.findDrawerRowElement(diagnosticId, targetIndex)
+    this.drawerClickViewportProbe = {
+      action,
+      rowElement,
+      listElement: this.drawerListEl,
+      rowHeightBefore: rowElement && Number.isFinite(rowElement.offsetHeight) ? rowElement.offsetHeight : 0,
+      viewportBefore: this.captureDrawerViewport(),
+    }
+  }
+
+  /**
+   * §8/§15/§27/§30/§32 — finalize the click-scoped probe: measure the REAL
+   * before/after viewport + row/list identity and feed the ONE gate authority.
+   */
+  private finalizeDrawerClickViewportProbe(reason: string): void {
+    const probe = this.drawerClickViewportProbe
+    this.drawerClickViewportProbe = null
+    if (!probe) return
+    const viewportAfter = this.captureDrawerViewport()
+    const rowStillConnected = probe.rowElement != null && probe.rowElement.isConnected
+    const clickedRowRemounted = probe.rowElement != null && !rowStillConnected
+    const scrollContainerRemounted = probe.listElement != null && probe.listElement !== this.drawerListEl
+    const rowHeightAfter = rowStillConnected && probe.rowElement && Number.isFinite(probe.rowElement.offsetHeight)
+      ? probe.rowElement.offsetHeight
+      : 0
+    const activeRowHeightChanged = probe.rowHeightBefore > 0 && rowHeightAfter > 0
+      && Math.abs(rowHeightAfter - probe.rowHeightBefore) > 0.5
+    const updateMode: DrawerUpdateMode = this.drawerStructuralRenderSinceClick ? 'STRUCTURAL_RENDER' : 'ACTIVE_PATCH'
+    const facts = {
+      action: probe.action,
+      updateMode,
+      scrollTopBefore: probe.viewportBefore.scrollTop,
+      scrollTopAfter: viewportAfter.scrollTop,
+      firstVisibleDiagnosticIdBefore: probe.viewportBefore.firstVisibleDiagnosticId,
+      firstVisibleDiagnosticIdAfter: viewportAfter.firstVisibleDiagnosticId,
+      firstVisibleOffsetBefore: probe.viewportBefore.firstVisibleOffsetPx,
+      firstVisibleOffsetAfter: viewportAfter.firstVisibleOffsetPx,
+      clickedRowRemounted,
+      scrollContainerRemounted,
+      rowScrollIntoViewCalled: this.drawerRowScrollIntoViewCalledSinceClick,
+      focusCausedScroll: this.drawerFocusCausedScrollSinceClick,
+      activeRowHeightChanged,
+    }
+    const partial = evaluateDrawerActiveClickFacts(facts)
+    for (const [k, v] of Object.entries(partial) as Array<[keyof DrawerViewportV1Counters, number]>) {
+      this.countersDrawerViewportV1[k] = Math.max(this.countersDrawerViewportV1[k], v)
+    }
+    // §31 — positive coverage per stability scenario.
+    const stable = facts.scrollTopBefore === facts.scrollTopAfter
+      && !clickedRowRemounted && !scrollContainerRemounted
+      && partial.drawerStructuralRerenderOnActiveOnlyChange == null
+    if (stable) {
+      if (facts.action === 'DEACTIVATE') this.coverageDrawerViewportV1.deactivateStability++
+      else if (facts.action === 'SWITCH') this.coverageDrawerViewportV1.activeSwitchStability++
+      else this.coverageDrawerViewportV1.activeClickStability++
+      if (this.isTargetGroupDiagnostic(this.diagnosticInteractionState.diagnosticId)) {
+        this.coverageDrawerViewportV1.targetGroupStability++
+      }
+      const activeIdForCoverage = this.diagnosticInteractionState.diagnosticId
+      if (activeIdForCoverage != null
+        && this.diagnosticById(activeIdForCoverage)?.location?.kind === 'multi-target') {
+        this.coverageDrawerViewportV1.multiTargetStability++
+      }
+    }
+    const ok = Object.keys(partial).length === 0
+    // Internal Blank-Line Policy V1 §34/§36 — the runtime witness + coverage for
+    // the document-FORMAT warning. It observes the SHARED viewport facts, so this
+    // rule can never introduce its own scroll behaviour.
+    this.noteInternalBlankLineRuntimeFacts(probe.action, probe.viewportBefore, viewportAfter, stable)
+    this.emitDrawerViewportAudit({
+      diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      action: probe.action,
+      updateMode,
+      scrollTopBefore: facts.scrollTopBefore,
+      scrollTopAfter: facts.scrollTopAfter,
+      firstVisibleDiagnosticIdBefore: facts.firstVisibleDiagnosticIdBefore,
+      firstVisibleDiagnosticIdAfter: facts.firstVisibleDiagnosticIdAfter,
+      firstVisibleProjectionKeyBefore: probe.viewportBefore.firstVisibleProjectionKey,
+      firstVisibleProjectionKeyAfter: viewportAfter.firstVisibleProjectionKey,
+      firstVisibleOffsetBefore: facts.firstVisibleOffsetBefore,
+      firstVisibleOffsetAfter: facts.firstVisibleOffsetAfter,
+      scrollContainerRemounted,
+      clickedRowRemounted,
+      rowScrollIntoViewCalled: facts.rowScrollIntoViewCalled,
+      focusPreventScroll: true,
+      viewportCapturePerformed: false,
+      viewportRestorePerformed: false,
+      decision: ok ? 'PASS' : 'FAIL',
+      reason: ok ? `DIAGNOSTIC_${probe.action}_DRAWER_VIEWPORT_STABLE_${reason}` : `DRAWER_VIEWPORT_VIOLATION_${Object.keys(partial).join('|')}`,
+    })
+  }
+
+  /** §32/§41 — read-only gate/coverage surface (runtime verification). */
+  getDrawerViewportV1GateReport(): string[] {
+    return formatDrawerViewportV1GateReport(this.countersDrawerViewportV1)
+  }
+
+  getDrawerViewportV1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateDrawerViewportV1Gates(this.countersDrawerViewportV1)
+  }
+
+  getDrawerViewportV1CoverageReport(): string[] {
+    return formatDrawerViewportV1CoverageReport(this.coverageDrawerViewportV1)
+  }
+
+  getDrawerViewportV1AuditFacts(): Readonly<Record<string, unknown>> {
+    return { ...this.lastDrawerViewportAudit }
+  }
+
+  /**
+   * Internal Blank-Line Policy V1 §33 — the SOURCE-side audit (state-deduped).
+   * Emitted on every committed diagnostic snapshot so the runtime log proves the
+   * gap facts (previous / next block identity + kind, the blank line span, the
+   * actual count, the threshold) that produced the Warning — and proves the
+   * separation from the EOF rules.
+   */
+  private emitInternalBlankLineSourceAudit(): void {
+    const snapshot = this.snapshot
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    const records = (snapshot?.diagnostics ?? []).filter(d => d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE)
+    const eofCodes = (snapshot?.diagnostics ?? [])
+      .filter(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING' || d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')
+      .map(d => d.code)
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    this.measureInternalBlankLineSourceGates(records, eofCodes, markdown)
+    // §21/§36 — EVENT-DRIVEN dynamic coverage: compare the committed gap IDENTITY
+    // set with the previous one FOR THE SAME DOCUMENT. A gap that is no longer
+    // reported "disappeared"; a new one "reappeared". This runs on every snapshot
+    // commit (the reconcile is fired by the editor change event — never a poll).
+    const identitySet = new Set(records.map(d => String(d.targetIdentity ?? '')))
+    const last = this.lastInternalBlankLineIdentityState
+    if (last != null && last.documentKey === documentKey) {
+      let disappeared = 0
+      let reappeared = 0
+      for (const id of last.identities) if (!identitySet.has(id)) disappeared++
+      for (const id of identitySet) if (!last.identities.has(id)) reappeared++
+      if (disappeared > 0) this.coverageInternalBlankLineV1.dynamicDisappearRuntime += disappeared
+      if (reappeared > 0) this.coverageInternalBlankLineV1.dynamicReappearRuntime += reappeared
+    }
+    this.lastInternalBlankLineIdentityState = { documentKey, identities: identitySet }
+    const signature = `${documentKey ?? ''}|${records.map(d => d.id).join(',')}|${eofCodes.join(',')}`
+    if (signature === this.lastInternalBlankLineSourceSignature) return
+    this.lastInternalBlankLineSourceSignature = signature
+    const gaps = records.map(d => {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      return {
+        diagnosticId: d.id,
+        severity: d.severity,
+        previousBlockIdentity: meta.previousBlockIdentity ?? null,
+        previousBlockKind: meta.previousBlockKind ?? null,
+        nextBlockIdentity: meta.nextBlockIdentity ?? null,
+        nextBlockKind: meta.nextBlockKind ?? null,
+        previousSourceEnd: meta.previousSourceEnd ?? null,
+        nextSourceStart: meta.nextSourceStart ?? null,
+        firstBlankLine: meta.firstBlankLine ?? null,
+        lastBlankLine: meta.lastBlankLine ?? null,
+        actualBlankLines: meta.actualBlankLines ?? null,
+        warningThreshold: meta.warningThreshold ?? null,
+        locationKind: d.location?.kind ?? null,
+        nextBlockStartLine: meta.nextBlockStartLine ?? null,
+      }
+    })
+    emitRuntimeAudit('DOCUMENT-INTERNAL-BLANK-LINE-AUDIT', {
+      documentKey,
+      revision: snapshot?.revision ?? null,
+      diagnosticId: records[0]?.id ?? null,
+      gapCount: records.length,
+      gaps,
+      eofDiagnosticCodes: eofCodes,
+      sourceDerived: true,
+      domGeometryUsed: false,
+      warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+      passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+      gateReport: formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1),
+      coverageReport: formatInternalBlankLineV1CoverageReport(this.coverageInternalBlankLineV1),
+      decision: this.getInternalBlankLineV1GateDecision().decision,
+      reason: records.length > 0 ? 'INTERNAL_BLANK_LINE_GAPS_PRESENT' : 'NO_INTERNAL_BLANK_LINE_GAP',
+    })
+  }
+
+  /**
+   * §35 — measure the SOURCE-side gates from the committed snapshot + the
+   * authoritative Markdown. Every measurement is a real comparison (never a
+   * hand-written 0): the gap identity must be the block-pair identity, ONE gap
+   * must own exactly ONE record, the run must sit between two real content
+   * blocks, and it must never overlap a fenced code block / display formula /
+   * front matter / HTML block or the EOF / leading run.
+   */
+  private measureInternalBlankLineSourceGates(
+    records: readonly DocumentDiagnosticsSnapshot['diagnostics'][number][],
+    eofCodes: readonly string[],
+    markdown: string | null,
+  ): void {
+    const c = this.countersInternalBlankLineV1
+    // §4 — source-only detection: the reported set must be reproducible from the
+    // Markdown alone (a DOM/geometry-derived gap could not survive this check).
+    const authoritative = new Set(analyzeInternalBlankLineGaps(markdown).map(internalBlankGapIdentity))
+    const ids = new Map<string, number>()
+    for (const d of records) {
+      if (d.severity !== 'warning') c.excessiveInternalBlankLinesWrongSeverity++
+      const target = String(d.targetIdentity ?? '')
+      ids.set(target, (ids.get(target) ?? 0) + 1)
+      // §20 — the identity must be the block-pair identity, never a bare index.
+      if (!target.startsWith('blank-gap:') || !authoritative.has(target)) c.internalBlankLineUnstableIdentity++
+      if (d.location?.kind === 'document-end') c.internalBlankLineReportedAsEof++
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      const first = typeof meta.firstBlankLine === 'number' ? meta.firstBlankLine : -1
+      const last = typeof meta.lastBlankLine === 'number' ? meta.lastBlankLine : -1
+      const region = protectedRegionKindAtLine(markdown, first)
+      if (region === 'code') c.codeFenceInternalBlankLineFalsePositive++
+      else if (region === 'formula') c.formulaInternalBlankLineFalsePositive++
+      else if (region === 'front-matter') c.frontMatterBlankLineFalsePositive++
+      else if (region === 'html') c.htmlBlockBlankLineFalsePositive++
+      // §11 — a leading run is never internal.
+      if (first <= 0 || first <= firstContentSourceLine(markdown)) c.leadingBlankLineReportedAsInternal++
+      // §10 — an EOF run is never internal.
+      if (last >= lastContentSourceLine(markdown)) c.eofBlankLineReportedAsInternal++
+    }
+    // §6 — ONE gap owns exactly ONE diagnostic (never N per blank line).
+    const duplicated = [...ids.values()].filter(n => n > 1).length
+    if (duplicated > 0) {
+      c.internalBlankLineOneGapMultiDiagnostic += duplicated
+      c.internalBlankLineEditDuplicateDiagnostic += duplicated
+    }
+    const uniqueIds = new Set(records.map(d => d.id)).size
+    if (uniqueIds !== records.length) c.internalBlankLineDuplicateDiagnosticId += records.length - uniqueIds
+    // §35 — the threshold authority is ONE constant; a second hardcoded value in
+    // this path would be visible as a record disagreeing with the policy.
+    if (records.some(d => {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      return meta.warningThreshold !== INTERNAL_BLANK_LINE_POLICY.warningThreshold
+        || meta.passMaxBlankLines !== INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
+    })) c.duplicateInternalBlankLineThresholdAuthority++
+    // §35 — the EOF rule must not swallow (or be swallowed by) the internal rule:
+    // the internal set never contains an EOF code.
+    if ((records as readonly { code: string }[]).some(d => eofCodes.includes(d.code))) c.internalBlankLineReportedAsEof++
+  }
+
+  /**
+   * Internal Blank-Line Policy V1 §34/§36 — the runtime witness for ONE click on
+   * the document-FORMAT warning, plus the positive coverage bookkeeping. The
+   * viewport facts come from the SHARED Drawer Viewport Stability authority (this
+   * rule has no private scroll path of its own).
+   */
+  private noteInternalBlankLineRuntimeFacts(
+    action: 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH',
+    before: DrawerViewportState,
+    after: DrawerViewportState,
+    stable: boolean,
+  ): void {
+    const id = this.diagnosticInteractionState.diagnosticId
+    const diag = id != null ? this.diagnosticById(id) : null
+    if (!diag || diag.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const actualBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : 0
+    const previousBlockKind = typeof meta.previousBlockKind === 'string' ? meta.previousBlockKind as DocumentBlockKind : null
+    const nextBlockKind = typeof meta.nextBlockKind === 'string' ? meta.nextBlockKind as DocumentBlockKind : null
+    const scrollDelta = after.scrollTop - before.scrollTop
+    const drift = Math.abs(scrollDelta)
+    const anchorChanged = before.firstVisibleProjectionKey != null
+      && before.firstVisibleProjectionKey !== after.firstVisibleProjectionKey
+    const activated = this.diagnosticInteractionState.phase === 'ACTIVE'
+    // §25 — the FIRST click must already be ACTIVATE (never scroll-only).
+    if (action === 'ACTIVATE' && !activated) {
+      this.countersInternalBlankLineV1.internalBlankLineFirstClickNotActivated++
+    }
+    // §26 — the Drawer viewport is the SHARED authority's contract.
+    if (drift > 1) this.countersInternalBlankLineV1.internalBlankLineClickDrawerScrollDriftGt1px++
+    if (anchorChanged) this.countersInternalBlankLineV1.internalBlankLineClickDrawerViewportAnchorChanged++
+    // §28 — the rule is a Warning: it may only appear in 全部 / 警告.
+    if (this.drawerOpen && this.drawerFilter !== 'all' && this.drawerFilter !== 'warning') {
+      this.countersInternalBlankLineV1.internalBlankLineWrongFilter++
+    }
+    noteInternalBlankLineCoverage(this.coverageInternalBlankLineV1, {
+      actualBlankLines,
+      previousBlockKind,
+      nextBlockKind,
+      firstClickActivated: action === 'ACTIVATE' && activated,
+      drawerViewportStable: stable && drift <= 1 && !anchorChanged,
+    })
+    emitRuntimeAudit(DOCUMENT_INTERNAL_BLANK_LINE_RUNTIME_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: id,
+      ruleCode: diag.code,
+      severity: diag.severity,
+      actualBlankLines,
+      previousBlockKind,
+      nextBlockKind,
+      warningFilterVisible: this.drawerFilter === 'warning',
+      drawerFilter: this.drawerFilter,
+      clickDecision: action,
+      scrollAnchorBlockIdentity: typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : null,
+      scrollAnchorBlockKind: nextBlockKind,
+      activeTargetIdentity: this.diagnosticInteractionState.targetKey ?? null,
+      drawerScrollTopBefore: before.scrollTop,
+      drawerScrollTopAfter: after.scrollTop,
+      drawerScrollDelta: scrollDelta,
+      activeLeasePresent: this.locateVisibilityLease != null,
+      activeFillCount: this.countActiveOwnerFillNodes(),
+      firstClickActivated: action === 'ACTIVATE' && activated,
+      decision: action === 'ACTIVATE' && !activated ? 'FAIL'
+        : (drift > 1 || anchorChanged) ? 'FAIL' : 'PASS',
+      reason: action === 'ACTIVATE' && !activated ? 'FIRST_CLICK_NOT_ACTIVATED'
+        : (drift > 1 || anchorChanged) ? 'DRAWER_VIEWPORT_DRIFT' : 'INTERNAL_BLANK_LINE_CLICK_OK',
+    })
+  }
+
+  /**
+   * §27/§35 — the Toolbar warning-count parity witness. The Toolbar counts come
+   * from the ONE projection authority (`deriveDocumentProblemsProjection`); the
+   * gate only fires when that projection disagrees with the committed snapshot,
+   * so adding / removing an internal blank-line Warning can never leave the
+   * Toolbar stale (and this rule never touches Error / Hint at all).
+   */
+  private checkInternalBlankLineToolbarParity(snapshot: DocumentDiagnosticsSnapshot | null): void {
+    const docWarnings = (snapshot?.diagnostics ?? []).filter(d => d.severity === 'warning').length
+    const projection = deriveDocumentProblemsProjection(snapshot)
+    if (projection.warningCount !== docWarnings) {
+      this.countersInternalBlankLineV1.internalBlankLineToolbarWarningCountMismatch++
+    }
+  }
+
+  /** §35/§36 — read-only gate / coverage surface (runtime verification). */
+  getInternalBlankLineV1GateReport(): string[] {
+    return formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1)
+  }
+
+  getInternalBlankLineV1CoverageReport(): string[] {
+    return formatInternalBlankLineV1CoverageReport(this.coverageInternalBlankLineV1)
+  }
+
+  getInternalBlankLineV1GateDecision(): { decision: 'PASS' | 'FAIL'; failing: readonly string[] } {
+    const failing = formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1)
+      .filter(line => !line.endsWith('=0'))
+    return { decision: failing.length === 0 ? 'PASS' : 'FAIL', failing }
+  }
+
+  /** §41 — the drawer row mount generation (proves a structural remount). */
+  getDrawerRowMountGeneration(): number {
+    return this.drawerRowMountGeneration
+  }
+
   private renderDrawer(): void {
     if (!this.drawerEl || !this.drawerListEl) return
     const snapshot = this.snapshot
     const activeKey = this.opts.ctx.authority.getDocumentKey()
     if (!snapshot || snapshot.documentKey == null || snapshot.documentKey !== activeKey) {
       this.renderDrawerFilterTabs(snapshot, false)
+      // §10 — a stale snapshot IS a structural change (the list content is invalid).
+      this.drawerStructuralRenderSinceClick = true
+      this.drawerRowMountGeneration++
+      this.lastDrawerStructureSignature = null
       // Phase 7R.3.11.4 — never render stale items: show a pending placeholder.
       const pending = document.createElement('div')
       pending.className = 'inkchapter-doc-drawer__item--empty'
@@ -14232,8 +15041,91 @@ export class DocumentUtilityOverlayHost {
     // severity counts are document-only.
     const documentDiagnostics = this.documentDiagnostics()
     const documentCounts = countDocumentSeverities(documentDiagnostics)
+    // §5/§8/§16 — decide the update MODE from the STRUCTURE signature BEFORE any
+    // DOM write. `ACTIVE_PATCH` (row set unchanged) must NEVER rebuild the list.
+    const projections = this.buildDrawerProjections()
+    const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
+    this.recordDrawerOrderFacts(projections, filtered)
+    this.measureTargetGroupDrawerFacts(projections, filtered)
+    const structureSignature = this.computeDrawerStructureSignature(filtered)
+    const listHasRows = this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
+    const modeDecision = resolveDrawerUpdateMode({
+      previousSignature: this.lastDrawerStructureSignature,
+      facts: {
+        projectionSignature: structureSignature,
+        documentKey: snapshot.documentKey,
+        filter: this.drawerFilter,
+        listHasRows,
+      },
+    })
+
+    if (modeDecision.mode === 'ACTIVE_PATCH') {
+      // §6/§7/§16 — patch ONLY the existing row nodes (active class / aria). No
+      // `replaceChildren`, no `innerHTML`, no re-created rows, no scroll write.
+      const before = this.captureDrawerViewport()
+      this.patchDrawerActiveState()
+      const after = this.captureDrawerViewport()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+        documentKey: snapshot.documentKey,
+        reason: modeDecision.reason,
+        updateMode: 'ACTIVE_PATCH',
+        rowSetChanged: false,
+        filterChanged: false,
+        documentChanged: false,
+        projectionChanged: false,
+        viewportCapturePerformed: false,
+        viewportRestorePerformed: false,
+        decision: 'ACTIVE_PATCH_NO_STRUCTURAL_RENDER',
+      })
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+        action: 'DRAWER_ACTIVE_PATCHED',
+        documentKey: snapshot.documentKey,
+        activeDocumentKey: activeKey,
+        revision: snapshot.revision,
+        sourceRevision: snapshot.sourceRevision,
+        drawerVisible: this.drawerOpen,
+        itemCount: documentCounts.total,
+        errorCount: documentCounts.error,
+        warningCount: documentCounts.warning,
+        hintCount: documentCounts.info,
+        filter: this.drawerFilter,
+        scrollTopBefore: before.scrollTop,
+        scrollTopAfter: after.scrollTop,
+        decision: 'DRAWER_ACTIVE_PATCHED_WITHOUT_RERENDER',
+      })
+      this.scheduleDrawerContentAudit()
+      // §32 — the ACTIVE_PATCH is auditable (no structural render, no scroll write).
+      this.emitDrawerViewportAudit({
+        diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+        action: 'RENDER',
+        updateMode: 'ACTIVE_PATCH',
+        scrollTopBefore: before.scrollTop,
+        scrollTopAfter: after.scrollTop,
+        firstVisibleDiagnosticIdBefore: before.firstVisibleDiagnosticId,
+        firstVisibleDiagnosticIdAfter: after.firstVisibleDiagnosticId,
+        firstVisibleProjectionKeyBefore: before.firstVisibleProjectionKey,
+        firstVisibleProjectionKeyAfter: after.firstVisibleProjectionKey,
+        firstVisibleOffsetBefore: before.firstVisibleOffsetPx,
+        firstVisibleOffsetAfter: after.firstVisibleOffsetPx,
+        scrollContainerRemounted: false,
+        clickedRowRemounted: false,
+        rowScrollIntoViewCalled: false,
+        focusPreventScroll: true,
+        viewportCapturePerformed: false,
+        viewportRestorePerformed: false,
+        decision: 'PASS',
+        reason: 'ACTIVE_PATCH_WITHOUT_STRUCTURAL_RENDER',
+      })
+      return
+    }
+
+    // ── STRUCTURAL_RENDER (§10/§12/§13) — capture BEFORE, restore AFTER. ─────
+    const viewportBefore = this.captureDrawerViewport()
+    this.pendingDrawerViewportCapture = viewportBefore
+    this.drawerStructuralRenderSinceClick = true
     this.renderDrawerFilterTabs(snapshot, documentDiagnostics.length > 0)
     this.drawerListEl.replaceChildren()
+    this.drawerRowMountGeneration++
     if (documentDiagnostics.length === 0) {
       const ok = document.createElement('div')
       ok.className = 'inkchapter-doc-drawer__item--empty'
@@ -14244,26 +15136,48 @@ export class DocumentUtilityOverlayHost {
       label.textContent = '未发现问题'
       ok.append(icon, label)
       this.drawerListEl.appendChild(ok)
+    } else if (filtered.length === 0) {
+      // Current filter yields nothing after a live refresh — show neutral hint.
+      const none = document.createElement('div')
+      none.className = 'inkchapter-doc-drawer__item--empty'
+      none.textContent = '当前筛选下没有问题'
+      this.drawerListEl.appendChild(none)
     } else {
-      // V5.14-R1 §3/§4/§5/§32 — ONE occurrence-level projection per real target,
-      // ordered strictly by document position (multi-target occurrences interleave
-      // with other diagnostics). The severity filter only REMOVES entries.
-      const projections = this.buildDrawerProjections()
-      const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
-      this.recordDrawerOrderFacts(projections, filtered)
-      this.measureTargetGroupDrawerFacts(projections, filtered)
-      if (filtered.length === 0) {
-        // Current filter yields nothing after a live refresh — show neutral hint.
-        const none = document.createElement('div')
-        none.className = 'inkchapter-doc-drawer__item--empty'
-        none.textContent = '当前筛选下没有问题'
-        this.drawerListEl.appendChild(none)
-      } else {
-        for (const p of filtered) {
-          this.drawerListEl.appendChild(this.buildDrawerItem(p))
-        }
+      for (const p of filtered) {
+        this.drawerListEl.appendChild(this.buildDrawerItem(p))
       }
     }
+    this.lastDrawerStructureSignature = structureSignature
+    // §13 — restore the visible anchor (+ offset); the row content is now final.
+    const restore = this.restoreDrawerViewport(viewportBefore)
+    // §12 — the new row set is now the user's viewport; the memory must follow the
+    // NEW mount generation, otherwise the external-move guard would refuse to act.
+    this.rememberDrawerViewport()
+    const restoreGates = evaluateDrawerStructuralRenderFacts({
+      capturePerformed: true,
+      restorePerformed: restore.performed,
+      restoreOk: restore.ok,
+    })
+    for (const [k, v] of Object.entries(restoreGates) as Array<[keyof DrawerViewportV1Counters, number]>) {
+      this.countersDrawerViewportV1[k] = Math.max(this.countersDrawerViewportV1[k], v)
+    }
+    if (restore.performed && restore.ok) this.coverageDrawerViewportV1.structuralRenderViewportRestore++
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+      documentKey: snapshot.documentKey,
+      reason: modeDecision.reason,
+      updateMode: 'STRUCTURAL_RENDER',
+      rowSetChanged: true,
+      filterChanged: true,
+      documentChanged: false,
+      projectionChanged: true,
+      viewportCapturePerformed: true,
+      viewportRestorePerformed: restore.performed,
+      viewportRestoreStrategy: restore.strategy,
+      viewportRestoreOk: restore.ok,
+      scrollTopBefore: viewportBefore.scrollTop,
+      scrollTopAfter: restore.actualScrollTop,
+      decision: restore.ok ? 'STRUCTURAL_RENDER_VIEWPORT_RESTORED' : 'STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL',
+    })
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
       action: 'DRAWER_RENDERED',
       documentKey: snapshot.documentKey,
@@ -14282,6 +15196,29 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.3.1 — read-only layout audit follows every re-render
     // (rAF + DOM read only; geometryWriteDelta stays 0 by construction).
     this.scheduleDrawerContentAudit()
+    // §32 — the STRUCTURAL_RENDER viewport audit (capture + restore).
+    const viewportAfter = this.captureDrawerViewport()
+    this.emitDrawerViewportAudit({
+      diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      action: 'RENDER',
+      updateMode: 'STRUCTURAL_RENDER',
+      scrollTopBefore: viewportBefore.scrollTop,
+      scrollTopAfter: viewportAfter.scrollTop,
+      firstVisibleDiagnosticIdBefore: viewportBefore.firstVisibleDiagnosticId,
+      firstVisibleDiagnosticIdAfter: viewportAfter.firstVisibleDiagnosticId,
+      firstVisibleProjectionKeyBefore: viewportBefore.firstVisibleProjectionKey,
+      firstVisibleProjectionKeyAfter: viewportAfter.firstVisibleProjectionKey,
+      firstVisibleOffsetBefore: viewportBefore.firstVisibleOffsetPx,
+      firstVisibleOffsetAfter: viewportAfter.firstVisibleOffsetPx,
+      scrollContainerRemounted: false,
+      clickedRowRemounted: false,
+      rowScrollIntoViewCalled: false,
+      focusPreventScroll: true,
+      viewportCapturePerformed: true,
+      viewportRestorePerformed: restore.performed,
+      decision: restore.ok ? 'PASS' : 'FAIL',
+      reason: restore.ok ? 'STRUCTURAL_RENDER_VIEWPORT_RESTORED' : 'STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL',
+    })
   }
 
   // ── V5.14-R7 — Diagnostic ACTIVE interaction state machine (§5/§6/§7/§8) ──
@@ -15048,6 +15985,9 @@ export class DocumentUtilityOverlayHost {
     this.pendingClosureAuditVersion = version
     const emit = (): void => {
       this.pendingClosureAuditVersion = null
+      // §32 — the post-settle boundary is the last point of the click: measure the
+      // REAL Drawer viewport here (after every sync patch / visual commit).
+      this.finalizeDrawerClickViewportProbe('POST_SETTLE')
       this.emitPostSettleClosureAuditV2(clickSequence)
     }
     if (typeof requestAnimationFrame !== 'function') {
@@ -15426,6 +16366,9 @@ export class DocumentUtilityOverlayHost {
     const committed = transition.action === 'DEACTIVATE'
       ? reduceDiagnosticClick(previous, click, null, null)
       : transition
+    // ── Drawer Viewport Stability V1 §32 — capture the Drawer viewport BEFORE the
+    // transition commits, so an active-only click can be PROVEN to leave it intact.
+    this.beginDrawerClickViewportProbe(committed.action, diagnosticId, clickedTargetIndex)
     this.commitDiagnosticTransitionV2(committed, clickSequence)
     const previousOwner = ownerOf(previous)
 
@@ -15441,6 +16384,8 @@ export class DocumentUtilityOverlayHost {
       })
       this.deactivateTeardownCommitted = true
       this.emitHeadingPostReconcileClosure('SAME_TARGET_DEACTIVATE_TEARDOWN_COMMITTED')
+      // §32 — DEACTIVATE is an ACTIVE-only change: prove the Drawer viewport held.
+      this.finalizeDrawerClickViewportProbe('DEACTIVATE_TEARDOWN_COMMITTED')
       this.schedulePostSettleClosureV2(clickSequence)
       return
     }
@@ -21424,6 +22369,20 @@ export class DocumentUtilityOverlayHost {
     item.setAttribute('data-target-index', String(p.targetIndex))
     item.setAttribute('role', 'button')
     item.setAttribute('tabindex', '0')
+    // ── Drawer Viewport Stability V1 §9/§25/§27 — HARD GUARDS on every row.
+    // EDITOR_SCROLL_OWNER != DIAGNOSTICS_DRAWER_SCROLL_OWNER: a diagnostic-row
+    // click must NEVER move the Drawer. A row `scrollIntoView` is trapped (and
+    // made provable), and `focus()` is ALWAYS forced to `{ preventScroll: true }`.
+    item.setAttribute('data-ink-drawer-row-mount', String(this.drawerRowMountGeneration))
+    ;(item as HTMLElement & { scrollIntoView: (...args: unknown[]) => void }).scrollIntoView = () => {
+      this.drawerRowScrollIntoViewCalledSinceClick = true
+      this.countersDrawerViewportV1.drawerForcedScrollIntoViewOnDiagnosticClick++
+    }
+    const realFocus = item.focus.bind(item)
+    item.focus = (options?: FocusOptions): void => {
+      if (options?.preventScroll !== true) this.drawerFocusCausedScrollSinceClick = true
+      realFocus({ preventScroll: true })
+    }
     // ── V5.14-R5 §8 — the Drawer keeps the FULL explanation; only the INLINE chip
     // is compressed. The presentation authority supplies a concise TITLE for the
     // strict first-H1 family (whose own `message` is a multi-line sentence with a

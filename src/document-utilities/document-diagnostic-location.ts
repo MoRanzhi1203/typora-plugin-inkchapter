@@ -54,6 +54,8 @@ export type DiagnosticLocationStrategy =
 export type DocumentDiagnosticArea =
   | 'document-state'
   | 'document-completeness'
+  /** Internal Blank-Line Policy V1 — body-internal SOURCE formatting. */
+  | 'document-format'
   | 'heading'
   | 'figure'
   | 'table'
@@ -69,6 +71,7 @@ export type DocumentDiagnosticScope = 'document' | 'heading' | 'block' | 'object
 export const DOCUMENT_DIAGNOSTIC_AREAS: readonly DocumentDiagnosticArea[] = [
   'document-state',
   'document-completeness',
+  'document-format',
   'heading',
   'figure',
   'table',
@@ -141,6 +144,7 @@ export interface DocumentDiagnosticRuleMeta {
 const AREA_DEFAULT_SCOPE: Readonly<Record<DocumentDiagnosticArea, DocumentDiagnosticScope>> = {
   'document-state': 'document',
   'document-completeness': 'document',
+  'document-format': 'block',
   heading: 'heading',
   figure: 'object',
   table: 'object',
@@ -223,6 +227,18 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   DOCUMENT_SOURCE_UNAVAILABLE: rule('DOCUMENT_SOURCE_UNAVAILABLE', 'document', 'document-start', { area: 'document-state' }),
   DOCUMENT_TERMINAL_NEWLINE_MISSING: rule('DOCUMENT_TERMINAL_NEWLINE_MISSING', 'document', 'document-end', { area: 'document-state' }),
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: rule('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', 'document', 'document-end', { area: 'document-state' }),
+  // Internal Blank-Line Policy V1 §1/§24 — 3+ consecutive blank lines between
+  // two sibling CONTENT blocks. A document-FORMAT warning, scoped to the block
+  // gap (scope=block), with NO reason chip (a body-wide format warning must not
+  // hang a chip on every paragraph). Its locator / active target is the NEXT
+  // block, reusing the existing Warning block-tight locate visual.
+  EXCESSIVE_INTERNAL_BLANK_LINES: rule('EXCESSIVE_INTERNAL_BLANK_LINES', 'document', 'source-range', {
+    area: 'document-format',
+    scope: 'block',
+    reasonChip: false,
+    passiveVisual: false,
+    activeVisual: true,
+  }),
   // V1 — 单标题无正文 Hint：the target is the UNIQUE canonical heading (never
   // EOF / blank body / toolbar / drawer), so its strategy is `canonical-node`
   // with a `source-range` fallback when the frame carries no stable identity.
