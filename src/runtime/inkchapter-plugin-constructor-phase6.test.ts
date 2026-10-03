@@ -12,7 +12,12 @@ function read(rel: string): string {
 function pluginEntrySnippet(bundle: string): string {
   const marker = bundle.indexOf('INKCHAPTER-BOOT-ONLOAD-START')
   if (marker < 0) return ''
-  return bundle.slice(Math.max(0, marker - 600), Math.min(bundle.length, marker + 200))
+  // Anchor to the ENCLOSING native class declaration — `class extends Plugin {`
+  // is what proves the plugin was NOT downleveled. A fixed lookback is brittle:
+  // any extra class field can push the declaration out of the window.
+  const classStart = bundle.lastIndexOf('class extends Plugin', marker)
+  const from = classStart >= 0 ? classStart : Math.max(0, marker - 600)
+  return bundle.slice(from, Math.min(bundle.length, marker + 200))
 }
 
 describe('Phase 6.0R plugin constructor / bundle boot compatibility', () => {

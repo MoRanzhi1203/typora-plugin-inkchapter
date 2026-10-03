@@ -32,6 +32,16 @@ import {
 } from './canonical-heading-frame'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
+// Heading Auto-Number Conflict Diagnostics V1 §2/§4 — the ONE per-heading
+// auto-numbering EFFECTIVENESS authority (reuses THIS service's effective
+// settings + the numbering engine; never a second level/config rule).
+import type { HeadingDescriptor } from './heading-types'
+import {
+  buildHeadingAutoNumberEffectivenessFacts,
+  isAutoNumberingEffectiveForHeading,
+} from './heading-auto-number-effective'
+// Heading Auto-Number Conflict V1.2 §21/§22 — the dev/test bridge COMMAND is read
+// by main.ts (file IO owner) and applied here through the official setters only.
 // V5.14-R4 — Heading Number + Gap ATOMIC reconcile contract.
 import {
   HEADING_NUMBER_DECORATION_AUDIT_EVENT,
@@ -1921,6 +1931,44 @@ export class HeadingNumberingService {
   /** Get current settings source ('global' or 'document'). */
   getSettingsSource(): 'global' | 'document' {
     return this.docContext.source
+  }
+
+  /**
+   * Heading Auto-Number Conflict Diagnostics V1 §2/§4 — the ONE per-heading
+   * EFFECTIVENESS surface for Document Diagnostics.
+   *
+   * It reuses THIS service's EFFECTIVE settings + the canonical heading
+   * bindings, and resolves each heading through the numbering engine's own
+   * label (`isAutoNumberingEffectiveForHeading`). No second level/config rule
+   * exists: strict/loose H1, per-level `enabled`, `maxDepth` and per-heading
+   * overrides all flow through the existing numbering calculation.
+   */
+  getHeadingAutoNumberingEffectiveFacts(): {
+    enabled: boolean
+    h1NumberingEnabled: boolean
+    /** Heading Auto-Number Conflict V1.2 §13 — the effective STYLE identity. */
+    styleKey: string
+    isEffectiveForElement: (element: HTMLElement | null) => boolean
+  } {
+    const bindings = this.adapter.collectHeadingBindings()
+    const descriptors: HeadingDescriptor[] = bindings.map(b => ({
+      key: b.key,
+      level: b.level,
+      text: b.text,
+    }))
+    const facts = buildHeadingAutoNumberEffectivenessFacts({ settings: this.s, headings: descriptors })
+    const effective = new Set<HTMLElement>()
+    if (facts.enabled) {
+      for (let i = 0; i < descriptors.length; i++) {
+        if (isAutoNumberingEffectiveForHeading(facts, descriptors[i].key)) effective.add(bindings[i].element)
+      }
+    }
+    return {
+      enabled: facts.enabled,
+      h1NumberingEnabled: facts.h1NumberingEnabled,
+      styleKey: facts.styleKey,
+      isEffectiveForElement: (element) => element != null && effective.has(element),
+    }
   }
 
   /** Save heading numbering with explicit scope. */
@@ -4089,6 +4137,81 @@ export class HeadingNumberingService {
     'focus-in': 2,
     'decoration-repair': 1,
     'tail-refresh': 1,
+  }
+
+  /** Heading Auto-Number Conflict Runtime Bridge V1 — re-entrancy guard. */
+  private headingConflictBridgeApplying = false
+
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — apply ONE dev/test bridge command.
+   *
+   * The COMMAND is not read here anymore: main.ts owns the file IO + the nonce
+   * bookkeeping, and the diagnostics recompute is the trigger (the toolbar
+   * 「重新检查文档」 button drives it deterministically). This method ONLY calls the
+   * official setters of THIS service — no direct field write, no settings-JSON
+   * mutation.
+   */
+  applyHeadingConflictBridgeCommand(command: string, arg: string | null): string {
+    if (this.headingConflictBridgeApplying) return 'REENTRANT_SKIP'
+    this.headingConflictBridgeApplying = true
+    try {
+      let result = 'UNKNOWN_COMMAND'
+      switch (command) {
+        case 'SET_STRUCTURE_MODE':
+          this.setHeadingStructureMode({
+            scope: 'global',
+            documentKey: null,
+            mode: arg === 'loose' ? 'loose' : 'strict',
+            source: 'RUNTIME_TEST',
+          })
+          result = `SET_STRUCTURE_MODE:${arg === 'loose' ? 'loose' : 'strict'}`
+          break
+        case 'TOGGLE_ENABLED':
+          this.toggle()
+          result = 'TOGGLE_ENABLED'
+          break
+        case 'APPLY_PRESET':
+          this.applyPreset((arg ?? 'decimal-hierarchical') as HeadingNumberingPreset)
+          result = `APPLY_PRESET:${arg ?? 'decimal-hierarchical'}`
+          break
+        case 'REPORT_ONLY':
+          result = 'REPORT_ONLY'
+          break
+        // §30 F5 — a REAL canonical SOURCE edit through the plugin's official
+        // content authority (`ctx.reloadContent` → framework File.reloadContent).
+        // It never writes the settings JSON and never touches the producer.
+        case 'SET_SOURCE': {
+          const markdown = this.ctx.getMarkdown?.() ?? ''
+          let next = markdown
+          if (arg === 'REMOVE_PREFIX') next = markdown.replace('## 1.1 研究背景', '## 研究背景')
+          else if (arg === 'RESTORE_PREFIX') next = markdown.replace('## 研究背景', '## 1.1 研究背景')
+          if (next !== markdown) this.ctx.reloadContent?.(next)
+          result = `SET_SOURCE:${arg ?? ''}:${next !== markdown ? 'APPLIED' : 'NO_MATCH'}`
+          break
+        }
+        default:
+          break
+      }
+      emitRuntimeAudit('HEADING-CONFLICT-TEST-BRIDGE', {
+        command,
+        arg,
+        result,
+        settingsRevision: this.settingsRevision,
+        effectiveMode: this.getEffectiveHeadingMode(),
+        capturePhase: 'DEFERRED_POST_COMMIT',
+      })
+      return result
+    } catch (e) {
+      emitRuntimeAudit('HEADING-CONFLICT-TEST-BRIDGE', {
+        command,
+        arg,
+        result: 'ERROR:' + String((e as Error)?.message ?? e),
+        decision: 'FAIL',
+      })
+      return 'ERROR'
+    } finally {
+      this.headingConflictBridgeApplying = false
+    }
   }
 
   private requestRefresh(reason: RefreshReason): void {

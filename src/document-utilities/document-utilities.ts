@@ -54,6 +54,40 @@ export interface DocumentUtilitiesSources {
    * Optional: absent ⇒ the manual-number rules stay OFF.
    */
   getObjectNumberingEnabled?: () => { figure?: boolean; table?: boolean; code?: boolean; formula?: boolean }
+  /**
+   * Heading Auto-Number Conflict V1 §2/§4 — the ONE per-heading heading
+   * auto-numbering EFFECTIVENESS authority (owned by the numbering service).
+   * Optional: absent ⇒ the conflict rule never runs.
+   */
+  getHeadingAutoNumberingEffectiveFacts?: () => {
+    enabled: boolean
+    h1NumberingEnabled: boolean
+    /** Heading Auto-Number Conflict V1.2 §13 — the effective STYLE identity. */
+    styleKey?: string
+    isEffectiveForElement: (element: HTMLElement | null) => boolean
+  }
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — the dev/test post-commit report
+   * sink (implemented by main.ts, which owns the file IO).
+   */
+  onHeadingConflictReportCapture?: (capture: {
+    runtimeSessionId: string
+    reportSequence: number
+    settingsRevision: number
+    sourceRevision: number
+    diagnosticsRevision: number
+    baselineEstablished: boolean
+    capturePhase: 'POST_COMMIT'
+    dualPass: { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[]; unmet: readonly string[] }
+    gateReport: string[]
+    coverageReport: string[]
+  }) => void
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — the ONE dev/test bridge
+   * consumption point, invoked at the start of every diagnostics recompute.
+   * Implemented by main.ts (owns the bridge file IO + the official setter).
+   */
+  consumeHeadingConflictTestBridge?: () => void
   /** Phase 7R.3.11.8B.7.6 — rendered caption host for an object element
    *  (compound missing-name locator). Optional. */
   getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
@@ -235,6 +269,14 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       sources.getCanonicalHeadingFrame(),
       sources.getDocumentKey(),
     ),
+    // Heading Auto-Number Conflict V1 §2/§4 — the ONE per-heading heading
+    // auto-numbering EFFECTIVENESS authority (owned by the numbering service).
+    getHeadingAutoNumberingEffectiveFacts: sources.getHeadingAutoNumberingEffectiveFacts,
+    // Heading Auto-Number Conflict V1.2 §21/§22 — the post-commit report sink.
+    onHeadingConflictReportCapture: sources.onHeadingConflictReportCapture,
+    // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE recompute-time bridge
+    // consumption point (driven by the toolbar 「重新检查文档」 button).
+    consumeHeadingConflictTestBridge: sources.consumeHeadingConflictTestBridge,
   }
 
   // Phase 7R.3.11.8B.7.1 — settings/mode recompute is rAF-coalesced so one mode

@@ -41,36 +41,85 @@ export function coverageMaskHas(mask: HeadingCoverageMask, part: number): boolea
   return (mask & part) !== 0
 }
 
-/** §4/§5/§6 — the coverage SEMANTICS of a heading diagnostic. */
-export type HeadingDiagnosticCoveragePolicy = 'TITLE_ONLY' | 'FULL_VISIBLE_HEADING' | 'SOURCE_RANGE'
+/**
+ * §2 (Heading Visible Label Coverage V1) — the SOURCE semantics of a heading
+ * diagnostic: what the diagnostic is ABOUT.
+ *
+ * The auto number is a PRESENTATION artifact of the heading numbering service; it
+ * is NOT part of the Markdown source, so it can never enter the source identity /
+ * canonical heading text / duplicate-title semantics.
+ *
+ *   SOURCE_TITLE_ONLY = the source title text alone (\`## 小节\` -> \`小节\`)
+ *   SOURCE_RANGE      = a real Markdown-token / source-range problem
+ */
+export type HeadingSourceSemanticsPolicy = 'SOURCE_TITLE_ONLY' | 'SOURCE_RANGE'
 
 /**
- * V5.14-R6.1 §3/§7 — the ONE policy resolver. The COVERAGE is decided by the
- * DiagnosticCode (its SEMANTICS), never by "does this heading have a number".
+ * §1/§2 — the VISUAL coverage of a heading diagnostic: what the user SEES.
  *
- * ROOT_R6_1_1 = R6 gave every heading diagnostic one global NUMBER|GAP|TITLE mask.
- * ROOT_R6_1_2 = the duplicate-title diagnostic therefore included the numbering
- *   decoration, although the duplication is about the TITLE TEXT only.
- * ROOT_R6_1_3 = the coverage was bound to the heading TYPE instead of the
- *   diagnostic semantics.
+ *   VISIBLE_HEADING_LABEL = the FULL visible heading label
+ *                           = generated number prefix + heading title text
+ *   SOURCE_RANGE          = a source-range marker (no heading label is painted)
+ */
+export type HeadingVisualCoveragePolicy = 'VISIBLE_HEADING_LABEL' | 'SOURCE_RANGE'
+
+/**
+ * §4/§5/§6 — the mask-level coverage policy consumed by the body PASSIVE / ACTIVE
+ * surface and the outline projection. The VISUAL policy IS
+ * \`HeadingVisualCoveragePolicy\`; \`TITLE_ONLY\` remains the SOURCE-layer mask
+ * (never selected for a heading diagnostic's geometry).
+ */
+export type HeadingDiagnosticCoveragePolicy = 'TITLE_ONLY' | 'VISIBLE_HEADING_LABEL' | 'SOURCE_RANGE'
+
+/**
+ * §1/§2/§3 — the ONE VISUAL coverage resolver. Every diagnostic that paints a
+ * heading MUST resolve here (never a per-rule numbering special case).
+ *
+ * TITLE_V1_1 = R6.1 bound the coverage to the diagnostic's SOURCE semantics, so a
+ *   numbered heading with a duplicate/empty diagnostic painted \`一、[小节]\` — the
+ *   auto number was treated as "not part of what the user sees". It IS part of what
+ *   the user sees; it is only excluded from the source IDENTITY.
+ * TITLE_V1_2 = the coverage is therefore decided by "is there a visible heading
+ *   label to paint" (always yes), never by the diagnostic's source semantics. The
+ *   source semantic layer keeps its own policy so the two can never be conflated
+ *   again (§2 SOURCE_TITLE_ONLY vs VISIBLE_HEADING_LABEL).
+ */
+export function resolveHeadingVisualCoveragePolicy(input: {
+  code: string
+  category?: string | null
+}): HeadingVisualCoveragePolicy {
+  const code = String(input.code ?? '')
+  // §6 — a real Markdown-token / local source range problem stays a source range.
+  if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return 'SOURCE_RANGE'
+  // §5/§10 — every other heading-scoped diagnostic paints the user's REAL visible
+  // heading label: the generated number prefix + the title text (degrading to the
+  // title alone when the heading carries no number decoration).
+  return 'VISIBLE_HEADING_LABEL'
+}
+
+/**
+ * §2 — the ONE SOURCE-semantics resolver (source identity / semantic matching /
+ * duplicate-title detection). It NEVER sees the auto number.
+ */
+export function resolveHeadingSourceSemanticsPolicy(input: {
+  code: string
+  category?: string | null
+}): HeadingSourceSemanticsPolicy {
+  const code = String(input.code ?? '')
+  if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return 'SOURCE_RANGE'
+  return 'SOURCE_TITLE_ONLY'
+}
+
+/**
+ * §3 — the host-facing entry point. It is the VISUAL policy (the visible heading
+ * label): the body PASSIVE fill and the body ACTIVE emphasis both consume it, so
+ * they can never disagree about whether the number is part of the coverage.
  */
 export function resolveHeadingDiagnosticCoveragePolicy(input: {
   code: string
   category?: string | null
 }): HeadingDiagnosticCoveragePolicy {
-  const code = String(input.code ?? '')
-  // §4 — the duplicated thing is the TITLE TEXT, never the auto number.
-  if (code === 'HEADING_DUPLICATE_TEXT' || code === 'HEADING_DUPLICATE_IDENTITY') return 'TITLE_ONLY'
-  // §6 — a real Markdown-token / local source range problem stays a source range.
-  if (code.startsWith('LATENT_ATX_HEADING_MARKER')) return 'SOURCE_RANGE'
-  // §5 — "the STRUCTURAL STATE of this heading node is wrong" → the whole visible
-  // heading (which degrades to TITLE when the numbering is off).
-  if (code === 'HEADING_LEVEL_GAP') return 'FULL_VISIBLE_HEADING'
-  if (code.startsWith('STRICT_FIRST_H1_')) return 'FULL_VISIBLE_HEADING'
-  if (code === 'STRICT_SINGLE_H1_NO_H1' || code === 'STRICT_SINGLE_H1_MULTIPLE_H1') return 'FULL_VISIBLE_HEADING'
-  // The remaining heading-scoped diagnostics annotate the heading TEXT they name.
-  if (code === 'HEADING_EMPTY_TEXT') return 'TITLE_ONLY'
-  return 'TITLE_ONLY'
+  return resolveHeadingVisualCoveragePolicy(input)
 }
 
 /** §7 — the mask a policy yields for a given heading. */
@@ -78,12 +127,25 @@ export function coverageMaskForPolicy(
   policy: HeadingDiagnosticCoveragePolicy,
   input: { hasNumberDecoration: boolean },
 ): HeadingCoverageMask {
-  if (policy === 'FULL_VISIBLE_HEADING') {
+  if (policy === 'VISIBLE_HEADING_LABEL') {
     return input.hasNumberDecoration ? HEADING_COVERAGE_NUMBERED : HEADING_COVERAGE_UNNUMBERED
   }
-  // TITLE_ONLY and SOURCE_RANGE never include the numbering decoration.
+  // TITLE_ONLY (the SOURCE-layer mask) and SOURCE_RANGE never include the
+  // numbering decoration: the source identity has no access to it.
   return HEADING_COVERAGE_UNNUMBERED
 }
+
+/**
+ * V1 §3/§10 — the DOCUMENT-level diagnostics whose visual target IS a heading.
+ * They consume the SAME visible-label authority as the HEADING_ / STRICT_ prefixed
+ * codes (and so will SECTION_EMPTY / SECTION_ONLY_SUBHEADINGS).
+ */
+const DOCUMENT_LEVEL_HEADING_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  'DOCUMENT_HEADING_ONLY_NO_BODY',
+  'DOCUMENT_HEADINGS_ONLY_NO_BODY',
+  'SECTION_EMPTY',
+  'SECTION_ONLY_SUBHEADINGS',
+])
 
 /** §25 — every code whose coverage policy is DECLARED above (never fallen through). */
 const EXPLICITLY_MAPPED_HEADING_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
@@ -91,19 +153,25 @@ const EXPLICITLY_MAPPED_HEADING_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set(
   'HEADING_DUPLICATE_IDENTITY',
   'HEADING_LEVEL_GAP',
   'HEADING_EMPTY_TEXT',
+  // Heading Auto-Number Conflict V1 §26 — a heading-scoped ERROR whose ACTIVE
+  // visual consumes the SAME VISIBLE_HEADING_LABEL coverage as every other
+  // heading diagnostic (so it is explicitly mapped, never a fall-through).
+  'HEADING_AUTO_NUMBER_CONFLICT',
   'STRICT_SINGLE_H1_NO_H1',
   'STRICT_SINGLE_H1_MULTIPLE_H1',
+  ...[...DOCUMENT_LEVEL_HEADING_DIAGNOSTIC_CODES],
 ])
 
 export function isKnownHeadingDiagnosticCode(code: string): boolean {
   const c = String(code ?? '')
+  if (DOCUMENT_LEVEL_HEADING_DIAGNOSTIC_CODES.has(c)) return true
   return c.startsWith('HEADING_') || c.startsWith('STRICT_') || c.startsWith('LATENT_ATX_')
 }
 
 /**
  * §25 — the KNOWN_HEADING_DIAGNOSTIC_WITHOUT_COVERAGE_POLICY gate predicate. A
  * heading diagnostic reaching the resolver's DEFAULT branch has no declared
- * semantics and must be caught, never silently annotated as TITLE_ONLY.
+ * semantics and must be caught, never silently annotated.
  */
 export function isExplicitlyMappedHeadingDiagnosticCode(code: string): boolean {
   const c = String(code ?? '')
@@ -115,7 +183,7 @@ export function isExplicitlyMappedHeadingDiagnosticCode(code: string): boolean {
 
 /** §5/§21 — the mask a heading (not a diagnostic) inherits for the PASSIVE fill. */
 export function expectedHeadingCoverageMask(input: { hasNumberDecoration: boolean }): HeadingCoverageMask {
-  return coverageMaskForPolicy('FULL_VISIBLE_HEADING', input)
+  return coverageMaskForPolicy('VISIBLE_HEADING_LABEL', input)
 }
 
 /** §11/§18 — the union of several policies (the heading-level passive fill). */
@@ -129,6 +197,43 @@ export function formatCoverageMask(mask: HeadingCoverageMask): string {
   if (coverageMaskHas(mask, HeadingCoveragePart.GAP)) parts.push('GAP')
   if (coverageMaskHas(mask, HeadingCoveragePart.TITLE)) parts.push('TITLE')
   return parts.length > 0 ? parts.join('|') : 'NONE'
+}
+
+/**
+ * §1/§2/§20 — the VISIBLE heading label TEXT the user reads: the generated number
+ * prefix + the heading title text. The reason chip and every other injected node
+ * are NEVER part of it. This is the TEXT twin of the geometric coverage mask, so
+ * an audit can prove that SOURCE and VISUAL disagree about the number exactly once.
+ *
+ * §7 — the number/gap rendering already carries its own separator (`一、`), and the
+ * `space` gap mode contributes one space between `1.1` and the title.
+ */
+export function visibleHeadingLabelText(input: {
+  numberPrefix: string | null
+  titleText: string
+  gapMode?: 'space' | 'none'
+}): string {
+  const prefix = String(input.numberPrefix ?? '').trim()
+  const title = String(input.titleText ?? '')
+  if (prefix === '') return title
+  if (title === '') return prefix
+  return (input.gapMode === 'space' ? `${prefix} ` : prefix) + title
+}
+
+/**
+ * §1/§2/§11/§12 — the SOURCE-identity guard: does the source text carry the AUTO
+ * number prefix? It must never do so — the number is a presentation artifact, and
+ * `一、方法` / `二、方法` must still be the duplicate source title `方法`.
+ */
+export function sourceSemanticsIncludesAutoNumber(input: {
+  sourceText: string
+  numberPrefix: string | null
+}): boolean {
+  const prefix = String(input.numberPrefix ?? '').trim()
+  if (prefix === '') return false
+  const source = String(input.sourceText ?? '')
+  const compact = (s: string) => s.replace(/\s+/g, '')
+  return compact(source).startsWith(compact(prefix))
 }
 
 /** §27 — a rect snapshot with the hard invariant right = left + width. */
@@ -292,9 +397,10 @@ export function reasonChipExcludedFromCoverage(input: {
 
 /** §5/§11 — build the ONE immutable snapshot for ONE diagnostic. */
 export function buildHeadingDiagnosticTargetSnapshot(input: HeadingCoverageInput): HeadingDiagnosticTargetSnapshot {
-  // §7 — the POLICY decides the mask; the numbering decoration only refines
-  // FULL_VISIBLE_HEADING. TITLE_ONLY keeps the number/gap rects in the snapshot
-  // (§12: the authority is never deleted) but NEVER puts them in the fragments.
+  // §7 — the VISUAL policy decides the mask (VISIBLE_HEADING_LABEL consumes the
+  // numbering decoration; SOURCE_RANGE never does). The number/gap rects stay in
+  // the snapshot as the RETENTION authority (§12) even for a policy that does not
+  // paint them, so the two layers can never silently diverge.
   const coverageMask = coverageMaskForPolicy(input.coveragePolicy, {
     hasNumberDecoration: input.hasNumberDecoration,
   })

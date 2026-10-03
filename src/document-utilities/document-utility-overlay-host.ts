@@ -238,6 +238,8 @@ import {
   type WorkspaceWidthState,
 } from './document-workspace-width-guard'
 import { deriveDiagnosticsState } from './document-diagnostics'
+// Heading Auto-Number Conflict V1 §28 — the conflict code (first-click coverage).
+import { HEADING_AUTO_NUMBER_CONFLICT_CODE } from './document-diagnostics'
 import { deriveDocumentProblemsProjection } from './document-problems-projection'
 import type { CurrentProblemsProjection } from './document-problems-projection'
 import {
@@ -675,12 +677,35 @@ import {
   makeCoverageRect,
   reasonChipExcludedFromCoverage,
   resolveHeadingDiagnosticCoveragePolicy,
+  resolveHeadingSourceSemanticsPolicy,
+  resolveHeadingVisualCoveragePolicy,
+  sourceSemanticsIncludesAutoNumber,
   splitNumberAndGapRects,
+  visibleHeadingLabelText,
   type CoverageRectSnapshot,
   type HeadingCoverageV514R6Counters,
   type HeadingDiagnosticCoveragePolicy,
   type HeadingDiagnosticTargetSnapshot,
 } from './document-diagnostic-heading-coverage-v514-r6'
+// Heading Visible Label Coverage V1 — the runtime audit + hard-gate authority for
+// the heading diagnostic VISUAL coverage (number prefix + title, chip excluded).
+import {
+  HEADING_VISIBLE_LABEL_COVERAGE_AUDIT_EVENT,
+  HEADING_VISIBLE_LABEL_RENUMBER_AUDIT_EVENT,
+  applyHeadingVisibleLabelCoverageFailure,
+  applyHeadingVisibleLabelRenumberFailure,
+  createHeadingVisibleLabelV1Counters,
+  createHeadingVisibleLabelV1Coverage,
+  evaluateHeadingVisibleLabelV1Coverage,
+  evaluateHeadingVisibleLabelV1Gates,
+  evaluateHeadingVisibleLabelCoverage,
+  evaluateHeadingVisibleLabelRenumber,
+  formatHeadingVisibleLabelV1CoverageReport,
+  formatHeadingVisibleLabelV1GateReport,
+  noteHeadingVisibleLabelCoverage,
+  type HeadingVisibleLabelV1Counters,
+  type HeadingVisibleLabelV1Coverage,
+} from './document-diagnostic-heading-visible-label-v1'
 import {
   HEADING_MARKER_AUDIT_EVENT,
   HEADING_MARKER_ICON_SIZE_PX,
@@ -2532,6 +2557,20 @@ export class DocumentUtilityOverlayHost {
   private headingActiveGroupWrappers: HTMLElement[] = []
   /** §13/§44 — N = the resolved heading target count of the active group (0 = not a group). */
   private headingActiveGroupTargetCount = 0
+  // ── Heading Visible Label Coverage V1 (§20/§23/§24) ──────────────────────
+  /** §23 — the ONE visible-heading-label gate authority (all must stay 0). */
+  private countersHeadingVisibleLabelV1: HeadingVisibleLabelV1Counters = createHeadingVisibleLabelV1Counters()
+  /** §24 — the positive coverage counters (the gates must be PROVEN exercised). */
+  private coverageHeadingVisibleLabelV1: HeadingVisibleLabelV1Coverage = createHeadingVisibleLabelV1Coverage()
+  /**
+   * §15/§16 — the rendered number prefix per heading identity, so a renumber or a
+   * numbering-style switch is detected from REAL transitions (never a poll).
+   */
+  private headingNumberPrefixByHeading = new Map<string, string | null>()
+  /** §6 — the H1 numbering decoration state per identity (ON/OFF toggle coverage). */
+  private headingNumberDecorationByHeading = new Map<string, boolean>()
+  /** §15/§16 — the last VISIBLE label text painted per heading identity. */
+  private lastHeadingVisibleLabelCoverageText = new Map<string, string>()
   /** Target Group V1 §20 — the provable gate counters (all must stay 0). */
   private countersTargetGroupV1: TargetGroupV1Counters = createTargetGroupV1Counters()
   /** Target Group V1 §19 — the positive coverage counters. */
@@ -5749,29 +5788,43 @@ export class DocumentUtilityOverlayHost {
         this.headingCoverageSnapshots.set(`${identity}::${diagnosticId}`, snapshot)
         return snapshot
       })
-      // §4/§8/§26 — a TITLE_ONLY diagnostic must NEVER include the numbering.
+      // ── V1 §1/§2/§10 — the AUTO NUMBER is a PRESENTATION artifact. It belongs to
+      // the VISUAL coverage (`VISIBLE_HEADING_LABEL`) and to NOTHING else. The
+      // SOURCE identity of a heading diagnostic (`SOURCE_TITLE_ONLY`) therefore must
+      // never carry it, while the coverage the user SEES must always include it.
       const titleLeftForPolicy = perDiagnosticSnapshots[0]?.titleRects[0]?.left ?? null
+      const autoNumberLabel = headingHasNumber
+        ? (g.el.getAttribute('data-inkchapter-heading-number') ?? null)
+        : null
+      // The heading's SOURCE text is the SAME `textContent` the diagnostic producer
+      // consumed (`collectHeadings`): the numbering decoration is a CSS `::before`,
+      // so it can never appear here — that is exactly what this guard proves.
+      const sourceTitleText = g.el.textContent ?? ''
+      const hasSourceTitleOnlyDiagnostic = headingDiagnosticIds.some(diagnosticId =>
+        resolveHeadingSourceSemanticsPolicy({ code: this.diagnosticById(diagnosticId)?.code ?? '' })
+          === 'SOURCE_TITLE_ONLY')
+      if (hasSourceTitleOnlyDiagnostic) {
+        if (sourceSemanticsIncludesAutoNumber({ sourceText: sourceTitleText, numberPrefix: autoNumberLabel })) {
+          this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
+        }
+        const trimmedSource = sourceTitleText.trimStart()
+        const labelText = String(autoNumberLabel ?? '').trim()
+        if (labelText !== '' && trimmedSource.startsWith(labelText)
+          && /\s/.test(trimmedSource.slice(labelText.length, labelText.length + 1))) {
+          this.countersHeadingCoverageV514R6.duplicateHeadingGapIncluded++
+        }
+      }
       for (const snapshot of perDiagnosticSnapshots) {
-        const extendsLeftOfTitle = titleLeftForPolicy != null
-          && snapshot.semanticFragmentRects.some(f => f.left < titleLeftForPolicy - 0.5)
-        if (snapshot.coveragePolicy === 'TITLE_ONLY') {
-          if (coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.NUMBER)) {
-            this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
-          }
-          if (coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.GAP)) {
-            this.countersHeadingCoverageV514R6.duplicateHeadingGapIncluded++
-          }
-          if (extendsLeftOfTitle) this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
-          // §4/§25 — TITLE_ONLY covers the title TEXT only; a fragment reaching
-          // outside the title band (left of the number, or past the last glyph) is
-          // a non-title coverage defect.
+        if (snapshot.coveragePolicy === 'VISIBLE_HEADING_LABEL') {
+          // V1 §7/§27 — the coverage MUST stay TEXT-TIGHT: it may extend into the
+          // number band (left of the first title glyph) but never PAST the visible
+          // label (right of the last title glyph), which is the full-block wash the
+          // spec forbids.
           const titleUnion = coverageUnionRect(snapshot.titleRects)
           if (titleUnion != null && snapshot.semanticFragmentRects.some(f =>
-            f.left < titleUnion.left - 0.5 || f.right > titleUnion.right + 0.5)) {
+            f.right > titleUnion.right + 0.5)) {
             this.countersHeadingCoverageV514R6.duplicateHeadingNonTitleCoverage++
           }
-        }
-        if (snapshot.coveragePolicy === 'FULL_VISIBLE_HEADING') {
           const firstFragmentStartsAtNumber = snapshot.numberRect != null
             && snapshot.semanticFragmentRects.some(f => f.left <= snapshot.numberRect!.left + 0.5)
           if (headingHasNumber && !firstFragmentStartsAtNumber) {
@@ -5786,7 +5839,7 @@ export class DocumentUtilityOverlayHost {
           }
         }
       }
-      const fullCoverageSnapshot = perDiagnosticSnapshots.find(s => s.coveragePolicy === 'FULL_VISIBLE_HEADING') ?? null
+      const fullCoverageSnapshot = perDiagnosticSnapshots.find(s => s.coveragePolicy === 'VISIBLE_HEADING_LABEL') ?? null
       const coverageSnapshot = fullCoverageSnapshot
         ?? perDiagnosticSnapshots.find(s => s.diagnosticId === g.primaryDiagnosticId)
         ?? perDiagnosticSnapshots[0]
@@ -5806,6 +5859,15 @@ export class DocumentUtilityOverlayHost {
       if (!coverageSnapshot.reasonChipExcluded) {
         this.countersHeadingCoverageV514R6.reasonChipIncludedInHeadingTarget++
       }
+      // ── V1 §3/§11/§12/§15/§16/§20 — the REAL visible-label facts of this heading
+      // (source guards, single-resolver invariant, renumber transition, H1 toggle).
+      this.noteHeadingVisibleLabelV1HeadingFacts({
+        el: g.el,
+        identity,
+        diagnosticIds: headingDiagnosticIds,
+        snapshots: perDiagnosticSnapshots,
+        coverageSnapshot,
+      })
       // ── V5.14-R3 §P10 §4/§24 (ROOT_P10_R3_4) — the PASSIVE marker is
       // PERMANENT: "this heading still has a problem". Selecting one of the
       // document's diagnostics may only ADD an active emphasis; it must NEVER
@@ -6047,17 +6109,17 @@ export class DocumentUtilityOverlayHost {
         this.headingCoverageSnapshots.set(identity, coverageSnapshot)
         const numberedCoverage = coverageMaskHas(coverageSnapshot.coverageMask, HeadingCoveragePart.NUMBER)
         const gapExpected = coverageMaskHas(coverageSnapshot.coverageMask, HeadingCoveragePart.GAP)
-        // V5.14-R6.1 §24 — the audit reports the MASK-derived inclusion, not the
-        // mere presence of a number/gap rect: a TITLE_ONLY snapshot KEEPS its
-        // numberRect authority (§12) yet never PAINTS it.
+        // V5.14-R6.1 §24 / V1 §2 — the audit reports the MASK-derived inclusion, not
+        // the mere presence of a number/gap rect: the VISIBLE_HEADING_LABEL policy is
+        // the only one that PAINTS the number, and the rect authority is retained in
+        // the snapshot either way (§12).
         const titleCovered = coverageMaskHas(coverageSnapshot.coverageMask, HeadingCoveragePart.TITLE)
         // §15/§17 — the OUTLINE shares the SAME coverage mask (semantic equality),
         // never the body rects (coordinate spaces differ). A mask mismatch is the
         // ROOT_R6_4 defect.
         const outlineTarget = collected.outlineDiagnosticTargets.find(t => t.stableHeadingIdentity === identity) ?? null
         // §17 — semantic equality is required for the WHOLE heading: the union of the
-        // outline masks must equal the union the body paints (a heading may carry a
-        // TITLE_ONLY and a FULL_VISIBLE_HEADING diagnostic at the same time).
+        // outline masks must equal the union the body paints.
         const outlineMask = collected.outlineDiagnosticTargets
           .filter(t => t.stableHeadingIdentity === identity)
           .reduce((acc, t) => acc | (t.coverageMask ?? 0), 0)
@@ -6065,13 +6127,13 @@ export class DocumentUtilityOverlayHost {
           this.countersHeadingCoverageV514R6.bodyOutlineSemanticCoverageMismatch++
         }
         // §26 — the R6 "every numbered heading's OUTLINE must include NUMBER/GAP"
-        // gate became policy-aware: it only fires for a FULL_VISIBLE_HEADING body
-        // snapshot (a DUPLICATE heading legitimately omits the numbering there too).
-        if (coverageSnapshot.coveragePolicy === 'FULL_VISIBLE_HEADING' && numberedCoverage
+        // gate became policy-aware: it fires for the VISIBLE_HEADING_LABEL body
+        // snapshot that carries the numbering.
+        if (coverageSnapshot.coveragePolicy === 'VISIBLE_HEADING_LABEL' && numberedCoverage
           && !coverageMaskHas(outlineMask, HeadingCoveragePart.NUMBER)) {
           this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
         }
-        if (coverageSnapshot.coveragePolicy === 'FULL_VISIBLE_HEADING' && gapExpected
+        if (coverageSnapshot.coveragePolicy === 'VISIBLE_HEADING_LABEL' && gapExpected
           && !coverageMaskHas(outlineMask, HeadingCoveragePart.GAP)) {
           this.countersHeadingCoverageV514R6.fullVisibleHeadingGapOmitted++
         }
@@ -7979,6 +8041,286 @@ export class DocumentUtilityOverlayHost {
     } catch { return 0 }
   }
 
+  // ── Heading Visible Label Coverage V1 (§20/§23/§24) ────────────────────────
+
+  /**
+   * §20/§23 — note the REAL per-heading facts of ONE marker pass: the source-layer
+   * guards, the single-resolver invariant, the renumber transition and the H1
+   * numbering toggle coverage. Every input is measured from the live DOM, and the
+   * whole pass is event-driven (a marker pass), never a timer.
+   */
+  private noteHeadingVisibleLabelV1HeadingFacts(input: {
+    el: HTMLElement
+    identity: string
+    diagnosticIds: readonly string[]
+    snapshots: readonly HeadingDiagnosticTargetSnapshot[]
+    coverageSnapshot: HeadingDiagnosticTargetSnapshot
+  }): void {
+    const el = input.el
+    const rawPrefix = el.getAttribute('data-inkchapter-heading-number')
+    const hasNumber = rawPrefix != null && rawPrefix !== ''
+    const numberPrefix = hasNumber ? rawPrefix : null
+    const gapMode: 'space' | 'none' = el.getAttribute('data-inkchapter-heading-gap') === 'space' ? 'space' : 'none'
+    const sourceText = el.textContent ?? ''
+    const codes = input.diagnosticIds.map(id => String(this.diagnosticById(id)?.code ?? ''))
+
+    // §1/§2 — the SOURCE identity must never carry the rendered auto number.
+    const sourceLeak = sourceSemanticsIncludesAutoNumber({ sourceText, numberPrefix })
+    if (sourceLeak) this.countersHeadingVisibleLabelV1.autoNumberPrefixEnteredSemanticIdentity++
+    // §12 — the duplicate-title rule must still see the SOURCE title text.
+    if (sourceLeak && codes.includes('HEADING_DUPLICATE_TEXT')) {
+      this.countersHeadingVisibleLabelV1.autoNumberPrefixMaskedDuplicateHeadingText++
+    }
+    // §11 — an EMPTY source heading with a live decoration is STILL empty.
+    if (hasNumber && sourceText.trim() === '' && !codes.includes('HEADING_EMPTY_TEXT')) {
+      this.countersHeadingVisibleLabelV1.emptyHeadingAutoNumberTreatedAsSourceText++
+    }
+    // §13 — the plugin's OWN auto number must never be reported as a MANUAL prefix.
+    if (hasNumber && !sourceLeak && codes.some(code => code.startsWith('HEADING_MANUAL_NUMBER_PREFIX'))) {
+      this.countersHeadingVisibleLabelV1.autoNumberPrefixReportedAsManualNumber++
+    }
+    // §3 — exactly ONE visible-label resolver: every snapshot's policy must equal
+    // the policy THAT resolver derives for the diagnostic's code.
+    for (const snapshot of input.snapshots) {
+      const code = String(this.diagnosticById(snapshot.diagnosticId)?.code ?? '')
+      if (resolveHeadingVisualCoveragePolicy({ code }) !== snapshot.coveragePolicy) {
+        this.countersHeadingVisibleLabelV1.duplicateHeadingVisibleLabelResolver++
+      }
+    }
+
+    // §15/§16 — a REAL number-prefix transition refreshes the VISUAL coverage only.
+    const previousPrefix = this.headingNumberPrefixByHeading.get(input.identity) ?? null
+    const previousDecoration = this.headingNumberDecorationByHeading.get(input.identity) ?? null
+    const coverageText = this.headingVisibleLabelCoverageText(input.coverageSnapshot, numberPrefix, sourceText, gapMode)
+    if (previousDecoration != null && previousPrefix !== numberPrefix) {
+      const before = {
+        diagnosticIdBefore: input.coverageSnapshot.diagnosticId,
+        diagnosticIdAfter: input.coverageSnapshot.diagnosticId,
+        headingStableIdentityBefore: input.identity,
+        headingStableIdentityAfter: input.identity,
+        canonicalSourceTextBefore: sourceText,
+        canonicalSourceTextAfter: sourceText,
+        numberPrefixBefore: previousPrefix,
+        numberPrefixAfter: numberPrefix,
+        visualCoverageBefore: this.lastHeadingVisibleLabelCoverageText.get(input.identity) ?? '',
+        visualCoverageAfter: coverageText,
+        staleFragmentCount: this.countStaleHeadingVisibleLabelFragments(input.identity, input.coverageSnapshot),
+      }
+      const verdict = evaluateHeadingVisibleLabelRenumber(before)
+      applyHeadingVisibleLabelRenumberFailure(this.countersHeadingVisibleLabelV1, verdict.failedChecks)
+      emitRuntimeAudit(HEADING_VISIBLE_LABEL_RENUMBER_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        headingStableIdentity: input.identity,
+        ...before,
+        prefixRefreshed: verdict.prefixRefreshed,
+        decision: verdict.decision,
+        reason: verdict.reason,
+      })
+      if (previousPrefix != null && verdict.prefixRefreshed) {
+        this.coverageHeadingVisibleLabelV1.dynamicRenumberVisualRefresh++
+      }
+    }
+    // §6 — an H1 numbering ON/OFF transition is its own (separately counted) fact.
+    if (el.tagName.toUpperCase() === 'H1' && previousDecoration != null && previousDecoration !== hasNumber) {
+      this.coverageHeadingVisibleLabelV1.h1NumberingToggleVisualRefresh++
+    }
+    this.headingNumberPrefixByHeading.set(input.identity, numberPrefix)
+    this.headingNumberDecorationByHeading.set(input.identity, hasNumber)
+    this.lastHeadingVisibleLabelCoverageText.set(input.identity, coverageText)
+  }
+
+  /** §1/§2 — the VISIBLE label text a coverage snapshot actually paints. */
+  private headingVisibleLabelCoverageText(
+    snapshot: HeadingDiagnosticTargetSnapshot,
+    numberPrefix: string | null,
+    titleText: string,
+    gapMode: 'space' | 'none',
+  ): string {
+    const includesNumber = coverageMaskHas(snapshot.coverageMask, HeadingCoveragePart.NUMBER)
+    return visibleHeadingLabelText({
+      numberPrefix: includesNumber ? numberPrefix : null,
+      titleText,
+      gapMode,
+    })
+  }
+
+  /**
+   * §15 — the count of ACTIVE fragments still painted for this heading that no
+   * longer belong to its CURRENT visible-label coverage (a stale prefix fragment).
+   */
+  private countStaleHeadingVisibleLabelFragments(
+    identity: string,
+    snapshot: HeadingDiagnosticTargetSnapshot,
+  ): number {
+    const wrapper = this.headingActiveMarkerIdentity === identity ? this.headingActiveWrapper : null
+    if (!wrapper || !wrapper.isConnected) return 0
+    const current = snapshot.semanticFragmentRects
+    let stale = 0
+    const nodes = wrapper.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-active__fragment')
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i]
+      const left = Number.parseFloat(node.style.left)
+      const top = Number.parseFloat(node.style.top)
+      if (!current.some(r => Math.abs(r.left - left) <= 1 && Math.abs(r.top - top) <= 1)) stale++
+    }
+    return stale
+  }
+
+  /**
+   * §19/§20/§23/§24 — the ACTIVE visible-label coverage audit. Every field is a
+   * REAL runtime fact of the painted emphasis, judged by the ONE decision function
+   * (`evaluateHeadingVisibleLabelCoverage`), and the positive coverage is counted
+   * from the SAME facts.
+   */
+  private noteHeadingVisibleLabelV1ActiveFacts(input: {
+    element: HTMLElement
+    diagnosticId: string
+    diagnosticCode: string
+    identity: string
+    coverage: HeadingDiagnosticTargetSnapshot
+    reasonChipRect: HeadingRect | null
+  }): void {
+    const element = input.element
+    const rawPrefix = element.getAttribute('data-inkchapter-heading-number')
+    const hasNumber = rawPrefix != null && rawPrefix !== ''
+    const numberPrefix = hasNumber ? rawPrefix : null
+    const gapMode: 'space' | 'none' = element.getAttribute('data-inkchapter-heading-gap') === 'space' ? 'space' : 'none'
+    const sourceText = (element.textContent ?? '').trim()
+    const numberIncluded = coverageMaskHas(input.coverage.coverageMask, HeadingCoveragePart.NUMBER)
+    const titleIncluded = coverageMaskHas(input.coverage.coverageMask, HeadingCoveragePart.TITLE)
+    const titleUnion = coverageUnionRect(input.coverage.titleRects)
+    const numberBand = input.coverage.numberRect
+    // §7/§27 — the coverage may reach into the number band (left) but never PAST
+    // the last title glyph: that is the block wash the spec forbids.
+    const spansPastTitle = titleUnion != null
+      && input.coverage.semanticFragmentRects.some(f => f.right > titleUnion.right + 0.5)
+    // §8 — a fragment that covers ONLY the number band is a numbering fragment
+    // promoted to a standalone target: it must not exist.
+    const numberOnlyFragment = numberBand != null
+      && input.coverage.semanticFragmentRects.some(f => f.right <= numberBand.right + 0.5)
+    if (numberOnlyFragment) this.countersHeadingVisibleLabelV1.numberingFragmentCountedAsSemanticTarget++
+    const anchorTag = element.tagName.toUpperCase()
+    const scrollAnchorIsCanonicalHeadingBlock = /^H[1-6]$/.test(anchorTag)
+    const chipPresent = input.reasonChipRect != null
+    const chipIncluded = chipPresent && !input.coverage.reasonChipExcluded
+    const facts = {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: input.diagnosticId,
+      diagnosticCode: input.diagnosticCode,
+      headingStableIdentity: input.identity,
+      headingLevel: /^H([1-6])$/.exec(anchorTag)?.[1] ?? null,
+      canonicalSourceText: sourceText,
+      generatedNumberPrefix: numberPrefix,
+      visibleTitleText: sourceText,
+      sourceIdentityIncludesNumbering: sourceSemanticsIncludesAutoNumber({ sourceText, numberPrefix }),
+      visualCoverageIncludesNumbering: numberIncluded,
+      visualCoverageIncludesTitle: titleIncluded,
+      reasonChipPresent: chipPresent,
+      reasonChipIncludedInCoverage: chipIncluded,
+      semanticTargetCount: 1,
+      visualFragmentCount: input.coverage.semanticFragmentRects.length,
+      coverageSpansUnrelatedBlock: spansPastTitle,
+      coverageIncludesUnrelatedUi: chipIncluded,
+      scrollAnchorIsCanonicalHeadingBlock,
+    }
+    const verdict = evaluateHeadingVisibleLabelCoverage(facts)
+    applyHeadingVisibleLabelCoverageFailure(this.countersHeadingVisibleLabelV1, verdict.failedChecks)
+    emitRuntimeAudit(HEADING_VISIBLE_LABEL_COVERAGE_AUDIT_EVENT, {
+      ...facts,
+      visibleLabelText: visibleHeadingLabelText({ numberPrefix, titleText: sourceText, gapMode }),
+      coverageMask: formatCoverageMask(input.coverage.coverageMask),
+      decision: verdict.decision,
+      reason: verdict.reason,
+    })
+    noteHeadingVisibleLabelCoverage(this.coverageHeadingVisibleLabelV1, {
+      numberPrefix,
+      visualFragmentCount: input.coverage.semanticFragmentRects.length,
+    })
+  }
+
+  /** §23/§24 — read-only gate / coverage surface (runtime verification). */
+  getHeadingVisibleLabelV1GateReport(): string[] {
+    return formatHeadingVisibleLabelV1GateReport(this.countersHeadingVisibleLabelV1)
+  }
+
+  getHeadingVisibleLabelV1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateHeadingVisibleLabelV1Gates(this.countersHeadingVisibleLabelV1)
+  }
+
+  getHeadingVisibleLabelV1CoverageReport(): string[] {
+    return formatHeadingVisibleLabelV1CoverageReport(this.coverageHeadingVisibleLabelV1)
+  }
+
+  getHeadingVisibleLabelV1CoverageDecision(): { decision: 'PASS' | 'FAIL'; unmet: readonly string[] } {
+    return evaluateHeadingVisibleLabelV1Coverage(this.coverageHeadingVisibleLabelV1)
+  }
+
+  getHeadingVisibleLabelV1Counters(): Readonly<HeadingVisibleLabelV1Counters> {
+    return { ...this.countersHeadingVisibleLabelV1 }
+  }
+
+  getHeadingVisibleLabelV1Coverage(): Readonly<HeadingVisibleLabelV1Coverage> {
+    return { ...this.coverageHeadingVisibleLabelV1 }
+  }
+
+  // ── Heading Auto-Number Conflict V1 §46/§47 — read-only verification surface ─
+  getHeadingAutoNumberConflictGateReport(): string[] {
+    return this.diagnostics.getHeadingAutoNumberConflictGateReport()
+  }
+
+  getHeadingAutoNumberConflictGateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return this.diagnostics.getHeadingAutoNumberConflictGateDecision()
+  }
+
+  getHeadingAutoNumberConflictCounters(): Readonly<Record<string, number>> {
+    return this.diagnostics.getHeadingAutoNumberConflictCounters()
+  }
+
+  getHeadingAutoNumberConflictCoverageReport(): string[] {
+    return this.diagnostics.getHeadingAutoNumberConflictCoverageReport()
+  }
+
+  getHeadingAutoNumberConflictCoverageDecision(): { decision: 'PASS' | 'FAIL'; unmet: readonly string[] } {
+    return this.diagnostics.getHeadingAutoNumberConflictCoverageDecision()
+  }
+
+  getHeadingAutoNumberConflictCoverage(): Readonly<Record<string, number>> {
+    return this.diagnostics.getHeadingAutoNumberConflictCoverage()
+  }
+
+  /** §4 (Runtime Closure V1) — gate==0 AND positive coverage>=minimum. */
+  getHeadingAutoNumberConflictDualPassDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[]; unmet: readonly string[] } {
+    return this.diagnostics.getHeadingAutoNumberConflictDualPassDecision()
+  }
+
+  // ── Heading Auto-Number Conflict V1.2 §20/§21/§22 — session + post-commit ──
+
+  /** §21/§22 — arm a REPORT_ONLY (captured on the next diagnostics commit). */
+  requestHeadingAutoNumberConflictReport(): void {
+    this.diagnostics.requestHeadingAutoNumberConflictReport()
+  }
+
+  getHeadingConflictRuntimeSessionId(): string {
+    return this.diagnostics.getHeadingConflictRuntimeSessionId()
+  }
+
+  isHeadingConflictBaselineEstablished(): boolean {
+    return this.diagnostics.isHeadingConflictBaselineEstablished()
+  }
+
+  getCommittedDiagnosticsRevision(): number {
+    return this.diagnostics.getCommittedDiagnosticsRevision()
+  }
+
+  getCommittedSourceRevision(): number {
+    return this.diagnostics.getCommittedSourceRevision()
+  }
+
+  /** §22 — force ONE diagnostics recompute so a pending REPORT_ONLY is served. */
+  recheckForHeadingConflictReport(): void {
+    this.diagnostics.rebind()
+  }
+
   /**
    * §5/§8/§9/§10/§11/§13 — the ONE measurement of a diagnostic heading's SEMANTIC
    * TARGET: NUMBER | GAP | TITLE for a numbered heading, TITLE otherwise. The
@@ -8132,6 +8474,12 @@ export class DocumentUtilityOverlayHost {
     const authority = this.resolveActiveHeadingAuthority(diag)
     if (authority.ok) {
       this.renderHeadingActiveEmphasisFromAuthority(authority.target, diag)
+      // Heading Auto-Number Conflict V1 §28/§47 — a REAL first-click activation of
+      // the conflict Error is counted (the existing heading locator/visual, no
+      // second interaction path).
+      if (String(diag.code ?? '') === HEADING_AUTO_NUMBER_CONFLICT_CODE) {
+        this.diagnostics.noteHeadingAutoNumberConflictFirstClickActivated()
+      }
       // Target Group V1 §12/§14 — a `target-group` rule activates the anchor FIRST
       // and then EVERY other member, all under the SAME active transaction/lease.
       if (this.isTargetGroupActiveVisual(diag)) {
@@ -8221,6 +8569,11 @@ export class DocumentUtilityOverlayHost {
     // §44 — resolvedTargetCount == headingCount is enforced by construction: the
     // count is the number of heading targets the location declared.
     this.headingActiveGroupTargetCount = targets.length
+    // V1 §9/§18/§23 — Target Group V1 must not regress: ONE diagnostic, ONE Drawer
+    // row, N heading targets, ONE active transaction. A group that painted a
+    // DIFFERENT number of targets than it declared is the regression the gate names.
+    const declared = diag.location?.kind === 'target-group' ? diag.location.targets.length : targets.length
+    if (targets.length !== declared) this.countersHeadingVisibleLabelV1.targetGroupRegression++
   }
 
   /**
@@ -8463,14 +8816,14 @@ export class DocumentUtilityOverlayHost {
           this.countersHeadingCoverageV514R6.bodyPassiveActiveTargetRectMismatch++
         }
       }
-      const activeTitleLeft = sharedCoverage.titleRects[0]?.left ?? null
-      if (sharedCoverage.coveragePolicy === 'TITLE_ONLY' && activeTitleLeft != null
-        && sharedCoverage.semanticFragmentRects.some(f => f.left < activeTitleLeft - 0.5)) {
-        this.countersHeadingCoverageV514R6.duplicateHeadingNumberIncluded++
-      }
-      if (sharedCoverage.coveragePolicy === 'FULL_VISIBLE_HEADING' && sharedCoverage.numberRect != null) {
+      // ── V1 §1/§2 — the ACTIVE coverage is the SAME snapshot the PASSIVE painted,
+      // so a numbered heading's active emphasis MUST include the auto number prefix.
+      if (sharedCoverage.coveragePolicy === 'VISIBLE_HEADING_LABEL' && sharedCoverage.numberRect != null) {
         const startsAtNumber = sharedCoverage.semanticFragmentRects.some(f => f.left <= sharedCoverage.numberRect!.left + 0.5)
         if (!startsAtNumber) this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
+        if (!coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.NUMBER)) {
+          this.countersHeadingCoverageV514R6.fullVisibleHeadingNumberOmitted++
+        }
       }
       }
     } else {
@@ -8825,8 +9178,9 @@ export class DocumentUtilityOverlayHost {
         ? comparePassiveActiveCoverage(passiveCoverageForAudit, sharedCoverage)
         : null
       const outlineMaskForAudit = this.outlineCoverageMaskByTargetKey.get(headingIdentity) ?? 0
-      // V5.14-R6.1 §24 — mask-derived inclusion (a TITLE_ONLY snapshot keeps its
-      // numberRect/gapRect authority but never paints them).
+      // V5.14-R6.1 §24 / V1 §2 — mask-derived inclusion: the VISIBLE_HEADING_LABEL
+      // policy paints the auto number, and the number/gap RECT authority is retained
+      // in the snapshot regardless (§12).
       const activeNumberIncluded = coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.NUMBER)
       const activeGapCovered = coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.GAP)
       const activeTitleIncluded = coverageMaskHas(sharedCoverage.coverageMask, HeadingCoveragePart.TITLE)
@@ -8878,6 +9232,16 @@ export class DocumentUtilityOverlayHost {
         reason: activeCoverageOk
           ? 'ACTIVE_CONSUMES_SHARED_SEMANTIC_COVERAGE'
           : 'ACTIVE_TARGET_RECT_DIVERGED_FROM_PASSIVE',
+      })
+      // ── V1 §19/§20/§23/§24 — the ACTIVE visible-heading-label coverage audit +
+      // the positive coverage facts, from the SAME painted snapshot.
+      this.noteHeadingVisibleLabelV1ActiveFacts({
+        element,
+        diagnosticId,
+        diagnosticCode: String(diag.code ?? ''),
+        identity: headingIdentity,
+        coverage: sharedCoverage,
+        reasonChipRect,
       })
     }
     const passiveIconRect = passiveRecord ? passiveRecord.iconLocal : null
@@ -14731,6 +15095,16 @@ export class DocumentUtilityOverlayHost {
       }
     }
     const ok = Object.keys(partial).length === 0
+    // Heading Auto-Number Conflict V1 §17/§18 (Runtime Closure V1) — the SAME
+    // shared viewport facts feed the conflict rule's positive coverage: a click
+    // that was already ACTIVE for a conflict Error and left the viewport stable.
+    if (stable && this.diagnosticInteractionState.diagnosticId != null
+      && String(this.diagnosticById(this.diagnosticInteractionState.diagnosticId)?.code ?? '') === HEADING_AUTO_NUMBER_CONFLICT_CODE) {
+      this.diagnostics.noteHeadingAutoNumberConflictDrawerViewportStable()
+    }
+    // V1 §18/§23 — this round must not regress the Drawer viewport: the SAME
+    // authoritative verdict feeds the visible-label gate (never a second check).
+    if (!ok) this.countersHeadingVisibleLabelV1.drawerViewportRegression++
     // Internal Blank-Line Policy V1 §34/§36 — the runtime witness + coverage for
     // the document-FORMAT warning. It observes the SHARED viewport facts, so this
     // rule can never introduce its own scroll behaviour.
@@ -14985,6 +15359,14 @@ export class DocumentUtilityOverlayHost {
     const projection = deriveDocumentProblemsProjection(snapshot)
     if (projection.warningCount !== docWarnings) {
       this.countersInternalBlankLineV1.internalBlankLineToolbarWarningCountMismatch++
+    }
+    // V1 §18/§23 — the Toolbar Error/Warning/Hint summary is this round's frozen
+    // surface: the SAME projection parity feeds the visible-label gate.
+    const docErrors = (snapshot?.diagnostics ?? []).filter(d => d.severity === 'error').length
+    const docHints = (snapshot?.diagnostics ?? []).filter(d => d.severity === 'info').length
+    if (projection.errorCount !== docErrors || projection.hintCount !== docHints
+      || projection.warningCount !== docWarnings) {
+      this.countersHeadingVisibleLabelV1.toolbarSeveritySummaryRegression++
     }
   }
 

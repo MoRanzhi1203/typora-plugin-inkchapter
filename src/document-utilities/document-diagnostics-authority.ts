@@ -9,10 +9,41 @@
  */
 import {
   DOCUMENT_HEADING_ONLY_NO_BODY_CODE,
+  HEADING_AUTO_NUMBER_CONFLICT_CODE,
   computeDocumentDiagnostics,
   computeEofNewlinePolicy,
   hasSubstantiveNonHeadingContent,
 } from './document-diagnostics'
+// Heading Auto-Number Conflict V1.2 §3–§47 — the ONE per-heading evidence-state
+// audit + transition classifier + hard-gate + positive-coverage authority for
+// `HEADING_AUTO_NUMBER_CONFLICT`.
+import {
+  HEADING_AUTO_NUMBER_CONFLICT_AUDIT_EVENT,
+  HEADING_AUTO_NUMBER_CONFLICT_DYNAMIC_AUDIT_EVENT,
+  applyHeadingAutoNumberConflictFailure,
+  createHeadingAutoNumberConflictCounters,
+  createHeadingAutoNumberConflictCoverage,
+  evaluateHeadingAutoNumberConflictCoverage,
+  evaluateHeadingAutoNumberConflictDualPass,
+  evaluateHeadingAutoNumberConflictFacts,
+  evaluateHeadingAutoNumberConflictGates,
+  evaluateHeadingAutoNumberConflictTransition,
+  formatHeadingAutoNumberConflictCoverageReport,
+  formatHeadingAutoNumberConflictGateReport,
+  headingAutoNumberConflictTransactionKey,
+  noteHeadingAutoNumberConflictCoverage,
+  noteHeadingAutoNumberConflictCoverageForReason,
+  type HeadingAutoNumberConflictCounters,
+  type HeadingAutoNumberConflictCoverage,
+  type HeadingAutoNumberConflictEvidenceState,
+  type HeadingAutoNumberConflictReportEnvelope,
+} from './document-diagnostics-heading-auto-number-conflict-v1'
+// The SAME parser authority the producer uses — the audit classifies the
+// generated prefix with it so no second classifier exists.
+import {
+  detectLegacyManualNumberPrefix,
+  resolveHeadingManualNumberPrefix,
+} from './document-diagnostics-heading-manual-number-prefix-v1'
 import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
 import type {
   DiagnosticFormulaFact,
@@ -112,6 +143,44 @@ export interface DocumentDiagnosticsProviders {
    * left outline can mirror them (COMMITTED mappings only). Optional.
    */
   publishOutlineHeadingDiagnostics?: (targets: readonly OutlineDiagnosticTargetInput[]) => void
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — the ONE post-commit report capture
+   * sink. Called at the END of a committed recompute (after a REPORT_ONLY request),
+   * never right after a setter. Optional.
+   */
+  onHeadingConflictReportCapture?: (capture: {
+    runtimeSessionId: string
+    reportSequence: number
+    settingsRevision: number
+    sourceRevision: number
+    diagnosticsRevision: number
+    baselineEstablished: boolean
+    capturePhase: 'POST_COMMIT'
+    dualPass: { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[]; unmet: readonly string[] }
+    gateReport: string[]
+    coverageReport: string[]
+  }) => void
+  /**
+   * Heading Auto-Number Conflict V1 §2/§4 — the ONE per-heading heading
+   * auto-numbering EFFECTIVENESS authority (the numbering service's own verdict).
+   * Optional: absent ⇒ no heading is "effectively numbered" and the conflict rule
+   * stays silent (pure/legacy callers).
+   */
+  getHeadingAutoNumberingEffectiveFacts?: () => {
+    enabled: boolean
+    h1NumberingEnabled: boolean
+    /** Heading Auto-Number Conflict V1.2 §13 — the effective STYLE identity. */
+    styleKey?: string
+    isEffectiveForElement: (element: HTMLElement | null) => boolean
+  }
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — the ONE dev/test bridge
+   * consumption point. Invoked at the START of every recompute (the toolbar
+   * 「重新检查文档」 button drives it deterministically), so the bridge never
+   * depends on an OS-level focus/selection event. main.ts owns the file IO +
+   * the official-setter call; this module only requests it. Optional.
+   */
+  consumeHeadingConflictTestBridge?: () => void
 }
 
 export class DocumentDiagnosticsAuthority {
@@ -128,6 +197,30 @@ export class DocumentDiagnosticsAuthority {
   private lastLatentAtxSignature = ''
   /** V1 — literal-exclusion audit dedupe (state-token). */
   private lastLiteralExclusionSignature = ''
+  /** Heading Auto-Number Conflict V1 §44/§46/§47 — gate + coverage counters. */
+  private countersHeadingAutoNumberConflict: HeadingAutoNumberConflictCounters =
+    createHeadingAutoNumberConflictCounters()
+  private coverageHeadingAutoNumberConflict: HeadingAutoNumberConflictCoverage =
+    createHeadingAutoNumberConflictCoverage()
+  /** §44 — the conflict-set signature of the last audited recompute. */
+  private lastConflictSignature = ''
+  /**
+   * §7 — the RUNTIME SESSION identity of this plugin instance (one Typora
+   * process). The evidence state is isolated by `runtimeSessionId|documentKey`.
+   */
+  private readonly conflictRuntimeSessionId: string = `ic-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  /** §3/§4 — the ONE per-heading evidence state (kept even when conflict=false). */
+  private conflictEvidenceStates = new Map<string, HeadingAutoNumberConflictEvidenceState>()
+  /** §7 — the (session|document) scope the evidence state belongs to. */
+  private conflictDynamicScopeKey = ''
+  /** §6 — the first complete snapshot only establishes the baseline. */
+  private conflictBaselineEstablished = false
+  /** §19 — transaction dedup keys already counted (one transaction = one bump). */
+  private conflictCoverageTransactions = new Set<string>()
+  /** §21/§22 — a REPORT_ONLY request waiting for the next diagnostics commit. */
+  private conflictPendingReport = false
+  /** §20 — monotonic report sequence inside this runtime session. */
+  private conflictReportSequence = 0
   /** V5.15 — the figure owning-block structure results of the last DOM pass. */
   private lastFigureStructureResults: FigureBlockStructureResult[] = []
   private listeners = new Set<(snapshot: DocumentDiagnosticsSnapshot | null) => void>()
@@ -172,6 +265,9 @@ export class DocumentDiagnosticsAuthority {
     // Phase 7R.3.11.8B.4 — severity transition log (strict/loose switch only).
     this.emitHeadingSeverityTransition(input.documentKey, input.strictMode)
     const computed = computeDocumentDiagnostics(input)
+    // Heading Auto-Number Conflict V1 §44/§45 — the ONE runtime audit for the
+    // conflict rule (state-deduped; event-driven, never a poll).
+    this.emitHeadingAutoNumberConflictAudits(input, computed)
     // V1 §37 — low-frequency, state-deduped audit for the single-heading-no-body
     // hint (never per block, never per mutation).
     this.emitHeadingOnlyHintAudit(input, computed)
@@ -226,6 +322,12 @@ export class DocumentDiagnosticsAuthority {
     const publishDecision = fingerprint === this.lastContentFingerprint ? 'NOOP' : 'PUBLISHED'
     this.emitTrailingBlankAudit(input.markdown, this.sourceRevision, this.snapshot, nextSnapshot, publishDecision)
     if (fingerprint === this.lastContentFingerprint) {
+      // §21/§22 — the bridge is consumed POST-COMMIT (never at the start of the
+      // recompute): the evidence state must describe a CONSISTENT snapshot, so
+      // the applied mutation is observed by the NEXT recompute it triggers.
+      this.consumeHeadingConflictTestBridge()
+      // §22 — a REPORT_ONLY request must still be served on a NOOP commit.
+      this.flushHeadingConflictPendingReport()
       return
     }
     this.lastContentFingerprint = fingerprint
@@ -243,6 +345,22 @@ export class DocumentDiagnosticsAuthority {
     this.emitObjectCaptionDiagnosticAudit(structural, input.documentKey)
     // Phase 7R.3.11.8B.7.1 — snapshot diff audit on mode transitions only.
     this.emitSnapshotDiffIfModeChanged(previous, nextSnapshot)
+    // §21/§22 — POST-COMMIT bridge consumption + REPORT_ONLY capture: the
+    // committed snapshot is now the authoritative one. Consuming here (never at
+    // the start) guarantees every evidence state describes a CONSISTENT snapshot.
+    this.consumeHeadingConflictTestBridge()
+    this.flushHeadingConflictPendingReport()
+  }
+
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — the ONE dev/test bridge
+   * consumption point, invoked POST-COMMIT (the toolbar 「重新检查文档」 button
+   * drives this recompute deterministically, never an OS-level focus event).
+   * main.ts owns the file IO + the official setter; failures are
+   * observability-only and must never affect the diagnostics commit.
+   */
+  private consumeHeadingConflictTestBridge(): void {
+    try { this.providers.consumeHeadingConflictTestBridge?.() } catch { /* observability only */ }
   }
 
   /** Phase 7R.3.11.8B.7.7 — reason of the LAST published snapshot. */
@@ -714,6 +832,311 @@ export class DocumentDiagnosticsAuthority {
     this.recompute()
   }
 
+  /**
+   * Heading Auto-Number Conflict V1.2 §3–§22 — the ONE evidence-state audit.
+   *
+   *   per-heading EVIDENCE STATE → ONE transition CLASSIFIER → transitionReason
+   *     → conflict audit / dynamic audit / coverage / failure gates
+   *
+   * §3/§4 the state is per-heading (keyed by headingStableIdentity) and is kept
+   * even while `conflict=false`, so a config change can never be misread as a
+   * source change. §6 the first complete snapshot only establishes the baseline.
+   * §7 a new (session|document) scope establishes a NEW baseline. §19 coverage is
+   * bumped ONCE per transaction (reason-level dedup), never once per heading.
+   */
+  private emitHeadingAutoNumberConflictAudits(
+    input: DocumentDiagnosticsInput,
+    computed: DocumentDiagnosticsComputed,
+  ): void {
+    const keyOf = (identity: string | undefined | null): string => String(identity ?? '')
+    const conflicts = computed.diagnostics.filter(d => d.code === HEADING_AUTO_NUMBER_CONFLICT_CODE)
+    const conflictByIdentity = new Map<string, DocumentDiagnostic>()
+    for (const d of conflicts) {
+      const key = keyOf(d.stableIdentity)
+      if (conflictByIdentity.has(key)) {
+        this.countersHeadingAutoNumberConflict.headingAutoNumberConflictDuplicateDiagnostic++
+      } else {
+        conflictByIdentity.set(key, d)
+      }
+    }
+    // §14/§43 — a conflicting heading must NEVER also carry the generic warning.
+    for (const d of computed.diagnostics) {
+      if (d.code !== 'HEADING_MANUAL_NUMBER_PREFIX') continue
+      if (conflictByIdentity.has(keyOf(d.stableIdentity))) {
+        this.countersHeadingAutoNumberConflict.autoNumberConflictAndManualPrefixDuplicateReport++
+      }
+    }
+
+    const globalEnabled = input.headingAutoNumbering?.enabled === true
+    const h1Enabled = input.headingAutoNumbering?.h1NumberingEnabled === true
+    // Heading Auto-Number Conflict V1.2 §13 — the STYLE identity comes from the
+    // numbering authority's own effective configuration (preset + per-level
+    // NUMBER FORMAT), NOT from the rendered auto number. A global ON/OFF toggle
+    // therefore leaves the style key unchanged and can never be misclassified as
+    // NUMBER_STYLE_CHANGED; only a real preset/format change moves it.
+    const styleKey = input.headingAutoNumbering?.styleKey ?? ''
+
+    // §3/§4 — the FULL per-heading evidence state (EVERY canonical heading).
+    const states = new Map<string, HeadingAutoNumberConflictEvidenceState>()
+    let dropped = 0
+    for (const heading of input.headings) {
+      const key = keyOf(heading.stableIdentity)
+      if (key === '') { dropped++; continue }
+      const diag = conflictByIdentity.get(key)
+      const prefix = resolveHeadingManualNumberPrefix(heading.text)
+      const generated = heading.element?.getAttribute?.('data-inkchapter-heading-number') ?? null
+      states.set(key, {
+        documentKey: input.documentKey ?? '',
+        headingStableIdentity: key,
+        headingLevel: heading.level,
+        sourceText: heading.text,
+        manualPrefixStatus: prefix.status,
+        manualPrefixKind: prefix.kind,
+        manualPrefixRaw: prefix.status === 'confirmed' ? prefix.rawPrefix : null,
+        globalAutoNumberingEnabled: globalEnabled,
+        autoNumberingEffectiveForHeading: heading.autoNumberingEffective === true,
+        h1NumberingEnabled: h1Enabled,
+        numberingStyleKey: styleKey,
+        generatedVisiblePrefix: generated,
+        conflict: diag != null,
+        diagnosticId: diag?.id ?? null,
+      })
+    }
+    // §3 — a canonical heading without a stable identity can never be tracked.
+    if (dropped > 0) this.countersHeadingAutoNumberConflict.dynamicStateDroppedNonConflictHeading += dropped
+
+    // ── §44 — the per-conflicting-heading facts (deduped by conflict signature).
+    const conflictSignature = [...conflictByIdentity.keys()].sort().join('|')
+    if (conflictSignature !== this.lastConflictSignature) {
+      for (const [key, d] of conflictByIdentity) {
+        const st = states.get(key)
+        const generatedPrefix = st?.generatedVisiblePrefix ?? null
+        // §5/§44 — the AUTO style is classified by the SAME parser authority
+        // (audit-only presentation classification, never a detection input).
+        const autoKind = generatedPrefix != null && generatedPrefix !== ''
+          ? resolveHeadingManualNumberPrefix(`${generatedPrefix} 标题`).kind
+          : null
+        const facts = {
+          documentKey: input.documentKey,
+          diagnosticId: d.id,
+          headingStableIdentity: key,
+          headingLevel: st ? String(st.headingLevel) : null,
+          autoNumberingGlobalEnabled: globalEnabled,
+          autoNumberingEffectiveForHeading: st?.autoNumberingEffectiveForHeading === true,
+          h1NumberingEnabled: h1Enabled,
+          canonicalSourceText: st?.sourceText ?? '',
+          manualPrefixStatus: st?.manualPrefixStatus ?? 'none',
+          manualPrefixKind: st?.manualPrefixKind ?? null,
+          manualPrefixRaw: st?.manualPrefixRaw ?? null,
+          generatedVisiblePrefix: generatedPrefix,
+          sourceEvidenceUsesGeneratedPrefix: false,
+          severity: d.severity,
+        }
+        const verdict = evaluateHeadingAutoNumberConflictFacts(facts)
+        applyHeadingAutoNumberConflictFailure(this.countersHeadingAutoNumberConflict, verdict.failedChecks)
+        emitRuntimeAudit(HEADING_AUTO_NUMBER_CONFLICT_AUDIT_EVENT, {
+          ...facts,
+          autoVisiblePrefixKind: autoKind,
+          runtimeSessionId: this.conflictRuntimeSessionId,
+          decision: verdict.decision,
+          reason: verdict.reason,
+        })
+        noteHeadingAutoNumberConflictCoverage(this.coverageHeadingAutoNumberConflict, {
+          manualPrefixKind: facts.manualPrefixKind,
+          crossStyle: autoKind != null && facts.manualPrefixKind != null && autoKind !== facts.manualPrefixKind,
+        })
+        // §20/§26 — the SAME heading would ALSO have raised the legacy generic
+        // manual-prefix warning, so the producer suppressed it.
+        if (st && detectLegacyManualNumberPrefix(st.sourceText) != null) {
+          this.coverageHeadingAutoNumberConflict.suppressionSameHeading++
+        }
+      }
+      // §20/§26 — a heading that is NOT conflict-effective keeps its warning.
+      if (computed.diagnostics.some(d => d.code === 'HEADING_MANUAL_NUMBER_PREFIX')) {
+        this.coverageHeadingAutoNumberConflict.nonConflictManualWarning++
+      }
+    }
+    this.lastConflictSignature = conflictSignature
+
+    // ── §7 — (runtimeSessionId | documentKey) isolation: a new scope = new baseline.
+    const scopeKey = `${this.conflictRuntimeSessionId}|${input.documentKey ?? ''}`
+    if (scopeKey !== this.conflictDynamicScopeKey) {
+      // A diff across different scopes would be a cross-document leak; the state
+      // is dropped wholesale instead of being compared.
+      this.conflictDynamicScopeKey = scopeKey
+      this.conflictEvidenceStates = states
+      this.conflictBaselineEstablished = true
+      return
+    }
+    // ── §6 — the first complete snapshot only establishes the baseline.
+    if (!this.conflictBaselineEstablished) {
+      this.conflictEvidenceStates = states
+      this.conflictBaselineEstablished = true
+      return
+    }
+
+    // ── §9 — ONE classifier, one reason, all downstream consumers.
+    const diagnosticsRevision = this.revision
+    const sourceRevision = this.sourceRevision
+    const keys = new Set<string>([...this.conflictEvidenceStates.keys(), ...states.keys()])
+    for (const key of keys) {
+      const before = this.conflictEvidenceStates.get(key)
+      const after = states.get(key) ?? null
+      // A heading that APPEARED has no baseline evidence: it is not a change.
+      if (!before) continue
+      const verdict = evaluateHeadingAutoNumberConflictTransition({ before, after })
+      if (verdict.transitionReason === 'NO_CHANGE') continue
+      if (verdict.transitionReason !== 'HEADING_REMOVED') {
+        applyHeadingAutoNumberConflictFailure(
+          this.countersHeadingAutoNumberConflict,
+          verdict.failedChecks,
+          verdict.transitionReason,
+        )
+      }
+      emitRuntimeAudit(HEADING_AUTO_NUMBER_CONFLICT_DYNAMIC_AUDIT_EVENT, {
+        documentKey: input.documentKey,
+        headingStableIdentity: key,
+        runtimeSessionId: this.conflictRuntimeSessionId,
+        diagnosticsRevision,
+        sourceRevision,
+        transitionReason: verdict.transitionReason,
+        before,
+        after,
+        decision: verdict.decision,
+        reason: verdict.failedChecks.length === 0 ? 'EVIDENCE_STATE_TRANSITION_CLASSIFIED' : verdict.failedChecks.join(','),
+      })
+      // §17/§18/§19 — coverage consumes ONLY the classifier's reason, deduped per
+      // transaction so one Auto-ON→OFF (17 headings) counts ONCE.
+      if (verdict.coverageKey != null) {
+        const txKey = headingAutoNumberConflictTransactionKey({
+          runtimeSessionId: this.conflictRuntimeSessionId,
+          diagnosticsRevision,
+          transitionReason: verdict.transitionReason,
+          settingsRevision: 0,
+          sourceRevision,
+        })
+        if (!this.conflictCoverageTransactions.has(txKey)) {
+          this.conflictCoverageTransactions.add(txKey)
+          noteHeadingAutoNumberConflictCoverageForReason(this.coverageHeadingAutoNumberConflict, verdict.transitionReason)
+        }
+      }
+    }
+    this.conflictEvidenceStates = states
+  }
+
+  /** §47 — the overlay host records ONE real first-click activation of a conflict. */
+  noteHeadingAutoNumberConflictFirstClickActivated(): void {
+    this.coverageHeadingAutoNumberConflict.firstClickActive++
+  }
+
+  // ── §21/§22 — the ONE post-commit report authority ─────────────────────────
+
+  /** §22 — arm a REPORT_ONLY: capture happens on the NEXT diagnostics commit. */
+  requestHeadingAutoNumberConflictReport(): void {
+    this.conflictPendingReport = true
+  }
+
+  /** §20 — the runtime session id of THIS plugin instance. */
+  getHeadingConflictRuntimeSessionId(): string {
+    return this.conflictRuntimeSessionId
+  }
+
+  /** §6 — whether the baseline of the current (session|document) scope is set. */
+  isHeadingConflictBaselineEstablished(): boolean {
+    return this.conflictBaselineEstablished
+  }
+
+  /** §22 — the committed diagnostics revision. */
+  getCommittedDiagnosticsRevision(): number {
+    return this.revision
+  }
+
+  /** §22 — the committed source revision. */
+  getCommittedSourceRevision(): number {
+    return this.sourceRevision
+  }
+
+  /** §22 — the current (session|document) dynamic scope key. */
+  getHeadingConflictDynamicScopeKey(): string {
+    return this.conflictDynamicScopeKey
+  }
+
+  /**
+   * §22 — the post-commit capture. It runs at the END of a committed recompute
+   * (never right after a setter), so the gate/coverage report always describes
+   * the SAME committed snapshot and carries its revision + session id.
+   */
+  private flushHeadingConflictPendingReport(): void {
+    if (!this.conflictPendingReport) return
+    this.conflictPendingReport = false
+    const envelope: HeadingAutoNumberConflictReportEnvelope = {
+      runtimeSessionId: this.conflictRuntimeSessionId,
+      reportSequence: ++this.conflictReportSequence,
+      settingsRevision: 0,
+      sourceRevision: this.sourceRevision,
+      diagnosticsRevision: this.revision,
+      baselineEstablished: this.conflictBaselineEstablished,
+      capturePhase: 'POST_COMMIT',
+    }
+    const capture = {
+      ...envelope,
+      dualPass: this.getHeadingAutoNumberConflictDualPassDecision(),
+      gateReport: formatHeadingAutoNumberConflictGateReport(this.countersHeadingAutoNumberConflict),
+      coverageReport: formatHeadingAutoNumberConflictCoverageReport(this.coverageHeadingAutoNumberConflict),
+    }
+    emitRuntimeAudit('HEADING-CONFLICT-REPORT-CAPTURED', capture)
+    try {
+      this.providers.onHeadingConflictReportCapture?.(capture)
+    } catch { /* observability only — never affects diagnostics */ }
+  }
+
+  /**
+   * §17/§26 (Runtime Closure V1) — ONE real stable post-click Drawer viewport
+   * observation for a conflict Error click (shared probe, never a second one).
+   */
+  noteHeadingAutoNumberConflictDrawerViewportStable(): void {
+    this.coverageHeadingAutoNumberConflict.drawerViewportStable++
+  }
+
+  /** §16 (Runtime Closure V1) — a repeated click that did NOT deactivate. */
+  noteHeadingAutoNumberConflictRepeatedClickNotDeactivated(): void {
+    this.countersHeadingAutoNumberConflict.headingAutoNumberConflictRepeatedClickNotDeactivated++
+  }
+
+  /** §4 (Runtime Closure V1) — the DUAL pass condition surface. */
+  getHeadingAutoNumberConflictDualPassDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[]; unmet: readonly string[] } {
+    const dual = evaluateHeadingAutoNumberConflictDualPass(
+      this.countersHeadingAutoNumberConflict,
+      this.coverageHeadingAutoNumberConflict,
+    )
+    return { decision: dual.decision, failedChecks: dual.failedChecks, unmet: dual.unmet }
+  }
+
+  /** §46 — read-only gate surface (runtime verification). */
+  getHeadingAutoNumberConflictGateReport(): string[] {
+    return formatHeadingAutoNumberConflictGateReport(this.countersHeadingAutoNumberConflict)
+  }
+
+  getHeadingAutoNumberConflictGateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateHeadingAutoNumberConflictGates(this.countersHeadingAutoNumberConflict)
+  }
+
+  getHeadingAutoNumberConflictCounters(): Readonly<HeadingAutoNumberConflictCounters> {
+    return { ...this.countersHeadingAutoNumberConflict }
+  }
+
+  getHeadingAutoNumberConflictCoverageReport(): string[] {
+    return formatHeadingAutoNumberConflictCoverageReport(this.coverageHeadingAutoNumberConflict)
+  }
+
+  getHeadingAutoNumberConflictCoverageDecision(): { decision: 'PASS' | 'FAIL'; unmet: readonly string[] } {
+    return evaluateHeadingAutoNumberConflictCoverage(this.coverageHeadingAutoNumberConflict)
+  }
+
+  getHeadingAutoNumberConflictCoverage(): Readonly<HeadingAutoNumberConflictCoverage> {
+    return { ...this.coverageHeadingAutoNumberConflict }
+  }
+
   private collectStructuralFacts(): {
     headings: DiagnosticHeadingFact[]
     h1Facts: DiagnosticH1Fact[] | null
@@ -725,6 +1148,8 @@ export class DocumentDiagnosticsAuthority {
     codes: DiagnosticObjectFact[]
     formulas: DiagnosticFormulaFact[]
     links: DiagnosticLinkFact[]
+    /** Heading Auto-Number Conflict V1 §2/§4 — global effectiveness audit facts. */
+    headingAutoNumbering: { enabled: boolean; h1NumberingEnabled: boolean; styleKey?: string }
   } {
     const root = resolveBusinessContentRoot()
     const figures: DiagnosticObjectFact[] = []
@@ -750,12 +1175,23 @@ export class DocumentDiagnosticsAuthority {
         }))
       }
     }
+    // Heading Auto-Number Conflict V1 §2/§4 — the numbering authority's OWN
+    // per-heading effectiveness verdict (never a second level/config rule).
+    const autoNumberingFacts = this.providers.getHeadingAutoNumberingEffectiveFacts?.()
+      ?? { enabled: false, h1NumberingEnabled: false, isEffectiveForElement: () => false }
     const headings: DiagnosticHeadingFact[] = canonicalHeadingFacts.map(f => ({
       level: f.physicalLevel,
       text: f.text,
       stableIdentity: f.stableIdentity,
       element: f.element,
+      autoNumberingEffective: autoNumberingFacts.enabled === true
+        && autoNumberingFacts.isEffectiveForElement(f.element),
     }))
+    const headingAutoNumbering = {
+      enabled: autoNumberingFacts.enabled === true,
+      h1NumberingEnabled: autoNumberingFacts.h1NumberingEnabled === true,
+      styleKey: autoNumberingFacts.styleKey ?? '',
+    }
     // Phase 7R.3.11.8B.4 — canonical == diagnostics heading authority invariant.
     const headingAuthority = this.computeHeadingAuthority(authority, headings)
     this.emitHeadingAuthorityAudits(authority, headingAuthority)
@@ -952,7 +1388,7 @@ export class DocumentDiagnosticsAuthority {
       }
     }
 
-    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, figureSourceOccurrences, tables, codes, formulas, links }
+    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, figureSourceOccurrences, tables, codes, formulas, links, headingAutoNumbering }
   }
 
   /** Phase 7R.3.11.8B.4.1 — LATENT-ATX marker transition log (state-deduped). */

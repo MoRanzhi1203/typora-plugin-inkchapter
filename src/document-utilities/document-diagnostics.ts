@@ -60,6 +60,9 @@ import {
   detectManualNumberPrefix,
   type SourceBlockSpan,
 } from './document-diagnostics-vnext-authority'
+// Heading Auto-Number Conflict Diagnostics V1 §7/§8 — the ONE manual-number
+// prefix parser authority (confirmed / ambiguous / none).
+import { resolveHeadingManualNumberPrefix } from './document-diagnostics-heading-manual-number-prefix-v1'
 // Internal Blank-Line Policy V1 §1/§3/§7 — the ONE threshold + block-gap
 // authority for `EXCESSIVE_INTERNAL_BLANK_LINES` (source-only, never DOM).
 import {
@@ -85,6 +88,13 @@ export interface DiagnosticHeadingFact {
   text: string
   stableIdentity?: string
   element: HTMLElement | null
+  /**
+   * Heading Auto-Number Conflict V1 §2/§4 — the heading numbering authority's
+   * OWN effective verdict for THIS heading (never the global switch). Produced
+   * by the ONE `isAutoNumberingEffectiveForHeading` authority; absent (pure /
+   * legacy callers) means "not effective" → the conflict rule stays silent.
+   */
+  autoNumberingEffective?: boolean
 }
 
 /**
@@ -281,6 +291,11 @@ export function resolveDocumentDiagnosticSeverity(
     case 'HEADING_MANUAL_NUMBER_PREFIX':
     case 'FIGURE_MANUAL_NUMBER_PREFIX':
       return 'warning'
+    // Heading Auto-Number Conflict V1 §13 — when the auto number is EFFECTIVE
+    // for the heading AND the source already carries a confirmed manual prefix,
+    // two numbering authorities WILL coexist. Fixed ERROR (never mode-dependent).
+    case 'HEADING_AUTO_NUMBER_CONFLICT':
+      return 'error'
     // ── Constant WARNING rules ──
     // V5.12-R8 §9 — a missing local image is a resource-level WARNING (the
     // document structure is intact; only a referenced asset is absent), never
@@ -392,6 +407,19 @@ export interface DocumentDiagnosticsInput {
     code?: boolean
     formula?: boolean
   }
+  /**
+   * Heading Auto-Number Conflict V1 §2/§4/§44 — the heading auto-numbering
+   * EFFECTIVENESS authority's global audit facts. The PER-HEADING verdict
+   * travels on `DiagnosticHeadingFact.autoNumberingEffective`; these two
+   * booleans are the global switch + H1 policy, recorded on the audit only.
+   * Absent = everything OFF (the conflict rule never runs).
+   */
+  headingAutoNumbering?: {
+    enabled: boolean
+    h1NumberingEnabled: boolean
+    /** Heading Auto-Number Conflict V1.2 §13 — the effective STYLE identity. */
+    styleKey?: string
+  }
 }
 
 export interface DocumentDiagnosticsComputed {
@@ -420,6 +448,13 @@ export const SECTION_EMPTY_CODE = 'SECTION_EMPTY'
 export const SECTION_ONLY_SUBHEADINGS_CODE = 'SECTION_ONLY_SUBHEADINGS'
 /** §24 — a heading text carrying a manual number prefix while auto-numbering is ON. */
 export const HEADING_MANUAL_NUMBER_PREFIX_CODE = 'HEADING_MANUAL_NUMBER_PREFIX'
+/**
+ * Heading Auto-Number Conflict V1 §1/§13 — the heading's automatic numbering is
+ * EFFECTIVE for it AND the canonical Markdown source heading already carries a
+ * CONFIRMED manual number prefix. Both numbering authorities would coexist, so
+ * this is an ERROR (never a warning/hint).
+ */
+export const HEADING_AUTO_NUMBER_CONFLICT_CODE = 'HEADING_AUTO_NUMBER_CONFLICT'
 /** §24 — a figure name carrying a manual number prefix while auto-numbering is ON. */
 export const FIGURE_MANUAL_NUMBER_PREFIX_CODE = 'FIGURE_MANUAL_NUMBER_PREFIX'
 /** §18 — a table that is not a standalone block (list / blockquote marker). */
@@ -1316,11 +1351,72 @@ export function computeDocumentDiagnostics(
         }
       }
 
+      // ── Heading Auto-Number Conflict V1 §1/§2/§3/§5/§12/§13/§17/§18/§19 ───
+      // ONE Error per heading:
+      //   isAutoNumberingEffectiveForHeading(heading) === true   (§2/§4/§15 —
+      //     the PER-HEADING effective policy, never the global switch)
+      //   AND the CANONICAL MARKDOWN SOURCE heading carries a CONFIRMED manual
+      //     number prefix (§5 — the rendered label / generated number is NEVER
+      //     read, so the plugin can never report its own number).
+      // §18 — every conflicting heading is an INDEPENDENT problem (never a
+      // Target Group). §19 — the identity is document + code + heading stable
+      // identity (never the auto number / style / value), so a renumber or a
+      // numbering-style switch can never move the diagnosticId.
+      const conflictedHeadingFacts = new Set<DiagnosticHeadingFact>()
+      if (input.headingAutoNumbering?.enabled === true) {
+        for (const heading of input.headings) {
+          if (heading.autoNumberingEffective !== true) continue
+          const prefix = resolveHeadingManualNumberPrefix(heading.text)
+          if (prefix.status !== 'confirmed') continue
+          conflictedHeadingFacts.add(heading)
+          const identity = normalizeIdentity(heading.stableIdentity)
+          const lineAttr = heading.element?.getAttribute?.('data-line')
+          const lineNo = lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) : null
+          const hasLine = lineNo != null && Number.isInteger(lineNo)
+          const location: DiagnosticLocation = identity !== ''
+            ? { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: identity }
+            : hasLine
+              ? { kind: 'source-range', startLine: lineNo as number, startColumn: 0, rawText: heading.text }
+              : { kind: 'document-start' }
+          const detail = prefix.rawPrefix !== ''
+            ? `当前标题已包含手工编号「${prefix.rawPrefix}」，同时启用了自动标题编号。请删除标题中的手工编号，或关闭该标题级别的自动编号。`
+            : '当前标题已包含手工编号，同时启用了自动标题编号。请删除标题中的手工编号，或关闭该标题级别的自动编号。'
+          push(
+            makeDiagnostic(input, 'heading', HEADING_AUTO_NUMBER_CONFLICT_CODE, '标题编号冲突', {
+              detail,
+              kind: 'heading',
+              stableIdentity: identity || undefined,
+              element: heading.element,
+              targetIdentity: `auto-number-conflict:${identity !== '' ? identity : hasLine ? `line:${lineNo}` : 'heading'}`,
+              metadata: {
+                ruleId: 'HEADING-AUTO-NUMBER-CONFLICT',
+                reason: 'AUTO_NUMBER_CONFLICT',
+                // §1 — the spec's own vocabulary for this rule family.
+                ruleCategory: 'heading-numbering',
+                headingLevel: heading.level,
+                manualPrefixKind: prefix.kind,
+                manualPrefixRaw: prefix.rawPrefix,
+                manualPrefixStatus: prefix.status,
+              },
+              locator: heading.element
+                ? { kind: 'heading', targetElement: heading.element }
+                : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+              location,
+            }),
+          )
+        }
+      }
+
       // ── VNext §24 — HEADING manual number prefix ──────────────────────────
       // Only while heading auto-numbering is ON (otherwise a literal `1.` is
       // plain text — MANUAL_NUMBER_PREFIX_FALSE_POSITIVE_COUNT=0).
+      // V1 §14/§43 — a heading that already raises the STRONGER
+      // HEADING_AUTO_NUMBER_CONFLICT must NOT also raise this generic warning:
+      // the two rules share ONE root cause, so the warning is suppressed for
+      // exactly those headings (never for the whole document).
       if (input.numberingEnabled?.heading === true) {
         for (const heading of input.headings) {
+          if (conflictedHeadingFacts.has(heading)) continue
           const match = detectManualNumberPrefix(heading.text)
           if (!match) continue
           const identity = normalizeIdentity(heading.stableIdentity)
