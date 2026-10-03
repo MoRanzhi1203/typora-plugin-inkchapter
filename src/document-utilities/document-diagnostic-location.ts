@@ -267,6 +267,18 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   SECTION_ONLY_SUBHEADINGS: rule('SECTION_ONLY_SUBHEADINGS', 'heading', 'canonical-node', { area: 'document-completeness', scope: 'heading', reasonChip: true }),
   // VNext §24 — user manual numbering while automatic numbering is ON.
   HEADING_MANUAL_NUMBER_PREFIX: rule('HEADING_MANUAL_NUMBER_PREFIX', 'heading', 'canonical-node', { area: 'caption-numbering', scope: 'heading' }),
+  // Heading Auto-Number Conflict V1 §1/§26 — the heading's auto numbering is
+  // EFFECTIVE and the Markdown source already carries a confirmed manual prefix.
+  // A heading-scoped ERROR: the target is the canonical heading BLOCK (never the
+  // manual prefix substring, never the generated numbering span), the ACTIVE
+  // visual consumes the stable VISIBLE_HEADING_LABEL coverage (`一、1.1 小节`),
+  // and the reason chip follows the existing heading-Error policy.
+  HEADING_AUTO_NUMBER_CONFLICT: rule('HEADING_AUTO_NUMBER_CONFLICT', 'heading', 'canonical-node', {
+    area: 'caption-numbering',
+    scope: 'heading',
+    reasonChip: true,
+    activeVisualMode: 'text-tight-single-target',
+  }),
   // Figure / table / code / formula / link (block node)
   FIGURE_MISSING_NAME: rule('FIGURE_MISSING_NAME', 'figure', 'figure-occurrence'),
   FIGURE_DUPLICATE_NAME: rule('FIGURE_DUPLICATE_NAME', 'figure', 'multi-target'),

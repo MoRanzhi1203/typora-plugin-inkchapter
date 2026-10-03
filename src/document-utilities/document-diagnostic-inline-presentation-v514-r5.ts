@@ -95,6 +95,9 @@ const INLINE_HINT_BY_CODE_V514R5: Readonly<Record<string, string>> = {
   HEADING_DUPLICATE_TEXT: '重复标题',
   HEADING_DUPLICATE_IDENTITY: '重复标题身份',
   HEADING_EMPTY_TEXT: '空标题',
+  // Heading Auto-Number Conflict V1 §27 — the short chip for the heading
+  // auto-number conflict (existing heading-Error presentation, no new style).
+  HEADING_AUTO_NUMBER_CONFLICT: '编号冲突',
   // objects
   TABLE_MISSING_NAME: '缺少表名',
   TABLE_DUPLICATE_NAME: '重复表名',

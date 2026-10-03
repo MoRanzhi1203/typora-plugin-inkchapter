@@ -23,6 +23,8 @@ import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from '
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
+// Heading Auto-Number Conflict V1.2 §21/§22 — dev/test-only bridge IO (report sink).
+import { writeHeadingConflictBridgeReport, readHeadingConflictBridgeFile, consumeHeadingConflictBridgeFile } from './heading-numbering/heading-conflict-test-bridge'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
 import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-empty-workspace-controller'
@@ -168,6 +170,14 @@ export default class extends Plugin<InkChapterSettings> {
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
   private documentUtilities?: DocumentUtilities
+  /**
+   * Heading Auto-Number Conflict V1.2 §21/§22 — the last dev/test bridge command.
+   * The bridge never writes a report itself: it arms the ONE post-commit capture,
+   * which stamps this command onto the report.
+   */
+  private headingConflictBridgeLastCommand: { command: string; arg: string | null; result: string } | null = null
+  /** §24 V1.2 — the last consumed bridge nonce (idempotent, one command in flight). */
+  private headingConflictBridgeLastNonce: string | null = null
   private docViewMenu?: DocumentViewContextMenu
   private tabCloseVisibility?: TabCloseVisibilityEnhancer
 
@@ -534,6 +544,53 @@ export default class extends Plugin<InkChapterSettings> {
         // only; all numbering semantics stay inside the caption service.
         getObjectNumberingEnabled: () => this.captionService?.getObjectNumberingEnabledState()
           ?? { figure: false, table: false, code: false, formula: false },
+        // Heading Auto-Number Conflict V1 §2/§4 — the ONE per-heading heading
+        // auto-numbering EFFECTIVENESS authority (reuses the numbering service's
+        // effective settings + the numbering engine; never a second rule).
+        getHeadingAutoNumberingEffectiveFacts: () => this.numberingService?.getHeadingAutoNumberingEffectiveFacts()
+          ?? { enabled: false, h1NumberingEnabled: false, styleKey: '', isEffectiveForElement: () => false },
+        // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE post-commit report
+        // sink: the diagnostics authority calls it at the END of a committed
+        // recompute (never right after a setter), and main.ts owns the file IO.
+        onHeadingConflictReportCapture: (capture) => {
+          const root = vaultRoot ?? null
+          if (!root) return
+          writeHeadingConflictBridgeReport(root, {
+            command: this.headingConflictBridgeLastCommand?.command ?? 'REPORT_ONLY',
+            arg: this.headingConflictBridgeLastCommand?.arg ?? null,
+            appliedAt: new Date().toISOString(),
+            result: this.headingConflictBridgeLastCommand?.result ?? 'POST_COMMIT_CAPTURE',
+            runtimeSessionId: capture.runtimeSessionId,
+            reportSequence: capture.reportSequence,
+            settingsRevision: capture.settingsRevision,
+            sourceRevision: capture.sourceRevision,
+            diagnosticsRevision: capture.diagnosticsRevision,
+            baselineEstablished: capture.baselineEstablished,
+            capturePhase: capture.capturePhase,
+            dualPass: capture.dualPass,
+            gateReport: capture.gateReport,
+            coverageReport: capture.coverageReport,
+          })
+          this.headingConflictBridgeLastCommand = null
+        },
+        // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE dev/test bridge
+        // consumption point, driven by the diagnostics recompute (the toolbar
+        // 「重新检查文档」 button), never by an OS-level focus/selection event.
+        consumeHeadingConflictTestBridge: () => {
+          const root = vaultRoot ?? null
+          if (!root) return
+          const cmd = readHeadingConflictBridgeFile(root, this.headingConflictBridgeLastNonce)
+          if (!cmd) return
+          // Stamp the nonce BEFORE applying so a nested recompute driven by the
+          // setter can never re-apply the same command.
+          this.headingConflictBridgeLastNonce = cmd.nonce
+          const result = this.numberingService?.applyHeadingConflictBridgeCommand(cmd.command, cmd.arg) ?? 'NO_SERVICE'
+          this.headingConflictBridgeLastCommand = { command: cmd.command, arg: cmd.arg, result }
+          consumeHeadingConflictBridgeFile(root, cmd)
+          // §21/§22 — arm the POST-COMMIT capture; flush happens at the END of
+          // this same committed recompute.
+          this.documentUtilities?.host.requestHeadingAutoNumberConflictReport()
+        },
         // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
         getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
         // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline

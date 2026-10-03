@@ -77,6 +77,21 @@ export interface DocumentUtilitiesAuthorityContext {
    * `1.` prefix is then plain text and must never be reported).
    */
   getObjectNumberingEnabled?: () => { figure?: boolean; table?: boolean; code?: boolean; formula?: boolean }
+  /**
+   * Heading Auto-Number Conflict V1 §2/§4 — the ONE per-heading heading
+   * auto-numbering EFFECTIVENESS authority, owned by the heading numbering
+   * service. `isEffectiveForElement` answers "will the plugin paint an automatic
+   * number on THIS heading?" for the CURRENT effective settings (strict/loose H1
+   * · per-level enabled · maxDepth · overrides). Optional: absent (pure/legacy
+   * consumers) means the conflict rule never runs.
+   */
+  getHeadingAutoNumberingEffectiveFacts?: () => {
+    enabled: boolean
+    h1NumberingEnabled: boolean
+    /** Heading Auto-Number Conflict V1.2 §13 — the effective STYLE identity. */
+    styleKey?: string
+    isEffectiveForElement: (element: HTMLElement | null) => boolean
+  }
 }
 
 export interface DocumentUtilitiesContext {
@@ -134,6 +149,11 @@ export function collectDiagnosticsInput(
     codes: DocumentDiagnosticsInput['codes']
     formulas: DocumentDiagnosticsInput['formulas']
     links: DocumentDiagnosticsInput['links']
+    /**
+     * Heading Auto-Number Conflict V1 §2/§4 — the numbering authority's global
+     * effectiveness facts (the PER-HEADING verdict travels on each heading fact).
+     */
+    headingAutoNumbering?: DocumentDiagnosticsInput['headingAutoNumbering']
   },
 ): DocumentDiagnosticsInput {
   // Phase 7R.3.11.8B.9 — conditional strict-policy activation. When the
@@ -166,5 +186,6 @@ export function collectDiagnosticsInput(
       heading: policy?.enabled === true,
       ...(ctx.authority.getObjectNumberingEnabled?.() ?? {}),
     },
+    headingAutoNumbering: structural.headingAutoNumbering,
   }
 }

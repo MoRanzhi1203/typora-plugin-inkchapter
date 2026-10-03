@@ -15,6 +15,9 @@
  * be proven the result is empty/silent — a hint is never guessed (§39).
  */
 import { normalizeCanonicalHeadingText } from './latent-atx-heading-marker'
+// Heading Auto-Number Conflict Diagnostics V1 §7 — the ONE manual-number prefix
+// parser authority (this module keeps only the LEGACY narrow view).
+import { detectLegacyManualNumberPrefix } from './document-diagnostics-heading-manual-number-prefix-v1'
 
 // ── Shared source scanning helpers ──────────────────────────────────────────
 
@@ -242,36 +245,24 @@ export interface ManualNumberPrefixMatch {
 }
 
 /**
- * §24 — a STRICT manual-number prefix ("1." / "1.1" / "1.1.2" / "一、" / "（一）").
+ * §24 — a STRICT manual-number prefix view of the ONE parser authority.
  *
- * Two arabic families, both requiring the numeric run to be a NUMBERING LEVEL:
- *   dotted     `1.1` / `1.1.2` — the FIRST segment is 1..2 digits (a year such
- *              as `2026.10` is 4 digits and is therefore never a level);
- *   separator  `1.` / `1)` / `1、` — the separator must be followed by content.
+ * The PARSER now lives in `document-diagnostics-heading-manual-number-prefix-v1`
+ * (`resolveHeadingManualNumberPrefix`), which the Heading Auto-Number Conflict
+ * rule also consumes — there is exactly ONE manual-number prefix authority
+ * (`DUPLICATE_HEADING_MANUAL_NUMBER_PREFIX_AUTHORITY_COUNT=0`). This function is
+ * the LEGACY, deliberately NARROWER view: it keeps the historical conservative
+ * scope (arabic dotted / separated, CJK enum, CJK parenthesized) and never
+ * widens to `roman` / `chapter-style`, so a rule that never fired before cannot
+ * start firing.
  *
  * The §24 negative list can never match:
  *   `2026 年计划`  (no separator after the run)     `5G` / `3D` / `R2` (no digit start)
  *   `ISO 9001`     (no digit start)                `2026.10 发布` (4-digit first segment)
  *   `一对一` / `三分之一` (no separator)
- *
- * KNOWN AMBIGUITY (documented, never silently hidden): a plain DECIMAL that
- * looks exactly like a level (`1.5`, `3.14`) is indistinguishable from
- * hierarchical numbering, so it matches. The rule only runs while the matching
- * automatic numbering is ON, where such a heading really does collide with the
- * generated number.
  */
 export function detectManualNumberPrefix(text: string | null | undefined): ManualNumberPrefixMatch | null {
-  const raw = (text ?? '').trim()
-  if (raw === '') return null
-  const dotted = /^(\d{1,2}(?:[.．]\d{1,3}){1,})(?=\s|$)/.exec(raw)
-  if (dotted) return { family: 'arabic', matched: dotted[1] }
-  const separated = /^(\d+)([.、)．])(?=\s|[^\d\s])/.exec(raw)
-  if (separated) return { family: 'arabic', matched: `${separated[1]}${separated[2]}` }
-  const cjkEnum = /^([一二三四五六七八九十百千]+)([、.])\s*/.exec(raw)
-  if (cjkEnum) return { family: 'cjk-enum', matched: `${cjkEnum[1]}${cjkEnum[2]}` }
-  const cjkParen = /^[（(]([一二三四五六七八九十百千]+)[）)]\s*/.exec(raw)
-  if (cjkParen) return { family: 'cjk-paren', matched: cjkParen[0].trim() }
-  return null
+  return detectLegacyManualNumberPrefix(text)
 }
 
 // ── §18/§19/§28 — source block spans ───────────────────────────────────────

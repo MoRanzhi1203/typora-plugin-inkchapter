@@ -1,16 +1,21 @@
 // @vitest-environment jsdom
 /**
- * V5.14-R6.1 — Heading Diagnostic COVERAGE POLICY (DiagnosticCode -> policy).
+ * V5.14-R6.1 + Heading Visible Label Coverage V1 — Heading Diagnostic COVERAGE
+ * POLICY (DiagnosticCode -> policy).
  *
- * R6 unified every heading diagnostic to NUMBER|GAP|TITLE. R6.1 corrects that
- * over-generalisation: the coverage is decided by the DiagnosticCode SEMANTICS.
+ * R6 unified every heading diagnostic to NUMBER|GAP|TITLE. R6.1 bound the coverage
+ * to the DiagnosticCode SOURCE semantics, which painted a numbered heading as
+ * `一、[小节]`. V1 splits the two layers formally (§2):
  *
- *  A  HEADING_DUPLICATE_TEXT + numbered -> TITLE_ONLY   (2.1 [第一节])
- *  B  HEADING_DUPLICATE_TEXT + unnumbered -> TITLE_ONLY (第一节)
- *  C  HEADING_LEVEL_GAP + numbered      -> FULL_VISIBLE_HEADING (NUMBER|GAP|TITLE)
- *  D  STRICT multi-H1 / first-H1        -> FULL_VISIBLE_HEADING
+ *  SOURCE_TITLE_ONLY     -> source identity / semantic matching (never a number)
+ *  VISIBLE_HEADING_LABEL -> the coverage the user SEES (number + gap + title)
+ *
+ *  A  HEADING_DUPLICATE_TEXT + numbered -> VISIBLE_HEADING_LABEL (一、[第一节])
+ *  B  HEADING_DUPLICATE_TEXT + unnumbered -> VISIBLE_HEADING_LABEL (第一节)
+ *  C  HEADING_LEVEL_GAP + numbered      -> VISIBLE_HEADING_LABEL (NUMBER|GAP|TITLE)
+ *  D  STRICT multi-H1 / first-H1        -> VISIBLE_HEADING_LABEL
  *  E  LATENT_ATX source issue           -> SOURCE_RANGE
- *  F  ONE heading with Duplicate + LevelGap -> two diagnostics, two policies
+ *  F  ONE heading with Duplicate + LevelGap -> two diagnostics, one visual policy
  *  §28 Passive -> Active keeps the policy / mask / rects
  *  §29 Outline shares the policy (reprojects, never copies a body rect)
  */
@@ -41,8 +46,11 @@ import {
   makeCoverageRect,
   reasonChipExcludedFromCoverage,
   resolveHeadingDiagnosticCoveragePolicy,
+  resolveHeadingSourceSemanticsPolicy,
+  sourceSemanticsIncludesAutoNumber,
   splitNumberAndGapRects,
   unionCoverageMasks,
+  visibleHeadingLabelText,
   type HeadingDiagnosticTargetSnapshot,
 } from './document-diagnostic-heading-coverage-v514-r6'
 
@@ -52,24 +60,36 @@ function rect(left: number, top: number, right: number, bottom: number) {
   return makeCoverageRect({ left, top, right, bottom })
 }
 
-describe('V5.14-R6.1 §3/§7 — the policy resolver', () => {
-  it('maps the REAL DiagnosticCodes to their coverage policy', () => {
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_DUPLICATE_TEXT' })).toBe('TITLE_ONLY')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_DUPLICATE_IDENTITY' })).toBe('TITLE_ONLY')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_EMPTY_TEXT' })).toBe('TITLE_ONLY')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_LEVEL_GAP' })).toBe('FULL_VISIBLE_HEADING')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_SINGLE_H1_NO_H1' })).toBe('FULL_VISIBLE_HEADING')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_SINGLE_H1_MULTIPLE_H1' })).toBe('FULL_VISIBLE_HEADING')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_FIRST_H1_POSITION' })).toBe('FULL_VISIBLE_HEADING')
-    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_FIRST_H1_LEADING_PARAGRAPH' })).toBe('FULL_VISIBLE_HEADING')
+describe('V5.14-R6.1 §3/§7 + V1 §2 — the policy resolvers', () => {
+  it('maps the REAL DiagnosticCodes to the VISIBLE coverage policy', () => {
+    // V1 §2/§10 — the VISUAL layer is the visible heading label for EVERY heading
+    // diagnostic: the auto number is excluded from the SOURCE identity only.
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_DUPLICATE_TEXT' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_DUPLICATE_IDENTITY' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_EMPTY_TEXT' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'HEADING_LEVEL_GAP' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_SINGLE_H1_NO_H1' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_SINGLE_H1_MULTIPLE_H1' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_FIRST_H1_POSITION' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'STRICT_FIRST_H1_LEADING_PARAGRAPH' })).toBe('VISIBLE_HEADING_LABEL')
+    // V1 §3/§10 — the DOCUMENT-level heading diagnostics reuse the SAME authority.
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'DOCUMENT_HEADING_ONLY_NO_BODY' })).toBe('VISIBLE_HEADING_LABEL')
+    expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'DOCUMENT_HEADINGS_ONLY_NO_BODY' })).toBe('VISIBLE_HEADING_LABEL')
     expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'LATENT_ATX_HEADING_MARKER' })).toBe('SOURCE_RANGE')
     expect(resolveHeadingDiagnosticCoveragePolicy({ code: 'LATENT_ATX_HEADING_MARKER_LEVEL_2' })).toBe('SOURCE_RANGE')
   })
 
-  it('§7 — only FULL_VISIBLE_HEADING consumes the numbering decoration', () => {
-    expect(coverageMaskForPolicy('FULL_VISIBLE_HEADING', { hasNumberDecoration: true })).toBe(HEADING_COVERAGE_NUMBERED)
-    expect(coverageMaskForPolicy('FULL_VISIBLE_HEADING', { hasNumberDecoration: false })).toBe(HEADING_COVERAGE_UNNUMBERED)
-    // TITLE_ONLY never includes the number/gap, numbered or not (§4/§17)
+  it('V1 §2 — the SOURCE semantics layer never sees the auto number', () => {
+    expect(resolveHeadingSourceSemanticsPolicy({ code: 'HEADING_DUPLICATE_TEXT' })).toBe('SOURCE_TITLE_ONLY')
+    expect(resolveHeadingSourceSemanticsPolicy({ code: 'HEADING_EMPTY_TEXT' })).toBe('SOURCE_TITLE_ONLY')
+    expect(resolveHeadingSourceSemanticsPolicy({ code: 'DOCUMENT_HEADINGS_ONLY_NO_BODY' })).toBe('SOURCE_TITLE_ONLY')
+    expect(resolveHeadingSourceSemanticsPolicy({ code: 'LATENT_ATX_HEADING_MARKER' })).toBe('SOURCE_RANGE')
+  })
+
+  it('V1 §1/§7 — only VISIBLE_HEADING_LABEL consumes the numbering decoration', () => {
+    expect(coverageMaskForPolicy('VISIBLE_HEADING_LABEL', { hasNumberDecoration: true })).toBe(HEADING_COVERAGE_NUMBERED)
+    expect(coverageMaskForPolicy('VISIBLE_HEADING_LABEL', { hasNumberDecoration: false })).toBe(HEADING_COVERAGE_UNNUMBERED)
+    // the SOURCE-layer mask never includes the number/gap, numbered or not (§4/§17)
     expect(coverageMaskForPolicy('TITLE_ONLY', { hasNumberDecoration: true })).toBe(HEADING_COVERAGE_UNNUMBERED)
     expect(coverageMaskForPolicy('TITLE_ONLY', { hasNumberDecoration: false })).toBe(HEADING_COVERAGE_UNNUMBERED)
     expect(coverageMaskForPolicy('SOURCE_RANGE', { hasNumberDecoration: true })).toBe(HEADING_COVERAGE_UNNUMBERED)
@@ -79,11 +99,33 @@ describe('V5.14-R6.1 §3/§7 — the policy resolver', () => {
     expect(coverageMaskHas(HEADING_COVERAGE_UNNUMBERED, HeadingCoveragePart.NUMBER)).toBe(false)
   })
 
+  it('V1 §1/§2/§20 — the visible label TEXT is number prefix + title, never the chip', () => {
+    expect(visibleHeadingLabelText({ numberPrefix: '一、', titleText: '小节', gapMode: 'none' })).toBe('一、小节')
+    expect(visibleHeadingLabelText({ numberPrefix: '1.1', titleText: '方法', gapMode: 'space' })).toBe('1.1 方法')
+    expect(visibleHeadingLabelText({ numberPrefix: 'II', titleText: '方法', gapMode: 'space' })).toBe('II 方法')
+    expect(visibleHeadingLabelText({ numberPrefix: '2.3.1', titleText: '参数估计', gapMode: 'space' })).toBe('2.3.1 参数估计')
+    // H1 numbering OFF -> the title alone
+    expect(visibleHeadingLabelText({ numberPrefix: null, titleText: '标题' })).toBe('标题')
+    expect(visibleHeadingLabelText({ numberPrefix: '', titleText: '标题' })).toBe('标题')
+    // V1 §11 — an EMPTY source heading with a live number keeps the number visible
+    expect(visibleHeadingLabelText({ numberPrefix: '三、', titleText: '', gapMode: 'none' })).toBe('三、')
+  })
+
+  it('V1 §1/§2/§12 — the SOURCE identity guard rejects an auto number prefix', () => {
+    expect(sourceSemanticsIncludesAutoNumber({ sourceText: '一、小节', numberPrefix: '一、' })).toBe(true)
+    expect(sourceSemanticsIncludesAutoNumber({ sourceText: '小节', numberPrefix: '一、' })).toBe(false)
+    expect(sourceSemanticsIncludesAutoNumber({ sourceText: '方法', numberPrefix: '一、' })).toBe(false)
+    expect(sourceSemanticsIncludesAutoNumber({ sourceText: '小节', numberPrefix: null })).toBe(false)
+  })
+
   it('§25 — every KNOWN heading diagnostic code is explicitly mapped', () => {
     for (const code of [
       'HEADING_DUPLICATE_TEXT', 'HEADING_DUPLICATE_IDENTITY', 'HEADING_LEVEL_GAP', 'HEADING_EMPTY_TEXT',
       'STRICT_SINGLE_H1_NO_H1', 'STRICT_SINGLE_H1_MULTIPLE_H1', 'STRICT_FIRST_H1_POSITION',
       'LATENT_ATX_HEADING_MARKER_LEVEL_2',
+      // V1 §3/§10 — the document-level heading rules are now covered by the SAME gate
+      'DOCUMENT_HEADING_ONLY_NO_BODY', 'DOCUMENT_HEADINGS_ONLY_NO_BODY',
+      'SECTION_EMPTY', 'SECTION_ONLY_SUBHEADINGS',
     ]) {
       expect(isKnownHeadingDiagnosticCode(code)).toBe(true)
       expect(isExplicitlyMappedHeadingDiagnosticCode(code)).toBe(true)
@@ -116,9 +158,9 @@ describe('V5.14-R6.1 §3/§7 — the policy resolver', () => {
     expect(unsplit.gapRect).toBeNull()
   })
 
-  it('§5 — FULL_VISIBLE_HEADING merges NUMBER|GAP|TITLE on the first line, keeps the number/gap authority', () => {
+  it('§5 — VISIBLE_HEADING_LABEL merges NUMBER|GAP|TITLE on the first line, keeps the number/gap authority', () => {
     const snapshot = buildHeadingDiagnosticTargetSnapshot({
-      diagnosticId: 'W1', coveragePolicy: 'FULL_VISIBLE_HEADING',
+      diagnosticId: 'W1', coveragePolicy: 'VISIBLE_HEADING_LABEL',
       stableIdentity: 'id:H3:idx:5', layoutEpoch: 3, geometryGeneration: 1, hasNumberDecoration: true,
       numberRect: rect(30, 100, 39, 124),
       gapRect: rect(39, 100, 70.5, 124),
@@ -132,7 +174,7 @@ describe('V5.14-R6.1 §3/§7 — the policy resolver', () => {
     for (const r of snapshot.semanticFragmentRects) expect(coverageRectInvariantHolds(r)).toBe(true)
   })
 
-  it('§4/§12 — TITLE_ONLY keeps the number/gap authority but NEVER paints it', () => {
+  it('V1 §2/§4/§12 — the SOURCE-layer TITLE_ONLY mask keeps the number authority but NEVER paints it', () => {
     const snapshot = buildHeadingDiagnosticTargetSnapshot({
       diagnosticId: 'W1', coveragePolicy: 'TITLE_ONLY',
       stableIdentity: 'id:H3:idx:5', layoutEpoch: 3, geometryGeneration: 1, hasNumberDecoration: true,
@@ -334,27 +376,26 @@ const passiveFragments = (): Array<{ left: number; top: number; width: number; h
   }))
 
 describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
-  it('A — Duplicate + numbered covers TITLE_ONLY (2.1 [第一节]), never the number', () => {
+  it('V1 A — Duplicate + numbered covers the FULL visible label (2.1 [第一节]), number included', () => {
     const w = makeWorld({ numbered: true })
     host = w.h
     inject(host, [headingDiag('HEADING_DUPLICATE_TEXT')])
     api().renderHeadingDiagnosticMarkers()
     const snapshot = api().getHeadingCoverageSnapshot(markerIdentity())!
-    expect(snapshot.coveragePolicy).toBe('TITLE_ONLY')
-    expect(snapshot.coverageMask).toBe(HEADING_COVERAGE_UNNUMBERED)
-    // the number/gap authority is retained (§12) but excluded from the paint
+    expect(snapshot.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
+    expect(snapshot.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
     expect(snapshot.numberRect).not.toBeNull()
     expect(snapshot.gapRect).not.toBeNull()
     expect(snapshot.titleRects).toHaveLength(1)
     expect(snapshot.semanticFragmentRects).toHaveLength(1)
-    // the fill starts at the TITLE glyph (70.5), NOT at the number (30)
-    expect(snapshot.semanticFragmentRects[0].left).toBeCloseTo(70.5, 3)
+    // the fill starts at the NUMBER (30) and ends at the title end (142.5)
+    expect(snapshot.semanticFragmentRects[0].left).toBeCloseTo(30, 3)
     expect(snapshot.semanticFragmentRects[0].right).toBeCloseTo(142.5, 3)
     // the PASSIVE DOM paint matches exactly (DOM style rounds to whole px → ±1)
     const fragments = passiveFragments()
     expect(fragments).toHaveLength(1)
-    expect(Math.abs(fragments[0].left - 70.5)).toBeLessThanOrEqual(1)
-    expect(Math.abs(fragments[0].width - 72)).toBeLessThanOrEqual(1)
+    expect(Math.abs(fragments[0].left - 30)).toBeLessThanOrEqual(1)
+    expect(Math.abs(fragments[0].width - 112.5)).toBeLessThanOrEqual(1)
     const counters = api().getHeadingCoverageV514R6Counters()
     expect(counters.duplicateHeadingNumberIncluded).toBe(0)
     expect(counters.duplicateHeadingGapIncluded).toBe(0)
@@ -366,13 +407,13 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
   })
 
-  it('B — Duplicate + unnumbered is still TITLE_ONLY (第一节)', () => {
+  it('V1 B — Duplicate + unnumbered still covers the visible label (第一节), degraded to the title', () => {
     const w = makeWorld({ numbered: false })
     host = w.h
     inject(host, [headingDiag('HEADING_DUPLICATE_TEXT')])
     api().renderHeadingDiagnosticMarkers()
     const snapshot = api().getHeadingCoverageSnapshot(markerIdentity())!
-    expect(snapshot.coveragePolicy).toBe('TITLE_ONLY')
+    expect(snapshot.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(snapshot.coverageMask).toBe(HEADING_COVERAGE_UNNUMBERED)
     expect(snapshot.numberRect).toBeNull()
     expect(snapshot.gapRect).toBeNull()
@@ -381,13 +422,13 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
   })
 
-  it('C — Level Gap + numbered covers FULL_VISIBLE_HEADING (NUMBER|GAP|TITLE)', () => {
+  it('C — Level Gap + numbered covers VISIBLE_HEADING_LABEL (NUMBER|GAP|TITLE)', () => {
     const w = makeWorld({ numbered: true })
     host = w.h
     inject(host, [headingDiag('HEADING_LEVEL_GAP')])
     api().renderHeadingDiagnosticMarkers()
     const snapshot = api().getHeadingCoverageSnapshot(markerIdentity())!
-    expect(snapshot.coveragePolicy).toBe('FULL_VISIBLE_HEADING')
+    expect(snapshot.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(snapshot.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
     expect(snapshot.semanticFragmentRects).toHaveLength(1)
     // ONE continuous fragment from the NUMBER start (30) to the title end (142.5)
@@ -400,13 +441,13 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
   })
 
-  it('D — Strict multi-H1 structure problems also use FULL_VISIBLE_HEADING', () => {
+  it('D — Strict multi-H1 structure problems also use VISIBLE_HEADING_LABEL', () => {
     const w = makeWorld({ numbered: true })
     host = w.h
     inject(host, [headingDiag('STRICT_SINGLE_H1_MULTIPLE_H1')])
     api().renderHeadingDiagnosticMarkers()
     const snapshot = api().getHeadingCoverageSnapshot(markerIdentity())!
-    expect(snapshot.coveragePolicy).toBe('FULL_VISIBLE_HEADING')
+    expect(snapshot.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(snapshot.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
     expect(snapshot.semanticFragmentRects[0].left).toBeCloseTo(30, 3)
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
@@ -424,7 +465,7 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
   })
 
-  it('F — ONE heading with Duplicate + LevelGap keeps two diagnostics with two policies', () => {
+  it('V1 F — ONE heading with two diagnostics keeps ONE visual policy for both', () => {
     const w = makeWorld({ numbered: true })
     host = w.h
     inject(host, [
@@ -435,13 +476,13 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     const identity = markerIdentity()
     const dup = api().getHeadingCoverageSnapshot(identity, 'DUP')!
     const gap = api().getHeadingCoverageSnapshot(identity, 'GAP')!
-    expect(dup.coveragePolicy).toBe('TITLE_ONLY')
-    expect(dup.coverageMask).toBe(HEADING_COVERAGE_UNNUMBERED)
-    expect(dup.semanticFragmentRects[0].left).toBeCloseTo(70.5, 3)
-    expect(gap.coveragePolicy).toBe('FULL_VISIBLE_HEADING')
+    expect(dup.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
+    expect(dup.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
+    expect(dup.semanticFragmentRects[0].left).toBeCloseTo(30, 3)
+    expect(gap.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(gap.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
     expect(gap.semanticFragmentRects[0].left).toBeCloseTo(30, 3)
-    // the heading-level PASSIVE fill paints the UNION (FULL ⊇ TITLE): the FULL range
+    // the heading-level PASSIVE fill paints the UNION: both cover the visible label
     const headingLevel = api().getHeadingCoverageSnapshot(identity)!
     expect(headingLevel.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
     const counters = api().getHeadingCoverageV514R6Counters()
@@ -461,7 +502,7 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     const passiveRects = passive.semanticFragmentRects.map(r => ({ ...r }))
     api().renderHeadingActiveEmphasisForTest('W1', headingDiag('HEADING_DUPLICATE_TEXT') as never, w.heading)
     const active = api().getHeadingCoverageSnapshot(identity, 'W1')!
-    expect(active.coveragePolicy).toBe('TITLE_ONLY')
+    expect(active.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(active.coverageMask).toBe(passive.coverageMask)
     const activeFragments = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-active__fragment'))
       .map(el => ({ left: Number.parseFloat(el.style.left), width: Number.parseFloat(el.style.width) }))
@@ -470,6 +511,8 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
       expect(Math.abs(activeFragments[i].left - passiveRects[i].left)).toBeLessThanOrEqual(1)
       expect(Math.abs(activeFragments[i].width - passiveRects[i].width)).toBeLessThanOrEqual(1)
     }
+    // V1 §19 — the ACTIVE emphasis includes the auto number prefix ("2.1 [第一节]")
+    expect(activeFragments[0].left).toBeCloseTo(30, 0)
     const counters = api().getHeadingCoverageV514R6Counters()
     expect(counters.bodyPassiveActivePolicyMismatch).toBe(0)
     expect(counters.bodyPassiveActiveTargetRectMismatch).toBe(0)
@@ -478,7 +521,7 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(counters.duplicateHeadingNumberIncluded).toBe(0)
   })
 
-  it('§29 — the OUTLINE projects the SAME policy (TITLE_ONLY / FULL_VISIBLE_HEADING)', () => {
+  it('§29 — the OUTLINE projects the SAME policy (VISIBLE_HEADING_LABEL)', () => {
     const w = makeWorld({ numbered: true })
     host = w.h
     const published: Array<Record<string, unknown>> = []
@@ -487,8 +530,8 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     inject(host, [headingDiag('HEADING_DUPLICATE_TEXT')])
     api().renderHeadingDiagnosticMarkers()
     expect(published).toHaveLength(1)
-    expect(published[0].coveragePolicy).toBe('TITLE_ONLY')
-    expect(published[0].coverageMask).toBe(HEADING_COVERAGE_UNNUMBERED)
+    expect(published[0].coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
+    expect(published[0].coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
     // §14 — the outline carries the MASK/policy, never the body rects
     expect(Object.keys(published[0])).not.toContain('bodyPassiveRects')
     expect(Object.keys(published[0])).not.toContain('semanticFragmentRects')
@@ -512,12 +555,12 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(line).toBeDefined()
     const fields: Record<string, string> = {}
     for (const m of String(line).matchAll(/(\w+)=([^\s]*)/g)) fields[m[1]] = m[2]
-    expect(fields.coveragePolicy).toBe('TITLE_ONLY')
-    expect(fields.numberIncluded).toBe('false')
-    expect(fields.gapIncluded).toBe('false')
+    expect(fields.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
+    expect(fields.numberIncluded).toBe('true')
+    expect(fields.gapIncluded).toBe('true')
     expect(fields.titleIncluded).toBe('true')
-    expect(fields.bodyPassivePolicy).toBe('TITLE_ONLY')
-    expect(fields.outlinePolicy).toBe('TITLE_ONLY')
+    expect(fields.bodyPassivePolicy).toBe('VISIBLE_HEADING_LABEL')
+    expect(fields.outlinePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(fields.reasonChipExcluded).toBe('true')
     // the R6 coverage audit must report the POLICY-derived inclusion, not the
     // mere presence of the (retained) numberRect/gapRect authority
@@ -525,17 +568,17 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(covLine).toBeDefined()
     const cov: Record<string, string> = {}
     for (const m of String(covLine).matchAll(/(\w+)=([^\s]*)/g)) cov[m[1]] = m[2]
-    expect(cov.coveragePolicy).toBe('TITLE_ONLY')
+    expect(cov.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(cov.numberVisible).toBe('true')
-    expect(cov.bodyPassiveNumberIncluded).toBe('false')
-    expect(cov.bodyPassiveGapIncluded).toBe('false')
+    expect(cov.bodyPassiveNumberIncluded).toBe('true')
+    expect(cov.bodyPassiveGapIncluded).toBe('true')
     expect(cov.bodyPassiveTitleIncluded).toBe('true')
-    expect(cov.outlineNumberIncluded).toBe('false')
-    expect(cov.outlinePolicy).toBe('TITLE_ONLY')
+    expect(cov.outlineNumberIncluded).toBe('true')
+    expect(cov.outlinePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(cov.decision).toBe('PASS')
   })
 
-  it('F-multiline — a multi-line Duplicate paints one TITLE fragment per line', () => {
+  it('F-multiline — a multi-line heading paints the number band + one fragment per line', () => {
     headingBlock = { left: 30, top: 100, right: 830, bottom: 152 }
     const w = makeWorld({ numbered: true })
     host = w.h
@@ -546,10 +589,10 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     inject(host, [headingDiag('HEADING_DUPLICATE_TEXT')])
     api().renderHeadingDiagnosticMarkers()
     const snapshot = api().getHeadingCoverageSnapshot(markerIdentity())!
-    expect(snapshot.coveragePolicy).toBe('TITLE_ONLY')
+    expect(snapshot.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
     expect(snapshot.semanticFragmentRects).toHaveLength(2)
-    // line 1 = the title line only (starts at 70.5, NOT the number)
-    expect(snapshot.semanticFragmentRects[0].left).toBeCloseTo(70.5, 3)
+    // line 1 = the number band (30) merged with the title line (…830)
+    expect(snapshot.semanticFragmentRects[0].left).toBeCloseTo(30, 3)
     expect(snapshot.semanticFragmentRects[0].right).toBeCloseTo(830, 3)
     // line 2 = its own fragment (the inter-line gap is NEVER painted)
     expect(snapshot.semanticFragmentRects[1].top).toBeCloseTo(128, 3)
@@ -579,19 +622,20 @@ describe('V5.14-R6.1 — coverage policy (host wiring)', () => {
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
   })
 
-  it('H — switching a heading from Duplicate to LevelGap changes the policy (stale-policy gate)', () => {
+  it('H — switching a heading from Duplicate to a LATENT_ATX issue changes the policy (stale-policy gate)', () => {
     const w = makeWorld({ numbered: true })
     host = w.h
     inject(host, [headingDiag('HEADING_DUPLICATE_TEXT')])
     api().renderHeadingDiagnosticMarkers()
     const identity = markerIdentity()
-    expect(api().getHeadingCoverageSnapshot(identity)!.coveragePolicy).toBe('TITLE_ONLY')
-    // the SAME diagnosticId now reports a structural problem
-    inject(host, [headingDiag('HEADING_LEVEL_GAP')], 2)
+    expect(api().getHeadingCoverageSnapshot(identity)!.coveragePolicy).toBe('VISIBLE_HEADING_LABEL')
+    // the SAME diagnosticId now reports a real SOURCE-range problem
+    inject(host, [headingDiag('LATENT_ATX_HEADING_MARKER_LEVEL_2')], 2)
     api().renderHeadingDiagnosticMarkers()
     const after = api().getHeadingCoverageSnapshot(identity)!
-    expect(after.coveragePolicy).toBe('FULL_VISIBLE_HEADING')
-    expect(after.coverageMask).toBe(HEADING_COVERAGE_NUMBERED)
+    expect(after.coveragePolicy).toBe('SOURCE_RANGE')
+    expect(after.coverageMask).toBe(HEADING_COVERAGE_UNNUMBERED)
+    expect(after.semanticFragmentRects[0].left).toBeCloseTo(70.5, 3)
     // a real diagnostic-semantics change must be a rebuild, never a stale paint
     expect(api().getHeadingCoverageV514R6Counters().staleHeadingPolicyAfterDiagnosticChange).toBe(0)
     expect(api().getHeadingCoverageV514R6GateDecision().decision).toBe('PASS')
