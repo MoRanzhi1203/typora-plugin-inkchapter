@@ -20,6 +20,10 @@
  *
  * No DOM access, no host state.
  */
+// VNext §11 — the ONE rule-scope authority (registry-driven, prefix aware).
+// Imported as a VALUE (not a type) so the chip policy never falls back to a
+// per-code special case.
+import { resolveRuleScope } from './document-diagnostic-location'
 
 export const HEADING_MARKER_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-HEADING-MARKER-AUDIT'
 
@@ -245,6 +249,48 @@ export function mergeHeadingMarkerSeverity(severities: ReadonlyArray<string | nu
     }
   }
   return best
+}
+
+/**
+ * V1 §2/§9/§10 — the diagnostic presentation SCOPE. Scope is a SEPARATE axis
+ * from severity: a `hint` may be document-level (heading-only) or object-local
+ * ("code block missing language"), and only scope decides reason-chip policy.
+ */
+export type DiagnosticPresentationScope = 'document' | 'heading' | 'block' | 'object' | 'inline'
+
+/**
+ * V1 §10/§25 — the ONE reason-chip presentation authority.
+ *
+ * Chip visibility is decided by diagnostic SCOPE / explicit presentation
+ * metadata — NEVER by severity. §9 explicitly forbids a global
+ * `severity === 'hint' → hideReasonChip()` rule, because object-local hints
+ * (code block missing language, figure missing caption, …) legitimately keep
+ * their short chip.
+ *
+ * Priority (highest first):
+ *   1. explicit `metadata.reasonChip` boolean override
+ *   2. explicit scope (argument or `metadata.scope`): `'document'` ⇒ suppressed
+ *   3. VNext §11 — the RULE REGISTRY scope for `code` (the single metadata
+ *      authority): a `scope=document` rule is ALWAYS suppressed, so the
+ *      document-level policy needs no per-code special case
+ *   4. default ⇒ shown
+ */
+export function shouldRenderReasonChip(diagnostic: {
+  scope?: DiagnosticPresentationScope | string | null
+  metadata?: Record<string, unknown> | null
+  /** VNext §11 — the rule code, so the registry scope can be consulted. */
+  code?: string | null
+}): boolean {
+  const meta = diagnostic.metadata ?? null
+  const override = meta?.['reasonChip']
+  if (override === false) return false
+  if (override === true) return true
+  const scope = diagnostic.scope ?? (meta?.['scope'] as string | null | undefined) ?? null
+  if (String(scope ?? '').trim().toLowerCase() === 'document') return false
+  if (diagnostic.code != null && diagnostic.code !== '') {
+    if (resolveRuleScope(diagnostic.code) === 'document') return false
+  }
+  return true
 }
 
 /** §16 — level and severity are INDEPENDENT (never "H6 ⇒ error"). */

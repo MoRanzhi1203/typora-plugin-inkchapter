@@ -19,6 +19,9 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
 import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+// Unified Diagnostics Domain V1 §6/§37 — the plugin's OWN runtime integrity is
+// the `runtime` domain; it is adapted here and never enters the user Drawer.
+import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
@@ -526,6 +529,11 @@ export default class extends Plugin<InkChapterSettings> {
         // Markdown alt; table/code → caption registry title (name-only). The
         // rendered "type + number" prefix never counts as a name.
         getCaptionTitleForElement: (el) => this.captionService?.getSemanticNameForElement(el) ?? null,
+        // VNext §24 — the object auto-numbering activation authority for the
+        // manual-number rules (figure/table/code/formula). Reports `enabled`
+        // only; all numbering semantics stay inside the caption service.
+        getObjectNumberingEnabled: () => this.captionService?.getObjectNumberingEnabledState()
+          ?? { figure: false, table: false, code: false, formula: false },
         // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
         getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
         // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline
@@ -1282,6 +1290,40 @@ export default class extends Plugin<InkChapterSettings> {
       initializationCount: initCount,
       sessionId,
     })
+
+    // Unified Diagnostics Domain V1 §6/§16/§37 — the identity result is a
+    // RUNTIME-domain concern (deployment / plugin state). It is collected into
+    // the runtime integrity report and NEVER becomes a user document problem.
+    // §6 — the DEPLOYED artifact's own SHA (the legacy `pluginMainSha256` above
+    // prefers the project build, so it cannot see a stale deployment).
+    const deployedMainSha256 = (() => {
+      try {
+        if (pluginExists) {
+          const data = require('fs').readFileSync(pluginArtifactPath, 'utf-8') as string
+          return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
+        }
+        return 'unknown'
+      } catch { return 'unknown' }
+    })()
+    const runtimeIntegrity = refreshRuntimeIntegrity(runtimeIntegrityFindingsFromIdentity({
+      pluginMainExists: pluginExists,
+      pluginMainSha256,
+      projectMainExists,
+      projectMainSha256,
+      shaMatch,
+      deployedMainExists: pluginExists,
+      deployedMainSha256,
+      buildId: INKCHAPTER_BUILD_ID,
+      initializationCount: initCount,
+    }))
+    console.info(
+      `[InkChapter] [DIAGNOSTIC][RUNTIME] ` +
+      `decision=${runtimeIntegrity.decision} ` +
+      `total=${runtimeIntegrity.total} ` +
+      `fail=${runtimeIntegrity.failCount} ` +
+      `degraded=${runtimeIntegrity.degradedCount} ` +
+      `pending=${runtimeIntegrity.pendingCount}`,
+    )
 
     console.log('[InkChapter] INKCHAPTER-BOOT-ONLOAD-SUCCESS')
     console.log('[InkChapter] 插件已加载')

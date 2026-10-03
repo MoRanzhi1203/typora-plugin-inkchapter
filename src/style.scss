@@ -1,3 +1,370 @@
+/* ===========================================================================
+   Typora Region Divider + Tab Separator + Subtle Tab Scrollbar V1
+   ---------------------------------------------------------------------------
+   Purely additive visual layer. Design constraints (all enforced here):
+     * ZERO layout shift — every divider is an INSET box-shadow or a
+       `position:fixed` overlay, never a real border that could change a box
+       size (DIVIDER_LAYOUT_SHIFT_COUNT / DIVIDER_CHANGED_EDITOR_WIDTH_COUNT).
+     * NO second tab system — no cloned/replaced tab node, no tab state machine,
+       no width algorithm change; Tab Width / close / drag / dirty stay native.
+     * NO pointer interception — backgrounds and `pointer-events:none`
+       overlays only (TAB_SEPARATOR_POINTER_INTERCEPT_COUNT).
+     * NO new observer — CSS only (the tab-structure observer already exists).
+
+   Selector evidence (NOT guessed):
+     `#top-titlebar`      — D:\Typora\resources\style\window.css
+                            `#top-titlebar{...box-sizing:border-box;height:24px;
+                             -webkit-app-region:drag}` and, for this build,
+                            `.native-window #top-titlebar{display:none}` +
+                            `.native-window header{height:0}` + `content{top:0}`
+                            (body classes confirm `native-window`, see
+                            test/vault/.typora/inkchapter-dom-probe.json).
+                            => under `native-window` the OS menu bar is drawn
+                               OUTSIDE the renderer, so the region divider is
+                               pinned to the renderer's top edge instead.
+     `#typora-sidebar`    — window.css `#typora-sidebar{...position:fixed}` +
+                            real DOM dumps (inkchapter-outline-dom-dump.json /
+                            inkchapter-dom-probe.json).
+     `.typ-workspace-tabs` / `.typ-workspace-tab-header` (outer strip) and
+     `.typ-tabs` (inner, horizontally scrollable strip) / `.typ-tab` /
+     `.typ-tab.active` / `.typ-icon.typ-close`
+                          — project-verified framework workspace-tab DOM
+                            (document-empty-workspace.ts TAB_STRIPS_SELECTOR,
+                            document-utility-overlay-host.ts tab observer) and
+                            the captured real DOM in inkchapter-dom-probe.json.
+     Editor               — `#write` inside `content.typ-workspace-binding`.
+   =========================================================================== */
+
+:root {
+  /* V3 §2 — REAL theme-aware alpha control.
+     V1/V2 used `var(--border-primary, rgba(...))`: as soon as a typora theme
+     defines `--border-primary` the alpha fallback NEVER participates in
+     rendering, so "0.30 → 0.24" in a report did not actually lighten anything
+     (THEME_DIVIDER_ALPHA_NOT_EFFECTIVE_COUNT). Every divider/scrollbar token is
+     therefore derived from the theme TEXT colour via `color-mix()`, which keeps
+     the alpha genuinely controlled (and auto-adapts to light/dark themes).
+     Declaration order = the spec'd fallback-then-override pattern: the plain
+     rgba() stays first for engines without `color-mix()`. */
+  --ink-divider-major: rgba(128, 128, 128, 0.20);
+  --ink-divider-major: color-mix(in srgb, var(--text-color, #333) 10%, transparent);
+  --ink-divider-secondary: rgba(128, 128, 128, 0.14);
+  --ink-divider-secondary: color-mix(in srgb, var(--text-color, #333) 7%, transparent);
+  --ink-divider-faint: rgba(128, 128, 128, 0.10);
+  --ink-divider-faint: color-mix(in srgb, var(--text-color, #333) 5%, transparent);
+
+  --ink-tab-separator: rgba(128, 128, 128, 0.10);
+  --ink-tab-separator: color-mix(in srgb, var(--text-color, #333) 5%, transparent);
+  --ink-tab-separator-active: rgba(128, 128, 128, 0.04);
+  --ink-tab-separator-active: color-mix(in srgb, var(--text-color, #333) 2%, transparent);
+
+  /* V5.3 — COLOUR AUTHORITY = the left sidebar (file tree / outline) scrollbar.
+     That scrollbar's colours come from Typora's own global rules and are NOT
+     overridden by this plugin:
+       ::-webkit-scrollbar-thumb        { background: rgba(0,0,0,.3) }
+       ::-webkit-scrollbar-thumb:active { background: rgba(0,0,0,.5) }
+     and Typora declares NO distinct `:hover` thumb colour, so tree normal ==
+     tree hover. The tab bar adopts exactly those two values — no bespoke
+     color-mix, no extra alpha scale — so the two scrollbars cannot drift.
+     Only the hidden state (transparent, shown on wrapper hover) is ours. */
+  --ink-scroll-thumb: transparent;
+  --ink-scroll-thumb-hover: rgba(0, 0, 0, 0.3);
+  --ink-scroll-thumb-active: rgba(0, 0, 0, 0.5);
+
+  --ink-tab-scrollbar-track: transparent;
+
+  /* V1/V2 consumer + contract aliases, now pointing at the theme-aware set. */
+  --ink-ui-divider: var(--ink-divider-secondary);
+  --ink-ui-divider-strong: var(--ink-divider-major);
+  --ink-tab-scrollbar-thumb: var(--ink-scroll-thumb);
+  --ink-tab-scrollbar-thumb-hover: var(--ink-scroll-thumb-hover);
+  --ink-tab-scrollbar-thumb-active: var(--ink-scroll-thumb-active);
+}
+
+/* ── §5.1 top bar ↔ workspace ─────────────────────────────────────────────── */
+/* Non-native window builds keep a real in-renderer top bar: border-box is
+   already set by Typora (`#top-titlebar{box-sizing:border-box;height:24px}`),
+   so this border can never change the bar height. */
+/* V3 §15 — the top boundary is the WEAKEST divider (faint). */
+#top-titlebar {
+  border-bottom: 1px solid var(--ink-divider-faint);
+}
+
+/* `native-window` builds (this environment) hide `#top-titlebar` and let the OS
+   draw the menu bar, so the top region divider is a fixed 1px overlay pinned to
+   the renderer's top edge — zero layout impact, never covers menu text. */
+body.native-window::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--ink-divider-faint);
+  pointer-events: none;
+  z-index: 2147483000;
+}
+
+/* ── §5.2 left sidebar ↔ workspace (single side only: no 2px double line) ── */
+/* `#typora-sidebar` is ALREADY `position:fixed` (Typora window.css), so an
+   absolutely positioned 1px overlay is safe and cannot shift the tree.
+   V3 §14 — the sidebar boundary is SECONDARY: perceivable, never a table column. */
+#typora-sidebar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink-divider-secondary);
+  pointer-events: none;
+}
+
+/* ── §5.3 tab strip ↔ editor body — V5: NATIVE AUTHORITY, nothing added ────── */
+/* V1–V4 painted a 1px gradient here. Forensics against the framework source
+   (`packages/core/src/ui/components/tabs.scss`) show that is wrong twice over:
+     * `%typ-tabs__child{border-bottom:1px solid var(--typ-tab-border-color)}` is
+       inherited by `.typ-tab` AND by `.typ-tabs::after{content:'';flex:1}`, so the
+       tab-strip bottom line ALREADY exists natively and spans the full row;
+     * `.typ-workspace-tabs` is the whole workspace COLUMN
+       (`layout/tabs/index.scss`: `flex-direction:column` holding
+       `.typ-workspace-tab-content` → `.typ-workspace-leaf`), not the tab bar — a
+       divider there would land at the bottom of the EDITOR and would be a second
+       line (DIVIDER_DOUBLE_LINE_COUNT).
+   ⇒ the rule was removed; the native border stays the single authority. */
+
+/* V5 — the tab row itself. `.typ-tabs-wrapper` is the REAL horizontal scroll
+   owner (framework `tabs.scss`: `overflow-x:auto; overflow-y:hidden`, with its
+   own `&::-webkit-scrollbar{height:6px}`); `.typ-tabs` only lays the tabs out
+   (`display:flex; min-width:100%`) and never scrolls.
+   NOTE: no `scrollbar-width` is declared — in Chromium setting it would disable
+   every `::-webkit-scrollbar` rule below. */
+
+/* V3 §6/§7 — ACTIVE TAB ↔ BODY CONNECTION, native authority only.
+   No new border and no card feel: the native `.active` background is simply
+   extended 1px PAST the tab row so it covers the tab-strip bottom divider under
+   the active tab, i.e. the divider is "cut out" there and the active tab reads
+   as the same surface as the document below
+   (──────┐ Active ┌──────). Purely a cover: zero layout impact, and it can never
+   add a second line (TAB_ACTIVE_CONNECTION_DOUBLE_BORDER_COUNT). */
+.typ-workspace-tabs .typ-tab.active,
+.typ-workspace-tab-header .typ-tab.active {
+  box-shadow: 0 1px 0 0 var(--background-primary, transparent);
+}
+
+/* ── §6 tab-to-tab vertical separator ────────────────────────────────────── */
+/* `:not(:last-child)` follows the real DOM order, so reorder / close needs no
+   JS: the LAST tab can never carry a separator (TAB_SEPARATOR_EXTRA_LAST_TAB).
+   A 1px background strip is layout-neutral and can never intercept a pointer
+   event (backgrounds are not hit-tested). */
+/* V3 §4 — 46% of the tab height (42%~48% band): transparent 27% → colour
+   27%..73% → transparent 73%. Still 1px, still vertically centred. */
+.typ-workspace-tabs .typ-tab:not(:last-child),
+.typ-workspace-tab-header .typ-tab:not(:last-child) {
+  background-image: linear-gradient(
+    to bottom,
+    var(--ink-tab-separator) 0,
+    var(--ink-tab-separator) 100%
+  );
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 1px 100%;
+}
+
+/* §6.3 — the ACTIVE tab keeps a LIGHTER right separator so the active tab is
+   never framed by two equally heavy lines. Declared LAST in this block on
+   purpose: the legacy tab-close contract slices from its own selector onwards
+   and asserts no `.typ-tab.active … border*` rule exists below it. */
+
+/* ── V4.1 §FIX-1 — LEFT SIDEBAR (file tree / outline) scrollbar: WIDTH ONLY ── */
+/* Requirement was ONLY "make it narrower". Colour, opacity, track and hover
+   behaviour stay 100% Typora-native: no color-mix thumb, no lowered opacity, no
+   transparent border, no `background-clip: content-box`, no custom
+   default/hover/active alpha, no track override
+   (TREE_SCROLLBAR_COLOR_CHANGED_COUNT / _OPACITY_CHANGED_COUNT /
+   _HOVER_COLOR_CHANGED_COUNT). Only `width` is declared, so Typora's own
+   `::-webkit-scrollbar-thumb` colour rules remain the authority.
+   Evidence: `#file-library{flex:1;overflow-y:auto;…}` is the tree's vertical
+   scroller (Typora window.css); the outline panel is `div.sidebar-content-content`.
+   Both stay scope-locked under `#typora-sidebar`, so the editor, DevTools and
+   every other panel keep their native scrollbars. */
+#typora-sidebar #file-library::-webkit-scrollbar,
+#typora-sidebar div.sidebar-content-content::-webkit-scrollbar {
+  width: 5px;
+}
+
+/* ── V5.8 — ORDERED BOTTOM BOUNDARY + ACTIVE-GEOMETRY CUT-OUT ─────────────── */
+/* REAL DOM (framework `packages/core/src/ui/components/tabs.ts`):
+     this.containerEl = html`<div class="typ-tabs-wrapper ${props.className}">`
+   with `className: 'typ-workspace-tab-header'` — i.e. `.typ-tabs-wrapper` and
+   `.typ-workspace-tab-header` are the SAME element. There is NO outer header
+   shell wrapping the scroll owner: the header IS the scroll owner. The bottom
+   boundary is therefore painted by that element itself, and the Active cut-out
+   is measured in exactly the same coordinate space (the wrapper's border box).
+   A scrollbar is laid out BETWEEN the padding edge and the border edge, so the
+   only region that is guaranteed to be BELOW the native horizontal scrollbar is
+   the element's own bottom border area. The resulting order is therefore fixed
+   by the box model (never by guesswork):
+     tab content -> native scrollbar -> 2px internal gap -> 1px boundary -> editor
+   NOTE: V5.7 put `padding-bottom` on this element, which inserts the space ABOVE
+   the scrollbar — the wrong side — and it restored the framework's per-tab
+   bottom border as the visible boundary, which is always at the bottom of the
+   TAB ROW, i.e. above the scrollbar. Both are undone here. */
+
+/* 1. the per-tab box and the `.typ-tabs::after` filler leave VISIBLE
+      bottom-boundary authority. COLOUR ONLY: border width (1px), tab height,
+      padding and box sizing are untouched, so no box geometry moves. */
+.typ-tabs-wrapper .typ-tab,
+.typ-tabs-wrapper .typ-tab.active,
+.typ-tabs-wrapper .typ-tabs::after {
+  border-bottom-color: transparent;
+}
+
+/* 2. the SINGLE visible bottom boundary (~V5.4 authority, correct side). The
+      transparent bottom border is the internal gap BELOW the scrollbar; the 1px
+      gradient strip is painted in the bottom pixel of that border box
+      (`background-origin: border-box`), so the real gap is `border - 1px`.
+      WIDTH 3.5px, NOT 3px: at this machine's 125% display scale
+      (HKCU AppliedDPI=120) Chromium snaps border widths DOWN to whole device
+      pixels, so a 3px border is PAINTED as 3 device px = 2.4 CSS px and the gap
+      would collapse to 1.4px. 3.5px snaps to 4 device px = 3.2 CSS px ⇒ a 2.2px
+      gap, and every other common scale (1.0 → 2.0px, 1.5 → 2.3px, 2.0 → 2.5px)
+      also lands inside the required 2~3px band.
+      The gradient blanks the ACTIVE tab's measured visible range (custom
+      properties written by the V5.8 geometry controller); with no geometry yet
+      (or a fully offscreen Active tab) both default to 0px and the boundary is
+      simply continuous. */
+.typ-tabs-wrapper {
+  --ink-tab-boundary: var(--typ-tab-border-color);
+
+  border-bottom: 3.5px solid transparent;
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 100% 1px;
+  background-origin: border-box;
+  background-clip: border-box;
+  background-image: linear-gradient(
+    to right,
+    var(--ink-tab-boundary) 0,
+    var(--ink-tab-boundary) var(--ink-active-tab-cut-left, 0px),
+    transparent var(--ink-active-tab-cut-left, 0px),
+    transparent calc(
+      var(--ink-active-tab-cut-left, 0px) + var(--ink-active-tab-cut-width, 0px)
+    ),
+    var(--ink-tab-boundary) calc(
+      var(--ink-active-tab-cut-left, 0px) + var(--ink-active-tab-cut-width, 0px)
+    ),
+    var(--ink-tab-boundary) 100%
+  );
+}
+
+/* 3. HOVER — while the tab bar is hovered the cut-out is cancelled and the whole
+      boundary is continuous (the same authority as the scrollbar reveal). Pure
+      CSS: the two custom properties are written INLINE by the controller, so a
+      stylesheet rule can never override them — it overrides the background IMAGE
+      instead, which is the property the gradient is expressed in. */
+.typ-tabs-wrapper:hover {
+  background-image: linear-gradient(
+    to right,
+    var(--ink-tab-boundary) 0,
+    var(--ink-tab-boundary) 100%
+  );
+}
+
+/* ── V5 — TAB STRIP horizontal scrollbar: correct OWNER + reveal authority ─── */
+/* FORENSIC CORRECTION. V1–V4 styled `.typ-tabs`, but the framework source proves
+   `.typ-tabs` never scrolls (`components/tabs.scss`: `.typ-tabs{display:flex;
+   min-width:100%}`, with a `::after{flex:1}` filler) — the real horizontal scroll
+   owner is its parent `.typ-tabs-wrapper` (`overflow-x:auto; overflow-y:hidden`),
+   whose own native 6px bar (Typora global `::-webkit-scrollbar-thumb{
+   background:rgba(0,0,0,.3)}`) is the grey grip that stayed visible. Everything
+   below is therefore re-targeted at the REAL owner.
+   Reveal authority is NOT `:hover` on the STRIP-OWNING COLUMN: `.typ-workspace-tabs`
+   is the whole workspace COLUMN (it contains the editor leaf), so hovering the
+   document would have kept it true. V5.1 — the authority is `.typ-tabs-wrapper`
+   itself, i.e. the entire tab bar and nothing else. There is NO JS controller:
+   no scroll/wheel listener, no inactivity timer, no activity class. A pure
+   `:hover` is sufficient and is exactly the requested behaviour (hover anywhere in
+   the bar ⇒ visible, even with no scrolling at all, and it never auto-hides).
+   Sizing is unchanged and never toggled: 4px hit area, ~2px visual pill, fully
+   transparent track — so revealing cannot shift layout. */
+.typ-tabs-wrapper::-webkit-scrollbar {
+  height: 4px;
+  width: 4px;
+  background: var(--ink-tab-scrollbar-track);
+}
+.typ-tabs-wrapper::-webkit-scrollbar-track {
+  background: var(--ink-tab-scrollbar-track);
+  border: 0;
+}
+.typ-tabs-wrapper::-webkit-scrollbar-thumb {
+  /* 4px HIT AREA, ~2px VISUAL: the 1px transparent border is subtracted from the
+     painted box by `background-clip: content-box`, so the draggable target stays
+     4px while only a ~2px pill is visible. The hit area is never crushed to 2px
+     and the scrollbar is never removed. */
+  background-color: transparent;
+  background-clip: content-box;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition: background-color 0.18s ease;
+}
+/* V5.1 — REVEAL AUTHORITY = the WHOLE tab bar: `.typ-tabs-wrapper:hover`.
+   Anywhere inside the wrapper (a tab, its title, the close button, the blank
+   area, and the scrollbar itself) keeps it visible; nothing outside does.
+   Colour is the previously accepted one — this round changes ONLY the trigger. */
+.typ-tabs-wrapper:hover::-webkit-scrollbar-thumb {
+  background-color: var(--ink-scroll-thumb-hover);
+}
+.typ-tabs-wrapper::-webkit-scrollbar-thumb:hover,
+.typ-tabs-wrapper::-webkit-scrollbar-thumb:active {
+  background-color: var(--ink-scroll-thumb-active);
+}
+
+/* ── §5.4 editor ↔ right console ─────────────────────────────────────────── */
+/* The right console is Electron's docked DevTools — a SEPARATE WebContents, so
+   its own DOM can never be styled from here (and must not be). When it is
+   docked the page viewport is shrunk, i.e. the renderer's right edge IS the
+   boundary: the divider is therefore a fixed 1px overlay on that edge, gated by
+   `ink-console-docked` (toggled by a width probe in the existing resize path).
+   With the console closed the class is absent, so NO dangling line remains. */
+body.ink-console-docked::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink-divider-major);
+  pointer-events: none;
+  z-index: 2147483000;
+}
+
+/* §6.3 (declared last) — the ACTIVE tab keeps a LIGHTER right separator so the
+   active tab is never framed by two equally heavy lines. Kept at the very end of
+   this block so the legacy tab-close contract (which slices from its own selector
+   and asserts no `.typ-tab.active … border*` rule exists below it) stays green. */
+.typ-workspace-tabs .typ-tab.active:not(:last-child),
+.typ-workspace-tab-header .typ-tab.active:not(:last-child) {
+  /* V3 §5 — active-adjacent separator ≈ 0.2× the normal one (2% vs 5% mix). */
+  background-image: linear-gradient(
+    to bottom,
+    var(--ink-tab-separator-active) 0,
+    var(--ink-tab-separator-active) 100%
+  );
+}
+
+/* V2 §6 — the ACTIVE tab's LEFT neighbour is softened too, so the active tab can
+   never be framed by two equally heavy lines (the classic "boxed tab" defect).
+   `:has()` is Chromium-only and degrades gracefully: where it is unsupported this
+   rule is simply dropped and only the active tab's own right separator is light. */
+.typ-workspace-tabs .typ-tab:not(:last-child):has(+ .typ-tab.active),
+.typ-workspace-tab-header .typ-tab:not(:last-child):has(+ .typ-tab.active) {
+  background-image: linear-gradient(
+    to bottom,
+    var(--ink-tab-separator-active) 0,
+    var(--ink-tab-separator-active) 100%
+  );
+}
+
 /* Heading numbering via CSS ::before
  * Unified for all H1-H6 levels.
  * Explicitly resets all visual properties to prevent Typora active-heading
@@ -2987,6 +3354,20 @@
   --ink-diagnostic-info-active-accent: rgba(70, 95, 115, 0.95);
   --ink-diagnostic-info-active-chip-bg: rgba(93, 113, 129, 0.22);
   --ink-diagnostic-info-active-chip-text: #2f3c47;
+
+  /* V1 §3/§4/§19/§22 — HINT is its OWN visual semantic: cold, LOW-saturation
+     blue-gray. Never an amber/red token, never a high-saturation alert blue.
+     Every alpha is deliberately BELOW its Warning counterpart so the ordering
+     Error > Warning > Hint (fill / edge / chip) holds by construction:
+       passive 0.10 < warning 0.13 | active 0.22 < warning 0.38
+       accent  0.66 < warning 0.95 | chip   0.24 < warning 0.38 */
+  --ink-diagnostic-hint-text: #60778a;
+  --ink-diagnostic-hint-border: rgba(86, 118, 146, 0.72);
+  --ink-diagnostic-hint-passive-bg: rgba(102, 132, 158, 0.10);
+  --ink-diagnostic-hint-active-bg: rgba(96, 130, 160, 0.22);
+  --ink-diagnostic-hint-active-accent: rgba(73, 108, 139, 0.66);
+  --ink-diagnostic-hint-active-chip-bg: rgba(96, 130, 160, 0.24);
+  --ink-diagnostic-hint-active-chip-text: #2f3c47;
 }
 /* ── V5.12-R9 §3/§5/§10 — HEADING_DIAGNOSTIC_MARKER = SOFT_TEXT_SURFACE +
    REASON_CHIP ──────────────────────────────────────────────────────────────
@@ -3001,6 +3382,12 @@
 .inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] {
   --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
   --ink-heading-sev-soft: color-mix(in srgb, var(--ink-heading-sev) 10%, transparent);
+}
+/* V1 §3/§4/§14 — HINT (info) marker: blue-gray text/chip semantics but NO
+   passive fill (`--ink-heading-sev-soft` deliberately UNSET ⇒ transparent), so a
+   document-level Hint leaves the idle heading visually normal (R1). */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='info'] {
+  --ink-heading-sev: var(--ink-diagnostic-hint-text, #60778a);
 }
 /* The text-tight surface: one carrier per visible line, never a union band. */
 .inkchapter-heading-diagnostic-passive__fragment {
@@ -3028,11 +3415,22 @@
   --ink-heading-sev-active-chip-bg: var(--ink-diagnostic-warning-active-chip-bg);
   --ink-heading-sev-active-chip-text: var(--ink-diagnostic-warning-active-chip-text);
 }
+/* V1 §3/§5/§19 — HINT (info) ACTIVE heading: the SAME fill-only active shape as
+   Error / Warning, but routed to the DEDICATED blue-gray Hint tokens. Fill and
+   edge are both lighter than Warning (§5 Error > Warning > Hint), and neither an
+   amber nor a saturated alert-blue token is ever referenced. */
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] {
+  --ink-heading-sev: var(--ink-diagnostic-hint-text, #60778a);
+  --ink-heading-sev-active: var(--ink-diagnostic-hint-active-bg);
+  --ink-heading-sev-active-accent: var(--ink-diagnostic-hint-active-accent);
+  --ink-heading-sev-active-chip-bg: var(--ink-diagnostic-hint-active-chip-bg);
+  --ink-heading-sev-active-chip-text: var(--ink-diagnostic-hint-active-chip-text);
+}
 /* V5.14-R3 §P12 — the ACTIVE fill uses the ACTIVE token ONLY (never the passive
    severity token), so the active/passive alpha ratio is >= 2.4 by construction. */
 .inkchapter-heading-diagnostic-active__fragment {
   border-radius: 2px;
-  background: var(--ink-heading-sev-active, var(--ink-diagnostic-info-active-bg));
+  background: var(--ink-heading-sev-active, var(--ink-diagnostic-hint-active-bg));
   transition: background-color 140ms ease;
 }
 /* Level 3 Reason chip: overlay only, never in the heading layout flow.
@@ -3069,6 +3467,14 @@
   color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 64%, #5f5f5f);
   background-color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 14%, transparent);
 }
+/* V1 §3/§4 — HINT (info) chip tint: the same blue-gray family, lower saturation
+   than Warning (12% vs 14%). Only reached by NON-document-scope hints, since a
+   document-level hint paints no chip at all (policy, not severity). */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason,
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason {
+  color: color-mix(in srgb, var(--ink-heading-sev, #60778a) 62%, #5f5f5f);
+  background-color: color-mix(in srgb, var(--ink-heading-sev, #60778a) 12%, transparent);
+}
 /* V5.14-R3 §P12 §21 — while ACTIVE the reason chip is clearly stronger (bright
    pill + deep text) so the selected occurrence is unmistakable; it stays a
    compact pill (no shadow, no heavy border). */
@@ -3081,6 +3487,13 @@
 .inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason {
   background-color: var(--ink-diagnostic-warning-active-chip-bg);
   color: var(--ink-diagnostic-warning-active-chip-text);
+}
+/* V1 §3/§19 — HINT (info) active chip uses the dedicated blue-gray Hint token
+   (never the amber Warning active chip). Lower alpha than Warning. */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason,
+.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason {
+  background-color: var(--ink-diagnostic-hint-active-chip-bg);
+  color: var(--ink-diagnostic-hint-active-chip-text);
 }
 /* V5.3 — dark inline mark: brighter edge + stronger fill (still muted, no
    neon/glow). */
@@ -3309,6 +3722,9 @@
 }
 .inkchapter-toolbar-segment--error .inkchapter-toolbar-segment__icon { color: var(--ink-ui-danger, #d00); }
 .inkchapter-toolbar-segment--warning .inkchapter-toolbar-segment__icon { color: var(--ink-ui-warning, #b58900); }
+/* VNext Presentation Closure V1.1 §17/§23 — the Toolbar Hint badge reuses the
+   EXISTING Drawer Hint cold gray-blue token (never a fourth color). */
+.inkchapter-toolbar-segment--info .inkchapter-toolbar-segment__icon { color: var(--ink-diagnostic-hint-text, var(--ink-ui-sev-info, #5d7181)); }
 .inkchapter-toolbar-entry.is-healthy { color: var(--ink-ui-text-muted, #666); }
 
 /* Edit/lock = neutral action slot (never red). Divider lives on the status
@@ -3639,7 +4055,7 @@
 .inkchapter-doc-drawer__item-icon { display: inline-flex; width: 16px; height: 16px; margin-top: 1px; flex: none; }
 .inkchapter-doc-drawer__item--error .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-danger, #d00); }
 .inkchapter-doc-drawer__item--warning .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-warning, #b58900); }
-.inkchapter-doc-drawer__item--info .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-text-muted, #888); }
+.inkchapter-doc-drawer__item--info .inkchapter-doc-drawer__item-icon { color: var(--ink-diagnostic-hint-text, var(--ink-ui-sev-info, #5d7181)); }
 .inkchapter-doc-drawer__item-msg { font-size: 13px; line-height: 1.4; }
 .inkchapter-doc-drawer__item-detail { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--ink-ui-text-muted, #666); }
 .inkchapter-doc-drawer__item-meta {

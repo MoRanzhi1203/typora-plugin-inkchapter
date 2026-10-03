@@ -36,6 +36,7 @@ import type { DiagnosticRangeRole } from './diagnostics-types'
 import {
   resolveDiagnosticLocation,
   getRuleMeta,
+  resolveRuleActiveVisualMode,
   hasLocatableLocation,
   normalizeSourceAnchorText,
   normalizeResourcePath,
@@ -52,6 +53,18 @@ import {
   buildDomBlockIdentity,
   computeCleanupClosureDecision,
   computeFeatureLocateDecision,
+  computeInteractionFinalDecision,
+  createFigureDiagnosticLocatorV2Counters,
+  createFigureDiagnosticLocatorV2CoverageCounters,
+  evaluateFigureDiagnosticLocatorV2Gates,
+  formatFigureDiagnosticLocatorV2CoverageReport,
+  formatFigureDiagnosticLocatorV2GateReport,
+  SOURCE_BLOCK_IDENTITY_AUDIT,
+  buildSourceBlockIdentity,
+  classifySourceBlockContainer,
+  verifySourceBlockIdentity,
+  type FigureDiagnosticLocatorV2Counters,
+  type FigureDiagnosticLocatorV2CoverageCounters,
   computeLocateDecision,
   createFigureDiagnosticLocatorV1Counters,
   createFigureDiagnosticLocatorV1CoverageCounters,
@@ -141,6 +154,7 @@ import {
   resolveCanonicalActiveHeadingTarget,
   type ActiveTargetAuthorityFacts,
   type CanonicalActiveHeadingTarget,
+  type CanonicalActiveTargetResolveFailure,
   type HeadingMultiTargetV2Counters,
   type HeadingMultiTargetV2CoverageCounters,
 } from './document-diagnostic-canonical-active-target-v2'
@@ -211,6 +225,10 @@ import { DocumentEditGuard } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
 import type { ScrollNavigatorState } from './document-scroll-navigator'
 import {
+  TAB_ACTIVE_BOUNDARY_AUDIT_EVENT,
+  TabActiveBoundaryGeometryController,
+} from './tab-active-boundary-geometry'
+import {
   WORKSPACE_WIDTH_STATE_ATTR,
   WORKSPACE_HOST_CLASS,
   DOCUMENT_WORKSPACE_MIN_WIDTH_PX,
@@ -273,6 +291,16 @@ import {
   type PlacementDecision,
 } from './document-locate-placement-v5-10'
 import type { DiagnosticFigureOccurrenceIdentity, DocumentDiagnosticsSnapshot } from './diagnostics-types'
+// Unified Diagnostics Domain V1 §9/§10/§19 — the ONE domain selector authority.
+// The user-facing Drawer and the body active/locator paths read the DOCUMENT
+// domain selection only; runtime integrity never reaches them.
+import {
+  countDocumentSeverities,
+  selectDocumentDiagnostics,
+} from './diagnostic-domain-v1'
+import type { DocumentDiagnostic } from './diagnostics-types'
+// V2 §6 — the source-line → visible-text normalizer used by the owning-block binder.
+import { stripBlockLevelMarkers, stripInlineResourceSyntax } from './document-diagnostic-location'
 import {
   DOCUMENT_SPACE_DRIFT_HARD_PX,
   LOCATE_DOCUMENT_LAYER_CLASS,
@@ -406,10 +434,63 @@ import {
   isOrderPreservingSubsequence,
   sortProjectionsByDocumentPosition,
   summarizeDrawerOrderAudit,
+  TARGET_GROUP_STABLE_IDENTITY,
   type DiagnosticTargetProjection,
   type DocumentPositionContext,
   type DrawerOrderV514R1Counters,
 } from './document-diagnostic-drawer-order-v514-r1'
+// Target Group V1 §20 — the ONE provable gate/coverage authority for the
+// `target-group` interaction model (ONE diagnostic / ONE row / N members).
+import {
+  createTargetGroupV1Counters,
+  createTargetGroupV1CoverageCounters,
+  evaluateTargetGroupDrawerFacts,
+  evaluateTargetGroupClosureFacts,
+  evaluateTargetGroupV1Gates,
+  formatTargetGroupV1GateReport,
+  formatTargetGroupV1CoverageReport,
+  type TargetGroupV1Counters,
+  type TargetGroupV1CoverageKey,
+} from './document-diagnostic-target-group-v1'
+// Drawer Viewport Stability V1 — the ONE authority separating ACTIVE_PATCH from
+// STRUCTURAL_RENDER and preserving the Drawer scroll viewport.
+import {
+  createDrawerViewportV1Counters,
+  createDrawerViewportV1CoverageCounters,
+  evaluateDrawerActiveClickFacts,
+  evaluateDrawerStructuralRenderFacts,
+  evaluateDrawerViewportV1Gates,
+  formatDrawerViewportV1GateReport,
+  formatDrawerViewportV1CoverageReport,
+  firstVisibleRowIndex,
+  resolveDrawerUpdateMode,
+  resolveViewportRestore,
+  type DrawerRowRect,
+  type DrawerUpdateMode,
+  type DrawerViewportState,
+  type DrawerViewportV1Counters,
+  type DrawerViewportV1CoverageKey,
+} from './document-diagnostic-drawer-viewport-v1'
+// Internal Blank-Line Policy V1 §34/§35/§36 — the document-FORMAT warning's
+// runtime witness + the single gate / coverage authority.
+import {
+  DOCUMENT_INTERNAL_BLANK_LINE_RUNTIME_AUDIT_EVENT,
+  EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+  createInternalBlankLineV1Counters,
+  createInternalBlankLineV1Coverage,
+  formatInternalBlankLineV1CoverageReport,
+  formatInternalBlankLineV1GateReport,
+  noteInternalBlankLineCoverage,
+  INTERNAL_BLANK_LINE_POLICY,
+  analyzeInternalBlankLineGaps,
+  internalBlankGapIdentity,
+  protectedRegionKindAtLine,
+  firstContentSourceLine,
+  lastContentSourceLine,
+  type DocumentBlockKind,
+  type InternalBlankLineV1Counters,
+  type InternalBlankLineV1Coverage,
+} from './document-diagnostic-internal-blank-lines-v1'
 import {
   HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT,
   buildHeadingDiagnosticVisualSnapshot,
@@ -613,6 +694,7 @@ import {
   makeHeadingRect,
   mergeHeadingMarkerSeverity,
   severityRank,
+  shouldRenderReasonChip,
   unionHeadingNumberAndTextRects,
   type HeadingMarkerSeverity,
   type HeadingRect,
@@ -2368,6 +2450,52 @@ export class DocumentUtilityOverlayHost {
   private lastLocateDecision: 'PASS' | 'FAIL' | 'N/A' = 'N/A'
   private lastCleanupClosureDecision: 'PASS' | 'FAIL' | 'N/A' = 'N/A'
   private lastFeatureLocateDecision: 'PASS' | 'FAIL' = 'FAIL'
+  /**
+   * V2 §19/§20 — the ACCEPTANCE counters are a separate scope from the
+   * per-transaction decision: they can be reset explicitly at a matrix start /
+   * fixture switch, so a historical failure can never permanently poison a
+   * later successful transaction (and a historical success can never mask a
+   * current failure — that is the per-transaction decision's job).
+   */
+  private countersFigureLocatorV2: FigureDiagnosticLocatorV2Counters = createFigureDiagnosticLocatorV2Counters()
+  private countersFigureLocatorV2Coverage: FigureDiagnosticLocatorV2CoverageCounters = createFigureDiagnosticLocatorV2CoverageCounters()
+  /**
+   * V2.3 §9 — the CURRENT transaction's full SourceDomBlockBindingResult,
+   * stashed by the binder and consumed by the semantic verify (which must
+   * VERIFY the binding proof, never re-derive source from the DOM).
+   */
+  private lastSourceBlockBindingV2: SourceBlockBinding | null = null
+
+  /** V2 §6 — the canonical owning-block container of a bound DOM block. */
+  private sourceBlockContainerKindOf(el: HTMLElement): string {
+    const inList = el.closest('li') != null
+    const inBlockquote = el.closest('blockquote') != null
+    return classifySourceBlockContainer(el.tagName, inList, inBlockquote)
+  }
+
+  /**
+   * §20 — the EXPLICIT acceptance-counter reset. Called at a runtime matrix
+   * start / fixture switch / explicit developer audit start — never silently
+   * before an ordinary click.
+   */
+  resetFigureDiagnosticLocatorAcceptanceCounters(): void {
+    this.countersFigureLocatorV2 = createFigureDiagnosticLocatorV2Counters()
+    this.countersFigureLocatorV2Coverage = createFigureDiagnosticLocatorV2CoverageCounters()
+    this.countersFigureLocatorV1 = createFigureDiagnosticLocatorV1Counters()
+    this.coverageFigureLocatorV1 = createFigureDiagnosticLocatorV1CoverageCounters()
+  }
+
+  getFigureDiagnosticLocatorV2GateReport(): string[] {
+    return formatFigureDiagnosticLocatorV2GateReport(this.countersFigureLocatorV2)
+  }
+
+  getFigureDiagnosticLocatorV2CoverageReport(): string[] {
+    return formatFigureDiagnosticLocatorV2CoverageReport(this.countersFigureLocatorV2Coverage)
+  }
+
+  getFigureDiagnosticLocatorV2GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateFigureDiagnosticLocatorV2Gates(this.countersFigureLocatorV2)
+  }
   /** V1 — the facts of the last emitted locate audit (consumed at the terminal). */
   private lastLocateAuditContext: {
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null
@@ -2395,6 +2523,81 @@ export class DocumentUtilityOverlayHost {
    * both read from HERE (never from a bare identity comparison).
    */
   private headingActiveVisualFacts = new Map<string, HeadingActiveVisualFacts>()
+  /**
+   * VNext Presentation Closure V1.1 §3/§12/§14 — the SECONDARY active wrappers of
+   * ONE `text-tight-multi-target` activation (the primary/anchor heading stays in
+   * `headingActiveWrapper`). They belong to the SAME active transaction + lease,
+   * and every one is removed by the ONE teardown.
+   */
+  private headingActiveGroupWrappers: HTMLElement[] = []
+  /** §13/§44 — N = the resolved heading target count of the active group (0 = not a group). */
+  private headingActiveGroupTargetCount = 0
+  /** Target Group V1 §20 — the provable gate counters (all must stay 0). */
+  private countersTargetGroupV1: TargetGroupV1Counters = createTargetGroupV1Counters()
+  /** Target Group V1 §19 — the positive coverage counters. */
+  private coverageTargetGroupV1: Record<TargetGroupV1CoverageKey, number> = createTargetGroupV1CoverageCounters()
+  // ── Internal Blank-Line Policy V1 (§34/§35/§36) ──────────────────────────
+  /** the ONE `EXCESSIVE_INTERNAL_BLANK_LINES` gate authority (all must stay 0). */
+  private countersInternalBlankLineV1: InternalBlankLineV1Counters = createInternalBlankLineV1Counters()
+  /** the positive coverage counters. */
+  private coverageInternalBlankLineV1: InternalBlankLineV1Coverage = createInternalBlankLineV1Coverage()
+  /** §33 — the source-side audit dedupe token. */
+  private lastInternalBlankLineSourceSignature = ''
+  /** §21 — the last committed gap identity set (per document) for dynamic coverage. */
+  private lastInternalBlankLineIdentityState: { documentKey: string | null; identities: Set<string> } | null = null
+  // ── Drawer Viewport Stability V1 (§5/§6/§8/§12/§13/§20/§30) ──────────────
+  /** the ONE drawer viewport gate authority counters (all must stay 0). */
+  private countersDrawerViewportV1: DrawerViewportV1Counters = createDrawerViewportV1Counters()
+  /** the positive coverage counters. */
+  private coverageDrawerViewportV1: Record<DrawerViewportV1CoverageKey, number> =
+    createDrawerViewportV1CoverageCounters()
+  /** §5/§8 — the signature of the LAST structurally rendered Drawer list. */
+  private lastDrawerStructureSignature: string | null = null
+  /** §12 — the viewport captured at the last structural render / presentation change. */
+  private pendingDrawerViewportCapture: DrawerViewportState | null = null
+  /** §27 — the drawer row mount generation (proves a structural remount). */
+  private drawerRowMountGeneration = 0
+  /** §12 — the list scrollTop saved across a transient locate-collapse. */
+  private drawerListScrollBeforeCollapse: number | null = null
+  /**
+   * §12 — the Drawer list viewport the USER last owned (anchor + offset + the row
+   * mount generation it was captured on). The overlay root's children can be
+   * detached + re-inserted by an EXTERNAL agent (the host framework), which
+   * silently destroys the list scroll box; this memory is what the plugin
+   * re-applies — before paint — so the Drawer never visibly jumps.
+   */
+  private drawerViewportMemory: DrawerViewportState | null = null
+  private drawerViewportMemoryMountGeneration = -1
+  /** §12 — detects an external detach/re-attach of the Drawer subtree. */
+  private drawerReattachObserver: MutationObserver | null = null
+  /** §32 — the last drawer viewport audit facts (runtime verification seam). */
+  private lastDrawerViewportAudit: Record<string, unknown> = {}
+  /** §6/§16 — a structural Drawer render happened since the current click began. */
+  private drawerStructuralRenderSinceClick = false
+  /** §9/§30 — a Drawer ROW `scrollIntoView` was called since the current click began. */
+  private drawerRowScrollIntoViewCalledSinceClick = false
+  /** §25/§30 — a Drawer row `focus()` without `preventScroll` scrolled since the click began. */
+  private drawerFocusCausedScrollSinceClick = false
+  /** §32 — the click-scoped viewport probe (before-state + row/list identity). */
+  private drawerClickViewportProbe: {
+    action: 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH'
+    rowElement: HTMLElement | null
+    listElement: HTMLElement | null
+    rowHeightBefore: number
+    viewportBefore: DrawerViewportState
+  } | null = null
+  /** Target Group V1 §13 — the member index the last group locate used (0 expected). */
+  private lastTargetGroupLocateMemberIndex = 0
+  /** Target Group V1 §8 — the last measured Drawer projection facts (audit/test seam). */
+  private lastTargetGroupDrawerFacts = {
+    groupDiagnosticCount: 0,
+    groupProjectionCount: 0,
+    groupRowCount: 0,
+    groupOccurrenceBadgeCount: 0,
+    multiTargetDiagnosticCount: 0,
+    multiTargetProjectionCount: 0,
+    multiTargetExpectedProjectionCount: 0,
+  }
   /** V1 §34 — the BEFORE side of the persistence audit (the previous commit). */
   private lastHeadingProjectionFacts: {
     layoutEpoch: number
@@ -2465,6 +2668,12 @@ export class DocumentUtilityOverlayHost {
   private disposables: Array<() => void> = []
   /** Phase 7R.3.11.8B.NO-ACTIVE-DOC — event-driven tab structure watch. */
   private tabStructureObserver: MutationObserver | null = null
+  /**
+   * V5.8 — the SINGLE Active-geometry controller (one instance). It only measures
+   * the Active tab's visible range inside `.typ-tabs-wrapper` and writes the two
+   * cut-out custom properties; see `tab-active-boundary-geometry.ts`.
+   */
+  private tabBoundaryGeometry: TabActiveBoundaryGeometryController | null = null
   /** V3 — last ACTIVE-LEAF presence decision (identity-conflict observability). */
   private lastActiveLeafPresence: ActiveDocumentPresenceDecision | null = null
   /** V3 — real active-leaf lifecycle subscription (workspace + tabs). */
@@ -2635,6 +2844,11 @@ export class DocumentUtilityOverlayHost {
     // from the SAME snapshot, so UI-count parity is a real measurement).
     this.commitEmptyDocumentShortCircuit(snapshot, previousDiagnosticIds)
     if (this.drawerOpen) this.renderDrawer()
+    // Internal Blank-Line Policy V1 §27/§33 — the source audit + the Toolbar
+    // warning-count parity witness at the SAME commit boundary that drives the
+    // Toolbar projection (so the parity measurement is a real one).
+    this.emitInternalBlankLineSourceAudit()
+    this.checkInternalBlankLineToolbarParity(snapshot)
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
     // changed, so every diagnostic visual geometry measured before is stale.
@@ -3155,6 +3369,7 @@ export class DocumentUtilityOverlayHost {
     this.toolbarEl = this.buildToolbar(root)
     this.navigatorEl = this.buildNavigator(root)
     this.drawerEl = this.buildDrawer(root)
+    this.installDrawerReattachGuard()
 
     // Phase 7R.3.11.8B.12 — Navigator MOUNT is HIDDEN-BY-DEFAULT. Visibility is
     // granted only after Active-Document eligibility + scrollability + a safe
@@ -3224,6 +3439,13 @@ export class DocumentUtilityOverlayHost {
       this.resizeObserver.observe(contentRoot)
     }
     window.addEventListener('resize', this.onWindowResize)
+    // Region Divider V1 §5.4 — probe the docked right console once at mount too
+    // (Typora may start with DevTools already docked).
+    this.syncRegionDividerConsoleDock()
+    // Tab Strip Wheel V5.6 — scoped to `.typ-tabs-wrapper`, idempotent
+    this.bindTabStripWheel()
+    // V5.8 — Active-Tab bottom-boundary geometry (scoped to `.typ-tabs-wrapper`)
+    this.ensureTabBoundaryGeometry('TAB_BOUNDARY_MOUNT')
     this.installWarningObserver()
     this.scheduleGeometrySync('mount')
 
@@ -3398,6 +3620,12 @@ export class DocumentUtilityOverlayHost {
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
     window.removeEventListener('resize', this.onWindowResize)
+    // Tab Strip Wheel V5.6 — release every scoped listener
+    this.unbindTabStripWheel()
+    // V5.8 — release the Active-geometry controller (listener / observer / rAF /
+    // custom properties) so no stale handle survives a dispose.
+    this.tabBoundaryGeometry?.unbind()
+    this.tabBoundaryGeometry = null
     if (this.onWindowErrorBound) {
       window.removeEventListener('error', this.onWindowErrorCapture, true)
       this.onWindowErrorBound = false
@@ -3457,6 +3685,10 @@ export class DocumentUtilityOverlayHost {
     this.diagnosticsMutationObserver?.disconnect()
     this.diagnosticsMutationObserver = null
     this.diagnosticsRafPending = false
+    // §12 — release the Drawer external-move guard.
+    this.drawerReattachObserver?.disconnect()
+    this.drawerReattachObserver = null
+    this.drawerViewportMemory = null
     this.editGuard.dispose()
     this.root?.remove()
     this.root = null
@@ -5283,7 +5515,12 @@ export class DocumentUtilityOverlayHost {
         })
         const g = groups.get(identity)
         const rank = severityRank(String(d.severity ?? 'info'))
-        const reason = buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
+        // V1 §9/§10 — the PASSIVE reason chip obeys the SAME scope policy as the
+        // active one (document-level diagnostics never paint a body chip). The
+        // decision is scope/presentation-driven, NEVER severity-driven.
+        const reason = shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown>, code: d.code })
+          ? buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
+          : null
         if (g) {
           g.severities.push(String(d.severity ?? 'info'))
           // V5.14-R6.1 §18 — one heading may carry SEVERAL diagnostics, each with
@@ -6408,6 +6645,11 @@ export class DocumentUtilityOverlayHost {
       if (!stillPresent) {
         this.countersPassiveActiveV514R3.staleHeadingActiveMarkerAfterDiagnosticResolved++
         this.countersVisualReflowV514R4.staleActiveMarkerAfterReflow++
+        // Target Group V1 §14 — the group diagnostic disappeared: any surviving
+        // group fill is stale (the teardown must have cleared it in the SAME pass).
+        if (this.headingActiveGroupWrappers.length > 0 || this.headingActiveGroupTargetCount > 0) {
+          this.countersTargetGroupV1.targetGroupStaleFillAfterDiagnosticDisappearCount++
+        }
       }
       // §5.2/§15 — an active component whose generation is behind the current one
       // is a mixed-generation commit (it was never re-measured after the reflow).
@@ -7371,15 +7613,159 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * Unified Diagnostics Domain V1 §9/§10 — the Drawer's ONLY data source: the
+   * DOCUMENT-domain selection of the current snapshot. The domain filter lives
+   * in ONE authority (`selectDocumentDiagnostics`); no component keeps its own
+   * black/white list, so a runtime item can never be rendered or counted.
+   */
+  private documentDiagnostics(): readonly DocumentDiagnostic[] {
+    return selectDocumentDiagnostics(this.snapshot?.diagnostics ?? [])
+  }
+
   private buildDrawerProjections(): DiagnosticTargetProjection[] {
-    const diagnostics = this.snapshot?.diagnostics ?? []
+    const diagnostics = this.documentDiagnostics()
     return sortProjectionsByDocumentPosition(
       flattenDiagnosticsToProjections(diagnostics, this.buildDocumentPositionContext()),
     )
   }
 
+  /**
+   * Target Group V1 §8/§9/§20 — measure the REAL Drawer projection + row facts and
+   * feed the ONE group gate authority. The gates prove: a group is EXACTLY ONE
+   * projection / ONE painted row / ZERO `1/N` badge, while the ordinary
+   * multi-target keeps its N occurrence projections.
+   */
+  private measureTargetGroupDrawerFacts(
+    projections: readonly DiagnosticTargetProjection[],
+    filtered: readonly DiagnosticTargetProjection[],
+  ): void {
+    const diagnostics = this.documentDiagnostics()
+    const groupIds = new Set(
+      diagnostics.filter(d => d.location?.kind === 'target-group').map(d => d.id),
+    )
+    const multiIds = new Set(
+      diagnostics.filter(d => d.location?.kind === 'multi-target').map(d => d.id),
+    )
+    const renderedGroupRows = filtered.filter(p => groupIds.has(p.diagnosticId)).length
+    let domGroupRows = 0
+    let groupOccurrenceBadgeCount = 0
+    if (this.drawerEl) {
+      for (const el of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+        if (!groupIds.has(el.getAttribute('data-diagnostic-id') ?? '')) continue
+        domGroupRows++
+        if (el.querySelector('.inkchapter-doc-drawer__item-target')) groupOccurrenceBadgeCount++
+      }
+    }
+    const expectations = diagnostics.reduce(
+      (acc, d) => {
+        if (d.location?.kind === 'multi-target') acc.multi += d.location.targets.length
+        return acc
+      },
+      { multi: 0 },
+    )
+    const facts = {
+      groupDiagnosticCount: groupIds.size,
+      groupProjectionCount: projections.filter(p => groupIds.has(p.diagnosticId)).length,
+      groupRowCount: Math.max(renderedGroupRows, domGroupRows),
+      groupOccurrenceBadgeCount,
+      multiTargetDiagnosticCount: multiIds.size,
+      multiTargetProjectionCount: projections.filter(p => multiIds.has(p.diagnosticId)).length,
+      multiTargetExpectedProjectionCount: expectations.multi,
+    }
+    this.lastTargetGroupDrawerFacts = { ...facts }
+    const partial = evaluateTargetGroupDrawerFacts(facts)
+    for (const [k, v] of Object.entries(partial) as Array<[keyof TargetGroupV1Counters, number]>) {
+      this.countersTargetGroupV1[k] = Math.max(this.countersTargetGroupV1[k], v)
+    }
+    if (facts.groupDiagnosticCount > 0 && facts.groupRowCount === 1) {
+      this.coverageTargetGroupV1.targetGroupSingleRowRenderCount++
+    }
+    if (facts.multiTargetDiagnosticCount > 0) {
+      this.coverageTargetGroupV1.multiTargetOccurrenceRowCount = Math.max(
+        this.coverageTargetGroupV1.multiTargetOccurrenceRowCount,
+        facts.multiTargetProjectionCount,
+      )
+    }
+  }
+
+  /**
+   * Target Group V1 §20 — read-only gate/coverage surface (runtime verification).
+   */
+  getTargetGroupV1GateReport(): string[] {
+    return formatTargetGroupV1GateReport(this.countersTargetGroupV1)
+  }
+
+  getTargetGroupV1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateTargetGroupV1Gates(this.countersTargetGroupV1)
+  }
+
+  getTargetGroupV1CoverageReport(): string[] {
+    return formatTargetGroupV1CoverageReport(this.coverageTargetGroupV1)
+  }
+
+  getTargetGroupV1DrawerFacts(): Readonly<typeof this.lastTargetGroupDrawerFacts> {
+    return { ...this.lastTargetGroupDrawerFacts }
+  }
+
+  /** Target Group V1 §8 — the projection authority's group row count (test seam). */
+  getTargetGroupProjectionCount(diagnosticId: string): number {
+    return this.buildDrawerProjections().filter(p => p.diagnosticId === diagnosticId).length
+  }
+
+  /**
+   * Target Group V1 §13/§15/§16/§20 — measure the REAL active group facts at the
+   * post-reconcile boundary and feed the ONE gate authority.
+   */
+  private measureTargetGroupClosureFacts(): void {
+    const st = this.diagnosticInteractionState
+    if (st.diagnosticId == null || !this.isTargetGroupDiagnostic(st.diagnosticId)) return
+    const groupMemberCount = this.targetGroupMemberCount(st.diagnosticId)
+    const memberIdentities: string[] = []
+    for (const [identity, fact] of this.headingActiveVisualFacts.entries()) {
+      if (fact.diagnosticId === st.diagnosticId) memberIdentities.push(identity)
+    }
+    const activeWrapperCount = (this.headingActiveMarkerIdentity != null ? 1 : 0) + this.headingActiveGroupWrappers.length
+    const secondaryFragments = this.headingActiveGroupWrappers
+      .reduce((n, w) => n + w.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length, 0)
+    const readiness = this.headingActiveMarkerIdentity != null
+      ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
+      : { fragmentCount: 0 }
+    const partial = evaluateTargetGroupClosureFacts({
+      groupMemberCount,
+      activeTargetCount: this.computeActiveTargetAuthorityFacts().activeTargetCount,
+      activeMemberIdentities: memberIdentities,
+      activeWrapperCount,
+      activeHeadingFragmentCount: readiness.fragmentCount + secondaryFragments,
+      selectedActiveRowCount: this.drawerActiveRowCountNow(),
+      activeLeaseCount: this.locateVisibilityLease != null ? 1 : 0,
+      locateMemberIndex: this.lastTargetGroupLocateMemberIndex,
+      anchorIdentity: this.headingActiveMarkerIdentity,
+      stateAnchorIdentity: this.resolveGroupAnchorMarkerIdentity(st.diagnosticId),
+      // A group never merges its members into one rect: strictly ONE wrapper per
+      // member is the contract, so "fewer wrappers than distinct members" is the
+      // ONLY way one wrapper could span several headings.
+      singleWrapperSpansMultipleMembers: new Set(memberIdentities).size > activeWrapperCount,
+    })
+    for (const [k, v] of Object.entries(partial) as Array<[keyof TargetGroupV1Counters, number]>) {
+      this.countersTargetGroupV1[k] = Math.max(this.countersTargetGroupV1[k], v)
+    }
+  }
+
+  /**
+   * Target Group V1 §14/§20 — a stale group fill (a leftover secondary wrapper /
+   * group target count) at a teardown boundary. Every path clears them together,
+   * so this must stay 0; the counter makes a leak provable.
+   */
+  private auditTargetGroupStaleFills(stage: 'DEACTIVATE' | 'DOCUMENT_SWITCH' | 'DIAGNOSTIC_DISAPPEAR'): void {
+    if (this.headingActiveGroupWrappers.length <= 0 && this.headingActiveGroupTargetCount <= 0) return
+    if (stage === 'DEACTIVATE') this.countersTargetGroupV1.targetGroupStaleFillAfterDeactivateCount++
+    else if (stage === 'DOCUMENT_SWITCH') this.countersTargetGroupV1.targetGroupStaleFillAfterDocumentSwitchCount++
+    else this.countersTargetGroupV1.targetGroupStaleFillAfterDiagnosticDisappearCount++
+  }
+
   private diagnosticById(id: string): DocumentDiagnosticsSnapshot['diagnostics'][number] | null {
-    const diagnostics = this.snapshot?.diagnostics ?? []
+    const diagnostics = this.documentDiagnostics()
     return diagnostics.find(d => d.id === id) ?? null
   }
 
@@ -7746,6 +8132,11 @@ export class DocumentUtilityOverlayHost {
     const authority = this.resolveActiveHeadingAuthority(diag)
     if (authority.ok) {
       this.renderHeadingActiveEmphasisFromAuthority(authority.target, diag)
+      // Target Group V1 §12/§14 — a `target-group` rule activates the anchor FIRST
+      // and then EVERY other member, all under the SAME active transaction/lease.
+      if (this.isTargetGroupActiveVisual(diag)) {
+        this.paintSecondaryHeadingActiveGroupTargets(diag)
+      }
       return
     }
     // ── V2 §8 — a projection attempted WITHOUT a legitimate ACTIVE state for this
@@ -7759,6 +8150,221 @@ export class DocumentUtilityOverlayHost {
     // the state IS active for this diagnostic but the EXACT subtarget could not be
     // resolved: FAIL CLOSED (never paint another heading).
     this.countersMultiTargetV2.canonicalActiveTargetResolveFailed++
+  }
+
+  /**
+   * Target Group V1 §4/§40/§41 — is this diagnostic's active visual a MULTI-MEMBER
+   * heading GROUP? The decision is the LOCATION KIND (strong type) plus the rule
+   * registry's `activeVisualMode`, never a `code === '...'` special case.
+   */
+  private isTargetGroupActiveVisual(diag: DocumentDiagnosticsSnapshot['diagnostics'][number]): boolean {
+    if (diag.location?.kind !== 'target-group') return false
+    return resolveRuleActiveVisualMode(String(diag.code ?? '')) === 'text-tight-target-group'
+  }
+
+  /** Target Group V1 §11 — the id-keyed form (cursor / locate plumbing). */
+  private isTargetGroupDiagnostic(diagnosticId: string | null): boolean {
+    if (diagnosticId == null) return false
+    const diag = this.diagnosticById(diagnosticId)
+    return diag != null && diag.location?.kind === 'target-group'
+  }
+
+  /** Target Group V1 §11 — the member count of a group diagnostic (0 when not a group). */
+  private targetGroupMemberCount(diagnosticId: string | null): number {
+    if (diagnosticId == null) return 0
+    const loc = this.diagnosticById(diagnosticId)?.location
+    return loc?.kind === 'target-group' ? loc.targets.length : 0
+  }
+
+  /**
+   * Target Group V1 §11/§13 — the marker identity of the group's scroll anchor
+   * (the first member). The group targetKey is a GROUP sentinel, so the STATE
+   * heading identity must be read from the anchor LOCATION instead.
+   */
+  private resolveGroupAnchorMarkerIdentity(diagnosticId: string | null): string | null {
+    if (diagnosticId == null) return null
+    const loc = this.diagnosticById(diagnosticId)?.location
+    if (loc?.kind !== 'target-group') return null
+    const anchor = loc.scrollAnchor
+    if (anchor.kind === 'canonical-node' && anchor.nodeKind === 'heading') {
+      return markerIdentityOfStableIdentity(anchor.stableIdentity)
+    }
+    if (anchor.kind === 'source-range') {
+      const el = this.resolveSourceLine(anchor.startLine)
+      const line = el?.getAttribute?.('data-line')
+      return line != null && line !== '' ? `line:${line}` : null
+    }
+    return null
+  }
+
+  /**
+   * VNext §3/§4/§7/§12/§44 — paint an INDEPENDENT text-tight active fill for every
+   * heading target BEYOND the anchor, under the SAME active transaction. Each
+   * target keeps its own stable identity (canonical-node / source-range), and each
+   * fill is text-tight (never a merged rectangle across the headings).
+   *
+   * The primary (anchor) heading was already painted by the canonical painter; its
+   * `headingActiveWrapper`/`headingActiveMarkerIdentity` stay the SINGLE active
+   * authority (scroll anchor + Drawer row + lease), so the V2 target-authority
+   * gates are untouched.
+   */
+  private paintSecondaryHeadingActiveGroupTargets(diag: DocumentDiagnosticsSnapshot['diagnostics'][number]): void {
+    this.headingActiveGroupTargetCount = 0
+    // A stale grouping (another switch) must never survive into this paint.
+    this.clearHeadingActiveGroupWrappers()
+    const targets = this.headingGroupTargets(diag)
+    if (targets.length <= 1) return
+    for (let i = 1; i < targets.length; i++) {
+      const wrapper = this.paintOneSecondaryHeadingActiveFill(targets[i], diag)
+      if (wrapper != null) this.headingActiveGroupWrappers.push(wrapper)
+    }
+    // §44 — resolvedTargetCount == headingCount is enforced by construction: the
+    // count is the number of heading targets the location declared.
+    this.headingActiveGroupTargetCount = targets.length
+  }
+
+  /**
+   * Target Group V1 §7/§14 — resolve EVERY member of the active `target-group`
+   * diagnostic into a canonical active target (stable identity + live element).
+   * The order is the DECLARED location order (§13: target[0] = scroll anchor).
+   */
+  private headingGroupTargets(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): CanonicalActiveHeadingTarget[] {
+    const location = diag.location
+    if (location?.kind !== 'target-group') return []
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const groupTargetKey = buildDiagnosticVisualTargetKey({
+      documentKey,
+      diagnosticId: diag.id,
+      targetIndex: 0,
+      stableIdentity: TARGET_GROUP_STABLE_IDENTITY,
+    })
+    const out: CanonicalActiveHeadingTarget[] = []
+    for (let i = 0; i < location.targets.length; i++) {
+      const loc = location.targets[i]
+      let stableIdentity = ''
+      let element: HTMLElement | null = null
+      if (loc.kind === 'canonical-node' && loc.nodeKind === 'heading') {
+        stableIdentity = loc.stableIdentity
+        element = this.resolveHeadingElementByIdentity(loc.stableIdentity, null)
+      } else if (loc.kind === 'source-range') {
+        element = this.resolveSourceLine(loc.startLine)
+        stableIdentity = element?.getAttribute?.('data-line') ?? ''
+      }
+      if (!element || !element.isConnected || !/^H[1-6]$/.test(element.tagName)) continue
+      if (stableIdentity === '') continue
+      const headingIdentity = markerIdentityOfStableIdentity(stableIdentity)
+      if (headingIdentity == null) continue
+      out.push({
+        documentKey,
+        diagnosticId: diag.id,
+        diagnosticTargetIndex: i,
+        transactionLocalTargetIndex: i,
+        // §10 — the anchor (member 0) carries the ONE group target key; the other
+        // members carry their own member key (used only for their private facts).
+        targetKey: i === 0
+          ? groupTargetKey
+          : buildDiagnosticVisualTargetKey({ documentKey, diagnosticId: diag.id, targetIndex: i, stableIdentity }),
+        stableHeadingIdentity: stableIdentity,
+        headingIdentity,
+        element,
+      })
+    }
+    return out
+  }
+
+  /**
+   * §4/§45 — ONE text-tight active fill for a SECONDARY heading target. It reuses
+   * the SAME measurement authority the primary active pass consumes (the passive
+   * coverage snapshot when available, the visible text fragments otherwise), so
+   * the geometry is text-tight and never a full-width / merged rectangle.
+   */
+  private paintOneSecondaryHeadingActiveFill(
+    target: CanonicalActiveHeadingTarget,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): HTMLElement | null {
+    const layer = this.ensureHeadingMarkerLayer()
+    if (layer == null) return null
+    const element = target.element
+    const headingIdentity = target.headingIdentity
+    // A secondary target that equals the anchor would double-paint — skip.
+    if (headingIdentity === this.headingActiveMarkerIdentity) return null
+    const sharedCoverage = this.headingCoverageSnapshots.get(`${headingIdentity}::${diag.id}`) ?? null
+    let localFragments: HeadingRect[]
+    if (sharedCoverage) {
+      localFragments = sharedCoverage.semanticFragmentRects.map(fromCoverageRect)
+    } else {
+      const fragments = this.headingVisibleFragments(element)
+      const numberRect = this.headingNumberRect(element, fragments[0] ?? null)
+      const contentFragments = numberRect ? [numberRect, ...fragments] : fragments
+      localFragments = contentFragments
+        .map(f => this.toDocumentLocal(f))
+        .filter((f): f is HeadingRect => f != null)
+    }
+    if (localFragments.length === 0) return null
+    const severity = mergeHeadingMarkerSeverity([String(diag.severity ?? 'info')]) ?? 'info'
+    const geometryGeneration = this.visualGeometryGeneration
+    const wrapper = document.createElement('div')
+    wrapper.className = 'inkchapter-heading-diagnostic-active'
+    wrapper.setAttribute('data-ink-diagnostic-active', 'true')
+    wrapper.setAttribute('data-ink-diagnostic-severity', severity)
+    wrapper.setAttribute('data-ink-active-diagnostic-id', diag.id)
+    // §4.3 — match the PRIMARY wrapper's attribute convention: `data-ink-heading-id`
+    // is the heading's marker identity, and the diagnostic is carried separately.
+    wrapper.setAttribute('data-ink-heading-id', headingIdentity)
+    wrapper.setAttribute('data-ink-content-left', String(localFragments[0].left))
+    wrapper.setAttribute('data-ink-layout-epoch', String(this.currentDocumentLayoutEpoch))
+    wrapper.setAttribute('data-ink-geometry-generation', String(geometryGeneration))
+    wrapper.setAttribute('data-ink-stable-identity', headingIdentity)
+    wrapper.setAttribute('data-ink-diagnostic-target-index', String(target.diagnosticTargetIndex))
+    wrapper.setAttribute('data-ink-target-key', target.targetKey)
+    wrapper.setAttribute('data-ink-heading-identity', headingIdentity)
+    wrapper.setAttribute('data-ink-interaction-version', String(this.diagnosticInteractionState.version))
+    wrapper.setAttribute('data-ink-multi-target-secondary', 'true')
+    wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+    layer.appendChild(wrapper)
+    for (const f of localFragments) {
+      const frag = document.createElement('div')
+      frag.className = 'inkchapter-heading-diagnostic-active__fragment'
+      frag.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.top)}px;width:${Math.round(f.width)}px;height:${Math.round(f.height)}px;`
+      wrapper.appendChild(frag)
+    }
+    // §12 — the STATE-DERIVED facts are committed for this heading too, so a
+    // reconcile re-derives the SAME secondary fill and the teardown clears it.
+    const committedFacts: HeadingActiveVisualFacts = {
+      fragmentCount: localFragments.length,
+      fragmentRects: localFragments.map(f => ({ left: f.left, top: f.top, width: f.width, height: f.height })),
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      geometryGeneration,
+      diagnosticId: diag.id,
+      targetKey: target.targetKey,
+      diagnosticTargetIndex: target.diagnosticTargetIndex,
+      transactionLocalTargetIndex: target.transactionLocalTargetIndex,
+      stableHeadingIdentity: target.stableHeadingIdentity,
+      headingIdentity,
+      interactionVersion: this.diagnosticInteractionState.version,
+    }
+    this.headingActiveVisualFacts.set(headingIdentity, committedFacts)
+    // §9/§P10 — the passive fill of a heading the ACTIVE group now covers is
+    // suppressed exactly like the anchor's (the active visual replaced it).
+    const passiveRecord = this.headingPassiveMarkers.get(headingIdentity) ?? null
+    if (passiveRecord) {
+      passiveRecord.activePresentationOwnsFill = true
+      passiveRecord.geometryGeneration = geometryGeneration
+    }
+    return wrapper
+  }
+
+  /** §14 — remove ONLY the secondary group wrappers (the anchor wrapper is owned elsewhere). */
+  private clearHeadingActiveGroupWrappers(): void {
+    for (const w of this.headingActiveGroupWrappers) {
+      try { w.remove() } catch { /* noop */ }
+      const identity = w.getAttribute('data-ink-heading-identity')
+      if (identity != null) this.headingActiveVisualFacts.delete(identity)
+    }
+    this.headingActiveGroupWrappers = []
+    this.headingActiveGroupTargetCount = 0
   }
 
   /**
@@ -7876,7 +8482,12 @@ export class DocumentUtilityOverlayHost {
         .filter((f): f is HeadingRect => f != null)
     }
     if (localFragments.length === 0) return
-    const severity = severityRank(String(diag.severity ?? 'info')) >= 3 ? 'error' : 'warning'
+    // V1 §3/§19/§21 — the ACTIVE heading visual routes through the SAME severity
+    // authority as the passive marker. The old fold (`rank >= 3 ? error : warning`)
+    // collapsed EVERY `info` diagnostic into the Warning class, so a Hint reused
+    // the amber Warning token. `mergeHeadingMarkerSeverity` is the ONE authority
+    // and yields error / warning / info ⇒ red / amber / blue-gray.
+    const severity = mergeHeadingMarkerSeverity([String(diag.severity ?? 'info')]) ?? 'info'
     // V5.12-R2 §6 — ACTIVE = PASSIVE + text fragments + reason chip.
     // (the target identity was resolved above; the passive record is re-read so it
     // is the record of the CURRENT geometry generation.)
@@ -7923,7 +8534,9 @@ export class DocumentUtilityOverlayHost {
     // §11/§12 — the reason chip is an OVERLAY child (never in the heading flow).
     // V5.12-R9 §6 — exactly ONE chip per heading: the PASSIVE marker owns it, so
     // the active pass ADOPTS the existing chip instead of creating a second one.
-    const reasonText = buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+    const reasonText = shouldRenderReasonChip({ metadata: (diag.metadata ?? {}) as Record<string, unknown>, code: diag.code })
+      ? buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+      : null
     let reasonChipRect: HeadingRect | null = null
     // ── V5.14-R4 §10 — the chip rect is read from the CURRENT geometry
     // generation's snapshot, never a rect left over from an earlier pass (the
@@ -7931,7 +8544,12 @@ export class DocumentUtilityOverlayHost {
     // stale by 40.8px).
     const passiveGeometrySnapshot = this.lastVisualGeometrySnapshots.get(headingIdentity) ?? null
     const adoptedPassiveChip = passiveRecord?.wrapper.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason') ?? null
-    if (adoptedPassiveChip) {
+    if (adoptedPassiveChip && !reasonText) {
+      // V1 §7/§13 — a document-level diagnostic carries NO body chip. If a stale
+      // passive chip survived (it must not, but the policy is enforced here too),
+      // drop it without touching the active FILL (fill and chip are decoupled).
+      try { adoptedPassiveChip.remove() } catch { /* noop */ }
+    } else if (adoptedPassiveChip) {
       // R1 §10 — while ACTIVE the chip shows the CURRENTLY clicked diagnostic's
       // reason (the passive pass restores the group reason on dismissal).
       if (reasonText && adoptedPassiveChip.textContent !== reasonText) {
@@ -8352,6 +8970,10 @@ export class DocumentUtilityOverlayHost {
 
   /** §7.2 — clear ONLY the active presentation (the Active authority is untouched). */
   private clearHeadingActiveEmphasisVisual(): void {
+    // VNext §14 — the MULTI-TARGET secondary fills belong to the SAME active
+    // presentation: they are removed together with the anchor in ONE teardown
+    // (never a stale leftover heading fill).
+    this.clearHeadingActiveGroupWrappers()
     const w = this.headingActiveWrapper
     if (w) {
       const id = this.headingActiveIdentity
@@ -8398,6 +9020,9 @@ export class DocumentUtilityOverlayHost {
   }
 
   private clearHeadingDiagnosticMarkers(): void {
+    // Target Group V1 §14 — a group fill left at a document-switch teardown is
+    // stale. Captured BEFORE the clear so a real leak is provable.
+    this.auditTargetGroupStaleFills('DOCUMENT_SWITCH')
     for (const rec of this.headingPassiveMarkers.values()) {
       try { rec.wrapper.remove() } catch { /* noop */ }
     }
@@ -8498,6 +9123,13 @@ export class DocumentUtilityOverlayHost {
   private computeActiveTargetAuthorityFacts(): ActiveTargetAuthorityFacts {
     const st = this.diagnosticInteractionState
     const stateKeyIdentity = parseCanonicalTargetKeyIdentityV2(st.targetKey)
+    // Target Group V1 §11/§13 — a group's targetKey is a GROUP sentinel (not a
+    // heading identity), so the STATE heading identity is derived from the
+    // location's scroll anchor. This keeps State ↔ Visual identity closure exact
+    // (anchor === visual) with ZERO authority divergence.
+    const groupAnchorIdentity = (st.targetMode === 'group' || this.isTargetGroupDiagnostic(st.diagnosticId))
+      ? this.resolveGroupAnchorMarkerIdentity(st.diagnosticId)
+      : null
     const visual = this.visualActiveTargetIdentityNow()
     const readiness = this.headingActiveMarkerIdentity != null
       ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity)
@@ -8507,13 +9139,20 @@ export class DocumentUtilityOverlayHost {
     const activeTargetIsHeading = this.headingActiveMarkerIdentity != null
       || (diag != null && /^H[1-6]$/.test(this.resolveDiagnosticElementForMarker(diag)?.tagName ?? ''))
     const drawerActiveRowCount = this.drawerActiveRowCountNow()
+    // VNext §13/§44 — a `text-tight-multi-target` activation owns N independent
+    // heading targets carried by ONE transaction / lease / Drawer row. The
+    // AUTHORITY facts therefore report the real group size; every other rule keeps
+    // the existing single-target semantics (groupCount === 0).
+    const groupCount = this.headingActiveGroupTargetCount
+    const secondaryFillCount = this.headingActiveGroupWrappers
+      .reduce((n, w) => n + w.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length, 0)
     return {
       phase: st.phase,
       activeTargetIsHeading,
       stateDiagnosticId: st.diagnosticId,
       stateDiagnosticTargetIndex: st.diagnosticTargetIndex,
       stateTargetKey: st.targetKey,
-      stateHeadingIdentity: markerIdentityOfStableIdentity(stateKeyIdentity),
+      stateHeadingIdentity: groupAnchorIdentity ?? markerIdentityOfStableIdentity(stateKeyIdentity),
       visualDiagnosticId: visual.diagnosticId,
       visualDiagnosticTargetIndex: visual.diagnosticTargetIndex,
       visualTargetKey: visual.targetKey,
@@ -8522,9 +9161,9 @@ export class DocumentUtilityOverlayHost {
       // the lease belongs to the CURRENT owner only when its diagnostic matches.
       leaseTargetKey: lease != null && lease.diagnosticId === st.diagnosticId ? st.targetKey : null,
       fragmentCount: readiness.fragmentCount,
-      fillCount: readiness.fragmentCount,
+      fillCount: groupCount > 0 ? readiness.fragmentCount + secondaryFillCount : readiness.fragmentCount,
       activeLeasePresent: lease != null,
-      activeTargetCount: readiness.fragmentCount >= 1 ? 1 : 0,
+      activeTargetCount: groupCount > 0 ? groupCount : (readiness.fragmentCount >= 1 ? 1 : 0),
       selectedActiveRowCount: drawerActiveRowCount,
       drawerActiveRowCount,
       drawerRowsRendered: this.drawerRowsRenderedNow(),
@@ -8643,6 +9282,9 @@ export class DocumentUtilityOverlayHost {
    */
   private emitHeadingPostReconcileClosure(reason: string): void {
     const st = this.diagnosticInteractionState
+    // Target Group V1 §20 — measure the REAL group member facts for the gates.
+    this.measureTargetGroupClosureFacts()
+    if (st.phase !== 'ACTIVE') this.auditTargetGroupStaleFills('DEACTIVATE')
     // ── V2 §22 — the ONE authoritative boundary: this is where the V2 fatal gates
     // are counted (the identity facts are read AFTER the projection committed).
     const authority = this.emitActiveTargetAuthorityAudit(reason, true)
@@ -8658,6 +9300,10 @@ export class DocumentUtilityOverlayHost {
       activeTargetIsHeading,
       selectedActiveRowCount: facts.selectedActiveRowCount,
       activeTargetCount: facts.activeTargetCount,
+      // VNext §13 — a `text-tight-multi-target` group commits N targets (default 1).
+      activeTargetCountExpected: this.headingActiveGroupTargetCount > 0
+        ? this.headingActiveGroupTargetCount
+        : 1,
       activeHeadingFragmentCount: facts.fragmentCount,
       activeFillCount: facts.fillCount,
       activeLeasePresent: facts.activeLeasePresent,
@@ -8764,6 +9410,31 @@ export class DocumentUtilityOverlayHost {
       decision,
       reason: decision === 'PASS' ? 'POST_RECONCILE_IDENTITY_CLOSURE_OK' : `${closure.reason}|${authority.reason}`,
     })
+    // Target Group V1 §20 — emit the ONE group gate report at the SAME boundary so
+    // the Hard Gates are PROVABLE from the runtime log (never a log-only PASS).
+    if (this.isTargetGroupDiagnostic(st.diagnosticId)) {
+      const groupGate = this.getTargetGroupV1GateDecision()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-TARGET-GROUP-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        trigger: reason,
+        diagnosticId: st.diagnosticId,
+        targetKey: st.targetKey,
+        targetMode: st.targetMode ?? 'single',
+        groupMemberCount: this.targetGroupMemberCount(st.diagnosticId),
+        activeTargetCount: facts.activeTargetCount,
+        activeWrapperCount: (this.headingActiveMarkerIdentity != null ? 1 : 0) + this.headingActiveGroupWrappers.length,
+        activeHeadingFragmentCount: facts.fragmentCount + this.headingActiveGroupWrappers
+          .reduce((n, w) => n + w.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length, 0),
+        selectedActiveRowCount: facts.selectedActiveRowCount,
+        activeLeasePresent: facts.activeLeasePresent,
+        locateMemberIndex: this.lastTargetGroupLocateMemberIndex,
+        drawerFacts: this.lastTargetGroupDrawerFacts,
+        gateReport: this.getTargetGroupV1GateReport(),
+        coverageReport: this.getTargetGroupV1CoverageReport(),
+        decision: groupGate.decision,
+        failedChecks: groupGate.failedChecks,
+      })
+    }
   }
 
   /** V1 §38/§39 — the active-persistence gate + coverage surface. */
@@ -9650,6 +10321,15 @@ export class DocumentUtilityOverlayHost {
     let fallbackLevel: 0 | 1 | 2 = 2
     const isSourceRangeFigureRule =
       code === 'FIGURE_LOCAL_IMAGE_MISSING' || code === 'FIGURE_MISSING_NAME'
+    // Internal Blank-Line Policy V1 §22/§23 — the scroll anchor is the NEXT
+    // content block. When that block is a HEADING, `classifyDiagnosticLocateElement`
+    // would hand the visual to the HEADING-MARKER carrier, which only the heading
+    // diagnostics own — a document-FORMAT Warning would therefore paint NOTHING
+    // (ZERO_PAINTED_RECT) and the first click would roll back. Reuse the SHARED
+    // text-tight inline carrier instead, so the next block is highlighted exactly
+    // like every other Warning. Scoped to this rule only.
+    const isInternalBlankLineHeadingAnchor =
+      code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE && /^H[1-6]$/.test(anchor.tagName)
     this.lastFigureTargetVisual = { exactTokenAvailable: false, exactTokenUsed: false, usedBlockFallback: false }
     if (isSourceRangeFigureRule && anchor.tagName !== 'IMG') {
       const raw = rangeToken ? measureTextRects(anchor, rangeToken, occWithin) : { exact: null, foundToken: false }
@@ -9692,6 +10372,13 @@ export class DocumentUtilityOverlayHost {
       diagnosticId: diagId,
       severity,
       anchor,
+      // §23 — an EXPLICIT carrier is required: the frame's own `heading` branch
+      // short-circuits BEFORE every other carrier and would hand the visual to the
+      // heading-MARKER layer (owned by the heading diagnostics) — a document-FORMAT
+      // Warning would then paint nothing and roll back. A block-tight overlay frame
+      // is the SHARED generic carrier; it never mutates the heading element, so the
+      // heading-marker authority is left completely untouched. Scoped to this rule.
+      kind: isInternalBlankLineHeadingAnchor ? 'block' : null,
       preciseRect,
       forceInlineMark: forceInline,
       captionHostRect: captionHostRect,
@@ -10233,8 +10920,41 @@ export class DocumentUtilityOverlayHost {
     // post-commit restore closes it (exact replay of presentationBeforeLocate).
     if (on) this.drawerLocatePresentationLeaseActive = true
     if (!this.drawerEl) return
-    if (on) this.drawerEl.setAttribute('data-locate-collapsed', 'true')
-    else this.drawerEl.removeAttribute('data-locate-collapsed')
+    if (on) {
+      // ── Drawer Viewport Stability V1 §12/§13 — the collapse hides the Drawer
+      // (`display:none`), which destroys the list's scroll box. Capture the list
+      // viewport BEFORE hiding so the un-collapse can put the user's first row
+      // back exactly where it was (a presentation change IS a structural change).
+      this.drawerListScrollBeforeCollapse = this.measureDrawerListScrollTop()
+      this.drawerEl.setAttribute('data-locate-collapsed', 'true')
+    } else {
+      this.drawerEl.removeAttribute('data-locate-collapsed')
+      // Restore the list viewport the collapse destroyed (same visible anchor).
+      const saved = this.drawerListScrollBeforeCollapse
+      this.drawerListScrollBeforeCollapse = null
+      if (saved != null && saved > 0 && this.drawerListEl && Number.isFinite(this.drawerListEl.scrollTop)) {
+        try {
+          const list = this.drawerListEl
+          const max = Math.max(0, list.scrollHeight - list.clientHeight)
+          list.scrollTop = Math.max(0, Math.min(max, saved))
+        } catch { /* keep current */ }
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          reason: 'LOCATE_COLLAPSE_PRESENTATION_RESTORED',
+          updateMode: 'STRUCTURAL_RENDER',
+          rowSetChanged: false,
+          filterChanged: false,
+          documentChanged: false,
+          projectionChanged: false,
+          viewportCapturePerformed: true,
+          viewportRestorePerformed: true,
+          viewportRestoreStrategy: 'SCROLL_TOP_FALLBACK',
+          scrollTopBefore: saved,
+          scrollTopAfter: Number.isFinite(this.drawerListEl.scrollTop) ? this.drawerListEl.scrollTop : saved,
+          decision: 'COLLAPSE_PRESENTATION_VIEWPORT_RESTORED',
+        })
+      }
+    }
   }
 
   /** V5.1 — snapshot the user's Drawer intent for the new locate transaction.
@@ -10806,6 +11526,109 @@ export class DocumentUtilityOverlayHost {
     this.scheduleResizeSettle()
     // V5.11 §19 — a true resize is a layout reflow: same-target reconcile only.
     this.reconcileLocateDocumentSpace('WINDOW_RESIZE')
+    // Region Divider V1 §5.4 — the docked right console (DevTools) shrinks the
+    // renderer viewport, so it is detected here (the ONE existing resize path)
+    // instead of adding a second listener / observer.
+    this.syncRegionDividerConsoleDock()
+    // Tab Strip Wheel V5.6 — re-asserted on the existing resize path (idempotent)
+    this.bindTabStripWheel()
+    // V5.8 — the tab bar itself may have changed width (window resize / docked
+    // DevTools): re-scan the wrapper and re-measure the Active cut-out.
+    this.ensureTabBoundaryGeometry('TAB_BOUNDARY_WINDOW_RESIZE')
+  }
+
+  /**
+   * Tab Wheel Interaction V5.6 — `.typ-tabs-wrapper` is SCROLL_OWNER, HOVER_OWNER
+   * and WHEEL_OWNER. A plain mouse wheel over ANY part of the tab bar (tab text,
+   * blank area, close button, rail, thumb) drives `scrollLeft`, so the rail never
+   * has to be clicked first.
+   *
+   * The listener is scoped to `.typ-tabs-wrapper` with `{ passive: false }` —
+   * never window/document/body, never a poller, never a timer. It is a
+   * presentation-only helper: it touches nothing but `scrollLeft`.
+   *
+   * Only REAL, POSSIBLE horizontal movement is consumed:
+   *   - `deltaX !== 0` (touchpad / Chromium's Shift+wheel) → left to the native
+   *     handler, so no double scroll;
+   *   - `shiftKey` or `deltaY === 0` → left alone;
+   *   - no horizontal overflow → never intercepted;
+   *   - already at the left/right edge → never swallowed;
+   *   - `preventDefault()` only after `scrollLeft` actually changed.
+   */
+  private readonly tabWheelBound = new WeakSet<HTMLElement>()
+
+  private readonly onTabStripWheel = (ev: WheelEvent): void => {
+    const wrapper = ev.currentTarget as HTMLElement | null
+    if (!wrapper) return
+    // native horizontal gestures (touchpad / Shift+wheel) stay untouched
+    if (ev.deltaX !== 0) return
+    if (ev.deltaY === 0 || ev.shiftKey) return
+    const max = wrapper.scrollWidth - wrapper.clientWidth
+    if (max <= 0) return
+    const before = wrapper.scrollLeft
+    const next = Math.max(0, Math.min(max, before + ev.deltaY))
+    if (next === before) return
+    wrapper.scrollLeft = next
+    if (wrapper.scrollLeft !== before) ev.preventDefault()
+  }
+
+  /** Idempotent bind (WeakSet-guarded ⇒ no duplicate listener can exist). */
+  private bindTabStripWheel(): void {
+    if (this.disposed || typeof document === 'undefined') return
+    for (const wrapper of Array.from(document.querySelectorAll<HTMLElement>('.typ-tabs-wrapper'))) {
+      if (this.tabWheelBound.has(wrapper)) continue
+      wrapper.addEventListener('wheel', this.onTabStripWheel, { passive: false })
+      this.tabWheelBound.add(wrapper)
+    }
+  }
+
+  /** Releases every scoped wheel listener ⇒ no stale listener survives. */
+  private unbindTabStripWheel(): void {
+    if (typeof document === 'undefined') return
+    for (const wrapper of Array.from(document.querySelectorAll<HTMLElement>('.typ-tabs-wrapper'))) {
+      wrapper.removeEventListener('wheel', this.onTabStripWheel)
+      this.tabWheelBound.delete(wrapper)
+    }
+  }
+
+  /**
+   * V5.8 — ACTIVE-TAB BOTTOM-BOUNDARY GEOMETRY. Creates the single controller
+   * once and (re-)binds it idempotently; the controller itself owns only the
+   * scroll listener, ONE scoped ResizeObserver and ONE rAF handle. The tab
+   * lifecycle reuses the EXISTING `.typ-tabs` structure observer (class changes
+   * included) instead of adding a second observer.
+   */
+  private ensureTabBoundaryGeometry(reason: string): void {
+    if (this.disposed || typeof document === 'undefined') return
+    if (!this.tabBoundaryGeometry) {
+      this.tabBoundaryGeometry = new TabActiveBoundaryGeometryController({
+        doc: document,
+        audit: (payload) => emitRuntimeAudit(TAB_ACTIVE_BOUNDARY_AUDIT_EVENT, payload),
+      })
+    }
+    this.tabBoundaryGeometry.bind(reason)
+  }
+
+  /**
+   * Region Divider V1 §5.4 — the right console is Electron's docked DevTools (a
+   * separate WebContents). Its border cannot be styled from the renderer, but
+   * when it is docked the renderer's own right edge IS the boundary, so a fixed
+   * 1px overlay is toggled through `body.ink-console-docked`. Detection is a
+   * pure geometry probe (`outerWidth - innerWidth`): a docked panel is hundreds
+   * of px wide whereas the native frame is ~0-20px. No DOM inside the console is
+   * ever touched, and the class is REMOVED when the console closes, so no
+   * dangling line can remain.
+   */
+  private syncRegionDividerConsoleDock(): void {
+    if (this.disposed || typeof document === 'undefined') return
+    const outer = typeof window !== 'undefined' ? window.outerWidth : 0
+    const inner = typeof window !== 'undefined' ? window.innerWidth : 0
+    const docked = outer > 0 && inner > 0 && outer - inner > 160
+    const body = document.body
+    if (!body) return
+    const has = body.classList.contains('ink-console-docked')
+    if (docked && !has) body.classList.add('ink-console-docked')
+    else if (!docked && has) body.classList.remove('ink-console-docked')
   }
 
   /**
@@ -11295,6 +12118,10 @@ export class DocumentUtilityOverlayHost {
         this.scrollNav?.bind()
         this.bindLocateFrameEditorScroll()
         this.diagnostics.rebind()
+        // §22 — a real document switch resets the Drawer viewport baseline: the
+        // previous document's Drawer scroll state must never be applied to the new
+        // document (the new document legitimately starts from its own top).
+        this.resetDrawerViewportBaseline()
       }
       this.diagnostics.recompute(reason)
       // V5 — reconcile DIRECT admission: the authoritative snapshot is handed
@@ -11687,11 +12514,24 @@ export class DocumentUtilityOverlayHost {
     if (!tabStrips.length) return
     this.tabStructureObserver = new MutationObserver(() => {
       this.scheduleGeometrySync('tabs-structure-change')
+      // V5.8 — the SAME scoped observer drives the Active cut-out: tab open /
+      // close (childList) and Active switch (class) both land here. No second
+      // observer, no body observer, no polling.
+      this.tabBoundaryGeometry?.bind('TAB_BOUNDARY_STRUCTURE_CHANGE')
       // Empty Workspace UX V1 — Typora may re-create the empty placeholder tab
       // DOM after closing tabs; re-apply the marker from the same authority.
       this.syncEmptyWorkspaceUx()
     })
-    for (const strip of tabStrips) this.tabStructureObserver.observe(strip, { childList: true })
+    for (const strip of tabStrips) {
+      this.tabStructureObserver.observe(strip, {
+        childList: true,
+        // `.typ-tab.active` is a CLASS toggle on an existing tab node, so open /
+        // close (childList) alone would miss an Active switch.
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class'],
+      })
+    }
     this.disposables.push(() => {
       this.tabStructureObserver?.disconnect()
       this.tabStructureObserver = null
@@ -12881,7 +13721,7 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** V1.1 — build ONE clickable status segment (icon + plain count text). */
-  private buildProblemsSegment(severity: 'error' | 'warning', count: number): HTMLButtonElement {
+  private buildProblemsSegment(severity: 'error' | 'warning' | 'info', count: number): HTMLButtonElement {
     const seg = document.createElement('button')
     seg.type = 'button'
     seg.className =
@@ -12895,14 +13735,25 @@ export class DocumentUtilityOverlayHost {
     const num = document.createElement('span')
     num.className = 'inkchapter-toolbar-segment__count'
     num.textContent = String(count)
-    seg.setAttribute('aria-label', severity === 'error' ? `错误 ${count}` : `警告 ${count}`)
+    seg.setAttribute('aria-label', severity === 'error' ? `错误 ${count}` : severity === 'warning' ? `警告 ${count}` : `提示 ${count}`)
     seg.title = seg.getAttribute('aria-label') ?? ''
     seg.append(icon, num)
     seg.addEventListener('click', () => this.openDrawer(severity))
     return seg
   }
 
-  /** V1.1 — Smart Summary: renders only the non-zero segments (never 错误0/警告0). */
+  /**
+   * V1.1 / VNext Presentation Closure V1.1 §17/§18/§19/§21 — Smart Summary.
+   *
+   * Shows an INDEPENDENT Error / Warning / Hint badge for EVERY non-zero severity
+   * (never a zero badge). The `✓ 文档检测` success entry is shown ONLY when ALL
+   * THREE counts are zero (§19 — a document with a Hint is NOT "healthy").
+   *
+   * The counts come from the ONE `deriveDocumentProblemsProjection` authority,
+   * which reads the FULL document snapshot — NEVER the Drawer filter / visible
+   * rows / runtime diagnostics (§20/§22), so switching the Drawer filter can
+   * never change the toolbar summary (§20 `TOOLBAR_COUNT_CHANGED_BY_DRAWER_FILTER=0`).
+   */
   private renderDiagnosticsButton(): void {
     const control = this.problemsControlEl
     if (!control) return
@@ -12925,29 +13776,23 @@ export class DocumentUtilityOverlayHost {
       control.appendChild(entry)
       return
     }
+    // §17 — three independent non-zero severity segments.
     if (projection.errorCount > 0) control.appendChild(this.buildProblemsSegment('error', projection.errorCount))
     if (projection.warningCount > 0) control.appendChild(this.buildProblemsSegment('warning', projection.warningCount))
-    if (projection.errorCount === 0 && projection.warningCount === 0) {
-      // HEALTHY (0/0/0) — check icon + 文档检测.
-      // V5.12-R6 §1/§11 — HINT-ONLY (e.g. the empty-document terminal notice:
-      // 全部1 / 错误0 / 警告0 / 提示1) MUST stay reachable: without an entry the
-      // Problems Control would render NOTHING and the Drawer could never be
-      // opened. The hint entry shows the REAL hint count — a zero counter is
-      // still never rendered.
-      const hintOnly = projection.hintCount > 0
+    if (projection.hintCount > 0) control.appendChild(this.buildProblemsSegment('info', projection.hintCount))
+    if (projection.errorCount === 0 && projection.warningCount === 0 && projection.hintCount === 0) {
+      // §18 row 000 / §19 — `✓ 文档检测` is allowed ONLY at 0/0/0.
       const entry = document.createElement('button')
       entry.type = 'button'
       entry.className =
-        'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry' +
-        (hintOnly ? '' : ' is-healthy')
-      const entryLabel = hintOnly ? `提示 ${projection.hintCount}` : '文档检测'
-      entry.setAttribute('aria-label', entryLabel)
-      entry.title = entryLabel
+        'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry is-healthy'
+      entry.setAttribute('aria-label', '文档检测：未发现问题')
+      entry.title = '文档检测：未发现问题'
       const icon = document.createElement('span')
       icon.className = 'inkchapter-toolbar-segment__icon'
-      setIcon(icon, hintOnly ? 'info' : 'check')
+      setIcon(icon, 'check')
       const label = document.createElement('span')
-      label.textContent = entryLabel
+      label.textContent = '文档检测'
       entry.append(icon, label)
       entry.addEventListener('click', () => this.openDrawer('all'))
       control.appendChild(entry)
@@ -13459,6 +14304,68 @@ export class DocumentUtilityOverlayHost {
     list.className = 'inkchapter-doc-drawer__list'
     this.drawerListEl = list
     drawer.appendChild(list)
+    // ── Drawer Viewport Stability V1 §12 — SCROLL TRACE (observability only).
+    // Any Drawer viewport change emits an audit so the ROOT cause can be proven
+    // at runtime (a stable active click must only ever reach this via the user's
+    // own wheel/keyboard scroll, never as a side effect of a locate).
+    list.addEventListener('scroll', () => {
+      // §12 — every REAL list scroll is the user's viewport becoming the truth.
+      this.rememberDrawerViewport()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-SCROLL-TRACE', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        scrollTop: list.scrollTop,
+        connected: list.isConnected,
+        offsetParentPresent: list.offsetParent != null,
+        drawerDisplay: this.drawerEl ? this.drawerEl.style.display : null,
+        collapseAttr: this.drawerEl ? this.drawerEl.getAttribute('data-locate-collapsed') : null,
+        phase: this.diagnosticInteractionState.phase,
+        activeDiagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      })
+    })
+    // ── Drawer Viewport Stability V1 §12 — viewport WRITE TRAP.
+    // A silent `scrollTop = 0` write is THE failure mode this phase must prove
+    // impossible. Trap it on the instance (shadowing the prototype accessor) and
+    // record the caller stack so the offending code path is attributable.
+    try {
+      const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
+      const host = this
+      if (desc?.get && desc?.set) {
+        const readNative = desc.get
+        const writeNative = desc.set
+        Object.defineProperty(list, 'scrollTop', {
+          configurable: true,
+          enumerable: true,
+          get(this: HTMLElement): number { return readNative.call(this) as number },
+          set(this: HTMLElement, v: number): void {
+            const prev = readNative.call(this) as number
+            if (v === 0 && prev > 1) {
+              emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-SCROLLTOP-WRITE-TRACE', {
+                documentKey: host.opts.ctx.authority.getDocumentKey() ?? null,
+                from: prev,
+                to: v,
+                stack: new Error('drawer-list-scrollTop-write').stack ?? null,
+              })
+            }
+            writeNative.call(this, v)
+          },
+        })
+      }
+    } catch { /* trap is observability only */ }
+    // Focus inside the Drawer must never scroll the list (the ACTIVE row is
+    // focused on click) — prove it: sample the list viewport around every focus.
+    list.addEventListener('focusin', (ev) => {
+      const target = ev.target as HTMLElement | null
+      const before = list.scrollTop
+      const label = target ? `${target.tagName}.${target.className}` : 'null'
+      queueMicrotask(() => {
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-FOCUS-TRACE', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          focusTarget: label,
+          scrollTopBefore: before,
+          scrollTopAfter: list.scrollTop,
+        })
+      })
+    })
 
     root.appendChild(drawer)
     return drawer
@@ -13471,12 +14378,15 @@ export class DocumentUtilityOverlayHost {
     filtersEl.replaceChildren()
     filtersEl.hidden = !visible
     if (!visible || !snapshot) return
+    // §8/§9 — the tabs count the DOCUMENT-domain selection ONLY. A runtime
+    // integrity item can never inflate 全部/错误/警告/提示.
+    const counts = countDocumentSeverities(this.documentDiagnostics())
     const tabs: Array<{ key: DiagnosticsSeverityFilter; label: string; n: number }> = [
-      { key: 'all', label: '全部', n: snapshot.diagnostics.length },
-      { key: 'error', label: '错误', n: snapshot.errorCount },
-      { key: 'warning', label: '警告', n: snapshot.warningCount },
+      { key: 'all', label: '全部', n: counts.total },
+      { key: 'error', label: '错误', n: counts.error },
+      { key: 'warning', label: '警告', n: counts.warning },
     ]
-    if (snapshot.infoCount > 0) tabs.push({ key: 'info', label: '提示', n: snapshot.infoCount })
+    if (counts.info > 0) tabs.push({ key: 'info', label: '提示', n: counts.info })
     const list = document.createElement('div')
     list.className = 'inkchapter-doc-drawer__filter-list'
     list.setAttribute('role', 'tablist')
@@ -13507,12 +14417,607 @@ export class DocumentUtilityOverlayHost {
     filtersEl.appendChild(list)
   }
 
+  // ── Drawer Viewport Stability V1 §11–§16/§27/§32 ───────────────────────────
+
+  /** §12 — the ordered row rects of the CURRENT list DOM. */
+  private drawerRowRects(): DrawerRowRect[] {
+    if (!this.drawerEl) return []
+    const list = this.drawerListEl
+    const rows = this.drawerEl.querySelectorAll<HTMLElement>(
+      '.inkchapter-doc-drawer__item[data-diagnostic-id]',
+    )
+    // §12/§13 — row offsets MUST be relative to the LIST scroll content, not to
+    // whichever higher ancestor happens to be the `offsetParent`. The list is
+    // statically positioned (`.inkchapter-doc-drawer__list` has `overflow-y:auto`
+    // but no `position`), so a row's raw `offsetTop` also contains the Drawer
+    // header + filter-tab strip height. Comparing that against `scrollTop`
+    // corrupts `firstVisibleRowIndex` by ~one header height and makes the anchor
+    // probe pick a row ABOVE the true first visible row. Normalise to the list.
+    const listOffsetTop = list && Number.isFinite(list.offsetTop) ? list.offsetTop : 0
+    const out: DrawerRowRect[] = []
+    for (const el of Array.from(rows)) {
+      const diagnosticId = el.getAttribute('data-diagnostic-id') ?? ''
+      const targetIndex = Number.parseInt(el.getAttribute('data-target-index') ?? '0', 10)
+      const rawTop = Number.isFinite(el.offsetTop) ? el.offsetTop : 0
+      const offsetTop = list && el.offsetParent !== list ? rawTop - listOffsetTop : rawTop
+      out.push({
+        projectionKey: `${diagnosticId}#${Number.isFinite(targetIndex) ? targetIndex : 0}`,
+        diagnosticId,
+        offsetTop,
+        height: Number.isFinite(el.offsetHeight) ? el.offsetHeight : 0,
+      })
+    }
+    return out
+  }
+
+  /** §12 — capture the Drawer list viewport (scrollTop + first visible anchor + offset). */
+  private captureDrawerViewport(): DrawerViewportState {
+    const list = this.drawerListEl
+    const scrollTop = list && Number.isFinite(list.scrollTop) ? list.scrollTop : this.measureDrawerListScrollTop()
+    const rows = this.drawerRowRects()
+    const idx = firstVisibleRowIndex(rows, scrollTop)
+    const anchor = idx >= 0 ? rows[idx] : null
+    return {
+      scrollTop,
+      firstVisibleDiagnosticId: anchor?.diagnosticId ?? null,
+      firstVisibleProjectionKey: anchor?.projectionKey ?? null,
+      firstVisibleOffsetPx: anchor != null ? anchor.offsetTop - scrollTop : 0,
+      filter: this.drawerFilter,
+    }
+  }
+
+  /** §13 — restore the Drawer list viewport by visible ANCHOR (+ offset), scrollTop as fallback. */
+  private restoreDrawerViewport(state: DrawerViewportState | null): {
+    performed: boolean
+    ok: boolean
+    strategy: string
+    targetScrollTop: number
+    actualScrollTop: number
+  } {
+    const list = this.drawerListEl
+    if (!list || state == null) {
+      return { performed: false, ok: false, strategy: 'NO_CAPTURE', targetScrollTop: 0, actualScrollTop: 0 }
+    }
+    const rows = this.drawerRowRects()
+    const resolution = resolveViewportRestore(state, rows)
+    let actual = state.scrollTop
+    let clamped = false
+    try {
+      const max = Math.max(0, list.scrollHeight - list.clientHeight)
+      const desired = resolution.targetScrollTop
+      const target = Math.max(0, Math.min(max, desired))
+      clamped = target !== desired
+      list.scrollTop = target
+      actual = Number.isFinite(list.scrollTop) ? list.scrollTop : target
+    } catch { /* keep current */ }
+    // §13 — "restored" means the SAVED anchor row sits at the SAVED offset again.
+    // The "first VISIBLE row" probe is deliberately NOT the contract: after a row
+    // set change a taller row that is now present ABOVE the anchor can legitimately
+    // straddle the viewport top, which would mis-classify the probe while the anchor
+    // is in fact positioned exactly where the user left it.
+    const afterRows = this.drawerRowRects()
+    const savedKey = state.firstVisibleProjectionKey
+    const anchorRow = savedKey == null ? null : afterRows.find(r => r.projectionKey === savedKey)
+    // §13 — the ONLY real failure: the restore claimed the EXACT anchor
+    // (`PROJECTION_KEY`) but the row did not land at the saved offset, and the
+    // request was not clamped by the list bounds. When the anchor did not survive
+    // the row-set change, the ordered fallback (same diagnostic → next → previous
+    // → saved scrollTop) is a SPECIFIED, legitimate outcome — never a failure.
+    const anchorPositioned = anchorRow != null
+      && savedKey != null
+      && Math.abs((anchorRow.offsetTop - actual) - state.firstVisibleOffsetPx) <= 1
+    const ok = savedKey == null
+      || resolution.strategy !== 'PROJECTION_KEY'
+      || anchorPositioned
+      || clamped
+    return { performed: true, ok, strategy: resolution.strategy, targetScrollTop: resolution.targetScrollTop, actualScrollTop: actual }
+  }
+
+  /** §7 — the ONE active-patch authority: toggle active state on EXISTING rows only. */
+  private patchDrawerActiveState(): void {
+    this.refreshDrawerActiveRow()
+  }
+
+  /**
+   * §12 — remember the Drawer list viewport the USER owns (anchor + offset + the
+   * row mount generation it belongs to). Updated on every REAL list `scroll`
+   * event and after every render that legitimately positions the list. A silent
+   * external reset produces NO scroll event, so it can never poison this memory.
+   */
+  private rememberDrawerViewport(): void {
+    if (!this.drawerEl || !this.drawerListEl) return
+    this.drawerViewportMemory = this.captureDrawerViewport()
+    this.drawerViewportMemoryMountGeneration = this.drawerRowMountGeneration
+  }
+
+  /**
+   * §12 — install the EXTERNAL-MOVE guard. The overlay root's children
+   * (toolbar / navigator / drawer) can be DETACHED and RE-INSERTED by an agent
+   * outside this host (observed at runtime during a locate). Re-inserting an
+   * element destroys the scroll box of every overflow container inside it, which
+   * is why the Drawer list silently jumped back to the top. A `MutationObserver`
+   * callback is a MICROTASK: it runs before the next paint, so re-applying the
+   * remembered viewport here is INVISIBLE (no top-then-back jump is ever shown).
+   */
+  private installDrawerReattachGuard(): void {
+    if (typeof MutationObserver === 'undefined' || !this.root) return
+    this.drawerReattachObserver?.disconnect()
+    this.drawerReattachObserver = new MutationObserver(() => {
+      this.restoreDrawerViewportAfterExternalMove()
+    })
+    this.drawerReattachObserver.observe(this.root, { childList: true })
+  }
+
+  /**
+   * §12 — re-apply the remembered viewport after an external detach/re-attach of
+   * the Drawer subtree. This is NOT a structural-render repair: it refuses to run
+   * when the ROW SET changed (a new mount generation), and it never re-renders.
+   */
+  private restoreDrawerViewportAfterExternalMove(): void {
+    const list = this.drawerListEl
+    const memory = this.drawerViewportMemory
+    if (!list || !memory || !this.root || !this.root.contains(list)) return
+    if (this.drawerRowMountGeneration !== this.drawerViewportMemoryMountGeneration) return
+    if (memory.scrollTop <= 0) return
+    const before = list.scrollTop
+    if (Math.abs(before - memory.scrollTop) <= 1) return
+    const restored = this.restoreDrawerViewport(memory)
+    const after = Number.isFinite(list.scrollTop) ? list.scrollTop : memory.scrollTop
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-VIEWPORT-AUDIT', {
+      diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      action: 'EXTERNAL_MOVE_REPAIR',
+      updateMode: 'ACTIVE_PATCH',
+      scrollTopBefore: before,
+      scrollTopAfter: after,
+      firstVisibleDiagnosticIdBefore: memory.firstVisibleDiagnosticId,
+      firstVisibleDiagnosticIdAfter: memory.firstVisibleDiagnosticId,
+      firstVisibleProjectionKeyBefore: memory.firstVisibleProjectionKey,
+      firstVisibleProjectionKeyAfter: memory.firstVisibleProjectionKey,
+      firstVisibleOffsetBefore: memory.firstVisibleOffsetPx,
+      firstVisibleOffsetAfter: memory.firstVisibleOffsetPx,
+      scrollContainerRemounted: false,
+      clickedRowRemounted: false,
+      rowScrollIntoViewCalled: false,
+      focusPreventScroll: true,
+      viewportCapturePerformed: restored.performed,
+      viewportRestorePerformed: restored.performed,
+      scrollDelta: after - before,
+      decision: Math.abs(after - memory.scrollTop) <= 1 ? 'PASS' : 'FAIL',
+      reason: 'DRAWER_VIEWPORT_REAPPLIED_AFTER_EXTERNAL_MOVE',
+    })
+  }
+
+  /** §5/§8 — the DRAWER STRUCTURE SIGNATURE (row set + order + content). */
+  private computeDrawerStructureSignature(
+    projections: readonly DiagnosticTargetProjection[],
+  ): string {
+    const parts = projections.map(p => {
+      const diag = this.diagnosticById(p.diagnosticId)
+      const severity = p.severity
+      const code = typeof diag?.code === 'string' ? diag.code : p.ruleId
+      const message = typeof diag?.message === 'string' ? diag.message : ''
+      const detail = typeof diag?.detail === 'string' ? diag.detail : ''
+      return `${p.diagnosticId}#${p.targetIndex}#${severity}#${code}#${message.length}:${detail.length}#${message}`
+    })
+    return `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${this.drawerFilter}|${parts.join('>')}`
+  }
+
+  /** §32/§33 — emit the ONE drawer viewport audit at every render / patch boundary. */
+  private emitDrawerViewportAudit(input: {
+    diagnosticId: string | null
+    action: string
+    updateMode: DrawerUpdateMode
+    scrollTopBefore: number
+    scrollTopAfter: number
+    firstVisibleDiagnosticIdBefore: string | null
+    firstVisibleDiagnosticIdAfter: string | null
+    firstVisibleProjectionKeyBefore: string | null
+    firstVisibleProjectionKeyAfter: string | null
+    firstVisibleOffsetBefore: number
+    firstVisibleOffsetAfter: number
+    scrollContainerRemounted: boolean
+    clickedRowRemounted: boolean
+    rowScrollIntoViewCalled: boolean
+    focusPreventScroll: boolean
+    viewportCapturePerformed: boolean
+    viewportRestorePerformed: boolean
+    decision: 'PASS' | 'FAIL'
+    reason: string
+  }): void {
+    this.lastDrawerViewportAudit = { ...input }
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-VIEWPORT-AUDIT', {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      ...input,
+      scrollDelta: Math.abs(input.scrollTopAfter - input.scrollTopBefore),
+      // §30/§31/§41 — the PROVABLE gate + coverage report at this boundary.
+      gateReport: this.getDrawerViewportV1GateReport(),
+      coverageReport: this.getDrawerViewportV1CoverageReport(),
+      gateDecision: this.getDrawerViewportV1GateDecision().decision,
+    })
+  }
+
+  /** §22 — a document switch resets the structural baseline (new document = new list). */
+  private resetDrawerViewportBaseline(): void {
+    this.lastDrawerStructureSignature = null
+    this.pendingDrawerViewportCapture = null
+    this.drawerListScrollBeforeCollapse = null
+    this.drawerViewportMemory = null
+    this.drawerViewportMemoryMountGeneration = -1
+  }
+
+  /** §12/§32 — locate the LIVE row element of one projection (diagnosticId + targetIndex). */
+  private findDrawerRowElement(diagnosticId: string, targetIndex: number): HTMLElement | null {
+    if (!this.drawerEl) return null
+    const rows = this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]')
+    for (const el of Array.from(rows)) {
+      if (el.getAttribute('data-diagnostic-id') !== diagnosticId) continue
+      const idx = Number.parseInt(el.getAttribute('data-target-index') ?? '0', 10)
+      if (idx === targetIndex) return el
+    }
+    return null
+  }
+
+  /** §32 — begin the click-scoped Drawer viewport probe (BEFORE the transition). */
+  private beginDrawerClickViewportProbe(
+    action: 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH',
+    diagnosticId: string,
+    targetIndex: number,
+  ): void {
+    this.drawerStructuralRenderSinceClick = false
+    this.drawerRowScrollIntoViewCalledSinceClick = false
+    this.drawerFocusCausedScrollSinceClick = false
+    const rowElement = this.findDrawerRowElement(diagnosticId, targetIndex)
+    this.drawerClickViewportProbe = {
+      action,
+      rowElement,
+      listElement: this.drawerListEl,
+      rowHeightBefore: rowElement && Number.isFinite(rowElement.offsetHeight) ? rowElement.offsetHeight : 0,
+      viewportBefore: this.captureDrawerViewport(),
+    }
+  }
+
+  /**
+   * §8/§15/§27/§30/§32 — finalize the click-scoped probe: measure the REAL
+   * before/after viewport + row/list identity and feed the ONE gate authority.
+   */
+  private finalizeDrawerClickViewportProbe(reason: string): void {
+    const probe = this.drawerClickViewportProbe
+    this.drawerClickViewportProbe = null
+    if (!probe) return
+    const viewportAfter = this.captureDrawerViewport()
+    const rowStillConnected = probe.rowElement != null && probe.rowElement.isConnected
+    const clickedRowRemounted = probe.rowElement != null && !rowStillConnected
+    const scrollContainerRemounted = probe.listElement != null && probe.listElement !== this.drawerListEl
+    const rowHeightAfter = rowStillConnected && probe.rowElement && Number.isFinite(probe.rowElement.offsetHeight)
+      ? probe.rowElement.offsetHeight
+      : 0
+    const activeRowHeightChanged = probe.rowHeightBefore > 0 && rowHeightAfter > 0
+      && Math.abs(rowHeightAfter - probe.rowHeightBefore) > 0.5
+    const updateMode: DrawerUpdateMode = this.drawerStructuralRenderSinceClick ? 'STRUCTURAL_RENDER' : 'ACTIVE_PATCH'
+    const facts = {
+      action: probe.action,
+      updateMode,
+      scrollTopBefore: probe.viewportBefore.scrollTop,
+      scrollTopAfter: viewportAfter.scrollTop,
+      firstVisibleDiagnosticIdBefore: probe.viewportBefore.firstVisibleDiagnosticId,
+      firstVisibleDiagnosticIdAfter: viewportAfter.firstVisibleDiagnosticId,
+      firstVisibleOffsetBefore: probe.viewportBefore.firstVisibleOffsetPx,
+      firstVisibleOffsetAfter: viewportAfter.firstVisibleOffsetPx,
+      clickedRowRemounted,
+      scrollContainerRemounted,
+      rowScrollIntoViewCalled: this.drawerRowScrollIntoViewCalledSinceClick,
+      focusCausedScroll: this.drawerFocusCausedScrollSinceClick,
+      activeRowHeightChanged,
+    }
+    const partial = evaluateDrawerActiveClickFacts(facts)
+    for (const [k, v] of Object.entries(partial) as Array<[keyof DrawerViewportV1Counters, number]>) {
+      this.countersDrawerViewportV1[k] = Math.max(this.countersDrawerViewportV1[k], v)
+    }
+    // §31 — positive coverage per stability scenario.
+    const stable = facts.scrollTopBefore === facts.scrollTopAfter
+      && !clickedRowRemounted && !scrollContainerRemounted
+      && partial.drawerStructuralRerenderOnActiveOnlyChange == null
+    if (stable) {
+      if (facts.action === 'DEACTIVATE') this.coverageDrawerViewportV1.deactivateStability++
+      else if (facts.action === 'SWITCH') this.coverageDrawerViewportV1.activeSwitchStability++
+      else this.coverageDrawerViewportV1.activeClickStability++
+      if (this.isTargetGroupDiagnostic(this.diagnosticInteractionState.diagnosticId)) {
+        this.coverageDrawerViewportV1.targetGroupStability++
+      }
+      const activeIdForCoverage = this.diagnosticInteractionState.diagnosticId
+      if (activeIdForCoverage != null
+        && this.diagnosticById(activeIdForCoverage)?.location?.kind === 'multi-target') {
+        this.coverageDrawerViewportV1.multiTargetStability++
+      }
+    }
+    const ok = Object.keys(partial).length === 0
+    // Internal Blank-Line Policy V1 §34/§36 — the runtime witness + coverage for
+    // the document-FORMAT warning. It observes the SHARED viewport facts, so this
+    // rule can never introduce its own scroll behaviour.
+    this.noteInternalBlankLineRuntimeFacts(probe.action, probe.viewportBefore, viewportAfter, stable)
+    this.emitDrawerViewportAudit({
+      diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      action: probe.action,
+      updateMode,
+      scrollTopBefore: facts.scrollTopBefore,
+      scrollTopAfter: facts.scrollTopAfter,
+      firstVisibleDiagnosticIdBefore: facts.firstVisibleDiagnosticIdBefore,
+      firstVisibleDiagnosticIdAfter: facts.firstVisibleDiagnosticIdAfter,
+      firstVisibleProjectionKeyBefore: probe.viewportBefore.firstVisibleProjectionKey,
+      firstVisibleProjectionKeyAfter: viewportAfter.firstVisibleProjectionKey,
+      firstVisibleOffsetBefore: facts.firstVisibleOffsetBefore,
+      firstVisibleOffsetAfter: facts.firstVisibleOffsetAfter,
+      scrollContainerRemounted,
+      clickedRowRemounted,
+      rowScrollIntoViewCalled: facts.rowScrollIntoViewCalled,
+      focusPreventScroll: true,
+      viewportCapturePerformed: false,
+      viewportRestorePerformed: false,
+      decision: ok ? 'PASS' : 'FAIL',
+      reason: ok ? `DIAGNOSTIC_${probe.action}_DRAWER_VIEWPORT_STABLE_${reason}` : `DRAWER_VIEWPORT_VIOLATION_${Object.keys(partial).join('|')}`,
+    })
+  }
+
+  /** §32/§41 — read-only gate/coverage surface (runtime verification). */
+  getDrawerViewportV1GateReport(): string[] {
+    return formatDrawerViewportV1GateReport(this.countersDrawerViewportV1)
+  }
+
+  getDrawerViewportV1GateDecision(): { decision: 'PASS' | 'FAIL'; failedChecks: readonly string[] } {
+    return evaluateDrawerViewportV1Gates(this.countersDrawerViewportV1)
+  }
+
+  getDrawerViewportV1CoverageReport(): string[] {
+    return formatDrawerViewportV1CoverageReport(this.coverageDrawerViewportV1)
+  }
+
+  getDrawerViewportV1AuditFacts(): Readonly<Record<string, unknown>> {
+    return { ...this.lastDrawerViewportAudit }
+  }
+
+  /**
+   * Internal Blank-Line Policy V1 §33 — the SOURCE-side audit (state-deduped).
+   * Emitted on every committed diagnostic snapshot so the runtime log proves the
+   * gap facts (previous / next block identity + kind, the blank line span, the
+   * actual count, the threshold) that produced the Warning — and proves the
+   * separation from the EOF rules.
+   */
+  private emitInternalBlankLineSourceAudit(): void {
+    const snapshot = this.snapshot
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? null
+    const records = (snapshot?.diagnostics ?? []).filter(d => d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE)
+    const eofCodes = (snapshot?.diagnostics ?? [])
+      .filter(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING' || d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')
+      .map(d => d.code)
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    this.measureInternalBlankLineSourceGates(records, eofCodes, markdown)
+    // §21/§36 — EVENT-DRIVEN dynamic coverage: compare the committed gap IDENTITY
+    // set with the previous one FOR THE SAME DOCUMENT. A gap that is no longer
+    // reported "disappeared"; a new one "reappeared". This runs on every snapshot
+    // commit (the reconcile is fired by the editor change event — never a poll).
+    const identitySet = new Set(records.map(d => String(d.targetIdentity ?? '')))
+    const last = this.lastInternalBlankLineIdentityState
+    if (last != null && last.documentKey === documentKey) {
+      let disappeared = 0
+      let reappeared = 0
+      for (const id of last.identities) if (!identitySet.has(id)) disappeared++
+      for (const id of identitySet) if (!last.identities.has(id)) reappeared++
+      if (disappeared > 0) this.coverageInternalBlankLineV1.dynamicDisappearRuntime += disappeared
+      if (reappeared > 0) this.coverageInternalBlankLineV1.dynamicReappearRuntime += reappeared
+    }
+    this.lastInternalBlankLineIdentityState = { documentKey, identities: identitySet }
+    const signature = `${documentKey ?? ''}|${records.map(d => d.id).join(',')}|${eofCodes.join(',')}`
+    if (signature === this.lastInternalBlankLineSourceSignature) return
+    this.lastInternalBlankLineSourceSignature = signature
+    const gaps = records.map(d => {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      return {
+        diagnosticId: d.id,
+        severity: d.severity,
+        previousBlockIdentity: meta.previousBlockIdentity ?? null,
+        previousBlockKind: meta.previousBlockKind ?? null,
+        nextBlockIdentity: meta.nextBlockIdentity ?? null,
+        nextBlockKind: meta.nextBlockKind ?? null,
+        previousSourceEnd: meta.previousSourceEnd ?? null,
+        nextSourceStart: meta.nextSourceStart ?? null,
+        firstBlankLine: meta.firstBlankLine ?? null,
+        lastBlankLine: meta.lastBlankLine ?? null,
+        actualBlankLines: meta.actualBlankLines ?? null,
+        warningThreshold: meta.warningThreshold ?? null,
+        locationKind: d.location?.kind ?? null,
+        nextBlockStartLine: meta.nextBlockStartLine ?? null,
+      }
+    })
+    emitRuntimeAudit('DOCUMENT-INTERNAL-BLANK-LINE-AUDIT', {
+      documentKey,
+      revision: snapshot?.revision ?? null,
+      diagnosticId: records[0]?.id ?? null,
+      gapCount: records.length,
+      gaps,
+      eofDiagnosticCodes: eofCodes,
+      sourceDerived: true,
+      domGeometryUsed: false,
+      warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+      passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+      gateReport: formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1),
+      coverageReport: formatInternalBlankLineV1CoverageReport(this.coverageInternalBlankLineV1),
+      decision: this.getInternalBlankLineV1GateDecision().decision,
+      reason: records.length > 0 ? 'INTERNAL_BLANK_LINE_GAPS_PRESENT' : 'NO_INTERNAL_BLANK_LINE_GAP',
+    })
+  }
+
+  /**
+   * §35 — measure the SOURCE-side gates from the committed snapshot + the
+   * authoritative Markdown. Every measurement is a real comparison (never a
+   * hand-written 0): the gap identity must be the block-pair identity, ONE gap
+   * must own exactly ONE record, the run must sit between two real content
+   * blocks, and it must never overlap a fenced code block / display formula /
+   * front matter / HTML block or the EOF / leading run.
+   */
+  private measureInternalBlankLineSourceGates(
+    records: readonly DocumentDiagnosticsSnapshot['diagnostics'][number][],
+    eofCodes: readonly string[],
+    markdown: string | null,
+  ): void {
+    const c = this.countersInternalBlankLineV1
+    // §4 — source-only detection: the reported set must be reproducible from the
+    // Markdown alone (a DOM/geometry-derived gap could not survive this check).
+    const authoritative = new Set(analyzeInternalBlankLineGaps(markdown).map(internalBlankGapIdentity))
+    const ids = new Map<string, number>()
+    for (const d of records) {
+      if (d.severity !== 'warning') c.excessiveInternalBlankLinesWrongSeverity++
+      const target = String(d.targetIdentity ?? '')
+      ids.set(target, (ids.get(target) ?? 0) + 1)
+      // §20 — the identity must be the block-pair identity, never a bare index.
+      if (!target.startsWith('blank-gap:') || !authoritative.has(target)) c.internalBlankLineUnstableIdentity++
+      if (d.location?.kind === 'document-end') c.internalBlankLineReportedAsEof++
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      const first = typeof meta.firstBlankLine === 'number' ? meta.firstBlankLine : -1
+      const last = typeof meta.lastBlankLine === 'number' ? meta.lastBlankLine : -1
+      const region = protectedRegionKindAtLine(markdown, first)
+      if (region === 'code') c.codeFenceInternalBlankLineFalsePositive++
+      else if (region === 'formula') c.formulaInternalBlankLineFalsePositive++
+      else if (region === 'front-matter') c.frontMatterBlankLineFalsePositive++
+      else if (region === 'html') c.htmlBlockBlankLineFalsePositive++
+      // §11 — a leading run is never internal.
+      if (first <= 0 || first <= firstContentSourceLine(markdown)) c.leadingBlankLineReportedAsInternal++
+      // §10 — an EOF run is never internal.
+      if (last >= lastContentSourceLine(markdown)) c.eofBlankLineReportedAsInternal++
+    }
+    // §6 — ONE gap owns exactly ONE diagnostic (never N per blank line).
+    const duplicated = [...ids.values()].filter(n => n > 1).length
+    if (duplicated > 0) {
+      c.internalBlankLineOneGapMultiDiagnostic += duplicated
+      c.internalBlankLineEditDuplicateDiagnostic += duplicated
+    }
+    const uniqueIds = new Set(records.map(d => d.id)).size
+    if (uniqueIds !== records.length) c.internalBlankLineDuplicateDiagnosticId += records.length - uniqueIds
+    // §35 — the threshold authority is ONE constant; a second hardcoded value in
+    // this path would be visible as a record disagreeing with the policy.
+    if (records.some(d => {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      return meta.warningThreshold !== INTERNAL_BLANK_LINE_POLICY.warningThreshold
+        || meta.passMaxBlankLines !== INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
+    })) c.duplicateInternalBlankLineThresholdAuthority++
+    // §35 — the EOF rule must not swallow (or be swallowed by) the internal rule:
+    // the internal set never contains an EOF code.
+    if ((records as readonly { code: string }[]).some(d => eofCodes.includes(d.code))) c.internalBlankLineReportedAsEof++
+  }
+
+  /**
+   * Internal Blank-Line Policy V1 §34/§36 — the runtime witness for ONE click on
+   * the document-FORMAT warning, plus the positive coverage bookkeeping. The
+   * viewport facts come from the SHARED Drawer Viewport Stability authority (this
+   * rule has no private scroll path of its own).
+   */
+  private noteInternalBlankLineRuntimeFacts(
+    action: 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH',
+    before: DrawerViewportState,
+    after: DrawerViewportState,
+    stable: boolean,
+  ): void {
+    const id = this.diagnosticInteractionState.diagnosticId
+    const diag = id != null ? this.diagnosticById(id) : null
+    if (!diag || diag.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const actualBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : 0
+    const previousBlockKind = typeof meta.previousBlockKind === 'string' ? meta.previousBlockKind as DocumentBlockKind : null
+    const nextBlockKind = typeof meta.nextBlockKind === 'string' ? meta.nextBlockKind as DocumentBlockKind : null
+    const scrollDelta = after.scrollTop - before.scrollTop
+    const drift = Math.abs(scrollDelta)
+    const anchorChanged = before.firstVisibleProjectionKey != null
+      && before.firstVisibleProjectionKey !== after.firstVisibleProjectionKey
+    const activated = this.diagnosticInteractionState.phase === 'ACTIVE'
+    // §25 — the FIRST click must already be ACTIVATE (never scroll-only).
+    if (action === 'ACTIVATE' && !activated) {
+      this.countersInternalBlankLineV1.internalBlankLineFirstClickNotActivated++
+    }
+    // §26 — the Drawer viewport is the SHARED authority's contract.
+    if (drift > 1) this.countersInternalBlankLineV1.internalBlankLineClickDrawerScrollDriftGt1px++
+    if (anchorChanged) this.countersInternalBlankLineV1.internalBlankLineClickDrawerViewportAnchorChanged++
+    // §28 — the rule is a Warning: it may only appear in 全部 / 警告.
+    if (this.drawerOpen && this.drawerFilter !== 'all' && this.drawerFilter !== 'warning') {
+      this.countersInternalBlankLineV1.internalBlankLineWrongFilter++
+    }
+    noteInternalBlankLineCoverage(this.coverageInternalBlankLineV1, {
+      actualBlankLines,
+      previousBlockKind,
+      nextBlockKind,
+      firstClickActivated: action === 'ACTIVATE' && activated,
+      drawerViewportStable: stable && drift <= 1 && !anchorChanged,
+    })
+    emitRuntimeAudit(DOCUMENT_INTERNAL_BLANK_LINE_RUNTIME_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: id,
+      ruleCode: diag.code,
+      severity: diag.severity,
+      actualBlankLines,
+      previousBlockKind,
+      nextBlockKind,
+      warningFilterVisible: this.drawerFilter === 'warning',
+      drawerFilter: this.drawerFilter,
+      clickDecision: action,
+      scrollAnchorBlockIdentity: typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : null,
+      scrollAnchorBlockKind: nextBlockKind,
+      activeTargetIdentity: this.diagnosticInteractionState.targetKey ?? null,
+      drawerScrollTopBefore: before.scrollTop,
+      drawerScrollTopAfter: after.scrollTop,
+      drawerScrollDelta: scrollDelta,
+      activeLeasePresent: this.locateVisibilityLease != null,
+      activeFillCount: this.countActiveOwnerFillNodes(),
+      firstClickActivated: action === 'ACTIVATE' && activated,
+      decision: action === 'ACTIVATE' && !activated ? 'FAIL'
+        : (drift > 1 || anchorChanged) ? 'FAIL' : 'PASS',
+      reason: action === 'ACTIVATE' && !activated ? 'FIRST_CLICK_NOT_ACTIVATED'
+        : (drift > 1 || anchorChanged) ? 'DRAWER_VIEWPORT_DRIFT' : 'INTERNAL_BLANK_LINE_CLICK_OK',
+    })
+  }
+
+  /**
+   * §27/§35 — the Toolbar warning-count parity witness. The Toolbar counts come
+   * from the ONE projection authority (`deriveDocumentProblemsProjection`); the
+   * gate only fires when that projection disagrees with the committed snapshot,
+   * so adding / removing an internal blank-line Warning can never leave the
+   * Toolbar stale (and this rule never touches Error / Hint at all).
+   */
+  private checkInternalBlankLineToolbarParity(snapshot: DocumentDiagnosticsSnapshot | null): void {
+    const docWarnings = (snapshot?.diagnostics ?? []).filter(d => d.severity === 'warning').length
+    const projection = deriveDocumentProblemsProjection(snapshot)
+    if (projection.warningCount !== docWarnings) {
+      this.countersInternalBlankLineV1.internalBlankLineToolbarWarningCountMismatch++
+    }
+  }
+
+  /** §35/§36 — read-only gate / coverage surface (runtime verification). */
+  getInternalBlankLineV1GateReport(): string[] {
+    return formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1)
+  }
+
+  getInternalBlankLineV1CoverageReport(): string[] {
+    return formatInternalBlankLineV1CoverageReport(this.coverageInternalBlankLineV1)
+  }
+
+  getInternalBlankLineV1GateDecision(): { decision: 'PASS' | 'FAIL'; failing: readonly string[] } {
+    const failing = formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1)
+      .filter(line => !line.endsWith('=0'))
+    return { decision: failing.length === 0 ? 'PASS' : 'FAIL', failing }
+  }
+
+  /** §41 — the drawer row mount generation (proves a structural remount). */
+  getDrawerRowMountGeneration(): number {
+    return this.drawerRowMountGeneration
+  }
+
   private renderDrawer(): void {
     if (!this.drawerEl || !this.drawerListEl) return
     const snapshot = this.snapshot
     const activeKey = this.opts.ctx.authority.getDocumentKey()
     if (!snapshot || snapshot.documentKey == null || snapshot.documentKey !== activeKey) {
       this.renderDrawerFilterTabs(snapshot, false)
+      // §10 — a stale snapshot IS a structural change (the list content is invalid).
+      this.drawerStructuralRenderSinceClick = true
+      this.drawerRowMountGeneration++
+      this.lastDrawerStructureSignature = null
       // Phase 7R.3.11.4 — never render stale items: show a pending placeholder.
       const pending = document.createElement('div')
       pending.className = 'inkchapter-doc-drawer__item--empty'
@@ -13532,9 +15037,96 @@ export class DocumentUtilityOverlayHost {
       return
     }
 
-    this.renderDrawerFilterTabs(snapshot, snapshot.diagnostics.length > 0)
+    // §9/§10 — the Drawer renders the DOCUMENT-domain selection only; §8 — its
+    // severity counts are document-only.
+    const documentDiagnostics = this.documentDiagnostics()
+    const documentCounts = countDocumentSeverities(documentDiagnostics)
+    // §5/§8/§16 — decide the update MODE from the STRUCTURE signature BEFORE any
+    // DOM write. `ACTIVE_PATCH` (row set unchanged) must NEVER rebuild the list.
+    const projections = this.buildDrawerProjections()
+    const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
+    this.recordDrawerOrderFacts(projections, filtered)
+    this.measureTargetGroupDrawerFacts(projections, filtered)
+    const structureSignature = this.computeDrawerStructureSignature(filtered)
+    const listHasRows = this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
+    const modeDecision = resolveDrawerUpdateMode({
+      previousSignature: this.lastDrawerStructureSignature,
+      facts: {
+        projectionSignature: structureSignature,
+        documentKey: snapshot.documentKey,
+        filter: this.drawerFilter,
+        listHasRows,
+      },
+    })
+
+    if (modeDecision.mode === 'ACTIVE_PATCH') {
+      // §6/§7/§16 — patch ONLY the existing row nodes (active class / aria). No
+      // `replaceChildren`, no `innerHTML`, no re-created rows, no scroll write.
+      const before = this.captureDrawerViewport()
+      this.patchDrawerActiveState()
+      const after = this.captureDrawerViewport()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+        documentKey: snapshot.documentKey,
+        reason: modeDecision.reason,
+        updateMode: 'ACTIVE_PATCH',
+        rowSetChanged: false,
+        filterChanged: false,
+        documentChanged: false,
+        projectionChanged: false,
+        viewportCapturePerformed: false,
+        viewportRestorePerformed: false,
+        decision: 'ACTIVE_PATCH_NO_STRUCTURAL_RENDER',
+      })
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+        action: 'DRAWER_ACTIVE_PATCHED',
+        documentKey: snapshot.documentKey,
+        activeDocumentKey: activeKey,
+        revision: snapshot.revision,
+        sourceRevision: snapshot.sourceRevision,
+        drawerVisible: this.drawerOpen,
+        itemCount: documentCounts.total,
+        errorCount: documentCounts.error,
+        warningCount: documentCounts.warning,
+        hintCount: documentCounts.info,
+        filter: this.drawerFilter,
+        scrollTopBefore: before.scrollTop,
+        scrollTopAfter: after.scrollTop,
+        decision: 'DRAWER_ACTIVE_PATCHED_WITHOUT_RERENDER',
+      })
+      this.scheduleDrawerContentAudit()
+      // §32 — the ACTIVE_PATCH is auditable (no structural render, no scroll write).
+      this.emitDrawerViewportAudit({
+        diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+        action: 'RENDER',
+        updateMode: 'ACTIVE_PATCH',
+        scrollTopBefore: before.scrollTop,
+        scrollTopAfter: after.scrollTop,
+        firstVisibleDiagnosticIdBefore: before.firstVisibleDiagnosticId,
+        firstVisibleDiagnosticIdAfter: after.firstVisibleDiagnosticId,
+        firstVisibleProjectionKeyBefore: before.firstVisibleProjectionKey,
+        firstVisibleProjectionKeyAfter: after.firstVisibleProjectionKey,
+        firstVisibleOffsetBefore: before.firstVisibleOffsetPx,
+        firstVisibleOffsetAfter: after.firstVisibleOffsetPx,
+        scrollContainerRemounted: false,
+        clickedRowRemounted: false,
+        rowScrollIntoViewCalled: false,
+        focusPreventScroll: true,
+        viewportCapturePerformed: false,
+        viewportRestorePerformed: false,
+        decision: 'PASS',
+        reason: 'ACTIVE_PATCH_WITHOUT_STRUCTURAL_RENDER',
+      })
+      return
+    }
+
+    // ── STRUCTURAL_RENDER (§10/§12/§13) — capture BEFORE, restore AFTER. ─────
+    const viewportBefore = this.captureDrawerViewport()
+    this.pendingDrawerViewportCapture = viewportBefore
+    this.drawerStructuralRenderSinceClick = true
+    this.renderDrawerFilterTabs(snapshot, documentDiagnostics.length > 0)
     this.drawerListEl.replaceChildren()
-    if (snapshot.diagnostics.length === 0) {
+    this.drawerRowMountGeneration++
+    if (documentDiagnostics.length === 0) {
       const ok = document.createElement('div')
       ok.className = 'inkchapter-doc-drawer__item--empty'
       const icon = document.createElement('span')
@@ -13544,25 +15136,48 @@ export class DocumentUtilityOverlayHost {
       label.textContent = '未发现问题'
       ok.append(icon, label)
       this.drawerListEl.appendChild(ok)
+    } else if (filtered.length === 0) {
+      // Current filter yields nothing after a live refresh — show neutral hint.
+      const none = document.createElement('div')
+      none.className = 'inkchapter-doc-drawer__item--empty'
+      none.textContent = '当前筛选下没有问题'
+      this.drawerListEl.appendChild(none)
     } else {
-      // V5.14-R1 §3/§4/§5/§32 — ONE occurrence-level projection per real target,
-      // ordered strictly by document position (multi-target occurrences interleave
-      // with other diagnostics). The severity filter only REMOVES entries.
-      const projections = this.buildDrawerProjections()
-      const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
-      this.recordDrawerOrderFacts(projections, filtered)
-      if (filtered.length === 0) {
-        // Current filter yields nothing after a live refresh — show neutral hint.
-        const none = document.createElement('div')
-        none.className = 'inkchapter-doc-drawer__item--empty'
-        none.textContent = '当前筛选下没有问题'
-        this.drawerListEl.appendChild(none)
-      } else {
-        for (const p of filtered) {
-          this.drawerListEl.appendChild(this.buildDrawerItem(p))
-        }
+      for (const p of filtered) {
+        this.drawerListEl.appendChild(this.buildDrawerItem(p))
       }
     }
+    this.lastDrawerStructureSignature = structureSignature
+    // §13 — restore the visible anchor (+ offset); the row content is now final.
+    const restore = this.restoreDrawerViewport(viewportBefore)
+    // §12 — the new row set is now the user's viewport; the memory must follow the
+    // NEW mount generation, otherwise the external-move guard would refuse to act.
+    this.rememberDrawerViewport()
+    const restoreGates = evaluateDrawerStructuralRenderFacts({
+      capturePerformed: true,
+      restorePerformed: restore.performed,
+      restoreOk: restore.ok,
+    })
+    for (const [k, v] of Object.entries(restoreGates) as Array<[keyof DrawerViewportV1Counters, number]>) {
+      this.countersDrawerViewportV1[k] = Math.max(this.countersDrawerViewportV1[k], v)
+    }
+    if (restore.performed && restore.ok) this.coverageDrawerViewportV1.structuralRenderViewportRestore++
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+      documentKey: snapshot.documentKey,
+      reason: modeDecision.reason,
+      updateMode: 'STRUCTURAL_RENDER',
+      rowSetChanged: true,
+      filterChanged: true,
+      documentChanged: false,
+      projectionChanged: true,
+      viewportCapturePerformed: true,
+      viewportRestorePerformed: restore.performed,
+      viewportRestoreStrategy: restore.strategy,
+      viewportRestoreOk: restore.ok,
+      scrollTopBefore: viewportBefore.scrollTop,
+      scrollTopAfter: restore.actualScrollTop,
+      decision: restore.ok ? 'STRUCTURAL_RENDER_VIEWPORT_RESTORED' : 'STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL',
+    })
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
       action: 'DRAWER_RENDERED',
       documentKey: snapshot.documentKey,
@@ -13570,10 +15185,10 @@ export class DocumentUtilityOverlayHost {
       revision: snapshot.revision,
       sourceRevision: snapshot.sourceRevision,
       drawerVisible: this.drawerOpen,
-      itemCount: snapshot.diagnostics.length,
-      errorCount: snapshot.errorCount,
-      warningCount: snapshot.warningCount,
-      hintCount: snapshot.infoCount,
+      itemCount: documentCounts.total,
+      errorCount: documentCounts.error,
+      warningCount: documentCounts.warning,
+      hintCount: documentCounts.info,
       filter: this.drawerFilter,
       snapshotMatchesActiveDocument: snapshot.documentKey === activeKey,
       decision: 'DRAWER_RENDERED_MATCHES_ACTIVE',
@@ -13581,6 +15196,29 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.3.1 — read-only layout audit follows every re-render
     // (rAF + DOM read only; geometryWriteDelta stays 0 by construction).
     this.scheduleDrawerContentAudit()
+    // §32 — the STRUCTURAL_RENDER viewport audit (capture + restore).
+    const viewportAfter = this.captureDrawerViewport()
+    this.emitDrawerViewportAudit({
+      diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+      action: 'RENDER',
+      updateMode: 'STRUCTURAL_RENDER',
+      scrollTopBefore: viewportBefore.scrollTop,
+      scrollTopAfter: viewportAfter.scrollTop,
+      firstVisibleDiagnosticIdBefore: viewportBefore.firstVisibleDiagnosticId,
+      firstVisibleDiagnosticIdAfter: viewportAfter.firstVisibleDiagnosticId,
+      firstVisibleProjectionKeyBefore: viewportBefore.firstVisibleProjectionKey,
+      firstVisibleProjectionKeyAfter: viewportAfter.firstVisibleProjectionKey,
+      firstVisibleOffsetBefore: viewportBefore.firstVisibleOffsetPx,
+      firstVisibleOffsetAfter: viewportAfter.firstVisibleOffsetPx,
+      scrollContainerRemounted: false,
+      clickedRowRemounted: false,
+      rowScrollIntoViewCalled: false,
+      focusPreventScroll: true,
+      viewportCapturePerformed: true,
+      viewportRestorePerformed: restore.performed,
+      decision: restore.ok ? 'PASS' : 'FAIL',
+      reason: restore.ok ? 'STRUCTURAL_RENDER_VIEWPORT_RESTORED' : 'STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL',
+    })
   }
 
   // ── V5.14-R7 — Diagnostic ACTIVE interaction state machine (§5/§6/§7/§8) ──
@@ -13591,6 +15229,12 @@ export class DocumentUtilityOverlayHost {
    */
   private resolveClickedTargetIndex(diagnosticId: string, targetIndexOverride?: number): number {
     const diag = this.diagnosticById(diagnosticId)
+    // Target Group V1 §11/§12 — a `target-group` activates the WHOLE group on
+    // every click. Its canonical index is ALWAYS 0 (the scroll anchor), so a
+    // repeated click is a same-target DEACTIVATE; the group NEVER touches the
+    // multi-target cursor and never SWITCHes members. (Strong-type driven:
+    // `location.kind === 'target-group'`.)
+    if (diag != null && diag.location?.kind === 'target-group') return 0
     const targetCount = diag?.location?.kind === 'multi-target' && diag.location.targets.length > 0
       ? diag.location.targets.length
       : 1
@@ -13598,6 +15242,12 @@ export class DocumentUtilityOverlayHost {
       return Math.max(0, Math.min(Math.max(0, targetCount - 1), Math.floor(targetIndexOverride)))
     }
     if (targetCount <= 1) return 0
+    // Target Group V1 §11/§12 — DEFENSIVE: a group must never reach the cursor.
+    // This counter makes a future regression provable.
+    if (this.isTargetGroupDiagnostic(diagnosticId)) {
+      this.countersTargetGroupV1.targetGroupCursorReadCount++
+      return 0
+    }
     return (this.multiTargetCursor.get(diagnosticId) ?? 0) % targetCount
   }
 
@@ -14071,6 +15721,16 @@ export class DocumentUtilityOverlayHost {
   private resolveActiveHeadingAuthority(
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
   ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> {
+    // Target Group V1 §13 — a `target-group` resolves ONLY the scroll anchor
+    // (the FIRST member). The N members share this ONE viewport locate; the
+    // active targetKey stays the ONE group key. This guarantees
+    // `TARGET_GROUP_STATE_LOCATE_AUTHORITY_DIVERGENCE_COUNT = 0` (the state owner
+    // and the locate member are the SAME anchor).
+    if (diag.location?.kind === 'target-group') {
+      const resolution = this.resolveActiveHeadingGroupAuthority(diag)
+      if (resolution.ok) this.coverageMultiTargetV2.canonicalActiveTargetExactResolutionCount++
+      return resolution
+    }
     const st = this.diagnosticInteractionState
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
     const projections = this.buildDrawerProjections()
@@ -14101,6 +15761,57 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * Target Group V1 §13/§14 — the group's canonical active target is its SCROLL
+   * ANCHOR (the first member). The targetKey is the ONE group key (never a member
+   * occurrence key); the element is the anchor heading.
+   */
+  private resolveActiveHeadingGroupAuthority(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> {
+    const st = this.diagnosticInteractionState
+    const fail = (
+      reason: CanonicalActiveTargetResolveFailure,
+    ): ReturnType<typeof resolveCanonicalActiveHeadingTarget> => ({
+      ok: false,
+      reason,
+      diagnosticId: st.diagnosticId,
+      diagnosticTargetIndex: st.diagnosticTargetIndex,
+      expectedHeadingIdentity: null,
+    })
+    if (st.phase !== 'ACTIVE' || st.diagnosticId !== diag.id) return fail('PHASE_NOT_ACTIVE')
+    if (st.targetKey == null || st.targetKey === '') return fail('TARGET_KEY_MISSING')
+    const loc = diag.location
+    if (loc?.kind !== 'target-group') return fail('NO_DIAGNOSTIC')
+    const anchor = loc.scrollAnchor
+    let stableIdentity = ''
+    let element: HTMLElement | null = null
+    if (anchor.kind === 'canonical-node' && anchor.nodeKind === 'heading') {
+      stableIdentity = anchor.stableIdentity
+      element = this.resolveHeadingElementByIdentity(anchor.stableIdentity, null)
+    } else if (anchor.kind === 'source-range') {
+      element = this.resolveSourceLine(anchor.startLine)
+      stableIdentity = element?.getAttribute?.('data-line') ?? ''
+    }
+    if (!element || !element.isConnected) return fail('ELEMENT_NOT_FOUND')
+    const headingIdentity = markerIdentityOfStableIdentity(stableIdentity)
+    if (headingIdentity == null) return fail('PROJECTION_NOT_FOUND')
+    return {
+      ok: true,
+      reason: 'CANONICAL_ACTIVE_TARGET_EXACT',
+      target: {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? '',
+        diagnosticId: diag.id,
+        diagnosticTargetIndex: st.diagnosticTargetIndex ?? 0,
+        transactionLocalTargetIndex: st.transactionLocalTargetIndex,
+        targetKey: st.targetKey,
+        stableHeadingIdentity: stableIdentity,
+        headingIdentity,
+        element,
+      },
+    }
+  }
+
+  /**
    * V2 §8 — TEST SEAM. Publishes the ACTIVE interaction state the reducer WOULD
    * have produced, so a visual-projection test can prepare a LEGITIMATE state
    * before calling the (now read-only) painter.
@@ -14117,6 +15828,7 @@ export class DocumentUtilityOverlayHost {
     const index = this.resolveClickedTargetIndex(diagnosticId, targetIndex)
     const targetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, index)
     const previous = this.diagnosticInteractionState
+    const groupMemberCount = this.targetGroupMemberCount(diagnosticId)
     this.diagnosticInteractionState = {
       version: previous.version + 1,
       phase: 'ACTIVE',
@@ -14126,6 +15838,8 @@ export class DocumentUtilityOverlayHost {
       transactionLocalTargetIndex: 0,
       transactionId: previous.transactionId,
       leaseToken: previous.leaseToken,
+      targetMode: groupMemberCount > 0 ? 'group' : 'single',
+      ...(groupMemberCount > 0 ? { groupMemberCount } : {}),
     }
     this.refreshDrawerActiveRow()
   }
@@ -14184,7 +15898,14 @@ export class DocumentUtilityOverlayHost {
       const next = transition.next
       const nextDiag = next.diagnosticId != null ? this.diagnosticById(next.diagnosticId) : null
       const isMultiTarget = nextDiag?.location?.kind === 'multi-target'
+      const isGroupNext = nextDiag?.location?.kind === 'target-group'
       const nextIndex = next.diagnosticTargetIndex
+      // Target Group V1 §19 — positive coverage of the group activation sizes.
+      if (isGroupNext && nextDiag?.location?.kind === 'target-group') {
+        const memberCount = nextDiag.location.targets.length
+        if (memberCount === 2) this.coverageTargetGroupV1.targetGroupTwoMemberActivationCount++
+        if (memberCount >= 3) this.coverageTargetGroupV1.targetGroupThreeMemberActivationCount++
+      }
       if (isMultiTarget && nextIndex != null && next.diagnosticId != null) {
         if (nextIndex === 0) this.coverageMultiTargetV2.multiTargetFirstSubtargetActivationCount++
         if (nextIndex >= 1) this.coverageMultiTargetV2.multiTargetSecondSubtargetActivationCount++
@@ -14195,6 +15916,12 @@ export class DocumentUtilityOverlayHost {
       if (transition.action === 'SWITCH') {
         const prev = transition.previous
         const sameDiagnostic = prev.diagnosticId === next.diagnosticId
+        // Target Group V1 §12 — a group SWITCH (member0 → member1) must NEVER
+        // happen; the same-diagnostic group key makes it a DEACTIVATE instead.
+        if (sameDiagnostic && isGroupNext) {
+          this.countersTargetGroupV1.targetGroupTargetSwitchCount++
+          this.countersTargetGroupV1.targetGroupRepeatedClickNotDeactivateCount++
+        }
         if (sameDiagnostic && isMultiTarget) {
           if (prev.diagnosticTargetIndex === 0 && nextIndex === 1) {
             this.coverageMultiTargetV2.multiTargetSwitch1To2Count++
@@ -14258,6 +15985,9 @@ export class DocumentUtilityOverlayHost {
     this.pendingClosureAuditVersion = version
     const emit = (): void => {
       this.pendingClosureAuditVersion = null
+      // §32 — the post-settle boundary is the last point of the click: measure the
+      // REAL Drawer viewport here (after every sync patch / visual commit).
+      this.finalizeDrawerClickViewportProbe('POST_SETTLE')
       this.emitPostSettleClosureAuditV2(clickSequence)
     }
     if (typeof requestAnimationFrame !== 'function') {
@@ -14285,11 +16015,15 @@ export class DocumentUtilityOverlayHost {
     // §14.2 — exactly ONE active target. A HEADING target is carried by the
     // text-tight heading emphasis; any other target is carried by the locate frame
     // (the two are mutually exclusive, never additive).
+    // VNext §13 — a `text-tight-multi-target` group owns N heading targets
+    // carried by ONE transaction, so the expected/target count is its real N.
+    const groupCount = this.headingActiveGroupTargetCount
     const activeTargetCount = st.phase !== 'ACTIVE'
       ? 0
       : activeTargetIsHeading
-        ? Math.min(1, activeWrappers)
+        ? (groupCount > 0 ? Math.min(groupCount, activeWrappers) : Math.min(1, activeWrappers))
         : (locateFrameCommitted ? 1 : 0)
+    const activeTargetCountExpected = groupCount > 0 ? groupCount : 1
     const drawerRowsRendered = this.drawerEl != null
       && this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
     const selectedActiveRowCount = this.drawerEl
@@ -14304,6 +16038,7 @@ export class DocumentUtilityOverlayHost {
       selectedActiveRowCount,
       drawerRowsRendered,
       activeTargetCount,
+      activeTargetCountExpected,
       activeFillCount: fillFacts.fillCount,
       activeFillCountMeasurable: styleSheets > 0,
       activeVisualWithoutOwner: this.headingActiveMarkerIdentity != null && st.phase !== 'ACTIVE',
@@ -14351,6 +16086,14 @@ export class DocumentUtilityOverlayHost {
     const st = this.diagnosticInteractionState
     const facts = this.measurePostSettleDomFactsV2(st)
     const verdict = evaluatePostSettleClosure(facts)
+    // ── V2 §17/§18 — the FINAL decision merges the interaction closure with the
+    // SEMANTIC locate outcome. A clean atomic teardown (cleanup PASS) can no
+    // longer be reported as a successful transaction when the semantic locate
+    // of THIS transaction failed.
+    const finalDecisionV2 = computeInteractionFinalDecision({
+      interactionClosureDecision: verdict.decision,
+      featureLocateDecision: this.lastFeatureLocateDecision,
+    })
     if (st.phase === 'ACTIVE' && facts.activeTargetIsHeading && facts.activeHeadingFragmentCount < 1) {
       this.countersActiveStateMachineV2.activeWithZeroFill++
     }
@@ -14474,8 +16217,18 @@ export class DocumentUtilityOverlayHost {
       fixtureResourceV1GateReport: this.getFixtureResourceV1GateReport(),
       fixtureResourceV1CoverageReport: this.getFixtureResourceV1CoverageReport(),
       fixtureResourceV1GateDecision: this.getFixtureResourceV1GateDecision().decision,
-      decision: verdict.decision,
-      reasons: verdict.reasons.join('|') || 'CLOSURE_OK',
+      // ── V2 §17/§18 — interaction closure and SEMANTIC locate are SEPARATE.
+      // A clean atomic teardown must never mask a semantic locate FAILURE.
+      interactionClosureDecisionV2: verdict.decision,
+      semanticLocateDecisionV2: this.lastFeatureLocateDecision,
+      // ── V2.3.2 §19/§20 — the V2 LOCATOR acceptance surface (runtime
+      // hard-gate + per-container binding coverage), so an acceptance run is
+      // self-describing instead of requiring a separate developer-only call.
+      figureLocatorV2GateReport: this.getFigureDiagnosticLocatorV2GateReport(),
+      figureLocatorV2CoverageReport: this.getFigureDiagnosticLocatorV2CoverageReport(),
+      figureLocatorV2GateDecision: this.getFigureDiagnosticLocatorV2GateDecision().decision,
+      decision: finalDecisionV2.decision,
+      reasons: finalDecisionV2.reason,
     })
   }
 
@@ -14536,11 +16289,16 @@ export class DocumentUtilityOverlayHost {
       transactionLocalTargetIndex: 0,
       transactionTargetCount: 1,
     })
+    const groupMemberCount = this.targetGroupMemberCount(diagnosticId)
     const click: DiagnosticClick = {
       diagnosticId,
       targetKey: clickedTargetKey,
       diagnosticTargetIndex: indexAuthority.canonicalDiagnosticTargetIndex,
       transactionLocalTargetIndex: indexAuthority.transactionLocalTargetIndex,
+      // Target Group V1 §11 — carry the interaction MODE onto the state so every
+      // downstream authority (cursor guard / closure count / audit) is mode-explicit.
+      targetMode: groupMemberCount > 0 ? 'group' : 'single',
+      ...(groupMemberCount > 0 ? { groupMemberCount } : {}),
     }
     this.emitTargetIndexAuthorityAudit({
       diagnosticId,
@@ -14608,6 +16366,9 @@ export class DocumentUtilityOverlayHost {
     const committed = transition.action === 'DEACTIVATE'
       ? reduceDiagnosticClick(previous, click, null, null)
       : transition
+    // ── Drawer Viewport Stability V1 §32 — capture the Drawer viewport BEFORE the
+    // transition commits, so an active-only click can be PROVEN to leave it intact.
+    this.beginDrawerClickViewportProbe(committed.action, diagnosticId, clickedTargetIndex)
     this.commitDiagnosticTransitionV2(committed, clickSequence)
     const previousOwner = ownerOf(previous)
 
@@ -14623,6 +16384,8 @@ export class DocumentUtilityOverlayHost {
       })
       this.deactivateTeardownCommitted = true
       this.emitHeadingPostReconcileClosure('SAME_TARGET_DEACTIVATE_TEARDOWN_COMMITTED')
+      // §32 — DEACTIVATE is an ACTIVE-only change: prove the Drawer viewport held.
+      this.finalizeDrawerClickViewportProbe('DEACTIVATE_TEARDOWN_COMMITTED')
       this.schedulePostSettleClosureV2(clickSequence)
       return
     }
@@ -14735,6 +16498,11 @@ export class DocumentUtilityOverlayHost {
     tx.targetIndex = targetIndex
     tx.targetCount = targetCount
     this.lastLocateTargetCounts.set(diagnosticId, targetCount)
+    // Target Group V1 §13 — the ONE group locate member index (must stay 0 = the
+    // scroll anchor). Recorded so a divergence from the state owner is provable.
+    if (this.isTargetGroupDiagnostic(diagnosticId)) {
+      this.lastTargetGroupLocateMemberIndex = targetIndex
+    }
 
     const resolveCtx: DiagnosticLocationResolveContext = {
       documentKey: currentKey,
@@ -18450,6 +20218,82 @@ export class DocumentUtilityOverlayHost {
     const sourceOccurrenceVerifyOk = !r5VerifyApplies
       ? true
       : (identityMatch && occurrenceMatch && sourceRangeIdentityMatch && sourceRangeOffsetMatch)
+    // ── V2 §9/§10/§11/§38 — SOURCE-BLOCK semantic verification.
+    //
+    // A structure diagnostic targets the WHOLE offending Markdown block. "Some
+    // DOM is visible in the editor" is NOT proof that it is the EXPECTED block,
+    // so `targetVisible` may NEVER rescue an identity failure. The occurrence
+    // contract does not apply to a structure block (N/A), and the structure
+    // path must not borrow the occurrence audit's PASS.
+    const locationV2 = diag.location
+    const isSourceBlockV2 = locationV2?.kind === 'source-block'
+    const bindingV2 = this.lastSourceBlockBindingV2
+    const boundForThisBlock = bindingV2 != null && bindingV2.sourceBlockIdentity === (isSourceBlockV2 ? locationV2.sourceBlockIdentity : null)
+    const expectedSourceBlockIdentity = isSourceBlockV2 ? locationV2.sourceBlockIdentity : null
+    // ── V2.3 §10/§13 — the resolved source provenance comes from the BINDING
+    // RESULT (the source record that actually participated in candidate
+    // construction). The verify never re-queries the DOM for a source line, and
+    // it never back-fills from the diagnostic's expected fields.
+    const resolvedSourceBlockIdentity = isSourceBlockV2 && boundForThisBlock ? bindingV2.sourceBlockIdentity : null
+    const resolvedSourceStartV2: number | null = isSourceBlockV2 && boundForThisBlock ? bindingV2.sourceStart : null
+    const resolvedSourceEndV2: number | null = isSourceBlockV2 && boundForThisBlock ? bindingV2.sourceEnd : null
+    // §36 — BOUND additionally requires a complete provenance record (unique
+    // candidate + source identity/span + connected DOM target).
+    const provenanceOk = !isSourceBlockV2
+      || (boundForThisBlock && bindingV2.provenanceComplete)
+    const sourceBlockVerify = verifySourceBlockIdentity({
+      expectedSourceBlockIdentity,
+      expectedSourceStart: isSourceBlockV2 ? locationV2.sourceStart : null,
+      expectedSourceEnd: isSourceBlockV2 ? locationV2.sourceEnd : null,
+      resolvedSourceBlockIdentity,
+      resolvedSourceStart: resolvedSourceStartV2,
+      resolvedSourceEnd: resolvedSourceEndV2,
+      candidateCount: isSourceBlockV2 ? (boundForThisBlock ? bindingV2.candidateCount : 0) : 1,
+      targetVisible,
+    })
+    if (isSourceBlockV2) {
+      emitRuntimeAudit(SOURCE_BLOCK_IDENTITY_AUDIT, {
+        transactionId: tx.id,
+        diagnosticId: diag.id,
+        expectedSourceBlockIdentity,
+        resolvedSourceBlockIdentity,
+        domBlockIdentity: boundForThisBlock ? bindingV2.domBlockIdentity : null,
+        containerKind: boundForThisBlock ? bindingV2.sourceContainerKind : null,
+        provenanceComplete: boundForThisBlock ? bindingV2.provenanceComplete : false,
+        containerKindMatch: boundForThisBlock ? bindingV2.containerKindMatch : false,
+        semanticTextMatch: boundForThisBlock ? bindingV2.semanticTextMatch : null,
+        provenanceOk,
+        expectedSourceStart: locationV2.sourceStart,
+        expectedSourceEnd: locationV2.sourceEnd,
+        resolvedSourceStart: resolvedSourceStartV2,
+        resolvedSourceEnd: resolvedSourceEndV2,
+        identityMatch: sourceBlockVerify.identityMatch,
+        sourceSpanMatch: sourceBlockVerify.sourceSpanMatch,
+        sourceSpanResolved: sourceBlockVerify.sourceSpanResolved,
+        candidateCount: isSourceBlockV2 ? (boundForThisBlock ? bindingV2.candidateCount : 0) : 1,
+        targetVisible,
+        occurrenceMatch: 'N/A',
+        occurrenceApplicable: false,
+        semanticDecision: sourceBlockVerify.semanticDecision,
+        visibilityDecision: sourceBlockVerify.visibilityDecision,
+        decision: sourceBlockVerify.semanticDecision,
+        reason: sourceBlockVerify.reason,
+      })
+      // §34 — the V2 gate accounting (only REAL violations, never a synthetic one).
+      if (sourceBlockVerify.semanticDecision === 'FAIL') {
+        if (sourceBlockVerify.reason === 'SOURCE_BLOCK_IDENTITY_MISMATCH') this.countersFigureLocatorV2.structureIdentityMismatch++
+        if (boundForThisBlock) {
+          if (bindingV2.sourceContainerKind === 'list-item') this.countersFigureLocatorV2.structureListItemLocateFail++
+          if (bindingV2.sourceContainerKind === 'blockquote') this.countersFigureLocatorV2.structureBlockquoteLocateFail++
+        }
+      }
+      if (boundForThisBlock && sourceBlockVerify.semanticDecision === 'PASS') {
+        // §35 — positive per-container coverage (only on a real exact binding).
+        if (bindingV2.sourceContainerKind === 'paragraph') this.countersFigureLocatorV2Coverage.paragraphBindingRuntime++
+        else if (bindingV2.sourceContainerKind === 'list-item') this.countersFigureLocatorV2Coverage.listItemBindingRuntime++
+        else if (bindingV2.sourceContainerKind === 'blockquote') this.countersFigureLocatorV2Coverage.blockquoteBindingRuntime++
+      }
+    }
     const rectRecord = (r: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null | undefined) =>
       r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height } : null
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-VERIFY-INVARIANT', {
@@ -18473,9 +20317,25 @@ export class DocumentUtilityOverlayHost {
       visibleEditorRect: visibleEditorRect ? rectRecord(visibleEditorRect) : null,
       unobscuredVisibleEditorRect: unobscuredRect ? rectRecord(unobscuredRect) : null,
       identityMatch, occurrenceMatch, targetVisible, hasRealLayout,
-      sourceOccurrenceDecision: sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL',
-      decision: !hasRealLayout ? 'SKIP_HEADLESS' : (targetVisible && sourceOccurrenceVerifyOk) ? 'PASS' : 'FAIL',
-      reason: !hasRealLayout ? 'NO_REAL_LAYOUT' : targetVisible ? 'TARGET_VISIBLE_IN_EDITOR' : 'TARGET_OUTSIDE_VISIBLE_EDITOR',
+      // V2 §11 — a source-block has NO occurrence contract: report N/A instead
+      // of claiming SOURCE_OCCURRENCE_IDENTITY_OK while every field is null.
+      sourceOccurrenceDecision: isSourceBlockV2 ? 'N/A' : (sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL'),
+      semanticIdentityMatchV2: isSourceBlockV2 ? sourceBlockVerify.identityMatch : null,
+      sourceSpanMatchV2: isSourceBlockV2 ? sourceBlockVerify.sourceSpanMatch : null,
+      semanticDecisionV2: isSourceBlockV2 ? sourceBlockVerify.semanticDecision : null,
+      visibilityDecisionV2: isSourceBlockV2 ? sourceBlockVerify.visibilityDecision : null,
+      // §10/§17 — a semantic identity failure is a FAIL even when the target is
+      // visible (`TARGET_VISIBLE_IN_EDITOR` may never rescue it).
+      decision: !hasRealLayout
+        ? 'SKIP_HEADLESS'
+        : (isSourceBlockV2
+          ? (targetVisible && sourceBlockVerify.semanticDecision === 'PASS' ? 'PASS' : 'FAIL')
+          : (targetVisible && sourceOccurrenceVerifyOk ? 'PASS' : 'FAIL')),
+      reason: !hasRealLayout
+        ? 'NO_REAL_LAYOUT'
+        : (isSourceBlockV2
+          ? sourceBlockVerify.reason
+          : (targetVisible ? 'TARGET_VISIBLE_IN_EDITOR' : 'TARGET_OUTSIDE_VISIBLE_EDITOR')),
     })
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-HIGHLIGHT-VISIBILITY-INVARIANT', {
       transactionId: tx.id, diagnosticId: diag.id,
@@ -18496,6 +20356,14 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R5 §12 — the SOURCE OCCURRENCE gate runs BEFORE the visual commit: a
     // perfect R4 document-space rect on the WRONG token is still a failure. A
     // failed gate NEVER commits (so no wrong marker can ever be painted).
+    // ── V2 §10/§17/§38 — a SOURCE-BLOCK semantic failure is TERMINAL: it can
+    // never be rescued by visibility and never be masked by a clean cleanup.
+    // It is decided BEFORE any visual commit, so a wrong block is never painted.
+    if (isSourceBlockV2 && (sourceBlockVerify.semanticDecision === 'FAIL' || !provenanceOk)) {
+      this.lastLocateVisualGateOk = false
+      this.clearDiagnosticLocateVisual('SOURCE_BLOCK_SEMANTIC_FAIL')
+      return false
+    }
     const visualCommitted = !r5.blocksCommit && (!hasRealLayout || (targetConnected && targetVisible))
     if (r5.blocksCommit) {
       for (const check of r5.gate.failedChecks) {
@@ -18568,10 +20436,17 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R8 §15 — a failure path must never lose a pending figure audit.
     if (this.pendingFigureTargetAudit) this.emitPendingFigureTargetAudit(0)
     if (commit && tx.targetCount > 1) {
-      // Commit the NEXT index (targetIndex+1 mod count) for the following click.
-      this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
+      // Target Group V1 §12 — DEFENSIVE: a group never advances the cursor.
+      if (this.isTargetGroupDiagnostic(tx.diagnosticId)) {
+        this.countersTargetGroupV1.targetGroupCursorAdvanceCount++
+      } else {
+        // Commit the NEXT index (targetIndex+1 mod count) for the following click.
+        this.multiTargetCursor.set(tx.diagnosticId, (tx.targetIndex + 1) % tx.targetCount)
+      }
     }
-    const committedNext = commit && tx.targetCount > 1 ? (tx.targetIndex + 1) % tx.targetCount : null
+    const committedNext = commit && tx.targetCount > 1 && !this.isTargetGroupDiagnostic(tx.diagnosticId)
+      ? (tx.targetIndex + 1) % tx.targetCount
+      : null
     const committedIndex = commit ? (tx.targetCount === 1 ? 0 : tx.targetIndex) : null
     // V5.8 — emit the single-click offscreen audit + evaluate the commit-time
     // hard gates BEFORE the terminal unlock (facts are still reachable).
@@ -19147,6 +21022,38 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * V2 §9 — the SOURCE-side ordinal of an IMAGE-ONLY block (its visible text is
+   * empty) among all PRECEDING image-only blocks.
+   *
+   * An image-only block (`- ![](a.png)`, `> ![](a.png)`, `![](a.png)`) has no
+   * text signature — every such block normalizes to the empty string — so the
+   * ordinal correspondence within that class is the only deterministic
+   * source→DOM link. The caller pairs it with the DOM-side list in document
+   * order and verifySourceBlockIdentity still has the final say.
+   */
+  private countPrecedingImageOnlyBlocks(startLine: number, expectedKind = 'paragraph'): number {
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    if (markdown == null || startLine <= 0) return 0
+    const lines = markdown.split(/\r?\n/)
+    let count = 0
+    for (let i = 0; i < startLine && i < lines.length; i++) {
+      const cur = lines[i]
+      if (cur.trim() === '') continue
+      const prev = i === 0 ? '' : lines[i - 1]
+      const isBlockStart = prev.trim() === '' || /^\s*(?:[-*+]|\d+[.)])\s/.test(cur)
+      if (!isBlockStart) continue
+      if (!/!\[[^\]]*\]\([^)]*\)/.test(cur)) continue
+      if (normalizeSourceAnchorText(stripInlineResourceSyntax(stripBlockLevelMarkers(cur))) !== '') continue
+      // V2.3.2 §1.3 — count within the SAME structural class so the source↔DOM
+      // ordinal correspondence stays cardinality-consistent.
+      const kind = /^\s*>/.test(cur) ? 'blockquote' : (/^\s*(?:[-*+]|\d+[.)])\s/.test(cur) ? 'list-item' : 'paragraph')
+      if (kind !== expectedKind) continue
+      count++
+    }
+    return count
+  }
+
+  /**
    * Phase 7R.3.11.8B.7.3 — resource semantic resolution against the CURRENT
    * DOM: find the occurrence-th live element whose normalized destination
    * equals the diagnostic's. For 'image' the element is the <img> (broken
@@ -19288,24 +21195,132 @@ export class DocumentUtilityOverlayHost {
   }): SourceBlockBinding | null {
     const root = resolveBusinessContentRoot()
     if (!root) return null
+    // §6 — the canonical OWNING block of a Markdown block: a `<p>` inside
+    // `<li>` / `<blockquote>` is NOT the owning block; the list item /
+    // blockquote is. (A `> ![](a.png)` paragraph must bind to its blockquote.)
+    const canonicalOwningBlock = (el: HTMLElement): HTMLElement => {
+      const li = el.closest('li')
+      if (li != null) return li
+      const bq = el.closest('blockquote')
+      if (bq != null) return bq
+      return el
+    }
+    const stashV2 = (_el: HTMLElement, binding: SourceBlockBinding, _decision: string): void => {
+      // V2.3 §9 — the WHOLE binding result (source provenance included) is
+      // carried to the verify stage; the transaction never degrades to
+      // `HTMLElement only` / `domBlockIdentity only`.
+      this.lastSourceBlockBindingV2 = binding
+    }
+    // V2.3 §6 — the SOURCE-side visible-semantic needle (images contribute no
+    // text; block-level markers are stripped). Computed ONCE, so every binding
+    // tier carries the same provenance.
+    const visibleNeedle = normalizeSourceAnchorText(
+      stripInlineResourceSyntax(stripBlockLevelMarkers(this.getSourceLineTextAt(input.startLine) ?? '')),
+    )
     // 1. exact Typora `data-line` stamp (the block's owning source line).
     const byLine = this.resolveSourceLine(input.startLine)
-    if (byLine) return this.bindAndAuditSourceBlock(byLine, 1, 'data-line', input)
-    // 2. text signature (+ the block ordinal for byte-identical blocks).
+    if (byLine) {
+      const owned = canonicalOwningBlock(byLine)
+      const binding = this.bindAndAuditSourceBlock(owned, 1, 'data-line', input, visibleNeedle)
+      stashV2(owned, binding, binding.decision)
+      return binding
+    }
+    // 2. source-text signature — three tiers, in order:
+    //    (a) the RAW line (the pre-existing contract);
+    //    (b) the VISIBLE text (inline image/link syntax stripped) — binds
+    //        `before ![](a.png) after`;
+    //    (c) the IMAGE-ONLY class (visible text is EMPTY): bind the canonical
+    //        owning block at the same SOURCE-side ordinal within that class.
+    //        `data-line` is unavailable in this Typora build, so this ordinal
+    //        correspondence is the only deterministic source→DOM link for
+    //        `- ![](a.png)` / `> ![](a.png)`; a wrong pick is still caught by
+    //        verifySourceBlockIdentity (FAIL — never a silent wrong block).
     const firstLine = this.getSourceLineTextAt(input.startLine)
-    const needle = normalizeSourceAnchorText(firstLine ?? '')
-    if (needle !== '') {
-      const matches: HTMLElement[] = []
+    const rawLineText = firstLine ?? ''
+    const matchBySignature = (needle: string): HTMLElement[] => {
+      if (needle === '') return []
+      const found = new Set<HTMLElement>()
       for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,figure,blockquote,li,pre,h1,h2,h3,h4,h5,h6,table'))) {
-        if (normalizeSourceAnchorText(el.textContent) === needle) matches.push(el)
+        if (normalizeSourceAnchorText(el.textContent) === needle) found.add(canonicalOwningBlock(el))
       }
-      if (matches.length > 1) {
-        // §9 — the source block ordinal disambiguates byte-identical blocks
-        // deterministically (never a random / first pick).
-        const idx = Math.max(0, Math.min(matches.length - 1, Math.floor(input.sourceBlockOrdinal)))
-        return this.bindAndAuditSourceBlock(matches[idx], matches.length, 'text-ordinal', input)
+      return [...found]
+    }
+    let candidates = matchBySignature(normalizeSourceAnchorText(rawLineText))
+    if (candidates.length === 0) candidates = matchBySignature(visibleNeedle)
+    // V2.3.2 §1.3 — the IMAGE-ONLY candidate inventory is captured so an empty
+    // candidate set is never a silent MISSING: the audit records WHAT the DOM
+    // actually exposed (tag / visible text / img count) and what the source
+    // derivation produced.
+    let imageOnlyDiagnostics: {
+      rawLineText: string
+      visibleNeedle: string
+      expectedKind: string
+      restrictedKind: string | null
+      sourceOrdinal: number
+      inventory: Array<{ tag: string; text: string; images: number; containerKind: string }>
+      candidateTags: string[]
+    } | null = null
+    if (candidates.length === 0 && visibleNeedle === '') {
+      // V2.3.2 §1.3 — an IMAGE-ONLY block has no visible text, so the class
+      // signature is (container kind + image-only + structural class). For a
+      // list-item / blockquote the candidate set is RESTRICTED to that container
+      // kind, and the source-side ordinal is counted within the SAME class, so
+      // the ordinal correspondence is cardinality-consistent by construction.
+      const expectedKind = this.sourceBlockContainerKindFromSource(input.sourceBlockIdentity)
+      // Only the two SPECIAL containers constrain the candidate class. Any other
+      // resolution (including an unresolvable source line) must FAIL OPEN and
+      // keep the pre-existing image-only behaviour — a kind filter that can
+      // collapse the candidate set to zero would turn "unknown" into "MISSING".
+      const restrictedKind = expectedKind === 'list-item' || expectedKind === 'blockquote' ? expectedKind : null
+      const imageOnly: HTMLElement[] = []
+      const inventory: Array<{ tag: string; text: string; images: number; containerKind: string }> = []
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,blockquote,li,figure'))) {
+        if (el.querySelector('img') == null) continue
+        const text = normalizeSourceAnchorText(el.textContent)
+        // V2.3.2 §1.3 — the DOM side MUST use the SAME visible-semantic
+        // projection as the source side. In this Typora build an image block
+        // keeps the image's RAW Markdown as (hidden) text content — e.g. the
+        // paragraph of `- ![](a.png)` reads `![](a.png)`, NOT `''`. Comparing
+        // raw `textContent` to `''` therefore never detected an image-only
+        // block, so `- ![](...)` / `> ![](...)` could never bind.
+        const domVisibleText = normalizeSourceAnchorText(stripInlineResourceSyntax(text))
+        const owned = canonicalOwningBlock(el)
+        const ownedKind = this.sourceBlockContainerKindOf(owned)
+        inventory.push({ tag: el.tagName.toLowerCase(), text, images: el.querySelectorAll('img').length, containerKind: ownedKind })
+        if (domVisibleText !== '') continue
+        if (restrictedKind != null && ownedKind !== restrictedKind) continue
+        if (!imageOnly.includes(owned)) imageOnly.push(owned)
       }
-      if (matches.length === 1) return this.bindAndAuditSourceBlock(matches[0], 1, 'text', input)
+      const srcIdx = this.countPrecedingImageOnlyBlocks(input.startLine, restrictedKind ?? 'paragraph')
+      imageOnlyDiagnostics = {
+        rawLineText,
+        visibleNeedle,
+        expectedKind,
+        restrictedKind,
+        sourceOrdinal: srcIdx,
+        inventory,
+        candidateTags: imageOnly.map((el) => el.tagName.toLowerCase()),
+      }
+      if (srcIdx >= 0 && srcIdx < imageOnly.length) candidates = [imageOnly[srcIdx]]
+    }
+    if (candidates.length > 0) {
+      // §8/§9 — ONE candidate is BOUND directly. For byte-identical blocks the
+      // SOURCE-side block ordinal (part of the source identity, never a DOM
+      // ordinal guess) disambiguates deterministically; the semantic identity
+      // verify still has the final say, so a wrong pick can never PASS.
+      const idx = candidates.length === 1
+        ? 0
+        : Math.max(0, Math.min(candidates.length - 1, Math.floor(input.sourceBlockOrdinal)))
+      const binding = this.bindAndAuditSourceBlock(
+        candidates[idx],
+        candidates.length,
+        candidates.length === 1 ? 'semantic-signature' : 'source-ordinal',
+        input,
+        visibleNeedle,
+        candidates.length === 1 ? 'N/A' : true,
+      )
+      stashV2(candidates[idx], binding, binding.decision)
+      return binding
     }
     // §27 — the MISSING binding is audited too (never a silent null).
     emitRuntimeAudit(FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT, {
@@ -19323,25 +21338,48 @@ export class DocumentUtilityOverlayHost {
       candidateCount: 0,
       decision: 'MISSING',
       reason: 'DOM_BLOCK_IDENTITY_UNRESOLVABLE',
+      // V2.3.2 §1.3 — WHY the image-only tier produced nothing (or whether it
+      // was skipped entirely because the source needle was NOT empty).
+      rawLineText,
+      visibleNeedle,
+      imageOnlyDiagnostics,
     })
-    return {
+    // V2.3 §9 — the FULL binding result is stashed so the verify can FAIL on
+    // `candidateCount === 0` (never a visible-only PASS).
+    const missingBinding: SourceBlockBinding = {
       element: null,
       domBlockIdentity: '',
       domTag: '',
       candidateCount: 0,
       decision: 'MISSING',
       bindingAuthority: 'none',
+      // V2.3 §6/§36 — the SOURCE provenance stays complete even when no DOM
+      // candidate was bound; only the DOM side is absent.
+      sourceBlockIdentity: input.sourceBlockIdentity,
+      sourceStart: input.sourceStart,
+      sourceEnd: input.sourceEnd,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      sourceContainerKind: this.sourceBlockContainerKindFromSource(input.sourceBlockIdentity),
+      sourceVisibleSemanticText: '',
+      semanticTextMatch: 'N/A',
+      containerKindMatch: false,
+      classOrdinalMatch: 'N/A',
+      provenanceComplete: false,
     }
+    this.lastSourceBlockBindingV2 = missingBinding
+    return missingBinding
   }
-
   /** Build the binding record AND emit the ONE Source↔DOM binding audit (§27). */
   private bindAndAuditSourceBlock(
     el: HTMLElement,
     candidateCount: number,
     authority: string,
     input: { sourceBlockIdentity: string; sourceStart: number; sourceEnd: number; startLine: number; endLine: number },
+    sourceVisibleSemanticText = '',
+    classOrdinalMatch: boolean | 'N/A' = 'N/A',
   ): SourceBlockBinding {
-    const binding = this.makeSourceBlockBinding(el, candidateCount, authority)
+    const binding = this.makeSourceBlockBinding(el, candidateCount, authority, input, sourceVisibleSemanticText, classOrdinalMatch)
     emitRuntimeAudit(FIGURE_SOURCE_DOM_BLOCK_BINDING_AUDIT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       sourceRevision: this.diagnostics.getSnapshot()?.sourceRevision ?? null,
@@ -19359,31 +21397,103 @@ export class DocumentUtilityOverlayHost {
       reason: isResolvableDomBlockIdentity(binding.domBlockIdentity)
         ? 'DOM_BLOCK_IDENTITY_RESOLVABLE'
         : 'DOM_BLOCK_IDENTITY_UNRESOLVABLE',
+      // ── V2.3 §6/§35/§36 — the provenance must be VISIBLE in the same audit,
+      // and `BOUND` is only legitimate when it is complete.
+      sourceVisibleSemanticText: binding.sourceVisibleSemanticText,
+      sourceContainerKind: binding.sourceContainerKind,
+      semanticTextMatch: binding.semanticTextMatch,
+      containerKindMatch: binding.containerKindMatch,
+      classOrdinalMatch: binding.classOrdinalMatch,
+      provenanceComplete: binding.provenanceComplete,
     })
     return binding
   }
 
-  /** Build a binding record with the STABLE DOM block identity (§7). */
-  private makeSourceBlockBinding(el: HTMLElement, candidateCount: number, authority: string): SourceBlockBinding {
-    const parent = el.parentElement
-    const ordinal = parent ? Array.from(parent.children).indexOf(el) : 0
-    const firstImage = el.querySelector<HTMLElement>('img')
+  /** Build a binding record with the STABLE DOM block identity + source provenance (§7). */
+  private makeSourceBlockBinding(
+    el: HTMLElement,
+    candidateCount: number,
+    authority: string,
+    src: { sourceBlockIdentity: string; sourceStart: number; sourceEnd: number; startLine: number; endLine: number },
+    sourceVisibleSemanticText: string,
+    classOrdinalMatch: boolean | 'N/A',
+  ): SourceBlockBinding {
+    const sourceContainerKind = this.sourceBlockContainerKindFromSource(src.sourceBlockIdentity)
+    // ── V2.3.2 §1.3 — CANONICAL OWNING DOM BLOCK AUTHORITY.
+    // paragraph → p / list-item → li / blockquote → blockquote. An inner `<p>`
+    // must never be reported as the owner of a list-item or blockquote block
+    // (`containerKind=list-item` + `dom-block:p` is forbidden).
+    const ownerEl: HTMLElement = sourceContainerKind === 'list-item'
+      ? (el.closest('li') ?? el)
+      : sourceContainerKind === 'blockquote'
+        ? (el.closest('blockquote') ?? el)
+        : el
+    const parent = ownerEl.parentElement
+    const ordinal = parent ? Array.from(parent.children).indexOf(ownerEl) : 0
+    const firstImage = ownerEl.querySelector<HTMLElement>('img')
     const domBlockIdentity = buildDomBlockIdentity({
-      tag: el.tagName,
-      runtimeId: el.getAttribute('data-node-id') ?? el.getAttribute('data-block-id'),
-      dataLine: el.getAttribute('data-line'),
-      elementId: el.id !== '' ? el.id : null,
+      tag: ownerEl.tagName,
+      runtimeId: ownerEl.getAttribute('data-node-id') ?? ownerEl.getAttribute('data-block-id'),
+      dataLine: ownerEl.getAttribute('data-line'),
+      elementId: ownerEl.id !== '' ? ownerEl.id : null,
       ordinal,
-      structuralSignature: `${el.querySelectorAll('img').length}:${firstImage?.getAttribute('src') ?? ''}`,
+      structuralSignature: `${ownerEl.querySelectorAll('img').length}:${firstImage?.getAttribute('src') ?? ''}`,
     })
+    const domVisibleSemanticText = normalizeSourceAnchorText(ownerEl.textContent)
+    const domContainerKind = this.sourceBlockContainerKindOf(ownerEl)
+    // V2.3 §6 — the matching proof: the source-side signature must equal the
+    // DOM-side signature, and the container kind must agree.
+    const semanticTextMatch: boolean | 'N/A' = sourceVisibleSemanticText === ''
+      ? 'N/A'
+      : domVisibleSemanticText === sourceVisibleSemanticText
+    const containerKindMatch = domContainerKind === sourceContainerKind
+    // V2.3 §36 — BOUND requires: unique candidate + COMPLETE SOURCE PROVENANCE
+    // (identity + span + line) + a CONNECTED DOM target. `semanticTextMatch` /
+    // `containerKindMatch` are recorded as PROOF (§6) but are not part of the
+    // completeness rule, so a synthetic/whitespace-different DOM still binds and
+    // the proof remains auditable.
+    const provenanceComplete = src.sourceBlockIdentity !== ''
+      && src.sourceStart != null
+      && src.sourceEnd != null
+      && src.startLine >= 0
+      && ownerEl.isConnected
     return {
-      element: el,
+      element: ownerEl,
       domBlockIdentity,
-      domTag: el.tagName.toLowerCase(),
+      domTag: ownerEl.tagName.toLowerCase(),
       candidateCount,
-      decision: candidateCount === 1 ? 'BOUND' : 'AMBIGUOUS',
+      // §36 — BOUND requires a unique candidate AND complete provenance AND a
+      // connected DOM target; a proven-but-empty bind is never BOUND.
+      decision: candidateCount === 1 && provenanceComplete
+        ? 'BOUND'
+        : (candidateCount > 1 ? 'AMBIGUOUS' : 'MISSING'),
       bindingAuthority: authority,
+      sourceBlockIdentity: src.sourceBlockIdentity,
+      sourceStart: src.sourceStart,
+      sourceEnd: src.sourceEnd,
+      startLine: src.startLine,
+      endLine: src.endLine,
+      sourceContainerKind,
+      sourceVisibleSemanticText,
+      semanticTextMatch,
+      containerKindMatch,
+      classOrdinalMatch,
+      provenanceComplete,
     }
+  }
+
+  /**
+   * V2.3 §6 — the SOURCE-side container kind of a `src-block:<line>` identity,
+   * read from the CURRENT Markdown. This is provenance, not a DOM guess.
+   */
+  private sourceBlockContainerKindFromSource(sourceBlockIdentity: string): string {
+    const m = /^src-block:(\d+)$/.exec(sourceBlockIdentity)
+    if (m == null) return 'other'
+    const text = this.getSourceLineTextAt(Number.parseInt(m[1], 10)) ?? ''
+    if (text.trim() === '') return 'other'
+    if (/^\s*>/.test(text)) return 'blockquote'
+    if (/^\s*(?:[-*+]|\d+[.)])\s/.test(text)) return 'list-item'
+    return 'paragraph'
   }
 
   /** V1 §26/§51A — emit the ONE figure locator audit (locator kind + runtime facts). */
@@ -20259,6 +22369,20 @@ export class DocumentUtilityOverlayHost {
     item.setAttribute('data-target-index', String(p.targetIndex))
     item.setAttribute('role', 'button')
     item.setAttribute('tabindex', '0')
+    // ── Drawer Viewport Stability V1 §9/§25/§27 — HARD GUARDS on every row.
+    // EDITOR_SCROLL_OWNER != DIAGNOSTICS_DRAWER_SCROLL_OWNER: a diagnostic-row
+    // click must NEVER move the Drawer. A row `scrollIntoView` is trapped (and
+    // made provable), and `focus()` is ALWAYS forced to `{ preventScroll: true }`.
+    item.setAttribute('data-ink-drawer-row-mount', String(this.drawerRowMountGeneration))
+    ;(item as HTMLElement & { scrollIntoView: (...args: unknown[]) => void }).scrollIntoView = () => {
+      this.drawerRowScrollIntoViewCalledSinceClick = true
+      this.countersDrawerViewportV1.drawerForcedScrollIntoViewOnDiagnosticClick++
+    }
+    const realFocus = item.focus.bind(item)
+    item.focus = (options?: FocusOptions): void => {
+      if (options?.preventScroll !== true) this.drawerFocusCausedScrollSinceClick = true
+      realFocus({ preventScroll: true })
+    }
     // ── V5.14-R5 §8 — the Drawer keeps the FULL explanation; only the INLINE chip
     // is compressed. The presentation authority supplies a concise TITLE for the
     // strict first-H1 family (whose own `message` is a multi-line sentence with a
