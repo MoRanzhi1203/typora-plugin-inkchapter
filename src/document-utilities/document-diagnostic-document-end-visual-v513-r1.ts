@@ -953,5 +953,7 @@ export function resolveDiagnosticTargetGroupSize(location: {
 } | null | undefined): number {
   if (!location) return 1
   if (location.kind === 'multi-target') return Array.isArray(location.targets) ? location.targets.length : 0
+  // Target Group V1 §15 — a target-group's member count is its declared size.
+  if (location.kind === 'target-group') return Array.isArray(location.targets) ? location.targets.length : 0
   return 1
 }

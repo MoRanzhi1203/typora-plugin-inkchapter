@@ -39,6 +39,46 @@ import {
   buildFigureOccurrenceIdentity,
   buildSourceBlockIdentity,
 } from './document-diagnostic-locator-authority-v1'
+// VNext §9/§11 — the ONE rule metadata authority (scope / presentation).
+import { getRuleMeta } from './document-diagnostic-location'
+// V1 — 单标题无正文 Hint：the canonical-heading source-line authority (Typora
+// `data-line` + the documented ATX text-key safety net). Reused so this rule
+// never builds a second Markdown heading parser.
+import {
+  collectCanonicalHeadingOwnedLines,
+  collectCanonicalHeadingSourceLines,
+  collectCanonicalHeadingTextKeys,
+} from './latent-atx-heading-marker'
+// VNext (Requirements Gap Closure V1) §12–§29 — the ONE pure source-only
+// analyzer authority for the new completeness / manual-numbering / block
+// structure / empty-object rules. It reads the Markdown ONLY (never the DOM).
+import {
+  analyzeDocumentCompleteness,
+  analyzeEmptySourceObjects,
+  analyzeDisplayFormulaBlocks,
+  analyzeTableBlocks,
+  detectManualNumberPrefix,
+  type SourceBlockSpan,
+} from './document-diagnostics-vnext-authority'
+// Internal Blank-Line Policy V1 §1/§3/§7 — the ONE threshold + block-gap
+// authority for `EXCESSIVE_INTERNAL_BLANK_LINES` (source-only, never DOM).
+import {
+  EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+  EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
+  INTERNAL_BLANK_LINE_POLICY,
+  analyzeInternalBlankLineGaps,
+  internalBlankGapIdentity,
+  internalBlankLineDetail,
+} from './document-diagnostic-internal-blank-lines-v1'
+
+/** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
+function lineTextAt(markdown: string | null, line: number): string {
+  if (markdown == null || !Number.isInteger(line) || line < 0) return ''
+  const lines = markdown.split('\n')
+  if (line >= lines.length) return ''
+  const raw = lines[line]
+  return raw.endsWith('\r') ? raw.slice(0, -1) : raw
+}
 
 export interface DiagnosticHeadingFact {
   level: number
@@ -231,16 +271,43 @@ export function resolveDocumentDiagnosticSeverity(
     // locate / visual target), so it is an ERROR, never a Warning.
     case 'FIGURE_BLOCK_STRUCTURE_INVALID':
       return 'error'
+    // VNext §18/§19 — a table / display formula that is NOT a standalone block
+    // breaks the object model the same way an invalid picture block does.
+    case 'TABLE_BLOCK_STRUCTURE_INVALID':
+    case 'FORMULA_BLOCK_STRUCTURE_INVALID':
+      return 'error'
+    // VNext §24 — a manual number prefix while automatic numbering is ON is a
+    // USER-content defect (it will collide with the generated number).
+    case 'HEADING_MANUAL_NUMBER_PREFIX':
+    case 'FIGURE_MANUAL_NUMBER_PREFIX':
+      return 'warning'
     // ── Constant WARNING rules ──
     // V5.12-R8 §9 — a missing local image is a resource-level WARNING (the
     // document structure is intact; only a referenced asset is absent), never
     // an error. Remote / data URLs can never reach this rule.
     case 'FIGURE_LOCAL_IMAGE_MISSING':
       return 'warning'
+    // Internal Blank-Line Policy V1 §2 — 3+ consecutive blank lines INSIDE the
+    // body is a document-FORMAT warning. Fixed across strict and loose mode and
+    // NEVER escalated to an error (a readable document with sloppy spacing).
+    case EXCESSIVE_INTERNAL_BLANK_LINES_CODE:
+      return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
     case 'DOCUMENT_INACTIVE':
     case 'DOCUMENT_SOURCE_UNAVAILABLE':
+    // VNext §13/§16/§17/§28 — completeness hints are HINTS in both modes.
+    case 'DOCUMENT_HEADINGS_ONLY_NO_BODY':
+    case 'SECTION_EMPTY':
+    case 'SECTION_ONLY_SUBHEADINGS':
+    case 'CODE_EMPTY_BLOCK':
+    case 'TABLE_EMPTY_CONTENT':
+    case 'FORMULA_EMPTY_CONTENT':
+    case 'BLOCKQUOTE_EMPTY':
+    // V1 §3 — a document that only owns a title is a completeness HINT, never a
+    // syntax error / structural warning. Constant across strict and loose mode:
+    // an incomplete document is incomplete in both.
+    case DOCUMENT_HEADING_ONLY_NO_BODY_CODE:
       return 'info'
     default:
       // Phase 7R.3.11.8B.4.1 — latent source syntax risk: strict=WARNING,
@@ -311,6 +378,20 @@ export interface DocumentDiagnosticsInput {
   links: readonly DiagnosticLinkFact[]
   canonicalDuplicateIdentities: readonly string[]
   captionDuplicateNames: readonly string[]
+  /**
+   * VNext §24 — which AUTOMATIC numbering systems are currently ON. A manual
+   * number prefix is only a defect while the corresponding auto-numbering would
+   * also emit a number (otherwise a literal `1.` prefix is plain text and MUST
+   * NOT be reported — `MANUAL_NUMBER_PREFIX_FALSE_POSITIVE_COUNT=0`).
+   * Absent = every system OFF (no manual-prefix rule runs).
+   */
+  numberingEnabled?: {
+    heading?: boolean
+    figure?: boolean
+    table?: boolean
+    code?: boolean
+    formula?: boolean
+  }
 }
 
 export interface DocumentDiagnosticsComputed {
@@ -322,6 +403,37 @@ export interface DocumentDiagnosticsComputed {
 
 const DOCUMENT_EMPTY_CODE = 'DOCUMENT_EMPTY'
 const SOURCE_UNAVAILABLE_CODE = 'DOCUMENT_SOURCE_UNAVAILABLE'
+
+/**
+ * V1 §2 — stable, unique, filterable, locatable id of the "a document that is
+ * only a title" completeness hint. Severity is `info` (the project's existing
+ * "提示 / hint" level — §3 forbids a NEW severity axis).
+ */
+export const DOCUMENT_HEADING_ONLY_NO_BODY_CODE = 'DOCUMENT_HEADING_ONLY_NO_BODY'
+
+// ── VNext (Requirements Gap Closure V1) rule codes ─────────────────────────
+/** §13 — MULTI-heading document without substantive body (mutually exclusive with the single-heading code above). */
+export const DOCUMENT_HEADINGS_ONLY_NO_BODY_CODE = 'DOCUMENT_HEADINGS_ONLY_NO_BODY'
+/** §16 — a heading whose section owns neither body nor child headings. */
+export const SECTION_EMPTY_CODE = 'SECTION_EMPTY'
+/** §17 — a heading whose whole subtree owns only descendant headings. */
+export const SECTION_ONLY_SUBHEADINGS_CODE = 'SECTION_ONLY_SUBHEADINGS'
+/** §24 — a heading text carrying a manual number prefix while auto-numbering is ON. */
+export const HEADING_MANUAL_NUMBER_PREFIX_CODE = 'HEADING_MANUAL_NUMBER_PREFIX'
+/** §24 — a figure name carrying a manual number prefix while auto-numbering is ON. */
+export const FIGURE_MANUAL_NUMBER_PREFIX_CODE = 'FIGURE_MANUAL_NUMBER_PREFIX'
+/** §18 — a table that is not a standalone block (list / blockquote marker). */
+export const TABLE_BLOCK_STRUCTURE_INVALID_CODE = 'TABLE_BLOCK_STRUCTURE_INVALID'
+/** §19 — a display formula that is not a standalone block. */
+export const FORMULA_BLOCK_STRUCTURE_INVALID_CODE = 'FORMULA_BLOCK_STRUCTURE_INVALID'
+/** §28 — an empty fenced code block. */
+export const CODE_EMPTY_BLOCK_CODE = 'CODE_EMPTY_BLOCK'
+/** §28 — a table with zero body rows. */
+export const TABLE_EMPTY_CONTENT_CODE = 'TABLE_EMPTY_CONTENT'
+/** §28 — an empty `$$` display formula (never blocks KNOWN_EMPTY numbering). */
+export const FORMULA_EMPTY_CONTENT_CODE = 'FORMULA_EMPTY_CONTENT'
+/** §28 — an empty blockquote. */
+export const BLOCKQUOTE_EMPTY_CODE = 'BLOCKQUOTE_EMPTY'
 
 // ── Standard EOF newline policy (Phase 7R.3.11.8B.8) ────────────────────
 // Supersedes the "exactly one trailing blank line" rule (7R.3.11.8B.7.x).
@@ -390,6 +502,53 @@ export function computeEofNewlinePolicy(markdown: string | null | undefined): Eo
   return { verdict: 'PASS', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
 }
 
+/**
+ * V1 §5/§6/§7/§8/§9 — "substantive non-heading content" authority for the
+ * `DOCUMENT_HEADING_ONLY_NO_BODY` hint (one boolean, no completeness score).
+ *
+ * SOURCE-based and canonical-heading-authority-driven: a source line counts as
+ * body content only when it is NOT blank and NOT owned by a canonical heading.
+ * The heading line numbers come from the canonical heading elements' Typora
+ * `data-line` — the SAME authority the latent-ATX scanner consumes — so this is
+ * never a second Markdown heading parser. An ATX-looking line inside a fenced
+ * code block, an escaped `\#`, or `#text` is simply NOT a canonical heading
+ * line and therefore stays "body content" (which is exactly what Typora
+ * renders). Plugin-injected DOM can never participate: the decision reads the
+ * SOURCE, never the rendered node count (§8).
+ *
+ * A setext heading's underline line (`===` / `---` directly beneath the heading
+ * text) belongs to the heading above it, so it is not body content either.
+ */
+export function hasSubstantiveNonHeadingContent(
+  markdown: string | null | undefined,
+  canonicalHeadingSourceLines: ReadonlySet<number>,
+): boolean {
+  if (markdown == null) return false
+  const lines = markdown.split('\n')
+  let previousLineWasHeading = false
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    // §7 — blank lines / pure whitespace are never body content.
+    if (line.trim() === '') {
+      previousLineWasHeading = false
+      continue
+    }
+    if (canonicalHeadingSourceLines.has(i)) {
+      previousLineWasHeading = true
+      continue
+    }
+    if (previousLineWasHeading && /^\s{0,3}(?:=+|-+)\s*$/.test(line)) {
+      previousLineWasHeading = false
+      continue
+    }
+    // §6/§24 — paragraph / list / blockquote / code / table / image / formula:
+    // any non-blank source line that no canonical heading owns is substantive.
+    return true
+  }
+  return false
+}
+
 /** Normalize a message so the same root cause deduplicates deterministically. */
 function normalizeIdentity(value: string | undefined | null): string {
   return (value ?? '').trim()
@@ -454,7 +613,24 @@ function makeDiagnostic(
   const locator = opts.locator ?? (opts.element
     ? { kind: opts.kind ?? category === 'heading' ? 'heading' : 'object', targetElement: opts.element }
     : undefined)
+  // VNext §9/§10/§11 — the RULE REGISTRY is the ONE metadata authority. Every
+  // published record is stamped with the rule's scope + presentation so a
+  // consumer never has to special-case a rule code.
+  const ruleMeta = getRuleMeta(code)
+  const metadata: Record<string, unknown> | undefined = ruleMeta == null && opts.metadata == null
+    ? undefined
+    : {
+        ...(opts.metadata ?? {}),
+        scope: opts.metadata?.['scope'] ?? ruleMeta?.scope,
+        reasonChip: opts.metadata?.['reasonChip'] ?? ruleMeta?.presentation.reasonChip,
+        passiveVisual: opts.metadata?.['passiveVisual'] ?? ruleMeta?.presentation.passiveVisual,
+        activeVisual: opts.metadata?.['activeVisual'] ?? ruleMeta?.presentation.activeVisual,
+        area: opts.metadata?.['area'] ?? ruleMeta?.area,
+      }
   return {
+    // §11 — WHOSE problem this is. The document authority only ever produces
+    // the document domain; runtime integrity is a separate model.
+    domain: 'document',
     id: `${category}:${code}:${targetIdentity || Math.random().toString(36).slice(2, 8)}`,
     documentKey: input.documentKey ?? '',
     severity,
@@ -464,7 +640,7 @@ function makeDiagnostic(
     detail: opts.detail,
     stableIdentity: opts.stableIdentity,
     targetIdentity: targetIdentity || undefined,
-    metadata: opts.metadata,
+    metadata,
     validityFingerprint: opts.validityFingerprint,
     locator,
     // V5.12-R6 §9 — a declared non-locatable notice carries NO location.
@@ -959,6 +1135,227 @@ export function computeDocumentDiagnostics(
       }
     }
 
+    // ── V1 §5/§10..§13 — DOCUMENT_HEADING_ONLY_NO_BODY (severity = hint) ─────
+    // Document SHAPE hint: the document owns EXACTLY ONE canonical heading and
+    // no substantive non-heading content whatsoever.
+    //
+    // TRIGGER (canonical):
+    //   headingCount === 1
+    //   && substantiveNonHeadingContentCount === 0
+    //   && documentIsEmpty === false
+    // `documentIsEmpty === false` is guaranteed structurally: the
+    // SEMANTIC-EMPTY short-circuit at the top of this function RETURNS BEFORE
+    // any content-level producer runs, so `DOCUMENT_EMPTY` and this hint can
+    // never coexist (§13). `markdown != null` is required because "no body" is
+    // not assertable without a source (a source-less document is the
+    // DOCUMENT_SOURCE_UNAVAILABLE concern, not this one).
+    //
+    // Scope is deliberately EXACTLY ONE heading (§25): a multi-heading document
+    // without body is a different rule and is not emitted here.
+    // Deliberately NOT gated on strictMode (§32): an incomplete document is
+    // equally incomplete in loose mode, and a coexisting higher-severity
+    // strict-H1 diagnostic never swallows this hint.
+    if (input.markdown != null && canonicalHeadingCount >= 1) {
+      const primaryHeading = input.headings[0]
+      // The heading's OWN source line is what makes the "no body" verdict
+      // trustworthy: it is the line the body scan must exclude. Two canonical
+      // authorities are reused (never a second heading parser): the Typora
+      // `data-line` stamp and the ATX text-key safety net used by the
+      // latent-ATX scanner.
+      const headingOwnedLines = collectCanonicalHeadingOwnedLines(
+        input.markdown,
+        collectCanonicalHeadingSourceLines(input.headings.map(h => h.element)),
+        collectCanonicalHeadingTextKeys(input.headings.map(h => ({ physicalLevel: h.level, text: h.text }))),
+      )
+      // No owned line ⇒ the canonical heading could not be located in the
+      // source at all ⇒ the shape is UNVERIFIABLE. Stay silent: an unverifiable
+      // verdict must never become a false positive.
+      if (headingOwnedLines.size > 0 && !hasSubstantiveNonHeadingContent(input.markdown, headingOwnedLines)) {
+        // §19 — stable identity comes from the canonical heading frame; the
+        // canonical source line is the fallback anchor (never the heading TEXT).
+        const stableIdentity = normalizeIdentity(primaryHeading?.stableIdentity)
+        const sourceLine = primaryHeading?.element?.getAttribute?.('data-line')
+        const lineNumber = sourceLine != null && sourceLine !== '' ? Number.parseInt(sourceLine, 10) : null
+        const hasLineAnchor = lineNumber != null && Number.isInteger(lineNumber)
+        if (canonicalHeadingCount === 1) {
+        const targetIdentity = `heading-only:${stableIdentity !== ''
+          ? stableIdentity
+          : hasLineAnchor ? `line:${lineNumber}` : 'single'}`
+        // §18 — the canonical target is the UNIQUE HEADING (never EOF / blank
+        // body / toolbar / drawer).
+        const location: DiagnosticLocation = stableIdentity !== ''
+          ? { kind: 'canonical-node', nodeKind: 'heading', stableIdentity }
+          : hasLineAnchor
+            ? { kind: 'source-range', startLine: lineNumber as number, startColumn: 0 }
+            : { kind: 'document-start' }
+        push(
+          makeDiagnostic(input, 'document', DOCUMENT_HEADING_ONLY_NO_BODY_CODE, '文档仅包含标题', {
+            detail: '当前文档只有一个标题，尚未包含正文内容。',
+            kind: 'heading',
+            stableIdentity: stableIdentity || undefined,
+            element: primaryHeading?.element ?? null,
+            targetIdentity,
+            metadata: {
+              ruleId: 'DOCUMENT-HEADING-ONLY-NO-BODY',
+              reason: 'HEADING_ONLY_NO_BODY',
+              headingCount: canonicalHeadingCount,
+              hasSubstantiveNonHeadingContent: false,
+              scope: 'document',
+              reasonChip: false,
+            },
+            // Reuses the EXISTING heading locator + Active State Machine V2 —
+            // no second locator, no second interaction state machine.
+            locator: primaryHeading?.element
+              ? { kind: 'heading', targetElement: primaryHeading.element }
+              : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+            location,
+          }),
+        )
+        } else {
+        // ── VNext §12/§13 — MULTI-HEADING document without body ────────────
+        // STRICTLY mutually exclusive with the single-heading hint above (this
+        // is an if/else on the SAME canonical heading count + the SAME bodyless
+        // verdict → SINGLE_AND_MULTI_HEADING_ONLY_COEXIST_COUNT=0 by construction).
+        //
+        // VNext Presentation Closure V1.1 §3/§5/§7/§44 — the semantic target set
+        // is EVERY canonical heading. Target Group V1 §4/§7 — it is ONE
+        // `target-group` diagnostic: the FIRST heading is the scroll anchor and
+        // the Drawer/locator identity anchor, while ALL headings are co-equal
+        // members (ONE Drawer row, N active members — never 1/N occurrences).
+        const multiTargetIdentity = `headings-only:${stableIdentity !== ''
+          ? stableIdentity
+          : hasLineAnchor ? `line:${lineNumber}` : 'multi'}`
+        const multiTargets: DiagnosticLocation[] = input.headings.map(h => {
+          if (h.stableIdentity) {
+            return { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: h.stableIdentity }
+          }
+          const hLine = h.element?.getAttribute?.('data-line')
+          if (hLine != null && hLine !== '') {
+            const n = Number.parseInt(hLine, 10)
+            if (Number.isInteger(n)) return { kind: 'source-range', startLine: n, startColumn: 0 }
+          }
+          return { kind: 'document-start' }
+        })
+        const groupAnchor: DiagnosticLocation = multiTargets[0] ?? { kind: 'document-start' }
+        push(
+          makeDiagnostic(input, 'document', DOCUMENT_HEADINGS_ONLY_NO_BODY_CODE, '文档只有标题结构', {
+            detail: '当前文档包含多个标题，但尚未包含实际正文内容。',
+            kind: 'heading',
+            stableIdentity: stableIdentity || undefined,
+            element: primaryHeading?.element ?? null,
+            targetIdentity: multiTargetIdentity,
+            metadata: {
+              ruleId: 'DOCUMENT-HEADINGS-ONLY-NO-BODY',
+              reason: 'HEADINGS_ONLY_NO_BODY',
+              headingCount: canonicalHeadingCount,
+              groupMemberCount: multiTargets.length,
+              hasSubstantiveNonHeadingContent: false,
+              scope: 'document',
+              reasonChip: false,
+            },
+            // §8 — the scroll anchor + DOM locator stay the FIRST heading (the
+            // existing heading locator; no second locator is introduced).
+            locator: primaryHeading?.element
+              ? { kind: 'heading', targetElement: primaryHeading.element }
+              : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+            location: { kind: 'target-group', scrollAnchor: groupAnchor, targets: multiTargets },
+          }),
+        )
+        }
+      }
+
+      // ── VNext §16/§17 — SECTION completeness ──────────────────────────────
+      // Only emitted when the WHOLE document HAS body (a fully bodyless
+      // document is already explained by the document-level hint above, so a
+      // section hint would only repeat the same root cause). §16/§17 are
+      // mutually exclusive per heading by construction.
+      const completeness = analyzeDocumentCompleteness(
+        input.markdown,
+        input.headings.map(h => ({ level: h.level, text: h.text })),
+        input.headings.map(h => h.element),
+        headingOwnedLines,
+      )
+      if (completeness.verifiable && !completeness.bodyless) {
+        for (const hint of completeness.sectionHints) {
+          const heading = input.headings[hint.headingIndex]
+          const hintIdentity = normalizeIdentity(heading?.stableIdentity)
+          const hintLineText = lineTextAt(input.markdown, hint.startLine)
+          const location: DiagnosticLocation = hintIdentity !== ''
+            ? { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: hintIdentity }
+            : {
+                kind: 'source-range',
+                startLine: hint.startLine,
+                startColumn: 0,
+                endLine: hint.endLine,
+                rawText: hintLineText,
+              }
+          const isOnlySubheadings = hint.code === SECTION_ONLY_SUBHEADINGS_CODE
+          push(
+            makeDiagnostic(input, 'heading', hint.code,
+              isOnlySubheadings ? '章节仅包含子标题' : '章节没有正文内容', {
+              detail: isOnlySubheadings
+                ? '当前章节下只有子标题，整个章节尚未包含实际正文内容。'
+                : '当前标题到下一个同级或更高级标题之间没有正文内容。',
+              kind: 'heading',
+              stableIdentity: hintIdentity || undefined,
+              element: heading?.element ?? null,
+              targetIdentity: `section:${hintIdentity !== '' ? hintIdentity : `line:${hint.startLine}`}`,
+              metadata: {
+                ruleId: isOnlySubheadings ? 'SECTION-ONLY-SUBHEADINGS' : 'SECTION-EMPTY',
+                reason: hint.code,
+                headingLevel: heading?.level ?? null,
+                sectionStartLine: hint.startLine,
+                sectionEndLine: hint.endLine,
+              },
+              locator: heading?.element
+                ? { kind: 'heading', targetElement: heading.element }
+                : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+              location,
+            }),
+          )
+        }
+      }
+
+      // ── VNext §24 — HEADING manual number prefix ──────────────────────────
+      // Only while heading auto-numbering is ON (otherwise a literal `1.` is
+      // plain text — MANUAL_NUMBER_PREFIX_FALSE_POSITIVE_COUNT=0).
+      if (input.numberingEnabled?.heading === true) {
+        for (const heading of input.headings) {
+          const match = detectManualNumberPrefix(heading.text)
+          if (!match) continue
+          const identity = normalizeIdentity(heading.stableIdentity)
+          const lineAttr = heading.element?.getAttribute?.('data-line')
+          const lineNo = lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) : null
+          const hasLine = lineNo != null && Number.isInteger(lineNo)
+          const location: DiagnosticLocation = identity !== ''
+            ? { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: identity }
+            : hasLine
+              ? { kind: 'source-range', startLine: lineNo as number, startColumn: 0, rawText: heading.text }
+              : { kind: 'document-start' }
+          push(
+            makeDiagnostic(input, 'heading', HEADING_MANUAL_NUMBER_PREFIX_CODE,
+              `标题文字包含手工编号「${match.matched}」`, {
+              detail: '当前已开启标题自动编号，标题文字中的手工编号会与自动编号同时出现，建议删除手工编号。',
+              kind: 'heading',
+              stableIdentity: identity || undefined,
+              element: heading.element,
+              targetIdentity: `manual-number:${identity !== '' ? identity : hasLine ? `line:${lineNo}` : 'heading'}`,
+              metadata: {
+                ruleId: 'HEADING-MANUAL-NUMBER-PREFIX',
+                reason: 'MANUAL_NUMBER_PREFIX',
+                family: match.family,
+                matched: match.matched,
+              },
+              locator: heading.element
+                ? { kind: 'heading', targetElement: heading.element }
+                : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+              location,
+            }),
+          )
+        }
+      }
+    }
+
     // ── Phase 7R.3.11.8B.8 — Standard EOF newline policy (all modes, raw
     //    source authority). The file MUST end with a terminal newline; 0~1
     //    extra trailing blank lines are legal; >=2 extra blank lines warn.
@@ -1003,6 +1400,66 @@ export function computeDocumentDiagnostics(
             },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
             location: { kind: 'document-end' },
+          }),
+        )
+      }
+    }
+
+    // ── Internal Blank-Line Policy V1 §1/§7/§8 — EXCESSIVE_INTERNAL_BLANK_LINES
+    //    Source-only candidate scan: a run of blank lines BETWEEN two sibling
+    //    content blocks. The block-gap authority itself already excludes
+    //      · blank lines inside a fenced code block / display formula / front
+    //        matter / HTML block (they are CONTENT — §12/§13/§14),
+    //      · the leading run before the first block (§11),
+    //      · the trailing EOF run (owned by the EOF rules above — §10),
+    //      · a loose list / lazy blockquote interior (§15).
+    //    ONE gap → ONE diagnostic: the stable identity is built from the two
+    //    block identities, never from a line index or the blank count, so
+    //    editing 3 → 4 → 5 → 6 blank lines keeps the SAME record (§20/§29).
+    if (input.markdown != null) {
+      for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
+        const gapIdentity = internalBlankGapIdentity(gap)
+        push(
+          makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
+            detail: internalBlankLineDetail(gap.actualBlankLines),
+            kind: 'document',
+            targetIdentity: gapIdentity,
+            metadata: {
+              ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
+              // §1 — the rule's OWN category / scope vocabulary. `category` on
+              // the record stays the legacy consumer grouping ('document').
+              ruleCategory: 'document-format',
+              scope: 'block-gap',
+              reasonChip: false,
+              passiveVisual: false,
+              activeVisual: true,
+              // §9/§33 — the block-gap facts travel on the record so the Drawer,
+              // the locator and the audits never re-derive them.
+              previousBlockIdentity: gap.previousBlockIdentity,
+              previousBlockKind: gap.previousBlockKind,
+              previousBlockStartLine: gap.previousBlockStartLine,
+              nextBlockIdentity: gap.nextBlockIdentity,
+              nextBlockKind: gap.nextBlockKind,
+              nextBlockStartLine: gap.nextBlockStartLine,
+              previousSourceEnd: gap.previousBlockSourceEnd,
+              nextSourceStart: gap.nextBlockSourceStart,
+              firstBlankLine: gap.firstBlankLine,
+              lastBlankLine: gap.lastBlankLine,
+              actualBlankLines: gap.actualBlankLines,
+              passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+              warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+            },
+            // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
+            // (and the active target) is the NEXT block: its proven VISIBLE text
+            // is the verification anchor, so the click shows the block the excess
+            // blanks precede. `source-range` never paints the whole blank band.
+            location: {
+              kind: 'source-range',
+              startLine: gap.nextBlockStartLine,
+              startColumn: 0,
+              sourceFingerprint: `internal-blank:${gapIdentity}`,
+              rawText: gap.nextBlockAnchorText,
+            },
           }),
         )
       }
@@ -1252,6 +1709,151 @@ export function computeDocumentDiagnostics(
     })
   }
 
+  // ── VNext §18/§19 — NON-STANDALONE table / display-formula blocks ─────────
+  // The source parser PROVES the block is not standalone (a list / blockquote
+  // marker is literally carried by the table's header/delimiter row or by the
+  // display formula's `$$` line). Never inferred from DOM position and never
+  // from a layout heuristic. Inline `$…$` math is never a display block.
+  if (structureSourceText != null) {
+    for (const span of analyzeTableBlocks(structureSourceText)) {
+      push(
+        makeDiagnostic(input, 'table', TABLE_BLOCK_STRUCTURE_INVALID_CODE,
+          '表格必须作为独立块插入', {
+          detail: '表格不能放在列表项或引用块中，请将表格移动到独立段落。',
+          kind: 'object',
+          targetIdentity: `table-structure:line:${span.startLine}`,
+          metadata: {
+            ruleId: 'TABLE-BLOCK-STRUCTURE-INVALID',
+            reason: 'NON_STANDALONE_TABLE_BLOCK',
+            containerKind: span.containerKind,
+            startLine: span.startLine,
+            endLine: span.endLine,
+            sourceStart: span.sourceStart,
+            sourceEnd: span.sourceEnd,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: span.startLine,
+            startColumn: span.startColumn,
+            endLine: span.endLine,
+            endColumn: span.endColumn,
+            sourceStart: span.sourceStart,
+            sourceEnd: span.sourceEnd,
+            sourceFingerprint: `table-structure:${span.startLine}`,
+            rawText: span.rawText,
+          },
+        }),
+      )
+    }
+    for (const span of analyzeDisplayFormulaBlocks(structureSourceText)) {
+      // A standalone display formula is VALID; an empty one belongs to §28.
+      if (span.containerKind == null || span.empty) continue
+      push(
+        makeDiagnostic(input, 'formula', FORMULA_BLOCK_STRUCTURE_INVALID_CODE,
+          '公式必须作为独立块插入', {
+          detail: '独立公式不能放在列表项或引用块中，请将公式移动到独立段落。',
+          kind: 'formula',
+          targetIdentity: `formula-structure:line:${span.startLine}`,
+          metadata: {
+            ruleId: 'FORMULA-BLOCK-STRUCTURE-INVALID',
+            reason: 'NON_STANDALONE_DISPLAY_FORMULA',
+            containerKind: span.containerKind,
+            startLine: span.startLine,
+            endLine: span.endLine,
+            sourceStart: span.sourceStart,
+            sourceEnd: span.sourceEnd,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: span.startLine,
+            startColumn: span.startColumn,
+            endLine: span.endLine,
+            endColumn: span.endColumn,
+            sourceStart: span.sourceStart,
+            sourceEnd: span.sourceEnd,
+            sourceFingerprint: `formula-structure:${span.startLine}`,
+            rawText: span.rawText,
+          },
+        }),
+      )
+    }
+
+    // ── VNext §28 — EMPTY source objects (hints only) ───────────────────────
+    // §20 — the empty-formula hint NEVER touches the numbering system, so a
+    // KNOWN_EMPTY formula keeps its number (EMPTY_FORMULA_NUMBERING_BLOCKED=0).
+    const emptyObjects = analyzeEmptySourceObjects(structureSourceText)
+    const pushEmpty = (
+      kindCode: string,
+      ruleId: string,
+      message: string,
+      detail: string,
+      category: DocumentDiagnosticCategory,
+      kind: 'object' | 'formula',
+      identityPrefix: string,
+      spans: readonly SourceBlockSpan[],
+    ): void => {
+      for (const span of spans) {
+        push(
+          makeDiagnostic(input, category, kindCode, message, {
+            detail,
+            kind,
+            targetIdentity: `${identityPrefix}:line:${span.startLine}`,
+            metadata: {
+              ruleId,
+              reason: 'EMPTY_SOURCE_OBJECT',
+              startLine: span.startLine,
+              endLine: span.endLine,
+              sourceStart: span.sourceStart,
+              sourceEnd: span.sourceEnd,
+            },
+            location: {
+              kind: 'source-range',
+              startLine: span.startLine,
+              startColumn: span.startColumn,
+              endLine: span.endLine,
+              endColumn: span.endColumn,
+              sourceStart: span.sourceStart,
+              sourceEnd: span.sourceEnd,
+              sourceFingerprint: `${identityPrefix}:${span.startLine}`,
+              rawText: span.rawText,
+            },
+          }),
+        )
+      }
+    }
+    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', emptyObjects.codeBlocks)
+    for (const span of emptyObjects.tables) {
+      push(
+        makeDiagnostic(input, 'table', TABLE_EMPTY_CONTENT_CODE, '表格没有数据行', {
+          detail: '当前表格只有表头，没有数据行。',
+          kind: 'object',
+          targetIdentity: `empty-table:line:${span.startLine}`,
+          metadata: {
+            ruleId: 'TABLE-EMPTY-CONTENT',
+            reason: 'EMPTY_SOURCE_OBJECT',
+            startLine: span.startLine,
+            endLine: span.endLine,
+            sourceStart: span.sourceStart,
+            sourceEnd: span.sourceEnd,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: span.startLine,
+            startColumn: span.startColumn,
+            endLine: span.endLine,
+            endColumn: span.endColumn,
+            sourceStart: span.sourceStart,
+            sourceEnd: span.sourceEnd,
+            sourceFingerprint: `empty-table:${span.startLine}`,
+            rawText: span.rawText,
+          },
+        }),
+      )
+    }
+    pushEmpty(FORMULA_EMPTY_CONTENT_CODE, 'FORMULA-EMPTY-CONTENT', '公式为空', '当前独立公式没有内容。', 'formula', 'formula', 'empty-formula', emptyObjects.formulas)
+    pushEmpty(BLOCKQUOTE_EMPTY_CODE, 'BLOCKQUOTE-EMPTY', '引用块为空', '当前引用块没有内容。', 'document', 'object', 'empty-blockquote', emptyObjects.blockquotes)
+  }
+
   // ── Figure diagnostics ──────────────────────────────
   const figureNames = input.figures.map(f => f.name)
   for (const name of duplicateNames(figureNames)) {
@@ -1470,6 +2072,104 @@ export function computeDocumentDiagnostics(
             rawLineOrdinal: occ.rawLineOrdinal,
             occurrenceWithinLine: occ.occurrenceWithinLine,
             // V1 §6/§11 — the owning source block identity + its ordinal.
+            sourceBlockIdentity,
+            sourceBlockOrdinal: occ.rawLineOrdinal,
+            figureOccurrenceIdentity: buildFigureOccurrenceIdentity(occurrenceIdentity),
+            sourceStart: occ.tokenStart,
+            sourceEnd: occ.tokenEnd,
+            tokenStart: occ.tokenStart,
+            tokenEnd: occ.tokenEnd,
+            destinationStart: occ.destinationStart,
+            destinationEnd: occ.destinationEnd,
+            startLine: occ.startLine,
+            endLine: occ.endLine,
+            rawText: occ.rawText,
+            altText: occ.altText,
+            resourceClass: occ.resourceClass,
+            localFileExists: occ.localFileExists,
+            sourceRevision: null,
+          },
+          location: {
+            kind: 'figure-occurrence',
+            occurrenceIdentity,
+            resourceKind: 'image',
+            rangeRole: 'figure-full-token',
+            startLine: occ.startLine,
+            startColumn: occ.startColumn,
+            endLine: occ.endLine,
+            endColumn: occ.endColumn,
+            rawText: occ.rawText,
+            sourceStart: occ.tokenStart,
+            sourceEnd: occ.tokenEnd,
+            sourceRangeIdentity,
+            canonicalDestination: occ.canonicalDestination,
+            rawDestination: occ.rawDestination,
+            occurrenceIndex: occIdx,
+            rawLineOrdinal: occ.rawLineOrdinal,
+            occurrenceWithinLine: occ.occurrenceWithinLine,
+            rawToken: occ.rawToken,
+            tokenStart: occ.tokenStart,
+            tokenEnd: occ.tokenEnd,
+            destinationStart: occ.destinationStart,
+            destinationEnd: occ.destinationEnd,
+          },
+        }),
+      )
+    }
+  }
+
+  // ── VNext §24 — FIGURE manual number prefix ───────────────────────────────
+  // The figure NAME is the Markdown image alt (the user's own source), so a
+  // manual number inside it is a DOCUMENT-domain defect — but only while figure
+  // auto-numbering is ON (otherwise it is plain text).
+  if (sourceFigureOccurrences && input.numberingEnabled?.figure === true) {
+    for (const occ of sourceFigureOccurrences) {
+      const match = detectManualNumberPrefix(occ.altText)
+      if (!match) continue
+      if (invalidFigureTokenStarts.has(occ.tokenStart)) continue
+      const occIdx = occ.occurrenceIndex
+      const sourceRangeIdentity = occ.sourceRangeIdentity ?? buildSourceRangeIdentity({
+        documentKey: input.documentKey,
+        sourceRevision: null,
+        resourceKind: 'image',
+        canonicalDestination: occ.canonicalDestination,
+        sourceStart: occ.tokenStart,
+        sourceEnd: occ.tokenEnd,
+        occurrenceIndex: occIdx,
+      })
+      const sourceBlockIdentity = buildSourceBlockIdentity(occ.startLine)
+      const occurrenceIdentity: DiagnosticFigureOccurrenceIdentity = {
+        documentKey: input.documentKey ?? null,
+        sourceRevision: input.sourceRevision ?? null,
+        sourceBlockIdentity,
+        sourceBlockOrdinal: occ.rawLineOrdinal,
+        tokenStart: occ.tokenStart,
+        tokenEnd: occ.tokenEnd,
+        rawLineOrdinal: occ.rawLineOrdinal,
+        occurrenceWithinLine: occ.occurrenceWithinLine,
+        destination: occ.canonicalDestination,
+      }
+      push(
+        makeDiagnostic(input, 'figure', FIGURE_MANUAL_NUMBER_PREFIX_CODE,
+          `图名包含手工编号「${match.matched}」`, {
+          detail: '当前已开启图片自动编号，图名中的手工编号会与自动编号同时出现，建议删除手工编号。',
+          targetIdentity: `figure-manual-number:${occ.canonicalDestination}${occIdx > 0 ? `:${occIdx + 1}` : ''}`,
+          kind: 'object',
+          metadata: {
+            ruleId: 'FIGURE-MANUAL-NUMBER-PREFIX',
+            reason: 'MANUAL_NUMBER_PREFIX',
+            family: match.family,
+            matched: match.matched,
+            resourceKind: 'image',
+            rangeRole: 'figure-full-token',
+            destination: occ.canonicalDestination,
+            rawDestination: occ.rawDestination,
+            canonicalDestination: occ.canonicalDestination,
+            rawToken: occ.rawToken,
+            sourceRangeIdentity,
+            occurrenceIndex: occIdx,
+            rawLineOrdinal: occ.rawLineOrdinal,
+            occurrenceWithinLine: occ.occurrenceWithinLine,
             sourceBlockIdentity,
             sourceBlockOrdinal: occ.rawLineOrdinal,
             figureOccurrenceIdentity: buildFigureOccurrenceIdentity(occurrenceIdentity),
