@@ -515,6 +515,16 @@ import {
   type BlockGapVisualV1Counters,
   type BlockGapVisualV1Coverage,
 } from './document-diagnostic-block-gap-visual-v1'
+// Blank-Space Warning Presentation Policy — the unified FILL_ONLY Warning band
+// shared by every blank-space Warning that has no gap/EOF carrier.
+import {
+  BLANK_SPACE_WARNING_MARKER_CLASS,
+  BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX,
+  BLANK_SPACE_WARNING_SEVERITY,
+  isBlankSpaceWarningCode,
+  isLeadingBlankSpaceWarningCode,
+  isTerminalNewlineBlankSpaceWarningCode,
+} from './blank-space-warning-presentation'
 // V7 §2 — the caption service's canonical runtime owner map (single writer).
 import { getCanonicalCaptionOwnerRoot, getCanonicalCaptionKind } from '../heading-numbering/caption-dom-adapter'
 import {
@@ -3934,6 +3944,9 @@ export class DocumentUtilityOverlayHost {
   private locateDocLayerHost: HTMLElement | null = null
   private locateDocLayerForcedPosition = false
   private locateDocCarrier: HTMLElement | null = null
+  /** Blank-Space Warning Presentation Policy — the unified FILL_ONLY warning band
+   *  carrier (T2 terminal-newline / T3 leading-H1; a locate carrier like the rest). */
+  private blankSpaceWarningCarrier: HTMLElement | null = null
   private locatePostCommitUserScrollCount = 0
   /** Frozen document-local committed visual (identities + local geometry). */
   private locateCommittedVisual: {
@@ -4053,6 +4066,9 @@ export class DocumentUtilityOverlayHost {
     // ── Presentation Stability Closure V1 §12 — the gap carrier is a locate
     // carrier and retires with the rest (never a stale gap visual).
     this.removeBlockGapVisual()
+    // Blank-Space Warning Presentation Policy — the unified warning band is a
+    // locate carrier too and must never outlive its diagnostic.
+    this.clearBlankSpaceWarningCarrier()
     if (this.locateDocCarrier) {
       try { this.locateDocCarrier.remove() } catch { /* noop */ }
       this.locateDocCarrier = null
@@ -10908,7 +10924,7 @@ export class DocumentUtilityOverlayHost {
     const layer = valid ? this.ensureLocateDocumentLayer() : null
     if (geometry && valid && layer) {
       const el = document.createElement('div')
-      el.className = BLOCK_GAP_VISUAL_CLASS
+      el.className = `${BLOCK_GAP_VISUAL_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
       el.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
       el.setAttribute('data-severity', severity)
       el.setAttribute('data-active', 'true')
@@ -10985,6 +11001,107 @@ export class DocumentUtilityOverlayHost {
       try { this.blockGapVisualEl.remove() } catch { /* noop */ }
       this.blockGapVisualEl = null
     }
+    // A gap carrier owns the band: retiring it also retires any unified band a
+    // previous blank-space Warning may have left behind.
+    this.clearBlankSpaceWarningCarrier()
+  }
+
+  /** Blank-Space Warning Presentation Policy — retire the unified warning band. */
+  private clearBlankSpaceWarningCarrier(): void {
+    if (this.blankSpaceWarningCarrier) {
+      try { this.blankSpaceWarningCarrier.remove() } catch { /* noop */ }
+    }
+    this.blankSpaceWarningCarrier = null
+  }
+
+  /**
+   * Blank-Space Warning Presentation Policy — the shared FILL_ONLY warning band.
+   *
+   * Paints the SAME band the reference `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE`
+   * (document-end synthetic EOF) uses, for the blank-space Warnings that own no
+   * gap / EOF carrier:
+   *   - the `STRICT_FIRST_H1_LEADING*` family → the empty zone ABOVE the first H1;
+   *   - `DOCUMENT_TERMINAL_NEWLINE_MISSING` → a minimal band right after the LAST
+   *     visible content block (the document end).
+   * T1 (`EXCESSIVE_INTERNAL_BLANK_LINES`) is intentionally excluded: its block-gap
+   * carrier is already the identical band.
+   */
+  private commitBlankSpaceWarningBand(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    targets: HTMLElement[],
+  ): void {
+    if (!isBlankSpaceWarningCode(diag.code)) return
+    // A block-gap OR synthetic-EOF carrier already owns the band for this locate.
+    if (this.isBlockGapVisualActive() || this.locateDocEndCarrier != null) return
+    const layer = this.ensureLocateDocumentLayer()
+    const hostRect = this.measureLocateRect(this.locateDocLayerHost)
+    const contentColumn = this.measureSemanticContentColumnRect()
+    if (!layer || !hostRect || !contentColumn) return
+    const viewportRect = this.resolveBlankSpaceWarningBandViewportRect(diag, targets, hostRect, contentColumn)
+    if (!viewportRect) return
+    if (viewportRect.bottom - viewportRect.top < BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX) return
+    const local = viewportRectToDocumentLocalRect({ viewportRect, contentHostRect: hostRect })
+    if (!local) return
+    this.clearBlankSpaceWarningCarrier()
+    const el = document.createElement('div')
+    el.className = `${DIAGNOSTIC_LOCATE_FRAME_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
+    el.setAttribute('data-ink-blank-space-warning', 'true')
+    el.setAttribute('data-ink-marker-kind', 'blank-space-warning')
+    el.setAttribute('data-severity', BLANK_SPACE_WARNING_SEVERITY)
+    el.setAttribute('data-target-kind', 'block')
+    el.setAttribute('data-presentation', 'full-frame')
+    el.setAttribute('data-coordinate-space', EOF_COORDINATE_SPACE)
+    el.setAttribute('aria-hidden', 'true')
+    el.style.cssText = `position:absolute;display:block;left:${Math.round(local.left)}px;top:${Math.round(local.top)}px;width:${Math.round(local.width)}px;height:${Math.round(local.height)}px;pointer-events:none;`
+    layer.appendChild(el)
+    this.blankSpaceWarningCarrier = el
+  }
+
+  /**
+   * Blank-Space Warning Presentation Policy — the band rect in VIEWPORT space.
+   *
+   * Leading: the empty zone from the content host top down to the first H1 top.
+   * Terminal-newline: one honest line-height band right after the last visible
+   * content block. Horizontal extent is always the real CONTENT column.
+   */
+  private resolveBlankSpaceWarningBandViewportRect(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    targets: HTMLElement[],
+    hostRect: RectRecord,
+    contentColumn: RectLike,
+  ): RectRecord | null {
+    if (isLeadingBlankSpaceWarningCode(diag.code)) {
+      const h1 = targets.find(el => el.isConnected) ?? targets[0] ?? null
+      const h1Rect = h1 ? this.measureLocateRect(h1) : null
+      if (!h1Rect) return null
+      const bottom = h1Rect.top - 1
+      return {
+        left: contentColumn.left,
+        top: hostRect.top,
+        right: contentColumn.right,
+        bottom,
+        width: Math.max(0, contentColumn.right - contentColumn.left),
+        height: Math.max(0, bottom - hostRect.top),
+      }
+    }
+    if (isTerminalNewlineBlankSpaceWarningCode(diag.code)) {
+      const last = this.collectLastMeaningfulBlock()
+      if (!last) return null
+      const top = last.rect.bottom
+      const rawLineHeight = computedStyleOf(last.element)?.lineHeight ?? ''
+      const parsedLineHeight = Number.parseFloat(rawLineHeight)
+      const lineHeight = Number.isFinite(parsedLineHeight) && parsedLineHeight > 0 ? parsedLineHeight : 24
+      const bottom = top + Math.max(lineHeight, BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX)
+      return {
+        left: contentColumn.left,
+        top,
+        right: contentColumn.right,
+        bottom,
+        width: Math.max(0, contentColumn.right - contentColumn.left),
+        height: Math.max(0, bottom - top),
+      }
+    }
+    return null
   }
 
   /** §6 — is the block-gap carrier the CURRENT painted locate carrier? */
@@ -18769,8 +18886,11 @@ export class DocumentUtilityOverlayHost {
     }
     this.locateDocEndCarrier = null
     this.locateDocCarrier = null
+    // A new locate owns exactly one carrier: the unified warning band never
+    // outlives the EOF carrier it might have accompanied.
+    this.clearBlankSpaceWarningCarrier()
     const el = document.createElement('div')
-    el.className = DIAGNOSTIC_LOCATE_FRAME_CLASS
+    el.className = `${DIAGNOSTIC_LOCATE_FRAME_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
     el.setAttribute('data-ink-eof-marker', 'true')
     el.setAttribute('data-ink-marker-kind', EOF_MARKER_KIND_DOCUMENT_END_WARNING)
     el.setAttribute('data-ink-target-identity', DOCUMENT_END_SEMANTIC_ANCHOR_IDENTITY)
@@ -21366,6 +21486,8 @@ export class DocumentUtilityOverlayHost {
         }
       }
     }
+    // Blank-Space Warning Presentation Policy — the shared FILL_ONLY warning band.
+    this.commitBlankSpaceWarningBand(diag, targets)
     const expectedDestination =
       typeof metadata.destination === 'string' && metadata.destination !== ''
         ? metadata.destination

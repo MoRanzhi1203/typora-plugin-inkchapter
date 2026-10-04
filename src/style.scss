@@ -3317,14 +3317,18 @@ body.ink-console-docked::after {
 
 /* ── Presentation Stability Closure V1 §9/§10 + Block Gap Binding Closure V1 §16 ─
    The `EXCESSIVE_INTERNAL_BLANK_LINES` semantic target is the GAP between two
-   sibling content blocks, so the visual IS the gap: a faint FILL_ONLY Warning
-   band (no border / gradient / shadow / pseudo element, per the FILL_ONLY
-   contract). It NEVER paints the adjacent previous / next content block.
-   Colours REUSE the existing Warning tokens (no new palette); the carrier is a
-   pointer-events:none overlay, so neither the document layout nor the
-   contenteditable flow is touched. */
+   sibling content blocks, so the visual IS the gap: a FILL_ONLY Warning band
+   (no border / gradient / shadow / pseudo element, per the FILL_ONLY contract).
+   It NEVER paints the adjacent previous / next content block.
+   ── Blank-Space Warning Presentation Policy ────────────────────────────────
+   The fill is the SAME ALWAYS-ACTIVE Warning token as the document-end
+   trailing-blank band (`--ink-diagnostic-warning-active-bg`). There is NO
+   passive/faint variant any more: every blank-space Warning shares ONE active
+   style (the document-end one). Colours REUSE the existing Warning tokens (no
+   new palette); the carrier is a pointer-events:none overlay, so neither the
+   document layout nor the contenteditable flow is touched. */
 .inkchapter-block-gap-visual {
-  --ink-block-gap-bg: var(--ink-diagnostic-warning-passive-bg, rgba(168, 121, 50, 0.13));
+  --ink-block-gap-bg: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
   border-radius: 2px;
   background-color: var(--ink-block-gap-bg);
   pointer-events: none;
@@ -3332,6 +3336,22 @@ body.ink-console-docked::after {
 .inkchapter-block-gap-visual[data-active='true'] {
   --ink-block-gap-bg: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
   background-color: var(--ink-block-gap-bg);
+}
+
+/* Unified Blank-Space Warning band — intentionally IDENTICAL to the document-end
+   trailing-blank band (FILL_ONLY warning fill, no border / outline / shadow /
+   pseudo line). Used by every blank-space Warning that has no gap/EOF carrier. */
+.inkchapter-blank-space-warning {
+  border: 0;
+  border-radius: 2px;
+  box-shadow: none;
+  outline: none;
+  background-color: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
+  pointer-events: none;
+}
+.inkchapter-blank-space-warning::before,
+.inkchapter-blank-space-warning::after {
+  content: none;
 }
 
 /* ── V5.12-R1 — Heading Diagnostic In-Document Marker ─────────────────────
