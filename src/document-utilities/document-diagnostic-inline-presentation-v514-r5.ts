@@ -112,6 +112,8 @@ const INLINE_HINT_BY_CODE_V514R5: Readonly<Record<string, string>> = {
   // document end / lifecycle
   DOCUMENT_TERMINAL_NEWLINE_MISSING: '末尾缺少换行',
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: '尾部空行过多',
+  // internal blank-space warning (unified with the document-end warning family)
+  EXCESSIVE_INTERNAL_BLANK_LINES: '连续空行过多',
   DOCUMENT_INACTIVE: '无活动文档',
   // V1 — 单标题无正文 (document completeness hint)
   DOCUMENT_HEADING_ONLY_NO_BODY: '仅有标题',
