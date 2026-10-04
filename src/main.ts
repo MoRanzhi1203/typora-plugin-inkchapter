@@ -638,6 +638,11 @@ export default class extends Plugin<InkChapterSettings> {
         },
         // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
         getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
+        // Phase G §8 — DOM-side Caption Integrity producer (same diagnostics
+        // pipeline). Ownership comes ONLY from the caption service's canonical
+        // owner map; no adjacency guessing.
+        getCaptionIntegrityDiagnostics: (documentKey, sourceRevision) =>
+          this.captionService?.computeCaptionIntegrityDiagnostics(documentKey, sourceRevision) ?? [],
         // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline
         // (painted only on a COMMITTED outline mapping).
         publishOutlineHeadingDiagnostics: (targets) => {

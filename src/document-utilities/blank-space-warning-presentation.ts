@@ -12,14 +12,31 @@
 
 export const BLANK_SPACE_WARNING_SEVERITY = 'warning' as const
 
-/** The single presentation mode shared by every blank-space Warning band. */
-export const BLANK_SPACE_WARNING_PRESENTATION_MODE = 'FILL_ONLY' as const
-
-/** The Warning fill token reused by the EOF band and the internal gap band. */
-export const BLANK_SPACE_WARNING_FILL_TOKEN = '--ink-diagnostic-warning-active-bg'
+/**
+ * V8 §3 — the ONE active presentation shared by every blank-space Warning.
+ * NEVER `FILL_ONLY`: it is a low-emphasis Warning surface PLUS one left accent
+ * rail (the original document-end EOF band).
+ */
+export const BLANK_SPACE_WARNING_PRESENTATION_MODE = 'FILL_WITH_LEFT_ACCENT' as const
 
 /** The marker class stamped onto every unified blank-space Warning band. */
 export const BLANK_SPACE_WARNING_MARKER_CLASS = 'inkchapter-blank-space-warning'
+
+// ── V8 §2/§3 — the ORIGINAL document-end EOF presentation, extracted VERBATIM
+// from `53f08b9:src/style.scss`. These are the ONLY sanctioned values; nothing
+// may re-invent a colour (no bright `rgba(255,190,20,0.38)` whole-surface fill).
+/** Low-emphasis Warning surface token (8% Warning mix). */
+export const BLANK_SPACE_WARNING_BACKGROUND_TOKEN = '--ink-blank-space-warning-bg'
+/** LEFT accent colour token (`--ink-ui-sev-warning`). */
+export const BLANK_SPACE_WARNING_LEFT_ACCENT_TOKEN = '--ink-blank-space-warning-accent'
+/** The original Warning surface mix percentage. */
+export const BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT = 8
+/** The original LEFT accent rail width (px). */
+export const BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX = 4
+/** The original band border radius. */
+export const BLANK_SPACE_WARNING_BORDER_RADIUS = '0 6px 6px 0'
+/** Exactly one LEFT accent rail per band. */
+export const BLANK_SPACE_WARNING_LEFT_ACCENT_COUNT = 1
 
 /** An honest band needs at least this many pixels of height to be painted. */
 export const BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX = 2
@@ -66,7 +83,20 @@ export const BLANK_SPACE_WARNING_CODES: readonly string[] = [
 export const BLANK_SPACE_WARNING_POLICY = Object.freeze({
   severity: BLANK_SPACE_WARNING_SEVERITY,
   presentationMode: BLANK_SPACE_WARNING_PRESENTATION_MODE,
-  fillToken: BLANK_SPACE_WARNING_FILL_TOKEN,
+  backgroundToken: BLANK_SPACE_WARNING_BACKGROUND_TOKEN,
+  backgroundMixPercent: BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT,
+  leftAccent: true,
+  leftAccentToken: BLANK_SPACE_WARNING_LEFT_ACCENT_TOKEN,
+  leftAccentWidthPx: BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX,
+  leftAccentCount: BLANK_SPACE_WARNING_LEFT_ACCENT_COUNT,
+  borderTopWidthPx: 0,
+  borderRightWidthPx: 0,
+  borderBottomWidthPx: 0,
+  borderRadius: BLANK_SPACE_WARNING_BORDER_RADIUS,
+  outline: false,
+  boxShadow: false,
+  pointerEvents: 'none',
+  layoutMutation: false,
   markerClass: BLANK_SPACE_WARNING_MARKER_CLASS,
   minVisibleHeightPx: BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX,
 })
@@ -77,7 +107,13 @@ export function formatBlankSpaceWarningPolicyReport(): string[] {
     'BLANK_SPACE_WARNING_POLICY_ID=blank-space-warning-v1',
     `BLANK_SPACE_WARNING_SEVERITY=${BLANK_SPACE_WARNING_SEVERITY}`,
     `BLANK_SPACE_WARNING_PRESENTATION_MODE=${BLANK_SPACE_WARNING_PRESENTATION_MODE}`,
-    `BLANK_SPACE_WARNING_FILL_TOKEN=${BLANK_SPACE_WARNING_FILL_TOKEN}`,
+    `BLANK_SPACE_WARNING_BACKGROUND_TOKEN=${BLANK_SPACE_WARNING_BACKGROUND_TOKEN}`,
+    `BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT=${BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT}`,
+    `BLANK_SPACE_WARNING_LEFT_ACCENT=true`,
+    `BLANK_SPACE_WARNING_LEFT_ACCENT_TOKEN=${BLANK_SPACE_WARNING_LEFT_ACCENT_TOKEN}`,
+    `BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX=${BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX}`,
+    `BLANK_SPACE_WARNING_LEFT_ACCENT_COUNT=${BLANK_SPACE_WARNING_LEFT_ACCENT_COUNT}`,
+    `BLANK_SPACE_WARNING_BORDER_RADIUS=${BLANK_SPACE_WARNING_BORDER_RADIUS}`,
     `BLANK_SPACE_WARNING_MARKER_CLASS=${BLANK_SPACE_WARNING_MARKER_CLASS}`,
     `BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX=${BLANK_SPACE_WARNING_MIN_VISIBLE_HEIGHT_PX}`,
   ]

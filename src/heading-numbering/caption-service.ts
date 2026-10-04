@@ -24,6 +24,12 @@ import {
 } from './caption-system'
 import * as path from 'path'
 import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
+// Phase G §8 — the read-only DOM caption-integrity producer (same pipeline).
+// NOTE: a namespace import is required — this repo's `esbuild-plugin-typora`
+// rewrites `import { A as B } from 'x'` into the invalid `const { A as B } =
+// await import('x')`, so aliased value imports must never be used.
+import * as captionIntegrityProducer from '../document-utilities/document-diagnostics-caption-integrity-v1'
+import type { DocumentDiagnostic } from '../document-utilities/diagnostics-types'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
@@ -2113,6 +2119,20 @@ export class CaptionService {
     const target = this.adapter.resolveTargetForElement(el)
     if (!target) return null
     return this.adapter.findCaptionHostForRoot(target.root)
+  }
+
+  /**
+   * Phase G §8 — read-only DOM caption-integrity snapshot for the document
+   * diagnostics authority. Never mutates the DOM or the registry; ownership is
+   * resolved ONLY through the canonical owner map (this service is its single
+   * writer).
+   */
+  computeCaptionIntegrityDiagnostics(documentKey: string | null, sourceRevision: number): DocumentDiagnostic[] {
+    return captionIntegrityProducer.computeCaptionIntegrityDiagnostics({
+      documentKey,
+      root: this.currentEditorRoot,
+      sourceRevision,
+    }).diagnostics
   }
 
   getCaptionCount(): number {

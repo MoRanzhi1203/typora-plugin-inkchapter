@@ -13,6 +13,7 @@ import {
   computeDocumentDiagnostics,
   computeEofNewlinePolicy,
   hasSubstantiveNonHeadingContent,
+  mergeDocumentDiagnostics,
 } from './document-diagnostics'
 // Heading Auto-Number Conflict V1.2 §3–§47 — the ONE per-heading evidence-state
 // audit + transition classifier + hard-gate + positive-coverage authority for
@@ -105,6 +106,11 @@ import {
   computeDiagnosticLocationContract,
   getRuleMeta,
 } from './document-diagnostic-location'
+// Capability Matrix V1 §14 — the ONE read-only capability count authority.
+import {
+  DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT,
+  resolveDocumentDiagnosticCapabilitySummary,
+} from './document-diagnostic-capability-summary'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 
 export interface DocumentDiagnosticsProviders {
@@ -181,6 +187,17 @@ export interface DocumentDiagnosticsProviders {
    * the official-setter call; this module only requests it. Optional.
    */
   consumeHeadingConflictTestBridge?: () => void
+  /**
+   * Phase G (spec §8) — the DOM-side Caption Integrity producer. It returns the
+   * caption-integrity diagnostics for the CURRENT document (ownership resolved
+   * ONLY through the caption service's canonical owner map). Merged into the
+   * SAME snapshot as the source-only diagnostics. Optional: absent ⇒ no caption
+   * integrity diagnostics (pure / legacy callers).
+   */
+  getCaptionIntegrityDiagnostics?: (
+    documentKey: string | null,
+    sourceRevision: number,
+  ) => readonly DocumentDiagnostic[]
 }
 
 export class DocumentDiagnosticsAuthority {
@@ -265,6 +282,11 @@ export class DocumentDiagnosticsAuthority {
     // Phase 7R.3.11.8B.4 — severity transition log (strict/loose switch only).
     this.emitHeadingSeverityTransition(input.documentKey, input.strictMode)
     const computed = computeDocumentDiagnostics(input)
+    // Phase G §8 — merge the DOM-side caption-integrity diagnostics (when a
+    // producer is wired) into the SAME snapshot the Drawer / location contract
+    // consume. Never a second pipeline, never a second registry.
+    const captionDiagnostics = this.collectCaptionIntegrityDiagnostics(input.documentKey)
+    const merged = mergeDocumentDiagnostics(computed.diagnostics, captionDiagnostics)
     // Heading Auto-Number Conflict V1 §44/§45 — the ONE runtime audit for the
     // conflict rule (state-deduped; event-driven, never a poll).
     this.emitHeadingAutoNumberConflictAudits(input, computed)
@@ -293,10 +315,10 @@ export class DocumentDiagnosticsAuthority {
       revision: this.revision,
       sourceRevision: this.sourceRevision,
       generatedAt: Date.now(),
-      diagnostics: computed.diagnostics,
-      errorCount: computed.errorCount,
-      warningCount: computed.warningCount,
-      infoCount: computed.infoCount,
+      diagnostics: merged.diagnostics,
+      errorCount: merged.errorCount,
+      warningCount: merged.warningCount,
+      infoCount: merged.infoCount,
       effectiveMode,
       effectiveModeRevision,
     }
@@ -321,6 +343,10 @@ export class DocumentDiagnosticsAuthority {
     // classified (source authority vs counter vs reconcile/publish vs timing).
     const publishDecision = fingerprint === this.lastContentFingerprint ? 'NOOP' : 'PUBLISHED'
     this.emitTrailingBlankAudit(input.markdown, this.sourceRevision, this.snapshot, nextSnapshot, publishDecision)
+    // Capability Matrix V1 §14 — ONE capability audit per recompute (event-driven,
+    // never a poll): the registry-derived counts + decision, emitted before the
+    // NOOP early-return so it fires exactly once per recompute either way.
+    this.emitDiagnosticCapabilityAudit(input.documentKey, publishDecision)
     if (fingerprint === this.lastContentFingerprint) {
       // §21/§22 — the bridge is consumed POST-COMMIT (never at the start of the
       // recompute): the evidence state must describe a CONSISTENT snapshot, so
@@ -361,6 +387,21 @@ export class DocumentDiagnosticsAuthority {
    */
   private consumeHeadingConflictTestBridge(): void {
     try { this.providers.consumeHeadingConflictTestBridge?.() } catch { /* observability only */ }
+  }
+
+  /**
+   * Phase G §8 — the DOM-side caption-integrity producer bridge. Optional;
+   * failures are observability-only and must never affect the diagnostics
+   * commit (a broken caption producer simply yields no caption diagnostics).
+   */
+  private collectCaptionIntegrityDiagnostics(documentKey: string | null): readonly DocumentDiagnostic[] {
+    const provider = this.providers.getCaptionIntegrityDiagnostics
+    if (typeof provider !== 'function') return []
+    try {
+      return provider(documentKey, this.sourceRevision) ?? []
+    } catch {
+      return []
+    }
   }
 
   /** Phase 7R.3.11.8B.7.7 — reason of the LAST published snapshot. */
@@ -688,6 +729,41 @@ export class DocumentDiagnosticsAuthority {
       gateReport: formatFigureLiteralExclusionV1GateReport(evaluated.counters),
       decision: gate.decision,
       reason: gate.decision === 'PASS' ? 'FIGURE_LITERAL_EXCLUSION_OK' : gate.failedChecks.join(','),
+    })
+  }
+
+  /**
+   * Capability Matrix V1 §14 — the ONE runtime capability audit.
+   *
+   * Emitted ONCE per diagnostics recompute (event-driven, never a poll) with the
+   * registry-derived counts + decision + reason. The counts are read from the
+   * SINGLE registry via `resolveDocumentDiagnosticCapabilitySummary`, so the
+   * audit can never drift from the Capability Matrix document.
+   */
+  private emitDiagnosticCapabilityAudit(
+    documentKey: string | null,
+    publishDecision: 'PUBLISHED' | 'NOOP',
+  ): void {
+    const summary = resolveDocumentDiagnosticCapabilitySummary()
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT, {
+      documentKey,
+      registeredRuleFamilyCount: summary.registeredRuleFamilyCount,
+      resolvedDiagnosticCodeCount: summary.resolvedDiagnosticCodeCount,
+      userVisibleDiagnosticTypeCount: summary.userVisibleDiagnosticTypeCount,
+      stateGuardCount: summary.stateGuardCount,
+      contentDiagnosticCount: summary.contentDiagnosticCount,
+      errorFamilyCount: summary.errorFamilyCount,
+      warningFamilyCount: summary.warningFamilyCount,
+      hintFamilyCount: summary.hintFamilyCount,
+      implementedCount: summary.implementedCount,
+      deferredCount: summary.deferredCount,
+      plannedCount: summary.plannedCount,
+      unregisteredProducedCodeCount: summary.unregisteredProducedCodeCount,
+      implementedWithoutProducerCount: summary.implementedWithoutProducerCount,
+      duplicateFamilyCount: summary.duplicateFamilyCount,
+      duplicateRuntimeCodeAuthorityCount: summary.duplicateRuntimeCodeAuthorityCount,
+      decision: summary.decision,
+      reason: publishDecision === 'PUBLISHED' ? 'SNAPSHOT_PUBLISHED' : 'SNAPSHOT_UNCHANGED',
     })
   }
 

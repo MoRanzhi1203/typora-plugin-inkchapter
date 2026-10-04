@@ -73,6 +73,9 @@ import {
   internalBlankGapIdentity,
   internalBlankLineDetail,
 } from './document-diagnostic-internal-blank-lines-v1'
+// Phase G — the DOM-side caption-integrity producer's emitted codes (the SAME
+// single allow-list mirrored below; the caption producer is not a second registry).
+import { CAPTION_INTEGRITY_DIAGNOSTIC_CODES } from './document-diagnostics-caption-integrity-v1'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -469,6 +472,109 @@ export const TABLE_EMPTY_CONTENT_CODE = 'TABLE_EMPTY_CONTENT'
 export const FORMULA_EMPTY_CONTENT_CODE = 'FORMULA_EMPTY_CONTENT'
 /** §28 — an empty blockquote. */
 export const BLOCKQUOTE_EMPTY_CODE = 'BLOCKQUOTE_EMPTY'
+
+/**
+ * Capability Matrix V1 §6 — the CONSERVATIVE allow-list of every runtime
+ * diagnostic code `computeDocumentDiagnostics` can emit. It exists so the
+ * Registry ↔ Producer consistency gate is REAL (never vacuous): the capability
+ * summary checks each produced code resolves to a registered family. Every
+ * entry is mirrored by the registry; the capability test asserts the mapping.
+ */
+export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
+  // document / strict / completeness
+  DOCUMENT_EMPTY_CODE,
+  SOURCE_UNAVAILABLE_CODE,
+  'DOCUMENT_INACTIVE',
+  'STRICT_FIRST_H1_LEADING_PARAGRAPH',
+  'STRICT_FIRST_H1_LEADING_EMPTY_LINE',
+  'STRICT_FIRST_H1_LEADING_EMPTY_BLOCK',
+  'STRICT_FIRST_H1_LEADING_OTHER_HEADING',
+  'STRICT_FIRST_H1_LEADING_OTHER_BLOCK',
+  'STRICT_FIRST_H1_DOCUMENT_EMPTY',
+  'STRICT_FIRST_H1_SOURCE_UNAVAILABLE',
+  'STRICT_SINGLE_H1_NO_H1',
+  'STRICT_SINGLE_H1_MULTIPLE_H1',
+  DOCUMENT_HEADING_ONLY_NO_BODY_CODE,
+  DOCUMENT_HEADINGS_ONLY_NO_BODY_CODE,
+  SECTION_EMPTY_CODE,
+  SECTION_ONLY_SUBHEADINGS_CODE,
+  HEADING_AUTO_NUMBER_CONFLICT_CODE,
+  HEADING_MANUAL_NUMBER_PREFIX_CODE,
+  'DOCUMENT_TERMINAL_NEWLINE_MISSING',
+  'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
+  EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+  // latent ATX (LEVEL_n — one representative per emitted level 1..6)
+  'LATENT_ATX_HEADING_MARKER_LEVEL_1',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_2',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_3',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_4',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_5',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_6',
+  // heading structure
+  'HEADING_DUPLICATE_IDENTITY',
+  'HEADING_DUPLICATE_TEXT',
+  'HEADING_EMPTY_TEXT',
+  'HEADING_LEVEL_GAP',
+  // figure
+  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  'FIGURE_DUPLICATE_NAME',
+  'FIGURE_LOCAL_IMAGE_MISSING',
+  'FIGURE_MISSING_NAME',
+  FIGURE_MANUAL_NUMBER_PREFIX_CODE,
+  // table
+  TABLE_BLOCK_STRUCTURE_INVALID_CODE,
+  'TABLE_DUPLICATE_NAME',
+  'TABLE_MISSING_NAME',
+  TABLE_EMPTY_CONTENT_CODE,
+  // code
+  CODE_EMPTY_BLOCK_CODE,
+  'CODE_DUPLICATE_NAME',
+  'CODE_MISSING_NAME',
+  'CODE_MISSING_LANGUAGE',
+  // formula
+  FORMULA_BLOCK_STRUCTURE_INVALID_CODE,
+  'FORMULA_DUPLICATE_VISIBLE_TAG',
+  FORMULA_EMPTY_CONTENT_CODE,
+  // blockquote
+  BLOCKQUOTE_EMPTY_CODE,
+  // link
+  'LINK_LOCAL_TARGET_MISSING',
+  // Phase G — DOM-side Caption Integrity (produced by
+  // `computeCaptionIntegrityDiagnostics`, merged into the SAME snapshot).
+  ...CAPTION_INTEGRITY_DIAGNOSTIC_CODES,
+]
+
+/**
+ * Phase G §8 — merge the source-only diagnostics with the DOM-side diagnostics
+ * (caption integrity) into ONE deduplicated list + honest severity counts. The
+ * base order is preserved; an id emitted twice keeps its FIRST occurrence.
+ */
+export function mergeDocumentDiagnostics(
+  base: readonly DocumentDiagnostic[],
+  extra: readonly DocumentDiagnostic[],
+): DocumentDiagnosticsComputed {
+  const seen = new Set<string>()
+  const diagnostics: DocumentDiagnostic[] = []
+  for (const d of base) {
+    if (seen.has(d.id)) continue
+    seen.add(d.id)
+    diagnostics.push(d)
+  }
+  for (const d of extra) {
+    if (seen.has(d.id)) continue
+    seen.add(d.id)
+    diagnostics.push(d)
+  }
+  let errorCount = 0
+  let warningCount = 0
+  let infoCount = 0
+  for (const d of diagnostics) {
+    if (d.severity === 'error') errorCount++
+    else if (d.severity === 'warning') warningCount++
+    else infoCount++
+  }
+  return { diagnostics, errorCount, warningCount, infoCount }
+}
 
 // ── Standard EOF newline policy (Phase 7R.3.11.8B.8) ────────────────────
 // Supersedes the "exactly one trailing blank line" rule (7R.3.11.8B.7.x).

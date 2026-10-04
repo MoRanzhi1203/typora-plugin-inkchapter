@@ -37,6 +37,7 @@ import {
   resolveDiagnosticLocation,
   getRuleMeta,
   resolveRuleActiveVisualMode,
+  resolvePresentationSeverity,
   hasLocatableLocation,
   normalizeSourceAnchorText,
   normalizeResourcePath,
@@ -526,7 +527,7 @@ import {
   isTerminalNewlineBlankSpaceWarningCode,
 } from './blank-space-warning-presentation'
 // V7 §2 — the caption service's canonical runtime owner map (single writer).
-import { getCanonicalCaptionOwnerRoot, getCanonicalCaptionKind } from '../heading-numbering/caption-dom-adapter'
+import { getCanonicalCaptionOwnerRoot, getCanonicalCaptionKind, resolveCanonicalCaptionProjection } from '../heading-numbering/caption-dom-adapter'
 import {
   HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT,
   buildHeadingDiagnosticVisualSnapshot,
@@ -2281,6 +2282,16 @@ function normalizeOutlineDiagnosticSeverity(severity: unknown): 'error' | 'warni
   return severity === 'error' || severity === 'warning' ? severity : 'info'
 }
 
+/**
+ * §4 — the ONE user-visible severity label authority. Routes the internal
+ * severity through `resolvePresentationSeverity` so no surface can ever show a
+ * fourth `info`/`信息` level (internal info → presentation hint → 提示).
+ */
+function presentationSeverityLabel(severity: 'error' | 'warning' | 'info'): string {
+  const presentation = resolvePresentationSeverity(severity)
+  return presentation === 'error' ? '错误' : presentation === 'warning' ? '警告' : '提示'
+}
+
 /** §P6 — parse the marker's declared visual-target-key set (never throws). */
 function parseVisualTargetKeys(raw: string | null): string[] {
   if (raw == null || raw === '') return []
@@ -3074,7 +3085,12 @@ export class DocumentUtilityOverlayHost {
       if (cs) {
         // §19 — the EOF band's LEFT accent is a surface style, not a border line:
         // it must never trip the legacy FILL_ONLY "no border" gate.
-        const leftAccentOnly = el.getAttribute('data-ink-eof-marker') === 'true' && isSurfaceLeftAccentOnly({
+        // V8 §1/§3 — EVERY blank-space Warning carrier (EOF band, internal gap
+        // band, terminal-newline band, leading-H1 band) owns the SAME left accent
+        // surface style, so the gate must not count it as a border line either.
+        const isBlankSpaceWarningCarrier = el.getAttribute('data-ink-eof-marker') === 'true'
+          || el.classList.contains(BLANK_SPACE_WARNING_MARKER_CLASS)
+        const leftAccentOnly = isBlankSpaceWarningCarrier && isSurfaceLeftAccentOnly({
           leftWidth: Number.parseFloat(cs.borderLeftWidth) || 0,
           topWidth: Number.parseFloat(cs.borderTopWidth) || 0,
           rightWidth: Number.parseFloat(cs.borderRightWidth) || 0,
@@ -5334,7 +5350,9 @@ export class DocumentUtilityOverlayHost {
         documentTextColumnSource: this.lastDocEndVisual?.textColumnSource ?? null,
         accentWidthPx: this.lastDocEndVisual?.accentWidthPx ?? 0,
         decorativeVerticalRail: false,
-        surfaceLeftAccent: false,
+        // V8 §2/§3 — restored: the document-end band's LEFT accent IS a surface
+        // style of the blank-space Warning presentation.
+        surfaceLeftAccent: true,
         legacyHeadingFrameRendered: false,
         passiveMarkerPresent: this.headingPassiveMarkers.size > 0,
         activeMarkerPresent: this.headingActiveWrapper !== null,
@@ -10880,6 +10898,10 @@ export class DocumentUtilityOverlayHost {
         ownedPresentationPartCount: spec.ext?.ownedCaptionCount ?? 0,
         ownedCaptionCount: spec.ext?.ownedCaptionCount ?? 0,
         ownerIdentityMatch: spec.ext?.ownerIdentityMatch ?? false,
+        // V8 §24.2 — the owned presentation rects + the edge authorities.
+        ownedPresentationRects: spec.ext?.ownedCaptionRects ?? [],
+        topAuthority: spec.ext?.topAuthority ?? null,
+        bottomAuthority: spec.ext?.bottomAuthority ?? null,
         unionRect: spec.ext?.rect ?? null,
         extentTop: spec.ext?.rect?.top ?? null,
         extentBottom: spec.ext?.rect?.bottom ?? null,
@@ -10905,6 +10927,22 @@ export class DocumentUtilityOverlayHost {
     const occupancy = this.measureBlockGapOccupancy(geometry, [prevEl, nextEl])
     // V4 §1 — ONLY SEMANTIC occupancy blocks the paint (raw DOM overlap is audit).
     const occupied = occupancy.semanticIntersectedCount > 0
+    // ── V8 §13 (Phase 1) — BOUNDARY-OWNED PRESENTATION COMPLETENESS ─────────
+    // The final gap must NEVER intersect the previous/next OWNED presentation
+    // (a generated caption). If one still falls inside, the extent is INCOMPLETE
+    // and the paint is REFUSED — occupancy must not be used to silently exclude
+    // a caption that the presentation extent failed to absorb.
+    const ownedPresentationRects = [
+      ...(prevExtent?.ownedCaptionRects ?? []),
+      ...(nextExtent?.ownedCaptionRects ?? []),
+    ]
+    const boundaryOwnedIntersectedCount = geometry
+      ? ownedPresentationRects.filter(r =>
+          r.bottom > geometry.gapTop && r.top < geometry.gapBottom
+          && r.right > geometry.gapLeft && r.left < geometry.gapRight,
+        ).length
+      : 0
+    const extentIncomplete = boundaryOwnedIntersectedCount > 0
     if (geometry) {
       emitRuntimeAudit(BLOCK_GAP_OCCUPANCY_AUDIT_EVENT, {
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
@@ -10913,14 +10951,21 @@ export class DocumentUtilityOverlayHost {
         visibleContentCount: occupancy.visibleContentCount,
         intersectedContentCount: occupancy.intersectedCount,
         semanticIntersectedCount: occupancy.semanticIntersectedCount,
+        // V8 §24.4 — boundary-owned vs third-party semantic occupancy, split.
+        boundaryOwnedIntersectedCount,
+        thirdPartySemanticIntersectedCount: extentIncomplete ? 0 : occupancy.semanticIntersectedCount,
         intersections: occupancy.intersections.slice(0, 8),
-        decision: occupied ? 'FAIL_GEOMETRY_OCCUPIED' : 'PASS',
-        reason: occupied
-          ? 'BLOCK_GAP_INTERSECTS_SEMANTIC_CONTENT'
-          : 'BLOCK_GAP_SEMANTIC_OCCUPANCY_CLEAR',
+        decision: extentIncomplete
+          ? 'FAIL_PRESENTATION_EXTENT_INCOMPLETE'
+          : occupied ? 'FAIL_GEOMETRY_OCCUPIED' : 'PASS',
+        reason: extentIncomplete
+          ? 'BOUNDARY_OWNED_PRESENTATION_INSIDE_FINAL_GAP'
+          : occupied
+            ? 'BLOCK_GAP_INTERSECTS_SEMANTIC_CONTENT'
+            : 'BLOCK_GAP_SEMANTIC_OCCUPANCY_CLEAR',
       })
     }
-    const valid = isBlockGapGeometryValid(geometry) && !occupied
+    const valid = isBlockGapGeometryValid(geometry) && !occupied && !extentIncomplete
     const layer = valid ? this.ensureLocateDocumentLayer() : null
     if (geometry && valid && layer) {
       const el = document.createElement('div')
@@ -11280,6 +11325,11 @@ export class DocumentUtilityOverlayHost {
     rect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
     ownedCaptionCount: number
     ownerIdentityMatch: boolean
+    /** V8 §13 — the owned caption rects (document-local) for the boundary gate. */
+    ownedCaptionRects: Array<{ left: number; top: number; right: number; bottom: number }>
+    /** V8 §11 — which edge authority produced the extent's top / bottom. */
+    topAuthority: 'SOURCE_TOP' | 'OWNED_CAPTION_TOP'
+    bottomAuthority: 'SOURCE_BOTTOM' | 'OWNED_CAPTION_BOTTOM'
     decision: 'RESOLVED' | 'DEGRADED' | 'MISSING'
     reason: string
   } {
@@ -11299,7 +11349,11 @@ export class DocumentUtilityOverlayHost {
       (vp ? viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect }) : null)
     const src = toLocal(this.measureLocateRect(el))
     if (!src) {
-      return { kind, rect: null, ownedCaptionCount: 0, ownerIdentityMatch: false, decision: 'MISSING', reason: 'SOURCE_UNMEASURABLE' }
+      return {
+        kind, rect: null, ownedCaptionCount: 0, ownerIdentityMatch: false,
+        ownedCaptionRects: [], topAuthority: 'SOURCE_TOP', bottomAuthority: 'SOURCE_BOTTOM',
+        decision: 'MISSING', reason: 'SOURCE_UNMEASURABLE',
+      }
     }
     let left = src.left
     let top = src.top
@@ -11307,6 +11361,8 @@ export class DocumentUtilityOverlayHost {
     let bottom = src.bottom
     let ownedCaptionCount = 0
     let ownerIdentityMatch = false
+    /** V8 §13 — the caption rects that this extent actually owns. */
+    const ownedCaptionRects: Array<{ left: number; top: number; right: number; bottom: number }> = []
     // ── V7 §2 — CANONICAL OWNER BRIDGE. The owned caption is found through the
     // caption service's OWN runtime owner map (module-scope, single writer) and
     // matched by OWNER ROOT identity. Explicitly NOT: nextElementSibling,
@@ -11339,6 +11395,7 @@ export class DocumentUtilityOverlayHost {
         if (!capLocal) continue
         ownedCaptionCount++
         ownerIdentityMatch = true
+        ownedCaptionRects.push({ left: capLocal.left, top: capLocal.top, right: capLocal.right, bottom: capLocal.bottom })
         left = Math.min(left, capLocal.left)
         top = Math.min(top, capLocal.top)
         right = Math.max(right, capLocal.right)
@@ -11351,6 +11408,11 @@ export class DocumentUtilityOverlayHost {
       rect: { left, top, right, bottom, width: right - left, height: bottom - top },
       ownedCaptionCount,
       ownerIdentityMatch,
+      ownedCaptionRects,
+      // V8 §11 — caption below ⇒ bottom comes from the owned caption; caption
+      // above ⇒ top does. Otherwise the primary figure/block rect governs.
+      topAuthority: ownedCaptionCount > 0 && top < src.top ? 'OWNED_CAPTION_TOP' : 'SOURCE_TOP',
+      bottomAuthority: ownedCaptionCount > 0 && bottom > src.bottom ? 'OWNED_CAPTION_BOTTOM' : 'SOURCE_BOTTOM',
       decision: ownedCaptionCount > 0 ? 'RESOLVED' : 'DEGRADED',
       reason: ownedCaptionCount > 0 ? 'EXTENT_UNION_WITH_OWNED_CAPTION' : 'EXTENT_SOURCE_ONLY',
     }
@@ -15042,7 +15104,10 @@ export class DocumentUtilityOverlayHost {
     const num = document.createElement('span')
     num.className = 'inkchapter-toolbar-segment__count'
     num.textContent = String(count)
-    seg.setAttribute('aria-label', severity === 'error' ? `错误 ${count}` : severity === 'warning' ? `警告 ${count}` : `提示 ${count}`)
+    // §4 — the user-visible severity LABEL routes through the ONE severity
+    // authority (internal info → presentation hint). Counting behaviour is
+    // FROZEN: the internal severity still drives the class / data attribute.
+    seg.setAttribute('aria-label', `${presentationSeverityLabel(severity)} ${count}`)
     seg.title = seg.getAttribute('aria-label') ?? ''
     seg.append(icon, num)
     seg.addEventListener('click', () => this.openDrawer(severity))
@@ -15690,10 +15755,12 @@ export class DocumentUtilityOverlayHost {
     const counts = countDocumentSeverities(this.documentDiagnostics())
     const tabs: Array<{ key: DiagnosticsSeverityFilter; label: string; n: number }> = [
       { key: 'all', label: '全部', n: counts.total },
-      { key: 'error', label: '错误', n: counts.error },
-      { key: 'warning', label: '警告', n: counts.warning },
+      { key: 'error', label: presentationSeverityLabel('error'), n: counts.error },
+      { key: 'warning', label: presentationSeverityLabel('warning'), n: counts.warning },
     ]
-    if (counts.info > 0) tabs.push({ key: 'info', label: '提示', n: counts.info })
+    // §4 — the internal `info` tab label is the PRESENTATION severity (`hint`),
+    // never a fourth `info`/`信息` level. The filter KEY stays `info` (frozen).
+    if (counts.info > 0) tabs.push({ key: 'info', label: presentationSeverityLabel('info'), n: counts.info })
     const list = document.createElement('div')
     list.className = 'inkchapter-doc-drawer__filter-list'
     list.setAttribute('role', 'tablist')
@@ -17837,6 +17904,12 @@ export class DocumentUtilityOverlayHost {
       resolveHeadingIdentity: (id) => this.resolveHeadingIdentity(id),
       resolveSourceLine: (line) => this.resolveSourceLine(line),
       resolveBlockIdentity: (kind, stableId) => this.resolveBlockIdentity(kind, stableId),
+      // Phase G §8 — caption-projection locate: resolve the LIVE caption by the
+      // caption service's OWN stable id (never adjacency / first-match).
+      resolveCaptionProjection: (captionId) => {
+        const root = resolveBusinessContentRoot()
+        return root ? resolveCanonicalCaptionProjection(root, captionId) : null
+      },
       // Phase 7R.3.11.8B.7.2 — content authority for source-range resolution:
       // current source line text (TARGET_CHANGED classification) + text-context
       // re-anchor for source-only diagnostics (LATENT_ATX_HEADING_MARKER).
@@ -19323,12 +19396,12 @@ export class DocumentUtilityOverlayHost {
       lastMeaningfulIndentDeltaPx: input.lastMeaningfulRect && input.writeContentRect
         ? input.lastMeaningfulRect.left - input.writeContentRect.left : null,
       accentWidthPx: this.lastDocEndVisual?.accentWidthPx ?? 0,
-      // V6 §10 — the EOF blank space now shares the internal gap FILL_ONLY policy:
-      // no low-emphasis alpha, no left accent surface.
-      fillAlphaClass: null,
+      // V8 §2/§3 — RESTORED to the ORIGINAL document-end presentation: the band
+      // has the LOW-EMPHASIS Warning surface AND one real LEFT accent rail.
+      fillAlphaClass: EOF_FILL_EMPHASIS_CLASS_LOW,
       markerKind: EOF_MARKER_KIND_DOCUMENT_END_WARNING,
       decorativeVerticalRail: false,
-      surfaceLeftAccent: false,
+      surfaceLeftAccent: true,
       drawerVisible: this.drawerOpen,
       drawerRect: this.realPanelRect(this.drawerEl),
       drawerAffectsWorkspaceWidth: false,
