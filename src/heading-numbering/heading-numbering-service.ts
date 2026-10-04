@@ -465,6 +465,8 @@ const INTENT_DEDUP_WINDOW_MS = 50
 const TAIL_REFRESH_MS = 60
 const FOCUS_TAIL_MS = 50
 
+import type { InkChapterDocumentContext } from '../runtime/inkchapter-path-authority'
+
 export interface ServiceContext {
   readonly settings: PluginSettings<InkChapterSettings>
   onWorkspaceEvent: <K extends string>(event: K, listener: (...args: never[]) => void) => () => void
@@ -486,6 +488,11 @@ export interface ServiceContext {
   setCursorOffset?: (offset: number) => void
   /** R58.3: Authoritative vault root for sidecar storage. */
   vaultRoot?: string
+  /**
+   * V1.1-GLOBAL §6 — the SPLIT document context. `vaultRoot` here may be null
+   * (single-file / non-vault folder) while the plugin still initializes.
+   */
+  documentContext?: InkChapterDocumentContext
   /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (invariant read). */
   getDiagnosticSnapshot?: () => DocumentDiagnosticsSnapshot | null
 }

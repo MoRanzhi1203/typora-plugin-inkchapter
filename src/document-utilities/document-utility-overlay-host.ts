@@ -493,6 +493,30 @@ import {
   type InternalBlankLineV1Counters,
   type InternalBlankLineV1Coverage,
 } from './document-diagnostic-internal-blank-lines-v1'
+// Presentation Stability Closure V1 §2/§6/§7 — the ONE BLOCK_GAP_VISUAL_TARGET
+// authority: the gap is painted where it IS (between the two blocks), never on
+// an adjacent content block. Detection stays source-only.
+import {
+  BLOCK_GAP_VISUAL_AUDIT_EVENT,
+  BLOCK_GAP_BINDING_AUDIT_EVENT,
+  BLOCK_GAP_CANONICAL_BINDING_AUDIT_EVENT,
+  BLOCK_GAP_VISUAL_CONSISTENCY_AUDIT_EVENT,
+  BLOCK_GAP_OCCUPANCY_AUDIT_EVENT,
+  BLOCK_GAP_IMAGE_ONLY_INVENTORY_AUDIT_EVENT,
+  BLOCK_GAP_VISUAL_CLASS,
+  BLOCK_GAP_VISUAL_TARGET,
+  computeBlockGapVisualGeometry,
+  isBlockGapGeometryValid,
+  createBlockGapVisualV1Counters,
+  createBlockGapVisualV1Coverage,
+  formatBlockGapVisualV1GateReport,
+  evaluateBlockGapVisualV1Gates,
+  formatBlockGapVisualV1CoverageReport,
+  type BlockGapVisualV1Counters,
+  type BlockGapVisualV1Coverage,
+} from './document-diagnostic-block-gap-visual-v1'
+// V7 §2 — the caption service's canonical runtime owner map (single writer).
+import { getCanonicalCaptionOwnerRoot, getCanonicalCaptionKind } from '../heading-numbering/caption-dom-adapter'
 import {
   HEADING_VISUAL_SNAPSHOT_AUDIT_EVENT,
   buildHeadingDiagnosticVisualSnapshot,
@@ -731,6 +755,7 @@ import {
   evaluateHeadingReasonChipStability,
   evaluateHeadingReasonChipStabilityV2Gates,
   formatHeadingReasonChipStabilityV2GateReport,
+  HEADING_REASON_CHIP_RECT_TRACE_AUDIT_EVENT,
   type HeadingReasonChipStabilityFact,
   type HeadingReasonChipStabilityV2Counters,
   type HeadingVisualDirtyEntry,
@@ -2584,6 +2609,19 @@ export class DocumentUtilityOverlayHost {
   private lastInternalBlankLineSourceSignature = ''
   /** §21 — the last committed gap identity set (per document) for dynamic coverage. */
   private lastInternalBlankLineIdentityState: { documentKey: string | null; identities: Set<string> } | null = null
+  // ── Presentation Stability Closure V1 (§6/§32/§33) — BLOCK_GAP_VISUAL_TARGET ─
+  /** §33 — the ONE gap-visual gate authority (all must stay 0). */
+  private countersBlockGapVisualV1: BlockGapVisualV1Counters = createBlockGapVisualV1Counters()
+  /** §32 — the positive coverage counters. */
+  private coverageBlockGapVisualV1: BlockGapVisualV1Coverage = createBlockGapVisualV1Coverage()
+  /** §6 — the ONE mounted gap carrier (never a content block). */
+  private blockGapVisualEl: HTMLElement | null = null
+  /** §12 — the last committed gap-visual audit facts (runtime verification seam). */
+  private lastBlockGapVisualAudit: Record<string, unknown> = {}
+  /** §25 — the monotonic reason-chip rect trace sequence (runtime forensics). */
+  private reasonChipRectTraceSeq = 0
+  /** §25 — the last traced chip rect per heading identity. */
+  private lastReasonChipRectTrace = new Map<string, { left: number; top: number; seq: number }>()
   // ── Drawer Viewport Stability V1 (§5/§6/§8/§12/§13/§20/§30) ──────────────
   /** the ONE drawer viewport gate authority counters (all must stay 0). */
   private countersDrawerViewportV1: DrawerViewportV1Counters = createDrawerViewportV1Counters()
@@ -2997,6 +3035,11 @@ export class DocumentUtilityOverlayHost {
       '.inkchapter-diagnostic-inline-mark',
       '.inkchapter-diagnostic-locate-marker',
       '.inkchapter-heading-diagnostic-active__fragment',
+      // Block Gap Visual Binding Closure V1 §16/§18 — the BLOCK_GAP_VISUAL_TARGET
+      // IS the active fill carrier for EXCESSIVE_INTERNAL_BLANK_LINES, so the
+      // FILL_ONLY accounting must see it (fillCount>=1) without ever reverting to
+      // a content-block highlight.
+      '.inkchapter-block-gap-visual',
     ].join(',')
     // V5.13-R1 — a document-space carrier lives in the `#write` host, NOT in the
     // fixed overlay root, so the caller may declare ONE extra carrier scope. Each
@@ -4007,6 +4050,9 @@ export class DocumentUtilityOverlayHost {
   }
 
   private removeLocateDocumentCarrier(): void {
+    // ── Presentation Stability Closure V1 §12 — the gap carrier is a locate
+    // carrier and retires with the rest (never a stale gap visual).
+    this.removeBlockGapVisual()
     if (this.locateDocCarrier) {
       try { this.locateDocCarrier.remove() } catch { /* noop */ }
       this.locateDocCarrier = null
@@ -5272,7 +5318,7 @@ export class DocumentUtilityOverlayHost {
         documentTextColumnSource: this.lastDocEndVisual?.textColumnSource ?? null,
         accentWidthPx: this.lastDocEndVisual?.accentWidthPx ?? 0,
         decorativeVerticalRail: false,
-        surfaceLeftAccent: true,
+        surfaceLeftAccent: false,
         legacyHeadingFrameRendered: false,
         passiveMarkerPresent: this.headingPassiveMarkers.size > 0,
         activeMarkerPresent: this.headingActiveWrapper !== null,
@@ -5301,6 +5347,14 @@ export class DocumentUtilityOverlayHost {
     // SCROLL rect is the semantic block box (may be the 800/964px heading block),
     // while the visual fragments are the text-tight presentation.
     const scrollRect = geom?.semanticRect ?? null
+    // ── V2 §B — AUTHORITY CONVERGENCE: when the BLOCK-GAP carrier is the active
+    // painted carrier, the VisualClosure must read the SAME committed carrier
+    // state as OneClick. It owns no locate frame, so the frame-derived facts
+    // (severity / targetKind / fragments) were structurally null — a
+    // OneClick-PASS + VisualClosure-FAIL contradiction.
+    const gapActive = this.isBlockGapVisualActive()
+    const gapRect = gapActive ? this.measureLocateRect(this.blockGapVisualEl) : null
+    const gapSeverity = gapActive ? this.blockGapActiveSeverity : null
     const coverageRatio = kind === 'inline'
       ? (inlineFacts ? inlineFacts.coverage : null)
       : isBlock ? (geom ? geom.horizontalCoverage : null) : (kind === 'heading' ? 1 : null)
@@ -5310,17 +5364,23 @@ export class DocumentUtilityOverlayHost {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       diagnosticId: this.lastLocatedDiagnosticId,
       ruleId: this.activeLocateTx?.diagnosticId ?? this.locateCommittedVisual?.diagnosticId ?? null,
-      severity: frame?.getStructure().severity ?? null,
-      visualTargetKind: structure?.kind ?? null,
+      // V2 §B — the gap carrier contributes its OWN unified facts (never null).
+      severity: gapActive ? gapSeverity : (frame?.getStructure().severity ?? null),
+      visualTargetKind: gapActive ? BLOCK_GAP_VISUAL_TARGET : (structure?.kind ?? null),
       semanticAnchorIdentity: this.locateCommittedVisual?.semanticAnchorIdentity ?? null,
       targetIdentity: this.lastLocatedDiagnosticId,
       sourceRangeIdentity: null,
       documentLayoutEpoch: this.currentDocumentLayoutEpoch,
       measuredLayoutEpoch: this.currentDocumentLayoutEpoch,
       layoutEpochCurrent: true,
-      scrollRect,
-      visualFragmentCount: inlineFacts ? inlineFacts.fragments.length : (structure?.inlineFragmentCount ?? 0),
-      visualFragments: inlineFacts ? inlineFacts.fragments : [],
+      scrollRect: gapActive ? gapRect : scrollRect,
+      // V2 §B — the gap carrier IS one painted fragment (the real gap band).
+      visualFragmentCount: gapActive
+        ? (gapRect ? 1 : 0)
+        : (inlineFacts ? inlineFacts.fragments.length : (structure?.inlineFragmentCount ?? 0)),
+      visualFragments: gapActive
+        ? (gapRect ? [{ left: gapRect.left, top: gapRect.top, right: gapRect.right, bottom: gapRect.bottom, width: gapRect.width, height: gapRect.height }] : [])
+        : (inlineFacts ? inlineFacts.fragments : []),
       secondaryContextRects: [],
       drawerRequestedOpen: this.drawerOpen,
       drawerPresentationMode: this.getDrawerPresentationMode(),
@@ -5336,10 +5396,17 @@ export class DocumentUtilityOverlayHost {
       passiveMarkerPresent: this.headingPassiveMarkers.size > 0,
       activeMarkerPresent: this.headingActiveWrapper !== null,
       activeHeadingIdentity: this.headingActiveMarkerIdentity,
-      visualDecision: commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA',
-      commitDecision: commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA',
+      // V2 §B — the gap branch commits its OWN unified carrier state.
+      visualDecision: gapActive
+        ? (gapRect ? 'PASS' : 'FAIL')
+        : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
+      commitDecision: gapActive
+        ? (gapRect ? 'COMMIT' : 'NO_COMMIT')
+        : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
       terminalState: this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE',
-      decision: commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS',
+      decision: gapActive
+        ? (gapRect && gapSeverity === 'warning' ? 'PASS' : 'FAIL')
+        : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
       reason,
       gateCounters: { ...this.countersClosureV512R2 },
       gateDecision: evaluateVisualClosureGates(this.countersClosureV512R2).decision,
@@ -5347,6 +5414,28 @@ export class DocumentUtilityOverlayHost {
     }
     this.lastVisualClosureAudit = payload
     emitRuntimeAudit(VISUAL_CLOSURE_AUDIT_EVENT, payload)
+    // V2 §B — the explicit OneClick ↔ VisualClosure consistency evidence.
+    if (gapActive) {
+      const consistent = gapRect != null && gapSeverity === 'warning'
+      emitRuntimeAudit(BLOCK_GAP_VISUAL_CONSISTENCY_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: this.lastLocatedDiagnosticId,
+        severity: gapSeverity,
+        visualTargetKind: BLOCK_GAP_VISUAL_TARGET,
+        primaryRect: gapRect,
+        visualCarrierPresent: true,
+        visualFragmentCount: gapRect ? 1 : 0,
+        oneClickCarrierPresent: true,
+        visualDecision: gapRect ? 'PASS' : 'FAIL',
+        commitDecision: gapRect ? 'COMMIT' : 'NO_COMMIT',
+        terminalState: payload.terminalState,
+        contradiction: !consistent,
+        decision: consistent ? 'PASS' : 'FAIL',
+        reason: gapRect
+          ? (gapSeverity === 'warning' ? 'GAP_UNIFIED_VISUAL_COMMIT_CONSISTENT' : 'GAP_SEVERITY_MISMATCH')
+          : 'GAP_UNIFIED_VISUAL_COMMIT_MISSING_RECT',
+      })
+    }
   }
 
   /** §17 — read-only unified closure payload. */
@@ -5491,6 +5580,11 @@ export class DocumentUtilityOverlayHost {
     const outlineDiagnosticTargets: OutlineDiagnosticTargetInput[] = []
     let headingWithoutVisualTarget = 0
     for (const d of diags) {
+      // ── Presentation Stability Closure V1 §2/§8 — the BLOCK-GAP rule's visual
+      // target is the GAP itself (a dedicated overlay carrier), never an
+      // adjacent content block. It must therefore NEVER enter the heading marker
+      // layer (which would paint the NEXT heading) nor a heading reason chip.
+      if (d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE) continue
       const targets = resolveDiagnosticVisualTargets(
         {
           id: d.id,
@@ -6081,6 +6175,11 @@ export class DocumentUtilityOverlayHost {
           // （`left − 最后一行文字右缘`）；不再有 BELOW_LAST_LINE 的纵向 gap 语义。
           chipGapPx = placement.rect.left - rightMost
           chipCenterDriftPx = evaluateHeadingChipCenterDrift(chipAnchorCenterY, chipLocal.top + chipLocal.height / 2)
+          // ── Presentation Stability Closure V1 §25 — reason-chip rect TRACE
+          // (runtime forensics). Records EVERY committed chip rect with its
+          // geometry epoch + a monotonic sequence, so a single Enter yields the
+          // BEFORE / transient / AFTER series. Observability only — never gates.
+          this.emitReasonChipRectTrace(identity, chipLocal, geometryGeneration)
         } else if (chip) {
           try { chip.remove() } catch { /* noop */ }
           chip = null
@@ -9918,6 +10017,13 @@ export class DocumentUtilityOverlayHost {
       this.clearHeadingActiveEmphasisVisual()
       return
     }
+    // ── Presentation Stability Closure V1 §2/§8 — the BLOCK-GAP rule owns the
+    // gap carrier; it must NEVER be re-derived into a heading emphasis (which
+    // would paint the NEXT heading) even when its scroll anchor is a heading.
+    if (diag.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE) {
+      this.clearHeadingActiveEmphasisVisual()
+      return
+    }
     const el = this.resolveDiagnosticElementForMarker(diag)
     if (!el || !/^H[1-6]$/.test(el.tagName)) {
       // ── V5.14-R8 §10 — an UNRESOLVABLE element is NOT proof that the painted
@@ -10624,6 +10730,717 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * Presentation Stability Closure V1 §6/§7/§8/§9/§10/§11 — paint the ONE
+   * BLOCK-GAP visual: a Warning rail + a faint Warning gap background strictly
+   * INSIDE the blank run between the two sibling content blocks.
+   *
+   * Detection is NOT re-run here: the two block source lines travel on the
+   * diagnostic's own source-only metadata (`previousBlockStartLine` /
+   * `nextBlockStartLine`). Only the PAINT geometry is measured live. Nothing is
+   * inserted into the Markdown / editable DOM — the carrier is an overlay in the
+   * existing locate document layer, so the document layout is unchanged.
+   */
+  private commitBlockGapVisual(
+    diagId: string | null,
+    severity: 'error' | 'warning' | 'info',
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    /** V2 §A — the canonical next-block element the locate resolver already bound. */
+    preferredNextElement: HTMLElement | null = null,
+  ): void {
+    const meta = (diag?.metadata ?? {}) as Record<string, unknown>
+    const prevLine = typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null
+    const nextLine = typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null
+    const prevIdentity = typeof meta.previousBlockIdentity === 'string' ? meta.previousBlockIdentity : ''
+    const nextIdentity = typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : ''
+    const actualBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+    const headless = isHeadlessTestRuntime()
+    // §12 — a stale carrier must never survive a new locate.
+    this.removeBlockGapVisual()
+    // §18 — the gap carrier lives in the locate DOCUMENT layer; ensure it exists
+    // BEFORE measuring the document host rect (a null host produced gapTop=null).
+    this.ensureLocateDocumentLayer()
+    const prevAnchorText = typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : ''
+    const nextAnchorText = typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : ''
+    // §7/§8 — SYMMETRIC Source→DOM binding for BOTH sides through ONE ladder.
+    // Raw `resolveSourceLine` (Typora data-line) is only a CANDIDATE, never the
+    // sole binding authority (BLOCK_GAP_RAW_DATA_LINE_ONLY_BINDING_COUNT=0).
+    const prevBinding = this.bindGapBlock(prevLine, prevAnchorText)
+    // V2 §A — the NEXT side prefers the CANONICAL element the locate/figure/
+    // resource resolver already bound; the ladder (incl. IMAGE_ONLY_ORDINAL) is a
+    // last fallback only.
+    const canonicalNext = this.canonicalGapBlockBinding(preferredNextElement, nextAnchorText)
+    const nextBinding = canonicalNext
+      ? {
+        element: canonicalNext.element,
+        decision: 'BOUND' as const,
+        strategy: canonicalNext.strategy,
+        semanticTextMatch: canonicalNext.semanticTextMatch,
+      }
+      : this.bindGapBlock(nextLine, nextAnchorText)
+    const prevEl = prevBinding.element
+    const nextEl = nextBinding.element
+    const nextDomIdentity = nextEl ? this.domBlockIdentityOf(nextEl) : null
+    if (!headless) {
+      if (prevBinding.decision === 'MISSING') this.countersBlockGapVisualV1.previousBindingMissing++
+      if (nextBinding.decision === 'MISSING') this.countersBlockGapVisualV1.nextBindingMissing++
+      if (prevBinding.decision === 'AMBIGUOUS' || nextBinding.decision === 'AMBIGUOUS') {
+        this.countersBlockGapVisualV1.ambiguousTextFallbackAccepted++
+      }
+      // V2 §A — the ordinal fallback must NOT win while a canonical binding exists.
+      if (
+        nextBinding.decision === 'BOUND'
+        && nextBinding.strategy === 'IMAGE_ONLY_ORDINAL'
+        && canonicalNext != null
+      ) {
+        this.countersBlockGapVisualV1.ordinalFallbackUsedWhileCanonicalAvailable++
+      }
+      if (nextBinding.decision === 'BOUND' && nextDomIdentity == null) {
+        this.countersBlockGapVisualV1.falseBound++
+      }
+    }
+    emitRuntimeAudit(BLOCK_GAP_CANONICAL_BINDING_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      nextSourceBlockIdentity: nextIdentity,
+      nextDomIdentity,
+      nextBindingStrategy: nextBinding.strategy,
+      canonicalLocateElementProvided: preferredNextElement != null,
+      physicalVerified: nextEl != null && nextEl.isConnected,
+      decision: nextBinding.decision === 'BOUND' && nextDomIdentity != null ? 'PASS' : 'PARTIAL',
+      reason: nextDomIdentity != null
+        ? `CANONICAL_NEXT_BOUND:${nextBinding.strategy}`
+        : `CANONICAL_NEXT_UNVERIFIED:${nextBinding.strategy}`,
+    })
+    emitRuntimeAudit(BLOCK_GAP_BINDING_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      actualBlankLines,
+      previousBlockIdentity: prevIdentity,
+      previousBlockStartLine: prevLine,
+      previousBlockAnchorText: prevAnchorText,
+      previousBindingDecision: prevBinding.decision,
+      previousBindingStrategy: prevBinding.strategy,
+      previousSemanticTextMatch: prevBinding.semanticTextMatch,
+      previousResolvedTag: prevEl ? prevEl.tagName.toLowerCase() : null,
+      previousResolvedClass: prevEl ? String(prevEl.className).slice(0, 48) : null,
+      nextBlockIdentity: nextIdentity,
+      nextBlockStartLine: nextLine,
+      nextBlockAnchorText: nextAnchorText,
+      nextBindingDecision: nextBinding.decision,
+      nextBindingStrategy: nextBinding.strategy,
+      nextSemanticTextMatch: nextBinding.semanticTextMatch,
+      nextResolvedTag: nextEl ? nextEl.tagName.toLowerCase() : null,
+      nextResolvedClass: nextEl ? String(nextEl.className).slice(0, 48) : null,
+      decision: prevBinding.decision === 'BOUND' && nextBinding.decision === 'BOUND' ? 'PASS' : 'MISSING',
+      reason: prevBinding.decision === 'BOUND' && nextBinding.decision === 'BOUND'
+        ? 'BLOCK_GAP_BOTH_SIDES_BOUND'
+        : `BLOCK_GAP_BINDING_INCOMPLETE:prev=${prevBinding.decision}:next=${nextBinding.decision}`,
+    })
+    const hostRect = this.measureLocateRect(this.locateDocLayerHost)
+    const prevVp = prevEl ? this.measureLocateRect(prevEl) : null
+    const nextVp = nextEl ? this.measureLocateRect(nextEl) : null
+    // ── V6 §4/§5/§8 — the gap boundary is the Canonical PRESENTATION EXTENT,
+    // not the raw block rect: gapTop = prevExtent.bottom / gapBottom =
+    // nextExtent.top, so an owned figure caption is INSIDE the previous extent
+    // (the yellow band can no longer start before the caption).
+    const prevExtent = prevEl && hostRect ? this.resolvePresentationExtentLocal(prevEl, hostRect) : null
+    const nextExtent = nextEl && hostRect ? this.resolvePresentationExtentLocal(nextEl, hostRect) : null
+    const prevLocal = prevExtent?.rect ?? null
+    const nextLocal = nextExtent?.rect ?? null
+    for (const spec of [
+      { role: 'previous', el: prevEl, srcVp: prevVp, ext: prevExtent, identity: prevIdentity },
+      { role: 'next', el: nextEl, srcVp: nextVp, ext: nextExtent, identity: nextIdentity },
+    ]) {
+      if (!spec.el || !hostRect) continue
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-PRESENTATION-EXTENT-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        boundaryRole: spec.role,
+        semanticIdentity: spec.identity,
+        kind: spec.ext?.kind ?? null,
+        sourceElementTag: spec.el.tagName.toLowerCase(),
+        sourceElementClass: String(spec.el.className).slice(0, 48),
+        sourceRect: spec.srcVp ?? null,
+        ownedPresentationPartCount: spec.ext?.ownedCaptionCount ?? 0,
+        ownedCaptionCount: spec.ext?.ownedCaptionCount ?? 0,
+        ownerIdentityMatch: spec.ext?.ownerIdentityMatch ?? false,
+        unionRect: spec.ext?.rect ?? null,
+        extentTop: spec.ext?.rect?.top ?? null,
+        extentBottom: spec.ext?.rect?.bottom ?? null,
+        extentHeight: spec.ext?.rect?.height ?? null,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        decision: spec.ext?.decision ?? 'MISSING',
+        reason: spec.ext?.reason ?? 'NO_EXTENT',
+      })
+    }
+    const geometry = computeBlockGapVisualGeometry({
+      previousBlockRect: prevLocal
+        ? { left: prevLocal.left, top: prevLocal.top, right: prevLocal.right, bottom: prevLocal.bottom, width: prevLocal.width, height: prevLocal.height }
+        : null,
+      nextBlockRect: nextLocal
+        ? { left: nextLocal.left, top: nextLocal.top, right: nextLocal.right, bottom: nextLocal.bottom, width: nextLocal.width, height: nextLocal.height }
+        : null,
+      contentColumns: null,
+    })
+    // ── V4 §1 — SEMANTIC OCCUPANCY SAFETY GATE ─────────────────────────────
+    // Only SUBSTANTIVE content blocks the paint. The gap's own boundary pair,
+    // empty editor placeholders and plugin presentation are NOT occupancy, so a
+    // correct Case-A gap is never refused. Raw DOM overlap stays audit-only.
+    const occupancy = this.measureBlockGapOccupancy(geometry, [prevEl, nextEl])
+    // V4 §1 — ONLY SEMANTIC occupancy blocks the paint (raw DOM overlap is audit).
+    const occupied = occupancy.semanticIntersectedCount > 0
+    if (geometry) {
+      emitRuntimeAudit(BLOCK_GAP_OCCUPANCY_AUDIT_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        gapRect: occupancy.gapRect,
+        visibleContentCount: occupancy.visibleContentCount,
+        intersectedContentCount: occupancy.intersectedCount,
+        semanticIntersectedCount: occupancy.semanticIntersectedCount,
+        intersections: occupancy.intersections.slice(0, 8),
+        decision: occupied ? 'FAIL_GEOMETRY_OCCUPIED' : 'PASS',
+        reason: occupied
+          ? 'BLOCK_GAP_INTERSECTS_SEMANTIC_CONTENT'
+          : 'BLOCK_GAP_SEMANTIC_OCCUPANCY_CLEAR',
+      })
+    }
+    const valid = isBlockGapGeometryValid(geometry) && !occupied
+    const layer = valid ? this.ensureLocateDocumentLayer() : null
+    if (geometry && valid && layer) {
+      const el = document.createElement('div')
+      el.className = BLOCK_GAP_VISUAL_CLASS
+      el.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
+      el.setAttribute('data-severity', severity)
+      el.setAttribute('data-active', 'true')
+      el.setAttribute('aria-hidden', 'true')
+      el.style.cssText = `position:absolute;left:${Math.round(geometry.gapLeft)}px;top:${Math.round(geometry.gapTop)}px;`
+        + `width:${Math.round(geometry.gapWidth)}px;height:${Math.round(geometry.gapHeight)}px;pointer-events:none;`
+      layer.appendChild(el)
+      this.blockGapVisualEl = el
+      // V2 §B — the painted gap carrier carries its diagnostic severity so the
+      // Unified Visual Closure reads the SAME facts as OneClick.
+      this.blockGapActiveSeverity = severity
+      // §12 — the layer must carry exactly ONE gap carrier; a leftover is a
+      // duplicate visual (never accumulate).
+      if (!headless) {
+        const carriers = layer.querySelectorAll(`.${BLOCK_GAP_VISUAL_CLASS}`).length
+        if (carriers > 1) this.countersBlockGapVisualV1.duplicateVisual += carriers - 1
+      }
+      this.coverageBlockGapVisualV1.gapVisualRuntime++
+      this.coverageBlockGapVisualV1.gapActiveRuntime++
+    } else if (!headless) {
+      // §8 — an unprovable / unmeasurable gap must NEVER degrade into painting an
+      // adjacent content block. Report the miss; paint nothing.
+      this.countersBlockGapVisualV1.gapVisualMissing++
+    }
+    // §8 — self check: the painted band may not intersect either block's box.
+    if (geometry && (geometry.overlapsPreviousBlock || geometry.overlapsNextBlock) && !headless) {
+      this.countersBlockGapVisualV1.visualCoversContentText++
+    }
+    this.lastBlockGapVisualAudit = {
+      diagnosticId: diagId,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      previousBlockIdentity: prevIdentity,
+      nextBlockIdentity: nextIdentity,
+      actualBlankLines,
+      previousBlockResolved: prevEl != null,
+      nextBlockResolved: nextEl != null,
+      previousBindingDecision: prevBinding.decision,
+      previousBindingStrategy: prevBinding.strategy,
+      nextBindingDecision: nextBinding.decision,
+      nextBindingStrategy: nextBinding.strategy,
+      previousRect: prevVp ? { left: prevVp.left, top: prevVp.top, right: prevVp.right, bottom: prevVp.bottom } : null,
+      nextRect: nextVp ? { left: nextVp.left, top: nextVp.top, right: nextVp.right, bottom: nextVp.bottom } : null,
+      visualTarget: BLOCK_GAP_VISUAL_TARGET,
+      gapTop: geometry ? geometry.gapTop : null,
+      gapBottom: geometry ? geometry.gapBottom : null,
+      gapHeight: geometry ? geometry.gapHeight : null,
+      gapWidth: geometry ? geometry.gapWidth : null,
+      overlapsPreviousBlock: geometry ? geometry.overlapsPreviousBlock : null,
+      overlapsNextBlock: geometry ? geometry.overlapsNextBlock : null,
+      painted: this.blockGapVisualEl != null,
+      active: this.blockGapVisualEl != null,
+      fillCarrierRegistered: this.blockGapVisualEl != null,
+      fillCount: this.blockGapVisualEl != null ? 1 : 0,
+      decision: valid ? 'PASS' : 'MISSING',
+      reason: valid
+        ? 'BLOCK_GAP_VISUAL_PAINTED'
+        : `BLOCK_GAP_VISUAL_NOT_PAINTED:prev=${prevBinding.decision}:next=${nextBinding.decision}`,
+    }
+    emitRuntimeAudit(BLOCK_GAP_VISUAL_AUDIT_EVENT, this.lastBlockGapVisualAudit)
+    // The gap IS the resolved target for this rule — the one-click commit must
+    // not be rolled back merely because the anchor block was handed to us. The
+    // caller's visibility checks still run (the next block was scrolled into
+    // view before this point).
+    this.lastLocateVisualGateOk = true
+  }
+
+  /** V2 §B — severity of the currently painted block-gap carrier (unified facts). */
+  private blockGapActiveSeverity: 'error' | 'warning' | 'info' | null = null
+
+  /** §12 — retire the gap carrier (dismiss / new locate / diagnostic removed). */
+  private removeBlockGapVisual(): void {
+    this.blockGapActiveSeverity = null
+    if (this.blockGapVisualEl) {
+      try { this.blockGapVisualEl.remove() } catch { /* noop */ }
+      this.blockGapVisualEl = null
+    }
+  }
+
+  /** §6 — is the block-gap carrier the CURRENT painted locate carrier? */
+  private isBlockGapVisualActive(): boolean {
+    return this.blockGapVisualEl != null && this.blockGapVisualEl.isConnected
+  }
+
+  /** §5 — is this diagnostic the BLOCK-GAP rule (presentation bypass key)? */
+  private isBlockGapDiagnostic(diag: { code?: string } | null | undefined): boolean {
+    return diag?.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE
+  }
+
+  /** §7 — the candidate live block elements for a Source→DOM gap binding. */
+  private gapBindingCandidates(): HTMLElement[] {
+    const root = resolveBusinessContentRoot()
+    if (!root) return []
+    return Array.from(root.querySelectorAll<HTMLElement>('p,h1,h2,h3,h4,h5,h6,li,pre'))
+  }
+
+  /**
+   * V7 §3/§11 — the DOM-side inventory of IMAGE-ONLY blocks (boundary candidates).
+   *
+   * In THIS Typora build an image block keeps the image's RAW Markdown as (hidden)
+   * `textContent` — the paragraph of `![](a.png)` reads `![](a.png)`, NOT `''`.
+   * So the DOM side MUST use the SAME visible-semantic projection as the source
+   * side (`stripInlineResourceSyntax`), exactly like the resource resolver. A bare
+   * `textContent === ''` filter excludes EVERY real image block — which is exactly
+   * what made the block-gap previous boundary resolve to MISSING.
+   *
+   * Cardinality is kept consistent with `countPrecedingImageOnlyBlocks(line)`
+   * (default kind = `paragraph`): the owning block is the canonical list-item /
+   * blockquote when nested, and only `paragraph`-kind blocks are returned.
+   */
+  private imageOnlyGapBlocks(): HTMLElement[] {
+    const root = resolveBusinessContentRoot()
+    if (!root) return []
+    const out: HTMLElement[] = []
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('p,blockquote,li,figure'))) {
+      if (el.querySelector('img') == null) continue
+      if (normalizeSourceAnchorText(stripInlineResourceSyntax(el.textContent)) !== '') continue
+      const owned = el.closest<HTMLElement>('li') ?? el.closest<HTMLElement>('blockquote') ?? el
+      if (this.sourceBlockContainerKindOf(owned) !== 'paragraph') continue
+      if (!out.includes(owned)) out.push(owned)
+    }
+    return out
+  }
+
+  /** §7 — the data-line distance of a candidate (Infinity when it has none). */
+  private gapDataLineDistance(el: HTMLElement, line: number): number {
+    const dl = el.getAttribute('data-line')
+    const n = dl != null ? Number.parseInt(dl, 10) : Number.NaN
+    return Number.isFinite(n) ? Math.abs(n - line) : Number.POSITIVE_INFINITY
+  }
+
+  /**
+   * Block Gap Visual Binding Closure V1 §7/§8/§9/§10/§11 — the ONE symmetric
+   * Source→DOM binding ladder for ONE gap side. `resolveSourceLine` (Typora
+   * `data-line`) is a CANDIDATE only; a text fallback must prove UNIQUENESS
+   * (never a first-match), and an image-only block binds by the EXISTING
+   * image-only ordinal authority — never by a bare textContent match.
+   */
+  private bindGapBlock(
+    line: number | null,
+    anchorText: string,
+  ): { element: HTMLElement | null; decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'; strategy: string; semanticTextMatch: boolean } {
+    if (line == null) return { element: null, decision: 'MISSING', strategy: 'NO_SOURCE_LINE', semanticTextMatch: false }
+    const needle = normalizeSourceAnchorText(anchorText)
+    // Step 1/2 — a data-line candidate, ACCEPTED only when its text verifies.
+    for (const l of [line, line + 1]) {
+      const el = this.resolveSourceLine(l)
+      if (el && needle !== '' && normalizeSourceAnchorText(el.textContent) === needle) {
+        return {
+          element: el,
+          decision: 'BOUND',
+          strategy: l === line ? 'SOURCE_LINE_VERIFIED' : 'SOURCE_LINE_OFFSET_VERIFIED',
+          semanticTextMatch: true,
+        }
+      }
+    }
+    // Image-only block (markdown text is a bare image token): bind by the SAME
+    // image-only ordinal authority the figure locator uses (deterministic).
+    const imageOnly = needle !== ''
+      && normalizeSourceAnchorText(stripInlineResourceSyntax(stripBlockLevelMarkers(anchorText))) === ''
+      && /!\[[^\]]*\]\([^)]*\)/.test(anchorText)
+    if (imageOnly) {
+      const ordinal = this.countPrecedingImageOnlyBlocks(line)
+      // ── V7 §3 — the fallback must index REAL image-only blocks (blocks that
+      // actually own an <img>), never "every empty-text paragraph": the blank-line
+      // carrier paragraphs are also empty, and picking the Nth of those bound the
+      // boundary to the WRONG element (→ source-only extent, tiny gap, no caption).
+      const candidates = this.imageOnlyGapBlocks()
+      emitRuntimeAudit(BLOCK_GAP_IMAGE_ONLY_INVENTORY_AUDIT_EVENT, {
+        diagnosticId: null,
+        sourceLine: line,
+        sourceOrdinal: ordinal,
+        candidateCount: candidates.length,
+        candidates: candidates.slice(0, 8).map(el => ({
+          tag: el.tagName.toLowerCase(),
+          cls: String(el.className).slice(0, 48),
+          imgCount: el.querySelectorAll('img').length,
+          visibleText: normalizeSourceAnchorText(stripInlineResourceSyntax(el.textContent)).slice(0, 40),
+          rawTextLen: (el.textContent ?? '').length,
+          dataLine: el.getAttribute('data-line'),
+        })),
+        decision: candidates[ordinal] != null ? 'FOUND' : 'NOT_FOUND',
+        reason: 'IMAGE_ONLY_ORDINAL',
+      })
+      const el = candidates[ordinal] ?? null
+      return el
+        ? { element: el, decision: 'BOUND', strategy: 'IMAGE_ONLY_ORDINAL', semanticTextMatch: true }
+        : { element: null, decision: 'MISSING', strategy: 'IMAGE_ONLY_ORDINAL_NOT_FOUND', semanticTextMatch: false }
+    }
+    // Step 3/4 — semantic anchor text fallback WITH uniqueness proof.
+    if (needle !== '') {
+      const matches = this.gapBindingCandidates().filter(el => normalizeSourceAnchorText(el.textContent) === needle)
+      if (matches.length === 1) return { element: matches[0], decision: 'BOUND', strategy: 'ANCHOR_TEXT_UNIQUE', semanticTextMatch: true }
+      if (matches.length > 1) {
+        const ranked = matches
+          .map(el => ({ el, d: this.gapDataLineDistance(el, line) }))
+          .sort((a, b) => a.d - b.d)
+        // Only a STRICTLY closest candidate is deterministic; a tie is AMBIGUOUS.
+        if (ranked.length >= 2 && Number.isFinite(ranked[0].d) && ranked[0].d < ranked[1].d) {
+          return { element: ranked[0].el, decision: 'BOUND', strategy: 'ANCHOR_TEXT_NEAREST_LINE', semanticTextMatch: true }
+        }
+        return { element: null, decision: 'AMBIGUOUS', strategy: 'ANCHOR_TEXT_AMBIGUOUS', semanticTextMatch: true }
+      }
+      return { element: null, decision: 'MISSING', strategy: 'ANCHOR_TEXT_NOT_FOUND', semanticTextMatch: false }
+    }
+    return { element: null, decision: 'MISSING', strategy: 'NO_TEXT_ANCHOR', semanticTextMatch: false }
+  }
+
+  /**
+   * V2 §A — the CANONICAL owning-block binding: reuse the element the locate /
+   * figure / resource resolver already resolved, then verify it PHYSICALLY
+   * (connected, inside the active editor, rendered) before accepting it.
+   * Semantic text match alone is never a physical PASS.
+   */
+  private canonicalGapBlockBinding(
+    el: HTMLElement | null | undefined,
+    anchorText: string,
+  ): { element: HTMLElement; strategy: string; semanticTextMatch: boolean; domIdentity: string | null } | null {
+    if (!el || !(el instanceof HTMLElement) || !el.isConnected) return null
+    const root = resolveBusinessContentRoot()
+    if (!root || !root.contains(el)) return null
+    const rect = this.measureLocateRect(el)
+    if (!rect || !(rect.height > 0)) return null
+    const needle = normalizeSourceAnchorText(anchorText)
+    const textOk = needle !== '' && normalizeSourceAnchorText(el.textContent) === needle
+    const imageOnly = needle !== ''
+      && normalizeSourceAnchorText(stripInlineResourceSyntax(stripBlockLevelMarkers(anchorText))) === ''
+      && /!\[[^\]]*\]\([^)]*\)/.test(anchorText)
+    if (!textOk && !imageOnly) return null
+    return {
+      element: el,
+      strategy: 'CANONICAL_LOCATE_ELEMENT',
+      semanticTextMatch: true,
+      domIdentity: this.domBlockIdentityOf(el),
+    }
+  }
+
+  /**
+   * V6 §4/§5 — CanonicalPresentationExtentAuthority (the ONE place that turns a
+   * semantic boundary block into its VISIBLE presentation extent).
+   *
+   * A generated figure/table/code caption is NOT auxiliary UI and NOT interior
+   * gap content — it is part of the owning block's visible boundary. Ownership is
+   * established by the caption service's OWN marker (`data-inkchapter-caption`)
+   * on the IMMEDIATELY ADJACENT sibling only: never a broad `.inkchapter-caption`
+   * scan, never a "nearest caption" guess, never a text regex.
+   */
+  private resolvePresentationExtentLocal(
+    el: HTMLElement,
+    hostRect: RectRecord,
+  ): {
+    kind: string
+    rect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    ownedCaptionCount: number
+    ownerIdentityMatch: boolean
+    decision: 'RESOLVED' | 'DEGRADED' | 'MISSING'
+    reason: string
+  } {
+    const tag = el.tagName.toLowerCase()
+    const hasImg = el.querySelector('img') != null
+    // V7 §11 — an image block's `textContent` is the RAW Markdown token in this
+    // Typora build, so the visible-semantic projection must strip resource syntax
+    // before judging "image-only"; a bare `textContent === ''` never classifies a
+    // real figure.
+    const visibleText = normalizeSourceAnchorText(stripInlineResourceSyntax(el.textContent))
+    const kind = tag === 'figure' || (tag === 'p' && hasImg && visibleText === '')
+      ? 'figure'
+      : tag.startsWith('h')
+        ? 'heading'
+        : tag === 'table' ? 'table' : tag === 'pre' ? 'code' : 'paragraph'
+    const toLocal = (vp: RectRecord | null) =>
+      (vp ? viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect }) : null)
+    const src = toLocal(this.measureLocateRect(el))
+    if (!src) {
+      return { kind, rect: null, ownedCaptionCount: 0, ownerIdentityMatch: false, decision: 'MISSING', reason: 'SOURCE_UNMEASURABLE' }
+    }
+    let left = src.left
+    let top = src.top
+    let right = src.right
+    let bottom = src.bottom
+    let ownedCaptionCount = 0
+    let ownerIdentityMatch = false
+    // ── V7 §2 — CANONICAL OWNER BRIDGE. The owned caption is found through the
+    // caption service's OWN runtime owner map (module-scope, single writer) and
+    // matched by OWNER ROOT identity. Explicitly NOT: nextElementSibling,
+    // skip-empty-p, nearest caption, global `.inkchapter-caption` selector,
+    // DOM ordinal, or image src/alt merging.
+    const ownerSearchRoot = resolveBusinessContentRoot()
+    const ownerKeyAttr = el.getAttribute('data-inkchapter-caption-owner-key')
+    if (ownerSearchRoot) {
+      const captionEls = Array.from(ownerSearchRoot.querySelectorAll<HTMLElement>('[data-inkchapter-caption]'))
+      // V7 §9/§24.4 — a key that matches MORE THAN ONE caption is NOT a unique
+      // owner identity. Blindly unioning them absorbed a neighbouring figure's
+      // caption (extent bottom jumped below the next block → inverted gap → no
+      // paint). When the key tier is ambiguous, refuse it and fall back to the
+      // owner-root identity tier only.
+      const keyMatches = ownerKeyAttr != null && ownerKeyAttr !== ''
+        ? captionEls.filter(cap => cap.getAttribute('data-inkchapter-caption-target-key') === ownerKeyAttr)
+        : []
+      const keyTierUsable = keyMatches.length === 1
+      for (const cap of captionEls) {
+        // (1) SECONDARY — canonical key EQUALITY: the caption service stamps the
+        // same target key on the caption and on its owner root (survives
+        // re-creation), but only when it is UNIQUE among captions.
+        const capKey = cap.getAttribute('data-inkchapter-caption-target-key')
+        const byKey = keyTierUsable && capKey === ownerKeyAttr
+        // (2) PRIMARY — the service's own runtime owner map (root identity).
+        const ownerRoot = getCanonicalCaptionOwnerRoot(cap)
+        const byMap = ownerRoot != null && (ownerRoot === el || ownerRoot.contains(el) || el.contains(ownerRoot))
+        if (!byKey && !byMap) continue
+        const capLocal = toLocal(this.measureLocateRect(cap))
+        if (!capLocal) continue
+        ownedCaptionCount++
+        ownerIdentityMatch = true
+        left = Math.min(left, capLocal.left)
+        top = Math.min(top, capLocal.top)
+        right = Math.max(right, capLocal.right)
+        bottom = Math.max(bottom, capLocal.bottom)
+      }
+    }
+    if (ownerSearchRoot) this.probeCaptionOwnership(el, ownerSearchRoot)
+    return {
+      kind,
+      rect: { left, top, right, bottom, width: right - left, height: bottom - top },
+      ownedCaptionCount,
+      ownerIdentityMatch,
+      decision: ownedCaptionCount > 0 ? 'RESOLVED' : 'DEGRADED',
+      reason: ownedCaptionCount > 0 ? 'EXTENT_UNION_WITH_OWNED_CAPTION' : 'EXTENT_SOURCE_ONLY',
+    }
+  }
+
+  /**
+   * V7 §2 (diagnostic) — read-only probe of the canonical caption owner map at
+   * the moment an extent is resolved. It DISAMBIGUATES "no caption exists in this
+   * document" from "a caption exists but the owner map does not link it here",
+   * without ever changing ownership semantics.
+   */
+  private probeCaptionOwnership(el: HTMLElement, root: HTMLElement | null): void {
+    try {
+      const captions = root
+        ? Array.from(root.querySelectorAll<HTMLElement>('[data-inkchapter-caption]'))
+        : []
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-CAPTION-OWNER-PROBE', {
+        elementTag: el.tagName.toLowerCase(),
+        elementClass: String(el.className).slice(0, 40),
+        hasImg: el.querySelector('img') != null,
+        textEmpty: normalizeSourceAnchorText(el.textContent) === '',
+        ownerKeyAttr: el.getAttribute('data-inkchapter-caption-owner-key'),
+        captionElementCount: captions.length,
+        captions: captions.slice(0, 6).map(c => {
+          const ow = getCanonicalCaptionOwnerRoot(c)
+          const capKey = c.getAttribute('data-inkchapter-caption-target-key')
+          const elKey = el.getAttribute('data-inkchapter-caption-owner-key')
+          return {
+            kind: getCanonicalCaptionKind(c),
+            targetKey: capKey,
+            ownerNull: ow == null,
+            ownerTag: ow ? ow.tagName.toLowerCase() : null,
+            ownerClass: ow ? String(ow.className).slice(0, 32) : null,
+            matched: ow != null && (ow === el || ow.contains(el) || el.contains(ow)),
+            keyMatched: elKey != null && elKey !== '' && capKey === elKey,
+          }
+        }),
+        decision: captions.length === 0 ? 'NO_CAPTION_ELEMENTS' : 'CAPTION_ELEMENTS_PRESENT',
+      })
+    } catch { /* observability only */ }
+  }
+
+  /** V2 §A — the canonical DOM owning-block identity of a bound element. */
+  private domBlockIdentityOf(el: HTMLElement): string | null {
+    try {
+      const root = resolveBusinessContentRoot()
+      const siblings = root
+        ? Array.from(root.querySelectorAll<HTMLElement>('p,h1,h2,h3,h4,h5,h6,li,pre'))
+        : []
+      const ordinal = siblings.indexOf(el)
+      const img = el.querySelector('img')
+      const sig = img
+        ? `img:${String(img.getAttribute('src') ?? '').slice(0, 40)}`
+        : normalizeSourceAnchorText(el.textContent).slice(0, 40)
+      const id = buildDomBlockIdentity({
+        tag: el.tagName,
+        runtimeId: el.getAttribute('data-node-id') ?? el.getAttribute('data-block-id'),
+        dataLine: el.getAttribute('data-line'),
+        elementId: el.getAttribute('id'),
+        ordinal: ordinal >= 0 ? ordinal : 0,
+        structuralSignature: sig,
+      })
+      return isResolvableDomBlockIdentity(id) ? id : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * V3 §4 — ABSOLUTE OCCUPANCY SAFETY. Before committing, the gap band must be
+   * proven to overlap NO visible content (paragraph / heading / figure / table /
+   * code / formula / blockquote / list / caption / image). Every rect is measured
+   * in the SAME document-local space as the gap geometry. A wrong boundary pair
+   * therefore fails the gate instead of painting over real content.
+   */
+  private measureBlockGapOccupancy(
+    geometry: { gapLeft: number; gapTop: number; gapWidth: number; gapHeight: number } | null,
+    boundaryElements: Array<HTMLElement | null> = [],
+  ): {
+    gapRect: { left: number; top: number; right: number; bottom: number } | null
+    visibleContentCount: number
+    intersectedCount: number
+    semanticIntersectedCount: number
+    intersections: Array<{ tag: string; cls: string; area: number; semantic: boolean }>
+  } {
+    const empty = {
+      gapRect: null,
+      visibleContentCount: 0,
+      intersectedCount: 0,
+      semanticIntersectedCount: 0,
+      intersections: [] as Array<{ tag: string; cls: string; area: number; semantic: boolean }>,
+    }
+    if (!geometry) return empty
+    const hostRect = this.measureLocateRect(this.locateDocLayerHost)
+    if (!hostRect) return empty
+    const gapRect = {
+      left: geometry.gapLeft,
+      top: geometry.gapTop,
+      right: geometry.gapLeft + geometry.gapWidth,
+      bottom: geometry.gapTop + geometry.gapHeight,
+    }
+    const root = resolveBusinessContentRoot()
+    if (!root) return { ...empty, gapRect }
+    const nodes = Array.from(root.querySelectorAll<HTMLElement>(
+      'p,h1,h2,h3,h4,h5,h6,figure,table,pre,blockquote,li,img,[class*="caption"],[class*="Caption"]',
+    ))
+    const boundaries = boundaryElements.filter((x): x is HTMLElement => x != null)
+    let visibleContentCount = 0
+    let intersectedCount = 0
+    let semanticIntersectedCount = 0
+    const intersections: Array<{ tag: string; cls: string; area: number; semantic: boolean }> = []
+    for (const n of nodes) {
+      const vp = this.measureLocateRect(n)
+      if (!vp || !(vp.width > 0) || !(vp.height > 0)) continue
+      const loc = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
+      if (!loc) continue
+      visibleContentCount++
+      const ow = Math.min(gapRect.right, loc.right) - Math.max(gapRect.left, loc.left)
+      const oh = Math.min(gapRect.bottom, loc.bottom) - Math.max(gapRect.top, loc.top)
+      const area = ow > 0 && oh > 0 ? ow * oh : 0
+      if (!(area > 4)) continue
+      intersectedCount++
+      // ── V4 §1 — SEMANTIC occupancy: raw DOM overlap is AUDIT ONLY. A node
+      // only blocks the paint when it is SUBSTANTIVE *and* not part of the gap's
+      // own source boundary (the boundary blocks legitimately straddle the band
+      // because Typora renders the blank lines inside the trailing block box).
+      const semantic = this.isSubstantiveGapContent(n, boundaries)
+      if (semantic) semanticIntersectedCount++
+      intersections.push({ tag: n.tagName.toLowerCase(), cls: String(n.className).slice(0, 40), area: Math.round(area), semantic })
+    }
+    return { gapRect, visibleContentCount, intersectedCount, semanticIntersectedCount, intersections }
+  }
+
+  /**
+   * V4 §1 — is this overlapped node REAL content (vs. an empty editor
+   * placeholder, a member of the gap's own boundary pair, or plugin
+   * presentation)? Only substantive content may block the gap paint.
+   */
+  private isSubstantiveGapContent(el: HTMLElement, boundaries: HTMLElement[]): boolean {
+    // A member of the gap's own source boundary pair is never "occupancy".
+    for (const b of boundaries) {
+      if (b === el || b.contains(el) || el.contains(b)) return false
+    }
+    const cls = String(el.className || '')
+    // ── V5 §9.6 — a GENERATED caption is SEMANTIC PRESENTATION, never generic
+    // auxiliary UI. Its occupancy semantics are decided by ownership/boundary,
+    // not by the `inkchapter-` class prefix.
+    const isCaption = cls.includes('inkchapter-caption') || cls.includes('caption')
+    if (!isCaption) {
+      // AUXILIARY_PLUGIN_UI: reason chip / overlay / carrier / toolbar / nav.
+      if (cls.includes('inkchapter-') || el.closest('[class*="inkchapter-"]') != null) return false
+    }
+    // EMPTY_EDITOR_PLACEHOLDER: Typora's trailing/empty block carries no content.
+    const hasImage = el.querySelector('img,svg,figure,table,pre,math') != null
+    const text = normalizeSourceAnchorText(el.textContent)
+    if (!hasImage && text === '' && !isCaption) return false
+    // ── V5 §9.2 — a caption owned by the PREVIOUS boundary belongs to its
+    // Presentation Extent, so it must not be counted as interior occupancy.
+    // (The boundary loop above already excludes direct boundary members.)
+    return true
+  }
+
+  /**
+   * Presentation Stability Closure V1 §25 — runtime-forensics TRACE of ONE
+   * committed reason-chip rect. Observability only: it never gates, never paints
+   * and never changes timing. A `transientShiftDetected` entry between the
+   * BEFORE and AFTER rects of a single Enter is the forensic evidence.
+   */
+  private emitReasonChipRectTrace(identity: string, chipLocal: HeadingRect, geometryGeneration: number): void {
+    const seq = ++this.reasonChipRectTraceSeq
+    const prev = this.lastReasonChipRectTrace.get(identity) ?? null
+    const deltaX = prev ? chipLocal.left - prev.left : null
+    const deltaY = prev ? chipLocal.top - prev.top : null
+    this.lastReasonChipRectTrace.set(identity, { left: chipLocal.left, top: chipLocal.top, seq })
+    emitRuntimeAudit(HEADING_REASON_CHIP_RECT_TRACE_AUDIT_EVENT, {
+      seq,
+      headingIdentity: identity,
+      chipLeft: chipLocal.left,
+      chipTop: chipLocal.top,
+      deltaXFromPrevious: deltaX,
+      deltaYFromPrevious: deltaY,
+      previousSeq: prev ? prev.seq : null,
+      geometryGeneration,
+      transientShiftDetected: deltaX != null && Math.abs(deltaX) > 1,
+    })
+  }
+
+  /** §33 — the ONE gap-visual gate report (all must be 0). */
+  getBlockGapVisualV1GateReport(): string[] {
+    return formatBlockGapVisualV1GateReport(this.countersBlockGapVisualV1)
+  }
+
+  getBlockGapVisualV1GateDecision(): { decision: 'PASS' | 'FAIL'; failing: string[] } {
+    return evaluateBlockGapVisualV1Gates(this.countersBlockGapVisualV1)
+  }
+
+  /** §32 — the gap-visual positive coverage report. */
+  getBlockGapVisualV1CoverageReport(): string[] {
+    return formatBlockGapVisualV1CoverageReport(this.coverageBlockGapVisualV1)
+  }
+
+  /** §12 — the last committed gap-visual audit facts. */
+  getLastBlockGapVisualAudit(): Record<string, unknown> {
+    return { ...this.lastBlockGapVisualAudit }
+  }
+
+  /**
    * Commit the V3 visual for a RESOLVED locate. Chooses the visual anchor from
    * the resolver's element (the real object / heading / link) — never a
    * re-query. Broken/zero-rect images fall back to their owning source block
@@ -10663,6 +11480,15 @@ export class DocumentUtilityOverlayHost {
       }
     }
     const code = diag?.code ?? null
+    // ── Presentation Stability Closure V1 §2/§6/§8/§11 — BLOCK_GAP_VISUAL_TARGET.
+    // The semantic target of `EXCESSIVE_INTERNAL_BLANK_LINES` is the gap BETWEEN
+    // two sibling content blocks. Its PAINT authority is therefore the gap —
+    // never the previous block, never the next block. The scroll anchor stays
+    // the next block; only the visual target changes here.
+    if (code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE) {
+      this.commitBlockGapVisual(diagId, severity, diag, result?.element ?? null)
+      return
+    }
     const meta = (diag?.metadata ?? {}) as Record<string, unknown>
     const rawDest = typeof meta.rawDestination === 'string' && meta.rawDestination !== '' ? meta.rawDestination : null
     // V5.12-R5 §8 — the EXACT resolved source occurrence drives the range build:
@@ -18377,10 +19203,12 @@ export class DocumentUtilityOverlayHost {
       lastMeaningfulIndentDeltaPx: input.lastMeaningfulRect && input.writeContentRect
         ? input.lastMeaningfulRect.left - input.writeContentRect.left : null,
       accentWidthPx: this.lastDocEndVisual?.accentWidthPx ?? 0,
-      fillAlphaClass: EOF_FILL_EMPHASIS_CLASS_LOW,
+      // V6 §10 — the EOF blank space now shares the internal gap FILL_ONLY policy:
+      // no low-emphasis alpha, no left accent surface.
+      fillAlphaClass: null,
       markerKind: EOF_MARKER_KIND_DOCUMENT_END_WARNING,
       decorativeVerticalRail: false,
-      surfaceLeftAccent: true,
+      surfaceLeftAccent: false,
       drawerVisible: this.drawerOpen,
       drawerRect: this.realPanelRect(this.drawerEl),
       drawerAffectsWorkspaceWidth: false,
@@ -19259,7 +20087,10 @@ export class DocumentUtilityOverlayHost {
     if (facts.preScrollGeometryInvalidated) {
       if (pre.targetRect) void pre.targetRect // explicitly NOT reused as final geometry
     }
-    facts.targetKind = this.locateFrame?.getStructure().kind ?? null
+    // §6 — the block-gap carrier declares its OWN target kind (never null).
+    facts.targetKind = this.isBlockGapVisualActive()
+      ? BLOCK_GAP_VISUAL_TARGET
+      : (this.locateFrame?.getStructure().kind ?? null)
   }
 
   /** V5.8 — the ACTUAL painted DOM carriers (frame / inline mark + context). */
@@ -19267,6 +20098,12 @@ export class DocumentUtilityOverlayHost {
     primary: RectRecord | null
     secondary: RectRecord | null
   } {
+    // ── Block-Gap Transaction Closure V1 §4/§6 — the BLOCK_GAP_VISUAL_TARGET IS
+    // a first-class painted carrier: the unified one-click closure must read its
+    // REAL rect as the primary painted rect (it owns no locate frame element).
+    if (this.isBlockGapVisualActive()) {
+      return { primary: this.measureLocateRect(this.blockGapVisualEl), secondary: null }
+    }
     const frame = this.locateFrame
     if (!frame) return { primary: null, secondary: null }
     const frameEl = frame.getFrameElement()
@@ -19349,7 +20186,7 @@ export class DocumentUtilityOverlayHost {
     const isCompound = this.isObjectKind(kind)
     const targetEl = result.element ?? null
     const targetConnected = !!targetEl && targetEl.isConnected
-    const primaryMarkerVisible = frame?.hasCommitted() === true
+    const primaryMarkerVisible = frame?.hasCommitted() === true || this.isBlockGapVisualActive()
     const geom = frame?.getGeometryReport() ?? null
     const sem = geom?.semanticRect ?? null
     const prim = painted.primary
@@ -19513,10 +20350,30 @@ export class DocumentUtilityOverlayHost {
       this.countersScrollV59.visualPaintAttemptWhileTargetOffscreen++
     }
     facts.visualPaintAttemptCount = attempt + 1
-    this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
+    // ── Block-Gap Transaction Closure V1 §5/§13 — for the BLOCK-GAP rule the
+    // gap carrier IS the active visual: the generic paragraph/block highlight is
+    // BYPASSED and the gap carrier is (re)painted in the CURRENT scroll state,
+    // exactly as the generic path repaints its own carrier.
+    if (this.isBlockGapDiagnostic(diag)) {
+      this.commitBlockGapVisual(diagnosticId, diag.severity, diag, result.element ?? null)
+      // §14.2 — the generic-highlight BYPASS audit (never a paragraph highlight).
+      const gapUsed = this.isBlockGapVisualActive()
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLOCK-GAP-GENERIC-HIGHLIGHT-BYPASS-AUDIT', {
+        diagnosticId,
+        genericBlockHighlightAttempted: false,
+        genericInlineHighlightAttempted: false,
+        genericHeadingHighlightAttempted: false,
+        blockGapVisualUsed: gapUsed,
+        decision: gapUsed ? 'PASS' : 'FAIL',
+        reason: gapUsed ? 'BLOCK_GAP_GENERIC_HIGHLIGHT_BYPASSED' : 'BLOCK_GAP_VISUAL_NOT_PAINTED',
+      })
+    } else {
+      this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
+    }
     // V5.8 — capture, synchronously after the paint, whether a REAL carrier
     // exists (the one-click visual is present, not merely "class applied").
-    facts.visualCarrierPresent = this.locateFrame?.hasCommitted() === true
+    // §6 — the block-gap carrier is a first-class painted carrier too.
+    facts.visualCarrierPresent = this.locateFrame?.hasCommitted() === true || this.isBlockGapVisualActive()
     const painted = this.measureActualPaintedLocateVisual(result)
     facts.actualPaintedPrimaryRect = painted.primary
     facts.actualPaintedSecondaryRect = painted.secondary

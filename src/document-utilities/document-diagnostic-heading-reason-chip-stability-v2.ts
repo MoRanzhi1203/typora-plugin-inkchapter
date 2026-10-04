@@ -29,6 +29,16 @@
 export const HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT
   = 'DOCUMENT-DIAGNOSTIC-HEADING-REASON-CHIP-STABILITY-AUDIT'
 
+/**
+ * Presentation Stability Closure V1 §25 — the reason-chip rect TRACE event.
+ *
+ * Runtime-forensics ONLY (never a gate): every committed chip rect is recorded
+ * with a monotonic sequence + its geometry generation, so ONE Enter yields the
+ * BEFORE / transient / AFTER series that proves (or disproves) a visible shift.
+ */
+export const HEADING_REASON_CHIP_RECT_TRACE_AUDIT_EVENT
+  = 'DOCUMENT-DIAGNOSTIC-HEADING-REASON-CHIP-RECT-TRACE'
+
 /** §4.1 — 首选 gap（标题文字右侧 8px）。 */
 export const HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2 = 8
 /** §4.2 — clamp 后允许的最小 gap（永不低于 4px）。 */

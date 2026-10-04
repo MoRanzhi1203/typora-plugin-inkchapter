@@ -103,6 +103,12 @@ export interface DocumentBlockGap {
    * the locate resolver verifies against the live block).
    */
   nextBlockAnchorText: string
+  /**
+   * Block Gap Visual Binding Closure V1 §5 — the PREVIOUS block's anchor text.
+   * Binding evidence / fallback ONLY: never part of the diagnostic stable
+   * identity (`internalBlankGapIdentity` uses the two block identities).
+   */
+  previousBlockAnchorText: string
 }
 
 // ── source line map ────────────────────────────────────────────────────────
@@ -542,6 +548,7 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
       lastBlankLine: runEnd,
       actualBlankLines: runEnd - runStart + 1,
       nextBlockAnchorText: runIdentities[runIdx + 1].anchor,
+      previousBlockAnchorText: runIdentities[runIdx].anchor,
     })
   }
   return gaps
