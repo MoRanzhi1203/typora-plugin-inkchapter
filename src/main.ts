@@ -643,6 +643,11 @@ export default class extends Plugin<InkChapterSettings> {
         // owner map; no adjacency guessing.
         getCaptionIntegrityDiagnostics: (documentKey, sourceRevision) =>
           this.captionService?.computeCaptionIntegrityDiagnostics(documentKey, sourceRevision) ?? [],
+        // Numbering Integrity V2 §9/§21 — the ONE canonical effective-number fact
+        // provider (owned by the caption service / formula planner). The
+        // diagnostics layer joins it to its OWN canonical source identity.
+        getObjectEffectiveNumberElementFacts: () =>
+          this.captionService?.getObjectEffectiveNumberElementFacts() ?? null,
         // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline
         // (painted only on a COMMITTED outline mapping).
         publishOutlineHeadingDiagnostics: (targets) => {

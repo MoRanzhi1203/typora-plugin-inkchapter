@@ -609,59 +609,70 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
     implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
     producerAuthority: 'computeCaptionIntegrityDiagnostics',
   }),
-  // §9 — Numbering Integrity (Phase H, later workstream) → PLANNED.
+  // §9 — Numbering Integrity (Phase H). The manual-prefix families ARE
+  // IMPLEMENTED (table / code mirror FIGURE_MANUAL_NUMBER_PREFIX). The
+  // duplicate / order / formula families are IMPLEMENTED against the ONE
+  // canonical "effective number" fact provider (`objectEffectiveNumbers`,
+  // wired from the caption service / formula planner) — the producer consumes
+  // that snapshot and NEVER re-derives or parses a number. When the provider is
+  // absent / empty every one of these rules stays SILENT (no false positive).
   FIGURE_NUMBER_DUPLICATE: rule('FIGURE_NUMBER_DUPLICATE', 'figure', 'figure-occurrence', {
     area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   TABLE_NUMBER_DUPLICATE: rule('TABLE_NUMBER_DUPLICATE', 'table', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   CODE_NUMBER_DUPLICATE: rule('CODE_NUMBER_DUPLICATE', 'code', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   FIGURE_NUMBER_ORDER_INVALID: rule('FIGURE_NUMBER_ORDER_INVALID', 'figure', 'figure-occurrence', {
     area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   TABLE_NUMBER_ORDER_INVALID: rule('TABLE_NUMBER_ORDER_INVALID', 'table', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   CODE_NUMBER_ORDER_INVALID: rule('CODE_NUMBER_ORDER_INVALID', 'code', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   FORMULA_NUMBER_ORDER_INVALID: rule('FORMULA_NUMBER_ORDER_INVALID', 'formula', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'formula', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   FORMULA_NUMBER_SECTION_MISMATCH: rule('FORMULA_NUMBER_SECTION_MISMATCH', 'formula', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'formula', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   TABLE_MANUAL_NUMBER_PREFIX: rule('TABLE_MANUAL_NUMBER_PREFIX', 'table', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
   CODE_MANUAL_NUMBER_PREFIX: rule('CODE_MANUAL_NUMBER_PREFIX', 'code', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
-    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
-  // §10 — Anchor Integrity (Phase I, later workstream) → PLANNED.
+  // §10 — Anchor Integrity (Phase I). Local anchor + collision ARE
+  // IMPLEMENTED (Typora's rendered heading id is the canonical anchor
+  // authority). The cross-file anchor check is DEFERRED_BY_SPEC: reading
+  // another Markdown file's heading anchor index is not safe in the
+  // source-only producer.
   LINK_LOCAL_ANCHOR_MISSING: rule('LINK_LOCAL_ANCHOR_MISSING', 'link', 'source-range', {
     area: 'link-anchor', capabilityCategory: 'link', scope: 'inline',
-    implementationStatus: 'PLANNED', suppressionGroup: 'anchor-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'anchor-integrity',
   }),
   LINK_LOCAL_FILE_ANCHOR_MISSING: rule('LINK_LOCAL_FILE_ANCHOR_MISSING', 'link', 'source-range', {
     area: 'link-anchor', capabilityCategory: 'link', scope: 'inline',
-    implementationStatus: 'PLANNED', suppressionGroup: 'anchor-integrity',
+    implementationStatus: 'DEFERRED_BY_SPEC', suppressionGroup: 'anchor-integrity',
+    producerAuthority: 'NONE',
   }),
-  HEADING_ANCHOR_COLLISION: rule('HEADING_ANCHOR_COLLISION', 'heading', 'canonical-node', {
+  HEADING_ANCHOR_COLLISION: rule('HEADING_ANCHOR_COLLISION', 'heading', 'target-group', {
     area: 'link-anchor', capabilityCategory: 'heading', scope: 'heading',
-    implementationStatus: 'PLANNED', suppressionGroup: 'anchor-integrity',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'anchor-integrity',
   }),
   // §11 — Cross-reference (Phase J) → DEFERRED_BY_SPEC (needs the canonical
   // structured reference parser; a broad Chinese-prose regex is forbidden).
@@ -911,6 +922,8 @@ export type DiagnosticResolveAnchor =
   | 'source-block-fallback'
   /** Phase G — the live caption projection resolved by the caption service id. */
   | 'caption-projection'
+  /** Anchor Integrity — the rendered inline `<a href="#anchor">` of a local link. */
+  | 'link-anchor'
 
 /**
  * V5.12-R5 §7 — the resolver's OWN output for a source occurrence. It must be
@@ -1034,6 +1047,14 @@ export interface DiagnosticLocationResolveContext {
    * resolver never guesses a caption by adjacency.
    */
   resolveCaptionProjection?: (captionId: string) => HTMLElement | null
+  /**
+   * Anchor Integrity — resolve a local link's INLINE mark: the live
+   * `<a href="#anchor">` whose rendered fragment equals `rawDestination`.
+   * The rendered DOM never carries the raw `[label](#anchor)` token, so the
+   * source-occurrence authority is inapplicable here; this hook matches the
+   * canonical anchor authority (href equality, occurrence-aware) instead.
+   */
+  resolveLinkAnchor?: (rawDestination: string, occurrenceIndex: number) => HTMLElement | null
   /**
    * Phase 7R.3.11.8B.7.2 — current Markdown source line text at a 0-based
    * index (null when unavailable / out of range). The content authority for
@@ -1516,6 +1537,32 @@ export function resolveDiagnosticLocation(
       }, ctx, targetIndex)
     }
     case 'source-range': {
+      // ── Anchor Integrity — a `[label](#anchor)` reference is a source-range
+      // whose rendered DOM is the inline `<a href="#anchor">`, NOT the raw
+      // `[label](#anchor)` token (the text resolver + source-occurrence
+      // authority are both inapplicable). Resolve through the canonical anchor
+      // authority (href equality, occurrence-aware); never a text first-match.
+      if (
+        location.resourceKind === 'link'
+        && typeof location.rawDestination === 'string'
+        && location.rawDestination.startsWith('#')
+      ) {
+        const resolveLink = ctx.resolveLinkAnchor
+        if (typeof resolveLink === 'function') {
+          const occurrence = typeof location.occurrenceIndex === 'number' ? location.occurrenceIndex : 0
+          const el = resolveLink(location.rawDestination, occurrence)
+          if (el) return resolvedResult(el, targetIndex, 'link-anchor', null)
+        }
+        return {
+          decision: 'UNRESOLVED',
+          element: null,
+          scrollAction: null,
+          targetIndex,
+          primaryAnchor: 'link-anchor',
+          fallbackAnchor: null,
+          reason: 'LINK_ANCHOR_NOT_MAPPED_TO_DOM',
+        }
+      }
       // ── V5.12-R5 §7/§8.3 — a source occurrence carrying its EXACT source range
       // resolves through the occurrence authority FIRST, so a duplicate
       // destination can never collapse onto the first text match. The authority

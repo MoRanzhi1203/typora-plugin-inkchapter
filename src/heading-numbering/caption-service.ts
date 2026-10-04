@@ -30,6 +30,7 @@ import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type Reconci
 // await import('x')`, so aliased value imports must never be used.
 import * as captionIntegrityProducer from '../document-utilities/document-diagnostics-caption-integrity-v1'
 import type { DocumentDiagnostic } from '../document-utilities/diagnostics-types'
+import type { ObjectEffectiveNumberElementFacts, ObjectEffectiveNumberFact } from '../document-utilities/diagnostics-types'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
@@ -571,6 +572,19 @@ export class CaptionService {
   private lastCompletePlanSet: FormulaCompletePlanSet | null = null
   /** Phase 7R.3.7: LAST COMPLETE caption plan set (atomic authority). */
   private lastCompleteCaptionPlanSet: CaptionCompleteCaptionPlanSet | null = null
+  /**
+   * Numbering Integrity V2 §9/§21 — the canonical effective-number facts of the
+   * LAST published COMPLETE caption / formula plan, keyed by the object's DOM
+   * element. Read-only snapshot consumed by the document diagnostics producer
+   * (joined to the diagnostics' OWN canonical source identity). Never mutates;
+   * cleared on document switch; never a second numbering authority.
+   */
+  private captionEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+  private captionEffectiveNumberingEnabled = false
+  private captionEffectiveSectionNumberingEnabled = false
+  private formulaEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+  private formulaEffectiveNumberingEnabled = false
+  private formulaEffectiveSectionNumberingEnabled = false
   /** Last canonical Formula host fingerprint (transient host-set detection). */
   private lastCanonicalFormulaHostFingerprint = ''
   // ── Phase 7R.3.6 gate counters ──────────────────────────────────────
@@ -899,6 +913,14 @@ export class CaptionService {
       // previous document's COMPLETE caption plan (never project doc A into B).
       this.captionDeferredRetry.resetForDocument()
       this.lastCompleteCaptionPlanSet = null
+      // Numbering Integrity V2 §7 — never project document A's effective
+      // numbers into document B (cross-document leak guard).
+      this.captionEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+      this.captionEffectiveNumberingEnabled = false
+      this.captionEffectiveSectionNumberingEnabled = false
+      this.formulaEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+      this.formulaEffectiveNumberingEnabled = false
+      this.formulaEffectiveSectionNumberingEnabled = false
       this.lastReportedCaptionFailureSignature = ''
       // Phase 7R.3.9R: clear A's pending intent + authority state; B starts
       // WAITING_FOR_HEADING_AUTHORITY until B's committed frame releases it.
@@ -2143,6 +2165,29 @@ export class CaptionService {
     return this.registry.getById(captionId)
   }
 
+  /**
+   * Numbering Integrity V2 §9/§21 — the ONE read-only "canonical effective
+   * number" fact provider the document diagnostics producer consumes. It is a
+   * snapshot of the LAST published COMPLETE caption / formula plan, keyed by the
+   * object's DOM element; the diagnostics layer joins it to its OWN canonical
+   * `block:<kind>:<ordinal>` source identity. Returns an EMPTY snapshot when no
+   * complete plan exists yet (the number rules then stay silent).
+   */
+  getObjectEffectiveNumberElementFacts(): ObjectEffectiveNumberElementFacts {
+    const byElement = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+    for (const [el, fact] of this.captionEffectiveNumbers) {
+      if (el.isConnected) byElement.set(el, fact)
+    }
+    for (const [el, fact] of this.formulaEffectiveNumbers) {
+      if (el.isConnected) byElement.set(el, fact)
+    }
+    return {
+      numberingEnabled: this.captionEffectiveNumberingEnabled || this.formulaEffectiveNumberingEnabled,
+      sectionNumberingEnabled: this.captionEffectiveSectionNumberingEnabled || this.formulaEffectiveSectionNumberingEnabled,
+      byElement,
+    }
+  }
+
   getOrphanCount(): number {
     return this.orphanIds.size
   }
@@ -2587,6 +2632,37 @@ export class CaptionService {
       resolvedTargetCount: resolvedCount,
       states: desiredStates,
     }
+    // Numbering Integrity V2 §9 — publish the canonical effective-number facts
+    // of THIS COMPLETE caption plan (element → number), read-only. The document
+    // diagnostics producer joins them to its OWN `block:<kind>:<ordinal>`
+    // identity; nothing here is ever parsed from rendered text.
+    {
+      const elementNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+      let anyEnabled = false
+      let anySection = false
+      for (let i = 0; i < plan.length; i++) {
+        const item = plan[i]
+        const state = desiredStates[i]
+        if (!state) continue
+        const el = item.type === 'figure'
+          ? (item.target.root.tagName === 'IMG'
+            ? item.target.root
+            : item.target.root.querySelector<HTMLElement>('img'))
+          : item.target.root
+        if (!el) continue
+        anyEnabled = true
+        const isSectionScoped = state.effectiveScope === 'section' && state.sectionOrdinal != null
+        if (isSectionScoped) anySection = true
+        elementNumbers.set(el, {
+          effectiveNumber: state.rawNumber,
+          sectionNumber: isSectionScoped ? String(state.sectionOrdinal) : undefined,
+          actualSectionNumber: state.sectionOrdinal != null ? String(state.sectionOrdinal) : undefined,
+        })
+      }
+      this.captionEffectiveNumbers = elementNumbers
+      this.captionEffectiveNumberingEnabled = anyEnabled
+      this.captionEffectiveSectionNumberingEnabled = anySection
+    }
     incHeadingSemanticPerf('captionSemanticReconcileCount')
     this.emitCaptionReconcilePerf(snapshot, 'COMPLETE', plan.length, 'COMPLETE_TO_IDLE', this.computeCaptionStateToken(snapshot, plan), previousCompleteCaptionCount, desiredStates.length)
     emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
@@ -2991,6 +3067,10 @@ export class CaptionService {
           return { ...ctx, mode: snap.structureMode }
         })
         const planned = planFormulaSemanticNumbers(formulaContexts, cfg)
+        // Numbering Integrity V2 §9 — canonical effective-number facts of THIS
+        // COMPLETE formula plan (element → number). Never parsed from rendered text.
+        const formulaElementNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+        let anyFormulaSection = false
         for (let i = 0; i < formulaTargets.length; i++) {
           const t = formulaTargets[i]
           const sourceTex = sources[i] ?? ''
@@ -3023,7 +3103,17 @@ export class CaptionService {
               effectiveScope: p.effectiveScope,
             },
           })
+          const isSectionScoped = p.effectiveScope === 'section' && p.sectionOrdinal != null
+          if (isSectionScoped) anyFormulaSection = true
+          formulaElementNumbers.set(t.root, {
+            effectiveNumber: p.rawNumber,
+            sectionNumber: isSectionScoped ? String(p.sectionOrdinal) : undefined,
+            actualSectionNumber: p.sectionOrdinal != null ? String(p.sectionOrdinal) : undefined,
+          })
         }
+        this.formulaEffectiveNumbers = formulaElementNumbers
+        this.formulaEffectiveNumberingEnabled = formulaElementNumbers.size > 0
+        this.formulaEffectiveSectionNumberingEnabled = anyFormulaSection
       }
 
       const candidate: FormulaPlanSetCandidate = {

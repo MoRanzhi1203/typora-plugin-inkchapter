@@ -9,6 +9,7 @@ import * as path from 'path'
 import type { CanonicalHeadingFrame } from '../heading-numbering/canonical-heading-frame'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type { ObjectEffectiveNumberElementFacts } from './diagnostics-types'
 import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
@@ -66,6 +67,12 @@ export interface DocumentUtilitiesSources {
     styleKey?: string
     isEffectiveForElement: (element: HTMLElement | null) => boolean
   }
+  /**
+   * Numbering Integrity V2 (spec §9/§21) — the ONE canonical effective-number
+   * fact provider (owned by the caption service / formula planner), keyed by the
+   * object's DOM element. Optional: absent ⇒ every number rule stays silent.
+   */
+  getObjectEffectiveNumberElementFacts?: () => ObjectEffectiveNumberElementFacts | null
   /**
    * Heading Auto-Number Conflict V1.2 §21/§22 — the dev/test post-commit report
    * sink (implemented by main.ts, which owns the file IO).
@@ -236,6 +243,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       // VNext §24 — the object auto-numbering activation authority (optional:
       // absent ⇒ the manual-number rules stay OFF).
       getObjectNumberingEnabled: sources.getObjectNumberingEnabled,
+      // Numbering Integrity V2 §9 — the canonical effective-number fact provider.
+      getObjectEffectiveNumberElementFacts: sources.getObjectEffectiveNumberElementFacts,
     },
     hasActiveDocument: () => sources.getActiveFilePath() != null,
   }
