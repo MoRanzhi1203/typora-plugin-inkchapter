@@ -874,6 +874,7 @@ export class DocumentDiagnosticsAuthority {
       nonLocatableNoticeCount: contract.nonLocatableNoticeCount,
       canonicalNodeLocationCount: contract.canonicalNodeLocationCount,
       sourceRangeLocationCount: contract.sourceRangeLocationCount,
+      sourceSyntaxOpenerLocationCount: contract.sourceSyntaxOpenerLocationCount,
       documentStartLocationCount: contract.documentStartLocationCount,
       documentEndLocationCount: contract.documentEndLocationCount,
       blockNodeLocationCount: contract.blockNodeLocationCount,

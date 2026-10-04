@@ -46,6 +46,34 @@ import {
   type ResolvedSourceOccurrenceHint,
   type SourceBlockBinding,
 } from './document-diagnostic-location'
+// TRAE V4 §6/§7/§9/§12/§24 — the source-syntax location + presentation authorities.
+import {
+  tryDataLineFastPath,
+  SOURCE_SYNTAX_LOCATE_AUDIT_EVENT,
+  type SourceSyntaxKind,
+  type SourceSyntaxLocateDecision,
+  type SourceSyntaxLocateRequest,
+  type SourceSyntaxLocateResult,
+} from './document-diagnostic-source-syntax-location-authority'
+import {
+  computeCanonicalSourceBlocks,
+  findCanonicalSourceBlockForOffset,
+  openerTextCompatible,
+  normalizeCanonicalBlockText,
+  buildSourceSyntaxProjectionAudit,
+  SOURCE_SYNTAX_PROJECTION_AUDIT_EVENT,
+  type SourceSyntaxProjectionDecision,
+  type SourceSyntaxProjectionStrategy,
+} from './document-diagnostic-source-range-projection-authority'
+import {
+  SOURCE_SYNTAX_PRESENTATION_KIND,
+  SOURCE_SYNTAX_SEVERITY_TOKEN,
+  SOURCE_SYNTAX_VISUAL_AUDIT_EVENT,
+  buildSourceSyntaxVisualAudit,
+  buildSourceSyntaxLocateAudit,
+  evaluateSourceSyntaxVisualCommit,
+  type SourceSyntaxVisualFacts,
+} from './document-diagnostic-source-syntax-presentation-authority'
 // V1 — Figure Diagnostic Locator Authority (block binding / occurrence identity / runtime gates).
 import {
   FIGURE_DIAGNOSTIC_LOCATOR_AUDIT,
@@ -3090,7 +3118,12 @@ export class DocumentUtilityOverlayHost {
         // surface style, so the gate must not count it as a border line either.
         const isBlankSpaceWarningCarrier = el.getAttribute('data-ink-eof-marker') === 'true'
           || el.classList.contains(BLANK_SPACE_WARNING_MARKER_CLASS)
-        const leftAccentOnly = isBlankSpaceWarningCarrier && isSurfaceLeftAccentOnly({
+        // TRAE V4 §10 — the source-syntax opener fragment owns the SAME surface
+        // left-accent style (never a border box), so the FILL_ONLY gate must not
+        // count its single left accent as a border line.
+        const isSurfaceLeftAccentCarrier = isBlankSpaceWarningCarrier
+          || el.getAttribute('data-ink-source-syntax') === 'true'
+        const leftAccentOnly = isSurfaceLeftAccentCarrier && isSurfaceLeftAccentOnly({
           leftWidth: Number.parseFloat(cs.borderLeftWidth) || 0,
           topWidth: Number.parseFloat(cs.borderTopWidth) || 0,
           rightWidth: Number.parseFloat(cs.borderRightWidth) || 0,
@@ -4663,7 +4696,32 @@ export class DocumentUtilityOverlayHost {
   } | null = null
   /** §13 — the illegal-IDLE repair must never recurse. */
   private repairingIllegalIdleVisual = false
-  /** §15 — the LAST clicked diagnostic id (the closure reports its severity). */
+  /**
+   * TRAE V5 §17 — the ONE canonical interaction TERMINAL RECORD. Every post-
+   * settle / persistence / active-interaction audit reads THIS record for the
+   * transaction's locate / presentation / commit outcomes, so a `TARGET_NOT_FOUND`
+   * locate can never be reported as `RESOLVED` by a generic closure.
+   */
+  private lastInteractionTerminal: {
+    transactionId: number
+    diagnosticId: string
+    ruleId: string
+    locateOutcome: 'RESOLVED' | 'UNRESOLVED' | 'AMBIGUOUS' | 'STALE'
+    presentationOutcome: 'PAINTED' | 'NOT_REACHED' | 'FAILED'
+    commitOutcome: 'COMMITTED' | 'NO_COMMIT'
+    finalPhase: 'ACTIVE' | 'IDLE'
+    finalReason: string
+  } | null = null
+  /**
+   * TRAE V5 §11/§12 — a source-syntax click is a DEFERRED activation: the phase
+   * stays IDLE until the visual commit really succeeded. This record carries the
+   * pending owner across the locate transaction.
+   */
+  private pendingSourceSyntaxActivation: {
+    diagnosticId: string
+    targetKey: string
+    version: number
+  } | null = null
   private lastClickedDiagnosticId: string | null = null
   /** §15 — the LAST applied visual recovery strategy (null = none needed). */
   private lastVisualRecoveryStrategyV21: DiagnosticVisualRecoveryStrategy | null = null
@@ -11659,6 +11717,13 @@ export class DocumentUtilityOverlayHost {
       }
     }
     const code = diag?.code ?? null
+    // ── TRAE V4 §10 — SOURCE-SYNTAX OPENING-LINE carrier. The active visual may
+    // only ever cover the opening token / opening line; a zero-rect outcome is an
+    // explicit NO_COMMIT, NEVER a block frame over opener→EOF.
+    if (diag?.location?.kind === 'source-syntax-opener') {
+      this.commitSourceSyntaxOpenerVisual(diagId, severity, anchor, diag, result)
+      return
+    }
     // ── Presentation Stability Closure V1 §2/§6/§8/§11 — BLOCK_GAP_VISUAL_TARGET.
     // The semantic target of `EXCESSIVE_INTERNAL_BLANK_LINES` is the gap BETWEEN
     // two sibling content blocks. Its PAINT authority is therefore the gap —
@@ -11866,6 +11931,136 @@ export class DocumentUtilityOverlayHost {
     if (!isHeadlessTestRuntime()) {
       this.emitVisualContrastAudit(diagId, severity, structure.kind, code, anchor)
     }
+  }
+
+  /**
+   * TRAE V4 §10/§12/§13/§24.2 — commit the source-syntax OPENING-LINE visual.
+   * The carrier is the SHARED inline-fragment painter (one fragment = one
+   * opening line). A zero-rect outcome is an explicit NO_COMMIT that emits the
+   * visual audit and clears the locate visual — never a block frame over
+   * opener→EOF, and never a fake ACTIVE row.
+   */
+  private commitSourceSyntaxOpenerVisual(
+    diagId: string | null,
+    severity: 'error' | 'warning' | 'info',
+    anchor: HTMLElement,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    result: DiagnosticLocationResolveResult | null,
+  ): void {
+    const frame = this.locateFrame
+    const loc = diag.location
+    const locOpener = loc?.kind === 'source-syntax-opener' ? loc : null
+    const syntaxKind: SourceSyntaxKind = locOpener ? locOpener.syntaxKind : 'code-fence'
+    const openerText = locOpener?.openerText ?? ''
+    const sourceLine = locOpener?.sourceLine ?? -1
+    const projection = this.sourceSyntaxPresentationRects(anchor, openerText, sourceLine)
+    let rects = projection.rects
+    // Headless (jsdom) has no layout: fall back to the anchor box so the carrier
+    // can still be exercised — never a fabricated real-layout PASS (the commit
+    // gate stays headless-aware).
+    if (rects.length === 0 && isHeadlessTestRuntime()) {
+      try {
+        const r = anchor.getBoundingClientRect()
+        rects = [{ left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }]
+      } catch { rects = [] }
+    }
+    const sourceRevisionCurrent = locOpener ? this.isSourceSyntaxRevisionCurrent(locOpener.sourceRevision) : true
+    // V5 §14 — the RULE id is carried straight from the snapshot; the
+    // diagnosticId is NEVER substituted for the ruleId, so the severity can
+    // never silently fall back to `info`.
+    const baseFacts = {
+      syntaxKind,
+      diagnosticId: diagId,
+      ruleId: diag.code,
+      severity,
+      transactionId: this.activeLocateTx?.id ?? null,
+      sourceBlockIdentity: null as string | null,
+    }
+    if (!frame || rects.length === 0 || !sourceRevisionCurrent) {
+      this.clearDiagnosticLocateVisual('SOURCE_SYNTAX_ZERO_PAINTED_RECT')
+      this.lastLocateVisualGateOk = false
+      this.emitSourceSyntaxVisualAudit(diagId, diag, {
+        ...baseFacts,
+        anchorResolved: true,
+        sourceRevisionCurrent,
+        carrierConnected: false,
+        visualFragmentCount: 0,
+        paintedPrimaryRect: false,
+        accentPresent: false,
+        fillVisible: false,
+      })
+      return
+    }
+    frame.commit({
+      diagnosticId: diagId,
+      severity,
+      anchor,
+      kind: 'inline',
+      forceInlineMark: true,
+      fragmentRects: rects,
+      sourceSyntaxAccent: true,
+    })
+    const structure = frame.getStructure()
+    const facts = frame.getInlineFragmentFacts()
+    const carrierConnected = structure.inlineFragmentCount >= 1 && anchor.isConnected
+    const paintedPrimaryRect = facts.paintedCarrierRect != null
+    const visualFacts: SourceSyntaxVisualFacts = {
+      ...baseFacts,
+      anchorResolved: true,
+      sourceRevisionCurrent: true,
+      carrierConnected,
+      visualFragmentCount: structure.inlineFragmentCount,
+      paintedPrimaryRect,
+      accentPresent: carrierConnected,
+      fillVisible: carrierConnected,
+    }
+    const verdict = evaluateSourceSyntaxVisualCommit(visualFacts)
+    this.lastLocateVisualGateOk = verdict.commitDecision === 'COMMIT'
+    if (verdict.commitDecision !== 'COMMIT') {
+      this.clearDiagnosticLocateVisual(`SOURCE_SYNTAX_${verdict.reasons[0] ?? 'NO_COMMIT'}`)
+    }
+    // NOTE: the FILL_ONLY gate measurement is run by the caller
+    // (`applyLocateHighlightAndVerify`) AFTER this commit — never duplicated here.
+    this.emitSourceSyntaxVisualAudit(diagId, diag, visualFacts, verdict)
+    void result
+    void projection
+  }
+
+  /** §22 — is the diagnostic's scan-time source generation still CURRENT? */
+  private isSourceSyntaxRevisionCurrent(sourceRevisionAtScan: number | null): boolean {
+    const current = this.diagnostics.getSnapshot()?.sourceRevision ?? null
+    if (sourceRevisionAtScan == null || current == null) return true
+    return sourceRevisionAtScan === current
+  }
+
+  /** TRAE V5 §17 — does the canonical terminal record describe THIS state? */
+  private lastInteractionTerminalMatchesCurrent(st: { diagnosticId: string | null; transactionId?: number | null }): boolean {
+    const t = this.lastInteractionTerminal
+    if (!t) return false
+    if (t.diagnosticId !== '' && t.diagnosticId === (st.diagnosticId ?? '')) return true
+    return st.transactionId != null && t.transactionId === st.transactionId
+  }
+
+  /** TRAE V5 §11 — is this diagnostic one of the source-syntax families? */
+  private isSourceSyntaxDiagnosticId(diagnosticId: string | null): boolean {
+    if (!diagnosticId) return false
+    const code = this.diagnosticById(diagnosticId)?.code
+    return code === 'CODE_FENCE_UNCLOSED' || code === 'FORMULA_BLOCK_UNCLOSED' || code === 'FRONTMATTER_UNCLOSED'
+  }
+
+  /** §24.2 — emit the source-syntax VISUAL audit with the derived verdict. */
+  private emitSourceSyntaxVisualAudit(
+    diagId: string | null,
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    facts: SourceSyntaxVisualFacts,
+    verdict = evaluateSourceSyntaxVisualCommit(facts),
+  ): void {
+    emitRuntimeAudit(SOURCE_SYNTAX_VISUAL_AUDIT_EVENT, {
+      ...buildSourceSyntaxVisualAudit(facts, verdict, diag.code),
+      diagnosticId: diagId,
+      presentationKindExpected: SOURCE_SYNTAX_PRESENTATION_KIND,
+      severityToken: SOURCE_SYNTAX_SEVERITY_TOKEN,
+    })
   }
 
   /** V5.4 — resolved inline text fragment count via Range.getClientRects()
@@ -17273,6 +17468,54 @@ export class DocumentUtilityOverlayHost {
    * interaction authority is written by a click.
    */
   private commitDiagnosticTransitionV2(transition: DiagnosticTransition, clickSequence: number): void {
+    // TRAE V5 §11/§12 — a source-syntax ACTIVATE/SWITCH does NOT publish ACTIVE
+    // at click time. The phase stays IDLE (a RESOLVING pending owner) and is only
+    // committed when the visual commit really succeeds
+    // (`finishLocateTransaction`). This removes the "Drawer active but no visual"
+    // window entirely.
+    if (transition.next.phase === 'ACTIVE' && this.isSourceSyntaxDiagnosticId(transition.next.diagnosticId)) {
+      const next = transition.next
+      this.diagnosticInteractionState = {
+        ...next,
+        phase: 'IDLE',
+        transactionId: null,
+        leaseToken: null,
+      }
+      this.pendingSourceSyntaxActivation = {
+        diagnosticId: next.diagnosticId ?? '',
+        targetKey: next.targetKey ?? '',
+        version: next.version,
+      }
+      this.lastDiagnosticTransition = transition
+      this.focusedDiagnosticId = next.diagnosticId
+      this.lastLocatedDiagnosticId = next.diagnosticId
+      this.lastLocatedTargetIndex = next.diagnosticTargetIndex ?? null
+      this.refreshDrawerActiveRow()
+      this.auditActiveStateInvariants()
+      emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STATE_TRANSITION_V2, {
+        clickSequence,
+        action: transition.action,
+        versionBefore: transition.previous.version,
+        versionAfter: next.version,
+        phaseBefore: transition.previous.phase,
+        phaseAfter: 'RESOLVING',
+        diagnosticBefore: transition.previous.diagnosticId,
+        diagnosticAfter: next.diagnosticId,
+        targetKeyBefore: transition.previous.targetKey,
+        targetKeyAfter: next.targetKey,
+        targetIndexBefore: transition.previous.diagnosticTargetIndex,
+        targetIndexAfter: next.diagnosticTargetIndex,
+        transactionIdBefore: transition.previous.transactionId,
+        transactionIdAfter: null,
+        leaseTokenBefore: transition.previous.leaseToken,
+        leaseTokenAfter: null,
+        severityBlind: true,
+        ownerRetired: transition.action !== 'ACTIVATE',
+        deferredActivation: true,
+        decision: 'PASS',
+      })
+      return
+    }
     this.diagnosticInteractionState = transition.next
     // §15 — a DEACTIVATE that REUSED the previous version is the R8_ROUTE_2 defect.
     if (transition.action === 'DEACTIVATE' && transition.next.version === transition.previous.version) {
@@ -17570,9 +17813,16 @@ export class DocumentUtilityOverlayHost {
       passiveSemanticSetUnchanged: facts.passiveSemanticSetUnchanged,
       globalUnscopedClearObserved: facts.globalUnscopedClearObserved,
       staleCallbackDroppedCountSinceLastClick: this.staleCallbackDropCountSinceClick,
-      // ── V2.1 §15 — visual transaction / recovery / rollback evidence.
-      locateOutcome: this.lastVisualTransactionV21 != null ? 'RESOLVED' : (st.phase === 'ACTIVE' ? 'RESOLVED' : null),
-      visualOutcome: this.lastVisualTransactionV21?.status ?? (st.phase === 'ACTIVE' ? 'PRESENTED' : null),
+      // ── V2.1 §15 / TRAE V5 §17 — visual transaction / recovery / rollback.
+      // The canonical TERMINAL RECORD is authoritative for the CURRENT
+      // transaction; only when it does not describe this transaction do we fall
+      // back to the legacy visual-transaction observation.
+      locateOutcome: this.lastInteractionTerminalMatchesCurrent(st)
+        ? this.lastInteractionTerminal!.locateOutcome
+        : (this.lastVisualTransactionV21 != null ? 'RESOLVED' : (st.phase === 'ACTIVE' ? 'RESOLVED' : null)),
+      visualOutcome: this.lastInteractionTerminalMatchesCurrent(st)
+        ? this.lastInteractionTerminal!.presentationOutcome
+        : (this.lastVisualTransactionV21?.status ?? (st.phase === 'ACTIVE' ? 'PRESENTED' : null)),
       visualRecoveryAttempted: this.lastVisualRecoveryStrategyV21 != null,
       visualRecoveryStrategy: this.lastVisualRecoveryStrategyV21,
       visualRecoverySucceeded: panelsLast || !navigatorVisibleV21,
@@ -17941,6 +18191,10 @@ export class DocumentUtilityOverlayHost {
       // that same block binding.
       resolveSourceBlock: (input) => this.resolveSourceBlockInRoot(input),
       resolveFigureOccurrence: (input) => this.resolveFigureOccurrenceInRoot(input),
+      // TRAE V4 §6/§7 — the source-syntax OPENER → DOM projection. It projects
+      // the opener SOURCE LINE through the canonical `data-line` authority, so a
+      // canonical code-block DOM is never required.
+      resolveSourceSyntaxOpener: (request) => this.resolveSourceSyntaxOpenerInRoot(request),
     }
     let result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
 
@@ -21874,6 +22128,46 @@ export class DocumentUtilityOverlayHost {
   ): void {
     if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
     this.cancelLocateSettleWatch()
+    // TRAE V5 §17 — ONE canonical terminal record for THIS transaction. Every
+    // closure audit reads it, so locate / presentation / commit / phase can
+    // never diverge (a TARGET_NOT_FOUND locate can never be reported RESOLVED).
+    {
+      const terminalDiag = tx.diagnosticId ? this.diagnosticById(tx.diagnosticId) : null
+      this.lastInteractionTerminal = {
+        transactionId: tx.id,
+        diagnosticId: tx.diagnosticId ?? '',
+        ruleId: terminalDiag?.code ?? '',
+        locateOutcome: commit ? 'RESOLVED' : 'UNRESOLVED',
+        presentationOutcome: commit ? 'PAINTED' : 'NOT_REACHED',
+        commitOutcome: commit ? 'COMMITTED' : 'NO_COMMIT',
+        finalPhase: commit ? 'ACTIVE' : 'IDLE',
+        finalReason: completionReason,
+      }
+    }
+    // TRAE V5 §11/§12 — the DEFERRED source-syntax activation is committed HERE,
+    // and ONLY when the locate + visual really succeeded. On failure the pending
+    // owner is dropped and the phase remains IDLE (never a fake ACTIVE).
+    if (this.pendingSourceSyntaxActivation != null
+      && this.pendingSourceSyntaxActivation.diagnosticId === (tx.diagnosticId ?? '')) {
+      if (commit) {
+        const pending = this.pendingSourceSyntaxActivation
+        const st = this.diagnosticInteractionState
+        this.diagnosticInteractionState = {
+          ...st,
+          phase: 'ACTIVE',
+          diagnosticId: pending.diagnosticId,
+          targetKey: pending.targetKey,
+          version: pending.version,
+          transactionId: tx.id,
+          leaseToken: st.leaseToken,
+        }
+        this.focusedDiagnosticId = pending.diagnosticId
+        this.pendingSourceSyntaxActivation = null
+        this.refreshDrawerActiveRow()
+      } else {
+        this.pendingSourceSyntaxActivation = null
+      }
+    }
     // V5.12-R8 §15 — a failure path must never lose a pending figure audit.
     if (this.pendingFigureTargetAudit) this.emitPendingFigureTargetAudit(0)
     if (commit && tx.targetCount > 1) {
@@ -22461,6 +22755,276 @@ export class DocumentUtilityOverlayHost {
     if (!root) return null
     return root.querySelector<HTMLElement>(`[data-line="${line}"]`)
   }
+
+  /** Number of live elements claiming a 0-based source line (ambiguity guard). */
+  private countSourceLineMatchesInRoot(line: number): number {
+    const root = resolveBusinessContentRoot()
+    if (!root) return 0
+    return root.querySelectorAll(`[data-line="${line}"]`).length
+  }
+
+  /**
+   * TRAE V5 §2–§8 — the canonical SOURCE RANGE → DOM projection chain for a
+   * source-syntax opener. `data-line` is only a VERIFIED FAST PATH; a miss
+   * ALWAYS falls through to the canonical source-block binding — it never
+   * terminates the locate with `TARGET_NOT_FOUND`.
+   */
+  private resolveSourceSyntaxOpenerInRoot(request: SourceSyntaxLocateRequest): SourceSyntaxLocateResult | null {
+    const markdown = this.opts.ctx.authority.getMarkdown() ?? ''
+    const currentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const currentRevision = this.diagnostics.getSnapshot()?.sourceRevision ?? null
+    const layoutEpoch = this.currentDocumentLayoutEpoch
+    const diagnosticCode = `${request.syntaxKind}:${request.openerIdentity}`
+
+    let decision: SourceSyntaxProjectionDecision = 'TARGET_NOT_FOUND'
+    let strategy: SourceSyntaxProjectionStrategy = 'NONE'
+    let element: HTMLElement | null = null
+    let sourceBlockIdentity: string | null = null
+    let sourceBlockStartOffset: number | null = null
+    let sourceBlockEndOffset: number | null = null
+    let openerOnlyBlock = false
+    let candidateCount = 0
+    let dataLineAttempted = false
+    let dataLineVerified = false
+    let reason = ''
+
+    const finish = (): SourceSyntaxLocateResult => {
+      const locateDecision: SourceSyntaxLocateDecision =
+        decision === 'RESOLVED' ? 'RESOLVED'
+          : decision === 'SOURCE_REVISION_STALE' ? 'SOURCE_REVISION_STALE'
+            : decision === 'DOCUMENT_MISMATCH' ? 'DOCUMENT_MISMATCH'
+              : decision === 'OPENER_TEXT_MISMATCH' ? 'OPENER_TEXT_MISMATCH'
+                : decision === 'DOM_BINDING_AMBIGUOUS' ? 'AMBIGUOUS'
+                  : 'TARGET_NOT_FOUND'
+      const result: SourceSyntaxLocateResult = {
+        decision: locateDecision,
+        targetKind: decision === 'RESOLVED' ? 'source-syntax-opener' : null,
+        primaryElement: element,
+        strategy,
+        candidateCount,
+        sourceBlockIdentity,
+        openerOnlyBlock,
+        presentationOpenerText: element ? request.openerText : null,
+      }
+      emitRuntimeAudit(SOURCE_SYNTAX_PROJECTION_AUDIT_EVENT, buildSourceSyntaxProjectionAudit({
+        documentKey: currentKey || null,
+        diagnosticId: null,
+        ruleId: '',
+        severity: 'error',
+        sourceRevision: request.sourceRevision,
+        sourceStartOffset: request.sourceStartOffset,
+        sourceEndOffset: request.sourceEndOffset,
+        sourceLine: request.sourceLine,
+        syntaxKind: request.syntaxKind,
+        openerIdentity: request.openerIdentity,
+        openerText: request.openerText,
+        sourceBlockIdentity,
+        sourceBlockStartOffset,
+        sourceBlockEndOffset,
+        projectionStrategy: strategy,
+        dataLineFastPathAttempted: dataLineAttempted,
+        dataLineFastPathVerified: dataLineVerified,
+        primaryElementKind: element ? element.tagName.toLowerCase() : null,
+        primaryElementConnected: !!element && element.isConnected,
+        domRangeResolved: element != null,
+        visibleRectCount: element ? measureTextFragmentRects(element, request.openerText).expected.length : 0,
+        layoutEpoch,
+        decision,
+        reason: reason || decision,
+      }))
+      emitRuntimeAudit(SOURCE_SYNTAX_LOCATE_AUDIT_EVENT, buildSourceSyntaxLocateAudit({
+        documentKey: request.documentKey,
+        diagnosticCode,
+        syntaxKind: request.syntaxKind,
+        sourceRevision: request.sourceRevision,
+        sourceLine: request.sourceLine,
+        sourceRangeStart: request.sourceStartOffset,
+        sourceRangeEnd: request.sourceEndOffset,
+        openerIdentity: request.openerIdentity,
+        resolveStrategy: strategy,
+        resolveDecision: locateDecision,
+        resolvedTargetKind: result.targetKind,
+        primaryElementKind: element ? element.tagName.toLowerCase() : null,
+        domRangeResolved: element != null,
+        visibleRectCount: element ? measureTextFragmentRects(element, request.openerText).expected.length : 0,
+        layoutEpoch,
+      }))
+      return result
+    }
+
+    // 1. document mismatch — the diagnostic belongs to another document.
+    if (request.documentKey && currentKey && request.documentKey !== currentKey) {
+      decision = 'DOCUMENT_MISMATCH'; reason = 'DOCUMENT_MISMATCH'; return finish()
+    }
+    // 2. stale source generation — never located with old offsets.
+    if (request.sourceRevision != null && currentRevision != null && request.sourceRevision !== currentRevision) {
+      decision = 'SOURCE_REVISION_STALE'; reason = 'SOURCE_REVISION_STALE'; return finish()
+    }
+    // 3. data-line VERIFIED fast path.
+    dataLineAttempted = true
+    const fast = tryDataLineFastPath(request, {
+      documentKey: currentKey,
+      getSourceRevision: () => currentRevision,
+      resolveSourceLine: (line) => this.resolveSourceLine(line),
+      countSourceLineMatches: (line) => this.countSourceLineMatchesInRoot(line),
+      verifySourceLineCandidate: (el, line) => this.verifySourceSyntaxSourceLineCandidate(el, line, request),
+    })
+    if (fast.verified && fast.element) {
+      decision = 'RESOLVED'
+      strategy = 'DATA_LINE_VERIFIED_FAST_PATH'
+      element = fast.element
+      dataLineVerified = true
+      candidateCount = 1
+      reason = 'DATA_LINE_VERIFIED_FAST_PATH'
+      openerOnlyBlock = this.sourceSyntaxBlockRepresentsOnlyOpener(fast.element, request)
+      return finish()
+    }
+    // 4. canonical source-range projection — data-line miss is NEVER terminal.
+    const blocks = computeCanonicalSourceBlocks(markdown)
+    const block = findCanonicalSourceBlockForOffset(blocks, request.sourceStartOffset)
+    if (!block) { decision = 'SOURCE_BLOCK_NOT_FOUND'; reason = 'SOURCE_BLOCK_NOT_FOUND'; return finish() }
+    sourceBlockIdentity = block.identity
+    sourceBlockStartOffset = block.startOffset
+    sourceBlockEndOffset = block.endOffset
+    if (!(block.startOffset <= request.sourceStartOffset && request.sourceEndOffset <= block.endOffset)) {
+      decision = 'SOURCE_RANGE_INVALID'; reason = 'SOURCE_RANGE_INVALID'; return finish()
+    }
+    if (!openerTextCompatible(markdown, request.sourceStartOffset, request.sourceEndOffset, request.openerText)) {
+      decision = 'OPENER_TEXT_MISMATCH'; reason = 'OPENER_TEXT_MISMATCH'; return finish()
+    }
+    const ordinal = this.canonicalSourceBlockOrdinal(blocks, block)
+    const binding = this.resolveSourceBlockInRoot({
+      startLine: block.startLine,
+      endLine: block.endLine,
+      sourceStart: block.startOffset,
+      sourceEnd: block.endOffset,
+      sourceBlockIdentity: block.identity,
+      sourceBlockOrdinal: ordinal,
+    })
+    if (!binding || binding.decision !== 'BOUND' || !binding.element) {
+      decision = binding?.decision === 'AMBIGUOUS' ? 'DOM_BINDING_AMBIGUOUS' : 'DOM_BINDING_NOT_FOUND'
+      reason = decision
+      candidateCount = binding?.candidateCount ?? 0
+      return finish()
+    }
+    candidateCount = binding.candidateCount
+    // §7/§8 — DOM-side opener verification. The exact opener token OR a verified
+    // opener-only block (the block represents ONLY the opener line) is required.
+    const domText = normalizeCanonicalBlockText(binding.element.textContent ?? '')
+    const blockText = normalizeCanonicalBlockText(block.text)
+    const openerNorm = normalizeCanonicalBlockText(request.openerText)
+    openerOnlyBlock = blockText !== '' && blockText === openerNorm
+    if (domText === '' || (openerNorm !== '' && openerNorm !== '' && domText.indexOf(openerNorm) < 0 && !openerOnlyBlock)) {
+      decision = 'TEXT_RANGE_NOT_PROJECTABLE'
+      strategy = 'CANONICAL_SOURCE_BLOCK_BINDING'
+      reason = 'OPENER_TEXT_NOT_IN_DOM'
+      return finish()
+    }
+    element = binding.element
+    strategy = domText.indexOf(openerNorm) >= 0 ? 'CANONICAL_SOURCE_RANGE_PROJECTION' : 'CANONICAL_SOURCE_BLOCK_BINDING'
+    decision = 'RESOLVED'
+    reason = strategy
+    return finish()
+  }
+
+  /**
+   * §5 — VERIFY a data-line fast-path candidate: its rendered text must carry
+   * the requested opener (or equal the source line text). A reject is a MISS.
+   */
+  private verifySourceSyntaxSourceLineCandidate(
+    element: HTMLElement,
+    line: number,
+    request: SourceSyntaxLocateRequest,
+  ): boolean {
+    const elText = normalizeCanonicalBlockText(element.textContent ?? '')
+    if (elText === '') return false
+    const lineText = normalizeCanonicalBlockText(this.getSourceLineTextAt(line) ?? '')
+    if (lineText !== '' && elText === lineText) return true
+    const opener = normalizeCanonicalBlockText(request.openerText)
+    return opener !== '' && elText.indexOf(opener) >= 0
+  }
+
+  /** §8 — does the bound element's whole text represent ONLY the opener? */
+  private sourceSyntaxBlockRepresentsOnlyOpener(element: HTMLElement, request: SourceSyntaxLocateRequest): boolean {
+    const elText = normalizeCanonicalBlockText(element.textContent ?? '')
+    if (elText === '') return false
+    const opener = normalizeCanonicalBlockText(request.openerText)
+    if (opener !== '' && elText === opener) return true
+    const lineText = normalizeCanonicalBlockText(this.getSourceLineTextAt(request.sourceLine) ?? '')
+    return lineText !== '' && elText === lineText
+  }
+
+  /** §7 — the canonical block ordinal among blocks with the SAME normalized text. */
+  private canonicalSourceBlockOrdinal(
+    blocks: readonly ReturnType<typeof computeCanonicalSourceBlocks>[number][],
+    block: ReturnType<typeof computeCanonicalSourceBlocks>[number],
+  ): number {
+    const needle = normalizeCanonicalBlockText(block.text)
+    let ordinal = 0
+    for (const b of blocks) {
+      if (b.identity === block.identity) break
+      if (normalizeCanonicalBlockText(b.text) === needle) ordinal++
+    }
+    return ordinal
+  }
+
+
+  /**
+   * TRAE V5 §8/§15 — the source-syntax active presentation geometry.
+   *
+   * Tier 1: the EXACT opener token → per-visual-line fragments (preferred).
+   * Tier 2: the opener is present in the element text but unmeasurable → the
+   *         top one-line band of the element.
+   * Tier 3: a VERIFIED opener-only block → the top one-line band (= the whole
+   *         block for a single-line element).
+   * Otherwise: NO geometry (the caller must NOT paint opener→EOF).
+   */
+  private sourceSyntaxPresentationRects(
+    anchor: HTMLElement,
+    openerText: string,
+    sourceLine: number,
+  ): { rects: RectLike[]; exactToken: boolean; openerOnlyBlock: boolean } {
+    // Tier 1 — the exact opener token range (never a block-sized union).
+    if (openerText && openerText.trim() !== '') {
+      const measured = measureTextFragmentRects(anchor, openerText, 0)
+      if (measured.expected.length > 0) {
+        return {
+          rects: measured.expected.map(r => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height })),
+          exactToken: true,
+          openerOnlyBlock: false,
+        }
+      }
+    }
+    // Tier 2/3 — no exact token geometry. Only the element's TOP LINE may be
+    // painted, and ONLY when the element really carries the opener (or is a
+    // verified opener-only block).
+    const elText = normalizeCanonicalBlockText(anchor.textContent ?? '')
+    if (elText === '') return { rects: [], exactToken: false, openerOnlyBlock: false }
+    const openerNorm = normalizeCanonicalBlockText(openerText)
+    const lineText = normalizeCanonicalBlockText(this.getSourceLineTextAt(sourceLine) ?? '')
+    const openerOnlyBlock = openerNorm !== '' ? elText === openerNorm : (lineText !== '' && elText === lineText)
+    const openerPresent = (openerNorm !== '' && elText.indexOf(openerNorm) >= 0) || openerOnlyBlock
+    if (!openerPresent) return { rects: [], exactToken: false, openerOnlyBlock: false }
+    let rect: DOMRect
+    try {
+      rect = anchor.getBoundingClientRect()
+    } catch {
+      return { rects: [], exactToken: false, openerOnlyBlock }
+    }
+    if (!(rect.width > 0 && rect.height > 0)) return { rects: [], exactToken: false, openerOnlyBlock }
+    let lineHeight = Number.NaN
+    try {
+      lineHeight = Number.parseFloat(anchor.ownerDocument.defaultView?.getComputedStyle(anchor).lineHeight ?? '')
+    } catch { lineHeight = Number.NaN }
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) lineHeight = Math.min(rect.height, 22)
+    const height = Math.min(lineHeight, rect.height)
+    return {
+      rects: [{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.top + height, width: rect.width, height }],
+      exactToken: false,
+      openerOnlyBlock,
+    }
+  }
+
 
   /**
    * V2 §9 — the SOURCE-side ordinal of an IMAGE-ONLY block (its visible text is

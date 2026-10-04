@@ -98,6 +98,15 @@ export interface DiagnosticLocateVisualCommit {
   forceInlineMark?: boolean
   /** V4 — caption / expected-name host rect (missing-name diagnostics). */
   captionHostRect?: RectLike | null
+  /**
+   * TRAE V4 §10 — the EXPLICIT source-syntax OPENING-LINE fragment rects. When
+   * present they are painted verbatim (one overlay child per rect) and the
+   * controller NEVER mounts a block frame — the source-syntax active visual may
+   * only ever cover the opening token / opening line, never opener→EOF.
+   */
+  fragmentRects?: RectLike[] | null
+  /** TRAE V4 §10 — paint the source-syntax left ERROR accent on the fragments. */
+  sourceSyntaxAccent?: boolean
 }
 
 export interface DiagnosticLocateFrameStructure {
@@ -285,6 +294,9 @@ export class DiagnosticLocateFrameController {
   /** The scroll offset the current inline geometry was measured at. */
   private inlineMeasuredScrollTop: number | null = null
   private lastHeadingLegacyFrameRender = false
+  /** TRAE V4 §10 — explicit source-syntax opening-line fragments. */
+  private explicitFragmentRects: RectLike[] | null = null
+  private sourceSyntaxAccent = false
 
   constructor(private readonly root: HTMLElement | null) {}
 
@@ -390,6 +402,23 @@ export class DiagnosticLocateFrameController {
     this.preciseOccurrenceWithinAnchor = Math.max(0, Math.floor(input.preciseOccurrenceWithinAnchor ?? 0))
     this.forceInlineMarkOverride = input.forceInlineMark === true
     this.captionHostRectOverride = input.captionHostRect ?? null
+    this.explicitFragmentRects = input.fragmentRects ?? null
+    this.sourceSyntaxAccent = input.sourceSyntaxAccent === true
+    // ── TRAE V4 §10 — SOURCE-SYNTAX OPENING-LINE carrier. The explicit
+    // fragments are painted verbatim; a block frame is NEVER mounted, so the
+    // opener→EOF protected range can never be painted.
+    if (input.sourceSyntaxAccent === true) {
+      this.kind = 'inline'
+      this.lastVisualPresentation = 'inline-mark'
+      this.lastOcclusion = 'none'
+      this.lastRectInvariantPass = true
+      this.lastRightEdgeAuthority = 'SEMANTIC_TARGET'
+      this.lastCoverage = { horizontal: 1, vertical: 1 }
+      const ar = safeAnchorRect(anchor)
+      this.lastSemanticRect = { left: ar.left, top: ar.top, right: ar.right, bottom: ar.bottom, width: ar.width, height: ar.height }
+      this.paintExplicitFragments()
+      return this.inlineFragmentEls.length > 0
+    }
     // ── V5.12-R2 §5/§4 — HEADING: scroll authority ≠ visual authority. ──────
     // The heading's block rect stays the SCROLL / visibility authority, but the
     // visual carrier is the TEXT-TIGHT heading marker (passive + active), which
@@ -439,6 +468,38 @@ export class DiagnosticLocateFrameController {
     this.mountFrame(kind)
     this.reposition()
     return true
+  }
+
+  /**
+   * TRAE V4 §10 — paint the EXPLICIT source-syntax opening-line rects verbatim.
+   * Each rect becomes ONE overlay child carrying the error severity + the
+   * source-syntax left accent marker. No text measurement, no block frame.
+   */
+  private paintExplicitFragments(): void {
+    this.removeInlineFragments()
+    const rects = this.explicitFragmentRects
+    if (!rects || rects.length === 0 || !this.root) return
+    const fragments: ClosureRect[] = []
+    for (const f of rects) {
+      if (![f.left, f.top, f.width, f.height].every(Number.isFinite)) continue
+      const el = document.createElement('div')
+      el.className = DIAGNOSTIC_INLINE_FRAGMENT_CLASS
+      el.setAttribute('data-severity', this.severity)
+      el.setAttribute('data-target-kind', 'inline')
+      if (this.sourceSyntaxAccent) el.setAttribute('data-ink-source-syntax', 'true')
+      el.setAttribute('aria-hidden', 'true')
+      el.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.top)}px;width:${Math.round(f.width)}px;height:${Math.round(f.height)}px;pointer-events:none;`
+      this.root.appendChild(el)
+      this.inlineFragmentEls.push(el)
+      fragments.push({ left: f.left, top: f.top, right: f.right, bottom: f.bottom, width: f.width, height: f.height })
+    }
+    this.lastInlineExpected = fragments.slice()
+    this.lastInlineFragments = fragments.slice()
+    this.inlineGeometryGeneration++
+    this.inlineMeasuredScrollTop = this.currentScrollTop()
+    if (this.preScrollInlineGeometryInvalidated) this.postScrollInlineGeometryFresh = true
+    this.lastInlineFragmentCoverage = 1
+    this.lastInlineCrossLineUnion = false
   }
 
   /** §10 — the exact source-range geometry as one overlay child per visual line. */
@@ -947,6 +1008,8 @@ export class DiagnosticLocateFrameController {
     this.preciseOccurrenceWithinAnchor = 0
     this.forceInlineMarkOverride = false
     this.captionHostRectOverride = null
+    this.explicitFragmentRects = null
+    this.sourceSyntaxAccent = false
     this.lastVisualPresentation = null
     this.lastOcclusion = null
     this.lastRectInvariantPass = true

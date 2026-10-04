@@ -3306,6 +3306,17 @@ body.ink-console-docked::after {
   --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
 }
 
+/* ── TRAE V4 §10 — SOURCE-SYNTAX OPENER active visual (CODE_FENCE_UNCLOSED /
+   FORMULA_BLOCK_UNCLOSED / FRONTMATTER_UNCLOSED). It reuses the EXISTING
+   `error` severity token: a low/medium emphasis error FILL plus exactly ONE
+   3px error LEFT accent. Coverage is the opening token / opening line ONLY —
+   never opener→EOF. The single left accent is a SURFACE style, so it is
+   exempted from the FILL_ONLY border gate. */
+.inkchapter-diagnostic-inline-fragment[data-ink-source-syntax='true'] {
+  border-radius: 0 3px 3px 0;
+  border-left: 3px solid var(--ink-locate-color);
+}
+
 /* ── Blank-Space Warning Presentation Policy — the ONE ACTIVE presentation ────
    RESTORED VERBATIM from the original document-end EOF band
    (V5.13-R2 §1.1 / V5.13-R3 §9/§10/§11/§26): a LOW-EMPHASIS Warning surface

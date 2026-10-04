@@ -121,6 +121,18 @@ function projectOne(
       sourceLine = numOrNull(loc.startLine)
       sourceColumn = 0
       stableIdentity = `block:${loc.sourceBlockIdentity}`
+    } else if (loc.kind === 'source-syntax-opener') {
+      // TRAE V5 §16 — the source-syntax family must carry its REAL source
+      // position: `sourceStartOffset` is never null, the stable identity is the
+      // canonical `openerIdentity`, and the ordering key is the real source line
+      // (never the UNKNOWN 1e10 fallback).
+      sourceStartOffset = numOrNull(loc.sourceStartOffset)
+      sourceEndOffset = numOrNull(loc.sourceEndOffset)
+      sourceLine = numOrNull(loc.sourceLine)
+      sourceColumn = 0
+      stableIdentity = typeof loc.openerIdentity === 'string' && loc.openerIdentity.trim() !== ''
+        ? loc.openerIdentity
+        : `source-syntax:${loc.syntaxKind}:${loc.sourceLine}`
     } else if (loc.kind === 'canonical-node') {
       stableIdentity = loc.stableIdentity
       canonicalHeadingIndex = ctx.headingIndexOfStableIdentity?.(stableIdentity) ?? null
