@@ -26,6 +26,11 @@ import type {
 import { AMBIGUOUS_DUPLICATE_INLINE_RANGE_REASON } from './document-diagnostic-source-occurrence-v512-r5'
 // Unified Diagnostics Domain V1 §9/§24 — the domain type used by the rule-domain authority.
 import type { DiagnosticDomain } from './diagnostic-domain-v1'
+// TRAE V4 §6/§7 — the ONE source-syntax opener → DOM projection authority.
+import type {
+  SourceSyntaxLocateRequest,
+  SourceSyntaxLocateResult,
+} from './document-diagnostic-source-syntax-location-authority'
 
 // ── Rule Registry ─────────────────────────────────────────
 
@@ -44,6 +49,13 @@ export type DiagnosticLocationStrategy =
   | 'figure-occurrence'
   /** Phase G — a DOM caption PROJECTION located by the caption service's own id. */
   | 'caption-projection'
+  /**
+   * TRAE V4 §3/§6 — a SOURCE-SYNTAX OPENER (unclosed code fence / formula
+   * block / front matter). The target is the opening source token projected
+   * through the canonical `data-line` source→DOM authority, NEVER a canonical
+   * code-block object.
+   */
+  | 'source-syntax-opener'
 
 /**
  * VNext §9/§30 — the 10 INTERNAL diagnostic areas.
@@ -68,7 +80,7 @@ export type DocumentDiagnosticArea =
   | 'cross-reference'
 
 /** VNext §10/§11 — what the problem acts on (never the severity, never the domain). */
-export type DocumentDiagnosticScope = 'document' | 'heading' | 'block' | 'object' | 'inline'
+export type DocumentDiagnosticScope = 'document' | 'heading' | 'block' | 'object' | 'inline' | 'source-syntax'
 
 // ── Capability Matrix V1 §2 — the ONE rule metadata authority vocabulary ─────
 //
@@ -363,6 +375,8 @@ function derivePresentationKind(
   reasonChip: boolean,
 ): string {
   if (locationStrategy === 'target-group') return 'target-group'
+  // TRAE V4 §11 — the source-syntax family owns ONE shared presentation kind.
+  if (locationStrategy === 'source-syntax-opener') return 'source-syntax-error'
   if (area === 'document-format') return 'blank-space-warning'
   if (locationStrategy === 'document-end') return 'synthetic-eof'
   if (scope === 'document') return 'none'
@@ -386,6 +400,7 @@ const STABLE_IDENTITY_AUTHORITY_BY_LOCATION: Readonly<Record<DiagnosticLocationS
   'source-block': 'owning-block-identity',
   'figure-occurrence': 'figure-occurrence-identity',
   'caption-projection': 'caption-projection-identity',
+  'source-syntax-opener': 'source-syntax-opener-identity',
 }
 
 /** §4 — the dynamic-refresh authority token of an implemented family. */
@@ -648,12 +663,14 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // Every one of these CONSUMES one of the three shared source authorities
   // (`DocumentSourceSyntaxAuthority` / `DocumentDefinitionReferenceIndex` /
   // `DocumentInlineLinkAuthority`) — no rule re-scans the whole document.
-  CODE_FENCE_UNCLOSED: rule('CODE_FENCE_UNCLOSED', 'code', 'source-range', {
-    area: 'code', capabilityCategory: 'code', scope: 'block', internalSeverity: 'error',
+  CODE_FENCE_UNCLOSED: rule('CODE_FENCE_UNCLOSED', 'code', 'source-syntax-opener', {
+    area: 'code', capabilityCategory: 'code', scope: 'source-syntax', internalSeverity: 'error',
+    presentationKind: 'source-syntax-error',
     producerAuthority: 'computeDocumentDiagnostics',
   }),
-  FORMULA_BLOCK_UNCLOSED: rule('FORMULA_BLOCK_UNCLOSED', 'formula', 'source-range', {
-    area: 'formula', capabilityCategory: 'formula', scope: 'block', internalSeverity: 'error',
+  FORMULA_BLOCK_UNCLOSED: rule('FORMULA_BLOCK_UNCLOSED', 'formula', 'source-syntax-opener', {
+    area: 'formula', capabilityCategory: 'formula', scope: 'source-syntax', internalSeverity: 'error',
+    presentationKind: 'source-syntax-error',
     producerAuthority: 'computeDocumentDiagnostics',
   }),
   // Footnote Integrity — ONE family per fact; a duplicate-definition family
@@ -684,8 +701,9 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
     suppressionGroup: 'reference-link-integrity', producerAuthority: 'computeDocumentDiagnostics',
   }),
   // Front Matter Integrity — UNCLOSED suppresses MALFORMED.
-  FRONTMATTER_UNCLOSED: rule('FRONTMATTER_UNCLOSED', 'document', 'source-range', {
-    area: 'document-state', capabilityCategory: 'document', scope: 'document', internalSeverity: 'error',
+  FRONTMATTER_UNCLOSED: rule('FRONTMATTER_UNCLOSED', 'document', 'source-syntax-opener', {
+    area: 'document-state', capabilityCategory: 'document', scope: 'source-syntax', internalSeverity: 'error',
+    presentationKind: 'source-syntax-error',
     suppressionGroup: 'frontmatter-integrity', producerAuthority: 'computeDocumentDiagnostics',
   }),
   // NO canonical YAML parser exists in the repo → MALFORMED can never be faked
@@ -994,6 +1012,8 @@ export interface DiagnosticLocationContract {
   figureOccurrenceLocationCount: number
   /** Phase G — caption projection locators. */
   captionProjectionLocationCount: number
+  /** TRAE V4 §3 — source-syntax opener locators. */
+  sourceSyntaxOpenerLocationCount: number
   documentStartLocationCount: number
   documentEndLocationCount: number
   blockNodeLocationCount: number
@@ -1024,6 +1044,11 @@ export function hasLocatableLocation(location: DiagnosticLocation | undefined | 
   // Phase G — a caption projection is locatable when it carries the caption
   // service's own stable id.
   if (location.kind === 'caption-projection') return location.captionId.trim() !== ''
+  // TRAE V4 §3 — a source-syntax opener is locatable when it carries a real
+  // opener identity AND a source line (the identity is never just the line).
+  if (location.kind === 'source-syntax-opener') {
+    return Number.isFinite(location.sourceLine) && location.openerIdentity.trim() !== ''
+  }
   if (location.kind === 'multi-target') return location.targets.length > 0
   // Target Group V1 §4 — a group is locatable when its scroll anchor is locatable
   // (or it declares at least one member).
@@ -1046,6 +1071,7 @@ export function computeDiagnosticLocationContract(
   let sourceBlock = 0
   let figureOccurrence = 0
   let captionProjection = 0
+  let sourceSyntaxOpener = 0
   let documentStart = 0
   let documentEnd = 0
   let blockNode = 0
@@ -1067,6 +1093,7 @@ export function computeDiagnosticLocationContract(
       case 'source-block': sourceBlock++; break
       case 'figure-occurrence': figureOccurrence++; break
       case 'caption-projection': captionProjection++; break
+      case 'source-syntax-opener': sourceSyntaxOpener++; break
       case 'document-start': documentStart++; break
       case 'document-end': documentEnd++; break
       case 'block-node': blockNode++; break
@@ -1085,6 +1112,7 @@ export function computeDiagnosticLocationContract(
     sourceBlockLocationCount: sourceBlock,
     figureOccurrenceLocationCount: figureOccurrence,
     captionProjectionLocationCount: captionProjection,
+    sourceSyntaxOpenerLocationCount: sourceSyntaxOpener,
     documentStartLocationCount: documentStart,
     documentEndLocationCount: documentEnd,
     blockNodeLocationCount: blockNode,
@@ -1125,6 +1153,8 @@ export type DiagnosticResolveAnchor =
   | 'caption-projection'
   /** Anchor Integrity — the rendered inline `<a href="#anchor">` of a local link. */
   | 'link-anchor'
+  /** TRAE V4 §6 — a source-syntax opener projected through the canonical `data-line`. */
+  | 'source-syntax-opener'
 
 /**
  * V5.12-R5 §7 — the resolver's OWN output for a source occurrence. It must be
@@ -1356,6 +1386,14 @@ export interface DiagnosticLocationResolveContext {
     occurrenceWithinLine: number
     expectedOccurrenceIndex: number | null
   }) => ResolvedSourceOccurrenceHint | null
+  /**
+   * TRAE V4 §6/§7 — the SOURCE-SYNTAX OPENER → DOM projection authority. It
+   * resolves an unclosed fence / formula / front matter OPENER to a live DOM
+   * target through the canonical `data-line` source→DOM projection, so a
+   * canonical code-block DOM is NEVER required. Returns null when no authority
+   * is wired (the caller then reports UNSUPPORTED, never a silent guess).
+   */
+  resolveSourceSyntaxOpener?: (request: SourceSyntaxLocateRequest) => SourceSyntaxLocateResult | null
 }
 
 /** Normalize source text for anchor comparison (trim + collapse whitespace). */
@@ -1876,6 +1914,61 @@ export function resolveDiagnosticLocation(
         primaryAnchor: 'source-line',
         fallbackAnchor,
         reason: 'SOURCE_LINE_NOT_FOUND',
+      }
+    }
+    case 'source-syntax-opener': {
+      // TRAE V4 §6/§7 — an unclosed source-syntax OPENER. The target is the
+      // opening source token projected through the canonical `data-line`
+      // authority — NEVER a canonical code-block DOM, never a text search.
+      const hook = ctx.resolveSourceSyntaxOpener
+      if (typeof hook !== 'function') {
+        return {
+          decision: 'UNSUPPORTED',
+          element: null,
+          scrollAction: null,
+          targetIndex,
+          primaryAnchor: 'source-syntax-opener',
+          fallbackAnchor: null,
+          reason: 'SOURCE_SYNTAX_LOCATE_AUTHORITY_MISSING',
+        }
+      }
+      const locate = hook({
+        documentKey: diagDocKey || currentDocKey,
+        sourceRevision: location.sourceRevision ?? null,
+        syntaxKind: location.syntaxKind,
+        sourceLine: location.sourceLine,
+        openerIdentity: location.openerIdentity,
+        openerText: location.openerText,
+        sourceStartOffset: location.sourceStartOffset,
+        sourceEndOffset: location.sourceEndOffset,
+      })
+      if (locate && locate.decision === 'RESOLVED' && locate.primaryElement) {
+        const resolved = resolvedResult(locate.primaryElement, targetIndex, 'source-syntax-opener', null)
+        return {
+          ...resolved,
+          resolvedNodeKind: locate.primaryElement.tagName.toLowerCase(),
+          resolvedBlockIdentity: locate.primaryElement.getAttribute('data-line') ?? locate.primaryElement.id ?? null,
+        }
+      }
+      if (locate && locate.decision === 'SOURCE_REVISION_STALE') {
+        return {
+          decision: 'TARGET_CHANGED',
+          element: null,
+          scrollAction: null,
+          targetIndex,
+          primaryAnchor: 'source-syntax-opener',
+          fallbackAnchor: null,
+          reason: STALE_SOURCE_REVISION_REASON,
+        }
+      }
+      return {
+        decision: 'UNRESOLVED',
+        element: null,
+        scrollAction: null,
+        targetIndex,
+        primaryAnchor: 'source-syntax-opener',
+        fallbackAnchor: null,
+        reason: `SOURCE_SYNTAX_${locate?.decision ?? 'TARGET_NOT_FOUND'}`,
       }
     }
     case 'document-start':

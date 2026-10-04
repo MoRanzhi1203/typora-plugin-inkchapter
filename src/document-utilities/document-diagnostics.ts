@@ -10,6 +10,8 @@ import { validateStrictFirstH1Topline } from '../heading-numbering/strict-docume
 import { normalizeResourcePath, normalizeSourceAnchorText } from './document-diagnostic-location'
 // V5.12-R5 §4 — the SOURCE RANGE IDENTITY authority (pure, no DOM).
 import { buildSourceRangeIdentity } from './document-diagnostic-source-occurrence-v512-r5'
+// TRAE V4 §3/§4 — the SOURCE-SYNTAX OPENER location kind.
+import type { SourceSyntaxKind } from './document-diagnostic-source-syntax-location-authority'
 // V5.12-R6 §7 — the ONE empty-document predicate (pure, no DOM / no runtime).
 import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
 // V5.12-R8 §4 — resource classification + the unified figure occurrence model.
@@ -1534,6 +1536,34 @@ function sourceRangeTarget(
   }
 }
 
+/**
+ * TRAE V4 §3/§4 — the ONE source-syntax opener locator. It carries the canonical
+ * opener identity (never a bare line), the THREE separated ranges, and the
+ * source generation. The producer NEVER stores only `line=N`.
+ */
+function sourceSyntaxOpenerTarget(
+  markdown: string,
+  syntaxKind: SourceSyntaxKind,
+  sourceLine: number,
+  openerIdentity: string,
+  locationRange: { start: number; end: number },
+  protectedRange: { start: number; end: number },
+  sourceRevision: number | null | undefined,
+): DiagnosticLocation {
+  return {
+    kind: 'source-syntax-opener',
+    syntaxKind,
+    sourceLine,
+    sourceStartOffset: locationRange.start,
+    sourceEndOffset: locationRange.end,
+    openerText: lineTextAt(markdown, sourceLine),
+    openerIdentity,
+    sourceRevision: sourceRevision ?? null,
+    protectedRange,
+    presentationRange: locationRange,
+  }
+}
+
 function groupTargetLocations(
   markdown: string,
   occurrences: ReadonlyArray<{ startLine: number; sourceStart: number; sourceEnd: number }>,
@@ -1570,7 +1600,15 @@ function emitSourceSyntaxIntegrity(
       kind: 'object',
       stableIdentity: identity,
       targetIdentity: identity,
-      location: sourceRangeTarget(markdown, fence.openLine, fence.openStart, fence.openEnd),
+      location: sourceSyntaxOpenerTarget(
+        markdown,
+        'code-fence',
+        fence.openLine,
+        identity,
+        { start: fence.openStart, end: fence.openEnd },
+        { start: fence.protectedRange.start, end: fence.protectedRange.end },
+        input.sourceRevision,
+      ),
     }))
   }
 
@@ -1584,7 +1622,15 @@ function emitSourceSyntaxIntegrity(
       kind: 'formula',
       stableIdentity: identity,
       targetIdentity: identity,
-      location: sourceRangeTarget(markdown, formula.openLine, formula.openStart, formula.openStart + 2),
+      location: sourceSyntaxOpenerTarget(
+        markdown,
+        'formula-block',
+        formula.openLine,
+        identity,
+        { start: formula.openStart, end: formula.openStart + 2 },
+        { start: formula.protectedRange.start, end: formula.protectedRange.end },
+        input.sourceRevision,
+      ),
     }))
   }
 
@@ -1598,7 +1644,15 @@ function emitSourceSyntaxIntegrity(
       kind: 'document',
       stableIdentity: fm.identity,
       targetIdentity: fm.identity,
-      location: sourceRangeTarget(markdown, fm.openLine, fm.protectedRange.start, fm.protectedRange.start + 3),
+      location: sourceSyntaxOpenerTarget(
+        markdown,
+        'frontmatter',
+        fm.openLine,
+        fm.identity,
+        { start: fm.protectedRange.start, end: fm.protectedRange.start + 3 },
+        { start: fm.protectedRange.start, end: fm.protectedRange.end },
+        input.sourceRevision,
+      ),
     }))
   }
 

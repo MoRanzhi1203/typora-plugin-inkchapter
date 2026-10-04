@@ -7,6 +7,7 @@
  */
 
 import type { DiagnosticDomain } from './diagnostic-domain-v1'
+import type { SourceSyntaxOpenerLocation } from './document-diagnostic-source-syntax-location-authority'
 
 export type DocumentDiagnosticSeverity = 'error' | 'warning' | 'info'
 
@@ -199,6 +200,15 @@ export type DiagnosticLocation =
       kind: 'multi-target'
       targets: readonly DiagnosticLocation[]
     }
+  /**
+   * TRAE V4 §3 — a SOURCE-SYNTAX OPENER locator. The target is the Markdown
+   * source-syntax opening token (code fence ``` / display formula $$ / front
+   * matter `---`) of a protected region that never closed — NEVER a canonical
+   * code-block object, and NEVER the opener→EOF protected range. The three
+   * ranges (`protectedRange` / `locationRange` / `presentationRange`) are
+   * deliberately separate fields.
+   */
+  | SourceSyntaxOpenerLocation
   /**
    * V1 (Target Group closure) — a TARGET GROUP. ONE diagnostic whose semantic
    * fact is carried by SEVERAL co-equal members (e.g. "the document only owns a
