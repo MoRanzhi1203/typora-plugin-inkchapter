@@ -227,12 +227,28 @@ describe('Capability Matrix V1 §0.1 — count authority', () => {
     expect(implemented).toContain('TABLE_MULTIPLE_CAPTIONS')
     expect(implemented).toContain('CODE_CAPTION_FORMAT_INVALID')
     expect(planned).not.toContain('FIGURE_ORPHAN_CAPTION')
-    // Numbering (Phase H) / anchor (Phase I) stay PLANNED.
-    expect(planned).toContain('TABLE_NUMBER_ORDER_INVALID')
-    expect(planned).toContain('HEADING_ANCHOR_COLLISION')
+    // Phase H — the table / code manual-prefix families are IMPLEMENTED.
+    expect(implemented).toContain('TABLE_MANUAL_NUMBER_PREFIX')
+    expect(implemented).toContain('CODE_MANUAL_NUMBER_PREFIX')
+    // Phase I — local anchor + heading-anchor collision are IMPLEMENTED.
+    expect(implemented).toContain('LINK_LOCAL_ANCHOR_MISSING')
+    expect(implemented).toContain('HEADING_ANCHOR_COLLISION')
+    expect(planned).not.toContain('HEADING_ANCHOR_COLLISION')
+    // Numbering Integrity V2 §9 — the number duplicate / order / formula
+    // families are IMPLEMENTED against the canonical effective-number provider.
+    expect(implemented).toContain('FIGURE_NUMBER_DUPLICATE')
+    expect(implemented).toContain('TABLE_NUMBER_ORDER_INVALID')
+    expect(implemented).toContain('CODE_NUMBER_DUPLICATE')
+    expect(implemented).toContain('FORMULA_NUMBER_ORDER_INVALID')
+    expect(implemented).toContain('FORMULA_NUMBER_SECTION_MISMATCH')
+    expect(deferred).not.toContain('TABLE_NUMBER_ORDER_INVALID')
+    expect(deferred).not.toContain('FORMULA_NUMBER_SECTION_MISMATCH')
+    // Phase I cross-file anchor + Phase J cross-reference stay DEFERRED.
+    expect(deferred).toContain('LINK_LOCAL_FILE_ANCHOR_MISSING')
     expect(deferred.sort()).toEqual([
       'FIGURE_REFERENCE_TARGET_MISSING',
       'FORMULA_REFERENCE_TARGET_MISSING',
+      'LINK_LOCAL_FILE_ANCHOR_MISSING',
       'TABLE_REFERENCE_TARGET_MISSING',
     ])
   })

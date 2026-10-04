@@ -6,7 +6,12 @@
  * never query DOM or resolve authority facts independently.
  */
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
-import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type {
+  DocumentDiagnosticsSnapshot,
+  ObjectEffectiveNumberElementFacts,
+  ObjectEffectiveNumberFact,
+  ObjectEffectiveNumbersSnapshot,
+} from './diagnostics-types'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 
 export interface HeadingPolicyActivationState {
@@ -92,6 +97,15 @@ export interface DocumentUtilitiesAuthorityContext {
     styleKey?: string
     isEffectiveForElement: (element: HTMLElement | null) => boolean
   }
+  /**
+   * Numbering Integrity V2 (spec §9/§21) — the ONE canonical effective-number
+   * fact provider (owned by the caption service / formula planner), keyed by the
+   * object's DOM element. The diagnostics layer joins each of ITS object facts
+   * (element + canonical `block:<kind>:<ordinal>` identity) to this map, so the
+   * identity authority stays here and the NUMBER authority stays there.
+   * Optional: absent ⇒ every number rule stays silent.
+   */
+  getObjectEffectiveNumberElementFacts?: () => ObjectEffectiveNumberElementFacts | null
 }
 
 export interface DocumentUtilitiesContext {
@@ -124,6 +138,43 @@ export function resolveEditorScrollContainer(): HTMLElement | null {
   if (!root) return null
   const parent = root.parentElement
   return parent instanceof HTMLElement ? parent : root
+}
+
+/**
+ * Numbering Integrity V2 (spec §9/§21) — join the numbering authority's
+ * element-keyed effective-number facts to the diagnostics layer's OWN canonical
+ * object facts (`block:<kind>:<ordinal>`). Returns null when the provider is
+ * absent / disabled / empty so every number rule stays silent.
+ */
+function buildObjectEffectiveNumbersSnapshot(
+  elementFacts: ObjectEffectiveNumberElementFacts | null,
+  structural: {
+    figures: DocumentDiagnosticsInput['figures']
+    tables: DocumentDiagnosticsInput['tables']
+    codes: DocumentDiagnosticsInput['codes']
+    formulas: DocumentDiagnosticsInput['formulas']
+  },
+): ObjectEffectiveNumbersSnapshot | null {
+  if (!elementFacts || !elementFacts.numberingEnabled || elementFacts.byElement.size === 0) return null
+  const bySourceIdentity = new Map<string, ObjectEffectiveNumberFact>()
+  const add = (facts: readonly { element: HTMLElement | null; targetIdentity?: string }[]): void => {
+    for (const f of facts) {
+      const id = f.targetIdentity
+      if (!id || !f.element) continue
+      const fact = elementFacts.byElement.get(f.element)
+      if (fact) bySourceIdentity.set(id, fact)
+    }
+  }
+  add(structural.figures)
+  add(structural.tables)
+  add(structural.codes)
+  add(structural.formulas)
+  if (bySourceIdentity.size === 0) return null
+  return {
+    numberingEnabled: elementFacts.numberingEnabled,
+    sectionNumberingEnabled: elementFacts.sectionNumberingEnabled,
+    bySourceIdentity,
+  }
 }
 
 /**
@@ -187,5 +238,12 @@ export function collectDiagnosticsInput(
       ...(ctx.authority.getObjectNumberingEnabled?.() ?? {}),
     },
     headingAutoNumbering: structural.headingAutoNumbering,
+    // Numbering Integrity V2 (spec §9/§21) — the canonical effective-number
+    // snapshot (joined to the diagnostics' OWN `block:<kind>:<ordinal>`
+    // identity). Absent/empty ⇒ the number rules stay silent.
+    objectEffectiveNumbers: buildObjectEffectiveNumbersSnapshot(
+      ctx.authority.getObjectEffectiveNumberElementFacts?.() ?? null,
+      structural,
+    ),
   }
 }

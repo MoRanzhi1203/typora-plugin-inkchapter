@@ -14,6 +14,9 @@ import { buildSourceRangeIdentity } from './document-diagnostic-source-occurrenc
 import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
 // V5.12-R8 §4 — resource classification + the unified figure occurrence model.
 import type { ResourceClass, ImageSourceOccurrence } from './document-resource-scanner'
+// Phase I (spec §10) — the ONE in-document anchor scanner (`[x](#target)`),
+// reusing the SAME literal-excluding reference scanner (no second parser).
+import { parseLocalAnchorTargets } from './document-resource-scanner'
 // V5.15 — Standalone Object Block Invariant (figure structure gate).
 import {
   analyzeFigureStandaloneSourceBlocks,
@@ -33,6 +36,7 @@ import type {
   DocumentDiagnosticSeverity,
   DocumentDiagnosticsSnapshot,
   DocumentDiagnosticsState,
+  ObjectEffectiveNumbersSnapshot,
 } from './diagnostics-types'
 // V1 — Figure Diagnostic Locator Authority (identity builders, pure).
 import {
@@ -293,6 +297,9 @@ export function resolveDocumentDiagnosticSeverity(
     // USER-content defect (it will collide with the generated number).
     case 'HEADING_MANUAL_NUMBER_PREFIX':
     case 'FIGURE_MANUAL_NUMBER_PREFIX':
+    // Phase H (spec §9) — the table / code analogues of the figure rule.
+    case 'TABLE_MANUAL_NUMBER_PREFIX':
+    case 'CODE_MANUAL_NUMBER_PREFIX':
       return 'warning'
     // Heading Auto-Number Conflict V1 §13 — when the auto number is EFFECTIVE
     // for the heading AND the source already carries a confirmed manual prefix,
@@ -309,6 +316,16 @@ export function resolveDocumentDiagnosticSeverity(
     // body is a document-FORMAT warning. Fixed across strict and loose mode and
     // NEVER escalated to an error (a readable document with sloppy spacing).
     case EXCESSIVE_INTERNAL_BLANK_LINES_CODE:
+      return 'warning'
+    // Phase I (spec §10) — a `#anchor` link that resolves to no canonical
+    // heading anchor is a broken cross-reference (Warning, never Error: the
+    // document structure is intact; only the link destination is wrong).
+    case 'LINK_LOCAL_ANCHOR_MISSING':
+      return 'warning'
+    // Phase I (spec §10) — two canonical headings sharing ONE anchor id make the
+    // anchor ambiguous; a Warning (a defensive integrity check on Typora's own
+    // heading ids).
+    case 'HEADING_ANCHOR_COLLISION':
       return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
@@ -411,6 +428,15 @@ export interface DocumentDiagnosticsInput {
     formula?: boolean
   }
   /**
+   * Numbering Integrity V2 (spec §9/§21) — the canonical effective-number fact
+   * snapshot consumed by the object / formula NUMBER rules (duplicate / order /
+   * section-mismatch). It is produced by the EXISTING numbering authority (the
+   * caption service) and keyed by the object's canonical SOURCE identity
+   * (`block:<kind>:<ordinal>`). Absent / empty ⇒ every number rule stays SILENT
+   * (never a false positive). The producer NEVER re-derives or parses a number.
+   */
+  objectEffectiveNumbers?: ObjectEffectiveNumbersSnapshot | null
+  /**
    * Heading Auto-Number Conflict V1 §2/§4/§44 — the heading auto-numbering
    * EFFECTIVENESS authority's global audit facts. The PER-HEADING verdict
    * travels on `DiagnosticHeadingFact.autoNumberingEffective`; these two
@@ -460,6 +486,14 @@ export const HEADING_MANUAL_NUMBER_PREFIX_CODE = 'HEADING_MANUAL_NUMBER_PREFIX'
 export const HEADING_AUTO_NUMBER_CONFLICT_CODE = 'HEADING_AUTO_NUMBER_CONFLICT'
 /** §24 — a figure name carrying a manual number prefix while auto-numbering is ON. */
 export const FIGURE_MANUAL_NUMBER_PREFIX_CODE = 'FIGURE_MANUAL_NUMBER_PREFIX'
+/** Phase H (spec §9) — a table name carrying a manual number prefix while auto-numbering is ON. */
+export const TABLE_MANUAL_NUMBER_PREFIX_CODE = 'TABLE_MANUAL_NUMBER_PREFIX'
+/** Phase H (spec §9) — a code-block name carrying a manual number prefix while auto-numbering is ON. */
+export const CODE_MANUAL_NUMBER_PREFIX_CODE = 'CODE_MANUAL_NUMBER_PREFIX'
+/** Phase I (spec §10) — a `[x](#target)` link whose target is no canonical heading anchor. */
+export const LINK_LOCAL_ANCHOR_MISSING_CODE = 'LINK_LOCAL_ANCHOR_MISSING'
+/** Phase I (spec §10) — a collision group of canonical headings sharing ONE anchor id. */
+export const HEADING_ANCHOR_COLLISION_CODE = 'HEADING_ANCHOR_COLLISION'
 /** §18 — a table that is not a standalone block (list / blockquote marker). */
 export const TABLE_BLOCK_STRUCTURE_INVALID_CODE = 'TABLE_BLOCK_STRUCTURE_INVALID'
 /** §19 — a display formula that is not a standalone block. */
@@ -472,6 +506,39 @@ export const TABLE_EMPTY_CONTENT_CODE = 'TABLE_EMPTY_CONTENT'
 export const FORMULA_EMPTY_CONTENT_CODE = 'FORMULA_EMPTY_CONTENT'
 /** §28 — an empty blockquote. */
 export const BLOCKQUOTE_EMPTY_CODE = 'BLOCKQUOTE_EMPTY'
+
+// ── Numbering Integrity V2 (spec §9/§21) rule codes ─────────────────────────
+/** §9 — two canonical figures share the same effective number. */
+export const FIGURE_NUMBER_DUPLICATE_CODE = 'FIGURE_NUMBER_DUPLICATE'
+/** §9 — two canonical tables share the same effective number. */
+export const TABLE_NUMBER_DUPLICATE_CODE = 'TABLE_NUMBER_DUPLICATE'
+/** §9 — two canonical code blocks share the same effective number. */
+export const CODE_NUMBER_DUPLICATE_CODE = 'CODE_NUMBER_DUPLICATE'
+/** §9 — figure effective numbers are not strictly increasing in document order. */
+export const FIGURE_NUMBER_ORDER_INVALID_CODE = 'FIGURE_NUMBER_ORDER_INVALID'
+/** §9 — table effective numbers are not strictly increasing in document order. */
+export const TABLE_NUMBER_ORDER_INVALID_CODE = 'TABLE_NUMBER_ORDER_INVALID'
+/** §9 — code effective numbers are not strictly increasing in document order. */
+export const CODE_NUMBER_ORDER_INVALID_CODE = 'CODE_NUMBER_ORDER_INVALID'
+/** §9 — formula effective numbers are not strictly increasing in document order. */
+export const FORMULA_NUMBER_ORDER_INVALID_CODE = 'FORMULA_NUMBER_ORDER_INVALID'
+/** §9 — a section-scoped formula number's section ≠ the section it sits in. */
+export const FORMULA_NUMBER_SECTION_MISMATCH_CODE = 'FORMULA_NUMBER_SECTION_MISMATCH'
+
+/**
+ * §9 — every NUMBER-INTEGRITY runtime code this producer can emit. The registry
+ * ↔ producer gate mirrors this list exactly.
+ */
+export const NUMBER_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
+  FIGURE_NUMBER_DUPLICATE_CODE,
+  TABLE_NUMBER_DUPLICATE_CODE,
+  CODE_NUMBER_DUPLICATE_CODE,
+  FIGURE_NUMBER_ORDER_INVALID_CODE,
+  TABLE_NUMBER_ORDER_INVALID_CODE,
+  CODE_NUMBER_ORDER_INVALID_CODE,
+  FORMULA_NUMBER_ORDER_INVALID_CODE,
+  FORMULA_NUMBER_SECTION_MISMATCH_CODE,
+]
 
 /**
  * Capability Matrix V1 §6 — the CONSERVATIVE allow-list of every runtime
@@ -526,11 +593,13 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   'TABLE_DUPLICATE_NAME',
   'TABLE_MISSING_NAME',
   TABLE_EMPTY_CONTENT_CODE,
+  TABLE_MANUAL_NUMBER_PREFIX_CODE,
   // code
   CODE_EMPTY_BLOCK_CODE,
   'CODE_DUPLICATE_NAME',
   'CODE_MISSING_NAME',
   'CODE_MISSING_LANGUAGE',
+  CODE_MANUAL_NUMBER_PREFIX_CODE,
   // formula
   FORMULA_BLOCK_STRUCTURE_INVALID_CODE,
   'FORMULA_DUPLICATE_VISIBLE_TAG',
@@ -539,9 +608,14 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   BLOCKQUOTE_EMPTY_CODE,
   // link
   'LINK_LOCAL_TARGET_MISSING',
+  LINK_LOCAL_ANCHOR_MISSING_CODE,
+  // heading
+  HEADING_ANCHOR_COLLISION_CODE,
   // Phase G — DOM-side Caption Integrity (produced by
   // `computeCaptionIntegrityDiagnostics`, merged into the SAME snapshot).
   ...CAPTION_INTEGRITY_DIAGNOSTIC_CODES,
+  // Numbering Integrity V2 (spec §9) — the object / formula NUMBER rules.
+  ...NUMBER_INTEGRITY_DIAGNOSTIC_CODES,
 ]
 
 /**
@@ -713,6 +787,27 @@ export function deduplicateDiagnostics(
   return out
 }
 
+/**
+ * Phase I §10 — does a `#target` resolve to a canonical heading anchor? The
+ * anchor authority is Typora's rendered heading id (raw), with a bounded
+ * percent-decode attempt (Typora may encode a non-ASCII anchor in the href).
+ * No slugifier, no guessing: an unknown target is simply NOT a heading anchor.
+ */
+function matchesCanonicalHeadingAnchor(
+  target: string,
+  anchors: ReadonlyMap<string, readonly DiagnosticHeadingFact[]>,
+): boolean {
+  if (target === '') return false
+  if (anchors.has(target)) return true
+  let decoded = target
+  try {
+    decoded = decodeURIComponent(target)
+  } catch {
+    return false
+  }
+  return decoded !== target && anchors.has(decoded)
+}
+
 function makeDiagnostic(
   input: DocumentDiagnosticsInput,
   category: DocumentDiagnosticCategory,
@@ -846,6 +941,206 @@ function deriveDefaultLocation(
     return { kind: 'document-start' }
   }
   return { kind: 'document-start' }
+}
+
+// ── Numbering Integrity V2 (spec §9/§21) — pure effective-number helpers ─────
+
+/** ONE object's canonical effective-number fact, keyed by its SOURCE identity. */
+interface ObjectNumberEntry {
+  sourceIdentity: string
+  effectiveNumber: string
+  sectionNumber?: string
+  actualSectionNumber?: string
+  element: HTMLElement | null
+}
+
+/**
+ * §9 — parse a CANONICAL effective number (a numbering-authority fact, never
+ * rendered text) into comparable integer components. Returns null for a value
+ * the canonical ordering cannot judge (e.g. a Roman numeral) — the caller then
+ * never reports an order violation for that step (no false positive).
+ */
+function parseEffectiveNumberComponents(value: string): number[] | null {
+  if (value === '') return null
+  const parts = value.split('.')
+  const out: number[] = []
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return null
+    out.push(Number.parseInt(part, 10))
+  }
+  return out.length > 0 ? out : null
+}
+
+/** §9 — lexical numeric comparison of two component vectors, shorter padded 0. */
+function compareEffectiveNumberComponents(a: readonly number[], b: readonly number[]): number {
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+interface ObjectNumberKindMeta {
+  category: DocumentDiagnosticCategory
+  duplicateCode: string
+  orderCode: string
+  label: string
+}
+
+const OBJECT_NUMBER_KIND_META: Readonly<Record<'figure' | 'table' | 'code', ObjectNumberKindMeta>> = {
+  figure: { category: 'figure', duplicateCode: FIGURE_NUMBER_DUPLICATE_CODE, orderCode: FIGURE_NUMBER_ORDER_INVALID_CODE, label: '图片' },
+  table: { category: 'table', duplicateCode: TABLE_NUMBER_DUPLICATE_CODE, orderCode: TABLE_NUMBER_ORDER_INVALID_CODE, label: '表格' },
+  code: { category: 'code', duplicateCode: CODE_NUMBER_DUPLICATE_CODE, orderCode: CODE_NUMBER_ORDER_INVALID_CODE, label: '代码块' },
+}
+
+/**
+ * §9/§21 — the object / formula NUMBER-INTEGRITY producer. It consumes ONLY the
+ * canonical effective-number snapshot (`input.objectEffectiveNumbers`); when the
+ * snapshot is absent / disabled / empty EVERY rule stays silent (zero output).
+ * Every emitted id derives from the object's SOURCE identity — never from the
+ * generated number — so a Chinese / Decimal / Roman style switch never churns
+ * an id.
+ */
+function emitObjectNumberIntegrity(
+  input: DocumentDiagnosticsInput,
+  emit: (d: DocumentDiagnostic) => void,
+): void {
+  const snapshot = input.objectEffectiveNumbers
+  if (!snapshot || !snapshot.numberingEnabled) return
+  const bySource = snapshot.bySourceIdentity
+  if (!bySource || bySource.size === 0) return
+
+  const collect = (
+    facts: readonly { element: HTMLElement | null; targetIdentity?: string }[],
+  ): { entries: ObjectNumberEntry[]; complete: boolean } => {
+    const entries: ObjectNumberEntry[] = []
+    let complete = true
+    for (const f of facts) {
+      const id = f.targetIdentity
+      if (!id) { complete = false; continue }
+      const fact = bySource.get(id)
+      if (!fact) { complete = false; continue }
+      entries.push({
+        sourceIdentity: id,
+        effectiveNumber: fact.effectiveNumber,
+        sectionNumber: fact.sectionNumber,
+        actualSectionNumber: fact.actualSectionNumber,
+        element: f.element,
+      })
+    }
+    return { entries, complete }
+  }
+
+  const emitDuplicates = (
+    kind: 'figure' | 'table' | 'code',
+    entries: readonly ObjectNumberEntry[],
+  ): void => {
+    const meta = OBJECT_NUMBER_KIND_META[kind]
+    const groups = new Map<string, ObjectNumberEntry[]>()
+    for (const e of entries) {
+      const list = groups.get(e.effectiveNumber)
+      if (list) list.push(e)
+      else groups.set(e.effectiveNumber, [e])
+    }
+    for (const [number, group] of groups) {
+      if (group.length <= 1) continue
+      const anchor = group[0]
+      const targets: DiagnosticLocation[] = group.map(g => ({
+        kind: 'block-node',
+        blockKind: kind,
+        stableIdentity: g.sourceIdentity,
+      }))
+      emit(makeDiagnostic(input, meta.category, meta.duplicateCode, `${meta.label}编号重复：${number}`, {
+        detail: `多个${meta.label}解析出了相同的有效编号，编号应当唯一。`,
+        targetIdentity: anchor.sourceIdentity,
+        element: anchor.element,
+        kind: 'object',
+        metadata: {
+          ruleId: meta.duplicateCode,
+          reason: 'OBJECT_NUMBER_DUPLICATE',
+          effectiveNumber: number,
+          memberCount: group.length,
+        },
+        location: { kind: 'target-group', scrollAnchor: targets[0], targets },
+      }))
+    }
+  }
+
+  const emitOrder = (
+    category: 'figure' | 'table' | 'code' | 'formula',
+    orderCode: string,
+    label: string,
+    entries: readonly ObjectNumberEntry[],
+    complete: boolean,
+  ): void => {
+    // Order is only judgeable when EVERY object of the type carries a canonical
+    // fact — a partial snapshot would produce a false "not increasing" verdict.
+    if (!complete || entries.length < 2) return
+    let prev: number[] | null = null
+    for (const e of entries) {
+      const comps = parseEffectiveNumberComponents(e.effectiveNumber)
+      if (!comps) { prev = null; continue }
+      if (prev && compareEffectiveNumberComponents(prev, comps) >= 0) {
+        emit(makeDiagnostic(input, category, orderCode, `${label}编号顺序异常：${e.effectiveNumber}`, {
+          detail: `${label}的有效编号在文档顺序中不是严格递增的。`,
+          targetIdentity: e.sourceIdentity,
+          element: e.element,
+          kind: 'object',
+          metadata: {
+            ruleId: orderCode,
+            reason: 'OBJECT_NUMBER_ORDER_INVALID',
+            effectiveNumber: e.effectiveNumber,
+          },
+          location: { kind: 'block-node', blockKind: category, stableIdentity: e.sourceIdentity },
+        }))
+      }
+      prev = comps
+    }
+  }
+
+  const figureScan = collect(input.figures)
+  if (figureScan.entries.length > 0) {
+    emitDuplicates('figure', figureScan.entries)
+    emitOrder('figure', FIGURE_NUMBER_ORDER_INVALID_CODE, OBJECT_NUMBER_KIND_META.figure.label, figureScan.entries, figureScan.complete)
+  }
+  const tableScan = collect(input.tables)
+  if (tableScan.entries.length > 0) {
+    emitDuplicates('table', tableScan.entries)
+    emitOrder('table', TABLE_NUMBER_ORDER_INVALID_CODE, OBJECT_NUMBER_KIND_META.table.label, tableScan.entries, tableScan.complete)
+  }
+  const codeScan = collect(input.codes)
+  if (codeScan.entries.length > 0) {
+    emitDuplicates('code', codeScan.entries)
+    emitOrder('code', CODE_NUMBER_ORDER_INVALID_CODE, OBJECT_NUMBER_KIND_META.code.label, codeScan.entries, codeScan.complete)
+  }
+
+  const formulaScan = collect(input.formulas)
+  if (formulaScan.entries.length > 0) {
+    emitOrder('formula', FORMULA_NUMBER_ORDER_INVALID_CODE, '公式', formulaScan.entries, formulaScan.complete)
+    // §9 — FORMULA_NUMBER_SECTION_MISMATCH fires ONLY for a SECTION-scoped
+    // number (sectionNumber present); a non-section mode never invents one.
+    for (const e of formulaScan.entries) {
+      if (e.sectionNumber == null || e.actualSectionNumber == null) continue
+      if (e.sectionNumber === e.actualSectionNumber) continue
+      emit(makeDiagnostic(input, 'formula', FORMULA_NUMBER_SECTION_MISMATCH_CODE,
+        `公式编号章节不一致：${e.effectiveNumber}`, {
+        detail: '公式编号所使用的章节号与该公式实际所在章节不一致。',
+        targetIdentity: e.sourceIdentity,
+        element: e.element,
+        kind: 'formula',
+        metadata: {
+          ruleId: FORMULA_NUMBER_SECTION_MISMATCH_CODE,
+          reason: 'FORMULA_NUMBER_SECTION_MISMATCH',
+          effectiveNumber: e.effectiveNumber,
+          numberSection: e.sectionNumber,
+          actualSection: e.actualSectionNumber,
+        },
+        location: { kind: 'block-node', blockKind: 'formula', stableIdentity: e.sourceIdentity },
+      }))
+    }
+  }
 }
 
 /** Count duplicate text names (case-insensitive, trimmed, non-empty). */
@@ -2556,6 +2851,63 @@ export function computeDocumentDiagnostics(
     }
   }
 
+  // ── Phase H §9 — TABLE / CODE manual number prefix ────────────────────────
+  // MIRRORS the existing FIGURE_MANUAL_NUMBER_PREFIX rule: the object NAME is
+  // the user's own caption name, so a manual number inside it is a
+  // DOCUMENT-domain defect — but ONLY while the matching auto-numbering is ON
+  // (otherwise a literal `1.` prefix is plain text). Reuses the SAME
+  // `detectManualNumberPrefix` authority — no second regex. The diagnostic
+  // identity derives from the object's SOURCE identity (block ordinal), never
+  // from any generated number (style switches therefore never churn the id).
+  if (input.numberingEnabled?.table === true) {
+    for (const t of input.tables) {
+      const match = detectManualNumberPrefix(t.name)
+      if (!match) continue
+      push(
+        makeDiagnostic(input, 'table', TABLE_MANUAL_NUMBER_PREFIX_CODE,
+          `表名包含手工编号「${match.matched}」`, {
+          detail: '当前已开启表格自动编号，表名中的手工编号会与自动编号同时出现，建议删除手工编号。',
+          element: t.element,
+          targetIdentity: t.targetIdentity ?? undefined,
+          kind: 'object',
+          metadata: {
+            ruleId: 'TABLE-MANUAL-NUMBER-PREFIX',
+            reason: 'MANUAL_NUMBER_PREFIX',
+            family: match.family,
+            matched: match.matched,
+          },
+          location: t.targetIdentity
+            ? { kind: 'block-node', blockKind: 'table', stableIdentity: t.targetIdentity }
+            : undefined,
+        }),
+      )
+    }
+  }
+  if (input.numberingEnabled?.code === true) {
+    for (const c of input.codes) {
+      const match = detectManualNumberPrefix(c.name)
+      if (!match) continue
+      push(
+        makeDiagnostic(input, 'code', CODE_MANUAL_NUMBER_PREFIX_CODE,
+          `代码名称包含手工编号「${match.matched}」`, {
+          detail: '当前已开启代码自动编号，代码名称中的手工编号会与自动编号同时出现，建议删除手工编号。',
+          element: c.element,
+          targetIdentity: c.targetIdentity ?? undefined,
+          kind: 'object',
+          metadata: {
+            ruleId: 'CODE-MANUAL-NUMBER-PREFIX',
+            reason: 'MANUAL_NUMBER_PREFIX',
+            family: match.family,
+            matched: match.matched,
+          },
+          location: c.targetIdentity
+            ? { kind: 'block-node', blockKind: 'code', stableIdentity: c.targetIdentity }
+            : undefined,
+        }),
+      )
+    }
+  }
+
   // ── Formula diagnostics (projection invariants only — never business re-derivation) ──
   for (const f of input.formulas) {
     const tokenSet = new Set(f.visibleTagTokens.map(t => t.trim()))
@@ -2619,6 +2971,98 @@ export function computeDocumentDiagnostics(
       }),
     )
   }
+
+  // ── Phase I §10 — ANCHOR INTEGRITY ────────────────────────────────────────
+  // The canonical heading ANCHOR authority is Typora's OWN rendered heading id
+  // (`el.id`) — the SAME identity the outline adapter matches `href="#id"`
+  // against (`outline-numbering-adapter.matchHeadingsToOutline`). We NEVER write
+  // a second slugifier and NEVER parse a rendered number.
+  const headingAnchors = new Map<string, DiagnosticHeadingFact[]>()
+  for (const h of input.headings) {
+    const id = (h.element?.id ?? '').trim()
+    if (id === '') continue
+    const list = headingAnchors.get(id)
+    if (list) list.push(h)
+    else headingAnchors.set(id, [h])
+  }
+
+  // HEADING_ANCHOR_COLLISION — ONE diagnostic per collision group (a
+  // target-group of the colliding headings), never N business diagnostics.
+  for (const [anchorId, group] of headingAnchors) {
+    if (group.length <= 1) continue
+    const targets: DiagnosticLocation[] = group.map(h => {
+      if (h.stableIdentity) return { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: h.stableIdentity }
+      const line = h.element?.getAttribute?.('data-line')
+      if (line != null && line !== '') {
+        const n = Number.parseInt(line, 10)
+        if (Number.isInteger(n)) return { kind: 'source-range', startLine: n, startColumn: 0 }
+      }
+      return { kind: 'document-start' }
+    })
+    push(
+      makeDiagnostic(input, 'heading', HEADING_ANCHOR_COLLISION_CODE,
+        `标题锚点重复：${anchorId}`, {
+        detail: '多个标题生成了相同的锚点，文档内跳转将无法定位到唯一标题。',
+        stableIdentity: group[0]?.stableIdentity,
+        element: group[0]?.element ?? null,
+        targetIdentity: `heading-anchor-collision:${anchorId}`,
+        kind: 'heading',
+        metadata: {
+          ruleId: 'HEADING-ANCHOR-COLLISION',
+          reason: 'HEADING_ANCHOR_COLLISION',
+          anchor: anchorId,
+          groupMemberCount: group.length,
+        },
+        locator: group[0]?.element
+          ? { kind: 'heading', targetElement: group[0].element }
+          : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+        location: { kind: 'target-group', scrollAnchor: targets[0] ?? { kind: 'document-start' }, targets },
+      }),
+    )
+  }
+
+  // LINK_LOCAL_ANCHOR_MISSING — `[x](#target)` resolving to NO canonical heading
+  // anchor. A source-syntax rule; SILENT when the anchor authority is
+  // unavailable (no canonical heading carries an id) so it never false-fires.
+  if (input.markdown != null && headingAnchors.size > 0) {
+    for (const ref of parseLocalAnchorTargets(input.markdown)) {
+      if (matchesCanonicalHeadingAnchor(ref.target, headingAnchors)) continue
+      push(
+        makeDiagnostic(input, 'link', LINK_LOCAL_ANCHOR_MISSING_CODE,
+          `本地锚点不存在：#${ref.target}`, {
+          detail: '链接指向的文档内锚点无法解析到任何标题。',
+          kind: 'link',
+          targetIdentity: `anchor:${ref.target}`,
+          metadata: {
+            ruleId: 'LINK-LOCAL-ANCHOR-MISSING',
+            reason: 'LOCAL_ANCHOR_MISSING',
+            anchor: ref.target,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: ref.startLine,
+            startColumn: ref.startColumn,
+            endLine: ref.endLine,
+            endColumn: ref.endColumn,
+            rawText: ref.rawText,
+            sourceStart: ref.sourceStart,
+            sourceEnd: ref.sourceEnd,
+            // Anchor Integrity — the rendered DOM of `[label](#anchor)` is the
+            // inline `<a href="#anchor">`; the raw `#anchor` fragment is the
+            // locator identity the anchor authority resolves by href equality.
+            resourceKind: 'link',
+            rawDestination: ref.rawDestination,
+            canonicalDestination: ref.rawDestination,
+          },
+        }),
+      )
+    }
+  }
+
+  // ── Numbering Integrity V2 (spec §9/§21) — object / formula NUMBER rules ──
+  // Consumes ONLY the canonical effective-number snapshot; absent / empty ⇒ all
+  // of these rules stay silent (never a false positive).
+  emitObjectNumberIntegrity(input, push)
 
   const deduped = deduplicateDiagnostics(diagnostics)
   return {

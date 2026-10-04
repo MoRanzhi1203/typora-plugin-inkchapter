@@ -17910,6 +17910,13 @@ export class DocumentUtilityOverlayHost {
         const root = resolveBusinessContentRoot()
         return root ? resolveCanonicalCaptionProjection(root, captionId) : null
       },
+      // Anchor Integrity — resolve a local link's INLINE mark by the canonical
+      // anchor authority: the live `<a href="#anchor">` whose rendered fragment
+      // equals the raw destination (href equality, occurrence-aware). The
+      // rendered DOM never carries the raw `[label](#anchor)` token, so this
+      // never falls back to a text first-match.
+      resolveLinkAnchor: (rawDestination, occurrenceIndex) =>
+        this.resolveLinkAnchorInRoot(rawDestination, occurrenceIndex),
       // Phase 7R.3.11.8B.7.2 — content authority for source-range resolution:
       // current source line text (TARGET_CHANGED classification) + text-context
       // re-anchor for source-only diagnostics (LATENT_ATX_HEADING_MARKER).
@@ -22581,6 +22588,27 @@ export class DocumentUtilityOverlayHost {
       return true
     }
     return false
+  }
+
+  /**
+   * Anchor Integrity — resolve a local link's inline mark. The target is the
+   * live `<a href="#anchor">` whose rendered fragment equals `rawDestination`,
+   * selected by occurrence (never a fuzzy text match). The rendered anchor href
+   * is a fragment-only reference in Typora, so it is compared by EXACT href
+   * equality rather than through `normalizeResourcePath` (which strips the `#`).
+   */
+  private resolveLinkAnchorInRoot(rawDestination: string, occurrenceIndex: number): HTMLElement | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const ref = (rawDestination ?? '').trim()
+    if (!ref.startsWith('#')) return null
+    let occurrence = 0
+    for (const a of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
+      if ((a.getAttribute('href') ?? '') !== ref) continue
+      if (occurrence++ < Math.max(0, Math.floor(occurrenceIndex))) continue
+      return a
+    }
+    return null
   }
 
   /** block kind + `block:<kind>:<ordinal>` (or `local:<target>` for links) → live element. */

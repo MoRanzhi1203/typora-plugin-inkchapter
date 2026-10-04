@@ -268,6 +268,54 @@ export function parseLocalLinkTargets(markdown: string): Array<string | LocalRes
 }
 
 /**
+ * Phase I (spec §10) — IN-DOCUMENT anchor references `[x](#target)` (link kind),
+ * literal-excluded by the SAME scanner as every other reference. `#target` is
+ * classified `resourceClass='other'` (never a filesystem resource), so these
+ * facts are deliberately SEPARATE from `parseLocalLinkTargets` (which only
+ * returns checkable local files). `target` is the anchor WITHOUT the leading
+ * `#`, exactly as written in the Markdown source.
+ */
+export interface LocalAnchorReference {
+  /** Anchor name without the leading `#` (the raw source token). */
+  target: string
+  /** The raw Markdown destination including `#`. */
+  rawDestination: string
+  sourceStart: number
+  sourceEnd: number
+  startLine: number
+  endLine: number
+  startColumn: number
+  endColumn: number
+  rawText: string
+  destinationStart: number
+  destinationEnd: number
+}
+
+export function parseLocalAnchorTargets(markdown: string): LocalAnchorReference[] {
+  const out: LocalAnchorReference[] = []
+  for (const ref of scanMarkdownReferences(markdown ?? '')) {
+    if (ref.resourceKind !== 'link') continue
+    if (!ref.rawDestination.startsWith('#')) continue
+    const target = ref.rawDestination.slice(1)
+    if (target === '') continue
+    out.push({
+      target,
+      rawDestination: ref.rawDestination,
+      sourceStart: ref.sourceStart,
+      sourceEnd: ref.sourceEnd,
+      startLine: ref.startLine,
+      endLine: ref.endLine,
+      startColumn: ref.startColumn,
+      endColumn: ref.endColumn,
+      rawText: ref.rawText,
+      destinationStart: ref.destinationStart,
+      destinationEnd: ref.destinationEnd,
+    })
+  }
+  return out
+}
+
+/**
  * V5.12-R8 §4 — EVERY Markdown image occurrence (local / remote / data), with
  * both the full token range and the destination range.
  */
