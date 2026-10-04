@@ -19,6 +19,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import * as os from 'os'
 import { INKCHAPTER_BUILD_ID } from '../heading-numbering/paragraph-indent-forensic'
 import { captureRuntimeLogTimestamp, formatRuntimeLogTimestamp, type RuntimeLogTimestamp } from './runtime-log-timestamp'
 
@@ -181,17 +182,16 @@ function resolveAuditDir(vaultRoot?: string | null): string | null {
   if (!root) {
     root = (globalThis as { __inkchapter_vault_root__?: string }).__inkchapter_vault_root__ ?? null
   }
-  if (!root) {
-    try {
-      const cwd = process.cwd()
-      const tv = path.join(cwd, 'test', 'vault')
-      if (fs.existsSync(tv)) root = tv
-    } catch {
-      root = null
-    }
-  }
-  if (!root) return null
-  return path.join(root, '.typora', 'inkchapter', 'audit')
+  if (root) return path.join(root, '.typora', 'inkchapter', 'audit')
+  // ── V1.1-GLOBAL §7/§12 — no vault (single-file / external folder / nested
+  // dir without `.typora`): the plugin is a USER-LEVEL install, so the audit
+  // sink falls back to a user-level directory. It must NEVER depend on a
+  // project or test-vault path to become observable.
+  try {
+    const home = os.homedir()
+    if (home) return path.join(home, '.typora', 'inkchapter', 'audit')
+  } catch { /* fall through */ }
+  return null
 }
 
 function scheduleFlush(): void {

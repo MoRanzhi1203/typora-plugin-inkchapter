@@ -52,6 +52,25 @@ const CAPTION_TYPE_ATTR = 'data-inkchapter-caption-type'
 const CAPTION_TITLE_ATTR = 'data-inkchapter-caption-title'
 const CAPTION_TARGET_KEY_ATTR = 'data-inkchapter-caption-target-key'
 
+/**
+ * V7 §2 — the canonical runtime caption-owner map, shared at MODULE scope so the
+ * caption service remains its single writer while other authorities (the
+ * block-gap presentation-extent authority) can read the SAME ownership instead
+ * of guessing from DOM adjacency / ordinals.
+ */
+const CAPTION_OWNER_ROOTS = new WeakMap<HTMLElement, HTMLElement>()
+
+/** V7 §2 — canonical owner root of a generated caption (null when unknown). */
+export function getCanonicalCaptionOwnerRoot(captionEl: HTMLElement): HTMLElement | null {
+  const owner = CAPTION_OWNER_ROOTS.get(captionEl)
+  return owner && owner.isConnected ? owner : null
+}
+
+/** V7 §2 — the canonical caption kind of a generated caption element. */
+export function getCanonicalCaptionKind(captionEl: HTMLElement): string | null {
+  return captionEl.getAttribute(CAPTION_TYPE_ATTR)
+}
+
 const DOCUMENT_POSITION_FOLLOWING = 4
 
 function isInside(el: Element, selector: string): boolean {
@@ -198,7 +217,7 @@ export class CaptionDomAdapter {
     rejectedNestedPreCount: 0, finalCodeTargetCount: 0,
   }
   /** caption DOM element → owner target root (session-only, survives moves). */
-  private captionOwnerRoots = new WeakMap<HTMLElement, HTMLElement>()
+  private captionOwnerRoots = CAPTION_OWNER_ROOTS
   /** owner target root → stable target key (rebuilt on collectTargets). */
   private targetKeysByRoot = new Map<HTMLElement, string>()
   // ── V1 §13/§14 — the code-candidate SEMANTIC CACHE. Within ONE semantic state
@@ -356,7 +375,7 @@ export class CaptionDomAdapter {
         node = node.parentElement
       }
       return {
-        runtimeKey: `${t.type}:${t.contentSignature ?? 'anon'}:${this.computeAnchorForTarget(t, targets).occurrence ?? 1}`,
+        runtimeKey: this.targetKeyForTarget(t, targets),
         rawMarkdownToken: `![${alt}](${src})`,
         rawPath: src,
         sourceHostTag: host.tagName,
@@ -555,7 +574,16 @@ export class CaptionDomAdapter {
   /** Stable diagnostic target key (NOT a persistence key). */
   private targetKeyForTarget(target: CaptionTarget, targets: CaptionTarget[]): string {
     const anchor = this.computeAnchorForTarget(target, targets)
-    return `${target.type}:${target.contentSignature ?? 'anon'}:${anchor.occurrence ?? 1}`
+    // ── V7 §9 — an ANONYMOUS target (no content signature) must STILL get a
+    // UNIQUE key. Falling back to the constant `1` made two same-destination
+    // figures collide on `figure:anon:1`, so the caption-owner bridge could not
+    // tell them apart and a block gap's previous extent absorbed the OTHER
+    // figure's caption (→ inverted geometry → no paint). The per-type ordinal is
+    // the canonical structural discriminator within that class.
+    const discriminator = target.contentSignature
+      ? String(anchor.occurrence ?? 1)
+      : String(target.ordinal + 1)
+    return `${target.type}:${target.contentSignature ?? 'anon'}:${discriminator}`
   }
 
   private contentSignature(type: CaptionTargetType, contentNode: HTMLElement): string | undefined {
@@ -713,10 +741,19 @@ export class CaptionDomAdapter {
     el.setAttribute(CAPTION_ID_ATTR, captionId)
     el.setAttribute(CAPTION_TYPE_ATTR, target.type)
     el.setAttribute(CAPTION_TITLE_ATTR, title)
-    el.setAttribute(CAPTION_TARGET_KEY_ATTR, this.targetKeysByRoot.get(target.root) ?? '')
+    const ownerKey = this.targetKeysByRoot.get(target.root) ?? ''
+    el.setAttribute(CAPTION_TARGET_KEY_ATTR, ownerKey)
     el.setAttribute('contenteditable', 'false')
     el.textContent = label
     this.captionOwnerRoots.set(el, target.root)
+    // ── V7 §2 — the SAME canonical key is stamped on the OWNER ROOT element, so
+    // any other authority can match caption↔owner by ATTRIBUTE EQUALITY. This is
+    // immune to caption element re-creation and to a duplicated module instance,
+    // and it still uses ONLY the caption service's own key (no shared state, no
+    // DOM adjacency, no ordinal).
+    if (ownerKey !== '') {
+      try { target.root.setAttribute('data-inkchapter-caption-owner-key', ownerKey) } catch { /* noop */ }
+    }
 
     this.insertCaption(el, this.resolveCaptionPlacement(target, position))
     return el

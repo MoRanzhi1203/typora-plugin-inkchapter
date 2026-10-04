@@ -16,9 +16,18 @@ import { editor, File } from 'typora'
 import { enableRuntimeAudit, getAuditEventsJSON, clearRuntimeAudit, copyAuditEventsToClipboard, recordRuntimeAudit } from './heading-numbering/runtime-audit'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as os from 'os'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
 import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+import {
+  INKCHAPTER_PLUGIN_ID,
+  buildInkChapterGlobalLoadAudit,
+  resolveInkChapterPathAuthority,
+  toInkChapterDocumentContext,
+  type InkChapterDocumentContext,
+} from './runtime/inkchapter-path-authority'
+import { recordInkChapterBootstrap } from './runtime/inkchapter-bootstrap-audit'
 // Unified Diagnostics Domain V1 §6/§37 — the plugin's OWN runtime integrity is
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
@@ -33,6 +42,13 @@ import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-e
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
 
 console.log('[InkChapter] INKCHAPTER-BOOT-MODULE-LOAD')
+
+// ── V1 §A — GLOBAL BOOTSTRAP PROVENANCE (earliest possible evidence) ────────
+// Runs at MODULE EVALUATION time — before the forensic sink, DocumentContext,
+// Document Utilities and Heading Numbering bootstrap — and writes to a
+// USER-LEVEL path, so it never depends on vaultRoot / workspaceRoot / activeFile
+// / a local `.typora`. If the InkChapter bundle executes AT ALL, this fires.
+recordInkChapterBootstrap(INKCHAPTER_PLUGIN_ID, INKCHAPTER_BUILD_ID)
 
 /** Best-effort fenced code language from the canonical code host. */
 function codeLanguageOf(el: HTMLElement): string | null {
@@ -312,9 +328,38 @@ export default class extends Plugin<InkChapterSettings> {
     const sessionId = `sess-${Date.now()}`
     initializeForensicSink({ vaultRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
 
+    // ── GLOBAL LOAD AUDIT (Block-Gap Transaction Closure V1.1-GLOBAL §12/§14) ──
+    // Observability ONLY (fail-open): InkChapter is a Typora USER-LEVEL plugin,
+    // so it must load for ANY document path — with or without a local `.typora`.
+    let documentContext: InkChapterDocumentContext | undefined
+    try {
+      const docPath = this.app.workspace.activeFile ?? null
+      const docDir = docPath ? path.dirname(docPath) : null
+      const localDot = docDir ? fs.existsSync(path.join(docDir, '.typora')) : false
+      const localPlugin = localDot && docDir
+        ? fs.existsSync(path.join(docDir, '.typora', 'plugins', INKCHAPTER_PLUGIN_ID))
+        : false
+      const authority = resolveInkChapterPathAuthority({
+        userHome: os.homedir(),
+        reportedInstallRoot: null,
+        documentPath: docPath,
+        workspaceRoot: vaultRoot ?? null,
+        vaultRoot: vaultRoot ?? null,
+        localDotTyporaPresent: localDot,
+        localInkChapterPluginPresent: localPlugin,
+      })
+      // §6 — the SPLIT document context is threaded into the service context so
+      // business code never has to infer document/plugin roots from one vaultRoot.
+      documentContext = toInkChapterDocumentContext(authority)
+      emitRuntimeAudit('INKCHAPTER-GLOBAL-LOAD-AUDIT', {
+        ...buildInkChapterGlobalLoadAudit(authority, true, 1),
+      })
+    } catch { /* observability must never block initialization */ }
+
     const ctx: ServiceContext = {
       settings: this.settings,
       vaultRoot,
+      documentContext,
       onWorkspaceEvent: (event, listener) => {
         const dispose = this.app.workspace.on(event as never, listener as never)
         this.register(dispose)

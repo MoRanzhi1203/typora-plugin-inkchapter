@@ -78,6 +78,42 @@ describe('CaptionDomAdapter', () => {
     expect(targets[1].ordinal).toBe(1)
   })
 
+  // V7 §9 — duplicate-destination figures must never share a caption owner.
+  it('gives duplicate-destination figures distinct owner keys (no collision)', () => {
+    const imA = img('same.png', root)
+    const imB = img('same.png', root)
+
+    const targets = adapter.collectTargets().filter(t => t.type === 'figure')
+    expect(targets).toHaveLength(2)
+    const capA = adapter.renderCaption(targets[0], '图 1', '', 'c1', 'below')
+    const capB = adapter.renderCaption(targets[1], '图 2', '', 'c2', 'below')
+    const keyA = capA.getAttribute('data-inkchapter-caption-target-key')
+    const keyB = capB.getAttribute('data-inkchapter-caption-target-key')
+    expect(keyA).not.toBe('')
+    expect(keyB).not.toBe('')
+    expect(keyA).not.toBe(keyB)
+    // The stamped owner-root marker agrees with each caption's key.
+    expect(imA.closest('p')!.getAttribute('data-inkchapter-caption-owner-key')).toBe(keyA)
+    expect(imB.closest('p')!.getAttribute('data-inkchapter-caption-owner-key')).toBe(keyB)
+  })
+
+  // V7 §9 — an ANONYMOUS figure (no src/alt ⇒ no content signature) must still get
+  // a unique key; a constant `1` fallback collided two figures onto `figure:anon:1`.
+  it('gives anonymous figures distinct target keys (no figure:anon collision)', () => {
+    const imA = img('', root)
+    const imB = img('', root)
+
+    const targets = adapter.collectTargets().filter(t => t.type === 'figure')
+    expect(targets).toHaveLength(2)
+    expect(targets[0].contentSignature).toBeUndefined()
+    expect(targets[1].contentSignature).toBeUndefined()
+    const keyA = adapter.renderCaption(targets[0], '图 1', '', 'c1', 'below').getAttribute('data-inkchapter-caption-target-key')
+    const keyB = adapter.renderCaption(targets[1], '图 2', '', 'c2', 'below').getAttribute('data-inkchapter-caption-target-key')
+    expect(keyA).toBe('figure:anon:1')
+    expect(keyB).toBe('figure:anon:2')
+    void imA; void imB
+  })
+
   it('resolves an internal table cell to the table target root', () => {
     const tb = table(root)
     const td = tb.querySelector('td')!
