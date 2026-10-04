@@ -80,6 +80,18 @@ import {
 // Phase G — the DOM-side caption-integrity producer's emitted codes (the SAME
 // single allow-list mirrored below; the caption producer is not a second registry).
 import { CAPTION_INTEGRITY_DIAGNOSTIC_CODES } from './document-diagnostics-caption-integrity-v1'
+// TRAE V3 §7 — the THREE shared source authorities (single-pass per source
+// revision; every new rule consumes them instead of re-scanning the document).
+import {
+  getDocumentSourceSyntaxSnapshot,
+  parseDocumentSourceTables,
+  type SourceTableStructure,
+} from './document-source-syntax-authority'
+import {
+  getDocumentDefinitionReferenceIndex,
+  type DefinitionReferenceOccurrence,
+} from './document-definition-reference-index'
+import { getDocumentInlineLinkAuthority } from './document-inline-link-authority'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -283,6 +295,14 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FORMULA_DUPLICATE_VISIBLE_TAG':
     case 'HEADING_DUPLICATE_IDENTITY':
       return 'error'
+    // TRAE V3 — an unclosed code fence / formula block swallows the rest of the
+    // document as one protected range and a duplicate footnote definition breaks
+    // the footnote model: all are ERRORS.
+    case 'CODE_FENCE_UNCLOSED':
+    case 'FORMULA_BLOCK_UNCLOSED':
+    case 'FOOTNOTE_DEFINITION_DUPLICATE':
+    case 'FRONTMATTER_UNCLOSED':
+      return 'error'
     // V5.15 §26 — a structurally invalid picture block breaks the Figure
     // business model itself (occurrence identity / numbering / caption /
     // locate / visual target), so it is an ERROR, never a Warning.
@@ -327,6 +347,15 @@ export function resolveDocumentDiagnosticSeverity(
     // heading ids).
     case 'HEADING_ANCHOR_COLLISION':
       return 'warning'
+    // TRAE V3 — a missing footnote / reference-style link definition, a duplicate
+    // reference definition and a link with no destination are WARNINGS (the
+    // document structure is intact; only a reference target is wrong).
+    case 'FOOTNOTE_REFERENCE_TARGET_MISSING':
+    case 'LINK_REFERENCE_DEFINITION_MISSING':
+    case 'LINK_REFERENCE_DEFINITION_DUPLICATE':
+    case 'LINK_TARGET_EMPTY':
+    case 'TABLE_HEADER_DUPLICATE':
+      return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
     case 'DOCUMENT_INACTIVE':
@@ -343,6 +372,13 @@ export function resolveDocumentDiagnosticSeverity(
     // syntax error / structural warning. Constant across strict and loose mode:
     // an incomplete document is incomplete in both.
     case DOCUMENT_HEADING_ONLY_NO_BODY_CODE:
+      return 'info'
+    // TRAE V3 — unused / empty footnote definitions and an empty table header cell
+    // are HINTS; an empty inline link TEXT is a hint too (an icon link is legal).
+    case 'FOOTNOTE_DEFINITION_UNUSED':
+    case 'FOOTNOTE_DEFINITION_EMPTY':
+    case 'TABLE_HEADER_EMPTY':
+    case 'LINK_TEXT_EMPTY':
       return 'info'
     default:
       // Phase 7R.3.11.8B.4.1 — latent source syntax risk: strict=WARNING,
@@ -507,6 +543,44 @@ export const FORMULA_EMPTY_CONTENT_CODE = 'FORMULA_EMPTY_CONTENT'
 /** §28 — an empty blockquote. */
 export const BLOCKQUOTE_EMPTY_CODE = 'BLOCKQUOTE_EMPTY'
 
+// ── TRAE V3 (spec §1–§6) — Source Syntax / Footnote / Reference / Front Matter
+//    / Table header / Empty-link integrity rule codes ────────────────────────
+export const CODE_FENCE_UNCLOSED_CODE = 'CODE_FENCE_UNCLOSED'
+export const FORMULA_BLOCK_UNCLOSED_CODE = 'FORMULA_BLOCK_UNCLOSED'
+export const FOOTNOTE_REFERENCE_TARGET_MISSING_CODE = 'FOOTNOTE_REFERENCE_TARGET_MISSING'
+export const FOOTNOTE_DEFINITION_DUPLICATE_CODE = 'FOOTNOTE_DEFINITION_DUPLICATE'
+export const FOOTNOTE_DEFINITION_UNUSED_CODE = 'FOOTNOTE_DEFINITION_UNUSED'
+export const FOOTNOTE_DEFINITION_EMPTY_CODE = 'FOOTNOTE_DEFINITION_EMPTY'
+export const LINK_REFERENCE_DEFINITION_MISSING_CODE = 'LINK_REFERENCE_DEFINITION_MISSING'
+export const LINK_REFERENCE_DEFINITION_DUPLICATE_CODE = 'LINK_REFERENCE_DEFINITION_DUPLICATE'
+export const FRONTMATTER_UNCLOSED_CODE = 'FRONTMATTER_UNCLOSED'
+export const FRONTMATTER_MALFORMED_CODE = 'FRONTMATTER_MALFORMED'
+export const TABLE_HEADER_EMPTY_CODE = 'TABLE_HEADER_EMPTY'
+export const TABLE_HEADER_DUPLICATE_CODE = 'TABLE_HEADER_DUPLICATE'
+export const LINK_TEXT_EMPTY_CODE = 'LINK_TEXT_EMPTY'
+export const LINK_TARGET_EMPTY_CODE = 'LINK_TARGET_EMPTY'
+
+/**
+ * §6/§31 — every TRAE V3 runtime code this producer can emit. `FRONTMATTER_MALFORMED`
+ * is deliberately ABSENT: it is DEFERRED_BY_SPEC (no canonical YAML parser), so the
+ * producer never fabricates it.
+ */
+export const SOURCE_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
+  CODE_FENCE_UNCLOSED_CODE,
+  FORMULA_BLOCK_UNCLOSED_CODE,
+  FOOTNOTE_REFERENCE_TARGET_MISSING_CODE,
+  FOOTNOTE_DEFINITION_DUPLICATE_CODE,
+  FOOTNOTE_DEFINITION_UNUSED_CODE,
+  FOOTNOTE_DEFINITION_EMPTY_CODE,
+  LINK_REFERENCE_DEFINITION_MISSING_CODE,
+  LINK_REFERENCE_DEFINITION_DUPLICATE_CODE,
+  FRONTMATTER_UNCLOSED_CODE,
+  TABLE_HEADER_EMPTY_CODE,
+  TABLE_HEADER_DUPLICATE_CODE,
+  LINK_TEXT_EMPTY_CODE,
+  LINK_TARGET_EMPTY_CODE,
+]
+
 // ── Numbering Integrity V2 (spec §9/§21) rule codes ─────────────────────────
 /** §9 — two canonical figures share the same effective number. */
 export const FIGURE_NUMBER_DUPLICATE_CODE = 'FIGURE_NUMBER_DUPLICATE'
@@ -616,6 +690,9 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   ...CAPTION_INTEGRITY_DIAGNOSTIC_CODES,
   // Numbering Integrity V2 (spec §9) — the object / formula NUMBER rules.
   ...NUMBER_INTEGRITY_DIAGNOSTIC_CODES,
+  // TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table header
+  // / Empty-link integrity (13 codes; FRONTMATTER_MALFORMED stays DEFERRED).
+  ...SOURCE_INTEGRITY_DIAGNOSTIC_CODES,
 ]
 
 /**
@@ -1435,6 +1512,227 @@ export function figureDestinationOccurrenceIndex(
  * Pure and synchronous — the production authority calls this on relevant
  * document/authority change events (never on a timer).
  */
+/**
+ * TRAE V3 §1–§6/§7 — Source Syntax / Footnote / Reference-link / Front Matter /
+ * Table-header / Empty-link integrity. ONE emitter that consumes the THREE
+ * shared source authorities; it NEVER re-scans the document itself.
+ */
+function sourceRangeTarget(
+  markdown: string,
+  startLine: number,
+  sourceStart: number,
+  sourceEnd: number,
+  startColumn = 0,
+): DiagnosticLocation {
+  return {
+    kind: 'source-range',
+    startLine,
+    startColumn,
+    rawText: lineTextAt(markdown, startLine),
+    sourceStart,
+    sourceEnd,
+  }
+}
+
+function groupTargetLocations(
+  markdown: string,
+  occurrences: ReadonlyArray<{ startLine: number; sourceStart: number; sourceEnd: number }>,
+): DiagnosticLocation[] {
+  return occurrences.map(o => sourceRangeTarget(markdown, o.startLine, o.sourceStart, o.sourceEnd))
+}
+
+function pushIntoMap<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const list = map.get(key)
+  if (list) list.push(value)
+  else map.set(key, [value])
+}
+
+function emitSourceSyntaxIntegrity(
+  input: DocumentDiagnosticsInput,
+  push: (d: DocumentDiagnostic) => void,
+): void {
+  if (input.markdown == null || input.documentKey == null || input.markdown.trim() === '') return
+  const markdown = input.markdown
+  const documentKey = input.documentKey
+  const syntax = getDocumentSourceSyntaxSnapshot(documentKey, markdown, input.sourceRevision)
+  const refIndex = getDocumentDefinitionReferenceIndex(documentKey, markdown, input.sourceRevision, syntax)
+  const inlineLinks = getDocumentInlineLinkAuthority(documentKey, markdown, input.sourceRevision, syntax)
+  const tables: SourceTableStructure[] = parseDocumentSourceTables(markdown, syntax)
+
+  // §1.1 — an unclosed code fence (the opener is the SINGLE target).
+  for (const fence of syntax.codeFences) {
+    if (fence.closed) continue
+    const label = fence.fenceKind === 'backtick' ? '```' : '~~~'
+    const identity = `${documentKey}:${fence.openerIdentity}`
+    push(makeDiagnostic(input, 'code', CODE_FENCE_UNCLOSED_CODE,
+      `代码块（${label}）未闭合，始于第 ${fence.openLine + 1} 行。`, {
+      detail: '未闭合的代码围栏会把后续所有内容视为代码。',
+      kind: 'object',
+      stableIdentity: identity,
+      targetIdentity: identity,
+      location: sourceRangeTarget(markdown, fence.openLine, fence.openStart, fence.openEnd),
+    }))
+  }
+
+  // §1.2 — an unclosed `$$` formula block (the opener is the SINGLE target).
+  for (const formula of syntax.formulaBlocks) {
+    if (formula.closed) continue
+    const identity = `${documentKey}:${formula.openerIdentity}`
+    push(makeDiagnostic(input, 'formula', FORMULA_BLOCK_UNCLOSED_CODE,
+      `公式块（$$）未闭合，始于第 ${formula.openLine + 1} 行。`, {
+      detail: '未闭合的 $$ 公式块会把后续内容视为公式。',
+      kind: 'formula',
+      stableIdentity: identity,
+      targetIdentity: identity,
+      location: sourceRangeTarget(markdown, formula.openLine, formula.openStart, formula.openStart + 2),
+    }))
+  }
+
+  // §4.1 — Front Matter unclosed (its opener is the target). FRONTMATTER_MALFORMED
+  // is never emitted here: it is DEFERRED_BY_SPEC (no canonical YAML parser).
+  const fm = syntax.frontMatter
+  if (fm != null && !fm.closed) {
+    push(makeDiagnostic(input, 'document', FRONTMATTER_UNCLOSED_CODE,
+      'Front Matter 起始分隔符（---）未闭合。', {
+      detail: '文档开头的 `---` 缺少结束分隔符，无法解析 Front Matter。',
+      kind: 'document',
+      stableIdentity: fm.identity,
+      targetIdentity: fm.identity,
+      location: sourceRangeTarget(markdown, fm.openLine, fm.protectedRange.start, fm.protectedRange.start + 3),
+    }))
+  }
+
+  // §2 — Footnote Integrity (ONE diagnostic per label; duplicate suppresses missing).
+  const fnDefs = new Map<string, typeof refIndex.footnoteDefinitions[number][]>()
+  for (const d of refIndex.footnoteDefinitions) pushIntoMap(fnDefs, d.label, d)
+  const fnRefs = new Map<string, DefinitionReferenceOccurrence[]>()
+  for (const r of refIndex.footnoteReferences) pushIntoMap(fnRefs, r.label, r)
+  for (const label of new Set([...fnDefs.keys(), ...fnRefs.keys()])) {
+    const defs = fnDefs.get(label) ?? []
+    const refs = fnRefs.get(label) ?? []
+    const identity = `${documentKey}:footnote:${label}`
+    if (defs.length > 1) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_DEFINITION_DUPLICATE_CODE,
+        `脚注「${defs[0].rawLabel}」存在 ${defs.length} 个重复定义。`, {
+        detail: '同一个脚注标签只能有一个定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, defs)[0], targets: groupTargetLocations(markdown, defs) },
+      }))
+    } else if (defs.length === 0 && refs.length > 0) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_REFERENCE_TARGET_MISSING_CODE,
+        `脚注引用「${refs[0].rawLabel}」缺少对应定义。`, {
+        detail: '存在脚注引用，但没有 `[^label]: 内容` 定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, refs)[0], targets: groupTargetLocations(markdown, refs) },
+      }))
+    } else if (defs.length >= 1 && refs.length === 0) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_DEFINITION_UNUSED_CODE,
+        `脚注定义「${defs[0].rawLabel}」未被任何引用使用。`, {
+        detail: '该脚注定义没有对应的正文引用。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, defs[0].startLine, defs[0].sourceStart, defs[0].sourceEnd),
+      }))
+    }
+    if (defs.length === 1 && defs[0].empty) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_DEFINITION_EMPTY_CODE,
+        `脚注定义「${defs[0].rawLabel}」内容为空。`, {
+        detail: '该脚注定义没有任何内容（含续行）。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, defs[0].startLine, defs[0].sourceStart, defs[0].sourceEnd),
+      }))
+    }
+  }
+
+  // §3 — Reference-style Link Integrity (shares the SAME index as footnotes).
+  const linkDefs = new Map<string, typeof refIndex.linkDefinitions[number][]>()
+  for (const d of refIndex.linkDefinitions) pushIntoMap(linkDefs, d.label, d)
+  const linkRefs = new Map<string, DefinitionReferenceOccurrence[]>()
+  for (const r of refIndex.linkReferences) pushIntoMap(linkRefs, r.label, r)
+  for (const label of new Set([...linkDefs.keys(), ...linkRefs.keys()])) {
+    const defs = linkDefs.get(label) ?? []
+    const refs = linkRefs.get(label) ?? []
+    const identity = `${documentKey}:link-ref:${label}`
+    if (defs.length > 1) {
+      push(makeDiagnostic(input, 'link', LINK_REFERENCE_DEFINITION_DUPLICATE_CODE,
+        `引用式链接定义「${defs[0].rawLabel}」存在 ${defs.length} 个重复定义。`, {
+        detail: '同一个引用标签只能有一个链接定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, defs)[0], targets: groupTargetLocations(markdown, defs) },
+      }))
+    } else if (defs.length === 0 && refs.length > 0) {
+      push(makeDiagnostic(input, 'link', LINK_REFERENCE_DEFINITION_MISSING_CODE,
+        `引用式链接「${refs[0].rawLabel}」缺少对应定义。`, {
+        detail: '存在 `[text][label]` 引用，但没有 `[label]: 目标` 定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, refs)[0], targets: groupTargetLocations(markdown, refs) },
+      }))
+    }
+  }
+
+  // §5 — Table Header Integrity (from the Source Table Structure authority).
+  for (const table of tables) {
+    const emptyCells = table.headerCells.filter(c => c.semantic === '')
+    if (emptyCells.length > 0) {
+      const targets = emptyCells.map(c => sourceRangeTarget(markdown, table.headerLine, c.start, c.end))
+      const identity = `${documentKey}:${table.identity}:empty-header`
+      push(makeDiagnostic(input, 'table', TABLE_HEADER_EMPTY_CODE,
+        `表格存在 ${emptyCells.length} 个空的表头单元格。`, {
+        detail: '表头单元格为空，建议补充列名。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: targets[0], targets },
+      }))
+    }
+    const bySemantic = new Map<string, typeof table.headerCells[number][]>()
+    for (const cell of table.headerCells) {
+      if (cell.semantic === '') continue
+      pushIntoMap(bySemantic, cell.semantic, cell)
+    }
+    for (const [semantic, cells] of bySemantic) {
+      if (cells.length < 2) continue
+      const targets = cells.map(c => sourceRangeTarget(markdown, table.headerLine, c.start, c.end))
+      const identity = `${documentKey}:${table.identity}:header:${semantic}`
+      push(makeDiagnostic(input, 'table', TABLE_HEADER_DUPLICATE_CODE,
+        `表格存在 ${cells.length} 个重复的表头「${semantic}」。`, {
+        detail: '同一表头文字出现多次，请重命名以区分列。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: targets[0], targets },
+      }))
+    }
+  }
+
+  // §6 — Empty Inline Link Integrity (images are EXCLUDED from LINK_TEXT_EMPTY).
+  for (const link of inlineLinks) {
+    if (link.isImage) continue
+    const identity = `${documentKey}:${link.identity}`
+    if (link.text.trim() === '') {
+      push(makeDiagnostic(input, 'link', LINK_TEXT_EMPTY_CODE,
+        '链接文本为空。', {
+        detail: '`[](目标)` 没有可见的链接文字。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, link.startLine, link.tokenStart, link.tokenEnd, link.startColumn),
+      }))
+    }
+    if (link.target.trim() === '') {
+      push(makeDiagnostic(input, 'link', LINK_TARGET_EMPTY_CODE,
+        '链接目标为空。', {
+        detail: '`[文字]()` 没有链接目标地址。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, link.startLine, link.tokenStart, link.tokenEnd, link.startColumn),
+      }))
+    }
+  }
+}
+
 export function computeDocumentDiagnostics(
   input: DocumentDiagnosticsInput,
 ): DocumentDiagnosticsComputed {
@@ -3063,6 +3361,10 @@ export function computeDocumentDiagnostics(
   // Consumes ONLY the canonical effective-number snapshot; absent / empty ⇒ all
   // of these rules stay silent (never a false positive).
   emitObjectNumberIntegrity(input, push)
+
+  // ── TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table
+  //    header / Empty-link integrity (ONE shared-authority pass).
+  emitSourceSyntaxIntegrity(input, push)
 
   const deduped = deduplicateDiagnostics(diagnostics)
   return {

@@ -1,0 +1,17 @@
+[
+  {
+    "familyId": "EXCESSIVE_INTERNAL_BLANK_LINES",
+    "fixture": "test/vault/runtime/smoke/Document-Diagnostics-Block-Gap-Presentation-Extent-Test.md",
+    "sessionId": "sess-1791130425821",
+    "buildId": "inkchapter-heading-reason-chip-stable-anchor-v2",
+    "mainSha256": "817B7327EE102AA132EB0B3E91311274DC30EE9729DE002977D45E6DB3652BC1",
+    "evidence": {
+      "producer": true,
+      "firstClick": true,
+      "activeVisual": true,
+      "deactivate": false,
+      "dynamicRefresh": false,
+      "crossDocumentCleanup": false
+    }
+  }
+]

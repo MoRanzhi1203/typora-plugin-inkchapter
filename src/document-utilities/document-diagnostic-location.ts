@@ -115,19 +115,38 @@ export type DocumentDiagnosticRuntimeCodePolicy =
   | { kind: 'PATTERN'; patternId: string; codes: readonly string[] }
 
 export type DocumentDiagnosticImplementationStatus = 'IMPLEMENTED' | 'DEFERRED_BY_SPEC' | 'PLANNED'
-export type DocumentDiagnosticRuntimeClosureStatus = 'CLOSED' | 'PARTIAL' | 'UNVERIFIED'
+export type DocumentDiagnosticRuntimeClosureStatus = 'CLOSED' | 'PARTIAL' | 'UNVERIFIED' | 'DEFERRED'
 
 /**
- * §4 — the ONE severity authority. Internal `info` maps to the user-visible
- * `hint`; error/warning map to themselves. No UI surface may show a 4th level.
+ * §4 — the FAMILY-level interaction authority mode (distinct from
+ * `presentation.interactionMode`, which is the legacy Drawer/overlay
+ * projection mode). `NONE` — no interactive target (a DEFERRED family whose
+ * producer does not exist); `SINGLE_TARGET` — one canonical target;
+ * `ORDINARY_MULTI_TARGET` — N independent occurrences (cursor / 1-N);
+ * `TARGET_GROUP` — ONE fact carried by N co-equal members (ONE row).
  */
-export function resolvePresentationSeverity(
+export type DocumentDiagnosticInteractionAuthorityMode =
+  | 'NONE'
+  | 'SINGLE_TARGET'
+  | 'ORDINARY_MULTI_TARGET'
+  | 'TARGET_GROUP'
+
+/**
+ * §4/§7 — the ONE presentation severity authority. Internal `info` maps to the
+ * user-visible `hint`; error/warning map to themselves. No UI surface may show a
+ * 4th level. `resolvePresentationSeverity` is the historical alias of the SAME
+ * function (a single authority, two names).
+ */
+export function resolveDocumentDiagnosticPresentationSeverity(
   internalSeverity: 'error' | 'warning' | 'info',
 ): DocumentDiagnosticPresentationSeverity {
   if (internalSeverity === 'error') return 'error'
   if (internalSeverity === 'warning') return 'warning'
   return 'hint'
 }
+
+/** §4/§7 — back-compat alias of `resolveDocumentDiagnosticPresentationSeverity`. */
+export const resolvePresentationSeverity = resolveDocumentDiagnosticPresentationSeverity
 
 export const DOCUMENT_DIAGNOSTIC_AREAS: readonly DocumentDiagnosticArea[] = [
   'document-state',
@@ -199,6 +218,16 @@ export interface DocumentDiagnosticRuleMeta {
   /** §10/§11 — WHERE the problem acts; the reason-chip default derives from it. */
   scope: DocumentDiagnosticScope
   presentation: DocumentDiagnosticRulePresentation
+
+  // ── §4 — the capability metadata axes that are NOT in `presentation` ───────
+  /** §4 — the authority token proving the family's stable identity. */
+  stableIdentityAuthority: string
+  /** §4 — the dynamic-refresh authority token (null ⇒ not dynamically refreshable). */
+  dynamicRefreshAuthority: string | null
+  /** §4 — the suppression authority token (null ⇒ never suppressed). */
+  suppressionAuthority: string | null
+  /** §4 — the family-level interaction authority mode. */
+  interactionMode: DocumentDiagnosticInteractionAuthorityMode
 
   // ── Capability Matrix V1 §2 — the honest capability record ─────────────────
   /** §2/§3 — the stable RULE FAMILY id (several runtime codes may share it). */
@@ -301,6 +330,22 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   BLOCKQUOTE_EMPTY: 'info',
   LATENT_ATX_HEADING_MARKER: 'info',
   STRICT_FIRST_H1_POSITION: 'warning',
+  // TRAE V3 — Source Syntax / Footnote / Reference-link / Front Matter / Table
+  // header / Empty link integrity families.
+  CODE_FENCE_UNCLOSED: 'error',
+  FORMULA_BLOCK_UNCLOSED: 'error',
+  FOOTNOTE_REFERENCE_TARGET_MISSING: 'warning',
+  FOOTNOTE_DEFINITION_DUPLICATE: 'error',
+  FOOTNOTE_DEFINITION_UNUSED: 'info',
+  FOOTNOTE_DEFINITION_EMPTY: 'info',
+  LINK_REFERENCE_DEFINITION_MISSING: 'warning',
+  LINK_REFERENCE_DEFINITION_DUPLICATE: 'warning',
+  FRONTMATTER_UNCLOSED: 'error',
+  FRONTMATTER_MALFORMED: 'warning',
+  TABLE_HEADER_EMPTY: 'info',
+  TABLE_HEADER_DUPLICATE: 'warning',
+  LINK_TEXT_EMPTY: 'info',
+  LINK_TARGET_EMPTY: 'warning',
 }
 
 /** §2/§4 — rule ids whose severity is strict/loose mode-dependent. */
@@ -327,6 +372,43 @@ function derivePresentationKind(
   if (locationStrategy === 'caption-projection') return 'caption-slot'
   if (reasonChip) return 'reason-chip'
   return 'block-fill'
+}
+
+/** §4 — the stable-identity authority token each location strategy proves. */
+const STABLE_IDENTITY_AUTHORITY_BY_LOCATION: Readonly<Record<DiagnosticLocationStrategy, string>> = {
+  'canonical-node': 'heading-stable-identity',
+  'source-range': 'source-range-identity',
+  'document-start': 'document-boundary',
+  'document-end': 'document-boundary',
+  'block-node': 'block-identity',
+  'multi-target': 'multi-target-identity',
+  'target-group': 'target-group-identity',
+  'source-block': 'owning-block-identity',
+  'figure-occurrence': 'figure-occurrence-identity',
+  'caption-projection': 'caption-projection-identity',
+}
+
+/** §4 — the dynamic-refresh authority token of an implemented family. */
+const DYNAMIC_REFRESH_AUTHORITY = 'runtime-recompute'
+
+/** §4 — derive the family-level interaction authority mode. */
+function deriveInteractionAuthorityMode(
+  locationStrategy: DiagnosticLocationStrategy,
+  implementationStatus: DocumentDiagnosticImplementationStatus,
+): DocumentDiagnosticInteractionAuthorityMode {
+  if (implementationStatus === 'DEFERRED_BY_SPEC' || implementationStatus === 'PLANNED') return 'NONE'
+  if (locationStrategy === 'target-group') return 'TARGET_GROUP'
+  if (locationStrategy === 'multi-target') return 'ORDINARY_MULTI_TARGET'
+  return 'SINGLE_TARGET'
+}
+
+/** §12 — derive the suppression authority token (parent wins over group). */
+function deriveSuppressionAuthority(
+  suppressionParentFamilyId: string | undefined,
+  suppressionGroup: string | undefined,
+): string | null {
+  if (suppressionParentFamilyId) return `parent:${suppressionParentFamilyId}`
+  return suppressionGroup ?? null
 }
 
 /** The capability-only extras accepted by the ONE rule() builder. */
@@ -397,6 +479,10 @@ function rule(
     area,
     scope,
     presentation,
+    stableIdentityAuthority: STABLE_IDENTITY_AUTHORITY_BY_LOCATION[locationStrategy],
+    dynamicRefreshAuthority: implementationStatus === 'IMPLEMENTED' ? DYNAMIC_REFRESH_AUTHORITY : null,
+    suppressionAuthority: deriveSuppressionAuthority(extra.suppressionParentFamilyId, extra.suppressionGroup),
+    interactionMode: deriveInteractionAuthorityMode(locationStrategy, implementationStatus),
     familyId: extra.familyId ?? ruleId,
     runtimeCodePolicy: extra.runtimeCodePolicy ?? { kind: 'EXACT', code: ruleId },
     capabilityCategory: extra.capabilityCategory ?? CATEGORY_DEFAULT_CAPABILITY[category],
@@ -410,7 +496,8 @@ function rule(
     suppressionParentFamilyId: extra.suppressionParentFamilyId,
     producerAuthority: extra.producerAuthority ?? (implementationStatus === 'IMPLEMENTED' ? 'computeDocumentDiagnostics' : 'NONE'),
     implementationStatus,
-    runtimeClosureStatus: extra.runtimeClosureStatus ?? 'UNVERIFIED',
+    runtimeClosureStatus: extra.runtimeClosureStatus
+      ?? (implementationStatus === 'DEFERRED_BY_SPEC' ? 'DEFERRED' : 'UNVERIFIED'),
     userVisible: extra.userVisible ?? (implementationStatus === 'IMPLEMENTED'),
   }
 }
@@ -555,6 +642,76 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   FORMULA_EMPTY_CONTENT: rule('FORMULA_EMPTY_CONTENT', 'formula', 'source-range', { area: 'document-completeness', scope: 'object' }),
   BLOCKQUOTE_EMPTY: rule('BLOCKQUOTE_EMPTY', 'document', 'source-range', { area: 'document-completeness', scope: 'block' }),
   LINK_LOCAL_TARGET_MISSING: rule('LINK_LOCAL_TARGET_MISSING', 'link', 'block-node'),
+
+  // ── TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table /
+  //    Empty-link integrity (13 IMPLEMENTED + 1 DEFERRED_BY_SPEC) ─────────────
+  // Every one of these CONSUMES one of the three shared source authorities
+  // (`DocumentSourceSyntaxAuthority` / `DocumentDefinitionReferenceIndex` /
+  // `DocumentInlineLinkAuthority`) — no rule re-scans the whole document.
+  CODE_FENCE_UNCLOSED: rule('CODE_FENCE_UNCLOSED', 'code', 'source-range', {
+    area: 'code', capabilityCategory: 'code', scope: 'block', internalSeverity: 'error',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FORMULA_BLOCK_UNCLOSED: rule('FORMULA_BLOCK_UNCLOSED', 'formula', 'source-range', {
+    area: 'formula', capabilityCategory: 'formula', scope: 'block', internalSeverity: 'error',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  // Footnote Integrity — ONE family per fact; a duplicate-definition family
+  // suppresses the same label's MISSING family (never both).
+  FOOTNOTE_REFERENCE_TARGET_MISSING: rule('FOOTNOTE_REFERENCE_TARGET_MISSING', 'document', 'target-group', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'inline', internalSeverity: 'warning',
+    suppressionGroup: 'footnote-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FOOTNOTE_DEFINITION_DUPLICATE: rule('FOOTNOTE_DEFINITION_DUPLICATE', 'document', 'target-group', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'block', internalSeverity: 'error',
+    suppressionGroup: 'footnote-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FOOTNOTE_DEFINITION_UNUSED: rule('FOOTNOTE_DEFINITION_UNUSED', 'document', 'source-range', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'block', internalSeverity: 'info',
+    suppressionGroup: 'footnote-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FOOTNOTE_DEFINITION_EMPTY: rule('FOOTNOTE_DEFINITION_EMPTY', 'document', 'source-range', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'block', internalSeverity: 'info',
+    suppressionGroup: 'footnote-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  // Reference-style Link Integrity — the footnote analogue, sharing the SAME index.
+  LINK_REFERENCE_DEFINITION_MISSING: rule('LINK_REFERENCE_DEFINITION_MISSING', 'link', 'target-group', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'inline', internalSeverity: 'warning',
+    suppressionGroup: 'reference-link-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  LINK_REFERENCE_DEFINITION_DUPLICATE: rule('LINK_REFERENCE_DEFINITION_DUPLICATE', 'link', 'target-group', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'block', internalSeverity: 'warning',
+    suppressionGroup: 'reference-link-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  // Front Matter Integrity — UNCLOSED suppresses MALFORMED.
+  FRONTMATTER_UNCLOSED: rule('FRONTMATTER_UNCLOSED', 'document', 'source-range', {
+    area: 'document-state', capabilityCategory: 'document', scope: 'document', internalSeverity: 'error',
+    suppressionGroup: 'frontmatter-integrity', producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  // NO canonical YAML parser exists in the repo → MALFORMED can never be faked
+  // with a regex. It registers as DEFERRED with the explicit reason.
+  FRONTMATTER_MALFORMED: rule('FRONTMATTER_MALFORMED', 'document', 'source-range', {
+    area: 'document-state', capabilityCategory: 'document', scope: 'document', internalSeverity: 'warning',
+    suppressionGroup: 'frontmatter-integrity', suppressionParentFamilyId: 'FRONTMATTER_UNCLOSED',
+    implementationStatus: 'DEFERRED_BY_SPEC', producerAuthority: 'NONE',
+  }),
+  TABLE_HEADER_EMPTY: rule('TABLE_HEADER_EMPTY', 'table', 'target-group', {
+    area: 'table', capabilityCategory: 'table', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  TABLE_HEADER_DUPLICATE: rule('TABLE_HEADER_DUPLICATE', 'table', 'target-group', {
+    area: 'table', capabilityCategory: 'table', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  LINK_TEXT_EMPTY: rule('LINK_TEXT_EMPTY', 'link', 'source-range', {
+    area: 'link-anchor', capabilityCategory: 'link', scope: 'inline', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  LINK_TARGET_EMPTY: rule('LINK_TARGET_EMPTY', 'link', 'source-range', {
+    area: 'link-anchor', capabilityCategory: 'link', scope: 'inline', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+
 
   // ── Caption Integrity (Phase G — spec §8/§15/§20) ──────────────────────────
   // DOM-side producer `computeCaptionIntegrityDiagnostics`. Ownership comes ONLY
@@ -728,6 +885,50 @@ export function getRuleMeta(code: string): DocumentDiagnosticRuleMeta | null {
     return DOCUMENT_DIAGNOSTIC_RULE_REGISTRY.STRICT_FIRST_H1_POSITION
   }
   return null
+}
+
+// ── §6 — Runtime Code Resolver ─────────────────────────────
+//
+// EVERY runtime diagnostic code (static EXACT, the 7 STRICT_FIRST_H1 PATTERN
+// codes, and the LATENT_ATX_HEADING_MARKER_LEVEL_n PREFIX family) must resolve
+// back to EXACTLY ONE familyId. A level change (LEVEL_2 → LEVEL_5) never
+// changes the family count because the PREFIX policy yields ONE sentinel.
+
+/** §6 — the RESOLVED runtime codes of a family. PREFIX ⇒ ONE `<prefix>_*` sentinel. */
+export function resolvedRuntimeCodesOf(meta: DocumentDiagnosticRuleMeta): string[] {
+  const policy = meta.runtimeCodePolicy
+  if (policy.kind === 'EXACT') return [policy.code]
+  if (policy.kind === 'PATTERN') return [...policy.codes].sort()
+  return [`${policy.prefix}_*`]
+}
+
+/** §6 — the STRICT_FIRST_H1 runtime codes (derived from the ONE PATTERN policy). */
+export const DOCUMENT_DIAGNOSTIC_STRICT_FIRST_H1_CODES: readonly string[] = (() => {
+  const policy = DOCUMENT_DIAGNOSTIC_RULE_REGISTRY.STRICT_FIRST_H1_POSITION.runtimeCodePolicy
+  return policy.kind === 'PATTERN' ? policy.codes : []
+})()
+
+/** §6 — the LATENT ATX heading-marker runtime code prefix. */
+export const DOCUMENT_DIAGNOSTIC_LATENT_ATX_CODE_PREFIX = 'LATENT_ATX_HEADING_MARKER'
+
+/**
+ * §6 — representative DYNAMIC runtime codes: the 7 STRICT_FIRST_H1 PATTERN
+ * codes plus the LATENT ATX PER-LEVEL codes. It exists so
+ * `UNRESOLVED_DYNAMIC_RUNTIME_CODE_COUNT` is a REAL gate (never vacuous).
+ */
+export const DOCUMENT_DIAGNOSTIC_DYNAMIC_RUNTIME_CODES: readonly string[] = [
+  ...DOCUMENT_DIAGNOSTIC_STRICT_FIRST_H1_CODES,
+  ...[1, 2, 3, 4, 5, 6].map(n => `${DOCUMENT_DIAGNOSTIC_LATENT_ATX_CODE_PREFIX}_LEVEL_${n}`),
+]
+
+/** §6 — the ONE runtime-code → familyId resolver (EXACT / PATTERN / PREFIX aware). */
+export function resolveRuntimeCodeFamilyId(code: string): string | null {
+  return getRuleMeta(code)?.familyId ?? null
+}
+
+/** §6 — the hard gate: dynamic runtime codes that do NOT resolve to a family. */
+export function countUnresolvedDynamicRuntimeCodes(): number {
+  return DOCUMENT_DIAGNOSTIC_DYNAMIC_RUNTIME_CODES.filter(code => resolveRuntimeCodeFamilyId(code) == null).length
 }
 
 /**

@@ -1,0 +1,23 @@
+{
+  "sessionId": "sess-1791130425821",
+  "kind": "FRESH_RUNTIME_IDENTITY_SESSION",
+  "buildId": "inkchapter-heading-reason-chip-stable-anchor-v2",
+  "mainSha256": "817B7327EE102AA132EB0B3E91311274DC30EE9729DE002977D45E6DB3652BC1",
+  "vaultWindow": "test/vault",
+  "launchDocument": "test/vault/doc.md",
+  "initializationCount": 1,
+  "loadedAt": "2026-10-04T16:13:46.031Z",
+  "auditLog": "test/vault/.typora/inkchapter/audit/runtime-sess-1791130425821.log",
+  "observed": {
+    "EXCESSIVE_INTERNAL_BLANK_LINES": {
+      "documentKey": "runtime/smoke/Document-Diagnostics-Block-Gap-Presentation-Extent-Test.md",
+      "actualBlankLines": 5,
+      "producerPass": true,
+      "firstClickPass": true,
+      "activeVisualPass": true,
+      "deactivatePass": false,
+      "dynamicRefreshPass": false,
+      "crossDocumentCleanupPass": false
+    }
+  }
+}
