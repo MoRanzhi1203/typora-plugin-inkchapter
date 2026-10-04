@@ -71,6 +71,38 @@ export function getCanonicalCaptionKind(captionEl: HTMLElement): string | null {
   return captionEl.getAttribute(CAPTION_TYPE_ATTR)
 }
 
+/** Phase G — the caption service's OWN stable id of a caption projection. */
+export function getCanonicalCaptionId(captionEl: HTMLElement): string {
+  return captionEl.getAttribute(CAPTION_ID_ATTR) ?? ''
+}
+
+/** Phase G — the caption projection's canonical title (the user-entered name). */
+export function getCanonicalCaptionTitle(captionEl: HTMLElement): string {
+  return captionEl.getAttribute(CAPTION_TITLE_ATTR) ?? ''
+}
+
+/**
+ * Phase G — the ONE canonical caption projection selector. Every caption the
+ * service writes carries `data-inkchapter-caption`; this is the SINGLE source of
+ * that selector (no second copy of the string, no class/attr drift).
+ */
+export function collectCanonicalCaptionProjections(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(`[${CAPTION_ATTR}]`))
+}
+
+/**
+ * Phase G (locate-time) — resolve a live caption projection by the caption
+ * service's OWN stable id. Attribute-equality over the canonical projection set
+ * (never a first-match selector, never DOM adjacency).
+ */
+export function resolveCanonicalCaptionProjection(root: HTMLElement, captionId: string): HTMLElement | null {
+  if (captionId === '') return null
+  for (const el of collectCanonicalCaptionProjections(root)) {
+    if (el.getAttribute(CAPTION_ID_ATTR) === captionId) return el
+  }
+  return null
+}
+
 const DOCUMENT_POSITION_FOLLOWING = 4
 
 function isInside(el: Element, selector: string): boolean {

@@ -183,6 +183,18 @@ export type DiagnosticLocation =
       blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link'
       stableIdentity: string
     }
+  /**
+   * Caption Integrity (spec §8/§15) — a DOM-side locator for a caption
+   * PROJECTION. Caption ownership is a runtime concept, so the locator carries
+   * the caption service's OWN stable `captionId` (never a source offset, never
+   * an adjacency-derived neighbour). Locate resolves the live caption element
+   * by that id.
+   */
+  | {
+      kind: 'caption-projection'
+      captionKind: 'figure' | 'table' | 'code'
+      captionId: string
+    }
   | {
       kind: 'multi-target'
       targets: readonly DiagnosticLocation[]

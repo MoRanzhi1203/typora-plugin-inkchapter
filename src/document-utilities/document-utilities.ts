@@ -91,6 +91,14 @@ export interface DocumentUtilitiesSources {
   /** Phase 7R.3.11.8B.7.6 — rendered caption host for an object element
    *  (compound missing-name locator). Optional. */
   getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
+  /**
+   * Phase G §8 — the DOM-side Caption Integrity producer. Optional: absent ⇒
+   * no caption-integrity diagnostics are merged into the snapshot.
+   */
+  getCaptionIntegrityDiagnostics?: (
+    documentKey: string | null,
+    sourceRevision: number,
+  ) => readonly import('./diagnostics-types').DocumentDiagnostic[]
   /** V5.14-R2 §P8 — heading diagnostic occurrences → LEFT OUTLINE mirror. Optional. */
   publishOutlineHeadingDiagnostics?: (targets: readonly OutlineDiagnosticTargetInput[]) => void
   /** Phase 7R.3.11.8B.7.7 — Markdown SOURCE change subscription (markdownEditor
@@ -260,6 +268,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     parseImageSourceOccurrences,
     // Phase 7R.3.11.8B.7.6 — compound locator caption host (optional).
     getObjectCaptionHost: sources.getObjectCaptionHost,
+    // Phase G §8 — the DOM-side caption-integrity producer (optional).
+    getCaptionIntegrityDiagnostics: sources.getCaptionIntegrityDiagnostics,
     // V5.14-R2 §P8 — heading diagnostics → LEFT OUTLINE projection publisher.
     publishOutlineHeadingDiagnostics: sources.publishOutlineHeadingDiagnostics,
     // Phase 7R.3.11.8B.1 — canonical H1 authority bridge: maps the REAL

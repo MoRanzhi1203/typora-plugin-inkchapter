@@ -948,9 +948,9 @@ describe('V5.13-R3 §8/§9/§14 — the EOF band X anchor is independent of the 
     expect(audit.presentationRightSource).toBe('DOCUMENT_CONTENT')
     expect(audit.markerKind).toBe(EOF_MARKER_KIND_DOCUMENT_END_WARNING)
     expect(audit.accentWidthPx).toBe('4')
-    expect(audit.fillAlphaClass).toBe('null')
-      expect(audit.surfaceLeftAccent).toBe('false')
-      expect(audit.documentTextColumnLeft).toBe('60')
+    expect(audit.fillAlphaClass).toBe(EOF_FILL_EMPHASIS_CLASS_LOW)
+    expect(audit.surfaceLeftAccent).toBe('true')
+    expect(audit.documentTextColumnLeft).toBe('60')
     expect(audit.decorativeVerticalRail).toBe('false')
     expect(audit.drawerAffectsWorkspaceWidth).toBe('false')
     // §7 — the last block's own (table) left must never be the anchor

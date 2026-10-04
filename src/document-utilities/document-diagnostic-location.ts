@@ -42,6 +42,8 @@ export type DiagnosticLocationStrategy =
   | 'source-block'
   /** V1 — ONE verified figure source occurrence (image warnings). */
   | 'figure-occurrence'
+  /** Phase G — a DOM caption PROJECTION located by the caption service's own id. */
+  | 'caption-projection'
 
 /**
  * VNext §9/§30 — the 10 INTERNAL diagnostic areas.
@@ -67,6 +69,65 @@ export type DocumentDiagnosticArea =
 
 /** VNext §10/§11 — what the problem acts on (never the severity, never the domain). */
 export type DocumentDiagnosticScope = 'document' | 'heading' | 'block' | 'object' | 'inline'
+
+// ── Capability Matrix V1 §2 — the ONE rule metadata authority vocabulary ─────
+//
+// Phase A of the Capability Matrix workstream attaches an honest capability
+// record to EVERY registered rule family. The registry stays the SINGLE
+// authority; the summary / matrix / gates are all DERIVED from it.
+
+/**
+ * §2 — the capability CATEGORY axis (broader than the legacy 7-way consumer
+ * `DocumentDiagnosticCategory`, which stays untouched for drawer/dedup keys).
+ */
+export type DocumentDiagnosticCapabilityCategory =
+  | 'document'
+  | 'heading'
+  | 'section'
+  | 'figure'
+  | 'table'
+  | 'code'
+  | 'formula'
+  | 'blockquote'
+  | 'link'
+  | 'reference'
+
+/**
+ * §0.3/§0.4 — the diagnostic KIND. `STATE_GUARD` is a document/runtime
+ * validation state (not a content violation); `CONTENT_DIAGNOSTIC` is a real
+ * content/structural violation the user fixes by editing Markdown.
+ */
+export type DocumentDiagnosticKind = 'STATE_GUARD' | 'CONTENT_DIAGNOSTIC'
+
+/** §4 — the user-visible severity axis. There is NO fourth `info` level. */
+export type DocumentDiagnosticPresentationSeverity = 'error' | 'warning' | 'hint'
+
+/**
+ * §2/§3 — how a family's runtime diagnostic codes resolve.
+ *   EXACT   — the registry key IS the emitted code.
+ *   PREFIX  — the emitted codes share a prefix (e.g. the latent ATX LEVEL_n);
+ *             NEVER counted as an infinite family set.
+ *   PATTERN — a closed, explicitly listed code set (e.g. STRICT_FIRST_H1).
+ */
+export type DocumentDiagnosticRuntimeCodePolicy =
+  | { kind: 'EXACT'; code: string }
+  | { kind: 'PREFIX'; prefix: string }
+  | { kind: 'PATTERN'; patternId: string; codes: readonly string[] }
+
+export type DocumentDiagnosticImplementationStatus = 'IMPLEMENTED' | 'DEFERRED_BY_SPEC' | 'PLANNED'
+export type DocumentDiagnosticRuntimeClosureStatus = 'CLOSED' | 'PARTIAL' | 'UNVERIFIED'
+
+/**
+ * §4 — the ONE severity authority. Internal `info` maps to the user-visible
+ * `hint`; error/warning map to themselves. No UI surface may show a 4th level.
+ */
+export function resolvePresentationSeverity(
+  internalSeverity: 'error' | 'warning' | 'info',
+): DocumentDiagnosticPresentationSeverity {
+  if (internalSeverity === 'error') return 'error'
+  if (internalSeverity === 'warning') return 'warning'
+  return 'hint'
+}
 
 export const DOCUMENT_DIAGNOSTIC_AREAS: readonly DocumentDiagnosticArea[] = [
   'document-state',
@@ -138,6 +199,36 @@ export interface DocumentDiagnosticRuleMeta {
   /** §10/§11 — WHERE the problem acts; the reason-chip default derives from it. */
   scope: DocumentDiagnosticScope
   presentation: DocumentDiagnosticRulePresentation
+
+  // ── Capability Matrix V1 §2 — the honest capability record ─────────────────
+  /** §2/§3 — the stable RULE FAMILY id (several runtime codes may share it). */
+  familyId: string
+  /** §2/§3 — how the family's runtime diagnostic codes resolve. */
+  runtimeCodePolicy: DocumentDiagnosticRuntimeCodePolicy
+  /** §2 — the capability category axis. */
+  capabilityCategory: DocumentDiagnosticCapabilityCategory
+  /** §0.3/§0.4 — validation state vs content violation. */
+  diagnosticKind: DocumentDiagnosticKind
+  /** §2/§4 — internal severity (`info` stays internal). */
+  internalSeverity: 'error' | 'warning' | 'info'
+  /** §4 — true when the severity depends on strict/loose mode. */
+  modeDependent: boolean
+  /** §2/§4 — the user-visible severity (info → hint). */
+  presentationSeverity: DocumentDiagnosticPresentationSeverity
+  /** §12 — the reason-chip policy token. */
+  reasonChipPolicy: string
+  /** §12 — the presentation kind token (real project concepts). */
+  presentationKind: string
+  suppressionGroup?: string
+  suppressionParentFamilyId?: string
+  /** §2 — the producer authority that emits the family's codes. */
+  producerAuthority: string
+  /** §2 — IMPLEMENTED / DEFERRED_BY_SPEC / PLANNED. */
+  implementationStatus: DocumentDiagnosticImplementationStatus
+  /** §13 — CLOSED / PARTIAL / UNVERIFIED. */
+  runtimeClosureStatus: DocumentDiagnosticRuntimeClosureStatus
+  /** §0.1 — whether the family is a user-visible diagnostic type. */
+  userVisible: boolean
 }
 
 /** area → scope default (§11: scope=document ⇒ reasonChip=false). */
@@ -166,6 +257,96 @@ const CATEGORY_DEFAULT_AREA: Readonly<Record<DocumentDiagnosticCategory, Documen
   link: 'link-anchor',
 }
 
+/** legacy consumer category → capability category default. */
+const CATEGORY_DEFAULT_CAPABILITY: Readonly<Record<DocumentDiagnosticCategory, DocumentDiagnosticCapabilityCategory>> = {
+  document: 'document',
+  heading: 'heading',
+  figure: 'figure',
+  table: 'table',
+  code: 'code',
+  formula: 'formula',
+  link: 'link',
+}
+
+/**
+ * §2/§4 — the internal severity each family's codes carry, MIRRORING the ONE
+ * runtime authority `resolveDocumentDiagnosticSeverity` (which lives in the
+ * producer module; importing it here would create a cyclic module init with a
+ * TDZ hazard). The capability test asserts this table agrees with that authority
+ * in BOTH strict and loose mode, so drift is a hard-gate failure.
+ */
+const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' | 'info'>> = {
+  HEADING_LEVEL_GAP: 'warning',
+  HEADING_EMPTY_TEXT: 'warning',
+  STRICT_SINGLE_H1_NO_H1: 'error',
+  STRICT_SINGLE_H1_MULTIPLE_H1: 'error',
+  FORMULA_DUPLICATE_VISIBLE_TAG: 'error',
+  HEADING_DUPLICATE_IDENTITY: 'error',
+  FIGURE_BLOCK_STRUCTURE_INVALID: 'error',
+  TABLE_BLOCK_STRUCTURE_INVALID: 'error',
+  FORMULA_BLOCK_STRUCTURE_INVALID: 'error',
+  HEADING_AUTO_NUMBER_CONFLICT: 'error',
+  FIGURE_LOCAL_IMAGE_MISSING: 'warning',
+  EXCESSIVE_INTERNAL_BLANK_LINES: 'warning',
+  DOCUMENT_EMPTY: 'info',
+  DOCUMENT_INACTIVE: 'info',
+  DOCUMENT_SOURCE_UNAVAILABLE: 'info',
+  DOCUMENT_HEADING_ONLY_NO_BODY: 'info',
+  DOCUMENT_HEADINGS_ONLY_NO_BODY: 'info',
+  SECTION_EMPTY: 'info',
+  SECTION_ONLY_SUBHEADINGS: 'info',
+  CODE_EMPTY_BLOCK: 'info',
+  TABLE_EMPTY_CONTENT: 'info',
+  FORMULA_EMPTY_CONTENT: 'info',
+  BLOCKQUOTE_EMPTY: 'info',
+  LATENT_ATX_HEADING_MARKER: 'info',
+  STRICT_FIRST_H1_POSITION: 'warning',
+}
+
+/** §2/§4 — rule ids whose severity is strict/loose mode-dependent. */
+const MODE_DEPENDENT_RULE_IDS: ReadonlySet<string> = new Set([
+  'HEADING_LEVEL_GAP',
+  'HEADING_EMPTY_TEXT',
+  'LATENT_ATX_HEADING_MARKER',
+])
+
+/** §12 — derive the presentation-kind token from the real project concepts. */
+function derivePresentationKind(
+  locationStrategy: DiagnosticLocationStrategy,
+  area: DocumentDiagnosticArea,
+  scope: DocumentDiagnosticScope,
+  reasonChip: boolean,
+): string {
+  if (locationStrategy === 'target-group') return 'target-group'
+  if (area === 'document-format') return 'blank-space-warning'
+  if (locationStrategy === 'document-end') return 'synthetic-eof'
+  if (scope === 'document') return 'none'
+  if (area === 'document-completeness' && scope === 'heading') return 'heading-visible-label'
+  // Phase G — a caption projection carries its OWN presentation carrier
+  // (the `caption-slot` visual kind) rather than a generic reason chip.
+  if (locationStrategy === 'caption-projection') return 'caption-slot'
+  if (reasonChip) return 'reason-chip'
+  return 'block-fill'
+}
+
+/** The capability-only extras accepted by the ONE rule() builder. */
+interface DocumentDiagnosticRuleCapabilityExtra {
+  familyId?: string
+  runtimeCodePolicy?: DocumentDiagnosticRuntimeCodePolicy
+  capabilityCategory?: DocumentDiagnosticCapabilityCategory
+  diagnosticKind?: DocumentDiagnosticKind
+  internalSeverity?: 'error' | 'warning' | 'info'
+  modeDependent?: boolean
+  reasonChipPolicy?: string
+  presentationKind?: string
+  suppressionGroup?: string
+  suppressionParentFamilyId?: string
+  producerAuthority?: string
+  implementationStatus?: DocumentDiagnosticImplementationStatus
+  runtimeClosureStatus?: DocumentDiagnosticRuntimeClosureStatus
+  userVisible?: boolean
+}
+
 /**
  * §9 — build ONE rule meta entry. Defaults are DERIVED (area → scope →
  * reasonChip) so every registered rule is complete by construction: a rule can
@@ -185,7 +366,7 @@ function rule(
     activeVisualMode?: DocumentDiagnosticActiveVisualMode
     interactionMode?: DocumentDiagnosticInteractionMode
     drawerProjectionMode?: DocumentDiagnosticDrawerProjectionMode
-  } = {},
+  } & DocumentDiagnosticRuleCapabilityExtra = {},
 ): DocumentDiagnosticRuleMeta {
   const area = extra.area ?? CATEGORY_DEFAULT_AREA[category]
   const scope = extra.scope ?? AREA_DEFAULT_SCOPE[area]
@@ -195,6 +376,19 @@ function rule(
     ?? (locationStrategy === 'target-group' ? 'group' : locationStrategy === 'multi-target' ? 'occurrence' : 'single')
   const drawerProjectionMode = extra.drawerProjectionMode
     ?? (locationStrategy === 'multi-target' ? 'occurrence-rows' : 'single-row')
+  const reasonChip = extra.reasonChip ?? scope !== 'document'
+  const presentation: DocumentDiagnosticRulePresentation = {
+    // §11 — the DEFAULT is scope-driven; a rule may still override explicitly.
+    reasonChip,
+    passiveVisual: extra.passiveVisual ?? true,
+    activeVisual: extra.activeVisual ?? true,
+    activeVisualMode: extra.activeVisualMode
+      ?? (locationStrategy === 'target-group' ? 'text-tight-target-group' : 'text-tight-single-target'),
+    interactionMode,
+    drawerProjectionMode,
+  }
+  const implementationStatus = extra.implementationStatus ?? 'IMPLEMENTED'
+  const internalSeverity = extra.internalSeverity ?? INTERNAL_SEVERITY_BY_RULE_ID[ruleId] ?? 'warning'
   return {
     ruleId,
     category,
@@ -202,16 +396,22 @@ function rule(
     domain: 'document',
     area,
     scope,
-    presentation: {
-      // §11 — the DEFAULT is scope-driven; a rule may still override explicitly.
-      reasonChip: extra.reasonChip ?? scope !== 'document',
-      passiveVisual: extra.passiveVisual ?? true,
-      activeVisual: extra.activeVisual ?? true,
-      activeVisualMode: extra.activeVisualMode
-        ?? (locationStrategy === 'target-group' ? 'text-tight-target-group' : 'text-tight-single-target'),
-      interactionMode,
-      drawerProjectionMode,
-    },
+    presentation,
+    familyId: extra.familyId ?? ruleId,
+    runtimeCodePolicy: extra.runtimeCodePolicy ?? { kind: 'EXACT', code: ruleId },
+    capabilityCategory: extra.capabilityCategory ?? CATEGORY_DEFAULT_CAPABILITY[category],
+    diagnosticKind: extra.diagnosticKind ?? 'CONTENT_DIAGNOSTIC',
+    internalSeverity,
+    modeDependent: extra.modeDependent ?? MODE_DEPENDENT_RULE_IDS.has(ruleId),
+    presentationSeverity: resolvePresentationSeverity(internalSeverity),
+    reasonChipPolicy: extra.reasonChipPolicy ?? (reasonChip ? 'CHIP_ON_TARGET' : 'NO_CHIP'),
+    presentationKind: extra.presentationKind ?? derivePresentationKind(locationStrategy, area, scope, reasonChip),
+    suppressionGroup: extra.suppressionGroup,
+    suppressionParentFamilyId: extra.suppressionParentFamilyId,
+    producerAuthority: extra.producerAuthority ?? (implementationStatus === 'IMPLEMENTED' ? 'computeDocumentDiagnostics' : 'NONE'),
+    implementationStatus,
+    runtimeClosureStatus: extra.runtimeClosureStatus ?? 'UNVERIFIED',
+    userVisible: extra.userVisible ?? (implementationStatus === 'IMPLEMENTED'),
   }
 }
 
@@ -222,9 +422,9 @@ function rule(
  */
 export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosticRuleMeta> = {
   // Document-level
-  DOCUMENT_INACTIVE: rule('DOCUMENT_INACTIVE', 'document', 'document-start', { area: 'document-state' }),
-  DOCUMENT_EMPTY: rule('DOCUMENT_EMPTY', 'document', 'document-start', { area: 'document-state' }),
-  DOCUMENT_SOURCE_UNAVAILABLE: rule('DOCUMENT_SOURCE_UNAVAILABLE', 'document', 'document-start', { area: 'document-state' }),
+  DOCUMENT_INACTIVE: rule('DOCUMENT_INACTIVE', 'document', 'document-start', { area: 'document-state', diagnosticKind: 'STATE_GUARD' }),
+  DOCUMENT_EMPTY: rule('DOCUMENT_EMPTY', 'document', 'document-start', { area: 'document-state', diagnosticKind: 'STATE_GUARD' }),
+  DOCUMENT_SOURCE_UNAVAILABLE: rule('DOCUMENT_SOURCE_UNAVAILABLE', 'document', 'document-start', { area: 'document-state', diagnosticKind: 'STATE_GUARD' }),
   DOCUMENT_TERMINAL_NEWLINE_MISSING: rule('DOCUMENT_TERMINAL_NEWLINE_MISSING', 'document', 'document-end', { area: 'document-state' }),
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: rule('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', 'document', 'document-end', { area: 'document-state' }),
   // Internal Blank-Line Policy V1 §1/§24 — 3+ consecutive blank lines between
@@ -242,13 +442,18 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // V1 — 单标题无正文 Hint：the target is the UNIQUE canonical heading (never
   // EOF / blank body / toolbar / drawer), so its strategy is `canonical-node`
   // with a `source-range` fallback when the frame carries no stable identity.
-  DOCUMENT_HEADING_ONLY_NO_BODY: rule('DOCUMENT_HEADING_ONLY_NO_BODY', 'document', 'canonical-node', { area: 'document-completeness' }),
+  // §7 — the document-completeness suppression cluster: a fully bodyless
+  // document suppresses BOTH section hints below (they would only repeat the
+  // same root cause).
+  DOCUMENT_HEADING_ONLY_NO_BODY: rule('DOCUMENT_HEADING_ONLY_NO_BODY', 'document', 'canonical-node', {
+    area: 'document-completeness', suppressionGroup: 'section-completeness',
+  }),
   // VNext §12/§13 / Target Group V1 §4/§6 — 多标题无正文 Hint（与上面严格互斥）。
   // It is a TARGET GROUP: ONE document-level fact carried by EVERY canonical
   // heading. ONE diagnostic / ONE Drawer row / ONE interaction / ONE lease with
   // N co-equal heading members — never an occurrence list (`1/N`).
   DOCUMENT_HEADINGS_ONLY_NO_BODY: rule('DOCUMENT_HEADINGS_ONLY_NO_BODY', 'document', 'target-group', {
-    area: 'document-completeness',
+    area: 'document-completeness', suppressionGroup: 'section-completeness',
   }),
   STRICT_SINGLE_H1_NO_H1: rule('STRICT_SINGLE_H1_NO_H1', 'document', 'document-start', { area: 'document-state' }),
   // §10/§11 — the MULTIPLE-H1 violation ACTS ON the offending H1 (its reason
@@ -256,15 +461,58 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // scope is `heading`, not `document`, even though the RULE is document-level.
   STRICT_SINGLE_H1_MULTIPLE_H1: rule('STRICT_SINGLE_H1_MULTIPLE_H1', 'document', 'multi-target', { area: 'document-state', scope: 'heading' }),
   // Source syntax
-  LATENT_ATX_HEADING_MARKER: rule('LATENT_ATX_HEADING_MARKER', 'heading', 'source-range'),
+  LATENT_ATX_HEADING_MARKER: rule('LATENT_ATX_HEADING_MARKER', 'heading', 'source-range', {
+    familyId: 'LATENT_ATX_HEADING_MARKER',
+    capabilityCategory: 'heading',
+    // §3 — the runtime emits `LATENT_ATX_HEADING_MARKER_LEVEL_n`; the PREFIX
+    // policy keeps LEVEL_n from ever becoming an infinite family set.
+    runtimeCodePolicy: { kind: 'PREFIX', prefix: 'LATENT_ATX_HEADING_MARKER' },
+  }),
+  // §2/§3/§0.4 — the STRICT_FIRST_H1 family: ONE family, 7 explicitly listed
+  // runtime codes. The family DEFAULT kind is CONTENT_DIAGNOSTIC (the 5
+  // LEADING_* structural violations); the two validation states
+  // (DOCUMENT_EMPTY / SOURCE_UNAVAILABLE) are overridden to STATE_GUARD by the
+  // per-code authority `resolveDiagnosticKind`.
+  STRICT_FIRST_H1_POSITION: rule('STRICT_FIRST_H1_POSITION', 'document', 'canonical-node', {
+    area: 'document-state',
+    scope: 'heading',
+    familyId: 'STRICT_FIRST_H1',
+    runtimeCodePolicy: {
+      kind: 'PATTERN',
+      patternId: 'STRICT_FIRST_H1',
+      codes: [
+        'STRICT_FIRST_H1_LEADING_PARAGRAPH',
+        'STRICT_FIRST_H1_LEADING_EMPTY_LINE',
+        'STRICT_FIRST_H1_LEADING_EMPTY_BLOCK',
+        'STRICT_FIRST_H1_LEADING_OTHER_HEADING',
+        'STRICT_FIRST_H1_LEADING_OTHER_BLOCK',
+        'STRICT_FIRST_H1_DOCUMENT_EMPTY',
+        'STRICT_FIRST_H1_SOURCE_UNAVAILABLE',
+      ],
+    },
+  }),
   // Heading structure
   HEADING_LEVEL_GAP: rule('HEADING_LEVEL_GAP', 'heading', 'canonical-node'),
   HEADING_EMPTY_TEXT: rule('HEADING_EMPTY_TEXT', 'heading', 'canonical-node'),
   HEADING_DUPLICATE_TEXT: rule('HEADING_DUPLICATE_TEXT', 'heading', 'multi-target'),
   HEADING_DUPLICATE_IDENTITY: rule('HEADING_DUPLICATE_IDENTITY', 'heading', 'canonical-node'),
   // VNext §16/§17 — section completeness (heading-scoped hints).
-  SECTION_EMPTY: rule('SECTION_EMPTY', 'heading', 'canonical-node', { area: 'document-completeness', scope: 'heading', reasonChip: true }),
-  SECTION_ONLY_SUBHEADINGS: rule('SECTION_ONLY_SUBHEADINGS', 'heading', 'canonical-node', { area: 'document-completeness', scope: 'heading', reasonChip: true }),
+  // §7 — Section Completeness is a CHILD of Document Completeness: when the
+  // WHOLE document is bodyless the document-level hint owns the fact and these
+  // two are suppressed (never a duplicate root cause). SECTION_EMPTY and
+  // SECTION_ONLY_SUBHEADINGS are mutually exclusive per heading by construction.
+  SECTION_EMPTY: rule('SECTION_EMPTY', 'heading', 'canonical-node', {
+    area: 'document-completeness', scope: 'heading', reasonChip: true,
+    suppressionGroup: 'section-completeness',
+    suppressionParentFamilyId: 'DOCUMENT_HEADINGS_ONLY_NO_BODY',
+    runtimeClosureStatus: 'PARTIAL',
+  }),
+  SECTION_ONLY_SUBHEADINGS: rule('SECTION_ONLY_SUBHEADINGS', 'heading', 'canonical-node', {
+    area: 'document-completeness', scope: 'heading', reasonChip: true,
+    suppressionGroup: 'section-completeness',
+    suppressionParentFamilyId: 'DOCUMENT_HEADINGS_ONLY_NO_BODY',
+    runtimeClosureStatus: 'PARTIAL',
+  }),
   // VNext §24 — user manual numbering while automatic numbering is ON.
   HEADING_MANUAL_NUMBER_PREFIX: rule('HEADING_MANUAL_NUMBER_PREFIX', 'heading', 'canonical-node', { area: 'caption-numbering', scope: 'heading' }),
   // Heading Auto-Number Conflict V1 §1/§26 — the heading's auto numbering is
@@ -307,6 +555,131 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   FORMULA_EMPTY_CONTENT: rule('FORMULA_EMPTY_CONTENT', 'formula', 'source-range', { area: 'document-completeness', scope: 'object' }),
   BLOCKQUOTE_EMPTY: rule('BLOCKQUOTE_EMPTY', 'document', 'source-range', { area: 'document-completeness', scope: 'block' }),
   LINK_LOCAL_TARGET_MISSING: rule('LINK_LOCAL_TARGET_MISSING', 'link', 'block-node'),
+
+  // ── Caption Integrity (Phase G — spec §8/§15/§20) ──────────────────────────
+  // DOM-side producer `computeCaptionIntegrityDiagnostics`. Ownership comes ONLY
+  // from the canonical owner map (`getCanonicalCaptionOwnerRoot`); orphan /
+  // multiple / format are derived from that authority. Locators are the caption
+  // service's own `caption-projection` id. (Numbering / anchor below stay PLANNED.)
+  FIGURE_ORPHAN_CAPTION: rule('FIGURE_ORPHAN_CAPTION', 'figure', 'caption-projection', {
+    area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  TABLE_ORPHAN_CAPTION: rule('TABLE_ORPHAN_CAPTION', 'table', 'caption-projection', {
+    area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  CODE_ORPHAN_CAPTION: rule('CODE_ORPHAN_CAPTION', 'code', 'caption-projection', {
+    area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  // MULTIPLE = ONE canonical owner owning >1 caption: ONE diagnostic per owner,
+  // presented as a TARGET GROUP (ONE Drawer row / N members) — never N business
+  // diagnostics.
+  FIGURE_MULTIPLE_CAPTIONS: rule('FIGURE_MULTIPLE_CAPTIONS', 'figure', 'target-group', {
+    area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  TABLE_MULTIPLE_CAPTIONS: rule('TABLE_MULTIPLE_CAPTIONS', 'table', 'target-group', {
+    area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  CODE_MULTIPLE_CAPTIONS: rule('CODE_MULTIPLE_CAPTIONS', 'code', 'target-group', {
+    area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  FIGURE_CAPTION_FORMAT_INVALID: rule('FIGURE_CAPTION_FORMAT_INVALID', 'figure', 'caption-projection', {
+    area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  TABLE_CAPTION_FORMAT_INVALID: rule('TABLE_CAPTION_FORMAT_INVALID', 'table', 'caption-projection', {
+    area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  CODE_CAPTION_FORMAT_INVALID: rule('CODE_CAPTION_FORMAT_INVALID', 'code', 'caption-projection', {
+    area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
+    implementationStatus: 'IMPLEMENTED', suppressionGroup: 'caption-integrity',
+    producerAuthority: 'computeCaptionIntegrityDiagnostics',
+  }),
+  // §9 — Numbering Integrity (Phase H, later workstream) → PLANNED.
+  FIGURE_NUMBER_DUPLICATE: rule('FIGURE_NUMBER_DUPLICATE', 'figure', 'figure-occurrence', {
+    area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  TABLE_NUMBER_DUPLICATE: rule('TABLE_NUMBER_DUPLICATE', 'table', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  CODE_NUMBER_DUPLICATE: rule('CODE_NUMBER_DUPLICATE', 'code', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  FIGURE_NUMBER_ORDER_INVALID: rule('FIGURE_NUMBER_ORDER_INVALID', 'figure', 'figure-occurrence', {
+    area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  TABLE_NUMBER_ORDER_INVALID: rule('TABLE_NUMBER_ORDER_INVALID', 'table', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  CODE_NUMBER_ORDER_INVALID: rule('CODE_NUMBER_ORDER_INVALID', 'code', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  FORMULA_NUMBER_ORDER_INVALID: rule('FORMULA_NUMBER_ORDER_INVALID', 'formula', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'formula', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  FORMULA_NUMBER_SECTION_MISMATCH: rule('FORMULA_NUMBER_SECTION_MISMATCH', 'formula', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'formula', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  TABLE_MANUAL_NUMBER_PREFIX: rule('TABLE_MANUAL_NUMBER_PREFIX', 'table', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  CODE_MANUAL_NUMBER_PREFIX: rule('CODE_MANUAL_NUMBER_PREFIX', 'code', 'block-node', {
+    area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
+    implementationStatus: 'PLANNED', suppressionGroup: 'numbering-integrity',
+  }),
+  // §10 — Anchor Integrity (Phase I, later workstream) → PLANNED.
+  LINK_LOCAL_ANCHOR_MISSING: rule('LINK_LOCAL_ANCHOR_MISSING', 'link', 'source-range', {
+    area: 'link-anchor', capabilityCategory: 'link', scope: 'inline',
+    implementationStatus: 'PLANNED', suppressionGroup: 'anchor-integrity',
+  }),
+  LINK_LOCAL_FILE_ANCHOR_MISSING: rule('LINK_LOCAL_FILE_ANCHOR_MISSING', 'link', 'source-range', {
+    area: 'link-anchor', capabilityCategory: 'link', scope: 'inline',
+    implementationStatus: 'PLANNED', suppressionGroup: 'anchor-integrity',
+  }),
+  HEADING_ANCHOR_COLLISION: rule('HEADING_ANCHOR_COLLISION', 'heading', 'canonical-node', {
+    area: 'link-anchor', capabilityCategory: 'heading', scope: 'heading',
+    implementationStatus: 'PLANNED', suppressionGroup: 'anchor-integrity',
+  }),
+  // §11 — Cross-reference (Phase J) → DEFERRED_BY_SPEC (needs the canonical
+  // structured reference parser; a broad Chinese-prose regex is forbidden).
+  FIGURE_REFERENCE_TARGET_MISSING: rule('FIGURE_REFERENCE_TARGET_MISSING', 'figure', 'source-range', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'inline',
+    implementationStatus: 'DEFERRED_BY_SPEC', suppressionGroup: 'cross-reference',
+    producerAuthority: 'NONE',
+  }),
+  TABLE_REFERENCE_TARGET_MISSING: rule('TABLE_REFERENCE_TARGET_MISSING', 'table', 'source-range', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'inline',
+    implementationStatus: 'DEFERRED_BY_SPEC', suppressionGroup: 'cross-reference',
+    producerAuthority: 'NONE',
+  }),
+  FORMULA_REFERENCE_TARGET_MISSING: rule('FORMULA_REFERENCE_TARGET_MISSING', 'formula', 'source-range', {
+    area: 'cross-reference', capabilityCategory: 'reference', scope: 'inline',
+    implementationStatus: 'DEFERRED_BY_SPEC', suppressionGroup: 'cross-reference',
+    producerAuthority: 'NONE',
+  }),
 }
 
 /** §11 — the ONE scope resolver (registry + prefix aware). */
@@ -341,9 +714,28 @@ export function getRuleMeta(code: string): DocumentDiagnosticRuleMeta | null {
   if (code.startsWith('STRICT_FIRST_H1_')) {
     // §11 — the pre-H1 lint acts ON the first H1 (its reason chip is painted on
     // that heading, the frozen V5.14-R5 contract) ⇒ scope=heading.
-    return rule('STRICT_FIRST_H1_POSITION', 'document', 'canonical-node', { area: 'document-state', scope: 'heading' })
+    return DOCUMENT_DIAGNOSTIC_RULE_REGISTRY.STRICT_FIRST_H1_POSITION
   }
   return null
+}
+
+/**
+ * §0.3/§0.4 — the ONE diagnostic-KIND authority (per RESOLVED code, never per
+ * family): resolves the STATE_GUARD vs CONTENT_DIAGNOSTIC split, including the
+ * STRICT_FIRST_H1 family whose two validation states are guards while the five
+ * LEADING_* codes are structural content violations.
+ */
+export const DOCUMENT_DIAGNOSTIC_STATE_GUARD_CODES: readonly string[] = [
+  'DOCUMENT_INACTIVE',
+  'DOCUMENT_EMPTY',
+  'DOCUMENT_SOURCE_UNAVAILABLE',
+  'STRICT_FIRST_H1_DOCUMENT_EMPTY',
+  'STRICT_FIRST_H1_SOURCE_UNAVAILABLE',
+]
+
+export function resolveDiagnosticKind(code: string): DocumentDiagnosticKind {
+  if (DOCUMENT_DIAGNOSTIC_STATE_GUARD_CODES.includes(code)) return 'STATE_GUARD'
+  return getRuleMeta(code)?.diagnosticKind ?? 'CONTENT_DIAGNOSTIC'
 }
 
 /**
@@ -388,6 +780,8 @@ export interface DiagnosticLocationContract {
   sourceBlockLocationCount: number
   /** V1 — figure occurrence locators. */
   figureOccurrenceLocationCount: number
+  /** Phase G — caption projection locators. */
+  captionProjectionLocationCount: number
   documentStartLocationCount: number
   documentEndLocationCount: number
   blockNodeLocationCount: number
@@ -415,6 +809,9 @@ export function hasLocatableLocation(location: DiagnosticLocation | undefined | 
     return Number.isFinite(location.startLine)
       && location.occurrenceIdentity.sourceBlockIdentity.trim() !== ''
   }
+  // Phase G — a caption projection is locatable when it carries the caption
+  // service's own stable id.
+  if (location.kind === 'caption-projection') return location.captionId.trim() !== ''
   if (location.kind === 'multi-target') return location.targets.length > 0
   // Target Group V1 §4 — a group is locatable when its scroll anchor is locatable
   // (or it declares at least one member).
@@ -436,6 +833,7 @@ export function computeDiagnosticLocationContract(
   let sourceRange = 0
   let sourceBlock = 0
   let figureOccurrence = 0
+  let captionProjection = 0
   let documentStart = 0
   let documentEnd = 0
   let blockNode = 0
@@ -456,6 +854,7 @@ export function computeDiagnosticLocationContract(
       case 'source-range': sourceRange++; break
       case 'source-block': sourceBlock++; break
       case 'figure-occurrence': figureOccurrence++; break
+      case 'caption-projection': captionProjection++; break
       case 'document-start': documentStart++; break
       case 'document-end': documentEnd++; break
       case 'block-node': blockNode++; break
@@ -473,6 +872,7 @@ export function computeDiagnosticLocationContract(
     sourceRangeLocationCount: sourceRange,
     sourceBlockLocationCount: sourceBlock,
     figureOccurrenceLocationCount: figureOccurrence,
+    captionProjectionLocationCount: captionProjection,
     documentStartLocationCount: documentStart,
     documentEndLocationCount: documentEnd,
     blockNodeLocationCount: blockNode,
@@ -509,6 +909,8 @@ export type DiagnosticResolveAnchor =
   | 'figure-occurrence'
   /** V1 — the owning source block used because the image DOM is absent. */
   | 'source-block-fallback'
+  /** Phase G — the live caption projection resolved by the caption service id. */
+  | 'caption-projection'
 
 /**
  * V5.12-R5 §7 — the resolver's OWN output for a source occurrence. It must be
@@ -626,6 +1028,12 @@ export interface DiagnosticLocationResolveContext {
   resolveSourceLine: (line: number) => HTMLElement | null
   /** block kind + stableIdentity (`block:<kind>:<ordinal>`) → live block element. */
   resolveBlockIdentity: (blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link', stableIdentity: string) => HTMLElement | null
+  /**
+   * Phase G — caption service's OWN captionId → the LIVE caption projection
+   * element. The DOM-side caption-integrity locator resolves through this; the
+   * resolver never guesses a caption by adjacency.
+   */
+  resolveCaptionProjection?: (captionId: string) => HTMLElement | null
   /**
    * Phase 7R.3.11.8B.7.2 — current Markdown source line text at a 0-based
    * index (null when unavailable / out of range). The content authority for
@@ -1278,6 +1686,25 @@ export function resolveDiagnosticLocation(
         primaryAnchor: 'block-identity',
         fallbackAnchor: null,
         reason: 'DOM_TARGET_UNRESOLVED',
+      }
+    }
+    case 'caption-projection': {
+      // Phase G — a DOM caption projection. The locator is the caption
+      // service's OWN stable captionId; resolution delegates to the wired
+      // authority (never an adjacency-derived neighbour, never a first-match).
+      const resolveCaption = ctx.resolveCaptionProjection
+      if (typeof resolveCaption === 'function') {
+        const el = resolveCaption(location.captionId)
+        if (el) return resolvedResult(el, targetIndex, 'caption-projection', null)
+      }
+      return {
+        decision: 'UNRESOLVED',
+        element: null,
+        scrollAction: null,
+        targetIndex,
+        primaryAnchor: 'caption-projection',
+        fallbackAnchor: null,
+        reason: 'CAPTION_PROJECTION_NOT_FOUND',
       }
     }
     case 'multi-target': {

@@ -3142,22 +3142,13 @@ body.ink-console-docked::after {
   background: var(--ink-locate-context-bg);
 }
 
-/* V6 §10 — BLANK-SPACE VISUAL POLICY UNIFICATION. The Document-End (EOF) blank
-   space now uses the SAME FILL_ONLY warning presentation as the internal block
-   gap (Source of Truth = Case A): one unified warning fill token, NO left
-   accent, no border / outline / shadow / pseudo line. Only the EOF *geometry*
-   (ACTUAL_TRAILING_DOM_BLANK_ZONE) stays EOF-specific. */
-.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'] {
-  border: 0;
-  border-radius: 2px;
-  box-shadow: none;
-  outline: none;
-  background-color: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
-}
-.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true']::before,
-.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true']::after {
-  content: none;
-}
+/* ── Blank-Space Warning Presentation Policy (V8 §1/§2/§3) ───────────────────
+   The document-end EOF band's ORIGINAL active style is the single Source of
+   Truth for EVERY blank-space Warning. It is defined ONCE at the shared
+   `.inkchapter-blank-space-warning` rule below (`FILL_WITH_LEFT_ACCENT`), and the
+   EOF selector is kept there as an explicit alias with the SAME tokens. The
+   previous "FILL_ONLY / no left accent / bright active fill" direction is
+   REVOKED. */
 
 /* V5.12-R7 §9 — Heading ACTIVE locate = FILL_ONLY over the measured heading text
    rect. The 3px vertical marker bar and the bottom-left corner cap are GONE.
@@ -3315,43 +3306,40 @@ body.ink-console-docked::after {
   --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 96%, transparent);
 }
 
-/* ── Presentation Stability Closure V1 §9/§10 + Block Gap Binding Closure V1 §16 ─
-   The `EXCESSIVE_INTERNAL_BLANK_LINES` semantic target is the GAP between two
-   sibling content blocks, so the visual IS the gap: a FILL_ONLY Warning band
-   (no border / gradient / shadow / pseudo element, per the FILL_ONLY contract).
-   It NEVER paints the adjacent previous / next content block.
-   ── Blank-Space Warning Presentation Policy ────────────────────────────────
-   The fill is the SAME ALWAYS-ACTIVE Warning token as the document-end
-   trailing-blank band (`--ink-diagnostic-warning-active-bg`). There is NO
-   passive/faint variant any more: every blank-space Warning shares ONE active
-   style (the document-end one). Colours REUSE the existing Warning tokens (no
-   new palette); the carrier is a pointer-events:none overlay, so neither the
-   document layout nor the contenteditable flow is touched. */
-.inkchapter-block-gap-visual {
-  --ink-block-gap-bg: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
-  border-radius: 2px;
-  background-color: var(--ink-block-gap-bg);
-  pointer-events: none;
-}
-.inkchapter-block-gap-visual[data-active='true'] {
-  --ink-block-gap-bg: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
-  background-color: var(--ink-block-gap-bg);
-}
+/* ── Blank-Space Warning Presentation Policy — the ONE ACTIVE presentation ────
+   RESTORED VERBATIM from the original document-end EOF band
+   (V5.13-R2 §1.1 / V5.13-R3 §9/§10/§11/§26): a LOW-EMPHASIS Warning surface
+   (`--ink-blank-space-warning-bg` = an 8% Warning mix) plus exactly ONE 4px
+   Warning LEFT accent rail, radius `0 6px 6px 0`, no top/right/bottom border,
+   no outline, no shadow, no pseudo line.
 
-/* Unified Blank-Space Warning band — intentionally IDENTICAL to the document-end
-   trailing-blank band (FILL_ONLY warning fill, no border / outline / shadow /
-   pseudo line). Used by every blank-space Warning that has no gap/EOF carrier. */
-.inkchapter-blank-space-warning {
+   Style is unified across every blank-space Warning; GEOMETRY stays per-type:
+   internal gap = previous/next presentation gap; document-end = the actual
+   trailing blank zone; leading-H1 = the zone above the first H1.
+   The carrier is a pointer-events:none overlay (no layout mutation). */
+.inkchapter-blank-space-warning,
+.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'] {
   border: 0;
-  border-radius: 2px;
+  border-left: var(--ink-blank-space-warning-accent-width) solid var(--ink-blank-space-warning-accent);
+  border-radius: var(--ink-blank-space-warning-radius);
   box-shadow: none;
   outline: none;
-  background-color: var(--ink-diagnostic-warning-active-bg, rgba(255, 190, 20, 0.38));
+  background: var(--ink-blank-space-warning-bg);
   pointer-events: none;
 }
 .inkchapter-blank-space-warning::before,
-.inkchapter-blank-space-warning::after {
+.inkchapter-blank-space-warning::after,
+.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true']::before,
+.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true']::after {
   content: none;
+}
+
+/* The internal gap carrier is a FIRST-CLASS member of the policy: its gap
+   geometry comes from `.inkchapter-block-gap-visual`, but its SURFACE is the
+   shared blank-space style (it also carries `.inkchapter-blank-space-warning`).
+   The bright/saturated active fill direction is REVOKED (V8 §4). */
+.inkchapter-block-gap-visual {
+  pointer-events: none;
 }
 
 /* ── V5.12-R1 — Heading Diagnostic In-Document Marker ─────────────────────
@@ -3386,6 +3374,16 @@ body.ink-console-docked::after {
   --ink-diagnostic-warning-active-accent: rgba(225, 150, 0, 0.95);
   --ink-diagnostic-warning-active-chip-bg: rgba(255, 190, 20, 0.38);
   --ink-diagnostic-warning-active-chip-text: #5f3f06;
+
+  /* V8 §2/§3 — Blank-Space Warning ACTIVE presentation, extracted VERBATIM from
+     the ORIGINAL document-end EOF band (53f08b9:src/style.scss): a LOW-EMPHASIS
+     Warning surface (an 8% Warning mix, NOT the bright 0.38 active fill), ONE 4px
+     `--ink-ui-sev-warning` LEFT accent rail, and the original `0 6px 6px 0`
+     radius. Every blank-space Warning consumes exactly these four tokens. */
+  --ink-blank-space-warning-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 8%, transparent);
+  --ink-blank-space-warning-accent: var(--ink-ui-sev-warning, #a87932);
+  --ink-blank-space-warning-accent-width: 4px;
+  --ink-blank-space-warning-radius: 0 6px 6px 0;
 
   --ink-diagnostic-info-passive-bg: rgba(93, 113, 129, 0.07);
   --ink-diagnostic-info-active-bg: rgba(93, 113, 129, 0.18);
