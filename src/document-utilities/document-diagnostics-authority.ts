@@ -107,10 +107,10 @@ import {
   getRuleMeta,
 } from './document-diagnostic-location'
 // Capability Matrix V1 §14 — the ONE read-only capability count authority.
-import {
-  DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT,
-  resolveDocumentDiagnosticCapabilitySummary,
-} from './document-diagnostic-capability-summary'
+import { DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT } from './document-diagnostic-capability-summary'
+// Capability Matrix V2 §19/§22 — the ONE Runtime Closure Authority (the §19
+// capability audit is DERIVED from it, never hand-written).
+import { resolveDocumentDiagnosticsCapabilityAudit } from './document-diagnostic-runtime-closure-authority'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 
 export interface DocumentDiagnosticsProviders {
@@ -744,25 +744,28 @@ export class DocumentDiagnosticsAuthority {
     documentKey: string | null,
     publishDecision: 'PUBLISHED' | 'NOOP',
   ): void {
-    const summary = resolveDocumentDiagnosticCapabilitySummary()
+    const audit = resolveDocumentDiagnosticsCapabilityAudit()
     emitRuntimeAudit(DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT, {
       documentKey,
-      registeredRuleFamilyCount: summary.registeredRuleFamilyCount,
-      resolvedDiagnosticCodeCount: summary.resolvedDiagnosticCodeCount,
-      userVisibleDiagnosticTypeCount: summary.userVisibleDiagnosticTypeCount,
-      stateGuardCount: summary.stateGuardCount,
-      contentDiagnosticCount: summary.contentDiagnosticCount,
-      errorFamilyCount: summary.errorFamilyCount,
-      warningFamilyCount: summary.warningFamilyCount,
-      hintFamilyCount: summary.hintFamilyCount,
-      implementedCount: summary.implementedCount,
-      deferredCount: summary.deferredCount,
-      plannedCount: summary.plannedCount,
-      unregisteredProducedCodeCount: summary.unregisteredProducedCodeCount,
-      implementedWithoutProducerCount: summary.implementedWithoutProducerCount,
-      duplicateFamilyCount: summary.duplicateFamilyCount,
-      duplicateRuntimeCodeAuthorityCount: summary.duplicateRuntimeCodeAuthorityCount,
-      decision: summary.decision,
+      registeredRuleFamilyCount: audit.registeredRuleFamilyCount,
+      resolvedDiagnosticCodeCount: audit.resolvedDiagnosticCodeCount,
+      userVisibleDiagnosticTypeCount: audit.userVisibleDiagnosticTypeCount,
+      implementedFamilyCount: audit.implementedFamilyCount,
+      deferredFamilyCount: audit.deferredFamilyCount,
+      stateGuardCodeCount: audit.stateGuardCodeCount,
+      contentDiagnosticCodeCount: audit.contentDiagnosticCodeCount,
+      closedFamilyCount: audit.closedFamilyCount,
+      partialFamilyCount: audit.partialFamilyCount,
+      unverifiedFamilyCount: audit.unverifiedFamilyCount,
+      deferredClosureFamilyCount: audit.deferredClosureFamilyCount,
+      unregisteredRuntimeCodeCount: audit.unregisteredRuntimeCodeCount,
+      implementedWithoutProducerCount: audit.implementedWithoutProducerCount,
+      duplicateFamilyCount: audit.duplicateFamilyCount,
+      unknownSeverityCount: audit.unknownSeverityCount,
+      staleRuntimeEvidenceCount: audit.staleRuntimeEvidenceCount,
+      runtimeEvidenceShaMismatchCount: audit.runtimeEvidenceShaMismatchCount,
+      decision: audit.decision,
+      gateReason: audit.reason,
       reason: publishDecision === 'PUBLISHED' ? 'SNAPSHOT_PUBLISHED' : 'SNAPSHOT_UNCHANGED',
     })
   }

@@ -21,6 +21,7 @@ import {
   resolveDocumentDiagnosticCapabilitySummary,
   resolvedRuntimeCodesOf,
 } from './document-diagnostic-capability-summary'
+import { resolveDocumentDiagnosticsCapabilityAudit } from './document-diagnostic-runtime-closure-authority'
 import {
   PRODUCED_DIAGNOSTIC_CODES,
   resolveDocumentDiagnosticSeverity,
@@ -32,13 +33,12 @@ const families = (): DocumentDiagnosticRuleMeta[] => Object.values(DOCUMENT_DIAG
 
 describe('Capability Matrix V1 §6/§18 — Registry ↔ Producer hard gates', () => {
   it('all hard-gate counters are 0 and the decision is PASS', () => {
-    const s = resolveDocumentDiagnosticCapabilitySummary()
-    expect(s.unregisteredProducedCodeCount, 'UNREGISTERED_RUNTIME_DIAGNOSTIC_CODE_COUNT').toBe(0)
-    expect(s.implementedWithoutProducerCount, 'REGISTERED_IMPLEMENTED_RULE_WITHOUT_PRODUCER_COUNT').toBe(0)
-    expect(s.duplicateFamilyCount, 'DUPLICATE_RULE_FAMILY_ID_COUNT').toBe(0)
-    expect(s.duplicateRuntimeCodeAuthorityCount, 'DUPLICATE_RUNTIME_CODE_AUTHORITY_COUNT').toBe(0)
-    expect(s.decision).toBe('PASS')
-    expect(s.failing).toEqual([])
+    const audit = resolveDocumentDiagnosticsCapabilityAudit()
+    expect(audit.unregisteredRuntimeCodeCount, 'UNREGISTERED_RUNTIME_DIAGNOSTIC_CODE_COUNT').toBe(0)
+    expect(audit.implementedWithoutProducerCount, 'REGISTERED_IMPLEMENTED_RULE_WITHOUT_PRODUCER_COUNT').toBe(0)
+    expect(audit.duplicateFamilyCount, 'DUPLICATE_RULE_FAMILY_ID_COUNT').toBe(0)
+    expect(audit.decision).toBe('PASS')
+    expect(audit.reason).toBe('CAPABILITY_AND_RUNTIME_CLOSURE_GATES_OK')
   })
 
   it('every PRODUCED_DIAGNOSTIC_CODES entry resolves to a registered family', () => {
@@ -156,7 +156,7 @@ describe('Capability Matrix V1 §2 — every family carries the full capability 
       expect(['STATE_GUARD', 'CONTENT_DIAGNOSTIC'], meta.ruleId).toContain(meta.diagnosticKind)
       expect(['error', 'warning', 'info'], meta.ruleId).toContain(meta.internalSeverity)
       expect(['IMPLEMENTED', 'DEFERRED_BY_SPEC', 'PLANNED'], meta.ruleId).toContain(meta.implementationStatus)
-      expect(['CLOSED', 'PARTIAL', 'UNVERIFIED'], meta.ruleId).toContain(meta.runtimeClosureStatus)
+      expect(['CLOSED', 'PARTIAL', 'UNVERIFIED', 'DEFERRED'], meta.ruleId).toContain(meta.runtimeClosureStatus)
       expect(meta.presentationKind, meta.ruleId).toBeTruthy()
       expect(meta.reasonChipPolicy, meta.ruleId).toBeTruthy()
       expect(typeof meta.userVisible, meta.ruleId).toBe('boolean')
@@ -188,21 +188,25 @@ describe('Capability Matrix V1 §5 — generation is deterministic', () => {
     const first = formatDocumentDiagnosticCapabilityMatrixMarkdown()
     const second = formatDocumentDiagnosticCapabilityMatrixMarkdown()
     expect(first).toBe(second)
-    // §5 — the required Summary block keys are present.
+    // §5 — the required machine-readable Summary keys are present.
     for (const key of [
       'REGISTERED_RULE_FAMILY_COUNT=',
       'RESOLVED_DIAGNOSTIC_CODE_COUNT=',
       'USER_VISIBLE_DIAGNOSTIC_TYPE_COUNT=',
-      'STATE_GUARD_COUNT=',
-      'CONTENT_DIAGNOSTIC_COUNT=',
-      'IMPLEMENTED_COUNT=',
-      'DEFERRED_COUNT=',
-      'PLANNED_COUNT=',
+      'IMPLEMENTED_FAMILY_COUNT=',
+      'DEFERRED_FAMILY_COUNT=',
+      'PLANNED_FAMILY_COUNT=',
+      'STATE_GUARD_CODE_COUNT=',
+      'CONTENT_DIAGNOSTIC_CODE_COUNT=',
+      'CLOSED_FAMILY_COUNT=',
+      'PARTIAL_FAMILY_COUNT=',
+      'UNVERIFIED_FAMILY_COUNT=',
+      'DEFERRED_CLOSURE_FAMILY_COUNT=',
     ]) {
       expect(first, key).toContain(key)
     }
-    // §5 — the required table columns are present.
-    expect(first).toContain('| Family | Runtime Code | Category | Kind | Internal Severity | UI Severity | Scope | Location Kind | Presentation Kind | Producer | Suppression | Runtime Closure | Test Status | Implementation |')
+    // §9 — the required 17-column table header is present.
+    expect(first).toContain('| Family | Runtime Code | Kind | Category | Internal Severity | UI Severity | Scope | Producer | Stable Identity | Suppression | Dynamic Refresh | Location | Presentation | Interaction | Static Test | Runtime Evidence | Closure |')
   })
 })
 
@@ -214,8 +218,10 @@ describe('Capability Matrix V1 §0.1 — count authority', () => {
     expect(s.registeredRuleFamilyCount).toBeGreaterThan(0)
     expect(s.resolvedDiagnosticCodeCount).toBeGreaterThanOrEqual(s.registeredRuleFamilyCount)
     expect(s.userVisibleDiagnosticTypeCount).toBeLessThanOrEqual(s.registeredRuleFamilyCount)
-    expect(s.implementedCount + s.deferredCount + s.plannedCount).toBe(s.registeredRuleFamilyCount)
-    expect(s.stateGuardCount + s.contentDiagnosticCount).toBe(s.resolvedDiagnosticCodeCount)
+    expect(s.implementedFamilyCount + s.deferredFamilyCount + s.plannedFamilyCount).toBe(s.registeredRuleFamilyCount)
+    expect(s.stateGuardCodeCount + s.contentDiagnosticCodeCount).toBe(s.resolvedDiagnosticCodeCount)
+    expect(s.closedFamilyCount + s.partialFamilyCount + s.unverifiedFamilyCount + s.deferredClosureFamilyCount)
+      .toBe(s.registeredRuleFamilyCount)
   })
 
   it('registers the future families with honest implementation statuses', () => {
@@ -243,13 +249,26 @@ describe('Capability Matrix V1 §0.1 — count authority', () => {
     expect(implemented).toContain('FORMULA_NUMBER_SECTION_MISMATCH')
     expect(deferred).not.toContain('TABLE_NUMBER_ORDER_INVALID')
     expect(deferred).not.toContain('FORMULA_NUMBER_SECTION_MISMATCH')
-    // Phase I cross-file anchor + Phase J cross-reference stay DEFERRED.
+    // Phase I cross-file anchor + Phase J cross-reference stay DEFERRED; TRAE V3
+    // adds the front-matter MALFORMED family (no canonical YAML parser).
     expect(deferred).toContain('LINK_LOCAL_FILE_ANCHOR_MISSING')
+    expect(deferred).toContain('FRONTMATTER_MALFORMED')
     expect(deferred.sort()).toEqual([
       'FIGURE_REFERENCE_TARGET_MISSING',
       'FORMULA_REFERENCE_TARGET_MISSING',
+      'FRONTMATTER_MALFORMED',
       'LINK_LOCAL_FILE_ANCHOR_MISSING',
       'TABLE_REFERENCE_TARGET_MISSING',
     ])
+    // TRAE V3 — the source-syntax / footnote / reference / table / link families
+    // are IMPLEMENTED.
+    expect(implemented).toContain('CODE_FENCE_UNCLOSED')
+    expect(implemented).toContain('FORMULA_BLOCK_UNCLOSED')
+    expect(implemented).toContain('FOOTNOTE_REFERENCE_TARGET_MISSING')
+    expect(implemented).toContain('LINK_REFERENCE_DEFINITION_DUPLICATE')
+    expect(implemented).toContain('FRONTMATTER_UNCLOSED')
+    expect(implemented).toContain('TABLE_HEADER_DUPLICATE')
+    expect(implemented).toContain('LINK_TARGET_EMPTY')
+    expect(deferred).not.toContain('FRONTMATTER_UNCLOSED')
   })
 })

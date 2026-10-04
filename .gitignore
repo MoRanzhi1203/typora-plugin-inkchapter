@@ -33,4 +33,5 @@ test/vault/.typora/inkchapter/captions/fixtures_*
 # trae
 .trae/
 
-docs/
+# project docs (root only; keeps scripts/docs/ tooling trackable)
+/docs/

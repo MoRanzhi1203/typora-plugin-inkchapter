@@ -1,0 +1,12 @@
+{
+  "sessionId": "sess-1791131522654",
+  "kind": "FRESH_RUNTIME_IDENTITY_SESSION",
+  "buildId": "inkchapter-heading-reason-chip-stable-anchor-v2",
+  "mainSha256": "059F1166C8DE08CCDF38D442C0BEECA47CE167D5698116211ED0519EED3ECF9D",
+  "vaultWindow": "test/vault",
+  "launchDocument": "test/vault/doc.md",
+  "initializationCount": 1,
+  "loadedAt": "2026-10-04T16:32:02.820Z",
+  "auditLog": "test/vault/.typora/inkchapter/audit/runtime-sess-1791131522654.log",
+  "observed": {}
+}

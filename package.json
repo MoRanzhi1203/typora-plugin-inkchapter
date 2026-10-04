@@ -10,7 +10,8 @@
     "build": "node build.js --prod",
     "pack": "pnpm run build && node pack.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "docs:verify": "node scripts/docs/verify-docs.mjs"
   },
   "keywords": [
     "typora",
