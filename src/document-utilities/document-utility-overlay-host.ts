@@ -448,13 +448,13 @@ import {
 } from './document-diagnostic-document-end-visual-v513-r1'
 // TRAE — document-end semantic target + geometry policy (missing terminal newline).
 import {
+  DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST,
+  DOCUMENT_END_MARKER_MAX_VERTICAL_DRIFT_PX,
   DOCUMENT_END_NEWLINE_GATE_KEYS,
   DOCUMENT_END_NEWLINE_MISSING_RULE,
   DOCUMENT_END_TRAILING_BLANK_RULE_NAME,
   EOF_NEWLINE_MARKER_ARIA_LABEL,
-  EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
   EOF_NEWLINE_MARKER_KIND,
-  EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY,
   EOF_NEWLINE_MARKER_RULE_ATTR,
   computeDocumentEndNewlineMarkerGeometry,
   createDocumentEndNewlineGateCounters,
@@ -462,6 +462,7 @@ import {
   evaluateDocumentEndNewlineGates,
   evaluateDocumentEndNewlinePositiveCoverage,
   resolveDocumentEndVisualRule,
+  type DocumentEndNewlineMarkerGeometry,
   type DocumentEndVisualRule,
 } from './document-diagnostic-document-end-newline-marker-v1'
 // V2 — Document-End one-click locate: coordinate-space contract + post-scroll
@@ -4323,6 +4324,8 @@ export class DocumentUtilityOverlayHost {
     // TRAE §13 — the served document-end rule retires WITH its carrier (a later
     // closure must never be scoped to a rule that owns no carrier any more).
     this.lastDocEndVisualRule = null
+    // TRAE round 2 — the geometry-authority facts retire with the same carrier.
+    this.lastDocEndMarkerGeometry = null
     // V5.13-R1 §14 — a marker left behind after the diagnostic is gone is a REAL
     // violation (self-checked on every carrier teardown).
     const dangling = this.root?.querySelectorAll('[data-ink-eof-marker="true"]').length ?? 0
@@ -8110,6 +8113,11 @@ export class DocumentUtilityOverlayHost {
   /** TRAE §13 — has this document EVER published the missing-newline warning?
    *  A later re-appearance is then a REINTRODUCTION (never the first sighting). */
   private lastDocEndNewlineDiagnosticEverSeen = false
+  /**
+   * The current document-end marker geometry, carrying the Y-authority audits
+   * (terminal line top / marker top / drift / source).
+   */
+  private lastDocEndMarkerGeometry: DocumentEndNewlineMarkerGeometry | null = null
 
   getDocumentEndVisualCounters(): Readonly<DocumentEndVisualV513R1Counters> {
     return { ...this.countersDocEndV513R1 }
@@ -19236,23 +19244,62 @@ export class DocumentUtilityOverlayHost {
       meaningfulRects: RectLike[]
     }
     contentColumn: RectLike | null
-    editorRect: RectLike | null
     textColumnLeft: number | null
     blankLineHeight: number | null
     blankLineHeightSource: string
   }): SyntheticEofGeometry {
     const anchor = input.tail.lastMeaningful
+    // ── TRAE round 2 §geometry — the Y authority is the REAL terminal editing
+    // line: a live terminal editable host when Typora renders one, otherwise
+    // `lastCanonicalBlock.bottom + MEASURED editor spacing`. Never a constant.
+    const host = this.resolveTerminalEditableHost(
+      anchor ? anchor.element : null,
+      anchor ? anchor.rect : null,
+    )
+    if (host && anchor) {
+      // post-conditions — a resolved host must be a real, editable, foreign node
+      const g = this.countersDocEndNewlineV1
+      if (this.isInkChapterAccessoryNode(host.element)) g.terminalHostIsOverlayOrCaption++
+      if (host.element.closest('.CodeMirror') !== null) g.terminalHostInsideCodeMirror++
+      if (host.element === anchor.element) g.terminalHostIsLastCanonicalBlock++
+      if (!this.isTerminalEditableNode(host.element)) g.terminalHostNotEditable++
+    }
+    const gap = anchor ? this.measureTerminalLineGapAfterBlock(anchor.element) : null
     const marker = computeDocumentEndNewlineMarkerGeometry({
       documentIsNonEmpty: input.tail.documentIsNonEmpty,
       lastCanonicalBlockRect: anchor ? anchor.rect : null,
+      terminalHostRect: host ? host.rect : null,
+      terminalHostConnected: host ? host.connected : false,
+      terminalLineGapPx: gap,
       contentBoundsRect: input.contentColumn,
-      editorContentRect: input.editorRect,
       lineHeight: input.blankLineHeight,
       textColumnLeft: input.textColumnLeft,
       otherMeaningfulRects: anchor
         ? input.tail.meaningfulRects.filter(r => r !== anchor.rect)
         : input.tail.meaningfulRects,
     })
+    this.lastDocEndMarkerGeometry = marker
+    // ── geometry-authority hard gates (every one must stay 0) ──
+    const g = this.countersDocEndNewlineV1
+    if (marker.rect != null && marker.terminalLineTop < marker.lastCanonicalBlockBottom - 0.5) {
+      g.terminalLineBeforeLastCanonicalBlockBottom++
+    }
+    if (marker.rect != null && marker.markerTop < marker.terminalLineTop - 0.5) {
+      g.markerTopBeforeTerminalLine++
+    }
+    if (marker.rect != null && marker.markerVerticalDriftPx > DOCUMENT_END_MARKER_MAX_VERTICAL_DRIFT_PX) {
+      g.markerVerticalDriftGt2px++
+    }
+    if (marker.rect != null && marker.fallbackUsed && gap == null) {
+      g.fallbackWithoutMeasuredLineMetric++
+    }
+    if (marker.rect != null) {
+      if (marker.geometrySource === DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST) {
+        g.DOCUMENT_END_TERMINAL_HOST_FOUND_RUNTIME_COUNT++
+      } else {
+        g.DOCUMENT_END_FALLBACK_GEOMETRY_RUNTIME_COUNT++
+      }
+    }
     return {
       rect: marker.rect,
       semanticZoneRect: marker.rect,
@@ -19264,7 +19311,7 @@ export class DocumentUtilityOverlayHost {
       lastMeaningfulRect: marker.lastCanonicalBlockRect,
       requiredTrailingBlankLineCount: 0,
       excessiveTrailingBlankLineCount: 0,
-      presentationHeightSource: EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
+      presentationHeightSource: marker.geometrySource,
       presentationHeight: marker.presentationHeight,
       geometrySource: marker.geometrySource,
       blankLineHeightSource: input.blankLineHeightSource,
@@ -19275,9 +19322,88 @@ export class DocumentUtilityOverlayHost {
           : 0,
       meaningfulIntersectionCount: marker.meaningfulIntersectionCount,
       meaningfulIntersectionArea: marker.meaningfulIntersectionArea,
-      viewportClamped: marker.clampedInsideEditor,
+      // No bottom-aligned clamp exists any more: the chip sits ON the terminal line.
+      viewportClamped: false,
       failClosed: marker.failClosed,
     }
+  }
+
+  /** TRAE §geometry — a node that can really host Typora's terminal caret. */
+  private isTerminalEditableNode(el: HTMLElement): boolean {
+    if (el.isContentEditable) return true
+    return String(el.className ?? '').includes('md-end-block')
+  }
+
+  /**
+   * TRAE §geometry/§4 — resolve the REAL Typora terminal editable host that
+   * exists AFTER the last canonical block. Only used for PRESENTATION geometry:
+   * it never enters the canonical Markdown block collection, never touches the
+   * trailing-newline / trailing-blank / heading / body diagnostics.
+   *
+   * Excluded structurally: everything outside the business content root
+   * (navigator / drawer / toolbar / hidden helpers), InkChapter overlays and
+   * captions, CodeMirror internals, and our own diagnostic carriers.
+   */
+  private resolveTerminalEditableHost(
+    lastCanonicalEl: HTMLElement | null,
+    lastCanonicalRect: RectLike | null,
+  ): { element: HTMLElement; rect: RectLike; connected: boolean } | null {
+    const root = resolveBusinessContentRoot()
+    if (!root || !lastCanonicalEl || !lastCanonicalRect) return null
+    const children = Array.from(root.children) as HTMLElement[]
+    const idx = children.indexOf(lastCanonicalEl)
+    if (idx < 0) return null
+    for (let i = idx + 1; i < children.length; i++) {
+      const el = children[i]
+      if (el === lastCanonicalEl) continue
+      // our OWN presentation nodes are never candidates (and never a violation)
+      if (el.getAttribute('data-inkchapter-locate-layer') === 'true') continue
+      if (el.hasAttribute('data-ink-eof-marker')) continue
+      if (el.hasAttribute('data-ink-blank-space-warning')) continue
+      // InkChapter overlay / caption nodes cannot host a caret
+      if (this.isInkChapterAccessoryNode(el)) continue
+      // a CodeMirror-internal node is never the terminal editing line
+      if (el.closest('.CodeMirror') !== null) continue
+      if (!this.isTerminalEditableNode(el)) continue
+      const cs = computedStyleOf(el)
+      if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) continue
+      const r = this.measureLocateRect(el)
+      if (!r || !(r.width > 0)) continue
+      if (r.top < lastCanonicalRect.bottom - 1) continue
+      return { element: el, rect: r, connected: el.isConnected }
+    }
+    return null
+  }
+
+  /**
+   * TRAE §geometry — the MEASURED collapsed margin the editor inserts between
+   * the last canonical block and the terminal editing line:
+   * `max(block.marginBottom, paragraph.marginTop)`, both read from real computed
+   * styles (never a hard-coded offset).
+   */
+  private measureTerminalLineGapAfterBlock(blockEl: HTMLElement): number | null {
+    const cs = computedStyleOf(blockEl)
+    if (!cs) return null
+    const mb = Number.parseFloat(cs.marginBottom)
+    const mt = this.measureTopLevelParagraphMarginTop()
+    const values = [mb, mt].filter(v => Number.isFinite(v))
+    if (values.length === 0) return null
+    return Math.max(...values)
+  }
+
+  /** The real margin-top of a top-level body paragraph in THIS document/theme. */
+  private measureTopLevelParagraphMarginTop(): number {
+    const root = resolveBusinessContentRoot()
+    if (!root) return 0
+    for (const el of Array.from(root.children) as HTMLElement[]) {
+      if (el.tagName !== 'P') continue
+      if (this.isInkChapterAccessoryNode(el)) continue
+      const cs = computedStyleOf(el)
+      if (!cs) continue
+      const mt = Number.parseFloat(cs.marginTop)
+      if (Number.isFinite(mt)) return mt
+    }
+    return 0
   }
 
   /**
@@ -19781,7 +19907,6 @@ export class DocumentUtilityOverlayHost {
       : this.buildDocumentEndNewlineMarkerGeometry({
           tail,
           contentColumn,
-          editorRect,
           textColumnLeft: textColumn.left,
           blankLineHeight: blankLh.lineHeight,
           blankLineHeightSource: blankLh.source,
@@ -20027,7 +20152,6 @@ export class DocumentUtilityOverlayHost {
         : this.buildDocumentEndNewlineMarkerGeometry({
             tail: retryTail,
             contentColumn: retryContent,
-            editorRect: retryEditor,
             textColumnLeft: retryTextColumn.left,
             blankLineHeight: retryLh.lineHeight,
             blankLineHeightSource: retryLh.source,
@@ -20349,6 +20473,15 @@ export class DocumentUtilityOverlayHost {
       actualTrailingBlankVisualRect: input.actualTrailingBlankVisualRect,
       blankLineHeightSource: input.blankLineHeightSource,
       presentationTopMinusLastMeaningfulBottom: input.presentationTopMinusLastMeaningfulBottom,
+      // ── TRAE round 2 — the document-end GEOMETRY AUTHORITY audits ───────────
+      DOCUMENT_END_GEOMETRY_SOURCE: this.lastDocEndMarkerGeometry?.geometrySource ?? input.geometrySource,
+      DOCUMENT_END_TERMINAL_HOST_CONNECTED: this.lastDocEndMarkerGeometry?.terminalHostConnected ?? false,
+      DOCUMENT_END_LAST_CANONICAL_BLOCK_BOTTOM: this.lastDocEndMarkerGeometry?.lastCanonicalBlockBottom ?? null,
+      DOCUMENT_END_TERMINAL_LINE_TOP: this.lastDocEndMarkerGeometry?.terminalLineTop ?? null,
+      DOCUMENT_END_MARKER_TOP: this.lastDocEndMarkerGeometry?.markerTop ?? null,
+      DOCUMENT_END_MARKER_VERTICAL_DRIFT_PX: this.lastDocEndMarkerGeometry?.markerVerticalDriftPx ?? null,
+      DOCUMENT_END_MARKER_AFTER_LAST_CANONICAL_BLOCK: this.lastDocEndMarkerGeometry?.markerAfterLastCanonicalBlock ?? null,
+      DOCUMENT_END_GEOMETRY_FALLBACK_USED: this.lastDocEndMarkerGeometry?.fallbackUsed ?? null,
       meaningfulIntersectionCount: input.meaningfulIntersectionCount,
       meaningfulIntersectionArea: input.meaningfulIntersectionArea,
       semanticZoneRect: input.semanticZoneRect,

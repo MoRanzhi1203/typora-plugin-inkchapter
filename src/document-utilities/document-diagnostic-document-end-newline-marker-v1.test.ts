@@ -30,12 +30,14 @@ import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { computeDocumentDiagnostics, computeEofNewlinePolicy } from './document-diagnostics'
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
 import {
+  DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK,
+  DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST,
+  DOCUMENT_END_MARKER_MAX_VERTICAL_DRIFT_PX,
   DOCUMENT_END_NEWLINE_GATE_KEYS,
   DOCUMENT_END_NEWLINE_MISSING_RULE,
   DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS,
   DOCUMENT_END_TRAILING_BLANK_RULE_NAME,
   EOF_NEWLINE_MARKER_ARIA_LABEL,
-  EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
   EOF_NEWLINE_MARKER_KIND,
   EOF_NEWLINE_MARKER_MAX_HEIGHT_PX,
   EOF_NEWLINE_MARKER_MAX_WIDTH_PX,
@@ -123,74 +125,108 @@ describe('DocumentEndTargetResolver — rule is a pure function of the diagnosti
   })
 })
 
-describe('computeDocumentEndNewlineMarkerGeometry — the compact EOF chip', () => {
+describe('computeDocumentEndNewlineMarkerGeometry — the Y authority', () => {
   const anchor = { left: 60, top: 900, right: 700, bottom: 1000, width: 640, height: 100 }
   const column = { left: 50, top: 0, right: 850, bottom: 1200, width: 800, height: 1200 }
-  const editor = { left: 50, top: 0, right: 850, bottom: 1100, width: 800, height: 1100 }
+  const base = {
+    documentIsNonEmpty: true, lastCanonicalBlockRect: anchor, contentBoundsRect: column,
+    lineHeight: 24, textColumnLeft: 60,
+  }
 
-  it('is compact, soft-fill-sized, and sits on the EOF side of the anchor', () => {
+  it('uses the REAL terminal editable host when one exists (drift 0, on the line)', () => {
+    const hostRect = { left: 60, top: 1015, right: 700, bottom: 1040, width: 640, height: 25 }
     const geo = computeDocumentEndNewlineMarkerGeometry({
-      documentIsNonEmpty: true, lastCanonicalBlockRect: anchor, contentBoundsRect: column,
-      editorContentRect: editor, lineHeight: 24, textColumnLeft: 60,
+      ...base, terminalHostRect: hostRect, terminalHostConnected: true, terminalLineGapPx: 15,
     })
     expect(geo.rect).not.toBeNull()
-    expect(geo.geometrySource).toBe(EOF_NEWLINE_MARKER_GEOMETRY_SOURCE)
+    expect(geo.geometrySource).toBe(DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST)
+    expect(geo.fallbackUsed).toBe(false)
+    expect(geo.terminalHostConnected).toBe(true)
+    expect(geo.terminalLineTop).toBe(1015)
+    expect(geo.markerTop).toBe(1015)
+    expect(geo.markerVerticalDriftPx).toBe(0)
+    expect(geo.markerAfterLastCanonicalBlock).toBe(true)
     expect(geo.rect!.width).toBeLessThanOrEqual(EOF_NEWLINE_MARKER_MAX_WIDTH_PX)
     expect(geo.rect!.height).toBeGreaterThanOrEqual(EOF_NEWLINE_MARKER_MIN_HEIGHT_PX)
     expect(geo.rect!.height).toBeLessThanOrEqual(EOF_NEWLINE_MARKER_MAX_HEIGHT_PX)
-    // EOF side: at/after the block bottom edge, never the block body centre
-    expect(geo.rect!.top).toBeGreaterThanOrEqual(anchor.bottom - geo.rect!.height)
     expect(geo.rect!.left).toBe(60)
-    expect(geo.clampedInsideEditor).toBe(false)
     expect(geo.meaningfulIntersectionCount).toBe(0)
     expect(geo.failClosed).toBe(false)
   })
 
-  it('bounds itself inside the visible editor instead of painting offscreen', () => {
+  it('falls back to the MEASURED gap after the last canonical block (never a constant)', () => {
     const geo = computeDocumentEndNewlineMarkerGeometry({
-      documentIsNonEmpty: true, lastCanonicalBlockRect: anchor, contentBoundsRect: column,
-      editorContentRect: { ...editor, top: 0, bottom: 1010 }, lineHeight: 24, textColumnLeft: 60,
+      ...base, terminalHostRect: null, terminalHostConnected: false, terminalLineGapPx: 15,
     })
-    expect(geo.rect).not.toBeNull()
-    expect(geo.clampedInsideEditor).toBe(true)
-    expect(geo.rect!.bottom).toBeLessThanOrEqual(1010 - 2)
+    expect(geo.geometrySource).toBe(DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK)
+    expect(geo.fallbackUsed).toBe(true)
+    expect(geo.lastCanonicalBlockBottom).toBe(1000)
+    // the terminal line is lastBlock.bottom + the MEASURED gap — not 1000, not 1000+2
+    expect(geo.terminalLineTop).toBe(1015)
+    expect(geo.markerTop).toBe(1015)
+    expect(geo.markerVerticalDriftPx).toBe(0)
+    expect(geo.markerAfterLastCanonicalBlock).toBe(true)
+    // a different measured gap moves the line by exactly that amount
+    const geo25 = computeDocumentEndNewlineMarkerGeometry({
+      ...base, terminalHostRect: null, terminalHostConnected: false, terminalLineGapPx: 25.6,
+    })
+    expect(geo25.terminalLineTop).toBe(1025.6)
+  })
+
+  it('rejects a host that is NOT after the last canonical block', () => {
+    const stale = { left: 60, top: 980, right: 700, bottom: 995, width: 640, height: 15 }
+    const geo = computeDocumentEndNewlineMarkerGeometry({
+      ...base, terminalHostRect: stale, terminalHostConnected: true, terminalLineGapPx: 15,
+    })
+    expect(geo.geometrySource).toBe(DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK)
+    expect(geo.terminalLineTop).toBe(1015)
   })
 
   it('fails CLOSED for a non-empty document with no resolvable canonical block', () => {
     const geo = computeDocumentEndNewlineMarkerGeometry({
-      documentIsNonEmpty: true, lastCanonicalBlockRect: null, contentBoundsRect: column,
-      editorContentRect: editor, lineHeight: 24, textColumnLeft: 60,
+      ...base, lastCanonicalBlockRect: null, terminalHostRect: null, terminalHostConnected: false,
+      terminalLineGapPx: 15,
     })
     expect(geo.rect).toBeNull()
     expect(geo.failClosed).toBe(true)
     expect(geo.reason).toBe('NO_LAST_CANONICAL_BLOCK')
     // an EMPTY document never fails closed (it owns no document-end visual)
     expect(computeDocumentEndNewlineMarkerGeometry({
-      documentIsNonEmpty: false, lastCanonicalBlockRect: null, contentBoundsRect: column,
-      editorContentRect: editor, lineHeight: 24, textColumnLeft: 60,
+      ...base, documentIsNonEmpty: false, lastCanonicalBlockRect: null,
+      terminalHostRect: null, terminalHostConnected: false, terminalLineGapPx: 15,
     }).failClosed).toBe(false)
   })
 
   it('never intersects another meaningful block (the chip is a chip)', () => {
-    const other = { left: 60, top: 1001, right: 700, bottom: 1100, width: 640, height: 99 }
+    const other = { left: 60, top: 1016, right: 700, bottom: 1100, width: 640, height: 84 }
     const geo = computeDocumentEndNewlineMarkerGeometry({
-      documentIsNonEmpty: true, lastCanonicalBlockRect: anchor, contentBoundsRect: column,
-      editorContentRect: editor, lineHeight: 24, textColumnLeft: 60, otherMeaningfulRects: [other],
+      ...base, terminalHostRect: null, terminalHostConnected: false, terminalLineGapPx: 15,
+      otherMeaningfulRects: [other],
     })
-    // top = 1002 → the other block starts at 1001 → a real intersection is reported
+    // top = 1015 → the other block starts at 1016 → a real intersection is reported
     expect(geo.meaningfulIntersectionCount).toBe(1)
     expect(geo.meaningfulIntersectionArea).toBeGreaterThan(0)
   })
 })
 
-describe('the 17 document-end gates + positive coverage', () => {
+describe('the document-end gates + positive coverage', () => {
   it('every gate is 0 ⇒ PASS; one hit ⇒ FAIL', () => {
-    expect(DOCUMENT_END_NEWLINE_GATE_KEYS).toHaveLength(17)
     const counters = createDocumentEndNewlineGateCounters()
+    expect(DOCUMENT_END_NEWLINE_GATE_KEYS).toHaveLength(24)
+    // the round-2 geometry-authority gates are present
+    for (const key of [
+      'terminalLineBeforeLastCanonicalBlockBottom', 'markerTopBeforeTerminalLine',
+      'markerVerticalDriftGt2px', 'terminalHostIsOverlayOrCaption',
+      'terminalHostInsideCodeMirror', 'terminalHostIsLastCanonicalBlock',
+      'terminalHostNotEditable', 'fallbackWithoutMeasuredLineMetric',
+    ] as const) {
+      expect(DOCUMENT_END_NEWLINE_GATE_KEYS).toContain(key)
+    }
+    expect(DOCUMENT_END_MARKER_MAX_VERTICAL_DRIFT_PX).toBe(2)
     expect(evaluateDocumentEndNewlineGates(counters).decision).toBe('PASS')
-    counters.severityDriftWarningToInfo = 1
+    counters.markerVerticalDriftGt2px = 1
     expect(evaluateDocumentEndNewlineGates(counters).decision).toBe('FAIL')
-    expect(evaluateDocumentEndNewlineGates(counters).failing).toEqual(['severityDriftWarningToInfo'])
+    expect(evaluateDocumentEndNewlineGates(counters).failing).toEqual(['markerVerticalDriftGt2px'])
   })
 
   it('positive coverage requires every runtime step, never a fabricated PASS', () => {
@@ -212,6 +248,13 @@ type Internals = {
   emitVisualClosureAudit(reason: string): void
   removeLocateDocumentCarrier(): void
   locateDiagnostic(diagnosticId: string): void
+  collectLastMeaningfulBlock(): { rect: unknown; element: HTMLElement; identity: string } | null
+  measureTrailingBlankGeometry(): {
+    documentIsNonEmpty: boolean
+    lastMeaningful: { rect: unknown; element: HTMLElement; identity: string } | null
+    trailingBlankRects: unknown[]
+    meaningfulRects: unknown[]
+  }
   lastLocatedDiagnosticId: string | null
   lastDocEndVisualRule: string | null
   lastLocateCommitGate: { canCommit: boolean; reason: string; failedChecks: string[] } | null
@@ -255,10 +298,12 @@ interface World {
   write: HTMLElement
   last: HTMLElement
   codeMirror?: HTMLElement
+  /** A real trailing terminal editable host (present only in that scenario). */
+  terminalHost?: HTMLElement
 }
 
 /** The last CANONICAL top-level content block, one shape per §15 A–H. */
-function makeKindWorld(kind: LastBlockKind): World {
+function makeKindWorld(kind: LastBlockKind, opts: { terminalHost?: boolean } = {}): World {
   const shell = document.createElement('div')
   shell.className = 'typ-markdown-view'
   document.body.appendChild(shell)
@@ -334,10 +379,22 @@ function makeKindWorld(kind: LastBlockKind): World {
   stubRect(el, () => ({ left, top: 1000, right: left + 640, bottom: 1040 }))
   if (codeMirror) stubRect(codeMirror, () => ({ left: 60, top: 1000, right: 700, bottom: 1040 }))
 
+  // An OPTIONAL real Typora terminal editable host AFTER the last canonical block
+  // (this is what Typora renders once the caret reaches the document end). It
+  // sits exactly one collapsed margin (15px) below the last block.
+  let terminalHost: HTMLElement | undefined
+  if (opts.terminalHost) {
+    terminalHost = document.createElement('p')
+    terminalHost.className = 'md-end-block md-p'
+    terminalHost.setAttribute('cid', 'n99')
+    write.appendChild(terminalHost)
+    stubRect(terminalHost, () => ({ left: 60, top: 1055, right: 700, bottom: 1080.6 }))
+  }
+
   const h = new DocumentUtilityOverlayHost({ ctx: fakeContext(), providers: fakeProviders() })
   h.mount()
   hosts.push(h)
-  return { h, write, last: el, codeMirror }
+  return { h, write, last: el, codeMirror, terminalHost }
 }
 
 function newlineDiag(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
@@ -413,6 +470,12 @@ beforeEach(() => {
     const isEofBand = el.getAttribute?.('data-ink-eof-marker') === 'true'
     return {
       lineHeight: '24px',
+      // REAL theme metrics (github theme): .md-fences{margin-bottom:15px},
+      // p.md-end-block{margin-top:12.8px} → the terminal line gap is 15px.
+      marginTop: '12.8px',
+      marginBottom: '15px',
+      display: 'block',
+      visibility: 'visible',
       backgroundColor: 'rgba(168, 121, 50, 0.08)',
       backgroundImage: 'none',
       boxShadow: 'none',
@@ -485,6 +548,94 @@ describe('§15 A–H — the missing-newline warning gets a REAL presentation ta
     expect(world.codeMirror!.querySelector('[data-ink-eof-marker="true"]')).toBeNull()
     expect(world.h.getDocumentEndNewlineGateCounters().markerLeftCodeMirrorInternalTarget).toBe(0)
     expect(world.h.getDocumentEndNewlineGateCounters().markerCoveredByCodeMirrorInternal).toBe(0)
+  })
+
+  // TRAE round 2 — the Y authority is the REAL terminal editing line.
+  it('round 2 A: a real trailing terminal host ⇒ TERMINAL_EDITABLE_HOST, drift 0, on the line', () => {
+    const world = makeKindWorld('paragraph', { terminalHost: true })
+    const diag = newlineDiag()
+    injectSnapshot(world, [diag])
+    expect((world.h as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag, 0, true)).toBe(true)
+    const audit = readAudits(infoSpy!, DOCUMENT_END_VISUAL_AUDIT_EVENT).pop()!
+    expect(audit.DOCUMENT_END_GEOMETRY_SOURCE).toBe(DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST)
+    expect(audit.DOCUMENT_END_TERMINAL_HOST_CONNECTED).toBe('true')
+    expect(Number(audit.DOCUMENT_END_LAST_CANONICAL_BLOCK_BOTTOM)).toBe(1040)
+    expect(Number(audit.DOCUMENT_END_TERMINAL_LINE_TOP)).toBe(1055)
+    expect(Number(audit.DOCUMENT_END_MARKER_TOP)).toBe(1055)
+    expect(Number(audit.DOCUMENT_END_MARKER_VERTICAL_DRIFT_PX)).toBe(0)
+    expect(audit.DOCUMENT_END_MARKER_AFTER_LAST_CANONICAL_BLOCK).toBe('true')
+    // the chip is painted ON the terminal line (#write origin = (50,0))
+    const marker = document.querySelector('[data-ink-eof-marker="true"]') as HTMLElement
+    expect(Number.parseFloat(marker.style.top)).toBe(1055)
+    const gates = world.h.getDocumentEndNewlineGateCounters()
+    expect(gates.DOCUMENT_END_TERMINAL_HOST_FOUND_RUNTIME_COUNT).toBe(1)
+    expect(gates.DOCUMENT_END_FALLBACK_GEOMETRY_RUNTIME_COUNT).toBe(0)
+    expect(world.h.getDocumentEndNewlineGateDecision().decision).toBe('PASS')
+    expect(world.h.getDocumentEndNewlineGateDecision().failing).toEqual([])
+  })
+
+  it('round 2 B: NO trailing host (the real Typora fixture) ⇒ measured fallback, drift 0, after the block', () => {
+    const world = makeKindWorld('code')
+    const diag = newlineDiag()
+    injectSnapshot(world, [diag])
+    expect((world.h as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag, 0, true)).toBe(true)
+    const audit = readAudits(infoSpy!, DOCUMENT_END_VISUAL_AUDIT_EVENT).pop()!
+    expect(audit.DOCUMENT_END_GEOMETRY_SOURCE).toBe(DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK)
+    expect(audit.DOCUMENT_END_TERMINAL_HOST_CONNECTED).toBe('false')
+    // lastBlock.bottom (1040) + the MEASURED collapsed margin (15px) = 1055 —
+    // NOT 1040, and NOT `+2px`.
+    expect(Number(audit.DOCUMENT_END_LAST_CANONICAL_BLOCK_BOTTOM)).toBe(1040)
+    expect(Number(audit.DOCUMENT_END_TERMINAL_LINE_TOP)).toBe(1055)
+    expect(Number(audit.DOCUMENT_END_MARKER_TOP)).toBe(1055)
+    expect(Number(audit.DOCUMENT_END_MARKER_VERTICAL_DRIFT_PX)).toBe(0)
+    expect(audit.DOCUMENT_END_MARKER_AFTER_LAST_CANONICAL_BLOCK).toBe('true')
+    const marker = document.querySelector('[data-ink-eof-marker="true"]') as HTMLElement
+    expect(Number.parseFloat(marker.style.top)).toBe(1055)
+    const gates = world.h.getDocumentEndNewlineGateCounters()
+    expect(gates.fallbackWithoutMeasuredLineMetric).toBe(0)
+    expect(gates.DOCUMENT_END_FALLBACK_GEOMETRY_RUNTIME_COUNT).toBe(1)
+    expect(gates.DOCUMENT_END_TERMINAL_HOST_FOUND_RUNTIME_COUNT).toBe(0)
+    expect(world.h.getDocumentEndNewlineGateDecision().decision).toBe('PASS')
+  })
+
+  it('round 2 §4 — the terminal host never enters the canonical Markdown block collection', () => {
+    const world = makeKindWorld('paragraph', { terminalHost: true })
+    const internals = world.h as unknown as Internals
+    // the canonical last block is STILL the content block, not the empty host
+    expect(internals.collectLastMeaningfulBlock()?.element).toBe(world.last)
+    const tail = internals.measureTrailingBlankGeometry()
+    expect(tail.lastMeaningful?.element).toBe(world.last)
+    // the empty host is a trailing BLANK (structure only), never a meaningful block
+    expect(tail.trailingBlankRects.length).toBeGreaterThanOrEqual(1)
+    expect(tail.meaningfulRects).not.toContain(world.terminalHost)
+  })
+
+  it('round 2 §5 — the marker geometry is independent of where the caret is', () => {
+    const world = makeKindWorld('code')
+    const diag = newlineDiag()
+    injectSnapshot(world, [diag])
+    const internals = world.h as unknown as Internals
+    // caret in the FIRST paragraph
+    const firstP = world.write.querySelector('p') as HTMLElement
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    const r1 = document.createRange()
+    r1.setStart(firstP.firstChild ?? firstP, 0)
+    r1.collapse(true)
+    sel.addRange(r1)
+    internals.commitSyntheticEofVisual(fakeTx(), diag, 0, true)
+    const topWithCaretFar = Number.parseFloat((document.querySelector('[data-ink-eof-marker="true"]') as HTMLElement).style.top)
+    // caret moved to the very end of the editor
+    sel.removeAllRanges()
+    const r2 = document.createRange()
+    r2.selectNodeContents(world.write)
+    r2.collapse(false)
+    sel.addRange(r2)
+    internals.commitSyntheticEofVisual(fakeTx(), diag, 0, true)
+    const topWithCaretAtEnd = Number.parseFloat((document.querySelector('[data-ink-eof-marker="true"]') as HTMLElement).style.top)
+    sel.removeAllRanges()
+    expect(topWithCaretAtEnd).toBe(topWithCaretFar)
+    expect(topWithCaretAtEnd).toBe(1055)
   })
 
   // §7 — the ONE-CLICK locate path: GO_BOTTOM is a STEP, not the result.

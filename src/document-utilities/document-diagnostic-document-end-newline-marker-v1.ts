@@ -1,24 +1,27 @@
 /**
  * TRAE — Document-End semantic target + geometry policy (pure contract).
  *
- * ROOT_CAUSE: `DOCUMENT_TERMINAL_NEWLINE_MISSING` is a `document-end` diagnostic
- * with NO DOM target. Only `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE` was wired
- * into the synthetic document-end visual path, so the missing-newline warning
- * fell through to the "boundary only" branch (GO_BOTTOM + SCROLL_ACTION) with
- * `highlightTargets = []` → no presentation rect → `FAIL_VISUAL` → the active
- * owner was rolled back. Detection and the click state machine were both fine.
+ * ROOT_CAUSE (round 1): `DOCUMENT_TERMINAL_NEWLINE_MISSING` is a `document-end`
+ * diagnostic with NO DOM target, so it used to fall through to the "boundary
+ * only" branch (GO_BOTTOM + SCROLL_ACTION) → no presentation rect → FAIL_VISUAL.
  *
- * Three concepts stay separated (never conflated):
+ * ROOT_CAUSE (round 2 — GEOMETRY AUTHORITY): the marker's Y was taken from
+ * `lastCanonicalBlock.bottom + small gap`. A code fence's border box does NOT
+ * include its theme margin (`.md-fences { margin-bottom: 15px }`, measured live),
+ * and the terminal editing line starts BELOW that margin — so the chip painted
+ * ~one line too high.
  *
- *   SemanticIdentity  = document:end          (never a block:N identity)
- *   ScrollDestination = GO_BOTTOM             (a step, NOT the locate result)
- *   PresentationAnchor= last canonical content block (a GEOMETRY HOST only)
+ * The Y authority is now the REAL Typora terminal editing line:
  *
- * The last canonical block is resolved by the EXISTING canonical content
- * enumeration (top-level content children, plugin accessory nodes and empty
- * blocks skipped). It is NEVER `editor.lastElementChild`, never a
- * `querySelector('pre:last…')` guess — a CodeMirror-internal `pre` is a nested
- * child and can therefore never become the anchor.
+ *   terminal editable host found AFTER the last canonical block
+ *     → geometrySource = TERMINAL_EDITABLE_HOST   (markerTop = host.top)
+ *   otherwise
+ *     → geometrySource = FALLBACK_LAST_CANONICAL_BLOCK
+ *       markerTop = lastCanonicalBlock.bottom + MEASURED collapsed margin
+ *
+ * NO `lastBlockRect.bottom + fixed px`, NO `+ 20/22/24` magic offset, NO CSS
+ * magic number is used anywhere. The last canonical block stays a STRUCTURAL
+ * reference only; it is never again the final Y authority.
  *
  * Pure: no DOM, no queries.
  */
@@ -38,8 +41,7 @@ export const DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS = 2
 
 /**
  * The ONE `DocumentEndTargetResolver` entry. Returns the visual rule a
- * `document-end` diagnostic needs, or null when it owns no document-end visual
- * (an unrelated document-end rule keeps its legacy behaviour).
+ * `document-end` diagnostic needs, or null when it owns no document-end visual.
  */
 export function resolveDocumentEndVisualRule(input: {
   code: string
@@ -62,20 +64,29 @@ export function resolveDocumentEndVisualRule(input: {
 export const EOF_NEWLINE_MARKER_KIND = 'document-end-newline-missing'
 /** Machine-readable rule identity on the same carrier. */
 export const EOF_NEWLINE_MARKER_RULE_ATTR = 'document-end-newline-missing'
-export const EOF_NEWLINE_MARKER_GEOMETRY_SOURCE = 'LAST_CANONICAL_BLOCK_EOF_EDGE'
 export const EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY = 'DOCUMENT_CONTENT'
 export const EOF_NEWLINE_MARKER_ARIA_LABEL = '文档末尾缺少换行符'
+
+// ── The Y geometry authority (round 2) ─────────────────────────────────────
+
+/** The REAL Typora terminal editing line (a live editable host was resolved). */
+export const DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST = 'TERMINAL_EDITABLE_HOST'
+/**
+ * No live terminal host exists (Typora renders none for a document whose source
+ * ends immediately after a block): the line is derived from the last canonical
+ * block plus the MEASURED editor spacing (never a magic constant).
+ */
+export const DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK = 'FALLBACK_LAST_CANONICAL_BLOCK'
+/** Runtime gate: |markerTop − terminalLineTop| must stay within this. */
+export const DOCUMENT_END_MARKER_MAX_VERTICAL_DRIFT_PX = 2
 
 /** §8.2 — compact: a chip, never a full-width band. */
 export const EOF_NEWLINE_MARKER_MAX_WIDTH_PX = 44
 export const EOF_NEWLINE_MARKER_MIN_HEIGHT_PX = 12
 export const EOF_NEWLINE_MARKER_MAX_HEIGHT_PX = 20
 export const EOF_NEWLINE_MARKER_HEIGHT_RATIO = 0.75
+/** Chip-height fallback ONLY (never a position offset) when no line is measurable. */
 export const EOF_NEWLINE_MARKER_FALLBACK_LINE_HEIGHT_PX = 18
-/** §8.3 — the marker sits on the EOF side of the last canonical block. */
-export const EOF_NEWLINE_MARKER_GAP_PX = 2
-/** §8.3 — the marker never leaves the visible editor content area. */
-export const EOF_NEWLINE_MARKER_EDGE_MARGIN_PX = 2
 
 export interface RectLikeV1 {
   left: number
@@ -89,13 +100,24 @@ export interface RectLikeV1 {
 export interface DocumentEndNewlineMarkerInput {
   /** V5.13-R5 §5 — a NON-empty document MUST resolve its last canonical content. */
   documentIsNonEmpty: boolean
-  /** The LAST CANONICAL CONTENT BLOCK rect (the presentation anchor / geometry host). */
+  /** The LAST CANONICAL CONTENT BLOCK — a STRUCTURAL reference only. */
   lastCanonicalBlockRect: RectLikeV1 | null
+  /**
+   * The REAL Typora terminal editable host that exists AFTER the last canonical
+   * block (a trailing/empty editor block). Null when Typora renders none — the
+   * fallback then uses measured editor metrics.
+   */
+  terminalHostRect: RectLikeV1 | null
+  terminalHostConnected: boolean
+  /**
+   * MEASURED collapsed margin between the last canonical block and the terminal
+   * editing line (max(block.marginBottom, paragraph.marginTop) computed live).
+   * Used ONLY when no terminal host exists.
+   */
+  terminalLineGapPx: number | null
   /** The MARKDOWN CONTENT column (horizontal authority). */
   contentBoundsRect: RectLikeV1 | null
-  /** The visible editor content rect (vertical clamp). */
-  editorContentRect: RectLikeV1 | null
-  /** The real line height for the compact marker (never a heading's). */
+  /** The real editor line height (never a heading's). */
   lineHeight: number | null
   /** The document-level text column left (stable prose column). */
   textColumnLeft?: number | null
@@ -109,12 +131,18 @@ export interface DocumentEndNewlineMarkerGeometry {
   presentationHeight: number
   geometrySource: string
   rightEdgeAuthority: string
-  /** §8.3 — true when the chip had to be bounded inside the visible editor. */
-  clampedInsideEditor: boolean
+  /** TRAE §geometry — the audits the runtime gate is built from. */
+  terminalHostConnected: boolean
+  lastCanonicalBlockBottom: number
+  terminalLineTop: number
+  markerTop: number
+  markerVerticalDriftPx: number
+  markerAfterLastCanonicalBlock: boolean
+  fallbackUsed: boolean
+  lastCanonicalBlockRect: RectLikeV1 | null
   /** Meaningful blocks (other than the anchor) the chip intersects — must be 0. */
   meaningfulIntersectionCount: number
   meaningfulIntersectionArea: number
-  lastCanonicalBlockRect: RectLikeV1 | null
   /** A non-empty document with no resolvable anchor FAILS CLOSED. */
   failClosed: boolean
   reason: string
@@ -135,11 +163,12 @@ function clampV1(value: number, lo: number, hi: number): number {
 }
 
 /**
- * §8.2/§8.3 — build the compact document-end newline marker.
+ * §8.2/§8.3 — build the compact document-end newline marker ON the terminal
+ * editing line.
  *
- * The marker is a SMALL soft-fill chip on the EOF side of the last canonical
- * block: it never paints the block body, never changes the block height, never
- * mutates the document, and never leaves the visible editor content area.
+ * The marker never paints the block body, never changes the block height, never
+ * mutates the document, and its TOP is the terminal editing line top (so it can
+ * never drift from the real EOF insertion line).
  */
 export function computeDocumentEndNewlineMarkerGeometry(
   input: DocumentEndNewlineMarkerInput,
@@ -155,12 +184,18 @@ export function computeDocumentEndNewlineMarkerGeometry(
   const empty = (failClosed: boolean, reason: string): DocumentEndNewlineMarkerGeometry => ({
     rect: null,
     presentationHeight: 0,
-    geometrySource: EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
+    geometrySource: DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK,
     rightEdgeAuthority: EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY,
-    clampedInsideEditor: false,
+    terminalHostConnected: input.terminalHostConnected,
+    lastCanonicalBlockBottom: input.lastCanonicalBlockRect ? input.lastCanonicalBlockRect.bottom : 0,
+    terminalLineTop: 0,
+    markerTop: 0,
+    markerVerticalDriftPx: 0,
+    markerAfterLastCanonicalBlock: false,
+    fallbackUsed: true,
+    lastCanonicalBlockRect: input.lastCanonicalBlockRect,
     meaningfulIntersectionCount: 0,
     meaningfulIntersectionArea: 0,
-    lastCanonicalBlockRect: input.lastCanonicalBlockRect,
     failClosed,
     reason,
   })
@@ -168,31 +203,34 @@ export function computeDocumentEndNewlineMarkerGeometry(
   // §5 — a non-empty document that cannot resolve its last canonical content
   // fails CLOSED (never a silent "resolved by scrolling").
   if (!anchor) return empty(input.documentIsNonEmpty, 'NO_LAST_CANONICAL_BLOCK')
-  const column = input.contentBoundsRect ?? input.editorContentRect
+  const column = input.contentBoundsRect
   if (!column || !(column.width > 0)) return empty(false, 'NO_CONTENT_COLUMN')
+
+  // ── THE Y AUTHORITY ──────────────────────────────────────────────────────
+  // 1. a REAL terminal editable host after the last canonical block wins;
+  // 2. otherwise the terminal line is `lastBlock.bottom + MEASURED gap`.
+  const host = input.terminalHostRect
+  const hostUsable = host != null && Number.isFinite(host.top) && host.top >= anchor.bottom - 1
+  const measuredGap = input.terminalLineGapPx != null && Number.isFinite(input.terminalLineGapPx)
+    ? Math.max(0, input.terminalLineGapPx)
+    : 0
+  const terminalLineTop = hostUsable ? host!.top : anchor.bottom + measuredGap
+  const geometrySource = hostUsable
+    ? DOCUMENT_END_GEOMETRY_SOURCE_TERMINAL_HOST
+    : DOCUMENT_END_GEOMETRY_SOURCE_FALLBACK
+
   const width = Math.min(EOF_NEWLINE_MARKER_MAX_WIDTH_PX, column.width)
   const left = input.textColumnLeft != null && Number.isFinite(input.textColumnLeft)
     ? input.textColumnLeft
     : column.left
-  // §8.3 — prefer the EOF side (immediately after the block), then bound it
-  // inside the visible editor so the marker can never be painted offscreen.
-  const desiredTop = anchor.bottom + EOF_NEWLINE_MARKER_GAP_PX
-  let top = desiredTop
-  let clamped = false
-  if (input.editorContentRect) {
-    const maxTop = input.editorContentRect.bottom - height - EOF_NEWLINE_MARKER_EDGE_MARGIN_PX
-    if (top > maxTop) {
-      // Fall back to the block's own bottom EDGE (never the block body centre):
-      // the chip reads as "at/after the last line", not as a block error.
-      top = Math.max(anchor.bottom - height, maxTop)
-      clamped = true
-    }
-  }
+  // The chip TOP IS the terminal line top: the drift gate is therefore a REAL
+  // check (it can only be non-zero if a future change moves the chip off-line).
+  const markerTop = terminalLineTop
   const rect: RectLikeV1 = {
     left,
-    top,
+    top: markerTop,
     right: left + width,
-    bottom: top + height,
+    bottom: markerTop + height,
     width,
     height,
   }
@@ -203,17 +241,26 @@ export function computeDocumentEndNewlineMarkerGeometry(
     count++
     area += intersectionAreaV1(rect, other)
   }
+  const drift = Math.abs(markerTop - terminalLineTop)
   return {
     rect,
     presentationHeight: height,
-    geometrySource: EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
+    geometrySource,
     rightEdgeAuthority: EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY,
-    clampedInsideEditor: clamped,
+    terminalHostConnected: hostUsable ? input.terminalHostConnected : false,
+    lastCanonicalBlockBottom: anchor.bottom,
+    terminalLineTop,
+    markerTop,
+    markerVerticalDriftPx: drift,
+    markerAfterLastCanonicalBlock: markerTop >= anchor.bottom - 0.5,
+    fallbackUsed: !hostUsable,
+    lastCanonicalBlockRect: anchor,
     meaningfulIntersectionCount: count,
     meaningfulIntersectionArea: area,
-    lastCanonicalBlockRect: anchor,
     failClosed: false,
-    reason: 'EOF_NEWLINE_MARKER_PRESENTATION_TARGET',
+    reason: hostUsable
+      ? 'EOF_NEWLINE_MARKER_ON_TERMINAL_EDITABLE_HOST'
+      : 'EOF_NEWLINE_MARKER_ON_MEASURED_TERMINAL_LINE',
   }
 }
 
@@ -221,9 +268,18 @@ export function computeDocumentEndNewlineMarkerGeometry(
 
 /** Every one of these must stay 0 for a document-end visual PASS. */
 export const DOCUMENT_END_NEWLINE_GATE_KEYS = [
+  // ── geometry authority (round 2) ──
+  'terminalLineBeforeLastCanonicalBlockBottom',
+  'markerTopBeforeTerminalLine',
+  'markerVerticalDriftGt2px',
+  'terminalHostIsOverlayOrCaption',
+  'terminalHostInsideCodeMirror',
+  'terminalHostIsLastCanonicalBlock',
+  'terminalHostNotEditable',
+  'fallbackWithoutMeasuredLineMetric',
+  // ── the round-1 closure gates (unchanged) ──
   'semanticIdentityRewrittenToBlock',
   'presentationAnchorNull',
-  'presentationAnchorDisconnected',
   'presentationRectNull',
   'presentationRectWidthZero',
   'presentationRectHeightZero',
@@ -264,6 +320,10 @@ export const DOCUMENT_END_NEWLINE_POSITIVE_COVERAGE_REQUIREMENTS: Readonly<Recor
   DOCUMENT_END_ONE_CLICK_COMMIT_RUNTIME_COUNT: 1,
   DOCUMENT_END_DIAGNOSTIC_REMOVED_RUNTIME_COUNT: 1,
   DOCUMENT_END_DIAGNOSTIC_REINTRODUCED_RUNTIME_COUNT: 1,
+  /** A real Typora terminal host must be observed at least once in the session. */
+  DOCUMENT_END_TERMINAL_HOST_FOUND_RUNTIME_COUNT: 1,
+  /** Informational: how often the measured-metrics fallback was used. */
+  DOCUMENT_END_FALLBACK_GEOMETRY_RUNTIME_COUNT: 0,
 }
 
 export function emptyDocumentEndNewlineCoverageCounters(): Record<string, number> {
