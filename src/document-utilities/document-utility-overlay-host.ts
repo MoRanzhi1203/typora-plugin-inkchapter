@@ -444,7 +444,26 @@ import {
   type DocumentEndVisualV513R1Counters,
   type DocumentEndVisualV513R2Counters,
   type StrictMultiH1VisualV513R5Counters,
+  type SyntheticEofGeometry,
 } from './document-diagnostic-document-end-visual-v513-r1'
+// TRAE — document-end semantic target + geometry policy (missing terminal newline).
+import {
+  DOCUMENT_END_NEWLINE_GATE_KEYS,
+  DOCUMENT_END_NEWLINE_MISSING_RULE,
+  DOCUMENT_END_TRAILING_BLANK_RULE_NAME,
+  EOF_NEWLINE_MARKER_ARIA_LABEL,
+  EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
+  EOF_NEWLINE_MARKER_KIND,
+  EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY,
+  EOF_NEWLINE_MARKER_RULE_ATTR,
+  computeDocumentEndNewlineMarkerGeometry,
+  createDocumentEndNewlineGateCounters,
+  emptyDocumentEndNewlineCoverageCounters,
+  evaluateDocumentEndNewlineGates,
+  evaluateDocumentEndNewlinePositiveCoverage,
+  resolveDocumentEndVisualRule,
+  type DocumentEndVisualRule,
+} from './document-diagnostic-document-end-newline-marker-v1'
 // V2 — Document-End one-click locate: coordinate-space contract + post-scroll
 // freshness authority.
 import {
@@ -2951,12 +2970,35 @@ export class DocumentUtilityOverlayHost {
     // atomic replacement so a stale residue can be proven (never assumed).
     const previousDiagnosticIds = this.snapshot?.diagnostics.map(d => d.id) ?? []
     this.snapshot = snapshot
+    // ── TRAE §13 Case B/C — LIVE resolve: the `DOCUMENT_TERMINAL_NEWLINE_MISSING`
+    // diagnostic must appear / disappear with the SOURCE, never requiring a
+    // document close+reopen. Its reintroduction is observed here.
+    const docEndNewlinePresent = snapshot?.diagnostics
+      .some(d => d.code === DOCUMENT_END_NEWLINE_MISSING_RULE) ?? false
+    if (docEndNewlinePresent && !this.lastDocEndNewlineDiagnosticPresent) {
+      // A re-appearance AFTER a real removal is a reintroduction; the first ever
+      // sighting is not.
+      if (this.lastDocEndNewlineDiagnosticEverSeen) {
+        this.countersDocEndNewlineV1.DOCUMENT_END_DIAGNOSTIC_REINTRODUCED_RUNTIME_COUNT++
+      }
+      this.lastDocEndNewlineDiagnosticEverSeen = true
+    }
+    this.lastDocEndNewlineDiagnosticPresent = docEndNewlinePresent
     // Phase 7R.3.11.8B.8 — snapshot updated and the located diagnostic no
     // longer exists → clear the active locate visual + row selection.
     if (this.lastLocatedDiagnosticId != null) {
       const stillPresent = snapshot?.diagnostics.some(d => d.id === this.lastLocatedDiagnosticId) ?? false
       if (!stillPresent) {
+        // TRAE §13 Case B — capture the served rule BEFORE the teardown clears it.
+        const wasDocEndVisual = this.lastDocEndVisualRule != null
         this.clearDiagnosticLocateVisual('ACTIVE_DIAGNOSTIC_REMOVED')
+        if (wasDocEndVisual) {
+          this.countersDocEndNewlineV1.DOCUMENT_END_DIAGNOSTIC_REMOVED_RUNTIME_COUNT++
+          // The marker + carrier must be gone in the SAME snapshot commit.
+          if (this.locateDocEndCarrier != null) {
+            this.countersDocEndNewlineV1.staleVisualAfterDiagnosticRemoved++
+          }
+        }
         this.lastLocatedDiagnosticId = null
         this.lastLocatedTargetIndex = null
       }
@@ -4278,6 +4320,9 @@ export class DocumentUtilityOverlayHost {
     }
     this.lastDocEndVisual = null
     this.lastDocEndClosureFacts = null
+    // TRAE §13 — the served document-end rule retires WITH its carrier (a later
+    // closure must never be scoped to a rule that owns no carrier any more).
+    this.lastDocEndVisualRule = null
     // V5.13-R1 §14 — a marker left behind after the diagnostic is gone is a REAL
     // violation (self-checked on every carrier teardown).
     const dangling = this.root?.querySelectorAll('[data-ink-eof-marker="true"]').length ?? 0
@@ -5560,6 +5605,35 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * TRAE §11 — the severity authority is the CURRENT Diagnostic Snapshot, never a
+   * `?? 'info'` fallback. A `warning` diagnostic must stay `warning` through
+   * Locate → Presentation → Carrier → Closure.
+   */
+  private snapshotSeverityForDiagnosticId(diagnosticId: string | null): 'error' | 'warning' | 'info' | null {
+    if (diagnosticId == null) return null
+    const diag = this.snapshot?.diagnostics.find(d => d.id === diagnosticId)
+    if (!diag) return null
+    const raw = String(diag.severity ?? '').toLowerCase()
+    return raw === 'error' ? 'error' : raw === 'warning' ? 'warning' : raw === 'info' ? 'info' : null
+  }
+
+  /**
+   * TRAE §12 — the CURRENT diagnostic's active visual count. A passive marker for
+   * ANOTHER diagnostic must never let the clicked one pass, so the count is
+   * scoped to the committed owner + the live document-space carriers it stamped.
+   */
+  private countCurrentDiagnosticActiveVisuals(diagnosticId: string | null): number {
+    if (diagnosticId == null) return 0
+    const committed = this.locateCommittedVisual
+    if (!committed || committed.diagnosticId !== diagnosticId) return 0
+    const seen = new Set<Element>()
+    for (const el of [this.locateDocEndCarrier, this.locateDocCarrier]) {
+      if (el != null && el.isConnected) seen.add(el)
+    }
+    return seen.size
+  }
+
   /** §17 — DOCUMENT-DIAGNOSTIC-VISUAL-CLOSURE-AUDIT (unified closure evidence). */
   private emitVisualClosureAudit(reason: string): void {
     // ── V5.13-R2 §6 — a committed synthetic EOF band MUST NOT fall into the
@@ -5610,7 +5684,11 @@ export class DocumentUtilityOverlayHost {
         bottomAlignedFallback: this.lastDocEndVisual?.viewportClamped === true,
         fallbackReason: this.lastDocEndVisual?.viewportClamped === true ? EOF_BOTTOM_ALIGNED_FALLBACK_REASON : null,
         // V5.13-R3 §20 — the horizontal anchor is part of the unified evidence too.
-        markerKind: EOF_MARKER_KIND_DOCUMENT_END_WARNING,
+        // TRAE §8.2 — the marker kind is per-rule on the SAME unified carrier.
+        markerKind: this.lastDocEndVisualRule === 'TERMINAL_NEWLINE_MISSING'
+          ? EOF_NEWLINE_MARKER_KIND
+          : EOF_MARKER_KIND_DOCUMENT_END_WARNING,
+        docEndVisualRule: this.lastDocEndVisualRule,
         presentationLeftSource: 'DOCUMENT_TEXT_COLUMN',
         presentationRightSource: 'DOCUMENT_CONTENT',
         documentTextColumnLeft: this.lastDocEndVisual?.textColumnLeft ?? null,
@@ -5666,6 +5744,39 @@ export class DocumentUtilityOverlayHost {
     const explicitCarrier = !gapActive && this.lastExplicitCarrierKind != null
     const explicitFragments = structure?.inlineFragmentCount ?? 0
     const explicitOk = explicitCarrier && explicitFragments >= 1 && structure?.active === true
+    // ── TRAE §11 — the severity authority is the Diagnostic Snapshot: a `warning`
+    // must never drift to `info`. The locate frame's OWN severity counts only
+    // while it is the ACTIVE carrier for THIS diagnostic; an idle controller keeps
+    // a stale default (`info`) that must never override the real severity.
+    const snapshotSeverity = this.snapshotSeverityForDiagnosticId(this.lastLocatedDiagnosticId)
+    const frameSeverity = structure?.active === true
+      && structure.activeDiagnosticId === this.lastLocatedDiagnosticId
+      ? structure.severity
+      : null
+    const reportedSeverity = gapActive
+      ? gapSeverity
+      : this.displaySeverityForRule(
+          this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId),
+          frameSeverity ?? snapshotSeverity ?? 'info',
+        )
+    if (snapshotSeverity === 'warning' && reportedSeverity === 'info') {
+      this.countersDocEndNewlineV1.severityDriftWarningToInfo++
+    }
+    // ── TRAE §12 — a document-end locate whose served rule owns NO active visual
+    // must NOT pass on the strength of some OTHER diagnostic's passive marker.
+    const docEndScoped = !gapActive && !explicitCarrier && this.lastDocEndVisualRule != null
+    const currentDiagnosticActiveVisualCount = docEndScoped
+      ? this.countCurrentDiagnosticActiveVisuals(this.lastLocatedDiagnosticId)
+      : null
+    const docEndScopeOk = !docEndScoped || currentDiagnosticActiveVisualCount === 1
+    if (docEndScoped && !docEndScopeOk) {
+      if (this.locateDocEndCarrier != null || this.locateCommittedVisual != null) {
+        this.countersDocEndNewlineV1.diagnosticTargetKeyMismatch++
+      }
+      if (commitGate == null || commitGate.canCommit) {
+        this.countersDocEndNewlineV1.unscopedVisualFalsePass++
+      }
+    }
     const payload: Record<string, unknown> = {
       transactionId: this.activeLocateTx?.id ?? this.locateCommittedVisual?.transactionId ?? null,
       visualEpoch: this.locateVisualEpoch,
@@ -5675,12 +5786,11 @@ export class DocumentUtilityOverlayHost {
       ruleId: this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId) ?? null,
       // V2 §B — the gap carrier contributes its OWN unified facts (never null).
       // V6-R2 §5 — the empty-block family reports the `hint` token end-to-end.
-      severity: gapActive
-        ? gapSeverity
-        : this.displaySeverityForRule(
-            this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId),
-            frame?.getStructure().severity ?? 'info',
-          ),
+      severity: reportedSeverity,
+      // TRAE §12 — the closure scope evidence (document-end current-owner count).
+      visualClosureScoped: docEndScoped,
+      currentDiagnosticActiveVisualCount,
+      docEndVisualRule: this.lastDocEndVisualRule,
       visualTargetKind: gapActive ? BLOCK_GAP_VISUAL_TARGET : (structure?.kind ?? null),
       semanticAnchorIdentity: this.locateCommittedVisual?.semanticAnchorIdentity ?? null,
       targetIdentity: this.lastLocatedDiagnosticId,
@@ -5717,22 +5827,30 @@ export class DocumentUtilityOverlayHost {
         ? (gapRect ? 'PASS' : 'FAIL')
         : explicitCarrier
           ? (explicitOk ? 'PASS' : 'FAIL')
-          : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
+          : docEndScoped
+            ? (docEndScopeOk && commitGate?.canCommit === true ? 'PASS' : 'FAIL')
+            : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
       commitDecision: gapActive
         ? (gapRect ? 'COMMIT' : 'NO_COMMIT')
         : explicitCarrier
           ? (explicitOk ? 'COMMIT' : 'NO_COMMIT')
-          : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
+          : docEndScoped
+            ? (docEndScopeOk && commitGate?.canCommit === true ? 'COMMIT' : 'NO_COMMIT')
+            : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
       terminalState: gapActive
         ? (gapRect ? 'COMMITTED' : 'FAILED')
         : explicitCarrier
           ? (explicitOk ? 'COMMITTED' : 'FAILED')
-          : (this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE'),
+          : docEndScoped
+            ? (docEndScopeOk && commitGate?.canCommit === true ? 'COMMITTED' : 'FAILED')
+            : (this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE'),
       decision: gapActive
         ? (gapRect && gapSeverity === 'warning' ? 'PASS' : 'FAIL')
         : explicitCarrier
           ? (explicitOk ? 'PASS' : 'FAIL')
-          : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
+          : docEndScoped
+            ? (docEndScopeOk && commitGate?.canCommit === true ? 'PASS' : 'FAIL')
+            : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
       reason,
       gateCounters: { ...this.countersClosureV512R2 },
       gateDecision: evaluateVisualClosureGates(this.countersClosureV512R2).decision,
@@ -7975,8 +8093,45 @@ export class DocumentUtilityOverlayHost {
     terminalState: 'COMMITTED' | 'FAILED'
   } | null = null
 
+  /**
+   * TRAE §17 — the document-end (EOF) hard gates + positive runtime coverage.
+   * Every gate must stay 0; the coverage counters are EVIDENCE only (never a
+   * fabricated PASS).
+   */
+  private countersDocEndNewlineV1: Record<string, number> = {
+    ...createDocumentEndNewlineGateCounters(),
+    ...emptyDocumentEndNewlineCoverageCounters(),
+  }
+  /** TRAE §7 — the visual rule the CURRENT document-end locate is serving. */
+  private lastDocEndVisualRule: DocumentEndVisualRule | null = null
+  /** TRAE §13 — presence of the `DOCUMENT_TERMINAL_NEWLINE_MISSING` diagnostic in
+   *  the last admitted snapshot, so its live resolve / reintroduce is observable. */
+  private lastDocEndNewlineDiagnosticPresent = false
+  /** TRAE §13 — has this document EVER published the missing-newline warning?
+   *  A later re-appearance is then a REINTRODUCTION (never the first sighting). */
+  private lastDocEndNewlineDiagnosticEverSeen = false
+
   getDocumentEndVisualCounters(): Readonly<DocumentEndVisualV513R1Counters> {
     return { ...this.countersDocEndV513R1 }
+  }
+
+  /** TRAE §17/§24 — the document-end hard-gate counters (report / decision). */
+  getDocumentEndNewlineGateCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersDocEndNewlineV1 }
+  }
+
+  getDocumentEndNewlineGateReport(): string[] {
+    const gates = evaluateDocumentEndNewlineGates(this.countersDocEndNewlineV1)
+    return DOCUMENT_END_NEWLINE_GATE_KEYS.map(key => `${key}=${this.countersDocEndNewlineV1[key] ?? 0}`)
+      .concat(`GATE_DECISION=${gates.decision}`)
+  }
+
+  getDocumentEndNewlineGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateDocumentEndNewlineGates(this.countersDocEndNewlineV1)
+  }
+
+  getDocumentEndNewlineCoverageDecision(): { satisfied: boolean; unmet: string[] } {
+    return evaluateDocumentEndNewlinePositiveCoverage(this.countersDocEndNewlineV1)
   }
 
   getDocumentEndVisualGateReport(): string[] {
@@ -18700,22 +18855,37 @@ export class DocumentUtilityOverlayHost {
     // target: it keeps its legacy completion (never enters the one-click
     // visual pipeline, which is about offscreen ELEMENT targets).
     const boundaryOnly = result.scrollAction != null && !result.element
-    // ── V5.13-R1 §4/§8 — a DOCUMENT-END TRAILING-BLANK warning is a SEMANTIC
-    // location with NO DOM target. GO_BOTTOM alone is not a locate: the synthetic
-    // EOF Document-Space visual target must be resolved AFTER the scroll settles.
-    const docEndExtra = this.resolveDocumentEndExtraTrailingBlank(diag)
-    if (docEndExtra != null && docEndExtra > 0) {
+    // ── V5.13-R1 §4/§8 / TRAE §7 — a DOCUMENT-END warning is a SEMANTIC location
+    // with NO DOM target. GO_BOTTOM alone is NOT a locate: the synthetic EOF
+    // Document-Space presentation target must be resolved AFTER the scroll settles.
+    // `DOCUMENT_TERMINAL_NEWLINE_MISSING` now takes the SAME path (its geometry is
+    // a compact EOF chip on the last canonical block's EOF side).
+    const docEnd = this.resolveDocumentEndVisualTarget(diag)
+    if (docEnd != null) {
+      this.lastDocEndVisualRule = docEnd.rule
+      this.countersDocEndNewlineV1.DOCUMENT_END_DIAGNOSTIC_RUNTIME_COUNT++
+      // TRAE §17 — GO_BOTTOM is a STEP of the document-end locate, never its result.
+      if (result.scrollAction != null) {
+        this.countersDocEndNewlineV1.DOCUMENT_END_SCROLL_TO_BOTTOM_RUNTIME_COUNT++
+      }
       tx.state = 'WAITING_SCROLL_SETTLE'
       if (!container) {
-        const verified = this.commitSyntheticEofVisual(tx, diag, docEndExtra, true)
-        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'DOCUMENT_END_SYNTHETIC_EOF', targetIndex, result, verified)
+        const verified = this.commitSyntheticEofVisual(tx, diag, docEnd.extraTrailingBlankLineCount, true)
+        this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'DOCUMENT_END_PRESENTATION_TARGET', targetIndex, result, verified)
         this.finishLocateTransaction(tx, verified, 'DOCUMENT_END_SYNTHETIC_EOF_NO_CONTAINER')
         return
       }
-      this.watchDocumentEndScrollSettle(tx, diag, diagnosticId, targetIndex, result, container, docEndExtra)
+      this.watchDocumentEndScrollSettle(tx, diag, diagnosticId, targetIndex, result, container, docEnd.extraTrailingBlankLineCount)
       return
     }
     if (boundaryOnly) {
+      // TRAE §7 — a DOCUMENT-END visual rule must NEVER be satisfied by "scroll
+      // only": reaching this branch means the resolver produced no presentation
+      // target (the exact `resolveReason=SCROLL_ACTION` regression).
+      const code = String(diag.code ?? '')
+      if (code === DOCUMENT_END_NEWLINE_MISSING_RULE || code === DOCUMENT_END_TRAILING_BLANK_RULE_NAME) {
+        this.countersDocEndNewlineV1.scrollOnlyPassedAsLocate++
+      }
       tx.state = 'WAITING_SCROLL_SETTLE'
       if (!container) {
         const verified = this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
@@ -19029,20 +19199,85 @@ export class DocumentUtilityOverlayHost {
   // ── V5.13-R1 — Synthetic EOF Document-Space Visual Target ───────────────
 
   /**
-   * §5.1 — the excess trailing-blank count of a `document-end` warning, or null
-   * when this diagnostic is not the trailing-blank rule (a missing-terminal-
-   * newline `document-end` warning must NEVER get a blank-line marker).
+   * TRAE §7 — the ONE `DocumentEndTargetResolver`. A `document-end` diagnostic
+   * owns a synthetic document-space visual target, and WHICH rule it is decides
+   * only the GEOMETRY (never the lifecycle):
+   *
+   *   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE → the excessive trailing blank zone
+   *   DOCUMENT_TERMINAL_NEWLINE_MISSING       → a compact EOF chip on the last
+   *                                             canonical block's EOF side
+   *
+   * Both share the SAME settle watcher, document-space carrier, lease, closure
+   * and cleanup. An unrelated `document-end` rule keeps its legacy behaviour.
    */
-  private resolveDocumentEndExtraTrailingBlank(
+  private resolveDocumentEndVisualTarget(
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
-  ): number | null {
+  ): { rule: DocumentEndVisualRule; extraTrailingBlankLineCount: number } | null {
     const extra = readExtraTrailingBlankLineCount(diag.metadata)
-    const applies = isDocumentEndTrailingBlankDiagnostic({
+    const rule = resolveDocumentEndVisualRule({
       code: diag.code,
       locationKind: diag.location?.kind ?? null,
       extraTrailingBlankLineCount: extra,
     })
-    return applies ? extra : null
+    return rule == null ? null : { rule, extraTrailingBlankLineCount: extra }
+  }
+
+  /**
+   * TRAE §8.2/§8.3 — the compact EOF chip geometry, normalized into the SAME
+   * `SyntheticEofGeometry` shape so the excess and newline rules share one
+   * carrier/lease/closure implementation. The anchor is the LAST CANONICAL
+   * content block resolved by the existing enumeration (never
+   * `editor.lastElementChild`, never a `pre:last…` guess).
+   */
+  private buildDocumentEndNewlineMarkerGeometry(input: {
+    tail: {
+      documentIsNonEmpty: boolean
+      lastMeaningful: { rect: RectLike; element: HTMLElement; identity: string } | null
+      meaningfulRects: RectLike[]
+    }
+    contentColumn: RectLike | null
+    editorRect: RectLike | null
+    textColumnLeft: number | null
+    blankLineHeight: number | null
+    blankLineHeightSource: string
+  }): SyntheticEofGeometry {
+    const anchor = input.tail.lastMeaningful
+    const marker = computeDocumentEndNewlineMarkerGeometry({
+      documentIsNonEmpty: input.tail.documentIsNonEmpty,
+      lastCanonicalBlockRect: anchor ? anchor.rect : null,
+      contentBoundsRect: input.contentColumn,
+      editorContentRect: input.editorRect,
+      lineHeight: input.blankLineHeight,
+      textColumnLeft: input.textColumnLeft,
+      otherMeaningfulRects: anchor
+        ? input.tail.meaningfulRects.filter(r => r !== anchor.rect)
+        : input.tail.meaningfulRects,
+    })
+    return {
+      rect: marker.rect,
+      semanticZoneRect: marker.rect,
+      // §8.2 — the excess-only zone concepts do not exist for the compact chip.
+      requiredBlankZoneRect: null,
+      excessiveBlankZoneRect: null,
+      actualTrailingBlankVisualRect: null,
+      documentEndBottom: anchor ? anchor.rect.bottom : 0,
+      lastMeaningfulRect: marker.lastCanonicalBlockRect,
+      requiredTrailingBlankLineCount: 0,
+      excessiveTrailingBlankLineCount: 0,
+      presentationHeightSource: EOF_NEWLINE_MARKER_GEOMETRY_SOURCE,
+      presentationHeight: marker.presentationHeight,
+      geometrySource: marker.geometrySource,
+      blankLineHeightSource: input.blankLineHeightSource,
+      rightEdgeAuthority: marker.rightEdgeAuthority,
+      presentationTopMinusLastMeaningfulBottom:
+        marker.rect && marker.lastCanonicalBlockRect
+          ? marker.rect.top - marker.lastCanonicalBlockRect.bottom
+          : 0,
+      meaningfulIntersectionCount: marker.meaningfulIntersectionCount,
+      meaningfulIntersectionArea: marker.meaningfulIntersectionArea,
+      viewportClamped: marker.clampedInsideEditor,
+      failClosed: marker.failClosed,
+    }
   }
 
   /**
@@ -19516,23 +19751,48 @@ export class DocumentUtilityOverlayHost {
     const tail = this.measureTrailingBlankGeometry()
     const blankLh = this.resolveBlankLineHeight(tail.trailingBlankRects)
     const layoutEpochAtMeasure = this.currentDocumentLayoutEpoch
-    const geo = computeSyntheticEofGeometry({
-      documentIsNonEmpty: tail.documentIsNonEmpty,
-      lastMeaningfulRect: tail.lastMeaningful ? tail.lastMeaningful.rect : null,
-      trailingBlankRects: tail.trailingBlankRects,
-      meaningfulRects: tail.meaningfulRects,
-      contentBoundsRect: contentColumn,
-      editorContentRect: editorRect,
-      blankLineHeight: blankLh.lineHeight,
-      blankLineHeightSource: blankLh.source,
-      extraTrailingBlankLineCount,
-      textColumnLeft: textColumn.left,
-    })
+    // ── TRAE §7/§8/§14 — Source truth ≠ Visual geometry: the RULE decides only
+    // the GEOMETRY, never the lifecycle. Both document-end rules feed the SAME
+    // settle watcher, carrier, lease, closure and cleanup.
+    // The rule is a PURE function of the diagnostic the locate resolved (the same
+    // `code` / `location.kind` / metadata the resolver consumed), so the geometry
+    // can never drift from the semantic target. A direct caller outside the
+    // resolver path (tests) keeps this function's historical excess contract.
+    const docEndRule = resolveDocumentEndVisualRule({
+      code: diag.code,
+      locationKind: diag.location?.kind ?? null,
+      extraTrailingBlankLineCount: readExtraTrailingBlankLineCount(diag.metadata),
+    }) ?? 'TRAILING_BLANK_EXCESS'
+    const isExcessRule = docEndRule === 'TRAILING_BLANK_EXCESS'
+    if (this.lastDocEndVisualRule == null) this.lastDocEndVisualRule = docEndRule
+    const geo: SyntheticEofGeometry = isExcessRule
+      ? computeSyntheticEofGeometry({
+          documentIsNonEmpty: tail.documentIsNonEmpty,
+          lastMeaningfulRect: tail.lastMeaningful ? tail.lastMeaningful.rect : null,
+          trailingBlankRects: tail.trailingBlankRects,
+          meaningfulRects: tail.meaningfulRects,
+          contentBoundsRect: contentColumn,
+          editorContentRect: editorRect,
+          blankLineHeight: blankLh.lineHeight,
+          blankLineHeightSource: blankLh.source,
+          extraTrailingBlankLineCount,
+          textColumnLeft: textColumn.left,
+        })
+      : this.buildDocumentEndNewlineMarkerGeometry({
+          tail,
+          contentColumn,
+          editorRect,
+          textColumnLeft: textColumn.left,
+          blankLineHeight: blankLh.lineHeight,
+          blankLineHeightSource: blankLh.source,
+        })
     // ── V5.13-R5 §15/§31 — real-geometry hard gates (every one must stay 0) ──
     if (tail.documentIsNonEmpty && !tail.lastMeaningful) c5.lastMeaningfulRectNullOnNonempty++
     if (geo.meaningfulIntersectionCount > 0) c5.fillIntersectsMeaningfulContent++
     if (geo.meaningfulIntersectionArea > 0) c5.meaningfulIntersectionAreaGt0++
-    if (geo.lastMeaningfulRect && geo.rect && geo.rect.top < geo.lastMeaningfulRect.bottom - 0.5) {
+    // §10 HARD is an EXCESS-zone invariant: the compact newline chip legitimately
+    // sits on the block's own EOF edge (clampedInsideEditor) and must not trip it.
+    if (isExcessRule && geo.lastMeaningfulRect && geo.rect && geo.rect.top < geo.lastMeaningfulRect.bottom - 0.5) {
       c5.zoneTopBeforeLastMeaningfulBottom++
     }
     if (isForbiddenBlankLineHeightSource(blankLh.source)) c5.blankLineHeightFromHeading++
@@ -19546,11 +19806,34 @@ export class DocumentUtilityOverlayHost {
     if (bandLocalProbe && this.eofFillIntersectsHeadingMarkerTargetLocal(bandLocalProbe)) {
       c5.fillIntersectsHeadingMarkerTarget++
     }
+    // ── TRAE §6.3/§8.3 — the anchor is the LAST CANONICAL block (top-level content
+    // enumeration), so it can never BE a CodeMirror-internal `pre`; the compact
+    // chip may also never be covered by one (it sits on the block's EOF side).
+    const anchorEl = tail.lastMeaningful?.element ?? null
+    if (anchorEl != null && anchorEl.closest('.CodeMirror') !== null) {
+      this.countersDocEndNewlineV1.markerLeftCodeMirrorInternalTarget++
+    }
+    if (anchorEl != null && geo.rect != null) {
+      // §8.3 — the chip legitimately sits on the anchor's OWN EOF edge; only a
+      // CodeMirror internal element of ANOTHER block covering it is a violation.
+      const contentRoot = resolveBusinessContentRoot()
+      for (const cm of Array.from(contentRoot?.querySelectorAll('.CodeMirror') ?? []) as HTMLElement[]) {
+        if (anchorEl.contains(cm)) continue
+        const cmRect = this.measureLocateRect(cm)
+        if (cmRect && rectsIntersect(cmRect, geo.rect)) {
+          this.countersDocEndNewlineV1.markerCoveredByCodeMirrorInternal++
+          break
+        }
+      }
+    }
     // §14 — a locatable document-end diagnostic that yields no geometry is a
     // REAL violation (never silently "resolved by scrolling").
     if (!geo.rect) {
       c.targetRectNull++
       c.locatableWithoutVisualTarget++
+      // TRAE §17 — distinguish "no anchor at all" from "anchor but no rect".
+      if (geo.failClosed) this.countersDocEndNewlineV1.presentationAnchorNull++
+      else this.countersDocEndNewlineV1.presentationRectNull++
       this.emitDocumentEndVisualAudit({
         documentKey, diag, sourceRevision, terminalNewlineCount, extraTrailingBlankLineCount,
         semanticAnchorKind: DOCUMENT_END_SEMANTIC_ANCHOR_KIND,
@@ -19590,6 +19873,7 @@ export class DocumentUtilityOverlayHost {
     if (!layer || !hostRect || !contentColumn) {
       c.targetRectNull++
       c.locatableWithoutVisualTarget++
+      this.countersDocEndNewlineV1.presentationRectNull++
       return false
     }
     // §7 — ONE rect factory: convert the viewport geometry ONCE into the shared
@@ -19598,8 +19882,11 @@ export class DocumentUtilityOverlayHost {
     if (!localRect) {
       c.targetRectNull++
       c.locatableWithoutVisualTarget++
+      this.countersDocEndNewlineV1.presentationRectNull++
       return false
     }
+    if (!(localRect.width > 0)) this.countersDocEndNewlineV1.presentationRectWidthZero++
+    if (!(localRect.height > 0)) this.countersDocEndNewlineV1.presentationRectHeightZero++
     // V5.13-R4 §8 — the fixed 36/48px presentation bound is ABOLISHED: the band
     // height IS the excessive blank zone, so it must never be capped or gated here.
     // §2.2 — the right edge must be the DOCUMENT CONTENT edge in BOTH layers.
@@ -19626,13 +19913,25 @@ export class DocumentUtilityOverlayHost {
     const el = document.createElement('div')
     el.className = `${DIAGNOSTIC_LOCATE_FRAME_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
     el.setAttribute('data-ink-eof-marker', 'true')
-    el.setAttribute('data-ink-marker-kind', EOF_MARKER_KIND_DOCUMENT_END_WARNING)
+    // ── TRAE §8.2/§14 — the compact newline chip carries its OWN machine
+    // identity (marker kind + rule) on the SAME unified blank-space carrier:
+    // one lifecycle, one style, GEOMETRY per rule. The excess band keeps its
+    // frozen marker kind.
+    el.setAttribute('data-ink-marker-kind', isExcessRule ? EOF_MARKER_KIND_DOCUMENT_END_WARNING : EOF_NEWLINE_MARKER_KIND)
+    el.setAttribute('data-ink-eof-rule', isExcessRule ? 'trailing-blank-excess' : EOF_NEWLINE_MARKER_RULE_ATTR)
     el.setAttribute('data-ink-target-identity', DOCUMENT_END_SEMANTIC_ANCHOR_IDENTITY)
     el.setAttribute('data-coordinate-space', EOF_COORDINATE_SPACE)
     el.setAttribute('data-severity', severity)
     el.setAttribute('data-target-kind', 'block')
     el.setAttribute('data-presentation', 'full-frame')
-    el.setAttribute('aria-hidden', 'true')
+    if (isExcessRule) {
+      el.setAttribute('aria-hidden', 'true')
+    } else {
+      // §8.2 — the chip's meaning is exposed as metadata, never as a permanent
+      // sentence painted into the body.
+      el.setAttribute('title', EOF_NEWLINE_MARKER_ARIA_LABEL)
+      el.setAttribute('aria-label', EOF_NEWLINE_MARKER_ARIA_LABEL)
+    }
     el.style.cssText = `position:absolute;display:block;left:${Math.round(localRect.left)}px;top:${Math.round(localRect.top)}px;width:${Math.round(localRect.width)}px;height:${Math.round(localRect.height)}px;pointer-events:none;`
     layer.appendChild(el)
     this.locateDocEndCarrier = el
@@ -19709,18 +20008,30 @@ export class DocumentUtilityOverlayHost {
       // (never a re-derived `extra × lineHeight`).
       const retryTail = this.measureTrailingBlankGeometry()
       const retryLh = this.resolveBlankLineHeight(retryTail.trailingBlankRects)
-      const retry = computeSyntheticEofGeometry({
-        documentIsNonEmpty: retryTail.documentIsNonEmpty,
-        lastMeaningfulRect: retryTail.lastMeaningful ? retryTail.lastMeaningful.rect : null,
-        trailingBlankRects: retryTail.trailingBlankRects,
-        meaningfulRects: retryTail.meaningfulRects,
-        contentBoundsRect: this.measureSemanticContentColumnRect(),
-        editorContentRect: this.measureLocateRect(container),
-        blankLineHeight: retryLh.lineHeight,
-        blankLineHeightSource: retryLh.source,
-        extraTrailingBlankLineCount,
-        textColumnLeft: textColumn.left,
-      })
+      const retryContent = this.measureSemanticContentColumnRect()
+      const retryEditor = this.measureLocateRect(container)
+      const retryTextColumn = this.measureDocumentTextColumnLeft(retryContent)
+      const retry: SyntheticEofGeometry = isExcessRule
+        ? computeSyntheticEofGeometry({
+            documentIsNonEmpty: retryTail.documentIsNonEmpty,
+            lastMeaningfulRect: retryTail.lastMeaningful ? retryTail.lastMeaningful.rect : null,
+            trailingBlankRects: retryTail.trailingBlankRects,
+            meaningfulRects: retryTail.meaningfulRects,
+            contentBoundsRect: retryContent,
+            editorContentRect: retryEditor,
+            blankLineHeight: retryLh.lineHeight,
+            blankLineHeightSource: retryLh.source,
+            extraTrailingBlankLineCount,
+            textColumnLeft: retryTextColumn.left,
+          })
+        : this.buildDocumentEndNewlineMarkerGeometry({
+            tail: retryTail,
+            contentColumn: retryContent,
+            editorRect: retryEditor,
+            textColumnLeft: retryTextColumn.left,
+            blankLineHeight: retryLh.lineHeight,
+            blankLineHeightSource: retryLh.source,
+          })
       const retryHost = this.measureLocateRect(host)
       const retryLocal = retry.rect && retryHost
         ? viewportRectToDocumentLocalRect({ viewportRect: retry.rect, contentHostRect: retryHost })
@@ -19765,20 +20076,28 @@ export class DocumentUtilityOverlayHost {
     const coverageBand = headless ? geo.rect : painted
     const excessZone = geo.excessiveBlankZoneRect
     const requiredZone = geo.requiredBlankZoneRect
-    const spanTopDrift = coverageBand && excessZone ? Math.abs(coverageBand.top - excessZone.top) : Number.POSITIVE_INFINITY
-    const spanBottomDrift = coverageBand && excessZone ? Math.abs(coverageBand.bottom - excessZone.bottom) : Number.POSITIVE_INFINITY
-    const spanCoverage = computeExcessZoneCoverage(coverageBand, excessZone)
-    const spanOk = spanCoverage >= EOF_EXCESS_ZONE_COVERAGE_MIN
+    // ── TRAE §14 — the SPAN contract belongs to the EXCESS rule only: the compact
+    // newline chip has no required/excessive blank zone at all, so an absent zone
+    // must NOT be reported as an infinite drift (a false FAIL).
+    const spanTopDrift = isExcessRule && excessZone
+      ? Math.abs((coverageBand ?? excessZone).top - excessZone.top)
+      : 0
+    const spanBottomDrift = isExcessRule && excessZone
+      ? Math.abs((coverageBand ?? excessZone).bottom - excessZone.bottom)
+      : 0
+    const spanCoverage = isExcessRule ? computeExcessZoneCoverage(coverageBand, excessZone) : 1
+    const spanOk = !isExcessRule || (coverageBand != null
+      && spanCoverage >= EOF_EXCESS_ZONE_COVERAGE_MIN
       && spanTopDrift <= EOF_EXCESS_ZONE_DRIFT_MAX_PX
-      && spanBottomDrift <= EOF_EXCESS_ZONE_DRIFT_MAX_PX
-    if (!spanOk) c4.excessZoneCoverageLt098++
-    if (spanTopDrift > EOF_EXCESS_ZONE_DRIFT_MAX_PX) c4.excessZoneTopDriftGt1px++
-    if (spanBottomDrift > EOF_EXCESS_ZONE_DRIFT_MAX_PX) c4.excessZoneBottomDriftGt1px++
-    if (!spanOk) c4.extraBlankCountMismatch++
-    if (coverageBand && excessZone && coverageBand.bottom < excessZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX) {
+      && spanBottomDrift <= EOF_EXCESS_ZONE_DRIFT_MAX_PX)
+    if (isExcessRule && !spanOk) c4.excessZoneCoverageLt098++
+    if (isExcessRule && spanTopDrift > EOF_EXCESS_ZONE_DRIFT_MAX_PX) c4.excessZoneTopDriftGt1px++
+    if (isExcessRule && spanBottomDrift > EOF_EXCESS_ZONE_DRIFT_MAX_PX) c4.excessZoneBottomDriftGt1px++
+    if (isExcessRule && !spanOk) c4.extraBlankCountMismatch++
+    if (isExcessRule && coverageBand && excessZone && coverageBand.bottom < excessZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX) {
       c4.excessBlankLineOmitted++
     }
-    if (coverageBand && requiredZone && coverageBand.top < requiredZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX) {
+    if (isExcessRule && coverageBand && requiredZone && coverageBand.top < requiredZone.bottom - EOF_EXCESS_ZONE_DRIFT_MAX_PX) {
       c4.requiredBlankLinePainted++
     }
 
@@ -19922,6 +20241,22 @@ export class DocumentUtilityOverlayHost {
     }
     this.emitVisualClosureAudit('DOCUMENT_END_SYNTHETIC_EOF')
     if (!gateOk) c.finalFailVisual++
+    // ── TRAE §17 — positive runtime coverage evidence. A document-end locate only
+    // counts as resolved when a REAL presentation anchor + visible owner committed.
+    if (gateOk) {
+      if (geo.lastMeaningfulRect != null) {
+        this.countersDocEndNewlineV1.DOCUMENT_END_PRESENTATION_ANCHOR_RUNTIME_COUNT++
+      }
+      this.countersDocEndNewlineV1.DOCUMENT_END_ACTIVE_VISUAL_RUNTIME_COUNT++
+      this.countersDocEndNewlineV1.DOCUMENT_END_ONE_CLICK_COMMIT_RUNTIME_COUNT++
+    } else if (geo.rect != null) {
+      // A geometry target that exists but fails visibility/commit is the exact
+      // `firstClickVisualNotVisible` regression (single click must succeed): the
+      // owner is retired and the diagnostic needs a SECOND click.
+      this.countersDocEndNewlineV1.firstClickVisualNotVisible++
+      this.countersDocEndNewlineV1.firstClickLocateRollback++
+      this.countersDocEndNewlineV1.secondClickRequired++
+    }
     return gateOk
   }
 
@@ -19986,10 +20321,14 @@ export class DocumentUtilityOverlayHost {
     finalDecision: 'PASS' | 'FAIL'
     reason: string
   }): void {
+    // §11 — the severity authority is the diagnostic's OWN severity carried
+    // through presentation, never a fallback token (warning ≠ info drift).
+    const sevRaw = String(input.diag.severity ?? 'info').toLowerCase()
     emitRuntimeAudit(DOCUMENT_END_VISUAL_AUDIT_EVENT, {
       documentKey: input.documentKey,
       diagnosticId: input.diag.id,
       ruleId: input.diag.code,
+      severity: sevRaw === 'error' ? 'error' : sevRaw === 'warning' ? 'warning' : 'info',
       // §7 — REAL facts carried from the rule scan (never re-guessed from the DOM).
       sourceRevision: input.sourceRevision,
       terminalNewlineCount: input.terminalNewlineCount,
