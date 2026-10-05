@@ -74,6 +74,25 @@ import {
   evaluateSourceSyntaxVisualCommit,
   type SourceSyntaxVisualFacts,
 } from './document-diagnostic-source-syntax-presentation-authority'
+// TRAE rebase §6/§8 — the presentation-EPOCH audit (generic) + the FILL_ONLY
+// ownership policy. The V6/V7/V8 empty-container SURFACE contract is gone from
+// production; only these rule-agnostic capabilities remain.
+import {
+  PRESENTATION_EPOCH_AUDIT_EVENT,
+  buildPresentationEpochAudit,
+  emptyFillOnlyOwnershipFacts,
+  evaluateFillOnlyOwnershipGate,
+  type FillOnlyOwnershipFacts,
+  type PresentationMutationProvenance,
+} from './document-diagnostic-presentation-epoch-policy'
+// TRAE rebase §10 — the click provenance audit is a GENERIC side-channel audit.
+import {
+  CLICK_PROVENANCE_AUDIT_EVENT,
+  buildClickProvenanceAudit,
+  evaluateClickProvenance,
+  type ClickProvenanceInput,
+  type PointerActivationToken,
+} from './document-diagnostic-persistent-carrier-authority-v8'
 // V1 — Figure Diagnostic Locator Authority (block binding / occurrence identity / runtime gates).
 import {
   FIGURE_DIAGNOSTIC_LOCATOR_AUDIT,
@@ -943,8 +962,7 @@ function outlineIsPainted(cs: CSSStyleDeclaration): boolean {
 }
 
 /** True when a computed box-shadow would paint (an inset shadow = a fake line). */
-function shadowIsPainted(cs: CSSStyleDeclaration): boolean {
-  const shadow = (cs.boxShadow ?? '').trim().toLowerCase()
+function shadowIsPainted(cs: CSSStyleDeclaration): boolean {  const shadow = (cs.boxShadow ?? '').trim().toLowerCase()
   return shadow !== '' && shadow !== 'none'
 }
 
@@ -2978,7 +2996,14 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
     // changed, so every diagnostic visual geometry measured before is stale.
-    this.bumpDocumentLayoutEpoch(source === 'RECONCILE' ? 'CAPTION_PROJECTION_REPLACE' : 'PLUGIN_DOM_MUTATION')
+    //
+    // ── TRAE V7 §6.2/§6.4 — EXCEPTION: when the ONLY mutation since the previous
+    // commit was the plugin's OWN presentation write (mounting / removing a
+    // diagnostic carrier), the visual geometry it just created is NOT stale. The
+    // epoch bump is short-circuited and the decision is audited instead of
+    // silently applied — a plugin presentation mutation must never kill its own
+    // visual epoch.
+    this.commitPresentationEpochDecision(source)
     // V5.12-R1 §5 — PASSIVE heading diagnostic markers follow the snapshot, and
     // the active emphasis is re-derived for the (possibly replaced) target.
     this.renderHeadingDiagnosticMarkers()
@@ -2996,6 +3021,69 @@ export class DocumentUtilityOverlayHost {
       hintCount: snapshot?.infoCount ?? 0,
       consumerAdmissionDecision: 'ADMITTED',
     })
+  }
+
+  /**
+   * TRAE V7 §6.2/§6.4 — the SINGLE DocumentLayoutEpoch bump decision of the
+   * admitted-snapshot boundary. A `PLUGIN_PRESENTATION_MUTATION` batch (the plugin
+   * mounting / removing its OWN diagnostic carrier) must NOT invalidate the
+   * geometry it just created, so the bump is short-circuited and the decision is
+   * audited (`DOCUMENT-DIAGNOSTIC-PRESENTATION-EPOCH-AUDIT`). Every other batch
+   * keeps the frozen V5.12-R2 behaviour.
+   *
+   * Provenance is established TWO ways: (a) the mutation observer's own batch
+   * classification; (b) a PROVABLE inference — a `PLUGIN_DOM_MUTATION` snapshot
+   * whose diagnostics revision AND source revision are byte-identical to the
+   * previous commit cannot be a user-content change, so it can only be the
+   * plugin's own presentation write.
+   */
+  private commitPresentationEpochDecision(source: string): void {
+    const kind: LayoutMutationKind =
+      source === 'RECONCILE' ? 'CAPTION_PROJECTION_REPLACE' : 'PLUGIN_DOM_MUTATION'
+    const observed = this.lastMutationProvenanceV7
+    // Consume the batch provenance: it must never leak into a later commit.
+    this.lastMutationProvenanceV7 = null
+    const curRevision = this.snapshot?.revision ?? null
+    const curSourceRevision = this.snapshot?.sourceRevision ?? null
+    const prevSemantic = this.lastPresentationEpochSemantic
+    const semanticsUnchanged =
+      prevSemantic != null
+      && prevSemantic.revision === curRevision
+      && prevSemantic.sourceRevision === curSourceRevision
+    this.lastPresentationEpochSemantic = { revision: curRevision, sourceRevision: curSourceRevision }
+    const carrierActive =
+      this.locateFrame?.hasCommitted() === true
+      || this.lastExplicitCarrierKind != null
+      || this.locateCommittedVisual != null
+    const provenance: PresentationMutationProvenance | null = observed
+      ?? (semanticsUnchanged && carrierActive && kind === 'PLUGIN_DOM_MUTATION'
+        ? 'PLUGIN_PRESENTATION_MUTATION'
+        : null)
+    const shortCircuit = provenance === 'PLUGIN_PRESENTATION_MUTATION' && carrierActive
+    const before = this.currentDocumentLayoutEpoch
+    if (shortCircuit) {
+      // TRAE §11 — a plugin presentation mutation must NOT invalidate its own
+      // just-mounted visual (positive runtime evidence).
+      this.presentationMutationShortCircuitCount++
+    } else {
+      this.bumpDocumentLayoutEpoch(kind)
+    }
+    if (provenance == null) return
+    emitRuntimeAudit(PRESENTATION_EPOCH_AUDIT_EVENT, buildPresentationEpochAudit({
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      mutationProvenance: provenance,
+      presentationOwnerVersion: this.diagnosticInteractionState.version,
+      transactionId: this.activeLocateTx?.id ?? null,
+      diagnosticId: this.lastLocatedDiagnosticId,
+      layoutEpochBefore: before,
+      layoutEpochAfter: this.currentDocumentLayoutEpoch,
+      semanticRevisionBefore: curSourceRevision,
+      semanticRevisionAfter: curSourceRevision,
+      currentVisualInvalidated: !shortCircuit && carrierActive,
+      invalidationReason: shortCircuit
+        ? 'PLUGIN_PRESENTATION_SELF_MUTATION_SHORT_CIRCUIT'
+        : (carrierActive ? `LAYOUT_EPOCH:${kind}` : 'NO_ACTIVE_VISUAL'),
+    }))
   }
 
   /**
@@ -3138,10 +3226,22 @@ export class DocumentUtilityOverlayHost {
         const before = pseudoIsPainted(view, el, '::before')
         const after = pseudoIsPainted(view, el, '::after')
         if (before || after) facts.linePseudoElementCount++
+        // ── TRAE V7 §7.2 — every element matched by the carrier selector is a
+        // PLUGIN-OWNED node by construction, so the same facts are the plugin-owned
+        // layer. A host-native border (Typora's own code block border) is probed
+        // SEPARATELY below and is informational only.
+        if (colorIsVisible(cs.backgroundColor) || (cs.backgroundImage ?? '').includes('gradient(')) facts.pluginOwnedFillCount++
+        if (!leftAccentOnly && borderIsPainted(cs)) facts.pluginOwnedBorderCount++
+        if (outlineIsPainted(cs)) facts.pluginOwnedOutlineCount++
+        if ((cs.backgroundImage ?? '').includes('gradient(')) facts.pluginOwnedKeylineCount++
+        if (shadowIsPainted(cs)) facts.pluginOwnedShadowCount++
+        if (before || after) facts.pluginOwnedCornerArmCount++
       }
       const rect = el.getBoundingClientRect()
       if (isHorizontalLineBar({ width: rect.width, height: rect.height })) facts.horizontalLineCount++
       if (isVerticalLineBar({ width: rect.width, height: rect.height })) facts.verticalLineCount++
+      if (isHorizontalLineBar({ width: rect.width, height: rect.height })) facts.pluginOwnedHorizontalLineCount++
+      if (isVerticalLineBar({ width: rect.width, height: rect.height })) facts.pluginOwnedVerticalLineCount++
       // SVG strokes are counted ONLY inside a locate carrier: the overlay's own
       // UI icons are stroked SVGs and must never be mistaken for a locate line.
       for (const svg of Array.from(el.querySelectorAll<Element>('svg,path,line,polyline'))) {
@@ -3160,6 +3260,19 @@ export class DocumentUtilityOverlayHost {
     )
     facts.lineDomChildCount = nodeList.length
     facts.cornerArmCount = lineScope.querySelectorAll<HTMLElement>('[class*="corner-arm"],[class*="continuation-arm"]').length
+    facts.pluginOwnedCornerArmCount = Math.max(facts.pluginOwnedCornerArmCount, facts.cornerArmCount)
+    // ── TRAE V7 §7.2 — the HOST-NATIVE (Typora) decoration of the located target.
+    // Informational only: the FILL_ONLY gate must NEVER fail because the host draws
+    // its own code block border, and the plugin must NEVER delete it to pass.
+    const hostNativeEl = this.locateFrame?.getAnchorElement() ?? null
+    if (hostNativeEl && hostNativeEl.isConnected) {
+      let hostCs: CSSStyleDeclaration | null = null
+      try { hostCs = view.getComputedStyle(hostNativeEl) } catch { hostCs = null }
+      if (hostCs) {
+        if (borderIsPainted(hostCs)) facts.hostNativeBorderCount++
+        if (outlineIsPainted(hostCs)) facts.hostNativeOutlineCount++
+      }
+    }
     // §14 — the PASSIVE heading gutter marker must survive the active cleanup.
     // V5.14-R8 §14 — the PASSIVE authority is the marker WRAPPER + its passive
     // fill fragment. The legacy gutter `__rail` is DELIBERATELY no longer created
@@ -3189,6 +3302,20 @@ export class DocumentUtilityOverlayHost {
   /** V5.12-R7 §13 — fold the measured facts into the session counters + audit. */
   private commitActiveLocateFillOnlyGates(committed: boolean, diagnosticId: string, scope?: Element | null): void {
     const facts = this.measureActiveLocateFillOnlyFacts(scope)
+    this.lastFillOnlyOwnershipFacts = {
+      pluginOwnedFillCount: facts.pluginOwnedFillCount,
+      pluginOwnedBorderCount: facts.pluginOwnedBorderCount,
+      pluginOwnedOutlineCount: facts.pluginOwnedOutlineCount,
+      pluginOwnedVerticalLineCount: facts.pluginOwnedVerticalLineCount,
+      pluginOwnedHorizontalLineCount: facts.pluginOwnedHorizontalLineCount,
+      pluginOwnedKeylineCount: facts.pluginOwnedKeylineCount,
+      pluginOwnedCornerArmCount: facts.pluginOwnedCornerArmCount,
+      pluginOwnedShadowCount: facts.pluginOwnedShadowCount,
+      hostNativeBorderCount: facts.hostNativeBorderCount,
+      hostNativeOutlineCount: facts.hostNativeOutlineCount,
+    }
+    // ── TRAE V7 §7.2 — FILL_ONLY is judged ONLY on the plugin-owned layer.
+    const ownership = evaluateFillOnlyOwnershipGate(this.lastFillOnlyOwnershipFacts, committed)
     // V5.13-R3 §18 — a NON-EOF active locate must never regrow a vertical rail
     // (the EOF band's left accent is a scoped surface style, NOT a locator rail).
     if (!scope && facts.verticalLineCount > 0) this.countersDocEndV513R3.nonEofVerticalLineRegression++
@@ -3221,7 +3348,20 @@ export class DocumentUtilityOverlayHost {
       editorShadowCount: facts.editorShadowCount,
       passiveHeadingMarkerRemoved: facts.passiveHeadingMarkerRemoved,
       drawerSeverityIndicatorRemoved: facts.drawerSeverityIndicatorRemoved,
-      decision: committed && (!fillOk || gate.decision === 'FAIL') ? 'FAIL' : 'PASS',
+      // ── TRAE V7 §7.2 — the layered ownership split (host-native = informational).
+      pluginOwnedFillCount: facts.pluginOwnedFillCount,
+      pluginOwnedBorderCount: facts.pluginOwnedBorderCount,
+      pluginOwnedOutlineCount: facts.pluginOwnedOutlineCount,
+      pluginOwnedVerticalLineCount: facts.pluginOwnedVerticalLineCount,
+      pluginOwnedHorizontalLineCount: facts.pluginOwnedHorizontalLineCount,
+      pluginOwnedKeylineCount: facts.pluginOwnedKeylineCount,
+      pluginOwnedCornerArmCount: facts.pluginOwnedCornerArmCount,
+      pluginOwnedShadowCount: facts.pluginOwnedShadowCount,
+      hostNativeBorderCount: facts.hostNativeBorderCount,
+      hostNativeOutlineCount: facts.hostNativeOutlineCount,
+      pluginOwnedGateDecision: committed ? ownership.decision : 'PASS',
+      pluginOwnedGateFailing: ownership.failing,
+      decision: committed && (!fillOk || gate.decision === 'FAIL' || ownership.decision === 'FAIL') ? 'FAIL' : 'PASS',
       reason: committed ? 'ACTIVE_LOCATE_FILL_ONLY' : 'NOT_COMMITTED',
     })
   }
@@ -3663,6 +3803,13 @@ export class DocumentUtilityOverlayHost {
             if (this.disposed) return
             const realContentMutation = this.pendingRealContentMutation
             this.pendingRealContentMutation = false
+            // ── TRAE V7 §6.2 — classify the batch provenance. A batch that contains
+            // ONLY our own presentation writes (the plugin mounting / removing its
+            // diagnostic carriers) is a PLUGIN_PRESENTATION_MUTATION and must never
+            // invalidate the visual it just created.
+            this.lastMutationProvenanceV7 = realContentMutation
+              ? 'USER_CONTENT_MUTATION'
+              : 'PLUGIN_PRESENTATION_MUTATION'
             this.diagnostics.recompute('DOCUMENT_MUTATION')
             // ── V5.14-R3 §P11 §10 — a real heading content edit marks the visual
             // dirty HERE (the single content-mutation authority), so the stale
@@ -4722,6 +4869,45 @@ export class DocumentUtilityOverlayHost {
     targetKey: string
     version: number
   } | null = null
+  /**
+   * TRAE V6-R2 §6 — the active EXPLICIT-FRAGMENT carrier kind (source-syntax
+   * opener / empty-block container). The unified closure derives its visual
+   * verdict from the REAL painted fragments for these carriers, so a
+   * `visualFragmentCount=0` failure can never be reported as `visualDecision=PASS`.
+   */
+  private lastExplicitCarrierKind: 'source-syntax' | 'empty-block' | null = null
+  /**
+   * TRAE V6-R2 §7 — a DETERMINISTIC business failure (identity unverified /
+   * source block not empty / block not found). The visual pipeline MUST NOT retry
+   * these within the same layout epoch: only a stale layout epoch or a temporary
+   * geometry unavailability may be re-measured.
+   */
+  private lastDeterministicVisualFailure: string | null = null
+  /**
+   * TRAE V7 §6.2 — the provenance of the LAST editor mutation batch. Only a
+   * `PLUGIN_PRESENTATION_MUTATION` may be short-circuited (it must never
+   * invalidate the plugin's own just-mounted carrier).
+   */
+  private lastMutationProvenanceV7: PresentationMutationProvenance | null = null
+  /** TRAE V7 §7 — the layered FILL_ONLY ownership facts of the last measurement. */
+  private lastFillOnlyOwnershipFacts: FillOnlyOwnershipFacts = emptyFillOnlyOwnershipFacts()
+  /**
+   * TRAE V7 §6.4 — the (revision, sourceRevision) of the last presentation-epoch
+   * decision. Two identical pairs prove a `PLUGIN_DOM_MUTATION` batch could not
+   * have been a user-content change.
+   */
+  private lastPresentationEpochSemantic: { revision: number | null; sourceRevision: number | null } | null = null
+  // ── TRAE §10 — Click Provenance (GENERIC side-channel audit) ───────────────
+  private pointerActivationSeq = 0
+  private pendingPointerActivation: PointerActivationToken | null = null
+  private drawerClickHandlerGeneration = 1
+  private readonly drawerClickHandlerInstanceId = `drawer-rows-${Math.random().toString(36).slice(2, 10)}`
+  private clickProvenanceListenerBound = false
+  private lastClickProvenanceDecision: string | null = null
+  /** TRAE V8 §11 — plugin presentation mutation short-circuit positive evidence. */
+  private presentationMutationShortCircuitCount = 0
+  /** TRAE §10 — duplicate business dispatches dropped for ONE pointer activation. */
+  private duplicatePointerActivationDropCount = 0
   private lastClickedDiagnosticId: string | null = null
   /** §15 — the LAST applied visual recovery strategy (null = none needed). */
   private lastVisualRecoveryStrategyV21: DiagnosticVisualRecoveryStrategy | null = null
@@ -4915,6 +5101,28 @@ export class DocumentUtilityOverlayHost {
   /** V5.12-R7 §13 — the last committed active-locate fill count (>= 1 required). */
   getActiveLocateFillCount(): number {
     return this.lastActiveLocateFillCount
+  }
+
+  // ── TRAE rebase — read-only FILL_ONLY / click-provenance observability ──────
+
+  /** TRAE §7.2 — the layered FILL_ONLY ownership facts of the last measurement. */
+  getLastFillOnlyOwnershipFacts(): Readonly<FillOnlyOwnershipFacts> {
+    return { ...this.lastFillOnlyOwnershipFacts }
+  }
+
+  /** TRAE §10 — the last click provenance decision (generic audit). */
+  getLastClickProvenanceDecision(): string | null {
+    return this.lastClickProvenanceDecision
+  }
+
+  /** TRAE §10 — duplicate business dispatches dropped for one pointer activation. */
+  getDuplicatePointerActivationDropCount(): number {
+    return this.duplicatePointerActivationDropCount
+  }
+
+  /** TRAE §11 — plugin presentation mutation short-circuit evidence count. */
+  getPresentationMutationShortCircuitCount(): number {
+    return this.presentationMutationShortCircuitCount
   }
 
   /** V5.12-R7 §13 — the ACTIVE locate presentation mode (fixed: FILL_ONLY). */
@@ -5366,7 +5574,8 @@ export class DocumentUtilityOverlayHost {
         visualEpoch: this.locateVisualEpoch,
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
         diagnosticId: this.lastLocatedDiagnosticId,
-        ruleId: this.locateCommittedVisual?.diagnosticId ?? null,
+        // V6-R2 §5 — the closure carries the RULE code, never the diagnosticId.
+        ruleId: this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId) ?? null,
         severity: eof.severity,
         visualTargetKind: eof.visualTargetKind,
         semanticAnchorIdentity: eof.semanticAnchorIdentity,
@@ -5450,14 +5659,28 @@ export class DocumentUtilityOverlayHost {
     const coverageRatio = kind === 'inline'
       ? (inlineFacts ? inlineFacts.coverage : null)
       : isBlock ? (geom ? geom.horizontalCoverage : null) : (kind === 'heading' ? 1 : null)
+    // V6-R2 §6 — for an EXPLICIT-FRAGMENT carrier (source-syntax opener /
+    // empty-block container) the closure verdict MUST derive from the REAL
+    // painted fragments, so a zero-fragment failure can never be reported as
+    // `visualDecision=PASS` / `commitDecision=COMMIT`.
+    const explicitCarrier = !gapActive && this.lastExplicitCarrierKind != null
+    const explicitFragments = structure?.inlineFragmentCount ?? 0
+    const explicitOk = explicitCarrier && explicitFragments >= 1 && structure?.active === true
     const payload: Record<string, unknown> = {
       transactionId: this.activeLocateTx?.id ?? this.locateCommittedVisual?.transactionId ?? null,
       visualEpoch: this.locateVisualEpoch,
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       diagnosticId: this.lastLocatedDiagnosticId,
-      ruleId: this.activeLocateTx?.diagnosticId ?? this.locateCommittedVisual?.diagnosticId ?? null,
+      // V6-R2 §5 — the closure carries the RULE code, never the diagnosticId.
+      ruleId: this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId) ?? null,
       // V2 §B — the gap carrier contributes its OWN unified facts (never null).
-      severity: gapActive ? gapSeverity : (frame?.getStructure().severity ?? null),
+      // V6-R2 §5 — the empty-block family reports the `hint` token end-to-end.
+      severity: gapActive
+        ? gapSeverity
+        : this.displaySeverityForRule(
+            this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId),
+            frame?.getStructure().severity ?? 'info',
+          ),
       visualTargetKind: gapActive ? BLOCK_GAP_VISUAL_TARGET : (structure?.kind ?? null),
       semanticAnchorIdentity: this.locateCommittedVisual?.semanticAnchorIdentity ?? null,
       targetIdentity: this.lastLocatedDiagnosticId,
@@ -5489,16 +5712,27 @@ export class DocumentUtilityOverlayHost {
       activeMarkerPresent: this.headingActiveWrapper !== null,
       activeHeadingIdentity: this.headingActiveMarkerIdentity,
       // V2 §B — the gap branch commits its OWN unified carrier state.
+      // V6-R2 §6 — the explicit-fragment branch reports the REAL fragment state.
       visualDecision: gapActive
         ? (gapRect ? 'PASS' : 'FAIL')
-        : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
+        : explicitCarrier
+          ? (explicitOk ? 'PASS' : 'FAIL')
+          : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
       commitDecision: gapActive
         ? (gapRect ? 'COMMIT' : 'NO_COMMIT')
-        : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
-      terminalState: this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE',
+        : explicitCarrier
+          ? (explicitOk ? 'COMMIT' : 'NO_COMMIT')
+          : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
+      terminalState: gapActive
+        ? (gapRect ? 'COMMITTED' : 'FAILED')
+        : explicitCarrier
+          ? (explicitOk ? 'COMMITTED' : 'FAILED')
+          : (this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE'),
       decision: gapActive
         ? (gapRect && gapSeverity === 'warning' ? 'PASS' : 'FAIL')
-        : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
+        : explicitCarrier
+          ? (explicitOk ? 'PASS' : 'FAIL')
+          : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
       reason,
       gateCounters: { ...this.countersClosureV512R2 },
       gateDecision: evaluateVisualClosureGates(this.countersClosureV512R2).decision,
@@ -10579,6 +10813,8 @@ export class DocumentUtilityOverlayHost {
   }
 
   private clearDiagnosticLocateVisual(reason: string): void {
+    // TRAE V6-R2 §6 — clearing the active visual clears the explicit-carrier kind too.
+    this.lastExplicitCarrierKind = null
     // V5.14-R8 §8 — a normal SWITCH/ACTIVATE must NEVER run a global unscoped
     // clear. The legacy `DIAGNOSTIC_SWITCH` reason (no `_SCOPED_` marker) is the
     // exact global-clear signature; observe it so the V2 gate can prove it is gone.
@@ -11693,6 +11929,8 @@ export class DocumentUtilityOverlayHost {
   ): void {
     const frame = this.locateFrame
     if (!frame) return
+    // V6-R2 §7 — reset the deterministic-failure marker for THIS commit attempt.
+    this.lastDeterministicVisualFailure = null
     const resultEl = result?.element ?? null
     let anchor: HTMLElement | null =
       resultEl && resultEl.isConnected ? resultEl : (targets.find(el => el.isConnected) ?? null)
@@ -11724,6 +11962,15 @@ export class DocumentUtilityOverlayHost {
       this.commitSourceSyntaxOpenerVisual(diagId, severity, anchor, diag, result)
       return
     }
+    // ── TRAE rebase — CODE_EMPTY_BLOCK intentionally has NO special carrier here.
+    // Its `locationKind` is `block-node` / `blockKind='code'` (exactly like
+    // CODE_MISSING_NAME / CODE_MISSING_LANGUAGE), so it resolves to the canonical
+    // `pre.md-fences` and flows through the SAME generic branch below:
+    //   anchorTag=pre → classifyDiagnosticLocateElement → 'code' → overlay-frame
+    //   → document-space carrier → active lease → ACTIVE.
+    // "Detection is special, presentation is NOT." The V6/V7/V8 empty-container
+    // surface / persistent-carrier / atomic-handoff path is removed from
+    // production (see gate E in the rebase prompt).
     // ── Presentation Stability Closure V1 §2/§6/§8/§11 — BLOCK_GAP_VISUAL_TARGET.
     // The semantic target of `EXCESSIVE_INTERNAL_BLANK_LINES` is the gap BETWEEN
     // two sibling content blocks. Its PAINT authority is therefore the gap —
@@ -12016,6 +12263,7 @@ export class DocumentUtilityOverlayHost {
     }
     const verdict = evaluateSourceSyntaxVisualCommit(visualFacts)
     this.lastLocateVisualGateOk = verdict.commitDecision === 'COMMIT'
+    this.lastExplicitCarrierKind = verdict.commitDecision === 'COMMIT' ? 'source-syntax' : null
     if (verdict.commitDecision !== 'COMMIT') {
       this.clearDiagnosticLocateVisual(`SOURCE_SYNTAX_${verdict.reasons[0] ?? 'NO_COMMIT'}`)
     }
@@ -12024,6 +12272,83 @@ export class DocumentUtilityOverlayHost {
     this.emitSourceSyntaxVisualAudit(diagId, diag, visualFacts, verdict)
     void result
     void projection
+  }
+
+  /**
+   * TRAE rebase — the V6/V7/V8 EMPTY-CONTAINER special visual path (the former
+   * `commit<EmptyBlock>Visual` → transient surface → persistent carrier → atomic
+   * handoff → compositing → final commit chain) is DELETED from production.
+   *
+   * `CODE_EMPTY_BLOCK` is a canonical `block:code:N` content diagnostic exactly
+   * like `CODE_MISSING_NAME` / `CODE_MISSING_LANGUAGE`; it is presented by the
+   * generic code branch of `commitDiagnosticLocateVisual` (anchorTag=pre →
+   * overlay-frame → document-space carrier → active lease → ACTIVE).
+   *
+   * Geometry refinement (CODE_CONTENT_ONLY) is a LATER, optional geometry policy
+   * on the SAME generic frame — never a second presentation lifecycle.
+   */
+
+  /**
+   * V6-R2 §1 — the CANONICAL BLOCK IDENTITY of a LIVE DOM block, computed from the
+   * SAME enumeration the diagnostics authority uses (`block:<kind>:<ordinal>`).
+   * It is a genuine bridge: the value is derived from the CURRENT DOM and then
+   * compared with the expected identity. It is NEVER a copy of the expected one,
+   * and it returns null when the element is not in the canonical set.
+   */
+  private canonicalBlockIdentityOf(
+    blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link',
+    element: HTMLElement,
+  ): string | null {
+    const root = resolveBusinessContentRoot()
+    if (!root) return null
+    const selector = blockKind === 'figure' ? 'img'
+      : blockKind === 'table' ? 'table'
+        : blockKind === 'code' ? 'pre.md-fences'
+          : blockKind === 'formula' ? '.md-math-block'
+            : null
+    if (selector == null) return null
+    const index = Array.from(root.querySelectorAll<HTMLElement>(selector)).indexOf(element)
+    return index >= 0 ? `block:${blockKind}:${index}` : null
+  }
+
+  /**
+   * V6-R2 §2 — the empty-block presentation MUST NOT re-derive emptiness from the
+   * DOM (Typora renders line numbers / CodeMirror scaffold, so a DOM text check
+   * would wrongly report "not empty"). `emptyBlockContentIsEmpty` was removed on
+   * purpose; the SOURCE authority (`metadata.sourceSemanticEmpty`) is the only
+   * emptiness authority.
+   */
+
+  /** TRAE V6-R2 §5 — the RULE code of a diagnostic id (never the id as a ruleId). */
+  private ruleCodeForDiagnosticId(diagnosticId: string | null): string | null {
+    if (!diagnosticId) return null
+    return this.diagnosticById(diagnosticId)?.code ?? null
+  }
+
+  /**
+   * TRAE V6-R2 §5 — the AUDIT severity token. The empty-block family reports the
+   * UI token `hint` end-to-end, while the frame keeps its `info` styling; every
+   * other rule is unchanged. The value is carried from the RULE, never inferred
+   * from a diagnosticId with an `info` fallback.
+   */
+  private displaySeverityForRule(
+    code: string | null,
+    severity: 'error' | 'warning' | 'info',
+  ): 'error' | 'warning' | 'info' | 'hint' {
+    return code === 'CODE_EMPTY_BLOCK' ? 'hint' : severity
+  }
+
+  /**
+   * TRAE V7 §8 — the display severity of a diagnostic ID. The empty-block family
+   * reports the UI token `hint` on EVERY user interaction / visual audit while the
+   * internal severity stays `info` (exposed as `internalSeverity`); every other
+   * rule is unchanged. Never a bare `severity=info` for CODE_EMPTY_BLOCK.
+   */
+  private displaySeverityForDiagnosticId(
+    diagnosticId: string | null,
+    severity: 'error' | 'warning' | 'info',
+  ): 'error' | 'warning' | 'info' | 'hint' {
+    return this.displaySeverityForRule(this.ruleCodeForDiagnosticId(diagnosticId), severity)
   }
 
   /** §22 — is the diagnostic's scan-time source generation still CURRENT? */
@@ -12041,11 +12366,18 @@ export class DocumentUtilityOverlayHost {
     return st.transactionId != null && t.transactionId === st.transactionId
   }
 
-  /** TRAE V5 §11 — is this diagnostic one of the source-syntax families? */
+  /**
+   * TRAE V5 §11 / V6 §17 — does this diagnostic require DEFERRED activation
+   * (phase stays IDLE until the visual commit succeeds)? The source-syntax
+   * openers and the empty-block container both must never show a fake ACTIVE.
+   */
   private isSourceSyntaxDiagnosticId(diagnosticId: string | null): boolean {
     if (!diagnosticId) return false
     const code = this.diagnosticById(diagnosticId)?.code
-    return code === 'CODE_FENCE_UNCLOSED' || code === 'FORMULA_BLOCK_UNCLOSED' || code === 'FRONTMATTER_UNCLOSED'
+    return code === 'CODE_FENCE_UNCLOSED'
+      || code === 'FORMULA_BLOCK_UNCLOSED'
+      || code === 'FRONTMATTER_UNCLOSED'
+      || code === 'CODE_EMPTY_BLOCK'
   }
 
   /** §24.2 — emit the source-syntax VISUAL audit with the derived verdict. */
@@ -15935,7 +16267,41 @@ export class DocumentUtilityOverlayHost {
     })
 
     root.appendChild(drawer)
+    // ── TRAE V8 §5 — Click Provenance Authority. ONE physical pointer activation
+    // (`pointerdown` … `click`) mints exactly ONE activation token, so a duplicate
+    // business dispatch of the SAME activation can be DROPPED without any
+    // debounce/time window and without disabling the genuine second click
+    // (whose own `pointerdown` always mints a NEW token).
+    if (!this.clickProvenanceListenerBound) {
+      this.clickProvenanceListenerBound = true
+      drawer.addEventListener('pointerdown', (ev) => {
+        if (this.disposed) return
+        if (ev.button != null && ev.button !== 0) return
+        const target = ev.target as HTMLElement | null
+        // Only a row (or a descendant of a row) may mint a business activation.
+        if (target == null || target.closest('.inkchapter-doc-drawer__item[data-diagnostic-id]') == null) return
+        this.pendingPointerActivation = {
+          pointerActivationId: ++this.pointerActivationSeq,
+          source: 'POINTER_DOWN',
+          pointerId: typeof ev.pointerId === 'number' ? ev.pointerId : null,
+          pointerType: typeof ev.pointerType === 'string' ? ev.pointerType : null,
+          button: typeof ev.button === 'number' ? ev.button : null,
+          timeStamp: ev.timeStamp,
+          targetIdentity: DocumentUtilityOverlayHost.describeEventTarget(ev.target),
+          dispatchCount: 0,
+        }
+      }, true)
+    }
     return drawer
+  }
+
+  /** TRAE V8 §5.2 — a stable, log-safe identity of an event target. */
+  private static describeEventTarget(target: EventTarget | null): string {
+    if (target == null) return 'null'
+    if (!(target instanceof HTMLElement)) return target.constructor?.name ?? 'unknown'
+    const id = target.getAttribute('data-diagnostic-id')
+    const cls = String(target.className).split(' ').filter(Boolean).slice(0, 2).join('.')
+    return `${target.tagName.toLowerCase()}${id ? `[${id}]` : ''}${cls ? `.${cls}` : ''}`
   }
 
   /** V1.1 — severity filter Text Tabs in the drawer header (hint tab hidden at 0). */
@@ -16917,9 +17283,22 @@ export class DocumentUtilityOverlayHost {
     if (this.locateDocCarrier != null) count += 1
     count += this.locateDocInlineEls.length
     count += scope.querySelectorAll('.inkchapter-heading-diagnostic-active__fragment').length
-    // the locate frame's own fill surface counts once when it is really painted
-    if (this.locateFrame?.hasCommitted() === true) count += 1
+    // ── TRAE V8 §10 — the TRANSIENT viewport carrier only counts while it is
+    // REALLY painted. `hasCommitted()` is TRUE from the mere presence of the
+    // anchor identity, so after the atomic handoff retired the transient element
+    // it still counted +1 — the exact `activeOwnerFillCount=2` defect.
+    if (this.isLocateFrameTransientPainted()) count += 1
     return count
+  }
+
+  /** TRAE §10 — is the TRANSIENT viewport carrier really painted right now? */
+  private isLocateFrameTransientPainted(): boolean {
+    const frame = this.locateFrame
+    if (!frame) return false
+    const structure = frame.getStructure()
+    return frame.getFrameElement() != null
+      || frame.getInlineElement() != null
+      || structure.inlineFragmentCount > 0
   }
 
   /** §12 — the ACTIVE owner markers (heading emphasis + locate frame carriers). */
@@ -16927,7 +17306,7 @@ export class DocumentUtilityOverlayHost {
     const scope = this.root?.ownerDocument ?? (typeof document !== 'undefined' ? document : null)
     if (scope == null) return 0
     let count = scope.querySelectorAll('.inkchapter-heading-diagnostic-active').length
-    if (this.locateFrame?.hasCommitted() === true) count += 1
+    if (this.isLocateFrameTransientPainted()) count += 1
     return count
   }
 
@@ -17161,7 +17540,13 @@ export class DocumentUtilityOverlayHost {
       clickedDiagnosticId: input.click.diagnosticId,
       clickedTargetKey: input.click.targetKey,
       clickedTargetIndex: input.click.diagnosticTargetIndex,
-      severity: input.severity,
+      // TRAE V7 §8 — display `hint` for CODE_EMPTY_BLOCK; internal severity stays
+      // exposed separately (never a bare ambiguous severity=info).
+      severity: this.displaySeverityForDiagnosticId(
+        input.click.diagnosticId,
+        (input.severity ?? 'info') as 'error' | 'warning' | 'info',
+      ),
+      internalSeverity: input.severity,
       classifiedAction: input.action,
       sameDiagnostic: input.sameDiagnostic,
       sameTarget: input.sameTarget,
@@ -17778,7 +18163,16 @@ export class DocumentUtilityOverlayHost {
     emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_POST_SETTLE_CLOSURE_V2, {
       clickSequence,
       actualClickedDiagnosticId: this.lastClickedDiagnosticId,
+      // TRAE V7 §8 — the POST-SETTLE closure read the INTERNAL `info` and produced
+      // the "Click=hint but PostSettle=info" split; the display token is now `hint`
+      // for CODE_EMPTY_BLOCK and the internal enum is exposed separately.
       severity: this.lastClickedDiagnosticId != null
+        ? this.displaySeverityForDiagnosticId(
+            this.lastClickedDiagnosticId,
+            (this.diagnosticById(this.lastClickedDiagnosticId)?.severity ?? 'info') as 'error' | 'warning' | 'info',
+          )
+        : null,
+      internalSeverity: this.lastClickedDiagnosticId != null
         ? (this.diagnosticById(this.lastClickedDiagnosticId)?.severity ?? null)
         : null,
       classifiedAction: this.lastDiagnosticTransition?.action ?? null,
@@ -17977,7 +18371,11 @@ export class DocumentUtilityOverlayHost {
       clickedDiagnosticId: diagnosticId,
       clickedTargetKey,
       clickedTargetIndex,
-      severity,
+      // V6-R2 §5 — the click audit carries the RULE-derived severity token
+      // (`hint` for the empty-block family), never an `info` fallback.
+      severity: this.displaySeverityForRule(this.ruleCodeForDiagnosticId(diagnosticId), severity ?? 'info'),
+      internalSeverity: severity ?? null,
+      ruleId: this.ruleCodeForDiagnosticId(diagnosticId),
       versionBefore: previous.version,
       phaseBefore: previous.phase,
       diagnosticBefore: previous.diagnosticId,
@@ -18154,6 +18552,8 @@ export class DocumentUtilityOverlayHost {
       resolveHeadingIdentity: (id) => this.resolveHeadingIdentity(id),
       resolveSourceLine: (line) => this.resolveSourceLine(line),
       resolveBlockIdentity: (kind, stableId) => this.resolveBlockIdentity(kind, stableId),
+      // V6-R2 §1 — the canonical block identity bridge (live DOM → canonical id).
+      resolveCanonicalBlockIdentity: (kind, el) => this.canonicalBlockIdentityOf(kind, el),
       // Phase G §8 — caption-projection locate: resolve the LIVE caption by the
       // caption service's OWN stable id (never adjacency / first-match).
       resolveCaptionProjection: (captionId) => {
@@ -20840,7 +21240,12 @@ export class DocumentUtilityOverlayHost {
     facts.zeroRectCommit = verdict.zeroRect
     facts.staleRectCommit = !facts.freshTargetMeasurement
     if (!verdict.ok) {
-      const decision = resolveOneClickRetryDecision(false, facts.visualRetryCount, LOCATE_ONE_CLICK_MAX_INTERNAL_RETRY)
+      // V6-R2 §7 — a DETERMINISTIC business failure (identity unverified / source
+      // block not empty / block not found) MUST NOT be retried within the same
+      // layout epoch. Only stale-epoch / temporary-geometry failures may retry.
+      const decision = this.lastDeterministicVisualFailure != null
+        ? 'NO_RETRY'
+        : resolveOneClickRetryDecision(false, facts.visualRetryCount, LOCATE_ONE_CLICK_MAX_INTERNAL_RETRY)
       if (decision === 'RETRY') {
         facts.visualRetryCount++
         // V5.9 §13 — a visual retry is ONLY legitimate once the target arrived.
@@ -21471,6 +21876,13 @@ export class DocumentUtilityOverlayHost {
       documentKey: facts.documentKey,
       diagnosticId: facts.diagnosticId,
       ruleCode: facts.ruleCode,
+      // TRAE V7 §8 — the One-Click audit carries the display severity (`hint` for
+      // CODE_EMPTY_BLOCK) plus the internal enum as a separate field.
+      severity: this.displaySeverityForRule(
+        facts.ruleCode,
+        (this.diagnosticById(facts.diagnosticId)?.severity ?? 'info') as 'error' | 'warning' | 'info',
+      ),
+      internalSeverity: this.diagnosticById(facts.diagnosticId)?.severity ?? null,
       userClickCount: facts.userClickCount,
       targetInitiallyVisible: facts.targetInitiallyVisible,
       automaticScrollRequired: facts.automaticScrollRequired,
@@ -24329,7 +24741,9 @@ export class DocumentUtilityOverlayHost {
       diagnosticId,
       ruleId: diag ? (getRuleMeta(diag.code)?.ruleId ?? diag.code) : null,
       diagnosticKind: diag?.code ?? null,
-      severity: diag?.severity ?? null,
+      // TRAE V7 §8 — CODE_EMPTY_BLOCK reports `hint`; the internal enum is separate.
+      severity: this.displaySeverityForRule(diag?.code ?? null, diag?.severity ?? 'info'),
+      internalSeverity: diag?.severity ?? null,
       locationKind: diag?.location?.kind ?? null,
       rawDestination,
       decodedDestination,
@@ -24473,18 +24887,95 @@ export class DocumentUtilityOverlayHost {
     meta.appendChild(go)
     item.appendChild(meta)
 
-    const activate = (): void => this.locateDiagnostic(p.diagnosticId, p.targetIndex)
     item.addEventListener('click', (ev) => {
       ev.preventDefault()
-      activate()
+      this.dispatchDrawerActivation(ev, p, 'CLICK')
     })
     item.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault()
-        activate()
+        this.dispatchDrawerActivation(ev, p, 'KEYBOARD')
       }
     })
     return item
+  }
+
+  /**
+   * TRAE V8 §5 — the ONE business dispatch entry of a Drawer row. It routes
+   * through the Click Provenance Authority: one physical pointer activation may
+   * only ever produce ONE business CLICK_DISPATCH. The genuine second click keeps
+   * its toggle-off semantics because its own `pointerdown` mints a NEW token.
+   */
+  private dispatchDrawerActivation(
+    ev: MouseEvent | KeyboardEvent,
+    p: DiagnosticTargetProjection,
+    source: 'CLICK' | 'KEYBOARD',
+  ): void {
+    if (this.disposed) return
+    if (source === 'KEYBOARD') {
+      this.pendingPointerActivation = {
+        pointerActivationId: ++this.pointerActivationSeq,
+        source: 'KEYBOARD',
+        pointerId: null,
+        pointerType: null,
+        button: null,
+        timeStamp: ev.timeStamp,
+        targetIdentity: DocumentUtilityOverlayHost.describeEventTarget(ev.target),
+        dispatchCount: 0,
+      }
+    }
+    const token = this.pendingPointerActivation
+    const mouse = ev as MouseEvent
+    const pointer = ev as PointerEvent
+    const provenance: ClickProvenanceInput = {
+      token,
+      eventType: ev.type,
+      eventIsTrusted: ev.isTrusted === true,
+      eventTimeStamp: ev.timeStamp,
+      eventDetail: typeof mouse.detail === 'number' ? mouse.detail : 0,
+      button: typeof mouse.button === 'number' ? mouse.button : null,
+      buttons: typeof mouse.buttons === 'number' ? mouse.buttons : null,
+      pointerId: typeof pointer.pointerId === 'number' ? pointer.pointerId : null,
+      pointerType: typeof pointer.pointerType === 'string' ? pointer.pointerType : null,
+      eventTargetIdentity: DocumentUtilityOverlayHost.describeEventTarget(ev.target),
+      currentTargetIdentity: DocumentUtilityOverlayHost.describeEventTarget(ev.currentTarget),
+      listenerGeneration: this.drawerClickHandlerGeneration,
+      handlerInstanceId: this.drawerClickHandlerInstanceId,
+    }
+    const verdict = evaluateClickProvenance(provenance)
+    this.lastClickProvenanceDecision = verdict.decision
+    const dispatchCountAfter = verdict.dispatch
+      ? (token != null ? token.dispatchCount + 1 : 1)
+      : (token != null ? token.dispatchCount : 0)
+    const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    const targetKey = this.buildClickedDiagnosticTargetKey(documentKey, p.diagnosticId, p.targetIndex)
+    const sameDiagnostic = this.diagnosticInteractionState.diagnosticId === p.diagnosticId
+    const sameTarget = this.diagnosticInteractionState.phase === 'ACTIVE'
+      && this.diagnosticInteractionState.targetKey === targetKey
+    emitRuntimeAudit(CLICK_PROVENANCE_AUDIT_EVENT, buildClickProvenanceAudit({
+      documentKey: documentKey || null,
+      diagnosticId: p.diagnosticId,
+      targetKey,
+      provenance,
+      businessClickSequence: this.diagnosticClickSequence + (verdict.dispatch ? 1 : 0),
+      businessDispatchCountForPointerActivation: dispatchCountAfter,
+      classifiedAction: verdict.dispatch
+        ? (sameTarget ? 'DEACTIVATE' : (sameDiagnostic ? 'SWITCH' : 'ACTIVATE'))
+        : null,
+      sameDiagnostic,
+      sameTarget,
+      verdict,
+    }))
+    if (!verdict.dispatch) {
+      // §5.3 rule 3 — the SAME activation must never reach the business entry a
+      // second time: no state change, no version bump, no deactivate.
+      this.duplicatePointerActivationDropCount++
+      return
+    }
+    if (token != null) token.dispatchCount++
+    // §10 — the trusted activation fact travels in the audit row (`eventIsTrusted`);
+    // the provenance authority stays a side-channel audit, never a carrier gate.
+    this.locateDiagnostic(p.diagnosticId, p.targetIndex)
   }
 
   /** V5.1 — EXPLICIT Problems-Control toggle (no blind `visible = !visible`).

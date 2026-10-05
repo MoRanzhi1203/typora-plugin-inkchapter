@@ -647,7 +647,12 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   CODE_MISSING_NAME: rule('CODE_MISSING_NAME', 'code', 'block-node'),
   CODE_MISSING_LANGUAGE: rule('CODE_MISSING_LANGUAGE', 'code', 'block-node'),
   CODE_DUPLICATE_NAME: rule('CODE_DUPLICATE_NAME', 'code', 'multi-target'),
-  CODE_EMPTY_BLOCK: rule('CODE_EMPTY_BLOCK', 'code', 'source-range', { area: 'document-completeness', scope: 'object' }),
+  // TRAE rebase — an EMPTY code block is a CANONICAL BLOCK content diagnostic with
+  // EXACTLY the generic `code` / `block-node` presentation of CODE_MISSING_NAME /
+  // CODE_MISSING_LANGUAGE. Detection is special; the presentation lifecycle is NOT.
+  CODE_EMPTY_BLOCK: rule('CODE_EMPTY_BLOCK', 'code', 'block-node', {
+    area: 'document-completeness', scope: 'object',
+  }),
   FORMULA_DUPLICATE_VISIBLE_TAG: rule('FORMULA_DUPLICATE_VISIBLE_TAG', 'formula', 'block-node'),
   // VNext §19 — a display formula carrying a list/blockquote marker is not a
   // standalone block (the formula analogue of FIGURE_BLOCK_STRUCTURE_INVALID).
@@ -1272,6 +1277,13 @@ export interface DiagnosticLocationResolveContext {
   resolveSourceLine: (line: number) => HTMLElement | null
   /** block kind + stableIdentity (`block:<kind>:<ordinal>`) → live block element. */
   resolveBlockIdentity: (blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link', stableIdentity: string) => HTMLElement | null
+  /**
+   * V6-R2 §1 — the CANONICAL BLOCK IDENTITY BRIDGE: a LIVE block element → its
+   * canonical `block:<kind>:<ordinal>` identity, computed from the CURRENT DOM
+   * enumeration (NEVER copied from the expected identity). Returns null when the
+   * element is not in the canonical set.
+   */
+  resolveCanonicalBlockIdentity?: (blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link', element: HTMLElement) => string | null
   /**
    * Phase G — caption service's OWN captionId → the LIVE caption projection
    * element. The DOM-side caption-integrity locator resolves through this; the
@@ -1977,7 +1989,18 @@ export function resolveDiagnosticLocation(
       return { decision: 'RESOLVED', element: null, scrollAction: 'GO_BOTTOM', targetIndex, primaryAnchor: 'document-boundary', fallbackAnchor: null }
     case 'block-node': {
       const el = ctx.resolveBlockIdentity(location.blockKind, location.stableIdentity)
-      if (el) return resolvedResult(el, targetIndex, 'block-identity', null)
+      if (el) {
+        const resolved = resolvedResult(el, targetIndex, 'block-identity', null)
+        // V6-R2 §1 — carry the CANONICAL identity computed from the LIVE DOM, so a
+        // downstream verifier can compare it with the expected one (never faked).
+        const canonical = typeof ctx.resolveCanonicalBlockIdentity === 'function'
+          ? ctx.resolveCanonicalBlockIdentity(location.blockKind, el)
+          : null
+        return {
+          ...resolved,
+          resolvedBlockIdentity: canonical ?? resolved.resolvedBlockIdentity ?? null,
+        }
+      }
       // Phase 7R.3.11.8B.7.3 — resource semantic resolution: a figure whose
       // ordinal identity drifted (or whose DOM got a wrapper) is re-derived
       // from the CURRENT frame by its normalized destination. NEVER a stale

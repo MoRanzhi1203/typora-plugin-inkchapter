@@ -404,9 +404,9 @@ export class DiagnosticLocateFrameController {
     this.captionHostRectOverride = input.captionHostRect ?? null
     this.explicitFragmentRects = input.fragmentRects ?? null
     this.sourceSyntaxAccent = input.sourceSyntaxAccent === true
-    // ── TRAE V4 §10 — SOURCE-SYNTAX OPENING-LINE carrier. The explicit
-    // fragments are painted verbatim; a block frame is NEVER mounted, so the
-    // opener→EOF protected range can never be painted.
+    // ── TRAE V4 §10 — EXPLICIT-FRAGMENT carrier (source-syntax opener). The
+    // fragments are painted verbatim; a block frame is NEVER mounted and no text
+    // range is ever required.
     if (input.sourceSyntaxAccent === true) {
       this.kind = 'inline'
       this.lastVisualPresentation = 'inline-mark'
