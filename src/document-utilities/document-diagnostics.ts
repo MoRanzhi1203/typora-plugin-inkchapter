@@ -2642,37 +2642,51 @@ export function computeDocumentDiagnostics(
       kind: 'object' | 'formula',
       identityPrefix: string,
       spans: readonly SourceBlockSpan[],
+      canonicalBlockKind?: 'code',
     ): void => {
       for (const span of spans) {
+        // TRAE V6 §6/§7 — an EMPTY container binds a CANONICAL BLOCK identity
+        // (`block:<kind>:<ordinal>`), NEVER a bare line / caption / Nth-block
+        // guess. The canonical block locator resolves the real DOM block.
+        const canonicalBlockIdentity = canonicalBlockKind != null && typeof span.ordinal === 'number'
+          ? `block:${canonicalBlockKind}:${span.ordinal}`
+          : null
         push(
           makeDiagnostic(input, category, kindCode, message, {
             detail,
             kind,
-            targetIdentity: `${identityPrefix}:line:${span.startLine}`,
+            targetIdentity: canonicalBlockIdentity ?? `${identityPrefix}:line:${span.startLine}`,
             metadata: {
               ruleId,
               reason: 'EMPTY_SOURCE_OBJECT',
+              // V6-R2 §2 — the SOURCE authority's emptiness verdict. The
+              // presentation MUST trust this, never re-derive emptiness from the
+              // DOM (Typora renders line numbers / CodeMirror scaffold).
+              sourceSemanticEmpty: true,
               startLine: span.startLine,
               endLine: span.endLine,
               sourceStart: span.sourceStart,
               sourceEnd: span.sourceEnd,
+              ...(canonicalBlockIdentity != null ? { canonicalBlockIdentity, blockKind: canonicalBlockKind } : {}),
             },
-            location: {
-              kind: 'source-range',
-              startLine: span.startLine,
-              startColumn: span.startColumn,
-              endLine: span.endLine,
-              endColumn: span.endColumn,
-              sourceStart: span.sourceStart,
-              sourceEnd: span.sourceEnd,
-              sourceFingerprint: `${identityPrefix}:${span.startLine}`,
-              rawText: span.rawText,
-            },
+            location: canonicalBlockIdentity != null && canonicalBlockKind != null
+              ? { kind: 'block-node', blockKind: canonicalBlockKind, stableIdentity: canonicalBlockIdentity }
+              : {
+                  kind: 'source-range',
+                  startLine: span.startLine,
+                  startColumn: span.startColumn,
+                  endLine: span.endLine,
+                  endColumn: span.endColumn,
+                  sourceStart: span.sourceStart,
+                  sourceEnd: span.sourceEnd,
+                  sourceFingerprint: `${identityPrefix}:${span.startLine}`,
+                  rawText: span.rawText,
+                },
           }),
         )
       }
     }
-    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', emptyObjects.codeBlocks)
+    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', emptyObjects.codeBlocks, 'code')
     for (const span of emptyObjects.tables) {
       push(
         makeDiagnostic(input, 'table', TABLE_EMPTY_CONTENT_CODE, '表格没有数据行', {

@@ -3317,6 +3317,12 @@ body.ink-console-docked::after {
   border-left: 3px solid var(--ink-locate-color);
 }
 
+/* ── TRAE rebase — the V6/V7 empty-container special ACTIVE presentation
+   (`[data-ink-empty-block]` fragment rail + `.inkchapter-diagnostic-empty-surface`
+   overlay) is REMOVED. `CODE_EMPTY_BLOCK` is presented by the generic
+   `.inkchapter-diagnostic-locate-frame` code frame like every other code
+   diagnostic — severity only changes the frame token, never the lifecycle. */
+
 /* ── Blank-Space Warning Presentation Policy — the ONE ACTIVE presentation ────
    RESTORED VERBATIM from the original document-end EOF band
    (V5.13-R2 §1.1 / V5.13-R3 §9/§10/§11/§26): a LOW-EMPHASIS Warning surface

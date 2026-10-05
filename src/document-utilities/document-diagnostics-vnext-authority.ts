@@ -277,6 +277,12 @@ export interface SourceBlockSpan {
   /** The canonical raw text the locate resolver re-anchors against. */
   rawText: string
   containerKind: SourceContainerKind
+  /**
+   * TRAE V6 §6 — the canonical block ORDINAL in SOURCE order (the SAME
+   * `block:<kind>:<ordinal>` identity space the canonical object locator uses),
+   * so an empty container binds a real block identity instead of a bare line.
+   */
+  ordinal?: number
 }
 
 /** §18 — a GFM table whose header/delimiter row carries a list/blockquote marker. */
@@ -406,6 +412,7 @@ export function analyzeEmptySourceObjects(markdown: string | null | undefined): 
   const lines = splitSourceLines(markdown)
 
   // Code — a fenced block with no non-blank line inside.
+  let fenceOrdinal = 0
   for (let i = 0; i < lines.length; i++) {
     const fence = FENCE_RE.exec(lines[i].text)
     if (!fence) continue
@@ -422,9 +429,14 @@ export function analyzeEmptySourceObjects(markdown: string | null | undefined): 
     if (!hasContent) {
       empty.codeBlocks.push({
         startLine: i, endLine: end, startColumn: 0, endColumn: lines[end].text.length,
-        sourceStart: lines[i].start, sourceEnd: lines[end].end, rawText: lines[i].text, containerKind: sourceContainerKindOfLine(lines[i].text),
+        sourceStart: lines[i].start, sourceEnd: lines[end].end, rawText: lines[i].text,
+        containerKind: sourceContainerKindOfLine(lines[i].text),
+        // V6 §6 — the canonical code-block ordinal (source order), the SAME
+        // identity space the DOM `block:code:<ordinal>` locator uses.
+        ordinal: fenceOrdinal,
       })
     }
+    fenceOrdinal++
     i = end
   }
 
