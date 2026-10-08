@@ -489,6 +489,13 @@ export interface ServiceContext {
   /** R58.3: Authoritative vault root for sidecar storage. */
   vaultRoot?: string
   /**
+   * V1.1-GLOBAL §7 — the SIDECAR/AUDIT storage root. Equals `vaultRoot` for a REAL
+   * vault; a per-folder USER-LEVEL directory for a plain document folder, so the
+   * plugin never creates `<folder>/.typora` (which would flip the framework to
+   * per-folder config and disable this user-level plugin on the next start).
+   */
+  storageRoot?: string | null
+  /**
    * V1.1-GLOBAL §6 — the SPLIT document context. `vaultRoot` here may be null
    * (single-file / non-vault folder) while the plugin still initializes.
    */
@@ -2745,12 +2752,14 @@ export class HeadingNumberingService {
   /** Inject production vault root before any sidecar operation. */
   private injectVaultRoot(): void {
     try {
-      // R58.3: Use authoritative vault root from ServiceContext (set by main.ts)
-      const vaultCandidate = this.ctx.vaultRoot
+      // R58.3 / V1.1-GLOBAL §7: use the SIDECAR/AUDIT storage root injected by
+      // main.ts. It equals the vault root for a REAL vault, and a user-level
+      // per-folder directory for a plain document folder (never `<folder>/.typora`).
+      const vaultCandidate = this.ctx.storageRoot ?? this.ctx.vaultRoot
 
       if (typeof vaultCandidate === 'string' && vaultCandidate.length > 0) {
         injectProductionVaultRoot(vaultCandidate)
-        logger.info(`SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=service-context`)
+        logger.info(`SIDECAR-CONTEXT: storageRoot=${vaultCandidate} vaultRoot=${this.ctx.vaultRoot ?? 'null'} source=service-context`)
         return
       }
 
@@ -6413,10 +6422,10 @@ export class HeadingNumberingService {
     try {
       const fs = require('fs') as typeof import('fs')
       const path = require('path') as typeof import('path')
-      const vaultRoot = (this.ctx as any).vaultRoot ??
+      const storageRoot = this.ctx.storageRoot ??
         (this.ctx.settings as any).getVaultRoot?.() ?? ''
       const tracePath = path.join(
-        vaultRoot || path.dirname(this.getActiveFilePath() || ''),
+        storageRoot || path.dirname(this.getActiveFilePath() || ''),
         '.typora',
         'inkchapter-enter-race-trace.jsonl',
       )

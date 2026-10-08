@@ -24,6 +24,7 @@ import {
   INKCHAPTER_PLUGIN_ID,
   buildInkChapterGlobalLoadAudit,
   resolveInkChapterPathAuthority,
+  resolveInkChapterStorageRoot,
   toInkChapterDocumentContext,
   type InkChapterDocumentContext,
 } from './runtime/inkchapter-path-authority'
@@ -324,9 +325,25 @@ export default class extends Plugin<InkChapterSettings> {
       }
     } catch { /* vaultRoot stays undefined */ }
 
+    // ── V1.1-GLOBAL §7/§12 — SIDECAR/AUDIT STORAGE ROOT ──────────────────
+    // A REAL vault already owns a `.typora` config dir, so sidecars/audits stay
+    // there. A plain document folder must NOT be turned into a vault by our own
+    // writes: the community framework reads `enabledPlugins` from `<folder>/.typora`
+    // whenever it exists, so creating it silently disables this user-level plugin
+    // on the next start. Non-vault storage goes to a per-folder USER-LEVEL dir.
+    const storageRoot = resolveInkChapterStorageRoot({
+      vaultPath: vaultRoot ?? null,
+      userHome: (() => { try { return os.homedir() } catch { return null } })(),
+      localDotTyporaPresent: vaultRoot ? fs.existsSync(path.join(vaultRoot, '.typora')) : false,
+    })
+    console.info(
+      `[InkChapter] SIDECAR-CONTEXT-UPDATE: vaultRoot=${vaultRoot ?? 'null'} ` +
+      `storageRoot=${storageRoot ?? 'null'} source=storage-root-authority`,
+    )
+
     // ── File-backed forensic audit sink (pure observability, fail-open) ──
     const sessionId = `sess-${Date.now()}`
-    initializeForensicSink({ vaultRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
+    initializeForensicSink({ vaultRoot: storageRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
 
     // ── GLOBAL LOAD AUDIT (Block-Gap Transaction Closure V1.1-GLOBAL §12/§14) ──
     // Observability ONLY (fail-open): InkChapter is a Typora USER-LEVEL plugin,
@@ -359,6 +376,7 @@ export default class extends Plugin<InkChapterSettings> {
     const ctx: ServiceContext = {
       settings: this.settings,
       vaultRoot,
+      storageRoot,
       documentContext,
       onWorkspaceEvent: (event, listener) => {
         const dispose = this.app.workspace.on(event as never, listener as never)
@@ -381,11 +399,12 @@ export default class extends Plugin<InkChapterSettings> {
       },
       writeDiagnosticFile: (filename: string, data: string) => {
         try {
-          // Derive vault path from active file
-          let vaultDir = ''
-          const fp = this.app.workspace.activeFile
-          if (fp) { vaultDir = path.dirname(fp) }
-          const dp = path.join(vaultDir, '.typora', filename)
+          // V1.1-GLOBAL §7 — diagnostics are plugin-owned sidecars: they go to the
+          // resolved storage root (user-level for a non-vault folder) and never
+          // create a `.typora` inside a plain document folder.
+          if (!storageRoot) return
+          const dp = path.join(storageRoot, '.typora', filename)
+          fs.mkdirSync(path.dirname(dp), { recursive: true })
           fs.writeFileSync(dp, data, 'utf8')
         } catch { /* fail-open */ }
       },
@@ -598,7 +617,7 @@ export default class extends Plugin<InkChapterSettings> {
         // sink: the diagnostics authority calls it at the END of a committed
         // recompute (never right after a setter), and main.ts owns the file IO.
         onHeadingConflictReportCapture: (capture) => {
-          const root = vaultRoot ?? null
+          const root = storageRoot ?? null
           if (!root) return
           writeHeadingConflictBridgeReport(root, {
             command: this.headingConflictBridgeLastCommand?.command ?? 'REPORT_ONLY',
@@ -622,7 +641,7 @@ export default class extends Plugin<InkChapterSettings> {
         // consumption point, driven by the diagnostics recompute (the toolbar
         // 「重新检查文档」 button), never by an OS-level focus/selection event.
         consumeHeadingConflictTestBridge: () => {
-          const root = vaultRoot ?? null
+          const root = storageRoot ?? null
           if (!root) return
           const cmd = readHeadingConflictBridgeFile(root, this.headingConflictBridgeLastNonce)
           if (!cmd) return

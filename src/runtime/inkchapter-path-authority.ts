@@ -116,6 +116,47 @@ export function resolveInkChapterPathAuthority(
   }
 }
 
+// ── Sidecar / audit STORAGE root ────────────────────────────────────────────
+/** User-level storage layout for sidecars/audits of NON-vault documents. */
+export const USER_STORAGE_LAYOUT = '.typora/inkchapter/userdata'
+
+/**
+ * Resolve the plugin's SIDECAR / AUDIT storage root.
+ *
+ * A REAL vault already owns a `.typora` config dir — its sidecars stay there,
+ * exactly as the framework convention expects.
+ *
+ * A plain document folder (no `.typora`) must NEVER be turned into a vault by our
+ * own writes: the community framework treats `<folder>/.typora` as a per-folder
+ * config dir, so creating it makes the NEXT start read `enabledPlugins` from that
+ * folder (no entry → this user-level plugin is not loaded at all). For those
+ * folders sidecars/audits go to a per-folder USER-LEVEL directory instead.
+ */
+export function resolveInkChapterStorageRoot(input: {
+  vaultPath: string | null
+  userHome: string | null
+  /** Does `<vaultPath>/.typora` already exist (a REAL vault)? */
+  localDotTyporaPresent: boolean
+}): string | null {
+  const vault = normalizeAuthorityPath(input.vaultPath)
+  if (vault == null) return null
+  if (input.localDotTyporaPresent) return vault
+  const home = normalizeAuthorityPath(input.userHome)
+  if (home == null) return null
+  return `${home}/${USER_STORAGE_LAYOUT}/${stableVaultHash(vault)}`
+}
+
+/** FNV-1a 32-bit hex — stable, dependency-free, separator/case-insensitive. */
+export function stableVaultHash(normalizedPath: string): string {
+  let h = 0x811c9dc5
+  const s = normalizedPath.replace(/\\/g, '/').toLowerCase()
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
 /** §14 — the `INKCHAPTER-GLOBAL-LOAD-AUDIT` payload. */
 export interface InkChapterGlobalLoadAudit {
   pluginLoadMode: InkChapterPluginLoadMode
