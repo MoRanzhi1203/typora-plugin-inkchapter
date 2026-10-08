@@ -7,7 +7,10 @@ import {
   normalizeAuthorityPath,
   resolveDocumentDirectory,
   resolveInkChapterPathAuthority,
+  resolveInkChapterStorageRoot,
+  stableVaultHash,
   toInkChapterDocumentContext,
+  USER_STORAGE_LAYOUT,
 } from './inkchapter-path-authority'
 
 const base = {
@@ -123,5 +126,47 @@ describe('InkChapter path authority (global closure V1.1 §5-§10)', () => {
     expect(/D:\\+TyporaPluginProjects/i.test(src)).toBe(false)
     expect(/test[\\/]+vault/i.test(src)).toBe(false)
     expect(src.includes('ranzhi.inkchapter')).toBe(true)
+  })
+})
+
+describe('InkChapter sidecar/audit storage root (global closure V1.1 §7)', () => {
+  const home = 'C:/Users/Someone'
+
+  it('SR-1: a REAL vault (owning `.typora`) keeps sidecars in the vault root', () => {
+    const root = resolveInkChapterStorageRoot({
+      vaultPath: 'D:\\Docs\\MyVault\\',
+      userHome: home,
+      localDotTyporaPresent: true,
+    })
+    expect(root).toBe('D:/Docs/MyVault')
+  })
+
+  it('SR-2: a plain folder never becomes a vault — user-level per-folder root', () => {
+    const root = resolveInkChapterStorageRoot({
+      vaultPath: 'D:/AnyFolder',
+      userHome: home,
+      localDotTyporaPresent: false,
+    })
+    expect(root).toBe(`C:/Users/Someone/${USER_STORAGE_LAYOUT}/${stableVaultHash('D:/AnyFolder')}`)
+    // never the document folder itself (which would create `<folder>/.typora`)
+    expect(root).not.toBe('D:/AnyFolder')
+    expect(root?.startsWith('C:/Users/Someone/')).toBe(true)
+  })
+
+  it('SR-3: no vault path → no storage root', () => {
+    expect(resolveInkChapterStorageRoot({ vaultPath: null, userHome: home, localDotTyporaPresent: false })).toBeNull()
+    expect(resolveInkChapterStorageRoot({ vaultPath: '  ', userHome: home, localDotTyporaPresent: false })).toBeNull()
+  })
+
+  it('SR-4: non-vault without a user home fails closed (no folder-local `.typora`)', () => {
+    expect(resolveInkChapterStorageRoot({ vaultPath: 'D:/AnyFolder', userHome: null, localDotTyporaPresent: false })).toBeNull()
+  })
+
+  it('SR-5: hash is stable and case/separator-insensitive, and differs per folder', () => {
+    expect(stableVaultHash('D:/Docs/A')).toBe(stableVaultHash('d:\\docs\\a'))
+    expect(stableVaultHash('D:/Docs/A')).not.toBe(stableVaultHash('D:/Docs/B'))
+    const a = resolveInkChapterStorageRoot({ vaultPath: 'D:/Docs/A', userHome: home, localDotTyporaPresent: false })
+    const b = resolveInkChapterStorageRoot({ vaultPath: 'D:/Docs/B', userHome: home, localDotTyporaPresent: false })
+    expect(a).not.toBe(b)
   })
 })
