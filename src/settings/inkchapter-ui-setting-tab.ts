@@ -54,8 +54,9 @@ export class InkChapterUiSettingTab extends SettingTab {
 
     this.addSettingTitle('界面')
     this.checkbox(
-      '显示左侧 Ribbon',
-      '社区框架的左侧竖条按钮（文件 / 搜索 / 大纲）。关闭后仅由墨章隐藏，不改动框架自身配置。',
+      '使用社区框架的左侧 Ribbon',
+      '默认关闭 = 保持 Typora 原生侧栏（原生「文件 / 搜索 / 大纲」切页栏，文件夹树与大纲为原生外观）。'
+        + '打开 = 改用社区框架的左侧竖条按钮。框架自身配置不会被改写。',
       ui.ribbon,
       v => this.patch({ ribbon: v }),
     )

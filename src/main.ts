@@ -204,11 +204,33 @@ export default class extends Plugin<InkChapterSettings> {
     return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
   }
 
-  /** 应用 Ribbon 可见性：仅由墨章加/去 body 类，绝不改写框架配置。 */
+  /**
+   * 应用 Ribbon 可见性 —— 绝不改写框架配置。
+   *
+   * `ui.ribbon === false`（默认）= 保持 Typora 原生侧栏：
+   *   1. 加 `body.inkchapter-ribbon-hidden`（CSS 兜底：`.typ-ribbon` display:none、
+   *      `--typ-ribbon-width: 0`）；
+   *   2. 撤掉框架的 `typ-ribbon--enable` —— 框架的 Ribbon 模式正是靠这个类隐藏
+   *      Typora 原生「文件 / 搜索 / 大纲」切页栏并改写侧栏布局；撤掉它后 Typora
+   *      自身 CSS 完全接管 ⇒ 文件夹树与大纲回到原生外观。
+   */
   private applyRibbonVisibility(): void {
     try {
-      const ui = this.readUiSettings()
-      document.body.classList.toggle('inkchapter-ribbon-hidden', ui.ribbon === false)
+      const hide = this.readUiSettings().ribbon === false
+      document.body.classList.toggle('inkchapter-ribbon-hidden', hide)
+      if (hide) document.body.classList.remove('typ-ribbon--enable')
+    } catch { /* fail-open */ }
+  }
+
+  /**
+   * 框架的 Ribbon 在 workspace 子组件里异步 load，可能在墨章 onload 之后才加上
+   * `typ-ribbon--enable`。这里用一次 body class 观察器保证“原生模式”最终成立。
+   */
+  private enforceRibbonVisibility(): void {
+    try {
+      const observer = new MutationObserver(() => this.applyRibbonVisibility())
+      observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+      this.register(() => observer.disconnect())
     } catch { /* fail-open */ }
   }
 
@@ -338,11 +360,12 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] ui settings migration error:', e)
     }
 
-    // ── 界面配置：Ribbon 可见性（启动应用 + 任何设置变更时重应用） ──
+    // ── 界面配置：Ribbon 可见性（启动应用 + 任何设置变更时重应用 + 异步兜底） ──
     try {
       this.register(this.settings.onChange('*', () => this.applyRibbonVisibility()))
     } catch { /* fail-open */ }
     this.applyRibbonVisibility()
+    this.enforceRibbonVisibility()
 
     // Build service context (exposes only needed APIs, avoids protected access)
     // R58.4: Authoritative vault root from Typora Core app.vault.path

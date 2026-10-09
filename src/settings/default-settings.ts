@@ -47,7 +47,13 @@ const DEFAULT_FORMAT_LIBRARY: FormatLibrary = {
   },
 }
 
-/** 界面 / 文件夹树 默认值：保持与改动前一致的行为（全部启用、Ribbon 不干预）。 */
+/**
+ * 界面 / 文件夹树 默认值。
+ *
+ * `ribbon: false` = **保持 Typora 原生侧栏**：社区框架的 Ribbon 模式会隐藏 Typora
+ * 原生的「文件 / 搜索 / 大纲」切页栏并改写侧栏布局，因此默认由墨章撤掉该模式，
+ * 让侧栏（含文件夹树与大纲）在任何文件夹下都是原生外观。用户可在设置页打开 Ribbon。
+ */
 export const DEFAULT_UI_SETTINGS: InkChapterUiSettings = {
   fileTreeLocateFlash: true,
   emptyWorkspaceCreate: true,
@@ -58,7 +64,7 @@ export const DEFAULT_UI_SETTINGS: InkChapterUiSettings = {
     revealTree: true,
     revealExplorer: true,
   },
-  ribbon: true,
+  ribbon: false,
 }
 
 /** 把可能不完整的 `ui` 配置按默认值补齐（纯函数，读取侧唯一权威）。 */
