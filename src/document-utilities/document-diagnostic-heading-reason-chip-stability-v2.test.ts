@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   HEADING_REASON_CHIP_MIN_GAP_PX_V2,
+  HEADING_REASON_CHIP_MIN_WRAP_WIDTH_PX_V2,
   HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT,
   HEADING_REASON_CHIP_STABILITY_V2_GATE_KEYS,
   HEADING_REASON_CHIP_STABILITY_V2_GATE_LABELS,
@@ -36,7 +37,7 @@ describe('Heading Reason Chip Stable Anchor V2 §4 — canonical placement', () 
     expect(p.horizontalClampApplied).toBe(false)
   })
 
-  it('clamps horizontally near the right edge but never drops to the next line', () => {
+  it('bounds the chip width to the safe rect instead of overflowing past it', () => {
     const p = computeHeadingReasonChipPlacement({
       lastTextRect: line(30, 100, 400, 124),
       headingRect: line(30, 100, 800, 124),
@@ -46,15 +47,17 @@ describe('Heading Reason Chip Stable Anchor V2 §4 — canonical placement', () 
       preferredGapPx: 8,
     })
     expect(p.placementMode).toBe('INLINE_RIGHT')
-    // structural floor wins when the chip is wider than the remaining space: the chip
-    // stays at `textRight + 4` instead of collapsing (never a next-line fallback).
-    expect(p.left).toBe(404)
+    // the left is still the text right + gap; the WIDTH is what shrinks so the
+    // right edge (left + width) never crosses the safe right (500).
+    expect(p.left).toBe(408)
     expect(p.left).toBeGreaterThanOrEqual(400 + HEADING_REASON_CHIP_MIN_GAP_PX_V2)
+    expect(p.width).toBe(92)
+    expect(p.left + p.width).toBeLessThanOrEqual(500)
     expect(p.horizontalClampApplied).toBe(true)
     expect(p.top).toBeLessThan(124)
   })
 
-  it('a degenerate / unmeasured safe rect can NEVER collapse the chip to left = 0', () => {
+  it('drops to its OWN visual line when the inline room cannot hold a legible chip', () => {
     const p = computeHeadingReasonChipPlacement({
       lastTextRect: line(30, 766.625, 110, 793.825),
       headingRect: null,
@@ -64,9 +67,13 @@ describe('Heading Reason Chip Stable Anchor V2 §4 — canonical placement', () 
       editorSafeRect: line(0, 0, 96, 900),
       preferredGapPx: 8,
     })
-    expect(p.left).toBe(114) // 110 + min gap 4
+    // a degenerate / unmeasured safe rect can NEVER collapse the chip to left = 0,
+    // and it now moves to its own line instead of overflowing to the right.
+    expect(p.placementMode).toBe('BELOW_LAST_LINE')
+    expect(p.left).toBe(30) // the last text line's left, never 0
     expect(p.left).toBeGreaterThan(0)
-    expect(p.top).toBeLessThan(793.825) // never below the text line
+    expect(p.top).toBeGreaterThan(793.825) // below the text line
+    expect(p.left + p.width).toBeLessThanOrEqual(96 + HEADING_REASON_CHIP_MIN_WRAP_WIDTH_PX_V2)
   })
 
   it('a long chip beside a short heading stays on the same line for every level', () => {

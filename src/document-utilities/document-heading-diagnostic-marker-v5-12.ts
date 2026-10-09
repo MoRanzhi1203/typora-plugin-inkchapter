@@ -182,6 +182,14 @@ export interface ReasonChipPlacement {
   rect: HeadingRect
   placement: 'RIGHT_OF_LAST_LINE' | 'BELOW_LAST_LINE'
   clamped: boolean
+  /**
+   * V5.14-R8 §4.4 — chip 的**有界渲染宽度**（<= `intrinsicWidthPx`）。宿主用它设置
+   * `max-width`，使 chip 右边缘永不越过编辑器可视右界；文案在宽度不足时换行，
+   * 绝不被 ellipsis 截断（信息不丢失）。
+   */
+  maxWidthPx: number
+  /** §4.4 — 请求的固有宽度（仅用于审计对比）。 */
+  intrinsicWidthPx: number
 }
 
 /**
@@ -189,15 +197,15 @@ export interface ReasonChipPlacement {
  * 现在是一个 thin adapter，唯一 authority 是
  * `computeHeadingReasonChipPlacement`（`document-diagnostic-heading-reason-chip-stability-v2.ts`）。
  *
- * ROOT_V2_A —— 旧实现横向空间不足时返回 `BELOW_LAST_LINE`（`top = last.bottom + 4`、
- * `left` 可退化为 0）。该 next-line fallback 已被**结构性移除**：chip 恒为
- * `INLINE_RIGHT`，只做水平 clamp，且 `left >= last.right + 4px` 永成立。
+ * V5.14-R8 —— 横向 clamp 不再把 chip 推到编辑器右界之外：可行时同行右侧（宽度有界 +
+ * 换行），行内右侧放不下可读 chip 时改走“独立视觉行”（BELOW_LAST_LINE，left 取文字
+ * 左缘，绝不归零）。
  */
 export function computeHeadingReasonChipPlacement(input: ReasonChipPlacementInput): ReasonChipPlacement | null {
   if (input.contentRects.length === 0) return null
   const last = input.contentRects[input.contentRects.length - 1]
   // §11 — Drawer 只作为“遮挡事实”收窄安全右界；它**永不**把安全右界压到 chip 宽度以下，
-  // 也不会把 chip 推到文字左侧（V2 canonical 内含结构下限）。
+  // 也不会把 chip 推到文字左侧（V2 canonical 内含结构下限 + BELOW 回退）。
   const safeRight = input.drawerLeft != null
     ? Math.max(input.drawerLeft, last.right + HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2)
     : input.editorRight
@@ -218,12 +226,13 @@ export function computeHeadingReasonChipPlacement(input: ReasonChipPlacementInpu
     rect: makeHeadingRect({
       left: placement.left,
       top: placement.top,
-      right: placement.left + input.chipWidth,
+      right: placement.left + placement.width,
       bottom: placement.top + input.chipHeight,
     }),
-    // 恒为同行右侧；`BELOW_LAST_LINE` 不再可能产生。
-    placement: 'RIGHT_OF_LAST_LINE',
+    placement: placement.placementMode === 'BELOW_LAST_LINE' ? 'BELOW_LAST_LINE' : 'RIGHT_OF_LAST_LINE',
     clamped: placement.horizontalClampApplied,
+    maxWidthPx: placement.width,
+    intrinsicWidthPx: placement.requestedWidth,
   }
 }
 

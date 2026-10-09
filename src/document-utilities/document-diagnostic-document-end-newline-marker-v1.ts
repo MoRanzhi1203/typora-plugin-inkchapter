@@ -66,6 +66,18 @@ export const EOF_NEWLINE_MARKER_KIND = 'document-end-newline-missing'
 export const EOF_NEWLINE_MARKER_RULE_ATTR = 'document-end-newline-missing'
 export const EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY = 'DOCUMENT_CONTENT'
 export const EOF_NEWLINE_MARKER_ARIA_LABEL = '文档末尾缺少换行符'
+/**
+ * 原设计要求 C — the EOF ENDPOINT indicator. The missing-final-newline marker is
+ * an explicit ENDPOINT (a left boundary line + a compact `EOF` label), NEVER a
+ * filled warning band and never a plain colour bar with a symbol dropped in it.
+ * The label is an icon-level token, not a sentence (the full text stays in the
+ * Drawer and in the `title`/`aria-label`).
+ */
+export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL = 'EOF'
+/** The endpoint label child's class (styled in style.scss; pointer-events:none). */
+export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS = 'inkchapter-eof-endpoint-label'
+/** The endpoint FORM attribute; style.scss drops the band fill for this form. */
+export const EOF_NEWLINE_MARKER_ENDPOINT_FORM = 'endpoint'
 
 // ── The Y geometry authority (round 2) ─────────────────────────────────────
 

@@ -22,15 +22,22 @@ export const BLANK_SPACE_WARNING_PRESENTATION_MODE = 'FILL_WITH_LEFT_ACCENT' as 
 /** The marker class stamped onto every unified blank-space Warning band. */
 export const BLANK_SPACE_WARNING_MARKER_CLASS = 'inkchapter-blank-space-warning'
 
-// ── V8 §2/§3 — the ORIGINAL document-end EOF presentation, extracted VERBATIM
-// from `53f08b9:src/style.scss`. These are the ONLY sanctioned values; nothing
-// may re-invent a colour (no bright `rgba(255,190,20,0.38)` whole-surface fill).
-/** Low-emphasis Warning surface token (8% Warning mix). */
+// ── V8 §2/§3 — the shared document-end EOF presentation, extracted from
+// `53f08b9:src/style.scss`. The COLOUR stays the token-based Warning mix (never a
+// re-invented bright `rgba(255,190,20,0.38)` whole-surface fill); 醒目度优化 only
+// raised the MIX (8 → 18) and moved the fill onto the continuous carrier band so
+// the rendered blank-row warning is legible.
+/** Warning surface token (a deepened Warning mix — raised from 8% for legibility). */
 export const BLANK_SPACE_WARNING_BACKGROUND_TOKEN = '--ink-blank-space-warning-bg'
 /** LEFT accent colour token (`--ink-ui-sev-warning`). */
 export const BLANK_SPACE_WARNING_LEFT_ACCENT_TOKEN = '--ink-blank-space-warning-accent'
-/** The original Warning surface mix percentage. */
-export const BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT = 8
+/**
+ * The Warning surface mix percentage. Raised 8 → 18 (醒目度优化): the rendered
+ * blank-row band now paints this ONCE on the continuous carrier container, so the
+ * user actually sees a solid warning band (the old 8% per-row fragments read as
+ * faint dashes).
+ */
+export const BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT = 18
 /** The original LEFT accent rail width (px). */
 export const BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX = 4
 /** The original band border radius. */

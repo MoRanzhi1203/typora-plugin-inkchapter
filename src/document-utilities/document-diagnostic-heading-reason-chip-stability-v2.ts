@@ -48,6 +48,17 @@ export const HEADING_REASON_CHIP_ANCHOR_TOLERANCE_PX_V2 = 1
 /** §10.2 — 纵向居中容差。 */
 export const HEADING_REASON_CHIP_CENTER_TOLERANCE_PX_V2 = 2
 
+/**
+ * V5.14-R8 §4.4 — 行内右侧仍可容纳一个**可读** chip 的最小宽度。低于此值时，
+ * 再横向 clamp 只会让 chip 越过编辑器可视右界（Drawer / 内容区）——因此改为
+ * “独立视觉行”（标题最后一行下方），left 取文字左缘，绝不归零。
+ */
+export const HEADING_REASON_CHIP_MIN_INLINE_WIDTH_PX_V2 = 72
+/** V5.14-R8 §4.4 — 独立视觉行与最后一行文字底部的垂直间距。 */
+export const HEADING_REASON_CHIP_BELOW_GAP_PX_V2 = 6
+/** V5.14-R8 §4.4 — 独立视觉行的最小换行宽度（极端窄宽度下的腿脚）。 */
+export const HEADING_REASON_CHIP_MIN_WRAP_WIDTH_PX_V2 = 48
+
 export interface HeadingReasonChipRectLike {
   left: number
   top: number
@@ -67,23 +78,35 @@ export interface HeadingReasonChipPlacementInput {
   preferredGapPx: number
 }
 
+/** §4.3 — 两种合法放置：同行右侧 / 标题最后一行下方的独立视觉行。 */
+export type HeadingReasonChipPlacementMode = 'INLINE_RIGHT' | 'BELOW_LAST_LINE'
+
 export interface HeadingReasonChipPlacement {
   left: number
   top: number
-  /** 实际生效的 gap（`left - lastTextRect.right`）。 */
+  /**
+   * V5.14-R8 §4.4 — chip 的**有界渲染宽度**（永远 <= 请求的 `chipWidth`）。chip 的
+   * 右边缘因此永远不越过 `editorSafeRect.right`；文案在宽度不足时自行换行，绝不
+   * 被 ellipsis 截断（信息不丢失）。
+   */
+  width: number
+  /** §4.4 — 请求的固有宽度（仅用于审计对比）。 */
+  requestedWidth: number
+  /** 实际生效的 gap（`left - lastTextRect.right`；BELOW 时为 0）。 */
   gapPx: number
   horizontalClampApplied: boolean
-  /** §4.3 — 恒为 `INLINE_RIGHT`；不存在 second-line / below-heading 模式。 */
-  placementMode: 'INLINE_RIGHT'
+  /** §4.3 — `INLINE_RIGHT`（同行右侧）或 `BELOW_LAST_LINE`（独立视觉行）。 */
+  placementMode: HeadingReasonChipPlacementMode
 }
 
 /**
  * §4 — 唯一 canonical reason chip placement。
  *
  * 不变量：
- *  - `left >= lastTextRect.right + MIN_GAP`（结构性地杜绝 `left = 0` 的 next-line fallback）。
- *  - `top = lastTextRect.top + (lastTextRect.height - chipHeight) / 2`（与最后一行垂直居中）。
- *  - 只做水平 clamp；**永不**把 chip 放到标题下一行。
+ *  - `left >= lastTextRect.right + MIN_GAP`（INLINE）或 `left = max(safeLeft, line.left)`（BELOW）；
+ *    结构性地杜绝 `left = 0` 的 next-line fallback（ROOT_V2_A 保持修复）。
+ *  - INLINE：`top` 与最后一行垂直居中；`left + width <= editorSafeRect.right`（右界被真正遵守）。
+ *  - BELOW：`top = line.bottom + belowGap`，只在行内右侧无法容纳一个可读 chip 时使用。
  */
 export function computeHeadingReasonChipPlacement(
   input: HeadingReasonChipPlacementInput,
@@ -93,7 +116,7 @@ export function computeHeadingReasonChipPlacement(
     ? Math.max(input.preferredGapPx, HEADING_REASON_CHIP_MIN_GAP_PX_V2)
     : HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2
   const preferredLeft = line.right + preferredGap
-  const top = line.top + ((line.bottom - line.top) - input.chipHeight) / 2
+  const centeredTop = line.top + ((line.bottom - line.top) - input.chipHeight) / 2
 
   const safeLeft = input.editorSafeRect ? input.editorSafeRect.left : 0
   // §4.2 —— 结构下限：chip 永远在文字右侧至少 MIN_GAP；一个未测量 / 退化的
@@ -102,17 +125,36 @@ export function computeHeadingReasonChipPlacement(
   const rawSafeRight = input.editorSafeRect ? input.editorSafeRect.right : preferredLeft + input.chipWidth
   const safeRight = Math.max(rawSafeRight, structuralFloor + 1)
 
-  const lowerBound = Math.max(safeLeft, structuralFloor)
-  const maxLeft = safeRight - input.chipWidth
-  const left = Math.max(lowerBound, Math.min(preferredLeft, maxLeft))
-  const gapPx = left - line.right
+  const inlineRoom = safeRight - preferredLeft
+  const legibleInlineWidth = Math.min(input.chipWidth, HEADING_REASON_CHIP_MIN_INLINE_WIDTH_PX_V2)
+  if (inlineRoom >= legibleInlineWidth) {
+    // ── INLINE_RIGHT —— 左边缘恒为文字右缘 + gap（不再 clamp 到安全右界，因为宽度
+    // 被有界化），右边缘 = left + width <= safeRight。宽度不足时 chip 内部换行。
+    const width = Math.min(input.chipWidth, Math.max(inlineRoom, 0))
+    return {
+      left: preferredLeft,
+      top: centeredTop,
+      width,
+      requestedWidth: input.chipWidth,
+      gapPx: preferredGap,
+      horizontalClampApplied: width < input.chipWidth - 0.5,
+      placementMode: 'INLINE_RIGHT',
+    }
+  }
 
+  // ── BELOW_LAST_LINE —— 行内右侧放不下一个可读 chip：放到标题最后一行下方的独立
+  // 视觉行。left 取文字左缘（真实标题内容左界，绝不归零），宽度受安全右界限制。
+  const baseLeft = Math.max(safeLeft, line.left)
+  const belowRoom = Math.max(safeRight - baseLeft, HEADING_REASON_CHIP_MIN_WRAP_WIDTH_PX_V2)
+  const belowWidth = Math.min(input.chipWidth, belowRoom)
   return {
-    left,
-    top,
-    gapPx,
-    horizontalClampApplied: Math.abs(left - preferredLeft) > 0.5,
-    placementMode: 'INLINE_RIGHT',
+    left: baseLeft,
+    top: line.bottom + HEADING_REASON_CHIP_BELOW_GAP_PX_V2,
+    width: belowWidth,
+    requestedWidth: input.chipWidth,
+    gapPx: 0,
+    horizontalClampApplied: true,
+    placementMode: 'BELOW_LAST_LINE',
   }
 }
 
@@ -253,7 +295,7 @@ export interface HeadingReasonChipStabilityFact {
   actualChipTop: number | null
   anchorDriftPx: number | null
   verticalCenterDriftPx: number | null
-  placementMode: 'INLINE_RIGHT' | null
+  placementMode: 'INLINE_RIGHT' | 'BELOW_LAST_LINE' | null
   horizontalClampApplied: boolean
   rebuildRequested: boolean
   rebuildPerformed: boolean
@@ -285,29 +327,38 @@ export function evaluateHeadingReasonChipStability(
   const failed: string[] = []
   const actualLeft = fact.actualChipLeft
   const actualTop = fact.actualChipTop
+  // V5.14-R8 §4.4 — BELOW_LAST_LINE 是合法的“独立视觉行”放置：此时不要求同行
+  // 居中 / 右侧 anchor，但必须真正落在文字行下方且不得归零。
+  const belowLine = fact.placementMode === 'BELOW_LAST_LINE'
 
   if (fact.documentKey != null && fact.currentDocumentKey != null && fact.documentKey !== fact.currentDocumentKey) {
     failed.push('CROSS_DOCUMENT_REASON_CHIP')
   }
-  if (fact.placementMode != null && fact.placementMode !== 'INLINE_RIGHT') {
+  if (fact.placementMode != null && fact.placementMode !== 'INLINE_RIGHT' && !belowLine) {
     failed.push('REASON_CHIP_NOT_INLINE_RIGHT')
   }
   if (actualLeft != null && actualLeft === 0 && (fact.expectedChipLeft ?? 0) > 0) {
     failed.push('REASON_CHIP_LEFT_ZERO_FALLBACK')
   }
-  if (fact.expectedChipLeft != null && actualLeft != null
-    && Math.abs(actualLeft - fact.expectedChipLeft) > HEADING_REASON_CHIP_ANCHOR_TOLERANCE_PX_V2) {
-    failed.push('REASON_CHIP_ANCHOR_AUTHORITY_MISMATCH')
-  }
-  if (fact.anchorDriftPx != null && fact.anchorDriftPx > HEADING_REASON_CHIP_ANCHOR_TOLERANCE_PX_V2) {
-    failed.push('REASON_CHIP_ANCHOR_AUTHORITY_MISMATCH')
-  }
-  if (actualTop != null && fact.textRectAfter != null && actualTop >= fact.textRectAfter.bottom) {
-    failed.push('REASON_CHIP_VERTICAL_FALLBACK')
-  }
-  if (fact.verticalCenterDriftPx != null
-    && fact.verticalCenterDriftPx > HEADING_REASON_CHIP_CENTER_TOLERANCE_PX_V2) {
-    failed.push('REASON_CHIP_CENTER_OUTSIDE_TEXT_LINE')
+  if (belowLine) {
+    if (actualTop != null && fact.textRectAfter != null && actualTop < fact.textRectAfter.bottom - 0.5) {
+      failed.push('REASON_CHIP_NOT_BELOW_LAST_LINE')
+    }
+  } else {
+    if (fact.expectedChipLeft != null && actualLeft != null
+      && Math.abs(actualLeft - fact.expectedChipLeft) > HEADING_REASON_CHIP_ANCHOR_TOLERANCE_PX_V2) {
+      failed.push('REASON_CHIP_ANCHOR_AUTHORITY_MISMATCH')
+    }
+    if (fact.anchorDriftPx != null && fact.anchorDriftPx > HEADING_REASON_CHIP_ANCHOR_TOLERANCE_PX_V2) {
+      failed.push('REASON_CHIP_ANCHOR_AUTHORITY_MISMATCH')
+    }
+    if (actualTop != null && fact.textRectAfter != null && actualTop >= fact.textRectAfter.bottom) {
+      failed.push('REASON_CHIP_VERTICAL_FALLBACK')
+    }
+    if (fact.verticalCenterDriftPx != null
+      && fact.verticalCenterDriftPx > HEADING_REASON_CHIP_CENTER_TOLERANCE_PX_V2) {
+      failed.push('REASON_CHIP_CENTER_OUTSIDE_TEXT_LINE')
+    }
   }
   if (!fact.isDirtyTarget && rectMovedPx(fact.reasonChipRectBefore, fact.reasonChipRectAfter) > 1) {
     failed.push('NON_DIRTY_HEADING_CHIP_POSITION_CHANGED')

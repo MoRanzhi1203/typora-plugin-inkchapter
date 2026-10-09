@@ -3,6 +3,12 @@ import { Notice, Plugin, PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from './settings/settings-model'
 import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
 import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
+import {
+  FRAMEWORK_RIBBON_ENABLE_CLASS,
+  INKCHAPTER_RIBBON_HIDDEN_CLASS,
+  applyRibbonHiddenClass,
+  resolveRibbonHidden,
+} from './settings/ribbon-visibility'
 import { HeadingNumberingService } from './heading-numbering/heading-numbering-service'
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { resolveHeadingPolicyActivation } from './heading-numbering/heading-policy-activation'
@@ -204,33 +210,59 @@ export default class extends Plugin<InkChapterSettings> {
     return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
   }
 
+  /** 界面配置应用次数（有界取证 A3，仅计数，不产生日志风暴）。 */
+  private uiApplyCount = 0
+
   /**
-   * 应用 Ribbon 可见性 —— 绝不改写框架配置。
+   * 应用 Ribbon 可见性 —— **幂等、只写墨章自己的类、绝不与框架争夺框架类**。
    *
    * `ui.ribbon === false`（默认）= 保持 Typora 原生侧栏：
-   *   1. 加 `body.inkchapter-ribbon-hidden`（CSS 兜底：`.typ-ribbon` display:none、
-   *      `--typ-ribbon-width: 0`）；
-   *   2. 撤掉框架的 `typ-ribbon--enable` —— 框架的 Ribbon 模式正是靠这个类隐藏
-   *      Typora 原生「文件 / 搜索 / 大纲」切页栏并改写侧栏布局；撤掉它后 Typora
-   *      自身 CSS 完全接管 ⇒ 文件夹树与大纲回到原生外观。
+   *   仅切换 `body.inkchapter-ribbon-hidden`；框架的 `typ-ribbon--enable` **保持不动**
+   *   （它是框架自己的模式状态），原生「文件 / 搜索 / 大纲」切页栏与侧栏布局改由
+   *   style.scss 在墨章命名空间下恢复。状态未变化时零 DOM 写入 ⇒ 无 MutationRecord
+   *   ⇒ 不触发任何观察者，也不与框架形成“写—观察”反馈环。
+   *
+   * 只允许由：插件设置加载完成、用户修改 `ui.ribbon`、设置页写回 触发。
    */
   private applyRibbonVisibility(): void {
     try {
-      const hide = this.readUiSettings().ribbon === false
-      document.body.classList.toggle('inkchapter-ribbon-hidden', hide)
-      if (hide) document.body.classList.remove('typ-ribbon--enable')
+      const body = document.body
+      if (!body) return
+      this.uiApplyCount++
+      const hidden = resolveRibbonHidden(this.readUiSettings().ribbon)
+      const wrote = applyRibbonHiddenClass(body, hidden)
+      if (wrote) {
+        emitRuntimeAudit('INKCHAPTER-UI-RIBBON-STATE', {
+          ribbonHidden: hidden,
+          frameworkRibbonEnabled: body.classList.contains(FRAMEWORK_RIBBON_ENABLE_CLASS),
+          domWrite: true,
+          applyCount: this.uiApplyCount,
+        })
+      }
     } catch { /* fail-open */ }
   }
 
   /**
-   * 框架的 Ribbon 在 workspace 子组件里异步 load，可能在墨章 onload 之后才加上
-   * `typ-ribbon--enable`。这里用一次 body class 观察器保证“原生模式”最终成立。
+   * 有界取证（A3）——3 次一次性心跳，证明 onload 之后主线程仍在运行、以及最终的
+   * Ribbon 状态；发射完即停止，**不做任何轮询 / 长期观察器**。仅用于 Runtime 验收。
    */
-  private enforceRibbonVisibility(): void {
+  private emitResponsiveHeartbeats(): void {
     try {
-      const observer = new MutationObserver(() => this.applyRibbonVisibility())
-      observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
-      this.register(() => observer.disconnect())
+      for (const ms of [1000, 3000, 6000]) {
+        const id = window.setTimeout(() => {
+          try {
+            const body = document.body
+            emitRuntimeAudit('INKCHAPTER-UI-RESPONSIVE-HEARTBEAT', {
+              afterMs: ms,
+              ribbonHidden: body.classList.contains(INKCHAPTER_RIBBON_HIDDEN_CLASS),
+              frameworkRibbonEnabled: body.classList.contains(FRAMEWORK_RIBBON_ENABLE_CLASS),
+              uiApplyCount: this.uiApplyCount,
+              ribbonObserverCount: 0,
+            })
+          } catch { /* fail-open */ }
+        }, ms)
+        this.register(() => window.clearTimeout(id))
+      }
     } catch { /* fail-open */ }
   }
 
@@ -360,13 +392,6 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] ui settings migration error:', e)
     }
 
-    // ── 界面配置：Ribbon 可见性（启动应用 + 任何设置变更时重应用 + 异步兜底） ──
-    try {
-      this.register(this.settings.onChange('*', () => this.applyRibbonVisibility()))
-    } catch { /* fail-open */ }
-    this.applyRibbonVisibility()
-    this.enforceRibbonVisibility()
-
     // Build service context (exposes only needed APIs, avoids protected access)
     // R58.4: Authoritative vault root from Typora Core app.vault.path
     let vaultRoot: string | undefined
@@ -398,6 +423,13 @@ export default class extends Plugin<InkChapterSettings> {
     // ── File-backed forensic audit sink (pure observability, fail-open) ──
     const sessionId = `sess-${Date.now()}`
     initializeForensicSink({ vaultRoot: storageRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
+
+    // ── 界面配置：Ribbon 可见性（在 sink 就绪后应用；幂等、无长期观察器） ──
+    try {
+      this.register(this.settings.onChange('*', () => this.applyRibbonVisibility()))
+    } catch { /* fail-open */ }
+    this.applyRibbonVisibility()
+    this.emitResponsiveHeartbeats()
 
     // ── GLOBAL LOAD AUDIT (Block-Gap Transaction Closure V1.1-GLOBAL §12/§14) ──
     // Observability ONLY (fail-open): InkChapter is a Typora USER-LEVEL plugin,

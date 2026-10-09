@@ -32,9 +32,9 @@ export interface InkChapterUiSettings {
   /**
    * 是否使用社区框架的左侧 Ribbon（**默认 false = 保持 Typora 原生侧栏**）。
    *
-   * false 时墨章撤掉框架的 Ribbon 模式（隐藏 `.typ-ribbon`，并让 Typora 原生的
-   * 「文件 / 搜索 / 大纲」切页栏与侧栏布局重新生效），从而在任何文件夹下都保持
-   * 原生外观；框架自身配置（core.json: showRibbon）永不被改写。
+   * false 时墨章**不修改任何框架状态**（不写 `typ-ribbon--enable`，不写 core.json），
+   * 只加自己的 `body.inkchapter-ribbon-hidden`，由墨章命名空间的 CSS 恢复原生
+   * 「文件 / 搜索 / 大纲」切页栏与侧栏布局 ⇒ 任何文件夹下都保持原生外观。
    */
   ribbon: boolean
 }

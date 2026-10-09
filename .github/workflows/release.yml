@@ -26,6 +26,11 @@ jobs:
 
       - run: pnpm install --no-frozen-lockfile
 
+      # CI 前置校验：修复进度存档必须满足 append-only 不变量（单调/哈希/未被重置）。
+      # 损坏或疑似被覆盖时脚本以非 0 退出 → 阻断本次构建/发布。
+      - name: Verify repair-progress archive (append-only integrity)
+        run: pnpm run verify:archive
+
       - run: pnpm run pack
 
       - name: Generate release body

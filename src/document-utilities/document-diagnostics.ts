@@ -2225,6 +2225,11 @@ export function computeDocumentDiagnostics(
               ruleId: 'DOCUMENT-TERMINAL-NEWLINE-MISSING',
               reason: 'MISSING_TERMINAL_NEWLINE',
               hasTerminalNewline: policy.hasTerminalNewline,
+              // SOURCE_REVISION_SYNC 修复 — the EOF fact MUST travel on the record so
+              // the locate/visual audits never read `terminalNewlineCount = null`
+              // (which was `terminalNewlineFactNull++`). A missing fact must never be
+              // silently treated as a normal state.
+              terminalNewlineCount: policy.terminalNewlineCount,
               extraTrailingBlankLineCount: policy.extraTrailingBlankLineCount,
             },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
@@ -2286,10 +2291,17 @@ export function computeDocumentDiagnostics(
               // the locator and the audits never re-derive them.
               previousBlockIdentity: gap.previousBlockIdentity,
               previousBlockKind: gap.previousBlockKind,
+              // TRAE §7 — the CANONICAL binding authority: `block:<kind>:<ordinal>`
+              // for object boundaries (code / table / formula). A fence text is
+              // never the binding identity.
+              previousBlockCanonicalKind: gap.previousBlockCanonicalKind,
+              previousBlockCanonicalOrdinal: gap.previousBlockCanonicalOrdinal,
               previousBlockStartLine: gap.previousBlockStartLine,
               previousBlockAnchorText: gap.previousBlockAnchorText,
               nextBlockIdentity: gap.nextBlockIdentity,
               nextBlockKind: gap.nextBlockKind,
+              nextBlockCanonicalKind: gap.nextBlockCanonicalKind,
+              nextBlockCanonicalOrdinal: gap.nextBlockCanonicalOrdinal,
               nextBlockStartLine: gap.nextBlockStartLine,
               nextBlockAnchorText: gap.nextBlockAnchorText,
               previousSourceEnd: gap.previousBlockSourceEnd,

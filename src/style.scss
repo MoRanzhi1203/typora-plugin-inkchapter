@@ -3324,9 +3324,10 @@ body.ink-console-docked::after {
    diagnostic — severity only changes the frame token, never the lifecycle. */
 
 /* ── Blank-Space Warning Presentation Policy — the ONE ACTIVE presentation ────
-   RESTORED VERBATIM from the original document-end EOF band
-   (V5.13-R2 §1.1 / V5.13-R3 §9/§10/§11/§26): a LOW-EMPHASIS Warning surface
-   (`--ink-blank-space-warning-bg` = an 8% Warning mix) plus exactly ONE 4px
+   from the original document-end EOF band
+   (V5.13-R2 §1.1 / V5.13-R3 §9/§10/§11/§26): a Warning surface
+   (`--ink-blank-space-warning-bg` = an 18% Warning mix, deepened for legibility)
+   plus exactly ONE 4px
    Warning LEFT accent rail, radius `0 6px 6px 0`, no top/right/bottom border,
    no outline, no shadow, no pseudo line.
 
@@ -3357,6 +3358,65 @@ body.ink-console-docked::after {
    The bright/saturated active fill direction is REVOKED (V8 §4). */
 .inkchapter-block-gap-visual {
   pointer-events: none;
+}
+
+/* 统一绘制权威 + 光标安全 — the CONTINUOUS blank-run marker is ONE lightweight
+   RANGE BACKGROUND on the group container. It carries NO inner vertical bar and
+   NO border line: a 4px rail sat exactly on the text/caret column and obscured
+   the Typora editing caret / selection. The overlay is pointer-events:none in a
+   0×0 document layer, so it can never affect caret, selection or body layout. */
+.inkchapter-block-gap-fragments {
+  background: var(--ink-blank-space-warning-bg);
+  border: 0;
+  border-radius: var(--ink-blank-space-warning-radius);
+}
+.inkchapter-block-gap-fragment {
+  background: transparent;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+  pointer-events: none;
+}
+/* the ONE count label — the DIAGNOSTIC's own visible blank-row count (the visual
+   layer never re-derives an "excess" number). 光标安全：右对齐，避免落在左侧
+   光标/选区列上。Pure overlay text. */
+.inkchapter-blank-run-count {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--ink-blank-space-warning-accent);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 原设计要求 C — the "missing final newline" marker is an EOF ENDPOINT, not a
+   filled warning band: drop the surface fill and keep only the LEFT boundary
+   line (the endpoint). Form only — the measured BOX is unchanged. */
+.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-eof-form='endpoint'] {
+  background: none;
+  border-left: var(--ink-blank-space-warning-accent-width) solid var(--ink-blank-space-warning-accent);
+  border-radius: 0;
+}
+/* the compact `EOF` endpoint label (icon-level token, never a sentence; the full
+   text stays in the Drawer and the `title`/`aria-label`). */
+.inkchapter-eof-endpoint-label {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--ink-blank-space-warning-accent);
+  pointer-events: none;
+  user-select: none;
 }
 
 /* ── V5.12-R1 — Heading Diagnostic In-Document Marker ─────────────────────
@@ -3393,13 +3453,17 @@ body.ink-console-docked::after {
   --ink-diagnostic-warning-active-chip-text: #5f3f06;
 
   /* V8 §2/§3 — Blank-Space Warning ACTIVE presentation, extracted VERBATIM from
-     the ORIGINAL document-end EOF band (53f08b9:src/style.scss): a LOW-EMPHASIS
-     Warning surface (an 8% Warning mix, NOT the bright 0.38 active fill), ONE 4px
+     the ORIGINAL document-end EOF band (53f08b9:src/style.scss): a Warning
+     surface (an 18% Warning mix, deepened 醒目度优化; NOT the bright 0.38 active
+     fill), ONE 4px
      `--ink-ui-sev-warning` LEFT accent rail, and the original `0 6px 6px 0`
      radius. Every blank-space Warning consumes exactly these four tokens. */
-  --ink-blank-space-warning-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 8%, transparent);
+  --ink-blank-space-warning-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 18%, transparent);
   --ink-blank-space-warning-accent: var(--ink-ui-sev-warning, #a87932);
   --ink-blank-space-warning-accent-width: 4px;
+  /* 醒目度优化 — each rendered blank ROW draws its own 3px LEFT rail (the rows
+     stack into one continuous rail along the continuous band). */
+  --ink-blank-space-warning-fragment-rail: 3px;
   --ink-blank-space-warning-radius: 0 6px 6px 0;
 
   --ink-diagnostic-info-passive-bg: rgba(93, 113, 129, 0.07);
@@ -3486,65 +3550,84 @@ body.ink-console-docked::after {
   background: var(--ink-heading-sev-active, var(--ink-diagnostic-hint-active-bg));
   transition: background-color 140ms ease;
 }
-/* Level 3 Reason chip: overlay only, never in the heading layout flow.
-   V5.12-R9 §6 — compact pill (18~20px tall, 11px text, 6~8px inline padding),
-   soft severity tint, NO shadow and NO heavy border. */
+/* V5.14-R8 R4 — the reason-chip CONTAINER. A heading can carry SEVERAL
+   diagnostics; EVERY one keeps its OWN pill (never merged into one highest-
+   severity label). The container is an overlay-only flex-wrap ROW positioned by
+   the host and bounded by the editor's REAL visible rect (inline `max-width`),
+   so the pills wrap with a 4~6px gap and can never overlap each other, the
+   heading text, or the Drawer. */
 .inkchapter-heading-diagnostic-reason {
+  pointer-events: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  /* ROOT (V5.14-R8 R4) — the marker wrapper is a 0×0 absolute box, so an
+     absolutely-positioned child with `width:auto` shrink-to-fits against a ZERO
+     containing block and collapses to its MINIMUM content width (ONE glyph),
+     producing a one-character-wide vertical chip. `max-content` sizes the row to
+     the labels; the host's inline `max-width` (the editor safe rect) still clamps
+     it, and the pills then wrap as whole units. `max-width:100%` must NOT be used
+     here — it would resolve against the same 0-wide containing block. */
+  width: max-content;
+  max-width: none;
+  box-sizing: border-box;
+}
+/* ONE compact pill per diagnostic label (V5.12-R9 §6: 18~20px tall, 11px text,
+   6~8px inline padding, soft severity tint, no shadow, no heavy border). */
+.inkchapter-heading-diagnostic-reason__item {
   pointer-events: none;
   display: inline-flex;
   align-items: center;
-  height: 20px;
-  padding: 0 7px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 20px;
+  padding: 1px 7px;
   border: 0;
   border-radius: 999px;
   box-shadow: none;
   font-size: 11px;
   font-weight: 500;
-  line-height: 18px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 15px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: var(--ink-ui-diagnostic-chip-text, var(--ink-ui-text-muted, #6b7280));
   background-color: var(--ink-ui-diagnostic-chip-bg, color-mix(in srgb, var(--ink-ui-surface, #ffffff) 88%, transparent));
   transition: color 140ms ease, background-color 140ms ease, opacity 140ms ease;
 }
-/* §4 — severity semantics: muted tint + medium-depth semantic text (never a
-   saturated pure red / pure amber). */
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-reason,
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-reason {
-  color: color-mix(in srgb, var(--ink-heading-sev, #b55454) 66%, #5f5f5f);
-  background-color: color-mix(in srgb, var(--ink-heading-sev, #b55454) 13%, transparent);
+/* §4 — severity semantics are PER PILL (a heading may mix error + warning + hint):
+   muted tint + medium-depth semantic text, never a saturated pure red / amber. */
+.inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='error'] {
+  --ink-heading-sev: var(--ink-ui-diagnostic-error, var(--ink-ui-sev-error, #b55454));
+  color: color-mix(in srgb, var(--ink-heading-sev) 66%, #5f5f5f);
+  background-color: color-mix(in srgb, var(--ink-heading-sev) 13%, transparent);
 }
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason,
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason {
-  color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 64%, #5f5f5f);
-  background-color: color-mix(in srgb, var(--ink-heading-sev, #a87932) 14%, transparent);
+.inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='warning'] {
+  --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
+  color: color-mix(in srgb, var(--ink-heading-sev) 64%, #5f5f5f);
+  background-color: color-mix(in srgb, var(--ink-heading-sev) 14%, transparent);
 }
-/* V1 §3/§4 — HINT (info) chip tint: the same blue-gray family, lower saturation
-   than Warning (12% vs 14%). Only reached by NON-document-scope hints, since a
-   document-level hint paints no chip at all (policy, not severity). */
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason,
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason {
-  color: color-mix(in srgb, var(--ink-heading-sev, #60778a) 62%, #5f5f5f);
-  background-color: color-mix(in srgb, var(--ink-heading-sev, #60778a) 12%, transparent);
+/* V1 §3/§4 — HINT (info) pill tint: same blue-gray family, lower saturation. */
+.inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='info'] {
+  --ink-heading-sev: var(--ink-diagnostic-hint-text, #60778a);
+  color: color-mix(in srgb, var(--ink-heading-sev) 62%, #5f5f5f);
+  background-color: color-mix(in srgb, var(--ink-heading-sev) 12%, transparent);
 }
-/* V5.14-R3 §P12 §21 — while ACTIVE the reason chip is clearly stronger (bright
-   pill + deep text) so the selected occurrence is unmistakable; it stays a
-   compact pill (no shadow, no heavy border). */
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-reason,
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='error'] .inkchapter-heading-diagnostic-reason {
+/* V5.14-R3 §P12 §21 — while ACTIVE EVERY pill of the selected heading is clearly
+   stronger (bright pill + deep text); each pill keeps its OWN severity. */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='error'],
+.inkchapter-heading-diagnostic-active .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='error'] {
   background-color: var(--ink-diagnostic-error-active-chip-bg);
   color: var(--ink-diagnostic-error-active-chip-text);
 }
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason,
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='warning'] .inkchapter-heading-diagnostic-reason {
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='warning'],
+.inkchapter-heading-diagnostic-active .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='warning'] {
   background-color: var(--ink-diagnostic-warning-active-chip-bg);
   color: var(--ink-diagnostic-warning-active-chip-text);
 }
-/* V1 §3/§19 — HINT (info) active chip uses the dedicated blue-gray Hint token
-   (never the amber Warning active chip). Lower alpha than Warning. */
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'][data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason,
-.inkchapter-heading-diagnostic-active[data-ink-diagnostic-severity='info'] .inkchapter-heading-diagnostic-reason {
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='info'],
+.inkchapter-heading-diagnostic-active .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='info'] {
   background-color: var(--ink-diagnostic-hint-active-chip-bg);
   color: var(--ink-diagnostic-hint-active-chip-text);
 }
@@ -4257,18 +4340,41 @@ body.ink-console-docked::after {
   pointer-events: none;
 }
 
-/* ── 界面配置：保持 Typora 原生侧栏（撤掉框架 Ribbon 模式） ────────────────
-   社区框架的 Ribbon 模式（`body.typ-ribbon--enable`）会隐藏 Typora 原生的
-   「文件 / 搜索 / 大纲」切页栏（`workspace-ribbon.scss`:
-   `.typ-ribbon--enable .info-panel-tab-wrapper{display:none}`）并改写侧栏布局
-   （`.typora-node .sidebar-content{top:18px}`），用左侧 48px 竖条替代 —— 这就是
-   “社区插件样式”。墨章在 `ui.ribbon=false`（默认）时由 main.ts 撤掉该 body 类，
-   让 Typora 自身 CSS 完全接管；下面两条规则是兜底（该 body 类被框架异步重新加上
-   时，侧栏仍保持原生外观）。框架自身配置（core.json: showRibbon）永不被改写。 */
+/* ── 界面配置：保持 Typora 原生侧栏（不改框架状态，纯 CSS 恢复原生外观） ──────
+   社区框架的 Ribbon 模式（`body.typ-ribbon--enable`）会用左侧 48px 竖条**替代**
+   Typora 原生的「文件 / 搜索 / 大纲」切页栏：
+     - `workspace-ribbon.scss`：`.typ-ribbon--enable .info-panel-tab-wrapper{display:none}`
+       且 `.typ-ribbon--enable.typora-node .sidebar-content{top:18px}`；
+     - `--typ-ribbon-width: 48px` 参与多处 `left: var(--typ-ribbon-width)`（含 pinned sidebar）。
+   墨章**不再争夺**该框架类（旧实现用 MutationObserver 撤类，会与框架形成
+   “写—观察”争用；已移除）。`ui.ribbon=false`（默认）时，只加自己的
+   `body.inkchapter-ribbon-hidden`，由下面的命名空间规则恢复原生外观：
+     1. 归零 `--typ-ribbon-width`（消除 48px 偏移，含 pinned sidebar 的 left）；
+     2. 隐藏 `.typ-ribbon`；
+     3. 恢复原生切页栏显示；
+     4. 恢复侧栏内容布局（数值取自本机 Typora window.css：
+        `.info-panel-tab-wrapper{width:100%;display:flex;height:12px;margin-top:4px;…}`、
+        `.sidebar-content{position:absolute;bottom:0;top:64px;…}`、
+        `.native-window .sidebar-content{top:54px}`）。
+   开关打开（true）时只去掉自己的类，框架既有 Ribbon 模式原样可用，无半失效状态。 */
 body.inkchapter-ribbon-hidden {
   --typ-ribbon-width: 0px !important;
 }
 
 body.inkchapter-ribbon-hidden .typ-ribbon {
   display: none !important;
+}
+
+/* 3. 恢复被框架 Ribbon 模式隐藏的原生切页栏 */
+body.inkchapter-ribbon-hidden.typ-ribbon--enable .info-panel-tab-wrapper {
+  display: flex !important;
+}
+
+/* 4. 恢复侧栏内容布局（源码：本机 D:\Typora\resources\style\window.css） */
+body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node .sidebar-content {
+  top: 64px !important;
+}
+
+body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .sidebar-content {
+  top: 54px !important;
 }

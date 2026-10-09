@@ -50,9 +50,10 @@ const DEFAULT_FORMAT_LIBRARY: FormatLibrary = {
 /**
  * 界面 / 文件夹树 默认值。
  *
- * `ribbon: false` = **保持 Typora 原生侧栏**：社区框架的 Ribbon 模式会隐藏 Typora
- * 原生的「文件 / 搜索 / 大纲」切页栏并改写侧栏布局，因此默认由墨章撤掉该模式，
- * 让侧栏（含文件夹树与大纲）在任何文件夹下都是原生外观。用户可在设置页打开 Ribbon。
+ * `ribbon: false` = **保持 Typora 原生侧栏**：框架的 Ribbon 模式会隐藏 Typora 原生
+ * 「文件 / 搜索 / 大纲」切页栏并改写侧栏布局；墨章只加自己的 `body` 类，由墨章
+ * 命名空间的 CSS 恢复原生外观 —— **不写框架类、不改框架配置、不注册长期观察器**。
+ * 用户可在设置页打开框架 Ribbon。
  */
 export const DEFAULT_UI_SETTINGS: InkChapterUiSettings = {
   fileTreeLocateFlash: true,
