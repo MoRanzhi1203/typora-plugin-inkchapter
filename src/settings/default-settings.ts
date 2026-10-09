@@ -1,4 +1,4 @@
-import type { InkChapterSettings } from './settings-model'
+import type { InkChapterSettings, InkChapterUiSettings } from './settings-model'
 import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary, ParagraphLayoutSettings } from '../heading-numbering/heading-types'
 import { DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
@@ -47,6 +47,41 @@ const DEFAULT_FORMAT_LIBRARY: FormatLibrary = {
   },
 }
 
+/** 界面 / 文件夹树 默认值：保持与改动前一致的行为（全部启用、Ribbon 不干预）。 */
+export const DEFAULT_UI_SETTINGS: InkChapterUiSettings = {
+  fileTreeLocateFlash: true,
+  emptyWorkspaceCreate: true,
+  docViewMenu: {
+    closeAll: true,
+    copyAbsolute: true,
+    copyRelative: true,
+    revealTree: true,
+    revealExplorer: true,
+  },
+  ribbon: true,
+}
+
+/** 把可能不完整的 `ui` 配置按默认值补齐（纯函数，读取侧唯一权威）。 */
+export function resolveUiSettings(
+  raw: Partial<InkChapterUiSettings> | null | undefined,
+): InkChapterUiSettings {
+  const menu = raw?.docViewMenu
+  return {
+    fileTreeLocateFlash:
+      typeof raw?.fileTreeLocateFlash === 'boolean' ? raw.fileTreeLocateFlash : DEFAULT_UI_SETTINGS.fileTreeLocateFlash,
+    emptyWorkspaceCreate:
+      typeof raw?.emptyWorkspaceCreate === 'boolean' ? raw.emptyWorkspaceCreate : DEFAULT_UI_SETTINGS.emptyWorkspaceCreate,
+    docViewMenu: {
+      closeAll: typeof menu?.closeAll === 'boolean' ? menu.closeAll : DEFAULT_UI_SETTINGS.docViewMenu.closeAll,
+      copyAbsolute: typeof menu?.copyAbsolute === 'boolean' ? menu.copyAbsolute : DEFAULT_UI_SETTINGS.docViewMenu.copyAbsolute,
+      copyRelative: typeof menu?.copyRelative === 'boolean' ? menu.copyRelative : DEFAULT_UI_SETTINGS.docViewMenu.copyRelative,
+      revealTree: typeof menu?.revealTree === 'boolean' ? menu.revealTree : DEFAULT_UI_SETTINGS.docViewMenu.revealTree,
+      revealExplorer: typeof menu?.revealExplorer === 'boolean' ? menu.revealExplorer : DEFAULT_UI_SETTINGS.docViewMenu.revealExplorer,
+    },
+    ribbon: typeof raw?.ribbon === 'boolean' ? raw.ribbon : DEFAULT_UI_SETTINGS.ribbon,
+  }
+}
+
 export const DEFAULT_SETTINGS: InkChapterSettings = {
   schemaVersion: 11,
   debug: false,
@@ -91,4 +126,5 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
     },
   },
   caption: DEFAULT_CAPTION_SETTINGS,
+  ui: DEFAULT_UI_SETTINGS,
 }

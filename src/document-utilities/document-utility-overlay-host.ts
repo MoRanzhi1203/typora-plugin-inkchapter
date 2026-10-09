@@ -1024,6 +1024,8 @@ export interface DocumentUtilitiesOverlayOptions {
   emptyWorkspace?: {
     platform: EmptyWorkspaceUxPlatform
     contentEditableBoundaryAllowed?: boolean
+    /** 配置：空工作区双击新建是否启用（缺省 = 启用）。 */
+    isEnabled?: () => boolean
     /** V2 — authoritative empty-workspace surface resolver (active EMPTY leaf
      *  view container). Never falls back to the stale #write business root. */
     resolveEmptySurface?(): EmptyWorkspaceSurfaceFacts | null
@@ -3903,6 +3905,7 @@ export class DocumentUtilityOverlayHost {
         const emptyUx = new EmptyWorkspaceUxController({
           platform: this.opts.emptyWorkspace.platform,
           contentEditableBoundaryAllowed: this.opts.emptyWorkspace.contentEditableBoundaryAllowed,
+          isEnabled: this.opts.emptyWorkspace.isEnabled,
           getPresence: () => this.readEmptyWorkspacePresence(),
           // V2 — surface authority = the ACTIVE EMPTY leaf view container,
           // injected by the workspace adapter. The stale #write root is NEVER

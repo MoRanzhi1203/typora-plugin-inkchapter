@@ -57,6 +57,35 @@ export type DocViewAction =
   | 'reveal-tree'
   | 'reveal-explorer'
 
+/** 每个墨章扩展项是否插入（原生项永不受影响）。 */
+export interface DocViewMenuOptions {
+  closeAll: boolean
+  copyAbsolute: boolean
+  copyRelative: boolean
+  revealTree: boolean
+  revealExplorer: boolean
+}
+
+/** 默认：全部插入（与引入配置项之前的行为完全一致）。 */
+export const ALL_DOCVIEW_MENU_ITEMS: DocViewMenuOptions = {
+  closeAll: true,
+  copyAbsolute: true,
+  copyRelative: true,
+  revealTree: true,
+  revealExplorer: true,
+}
+
+/** 墨章界面配置读取结果（菜单项显隐 + 定位高亮）。 */
+export interface DocViewUiOptions {
+  menu: DocViewMenuOptions
+  flash: boolean
+}
+
+export const DEFAULT_DOCVIEW_UI_OPTIONS: DocViewUiOptions = {
+  menu: ALL_DOCVIEW_MENU_ITEMS,
+  flash: true,
+}
+
 export type DocViewPlatform = {
   isWindows: boolean
   getFileTreeRoot(): string | null
@@ -106,7 +135,7 @@ export function findTabContextMenu(root: ParentNode = document): HTMLUListElemen
   for (const menu of menus) {
     if (menu.id) continue // built-in Typora menus carry ids
     if (!menu.querySelector('[data-key="removeTab"]')) continue
-    if (menu.querySelector(`[${ATTR_ACTION}="close-all"]`)) continue // already enhanced
+    if (menu.querySelector(`[${ATTR_ACTION}]`)) continue // already enhanced
     found = menu
   }
   return found
@@ -230,10 +259,13 @@ export async function revealPathInFileTree(opts: {
   showFileTree: () => void
   tick?: () => Promise<void> | void
   flashDurationMs?: number
+  /** 是否在目标节点上加临时高亮类；false 时定位/展开/选中完全不变。 */
+  enableFlash?: boolean
   onInvariant?: (facts: FileTreeNativeFacts) => void
 }): Promise<boolean> {
   const { root, absolutePath, fileTreeRoot, showFileTree } = opts
   const tick = opts.tick ?? (() => new Promise<void>(r => setTimeout(r, 80)))
+  const flashEnabled = opts.enableFlash ?? true
   const flashMs = opts.flashDurationMs ?? 1000
   showFileTree()
   await tick()
@@ -323,7 +355,7 @@ export async function revealPathInFileTree(opts: {
     activate.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
     activate.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
   } catch { /* native activation best-effort */ }
-  const inkHighlightAdded = scheduleFlash(target, flashMs)
+  const inkHighlightAdded = flashEnabled ? scheduleFlash(target, flashMs) : false
 
   const after = snapshot()
   const nativeClassesPreserved = before.classes.every(c => after.classes.includes(c))
@@ -458,8 +490,12 @@ function makeItem(action: DocViewAction, label: string, enabled: boolean, reason
  *   在文件树中定位 / 在文件资源管理器中显示  ← Reveal group
  *   (native divider + split actions preserved where present)
  */
-export function injectFlatMenuItems(menu: HTMLUListElement, ctx: DocumentViewContext): number {
-  if (menu.querySelector(`[${ATTR_ACTION}="close-all"]`)) return 0 // duplicate guard
+export function injectFlatMenuItems(
+  menu: HTMLUListElement,
+  ctx: DocumentViewContext,
+  options: DocViewMenuOptions = ALL_DOCVIEW_MENU_ITEMS,
+): number {
+  if (menu.querySelector(`[${ATTR_ACTION}]`)) return 0 // duplicate guard
 
   // Stable semantic anchor, in preference order: 关闭右侧标签 → 关闭其他 → 关闭标签.
   let anchor: HTMLElement | null = null
@@ -469,15 +505,35 @@ export function injectFlatMenuItems(menu: HTMLUListElement, ctx: DocumentViewCon
   }
   if (!anchor) return 0
 
-  const rows: HTMLElement[] = [
-    makeItem('close-all', LABEL_CLOSE_ALL, true, null),
-    makeDivider(),
-    makeItem('copy-absolute', LABEL_COPY_ABSOLUTE, ctx.canCopyAbsolutePath, ctx.disabledReason.copyAbsolutePath),
-    makeItem('copy-relative', LABEL_COPY_RELATIVE, ctx.canCopyRelativePath, ctx.disabledReason.copyRelativePath),
-    makeDivider(),
-    makeItem('reveal-tree', LABEL_REVEAL_TREE, ctx.canRevealInFileTree, ctx.disabledReason.revealInFileTree),
-    makeItem('reveal-explorer', LABEL_REVEAL_EXPLORER, ctx.canRevealInExplorer, ctx.disabledReason.revealInExplorer),
-  ]
+  // Only the ENABLED InkChapter rows are built; native rows are never touched.
+  const groups: HTMLElement[][] = []
+  if (options.closeAll) {
+    groups.push([makeItem('close-all', LABEL_CLOSE_ALL, true, null)])
+  }
+  const pathGroup: HTMLElement[] = []
+  if (options.copyAbsolute) {
+    pathGroup.push(makeItem('copy-absolute', LABEL_COPY_ABSOLUTE, ctx.canCopyAbsolutePath, ctx.disabledReason.copyAbsolutePath))
+  }
+  if (options.copyRelative) {
+    pathGroup.push(makeItem('copy-relative', LABEL_COPY_RELATIVE, ctx.canCopyRelativePath, ctx.disabledReason.copyRelativePath))
+  }
+  if (pathGroup.length > 0) groups.push(pathGroup)
+  const revealGroup: HTMLElement[] = []
+  if (options.revealTree) {
+    revealGroup.push(makeItem('reveal-tree', LABEL_REVEAL_TREE, ctx.canRevealInFileTree, ctx.disabledReason.revealInFileTree))
+  }
+  if (options.revealExplorer) {
+    revealGroup.push(makeItem('reveal-explorer', LABEL_REVEAL_EXPLORER, ctx.canRevealInExplorer, ctx.disabledReason.revealInExplorer))
+  }
+  if (revealGroup.length > 0) groups.push(revealGroup)
+
+  if (groups.length === 0) return 0
+
+  const rows: HTMLElement[] = []
+  groups.forEach((group, i) => {
+    if (i > 0) rows.push(makeDivider())
+    rows.push(...group)
+  })
 
   let ref = anchor
   for (const row of rows) {
@@ -774,7 +830,12 @@ export class DocumentViewContextMenu {
   private lastContext: DocumentViewContext | null = null
   private lastMenu: HTMLUListElement | null = null
 
-  constructor(private platform: DocViewPlatform, private root: ParentNode = document) {
+  constructor(
+    private platform: DocViewPlatform,
+    private root: ParentNode = document,
+    /** 墨章界面配置读取器（默认全启用 ⇒ 与引入配置之前完全一致）。 */
+    private getUiOptions: () => DocViewUiOptions = () => DEFAULT_DOCVIEW_UI_OPTIONS,
+  ) {
     this.handleContextMenuBound = this.handleContextMenu.bind(this)
     this.handleClickBound = this.handleClick.bind(this)
   }
@@ -824,7 +885,7 @@ export class DocumentViewContextMenu {
     })
     this.lastContext = ctx
     this.lastMenu = menu
-    const inserted = injectFlatMenuItems(menu, ctx)
+    const inserted = injectFlatMenuItems(menu, ctx, this.getUiOptions().menu)
     if (inserted > 0) {
       this.emitMenuInvariant(menu)
       this.scheduleLayoutInvariant(menu)
@@ -879,6 +940,7 @@ export class DocumentViewContextMenu {
               fileTreeRoot: ctx.fileTreeRoot,
               showFileTree: () => this.platform.showFileTree(),
               tick: this.platform.tick?.bind(this.platform),
+              enableFlash: this.getUiOptions().flash,
               onInvariant: facts => {
                 this.platform.onInvariant?.('DOCUMENT-VIEW-FILE-TREE-NATIVE-STATE-INVARIANT', facts as unknown as Record<string, unknown>)
               },
