@@ -1,7 +1,8 @@
 import './style.scss'
 import { Notice, Plugin, PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from './settings/settings-model'
-import { DEFAULT_SETTINGS } from './settings/default-settings'
+import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
+import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
 import { HeadingNumberingService } from './heading-numbering/heading-numbering-service'
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { resolveHeadingPolicyActivation } from './heading-numbering/heading-policy-activation'
@@ -198,6 +199,19 @@ export default class extends Plugin<InkChapterSettings> {
   private docViewMenu?: DocumentViewContextMenu
   private tabCloseVisibility?: TabCloseVisibilityEnhancer
 
+  /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
+  private readUiSettings() {
+    return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
+  }
+
+  /** 应用 Ribbon 可见性：仅由墨章加/去 body 类，绝不改写框架配置。 */
+  private applyRibbonVisibility(): void {
+    try {
+      const ui = this.readUiSettings()
+      document.body.classList.toggle('inkchapter-ribbon-hidden', ui.ribbon === false)
+    } catch { /* fail-open */ }
+  }
+
   constructor(...args: ConstructorParameters<typeof Plugin>) {
     super(...args)
     console.log('[InkChapter] INKCHAPTER-BOOT-CONSTRUCTOR-SUCCESS')
@@ -312,6 +326,23 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] caption settings migration error:', e)
     }
+
+    // ── Schema migration: init ui (界面 / 文件夹树) if missing ──
+    try {
+      const current = this.settings.get('ui' as keyof InkChapterSettings) as any
+      if (!current || typeof current !== 'object') {
+        this.settings.set('ui' as keyof InkChapterSettings, DEFAULT_UI_SETTINGS as any)
+        console.log('[InkChapter] ui settings migration applied')
+      }
+    } catch (e) {
+      console.error('[InkChapter] ui settings migration error:', e)
+    }
+
+    // ── 界面配置：Ribbon 可见性（启动应用 + 任何设置变更时重应用） ──
+    try {
+      this.register(this.settings.onChange('*', () => this.applyRibbonVisibility()))
+    } catch { /* fail-open */ }
+    this.applyRibbonVisibility()
 
     // Build service context (exposes only needed APIs, avoids protected access)
     // R58.4: Authoritative vault root from Typora Core app.vault.path
@@ -701,6 +732,7 @@ export default class extends Plugin<InkChapterSettings> {
         // created file opens through the framework App.openFile (real API).
         emptyWorkspace: {
           contentEditableBoundaryAllowed: true,
+          isEnabled: () => this.readUiSettings().emptyWorkspaceCreate,
           resolveEmptySurface: () => readActiveEmptyWorkspaceSurface(
             this.app.workspace as unknown as { activeLeaf?: { viewType?: string; view?: { containerEl?: unknown } } | null },
           ),
@@ -851,7 +883,10 @@ export default class extends Plugin<InkChapterSettings> {
           emitRuntimeAudit(event, payload)
         },
       }
-      this.docViewMenu = new DocumentViewContextMenu(docViewPlatform)
+      this.docViewMenu = new DocumentViewContextMenu(docViewPlatform, document, () => {
+        const ui = this.readUiSettings()
+        return { menu: ui.docViewMenu, flash: ui.fileTreeLocateFlash }
+      })
       this.docViewMenu.attach()
       this.register(() => {
         this.docViewMenu?.dispose()
@@ -1014,6 +1049,20 @@ export default class extends Plugin<InkChapterSettings> {
         console.error('[InkChapter] 设置页面注册失败', e)
         Notice.error('墨章：设置页面加载失败，但插件主体仍可用')
       }
+    }
+
+    // Register 界面 / 文件夹树 settings tab (independent of the numbering service)
+    try {
+      this.registerSettingTab(new InkChapterUiSettingTab({
+        read: () => this.readUiSettings(),
+        write: (next) => {
+          this.settings.set('ui' as keyof InkChapterSettings, next as never)
+          this.applyRibbonVisibility()
+        },
+      }))
+      console.log('[InkChapter] ui settings tab registered')
+    } catch (e) {
+      console.error('[InkChapter] 界面设置页注册失败', e)
     }
 
     // ── Commands (always registered, even if service failed) ──

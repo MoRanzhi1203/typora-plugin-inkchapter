@@ -32,6 +32,8 @@ export interface DocumentUtilitiesSources {
   emptyWorkspace?: {
     platform: import('./document-empty-workspace-controller').EmptyWorkspaceUxPlatform
     contentEditableBoundaryAllowed?: boolean
+    /** 配置：空工作区双击新建是否启用（缺省 = 启用）。 */
+    isEnabled?: () => boolean
     resolveEmptySurface?(): import('./document-empty-workspace-controller').EmptyWorkspaceSurfaceFacts | null
   }
   getMarkdown: () => string | null

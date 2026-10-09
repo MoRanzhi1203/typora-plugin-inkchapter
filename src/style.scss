@@ -4256,3 +4256,15 @@ body.ink-console-docked::after {
   opacity: 0;
   pointer-events: none;
 }
+
+/* ── 界面配置：隐藏社区框架左侧 Ribbon（`.typ-ribbon`） ─────────────────────
+   该能力只由墨章在 body 上加/去 `inkchapter-ribbon-hidden` 实现，绝不写入框架
+   自身配置（core.json: showRibbon）。框架布局用 `--typ-ribbon-width` 参与
+   `calc()`，故必须一并归零，否则隐藏后左侧会留出 48px 空档。 */
+body.inkchapter-ribbon-hidden {
+  --typ-ribbon-width: 0px !important;
+}
+
+body.inkchapter-ribbon-hidden .typ-ribbon {
+  display: none !important;
+}

@@ -82,6 +82,8 @@ export interface EmptyWorkspaceUxControllerOptions {
   resolveSurface?(): HTMLElement | null
   /** Allow double-click when the surface itself is contenteditable (EMPTY only). */
   contentEditableBoundaryAllowed?: boolean
+  /** 配置：空工作区双击新建是否启用（缺省 = 启用）。 */
+  isEnabled?: () => boolean
 }
 
 export interface EmptyWorkspaceUxRuntimeFacts {
@@ -195,6 +197,8 @@ export class EmptyWorkspaceUxController {
 
   private readonly onSurfaceDoubleClick = (e: MouseEvent): void => {
     if (this.disposed) return
+    // 配置关闭「空工作区双击新建」时完全不介入：不记录 receipt、不创建。
+    if (this.opts.isEnabled?.() === false) return
     const surface = this.surfaceBound
     const presence = this.opts.getPresence()
     const empty = presence.state === 'EMPTY'
