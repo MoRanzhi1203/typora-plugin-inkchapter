@@ -6,6 +6,8 @@
  *  - 文件树定位高亮开关（关闭时定位不变、只少一个临时类）
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { DEFAULT_UI_SETTINGS, resolveUiSettings } from './default-settings'
 import {
   ALL_DOCVIEW_MENU_ITEMS,
@@ -40,6 +42,17 @@ describe('UI-SETTINGS — resolveUiSettings', () => {
     expect(resolveUiSettings(undefined)).toEqual(DEFAULT_UI_SETTINGS)
     expect(resolveUiSettings(null)).toEqual(DEFAULT_UI_SETTINGS)
     expect(resolveUiSettings({})).toEqual(DEFAULT_UI_SETTINGS)
+  })
+
+  it('defaults keep the NATIVE Typora sidebar (framework ribbon off) in any folder', () => {
+    expect(DEFAULT_UI_SETTINGS.ribbon).toBe(false)
+    expect(resolveUiSettings({}).ribbon).toBe(false)
+  })
+
+  it('ships the native-sidebar fallback CSS (hide framework ribbon, zero its layout width)', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    expect(css).toMatch(/body\.inkchapter-ribbon-hidden\s*\{[\s\S]{0,80}--typ-ribbon-width:\s*0px\s*!important/)
+    expect(css).toMatch(/body\.inkchapter-ribbon-hidden \.typ-ribbon\s*\{[\s\S]{0,60}display:\s*none\s*!important/)
   })
 
   it('partial config keeps defaults for the rest', () => {

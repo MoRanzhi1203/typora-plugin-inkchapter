@@ -4257,10 +4257,14 @@ body.ink-console-docked::after {
   pointer-events: none;
 }
 
-/* ── 界面配置：隐藏社区框架左侧 Ribbon（`.typ-ribbon`） ─────────────────────
-   该能力只由墨章在 body 上加/去 `inkchapter-ribbon-hidden` 实现，绝不写入框架
-   自身配置（core.json: showRibbon）。框架布局用 `--typ-ribbon-width` 参与
-   `calc()`，故必须一并归零，否则隐藏后左侧会留出 48px 空档。 */
+/* ── 界面配置：保持 Typora 原生侧栏（撤掉框架 Ribbon 模式） ────────────────
+   社区框架的 Ribbon 模式（`body.typ-ribbon--enable`）会隐藏 Typora 原生的
+   「文件 / 搜索 / 大纲」切页栏（`workspace-ribbon.scss`:
+   `.typ-ribbon--enable .info-panel-tab-wrapper{display:none}`）并改写侧栏布局
+   （`.typora-node .sidebar-content{top:18px}`），用左侧 48px 竖条替代 —— 这就是
+   “社区插件样式”。墨章在 `ui.ribbon=false`（默认）时由 main.ts 撤掉该 body 类，
+   让 Typora 自身 CSS 完全接管；下面两条规则是兜底（该 body 类被框架异步重新加上
+   时，侧栏仍保持原生外观）。框架自身配置（core.json: showRibbon）永不被改写。 */
 body.inkchapter-ribbon-hidden {
   --typ-ribbon-width: 0px !important;
 }
