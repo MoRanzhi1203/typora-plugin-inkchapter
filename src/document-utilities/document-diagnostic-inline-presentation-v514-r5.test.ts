@@ -361,8 +361,12 @@ describe('V5.14-R5 §3/§7/§12/§18 — the in-body chip (host wiring)', () => 
     expect(chipText()).not.toContain('⚠')
     expect(chipText()).not.toContain('严格模式结构错误')
     expect(chipText()).not.toContain('\n')
-    // §9 — max-width is only the fallback clamp
-    expect(chipStyleWidthClamp()).toBe(`${INLINE_CHIP_MAX_WIDTH_PX_V514R5}px`)
+    // V5.14-R8 §4.4 — max-width is the BOUNDED placement width (never larger than
+    // the 168px clamp); with plenty of room it equals the short hint's intrinsic width.
+    const chipMaxWidthPx = Number.parseFloat(chipStyleWidthClamp())
+    expect(Number.isFinite(chipMaxWidthPx)).toBe(true)
+    expect(chipMaxWidthPx).toBe(computeInlineChipWidthPx('H1 前有正文'))
+    expect(chipMaxWidthPx).toBeLessThanOrEqual(INLINE_CHIP_MAX_WIDTH_PX_V514R5)
     // §12 — the heading itself is untouched
     expect(w.headings[0].textContent).toBe('题目1')
     expect(w.headings[0].hasAttribute('data-inkchapter-heading-number')).toBe(false)
@@ -432,6 +436,37 @@ describe('V5.14-R5 §3/§7/§12/§18 — the in-body chip (host wiring)', () => 
     expect(api().getInlineChipRebuiltAfterHintChange()).toBe(true)
     expect(api().getInlinePresentationV514R5Counters().inlineReasonStaleWidthAfterLabelChange).toBe(0)
     expect(api().getInlinePresentationV514R5Counters().inlineReasonFixedWidth).toBe(0)
+  })
+
+  it('§4.4 — the chip width is bounded by the editor safe rect (Drawer inset) and never overflows it', () => {
+    const w = makeWorld(1)
+    host = w.h
+    const write = document.getElementById('write')!
+    // a NARROW visible editor (as if the Drawer inset shrank the content column)
+    stubRect(write, () => ({ left: 0, top: 0, right: 500, bottom: 3000 }))
+    inject(host, [diagFor('E1', 'H-A', 'error', 'STRICT_FIRST_H1_LEADING_PARAGRAPH',
+      '⚠ 严格模式结构错误：文档必须以一级标题开始\nH1 前存在正文内容')])
+    api().renderHeadingDiagnosticMarkers()
+    const chip = document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement
+    const left = Number.parseFloat(chip.style.left)
+    const maxWidth = Number.parseFloat(chip.style.maxWidth)
+    expect(Number.isFinite(left)).toBe(true)
+    expect(Number.isFinite(maxWidth)).toBe(true)
+    // the chip's RIGHT edge never crosses the editor's real visible right (500)
+    expect(left + maxWidth).toBeLessThanOrEqual(500 + 0.5)
+  })
+
+  it('§4.4 — when the inline room cannot hold a legible chip it moves to its OWN visual line', () => {
+    const w = makeWorld(1)
+    host = w.h
+    const write = document.getElementById('write')!
+    stubRect(write, () => ({ left: 0, top: 0, right: 480, bottom: 3000 }))
+    inject(host, [diagFor('E1', 'H-A', 'error', 'STRICT_FIRST_H1_LEADING_PARAGRAPH',
+      '⚠ 严格模式结构错误：文档必须以一级标题开始\nH1 前存在正文内容')])
+    api().renderHeadingDiagnosticMarkers()
+    const chip = document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement
+    expect(Number.parseFloat(chip.style.left)).toBe(100) // the title's left, never 0
+    expect(Number.parseFloat(chip.style.top)).toBeGreaterThan(228) // below the text line
   })
 
   it('§8 — the Drawer keeps the FULL explanation (never the 4~10 char inline hint)', () => {

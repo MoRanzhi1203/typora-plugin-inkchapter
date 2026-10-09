@@ -108,10 +108,22 @@ export function emptyFillOnlyOwnershipFacts(): FillOnlyOwnershipFacts {
 export function evaluateFillOnlyOwnershipGate(
   facts: FillOnlyOwnershipFacts,
   committed: boolean,
+  options?: {
+    /**
+     * 模式契约修复 — the acceptance is judged PER VISUAL TYPE. The EOF ENDPOINT
+     * form (`data-ink-eof-form='endpoint'`) is a deliberate **NO-FILL** endpoint
+     * (boundary line + `EOF` label). Requiring a plugin-owned FILL for it was a
+     * mode conflict (it killed the endpoint with `PLUGIN_OWNED_FILL_MISSING`);
+     * the endpoint is validated by its own connected/visible marker instead. The
+     * fix must NEVER re-add a large background fill just to satisfy the old gate.
+     */
+    endpointForm?: boolean
+  },
 ): { decision: 'PASS' | 'FAIL'; failing: string[] } {
   if (!committed) return { decision: 'PASS', failing: [] }
   const failing: string[] = []
-  if (facts.pluginOwnedFillCount < 1) failing.push('PLUGIN_OWNED_FILL_MISSING')
+  const fillRequired = options?.endpointForm !== true
+  if (fillRequired && facts.pluginOwnedFillCount < 1) failing.push('PLUGIN_OWNED_FILL_MISSING')
   if (facts.pluginOwnedBorderCount > 0) failing.push('PLUGIN_OWNED_BORDER_COUNT')
   if (facts.pluginOwnedOutlineCount > 0) failing.push('PLUGIN_OWNED_OUTLINE_COUNT')
   if (facts.pluginOwnedVerticalLineCount > 0) failing.push('PLUGIN_OWNED_RAIL_COUNT')

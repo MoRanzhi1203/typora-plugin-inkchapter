@@ -23,6 +23,8 @@
  *   §13  the diagnostic's appearance / disappearance is live
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
@@ -38,6 +40,9 @@ import {
   DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS,
   DOCUMENT_END_TRAILING_BLANK_RULE_NAME,
   EOF_NEWLINE_MARKER_ARIA_LABEL,
+  EOF_NEWLINE_MARKER_ENDPOINT_FORM,
+  EOF_NEWLINE_MARKER_ENDPOINT_LABEL,
+  EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS,
   EOF_NEWLINE_MARKER_KIND,
   EOF_NEWLINE_MARKER_MAX_HEIGHT_PX,
   EOF_NEWLINE_MARKER_MAX_WIDTH_PX,
@@ -55,6 +60,35 @@ import {
   DOCUMENT_END_VISUAL_AUDIT_EVENT,
   EOF_MARKER_KIND_DOCUMENT_END_WARNING,
 } from './document-diagnostic-document-end-visual-v513-r1'
+
+// ── 原设计要求 C — an EXPLICIT EOF ENDPOINT marker (not a filled colour bar) ──
+describe('原设计要求 C — EOF endpoint marker', () => {
+  it('exposes an `EOF` endpoint label + its class + the endpoint form', () => {
+    expect(EOF_NEWLINE_MARKER_ENDPOINT_LABEL).toBe('EOF')
+    expect(EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS).toBe('inkchapter-eof-endpoint-label')
+    expect(EOF_NEWLINE_MARKER_ENDPOINT_FORM).toBe('endpoint')
+  })
+
+  it('the overlay host paints the endpoint label + form on the newline-missing chip', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
+    expect(src).toContain('EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS')
+    expect(src).toContain('label.textContent = EOF_NEWLINE_MARKER_ENDPOINT_LABEL')
+    expect(src).toContain("setAttribute('data-ink-eof-form', EOF_NEWLINE_MARKER_ENDPOINT_FORM)")
+    expect(src).toContain('el.appendChild(label)')
+  })
+
+  it('the endpoint form drops the band fill (left boundary line only)', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    const formBlock = css.match(/\[data-ink-eof-marker='true'\]\[data-ink-eof-form='endpoint'\] \{[^}]*\}/)?.[0] ?? ''
+    expect(formBlock).not.toBe('')
+    expect(formBlock).toContain('background: none')
+    expect(formBlock).toContain('var(--ink-blank-space-warning-accent)')
+    const labelBlock = css.match(/\.inkchapter-eof-endpoint-label \{[^}]*\}/)?.[0] ?? ''
+    expect(labelBlock).not.toBe('')
+    expect(labelBlock).toContain('pointer-events: none')
+    expect(labelBlock).toContain('var(--ink-blank-space-warning-accent)')
+  })
+})
 
 // ── environment stubs (mirrors the V5.13-R1 suite) ─────────────────────────
 

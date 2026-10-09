@@ -454,6 +454,9 @@ import {
   DOCUMENT_END_NEWLINE_MISSING_RULE,
   DOCUMENT_END_TRAILING_BLANK_RULE_NAME,
   EOF_NEWLINE_MARKER_ARIA_LABEL,
+  EOF_NEWLINE_MARKER_ENDPOINT_FORM,
+  EOF_NEWLINE_MARKER_ENDPOINT_LABEL,
+  EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS,
   EOF_NEWLINE_MARKER_KIND,
   EOF_NEWLINE_MARKER_RULE_ATTR,
   computeDocumentEndNewlineMarkerGeometry,
@@ -554,6 +557,7 @@ import {
   INTERNAL_BLANK_LINE_POLICY,
   analyzeInternalBlankLineGaps,
   internalBlankGapIdentity,
+  internalBlankLineDetail,
   protectedRegionKindAtLine,
   firstContentSourceLine,
   lastContentSourceLine,
@@ -561,6 +565,48 @@ import {
   type InternalBlankLineV1Counters,
   type InternalBlankLineV1Coverage,
 } from './document-diagnostic-internal-blank-lines-v1'
+// TRAE — the RENDERED BLANK ROW AUTHORITY (source candidate → rendered DOM
+// blank rows) + the split boundary decision algebra + the §39–§44 gates.
+import {
+  RENDERED_BLANK_ROW_AUDIT_EVENT,
+  RENDERED_BLANK_ROW_DOM_PROBE_EVENT,
+  RENDERED_BLANK_GAP_SCROLL_TARGET,
+  RENDERED_BLANK_ROW_PENDING_DETAIL,
+  RENDERED_BLANK_ROW_GEOMETRY_AUDIT_EVENT,
+  RENDERED_BLANK_GAP_LOCAL_SPACE,
+  convertRenderedRowsToLocal,
+  evaluateBoundaryResolution,
+  resolveRenderedBlankRows,
+  renderedBlankRowUnion,
+  createRenderedBlankRowGates,
+  emptyRenderedBlankRowCoverage,
+  formatRenderedBlankRowGateReport,
+  evaluateRenderedBlankRowGates,
+  evaluateRenderedBlankRowCoverage,
+  type BoundaryResolution,
+  type RenderedBlankRowResult,
+} from './document-diagnostic-rendered-blank-row'
+// TRAE §3–§7/§13–§18 — the PAINT LAYER COORDINATE AUTHORITY: measure the REAL
+// paint layer (origin + basis + scale) instead of assuming
+// `DOCUMENT_LOCAL = VIEWPORT - contentHostRect`, and close the painted fragment
+// geometry against the source blank-row viewport rects.
+import {
+  PAINT_LAYER_CALIBRATION_AUDIT_EVENT,
+  BLANK_ROW_FRAGMENT_CLOSURE_AUDIT_EVENT,
+  BLANK_ROW_FRAGMENT_MAX_DRIFT_PX,
+  calibratePaintLayerFromLayer,
+  viewportRectToPaintLayerLocalV1,
+  evaluateFragmentClosureEntry,
+  maxFragmentDrift,
+  createPaintLayerGeometryGates,
+  formatPaintLayerGeometryGateReport,
+  evaluatePaintLayerGeometryGates,
+  createBlankRowTxGates,
+  formatBlankRowTxGateReport,
+  evaluateBlankRowTxGates,
+  type PaintLayerCalibration,
+  type BlankRowFragmentClosureEntry,
+} from './document-diagnostic-paint-layer-calibration'
 // Presentation Stability Closure V1 §2/§6/§7 — the ONE BLOCK_GAP_VISUAL_TARGET
 // authority: the gap is painted where it IS (between the two blocks), never on
 // an adjacent content block. Detection stays source-only.
@@ -571,17 +617,31 @@ import {
   BLOCK_GAP_VISUAL_CONSISTENCY_AUDIT_EVENT,
   BLOCK_GAP_OCCUPANCY_AUDIT_EVENT,
   BLOCK_GAP_IMAGE_ONLY_INVENTORY_AUDIT_EVENT,
+  BLOCK_GAP_TARGET_AUDIT_EVENT,
   BLOCK_GAP_VISUAL_CLASS,
   BLOCK_GAP_VISUAL_TARGET,
   computeBlockGapVisualGeometry,
   isBlockGapGeometryValid,
+  blockGapFailClosedReason,
+  resolveBlockGapHorizontalExtent,
+  computeRenderedBlankRowFragments,
+  RENDERED_BLANK_ROW_FRAGMENT_CLASS,
+  RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS,
+  RENDERED_BLANK_ROW_ROLE_ATTR,
+  BLANK_RUN_COUNT_CHIP_CLASS,
   createBlockGapVisualV1Counters,
   createBlockGapVisualV1Coverage,
+  createBlockGapCanonicalClosureGates,
+  emptyBlockGapCanonicalClosureCoverage,
+  evaluateBlockGapCanonicalClosureGates,
+  evaluateBlockGapCanonicalClosureCoverage,
   formatBlockGapVisualV1GateReport,
   evaluateBlockGapVisualV1Gates,
   formatBlockGapVisualV1CoverageReport,
+  formatBlockGapCanonicalClosureGateReport,
   type BlockGapVisualV1Counters,
   type BlockGapVisualV1Coverage,
+  type BlockGapCanonicalClosureGateKey,
 } from './document-diagnostic-block-gap-visual-v1'
 // Blank-Space Warning Presentation Policy — the unified FILL_ONLY Warning band
 // shared by every blank-space Warning that has no gap/EOF carrier.
@@ -741,7 +801,6 @@ import {
 // presentation authority (short in-body label; the Drawer keeps the full copy).
 import {
   DOCUMENT_DIAGNOSTIC_INLINE_PRESENTATION_AUDIT_EVENT,
-  INLINE_CHIP_MAX_WIDTH_PX_V514R5,
   INLINE_PRESENTATION_V514R5_GATE_KEYS,
   buildDiagnosticPresentation,
   computeInlineChipWidthPx,
@@ -2325,18 +2384,35 @@ interface HeadingPassiveMarkerRecord {
 
 /** V5.12-R9 §6 — reason chip height (18~20px band). */
 const HEADING_REASON_CHIP_HEIGHT_PX = 20
+/** V5.14-R8 R4 §2.1 — the gap between two reason pills on the SAME heading (4~6px). */
+const HEADING_REASON_ITEM_GAP_PX = 6
 
 /**
  * §P6 — ONE heading marker group. A single heading can be the target of SEVERAL
- * heading diagnostics; they merge into ONE painted marker (severity = highest,
- * chip = highest rank) while still owning a SET of visual target keys, so the
- * closure reconciliation stays per-(diagnostic,target) exact.
+ * heading diagnostics; they share ONE painted marker (severity = highest for the
+ * soft FILL) while still owning a SET of visual target keys, so the closure
+ * reconciliation stays per-(diagnostic,target) exact.
+ *
+ * V5.14-R8 R4 — every diagnostic keeps its OWN reason label: `reasonItems` is the
+ * complete, order-stable list of labels painted into the marker's reason-chip
+ * container. Merging them into one label is FORBIDDEN (it silently dropped every
+ * diagnosis but the highest-severity one).
  */
+interface HeadingReasonItem {
+  diagnosticId: string
+  severity: 'error' | 'warning' | 'info'
+  text: string
+  rank: number
+}
+
 interface HeadingMarkerGroup {
   el: HTMLElement
   severities: string[]
   resolverSource: string
+  /** The highest-severity label (audit / primary authority). */
   reasonText: string | null
+  /** V5.14-R8 R4 — ALL labels of this heading (one per diagnostic), rank desc. */
+  reasonItems: HeadingReasonItem[]
   topRank: number
   /** The owning diagnostic of the marker's PRIMARY key (chip/audit authority). */
   primaryDiagnosticId: string
@@ -2414,6 +2490,22 @@ function computedStyleOf(el: Element): CSSStyleDeclaration | null {
 const FIGURE_FIXTURE_DECODE_MAX_ATTEMPTS = 12
 const FIGURE_FIXTURE_DECODE_RETRY_MS = 200
 
+/**
+ * DOM position bitmask constants — the DOM spec values (1/2/4/8/16).
+ *
+ * MUST NOT use `Node.DOCUMENT_POSITION_*` here: real Typora runtime evidence
+ * proved those constants resolve to `undefined` inside the plugin bundle scope
+ * (the same trap already documented in `heading-numbering-service.ts`), which
+ * silently makes every bitmask test falsy. That bug made `gapBoundaryOrderOk`
+ * ALWAYS false, so the rendered-blank-row PRIMARY paint was always skipped →
+ * `ZERO_PAINTED_RECT`. These local literals are the spec values.
+ */
+const DOM_POSITION_DISCONNECTED = 1
+const DOM_POSITION_PRECEDING = 2
+const DOM_POSITION_FOLLOWING = 4
+const DOM_POSITION_CONTAINS = 8
+const DOM_POSITION_CONTAINED_BY = 16
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -2437,6 +2529,26 @@ export class DocumentUtilityOverlayHost {
   private bottomBtnEl: HTMLButtonElement | null = null
   private drawerOpen = false
   private resizeObserver: ResizeObserver | null = null
+  /**
+   * LAYOUT-INVALIDATION — the last committed diagnostic-visual inputs. A real
+   * editor-geometry change (sidebar divider drag / window resize / zoom) re-wraps
+   * the text, so the marker MUST be re-measured instead of reusing a stale
+   * origin/rect. These inputs are replayed in the coalesced geometry rAF.
+   */
+  private lastLocateVisualInputs: {
+    diagId: string | null
+    severity: 'error' | 'warning' | 'info'
+    targets: HTMLElement[]
+    result: DiagnosticLocationResolveResult | null
+    resolvedPrimary: HTMLElement | null
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null
+    documentKey: string | null
+  } | null = null
+  /** Last editor-shell geometry we measured against (0.5px tolerance). */
+  private lastAppliedEditorGeometry: { left: number; top: number; width: number; height: number } | null = null
+  /** Monotonic layout-invalidation generation (guards stale re-measures). */
+  private layoutInvalidateEpoch = 0
+  private layoutInvalidateRemeasureCount = 0
   private geometryRafPending = false
   private pendingGeometryReasons = new Set<string>()
   private lastGeometry: OverlayGeometry | null = null
@@ -2707,6 +2819,65 @@ export class DocumentUtilityOverlayHost {
   private blockGapVisualEl: HTMLElement | null = null
   /** §12 — the last committed gap-visual audit facts (runtime verification seam). */
   private lastBlockGapVisualAudit: Record<string, unknown> = {}
+  // ── TRAE §22/§21 — the CANONICAL block-gap locator closure ────────────────
+  /** §22 — the canonical locator closure gates (all must stay 0). */
+  private countersBlockGapCanonicalClosure: Record<string, number> = {
+    ...createBlockGapCanonicalClosureGates(),
+    ...emptyBlockGapCanonicalClosureCoverage(),
+  }
+  /** §14 — the provisional gap rect (viewport) used as the SCROLL target. */
+  private blockGapScrollTargetRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null = null
+  /** §14 — which process produced the CURRENT scroll target for this transaction. */
+  private lastScrollTargetKind: string | null = null
+  /**
+   * TRAE §8 — the canonical identity the CURRENT block-gap locate is serving.
+   * `null` when the active locate is not an internal-blank-gap locate.
+   */
+  private lastBlockGapDiagnosticId: string | null = null
+  /** TRAE §17 — the last scoped visual-closure verdict for the block-gap rule. */
+  private lastBlockGapClosureScoped: boolean | null = null
+  // ── TRAE — RENDERED BLANK ROW AUTHORITY (§35/§39–§44) ─────────────────────
+  /** §39–§44 — the rendered-blank-row hard gates + positive coverage. */
+  private countersRenderedBlankRow: Record<string, number> = {
+    ...createRenderedBlankRowGates(),
+    ...emptyRenderedBlankRowCoverage(),
+  }
+  // ── TRAE §18 — the PAINT-LAYER geometry closure gates (all must stay 0). ───
+  private countersPaintLayerGeometry: Record<string, number> = createPaintLayerGeometryGates()
+  // ── TRAE §26/§27 — the CURRENT-TRANSACTION-scoped panel/navigator/toolbar
+  // gates. Only the CURRENT blank-gap fragments may fail these; the historical
+  // coverage counters live apart and never poison this transaction. ─────────
+  private countersBlankRowTx: Record<string, number> = createBlankRowTxGates()
+  /** §26 — POSITIVE historical coverage (never fatal). */
+  private coverageBlankRowHistorical: Record<string, number> = {
+    historicalPanelIntersectionCount: 0,
+    historicalNavigatorIntersectionCount: 0,
+    historicalToolbarIntersectionCount: 0,
+    historicalSafeClipMutationCount: 0,
+  }
+  /** §16 — the last paint-layer calibration (runtime verification seam). */
+  private lastPaintLayerCalibration: PaintLayerCalibration | null = null
+  /** §17 — the last painted-fragment closure entries (runtime verification seam). */
+  private lastBlankRowFragmentClosure: BlankRowFragmentClosureEntry[] = []
+  /** commit-time acceptance dry-run positive coverage (clearly named, non-poisoning). */
+  private coverageBlankRowAcceptance: Record<string, number> = {
+    ACCEPTANCE_DRY_RUN_COUNT: 0,
+    ACCEPTANCE_CALIBRATION_VERIFIED_COUNT: 0,
+    ACCEPTANCE_SOURCE_VIEWPORT_RECT_COUNT: 0,
+    ACCEPTANCE_PAINTED_FRAGMENT_VIEWPORT_RECT_COUNT: 0,
+    ACCEPTANCE_FRAGMENT_DRIFT_GT_1PX_COUNT: 0,
+  }
+  /** §22 — the N fragment FILL nodes of the CURRENT active gap carrier. */
+  private blockGapFragmentEls: HTMLElement[] = []
+  /** §35 — the last rendered-blank-row audit facts (runtime verification seam). */
+  private lastRenderedBlankRowAudit: Record<string, unknown> = {}
+  /** §4 — the last resolved rendered-blank-row result for the current gap. */
+  private lastRenderedBlankRowResult: RenderedBlankRowResult | null = null
+  /**
+   * §26 — the registerable RENDERED count authority the Drawer projection
+   * consults (keyed by the gap's stable target identity). NEVER the source count.
+   */
+  private renderedBlankRowAuthority = new Map<string, { renderedBlankRowCount: number; displayDetail: string; warning: boolean; layoutEpoch: number }>()
   /** §25 — the monotonic reason-chip rect trace sequence (runtime forensics). */
   private reasonChipRectTraceSeq = 0
   /** §25 — the last traced chip rect per heading identity. */
@@ -2973,6 +3144,12 @@ export class DocumentUtilityOverlayHost {
     // atomic replacement so a stale residue can be proven (never assumed).
     const previousDiagnosticIds = this.snapshot?.diagnostics.map(d => d.id) ?? []
     this.snapshot = snapshot
+    // TRAE §26/§28/§50-R1 — (re)register the RENDERED blank-row count the Drawer
+    // projects for EVERY current internal blank gap, BEFORE the Drawer renders —
+    // so the IDLE list shows the RENDERED count (3), never the raw source line
+    // count (7). A gap the runtime cannot verify is pruned to the PENDING copy;
+    // a gone/changed gap can never keep a stale rendered count.
+    this.registerRenderedBlankRowAuthorityFromSnapshot(snapshot)
     // ── TRAE §13 Case B/C — LIVE resolve: the `DOCUMENT_TERMINAL_NEWLINE_MISSING`
     // diagnostic must appear / disappear with the SOURCE, never requiring a
     // document close+reopen. Its reintroduction is observed here.
@@ -2994,7 +3171,20 @@ export class DocumentUtilityOverlayHost {
       if (!stillPresent) {
         // TRAE §13 Case B — capture the served rule BEFORE the teardown clears it.
         const wasDocEndVisual = this.lastDocEndVisualRule != null
+        // TRAE §19 — the internal blank-gap carrier disappearing WITH its
+        // diagnostic is the dynamic 3→2 evidence (never a stale fill).
+        const wasBlockGapVisual = this.lastBlockGapDiagnosticId != null
         this.clearDiagnosticLocateVisual('ACTIVE_DIAGNOSTIC_REMOVED')
+        if (wasBlockGapVisual) {
+          this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_DYNAMIC_DISAPPEAR_RUNTIME_COUNT++
+          // TRAE §44 — 3→2: the rendered warning + visual were removed live.
+          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_3_TO_2_DIAGNOSTIC_REMOVED_COUNT++
+          if (this.blockGapVisualEl != null) {
+            this.countersBlockGapCanonicalClosure.staleVisualCount++
+          } else {
+            this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_3_TO_2_VISUAL_REMOVED_COUNT++
+          }
+        }
         if (wasDocEndVisual) {
           this.countersDocEndNewlineV1.DOCUMENT_END_DIAGNOSTIC_REMOVED_RUNTIME_COUNT++
           // The marker + carrier must be gone in the SAME snapshot commit.
@@ -3359,12 +3549,27 @@ export class DocumentUtilityOverlayHost {
       hostNativeBorderCount: facts.hostNativeBorderCount,
       hostNativeOutlineCount: facts.hostNativeOutlineCount,
     }
+    // 模式契约修复 — detect the EOF ENDPOINT form: it is a deliberate NO-FILL
+    // endpoint, so the FILL_ONLY acceptance is judged PER VISUAL TYPE (a connected
+    // + visible endpoint marker) and NEVER by re-adding a background fill.
+    const endpointFormEl = this.findEndpointFormCarrier(scope)
+    let endpointFormValid = false
+    if (endpointFormEl != null) {
+      try {
+        const r = endpointFormEl.getBoundingClientRect()
+        endpointFormValid = r.width > 0 && r.height > 0
+      } catch { endpointFormValid = false }
+    }
     // ── TRAE V7 §7.2 — FILL_ONLY is judged ONLY on the plugin-owned layer.
-    const ownership = evaluateFillOnlyOwnershipGate(this.lastFillOnlyOwnershipFacts, committed)
+    const ownership = evaluateFillOnlyOwnershipGate(
+      this.lastFillOnlyOwnershipFacts, committed, { endpointForm: endpointFormValid },
+    )
     // V5.13-R3 §18 — a NON-EOF active locate must never regrow a vertical rail
     // (the EOF band's left accent is a scoped surface style, NOT a locator rail).
     if (!scope && facts.verticalLineCount > 0) this.countersDocEndV513R3.nonEofVerticalLineRegression++
     const { counters, fillOk } = measureActiveLocateFillOnlyGates(facts, committed)
+    // 模式契约修复 — a valid ENDPOINT form satisfies the visual even without a fill.
+    const fillSatisfied = fillOk || endpointFormValid
     if (committed) {
       for (const key of ACTIVE_LOCATE_FILL_ONLY_GATE_KEYS) {
         const value = counters[key]
@@ -3380,7 +3585,8 @@ export class DocumentUtilityOverlayHost {
       presentationMode: ACTIVE_LOCATE_PRESENTATION_FILL_ONLY,
       lineSource: ACTIVE_LOCATE_LINE_SOURCE,
       fillCount: facts.fillCount,
-      fillGateSatisfied: fillOk && facts.fillCount >= ACTIVE_LOCATE_MIN_FILL_COUNT,
+      fillGateSatisfied: fillSatisfied && (facts.fillCount >= ACTIVE_LOCATE_MIN_FILL_COUNT || endpointFormValid),
+      endpointFormValidated: endpointFormValid,
       verticalLineCount: facts.verticalLineCount,
       horizontalLineCount: facts.horizontalLineCount,
       borderCount: facts.borderCount,
@@ -3406,9 +3612,24 @@ export class DocumentUtilityOverlayHost {
       hostNativeOutlineCount: facts.hostNativeOutlineCount,
       pluginOwnedGateDecision: committed ? ownership.decision : 'PASS',
       pluginOwnedGateFailing: ownership.failing,
-      decision: committed && (!fillOk || gate.decision === 'FAIL' || ownership.decision === 'FAIL') ? 'FAIL' : 'PASS',
+      decision: committed && (!fillSatisfied || gate.decision === 'FAIL' || ownership.decision === 'FAIL') ? 'FAIL' : 'PASS',
       reason: committed ? 'ACTIVE_LOCATE_FILL_ONLY' : 'NOT_COMMITTED',
     })
+  }
+
+  /**
+   * 模式契约修复 — the EOF ENDPOINT-form carrier (connected), when one is painted.
+   * Used to judge the FILL_ONLY acceptance PER VISUAL TYPE: an endpoint form is a
+   * deliberate NO-FILL marker, so it must not be killed by `PLUGIN_OWNED_FILL_MISSING`.
+   */
+  private findEndpointFormCarrier(scope?: Element | null): HTMLElement | null {
+    const scopes = [this.root, scope ?? null, this.locateDocLayerHost]
+      .filter((e): e is Element => e != null)
+    for (const s of scopes) {
+      const el = s.querySelector<HTMLElement>("[data-ink-eof-marker='true'][data-ink-eof-form='endpoint']")
+      if (el && el.isConnected) return el
+    }
+    return null
   }
 
   /**
@@ -4049,6 +4270,8 @@ export class DocumentUtilityOverlayHost {
    *  most one fresh absolute reposition; scroll events never do DOM writes and
    *  never re-enter a locate transaction. */
   private locateScrollRafHandle: number | null = null
+  /** SCROLL-COORDINATE FIX — one coalesced rAF for the POST-COMMIT frame re-sync. */
+  private committedFrameScrollRafHandle: number | null = null
 
   /** V5.6 — interaction lifecycle: active visual epoch + decoupled selection. */
   private locateVisualEpoch = 0
@@ -5739,6 +5962,9 @@ export class DocumentUtilityOverlayHost {
     // OneClick-PASS + VisualClosure-FAIL contradiction.
     const gapActive = this.isBlockGapVisualActive()
     const gapRect = gapActive ? this.measureLocateRect(this.blockGapVisualEl) : null
+    // TRAE §22/§25 — ONE semantic active visual owner, N fragment fills.
+    const gapFragmentCount = gapActive ? this.blockGapFragmentEls.length : 0
+    const gapVisualOk = gapRect != null && gapFragmentCount >= 1
     const gapSeverity = gapActive ? this.blockGapActiveSeverity : null
     const coverageRatio = kind === 'inline'
       ? (inlineFacts ? inlineFacts.coverage : null)
@@ -5783,6 +6009,31 @@ export class DocumentUtilityOverlayHost {
         this.countersDocEndNewlineV1.unscopedVisualFalsePass++
       }
     }
+    // ── TRAE §17 — the SAME scope contract for the INTERNAL BLANK GAP: a gap
+    // closure is only a PASS when THIS diagnostic owns exactly ONE live gap
+    // carrier. A passive marker (or a stale non-gap carrier) for some OTHER
+    // diagnostic must never let it pass.
+    const blockGapRuleActive = this.isBlockGapDiagnostic(this.diagnosticById(this.lastLocatedDiagnosticId ?? ''))
+    const blockGapScoped = blockGapRuleActive && !gapActive
+    let blockGapScopeOk = true
+    if (gapActive) {
+      // the gap carrier IS the scoped active visual of this diagnostic
+      const scopedPass = gapVisualOk && gapSeverity === 'warning'
+      this.lastBlockGapClosureScoped = scopedPass
+      if (scopedPass && !isHeadlessTestRuntime()) {
+        this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_SCOPED_VISUAL_CLOSURE_PASS_COUNT++
+      }
+    } else if (blockGapScoped) {
+      // no gap carrier for the clicked gap diagnostic → the closure is UNSCOPED
+      blockGapScopeOk = false
+      this.lastBlockGapClosureScoped = false
+      if (commitGate == null || commitGate.canCommit) {
+        this.countersBlockGapCanonicalClosure.unscopedVisualFalsePassCount++
+      }
+      if (this.blockGapVisualEl != null && !this.blockGapVisualEl.isConnected) {
+        this.countersBlockGapCanonicalClosure.staleVisualCount++
+      }
+    }
     const payload: Record<string, unknown> = {
       transactionId: this.activeLocateTx?.id ?? this.locateCommittedVisual?.transactionId ?? null,
       visualEpoch: this.locateVisualEpoch,
@@ -5796,6 +6047,11 @@ export class DocumentUtilityOverlayHost {
       // TRAE §12 — the closure scope evidence (document-end current-owner count).
       visualClosureScoped: docEndScoped,
       currentDiagnosticActiveVisualCount,
+      // TRAE §17 — the INTERNAL BLANK GAP scope evidence (same contract).
+      blockGapVisualRuleActive: blockGapRuleActive,
+      blockGapVisualClosureScoped: blockGapRuleActive ? blockGapScopeOk : null,
+      blockGapActiveFillCount: this.isBlockGapVisualActive() ? 1 : 0,
+      scrollTargetKind: this.lastScrollTargetKind,
       docEndVisualRule: this.lastDocEndVisualRule,
       visualTargetKind: gapActive ? BLOCK_GAP_VISUAL_TARGET : (structure?.kind ?? null),
       semanticAnchorIdentity: this.locateCommittedVisual?.semanticAnchorIdentity ?? null,
@@ -5807,10 +6063,12 @@ export class DocumentUtilityOverlayHost {
       scrollRect: gapActive ? gapRect : scrollRect,
       // V2 §B — the gap carrier IS one painted fragment (the real gap band).
       visualFragmentCount: gapActive
-        ? (gapRect ? 1 : 0)
+        ? gapFragmentCount
         : (inlineFacts ? inlineFacts.fragments.length : (structure?.inlineFragmentCount ?? 0)),
       visualFragments: gapActive
-        ? (gapRect ? [{ left: gapRect.left, top: gapRect.top, right: gapRect.right, bottom: gapRect.bottom, width: gapRect.width, height: gapRect.height }] : [])
+        ? this.blockGapFragmentEls
+            .map(f => { const r = this.measureLocateRect(f); return r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height } : null })
+            .filter((r): r is { left: number; top: number; right: number; bottom: number; width: number; height: number } => r != null)
         : (inlineFacts ? inlineFacts.fragments : []),
       secondaryContextRects: [],
       drawerRequestedOpen: this.drawerOpen,
@@ -5830,33 +6088,39 @@ export class DocumentUtilityOverlayHost {
       // V2 §B — the gap branch commits its OWN unified carrier state.
       // V6-R2 §6 — the explicit-fragment branch reports the REAL fragment state.
       visualDecision: gapActive
-        ? (gapRect ? 'PASS' : 'FAIL')
+        ? (gapVisualOk ? 'PASS' : 'FAIL')
         : explicitCarrier
           ? (explicitOk ? 'PASS' : 'FAIL')
           : docEndScoped
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'PASS' : 'FAIL')
-            : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
+            : blockGapScoped
+              ? 'FAIL'
+              : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
       commitDecision: gapActive
-        ? (gapRect ? 'COMMIT' : 'NO_COMMIT')
+        ? (gapVisualOk ? 'COMMIT' : 'NO_COMMIT')
         : explicitCarrier
           ? (explicitOk ? 'COMMIT' : 'NO_COMMIT')
           : docEndScoped
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'COMMIT' : 'NO_COMMIT')
-            : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
+            : blockGapScoped
+              ? 'NO_COMMIT'
+              : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
       terminalState: gapActive
-        ? (gapRect ? 'COMMITTED' : 'FAILED')
+        ? (gapVisualOk ? 'COMMITTED' : 'FAILED')
         : explicitCarrier
           ? (explicitOk ? 'COMMITTED' : 'FAILED')
           : docEndScoped
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'COMMITTED' : 'FAILED')
             : (this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE'),
       decision: gapActive
-        ? (gapRect && gapSeverity === 'warning' ? 'PASS' : 'FAIL')
+        ? (gapVisualOk && gapSeverity === 'warning' ? 'PASS' : 'FAIL')
         : explicitCarrier
           ? (explicitOk ? 'PASS' : 'FAIL')
           : docEndScoped
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'PASS' : 'FAIL')
-            : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
+            : blockGapScoped
+              ? 'FAIL'
+              : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
       reason,
       gateCounters: { ...this.countersClosureV512R2 },
       gateDecision: evaluateVisualClosureGates(this.countersClosureV512R2).decision,
@@ -5989,6 +6253,44 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * V5.14-R8 R4 — paint ONE reason pill per diagnostic into the marker's reason
+   * chip CONTAINER, so a heading with several problems keeps EVERY label. It is
+   * idempotent: the item set is signature-guarded, so an unchanged marker never
+   * rewrites its DOM (no duplicate pills, no churn).
+   */
+  private syncHeadingReasonChipItems(
+    container: HTMLElement,
+    items: readonly HeadingReasonItem[],
+  ): void {
+    const signature = items.map(i => `${i.severity}:${i.diagnosticId}:${i.text}`).join('|')
+    if (container.getAttribute('data-ink-reason-item-signature') === signature) return
+    const existing = Array.from(container.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'))
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      let el = existing[i] ?? null
+      if (!el) {
+        el = document.createElement('span')
+        el.className = 'inkchapter-heading-diagnostic-reason__item'
+        el.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
+        container.appendChild(el)
+      }
+      if (el.getAttribute('data-ink-diagnostic-severity') !== item.severity) {
+        el.setAttribute('data-ink-diagnostic-severity', item.severity)
+      }
+      if (el.getAttribute('data-ink-diagnostic-id') !== item.diagnosticId) {
+        el.setAttribute('data-ink-diagnostic-id', item.diagnosticId)
+      }
+      if (el.textContent !== item.text) el.textContent = item.text
+      if (el.getAttribute('title') !== item.text) el.setAttribute('title', item.text)
+      el.setAttribute('aria-hidden', 'true')
+    }
+    for (let i = items.length; i < existing.length; i++) {
+      try { existing[i].remove() } catch { /* noop */ }
+    }
+    container.setAttribute('data-ink-reason-item-signature', signature)
+  }
+
+  /**
    * V5.13-R5 §20 / ROOT_H1_R5_1 — the marker identity for ONE resolved heading
    * target. It MUST come from the TARGET's OWN identity, never from the
    * diagnostic's `stableIdentity`: a multi-target diagnostic carries ONE
@@ -6104,13 +6406,18 @@ export class DocumentUtilityOverlayHost {
         const reason = shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown>, code: d.code })
           ? buildHeadingLocateReason({ code: d.code, message: d.message, metadata: (d.metadata ?? {}) as Record<string, unknown> })
           : null
+        const severityKind = mergeHeadingMarkerSeverity([String(d.severity ?? 'info')]) ?? 'info'
         if (g) {
           g.severities.push(String(d.severity ?? 'info'))
           // V5.14-R6.1 §18 — one heading may carry SEVERAL diagnostics, each with
           // its own coverage policy.
           if (!g.diagnosticIds.includes(d.id)) g.diagnosticIds.push(d.id)
-          // V5.12-R9 §6 — the PASSIVE marker carries a compact reason chip too;
-          // the HIGHEST-severity diagnostic owns it.
+          // V5.14-R8 R4 — EVERY renderable diagnostic keeps its OWN label so a
+          // heading with several problems never loses a label to the merge.
+          if (reason && !g.reasonItems.some(it => it.diagnosticId === d.id)) {
+            g.reasonItems.push({ diagnosticId: d.id, severity: severityKind, text: reason, rank })
+          }
+          // V5.12-R9 §6 — the HIGHEST-severity diagnostic owns the PRIMARY label.
           if (reason && (g.reasonText == null || rank > g.topRank)) {
             g.reasonText = reason
             g.topRank = rank
@@ -6123,6 +6430,9 @@ export class DocumentUtilityOverlayHost {
             severities: [String(d.severity ?? 'info')],
             resolverSource: t.targetKindLabel,
             reasonText: reason,
+            reasonItems: reason
+              ? [{ diagnosticId: d.id, severity: severityKind, text: reason, rank }]
+              : [],
             topRank: rank,
             primaryDiagnosticId: d.id,
             primaryTargetIndex: targetIndex,
@@ -6130,6 +6440,10 @@ export class DocumentUtilityOverlayHost {
           })
         }
       }
+    }
+    // V5.14-R8 R4 — a deterministic, order-stable label sequence (severity desc).
+    for (const g of groups.values()) {
+      g.reasonItems.sort((a, b) => (b.rank - a.rank) || a.diagnosticId.localeCompare(b.diagnosticId))
     }
     return { groups, headingWithoutVisualTarget, expectedTargets, groupTargetKeys, outlineDiagnosticTargets }
   }
@@ -6551,10 +6865,12 @@ export class DocumentUtilityOverlayHost {
         chipLocal = null
       }
       this.lastHeadingVisualSnapshots.set(identity, headingVisualSnapshot)
-      if (g.reasonText) {
-        // ── V5.14-R5 §9/§10 — the placement budget is the SHORT hint's intrinsic
-        // width; `max-width` is only the fallback clamp.
-        const chipWidth = computeInlineChipWidthPx(g.reasonText)
+      if (g.reasonItems.length > 0) {
+        // ── V5.14-R5 §9/§10 + V5.14-R8 R4 — the placement budget is the summed
+        // intrinsic width of EVERY label (they wrap inside the container);
+        // `max-width` is the safe-rect clamp.
+        const chipWidth = g.reasonItems.reduce((sum, it) => sum + computeInlineChipWidthPx(it.text), 0)
+          + HEADING_REASON_ITEM_GAP_PX * Math.max(0, g.reasonItems.length - 1)
         const chipHeight = HEADING_REASON_CHIP_HEIGHT_PX
         const drawerRect = this.drawerOpen && this.drawerEl && this.drawerEl.isConnected ? this.measureLocateRect(this.drawerEl) : null
         const hostLocalLeft = hostRectForChip ? hostRectForChip.left : 0
@@ -6583,19 +6899,29 @@ export class DocumentUtilityOverlayHost {
             chip.setAttribute('aria-hidden', 'true')
             wrapper.appendChild(chip)
           }
-          if (chip.textContent !== g.reasonText) chip.textContent = g.reasonText
-          chip.setAttribute('title', g.reasonText)
-          // §4.1 — 唯一纵向规则：与最后一行文本**垂直居中**。Heading Reason Chip
-          // Stable Anchor V2 删除了 `BELOW_LAST_LINE`（`placement.rect.top`）分支，
-          // 因此 initial / passive rebuild / active / restore 五条路径共用同一 top。
-          const chipTop = chipAnchorCenterY - chipHeight / 2
-          chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(chipTop)}px;max-width:${INLINE_CHIP_MAX_WIDTH_PX_V514R5}px;`
-          // ── V5.14-R5 §10/§11/§22 — the chip rect is the RENDERED width of the
-          // CURRENT (short) text, never a character-count estimate and never a
-          // leftover from the previous long label. `right` is recomputed here.
-          const renderedChipWidth = this.measureLocateRect(chip)?.width ?? chipWidth
+          // V5.14-R8 R4 — ONE pill per diagnostic; EVERY label of this heading is
+          // kept (never merged into a single highest-severity label).
+          this.syncHeadingReasonChipItems(chip, g.reasonItems)
+          // The primary (highest-severity) label drives the tooltip + audits.
+          const primaryReasonText = g.reasonText ?? g.reasonItems[0].text
+          chip.setAttribute('title', primaryReasonText)
+          // §4.1 — 唯一纵向规则：INLINE 时与最后一行文本**垂直居中**（用**实测**高度，
+          // 保证换行后的多行 chip 依然居中）；BELOW_LAST_LINE（独立视觉行）用 placement
+          // 给出的 line.bottom + gap。
+          const chipMaxWidth = Math.max(1, Math.round(placement.maxWidthPx))
+          chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:0;max-width:${chipMaxWidth}px;`
+          // ── V5.14-R5 §10/§11/§22 + V5.14-R8 §4.4 — the chip rect is the RENDERED
+          // width/height of the CURRENT (short) text, never an estimate and never a
+          // leftover from the previous long label.
+          const measuredChip = this.measureLocateRect(chip)
+          const renderedChipWidth = measuredChip && measuredChip.width > 0 ? measuredChip.width : chipMaxWidth
+          const renderedChipHeight = measuredChip && measuredChip.height > 0 ? measuredChip.height : chipHeight
+          const chipTop = chipPlacementKind === 'BELOW_LAST_LINE'
+            ? placement.rect.top
+            : chipAnchorCenterY - renderedChipHeight / 2
+          chip.style.top = `${Math.round(chipTop)}px`
           const chipGeometry = evaluateInlineChipGeometry({
-            hint: g.reasonText,
+            hint: primaryReasonText,
             renderedWidthPx: renderedChipWidth,
             previousRenderedWidthPx: chipPreviousRecord?.chipRenderedWidthPx ?? null,
           })
@@ -6611,20 +6937,26 @@ export class DocumentUtilityOverlayHost {
             left: placement.rect.left,
             top: chipTop,
             right: placement.rect.left + chipGeometry.renderedWidthPx,
-            bottom: chipTop + chipHeight,
+            bottom: chipTop + renderedChipHeight,
           })
           chipRenderedWidthPx = chipGeometry.renderedWidthPx
           chipIntrinsicWidthPx = chipGeometry.intrinsicWidthPx
           chipClamped = chipGeometry.clamped
-          if (!inlineHintIsSafe(g.reasonText)) {
-            if (inlineHintHasSeverityPrefix(g.reasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityPrefix++
-            if (inlineHintHasSeverityEmoji(g.reasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityEmoji++
+          if (!inlineHintIsSafe(primaryReasonText)) {
+            if (inlineHintHasSeverityPrefix(primaryReasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityPrefix++
+            if (inlineHintHasSeverityEmoji(primaryReasonText)) this.countersInlinePresentationV514R5.inlineReasonContainsSeverityEmoji++
           }
           const rightMost = chipAnchorRects.reduce((acc, r) => Math.max(acc, r.right), chipAnchor.left)
-          // Heading Reason Chip Stable Anchor V2 §4.1/§4.2 —— gap 恒为**水平** gap
-          // （`left − 最后一行文字右缘`）；不再有 BELOW_LAST_LINE 的纵向 gap 语义。
-          chipGapPx = placement.rect.left - rightMost
-          chipCenterDriftPx = evaluateHeadingChipCenterDrift(chipAnchorCenterY, chipLocal.top + chipLocal.height / 2)
+          // Heading Reason Chip Stable Anchor V2 §4.1/§4.2 —— INLINE_RIGHT 时 gap 恒为
+          // **水平** gap（`left − 最后一行文字右缘`）；V5.14-R8 §4.4 —— BELOW_LAST_LINE
+          // （独立视觉行）没有“同行 gap”语义，故只在 INLINE 时统计 gap/居中漂移。
+          if (chipPlacementKind === 'RIGHT_OF_LAST_LINE') {
+            chipGapPx = placement.rect.left - rightMost
+            chipCenterDriftPx = evaluateHeadingChipCenterDrift(chipAnchorCenterY, chipLocal.top + chipLocal.height / 2)
+          } else {
+            chipGapPx = null
+            chipCenterDriftPx = null
+          }
           // ── Presentation Stability Closure V1 §25 — reason-chip rect TRACE
           // (runtime forensics). Records EVERY committed chip rect with its
           // geometry epoch + a monotonic sequence, so a single Enter yields the
@@ -6889,7 +7221,9 @@ export class DocumentUtilityOverlayHost {
       const labelAuthorityEval = headingLabelGeometry
         ? evaluateHeadingChipAnchorAuthority({
             snapshot: headingLabelGeometry,
-            actualChipLeft: chipLocal ? chipLocal.left : null,
+            // V5.14-R8 §4.4 — BELOW_LAST_LINE（独立视觉行）不参与同行 anchor 校验，
+            // 传 null 让权威函数走“无 chip 参与”分支（绝不被误判为 anchor mismatch）。
+            actualChipLeft: chipPlacementKind === 'RIGHT_OF_LAST_LINE' && chipLocal ? chipLocal.left : null,
             actualChipGapPx: chipGapPx,
             paintLayoutEpoch: epoch,
           })
@@ -7957,6 +8291,9 @@ export class DocumentUtilityOverlayHost {
       fillFragmentCount: fills.length,
       activeFragmentCount: activeFragments,
       chipCount: count('.inkchapter-heading-diagnostic-reason'),
+      // V5.14-R8 R4 — the number of LABELS (pills) actually painted; a heading
+      // with N diagnostics contributes N, so a merge regression is observable.
+      reasonItemCount: count('.inkchapter-heading-diagnostic-reason__item'),
       leftIconPresent: this.countersHeadingSurfaceV512R9.leftIcon > 0,
       verticalRailPresent: this.countersHeadingSurfaceV512R9.verticalRail > 0,
       horizontalRailPresent: this.countersHeadingSurfaceV512R9.horizontalRail > 0,
@@ -9488,18 +9825,12 @@ export class DocumentUtilityOverlayHost {
     // stale by 40.8px).
     const passiveGeometrySnapshot = this.lastVisualGeometrySnapshots.get(headingIdentity) ?? null
     const adoptedPassiveChip = passiveRecord?.wrapper.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason') ?? null
-    if (adoptedPassiveChip && !reasonText) {
-      // V1 §7/§13 — a document-level diagnostic carries NO body chip. If a stale
-      // passive chip survived (it must not, but the policy is enforced here too),
-      // drop it without touching the active FILL (fill and chip are decoupled).
-      try { adoptedPassiveChip.remove() } catch { /* noop */ }
-    } else if (adoptedPassiveChip) {
-      // R1 §10 — while ACTIVE the chip shows the CURRENTLY clicked diagnostic's
-      // reason (the passive pass restores the group reason on dismissal).
-      if (reasonText && adoptedPassiveChip.textContent !== reasonText) {
-        adoptedPassiveChip.textContent = reasonText
-        adoptedPassiveChip.setAttribute('title', reasonText)
-      }
+    if (adoptedPassiveChip) {
+      // V5.14-R8 R4 — the passive container already paints EVERY label of this
+      // heading (one pill per diagnostic). The active pass ADOPTS it AS-IS: it must
+      // never be rewritten down to the clicked diagnostic's single label, and it
+      // must never be removed just because the CLICKED rule is document-scoped
+      // (the heading's other labels are still valid).
       const chipFromCurrentGeneration = passiveGeometrySnapshot?.reasonChipRect ?? null
       reasonChipRect = chipFromCurrentGeneration
         ? makeHeadingRect({
@@ -9538,17 +9869,30 @@ export class DocumentUtilityOverlayHost {
       if (placement) {
         const chip = document.createElement('div')
         chip.className = 'inkchapter-heading-diagnostic-reason'
+        chip.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
+        chip.setAttribute('aria-hidden', 'true')
         chip.setAttribute('title', reasonText)
-        chip.textContent = reasonText
-        chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:${Math.round(placement.rect.top)}px;max-width:${INLINE_CHIP_MAX_WIDTH_PX_V514R5}px;`
+        this.syncHeadingReasonChipItems(chip, [
+          { diagnosticId: diag.id, severity, text: reasonText, rank: severityRank(String(diag.severity ?? 'info')) },
+        ])
+        // V5.14-R8 §4.4 — max-width 由 placement 的有界宽度给出（永不越过安全右界），
+        // 文案换行不 ellipsis；top 用**实测**高度重新居中（避免换行后偏移）。
+        const chipMaxWidth = Math.max(1, Math.round(placement.maxWidthPx))
+        chip.style.cssText = `position:absolute;left:${Math.round(placement.rect.left)}px;top:0;max-width:${chipMaxWidth}px;`
         wrapper.appendChild(chip)
-        // V5.14-R5 §10/§11 — the rect uses the RENDERED width of the short hint.
-        const renderedChipWidth = this.measureLocateRect(chip)?.width ?? chipWidth
+        // V5.14-R5 §10/§11 — the rect uses the RENDERED width/height of the short hint.
+        const measuredChip = this.measureLocateRect(chip)
+        const renderedChipWidth = measuredChip && measuredChip.width > 0 ? measuredChip.width : chipMaxWidth
+        const renderedChipHeight = measuredChip && measuredChip.height > 0 ? measuredChip.height : chipHeight
+        const chipTop = placement.placement === 'BELOW_LAST_LINE'
+          ? placement.rect.top
+          : (placement.rect.top + chipHeight / 2) - renderedChipHeight / 2
+        chip.style.top = `${Math.round(chipTop)}px`
         reasonChipRect = makeHeadingRect({
           left: placement.rect.left,
-          top: placement.rect.top,
+          top: chipTop,
           right: placement.rect.left + renderedChipWidth,
-          bottom: placement.rect.top + chipHeight,
+          bottom: chipTop + renderedChipHeight,
         })
         // §12 — the chip must not reflow the heading (it lives in the overlay).
         const afterWidth = this.measureLocateRect(element)?.width ?? anchorVp.width
@@ -10761,6 +11105,19 @@ export class DocumentUtilityOverlayHost {
     if (!this.locateScrollLeaseActive()) {
       if (this.locateCommittedVisual) {
         this.auditPostCommitScrollInert()
+        // ── SCROLL-COORDINATE FIX (category C: pure translation) ─────────────
+        // A visual presented by a DOCUMENT-space carrier (table / code / inline /
+        // blank-gap / EOF …) lives inside the scroll content and follows the scroll
+        // natively → INERT is correct (V5.11/V5.12 contract, unchanged).
+        //
+        // A visual presented by the VIEWPORT-fixed frame (`this.root` is
+        // `position:fixed`) does NOT move with the content → it MUST re-sync, which
+        // is exactly the "warnings drift after scrolling" defect. We re-sync ONLY the
+        // paint transform: no re-resolve, no rule re-run, no scrollTop write, and no
+        // re-entry into the locate transaction lifecycle.
+        if (!this.committedVisualIsDocumentSpacePresented()) {
+          this.scheduleCommittedFrameScrollResync()
+        }
         return
       }
       if (this.activeLocateTx) {
@@ -10791,6 +11148,49 @@ export class DocumentUtilityOverlayHost {
       if (expectedEpoch === this.locateVisualEpoch && this.locateVisualIsActive() && this.locateScrollLeaseActive()) {
         this.repositionDiagnosticLocateFrame()
       }
+    }
+  }
+
+  /**
+   * SCROLL-COORDINATE FIX — is the committed visual presented by a DOCUMENT-space
+   * carrier? Those live inside the scroll content (`position:absolute` in the
+   * document layer) and therefore scroll natively, so they must stay scroll-INERT
+   * (re-measuring them would be the meaningless work the spec forbids). Everything
+   * else is presented by the VIEWPORT-fixed frame and needs a scroll re-sync.
+   */
+  private committedVisualIsDocumentSpacePresented(): boolean {
+    return this.locateDocCarrier != null
+      || this.locateDocEndCarrier != null
+      || this.locateFrame?.getStructure().kind === 'inline'
+  }
+
+  /**
+   * SCROLL-COORDINATE FIX — re-sync the COMMITTED (post-lease) viewport-fixed locate
+   * frame to the scrolled position.
+   *
+   * Category C (pure translation): it only updates the paint transform
+   * (`frame.reposition({scroll:true})` = one live rect read + a transform write). It
+   * NEVER re-resolves the target, never re-runs a diagnostic rule, never writes
+   * `scrollTop` and never re-enters the transaction lifecycle. Coalesced to ONE rAF
+   * and generation-guarded (`locateVisualEpoch`), so an older scroll frame can never
+   * overwrite a newer position. No polling, no new observer.
+   */
+  private scheduleCommittedFrameScrollResync(): void {
+    if (this.committedFrameScrollRafHandle !== null) return
+    const expectedEpoch = this.locateVisualEpoch
+    const run = (): void => {
+      this.committedFrameScrollRafHandle = null
+      // V5.6 — the visual was dismissed/replaced → this queued resync is a stale no-op.
+      if (expectedEpoch !== this.locateVisualEpoch) return
+      if (!this.locateCommittedVisual) return
+      if (this.locateScrollLeaseActive()) return // a live tx owns the frame now
+      this.repositionDiagnosticLocateFrame(true)
+      if (!isHeadlessTestRuntime()) this.emitScrollStabilityAudit()
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      this.committedFrameScrollRafHandle = requestAnimationFrame(run)
+    } else {
+      run() // jsdom / environments without rAF
     }
   }
 
@@ -10981,6 +11381,9 @@ export class DocumentUtilityOverlayHost {
   private clearDiagnosticLocateVisual(reason: string): void {
     // TRAE V6-R2 §6 — clearing the active visual clears the explicit-carrier kind too.
     this.lastExplicitCarrierKind = null
+    // LAYOUT-INVALIDATION — a cleared visual must NEVER be re-measured by a later
+    // layout change (otherwise a retired marker could reappear stale).
+    this.lastLocateVisualInputs = null
     // V5.14-R8 §8 — a normal SWITCH/ACTIVATE must NEVER run a global unscoped
     // clear. The legacy `DIAGNOSTIC_SWITCH` reason (no `_SCOPED_` marker) is the
     // exact global-clear signature; observe it so the V2 gate can prove it is gone.
@@ -11255,13 +11658,25 @@ export class DocumentUtilityOverlayHost {
     this.ensureLocateDocumentLayer()
     const prevAnchorText = typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : ''
     const nextAnchorText = typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : ''
-    // §7/§8 — SYMMETRIC Source→DOM binding for BOTH sides through ONE ladder.
-    // Raw `resolveSourceLine` (Typora data-line) is only a CANDIDATE, never the
-    // sole binding authority (BLOCK_GAP_RAW_DATA_LINE_ONLY_BINDING_COUNT=0).
-    const prevBinding = this.bindGapBlock(prevLine, prevAnchorText)
+    // TRAE §7/§8 — the CANONICAL boundary authority travels on the record.
+    const prevCanonicalKind = typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null
+    const prevCanonicalOrdinal = typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null
+    const nextCanonicalKind = typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null
+    const nextCanonicalOrdinal = typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null
+    const prevKind = typeof meta.previousBlockKind === 'string' ? meta.previousBlockKind : null
+    const nextKind = typeof meta.nextBlockKind === 'string' ? meta.nextBlockKind : null
+    this.lastBlockGapDiagnosticId = diagId
+    const layoutEpochAtCommit = this.currentDocumentLayoutEpoch
+    // §7/§8 — SYMMETRIC canonical-first binding for BOTH sides through ONE ladder.
+    // A Markdown fence text (`"```"`) is NEVER a code-block binding authority.
+    const prevBinding = this.bindGapBoundary({
+      canonicalKind: prevCanonicalKind, canonicalOrdinal: prevCanonicalOrdinal,
+      startLine: prevLine, anchorText: prevAnchorText,
+    })
     // V2 §A — the NEXT side prefers the CANONICAL element the locate/figure/
     // resource resolver already bound; the ladder (incl. IMAGE_ONLY_ORDINAL) is a
-    // last fallback only.
+    // last fallback only. §16 — the preferred element is an IDENTITY HINT ONLY,
+    // physically verified inside `canonicalGapBlockBinding` (never a raw authority).
     const canonicalNext = this.canonicalGapBlockBinding(preferredNextElement, nextAnchorText)
     const nextBinding = canonicalNext
       ? {
@@ -11270,14 +11685,67 @@ export class DocumentUtilityOverlayHost {
         strategy: canonicalNext.strategy,
         semanticTextMatch: canonicalNext.semanticTextMatch,
       }
-      : this.bindGapBlock(nextLine, nextAnchorText)
-    const prevEl = prevBinding.element
-    const nextEl = nextBinding.element
+      : this.bindGapBoundary({
+        canonicalKind: nextCanonicalKind, canonicalOrdinal: nextCanonicalOrdinal,
+        startLine: nextLine, anchorText: nextAnchorText,
+      })
+    let prevEl = prevBinding.element
+    let nextEl = nextBinding.element
+    // TRAE §8 — a canonical object boundary must never be bound to a NON-object
+    // element (a fence text fallback could otherwise bind a caption/paragraph).
+    const prevBoundaryKind = prevCanonicalKind === 'code' || prevCanonicalKind === 'table' || prevCanonicalKind === 'formula' ? prevCanonicalKind : null
+    const nextBoundaryKind = nextCanonicalKind === 'code' || nextCanonicalKind === 'table' || nextCanonicalKind === 'formula' ? nextCanonicalKind : null
+    if (prevEl != null && prevBoundaryKind != null && !this.gapBoundaryElementMatchesKind(prevEl, prevBoundaryKind)) prevEl = null
+    if (nextEl != null && nextBoundaryKind != null && !this.gapBoundaryElementMatchesKind(nextEl, nextBoundaryKind)) nextEl = null
+    // TRAE §9/§24.5 — the two boundaries must be REAL SIBLINGS IN ORDER: a
+    // previous element that does not precede the next one is not a gap, and the
+    // gap is FAIL-CLOSED rather than degraded into an adjacent-block highlight.
+    // §12 — the order failure is NOT an identity failure: both sides keep their
+    // resolved identity; the ORDER flag alone refuses the paint below.
+    let gapBoundaryOrderOk = true
+    if (prevEl != null && nextEl != null && prevEl !== nextEl) {
+      const order = prevEl.compareDocumentPosition(nextEl)
+      gapBoundaryOrderOk = (order & DOM_POSITION_FOLLOWING) !== 0
+    }
+    // §12/§13 — split each side into identityDecision / physicalDecision / decision.
+    const prevResolution = this.toBoundaryResolution({
+      binding: prevBinding, canonicalKind: prevCanonicalKind, canonicalOrdinal: prevCanonicalOrdinal,
+      element: prevEl, expectedLayoutEpoch: layoutEpochAtCommit,
+    })
+    const nextResolution = this.toBoundaryResolution({
+      binding: nextBinding, canonicalKind: nextCanonicalKind, canonicalOrdinal: nextCanonicalOrdinal,
+      element: nextEl, expectedLayoutEpoch: layoutEpochAtCommit,
+    })
+    // §13/§40 — a fake-BOUND is a HARD gate: the ladder must never CLAIM a bind
+    // without a physically verifiable element (null / disconnected / zero-rect /
+    // stale-layout / wrong-kind). The FINAL decision can never be BOUND then.
+    for (const [binding, resolution] of [[prevBinding, prevResolution], [nextBinding, nextResolution]] as const) {
+      if (binding.decision === 'BOUND' && binding.element == null) this.countersRenderedBlankRow.boundWithNullElement++
+      if (resolution.decision === 'BOUND' && resolution.physicalDecision !== 'VERIFIED') this.countersRenderedBlankRow.boundWithoutPhysicalVerification++
+      if (resolution.decision === 'BOUND' && !resolution.connected) this.countersRenderedBlankRow.boundWithDisconnectedElement++
+      if (resolution.decision === 'BOUND' && resolution.physicalDecision === 'STALE_LAYOUT') this.countersRenderedBlankRow.boundWithStaleLayout++
+      if (resolution.decision === 'BOUND' && resolution.physicalDecision === 'ZERO_RECT') this.countersRenderedBlankRow.boundWithZeroRect++
+    }
     const nextDomIdentity = nextEl ? this.domBlockIdentityOf(nextEl) : null
+    const gapFailClosed = blockGapFailClosedReason(prevResolution.decision === 'BOUND', nextResolution.decision === 'BOUND')
     if (!headless) {
-      if (prevBinding.decision === 'MISSING') this.countersBlockGapVisualV1.previousBindingMissing++
-      if (nextBinding.decision === 'MISSING') this.countersBlockGapVisualV1.nextBindingMissing++
-      if (prevBinding.decision === 'AMBIGUOUS' || nextBinding.decision === 'AMBIGUOUS') {
+      // TRAE §22 — a fence-text code binding must never happen again.
+      if (prevKind === 'code' && prevBinding.strategy.includes('ANCHOR_TEXT')) {
+        this.countersBlockGapCanonicalClosure.anchorTextCodeFenceBindCount++
+      }
+      if (nextKind === 'code' && nextBinding.strategy.includes('ANCHOR_TEXT')) {
+        this.countersBlockGapCanonicalClosure.anchorTextCodeFenceBindCount++
+      }
+      if (prevEl == null) this.countersBlockGapCanonicalClosure.previousBoundaryMissingCount++
+      if (nextEl == null) this.countersBlockGapCanonicalClosure.nextBoundaryMissingCount++
+      if (prevEl != null) this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_PREVIOUS_BOUNDARY_RESOLVED_COUNT++
+      if (nextEl != null) this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_NEXT_BOUNDARY_RESOLVED_COUNT++
+      if (prevBinding.strategy === 'CANONICAL_CODE_TARGET' || prevBinding.strategy === 'SOURCE_LINE_CANONICAL_CODE_TARGET') {
+        this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_PREVIOUS_CODE_CANONICAL_BIND_COUNT++
+      }
+      if (prevResolution.decision === 'MISSING') this.countersBlockGapVisualV1.previousBindingMissing++
+      if (nextResolution.decision === 'MISSING') this.countersBlockGapVisualV1.nextBindingMissing++
+      if (prevResolution.decision === 'AMBIGUOUS' || nextResolution.decision === 'AMBIGUOUS') {
         this.countersBlockGapVisualV1.ambiguousTextFallbackAccepted++
       }
       // V2 §A — the ordinal fallback must NOT win while a canonical binding exists.
@@ -11291,6 +11759,9 @@ export class DocumentUtilityOverlayHost {
       if (nextBinding.decision === 'BOUND' && nextDomIdentity == null) {
         this.countersBlockGapVisualV1.falseBound++
       }
+      // §40 — positive physical-verification coverage.
+      if (prevResolution.physicalDecision === 'VERIFIED') this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_PREVIOUS_PHYSICAL_VERIFIED_COUNT++
+      if (nextResolution.physicalDecision === 'VERIFIED') this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_NEXT_PHYSICAL_VERIFIED_COUNT++
     }
     emitRuntimeAudit(BLOCK_GAP_CANONICAL_BINDING_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
@@ -11299,8 +11770,8 @@ export class DocumentUtilityOverlayHost {
       nextDomIdentity,
       nextBindingStrategy: nextBinding.strategy,
       canonicalLocateElementProvided: preferredNextElement != null,
-      physicalVerified: nextEl != null && nextEl.isConnected,
-      decision: nextBinding.decision === 'BOUND' && nextDomIdentity != null ? 'PASS' : 'PARTIAL',
+      physicalVerified: nextResolution.physicalDecision === 'VERIFIED',
+      decision: nextResolution.decision === 'BOUND' && nextDomIdentity != null ? 'PASS' : 'PARTIAL',
       reason: nextDomIdentity != null
         ? `CANONICAL_NEXT_BOUND:${nextBinding.strategy}`
         : `CANONICAL_NEXT_UNVERIFIED:${nextBinding.strategy}`,
@@ -11312,7 +11783,9 @@ export class DocumentUtilityOverlayHost {
       previousBlockIdentity: prevIdentity,
       previousBlockStartLine: prevLine,
       previousBlockAnchorText: prevAnchorText,
-      previousBindingDecision: prevBinding.decision,
+      previousBindingDecision: prevResolution.decision,
+      previousIdentityDecision: prevResolution.identityDecision,
+      previousPhysicalDecision: prevResolution.physicalDecision,
       previousBindingStrategy: prevBinding.strategy,
       previousSemanticTextMatch: prevBinding.semanticTextMatch,
       previousResolvedTag: prevEl ? prevEl.tagName.toLowerCase() : null,
@@ -11320,15 +11793,17 @@ export class DocumentUtilityOverlayHost {
       nextBlockIdentity: nextIdentity,
       nextBlockStartLine: nextLine,
       nextBlockAnchorText: nextAnchorText,
-      nextBindingDecision: nextBinding.decision,
+      nextBindingDecision: nextResolution.decision,
+      nextIdentityDecision: nextResolution.identityDecision,
+      nextPhysicalDecision: nextResolution.physicalDecision,
       nextBindingStrategy: nextBinding.strategy,
       nextSemanticTextMatch: nextBinding.semanticTextMatch,
       nextResolvedTag: nextEl ? nextEl.tagName.toLowerCase() : null,
       nextResolvedClass: nextEl ? String(nextEl.className).slice(0, 48) : null,
-      decision: prevBinding.decision === 'BOUND' && nextBinding.decision === 'BOUND' ? 'PASS' : 'MISSING',
-      reason: prevBinding.decision === 'BOUND' && nextBinding.decision === 'BOUND'
+      decision: prevResolution.decision === 'BOUND' && nextResolution.decision === 'BOUND' ? 'PASS' : 'MISSING',
+      reason: prevResolution.decision === 'BOUND' && nextResolution.decision === 'BOUND'
         ? 'BLOCK_GAP_BOTH_SIDES_BOUND'
-        : `BLOCK_GAP_BINDING_INCOMPLETE:prev=${prevBinding.decision}:next=${nextBinding.decision}`,
+        : `BLOCK_GAP_BINDING_INCOMPLETE:prev=${prevResolution.decision}:next=${nextResolution.decision}`,
     })
     const hostRect = this.measureLocateRect(this.locateDocLayerHost)
     const prevVp = prevEl ? this.measureLocateRect(prevEl) : null
@@ -11371,6 +11846,22 @@ export class DocumentUtilityOverlayHost {
         reason: spec.ext?.reason ?? 'NO_EXTENT',
       })
     }
+    // TRAE §11 — the horizontal authority is the DOCUMENT text/content column,
+    // never the window / drawer / editor-shell width. All inputs are converted to
+    // the SAME document-local space the vertical extents live in.
+    const contentColumnVp = this.measureSemanticContentColumnRect()
+    const textColumnVp = this.measureDocumentTextColumnLeft(contentColumnVp)
+    const toLocalX = (x: number | null | undefined): number | null =>
+      x == null || !Number.isFinite(x) || !hostRect ? null : x - hostRect.left
+    const horizontal = resolveBlockGapHorizontalExtent({
+      textColumnLeft: toLocalX(textColumnVp.left),
+      contentLeft: toLocalX(contentColumnVp ? contentColumnVp.left : null),
+      contentRight: toLocalX(contentColumnVp ? contentColumnVp.right : null),
+      previousLeft: prevLocal ? prevLocal.left : null,
+      previousRight: prevLocal ? prevLocal.right : null,
+      nextLeft: nextLocal ? nextLocal.left : null,
+      nextRight: nextLocal ? nextLocal.right : null,
+    })
     const geometry = computeBlockGapVisualGeometry({
       previousBlockRect: prevLocal
         ? { left: prevLocal.left, top: prevLocal.top, right: prevLocal.right, bottom: prevLocal.bottom, width: prevLocal.width, height: prevLocal.height }
@@ -11378,8 +11869,136 @@ export class DocumentUtilityOverlayHost {
       nextBlockRect: nextLocal
         ? { left: nextLocal.left, top: nextLocal.top, right: nextLocal.right, bottom: nextLocal.bottom, width: nextLocal.width, height: nextLocal.height }
         : null,
-      contentColumns: null,
+      contentColumns: horizontal ? { left: horizontal.left, right: horizontal.right } : null,
     })
+    // ── TRAE §3/§4/§6/§8 — RENDERED BLANK ROW AUTHORITY ───────────────────────
+    // Count the blank rows the user ACTUALLY sees in the live WYSIWYG DOM between
+    // the two PHYSICALLY verified boundaries. NEVER a mathematical conversion of
+    // the source count; NEVER the source count displayed as the rendered count.
+    const renderedBlankRows = resolveRenderedBlankRows({
+      businessRoot: resolveBusinessContentRoot(),
+      previousElement: prevResolution.decision === 'BOUND' ? prevEl : null,
+      nextElement: nextResolution.decision === 'BOUND' ? nextEl : null,
+      sourceBlankLineCount: actualBlankLines ?? 0,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
+    })
+    this.lastRenderedBlankRowResult = renderedBlankRows
+    if (!headless) this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_SOURCE_CANDIDATE_RUNTIME_COUNT++
+    // §6 — the DOM probe (forensic; never a decision authority).
+    if (renderedBlankRows.probe != null) {
+      emitRuntimeAudit(RENDERED_BLANK_ROW_DOM_PROBE_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        sourceRevision: this.snapshot?.sourceRevision ?? null,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        previousCanonicalIdentity: prevResolution.canonicalIdentity,
+        nextCanonicalIdentity: nextResolution.canonicalIdentity,
+        ...renderedBlankRows.probe,
+      })
+    }
+    const renderedRowCount = renderedBlankRows.renderedBlankRowCount
+    // ── TRAE §3–§7 — PAINT LAYER CALIBRATION (the REAL coordinate authority) ──
+    // Insert three invisible plugin-owned probes into the SAME layer the fragments
+    // are painted into, measure them, remove them, then derive the origin + basis +
+    // scale. `contentHostRect` is NO LONGER assumed to be the paint-layer origin:
+    // it only backs the headless (jsdom, no layout) fallback below.
+    const paintLayerEl = this.ensureLocateDocumentLayer()
+    const calibration = calibratePaintLayerFromLayer(paintLayerEl, this.currentDocumentLayoutEpoch)
+    this.lastPaintLayerCalibration = calibration
+    const useCalibrated = !headless && calibration.decision === 'VERIFIED'
+    // ── TRAE coordinate closure §5/§7 — kept as the DEGRADED diagnostic path: a
+    // RenderedBlankRow DOMRect is VIEWPORT space converted into DOCUMENT_LOCAL.
+    const rowConversion = convertRenderedRowsToLocal({
+      rows: renderedBlankRows.rows.map(r => ({ rect: r.rect })),
+      inputCoordinateSpace: 'VIEWPORT',
+      contentHostRect: hostRect,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+    })
+    // §7 — PRIMARY geometry: VIEWPORT → PAINT_LAYER_LOCAL through the MEASURED
+    // calibration. Headless (jsdom) cannot layout probes → the legacy path backs it.
+    const calibratedRowRects: Array<RectLike | null> | null = useCalibrated
+      ? renderedBlankRows.rows.map(r => (r.rect ? viewportRectToPaintLayerLocalV1(r.rect, calibration) : null))
+      : null
+    const localRowRects: RectLike[] = calibratedRowRects
+      ? calibratedRowRects.filter((r): r is RectLike => r != null)
+      : rowConversion.localRects
+    // §11 — the horizontal authority must live in the SAME space as the row rects.
+    const calibratedPrevRect = useCalibrated && prevVp ? viewportRectToPaintLayerLocalV1(prevVp, calibration) : null
+    const calibratedNextRect = useCalibrated && nextVp ? viewportRectToPaintLayerLocalV1(nextVp, calibration) : null
+    const toPaintLocalX = (x: number | null | undefined): number | null =>
+      x == null || !Number.isFinite(x) ? null : (x - calibration.originViewportX) / calibration.scaleX
+    const fragmentHorizontal = useCalibrated
+      ? resolveBlockGapHorizontalExtent({
+          textColumnLeft: toPaintLocalX(textColumnVp.left),
+          contentLeft: toPaintLocalX(contentColumnVp ? contentColumnVp.left : null),
+          contentRight: toPaintLocalX(contentColumnVp ? contentColumnVp.right : null),
+          previousLeft: calibratedPrevRect ? calibratedPrevRect.left : null,
+          previousRight: calibratedPrevRect ? calibratedPrevRect.right : null,
+          nextLeft: calibratedNextRect ? calibratedNextRect.left : null,
+          nextRight: calibratedNextRect ? calibratedNextRect.right : null,
+        })
+      : horizontal
+    // §20/§23 — N FILL_ONLY fragments built from the CONVERTED rects (exactly one
+    // conversion each), never one big [prev.bottom, next.top].
+    const fragmentGeometry = computeRenderedBlankRowFragments({
+      rowRects: localRowRects,
+      contentColumns: fragmentHorizontal ? { left: fragmentHorizontal.left, right: fragmentHorizontal.right } : null,
+    })
+    const fragmentCount = fragmentGeometry.fragments.length
+    const renderedRowUnion = renderedBlankRowUnion(localRowRects.map(rect => ({ rect })))
+    // §26 — register the RENDERED count the Drawer projection consults (keyed by
+    // the gap's stable identity). NEVER the source count; absent → PENDING copy.
+    const gapTargetIdentity = `blank-gap:${prevIdentity}>>${nextIdentity}`
+    if (renderedBlankRows.decision === 'VERIFIED' && renderedRowCount > 0) {
+      this.renderedBlankRowAuthority.set(gapTargetIdentity, {
+        renderedBlankRowCount: renderedRowCount,
+        displayDetail: internalBlankLineDetail(renderedRowCount),
+        warning: renderedRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+      })
+    } else {
+      this.renderedBlankRowAuthority.delete(gapTargetIdentity)
+    }
+    // ── §20/§21 — SCROLL and PAINT have SEPARATE coordinate authorities. The
+    // scroll target is the fresh blank-row VIEWPORT union (the placement API
+    // consumes viewport), never a paint-layer local rect.
+    const viewportRowUnion = renderedBlankRowUnion(renderedBlankRows.rows.map(r => ({ rect: r.rect })))
+    this.blockGapScrollTargetRect = viewportRowUnion
+      ? {
+        left: viewportRowUnion.left,
+        top: viewportRowUnion.top,
+        right: viewportRowUnion.right,
+        bottom: viewportRowUnion.bottom,
+        width: viewportRowUnion.right - viewportRowUnion.left,
+        height: viewportRowUnion.bottom - viewportRowUnion.top,
+      }
+      : null
+    // ── §14 — the coordinate-space gates (every one must stay 0). A rect that is
+    // already local, an unknown space, or a mixed-space comparison is counted
+    // HERE, at the ONE conversion point.
+    if (!headless) {
+      const g = this.countersRenderedBlankRow
+      if (rowConversion.doubleConversionDetected) g.doubleCoordinateConversion++
+      if (rowConversion.unknownCoordinateSpace) g.unknownCoordinateSpace++
+      if (rowConversion.mixedCoordinateDetected) g.mixedCoordinateSpaceCompare++
+      if (renderedRowCount > 0 && rowConversion.conversionCount !== renderedRowCount) {
+        g.mixedCoordinateSpaceCompare++
+      }
+      const scrollCenterY = this.blockGapScrollTargetRect
+        ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2
+        : null
+      if (scrollCenterY != null && scrollCenterY < 0) g.negativeRenderedGapCenter++
+      if (renderedRowCount > 0) {
+        g.INTERNAL_BLANK_LINE_RENDERED_BLANK_ROW_PRIMARY_GEOMETRY_USED_COUNT++
+      }
+      g.INTERNAL_BLANK_LINE_ROW_FRAGMENT_COORDINATE_CONVERSION_COUNT = rowConversion.conversionCount
+    }
+    if (geometry && !headless) {
+      this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_GAP_RECT_COUNT++
+      if (!(geometry.gapWidth > 0)) this.countersBlockGapCanonicalClosure.gapRectWidthZeroCount++
+      if (!(geometry.gapHeight > 0)) this.countersBlockGapCanonicalClosure.gapRectHeightZeroCount++
+    }
     // ── V4 §1 — SEMANTIC OCCUPANCY SAFETY GATE ─────────────────────────────
     // Only SUBSTANTIVE content blocks the paint. The gap's own boundary pair,
     // empty editor placeholders and plugin presentation are NOT occupancy, so a
@@ -11425,22 +12044,103 @@ export class DocumentUtilityOverlayHost {
             : 'BLOCK_GAP_SEMANTIC_OCCUPANCY_CLEAR',
       })
     }
-    const valid = isBlockGapGeometryValid(geometry) && !occupied && !extentIncomplete
-    const layer = valid ? this.ensureLocateDocumentLayer() : null
-    if (geometry && valid && layer) {
-      const el = document.createElement('div')
-      el.className = `${BLOCK_GAP_VISUAL_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
-      el.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
-      el.setAttribute('data-severity', severity)
-      el.setAttribute('data-active', 'true')
-      el.setAttribute('aria-hidden', 'true')
-      el.style.cssText = `position:absolute;left:${Math.round(geometry.gapLeft)}px;top:${Math.round(geometry.gapTop)}px;`
-        + `width:${Math.round(geometry.gapWidth)}px;height:${Math.round(geometry.gapHeight)}px;pointer-events:none;`
-      layer.appendChild(el)
-      this.blockGapVisualEl = el
+    // ── §9/§10/§11/§28.5 — PRIMARY path drops the legacy synthetic veto. When the
+    // rendered rows are VERIFIED, validity is decided ONLY by: >0 rows, both
+    // boundaries physically VERIFIED, DOM order, a VERIFIED paint-layer
+    // calibration, a 1:1 fragment count, and the painted-fragment closure. The
+    // legacy synthetic gap / presentation extent / occupancy / caption union is
+    // NEVER consulted on the primary path.
+    const renderedPrimary = renderedBlankRows.decision === 'VERIFIED' && renderedRowCount > 0
+    const legacyGeometryOk = isBlockGapGeometryValid(geometry) && !extentIncomplete
+    const calibrationGateOk = headless || calibration.decision === 'VERIFIED'
+    const structuralValid = renderedPrimary
+      ? (renderedRowCount > 0
+        && prevResolution.physicalDecision === 'VERIFIED'
+        && nextResolution.physicalDecision === 'VERIFIED'
+        && gapBoundaryOrderOk
+        && calibrationGateOk
+        && fragmentCount === renderedRowCount
+        && fragmentCount > 0)
+      : (legacyGeometryOk && !occupied && fragmentCount > 0 && gapBoundaryOrderOk)
+    if (!headless && renderedPrimary) {
+      const pg = this.countersPaintLayerGeometry
+      if (calibration.decision !== 'VERIFIED') pg.paintLayerCalibrationFail++
+      if (calibration.decision === 'NON_AFFINE') pg.paintLayerNonAffine++
+      if (calibration.decision === 'STALE_LAYOUT') pg.paintLayerStaleEpoch++
+      if (fragmentCount !== renderedRowCount) pg.blankRowFragmentCountMismatch++
+    }
+    if (!headless && renderedPrimary && fragmentCount === 0) {
+      // a VERIFIED row set that produced no converted fragment is a REAL
+      // violation — never a silent fall-back onto the synthetic gap.
+      this.countersRenderedBlankRow.syntheticGapUsedWhileRenderedRowsVerified++
+    }
+    const layer = structuralValid ? this.ensureLocateDocumentLayer() : null
+    let closureEntries: BlankRowFragmentClosureEntry[] = []
+    let paintedFragmentRects: Array<RectLike | null> = []
+    let fragmentDomReady = false
+    if (structuralValid && layer && fragmentGeometry.container != null) {
+      const box = fragmentGeometry.container
+      const container = document.createElement('div')
+      container.className = `${BLOCK_GAP_VISUAL_CLASS} ${RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS}`
+      container.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
+      container.setAttribute('data-severity', severity)
+      container.setAttribute('data-active', 'true')
+      container.setAttribute('aria-hidden', 'true')
+      // 统一绘制权威 — the container is the ONE RANGE BACKGROUND for the whole
+      // blank run; its SURFACE + ONE left accent come from style.scss (so it must
+      // NOT force `background:none` inline). The per-row fragments are pure
+      // geometry/closure anchors (transparent), so there is EXACTLY ONE background.
+      container.style.cssText = `position:absolute;left:${Math.round(box.left)}px;top:${Math.round(box.top)}px;`
+        + `width:${Math.round(box.width)}px;height:${Math.round(box.height)}px;pointer-events:none;`
+      const allowance = INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
+      const fragEls: HTMLElement[] = []
+      fragmentGeometry.fragments.forEach((frag, i) => {
+        const f = document.createElement('div')
+        f.className = `${RENDERED_BLANK_ROW_FRAGMENT_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
+        f.setAttribute('data-severity', severity)
+        f.setAttribute('data-active', 'true')
+        // forensic role only — the SURFACE is the ONE range band on the container.
+        f.setAttribute(RENDERED_BLANK_ROW_ROLE_ATTR, i < allowance ? 'allowed' : 'excess')
+        f.setAttribute('aria-hidden', 'true')
+        f.style.cssText = `position:absolute;left:${Math.round(frag.left)}px;top:${Math.round(frag.top)}px;`
+          + `width:${Math.round(frag.width)}px;height:${Math.round(frag.height)}px;pointer-events:none;`
+        container.appendChild(f)
+        fragEls.push(f)
+      })
+      // ONE count label — the DIAGNOSTIC's OWN visible blank-row count. The visual
+      // layer must NEVER re-derive an "excess" number (that would silently
+      // re-compute and contradict the diagnostic semantics). Pure overlay text.
+      if (renderedRowCount > 0) {
+        const chip = document.createElement('span')
+        chip.className = BLANK_RUN_COUNT_CHIP_CLASS
+        chip.setAttribute('aria-hidden', 'true')
+        chip.textContent = `${renderedRowCount} 空行`
+        container.appendChild(chip)
+      }
+      layer.appendChild(container)
+      this.blockGapVisualEl = container
+      this.blockGapFragmentEls = fragEls
       // V2 §B — the painted gap carrier carries its diagnostic severity so the
       // Unified Visual Closure reads the SAME facts as OneClick.
       this.blockGapActiveSeverity = severity
+      // ── §13/§15 — PAINT-AFTER RE-MEASURE (the visual closure). Measure every
+      // painted fragment and close it against ITS source blank-row viewport rect.
+      paintedFragmentRects = fragEls.map(f => this.measureLocateRect(f))
+      closureEntries = renderedBlankRows.rows.slice(0, fragmentCount).map((row, i) =>
+        evaluateFragmentClosureEntry({
+          index: i,
+          sourceViewportRect: row.rect,
+          paintLayerLocalRect: localRowRects[i] ?? null,
+          paintedViewportRect: paintedFragmentRects[i] ?? null,
+          connected: fragEls[i]?.isConnected ?? false,
+          visible: !headless && isRenderedVisible(fragEls[i] ?? null),
+        }))
+      fragmentDomReady = !headless
+        && fragEls.length === fragmentCount
+        && fragEls.length > 0
+        && fragEls.every(f => f.isConnected)
+        && closureEntries.length === renderedRowCount
+        && closureEntries.every(e => e.decision === 'PASS')
       // §12 — the layer must carry exactly ONE gap carrier; a leftover is a
       // duplicate visual (never accumulate).
       if (!headless) {
@@ -11449,10 +12149,147 @@ export class DocumentUtilityOverlayHost {
       }
       this.coverageBlockGapVisualV1.gapVisualRuntime++
       this.coverageBlockGapVisualV1.gapActiveRuntime++
+      if (!headless) {
+        // TRAE §22/§23 — exactly `renderedRowCount` active fragments, aligned to
+        // the real rows (one semantic active visual owner, N fragment fills).
+        const fills = layer.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length
+        if (fills === fragmentCount) this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_ACTIVE_FILL_COUNT++
+        else this.countersBlockGapVisualV1.duplicateVisual += Math.abs(fills - fragmentCount)
+        // TRAE §19 — a gap carrier painted AFTER the rule had disappeared is the
+        // dynamic 2→3 REAPPEAR evidence (the diagnostic returned and re-bound).
+        if (this.activeLocateTx != null
+          && this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_DYNAMIC_DISAPPEAR_RUNTIME_COUNT > 0) {
+          this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_DYNAMIC_REAPPEAR_RUNTIME_COUNT++
+          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_2_TO_3_DIAGNOSTIC_ADDED_COUNT++
+        }
+        // §41/§42 — rendered-row geometry + fragment coverage.
+        if (renderedBlankRows.decision === 'VERIFIED') this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_RENDERED_COUNT_VERIFIED_COUNT++
+        this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_RENDERED_ROW_RECT_COUNT += renderedBlankRows.rows.length
+        if (fills === renderedRowCount && renderedRowCount > 0) {
+          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_MARKER_FRAGMENT_COUNT_MATCH_RENDERED_ROWS_COUNT++
+        }
+        if (this.blockGapScrollTargetRect != null) this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_SCROLL_TARGET_RENDERED_GAP_COUNT++
+        this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_CURRENT_DIAGNOSTIC_ACTIVE_VISUAL_COUNT = 1
+        for (const r of renderedBlankRows.rows) {
+          if (r.rect == null) this.countersRenderedBlankRow.renderedRowRectMissing++
+          else if (!(r.rect.height > 0)) this.countersRenderedBlankRow.renderedRowZeroHeight++
+          if (r.pluginOwned) this.countersRenderedBlankRow.renderedRowPluginOwned++
+        }
+      }
+      // ── §18 — the new FATAL geometry gates (all must stay 0). ──────────────
+      if (!headless && renderedPrimary) {
+        const pg = this.countersPaintLayerGeometry
+        for (const e of closureEntries) {
+          if (!e.connected) pg.blankRowFragmentDisconnected++
+          if (!e.visible) pg.blankRowFragmentNotVisible++
+          if (!(e.maxDriftPx <= BLANK_ROW_FRAGMENT_MAX_DRIFT_PX)) pg.blankRowFragmentDriftGt1px++
+        }
+        const prevVpRect = prevResolution.rect ?? prevVp
+        const nextVpRect = nextResolution.rect ?? nextVp
+        const captionVpRects = hostRect
+          ? ownedPresentationRects.map(r => ({
+              left: r.left + hostRect.left,
+              top: r.top + hostRect.top,
+              right: r.right + hostRect.left,
+              bottom: r.bottom + hostRect.top,
+              width: r.right - r.left,
+              height: r.bottom - r.top,
+            }))
+          : []
+        for (const painted of paintedFragmentRects) {
+          if (painted == null) continue
+          if (prevVpRect && rectsIntersect(painted, prevVpRect)) pg.blankRowFragmentPreviousIntersection++
+          if (nextVpRect && rectsIntersect(painted, nextVpRect)) pg.blankRowFragmentNextIntersection++
+          for (const cap of captionVpRects) if (rectsIntersect(painted, cap)) { pg.blankRowFragmentCaptionIntersection++; break }
+        }
+      }
+      // ── §26/§27 — CURRENT-TRANSACTION-scoped panel / navigator / toolbar gate.
+      // ONLY these fragments can fail it; the historical coverage counters live
+      // apart and can never poison this transaction.
+      if (!headless && renderedPrimary) {
+        const cTx = this.countersBlankRowTx
+        cTx.currentTxPanelIntersectionCount = 0
+        cTx.currentTxNavigatorIntersectionCount = 0
+        cTx.currentTxToolbarIntersectionCount = 0
+        cTx.currentTxSafeClipMutationCount = 0
+        const drawerRect = this.realPanelRect(this.drawerEl)
+        const toolbarRect = this.realPanelRect(this.toolbarEl)
+        const navigatorRect = this.realPanelRect(this.navigatorEl)
+        for (const painted of paintedFragmentRects) {
+          if (painted == null) continue
+          if (drawerRect && rectsIntersect(painted, drawerRect)) cTx.currentTxPanelIntersectionCount++
+          if (navigatorRect && rectsIntersect(painted, navigatorRect)) cTx.currentTxNavigatorIntersectionCount++
+          if (toolbarRect && rectsIntersect(painted, toolbarRect)) cTx.currentTxToolbarIntersectionCount++
+        }
+        for (const e of closureEntries) if (!e.visible) cTx.currentTxSafeClipMutationCount++
+      }
     } else if (!headless) {
       // §8 — an unprovable / unmeasurable gap must NEVER degrade into painting an
       // adjacent content block. Report the miss; paint nothing.
       this.countersBlockGapVisualV1.gapVisualMissing++
+      // TRAE §22 — a one-click activation that painted NOTHING is the exact
+      // `ZERO_PAINTED_RECT` regression this round removes.
+      if (this.activeLocateTx != null) {
+        this.countersBlockGapCanonicalClosure.zeroPaintedRectCount++
+        this.countersRenderedBlankRow.zeroPaintedRect++
+      }
+    }
+    // §13/§15/§24 — the closure verdict. Headless (jsdom) cannot paint, so it is
+    // exempt (its render path is a stub); the REAL runtime proves it visually.
+    const maxDriftPx = maxFragmentDrift(closureEntries)
+    const closureOk = headless ? true : (structuralValid && fragmentDomReady)
+    const valid = structuralValid && closureOk
+    this.lastBlankRowFragmentClosure = closureEntries
+    // ── §16 — the paint-layer calibration audit ─────────────────────────────
+    emitRuntimeAudit(PAINT_LAYER_CALIBRATION_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      targetKey: gapTargetIdentity,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      layerConnected: calibration.layerConnected,
+      layerTag: paintLayerEl ? paintLayerEl.tagName.toLowerCase() : null,
+      layerClass: paintLayerEl ? String(paintLayerEl.className).slice(0, 48) : null,
+      layerRect: calibration.layerRect,
+      originProbeViewportRect: calibration.originProbeViewportRect,
+      xProbeViewportRect: calibration.xProbeViewportRect,
+      yProbeViewportRect: calibration.yProbeViewportRect,
+      basisX: calibration.basisX,
+      basisY: calibration.basisY,
+      scaleX: calibration.scaleX,
+      scaleY: calibration.scaleY,
+      axisAligned: calibration.axisAligned,
+      affineVerified: calibration.affineVerified,
+      decision: calibration.decision,
+      reason: calibration.reason,
+    })
+    // ── §17 — the painted-fragment closure audit ────────────────────────────
+    emitRuntimeAudit(BLANK_ROW_FRAGMENT_CLOSURE_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      targetKey: gapTargetIdentity,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      renderedBlankRowCount: renderedRowCount,
+      fragments: closureEntries,
+      fragmentCount,
+      maxFragmentDriftPx: maxDriftPx,
+      previousBoundaryIntersectCount: this.countersPaintLayerGeometry.blankRowFragmentPreviousIntersection,
+      nextBoundaryIntersectCount: this.countersPaintLayerGeometry.blankRowFragmentNextIntersection,
+      captionIntersectCount: this.countersPaintLayerGeometry.blankRowFragmentCaptionIntersection,
+      decision: closureOk && structuralValid ? 'PASS' : 'FAIL',
+      reason: closureOk && structuralValid ? 'PAINTED_FRAGMENTS_CLOSE_TO_SOURCE_BLANK_ROWS' : `FRAGMENT_CLOSURE_FAIL:${calibration.decision}`,
+    })
+    // ── §12/§24/§43 — post-scroll truthfulness: fresh verified boundaries + fresh
+    // row rects + the fragments REALLY inserted, connected, painted and closed.
+    const presentationBuiltAfterScroll = valid && this.activeLocateTx != null
+      && prevResolution.physicalDecision === 'VERIFIED'
+      && nextResolution.physicalDecision === 'VERIFIED'
+      && renderedRowCount > 0
+      && fragmentCount === renderedRowCount
+      && (headless ? true : fragmentDomReady)
+    if (presentationBuiltAfterScroll) {
+      if (prevResolution.element == null || nextResolution.element == null) this.countersRenderedBlankRow.presentationBuiltWithNullBoundary++
+      if (localRowRects.length === 0) this.countersRenderedBlankRow.presentationBuiltWithoutRowRect++
+      if (renderedBlankRows.decision === 'STALE_LAYOUT') this.countersRenderedBlankRow.presentationBuiltOnStaleLayout++
     }
     // §8 — self check: the painted band may not intersect either block's box.
     if (geometry && (geometry.overlapsPreviousBlock || geometry.overlapsNextBlock) && !headless) {
@@ -11466,9 +12303,13 @@ export class DocumentUtilityOverlayHost {
       actualBlankLines,
       previousBlockResolved: prevEl != null,
       nextBlockResolved: nextEl != null,
-      previousBindingDecision: prevBinding.decision,
+      previousBindingDecision: prevResolution.decision,
+      previousIdentityDecision: prevResolution.identityDecision,
+      previousPhysicalDecision: prevResolution.physicalDecision,
       previousBindingStrategy: prevBinding.strategy,
-      nextBindingDecision: nextBinding.decision,
+      nextBindingDecision: nextResolution.decision,
+      nextIdentityDecision: nextResolution.identityDecision,
+      nextPhysicalDecision: nextResolution.physicalDecision,
       nextBindingStrategy: nextBinding.strategy,
       previousRect: prevVp ? { left: prevVp.left, top: prevVp.top, right: prevVp.right, bottom: prevVp.bottom } : null,
       nextRect: nextVp ? { left: nextVp.left, top: nextVp.top, right: nextVp.right, bottom: nextVp.bottom } : null,
@@ -11482,13 +12323,198 @@ export class DocumentUtilityOverlayHost {
       painted: this.blockGapVisualEl != null,
       active: this.blockGapVisualEl != null,
       fillCarrierRegistered: this.blockGapVisualEl != null,
-      fillCount: this.blockGapVisualEl != null ? 1 : 0,
+      fillCount: this.blockGapVisualEl != null ? fragmentCount : 0,
+      markerFragmentCount: this.blockGapVisualEl != null ? fragmentCount : 0,
+      renderedBlankRowCount: renderedRowCount,
+      displayedBlankRowCount: renderedRowCount,
       decision: valid ? 'PASS' : 'MISSING',
       reason: valid
         ? 'BLOCK_GAP_VISUAL_PAINTED'
-        : `BLOCK_GAP_VISUAL_NOT_PAINTED:prev=${prevBinding.decision}:next=${nextBinding.decision}`,
+        : `BLOCK_GAP_VISUAL_NOT_PAINTED:${gapFailClosed ?? 'GEOMETRY_INVALID'}:prev=${prevBinding.strategy}:next=${nextBinding.strategy}`,
     }
     emitRuntimeAudit(BLOCK_GAP_VISUAL_AUDIT_EVENT, this.lastBlockGapVisualAudit)
+    // ── TRAE §21 — the ONE canonical block-gap target audit ──────────────────
+    const prevExtentVp = prevExtent?.rect && hostRect
+      ? { top: prevExtent.rect.top + hostRect.top, bottom: prevExtent.rect.bottom + hostRect.top }
+      : null
+    const nextExtentVp = nextExtent?.rect && hostRect
+      ? { top: nextExtent.rect.top + hostRect.top, bottom: nextExtent.rect.bottom + hostRect.top }
+      : null
+    emitRuntimeAudit(BLOCK_GAP_TARGET_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      targetKey: diagId,
+      ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+      presentationKind: BLOCK_GAP_VISUAL_TARGET,
+      firstBlankLine: typeof meta.firstBlankLine === 'number' ? meta.firstBlankLine : null,
+      lastBlankLine: typeof meta.lastBlankLine === 'number' ? meta.lastBlankLine : null,
+      actualBlankLines,
+      previousBoundaryKind: prevKind,
+      previousBoundaryCanonicalIdentity: prevCanonicalKind != null && prevCanonicalOrdinal != null
+        ? `block:${prevCanonicalKind}:${prevCanonicalOrdinal}` : null,
+      previousBoundaryOrdinal: prevCanonicalOrdinal,
+      previousBindingDecision: prevResolution.decision,
+      previousIdentityDecision: prevResolution.identityDecision,
+      previousPhysicalDecision: prevResolution.physicalDecision,
+      previousBindingStrategy: prevBinding.strategy,
+      previousResolvedTag: prevEl ? prevEl.tagName.toLowerCase() : null,
+      previousResolvedClass: prevEl ? String(prevEl.className).slice(0, 48) : null,
+      nextBoundaryKind: nextKind,
+      nextBoundaryCanonicalIdentity: nextCanonicalKind != null && nextCanonicalOrdinal != null
+        ? `block:${nextCanonicalKind}:${nextCanonicalOrdinal}` : null,
+      nextBoundaryOrdinal: nextCanonicalOrdinal,
+      nextBindingDecision: nextResolution.decision,
+      nextIdentityDecision: nextResolution.identityDecision,
+      nextPhysicalDecision: nextResolution.physicalDecision,
+      nextBindingStrategy: nextBinding.strategy,
+      nextResolvedTag: nextEl ? nextEl.tagName.toLowerCase() : null,
+      nextResolvedClass: nextEl ? String(nextEl.className).slice(0, 48) : null,
+      previousExtentTop: prevExtentVp ? prevExtentVp.top : null,
+      previousExtentBottom: prevExtentVp ? prevExtentVp.bottom : null,
+      previousExtentAuthority: prevExtent?.bottomAuthority ?? null,
+      nextExtentTop: nextExtentVp ? nextExtentVp.top : null,
+      nextExtentBottom: nextExtentVp ? nextExtentVp.bottom : null,
+      nextExtentAuthority: nextExtent?.topAuthority ?? null,
+      gapTop: geometry ? geometry.gapTop : null,
+      gapBottom: geometry ? geometry.gapBottom : null,
+      gapHeight: geometry ? geometry.gapHeight : null,
+      gapWidth: geometry ? geometry.gapWidth : null,
+      gapHorizontalAuthority: horizontal ? horizontal.authority : null,
+      scrollTargetKind: this.blockGapScrollTargetRect ? RENDERED_BLANK_GAP_SCROLL_TARGET : null,
+      scrollTargetCenterY: this.blockGapScrollTargetRect
+        ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2 : null,
+      presentationBuiltAfterScroll,
+      placementMode: this.activeLocateTx?.oneClick?.placementMode ?? null,
+      fillCarrierRegistered: this.blockGapVisualEl != null,
+      activeFillCount: this.blockGapVisualEl != null ? 1 : 0,
+      markerFragmentCount: this.blockGapVisualEl != null ? fragmentCount : 0,
+      primaryMarkerVisible: this.blockGapVisualEl != null,
+      secondUserClickRequired: this.activeLocateTx?.oneClick?.secondUserClickRequired ?? false,
+      // §13 — ONE scope fact: the target audit reads the SAME computed scoped
+      // verdict the real Visual Closure uses (never a hard-coded true).
+      visualClosureScoped: valid && this.blockGapVisualEl != null
+        && fragmentCount === renderedRowCount && severity === 'warning',
+      currentDiagnosticActiveVisualCount: this.blockGapVisualEl != null ? 1 : 0,
+      // TRAE diagnostic — the EXACT structural-validity inputs, so a skipped paint
+      // is provable (which gate failed) instead of inferred.
+      structuralValid,
+      renderedPrimary,
+      gapBoundaryOrderOk,
+      calibrationGateOk,
+      paintLayerPresent: layer != null,
+      fragmentContainerPresent: fragmentGeometry.container != null,
+      fragmentCountForValidity: fragmentCount,
+      renderedRowCountForValidity: renderedRowCount,
+      fragmentDomReady,
+      closureOk,
+      decision: valid ? 'PASS' : 'MISSING',
+      reason: valid
+        ? 'BLOCK_GAP_CANONICAL_TARGET_PAINTED'
+        : `BLOCK_GAP_CANONICAL_TARGET_FAIL_CLOSED:${gapFailClosed ?? (geometry ? 'GEOMETRY_INVALID' : 'NO_GEOMETRY')}`,
+    })
+    // ── §35 — the ONE rendered-blank-row runtime audit ───────────────────────
+    const renderedAudit = {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      sourceRevision: this.snapshot?.sourceRevision ?? null,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      sourceCandidateId: gapTargetIdentity,
+      sourceFirstBlankLine: typeof meta.firstBlankLine === 'number' ? meta.firstBlankLine : null,
+      sourceLastBlankLine: typeof meta.lastBlankLine === 'number' ? meta.lastBlankLine : null,
+      sourceBlankLineCount: actualBlankLines,
+      previousIdentityDecision: prevResolution.identityDecision,
+      previousPhysicalDecision: prevResolution.physicalDecision,
+      previousBindingDecision: prevResolution.decision,
+      previousCanonicalIdentity: prevResolution.canonicalIdentity,
+      previousResolvedTag: prevResolution.element ? prevResolution.element.tagName.toLowerCase() : null,
+      previousResolvedClass: prevResolution.element ? String(prevResolution.element.className).slice(0, 48) : null,
+      previousConnected: prevResolution.connected,
+      previousInsideBusinessRoot: prevResolution.insideBusinessRoot,
+      previousKindVerified: prevResolution.kindVerified,
+      previousRect: prevResolution.rect,
+      nextIdentityDecision: nextResolution.identityDecision,
+      nextPhysicalDecision: nextResolution.physicalDecision,
+      nextBindingDecision: nextResolution.decision,
+      nextCanonicalIdentity: nextResolution.canonicalIdentity,
+      nextResolvedTag: nextResolution.element ? nextResolution.element.tagName.toLowerCase() : null,
+      nextResolvedClass: nextResolution.element ? String(nextResolution.element.className).slice(0, 48) : null,
+      nextConnected: nextResolution.connected,
+      nextInsideBusinessRoot: nextResolution.insideBusinessRoot,
+      nextKindVerified: nextResolution.kindVerified,
+      nextRect: nextResolution.rect,
+      betweenSiblingCount: renderedBlankRows.probe?.betweenSiblingCount ?? 0,
+      renderedBlankRowCount: renderedRowCount,
+      renderedBlankRowRectCount: renderedBlankRows.rows.filter(r => r.rect != null).length,
+      renderedBlankRows: renderedBlankRows.rows.map(r => ({ index: r.index, rect: r.rect, physicalVerified: r.physicalVerified, editableVerified: r.editableVerified, pluginOwned: r.pluginOwned })),
+      displayedBlankRowCount: renderedRowCount,
+      threshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+      warningDecision: renderedRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold ? 'WARNING' : 'PASS',
+      scrollTargetKind: this.blockGapScrollTargetRect ? RENDERED_BLANK_GAP_SCROLL_TARGET : null,
+      scrollTargetCenterY: this.blockGapScrollTargetRect
+        ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2 : null,
+      presentationBuiltAfterScroll,
+      markerFragmentCount: this.blockGapVisualEl != null ? fragmentCount : 0,
+      activeVisualCount: this.blockGapVisualEl != null ? 1 : 0,
+      paintLayerCalibrated: useCalibrated,
+      paintLayerCalibrationDecision: calibration.decision,
+      paintLayerOriginViewport: { x: calibration.originViewportX, y: calibration.originViewportY },
+      paintLayerScale: { x: calibration.scaleX, y: calibration.scaleY },
+      paintLayerAffineVerified: calibration.affineVerified,
+      maxFragmentDriftPx: maxDriftPx,
+      renderedBlankRowDecision: renderedBlankRows.decision,
+      authority: renderedBlankRows.authority,
+      decision: valid ? 'PASS' : 'MISSING',
+      reason: valid
+        ? 'RENDERED_BLANK_ROWS_VERIFIED'
+        : `RENDERED_BLANK_ROWS_UNVERIFIED:${renderedBlankRows.decision}:${gapFailClosed ?? 'GEOMETRY_INVALID'}`,
+    }
+    this.lastRenderedBlankRowAudit = renderedAudit
+    emitRuntimeAudit(RENDERED_BLANK_ROW_AUDIT_EVENT, renderedAudit)
+    // ── §15 — the coordinate-space audit (one record per geometry build). It makes
+    // the conversion count, the input/output spaces and any double / mixed
+    // conversion PROVABLE at runtime instead of inferred.
+    const scrollCenterYFromUnion = this.blockGapScrollTargetRect
+      ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2
+      : null
+    emitRuntimeAudit(RENDERED_BLANK_ROW_GEOMETRY_AUDIT_EVENT, {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: diagId,
+      targetKey: gapTargetIdentity,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      renderedBlankRowCount: renderedRowCount,
+      rows: rowConversion.rows.map(r => ({
+        index: r.index,
+        inputRect: r.inputRect,
+        inputCoordinateSpace: r.inputCoordinateSpace,
+        outputRect: r.outputRect,
+        outputCoordinateSpace: r.outputCoordinateSpace,
+        conversionCount: r.conversionCount,
+      })),
+      rowCoordinateConversionCount: rowConversion.conversionCount,
+      fragmentCount,
+      fragmentUnionRect: renderedRowUnion,
+      // §20/§21 — the fragment union lives in PAINT_LAYER_LOCAL (calibrated) at
+      // runtime; only the headless fallback keeps the legacy DOCUMENT_LOCAL label.
+      fragmentUnionCoordinateSpace: useCalibrated ? 'PAINT_LAYER_LOCAL' : RENDERED_BLANK_GAP_LOCAL_SPACE,
+      paintLayerCalibrated: useCalibrated,
+      paintLayerCalibrationDecision: calibration.decision,
+      scrollTargetKind: this.blockGapScrollTargetRect ? RENDERED_BLANK_GAP_SCROLL_TARGET : null,
+      scrollTargetRect: this.blockGapScrollTargetRect,
+      scrollTargetCoordinateSpace: this.blockGapScrollTargetRect ? 'VIEWPORT' : null,
+      scrollTargetCenterY: scrollCenterYFromUnion,
+      legacySyntheticGapConsulted: geometry != null,
+      legacySyntheticGapUsed: !renderedPrimary && geometry != null,
+      mixedCoordinateComparisonDetected: rowConversion.mixedCoordinateDetected,
+      doubleConversionDetected: rowConversion.doubleConversionDetected,
+      decision: valid ? 'PASS' : 'MISSING',
+      reason: valid ? 'RENDERED_BLANK_ROW_LOCAL_FRAGMENTS' : `RENDERED_BLANK_ROW_GEOMETRY_INVALID:${gapFailClosed ?? (renderedPrimary ? 'FRAGMENT_MISMATCH' : 'LEGACY_GEOMETRY_INVALID')}`,
+    })
+    // TRAE §19/§20 — the scroll target kind for this transaction is the RENDERED
+    // blank gap (never EOF / GO_BOTTOM / the next paragraph).
+    if (this.blockGapScrollTargetRect != null) {
+      this.lastScrollTargetKind = RENDERED_BLANK_GAP_SCROLL_TARGET
+      if (!headless) this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_SCROLL_TARGET_IS_GAP_COUNT++
+    }
     // The gap IS the resolved target for this rule — the one-click commit must
     // not be rolled back merely because the anchor block was handed to us. The
     // caller's visibility checks still run (the next block was scrolled into
@@ -11502,10 +12528,22 @@ export class DocumentUtilityOverlayHost {
   /** §12 — retire the gap carrier (dismiss / new locate / diagnostic removed). */
   private removeBlockGapVisual(): void {
     this.blockGapActiveSeverity = null
+    this.blockGapFragmentEls = []
     if (this.blockGapVisualEl) {
       try { this.blockGapVisualEl.remove() } catch { /* noop */ }
       this.blockGapVisualEl = null
     }
+    // TRAE §22 — a retired gap carrier must never leave a stale node behind.
+    const root = this.root
+    if (root && root.querySelectorAll(`.${BLOCK_GAP_VISUAL_CLASS}`).length > 0) {
+      this.countersBlockGapCanonicalClosure.staleVisualCount++
+    }
+    if (root && root.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length > 0) {
+      this.countersRenderedBlankRow.staleVisual++
+    }
+    this.blockGapScrollTargetRect = null
+    this.lastBlockGapDiagnosticId = null
+    this.lastScrollTargetKind = null
     // A gap carrier owns the band: retiring it also retires any unified band a
     // previous blank-space Warning may have left behind.
     this.clearBlankSpaceWarningCarrier()
@@ -11659,6 +12697,120 @@ export class DocumentUtilityOverlayHost {
     const dl = el.getAttribute('data-line')
     const n = dl != null ? Number.parseInt(dl, 10) : Number.NaN
     return Number.isFinite(n) ? Math.abs(n - line) : Number.POSITIVE_INFINITY
+  }
+
+  /** TRAE §8 — is this live element the canonical DOM target of the given kind? */
+  private gapBoundaryElementMatchesKind(
+    el: HTMLElement,
+    kind: 'code' | 'table' | 'formula',
+  ): boolean {
+    const root = resolveBusinessContentRoot()
+    if (!root || !root.contains(el) || !el.isConnected) return false
+    if (kind === 'code') return el.tagName === 'PRE' && el.classList.contains('md-fences')
+    if (kind === 'table') return el.tagName === 'TABLE'
+    return el.classList.contains('md-math-block')
+  }
+
+  /**
+   * TRAE §8 — the ONE canonical boundary resolver for a block-gap side.
+   *
+   * Priority is CANONICAL IDENTITY FIRST and a Markdown fence text is NEVER an
+   * authority (§3/§7):
+   *   1. `block:<kind>:<ordinal>` → the existing canonical object target
+   *      authority (code → `pre.md-fences[N]`, table → `table[N]`, formula →
+   *      `.md-math-block[N]`);
+   *   2. the Typora `data-line` element, ACCEPTED only when its KIND matches the
+   *      source kind (the ordinal drifted — e.g. an indented code block the
+   *      source classifier never counted);
+   *   3. FAIL CLOSED — a canonical object boundary never degrades to
+   *      `ANCHOR_TEXT_NOT_FOUND` / a fence-text search; the gap is simply not
+   *      painted (never an adjacent-block highlight).
+   *
+   * Non-canonical kinds (heading / paragraph / list / blockquote) keep the
+   * existing verified Source→DOM ladder unchanged.
+   */
+  private bindGapBoundary(ref: {
+    canonicalKind: string | null
+    canonicalOrdinal: number | null
+    startLine: number | null
+    anchorText: string
+  }): { element: HTMLElement | null; decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'; strategy: string; semanticTextMatch: boolean } {
+    const kind = ref.canonicalKind === 'code' || ref.canonicalKind === 'table' || ref.canonicalKind === 'formula'
+      ? ref.canonicalKind
+      : null
+    if (kind == null) return this.bindGapBlock(ref.startLine, ref.anchorText)
+    const canonicalStrategy = kind === 'code' ? 'CANONICAL_CODE_TARGET'
+      : kind === 'table' ? 'CANONICAL_TABLE_TARGET'
+        : 'CANONICAL_FORMULA_TARGET'
+    // 1. canonical identity (`block:<kind>:<ordinal>`)
+    if (ref.canonicalOrdinal != null && Number.isFinite(ref.canonicalOrdinal)) {
+      const byIdentity = this.resolveBlockIdentity(kind, `block:${kind}:${ref.canonicalOrdinal}`)
+      if (byIdentity && this.gapBoundaryElementMatchesKind(byIdentity, kind)) {
+        return { element: byIdentity, decision: 'BOUND', strategy: canonicalStrategy, semanticTextMatch: false }
+      }
+    }
+    // 2. the Typora `data-line` element of the SAME canonical kind
+    if (ref.startLine != null) {
+      for (const l of [ref.startLine, ref.startLine + 1]) {
+        const byLine = this.resolveSourceLine(l)
+        if (byLine && this.gapBoundaryElementMatchesKind(byLine, kind)) {
+          return { element: byLine, decision: 'BOUND', strategy: `SOURCE_LINE_${canonicalStrategy}`, semanticTextMatch: false }
+        }
+      }
+    }
+    // 3. fail closed — never a fence/text guess for a canonical object boundary
+    return {
+      element: null,
+      decision: 'MISSING',
+      strategy: `${canonicalStrategy}_MISSING`,
+      semanticTextMatch: false,
+    }
+  }
+
+  /**
+   * §12/§13 — fold ONE binding ladder result + the FINAL (kind/order filtered)
+   * element into a split `BoundaryResolution`. `BOUND` is emitted ONLY when the
+   * element is present, connected, inside the business root, of the expected
+   * kind, measurable with a positive rect, and measured at the CURRENT layout
+   * epoch. Otherwise the decision degrades to UNVERIFIED / MISSING / AMBIGUOUS.
+   */
+  private toBoundaryResolution(input: {
+    binding: { element: HTMLElement | null; decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'; strategy: string }
+    canonicalKind: string | null
+    canonicalOrdinal: number | null
+    element: HTMLElement | null
+    expectedLayoutEpoch: number
+  }): BoundaryResolution {
+    const kind = input.canonicalKind === 'code' || input.canonicalKind === 'table' || input.canonicalKind === 'formula'
+      ? input.canonicalKind
+      : null
+    const canonicalIdentity = kind != null && input.canonicalOrdinal != null
+      ? `block:${kind}:${input.canonicalOrdinal}`
+      : null
+    const element = input.element
+    const identityDecision: BoundaryResolution['identityDecision'] =
+      input.binding.decision === 'AMBIGUOUS' ? 'AMBIGUOUS'
+        : input.binding.decision === 'BOUND' && element != null ? 'RESOLVED'
+          : 'MISSING'
+    const root = resolveBusinessContentRoot()
+    const connected = element?.isConnected ?? false
+    const insideBusinessRoot = element != null && root != null && root.contains(element)
+    const kindVerified = element == null || kind == null || this.gapBoundaryElementMatchesKind(element, kind)
+    const rect = element ? this.measureLocateRect(element) : null
+    return evaluateBoundaryResolution({
+      identityDecision,
+      element,
+      connected,
+      insideBusinessRoot,
+      kindVerified,
+      rect: rect
+        ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
+        : null,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      expectedLayoutEpoch: input.expectedLayoutEpoch,
+      canonicalIdentity,
+      strategy: input.binding.strategy,
+    })
   }
 
   /**
@@ -12079,6 +13231,396 @@ export class DocumentUtilityOverlayHost {
     return { ...this.lastBlockGapVisualAudit }
   }
 
+  // ── TRAE §22/§21 — the canonical block-gap locator closure reports ─────────
+
+  /** §22 — every closure gate (all must be 0). */
+  getBlockGapCanonicalClosureGateReport(): string[] {
+    return formatBlockGapCanonicalClosureGateReport(this.countersBlockGapCanonicalClosure)
+  }
+
+  /** §22 — the canonical block-gap closure gate verdict. */
+  getBlockGapCanonicalClosureGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateBlockGapCanonicalClosureGates(this.countersBlockGapCanonicalClosure)
+  }
+
+  /** §22 — the runtime positive-coverage verdict for the block-gap closure. */
+  getBlockGapCanonicalClosureCoverageDecision(): { satisfied: boolean; unmet: string[] } {
+    return evaluateBlockGapCanonicalClosureCoverage(this.countersBlockGapCanonicalClosure)
+  }
+
+  /** §22 — the raw counter snapshot (runtime forensics). */
+  getBlockGapCanonicalClosureCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersBlockGapCanonicalClosure }
+  }
+
+  /** §17 — the last scoped visual-closure verdict for the block-gap rule. */
+  getLastBlockGapClosureScoped(): boolean | null {
+    return this.lastBlockGapClosureScoped
+  }
+
+  // ── TRAE §35/§39–§44 — the RENDERED BLANK ROW AUTHORITY reports ────────────
+
+  /** §39–§44 — every rendered-blank-row hard gate (all must be 0). */
+  getRenderedBlankRowGateReport(): string[] {
+    return formatRenderedBlankRowGateReport(this.countersRenderedBlankRow)
+  }
+
+  /** §39–§44 — the rendered-blank-row gate verdict. */
+  getRenderedBlankRowGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateRenderedBlankRowGates(this.countersRenderedBlankRow)
+  }
+
+  /** §39–§44 — the rendered-blank-row positive-coverage verdict. */
+  getRenderedBlankRowCoverageDecision(): { satisfied: boolean; unmet: string[] } {
+    return evaluateRenderedBlankRowCoverage(this.countersRenderedBlankRow)
+  }
+
+  /** §35 — the raw counter snapshot (runtime forensics). */
+  getRenderedBlankRowCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersRenderedBlankRow }
+  }
+
+  /** §35 — the last rendered-blank-row audit facts. */
+  getLastRenderedBlankRowAudit(): Record<string, unknown> {
+    return { ...this.lastRenderedBlankRowAudit }
+  }
+
+  /** §4 — the last resolved rendered-blank-row result (tests / forensics). */
+  getLastRenderedBlankRowResult(): RenderedBlankRowResult | null {
+    return this.lastRenderedBlankRowResult
+  }
+
+  // ── TRAE §16/§17/§18/§26/§27 — the paint-layer geometry closure reports ────
+
+  /** §18 — every paint-layer geometry gate (all must be 0). */
+  getPaintLayerGeometryGateReport(): string[] {
+    return formatPaintLayerGeometryGateReport(this.countersPaintLayerGeometry)
+  }
+
+  getPaintLayerGeometryGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluatePaintLayerGeometryGates(this.countersPaintLayerGeometry)
+  }
+
+  getPaintLayerGeometryCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersPaintLayerGeometry }
+  }
+
+  /** §26/§27 — the CURRENT-TRANSACTION-scoped panel/navigator/toolbar gates. */
+  getBlankRowTxGateReport(): string[] {
+    return formatBlankRowTxGateReport(this.countersBlankRowTx)
+  }
+
+  getBlankRowTxGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateBlankRowTxGates(this.countersBlankRowTx)
+  }
+
+  getBlankRowTxCounters(): Readonly<Record<string, number>> {
+    return { ...this.countersBlankRowTx }
+  }
+
+  /** §26 — the HISTORICAL coverage counters (never fatal). */
+  getBlankRowHistoricalCoverageCounters(): Readonly<Record<string, number>> {
+    return { ...this.coverageBlankRowHistorical }
+  }
+
+  /** §16 — the last paint-layer calibration (tests / forensics). */
+  getLastPaintLayerCalibration(): PaintLayerCalibration | null {
+    return this.lastPaintLayerCalibration
+  }
+
+  /** §17 — the last painted-fragment closure entries (tests / forensics). */
+  getLastBlankRowFragmentClosure(): BlankRowFragmentClosureEntry[] {
+    return [...this.lastBlankRowFragmentClosure]
+  }
+
+  /** §29 — the commit-time acceptance dry-run coverage counters. */
+  getBlankRowAcceptanceCoverage(): Readonly<Record<string, number>> {
+    return { ...this.coverageBlankRowAcceptance }
+  }
+
+  /**
+   * §26/§28/§50-R1 — register the RENDERED blank-row count the Drawer projects
+   * for EVERY current internal blank gap (not only the clicked one), so the IDLE
+   * Drawer list shows the RENDERED count. The count is read from the LIVE
+   * WYSIWYG DOM between the two PHYSICALLY verified boundaries; when the runtime
+   * cannot prove it the record is pruned (the Drawer shows the PENDING copy) —
+   * the SOURCE line count is NEVER displayed as the rendered count.
+   */
+  private registerRenderedBlankRowAuthorityFromSnapshot(
+    snapshot: DocumentDiagnosticsSnapshot | null,
+  ): void {
+    const liveIdentities = new Set<string>()
+    for (const d of snapshot?.diagnostics ?? []) {
+      if (d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) continue
+      const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
+      if (targetIdentity === '') continue
+      liveIdentities.add(targetIdentity)
+      const meta = (d.metadata ?? {}) as Record<string, unknown>
+      const result = this.resolveRenderedBlankRowsForMeta(meta)
+      // ── TRAE §6 — the REAL DOM probe is emitted at the SNAPSHOT COMMIT (not only
+      // on click), so merely OPENING the fixture yields the live Typora DOM
+      // structure that decides §7A (independent blank-row elements) vs §7B
+      // (geometry fallback). Forensic only — never a decision authority.
+      emitRuntimeAudit(RENDERED_BLANK_ROW_DOM_PROBE_EVENT, {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: d.id ?? null,
+        targetIdentity,
+        sourceRevision: snapshot?.sourceRevision ?? null,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        sourceBlankLineCount: typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null,
+        previousCanonicalIdentity: this.gapCanonicalIdentityFromMeta(meta, 'previous'),
+        nextCanonicalIdentity: this.gapCanonicalIdentityFromMeta(meta, 'next'),
+        renderedBlankRowCount: result?.renderedBlankRowCount ?? 0,
+        renderedBlankRowDecision: result?.decision ?? 'RUNTIME_UNAVAILABLE',
+        renderedBlankRowAuthority: result?.authority ?? null,
+        ...(result?.probe ?? {}),
+      })
+      if (result != null && result.decision === 'VERIFIED' && result.renderedBlankRowCount > 0) {
+        this.renderedBlankRowAuthority.set(targetIdentity, {
+          renderedBlankRowCount: result.renderedBlankRowCount,
+          displayDetail: internalBlankLineDetail(result.renderedBlankRowCount),
+          warning: result.renderedBlankRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+          layoutEpoch: this.currentDocumentLayoutEpoch,
+        })
+        if (!isHeadlessTestRuntime()) {
+          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_RENDERED_COUNT_COUNT++
+        }
+      } else {
+        this.renderedBlankRowAuthority.delete(targetIdentity)
+      }
+      // ── TRAE — the commit-time acceptance dry-run (spec §13/§15 semantics): it
+      // yields REAL Typora runtime evidence (calibration origin/scale/affine +
+      // per-fragment drift) with NO click, then removes every node it inserted.
+      if (result != null) {
+        this.runBlankRowPaintLayerAcceptanceDryRun({
+          diagId: d.id ?? null, targetKey: targetIdentity, result,
+        })
+      }
+    }
+    for (const key of Array.from(this.renderedBlankRowAuthority.keys())) {
+      if (!liveIdentities.has(key)) this.renderedBlankRowAuthority.delete(key)
+    }
+  }
+
+  /**
+   * TRAE §13/§15/§29 — the COMMIT-TIME ACCEPTANCE DRY-RUN.
+   *
+   * At diagnostics-commit time (no click required, so it runs in the REAL Typora
+   * runtime), when a gap's rendered rows are VERIFIED, it inserts the calibration
+   * probes AND one fragment-sized div per source blank row into the SAME paint
+   * layer, measures every painted viewport rect, computes the per-fragment drift
+   * against the source row viewport rects, emits the two audits, and then removes
+   * every probe/dry-run node. It NEVER leaves a node behind and NEVER touches the
+   * real transaction counters (only clearly-named acceptance coverage counters).
+   */
+  private runBlankRowPaintLayerAcceptanceDryRun(input: {
+    diagId: string | null
+    targetKey: string
+    result: RenderedBlankRowResult
+  }): void {
+    if (isHeadlessTestRuntime()) return
+    if (input.result.decision !== 'VERIFIED' || input.result.renderedBlankRowCount <= 0) return
+    const layer = this.ensureLocateDocumentLayer()
+    if (!layer) return
+    const calibration = calibratePaintLayerFromLayer(layer, this.currentDocumentLayoutEpoch)
+    this.lastPaintLayerCalibration = calibration
+    const sourceRowRects = input.result.rows.map(r => r.rect)
+    const dryNodes: HTMLElement[] = []
+    try {
+      const localRects = sourceRowRects.map(r => r ? viewportRectToPaintLayerLocalV1(r, calibration) : null)
+      // §13/§15 — reproduce the PRODUCTION paint structure: ONE container + N
+      // rounded FILL_ONLY fragments (the same rounding the real carrier uses).
+      const usable = localRects.filter((r): r is RectLike => r != null)
+      const colLeft = usable.length > 0 ? Math.min(...usable.map(r => r.left)) : null
+      const colRight = usable.length > 0 ? Math.max(...usable.map(r => r.right)) : null
+      const geom = computeRenderedBlankRowFragments({
+        rowRects: localRects,
+        contentColumns: colLeft != null && colRight != null && colRight > colLeft ? { left: colLeft, right: colRight } : null,
+      })
+      const paintedRects: Array<RectLike | null> = []
+      if (geom.container != null) {
+        const box = geom.container
+        const container = document.createElement('div')
+        container.setAttribute('data-inkchapter-acceptance-dryrun', 'container')
+        container.setAttribute('aria-hidden', 'true')
+        container.style.cssText = `position:absolute;left:${Math.round(box.left)}px;top:${Math.round(box.top)}px;`
+          + `width:${Math.round(box.width)}px;height:${Math.round(box.height)}px;visibility:hidden;pointer-events:none;`
+        layer.appendChild(container)
+        dryNodes.push(container)
+        for (const frag of geom.fragments) {
+          const f = document.createElement('div')
+          f.setAttribute('data-inkchapter-acceptance-dryrun', 'fragment')
+          f.setAttribute('aria-hidden', 'true')
+          f.style.cssText = `position:absolute;left:${Math.round(frag.left)}px;top:${Math.round(frag.top)}px;`
+            + `width:${Math.round(frag.width)}px;height:${Math.round(frag.height)}px;visibility:hidden;pointer-events:none;`
+          container.appendChild(f)
+          dryNodes.push(f)
+          paintedRects.push(this.measureLocateRect(f))
+        }
+      }
+      const entries = sourceRowRects.map((src, i) => evaluateFragmentClosureEntry({
+        index: i,
+        sourceViewportRect: src,
+        paintLayerLocalRect: localRects[i] ?? null,
+        paintedViewportRect: paintedRects[i] ?? null,
+        connected: paintedRects[i] != null,
+        visible: paintedRects[i] != null,
+      }))
+      const maxDrift = maxFragmentDrift(entries)
+      const sourceRectCount = sourceRowRects.filter(r => r != null).length
+      const paintedRectCount = paintedRects.filter(r => r != null).length
+      const driftGt1Count = entries.filter(e => !(e.maxDriftPx <= BLANK_ROW_FRAGMENT_MAX_DRIFT_PX)).length
+      const acc = this.coverageBlankRowAcceptance
+      acc.ACCEPTANCE_DRY_RUN_COUNT++
+      if (calibration.decision === 'VERIFIED') acc.ACCEPTANCE_CALIBRATION_VERIFIED_COUNT++
+      acc.ACCEPTANCE_SOURCE_VIEWPORT_RECT_COUNT = sourceRectCount
+      acc.ACCEPTANCE_PAINTED_FRAGMENT_VIEWPORT_RECT_COUNT = paintedRectCount
+      acc.ACCEPTANCE_FRAGMENT_DRIFT_GT_1PX_COUNT = driftGt1Count
+      emitRuntimeAudit(PAINT_LAYER_CALIBRATION_AUDIT_EVENT, {
+        acceptanceMode: true,
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: input.diagId,
+        targetKey: input.targetKey,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        layerConnected: calibration.layerConnected,
+        layerTag: layer.tagName.toLowerCase(),
+        layerClass: String(layer.className).slice(0, 48),
+        layerRect: calibration.layerRect,
+        originProbeViewportRect: calibration.originProbeViewportRect,
+        xProbeViewportRect: calibration.xProbeViewportRect,
+        yProbeViewportRect: calibration.yProbeViewportRect,
+        basisX: calibration.basisX,
+        basisY: calibration.basisY,
+        scaleX: calibration.scaleX,
+        scaleY: calibration.scaleY,
+        axisAligned: calibration.axisAligned,
+        affineVerified: calibration.affineVerified,
+        PAINT_LAYER_CALIBRATION: calibration.decision,
+        PAINT_LAYER_ORIGIN_VIEWPORT: { x: calibration.originViewportX, y: calibration.originViewportY },
+        PAINT_LAYER_SCALE: { x: calibration.scaleX, y: calibration.scaleY },
+        PAINT_LAYER_AFFINE_VERIFIED: calibration.affineVerified,
+        decision: calibration.decision,
+        reason: calibration.reason,
+      })
+      emitRuntimeAudit(BLANK_ROW_FRAGMENT_CLOSURE_AUDIT_EVENT, {
+        acceptanceMode: true,
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: input.diagId,
+        targetKey: input.targetKey,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        renderedBlankRowCount: input.result.renderedBlankRowCount,
+        fragments: entries,
+        fragmentCount: entries.length,
+        BLANK_ROW_SOURCE_VIEWPORT_RECT_COUNT: sourceRectCount,
+        PAINTED_FRAGMENT_VIEWPORT_RECT_COUNT: paintedRectCount,
+        MAX_FRAGMENT_DRIFT_PX: maxDrift,
+        FRAGMENT_DRIFT_GT_1PX_COUNT: driftGt1Count,
+        maxFragmentDriftPx: maxDrift,
+        decision: maxDrift <= BLANK_ROW_FRAGMENT_MAX_DRIFT_PX ? 'PASS' : 'FAIL',
+        reason: 'ACCEPTANCE_DRY_RUN',
+      })
+    } finally {
+      for (const el of dryNodes) {
+        try { el.remove() } catch { /* noop */ }
+      }
+    }
+  }
+
+  /** §8 — resolve the rendered blank rows for ONE gap record's carried metadata. */
+  private resolveRenderedBlankRowsForMeta(
+    meta: Record<string, unknown>,
+  ): RenderedBlankRowResult | null {
+    const previousElement = this.resolveGapBoundaryElementFromMeta(meta, 'previous')
+    const nextElement = this.resolveGapBoundaryElementFromMeta(meta, 'next')
+    if (previousElement == null || nextElement == null) return null
+    // TRAE diagnostic — the exact DOM relationship between the two boundaries
+    // (no click required), so a false `gapBoundaryOrderOk` is provable.
+    try {
+      const order = previousElement.compareDocumentPosition(nextElement)
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLANK-ROW-ORDER-PROBE', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        previousTag: previousElement.tagName.toLowerCase(),
+        previousClass: String(previousElement.className).slice(0, 64),
+        previousDataLine: previousElement.getAttribute('data-line'),
+        nextTag: nextElement.tagName.toLowerCase(),
+        nextClass: String(nextElement.className).slice(0, 64),
+        nextDataLine: nextElement.getAttribute('data-line'),
+        sameParent: previousElement.parentElement === nextElement.parentElement,
+        previousParentClass: previousElement.parentElement ? String(previousElement.parentElement.className).slice(0, 64) : null,
+        nextParentClass: nextElement.parentElement ? String(nextElement.parentElement.className).slice(0, 64) : null,
+        docPosition: order,
+        following: (order & DOM_POSITION_FOLLOWING) !== 0,
+        preceding: (order & DOM_POSITION_PRECEDING) !== 0,
+        contains: (order & DOM_POSITION_CONTAINS) !== 0,
+        containedBy: (order & DOM_POSITION_CONTAINED_BY) !== 0,
+        disconnected: (order & DOM_POSITION_DISCONNECTED) !== 0,
+      })
+    } catch { /* diagnostic only */ }
+    return resolveRenderedBlankRows({
+      businessRoot: resolveBusinessContentRoot(),
+      previousElement,
+      nextElement,
+      sourceBlankLineCount: typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : 0,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
+    })
+  }
+
+  /**
+   * §8 — resolve ONE PHYSICALLY verified gap boundary element from a record's
+   * carried metadata, reusing the SAME canonical-first ladder the paint path
+   * uses (never a fence-text guess for a canonical object boundary).
+   */
+  private resolveGapBoundaryElementFromMeta(
+    meta: Record<string, unknown>,
+    side: 'previous' | 'next',
+  ): HTMLElement | null {
+    const rawKind = meta[`${side}BlockCanonicalKind`]
+    const kind = rawKind === 'code' || rawKind === 'table' || rawKind === 'formula' ? rawKind : null
+    const ordinal = typeof meta[`${side}BlockCanonicalOrdinal`] === 'number'
+      ? meta[`${side}BlockCanonicalOrdinal`] as number : null
+    const startLine = typeof meta[`${side}BlockStartLine`] === 'number'
+      ? meta[`${side}BlockStartLine`] as number : null
+    const anchorText = typeof meta[`${side}BlockAnchorText`] === 'string'
+      ? meta[`${side}BlockAnchorText`] as string : ''
+    const bound = this.bindGapBoundary({ canonicalKind: kind, canonicalOrdinal: ordinal, startLine, anchorText })
+    const el = bound.element
+    if (el == null) return null
+    if (kind != null && !this.gapBoundaryElementMatchesKind(el, kind)) return null
+    const root = resolveBusinessContentRoot()
+    if (root == null || !root.contains(el) || !el.isConnected) return null
+    return el
+  }
+
+  /** §6/§35 — the canonical `block:<kind>:<ordinal>` identity carried on a record. */
+  private gapCanonicalIdentityFromMeta(
+    meta: Record<string, unknown>,
+    side: 'previous' | 'next',
+  ): string | null {
+    const kind = meta[`${side}BlockCanonicalKind`]
+    const ordinal = meta[`${side}BlockCanonicalOrdinal`]
+    if ((kind === 'code' || kind === 'table' || kind === 'formula') && typeof ordinal === 'number') {
+      return `block:${kind}:${ordinal}`
+    }
+    return null
+  }
+
+  /**
+   * §26/§29 — the Drawer-facing DETAIL for an internal blank-gap diagnostic.
+   *
+   * Reads the REGISTERED rendered count authority (never the source line count).
+   * When the runtime DOM has not yet confirmed a rendered count it returns the
+   * PENDING copy — it NEVER falls back to `sourceBlankLineCount`.
+   */
+  private renderedBlankRowDetailForDiagnostic(
+    d: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+  ): string | null {
+    if (d == null || d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return null
+    const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
+    const record = targetIdentity !== '' ? this.renderedBlankRowAuthority.get(targetIdentity) ?? null : null
+    return record != null ? record.displayDetail : RENDERED_BLANK_ROW_PENDING_DETAIL
+  }
+
   /**
    * Commit the V3 visual for a RESOLVED locate. Chooses the visual anchor from
    * the resolver's element (the real object / heading / link) — never a
@@ -12119,6 +13661,12 @@ export class DocumentUtilityOverlayHost {
       if (zero && resolvedPrimary && resolvedPrimary !== anchor && resolvedPrimary.isConnected) {
         anchor = resolvedPrimary
       }
+    }
+    // LAYOUT-INVALIDATION — record the inputs so a later real geometry change can
+    // re-measure this exact visual (never a transition, never a rule re-run).
+    this.lastLocateVisualInputs = {
+      diagId, severity, targets, result, resolvedPrimary, diag,
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
     }
     const code = diag?.code ?? null
     // ── TRAE V4 §10 — SOURCE-SYNTAX OPENING-LINE carrier. The active visual may
@@ -13756,6 +15304,41 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * LAYOUT-INVALIDATION — re-measure the ACTIVE diagnostic visual after a real
+   * editor-geometry change (sidebar divider drag / window resize / zoom).
+   *
+   * Runs INSIDE the coalesced geometry rAF (post-layout → settled rects). It replays
+   * ONLY the visual commit (re-measure + re-paint) — never a click transition and
+   * never a diagnostic-rule re-run. Generation-guarded by `layoutInvalidateEpoch` +
+   * document identity, so a superseded re-measure can never overwrite a newer commit.
+   */
+  private remeasureActiveVisualOnLayoutChange(reason: string): void {
+    const inputs = this.lastLocateVisualInputs
+    if (inputs == null) return
+    // Only an ACTIVE visual is re-measured; a cleared/retired one is left alone.
+    if (this.diagnosticInteractionState.phase !== 'ACTIVE') return
+    const epoch = this.layoutInvalidateEpoch
+    const documentKey = this.opts.ctx.authority.getDocumentKey()
+    // ASYNC GENERATION GUARD — never re-measure another document's visual.
+    if (documentKey !== inputs.documentKey) return
+    this.layoutInvalidateRemeasureCount++
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LAYOUT-INVALIDATION-REMEASURE', {
+      reason,
+      layoutInvalidateEpoch: epoch,
+      diagnosticId: inputs.diagId,
+      documentKey,
+      remeasureCount: this.layoutInvalidateRemeasureCount,
+      phase: this.diagnosticInteractionState.phase,
+      decision: 'REMEASURE',
+    })
+    // Superseded mid-flight (a newer layout change landed) → drop this stale one.
+    if (epoch !== this.layoutInvalidateEpoch) return
+    this.commitDiagnosticLocateVisual(
+      inputs.diagId, inputs.severity, inputs.targets, inputs.result, inputs.resolvedPrimary, inputs.diag,
+    )
+  }
+
   /** Event-driven resize-settle debounce — forensic summary ONLY (no business UI). */
   private scheduleResizeSettle(): void {
     if (this.settleTimer) clearTimeout(this.settleTimer)
@@ -15032,6 +16615,38 @@ export class DocumentUtilityOverlayHost {
     }
     const container = getActiveEditorScrollContainer()
     const rect = container?.getBoundingClientRect()
+    // ── LAYOUT-INVALIDATION — a REAL editor-geometry change (sidebar divider drag,
+    // window resize, zoom) re-wraps the text, so a committed diagnostic marker MUST
+    // be re-measured. The signal is the LIVE editor-shell geometry — NOT window.resize
+    // alone (a divider drag changes the editor width with NO window resize) and NOT a
+    // content mutation (a divider drag must never be treated as a document edit).
+    if (rect != null) {
+      const nextEditorGeom = { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+      const prevGeom = this.lastAppliedEditorGeometry
+      const geometryChanged = prevGeom == null
+        || Math.abs(nextEditorGeom.left - prevGeom.left) > 0.5
+        || Math.abs(nextEditorGeom.top - prevGeom.top) > 0.5
+        || Math.abs(nextEditorGeom.width - prevGeom.width) > 0.5
+        || Math.abs(nextEditorGeom.height - prevGeom.height) > 0.5
+      if (geometryChanged) {
+        this.layoutInvalidateEpoch++
+        this.lastAppliedEditorGeometry = nextEditorGeom
+        // ── UNIFIED GEOMETRY INVALIDATION (Active + Passive) ──────────────────
+        // A sidebar divider drag re-wraps the text WITHOUT mutating the DOM, so the
+        // content-mutation path (`invalidateDiagnosticVisualGeometry('EDITOR_REFLOW')`)
+        // NEVER fires — which is exactly why PASSIVE markers kept their stale rects
+        // while the ACTIVE marker recovered on its own. This drives the SAME passive
+        // reconcile authority (heading markers / range backgrounds / reason chip /
+        // code + EOF markers) from a REAL layout change. The reason deliberately
+        // avoids `PLUGIN_DOM_MUTATION|RECONCILE` so the full reconcile runs (a scoped
+        // dirty set would skip the real reflow). It never enters the click state
+        // machine: no activation, no deactivation, no diagnostic switch.
+        this.invalidateDiagnosticVisualGeometry('EDITOR_LAYOUT_INVALIDATION')
+        // ACTIVE keeps its independent re-measure entry (shares the same target
+        // identity + geometry authority, never the click transition).
+        this.remeasureActiveVisualOnLayoutChange('EDITOR_GEOMETRY_CHANGED')
+      }
+    }
     // Phase 7R.3.11.8B.6 — workspace width state (read-only sample + deduped
     // state-token write). Runs inside the SAME coalesced geometry pass so the
     // guard observes every real geometry change with zero extra observers.
@@ -20059,6 +21674,16 @@ export class DocumentUtilityOverlayHost {
       // sentence painted into the body.
       el.setAttribute('title', EOF_NEWLINE_MARKER_ARIA_LABEL)
       el.setAttribute('aria-label', EOF_NEWLINE_MARKER_ARIA_LABEL)
+      // 原设计要求 C — an EXPLICIT EOF ENDPOINT indicator (left boundary line +
+      // a compact `EOF` label), NOT a filled blank band and not a colour bar with
+      // a symbol dropped in it. Form only: style.scss drops the band fill for this
+      // form; the measured BOX is unchanged, so geometry gates/closure still hold.
+      el.setAttribute('data-ink-eof-form', EOF_NEWLINE_MARKER_ENDPOINT_FORM)
+      const label = document.createElement('span')
+      label.className = EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS
+      label.setAttribute('aria-hidden', 'true')
+      label.textContent = EOF_NEWLINE_MARKER_ENDPOINT_LABEL
+      el.appendChild(label)
     }
     el.style.cssText = `position:absolute;display:block;left:${Math.round(localRect.left)}px;top:${Math.round(localRect.top)}px;width:${Math.round(localRect.width)}px;height:${Math.round(localRect.height)}px;pointer-events:none;`
     layer.appendChild(el)
@@ -20646,6 +22271,64 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * TRAE §14 — the PROVISIONAL gap bounds (viewport) used as the SCROLL target.
+   *
+   * Both canonical boundaries are resolved and measured BEFORE the scroll; the
+   * final PAINT re-resolves + re-measures them after the settle (the pre-scroll
+   * rect is never reused as the painted rect). Returns null unless BOTH sides
+   * bind and the vertical interval is a real gap — the caller then keeps the
+   * generic placement (never a fabricated gap target).
+   */
+  private measureBlockGapPlacementBounds(): { top: number; bottom: number; left: number; right: number } | null {
+    const diagId = this.activeLocateTx?.diagnosticId ?? this.lastLocatedDiagnosticId
+    const diag = this.diagnosticById(diagId ?? '')
+    if (!diag || diag.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return null
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const prev = this.bindGapBoundary({
+      canonicalKind: typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null,
+      canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
+      startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
+      anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
+    })
+    const next = this.bindGapBoundary({
+      canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
+      canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
+      startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
+      anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+    })
+    if (prev.element == null || next.element == null || prev.element === next.element) return null
+    // §17/§20 — re-resolve the RENDERED blank rows FRESH between the two live
+    // boundaries; the placement centre is their union, never the next paragraph.
+    const rendered = resolveRenderedBlankRows({
+      businessRoot: resolveBusinessContentRoot(),
+      previousElement: prev.element,
+      nextElement: next.element,
+      sourceBlankLineCount: 0,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
+    })
+    // §20/§22 — the placement API consumes VIEWPORT space, and the fresh
+    // rendered-blank-row rects ARE viewport rects. Use their union DIRECTLY —
+    // never a VIEWPORT → LOCAL → VIEWPORT round trip (that chain proved nothing
+    // and only added an error surface).
+    const viewportUnion = renderedBlankRowUnion(rendered.rows.map(r => ({ rect: r.rect })))
+    if (viewportUnion) {
+      return { top: viewportUnion.top, bottom: viewportUnion.bottom, left: viewportUnion.left, right: viewportUnion.right }
+    }
+    // §7B geometry fallback: no independent blank-row DOM → the two-boundary band.
+    const prevVp = this.measureLocateRect(prev.element)
+    const nextVp = this.measureLocateRect(next.element)
+    if (!prevVp || !nextVp) return null
+    if (!(nextVp.top > prevVp.bottom)) return null
+    return {
+      top: prevVp.bottom,
+      bottom: nextVp.top,
+      left: Math.min(prevVp.left, nextVp.left),
+      right: Math.max(prevVp.right, nextVp.right),
+    }
+  }
+
+  /**
    * V5.10 — full PREFERRED PLACEMENT measurement (fresh geometry only, §21).
    * CENTER authority = compound Primary+Secondary union for Table/Code.
    */
@@ -20666,7 +22349,17 @@ export class DocumentUtilityOverlayHost {
     const measurable = (r: RectRecord | null): r is RectRecord => r != null && (r.width > 0 || r.height > 0)
     let boundsRect: RectRecord | null
     let compoundBoundsUsed = false
-    if (ctx.compound) {
+    // ── TRAE §14 — the INTERNAL BLANK GAP scrolls to the GAP CENTRE, never to the
+    // next paragraph: the provisional two-boundary gap is the placement bounds.
+    const gapBounds = this.measureBlockGapPlacementBounds()
+    if (gapBounds) {
+      boundsRect = {
+        left: gapBounds.left, top: gapBounds.top, right: gapBounds.right, bottom: gapBounds.bottom,
+        width: gapBounds.right - gapBounds.left, height: gapBounds.bottom - gapBounds.top,
+      }
+      compoundBoundsUsed = false
+      this.lastScrollTargetKind = RENDERED_BLANK_GAP_SCROLL_TARGET
+    } else if (ctx.compound) {
       if (primaryRect && secondaryRect) {
         boundsRect = {
           left: Math.min(primaryRect.left, secondaryRect.left),
@@ -20721,6 +22414,18 @@ export class DocumentUtilityOverlayHost {
     facts.largeBlock = d.largeBlock
     facts.primaryActualViewportY = state.primaryTopNow
     if (typeof state.maxScrollTop === 'number') facts.maxScrollTopV510 = state.maxScrollTop
+    // TRAE §15 — an INTERNAL BLANK GAP locate must never be placed by the
+    // document-end / EOF placement. A scroll clamp is only a violation when the
+    // gap was NOT the scroll target (i.e. the placement fell back to the block).
+    if (initial && this.isBlockGapDiagnostic(this.diagnosticById(this.activeLocateTx?.diagnosticId ?? this.lastLocatedDiagnosticId ?? ''))) {
+      const clamped = d.placementMode === 'CLAMPED_DOCUMENT_END' || d.placementMode === 'CLAMPED_DOCUMENT_START'
+      // TRAE §21 — a CLAMP is only a violation when the RENDERED blank gap was NOT
+      // the scroll target; a clamped viewport with a rendered-gap target is legal.
+      if (clamped && this.lastScrollTargetKind !== RENDERED_BLANK_GAP_SCROLL_TARGET) {
+        this.countersBlockGapCanonicalClosure.documentEndPlacementCount++
+        this.countersRenderedBlankRow.eofAuthorityUsed++
+      }
+    }
     if (!initial) return
     facts.alreadyWithinCenterTolerance = d.alreadyWithinTolerance
     facts.viewportCenterY = d.viewportCenterY
@@ -21696,6 +23401,19 @@ export class DocumentUtilityOverlayHost {
         decision: gapUsed ? 'PASS' : 'FAIL',
         reason: gapUsed ? 'BLOCK_GAP_GENERIC_HIGHLIGHT_BYPASSED' : 'BLOCK_GAP_VISUAL_NOT_PAINTED',
       })
+      // TRAE §22/§24.5 — the FIRST click must already be ACTIVE, and an adjacent
+      // content block must never have been highlighted as a fallback.
+      if (attempt === 0) {
+        if (gapUsed) this.countersBlockGapCanonicalClosure.INTERNAL_BLANK_LINE_FIRST_CLICK_ACTIVE_RUNTIME_COUNT++
+        else this.countersBlockGapCanonicalClosure.secondClickRequiredCount++
+      }
+      const frame = this.locateFrame
+      if (frame?.hasCommitted() === true && frame.getStructure().activeDiagnosticId === diagnosticId) {
+        // the generic block frame committed FOR THIS diagnostic: the gap was
+        // bypassed by the very fallback this round removes.
+        this.countersBlockGapCanonicalClosure.wrongPreviousBlockHighlightCount++
+        this.countersBlockGapCanonicalClosure.wrongNextBlockHighlightCount++
+      }
     } else {
       this.applyLocateHighlightAndVerify(tx, diag, highlightTargets, result, targetIndex)
     }
@@ -21883,7 +23601,10 @@ export class DocumentUtilityOverlayHost {
             facts.postRecoveryRemeasured = false
             this.scheduleOneClickRaf(() => {
               if (!this.activeLocateTx || this.activeLocateTx.id !== tx.id) return
-              if (!facts.postRecoveryRemeasured) this.countersClosureV512R2.drawerRecoveryWithoutRemeasure++
+              // 修复：`postRecoveryRemeasured` 由 runOneClickFinalPhase 的**异步**重测
+              // 置位；此处提前判定会**必然**为 false，导致 DRAWER_RECOVERY_WITHOUT_
+              // REMEASURE 门禁恒失败（并在随后回滚/删掉刚画的标记）。终态门禁（见
+              // measureOneClickPostScroll 之后）已用最终事实校验，故这里不再提前自增。
               this.runOneClickFinalPhase(tx, diag, diagnosticId, targetIndex, highlightTargets, result, identity, pre, completionReason, 'PHASE_A')
             })
             return
@@ -25307,7 +27028,9 @@ export class DocumentUtilityOverlayHost {
           code: d.code,
           severity: d.severity,
           message: d.message,
-          detail: d.detail,
+          // TRAE §26/§29 — the internal blank-gap DETAIL comes from the RENDERED
+          // count authority, never the raw source line count.
+          detail: this.renderedBlankRowDetailForDiagnostic(d) ?? d.detail,
           category: (d as { category?: string }).category ?? null,
           metadata: (d.metadata ?? {}) as Record<string, unknown>,
         })

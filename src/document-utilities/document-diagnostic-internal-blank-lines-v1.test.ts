@@ -240,6 +240,17 @@ describe('Internal Blank-Line Policy V1 — identity and dedup', () => {
     expect(String(five.detail)).toContain('5')
   })
 
+  it('TRAE §3/§7 P3 — a CODE boundary identity is block:code:<ordinal>, never a fence text', () => {
+    const md = '```ts\nconst a = 1\n```\n\n\n\n```ts\nconst b = 2\n```\n\n\n\n正文。\n'
+    const gaps = analyzeInternalBlankLineGaps(md)
+    const last = gaps[gaps.length - 1]
+    expect(last.previousBlockKind).toBe('code')
+    // the canonical object identity (2nd code block → ordinal 1), never "```"
+    expect(last.previousBlockIdentity).toBe('block:code:1')
+    expect(last.previousBlockIdentity.includes('`')).toBe(false)
+    expect(internalBlankGapIdentity(last).startsWith('blank-gap:block:code:1>>')).toBe(true)
+  })
+
   it('§20/§6 — two DIFFERENT gaps produce two diagnostics with different ids', () => {
     const diags = internalDiagnostics('# 标题\n\n\n\n正文 A。\n\n\n\n正文 B。\n')
     expect(diags).toHaveLength(2)

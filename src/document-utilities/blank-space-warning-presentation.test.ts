@@ -46,7 +46,7 @@ describe('Blank-Space Warning Presentation Policy — constants', () => {
     expect(BLANK_SPACE_WARNING_SEVERITY).toBe('warning')
     expect(BLANK_SPACE_WARNING_PRESENTATION_MODE).toBe('FILL_WITH_LEFT_ACCENT')
     expect(BLANK_SPACE_WARNING_BACKGROUND_TOKEN).toBe('--ink-blank-space-warning-bg')
-    expect(BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT).toBe(8)
+    expect(BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT).toBe(18)
     expect(BLANK_SPACE_WARNING_LEFT_ACCENT_TOKEN).toBe('--ink-blank-space-warning-accent')
     expect(BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX).toBe(4)
     expect(BLANK_SPACE_WARNING_LEFT_ACCENT_COUNT).toBe(1)
@@ -114,7 +114,7 @@ describe('Blank-Space Warning Presentation Policy — predicates', () => {
     expect(lines).toContain('BLANK_SPACE_WARNING_PRESENTATION_MODE=FILL_WITH_LEFT_ACCENT')
     expect(lines).toContain('BLANK_SPACE_WARNING_LEFT_ACCENT=true')
     expect(lines).toContain('BLANK_SPACE_WARNING_LEFT_ACCENT_WIDTH_PX=4')
-    expect(lines).toContain('BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT=8')
+    expect(lines).toContain('BLANK_SPACE_WARNING_BACKGROUND_MIX_PERCENT=18')
   })
 })
 
@@ -138,13 +138,37 @@ describe('Blank-Space Warning Presentation Policy — CSS band', () => {
     expect(bandBlock).toContain('pointer-events: none')
   })
 
-  it('restores the ORIGINAL EOF token values (8% surface, 4px accent, 0 6px 6px 0)', () => {
+  it('the Warning token values (deepened 18% surface, 4px accent, 0 6px 6px 0, 3px row rail)', () => {
     expect(STYLE_SCSS).toContain('--ink-blank-space-warning-accent-width: 4px')
     expect(STYLE_SCSS).toContain('--ink-blank-space-warning-radius: 0 6px 6px 0')
     expect(STYLE_SCSS).toContain(
-      '--ink-blank-space-warning-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 8%, transparent)',
+      '--ink-blank-space-warning-bg: color-mix(in srgb, var(--ink-ui-sev-warning, #a87932) 18%, transparent)',
     )
     expect(STYLE_SCSS).toContain('--ink-blank-space-warning-accent: var(--ink-ui-sev-warning, #a87932)')
+    // 醒目度优化 — the per-row 3px LEFT rail token.
+    expect(STYLE_SCSS).toContain('--ink-blank-space-warning-fragment-rail: 3px')
+  })
+
+  it('统一绘制权威 — ONE range background + ONE left accent + ONE count label', () => {
+    // the container owns the ONE range surface + ONE accent (no stacked layers)
+    const containerBlock = STYLE_SCSS.match(/\.inkchapter-block-gap-fragments \{[^}]*\}/)?.[0] ?? ''
+    expect(containerBlock).not.toBe('')
+    expect(containerBlock).toContain('background: var(--ink-blank-space-warning-bg)')
+    // 光标安全 — the container must carry NO inner vertical bar / border line
+    expect(containerBlock).toContain('border: 0')
+    expect(containerBlock).not.toContain('border-left')
+    // the per-row fragments are pure geometry anchors → NO surface of their own
+    const fragBlock = STYLE_SCSS.match(/\.inkchapter-block-gap-fragment \{[^}]*\}/)?.[0] ?? ''
+    expect(fragBlock).toContain('background: transparent')
+    // the removed per-row role fills must NOT come back (they caused stacked layers)
+    expect(STYLE_SCSS).not.toMatch(/data-ink-blank-role='(allowed|excess)'\] \{/)
+    // ONE count label, overlay-only
+    const chipBlock = STYLE_SCSS.match(/\.inkchapter-blank-run-count \{[^}]*\}/)?.[0] ?? ''
+    expect(chipBlock).not.toBe('')
+    expect(chipBlock).toContain('pointer-events: none')
+    // 光标安全 — the label is RIGHT-aligned, never over the left caret column
+    expect(chipBlock).toContain('right: 6px')
+    expect(chipBlock).not.toContain('left:')
   })
 
   it('the bright FILL_ONLY regression is gone from the blank-space carriers', () => {
@@ -166,8 +190,11 @@ describe('Blank-Space Warning Presentation Policy — overlay host wiring', () =
   })
 
   it('every blank-space carrier carries the shared marker class', () => {
-    // gap carrier
-    expect(OVERLAY_HOST).toContain('${BLOCK_GAP_VISUAL_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}')
+    // TRAE §22/§24 + 醒目度优化 — the gap carrier's container carries the shared
+    // marker surface (the CONTINUOUS band) and the N row fragments carry the
+    // shared marker class for their per-row left rail.
+    expect(OVERLAY_HOST).toContain('${RENDERED_BLANK_ROW_FRAGMENT_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}')
+    expect(OVERLAY_HOST).toContain('${BLOCK_GAP_VISUAL_CLASS} ${RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS}')
     // EOF carrier
     expect(OVERLAY_HOST).toContain('${DIAGNOSTIC_LOCATE_FRAME_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}')
     // terminal-newline / leading-H1 band

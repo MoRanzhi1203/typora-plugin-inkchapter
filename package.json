@@ -6,10 +6,11 @@
   "type": "module",
   "main": "",
   "scripts": {
-    "build:dev": "node build.js",
-    "build": "node build.js --prod",
+    "verify:archive": "node scripts/progress-archive.mjs verify",
+    "build:dev": "pnpm run verify:archive && node build.js",
+    "build": "pnpm run verify:archive && node build.js --prod",
     "pack": "pnpm run build && node pack.js",
-    "test": "vitest run",
+    "test": "pnpm run verify:archive && vitest run",
     "test:watch": "vitest",
     "docs:verify": "node scripts/docs/verify-docs.mjs"
   },

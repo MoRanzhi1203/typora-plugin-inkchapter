@@ -45,6 +45,139 @@ export const BLOCK_GAP_IMAGE_ONLY_INVENTORY_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-B
 /** §12 — the gap identity audit event (identity stability across 15→9→4→3). */
 export const BLOCK_GAP_IDENTITY_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-BLOCK-GAP-IDENTITY-AUDIT'
 
+/** TRAE §21 — the ONE canonical block-gap target audit event. */
+export const BLOCK_GAP_TARGET_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-BLOCK-GAP-TARGET-AUDIT'
+
+/** TRAE §9 — why a two-boundary gap could not be built (never a block fallback). */
+export type BlockGapFailClosedReason =
+  | 'PREVIOUS_BOUNDARY_MISSING'
+  | 'NEXT_BOUNDARY_MISSING'
+  | 'BOTH_BOUNDARIES_MISSING'
+
+/** TRAE §9 — the exact fail-closed reason for a gap whose sides did not both bind. */
+export const blockGapFailClosedReason = (
+  previousBound: boolean,
+  nextBound: boolean,
+): BlockGapFailClosedReason | null => {
+  if (previousBound && nextBound) return null
+  if (!previousBound && !nextBound) return 'BOTH_BOUNDARIES_MISSING'
+  return previousBound ? 'NEXT_BOUNDARY_MISSING' : 'PREVIOUS_BOUNDARY_MISSING'
+}
+
+// ── TRAE §22/§23/§24 — RENDERED blank-row FRAGMENT geometry ────────────────
+
+/** §22 — the fragment FILL class (ONE per real rendered blank row). */
+export const RENDERED_BLANK_ROW_FRAGMENT_CLASS = 'inkchapter-block-gap-fragment'
+
+/** §22 — the fragment CONTAINER class (the ONE semantic active visual). */
+export const RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS = 'inkchapter-block-gap-fragments'
+
+/**
+ * 原设计要求 A — the per-row ROLE on a continuous blank-run fragment:
+ *   `allowed` = the LEGAL allowance (passMaxBlankLines) — a faint neutral zone;
+ *   `excess`  = the rows the Warning actually owns — the warning colour + rail.
+ * The marker must show BOTH so a compliant allowance is never painted as a fault.
+ */
+export type RenderedBlankRowRole = 'allowed' | 'excess'
+
+/** The role attribute carried by every rendered blank-row fragment. */
+export const RENDERED_BLANK_ROW_ROLE_ATTR = 'data-ink-blank-role'
+
+/**
+ * 原设计要求 A — the non-intrusive COUNT chip painted on the group marker: the
+ * true visible blank-row total plus how many are EXCESS. Never a Markdown edit.
+ */
+export const BLANK_RUN_COUNT_CHIP_CLASS = 'inkchapter-blank-run-count'
+
+/** §24 — the minimum paintable fragment height; a row below it is skipped. */
+export const RENDERED_BLANK_ROW_FRAGMENT_MIN_HEIGHT_PX = 2
+
+/** §23 — one FILL_ONLY row fragment (document-local, relative to the container). */
+export interface RenderedBlankRowFragment {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/** §23 — the container rect covering the rendered blank-row union. */
+export interface RenderedBlankRowFragmentBox {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * §22/§23/§24 — turn the REAL rendered blank-row rects into N FILL_ONLY
+ * fragments (NEVER one single `[prev.bottom, next.top]` band). The container
+ * covers the row union; each fragment is aligned to ITS real row rect and uses
+ * the document text column width (falling back to the row's own width). Rows
+ * whose height is below the minimum are skipped — a fragment is never faked.
+ */
+export function computeRenderedBlankRowFragments(input: {
+  rowRects: ReadonlyArray<BlockGapRectLike | null>
+  contentColumns: { left: number; right: number } | null
+}): { container: RenderedBlankRowFragmentBox | null; fragments: RenderedBlankRowFragment[] } {
+  const rows = input.rowRects.filter((r): r is BlockGapRectLike => isUsableRect(r))
+  if (rows.length === 0) return { container: null, fragments: [] }
+  const top = Math.min(...rows.map(r => r.top))
+  const bottom = Math.max(...rows.map(r => r.bottom))
+  const rowLeft = Math.min(...rows.map(r => r.left))
+  const rowRight = Math.max(...rows.map(r => r.right))
+  const cols = input.contentColumns
+  const left = cols && Number.isFinite(cols.left) ? cols.left : rowLeft
+  const right = cols && Number.isFinite(cols.right) && cols.right > cols.left ? cols.right : rowRight
+  if (!(right > left) || !(bottom > top)) return { container: null, fragments: [] }
+
+  const fragments: RenderedBlankRowFragment[] = []
+  for (const r of rows) {
+    const height = r.bottom - r.top
+    if (!(height >= RENDERED_BLANK_ROW_FRAGMENT_MIN_HEIGHT_PX)) continue
+    fragments.push({
+      left: left - left,
+      top: r.top - top,
+      width: right - left,
+      height,
+    })
+  }
+  return {
+    container: { left, top, width: right - left, height: bottom - top },
+    fragments,
+  }
+}
+
+/** TRAE §11 — the horizontal authority of a painted gap band. */
+export type BlockGapHorizontalAuthority = 'DOCUMENT_TEXT_COLUMN' | 'BOUNDARY_UNION'
+
+/**
+ * TRAE §11 — the gap band's horizontal extent: the DOCUMENT text/content column
+ * when available, never the window / drawer / editor shell width.
+ */
+export function resolveBlockGapHorizontalExtent(input: {
+  textColumnLeft: number | null
+  contentLeft: number | null
+  contentRight: number | null
+  previousLeft: number | null
+  previousRight: number | null
+  nextLeft: number | null
+  nextRight: number | null
+}): { left: number; right: number; authority: BlockGapHorizontalAuthority } | null {
+  const lefts = [input.previousLeft, input.nextLeft].filter((v): v is number => v != null && Number.isFinite(v))
+  const rights = [input.previousRight, input.nextRight].filter((v): v is number => v != null && Number.isFinite(v))
+  const unionLeft = lefts.length > 0 ? Math.min(...lefts) : null
+  const unionRight = rights.length > 0 ? Math.max(...rights) : null
+  const columnLeft = input.textColumnLeft ?? input.contentLeft
+  const columnRight = input.contentRight
+  if (columnLeft != null && columnRight != null && columnRight > columnLeft) {
+    return { left: columnLeft, right: columnRight, authority: 'DOCUMENT_TEXT_COLUMN' }
+  }
+  if (unionLeft != null && unionRight != null && unionRight > unionLeft) {
+    return { left: unionLeft, right: unionRight, authority: 'BOUNDARY_UNION' }
+  }
+  return null
+}
+
 /**
  * §7/§8 — the minimum paintable gap height. Below this the two block boxes are
  * effectively touching (no visual band to paint), so the gap visual is refused
@@ -302,4 +435,99 @@ export const BLOCK_GAP_VISUAL_V1_COVERAGE_LABELS: Record<BlockGapVisualV1Coverag
 export function formatBlockGapVisualV1CoverageReport(coverage: BlockGapVisualV1Coverage): string[] {
   return (Object.keys(BLOCK_GAP_VISUAL_V1_COVERAGE_LABELS) as BlockGapVisualV1CoverageKey[])
     .map(k => `${BLOCK_GAP_VISUAL_V1_COVERAGE_LABELS[k]}=${coverage[k]}`)
+}
+
+// ── TRAE §22 — the canonical locator closure gate family ────────────────────
+
+/**
+ * Every one of these MUST stay 0 for the internal blank-gap closure to pass.
+ * They are the detectors for the defects this round removes: fence-text code
+ * binding, one-sided gaps, zero-rect paint, EOF/placement leakage, wrong-block
+ * fallback and unscoped visual closure.
+ */
+export const BLOCK_GAP_CANONICAL_CLOSURE_GATE_KEYS = [
+  'anchorTextCodeFenceBindCount',
+  'previousBoundaryMissingCount',
+  'nextBoundaryMissingCount',
+  'gapRectWidthZeroCount',
+  'gapRectHeightZeroCount',
+  'zeroPaintedRectCount',
+  'secondClickRequiredCount',
+  'documentEndPlacementCount',
+  'wrongPreviousBlockHighlightCount',
+  'wrongNextBlockHighlightCount',
+  'unscopedVisualFalsePassCount',
+  'staleVisualCount',
+  'drawerScrollDriftGt1pxCount',
+  'drawerViewportAnchorChangedCount',
+] as const
+
+export type BlockGapCanonicalClosureGateKey = typeof BLOCK_GAP_CANONICAL_CLOSURE_GATE_KEYS[number]
+
+export const BLOCK_GAP_CANONICAL_CLOSURE_GATE_LABELS: Record<BlockGapCanonicalClosureGateKey, string> = {
+  anchorTextCodeFenceBindCount: 'INTERNAL_BLANK_LINE_ANCHOR_TEXT_CODE_FENCE_BIND_COUNT',
+  previousBoundaryMissingCount: 'INTERNAL_BLANK_LINE_PREVIOUS_BOUNDARY_MISSING_COUNT',
+  nextBoundaryMissingCount: 'INTERNAL_BLANK_LINE_NEXT_BOUNDARY_MISSING_COUNT',
+  gapRectWidthZeroCount: 'INTERNAL_BLANK_LINE_GAP_RECT_WIDTH_ZERO_COUNT',
+  gapRectHeightZeroCount: 'INTERNAL_BLANK_LINE_GAP_RECT_HEIGHT_ZERO_COUNT',
+  zeroPaintedRectCount: 'INTERNAL_BLANK_LINE_ZERO_PAINTED_RECT_COUNT',
+  secondClickRequiredCount: 'INTERNAL_BLANK_LINE_SECOND_CLICK_REQUIRED_COUNT',
+  documentEndPlacementCount: 'INTERNAL_BLANK_LINE_DOCUMENT_END_PLACEMENT_COUNT',
+  wrongPreviousBlockHighlightCount: 'INTERNAL_BLANK_LINE_WRONG_PREVIOUS_BLOCK_HIGHLIGHT_COUNT',
+  wrongNextBlockHighlightCount: 'INTERNAL_BLANK_LINE_WRONG_NEXT_BLOCK_HIGHLIGHT_COUNT',
+  unscopedVisualFalsePassCount: 'INTERNAL_BLANK_LINE_UNSCOPED_VISUAL_FALSE_PASS_COUNT',
+  staleVisualCount: 'INTERNAL_BLANK_LINE_STALE_VISUAL_COUNT',
+  drawerScrollDriftGt1pxCount: 'INTERNAL_BLANK_LINE_CLICK_DRAWER_SCROLL_DRIFT_GT_1PX_COUNT',
+  drawerViewportAnchorChangedCount: 'INTERNAL_BLANK_LINE_CLICK_DRAWER_VIEWPORT_ANCHOR_CHANGED_COUNT',
+}
+
+export function createBlockGapCanonicalClosureGates(): Record<BlockGapCanonicalClosureGateKey, number> {
+  const out = {} as Record<BlockGapCanonicalClosureGateKey, number>
+  for (const k of BLOCK_GAP_CANONICAL_CLOSURE_GATE_KEYS) out[k] = 0
+  return out
+}
+
+export function evaluateBlockGapCanonicalClosureGates(
+  counters: Readonly<Record<string, number>>,
+): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+  const failing = BLOCK_GAP_CANONICAL_CLOSURE_GATE_KEYS.filter(k => (counters[k] ?? 0) !== 0)
+  return {
+    decision: failing.length === 0 ? 'PASS' : 'FAIL',
+    failCount: failing.length,
+    failing: failing.map(k => BLOCK_GAP_CANONICAL_CLOSURE_GATE_LABELS[k]),
+  }
+}
+
+export function formatBlockGapCanonicalClosureGateReport(counters: Readonly<Record<string, number>>): string[] {
+  return BLOCK_GAP_CANONICAL_CLOSURE_GATE_KEYS.map(k => `${BLOCK_GAP_CANONICAL_CLOSURE_GATE_LABELS[k]}=${counters[k] ?? 0}`)
+}
+
+/** §22 — the positive runtime coverage the internal blank-gap closure needs. */
+export const BLOCK_GAP_CANONICAL_CLOSURE_COVERAGE_REQUIREMENTS: Readonly<Record<string, number>> = {
+  INTERNAL_BLANK_LINE_WARNING_RUNTIME_COUNT: 1,
+  INTERNAL_BLANK_LINE_PREVIOUS_BOUNDARY_RESOLVED_COUNT: 1,
+  INTERNAL_BLANK_LINE_NEXT_BOUNDARY_RESOLVED_COUNT: 1,
+  INTERNAL_BLANK_LINE_PREVIOUS_CODE_CANONICAL_BIND_COUNT: 1,
+  INTERNAL_BLANK_LINE_GAP_RECT_COUNT: 1,
+  INTERNAL_BLANK_LINE_ACTIVE_FILL_COUNT: 1,
+  INTERNAL_BLANK_LINE_FIRST_CLICK_ACTIVE_RUNTIME_COUNT: 1,
+  INTERNAL_BLANK_LINE_SCROLL_TARGET_IS_GAP_COUNT: 1,
+  INTERNAL_BLANK_LINE_SCOPED_VISUAL_CLOSURE_PASS_COUNT: 1,
+  INTERNAL_BLANK_LINE_DYNAMIC_DISAPPEAR_RUNTIME_COUNT: 1,
+  INTERNAL_BLANK_LINE_DYNAMIC_REAPPEAR_RUNTIME_COUNT: 1,
+}
+
+export function emptyBlockGapCanonicalClosureCoverage(): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const k of Object.keys(BLOCK_GAP_CANONICAL_CLOSURE_COVERAGE_REQUIREMENTS)) out[k] = 0
+  return out
+}
+
+export function evaluateBlockGapCanonicalClosureCoverage(
+  counters: Readonly<Record<string, number>>,
+): { satisfied: boolean; unmet: string[] } {
+  const unmet = Object.entries(BLOCK_GAP_CANONICAL_CLOSURE_COVERAGE_REQUIREMENTS)
+    .filter(([k, min]) => (counters[k] ?? 0) < min)
+    .map(([k]) => k)
+  return { satisfied: unmet.length === 0, unmet }
 }

@@ -379,6 +379,20 @@ describe('R9-HEADING-10 — scope discipline (no global heading pollution, Drawe
     }
   })
 
+  it('the reason-chip container sizes to its labels (never a one-glyph column)', () => {
+    // V5.14-R8 R4 ROOT — the marker wrapper is a 0×0 absolute box, so an
+    // absolutely-positioned chip with `width:auto` would shrink-to-fit to its
+    // MINIMUM content width (one glyph) and collapse into a vertical column.
+    // The container MUST size with `max-content` and MUST NOT clamp with
+    // `max-width:100%` (which resolves against the same 0-wide containing block).
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    const start = css.indexOf('.inkchapter-heading-diagnostic-reason {')
+    expect(start).toBeGreaterThanOrEqual(0)
+    const rule = css.slice(start, css.indexOf('}', start))
+    expect(rule).toContain('width: max-content')
+    expect(rule).not.toContain('max-width: 100%')
+  })
+
   it('the Drawer / Problems Control gates stay 0 (nothing in R9 touches them)', () => {
     const w = makeWorld()
     host = w.h

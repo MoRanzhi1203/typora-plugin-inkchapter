@@ -78,16 +78,41 @@ export type DocumentBlockKind =
   | 'thematic-break'
 
 /**
+ * TRAE — the CANONICAL (DOM-resolvable) object kinds a gap boundary can own.
+ * These are the only kinds with a `block:<kind>:<ordinal>` authority, so they
+ * bind by canonical identity — never by fence/text guessing.
+ */
+export type CanonicalGapBoundaryKind = 'code' | 'table' | 'formula'
+
+/**
+ * TRAE §8.1/§8.4 — map a source block kind to its canonical object kind, or null
+ * when the kind has no canonical ordinal authority (heading / paragraph / list /
+ * blockquote bind through the existing source-line + verified-anchor ladder).
+ */
+export function canonicalGapBoundaryKind(kind: DocumentBlockKind): CanonicalGapBoundaryKind | null {
+  return kind === 'code' || kind === 'table' || kind === 'formula' ? kind : null
+}
+
+/**
  * §7/§33 — ONE proven gap between two sibling content blocks. Every field is
  * derived from the canonical source line map (never from the DOM).
  */
 export interface DocumentBlockGap {
   previousBlockIdentity: string
   previousBlockKind: DocumentBlockKind
+  /**
+   * TRAE §7 — the canonical object kind + the document-order ordinal among runs
+   * of that SAME kind. `block:<kind>:<ordinal>` is the ONLY binding authority for
+   * a canonical boundary block; a Markdown fence text (`"```"`) never is.
+   */
+  previousBlockCanonicalKind: CanonicalGapBoundaryKind | null
+  previousBlockCanonicalOrdinal: number | null
   /** 0-based source line of the previous block's first content line. */
   previousBlockStartLine: number
   nextBlockIdentity: string
   nextBlockKind: DocumentBlockKind
+  nextBlockCanonicalKind: CanonicalGapBoundaryKind | null
+  nextBlockCanonicalOrdinal: number | null
   /** 0-based source line of the next block's first content line. */
   nextBlockStartLine: number
   previousBlockSourceEnd: number
@@ -484,29 +509,60 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     runs.push({ start, end: i - 1 })
   }
 
-  // §20 — the identity ordinal: the Nth block (document order) sharing the same
-  // (kind, normalized first-line text). Text-based, so inserting / removing
-  // BLANK LINES never changes a block's identity (Hard Gate
+  // ── TRAE §7/§8.1 — the canonical `block:<kind>:<ordinal>` ordinal of each run:
+  // the document-order index among runs of the SAME canonical object kind. This is
+  // the SOURCE-side counterpart of the diagnostics authority's canonical identity.
+  const runKindOf = (r: number): DocumentBlockKind => classOf[runs[r].start].kind
+  const canonicalOrdinalOf: Array<number | null> = []
+  const canonicalCounters = new Map<CanonicalGapBoundaryKind, number>()
+  for (let r = 0; r < runs.length; r++) {
+    const ck = canonicalGapBoundaryKind(runKindOf(r))
+    if (ck == null) { canonicalOrdinalOf.push(null); continue }
+    // TRAE §7 — a run that CONTINUES the same canonical source block keeps the
+    // previous ordinal instead of consuming a new one: an empty fence's interior
+    // blank line splits it into two runs, but BOTH are the SAME `pre.md-fences`
+    // and therefore the SAME `block:code:<ordinal>`.
+    const continuesSameBlock = r > 0
+      && runs[r - 1].end === runs[r].start - 2
+      && classOf[runs[r].start - 1]?.protectedRegion != null
+      && canonicalGapBoundaryKind(runKindOf(r - 1)) === ck
+    if (continuesSameBlock) {
+      canonicalOrdinalOf.push(canonicalOrdinalOf[r - 1] ?? 0)
+      continue
+    }
+    const ordinal = canonicalCounters.get(ck) ?? 0
+    canonicalCounters.set(ck, ordinal + 1)
+    canonicalOrdinalOf.push(ordinal)
+  }
+
+  // §20 — the stable block identity. TRAE §3/§7 — a CANONICAL object boundary
+  // (code / table / formula) is identified by its canonical `block:<kind>:<ordinal>`
+  // form, NEVER by its non-unique Markdown first line (a fenced code block's first
+  // line is literally "```", so a fence text is not an identity authority). Every
+  // other kind keeps the ordinal-suffixed source-text identity, so inserting /
+  // removing BLANK LINES never changes a block's identity (Hard Gate
   // INTERNAL_BLANK_LINE_UNSTABLE_IDENTITY_COUNT / EDIT_DUPLICATE).
   const ordinalByKey = new Map<string, number>()
-  const identityOfRun = (run: { start: number; end: number }): { identity: string; kind: DocumentBlockKind; anchor: string } => {
-    const kind = classOf[run.start].kind
-    const keyText = normalizeIdentityText(lines[run.start].text)
-    const key = `${kind}:${keyText}`
-    const ordinal = ordinalByKey.get(key) ?? 0
-    ordinalByKey.set(key, ordinal + 1)
-    return {
-      identity: `${key}#${ordinal}`,
-      kind,
-      anchor: nextBlockAnchorText(kind, lines, run.start, run.end),
+  const runIdentities = runs.map((run, r): { identity: string; kind: DocumentBlockKind; anchor: string } => {
+    const kind = runKindOf(r)
+    const ck = canonicalGapBoundaryKind(kind)
+    const canonicalOrdinal = canonicalOrdinalOf[r]
+    let identity: string
+    if (ck != null && canonicalOrdinal != null) {
+      identity = `block:${ck}:${canonicalOrdinal}`
+    } else {
+      const keyText = normalizeIdentityText(lines[run.start].text)
+      const key = `${kind}:${keyText}`
+      const ordinal = ordinalByKey.get(key) ?? 0
+      ordinalByKey.set(key, ordinal + 1)
+      identity = `${key}#${ordinal}`
     }
-  }
+    return { identity, kind, anchor: nextBlockAnchorText(kind, lines, run.start, run.end) }
+  })
 
   const gaps: DocumentBlockGap[] = []
   let runIdx = 0
   let cursor = 0
-  // Pre-compute identities in DOCUMENT ORDER so the ordinal is deterministic.
-  const runIdentities = runs.map(r => identityOfRun(r))
 
   while (cursor < n) {
     if (!classOf[cursor].blank) { cursor++; continue }
@@ -538,9 +594,13 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     gaps.push({
       previousBlockIdentity: runIdentities[runIdx].identity,
       previousBlockKind: runIdentities[runIdx].kind,
+      previousBlockCanonicalKind: canonicalGapBoundaryKind(runIdentities[runIdx].kind),
+      previousBlockCanonicalOrdinal: canonicalOrdinalOf[runIdx] ?? null,
       previousBlockStartLine: prevRun.start,
       nextBlockIdentity: runIdentities[runIdx + 1].identity,
       nextBlockKind: runIdentities[runIdx + 1].kind,
+      nextBlockCanonicalKind: canonicalGapBoundaryKind(runIdentities[runIdx + 1].kind),
+      nextBlockCanonicalOrdinal: canonicalOrdinalOf[runIdx + 1] ?? null,
       nextBlockStartLine: nextRun.start,
       previousBlockSourceEnd: lines[before].end,
       nextBlockSourceStart: lines[after].start,

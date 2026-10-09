@@ -1,5 +1,5 @@
 <!--
-Document Diagnostics smoke fixture — CODE INTEGRITY / CAPTION / NUMBERING (P1).
+Document Diagnostics smoke fixture -- CODE INTEGRITY / CAPTION / NUMBERING (P1).
 Expected (uniquely judgeable; FRESH window, InkChapter loaded):
   CODE_MISSING_NAME               = 1  (no caption/title name on the code block)
   CODE_MISSING_LANGUAGE           = 1  (the first fence has NO language tag)
@@ -11,6 +11,8 @@ Expected (uniquely judgeable; FRESH window, InkChapter loaded):
   CODE_CAPTION_FORMAT_INVALID     = 0
   CODE_NUMBER_DUPLICATE           = 0
   CODE_NUMBER_ORDER_INVALID       = 0
+  EXCESSIVE_INTERNAL_BLANK_LINES  = 1  (3 blank lines between the empty fence and
+                                         the caption paragraph -- Block-Gap target)
 -->
 
 # Code Integrity Fixture
@@ -29,8 +31,23 @@ const hasLanguage = true
 
 ```
 
+
+
+
+
+
+
 代码 3 Manual prefix code caption
 
 ```js
 const trailing = 1
 ```
+
+
+
+
+
+
+
+
+

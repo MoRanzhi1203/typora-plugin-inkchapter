@@ -334,7 +334,7 @@ describe('V512R1-9/10 — dismiss keeps passive; multiple diagnostics merge', ()
     expect(headingHost().getHeadingMarkerCounters().headingDismissRemovesPassiveDiagnostic).toBe(0)
   })
 
-  it('V512R1-10: two diagnostics on ONE heading → one marker with the highest severity', () => {
+  it('V512R1-10: two diagnostics on ONE heading → one marker, EVERY label kept (R4)', () => {
     const w = makeWorld()
     host = w.h
     inject(host, [
@@ -344,15 +344,27 @@ describe('V512R1-9/10 — dismiss keeps passive; multiple diagnostics merge', ()
     headingHost().renderHeadingDiagnosticMarkers()
     const markers = document.querySelectorAll('.inkchapter-heading-diagnostic-marker')
     expect(markers.length).toBe(1)
+    // the soft FILL severity is the highest of the heading…
     expect(markers[0].getAttribute('data-ink-diagnostic-severity')).toBe('error')
     // V5.12-R9 §10 — one marker, and NO gutter rail/icon child any more.
     expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-marker__rail').length).toBe(0)
     expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-marker__icon').length).toBe(0)
     expect(markers[0].querySelectorAll('.inkchapter-heading-diagnostic-passive__fragment').length).toBeGreaterThan(0)
     expect(headingHost().getHeadingMarkerCounters().multipleHeadingMarkerOverlap).toBe(0)
-    // The active reason shows the CURRENTLY clicked diagnostic.
+    // ── V5.14-R8 R4 — the label is NEVER merged: BOTH diagnostics keep a pill,
+    // ordered by severity (error first), each carrying its OWN severity.
+    const items = Array.from(
+      document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'),
+    )
+    expect(items.map(el => el.textContent)).toEqual(['多余 H1', 'H2 → H4 · 缺 H3'])
+    expect(items.map(el => el.getAttribute('data-ink-diagnostic-severity'))).toEqual(['error', 'warning'])
+    // The active pass ADOPTS the passive container as-is (never rewrites it down to
+    // the single clicked diagnostic).
     headingHost().renderHeadingActiveEmphasisForTest('W1', headingDiag('W1', 'HEADING_LEVEL_GAP', 'warning', { previousLevel: 2, currentLevel: 4, missingLevels: [3] }) as never, w.heading)
-    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('H2 → H4 · 缺 H3')
+    const activeItems = Array.from(
+      document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'),
+    )
+    expect(activeItems.map(el => el.textContent)).toEqual(['多余 H1', 'H2 → H4 · 缺 H3'])
   })
 })
 
