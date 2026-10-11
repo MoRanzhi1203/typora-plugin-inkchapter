@@ -10,6 +10,9 @@
  * Pure contract: no DOM, no host state. See `DOCUMENT-DIAGNOSTIC-DRAWER-ORDER-AUDIT`.
  */
 import type { DiagnosticLocation, DocumentDiagnostic } from './diagnostics-types'
+// §2 — the STABLE rule priority is the ordering tie-break at an identical
+// position + severity (never the alphabetical rule id, which is not semantic).
+import { resolveRulePriority } from './document-diagnostic-copy-v1'
 
 export type DiagnosticSeverityV514 = 'error' | 'warning' | 'info'
 
@@ -299,6 +302,10 @@ export function compareDiagnosticTargetProjections(
   if (pa.subKey !== pb.subKey) return pa.subKey - pb.subKey
   const sr = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
   if (sr !== 0) return sr
+  // §2 — STABLE rule priority first, then the rule id / diagnostic id as the
+  // final deterministic fallback.
+  const pr = resolveRulePriority(a.ruleId) - resolveRulePriority(b.ruleId)
+  if (pr !== 0) return pr
   if (a.ruleId !== b.ruleId) return a.ruleId < b.ruleId ? -1 : 1
   if (a.diagnosticId !== b.diagnosticId) return a.diagnosticId < b.diagnosticId ? -1 : 1
   return a.targetIndex - b.targetIndex

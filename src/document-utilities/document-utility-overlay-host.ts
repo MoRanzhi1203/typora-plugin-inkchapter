@@ -514,6 +514,23 @@ import {
   type DocumentPositionContext,
   type DrawerOrderV514R1Counters,
 } from './document-diagnostic-drawer-order-v514-r1'
+// View Order V1 — the ONE sort-mode / type-filter / grouping authority for the
+// Drawer list (default = Markdown source position). Pure, no DOM.
+import {
+  DIAGNOSTIC_PROBLEM_TYPES,
+  DIAGNOSTIC_SORT_MODES,
+  DIAGNOSTIC_SORT_MODE_LABELS,
+  DIAGNOSTIC_PROBLEM_TYPE_LABELS,
+  filterProjectionsByProblemType,
+  groupProjectionsByProblemType,
+  isDiagnosticSortMode,
+  isDiagnosticTypeFilter,
+  resolveDrawerViewOrderLayout,
+  resolveProblemType,
+  sortProjections,
+  type DiagnosticSortMode,
+  type DiagnosticTypeFilter,
+} from './document-diagnostic-view-order-v1'
 // Target Group V1 §20 — the ONE provable gate/coverage authority for the
 // `target-group` interaction model (ONE diagnostic / ONE row / N members).
 import {
@@ -816,6 +833,9 @@ import {
   inlineHintIsSafe,
   type InlinePresentationV514R5Counters,
 } from './document-diagnostic-inline-presentation-v514-r5'
+// Copy Authority V1 — the redundancy authority used by the Drawer card so a fix
+// advice that restates the description is never shown twice.
+import { isRedundantDiagnosticCopy } from './document-diagnostic-copy-v1'
 // V5.14-R6 §4/§5/§6/§15/§28/§29 — the ONE Heading Diagnostic SEMANTIC COVERAGE
 // model shared by the body passive marker, the body active emphasis and the
 // left-outline projection.
@@ -2559,6 +2579,16 @@ export class DocumentUtilityOverlayHost {
   /** V1.1 — Drawer severity filter, shared with the Toolbar status segments. */
   private drawerFilter: DiagnosticsSeverityFilter = 'all'
   private drawerFiltersEl: HTMLDivElement | null = null
+  /** View Order V1 — the sort-mode / type-filter / grouping control strip. */
+  private drawerViewOrderEl: HTMLDivElement | null = null
+  /**
+   * View Order V1 — the Drawer's ORDER / TYPE-FILTER / GROUP preferences.
+   * `document` (source position) is the DEFAULT; a change is a STRUCTURAL_RENDER
+   * (part of the drawer structure signature) so the painted order always matches.
+   */
+  private drawerSortMode: DiagnosticSortMode = 'document'
+  private drawerTypeFilter: DiagnosticTypeFilter = 'all'
+  private drawerGrouped = false
   private drawerEmptyEl: HTMLDivElement | null = null
   /** V1.1 — most-recent located diagnostic row highlight (neutral/accent). */
   private lastLocatedDiagnosticId: string | null = null
@@ -9311,9 +9341,12 @@ export class DocumentUtilityOverlayHost {
 
   private buildDrawerProjections(): DiagnosticTargetProjection[] {
     const diagnostics = this.documentDiagnostics()
-    return sortProjectionsByDocumentPosition(
-      flattenDiagnosticsToProjections(diagnostics, this.buildDocumentPositionContext()),
-    )
+    const flat = flattenDiagnosticsToProjections(diagnostics, this.buildDocumentPositionContext())
+    // View Order V1 — the default `document` mode delegates to the frozen
+    // V5.14-R1 comparator (source position → severity → stable rule priority).
+    return this.drawerSortMode === 'document'
+      ? sortProjectionsByDocumentPosition(flat)
+      : sortProjections(flat, this.drawerSortMode)
   }
 
   /**
@@ -9464,21 +9497,32 @@ export class DocumentUtilityOverlayHost {
     filtered: readonly DiagnosticTargetProjection[],
   ): void {
     const c = this.countersDrawerOrderV514R1
-    if (countDocumentOrderInversions(all) > 0) c.documentOrderInversion++
-    if (!isOrderPreservingSubsequence(all, filtered)) c.filterRelativeOrderMutation++
-    const grouped = countMultiTargetGroupedInsteadOfPositionSorted(
-      sortProjectionsByDocumentPosition(all), all,
-    )
-    if (grouped > 0) c.multiTargetGroupedInsteadOfPositionSorted += grouped
-    const drift = countDocumentOrderDriftWithoutSourceChange(this.lastDrawerOrderProjections, all)
-    if (drift > 0) c.documentOrderDriftWithoutSourceChange += drift
+    // View Order V1 — the document-order contract is asserted ONLY in the default
+    // mode: a user-selected severity / type order INTENTIONALLY reorders rows.
+    const documentMode = this.drawerSortMode === 'document'
+    if (documentMode) {
+      if (countDocumentOrderInversions(all) > 0) c.documentOrderInversion++
+      if (!isOrderPreservingSubsequence(all, filtered)) c.filterRelativeOrderMutation++
+      const grouped = countMultiTargetGroupedInsteadOfPositionSorted(
+        sortProjectionsByDocumentPosition(all), all,
+      )
+      if (grouped > 0) c.multiTargetGroupedInsteadOfPositionSorted += grouped
+      const drift = countDocumentOrderDriftWithoutSourceChange(this.lastDrawerOrderProjections, all)
+      if (drift > 0) c.documentOrderDriftWithoutSourceChange += drift
+    }
+    // The drift BASELINE is always kept in document order, so switching view
+    // modes can never be mis-read as source-order drift.
+    const documentOrdered = sortProjectionsByDocumentPosition(all)
     const previous = this.lastDrawerOrderProjections
-    const summary = summarizeDrawerOrderAudit(previous, all)
-    this.lastDrawerOrderProjections = all.map(p => ({ ...p }))
+    const summary = summarizeDrawerOrderAudit(previous, documentOrdered)
+    this.lastDrawerOrderProjections = documentOrdered.map(p => ({ ...p }))
     emitRuntimeAudit(DRAWER_ORDER_AUDIT_EVENT, {
       documentKey: this.snapshot?.documentKey ?? null,
       snapshotRevision: this.snapshot?.revision ?? null,
       filter: this.drawerFilter,
+      sortMode: this.drawerSortMode,
+      typeFilter: this.drawerTypeFilter,
+      grouped: this.drawerGrouped,
       entryCount: summary.entryCount,
       entries: buildDrawerOrderAuditEntries(all),
       isMonotonicDocumentOrder: summary.isMonotonicDocumentOrder,
@@ -19091,6 +19135,11 @@ export class DocumentUtilityOverlayHost {
     filters.className = 'inkchapter-doc-drawer__filters'
     this.drawerFiltersEl = filters
     header.appendChild(filters)
+    // Row 3 — View Order V1: sort mode / problem-type filter / optional grouping.
+    const viewOrder = document.createElement('div')
+    viewOrder.className = 'inkchapter-doc-drawer__vieworder'
+    this.drawerViewOrderEl = viewOrder
+    header.appendChild(viewOrder)
     drawer.appendChild(header)
 
     const list = document.createElement('div')
@@ -19244,6 +19293,132 @@ export class DocumentUtilityOverlayHost {
       list.appendChild(btn)
     }
     filtersEl.appendChild(list)
+  }
+
+  /**
+   * View Order V1 — the sort-mode / problem-type-filter / optional-grouping
+   * control strip. It is ONE row: [排序 ▾] [类型 ▾] [分组]. Changing ANY of them
+   * is a STRUCTURAL_RENDER (they are part of the drawer structure signature), so
+   * the painted order always matches state. At a very narrow Drawer width the
+   * strip switches to a stacked layout (`data-layout="stacked"`).
+   */
+  private renderDrawerViewOrderControls(snapshot: DocumentDiagnosticsSnapshot | null, visible: boolean): void {
+    const host = this.drawerViewOrderEl
+    if (!host) return
+    host.replaceChildren()
+    host.hidden = !visible
+    if (!visible || !snapshot) return
+    // §6 — the measured Drawer content width drives the layout switch. `null` /
+    // 0 (unmeasured) stays `wide`; CSS `flex-wrap` still protects a narrow Drawer.
+    const measuredWidth = this.drawerEl?.clientWidth ?? this.drawerListEl?.clientWidth ?? null
+    host.setAttribute('data-layout', resolveDrawerViewOrderLayout(measuredWidth))
+
+    const diagnostics = this.documentDiagnostics()
+    const presentTypes = new Set(diagnostics.map(d => resolveProblemType(d.code)))
+
+    // ── 排序 ▾ ─────────────────────────────────────────────────────────────
+    host.appendChild(this.buildDrawerSelectControl({
+      label: '排序',
+      className: 'inkchapter-doc-drawer__sort-select',
+      dataAttr: 'data-sort',
+      value: this.drawerSortMode,
+      options: DIAGNOSTIC_SORT_MODES.map(mode => ({ value: mode, label: DIAGNOSTIC_SORT_MODE_LABELS[mode] })),
+      onChange: (value) => {
+        if (!isDiagnosticSortMode(value) || this.drawerSortMode === value) return
+        this.drawerSortMode = value
+        this.renderDrawer()
+      },
+    }))
+
+    // ── 类型 ▾ ('全部类型' + every present type) ────────────────────────────
+    const typeOptions: Array<{ value: DiagnosticTypeFilter; label: string }> = [{ value: 'all', label: '全部类型' }]
+    for (const t of DIAGNOSTIC_PROBLEM_TYPES) {
+      if (presentTypes.has(t) || this.drawerTypeFilter === t) {
+        typeOptions.push({ value: t, label: DIAGNOSTIC_PROBLEM_TYPE_LABELS[t] })
+      }
+    }
+    host.appendChild(this.buildDrawerSelectControl({
+      label: '类型',
+      className: 'inkchapter-doc-drawer__type-select',
+      dataAttr: 'data-type',
+      value: this.drawerTypeFilter,
+      options: typeOptions,
+      onChange: (value) => {
+        if (!isDiagnosticTypeFilter(value) || this.drawerTypeFilter === value) return
+        this.drawerTypeFilter = value
+        this.renderDrawer()
+      },
+    }))
+
+    // ── 分组 (compact toggle with an explicit ON/OFF state) ─────────────────
+    const groupBtn = document.createElement('button')
+    groupBtn.type = 'button'
+    groupBtn.className = 'inkchapter-doc-drawer__group-toggle'
+    groupBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    groupBtn.setAttribute('data-group-toggle', 'true')
+    groupBtn.classList.toggle('is-active', this.drawerGrouped)
+    groupBtn.setAttribute('aria-pressed', String(this.drawerGrouped))
+    groupBtn.setAttribute('aria-label', this.drawerGrouped ? '分组：开' : '分组：关')
+    groupBtn.title = this.drawerGrouped ? '分组：开' : '分组：关'
+    const groupMark = document.createElement('span')
+    groupMark.className = 'inkchapter-doc-drawer__group-toggle-mark'
+    groupMark.setAttribute('aria-hidden', 'true')
+    groupMark.textContent = this.drawerGrouped ? '✓' : ''
+    const groupText = document.createElement('span')
+    groupText.className = 'inkchapter-doc-drawer__group-toggle-text'
+    groupText.textContent = '分组'
+    groupBtn.append(groupMark, groupText)
+    groupBtn.addEventListener('click', () => {
+      this.drawerGrouped = !this.drawerGrouped
+      this.renderDrawer()
+    })
+    host.appendChild(groupBtn)
+  }
+
+  /** View Order V1 §1 — ONE labelled `<select>` control in the view-order strip. */
+  private buildDrawerSelectControl(input: {
+    label: string
+    className: string
+    dataAttr: string
+    value: string
+    options: ReadonlyArray<{ value: string; label: string }>
+    onChange: (value: string) => void
+  }): HTMLLabelElement {
+    const wrap = document.createElement('label')
+    wrap.className = 'inkchapter-doc-drawer__control'
+    const caption = document.createElement('span')
+    caption.className = 'inkchapter-doc-drawer__control-label'
+    caption.textContent = input.label
+    const select = document.createElement('select')
+    select.className = `inkchapter-doc-drawer__select ${input.className}`
+    select.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    select.setAttribute(input.dataAttr, input.value)
+    select.setAttribute('aria-label', input.label)
+    for (const opt of input.options) {
+      const el = document.createElement('option')
+      el.value = opt.value
+      el.textContent = opt.label
+      select.appendChild(el)
+    }
+    select.value = input.value
+    select.addEventListener('change', () => input.onChange(select.value))
+    wrap.append(caption, select)
+    return wrap
+  }
+
+  /** View Order V1 §5 — one problem-type group header (decoration, not a row). */
+  private buildDrawerGroupHeader(label: string, count: number): HTMLElement {
+    const el = document.createElement('div')
+    el.className = 'inkchapter-doc-drawer__group-header'
+    el.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    const text = document.createElement('span')
+    text.className = 'inkchapter-doc-drawer__group-label'
+    text.textContent = label
+    const n = document.createElement('span')
+    n.className = 'inkchapter-doc-drawer__group-count'
+    n.textContent = String(count)
+    el.append(text, n)
+    return el
   }
 
   // ── Drawer Viewport Stability V1 §11–§16/§27/§32 ───────────────────────────
@@ -19428,7 +19603,7 @@ export class DocumentUtilityOverlayHost {
       const detail = typeof diag?.detail === 'string' ? diag.detail : ''
       return `${p.diagnosticId}#${p.targetIndex}#${severity}#${code}#${message.length}:${detail.length}#${message}`
     })
-    return `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${this.drawerFilter}|${parts.join('>')}`
+    return `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${this.drawerFilter}|${this.drawerSortMode}|${this.drawerTypeFilter}|${this.drawerGrouped}|${parts.join('>')}`
   }
 
   /** §32/§33 — emit the ONE drawer viewport audit at every render / patch boundary. */
@@ -19861,6 +20036,7 @@ export class DocumentUtilityOverlayHost {
     const activeKey = this.opts.ctx.authority.getDocumentKey()
     if (!snapshot || snapshot.documentKey == null || snapshot.documentKey !== activeKey) {
       this.renderDrawerFilterTabs(snapshot, false)
+      this.renderDrawerViewOrderControls(snapshot, false)
       // §10 — a stale snapshot IS a structural change (the list content is invalid).
       this.drawerStructuralRenderSinceClick = true
       this.drawerRowMountGeneration++
@@ -19891,7 +20067,10 @@ export class DocumentUtilityOverlayHost {
     // §5/§8/§16 — decide the update MODE from the STRUCTURE signature BEFORE any
     // DOM write. `ACTIVE_PATCH` (row set unchanged) must NEVER rebuild the list.
     const projections = this.buildDrawerProjections()
-    const filtered = filterProjectionsBySeverity(projections, this.drawerFilter)
+    const severityFiltered = filterProjectionsBySeverity(projections, this.drawerFilter)
+    // View Order V1 — the TYPE filter is applied AFTER the severity filter; both
+    // preserve order (a filter never reorders survivors).
+    const filtered = filterProjectionsByProblemType(severityFiltered, this.drawerTypeFilter)
     this.recordDrawerOrderFacts(projections, filtered)
     this.measureTargetGroupDrawerFacts(projections, filtered)
     const structureSignature = this.computeDrawerStructureSignature(filtered)
@@ -19971,6 +20150,7 @@ export class DocumentUtilityOverlayHost {
     this.pendingDrawerViewportCapture = viewportBefore
     this.drawerStructuralRenderSinceClick = true
     this.renderDrawerFilterTabs(snapshot, documentDiagnostics.length > 0)
+    this.renderDrawerViewOrderControls(snapshot, documentDiagnostics.length > 0)
     this.drawerListEl.replaceChildren()
     this.drawerRowMountGeneration++
     if (documentDiagnostics.length === 0) {
@@ -19989,6 +20169,15 @@ export class DocumentUtilityOverlayHost {
       none.className = 'inkchapter-doc-drawer__item--empty'
       none.textContent = '当前筛选下没有问题'
       this.drawerListEl.appendChild(none)
+    } else if (this.drawerGrouped) {
+      // View Order V1 §5 — optional grouping by problem type. The groups are a
+      // presentation overlay; the item order inside each group is preserved.
+      for (const group of groupProjectionsByProblemType(filtered)) {
+        this.drawerListEl.appendChild(this.buildDrawerGroupHeader(group.label, group.items.length))
+        for (const p of group.items) {
+          this.drawerListEl.appendChild(this.buildDrawerItem(p))
+        }
+      }
     } else {
       for (const p of filtered) {
         this.drawerListEl.appendChild(this.buildDrawerItem(p))
@@ -28250,7 +28439,21 @@ export class DocumentUtilityOverlayHost {
       : null
     const message = presentation?.drawerTitle ?? d?.message ?? p.ruleId
     const detailText = presentation?.drawerDetail ?? d?.detail ?? null
-    item.setAttribute('aria-label', `${detailText ? detailText + '，' : ''}${message}`)
+    const suggestionText = presentation?.drawerSuggestion ?? null
+    // §1 — the card shows ONE complete description by default: the factual detail
+    // when present, otherwise the canonical suggestion.
+    const descriptionText = detailText != null && detailText.trim() !== ''
+      ? detailText
+      : (suggestionText ?? '')
+    // §2 — a fix advice is offered as an EXPANDABLE detail only when it adds
+    // information (never a semantic duplicate of the description).
+    const extraSuggestion = suggestionText != null && suggestionText.trim() !== ''
+      && !isRedundantDiagnosticCopy(descriptionText, suggestionText)
+      ? suggestionText
+      : null
+    item.setAttribute('aria-label', `${descriptionText ? descriptionText + '，' : ''}${message}`)
+    // The full copy stays reachable without expanding (native tooltip).
+    if (extraSuggestion) item.title = `${descriptionText}\n${extraSuggestion}`
     // ── V5.14-R8 §9/§11 — the ACTIVE row derives from the ONE V2 authority, so a
     // dismissed target can never keep a selected-looking row and a switch moves
     // the row in the SAME render. The FOCUS ring is a SEPARATE authority.
@@ -28274,11 +28477,38 @@ export class DocumentUtilityOverlayHost {
     msg.className = 'inkchapter-doc-drawer__item-msg'
     msg.textContent = message
     body.appendChild(msg)
-    if (detailText) {
+    if (descriptionText) {
       const detail = document.createElement('div')
       detail.className = 'inkchapter-doc-drawer__item-detail'
-      detail.textContent = detailText
+      detail.textContent = descriptionText
       body.appendChild(detail)
+    }
+    if (extraSuggestion) {
+      // §4 — a complex diagnostic MAY expand its fix advice. The toggle is a
+      // nested control: its activation is contained (never a locate) and the
+      // suggestion starts COLLAPSED, so the default card stays one description.
+      const suggestion = document.createElement('div')
+      suggestion.className = 'inkchapter-doc-drawer__item-suggestion'
+      suggestion.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+      suggestion.hidden = true
+      suggestion.textContent = extraSuggestion
+      const more = document.createElement('button')
+      more.type = 'button'
+      more.className = 'inkchapter-doc-drawer__item-more'
+      more.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+      more.setAttribute('data-ink-detail-toggle', 'true')
+      more.setAttribute('aria-expanded', 'false')
+      more.textContent = '详情'
+      more.addEventListener('click', (ev) => {
+        // Contain the activation: never bubble to the row's locate handler.
+        ev.preventDefault()
+        ev.stopPropagation()
+        const open = suggestion.hidden
+        suggestion.hidden = !open
+        more.setAttribute('aria-expanded', String(open))
+        more.textContent = open ? '收起' : '详情'
+      })
+      body.append(more, suggestion)
     }
     item.appendChild(body)
 
@@ -28303,6 +28533,10 @@ export class DocumentUtilityOverlayHost {
       this.dispatchDrawerActivation(ev, p, 'CLICK')
     })
     item.addEventListener('keydown', (ev) => {
+      // §4 — a key event originating from the nested detail toggle must never
+      // trigger the row's locate activation (the toggle owns it).
+      const origin = ev.target as HTMLElement | null
+      if (origin != null && typeof origin.closest === 'function' && origin.closest('[data-ink-detail-toggle]') != null) return
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault()
         this.dispatchDrawerActivation(ev, p, 'KEYBOARD')
