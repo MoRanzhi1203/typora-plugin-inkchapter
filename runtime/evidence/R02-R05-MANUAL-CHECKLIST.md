@@ -1,6 +1,6 @@
 # R02–R05 人工确认清单（墨章 · 统一几何事务）
 
-> 对应任务：`docs/prompts/pending/TRAE-INKCHAPTER-UNIFIED-VISUAL-GEOMETRY-TRANSACTION-CLOSURE.md` §7 R02–R05
+> 对应能力：统一诊断视觉几何事务（见 `docs/modules/document-utilities.md`「统一呈现 / 几何事务」）§R02–R05
 > 适用构建：`dist/main.js = 4D3FA255EBCCA44215A28C0E0874253306685F87A0B6095A372A8303244305ED`（vault 已部署并真实加载，`initializationCount=1`）
 > 测试文档：
 > - `test/vault/Document-Diagnostics-Code-Integrity-Test.md` —— 含 **heading 诊断**（标题被动高亮 + 右侧标签），用于 R02–R05 的标题/chip 观察

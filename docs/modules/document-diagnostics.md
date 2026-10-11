@@ -25,6 +25,7 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
   - `DocumentDefinitionReferenceIndex`（`src/document-utilities/document-definition-reference-index.ts`）—— footnote 引用/定义 + reference-style link 引用/定义，一次 source revision 构建 ≤ 1 次；footnote 与 reference-link 不再各写一套全文 scanner。
   - `DocumentInlineLinkAuthority`（`src/document-utilities/document-inline-link-authority.ts`）—— `[text](target)` / `![alt](target)` 结构，一次 source revision 解析 ≤ 1 次。
 - `FRONTMATTER_MALFORMED` 因项目无 canonical YAML parser，按规格登记为 `DEFERRED_BY_SPEC`（reason = `CANONICAL_FRONTMATTER_PARSER_REQUIRED`），绝不用自制 regex 冒充 YAML 校验。
+- 内部空行过多 `EXCESSIVE_INTERNAL_BLANK_LINES` 的**发布判决以可视空行数为依据**（见 §4）。
 
 ## 3. Production Entry Points
 
@@ -46,6 +47,9 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - **Severity**：error / warning / hint 三档；severity palette 冻结（`src/style.scss`）。
 - **Stable Identity**：去重键 `category + code + targetIdentity`（`deduplicateDiagnostics`）；occurrence 级身份见 `document-diagnostic-source-occurrence-v512-r5.ts`。
 - **Location Authority / Presentation Authority / Active Transaction**：见 [../architecture/identity-presentation-authorities.md](../architecture/identity-presentation-authorities.md)。
+- **内部空行发布判决（`src/document-utilities/document-diagnostic-internal-blank-decision-v1.ts`）**：正常编辑（WYSIWYG）下**以可视空行数 `visibleBlankLineCount` 为发布依据**——`<=1` 不发布、`>=2` 发布且数量=可视数；`sourceBlankLineCount` 仅保留用于源码解析 / 位置映射 / 调试，**不直接决定告警**。数据来源按编辑模式区分：`wysiwyg` 取渲染行带、`source`（`.typora-sourceview-on`）取源码行数、`unknown` 或不可测量时**不猜测**（不发布）。模式切换由 `body` 的**只读** class 观察器触发重评估，禁止复用另一模式的遗留结果；不符合条件的诊断从**快照 / 计数 / 排序 / Active** 同步移除（非仅在 Drawer 隐藏）。
+- **Drawer 更新三态（`src/document-utilities/document-diagnostic-drawer-viewport-v1.ts`）**：`STRUCTURAL_UPDATE`（行集合 / 顺序 / 严重级别 / 筛选 / 文档变化 → 重建并捕获恢复视口）、`CONTENT_UPDATE`（行集合不变但**显示内容**变化 → 就地刷新既有行文字，不重建、不动滚动 / 选中 / Active）、`ACTIVE_PATCH`（结构与内容均不变）。判定由**结构签名**与**内容签名**（含真实显示文字）分离决定，纯内容变化绝不折叠为 `ACTIVE_PATCH`。
+- **真实 DOM 内容一致性门禁**：`DOCUMENT-DIAGNOSTIC-DRAWER-CONTENT-CONSISTENCY` 读回 Drawer 行的**真实 DOM 文字**并校验显示数 == 当前诊断的可视空行数（`checkedRowCount` / `mismatchCount`），禁止只比较内部对象即宣布 PASS。
 
 ## 5. 核心数据结构
 
@@ -70,6 +74,7 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - Drawer 顶部筛选固定为 全部 / 错误 / 警告 / 提示；内部 area 只作 metadata，不生成 Tab。
 - reason chip 由注册表 `scope` 决定（`shouldRenderReasonChip({code})`），无 `code === 'DOCUMENT_*'` 特判。
 - passive 与 active 视觉解耦（passive 永不等于 selection）。
+- Drawer 行**内容**变更走 `CONTENT_UPDATE` 就地刷新：保留滚动位置、选中状态与 Active 标记，不无差别重建面板。
 
 ## 8. Settings / Persistence
 

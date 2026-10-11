@@ -148,3 +148,46 @@ PROMPT_MIGRATION_RECORD_ENTRY_COUNT = 114
 - `.trae/project_rules.md`、`.trae/rules/inkchapter-development.md`：Agent 工作区规则（OTHER），保留。
 
 > 生成脚本与临时 inventory 位于 `.tmp/prompt-consolidation/`，本记录定稿后删除。
+
+## 2026-10-11 — 遗留提示词二次清理（MERGE_THEN_DELETE）
+
+> `scripts/docs/verify-docs.mjs` 以 `PROMPT_MD_REMAINING_COUNT` 硬门禁"任何遗留提示词 md"。
+> 本轮把 2026-10-05 整合后**仍残留**的 19 个一次性提示词文件清理干净（有效结论已由模块文档承载）。
+> 外部备份：`D:\TyporaPluginProjects\_prompt-backups\inkchapter-doc-cleanup-<stamp>\`。
+
+```text
+PROMPT_TOTAL_COUNT                  = 19
+PROMPT_ABSORBED_COUNT               = 19
+PROMPT_SUPERSEDED_COUNT             = 0
+PROMPT_REQUIREMENT_TO_ROADMAP_COUNT = 0
+PROMPT_DELETE_READY_COUNT           = 19
+PROMPT_DELETE_BLOCKED_COUNT         = 0
+PROMPT_MIGRATION_RECORD_ENTRY_COUNT = 19
+```
+
+| # | Old Prompt | Classification | Code Verification | Absorbed Into | Changelog Decision | Remaining Gap | Delete Decision |
+|---|---|---|---|---|---|---|---|
+| 115 | `docs/prompts/pending/TRAE-BLANK-ROW-PAINT-LAYER-GEOMETRY-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-diagnostics.md · document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 116 | `docs/prompts/pending/TRAE-CODE-EMPTY-BLOCK-GENERIC-PIPELINE-REBASE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 117 | `docs/prompts/pending/TRAE-DOCUMENT-DIAGNOSTICS-EMPTY-BLOCK-CONTAINER-PRESENTATION-CLOSURE-V6.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 118 | `docs/prompts/pending/TRAE-DOCUMENT-DIAGNOSTICS-EMPTY-BLOCK-SURFACE-PAINT-CLOSURE-V7.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 119 | `docs/prompts/pending/TRAE-DOCUMENT-DIAGNOSTICS-EMPTY-BLOCK-PERSISTENT-CARRIER-CLOSURE-V8.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 120 | `docs/prompts/pending/TRAE-DOCUMENT-DIAGNOSTICS-SOURCE-SYNTAX-LOCATION-PRESENTATION-CLOSURE-V4.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-diagnostics.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 121 | `docs/prompts/pending/TRAE-DOCUMENT-DIAGNOSTICS-SOURCE-SYNTAX-SOURCE-DOM-PROJECTION-COMMIT-CLOSURE-V5.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-diagnostics.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 122 | `docs/prompts/pending/TRAE-DOCUMENT-END-NEWLINE-MARKER-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-diagnostics.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 123 | `docs/prompts/pending/TRAE-INKCHAPTER-BLANK-DIAGNOSTIC-SOURCE-GEOMETRY-LIFECYCLE-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 124 | `docs/prompts/pending/TRAE-INKCHAPTER-BLANK-LINE-MARKER-GEOMETRY-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 125 | `docs/prompts/pending/TRAE-INKCHAPTER-CODE-COMPOSITE-MARKER-RESIZE-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 126 | `docs/prompts/pending/TRAE-INKCHAPTER-DIAGNOSTIC-ANNOTATION-OVERLAP-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 127 | `docs/prompts/pending/TRAE-INKCHAPTER-TYPORA-FREEZE-RIBBON-RUNTIME-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/sidebar-integration.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 128 | `docs/prompts/pending/TRAE-INKCHAPTER-UNIFIED-VISUAL-GEOMETRY-TRANSACTION-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 129 | `docs/prompts/pending/TRAE-RENDERED-BLANK-ROW-COORDINATE-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 130 | `docs/prompts/pending/trae-unified-diagnostic-geometry-closure.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 131 | `runtime/smoke/TRAE-INTERNAL-BLANK-GAP-CANONICAL-LOCATOR-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 132 | `runtime/smoke/TRAE-RENDERED-BLANK-ROW-AUTHORITY-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md · document-diagnostics.md | DOC_CONSOLIDATED | NONE | DELETE |
+| 133 | `runtime/smoke/TRAE-RENDERED-BLANK-ROW-COORDINATE-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | docs/modules/document-utilities.md | DOC_CONSOLIDATED | NONE | DELETE |
+
+### 引用改动（同轮）
+
+- `src/settings/ribbon-visibility.ts`、`runtime/evidence/R02-R05-MANUAL-CHECKLIST.md` 中的提示词路径引用改为指向 canonical 模块文档。
+- `scripts/docs/verify-docs.mjs`：把 `docs/maintenance/prompt-cleanup-history.md` 列入 `PROVENANCE_FILES`（该文件按设计列出已删除路径）；并修正行内代码（`` `[text](target)` ``）被误判为 Markdown 链接的假阳性（新增 `stripInlineCode`）。
