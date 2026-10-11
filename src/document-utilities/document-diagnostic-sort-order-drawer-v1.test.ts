@@ -455,30 +455,50 @@ describe('ACTIVE 空行视觉 — 跟随已提交快照（禁止复用点击时�
   })
 })
 
-// ── 显示数量：源码数量是规则 / Drawer 文案 / Active 标签的唯一事实 ────────────────
+// ── 显示数量：以「可视空行数」为判定依据（源码数量仅用于解析/映射/调试） ──────────
 
-describe('空行显示数量 — 源码数量唯一事实（source 与 rendered 背离时）', () => {
-  it('source=9 / rendered=1：Drawer 文案必须写 9，渲染数量仅作几何事实', async () => {
-    host = await openWith([blankDiag(9)], { markdown: '正文一。\n\n\n\n\n\n\n\n\n\n正文二。\n' })
-    const h = host as unknown as {
-      resolveRenderedBlankRowsForMeta(meta: Record<string, unknown>): unknown
-      registerRenderedBlankRowAuthorityFromSnapshot(s: unknown): void
-      runBlankRowPaintLayerAcceptanceDryRun(i: unknown): void
-    }
-    // The LIVE DOM proves only ONE rendered blank row for these 9 SOURCE blanks
-    // (Typora collapses consecutive blank lines) — that is the GEOMETRY axis.
+describe('空行显示数量 — 可视空行数判决（source 与 visible 背离时）', () => {
+  type ReconcileHost = {
+    resolveRenderedBlankRowsForMeta(meta: Record<string, unknown>): unknown
+    reconcileInternalBlankLineDiagnostics(s: unknown): unknown
+  }
+
+  it('source=4 / visible=1：不发布诊断（可视 <= 1），并从快照与计数中移除', async () => {
+    host = await openWith([blankDiag(4)], { markdown: '正文一。\n\n\n\n\n正文二。\n' })
+    const h = host as unknown as ReconcileHost
+    // The LIVE DOM proves only ONE VISIBLE blank band for these 4 SOURCE blanks
+    // (Typora collapses consecutive blank lines).
     h.resolveRenderedBlankRowsForMeta = () => ({
-      sourceBlankLineCount: 9, renderedBlankRowCount: 1, rows: [{ index: 0 }],
-      decision: 'VERIFIED', authority: 'RENDERED_DOM_BLANK_ROWS_V1', probe: null,
+      sourceBlankLineCount: 4, renderedBlankRowCount: 1, visibleBlankLineCount: 1,
+      rows: [{ index: 0 }], decision: 'VERIFIED', authority: 'RENDERED_DOM_BLANK_ROWS_V1', probe: null,
     })
-    h.runBlankRowPaintLayerAcceptanceDryRun = () => { /* geometry dry-run: not under test here */ }
-    h.registerRenderedBlankRowAuthorityFromSnapshot({
-      documentKey: 'doc:key', revision: 1, sourceRevision: 1, diagnostics: [blankDiag(9)],
+    const decided = h.reconcileInternalBlankLineDiagnostics({
+      documentKey: 'doc:key', revision: 1, sourceRevision: 1,
+      diagnostics: [blankDiag(4)], errorCount: 0, warningCount: 1, infoCount: 0,
+    }) as { diagnostics: Array<{ code: string }>; warningCount: number }
+    expect(decided.diagnostics.filter(d => d.code === 'EXCESSIVE_INTERNAL_BLANK_LINES')).toHaveLength(0)
+    expect(decided.warningCount).toBe(0)
+  })
+
+  it('source=4 / visible=2：发布警告，Drawer 文案写可视数量 2（不是源码 4）', async () => {
+    host = await openWith([blankDiag(4)], { markdown: '正文一。\n\n\n\n\n正文二。\n' })
+    const h = host as unknown as ReconcileHost
+    h.resolveRenderedBlankRowsForMeta = () => ({
+      sourceBlankLineCount: 4, renderedBlankRowCount: 2, visibleBlankLineCount: 2,
+      rows: [{ index: 0 }, { index: 1 }], decision: 'VERIFIED', authority: 'RENDERED_DOM_BLANK_ROWS_V1', probe: null,
     })
+    const decided = h.reconcileInternalBlankLineDiagnostics({
+      documentKey: 'doc:key', revision: 1, sourceRevision: 1,
+      diagnostics: [blankDiag(4)], errorCount: 0, warningCount: 1, infoCount: 0,
+    }) as { diagnostics: Array<Record<string, unknown>>; warningCount: number }
+    expect(decided.diagnostics.filter(d => d.code === 'EXCESSIVE_INTERNAL_BLANK_LINES')).toHaveLength(1)
+    expect(decided.warningCount).toBe(1)
+    ;(host as unknown as { snapshot: unknown }).snapshot = decided
     internals(host).renderDrawer()
     await flushRaf()
     const labels = rows().map(r => r.getAttribute('aria-label') ?? '')
-    expect(labels.some(l => l.includes('源码中存在 9 个连续空行'))).toBe(true)  // SOURCE, explicitly labelled
-    expect(labels.some(l => l.includes('1 个连续空行'))).toBe(false)            // the visible count is NEVER the Drawer copy
+    expect(labels.some(l => l.includes('2 个可视连续空行'))).toBe(true)   // VISIBLE count
+    expect(labels.some(l => l.includes('4 个可视连续空行'))).toBe(false)  // the SOURCE count is NEVER stated as the visible one
+    expect(labels.some(l => l.includes('源码中存在 4 个连续空行'))).toBe(false)
   })
 })

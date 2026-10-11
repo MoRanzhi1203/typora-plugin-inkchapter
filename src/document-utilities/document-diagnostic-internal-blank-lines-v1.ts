@@ -747,10 +747,12 @@ export function firstContentSourceLine(markdown: string | null | undefined): num
 }
 
 /**
- * §12 — the Drawer-facing detail copy. It carries the **SOURCE** blank count and is
- * ALWAYS explicitly labelled 「源码」: the source count is the rule's own fact, while
- * the user-visible (WYSIWYG) blank line count is a DIFFERENT number that the Active
- * label states. The two must never be presented as the same quantity.
+ * §12 — the SCANNER's raw SOURCE-count detail for a candidate gap. This is the
+ * source fact carried by the freshly-scanned candidate (used for source parsing /
+ * position mapping / debugging). The PUBLISHED diagnostic's user-facing copy is
+ * decided in `document-diagnostic-internal-blank-decision-v1.ts` and states the
+ * VISIBLE blank-line count — a source count must never be presented as the visible
+ * display count. Kept here because the scanner still owns the raw source fact.
  */
 export function internalBlankLineDetail(actualBlankLines: number): string {
   return `源码中存在 ${actualBlankLines} 个连续空行，建议压缩为 1 个空行。`

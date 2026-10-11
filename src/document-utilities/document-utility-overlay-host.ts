@@ -546,7 +546,7 @@ import {
   type TargetGroupV1CoverageKey,
 } from './document-diagnostic-target-group-v1'
 // Drawer Viewport Stability V1 — the ONE authority separating ACTIVE_PATCH from
-// STRUCTURAL_RENDER and preserving the Drawer scroll viewport.
+// STRUCTURAL_UPDATE and preserving the Drawer scroll viewport.
 import {
   createDrawerViewportV1Counters,
   createDrawerViewportV1CoverageCounters,
@@ -577,7 +577,6 @@ import {
   INTERNAL_BLANK_LINE_POLICY,
   analyzeInternalBlankLineGaps,
   internalBlankGapIdentity,
-  internalBlankLineDetail,
   protectedRegionKindAtLine,
   firstContentSourceLine,
   lastContentSourceLine,
@@ -589,6 +588,25 @@ import {
   type InternalBlankLineV1Counters,
   type InternalBlankLineV1Coverage,
 } from './document-diagnostic-internal-blank-lines-v1'
+// LIVE-UPDATE CLOSURE §1–§7 — the VISIBLE-based PUBLICATION DECISION: in normal
+// editing mode the `EXCESSIVE_INTERNAL_BLANK_LINES` rule is decided on the
+// measured VISIBLE blank-line bands (never the raw source count), and the mode
+// (WYSIWYG vs source) selects the data source. `<=1` visible → no diagnostic.
+import {
+  INTERNAL_BLANK_DECISION_AUDIT_EVENT,
+  INTERNAL_BLANK_DECISION_MODE_META_KEY,
+  INTERNAL_BLANK_PUBLISHED_COUNT_META_KEY,
+  INTERNAL_BLANK_SOURCE_COUNT_META_KEY,
+  createInternalBlankDecisionCoverage,
+  createInternalBlankDecisionGates,
+  decideInternalBlankPublication,
+  detectDocumentEditingMode,
+  evaluateInternalBlankDecisionGates,
+  formatInternalBlankDecisionCoverageReport,
+  formatInternalBlankDecisionGateReport,
+  internalBlankLineVisibleDetail,
+  type DocumentEditingMode,
+} from './document-diagnostic-internal-blank-decision-v1'
 // TRAE — the RENDERED BLANK ROW AUTHORITY (source candidate → rendered DOM
 // blank rows) + the split boundary decision algebra + the §39–§44 gates.
 import {
@@ -2331,6 +2349,16 @@ export function isHeadlessTestRuntime(): boolean {
 }
 
 /**
+ * §6 (content consistency) — the FIRST unsigned integer in a rendered Drawer copy
+ * (`… 存在 4 个可视连续空行 …` → 4). Used to read the ACTUAL displayed count back
+ * from the REAL DOM so a stale row can never be declared a PASS.
+ */
+function firstIntegerInText(text: string): number | null {
+  const m = /\d+/.exec(text)
+  return m == null ? null : Number.parseInt(m[0], 10)
+}
+
+/**
  * V3 — zero-rect broken-resource fallback: climb from the resource node to the
  * first real block ancestor that has non-empty layout (Typora block host),
  * returning null when none exists (caller keeps the node itself).
@@ -2585,7 +2613,7 @@ export class DocumentUtilityOverlayHost {
   private drawerViewOrderEl: HTMLDivElement | null = null
   /**
    * View Order V1 — the Drawer's ORDER / TYPE-FILTER / GROUP preferences.
-   * `document` (source position) is the DEFAULT; a change is a STRUCTURAL_RENDER
+   * `document` (source position) is the DEFAULT; a change is a STRUCTURAL_UPDATE
    * (part of the drawer structure signature) so the painted order always matches.
    */
   private drawerSortMode: DiagnosticSortMode = 'document'
@@ -2970,6 +2998,21 @@ export class DocumentUtilityOverlayHost {
    * consults (keyed by the gap's stable target identity). NEVER the source count.
    */
   private renderedBlankRowAuthority = new Map<string, { renderedBlankRowCount: number; displayDetail: string; warning: boolean; layoutEpoch: number }>()
+  // ── LIVE-UPDATE CLOSURE §1–§9 — the VISIBLE-based publication decision ─────
+  /** §9 — the hard gates of the visible-based publication decision (all 0). */
+  private countersInternalBlankDecision: Record<string, number> = createInternalBlankDecisionGates()
+  /** §9 — the positive coverage of the visible-based publication decision. */
+  private coverageInternalBlankDecision: Record<string, number> = createInternalBlankDecisionCoverage()
+  /**
+   * §5/§7 — the RAW (as-admitted) snapshot, kept so a MODE switch can re-evaluate
+   * the internal blank-line decision against the SAME source without a re-scan.
+   * `this.snapshot` stays the FILTERED snapshot every consumer reads.
+   */
+  private lastRawAdmittedSnapshot: DocumentDiagnosticsSnapshot | null = null
+  /** §7 — the editing mode the CURRENT decision ran in (mode-change detector). */
+  private lastInternalBlankEditingMode: DocumentEditingMode | null = null
+  /** §7 — the targeted body-class observer that re-evaluates on a mode switch. */
+  private internalBlankModeObserver: MutationObserver | null = null
   /** §25 — the monotonic reason-chip rect trace sequence (runtime forensics). */
   private reasonChipRectTraceSeq = 0
   /** §25 — the last traced chip rect per heading identity. */
@@ -2982,6 +3025,12 @@ export class DocumentUtilityOverlayHost {
     createDrawerViewportV1CoverageCounters()
   /** §5/§8 — the signature of the LAST structurally rendered Drawer list. */
   private lastDrawerStructureSignature: string | null = null
+  /**
+   * §6 — the LAST rendered DISPLAYED-content signature (title + description per
+   * row). Kept separate from the structure signature so a pure content change
+   * (detail / title / visible count) is a CONTENT_UPDATE, never an ACTIVE_PATCH.
+   */
+  private lastDrawerContentSignature: string | null = null
   /** §12 — the viewport captured at the last structural render / presentation change. */
   private pendingDrawerViewportCapture: DrawerViewportState | null = null
   /** §27 — the drawer row mount generation (proves a structural remount). */
@@ -3235,17 +3284,21 @@ export class DocumentUtilityOverlayHost {
     // V5.12-R6 §13 — capture the PREVIOUS snapshot's diagnostic ids BEFORE the
     // atomic replacement so a stale residue can be proven (never assumed).
     const previousDiagnosticIds = this.snapshot?.diagnostics.map(d => d.id) ?? []
-    this.snapshot = snapshot
-    // TRAE §26/§28/§50-R1 — (re)register the RENDERED blank-row count the Drawer
-    // projects for EVERY current internal blank gap, BEFORE the Drawer renders —
-    // so the IDLE list shows the RENDERED count (3), never the raw source line
-    // count (7). A gap the runtime cannot verify is pruned to the PENDING copy;
-    // a gone/changed gap can never keep a stale rendered count.
-    this.registerRenderedBlankRowAuthorityFromSnapshot(snapshot)
+    // LIVE-UPDATE CLOSURE §1–§7 — the RAW admitted snapshot is retained so a mode
+    // switch can re-evaluate against the SAME source; every consumer reads the
+    // FILTERED snapshot below.
+    this.lastRawAdmittedSnapshot = snapshot
+    // §5 — the ONE publication boundary: the internal blank-line diagnostics are
+    // decided on the VISIBLE count HERE (dropped entirely when `<=1`, re-counted
+    // to the visible number when `>=2`) so the snapshot, its severity counts, the
+    // Drawer list/order and the Active marker are ALL consistent. A diagnostic is
+    // never merely hidden in the Drawer.
+    const admitted = this.reconcileInternalBlankLineDiagnostics(snapshot)
+    this.snapshot = admitted
     // ── TRAE §13 Case B/C — LIVE resolve: the `DOCUMENT_TERMINAL_NEWLINE_MISSING`
     // diagnostic must appear / disappear with the SOURCE, never requiring a
     // document close+reopen. Its reintroduction is observed here.
-    const docEndNewlinePresent = snapshot?.diagnostics
+    const docEndNewlinePresent = admitted?.diagnostics
       .some(d => d.code === DOCUMENT_END_NEWLINE_MISSING_RULE) ?? false
     if (docEndNewlinePresent && !this.lastDocEndNewlineDiagnosticPresent) {
       // A re-appearance AFTER a real removal is a reintroduction; the first ever
@@ -3259,7 +3312,7 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.8 — snapshot updated and the located diagnostic no
     // longer exists → clear the active locate visual + row selection.
     if (this.lastLocatedDiagnosticId != null) {
-      const stillPresent = snapshot?.diagnostics.some(d => d.id === this.lastLocatedDiagnosticId) ?? false
+      const stillPresent = admitted?.diagnostics.some(d => d.id === this.lastLocatedDiagnosticId) ?? false
       if (!stillPresent) {
         // TRAE §13 Case B — capture the served rule BEFORE the teardown clears it.
         const wasDocEndVisual = this.lastDocEndVisualRule != null
@@ -3291,7 +3344,7 @@ export class DocumentUtilityOverlayHost {
     // ── V5.14-R8 §7.3 — the ACTIVE authority never outlives its diagnostic.
     // The IDLE commit increments the version, so every pending callback dies here.
     if (this.diagnosticInteractionState.phase === 'ACTIVE') {
-      const activePresent = snapshot?.diagnostics
+      const activePresent = admitted?.diagnostics
         .some(d => d.id === this.diagnosticInteractionState.diagnosticId) ?? false
       if (!activePresent) {
         const st = this.diagnosticInteractionState
@@ -3307,13 +3360,13 @@ export class DocumentUtilityOverlayHost {
         }
       }
     }
-    this.handleStrictSingleH1Popup(snapshot)
+    this.handleStrictSingleH1Popup(admitted)
     this.renderDiagnosticsButton()
     this.renderLockButton()
     // V5.12-R6 §11/§15/§19 — the empty-document short-circuit gates + audit are
     // measured at this SINGLE commit boundary (after the projection is derived
     // from the SAME snapshot, so UI-count parity is a real measurement).
-    this.commitEmptyDocumentShortCircuit(snapshot, previousDiagnosticIds)
+    this.commitEmptyDocumentShortCircuit(admitted, previousDiagnosticIds)
     if (this.drawerOpen) this.renderDrawer()
     // Internal Blank-Line Policy V1 §27/§33 — the source audit + the Toolbar
     // warning-count parity witness at the SAME commit boundary that drives the
@@ -3323,7 +3376,7 @@ export class DocumentUtilityOverlayHost {
     // INDEPENDENT of whether the Drawer is open (so the rendered order can be
     // verified without a GUI interaction).
     this.emitSourceOrderAudit(this.buildDrawerProjections())
-    this.checkInternalBlankLineToolbarParity(snapshot)
+    this.checkInternalBlankLineToolbarParity(admitted)
     // ── §5 (live-update closure) — the ACTIVE visual MUST follow the PUBLISHED
     // snapshot. A stable-id fact change (blank COUNT 2→4) keeps the diagnostic
     // identity, so the committed band + its count label would otherwise keep the
@@ -4204,6 +4257,22 @@ export class DocumentUtilityOverlayHost {
         }
       })
       this.diagnosticsMutationObserver.observe(editorRoot, { childList: true, characterData: true, subtree: true })
+    }
+
+    // ── LIVE-UPDATE CLOSURE §7 — the EDITING-MODE re-evaluation trigger. Typora
+    // toggles the `.typora-sourceview-on` class on `<body>` when switching between
+    // the WYSIWYG editor and source code mode; the internal blank-line decision must
+    // be re-evaluated against the NEW mode's data source (a result computed in the
+    // other mode is never reused). This is a READ-ONLY observer on ONE element's
+    // `class` attribute — it never writes any class back (no write-observe feedback
+    // loop) — and it is event-driven, never a timer / poll.
+    if (typeof document !== 'undefined' && document.body && typeof MutationObserver === 'function') {
+      this.internalBlankModeObserver = new MutationObserver(() => { this.reevaluateInternalBlankLineMode() })
+      this.internalBlankModeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+      this.disposables.push(() => {
+        this.internalBlankModeObserver?.disconnect()
+        this.internalBlankModeObserver = null
+      })
     }
 
     // Bind to the current document.
@@ -13149,11 +13218,13 @@ export class DocumentUtilityOverlayHost {
         sourceRevision: this.snapshot?.sourceRevision ?? null,
         decision: 'UNRESOLVED_SOURCE',
       })
-    } else if (renderedBlankRows.decision === 'VERIFIED' && renderedRowCount > 0) {
+    } else if (renderedBlankRows.decision === 'VERIFIED' && visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold) {
+      // §3 — the Drawer copy + the count label state the VISIBLE blank-line count
+      // (the number the publication decision was made on), never the source count.
       this.renderedBlankRowAuthority.set(gapTargetIdentity, {
         renderedBlankRowCount: renderedRowCount,
-        displayDetail: internalBlankLineDetail(actualBlankLines),
-        warning: actualBlankLines >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+        displayDetail: internalBlankLineVisibleDetail(visibleBlankLineCount),
+        warning: true,
         layoutEpoch: this.currentDocumentLayoutEpoch,
       })
     } else {
@@ -13306,10 +13377,12 @@ export class DocumentUtilityOverlayHost {
         container.appendChild(f)
         fragEls.push(f)
       })
-      // ONE count label — the VISIBLE blank line BAND count (§4): the number of
-      // distinct blank line bands the user actually sees. The SOURCE blank count is
-      // a DIFFERENT number and is stated (explicitly labelled 「源码」) only in the
-      // Drawer copy — never here. The rendered row/node count is a GEOMETRY fact.
+      // ONE count label — the VISIBLE blank line BAND count (§3/§4): the number of
+      // distinct blank line bands the user actually sees AND the number the
+      // publication decision was made on. The SOURCE blank count is a DIFFERENT,
+      // non-decision fact (kept only for source parsing / position mapping / debug)
+      // and is NEVER stated as the displayed count. The rendered row/node count is a
+      // GEOMETRY fact.
       const labelBlankCount = visibleBlankLineCount
       if (labelBlankCount > 0) {
         const chip = document.createElement('span')
@@ -13324,39 +13397,53 @@ export class DocumentUtilityOverlayHost {
       // V2 §B — the painted gap carrier carries its diagnostic severity so the
       // Unified Visual Closure reads the SAME facts as OneClick.
       this.blockGapActiveSeverity = severity
-      // ── §4 (live-update closure) — the ONE blank-band VISUAL CONSISTENCY record.
-      // The Active label / fragments / Drawer / rendered rows must ALL describe the
-      // SAME committed diagnostic version; a re-commit driven by a STALE diagnostic
-      // object (the original defect) is proven by `staleActiveVisualCount=1`.
+      // ── §9 (live-update closure) — the ONE blank-band BUSINESS + VISUAL
+      // CONSISTENCY record, redefined this round. The rule exists ONLY because the
+      // VISIBLE blank-line count is excessive; the published diagnostic, the Drawer
+      // copy and the Active label ALL state the VISIBLE count. A re-commit driven by
+      // a STALE diagnostic object is proven by `staleActiveVisualCount=1`, and a
+      // source count stated as the visible count by `SOURCE_STATED_AS_VISIBLE_COUNT=1`.
       {
         const live = this.liveDiagnosticFor(diagId)
-        const diagnosticBlankCount = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+        const diagnosticSourceBlankCount = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+        // §3 — the count the PUBLISHED diagnostic states (the visible count).
+        const publishedBlankCount = typeof meta.publishedBlankLineCount === 'number'
+          ? meta.publishedBlankLineCount
+          : visibleBlankLineCount
         const activeLabelBlankCount = labelBlankCount
         const paintedFragmentCount = fragEls.length
         const staleActiveVisualCount = live != null && live !== diag ? 1 : 0
         const sourceBlankLineCountUsed = actualBlankLines
-        // FOUR counts, TWO contracts (never conflated):
-        //   · the Active LABEL must equal the VISIBLE band count (§4);
-        //   · the painted fragments must equal the rendered rows (geometry);
-        //   · the SOURCE count used must equal the DIAGNOSTIC's own count (the rule);
-        //   · SOURCE vs VISIBLE are DIFFERENT axes and are never forced to be equal.
+        // The SOURCE count must NEVER be stated as the VISIBLE count (§9).
+        const sourceStatedAsVisibleCount = publishedBlankCount === sourceBlankLineCountUsed
+          && visibleBlankLineCount !== sourceBlankLineCountUsed ? 1 : 0
+        // BUSINESS + VISUAL contracts (never conflated):
+        //   · the rule is PUBLISHED iff the VISIBLE count is excessive (§2/§3);
+        //   · the published count == Active label == Drawer copy == the VISIBLE count;
+        //   · the painted fragments equal the rendered rows (geometry);
+        //   · the SOURCE axis stays consistent and is NEVER dressed as the visible one.
         const consistency = staleActiveVisualCount === 0
-          && diagnosticBlankCount != null
+          && visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold
+          && publishedBlankCount === visibleBlankLineCount
           && activeLabelBlankCount === visibleBlankLineCount
           && paintedFragmentCount === renderedRowCount
-          && sourceBlankLineCountUsed === diagnosticBlankCount
+          && sourceBlankLineCountUsed === diagnosticSourceBlankCount
+          && sourceStatedAsVisibleCount === 0
           ? 'PASS' : 'FAIL'
         this.lastBlankVisualConsistency = Object.freeze({
           DIAGNOSTIC_SOURCE_REVISION: this.snapshot?.sourceRevision ?? null,
           DIAGNOSTIC_SNAPSHOT_REVISION: this.snapshot?.revision ?? null,
           ACTIVE_VISUAL_REVISION: this.snapshot?.revision ?? null,
-          DIAGNOSTIC_BLANK_COUNT: diagnosticBlankCount,
+          DIAGNOSTIC_SOURCE_BLANK_COUNT: diagnosticSourceBlankCount,
+          PUBLISHED_DIAGNOSTIC_BLANK_COUNT: publishedBlankCount,
           SOURCE_BLANK_LINE_COUNT_USED: sourceBlankLineCountUsed,
           VISIBLE_BLANK_LINE_COUNT: visibleBlankLineCount,
           RENDERED_BLANK_ROW_COUNT: renderedRowCount,
-          DRAWER_DISPLAYED_BLANK_COUNT: diagnosticBlankCount,
+          DRAWER_DISPLAYED_BLANK_COUNT: publishedBlankCount,
           ACTIVE_LABEL_BLANK_COUNT: activeLabelBlankCount,
           ACTIVE_PAINTED_FRAGMENT_COUNT: paintedFragmentCount,
+          SOURCE_STATED_AS_VISIBLE_COUNT: sourceStatedAsVisibleCount,
+          RULE_VISIBLE_EXCESSIVE: visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
           STALE_ACTIVE_VISUAL_COUNT: staleActiveVisualCount,
           FINAL_BLANK_VISUAL_CONSISTENCY: consistency,
         })
@@ -13366,7 +13453,7 @@ export class DocumentUtilityOverlayHost {
             diagnosticId: diagId,
             ...this.lastBlankVisualConsistency,
             decision: consistency,
-            reason: 'BLANK_BAND_LABEL_FRAGMENT_DRAWER_SHARE_ONE_DIAGNOSTIC_VERSION',
+            reason: 'VISIBLE_COUNT_DECIDES_PUBLISH_LABEL_FRAGMENT_DRAWER_SHARE_ONE_VERSION',
           })
         }
       }
@@ -14598,74 +14685,209 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * §26/§28/§50-R1 — register the RENDERED blank-row count the Drawer projects
-   * for EVERY current internal blank gap (not only the clicked one), so the IDLE
-   * Drawer list shows the RENDERED count. The count is read from the LIVE
-   * WYSIWYG DOM between the two PHYSICALLY verified boundaries; when the runtime
-   * cannot prove it the record is pruned (the Drawer shows the PENDING copy) —
-   * the SOURCE line count is NEVER displayed as the rendered count.
+   * LIVE-UPDATE CLOSURE §1–§9 — the ONE internal blank-line PUBLICATION DECISION.
+   *
+   * ROOT CAUSE: the rule was published straight from the SOURCE blank-line count,
+   * so a document whose 4 source blank lines Typora renders as ONE visible blank
+   * line was wrongly warned. This method is the SINGLE boundary where the SOURCE
+   * facts and the VISIBLE DOM facts meet, so it:
+   *   · decides on the VISIBLE blank-line count in normal editing mode
+   *     (`<=1` visible → the diagnostic is DROPPED — from the snapshot, its
+   *     severity counts, the Drawer list/order AND the Active state — never merely
+   *     hidden in the Drawer);
+   *   · re-counts the published diagnostic + its Drawer/Active copy to the VISIBLE
+   *     number when `>=2`, keeping the SOURCE count only for source parsing /
+   *     position mapping / debugging;
+   *   · selects the DATA SOURCE by editing mode (source mode = source lines);
+   *   · NEVER guesses a visible count while the runtime cannot measure it;
+   *   · registers the Drawer / Active count authority for the survivors.
    */
-  private registerRenderedBlankRowAuthorityFromSnapshot(
+  private reconcileInternalBlankLineDiagnostics(
     snapshot: DocumentDiagnosticsSnapshot | null,
-  ): void {
+  ): DocumentDiagnosticsSnapshot | null {
+    if (snapshot == null) return null
+    const headless = isHeadlessTestRuntime()
+    const mode = detectDocumentEditingMode(typeof document !== 'undefined' ? document : null)
+    const modeChanged = mode !== this.lastInternalBlankEditingMode
+    this.lastInternalBlankEditingMode = mode
     const liveIdentities = new Set<string>()
-    for (const d of snapshot?.diagnostics ?? []) {
-      if (d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) continue
+    const kept: DocumentDiagnosticsSnapshot['diagnostics'][number][] = []
+    let touched = false
+    for (const d of snapshot.diagnostics) {
+      if (d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) { kept.push(d); continue }
       const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
-      if (targetIdentity === '') continue
-      liveIdentities.add(targetIdentity)
       const meta = (d.metadata ?? {}) as Record<string, unknown>
-      const result = this.resolveRenderedBlankRowsForMeta(meta)
-      // ── TRAE §6 — the REAL DOM probe is emitted at the SNAPSHOT COMMIT (not only
-      // on click), so merely OPENING the fixture yields the live Typora DOM
-      // structure that decides §7A (independent blank-row elements) vs §7B
-      // (geometry fallback). Forensic only — never a decision authority.
-      emitRuntimeAudit(RENDERED_BLANK_ROW_DOM_PROBE_EVENT, {
-        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      const sourceBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+      if (targetIdentity === '' || sourceBlankLines == null) {
+        // §7 — the SOURCE gap itself is unresolved: request ONE bounded re-parse;
+        // never publish a guess (the visible count cannot be proven either).
+        this.renderedBlankRowAuthority.delete(targetIdentity)
+        this.requestBoundedInternalBlankReparse('INTERNAL_BLANK_LINE_SOURCE_UNRESOLVED')
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLANK-SOURCE-UNRESOLVED', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          diagnosticId: d.id ?? null,
+          targetKey: targetIdentity,
+          sourceCountAuthority: 'UNRESOLVED_SOURCE',
+          mode,
+          sourceRevision: snapshot.sourceRevision ?? null,
+          decision: 'UNRESOLVED_SOURCE',
+        })
+        touched = true
+        continue
+      }
+      // §7 — the VISIBLE data source: rendered bands ONLY in WYSIWYG mode; in
+      // source mode the decision uses the source line count (every raw line is
+      // directly visible) and NO WYSIWYG geometry is consulted (never a cross-mode
+      // leftover). An unknown mode measures nothing.
+      const result = mode === 'wysiwyg' ? this.resolveRenderedBlankRowsForMeta(meta) : null
+      if (result != null) {
+        // TRAE §6 — the REAL DOM probe is emitted at the SNAPSHOT COMMIT (not only
+        // on click). Forensic only — never a decision authority.
+        emitRuntimeAudit(RENDERED_BLANK_ROW_DOM_PROBE_EVENT, {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          diagnosticId: d.id ?? null,
+          targetIdentity,
+          sourceRevision: snapshot.sourceRevision ?? null,
+          layoutEpoch: this.currentDocumentLayoutEpoch,
+          sourceBlankLineCount: sourceBlankLines,
+          previousCanonicalIdentity: this.gapCanonicalIdentityFromMeta(meta, 'previous'),
+          nextCanonicalIdentity: this.gapCanonicalIdentityFromMeta(meta, 'next'),
+          renderedBlankRowCount: result.renderedBlankRowCount,
+          renderedBlankRowDecision: result.decision,
+          renderedBlankRowAuthority: result.authority,
+          ...(result.probe ?? {}),
+        })
+      }
+      const measuredVisible = result != null && result.decision === 'VERIFIED'
+        ? result.visibleBlankLineCount
+        : null
+      const decision = decideInternalBlankPublication({
+        mode,
+        measuredVisibleBlankLineCount: measuredVisible,
+        sourceBlankLineCount: sourceBlankLines,
+      })
+      emitRuntimeAudit(INTERNAL_BLANK_DECISION_AUDIT_EVENT, {
+        documentKey: snapshot.documentKey ?? null,
         diagnosticId: d.id ?? null,
         targetIdentity,
-        sourceRevision: snapshot?.sourceRevision ?? null,
-        layoutEpoch: this.currentDocumentLayoutEpoch,
-        sourceBlankLineCount: typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null,
-        previousCanonicalIdentity: this.gapCanonicalIdentityFromMeta(meta, 'previous'),
-        nextCanonicalIdentity: this.gapCanonicalIdentityFromMeta(meta, 'next'),
-        renderedBlankRowCount: result?.renderedBlankRowCount ?? 0,
+        mode,
+        modeChanged,
+        sourceBlankLineCount: sourceBlankLines,
+        measuredVisibleBlankLineCount: measuredVisible,
+        visibleBlankLineCount: decision.visibleBlankLineCount,
+        publish: decision.publish,
+        reason: decision.reason,
         renderedBlankRowDecision: result?.decision ?? 'RUNTIME_UNAVAILABLE',
-        renderedBlankRowAuthority: result?.authority ?? null,
-        ...(result?.probe ?? {}),
       })
-      const sourceBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
-      if (result != null && result.decision === 'VERIFIED' && result.renderedBlankRowCount > 0 && sourceBlankLines != null) {
-        this.renderedBlankRowAuthority.set(targetIdentity, {
-          renderedBlankRowCount: result.renderedBlankRowCount,
-          // §3 — the DISPLAY count is the DIAGNOSTIC's OWN SOURCE blank count (the
-          // rule's single fact, shown by BOTH the Drawer copy and the Active label).
-          // The RENDERED row count stays a GEOMETRY fact (fragments / extents) — a
-          // SEPARATE axis that is never forced to equal the source count. Registering
-          // the rendered count here was the split-brain that made the Drawer say "1
-          // 个连续空行" while the rule (and its own detail) said 9.
-          displayDetail: internalBlankLineDetail(sourceBlankLines),
-          warning: sourceBlankLines >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
-          layoutEpoch: this.currentDocumentLayoutEpoch,
-        })
-        if (!isHeadlessTestRuntime()) {
-          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_SOURCE_COUNT_COUNT++
-        }
-      } else {
+      if (!headless && decision.visibleBlankLineCount != null) {
+        this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_VISIBLE_DECISION_COUNT++
+        if (mode === 'source') this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_SOURCE_MODE_DECISION_COUNT++
+      }
+      if (!decision.publish || decision.displayBlankLineCount == null) {
+        // §5/§6 — DROPPED because the VISIBLE count is within the allowance (or it
+        // could not be measured): removed from the published snapshot (so the
+        // Drawer list/order + severity counts + Active marker all lose it) and its
+        // count authority is pruned in the SAME commit. This is NOT a Drawer-only
+        // hide: the record never reaches the snapshot at all.
         this.renderedBlankRowAuthority.delete(targetIdentity)
+        if (!headless && decision.visibleBlankLineCount != null) {
+          this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_VISIBLE_SUPPRESSED_COUNT++
+        }
+        touched = true
+        continue
+      }
+      liveIdentities.add(targetIdentity)
+      // The published record carries the VISIBLE count (detail + metadata), so the
+      // snapshot is a NEW object even when every gap survives.
+      touched = true
+      // §3/§4 — the published rule states the VISIBLE count; the SOURCE count is
+      // kept ONLY for source parsing / position mapping / debugging.
+      const visible = decision.visibleBlankLineCount ?? decision.displayBlankLineCount
+      kept.push({
+        ...d,
+        detail: internalBlankLineVisibleDetail(decision.displayBlankLineCount),
+        metadata: {
+          ...meta,
+          [INTERNAL_BLANK_SOURCE_COUNT_META_KEY]: sourceBlankLines,
+          [INTERNAL_BLANK_PUBLISHED_COUNT_META_KEY]: decision.displayBlankLineCount,
+          [INTERNAL_BLANK_DECISION_MODE_META_KEY]: mode,
+          visibleBlankLineCount: visible,
+        },
+      })
+      // §3 — the DISPLAY count (Drawer copy + Active label) is the VISIBLE count:
+      // the SAME number the decision was made on.
+      this.renderedBlankRowAuthority.set(targetIdentity, {
+        renderedBlankRowCount: result?.renderedBlankRowCount ?? 0,
+        displayDetail: internalBlankLineVisibleDetail(decision.displayBlankLineCount),
+        warning: true,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+      })
+      if (!headless) {
+        this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_VISIBLE_PUBLISHED_COUNT++
+        this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_SOURCE_COUNT_COUNT++
       }
       // ── TRAE — the commit-time acceptance dry-run (spec §13/§15 semantics): it
-      // yields REAL Typora runtime evidence (calibration origin/scale/affine +
-      // per-fragment drift) with NO click, then removes every node it inserted.
+      // yields REAL Typora runtime evidence with NO click, then removes every node.
       if (result != null) {
         this.runBlankRowPaintLayerAcceptanceDryRun({
           diagId: d.id ?? null, targetKey: targetIdentity, result,
         })
       }
     }
+    // Prune any authority entry whose gap no longer survives the decision.
     for (const key of Array.from(this.renderedBlankRowAuthority.keys())) {
-      if (!liveIdentities.has(key)) this.renderedBlankRowAuthority.delete(key)
+      if (!liveIdentities.has(key)) {
+        this.renderedBlankRowAuthority.delete(key)
+        touched = true
+      }
     }
+    if (!touched) return snapshot
+    return {
+      ...snapshot,
+      diagnostics: kept,
+      errorCount: kept.filter(d => d.severity === 'error').length,
+      warningCount: kept.filter(d => d.severity === 'warning').length,
+      infoCount: kept.filter(d => d.severity === 'info').length,
+    }
+  }
+
+  /**
+   * §7 — re-evaluate the internal blank-line decision when Typora's editing mode
+   * changes (WYSIWYG ↔ source). The retained RAW snapshot is re-decided against the
+   * CURRENT mode's data source, so a result computed in the OTHER mode is never
+   * reused. Never a timer / poll: fired only by a real body-class change.
+   */
+  private reevaluateInternalBlankLineMode(): void {
+    if (this.disposed) return
+    const mode = detectDocumentEditingMode(typeof document !== 'undefined' ? document : null)
+    if (mode === this.lastInternalBlankEditingMode) return
+    const raw = this.lastRawAdmittedSnapshot
+    if (raw == null) { this.lastInternalBlankEditingMode = mode; return }
+    const decided = this.reconcileInternalBlankLineDiagnostics(raw)
+    if (decided == null) return
+    this.snapshot = decided
+    this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_MODE_RE_EVALUATED_COUNT++
+    emitRuntimeAudit(INTERNAL_BLANK_DECISION_AUDIT_EVENT, {
+      documentKey: raw.documentKey ?? null,
+      mode,
+      reason: 'MODE_CHANGED_RE_EVALUATED',
+      internalBlankDiagnosticCount: decided.diagnostics
+        .filter(d => d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE).length,
+    })
+    if (this.drawerOpen) this.renderDrawer()
+  }
+
+  /** §9 — the read-only gate + coverage surface (runtime verification). */
+  getInternalBlankDecisionGateReport(): string[] {
+    return formatInternalBlankDecisionGateReport(this.countersInternalBlankDecision)
+  }
+
+  getInternalBlankDecisionCoverageReport(): string[] {
+    return formatInternalBlankDecisionCoverageReport(this.coverageInternalBlankDecision)
+  }
+
+  getInternalBlankDecisionGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateInternalBlankDecisionGates(this.countersInternalBlankDecision)
   }
 
   /**
@@ -14872,11 +15094,12 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * §26/§29 — the Drawer-facing DETAIL for an internal blank-gap diagnostic.
+   * §26/§29/§3 — the Drawer-facing DETAIL for an internal blank-gap diagnostic.
    *
-   * Reads the REGISTERED rendered count authority (never the source line count).
-   * When the runtime DOM has not yet confirmed a rendered count it returns the
-   * PENDING copy — it NEVER falls back to `sourceBlankLineCount`.
+   * Reads the REGISTERED VISIBLE count authority (never the raw source line count).
+   * When the runtime has not registered it yet, falls back to the DIAGNOSTIC's OWN
+   * (already visible-based) detail — the Drawer must never state a different number
+   * than the rule / the Active label. It NEVER states the source count.
    */
   private renderedBlankRowDetailForDiagnostic(
     d: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
@@ -14884,11 +15107,6 @@ export class DocumentUtilityOverlayHost {
     if (d == null || d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return null
     const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
     const record = targetIdentity !== '' ? this.renderedBlankRowAuthority.get(targetIdentity) ?? null : null
-    // §3 — the registered display copy is the diagnostic's OWN SOURCE count. When the
-    // runtime has not registered it yet, fall back to the DIAGNOSTIC's OWN detail
-    // (also source-based) instead of a "pending" placeholder that would hide the
-    // rule's single fact — the Drawer must never state a different number than the
-    // rule / the Active label.
     return record != null ? record.displayDetail : (d.detail ?? RENDERED_BLANK_ROW_PENDING_DETAIL)
   }
 
@@ -15864,7 +16082,7 @@ export class DocumentUtilityOverlayHost {
         emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
           documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
           reason: 'LOCATE_COLLAPSE_PRESENTATION_RESTORED',
-          updateMode: 'STRUCTURAL_RENDER',
+          updateMode: 'STRUCTURAL_UPDATE',
           rowSetChanged: false,
           filterChanged: false,
           documentChanged: false,
@@ -19557,7 +19775,7 @@ export class DocumentUtilityOverlayHost {
   /**
    * View Order V1 — the sort-mode / problem-type-filter / optional-grouping
    * control strip. It is ONE row: [排序 ▾] [类型 ▾] [分组]. Changing ANY of them
-   * is a STRUCTURAL_RENDER (they are part of the drawer structure signature), so
+   * is a STRUCTURAL_UPDATE (they are part of the drawer structure signature), so
    * the painted order always matches state. At a very narrow Drawer width the
    * strip switches to a stacked layout (`data-layout="stacked"`).
    */
@@ -19782,6 +20000,102 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * §5/§6 — refresh ONLY the existing Drawer rows' DISPLAYED text in place (the
+   * CONTENT_UPDATE path). Rows are matched by `<diagnosticId>#<targetIndex>`; the
+   * message / description / aria-label are updated from the SAME
+   * `drawerRowDisplayContent` authority the initial paint used. It NEVER rebuilds
+   * the list, re-creates a row or writes scroll — so the scroll position, selection
+   * and Active marker are all preserved. This is the fix for "detection data updated
+   * but the Drawer text stayed stale".
+   */
+  private patchDrawerRowContents(projections: readonly DiagnosticTargetProjection[]): void {
+    if (!this.drawerListEl) return
+    const byKey = new Map<string, HTMLElement>()
+    for (const row of Array.from(this.drawerListEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+      byKey.set(`${row.getAttribute('data-diagnostic-id') ?? ''}#${row.getAttribute('data-target-index') ?? ''}`, row)
+    }
+    for (const p of projections) {
+      const row = byKey.get(`${p.diagnosticId}#${p.targetIndex}`)
+      if (row == null) continue
+      const d = this.diagnosticById(p.diagnosticId)
+      const { message, descriptionText } = this.drawerRowDisplayContent(d, p.ruleId)
+      const msgEl = row.querySelector<HTMLElement>('.inkchapter-doc-drawer__item-msg')
+      if (msgEl != null && msgEl.textContent !== message) msgEl.textContent = message
+      const bodyEl = row.querySelector<HTMLElement>('.inkchapter-doc-drawer__item-body')
+      let detailEl = row.querySelector<HTMLElement>('.inkchapter-doc-drawer__item-detail')
+      if (descriptionText !== '') {
+        if (detailEl == null && bodyEl != null) {
+          detailEl = document.createElement('div')
+          detailEl.className = 'inkchapter-doc-drawer__item-detail'
+          bodyEl.appendChild(detailEl)
+        }
+        if (detailEl != null && detailEl.textContent !== descriptionText) detailEl.textContent = descriptionText
+      } else if (detailEl != null) {
+        detailEl.remove()
+      }
+      const aria = `${descriptionText ? descriptionText + '，' : ''}${message}`
+      if (row.getAttribute('aria-label') !== aria) row.setAttribute('aria-label', aria)
+    }
+  }
+
+  /**
+   * §6 (content consistency) — the REAL-DOM content gate. For every internal
+   * blank-line row it reads back the ACTUAL rendered text and proves the displayed
+   * count equals the CURRENT diagnostic's VISIBLE count. Comparing internal objects
+   * only can NEVER be a PASS. A stale row after a real CONTENT_UPDATE is counted in
+   * its OWN gate (the exact defect this round fixes).
+   */
+  private auditDrawerRowContentConsistency(
+    projections: readonly DiagnosticTargetProjection[],
+    phase: 'CONTENT_UPDATE' | 'STRUCTURAL_UPDATE',
+  ): void {
+    if (!this.drawerListEl) return
+    const byKey = new Map<string, HTMLElement>()
+    for (const row of Array.from(this.drawerListEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+      byKey.set(`${row.getAttribute('data-diagnostic-id') ?? ''}#${row.getAttribute('data-target-index') ?? ''}`, row)
+    }
+    let checked = 0
+    let mismatches = 0
+    for (const p of projections) {
+      const d = this.diagnosticById(p.diagnosticId)
+      if (d == null || d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) continue
+      const expected = this.expectedVisibleBlankCount(d)
+      if (expected == null) continue
+      const row = byKey.get(`${p.diagnosticId}#${p.targetIndex}`)
+      if (row == null) continue
+      checked++
+      const detailText = row.querySelector<HTMLElement>('.inkchapter-doc-drawer__item-detail')?.textContent ?? ''
+      const msgText = row.querySelector<HTMLElement>('.inkchapter-doc-drawer__item-msg')?.textContent ?? ''
+      const shown = firstIntegerInText(detailText) ?? firstIntegerInText(msgText)
+      if (shown !== expected) mismatches++
+    }
+    if (mismatches > 0) {
+      this.countersDrawerViewportV1.drawerRowDisplayedCountMismatch += mismatches
+      if (phase === 'CONTENT_UPDATE') {
+        this.countersDrawerViewportV1.drawerRowContentStaleAfterContentChange += mismatches
+      }
+    }
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-CONTENT-CONSISTENCY', {
+      documentKey: this.snapshot?.documentKey ?? null,
+      phase,
+      checkedRowCount: checked,
+      mismatchCount: mismatches,
+      decision: mismatches === 0 ? 'PASS' : 'FAIL',
+      reason: mismatches === 0 ? 'DRAWER_DOM_TEXT_MATCHES_VISIBLE_COUNT' : 'DRAWER_DOM_TEXT_STALE',
+    })
+  }
+
+  /** §6 — the CURRENT VISIBLE blank-line count a published rule must display. */
+  private expectedVisibleBlankCount(
+    d: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): number | null {
+    const meta = (d.metadata ?? {}) as Record<string, unknown>
+    if (typeof meta['publishedBlankLineCount'] === 'number') return meta['publishedBlankLineCount'] as number
+    if (typeof meta['visibleBlankLineCount'] === 'number') return meta['visibleBlankLineCount'] as number
+    return null
+  }
+
+  /**
    * §12 — remember the Drawer list viewport the USER owns (anchor + offset + the
    * row mount generation it belongs to). Updated on every REAL list `scroll`
    * event and after every render that legitimately positions the list. A silent
@@ -19850,19 +20164,62 @@ export class DocumentUtilityOverlayHost {
     })
   }
 
-  /** §5/§8 — the DRAWER STRUCTURE SIGNATURE (row set + order + content). */
+  /**
+   * §5/§8/§16 — the DRAWER STRUCTURE SIGNATURE: row set + order + SEVERITY + the
+   * view context (documentKey / filter / sort / type / group). It deliberately
+   * EXCLUDES any displayed text, so a pure content change is never mistaken for a
+   * structure change (the fix for the "data updated but text stale" defect).
+   */
   private computeDrawerStructureSignature(
     projections: readonly DiagnosticTargetProjection[],
   ): string {
-    const parts = projections.map(p => {
-      const diag = this.diagnosticById(p.diagnosticId)
-      const severity = p.severity
-      const code = typeof diag?.code === 'string' ? diag.code : p.ruleId
-      const message = typeof diag?.message === 'string' ? diag.message : ''
-      const detail = typeof diag?.detail === 'string' ? diag.detail : ''
-      return `${p.diagnosticId}#${p.targetIndex}#${severity}#${code}#${message.length}:${detail.length}#${message}`
-    })
+    const parts = projections.map(p => `${p.diagnosticId}#${p.targetIndex}#${p.severity}`)
     return `${this.opts.ctx.authority.getDocumentKey() ?? ''}|${this.drawerFilter}|${this.drawerSortMode}|${this.drawerTypeFilter}|${this.drawerGrouped}|${parts.join('>')}`
+  }
+
+  /**
+   * §6 — the DRAWER CONTENT SIGNATURE: for every row, the EXACT displayed text
+   * (`message::description`) — the SAME content `buildDrawerItem` paints. A change
+   * here with an unchanged structure signature is a CONTENT_UPDATE (refresh the
+   * existing rows' text), never an ACTIVE_PATCH.
+   */
+  private computeDrawerContentSignature(
+    projections: readonly DiagnosticTargetProjection[],
+  ): string {
+    const parts = projections.map(p => {
+      const d = this.diagnosticById(p.diagnosticId)
+      const { message, descriptionText } = this.drawerRowDisplayContent(d, p.ruleId)
+      return `${p.diagnosticId}#${p.targetIndex}#${message}\u0000${descriptionText}`
+    })
+    return parts.join('\u0001')
+  }
+
+  /**
+   * §6 — the ONE authority for a Drawer row's DISPLAYED content. `buildDrawerItem`
+   * (initial paint), `computeDrawerContentSignature` (change detection) and
+   * `patchDrawerRowContents` (live refresh) all call this, so the content signature
+   * can never disagree with what is actually rendered.
+   */
+  private drawerRowDisplayContent(
+    d: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    ruleId: string,
+  ): { message: string; descriptionText: string } {
+    const presentation = d
+      ? buildDiagnosticPresentation({
+          code: d.code,
+          severity: d.severity,
+          message: d.message,
+          // TRAE §26/§29 — the internal blank-gap DETAIL comes from the RENDERED
+          // count authority (the VISIBLE count), never the raw source line count.
+          detail: this.renderedBlankRowDetailForDiagnostic(d) ?? d.detail,
+          category: (d as { category?: string }).category ?? null,
+          metadata: (d.metadata ?? {}) as Record<string, unknown>,
+        })
+      : null
+    const message = presentation?.drawerTitle ?? d?.message ?? ruleId
+    const detailText = presentation?.drawerDetail ?? d?.detail ?? null
+    const descriptionText = detailText != null && detailText.trim() !== '' ? detailText : ''
+    return { message, descriptionText }
   }
 
   /** §32/§33 — emit the ONE drawer viewport audit at every render / patch boundary. */
@@ -19902,6 +20259,7 @@ export class DocumentUtilityOverlayHost {
   /** §22 — a document switch resets the structural baseline (new document = new list). */
   private resetDrawerViewportBaseline(): void {
     this.lastDrawerStructureSignature = null
+    this.lastDrawerContentSignature = null
     this.pendingDrawerViewportCapture = null
     this.drawerListScrollBeforeCollapse = null
     this.drawerViewportMemory = null
@@ -19956,7 +20314,7 @@ export class DocumentUtilityOverlayHost {
       : 0
     const activeRowHeightChanged = probe.rowHeightBefore > 0 && rowHeightAfter > 0
       && Math.abs(rowHeightAfter - probe.rowHeightBefore) > 0.5
-    const updateMode: DrawerUpdateMode = this.drawerStructuralRenderSinceClick ? 'STRUCTURAL_RENDER' : 'ACTIVE_PATCH'
+    const updateMode: DrawerUpdateMode = this.drawerStructuralRenderSinceClick ? 'STRUCTURAL_UPDATE' : 'ACTIVE_PATCH'
     const facts = {
       action: probe.action,
       updateMode,
@@ -20112,9 +20470,16 @@ export class DocumentUtilityOverlayHost {
       domGeometryUsed: false,
       warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
       passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+      // LIVE-UPDATE CLOSURE §7/§9 — the VISIBLE-based publication-decision facts:
+      // the editing mode the decision ran in, the visible-count gate report and the
+      // positive coverage (proof the record set is visible-count filtered).
+      blankLineDecisionMode: this.lastInternalBlankEditingMode,
+      decisionGateReport: this.getInternalBlankDecisionGateReport(),
+      decisionCoverageReport: this.getInternalBlankDecisionCoverageReport(),
+      decision: this.getInternalBlankDecisionGateDecision().decision === 'FAIL'
+        ? 'FAIL' : this.getInternalBlankLineV1GateDecision().decision,
       gateReport: formatInternalBlankLineV1GateReport(this.countersInternalBlankLineV1),
       coverageReport: formatInternalBlankLineV1CoverageReport(this.coverageInternalBlankLineV1),
-      decision: this.getInternalBlankLineV1GateDecision().decision,
       reason: records.length > 0 ? 'INTERNAL_BLANK_LINE_GAPS_PRESENT' : 'NO_INTERNAL_BLANK_LINE_GAP',
     })
   }
@@ -20300,6 +20665,7 @@ export class DocumentUtilityOverlayHost {
       this.drawerStructuralRenderSinceClick = true
       this.drawerRowMountGeneration++
       this.lastDrawerStructureSignature = null
+      this.lastDrawerContentSignature = null
       // Phase 7R.3.11.4 — never render stale items: show a pending placeholder.
       const pending = document.createElement('div')
       pending.className = 'inkchapter-doc-drawer__item--empty'
@@ -20335,11 +20701,14 @@ export class DocumentUtilityOverlayHost {
     this.emitSourceOrderAudit(projections)
     this.measureTargetGroupDrawerFacts(projections, filtered)
     const structureSignature = this.computeDrawerStructureSignature(filtered)
+    const contentSignature = this.computeDrawerContentSignature(filtered)
     const listHasRows = this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
     const modeDecision = resolveDrawerUpdateMode({
-      previousSignature: this.lastDrawerStructureSignature,
+      previousStructureSignature: this.lastDrawerStructureSignature,
+      previousContentSignature: this.lastDrawerContentSignature,
       facts: {
-        projectionSignature: structureSignature,
+        structureSignature,
+        contentSignature,
         documentKey: snapshot.documentKey,
         filter: this.drawerFilter,
         listHasRows,
@@ -20362,7 +20731,7 @@ export class DocumentUtilityOverlayHost {
         projectionChanged: false,
         viewportCapturePerformed: false,
         viewportRestorePerformed: false,
-        decision: 'ACTIVE_PATCH_NO_STRUCTURAL_RENDER',
+        decision: 'ACTIVE_PATCH_NO_STRUCTURAL_UPDATE',
       })
       emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
         action: 'DRAWER_ACTIVE_PATCHED',
@@ -20401,12 +20770,80 @@ export class DocumentUtilityOverlayHost {
         viewportCapturePerformed: false,
         viewportRestorePerformed: false,
         decision: 'PASS',
-        reason: 'ACTIVE_PATCH_WITHOUT_STRUCTURAL_RENDER',
+        reason: 'ACTIVE_PATCH_WITHOUT_STRUCTURAL_UPDATE',
+      })
+      this.lastDrawerContentSignature = contentSignature
+      return
+    }
+
+    if (modeDecision.mode === 'CONTENT_UPDATE') {
+      // §5/§6 — the ROW SET (ids + order + severity) is UNCHANGED, but a row's
+      // DISPLAYED content changed (detail / title / visible count). Refresh ONLY the
+      // EXISTING rows' text nodes in place: NO `replaceChildren`, NO re-created rows,
+      // NO scroll write — the scroll position, row selection and Active marker are
+      // preserved. This is the fix for "data updated but the Drawer text stayed stale".
+      const before = this.captureDrawerViewport()
+      this.patchDrawerRowContents(filtered)
+      this.patchDrawerActiveState()
+      const after = this.captureDrawerViewport()
+      this.lastDrawerContentSignature = contentSignature
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
+        documentKey: snapshot.documentKey,
+        reason: modeDecision.reason,
+        updateMode: 'CONTENT_UPDATE',
+        rowSetChanged: false,
+        filterChanged: false,
+        documentChanged: false,
+        projectionChanged: true,
+        viewportCapturePerformed: false,
+        viewportRestorePerformed: false,
+        decision: 'CONTENT_UPDATE_WITHOUT_STRUCTURAL_RENDER',
+      })
+      emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
+        action: 'DRAWER_CONTENT_PATCHED',
+        documentKey: snapshot.documentKey,
+        activeDocumentKey: activeKey,
+        revision: snapshot.revision,
+        sourceRevision: snapshot.sourceRevision,
+        drawerVisible: this.drawerOpen,
+        itemCount: documentCounts.total,
+        errorCount: documentCounts.error,
+        warningCount: documentCounts.warning,
+        hintCount: documentCounts.info,
+        filter: this.drawerFilter,
+        scrollTopBefore: before.scrollTop,
+        scrollTopAfter: after.scrollTop,
+        decision: 'DRAWER_CONTENT_PATCHED_WITHOUT_RERENDER',
+      })
+      // §6 — read the REAL DOM back and prove the displayed count matches the live
+      // visible count (never announce PASS by comparing internal objects only).
+      this.auditDrawerRowContentConsistency(filtered, 'CONTENT_UPDATE')
+      this.scheduleDrawerContentAudit()
+      this.emitDrawerViewportAudit({
+        diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
+        action: 'RENDER',
+        updateMode: 'CONTENT_UPDATE',
+        scrollTopBefore: before.scrollTop,
+        scrollTopAfter: after.scrollTop,
+        firstVisibleDiagnosticIdBefore: before.firstVisibleDiagnosticId,
+        firstVisibleDiagnosticIdAfter: after.firstVisibleDiagnosticId,
+        firstVisibleProjectionKeyBefore: before.firstVisibleProjectionKey,
+        firstVisibleProjectionKeyAfter: after.firstVisibleProjectionKey,
+        firstVisibleOffsetBefore: before.firstVisibleOffsetPx,
+        firstVisibleOffsetAfter: after.firstVisibleOffsetPx,
+        scrollContainerRemounted: false,
+        clickedRowRemounted: false,
+        rowScrollIntoViewCalled: false,
+        focusPreventScroll: true,
+        viewportCapturePerformed: false,
+        viewportRestorePerformed: false,
+        decision: 'PASS',
+        reason: 'CONTENT_UPDATE_WITHOUT_STRUCTURAL_RENDER',
       })
       return
     }
 
-    // ── STRUCTURAL_RENDER (§10/§12/§13) — capture BEFORE, restore AFTER. ─────
+    // ── STRUCTURAL_UPDATE (§10/§12/§13) — capture BEFORE, restore AFTER. ─────
     const viewportBefore = this.captureDrawerViewport()
     this.pendingDrawerViewportCapture = viewportBefore
     this.drawerStructuralRenderSinceClick = true
@@ -20445,6 +20882,9 @@ export class DocumentUtilityOverlayHost {
       }
     }
     this.lastDrawerStructureSignature = structureSignature
+    this.lastDrawerContentSignature = contentSignature
+    // §6 — the REAL DOM content consistency check after a structural rebuild.
+    this.auditDrawerRowContentConsistency(filtered, 'STRUCTURAL_UPDATE')
     // §13 — restore the visible anchor (+ offset); the row content is now final.
     const restore = this.restoreDrawerViewport(viewportBefore)
     // §12 — the new row set is now the user's viewport; the memory must follow the
@@ -20462,7 +20902,7 @@ export class DocumentUtilityOverlayHost {
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DRAWER-STRUCTURAL-RENDER-AUDIT', {
       documentKey: snapshot.documentKey,
       reason: modeDecision.reason,
-      updateMode: 'STRUCTURAL_RENDER',
+      updateMode: 'STRUCTURAL_UPDATE',
       rowSetChanged: true,
       filterChanged: true,
       documentChanged: false,
@@ -20473,7 +20913,7 @@ export class DocumentUtilityOverlayHost {
       viewportRestoreOk: restore.ok,
       scrollTopBefore: viewportBefore.scrollTop,
       scrollTopAfter: restore.actualScrollTop,
-      decision: restore.ok ? 'STRUCTURAL_RENDER_VIEWPORT_RESTORED' : 'STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL',
+      decision: restore.ok ? 'STRUCTURAL_UPDATE_VIEWPORT_RESTORED' : 'STRUCTURAL_UPDATE_VIEWPORT_RESTORE_FAIL',
     })
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
       action: 'DRAWER_RENDERED',
@@ -20493,12 +20933,12 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.3.1 — read-only layout audit follows every re-render
     // (rAF + DOM read only; geometryWriteDelta stays 0 by construction).
     this.scheduleDrawerContentAudit()
-    // §32 — the STRUCTURAL_RENDER viewport audit (capture + restore).
+    // §32 — the STRUCTURAL_UPDATE viewport audit (capture + restore).
     const viewportAfter = this.captureDrawerViewport()
     this.emitDrawerViewportAudit({
       diagnosticId: this.diagnosticInteractionState.diagnosticId ?? null,
       action: 'RENDER',
-      updateMode: 'STRUCTURAL_RENDER',
+      updateMode: 'STRUCTURAL_UPDATE',
       scrollTopBefore: viewportBefore.scrollTop,
       scrollTopAfter: viewportAfter.scrollTop,
       firstVisibleDiagnosticIdBefore: viewportBefore.firstVisibleDiagnosticId,
@@ -20514,7 +20954,7 @@ export class DocumentUtilityOverlayHost {
       viewportCapturePerformed: true,
       viewportRestorePerformed: restore.performed,
       decision: restore.ok ? 'PASS' : 'FAIL',
-      reason: restore.ok ? 'STRUCTURAL_RENDER_VIEWPORT_RESTORED' : 'STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL',
+      reason: restore.ok ? 'STRUCTURAL_UPDATE_VIEWPORT_RESTORED' : 'STRUCTURAL_UPDATE_VIEWPORT_RESTORE_FAIL',
     })
   }
 
@@ -28683,26 +29123,11 @@ export class DocumentUtilityOverlayHost {
       realFocus({ preventScroll: true })
     }
     // ── V5.14-R5 §8 — the Drawer keeps the FULL explanation; only the INLINE chip
-    // is compressed. The presentation authority supplies a concise TITLE for the
-    // strict first-H1 family (whose own `message` is a multi-line sentence with a
-    // severity glyph) and promotes that full sentence to the DETAIL.
-    const presentation = d
-      ? buildDiagnosticPresentation({
-          code: d.code,
-          severity: d.severity,
-          message: d.message,
-          // TRAE §26/§29 — the internal blank-gap DETAIL comes from the RENDERED
-          // count authority, never the raw source line count.
-          detail: this.renderedBlankRowDetailForDiagnostic(d) ?? d.detail,
-          category: (d as { category?: string }).category ?? null,
-          metadata: (d.metadata ?? {}) as Record<string, unknown>,
-        })
-      : null
-    const message = presentation?.drawerTitle ?? d?.message ?? p.ruleId
-    const detailText = presentation?.drawerDetail ?? d?.detail ?? null
+    // is compressed. The ONE content authority (`drawerRowDisplayContent`) is shared
+    // with the change-detection signature + the live CONTENT_UPDATE patch.
+    const { message, descriptionText } = this.drawerRowDisplayContent(d, p.ruleId)
     // §1 — ONE complete, concise description. There is NO expandable detail, no
     // extra advice paragraph and no expand state on the card (removed).
-    const descriptionText = detailText != null && detailText.trim() !== '' ? detailText : ''
     item.setAttribute('aria-label', `${descriptionText ? descriptionText + '，' : ''}${message}`)
     // ── V5.14-R8 §9/§11 — the ACTIVE row derives from the ONE V2 authority, so a
     // dismissed target can never keep a selected-looking row and a switch moves
