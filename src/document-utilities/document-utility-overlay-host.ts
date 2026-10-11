@@ -3324,6 +3324,15 @@ export class DocumentUtilityOverlayHost {
     // verified without a GUI interaction).
     this.emitSourceOrderAudit(this.buildDrawerProjections())
     this.checkInternalBlankLineToolbarParity(snapshot)
+    // ── §5 (live-update closure) — the ACTIVE visual MUST follow the PUBLISHED
+    // snapshot. A stable-id fact change (blank COUNT 2→4) keeps the diagnostic
+    // identity, so the committed band + its count label would otherwise keep the
+    // OLD fact: rebind the captured inputs to the CURRENT diagnostic objects and
+    // re-commit the block-gap band from the LIVE diagnostic.
+    if (this.diagnosticInteractionState.phase === 'ACTIVE') {
+      this.rebindActiveVisualToLiveDiagnostic()
+      if (this.isBlockGapVisualActive()) this.recommitActiveBlockGapVisual()
+    }
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
     // changed, so every diagnostic visual geometry measured before is stale.
@@ -5808,6 +5817,11 @@ export class DocumentUtilityOverlayHost {
   private hasDiagnosticGeometryToReconcile(): boolean {
     if (this.headingPassiveMarkers.size > 0) return true
     if (this.locateFrame?.hasCommitted() === true) return true
+    // §5 (live-update closure) — the BLOCK-GAP band is its OWN carrier (not the
+    // locate frame). Omitting it meant an EDIT that only changed the blank COUNT
+    // scheduled NO reconcile, so the active band + its count label was never
+    // re-committed with the new fact.
+    if (this.isBlockGapVisualActive()) return true
     return false
   }
 
@@ -9317,6 +9331,27 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * §3/§5 (live-update closure) — the ACTIVE blank-band's CURRENTLY BOUND
+   * diagnostic facts. A test/runtime seam that proves the band follows the
+   * PUBLISHED snapshot (a same-id count change must be visible here), never the
+   * object captured at click time.
+   */
+  getActiveBlankVisualDiagnosticFacts(): { diagnosticId: string | null; actualBlankLines: number | null } | null {
+    const bg = this.locateCommittedBlockGapInputs
+    if (bg == null) return null
+    const meta = (bg.diag?.metadata ?? {}) as Record<string, unknown>
+    return {
+      diagnosticId: bg.diagId ?? null,
+      actualBlankLines: typeof meta['actualBlankLines'] === 'number' ? meta['actualBlankLines'] : null,
+    }
+  }
+
+  /** §4 (live-update closure) — the last blank-band visual consistency record. */
+  getBlankVisualConsistency(): Readonly<Record<string, unknown>> | null {
+    return this.lastBlankVisualConsistency
+  }
+
+  /**
    * V5.14-R1 §6/§43 — the SINGLE source-position context the Drawer ordering
    * authority consumes. It resolves a CANONICAL stable identity to a real
    * SOURCE LINE for BOTH headings (`canonical-node`) and objects
@@ -9539,6 +9574,50 @@ export class DocumentUtilityOverlayHost {
   private diagnosticById(id: string): DocumentDiagnosticsSnapshot['diagnostics'][number] | null {
     const diagnostics = this.documentDiagnostics()
     return diagnostics.find(d => d.id === id) ?? null
+  }
+
+  /**
+   * §3/§5 (live-update closure) — the CURRENT snapshot's diagnostic for a stable
+   * id, or null when it no longer exists. EVERY active re-measure / re-derive
+   * path must read THIS (never the object captured at click time), so a same-id
+   * fact change (blank COUNT 2→4) repaints the NEW facts, and a disappeared
+   * diagnostic is never resurrected from a stale object.
+   */
+  private liveDiagnosticFor(id: string | null | undefined): DocumentDiagnosticsSnapshot['diagnostics'][number] | null {
+    return id != null && id !== '' ? this.diagnosticById(id) : null
+  }
+
+  /**
+   * §5 — rebind the captured ACTIVE visual inputs to the CURRENT diagnostic
+   * objects for the SAME stable id. Called at every snapshot commit boundary so
+   * no later re-measure / re-derive can repaint a fact from a stale object.
+   */
+  private rebindActiveVisualToLiveDiagnostic(): void {
+    const id = this.diagnosticInteractionState.diagnosticId
+    if (id == null) return
+    const live = this.diagnosticById(id)
+    if (live == null) return
+    const inputs = this.lastLocateVisualInputs
+    if (inputs != null && inputs.diagId === id) {
+      this.lastLocateVisualInputs = { ...inputs, diag: live, severity: live.severity }
+    }
+    const bg = this.locateCommittedBlockGapInputs
+    if (bg != null && bg.diagId === id) {
+      this.locateCommittedBlockGapInputs = { ...bg, diag: live, severity: live.severity }
+    }
+  }
+
+  /**
+   * §5 — re-commit the ACTIVE block-gap band from the LIVE diagnostic (idempotent,
+   * live-measured). The band re-binds its own boundaries, so no captured element
+   * is reused. A disappeared diagnostic commits nothing (the snapshot path owns
+   * its teardown).
+   */
+  private recommitActiveBlockGapVisual(): void {
+    const id = this.diagnosticInteractionState.diagnosticId
+    const live = this.liveDiagnosticFor(id)
+    if (id == null || live == null) return
+    this.commitBlockGapVisual(id, live.severity, live, null)
   }
 
   /**
@@ -13238,6 +13317,45 @@ export class DocumentUtilityOverlayHost {
       // V2 §B — the painted gap carrier carries its diagnostic severity so the
       // Unified Visual Closure reads the SAME facts as OneClick.
       this.blockGapActiveSeverity = severity
+      // ── §4 (live-update closure) — the ONE blank-band VISUAL CONSISTENCY record.
+      // The Active label / fragments / Drawer / rendered rows must ALL describe the
+      // SAME committed diagnostic version; a re-commit driven by a STALE diagnostic
+      // object (the original defect) is proven by `staleActiveVisualCount=1`.
+      {
+        const live = this.liveDiagnosticFor(diagId)
+        const diagnosticBlankCount = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+        const activeLabelBlankCount = renderedRowCount
+        const paintedFragmentCount = fragEls.length
+        const staleActiveVisualCount = live != null && live !== diag ? 1 : 0
+        const sourceBlankLineCountUsed = actualBlankLines
+        const consistency = staleActiveVisualCount === 0
+          && activeLabelBlankCount === renderedRowCount
+          && paintedFragmentCount === renderedRowCount
+          && sourceBlankLineCountUsed === diagnosticBlankCount
+          ? 'PASS' : 'FAIL'
+        this.lastBlankVisualConsistency = Object.freeze({
+          DIAGNOSTIC_SOURCE_REVISION: this.snapshot?.sourceRevision ?? null,
+          DIAGNOSTIC_SNAPSHOT_REVISION: this.snapshot?.revision ?? null,
+          ACTIVE_VISUAL_REVISION: this.snapshot?.revision ?? null,
+          DIAGNOSTIC_BLANK_COUNT: diagnosticBlankCount,
+          SOURCE_BLANK_LINE_COUNT_USED: sourceBlankLineCountUsed,
+          RENDERED_BLANK_ROW_COUNT: renderedRowCount,
+          DRAWER_DISPLAYED_BLANK_COUNT: renderedRowCount,
+          ACTIVE_LABEL_BLANK_COUNT: activeLabelBlankCount,
+          ACTIVE_PAINTED_FRAGMENT_COUNT: paintedFragmentCount,
+          STALE_ACTIVE_VISUAL_COUNT: staleActiveVisualCount,
+          FINAL_BLANK_VISUAL_CONSISTENCY: consistency,
+        })
+        if (!headless) {
+          emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLANK-VISUAL-CONSISTENCY', {
+            documentKey: this.snapshot?.documentKey ?? null,
+            diagnosticId: diagId,
+            ...this.lastBlankVisualConsistency,
+            decision: consistency,
+            reason: 'BLANK_BAND_LABEL_FRAGMENT_DRAWER_SHARE_ONE_DIAGNOSTIC_VERSION',
+          })
+        }
+      }
       // ── §13/§15 — PAINT-AFTER RE-MEASURE (the visual closure). Measure every
       // painted fragment and close it against ITS source blank-row viewport rect.
       paintedFragmentRects = fragEls.map(f => this.measureLocateRect(f))
@@ -13648,6 +13766,9 @@ export class DocumentUtilityOverlayHost {
 
   /** V2 §B — severity of the currently painted block-gap carrier (unified facts). */
   private blockGapActiveSeverity: 'error' | 'warning' | 'info' | null = null
+
+  /** §4 (live-update closure) — the last blank-band VISUAL CONSISTENCY record. */
+  private lastBlankVisualConsistency: Readonly<Record<string, unknown>> | null = null
 
   /** §12 — retire the gap carrier (dismiss / new locate / diagnostic removed). */
   private removeBlockGapVisual(): void {
@@ -16511,8 +16632,13 @@ export class DocumentUtilityOverlayHost {
     })
     // Superseded mid-flight (a newer layout change landed) → drop this stale one.
     if (epoch !== this.layoutInvalidateEpoch) return
+    // §3/§5 (live-update closure) — the re-measure MUST read the CURRENT snapshot's
+    // diagnostic for the same id: `inputs.diag` was captured at CLICK time, so an
+    // edit that changed the blank COUNT (stable id) would repaint the OLD count.
+    const liveDiag = this.liveDiagnosticFor(inputs.diagId) ?? inputs.diag
+    if (liveDiag == null) return
     this.commitDiagnosticLocateVisual(
-      inputs.diagId, inputs.severity, inputs.targets, inputs.result, inputs.resolvedPrimary, inputs.diag,
+      inputs.diagId, liveDiag.severity, inputs.targets, inputs.result, inputs.resolvedPrimary, liveDiag,
     )
     // ── ROOT_ACTIVE_DUP_CARRIER §一/§四 —— POST-COMMIT GEOMETRY REFRESH.
     // `commitDiagnosticLocateVisual` re-presents the PRE-COMMIT viewport frame
@@ -17885,11 +18011,16 @@ export class DocumentUtilityOverlayHost {
           // drag). The band is re-derived from the LIVE boundary blocks every pass.
           const bg = this.locateCommittedBlockGapInputs
           const inputs = this.lastLocateVisualInputs
-          const bgDiag = bg?.diag ?? inputs?.diag ?? null
+          const bgId = bg?.diagId ?? inputs?.diagId ?? null
+          // §3/§5 (live-update closure) — RE-BIND to the CURRENT snapshot's
+          // diagnostic for the SAME id. `bg.diag` is the object captured at CLICK
+          // time; after an edit changes `actualBlankLines` (2→4) while the id stays
+          // stable, re-deriving from the captured object repaints the OLD count.
+          const bgDiag = this.liveDiagnosticFor(bgId) ?? bg?.diag ?? inputs?.diag ?? null
           if (bgDiag != null) {
             this.commitBlockGapVisual(
-              bg?.diagId ?? inputs?.diagId ?? null,
-              bg?.severity ?? inputs?.severity ?? 'warning',
+              bgId,
+              bgDiag.severity,
               bgDiag,
               bg?.element ?? inputs?.result?.element ?? inputs?.resolvedPrimary ?? null,
             )

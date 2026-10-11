@@ -268,6 +268,31 @@ export class DocumentDiagnosticsAuthority {
     for (const l of this.listeners) l(this.snapshot)
   }
 
+  /**
+   * §32 (live-update closure) — the per-diagnostic FACT suffix folded into the
+   * content fingerprint.
+   *
+   * A blank-line COUNT change keeps the rule's STABLE identity (`targetIdentity`
+   * is the gap's previous>>next pair, count-independent), so a fingerprint built
+   * from `{severity:code:targetIdentity}` alone classified an edit like 3→5
+   * blanks as a NOOP — the recompute RETURNED EARLY and the Drawer count / the
+   * body count label / the Active visual never learned the new fact. Folding the
+   * count-bearing metadata into the fingerprint makes a fact change a REAL
+   * publish, without inventing a second identity authority.
+   */
+  private diagnosticFactSuffix(d: DocumentDiagnostic): string {
+    const meta = d.metadata
+    if (meta == null) return ''
+    const parts: string[] = []
+    if (typeof meta['actualBlankLines'] === 'number') {
+      const first = typeof meta['firstBlankLine'] === 'number' ? meta['firstBlankLine'] : 'n'
+      parts.push(`b${meta['actualBlankLines']}@${first}`)
+    }
+    if (typeof meta['extraTrailingBlankLineCount'] === 'number') parts.push(`t${meta['extraTrailingBlankLineCount']}`)
+    if (typeof meta['terminalNewlineCount'] === 'number') parts.push(`n${meta['terminalNewlineCount']}`)
+    return parts.length > 0 ? `#${parts.join(',')}` : ''
+  }
+
   /** Recompute from current authorities. Event-driven only. */
   recompute(reason: string = 'AUTO'): void {
     const structural = this.collectStructuralFacts()
@@ -326,7 +351,7 @@ export class DocumentDiagnosticsAuthority {
     // provenance: same content + different mode = different fingerprint.
     // Phase 7R.3.11.8-B §32 — identical-state recomputes do NOT re-publish.
     const fingerprint = `${nextSnapshot.documentKey ?? ''}|mode:${effectiveMode}:${effectiveModeRevision}|${nextSnapshot.diagnostics
-      .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}`)
+      .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}${this.diagnosticFactSuffix(d)}`)
       .sort()
       .join(';')}`
     // Phase 7R.3.11.8B.11 — HEADING-DOCUMENT-SHAPE-AUDIT: the shape decision
