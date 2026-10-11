@@ -2,15 +2,16 @@
  * Document Diagnostics — RENDERED BLANK ROW AUTHORITY (TRAE rendered-blank-row
  * closure).
  *
- * The product semantics of `EXCESSIVE_INTERNAL_BLANK_LINES` are about what the
- * user ACTUALLY SEES in the live WYSIWYG editor:
+ * THE PRODUCT CONTRACT (single fact, two axes):
  *
- *   the number of consecutive BLANK EDITABLE ROWS Typora renders between two
- *   sibling content blocks
+ *   DISPLAY + RULE fact → the number of raw empty MARKDOWN SOURCE lines between the
+ *   two sibling content blocks (`actualBlankLines`). This is the ONE number the
+ *   rule decision, the Drawer copy and the Active count label all state.
  *
- * NOT the number of raw empty MARKDOWN SOURCE lines. The two differ: the core
- * regression fixture has `sourceBlankLineCount = 7` but only
- * `renderedBlankRowCount = 3` visible blank editable rows.
+ *   GEOMETRY fact → the number of blank editable rows Typora RENDERS between the
+ *   two PHYSICALLY VERIFIED boundaries. This drives region location, painting and
+ *   geometric verification ONLY. It is NEVER shown to the user and is never forced
+ *   to equal the source count (the core fixture has source=7 / rendered=3).
  *
  * Authority split (never merged, never a mathematical conversion):
  *
@@ -160,6 +161,14 @@ export interface RenderedBlankRow {
 export interface RenderedBlankRowResult {
   sourceBlankLineCount: number
   renderedBlankRowCount: number
+  /**
+   * §3 — the VISIBLE blank line BAND count: the number of DISTINCT vertical bands
+   * the physically verified blank rows occupy. Typora collapses several SOURCE
+   * blank lines into FEWER visible bands (and may stack coincident rows), so this
+   * is neither the source count nor the raw DOM node count — it is the count the
+   * Active label states (`visibleBlankLineCount`).
+   */
+  visibleBlankLineCount: number
   rows: RenderedBlankRow[]
   decision: RenderedBlankRowDecision
   authority: string
@@ -345,6 +354,41 @@ export function collectBetweenBoundarySiblings(
   return out
 }
 
+/**
+ * §3 — the VISIBLE blank line BAND count.
+ *
+ * Counts the DISTINCT vertical bands the physically verified blank rows occupy:
+ * rows whose vertical extents OVERLAP (or coincide) belong to ONE band. This is the
+ * number the user actually sees in the WYSIWYG editor, so it is:
+ *   - NEVER the raw DOM node count (coincident rows collapse into one band),
+ *   - NEVER the SOURCE blank line count (N source blanks may paint as one band).
+ */
+export function countVisibleBlankLineBands(
+  rows: ReadonlyArray<{ rect: RectLike | null }>,
+): number {
+  const withRect: RectLike[] = []
+  let withoutRect = 0
+  for (const row of rows) {
+    if (row.rect == null) withoutRect++
+    else withRect.push(row.rect)
+  }
+  const sorted = withRect.slice().sort((a, b) => a.top - b.top)
+  let bands = 0
+  let bandBottom = Number.NEGATIVE_INFINITY
+  for (const rect of sorted) {
+    const top = Number.isFinite(rect.top) ? rect.top : bandBottom + 1
+    const bottom = Number.isFinite(rect.bottom) ? rect.bottom : top
+    // §3 — 1px tolerance: a row starting BELOW the current band's bottom starts a new band.
+    if (top >= bandBottom - 1) {
+      bands++
+      bandBottom = bottom
+    } else {
+      bandBottom = Math.max(bandBottom, bottom)
+    }
+  }
+  return bands + withoutRect
+}
+
 export interface RenderedBlankRowInput {
   businessRoot: HTMLElement | null
   previousElement: HTMLElement | null
@@ -368,6 +412,7 @@ export function resolveRenderedBlankRows(input: RenderedBlankRowInput): Rendered
   const base = (decision: RenderedBlankRowDecision, rows: RenderedBlankRow[], probe: RenderedBlankRowProbe | null): RenderedBlankRowResult => ({
     sourceBlankLineCount,
     renderedBlankRowCount: decision === 'VERIFIED' ? rows.length : 0,
+    visibleBlankLineCount: decision === 'VERIFIED' ? countVisibleBlankLineBands(rows) : 0,
     rows,
     decision,
     authority: RENDERED_BLANK_ROW_AUTHORITY,
@@ -549,7 +594,7 @@ export function evaluateRenderedBlankRowGates(
 export const RENDERED_BLANK_ROW_COVERAGE_REQUIREMENTS: Readonly<Record<string, number>> = {
   INTERNAL_BLANK_LINE_SOURCE_CANDIDATE_RUNTIME_COUNT: 1,
   INTERNAL_BLANK_LINE_RENDERED_COUNT_VERIFIED_COUNT: 1,
-  INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_RENDERED_COUNT_COUNT: 1,
+  INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_SOURCE_COUNT_COUNT: 1,
   INTERNAL_BLANK_LINE_PREVIOUS_PHYSICAL_VERIFIED_COUNT: 1,
   INTERNAL_BLANK_LINE_NEXT_PHYSICAL_VERIFIED_COUNT: 1,
   INTERNAL_BLANK_LINE_RENDERED_ROW_RECT_COUNT: 1,

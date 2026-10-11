@@ -24,6 +24,7 @@ import {
   RENDERED_BLANK_ROW_GATE_KEYS,
   RENDERED_BLANK_ROW_GATE_LABELS,
   createRenderedBlankRowGates,
+  countVisibleBlankLineBands,
   emptyRenderedBlankRowCoverage,
   evaluateBoundaryResolution,
   evaluateRenderedBlankRowCoverage,
@@ -496,5 +497,59 @@ describe('TRAE coordinate closure §5/§7/§16/§17 — ONE canonical conversion
   it('§22 — the primary-geometry + fragment-conversion coverage keys exist', () => {
     expect(RENDERED_BLANK_ROW_COVERAGE_REQUIREMENTS.INTERNAL_BLANK_LINE_RENDERED_BLANK_ROW_PRIMARY_GEOMETRY_USED_COUNT).toBe(1)
     expect(RENDERED_BLANK_ROW_COVERAGE_REQUIREMENTS.INTERNAL_BLANK_LINE_ROW_FRAGMENT_COORDINATE_CONVERSION_COUNT).toBe(1)
+  })
+})
+
+// ── §3/§4 — VISIBLE blank line BANDS (the count the Active label states) ───────
+
+const band = (top: number, bottom: number): { rect: RectLike } => ({
+  rect: { left: 373.8, top, right: 1112.2, bottom, width: 738.4, height: bottom - top },
+})
+
+describe('§3 visibleBlankLineCount — 可见空行「行带」数量（≠ 源码数，≠ DOM 节点数）', () => {
+  it('source=4 折叠为 1 个可视行带（4 个重合行）：visible=1', () => {
+    // Typora paints the 4 SOURCE blank lines as ONE visible band (coincident rows).
+    expect(countVisibleBlankLineBands([band(574.8, 600.4), band(574.8, 600.4), band(574.9, 600.5), band(574.8, 600.4)])).toBe(1)
+  })
+
+  it('4 个真实分离的行带：visible=4', () => {
+    expect(countVisibleBlankLineBands([
+      band(230.7, 256.3), band(269.1, 294.7), band(307.5, 333.1), band(345.9, 371.5),
+    ])).toBe(4)
+  })
+
+  it('部分重叠的行合并进同一行带', () => {
+    expect(countVisibleBlankLineBands([band(100, 126), band(110, 136), band(140, 166)])).toBe(2)
+  })
+
+  it('无 rect 的高行各自计为一行带（不可合并）', () => {
+    expect(countVisibleBlankLineBands([{ rect: null }, band(10, 36)])).toBe(2)
+    expect(countVisibleBlankLineBands([])).toBe(0)
+  })
+
+  it('resolveRenderedBlankRows 同时暴露 rendered(节点) 与 visible(行带) 两个计数', () => {
+    const root = document.createElement('div')
+    const prev = document.createElement('p')
+    const next = document.createElement('p')
+    root.append(prev, next)
+    const rows: HTMLElement[] = []
+    for (let i = 0; i < 4; i++) {
+      const p = document.createElement('p')
+      p.setAttribute('contenteditable', 'true')
+      root.insertBefore(p, next)
+      // all 4 rows share the SAME visual band
+      stubRect(p, { left: 373.8, top: 574.8, right: 1112.2, bottom: 600.4 })
+      rows.push(p)
+    }
+    document.body.append(root)
+    const result = resolveRenderedBlankRows({
+      businessRoot: root, previousElement: prev, nextElement: next,
+      sourceBlankLineCount: 4, layoutEpoch: 1,
+    })
+    expect(result.decision).toBe('VERIFIED')
+    expect(result.sourceBlankLineCount).toBe(4)   // the rule's axis
+    expect(result.renderedBlankRowCount).toBe(4)  // the DOM node count
+    expect(result.visibleBlankLineCount).toBe(1)  // the user-visible band count
+    root.remove()
   })
 })

@@ -216,6 +216,14 @@ describe('ROOT_BLANK_LAYOUT_REDERIVE / ROOT_BLANK_SOURCE_AUTHORITY — 契约', 
     expect(body).toContain('this.commitBlockGapVisual(')
   })
 
+  it('§4 — Active 数量标签必须取 VISIBLE 行带数（不得用源码数或渲染节点数）', () => {
+    const idx = HOST_SRC.indexOf('ONE count label')
+    expect(idx).toBeGreaterThan(0)
+    const body = HOST_SRC.slice(idx, idx + 700)
+    expect(body).toContain('const labelBlankCount = visibleBlankLineCount')
+    expect(body).not.toContain('labelBlankCount = actualBlankLines')
+  })
+
   it('§2.2 — 源码计数缺失时绝不回退渲染行数（UNRESOLVED_SOURCE + 一次有界重解析）', () => {
     // 旧写法已删除：不得再出现 `actualBlankLines ?? renderedRowCount`
     expect(HOST_SRC).not.toContain('actualBlankLines ?? renderedRowCount')

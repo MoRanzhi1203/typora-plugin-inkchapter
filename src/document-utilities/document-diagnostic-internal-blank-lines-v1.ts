@@ -746,9 +746,14 @@ export function firstContentSourceLine(markdown: string | null | undefined): num
   return -1
 }
 
-/** §12 — the Drawer-facing detail copy (carries `actualBlankLines`). */
+/**
+ * §12 — the Drawer-facing detail copy. It carries the **SOURCE** blank count and is
+ * ALWAYS explicitly labelled 「源码」: the source count is the rule's own fact, while
+ * the user-visible (WYSIWYG) blank line count is a DIFFERENT number that the Active
+ * label states. The two must never be presented as the same quantity.
+ */
 export function internalBlankLineDetail(actualBlankLines: number): string {
-  return `当前两个内容块之间存在 ${actualBlankLines} 个连续空行，建议压缩为 1 个空行。`
+  return `源码中存在 ${actualBlankLines} 个连续空行，建议压缩为 1 个空行。`
 }
 
 // ── §35 — the hard gates ───────────────────────────────────────────────────
