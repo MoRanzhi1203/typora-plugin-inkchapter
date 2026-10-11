@@ -203,6 +203,25 @@ export const LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS = [
    * lost (or fails to cover its target) is FATAL.
    */
   'compoundCaptionCueUncoveredAfterReconcile',
+  /**
+   * ROOT_BLANK_SEMANTIC_CONTAINMENT §二/§三 —— the blank-space carrier (continuous
+   * blank-run / EOF band) painted OUTSIDE its semantic zone: it overshot the gap or
+   * intruded into the adjacent prose block box.
+   *
+   * `BLANK-ROW-FRAGMENT-CLOSURE-AUDIT` validates the painted fragment against the
+   * RENDERED ROW it painted (self-referential) and therefore can never see this; the
+   * only independent check was a coarse occupancy count. This gate compares the LIVE
+   * painted rect against the committed semantic gap + the two boundary block rects.
+   */
+  'blankCarrierIntrudesAdjacentProse',
+  /**
+   * ROOT_CODE_CARRIER_CONTENT_COLUMN —— the CODE carrier (frame clone) painted
+   * PAST the live content column. The outer frame gap is symmetric, so a
+   * full-width code block used to overflow the column by 2px on each side
+   * (measured 763.4 → 767.4 = +4px). The gap is now clamped to the column; a
+   * residual overflow on the REAL painted node is FATAL.
+   */
+  'codeCarrierOverflowsContentColumn',
 ] as const
 
 export type LocateDocumentSpaceV511GateKey = typeof LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS[number]

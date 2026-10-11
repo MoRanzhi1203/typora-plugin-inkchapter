@@ -127,9 +127,10 @@ describe('TRAE §23 A/C — the canonical boundary identity is source derived', 
       ['# T', '', '```', 'const a = 1', '```', ...Array.from({ length: n }, () => ''), 'tail paragraph'].join('\n')
     expect(analyzeInternalBlankLineGaps(withBlanks(0))).toHaveLength(0)
     expect(analyzeInternalBlankLineGaps(withBlanks(1))).toHaveLength(0)
-    expect(analyzeInternalBlankLineGaps(withBlanks(2))).toHaveLength(0)
+    expect(analyzeInternalBlankLineGaps(withBlanks(2))).toHaveLength(1)
     expect(analyzeInternalBlankLineGaps(withBlanks(3))).toHaveLength(1)
     expect(analyzeInternalBlankLineGaps(withBlanks(4))).toHaveLength(1)
+    expect(analyzeInternalBlankLineGaps(withBlanks(2))[0].actualBlankLines).toBe(2)
     expect(analyzeInternalBlankLineGaps(withBlanks(3))[0].actualBlankLines).toBe(3)
   })
 
@@ -420,8 +421,8 @@ function gapDiag(over: Record<string, unknown> = {}): Record<string, unknown> {
       firstBlankLine: 15,
       lastBlankLine: 17,
       actualBlankLines: 3,
-      passMaxBlankLines: 2,
-      warningThreshold: 3,
+      passMaxBlankLines: 1,
+      warningThreshold: 2,
     },
     location: {
       kind: 'source-range', startLine: 19, startColumn: 0,

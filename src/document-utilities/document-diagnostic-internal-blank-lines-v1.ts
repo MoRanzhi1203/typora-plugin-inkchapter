@@ -5,13 +5,16 @@
  * The product semantics are fixed:
  *
  *   文档内部两个有效内容块之间
- *   0~2 个连续空行 → PASS
- *   3 个及以上连续空行 → Warning
+ *   0~1 个连续空行 → PASS
+ *   2 个及以上连续空行 → Warning
+ *
+ * 空行数量一律以 **Markdown 源码** 为准（Typora 会把 N 个连续空行折叠成 1 个空
+ * `<p>`，渲染 DOM 的行数只用于「可绘制几何」，绝不是规则计数）。
  *
  * This module is the ONE authority for
  *
  *   1. `INTERNAL_BLANK_LINE_POLICY` — the threshold constants. NO producer /
- *      locator / test may hardcode `2` or `3` independently.
+ *      locator / test may hardcode `1` or `2` independently.
  *   2. `DocumentBlockGap` — the source-only BLOCK GAP model: every gap is
  *      proven from the canonical Markdown SOURCE (line map + block ownership),
  *      NEVER from DOM margins / computed style / visual whitespace height.
@@ -46,8 +49,8 @@ export interface InternalBlankLinePolicy {
  * document can never fall into an undefined band.
  */
 export const INTERNAL_BLANK_LINE_POLICY: InternalBlankLinePolicy = {
-  passMaxBlankLines: 2,
-  warningThreshold: 3,
+  passMaxBlankLines: 1,
+  warningThreshold: 2,
 }
 
 /** §9 — the rule code (the ONLY business rule for internal blank-line gaps). */
@@ -764,7 +767,7 @@ export function evaluateInternalBlankLineV1Gates(
 
 export const INTERNAL_BLANK_LINE_V1_COVERAGE_KEYS = [
   'warningRuntime',
-  'threshold3Runtime',
+  'thresholdRuntime',
   'headingToParagraphRuntime',
   'paragraphToHeadingRuntime',
   'headingToHeadingRuntime',
@@ -791,7 +794,7 @@ export function formatInternalBlankLineV1CoverageReport(
 ): string[] {
   const label: Record<InternalBlankLineV1CoverageKey, string> = {
     warningRuntime: 'INTERNAL_BLANK_LINE_WARNING_RUNTIME_COUNT',
-    threshold3Runtime: 'INTERNAL_BLANK_LINE_THRESHOLD_3_RUNTIME_COUNT',
+    thresholdRuntime: 'INTERNAL_BLANK_LINE_THRESHOLD_RUNTIME_COUNT',
     headingToParagraphRuntime: 'INTERNAL_BLANK_LINE_HEADING_TO_PARAGRAPH_RUNTIME_COUNT',
     paragraphToHeadingRuntime: 'INTERNAL_BLANK_LINE_PARAGRAPH_TO_HEADING_RUNTIME_COUNT',
     headingToHeadingRuntime: 'INTERNAL_BLANK_LINE_HEADING_TO_HEADING_RUNTIME_COUNT',
@@ -819,7 +822,7 @@ export function noteInternalBlankLineCoverage(
   },
 ): void {
   coverage.warningRuntime++
-  if (facts.actualBlankLines === INTERNAL_BLANK_LINE_POLICY.warningThreshold) coverage.threshold3Runtime++
+  if (facts.actualBlankLines === INTERNAL_BLANK_LINE_POLICY.warningThreshold) coverage.thresholdRuntime++
   const pair = `${facts.previousBlockKind}>${facts.nextBlockKind}`
   if (pair === 'heading>paragraph') coverage.headingToParagraphRuntime++
   if (pair === 'paragraph>heading') coverage.paragraphToHeadingRuntime++

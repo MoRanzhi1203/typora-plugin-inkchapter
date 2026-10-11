@@ -141,6 +141,12 @@ export interface DiagnosticLocateVisualCommit {
   /** V4 — caption / expected-name host rect (missing-name diagnostics). */
   captionHostRect?: RectLike | null
   /**
+   * ROOT_CODE_CARRIER_CONTENT_COLUMN —— the LIVE semantic content column. The
+   * outer frame gap is clamped to it so a full-width carrier (code/table/figure/
+   * formula) never paints past the column edge.
+   */
+  contentColumnRect?: RectLike | null
+  /**
    * TRAE V4 §10 — the EXPLICIT source-syntax OPENING-LINE fragment rects. When
    * present they are painted verbatim (one overlay child per rect) and the
    * controller NEVER mounts a block frame — the source-syntax active visual may
@@ -249,6 +255,31 @@ function mergeCaptionHost(
 }
 
 /**
+ * ROOT_CODE_CARRIER_CONTENT_COLUMN —— clamp the outer BREATHING GAP to the
+ * content column, never the target.
+ *
+ * `withGap` is the target box already inflated by the frame gap; `base` is the
+ * same target WITHOUT the gap. A side is only pulled back to the column edge when
+ * the pre-gap box was already inside it — so a full-width block loses its (out-of-
+ * column) 2px gap while a target that legitimately extends past the column keeps
+ * its real extent.
+ */
+function clampCarrierGapToColumn(
+  withGap: RectSnapshot,
+  base: RectSnapshot,
+  column: { left: number; right: number },
+): RectSnapshot {
+  if (!Number.isFinite(column.left) || !Number.isFinite(column.right) || column.right <= column.left) return withGap
+  // A side is pulled back to the column edge ONLY when the pre-gap box was already
+  // inside it; a target that legitimately extends past the column keeps its gap.
+  const left = base.left >= column.left ? Math.max(withGap.left, column.left) : withGap.left
+  const right = base.right <= column.right ? Math.min(withGap.right, column.right) : withGap.right
+  if (left === withGap.left && right === withGap.right) return withGap
+  if (right <= left) return withGap
+  return makeRectSnapshot({ left, top: withGap.top, right, bottom: withGap.bottom })
+}
+
+/**
  * Phase 7R.3.11.8B.8 — SINGLE Diagnostic Locate Frame controller.
  *
  * The host owns ONE instance per overlay host. The controller owns at most ONE
@@ -275,6 +306,14 @@ export class DiagnosticLocateFrameController {
   private preciseOccurrenceWithinAnchor = 0
   private forceInlineMarkOverride = false
   private captionHostRectOverride: { left: number; top: number; right: number; bottom: number } | null = null
+  /**
+   * ROOT_CODE_CARRIER_CONTENT_COLUMN —— the LIVE content column the carrier must
+   * never overflow. The 2px breathing gap is symmetric, so a FULL-WIDTH block
+   * (code/table/figure/formula) pushed the carrier 2px past the column on each
+   * side (measured 763.4 → 767.4 = +4px). The gap is clamped to the available
+   * headroom; the TARGET itself is never shrunk.
+   */
+  private contentColumnRectOverride: { left: number; top: number; right: number; bottom: number } | null = null
   /** V4 — last committed visual geometry decision (audit/tests). */
   private lastVisualPresentation: string | null = null
   private lastOcclusion: string | null = null
@@ -444,6 +483,7 @@ export class DiagnosticLocateFrameController {
     this.preciseOccurrenceWithinAnchor = Math.max(0, Math.floor(input.preciseOccurrenceWithinAnchor ?? 0))
     this.forceInlineMarkOverride = input.forceInlineMark === true
     this.captionHostRectOverride = input.captionHostRect ?? null
+    this.contentColumnRectOverride = input.contentColumnRect ?? null
     this.explicitFragmentRects = input.fragmentRects ?? null
     this.sourceSyntaxAccent = input.sourceSyntaxAccent === true
     // ── TRAE V4 §10 — EXPLICIT-FRAGMENT carrier (source-syntax opener). The
@@ -796,7 +836,7 @@ export class DiagnosticLocateFrameController {
    * separate by buildLocateVisualGeometryV4. Drawer occlusion becomes an
    * OPEN-EDGE presentation (no fake closed clipped rectangle).
    */
-  reposition(opts?: { clipRect?: RectLike | null; headless?: boolean; drawerRect?: RectLike | null; preciseRect?: RectLike | null; scroll?: boolean }): void {
+  reposition(opts?: { clipRect?: RectLike | null; headless?: boolean; drawerRect?: RectLike | null; preciseRect?: RectLike | null; scroll?: boolean; contentColumnRect?: RectLike | null }): void {
     if (this.disposed) return
     if (this.anchorEl && !this.anchorEl.isConnected) {
       this.clear('ANCHOR_DISCONNECTED')
@@ -823,7 +863,15 @@ export class DiagnosticLocateFrameController {
     const gap = precise || this.forceInlineMarkOverride ? 0 : diagnosticLocateFrameGapFor(this.kind)
     const inflated = inflateRectBy(semanticSource, gap)
     const caption = this.captionHostRectOverride
-    const withCaption = mergeCaptionHost(inflated, caption)
+    const withCaptionGap = mergeCaptionHost(inflated, caption)
+    // ── ROOT_CODE_CARRIER_CONTENT_COLUMN —— the outer breathing gap is clamped to
+    // the LIVE content column so a full-width carrier never paints past the column
+    // edge (measured 763.4 → 767.4 = +4px). The pre-gap union is the TARGET that
+    // must stay covered, so a legitimately wider-than-column target is never shrunk.
+    const contentColumn = opts?.contentColumnRect ?? this.contentColumnRectOverride
+    const withCaption = contentColumn && gap > 0
+      ? clampCarrierGapToColumn(withCaptionGap, mergeCaptionHost(semanticSource, caption), contentColumn)
+      : withCaptionGap
     // Heading — measure the REAL text extent for the text-tight bottom edge
     // (never a full-width heading border). Headless keeps the semantic box.
     let headingTextRight = 0
@@ -1050,6 +1098,7 @@ export class DiagnosticLocateFrameController {
     this.preciseOccurrenceWithinAnchor = 0
     this.forceInlineMarkOverride = false
     this.captionHostRectOverride = null
+    this.contentColumnRectOverride = null
     this.explicitFragmentRects = null
     this.sourceSyntaxAccent = false
     this.lastVisualPresentation = null

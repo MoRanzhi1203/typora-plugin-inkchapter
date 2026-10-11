@@ -523,7 +523,7 @@ function internalBlankDiagnostic(): Record<string, unknown> {
       nextBlockIdentity: 'paragraph:B#0', nextBlockKind: 'paragraph',
       previousSourceEnd: 10, nextSourceStart: 20,
       firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3,
-      passMaxBlankLines: 2, warningThreshold: 3,
+      passMaxBlankLines: 1, warningThreshold: 2,
     },
     // §22/§23 — the anchor is the NEXT block; `标题 0` is the `data-line="4"` heading.
     location: { kind: 'source-range', startLine: 4, startColumn: 0, rawText: '标题 0' },
