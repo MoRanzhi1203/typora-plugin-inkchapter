@@ -2217,7 +2217,7 @@ export function computeDocumentDiagnostics(
       if (policy.verdict === 'MISSING_TERMINAL_NEWLINE') {
         push(
           makeDiagnostic(input, 'document', 'DOCUMENT_TERMINAL_NEWLINE_MISSING',
-            '警告：文档末尾缺少换行符', {
+            '文档末尾缺少换行符', {
             detail: 'Markdown 文档应以一个换行符结束。',
             kind: 'document',
             targetIdentity: 'document:terminal-newline-missing',
@@ -2239,7 +2239,7 @@ export function computeDocumentDiagnostics(
       } else if (policy.verdict === 'EXCESSIVE_TRAILING_BLANK_LINES') {
         push(
           makeDiagnostic(input, 'document', 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
-            '警告：文档末尾存在过多空行', {
+            '文档末尾空行过多', {
             detail: 'Markdown 文档末尾存在多个连续空行，建议删除多余空行。',
             kind: 'document',
             targetIdentity: 'document:trailing-blank-lines-excessive',

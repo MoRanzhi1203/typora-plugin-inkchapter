@@ -21,6 +21,8 @@
  * Pure contract: no DOM, no host state.
  */
 
+import { normalizeDiagnosticText, resolveDiagnosticCopy } from './document-diagnostic-copy-v1'
+
 export type DiagnosticSeverityLike = 'error' | 'warning' | 'info'
 
 /** Where the inline hint came from (audited; known codes must never fall back). */
@@ -29,10 +31,12 @@ export type InlineHintSource = 'MAPPED' | 'DYNAMIC' | 'CATEGORY_FALLBACK' | 'MES
 export interface DiagnosticPresentation {
   /** The SHORT in-document label (what the body chip shows). */
   inlineHint: string
-  /** The Drawer heading — the FULL diagnostic message (never compressed here). */
+  /** The Drawer heading — the canonical normalized title. */
   drawerTitle: string
   /** The Drawer body — the FULL explanation / advice (never compressed here). */
   drawerDetail: string | null
+  /** The Drawer fix advice (`修复建议`), normalized by the copy authority. */
+  drawerSuggestion: string | null
   inlineHintSource: InlineHintSource
 }
 
@@ -79,7 +83,7 @@ const EMOJI_RE = /[\u2600-\u27BF\u2B00-\u2BFF\uFE0F\uD83C-\uDBFF\uDC00-\uDFFF]/
 
 // ── §4/§5 — the deterministic DiagnosticCode -> inlineHint table ────────────
 
-const INLINE_HINT_BY_CODE_V514R5: Readonly<Record<string, string>> = {
+export const INLINE_HINT_BY_CODE_V514R5: Readonly<Record<string, string>> = {
   // strict first-H1 top-line family (`STRICT_FIRST_H1_<documentStartState>`)
   STRICT_FIRST_H1_LEADING_PARAGRAPH: 'H1 前有正文',
   STRICT_FIRST_H1_LEADING_EMPTY_LINE: 'H1 前有空行',
@@ -219,14 +223,29 @@ export function buildDiagnosticPresentation(input: DiagnosticPresentationInput):
   const message = String(input.message ?? '').trim()
   const explicitDetail = String(input.detail ?? '').trim()
   const drawerTitleOverride = DRAWER_TITLE_BY_CODE_V514R5[code] ?? null
+  // §8 / Copy Authority V1 — the canonical user-facing copy (title / description
+  // / suggestion). The strict-H1 override keeps its frozen per-code title.
+  const copy = resolveDiagnosticCopy({
+    code,
+    message,
+    detail: explicitDetail,
+    severity: input.severity ?? null,
+    category: input.category ?? null,
+  })
+  const drawerTitle = drawerTitleOverride ?? copy.title
+  // §8 — the FULL explanation is never dropped: an explicit (dynamic) detail is
+  // authoritative (only formatting is normalized); otherwise an override title
+  // promotes the message to the detail; otherwise the canonical description.
+  const drawerDetail = explicitDetail !== ''
+    ? normalizeDiagnosticText(explicitDetail)
+    : (drawerTitleOverride != null && message !== ''
+      ? buildDrawerDetailFromMessage(message)
+      : (copy.description !== '' ? copy.description : null))
   return {
     inlineHint: hint,
-    drawerTitle: drawerTitleOverride ?? message ?? inlineHintCategoryForCode(code, input.category ?? null),
-    // §8 — the FULL explanation is never dropped: an override title promotes the
-    // message to the detail, otherwise the explicit detail stays authoritative.
-    drawerDetail: explicitDetail
-      || (drawerTitleOverride != null && message !== '' ? buildDrawerDetailFromMessage(message) : null)
-      || null,
+    drawerTitle,
+    drawerDetail,
+    drawerSuggestion: copy.suggestion !== '' ? copy.suggestion : null,
     inlineHintSource: source,
   }
 }
