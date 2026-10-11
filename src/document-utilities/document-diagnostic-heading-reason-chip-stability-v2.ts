@@ -297,8 +297,27 @@ export interface HeadingReasonChipStabilityFact {
   verticalCenterDriftPx: number | null
   placementMode: 'INLINE_RIGHT' | 'BELOW_LAST_LINE' | null
   horizontalClampApplied: boolean
+  /**
+   * Unified Geometry Transaction Closure §4/§5 — the REAL global layout fact of
+   * this reconcile: the editor/viewport geometry (width) or the target itself
+   * changed. When a global layout change happened, EVERY chip legitimately moves,
+   * so a chip-position delta is NOT a stability violation.
+   */
+  globalLayoutChanged: boolean
   rebuildRequested: boolean
+  /**
+   * Unified Geometry Transaction Closure §4 — a VERIFIED rebuild: this pass really
+   * re-measured this target (the scoped reconcile did not skip it). A skipped
+   * (intentionally unchanged) target must never be counted as a remeasure.
+   */
   rebuildPerformed: boolean
+  /**
+   * Unified Geometry Transaction Closure §4 — was this rebuild JUSTIFIED by a real
+   * geometry change (the target's live rect moved, the editor width changed, or the
+   * reconcile measured a drifted retained target)? A justified rebuild must never be
+   * charged as a "non-dirty remeasure" / "plugin mutation global reflow" violation.
+   */
+  rebuildJustified: boolean
   rebuildReason: string | null
 }
 
@@ -360,10 +379,16 @@ export function evaluateHeadingReasonChipStability(
       failed.push('REASON_CHIP_CENTER_OUTSIDE_TEXT_LINE')
     }
   }
-  if (!fact.isDirtyTarget && rectMovedPx(fact.reasonChipRectBefore, fact.reasonChipRectAfter) > 1) {
+  // ── Unified Geometry Transaction Closure §4/§5 — a chip may only be judged
+  // "moved without cause" when NOTHING legitimately moved it: not the target, not
+  // the content, and not the global layout (window/editor width). A window-width
+  // change or a Drawer toggle moves EVERY chip, so a position delta there is
+  // expected, never a stability violation.
+  if (!fact.isDirtyTarget && !fact.globalLayoutChanged
+    && rectMovedPx(fact.reasonChipRectBefore, fact.reasonChipRectAfter) > 1) {
     failed.push('NON_DIRTY_HEADING_CHIP_POSITION_CHANGED')
   }
-  if (!fact.contentChanged && !fact.targetMoved
+  if (!fact.contentChanged && !fact.targetMoved && !fact.globalLayoutChanged
     && rectMovedPx(fact.reasonChipRectBefore, fact.reasonChipRectAfter) > 1) {
     failed.push('CHIP_POSITION_CHANGED_WITHOUT_CONTENT_CHANGE')
   }

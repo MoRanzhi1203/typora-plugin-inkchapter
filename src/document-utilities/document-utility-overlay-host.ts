@@ -18,6 +18,8 @@ import {
   DiagnosticLocateFrameController,
   DIAGNOSTIC_INLINE_FRAGMENT_CLASS,
   DIAGNOSTIC_LOCATE_FRAME_CLASS,
+  DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS,
+  computeCaptionCueRect,
   classifyDiagnosticLocateElement,
   type DiagnosticLocateTargetKind,
   type RectLike,
@@ -2380,12 +2382,45 @@ interface HeadingPassiveMarkerRecord {
   chipInlineHint?: string | null
   /** V5.14-R6 §6 — the ONE semantic coverage snapshot the PASSIVE visual painted. */
   coverageSnapshot?: HeadingDiagnosticTargetSnapshot
+  /**
+   * Unified Geometry Transaction Closure §4 — did THIS pass really re-measure this
+   * target? `false` marks a record the scoped reconcile intentionally SKIPPED
+   * (non-dirty target, unchanged layout epoch): it must never be counted as a
+   * non-dirty remeasure, and its geometry is trivially generation-current.
+   */
+  rebuiltThisPass?: boolean
+  /**
+   * Unified Geometry Transaction Closure §4 — did the scoped reconcile measure this
+   * retained target and find its LIVE geometry CHANGED? (⇒ the rebuild was
+   * justified, so it must never be charged as a violation.)
+   */
+  liveGeometryChangedThisPass?: boolean
 }
 
 /** V5.12-R9 §6 — reason chip height (18~20px band). */
 const HEADING_REASON_CHIP_HEIGHT_PX = 20
 /** V5.14-R8 R4 §2.1 — the gap between two reason pills on the SAME heading (4~6px). */
 const HEADING_REASON_ITEM_GAP_PX = 6
+
+/**
+ * Unified Geometry Transaction Closure §4/§5 — the bounded number of consecutive
+ * visual-closure passes that may be DEFERRED while the editor DOM is being rebuilt
+ * (a content mutation detaches + remounts every heading node). Beyond this budget a
+ * pass that still resolves nothing is a REAL violation.
+ */
+const MAX_CLOSURE_DOM_SETTLE_DEFER = 2
+
+/**
+ * Unified Geometry Transaction Closure §4 — the MARKER identity encoded by a
+ * canonical visual/diagnostic target key (`doc::diag::<i>::id:H1:idx:0` →
+ * `id:H1:idx:0`). Returns null when the key carries no identity segment.
+ */
+function headingMarkerIdentityOfTargetKey(targetKey: string | null | undefined): string | null {
+  if (targetKey == null || targetKey === '') return null
+  const parts = targetKey.split('::')
+  const identity = parts[parts.length - 1]
+  return identity === '' ? null : identity
+}
 
 /**
  * §P6 — ONE heading marker group. A single heading can be the target of SEVERAL
@@ -2506,6 +2541,12 @@ const DOM_POSITION_FOLLOWING = 4
 const DOM_POSITION_CONTAINS = 8
 const DOM_POSITION_CONTAINED_BY = 16
 
+/**
+ * §三/§七 — how far the painted block-gap band may exceed the LIVE content column
+ * before it counts as a real geometry failure (never widened per run).
+ */
+export const BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX = 1
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -2549,6 +2590,14 @@ export class DocumentUtilityOverlayHost {
   /** Monotonic layout-invalidation generation (guards stale re-measures). */
   private layoutInvalidateEpoch = 0
   private layoutInvalidateRemeasureCount = 0
+  /**
+   * §七 — the CURRENT-TRANSACTION painted-geometry drift count. The cumulative
+   * `docSpaceCarrierPaintDriftGt1px` is HISTORICAL evidence (and must stay >0 when a
+   * real drift was ever observed), but an acceptance run must be judged on the
+   * CURRENT transaction only: this is reset at every new locate intent, so a
+   * transient pre-fix frame can never poison a later verdict.
+   */
+  private docSpaceCarrierPaintDriftCurrentTx = 0
   private geometryRafPending = false
   private pendingGeometryReasons = new Set<string>()
   private lastGeometry: OverlayGeometry | null = null
@@ -2774,6 +2823,16 @@ export class DocumentUtilityOverlayHost {
    * both read from HERE (never from a bare identity comparison).
    */
   private headingActiveVisualFacts = new Map<string, HeadingActiveVisualFacts>()
+  /**
+   * Unified Geometry Transaction Closure §3.2 — how many times a RETAINED active
+   * heading visual was re-stamped to the CURRENT geometry generation after the
+   * reconcile PROVED (by fresh fragment measurement) its geometry is unchanged.
+   * This is the honest same-generation commit of a retained component; a drifted
+   * retained visual is NEVER re-stamped (it must be rebuilt or FAIL).
+   */
+  private activeHeadingVisualGenerationRestampCount = 0
+  /** §3.2 — retained active visuals whose generation could NOT be verified current. */
+  private activeHeadingVisualGenerationUnverifiedCount = 0
   /**
    * VNext Presentation Closure V1.1 §3/§12/§14 — the SECONDARY active wrappers of
    * ONE `text-tight-multi-target` activation (the primary/anchor heading stays in
@@ -4409,6 +4468,38 @@ export class DocumentUtilityOverlayHost {
   private locateDocLayerHost: HTMLElement | null = null
   private locateDocLayerForcedPosition = false
   private locateDocCarrier: HTMLElement | null = null
+  /**
+   * ROOT_ACTIVE_DUP_CARRIER §三/§五 —— the committed SECONDARY context element.
+   * `locatePlacementCtx` is transaction-scoped and dies with the locate, so the
+   * reconcile needs its own reference to re-project the secondary geometry on a
+   * later layout change (instead of leaving the COMMIT-time rect frozen).
+   */
+  private locateCommittedSecondaryEl: HTMLElement | null = null
+  /**
+   * ROOT_COMPOUND_CAPTION_COVERAGE §一/§三 —— the committed PRIMARY element (the
+   * caption / name-slot for a compound Table/Code target). Kept past the
+   * transaction so the reconcile can verify the caption is still covered.
+   */
+  private locateCommittedPrimaryEl: HTMLElement | null = null
+  /**
+   * ROOT_COMPOUND_CAPTION_COVERAGE §一/§三 —— the per-edge relation between the
+   * COMMITTED carrier and the semantic anchor at commit time.
+   *
+   * For a compound target (CODE_MISSING_NAME: caption + body) the carrier covers
+   * `caption ∪ body`, i.e. it extends ABOVE the semantic anchor (the code body) by
+   * the caption's height. Re-deriving the carrier from the anchor alone (the old
+   * reconcile) collapsed it onto the body and DROPPED the caption highlight after a
+   * layout change. Capturing the relation once at commit and re-applying it to the
+   * LIVE anchor keeps caption and body bound to the SAME layout snapshot.
+   */
+  private locateCommittedCarrierEdgePad: { left: number; top: number; right: number; bottom: number } | null = null
+  /**
+   * ROOT_COMPOUND_CAPTION_COVERAGE §六 —— did the COMMITTED carrier already cover the
+   * compound caption? The gate is a REGRESSION detector: a reconcile must never DROP
+   * a caption coverage the commit had (headless layouts that legitimately cannot
+   * extend the frame to the caption therefore never trip it).
+   */
+  private locateCommittedCarrierCoveredCaptionAtCommit = false
   /** Blank-Space Warning Presentation Policy — the unified FILL_ONLY warning band
    *  carrier (T2 terminal-newline / T3 leading-H1; a locate carrier like the rest). */
   private blankSpaceWarningCarrier: HTMLElement | null = null
@@ -4433,8 +4524,37 @@ export class DocumentUtilityOverlayHost {
   } | null = null
   private countersDocSpaceV511 = createLocateDocumentSpaceV511GateCounters()
 
+  /**
+   * §七 — the layout epoch at which the COMMITTED carrier's geometry was measured.
+   * `null` (unknown / legacy writer) is treated as CURRENT by `isLayoutEpochStale`,
+   * so an unresolved carrier can never fabricate a violation.
+   */
+  private resolveCommittedCarrierMeasuredLayoutEpoch(
+    structure: { kind?: string | null; headingMarkerCarrier?: boolean },
+  ): number | null {
+    // document-end / blank-space band owns its own measure-time epoch.
+    if (this.lastDocEndVisualRule != null) {
+      const e = this.lastDocEndVisual?.layoutEpochAtMeasure
+      return typeof e === 'number' ? e : null
+    }
+    // heading carrier (active emphasis / passive range background).
+    const identity = this.headingActiveMarkerIdentity
+    if (identity != null) {
+      const active = this.headingActiveVisualFacts.get(identity)
+      if (active != null && typeof active.layoutEpoch === 'number') return active.layoutEpoch
+      const rec = this.headingPassiveMarkers.get(identity)
+      if (rec != null && typeof rec.measuredLayoutEpoch === 'number') return rec.measuredLayoutEpoch
+    }
+    return null
+  }
+
   getDocumentSpaceCounters(): Readonly<Record<string, number>> {
-    return { ...this.countersDocSpaceV511 }
+    return {
+      ...this.countersDocSpaceV511,
+      // §七 — the CURRENT-TRANSACTION readout (reset at each locate intent): an
+      // acceptance run reads THIS, while the cumulative key remains historical.
+      docSpaceCarrierPaintDriftCurrentTx: this.docSpaceCarrierPaintDriftCurrentTx,
+    }
   }
 
   /** V5.11 — read-only snapshot of the frozen document-space visual. */
@@ -4538,6 +4658,12 @@ export class DocumentUtilityOverlayHost {
       try { this.locateDocCarrier.remove() } catch { /* noop */ }
       this.locateDocCarrier = null
     }
+    // ROOT_ACTIVE_DUP_CARRIER — the committed SECONDARY context element retires with
+    // the carrier it belongs to (never a stale element reference).
+    this.locateCommittedSecondaryEl = null
+    this.locateCommittedPrimaryEl = null
+    this.locateCommittedCarrierEdgePad = null
+    this.locateCommittedCarrierCoveredCaptionAtCommit = false
     // V5.13-R1 §10 — the synthetic EOF marker is a document-space carrier and is
     // removed with it (new locate / dismiss / document switch / diagnostic
     // removed / unload all funnel through here).
@@ -4570,11 +4696,33 @@ export class DocumentUtilityOverlayHost {
     return `${el.tagName.toLowerCase()}#${line}.${String(el.className).slice(0, 40)}`
   }
 
-  private measureLocateLayoutFingerprint(host: HTMLElement | null): LocateLayoutFingerprint | null {
+  /**
+   * ROOT_COMPOUND_CAPTION_COVERAGE §3.1 —— return a LIVE element for a committed
+   * reference: the SAME node when still connected, otherwise the CURRENT DOM node
+   * carrying the SAME canonical identity (Typora rebuilds the caption / `pre` DOM on
+   * re-wrap). Never keep drawing on a detached node.
+   */
+  private resolveLiveCommittedElement(
+    fallback: HTMLElement | null,
+    expectedIdentity: string | null,
+  ): HTMLElement | null {
+    if (fallback && fallback.isConnected) return fallback
+    if (expectedIdentity == null) return fallback
+    const root = resolveBusinessContentRoot()
+    if (!root) return fallback
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>(
+      'pre,table,figure,.md-math-block,blockquote,p,h1,h2,h3,h4,h5,h6',
+    ))) {
+      if (DocumentUtilityOverlayHost.anchorIdentityOf(el) === expectedIdentity) return el
+    }
+    return fallback
+  }
+
+  private measureLocateLayoutFingerprint(host: HTMLElement | null, anchorOverride?: HTMLElement | null): LocateLayoutFingerprint | null {
     if (!host) return null
     const hostRect = this.measureLocateRect(host)
     const ctx = this.locatePlacementCtx
-    const anchor = this.locateFrame?.getAnchorElement() ?? null
+    const anchor = anchorOverride !== undefined ? anchorOverride : (this.locateFrame?.getAnchorElement() ?? null)
     const semRect = this.measureLocateRect(anchor)
     const primaryRect = ctx?.compound ? this.measureLocateRect(ctx.primaryEl) : null
     const secondaryRect = this.measureLocateRect(ctx?.secondaryEl ?? null)
@@ -4595,10 +4743,77 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * §23/§8/§18 — COMMIT: convert the FINAL viewport geometry into document-local
-   * geometry ONCE and mount the carrier in the document-space layer. The
-   * viewport frame is then detached so only ONE carrier exists.
+   * §二/§五/§七 — INDEPENDENT POST-COMMIT PAINT VERIFICATION of the FINAL node.
+   *
+   * `commitDocumentSpaceCarrier` mounts the document-space clone and RELEASES the
+   * viewport frame in the same step — and it runs AFTER every pre-existing
+   * verification (`verifyOneClickPaintedVisual` validated the viewport frame). The
+   * clone is therefore the only thing the user sees, and nothing measured it. A
+   * layer whose containing block / offsetParent / transform does not coincide with
+   * the measured content host (a sidebar-divider reflow, a theme `position` reset)
+   * shifted the carrier with NO audit able to observe it.
+   *
+   * This reads the REAL painted node, compensates a translation mismatch on the
+   * node itself, and fails a FATAL gate when the painted result still drifts >1px.
    */
+  private verifyAndCorrectDocumentSpaceCarrierPaint(
+    carrier: HTMLElement,
+    local: { left: number; top: number; right: number; bottom: number; width: number; height: number },
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): void {
+    const host = this.locateDocLayerHost
+    const hostRect = this.measureLocateRect(host)
+    const actual = this.measureLocateRect(carrier)
+    if (!hostRect || !actual) return
+    const expectedLeft = hostRect.left + local.left
+    const expectedTop = hostRect.top + local.top
+    const driftX = Math.abs(expectedLeft - actual.left)
+    const driftY = Math.abs(expectedTop - actual.top)
+    const driftPx = Math.max(driftX, driftY)
+    if (driftPx <= 0.5) return
+    // The placement contract is `paintedViewport == hostRect + local`. A deviation
+    // proves the paint layer's origin is NOT the measured content host origin →
+    // compensate on the REAL node so the painted result lands on the target.
+    const correctedLeft = parseFloat(carrier.style.left || '0') + (expectedLeft - actual.left)
+    const correctedTop = parseFloat(carrier.style.top || '0') + (expectedTop - actual.top)
+    carrier.style.left = `${correctedLeft}px`
+    carrier.style.top = `${correctedTop}px`
+    const after = this.measureLocateRect(carrier)
+    const residual = after
+      ? Math.max(Math.abs(expectedLeft - after.left), Math.abs(expectedTop - after.top))
+      : Number.POSITIVE_INFINITY
+    const fatal = !(residual <= 1)
+    if (fatal) {
+      this.countersDocSpaceV511.docSpaceCarrierPaintDriftGt1px++
+      this.docSpaceCarrierPaintDriftCurrentTx++
+    }
+    const style = computedStyleOf(carrier)
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DOC-SPACE-PAINT-VERIFY', {
+      diagnosticId: diag.id,
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      targetIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(carrier),
+      targetTagIdentity: (this.locateFrame?.getAnchorElement()?.tagName ?? null),
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      transactionId: this.activeLocateTx?.id ?? null,
+      // ── the independent measurement (all read from the COMMITTED DOM) ──
+      contentHostRect: hostRect,
+      paintLayerContainingBlock: carrier.offsetParent ? `${carrier.offsetParent.tagName}#${(carrier.offsetParent as HTMLElement).id || ''}` : null,
+      paintLayerPosition: style ? style.position : null,
+      paintLayerTransform: style ? style.transform : null,
+      expectedPaintedLeft: expectedLeft,
+      expectedPaintedTop: expectedTop,
+      paintedRect: actual,
+      driftX,
+      driftY,
+      driftPx,
+      correctedLeft,
+      correctedTop,
+      residualDriftPx: residual,
+      decision: fatal ? 'FAIL' : 'CORRECTED',
+      reason: fatal ? 'DOC_SPACE_CARRIER_PAINT_DRIFT_GT_1PX' : 'DOC_SPACE_CARRIER_PAINT_ORIGIN_CORRECTED',
+    })
+  }
+
   private commitDocumentSpaceCarrier(
     tx: NonNullable<DocumentUtilityOverlayHost['activeLocateTx']>,
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
@@ -4621,6 +4836,28 @@ export class DocumentUtilityOverlayHost {
       const vp = this.measureLocateRect(frameEl)
       const local = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
       if (local) {
+        // ROOT_COMPOUND_CAPTION_COVERAGE §一/§三 — capture the carrier↔anchor edge
+        // relation ONCE. For a compound target the carrier covers `caption ∪ body`
+        // (extending ABOVE the anchor by the caption height); re-applying this exact
+        // relation to the LIVE anchor keeps caption + body on the same snapshot.
+        const anchorForCarrier = frame.getAnchorElement()
+        const anchorVpAtCommit = this.measureLocateRect(anchorForCarrier)
+        this.locateCommittedCarrierEdgePad = anchorVpAtCommit && vp
+          ? {
+              left: vp.left - anchorVpAtCommit.left,
+              top: vp.top - anchorVpAtCommit.top,
+              right: vp.right - anchorVpAtCommit.right,
+              bottom: vp.bottom - anchorVpAtCommit.bottom,
+            }
+          : null
+        // §六 — was the compound caption COVERED at commit? (delta-based gate input)
+        const captionElAtCommit = this.locatePlacementCtx?.primaryEl ?? null
+        const captionVpAtCommit = captionElAtCommit && captionElAtCommit.isConnected
+          ? this.measureLocateRect(captionElAtCommit)
+          : null
+        this.locateCommittedCarrierCoveredCaptionAtCommit = captionVpAtCommit != null && vp != null
+          && vp.left <= captionVpAtCommit.left + 1 && vp.top <= captionVpAtCommit.top + 1
+          && vp.right >= captionVpAtCommit.right - 1 && vp.bottom >= captionVpAtCommit.bottom - 1
         const clone = frameEl.cloneNode(true) as HTMLElement
         clone.style.position = 'absolute'
         clone.style.left = `${Math.round(local.left)}px`
@@ -4632,8 +4869,13 @@ export class DocumentUtilityOverlayHost {
         this.locateDocCarrier = clone
         primaryLocal = makeDocumentSpaceRect({ left: local.left, top: local.top, right: local.right, bottom: local.bottom })
         carrierNodes = 1
+        // §二/§五/§七 — independent verification of the node we JUST painted.
+        this.verifyAndCorrectDocumentSpaceCarrierPaint(clone, local, diag)
       }
       frame.releaseViewportCarrier()
+      // §四/§六 — the document-space clone is the ONLY visible owner now; a still
+      // mounted viewport frame would be a duplicate marker (viewport-fixed).
+      this.verifyNoLingeringViewportFrameAfterCommit('DOCUMENT_SPACE_CARRIER_COMMITTED')
     }
     // ── V5.12-R4 §3 — inline exact fragments enter the SAME document-space ────
     // pipeline and carrier. There is NO inline-private viewport render path: the
@@ -4720,6 +4962,11 @@ export class DocumentUtilityOverlayHost {
     const ctx = this.locatePlacementCtx
     const secondaryVp = this.measureLocateRect(ctx?.secondaryEl ?? anchor)
     const secondaryLocal = viewportRectToDocumentLocalRect({ viewportRect: secondaryVp, contentHostRect: hostRect })
+    // The SECONDARY/PIMARY elements are kept past the transaction so a later layout
+    // change can RE-PROJECT their geometry (never keep the commit-time rect frozen)
+    // and verify the compound caption is still covered by the re-derived carrier.
+    this.locateCommittedSecondaryEl = ctx?.secondaryEl ?? anchor ?? null
+    this.locateCommittedPrimaryEl = ctx?.primaryEl ?? null
     this.locateCommittedVisual = {
       transactionId: tx.id,
       visualEpoch: this.locateVisualEpoch,
@@ -5272,6 +5519,17 @@ export class DocumentUtilityOverlayHost {
   private locateDrawerListScrollAtStart = 0
   /** §14 — the last commit-gate decision (audit). */
   private lastLocateCommitGate: LocateVisualCommitDecision | null = null
+  /**
+   * Unified Geometry Transaction Closure §5.7 — the last SEPARATED panel facts:
+   * the geometric intersection count (allowed backing-layer overlap), the count
+   * of carriers really painting ABOVE a panel (the only fatal layering fact) and
+   * the honest overlay-occlusion count (a panel painting over the target).
+   */
+  private lastVisiblePaintAbovePanelCount = 0
+  private lastActualPanelOcclusionCount = 0
+  /** §5.7 — the last REAL panel intersections (never the paint-order relation). */
+  private lastToolbarIntersectsFrame = false
+  private lastNavigatorIntersectsFrame = false
   /** §14 — visual recovery attempts inside the CURRENT transaction. */
   private txVisualRecoveryAttempts = 0
   /** §13.3 — the ACTIVE LOCATE VISIBILITY LEASE (outlives COMMIT). */
@@ -5419,6 +5677,14 @@ export class DocumentUtilityOverlayHost {
     // high-frequency cost with zero benefit, and it would perturb the geometry
     // scheduler's frame accounting).
     if (this.hasDiagnosticGeometryToReconcile()) {
+      // ── Unified Geometry Transaction Closure §4（ROOT_V2_D）—— the plugin's OWN
+      // presentation write must never escalate into a GLOBAL heading reflow. An
+      // existing interaction scope is preserved; with NO scope the reconcile is
+      // forced SCOPED-with-empty-dirty-set so only a target whose LIVE geometry
+      // really drifted can be rebuilt.
+      if (kind === 'PLUGIN_DOM_MUTATION' && this.headingVisualDirtyScope == null) {
+        this.headingVisualDirtyScope = new Set<string>()
+      }
       this.scheduleDiagnosticGeometryReconcile(`LAYOUT_EPOCH:${kind}`)
     }
     return true
@@ -5594,6 +5860,20 @@ export class DocumentUtilityOverlayHost {
    * means "full reconcile" (mount / document switch / non-interaction layout change).
    */
   private headingVisualDirtyScope: Set<string> | null = null
+  /**
+   * Unified Geometry Transaction Closure §4 — the editor content width observed by
+   * the previous reflow audit. A change between passes is a REAL global layout
+   * change (window resize / native sidebar / Drawer toggle) and legitimately moves
+   * every chip.
+   */
+  private lastClosureEditorWidth: number | null = null
+  /**
+   * Unified Geometry Transaction Closure §4/§5 — the bounded deferral budget of the
+   * heading visual closure while the editor DOM is not yet mounted/settled. A pass
+   * that resolves NOTHING while heading diagnostics exist is DEFERRED (not counted);
+   * after the budget the condition is treated as a REAL violation.
+   */
+  private closureDomDeferRetries = 0
   private lastHeadingReasonChipStabilityFacts = new Map<string, HeadingReasonChipStabilityFact>()
   private countersHeadingReasonChipStabilityV2: HeadingReasonChipStabilityV2Counters
     = createHeadingReasonChipStabilityV2Counters()
@@ -5616,8 +5896,57 @@ export class DocumentUtilityOverlayHost {
 
   /** §7 — set the dirty heading set for the reconcile that is about to run. */
   private setHeadingVisualDirtyTargets(entries: readonly HeadingVisualDirtyEntry[]): void {
-    this.headingVisualDirtyKeys = new Set(entries.map(entry => entry.targetKey))
-    this.headingVisualDirtyScope = new Set(this.headingVisualDirtyKeys)
+    // ── Unified Geometry Transaction Closure §4（ROOT_DIRTY_KEY）—— the dirty keys
+    // arrive as CANONICAL target keys (`doc::diag::0::id:H1:idx:0`) while every
+    // consumer queries the MARKER identity (`id:H1:idx:0`). Storing only the
+    // canonical form made `has(identity)` ALWAYS false, so: (a) every heading was
+    // treated as non-dirty → the scoped skip never applied (full re-measure on
+    // every reconcile), and (b) `nonDirtyHeadingVisualRemeasure` /
+    // `nonActiveHeadingRebuiltOnNonHeadingSwitch` incremented on every pass.
+    // The set therefore carries BOTH forms so a lookup by either key is correct.
+    const keys = new Set<string>()
+    for (const entry of entries) {
+      if (!entry.targetKey) continue
+      keys.add(entry.targetKey)
+      const markerIdentity = headingMarkerIdentityOfTargetKey(entry.targetKey)
+      if (markerIdentity != null) keys.add(markerIdentity)
+    }
+    this.headingVisualDirtyKeys = keys
+    this.headingVisualDirtyScope = new Set(keys)
+  }
+
+  /**
+   * §7 — is this heading (by marker identity) part of the CURRENT scoped dirty
+   * set? Accepts both the marker identity and the canonical target key.
+   */
+  private isHeadingVisualDirty(identity: string): boolean {
+    return this.headingVisualDirtyKeys.has(identity)
+  }
+
+  /**
+   * §7（ROOT_DIRTY_SCOPE）— is the CURRENT reconcile an INTERACTION-SCOPED one?
+   *
+   * `computeHeadingVisualDirtyTargets` only ever builds a dirty set for ONE
+   * diagnostic interaction ("其它 passive heading 不得被重建"). A FULL reconcile
+   * (mount / EDITOR_REFLOW / DOCUMENT_SWITCH, scope === null) has NO interaction
+   * to scope against, and re-measuring every heading there is REQUIRED — so the
+   * "non-dirty remeasure" / "non-heading-switch rebuild" violations may only be
+   * charged against a scoped reconcile.
+   */
+  private isHeadingVisualReconcileScoped(): boolean {
+    return this.headingVisualDirtyScope != null
+  }
+
+  /**
+   * §4 — is the retained PASSIVE marker's LIVE anchor still equal to the geometry it
+   * was painted with (≤1px)? A plugin-owned epoch bump that did not move the heading
+   * must not force a re-measure / DOM rebuild.
+   */
+  private passiveHeadingLiveGeometryUnchanged(rec: HeadingPassiveMarkerRecord): boolean {
+    const el = rec.element
+    if (!el || !el.isConnected) return false
+    const live = this.measureHeadingAnchorLocal(el)
+    return live != null && !measureGeometryDrift(rec.anchorLocal, live).stale
   }
 
   /** §7.1/§7.2 — a target key whose stable identity is a heading (`…::id:H4:idx:6`). */
@@ -5648,7 +5977,16 @@ export class DocumentUtilityOverlayHost {
         default: break
       }
     }
-    if (!fact.isDirtyTarget && fact.rebuildPerformed) c.nonDirtyHeadingVisualRemeasure++
+    // ROOT_DIRTY_SCOPE/§4 — a "non-dirty remeasure" is only a violation when the
+    // rebuild was UNJUSTIFIED: an interaction-scoped reconcile rebuilt a heading
+    // that did not move and whose global layout did not change. (A target that
+    // really moved MUST be re-measured — that is correctness, not a violation.)
+    if (this.isHeadingVisualReconcileScoped()
+      && !fact.isDirtyTarget
+      && fact.rebuildPerformed
+      && !fact.rebuildJustified) {
+      c.nonDirtyHeadingVisualRemeasure++
+    }
     this.lastHeadingReasonChipStabilityFacts.set(fact.stableHeadingIdentity, fact)
     emitRuntimeAudit(HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT, {
       documentKey: fact.documentKey,
@@ -5727,12 +6065,55 @@ export class DocumentUtilityOverlayHost {
         this.countersHeadingReasonChipStabilityV2.crossDocumentReflowTarget++
         continue
       }
+      // ── Unified Geometry Transaction Closure §3.2/§6 — `activeRebuilt` MUST be a
+      // VERIFIED fact (the committed active facts really carry the new generation
+      // AND a non-empty fragment set), never "we entered the rebuild function".
+      // The pre-fix audit reported `activeRebuilt = before != null && isActive`,
+      // so a RETAINED stale active component still produced
+      // `activeRebuilt=true / visualSnapshotAtomic=true / decision=PASS` while the
+      // same pass' closure FAILed on `ACTIVE_FRAGMENT_GEOMETRY_GENERATION_STALE`.
+      const activeFacts = isActive ? (this.headingActiveVisualFacts.get(identity) ?? null) : null
+      // ── Unified Geometry Transaction Closure §4 — a target the scoped reconcile
+      // intentionally SKIPPED is not a "rebuild" and its geometry is trivially
+      // current (it was never re-measured).
+      const rebuiltThisPass = rec?.rebuiltThisPass === true
+      // §4 — the VERIFIED-justified facts: the scoped reconcile measured a drifted
+      // retained target, or the target/editor geometry really changed this pass.
+      const liveGeometryChanged = rec?.liveGeometryChangedThisPass === true
+      const passiveGenerationCurrent = rec == null
+        || !rebuiltThisPass
+        || rec.geometryGeneration === afterGeneration
+      // ── §4/§5 — the REAL global layout fact: did the editor width (window resize /
+      // native sidebar / Drawer toggle) or the target itself change this pass? When
+      // it did, every chip legitimately moves, so a chip delta is not a violation.
+      const editorWidthNow = this.measureLocateRect(this.locateDocLayerHost)?.width ?? null
+      const editorWidthChanged = editorWidthNow != null && this.lastClosureEditorWidth != null
+        && Math.abs(editorWidthNow - this.lastClosureEditorWidth) > 0.5
+      this.lastClosureEditorWidth = editorWidthNow
+      const globalLayoutChanged = drift.stale || editorWidthChanged
+        || (before != null && before.layoutEpoch !== this.currentDocumentLayoutEpoch)
+      // ── §4 — a rebuild is JUSTIFIED when a real geometry change caused it: the
+      // scoped reconcile measured a drifted retained target, the target's live rect
+      // moved between passes, or the editor width changed. Only an UNJUSTIFIED
+      // rebuild may be charged against the reason-chip stability gates.
+      const rebuildJustified = rebuiltThisPass
+        && (liveGeometryChanged || drift.stale || editorWidthChanged)
+      const activeRebuiltVerified = isActive
+        && activeFacts != null
+        && activeFacts.geometryGeneration === afterGeneration
+        && activeFacts.fragmentCount >= 1
+      const chipGenerationCurrent = passiveGenerationCurrent
+      const visualSnapshotAtomicVerified = passiveGenerationCurrent
+        && chipGenerationCurrent
+        && (!isActive || activeRebuiltVerified)
+      const activeRebuildClaimedButUnverified = isActive && before != null && !activeRebuiltVerified
+      if (activeRebuildClaimedButUnverified) this.activeHeadingVisualGenerationUnverifiedCount++
       // ── V2 §10 —— PASS 不再仅凭 "发生了 rebuild"：chip 必须真正落在同行右侧且与
       // 最后一行的垂直中心对齐，否则 FAIL（消除 REFLOW_GEOMETRY_REBUILT_SAME_GENERATION
       // 的 false PASS）。
       const chipClosureFailed = snapshot.reasonChipRect != null
         && (!chipEval.anchorOk || !chipEval.verticalOk || snapshot.reasonChipRect.left === 0)
-      const reflowFailed = residualDrift.stale || chipClosureFailed
+      const reflowFailed = residualDrift.stale || chipClosureFailed || activeRebuildClaimedButUnverified
       // ── V2 §10/§12 —— REAL post-reflow chip closure (turns the old
       // `REFLOW_GEOMETRY_REBUILT_SAME_GENERATION` false PASS into a FAIL).
       {
@@ -5747,7 +6128,7 @@ export class DocumentUtilityOverlayHost {
           diagnosticId: snapshot.diagnosticId ?? '',
           stableHeadingIdentity: identity,
           activeDiagnosticId: this.headingActiveIdentity,
-          isDirtyTarget: this.headingVisualDirtyKeys.has(identity),
+          isDirtyTarget: this.isHeadingVisualDirty(identity),
           contentFingerprintBefore: rec?.contentFingerprintBefore ?? null,
           contentFingerprintAfter: rec?.contentFingerprint ?? null,
           contentChanged: rec?.contentFingerprintBefore != null && rec.contentFingerprintBefore !== rec.contentFingerprint,
@@ -5764,22 +6145,36 @@ export class DocumentUtilityOverlayHost {
           actualChipTop: chipTop,
           anchorDriftPx: chipEval.anchorDriftPx,
           verticalCenterDriftPx: chipEval.verticalDriftPx,
-          placementMode: snapshot.reasonChipRect ? 'INLINE_RIGHT' : null,
+          // ── Unified Geometry Transaction Closure §1/§5（ROOT_CHIP_MODE）—— the
+          // REAL placement of THIS pass's chip. Reporting a legal BELOW_LAST_LINE
+          // chip as `INLINE_RIGHT` made the evaluator apply the same-line anchor /
+          // centre rules and produced 236 false FAILs
+          // (REASON_CHIP_ANCHOR_AUTHORITY_MISMATCH + REASON_CHIP_VERTICAL_FALLBACK).
+          placementMode: snapshot.reasonChipRect == null
+            ? null
+            : (rec?.chipPlacementKind === 'BELOW_LAST_LINE' ? 'BELOW_LAST_LINE' : 'INLINE_RIGHT'),
+          globalLayoutChanged,
           horizontalClampApplied: chipLeft != null && expectedChipLeft != null
             && Math.abs(chipLeft - expectedChipLeft) > 0.5,
           rebuildRequested: before != null,
-          rebuildPerformed: before != null,
+          // §4 — VERIFIED rebuild: this target was really re-measured this pass.
+          rebuildPerformed: rebuiltThisPass,
+          rebuildJustified,
           rebuildReason: reason,
         })
         // §8/§11 — plugin-owned presentation mutation must never escalate into a GLOBAL
         // heading reflow（ROOT_V2_D）；非 heading 诊断切换也不得重建非 active heading。
-        if (!this.headingVisualDirtyKeys.has(identity) && before != null) {
-          if (/PLUGIN_DOM_MUTATION/.test(reason)) {
-            this.countersHeadingReasonChipStabilityV2.pluginDomMutationGlobalHeadingReflow++
-          }
-          if (!this.isHeadingDiagnosticTargetKey(this.diagnosticInteractionState.targetKey)) {
-            this.countersHeadingReasonChipStabilityV2.nonActiveHeadingRebuiltOnNonHeadingSwitch++
-          }
+        // Unified Geometry Transaction Closure §4 — only an UNJUSTIFIED rebuild is
+        // charged (a moved target / changed editor width is correctness, not a defect).
+        if (!rebuildJustified && rebuiltThisPass
+          && /PLUGIN_DOM_MUTATION/.test(reason) && !this.isHeadingVisualDirty(identity)) {
+          this.countersHeadingReasonChipStabilityV2.pluginDomMutationGlobalHeadingReflow++
+        }
+        if (!rebuildJustified && rebuiltThisPass
+          && this.isHeadingVisualReconcileScoped()
+          && !this.isHeadingVisualDirty(identity)
+          && !this.isHeadingDiagnosticTargetKey(this.diagnosticInteractionState.targetKey)) {
+          this.countersHeadingReasonChipStabilityV2.nonActiveHeadingRebuiltOnNonHeadingSwitch++
         }
       }
       emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_VISUAL_REFLOW_AUDIT_EVENT, {
@@ -5811,10 +6206,22 @@ export class DocumentUtilityOverlayHost {
         reasonChipRectBefore: null,
         reasonChipRectAfter: snapshot.reasonChipRect,
         visualInvalidated: before != null,
-        passiveRebuilt: before != null,
-        activeRebuilt: before != null && isActive,
-        chipRebuilt: before != null,
-        visualSnapshotAtomic: true,
+        // Unified Geometry Transaction Closure §4 — `rebuiltThisPass` is the
+        // VERIFIED per-target rebuild fact (false = the scoped reconcile skipped it).
+        rebuiltThisPass,
+        liveGeometryChangedThisPass: liveGeometryChanged,
+        rebuildJustified,
+        passiveRebuilt: rebuiltThisPass,
+        activeRebuilt: activeRebuiltVerified,
+        chipRebuilt: rebuiltThisPass,
+        globalLayoutChanged,
+        editorWidth: this.lastClosureEditorWidth,
+        // §3.2/§6 — VERIFIED facts (never a claim): the passive/chip carry the new
+        // generation and the active (when owned) really does too.
+        passiveGenerationCurrent,
+        activeGenerationCurrent: activeRebuiltVerified,
+        chipGenerationCurrent,
+        visualSnapshotAtomic: visualSnapshotAtomicVerified,
         maxTargetVisualDriftPx: residualDrift.maxDrift,
         moveDistancePx: moveDrift.maxDrift,
         chipVerticalDriftPx: chipEval.verticalDriftPx,
@@ -5827,9 +6234,11 @@ export class DocumentUtilityOverlayHost {
           ? 'GEOMETRY_ALREADY_CURRENT'
           : (residualDrift.stale
               ? 'REFLOW_REBUILT_STILL_DRIFTING'
-              : (chipClosureFailed
-                  ? 'REFLOW_REBUILT_WITH_REASON_CHIP_PLACEMENT_VIOLATION'
-                  : 'REFLOW_GEOMETRY_REBUILT_SAME_GENERATION')),
+              : (activeRebuildClaimedButUnverified
+                  ? 'ACTIVE_REBUILD_UNVERIFIED_GENERATION_STALE'
+                  : (chipClosureFailed
+                      ? 'REFLOW_REBUILT_WITH_REASON_CHIP_PLACEMENT_VIOLATION'
+                      : 'REFLOW_GEOMETRY_REBUILT_SAME_GENERATION'))),
       })
     }
   }
@@ -5872,6 +6281,25 @@ export class DocumentUtilityOverlayHost {
     if (eof) {
       const rect = eof.presentationRect
       const measuredEpoch = this.lastDocEndVisual?.layoutEpochAtMeasure ?? this.currentDocumentLayoutEpoch
+      // §三/§七 — the LIVE geometry the committed EOF band must still match. Read
+      // from the real DOM (never the stored `lastDocEndVisual` facts), so a frozen
+      // band after an editor-width change becomes a REAL, gated failure.
+      const liveEofColumn = this.measureSemanticContentColumnRect()
+      const liveEofTextColumnLeft = this.measureDocumentTextColumnLeft(liveEofColumn).left
+      let endBandOverhangPx: number | null = null
+      let endBandAnchorDriftPx: number | null = null
+      if (rect && liveEofColumn) {
+        endBandOverhangPx = Math.max(0, rect.right - liveEofColumn.right, liveEofColumn.left - rect.left)
+      }
+      if (rect && liveEofTextColumnLeft != null) {
+        endBandAnchorDriftPx = Math.abs(rect.left - liveEofTextColumnLeft)
+      }
+      const endBandGeometryOk = (endBandOverhangPx ?? 0) <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
+        && (endBandAnchorDriftPx ?? 0) <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
+      if (!endBandGeometryOk) {
+        this.countersDocSpaceV511.docSpaceCarrierPaintDriftGt1px++
+        this.docSpaceCarrierPaintDriftCurrentTx++
+      }
       const payload: Record<string, unknown> = {
         transactionId: this.locateCommittedVisual?.transactionId ?? null,
         visualEpoch: this.locateVisualEpoch,
@@ -5922,6 +6350,16 @@ export class DocumentUtilityOverlayHost {
         presentationRightSource: 'DOCUMENT_CONTENT',
         documentTextColumnLeft: this.lastDocEndVisual?.textColumnLeft ?? null,
         documentTextColumnSource: this.lastDocEndVisual?.textColumnSource ?? null,
+        // ── §三/§七（ROOT_EOF_LIVE_COMPARATOR）—— the fields above are the COMMITTED
+        // values, so this audit could only ever agree with itself: a sidebar reflow
+        // that left the band's horizontal extent frozen was structurally invisible
+        // here (exactly the way the block-gap band was). The band is now also
+        // measured against the LIVE content column / live text-column anchor.
+        liveContentColumnRect: liveEofColumn,
+        liveDocumentTextColumnLeft: liveEofTextColumnLeft,
+        endBandOverhangPx: endBandOverhangPx,
+        endBandAnchorDriftPx: endBandAnchorDriftPx,
+        endBandGeometryDecision: endBandGeometryOk ? 'PASS' : 'FAIL',
         accentWidthPx: this.lastDocEndVisual?.accentWidthPx ?? 0,
         decorativeVerticalRail: false,
         // V8 §2/§3 — restored: the document-end band's LEFT accent IS a surface
@@ -6077,8 +6515,18 @@ export class DocumentUtilityOverlayHost {
       layoutRecoveryPerformed: this.txVisualRecoveryAttempts > 0,
       remeasuredAfterRecovery: this.txVisualRecoveryAttempts > 0,
       drawerIntersectionCount: this.lastDrawerOccludesTarget ? 1 : 0,
-      toolbarIntersectionCount: this.lastFramePaintsAboveToolbar ? 1 : 0,
-      navigatorIntersectionCount: this.lastFramePaintsAboveNavigator ? 1 : 0,
+      toolbarIntersectionCount: this.lastToolbarIntersectsFrame ? 1 : 0,
+      navigatorIntersectionCount: this.lastNavigatorIntersectsFrame ? 1 : 0,
+      // Unified Geometry Transaction Closure §5.7 — the SEPARATED panel facts.
+      geometricIntersectionCount:
+        (this.lastDrawerOccludesTarget ? 1 : 0)
+        + (this.lastToolbarIntersectsFrame ? 1 : 0)
+        + (this.lastNavigatorIntersectsFrame ? 1 : 0),
+      visiblePaintAbovePanelCount: this.lastVisiblePaintAbovePanelCount,
+      actualOcclusionCount: this.lastActualPanelOcclusionCount,
+      framePaintsAboveDrawer: this.lastFramePaintsAboveDrawer,
+      framePaintsAboveToolbar: this.lastFramePaintsAboveToolbar,
+      framePaintsAboveNavigator: this.lastFramePaintsAboveNavigator,
       coverageRatio,
       fragmentCoverageRatio: inlineFacts ? inlineFacts.coverage : null,
       legacyHeadingFrameRendered: frame?.getHeadingLegacyFrameRender() ?? false,
@@ -6130,13 +6578,40 @@ export class DocumentUtilityOverlayHost {
     emitRuntimeAudit(VISUAL_CLOSURE_AUDIT_EVENT, payload)
     // V2 §B — the explicit OneClick ↔ VisualClosure consistency evidence.
     if (gapActive) {
-      const consistent = gapRect != null && gapSeverity === 'warning'
+      // ── §三/§七 — the LIVE comparator. The old record carried ONLY the carrier's
+      // own rect, so `PASS` meant "a carrier exists", never "it covers the target":
+      // the semantic value and the carrier came from the SAME commit-time geometry
+      // and therefore always agreed. A sidebar reflow left the band's WIDTH frozen
+      // while its left followed, which no self-consistent audit could see. The band
+      // is now measured against the LIVE content column, so an overhang onto
+      // non-target content / past the editor is a REAL failure.
+      const liveContentRect = this.measureLocateRect(this.locateDocLayerHost)
+      let bandOverhangPx: number | null = null
+      if (gapRect && liveContentRect) {
+        bandOverhangPx = Math.max(
+          0,
+          gapRect.right - liveContentRect.right,
+          liveContentRect.left - gapRect.left,
+        )
+        if (bandOverhangPx > BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX) {
+          this.countersDocSpaceV511.docSpaceCarrierPaintDriftGt1px++
+          this.docSpaceCarrierPaintDriftCurrentTx++
+        }
+      }
+      const geometryOk = bandOverhangPx == null || bandOverhangPx <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
+      const consistent = gapRect != null && gapSeverity === 'warning' && geometryOk
       emitRuntimeAudit(BLOCK_GAP_VISUAL_CONSISTENCY_AUDIT_EVENT, {
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
         diagnosticId: this.lastLocatedDiagnosticId,
         severity: gapSeverity,
         visualTargetKind: BLOCK_GAP_VISUAL_TARGET,
         primaryRect: gapRect,
+        // the INDEPENDENT live evidence (never the commit-time prediction)
+        liveContentRect,
+        bandOverhangPx,
+        geometryDecision: geometryOk ? 'PASS' : 'FAIL',
+        /** §七 — the CURRENT-TRANSACTION drift count (acceptance readout). */
+        paintDriftCurrentTx: this.docSpaceCarrierPaintDriftCurrentTx,
         visualCarrierPresent: true,
         visualFragmentCount: gapRect ? 1 : 0,
         oneClickCarrierPresent: true,
@@ -6145,9 +6620,11 @@ export class DocumentUtilityOverlayHost {
         terminalState: payload.terminalState,
         contradiction: !consistent,
         decision: consistent ? 'PASS' : 'FAIL',
-        reason: gapRect
-          ? (gapSeverity === 'warning' ? 'GAP_UNIFIED_VISUAL_COMMIT_CONSISTENT' : 'GAP_SEVERITY_MISMATCH')
-          : 'GAP_UNIFIED_VISUAL_COMMIT_MISSING_RECT',
+        reason: !geometryOk
+          ? 'GAP_BAND_OVERHANGS_LIVE_CONTENT_COLUMN'
+          : gapRect
+            ? (gapSeverity === 'warning' ? 'GAP_UNIFIED_VISUAL_COMMIT_CONSISTENT' : 'GAP_SEVERITY_MISMATCH')
+            : 'GAP_UNIFIED_VISUAL_COMMIT_MISSING_RECT',
       })
     }
   }
@@ -6521,9 +6998,30 @@ export class DocumentUtilityOverlayHost {
       // 非 dirty 且 layoutEpoch 未变的 heading **复用现有 DOM node 与几何**，绝不重建、
       // 绝不 remeasure、绝不重算 chip placement。
       if (existing != null && this.headingVisualDirtyScope != null
-        && !this.headingVisualDirtyScope.has(identity)
-        && existing.measuredLayoutEpoch === epoch) {
-        continue
+        && !this.isHeadingVisualDirty(identity)) {
+        // ── Unified Geometry Transaction Closure §4（ROOT_V2_D）—— a PLUGIN-OWNED
+        // presentation write (marker layer / chip / the plugin's own projection) bumps
+        // the document layout epoch WITHOUT moving the heading's own geometry. The
+        // old `existing.measuredLayoutEpoch === epoch` guard therefore bypassed the
+        // skip on EVERY plugin write → a global heading re-measure
+        // (`PLUGIN_DOM_MUTATION_GLOBAL_HEADING_REFLOW_COUNT`, `NON_DIRTY_…`).
+        // The rebuild decision is driven by the MEASURED live geometry instead: a
+        // non-dirty target whose live anchor is unchanged is retained (no DOM
+        // rebuild), and only its epoch/generation token is refreshed to the value we
+        // just measured. A target that really moved is still rebuilt (correct).
+        const epochUnchanged = existing.measuredLayoutEpoch === epoch
+        if (epochUnchanged || this.passiveHeadingLiveGeometryUnchanged(existing)) {
+          if (!epochUnchanged) {
+            existing.measuredLayoutEpoch = epoch
+            existing.geometryGeneration = geometryGeneration
+          }
+          // intentionally NOT rebuilt by this scoped reconcile
+          existing.rebuiltThisPass = false
+          existing.liveGeometryChangedThisPass = false
+          continue
+        }
+        // the scoped skip did NOT apply → the LIVE geometry really changed
+        existing.liveGeometryChangedThisPass = true
       }
       // ── V5.12-R9 §7/§13 — heading typography/height as observed BEFORE our
       // paint. We never write to the heading element, so capturing before/after in
@@ -7363,6 +7861,9 @@ export class DocumentUtilityOverlayHost {
         chipIntrinsicWidthPx,
         chipInlineHint: g.reasonText,
         coverageSnapshot,
+        // Unified Geometry Transaction Closure §4 — VERIFIED: this pass really
+        // re-measured this target (it did not take the scoped-skip branch).
+        rebuiltThisPass: true,
       }
       this.headingPassiveMarkers.set(identity, record)
       // ── V5.14-R4 §5.1/§5.2 — the ONE immutable geometry snapshot this visual
@@ -7531,7 +8032,15 @@ export class DocumentUtilityOverlayHost {
     // V5.14-R4 §11 — when the ACTIVE pass itself requested this rebuild (its
     // passive snapshot was stale) the active emphasis is rendered by the CALLER
     // from the SAME fresh generation, so it is not rendered twice here.
-    if (!skipActiveEmphasis) this.renderActiveHeadingEmphasisForCommittedVisual()
+    if (!skipActiveEmphasis) {
+      this.renderActiveHeadingEmphasisForCommittedVisual()
+      // ── Unified Geometry Transaction Closure §3.2 — the SAME atomic commit must
+      // leave the ACTIVE component on the CURRENT generation. When the active
+      // emphasis was legitimately RETAINED (verified-unchanged geometry) it is
+      // re-stamped here; a drifted retained visual is left untouched so the closure
+      // below still FAILS.
+      this.restampRetainedActiveHeadingVisualForCurrentGeneration()
+    }
     // §12 — AFTER both authorities: no stale heading visual may survive.
     this.verifyNoStaleHeadingVisuals(new Set(groups.keys()), skipActiveEmphasis)
     // V5.13-R5 §27/§28 — the Strict Multi-H1 visual Authority audit + gates.
@@ -7759,6 +8268,53 @@ export class DocumentUtilityOverlayHost {
       currentDocumentKey,
       activeKeySet.size > 0 ? activeKeySet : null,
     )
+    // ── Unified Geometry Transaction Closure §4/§5（ROOT_CLOSURE_DEFER）——
+    // A "locatable heading diagnostic without a visual target" may ONLY be counted
+    // against a SETTLED, READY editor: the real-runtime false FAIL
+    // (LOCATABLE_HEADING_DIAGNOSTIC_WITHOUT_VISUAL_TARGET_COUNT=1, session
+    // sess-1791560998955 @16:10:22.595) came from a pass with `documentKey=''`,
+    // `expectedKeys=0` and `headingWithoutVisualTarget=1` — i.e. a content-mutation
+    // reconcile that ran while Typora was still REBUILDING the editor DOM (every
+    // heading node transiently detached). Counting that permanently poisons the
+    // cumulative gate, so the pass is DEFERRED (bounded) instead of counted.
+    const docKeyReady = currentDocumentKey != null && currentDocumentKey !== ''
+    const nothingResolved = collected.expectedTargets.length === 0 && collected.headingWithoutVisualTarget > 0
+    // The deferral is ALWAYS bounded: a genuinely unrenderable heading diagnostic
+    // is still counted once the settle budget is exhausted (never masked forever).
+    const mayDefer = nothingResolved && this.closureDomDeferRetries < MAX_CLOSURE_DOM_SETTLE_DEFER
+    if (nothingResolved) this.closureDomDeferRetries++
+    else this.closureDomDeferRetries = 0
+    if (mayDefer) {
+      emitRuntimeAudit(VISUAL_CLOSURE_TARGET_AUDIT_EVENT, {
+        snapshotRevision: this.snapshot?.revision ?? null,
+        documentKey: currentDocumentKey,
+        expectedKeys: recon.expectedCount,
+        expectedKeyList: collected.expectedTargets.map(t => t.visualTargetKey),
+        actualPassiveKeys: recon.actualCount,
+        actualPassiveKeyList: facts.filter(f => f.role === 'passive' && f.connected).map(f => f.visualTargetKey),
+        missingKeys: recon.missingKeys,
+        extraKeys: recon.extraKeys,
+        duplicateKeys: recon.duplicateKeys,
+        identityMismatchKeys: recon.identityMismatchKeys,
+        targetIndexMismatchKeys: recon.targetIndexMismatchKeys,
+        staleDocumentKeys: recon.staleDocumentKeys,
+        expectedCount: recon.expectedCount,
+        actualCount: recon.actualCount,
+        activeVisualTargetKeys: recon.activeVisualTargetKeys,
+        activeSatisfied: recon.activeSatisfied,
+        locatableHeadingDiagnosticWithoutVisualTarget: 0,
+        unresolvedHeadingTargetCount: collected.headingWithoutVisualTarget,
+        state: 'DEFERRED',
+        gateCounters: { ...this.countersVisualClosureV514R2 },
+        gateReport: formatVisualClosureTargetV514R2GateReport(this.countersVisualClosureV514R2),
+        decision: 'PASS',
+        reason: docKeyReady ? 'WAITING_EDITOR_DOM_SETTLE' : 'WAITING_DOCUMENT_READY',
+      })
+      // Bounded re-measure so the settled state is re-evaluated once the editor DOM
+      // has mounted; a genuinely missing target is still counted (budget exhausted).
+      this.scheduleDiagnosticGeometryReconcile('CLOSURE_DEFERRED_DOM_UNSETTLED')
+      return
+    }
     const closureCounters = visualClosureReconciliationToGateCounters(
       recon,
       collected.headingWithoutVisualTarget,
@@ -10359,6 +10915,69 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * Unified Geometry Transaction Closure §3.2 — the ACTIVE component participates
+   * in the SAME atomic generation transaction as the passive fill and the chip.
+   *
+   * A reconcile that bumps the geometry generation re-paints the passive fill and
+   * the chip under the NEW token. When the ACTIVE emphasis of the CURRENT owner is
+   * RETAINED (the same canonical target whose geometry the fresh measurement just
+   * proved unchanged), it must receive the NEW token in the SAME commit — exactly
+   * like the passive fill, which re-paints identical rects under the new token.
+   *
+   * The re-stamp is NEVER unconditional: the retained geometry is verified against
+   *   (a) the freshly measured passive coverage snapshot of the SAME diagnostic
+   *       (fragment-count + ≤1px rect agreement), or
+   *   (b) the live heading rect (no drift) as an independent DOM witness.
+   * A drifted retained visual is left untouched → the post-commit closure still
+   * FAILS (never masked). No DOM re-measure loop is introduced.
+   */
+  private restampRetainedActiveHeadingVisualForCurrentGeneration(): void {
+    const identity = this.headingActiveMarkerIdentity
+    if (identity == null) return
+    const facts = this.headingActiveVisualFacts.get(identity)
+    const wrapper = this.headingActiveWrapper
+    if (facts == null || wrapper == null || !wrapper.isConnected) return
+    if (facts.geometryGeneration === this.visualGeometryGeneration
+      && facts.layoutEpoch === this.currentDocumentLayoutEpoch) {
+      return
+    }
+    if (facts.fragmentCount < 1) return
+    const diagnosticId = facts.diagnosticId
+    // The verification witness is the FRESH semantic coverage snapshot of the
+    // SAME diagnostic (the active emphasis consumes the very same snapshot as the
+    // passive fill), so "unchanged" means the ACTIVE fragment set still equals the
+    // geometry that was just re-measured. When no such snapshot exists the
+    // retained visual is NOT verified → it keeps its old token (never masked).
+    let verified = false
+    if (diagnosticId != null) {
+      const fresh = this.headingCoverageSnapshots.get(`${identity}::${diagnosticId}`) ?? null
+      if (fresh != null && fresh.semanticFragmentRects.length === facts.fragmentRects.length) {
+        verified = fresh.semanticFragmentRects.every((r, i) => {
+          const f = facts.fragmentRects[i]
+          return f != null
+            && Math.abs(r.left - f.left) <= PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6
+            && Math.abs(r.top - f.top) <= PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6
+            && Math.abs(r.width - f.width) <= PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6
+            && Math.abs(r.height - f.height) <= PASSIVE_ACTIVE_RECT_TOLERANCE_PX_V514R6
+        })
+      }
+    }
+    if (!verified) {
+      this.activeHeadingVisualGenerationUnverifiedCount++
+      return
+    }
+    // The DOM witness and the state-derived facts move TOGETHER (ONE commit, no
+    // mixed generation), so the post-commit gates read a single generation.
+    facts.geometryGeneration = this.visualGeometryGeneration
+    facts.layoutEpoch = this.currentDocumentLayoutEpoch
+    wrapper.setAttribute('data-ink-geometry-generation', String(this.visualGeometryGeneration))
+    wrapper.setAttribute('data-ink-layout-epoch', String(this.currentDocumentLayoutEpoch))
+    const rec = this.headingPassiveMarkers.get(identity)
+    if (rec != null) rec.geometryGeneration = this.visualGeometryGeneration
+    this.activeHeadingVisualGenerationRestampCount++
+  }
+
+  /**
    * V1 §55 — the Drawer Active row count (real DOM). The ACTIVE row is the row
    * the SINGLE V2 authority selected (`refreshDrawerActiveRow` / `buildDrawerItem`
    * both write `.is-selected`), so the count reads THAT — never a legacy
@@ -10703,6 +11322,15 @@ export class DocumentUtilityOverlayHost {
       activeFillCount: facts.fillCount,
       activeLeasePresent: facts.activeLeasePresent,
       activeFragmentRects: this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity ?? '')?.fragmentRects ?? [],
+      activeFragmentGeometryGeneration: this.headingActiveMarkerIdentity != null
+        ? (this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity)?.geometryGeneration ?? null)
+        : null,
+      // Unified Geometry Transaction Closure §3.2 — the CURRENT generation this
+      // commit stamped; the two values MUST agree for a same-generation commit.
+      activeGenerationRestamped: this.headingActiveMarkerIdentity != null
+        && this.headingActiveVisualFacts.get(this.headingActiveMarkerIdentity)?.geometryGeneration === this.visualGeometryGeneration,
+      activeGenerationRestampCount: this.activeHeadingVisualGenerationRestampCount,
+      activeGenerationUnverifiedCount: this.activeHeadingVisualGenerationUnverifiedCount,
       activeReadinessReason: this.headingActiveMarkerIdentity != null
         ? this.activeHeadingVisualReadiness(this.headingActiveMarkerIdentity).reason
         : 'NO_ACTIVE_HEADING',
@@ -10872,18 +11500,55 @@ export class DocumentUtilityOverlayHost {
     this.renderHeadingActiveEmphasis(id, diag, el)
   }
 
+  /**
+   * ROOT_COMPOUND_CAPTION_COVERAGE §3.2/§3.3 —— re-derive the caption / name-slot
+   * PRIMARY child of a COMMITTED document-space carrier from the LIVE rects.
+   *
+   * The carrier is a deep clone of the pre-commit frame, so its caption child kept
+   * the COMMIT-time relative offsets + width. A layout change resized only the outer
+   * box → the caption emphasis no longer matched the caption (the reported
+   * "题注高亮消失/不一致"). Uses the SAME pure authority as the frame controller.
+   */
+  private syncCommittedCarrierCaptionCue(
+    carrier: HTMLElement,
+    presentViewport: { left: number; top: number; width: number; height: number } | null,
+    captionViewport: { left: number; top: number; right: number; bottom: number } | null,
+  ): void {
+    const old = carrier.querySelector<HTMLElement>(`:scope > .${DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS}`)
+    if (old) { try { old.remove() } catch { /* noop */ } }
+    carrier.removeAttribute('data-caption-cue')
+    const cueRect = presentViewport ? computeCaptionCueRect(presentViewport, captionViewport) : null
+    if (!cueRect) return
+    const cue = document.createElement('div')
+    cue.className = DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS
+    cue.setAttribute('data-marker-kind', 'caption-edge')
+    cue.setAttribute('data-cue-type', 'caption-host')
+    cue.setAttribute('data-severity', carrier.getAttribute('data-severity') ?? 'warning')
+    cue.style.left = `${cueRect.left}px`
+    cue.style.top = `${cueRect.top}px`
+    cue.style.width = `${cueRect.width}px`
+    cue.style.height = `${cueRect.height}px`
+    carrier.appendChild(cue)
+    carrier.setAttribute('data-caption-cue', 'caption-host')
+  }
+
   private reconcileLocateDocumentSpace(reason: string): void {
     const c = this.locateCommittedVisual
     if (!c) return
     const host = this.locateDocLayerHost
     const frame = this.locateFrame
     if (!host || !frame) return
-    const fresh = this.measureLocateLayoutFingerprint(host)
+    // §3.1 — Typora may rebuild the caption/pre DOM during a layout change, leaving
+    // the COMMITTED element references DETACHED. Re-resolve the live replacement by
+    // the SAME canonical identity BEFORE the reflow fingerprint, so a rebuilt node is
+    // still a "same target" reflow (never an early return onto a dead node).
+    const anchor = this.resolveLiveCommittedElement(frame.getAnchorElement(), c.semanticAnchorIdentity)
+    if (!anchor) { this.countersDocSpaceV511.layoutReconcileTargetIdentityChange++; return }
+    const fresh = this.measureLocateLayoutFingerprint(host, anchor)
     const reflow = isLayoutReflow(c.fingerprint, fresh)
     if (!reflow) return
     // same-target validation
     const stillPresent = this.diagnostics.getSnapshot()?.diagnostics.some(d => d.id === c.diagnosticId) ?? false
-    const anchor = frame.getAnchorElement()
     const identityNow = DocumentUtilityOverlayHost.anchorIdentityOf(anchor)
     const identityOk = c.semanticAnchorIdentity == null || identityNow === c.semanticAnchorIdentity
     const presentationNow = frame.getVisualPresentation() ?? null
@@ -10925,21 +11590,120 @@ export class DocumentUtilityOverlayHost {
       this.locateDocInlineEls.length = nextLocal.length
       c.inlineLocal = nextLocal
     }
+    let captionCoveredByCarrier: boolean | null = null
+    let captionCuePaintedRect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null = null
+    let captionCuePresent: boolean | null = null
+    let captionCueBackground: string | null = null
+    let captionCueOpacity: string | null = null
     if (hostRect && frameEl && anchorVp) {
-      const local = viewportRectToDocumentLocalRect({ viewportRect: anchorVp, contentHostRect: hostRect })
+      // ── ROOT_COMPOUND_CAPTION_COVERAGE §一/§三 —— re-derive the carrier from the
+      // LIVE anchor with the SAME per-edge relation captured at commit. For a
+      // COMPOUND target (e.g. CODE_MISSING_NAME: caption + body) the carrier covers
+      // `caption ∪ body` — it extends ABOVE the semantic anchor by the caption
+      // height. Deriving the carrier from the anchor ALONE collapsed it onto the
+      // code body and DROPPED the caption highlight after a layout change.
+      const pad = this.locateCommittedCarrierEdgePad ?? { left: -2, top: -2, right: 2, bottom: 2 }
+      const carrierVp = {
+        left: anchorVp.left + pad.left,
+        top: anchorVp.top + pad.top,
+        right: anchorVp.right + pad.right,
+        bottom: anchorVp.bottom + pad.bottom,
+      }
+      const local = viewportRectToDocumentLocalRect({ viewportRect: carrierVp, contentHostRect: hostRect })
       if (local) {
-        const pad = 2
-        const left = Math.round(local.left - pad)
-        const top = Math.round(local.top - pad)
-        const width = Math.round(local.width + pad * 2)
-        const height = Math.round(local.height + pad * 2)
+        const left = Math.round(local.left)
+        const top = Math.round(local.top)
+        const width = Math.round(local.width)
+        const height = Math.round(local.height)
         frameEl.style.left = `${left}px`
         frameEl.style.top = `${top}px`
         frameEl.style.width = `${width}px`
         frameEl.style.height = `${height}px`
         c.primaryLocal = makeDocumentSpaceRect({ left, top, right: left + width, bottom: top + height })
+        // ── §3.2/§3.3 —— REAL DOM acceptance + ATOMIC COMPOSITE COMMIT. The carrier
+        // is a deep clone, so its caption/name-slot PRIMARY child still carried the
+        // COMMIT-time offsets/width; resizing only the outer box left the caption
+        // emphasis mismatched. Re-derive the child from the LIVE rects with the SAME
+        // pure authority the frame controller uses — in THIS SAME synchronous pass
+        // (never a half-frame where the box moved but the caption child did not).
+        const captionEl = this.resolveLiveCommittedElement(this.locateCommittedPrimaryEl, c.primaryAnchorIdentity)
+        const captionVp = captionEl && captionEl.isConnected ? this.measureLocateRect(captionEl) : null
+        const paintedNow = this.measureLocateRect(frameEl)
+        this.syncCommittedCarrierCaptionCue(frameEl, paintedNow, captionVp)
+        // §3.5 — the REAL painted caption cue (visible-evidence gate input).
+        const cueEl = frameEl.querySelector<HTMLElement>(`:scope > .${DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS}`)
+        captionCuePresent = cueEl != null
+        captionCuePaintedRect = cueEl ? this.measureLocateRect(cueEl) : null
+        if (captionVp) {
+          captionCoveredByCarrier = paintedNow != null
+            && paintedNow.left <= captionVp.left + 1 && paintedNow.top <= captionVp.top + 1
+            && paintedNow.right >= captionVp.right - 1 && paintedNow.bottom >= captionVp.bottom - 1
+          // §3.5 — the caption PRIMARY child must ALSO still cover the caption
+          // (declared box vs the LIVE caption rect; headless-safe).
+          if (cueEl && paintedNow) {
+            const cueL = Number.parseFloat(cueEl.style.left || '0') || 0
+            const cueT = Number.parseFloat(cueEl.style.top || '0') || 0
+            const cueW = Number.parseFloat(cueEl.style.width || '0') || 0
+            const cueH = Number.parseFloat(cueEl.style.height || '0') || 0
+            const cueCoversCaption = (paintedNow.left + cueL) <= captionVp.left + 1
+              && (paintedNow.top + cueT) <= captionVp.top + 1
+              && (paintedNow.left + cueL + cueW) >= captionVp.right - 1
+              && (paintedNow.top + cueT + cueH) >= captionVp.bottom - 1
+            const cueStyle = computedStyleOf(cueEl)
+            captionCueBackground = cueStyle ? (cueStyle.background || cueStyle.backgroundColor || null) : null
+            captionCueOpacity = cueStyle ? (cueStyle.opacity || null) : null
+            if (!cueCoversCaption && this.locateCommittedCarrierCoveredCaptionAtCommit) {
+              this.countersDocSpaceV511.compoundCaptionCueUncoveredAfterReconcile++
+              emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-COMPOUND-CAPTION-CUE-LOST', {
+                reason,
+                diagnosticId: c.diagnosticId,
+                documentKey: c.documentKey,
+                captionLocalRect: viewportRectToDocumentLocalRect({ viewportRect: captionVp, contentHostRect: hostRect }),
+                cueDeclaredRect: { left: cueL, top: cueT, width: cueW, height: cueH },
+                captionCueBackground,
+                captionCueOpacity,
+                decision: 'FAIL',
+                failReason: 'COMPOUND_CAPTION_CUE_NOT_COVERING_CAPTION',
+              })
+            }
+          } else if (this.locateCommittedCarrierCoveredCaptionAtCommit) {
+            // The caption cue child is GONE while the commit had it → a lost composite
+            // sub-layer (never a silent PASS).
+            this.countersDocSpaceV511.compoundCaptionCueUncoveredAfterReconcile++
+            emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-COMPOUND-CAPTION-CUE-LOST', {
+              reason, diagnosticId: c.diagnosticId, documentKey: c.documentKey,
+              decision: 'FAIL', failReason: 'COMPOUND_CAPTION_CUE_MISSING_AFTER_RECONCILE',
+            })
+          }
+          if (!captionCoveredByCarrier && this.locateCommittedCarrierCoveredCaptionAtCommit) {
+            this.countersDocSpaceV511.compoundCaptionUncoveredAfterReconcile++
+            emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-COMPOUND-CAPTION-LOST', {
+              reason,
+              diagnosticId: c.diagnosticId,
+              documentKey: c.documentKey,
+              captionLocalRect: viewportRectToDocumentLocalRect({ viewportRect: captionVp, contentHostRect: hostRect }),
+              carrierLocalRect: paintedNow
+                ? viewportRectToDocumentLocalRect({ viewportRect: paintedNow, contentHostRect: hostRect })
+                : null,
+              decision: 'FAIL',
+              failReason: 'COMPOUND_CAPTION_NOT_COVERED_BY_CARRIER',
+            })
+          }
+        }
       }
     }
+    // ── ROOT_ACTIVE_DUP_CARRIER §三/§五 —— the SECONDARY context is a committed
+    // geometry fact too. It was FROZEN at COMMIT: `secondaryLocal` still carried
+    // the PRE-drag layout (e.g. width 800 / top 130px away while the document host
+    // is now 763.4px). Re-project it from the LIVE element on the SAME epoch; an
+    // invalidated secondary (element gone) is atomically CLEARED — never old geometry
+    // left behind next to the new one.
+    const secondaryEl = this.locateCommittedSecondaryEl
+    const prevSecondaryLocal = c.secondaryLocal
+    const secondaryVpNow = secondaryEl && secondaryEl.isConnected ? this.measureLocateRect(secondaryEl) : null
+    const secondaryLocalNow = viewportRectToDocumentLocalRect({ viewportRect: secondaryVpNow, contentHostRect: hostRect })
+    c.secondaryLocal = secondaryLocalNow
+    const secondaryLocalDriftPx = documentLocalDrift(prevSecondaryLocal, secondaryLocalNow)
     c.fingerprint = fresh
     emitRuntimeAudit(LOCATE_DOCUMENT_SPACE_AUDIT_EVENT, {
       transactionId: c.transactionId,
@@ -10954,6 +11718,31 @@ export class DocumentUtilityOverlayHost {
       documentLocalPrimaryRects: c.primaryLocal ? [c.primaryLocal] : [],
       documentLocalSecondaryRects: c.secondaryLocal ? [c.secondaryLocal] : [],
       documentLocalInlineRects: c.inlineLocal,
+      // ── §三/§六（ROOT_ACTIVE_DUP_CARRIER）—— FINAL DOM ACCEPTANCE. The committed
+      // rects above describe only the carrier this reconcile repositioned; they can
+      // never reveal a SECOND, viewport-fixed marker that outlived the commit. Read
+      // the REAL DOM: each carrier's containing block + the live viewport-frame count.
+      primaryContainingBlock: frameEl && (frameEl as HTMLElement).offsetParent
+        ? `${(frameEl as HTMLElement).offsetParent!.tagName}#${((frameEl as HTMLElement).offsetParent as HTMLElement).id || ''}`
+        : null,
+      secondaryElementConnected: secondaryEl ? secondaryEl.isConnected : null,
+      secondaryContainingBlock: secondaryEl && secondaryEl.offsetParent
+        ? `${secondaryEl.offsetParent.tagName}#${(secondaryEl.offsetParent as HTMLElement).id || ''}`
+        : null,
+      secondaryLocalDriftPx,
+      secondaryLocalCorrected: secondaryLocalDriftPx != null && secondaryLocalDriftPx > 0.5,
+      // §六/§3.5 — REAL DOM acceptance of the compound caption coverage + its cue.
+      captionCoveredByCarrier,
+      captionCuePresent,
+      captionCuePaintedRect,
+      captionCueBackground,
+      captionCueOpacity,
+      carrierEdgePad: this.locateCommittedCarrierEdgePad,
+      nameSlotPrimaryPresent: frameEl ? (frameEl as HTMLElement).hasAttribute('data-name-primary') : null,
+      // `frameCount`/`staleLocateFrameCount` describe the frame element ITSELF and
+      // therefore can never see this duplicate; reported here as raw evidence only
+      // (the hard gate runs right AFTER the explicit release).
+      viewportFrameLingeringCount: this.locateFrame?.getStructure().locateFrameCount ?? 0,
       presentationKind: c.presentationKind,
       scrollLeaseStateAtCommit: this.locateScrollLease?.state ?? null,
       scrollLeaseReleasedAfterCommit: true,
@@ -13643,6 +14432,12 @@ export class DocumentUtilityOverlayHost {
     let anchor: HTMLElement | null =
       resultEl && resultEl.isConnected ? resultEl : (targets.find(el => el.isConnected) ?? null)
     if (!anchor) anchor = resolvedPrimary && resolvedPrimary.isConnected ? resolvedPrimary : null
+    // §3.1 — Typora may rebuild the caption/`pre` DOM; the recorded result element is
+    // then DETACHED. Re-resolve the SAME semantic anchor from the CURRENT DOM rather
+    // than clearing the visual (a rebuilt node is NOT a lost target).
+    if (!anchor || !anchor.isConnected) {
+      anchor = this.resolveLiveCommittedElement(null, this.locateCommittedVisual?.semanticAnchorIdentity ?? null)
+    }
     if (!anchor || !anchor.isConnected) {
       this.clearDiagnosticLocateVisual('NO_ANCHOR')
       this.lastLocateVisualGateOk = false
@@ -14205,7 +15000,16 @@ export class DocumentUtilityOverlayHost {
       const inlineFacts = this.locateFrame?.getInlineFragmentFacts() ?? null
       const panelIntersectionCount =
         (layers.drawerIntersectsFrame ? 1 : 0) + (layers.toolbarIntersectsFrame ? 1 : 0) + (layers.navigatorIntersectsFrame ? 1 : 0)
-      const staleEpoch = isLayoutEpochStale(this.currentDocumentLayoutEpoch, this.currentDocumentLayoutEpoch)
+      // ── §七（ROOT_STALE_EPOCH_DEAD_CHECK）—— the epoch the COMMITTED carrier's
+      // geometry was actually MEASURED at. The previous code compared the CURRENT
+      // epoch with ITSELF (`isLayoutEpochStale(current, current)`), which is false by
+      // construction → `layoutEpochCurrent` was always true and
+      // `finalCommitWithStaleLayoutEpoch` could never increment: a carrier measured
+      // BEFORE a reflow could be committed as fresh with NO audit able to see it.
+      const staleEpoch = isLayoutEpochStale(
+        this.resolveCommittedCarrierMeasuredLayoutEpoch(structure),
+        this.currentDocumentLayoutEpoch,
+      )
       const inlineCoverage = inlineFacts ? inlineFacts.coverage : null
       const gateCoverage = structure.kind === 'inline'
         ? inlineCoverage
@@ -14215,6 +15019,9 @@ export class DocumentUtilityOverlayHost {
         : structure.headingMarkerCarrier === true
           ? this.headingCarrierPresent(structure)
           : this.locateFrame?.getFrameElement() != null
+      const visiblePaintAbovePanelCount =
+        (layers.framePaintsAboveDrawer ? 1 : 0) + (layers.framePaintsAboveToolbar ? 1 : 0) + (layers.framePaintsAboveNavigator ? 1 : 0)
+      const actualOcclusionCount = layers.drawerOccludesTarget ? 1 : 0
       const commitDecision = canCommitLocateVisual({
         semanticResolvePass: diagId != null,
         scrollArrivalPass: true,
@@ -14223,8 +15030,15 @@ export class DocumentUtilityOverlayHost {
         layoutEpochCurrent: !staleEpoch,
         presentationBuilt: report?.presentationRect != null || structure.kind === 'inline' || structure.headingMarkerCarrier === true,
         visualCarrierPresent: carrierPresent,
-        targetFullyUnobscured: !layers.drawerOccludesTarget,
+        // ── Unified Geometry Transaction Closure §5.7/§6 — `targetFullyUnobscured`
+        // is the REAL GEOMETRY fact (the drawn carrier is not truncated by a
+        // panel), NOT the overlay-occlusion relation. A Drawer painting OVER the
+        // target is EXPECTED occlusion and must never block COMMIT (the frame is
+        // the first child of the overlay root, so it can never overdraw a panel).
+        targetFullyUnobscured: !layers.drawerClipsTargetGeometry,
         panelIntersectionCount,
+        panelOverlayIntersectionCount: panelIntersectionCount,
+        panelGeometryClipCount: layers.drawerClipsTargetGeometry ? 1 : 0,
         framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
         framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
         framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
@@ -14235,6 +15049,8 @@ export class DocumentUtilityOverlayHost {
       })
       if (!isHeadlessTestRuntime()) {
         this.lastLocateCommitGate = commitDecision
+        this.lastVisiblePaintAbovePanelCount = visiblePaintAbovePanelCount
+        this.lastActualPanelOcclusionCount = actualOcclusionCount
         if (coverageLow) this.countersClosureV512R2.blockCoverageLt098++
         if (structure.kind === 'inline' && inlineCoverage != null && inlineCoverage < VISUAL_COVERAGE_FLOOR) {
           this.countersClosureV512R2.inlineFragmentCoverageLt098++
@@ -14287,11 +15103,23 @@ export class DocumentUtilityOverlayHost {
         measuredLayoutEpoch: this.currentDocumentLayoutEpoch,
         currentLayoutEpoch: this.currentDocumentLayoutEpoch,
         layoutEpochCurrent: !staleEpoch,
-        targetFullyUnobscured: !layers.drawerOccludesTarget,
+        // Unified Geometry Transaction Closure §5.7 — the three panel facts are
+        // reported SEPARATELY: the geometry fact (the carrier is not truncated),
+        // the real stacking fact (visible paint above a panel) and the honest
+        // overlay-occlusion fact (the panel paints over the target).
+        targetFullyUnobscured: !layers.drawerClipsTargetGeometry,
+        targetGeometryClippedByPanel: layers.drawerClipsTargetGeometry,
+        targetFullyUnobscuredByOverlay: !layers.drawerOccludesTarget,
         drawerIntersection: layers.drawerIntersectsFrame,
         toolbarIntersection: layers.toolbarIntersectsFrame,
         navigatorIntersection: layers.navigatorIntersectsFrame,
         panelIntersectionCount,
+        geometricIntersectionCount: panelIntersectionCount,
+        visiblePaintAbovePanelCount,
+        actualOcclusionCount,
+        framePaintsAboveDrawer: layers.framePaintsAboveDrawer,
+        framePaintsAboveToolbar: layers.framePaintsAboveToolbar,
+        framePaintsAboveNavigator: layers.framePaintsAboveNavigator,
         fragmentCoverageRatio: inlineCoverage,
         canCommit: commitDecision.canCommit,
         canCommitReason: commitDecision.reason,
@@ -14727,10 +15555,17 @@ export class DocumentUtilityOverlayHost {
     const rootEl = this.root
     const children = rootEl ? Array.from(rootEl.children) : []
     const frameIdx = frameEl ? children.indexOf(frameEl) : -1
-    const paintsAfter = (el: HTMLElement | null): boolean => {
+    // ── Unified Geometry Transaction Closure §5.7 — REAL stacking, not the mere
+    // existence of an intersection. The locate frame is inserted as the FIRST
+    // child of the overlay root (below every panel), so within this ONE stacking
+    // context the frame paints above a panel ONLY when the frame's DOM index is
+    // GREATER than the panel's. The previous `paintsAfter(panel)` was the exact
+    // inverse, so a legal backing-layer overlap (frame ∩ Drawer) was reported as
+    // a top-layer overdraw → a false FRAME_PAINTS_ABOVE_DRAWER FAIL.
+    const framePaintsAfter = (el: HTMLElement | null): boolean => {
       if (!el || !el.isConnected) return false
       const idx = children.indexOf(el)
-      return frameIdx >= 0 && idx > frameIdx
+      return frameIdx >= 0 && idx >= 0 && frameIdx > idx
     }
     const toolbarRect = this.realPanelRect(this.toolbarEl)
     const navigatorRect = this.realPanelRect(this.navigatorEl)
@@ -14758,9 +15593,9 @@ export class DocumentUtilityOverlayHost {
       drawerIntersectsFrame: drawerFacts.drawerIntersectsFrame,
       drawerIntersectionArea: drawerFacts.drawerIntersectionArea,
       drawerClipsTargetGeometry,
-      framePaintsAboveDrawer: evaluatePanelPaintRelation(frameRect, drawerRect, paintsAfter(this.drawerEl)),
-      framePaintsAboveToolbar: evaluatePanelPaintRelation(frameRect, toolbarRect, paintsAfter(this.toolbarEl)),
-      framePaintsAboveNavigator: evaluatePanelPaintRelation(frameRect, navigatorRect, paintsAfter(this.navigatorEl)),
+      framePaintsAboveDrawer: evaluatePanelPaintRelation(frameRect, drawerRect, framePaintsAfter(this.drawerEl)),
+      framePaintsAboveToolbar: evaluatePanelPaintRelation(frameRect, toolbarRect, framePaintsAfter(this.toolbarEl)),
+      framePaintsAboveNavigator: evaluatePanelPaintRelation(frameRect, navigatorRect, framePaintsAfter(this.navigatorEl)),
       toolbarRenderedVisible,
       toolbarIntersectsFrame,
       navigatorRenderedVisible,
@@ -14799,6 +15634,10 @@ export class DocumentUtilityOverlayHost {
     this.lastFramePaintsAboveDrawer = layers.framePaintsAboveDrawer
     this.lastFramePaintsAboveToolbar = layers.framePaintsAboveToolbar
     this.lastFramePaintsAboveNavigator = layers.framePaintsAboveNavigator
+    // Unified Geometry Transaction Closure §5.7 — the REAL intersections (never
+    // the paint-order relation) are what the unified closure reports.
+    this.lastToolbarIntersectsFrame = layers.toolbarIntersectsFrame
+    this.lastNavigatorIntersectsFrame = layers.navigatorIntersectsFrame
     // V5.12-R2 §18 — layer + rect hard-gate counters (real layout only).
     if (layers.framePaintsAboveDrawer) this.countersClosureV512R2.framePaintsAboveDrawer++
     if (layers.framePaintsAboveToolbar) this.countersClosureV512R2.framePaintsAboveToolbar++
@@ -15337,6 +16176,42 @@ export class DocumentUtilityOverlayHost {
     this.commitDiagnosticLocateVisual(
       inputs.diagId, inputs.severity, inputs.targets, inputs.result, inputs.resolvedPrimary, inputs.diag,
     )
+    // ── ROOT_ACTIVE_DUP_CARRIER §一/§四 —— POST-COMMIT GEOMETRY REFRESH.
+    // `commitDiagnosticLocateVisual` re-presents the PRE-COMMIT viewport frame
+    // (`frameEl` in the viewport-fixed overlay root). On the click path that frame
+    // is subsequently CLONED into the document-space layer and RELEASED by
+    // `commitDocumentSpaceCarrier`; on THIS remeasure path there is no such step, so
+    // the frame would survive as a SECOND marker — coincident at first, then
+    // diverging from the document-space clone on the next scroll because it is
+    // VIEWPORT-FIXED ("the extra marker that never follows the scroll"). The
+    // committed DOCUMENT-SPACE carrier is the sole visible owner: release the
+    // just-mounted viewport frame here.
+    if (this.committedVisualIsDocumentSpacePresented()) {
+      this.locateFrame?.releaseViewportCarrier()
+    }
+    this.verifyNoLingeringViewportFrameAfterCommit('LAYOUT_INVALIDATION_REMEASURE')
+  }
+
+  /**
+   * ROOT_ACTIVE_DUP_CARRIER §四/§六 —— the FINAL DOM acceptance for "no duplicate
+   * marker". A committed document-space carrier plus a live viewport frame is a
+   * REAL duplicate (the viewport one never follows the scroll); `frameCount` /
+   * `staleLocateFrameCount` describe the frame itself and can never see it.
+   */
+  private verifyNoLingeringViewportFrameAfterCommit(reason: string): void {
+    if (!this.committedVisualIsDocumentSpacePresented()) return
+    const frameCount = this.locateFrame?.getStructure().locateFrameCount ?? 0
+    if (frameCount <= 0) return
+    this.countersDocSpaceV511.locateViewportFrameLingeringAfterCommit++
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-DUP-CARRIER-DETECTED', {
+      reason,
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: this.locateCommittedVisual?.diagnosticId ?? null,
+      viewportFrameCount: frameCount,
+      docSpaceCarrierConnected: this.locateDocCarrier?.isConnected === true,
+      decision: 'FAIL',
+      failReason: 'VIEWPORT_FRAME_LINGERS_AFTER_DOC_SPACE_COMMIT',
+    })
   }
 
   /** Event-driven resize-settle debounce — forensic summary ONLY (no business UI). */
@@ -15960,6 +16835,17 @@ export class DocumentUtilityOverlayHost {
     this.multiTargetCursor.clear()
     this.lastLocateTargetCounts.clear()
     this.lastHeadingVisualSnapshots.clear()
+    // ── Unified Geometry Transaction Closure §4/§5（ROOT_XDOC）—— the per-heading chip
+    // stability facts and the scoped dirty set are PER DOCUMENT too. Carrying them
+    // across a switch made `reasonChipRectBefore` a rect from ANOTHER document, so a
+    // correct new-document chip looked "moved without cause"
+    // (NON_DIRTY_HEADING_CHIP_POSITION_CHANGED / CHIP_POSITION_CHANGED_WITHOUT_CONTENT_CHANGE).
+    this.lastHeadingReasonChipStabilityFacts.clear()
+    this.headingVisualDirtyKeys.clear()
+    this.headingVisualDirtyScope = null
+    this.lastClosureEditorWidth = null
+    this.closureDomDeferRetries = 0
+    this.lastReflowAuditBefore = null
     // §P5-R2 — the LABEL authority is per-document too (identities collide across
     // documents, so a carried-over snapshot would be a stale-revision authority).
     this.lastHeadingLabelGeometry.clear()
@@ -16645,6 +17531,32 @@ export class DocumentUtilityOverlayHost {
         // ACTIVE keeps its independent re-measure entry (shares the same target
         // identity + geometry authority, never the click transition).
         this.remeasureActiveVisualOnLayoutChange('EDITOR_GEOMETRY_CHANGED')
+        // ── §一/§五（ROOT_BAND_WIDTH）—— the BLOCK-GAP band is a SEPARATE carrier
+        // channel (`blockGapVisualEl`) whose geometry was only ever derived on the
+        // click path (`commitBlockGapVisual`). On a sidebar-divider drag only the
+        // layer ORIGIN translated, so the band's LEFT followed while its WIDTH stayed
+        // frozen at the commit-time value → at a narrow editor the band overhangs the
+        // content column (and neighbouring blocks) with no audit able to see it. A
+        // real editor-geometry change must RE-DERIVE the band from the LIVE boundary
+        // blocks, exactly like the click path does (idempotent; live-measured).
+        if (this.isBlockGapVisualActive()) {
+          const inputs = this.lastLocateVisualInputs
+          if (inputs?.diag != null) {
+            this.commitBlockGapVisual(
+              inputs.diagId, inputs.severity, inputs.diag,
+              inputs.result?.element ?? inputs.resolvedPrimary ?? null,
+            )
+          }
+        }
+        // ── §三/§七（ROOT_EOF_LIVE_COMPARATOR）—— the synthetic EOF band is the
+        // SAME class of carrier: its horizontal extent was only ever derived on the
+        // locate/scroll path, so a sidebar-divider drag left it frozen at its
+        // commit-time width with no live comparator able to see it. A real
+        // editor-geometry change re-derives it from live geometry, exactly like the
+        // block-gap band (idempotent; live-measured).
+        if (this.locateDocEndCarrier != null && this.locateDocEndCarrier.isConnected) {
+          this.rederiveSyntheticEofVisualOnLayoutChange()
+        }
       }
     }
     // Phase 7R.3.11.8B.6 — workspace width state (read-only sample + deduped
@@ -20096,6 +21008,8 @@ export class DocumentUtilityOverlayHost {
     // then retire the OLD owner (scoped), then publish the new visual. There is no
     // "clear everything → stable IDLE → activate" window any more.
     const documentKey = this.opts.ctx.authority.getDocumentKey() ?? ''
+    // §七 — acceptance is judged on the CURRENT transaction only.
+    this.docSpaceCarrierPaintDriftCurrentTx = 0
     const clickedTargetIndex = this.resolveClickedTargetIndex(diagnosticId, targetIndexOverride)
     const clickedTargetKey = this.buildClickedDiagnosticTargetKey(documentKey, diagnosticId, clickedTargetIndex)
     // ── V1 §7 — TWO namespaces. The narrowed transaction may legitimately carry
@@ -21114,16 +22028,41 @@ export class DocumentUtilityOverlayHost {
    * only to the visible EDITOR. Never `drawer.left`, never
    * `unobscuredVisibleEditorRect.right` (a Drawer-clipped width must never become
    * the semantic / presentation right edge).
+   *
+   * §三/§七（ROOT_EOF_CONTENT_BOX）—— the authority is the `#write` **CONTENT box**
+   * (border box minus its horizontal padding + border), NOT the border box itself.
+   * Typora's `#write` carries a horizontal padding, so its BORDER-box right
+   * overhangs the text area by `paddingRight`. Every band that anchors its LEFT to
+   * the text column (EOF tail band, block-gap band) must therefore END at the SAME
+   * content area on the RIGHT — otherwise the band is ~`paddingRight` too wide
+   * (visibly asymmetric: inset on the left, flush on the right).
+   *
+   * Vertical extents are left on the border box (scrolling / drawer math unchanged).
    */
   private measureSemanticContentColumnRect(): RectLike | null {
     const root = resolveBusinessContentRoot()
     const content = this.measureLocateRect(root)
     if (!content) return null
+    // Inset the border box to its CONTENT box (horizontal only).
+    const cs = root ? computedStyleOf(root) : null
+    const insetLeft = cs ? (Number.parseFloat(cs.borderLeftWidth) || 0) + (Number.parseFloat(cs.paddingLeft) || 0) : 0
+    const insetRight = cs ? (Number.parseFloat(cs.borderRightWidth) || 0) + (Number.parseFloat(cs.paddingRight) || 0) : 0
+    const innerLeft = content.left + insetLeft
+    const innerRight = Math.max(innerLeft, content.right - insetRight)
     const container = getActiveEditorScrollContainer()
     const editor = this.measureLocateRect(container)
-    if (!editor) return content
-    const left = Math.max(content.left, editor.left)
-    const right = Math.max(left, Math.min(content.right, editor.right))
+    if (!editor) {
+      return {
+        left: innerLeft,
+        top: content.top,
+        right: innerRight,
+        bottom: content.bottom,
+        width: Math.max(0, innerRight - innerLeft),
+        height: content.height,
+      }
+    }
+    const left = Math.max(innerLeft, editor.left)
+    const right = Math.max(left, Math.min(innerRight, editor.right))
     return {
       left,
       top: content.top,
@@ -21758,39 +22697,11 @@ export class DocumentUtilityOverlayHost {
       this.txVisualRetryCount++
       this.setDrawerCollapseForLocate(true)
       // V5.13-R5 §3/§6 — the retry RE-MEASURES the real trailing blank geometry
-      // (never a re-derived `extra × lineHeight`).
-      const retryTail = this.measureTrailingBlankGeometry()
-      const retryLh = this.resolveBlankLineHeight(retryTail.trailingBlankRects)
-      const retryContent = this.measureSemanticContentColumnRect()
-      const retryEditor = this.measureLocateRect(container)
-      const retryTextColumn = this.measureDocumentTextColumnLeft(retryContent)
-      const retry: SyntheticEofGeometry = isExcessRule
-        ? computeSyntheticEofGeometry({
-            documentIsNonEmpty: retryTail.documentIsNonEmpty,
-            lastMeaningfulRect: retryTail.lastMeaningful ? retryTail.lastMeaningful.rect : null,
-            trailingBlankRects: retryTail.trailingBlankRects,
-            meaningfulRects: retryTail.meaningfulRects,
-            contentBoundsRect: retryContent,
-            editorContentRect: retryEditor,
-            blankLineHeight: retryLh.lineHeight,
-            blankLineHeightSource: retryLh.source,
-            extraTrailingBlankLineCount,
-            textColumnLeft: retryTextColumn.left,
-          })
-        : this.buildDocumentEndNewlineMarkerGeometry({
-            tail: retryTail,
-            contentColumn: retryContent,
-            textColumnLeft: retryTextColumn.left,
-            blankLineHeight: retryLh.lineHeight,
-            blankLineHeightSource: retryLh.source,
-          })
-      const retryHost = this.measureLocateRect(host)
-      const retryLocal = retry.rect && retryHost
-        ? viewportRectToDocumentLocalRect({ viewportRect: retry.rect, contentHostRect: retryHost })
-        : null
-      if (retryLocal) {
-        el.style.cssText = `position:absolute;display:block;left:${Math.round(retryLocal.left)}px;top:${Math.round(retryLocal.top)}px;width:${Math.round(retryLocal.width)}px;height:${Math.round(retryLocal.height)}px;pointer-events:none;`
-        painted = this.measureLocateRect(el)
+      // (never a re-derived `extra × lineHeight`), through the ONE EOF re-derive
+      // authority shared with the layout-invalidation path.
+      const applied = this.recomputeSyntheticEofPresentation(el, isExcessRule, extraTrailingBlankLineCount)
+      if (applied != null) {
+        painted = applied.painted
         drawerRect = this.realPanelRect(this.drawerEl)
         toolbarRect = this.realPanelRect(this.toolbarEl)
         navigatorRect = this.realPanelRect(this.navigatorEl)
@@ -22010,6 +22921,94 @@ export class DocumentUtilityOverlayHost {
       this.countersDocEndNewlineV1.secondClickRequired++
     }
     return gateOk
+  }
+
+  /**
+   * ROOT_EOF_LIVE_COMPARATOR §三/§七（EOF carrier）—— RE-MEASURE + re-apply the
+   * committed EOF band from the CURRENT live geometry (trailing blank zone +
+   * content column + text column), in place.
+   *
+   * The band's horizontal extent was only ever derived inside
+   * `commitSyntheticEofVisual` (the locate/scroll path), so an editor-width change
+   * after commit (sidebar divider drag / window resize) left the band frozen at its
+   * commit-time width — exactly the structural blindness the block-gap band had.
+   * This is the ONE re-derive authority shared by the drawer-retry re-measure and
+   * the layout-invalidation re-derive.
+   */
+  private recomputeSyntheticEofPresentation(
+    el: HTMLElement,
+    isExcessRule: boolean,
+    extraTrailingBlankLineCount: number,
+  ): {
+    local: { left: number; top: number; right: number; bottom: number; width: number; height: number }
+    viewportRect: RectLike
+    painted: RectRecord | null
+  } | null {
+    const host = this.locateDocLayerHost
+    const container = getActiveEditorScrollContainer()
+    const tail = this.measureTrailingBlankGeometry()
+    const lh = this.resolveBlankLineHeight(tail.trailingBlankRects)
+    const contentColumn = this.measureSemanticContentColumnRect()
+    const editorRect = this.measureLocateRect(container)
+    const textColumn = this.measureDocumentTextColumnLeft(contentColumn)
+    const geo: SyntheticEofGeometry = isExcessRule
+      ? computeSyntheticEofGeometry({
+          documentIsNonEmpty: tail.documentIsNonEmpty,
+          lastMeaningfulRect: tail.lastMeaningful ? tail.lastMeaningful.rect : null,
+          trailingBlankRects: tail.trailingBlankRects,
+          meaningfulRects: tail.meaningfulRects,
+          contentBoundsRect: contentColumn,
+          editorContentRect: editorRect,
+          blankLineHeight: lh.lineHeight,
+          blankLineHeightSource: lh.source,
+          extraTrailingBlankLineCount,
+          textColumnLeft: textColumn.left,
+        })
+      : this.buildDocumentEndNewlineMarkerGeometry({
+          tail,
+          contentColumn,
+          textColumnLeft: textColumn.left,
+          blankLineHeight: lh.lineHeight,
+          blankLineHeightSource: lh.source,
+        })
+    if (!geo.rect) return null
+    const hostRect = this.measureLocateRect(host)
+    const local = hostRect
+      ? viewportRectToDocumentLocalRect({ viewportRect: geo.rect, contentHostRect: hostRect })
+      : null
+    if (!local) return null
+    el.style.cssText = `position:absolute;display:block;left:${Math.round(local.left)}px;top:${Math.round(local.top)}px;width:${Math.round(local.width)}px;height:${Math.round(local.height)}px;pointer-events:none;`
+    return { local, viewportRect: geo.rect, painted: this.measureLocateRect(el) }
+  }
+
+  /**
+   * ROOT_EOF_LIVE_COMPARATOR §三/§七 —— a REAL editor-geometry change re-derives the
+   * committed EOF band from live geometry, so its frozen commit-time width can never
+   * outlive the layout that produced it.
+   */
+  private rederiveSyntheticEofVisualOnLayoutChange(): void {
+    const el = this.locateDocEndCarrier
+    if (el == null || !el.isConnected) return
+    const isExcessRule = (this.lastDocEndVisualRule ?? 'TRAILING_BLANK_EXCESS') !== 'TERMINAL_NEWLINE_MISSING'
+    const extra = this.lastDocEndVisual?.excessiveTrailingBlankLineCount ?? 0
+    const applied = this.recomputeSyntheticEofPresentation(el, isExcessRule, extra)
+    if (applied == null) return
+    if (this.lastDocEndVisual != null) {
+      this.lastDocEndVisual.rectViewport = applied.viewportRect
+      this.lastDocEndVisual.rectLocal = applied.local
+      this.lastDocEndVisual.layoutEpochAtMeasure = this.currentDocumentLayoutEpoch
+    }
+    if (this.lastDocEndClosureFacts != null) {
+      this.lastDocEndClosureFacts.presentationRect = applied.painted ?? applied.viewportRect
+    }
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-EOF-LAYOUT-REMEASURE', {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+      diagnosticId: this.lastLocatedDiagnosticId,
+      rule: this.lastDocEndVisualRule,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      localRect: applied.local,
+      decision: 'REMEASURE',
+    })
   }
 
   private readDiagnosticTerminalNewlineCount(
@@ -23143,6 +24142,19 @@ export class DocumentUtilityOverlayHost {
     const frameEl = frame.getFrameElement()
     const inlineEl = frame.getInlineElement()
     const kind = frame.getStructure().kind
+    // ── §二/§七 — THE FINAL PAINTED NODE. After `commitDocumentSpaceCarrier` the
+    // viewport frame is RELEASED and the document-space clone is what the user
+    // actually sees. Reading the released viewport frame here meant every
+    // "actual painted" gate validated a node that is no longer on screen, so a real
+    // offset of the painted carrier was structurally invisible. Prefer the mounted
+    // document-space carrier whenever it exists (it is the painted truth).
+    if (this.locateDocCarrier != null && this.locateDocCarrier.isConnected && kind !== 'heading') {
+      const paintedCarrier = this.measureLocateRect(this.locateDocCarrier)
+      if (paintedCarrier) {
+        const secondary = this.isObjectKind(kind) ? this.measureLocateRect(result.element ?? null) : null
+        return { primary: paintedCarrier, secondary }
+      }
+    }
     // V5.12-R2 §5/§10 — the heading + fragment inline carriers are overlay
     // geometry, not a frame element; the painted rect must be measured from the
     // REAL painted carriers.

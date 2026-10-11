@@ -91,16 +91,27 @@ export function computeDrawerOcclusionFacts(
  * §12 — FRAME_PAINTS_ABOVE_* may only be true when the panel is RENDERED,
  * has a non-zero rect, AND the frame really intersects it. A hidden navigator,
  * a 0×0 drawer and a non-intersecting toolbar are all NOT_APPLICABLE.
+ *
+ * Unified Geometry Transaction Closure §5.7 — the three panel facts are
+ * SEPARATED and must never be conflated:
+ *   * `geometricIntersection`      — frame ∩ panel (an ALLOWED backing-layer
+ *                                    overlap; never fatal on its own);
+ *   * `visiblePaintAbovePanel`     — THIS value: the frame really paints on a
+ *                                    layer ABOVE the panel (a real overdraw);
+ *   * `actualOcclusion`            — the panel paints over the target (expected).
+ * `framePaintsAfterPanel` MUST therefore describe REAL stacking (the frame's
+ * paint order relative to the panel inside the SAME overlay root), never the
+ * mere existence of an intersection.
  */
 export function evaluatePanelPaintRelation(
   frameRect: SimpleRect | null,
   panelRect: SimpleRect | null,
-  panelPaintsAfterFrame: boolean,
+  framePaintsAfterPanel: boolean,
 ): boolean {
   if (!frameRect || !panelRect) return false
   if (panelRect.width <= 0 || panelRect.height <= 0) return false
   if (!rectsIntersect(frameRect, panelRect)) return false
-  return panelPaintsAfterFrame
+  return framePaintsAfterPanel
 }
 
 export interface NameSlotResolution {

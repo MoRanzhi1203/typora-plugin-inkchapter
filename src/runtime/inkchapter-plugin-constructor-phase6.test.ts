@@ -25,7 +25,11 @@ function pluginEntrySnippet(bundle: string): string {
 describe('Phase 6.0R plugin constructor / bundle boot compatibility', () => {
   it('BOOT-T1: authoritative production build is node build.js --prod, not Rollup ES5 downlevel', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> }
-    expect(pkg.scripts.build).toBe('node build.js --prod')
+    // The authoritative production build is `node build.js --prod`; a bounded
+    // `verify:archive` pre-step may precede it (progress-archive v1), but the
+    // bundle producer must never become a Rollup ES5 downlevel pipeline.
+    expect(pkg.scripts.build).toContain('node build.js --prod')
+    expect(pkg.scripts.build).not.toContain('rollup')
   })
 
   it('BOOT-T1/T3: production bundle keeps native class inheritance and has no illegal base apply/call', () => {

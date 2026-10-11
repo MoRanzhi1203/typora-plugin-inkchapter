@@ -1355,3 +1355,51 @@ describe('V5.13-R5 §29 — Strict Multi-H1: EVERY excess target is marked', () 
     expect(evaluateStrictMultiH1VisualV513R5Gates(counters).failedChecks).toEqual(['passiveMarkerCountMismatch'])
   })
 })
+
+describe('ROOT_EOF_CONTENT_BOX — 尾带右缘 = #write 内容区右缘（减去右内边距），与左缘对称', () => {
+  // jsdom applies no stylesheet → mock #write's horizontal padding explicitly so
+  // the horizontal authority (the CONTENT box, not the border box) is exercised.
+  const commitBand = (writePaddingPx: number): { left: number; width: number } => {
+    vi.mocked(window.getComputedStyle).mockImplementation(((el: Element, pseudo?: string) => {
+      if (pseudo != null) return { content: 'none' } as unknown as CSSStyleDeclaration
+      const isEofBand = el.getAttribute?.('data-ink-eof-marker') === 'true'
+      const isWrite = (el as HTMLElement).id === 'write'
+      return {
+        lineHeight: '24px',
+        backgroundColor: 'rgba(168, 121, 50, 0.08)',
+        backgroundImage: 'none',
+        boxShadow: 'none',
+        outlineStyle: 'none',
+        outlineWidth: '0px',
+        borderLeftWidth: isEofBand ? '4px' : '0px',
+        borderLeftStyle: isEofBand ? 'solid' : 'none',
+        borderTopStyle: 'none',
+        borderRightStyle: 'none',
+        borderBottomStyle: 'none',
+        borderTopWidth: '0px',
+        borderRightWidth: '0px',
+        borderBottomWidth: '0px',
+        paddingLeft: isWrite ? `${writePaddingPx}px` : '0px',
+        paddingRight: isWrite ? `${writePaddingPx}px` : '0px',
+      } as unknown as CSSStyleDeclaration
+    }) as unknown as typeof window.getComputedStyle)
+    const world = makeWorld()
+    const diag = trailingBlankDiag(5)
+    injectSnapshot(world, [diag])
+    ;(world.h as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag, 5, true)
+    const marker = document.querySelector('[data-ink-eof-marker="true"]') as HTMLElement
+    return { left: Number.parseFloat(marker.style.left), width: Number.parseFloat(marker.style.width) }
+  }
+
+  it('#write=[50,850]、正文列左缘=60、右内边距=30 → 尾带 [60,820]（宽 760，不是边框盒的 790）', () => {
+    const band = commitBand(30)
+    // 右缘 = 850 − 30 = 820（内容区右缘）；左缘仍是正文列 60 → 两侧对称
+    expect(band.width).toBe(760)
+    // 文档本地左缘 = 60 − 50（#write 原点）= 10，未被水平内边距改动
+    expect(band.left).toBe(10)
+  })
+
+  it('无内边距时退化为 #write 边框盒（宽 790）—— 不引入回归', () => {
+    expect(commitBand(0).width).toBe(790)
+  })
+})
