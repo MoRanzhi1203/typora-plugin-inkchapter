@@ -26,6 +26,48 @@ export const DIAGNOSTIC_INLINE_MARK_CLASS = 'inkchapter-diagnostic-inline-mark'
 export const DIAGNOSTIC_INLINE_FRAGMENT_CLASS = 'inkchapter-diagnostic-inline-fragment'
 export const DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS = 'inkchapter-diagnostic-locate-marker'
 
+/**
+ * ROOT_COMPOUND_CAPTION_COVERAGE §3.2/§3.3 —— THE single pure authority for the
+ * caption / expected-name PRIMARY slot geometry (relative to the carrier box).
+ *
+ * It is shared by the pre-commit frame controller AND the post-commit document-space
+ * reconcile: a composite target (code/table caption ∪ body) must re-derive BOTH the
+ * outer carrier AND its caption child on the SAME layout snapshot. Resizing only the
+ * outer box left the caption cue at its COMMIT-time width/offsets — after a sidebar
+ * drag the caption emphasis no longer matched the caption (the reported "题注高亮
+ * 消失/不一致").
+ */
+export interface CaptionCueRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export function computeCaptionCueRect(
+  present: { left: number; top: number; width: number; height: number },
+  caption: { left: number; top: number; right: number; bottom: number } | null,
+): CaptionCueRect | null {
+  if (!caption) return null
+  const relLeftRaw = caption.left - present.left
+  const relTopRaw = caption.top - present.top
+  let cueWidth = Math.max(12, caption.right - caption.left)
+  if (relLeftRaw < -2 || relTopRaw < -2 || relTopRaw > present.height + 2 || cueWidth < 6) return null
+  const maxW = present.width - Math.max(relLeftRaw, 0) - 2
+  if (maxW < 6) return null
+  cueWidth = Math.min(cueWidth, maxW)
+  // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured slot
+  // height, min 12px, clamped to the visible frame). No bottom keyline.
+  const slotTop = Math.max(relTopRaw, 0)
+  const slotH = Math.max(12, Math.min(caption.bottom - caption.top, present.height - slotTop - 2))
+  return {
+    left: Math.round(Math.max(relLeftRaw, 0)),
+    top: Math.round(slotTop),
+    width: Math.round(cueWidth),
+    height: Math.round(slotH),
+  }
+}
+
 import {
   clampRectToClip,
   inflateRectBy,
@@ -1066,26 +1108,18 @@ export class DiagnosticLocateFrameController {
     // measured name slot there is no cue at all (never a 2px keyline).
     if (!caption) return
     const cueType = 'caption-host'
-    const relLeftRaw = caption.left - present.left
-    const relTopRaw = caption.top - present.top
-    let cueWidth = Math.max(12, caption.right - caption.left)
-    if (relLeftRaw < -2 || relTopRaw < -2 || relTopRaw > present.height + 2 || cueWidth < 6) return
-    const maxW = present.width - Math.max(relLeftRaw, 0) - 2
-    if (maxW < 6) return
-    cueWidth = Math.min(cueWidth, maxW)
+    // THE single pure authority (shared with the post-commit reconcile).
+    const cueRect = computeCaptionCueRect(present, caption)
+    if (!cueRect) return
     const cue = document.createElement('div')
     cue.className = DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS
     cue.setAttribute('data-marker-kind', 'caption-edge')
     cue.setAttribute('data-cue-type', cueType)
     cue.setAttribute('data-severity', this.severity)
-    cue.style.left = `${Math.round(Math.max(relLeftRaw, 0))}px`
-    cue.style.top = `${Math.round(Math.max(relTopRaw, 0))}px`
-    cue.style.width = `${Math.round(cueWidth)}px`
-    // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured
-    // slot height, min 12px, clamped to the visible frame). No bottom keyline.
-    const slotTop = Math.max(relTopRaw, 0)
-    const slotH = Math.max(12, Math.min(caption.bottom - caption.top, present.height - slotTop - 2))
-    cue.style.height = `${Math.round(slotH)}px`
+    cue.style.left = `${cueRect.left}px`
+    cue.style.top = `${cueRect.top}px`
+    cue.style.width = `${cueRect.width}px`
+    cue.style.height = `${cueRect.height}px`
     frame.appendChild(cue)
     frame.setAttribute('data-caption-cue', cueType)
   }

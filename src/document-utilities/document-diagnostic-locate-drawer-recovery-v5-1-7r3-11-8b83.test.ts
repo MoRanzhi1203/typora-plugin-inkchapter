@@ -125,6 +125,24 @@ describe('LAYER-5_1 — paint-above requires rendered + non-zero + real intersec
     // …and a real intersection that does NOT paint above stays clean.
     expect(evaluatePanelPaintRelation(codeBody, overlayPanel, false)).toBe(false)
   })
+
+  // ── Unified Geometry Transaction Closure §5.7 — geometricIntersection /
+  // visiblePaintAbovePanel / actualOcclusion are SEPARATED. The locate frame is
+  // inserted as the FIRST child of the overlay root, so an ALLOWED backing-layer
+  // overlap (frame ∩ Drawer, the Drawer painting OVER the frame) must NEVER be
+  // reported as a top-layer overdraw.
+  it('LAYER-5_1-5: a legal BACKING-LAYER overlap (frame paints BEFORE the panel) is NOT paint-above', () => {
+    const drawer = r(800, 0, 1400, 900)
+    expect(rectsIntersect(codeBody, drawer)).toBe(true)
+    // frame index < panel index within the SAME overlay root → the drawer paints
+    // over the frame → `framePaintsAfterPanel=false` → not a layering failure.
+    expect(evaluatePanelPaintRelation(codeBody, drawer, false)).toBe(false)
+    // the geometric intersection itself is still a REAL fact…
+    expect(computeDrawerOcclusionFacts(drawer, codeBody).drawerOccludesTarget).toBe(true)
+    // …which is exactly why it is reported through `actualOcclusion`, never through
+    // `framePaintsAboveDrawer`.
+    expect(evaluatePanelPaintRelation(codeBody, drawer, true)).toBe(true)
+  })
 })
 
 describe('RETRY-5_1 — layout recovery is transaction-local, max 1 per tx', () => {

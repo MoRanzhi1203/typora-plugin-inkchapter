@@ -126,9 +126,16 @@ function makeWorld(opts: {
   captionHeight?: number
   captionGap?: number
   targetHtml?: string
+  /**
+   * V511-DRAG — model the REAL content host: in Typora the document host is a child
+   * of the scroller, so its VIEWPORT box moves with `scrollTop`. Without this the
+   * document-local conversion (`viewport − hostRect`) cannot be asserted absolutely.
+   */
+  scrollingHost?: boolean
 }): World {
   const viewHeight = opts.viewHeight ?? 600
   const contentHeight = opts.contentHeight ?? 3000
+  const scrollingHost = opts.scrollingHost === true
   let targetTop = opts.targetTop
   let targetHeight = opts.targetHeight
   const captionHeight = opts.captionHeight ?? 40
@@ -151,7 +158,10 @@ function makeWorld(opts: {
   write.id = 'write'
   shell.appendChild(write)
   document.body.appendChild(shell)
-  stubRect(write, () => ({ left: 0, top: 0, right: hostWidth, bottom: contentHeight }))
+  stubRect(write, () => {
+    const top = scrollingHost ? -scrollTop : 0
+    return { left: 0, top, right: hostWidth, bottom: top + contentHeight }
+  })
 
   let caption: HTMLElement | null = null
   if (opts.withCaption) {
@@ -231,7 +241,15 @@ beforeEach(() => {
       const l = Number.parseFloat((this as HTMLElement).style.left || '0')
       const w = Number.parseFloat((this as HTMLElement).style.width || '300')
       const h = Number.parseFloat((this as HTMLElement).style.height || '100')
-      return { x: l, y: st, left: l, top: st, right: l + w, bottom: st + h, width: w, height: h, toJSON: () => ({}) } as DOMRect
+      // A carrier inside the DOCUMENT-SPACE layer shares the content host's
+      // containing block, so it SCROLLS with the host: viewport = host + style.
+      const hostEl = document.getElementById('write')
+      const inDocLayer = typeof this.closest === 'function'
+        && this.closest(`.${LOCATE_DOCUMENT_LAYER_CLASS}`) != null
+      const hr = inDocLayer && hostEl ? hostEl.getBoundingClientRect() : null
+      const left = l + (hr ? hr.left : 0)
+      const top = st + (hr ? hr.top : 0)
+      return { x: left, y: top, left, top, right: left + w, bottom: top + h, width: w, height: h, toJSON: () => ({}) } as DOMRect
     }
     return origBcr.call(this)
   } as typeof Element.prototype.getBoundingClientRect
@@ -532,11 +550,283 @@ describe('V511-13 — no scroll handler paint in the COMMITTED state', () => {
   })
 })
 
+// ── V511-DRAG — sidebar-divider drag (editor width change, NO window resize)  ─
+describe('V511-DRAG — the ACTIVE document-space carrier follows a real editor-width change', () => {
+  const carrierOf = (): HTMLElement | null =>
+    document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame`) as HTMLElement | null
+  const geomOf = (): { left: number; top: number; width: number } => {
+    const c = carrierOf()!
+    return { left: parseFloat(c.style.left), top: parseFloat(c.style.top), width: parseFloat(c.style.width) }
+  }
+  const runGeometryPass = (reason: string): void => {
+    ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set([reason]))
+  }
+  /** GROUND TRUTH — the target's own document-local rect (viewport − content host). */
+  const targetLocal = (): { top: number; width: number } => {
+    const t = w_target!.getBoundingClientRect()
+    const h = w_write!.getBoundingClientRect()
+    return { top: t.top - h.top, width: t.right - t.left }
+  }
+  // The frame pads the target by `frameGap` on every side.
+  const expectCarrierFollowsTarget = (): void => {
+    const g = geomOf()
+    const t = targetLocal()
+    expect(Math.abs(g.top - (t.top - 2)), `carrier.top=${g.top} target.top=${t.top}`).toBeLessThanOrEqual(1)
+    expect(Math.abs(g.width - (t.width + 4)), `carrier.width=${g.width} target.width=${t.width}`).toBeLessThanOrEqual(1)
+  }
+  let w_target: HTMLElement | null = null
+  let w_write: HTMLElement | null = null
+
+  it('V511-DRAG-1: the drag re-measures the carrier (a window.resize never fired)', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h; w_target = w.target; w_write = w.write
+    inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+    await oneClick(host, 'C')
+    expectCarrierFollowsTarget()
+    expect(geomOf().top).toBe(998) // 1000 − frameGap(2)
+
+    // SIDEBAR DIVIDER DRAG: the editor narrows AND the code block re-wraps — its
+    // document position and rendered width both change. No `window.resize` fires.
+    w.setHostWidth(520)
+    stubRect(w.target, () => {
+      const top = 1060 - w.scrollTop()
+      return { left: 200, top, right: 640, bottom: top + 260 }
+    })
+    runGeometryPass('resize-observer')
+    await flushRaf()
+
+    // the carrier MUST be re-measured onto the NEW target geometry
+    expectCarrierFollowsTarget()
+    expect(geomOf().top).toBe(1058) // 1060 − frameGap(2)
+    expect(geomOf().width).toBe(444) // 440 + 2*frameGap
+    expect(host.getCommittedDocumentSpace()).not.toBeNull()
+  })
+
+  it('V511-DRAG-2: after the drag the (re-measured) carrier stays scroll-inert', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h; w_target = w.target; w_write = w.write
+    inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+    await oneClick(host, 'C')
+
+    w.setHostWidth(520)
+    stubRect(w.target, () => {
+      const top = 1060 - w.scrollTop()
+      return { left: 200, top, right: 640, bottom: top + 260 }
+    })
+    runGeometryPass('resize-observer')
+    await flushRaf()
+    expectCarrierFollowsTarget()
+    const dragged = geomOf()
+
+    // POST-DRAG SCROLL PROOF — the document-local carrier does not move at all.
+    w.scrollBy(400)
+    await flushRaf()
+    expect(geomOf()).toEqual(dragged)
+    expectCarrierFollowsTarget()
+
+    // REVERSE drag → back to the wide layout; the carrier must follow again.
+    w.setHostWidth(800)
+    stubRect(w.target, () => {
+      const top = 1000 - w.scrollTop()
+      return { left: 200, top, right: 900, bottom: top + 200 }
+    })
+    runGeometryPass('resize-observer')
+    await flushRaf()
+    expectCarrierFollowsTarget()
+    const restored = geomOf()
+    expect(restored.top).toBe(998)
+    expect(restored.width).toBe(704) // 700 + 2*frameGap
+    expect(restored.width).toBeGreaterThan(dragged.width)
+
+    // DEACTIVATE (left-click dismiss) → REACTIVATE keeps the same authority.
+    w.write.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse', cancelable: true }))
+    await flushRaf()
+    expect(carrierOf()).toBeNull()
+    await oneClick(host, 'C')
+    expectCarrierFollowsTarget()
+    gateZero(host)
+  })
+})
+
+// ── ROOT_ACTIVE_DUP_CARRIER ────────────────────────────────────────────────
+describe('ROOT_ACTIVE_DUP_CARRIER — 布局重测不得留下 viewport 帧（重复标记 / 不随滚动）', () => {
+  const docFrames = (): number =>
+    document.querySelectorAll(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame`).length
+  const strayViewportFrames = (): number =>
+    Array.from(document.querySelectorAll('.inkchapter-diagnostic-locate-frame'))
+      .filter(el => el.closest(`.${LOCATE_DOCUMENT_LAYER_CLASS}`) == null).length
+
+  it('激活 code 诊断 → 拖拽侧栏 → 只剩 1 个 document-space 载体，viewport 帧已释放', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h
+    inject(host, diagOf('C', 'CODE_MISSING_LANGUAGE', CODE_LOC))
+    await oneClick(host, 'C')
+    expect(docFrames()).toBe(1)
+    // committed: the pre-commit viewport frame was cloned + released.
+    expect(host.getLocateFrameStructure().locateFrameCount).toBe(0)
+
+    // SIDEBAR DIVIDER DRAG: the editor narrows AND the code block re-wraps.
+    w.setHostWidth(520)
+    stubRect(w.target, () => {
+      const top = 1060 - w.scrollTop()
+      return { left: 200, top, right: 640, bottom: top + 260 }
+    })
+    ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set(['resize-observer']))
+    await flushRaf()
+
+    // The remeasure path (which re-presents the PRE-COMMIT viewport frame) really ran.
+    expect(readAudits(infoSpy!, 'DOCUMENT-DIAGNOSTIC-LAYOUT-INVALIDATION-REMEASURE').length).toBeGreaterThanOrEqual(1)
+    // …yet the viewport frame must NOT survive: the doc-space carrier is the sole owner.
+    expect(docFrames()).toBe(1)
+    expect(strayViewportFrames()).toBe(0)
+    expect(host.getLocateFrameStructure().locateFrameCount).toBe(0)
+    expect(host.getDocumentSpaceCounters().locateViewportFrameLingeringAfterCommit).toBe(0)
+
+    // FINAL DOM ACCEPTANCE — the reconcile audit reports the REAL DOM facts.
+    const reconcile = readAudits(infoSpy!, LOCATE_DOCUMENT_SPACE_AUDIT_EVENT)
+      .find(a => (a.reason ?? '').startsWith('LAYOUT_RECONCILE:'))
+    expect(reconcile).toBeDefined()
+    expect(reconcile!.viewportFrameLingeringCount).toBe('1') // raw pre-release evidence
+    // the SECONDARY is re-projected on the SAME epoch, never left frozen.
+    expect(reconcile).toHaveProperty('secondaryLocalDriftPx')
+    expect(reconcile!.secondaryElementConnected).toBe('true')
+  })
+
+  it('拖拽后滚动：唯一的 document-space 载体随文档滚动，无第二枚标记', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h
+    inject(host, diagOf('C', 'CODE_MISSING_LANGUAGE', CODE_LOC))
+    await oneClick(host, 'C')
+    w.setHostWidth(520)
+    ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set(['resize-observer']))
+    await flushRaf()
+    const carrier = document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame`) as HTMLElement
+    const topBefore = parseFloat(carrier.style.top)
+    w.scrollBy(400)
+    await flushRaf()
+    // the document-local carrier does not move with scroll (native), and no second,
+    // viewport-fixed marker exists to diverge from it.
+    expect(parseFloat(carrier.style.top)).toBe(topBefore)
+    expect(strayViewportFrames()).toBe(0)
+    expect(host.getDocumentSpaceCounters().postCommitUserScrollRepaint).toBe(0)
+    expect(host.getDocumentSpaceCounters().locateViewportFrameLingeringAfterCommit).toBe(0)
+  })
+})
+
+// ── ROOT_COMPOUND_CAPTION_COVERAGE ─────────────────────────────────────────
+describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化后仍被载体覆盖', () => {
+  const carrierOf = (): HTMLElement | null =>
+    document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame`) as HTMLElement | null
+  const geom = (): { top: number; height: number; width: number } => {
+    const c = carrierOf()!
+    return { top: parseFloat(c.style.top), height: parseFloat(c.style.height), width: parseFloat(c.style.width) }
+  }
+  const runGeometryPass = (reason: string): void => {
+    ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set([reason]))
+  }
+
+  it('CODE_MISSING_NAME：题注+代码主体的载体在拖拽后仍覆盖题注（不是塌缩到代码主体）', async () => {
+    // Force the REAL-layout branch so the frame controller resolves the caption host
+    // and the committed carrier actually spans `caption ∪ body` (as in Typora).
+    const ua = vi.spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 RegularRuntime')
+    try {
+      const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, withCaption: true, scrollingHost: true })
+      host = w.h
+      inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+      await oneClick(host, 'C')
+      expect(carrierOf()).not.toBeNull()
+      const committed = geom()
+      // the committed carrier must span the caption ∪ body (NOT just the body).
+      const bodyH = w.target.getBoundingClientRect().height
+      expect(committed.height).toBeGreaterThan(bodyH + 5)
+
+      // SIDEBAR DIVIDER DRAG — the caption and the body both move / re-wrap.
+      w.setHostWidth(520)
+      stubRect(w.target, () => {
+        const top = 1060 - w.scrollTop()
+        return { left: 200, top, right: 640, bottom: top + 200 }
+      })
+      if (w.caption) stubRect(w.caption, () => {
+        const top = 1060 - 26 - w.scrollTop()
+        return { left: 200, top, right: 640, bottom: top + 22 }
+      })
+      runGeometryPass('resize-observer')
+      await flushRaf()
+
+      const after = geom()
+      // the carrier keeps its compound height (caption + body) — it must NOT collapse
+      // onto the body (the reported "题注高亮覆盖丢失").
+      expect(Math.abs(after.height - committed.height)).toBeLessThanOrEqual(4)
+      expect(host.getDocumentSpaceCounters().compoundCaptionUncoveredAfterReconcile).toBe(0)
+      // ── §3.3 — the caption PRIMARY child must be re-derived with the LIVE caption:
+      // a deep-cloned carrier kept the COMMIT-time cue width (the caption is re-wrapped
+      // narrower/wider), so the emphasis no longer covered the caption.
+      const cue = (): HTMLElement | null =>
+        document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame > .inkchapter-diagnostic-locate-marker[data-cue-type='caption-host']`) as HTMLElement | null
+      expect(cue()).not.toBeNull()
+      const liveCaption = w.caption!.getBoundingClientRect()
+      expect(Math.abs(parseFloat(cue()!.style.width) - liveCaption.width)).toBeLessThanOrEqual(2)
+      expect(host.getDocumentSpaceCounters().compoundCaptionCueUncoveredAfterReconcile).toBe(0)
+      const rec = readAudits(infoSpy!, LOCATE_DOCUMENT_SPACE_AUDIT_EVENT)
+        .find(a => (a.reason ?? '').startsWith('LAYOUT_RECONCILE:'))
+      expect(rec).toBeDefined()
+      expect(rec!.captionCoveredByCarrier).toBe('true')
+      expect(rec!.captionCuePresent).toBe('true')
+    } finally {
+      ua.mockRestore()
+    }
+  })
+})
+
+// ── ROOT_COMPOUND_CAPTION_COVERAGE §3.1 — detached DOM re-bind ─────────────
+describe('§3.1 — 已提交元素 detached 时按同一语义身份重解析（不在死节点上继续画）', () => {
+  type Internals = { resolveLiveCommittedElement(f: HTMLElement | null, i: string | null): HTMLElement | null }
+
+  it('连接中 → 返回同一节点；detached → 返回同身份的新节点；identity 不符 → 不误绑', () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h
+    const internals = host as unknown as Internals
+    const id = 'pre#.md-fences'
+    // connected → the SAME node (no re-bind)
+    expect(internals.resolveLiveCommittedElement(w.target, id)).toBe(w.target)
+    // Typora rebuilt `pre` → the committed reference is DETACHED
+    w.target.remove()
+    expect(w.target.isConnected).toBe(false)
+    const rebuilt = document.createElement('pre')
+    rebuilt.className = 'md-fences'
+    w.write.appendChild(rebuilt)
+    expect(internals.resolveLiveCommittedElement(w.target, id)).toBe(rebuilt)
+    // a DIFFERENT identity is never silently bound to an unrelated node
+    expect(internals.resolveLiveCommittedElement(w.target, 'pre#999.nope')).toBe(w.target)
+    // no expected identity → keep the fallback (never scan)
+    expect(internals.resolveLiveCommittedElement(w.target, null)).toBe(w.target)
+  })
+
+  it('DOM 重建后布局变化：编辑器宽度变化仍触发一次事务内 reconcile（不因死引用早退）', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h
+    inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+    await oneClick(host, 'C')
+    // connected baseline: the carrier follows the real editor-width change.
+    stubRect(w.write, () => ({ left: 0, top: -w.scrollTop(), right: 560, bottom: -w.scrollTop() + 3000 }))
+    stubRect(w.target, () => {
+      const top = 1400 - w.scrollTop()
+      return { left: 200, top, right: 640, bottom: top + 200 }
+    })
+    ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set(['resize-observer']))
+    await flushRaf()
+    const top = parseFloat((document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame`) as HTMLElement).style.top)
+    expect(top).toBeGreaterThan(1000)
+    expect(host.getDocumentSpaceCounters().layoutReconcileTargetIdentityChange).toBe(0)
+  })
+})
+
 // ── Pure contract ──────────────────────────────────────────────────────────
 describe('V511-CONTRACT — pure document-space surface', () => {
-  it('V511-CONTRACT-1: the 18 hard gates are declared exactly once', () => {
-    expect(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS.length).toBe(18)
-    expect(new Set(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS).size).toBe(18)
+  it('V511-CONTRACT-1: the hard gates are declared exactly once', () => {
+    expect(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS.length).toBe(22)
+    expect(new Set(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS).size).toBe(22)
     for (const key of [
       'postCommitUserScrollRepaint', 'postCommitUserScrollRemeasure', 'postCommitUserScrollReresolve',
       'postCommitUserScrollRecenter', 'postCommitUserScrollWrite', 'postCommitPresentationKindChange',
@@ -545,6 +835,13 @@ describe('V511-CONTRACT — pure document-space surface', () => {
       'userScrollReentersLocateTransaction', 'documentSpaceOverlayScrollDrift',
       'layoutReconcileTargetIdentityChange', 'layoutReconcilePresentationKindChange',
       'locateVisualReappearAfterDocumentDismiss', 'postDismissRecenter',
+      'docSpaceCarrierPaintDriftGt1px',
+      // ROOT_ACTIVE_DUP_CARRIER — a pre-commit viewport frame that outlived its commit.
+      'locateViewportFrameLingeringAfterCommit',
+      // ROOT_COMPOUND_CAPTION_COVERAGE — a compound caption left outside the carrier.
+      'compoundCaptionUncoveredAfterReconcile',
+      // ROOT_COMPOUND_CAPTION_COVERAGE — the caption PRIMARY child lost/mismatched.
+      'compoundCaptionCueUncoveredAfterReconcile',
     ] as const) {
       expect(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS).toContain(key)
     }

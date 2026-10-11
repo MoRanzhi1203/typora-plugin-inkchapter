@@ -149,3 +149,55 @@ describe('SCROLL 坐标 — 已提交的视口层定位框必须随滚动重同�
     expect(body).toContain('if (this.locateScrollLeaseActive()) return')
   })
 })
+
+describe('EOF 载体几何失效 — 侧栏拖拽后文档末尾带同样重测（ROOT_EOF_LIVE_COMPARATOR）', () => {
+  it('根因：EOF 带的水平范围仅在 locate/scroll 提交路径求导，无拖拽重求导分支', () => {
+    // 唯一的几何写入入口是 commitSyntheticEofVisual（locate/scroll 路径）
+    const commitIdx = HOST_SRC.indexOf('private commitSyntheticEofVisual')
+    expect(commitIdx).toBeGreaterThan(0)
+    // 该 carrier 通道与 block-gap 同类，均属「提交期固定尺寸」缺陷
+    expect(HOST_SRC).toContain('this.locateDocEndCarrier = el')
+  })
+
+  it('编辑区几何真实变化 → 文档末尾带以 LIVE 几何重求导（与 block-gap 同一权威）', () => {
+    expect(HOST_SRC).toContain('this.rederiveSyntheticEofVisualOnLayoutChange()')
+    const fn = HOST_SRC.slice(HOST_SRC.indexOf('private rederiveSyntheticEofVisualOnLayoutChange'))
+    const body = fn.slice(0, 1600)
+    // 只有已连接的真实载体才重求导
+    expect(body).toContain('this.locateDocEndCarrier')
+    expect(body).toContain('.isConnected')
+    // 重求导走唯一权威，且刷新已提交几何事实
+    expect(body).toContain('this.recomputeSyntheticEofPresentation(')
+    expect(body).toContain('this.lastDocEndClosureFacts.presentationRect')
+    expect(body).toContain('DOCUMENT-DIAGNOSTIC-EOF-LAYOUT-REMEASURE')
+  })
+
+  it('重求导用真实测量（尾随空行 + 内容列 + 文本列），绝不使用常量/存储值', () => {
+    const fn = HOST_SRC.slice(HOST_SRC.indexOf('private recomputeSyntheticEofPresentation'))
+    const body = fn.slice(0, 2400)
+    expect(body).toContain('this.measureTrailingBlankGeometry()')
+    expect(body).toContain('this.measureSemanticContentColumnRect()')
+    expect(body).toContain('this.measureDocumentTextColumnLeft(')
+    expect(body).toContain('viewportRectToDocumentLocalRect(')
+    // 无轮询 / 无新增观察器
+    expect(body).not.toContain('setInterval')
+    expect(body).not.toContain('new ResizeObserver')
+    expect(body).not.toContain('new MutationObserver')
+  })
+
+  it('EOF 闭合审计带 LIVE 对照字段（不再自引用提交期几何）', () => {
+    const idx = HOST_SRC.indexOf('const liveEofColumn = this.measureSemanticContentColumnRect()')
+    expect(idx).toBeGreaterThan(0)
+    for (const field of [
+      'liveContentColumnRect',
+      'liveDocumentTextColumnLeft',
+      'endBandOverhangPx',
+      'endBandAnchorDriftPx',
+      'endBandGeometryDecision',
+    ]) {
+      expect(HOST_SRC).toContain(field)
+    }
+    // 外溢超容差 → 计入当前事务的绘制漂移计数（可被门禁捕获）
+    expect(HOST_SRC).toContain('this.docSpaceCarrierPaintDriftCurrentTx++')
+  })
+})

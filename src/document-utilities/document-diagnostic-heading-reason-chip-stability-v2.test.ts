@@ -188,9 +188,11 @@ function baseFact(overrides: Partial<HeadingReasonChipStabilityFact> = {}): Head
     anchorDriftPx: 0,
     verticalCenterDriftPx: 0,
     placementMode: 'INLINE_RIGHT',
+    globalLayoutChanged: false,
     horizontalClampApplied: false,
     rebuildRequested: true,
     rebuildPerformed: true,
+    rebuildJustified: false,
     rebuildReason: 'LAYOUT_EPOCH:PLUGIN_DOM_MUTATION',
     ...overrides,
   }
@@ -245,6 +247,72 @@ describe('Heading Reason Chip Stable Anchor V2 §10 — post-reflow closure', ()
     const verdict = evaluateHeadingReasonChipStability(baseFact({ documentKey: 'scratch/doc.md' }))
     expect(verdict.decision).toBe('FAIL')
     expect(verdict.failedChecks).toContain('CROSS_DOCUMENT_REASON_CHIP')
+  })
+})
+
+// ── Unified Geometry Transaction Closure — real placement + global layout ──
+
+describe('Unified Geometry Transaction Closure §1/§4/§5 — placement + layout truth', () => {
+  it('ROOT_CHIP_MODE: a LEGAL BELOW_LAST_LINE chip PASSes (never judged as INLINE_RIGHT)', () => {
+    // The real-runtime defect (sess-1791560998955, 118+118 false FAILs): the audit
+    // hardcoded `placementMode='INLINE_RIGHT'`, so a legal next-line chip
+    // (chipLeft=30 below the last line) was scored with the same-line anchor /
+    // centre rules.
+    const verdict = evaluateHeadingReasonChipStability(baseFact({
+      placementMode: 'BELOW_LAST_LINE',
+      reasonChipRectBefore: null,
+      reasonChipRectAfter: line(30, 797.8, 126, 817.8),
+      actualChipLeft: 30,
+      actualChipTop: 797.8,
+      expectedChipLeft: 118,
+      anchorDriftPx: 88,
+      verticalCenterDriftPx: 27,
+    }))
+    expect(verdict.decision).toBe('PASS')
+    expect(verdict.failedChecks).toEqual([])
+  })
+
+  it('ROOT_CHIP_MODE: a BELOW_LAST_LINE chip that is NOT below the line still FAILs', () => {
+    const verdict = evaluateHeadingReasonChipStability(baseFact({
+      placementMode: 'BELOW_LAST_LINE',
+      reasonChipRectAfter: line(30, 770.2, 126, 790.2),
+      actualChipLeft: 30,
+      actualChipTop: 770.2,
+      anchorDriftPx: 88,
+    }))
+    expect(verdict.decision).toBe('FAIL')
+    expect(verdict.failedChecks).toContain('REASON_CHIP_NOT_BELOW_LAST_LINE')
+  })
+
+  it('a non-dirty chip move caused by a REAL global layout change (window width) PASSes', () => {
+    // A window-width change / native-sidebar drag moves EVERY chip; that is not a
+    // stability violation.
+    const verdict = evaluateHeadingReasonChipStability(baseFact({
+      isDirtyTarget: false,
+      globalLayoutChanged: true,
+      reasonChipRectBefore: line(118, 770.2, 214, 790.2),
+      reasonChipRectAfter: line(150, 770.2, 246, 790.2),
+      actualChipLeft: 150,
+      expectedChipLeft: 150,
+      anchorDriftPx: 0,
+    }))
+    expect(verdict.decision).toBe('PASS')
+    expect(verdict.failedChecks).toEqual([])
+  })
+
+  it('a non-dirty chip move with NO layout / content / target change still FAILs', () => {
+    const verdict = evaluateHeadingReasonChipStability(baseFact({
+      isDirtyTarget: false,
+      globalLayoutChanged: false,
+      reasonChipRectBefore: line(118, 770.2, 214, 790.2),
+      reasonChipRectAfter: line(150, 770.2, 246, 790.2),
+      actualChipLeft: 150,
+      expectedChipLeft: 150,
+      anchorDriftPx: 0,
+    }))
+    expect(verdict.decision).toBe('FAIL')
+    expect(verdict.failedChecks).toContain('NON_DIRTY_HEADING_CHIP_POSITION_CHANGED')
+    expect(verdict.failedChecks).toContain('CHIP_POSITION_CHANGED_WITHOUT_CONTENT_CHANGE')
   })
 })
 
