@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { DocumentDiagnostic } from './diagnostics-types'
 import { computeDocumentDiagnostics, type DocumentDiagnosticsInput } from './document-diagnostics'
-import { analyzeInternalBlankLineGaps } from './document-diagnostic-internal-blank-lines-v1'
+import {
+  analyzeInternalBlankLineGaps,
+  collectCanonicalSourceObjectLines,
+  collectSourceHeadingLines,
+} from './document-diagnostic-internal-blank-lines-v1'
 import {
   DOCUMENT_POSITION_BAND_END,
   DOCUMENT_POSITION_BAND_SOURCE,
@@ -291,5 +297,74 @@ describe('SORT-0x — ONE in-body key scale (no index-vs-line mix)', () => {
     ] as DocumentDiagnostic[]
     const sorted = sortProjectionsByDocumentPosition(flattenDiagnosticsToProjections(diags, ctx))
     expect(sorted.map(p => p.diagnosticId)).toEqual(['h', 'gap'])
+  })
+})
+
+// ── SORT-10..13 — the REAL reproduction document (source authority) ────────
+
+const REPRO_MD = readFileSync(
+  resolve(process.cwd(), 'test/vault/runtime/smoke/Document-Diagnostics-Block-Gap-Presentation-Extent-Test.md'),
+  'utf8',
+)
+
+describe('SORT-10 — the SOURCE-side canonical object line authority', () => {
+  it('maps block:code:0 to the fence’s REAL start line (no DOM needed)', () => {
+    const lines = collectCanonicalSourceObjectLines(REPRO_MD)
+    expect(lines.get('block:code:0')).toBe(4)
+    for (const [, line] of lines) expect(Number.isInteger(line)).toBe(true)
+  })
+
+  it('maps the ATX heading index → its real source line', () => {
+    const headings = collectSourceHeadingLines(REPRO_MD)
+    expect(headings[0]).toBe(0)                        // '# Block-Gap …'
+    expect(headings[headings.length - 1]).toBe(20)     // '## 章节 B'
+    for (let i = 1; i < headings.length; i++) expect(headings[i]).toBeGreaterThan(headings[i - 1])
+  })
+
+  it('does not fabricate a position for an unknown object', () => {
+    expect(collectCanonicalSourceObjectLines(REPRO_MD).has('block:code:9')).toBe(false)
+    expect(collectCanonicalSourceObjectLines('just text').size).toBe(0)
+  })
+})
+
+describe('SORT-11 — the REAL document end-to-end order', () => {
+  it('CODE_MISSING_NAME → 图片不存在 → EXCESSIVE_INTERNAL_BLANK_LINES', () => {
+    const objectLines = collectCanonicalSourceObjectLines(REPRO_MD)
+    const codeLine = objectLines.get('block:code:0')!
+    const gap = analyzeInternalBlankLineGaps(REPRO_MD)[0]
+    const imageLine = REPRO_MD.split('\n').findIndex(l => l.includes('missing-assets/'))
+    expect(codeLine).toBeLessThan(imageLine)
+    expect(imageLine).toBeLessThan(gap.nextBlockStartLine)
+
+    const sorted = sortProjectionsByDocumentPosition([
+      proj('CODE_MISSING_NAME', { diagnosticId: 'code', locationKind: 'block-node', stableIdentity: 'block:code:0', sourceLine: codeLine }),
+      proj('FIGURE_LOCAL_IMAGE_MISSING', { diagnosticId: 'image', locationKind: 'figure-occurrence', sourceLine: imageLine }),
+      proj('EXCESSIVE_INTERNAL_BLANK_LINES', { diagnosticId: 'blank', sourceLine: gap.nextBlockStartLine }),
+    ])
+    expect(sorted.map(p => p.diagnosticId)).toEqual(['code', 'image', 'blank'])
+    expect(sorted.every(p => documentPositionOf(p).band === DOCUMENT_POSITION_BAND_SOURCE)).toBe(true)
+  })
+})
+
+describe('SORT-12 — heading / table / formula / EOF stay stable', () => {
+  it('a resolved line always outranks an unresolved one, EOF always last', () => {
+    const sorted = sortProjectionsByDocumentPosition([
+      proj('DOCUMENT_TERMINAL_NEWLINE_MISSING', { diagnosticId: 'eof', locationKind: 'document-end' }),
+      proj('TABLE_MISSING_NAME', { diagnosticId: 'table-unresolved', locationKind: 'block-node', stableIdentity: 'block:table:7' }),
+      proj('HEADING_LEVEL_GAP', { diagnosticId: 'heading', locationKind: 'canonical-node', stableIdentity: 'h1', sourceLine: 40 }),
+      proj('FORMULA_EMPTY_CONTENT', { diagnosticId: 'formula', locationKind: 'block-node', stableIdentity: 'block:formula:0', sourceLine: 6 }),
+    ])
+    expect(sorted.map(p => p.diagnosticId)).toEqual(['formula', 'heading', 'table-unresolved', 'eof'])
+  })
+})
+
+describe('SORT-13 — no unit mixing (index never outranks a line)', () => {
+  it('canonical indices are decorative; the key is always the source line', () => {
+    const a = documentPositionOf(proj('X', { sourceLine: 900_000, canonicalHeadingIndex: 0, canonicalBlockIndex: 0 }))
+    const b = documentPositionOf(proj('Y', { canonicalHeadingIndex: 0, canonicalBlockIndex: 0 }))
+    expect(a.key).toBe(900_000 * 1000)
+    expect(a.key).toBeLessThan(b.key)             // unresolved (index-only) sorts after
+    expect(b.key).toBe(DOCUMENT_POSITION_KEY_UNKNOWN)
+    expect(a.band).toBe(DOCUMENT_POSITION_BAND_SOURCE)
   })
 })
