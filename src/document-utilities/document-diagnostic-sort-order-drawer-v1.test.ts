@@ -397,3 +397,60 @@ describe('Drawer 交互验收 — 点击激活与排序/筛选/分组协同', ()
     expect(ids.filter(id => id === 'h1' || id === 'h2')).toEqual(['h1', 'h2'])
   })
 })
+
+// ── ACTIVE 视觉必须跟随已提交快照（同 id 数量变化 → 重绑定 LIVE 诊断） ─────────
+
+const BLANK_ID = 'document:EXCESSIVE_INTERNAL_BLANK_LINES:blank-gap:paragraph:正文一。#0>>paragraph:正文二。#0'
+
+function blankDiag(n: number): Record<string, unknown> {
+  return {
+    domain: 'document', documentKey: 'doc:key', severity: 'warning',
+    id: BLANK_ID, category: 'document', code: 'EXCESSIVE_INTERNAL_BLANK_LINES',
+    message: '连续空行过多',
+    detail: `当前两个内容块之间存在 ${n} 个连续空行，建议压缩为 1 个空行。`,
+    targetIdentity: 'blank-gap:paragraph:正文一。#0>>paragraph:正文二。#0',
+    metadata: {
+      actualBlankLines: n, firstBlankLine: 3,
+      previousBlockStartLine: 2, nextBlockStartLine: 3 + n,
+      previousBlockKind: 'paragraph', nextBlockKind: 'paragraph',
+      nextBlockAnchorText: '正文二。', previousBlockAnchorText: '正文一。',
+    },
+    location: { kind: 'source-range', startLine: 3 + n, startColumn: 0, rawText: '正文二。' },
+  }
+}
+
+describe('ACTIVE 空行视觉 — 跟随已提交快照（禁止复用点击时的旧诊断对象）', () => {
+  it('同一诊断 id 下 2 → 4 空行：绑定的 ACTIVE 诊断事实必须变新', async () => {
+    host = await openWith([blankDiag(2)], { markdown: '正文一。\n\n\n\n正文二。\n' })
+    const h = host as unknown as {
+      locateCommittedBlockGapInputs: unknown
+      diagnosticInteractionState: Record<string, unknown>
+      rebindActiveVisualToLiveDiagnostic(): void
+    }
+    // Seed the ACTIVE blank band exactly as the click path does: the captured diag
+    // is the OLD object (actualBlankLines=2), the snapshot now carries 4.
+    h.locateCommittedBlockGapInputs = { diagId: BLANK_ID, severity: 'warning', diag: blankDiag(2), element: null }
+    h.diagnosticInteractionState = { ...h.diagnosticInteractionState, phase: 'ACTIVE', diagnosticId: BLANK_ID }
+    inject(host, [blankDiag(4)], 2)
+
+    expect(host.getActiveBlankVisualDiagnosticFacts()?.actualBlankLines).toBe(2)  // stale BEFORE rebind
+    h.rebindActiveVisualToLiveDiagnostic()
+    expect(host.getActiveBlankVisualDiagnosticFacts()?.actualBlankLines).toBe(4)  // live AFTER rebind
+    expect(host.getActiveBlankVisualDiagnosticFacts()?.diagnosticId).toBe(BLANK_ID)  // identity stable
+  })
+
+  it('诊断已消失时不复活旧视觉（rebind 不写回已删除的诊断）', async () => {
+    host = await openWith([blankDiag(2)], { markdown: '正文一。\n\n\n\n正文二。\n' })
+    const h = host as unknown as {
+      locateCommittedBlockGapInputs: unknown
+      diagnosticInteractionState: Record<string, unknown>
+      rebindActiveVisualToLiveDiagnostic(): void
+    }
+    h.locateCommittedBlockGapInputs = { diagId: BLANK_ID, severity: 'warning', diag: blankDiag(2), element: null }
+    h.diagnosticInteractionState = { ...h.diagnosticInteractionState, phase: 'ACTIVE', diagnosticId: BLANK_ID }
+    inject(host, [{ ...blankDiag(2), id: 'other-id', code: 'OTHER' }], 3)   // the id no longer exists
+    h.rebindActiveVisualToLiveDiagnostic()
+    // the captured object is NOT replaced by a live one (there is none)
+    expect(host.getActiveBlankVisualDiagnosticFacts()?.actualBlankLines).toBe(2)
+  })
+})

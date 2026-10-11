@@ -207,10 +207,12 @@ describe('ROOT_BLANK_LAYOUT_REDERIVE / ROOT_BLANK_SOURCE_AUTHORITY — 契约', 
     expect(HOST_SRC).toContain('this.locateCommittedBlockGapInputs = { diagId, severity, diag, element: preferredNextElement }')
     const idx = HOST_SRC.indexOf('if (this.isBlockGapVisualActive()) {')
     expect(idx).toBeGreaterThan(0)
-    const body = HOST_SRC.slice(idx, idx + 900)
+    const body = HOST_SRC.slice(idx, idx + 1400)
     // 自有输入优先（旧的 `inputs?.diag != null` 单一守卫会把带冻结在提交宽度）
     expect(body).toContain('const bg = this.locateCommittedBlockGapInputs')
     expect(body).toContain('bg?.diag ?? inputs?.diag')
+    // §5 — 重求导必须绑定当前快照的 LIVE 诊断（同 id 数量变化后不得复用点击时的旧对象）
+    expect(body).toContain('this.liveDiagnosticFor(bgId)')
     expect(body).toContain('this.commitBlockGapVisual(')
   })
 
