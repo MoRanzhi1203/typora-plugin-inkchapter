@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-10-11T09:05:27.367Z",
+  "timestamp": "2026-10-11T10:11:10.394Z",
   "buildMarker": "inkchapter-outline-toolbar-v5.1-compact-row",
   "isOutlinePanelActive": false,
   "tabBar": {
     "rect": {
-      "w": 313,
+      "w": 318,
       "h": 12,
       "x": 0,
       "y": 4
@@ -50,7 +50,7 @@
     "visible": true,
     "display": "block",
     "rect": {
-      "w": 313,
+      "w": 318,
       "h": 698
     }
   }
