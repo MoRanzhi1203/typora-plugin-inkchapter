@@ -4265,27 +4265,8 @@ body.ink-console-docked::after {
 .inkchapter-doc-drawer__item--warning .inkchapter-doc-drawer__item-icon { color: var(--ink-ui-warning, #b58900); }
 .inkchapter-doc-drawer__item--info .inkchapter-doc-drawer__item-icon { color: var(--ink-diagnostic-hint-text, var(--ink-ui-sev-info, #5d7181)); }
 .inkchapter-doc-drawer__item-msg { font-size: 13px; line-height: 1.4; }
+/* The card shows ONE description in a SECONDARY text colour (never link blue). */
 .inkchapter-doc-drawer__item-detail { margin-top: 2px; font-size: 12px; line-height: 1.5; color: var(--ink-ui-text-muted, #666); }
-/* §3 — ordinary advice uses a SECONDARY text colour (never the link blue). */
-.inkchapter-doc-drawer__item-suggestion {
-  margin-top: 2px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--ink-ui-text-muted, #666);
-}
-.inkchapter-doc-drawer__item-suggestion[hidden] { display: none; }
-.inkchapter-doc-drawer__item-more {
-  margin-top: 2px;
-  align-self: flex-start;
-  padding: 0;
-  border: none;
-  background: none;
-  font-family: inherit;
-  font-size: 11px;
-  color: var(--ink-ui-primary, #07a);
-  cursor: pointer;
-}
-.inkchapter-doc-drawer__item-more:hover { text-decoration: underline; }
 .inkchapter-doc-drawer__item-meta {
   display: inline-flex;
   align-items: center;

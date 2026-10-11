@@ -65,15 +65,15 @@ describe('Drawer UI V2 — unified card', () => {
     expect(body).toContain('gap: 6px')
   })
 
-  it('ordinary advice uses a SECONDARY colour, never the link blue', () => {
-    const body = bodyOf('\\.inkchapter-doc-drawer__item-suggestion')
+  it('the ONE description uses a SECONDARY colour, never the link blue', () => {
+    const body = bodyOf('\\.inkchapter-doc-drawer__item-detail')
     expect(body).toContain('--ink-ui-text-muted')
     expect(body).not.toContain('--ink-ui-primary')
   })
 
-  it('the advice can be collapsed (hidden rule exists) and is toggled by a compact control', () => {
-    expect(bodyOf('\\.inkchapter-doc-drawer__item-suggestion\\[hidden\\]')).toContain('display: none')
-    expect(bodyOf('\\.inkchapter-doc-drawer__item-more')).toContain('cursor: pointer')
+  it('the 「详情 / 收起」expansion and its advice paragraph are fully removed', () => {
+    expect(css).not.toContain('.inkchapter-doc-drawer__item-suggestion')
+    expect(css).not.toContain('.inkchapter-doc-drawer__item-more')
   })
 
   it('the active row keeps a low-saturation wash (no hard fill)', () => {

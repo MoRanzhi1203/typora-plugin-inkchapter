@@ -35,8 +35,6 @@ export interface DiagnosticPresentation {
   drawerTitle: string
   /** The Drawer body — the FULL explanation / advice (never compressed here). */
   drawerDetail: string | null
-  /** The Drawer fix advice (`修复建议`), normalized by the copy authority. */
-  drawerSuggestion: string | null
   inlineHintSource: InlineHintSource
 }
 
@@ -245,7 +243,6 @@ export function buildDiagnosticPresentation(input: DiagnosticPresentationInput):
     inlineHint: hint,
     drawerTitle,
     drawerDetail,
-    drawerSuggestion: copy.suggestion !== '' ? copy.suggestion : null,
     inlineHintSource: source,
   }
 }
