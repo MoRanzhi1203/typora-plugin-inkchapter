@@ -13301,14 +13301,19 @@ export class DocumentUtilityOverlayHost {
         container.appendChild(f)
         fragEls.push(f)
       })
-      // ONE count label — the DIAGNOSTIC's OWN visible blank-row count. The visual
-      // layer must NEVER re-derive an "excess" number (that would silently
-      // re-compute and contradict the diagnostic semantics). Pure overlay text.
-      if (renderedRowCount > 0) {
+      // ONE count label — the DIAGNOSTIC's OWN blank count (the SOURCE count the
+      // rule fires on). The visual layer must NEVER display a DIFFERENT number:
+      // Typora collapses N SOURCE blank lines into FEWER rendered empty paragraphs,
+      // so a rendered-row label (e.g. "1 空行") contradicted both the Drawer detail
+      // (「当前两个内容块之间存在 9 个连续空行」) and the warning itself — read by the
+      // user as "1 个空行被判定为连续空行过多". The rendered row count stays a
+      // SEPARATE visual fact (fragments / geometry).
+      const labelBlankCount = actualBlankLines != null && actualBlankLines > 0 ? actualBlankLines : renderedRowCount
+      if (labelBlankCount > 0) {
         const chip = document.createElement('span')
         chip.className = BLANK_RUN_COUNT_CHIP_CLASS
         chip.setAttribute('aria-hidden', 'true')
-        chip.textContent = `${renderedRowCount} 空行`
+        chip.textContent = `${labelBlankCount} 空行`
         container.appendChild(chip)
       }
       layer.appendChild(container)
@@ -13324,12 +13329,17 @@ export class DocumentUtilityOverlayHost {
       {
         const live = this.liveDiagnosticFor(diagId)
         const diagnosticBlankCount = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
-        const activeLabelBlankCount = renderedRowCount
+        const activeLabelBlankCount = labelBlankCount
         const paintedFragmentCount = fragEls.length
         const staleActiveVisualCount = live != null && live !== diag ? 1 : 0
         const sourceBlankLineCountUsed = actualBlankLines
+        // The Drawer detail and the Active label BOTH state the DIAGNOSTIC's own
+        // SOURCE count, so they must EQUAL it; the RENDERED row count stays a
+        // SEPARATE axis (fragments must equal the painted rows) and is never forced
+        // to equal the source count.
         const consistency = staleActiveVisualCount === 0
-          && activeLabelBlankCount === renderedRowCount
+          && diagnosticBlankCount != null
+          && activeLabelBlankCount === diagnosticBlankCount
           && paintedFragmentCount === renderedRowCount
           && sourceBlankLineCountUsed === diagnosticBlankCount
           ? 'PASS' : 'FAIL'
@@ -13340,7 +13350,7 @@ export class DocumentUtilityOverlayHost {
           DIAGNOSTIC_BLANK_COUNT: diagnosticBlankCount,
           SOURCE_BLANK_LINE_COUNT_USED: sourceBlankLineCountUsed,
           RENDERED_BLANK_ROW_COUNT: renderedRowCount,
-          DRAWER_DISPLAYED_BLANK_COUNT: renderedRowCount,
+          DRAWER_DISPLAYED_BLANK_COUNT: diagnosticBlankCount,
           ACTIVE_LABEL_BLANK_COUNT: activeLabelBlankCount,
           ACTIVE_PAINTED_FRAGMENT_COUNT: paintedFragmentCount,
           STALE_ACTIVE_VISUAL_COUNT: staleActiveVisualCount,

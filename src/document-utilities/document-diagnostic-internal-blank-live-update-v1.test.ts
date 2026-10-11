@@ -186,3 +186,74 @@ describe('P0 内部空行 — 源码变更实时重算（真实 source revision�
     expect(publishes).toBe(publishesAfterFirst)
   })
 })
+
+// ── 同一规则多实例：按完整 diagnosticId/targetIdentity 区分，互不串位 ────────────
+
+/** Two gaps: `A`⟷`B` with `n1` blanks and `B`⟷`C` with `n2` blanks. */
+function twoGapDoc(n1: number, n2: number): string {
+  return `A。\n${'\n'.repeat(n1)}B。\n${'\n'.repeat(n2)}C。\n`
+}
+
+describe('P0 同一规则多实例 — 独立身份与数量隔离', () => {
+  it('两个空行区间 → 两条诊断，id/targetIdentity 互不相同', () => {
+    markdown = twoGapDoc(3, 4)
+    authority.recompute('TWO_GAPS')
+    const ds = blanks()
+    expect(ds).toHaveLength(2)
+    expect(new Set(ds.map(d => d.id)).size).toBe(2)
+    expect(new Set(ds.map(d => d.targetIdentity)).size).toBe(2)
+    // each gap reports its OWN source count
+    const counts = ds.map(d => d.metadata?.['actualBlankLines']).sort()
+    expect(counts).toEqual([3, 4])
+  })
+
+  it('只编辑其中一个区间：另一条诊断不串位、不复用旧数量、不误消失', () => {
+    markdown = twoGapDoc(3, 4)
+    authority.recompute('TWO_GAPS')
+    const before = blanks()
+    const byGap = (list: typeof before, kind: 'first' | 'second') =>
+      kind === 'first'
+        ? list.find(d => d.targetIdentity!.includes('A。') && d.targetIdentity!.includes('B。'))!
+        : list.find(d => d.targetIdentity!.includes('B。') && d.targetIdentity!.includes('C。'))!
+    const firstBefore = byGap(before, 'first')
+    const secondBefore = byGap(before, 'second')
+    expect(firstBefore.metadata?.['actualBlankLines']).toBe(3)
+    expect(secondBefore.metadata?.['actualBlankLines']).toBe(4)
+
+    // edit ONLY the FIRST gap (3 → 6)
+    markdown = twoGapDoc(6, 4)
+    authority.recompute('DOCUMENT_MUTATION')
+    const after = blanks()
+    expect(after).toHaveLength(2)
+    const firstAfter = byGap(after, 'first')
+    const secondAfter = byGap(after, 'second')
+    // the edited gap: same id, new count
+    expect(firstAfter.id).toBe(firstBefore.id)
+    expect(firstAfter.metadata?.['actualBlankLines']).toBe(6)
+    // the untouched gap: SAME id, SAME count (no cross-talk / stale reuse)
+    expect(secondAfter.id).toBe(secondBefore.id)
+    expect(secondAfter.metadata?.['actualBlankLines']).toBe(4)
+    // the Drawer detail of the untouched gap still states ITS OWN count
+    expect(String(secondAfter.detail ?? '')).toContain('4 个连续空行')
+    expect(String(firstAfter.detail ?? '')).toContain('6 个连续空行')
+  })
+
+  it('一个内部空行（合规）绝不触发 EXCESSIVE_INTERNAL_BLANK_LINES', () => {
+    // A⟷B 1 blank, B⟷C 1 blank → both compliant
+    markdown = twoGapDoc(1, 1)
+    authority.recompute('ONE_ONE')
+    expect(blanks()).toHaveLength(0)
+    // even with a heading/code boundary on one side
+    markdown = 'A。\n\n## 标题\n\n正文。\n'
+    authority.recompute('ONE_ONE_BLOCKS')
+    expect(blanks()).toHaveLength(0)
+  })
+
+  it('1 → 2 的边界：正好 2 个空行才出现（阈值 = 2）', () => {
+    markdown = twoGapDoc(1, 2)
+    authority.recompute('ONE_TWO')
+    const ds = blanks()
+    expect(ds).toHaveLength(1)
+    expect(ds[0].metadata?.['actualBlankLines']).toBe(2)
+  })
+})
