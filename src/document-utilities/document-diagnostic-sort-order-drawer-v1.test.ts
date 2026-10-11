@@ -407,7 +407,7 @@ function blankDiag(n: number): Record<string, unknown> {
     domain: 'document', documentKey: 'doc:key', severity: 'warning',
     id: BLANK_ID, category: 'document', code: 'EXCESSIVE_INTERNAL_BLANK_LINES',
     message: '连续空行过多',
-    detail: `当前两个内容块之间存在 ${n} 个连续空行，建议压缩为 1 个空行。`,
+    detail: `源码中存在 ${n} 个连续空行，建议压缩为 1 个空行。`,
     targetIdentity: 'blank-gap:paragraph:正文一。#0>>paragraph:正文二。#0',
     metadata: {
       actualBlankLines: n, firstBlankLine: 3,
@@ -452,5 +452,33 @@ describe('ACTIVE 空行视觉 — 跟随已提交快照（禁止复用点击时�
     h.rebindActiveVisualToLiveDiagnostic()
     // the captured object is NOT replaced by a live one (there is none)
     expect(host.getActiveBlankVisualDiagnosticFacts()?.actualBlankLines).toBe(2)
+  })
+})
+
+// ── 显示数量：源码数量是规则 / Drawer 文案 / Active 标签的唯一事实 ────────────────
+
+describe('空行显示数量 — 源码数量唯一事实（source 与 rendered 背离时）', () => {
+  it('source=9 / rendered=1：Drawer 文案必须写 9，渲染数量仅作几何事实', async () => {
+    host = await openWith([blankDiag(9)], { markdown: '正文一。\n\n\n\n\n\n\n\n\n\n正文二。\n' })
+    const h = host as unknown as {
+      resolveRenderedBlankRowsForMeta(meta: Record<string, unknown>): unknown
+      registerRenderedBlankRowAuthorityFromSnapshot(s: unknown): void
+      runBlankRowPaintLayerAcceptanceDryRun(i: unknown): void
+    }
+    // The LIVE DOM proves only ONE rendered blank row for these 9 SOURCE blanks
+    // (Typora collapses consecutive blank lines) — that is the GEOMETRY axis.
+    h.resolveRenderedBlankRowsForMeta = () => ({
+      sourceBlankLineCount: 9, renderedBlankRowCount: 1, rows: [{ index: 0 }],
+      decision: 'VERIFIED', authority: 'RENDERED_DOM_BLANK_ROWS_V1', probe: null,
+    })
+    h.runBlankRowPaintLayerAcceptanceDryRun = () => { /* geometry dry-run: not under test here */ }
+    h.registerRenderedBlankRowAuthorityFromSnapshot({
+      documentKey: 'doc:key', revision: 1, sourceRevision: 1, diagnostics: [blankDiag(9)],
+    })
+    internals(host).renderDrawer()
+    await flushRaf()
+    const labels = rows().map(r => r.getAttribute('aria-label') ?? '')
+    expect(labels.some(l => l.includes('源码中存在 9 个连续空行'))).toBe(true)  // SOURCE, explicitly labelled
+    expect(labels.some(l => l.includes('1 个连续空行'))).toBe(false)            // the visible count is NEVER the Drawer copy
   })
 })

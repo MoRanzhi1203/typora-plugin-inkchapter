@@ -13076,6 +13076,11 @@ export class DocumentUtilityOverlayHost {
       })
     }
     const renderedRowCount = renderedBlankRows.renderedBlankRowCount
+    // §3/§4 — the count the Active LABEL states: the VISIBLE blank line BANDS (what
+    // the user really sees in the WYSIWYG editor), which Typora may collapse from
+    // MANY source blank lines into FEWER bands. It is neither the source count nor
+    // the raw DOM node count.
+    const visibleBlankLineCount = renderedBlankRows.visibleBlankLineCount
     // ── TRAE §3–§7 — PAINT LAYER CALIBRATION (the REAL coordinate authority) ──
     // Insert three invisible plugin-owned probes into the SAME layer the fragments
     // are painted into, measure them, remove them, then derive the origin + basis +
@@ -13301,14 +13306,11 @@ export class DocumentUtilityOverlayHost {
         container.appendChild(f)
         fragEls.push(f)
       })
-      // ONE count label — the DIAGNOSTIC's OWN blank count (the SOURCE count the
-      // rule fires on). The visual layer must NEVER display a DIFFERENT number:
-      // Typora collapses N SOURCE blank lines into FEWER rendered empty paragraphs,
-      // so a rendered-row label (e.g. "1 空行") contradicted both the Drawer detail
-      // (「当前两个内容块之间存在 9 个连续空行」) and the warning itself — read by the
-      // user as "1 个空行被判定为连续空行过多". The rendered row count stays a
-      // SEPARATE visual fact (fragments / geometry).
-      const labelBlankCount = actualBlankLines != null && actualBlankLines > 0 ? actualBlankLines : renderedRowCount
+      // ONE count label — the VISIBLE blank line BAND count (§4): the number of
+      // distinct blank line bands the user actually sees. The SOURCE blank count is
+      // a DIFFERENT number and is stated (explicitly labelled 「源码」) only in the
+      // Drawer copy — never here. The rendered row/node count is a GEOMETRY fact.
+      const labelBlankCount = visibleBlankLineCount
       if (labelBlankCount > 0) {
         const chip = document.createElement('span')
         chip.className = BLANK_RUN_COUNT_CHIP_CLASS
@@ -13333,13 +13335,14 @@ export class DocumentUtilityOverlayHost {
         const paintedFragmentCount = fragEls.length
         const staleActiveVisualCount = live != null && live !== diag ? 1 : 0
         const sourceBlankLineCountUsed = actualBlankLines
-        // The Drawer detail and the Active label BOTH state the DIAGNOSTIC's own
-        // SOURCE count, so they must EQUAL it; the RENDERED row count stays a
-        // SEPARATE axis (fragments must equal the painted rows) and is never forced
-        // to equal the source count.
+        // FOUR counts, TWO contracts (never conflated):
+        //   · the Active LABEL must equal the VISIBLE band count (§4);
+        //   · the painted fragments must equal the rendered rows (geometry);
+        //   · the SOURCE count used must equal the DIAGNOSTIC's own count (the rule);
+        //   · SOURCE vs VISIBLE are DIFFERENT axes and are never forced to be equal.
         const consistency = staleActiveVisualCount === 0
           && diagnosticBlankCount != null
-          && activeLabelBlankCount === diagnosticBlankCount
+          && activeLabelBlankCount === visibleBlankLineCount
           && paintedFragmentCount === renderedRowCount
           && sourceBlankLineCountUsed === diagnosticBlankCount
           ? 'PASS' : 'FAIL'
@@ -13349,6 +13352,7 @@ export class DocumentUtilityOverlayHost {
           ACTIVE_VISUAL_REVISION: this.snapshot?.revision ?? null,
           DIAGNOSTIC_BLANK_COUNT: diagnosticBlankCount,
           SOURCE_BLANK_LINE_COUNT_USED: sourceBlankLineCountUsed,
+          VISIBLE_BLANK_LINE_COUNT: visibleBlankLineCount,
           RENDERED_BLANK_ROW_COUNT: renderedRowCount,
           DRAWER_DISPLAYED_BLANK_COUNT: diagnosticBlankCount,
           ACTIVE_LABEL_BLANK_COUNT: activeLabelBlankCount,
@@ -14630,15 +14634,22 @@ export class DocumentUtilityOverlayHost {
         renderedBlankRowAuthority: result?.authority ?? null,
         ...(result?.probe ?? {}),
       })
-      if (result != null && result.decision === 'VERIFIED' && result.renderedBlankRowCount > 0) {
+      const sourceBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+      if (result != null && result.decision === 'VERIFIED' && result.renderedBlankRowCount > 0 && sourceBlankLines != null) {
         this.renderedBlankRowAuthority.set(targetIdentity, {
           renderedBlankRowCount: result.renderedBlankRowCount,
-          displayDetail: internalBlankLineDetail(result.renderedBlankRowCount),
-          warning: result.renderedBlankRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+          // §3 — the DISPLAY count is the DIAGNOSTIC's OWN SOURCE blank count (the
+          // rule's single fact, shown by BOTH the Drawer copy and the Active label).
+          // The RENDERED row count stays a GEOMETRY fact (fragments / extents) — a
+          // SEPARATE axis that is never forced to equal the source count. Registering
+          // the rendered count here was the split-brain that made the Drawer say "1
+          // 个连续空行" while the rule (and its own detail) said 9.
+          displayDetail: internalBlankLineDetail(sourceBlankLines),
+          warning: sourceBlankLines >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
           layoutEpoch: this.currentDocumentLayoutEpoch,
         })
         if (!isHeadlessTestRuntime()) {
-          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_RENDERED_COUNT_COUNT++
+          this.countersRenderedBlankRow.INTERNAL_BLANK_LINE_DISPLAYED_COUNT_MATCH_SOURCE_COUNT_COUNT++
         }
       } else {
         this.renderedBlankRowAuthority.delete(targetIdentity)
@@ -14873,7 +14884,12 @@ export class DocumentUtilityOverlayHost {
     if (d == null || d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return null
     const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
     const record = targetIdentity !== '' ? this.renderedBlankRowAuthority.get(targetIdentity) ?? null : null
-    return record != null ? record.displayDetail : RENDERED_BLANK_ROW_PENDING_DETAIL
+    // §3 — the registered display copy is the diagnostic's OWN SOURCE count. When the
+    // runtime has not registered it yet, fall back to the DIAGNOSTIC's OWN detail
+    // (also source-based) instead of a "pending" placeholder that would hide the
+    // rule's single fact — the Drawer must never state a different number than the
+    // rule / the Active label.
+    return record != null ? record.displayDetail : (d.detail ?? RENDERED_BLANK_ROW_PENDING_DETAIL)
   }
 
   /**
