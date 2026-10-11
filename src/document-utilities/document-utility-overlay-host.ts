@@ -9308,6 +9308,16 @@ export class DocumentUtilityOverlayHost {
     return this.buildDrawerProjections()
   }
 
+  /**
+   * V5.14-R1 §6/§43 — the SINGLE source-position context the Drawer ordering
+   * authority consumes. It resolves a CANONICAL stable identity to a real
+   * SOURCE LINE for BOTH headings (`canonical-node`) and objects
+   * (`block:<kind>:<ordinal>`), so every in-body diagnostic orders on the SAME
+   * unit. Without the object branch, a figure/table/code/formula diagnostic
+   * carried NO source line and (previously) fell back to a canonical-index key
+   * that outranked a mid-document `source-range` diagnostic such as
+   * `EXCESSIVE_INTERNAL_BLANK_LINES` — the reported wrong ordering.
+   */
   private buildDocumentPositionContext(): DocumentPositionContext {
     const root = resolveBusinessContentRoot()
     if (!root) return {}
@@ -9317,14 +9327,34 @@ export class DocumentUtilityOverlayHost {
       const id = this.headingStableIdentityOf(h)
       if (id) indexOf.set(id, i)
     })
+    // §3 — a Typora `data-line` carried by the element or its nearest block
+    // ancestor (an inline `img` has none; its owning paragraph does).
+    const sourceLineOfElement = (el: HTMLElement | null): number | null => {
+      let node: HTMLElement | null = el
+      while (node != null) {
+        const attr = node.getAttribute?.('data-line')
+        if (attr != null && attr !== '') {
+          const n = Number.parseInt(attr, 10)
+          if (Number.isFinite(n)) return n
+        }
+        node = node.parentElement
+      }
+      return null
+    }
+    const parseBlockIdentity = (id: string): { kind: 'figure' | 'table' | 'code' | 'formula'; ordinal: number } | null => {
+      const m = /^block:(figure|table|code|formula):(\d+)$/.exec(id)
+      if (!m) return null
+      return { kind: m[1] as 'figure' | 'table' | 'code' | 'formula', ordinal: Number.parseInt(m[2], 10) }
+    }
     return {
       headingIndexOfStableIdentity: id => (indexOf.has(id) ? indexOf.get(id)! : null),
+      blockIndexOfStableIdentity: id => parseBlockIdentity(id)?.ordinal ?? null,
       lineOfStableIdentity: id => {
         const idx = indexOf.get(id)
-        if (idx == null) return null
-        const attr = headings[idx].getAttribute('data-line')
-        const n = attr != null && attr !== '' ? Number.parseInt(attr, 10) : Number.NaN
-        return Number.isFinite(n) ? n : null
+        if (idx != null) return sourceLineOfElement(headings[idx])
+        const block = parseBlockIdentity(id)
+        if (block != null) return sourceLineOfElement(this.resolveBlockIdentity(block.kind, id))
+        return null
       },
     }
   }
