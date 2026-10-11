@@ -648,6 +648,45 @@ describe('V511-DRAG — the ACTIVE document-space carrier follows a real editor-
   })
 })
 
+// ── ROOT_CODE_CARRIER_CONTENT_COLUMN ───────────────────────────────────────
+describe('V511-CONTENT-COLUMN — a full-width carrier never overflows the content column', () => {
+  const carrierOf = (): HTMLElement | null =>
+    document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame`) as HTMLElement | null
+
+  it('V511-COL-1: a full-width code carrier is clamped to the column (the +4px gap is dropped)', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h
+    // Zero the content padding so the semantic content column coincides with the
+    // host box (0..800), then make the code block span that whole column.
+    w.write.style.padding = '0px'
+    w.write.style.border = '0px'
+    stubRect(w.target, () => {
+      const top = 1000 - w.scrollTop()
+      return { left: 0, top, right: 800, bottom: top + 200 }
+    })
+    inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+    await oneClick(host, 'C')
+    const c = carrierOf()!
+    // The 2px symmetric gap would have made this 804 → clamped to the column (800).
+    expect(parseFloat(c.style.width)).toBe(800)
+    expect(parseFloat(c.style.left)).toBe(0)
+    expect(host.getDocumentSpaceCounters().codeCarrierOverflowsContentColumn).toBe(0)
+    gateZero(host)
+  })
+
+  it('V511-COL-2: a narrower carrier keeps its 2px breathing gap', async () => {
+    const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, scrollingHost: true })
+    host = w.h
+    inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+    await oneClick(host, 'C')
+    // target 200..900 (700 wide) → 198..902 = 704: the gap is preserved because the
+    // target itself extends past the column, so no side is clamped.
+    const c = carrierOf()!
+    expect(parseFloat(c.style.width)).toBe(704)
+    gateZero(host)
+  })
+})
+
 // ── ROOT_ACTIVE_DUP_CARRIER ────────────────────────────────────────────────
 describe('ROOT_ACTIVE_DUP_CARRIER — 布局重测不得留下 viewport 帧（重复标记 / 不随滚动）', () => {
   const docFrames = (): number =>
@@ -825,8 +864,8 @@ describe('§3.1 — 已提交元素 detached 时按同一语义身份重解析�
 // ── Pure contract ──────────────────────────────────────────────────────────
 describe('V511-CONTRACT — pure document-space surface', () => {
   it('V511-CONTRACT-1: the hard gates are declared exactly once', () => {
-    expect(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS.length).toBe(22)
-    expect(new Set(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS).size).toBe(22)
+    expect(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS.length).toBe(24)
+    expect(new Set(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS).size).toBe(24)
     for (const key of [
       'postCommitUserScrollRepaint', 'postCommitUserScrollRemeasure', 'postCommitUserScrollReresolve',
       'postCommitUserScrollRecenter', 'postCommitUserScrollWrite', 'postCommitPresentationKindChange',
@@ -842,6 +881,10 @@ describe('V511-CONTRACT — pure document-space surface', () => {
       'compoundCaptionUncoveredAfterReconcile',
       // ROOT_COMPOUND_CAPTION_COVERAGE — the caption PRIMARY child lost/mismatched.
       'compoundCaptionCueUncoveredAfterReconcile',
+      // ROOT_BLANK_SEMANTIC_CONTAINMENT — a blank carrier intruding into adjacent prose.
+      'blankCarrierIntrudesAdjacentProse',
+      // ROOT_CODE_CARRIER_CONTENT_COLUMN — a full-width code carrier overflowing the column.
+      'codeCarrierOverflowsContentColumn',
     ] as const) {
       expect(LOCATE_DOCUMENT_SPACE_V511_GATE_KEYS).toContain(key)
     }

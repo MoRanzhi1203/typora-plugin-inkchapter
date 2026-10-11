@@ -313,6 +313,64 @@ export function isBlockGapGeometryValid(g: BlockGapVisualGeometry | null): boole
     && g.gapWidth > 0
 }
 
+/** §二/§三 — the default tolerance for a blank-carrier / prose-box comparison. */
+export const BLANK_CARRIER_INTRUSION_TOLERANCE_PX = 1
+
+export interface BlankCarrierContainmentInput {
+  /** The LIVE painted carrier rect (viewport space). */
+  paintedRect: { top: number; bottom: number } | null
+  /** The LIVE previous / next boundary block boxes (viewport space). */
+  previousBlockRect: { top: number; bottom: number } | null
+  nextBlockRect: { top: number; bottom: number } | null
+  tolerancePx?: number
+}
+
+export interface BlankCarrierContainment {
+  /** How far the carrier reaches ABOVE the gap (into/over the previous block). */
+  overshootTopPx: number | null
+  /** How far the carrier reaches BELOW the gap (into/over the next block). */
+  overshootBottomPx: number | null
+  intrudesPreviousBlock: boolean
+  intrudesNextBlock: boolean
+  decision: 'PASS' | 'FAIL'
+}
+
+/**
+ * ROOT_BLANK_SEMANTIC_CONTAINMENT §二/§三 —— THE independent containment authority
+ * for a blank-space carrier (continuous blank-run / EOF band).
+ *
+ * The self-referential fragment audit compares the painted fragment against the
+ * RENDERED ROW it painted, so it can NEVER see an overshoot past the semantic gap or
+ * an intrusion into the adjacent prose. This compares the LIVE painted rect against
+ * the two LIVE boundary block boxes instead — a real, independent observation.
+ */
+export function evaluateBlankCarrierContainment(
+  input: BlankCarrierContainmentInput,
+): BlankCarrierContainment {
+  const tol = input.tolerancePx ?? BLANK_CARRIER_INTRUSION_TOLERANCE_PX
+  const painted = input.paintedRect
+  const prev = input.previousBlockRect
+  const next = input.nextBlockRect
+  if (!painted || !prev || !next) {
+    return {
+      overshootTopPx: null, overshootBottomPx: null,
+      intrudesPreviousBlock: false, intrudesNextBlock: false,
+      decision: 'PASS',
+    }
+  }
+  const overshootTopPx = Math.max(0, prev.bottom - painted.top)
+  const overshootBottomPx = Math.max(0, painted.bottom - next.top)
+  const intrudesPreviousBlock = painted.top < prev.bottom - tol
+  const intrudesNextBlock = painted.bottom > next.top + tol
+  return {
+    overshootTopPx,
+    overshootBottomPx,
+    intrudesPreviousBlock,
+    intrudesNextBlock,
+    decision: intrudesPreviousBlock || intrudesNextBlock ? 'FAIL' : 'PASS',
+  }
+}
+
 /**
  * §12 — the gap's DOM-independent identity for the runtime audit. Built from
  * the two block identities only (never a blank-line count / line number /

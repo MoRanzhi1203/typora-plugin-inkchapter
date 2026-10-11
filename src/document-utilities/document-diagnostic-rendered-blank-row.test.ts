@@ -156,19 +156,19 @@ describe('TRAE §34 A–D — source vs rendered count matrix', () => {
     expect(resolve(gap, 12).renderedBlankRowCount).toBe(3)
   })
 
-  it('C: rendered 2 → below the warning threshold (PASS)', () => {
+  it('C: rendered 2 → at/above the warning threshold (WARNING)', () => {
     const gap = buildGap({ rows: 2 })
     const res = resolve(gap, 7)
     expect(res.renderedBlankRowCount).toBe(2)
-    expect(res.renderedBlankRowCount < INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(true)
+    expect(res.renderedBlankRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(true)
   })
 
-  it('D: 0/1/2 → below threshold, 3/4 → warning (from the RENDERED count)', () => {
+  it('D: 0/1 → below threshold, 2/3/4 → warning (from the RENDERED count)', () => {
     for (const n of [0, 1, 2, 3, 4]) {
       const res = resolve(buildGap({ rows: n }), 7)
       expect(res.renderedBlankRowCount, `${n} rows`).toBe(n)
       const warning = res.renderedBlankRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold
-      expect(warning, `${n} rows`).toBe(n >= 3)
+      expect(warning, `${n} rows`).toBe(n >= 2)
     }
   })
 
@@ -401,13 +401,14 @@ describe('TRAE §39–§44 — gates + coverage', () => {
 // ── §44 — dynamic 3 → 2 and 2 → 3 ──────────────────────────────────────────
 
 describe('TRAE §44 — dynamic rendered row refresh (event-driven, no timer)', () => {
-  it('3 → 2 blank rows flips the warning off on re-resolve', () => {
+  it('3 → 1 blank rows flips the warning off on re-resolve', () => {
     const gap = buildGap({ rows: 3 })
     expect(resolve(gap, 7).renderedBlankRowCount).toBe(3)
-    // remove one real blank row from the DOM
+    // remove TWO real blank rows from the DOM (3 → 1, below the warning threshold)
     gap.rows[1].remove()
+    gap.rows[2].remove()
     const after = resolve(gap, 7)
-    expect(after.renderedBlankRowCount).toBe(2)
+    expect(after.renderedBlankRowCount).toBe(1)
     expect(after.renderedBlankRowCount < INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(true)
   })
 

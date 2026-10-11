@@ -201,3 +201,84 @@ describe('EOF 载体几何失效 — 侧栏拖拽后文档末尾带同样重测�
     expect(HOST_SRC).toContain('this.docSpaceCarrierPaintDriftCurrentTx++')
   })
 })
+
+describe('ROOT_BLANK_LAYOUT_REDERIVE / ROOT_BLANK_SOURCE_AUTHORITY — 契约', () => {
+  it('空白带自有输入持久化，布局失效时用「自有输入优先」重求导（不被冻结）', () => {
+    expect(HOST_SRC).toContain('this.locateCommittedBlockGapInputs = { diagId, severity, diag, element: preferredNextElement }')
+    const idx = HOST_SRC.indexOf('if (this.isBlockGapVisualActive()) {')
+    expect(idx).toBeGreaterThan(0)
+    const body = HOST_SRC.slice(idx, idx + 900)
+    // 自有输入优先（旧的 `inputs?.diag != null` 单一守卫会把带冻结在提交宽度）
+    expect(body).toContain('const bg = this.locateCommittedBlockGapInputs')
+    expect(body).toContain('bg?.diag ?? inputs?.diag')
+    expect(body).toContain('this.commitBlockGapVisual(')
+  })
+
+  it('§2.2 — 源码计数缺失时绝不回退渲染行数（UNRESOLVED_SOURCE + 一次有界重解析）', () => {
+    // 旧写法已删除：不得再出现 `actualBlankLines ?? renderedRowCount`
+    expect(HOST_SRC).not.toContain('actualBlankLines ?? renderedRowCount')
+    expect(HOST_SRC).toContain("sourceCountAuthority: actualBlankLines == null ? 'UNRESOLVED_SOURCE' : 'SOURCE'")
+    expect(HOST_SRC).toContain("this.requestBoundedInternalBlankReparse('INTERNAL_BLANK_LINE_SOURCE_UNRESOLVED')")
+    // 有界：同一 sourceRevision 只重解析一次，不是轮询
+    const fn = HOST_SRC.slice(HOST_SRC.indexOf('private requestBoundedInternalBlankReparse'))
+    const body = fn.slice(0, 500)
+    expect(body).toContain('revision === this.lastInternalBlankReparseRevision')
+    expect(body).not.toContain('setInterval')
+    expect(body).not.toContain('setTimeout')
+  })
+})
+
+describe('ROOT_CODE_COMPOUND_TARGET — 代码块复合载体必须覆盖「名称行 ∪ 代码主体」', () => {
+  it('载体范围取 frame ∩ LIVE 题注的并集（消除 68.44/42.64 两值漂移）', () => {
+    const idx = HOST_SRC.indexOf('const vpFrame = this.measureLocateRect(frameEl)')
+    expect(idx).toBeGreaterThan(0)
+    const body = HOST_SRC.slice(idx, idx + 2600)
+    // 必须把 LIVE 题注并进范围，而不是只信 frame.getFrameElement()（会退化成 body-only 42.64）
+    expect(body).toContain('const captionElForCarrier = this.locatePlacementCtx?.primaryEl ?? null')
+    expect(body).toContain('Math.min(vpFrame.top, captionVpForCarrier.top)')
+    expect(body).toContain('Math.max(vpFrame.bottom, captionVpForCarrier.bottom)')
+    // 题注必须已连接且与 frame/anchor 不是同一节点（避免自并集）
+    expect(body).toContain('captionElForCarrier !== frameEl && captionElForCarrier !== anchor')
+    // 并集后的 rect 必须走同一 document-local 权威（不新增坐标换算路径）
+    expect(body).toContain('viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })')
+  })
+
+  it('载体↔锚点边关系在提交期一次性固化为 edgePad（供 reconcile 同代次复现）', () => {
+    const idx = HOST_SRC.indexOf('this.locateCommittedCarrierEdgePad = anchorVpAtCommit && vp')
+    expect(idx).toBeGreaterThan(0)
+    const body = HOST_SRC.slice(idx, idx + 420)
+    expect(body).toContain('left: vp.left - anchorVpAtCommit.left')
+    expect(body).toContain('top: vp.top - anchorVpAtCommit.top')
+    expect(body).toContain('bottom: vp.bottom - anchorVpAtCommit.bottom')
+  })
+})
+
+const FRAME_SRC = readFileSync(
+  resolve(process.cwd(), 'src/document-utilities/document-diagnostic-locate-frame.ts'), 'utf8',
+)
+
+describe('ROOT_CODE_CARRIER_CONTENT_COLUMN — 4px 水平外溢收口', () => {
+  it('外框 breathing gap 按内容列夹取（只夹 gap，不夹目标）', () => {
+    const idx = FRAME_SRC.indexOf('function clampCarrierGapToColumn')
+    expect(idx).toBeGreaterThan(0)
+    const body = FRAME_SRC.slice(idx, idx + 900)
+    // 仅当 pre-gap 盒已在列内时才把该边拉回列边界（目标超列时不缩）
+    expect(body).toContain('base.left >= column.left ? Math.max(withGap.left, column.left) : withGap.left')
+    expect(body).toContain('base.right <= column.right ? Math.min(withGap.right, column.right) : withGap.right')
+  })
+
+  it('reposition 用内容列夹取并集后的载体（gap>0 才夹）', () => {
+    const idx = FRAME_SRC.indexOf('const withCaption = contentColumn && gap > 0')
+    expect(idx).toBeGreaterThan(0)
+    const body = FRAME_SRC.slice(idx, idx + 400)
+    expect(body).toContain('clampCarrierGapToColumn(withCaptionGap, mergeCaptionHost(semanticSource, caption), contentColumn)')
+  })
+
+  it('闭合审计对 CODE 目标做独立 scope 覆盖 + 内容列包含判定', () => {
+    expect(HOST_SRC).toContain('codeVisualClosureScoped: codeRuleActive ? codeVisualScopeOk : null')
+    expect(HOST_SRC).toContain('this.countersDocSpaceV511.codeCarrierOverflowsContentColumn++')
+    // 超列只在「目标本身也在列内」的一侧计入（目标超列不误报）
+    expect(HOST_SRC).toContain('targetRect.left >= contentCol.left ? Math.max(0, contentCol.left - carrierRect.left) : 0')
+    expect(HOST_SRC).toContain('targetRect.right <= contentCol.right ? Math.max(0, carrierRect.right - contentCol.right) : 0')
+  })
+})

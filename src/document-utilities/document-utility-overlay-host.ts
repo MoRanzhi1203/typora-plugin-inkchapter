@@ -624,6 +624,7 @@ import {
   BLOCK_GAP_VISUAL_TARGET,
   computeBlockGapVisualGeometry,
   isBlockGapGeometryValid,
+  evaluateBlankCarrierContainment,
   blockGapFailClosedReason,
   resolveBlockGapHorizontalExtent,
   computeRenderedBlankRowFragments,
@@ -4500,6 +4501,22 @@ export class DocumentUtilityOverlayHost {
    * extend the frame to the caption therefore never trip it).
    */
   private locateCommittedCarrierCoveredCaptionAtCommit = false
+  /**
+   * ROOT_BLANK_LAYOUT_REDERIVE §3.1/§5 —— the committed BLOCK-GAP channel inputs,
+   * kept past the locate transaction so a REAL layout change can RE-DERIVE the band
+   * from the LIVE boundary blocks. The generic `lastLocateVisualInputs` guard could
+   * be null for this channel, which left the band frozen at its commit-time WIDTH —
+   * measured 140.6px of overhang past the live content column during a sidebar drag
+   * (the band was re-derived exactly ONCE per session: at commit).
+   */
+  private locateCommittedBlockGapInputs: {
+    diagId: string | null
+    severity: 'error' | 'warning' | 'info'
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null
+    element: HTMLElement | null
+  } | null = null
+  /** ROOT_BLANK_SOURCE_AUTHORITY §2.2 — the ONE bounded re-parse guard (per revision). */
+  private lastInternalBlankReparseRevision = -1
   /** Blank-Space Warning Presentation Policy — the unified FILL_ONLY warning band
    *  carrier (T2 terminal-newline / T3 leading-H1; a locate carrier like the rest). */
   private blankSpaceWarningCarrier: HTMLElement | null = null
@@ -4664,6 +4681,9 @@ export class DocumentUtilityOverlayHost {
     this.locateCommittedPrimaryEl = null
     this.locateCommittedCarrierEdgePad = null
     this.locateCommittedCarrierCoveredCaptionAtCommit = false
+    // ROOT_BLANK_LAYOUT_REDERIVE — the block-gap channel inputs retire with the
+    // carriers they belong to.
+    this.locateCommittedBlockGapInputs = null
     // V5.13-R1 §10 — the synthetic EOF marker is a document-space carrier and is
     // removed with it (new locate / dismiss / document switch / diagnostic
     // removed / unload all funnel through here).
@@ -4833,7 +4853,27 @@ export class DocumentUtilityOverlayHost {
     let primaryLocal: DocumentSpaceRect | null = null
     let carrierNodes = 0
     if (frameEl) {
-      const vp = this.measureLocateRect(frameEl)
+      const vpFrame = this.measureLocateRect(frameEl)
+      // ROOT_CODE_COMPOUND_TARGET §1/§2/§3 —— a compound CODE target's carrier must
+      // cover `caption(墨章代码编号名称) ∪ body(pre.md-fences)` DETERMINISTICALLY.
+      // `frame.getFrameElement()` is race-prone: measured H=68.44 when the caption
+      // projection had settled, but H=42.64 (the SAME target, body-only) when it had
+      // not — the same diagnostic therefore flickered between two carrier heights and
+      // the name row lost its highlight (10/19 commits in the field log). Union the
+      // LIVE caption element into the extent so the name row can never be dropped.
+      const captionElForCarrier = this.locatePlacementCtx?.primaryEl ?? null
+      const captionVpForCarrier = captionElForCarrier && captionElForCarrier.isConnected
+        && captionElForCarrier !== frameEl && captionElForCarrier !== anchor
+        ? this.measureLocateRect(captionElForCarrier)
+        : null
+      const vp = vpFrame && captionVpForCarrier
+        ? {
+            left: Math.min(vpFrame.left, captionVpForCarrier.left),
+            top: Math.min(vpFrame.top, captionVpForCarrier.top),
+            right: Math.max(vpFrame.right, captionVpForCarrier.right),
+            bottom: Math.max(vpFrame.bottom, captionVpForCarrier.bottom),
+          }
+        : vpFrame
       const local = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
       if (local) {
         // ROOT_COMPOUND_CAPTION_COVERAGE §一/§三 — capture the carrier↔anchor edge
@@ -6472,6 +6512,56 @@ export class DocumentUtilityOverlayHost {
         this.countersBlockGapCanonicalClosure.staleVisualCount++
       }
     }
+    // ── ROOT_CODE_COMPOUND_SCOPE —— a CODE target's closure must be SCOPE-VERIFIED
+    // against the LIVE DOM. Until now it fell straight to `commitGate.canCommit`
+    // (derived from the SAME commit-time geometry, so it could only ever agree with
+    // itself), and `visualClosureScoped` above covers ONLY the document-end rule —
+    // a code closure reported `false` and carried NO scope evidence at all. The
+    // committed carrier must independently cover the LIVE primary (caption) ∪
+    // secondary (body) target and never overflow the live content column.
+    const codeRuleActive = !gapActive && !explicitCarrier && !docEndScoped && kind === 'code'
+    let codeCarrierCoveredPrimary: boolean | null = null
+    let codeCarrierCoveredSecondary: boolean | null = null
+    let codeCarrierOverflowPx: number | null = null
+    let codeVisualScopeOk = true
+    if (codeRuleActive) {
+      const carrierEl = this.locateDocCarrier
+      const carrierRect = carrierEl && carrierEl.isConnected ? this.measureLocateRect(carrierEl) : null
+      const primaryRect = this.measureLocateRect(this.locateCommittedPrimaryEl)
+      const secondaryRect = this.measureLocateRect(this.locateCommittedSecondaryEl)
+      const covers = (t: RectRecord | null): boolean | null =>
+        t == null ? null : carrierRect != null
+          && carrierRect.left <= t.left + 1 && carrierRect.top <= t.top + 1
+          && carrierRect.right >= t.right - 1 && carrierRect.bottom >= t.bottom - 1
+      codeCarrierCoveredPrimary = covers(primaryRect)
+      codeCarrierCoveredSecondary = covers(secondaryRect)
+      const contentCol = this.measureSemanticContentColumnRect()
+      // The overflow is measured ONLY on a side where the TARGET is already inside
+      // the column — a target that legitimately extends past the column keeps its
+      // own extent (never a false "overflow" on its account).
+      const targetRect: RectRecord | null = primaryRect && secondaryRect
+        ? {
+            left: Math.min(primaryRect.left, secondaryRect.left),
+            top: Math.min(primaryRect.top, secondaryRect.top),
+            right: Math.max(primaryRect.right, secondaryRect.right),
+            bottom: Math.max(primaryRect.bottom, secondaryRect.bottom),
+            width: 0,
+            height: 0,
+          }
+        : (primaryRect ?? secondaryRect)
+      if (carrierRect && contentCol && targetRect) {
+        const leftOverflow = targetRect.left >= contentCol.left ? Math.max(0, contentCol.left - carrierRect.left) : 0
+        const rightOverflow = targetRect.right <= contentCol.right ? Math.max(0, carrierRect.right - contentCol.right) : 0
+        codeCarrierOverflowPx = Math.max(leftOverflow, rightOverflow)
+        if (codeCarrierOverflowPx > BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX) {
+          this.countersDocSpaceV511.codeCarrierOverflowsContentColumn++
+        }
+      }
+      codeVisualScopeOk = carrierRect != null
+        && codeCarrierCoveredPrimary !== false
+        && codeCarrierCoveredSecondary !== false
+        && (codeCarrierOverflowPx ?? 0) <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
+    }
     const payload: Record<string, unknown> = {
       transactionId: this.activeLocateTx?.id ?? this.locateCommittedVisual?.transactionId ?? null,
       visualEpoch: this.locateVisualEpoch,
@@ -6489,6 +6579,14 @@ export class DocumentUtilityOverlayHost {
       blockGapVisualRuleActive: blockGapRuleActive,
       blockGapVisualClosureScoped: blockGapRuleActive ? blockGapScopeOk : null,
       blockGapActiveFillCount: this.isBlockGapVisualActive() ? 1 : 0,
+      // ── ROOT_CODE_COMPOUND_SCOPE —— the CODE scope evidence. NOT doc-end scoped
+      // (that field is `false` for a code rule by construction), so the code
+      // closure carries its OWN independent LIVE-DOM coverage + containment proof.
+      codeVisualRuleActive: codeRuleActive,
+      codeVisualClosureScoped: codeRuleActive ? codeVisualScopeOk : null,
+      codeCarrierCoveredPrimary,
+      codeCarrierCoveredSecondary,
+      codeCarrierOverflowPx,
       scrollTargetKind: this.lastScrollTargetKind,
       docEndVisualRule: this.lastDocEndVisualRule,
       visualTargetKind: gapActive ? BLOCK_GAP_VISUAL_TARGET : (structure?.kind ?? null),
@@ -6535,6 +6633,8 @@ export class DocumentUtilityOverlayHost {
       activeHeadingIdentity: this.headingActiveMarkerIdentity,
       // V2 §B — the gap branch commits its OWN unified carrier state.
       // V6-R2 §6 — the explicit-fragment branch reports the REAL fragment state.
+      // ROOT_CODE_COMPOUND_SCOPE — a code closure is a PASS only when the LIVE
+      // carrier really covers the compound target AND stays inside the column.
       visualDecision: gapActive
         ? (gapVisualOk ? 'PASS' : 'FAIL')
         : explicitCarrier
@@ -6543,7 +6643,9 @@ export class DocumentUtilityOverlayHost {
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'PASS' : 'FAIL')
             : blockGapScoped
               ? 'FAIL'
-              : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
+              : codeRuleActive
+                ? (codeVisualScopeOk && (commitGate == null || commitGate.canCommit) ? 'PASS' : 'FAIL')
+                : (commitGate ? (commitGate.canCommit ? 'PASS' : 'FAIL') : 'NA'),
       commitDecision: gapActive
         ? (gapVisualOk ? 'COMMIT' : 'NO_COMMIT')
         : explicitCarrier
@@ -6552,14 +6654,18 @@ export class DocumentUtilityOverlayHost {
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'COMMIT' : 'NO_COMMIT')
             : blockGapScoped
               ? 'NO_COMMIT'
-              : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
+              : codeRuleActive
+                ? (codeVisualScopeOk && (commitGate == null || commitGate.canCommit) ? 'COMMIT' : 'NO_COMMIT')
+                : (commitGate ? (commitGate.canCommit ? 'COMMIT' : 'NO_COMMIT') : 'NA'),
       terminalState: gapActive
         ? (gapVisualOk ? 'COMMITTED' : 'FAILED')
         : explicitCarrier
           ? (explicitOk ? 'COMMITTED' : 'FAILED')
           : docEndScoped
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'COMMITTED' : 'FAILED')
-            : (this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE'),
+            : codeRuleActive
+              ? (codeVisualScopeOk && (commitGate == null || commitGate.canCommit) ? 'COMMITTED' : 'FAILED')
+              : (this.activeLocateTx ? this.activeLocateTx.state : this.locateCommittedVisual ? 'COMMITTED' : 'IDLE'),
       decision: gapActive
         ? (gapVisualOk && gapSeverity === 'warning' ? 'PASS' : 'FAIL')
         : explicitCarrier
@@ -6568,7 +6674,9 @@ export class DocumentUtilityOverlayHost {
             ? (docEndScopeOk && commitGate?.canCommit === true ? 'PASS' : 'FAIL')
             : blockGapScoped
               ? 'FAIL'
-              : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
+              : codeRuleActive
+                ? (codeVisualScopeOk && (commitGate == null || commitGate.canCommit) ? 'PASS' : 'FAIL')
+                : (commitGate && !commitGate.canCommit ? 'FAIL' : 'PASS'),
       reason,
       gateCounters: { ...this.countersClosureV512R2 },
       gateDecision: evaluateVisualClosureGates(this.countersClosureV512R2).decision,
@@ -6599,7 +6707,27 @@ export class DocumentUtilityOverlayHost {
         }
       }
       const geometryOk = bandOverhangPx == null || bandOverhangPx <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
-      const consistent = gapRect != null && gapSeverity === 'warning' && geometryOk
+      // ── ROOT_BLANK_SEMANTIC_CONTAINMENT §二/§三 —— the INDEPENDENT semantic
+      // containment check. `BLANK-ROW-FRAGMENT-CLOSURE-AUDIT` validates the painted
+      // fragment against the RENDERED ROW it painted (self-referential), so it can
+      // never see an overshoot past the gap nor an intrusion into the adjacent
+      // prose. Compare the LIVE painted rect against the committed semantic gap +
+      // the two boundary block boxes.
+      const semAudit = this.lastBlockGapVisualAudit as {
+        previousRect?: { top: number; bottom: number } | null
+        nextRect?: { top: number; bottom: number } | null
+      }
+      const prevVp = semAudit.previousRect ?? null
+      const nextVp = semAudit.nextRect ?? null
+      const containment = evaluateBlankCarrierContainment({
+        paintedRect: gapRect,
+        previousBlockRect: prevVp,
+        nextBlockRect: nextVp,
+      })
+      const { overshootTopPx, overshootBottomPx, intrudesPreviousBlock, intrudesNextBlock } = containment
+      const semanticContainmentOk = containment.decision === 'PASS'
+      if (!semanticContainmentOk) this.countersDocSpaceV511.blankCarrierIntrudesAdjacentProse++
+      const consistent = gapRect != null && gapSeverity === 'warning' && geometryOk && semanticContainmentOk
       emitRuntimeAudit(BLOCK_GAP_VISUAL_CONSISTENCY_AUDIT_EVENT, {
         documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
         diagnosticId: this.lastLocatedDiagnosticId,
@@ -6610,6 +6738,16 @@ export class DocumentUtilityOverlayHost {
         liveContentRect,
         bandOverhangPx,
         geometryDecision: geometryOk ? 'PASS' : 'FAIL',
+        // ── §二/§三 — the INDEPENDENT semantic containment evidence.
+        paintedRect: gapRect,
+        semanticGapViewportRect: prevVp && nextVp ? { top: prevVp.bottom, bottom: nextVp.top } : null,
+        previousBlockViewportRect: prevVp,
+        nextBlockViewportRect: nextVp,
+        overshootTopPx,
+        overshootBottomPx,
+        intrudesPreviousBlock,
+        intrudesNextBlock,
+        semanticContainmentDecision: semanticContainmentOk ? 'PASS' : 'FAIL',
         /** §七 — the CURRENT-TRANSACTION drift count (acceptance readout). */
         paintDriftCurrentTx: this.docSpaceCarrierPaintDriftCurrentTx,
         visualCarrierPresent: true,
@@ -6622,9 +6760,11 @@ export class DocumentUtilityOverlayHost {
         decision: consistent ? 'PASS' : 'FAIL',
         reason: !geometryOk
           ? 'GAP_BAND_OVERHANGS_LIVE_CONTENT_COLUMN'
-          : gapRect
-            ? (gapSeverity === 'warning' ? 'GAP_UNIFIED_VISUAL_COMMIT_CONSISTENT' : 'GAP_SEVERITY_MISMATCH')
-            : 'GAP_UNIFIED_VISUAL_COMMIT_MISSING_RECT',
+          : !semanticContainmentOk
+            ? 'BLANK_CARRIER_INTRUDES_ADJACENT_PROSE'
+            : gapRect
+              ? (gapSeverity === 'warning' ? 'GAP_UNIFIED_VISUAL_COMMIT_CONSISTENT' : 'GAP_SEVERITY_MISMATCH')
+              : 'GAP_UNIFIED_VISUAL_COMMIT_MISSING_RECT',
       })
     }
   }
@@ -12149,7 +12289,11 @@ export class DocumentUtilityOverlayHost {
     }
     if (!frame?.hasCommitted()) return
     const region = this.resolveLocateFrameClipRegion()
-    frame.reposition({ clipRect: region.unobscured, drawerRect: region.drawer, headless: isHeadlessTestRuntime(), scroll: scrollRepaint })
+    // ROOT_CODE_CARRIER_CONTENT_COLUMN — hand the LIVE content column to the
+    // controller so the outer gap is clamped (a pure SCROLL repaint reuses the
+    // frozen topology, so the extra measurement is only taken on re-derive).
+    const contentColumnRect = scrollRepaint ? null : this.measureSemanticContentColumnRect()
+    frame.reposition({ clipRect: region.unobscured, drawerRect: region.drawer, headless: isHeadlessTestRuntime(), scroll: scrollRepaint, contentColumnRect })
     // V5.5 — keep the first/commit baseline so the first scroll drift is
     // measured against the freshly committed geometry, never a stale value.
     if (!isHeadlessTestRuntime()) {
@@ -12416,6 +12560,22 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * ROOT_BLANK_SOURCE_AUTHORITY §2.2 —— ONE bounded recovery when the internal
+   * blank-line SOURCE count is missing. It NEVER substitutes the rendered row count;
+   * it asks the diagnostics authority for exactly ONE re-parse per source revision
+   * (no polling, no per-frame recompute) and reports `UNRESOLVED_SOURCE` until the
+   * fresh revision arrives.
+   */
+  private requestBoundedInternalBlankReparse(reason: string): void {
+    const revision = this.snapshot?.sourceRevision ?? -1
+    if (revision === this.lastInternalBlankReparseRevision) return
+    this.lastInternalBlankReparseRevision = revision
+    try {
+      this.diagnostics.recompute(reason)
+    } catch { /* bounded best-effort: never rethrow into the paint path */ }
+  }
+
+  /**
    * Presentation Stability Closure V1 §6/§7/§8/§9/§10/§11 — paint the ONE
    * BLOCK-GAP visual: a Warning rail + a faint Warning gap background strictly
    * INSIDE the blank run between the two sibling content blocks.
@@ -12442,6 +12602,10 @@ export class DocumentUtilityOverlayHost {
     const headless = isHeadlessTestRuntime()
     // §12 — a stale carrier must never survive a new locate.
     this.removeBlockGapVisual()
+    // ROOT_BLANK_LAYOUT_REDERIVE §3.1 — keep this channel's OWN inputs past the
+    // transaction (AFTER the removal above) so the layout-invalidation branch can
+    // re-derive the band from the LIVE boundary blocks.
+    this.locateCommittedBlockGapInputs = { diagId, severity, diag, element: preferredNextElement }
     // §18 — the gap carrier lives in the locate DOCUMENT layer; ensure it exists
     // BEFORE measuring the document host rect (a null host produced gapTop=null).
     this.ensureLocateDocumentLayer()
@@ -12736,14 +12900,30 @@ export class DocumentUtilityOverlayHost {
     })
     const fragmentCount = fragmentGeometry.fragments.length
     const renderedRowUnion = renderedBlankRowUnion(localRowRects.map(rect => ({ rect })))
-    // §26 — register the RENDERED count the Drawer projection consults (keyed by
-    // the gap's stable identity). NEVER the source count; absent → PENDING copy.
+    // §26/§2.2 —— register the count the Drawer projection consults (keyed by the gap's
+    // stable identity). The ONE business authority is the MARKDOWN SOURCE count.
+    // When it is MISSING the entry is NEVER derived from the rendered row count:
+    // the source is marked UNRESOLVED, ONE bounded re-parse is requested, and nothing
+    // is registered (so no warning / copy / severity can be invented from the DOM).
     const gapTargetIdentity = `blank-gap:${prevIdentity}>>${nextIdentity}`
-    if (renderedBlankRows.decision === 'VERIFIED' && renderedRowCount > 0) {
+    if (actualBlankLines == null) {
+      this.renderedBlankRowAuthority.delete(gapTargetIdentity)
+      this.requestBoundedInternalBlankReparse('INTERNAL_BLANK_LINE_SOURCE_UNRESOLVED')
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLANK-SOURCE-UNRESOLVED', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        diagnosticId: diagId,
+        targetKey: gapTargetIdentity,
+        sourceCountAuthority: 'UNRESOLVED_SOURCE',
+        renderedRowCount,
+        renderedMismatchExpected: true,
+        sourceRevision: this.snapshot?.sourceRevision ?? null,
+        decision: 'UNRESOLVED_SOURCE',
+      })
+    } else if (renderedBlankRows.decision === 'VERIFIED' && renderedRowCount > 0) {
       this.renderedBlankRowAuthority.set(gapTargetIdentity, {
         renderedBlankRowCount: renderedRowCount,
-        displayDetail: internalBlankLineDetail(renderedRowCount),
-        warning: renderedRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+        displayDetail: internalBlankLineDetail(actualBlankLines),
+        warning: actualBlankLines >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
         layoutEpoch: this.currentDocumentLayoutEpoch,
       })
     } else {
@@ -13237,7 +13417,16 @@ export class DocumentUtilityOverlayHost {
       renderedBlankRows: renderedBlankRows.rows.map(r => ({ index: r.index, rect: r.rect, physicalVerified: r.physicalVerified, editableVerified: r.editableVerified, pluginOwned: r.pluginOwned })),
       displayedBlankRowCount: renderedRowCount,
       threshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
-      warningDecision: renderedRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold ? 'WARNING' : 'PASS',
+      allowMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+      // §2.2 — the business decision is the SOURCE count ONLY. A missing source fact is
+      // `UNRESOLVED_SOURCE`, never a rendered-count-derived WARNING.
+      sourceCountAuthority: actualBlankLines == null ? 'UNRESOLVED_SOURCE' : 'SOURCE',
+      sourceCountValue: actualBlankLines,
+      renderedMismatchExpected: actualBlankLines != null && actualBlankLines !== renderedRowCount,
+      warningDecision: actualBlankLines == null
+        ? 'UNRESOLVED_SOURCE'
+        : (actualBlankLines >= INTERNAL_BLANK_LINE_POLICY.warningThreshold ? 'WARNING' : 'PASS'),
+      renderedRowWarningDecision: renderedRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold ? 'WARNING' : 'PASS',
       scrollTargetKind: this.blockGapScrollTargetRect ? RENDERED_BLANK_GAP_SCROLL_TARGET : null,
       scrollTargetCenterY: this.blockGapScrollTargetRect
         ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2 : null,
@@ -14572,6 +14761,9 @@ export class DocumentUtilityOverlayHost {
       preciseRect,
       forceInlineMark: forceInline,
       captionHostRect: captionHostRect,
+      // ROOT_CODE_CARRIER_CONTENT_COLUMN — the outer frame gap is clamped to the
+      // LIVE content column so a full-width carrier never paints past the column.
+      contentColumnRect: this.measureSemanticContentColumnRect(),
       // V5.12-R2 §10 (runtime closure) — hand the controller the EXACT source
       // token so a wrapped destination is painted as one fragment per visual
       // line instead of a block-sized union rectangle.
@@ -17540,11 +17732,20 @@ export class DocumentUtilityOverlayHost {
         // real editor-geometry change must RE-DERIVE the band from the LIVE boundary
         // blocks, exactly like the click path does (idempotent; live-measured).
         if (this.isBlockGapVisualActive()) {
+          // ROOT_BLANK_LAYOUT_REDERIVE §3.1/§5 — the BLOCK-GAP channel's OWN committed
+          // inputs first. The generic `lastLocateVisualInputs` guard could be null for
+          // this channel, which left the band frozen at its commit-time width (a
+          // measured 140.6px overhang past the live content column during a sidebar
+          // drag). The band is re-derived from the LIVE boundary blocks every pass.
+          const bg = this.locateCommittedBlockGapInputs
           const inputs = this.lastLocateVisualInputs
-          if (inputs?.diag != null) {
+          const bgDiag = bg?.diag ?? inputs?.diag ?? null
+          if (bgDiag != null) {
             this.commitBlockGapVisual(
-              inputs.diagId, inputs.severity, inputs.diag,
-              inputs.result?.element ?? inputs.resolvedPrimary ?? null,
+              bg?.diagId ?? inputs?.diagId ?? null,
+              bg?.severity ?? inputs?.severity ?? 'warning',
+              bgDiag,
+              bg?.element ?? inputs?.result?.element ?? inputs?.resolvedPrimary ?? null,
             )
           }
         }

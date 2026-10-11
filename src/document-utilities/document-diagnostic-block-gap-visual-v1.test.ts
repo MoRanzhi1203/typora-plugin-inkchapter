@@ -8,6 +8,7 @@ import {
   createBlockGapVisualV1Counters,
   createBlockGapVisualV1Coverage,
   evaluateBlockGapVisualV1Gates,
+  evaluateBlankCarrierContainment,
   formatBlockGapVisualV1CoverageReport,
   formatBlockGapVisualV1GateReport,
   isBlockGapGeometryValid,
@@ -16,6 +17,43 @@ import {
   collectDocumentBlockGaps,
   internalBlankGapIdentity,
 } from './document-diagnostic-internal-blank-lines-v1'
+
+// ── ROOT_BLANK_SEMANTIC_CONTAINMENT §二/§三 — independent containment ──────
+describe('空白载体「独立语义包含」权威 — 不侵入相邻正文', () => {
+  const prev = { top: 536.4, bottom: 562.0 }
+  const next = { top: 613.2, bottom: 638.8 }
+
+  it('载体落在 gap 内 → PASS，无外溢', () => {
+    const r = evaluateBlankCarrierContainment({ paintedRect: { top: 574.8, bottom: 600.8 }, previousBlockRect: prev, nextBlockRect: next })
+    expect(r.decision).toBe('PASS')
+    expect(r.intrudesPreviousBlock).toBe(false)
+    expect(r.intrudesNextBlock).toBe(false)
+    expect(r.overshootTopPx).toBe(0)
+    expect(r.overshootBottomPx).toBe(0)
+  })
+
+  it('载体上溢侵入上一块 → FAIL（自引用 fragment 审计看不见这种越界）', () => {
+    const r = evaluateBlankCarrierContainment({ paintedRect: { top: 540.0, bottom: 600.8 }, previousBlockRect: prev, nextBlockRect: next })
+    expect(r.decision).toBe('FAIL')
+    expect(r.intrudesPreviousBlock).toBe(true)
+    expect(r.overshootTopPx).toBeCloseTo(22.0, 1)
+  })
+
+  it('载体下溢侵入下一块 → FAIL', () => {
+    const r = evaluateBlankCarrierContainment({ paintedRect: { top: 574.8, bottom: 625.0 }, previousBlockRect: prev, nextBlockRect: next })
+    expect(r.decision).toBe('FAIL')
+    expect(r.intrudesNextBlock).toBe(true)
+  })
+
+  it('1px 容差内的贴合不算侵入（DPR/四舍五入）', () => {
+    const r = evaluateBlankCarrierContainment({ paintedRect: { top: 561.2, bottom: 613.8 }, previousBlockRect: prev, nextBlockRect: next })
+    expect(r.decision).toBe('PASS')
+  })
+
+  it('缺少边界块 → 不判定（PASS，但无证据）', () => {
+    expect(evaluateBlankCarrierContainment({ paintedRect: { top: 0, bottom: 10 }, previousBlockRect: null, nextBlockRect: null }).decision).toBe('PASS')
+  })
+})
 
 const rect = (left: number, top: number, right: number, bottom: number) => ({
   left, top, right, bottom, width: right - left, height: bottom - top,
