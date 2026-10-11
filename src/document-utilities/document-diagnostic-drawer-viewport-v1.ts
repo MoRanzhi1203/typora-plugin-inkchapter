@@ -6,21 +6,28 @@
  *   EDITOR_SCROLL_OWNER            — the editor locate may scroll freely;
  *   DIAGNOSTICS_DRAWER_SCROLL_OWNER— a diagnostic click may NEVER move it.
  *
- * The Drawer update lifecycle is split into exactly two modes (§5/§6/§10):
- *   ACTIVE_PATCH      — the row SET is unchanged (first click / deactivate /
- *                       A→B switch / locate completion / lease / active visual
- *                       commit). It may ONLY toggle active state on the EXISTING
- *                       row nodes: no `replaceChildren`, no `innerHTML`, no
- *                       re-created rows, no scroll write.
- *   STRUCTURAL_RENDER — the row set really changed (diagnostic add/remove, order,
- *                       filter, document switch, first open). It MAY rebuild the
- *                       list, but MUST capture the viewport first and restore the
- *                       visible anchor (+ offset) afterwards.
+ * The Drawer update lifecycle is split into exactly THREE modes (§5/§6/§10):
+ *   ACTIVE_PATCH      — the row SET and every row's DISPLAYED CONTENT are unchanged
+ *                       (first click / deactivate / A→B switch / locate completion /
+ *                       lease / active visual commit). It may ONLY toggle active
+ *                       state on the EXISTING row nodes: no `replaceChildren`, no
+ *                       `innerHTML`, no re-created rows, no scroll write.
+ *   CONTENT_UPDATE    — the row SET (ids + order + severity) is UNCHANGED, but a
+ *                       row's DISPLAYED content changed (detail / title / suggestion /
+ *                       visibleBlankLineCount). The list MUST NOT be rebuilt; only
+ *                       the EXISTING rows' text nodes are refreshed in place (scroll,
+ *                       selection and active markers are preserved). Classifying
+ *                       this as ACTIVE_PATCH was the bug: the data updated but the
+ *                       Drawer text stayed stale.
+ *   STRUCTURAL_UPDATE — the row set really changed (diagnostic add/remove, order,
+ *                       severity, filter, document switch, first open). It MAY
+ *                       rebuild the list, but MUST capture the viewport first and
+ *                       restore the visible anchor (+ offset) afterwards.
  *
  * Pure: no DOM. The overlay measures the REAL facts and feeds them here.
  */
 
-export type DrawerUpdateMode = 'ACTIVE_PATCH' | 'STRUCTURAL_RENDER'
+export type DrawerUpdateMode = 'ACTIVE_PATCH' | 'CONTENT_UPDATE' | 'STRUCTURAL_UPDATE'
 
 /** §11 — the captured Drawer viewport. */
 export interface DrawerViewportState {
@@ -46,6 +53,11 @@ export const DRAWER_VIEWPORT_V1_GATE_KEYS = [
   'drawerFocusCausedScroll',
   'drawerStructuralRenderWithoutViewportCapture',
   'drawerStructuralRenderViewportRestoreFail',
+  // §6 (content consistency) — the ACTUAL rendered Drawer text must state the
+  // CURRENT diagnostic's visible count. Comparing internal objects only is NOT a
+  // PASS: the row's REAL DOM text is read back and matched.
+  'drawerRowDisplayedCountMismatch',
+  'drawerRowContentStaleAfterContentChange',
 ] as const
 
 export type DrawerViewportV1GateKey = typeof DRAWER_VIEWPORT_V1_GATE_KEYS[number]
@@ -62,8 +74,10 @@ export const DRAWER_VIEWPORT_V1_GATE_LABELS: Readonly<Record<DrawerViewportV1Gat
   drawerClickedRowRemountOnActiveClick: 'DRAWER_CLICKED_ROW_REMOUNT_ON_ACTIVE_CLICK_COUNT',
   drawerActiveStateRowHeightChange: 'DRAWER_ACTIVE_STATE_ROW_HEIGHT_CHANGE_COUNT',
   drawerFocusCausedScroll: 'DRAWER_FOCUS_CAUSED_SCROLL_COUNT',
-  drawerStructuralRenderWithoutViewportCapture: 'DRAWER_STRUCTURAL_RENDER_WITHOUT_VIEWPORT_CAPTURE_COUNT',
-  drawerStructuralRenderViewportRestoreFail: 'DRAWER_STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL_COUNT',
+  drawerStructuralRenderWithoutViewportCapture: 'DRAWER_STRUCTURAL_UPDATE_WITHOUT_VIEWPORT_CAPTURE_COUNT',
+  drawerStructuralRenderViewportRestoreFail: 'DRAWER_STRUCTURAL_UPDATE_VIEWPORT_RESTORE_FAIL_COUNT',
+  drawerRowDisplayedCountMismatch: 'DRAWER_ROW_DISPLAYED_COUNT_MISMATCH_COUNT',
+  drawerRowContentStaleAfterContentChange: 'DRAWER_ROW_CONTENT_STALE_AFTER_CONTENT_CHANGE_COUNT',
 }
 
 export type DrawerViewportV1Counters = Record<DrawerViewportV1GateKey, number>
@@ -111,11 +125,23 @@ export function formatDrawerViewportV1CoverageReport(
   return DRAWER_VIEWPORT_V1_COVERAGE_KEYS.map(k => `${k}=${counters[k] ?? 0}`)
 }
 
-// ── §10/§16 — STRUCTURAL_RENDER decision ───────────────────────────────────
+// ── §10/§16 — STRUCTURAL_UPDATE decision ───────────────────────────────────
 
 export interface DrawerStructureFacts {
-  /** ordered visible projection keys (`<diagnosticId>#<targetIndex>#<severity>#<contentHash>`). */
-  projectionSignature: string
+  /**
+   * §16 — the STABLE structure signature: the ordered visible rows as
+   * `<diagnosticId>#<targetIndex>#<severity>` plus documentKey/filter/sort/type/group.
+   * It NEVER contains displayed text, so a pure content change is NOT a structure
+   * change (and must not rebuild the list).
+   */
+  structureSignature: string
+  /**
+   * §6 — the DISPLAYED-content signature: `<diagnosticId>#<targetIndex>#<displayedText>`
+   * for every row, where `displayedText` is EXACTLY what the row renders (title +
+   * description / visible count). A change here with an unchanged structure is a
+   * CONTENT_UPDATE.
+   */
+  contentSignature: string
   documentKey: string | null
   filter: string
   /** the LIST really holds rows for the previous signature. */
@@ -123,18 +149,27 @@ export interface DrawerStructureFacts {
 }
 
 /**
- * §5/§6/§16 — the ONE structural-render decision. When the projection signature
- * (row set + order + content) is unchanged AND the list already holds rows, the
- * update is an ACTIVE_PATCH — the list must NOT be rebuilt.
+ * §5/§6/§16 — the ONE three-way update decision.
+ *   · structure changed (or no previous render / empty list) → STRUCTURAL_UPDATE;
+ *   · structure SAME but the displayed content changed          → CONTENT_UPDATE;
+ *   · both SAME                                                 → ACTIVE_PATCH.
+ * A pure content change (detail/title/visible count) is NEVER collapsed into
+ * ACTIVE_PATCH: the Drawer text MUST be refreshed even when the row set is identical.
  */
 export function resolveDrawerUpdateMode(input: {
-  previousSignature: string | null
+  previousStructureSignature: string | null
+  previousContentSignature: string | null
   facts: DrawerStructureFacts
 }): { mode: DrawerUpdateMode; reason: string } {
-  if (!input.facts.listHasRows) return { mode: 'STRUCTURAL_RENDER', reason: 'LIST_EMPTY_FIRST_RENDER' }
-  if (input.previousSignature == null) return { mode: 'STRUCTURAL_RENDER', reason: 'NO_PREVIOUS_RENDER' }
-  if (input.previousSignature !== input.facts.projectionSignature) {
-    return { mode: 'STRUCTURAL_RENDER', reason: 'PROJECTION_SET_CHANGED' }
+  if (!input.facts.listHasRows) return { mode: 'STRUCTURAL_UPDATE', reason: 'LIST_EMPTY_FIRST_RENDER' }
+  if (input.previousStructureSignature == null || input.previousContentSignature == null) {
+    return { mode: 'STRUCTURAL_UPDATE', reason: 'NO_PREVIOUS_RENDER' }
+  }
+  if (input.previousStructureSignature !== input.facts.structureSignature) {
+    return { mode: 'STRUCTURAL_UPDATE', reason: 'PROJECTION_STRUCTURE_CHANGED' }
+  }
+  if (input.previousContentSignature !== input.facts.contentSignature) {
+    return { mode: 'CONTENT_UPDATE', reason: 'PROJECTION_CONTENT_CHANGED' }
   }
   return { mode: 'ACTIVE_PATCH', reason: 'PROJECTION_SET_UNCHANGED' }
 }
@@ -214,7 +249,7 @@ export function evaluateDrawerActiveClickFacts(facts: DrawerActiveClickFacts): P
   const out: Partial<DrawerViewportV1Counters> = {}
   const scrollDrift = Math.abs(facts.scrollTopAfter - facts.scrollTopBefore)
   // §16 — an active-only change must NEVER be a structural render.
-  if (facts.updateMode === 'STRUCTURAL_RENDER') {
+  if (facts.updateMode === 'STRUCTURAL_UPDATE') {
     out.drawerStructuralRerenderOnActiveOnlyChange = 1
   }
   // §2 — the Drawer scrollTop must not move on any diagnostic click.
