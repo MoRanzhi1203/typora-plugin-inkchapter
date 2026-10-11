@@ -490,18 +490,20 @@ function nextBlockAnchorText(
 }
 
 /**
- * §7/§8/§10/§11/§12/§13/§14/§15 — the ONE source-only BLOCK GAP analyzer.
- *
- * Returns every gap (>= 1 blank line) between two sibling content blocks, in
- * document order. EOF / leading blank runs are structurally excluded here (the
- * EOF rules own the former; this rule owns neither).
+ * §7/§8.1 — the shared SOURCE run index. BOTH the block-gap analyzer and the
+ * Drawer's SOURCE POSITION authority consume THIS ONE computation, so the
+ * SOURCE-side `block:<kind>:<ordinal>` space can never diverge between them.
  */
-export function collectDocumentBlockGaps(markdown: string | null | undefined): DocumentBlockGap[] {
-  if (markdown == null) return []
+interface SourceRunsIndex {
+  lines: SourceLine[]
+  classOf: LineClassification[]
+  runs: Array<{ start: number; end: number }>
+  canonicalOrdinalOf: Array<number | null>
+}
+
+function buildSourceRunsIndex(markdown: string): SourceRunsIndex {
   const { lines, classOf } = classifyLines(markdown)
   const n = lines.length
-  if (n === 0) return []
-
   // Block extents: maximal non-blank content runs separated by GAP runs.
   const runs: Array<{ start: number; end: number }> = []
   let i = 0
@@ -511,10 +513,8 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     while (i < n && !classOf[i].blank) i++
     runs.push({ start, end: i - 1 })
   }
-
   // ── TRAE §7/§8.1 — the canonical `block:<kind>:<ordinal>` ordinal of each run:
-  // the document-order index among runs of the SAME canonical object kind. This is
-  // the SOURCE-side counterpart of the diagnostics authority's canonical identity.
+  // the document-order index among runs of the SAME canonical object kind.
   const runKindOf = (r: number): DocumentBlockKind => classOf[runs[r].start].kind
   const canonicalOrdinalOf: Array<number | null> = []
   const canonicalCounters = new Map<CanonicalGapBoundaryKind, number>()
@@ -522,9 +522,8 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     const ck = canonicalGapBoundaryKind(runKindOf(r))
     if (ck == null) { canonicalOrdinalOf.push(null); continue }
     // TRAE §7 — a run that CONTINUES the same canonical source block keeps the
-    // previous ordinal instead of consuming a new one: an empty fence's interior
-    // blank line splits it into two runs, but BOTH are the SAME `pre.md-fences`
-    // and therefore the SAME `block:code:<ordinal>`.
+    // previous ordinal: an empty fence's interior blank line splits it into two
+    // runs, but BOTH are the SAME `pre.md-fences` → SAME `block:code:<ordinal>`.
     const continuesSameBlock = r > 0
       && runs[r - 1].end === runs[r].start - 2
       && classOf[runs[r].start - 1]?.protectedRegion != null
@@ -537,6 +536,77 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     canonicalCounters.set(ck, ordinal + 1)
     canonicalOrdinalOf.push(ordinal)
   }
+  return { lines, classOf, runs, canonicalOrdinalOf }
+}
+
+/**
+ * SORT-P0 §4 — the SOURCE POSITION of every canonical object boundary
+ * (`block:code:<n>` / `block:table:<n>` / `block:formula:<n>`) → its 0-based
+ * START source line.
+ *
+ * The Drawer ordering authority consumes this so a code / table / formula
+ * diagnostic orders on its REAL SOURCE line, even when Typora renders the
+ * object element WITHOUT a `data-line` attribute (a `<pre class="md-fences">`
+ * is not guaranteed to carry one). It NEVER fabricates a position: an object
+ * that the source scan does not recognize simply has no entry.
+ */
+export function collectCanonicalSourceObjectLines(
+  markdown: string | null | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  if (markdown == null) return out
+  const { classOf, runs, canonicalOrdinalOf } = buildSourceRunsIndex(markdown)
+  for (let r = 0; r < runs.length; r++) {
+    const ck = canonicalGapBoundaryKind(classOf[runs[r].start].kind)
+    const ordinal = canonicalOrdinalOf[r]
+    if (ck == null || ordinal == null) continue
+    const key = `block:${ck}:${ordinal}`
+    if (!out.has(key)) out.set(key, runs[r].start)
+  }
+  return out
+}
+
+/**
+ * SORT-P0 §4 — the SOURCE START LINE of every ATX heading, in document order.
+ * Index `i` here is the SAME heading index `headingIndexOfStableIdentity`
+ * returns, so a heading diagnostic orders on its real source line even when its
+ * canonical `stableIdentity` cannot be resolved against the live DOM.
+ */
+export function collectSourceHeadingLines(markdown: string | null | undefined): number[] {
+  if (markdown == null) return []
+  const lines = splitSourceLines(markdown)
+  const out: number[] = []
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  for (const line of lines) {
+    const fence = FENCE_RE.exec(line.text)
+    if (fence) {
+      const char = fence[1][0]
+      const len = fence[1].length
+      if (!inFence) { inFence = true; fenceChar = char; fenceLen = len; continue }
+      if (char === fenceChar && len >= fenceLen) { inFence = false; continue }
+      continue
+    }
+    if (inFence) continue
+    if (ATX_RE.test(line.text)) out.push(line.index)
+  }
+  return out
+}
+
+/**
+ * §7/§8/§10/§11/§12/§13/§14/§15 — the ONE source-only BLOCK GAP analyzer.
+ *
+ * Returns every gap (>= 1 blank line) between two sibling content blocks, in
+ * document order. EOF / leading blank runs are structurally excluded here (the
+ * EOF rules own the former; this rule owns neither).
+ */
+export function collectDocumentBlockGaps(markdown: string | null | undefined): DocumentBlockGap[] {
+  if (markdown == null) return []
+  const { lines, classOf, runs, canonicalOrdinalOf } = buildSourceRunsIndex(markdown)
+  const n = lines.length
+  if (n === 0) return []
+  const runKindOf = (r: number): DocumentBlockKind => classOf[runs[r].start].kind
 
   // §20 — the stable block identity. TRAE §3/§7 — a CANONICAL object boundary
   // (code / table / formula) is identified by its canonical `block:<kind>:<ordinal>`

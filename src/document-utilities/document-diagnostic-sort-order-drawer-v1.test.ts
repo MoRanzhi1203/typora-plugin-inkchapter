@@ -11,10 +11,18 @@
  *     activates a locate.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+
+/** The REAL reproduction document (read-only; never modified). */
+const REPRO_MD = readFileSync(
+  resolve(process.cwd(), 'test/vault/runtime/smoke/Document-Diagnostics-Block-Gap-Presentation-Extent-Test.md'),
+  'utf8',
+)
 
 // ── rAF / geometry stubs ────────────────────────────────────────────────────
 
@@ -53,12 +61,12 @@ function stubRangeRects(rects: Rect[]): void {
   ;(document as unknown as { createRange: () => unknown }).createRange = () => fake
 }
 
-function fakeContext(): DocumentUtilitiesContext {
+function fakeContext(markdown = '# t'): DocumentUtilitiesContext {
   return {
     authority: {
       getActiveFilePath: () => '/vault/doc.md',
       getDocumentKey: () => 'doc:key',
-      getMarkdown: () => '# t',
+      getMarkdown: () => markdown,
       isStrictMode: () => true,
       vaultRoot: '/vault',
       getCanonicalDuplicateIdentities: () => [],
@@ -82,7 +90,14 @@ function fakeProviders(): DocumentDiagnosticsProviders {
   }
 }
 
-type Internals = { renderDrawer(): void; openDrawer(filter?: string): void }
+type Internals = {
+  renderDrawer(): void
+  openDrawer(filter?: string): void
+  locateDiagnostic(id: string, targetIndex?: number): void
+}
+type HostApi = {
+  getDiagnosticInteractionStateV2(): { phase: string; diagnosticId: string | null; diagnosticTargetIndex: number | null }
+}
 
 let host: DocumentUtilityOverlayHost | null = null
 let infoSpy: { mockRestore: () => void } | null = null
@@ -120,7 +135,7 @@ afterEach(() => {
 
 // ── world: a #write root with headings + a code block + a table ─────────────
 
-function makeWorld(): DocumentUtilityOverlayHost {
+function makeWorld(opts: { markdown?: string; fenceDataLine?: string | null } = {}): DocumentUtilityOverlayHost {
   const shell = document.createElement('div')
   shell.style.cssText = 'position:relative;overflow-y:auto;'
   stubRect(shell, () => ({ left: 0, top: 0, right: 1200, bottom: 800 }))
@@ -134,7 +149,10 @@ function makeWorld(): DocumentUtilityOverlayHost {
   h1.setAttribute('data-id', 'H-0'); h1.setAttribute('data-line', '2'); h1.textContent = '标题'
   write.appendChild(h1)
   const fence = document.createElement('pre')
-  fence.className = 'md-fences'; fence.setAttribute('data-line', '10'); fence.textContent = 'x'
+  fence.className = 'md-fences'; fence.textContent = 'x'
+  // Typora does NOT guarantee `data-line` on a code fence — the repro case
+  // relies on the SOURCE-side fallback, so allow it to be ABSENT here.
+  if (opts.fenceDataLine !== null) fence.setAttribute('data-line', opts.fenceDataLine ?? '10')
   write.appendChild(fence)
   const table = document.createElement('table')
   table.setAttribute('data-line', '20'); write.appendChild(table)
@@ -145,7 +163,7 @@ function makeWorld(): DocumentUtilityOverlayHost {
     stubRect(el, () => ({ left: 100, top: 200, right: 700, bottom: 240 }))
   }
 
-  const h = new DocumentUtilityOverlayHost({ ctx: fakeContext(), providers: fakeProviders() })
+  const h = new DocumentUtilityOverlayHost({ ctx: fakeContext(opts.markdown), providers: fakeProviders() })
   h.mount()
   return h
 }
@@ -181,15 +199,43 @@ function sortScenario(): Array<Record<string, unknown>> {
   ]
 }
 
-async function openWith(diags: Array<Record<string, unknown>>): Promise<DocumentUtilityOverlayHost> {
-  const h = makeWorld()
+async function openWith(
+  diags: Array<Record<string, unknown>>,
+  worldOpts: { markdown?: string; fenceDataLine?: string | null } = {},
+): Promise<DocumentUtilityOverlayHost> {
+  const h = makeWorld(worldOpts)
   inject(h, diags)
   ;(h as unknown as Internals).openDrawer('all')
   await flushRaf()
   return h
 }
 
+/** The REAL repro document's three diagnostics (source lines from the source scan). */
+function reproScenario(): Array<Record<string, unknown>> {
+  const base = { domain: 'document', documentKey: 'doc:key', detail: '' }
+  return [
+    { ...base, id: 'blank', severity: 'warning', category: 'document', code: 'EXCESSIVE_INTERNAL_BLANK_LINES', message: '连续空行过多', location: { kind: 'source-range', startLine: 20, startColumn: 0 } },
+    { ...base, id: 'image', severity: 'warning', category: 'figure', code: 'FIGURE_LOCAL_IMAGE_MISSING', message: '本地图片不存在', location: { kind: 'figure-occurrence', startLine: 14, startColumn: 0, rangeRole: 'figure-destination', occurrenceIdentity: { documentKey: 'doc:key', sourceRevision: 1, sourceBlockIdentity: 'src-block:14', sourceBlockOrdinal: 0, tokenStart: 0, tokenEnd: 10, rawLineOrdinal: 0, occurrenceWithinLine: 0, destination: 'missing-assets/x.png' }, resourceKind: 'image', canonicalDestination: 'missing-assets/x.png', rawDestination: 'missing-assets/x.png', occurrenceIndex: 0, rawLineOrdinal: 0, occurrenceWithinLine: 0, sourceStart: 0, sourceEnd: 10, sourceRangeIdentity: null } },
+    { ...base, id: 'code', severity: 'warning', category: 'code', code: 'CODE_MISSING_NAME', message: '代码块缺少名称', location: { kind: 'block-node', blockKind: 'code', stableIdentity: 'block:code:0' } },
+  ]
+}
+
 // ── SORT at the Drawer level ────────────────────────────────────────────────
+
+describe('Drawer SORT — the REAL reproduction document', () => {
+  it('orders CODE_MISSING_NAME → 图片不存在 → EXCESSIVE_INTERNAL_BLANK_LINES', async () => {
+    // The fence carries NO data-line (the real Typora case) → the SOURCE-side
+    // fallback must supply the code block's real source line.
+    host = await openWith(reproScenario(), { markdown: REPRO_MD, fenceDataLine: null })
+    expect(rowIds()).toEqual(['code', 'image', 'blank'])
+  })
+
+  it('the code row is FIRST even though its DOM element has no data-line', async () => {
+    host = await openWith(reproScenario(), { markdown: REPRO_MD, fenceDataLine: null })
+    expect(rowIds()[0]).toBe('code')
+    expect(rowIds()[rowIds().length - 1]).toBe('blank')
+  })
+})
 
 describe('Drawer SORT — the rendered row order follows the source position', () => {
   it('orders heading(2) → code(10) → table(20) → blank(25) → heading(30) → eof', async () => {
@@ -256,5 +302,98 @@ describe('Drawer card — the 「详情」feature is fully removed', () => {
     expect(row.getAttribute('tabindex')).toBe('0')
     // the row itself is the locate target (no nested interactive control shadows it)
     expect(row.querySelector('button, a, [role="button"]')).toBeNull()
+  })
+})
+
+// ── 交互验收（Drawer 级：点击激活 / 排序·筛选·分组 / 动态更新） ──────────────
+// GUI 级点击在本环境不可达（Typora 抽屉是 Electron web DOM，UIA 不暴露、且无
+// 截图坐标可用），因此以同一套真实 Drawer 渲染管线做确定性交互验收。
+
+const internals = (h: DocumentUtilityOverlayHost): Internals => h as unknown as Internals
+const api = (): HostApi => host as unknown as HostApi
+const selectedIds = (): string[] =>
+  rows().filter(r => r.classList.contains('is-selected')).map(r => r.getAttribute('data-diagnostic-id') ?? '')
+const projectionIds = (): string[] => host!.getDrawerProjections().map(p => p.diagnosticId)
+const setSortMode = (mode: string): void => { (host as unknown as { drawerSortMode: string }).drawerSortMode = mode }
+const setTypeFilter = (f: string): void => { (host as unknown as { drawerTypeFilter: string }).drawerTypeFilter = f }
+const toggleGrouped = (): void => {
+  const h = host as unknown as { drawerGrouped: boolean }
+  h.drawerGrouped = !h.drawerGrouped
+}
+async function clickRow(id: string): Promise<void> {
+  internals(host!).locateDiagnostic(id, 0)
+  await flushRaf()
+}
+
+describe('Drawer 交互验收 — 点击激活与排序/筛选/分组协同', () => {
+  it('点击一行 → 该行 Active；再次点击 → 取消', async () => {
+    host = await openWith(sortScenario())
+    await clickRow('code')
+    expect(api().getDiagnosticInteractionStateV2().diagnosticId).toBe('code')
+    expect(selectedIds()).toEqual(['code'])
+    await clickRow('code')
+    expect(selectedIds()).toEqual([])
+  })
+
+  it('切换排序模式：行序改变、Active 诊断保持、无重复行', async () => {
+    host = await openWith(sortScenario())
+    await clickRow('code')          // a resolvable DOM target (block:code:0)
+    expect(selectedIds()).toEqual(['code'])
+
+    setSortMode('severity')
+    internals(host).renderDrawer()
+    await flushRaf()
+    // same set of diagnostics (no loss / duplication), order may change
+    expect(new Set(projectionIds()).size).toBe(projectionIds().length)
+    expect(new Set(projectionIds())).toEqual(new Set(['h1', 'code', 'table', 'blank', 'h2', 'eof']))
+    // the ACTIVE diagnostic survives a sort-mode change
+    expect(api().getDiagnosticInteractionStateV2().diagnosticId).toBe('code')
+    expect(selectedIds()).toEqual(['code'])
+    // and the painted rows still match the projection order
+    expect(rowIds()).toEqual(projectionIds())
+  })
+
+  it('类型筛选：只保留该类型、保序、Active 被筛掉时无选中', async () => {
+    host = await openWith(sortScenario())
+    await clickRow('code')          // code type
+    setTypeFilter('heading')
+    internals(host).renderDrawer()
+    await flushRaf()
+    expect(rowIds()).toEqual(['h1', 'h2'])          // order preserved within the type
+    expect(selectedIds()).toEqual([])                // active row filtered out
+    // back to all → the row set is restored in document order
+    setTypeFilter('all')
+    internals(host).renderDrawer()
+    await flushRaf()
+    expect(rowIds()).toEqual(['h1', 'code', 'table', 'blank', 'h2', 'eof'])
+  })
+
+  it('动态更新：空行后移后按新位置重排，且无残留/重复行', async () => {
+    host = await openWith(sortScenario())
+    expect(rowIds()).toEqual(['h1', 'code', 'table', 'blank', 'h2', 'eof'])
+    // a live edit moves the excess gap AFTER h2 (source line 40)
+    const moved = sortScenario().map(d =>
+      d.id === 'blank' ? { ...d, location: { kind: 'source-range', startLine: 40, startColumn: 0 } } : d)
+    inject(host, moved, 2)
+    internals(host).renderDrawer()
+    await flushRaf()
+    expect(rowIds()).toEqual(['h1', 'code', 'table', 'h2', 'blank', 'eof'])
+    expect(new Set(rowIds()).size).toBe(rowIds().length)   // no duplicated rows
+    expect(document.querySelectorAll('.inkchapter-doc-drawer__item').length).toBe(6)  // no residue
+  })
+
+  it('分组切换：出现分组头、组内顺序保持、诊断不丢失', async () => {
+    host = await openWith(sortScenario())
+    toggleGrouped()
+    internals(host).renderDrawer()
+    await flushRaf()
+    const headers = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__group-header'))
+    expect(headers.length).toBeGreaterThan(0)
+    // every diagnostic is still rendered exactly once
+    const ids = rowIds()
+    expect(new Set(ids).size).toBe(6)
+    expect(new Set(ids)).toEqual(new Set(['h1', 'code', 'table', 'blank', 'h2', 'eof']))
+    // the heading group keeps its document order
+    expect(ids.filter(id => id === 'h1' || id === 'h2')).toEqual(['h1', 'h2'])
   })
 })

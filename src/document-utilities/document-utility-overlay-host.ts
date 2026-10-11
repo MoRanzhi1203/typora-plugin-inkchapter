@@ -502,6 +502,7 @@ import {
   countDocumentOrderInversions,
   countMultiTargetGroupedInsteadOfPositionSorted,
   createDrawerOrderV514R1Counters,
+  documentPositionOf,
   evaluateDrawerOrderV514R1Gates,
   filterProjectionsBySeverity,
   flattenDiagnosticsToProjections,
@@ -580,6 +581,10 @@ import {
   protectedRegionKindAtLine,
   firstContentSourceLine,
   lastContentSourceLine,
+  // SORT-P0 §4 — the SOURCE-side canonical object / heading line authority the
+  // Drawer ordering uses as the fallback when the DOM carries no `data-line`.
+  collectCanonicalSourceObjectLines,
+  collectSourceHeadingLines,
   type DocumentBlockKind,
   type InternalBlankLineV1Counters,
   type InternalBlankLineV1Coverage,
@@ -3314,6 +3319,10 @@ export class DocumentUtilityOverlayHost {
     // warning-count parity witness at the SAME commit boundary that drives the
     // Toolbar projection (so the parity measurement is a real one).
     this.emitInternalBlankLineSourceAudit()
+    // SORT-P0 §7 — the REAL source-order audit at the SAME commit boundary,
+    // INDEPENDENT of whether the Drawer is open (so the rendered order can be
+    // verified without a GUI interaction).
+    this.emitSourceOrderAudit(this.buildDrawerProjections())
     this.checkInternalBlankLineToolbarParity(snapshot)
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
@@ -9080,6 +9089,8 @@ export class DocumentUtilityOverlayHost {
   private countersDrawerOrderV514R1 = createDrawerOrderV514R1Counters()
   /** V5.14-R1 §6 — the previous render's projections (order-drift detection). */
   private lastDrawerOrderProjections: DiagnosticTargetProjection[] = []
+  /** SORT-P0 — the last emitted SOURCE-ORDER-AUDIT signature (emit on change only). */
+  private lastSourceOrderSignature: string | null = null
   /** V5.14-R1 §33 — the SELECTED occurrence (stable across refreshes). */
   private lastLocatedTargetIndex: number | null = null
   /** V5.14-R1 §41 — Heading fill/chip snapshot gates. Every one must stay 0. */
@@ -9343,14 +9354,29 @@ export class DocumentUtilityOverlayHost {
       if (!m) return null
       return { kind: m[1] as 'figure' | 'table' | 'code' | 'formula', ordinal: Number.parseInt(m[2], 10) }
     }
+    // SORT-P0 §4 — the SOURCE-side fallback positions. Typora does NOT guarantee a
+    // `data-line` on every object element (a `<pre class="md-fences">` may carry
+    // none), so a code / table / formula diagnostic would otherwise have NO source
+    // line and sort last. The source scan assigns the REAL start line in the SAME
+    // `block:<kind>:<ordinal>` space (one authority, shared with the block-gap
+    // analyzer), and the heading index matches `headingIndexOfStableIdentity`.
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    const sourceObjectLines = collectCanonicalSourceObjectLines(markdown)
+    const sourceHeadingLines = collectSourceHeadingLines(markdown)
     return {
       headingIndexOfStableIdentity: id => (indexOf.has(id) ? indexOf.get(id)! : null),
       blockIndexOfStableIdentity: id => parseBlockIdentity(id)?.ordinal ?? null,
       lineOfStableIdentity: id => {
         const idx = indexOf.get(id)
-        if (idx != null) return sourceLineOfElement(headings[idx])
+        if (idx != null) {
+          return sourceLineOfElement(headings[idx]) ?? sourceHeadingLines[idx] ?? null
+        }
         const block = parseBlockIdentity(id)
-        if (block != null) return sourceLineOfElement(this.resolveBlockIdentity(block.kind, id))
+        if (block != null) {
+          const fromDom = sourceLineOfElement(this.resolveBlockIdentity(block.kind, id))
+          if (fromDom != null) return fromDom
+          return sourceObjectLines.get(id) ?? null
+        }
         return null
       },
     }
@@ -9576,6 +9602,55 @@ export class DocumentUtilityOverlayHost {
       layoutEpoch: a.layoutEpoch,
       documentKey: a.documentKey,
     }
+  }
+
+  /**
+   * SORT-P0 — the ONE Drawer SOURCE ORDER audit. Emitted at every structural
+   * render so the REAL rendered order can be verified against the real source
+   * positions: for every projection it records the diagnostic id / rule / source
+   * offset / source line / POSITION AUTHORITY (how the line was obtained) and the
+   * final sorted index. `decision=FAIL` whenever the rendered order is not
+   * monotonic in document position.
+   */
+  private emitSourceOrderAudit(projections: readonly DiagnosticTargetProjection[]): void {
+    // Emit only when the REAL order changes, so the audit is a signal (not noise).
+    const signature = projections.map(p => `${p.diagnosticId}#${p.targetIndex}@${p.sourceLine ?? 'n'}`).join('>')
+    if (signature === this.lastSourceOrderSignature) return
+    this.lastSourceOrderSignature = signature
+    const byId = new Map(this.documentDiagnostics().map(d => [d.id, d] as const))
+    const entries = projections.map((p, index) => {
+      const loc = byId.get(p.diagnosticId)?.location ?? null
+      let authority: string
+      if (loc?.kind === 'source-range') authority = 'source-range:startLine'
+      else if (loc?.kind === 'figure-occurrence') authority = 'figure-occurrence:startLine'
+      else if (loc?.kind === 'source-block') authority = 'source-block:startLine'
+      else if (loc?.kind === 'source-syntax-opener') authority = 'source-syntax-opener:sourceLine'
+      else if (loc?.kind === 'canonical-node') authority = p.sourceLine != null ? 'canonical-node:ctx-line' : 'canonical-node:UNRESOLVED'
+      else if (loc?.kind === 'block-node') authority = p.sourceLine != null ? 'block-node:ctx-line' : 'block-node:UNRESOLVED'
+      else if (loc?.kind === 'document-start') authority = 'document-start'
+      else if (loc?.kind === 'document-end') authority = 'document-end'
+      else authority = p.sourceLine != null ? 'other' : 'UNRESOLVED'
+      const pos = documentPositionOf(p)
+      return {
+        index, diagnosticId: p.diagnosticId, ruleId: p.ruleId, severity: p.severity,
+        locationKind: p.locationKind, stableIdentity: p.stableIdentity,
+        sourceLine: p.sourceLine, sourceColumn: p.sourceColumn, sourceStartOffset: p.sourceStartOffset,
+        canonicalHeadingIndex: p.canonicalHeadingIndex, canonicalBlockIndex: p.canonicalBlockIndex,
+        band: pos.band, key: pos.key, subKey: pos.subKey, positionAuthority: authority,
+      }
+    })
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-SOURCE-ORDER-AUDIT', {
+      documentKey: this.snapshot?.documentKey ?? null,
+      revision: this.snapshot?.revision ?? null,
+      sortMode: this.drawerSortMode,
+      filter: this.drawerFilter,
+      typeFilter: this.drawerTypeFilter,
+      grouped: this.drawerGrouped,
+      entryCount: entries.length,
+      entries,
+      decision: countDocumentOrderInversions(projections) === 0 ? 'PASS' : 'FAIL',
+      reason: 'SOURCE_POSITION_SORTED_DRAWER_ROWS',
+    })
   }
 
   /** The last synthetic EOF presentation facts (runtime verification helpers). */
@@ -20099,6 +20174,8 @@ export class DocumentUtilityOverlayHost {
     // preserve order (a filter never reorders survivors).
     const filtered = filterProjectionsByProblemType(severityFiltered, this.drawerTypeFilter)
     this.recordDrawerOrderFacts(projections, filtered)
+    // SORT-P0 §7 — the REAL source-order audit of the rendered order.
+    this.emitSourceOrderAudit(projections)
     this.measureTargetGroupDrawerFacts(projections, filtered)
     const structureSignature = this.computeDrawerStructureSignature(filtered)
     const listHasRows = this.drawerEl.querySelector('.inkchapter-doc-drawer__item[data-diagnostic-id]') != null
