@@ -1,7 +1,7 @@
 /**
  * Ribbon 可见性 —— 原生侧栏恢复的**纯状态助手**。
  *
- * 设计约束（见 docs/prompts/pending/TRAE-INKCHAPTER-TYPORA-FREEZE-RIBBON-RUNTIME-CLOSURE.md B1）：
+ * 设计约束（见 docs/modules/sidebar-integration.md「Ribbon 可见性」）：
  *  1. 墨章**只**写自己命名空间下的 `body.inkchapter-ribbon-hidden`；
  *  2. **绝不**写框架持有的 `body.typ-ribbon--enable`（原生切页栏与侧栏布局改由
  *     style.scss 在该框架类仍然存在时，用墨章命名空间的 CSS 恢复）；

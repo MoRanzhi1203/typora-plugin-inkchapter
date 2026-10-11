@@ -6,6 +6,14 @@
 >
 > 说明：2026-10-05 的整合轮次之后，项目**不再保留任何提示词 Markdown 文件**；本文件只保留历次清理的日期、数量与去向摘要，不再指向已删除文件路径。
 
+## 2026-10-11 — 遗留提示词二次清理（MERGE_THEN_DELETE）
+
+- 删除 `docs/prompts/pending/**` 16 个 + `runtime/smoke/TRAE-*.md` 3 个，共 19 个文件；`scripts/docs/verify-docs.mjs` 的 `PROMPT_MD_REMAINING_COUNT` 归零。
+- 有效结论并入 [../modules/document-utilities.md](../modules/document-utilities.md)、[../modules/document-diagnostics.md](../modules/document-diagnostics.md)、[../modules/sidebar-integration.md](../modules/sidebar-integration.md)。
+- 提示词路径引用改为指向 canonical 模块文档（`src/settings/ribbon-visibility.ts`、`runtime/evidence/R02-R05-MANUAL-CHECKLIST.md`）。
+- 外部备份：`D:\TyporaPluginProjects\_prompt-backups\inkchapter-doc-cleanup-<stamp>\`。
+- 逐条明细见 [prompt-consolidation-record.md](prompt-consolidation-record.md) §2026-10-11。
+
 ## 2026-10-05 — TRAE V3 文档诊断源码完整性（MERGE_THEN_DELETE）
 
 - 删除 `docs/prompts/pending/TRAE-DOCUMENT-DIAGNOSTICS-SYNTAX-FOOTNOTE-REFERENCE-FRONTMATTER-EXPANSION-V3.md`（1 个文件）。

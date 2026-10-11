@@ -15,6 +15,7 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage'])
 // Files that legitimately list deleted prompt paths as provenance.
 const PROVENANCE_FILES = new Set([
   'docs/maintenance/prompt-consolidation-record.md',
+  'docs/maintenance/prompt-cleanup-history.md',
 ])
 // The verifier itself must not be scanned (it embeds the patterns).
 const SKIP_FILES = new Set(['scripts/docs/verify-docs.mjs'])
@@ -55,12 +56,19 @@ function stripFences(text) {
   return text.replace(/```[\s\S]*?```/g, '').replace(/~~~[\s\S]*?~~~/g, '')
 }
 
+// A markdown example written INSIDE an inline code span (e.g. `` `[text](target)` ``)
+// is documentation, never a real link — strip inline code before the link scan.
+function stripInlineCode(text) {
+  return text.replace(/`[^`]*`/g, '')
+}
+
 const headingsByTitle = new Map()
 
 for (const rel of files) {
   const content = fs.readFileSync(path.join(root, rel), 'utf8')
   const dir = path.dirname(path.join(root, rel))
   const scan = stripFences(content)
+  const linkScan = stripInlineCode(scan)
 
   // Documentation files only for link/path/stale checks (fixtures legitimately
   // reference non-existent sample assets, so they are excluded).
@@ -79,9 +87,9 @@ for (const rel of files) {
   const isProvenance = PROVENANCE_FILES.has(rel)
 
   // 1) markdown links
-  const links = scan.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)
+  const links = linkScan.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)
   if (isDoc) for (const m of links) {
-    if (scan[m.index - 1] === '!') continue
+    if (linkScan[m.index - 1] === '!') continue
     let target = m[1]
     if (/…/.test(target)) continue
     const hash = target.indexOf('#')
@@ -111,6 +119,9 @@ for (const rel of files) {
       problems.push(`[stale-prompt-ref] ${rel} -> ${token}`)
       continue
     }
+    // A migration / cleanup record legitimately lists DELETED paths as provenance,
+    // so its path tokens are never existence-checked.
+    if (isProvenance) continue
     const isSrc = token.startsWith('src/')
     const isScript = token.startsWith('scripts/')
     const isFixture = token.startsWith('test/') || token.startsWith('runtime/')
