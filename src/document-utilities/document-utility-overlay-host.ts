@@ -833,9 +833,6 @@ import {
   inlineHintIsSafe,
   type InlinePresentationV514R5Counters,
 } from './document-diagnostic-inline-presentation-v514-r5'
-// Copy Authority V1 — the redundancy authority used by the Drawer card so a fix
-// advice that restates the description is never shown twice.
-import { isRedundantDiagnosticCopy } from './document-diagnostic-copy-v1'
 // V5.14-R6 §4/§5/§6/§15/§28/§29 — the ONE Heading Diagnostic SEMANTIC COVERAGE
 // model shared by the body passive marker, the body active emphasis and the
 // left-outline projection.
@@ -28469,21 +28466,10 @@ export class DocumentUtilityOverlayHost {
       : null
     const message = presentation?.drawerTitle ?? d?.message ?? p.ruleId
     const detailText = presentation?.drawerDetail ?? d?.detail ?? null
-    const suggestionText = presentation?.drawerSuggestion ?? null
-    // §1 — the card shows ONE complete description by default: the factual detail
-    // when present, otherwise the canonical suggestion.
-    const descriptionText = detailText != null && detailText.trim() !== ''
-      ? detailText
-      : (suggestionText ?? '')
-    // §2 — a fix advice is offered as an EXPANDABLE detail only when it adds
-    // information (never a semantic duplicate of the description).
-    const extraSuggestion = suggestionText != null && suggestionText.trim() !== ''
-      && !isRedundantDiagnosticCopy(descriptionText, suggestionText)
-      ? suggestionText
-      : null
+    // §1 — ONE complete, concise description. There is NO expandable detail, no
+    // extra advice paragraph and no expand state on the card (removed).
+    const descriptionText = detailText != null && detailText.trim() !== '' ? detailText : ''
     item.setAttribute('aria-label', `${descriptionText ? descriptionText + '，' : ''}${message}`)
-    // The full copy stays reachable without expanding (native tooltip).
-    if (extraSuggestion) item.title = `${descriptionText}\n${extraSuggestion}`
     // ── V5.14-R8 §9/§11 — the ACTIVE row derives from the ONE V2 authority, so a
     // dismissed target can never keep a selected-looking row and a switch moves
     // the row in the SAME render. The FOCUS ring is a SEPARATE authority.
@@ -28513,33 +28499,6 @@ export class DocumentUtilityOverlayHost {
       detail.textContent = descriptionText
       body.appendChild(detail)
     }
-    if (extraSuggestion) {
-      // §4 — a complex diagnostic MAY expand its fix advice. The toggle is a
-      // nested control: its activation is contained (never a locate) and the
-      // suggestion starts COLLAPSED, so the default card stays one description.
-      const suggestion = document.createElement('div')
-      suggestion.className = 'inkchapter-doc-drawer__item-suggestion'
-      suggestion.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-      suggestion.hidden = true
-      suggestion.textContent = extraSuggestion
-      const more = document.createElement('button')
-      more.type = 'button'
-      more.className = 'inkchapter-doc-drawer__item-more'
-      more.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-      more.setAttribute('data-ink-detail-toggle', 'true')
-      more.setAttribute('aria-expanded', 'false')
-      more.textContent = '详情'
-      more.addEventListener('click', (ev) => {
-        // Contain the activation: never bubble to the row's locate handler.
-        ev.preventDefault()
-        ev.stopPropagation()
-        const open = suggestion.hidden
-        suggestion.hidden = !open
-        more.setAttribute('aria-expanded', String(open))
-        more.textContent = open ? '收起' : '详情'
-      })
-      body.append(more, suggestion)
-    }
     item.appendChild(body)
 
     // Right-hand metadata: the THIS-occurrence position (1/N …) from the projection.
@@ -28563,10 +28522,6 @@ export class DocumentUtilityOverlayHost {
       this.dispatchDrawerActivation(ev, p, 'CLICK')
     })
     item.addEventListener('keydown', (ev) => {
-      // §4 — a key event originating from the nested detail toggle must never
-      // trigger the row's locate activation (the toggle owns it).
-      const origin = ev.target as HTMLElement | null
-      if (origin != null && typeof origin.closest === 'function' && origin.closest('[data-ink-detail-toggle]') != null) return
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault()
         this.dispatchDrawerActivation(ev, p, 'KEYBOARD')

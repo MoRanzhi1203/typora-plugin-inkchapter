@@ -3,7 +3,6 @@ import {
   DOCUMENT_DIAGNOSTIC_COPY_TABLE,
   DOCUMENT_DIAGNOSTIC_RULE_PRIORITY,
   DOCUMENT_DIAGNOSTIC_RULE_PRIORITY_FALLBACK,
-  isRedundantDiagnosticCopy,
   normalizeDiagnosticText,
   resolveDiagnosticCopy,
   resolveRulePriority,
@@ -107,7 +106,7 @@ describe('copy V1 — coverage cannot drift', () => {
 })
 
 describe('copy V1 — the Drawer presentation consumes the copy authority', () => {
-  it('normalizes a legacy severity-prefixed title and adds the fix advice', () => {
+  it('normalizes a legacy severity-prefixed title to the canonical title', () => {
     const p = buildDiagnosticPresentation({
       code: 'DOCUMENT_TERMINAL_NEWLINE_MISSING',
       severity: 'warning',
@@ -115,7 +114,9 @@ describe('copy V1 — the Drawer presentation consumes the copy authority', () =
       detail: 'Markdown 文档应以一个换行符结束。',
     })
     expect(p.drawerTitle).toBe('文档末尾缺少换行符')
-    expect(p.drawerSuggestion).toBe('在文档末尾补充一个换行符。')
+    expect(p.drawerDetail).toBe('Markdown 文档应以一个换行符结束。')
+    // §2 — the presentation no longer carries a separate fix-advice field.
+    expect(Object.prototype.hasOwnProperty.call(p, 'drawerSuggestion')).toBe(false)
   })
 
   it('keeps the frozen strict-H1 per-code Drawer title', () => {
@@ -126,28 +127,6 @@ describe('copy V1 — the Drawer presentation consumes the copy authority', () =
     })
     expect(p.drawerTitle).toBe('H1 前存在正文')
     expect(p.drawerDetail).toContain('严格模式结构错误')
-  })
-
-  it('exposes a suggestion for every registered family', () => {
-    for (const id of Object.keys(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY)) {
-      const p = buildDiagnosticPresentation({ code: id, message: 'm', detail: 'd' })
-      expect(p.drawerSuggestion, id).not.toBeNull()
-    }
-  })
-})
-
-describe('copy V1 — 说明与修复建议不得语义重复', () => {
-  it('no rule pairs a description with a redundant suggestion', () => {
-    for (const [code, spec] of Object.entries(DOCUMENT_DIAGNOSTIC_COPY_TABLE)) {
-      expect(isRedundantDiagnosticCopy(spec.description, spec.suggestion), code).toBe(false)
-    }
-  })
-
-  it('isRedundantDiagnosticCopy detects equality / containment, keeps distinct advice', () => {
-    expect(isRedundantDiagnosticCopy('当前两个内容块之间存在 3 个连续空行。', '当前两个内容块之间存在3个连续空行')).toBe(true)
-    expect(isRedundantDiagnosticCopy('建议为图片命名。', '为图片补充图名，避免与其他图混淆。')).toBe(false)
-    expect(isRedundantDiagnosticCopy('', '任何建议')).toBe(false)
-    expect(isRedundantDiagnosticCopy(null, null)).toBe(false)
   })
 })
 

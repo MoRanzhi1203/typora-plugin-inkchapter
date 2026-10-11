@@ -356,23 +356,3 @@ export function resolveDiagnosticCopy(input: ResolveDiagnosticCopyInput): Docume
     suggestion: spec?.suggestion ?? '',
   }
 }
-
-/**
- * §5 — are two user-facing copy strings SEMANTICALLY REDUNDANT? Used by the
- * Drawer so a fix advice that merely restates the description is never shown
- * twice. The check is intentionally conservative (normalized equality or
- * containment) so genuinely different advice is never dropped.
- */
-export function isRedundantDiagnosticCopy(a: string | null | undefined, b: string | null | undefined): boolean {
-  const na = normalizeCopyKey(a)
-  const nb = normalizeCopyKey(b)
-  if (na === '' || nb === '') return false
-  return na === nb || na.includes(nb) || nb.includes(na)
-}
-
-/** §5 — strip whitespace / punctuation so two phrasings compare on content. */
-function normalizeCopyKey(text: string | null | undefined): string {
-  return String(text ?? '')
-    .replace(/[\s，。、；：,.!?！？()（）「」【】\[\]`'"·—…]+/g, '')
-    .trim()
-}
