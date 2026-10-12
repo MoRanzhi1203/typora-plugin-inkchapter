@@ -463,6 +463,21 @@ interface World {
   diagnostics: Record<string, unknown> | null
 }
 
+/**
+ * TRAE item 4 — REAL trailing blank DOM rows are the ONLY legal geometry source.
+ * A world without them can no longer paint an EOF excess band (no synthetic
+ * fallback), so every host world supplies real rows.
+ */
+function addTrailingBlankRows(write: HTMLElement, count: number, fromTop: number, height = 40): void {
+  for (let i = 0; i < count; i++) {
+    const b = document.createElement('p')
+    b.textContent = ''
+    const top = fromTop + i * height
+    stubRect(b, () => ({ left: 60, top, right: 700, bottom: top + height }))
+    write.appendChild(b)
+  }
+}
+
 function makeWorld(): World {
   const shell = document.createElement('div')
   shell.className = 'typ-markdown-view'
@@ -477,6 +492,8 @@ function makeWorld(): World {
   last.textContent = '最后一段正文'
   write.appendChild(last)
   stubRect(last, () => ({ left: 60, top: 1000, right: 700, bottom: 1024 }))
+  // item 4 — real trailing blank rows (the only legal band geometry source).
+  addTrailingBlankRows(write, 6, 1024)
   const h = new DocumentUtilityOverlayHost({ ctx: fakeContext(), providers: fakeProviders() })
   h.mount()
   hosts.push(h)
@@ -620,10 +637,10 @@ describe('TEST-END-3/4/5/7/8/9/14 — the host commits a synthetic EOF marker wi
     expect(audit.remeasuredAfterScroll).toBe('true')
     expect(Number(audit.syntheticRect ? String(audit.syntheticRect).length : 0)).toBeGreaterThan(0)
     const marker = document.querySelector('[data-ink-eof-marker="true"]') as HTMLElement
-    // local top = viewport top − host top; the host top is 0 here, and the marker
-    // must follow the LAST block (+ the legal blank line + gap), proving the fresh
-    // post-scroll rect was used.
-    expect(marker.style.top).toBe('954px')
+    // item 3/4 — the band IS the REAL excess blank rows (the legal first row is
+    // excluded), so its local top is the SECOND real row's top (1064), proving the
+    // fresh post-scroll measurement was used and no synthetic rect was substituted.
+    expect(marker.style.top).toBe('1064px')
   })
 
   it('TEST-END-8/9: Drawer stays requested-open; clearing the visual removes the marker', () => {
@@ -672,10 +689,11 @@ describe('V5.13-R2 — EOF Soft Band geometry, facts and unified closure', () =>
     const ok = (world.h as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag, 5, true)
     expect(ok).toBe(true)
     const facts = world.h.getLastDocumentEndVisualFacts()!
-    // V5.13-R5 §3/§8 — this world has NO real trailing blank nodes, so the zone is
-    // the bounded COMPACT_SAFE_FALLBACK (never the forbidden `5 × 24 = 120`).
-    expect(facts.presentationHeight).toBe(EOF_VISUAL_MIN_HEIGHT_PX)
-    expect(facts.presentationHeight).toBeLessThan(5 * 24)
+    // item 3/4 — the band IS the REAL DOM tail rows (5 excess × 40): deeper than the
+    // degenerate 28px marker and never the forbidden synthetic `5 × 24 = 120`.
+    expect(facts.presentationHeight).toBe(200)
+    expect(facts.presentationHeight).not.toBe(EOF_VISUAL_MIN_HEIGHT_PX)
+    expect(facts.presentationHeight).not.toBe(5 * 24)
     expect(facts.presentationHeightSource).toBe('ACTUAL_TRAILING_BLANK_GEOMETRY')
     expect(facts.excessiveTrailingBlankLineCount).toBe(5)
     expect(facts.excessiveCoverageRatio).toBe(1)
@@ -687,7 +705,7 @@ describe('V5.13-R2 — EOF Soft Band geometry, facts and unified closure', () =>
     expect(audit.terminalNewlineCount).toBe('6')
     expect(audit.extraTrailingBlankLineCount).toBe('5')
     expect(audit.rightEdgeAuthority).toBe(DOCUMENT_END_RIGHT_EDGE_AUTHORITY_DOCUMENT_CONTENT)
-    expect(audit.presentationHeight).toBe(String(EOF_VISUAL_MIN_HEIGHT_PX))
+    expect(audit.presentationHeight).toBe('200')
     expect(audit.presentationHeightSource).toBe('ACTUAL_TRAILING_BLANK_GEOMETRY')
     expect(audit.visualTargetKind).toBe(DOCUMENT_END_VISUAL_TARGET_KIND)
     expect(audit.finalDecision).toBe('PASS')
@@ -797,7 +815,7 @@ function addLastBlock(write: HTMLElement, kind: LastBlockKind): void {
 }
 
 /** §14 — a world whose PROSE column is fixed at 60 while the last block varies. */
-function makeAnchorWorld(kind: LastBlockKind): { h: DocumentUtilityOverlayHost; prose: HTMLElement } {
+function makeAnchorWorld(kind: LastBlockKind, opts: { blankRows?: number } = {}): { h: DocumentUtilityOverlayHost; prose: HTMLElement } {
   const shell = document.createElement('div')
   shell.className = 'typ-markdown-view'
   document.body.appendChild(shell)
@@ -811,6 +829,8 @@ function makeAnchorWorld(kind: LastBlockKind): { h: DocumentUtilityOverlayHost; 
   write.appendChild(prose)
   stubRect(prose, () => ({ left: 60, top: 100, right: 700, bottom: 124 }))
   addLastBlock(write, kind)
+  // item 4 — real trailing blank rows after the (kind-varied) last block.
+  addTrailingBlankRows(write, opts.blankRows ?? 6, 1040)
   const h = new DocumentUtilityOverlayHost({ ctx: fakeContext(), providers: fakeProviders() })
   h.mount()
   hosts.push(h)
@@ -1186,7 +1206,7 @@ describe('V5.13-R4/R5 §5/§9/§10 — the host commits REAL trailing-blank geom
   })
 
   it('§10 — a REAL trailing blank tail grows the band (never a fixed 36/48px cap)', () => {
-    const world = makeAnchorWorld('paragraph')
+    const world = makeAnchorWorld('paragraph', { blankRows: 0 })
     const write = document.getElementById('write')!
     // four REAL empty trailing blocks AFTER the last meaningful <p>
     for (let i = 0; i < 4; i++) {

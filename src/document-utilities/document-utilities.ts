@@ -300,15 +300,15 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     consumeHeadingConflictTestBridge: sources.consumeHeadingConflictTestBridge,
   }
 
-  // Phase 7R.3.11.8B.7.1 — settings/mode recompute is rAF-coalesced so one mode
-  // transaction produces AT MOST ONE final recompute/publish.
-  let settingsRecomputePending = false
-  // Phase 7R.3.11.8B.7.7 — source-edit recompute is rAF-coalesced. The Markdown
-  // SOURCE (markdownEditor 'edit') is the authority for document-level rules
-  // (EOF trailing blank lines etc.) — EOF whitespace changes may not produce
-  // any ordinary DOM block mutation, so we must not rely on the MutationObserver
-  // alone to retire/add those diagnostics.
-  let sourceRecomputePending = false
+  // TRAE §1.3/§4.3 — ONE rAF-coalescing scheduler for the ASYNC diagnostics
+  // triggers (source edit + settings/mode change). They used to hold SEPARATE rAF
+  // flags and never merged, so a single user action that both edited the source
+  // and flipped a setting ran TWO recomputes of the SAME semantic state (the
+  // duplicated `DOCUMENT-TRAILING-BLANK-AUDIT` / `ACTIVE_DOCUMENT_RECONCILE`
+  // storm). Now a frame runs exactly ONE recompute with the MERGED reason; the
+  // producer fingerprint still dedupes a genuinely unchanged state.
+  const pendingRecomputeReasons = new Set<string>()
+  let recomputeRafPending = false
 
   const host = new DocumentUtilityOverlayHost({
     ctx,
@@ -335,29 +335,31 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     // Phase 7R.3.11.8-B — live diagnostics triggers (heading frame commit +
     // settings/mode change) → lightweight snapshot recompute only.
     onDiagnosticsTrigger: (recompute) => {
+      // TRAE §1.3/§4.3 — the ONE coalescing scheduler (see the state above).
+      const scheduleRecompute = (reason: string): void => {
+        pendingRecomputeReasons.add(reason)
+        if (recomputeRafPending) return
+        recomputeRafPending = true
+        requestAnimationFrame(() => {
+          recomputeRafPending = false
+          const merged = Array.from(pendingRecomputeReasons).join('+')
+          pendingRecomputeReasons.clear()
+          recompute(merged || reason)
+        })
+      }
       sources.onCanonicalFrameCommit?.(() => {
         indexHeadingIdentities()
         recompute('CANONICAL_FRAME_CHANGED')
       })
       sources.onSettingsChanged?.(() => {
-        if (settingsRecomputePending) return
-        settingsRecomputePending = true
-        requestAnimationFrame(() => {
-          settingsRecomputePending = false
-          recompute('HEADING_STRUCTURE_MODE_CHANGED')
-        })
+        scheduleRecompute('HEADING_STRUCTURE_MODE_CHANGED')
       })
       // Phase 7R.3.11.8B.7.7 — Markdown SOURCE change is the live-reconcile
       // authority for document-level diagnostics (EOF blank lines). Recompute
       // is pure + fingerprint-gated, so identical state never re-publishes and
       // a real 0→1 / 1→2 / 2→1 / 1→0 transition auto ADD/REMOVE the warning.
       sources.onSourceEdit?.(() => {
-        if (sourceRecomputePending) return
-        sourceRecomputePending = true
-        requestAnimationFrame(() => {
-          sourceRecomputePending = false
-          recompute('DOCUMENT_SOURCE_CHANGED')
-        })
+        scheduleRecompute('DOCUMENT_SOURCE_CHANGED')
       })
     },
   })

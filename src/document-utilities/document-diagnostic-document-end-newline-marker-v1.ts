@@ -40,6 +40,41 @@ export type DocumentEndVisualRule = 'TRAILING_BLANK_EXCESS' | 'TERMINAL_NEWLINE_
 export const DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS = 2
 
 /**
+ * TRAE EOF-ENTER-BLANK §2/§3.1 — the Drawer DESCRIPTION for the EOF excess rule.
+ *
+ * The stated number is the CURRENT authoritative count for the ACTIVE mode:
+ *   wysiwyg → the VERIFIED VISIBLE blank-ROW count (NEVER the source newline count)
+ *   source  → the SOURCE logical blank-line count, explicitly labelled `源码`
+ * The two are NEVER interchanged, and an UNVERIFIED visible count is never stated.
+ */
+export function eofTailExcessDetailText(input: {
+  mode: 'wysiwyg' | 'source' | 'unknown'
+  visibleBlankRowCount: number | null
+  sourceBlankLineCount: number
+}): string {
+  const src = Math.max(0, Math.floor(input.sourceBlankLineCount))
+  if (input.mode === 'source') {
+    return `源码：文末有 ${src} 个源码空行，建议保留 1 个。`
+  }
+  if (input.visibleBlankRowCount == null) {
+    // §3.1 — an unverified visible count is DEFERRED, never stated as measured.
+    return `文末空行数量待测量（源码事实：${src} 个空行），建议保留 1 个。`
+  }
+  const n = Math.max(0, Math.floor(input.visibleBlankRowCount))
+  return `文末有 ${n} 个可见空行，建议保留 1 个。`
+}
+
+/**
+ * TRAE EOF-ENTER-BLANK §3.1 — the Drawer DESCRIPTION for the missing-tail rule
+ * (0 verified visible blank rows). Distinct from the source-terminal-newline fact.
+ */
+export function eofMissingTailDetailText(mode: 'wysiwyg' | 'source' | 'unknown'): string {
+  return mode === 'source'
+    ? '源码：文末需保留 1 个空行（并以换行符结束）。'
+    : '文末需保留 1 个空行。'
+}
+
+/**
  * The ONE `DocumentEndTargetResolver` entry. Returns the visual rule a
  * `document-end` diagnostic needs, or null when it owns no document-end visual.
  */
@@ -67,17 +102,26 @@ export const EOF_NEWLINE_MARKER_RULE_ATTR = 'document-end-newline-missing'
 export const EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY = 'DOCUMENT_CONTENT'
 export const EOF_NEWLINE_MARKER_ARIA_LABEL = '文档末尾缺少换行符'
 /**
- * 原设计要求 C — the EOF ENDPOINT indicator. The missing-final-newline marker is
- * an explicit ENDPOINT (a left boundary line + a compact `EOF` label), NEVER a
- * filled warning band and never a plain colour bar with a symbol dropped in it.
- * The label is an icon-level token, not a sentence (the full text stays in the
- * Drawer and in the `title`/`aria-label`).
+ * TRAE — the EOF ENDPOINT indicator. The missing-final-newline marker is an
+ * explicit ENDPOINT: a SHORT HORIZONTAL line (40–60px) + a `缺少 1 空行` label,
+ * NEVER a filled warning band. It deliberately shares the amber warning TOKEN
+ * family with the blank-space region but keeps its OWN endpoint form.
  */
-export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL = 'EOF'
+export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL = '缺少 1 空行'
 /** The endpoint label child's class (styled in style.scss; pointer-events:none). */
 export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS = 'inkchapter-eof-endpoint-label'
 /** The endpoint FORM attribute; style.scss drops the band fill for this form. */
 export const EOF_NEWLINE_MARKER_ENDPOINT_FORM = 'endpoint'
+/** The short horizontal endpoint line child (40–60px), styled in style.scss. */
+export const EOF_ENDPOINT_LINE_CLASS = 'inkchapter-eof-endpoint-line'
+/** 设计要求 — the endpoint line length is bounded to a SHORT stroke. */
+export const EOF_ENDPOINT_LINE_MIN_PX = 40
+export const EOF_ENDPOINT_LINE_MAX_PX = 60
+/** Clamp the endpoint line to the legal 40–60px band. */
+export function clampEofEndpointLineLength(px: number): number {
+  if (!Number.isFinite(px)) return EOF_ENDPOINT_LINE_MIN_PX
+  return Math.max(EOF_ENDPOINT_LINE_MIN_PX, Math.min(EOF_ENDPOINT_LINE_MAX_PX, Math.round(px)))
+}
 
 // ── The Y geometry authority (round 2) ─────────────────────────────────────
 

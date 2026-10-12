@@ -29,6 +29,7 @@ import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type Reconci
 // rewrites `import { A as B } from 'x'` into the invalid `const { A as B } =
 // await import('x')`, so aliased value imports must never be used.
 import * as captionIntegrityProducer from '../document-utilities/document-diagnostics-caption-integrity-v1'
+import { stampCaretInertPresentation } from '../document-utilities/document-diagnostic-caret-isolation-v1'
 import type { DocumentDiagnostic } from '../document-utilities/diagnostics-types'
 import type { ObjectEffectiveNumberElementFacts, ObjectEffectiveNumberFact } from '../document-utilities/diagnostics-types'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
@@ -2780,7 +2781,7 @@ export class CaptionService {
     el.className = 'inkchapter-caption inkchapter-caption-table'
     el.setAttribute('data-inkchapter-caption', 'true')
     el.setAttribute('data-inkchapter-caption-debug', 'true')
-    el.setAttribute('contenteditable', 'false')
+    stampCaretInertPresentation(el, true) // P0 CARET ISOLATION — 投影展示文字隔离
     el.textContent = 'CAPTION DEBUG · 表 1'
     firstTable.root.parentElement?.insertBefore(el, firstTable.root)
     this.verifyRender('debug-minimal', 'CAPTION DEBUG · 表 1')

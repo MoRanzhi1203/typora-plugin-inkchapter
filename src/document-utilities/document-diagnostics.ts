@@ -19,6 +19,9 @@ import type { ResourceClass, ImageSourceOccurrence } from './document-resource-s
 // Phase I (spec §10) — the ONE in-document anchor scanner (`[x](#target)`),
 // reusing the SAME literal-excluding reference scanner (no second parser).
 import { parseLocalAnchorTargets } from './document-resource-scanner'
+// TRAE §2.4 — the SINGLE-SOURCE document-end trailing-blank threshold (0~1 extra
+// blank lines are legal), shared with the visual + newline-marker resolvers.
+import { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS } from './document-diagnostic-document-end-newline-marker-v1'
 // V5.15 — Standalone Object Block Invariant (figure structure gate).
 import {
   analyzeFigureStandaloneSourceBlocks,
@@ -790,7 +793,7 @@ export function computeEofNewlinePolicy(markdown: string | null | undefined): Eo
   if (!hasTerminalNewline) {
     return { verdict: 'MISSING_TERMINAL_NEWLINE', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
   }
-  if (extraTrailingBlankLineCount >= 2) {
+  if (extraTrailingBlankLineCount >= DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS) {
     return { verdict: 'EXCESSIVE_TRAILING_BLANK_LINES', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
   }
   return { verdict: 'PASS', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }

@@ -31,6 +31,14 @@ import {
   type CanonicalHeadingFrame,
 } from './canonical-heading-frame'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
+import { armEnterEchoWriteTrace, drainEnterEchoWriteTrace, persistEnterEchoWriteTrace } from '../document-utilities/enter-echo-write-trace'
+import {
+  scheduleNavigationPostDefaultAudit,
+  refreshCaretIsolationDomCounters,
+  getCaretIsolationCounters,
+  formatCaretIsolationGateReport,
+  evaluateCaretIsolationGates,
+} from '../document-utilities/document-diagnostic-caret-isolation-v1'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 // Heading Auto-Number Conflict Diagnostics V1 §2/§4 — the ONE per-heading
 // auto-numbering EFFECTIVENESS authority (reuses THIS service's effective
@@ -544,6 +552,13 @@ function contextualToMultilevelVariants(
 const DOM_POSITION_DISCONNECTED = 1
 const DOM_POSITION_PRECEDING = 2
 const DOM_POSITION_FOLLOWING = 4
+
+/**
+ * ENTER→BLANK ECHO GUARD — the bounded window in which a SECOND structural
+ * `SPLIT_1_TO_2` is attributed to the SAME trusted Enter scene (one Enter = one
+ * split). A split beyond this window is a genuinely new user action.
+ */
+const ENTER_SPLIT_ECHO_WINDOW_MS = 250
 
 export class HeadingNumberingService {
   private adapter: HeadingDomAdapter
@@ -1275,6 +1290,77 @@ export class HeadingNumberingService {
   private specialCommandCreatedFromNonEnterCount = 0
   private activeEmptySpecialTransaction: EmptySpecialCommandTransaction | null = null
   private activeEmptySpecialSettle: EmptySpecialSettleContext | null = null
+  // ── R58.7+ ENTER→BLANK ECHO GUARD — one trusted Enter must commit EXACTLY ONE
+  // structural split. The plugin never dispatches Enter and never splits a
+  // paragraph, so a SECOND `SPLIT_1_TO_2` after NORMAL-ENTER-FINAL is an EXTERNAL
+  // structural echo (native re-render). It is counted here with REAL evidence so
+  // the duplicate can never hide behind a count formula.
+  private lastNormalEnterTxnId: string | null = null
+  private enterSplitSceneId: string | null = null
+  private enterSplitSceneCount = 0
+  private enterSplitSceneLastAt = 0
+  private enterDuplicateStructuralSplitCount = 0
+  /** §D2 — of the duplicates above, how many were Typora's own end-block re-normalisation. */
+  private enterEndBlockRenormalizationCount = 0
+
+  // ── P0 CARET ISOLATION 门禁（真实 DOM/Selection 审计；禁止硬编码 PASS） ──
+  getCaretIsolationGateReport(): string[] {
+    return formatCaretIsolationGateReport({ ...getCaretIsolationCounters() })
+  }
+
+  getCaretIsolationGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateCaretIsolationGates({ ...getCaretIsolationCounters() })
+  }
+
+  /** 视觉提交后重算「可编辑树内插件文字」集合计数（只读）。 */
+  refreshCaretIsolationCounters(): void {
+    try { refreshCaretIsolationDomCounters(this.adapter.getEditorRoot()) } catch { /* observability only */ }
+  }
+  /**
+   * §D2 — while `now < enterTransactionCoalesceUntil`, the diagnostics commit must be
+   * IDEMPOTENT for `enterTransactionCoalesceSceneId`: the trailing end-block
+   * re-normalisation belongs to the SAME Enter transaction, so the final snapshot is
+   * committed once (never as a second user transaction, never by swallowing a batch).
+   */
+  private enterTransactionCoalesceSceneId: string | null = null
+  private enterTransactionCoalesceUntil = 0
+
+  /**
+   * ENTER→BLANK ECHO GUARD — the REAL duplicate-structural-split evidence.
+   *
+   * `duplicateStructuralSplitCount` is the number of EXTERNAL `SPLIT_1_TO_2`
+   * echoes seen AFTER a trusted Enter reached NORMAL-ENTER-FINAL, within the
+   * bounded echo window and attributed to the SAME Enter scene. 0 ⇒ one Enter
+   * produced exactly one structural split (PASS); >0 ⇒ a duplicate split.
+   */
+  getEnterSplitEchoReport(): {
+    duplicateStructuralSplitCount: number
+    endBlockRenormalizationCount: number
+    lastSceneId: string | null
+    lastSceneSplitCount: number
+    transactionCoalesce: { sceneId: string | null; active: boolean }
+  } {
+    return {
+      duplicateStructuralSplitCount: this.enterDuplicateStructuralSplitCount,
+      endBlockRenormalizationCount: this.enterEndBlockRenormalizationCount,
+      lastSceneId: this.enterSplitSceneId,
+      lastSceneSplitCount: this.enterSplitSceneCount,
+      transactionCoalesce: {
+        sceneId: this.enterTransactionCoalesceSceneId,
+        active: Date.now() < this.enterTransactionCoalesceUntil,
+      },
+    }
+  }
+
+  /**
+   * §D2 — TRUE when the CURRENT editor mutation belongs to the SAME trusted Enter
+   * transaction (Typora's trailing end-block re-normalisation). Consumers use it to
+   * commit diagnostics IDEMPOTENTLY against the final snapshot; it must never be
+   * used to hide a real content change (the batch is still fully processed).
+   */
+  isEnterTransactionCoalesced(now = Date.now()): boolean {
+    return now < this.enterTransactionCoalesceUntil
+  }
 
   /** R58.7 Step 1.2: Validate that a KeyboardEvent is a real Enter key, not IME Process/Period. */
   private isRealEnterKey(e: KeyboardEvent): boolean {
@@ -4701,6 +4787,10 @@ export class HeadingNumberingService {
     })
 
     // Business: always execute (never inside trace wrapper)
+    // NOTE: plan ① (deferring this write inside the Enter echo window) was tried and
+    // REFUTED by the runtime log — the deferral fired (ENTER-ECHO-STYLE-WRITE-DEFERRED)
+    // and the duplicate split STILL happened. The write is therefore NOT gated here;
+    // the targeted write tracer (`enter-echo-write-trace`) names the real culprit.
     refreshParagraphIndentStyles(root, settings, this.isInComposition)
 
     // ── Trace: T7 after ──
@@ -10465,6 +10555,105 @@ export class HeadingNumberingService {
         suppressParagraphDetection: this.suppressParagraphCommandDetection,
       })
 
+      // ── ENTER→BLANK ECHO GUARD (R58.7+) ─────────────────────────────────────
+      // ONE trusted Enter must commit EXACTLY ONE structural split. The plugin
+      // never dispatches Enter and never splits a paragraph; therefore a SECOND
+      // `SPLIT_1_TO_2` attributed to the SAME just-closed Enter scene inside the
+      // bounded window is an EXTERNAL structural echo. It is counted with REAL
+      // evidence (never derived from a source-newline formula) so the duplicate
+      // cannot hide behind the visible-count arithmetic.
+      {
+        let removedP = 0
+        let addedP = 0
+        for (const m of mutations) {
+          if (m.type !== 'childList') continue
+          for (const n of Array.from(m.removedNodes)) {
+            if (n instanceof HTMLElement && /^(P|DIV)$/.test(n.tagName)
+              && !this.isHeadingOrContainsHeading(n) && !/inkchapter/i.test(String(n.className ?? ''))) removedP++
+          }
+          for (const n of Array.from(m.addedNodes)) {
+            if (n instanceof HTMLElement && /^(P|DIV)$/.test(n.tagName)
+              && !this.isHeadingOrContainsHeading(n) && !/inkchapter/i.test(String(n.className ?? ''))) addedP++
+          }
+        }
+        if (removedP === 1 && addedP === 2) {
+          const now = Date.now()
+          const sceneId = this.activeNormalEnterTxn?.id ?? this.lastNormalEnterTxnId
+          // §D2 — Typora keeps an ALWAYS-PRESENT trailing end block
+          // (`P.md-end-block`). Pressing Enter at the document end makes Typora's
+          // own `Editor.pressReturn` re-normalise that block; the observer then sees
+          // a SECOND `SPLIT_1_TO_2` that is a NATIVE INTERMEDIATE STATE, not a
+          // second user Enter. Classified here (never swallowed) so the final
+          // snapshot can commit idempotently under the SAME Enter transaction.
+          let endBlockTouched = false
+          for (const m of mutations) {
+            if (m.type !== 'childList') continue
+            for (const n of [...Array.from(m.removedNodes), ...Array.from(m.addedNodes)]) {
+              if (n instanceof HTMLElement && n.classList.contains('md-end-block')) endBlockTouched = true
+            }
+          }
+          const sameScene = sceneId != null && sceneId === this.enterSplitSceneId
+            && (now - this.enterSplitSceneLastAt) <= ENTER_SPLIT_ECHO_WINDOW_MS
+          if (sameScene) {
+            this.enterDuplicateStructuralSplitCount++
+            if (endBlockTouched) this.enterEndBlockRenormalizationCount++
+            // §D2 — PROVEN by real runtime evidence (structural=0, pluginStructural=0,
+            // origin: typora=14, endBlockRenormalization=true): the second
+            // `SPLIT_1_TO_2` is Typora's OWN trailing end-block re-normalisation, a
+            // NATIVE INTERMEDIATE STATE. It is NOT swallowed. It is ATTRIBUTED to the
+            // SAME Enter transaction so the diagnostics commit IDEMPOTENTLY against
+            // the final DOM (no second user transaction, no count formula change).
+            if (endBlockTouched) {
+              this.enterTransactionCoalesceSceneId = sceneId
+              this.enterTransactionCoalesceUntil = now + ENTER_SPLIT_ECHO_WINDOW_MS
+            }
+            emitRuntimeAudit('ENTER-DUPLICATE-SPLIT-AFTER-FINAL', {
+              normalEnterTxnId: sceneId,
+              duplicateSplitIndex: this.enterSplitSceneCount + 1,
+              windowMs: now - this.enterSplitSceneLastAt,
+              endBlockRenormalization: endBlockTouched,
+              transactionAttribution: endBlockTouched ? 'SAME_ENTER_SCENE_IDEMPOTENT' : 'USER_DUPLICATE_SPLIT',
+              decision: endBlockTouched ? 'NATIVE_END_BLOCK_RENORMALIZATION' : 'DUPLICATE_SPLIT',
+            })
+            // plan ② — the DIRECT evidence: every plugin DOM write inside the echo
+            // window with its call stack, so the REAL writer of the second split is
+            // named instead of guessed.
+            const trace = drainEnterEchoWriteTrace()
+            const structural = trace.records.filter(r => r.kind.startsWith('struct:'))
+            const pluginStructural = structural.filter(r => r.origin === 'plugin')
+            const tracePayload = {
+              normalEnterTxnId: sceneId,
+              duplicateSplitIndex: this.enterSplitSceneCount + 1,
+              windowMs: now - this.enterSplitSceneLastAt,
+              endBlockRenormalization: endBlockTouched,
+              capturedAt: new Date().toISOString(),
+              recordCount: trace.records.length,
+              truncated: trace.truncated,
+              structuralRecordCount: structural.length,
+              pluginStructuralWriteCount: pluginStructural.length,
+              originCounts: {
+                plugin: trace.records.filter(r => r.origin === 'plugin').length,
+                typora: trace.records.filter(r => r.origin === 'typora').length,
+                unknown: trace.records.filter(r => r.origin === 'unknown').length,
+              },
+              records: trace.records,
+            }
+            persistEnterEchoWriteTrace(tracePayload)
+            emitRuntimeAudit('ENTER-ECHO-DOM-WRITE-TRACE', {
+              normalEnterTxnId: sceneId,
+              recordCount: trace.records.length,
+              truncated: trace.truncated,
+              structuralRecordCount: structural.length,
+              pluginStructuralWriteCount: pluginStructural.length,
+              decision: 'TRACED',
+            })
+          }
+          this.enterSplitSceneId = sceneId
+          this.enterSplitSceneCount = sameScene ? this.enterSplitSceneCount + 1 : 1
+          this.enterSplitSceneLastAt = now
+        }
+      }
+
       // ── Trace: T3 Classifier (fail-open) ──
       safeTrace(() => {
         traceT3_Classifier({
@@ -10636,6 +10825,9 @@ export class HeadingNumberingService {
             // overall=true if the canonical transfer failed at any layer.
             const canonicalGatePassed = !hasCanonicalSource || (canonicalOutcome?.overall ?? false)
             if (canonicalGatePassed) this.normalEnterSuccessCount++
+            // ENTER→BLANK ECHO GUARD — the scene id for the split detector is the
+            // JUST-CLOSED transaction, so a post-FINAL echo is attributed to it.
+            this.lastNormalEnterTxnId = postTxn.id
             emitRuntimeAudit('NORMAL-ENTER-FINAL', {
               normalEnterTxnId: postTxn.id,
               caretDestinationRuntimeId: caretDestRtId ?? 'none',
@@ -10785,8 +10977,26 @@ export class HeadingNumberingService {
       if (this.skipIfInkChapterUiEvent(e, 'enter-command')) return
       this.logKeyboardProvenance(e, 'onEnterCommand')
 
+      // ── P0 CARET ISOLATION — 方向键默认行为后的有界、只读插入点审计 ──
+      // 仅 ArrowDown/ArrowUp；不做 preventDefault、不移动光标、不改 Selection。
+      try {
+        scheduleNavigationPostDefaultAudit(e.key, e.isTrusted, e.defaultPrevented, {
+          documentKey: this.getDocumentKey() ?? null,
+          buildShaOrMarker: FORENSIC_BUILD_MARKER,
+          editorRoot: root,
+          editorRootIdentity: `${root.tagName}#${root.id || ''}.${String(root.className ?? '').split(/\s+/).filter(Boolean).slice(0, 2).join('.')}`,
+          sourceRevision: null,
+          peekRuntimeId: (el: HTMLElement) => this.getParagraphRuntimeId(el),
+        })
+      } catch { /* observability only */ }
+
       // ── R58.7 Step 1.2: ENTER ADMISSION FIREWALL ──
       const isRealEnter = this.isRealEnterKey(e)
+      // ── ENTER→BLANK ECHO GUARD (plan ②) — arm the targeted DOM-WRITE CALL-STACK
+      // TRACER for the bounded echo window BEFORE the native split, so the REAL
+      // writer of the second `SPLIT_1_TO_2` is captured (plan ① style deferral was
+      // refuted by the runtime log).
+      if (isRealEnter) armEnterEchoWriteTrace(null, ENTER_SPLIT_ECHO_WINDOW_MS)
       const preParagraph = resolveCurrentBodyParagraph(root)
       const preVisibleText = preParagraph ? getUserVisibleParagraphText(preParagraph) : ''
       const preToken = preParagraph ? readParagraphIndentCommand(preParagraph) : null

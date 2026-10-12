@@ -620,3 +620,73 @@ describe('R2-GATE — closure audit + hard gates', () => {
     expect(hostSrc).toContain('bumpDocumentLayoutEpoch')
   })
 })
+
+// ── TRAE §1.2/§3.6 — the closure gate is TRANSACTION-SCOPED ────────────────
+type ClosureCounters = ReturnType<typeof createVisualClosureV512R2Counters>
+type ScopeInternals = {
+  countersClosureV512R2: ClosureCounters
+  closureCountersTxBaseline: ClosureCounters | null
+  captureClosureCountersBaseline(): void
+  clearClosureCountersBaseline(): void
+  scopedClosureCounters(): ClosureCounters
+}
+function scopeOf(h: DocumentUtilityOverlayHost): ScopeInternals {
+  return h as unknown as ScopeInternals
+}
+
+describe('R2-SCOPE — the closure gate decision is transaction-scoped', () => {
+  it('R2-SCOPE-1: a stale session increment cannot turn a PASS target into a global gate FAIL', () => {
+    const w = makeWorld()
+    host = w.h
+    const s = scopeOf(host)
+    // A stale increment from an EARLIER transaction (the reported 81) happens
+    // BEFORE this locate starts.
+    s.countersClosureV512R2.mixedCoordinateSpace += 81
+    // The baseline is captured at locate start.
+    s.captureClosureCountersBaseline()
+    const scoped = s.scopedClosureCounters()
+    expect(scoped.mixedCoordinateSpace).toBe(0)
+    expect(evaluateVisualClosureGates(scoped).decision).toBe('PASS')
+    // The session totals still carry the stale 81 (forensic evidence preserved).
+    expect(evaluateVisualClosureGates(s.countersClosureV512R2).decision).toBe('FAIL')
+  })
+
+  it('R2-SCOPE-2: an increment DURING the transaction still fails its OWN gate', () => {
+    const w = makeWorld()
+    host = w.h
+    const s = scopeOf(host)
+    s.countersClosureV512R2.mixedCoordinateSpace += 5 // stale, before this tx
+    s.captureClosureCountersBaseline()
+    s.countersClosureV512R2.inlineCrossLineUnion += 1 // this transaction
+    const scoped = s.scopedClosureCounters()
+    expect(scoped.mixedCoordinateSpace).toBe(0)
+    expect(scoped.inlineCrossLineUnion).toBe(1)
+    expect(evaluateVisualClosureGates(scoped).decision).toBe('FAIL')
+  })
+
+  it('R2-SCOPE-3: outside a transaction the scope degrades to the session totals', () => {
+    const w = makeWorld()
+    host = w.h
+    const s = scopeOf(host)
+    s.clearClosureCountersBaseline()
+    s.countersClosureV512R2.blockCoverageLt098 += 3
+    expect(s.scopedClosureCounters().blockCoverageLt098).toBe(3)
+  })
+
+  it('R2-SCOPE-4: the drawer-persistence gate is transaction-scoped too', () => {
+    const w = makeWorld()
+    host = w.h
+    const s = host as unknown as {
+      countersDrawerV512R3: Record<string, number>
+      captureClosureCountersBaseline(): void
+      scopedDrawerPersistenceCounters(): Record<string, number>
+    }
+    // A stale violation left by an EARLIER transaction.
+    s.countersDrawerV512R3.drawerRequestedOpenButHiddenAfterCommit = 1
+    s.captureClosureCountersBaseline()
+    expect(s.scopedDrawerPersistenceCounters().drawerRequestedOpenButHiddenAfterCommit).toBe(0)
+    // THIS transaction's own violation is still counted.
+    s.countersDrawerV512R3.drawerRequestedOpenButHiddenAfterCommit = 2
+    expect(s.scopedDrawerPersistenceCounters().drawerRequestedOpenButHiddenAfterCommit).toBe(1)
+  })
+})
