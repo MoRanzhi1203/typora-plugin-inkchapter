@@ -59,7 +59,25 @@ export function computeCaptionCueRect(
   // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured slot
   // height, min 12px, clamped to the visible frame). No bottom keyline.
   const slotTop = Math.max(relTopRaw, 0)
-  const slotH = Math.max(12, Math.min(caption.bottom - caption.top, present.height - slotTop - 2))
+  const captionH = caption.bottom - caption.top
+  // TRAE P0 §A/§2 — CAPTION_ONLY: the carrier box IS the caption row, so the cue
+  // must fill the WHOLE frame. The old −2px inset left the last 2px of the row
+  // uncovered and tripped COMPOUND_CAPTION_CUE_NOT_COVERING_CAPTION. Inert for a
+  // compound carrier, whose frame is far taller/wider than the caption.
+  const fullBleed = slotTop <= 1 && relLeftRaw <= 1
+    && present.height <= captionH + 3
+    && present.width <= Math.max(12, caption.right - caption.left) + 3
+  if (fullBleed) {
+    return {
+      left: Math.round(Math.max(relLeftRaw, 0)),
+      top: Math.round(slotTop),
+      width: Math.round(present.width),
+      height: Math.round(present.height),
+    }
+  }
+  // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured slot
+  // height, min 12px, clamped to the visible frame). No bottom keyline.
+  const slotH = Math.max(12, Math.min(captionH, present.height - slotTop - 2))
   return {
     left: Math.round(Math.max(relLeftRaw, 0)),
     top: Math.round(slotTop),

@@ -174,7 +174,7 @@ describe('EOF 载体几何失效 — 侧栏拖拽后文档末尾带同样重测�
 
   it('重求导用真实测量（尾随空行 + 内容列 + 文本列），绝不使用常量/存储值', () => {
     const fn = HOST_SRC.slice(HOST_SRC.indexOf('private recomputeSyntheticEofPresentation'))
-    const body = fn.slice(0, 2400)
+    const body = fn.slice(0, 4200)
     expect(body).toContain('this.measureTrailingBlankGeometry()')
     expect(body).toContain('this.measureSemanticContentColumnRect()')
     expect(body).toContain('this.measureDocumentTextColumnLeft(')
@@ -242,7 +242,7 @@ describe('ROOT_CODE_COMPOUND_TARGET — 代码块复合载体必须覆盖「名�
   it('载体范围取 frame ∩ LIVE 题注的并集（消除 68.44/42.64 两值漂移）', () => {
     const idx = HOST_SRC.indexOf('const vpFrame = this.measureLocateRect(frameEl)')
     expect(idx).toBeGreaterThan(0)
-    const body = HOST_SRC.slice(idx, idx + 2600)
+    const body = HOST_SRC.slice(idx, idx + 4200)
     // 必须把 LIVE 题注并进范围，而不是只信 frame.getFrameElement()（会退化成 body-only 42.64）
     expect(body).toContain('const captionElForCarrier = this.locatePlacementCtx?.primaryEl ?? null')
     expect(body).toContain('Math.min(vpFrame.top, captionVpForCarrier.top)')

@@ -205,6 +205,8 @@ export class DocumentDiagnosticsAuthority {
   private revision = 0
   private sourceRevision = 0
   private lastDocumentKey: string | null = null
+  /** TRAE item 5 — the last SOURCE text, so `sourceRevision` tracks real edits. */
+  private lastSourceText: string | null = null
   private lastContentFingerprint = ''
   /** Phase 7R.3.11.8B.1 — H1 authority bridge audit dedup (state-token). */
   private lastH1BridgeSignature = ''
@@ -297,9 +299,20 @@ export class DocumentDiagnosticsAuthority {
   recompute(reason: string = 'AUTO'): void {
     const structural = this.collectStructuralFacts()
     const input = collectDiagnosticsInput(this.ctx, structural)
+    const src = input.markdown ?? ''
     if (input.documentKey !== this.lastDocumentKey) {
       this.sourceRevision++
       this.lastDocumentKey = input.documentKey
+      this.lastSourceText = src
+    } else if (this.lastSourceText !== src) {
+      // TRAE item 5 — SOURCE REVISION is a real CONTENT version, not a per-document
+      // constant. It used to stay `1` for a whole session (it only bumped on a
+      // document switch), which made it useless for stale-result elimination and
+      // hid the real content generation. It now advances on every real source
+      // change, so a snapshot's `sourceRevision` truthfully identifies the source
+      // generation it was computed from.
+      this.sourceRevision++
+      this.lastSourceText = src
     }
     // V1 §21 — the figure locator records the EXACT source generation this
     // compute runs against, so a later click can detect a stale revision.
@@ -442,14 +455,16 @@ export class DocumentDiagnosticsAuthority {
   }
 
   /**
-   * Phase 7R.3.11.8B.8 — DOCUMENT-TRAILING-BLANK-AUDIT (one per recompute;
-   * recompute is event-driven, never a poll). Records the REAL observed source
-   * tail + the two split quantities (hasTerminalNewline /
-   * extraTrailingBlankLineCount) so a Runtime failure is classifiable:
+   * Phase 7R.3.11.8B.8 / TRAE §1.3 — DOCUMENT-TRAILING-BLANK-AUDIT (one per
+   * recompute, STATE-DEDUPED). Records the REAL observed source tail + the two
+   * split quantities (hasTerminalNewline / extraTrailingBlankLineCount) so a
+   * Runtime failure is classifiable:
    *   1. EOF_SOURCE_AUTHORITY_MISMATCH  (visual tail ≠ getMarkdown tail)
    *   2. EOF_COUNTER_BUG                (counter disagrees with the tail)
    *   3. DIAGNOSTIC_RECONCILE_PUBLISH_BUG (policy flipped but no publish)
    *   4. EDIT_EVENT_PRE_COMMIT_TIMING_BUG (edit read old source)
+   * Identical consecutive semantic states collapse to ONE row (see the token
+   * built in the body); a real tail/verdict/publish change always re-emits.
    */
   private emitTrailingBlankAudit(
     markdown: string | null | undefined,
@@ -467,7 +482,22 @@ export class DocumentDiagnosticsAuthority {
       : prevCodes.length === 0 ? `ADD:${nextCodes.join(',')}`
         : nextCodes.length === 0 ? `REMOVE:${prevCodes.join(',')}`
           : `REPLACE:${prevCodes.join('>')}->${nextCodes.join(',')}`
-    emitRuntimeAudit('DOCUMENT-TRAILING-BLANK-AUDIT', {
+    // TRAE §1.3/§4.3 — STATE-DEDUPED. This audit is emitted BEFORE the content
+    // fingerprint early-return, so without dedup every recompute (source edit,
+    // `#write` mutation, canonical frame commit, settings change) re-wrote the
+    // SAME semantic EOF state (the repeated `publishDecision=NOOP` rows). The
+    // state token collapses identical consecutive tails; a REAL change (verdict /
+    // counts / published codes) re-emits, so the forensic authority is preserved.
+    const signature = [
+      next.documentKey ?? '',
+      policy.verdict,
+      policy.hasTerminalNewline ? 1 : 0,
+      policy.terminalNewlineCount,
+      policy.extraTrailingBlankLineCount,
+      publishDecision,
+      nextCodes.join(','),
+    ].join('|')
+    emitRuntimeAuditStateDedup('DOCUMENT-TRAILING-BLANK-AUDIT', signature, {
       documentKey: next.documentKey,
       trigger: this.lastPublishReason,
       sourceRevision,

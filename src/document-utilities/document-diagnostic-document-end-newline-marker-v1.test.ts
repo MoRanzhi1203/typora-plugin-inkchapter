@@ -43,6 +43,9 @@ import {
   EOF_NEWLINE_MARKER_ENDPOINT_FORM,
   EOF_NEWLINE_MARKER_ENDPOINT_LABEL,
   EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS,
+  EOF_ENDPOINT_LINE_CLASS,
+  EOF_ENDPOINT_LINE_MIN_PX,
+  EOF_ENDPOINT_LINE_MAX_PX,
   EOF_NEWLINE_MARKER_KIND,
   EOF_NEWLINE_MARKER_MAX_HEIGHT_PX,
   EOF_NEWLINE_MARKER_MAX_WIDTH_PX,
@@ -59,34 +62,91 @@ import {
   DOCUMENT_END_SEMANTIC_ANCHOR_IDENTITY,
   DOCUMENT_END_VISUAL_AUDIT_EVENT,
   EOF_MARKER_KIND_DOCUMENT_END_WARNING,
+  formatDocumentEndTrailingBlankChipText,
 } from './document-diagnostic-document-end-visual-v513-r1'
 
-// ── 原设计要求 C — an EXPLICIT EOF ENDPOINT marker (not a filled colour bar) ──
-describe('原设计要求 C — EOF endpoint marker', () => {
-  it('exposes an `EOF` endpoint label + its class + the endpoint form', () => {
-    expect(EOF_NEWLINE_MARKER_ENDPOINT_LABEL).toBe('EOF')
+// ── 端点标记 — an EXPLICIT EOF ENDPOINT marker (short line + label, not a band) ──
+describe('端点标记 — 文末缺空行端点（短横线 + 缺少 1 空行）', () => {
+  it('exposes the `缺少 1 空行` endpoint label + its class + the endpoint form + a 40–60px line', () => {
+    expect(EOF_NEWLINE_MARKER_ENDPOINT_LABEL).toBe('缺少 1 空行')
     expect(EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS).toBe('inkchapter-eof-endpoint-label')
     expect(EOF_NEWLINE_MARKER_ENDPOINT_FORM).toBe('endpoint')
+    expect(EOF_ENDPOINT_LINE_CLASS).toBe('inkchapter-eof-endpoint-line')
+    expect(EOF_ENDPOINT_LINE_MIN_PX).toBe(40)
+    expect(EOF_ENDPOINT_LINE_MAX_PX).toBe(60)
   })
 
-  it('the overlay host paints the endpoint label + form on the newline-missing chip', () => {
+  it('the overlay host paints the endpoint LINE + label + form on the newline-missing chip', () => {
     const src = readFileSync(resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
     expect(src).toContain('EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS')
     expect(src).toContain('label.textContent = EOF_NEWLINE_MARKER_ENDPOINT_LABEL')
+    expect(src).toContain('EOF_ENDPOINT_LINE_CLASS')
     expect(src).toContain("setAttribute('data-ink-eof-form', EOF_NEWLINE_MARKER_ENDPOINT_FORM)")
+    expect(src).toContain('el.appendChild(line)')
     expect(src).toContain('el.appendChild(label)')
   })
 
-  it('the endpoint form drops the band fill (left boundary line only)', () => {
+  it('the endpoint form drops the band fill AND the rail; the short line is 40–60px', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const formBlock = css.match(/\[data-ink-eof-marker='true'\]\[data-ink-eof-form='endpoint'\] \{[^}]*\}/)?.[0] ?? ''
     expect(formBlock).not.toBe('')
     expect(formBlock).toContain('background: none')
-    expect(formBlock).toContain('var(--ink-blank-space-warning-accent)')
+    // the endpoint is a SHORT LINE, never a vertical rail
+    expect(formBlock).toContain('border-left: 0')
+    const lineBlock = css.match(/\.inkchapter-eof-endpoint-line \{[^}]*\}/)?.[0] ?? ''
+    expect(lineBlock).not.toBe('')
+    const width = Number.parseFloat(lineBlock.match(/width:\s*(\d+(?:\.\d+)?)px/)?.[1] ?? '0')
+    expect(width).toBeGreaterThanOrEqual(EOF_ENDPOINT_LINE_MIN_PX)
+    expect(width).toBeLessThanOrEqual(EOF_ENDPOINT_LINE_MAX_PX)
+    expect(lineBlock).toContain('var(--ink-blank-space-warning-accent)')
     const labelBlock = css.match(/\.inkchapter-eof-endpoint-label \{[^}]*\}/)?.[0] ?? ''
     expect(labelBlock).not.toBe('')
     expect(labelBlock).toContain('pointer-events: none')
     expect(labelBlock).toContain('var(--ink-blank-space-warning-accent)')
+  })
+})
+
+// ── 统一样式 — the doc-end excess band matches the internal amber region ──────
+describe('统一样式 — 文末多余空行复用内部琥珀色空行区域', () => {
+  it('the excess carrier drops the left accent (identical amber range region)', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    const region = css.match(/\[data-ink-eof-marker='true'\]\[data-ink-blank-region='amber-range'\] \{[^}]*\}/)?.[0] ?? ''
+    expect(region).not.toBe('')
+    expect(region).toContain('border-left: 0')
+    expect(region).toContain('background: var(--ink-blank-space-warning-bg)')
+  })
+
+  it('the doc-end excess chip is pinned top-right and states `多余 N 空行`', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    const chip = css.match(/\.inkchapter-blank-run-count\[data-ink-chip-pos='top-right'\] \{[^}]*\}/)?.[0] ?? ''
+    expect(chip).not.toBe('')
+    expect(chip).toContain('top: 4px')
+    expect(chip).toContain('transform: none')
+  })
+
+  it('the chip text uses the Markdown trailing count (数据来源分离)', () => {
+    expect(formatDocumentEndTrailingBlankChipText(2)).toBe('多余 2 空行')
+    expect(formatDocumentEndTrailingBlankChipText(0)).toBe('多余 0 空行')
+  })
+})
+
+// ── 实时同步 — 空行 0→1→2→3→1→0（文末规则按 Markdown 末尾计数判决） ─────────────
+describe('实时同步 — 文末多余空行 0→1→2→3→1→0', () => {
+  const present = (extra: number): boolean => resolveDocumentEndVisualRule({
+    code: DOCUMENT_END_TRAILING_BLANK_RULE_NAME,
+    locationKind: 'document-end',
+    extraTrailingBlankLineCount: extra,
+  }) !== null
+  it('only >= 2 excess trailing blanks publish the Warning (恰好 1 空行为 PASS)', () => {
+    expect(present(0)).toBe(false)
+    expect(present(1)).toBe(false)   // 恰好 1 个空行 = PASS（规则不变）
+    expect(present(2)).toBe(true)
+    expect(present(3)).toBe(true)
+    expect(present(1)).toBe(false)
+    expect(present(0)).toBe(false)
+  })
+  it('the chip number follows the SAME count as the rule (no visual re-derivation)', () => {
+    for (const n of [0, 1, 2, 3, 1, 0]) expect(formatDocumentEndTrailingBlankChipText(n)).toBe(`多余 ${n} 空行`)
   })
 })
 
@@ -425,10 +485,25 @@ function makeKindWorld(kind: LastBlockKind, opts: { terminalHost?: boolean } = {
     stubRect(terminalHost, () => ({ left: 60, top: 1055, right: 700, bottom: 1080.6 }))
   }
 
+  // item 4 — REAL trailing blank rows (the only legal band geometry source).
+  addTrailingBlankRows(write, 6, opts.terminalHost ? 1085 : 1040)
   const h = new DocumentUtilityOverlayHost({ ctx: fakeContext(), providers: fakeProviders() })
   h.mount()
   hosts.push(h)
   return { h, write, last: el, codeMirror, terminalHost }
+}
+
+/**
+ * TRAE item 4 — REAL trailing blank DOM rows are the ONLY legal geometry source.
+ */
+function addTrailingBlankRows(write: HTMLElement, count: number, fromTop: number, height = 40): void {
+  for (let i = 0; i < count; i++) {
+    const b = document.createElement('p')
+    b.textContent = ''
+    const top = fromTop + i * height
+    stubRect(b, () => ({ left: 60, top, right: 700, bottom: top + height }))
+    write.appendChild(b)
+  }
 }
 
 function newlineDiag(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
@@ -839,5 +914,90 @@ describe('§13 — the diagnostic, marker and lease track the source live', () =
     internals.lastLocatedDiagnosticId = String(diag.id)
     expect(internals.commitSyntheticEofVisual(fakeTx(), diag, 0, true)).toBe(true)
     expect(eofCarriers()).toBe(1)
+  })
+})
+
+// ── 三方 DOM 一致性 — Passive / Active / Drawer 同步（统一文末空行标记） ─────────
+
+type DrawerInternals = Internals & { openDrawer(filter?: string): void }
+const drawerRows = (): HTMLElement[] =>
+  Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))
+const excessCarrier = (): HTMLElement | null =>
+  document.querySelector<HTMLElement>('[data-ink-eof-marker="true"]')
+
+describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawer 同一计数源）', () => {
+  it('文末多余空行标记复用琥珀区域样式 + 右上角「多余 N 空行」（唯一 carrier）', () => {
+    const world = makeKindWorld('paragraph')
+    const diag = excessDiag(3)
+    injectSnapshot(world, [diag])
+    const ok = (world.h as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag, 3, true)
+    expect(ok).toBe(true)
+    // exactly ONE carrier (no duplicate)
+    expect(eofCarriers()).toBe(1)
+    const carrier = excessCarrier()!
+    // 统一样式 — the SAME amber blank-area region as the internal blank line
+    expect(carrier.getAttribute('data-ink-blank-region')).toBe('amber-range')
+    expect(carrier.getAttribute('data-ink-marker-kind')).toBe(EOF_MARKER_KIND_DOCUMENT_END_WARNING)
+    // 右上角「多余 N 空行」— N is the VISIBLE excess blank rows (item 3): the world
+    // supplies 6 REAL trailing blank rows → 6 − 1 legal = 5 visible excess rows.
+    const chip = carrier.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')
+    expect(chip).not.toBeNull()
+    expect(chip!.textContent).toBe('多余 5 空行')
+    // the last block itself is never polluted
+    expect(world.last.querySelector('[data-ink-eof-marker="true"]')).toBeNull()
+  })
+
+  it('文末缺空行端点：短横线 + 「缺少 1 空行」', () => {
+    const world = makeKindWorld('paragraph')
+    const diag = newlineDiag()
+    injectSnapshot(world, [diag])
+    expect((world.h as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag, 0, true)).toBe(true)
+    const carrier = excessCarrier()!
+    expect(carrier.getAttribute('data-ink-eof-form')).toBe('endpoint')
+    expect(carrier.querySelector('.inkchapter-eof-endpoint-line')).not.toBeNull()
+    const label = carrier.querySelector<HTMLElement>('.inkchapter-eof-endpoint-label')
+    expect(label).not.toBeNull()
+    expect(label!.textContent).toBe('缺少 1 空行')
+  })
+
+  it('Drawer 行 / Passive carrier / Active 标记 三者共享同一诊断与计数', () => {
+    const world = makeKindWorld('paragraph')
+    const diag = excessDiag(2)
+    const internals = world.h as unknown as DrawerInternals
+    // Drawer == the ONE snapshot projection
+    internals.commitAdmittedSnapshot(snapshotOf([diag], 1), 'TEST')
+    internals.openDrawer('all')
+    const rows = drawerRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].getAttribute('data-diagnostic-id')).toBe(String(diag.id))
+    expect(rows[0].className).toContain('warning')
+    // Passive carrier shares the SAME count as the Drawer row / the rule
+    internals.lastLocatedDiagnosticId = String(diag.id)
+    expect(internals.commitSyntheticEofVisual(fakeTx(), diag, 2, true)).toBe(true)
+    const chip = excessCarrier()!.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')
+    // item 3 — the chip states the VISIBLE excess rows (6 real − 1 legal = 5).
+    expect(chip!.textContent).toBe('多余 5 空行')
+    // Active — a re-locate must never duplicate the marker nor leave a residue, and
+    // the Drawer row set is unchanged (ONE lifecycle / one identity).
+    internals.locateDiagnostic(String(diag.id))
+    expect(eofCarriers()).toBeLessThanOrEqual(1)
+    expect(drawerRows().length).toBe(rows.length)
+    const after = excessCarrier()
+    if (after != null) {
+      expect(after.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')!.textContent).toBe('多余 5 空行')
+    }
+  })
+
+  it('实时同步 0→1→2→3→1→0：诊断/计数随 Markdown 末尾计数变化，标记不重复不残留', () => {
+    const world = makeKindWorld('paragraph')
+    const internals = world.h as unknown as DrawerInternals
+    internals.openDrawer('all')
+    const expectPresent = (extra: number): void => {
+      const diags = extra >= 2 ? [excessDiag(extra)] : []
+      internals.commitAdmittedSnapshot(snapshotOf(diags, extra + 1), 'TEST')
+      expect(world.h.getCurrentProblemsProjection().warningCount).toBe(diags.length)
+      expect(drawerRows().length).toBe(diags.length)
+    }
+    for (const n of [0, 1, 2, 3, 1, 0]) expectPresent(n)
   })
 })

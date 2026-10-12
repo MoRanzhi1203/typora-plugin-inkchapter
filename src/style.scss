@@ -3142,6 +3142,15 @@ body.ink-console-docked::after {
   background: var(--ink-locate-context-bg);
 }
 
+/* TRAE P0 §A/§2 — CODE NAME (CAPTION_ONLY). The frame box IS the caption/title
+   row (the paint target was decoupled from the navigation target), so its own
+   full-object context wash would be a redundant SECOND fill on the very same row.
+   The caption cue child remains the ONE visible fill — no CSS-only geometry hack:
+   the geometry is the caption row itself, this only drops the duplicate layer. */
+.inkchapter-diagnostic-locate-frame[data-paint-kind='caption-only'] {
+  background: transparent;
+}
+
 /* ── Blank-Space Warning Presentation Policy (V8 §1/§2/§3) ───────────────────
    The document-end EOF band's ORIGINAL active style is the single Source of
    Truth for EVERY blank-space Warning. It is defined ONCE at the shared
@@ -3395,24 +3404,56 @@ body.ink-console-docked::after {
   user-select: none;
 }
 
-/* 原设计要求 C — the "missing final newline" marker is an EOF ENDPOINT, not a
-   filled warning band: drop the surface fill and keep only the LEFT boundary
-   line (the endpoint). Form only — the measured BOX is unchanged. */
+/* 统一样式 — the document-end trailing-blank marker uses the SAME amber blank-area
+   REGION style as the internal `EXCESSIVE_INTERNAL_BLANK_LINES` block gap: a plain
+   amber range background with NO left accent rail and NO border. Only the geometry
+   (which zone) differs; the surface is identical. */
+.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-blank-region='amber-range'] {
+  border: 0;
+  border-left: 0;
+  border-radius: var(--ink-blank-space-warning-radius);
+  background: var(--ink-blank-space-warning-bg);
+}
+
+/* 右上角「多余 N 空行」— the doc-end excess chip is pinned to the TOP-RIGHT (never
+   the caret/selection column). Pure overlay text. */
+.inkchapter-blank-run-count[data-ink-chip-pos='top-right'] {
+  right: 6px;
+  top: 4px;
+  transform: none;
+}
+
+/* 端点标记 — the missing-final-newline marker is an ENDPOINT, not a filled band:
+   drop the surface fill AND the vertical rail; keep a SHORT horizontal line
+   (40–60px) plus the `缺少 1 空行` label. Its own form — only the warning accent
+   token is shared. */
 .inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-eof-form='endpoint'] {
   background: none;
-  border-left: var(--ink-blank-space-warning-accent-width) solid var(--ink-blank-space-warning-accent);
+  border: 0;
+  border-left: 0;
   border-radius: 0;
 }
-/* the compact `EOF` endpoint label (icon-level token, never a sentence; the full
-   text stays in the Drawer and the `title`/`aria-label`). */
+.inkchapter-eof-endpoint-line {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 48px;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: var(--ink-blank-space-warning-accent);
+  pointer-events: none;
+  user-select: none;
+}
+/* the `缺少 1 空行` endpoint label (sits to the RIGHT of the short line). */
 .inkchapter-eof-endpoint-label {
   position: absolute;
-  left: 8px;
+  left: 52px;
   top: 50%;
   transform: translateY(-50%);
   font-size: 10px;
   line-height: 1;
-  letter-spacing: 0.06em;
+  white-space: nowrap;
   font-weight: 700;
   color: var(--ink-blank-space-warning-accent);
   pointer-events: none;

@@ -18,6 +18,7 @@ import type {
 import { hashText } from './paragraph-layout-store'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { forensicVerboseEnabled } from './document-open-perf'
+import { stampCaretInertPresentation } from '../document-utilities/document-diagnostic-caret-isolation-v1'
 // V5.15 — Standalone Object Block Invariant: ONE business object = ONE
 // standalone owning block = ONE canonical target. A structurally invalid image
 // block is excluded HERE, before any ordinal / caption is produced.
@@ -775,7 +776,9 @@ export class CaptionDomAdapter {
     el.setAttribute(CAPTION_TITLE_ATTR, title)
     const ownerKey = this.targetKeysByRoot.get(target.root) ?? ''
     el.setAttribute(CAPTION_TARGET_KEY_ATTR, ownerKey)
-    el.setAttribute('contenteditable', 'false')
+    // P0 CARET ISOLATION — 题注是**投影展示文字**，必须标记为光标惰性孤岛
+    // （contenteditable=false + tabindex=-1 + user-select:none；保留点击交互）。
+    stampCaretInertPresentation(el, true)
     el.textContent = label
     this.captionOwnerRoots.set(el, target.root)
     // ── V7 §2 — the SAME canonical key is stamped on the OWNER ROOT element, so

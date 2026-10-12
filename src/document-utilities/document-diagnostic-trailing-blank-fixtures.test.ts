@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { computeDocumentDiagnostics, computeEofNewlinePolicy } from './document-diagnostics'
+import { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS } from './document-diagnostic-document-end-newline-marker-v1'
 
 const readFixture = (n: number): string =>
   readFileSync(resolve(process.cwd(), `test/vault/runtime/Document-Diagnostics-Trailing-Blank-${n}.md`), 'utf8')
@@ -50,5 +51,34 @@ describe('原设计要求 B — 尾部多余空行 0/1/2/3 fixture', () => {
       .find(x => x.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')
     expect(d).toBeTruthy()
     expect(typeof (d!.metadata as Record<string, unknown>).terminalNewlineCount).toBe('number')
+  })
+
+  it('10 个尾部空行为 EXCESSIVE，数量与范围准确', () => {
+    const p = computeEofNewlinePolicy('# T\n\n正文。\n' + '\n'.repeat(10))
+    expect(p.verdict).toBe('EXCESSIVE_TRAILING_BLANK_LINES')
+    expect(p.extraTrailingBlankLineCount).toBe(10)
+    expect(p.terminalNewlineCount).toBe(11)
+  })
+
+  it('检测 / 视觉 / 标记共享单一阈值 DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS', () => {
+    expect(DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS).toBe(2)
+    expect(computeEofNewlinePolicy('# T\n\n正文。\n').verdict).toBe('PASS')
+    const excess = computeEofNewlinePolicy('# T\n' + '\n'.repeat(DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS))
+    expect(excess.verdict).toBe('EXCESSIVE_TRAILING_BLANK_LINES')
+    expect(excess.extraTrailingBlankLineCount).toBe(DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS)
+  })
+
+  it('正文空行与文末空行同时存在：文末判定只看最后一个非空内容之后', () => {
+    const p = computeEofNewlinePolicy('# T\n\n甲\n\n\n乙\n\n\n')
+    expect(p.verdict).toBe('EXCESSIVE_TRAILING_BLANK_LINES')
+    expect(p.extraTrailingBlankLineCount).toBe(2)
+  })
+
+  it('CRLF 与无终止换行的组合判定', () => {
+    expect(computeEofNewlinePolicy('a\r\n')).toMatchObject({ verdict: 'PASS', hasTerminalNewline: true })
+    expect(computeEofNewlinePolicy('a\r\n\r\n\r\n')).toMatchObject({
+      verdict: 'EXCESSIVE_TRAILING_BLANK_LINES', extraTrailingBlankLineCount: 2,
+    })
+    expect(computeEofNewlinePolicy('a\r\nb')).toMatchObject({ verdict: 'MISSING_TERMINAL_NEWLINE' })
   })
 })

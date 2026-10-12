@@ -13,6 +13,16 @@ $RuntimeLoad    = Join-Path $ProjectRoot "test\vault\.typora\inkchapter-runtime-
 $ProjectMain    = Join-Path $ProjectRoot "dist\main.js"
 $ProjectCss     = Join-Path $ProjectRoot "dist\style.css"
 
+# ── GLOBAL (user-level) install — the root that loads for NORMAL documents ─
+# Non-vault Markdown paths have no local `.typora`, so the framework loads the
+# user-level copy. Both roots MUST carry the same artifact or the two windows
+# show two versions.
+$GlobalRoot     = Join-Path $env:APPDATA "Typora\plugins"
+$GlobalPluginId = "ranzhi.inkchapter"
+$GlobalMain     = Join-Path $GlobalRoot "plugins\$GlobalPluginId\main.js"
+$GlobalCss      = Join-Path $GlobalRoot "plugins\$GlobalPluginId\style.css"
+$GlobalLoad     = Join-Path $GlobalRoot "inkchapter-runtime-load.json"
+
 # ── Expected build ID (single source: forensic.ts) ─────────────────────────
 $ExpectedBuildId = "inkchapter-heading-reason-chip-stable-anchor-v2"
 
@@ -151,6 +161,35 @@ if ($latestAudit) {
 }
 $settingsModeParity = ($persistedMode -eq $runtimeResolvedMode) -and ($runtimeAuthorityDecision -eq "COHERENT")
 
+# ── 17. TWO-ROOT IDENTITY (test-vault path vs normal-document path) ─────────
+# The vault path loads `<vault>/.typora/plugins/<id>`; a NORMAL Markdown path
+# (no local `.typora`) loads the user-level `<userData>/plugins/plugins/<id>`.
+# Both roots must carry the SAME artifact and each window's recorded load must
+# match its own root, or the same plugin appears as two different versions.
+$globalMainSha256 = if (Test-Path $GlobalMain) { (Get-FileHash $GlobalMain -Algorithm SHA256).Hash } else { "" }
+$globalCssSha256  = if (Test-Path $GlobalCss)  { (Get-FileHash $GlobalCss  -Algorithm SHA256).Hash } else { "" }
+$crossRootOnDiskParity = ($runtimeMainSha256 -ne "") -and ($globalMainSha256 -ne "") -and ($runtimeMainSha256 -eq $globalMainSha256)
+
+function Read-LoadRecord([string]$p) {
+    if (-not (Test-Path $p)) { return $null }
+    try { return (Get-Content $p -Raw | ConvertFrom-Json) } catch { return $null }
+}
+$vaultLoadRec  = Read-LoadRecord $RuntimeLoad
+$globalLoadRec = Read-LoadRecord $GlobalLoad
+
+$vaultLoadSha     = if ($vaultLoadRec)  { [string]$vaultLoadRec.mainJsSha256 } else { "" }
+$vaultLoadAt      = if ($vaultLoadRec)  { [string]$vaultLoadRec.loadedAt }    else { "" }
+$vaultLoadSource  = if ($vaultLoadRec)  { [string]$vaultLoadRec.loadSource }  else { "" }
+$vaultLoadRoot    = if ($vaultLoadRec)  { [string]$vaultLoadRec.pluginRoot }  else { "" }
+$globalLoadSha    = if ($globalLoadRec) { [string]$globalLoadRec.mainJsSha256 } else { "" }
+$globalLoadAt     = if ($globalLoadRec) { [string]$globalLoadRec.loadedAt }     else { "" }
+$globalLoadSource = if ($globalLoadRec) { [string]$globalLoadRec.loadSource }   else { "" }
+$globalLoadRoot   = if ($globalLoadRec) { [string]$globalLoadRec.pluginRoot }   else { "" }
+
+$vaultRuntimeIdentityMatch  = ($vaultLoadSha -ne "")  -and ($vaultLoadSha  -eq $runtimeMainSha256)
+$globalRuntimeIdentityMatch = ($globalLoadSha -ne "") -and ($globalLoadSha -eq $globalMainSha256)
+$twoPathVersionConsistency  = $crossRootOnDiskParity -and $vaultRuntimeIdentityMatch -and $globalRuntimeIdentityMatch -and ($vaultLoadSha -eq $globalLoadSha)
+
 # ── Assemble result JSON ───────────────────────────────────────────────────
 $result = [PSCustomObject]@{
     oldProcessExited      = ($runtimeLoadExists -and $initializationCount -eq 1)
@@ -178,6 +217,21 @@ $result = [PSCustomObject]@{
     runtimeResolvedMode   = $runtimeResolvedMode
     runtimeAuthorityDecision = $runtimeAuthorityDecision
     settingsModeParity    = $settingsModeParity
+    globalMainPath        = $GlobalMain
+    globalMainSha256      = $globalMainSha256
+    globalCssSha256       = $globalCssSha256
+    crossRootOnDiskParity = $crossRootOnDiskParity
+    vaultRuntimeLoadSha256 = $vaultLoadSha
+    vaultRuntimeLoadLoadedAt = $vaultLoadAt
+    vaultRuntimeLoadSource = $vaultLoadSource
+    vaultRuntimeLoadPluginRoot = $vaultLoadRoot
+    globalRuntimeLoadSha256 = $globalLoadSha
+    globalRuntimeLoadLoadedAt = $globalLoadAt
+    globalRuntimeLoadSource = $globalLoadSource
+    globalRuntimeLoadPluginRoot = $globalLoadRoot
+    vaultRuntimeIdentityMatch = $vaultRuntimeIdentityMatch
+    globalRuntimeIdentityMatch = $globalRuntimeIdentityMatch
+    twoPathVersionConsistency = $twoPathVersionConsistency
     all15Passed           = $false
 }
 
@@ -214,4 +268,23 @@ if ($result.all15Passed) {
 } else {
     Write-Output "MISSING ITEMS: $($missingItems -join ', ')"
     Write-Output "FINAL VERDICT: launch command sent but not yet confirmed successful."
+}
+
+Write-Output ""
+Write-Output "========================================"
+Write-Output "TWO-ROOT IDENTITY"
+Write-Output "========================================"
+Write-Output "vault path   -> pluginRoot=$vaultLoadRoot"
+Write-Output "                 mainJsSha256=$vaultLoadSha  source=$vaultLoadSource  loadedAt=$vaultLoadAt"
+Write-Output "normal path  -> pluginRoot=$globalLoadRoot"
+Write-Output "                 mainJsSha256=$globalLoadSha  source=$globalLoadSource  loadedAt=$globalLoadAt"
+Write-Output "on-disk      -> vault=$runtimeMainSha256"
+Write-Output "                global=$globalMainSha256"
+Write-Output "CROSS_ROOT_ON_DISK_PARITY=$crossRootOnDiskParity"
+Write-Output "VAULT_RUNTIME_IDENTITY_MATCH=$vaultRuntimeIdentityMatch"
+Write-Output "GLOBAL_RUNTIME_IDENTITY_MATCH=$globalRuntimeIdentityMatch"
+Write-Output "TWO_PATH_VERSION_CONSISTENCY=$twoPathVersionConsistency"
+if (-not $twoPathVersionConsistency) {
+    Write-Output "NOTE: run each Typora window (vault doc AND a normal doc) once so both"
+    Write-Output "      runtime-load.json records are fresh, then re-run this script."
 }

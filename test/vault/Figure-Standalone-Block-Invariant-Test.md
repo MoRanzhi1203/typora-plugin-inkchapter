@@ -43,3 +43,4 @@ before ![F1](assets/phase7-strict-h1-boundary/boundary-a-figure.png) middle ![F2
 ## 结束
 
 本 fixture 结束。![]()
+

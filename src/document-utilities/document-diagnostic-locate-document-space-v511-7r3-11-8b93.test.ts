@@ -764,9 +764,9 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
     ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set([reason]))
   }
 
-  it('CODE_MISSING_NAME：题注+代码主体的载体在拖拽后仍覆盖题注（不是塌缩到代码主体）', async () => {
+  it('CODE_MISSING_NAME：载体只覆盖代码标题行（CAPTION_ONLY），不覆盖代码主体；拖拽后仍覆盖标题行', async () => {
     // Force the REAL-layout branch so the frame controller resolves the caption host
-    // and the committed carrier actually spans `caption ∪ body` (as in Typora).
+    // and the committed carrier actually targets the code TITLE ROW (as in Typora).
     const ua = vi.spyOn(window.navigator, 'userAgent', 'get')
       .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 RegularRuntime')
     try {
@@ -776,9 +776,19 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
       await oneClick(host, 'C')
       expect(carrierOf()).not.toBeNull()
       const committed = geom()
-      // the committed carrier must span the caption ∪ body (NOT just the body).
+      // TRAE P0 §A/§2 — the paint target is the code TITLE ROW ONLY: the carrier
+      // height is the caption height and it must NEVER span the code body.
       const bodyH = w.target.getBoundingClientRect().height
-      expect(committed.height).toBeGreaterThan(bodyH + 5)
+      const captionH = w.caption!.getBoundingClientRect().height
+      expect(committed.height).toBeLessThan(bodyH)
+      expect(Math.abs(committed.height - captionH)).toBeLessThanOrEqual(4)
+      // §六 — the acceptance facts are MEASURED, not hard-coded.
+      const acc = host.getCodePaintAcceptance()
+      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('CAPTION_ONLY')
+      expect(acc.CODE_CAPTION_OWNER_MATCH).toBe(true)
+      expect(acc.CODE_BODY_UNEXPECTED_FILL_COUNT).toBe(0)
+      expect(acc.CODE_SIBLING_INTERSECTION_COUNT).toBe(0)
+      expect(acc.CODE_CAPTION_RECT_DRIFT_MAX_PX).toBeLessThanOrEqual(1)
 
       // SIDEBAR DIVIDER DRAG — the caption and the body both move / re-wrap.
       w.setHostWidth(520)
@@ -794,9 +804,11 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
       await flushRaf()
 
       const after = geom()
-      // the carrier keeps its compound height (caption + body) — it must NOT collapse
-      // onto the body (the reported "题注高亮覆盖丢失").
-      expect(Math.abs(after.height - committed.height)).toBeLessThanOrEqual(4)
+      // the caption-only carrier TRACKS the LIVE caption row (the row re-wraps to a
+      // new height on the drag) — it must NOT collapse onto the body and must NOT
+      // grow back over the body.
+      expect(Math.abs(after.height - w.caption!.getBoundingClientRect().height)).toBeLessThanOrEqual(2)
+      expect(after.height).toBeLessThan(bodyH)
       expect(host.getDocumentSpaceCounters().compoundCaptionUncoveredAfterReconcile).toBe(0)
       // ── §3.3 — the caption PRIMARY child must be re-derived with the LIVE caption:
       // a deep-cloned carrier kept the COMMIT-time cue width (the caption is re-wrapped
@@ -812,6 +824,49 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
       expect(rec).toBeDefined()
       expect(rec!.captionCoveredByCarrier).toBe('true')
       expect(rec!.captionCuePresent).toBe('true')
+    } finally {
+      ua.mockRestore()
+    }
+  })
+
+  it('CODE_MISSING_NAME 与相邻代码块共存 ⇒ CAPTION_ONLY 涂色不越入兄弟块（CODE_SIBLING_INTERSECTION_COUNT=0）', async () => {
+    const ua = vi.spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 RegularRuntime')
+    try {
+      const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, withCaption: true, scrollingHost: true })
+      host = w.h
+      // a SECOND code block directly BELOW the target block (adjacent sibling)
+      const sibling = document.createElement('pre')
+      sibling.className = 'md-fences'
+      w.write.appendChild(sibling)
+      stubRect(sibling, () => { const top = 1210 - w.scrollTop(); return { left: 200, top, right: 900, bottom: top + 120 } })
+      inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+      await oneClick(host, 'C')
+      const acc = host.getCodePaintAcceptance()
+      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('CAPTION_ONLY')
+      expect(acc.CODE_SIBLING_INTERSECTION_COUNT).toBe(0)
+      expect(acc.CODE_BODY_UNEXPECTED_FILL_COUNT).toBe(0)
+    } finally {
+      ua.mockRestore()
+    }
+  })
+
+  it('CODE_MISSING_NAME 无真实标题槽 ⇒ 有依据的非侵入式 fallback（BLOCK_BODY，不冒充 CAPTION_ONLY）', async () => {
+    const ua = vi.spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 RegularRuntime')
+    try {
+      // NO caption host at all → the paint policy must fall back to the block body.
+      const w = makeWorld({ tag: 'pre', targetTop: 1000, targetHeight: 200, withCaption: false, scrollingHost: true })
+      host = w.h
+      inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
+      await oneClick(host, 'C')
+      expect(carrierOf()).not.toBeNull()
+      const acc = host.getCodePaintAcceptance()
+      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('BLOCK_BODY')
+      expect(acc.CODE_CAPTION_OWNER_MATCH).toBe(false)
+      // a block-body paint legitimately covers its OWN block only
+      expect(acc.CODE_BODY_UNEXPECTED_FILL_COUNT).toBe(0)
+      expect(acc.CODE_SIBLING_INTERSECTION_COUNT).toBe(0)
     } finally {
       ua.mockRestore()
     }

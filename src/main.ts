@@ -1396,6 +1396,11 @@ export default class extends Plugin<InkChapterSettings> {
           mainJsPath,
           mainJsSha256: hash,
           manifestPath,
+          // Framework-reported install position: 'global' (user-level) or 'vault'
+          // (a local `.typora/plugins` copy). This is the AUTHORITATIVE per-window
+          // load source — the same id can be installed in both roots, and only
+          // this field (plus pluginRoot) tells them apart without path guessing.
+          loadSource: (this as any).manifest?.postion ?? 'unknown',
           initializationCount: 1,
           ribbonInjected: !!document.querySelector('.typ-ribbon'),
           ribbonEnableClass: document.body.classList.contains('typ-ribbon--enable'),
@@ -1408,6 +1413,13 @@ export default class extends Plugin<InkChapterSettings> {
           },
         }
         fs.writeFileSync(runtimeLoadPath, JSON.stringify(runtimeLoad, null, 2), 'utf8')
+        // ENTER→BLANK ECHO GUARD (plan ②) — publish the evidence directory so the
+        // targeted DOM-write call-stack tracer can persist its DIRECT evidence to
+        // disk (the console audits cannot be read from outside the app).
+        try {
+          (globalThis as unknown as { __INKCHAPTER_EVIDENCE_DIR?: string }).__INKCHAPTER_EVIDENCE_DIR
+            = path.join(pluginRoot, '..', '..')
+        } catch { /* forensics only */ }
         console.log('[InkChapter] runtime-load.json written:', runtimeLoadPath)
       }
     } catch (e) {
