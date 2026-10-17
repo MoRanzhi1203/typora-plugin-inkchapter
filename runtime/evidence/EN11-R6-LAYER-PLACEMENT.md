@@ -184,3 +184,25 @@ EN11_REAL_RUNTIME        = PASS（16 次真实 Enter，0 次重复拆分，+1 �
 3. **即便接管，T-B-3 的初始状态也不同**：它本身已以 3 个空行结尾；在绝对末尾按 Enter 会在既有空行之上再加一个空段落，视觉上自然像“多个空行”，与 Probe（0 个尾随空行）不可直接对比。
 
 正确复测方式：**用 Typora 侧栏打开** T-B-3（框架管理标签）→ 确认 `activeLeafPath` 变为该文件 → 再按一次 Enter。
+
+### 12.1 为什么“没被接管”（事件链证据）
+
+插件日志里 `workspace @file:open` 的最后 5 条：
+
+```
+16:49:24  ...\Document-Diagnostics-Empty-Block-Presentation-Test.md
+17:48:25  ...\runtime\EOF-R5-Verify-3blanks.md
+18:16:05  ...\vnext_Headings-With-Body-H1H2.md
+18:16:43  ...\runtime\EOF-R5-Enter-Probe.md
+18:23:03  ...\runtime\EOF-R5-Enter-Probe.md   ← 之后没有任何 file:open / active-leaf:change
+```
+
+T-B-3 是在**已有活动文档时由第二个 CLI 进程**打开的，Typora 用原生标签层创建了它，**没有走框架的 `workspace.openFile`**：
+- 不触发 `file:open`
+- 不触发 `active-leaf:change`
+- 框架的 `workspace.activeLeaf` 仍指向 Probe 的 leaf
+- 插件以 `activeLeaf.state.path` 为最高权威（`main.ts:95`）→ 继续认为 Probe 是活动文档
+
+→ 插件对该文档 **0 事件**，诊断/视觉都在旧文档上。这是**框架对“外部打开标签”的盲区**，不是 R5 修复未同步。
+
+（对比：17:48:25 那次 CLI 打开**触发了** `file:open` 并成功绑定；差异在于当时窗口处于空工作区，Typora 走了框架打开路径。）
