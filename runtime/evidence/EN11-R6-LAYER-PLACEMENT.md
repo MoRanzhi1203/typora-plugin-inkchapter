@@ -165,3 +165,22 @@ EN11_REAL_RUNTIME        = PASS（16 次真实 Enter，0 次重复拆分，+1 �
 ```
 
 **残余说明**：本轮未在同一会话内执行「禁用墨章」的 C0 配对；上述为跨构建前后对照 + 用户目视确认（「貌似已经修复了」）。若要 100% 排除其他变量，可再做一次 C0，但不影响当前结论方向。
+
+## 12. `Document-Diagnostics-Trailing-Blank-3.md` 仍“两个空行”的复核（2026-10-18 02:47）
+
+用户反馈：Probe 正常，但 T-B-3 仍异常。审计事实：
+
+| 项 | 值 |
+|---|---|
+| 加载构建 | `B68D5041…`（`loadedAt=18:22:10`，init=1）— **修复已生效** |
+| `activeLeafPath` | 仍为 `runtime/EOF-R5-Enter-Probe.md` |
+| 含 `Document-Diagnostics-Trailing-Blank-3` 的审计事件 | **0 条** |
+| `@file:open` / `@active-leaf:change`（插件日志） | 最后一条 **18:23:03**，之后无 |
+| T-B-3 文件内容 | `# Trailing Blank 3\n\n正文结束。\n\n\n\n` → 正文后已有 **3 个空行**（39B / 6 LF） |
+
+结论：
+1. **不是构建未更新**：同一实例的 Probe 用 16 次真实 Enter 验证为 0 重复拆分、每次 +1。
+2. **T-B-3 没有被插件接管**：该文件是 **CLI 第二进程打开**的标签，不在框架的标签模型内（18:23 之后没有任何 `file:open` / `active-leaf:change`），所以 `activeLeafPath` 仍是 Probe，插件对该文档 0 事件。
+3. **即便接管，T-B-3 的初始状态也不同**：它本身已以 3 个空行结尾；在绝对末尾按 Enter 会在既有空行之上再加一个空段落，视觉上自然像“多个空行”，与 Probe（0 个尾随空行）不可直接对比。
+
+正确复测方式：**用 Typora 侧栏打开** T-B-3（框架管理标签）→ 确认 `activeLeafPath` 变为该文件 → 再按一次 Enter。
