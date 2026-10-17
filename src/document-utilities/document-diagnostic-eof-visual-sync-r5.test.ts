@@ -280,6 +280,19 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     expect(frags()).toBe(4)
   })
 
+  it('EN-11: 展示层必须是 #write 的首个子节点，绝不能跟在最后一个正文块之后', () => {
+    const w = makeWorld(); host = w.h
+    setVisible(w.write, 3)
+    ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(3), 3, true)
+    const layer = w.write.querySelector('[data-inkchapter-locate-layer="true"]') as HTMLElement | null
+    expect(layer).not.toBeNull()
+    // EN-11 — a trailing foreign child after the final paragraph makes Typora's
+    // end-of-document Enter produce TWO paragraph breaks. The layer must be FIRST.
+    expect(w.write.firstElementChild).toBe(layer)
+    expect(w.write.lastElementChild).not.toBe(layer)
+    expect(w.write.lastElementChild!.getAttribute('data-inkchapter-locate-layer')).toBeNull()
+  })
+
   it('EOF-15: 内部正文空行不计入 EOF 多余数（只统计最后一个非空块之后）', () => {
     const w = makeWorld(); host = w.h
     // a MEANINGFUL block, then an INTERNAL blank run, then the last meaningful block
