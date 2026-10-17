@@ -5002,8 +5002,16 @@ export class DocumentUtilityOverlayHost {
     // non-editable island (contenteditable=false + tabindex=-1 + user-select:none);
     // it changes NO user Markdown, NO count and NO serialization.
     stampCaretInertPresentation(layer, false)
-    noteEnterEchoWrite('write:WRITE.appendChild(layer)', host)
-    host.appendChild(layer)
+    noteEnterEchoWrite('write:WRITE.insertBefore(layer)', host)
+    // ── EN-11 ────────────────────────────────────────────────────────────────
+    // DO NOT append the presentation layer as the LAST child of the editor root.
+    // `#write` is Typora's block model; a trailing foreign (non-block) child after
+    // the final paragraph makes "insert paragraph at end" produce TWO paragraph
+    // breaks for ONE physical Enter. The layer is absolutely positioned in
+    // document-local coordinates, so DOM ORDER is irrelevant to geometry — park it
+    // BEFORE the first content block, never after the last one.
+    if (host.firstChild != null) host.insertBefore(layer, host.firstChild)
+    else host.appendChild(layer)
     this.locateDocLayer = layer
     this.locateDocLayerHost = host
     return layer
