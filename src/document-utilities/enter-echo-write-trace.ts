@@ -89,6 +89,15 @@ export function isContentDocumentWriteHoldActive(now = Date.now()): boolean {
   return now < armedUntil
 }
 
+/**
+ * EN-11 — remaining milliseconds of the armed content-document write hold
+ * (0 when the window is not armed). Used to DEFER a plugin presentation paint to
+ * just AFTER the window instead of writing `#write` during it.
+ */
+export function getEnterEchoWriteHoldRemainingMs(now = Date.now()): number {
+  return Math.max(0, armedUntil - now)
+}
+
 function describeTarget(target: Element | string | null): string {
   if (target == null) return 'none'
   if (typeof target === 'string') return target.slice(0, 80)

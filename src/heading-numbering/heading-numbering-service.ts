@@ -35,6 +35,9 @@ import { armEnterEchoWriteTrace, drainEnterEchoWriteTrace, persistEnterEchoWrite
 import {
   scheduleNavigationPostDefaultAudit,
   refreshCaretIsolationDomCounters,
+  invalidateNavigationAudits,
+  getNavigationAuditCounters,
+  evaluateAuditCoverageGate,
   getCaretIsolationCounters,
   formatCaretIsolationGateReport,
   evaluateCaretIsolationGates,
@@ -1310,6 +1313,17 @@ export class HeadingNumberingService {
 
   getCaretIsolationGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
     return evaluateCaretIsolationGates({ ...getCaretIsolationCounters() })
+  }
+
+  /** P0 §7.2 审计覆盖门禁报告（真实事件计数；AUDITS_DROPPED 必须为 0）。 */
+  getNavigationAuditCoverageReport(): {
+    decision: 'PASS' | 'FAIL'
+    failing: string[]
+    reason: string
+    counters: Readonly<Record<string, number>>
+  } {
+    const g = evaluateAuditCoverageGate()
+    return { decision: g.decision, failing: g.failing, reason: g.reason, counters: { ...getNavigationAuditCounters() } }
   }
 
   /** 视觉提交后重算「可编辑树内插件文字」集合计数（只读）。 */
@@ -10968,6 +10982,9 @@ export class HeadingNumberingService {
     if (this.editorRootDisposables) {
       this.editorRootDisposables.dispose()
     }
+    // ── P0 §2.3/§7.2: 编辑器根重绑（切文档/换 editor root）→ 取消旧待处理导航审计，
+    // 防止跨文档污染（不静默：计入 AUDITS_CANCELLED_WITH_REASON / STALE_DOCUMENT_DISCARD）。
+    try { invalidateNavigationAudits('EDITOR_ROOT_REBIND') } catch { /* observability only */ }
     this.editorRootDisposables = new DisposableStore()
     this.boundEditorRoot = root
 
@@ -11051,6 +11068,22 @@ export class HeadingNumberingService {
 
       if (!handled) {
         this.beginTrustedUserIntent('NORMAL_ENTER', 'keydown', 'Enter')
+      }
+
+      // ── P0 §3.5 — 有界、只读的「插件是否干预原生 Enter 事件链」取证 ──
+      // 用于区分「原生 pressReturn 单次」与「被插件事件链干预后二次执行」。仅记录真实事实，
+      // 不做任何 preventDefault/stopPropagation/二次派发（本路径自始至终不干预）。
+      if (isRealEnter) {
+        emitRuntimeAudit('ENTER-PLUGIN-INTERVENTION-AUDIT', {
+          key: e.key,
+          code: e.code,
+          isTrusted: e.isTrusted,
+          admissionDecision,
+          createdTransaction: handled,
+          defaultPreventedAtHandlerEnd: e.defaultPrevented,
+          cancelBubbleAtHandlerEnd: e.cancelBubble,
+          pluginDispatchSyntheticEnter: false,
+        })
       }
     }
     root.addEventListener('keydown', onEnterCommand, true)
