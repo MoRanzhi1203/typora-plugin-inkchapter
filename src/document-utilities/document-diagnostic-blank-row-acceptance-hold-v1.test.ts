@@ -17,6 +17,7 @@ import {
   armEnterEchoWriteTrace,
   drainEnterEchoWriteTrace,
   isContentDocumentWriteHoldActive,
+  getEnterEchoWriteHoldRemainingMs,
   noteEnterEchoWrite,
 } from './enter-echo-write-trace'
 
@@ -68,5 +69,52 @@ describe('ENTER→BLANK — content-document write hold + write fingerprint', ()
     // both gates are real, audited early-returns (never silent skips)
     expect(hostSrc).toContain('DOCUMENT-DIAGNOSTIC-BLANK-ROW-DRYRUN-DISABLED')
     expect(hostSrc).toContain('DOCUMENT-DIAGNOSTIC-BLANK-ROW-DRYRUN-HELD')
+  })
+
+  it('HOLD-4: remaining-ms accessor mirrors the armed window (0 when unarmed)', () => {
+    armEnterEchoWriteTrace('S', 250, 1000)
+    expect(getEnterEchoWriteHoldRemainingMs(1000)).toBe(250)
+    expect(getEnterEchoWriteHoldRemainingMs(1200)).toBe(50)
+    expect(getEnterEchoWriteHoldRemainingMs(1250)).toBe(0)
+    expect(getEnterEchoWriteHoldRemainingMs(9999)).toBe(0)
+    armEnterEchoWriteTrace('S', 0, 0)
+    expect(getEnterEchoWriteHoldRemainingMs(10)).toBe(0)
+  })
+
+  it('HOLD-5 (EN-11): reconcile presentation paints into #write are DEFERRED during the echo window', () => {
+    const hostSrc = readFileSync(
+      resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
+    const helperStart = hostSrc.indexOf('private runContentDocumentPaint(')
+    expect(helperStart).toBeGreaterThan(-1)
+    // the helper is a real deferral: it checks the hold, audits, and re-runs AFTER the window
+    expect(hostSrc).toContain('DOCUMENT-DIAGNOSTIC-ECHO-WINDOW-PAINT-HELD')
+    // R3 — the deferral is owned by the SINGLE coordinator (no per-site setTimeout)
+    expect(hostSrc).toContain('new PresentationPaintCoordinator(')
+    expect(hostSrc).toContain('this.getPaintCoordinator().request(')
+    expect(hostSrc).not.toContain('setTimeout(() => { try { paint() }')
+    // the three reconcile-driven #write paints MUST be routed through the helper
+    for (const call of [
+      'this.runContentDocumentPaint(\'HEADING_MARKERS\', () => this.renderHeadingDiagnosticMarkers())',
+      'this.runContentDocumentPaint(\'ACTIVE_HEADING_EMPHASIS\', () => this.renderActiveHeadingEmphasisForCommittedVisual())',
+      'this.runContentDocumentPaint(\'ACTIVE_BLOCK_GAP_RECOMMIT\', () => this.recommitActiveBlockGapVisual())',
+    ]) {
+      expect(hostSrc).toContain(call)
+    }
+    // and the raw (unguarded) calls must be GONE: every bare render call must sit
+    // on a runContentDocumentPaint(...) line — count parity proves it (falsifiable).
+    const countOf = (needle: string): number => hostSrc.split(needle).length - 1
+    expect(countOf('this.renderHeadingDiagnosticMarkers()')).toBe(
+      countOf("runContentDocumentPaint('HEADING_MARKERS'")
+      + countOf("runContentDocumentPaint('REFLOOR_MARKERS'")
+      + countOf("runContentDocumentPaint('HEADING_TEXT_CHANGED_MARKERS'"),
+    )
+    expect(countOf('this.renderActiveHeadingEmphasisForCommittedVisual()')).toBe(
+      countOf("runContentDocumentPaint('ACTIVE_HEADING_EMPHASIS'")
+      + countOf("runContentDocumentPaint('REFLOOR_ACTIVE_EMPHASIS'")
+      + countOf("runContentDocumentPaint('PASSIVE_ACTIVE_EMPHASIS'")
+      + countOf("runContentDocumentPaint('HEADING_TEXT_CHANGED_ACTIVE_EMPHASIS'"),
+    )
+    expect(countOf('this.recommitActiveBlockGapVisual()')).toBe(1)
+    expect(countOf("runContentDocumentPaint('ACTIVE_BLOCK_GAP_RECOMMIT'")).toBe(1)
   })
 })
