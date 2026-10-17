@@ -3465,6 +3465,13 @@ export class DocumentUtilityOverlayHost {
       this.reconcileInternalBlankLineDiagnostics(snapshot),
     )
     this.snapshot = admitted
+    // ── EOF-R5 §3/§4 — PASSIVE EOF VISUAL SYNC. The excess band + `多余 N 空行`
+    // label used to be written ONLY by the locate/click transaction, so a passive
+    // edit updated the diagnostic/Drawer while the band stayed stale until the
+    // user clicked again. Dispatch the ONE re-derive authority here, on the
+    // committed snapshot, gated by content/geometry fingerprints (not by
+    // `diagnosticDiff` and not by the diagnosticId).
+    this.dispatchDocumentEndExcessVisualSync()
     // ── TRAE §13 Case B/C — LIVE resolve: the `DOCUMENT_TERMINAL_NEWLINE_MISSING`
     // diagnostic must appear / disappear with the SOURCE, never requiring a
     // document close+reopen. Its reintroduction is observed here.
@@ -9809,6 +9816,23 @@ export class DocumentUtilityOverlayHost {
    * real change rebuilds the complete set.
    */
   private lastEofFragmentSetSignature: string | null = null
+  /**
+   * EOF-R5 — the LAST measured EOF presentation facts from the snapshot commit
+   * boundary. The passive sync consumes THIS (never a re-derivation from the
+   * stale record) so a visible-count change always reaches the band/label.
+   */
+  private lastEofReconcileFacts: {
+    publish: boolean
+    contentFingerprint: string
+    geometryFingerprint: string
+    visibleBlankCount: number | null
+    excessVisibleRows: number | null
+    detail: string
+    layoutEpoch: number
+  } | null = null
+  /** EOF-R5 — fingerprints actually painted by the passive sync (idempotence). */
+  private lastEofAppliedContentFp: string | null = null
+  private lastEofAppliedGeometryFp: string | null = null
   /** TRAE §B2 — doc-end fragment-set accounting (cleanup / mismatch evidence). */
   private countersEofFragmentV1 = { oldFragmentCleanup: 0, setMismatch: 0 }
   /** TRAE §B3 — the diagnosticId the CURRENT doc-end fragment set was painted for. */
@@ -15496,6 +15520,40 @@ export class DocumentUtilityOverlayHost {
       mode, visibleBlankRowCount: renderedVisibleBlankCount, sourceBlankLineCount: eofTailSourceBlankCount,
     })
     const eofDiagnosticIdentity = String((sourceD as { targetIdentity?: string } | undefined)?.targetIdentity ?? '')
+    // ── EOF-R5 §3 — TWO independent fingerprints.
+    // CONTENT: what the user is told (identity + mode + visible/excess + detail).
+    // GEOMETRY: where it must be painted (live root OBJECT + source/layout generation
+    // + the real trailing-row count). `diagnosticDiff=NONE` / an unchanged
+    // diagnosticId must never block a content or geometry update.
+    const eofContentFingerprint = [
+      snapshot.documentKey ?? '', DOCUMENT_END_TRAILING_BLANK_RULE_NAME, mode,
+      String(renderedVisibleBlankCount ?? 'null'), String(excessVisibleRows ?? 'null'), eofPublishedDetail,
+    ].join('|')
+    let eofRootIdentity = 'unknown'
+    try { eofRootIdentity = this.editorRootIdOf(resolveBusinessContentRoot()) ?? 'no-root' } catch { eofRootIdentity = 'unknown' }
+    const eofGeometryFingerprint = [
+      eofRootIdentity, String(snapshot.sourceRevision ?? ''), String(this.currentDocumentLayoutEpoch),
+      String(tail.trailingBlankRects.length),
+    ].join('|')
+    this.lastEofReconcileFacts = {
+      publish,
+      contentFingerprint: eofContentFingerprint,
+      geometryFingerprint: eofGeometryFingerprint,
+      visibleBlankCount: renderedVisibleBlankCount,
+      excessVisibleRows,
+      detail: eofPublishedDetail,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+    }
+    // EOF-R5 §3.3 — `diagnosticDiff` is the IDENTITY/collection diff (unchanged
+    // meaning: same published rule ⇒ NONE). The CONTENT/GEOMETRY update is a
+    // SEPARATE axis (`visualUpdate`) and is the ONLY gate the passive EOF visual
+    // sync consumes — `NONE` must never block a visible-count/label/target update.
+    const eofIdentityDiff = publish ? 'NONE' : 'REMOVE'
+    const eofVisualUpdate = !publish
+      ? 'RETRACT'
+      : (eofContentFingerprint !== this.lastEofAppliedContentFp
+        ? 'UPDATE_CONTENT'
+        : (eofGeometryFingerprint !== this.lastEofAppliedGeometryFp ? 'UPDATE_GEOMETRY' : 'NOOP'))
     const diagnosticDecision = publish
       ? (reason === 'VISIBLE_EXCESSIVE_' + String(excessVisibleRows) ? 'PUBLISH_EXCESSIVE' : 'KEEP_SOURCE_PENDING')
       : 'RETRACT_PASS'
@@ -15514,7 +15572,10 @@ export class DocumentUtilityOverlayHost {
       diagnosticDecision,
       previousDiagnosticId: sourceD?.id ?? null,
       nextDiagnosticId,
-      diagnosticDiff: publish ? 'NONE' : 'REMOVE',
+      diagnosticDiff: eofIdentityDiff,
+      visualUpdate: eofVisualUpdate,
+      contentFingerprint: eofContentFingerprint,
+      geometryFingerprint: eofGeometryFingerprint,
       drawerWarningCount: publish ? 1 : 0,
       visualFragmentCount: this.locateDocEndCarrier
         ? this.locateDocEndCarrier.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length
@@ -25397,17 +25458,15 @@ export class DocumentUtilityOverlayHost {
       this.applyEofExcessRealRowBandAuthority(geo, tail, textColumn.left, contentColumn ? contentColumn.right : null)
     }
     if (!geo.rect) {
-      // ── TRAE §B2 item 6 — the excess region went to ZERO (or became invalid):
-      // REMOVE the previous fragment set + chip so no stale marker survives, and
-      // drop the signature so a later growth rebuilds a fresh, complete set.
+      // ── TRAE §B2 item 6 — the excess region went to ZERO: REMOVE the previous
+      // fragment set + chip so no stale marker survives.
+      // EOF-R5 §4.1 — but a MOMENTARILY unmeasurable geometry (mid-edit / mid-reflow)
+      // is NOT "zero excess". Clearing here removed the old visual and never painted
+      // the new one (the observed `2 → 0` stale-gap). Keep the current set; the next
+      // SETTLED re-derive replaces it atomically.
       if (isExcessRule) {
-        for (const child of Array.from(el.children)) {
-          if (child.classList.contains(RENDERED_BLANK_ROW_FRAGMENT_CLASS) || child.classList.contains(BLANK_RUN_COUNT_CHIP_CLASS)) {
-            child.remove()
-            this.countersEofFragmentV1.oldFragmentCleanup++
-          }
-        }
-        this.lastEofFragmentSetSignature = null
+        const liveExcessRows = Math.max(0, tail.trailingBlankRects.length - 1)
+        if (liveExcessRows === 0) this.clearEofExcessFragments(el)
       }
       return null
     }
@@ -25437,15 +25496,80 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * EOF-R5 §3/§4 — PASSIVE EOF excess visual sync at the snapshot boundary.
+   *
+   * Consumes the LAST measured facts (never the stale diagnostic record). Updates
+   * an EXISTING carrier in place through the ONE re-derive authority, atomically
+   * replacing fragments + label. It never creates a second geometry authority,
+   * never writes while the content-document hold is active (the coordinator parks
+   * it), and never clears a valid band while geometry is momentarily unmeasurable.
+   */
+  private dispatchDocumentEndExcessVisualSync(): void {
+    const facts = this.lastEofReconcileFacts
+    if (facts == null) return
+    // Retraction (N = 0/1 visible): tear down the old owner's fragments + label.
+    if (!facts.publish) {
+      if (this.locateDocEndCarrier != null && this.locateDocEndCarrier.isConnected) {
+        this.runContentDocumentPaint('EOF_TAIL_RETRACT', () => {
+          const live = this.locateDocEndCarrier
+          if (live == null || !live.isConnected) return
+          this.clearEofExcessFragments(live)
+        })
+      }
+      this.lastEofAppliedContentFp = null
+      this.lastEofAppliedGeometryFp = null
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-EOF-VISUAL-SYNC', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null, update: 'RETRACT', ...facts,
+      })
+      return
+    }
+    // UNMEASURABLE is not "zero excess": keep the current paint, never retract.
+    if (facts.excessVisibleRows == null) return
+    const el = this.locateDocEndCarrier
+    if (el == null || !el.isConnected) return
+    const update = facts.contentFingerprint !== this.lastEofAppliedContentFp
+      ? 'UPDATE_CONTENT'
+      : facts.geometryFingerprint !== this.lastEofAppliedGeometryFp ? 'UPDATE_GEOMETRY' : 'NOOP'
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-EOF-VISUAL-SYNC', {
+      documentKey: this.opts.ctx.authority.getDocumentKey() ?? null, update, ...facts,
+    })
+    if (update === 'NOOP') return
+    const contentFp = facts.contentFingerprint
+    const geometryFp = facts.geometryFingerprint
+    const excess = facts.excessVisibleRows
+    this.runContentDocumentPaint('EOF_TAIL_VISUAL', () => {
+      const live = this.locateDocEndCarrier
+      if (live == null || !live.isConnected) return
+      this.rederiveSyntheticEofVisualOnLayoutChange(excess)
+      this.lastEofAppliedContentFp = contentFp
+      this.lastEofAppliedGeometryFp = geometryFp
+    })
+  }
+
+  /** EOF-R5 §4.2 — remove ONLY this owner's fragments + label (never the carrier box). */
+  private clearEofExcessFragments(el: HTMLElement): void {
+    let removed = 0
+    for (const child of Array.from(el.children)) {
+      if (child.classList.contains(RENDERED_BLANK_ROW_FRAGMENT_CLASS) || child.classList.contains(BLANK_RUN_COUNT_CHIP_CLASS)) {
+        child.remove()
+        removed++
+      }
+    }
+    if (removed > 0) this.countersEofFragmentV1.oldFragmentCleanup += removed
+    this.lastEofFragmentSetSignature = null
+  }
+
+  /**
    * ROOT_EOF_LIVE_COMPARATOR §三/§七 —— a REAL editor-geometry change re-derives the
    * committed EOF band from live geometry, so its frozen commit-time width can never
    * outlive the layout that produced it.
    */
-  private rederiveSyntheticEofVisualOnLayoutChange(): void {
+  private rederiveSyntheticEofVisualOnLayoutChange(extraOverride?: number): void {
     const el = this.locateDocEndCarrier
     if (el == null || !el.isConnected) return
     const isExcessRule = (this.lastDocEndVisualRule ?? 'TRAILING_BLANK_EXCESS') !== 'TERMINAL_NEWLINE_MISSING'
-    const extra = this.lastDocEndVisual?.excessiveTrailingBlankLineCount ?? 0
+    // EOF-R5 — prefer the FRESHLY measured excess (never a stale committed value).
+    const extra = extraOverride ?? this.lastDocEndVisual?.excessiveTrailingBlankLineCount ?? 0
     const applied = this.recomputeSyntheticEofPresentation(el, isExcessRule, extra)
     if (applied == null) return
     if (this.lastDocEndVisual != null) {
