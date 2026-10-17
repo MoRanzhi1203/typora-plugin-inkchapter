@@ -15,9 +15,9 @@
 | **EOF-04b（真实反馈）** | 3→2→4 | **着色块几何高度**随多余行数缩小/增大（不只是数值） | **PASS（单元）** | `EOF-04b`：`height2 < height3`、`height4 > height2` |
 | EOF-05 | 2→1 | 警告与旧 owner 全清 | **PASS（单元）** | `EOF-05`：`frags=0`、`chip=null`、无残留 chip |
 | EOF-06 | 3→1 | 快速跨行删除、零残留 | **PASS（单元）** | `EOF-06` |
-| EOF-07 | 1→0 | 出现缺换行警告、非过量标记 | **NOT_RUN（真实）** | 单元层已覆盖 retract；缺换行端点需真实编辑器 |
+| EOF-07 | 1→0 | 出现缺换行警告、非过量标记 | **PASS（真实）** | `DOCUMENT-TRAILING-BLANK-AUDIT`：tail `"# T\n\ncontent"`、`hasTerminalNewline=false`、`policyDecision=MISSING_TERMINAL_NEWLINE`、`nextDiagnostic=["DOCUMENT_TERMINAL_NEWLINE_MISSING"]`、无过量诊断 |
 | EOF-08 | 快速连续 Enter/Backspace | 最终最新、无旧回调覆盖 | **PASS（单元）** | `EOF-08`：2→3→2→4→3→5 终态 `多余 4 空行`/4 frags |
-| EOF-09 | Undo/Redo | Drawer/fill/标签同步恢复 | **NOT_RUN（真实）** | 需真实 Undo 栈 |
+| EOF-09 | Undo/Redo | Drawer/fill/标签同步恢复 | **PARTIAL（真实 Undo）** | Undo：16B→14B→12B，策略 `EXCESSIVE → PASS → MISSING_TERMINAL_NEWLINE` 全程正确；Redo 与 fill/标签（无 carrier）**NOT_RUN** |
 | EOF-10 | 激活/未激活各执行 01..09 | 无需再次点击 | **PASS（单元，激活态）** | `EOF-10`；未激活态由 EOF-02~06 覆盖 |
 | EOF-11 | 点击 EOF 诊断再增删行 | active target 不丢、Drawer 不跳 | **PASS（单元）** | `EOF-11`：同一 carrier 对象、`isConnected=true` |
 | EOF-12 | 文档切换与根替换 | 旧视觉/异步任务清理 | **PASS（协调器单元）** | coordinator T5/T6/T13（docKey/root 变化 → `DROP_STALE`）；真实切文档 **NOT_RUN** |
