@@ -66,7 +66,7 @@ RUNTIME_IDENTITY=PASS (B0A98E09…, source=vault, init=1)
 EOF_REAL_RUNTIME=PASS (excess band + label sync: 5/5 expected==actual, RETRACT at 1, NOOP idempotent)
 EN11_REAL_RUNTIME=PASS (B68D5041, presenceState=ACTIVE, 16 real code=Enter, ENTER-DUPLICATE-SPLIT=0, +1 visible blank per Enter)
 FINAL_DECISION=PASS (EOF visual sync + EN-11) / PENDING_USER_MANUAL (C0 paired control, pixel glance)
-NOT_RUN=[EOF-07(real missing-newline endpoint),EOF-09(undo/redo),EOF-12(cross-document real),EOF-13(pixel),EOF-14(save/reopen),EOF-15(code/formula/CRLF),EOF-16(C0 paired control),EOF_CROSS_DOCUMENT_STALE_PAINT_COUNT]
+NOT_RUN=[EOF-12(cross-document real),EOF-13(pixel),EOF-14(save/reopen),EOF-15(code/formula/CRLF),EOF-16(C0 paired control),EOF_CROSS_DOCUMENT_STALE_PAINT_COUNT]
 ```
 
 ## 6. 剩余风险
