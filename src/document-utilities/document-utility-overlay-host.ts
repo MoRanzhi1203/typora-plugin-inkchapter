@@ -1587,6 +1587,16 @@ const DRAWER_NAV_GAP_PX = 16
 /** Phase 7R.3.11.4 — ResizeObserver attribution windows (single source of truth). */
 const EXTERNAL_RESIZE_WINDOW_MS = 100
 const UTILITY_WRITE_WINDOW_MS = 100
+/**
+ * PERFORMANCE — diagnostics recompute coalescing.
+ *
+ * The editor-mutation observer used to run the FULL semantic pass (Markdown
+ * parse + DOM scan) on every animation frame, i.e. multiple times per second
+ * while typing. It now waits for a quiet window; a hard max-wait guarantees a
+ * refresh even during continuous typing.
+ */
+const DIAGNOSTICS_RECOMPUTE_DEBOUNCE_MS = 300
+const DIAGNOSTICS_RECOMPUTE_MAX_WAIT_MS = 1000
 
 /** Phase 7R.3.11.6 — navigator placement tolerance (px) for NAV-PLACEMENT gate. */
 const NAV_PLACEMENT_TOLERANCE_PX = 3
@@ -2789,6 +2799,11 @@ export class DocumentUtilityOverlayHost {
   /** Phase 7R.3.11.8-B §7 — event-driven diagnostics recompute (mutation → rAF, no polling). */
   private diagnosticsMutationObserver: MutationObserver | null = null
   private diagnosticsRafPending = false
+  /** PERFORMANCE — debounced semantic recompute (mutation bursts collapse). */
+  private diagnosticsRecomputeTimer: ReturnType<typeof setTimeout> | null = null
+  private diagnosticsRecomputeReason = 'DOCUMENT_MUTATION'
+  private diagnosticsRecomputeRealContentMutation = false
+  private diagnosticsRecomputeMaxWaitAt: number | null = null
   private snapshot: DocumentDiagnosticsSnapshot | null = null
   /** Phase 7R.3.11.8B.5 — multi-target locate cycle cursor per diagnosticId. */
   private multiTargetCursor = new Map<string, number>()
@@ -4428,12 +4443,6 @@ export class DocumentUtilityOverlayHost {
             this.lastMutationProvenanceV7 = realContentMutation
               ? 'USER_CONTENT_MUTATION'
               : 'PLUGIN_PRESENTATION_MUTATION'
-            this.diagnostics.recompute('DOCUMENT_MUTATION')
-            // ── V5.14-R3 §P11 §10 — a real heading content edit marks the visual
-            // dirty HERE (the single content-mutation authority), so the stale
-            // fill width / chip anchor is invalidated + rebuilt once even when the
-            // diagnostics publish is a NOOP.
-            this.reconcileHeadingContentEdits('DOCUMENT_MUTATION')
             // ── V5.14-R4 §6/§7 — the ONE reflow invalidation entry point. A blank
             // line / paragraph inserted above a diagnosed heading changes its live
             // position while diagnosticId / stableIdentity / contentFingerprint all
@@ -4446,6 +4455,10 @@ export class DocumentUtilityOverlayHost {
                 this.countersVisualReflowV514R4.layoutAffectingMutationWithoutGeometryInvalidation++
               }
             }
+            // PERFORMANCE — the expensive semantic pass is debounced. Geometry
+            // invalidation stays on the rAF path so markers never keep stale
+            // coordinates while typing.
+            this.scheduleDiagnosticsRecompute('DOCUMENT_MUTATION', realContentMutation)
             this.scheduleGeometrySync('content-mutation')
           })
         }
@@ -4547,6 +4560,8 @@ export class DocumentUtilityOverlayHost {
       this.geometryRecoveryRaf = null
     }
     this.pendingGeometryRecovery = null
+    // PERFORMANCE — a disposed host must never run a queued semantic recompute.
+    this.cancelPendingDiagnosticsRecompute()
     for (const d of this.disposables) d()
     this.disposables = []
     this.resizeObserver?.disconnect()
@@ -17880,6 +17895,53 @@ export class DocumentUtilityOverlayHost {
   }
 
   // ── Placement (coalesced, read/write separated) ─────
+  /**
+   * PERFORMANCE — debounce the FULL diagnostics semantic pass.
+   *
+   * Mutation bursts (typing) collapse into ONE recompute after a quiet window.
+   * A hard max-wait guarantees a pass even during continuous typing. Geometry
+   * invalidation stays on the rAF path (cheap) so markers never keep stale
+   * coordinates while the semantic pass waits.
+   */
+  private scheduleDiagnosticsRecompute(reason: string, realContentMutation: boolean): void {
+    if (this.disposed) return
+    this.diagnosticsRecomputeReason = reason
+    if (realContentMutation) this.diagnosticsRecomputeRealContentMutation = true
+
+    const now = Date.now()
+    if (this.diagnosticsRecomputeMaxWaitAt === null) {
+      this.diagnosticsRecomputeMaxWaitAt = now + DIAGNOSTICS_RECOMPUTE_MAX_WAIT_MS
+    }
+    const maxWaitRemaining = Math.max(0, this.diagnosticsRecomputeMaxWaitAt - now)
+    const delay = Math.min(DIAGNOSTICS_RECOMPUTE_DEBOUNCE_MS, maxWaitRemaining)
+
+    if (this.diagnosticsRecomputeTimer !== null) clearTimeout(this.diagnosticsRecomputeTimer)
+    this.diagnosticsRecomputeTimer = setTimeout(() => {
+      this.diagnosticsRecomputeTimer = null
+      this.diagnosticsRecomputeMaxWaitAt = null
+      if (this.disposed) return
+      const pendingReason = this.diagnosticsRecomputeReason
+      const realContent = this.diagnosticsRecomputeRealContentMutation
+      this.diagnosticsRecomputeRealContentMutation = false
+      try {
+        this.diagnostics.recompute(pendingReason)
+      } catch { /* fail-open: observability must never break the editor */ }
+      // ── V5.14-R3 §P11 §10 — the stale fill width / chip anchor is rebuilt
+      // once from the freshly committed snapshot.
+      if (realContent) this.reconcileHeadingContentEdits(pendingReason)
+    }, delay)
+  }
+
+  /** Cancel a pending debounced recompute (dispose / authoritative reconcile). */
+  private cancelPendingDiagnosticsRecompute(): void {
+    if (this.diagnosticsRecomputeTimer !== null) {
+      clearTimeout(this.diagnosticsRecomputeTimer)
+      this.diagnosticsRecomputeTimer = null
+    }
+    this.diagnosticsRecomputeMaxWaitAt = null
+    this.diagnosticsRecomputeRealContentMutation = false
+  }
+
   private scheduleGeometrySync(reason: string): void {
     if (!this.root) return
     // Phase 7R.3.11.6 — coalescing must NOT drop drawer-open/close semantics:
@@ -18417,6 +18479,9 @@ export class DocumentUtilityOverlayHost {
       // layout/commit phases (or hidden inside them).
       {
         const detectStart = typeof performance !== 'undefined' ? performance.now() : Date.now()
+        // PERFORMANCE — an authoritative reconcile supersedes any debounced
+        // mutation pass; never run the full parse twice for the same state.
+        this.cancelPendingDiagnosticsRecompute()
         this.diagnostics.recompute(reason)
         const detectDone = typeof performance !== 'undefined' ? performance.now() : Date.now()
         this.recordDiagnosticPerf('semanticDetect', detectDone - detectStart)

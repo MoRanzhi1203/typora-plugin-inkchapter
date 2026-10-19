@@ -4538,6 +4538,12 @@ export class HeadingNumberingService {
       if (!root) return
       this.adapter.setEditorRoot(root)
 
+      // PERFORMANCE — ONE full-document heading query for this refresh. Every
+      // step below (layout / bindings / snapshot / fast-path validation /
+      // reconcile / audit) consumes this same collection instead of re-running
+      // the identical selector 5-7 times per keystroke.
+      const headingEls = this.adapter.queryHeadingElements()
+
       // ── Trace: T5 doRefresh (fail-open) ──
       this.traceDoRefreshCount++
       safeTrace(() => {
@@ -4553,7 +4559,7 @@ export class HeadingNumberingService {
       })
 
       // Apply heading layouts (always, independent of numbering state)
-      this.applyHeadingLayouts()
+      this.applyHeadingLayouts(headingEls)
 
       // ── Rehydrate explicit paragraph overrides before layout refresh ──
       // Normal Enter / paragraph split destroys HTMLElement identity.
@@ -4571,7 +4577,7 @@ export class HeadingNumberingService {
       // Phase 7R.3.9: ONE canonical heading collection (binding retains the live
       // element). The semantic snapshot + CanonicalHeadingFrame are built from
       // this SAME collection — the 34-vs-33 two-collector drift cannot occur.
-      const headingBindings = this.adapter.collectHeadingBindings()
+      const headingBindings = this.adapter.collectHeadingBindings(headingEls)
       this.headingStructureEpochValue++
       const headings = headingBindings.map(b => ({ key: b.key, level: b.level as HeadingLevel, text: b.text }))
       snapshotHeadingCollection(headings)
@@ -4634,7 +4640,7 @@ export class HeadingNumberingService {
       // ── PHYSICAL PROJECTION GATE (semantic already committed) ──
       if (!this.s.enabled) return
 
-      const snapshot = this.adapter.createHeadingSnapshot()
+      const snapshot = this.adapter.createHeadingSnapshot(headings)
       const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
 
       if (!forceRefresh && this.lastSnapshot && this.renderedStates && this.renderedProjections) {
@@ -4644,9 +4650,9 @@ export class HeadingNumberingService {
           // AND gap are all still valid from the SAME projection. The gap is now
           // validated inside `isRenderedStateValid` (the state carries it), so a
           // "label valid but gap invalid" DOM can never be fast-path accepted.
-          if (this.adapter.isRenderedStateValid(this.renderedStates)) {
+          if (this.adapter.isRenderedStateValid(this.renderedStates, headingEls)) {
             this.lastSnapshot = snapshot
-            this.emitHeadingDecorationAudit(reason, 'FAST_PATH_SKIP', null, numberingSnapshot.revision)
+            this.emitHeadingDecorationAudit(reason, 'FAST_PATH_SKIP', null, numberingSnapshot.revision, undefined, headingEls)
             return // physical DOM unchanged → skip projection (semantic already committed)
           }
           // Structure same but the ATOMIC decoration drifted (node replaced, gap
@@ -4655,10 +4661,10 @@ export class HeadingNumberingService {
           // rewritten, from the SAME projection snapshot.
           const repairProjections = this.renderedProjections
           if (repairProjections) {
-            const diff = this.adapter.reconcileHeadingDecorations(repairProjections)
-            this.syncRenderedDecorationCache(repairProjections)
+            const diff = this.adapter.reconcileHeadingDecorations(repairProjections, headingEls)
+            this.syncRenderedDecorationCache(repairProjections, headingEls)
             this.logRefresh(reason, snapshot.length, diff, startTime)
-            this.emitHeadingDecorationAudit(reason, 'DECORATION_REPAIR', repairProjections, numberingSnapshot.revision, diff)
+            this.emitHeadingDecorationAudit(reason, 'DECORATION_REPAIR', repairProjections, numberingSnapshot.revision, diff, headingEls)
             this.lastSnapshot = snapshot
             return
           }
@@ -4710,14 +4716,13 @@ export class HeadingNumberingService {
       snapshotNumberingEngine(this.s, engineEntries)
 
       const previousProjections = this.renderedProjections
-      const diff = this.adapter.reconcileHeadingDecorations(projections)
-      this.syncRenderedDecorationCache(projections)
+      const diff = this.adapter.reconcileHeadingDecorations(projections, headingEls)
+      this.syncRenderedDecorationCache(projections, headingEls)
 
       const gaps = projections.map(p => p.gap)
-      this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff)
+      this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff, headingEls)
 
-      // Snapshot apply-diff
-      const headingEls = this.adapter.getEditorRoot()?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []
+      // Snapshot apply-diff (SAME heading collection — no second query)
       const diffEntries: ApplyDiffEntry[] = []
       let di = 0; for (const el of Array.from(headingEls).slice(0, 20)) {
         diffEntries.push({
@@ -4765,15 +4770,15 @@ export class HeadingNumberingService {
   // ── Heading layout ─────────────────────────────────────
 
   /** Apply heading layout to the editor (independent of numbering state). */
-  private applyHeadingLayouts(): void {
+  private applyHeadingLayouts(headingEls?: readonly HTMLHeadingElement[]): void {
     const structure = resolveHeadingStructure(this.s)
     const layouts = this.getEffectiveHeadingLayouts(structure.mode)
     if (!layouts) {
-      this.adapter.clearHeadingLayouts()
+      this.adapter.clearHeadingLayouts(headingEls)
       return
     }
     // Layout is physical H1-H6 (NO level shift): real H2 uses layout.h2.
-    this.adapter.applyHeadingLayouts(layouts)
+    this.adapter.applyHeadingLayouts(layouts, headingEls)
   }
 
   /** Apply paragraph indent styles to the editor DOM. */
@@ -9267,11 +9272,15 @@ export class HeadingNumberingService {
    * V5.14-R4 §9 — commit the ONE decoration projection and cache it as the
    * AUTHORITY that repair / fast-path validation / diagnostics read back.
    */
-  private syncRenderedDecorationCache(projections: readonly HeadingDecorationProjection[]): void {
+  private syncRenderedDecorationCache(
+    projections: readonly HeadingDecorationProjection[],
+    preCollected?: readonly HTMLHeadingElement[],
+  ): void {
     this.renderedProjections = [...projections]
     this.renderedStates = this.adapter.buildRenderedStates(
       projections.map(p => p.label),
       projections.map(p => p.gap),
+      preCollected,
     )
     this.renderedGaps = projections.map(p => p.gap)
     this.decorationProjectionGeneration++
@@ -9288,6 +9297,7 @@ export class HeadingNumberingService {
     previous: readonly HeadingDecorationProjection[] | null,
     numberingRevision: number | null,
     diff?: { labelMismatch: number; gapMismatch: number; classMismatch: number },
+    preCollected?: readonly HTMLHeadingElement[],
   ): void {
     const root = this.adapter.getEditorRoot()
     const projections = this.renderedProjections
@@ -9296,7 +9306,7 @@ export class HeadingNumberingService {
     const settingsRevision = this.docContext?.settingsRevision ?? null
     const settingsChanged = settingsRevision != null && settingsRevision !== this.lastAuditedSettingsRevision
     const previousByIdentity = new Map((previous ?? []).map(p => [p.stableIdentity, p]))
-    const els = root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6')
+    const els = preCollected ?? root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6')
     let idx = 0
     for (let i = 0; i < els.length; i++) {
       const el = els[i]

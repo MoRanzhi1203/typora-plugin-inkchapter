@@ -101,6 +101,11 @@ let suppressedInfoLogCount = 0
 let warnAuditCount = 0
 let errorAuditCount = 0
 const dedupLastSignature = new Map<string, string>()
+/**
+ * PERFORMANCE — bound the dedup cache so a long editing session with many
+ * distinct document/state tokens can never grow it without limit.
+ */
+const MAX_DEDUP_SIGNATURES = 500
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -236,15 +241,21 @@ function flush(): void {
 }
 
 function enqueueRecord(event: string, payload?: Record<string, unknown>, level: AuditLogLevel = 'info'): void {
-  // Capture the emission timestamp exactly once (NOT at flush time).
-  const ts = captureRuntimeLogTimestamp()
-
   // Phase 7R.3.11.7 — summary level counters (non-info authority preserved).
   if (level === 'warn') warnAuditCount++
   else if (level === 'error') errorAuditCount++
 
-  // Console mirror always runs — preserves the existing observable stream.
-  consoleLog(level, buildConsoleLine(event, payload, ts))
+  const consoleEnabled = isRuntimeAuditConsoleRequested()
+  // PERFORMANCE — zero-cost path: no timestamp, no formatting and no string
+  // building when both the console mirror and the file sink are disabled.
+  if (!consoleEnabled && (!enabled || failed)) return
+
+  // Capture the emission timestamp exactly once (NOT at flush time).
+  const ts = captureRuntimeLogTimestamp()
+
+  // Console mirror always runs (unless explicitly silenced) — preserves the
+  // existing observable stream.
+  if (consoleEnabled) consoleLog(level, buildConsoleLine(event, payload, ts))
 
   // File sink is best-effort; never throws into business code.
   if (!enabled || failed) return
@@ -286,6 +297,29 @@ export function isRuntimeAuditSinkRequested(): boolean {
   }
 }
 
+let consoleEnvDefault: boolean | null = null
+
+/**
+ * PERFORMANCE — console mirroring is ON by default and can be silenced with
+ * `globalThis.__inkchapter_audit_console__ = false` or `INKCHAPTER_AUDIT_CONSOLE=0`.
+ * Combined with the opt-in file sink this gives the hot path a zero-cost mode
+ * (no timestamp, no payload formatting, no console call).
+ */
+export function isRuntimeAuditConsoleRequested(): boolean {
+  const g = globalThis as { __inkchapter_audit_console__?: unknown }
+  if (g.__inkchapter_audit_console__ === false) return false
+  if (g.__inkchapter_audit_console__ === true) return true
+  if (consoleEnvDefault === null) {
+    try {
+      const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      consoleEnvDefault = proc?.env?.INKCHAPTER_AUDIT_CONSOLE !== '0'
+    } catch {
+      consoleEnvDefault = true
+    }
+  }
+  return consoleEnvDefault
+}
+
 /**
  * Unified audit facade. Console + file-backed sink in one place.
  * Pure logger — carries no business logic.
@@ -321,6 +355,10 @@ export function emitRuntimeAuditStateDedup(
   if (last === signature) {
     suppressedInfoLogCount++
     return
+  }
+  if (dedupLastSignature.size >= MAX_DEDUP_SIGNATURES && !dedupLastSignature.has(event)) {
+    const oldest = dedupLastSignature.keys().next().value
+    if (oldest !== undefined) dedupLastSignature.delete(oldest)
   }
   dedupLastSignature.set(event, signature)
   emittedInfoLogCount++
