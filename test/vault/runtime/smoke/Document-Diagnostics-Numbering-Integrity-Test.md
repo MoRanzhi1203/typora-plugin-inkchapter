@@ -1,20 +1,8 @@
 # Document Diagnostics — Numbering Integrity Runtime Fixture (Phase H / Numbering V2)
 
-> Runtime smoke fixture for the numbering-integrity families (§9 / §21).
+> Runtime smoke fixture（§9 / §21）。在真实 vault 窗口中按各节配置启用对象 / 标题自动编号。
 >
-> Open this file inside the REAL vault window (InkChapter loaded) with the
-> object / heading auto-numbering settings configured as noted per section.
->
-> Canonical authorities (NO rendered-text number regex is ever used):
-> `computeObjectNumbers` / `buildObjectNumberingLabel` (object numbering engine),
-> `planFormulaSemanticNumbers` (formula semantic planner), `detectManualNumberPrefix`
-> (the ONE manual-prefix parser). The numbering integrity rules consume ONLY the
-> caption service's published "effective number" snapshot
-> (`getObjectEffectiveNumberElementFacts`), joined to the diagnostics' OWN
-> `block:<kind>:<ordinal>` source identity. When that snapshot is absent / empty
-> every number rule stays SILENT. Diagnostic identities derive from the object's
-> SOURCE identity (block ordinal), never from a generated number — switching the
-> number STYLE (Chinese / Decimal / Roman) must NOT change any diagnostic id.
+> Authority：`computeObjectNumbers` / `buildObjectNumberingLabel`、`planFormulaSemanticNumbers`、`detectManualNumberPrefix`；规则只消费 caption service 的 effective number snapshot 与 `block:<kind>:<ordinal>` 源身份。Snapshot 缺失时规则保持 SILENT；编号样式切换不得改变 diagnostic id。
 
 ## N1–N3 — duplicate numbers
 
