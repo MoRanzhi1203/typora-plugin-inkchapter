@@ -423,8 +423,10 @@ export default class extends Plugin<InkChapterSettings> {
     // ── File-backed forensic audit sink (pure observability, fail-open) ──
     // PERFORMANCE: opt-in only. Console mirroring stays always-on; persisting
     // JSONL would otherwise write to disk from the editing hot path.
+    // `sessionId` stays function-scoped: the runtime identity audit below
+    // reports it regardless of whether the file sink is enabled.
+    const sessionId = `sess-${Date.now()}`
     if (isRuntimeAuditSinkRequested()) {
-      const sessionId = `sess-${Date.now()}`
       initializeForensicSink({ vaultRoot: storageRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
     } else {
       console.info('[InkChapter] RUNTIME-AUDIT-SINK: disabled (console-only)')
