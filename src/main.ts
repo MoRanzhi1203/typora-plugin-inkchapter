@@ -26,7 +26,7 @@ import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
-import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+import { initializeForensicSink, isRuntimeAuditSinkRequested, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
 import {
   INKCHAPTER_PLUGIN_ID,
   buildInkChapterGlobalLoadAudit,
@@ -421,8 +421,14 @@ export default class extends Plugin<InkChapterSettings> {
     )
 
     // ── File-backed forensic audit sink (pure observability, fail-open) ──
-    const sessionId = `sess-${Date.now()}`
-    initializeForensicSink({ vaultRoot: storageRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
+    // PERFORMANCE: opt-in only. Console mirroring stays always-on; persisting
+    // JSONL would otherwise write to disk from the editing hot path.
+    if (isRuntimeAuditSinkRequested()) {
+      const sessionId = `sess-${Date.now()}`
+      initializeForensicSink({ vaultRoot: storageRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
+    } else {
+      console.info('[InkChapter] RUNTIME-AUDIT-SINK: disabled (console-only)')
+    }
 
     // ── 界面配置：Ribbon 可见性（在 sink 就绪后应用；幂等、无长期观察器） ──
     try {
