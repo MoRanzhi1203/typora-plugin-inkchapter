@@ -39,6 +39,10 @@ if ($remaining) {
 Write-Output ""
 
 # ── 3. Launch target vault ─────────────────────────────────────────────────
+# PERFORMANCE — the plugin's file-backed audit sink is opt-in (console-only by
+# default). Verification runs read the JSONL audit, so enable it for the
+# Typora process launched here; the child inherits this environment variable.
+$env:INKCHAPTER_AUDIT_SINK = "1"
 Write-Output "Launching Typora with vault: $TargetVault"
 Start-Process $TyporaExe -ArgumentList $TargetVault
 Write-Output "Launch sent."

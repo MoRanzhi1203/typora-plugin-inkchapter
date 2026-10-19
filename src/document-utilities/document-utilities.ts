@@ -181,6 +181,39 @@ function resourceBaseDir(activeFilePath: string | null, vaultRoot: string | null
   return vaultRoot
 }
 
+/**
+ * PERFORMANCE — local resource existence cache.
+ *
+ * Applies to the diagnostics recompute path only (image / link targets). That
+ * recompute runs on every editor mutation, so this used to issue one
+ * synchronous `fs.existsSync` per resource per keystroke — a blocking disk stat
+ * on the renderer thread (worst on Windows / network drives).
+ *
+ * Results are cached by resolved absolute path for a short TTL: one typing
+ * burst never stats the same path twice, while a created/deleted asset is still
+ * observed within the freshness window.
+ */
+const RESOURCE_EXISTENCE_TTL_MS = 2000
+const RESOURCE_EXISTENCE_CACHE_MAX_ENTRIES = 2000
+const resourceExistenceCache = new Map<string, { exists: boolean; checkedAt: number }>()
+
+function cachedPathExists(absolutePath: string): boolean {
+  const now = Date.now()
+  const hit = resourceExistenceCache.get(absolutePath)
+  if (hit && now - hit.checkedAt < RESOURCE_EXISTENCE_TTL_MS) return hit.exists
+  let exists = false
+  try {
+    exists = fs.existsSync(absolutePath)
+  } catch {
+    exists = false
+  }
+  if (resourceExistenceCache.size >= RESOURCE_EXISTENCE_CACHE_MAX_ENTRIES) {
+    resourceExistenceCache.clear()
+  }
+  resourceExistenceCache.set(absolutePath, { exists, checkedAt: now })
+  return exists
+}
+
 function imageLocalPath(img: HTMLElement, baseDir: string | null): string | null {
   const src = img.getAttribute('src') ?? ''
   if (!src) return null
@@ -196,7 +229,7 @@ function imageLocalPath(img: HTMLElement, baseDir: string | null): string | null
   }
   if (!candidate) return null
   try {
-    return fs.existsSync(candidate) ? null : candidate
+    return cachedPathExists(candidate) ? null : candidate
   } catch {
     return null
   }
@@ -206,7 +239,7 @@ function linkTargetMissing(target: string, baseDir: string | null): boolean {
   if (!isLocalRelative(target) || !baseDir) return false
   try {
     const resolved = path.resolve(baseDir, target)
-    return !fs.existsSync(resolved)
+    return !cachedPathExists(resolved)
   } catch {
     return false
   }
