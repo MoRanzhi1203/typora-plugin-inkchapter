@@ -1,158 +1,17 @@
 {
-  "normalEnterTxnId": "NENTER-2-1792259453195",
-  "duplicateSplitIndex": 2,
-  "windowMs": 54,
+  "normalEnterTxnId": "NENTER-18-1792261179529",
+  "duplicateSplitIndex": 3,
+  "windowMs": 124,
   "endBlockRenormalization": true,
-  "capturedAt": "2026-10-17T17:50:53.267Z",
-  "recordCount": 14,
+  "capturedAt": "2026-10-17T18:20:08.444Z",
+  "recordCount": 0,
   "truncated": false,
   "structuralRecordCount": 0,
   "pluginStructuralWriteCount": 0,
   "originCounts": {
     "plugin": 0,
-    "typora": 14,
+    "typora": 0,
     "unknown": 0
   },
-  "records": [
-    {
-      "atMs": 1792259453202,
-      "sinceEnterMs": 7,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at a.exeCommand (typora://app/typemark/appsrc/window/frame.js:30:209523) | at i.brushNode (typora://app/typemark/appsrc/window/frame.js:1:114408) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:501332) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863)"
-    },
-    {
-      "atMs": 1792259453202,
-      "sinceEnterMs": 7,
-      "kind": "attr:removeAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus;id=sizzle1792259258728",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at a.exeCommand (typora://app/typemark/appsrc/window/frame.js:30:209523) | at i.brushNode (typora://app/typemark/appsrc/window/frame.js:1:114408) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:501332) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863)"
-    },
-    {
-      "atMs": 1792259453202,
-      "sinceEnterMs": 7,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at w.breakOn (typora://app/typemark/appsrc/window/frame.js:1:43692) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:502747) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453203,
-      "sinceEnterMs": 8,
-      "kind": "attr:removeAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus;id=sizzle1792259258728",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at w.breakOn (typora://app/typemark/appsrc/window/frame.js:1:43692) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:502747) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453207,
-      "sinceEnterMs": 12,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:503679) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453207,
-      "sinceEnterMs": 12,
-      "kind": "attr:removeAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p;id=sizzle1792259258728",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:503679) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453208,
-      "sinceEnterMs": 13,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:451119) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:503679) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:469967) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453260,
-      "sinceEnterMs": 65,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at a.exeCommand (typora://app/typemark/appsrc/window/frame.js:30:209523) | at i.brushNode (typora://app/typemark/appsrc/window/frame.js:1:114408) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:501332) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863)"
-    },
-    {
-      "atMs": 1792259453260,
-      "sinceEnterMs": 65,
-      "kind": "attr:removeAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus;id=sizzle1792259258728",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at a.exeCommand (typora://app/typemark/appsrc/window/frame.js:30:209523) | at i.brushNode (typora://app/typemark/appsrc/window/frame.js:1:114408) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:501332) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863)"
-    },
-    {
-      "atMs": 1792259453260,
-      "sinceEnterMs": 65,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at w.breakOn (typora://app/typemark/appsrc/window/frame.js:1:43692) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:502747) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453260,
-      "sinceEnterMs": 65,
-      "kind": "attr:removeAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p md-focus;id=sizzle1792259258728",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at w.breakOn (typora://app/typemark/appsrc/window/frame.js:1:43692) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:502747) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453262,
-      "sinceEnterMs": 67,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:503679) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453262,
-      "sinceEnterMs": 67,
-      "kind": "attr:removeAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p;id=sizzle1792259258728",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at F.fn.init.find (typora://app/typemark/appsrc/window/frame.js:29:54671) | at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:450253) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:503679) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    },
-    {
-      "atMs": 1792259453263,
-      "sinceEnterMs": 68,
-      "kind": "attr:setAttribute",
-      "target": "P.md-end-block.md-p",
-      "targetFingerprint": "tag=P;childCount=0;parent=DIV#write.enable-diagrams;attrs=class=md-end-block md-p",
-      "affectedFingerprint": "",
-      "origin": "typora",
-      "stack": "at Editor.refocus (typora://app/typemark/appsrc/window/frame.js:1:451119) | at Editor.pressReturn (typora://app/typemark/appsrc/window/frame.js:1:503679) | at HTMLDivElement.<anonymous> (typora://app/typemark/appsrc/window/frame.js:1:471560) | at HTMLDivElement.dispatch (typora://app/typemark/appsrc/window/frame.js:29:71831) | at f.handle (typora://app/typemark/appsrc/window/frame.js:29:69863) | at HTMLDivElement.t (typora://app/typemark/appsrc/window/frame.js:1:598476)"
-    }
-  ]
+  "records": []
 }
