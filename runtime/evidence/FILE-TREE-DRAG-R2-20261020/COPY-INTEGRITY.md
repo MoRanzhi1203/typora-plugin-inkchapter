@@ -172,3 +172,54 @@ Get-ChildItem "D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\墨�
 - 目标文件已移动到 `runtime/evidence/.../os-drag-artifacts/`，测试 vault 根目录已清理
 
 > 输入来源为 OS 级自动化鼠标，不是人工鼠标；完整人工 D01–D12 收据仍为 PENDING_USER_MANUAL。该组证据足以证明真实运行时复制路径、冲突命名与源文件保留。
+
+## 7. 真实 OS 鼠标拖拽复制证据（2026-10-20 19:00–19:29）
+
+证据分级：**OS** = Win32 `SendInput` 真实鼠标；**DOM** = 真实渲染器 DevTools 读数（仅测量/核验，无合成 Drop）；**SVC** = 真实 fs 服务测试。
+
+### 7.1 拖入（Explorer → 文件树）
+
+| 目标文件 | 字节 | 创建时间 | SHA256 | 源仍存在 |
+|---|---:|---|---|---|
+| `root\D01-single.md` | 18 | 18:59:37 | `75C9FB6C8B192904B94E24F191772F6917136DFCB0559CFC8F96F1E55917D2CD` | 是 |
+| `conflict\D05-conflict (2).md` | 15 | 19:04:25 | `BE60390DD684E7D12529A5EAFBD34897F139EEFFDFCEDF3094CEB4C5F6174579` | 是 |
+| `conflict\crlf.md` | 14 | 19:06:21 | `4AD3EF64DFB83F7A8F789BCE6F30CC1F8D18491B14DB4C875309B150D2A7D213` | 是 |
+| `conflict\case-note (2).md` | 18 | 19:06:21 | `516EA8D7A58EC7CCA3EEA99CBD01FD9A8F285CA051611F93A75FB090D486123A` | 是 |
+| `internal\D04-batch-a.md` 等 3 份 | 19 | 19:12–19:14 | `80381751B913FC545CB60865E86207BF1B94AE6D9A240AAFE247173B03CF49A2` | 是 |
+| `expanded\D04-batch-a.md`（窗口 700px 宽时） | 19 | 19:15:15 | `80381751B913FC545CB60865E86207BF1B94AE6D9A240AAFE247173B03CF49A2` | 是 |
+| `root\D01-single.md` + `root\crlf.md`（修复后回归，一次 drop 2 个） | 18 / 14 | 19:26:24 | `75C9FB6C...` / `4AD3EF...` | 是 |
+| `unexpanded\empty.md`（0 字节） | 0 | 19:26:58 | `E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855` | 是 |
+
+未覆盖与冲突：
+
+- 预置 `conflict\D05-conflict.md` 保持 21 B、SHA `F9B558C961353B7154C066E73C34406678581A2FE9902FF0BF000CC4CAB9EE63`、mtime 17:15:57，未被覆盖。
+- 预置 `conflict\case-note.MD` 保持 18 B、SHA `9FF8A032597F9FB31E368D053A454C282A1AA6D018843881E6BD7C76FF6F9AD6`（大小写同名冲突被重命名为 `case-note (2).md`）。
+- `D06-ignored.txt` 真实拖入被拒：`failedCount=1`，vault 内不存在任何 `.txt` 副本。
+- 适配器计数与文件一一对应（D01→1；D05→2；批量 drop→+1；宽度回归→+1），未出现重复处理。
+
+### 7.2 拖出（文件树 → Explorer，源保留）
+
+| 目标副本 | 字节 | 创建时间 | SHA256 | 源仍存在 |
+|---|---:|---|---|---|
+| `%TEMP%\...\sources\D05-conflict (2).md`（跨盘 D:→C:） | 15 | 19:05:19 | `BE60390DD684E7D12529A5EAFBD34897F139EEFFDFCEDF3094CEB4C5F6174579` | 是 |
+| `%TEMP%\...\sources\internal-b.md`（跨盘 D:→C:） | 18 | 19:26:42 | `6D112941267C3F262C493FFEE23D05A7609E1634D8FFB5481D3712BB7CD8847E` | 是 |
+| `...\file-tree-drag-r2\expanded\D01-single.md`（同盘 D:→D:） | 18 | 19:28:49 | `75C9FB6C8B192904B94E24F191772F6917136DFCB0559CFC8F96F1E55917D2CD` | 是 |
+
+归档副本（`os-drag-artifacts/`）：
+
+| 文件 | 字节 | SHA256 |
+|---|---:|---|
+| `os-dragin-D01-single.md` | 18 | `75C9FB6C8B192904B94E24F191772F6917136DFCB0559CFC8F96F1E55917D2CD` |
+| `os-dragin-D05-conflict-2.md` | 15 | `BE60390DD684E7D12529A5EAFBD34897F139EEFFDFCEDF3094CEB4C5F6174579` |
+| `os-dragout-internal-b.md` | 18 | `6D112941267C3F262C493FFEE23D05A7609E1634D8FFB5481D3712BB7CD8847E` |
+| `os-dragout-same-volume-D01-single.md` | 18 | `75C9FB6C8B192904B94E24F191772F6917136DFCB0559CFC8F96F1E55917D2CD` |
+
+### 7.3 D07 修复前后对比（真实 OS 内部拖放）
+
+| 阶段 | 结果 | 适配器 |
+|---|---|---|
+| 修复前（`DD4F...`） | `internal-a.md` 拖到 `root` 后，源与目标同时存在（复制） | `externalDropCount` +1 |
+| 修复后（`420B9E4C...`） | `internal-a.md` 从 `internal` 消失并出现在 `root`（原生移动） | `externalDropCount` 不变（0） |
+
+> 验证后已将 `internal-a.md` 移回 `internal`、删除测试副本，夹具恢复基线；上述真实复制件均已归档到 `os-drag-artifacts/`。
+

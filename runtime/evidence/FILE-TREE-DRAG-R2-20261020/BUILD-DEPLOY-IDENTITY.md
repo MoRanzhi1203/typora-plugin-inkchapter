@@ -115,3 +115,40 @@ D58FF 已在本轮开始通过 `dist/main.js` 与测试 vault 两处 SHA 核实�
 - 运行时加载候选构建：**LOADED / PASS**
 - 真实 OS 拖拽 D01–D12：**PENDING_USER_MANUAL**
 - 总体：**PARTIAL / PENDING_USER_MANUAL**（不得写 FULL_PASS）
+
+## 6. R2 真实运行闭环构建（2026-10-20 19:24）
+
+D07（树内拖放被误判为外部拖入）修复后重新构建并复验。
+
+| 项目 | 值 |
+|---|---|
+| 生产构建 SHA256 | `420B9E4C5181E7A5532BE082BCFEF1A131A3BA86FAAFF08C036AF9B018EE6961` |
+| 构建时间 | 2026-10-20 19:23:24 |
+| 部署目标 | `test\vault\.typora\plugins\dist`（`DEPLOY_HASH_MAIN_MATCH=True`） |
+| 运行时 PID / HWND | 31320 / 789980 |
+| loadedAt | 2026-10-20T11:24:20.253Z |
+| loadSource | vault |
+| 全局生产插件 | 未覆盖（保持 `DE62CB1A7489E219EF88D4BA0E2431D57506FAAE3D7E2A1433606FD2639A339E`） |
+| Git commit | 未执行 |
+
+门禁：
+
+| 门禁 | 结果 |
+|---|---|
+| `tsc --noEmit` | PASS |
+| 定向 `file-tree-drag-adapter.test.ts` | 16/16 PASS（新增内部拖放/拖出清理/dragend 3 例） |
+| 全量 `pnpm run test` | 245 文件 / 4592 用例 PASS |
+| `pnpm run build`（prod） | PASS |
+| 测试 vault 部署 SHA 一致 | PASS |
+| 运行时加载 + adapter attached | PASS |
+
+运行时复验（真实 OS）：
+
+- 内部拖放：原生移动，adapter 计数 0；
+- 外部拖入：复制，计数 +1，源保留；
+- 拖出：源保留，计数不变；
+- 拖出后再次外部拖入：计数 +1（标记已清除）；
+- 窗口宽度 900→700、侧栏滚动：adapter 保持 attached。
+
+**最终状态：真实 OS 主链路 PASS；未执行项（桌面拖出、未保存告警、目录/符号链接真机、busy guard 重叠）明确标记 NOT_RUN / PARTIAL。**
+

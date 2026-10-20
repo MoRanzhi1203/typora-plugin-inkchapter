@@ -71,6 +71,7 @@ export interface FileTreeDragInvariant {
   failedCount: number
   lastDestination: string | null
   highlighted: boolean
+  internalDragActive: boolean
 }
 
 interface DropTarget {
@@ -117,6 +118,16 @@ export class FileTreeDragAdapter {
 
   private attached = false
   private processing = false
+  /**
+   * 当前拖拽是否由文件树节点自身发起（即 Typora 内部拖放）。
+   *
+   * 为什么不能只看 `dataTransfer.types`：真实运行中，Typora 内部拖放与 Explorer
+   * 外部拖入的 `types` 都只有 `["Files"]`，无法区分。若把内部拖放当成外部导入，
+   * 用户原本的「树内移动」会变成「复制」，源文件被保留、目标多出副本。
+   * 因此必须记录拖拽来源；拖出窗口（dragleave 且 relatedTarget 为空）或 dragend
+   * 时清除，避免拖出后残留状态影响后续外部拖入。
+   */
+  private internalDragActive = false
   private highlighted: Element | null = null
   private externalDropCount = 0
   private copiedCount = 0
@@ -156,6 +167,7 @@ export class FileTreeDragAdapter {
     this.clearHighlight()
     this.attached = false
     this.processing = false
+    this.internalDragActive = false
     const registry = adapterRegistry()
     if (registry.current === this) registry.current = null
   }
@@ -169,6 +181,7 @@ export class FileTreeDragAdapter {
       failedCount: this.failedCount,
       lastDestination: this.lastDestination,
       highlighted: this.highlighted !== null,
+      internalDragActive: this.internalDragActive,
     }
   }
 
@@ -193,11 +206,21 @@ export class FileTreeDragAdapter {
   private onDragLeave = (event: DragEvent): void => {
     if (!this.isTreeEvent(event)) return
     const related = event.relatedTarget as Node | null
+    if (related === null) {
+      // 拖出窗口（外部或拖出到 Explorer/桌面）：本次拖拽结束，清除内部拖拽标记，
+      // 否则下一次从 Explorer 拖入会被误判成内部拖放。
+      this.internalDragActive = false
+    }
     if (related && this.treeContains(related)) return
     this.clearHighlight()
   }
 
   private onDrop = (event: DragEvent): void => {
+    if (this.internalDragActive) {
+      // 文件树内部拖放：交还 Typora 原生移动逻辑，不 preventDefault、不复制。
+      this.internalDragActive = false
+      return
+    }
     if (!this.isExternalTreeDrag(event)) return
     // 捕获阶段先于 Typora 的 `copyOrMoveFiles`，阻止原生「移动」分支。
     event.preventDefault()
@@ -228,6 +251,8 @@ export class FileTreeDragAdapter {
 
   private onDragStart = (event: DragEvent): void => {
     if (!this.attached) return
+    // 任何新的 dragstart 都先清除上一次拖拽的来源标记。
+    this.internalDragActive = false
     const element = asElement(event.target)
     if (!element) return
     const tree = element.closest(FILE_TREE_ROOT_SELECTOR)
@@ -238,6 +263,7 @@ export class FileTreeDragAdapter {
     if (!node || !node.matches(FILE_TREE_NODE_SELECTOR)) return
     const sourcePath = node.getAttribute('data-path')
     if (!sourcePath) return
+    this.internalDragActive = true
     const observation: DragOutObservation = {
       path: sourcePath,
       isDirectory: node.getAttribute('data-is-directory') === 'true',
@@ -253,6 +279,7 @@ export class FileTreeDragAdapter {
   }
 
   private onDragEnd = (): void => {
+    this.internalDragActive = false
     this.clearHighlight()
   }
 
@@ -310,6 +337,9 @@ export class FileTreeDragAdapter {
 
   private isExternalTreeDrag(event: DragEvent): boolean {
     if (!this.attached) return false
+    // Typora 内部拖放与外部拖入的 dataTransfer.types 都是 ["Files"]，
+    // 只能依靠 dragstart 来源区分；内部拖放必须完全放行给原生移动逻辑。
+    if (this.internalDragActive) return false
     if (!this.isTreeEvent(event)) return false
     const dataTransfer = event.dataTransfer
     if (!dataTransfer) return false
