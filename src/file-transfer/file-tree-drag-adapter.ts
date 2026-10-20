@@ -1,0 +1,371 @@
+/**
+ * 文件树拖放适配器 —— 只在 Typora 原生文件树（`#file-library-tree`）区域生效。
+ *
+ * 为什么必须“截获”拖入：
+ *   Typora 原生文件树对外部文件的 drop 走 `copyOrMoveFiles()` → `fs-extra.rename`，
+ *   即**移动源文件**（确认框文案为 “Are you sure you want to move ...?”）。
+ *   本适配器在 document 捕获阶段先于 Typora 的委托处理器处理外部文件 drop，
+ *   改为调用 FileCopyService 做真实复制，并阻止事件继续冒泡到原生的移动逻辑。
+ *
+ * 为什么不能影响拖出：
+ *   文件树节点的 dragstart 由 Typora 自己发送 Electron `ondragstart`（原生 OS 拖拽）。
+ *   本适配器只**观察** dragstart（未保存告警 / 符号链接告警），绝不 preventDefault、
+ *   不 stopPropagation、不改 dataTransfer —— 原生拖出链路保持原样。
+ *
+ * 编辑器正文（`#write`）与搜索/列表视图不属于 `#file-library-tree`，因此完全不被拦截。
+ */
+import * as path from 'path'
+import type { CopyBatchResult, CopyReason } from './file-copy-service'
+import {
+  collectDroppedFilePaths,
+  isExternalFileDrag,
+  resolveDropDirectory,
+} from './file-transfer-policy'
+
+export const FILE_TREE_ROOT_SELECTOR = '#file-library-tree'
+export const FILE_TREE_NODE_SELECTOR = '.file-library-node[data-path]'
+export const FILE_TREE_DRAG_CONTENT_SELECTOR = '.file-node-content'
+export const FILE_DROP_TARGET_CLASS = 'ink-file-drop-target'
+
+const MAX_FAILURE_DETAIL_ITEMS = 3
+
+export type FileTransferNoticeLevel = 'info' | 'warning' | 'error'
+
+export interface DragOutObservation {
+  path: string
+  isDirectory: boolean
+}
+
+export interface FileTreeDragHost {
+  document: Document
+  /** 当前打开的文件夹（vault 根）。 */
+  getVaultRoot(): string | null
+  /** 真实复制（FileCopyService.copyBatch 的绑定包装）。 */
+  copy(sources: string[], destinationDir: string): Promise<CopyBatchResult>
+  /** 复制完成后增量刷新文件树（不得整体重绘 / 折叠用户已展开的节点）。 */
+  refreshTree(destinationDir: string, copiedFiles: string[]): void
+  notify(message: string, level?: FileTransferNoticeLevel): void
+  /** dragstart 观察（只读，不允许阻止原生拖出）。 */
+  onDragOutObserved?(observation: DragOutObservation): void
+}
+
+interface AdapterRegistry {
+  current: FileTreeDragAdapter | null
+}
+
+/**
+ * 跨插件重载仍然有效的单实例注册表（Electron 渲染进程内一个 document 只有一个
+ * 文件树）。插件热重载 / 切换 vault 后若旧实例未正常 onunload，新实例会先释放
+ * 旧监听器，避免 drop/dragstart 被重复处理。
+ */
+function adapterRegistry(): AdapterRegistry {
+  const scope = globalThis as unknown as { __INKCHAPTER_FILE_TREE_DRAG_ADAPTER__?: AdapterRegistry }
+  return (scope.__INKCHAPTER_FILE_TREE_DRAG_ADAPTER__ ??= { current: null })
+}
+
+export interface FileTreeDragInvariant {
+  attached: boolean
+  processing: boolean
+  externalDropCount: number
+  copiedCount: number
+  failedCount: number
+  lastDestination: string | null
+  highlighted: boolean
+}
+
+interface DropTarget {
+  directory: string | null
+  element: Element
+}
+
+function asElement(target: EventTarget | null): Element | null {
+  if (!target) return null
+  const candidate = target as Element
+  return candidate.nodeType === 1 && typeof candidate.closest === 'function' ? candidate : null
+}
+
+function dataTransferTypes(dataTransfer: DataTransfer | null): string[] {
+  if (!dataTransfer || !dataTransfer.types) return []
+  return Array.from(dataTransfer.types as ArrayLike<string>)
+}
+
+const REASON_TEXT: Record<CopyReason, string> = {
+  INVALID_SOURCE: '源路径无效',
+  SOURCE_MISSING: '源文件不存在',
+  SOURCE_NOT_FILE: '源路径不是普通文件',
+  SOURCE_SYMLINK_REJECTED: '不支持符号链接',
+  UNSUPPORTED_EXTENSION: '仅支持 .md / .markdown',
+  NO_DESTINATION: '没有可用的目标目录',
+  DESTINATION_MISSING: '目标目录不存在',
+  DESTINATION_NOT_DIRECTORY: '目标不是文件夹',
+  DESTINATION_SYMLINK_REJECTED: '目标目录是符号链接，已拒绝',
+  DESTINATION_OUTSIDE_VAULT: '目标目录越出当前文件夹',
+  SAME_FILE: '源文件与目标文件相同',
+  CONFLICT_SKIPPED: '同名文件已跳过',
+  CONFLICT_DIRECTORY: '同名位置是文件夹，无法覆盖',
+  DESTINATION_EXISTS_AS_SYMLINK: '同名目标是符号链接，已拒绝覆盖',
+  COPY_FAILED: '复制失败',
+  COPY_SIZE_MISMATCH: '复制后大小不一致',
+}
+
+export function describeCopyFailure(reason: CopyReason | undefined, detail?: string): string {
+  const base = reason ? REASON_TEXT[reason] : '复制失败'
+  return detail ? `${base}（${detail}）` : base
+}
+
+export class FileTreeDragAdapter {
+
+  private attached = false
+  private processing = false
+  private highlighted: Element | null = null
+  private externalDropCount = 0
+  private copiedCount = 0
+  private failedCount = 0
+  private lastDestination: string | null = null
+
+  constructor(private readonly host: FileTreeDragHost) { }
+
+  attach(): boolean {
+    if (this.attached) return false
+    const doc = this.host.document
+    if (!doc) return false
+    const registry = adapterRegistry()
+    if (registry.current && registry.current !== this) {
+      try { registry.current.dispose() } catch { /* 旧实例释放失败不阻断新实例 */ }
+    }
+    registry.current = this
+    doc.addEventListener('dragenter', this.onDragEnter, true)
+    doc.addEventListener('dragover', this.onDragOver, true)
+    doc.addEventListener('dragleave', this.onDragLeave, true)
+    doc.addEventListener('drop', this.onDrop, true)
+    doc.addEventListener('dragstart', this.onDragStart, true)
+    doc.addEventListener('dragend', this.onDragEnd, true)
+    this.attached = true
+    return true
+  }
+
+  dispose(): void {
+    if (!this.attached) return
+    const doc = this.host.document
+    doc.removeEventListener('dragenter', this.onDragEnter, true)
+    doc.removeEventListener('dragover', this.onDragOver, true)
+    doc.removeEventListener('dragleave', this.onDragLeave, true)
+    doc.removeEventListener('drop', this.onDrop, true)
+    doc.removeEventListener('dragstart', this.onDragStart, true)
+    doc.removeEventListener('dragend', this.onDragEnd, true)
+    this.clearHighlight()
+    this.attached = false
+    this.processing = false
+    const registry = adapterRegistry()
+    if (registry.current === this) registry.current = null
+  }
+
+  getInvariant(): FileTreeDragInvariant {
+    return {
+      attached: this.attached,
+      processing: this.processing,
+      externalDropCount: this.externalDropCount,
+      copiedCount: this.copiedCount,
+      failedCount: this.failedCount,
+      lastDestination: this.lastDestination,
+      highlighted: this.highlighted !== null,
+    }
+  }
+
+  private onDragEnter = (event: DragEvent): void => {
+    if (!this.isExternalTreeDrag(event)) return
+    event.preventDefault()
+    this.setDropEffectCopy(event)
+    if (this.processing) return
+    const target = this.resolveDropTarget(event)
+    if (target?.directory) this.setHighlight(target.element)
+  }
+
+  private onDragOver = (event: DragEvent): void => {
+    if (!this.isExternalTreeDrag(event)) return
+    // 允许 drop，并把 OS 光标标记为「复制」；同时阻止 Typora 文档级
+    // `dragover` 把 dropEffect 改回 "none"（那会导致 drop 被取消）。
+    event.preventDefault()
+    event.stopPropagation()
+    this.setDropEffectCopy(event)
+  }
+
+  private onDragLeave = (event: DragEvent): void => {
+    if (!this.isTreeEvent(event)) return
+    const related = event.relatedTarget as Node | null
+    if (related && this.treeContains(related)) return
+    this.clearHighlight()
+  }
+
+  private onDrop = (event: DragEvent): void => {
+    if (!this.isExternalTreeDrag(event)) return
+    // 捕获阶段先于 Typora 的 `copyOrMoveFiles`，阻止原生「移动」分支。
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    if (this.processing) {
+      this.host.notify('墨章：上一批文件仍在导入，请稍候', 'info')
+      return
+    }
+
+    const target = this.resolveDropTarget(event)
+    this.clearHighlight()
+    if (!target || !target.directory) {
+      this.host.notify('墨章：目标文件夹不可用或越出当前打开的文件夹', 'error')
+      return
+    }
+
+    const sources = collectDroppedFilePaths(event.dataTransfer)
+    if (sources.length === 0) {
+      this.host.notify('墨章：未检测到本地文件路径（仅支持从资源管理器拖入文件）', 'warning')
+      return
+    }
+
+    this.processing = true
+    this.externalDropCount++
+    void this.runImport(sources, target.directory)
+  }
+
+  private onDragStart = (event: DragEvent): void => {
+    if (!this.attached) return
+    const element = asElement(event.target)
+    if (!element) return
+    const tree = element.closest(FILE_TREE_ROOT_SELECTOR)
+    if (!tree) return
+    const content = element.closest(FILE_TREE_DRAG_CONTENT_SELECTOR)
+    if (!content) return
+    const node = content.parentElement
+    if (!node || !node.matches(FILE_TREE_NODE_SELECTOR)) return
+    const sourcePath = node.getAttribute('data-path')
+    if (!sourcePath) return
+    const observation: DragOutObservation = {
+      path: sourcePath,
+      isDirectory: node.getAttribute('data-is-directory') === 'true',
+    }
+    // 延后到原生 dragstart / IPC 之后再观察：lstat 若遇到慢速网络盘也不会拖住
+    // Typora 的系统拖拽启动。
+    const view = this.host.document.defaultView
+    const run = (): void => {
+      try { this.host.onDragOutObserved?.(observation) } catch { /* 绝不影响原生拖出 */ }
+    }
+    if (view) view.setTimeout(run, 0)
+    else run()
+  }
+
+  private onDragEnd = (): void => {
+    this.clearHighlight()
+  }
+
+  private async runImport(sources: string[], destinationDir: string): Promise<void> {
+    try {
+      const result = await this.host.copy(sources, destinationDir)
+      this.copiedCount += result.copiedCount
+      this.failedCount += result.failedCount
+      this.lastDestination = destinationDir
+      const copiedFiles = result.entries
+        .filter(entry => entry.status === 'copied' && entry.destination)
+        .map(entry => entry.destination as string)
+      if (copiedFiles.length > 0) {
+        this.host.refreshTree(destinationDir, copiedFiles)
+      }
+      this.host.notify(this.summaryFor(result, destinationDir), this.noticeLevelFor(result))
+      const detail = this.failureDetailFor(result)
+      if (detail) this.host.notify(detail, 'warning')
+    } catch (error) {
+      this.failedCount += sources.length
+      this.host.notify(
+        `墨章：导入失败 —— ${error instanceof Error ? error.message : String(error)}`,
+        'error',
+      )
+    } finally {
+      this.processing = false
+    }
+  }
+
+  private summaryFor(result: CopyBatchResult, destinationDir: string): string {
+    const folder = path.basename(destinationDir) || destinationDir
+    const parts: string[] = [`已复制 ${result.copiedCount} 个文件到「${folder}」`]
+    if (result.conflictCount > 0) parts.push(`${result.conflictCount} 个同名文件已自动重命名`)
+    if (result.skippedCount > 0) parts.push(`${result.skippedCount} 个已跳过`)
+    if (result.failedCount > 0) parts.push(`${result.failedCount} 个失败`)
+    return `墨章：${parts.join('，')}`
+  }
+
+  private noticeLevelFor(result: CopyBatchResult): FileTransferNoticeLevel {
+    if (result.failedCount > 0) return result.copiedCount > 0 ? 'warning' : 'error'
+    return 'info'
+  }
+
+  private failureDetailFor(result: CopyBatchResult): string | null {
+    const failures = result.entries.filter(entry => entry.status === 'failed')
+    if (failures.length === 0) return null
+    const lines = failures
+      .slice(0, MAX_FAILURE_DETAIL_ITEMS)
+      .map(entry => `${path.basename(entry.source)}：${describeCopyFailure(entry.reason, entry.detail)}`)
+    if (failures.length > MAX_FAILURE_DETAIL_ITEMS) {
+      lines.push(`等 ${failures.length} 个文件`)
+    }
+    return `墨章：${lines.join('；')}`
+  }
+
+  private isExternalTreeDrag(event: DragEvent): boolean {
+    if (!this.attached) return false
+    if (!this.isTreeEvent(event)) return false
+    const dataTransfer = event.dataTransfer
+    if (!dataTransfer) return false
+    return isExternalFileDrag(dataTransferTypes(dataTransfer))
+  }
+
+  private isTreeEvent(event: DragEvent): boolean {
+    const element = asElement(event.target)
+    return !!element && !!element.closest(FILE_TREE_ROOT_SELECTOR)
+  }
+
+  private treeContains(node: Node): boolean {
+    const element = asElement(node)
+    if (!element) return false
+    return !!element.closest(FILE_TREE_ROOT_SELECTOR)
+  }
+
+  private resolveDropTarget(event: DragEvent): DropTarget | null {
+    const element = asElement(event.target)
+    if (!element) return null
+    const tree = element.closest(FILE_TREE_ROOT_SELECTOR)
+    if (!tree) return null
+    const vaultRoot = this.host.getVaultRoot()
+    const node = element.closest(FILE_TREE_NODE_SELECTOR)
+    if (node && tree.contains(node)) {
+      const nodePath = node.getAttribute('data-path')
+      const isDirectory = node.getAttribute('data-is-directory') === 'true'
+      // 落在文件上时实际写入其父目录；高亮父目录而不是文件本身，避免误导。
+      const parentNode = isDirectory ? node : node.parentElement?.closest(FILE_TREE_NODE_SELECTOR)
+      return {
+        directory: resolveDropDirectory(nodePath, isDirectory, vaultRoot),
+        element: parentNode && tree.contains(parentNode) ? parentNode : node,
+      }
+    }
+    return {
+      directory: resolveDropDirectory(null, true, vaultRoot),
+      element: tree,
+    }
+  }
+
+  private setDropEffectCopy(event: DragEvent): void {
+    try {
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+    } catch { /* 某些合成事件可能只读，忽略 */ }
+  }
+
+  private setHighlight(element: Element): void {
+    if (this.highlighted === element) return
+    this.clearHighlight()
+    element.classList.add(FILE_DROP_TARGET_CLASS)
+    this.highlighted = element
+  }
+
+  private clearHighlight(): void {
+    if (!this.highlighted) return
+    this.highlighted.classList.remove(FILE_DROP_TARGET_CLASS)
+    this.highlighted = null
+  }
+}
