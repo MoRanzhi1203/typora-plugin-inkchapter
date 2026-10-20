@@ -44,6 +44,9 @@ import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentU
 import { writeHeadingConflictBridgeReport, readHeadingConflictBridgeFile, consumeHeadingConflictBridgeFile } from './heading-numbering/heading-conflict-test-bridge'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
+import { FileCopyService } from './file-transfer/file-copy-service'
+import { FileTreeDragAdapter } from './file-transfer/file-tree-drag-adapter'
+import { NativeDragBridge, type ElectronRendererLike } from './file-transfer/native-drag-bridge'
 import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-empty-workspace-controller'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
@@ -204,6 +207,9 @@ export default class extends Plugin<InkChapterSettings> {
   private headingConflictBridgeLastNonce: string | null = null
   private docViewMenu?: DocumentViewContextMenu
   private tabCloseVisibility?: TabCloseVisibilityEnhancer
+  private fileCopyService?: FileCopyService
+  private nativeDragBridge?: NativeDragBridge
+  private fileTreeDragAdapter?: FileTreeDragAdapter
 
   /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
   private readUiSettings() {
@@ -961,6 +967,98 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] 文档查看右键菜单初始化失败', e)
     }
 
+    // ── File tree ↔ Windows Explorer drag/drop enhancement ──
+    // 外部拖入：捕获阶段改「移动」为真实复制；拖出：只观察，保留 Typora 原生 IPC 拖拽。
+    try {
+      this.fileCopyService = new FileCopyService()
+      this.nativeDragBridge = new NativeDragBridge({
+        getElectron: () => {
+          const globalScope = globalThis as { reqnode?: unknown }
+          if (typeof globalScope.reqnode !== 'function') return null
+          try {
+            return (globalScope.reqnode as (id: string) => unknown)('electron') as ElectronRendererLike
+          } catch {
+            return null
+          }
+        },
+      })
+      const copyService = this.fileCopyService
+      const bridge = this.nativeDragBridge
+      let lastDragOutNoticeAt = 0
+
+      this.fileTreeDragAdapter = new FileTreeDragAdapter({
+        document,
+        getVaultRoot: () => {
+          try {
+            return File.getMountFolder() || null
+          } catch {
+            return null
+          }
+        },
+        copy: (sources, destinationDir) => {
+          const vaultRoot = File.getMountFolder()
+          if (!vaultRoot) {
+            return Promise.resolve({
+              entries: [],
+              copiedCount: 0,
+              skippedCount: 0,
+              failedCount: sources.length,
+              conflictCount: 0,
+              sourcePreserved: true as const,
+            })
+          }
+          return copyService.copyBatch(sources, destinationDir, {
+            vaultRoot,
+            conflictPolicy: 'rename',
+          })
+        },
+        refreshTree: (destinationDir, copiedFiles) => {
+          try {
+            const tree = editor.library?.fileTree
+            if (!tree) return
+            // 增量更新：不调用 refreshPanelCommand()，避免整体重绘折叠用户已展开的节点。
+            for (const filePath of copiedFiles) {
+              tree.onChangeForWin(filePath, [], 'add')
+            }
+          } catch (e) {
+            console.warn('[InkChapter] 文件树增量刷新失败', e)
+          }
+        },
+        notify: (message, level) => {
+          if (level === 'error') Notice.error(message)
+          else if (level === 'warning') Notice.warning(message)
+          else Notice.info(message)
+        },
+        onDragOutObserved: ({ path: draggedPath, isDirectory }) => {
+          if (isDirectory) return
+          try {
+            const activePath = File.bundle?.filePath || File.filePath || null
+            const modified = !!File.bundle?.hasMidified
+            const warning = bridge.warningFor(bridge.inspect(draggedPath, activePath, modified))
+            if (!warning) return
+            const now = Date.now()
+            if (now - lastDragOutNoticeAt < 4000) return
+            lastDragOutNoticeAt = now
+            Notice.warning(warning)
+          } catch { /* 观察失败绝不影响原生拖出 */ }
+        },
+      })
+
+      const attached = this.fileTreeDragAdapter.attach()
+      const capability = this.nativeDragBridge.probe()
+      console.log('[InkChapter] file tree drag adapter ready', {
+        attached,
+        capability,
+        invariant: this.fileTreeDragAdapter.getInvariant(),
+      })
+      this.register(() => {
+        this.fileTreeDragAdapter?.dispose()
+        this.fileTreeDragAdapter = undefined
+      })
+    } catch (e) {
+      console.error('[InkChapter] 文件树拖放增强初始化失败', e)
+    }
+
     // ── Workspace tab close × — hover/focus-only (CSS) enhancer (V1) ──
     // Visibility itself is CSS-only; this enhancer only guards single mount and
     // emits the DEFAULT state invariant (0 × visible) after tabs settle.
@@ -1136,6 +1234,25 @@ export default class extends Plugin<InkChapterSettings> {
       title: '检查插件状态',
       scope: 'global',
       callback: () => Notice.info('墨章 InkChapter 已正常加载'),
+    })
+
+    // File tree drag/drop capability report (runtime verification helper)
+    this.registerCommand({
+      id: 'inkchapter.file-transfer.capability',
+      title: '墨章：文件拖放能力检测',
+      scope: 'global',
+      callback: () => {
+        const capability = this.nativeDragBridge?.probe()
+        const invariant = this.fileTreeDragAdapter?.getInvariant()
+        const dragOut = capability?.nativeDragOut ?? 'UNAVAILABLE'
+        const ipc = capability?.ipcRendererAvailable ? '可用' : '不可用'
+        const stats = invariant
+          ? `拖入 ${invariant.externalDropCount} 次 / 复制 ${invariant.copiedCount} 个 / 失败 ${invariant.failedCount} 个`
+          : '适配器未就绪'
+        Notice.info(
+          `文件树拖放：原生拖出=${dragOut}，Electron IPC=${ipc}；${stats}。目标端默认复制，Shift 拖放由系统判定为移动。`,
+        )
+      },
     })
 
     // Toggle heading numbering
@@ -1585,6 +1702,12 @@ export default class extends Plugin<InkChapterSettings> {
   }
 
   onunload() {
+    if (this.fileTreeDragAdapter) {
+      this.fileTreeDragAdapter.dispose()
+      this.fileTreeDragAdapter = undefined
+    }
+    this.fileCopyService = undefined
+    this.nativeDragBridge = undefined
     if (this.tabCloseVisibility) {
       this.tabCloseVisibility.dispose()
       this.tabCloseVisibility = undefined
