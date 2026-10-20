@@ -226,7 +226,7 @@ describe('FileTreeDragAdapter · scope isolation', () => {
     expect(event.defaultPrevented).toBe(false)
   })
 
-  it('leaves internal file-tree drags untouched', async () => {
+  it('leaves internal file-tree drags untouched even though they also expose Files', async () => {
     const host = makeHost()
     adapter = new FileTreeDragAdapter(host)
     adapter.attach()
@@ -234,16 +234,51 @@ describe('FileTreeDragAdapter · scope isolation', () => {
     let bubbleRan = false
     node(FILE_TREE_ROOT_SELECTOR).addEventListener('drop', () => { bubbleRan = true })
 
+    // 真实 Typora 内部拖放与 Explorer 外部拖入的 types 都是 ["Files"]，
+    // 唯一可靠的区分是 dragstart 是否发生在文件树节点上。
+    fire(fileContent(), 'dragstart', makeDataTransfer(['Files'], [NOTE]))
     const event = fire(
       docsContent(),
       'drop',
-      makeDataTransfer(['file', 'text/plain'], [DOCS]),
+      makeDataTransfer(['Files'], [NOTE]),
     )
     await flush()
 
     expect(host.copy).not.toHaveBeenCalled()
     expect(bubbleRan).toBe(true)
     expect(event.defaultPrevented).toBe(false)
+    expect(adapter.getInvariant().externalDropCount).toBe(0)
+  })
+
+  it('re-enables external drop after the pointer leaves the window (dragleave relatedTarget null)', async () => {
+    const host = makeHost()
+    adapter = new FileTreeDragAdapter(host)
+    adapter.attach()
+
+    fire(fileContent(), 'dragstart', makeDataTransfer(['Files'], [NOTE]))
+    // 拖出窗口：relatedTarget 为空，必须清除内部拖拽标记。
+    fire(fileContent(), 'dragleave', makeDataTransfer(['Files']), null)
+
+    const event = fire(docsContent(), 'drop', makeDataTransfer(['Files'], ['D:\\src\\a.md']))
+    await flush()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(host.copy).toHaveBeenCalledWith(['D:\\src\\a.md'], DOCS)
+    expect(adapter.getInvariant().externalDropCount).toBe(1)
+  })
+
+  it('clears internal drag state on dragend', async () => {
+    const host = makeHost()
+    adapter = new FileTreeDragAdapter(host)
+    adapter.attach()
+
+    fire(fileContent(), 'dragstart', makeDataTransfer(['Files'], [NOTE]))
+    fire(fileContent(), 'dragend', makeDataTransfer(['Files'], [NOTE]))
+    fire(docsContent(), 'drop', makeDataTransfer(['Files'], ['D:\\src\\a.md']))
+    await flush()
+
+    expect(host.copy).toHaveBeenCalledWith(['D:\\src\\a.md'], DOCS)
+    expect(adapter.getInvariant().internalDragActive).toBe(false)
   })
 
   it('replaces a previously mounted adapter instead of double-installing listeners', async () => {
