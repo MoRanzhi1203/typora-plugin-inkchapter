@@ -9,6 +9,7 @@ import {
   isPathInsideRoot,
   isSamePath,
   resolveDropDirectory,
+  resolveModifiedState,
   shouldWarnStaleDragOut,
   uniqueFileName,
 } from './file-transfer-policy'
@@ -127,5 +128,26 @@ describe('file-transfer-policy · drag-out warnings and naming', () => {
     expect(uniqueFileName('note.md', 1)).toBe('note.md')
     expect(uniqueFileName('note.md', 2)).toBe('note (2).md')
     expect(uniqueFileName('note.markdown', 3)).toBe('note (3).markdown')
+  })
+})
+
+describe('file-transfer-policy · modified state resolution', () => {
+  it('trusts hasMidified when it is true', () => {
+    expect(resolveModifiedState(true, '# a', '# a')).toEqual({ modified: true, source: 'hasMidified' })
+  })
+
+  it('falls back to savedContent when hasMidified lags behind', () => {
+    expect(resolveModifiedState(false, '# a\n\n', '# a')).toEqual({ modified: true, source: 'savedContent' })
+    expect(resolveModifiedState(undefined, 'x', 'y')).toEqual({ modified: true, source: 'savedContent' })
+  })
+
+  it('normalizes CRLF so line endings alone are not a modification', () => {
+    expect(resolveModifiedState(false, 'a\r\nb', 'a\nb')).toEqual({ modified: false, source: 'none' })
+  })
+
+  it('returns false when content is equal or unavailable', () => {
+    expect(resolveModifiedState(false, 'a', 'a')).toEqual({ modified: false, source: 'none' })
+    expect(resolveModifiedState(false, null, 'a')).toEqual({ modified: false, source: 'none' })
+    expect(resolveModifiedState(false, 'a', undefined)).toEqual({ modified: false, source: 'none' })
   })
 })

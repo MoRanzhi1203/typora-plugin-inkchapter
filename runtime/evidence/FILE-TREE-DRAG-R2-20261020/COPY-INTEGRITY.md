@@ -223,3 +223,42 @@ Get-ChildItem "D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault\墨�
 
 > 验证后已将 `internal-a.md` 移回 `internal`、删除测试副本，夹具恢复基线；上述真实复制件均已归档到 `os-drag-artifacts/`。
 
+### 7.4 D06 拒绝路径（真实 OS，2026-10-24 04:03–04:04）
+
+源夹具：`%TEMP%\inkchapter-drag-r2\d06\`（保留以便复现）
+
+| 拖入对象 | 类型 | 运行通知（OCR 实测） | vault 是否产生副本 | 源状态 |
+|---|---|---|---|---|
+| `folder-source`（含 `inside.md` 26 B） | 普通目录 | `墨章：已复制 0 个文件到「root」`；`墨章：folder-source：源路径不是普通文件` | 否（递归检索无 `folder-source` / `inside.md`） | 目录与 `inside.md` 完整（26 B，mtime 04:01:35） |
+| `junction-dir` → `folder-source` | 目录 junction（LinkType=Junction） | `墨章：已复制 0 个文件到「root」`；`墨章：junction-dir：不支持符号链接` | 否 | junction 仍存在，Target 不变 |
+
+说明：
+
+- 真实**文件**符号链接创建需要管理员权限（`New-Item -ItemType SymbolicLink` 返回“此操作需要管理员权限”），因此改用目录 junction。
+- Node `lstat` 对 junction 同样返回 `isSymbolicLink()=true`，运行时命中的是 `SOURCE_SYMLINK_REJECTED` 分支，与单测断言一致。
+- 两次拖入均由真实 OS 鼠标完成；适配器拦截并拒绝，Typora 原生“移动”未执行（源目录/junction 均未消失）。
+
+### 7.5 D09 桌面拖出 / D11 未保存副本 / ACL 拒写（真实 OS，2026-10-24 04:2x）
+
+| 项目 | 结果 | SHA / 证据 |
+|---|---|---|
+| D09 桌面文件夹 | `internal-b.md` → `D:\MSIPC\Desktop\近代史作业\internal-b.md`，18 B | `6D112941267C3F262C493FFEE23D05A7609E1634D8FFB5481D3712BB7CD8847E`；源保留；副本已删除 |
+| D09 桌面根（2026-10-24 06:0x 复测） | `Generic-Locator-Runtime-Test.md` → `D:\MSIPC\Desktop\Generic-Locator-Runtime-Test.md`，398 B | `7F4E6B3BDE8759856888CC0A6494646E138890AD48FA8AD33EFD55442BA5D893`；kdesk64（PID 14956）接收落点；源保留；副本已删除 |
+| D11 未保存拖出（磁盘副本） | `internal-a.md`（未保存）→ `out-d11\internal-a.md`，18 B | `B90773886B5ADE73FC3EEA626E95304B6EEABE75DF6E693C9541F87EE190E32B`（磁盘版本）；磁盘文件 mtime 17:15:57 未变；文档保持未保存 |
+| D11 未保存告警（修复后） | 脏文档拖出 → `modified:true / warning:WARN` | `editedAt=2026-10-23T21:29:17.709Z` vs `fileMtime=2026-10-23T21:17:01.030Z`；OCR 捕获“墨章：当前文档有未保存修改…请先保存（Ctrl+S）”；`Ctrl+S` 后 `fileMtime=21:29:42.226Z`、干净文档均 `warning:NONE`；审计 `runtime-sess-1792790938027.log` |
+| ACL 拒写（2026-10-24 06:2x 复测） | `acl-target` 仅 `RX`；直接写入被拒；真实拖入 `D05-conflict.md` 后目录为空 | 源 `D05-conflict.md` 18 B 保留；截图 OCR：“已复制 0 个文件到「acl-target」，1 个失败”“D05-conflict.md：复制失败 (EPERM)”；`acl-target` 已恢复 ACL 并删除 |
+
+说明：D11 的磁盘版本复制语义已证实（副本 SHA 等于磁盘文件而非修改缓冲区）。告警修复后已在真实 OS 拖拽中经审计日志与截图 OCR 双双取证，判定机制为“`#write` 内编辑事件时间戳 vs 文件 mtime（`> mtime + 1s`）”，因为 Typora 1.6.7 的 `hasMidified` 运行时恒为 false。最终构建 `CB60457608E65901A037105B3712EA2771938F036AA7BDD5900220AE6150D63E`。
+
+### 7.6 D12 真正重叠（2026-10-24 06:4x，修复后）
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| 首拖：1148 个 `.md` 批量导入 | 复制进行中 | 多选后真实拖入 vault 根；落点后 0.4 s 已复制 21 个，随后 291、1148；审计 `started, sourcesCount=1148`；测试后全部删除 |
+| 第二拖：复制未完成时拖入 `D05-conflict.md` | 命中 busy 分支，未产生副本 | 审计 `INKCHAPTER-FILE-DRAG-IN-DROP`：`{"phase":"busy","processing":true,"sourcesCount":1,"targetDirectory":null}`（`runtime-sess-1792794717701.log`，22:45:48.172Z）；`D05-conflict.md` 未出现在 vault 根 |
+| busy 提示 | 代码路径已执行 | 同一分支调用 `Notice.info('墨章：上一批文件仍在导入，请稍候')`；本轮以审计作为确定性证据，通知为瞬时 UI |
+
+说明：本卷对大文件复制存在近似块克隆的快速路径（3 GB/8 GB 单文件亚秒级完成），无法以单文件制造 busy 窗口；改用 1148 文件批次拉长复制时间，并以真实 OS 拖拽触发重叠。修复内容见 `OS-DRAG-RUNTIME-MATRIX.md` §2.2：`internalDragActive` 残留会让 `dragover` 不再 `preventDefault`，`drop` 根本不触发；现已增加 mouseup / 失焦 / visibilitychange 兜底与 15 s TTL，并新增拖入决策审计。
+
+
+

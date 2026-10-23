@@ -76,6 +76,7 @@ function makeHost(over: Partial<FileTreeDragHost> = {}): FileTreeDragHost {
     refreshTree: vi.fn(),
     notify: vi.fn(),
     onDragOutObserved: vi.fn(),
+    onDropDecided: vi.fn(),
     ...over,
   }
 }
@@ -349,6 +350,19 @@ describe('FileTreeDragAdapter · drag-out observation', () => {
     expect(event.defaultPrevented).toBe(false)
   })
 
+  it('observes dragstart from the node itself (real Typora targets inner descendants)', async () => {
+    const host = makeHost()
+    adapter = new FileTreeDragAdapter(host)
+    adapter.attach()
+
+    // 真实 Typora 的 dragstart 目标可能是节点本身或标题后代；不能要求
+    // 必须命中 .file-node-content，否则未保存告警会静默丢失。
+    fire(node('[data-path="D:\\\\vault\\\\note.md"]'), 'dragstart', makeDataTransfer(['Files']))
+    await flush()
+
+    expect(host.onDragOutObserved).toHaveBeenCalledWith({ path: NOTE, isDirectory: false })
+  })
+
   it('does not emit drag-out observations for tree background drags', async () => {
     const host = makeHost()
     adapter = new FileTreeDragAdapter(host)
@@ -390,9 +404,49 @@ describe('FileTreeDragAdapter · highlight and busy guard', () => {
 
     expect(host.copy).toHaveBeenCalledTimes(1)
     expect(host.notify).toHaveBeenCalledWith('墨章：上一批文件仍在导入，请稍候', 'info')
+    // busy 分支必须有可离线核验的运行时审计，不能只依赖瞬时通知。
+    expect(host.onDropDecided).toHaveBeenCalledWith({
+      phase: 'busy',
+      processing: true,
+      sourcesCount: 1,
+      targetDirectory: null,
+    })
 
     resolveCopy(resultFor(['D:\\src\\a.md']))
     await flush()
     expect(adapter.getInvariant().processing).toBe(false)
+  })
+
+  it('clears a stale internal drag marker on mouseup so later external drops work', () => {
+    const host = makeHost()
+    adapter = new FileTreeDragAdapter(host)
+    adapter.attach()
+
+    fire(fileContent(), 'dragstart', makeDataTransfer(['Files']))
+    expect(adapter.getInvariant().internalDragActive).toBe(true)
+
+    // 真实拖拽可能在窗口外结束而未触发 dragend；mouseup 必须兜底清理。
+    document.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }))
+
+    fire(docsContent(), 'drop', makeDataTransfer(['Files'], ['D:\\src\\a.md']))
+    expect(adapter.getInvariant().internalDragActive).toBe(false)
+    expect(host.copy).toHaveBeenCalledTimes(1)
+  })
+
+  it('expires a stale internal drag marker after the TTL', () => {
+    const host = makeHost()
+    adapter = new FileTreeDragAdapter(host)
+    adapter.attach()
+    const now = vi.spyOn(Date, 'now')
+
+    now.mockReturnValue(1_000)
+    fire(fileContent(), 'dragstart', makeDataTransfer(['Files']))
+    expect(adapter.getInvariant().internalDragActive).toBe(true)
+
+    now.mockReturnValue(1_000 + 16_000)
+    fire(docsContent(), 'drop', makeDataTransfer(['Files'], ['D:\\src\\a.md']))
+    expect(adapter.getInvariant().internalDragActive).toBe(false)
+    expect(host.copy).toHaveBeenCalledTimes(1)
+    now.mockRestore()
   })
 })

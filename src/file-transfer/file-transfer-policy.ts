@@ -155,6 +155,30 @@ export function shouldWarnStaleDragOut(
   return activeDocumentModified && isSamePath(activeDocumentPath, draggedPath)
 }
 
+export type ModifiedStateSource = 'hasMidified' | 'savedContent' | 'none'
+
+/**
+ * 计算当前文档是否真的有未保存修改。
+ *
+ * 真实运行时 `File.bundle.hasMidified` 在标题已出现未保存标记时仍可能为 false，
+ * 因此增加 `savedContent` 与当前正文的比对作为回退。换行差异先归一化，避免
+ * CRLF/LF 造成误报。
+ */
+export function resolveModifiedState(
+  hasMidified: boolean | null | undefined,
+  currentContent: string | null | undefined,
+  savedContent: string | null | undefined,
+): { modified: boolean; source: ModifiedStateSource } {
+  if (hasMidified) return { modified: true, source: 'hasMidified' }
+  if (typeof currentContent === 'string' && typeof savedContent === 'string') {
+    const normalize = (value: string): string => value.replace(/\r\n/g, '\n')
+    if (normalize(currentContent) !== normalize(savedContent)) {
+      return { modified: true, source: 'savedContent' }
+    }
+  }
+  return { modified: false, source: 'none' }
+}
+
 /** 同名冲突的候选文件名：`note.md` → `note (2).md`。 */
 export function uniqueFileName(fileName: string, index: number): string {
   if (index <= 1) return fileName
