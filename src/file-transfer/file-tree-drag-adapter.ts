@@ -28,12 +28,22 @@ export const FILE_TREE_DRAG_CONTENT_SELECTOR = '.file-node-content'
 export const FILE_DROP_TARGET_CLASS = 'ink-file-drop-target'
 
 const MAX_FAILURE_DETAIL_ITEMS = 3
+/** 内部拖拽标记的最长存活时间：超过则视为上一次拖拽残留。 */
+const INTERNAL_DRAG_TTL_MS = 15_000
 
 export type FileTransferNoticeLevel = 'info' | 'warning' | 'error'
 
 export interface DragOutObservation {
   path: string
   isDirectory: boolean
+}
+
+/** 外部拖入在进入复制前做出的决策（用于运行时审计，不参与业务逻辑）。 */
+export interface DropDecisionObservation {
+  phase: 'internal' | 'busy' | 'invalid-target' | 'no-sources' | 'started'
+  processing: boolean
+  sourcesCount: number
+  targetDirectory: string | null
 }
 
 export interface FileTreeDragHost {
@@ -47,6 +57,8 @@ export interface FileTreeDragHost {
   notify(message: string, level?: FileTransferNoticeLevel): void
   /** dragstart 观察（只读，不允许阻止原生拖出）。 */
   onDragOutObserved?(observation: DragOutObservation): void
+  /** 拖入决策观察（只读，用于审计 busy/目标无效等分支）。 */
+  onDropDecided?(observation: DropDecisionObservation): void
 }
 
 interface AdapterRegistry {
@@ -128,6 +140,8 @@ export class FileTreeDragAdapter {
    * 时清除，避免拖出后残留状态影响后续外部拖入。
    */
   private internalDragActive = false
+  /** 内部 dragstart 的时间戳，用于兜底清理未收到 dragend/drop 的残留标记。 */
+  private internalDragStartedAt = 0
   private highlighted: Element | null = null
   private externalDropCount = 0
   private copiedCount = 0
@@ -151,6 +165,12 @@ export class FileTreeDragAdapter {
     doc.addEventListener('drop', this.onDrop, true)
     doc.addEventListener('dragstart', this.onDragStart, true)
     doc.addEventListener('dragend', this.onDragEnd, true)
+    // 兜底：拖拽未以 dragend/drop 正常结束时（例如指针移出窗口后被外部程序接管），
+    // 下一次外部拖入的 dragover 会因 internalDragActive 残留而不再 preventDefault，
+    // 导致 drop 根本不触发（表现为拖入无反应、busy 提示也不出现）。
+    doc.addEventListener('mouseup', this.onDragLifecycleEnd, true)
+    doc.addEventListener('visibilitychange', this.onVisibilityChange, true)
+    doc.defaultView?.addEventListener('blur', this.onWindowBlur)
     this.attached = true
     return true
   }
@@ -164,10 +184,13 @@ export class FileTreeDragAdapter {
     doc.removeEventListener('drop', this.onDrop, true)
     doc.removeEventListener('dragstart', this.onDragStart, true)
     doc.removeEventListener('dragend', this.onDragEnd, true)
+    doc.removeEventListener('mouseup', this.onDragLifecycleEnd, true)
+    doc.removeEventListener('visibilitychange', this.onVisibilityChange, true)
+    doc.defaultView?.removeEventListener('blur', this.onWindowBlur)
     this.clearHighlight()
     this.attached = false
     this.processing = false
-    this.internalDragActive = false
+    this.clearInternalDrag()
     const registry = adapterRegistry()
     if (registry.current === this) registry.current = null
   }
@@ -209,16 +232,30 @@ export class FileTreeDragAdapter {
     if (related === null) {
       // 拖出窗口（外部或拖出到 Explorer/桌面）：本次拖拽结束，清除内部拖拽标记，
       // 否则下一次从 Explorer 拖入会被误判成内部拖放。
-      this.internalDragActive = false
+      this.clearInternalDrag()
     }
     if (related && this.treeContains(related)) return
     this.clearHighlight()
   }
 
+  /** 鼠标释放 / 窗口失焦 / 页面隐藏都意味着拖拽生命周期已结束。 */
+  private onDragLifecycleEnd = (): void => {
+    this.clearInternalDrag()
+  }
+
+  private onWindowBlur = (): void => {
+    this.clearInternalDrag()
+  }
+
+  private onVisibilityChange = (): void => {
+    if (this.host.document.hidden) this.clearInternalDrag()
+  }
+
   private onDrop = (event: DragEvent): void => {
-    if (this.internalDragActive) {
+    if (this.hasActiveInternalDrag()) {
       // 文件树内部拖放：交还 Typora 原生移动逻辑，不 preventDefault、不复制。
-      this.internalDragActive = false
+      this.clearInternalDrag()
+      this.recordDropDecision('internal', 0, null)
       return
     }
     if (!this.isExternalTreeDrag(event)) return
@@ -226,8 +263,11 @@ export class FileTreeDragAdapter {
     event.preventDefault()
     event.stopPropagation()
     event.stopImmediatePropagation()
+
+    const sources = collectDroppedFilePaths(event.dataTransfer)
     if (this.processing) {
       this.host.notify('墨章：上一批文件仍在导入，请稍候', 'info')
+      this.recordDropDecision('busy', sources.length, null)
       return
     }
 
@@ -235,35 +275,38 @@ export class FileTreeDragAdapter {
     this.clearHighlight()
     if (!target || !target.directory) {
       this.host.notify('墨章：目标文件夹不可用或越出当前打开的文件夹', 'error')
+      this.recordDropDecision('invalid-target', sources.length, null)
       return
     }
 
-    const sources = collectDroppedFilePaths(event.dataTransfer)
     if (sources.length === 0) {
       this.host.notify('墨章：未检测到本地文件路径（仅支持从资源管理器拖入文件）', 'warning')
+      this.recordDropDecision('no-sources', 0, target.directory)
       return
     }
 
     this.processing = true
     this.externalDropCount++
+    this.recordDropDecision('started', sources.length, target.directory)
     void this.runImport(sources, target.directory)
   }
 
   private onDragStart = (event: DragEvent): void => {
     if (!this.attached) return
     // 任何新的 dragstart 都先清除上一次拖拽的来源标记。
-    this.internalDragActive = false
+    this.clearInternalDrag()
     const element = asElement(event.target)
     if (!element) return
     const tree = element.closest(FILE_TREE_ROOT_SELECTOR)
     if (!tree) return
-    const content = element.closest(FILE_TREE_DRAG_CONTENT_SELECTOR)
-    if (!content) return
-    const node = content.parentElement
-    if (!node || !node.matches(FILE_TREE_NODE_SELECTOR)) return
+    // 真实 Typora 的 dragstart 目标可能是节点内的任意后代（标题文本、图标等），
+    // 不能要求必须命中 .file-node-content；直接取最近的带 data-path 节点即可。
+    const node = element.closest(FILE_TREE_NODE_SELECTOR)
+    if (!node || !tree.contains(node)) return
     const sourcePath = node.getAttribute('data-path')
     if (!sourcePath) return
     this.internalDragActive = true
+    this.internalDragStartedAt = Date.now()
     const observation: DragOutObservation = {
       path: sourcePath,
       isDirectory: node.getAttribute('data-is-directory') === 'true',
@@ -279,8 +322,45 @@ export class FileTreeDragAdapter {
   }
 
   private onDragEnd = (): void => {
-    this.internalDragActive = false
+    this.clearInternalDrag()
     this.clearHighlight()
+  }
+
+  private clearInternalDrag(): void {
+    this.internalDragActive = false
+    this.internalDragStartedAt = 0
+  }
+
+  /**
+   * 内部拖拽标记是否仍然有效。
+   *
+   * 真实 Typora 在“树内 dragstart → 拖到窗口外/外部程序”时并不保证触发 dragend
+   * 或 dragleave(relatedTarget=null)。若标记残留，后续外部拖入的 dragover 不会
+   * 被 preventDefault，浏览器直接拒绝 drop —— 表现为拖入完全无反应，busy 提示
+   * 也不会出现。除 mouseup / blur / visibilitychange 兜底外，再加时间上限自愈。
+   */
+  private hasActiveInternalDrag(): boolean {
+    if (!this.internalDragActive) return false
+    if (this.internalDragStartedAt > 0 && Date.now() - this.internalDragStartedAt > INTERNAL_DRAG_TTL_MS) {
+      this.clearInternalDrag()
+      return false
+    }
+    return true
+  }
+
+  private recordDropDecision(
+    phase: DropDecisionObservation['phase'],
+    sourcesCount: number,
+    targetDirectory: string | null,
+  ): void {
+    try {
+      this.host.onDropDecided?.({
+        phase,
+        processing: this.processing,
+        sourcesCount,
+        targetDirectory,
+      })
+    } catch { /* 审计失败绝不影响拖放 */ }
   }
 
   private async runImport(sources: string[], destinationDir: string): Promise<void> {
@@ -339,7 +419,7 @@ export class FileTreeDragAdapter {
     if (!this.attached) return false
     // Typora 内部拖放与外部拖入的 dataTransfer.types 都是 ["Files"]，
     // 只能依靠 dragstart 来源区分；内部拖放必须完全放行给原生移动逻辑。
-    if (this.internalDragActive) return false
+    if (this.hasActiveInternalDrag()) return false
     if (!this.isTreeEvent(event)) return false
     const dataTransfer = event.dataTransfer
     if (!dataTransfer) return false

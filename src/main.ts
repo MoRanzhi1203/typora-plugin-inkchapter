@@ -45,6 +45,7 @@ import { writeHeadingConflictBridgeReport, readHeadingConflictBridgeFile, consum
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
 import { FileCopyService } from './file-transfer/file-copy-service'
+import { resolveModifiedState } from './file-transfer/file-transfer-policy'
 import { FileTreeDragAdapter } from './file-transfer/file-tree-drag-adapter'
 import { NativeDragBridge, type ElectronRendererLike } from './file-transfer/native-drag-bridge'
 import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-empty-workspace-controller'
@@ -985,6 +986,47 @@ export default class extends Plugin<InkChapterSettings> {
       const copyService = this.fileCopyService
       const bridge = this.nativeDragBridge
       let lastDragOutNoticeAt = 0
+      // 真实 Typora 1.6.7（Windows）不提供可靠的未保存标记：
+      // hasMidified 恒为 false，getContent/savedContent 始终相同。这里记录编辑器
+      // 最后一次 input 时间；拖出时若晚于磁盘 mtime（允许 1s 时钟粒度），
+      // 说明存在未保存修改。保存会推进 mtime，从而自动恢复为干净状态。
+      const lastEditAt = new Map<string, number>()
+      const markEdited = (): void => {
+        try {
+          const activePath = File.bundle?.filePath
+          if (activePath) lastEditAt.set(activePath, Date.now())
+        } catch { /* 忽略 */ }
+      }
+      const isInsideEditor = (target: EventTarget | null): boolean => {
+        const element = target as Element | null
+        return !!element && typeof element.closest === 'function' && !!element.closest('#write')
+      }
+      const onEditorEdit = (event: Event): void => {
+        if (isInsideEditor(event.target)) markEdited()
+      }
+      const onEditorKeyDown = (event: KeyboardEvent): void => {
+        if (!isInsideEditor(event.target)) return
+        if (event.ctrlKey || event.metaKey || event.altKey) {
+          if (!['v', 'x', 'z', 'y'].includes(event.key.toLowerCase())) return
+        } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape', 'CapsLock'].includes(event.key)) {
+          return
+        }
+        markEdited()
+      }
+      document.addEventListener('input', onEditorEdit, true)
+      document.addEventListener('paste', onEditorEdit, true)
+      document.addEventListener('cut', onEditorEdit, true)
+      document.addEventListener('drop', onEditorEdit, true)
+      document.addEventListener('compositionend', onEditorEdit, true)
+      document.addEventListener('keydown', onEditorKeyDown, true)
+      this.register(() => {
+        document.removeEventListener('input', onEditorEdit, true)
+        document.removeEventListener('paste', onEditorEdit, true)
+        document.removeEventListener('cut', onEditorEdit, true)
+        document.removeEventListener('drop', onEditorEdit, true)
+        document.removeEventListener('compositionend', onEditorEdit, true)
+        document.removeEventListener('keydown', onEditorKeyDown, true)
+      })
 
       this.fileTreeDragAdapter = new FileTreeDragAdapter({
         document,
@@ -1032,15 +1074,169 @@ export default class extends Plugin<InkChapterSettings> {
         onDragOutObserved: ({ path: draggedPath, isDirectory }) => {
           if (isDirectory) return
           try {
-            const activePath = File.bundle?.filePath || File.filePath || null
-            const modified = !!File.bundle?.hasMidified
-            const warning = bridge.warningFor(bridge.inspect(draggedPath, activePath, modified))
-            if (!warning) return
-            const now = Date.now()
-            if (now - lastDragOutNoticeAt < 4000) return
-            lastDragOutNoticeAt = now
-            Notice.warning(warning)
+            // Typora 的 bundle.filePath 通常为绝对路径；旧版 File.filePath 可能为
+            // vault 相对路径，先按 vault 根规范化，避免同一文件因形式不同而漏报。
+            const bundle = File.bundle as { filePath?: string; hasMidified?: boolean; savedContent?: string; modifiedDate?: Date } | undefined
+            const legacyPath = File.filePath
+            let activePath: string | null = bundle?.filePath || legacyPath || null
+            if (activePath && !path.isAbsolute(activePath)) {
+              try {
+                const vault = File.getMountFolder()
+                if (vault) activePath = path.resolve(vault, activePath)
+              } catch { /* 保持原值 */ }
+            }
+            let currentContent: string | null = null
+            let contentError: string | null = null
+            try { currentContent = File.getContent() } catch (e) { contentError = e instanceof Error ? e.message : String(e) }
+            const contentType = typeof currentContent
+            const contentCtor = currentContent && typeof currentContent === 'object'
+              ? ((currentContent as unknown as { constructor?: { name?: string } }).constructor?.name ?? null)
+              : null
+            // hasMidified 在真实运行中可能滞后；用 savedContent 与当前正文比对兜底。
+            const state = resolveModifiedState(bundle?.hasMidified, currentContent, bundle?.savedContent)
+            let modified = state.modified
+            const editedAt = lastEditAt.get(draggedPath) ?? null
+            if (!modified && editedAt !== null) {
+              try {
+                const mtime = fs.statSync(draggedPath).mtimeMs
+                if (editedAt > mtime + 1000) modified = true
+              } catch { /* 忽略 */ }
+            }
+            // 诊断：记录文档标签页 DOM（.typ-tab）的类名与活动标签 HTML，
+            // 定位 Typora 原生的未保存标记（hasMidified 在真实运行中不可靠）。
+            let docTabClasses: string[] = []
+            let activeTabHtml: string | null = null
+            let activeCloseBefore: string | null = null
+            try {
+              const tabs = Array.from(document.querySelectorAll('.typ-workspace-tabs .typ-tab, .typ-workspace-tab-header .typ-tab'))
+              docTabClasses = tabs.slice(0, 8).map(element => String((element as HTMLElement).className))
+              const activeTab = tabs.find(element => element.classList.contains('active'))
+              activeTabHtml = activeTab ? String(activeTab.outerHTML).slice(0, 600) : null
+              const closeButton = activeTab?.querySelector('.typ-close')
+              activeCloseBefore = closeButton ? window.getComputedStyle(closeButton, '::before').content : null
+            } catch { docTabClasses = []; activeTabHtml = null; activeCloseBefore = null }
+            // 诊断：Typora 在加载/保存后重置 UndoManager.commandStack；
+            // 非空命令栈通常意味着存在未保存编辑。
+            let undoStackLength: number | null = null
+            try {
+              const undoManager = (editor as unknown as { undo?: { UndoManager?: { commandStack?: unknown[] } } }).undo?.UndoManager
+              undoStackLength = Array.isArray(undoManager?.commandStack) ? undoManager.commandStack.length : null
+            } catch { undoStackLength = null }
+            const inspection = bridge.inspect(draggedPath, activePath, modified)
+            const warning = bridge.warningFor(inspection)
+            const notify = (text: string | null): void => {
+              if (!text) return
+              const now = Date.now()
+              if (now - lastDragOutNoticeAt < 4000) return
+              lastDragOutNoticeAt = now
+              Notice.warning(text)
+            }
+            emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+              phase: 'sync',
+              draggedPath,
+              activePath,
+              modified,
+              modifiedSource: state.source,
+              hasMidified: !!bundle?.hasMidified,
+              bundleType: typeof bundle,
+              legacyPath: legacyPath || null,
+              savedContentLength: typeof bundle?.savedContent === 'string' ? bundle.savedContent.length : null,
+              currentContentLength: typeof currentContent === 'string' ? currentContent.length : null,
+              contentType,
+              contentCtor,
+              contentError,
+              docTabClasses,
+              activeTabHtml,
+              activeCloseBefore,
+              undoStackLength,
+              modifiedDate: bundle?.modifiedDate instanceof Date ? bundle.modifiedDate.toISOString() : String(bundle?.modifiedDate ?? null),
+              fileMtime: (() => { try { return new Date(fs.statSync(draggedPath).mtimeMs).toISOString() } catch { return null } })(),
+              editedAt: editedAt === null ? null : new Date(editedAt).toISOString(),
+              windowTitle: (() => {
+                try {
+                  const reqnode = (globalThis as { reqnode?: (id: string) => unknown }).reqnode
+                  const electron = reqnode?.('electron') as { remote?: { getCurrentWindow?: () => { getTitle?: () => string } } } | undefined
+                  return electron?.remote?.getCurrentWindow?.()?.getTitle?.() ?? null
+                } catch (e) { return e instanceof Error ? `ERR:${e.message}` : 'ERR' }
+              })(),
+              documentTitle: document.title,
+              remoteTitle: (() => {
+                try {
+                  const reqnode = (globalThis as { reqnode?: (id: string) => unknown }).reqnode
+                  const remote = reqnode?.('@electron/remote') as { getCurrentWindow?: () => { getTitle?: () => string } } | undefined
+                  return remote?.getCurrentWindow?.()?.getTitle?.() ?? null
+                } catch (e) { return e instanceof Error ? `ERR:${e.message}` : 'ERR' }
+              })(),
+              exists: inspection.exists,
+              symlink: inspection.symlink,
+              staleDueToUnsavedChanges: inspection.staleDueToUnsavedChanges,
+              warning: warning ? 'WARN' : 'NONE',
+            })
+            if (warning) {
+              notify(warning)
+              return
+            }
+            // hasMidified 与 getContent 在真实运行中均不可靠；尝试从 getContent 的
+            // 异步返回值或 Typora 文档桥读取当前 Markdown，与 savedContent 比对。
+            const savedContent = bundle?.savedContent
+            if (typeof savedContent !== 'string') return
+            const evaluateContent = (raw: unknown, source: string): void => {
+              const content = typeof raw === 'string'
+                ? raw
+                : (raw && typeof (raw as { content?: unknown }).content === 'string'
+                  ? (raw as { content: string }).content
+                  : null)
+              const asyncState = resolveModifiedState(false, content, savedContent)
+              const asyncInspection = bridge.inspect(draggedPath, activePath, asyncState.modified)
+              const asyncWarning = bridge.warningFor(asyncInspection)
+              emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+                phase: 'async',
+                contentSource: source,
+                draggedPath,
+                activePath,
+                modified: asyncState.modified,
+                modifiedSource: asyncState.source,
+                resultType: typeof raw,
+                savedContentLength: savedContent.length,
+                currentContentLength: typeof content === 'string' ? content.length : null,
+                exists: asyncInspection.exists,
+                symlink: asyncInspection.symlink,
+                staleDueToUnsavedChanges: asyncInspection.staleDueToUnsavedChanges,
+                warning: asyncWarning ? 'WARN' : 'NONE',
+              })
+              notify(asyncWarning)
+            }
+            const maybePromise = currentContent as unknown
+            if (maybePromise && typeof (maybePromise as { then?: unknown }).then === 'function') {
+              void (maybePromise as Promise<unknown>).then(value => evaluateContent(value, 'getContentPromise')).catch((error: unknown) => {
+                emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+                  phase: 'async-error',
+                  contentSource: 'getContentPromise',
+                  draggedPath,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              })
+              return
+            }
+            const jsBridge = (globalThis as { JSBridge?: { invoke: (command: string) => Promise<unknown> } }).JSBridge
+            if (!jsBridge) return
+            void jsBridge.invoke('document.getContent').then(value => evaluateContent(value, 'jsbridge')).catch((error: unknown) => {
+              emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+                phase: 'async-error',
+                contentSource: 'jsbridge',
+                draggedPath,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            })
           } catch { /* 观察失败绝不影响原生拖出 */ }
+        },
+        onDropDecided: (decision) => {
+          emitRuntimeAudit('INKCHAPTER-FILE-DRAG-IN-DROP', {
+            phase: decision.phase,
+            processing: decision.processing,
+            sourcesCount: decision.sourcesCount,
+            targetDirectory: decision.targetDirectory,
+          })
         },
       })
 
