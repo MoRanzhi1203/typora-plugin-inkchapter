@@ -84,7 +84,7 @@ docs/diagnostics/DOCUMENT-DIAGNOSTICS-VNEXT-GAP-LEDGER.md §1）。
 - 构建：`build.js` 是唯一构建 authority（esbuild；`node build.js`=dev，`node build.js --prod`=生产），样式经 `esbuild-sass-plugin` 编译；dev 模式调用 `installDevPlugin()` 并重启 Typora。
 - 打包：`pack.js`（`pnpm run pack`）。
 - 类型：`tsconfig.json`（严格）；测试：`vitest`（`vitest.config.ts`，`pnpm test`）。
-- 部署/校验脚本：`scripts/deploy-test-vault.ps1`、`scripts/restart-typora-test-vault.ps1`、`scripts/verify-typora-runtime.ps1`、`scripts/verify-typora-startup.ps1`。
+- 部署脚本：`scripts/deploy-test-vault.ps1`；文档校验：`scripts/docs/verify-docs.mjs`；诊断文档生成：`scripts/document-diagnostics/*.mjs`。运行时验证已迁移为审计日志 + `runtime/evidence/`（旧 `verify-typora-*.ps1` 与 `restart-typora-test-vault.ps1` 已移除）。
 
 ## 9. 相关文档
 

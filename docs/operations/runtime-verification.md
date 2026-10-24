@@ -1,18 +1,14 @@
 # Runtime 验证指南
 
-> 更新记录: 2026-08-11 — 新增 R59 严格 15 项验证、verify-typora-runtime.ps1 自动脚本
+> 更新记录: 2026-10-24 — 移除一次性 `verify-typora-runtime.ps1`；本指南改为手工采集 + 审计日志证据。
 
 ## 一、核心原则
 
 **启动命令成功 ≠ Typora 已成功启动。** 只有完成本指南验证步骤后，才允许表述"Typora 已启动"或"插件已加载"。任一项缺失只能写："启动命令已发出，但尚未确认成功。"
 
-## 二、自动化验证（R59）
+## 二、证据采集方式
 
-```powershell
-powershell -File scripts\verify-typora-runtime.ps1
-```
-
-输出结构化 JSON，含以下所有 15 项。必须 `all15Passed=true` 方可继续。
+旧自动脚本已移除。按下方 15 项逐项采集证据（PowerShell + `runtime-load.json` + 审计 JSONL），全部满足方可继续；禁止只凭启动命令返回码判定成功。
 
 ## 三、严格 15 项验证清单
 

@@ -25,13 +25,9 @@ pnpm build:dev
 ```powershell
 # 部署（含硬路径断言、旧错误目录检测、SHA256 校验）
 powershell -File scripts\deploy-test-vault.ps1
-
-# 重启 Typora（关闭旧进程→确认退出→启动→等待窗口）
-powershell -File scripts\restart-typora-test-vault.ps1
-
-# 运行时验证（结构化 JSON, 15 项校验）
-powershell -File scripts\verify-typora-runtime.ps1
 ```
+
+> 旧 `restart-typora-test-vault.ps1` 与 `verify-typora-runtime.ps1` 已移除。重启走正常启动流程；15 项运行时校验按 [runtime-verification.md](runtime-verification.md) 手工采集审计证据。
 
 ### Gate 流程
 
@@ -40,7 +36,7 @@ GATE0: tsc --noEmit → pnpm test → pnpm run build:dev
 GATE1: scripts\deploy-test-vault.ps1 (硬路径断言, 禁止 test\vault.typora)
 GATE2: project dist SHA256 vs runtime dist SHA256
 GATE3: expected buildId == runtime-load buildMarker
-GATE4: strict 15-item verify (all15Passed=true)
+GATE4: strict 15-item verify（按 runtime-verification.md 手工/审计采集）
 GATE5: minimal GUI smoke
 任一 Gate FAIL → HARD STOP, 后续 Gate SKIPPED
 ```

@@ -27,8 +27,8 @@ artifacts/
 
 # runtime generated sidecars (regenerated on Typora run)
 test/vault/.typora/inkchapter/audit/
-test/vault/.typora/inkchapter/captions/regression_*
-test/vault/.typora/inkchapter/captions/fixtures_*
+test/vault/.typora/inkchapter-outline-dom-dump.json
+test/vault/.typora/inkchapter/captions/*.json
 
 # trae
 .trae/

@@ -17,8 +17,8 @@
 | 内存审计缓冲 | `src/heading-numbering/runtime-audit.ts`（`enableRuntimeAudit` / `getAuditEventsJSON` / `copyAuditEventsToClipboard` / `recordRuntimeAudit`） |
 | 文件 sink | `src/runtime/forensic-log-sink.ts`（`initializeForensicSink` / `emitRuntimeAudit` / `shutdownForensicSink`） |
 | 全局加载审计 | `src/runtime/inkchapter-path-authority.ts` + `src/runtime/inkchapter-bootstrap-audit.ts` |
-| 运行时验证脚本 | `scripts/verify-typora-runtime.ps1`、`scripts/verify-typora-startup.ps1` |
-| 部署脚本 | `scripts/deploy-test-vault.ps1`、`scripts/restart-typora-test-vault.ps1` |
+| 运行时验证 | 审计事件（`RUNTIME-IDENTITY-FINAL`）+ `runtime/evidence/`；旧 `verify-typora-runtime.ps1` / `verify-typora-startup.ps1` 已移除 |
+| 部署脚本 | `scripts/deploy-test-vault.ps1`；旧 `restart-typora-test-vault.ps1` 已移除 |
 
 ## 4. Authority / Source of Truth
 
@@ -41,7 +41,7 @@ onload
   → emitRuntimeAudit('RUNTIME-IDENTITY-FINAL', { shaMatch, initializationCount, ... })
   → 写 {pluginRoot}/../../inkchapter-runtime-load.json
   → refreshRuntimeIntegrity（runtime 域，不进用户 Drawer）
-验证：scripts/verify-typora-runtime.ps1 → all15Passed=true
+验证：审计事件 `all15Passed=true`（原 `verify-typora-runtime.ps1` 已移除）
 ```
 
 ## 7. 用户交互与 UI Contract
