@@ -191,3 +191,33 @@ PROMPT_MIGRATION_RECORD_ENTRY_COUNT = 19
 
 - `src/settings/ribbon-visibility.ts`、`runtime/evidence/R02-R05-MANUAL-CHECKLIST.md` 中的提示词路径引用改为指向 canonical 模块文档。
 - `scripts/docs/verify-docs.mjs`：把 `docs/maintenance/prompt-cleanup-history.md` 列入 `PROVENANCE_FILES`（该文件按设计列出已删除路径）；并修正行内代码（`` `[text](target)` ``）被误判为 Markdown 链接的假阳性（新增 `stripInlineCode`）。
+
+## 2026-10-19 — Enter / EOF / 光标 P0 批次整理（MERGE_THEN_DELETE）
+
+> 本批次把 `docs/prompts/pending/` 中剩余的 8 份一次性提示词全部并入 canonical 文档与日志；
+> 有效结论以 [../modules/document-utilities.md](../modules/document-utilities.md) 的 EOF-R5 / EN-11 / P0-CARET-EOF 三节为准。
+> 外部备份：`D:\TyporaPluginProjects\_prompt-backups\inkchapter-enter-eof-caret-20261019\`。
+
+```text
+PROMPT_TOTAL_COUNT                  = 8
+PROMPT_ABSORBED_COUNT               = 6
+PROMPT_SUPERSEDED_COUNT             = 2
+PROMPT_REQUIREMENT_TO_ROADMAP_COUNT = 0
+PROMPT_DELETE_READY_COUNT           = 8
+PROMPT_DELETE_BLOCKED_COUNT         = 0
+PROMPT_MIGRATION_RECORD_ENTRY_COUNT = 8
+```
+
+| # | Old Prompt | Classification | Code Verification | Absorbed Into | Changelog Decision | Remaining Gap | Delete Decision |
+|---|---|---|---|---|---|---|---|
+| 134 | `docs/prompts/pending/TRAE-INKCHAPTER-ENTER-DUPLICATE-SPLIT-RUNTIME-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | document-utilities.md § EOF 诊断事实 ↔ 视觉标记实时同步 / § 文末 Enter 重复拆分（EN-11） | DOC_CONSOLIDATED | NONE | DELETE |
+| 135 | `docs/prompts/pending/TRAE-INKCHAPTER-ENTER-EOF-ROOT-CAUSE-FULL-REPAIR.md` | PROMPT | CANONICAL_DOC_PRESENT | document-utilities.md § EOF-R5 / § EN-11 | DOC_CONSOLIDATED | NONE | DELETE |
+| 136 | `docs/prompts/pending/TRAE-INKCHAPTER-EOF-ENTER-BLANK-SEMANTICS-CLOSURE.md` | PROMPT | CANONICAL_DOC_PRESENT | document-utilities.md § EOF-R5（空行计数语义） | DOC_CONSOLIDATED | NONE | DELETE |
+| 137 | `docs/prompts/pending/TRAE-INKCHAPTER-EN11-CAUSAL-CLOSURE-R3.md` | PROMPT | CANONICAL_DOC_PRESENT | document-utilities.md § EN-11（归因演进 / 协调器安全） | DOC_CONSOLIDATED | NONE | DELETE |
+| 138 | `docs/prompts/pending/TRAE-INKCHAPTER-EN11-R4-REAL-ACCEPTANCE-AND-COORDINATOR-SAFETY.md` | PROMPT | CANONICAL_DOC_PRESENT | document-utilities.md § EN-11（协调器安全门） | DOC_CONSOLIDATED | NONE | DELETE |
+| 139 | `docs/prompts/pending/TRAE-INKCHAPTER-P0-EDITOR-CARET-EOF-FULL-CLOSURE.md` | PROMPT | SUPERSEDED_BY_R2 | document-utilities.md § 诊断光标隔离、审计覆盖与构建 fail-fast | HISTORICAL_ONLY | NONE | DELETE |
+| 140 | `docs/prompts/pending/TRAE-INKCHAPTER-P0-EDITOR-EOF-CARET-LEDGER-INTEGRATED-R2.md` | PROMPT | SUPERSEDED_BY_EN11-R3/R4 + EOF-R5 | document-utilities.md § 诊断光标隔离 / § EN-11 | HISTORICAL_ONLY | NONE | DELETE |
+| 141 | `docs/prompts/pending/TRAE-INKCHAPTER-EOF-VISUAL-SYNC-R5.md` | PROMPT | CANONICAL_DOC_PRESENT | document-utilities.md § EOF-R5 | DOC_CONSOLIDATED | NONE | DELETE |
+
+> 142 行以后不再编号；本批次完成后 `PROMPT_MD_REMAINING_COUNT = 0`。
+> 证据分级：视觉 / Enter 结论以 `runtime/evidence/EOF-R5-*`、`EN11-R3-*`、`EN11-R4-*`、`EN11-R6-LAYER-PLACEMENT.md`、`P0-CARET-EOF-*` 为准；`NOT_RUN` 项未被写成 PASS。
