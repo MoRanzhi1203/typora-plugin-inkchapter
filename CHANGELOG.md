@@ -34,6 +34,9 @@
 - Figure / Caption 诊断的存在性与命名改由 canonical owner（alt / sidecar）判定。
 - 文档诊断「连续空行过多」改以**可视空行数**判定（Typora 折叠源码空行后不再误报），并按编辑模式（所见即所得 / 源代码）区分数据来源。
 - 文档诊断 Drawer：诊断**内容**变化时就地刷新该行文字（消除"检测数据已更新但 Drawer 文字仍旧"），并保留滚动位置与选中状态。
+- 文末空行诊断与视觉标记实时同步（EOF-R5）：内容 / 几何指纹驱动 `UPDATE_CONTENT / UPDATE_GEOMETRY / RETRACT`，Drawer、`多余 N 空行` 标签与精确着色片段原子重建，修复"数值变、色块不变"；规范保留的 1 行永不涂色。
+- 文末 Enter 重复拆分（EN-11）：展示层不再作为 `#write` 最后子节点（改为首子节点），并在 Enter 回声窗口内暂缓插件展示写入；真实 16 次物理 Enter 0 次重复拆分、每次 +1 可见空行。
+- 文档诊断光标隔离与审计覆盖：展示文本不进入 Selection / Markdown 序列化；导航审计显式记录 `dropped / cancelled` 而非静默丢弃；构建链 `typecheck` fail-fast。
 - UI：标签滚动条、标签分隔线、区域边界与主题视觉层级对齐。
 
 ### Removed

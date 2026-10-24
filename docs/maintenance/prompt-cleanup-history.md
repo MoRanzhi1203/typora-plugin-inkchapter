@@ -6,6 +6,15 @@
 >
 > 说明：2026-10-05 的整合轮次之后，项目**不再保留任何提示词 Markdown 文件**；本文件只保留历次清理的日期、数量与去向摘要，不再指向已删除文件路径。
 
+## 2026-10-19 — Enter / EOF / 光标 P0 批次（MERGE_THEN_DELETE）
+
+- 删除 `docs/prompts/pending/**` 剩余 8 个提示词文件（ENTER-DUPLICATE / ENTER-EOF / EOF-ENTER-BLANK / EN11-R3 / EN11-R4 / P0-CARET-EOF R1 / P0-R2 / EOF-R5），`PROMPT_MD_REMAINING_COUNT` 归零。
+- 有效结论并入 [../modules/document-utilities.md](../modules/document-utilities.md) 的「EOF 诊断事实 ↔ 视觉标记实时同步（EOF-R5）」「文末 Enter 重复拆分（EN-11）」「诊断光标隔离、审计覆盖与构建 fail-fast（P0-CARET-EOF）」三节，并更新 [../modules/README.md](../modules/README.md) 索引。
+- 用户可见变更并入 [CHANGELOG.md](../../CHANGELOG.md) `[Unreleased] → Fixed`；[../roadmap/issue-and-error-ledger.md](../roadmap/issue-and-error-ledger.md) 的 EN-11 标记为 2026-10-18 已闭环并记录结论修正。
+- 证据：`runtime/evidence/EOF-R5-*`、`EN11-R3-*`、`EN11-R4-*`、`EN11-R6-LAYER-PLACEMENT.md`、`P0-CARET-EOF-*`；`NOT_RUN` / `PENDING_USER_MANUAL` 项保持原状态，未写成 PASS。
+- 外部备份：`D:\TyporaPluginProjects\_prompt-backups\inkchapter-enter-eof-caret-20261019\`。
+- 逐条明细见 [prompt-consolidation-record.md](prompt-consolidation-record.md) §2026-10-19。
+
 ## 2026-10-11 — 遗留提示词二次清理（MERGE_THEN_DELETE）
 
 - 删除 `docs/prompts/pending/**` 16 个 + `runtime/smoke/TRAE-*.md` 3 个，共 19 个文件；`scripts/docs/verify-docs.mjs` 的 `PROMPT_MD_REMAINING_COUNT` 归零。

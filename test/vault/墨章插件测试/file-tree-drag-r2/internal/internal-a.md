@@ -1,2 +1,2 @@
-﻿# internal A
+# internal A
 
