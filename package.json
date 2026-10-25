@@ -13,6 +13,7 @@
     "pack": "pnpm run build && node pack.js",
     "test": "pnpm run verify:archive && vitest run",
     "test:watch": "vitest",
+    "open:vault": "node scripts/open-test-vault.mjs",
     "docs:verify": "node scripts/docs/verify-docs.mjs"
   },
   "keywords": [

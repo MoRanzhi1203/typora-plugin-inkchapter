@@ -16,7 +16,16 @@ pnpm build:dev
 2. **复制 locales**: 如果 `src/locales/` 存在，复制到 `dist/locales/`
 3. **esbuild 打包**: `src/main.ts` → `dist/`（ESM、sourcemap、bundle）
 4. **安装到 test vault**: 部署到 `test/vault/.typora/plugins/dist/`
-5. **重启 Typora**: 关闭当前 Typora → 打开 `test/vault/doc.md`
+5. **重启 Typora（仅当未运行时）**: 若检测到 Typora 正在运行，**不关闭任何窗口**（跳过 `closeTypora()` 与自动重开），只提示手动重启以加载新构建；若未运行，才执行关闭，并**先以 vault 文件夹启动**（`test/vault`）再打开 `test/vault/doc.md` —— 单独打开文件不会触发社区框架的 vault 插件加载，窗口里将没有墨章 UI。可执行文件按 `TYPORA_EXE` 环境变量 → 常见安装路径 → PATH 顺序解析。
+
+### 打开测试 vault（墨章默认加载）
+
+```bash
+pnpm run open:vault                # 挂载 test/vault 后打开 test/vault/doc.md
+pnpm run open:vault -- <doc.md>    # 打开指定文档
+```
+
+该命令**始终先以文件夹方式挂载 `test/vault`**，轮询 `inkchapter-runtime-load.json` 直到出现新的 `loadSource=vault`，然后才打开文档。原因：社区框架只在“打开笔记文件夹”时加载 vault 插件，单独打开 `.md` 文件得到的窗口没有墨章 UI。可执行文件按 `TYPORA_EXE` → 常见安装路径 → PATH 解析。
 
 ### 自动化部署脚本（R59）
 

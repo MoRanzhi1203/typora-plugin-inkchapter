@@ -714,6 +714,44 @@ export function internalBlankGapIdentity(gap: DocumentBlockGap): string {
   return `blank-gap:${gap.previousBlockIdentity}>>${gap.nextBlockIdentity}`
 }
 
+export interface DocumentBlockSequenceEntry {
+  identity: string
+  kind: DocumentBlockKind
+  /** 0-based source line of the block's first content line. */
+  startLine: number
+}
+
+/**
+ * WC-R2 active-group lineage — the ORDERED block identity sequence of a source.
+ *
+ * The identity computation is byte-for-byte the same one used by the gap
+ * analyzer (`collectDocumentBlockGaps`), so a lineage lookup can never disagree
+ * with a gap's own `previousBlockIdentity` / `nextBlockIdentity`.
+ */
+export function collectDocumentBlockSequence(
+  markdown: string | null | undefined,
+): DocumentBlockSequenceEntry[] {
+  if (markdown == null) return []
+  const { lines, classOf, runs, canonicalOrdinalOf } = buildSourceRunsIndex(markdown)
+  const ordinalByKey = new Map<string, number>()
+  return runs.map((run, r) => {
+    const kind = classOf[run.start].kind
+    const ck = canonicalGapBoundaryKind(kind)
+    const canonicalOrdinal = canonicalOrdinalOf[r]
+    let identity: string
+    if (ck != null && canonicalOrdinal != null) {
+      identity = `block:${ck}:${canonicalOrdinal}`
+    } else {
+      const keyText = normalizeIdentityText(lines[run.start].text)
+      const key = `${kind}:${keyText}`
+      const ordinal = ordinalByKey.get(key) ?? 0
+      ordinalByKey.set(key, ordinal + 1)
+      identity = `${key}#${ordinal}`
+    }
+    return { identity, kind, startLine: run.start }
+  })
+}
+
 /**
  * §12/§13/§14 — the protected source region containing ONE line, or null. The
  * runtime gate uses this to prove that no reported gap run sits inside a fenced

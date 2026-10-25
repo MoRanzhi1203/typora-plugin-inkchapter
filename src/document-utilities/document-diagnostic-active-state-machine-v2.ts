@@ -83,8 +83,23 @@ export type DiagnosticTransitionAction = 'ACTIVATE' | 'DEACTIVATE' | 'SWITCH'
 
 export interface DiagnosticTransition {
   action: DiagnosticTransitionAction
+  /**
+   * R4 §3.1 — the MECHANICAL classification of the click (what the interaction
+   * phase alone would have said). The final `action` is decided by the same
+   * reducer with the inherited-group context, so provenance and semantics are
+   * both explicit and never silently diverge.
+   */
+  provenanceAction?: DiagnosticTransitionAction
+  /** R4 §3.1 — why the final action differs from the mechanical one. */
+  reason?: string
   previous: DiagnosticInteractionState
   next: DiagnosticInteractionState
+}
+
+/** R4 §3.1 — context the ONE reducer needs BEFORE it commits a transition. */
+export interface DiagnosticClickContext {
+  /** The clicked diagnostic is a CURRENT inherited member of the active group. */
+  inheritedGroupMember?: boolean
 }
 
 /**
@@ -92,24 +107,34 @@ export interface DiagnosticTransition {
  * click handler can never mutate several state objects independently.
  *
  * §4.1 — `version` ALWAYS increments, once per click.
- * §4.2 — the three (and only three) transitions:
- *          IDLE      + A -> ACTIVE(A)
- *          ACTIVE(A) + A -> IDLE
- *          ACTIVE(A) + B -> ACTIVE(B)
+ * §4.2 — the transitions:
+ *          IDLE             + A -> ACTIVE(A)
+ *          ACTIVE(A)        + A -> IDLE
+ *          ACTIVE(A)        + B -> ACTIVE(B)
+ *          (ACTIVE|DORMANT) + M -> IDLE      (M is a current inherited group member)
+ *
+ * R4 §3.1 — the inherited-member case is decided HERE, not overridden later.
  */
 export function reduceDiagnosticClick(
   prev: DiagnosticInteractionState,
   click: DiagnosticClick,
   nextTransactionId: number | null,
   nextLeaseToken: string | null,
+  context?: DiagnosticClickContext,
 ): DiagnosticTransition {
   const version = prev.version + 1
   const sameTarget = prev.phase === 'ACTIVE' && prev.targetKey === click.targetKey
-  if (sameTarget) {
+  const groupToggleOff = context?.inheritedGroupMember === true
+  if (sameTarget || groupToggleOff) {
+    const provenanceAction: DiagnosticTransitionAction = sameTarget
+      ? 'DEACTIVATE'
+      : (prev.phase === 'ACTIVE' ? 'SWITCH' : 'ACTIVATE')
     // §7 — DEACTIVATE is a NEW interaction version, and every active identity is
     // cleared in the SAME commit (never "reuse the previous version").
     return {
       action: 'DEACTIVATE',
+      provenanceAction,
+      ...(groupToggleOff ? { reason: 'GROUP_MEMBER_TOGGLE_OFF' } : {}),
       previous: prev,
       next: {
         version,
@@ -126,6 +151,8 @@ export function reduceDiagnosticClick(
   const action: DiagnosticTransitionAction = prev.phase === 'ACTIVE' ? 'SWITCH' : 'ACTIVATE'
   return {
     action,
+    // No override happened: the mechanical classification IS the final action.
+    provenanceAction: action,
     previous: prev,
     next: {
       version,
@@ -182,6 +209,64 @@ export function isCurrentOwnerV2(
   if (current.targetKey !== owner.targetKey) return false
   if (owner.transactionId != null && current.transactionId !== owner.transactionId) return false
   return true
+}
+
+// ── R5 §3/§5 — ONE visual owner per group target ────────────────────────────
+
+/**
+ * R5 — may the group projection SKIP this member because the PRIMARY locate
+ * carrier already owns it?
+ *
+ * The answer is YES only when ALL of these hold:
+ *   · the member really has a diagnostic id,
+ *   · that id IS the one the primary carrier was registered for,
+ *   · the primary carrier element still exists AND is connected.
+ *
+ * A stale registration (id written before a failed paint) or a retired carrier
+ * must NEVER suppress the group's own highlight — that is exactly how a valid
+ * split descendant silently lost its marker.
+ */
+export function shouldSkipGroupMemberForPrimaryCarrier(input: {
+  memberDiagnosticId: string | null | undefined
+  primaryDiagnosticId: string | null | undefined
+  primaryCarrierConnected: boolean
+}): boolean {
+  if (input.memberDiagnosticId == null || input.memberDiagnosticId === '') return false
+  if (input.primaryDiagnosticId == null) return false
+  if (input.memberDiagnosticId !== input.primaryDiagnosticId) return false
+  return input.primaryCarrierConnected === true
+}
+
+// ── R6 — bounded repaint when a published group member failed to paint ──────
+
+/**
+ * R6 — does the group projection need ONE bounded repaint?
+ *
+ * ROOT CAUSE this guards: `paintActiveGapGroupVisuals` binds every member to its
+ * live DOM boundary pair and measures the rendered blank rows. Right after a
+ * split, Typora may still be rebuilding the new block, so the bind or the
+ * measurement fails and that member is silently skipped (`continue`). Nothing
+ * re-derived the projection afterwards, so a two-member split could settle with
+ * only ONE highlighted descendant — exactly the reported "double highlight"
+ * failure — until some unrelated edit produced a new snapshot commit.
+ *
+ * A member is "accounted for" when either the group itself painted it OR the
+ * primary locate carrier already owns that same target. Anything else is a real
+ * gap between the published set and the projection, which earns a single bounded
+ * re-decision (never a permanent retry loop).
+ */
+export function shouldRequestGroupRepaint(input: {
+  /** Published members that the projection was supposed to visualise. */
+  publishedMemberCount: number
+  /** Members the group projection really painted in this pass. */
+  paintedMemberCount: number
+  /** Members whose marker is already owned by the primary locate carrier. */
+  primaryCarrierMemberCount: number
+}): boolean {
+  const published = Math.max(0, Math.floor(input.publishedMemberCount))
+  const accounted = Math.max(0, Math.floor(input.paintedMemberCount))
+    + Math.max(0, Math.floor(input.primaryCarrierMemberCount))
+  return published > accounted
 }
 
 // ── §11 — the PASSIVE semantic set must be untouched by Active switching ────

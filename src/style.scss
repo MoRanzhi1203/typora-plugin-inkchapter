@@ -3962,6 +3962,13 @@ body.ink-console-docked::after {
 .inkchapter-doc-navigator[data-rail='hidden'] {
   display: none !important;
 }
+/* Native word-count panel OPEN and neither LEFT nor UP avoidance fits: the
+   navigator is hidden for the lifetime of the open panel only. The marker is
+   removed on close, so visibility returns with the base anchor (no residue).
+   The panel itself is Typora's own DOM and is never touched. */
+.inkchapter-doc-navigator[data-ink-wc-avoid='hidden'] {
+  display: none !important;
+}
 
 .inkchapter-doc-navigator__btn {
   /* Full native-button reset — appearance/border/outline/shadow all gone. */

@@ -333,6 +333,63 @@ function toRectLike(r: RectLike | null): RectLike | null {
 }
 
 /**
+ * §6/§9 — normalize two boundary elements to the SAME sibling level.
+ *
+ * Typora mixes direct block children with wrapper elements (`div.md-end-block`
+ * around a newly typed / differently-rendered block). When the two boundaries
+ * live at different nesting levels, `collectBetweenBoundarySiblings` refuses the
+ * traversal (different parents) and the whole gap becomes unmeasurable — which
+ * used to DROP the diagnostic after a blank run was split by typed text.
+ *
+ * This helper lifts BOTH elements to the children of their deepest common
+ * ancestor (still inside the business root), so the blank rows are counted
+ * between the real block-level siblings. It never merges an ancestor/descendant
+ * pair (that cannot describe a gap) and never leaves the business root.
+ */
+export function normalizeSiblingBoundaryPair(
+  root: HTMLElement,
+  previous: HTMLElement,
+  next: HTMLElement,
+): { previous: HTMLElement; next: HTMLElement } | null {
+  if (previous === next) return null
+  if (!root.contains(previous) || !root.contains(next)) return null
+  if (previous.parentElement != null && previous.parentElement === next.parentElement) {
+    return { previous, next }
+  }
+  const chain = (el: HTMLElement): HTMLElement[] => {
+    const out: HTMLElement[] = []
+    let cursor: HTMLElement | null = el
+    while (cursor != null && cursor !== root) {
+      out.push(cursor)
+      cursor = cursor.parentElement
+    }
+    if (cursor !== root) return []
+    return out.reverse() // [root child, …, element]
+  }
+  const a = chain(previous)
+  const b = chain(next)
+  if (a.length === 0 || b.length === 0) return null
+  const shared = Math.min(a.length, b.length)
+  let diverge = -1
+  for (let i = 0; i < shared; i++) {
+    if (a[i] !== b[i]) { diverge = i; break }
+  }
+  // One boundary CONTAINS the other (prefix chain) → not a sibling gap.
+  if (diverge < 0) return null
+  const liftedPrevious = a[diverge]
+  const liftedNext = b[diverge]
+  if (liftedPrevious === liftedNext) return null
+  if (liftedPrevious.parentElement == null || liftedPrevious.parentElement !== liftedNext.parentElement) return null
+  try {
+    const order = liftedPrevious.compareDocumentPosition(liftedNext)
+    if ((order & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return null
+  } catch {
+    return null
+  }
+  return { previous: liftedPrevious, next: liftedNext }
+}
+
+/**
  * §6/§9 — collect the DOM siblings STRICTLY between `previous` and `next`.
  * Both must share a parent; otherwise the traversal is refused (AMBIGUOUS).
  */

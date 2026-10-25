@@ -221,3 +221,33 @@ PROMPT_MIGRATION_RECORD_ENTRY_COUNT = 8
 
 > 142 行以后不再编号；本批次完成后 `PROMPT_MD_REMAINING_COUNT = 0`。
 > 证据分级：视觉 / Enter 结论以 `runtime/evidence/EOF-R5-*`、`EN11-R3-*`、`EN11-R4-*`、`EN11-R6-LAYER-PLACEMENT.md`、`P0-CARET-EOF-*` 为准；`NOT_RUN` 项未被写成 PASS。
+
+## 2026-10-24 — 恢复后二次整合（复核 + 补写）
+
+> 用户要求把 `docs/prompts/pending/` 恢复回来后，重新逐条核对 10-11 / 10-19 两批共 26 个文件，
+> 把此前矩阵声称"CANONICAL_DOC_PRESENT"但正文实际缺失的结论补写进 canonical 文档。
+> **目录 `docs/prompts/pending/` 保留**；提示词正文移出到 `D:\TyporaPluginProjects\_prompt-backups\inkchapter-prompt-reorg-20261024\`。
+
+```text
+PROMPT_TOTAL_COUNT                  = 26
+PROMPT_ABSORBED_COUNT               = 26
+PROMPT_PARTIAL_EXECUTION_COUNT      = 18
+PROMPT_NOT_EXECUTED_COUNT           = 4
+PROMPT_ROLLED_BACK_COUNT            = 4
+PROMPT_RUNTIME_CLOSED_COUNT         = 0
+PROMPT_MD_REMAINING_COUNT           = 0
+```
+
+| 组 | 提示词 | 复核状态 | Absorbed Into |
+|---|---|---|---|
+| 空白行 authority | `TRAE-RENDERED-BLANK-ROW-AUTHORITY-CLOSURE`、`TRAE-RENDERED-BLANK-ROW-COORDINATE-CLOSURE`、`TRAE-BLANK-ROW-PAINT-LAYER-GEOMETRY-CLOSURE` | 部分执行，Runtime PENDING | document-utilities.md § 空行诊断的三层 authority / Rendered Blank Row 坐标闭合 / Blank Row Paint-Layer Calibration |
+| 空白几何标记 | `TRAE-INKCHAPTER-BLANK-LINE-MARKER-GEOMETRY-CLOSURE`、`TRAE-INKCHAPTER-BLANK-DIAGNOSTIC-SOURCE-GEOMETRY-LIFECYCLE-CLOSURE`、`trae-unified-diagnostic-geometry-closure` | 未执行 / 被后续承接 | document-utilities.md § 空行与 EOF 标记的三类几何 / Unified Visual Geometry Transaction |
+| Block gap | `TRAE-INTERNAL-BLANK-GAP-CANONICAL-LOCATOR-CLOSURE` | 部分执行，Runtime UNVERIFIED | document-utilities.md § 连续空行 Block Gap 的 Canonical Boundary 定位 |
+| 空代码块 V6/V7/V8 | `...EMPTY-BLOCK-CONTAINER-PRESENTATION-CLOSURE-V6`、`...SURFACE-PAINT-CLOSURE-V7`、`...PERSISTENT-CARRIER-CLOSURE-V8`、`TRAE-CODE-EMPTY-BLOCK-GENERIC-PIPELINE-REBASE` | 专属路线已回退；通用管线部分落地 | document-utilities.md § CODE_EMPTY_BLOCK 通用 Code 管线接管与 V6/V7/V8 回退 / § Plugin Presentation Mutation 短路；document-diagnostics.md §14 |
+| Source syntax | `...SOURCE-SYNTAX-LOCATION-PRESENTATION-CLOSURE-V4`、`...SOURCE-SYNTAX-SOURCE-DOM-PROJECTION-COMMIT-CLOSURE-V5` | 部分执行，Runtime UNVERIFIED | document-utilities.md § Source-Syntax Opener Locator / § Canonical Source Range → DOM Projection Authority；document-diagnostics.md §4 / §10 |
+| Document end | `TRAE-DOCUMENT-END-NEWLINE-MARKER-CLOSURE` | 部分执行，Runtime PENDING | document-utilities.md § Document-End 缺少末尾换行：EOF 端点标记 |
+| 视觉事务 / 标注 | `TRAE-INKCHAPTER-UNIFIED-VISUAL-GEOMETRY-TRANSACTION-CLOSURE`、`TRAE-INKCHAPTER-CODE-COMPOSITE-MARKER-RESIZE-CLOSURE`、`TRAE-INKCHAPTER-DIAGNOSTIC-ANNOTATION-OVERLAP-CLOSURE` | 部分执行 / 无执行产物 | document-utilities.md § Unified Visual Geometry Transaction / § Code Composite Marker Resize / § 标题诊断标注非重叠布局 |
+| ENTER / EOF / EN11 / P0 | `EN11-CAUSAL-CLOSURE-R3`、`EN11-R4-REAL-ACCEPTANCE...`、`ENTER-DUPLICATE-SPLIT...`、`ENTER-EOF-ROOT-CAUSE...`、`EOF-ENTER-BLANK-SEMANTICS...`、`EOF-VISUAL-SYNC-R5`、`P0-EDITOR-CARET-EOF-FULL-CLOSURE`、`P0-EDITOR-EOF-CARET-LEDGER-INTEGRATED-R2` | 部分执行 / 已回退 / 未执行 | document-utilities.md § EOF-R5（补充 4 条）/ § EN-11（补充 4 条）/ § P0-CARET-EOF（补充 3 条） |
+| 侧栏冻结 | `TRAE-INKCHAPTER-TYPORA-FREEZE-RIBBON-RUNTIME-CLOSURE` | 部分执行，R1 真机通过 | sidebar-integration.md § Ribbon 可见性（ui.ribbon）与 LC-01 |
+
+> 口径修正：上两轮矩阵的 `Remaining Gap=NONE` 与实际文档不符，本轮以补写后的章节为准；凡 Runtime 未取证项仍标 `NOT_RUN` / `PENDING`，未升级为 PASS。

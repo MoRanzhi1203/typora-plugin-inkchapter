@@ -39,7 +39,7 @@
 
 **代码层面**:
 - `src/main.ts` 不注入自定义 Ribbon（无 `registerRibbon` 调用）
-- `src/style.scss` 不包含侧栏修改样式（803 行全部为编号和设置页样式）
+- `src/style.scss` 在该 2026-08-02 基线不含侧栏修改样式（803 行全部为编号和设置页样式）；2026-10 起新增**受 `body.inkchapter-ribbon-hidden` 命名空间约束**的 Ribbon 隐藏与侧栏宽度恢复样式（见「Ribbon 可见性」）
 - `manifest.json` 中无 `showRibbon` 或 Ribbon 相关配置
 
 **构建标识**: `inkchapter-sidebar-restored-v1` 明确记录侧栏恢复版本
@@ -81,7 +81,17 @@
 
 ## 已知问题
 
-无
+- 侧栏行为本身无已知问题；Ribbon 可见性（LC-01 整窗冻结）见下节。
+
+## Ribbon 可见性（`ui.ribbon`）与 LC-01 整窗冻结
+
+- **根因（LC-01）**：旧实现用常驻 `document.body` class `MutationObserver`，回调反复 `classList.remove('typ-ribbon--enable')`，与框架写类形成"写—观察"反馈环，导致 Typora 整窗无响应；修复前会话无 flush、突然结束。
+- **修复**：`applyRibbonVisibility()` 幂等且只写墨章自有类，值未变化时零 DOM 写入；**永不写框架类** `typ-ribbon--enable`，只读判断；模块内无观察器 / 定时器 / 监听。
+- **移除长期观察器**：`main.ts` 不再注册 `MutationObserver`，也没有 `enforceRibbonVisibility`。
+- **CSS 命名空间**：`body.inkchapter-ribbon-hidden` 下恢复原生侧栏 —— `--typ-ribbon-width: 0px`、隐藏 `.typ-ribbon`、`.info-panel-tab-wrapper{display:flex}`、`sidebar-content` top 64/54px（`src/style.scss`）。
+- **默认值**：`ui.ribbon=false`；`resolveRibbonHidden()` 仅显式 `true` 才使用 Ribbon，缺省 fail-native。
+- **取证边界**：仅保留有界 `INKCHAPTER-UI-RESPONSIVE-HEARTBEAT` 与有写入时的 `INKCHAPTER-UI-RIBBON-STATE`，并声明 `ribbonObserverCount: 0`。
+- **验证状态**：R1（整窗冻结消失）在台账记录为真机通过；R2–R10（双向切换、多次 onload/unload、`window.css` 数值契约）未逐项取证，且 `window.css` 契约测试在本机文件缺失时会 skip。台账见 [../roadmap/issue-and-error-ledger.md](../roadmap/issue-and-error-ledger.md) LC-01。
 
 ## 历史修复记录
 

@@ -5,6 +5,14 @@
 > 治理规则见 [../operations/prompt-lifecycle.md](../operations/prompt-lifecycle.md)。
 >
 > 说明：2026-10-05 的整合轮次之后，项目**不再保留任何提示词 Markdown 文件**；本文件只保留历次清理的日期、数量与去向摘要，不再指向已删除文件路径。
+> 2026-10-24 曾按用户要求把两批提示词恢复到 `docs/prompts/pending/`，随后完成二次整合并再次移出（见下节）。
+
+## 2026-10-24 — 恢复后二次整合（MERGE_THEN_DELETE）
+
+- 恢复的 26 个提示词（10-11 批次 18 个 + 10-19 批次 8 个，`TRAE-RENDERED-BLANK-ROW-COORDINATE-CLOSURE.md` 重复 1 个）逐条核对后整合，**目录 `docs/prompts/pending/` 保留**，提示词正文移出到外部备份 `D:\TyporaPluginProjects\_prompt-backups\inkchapter-prompt-reorg-20261024\`。
+- 结论去向：[../modules/document-utilities.md](../modules/document-utilities.md) 新增 13 节（空行三层 authority、Block Gap canonical 定位、paint-layer 校准、坐标闭合、三类几何、`CODE_EMPTY_BLOCK` 通用管线、Source-Syntax V4/V5、Document-End 端点、presentation epoch、统一几何事务、composite marker、badge 非重叠），并补齐 EOF-R5 / EN-11 / P0-CARET 三章的缺口；[../modules/document-diagnostics.md](../modules/document-diagnostics.md) §4 / §10 / §14；[../modules/sidebar-integration.md](../modules/sidebar-integration.md) 新增 Ribbon 可见性与 LC-01；[CHANGELOG.md](../../CHANGELOG.md) `[Unreleased] → Fixed` 5 条。
+- 如实保留未闭环事实：V6/V7/V8 空代码块专属路线已回退；Source-Syntax V4/V5、空行权威、paint-layer 校准、Document-End、统一几何事务均只到静态/单测落地，Runtime 仍为 `NOT_RUN` / `PENDING`；`ANNOTATION-OVERLAP` 本轮无执行产物。
+- 逐条明细见 [prompt-consolidation-record.md](prompt-consolidation-record.md) §2026-10-24。
 
 ## 2026-10-19 — Enter / EOF / 光标 P0 批次（MERGE_THEN_DELETE）
 

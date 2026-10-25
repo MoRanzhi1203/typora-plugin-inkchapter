@@ -501,6 +501,121 @@
 - **接线**：真实 `active-leaf:change` + workspace-tabs `tab:toggle` 为 **primary** trigger，MutationObserver 降级为 fallback；close-last 同步清 identity / toolbar projection / drawer / locate / presentation，reopen 自动恢复（无需点击正文）。不变式 `DOCUMENT-UTILITY-ACTIVE-LEAF-DOCUMENT-INVARIANT`；FAIL 码 `STALE_ACTIVE_FILE_OVERRIDES_EMPTY_LEAF` / `EMPTY_LEAF_WITH_RENDERED_TOOLBAR`；测试 `LAST-TAB-1..12`（纯决策）+ `TAB-TOGGLE-1..5`（host 生命周期）。
 - **残差（阻断）**：真实 R3（原生关闭最后标签 → 应用内空 leaf）未闭环 —— 该 Typora 构建关最后一个文件标签即关窗口，框架从不产生「窗口仍在、无文件」的空 leaf；未用 synthetic close / startup-empty 冒充。
 
+### 空行诊断的三层 authority：Source Candidate / Rendered Blank Row / 可视空行带（2026-10）
+
+- **三层分离**：source 只产出 candidate 与身份（`sourceDerived=true / domGeometryUsed=false`）；DOM 决定用户真实可编辑空白行数与几何；**发布判决**用可视空行带数 `visibleBlankLineCount`（`document-diagnostic-internal-blank-decision-v1.ts`）。WYSIWYG 取渲染行带、源码模式（`.typora-sourceview-on`）取源码行数、不可测量时不猜测（不发布）。
+- **禁止渲染回退**：不得用 `actualBlankLines ?? renderedRowCount` 之类写法让渲染数覆盖源码事实；缺 source 时标 `UNRESOLVED_SOURCE` 并触发有界重解析，`renderedRowWarningDecision` 只进日志。
+- **Binding 双层化**：`identityDecision / physicalDecision / decision` 分离；`BOUND` 需同时满足身份解析与物理验证，禁止"identity 已解析即 BOUND"的假 BOUND。
+- **DOM probe 排除项**：plugin-owned、CodeMirror、formula、table、hidden 节点均不得计为 blank row（`document-diagnostic-rendered-blank-row.ts`）。
+- 审计：`DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-AUDIT` / `DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-DOM-PROBE`。**状态**：代码与单测已落地；真实 Runtime 尚未闭环（能力矩阵该规则 `Closure=UNVERIFIED`）。
+- **边界层级归一化（WC-R2）**：Typora 会把新输入的段落包进 `div.md-end-block` 等不同层级，两侧边界不在同一父节点时 `collectBetweenBoundarySiblings` 会拒绝遍历（`AMBIGUOUS`），导致可视空行不可测、诊断被整条丢弃。测量前统一调用 `normalizeSiblingBoundaryPair()` 把两个边界提升到共同 sibling 层；决策、点击绘制、滚动定位三条路径共用。
+- **可测性有界重试（WC-R2）**：可视空行暂时不可测时**不猜测、也不永久丢弃**；按 `sourceRevision` 触发最多 2 次事件驱动重决策（`DOCUMENT-INTERNAL-BLANK-LINE-RETRY-AUDIT`），DOM 渲染完成后自动发布；仍不可测则保持不发布。
+- **激活组生命周期（WC-R3）**：`activeGapGroup` 只有 `ACTIVE` / `DORMANT` 两态，`CANCELLED` 以 `null` 表示（终态，不新增第二套权威）。唯一迁移点是快照提交内的 `reconcileActiveGapGroup()`：有已发布成员 → ACTIVE 并全量重绘；有成员但无发布、或锚点仍可解析 → DORMANT（清空全部组片段、Drawer 无选中行）；锚点两端都不可解析 → CANCELLED（`LINEAGE_LOST`）。
+- **证据式血缘（替代纯几何）**：以冻结的 `anchors`（历史上可证明成员的 `(prev,next)` 块身份对）为唯一依据，四条规则：同区间；候选覆盖锚点范围（合并祖先）；锚点已消失且**被切开**（端点消失或区间内出现上一版没有的块）时取其一端的残余；与锚点共享端点且并集**恰好填满**受控选区。`scopePrev/scopeNext` 只作佐证，"仅仅落在历史范围内"不再触发继承。
+- **锚点冻结不被覆盖**：`mergeGroupAnchors()` 把本轮可证成员锚与历史锚**累积去重**（上限 12），不再用"当前成员"替换。否则某一侧暂时没有 gap 记录（空行归零）时证据被抹掉，之后重新超量也无法复归。
+- **选区端点不静默收缩**：`expandGroupScope()` 只在端点**从未设置**时用锚点初始化；已设置但本轮解析失败的端点保留原块身份，不会被更窄的锚点位置替换。否则"共享端点 + 并集填满选区"这条规则会因为选区变窄而失效。
+- **组成员点击**：`commitDiagnosticTransitionV2()` 在写成 ACTIVE 前检查 `isActiveGapGroupMemberDiagnostic()`，命中即整组 `GROUP_MEMBER_TOGGLE_OFF`，并在同一次点击内把 interaction 置为 IDLE（沿用本次点击的版本号），保证 Drawer 不会停留在"单行选中 + 无兄弟高亮"。
+- **成员与可绘制的分离**：被可视空行门暂缓发布的血缘后代仍保留在 `members`，只影响绘制；`paintActiveGapGroupVisuals()` 在 `lifecycle !== 'ACTIVE'` 时直接返回，DORMANT 永远不产生残留片段。
+- **组投影**：每个成员独立容器（`inkchapter-block-gap-group-visual`），从当前真实空行 rows 全量重建片段；先清理旧组容器再绘制，主选中 gap 由 locate 事务绘制并跳过，避免双份。Drawer 仍是单一 active 权威，组不新增第二个选中态。
+
+### 连续空行 Block Gap 的 Canonical Boundary 定位（2026-10）
+
+- **定位与呈现分离**：`locationKind=source-range` 保留为 source truth，`presentationKind=block-gap` 分流几何策略（`BlockGapGeometryPolicy`）。
+- **边界身份**：统一为 `block:<kind>:<ordinal>`；code 复用 canonical `pre.md-fences`，**禁止**锚文本 / 源码 fence 文本搜索（旧实现用 ``` 文本猜 DOM，出现 `MISSING / ANCHOR_TEXT_NOT_FOUND`）。
+- **双边界 fail-closed**：仅 `previous=BOUND` 且 `next=BOUND` 才生成 gap；否则输出精确原因（`BlockGapFailClosedReason`），**绝不回退高亮相邻块**。
+- **几何**：`gapTop=previousExtent.bottom`、`gapBottom=nextExtent.top`；横向取**正文列**而非 window / drawer 宽度（`resolveBlockGapHorizontalExtent`）。
+- **现行细化**：逐真实渲染空行 FILL_ONLY 片段 + allowed/excess 角色 + 单 fragment 容器；滚动目标 `RENDERED_BLANK_GAP_SCROLL_TARGET='rendered-blank-gap'`。
+- **状态**：静态实现与单测（`document-diagnostic-block-gap-canonical-locator.test.ts`）已落地；Runtime R1–R7、Figure 边界组合、动态删除/恢复计数均未取证。
+
+### Blank Row Paint-Layer Calibration 与 Fragment 视觉闭环（2026-10）
+
+- **不再假设 contentHostRect 推导 document-local**：在 paint layer 内插入 `data-inkchapter-diagnostic-calibration="origin"` 三点探针，实测 `basisX/basisY` 与 `scaleX/scaleY`。
+- **校准权威** `PaintLayerCalibration`：`layoutEpoch / originViewport / basisX / basisY / affineVerified / axisAligned / layerConnected`，`decision ∈ VERIFIED | LAYER_MISSING | PROBE_MISSING | ZERO_BASIS | NON_AFFINE | STALE_LAYOUT`。
+- **转换**：`local = (viewport - O) / S`；non-affine 时用 `DOMMatrix` 逆变换或 fail-closed，禁止硬编码偏移。
+- **PRIMARY 判据**只依赖 rendered rows、physical prev/next、被夹在两者之间、calibration 通过、逐片对齐；previous/next 降级为 Guard，不得否决已验证的 3 行。
+- **绘制后反向实测**：`fragment.getBoundingClientRect()` 逐片校验 `maxDriftPx <= 1`，否则 `RUNTIME_GEOMETRY_CLOSURE` 不得成立。
+- 审计：`DOCUMENT-DIAGNOSTIC-PAINT-LAYER-CALIBRATION-AUDIT`、`DOCUMENT-DIAGNOSTIC-BLANK-ROW-FRAGMENT-CLOSURE-AUDIT`。**状态**：`document-diagnostic-paint-layer-calibration.ts` 已存在；Runtime R1–R8 为 `PENDING_USER_MANUAL_RUNTIME`。
+
+### Rendered Blank Row 坐标闭合：VIEWPORT → DOCUMENT_LOCAL 单一转换（2026-10）
+
+- **显式坐标空间**：`CoordinateSpace = 'VIEWPORT' | 'DOCUMENT' | 'DOCUMENT_LOCAL'` + `SpatialRect`；唯一转换点 `viewportRectToDocumentLocalV1()`，已属 local 的 Rect 再次进入即判 **double conversion FAIL**。
+- **逐行 fragment**：`computeRenderedBlankRowFragments()` 把 N 行渲染为 N 个 fragment；`markerFragmentCount == renderedBlankRowCount`。
+- **硬门禁**：`INTERNAL_BLANK_LINE_DOUBLE_COORDINATE_CONVERSION_COUNT` 等归零；审计 `DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-GEOMETRY-AUDIT`。
+- **滚动后重建**：`presentationBuiltAfterScroll` 仅在 fresh 边界、行 Rect、fragment 数、carrier 全部成立时为 true，禁止用旧几何冒充。
+- **状态**：代码与单测（`document-diagnostic-rendered-blank-row.test.ts`）已落地；R1 首次点击保持 ACTIVE、R5/R6 动态 3↔2、R7 离屏滚动重建未取证。
+
+### 空行与 EOF 标记的三类几何（BLANK_RUN / EXTRA_BLANK / EOF_POINT，2026-10）
+
+- **三类不共用伪造算法**：`BLANK_RUN`（连续空行）、`EXTRA_BLANK`（尾部多余空行）、`EOF_POINT`（缺少末尾换行），主键仍复用既有 diagnostic id，不改 Store 与规则。
+- **BLANK_RUN**：一个诊断区间一个 group carrier，优先真实行盒；横向以可见正文为上限，禁止画到 Drawer、滚动条、导航。
+- **EXTRA_BLANK**：无可测行盒时降级为最后非空块**底部边界标记**，不推算空行高度；不复用内部空行 prev/next 算法。
+- **EOF_POINT**：以真实 EOF 字符边界或末块末端为锚点，小型端点指示（左强调线 + `EOF`），不覆盖最后 token、语言标签、题注与右下导航。
+- **状态枚举** `EXACT / BOUNDARY_FALLBACK / NO_SAFE_GEOMETRY`；全部 `pointer-events: none`，`activeDiagnosticState` 为单一状态权威。
+- **状态**：规格与部分构件落地（`document-diagnostic-block-gap-visual-v1.ts`）；B01–B12 真机矩阵 `RUNTIME_PENDING`。
+
+### 空代码块诊断（CODE_EMPTY_BLOCK）：通用 Code 管线接管与 V6/V7/V8 回退（2026-10）
+
+- **原则**："检测逻辑特殊，呈现逻辑不特殊"。`CODE_EMPTY_BLOCK` 与 `CODE_MISSING_NAME` / `CODE_MISSING_LANGUAGE` 共用 code 分支：`locationKind=block-node`、`blockKind=code`、`anchorTag=pre` → `pre.md-fences` → generic `overlay-frame` → document-space carrier → active lease。
+- **空判定唯一权威** = source authority 的 `metadata.sourceSemanticEmpty`；禁止用 `textContent` 或 DOM 二次判空。
+- **专属路线已删除**：V6/V7/V8 的 empty-container surface、transient/persistent carrier、atomic handoff、compositing visibility、`FinalVisualCommitVerdict` 均已从生产移除（`document-utility-overlay-host.ts` 与 `document-diagnostic-persistent-carrier-authority-v8.ts` 头注释、`src/style.scss` 中的 `[data-ink-empty-block]`）；由测试守护其不得复活。台账见 `docs/roadmap/issue-and-error-ledger.md` DG-02。
+- **保留的 rule-agnostic 能力**：`DOCUMENT-DIAGNOSTIC-PRESENTATION-EPOCH-AUDIT`（plugin presentation mutation 短路）与 FILL_ONLY 只约束插件自有装饰。
+- **未实现 / 未取证**：`CODE_CONTENT_ONLY` 几何收紧、空块专属计数与 Gate、合规 A/B/C 运行期 fixture、R1–R10 与部署身份；能力矩阵 `CODE_EMPTY_BLOCK` 为 `Runtime Evidence=NONE / Closure=UNVERIFIED`。
+
+### Source-Syntax Opener Locator 与 Presentation / Visual Commit（TRAE V4）
+
+- **新 location kind** `source-syntax-opener`；三个 range 字段分离：`protectedRange`（opener→EOF）、`sourceStart/EndOffset`（opener token）、`presentationRange`。
+- **注册表三元数据**：`CODE_FENCE_UNCLOSED` / `FORMULA_BLOCK_UNCLOSED` / `FRONTMATTER_UNCLOSED` → `scope=source-syntax`、`locationStrategy=source-syntax-opener`、`presentationKind=source-syntax-error`、`internalSeverity=error`。
+- **共享 Presentation Authority**：`SOURCE_SYNTAX_PRESENTATION_KIND='source-syntax-error'`，`evaluateSourceSyntaxVisualCommit()` 任一事实缺失即 `NO_COMMIT`，至少 1 个 fragment。
+- **ACTIVE 延迟提交**：点击只写 pending，locate + visual 均成功后才置 `ACTIVE`；失败原子 teardown 回 `IDLE`（`pendingSourceSyntaxActivation`）。
+- 审计：`DOCUMENT-DIAGNOSTIC-SOURCE-SYNTAX-LOCATE-AUDIT`、`DOCUMENT-DIAGNOSTIC-SOURCE-SYNTAX-VISUAL-AUDIT`。**状态**：代码落地；24 项 hard gate 未实现为计数器，Runtime R1–R8 未取证。
+
+### Canonical Source Range → DOM Projection Authority（TRAE V5）
+
+- **`data-line` 降级为快速路径**：`DATA_LINE_VERIFIED_FAST_PATH`；未通过 `verifySourceLineCandidate` 即 miss，**必须**走 canonical fallback，禁止直接 `TARGET_NOT_FOUND`（未闭合 fence 在 Typora 中常是无 `data-line` 的段落）。
+- **`CanonicalSourceRangeProjectionAuthority`**：`computeCanonicalSourceBlocks()` / `findCanonicalSourceBlockForOffset()` / `openerTextCompatible()`，源码块身份为主权威。
+- **解析链**：`DOCUMENT_MISMATCH → SOURCE_REVISION_STALE → fast path → canonical block → SOURCE_RANGE_INVALID → OPENER_TEXT_MISMATCH → resolveSourceBlockInRoot → DOM 文本校验 → RESOLVED`。
+- **视觉三层**：Tier1 exact opener token 逐视觉行 fragments；Tier2/3 只画 element 顶行 band；**绝不 opener→EOF 整段染色**。
+- 审计：`DOCUMENT-DIAGNOSTIC-SOURCE-SYNTAX-PROJECTION-AUDIT` 与 LOCATE / VISUAL 审计同源输出。**状态**：代码与契约单测落地；三条规则能力矩阵仍 `UNVERIFIED`，无 runtime 审计落盘。
+
+### Document-End 缺少末尾换行：EOF 端点标记与 Scoped Visual Closure（2026-10）
+
+- **规则保持**：`DOCUMENT_TERMINAL_NEWLINE_MISSING`、`location.kind='document-end'`、`GO_BOTTOM`；诊断随带 `terminalNewlineCount` / `extraTrailingBlankLineCount`。
+- **滚动不等于定位成果**：scroll settle 后必须重测，并以 `resolveReason=DOCUMENT_END_PRESENTATION_TARGET` 提交，禁止把"滚到底"当成功。
+- **共用 EOF 几何**：与"尾部空行过多"共用 `SyntheticEofGeometry` / `commitSyntheticEofVisual` / document-space carrier + lease；**禁止**再建 `DocumentEndPersistentCarrier` / `AtomicHandoff` / `Compositing`。
+- **端点形态**：`EOF_NEWLINE_MARKER_ENDPOINT_FORM='endpoint'`、短横线 + `缺少 1 空行`、线长限制 40–60px。
+- **severity 同源**：由 Diagnostic Snapshot 供给，并按当前诊断计数限定视觉闭环；审计键 `severityDriftWarningToInfo` / `unscopedVisualFalsePass` / `diagnosticTargetKeyMismatch`。审计前缀 `DOCUMENT-DIAGNOSTIC-DOCUMENT-END-VISUAL-AUDIT`。
+- **状态**：代码与单测落地；Runtime Sequence 1–4、19 项 gate、部署 SHA 与 runtime identity 均为 PENDING。
+
+### Plugin Presentation Mutation 短路与 FILL_ONLY Ownership 分层（V7 §6.4 / §7.2）
+
+- **呈现来源分类**：`PresentationMutationProvenance = USER_CONTENT_MUTATION | HOST_LAYOUT_MUTATION | PLUGIN_PRESENTATION_MUTATION`；插件自身 presentation mutation **不得 invalidate 自己刚挂载的视觉**。
+- **FILL_ONLY 分层**：`pluginOwnedFill/Border/Outline` 与 `hostNativeBorder/Outline` 分开计数，只对 plugin-owned 判 FAIL，**不改写 Typora 原生边框**。
+- **severity 双层**：`displaySeverity=hint` + `internalSeverity=info`，在 CLICK / LOCATE / ONE-CLICK / ACTIVE / VISUAL-CLOSURE / POST-SETTLE 全链一致。
+- 审计：`DOCUMENT-DIAGNOSTIC-PRESENTATION-EPOCH-AUDIT`。**状态**：代码与单测/接线落地；V7 真机 R10（plugin mutation + resize）未取证。
+
+### Unified Visual Geometry Transaction：同代次与事务域门禁（2026-10）
+
+- **`activeRebuiltVerified`** 必须绑定同一 `geometryGeneration` 且 `fragmentCount >= 1`；`passiveGenerationCurrent` / `chipGenerationCurrent` / `visualSnapshotAtomicVerified` 同代次判定。
+- **`rebuildJustified`** 只接受真实 drift、`liveGeometryChangedThisPass`、`editorWidthChanged`；禁止"保留的 stale active 仍报 activeRebuilt=true"。
+- **门禁按事务域计数**：closure / drawer 使用事务域基线，session 累计计数不得污染当前健康事务。
+- **面板层级**：`FINAL_COMMIT_WITH_PANEL_INTERSECTION_COUNT`、`FRAME_PAINTS_ABOVE_DRAWER_COUNT` 归零。
+- **状态**：契约与 ACT-TX-1/2 单测落地；R01、R06–R18、DPI / DevTools / 窄宽变体未取证。
+
+### Code Composite Marker Resize：题注 cue 与载体同帧重求导（2026-10）
+
+- **根因**：`reconcileLocateDocumentSpace` 用 `frame.getAnchorElement()`（主体）重定位已提交载体，而提交期载体是 `frame.getFrameElement()`（题注 ∪ 主体）；布局变化后载体塌缩、题注高亮丢失。次因是 `cloneNode(true)` 连同 caption cue 的 commit 时 left/top/width/height 一起复制。
+- **修复**：共享纯权威 `computeCaptionCueRect`；`edgePad` + LIVE 锚点重求导；`resolveLiveCommittedElement` 处理 detached 引用。
+- **门禁**：`compoundCaptionUncoveredAfterReconcile`、`compoundCaptionCueUncoveredAfterReconcile`；DOM 验收字段 `captionCoveredByCarrier / captionCuePresent / carrierEdgePad / nameSlotPrimaryPresent`。
+- **状态**：构建 `454BFA51…`、222 files / 4278 tests 全绿；`ACTIVE_COMPOSITE_VISUAL_GATE=UNVERIFIED`、`DRAWER_GATE=FAIL`（累计计数）、`FINAL_DECISION=PENDING_USER_RUNTIME_ACCEPTANCE`。
+
+### 标题诊断标注（badge / reason chip）非重叠布局与逐行高亮契约（2026-10）
+
+- **chip 锚点唯一 authority**：`HEADING_LABEL_CHIP_GAP_PX = 8`；band 判定需垂直重叠 ≥ 较小 rect 高度的 50%。
+- **chip 与文本结构下限**：`HEADING_REASON_CHIP_MIN_GAP_PX_V2 = 4`、`PREFERRED_GAP_PX_V2 = 8`、`MIN_INLINE_WIDTH_PX_V2 = 72`；模式 `INLINE_RIGHT | BELOW_LAST_LINE`。
+- **多 badge**：独立 pill、间距 4–6px、`max-width` 受编辑器真实可见 rect 约束、`pointer-events: none`。
+- **标题高亮**：一行一个 text-tight fragment，**禁止** block 全宽 wash。
+- **状态**：本轮提示词（`TRAE-INKCHAPTER-DIAGNOSTIC-ANNOTATION-OVERLAP-CLOSURE`）无执行产物（T1–T10 / R1–R10 未执行，指定 fixture 不存在）；以上为仓库既有已落地契约，重叠组合仍需真机取证。
+
 ### EOF 诊断事实 ↔ 视觉标记实时同步（EOF-R5，2026-10）
 
 - **空行计数语义（前置冻结）**：`terminalNewlineCount` / 源码 LF 数、源码逻辑空行、WYSIWYG 真实可编辑空段落、可绘制 excess 行是四个独立事实，禁止互相赋值。WYSIWYG 以经过验证的实时 DOM 空段落数为权威；不可测量时 `DEFER`，不得用旧值或 `lineHeight` 猜测。规范为最后一个非空内容后 **0 → 缺少空行警告；1 → PASS；≥2 → 多余空行警告**，多余数 `max(0, visibleBlankCount - 1)`。
@@ -510,6 +625,10 @@
 - **原子替换**：每次映射变化从**实时 DOM 空行**读取目标，先算 `expectedTargetKeys` 对照 `actualTargetKeys`，只清理**本 owner** 的过期 fragment / chip，再补齐缺失片段；标签与片段在同一重建块更新（`多余 N 空行` 与 excess 同源）。只给多余行上色，规范保留的 1 行永不涂色；retract 时 `lastEofFragmentSetSignature` 置空，避免同签名跳过重建。
 - **真实闭环**（构建 `B0A98E09…`）：`EOF-VISUAL-SYNC` 5 条覆盖 `UPDATE_CONTENT(3/2) → UPDATE_CONTENT(2/1) → RETRACT(1/0) → UPDATE_CONTENT(2/1) → NOOP`；`expected==actual` 5/5、`visualFragmentRebuilt=true`、旧片段清理 `0/4/3/0/3`；Undo/Redo 同步恢复。真实硬门禁 7 项为 0，`EOF_CROSS_DOCUMENT_STALE_PAINT_COUNT=NOT_RUN`（单文档会话）。
 - **不改动**：原生 Enter、`。。+Enter` 缩进、Markdown 正文、全局生产插件。被动同步只更新**已存在**的 EOF carrier，不新建第二套几何权威（首次使用需点击一次 Drawer 行建立 carrier）。
+- **第二条独立根因（Drawer 文案不更新）**：标题取自静态 copy 表、描述取自 producer 静态 detail，`renderedVisibleBlankCount` 只进审计不回写 → 数值变而文案与 chip 不变。修复为纯函数 `eofTailExcessDetailText()` / `eofMissingTailDetailText()`；源码模式加"源码："限定，几何不可测量时显示"待测量"，不得沿用旧值。
+- **独立规则维度**：`MISSING_TERMINAL_NEWLINE`（EOF-07）与"尾部空行过多"是两个规则，不得互相替代；前者用端点标记，后者用尾带。
+- **七项门禁（EOF-Enter 语义）**：其中 `EOF_ENTER_EVENT_DOUBLE_EXECUTION` **只计真实双执行**，源码 `\n` 增 +2 不算双 Enter。
+- **残余口径**：`EOF-13/14/15/16`（滚动/像素、保存重开、代码/公式/CRLF 尾块、C0 配对）仍为 `NOT_RUN`，`EOF_CROSS_DOCUMENT_STALE_PAINT_COUNT` 仅单文档会话验证。
 
 ### 文末 Enter 重复拆分（EN-11）：展示层位置 + 绘制协调器（EN11-R3/R4/R6，2026-10）
 
@@ -520,6 +639,10 @@
 - **真实闭环**（构建 `B68D5041…`，`presenceState=ACTIVE`）：16 次物理 Enter 全部 `ALLOW_NORMAL_ENTER`、插件 `createdTransaction=false / defaultPrevented=false`、`ENTER-DUPLICATE-SPLIT-AFTER-FINAL=0`；每次可见空行 +1、源码 LF +2（1 个段落）。跨构建对照：展示层在 `#write` 末尾的 `3A165610… / 2BAC4003…` 观察到 duplicate split，`B68D5041…` 为 0。
 - **开发路径限制**：第二个 CLI 进程打开的文件不触发框架 `file:open` / `active-leaf:change`，插件保持原活动文档（`presenceState=EMPTY` 或旧 leaf）；所有 C4 真实验收必须用 Typora 侧栏打开。该限制不作为产品缺陷修改，避免放宽 `activeLeaf.state.path` 权威而引入陈旧身份。
 - **残差**：未在同一会话执行禁用墨章的 C0 配对（跨构建对照 + 用户目视确认）；`EOF-16` 等真实矩阵项单列 `PENDING_USER_MANUAL`。
+- **验收脚本硬化（EN11-R4）**：真实 Enter 验收必须有 ADMISSION 门；`OVERALL_DECISION` 与进程退出码对齐；**无真实物理 Enter 时恒为 `NOT_RUN`**，不得用静态测试或合成事件顶替。
+- **`PRESENTATION_WRITE_CAUSALITY=REFUTED`**：协调器安全修复后观测到"回声窗口内 `pluginStructuralWriteCount=0` 而第二次 `SPLIT_1_TO_2` 仍发生"，说明展示写入不是该轮重复拆分的充分原因；同时枚举 11 类 `#write` 写入口，**不得声称插件零写入**。
+- **已撤回结论**：`SAME_ENTER_SCENE_IDEMPOTENT` / `isEnterTransactionCoalesced` 的事务合并被定性为"掩盖重复写入"并撤回，源码仅保留审计分类（`heading-numbering-service.ts`）。
+- **合成输入不可用于判定**：`code=""` 的合成 Enter 应 `REJECT_NON_ENTER`；`keybd_event` 会造成双插入，不能作为验收证据。
 
 ### 诊断光标隔离、审计覆盖与构建 fail-fast（P0-CARET-EOF，2026-10）
 
@@ -527,6 +650,9 @@
 - **审计覆盖**：`NavigationAudit` 每次可信导航分配 `eventSeq / queuedAt / flushedAt`；队列溢出由静默 `shift` 改为显式 `dropped` 计数并让 `AUDIT_COVERAGE` FAIL；切文档 / 编辑器根重绑调用 `invalidateNavigationAudits(reason)` 取消待处理项；`PLUGIN_TEXT_IN_SERIALIZED_MARKDOWN` 必须由真实导出文本判定，缺采样为 `NOT_RUN`。
 - **构建 fail-fast**：`build:dev` / `build` 前置 `verify:archive` + `typecheck`；`build-pipeline-fail-fast.test.ts` 守护「tsc 失败不得被 esbuild 成功掩盖」。
 - **R1/R2 处置**：`TRAE-INKCHAPTER-P0-EDITOR-CARET-EOF-FULL-CLOSURE` 与 `TRAE-INKCHAPTER-P0-EDITOR-EOF-CARET-LEDGER-INTEGRATED-R2` 属于同一 P0 批次的重复指令（R2 自述取代 R1）；实际落地以 `runtime/evidence/P0-CARET-EOF-*` 与现行源码为准。EN-11 主线最终由 EN11-R3/R4 与 EOF-R5 收敛，两份提示词均按 `SUPERSEDED` 处置。
+- **验收边界**：`CARET_ISOLATION_RUNTIME` 在真实重启后仍为 `NOT_RUN`（全部计数为 -1），**不得以静态门禁代替真机采样**；`FULL_RUNTIME_ACCEPTANCE=PARTIAL`。
+- **Enter 只读证明**：`ENTER-PLUGIN-INTERVENTION-AUDIT` 须记录真实 Enter 下 `createdTransaction / defaultPrevented / cancelBubble` 均为 false；并保留 `NO_PRODUCTION_DOM_MUTATING_ACCEPTANCE_PROBE` 门禁，禁止把验收探针写进生产路径。
+- **计数语义**：`UNMEASURABLE` **不得折成 0 或通过**；未取得采样一律 `NOT_RUN`。
 
 ## §3.1 标题编号装饰：Number + Gap 原子 reconcile（V5.14-R4）
 
@@ -655,6 +781,7 @@
 
 ### 仍开放的验收项（PENDING，禁止照抄为已通过）
 
+- **2026-10 批次（空行 / Source-Syntax / 空代码块 / Document-End）**：以下仅有静态实现或单测证据，真实 Typora 验收一律 `NOT_RUN` / `PENDING` —— 连续空行逐行 marker 的首次点击 ACTIVE 与 3↔2 动态、block gap 首次点击与 Figure 边界组合、paint-layer 校准逐片漂移 ≤1px、Source-Syntax V4/V5 的 hard gate 与 R1–R8、`CODE_EMPTY_BLOCK` 通用管线 R1–R10、Document-End 的 Sequence 1–4 与 19 项 gate、统一几何事务 R01/R06–R18、composite marker 的 H1–H3 拖拽像素；`ANNOTATION-OVERLAP` 本轮无执行产物。
 - **严格 H1 / EOF 政策的真实 Typora 视觉验收**：conditional strict（未配置纯正文 0 strict error、出现任意 heading 恢复 strict 契约、2×H1 报 MULTIPLE_H1）与 standard EOF（缺失换行符/0~1 空行 PASS/≥2 过多空行）需在真实 Typora 中以人工视觉验收闭环（PENDING_USER_MANUAL_CHECK）。
 - **UI Phase 1/2B/2C visual acceptance**：`PENDING_USER_MANUAL_CHECK`（见 6b3cf21/48f6c5f/37c14f3 commit message；2-C 尚处 test convergence pending，overlay-host/style.scss 未提交收敛）。UI 2D+ 尚未开始。
 - **8B.3.1 Resize hard gate 归因**：历史上出现过单次 `feedbackLoopConfirmedCount=1 / attributionVerdict=ATTRIBUTED_TO_DOCUMENT_UTILITIES`（其余 session 为 0），按要求不可用"只出现一次"豁免；confirmed 判定须改为同一 causal token 闭环（write1→callback→write2）证据，echo/suspect 不得升级；该归因到本文档时点仍未以真实闭环证据收口（RESIZE_FEEDBACK_HARD_GATE 状态需后续 UI 阶段复验）。

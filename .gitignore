@@ -29,6 +29,9 @@ artifacts/
 test/vault/.typora/inkchapter/audit/
 test/vault/.typora/inkchapter-outline-dom-dump.json
 test/vault/.typora/inkchapter/captions/*.json
+# per-document-folder Typora runtime state (hotkeys / plugin logger); the
+# vault-level `test/vault/.typora/` stays versioned on purpose
+test/vault/*/.typora/
 
 # trae
 .trae/

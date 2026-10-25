@@ -50,6 +50,8 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - **内部空行发布判决（`src/document-utilities/document-diagnostic-internal-blank-decision-v1.ts`）**：正常编辑（WYSIWYG）下**以可视空行数 `visibleBlankLineCount` 为发布依据**——`<=1` 不发布、`>=2` 发布且数量=可视数；`sourceBlankLineCount` 仅保留用于源码解析 / 位置映射 / 调试，**不直接决定告警**。数据来源按编辑模式区分：`wysiwyg` 取渲染行带、`source`（`.typora-sourceview-on`）取源码行数、`unknown` 或不可测量时**不猜测**（不发布）。模式切换由 `body` 的**只读** class 观察器触发重评估，禁止复用另一模式的遗留结果；不符合条件的诊断从**快照 / 计数 / 排序 / Active** 同步移除（非仅在 Drawer 隐藏）。
 - **Drawer 更新三态（`src/document-utilities/document-diagnostic-drawer-viewport-v1.ts`）**：`STRUCTURAL_UPDATE`（行集合 / 顺序 / 严重级别 / 筛选 / 文档变化 → 重建并捕获恢复视口）、`CONTENT_UPDATE`（行集合不变但**显示内容**变化 → 就地刷新既有行文字，不重建、不动滚动 / 选中 / Active）、`ACTIVE_PATCH`（结构与内容均不变）。判定由**结构签名**与**内容签名**（含真实显示文字）分离决定，纯内容变化绝不折叠为 `ACTIVE_PATCH`。
 - **真实 DOM 内容一致性门禁**：`DOCUMENT-DIAGNOSTIC-DRAWER-CONTENT-CONSISTENCY` 读回 Drawer 行的**真实 DOM 文字**并校验显示数 == 当前诊断的可视空行数（`checkedRowCount` / `mismatchCount`），禁止只比较内部对象即宣布 PASS。
+- **Source-Syntax 三段权威（TRAE V4 / V5）**：`CODE_FENCE_UNCLOSED` / `FORMULA_BLOCK_UNCLOSED` / `FRONTMATTER_UNCLOSED` 走 `locationStrategy=source-syntax-opener`，`protectedRange`（opener→EOF）、opener token 的 `sourceStart/EndOffset`、`presentationRange` 三字段分离；`data-line` 仅为已验证快速路径，miss 必须回退到 canonical source block 投影。机制与实现见 [document-utilities.md](document-utilities.md) §3「Source-Syntax Opener Locator」「Canonical Source Range → DOM Projection Authority」；三条规则能力矩阵仍为 `UNVERIFIED`。
+- **空行事实三层**：source candidate、rendered blank row、`visibleBlankLineCount` 是三个独立事实，发布判决只看可视空行带数（WYSIWYG）/ 源码行数（source 模式），不可测量时不发布。详见 [document-utilities.md](document-utilities.md) §3「空行诊断的三层 authority」。
 
 ## 5. 核心数据结构
 
@@ -90,6 +92,7 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 
 - 审计前缀：`DOCUMENT-DIAGNOSTIC-*`、`DIAGNOSTIC-DOMAIN-RUNTIME-REPORT`、`RUNTIME-IDENTITY-FINAL`（runtime 域）。
 - 证据落盘：`<vault>/.typora/inkchapter/audit/runtime-<sessionId>.log`（`src/runtime/forensic-log-sink.ts`）。
+- 审计前缀补充（2026-10 批次）：`DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-AUDIT` / `-DOM-PROBE` / `-GEOMETRY-AUDIT`、`DOCUMENT-DIAGNOSTIC-PAINT-LAYER-CALIBRATION-AUDIT`、`DOCUMENT-DIAGNOSTIC-BLANK-ROW-FRAGMENT-CLOSURE-AUDIT`、`DOCUMENT-DIAGNOSTIC-SOURCE-SYNTAX-{LOCATE,VISUAL,PROJECTION}-AUDIT`、`DOCUMENT-DIAGNOSTIC-DOCUMENT-END-VISUAL-AUDIT`、`DOCUMENT-DIAGNOSTIC-PRESENTATION-EPOCH-AUDIT`、`DOCUMENT-DIAGNOSTIC-CLICK-PROVENANCE-AUDIT`。这些前缀目前多数只有静态/单测证据，Runtime 采样为 `NOT_RUN`。
 
 ## 11. Tests / Fixtures
 
@@ -111,3 +114,6 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 
 - Earlier DOM-adjacency approach was replaced by canonical owner resolution（题注归属不再靠 DOM 邻接猜测）。
 - 视觉方案经 `raw DOM → semantic occupancy → presentation extent` 演进，失败方向不进入当前规范。
+- `CODE_EMPTY_BLOCK` 曾为单一规则分叉出 empty-container surface / persistent carrier / atomic handoff / compositing（V6/V7/V8），因多 owner 语义冲突与不可维护被整体删除，回归通用 code 管线（DG-02）。结论："检测逻辑特殊，呈现逻辑不特殊"，由 `document-diagnostic-code-empty-block-generic-pipeline.test.ts` 守护专用路径不得复活。
+- `data-line` 曾作为唯一 DOM 投影入口，未闭合 fence 无 `data-line` 时直接 `TARGET_NOT_FOUND`；现降级为已验证快速路径，canonical source block 为主权威。
+- 空行诊断曾用"渲染行数覆盖源码事实"的回退（`actualBlankLines ?? renderedRowCount`），导致文案与 severity 失真；现行规范固定为三层事实分离，禁止渲染值反写源码事实。

@@ -32,6 +32,26 @@ import {
   type RectSnapshot,
 } from './document-locate-rect-v4'
 import { measureTextRects, measureTextFragmentRects, countTokenInElement } from './document-locate-visual-geometry-v4'
+// Native word-count panel ↔ navigator avoidance (presentation-only).
+import {
+  computeWordCountPanelAvoidance,
+  measureWordCountPanelRect,
+  writeNavigatorWordCountAvoidance,
+  NAV_WORD_COUNT_AVOID_ATTR,
+  WORD_COUNT_AVOID_GAP_PX,
+  WORD_COUNT_PANEL_OPEN_CLASS,
+  type WordCountAvoidResult,
+  type WordCountPanelMeasurement,
+} from './document-utility-word-count-avoidance'
+// WC-R2 — one physical gesture yields at most ONE navigator intent.
+import {
+  NavigatorIntentMachine,
+  type NavigatorGesture,
+  type NavigatorGestureCancelReason,
+  type NavigatorGestureExecutionSource,
+  type NavigatorGesturePhase,
+  type NavigatorNavigationAction,
+} from './document-navigator-intent'
 // V5.12-R8 §6 — the SINGLE Markdown reference scanner (no second parser).
 import { findReferenceSpanAt, type ReferenceSpan } from './document-resource-scanner'
 import type { DiagnosticRangeRole } from './diagnostics-types'
@@ -612,6 +632,7 @@ import {
   INTERNAL_BLANK_LINE_POLICY,
   analyzeInternalBlankLineGaps,
   internalBlankGapIdentity,
+  collectDocumentBlockSequence,
   protectedRegionKindAtLine,
   firstContentSourceLine,
   lastContentSourceLine,
@@ -654,6 +675,7 @@ import {
   convertRenderedRowsToLocal,
   evaluateBoundaryResolution,
   resolveRenderedBlankRows,
+  normalizeSiblingBoundaryPair,
   renderedBlankRowUnion,
   createRenderedBlankRowGates,
   emptyRenderedBlankRowCoverage,
@@ -827,9 +849,12 @@ import {
   isCurrentOwnerV2,
   ownerOf,
   reduceDiagnosticClick,
+  shouldRequestGroupRepaint,
+  shouldSkipGroupMemberForPrimaryCarrier,
   type ActiveStateMachineV2Counters,
   type ActiveStateMachineV2CoverageCounters,
   type DiagnosticClick,
+  type DiagnosticClickContext,
   type DiagnosticInteractionState,
   type DiagnosticTransition,
   type DiagnosticVisualOwnerV2,
@@ -1909,6 +1934,17 @@ export interface NavigatorRailFacts {
 const NAV_CONTENT_SAFE_GAP_PX = 8
 /** V1.1 — measured scrollbar clearance gap (scrollbarSafeRight = rect.right − sb − gap). */
 const NAV_SCROLLBAR_SAFE_GAP_PX = 2
+/**
+ * Stable "no avoidance" result (same signature the pure resolver produces for a
+ * non-measurable navigator). Used so the geometry noop gate and the DOM write
+ * always compare the SAME identity — a fallback evaluated twice must not look
+ * like a state change (that would defeat the resize-echo / no-op accounting).
+ */
+const DEFAULT_WORD_COUNT_AVOID: WordCountAvoidResult = computeWordCountPanelAvoidance({
+  navigator: null,
+  panel: null,
+  bounds: { left: 0, top: 0 },
+})
 /** True-Inset — rail may overlap #write's right edge by at most this much (px). */
 export const NAV_INSET_MAX_CONTENT_OVERLAP_PX = 12
 /** Edge-Inset fallback — navigator hugs the visible editor's right edge with
@@ -2691,6 +2727,48 @@ export class DocumentUtilityOverlayHost {
   private drawerEmptyEl: HTMLDivElement | null = null
   /** V1.1 — most-recent located diagnostic row highlight (neutral/accent). */
   private lastLocatedDiagnosticId: string | null = null
+  // ── WC-R3 — active GAP GROUP lifecycle (one Drawer intent, N highlights) ───
+  private activeGapGroup: {
+    groupId: number
+    /**
+     * WC-R3 §2.2 — the explicit lifecycle. `CANCELLED` is the terminal state and
+     * is represented by `activeGapGroup === null` (single authority, no duplicate
+     * state object).
+     *
+     *   ACTIVE  : at least one member is published → highlighted
+     *   DORMANT : intent is still provable (anchors resolve) but nothing is
+     *             published right now → ZERO highlights, no Drawer selection
+     */
+    lifecycle: 'ACTIVE' | 'DORMANT'
+    originDiagnosticId: string
+    /** Semantic `blank-gap:prev>>next` identities of the CURRENT revision. */
+    members: Set<string>
+    /**
+     * WC-R3 §2.3 — frozen `(prev, next)` block-identity pairs from the last
+     * revision that had provable members. This is the DORMANT recovery evidence;
+     * it is never derived from geometry alone.
+     */
+    anchors: Array<{ prev: string; next: string }>
+    /**
+     * Bounded corroborating context (never the sole authority): the last known
+     * selected block range. It only grows on a proven MERGE.
+     */
+    scopePrev: string | null
+    scopeNext: string | null
+    /** Hard identity scope: a group never survives a document switch. */
+    documentKey: string | null
+    /** The source revision this group last committed on (paint freshness). */
+    sourceRevision: number | null
+  } | null = null
+  private activeGapGroupSeq = 0
+  private activeGapGroupVisualEls: HTMLElement[] = []
+  /** Previous revision's block order + gap ranges, used ONLY for lineage. */
+  private lastGapLineage: {
+    documentKey: string | null
+    sourceRevision: number
+    blockOrder: string[]
+    gaps: Map<string, { prev: string; next: string; prevIdx: number; nextIdx: number }>
+  } | null = null
   /**
    * Phase 7R.3.11.8B.8 — V3 Diagnostic Locate Frame controller. ONE instance;
    * owns at most ONE overlay frame + ONE inline mark (presentation only).
@@ -3092,6 +3170,10 @@ export class DocumentUtilityOverlayHost {
    * `this.snapshot` stays the FILTERED snapshot every consumer reads.
    */
   private lastRawAdmittedSnapshot: DocumentDiagnosticsSnapshot | null = null
+  /** WC-R2 — bounded re-decision when the DOM was not measurable yet. */
+  private pendingInternalBlankReDecisionRevision: number | null = null
+  private internalBlankReDecisionAttempts = 0
+  private internalBlankReDecisionRaf: number | null = null
   /** §7 — the editing mode the CURRENT decision ran in (mode-change detector). */
   private lastInternalBlankEditingMode: DocumentEditingMode | null = null
   /** §7 — the targeted body-class observer that re-evaluates on a mode switch. */
@@ -3552,6 +3634,10 @@ export class DocumentUtilityOverlayHost {
         }
       }
     }
+    // WC-R2 — the active gap group is reconciled AFTER the retired active id /
+    // visual cleanup above, so group-owned fragments are painted last and can
+    // never be wiped by that cleanup in the same commit.
+    this.reconcileActiveGapGroup(admitted)
     this.handleStrictSingleH1Popup(admitted)
     this.renderDiagnosticsButton()
     this.renderLockButton()
@@ -4353,6 +4439,9 @@ export class DocumentUtilityOverlayHost {
       this.resizeObserver.observe(contentRoot)
     }
     window.addEventListener('resize', this.onWindowResize)
+    // Native word-count panel (presentation-only avoidance): bounded observers,
+    // bound once; they only enqueue the existing coalesced geometry pass.
+    this.bindWordCountPanelObservers()
     // Region Divider V1 §5.4 — probe the docked right console once at mount too
     // (Typora may start with DevTools already docked).
     this.syncRegionDividerConsoleDock()
@@ -4636,6 +4725,23 @@ export class DocumentUtilityOverlayHost {
     this.drawerReattachObserver?.disconnect()
     this.drawerReattachObserver = null
     this.drawerViewportMemory = null
+    // Native word-count avoidance observers (bounded; disconnected on dispose).
+    this.wordCountPanelClassObserver?.disconnect()
+    this.wordCountPanelClassObserver = null
+    this.wordCountPanelResizeObserver?.disconnect()
+    this.wordCountPanelResizeObserver = null
+    this.lastWordCountPanelOpen = false
+    this.cancelNavigatorGesture('DISPOSE')
+    this.navigatorIntent.reset()
+    this.clearActiveGapGroup('DISPOSE')
+    if (this.internalBlankReDecisionRaf != null) {
+      try { cancelAnimationFrame(this.internalBlankReDecisionRaf) } catch { /* noop */ }
+      this.internalBlankReDecisionRaf = null
+    }
+    this.pendingInternalBlankReDecisionRevision = null
+    this.internalBlankReDecisionAttempts = 0
+    this.lastNavAvoidSignature = ''
+    this.lastDpr = null
     this.editGuard.dispose()
     this.root?.remove()
     this.root = null
@@ -4647,6 +4753,10 @@ export class DocumentUtilityOverlayHost {
 
   /** FILE_OPEN document switch — routed into the single reconcile authority. */
   bindDocument(): void {
+    // WC-R2 — a document switch drops any pending navigator gesture before it
+    // could be applied to the NEW document.
+    this.cancelNavigatorGesture('DOCUMENT_SWITCH')
+    this.clearActiveGapGroup('DOCUMENT_SWITCH')
     // EN-11 R3 — a document switch must drop every parked presentation paint so a
     // captured intent can never be applied to the NEW document (DROP_STALE).
     try { this.paintCoordinator?.cancelAll('DOCUMENT_SWITCH') } catch { /* presentation-only */ }
@@ -10387,6 +10497,46 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * R4 §3.4 — STALE is a FACT comparison, never an object-identity comparison.
+   *
+   * `liveDiagnosticFor()` re-reads the CURRENT snapshot, so it returns a FRESH
+   * object instance on every call. Comparing `live !== diag` therefore reported
+   * "stale" whenever the diagnostic merely EXISTED (STALE_ACTIVE_VISUAL_COUNT=1
+   * with exactly one correct DOM owner). Only a real fact divergence — another
+   * id, another severity, or another blank/lineage fact — is stale.
+   */
+  private isStaleActiveVisualFact(
+    painted: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    live: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+  ): boolean {
+    return this.staleActiveVisualFactDiff(painted, live) !== ''
+  }
+
+  /**
+   * R4 §3.4 — WHICH facts diverge (forensic token, `''` when the painted facts
+   * already equal the LIVE diagnostic). A vanished diagnostic is NOT stale (the
+   * snapshot path owns its teardown); a paint without any captured fact is not
+   * stale either — it simply re-derived everything from the live id.
+   */
+  private staleActiveVisualFactDiff(
+    painted: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+    live: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
+  ): string {
+    // A disappeared diagnostic is not stale: the snapshot path owns its teardown.
+    if (live == null) return ''
+    if (painted == null) return ''
+    const diffs: string[] = []
+    if (painted.id != null && live.id !== painted.id) diffs.push('id')
+    if (painted.severity !== live.severity) diffs.push('severity')
+    const paintedMeta = (painted.metadata ?? {}) as Record<string, unknown>
+    const liveMeta = (live.metadata ?? {}) as Record<string, unknown>
+    // The blank-band facts a painted carrier must agree with the LIVE diagnostic on.
+    const factKeys = ['actualBlankLines', 'publishedBlankLineCount', 'previousBlockStartLine', 'nextBlockStartLine']
+    for (const k of factKeys) if (paintedMeta[k] !== liveMeta[k]) diffs.push(k)
+    return diffs.join('+')
+  }
+
+  /**
    * §5 — rebind the captured ACTIVE visual inputs to the CURRENT diagnostic
    * objects for the SAME stable id. Called at every snapshot commit boundary so
    * no later re-measure / re-derive can repaint a fact from a stale object.
@@ -13023,6 +13173,10 @@ export class DocumentUtilityOverlayHost {
     // 3) Clear the visual carriers.
     if (visualActiveBefore) {
       this.clearDiagnosticLocateVisual('DOCUMENT_LEFT_POINTER_DISMISS')
+      // R6 — a blank click dismisses the CARRIER, never the user's activation
+      // group (spec §1.5): re-project the group so the origin member keeps its
+      // own marker instead of silently disappearing.
+      this.reprojectActiveGapGroupAfterCarrierRetirement()
     }
     // V5.10 §34 — mark the dismiss so any late placement attempt is attributed
     // to the dismiss (and never re-centers).
@@ -13395,6 +13549,28 @@ export class DocumentUtilityOverlayHost {
     }
   }
 
+  /**
+   * R6 — the gap GROUP is a LONGER-LIVED activation intent than the primary
+   * locate carrier.
+   *
+   * While the primary carrier owns a target, the group deliberately skips it
+   * (`shouldSkipGroupMemberForPrimaryCarrier`). When the carrier is retired but
+   * the user's activation is still valid (Drawer closed, blank click), the ORIGIN
+   * member therefore lost its only marker while every inherited descendant kept
+   * its own — a half-painted group.
+   *
+   * This is deliberately NOT called from `clearDiagnosticLocateVisual` itself: a
+   * SWITCH/ACTIVATE retires the old carrier and then installs a NEW primary
+   * carrier for the new target, so re-projecting there would paint that target
+   * twice (group + primary) and break the one-owner rule. Only the two explicit
+   * "activation stays, carrier goes" entry points call this.
+   */
+  private reprojectActiveGapGroupAfterCarrierRetirement(): void {
+    if (this.lastBlockGapDiagnosticId != null) return
+    if (this.activeGapGroup == null || this.activeGapGroup.lifecycle !== 'ACTIVE') return
+    this.runContentDocumentPaint('ACTIVE_GAP_GROUP', () => this.paintActiveGapGroupVisuals())
+  }
+
   /** V4 — visual presentation gate (stored at commit time, real layout). */
   private lastLocateVisualGateOk: boolean | null = null
   private lastLocateVisualPresentation: string | null = null
@@ -13622,6 +13798,42 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * WC-R2 — ONE bounded, event-driven re-decision after an UNMEASURABLE visible
+   * count. It never invents a count and never polls: it re-runs the SAME raw
+   * snapshot on the next animation frame so a split gap whose blank rows were
+   * still rendering is published once they exist. Capped per source revision.
+   */
+  private requestInternalBlankReDecision(revision: number): void {
+    if (this.disposed) return
+    if (this.pendingInternalBlankReDecisionRevision !== revision) {
+      this.pendingInternalBlankReDecisionRevision = revision
+      this.internalBlankReDecisionAttempts = 0
+    }
+    if (this.internalBlankReDecisionAttempts >= 2) return
+    if (this.internalBlankReDecisionRaf != null) return
+    if (typeof requestAnimationFrame !== 'function') return
+    this.internalBlankReDecisionRaf = requestAnimationFrame(() => {
+      this.internalBlankReDecisionRaf = null
+      if (this.disposed) return
+      const raw = this.lastRawAdmittedSnapshot
+      if (raw == null || raw.sourceRevision !== this.pendingInternalBlankReDecisionRevision) return
+      // The authority moved on (newer snapshot) → this retry is stale.
+      if (this.diagnostics.getSnapshot() !== raw) return
+      this.internalBlankReDecisionAttempts++
+      emitRuntimeAudit('DOCUMENT-INTERNAL-BLANK-LINE-RETRY-AUDIT', {
+        documentKey: raw.documentKey ?? null,
+        sourceRevision: raw.sourceRevision,
+        attempt: this.internalBlankReDecisionAttempts,
+        reason: 'VISIBLE_UNMEASURABLE_RE_DECISION',
+      })
+      // Re-decide the SAME raw snapshot: no new source, no guessed count. If the
+      // DOM is measurable now the diagnostic is published; otherwise the attempt
+      // budget (2) stops the loop.
+      this.commitAdmittedSnapshot(raw, 'INTERNAL_BLANK_VISIBLE_RETRY')
+    })
+  }
+
+  /**
    * TRAE §二 (UNIFIED BLANK REGION) — the ONE shared per-row blank-region
    * fragment builder.
    *
@@ -13676,6 +13888,16 @@ export class DocumentUtilityOverlayHost {
     /** V2 §A — the canonical next-block element the locate resolver already bound. */
     preferredNextElement: HTMLElement | null = null,
   ): void {
+    // ── R4 §3.3/§3.4 — the ONE final visual set is derived from the CURRENT
+    // snapshot. A diagnostic object captured at CLICK time can be older than the
+    // committed snapshot (sourceRevision drift: 3 → 28), so the band re-binds to
+    // the LIVE object for the same stable id BEFORE deriving any fact. The stale
+    // audit then compares like with like instead of repainting an old object.
+    const liveForPaint = this.liveDiagnosticFor(diagId)
+    if (liveForPaint != null) {
+      diag = liveForPaint
+      severity = liveForPaint.severity
+    }
     const meta = (diag?.metadata ?? {}) as Record<string, unknown>
     const prevLine = typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null
     const nextLine = typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null
@@ -13701,7 +13923,12 @@ export class DocumentUtilityOverlayHost {
     const nextCanonicalOrdinal = typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null
     const prevKind = typeof meta.previousBlockKind === 'string' ? meta.previousBlockKind : null
     const nextKind = typeof meta.nextBlockKind === 'string' ? meta.nextBlockKind : null
-    this.lastBlockGapDiagnosticId = diagId
+    // ── R5 §3/§5 — the PRIMARY carrier owner is registered ONLY after it is
+    // really painted (see the successful append below). Registering it here made
+    // the group projection believe "the main carrier already owns this target"
+    // even when this paint bailed out on geometry, so a split descendant silently
+    // lost its only highlight (the reported "双高亮失效 / 标记丢失").
+    this.lastBlockGapDiagnosticId = null
     const layoutEpochAtCommit = this.currentDocumentLayoutEpoch
     // §7/§8 — SYMMETRIC canonical-first binding for BOTH sides through ONE ladder.
     // A Markdown fence text (`"```"`) is NEVER a code-block binding authority.
@@ -13911,10 +14138,19 @@ export class DocumentUtilityOverlayHost {
     // Count the blank rows the user ACTUALLY sees in the live WYSIWYG DOM between
     // the two PHYSICALLY verified boundaries. NEVER a mathematical conversion of
     // the source count; NEVER the source count displayed as the rendered count.
+    const businessRootForRows = resolveBusinessContentRoot()
+    // WC-R2 — the two boundaries may live at different DOM levels (Typora wraps
+    // the freshly typed block). Lift them to a common sibling level BEFORE the
+    // rendered-row traversal, otherwise the click-time visual has no rows.
+    const boundaryPair = businessRootForRows != null
+      && prevResolution.decision === 'BOUND' && nextResolution.decision === 'BOUND'
+      && prevEl != null && nextEl != null
+      ? normalizeSiblingBoundaryPair(businessRootForRows, prevEl, nextEl)
+      : null
     const renderedBlankRows = resolveRenderedBlankRows({
-      businessRoot: resolveBusinessContentRoot(),
-      previousElement: prevResolution.decision === 'BOUND' ? prevEl : null,
-      nextElement: nextResolution.decision === 'BOUND' ? nextEl : null,
+      businessRoot: businessRootForRows,
+      previousElement: boundaryPair?.previous ?? null,
+      nextElement: boundaryPair?.next ?? null,
       sourceBlankLineCount: actualBlankLines ?? 0,
       layoutEpoch: this.currentDocumentLayoutEpoch,
       expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
@@ -14170,6 +14406,8 @@ export class DocumentUtilityOverlayHost {
       layer.appendChild(container)
       this.blockGapVisualEl = container
       this.blockGapFragmentEls = fragEls
+      // R5 §5 — the primary owner is proven only by a REAL painted carrier.
+      this.lastBlockGapDiagnosticId = diagId
       // V2 §B — the painted gap carrier carries its diagnostic severity so the
       // Unified Visual Closure reads the SAME facts as OneClick.
       this.blockGapActiveSeverity = severity
@@ -14188,7 +14426,8 @@ export class DocumentUtilityOverlayHost {
           : visibleBlankLineCount
         const activeLabelBlankCount = labelBlankCount
         const paintedFragmentCount = fragEls.length
-        const staleActiveVisualCount = live != null && live !== diag ? 1 : 0
+        const staleFactDiff = this.staleActiveVisualFactDiff(diag, live)
+        const staleActiveVisualCount = staleFactDiff !== '' ? 1 : 0
         const sourceBlankLineCountUsed = actualBlankLines
         // The SOURCE count must NEVER be stated as the VISIBLE count (§9).
         const sourceStatedAsVisibleCount = publishedBlankCount === sourceBlankLineCountUsed
@@ -14221,6 +14460,7 @@ export class DocumentUtilityOverlayHost {
           SOURCE_STATED_AS_VISIBLE_COUNT: sourceStatedAsVisibleCount,
           RULE_VISIBLE_EXCESSIVE: visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
           STALE_ACTIVE_VISUAL_COUNT: staleActiveVisualCount,
+          STALE_ACTIVE_VISUAL_FACT_DIFF: staleFactDiff || 'NONE',
           FINAL_BLANK_VISUAL_CONSISTENCY: consistency,
         })
         if (!headless) {
@@ -15666,6 +15906,664 @@ export class DocumentUtilityOverlayHost {
    *   · NEVER guesses a visible count while the runtime cannot measure it;
    *   · registers the Drawer / Active count authority for the survivors.
    */
+  // ── WC-R2 — ACTIVE GAP GROUP (one user selection, N highlighted gaps) ─────
+  /** The gap diagnostic behind ONE Drawer selection, or null. */
+  private gapIdentityOfDiagnostic(diagnosticId: string | null): { identity: string; diag: DocumentDiagnosticsSnapshot['diagnostics'][number] } | null {
+    if (diagnosticId == null) return null
+    const diag = this.diagnosticById(diagnosticId)
+    if (diag == null || diag.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return null
+    const identity = String((diag as { targetIdentity?: string }).targetIdentity ?? '')
+    if (identity === '') return null
+    return { identity, diag }
+  }
+
+  /** WC-R2 §3.2 — the block range of a gap identity in the CURRENT markdown. */
+  /** The gaps of the CURRENT markdown, in document order. */
+  private resolveGapScope(identity: string): { scopePrev: string | null; scopeNext: string | null } {
+    const markdown = this.opts.ctx.authority.getMarkdown() ?? ''
+    const gap = analyzeInternalBlankLineGaps(markdown)
+      .find(g => internalBlankGapIdentity(g) === identity)
+    return {
+      scopePrev: gap?.previousBlockIdentity ?? null,
+      scopeNext: gap?.nextBlockIdentity ?? null,
+    }
+  }
+
+  /**
+   * R6 — the boundary pair of a diagnostic AS THE SNAPSHOT PUBLISHED IT.
+   *
+   * The user activates a row they can SEE, i.e. a record of the committed
+   * snapshot. Deriving the anchor by re-scanning the live buffer made activation
+   * depend on Typora's serialisation being already up to date: when it lagged one
+   * edit the identity was not found, the anchor list came out empty and the
+   * group could never inherit a single descendant (`LINEAGE_LOST` on the first
+   * reconcile). The snapshot record carries the two block identities itself, so
+   * the proven anchor no longer needs any live re-scan.
+   */
+  private gapBoundariesFromSnapshotDiagnostic(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+  ): { prev: string; next: string } | null {
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const prev = typeof meta.previousBlockIdentity === 'string' ? meta.previousBlockIdentity : ''
+    const next = typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : ''
+    if (prev === '' || next === '') return null
+    return { prev, next }
+  }
+
+  /** WC-R3 §2.2 — is this diagnostic one of the CURRENT group members? */
+  private isActiveGapGroupMemberDiagnostic(diagnosticId: string | null): boolean {
+    if (diagnosticId == null) return false
+    const group = this.activeGapGroup
+    if (group == null || group.members.size === 0) return false
+    const hit = this.gapIdentityOfDiagnostic(diagnosticId)
+    if (hit == null) return false
+    return group.members.has(hit.identity)
+  }
+
+  /** A real user activation: start a group ONLY for an internal blank-gap rule. */
+  private onDiagnosticActivatedForGapGroup(diagnosticId: string | null): void {
+    // A new user activation supersedes the previous group (one group authority).
+    this.clearActiveGapGroup('REPLACED_BY_NEW_ACTIVATION')
+    const hit = this.gapIdentityOfDiagnostic(diagnosticId)
+    if (hit == null) {
+      this.clearActiveGapGroup('ACTIVATED_OTHER_RULE')
+      return
+    }
+    // R6 — prefer the SNAPSHOT's own boundary pair (the row the user actually
+    // clicked); fall back to a live re-scan only when the record carries none.
+    const fromSnapshot = this.gapBoundariesFromSnapshotDiagnostic(hit.diag)
+    const scope = fromSnapshot != null
+      ? { scopePrev: fromSnapshot.prev, scopeNext: fromSnapshot.next }
+      : this.resolveGapScope(hit.identity)
+    this.activeGapGroup = {
+      groupId: ++this.activeGapGroupSeq,
+      lifecycle: 'ACTIVE',
+      originDiagnosticId: diagnosticId as string,
+      members: new Set([hit.identity]),
+      anchors: scope.scopePrev != null && scope.scopeNext != null
+        ? [{ prev: scope.scopePrev, next: scope.scopeNext }]
+        : [],
+      scopePrev: scope.scopePrev,
+      scopeNext: scope.scopeNext,
+      documentKey: this.snapshot?.documentKey
+        ?? this.opts.ctx.authority.getDocumentKey()
+        ?? null,
+      sourceRevision: this.snapshot?.sourceRevision ?? null,
+    }
+    // The locate transaction paints the origin gap; the group projection runs on
+    // the NEXT atomic snapshot commit, where split/merge members are known. Do
+    // not paint here: an early container would be cleared by commitBlockGapVisual.
+  }
+
+  /** Release the whole group + its group-owned fragments. Never touches Markdown. */
+  private clearActiveGapGroup(reason: string): void {
+    const had = this.activeGapGroup != null
+    this.activeGapGroup = null
+    this.clearActiveGapGroupVisuals()
+    if (had) {
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-ACTIVE-GAP-GROUP', {
+        action: 'CLEAR',
+        reason,
+        documentKey: this.snapshot?.documentKey ?? null,
+        sourceRevision: this.snapshot?.sourceRevision ?? null,
+        activeGroupCount: 0,
+        decision: 'PASS',
+      })
+    }
+  }
+
+  private clearActiveGapGroupVisuals(): void {
+    for (const el of this.activeGapGroupVisualEls) {
+      try { el.remove() } catch { /* detached */ }
+    }
+    this.activeGapGroupVisualEls = []
+  }
+
+  /**
+   * R6 — the number of group containers that are REALLY in the live document.
+   * A layer teardown (document switch / host remount) can detach every container
+   * while the bookkeeping array still holds the old references, so
+   * `length` alone over-reports the projection and turns the runtime counter
+   * `paintedGroupTargetCount` into a fact that the DOM does not support.
+   */
+  private liveActiveGapGroupVisualCount(): number {
+    let n = 0
+    for (const el of this.activeGapGroupVisualEls) {
+      try { if (el.isConnected) n++ } catch { /* detached */ }
+    }
+    return n
+  }
+
+  /** Rebuild the lineage index for the revision that was just published. */
+  private updateGapLineage(snapshot: DocumentDiagnosticsSnapshot | null): void {
+    const markdown = this.opts.ctx.authority.getMarkdown() ?? ''
+    const blocks = collectDocumentBlockSequence(markdown)
+    const blockOrder = blocks.map(b => b.identity)
+    const index = new Map(blockOrder.map((identity, i) => [identity, i]))
+    const gaps = new Map<string, { prev: string; next: string; prevIdx: number; nextIdx: number }>()
+    for (const gap of analyzeInternalBlankLineGaps(markdown)) {
+      const prevIdx = index.get(gap.previousBlockIdentity)
+      const nextIdx = index.get(gap.nextBlockIdentity)
+      if (prevIdx == null || nextIdx == null) continue
+      gaps.set(internalBlankGapIdentity(gap), {
+        prev: gap.previousBlockIdentity,
+        next: gap.nextBlockIdentity,
+        prevIdx,
+        nextIdx,
+      })
+    }
+    this.lastGapLineage = {
+      documentKey: snapshot?.documentKey ?? null,
+      sourceRevision: snapshot?.sourceRevision ?? -1,
+      blockOrder,
+      gaps,
+    }
+  }
+
+  /**
+   * WC-R3 §2.3 / R6 — deterministic lineage over the PROVEN anchors.
+   *
+   * A candidate gap inherits only with structural evidence:
+   *   · identical `(prev, next)` block pair                        → same gap;
+   *   · candidate covers the whole anchor range                    → merge / ancestor;
+   *   · the anchor was CUT and the candidate shares one of its two
+   *     boundary blocks                                            → residual split;
+   *   · the anchor was CUT and the candidate lives INSIDE the
+   *     anchor's block range                                       → nested residual
+   *     split (2nd/3rd-generation descendants);
+   *   · candidate butts against an anchor (`prev===anchor.next` or
+   *     `next===anchor.prev`) AND stays inside the bounded selected
+   *     range                                                     → side that once
+   *     dropped to zero blank lines and is excessive again.
+   *
+   * Anything else is NOT inherited (fail closed). In particular a NEW gap that
+   * merely sits inside the historical extent is never adopted: the bounded
+   * `withinScope` clause additionally requires the union to fill the selection
+   * EXACTLY, and the containment clause requires the anchor to be provably cut.
+   */
+  private computeInheritedGapMembers(
+    newGaps: Map<string, { prev: string; next: string; prevIdx: number; nextIdx: number }>,
+    newOrder: string[],
+    published: Set<string>,
+    anchors: readonly { prev: string; next: string }[],
+    scope: { prev: string | null; next: string | null },
+  ): { members: Set<string>; unresolved: number; publishedCount: number; resolvedAnchorCount: number } {
+    const members = new Set<string>()
+    const group = this.activeGapGroup
+    if (group == null) return { members, unresolved: 0, publishedCount: 0, resolvedAnchorCount: 0 }
+    const newPos = new Map(newOrder.map((identity, i) => [identity, i]))
+    const scopePrevPos = scope.prev != null ? newPos.get(scope.prev) ?? null : null
+    const scopeNextPos = scope.next != null ? newPos.get(scope.next) ?? null : null
+    const withinScope = (gap: { prevIdx: number; nextIdx: number }): boolean =>
+      scopePrevPos != null && scopeNextPos != null
+      && gap.prevIdx >= scopePrevPos && gap.nextIdx <= scopeNextPos
+    /**
+     * WC-R3 §2.3 / R6 — "the anchor was CUT" is a STRUCTURAL fact of the anchor,
+     * never an identity diff against the previous revision.
+     *
+     * A proven anchor `(prev,next)` originated from a MAXIMAL blank run, i.e.
+     * `prev` and `next` were ADJACENT sibling blocks with no block between them.
+     * Therefore, as soon as ANY block sits between them, that run was split —
+     * regardless of WHICH block it is.
+     *
+     * ROOT CAUSE (R6): the previous implementation asked "does the current order
+     * contain a block id the old order lacked?". Block identities are
+     * `kind:text#ordinal` (and `block:<kind>:<n>` for canonical objects), so a
+     * paragraph whose text already exists elsewhere in the document can REUSE an
+     * ordinal the previous revision already had. A real split then looked like
+     * "no new block was inserted", both descendants lost their lineage and the
+     * activation degraded to DORMANT with zero highlights.
+     */
+    const anchorCut = (anchorPrevPos: number | null, anchorNextPos: number | null): boolean => {
+      // One end vanished (merged into a neighbouring paragraph) → the anchor was
+      // structurally broken, so its surviving end may own a residual piece.
+      if (anchorPrevPos == null || anchorNextPos == null) return true
+      return anchorNextPos - anchorPrevPos > 1
+    }
+    let publishedCount = 0
+    let resolvedAnchorCount = 0
+    for (const anchor of anchors) {
+      const anchorPrevPos = newPos.get(anchor.prev)
+      const anchorNextPos = newPos.get(anchor.next)
+      const anchorSurvives = newGaps.has(this.gapIdentityOfPair(anchor))
+      // Same gap pair survives somewhere → this anchor is still resolvable.
+      if (anchorPrevPos == null && anchorNextPos == null && !anchorSurvives) continue
+      resolvedAnchorCount++
+      const cut = anchorCut(anchorPrevPos ?? null, anchorNextPos ?? null)
+      for (const [id, gap] of newGaps) {
+        // R6 — a gap carried over from a snapshot whose live buffer moved on has
+        // UNKNOWN positions (-1). Every range-based edge below must skip it; only
+        // the identity-based edges (exact pair / shared boundary) may match.
+        const hasPos = gap.prevIdx >= 0 && gap.nextIdx >= 0
+        let related = gap.prev === anchor.prev && gap.next === anchor.next
+        // Residual split: the anchor WAS CUT and this piece kept one of its ends
+        // (the case where the OTHER end of the anchor no longer resolves).
+        if (!related && !anchorSurvives && cut
+          && (gap.prev === anchor.prev || gap.next === anchor.next)) {
+          related = true
+        }
+        // R6 — nested residual split: the anchor WAS CUT and this maximal gap
+        // lives strictly INSIDE the anchor's block range. Containment (not "shares
+        // one end") is what makes a SECOND-generation split inherit: after
+        // 甲..X..乙 splits again into 甲..P..X..乙 the middle gap P..X touches
+        // NEITHER anchor end yet is a proven descendant of the 甲..乙 anchor.
+        if (!related && hasPos && !anchorSurvives && cut
+          && anchorPrevPos != null && anchorNextPos != null
+          && gap.prevIdx >= anchorPrevPos && gap.nextIdx <= anchorNextPos) {
+          related = true
+        }
+        // Merge / ancestor: the candidate now covers the whole anchor range.
+        if (!related && hasPos && anchorPrevPos != null && anchorNextPos != null
+          && gap.prevIdx <= anchorPrevPos && gap.nextIdx >= anchorNextPos) {
+          related = true
+        }
+        // A neighbouring side that once dropped to zero blank lines: it butts
+        // against a proven anchor, stays inside the bounded selection AND the
+        // union with that anchor exactly fills the selection. The "fills the
+        // selection" clause is what keeps an UNRELATED gap that merely appeared
+        // inside a historically expanded range from being adopted.
+        if (!related && withinScope(gap)
+          && anchorPrevPos != null && anchorNextPos != null
+          && (gap.prev === anchor.next || gap.next === anchor.prev)
+          && Math.min(gap.prevIdx, anchorPrevPos) === scopePrevPos
+          && Math.max(gap.nextIdx, anchorNextPos) === scopeNextPos) {
+          related = true
+        }
+        if (related) {
+          members.add(id)
+          if (published.has(id)) publishedCount++
+        }
+      }
+    }
+    return {
+      members,
+      unresolved: anchors.length > 0 && resolvedAnchorCount === 0 ? 1 : 0,
+      publishedCount,
+      resolvedAnchorCount,
+    }
+  }
+
+  /** Block-pair identity WITHOUT going through the source scanner. */
+  private gapIdentityOfPair(anchor: { prev: string; next: string }): string {
+    return `blank-gap:${anchor.prev}>>${anchor.next}`
+  }
+
+  /**
+   * Reconcile the active group against the committed snapshot + lineage.
+   * Runs INSIDE the atomic snapshot commit; the paint projection is rebuilt from
+   * the FULL current member set (never an incremental delta).
+   *
+   * WC-R3 §2.2 — the ONLY place the group lifecycle moves:
+   *   ACTIVE  → published members exist
+   *   DORMANT → anchors still provable, nothing published (zero highlights)
+   *   CANCELLED → anchors irrecoverable / document switch / user action (null)
+   */
+  private reconcileActiveGapGroup(snapshot: DocumentDiagnosticsSnapshot | null): void {
+    if (snapshot == null) {
+      this.clearActiveGapGroup('NULL_SNAPSHOT')
+      // R6 — no snapshot means no provable lineage for ANY document. Retire the
+      // block-order index instead of leaving the previous document's order in
+      // place for one more reconcile.
+      this.lastGapLineage = { documentKey: null, sourceRevision: -1, blockOrder: [], gaps: new Map() }
+      return
+    }
+    const group = this.activeGapGroup
+    if (group != null && group.documentKey != null && group.documentKey !== snapshot.documentKey) {
+      this.clearActiveGapGroup('DOCUMENT_SWITCH')
+      this.updateGapLineage(snapshot)
+      return
+    }
+    const markdown = this.opts.ctx.authority.getMarkdown() ?? ''
+    const blocks = collectDocumentBlockSequence(markdown)
+    const newOrder = blocks.map(b => b.identity)
+    const index = new Map(newOrder.map((identity, i) => [identity, i]))
+    const published = new Set(
+      snapshot.diagnostics
+        .filter(d => d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE)
+        .map(d => String((d as { targetIdentity?: string }).targetIdentity ?? ''))
+        .filter(id => id !== ''),
+    )
+    // WC-R3 §2.3 — the lineage MUST be derived from the SAME snapshot the user
+    // sees. Re-scanning `getMarkdown()` here races the editor serialization: a
+    // commit can carry a snapshot one edit behind the live buffer, which would
+    // make every member look "unpublished" and silently park the group in
+    // DORMANT. Build the candidate set from the snapshot's own gap metadata.
+    const newGaps = new Map<string, { prev: string; next: string; prevIdx: number; nextIdx: number }>()
+    for (const diag of snapshot.diagnostics) {
+      if (diag.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) continue
+      const identity = String((diag as { targetIdentity?: string }).targetIdentity ?? '')
+      if (identity === '') continue
+      const meta = (diag.metadata ?? {}) as Record<string, unknown>
+      const prev = typeof meta.previousBlockIdentity === 'string' ? meta.previousBlockIdentity : ''
+      const next = typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : ''
+      if (prev === '' || next === '') continue
+      const prevIdx = index.get(prev)
+      const nextIdx = index.get(next)
+      // ── R6 — a PUBLISHED gap is a FACT even when the live buffer has already
+      // moved on. Typora's serialisation can lag one edit behind the committed
+      // snapshot, and then `prev`/`next` are absent from the live block order.
+      // Dropping the entry here made every published member look unknown, drove
+      // `publishedCount` to 0 and degraded the whole group to DORMANT (all
+      // highlights gone) for one commit. Keep it with UNKNOWN positions (-1) so
+      // the identity-only lineage edges (exact pair / shared boundary) still prove
+      // it, while every range-based edge skips it (never a guessed position).
+      newGaps.set(identity, {
+        prev,
+        next,
+        prevIdx: prevIdx ?? -1,
+        nextIdx: nextIdx ?? -1,
+      })
+    }
+    // (b) live-scan supplements: a descendant that the VISIBLE gate withheld is
+    // absent from the snapshot but must stay a lineage member so it can rejoin
+    // the highlight on the next edit. Never used for the published test.
+    for (const gap of analyzeInternalBlankLineGaps(markdown)) {
+      const identity = internalBlankGapIdentity(gap)
+      if (newGaps.has(identity)) continue
+      const prevIdx = index.get(gap.previousBlockIdentity)
+      const nextIdx = index.get(gap.nextBlockIdentity)
+      if (prevIdx == null || nextIdx == null) continue
+      newGaps.set(identity, {
+        prev: gap.previousBlockIdentity,
+        next: gap.nextBlockIdentity,
+        prevIdx,
+        nextIdx,
+      })
+    }
+    if (group != null) {
+      const anchors = this.resolveGroupAnchors(group, newGaps)
+      const { members, unresolved, publishedCount, resolvedAnchorCount } =
+        this.computeInheritedGapMembers(
+          newGaps, newOrder, published, anchors,
+          { prev: group.scopePrev, next: group.scopeNext },
+        )
+      if (unresolved > 0) {
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-ACTIVE-GAP-GROUP', {
+          action: 'LINEAGE_UNRESOLVED',
+          unresolvedCount: unresolved,
+          documentKey: snapshot.documentKey ?? null,
+          sourceRevision: snapshot.sourceRevision ?? null,
+        })
+      }
+      const memberAnchors = [...members]
+        .map(id => newGaps.get(id))
+        .filter((r): r is { prev: string; next: string; prevIdx: number; nextIdx: number } => r != null)
+        .map(r => ({ prev: r.prev, next: r.next }))
+      if (resolvedAnchorCount === 0 && members.size === 0) {
+        // No boundary, no member → the lineage is irrecoverable. Fail closed.
+        this.clearActiveGapGroup('LINEAGE_LOST')
+      } else if (publishedCount > 0) {
+        const scope = this.expandGroupScope(group, newOrder, index, memberAnchors)
+        this.activeGapGroup = {
+          ...group,
+          lifecycle: 'ACTIVE',
+          members,
+          anchors: this.mergeGroupAnchors(group.anchors, memberAnchors),
+          scopePrev: scope.prev,
+          scopeNext: scope.next,
+          sourceRevision: snapshot.sourceRevision ?? null,
+        }
+        // The Drawer keeps its SINGLE authority: when the origin diagnostic is
+        // retired by the split/merge the interaction state above has already
+        // moved to IDLE. We never fabricate a second selection here; the group
+        // projection below carries the inherited highlights.
+        //
+        // ── R6 / EN-11 — the projection MUST go through the presentation paint
+        // coordinator. `paintActiveGapGroupVisuals` APPENDS new containers inside
+        // the locate layer, which is a child of `#write`; writing there during a
+        // real Enter's echo window makes Typora re-normalise its end block (the
+        // documented SECOND `SPLIT_1_TO_2` for ONE Enter). Without the hold every
+        // non-Enter path still paints synchronously — behaviour is unchanged.
+        this.runContentDocumentPaint('ACTIVE_GAP_GROUP', () => this.paintActiveGapGroupVisuals())
+        this.emitGapGroupStateAudit('ACTIVE', this.activeGapGroup, snapshot)
+      } else {
+        // DORMANT — provable intent, nothing to highlight. The Drawer shows no
+        // active row because the diagnostics themselves are not published.
+        this.activeGapGroup = {
+          ...group,
+          lifecycle: 'DORMANT',
+          members,
+          anchors: this.mergeGroupAnchors(group.anchors, memberAnchors),
+          sourceRevision: snapshot.sourceRevision ?? null,
+        }
+        // R6 — retire the previous projection through the SAME coordinator: the
+        // retired containers are childList writes inside `#write` too, and
+        // `paintActiveGapGroupVisuals` is already idempotent (it clears first and
+        // paints nothing unless the live group is ACTIVE), so ONE latest-wins
+        // intent expresses "derive the projection from the current state".
+        this.runContentDocumentPaint('ACTIVE_GAP_GROUP', () => this.paintActiveGapGroupVisuals())
+        this.emitGapGroupStateAudit('DORMANT', this.activeGapGroup, snapshot)
+      }
+    }
+    this.updateGapLineage(snapshot)
+  }
+
+  /** The anchors to reconcile against (frozen evidence, or legacy member records). */
+  private resolveGroupAnchors(
+    group: NonNullable<DocumentUtilityOverlayHost['activeGapGroup']>,
+    newGaps: Map<string, { prev: string; next: string; prevIdx: number; nextIdx: number }>,
+  ): Array<{ prev: string; next: string }> {
+    if (group.anchors.length > 0) return group.anchors
+    const out: Array<{ prev: string; next: string }> = []
+    const seen = new Set<string>()
+    for (const id of group.members) {
+      const rec = newGaps.get(id) ?? this.lastGapLineage?.gaps.get(id)
+      if (rec == null) continue
+      const key = this.gapIdentityOfPair(rec)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ prev: rec.prev, next: rec.next })
+    }
+    return out
+  }
+
+  /**
+   * WC-R3 §2.3 — proven anchors are FROZEN evidence. A revision that keeps
+   * proving an anchor keeps it; a descendant whose blank run temporarily drops
+   * to zero has no candidate gap at all, so replacing the anchor set with "the
+   * current members" would erase the only record that lets it rejoin later.
+   */
+  private mergeGroupAnchors(
+    proven: readonly { prev: string; next: string }[],
+    current: readonly { prev: string; next: string }[],
+  ): Array<{ prev: string; next: string }> {
+    const out: Array<{ prev: string; next: string }> = []
+    const seen = new Set<string>()
+    for (const anchor of [...proven, ...current]) {
+      const key = this.gapIdentityOfPair(anchor)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ prev: anchor.prev, next: anchor.next })
+    }
+    return out.slice(-12)
+  }
+
+  /** WC-R3 §2.3 — the bounded selection range only grows on a proven merge. */
+  private expandGroupScope(
+    group: NonNullable<DocumentUtilityOverlayHost['activeGapGroup']>,
+    newOrder: readonly string[],
+    index: ReadonlyMap<string, number>,
+    memberAnchors: readonly { prev: string; next: string }[],
+  ): { prev: string | null; next: string | null } {
+    const scopedPrev = group.scopePrev != null
+    const scopedNext = group.scopeNext != null
+    let prevPos = scopedPrev ? index.get(group.scopePrev as string) ?? null : null
+    let nextPos = scopedNext ? index.get(group.scopeNext as string) ?? null : null
+    for (const anchor of memberAnchors) {
+      const p = index.get(anchor.prev)
+      const n = index.get(anchor.next)
+      // A scope end that is TEMPORARILY unresolvable (its block was merged into,
+      // or split out of, a neighbour) keeps its frozen identity: replacing it
+      // with a narrower anchor position would silently shrink the bounded
+      // selection and stop the other side of an edit from ever rejoining.
+      if (p != null && (!scopedPrev || prevPos != null)) {
+        prevPos = prevPos == null ? p : Math.min(prevPos, p)
+      }
+      if (n != null && (!scopedNext || nextPos != null)) {
+        nextPos = nextPos == null ? n : Math.max(nextPos, n)
+      }
+    }
+    return {
+      prev: prevPos != null ? newOrder[prevPos] ?? group.scopePrev : group.scopePrev,
+      next: nextPos != null ? newOrder[nextPos] ?? group.scopeNext : group.scopeNext,
+    }
+  }
+
+  private emitGapGroupStateAudit(
+    lifecycle: 'ACTIVE' | 'DORMANT',
+    group: NonNullable<DocumentUtilityOverlayHost['activeGapGroup']> | null,
+    snapshot: DocumentDiagnosticsSnapshot,
+  ): void {
+    if (group == null) return
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-ACTIVE-GAP-GROUP', {
+      action: 'STATE',
+      lifecycle,
+      groupId: group.groupId,
+      memberCount: group.members.size,
+      anchorCount: group.anchors.length,
+      paintedGroupTargetCount: this.liveActiveGapGroupVisualCount(),
+      documentKey: snapshot.documentKey ?? null,
+      sourceRevision: snapshot.sourceRevision ?? null,
+      decision: 'PASS',
+    })
+  }
+
+  /**
+   * WC-R2 §3.3/§3.4 — paint the group's CURRENT members from live DOM rows.
+   * The locate transaction owns its primary carrier; every OTHER member gets its
+   * own container here. Containers are rebuilt from the real row set, so a merge
+   * expands and a split shrinks without stretching stale rectangles.
+   */
+  private paintActiveGapGroupVisuals(): void {
+    this.clearActiveGapGroupVisuals()
+    const group = this.activeGapGroup
+    // WC-R3 §2.2 — DORMANT renders NOTHING (no stale warning, no ghost band).
+    if (group == null || group.lifecycle !== 'ACTIVE' || group.members.size === 0) return
+    const snapshot = this.snapshot
+    if (snapshot == null) return
+    const root = resolveBusinessContentRoot()
+    const layer = root ? this.ensureLocateDocumentLayer() : null
+    const hostRect = layer ? this.measureLocateRect(layer) : null
+    if (root == null || layer == null || hostRect == null) return
+    // R6 — the projection is judged against the PUBLISHED set, not against
+    // "a method ran": a member with no published diagnostic is not a paint miss.
+    let publishedMemberCount = 0
+    let paintedMemberCount = 0
+    let primaryOwnedMemberCount = 0
+    let unpaintedMemberCount = 0
+    for (const identity of group.members) {
+      const diag = snapshot.diagnostics.find(d =>
+        d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE
+        && String((d as { targetIdentity?: string }).targetIdentity ?? '') === identity)
+      if (!diag) continue
+      publishedMemberCount++
+      // ── R5 §5 — skip a member ONLY when the primary carrier for THAT SAME
+      // target is still really painted and connected. A stale id, or a carrier
+      // that was retired/failed, must never suppress the group's own highlight
+      // (otherwise a valid descendant silently loses its marker).
+      const primaryCarrierAlive = shouldSkipGroupMemberForPrimaryCarrier({
+        memberDiagnosticId: diag.id,
+        primaryDiagnosticId: this.lastBlockGapDiagnosticId,
+        primaryCarrierConnected: this.blockGapVisualEl != null && this.blockGapVisualEl.isConnected,
+      })
+      if (primaryCarrierAlive) { primaryOwnedMemberCount++; continue }
+      const meta = (diag.metadata ?? {}) as Record<string, unknown>
+      const prevBinding = this.bindGapBoundary({
+        canonicalKind: typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null,
+        canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
+        startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
+        anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
+      })
+      const nextBinding = this.bindGapBoundary({
+        canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
+        canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
+        startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
+        anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+      })
+      if (prevBinding.element == null || nextBinding.element == null) { unpaintedMemberCount++; continue }
+      const pair = normalizeSiblingBoundaryPair(root, prevBinding.element, nextBinding.element)
+      if (pair == null) { unpaintedMemberCount++; continue }
+      const rows = resolveRenderedBlankRows({
+        businessRoot: root,
+        previousElement: pair.previous,
+        nextElement: pair.next,
+        sourceBlankLineCount: typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : 0,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+        expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
+      })
+      if (rows.decision !== 'VERIFIED' || rows.rows.length === 0) { unpaintedMemberCount++; continue }
+      const visible = rows.visibleBlankLineCount
+      // A member that now MEASURES as compliant is correctly left unpainted: it is
+      // no longer excessive, so there is nothing to highlight (not a paint failure).
+      if (visible < INTERNAL_BLANK_LINE_POLICY.warningThreshold) continue
+      const local = convertRenderedRowsToLocal({
+        rows: rows.rows.map(r => ({ rect: r.rect })),
+        inputCoordinateSpace: 'VIEWPORT',
+        contentHostRect: hostRect,
+        layoutEpoch: this.currentDocumentLayoutEpoch,
+      })
+      if (local.localRects.length === 0) { unpaintedMemberCount++; continue }
+      const left = Math.min(...local.localRects.map(r => r.left))
+      const right = Math.max(...local.localRects.map(r => r.right))
+      const geometry = computeRenderedBlankRowFragments({
+        rowRects: local.localRects,
+        contentColumns: { left, right },
+      })
+      if (geometry.container == null || geometry.fragments.length === 0) { unpaintedMemberCount++; continue }
+      const container = document.createElement('div')
+      // ── R6 — the group carrier MUST own the SAME surface contract as the
+      // primary carrier. It previously carried only `BLOCK_GAP_VISUAL_CLASS`
+      // (pointer-events only), while the amber blank-run RANGE BACKGROUND comes
+      // from `RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS`
+      // (`.inkchapter-block-gap-fragments`). Without it every inherited
+      // descendant rendered a transparent container + transparent rows + a count
+      // chip, i.e. the split's second gap had a diagnostic and a Drawer row but
+      // NO visible highlight at all. One style authority, two owners.
+      container.className = `${BLOCK_GAP_VISUAL_CLASS} ${RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS} inkchapter-block-gap-group-visual`
+      container.setAttribute('data-block-gap-visual', 'active-gap-group')
+      container.setAttribute('data-severity', diag.severity)
+      container.setAttribute('data-active', 'true')
+      container.setAttribute('aria-hidden', 'true')
+      container.style.cssText = `position:absolute;left:${Math.round(geometry.container.left)}px;`
+        + `top:${Math.round(geometry.container.top)}px;width:${Math.round(geometry.container.width)}px;`
+        + `height:${Math.round(geometry.container.height)}px;pointer-events:none;`
+      this.buildBlankRowFragmentEls(container, geometry.fragments, INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines, diag.severity)
+      const chip = document.createElement('span')
+      chip.className = BLANK_RUN_COUNT_CHIP_CLASS
+      chip.setAttribute('aria-hidden', 'true')
+      chip.textContent = `${visible} 空行`
+      container.appendChild(chip)
+      layer.appendChild(container)
+      this.activeGapGroupVisualEls.push(container)
+      paintedMemberCount++
+    }
+    // ── R6 — a published member that could not be bound/measured right after a
+    // split leaves a REAL hole in the projection (two-member split showing only
+    // one marker). Earn exactly ONE bounded re-decision per source revision; the
+    // retry budget lives in `requestInternalBlankReDecision` (max 2 rAF passes),
+    // so this can never become a polling loop.
+    const repaintNeeded = shouldRequestGroupRepaint({
+      publishedMemberCount,
+      paintedMemberCount,
+      primaryCarrierMemberCount: primaryOwnedMemberCount,
+    })
+    if (repaintNeeded) this.requestInternalBlankReDecision(snapshot.sourceRevision ?? -1)
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-ACTIVE-GAP-GROUP', {
+      action: 'PAINT',
+      documentKey: snapshot.documentKey ?? null,
+      sourceRevision: snapshot.sourceRevision ?? null,
+      activeGroupCount: 1,
+      memberCount: group.members.size,
+      publishedMemberCount,
+      paintedMemberCount,
+      primaryCarrierMemberCount: primaryOwnedMemberCount,
+      unpaintedMemberCount,
+      repaintRequested: repaintNeeded,
+      paintedGroupTargetCount: this.liveActiveGapGroupVisualCount(),
+      decision: 'PASS',
+    })
+  }
+
   private reconcileInternalBlankLineDiagnostics(
     snapshot: DocumentDiagnosticsSnapshot | null,
   ): DocumentDiagnosticsSnapshot | null {
@@ -15677,6 +16575,7 @@ export class DocumentUtilityOverlayHost {
     const liveIdentities = new Set<string>()
     const kept: DocumentDiagnosticsSnapshot['diagnostics'][number][] = []
     let touched = false
+    let unmeasurable = false
     for (const d of snapshot.diagnostics) {
       if (d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) { kept.push(d); continue }
       const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
@@ -15748,6 +16647,11 @@ export class DocumentUtilityOverlayHost {
         if (mode === 'source') this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_SOURCE_MODE_DECISION_COUNT++
       }
       if (!decision.publish || decision.displayBlankLineCount == null) {
+        // WC-R2 — an UNMEASURABLE visible count is never guessed, but it is not
+        // final either: the DOM may still be rendering the split's blank rows.
+        // A bounded re-decision is requested below (event-driven, capped), so a
+        // transient NO_RENDERED_ROWS can no longer hide the gap forever.
+        if (decision.visibleBlankLineCount == null) unmeasurable = true
         // §5/§6 — DROPPED because the VISIBLE count is within the allowance (or it
         // could not be measured): removed from the published snapshot (so the
         // Drawer list/order + severity counts + Active marker all lose it) and its
@@ -15804,6 +16708,17 @@ export class DocumentUtilityOverlayHost {
         this.renderedBlankRowAuthority.delete(key)
         touched = true
       }
+    }
+    // WC-R2 — retry ONCE the DOM has had a frame to materialize the split's
+    // blank rows. Bounded per source revision, and only when this snapshot is
+    // BOTH the admitted one and the authority's current snapshot (a direct
+    // unit-test injection never triggers a retry against stale data).
+    if (
+      unmeasurable
+      && this.lastRawAdmittedSnapshot === snapshot
+      && this.diagnostics.getSnapshot() === snapshot
+    ) {
+      this.requestInternalBlankReDecision(snapshot.sourceRevision)
     }
     if (!touched) return snapshot
     return {
@@ -16014,9 +16929,20 @@ export class DocumentUtilityOverlayHost {
   private resolveRenderedBlankRowsForMeta(
     meta: Record<string, unknown>,
   ): RenderedBlankRowResult | null {
-    const previousElement = this.resolveGapBoundaryElementFromMeta(meta, 'previous')
-    const nextElement = this.resolveGapBoundaryElementFromMeta(meta, 'next')
-    if (previousElement == null || nextElement == null) return null
+    const previousRaw = this.resolveGapBoundaryElementFromMeta(meta, 'previous')
+    const nextRaw = this.resolveGapBoundaryElementFromMeta(meta, 'next')
+    if (previousRaw == null || nextRaw == null) return null
+    const businessRoot = resolveBusinessContentRoot()
+    if (businessRoot == null) return null
+    // WC-R2 — Typora may wrap ONE of the two boundaries (e.g. the paragraph the
+    // user just typed) in a different DOM level. Counting "between siblings"
+    // across different parents is refused → the gap would be unmeasurable and
+    // the diagnostic silently dropped after a blank run is split. Lift BOTH
+    // boundaries to their deepest common sibling level first.
+    const pair = normalizeSiblingBoundaryPair(businessRoot, previousRaw, nextRaw)
+    if (pair == null) return null
+    const previousElement = pair.previous
+    const nextElement = pair.next
     // TRAE diagnostic — the exact DOM relationship between the two boundaries
     // (no click required), so a false `gapBoundaryOrderOk` is provable.
     try {
@@ -18257,6 +19183,27 @@ export class DocumentUtilityOverlayHost {
   private lastNavigatorAuthoritySig = ''
   private lastDiagnosticsPresentation: DiagnosticsPresentation = 'desktop'
 
+  // ── Native word-count panel avoidance (presentation-only) ────────────────
+  // The panel is Typora's own (`#footer-word-count-info`); it is never touched.
+  // Only the navigator moves. Two BOUNDED observers drive it: one body-class
+  // observer (single node, single attribute) for open/close, one ResizeObserver
+  // on the panel box for its own size changes. No full-DOM scan, no polling,
+  // no fixed-delay "stability" guess: every update goes through the existing
+  // coalesced geometry rAF.
+  private wordCountPanelClassObserver: MutationObserver | null = null
+  private wordCountPanelResizeObserver: ResizeObserver | null = null
+  private lastWordCountPanelOpen = false
+  /** WC-R2 — ONE gesture → ONE intent (press recorded, executed at gesture end). */
+  private navigatorIntent = new NavigatorIntentMachine()
+  /** Bounded listeners that end the current gesture (click / pointerup / Esc). */
+  private navigatorGestureCleanup: (() => void) | null = null
+  /** Last committed avoidance signature — the geometry noop gate includes it. */
+  private lastNavAvoidSignature = ''
+  /** Audit state token (one avoidance audit line per real change). */
+  private lastWordCountAvoidAuditSig = ''
+  /** Per-monitor DPI witness: a change re-runs ONE geometry pass. */
+  private lastDpr: number | null = null
+
   // ── V3 Active-Document Presence authority (ACTIVE / EMPTY / UNKNOWN) ──────
   // The ACTIVE workspace leaf (`activeLeaf.state.path`) is the HIGHEST
   // authority. An EXPLICIT EMPTY leaf (known + path='') HARD-VETOES every stale
@@ -18465,6 +19412,10 @@ export class DocumentUtilityOverlayHost {
         // Phase 7R.3.11.8B.8 — a real document switch clears the previous
         // document's locate visual (frame / inline mark) unconditionally.
         this.clearDiagnosticLocateVisual('DOCUMENT_SWITCH')
+        // WC-R2 — an active gap group never crosses documents.
+        this.clearActiveGapGroup('DOCUMENT_SWITCH')
+        // WC-R2 — the navigator gesture is bound to the OLD document/key; drop it.
+        this.cancelNavigatorGesture('DOCUMENT_SWITCH')
         this.ensureTabStructureObserver()
         this.scrollNav?.bind()
         this.bindLocateFrameEditorScroll()
@@ -19110,15 +20061,259 @@ export class DocumentUtilityOverlayHost {
     })
   }
 
+  // ── Native word-count panel avoidance (presentation-only) ─────────────────
+
+  /**
+   * Per-monitor DPI witness. All geometry here is CSS-pixel, so a DPR change
+   * never alters a single computed offset — but dragging the window onto a
+   * display with another scale factor can change the CSS viewport WITHOUT a
+   * `resize` event. One self-terminating extra pass keeps the anchor honest.
+   */
+  private watchDevicePixelRatio(): void {
+    if (typeof window === 'undefined') return
+    const raw = window.devicePixelRatio
+    const dpr = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : 1
+    if (this.lastDpr == null) {
+      this.lastDpr = dpr
+      return
+    }
+    if (this.lastDpr === dpr) return
+    this.lastDpr = dpr
+    this.scheduleGeometrySync('device-pixel-ratio-change')
+  }
+
+  /**
+   * Bind the TWO bounded observers that drive the avoidance (once each):
+   *  - ONE `MutationObserver` on `document.body`, attribute-filtered to
+   *    `class` — it only observes whether `ty-show-word-count` toggled
+   *    (native open/close marker). No subtree, no document scan.
+   *  - ONE `ResizeObserver` on `#footer-word-count-info` — the panel's own box
+   *    changes (delimiter switch / in-selection rows) without a resize event.
+   * Both merely enqueue the existing coalesced geometry rAF: no polling, no
+   * fixed-delay "stability" guess, no second layout authority.
+   */
+  private bindWordCountPanelObservers(): void {
+    if (this.disposed || typeof document === 'undefined' || !document.body) return
+    if (!this.wordCountPanelClassObserver && typeof MutationObserver === 'function') {
+      this.wordCountPanelClassObserver = new MutationObserver(() => {
+        if (this.disposed || typeof document === 'undefined' || !document.body) return
+        const open = document.body.classList.contains(WORD_COUNT_PANEL_OPEN_CLASS)
+        const changed = open !== this.lastWordCountPanelOpen
+        this.lastWordCountPanelOpen = open
+        if (changed) this.scheduleGeometrySync(open ? 'word-count-panel-open' : 'word-count-panel-close')
+        // WC-R2 — a deferred press becomes ADMITTED here, but is NEVER executed
+        // from this observer: Typora's own caret-restore scroll runs later in the
+        // same gesture, so the single execution waits for gesture end.
+        if (!open && this.navigatorIntent.onPanelClosed()) {
+          const gesture = this.navigatorIntent.current
+          if (gesture) this.emitNavigatorGestureAudit('ADMITTED', gesture, null, { panelClosed: true })
+        }
+      })
+      this.wordCountPanelClassObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+    }
+    this.lastWordCountPanelOpen = this.isWordCountPanelOpen()
+    if (!this.wordCountPanelResizeObserver && typeof ResizeObserver !== 'undefined') {
+      let panel: HTMLElement | null = null
+      try { panel = document.getElementById('footer-word-count-info') } catch { panel = null }
+      if (panel) {
+        this.wordCountPanelResizeObserver = new ResizeObserver(() => {
+          if (this.disposed) return
+          this.scheduleGeometrySync('word-count-panel-resize')
+        })
+        this.wordCountPanelResizeObserver.observe(panel)
+      }
+    }
+  }
+
+  /** True while Typora's native word-count panel is open (body marker only). */
+  private isWordCountPanelOpen(): boolean {
+    return typeof document !== 'undefined' && !!document.body
+      && document.body.classList.contains(WORD_COUNT_PANEL_OPEN_CLASS)
+  }
+
+  /** Emit one bounded gesture audit line (never high-frequency). */
+  private emitNavigatorGestureAudit(
+    phase: NavigatorGesturePhase,
+    gesture: NavigatorGesture,
+    source: NavigatorGestureExecutionSource | null,
+    extra?: Record<string, unknown>,
+  ): void {
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAV-GESTURE', {
+      gestureId: gesture.id,
+      phase,
+      action: gesture.action,
+      source,
+      documentKey: gesture.documentKey,
+      panelOpenAtPress: gesture.panelOpenAtPress,
+      elapsedMs: Math.max(0, this.now() - gesture.startedAt),
+      containerIdentity: gesture.container
+        ? `${gesture.container.tagName}#${gesture.container.id || ''}`
+        : null,
+      ...extra,
+    })
+  }
+
+  /** True while a press intent is waiting for its physical gesture to end. */
+  private hasPendingNavigatorGesture(): boolean {
+    const g = this.navigatorIntent.current
+    return g != null && (g.phase === 'PRESSED' || g.phase === 'ADMITTED')
+  }
+
+  /**
+   * Arm the BOUNDED gesture-end listeners for a deferred press.
+   *
+   * The single execution happens on the document-level `click` (bubble end, so
+   * Typora's own click / caret-restore handler has already run) or, when no
+   * click reaches the document, on `pointerup` + `setTimeout(0)`. Both funnel
+   * into `executeNavigatorGesture`, which takes the intent exactly once.
+   */
+  private armNavigatorGestureEnd(): void {
+    if (this.navigatorGestureCleanup) return
+    if (typeof document === 'undefined') return
+    const onClick = (): void => {
+      this.disposeNavigatorGestureEnd()
+      this.executeNavigatorGesture('CLICK')
+    }
+    const onPointerUp = (): void => {
+      this.disposeNavigatorGestureEnd()
+      // setTimeout(0) runs after the click task; when click already executed the
+      // intent is gone, so this can never produce a second scroll.
+      setTimeout(() => this.executeNavigatorGesture('POINTERUP_FALLBACK'), 0)
+    }
+    const onKeyDown = (ev: KeyboardEvent): void => {
+      if (ev.key !== 'Escape') return
+      this.cancelNavigatorGesture('ESCAPE')
+    }
+    document.addEventListener('click', onClick)
+    document.addEventListener('pointerup', onPointerUp, { once: true, passive: true } as AddEventListenerOptions)
+    document.addEventListener('keydown', onKeyDown)
+    this.navigatorGestureCleanup = () => {
+      document.removeEventListener('click', onClick)
+      document.removeEventListener('pointerup', onPointerUp)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }
+
+  /** Remove every gesture-end listener (idempotent). */
+  private disposeNavigatorGestureEnd(): void {
+    const cleanup = this.navigatorGestureCleanup
+    this.navigatorGestureCleanup = null
+    if (cleanup) cleanup()
+  }
+
+  /** Cancel the current gesture + release its listeners (no execution). */
+  private cancelNavigatorGesture(reason: NavigatorGestureCancelReason): void {
+    const cancelled = this.navigatorIntent.cancel(reason)
+    this.disposeNavigatorGestureEnd()
+    if (cancelled) this.emitNavigatorGestureAudit('CANCELLED', cancelled, null, { cancelReason: reason })
+  }
+
+  /**
+   * Execute the SINGLE pending intent (if any). Returns true when a scroll was
+   * handed to the scroll authority.
+   *
+   * Freshness: the document key captured at press must still match, and the
+   * editor scroll container must be the SAME live container — a document switch
+   * or editor-root replacement discards the intent instead of retargeting it.
+   */
+  private executeNavigatorGesture(source: NavigatorGestureExecutionSource): boolean {
+    const intent = this.navigatorIntent.take({
+      now: this.now(),
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+    })
+    if (!intent) return false
+    const fresh = getActiveEditorScrollContainer()
+    if (!fresh || (intent.container && intent.container !== fresh)) {
+      const cancelled = this.navigatorIntent.cancel('EDITOR_ROOT_REPLACED')
+      this.disposeNavigatorGestureEnd()
+      if (cancelled) {
+        this.emitNavigatorGestureAudit('CANCELLED', cancelled, source, { cancelReason: 'EDITOR_ROOT_REPLACED' })
+      }
+      return false
+    }
+    this.disposeNavigatorGestureEnd()
+    this.emitNavigatorGestureAudit('APPLIED', intent, source)
+    this.handleScrollAction(intent.action, 'BUTTON')
+    this.navigatorIntent.complete()
+    return true
+  }
+
+  /** Drop the panel-scoped hide marker + its signature (never a stray offset). */
+  private clearNavigatorWordCountAvoidance(): void {
+    const nav = this.navigatorEl
+    if (nav && nav.hasAttribute(NAV_WORD_COUNT_AVOID_ATTR)) nav.removeAttribute(NAV_WORD_COUNT_AVOID_ATTR)
+    this.lastNavAvoidSignature = ''
+  }
+
+  /**
+   * Resolve the navigator's panel avoidance from REAL rects for this pass.
+   *
+   * The navigator rect is derived from the RESOLVED base anchor (not from a
+   * possibly-stale previous write), so the decision never compounds. Returns
+   * null when the navigator is hidden / not measurable.
+   */
+  private resolveWordCountPanelAvoidance(args: {
+    baseRight: number
+    baseBottom: number
+    editorLeft: number | null
+    editorTop: number | null
+  }): WordCountAvoidResult | null {
+    const nav = this.navigatorEl
+    if (!nav || typeof document === 'undefined' || typeof window === 'undefined') return null
+    if (this.lastNavVis.presentation === 'hidden') return null
+    if (!Number.isFinite(args.baseRight) || !Number.isFinite(args.baseBottom)) return null
+    let navRect: DOMRect | null = null
+    try { navRect = nav.getBoundingClientRect() } catch { navRect = null }
+    const navWidth = navRect && navRect.width > 0 ? navRect.width : this.measureNavigatorVisualWidth()
+    const navHeight = navRect && navRect.height > 0 ? navRect.height : (this.lastNavigatorHeightPx ?? 0)
+    if (!(navWidth > 0) || !(navHeight > 0)) return null
+    const panel = measureWordCountPanelRect(document)
+    const right = window.innerWidth - args.baseRight
+    const bottom = window.innerHeight - args.baseBottom
+    return computeWordCountPanelAvoidance({
+      navigator: { left: right - navWidth, top: bottom - navHeight, right, bottom },
+      panel: panel.rect,
+      bounds: {
+        left: Math.max(0, args.editorLeft ?? 0) + NAV_EDGE_INSET_GAP_PX,
+        top: Math.max(0, args.editorTop ?? 0) + NAV_EDGE_INSET_GAP_PX,
+      },
+      gap: WORD_COUNT_AVOID_GAP_PX,
+    })
+  }
+
+  /** Sig-deduped avoidance audit (one line per real state change). */
+  private emitWordCountAvoidanceAudit(result: WordCountAvoidResult, baseRight: number, baseBottom: number): void {
+    if (result.signature === this.lastWordCountAvoidAuditSig) return
+    this.lastWordCountAvoidAuditSig = result.signature
+    let panel: WordCountPanelMeasurement = { open: false, rect: null }
+    try { panel = measureWordCountPanelRect(document) } catch { /* fail-open */ }
+    emitRuntimeAudit('DOCUMENT-UTILITY-NAV-WORD-COUNT-AVOIDANCE', {
+      documentKey: this.opts.ctx.authority.getDocumentKey(),
+      mode: result.mode,
+      reason: result.reason,
+      dx: result.dx,
+      dy: result.dy,
+      gapPx: WORD_COUNT_AVOID_GAP_PX,
+      panelOpen: panel.open,
+      panelRect: panel.rect,
+      baseRight,
+      baseBottom,
+      devicePixelRatio:
+        typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1,
+    })
+  }
+
   /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
   private applyNavigatorPresentation(presentation: NavigatorPresentation, insetRightPx: number | null): void {
     if (!this.navigatorEl) return
     this.navigatorEl.dataset.rail = presentation
     this.navigatorEl.hidden = presentation === 'hidden'
     this.navigatorEl.setAttribute('aria-hidden', String(presentation === 'hidden'))
-    if (presentation === 'inset' && insetRightPx != null) {
-      this.navigatorEl.style.right = `${insetRightPx}px`
-    }
+    // NOTE — the navigator's right/bottom anchor is NEVER written here. The
+    // single geometry writer commits base anchor + word-count avoidance offset;
+    // writing the bare inset right here would silently erase an active
+    // avoidance shift on every pass (panel open, geometry unchanged → no-op).
+    void insetRightPx
     this.emitNavigatorPresentationInvariant()
   }
 
@@ -19319,6 +20514,13 @@ export class DocumentUtilityOverlayHost {
   private applyGeometry(reasons: Set<string>): void {
     if (!this.root) return
     this.geometryCounters.executionCount++
+    // Per-monitor DPI witness: CSS-pixel geometry is DPR-free, but dragging the
+    // window to a display with another scale factor changes the CSS viewport
+    // without necessarily firing `resize`. One self-terminating extra pass.
+    this.watchDevicePixelRatio()
+    // Idempotent + bounded: the native panel may appear after mount; binding
+    // only ever does ONE getElementById (no document scan).
+    this.bindWordCountPanelObservers()
     // ── V5.14-R3 §P11 §10 — a REAL heading content edit runs FIRST: the old
     // passive / active / chip geometry is invalidated and rebuilt from the
     // CURRENT text, independent of whether the diagnostics re-published.
@@ -19404,6 +20606,17 @@ export class DocumentUtilityOverlayHost {
             )
           }
         }
+        // ── R6 — the active gap GROUP is a THIRD block-gap owner and needs the
+        // same live re-derivation. This pass used to re-derive only the primary
+        // band (`commitBlockGapVisual`) and the EOF band, so every INHERITED
+        // descendant kept its commit-time `left/width` after a sidebar-divider
+        // drag or a window resize: at a narrow editor the split's second
+        // highlight overhung the content column exactly like the primary band
+        // used to. The group projection is idempotent and derives every target
+        // from LIVE geometry, so one coordinator request is all it takes.
+        if (this.activeGapGroup != null && this.activeGapGroup.lifecycle === 'ACTIVE') {
+          this.runContentDocumentPaint('ACTIVE_GAP_GROUP', () => this.paintActiveGapGroupVisuals())
+        }
         // ── §三/§七（ROOT_EOF_LIVE_COMPARATOR）—— the synthetic EOF band is the
         // SAME class of carrier: its horizontal extent was only ever derived on the
         // locate/scroll path, so a sidebar-divider drag left it frozen at its
@@ -19448,6 +20661,12 @@ export class DocumentUtilityOverlayHost {
     //    noop comparison so width-only changes still reclass without geometry churn.
     const toolbarPresentation = decideToolbarPresentation(editorVisibleWidth)
     let rightGutter: number | null = null
+    /**
+     * Native word-count panel avoidance for THIS pass (null ⇒ navigator not
+     * visible). Computed from freshly measured rects and committed with the
+     * same single navigator write; never a second writer, never a timer.
+     */
+    let navAvoid: WordCountAvoidResult | null = null
     const writeEl = document.getElementById('write')
     if (rect && writeEl) {
       const wr = writeEl.getBoundingClientRect()
@@ -19621,6 +20840,19 @@ export class DocumentUtilityOverlayHost {
         this.monotonicVisibilityHoleCount++
         console.log(`[InkChapter] DOCUMENT-UTILITY-NAVIGATOR-MONOTONIC-VISIBILITY-INVARIANT: decision=${mono.decision} finalPresentation=${finalPres} edgeInsetCandidateValid=${edgeInsetCandidate?.valid}`)
       }
+      // ── Native word-count panel avoidance (presentation-only) ────────────
+      // `#footer-word-count-info` is Typora's own DOM and is NEVER touched: only
+      // the navigator anchor is resolved against the panel's REAL rect. Left
+      // avoidance wins, then up, then a temporary hide (restored on close).
+      if (finalPres !== 'hidden') {
+        const baseRight = finalPres === 'inset' && insetPx != null ? insetPx : next.navRight
+        navAvoid = this.resolveWordCountPanelAvoidance({
+          baseRight,
+          baseBottom: next.navBottom,
+          editorLeft: editorLeftRaw ?? null,
+          editorTop: editorTopRaw ?? null,
+        })
+      }
       next.navigatorVisible = finalPres !== 'hidden'
       next.navigatorSuppressed = finalPres === 'hidden'
     } else {
@@ -19630,6 +20862,8 @@ export class DocumentUtilityOverlayHost {
       this.lastStableNavigatorPresentation = null
       this.stabilizationRemeasurePending = false
       this.lastDriftContentGap = NAV_CONTENT_SAFE_GAP_PX
+      // A hidden navigator carries no panel-avoidance state either (no residue).
+      this.clearNavigatorWordCountAvoidance()
       // Stale geometry cleanup — no left/right/top/bottom residue may survive
       // a hidden state (next show must never inherit a left-bottom position).
       if (this.navigatorEl) {
@@ -19665,7 +20899,15 @@ export class DocumentUtilityOverlayHost {
     const hasDrawerTransition = reasons.has('drawer-open') || reasons.has('drawer-close')
     const prev = this.lastGeometry
     this.lastGeometry = next
-    if (prev && JSON.stringify(prev) === JSON.stringify(next)) {
+    // The navigator anchors are part of the committed state: a panel opened or
+    // closed without any editor geometry change must still re-write the anchor
+    // once (then the signature matches and later passes are true noops).
+    // A HIDDEN navigator carries no avoidance identity ('' matches the cleared
+    // signature), while a visible-but-unmeasurable one uses the stable default.
+    const navHiddenNow = this.lastNavVis.presentation === 'hidden'
+    const navAvoidEff = navHiddenNow ? null : (navAvoid ?? DEFAULT_WORD_COUNT_AVOID)
+    const avoidSignature = navAvoidEff?.signature ?? ''
+    if (prev && JSON.stringify(prev) === JSON.stringify(next) && avoidSignature === this.lastNavAvoidSignature) {
       this.geometryCounters.noopCount++
       // Phase 7R.3.11.8B.3.1 — §5 C UTILITY_RESIZE_ECHO: a write → one RO
       // callback → geometry noop terminates the causal token. This is NOT a
@@ -19710,15 +20952,24 @@ export class DocumentUtilityOverlayHost {
       // placement (next show must not inherit an old position).
       const nv = this.lastNavVis
       if (nv.presentation === 'hidden') {
+        this.clearNavigatorWordCountAvoidance()
         this.navigatorEl.style.removeProperty('right')
         this.navigatorEl.style.removeProperty('left')
         this.navigatorEl.style.removeProperty('top')
         this.navigatorEl.style.removeProperty('bottom')
         this.navigatorEl.style.display = 'none'
       } else {
-        this.navigatorEl.style.right = `${nv.presentation === 'inset' && nv.insetRightPx != null ? nv.insetRightPx : next.navRight}px`
-        this.navigatorEl.style.bottom = `${next.navBottom}px`
-        this.navigatorEl.style.display = 'flex'
+        // SINGLE writer for the navigator anchor: base (gutter/inset) anchor +
+        // the panel-avoidance offset. DEFAULT restores the base exactly, so a
+        // closed panel can never leave a residual shift behind.
+        const baseRight = nv.presentation === 'inset' && nv.insetRightPx != null ? nv.insetRightPx : next.navRight
+        const avoid = navAvoidEff ?? DEFAULT_WORD_COUNT_AVOID
+        writeNavigatorWordCountAvoidance(this.navigatorEl, { right: baseRight, bottom: next.navBottom }, avoid)
+        this.lastNavAvoidSignature = avoid.signature
+        // HIDE flips the navigator's real visibility (hidden + display:none):
+        // emit the presentation invariant so the audit reports what is true.
+        if (avoid.mode === 'HIDE') this.emitNavigatorPresentationInvariant()
+        this.emitWordCountAvoidanceAudit(avoid, baseRight, next.navBottom)
       }
     }
     if (this.drawerEl) {
@@ -20353,6 +21604,83 @@ export class DocumentUtilityOverlayHost {
     nav.style.position = 'absolute'
     nav.style.pointerEvents = 'auto'
 
+    /**
+     * While the NATIVE word-count panel is open, a press on a navigator button
+     * must not bubble to Typora's document-level "click outside closes the
+     * panel" handler: that close would first restore the base anchor, so the
+     * button would have moved away by the time `click` dispatches and the press
+     * would land on the editor instead. The button's OWN action still runs; the
+     * native panel keeps its DOM, styling and behaviour untouched.
+     */
+    const keepPanelOpenDuringPress = (ev: Event): void => {
+      if (typeof document !== 'undefined' && document.body
+        && document.body.classList.contains(WORD_COUNT_PANEL_OPEN_CLASS)) {
+        ev.stopPropagation()
+      }
+    }
+
+    /**
+     * WC-R2 — one gesture, one intent.
+     *
+     * `mousedown` only RECORDS the intent (pointerdown/mousedown/click all
+     * belong to the same physical gesture). When the native panel is open the
+     * intent is deferred until the gesture ENDS, because Typora closes the
+     * panel on this same press and restores the caret scroll afterwards —
+     * replaying from the panel-close callback raced with that restore.
+     *
+     * Execution points: press (panel already closed), document click (bubble
+     * end), pointerup fallback, or keyboard activation (click `detail === 0`).
+     * Every path funnels through `executeNavigatorGesture`, which takes the
+     * intent exactly once.
+     */
+    const bindNavigatorButton = (btn: HTMLButtonElement, action: NavigatorNavigationAction): void => {
+      const beginGesture = (panelOpen: boolean): NavigatorGesture => {
+        const gesture = this.navigatorIntent.begin({
+          action,
+          documentKey: this.opts.ctx.authority.getDocumentKey(),
+          container: getActiveEditorScrollContainer(),
+          panelOpen,
+          now: this.now(),
+        })
+        this.emitNavigatorGestureAudit('PRESSED', gesture, 'PRESS')
+        return gesture
+      }
+      // WC-T11 — in the panel-scoped HIDE state the navigator is not interactive
+      // (no safe space), so a stray event must never strand or falsely admit a
+      // gesture. (`hidden` alone is NOT enough: short / unscrollable documents
+      // are hidden too.)
+      btn.addEventListener('mousedown', (ev) => {
+        if (this.navigatorEl?.getAttribute(NAV_WORD_COUNT_AVOID_ATTR) === 'hidden') return
+        ev.preventDefault()
+        keepPanelOpenDuringPress(ev)
+        if (ev.button !== 0) return
+        const panelOpen = this.isWordCountPanelOpen()
+        const gesture = beginGesture(panelOpen)
+        if (gesture.panelOpenAtPress) {
+          // Defer to gesture end; the native panel may close immediately.
+          this.armNavigatorGestureEnd()
+          return
+        }
+        this.executeNavigatorGesture('PRESS')
+      })
+      btn.addEventListener('pointerdown', keepPanelOpenDuringPress)
+      btn.addEventListener('pointercancel', () => this.cancelNavigatorGesture('POINTER_CANCEL'))
+      btn.addEventListener('click', (ev) => {
+        // WC-T11 — the panel-scoped HIDE state is not interactive.
+        if (this.navigatorEl?.getAttribute(NAV_WORD_COUNT_AVOID_ATTR) === 'hidden') return
+        keepPanelOpenDuringPress(ev)
+        if (ev.detail === 0) {
+          // Keyboard Enter/Space: no press phase precedes this click.
+          if (!this.hasPendingNavigatorGesture()) beginGesture(false)
+          this.executeNavigatorGesture('KEYBOARD')
+          return
+        }
+        // Mouse click — executes the press intent at most once (a press that
+        // already ran leaves no intent behind).
+        this.executeNavigatorGesture('CLICK')
+      })
+    }
+
     const topBtn = document.createElement('button')
     topBtn.type = 'button'
     topBtn.className = 'inkchapter-doc-navigator__btn'
@@ -20361,7 +21689,7 @@ export class DocumentUtilityOverlayHost {
     topBtn.title = '回到文档顶部'
     setIcon(topBtn, 'chevron-up')
     topBtn.disabled = true
-    topBtn.addEventListener('click', () => this.handleScrollAction('GO_TOP'))
+    bindNavigatorButton(topBtn, 'GO_TOP')
     this.topBtnEl = topBtn
     nav.appendChild(topBtn)
 
@@ -20373,7 +21701,7 @@ export class DocumentUtilityOverlayHost {
     bottomBtn.title = '到达文档底部'
     setIcon(bottomBtn, 'chevron-down')
     bottomBtn.disabled = true
-    bottomBtn.addEventListener('click', () => this.handleScrollAction('GO_BOTTOM'))
+    bindNavigatorButton(bottomBtn, 'GO_BOTTOM')
     this.bottomBtnEl = bottomBtn
     nav.appendChild(bottomBtn)
 
@@ -22152,6 +23480,8 @@ export class DocumentUtilityOverlayHost {
    * presentation is removed (never a global unscoped clear).
    */
   private retireActiveVisualForDeactivate(previousOwner: DiagnosticVisualOwnerV2 | null, click: DiagnosticClick): void {
+    // WC-R2 — a same-target toggle-off cancels the WHOLE active gap group.
+    this.clearActiveGapGroup('DEACTIVATE')
     this.retireVisualForOwnerV2(previousOwner, SAME_TARGET_TOGGLE_OFF_REASON_V2)
     this.clearHeadingActiveEmphasisVisual()
     this.clearDiagnosticLocateVisual(SAME_TARGET_TOGGLE_OFF_REASON_V2)
@@ -22783,10 +24113,54 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * R4 §3.1 — commit the reducer's OWN `DEACTIVATE / GROUP_MEMBER_TOGGLE_OFF`
+   * decision. The reducer already produced the IDLE `next` state (version has
+   * incremented exactly once), so this method only applies that ONE state and
+   * retires the group + locate carrier — it never re-classifies the click.
+   */
+  private commitGroupMemberToggleOff(transition: DiagnosticTransition, clickSequence: number): void {
+    this.clearActiveGapGroup('GROUP_MEMBER_TOGGLE_OFF')
+    this.diagnosticInteractionState = transition.next
+    this.lastDiagnosticTransition = transition
+    this.focusedDiagnosticId = null
+    this.lastLocatedDiagnosticId = null
+    this.lastLocatedTargetIndex = null
+    this.clearDiagnosticLocateVisual('GROUP_MEMBER_TOGGLE_OFF')
+    this.refreshDrawerActiveRow()
+    this.auditActiveStateInvariants()
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STATE_TRANSITION_V2, {
+      clickSequence,
+      action: transition.action,
+      provenanceAction: transition.provenanceAction ?? null,
+      versionBefore: transition.previous.version,
+      versionAfter: transition.next.version,
+      phaseBefore: transition.previous.phase,
+      phaseAfter: transition.next.phase,
+      diagnosticBefore: transition.previous.diagnosticId,
+      diagnosticAfter: null,
+      targetKeyBefore: transition.previous.targetKey,
+      targetKeyAfter: null,
+      reason: 'GROUP_MEMBER_TOGGLE_OFF',
+      severityBlind: true,
+      ownerRetired: true,
+      deferredActivation: false,
+      decision: 'PASS',
+    })
+  }
+
+  /**
    * §4 — commit ONE reducer transition atomically. This is the ONLY place the
    * interaction authority is written by a click.
    */
   private commitDiagnosticTransitionV2(transition: DiagnosticTransition, clickSequence: number): void {
+    // ── R4 §3.1 — the reducer already decided this click is a WHOLE-GROUP
+    // toggle-off (the target is a CURRENT inherited member). Commit that one
+    // authoritative transition here: provenance and final action are both
+    // explicit in the audit, never a silent ACTIVATE→DEACTIVATE rewrite.
+    if (transition.action === 'DEACTIVATE' && transition.reason === 'GROUP_MEMBER_TOGGLE_OFF') {
+      this.commitGroupMemberToggleOff(transition, clickSequence)
+      return
+    }
     // TRAE V5 §11/§12 — a source-syntax ACTIVATE/SWITCH does NOT publish ACTIVE
     // at click time. The phase stays IDLE (a RESOLVING pending owner) and is only
     // committed when the visual commit really succeeds
@@ -22846,6 +24220,8 @@ export class DocumentUtilityOverlayHost {
       // DEMOTED observational mirror (never an authority any more).
       this.lastLocatedDiagnosticId = transition.next.diagnosticId
       this.lastLocatedTargetIndex = transition.next.diagnosticTargetIndex ?? null
+      // WC-R2 — ONE user selection starts ONE active gap group (N highlights).
+      this.onDiagnosticActivatedForGapGroup(transition.next.diagnosticId)
       // ── V1 §39 — the POSITIVE coverage of a real activation/switch.
       this.registerHeadingActivationCoverage(transition.action, transition.next.targetKey)
       // ── V2 §12 — the multi-target scenarios must be PROVEN (coverage only).
@@ -23345,9 +24721,16 @@ export class DocumentUtilityOverlayHost {
       this.countersActivationLifecycleV1.recoverySyntheticClick++
     }
     const predictedTxId = this.locateTxIdSeq + 1
-    const transition = reduceDiagnosticClick(previous, click, predictedTxId, null)
+    // ── R4 §3.1 — the ONE reducer must know the inherited-group fact BEFORE it
+    // commits, so a click on a CURRENT inherited member is decided as
+    // DEACTIVATE/GROUP_MEMBER_TOGGLE_OFF right here (never an ACTIVATE that a
+    // later branch silently rewrites).
+    const clickContext: DiagnosticClickContext = {
+      inheritedGroupMember: this.isActiveGapGroupMemberDiagnostic(diagnosticId),
+    }
+    const transition = reduceDiagnosticClick(previous, click, predictedTxId, null, clickContext)
     const committed = transition.action === 'DEACTIVATE'
-      ? reduceDiagnosticClick(previous, click, null, null)
+      ? reduceDiagnosticClick(previous, click, null, null, clickContext)
       : transition
     // ── Drawer Viewport Stability V1 §32 — capture the Drawer viewport BEFORE the
     // transition commits, so an active-only click can be PROVEN to leave it intact.
@@ -26043,10 +27426,14 @@ export class DocumentUtilityOverlayHost {
     if (prev.element == null || next.element == null || prev.element === next.element) return null
     // §17/§20 — re-resolve the RENDERED blank rows FRESH between the two live
     // boundaries; the placement centre is their union, never the next paragraph.
+    const rootForPlacement = resolveBusinessContentRoot()
+    const placementPair = rootForPlacement != null
+      ? normalizeSiblingBoundaryPair(rootForPlacement, prev.element, next.element)
+      : null
     const rendered = resolveRenderedBlankRows({
-      businessRoot: resolveBusinessContentRoot(),
-      previousElement: prev.element,
-      nextElement: next.element,
+      businessRoot: rootForPlacement,
+      previousElement: placementPair?.previous ?? null,
+      nextElement: placementPair?.next ?? null,
       sourceBlankLineCount: 0,
       layoutEpoch: this.currentDocumentLayoutEpoch,
       expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
@@ -30918,6 +32305,11 @@ export class DocumentUtilityOverlayHost {
     const sameDiagnostic = this.diagnosticInteractionState.diagnosticId === p.diagnosticId
     const sameTarget = this.diagnosticInteractionState.phase === 'ACTIVE'
       && this.diagnosticInteractionState.targetKey === targetKey
+    // ── R4 §3.1 — the inherited-group fact is part of the click classification,
+    // not a later correction.
+    const inheritedGroupMember = this.isActiveGapGroupMemberDiagnostic(p.diagnosticId)
+    const mechanicalAction = sameTarget ? 'DEACTIVATE' : (sameDiagnostic ? 'SWITCH' : 'ACTIVATE')
+    const classifiedAction = inheritedGroupMember ? 'DEACTIVATE' : mechanicalAction
     emitRuntimeAudit(CLICK_PROVENANCE_AUDIT_EVENT, buildClickProvenanceAudit({
       documentKey: documentKey || null,
       diagnosticId: p.diagnosticId,
@@ -30925,9 +32317,12 @@ export class DocumentUtilityOverlayHost {
       provenance,
       businessClickSequence: this.diagnosticClickSequence + (verdict.dispatch ? 1 : 0),
       businessDispatchCountForPointerActivation: dispatchCountAfter,
-      classifiedAction: verdict.dispatch
-        ? (sameTarget ? 'DEACTIVATE' : (sameDiagnostic ? 'SWITCH' : 'ACTIVATE'))
-        : null,
+      classifiedAction: verdict.dispatch ? classifiedAction : null,
+      // ── R4 §3.1/§R4-28 — the MECHANICAL classification and the final action are
+      // BOTH stated, so an inherited-member toggle-off can never look like a
+      // silent ACTIVATE→DEACTIVATE rewrite.
+      provenanceAction: verdict.dispatch ? mechanicalAction : null,
+      inheritedGroupMember,
       sameDiagnostic,
       sameTarget,
       verdict,
@@ -31017,6 +32412,11 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.8 — closing the Drawer also clears the V3 locate visual
     // even when no transaction was active (the frame persists after a commit).
     this.clearDiagnosticLocateVisual('DRAWER_CLOSE')
+    // R6 — closing the Drawer ends the CARRIER, not the user's activation group
+    // (spec §1.5: opening/closing the Drawer must not cancel the group). Without
+    // this the origin member kept no marker at all while its inherited
+    // descendants stayed highlighted.
+    this.reprojectActiveGapGroupAfterCarrierRetirement()
     this.setDrawerOpen(false)
     emitRuntimeAudit('DOCUMENT-UTILITY-DRAWER', {
       action: 'CLOSE',

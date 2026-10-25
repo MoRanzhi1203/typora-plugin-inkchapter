@@ -105,6 +105,10 @@ export function buildClickProvenanceAudit(input: {
   businessClickSequence: number
   businessDispatchCountForPointerActivation: number
   classifiedAction: string | null
+  /** R4 §3.1 — the MECHANICAL classification (what the interaction phase alone said). */
+  provenanceAction?: string | null
+  /** R4 §3.1 — the clicked diagnostic is a CURRENT inherited group member. */
+  inheritedGroupMember?: boolean
   sameDiagnostic: boolean
   sameTarget: boolean
   verdict: ClickProvenanceVerdict
@@ -131,6 +135,8 @@ export function buildClickProvenanceAudit(input: {
     businessClickSequence: input.businessClickSequence,
     businessDispatchCountForPointerActivation: input.businessDispatchCountForPointerActivation,
     classifiedAction: input.classifiedAction,
+    provenanceAction: input.provenanceAction ?? input.classifiedAction,
+    inheritedGroupMember: input.inheritedGroupMember === true,
     sameDiagnostic: input.sameDiagnostic,
     sameTarget: input.sameTarget,
     decision: input.verdict.decision,
