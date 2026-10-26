@@ -16677,9 +16677,10 @@ export class DocumentUtilityOverlayHost {
         visibleBlankLineCount: decision.visibleBlankLineCount,
         publish: decision.publish,
         reason: decision.reason,
-        renderedBlankRowDecision: result?.decision ?? 'RUNTIME_UNAVAILABLE',
-        // R8F — `result == null` 表示边界绑定/兄弟级归一化阶段就失败了（不是 DOM 断开）。
-        // 单独记录，避免把「绑定失败」误读成「运行时不可用」。
+        // R9 §D3 — `result == null` is an UPSTREAM BINDING failure, never a
+        // runtime-unavailable DOM. Reporting it as RUNTIME_UNAVAILABLE hid the
+        // real cause (see the BOUNDARY-BIND-AUDIT strategy for this side).
+        renderedBlankRowDecision: result?.decision ?? 'BOUNDARY_UNRESOLVED',
         renderedBlankRowResultPresent: result != null,
       })
       if (!headless && decision.visibleBlankLineCount != null) {

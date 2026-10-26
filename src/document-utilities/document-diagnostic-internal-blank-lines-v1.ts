@@ -33,6 +33,7 @@
  * quote formatting choice, not a sibling block gap (§15).
  */
 import { normalizeCanonicalHeadingText } from './latent-atx-heading-marker'
+import { isWhitespaceOnlyText } from './document-diagnostic-whitespace-semantics-v1'
 
 // ── §3 — the ONE threshold authority ────────────────────────────────────────
 
@@ -204,8 +205,19 @@ interface LineClassification {
   kind: DocumentBlockKind
 }
 
+/**
+ * §5/R9 — a source line with NO visible content.
+ *
+ * R9: `trim()` alone is NOT the whitespace authority. Typora serializes an
+ * empty paragraph that the user typed only spaces into as a line holding a
+ * single U+200B, which `trim()` keeps. Treating that line as content cut one
+ * 6-blank run into two phantom gaps whose boundaries could never bind
+ * (`NO_TEXT_ANCHOR`), so the still-violating region disappeared from the
+ * diagnostics. The shared contract makes the source scanner agree with the
+ * anchor projection and the rendered-row classifier.
+ */
 function isBlank(text: string): boolean {
-  return text.trim() === ''
+  return isWhitespaceOnlyText(text)
 }
 
 function normalizeIdentityText(text: string): string {

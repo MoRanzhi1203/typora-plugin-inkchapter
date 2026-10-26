@@ -24,6 +24,7 @@ import type {
 } from './diagnostics-types'
 // V5.12-R5 — the explicit ambiguity failure reason (never a silent first match).
 import { AMBIGUOUS_DUPLICATE_INLINE_RANGE_REASON } from './document-diagnostic-source-occurrence-v512-r5'
+import { stripInvisiblePlaceholderChars } from './document-diagnostic-whitespace-semantics-v1'
 // Unified Diagnostics Domain V1 §9/§24 — the domain type used by the rule-domain authority.
 import type { DiagnosticDomain } from './diagnostic-domain-v1'
 // TRAE V4 §6/§7 — the ONE source-syntax opener → DOM projection authority.
@@ -1410,10 +1411,9 @@ export interface DiagnosticLocationResolveContext {
 
 /** Normalize source text for anchor comparison (trim + collapse whitespace). */
 export function normalizeSourceAnchorText(text: string | null | undefined): string {
-  return (text ?? '')
+  return stripInvisiblePlaceholderChars(String(text ?? ''))
     .replace(/\r\n?/g, '\n')
     .replace(/[\u00A0\u2007\u202F]/g, ' ')  // NBSP family → plain space
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')  // zero-width chars Typora may inject
     .replace(/\s+/g, ' ')
     .trim()
 }

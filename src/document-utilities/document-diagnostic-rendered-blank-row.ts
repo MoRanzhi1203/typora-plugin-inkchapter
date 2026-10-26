@@ -28,6 +28,7 @@
  */
 
 // ── §35 — the runtime audit events ─────────────────────────────────────────
+import { stripInvisiblePlaceholderChars } from './document-diagnostic-whitespace-semantics-v1'
 
 /** §35 — the ONE rendered-blank-row runtime audit. */
 export const RENDERED_BLANK_ROW_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-AUDIT'
@@ -211,7 +212,12 @@ export interface RenderedBlankRowProbe {
 
 /** §9 — the user-visible text projection of a candidate row. */
 export function normalizeRenderedRowText(text: string | null | undefined): string {
-  return String(text ?? '').replace(/\s+/g, ' ').trim()
+  // R9 — the SAME whitespace contract as the source scanner: a paragraph that
+  // only holds invisible placeholders (Typora writes U+200B for a spaces-only
+  // block) IS a blank row. `\s` does not match U+200B, so without this strip the
+  // DOM side counted one row less than the source side and the visible count
+  // was silently short.
+  return stripInvisiblePlaceholderChars(text).replace(/\s+/g, ' ').trim()
 }
 
 /**
