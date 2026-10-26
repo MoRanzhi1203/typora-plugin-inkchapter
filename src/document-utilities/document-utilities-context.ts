@@ -53,6 +53,21 @@ export interface DocumentUtilitiesAuthorityContext {
   getActiveLeafState?: () => ActiveLeafDocumentFacts | null | undefined
 
   getMarkdown: () => string | null
+  /**
+   * R10 Closure §2.2 — the ONE immutable STRUCTURAL markdown snapshot for a
+   * diagnostics transaction.
+   *
+   * WHY IT EXISTS: in this Typora build `getMarkdown()` is an incremental text
+   * mirror — typed characters land in it but blank-line / block structure never
+   * updates. It is consumed by ~18 call sites (not only blank-gap), so forcing
+   * it to serialize globally would tax every consumer.
+   *
+   * CONTRACT: diagnostic-input building calls THIS exactly once per reconcile.
+   * `structural=false` means the structural read failed/returned empty and the
+   * caller received the incremental mirror — that is a DEGRADED fact and must
+   * never be reported as structure-verified.
+   */
+  getStructuralMarkdown?: () => { markdown: string | null; structural: boolean }
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
   /**
@@ -211,9 +226,21 @@ export function collectDiagnosticsInput(
   // provider exists, its three-state policy decides strict-policy rule gating;
   // without it (pure/legacy consumers) strictMode keeps its old semantics.
   const policy = ctx.authority.getHeadingPolicyState?.()
+  // R10 Closure §2.2 — ONE structural snapshot per diagnostics transaction.
+  // Never falls back silently: when the structural read is unavailable the
+  // incremental mirror is used, and that degraded fact is recorded by the host
+  // audit (structural=false) instead of being presented as verified structure.
+  let transactionMarkdown: string | null = null
+  try {
+    const structuralSnapshot = ctx.authority.getStructuralMarkdown?.()
+    if (structuralSnapshot != null && typeof structuralSnapshot.markdown === 'string' && structuralSnapshot.markdown !== '') {
+      transactionMarkdown = structuralSnapshot.markdown
+    }
+  } catch { /* fall back to the incremental mirror */ }
+  if (transactionMarkdown == null) transactionMarkdown = ctx.authority.getMarkdown()
   return {
     documentKey: ctx.authority.getDocumentKey(),
-    markdown: ctx.authority.getMarkdown(),
+    markdown: transactionMarkdown,
     strictMode: ctx.authority.isStrictMode(),
     headingPolicyEnabled: policy?.enabled,
     headingPolicyConfigured: policy?.configured,

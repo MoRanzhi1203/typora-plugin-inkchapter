@@ -487,6 +487,12 @@ export interface ServiceContext {
   getActiveFilePath?: () => string | null
   /** Optional: get the raw markdown content of the current editor. */
   getMarkdown?: () => string
+  /**
+   * R10 Closure §2.2 — the ONE immutable STRUCTURAL markdown snapshot for one
+   * diagnostics transaction (see DocumentUtilitiesAuthorityContext's twin).
+   * `structural=false` is a degraded fallback, never a verified structure.
+   */
+  getStructuralMarkdown?: () => { markdown: string | null; structural: boolean }
   /** Optional: replace editor content with undo support. */
   reloadContent?: (markdown: string) => void
   /** Optional: replace editor content preserving undo history (for shortcut commands). */

@@ -491,33 +491,29 @@ export default class extends Plugin<InkChapterSettings> {
       },
       registerDisposable: (fn) => this.register(fn),
       getActiveFilePath: () => this.app.workspace.activeFile ?? null,
-      // R10 — Typora's `editor.getMarkdown()` is an INCREMENTAL text mirror:
-      // inserted characters do land in it, but blank-line / block structure
-      // NEVER does. Proven in a real session — three real edits (17 blank lines
-      // -> 13/a/3 -> 11/b/1/a/3) each added exactly one character to the
-      // mirrored string while its LF count and blank-run count stayed at 30/14,
-      // even after Ctrl+S wrote the correct structure to disk.
-      //
-      // Repair: keep the fast incremental path, but re-serialize the writing
-      // area ONLY when the BLOCK COUNT really changed (a structural edit). This
-      // is event-driven and bounded — no fixed delay, no polling, and pure text
-      // edits inside one block never pay the serialization cost.
-      getMarkdown: (() => {
-        let lastStructuralBlockCount = -1
-        return (): string => {
-          const incremental = editor.getMarkdown()
-          try {
-            const area = editor.writingArea
-            const blocks = area ? area.childElementCount : -1
-            if (blocks >= 0 && blocks !== lastStructuralBlockCount) {
-              lastStructuralBlockCount = blocks
-              const structural = editor.UserOp.getMarkdownSourceFrom($(area))
-              if (typeof structural === 'string' && structural !== '') return structural
+      // R10 Closure §2.1 — `getMarkdown()` is the GENERAL read path consumed by
+      // ~18 places (not only blank-gap). It stays the incremental mirror exactly
+      // as before: forcing serialization here would tax every consumer.
+      getMarkdown: () => editor.getMarkdown(),
+      // R10 Closure §2.2 — the STRUCTURAL snapshot authority for one diagnostics
+      // transaction. buildDocumentDiagnosticsInput calls this exactly once per
+      // reconcile; the returned string then flows through source scanning,
+      // visible-row binding, diagnostic publish and the read-only audit.
+      // `structural=false` means the structural read failed or came back empty
+      // and the caller got the incremental mirror — a DEGRADED fact that must
+      // never be reported as structure-verified.
+      getStructuralMarkdown: (): { markdown: string | null; structural: boolean } => {
+        try {
+          const area = editor.writingArea
+          if (area != null) {
+            const structural = editor.UserOp.getMarkdownSourceFrom($(area))
+            if (typeof structural === 'string' && structural !== '') {
+              return { markdown: structural, structural: true }
             }
-          } catch { /* fall through to the incremental mirror */ }
-          return incremental
-        }
-      })(),
+          }
+        } catch { /* fall through to the degraded path */ }
+        return { markdown: editor.getMarkdown(), structural: false }
+      },
       reloadContent: (markdown: string) => {
         File.reloadContent(markdown, false, true, false, true)
       },

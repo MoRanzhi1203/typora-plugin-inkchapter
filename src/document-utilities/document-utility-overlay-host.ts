@@ -16610,14 +16610,22 @@ export class DocumentUtilityOverlayHost {
     // revision (does it carry the new blank-line structure, or a stale cache?).
     // Never used for any decision.
     try {
+      const t0 = typeof performance !== 'undefined' ? performance.now() : 0
       const md = this.opts.ctx.authority.getMarkdown() ?? ''
+      const serializeMs = t0 > 0 ? Math.round((performance.now() - t0) * 100) / 100 : -1
       let lf = 0
       for (let i = 0; i < md.length; i++) if (md.charCodeAt(i) === 10) lf++
-      emitRuntimeAudit('R10-SOURCE-CENSUS-AUDIT', {
+      // R10 Closure §5 — the census is now HEADLESS-ONLY (debug runs). In the
+      // product it stays off: it read the general incremental mirror and dumped
+      // document text, and the transaction fact now lives in DECISION-AUDIT
+      // `sourceBlankLineCount`, which comes from the structural snapshot.
+      if (headless) emitRuntimeAudit('R10-SOURCE-CENSUS-AUDIT', {
         sourceRevision: snapshot.sourceRevision ?? null,
         markdownLength: md.length,
+        serializeMs,
         lfCount: lf,
         blankRuns: (md.match(/\n[ \t\u200B\u00A0\uFEFF]*\n/g) ?? []).length,
+        sample: md.slice(0, 220).replace(/\n/g, '\\n'),
       })
     } catch { /* forensic only */ }
     const mode = detectDocumentEditingMode(typeof document !== 'undefined' ? document : null)
