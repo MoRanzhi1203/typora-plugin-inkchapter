@@ -317,6 +317,24 @@ export class DocumentDiagnosticsAuthority {
     // V1 §21 — the figure locator records the EXACT source generation this
     // compute runs against, so a later click can detect a stale revision.
     input.sourceRevision = this.sourceRevision
+    // R10 Closure §2.2 — structural provenance travels WITH the transaction.
+    // A degraded read (throw / empty / disconnected root) is an explicit
+    // UNRESOLVED fact: it is recorded on the snapshot and must never be
+    // presented downstream as verified structure or “no problems found”.
+    const structuralVerified = input.structuralVerified !== false
+    const structuralProvenance = input.structuralVerified === true
+      ? 'STRUCTURAL_SERIALIZER'
+      : (input.structuralVerified === false ? 'INCREMENTAL_MIRROR' : 'UNSPECIFIED_LEGACY')
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-STRUCTURAL-SNAPSHOT', {
+      documentKey: input.documentKey,
+      sourceRevision: this.sourceRevision,
+      snapshotOrigin: structuralProvenance,
+      structuralVerified: input.structuralVerified ?? null,
+      degradedReason: structuralVerified ? null : (input.structuralDegradedReason ?? 'UNKNOWN'),
+      decision: input.structuralVerified === true
+        ? 'VERIFIED'
+        : (input.structuralVerified === false ? 'DEGRADED' : 'UNVERIFIED_LEGACY'),
+    })
     // Phase 7R.3.11.8B.4 — severity transition log (strict/loose switch only).
     this.emitHeadingSeverityTransition(input.documentKey, input.strictMode)
     const computed = computeDocumentDiagnostics(input)
@@ -359,11 +377,14 @@ export class DocumentDiagnosticsAuthority {
       infoCount: merged.infoCount,
       effectiveMode,
       effectiveModeRevision,
+      ...(input.structuralVerified === undefined ? {} : { structuralVerified: input.structuralVerified }),
     }
     // Phase 7R.3.11.8B.7.1 — the semantic fingerprint MUST include the mode
     // provenance: same content + different mode = different fingerprint.
+    // R10 Closure §2.2 — structural provenance joins it too: the same content
+    // read from a degraded mirror is NOT the same fact as a verified read.
     // Phase 7R.3.11.8-B §32 — identical-state recomputes do NOT re-publish.
-    const fingerprint = `${nextSnapshot.documentKey ?? ''}|mode:${effectiveMode}:${effectiveModeRevision}|${nextSnapshot.diagnostics
+    const fingerprint = `${nextSnapshot.documentKey ?? ''}|mode:${effectiveMode}:${effectiveModeRevision}|struct:${structuralVerified ? 'V' : 'D'}|${nextSnapshot.diagnostics
       .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}${this.diagnosticFactSuffix(d)}`)
       .sort()
       .join(';')}`

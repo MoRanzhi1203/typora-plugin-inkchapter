@@ -79,6 +79,7 @@ import {
   collectHeadingProjectionFacts,
 } from './heading-structure-audit'
 import type { DocumentDiagnosticsSnapshot } from '../document-utilities/diagnostics-types'
+import type { StructuralMarkdownSnapshot } from '../document-utilities/document-utilities-context'
 import {
   resolveEffectiveHeadingMode,
   resolveDocumentScopeState,
@@ -492,7 +493,7 @@ export interface ServiceContext {
    * diagnostics transaction (see DocumentUtilitiesAuthorityContext's twin).
    * `structural=false` is a degraded fallback, never a verified structure.
    */
-  getStructuralMarkdown?: () => { markdown: string | null; structural: boolean }
+  getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   /** Optional: replace editor content with undo support. */
   reloadContent?: (markdown: string) => void
   /** Optional: replace editor content preserving undo history (for shortcut commands). */

@@ -16606,9 +16606,23 @@ export class DocumentUtilityOverlayHost {
   ): DocumentDiagnosticsSnapshot | null {
     if (snapshot == null) return null
     const headless = isHeadlessTestRuntime()
+    // R10 Closure §2.2 — a DEGRADED snapshot was computed from the incremental
+    // mirror, whose block structure never updates. Reconciling / retiring /
+    // repainting from it would either hide a real violation or clear a verified
+    // highlight, so this stage is skipped and the last verified projection stays.
+    if (snapshot.structuralVerified === false) {
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-STRUCTURAL-SNAPSHOT', {
+        action: 'INTERNAL_BLANK_RECONCILE_SKIPPED',
+        documentKey: snapshot.documentKey ?? null,
+        sourceRevision: snapshot.sourceRevision ?? null,
+        decision: 'DEGRADED',
+      })
+      return snapshot
+    }
     // R10 — forensic ONLY: prove what `getMarkdown()` really returns for this
     // revision (does it carry the new blank-line structure, or a stale cache?).
     // Never used for any decision.
+    if (headless) {
     try {
       const t0 = typeof performance !== 'undefined' ? performance.now() : 0
       const md = this.opts.ctx.authority.getMarkdown() ?? ''
@@ -16628,6 +16642,7 @@ export class DocumentUtilityOverlayHost {
         sample: md.slice(0, 220).replace(/\n/g, '\\n'),
       })
     } catch { /* forensic only */ }
+    }
     const mode = detectDocumentEditingMode(typeof document !== 'undefined' ? document : null)
     const modeChanged = mode !== this.lastInternalBlankEditingMode
     this.lastInternalBlankEditingMode = mode
@@ -21587,6 +21602,24 @@ export class DocumentUtilityOverlayHost {
       entry.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry'
       entry.setAttribute('aria-label', '文档检测')
       entry.title = '文档检测'
+      const label = document.createElement('span')
+      label.textContent = '文档检测'
+      entry.append(label)
+      entry.addEventListener('click', () => this.openDrawer('all'))
+      control.appendChild(entry)
+      return
+    }
+    // R10 Closure §2.2 — a DEGRADED snapshot must never render as
+    // `✓ 文档检测 / 未发现问题`: the markdown came from the incremental mirror,
+    // whose block structure was never verified. Show an explicit unverified
+    // entry instead of any zero-count “healthy” claim.
+    if (this.snapshot?.structuralVerified === false) {
+      const entry = document.createElement('button')
+      entry.type = 'button'
+      entry.className =
+        'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--diag inkchapter-toolbar-entry is-unverified'
+      entry.setAttribute('aria-label', '文档检测：结构未验证')
+      entry.title = '文档检测：结构未验证'
       const label = document.createElement('span')
       label.textContent = '文档检测'
       entry.append(label)

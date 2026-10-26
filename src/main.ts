@@ -36,6 +36,7 @@ import {
   type InkChapterDocumentContext,
 } from './runtime/inkchapter-path-authority'
 import { recordInkChapterBootstrap } from './runtime/inkchapter-bootstrap-audit'
+import { installGuiCaretAudit } from './runtime/gui-caret-audit'
 // Unified Diagnostics Domain V1 §6/§37 — the plugin's OWN runtime integrity is
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
@@ -52,6 +53,29 @@ import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-e
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
+
+/**
+ * R10 Closure §5.1 — OPT-IN structural-serialization perf evidence
+ * (`INKCHAPTER_STRUCTURAL_AUDIT=1`). Off by default so the production hot path
+ * never formats an audit payload per transaction.
+ *
+ * Resolved LAZILY: the renderer may expose `process` only after the bundle is
+ * evaluated, so a module-scope read can miss the environment (forensic only).
+ */
+let structuralAuditEnabledCache: boolean | null = null
+function isStructuralAuditEnabled(): boolean {
+  if (structuralAuditEnabledCache !== null) return structuralAuditEnabledCache
+  try {
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    structuralAuditEnabledCache = proc?.env?.INKCHAPTER_STRUCTURAL_AUDIT === '1'
+      // The GUI-acceptance run already proves the env channel works and needs
+      // the same per-transaction serialization cost; both are test-only flags.
+      || proc?.env?.INKCHAPTER_GUI_CARET_AUDIT === '1'
+  } catch {
+    structuralAuditEnabledCache = false
+  }
+  return structuralAuditEnabledCache
+}
 
 console.log('[InkChapter] INKCHAPTER-BOOT-MODULE-LOAD')
 
@@ -474,6 +498,56 @@ export default class extends Plugin<InkChapterSettings> {
       })
     } catch { /* observability must never block initialization */ }
 
+    /**
+     * R10 Closure §2.2 — ONE structural-read implementation shared by the
+     * ServiceContext and the Document-Utilities authority. Every degraded path
+     * reports WHY and always returns `structural:false` with the fallback string;
+     * the transaction builder records that fact on the diagnostics input.
+     */
+    const readStructuralMarkdown = (): {
+      markdown: string | null
+      structural: boolean
+      reason?: 'ROOT_DISCONNECTED' | 'API_THREW' | 'EMPTY_RESULT' | 'API_UNAVAILABLE'
+    } => {
+      const incremental = (): string | null => {
+        try { return editor.getMarkdown() } catch { return null }
+      }
+      let area: HTMLElement | null = null
+      try {
+        const writingArea = editor.writingArea as HTMLElement | null | undefined
+        area = writingArea ?? null
+      } catch { area = null }
+      if (area == null || area.isConnected === false) {
+        return { markdown: incremental(), structural: false, reason: 'ROOT_DISCONNECTED' }
+      }
+      const userOp = (editor as unknown as { UserOp?: { getMarkdownSourceFrom?: (el: unknown) => unknown } }).UserOp
+      if (userOp == null || typeof userOp.getMarkdownSourceFrom !== 'function') {
+        return { markdown: incremental(), structural: false, reason: 'API_UNAVAILABLE' }
+      }
+      const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+      try {
+        const structural = userOp.getMarkdownSourceFrom($(area))
+        const elapsedMs = t0 > 0 ? Math.round((performance.now() - t0) * 100) / 100 : -1
+        // Perf evidence is OPT-IN (`INKCHAPTER_STRUCTURAL_AUDIT=1`): the
+        // product hot path performs no audit formatting by default.
+        if (isStructuralAuditEnabled()) {
+          emitRuntimeAudit('R10-STRUCTURAL-SERIALIZE-AUDIT', {
+            path: this.app.workspace.activeFile ?? null,
+            writingAreaChildCount: area.childElementCount,
+            serializeMs: elapsedMs,
+            markdownLength: typeof structural === 'string' ? structural.length : null,
+            decision: typeof structural === 'string' && structural !== '' ? 'STRUCTURAL' : 'EMPTY_RESULT',
+          })
+        }
+        if (typeof structural === 'string' && structural !== '') {
+          return { markdown: structural, structural: true }
+        }
+        return { markdown: incremental(), structural: false, reason: 'EMPTY_RESULT' }
+      } catch {
+        return { markdown: incremental(), structural: false, reason: 'API_THREW' }
+      }
+    }
+
     const ctx: ServiceContext = {
       settings: this.settings,
       vaultRoot,
@@ -502,18 +576,7 @@ export default class extends Plugin<InkChapterSettings> {
       // `structural=false` means the structural read failed or came back empty
       // and the caller got the incremental mirror — a DEGRADED fact that must
       // never be reported as structure-verified.
-      getStructuralMarkdown: (): { markdown: string | null; structural: boolean } => {
-        try {
-          const area = editor.writingArea
-          if (area != null) {
-            const structural = editor.UserOp.getMarkdownSourceFrom($(area))
-            if (typeof structural === 'string' && structural !== '') {
-              return { markdown: structural, structural: true }
-            }
-          }
-        } catch { /* fall through to the degraded path */ }
-        return { markdown: editor.getMarkdown(), structural: false }
-      },
+      getStructuralMarkdown: readStructuralMarkdown,
       reloadContent: (markdown: string) => {
         File.reloadContent(markdown, false, true, false, true)
       },
@@ -663,6 +726,10 @@ export default class extends Plugin<InkChapterSettings> {
         getMarkdown: () => {
           try { return editor.getMarkdown() } catch { return null }
         },
+        // R10 Closure §2.2 — the diagnostics transaction's ONE structural
+        // snapshot source. Without this forwarding the authority fell back to
+        // the incremental mirror while still reporting “verified”.
+        getStructuralMarkdown: readStructuralMarkdown,
         isStrictMode: () => {
           // Phase 7R.3.11.8B.7.1 — the diagnostics mode input MUST be the
           // EFFECTIVE mode (document override ?? global), never global-only.
@@ -893,6 +960,22 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] 文档工具初始化失败，诊断/锁定/滚动功能不可用', e)
     }
+
+    // ── R10 GUI caret probe (READ-ONLY, disposable-fixture only) ──────────
+    // Typora 1.6.7 refuses remote debugging and exposes no accessibility tree,
+    // so the GUI driver cannot otherwise prove which paragraph owns the caret
+    // BEFORE sending a destructive key. Off unless explicitly requested.
+    try {
+      this.register(installGuiCaretAudit({
+        getDocumentKey: () => {
+          const fp = this.app.workspace.activeFile
+          const vr = vaultRoot ?? ''
+          if (!fp || !vr) return null
+          try { return generateDocumentKey(fp, vr) } catch { return null }
+        },
+        getSourceRevision: () => this.documentUtilities?.getSnapshot()?.sourceRevision ?? null,
+      }))
+    } catch { /* test-only probe must never block initialization */ }
 
     // ── Document View context menu (墨章 · 文档查看, tab right-click V1) ──
     // Presentation only: reuses the current Typora file-tree root as the

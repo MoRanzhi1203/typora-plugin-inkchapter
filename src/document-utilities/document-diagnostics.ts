@@ -407,6 +407,19 @@ export interface DocumentDiagnosticsInput {
    * outdated offset.
    */
   sourceRevision?: number | null
+  /**
+   * R10 Closure §2.2 — structural-snapshot provenance.
+   *
+   * `true`  — `markdown` came from the editor's structural serializer for THIS
+   *           transaction (verified structure).
+   * `false` — DEGRADED: the structural read failed and `markdown` is the
+   *           incremental mirror. A degraded transaction must never be
+   *           presented as verified / compliant downstream.
+   * Absent (pure/legacy callers) keeps the previous semantics.
+   */
+  structuralVerified?: boolean
+  /** Forensics: why the structural read degraded (only when `false`). */
+  structuralDegradedReason?: string | null
   strictMode: boolean
   /**
    * Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation.

@@ -413,6 +413,13 @@ export interface DocumentDiagnosticsSnapshot {
   effectiveMode?: 'strict' | 'loose'
   /** Effective-mode transition revision (increments on REAL transitions only). */
   effectiveModeRevision?: number
+  /**
+   * R10 Closure §2.2 — whether this snapshot was computed from a VERIFIED
+   * structural markdown snapshot. `false` = DEGRADED (incremental mirror).
+   * Absent = legacy/pure snapshot (no structural authority was involved).
+   * A degraded snapshot must never be presented as “no problems found”.
+   */
+  structuralVerified?: boolean
 }
 
 export interface DocumentDiagnosticsState {

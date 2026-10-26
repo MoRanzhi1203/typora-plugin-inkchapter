@@ -12,7 +12,7 @@ import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import type { ObjectEffectiveNumberElementFacts } from './diagnostics-types'
 import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
-import type { DocumentUtilitiesContext } from './document-utilities-context'
+import type { DocumentUtilitiesContext, StructuralMarkdownSnapshot } from './document-utilities-context'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
 
@@ -37,6 +37,13 @@ export interface DocumentUtilitiesSources {
     resolveEmptySurface?(): import('./document-empty-workspace-controller').EmptyWorkspaceSurfaceFacts | null
   }
   getMarkdown: () => string | null
+  /**
+   * R10 Closure §2.2 — the ONE structural markdown snapshot per diagnostics
+   * transaction. Forwarded VERBATIM into the diagnostics authority (the host
+   * transaction builder calls it exactly once per reconcile). Absent only for
+   * legacy/pure consumers.
+   */
+  getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   isStrictMode: () => boolean
   /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
    *  (enabled && explicitly-configured && effective strict). Optional so
@@ -252,6 +259,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       getDocumentKey: sources.getDocumentKey,
       getActiveLeafState: sources.getActiveLeafState,
       getMarkdown: sources.getMarkdown,
+      getStructuralMarkdown: sources.getStructuralMarkdown,
       isStrictMode: sources.isStrictMode,
       getHeadingPolicyState: sources.getHeadingPolicyState,
       getEffectiveHeadingModeRevision: () => sources.getEffectiveHeadingModeRevision?.() ?? 0,

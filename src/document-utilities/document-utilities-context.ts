@@ -14,6 +14,22 @@ import type {
 } from './diagnostics-types'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 
+/**
+ * R10 Closure §2.2 — the result of ONE structural markdown read.
+ *
+ * `structural=true` — the string came from the editor's SOURCE serializer and
+ * is the authoritative structure for this diagnostics transaction.
+ * `structural=false` — DEGRADED: the serialization threw / returned empty / the
+ * editor root was disconnected, so `markdown` is the incremental mirror. It
+ * must never be presented as a verified structure or as “no problems found”.
+ */
+export interface StructuralMarkdownSnapshot {
+  markdown: string | null
+  structural: boolean
+  /** Why the structural read degraded (forensics only; absent = structural). */
+  reason?: 'ROOT_DISCONNECTED' | 'API_THREW' | 'EMPTY_RESULT' | 'API_UNAVAILABLE'
+}
+
 export interface HeadingPolicyActivationState {
   /** Global heading-numbering feature master switch (enabled ≠ configured). */
   enabled: boolean
@@ -67,7 +83,7 @@ export interface DocumentUtilitiesAuthorityContext {
    * caller received the incremental mirror — that is a DEGRADED fact and must
    * never be reported as structure-verified.
    */
-  getStructuralMarkdown?: () => { markdown: string | null; structural: boolean }
+  getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
   /**
@@ -228,19 +244,36 @@ export function collectDiagnosticsInput(
   const policy = ctx.authority.getHeadingPolicyState?.()
   // R10 Closure §2.2 — ONE structural snapshot per diagnostics transaction.
   // Never falls back silently: when the structural read is unavailable the
-  // incremental mirror is used, and that degraded fact is recorded by the host
-  // audit (structural=false) instead of being presented as verified structure.
+  // incremental mirror is used, and that degraded fact is recorded on the input
+  // (`structuralVerified=false`) so no downstream stage may present it as a
+  // verified structure or as “no problems found”.
   let transactionMarkdown: string | null = null
-  try {
-    const structuralSnapshot = ctx.authority.getStructuralMarkdown?.()
-    if (structuralSnapshot != null && typeof structuralSnapshot.markdown === 'string' && structuralSnapshot.markdown !== '') {
-      transactionMarkdown = structuralSnapshot.markdown
+  let structuralVerified: boolean | undefined
+  let structuralDegradedReason: string | null = null
+  const structuralReader = ctx.authority.getStructuralMarkdown
+  if (structuralReader != null) {
+    try {
+      const structuralSnapshot = structuralReader()
+      structuralVerified = structuralSnapshot.structural === true
+        && typeof structuralSnapshot.markdown === 'string'
+        && structuralSnapshot.markdown !== ''
+      if (structuralVerified) {
+        transactionMarkdown = structuralSnapshot.markdown
+      } else {
+        structuralDegradedReason = structuralSnapshot.reason ?? 'EMPTY_RESULT'
+      }
+    } catch {
+      structuralVerified = false
+      structuralDegradedReason = 'API_THREW'
     }
-  } catch { /* fall back to the incremental mirror */ }
+  }
   if (transactionMarkdown == null) transactionMarkdown = ctx.authority.getMarkdown()
   return {
     documentKey: ctx.authority.getDocumentKey(),
     markdown: transactionMarkdown,
+    ...(structuralVerified === undefined
+      ? {}
+      : { structuralVerified, structuralDegradedReason }),
     strictMode: ctx.authority.isStrictMode(),
     headingPolicyEnabled: policy?.enabled,
     headingPolicyConfigured: policy?.configured,
