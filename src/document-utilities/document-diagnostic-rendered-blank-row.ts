@@ -214,15 +214,51 @@ export function normalizeRenderedRowText(text: string | null | undefined): strin
   return String(text ?? '').replace(/\s+/g, ' ').trim()
 }
 
-/** §9/§10 — the plugin-owned / auxiliary exclusion (reuses the accessory vocabulary). */
+/**
+ * Plugin-OWNED presentation classes — written ONLY on nodes the plugin itself
+ * injects (caption carriers, gap / EOF visuals, markers, locate layers, overlay
+ * chrome). A row carrying one of these is never a document business row.
+ *
+ * R7 — this list is deliberately EXACT. It must not contain the projection
+ * classes the plugin writes onto REAL user blocks:
+ *   `inkchapter-paragraph-effective-flush`
+ *   `inkchapter-paragraph-effective-indent-2`
+ *   `inkchapter-empty-block`
+ * Those blocks are the document's own paragraphs (including the empty paragraph
+ * Enter just created), i.e. real visible blank lines. Matching them made the
+ * candidate set one row short (truth 3 → reported 2, highlight one row less).
+ */
+const PLUGIN_OWNED_ROW_CLASS_TOKENS = [
+  'inkchapter-caption',
+  'inkchapter-block-gap-',
+  'inkchapter-blank-',
+  'inkchapter-eof-',
+  'inkchapter-locate-',
+  'inkchapter-diagnostic-',
+  'inkchapter-heading-',
+  'inkchapter-doc-',
+  'inkchapter-ui-',
+]
+
+/**
+ * §9/§10 — the plugin-owned / auxiliary exclusion.
+ *
+ * R7 — NEVER match a bare `inkchapter` substring: the paragraph-indent module
+ * stamps `inkchapter-paragraph-effective-*` on real `#write > p` blocks, so the
+ * old substring test silently deleted one really visible blank line from every
+ * affected gap. Overlay nodes are excluded by the exact token list above, by the
+ * explicit `data-*` carriers below, and — structurally — by
+ * `isEditableBusinessRowElement`, which only admits a `<p>` / `<li>` or a
+ * `data-line` leaf.
+ */
 export function isPluginOwnedBlankRowCandidate(el: HTMLElement): boolean {
   if (el.getAttribute('data-inkchapter-locate-layer') === 'true') return true
   if (el.hasAttribute('data-inkchapter-caption')) return true
+  if (el.hasAttribute('data-ink-ui-root')) return true
+  if (el.hasAttribute('data-inkchapter-diagnostic-marker')) return true
+  if (el.closest('[data-inkchapter-locate-layer], [data-ink-ui-root]') != null) return true
   const cls = String(el.className ?? '')
-  return cls.includes('inkchapter-')
-    || cls.includes('inkchapter')
-    || el.hasAttribute('data-ink-ui-root')
-    || el.hasAttribute('data-inkchapter-diagnostic-marker')
+  return PLUGIN_OWNED_ROW_CLASS_TOKENS.some(token => cls.includes(token))
 }
 
 /** §10 — CodeMirror internal rows are never business rows. */

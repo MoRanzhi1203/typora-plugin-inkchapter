@@ -493,6 +493,62 @@ describe('R6-10 activation anchor comes from the snapshot the user clicked', () 
   })
 })
 
+// ── R6-12 — leading / trailing blank runs never leak into the internal gap ──
+
+describe('R6-12 internal gaps stay isolated from leading and EOF blank runs', () => {
+  it('R6-12a a trailing excessive run yields NO internal gap', () => {
+    const md = `甲。${blanks(3)}乙。${blanks(5)}`
+    expect(gapIdsOf(md)).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0'])
+  })
+
+  it('R6-12b a leading excessive run yields NO internal gap', () => {
+    const md = `${blanks(5)}甲。${blanks(3)}乙。`
+    expect(gapIdsOf(md)).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0'])
+  })
+
+  it('R6-12c leading + internal + trailing: exactly the internal gap is reported', () => {
+    const md = `${blanks(5)}甲。${blanks(3)}乙。${blanks(5)}`
+    expect(gapIdsOf(md)).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0'])
+  })
+
+  it('R6-12d the activated internal gap still inherits when an EOF run grows', () => {
+    const base = `甲。${blanks(3)}乙。`
+    const withEof = `甲。${blanks(3)}乙。${blanks(5)}`
+    mdRef.current = base
+    const h = makeHost()
+    h.updateGapLineage(snapshotOf(base, 1))
+    seedGroup(h, base, gapIdsOf(base))
+    const members = step(h, base, withEof, 2)
+    expect([...members]).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0'])
+    expect(h.activeGapGroup?.lifecycle).toBe('ACTIVE')
+  })
+})
+
+// ── R6-13 — Undo/Redo across split and merge ───────────────────────────────
+
+describe('R6-13 undo/redo across split and merge is recomputed, never cached', () => {
+  it('R6-13 merge → undo(split) → redo(merge) → undo(split) stays deterministic', () => {
+    const v1 = `甲。${blanks(5)}乙。`
+    const v2 = `甲。${blanks(3)}X${blanks(3)}乙。`
+    mdRef.current = v1
+    const h = makeHost()
+    h.updateGapLineage(snapshotOf(v1, 1))
+    seedGroup(h, v1, gapIdsOf(v1))
+    let revision = 2
+    const expectedSplit = [
+      'blank-gap:paragraph:X#0>>paragraph:乙。#0',
+      'blank-gap:paragraph:甲。#0>>paragraph:X#0',
+    ]
+    expect([...step(h, v1, v2, revision++)].sort()).toEqual(expectedSplit)   // split
+    expect([...step(h, v2, v1, revision++)]).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0']) // merge
+    expect([...step(h, v1, v2, revision++)].sort()).toEqual(expectedSplit)   // undo → split again
+    expect([...step(h, v2, v1, revision++)]).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0']) // redo → merge
+    expect([...step(h, v1, v2, revision++)].sort()).toEqual(expectedSplit)   // undo again
+    expect(h.activeGapGroup?.lifecycle).toBe('ACTIVE')
+    expect(h.activeGapGroup!.members.size).toBe(2)
+  })
+})
+
 // ── R6-11 — a long mixed sequence keeps the invariants after EVERY step ─────
 
 describe('R6-11 mixed sequence keeps the group invariants after every step', () => {
@@ -611,7 +667,7 @@ describe('R6-05 merge and unrelated gaps stay correct with the structural cut ru
     expect(h.activeGapGroup?.lifecycle).toBe('ACTIVE')
   })
 
-  it('R6-05d repeated split/merge keeps the member set exact (5 rounds)', () => {
+  it('R6-05d repeated split/merge keeps the member set exact (50 rounds)', () => {
     const base = `甲。${blanks(5)}乙。`
     const split = `甲。${blanks(3)}X${blanks(3)}乙。`
     mdRef.current = base
@@ -619,12 +675,12 @@ describe('R6-05 merge and unrelated gaps stay correct with the structural cut ru
     h.updateGapLineage(snapshotOf(base, 1))
     seedGroup(h, base, gapIdsOf(base))
     let revision = 2
-    for (let round = 0; round < 5; round++) {
+    for (let round = 0; round < 50; round++) {
       const afterSplit = step(h, base, split, revision++)
-      expect(afterSplit.size).toBe(2)
+      expect(afterSplit.size, `split round ${round}`).toBe(2)
       expect(h.activeGapGroup?.lifecycle).toBe('ACTIVE')
       const afterMerge = step(h, split, base, revision++)
-      expect([...afterMerge]).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0'])
+      expect([...afterMerge], `merge round ${round}`).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:乙。#0'])
       expect(h.activeGapGroup?.lifecycle).toBe('ACTIVE')
     }
     // bounded anchor history (never unbounded growth)
