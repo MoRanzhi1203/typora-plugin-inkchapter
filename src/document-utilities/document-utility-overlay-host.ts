@@ -499,6 +499,11 @@ import {
   type DocumentEndVisualRule,
 } from './document-diagnostic-document-end-newline-marker-v1'
 import { noteEnterEchoWrite, isContentDocumentWriteHoldActive } from './enter-echo-write-trace'
+import {
+  PresentationPaintCoordinator,
+  createPresentationPaintCounters,
+  type PresentationPaintCounters,
+} from './presentation-paint-coordinator'
 import { stampCaretInertPresentation } from './document-diagnostic-caret-isolation-v1'
 // V2 — Document-End one-click locate: coordinate-space contract + post-scroll
 // freshness authority.
@@ -3343,6 +3348,103 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** V5 — commit an ADMITTED snapshot to projection + Problems Control/Drawer. */
+  /**
+   * EN-11 — CONTENT-DOCUMENT PRESENTATION WRITE HOLD.
+   *
+   * Real-runtime evidence: ONE trusted Enter yields TWO `SPLIT_1_TO_2` batches; the
+   * 2nd batch carries plugin-owned added nodes (`pluginOwnedAddedCount` 3→4) while
+   * the plugin never touches the event chain (`createdTransaction=false`,
+   * `defaultPrevented=false`, `ALLOW_SPECIAL_COMMAND=0`, `CANONICAL-RECORD-COMMIT=0`).
+   * Typora re-normalises its end block on ANY foreign childList write inside
+   * `#write`, so a presentation repaint emitted in the SAME echo window becomes a
+   * SECOND split (+2 LF).
+   *
+   * R3 — the deferral is now owned by the SINGLE `PresentationPaintCoordinator`
+   * below (one pending intent per document+domain, latest-wins, doc-switch safe).
+   */
+  private paintCoordinator: PresentationPaintCoordinator | null = null
+  /**
+   * EN-11 R4 B2 — monotonic, element-identity-based editor root id. A replaced
+   * root element gets a NEW id even if it is still `DIV#write`, so a captured
+   * intent can never be applied to a different root object.
+   */
+  private readonly editorRootIdentity = new WeakMap<Element, number>()
+  private editorRootIdentitySeq = 0
+
+  private editorRootIdOf(el: Element | null): string | null {
+    if (!el) return null
+    let n = this.editorRootIdentity.get(el)
+    if (n == null) {
+      n = ++this.editorRootIdentitySeq
+      this.editorRootIdentity.set(el, n)
+    }
+    return `editorRoot#${n}`
+  }
+
+  private getPaintCoordinator(): PresentationPaintCoordinator {
+    if (!this.paintCoordinator) {
+      this.paintCoordinator = new PresentationPaintCoordinator(
+        () => isContentDocumentWriteHoldActive(),
+        () => {
+          let editorRootId: string | null = null
+          try { editorRootId = this.editorRootIdOf(resolveBusinessContentRoot()) } catch { editorRootId = null }
+          return { documentKey: this.opts.ctx.authority.getDocumentKey() ?? null, editorRootId }
+        },
+        (event, domain, detail) => {
+          emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-ECHO-WINDOW-PAINT-HELD', { event, domain, ...detail })
+        },
+        // B2 — live revision reader: validated at commit (missing ⇒ UNKNOWN, never hard-matched).
+        () => ({
+          sourceRevision: this.snapshot?.sourceRevision ?? null,
+          layoutEpoch: this.currentDocumentLayoutEpoch ?? null,
+        }),
+      )
+    }
+    return this.paintCoordinator
+  }
+
+  /**
+   * EN-11 R3/R4 — route a reconcile-driven `#write` presentation paint through the
+   * SINGLE coordinator. Synchronous when no write hold is active (unchanged
+   * behaviour on every non-Enter path); otherwise parked (latest-wins, one intent
+   * per document+domain) and re-applied against the LIVE snapshot/geometry when it
+   * runs — never a replay of captured DOM. Dropped on document switch/dispose.
+   */
+  private runContentDocumentPaint(reason: string, paint: () => void): void {
+    let editorRootId: string | null = null
+    try { editorRootId = this.editorRootIdOf(resolveBusinessContentRoot()) } catch { editorRootId = null }
+    this.getPaintCoordinator().request(
+      reason,
+      {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        editorRootId,
+        sourceRevision: this.snapshot?.sourceRevision ?? null,
+        layoutEpoch: this.currentDocumentLayoutEpoch ?? null,
+      },
+      paint,
+    )
+  }
+
+  /** EN-11 test/acceptance seam — paints deferred by the echo-window hold. */
+  getEchoWindowHeldPaintCount(): number {
+    return this.paintCoordinator?.getCounters().DEFERRED_BY_ECHO_WINDOW ?? 0
+  }
+
+  /** EN-11 test seam — the presentation-paint coordinator counters. */
+  getPresentationPaintCounters(): Readonly<PresentationPaintCounters> {
+    return this.paintCoordinator?.getCounters() ?? createPresentationPaintCounters()
+  }
+
+  /** EN-11 test seam — parked (not yet painted) presentation intents. */
+  getPresentationPaintPendingCount(): number {
+    return this.paintCoordinator?.getPendingCount() ?? 0
+  }
+
+  /** EN-11 test seam — run parked presentation intents now. */
+  flushPresentationPaintNow(): void {
+    this.paintCoordinator?.flushNow()
+  }
+
   private commitAdmittedSnapshot(snapshot: DocumentDiagnosticsSnapshot | null, source: string): void {
     // V5.12-R6 §13 — capture the PREVIOUS snapshot's diagnostic ids BEFORE the
     // atomic replacement so a stale residue can be proven (never assumed).
@@ -3452,7 +3554,7 @@ export class DocumentUtilityOverlayHost {
     // re-commit the block-gap band from the LIVE diagnostic.
     if (this.diagnosticInteractionState.phase === 'ACTIVE') {
       this.rebindActiveVisualToLiveDiagnostic()
-      if (this.isBlockGapVisualActive()) this.recommitActiveBlockGapVisual()
+      if (this.isBlockGapVisualActive()) this.runContentDocumentPaint('ACTIVE_BLOCK_GAP_RECOMMIT', () => this.recommitActiveBlockGapVisual())
     }
     // V5.12-R2 §3.2 — a diagnostics snapshot reconcile is the caption/numbering/
     // formula/table/figure projection commit boundary: the body layout may have
@@ -3467,8 +3569,10 @@ export class DocumentUtilityOverlayHost {
     this.commitPresentationEpochDecision(source)
     // V5.12-R1 §5 — PASSIVE heading diagnostic markers follow the snapshot, and
     // the active emphasis is re-derived for the (possibly replaced) target.
-    this.renderHeadingDiagnosticMarkers()
-    this.renderActiveHeadingEmphasisForCommittedVisual()
+    // EN-11 — both write into `#write`; they are deferred to just after a real
+    // Enter's echo window so the plugin never mutates `#write` during it.
+    this.runContentDocumentPaint('HEADING_MARKERS', () => this.renderHeadingDiagnosticMarkers())
+    this.runContentDocumentPaint('ACTIVE_HEADING_EMPHASIS', () => this.renderActiveHeadingEmphasisForCommittedVisual())
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
       action: source === 'RECONCILE' ? 'RECONCILE_COMMITTED' : 'PUBLISHED',
       documentKey: snapshot?.documentKey ?? null,
@@ -4424,6 +4528,8 @@ export class DocumentUtilityOverlayHost {
   }
 
   dispose(): void {
+    // EN-11 R3 — drop + disarm the presentation-paint coordinator (no cross-doc paint).
+    try { this.paintCoordinator?.dispose() } catch { /* presentation-only */ }
     if (this.disposed) return
     this.disposed = true
     this.mounted = false
@@ -4519,6 +4625,9 @@ export class DocumentUtilityOverlayHost {
 
   /** FILE_OPEN document switch — routed into the single reconcile authority. */
   bindDocument(): void {
+    // EN-11 R3 — a document switch must drop every parked presentation paint so a
+    // captured intent can never be applied to the NEW document (DROP_STALE).
+    try { this.paintCoordinator?.cancelAll('DOCUMENT_SWITCH') } catch { /* presentation-only */ }
     this.reconcileActiveDocument('FILE_OPEN')
   }
 
@@ -6188,6 +6297,9 @@ export class DocumentUtilityOverlayHost {
       this.visualGeometryCounters.scrollGeometryRebuildCount++
       return
     }
+    // EN-11 R4 B1 — a REAL layout invalidation IS a stable signal (never a scroll):
+    // resume a BLOCKED coordinator from an event instead of inventing a longer timer.
+    try { this.paintCoordinator?.resumeOnStable(reason) } catch { /* presentation-only */ }
     if (this.diagnosticVisualDirtyReason != null) {
       // multiple mutations inside ONE frame coalesce into a single reconcile.
       this.visualGeometryCounters.sameFrameCoalesceCount++
@@ -6314,8 +6426,8 @@ export class DocumentUtilityOverlayHost {
           anchors: new Map([...this.lastVisualGeometrySnapshots].map(([k, v]) => [k, v.anchorRect])),
           sourceRevision: this.snapshot?.sourceRevision ?? null,
         }
-        this.renderHeadingDiagnosticMarkers()
-        this.renderActiveHeadingEmphasisForCommittedVisual()
+        this.runContentDocumentPaint('REFLOOR_MARKERS', () => this.renderHeadingDiagnosticMarkers())
+        this.runContentDocumentPaint('REFLOOR_ACTIVE_EMPHASIS', () => this.renderActiveHeadingEmphasisForCommittedVisual())
         this.emitVisualReflowAudit(dirty ?? reason)
         // ── V2 §7 —— consume-once：scoped dirty set 只属于这一轮 reconcile。
         this.headingVisualDirtyScope = null
@@ -8701,7 +8813,7 @@ export class DocumentUtilityOverlayHost {
     // passive snapshot was stale) the active emphasis is rendered by the CALLER
     // from the SAME fresh generation, so it is not rendered twice here.
     if (!skipActiveEmphasis) {
-      this.renderActiveHeadingEmphasisForCommittedVisual()
+      this.runContentDocumentPaint('PASSIVE_ACTIVE_EMPHASIS', () => this.renderActiveHeadingEmphasisForCommittedVisual())
       // ── Unified Geometry Transaction Closure §3.2 — the SAME atomic commit must
       // leave the ACTIVE component on the CURRENT generation. When the active
       // emphasis was legitimately RETAINED (verified-unchanged geometry) it is
@@ -10485,8 +10597,8 @@ export class DocumentUtilityOverlayHost {
       return
     }
     // §10 — invalidate → re-measure → rebuild affected markers EXACTLY once.
-    this.renderHeadingDiagnosticMarkers()
-    this.renderActiveHeadingEmphasisForCommittedVisual()
+    this.runContentDocumentPaint('HEADING_TEXT_CHANGED_MARKERS', () => this.renderHeadingDiagnosticMarkers())
+    this.runContentDocumentPaint('HEADING_TEXT_CHANGED_ACTIVE_EMPHASIS', () => this.renderActiveHeadingEmphasisForCommittedVisual())
     emitRuntimeAudit(HEADING_EDIT_GEOMETRY_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       trigger: triggerReason,

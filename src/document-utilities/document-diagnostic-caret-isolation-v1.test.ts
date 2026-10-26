@@ -21,6 +21,13 @@ import {
   formatCaretIsolationGateReport,
   findContenteditableAncestor,
   getCaretIsolationCounters,
+  getNavigationAuditCounters,
+  resetNavigationAuditCounters,
+  evaluateAuditCoverageGate,
+  invalidateNavigationAudits,
+  collectPluginPresentationTexts,
+  scanPluginTextInSerializedMarkdown,
+  evaluateSerializedMarkdownGate,
   isCaretInertPresentation,
   isPluginPresentationNode,
   refreshCaretIsolationDomCounters,
@@ -199,4 +206,92 @@ describe('P0 caret isolation — 诊断文字必须脱离可编辑树', () => {
   })
 
   beforeEach(() => { resetCaretIsolationCounters() })
+})
+
+describe('P0 §7.2/§7.3 — 审计覆盖门禁（禁止静默覆盖）+ 序列化泄漏判定', () => {
+  beforeEach(() => {
+    resetCaretIsolationCounters()
+    resetNavigationAuditCounters()
+  })
+
+  function ctx(write: HTMLElement) {
+    return { documentKey: 'doc.md', buildShaOrMarker: 'm', editorRoot: write, editorRootIdentity: 'DIV#write', sourceRevision: 7 }
+  }
+
+  it('COVERAGE PASS：少量导航键全部 flush，eligible 对账成立，dropped=0', () => {
+    vi.useFakeTimers()
+    try {
+      const { write } = world()
+      for (let i = 0; i < 5; i++) scheduleNavigationPostDefaultAudit('ArrowDown', true, false, ctx(write))
+      expect(getNavigationAuditCounters().AUDITS_ENQUEUED).toBe(5)
+      expect(getNavigationAuditCounters().AUDITS_FLUSHED).toBe(0)
+      vi.runOnlyPendingTimers()
+      const c = getNavigationAuditCounters()
+      expect(c.KEY_EVENTS_ELIGIBLE).toBe(5)
+      expect(c.AUDITS_ENQUEUED).toBe(5)
+      expect(c.AUDITS_FLUSHED).toBe(5)
+      expect(c.AUDITS_DROPPED).toBe(0)
+      expect(evaluateAuditCoverageGate().decision).toBe('PASS')
+      expect(evaluateAuditCoverageGate().reason).toBe('AUDIT_COVERAGE_COMPLETE')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('NON-SILENT：队列溢出必须计入 AUDITS_DROPPED 并判 FAIL_AUDIT_COVERAGE（禁止 shift 静默丢弃）', () => {
+    vi.useFakeTimers()
+    try {
+      const { write } = world()
+      const N = 70 // > MAX_PENDING_AUDITS (64)
+      for (let i = 0; i < N; i++) scheduleNavigationPostDefaultAudit('ArrowUp', true, false, ctx(write))
+      const c = getNavigationAuditCounters()
+      expect(c.AUDITS_ENQUEUED).toBe(N)
+      expect(c.AUDITS_DROPPED).toBe(N - 64) // 显式计数，而非静默
+      const g = evaluateAuditCoverageGate()
+      expect(g.decision).toBe('FAIL')
+      expect(g.failing).toContain('AUDITS_DROPPED')
+      expect(g.reason).toBe('FAIL_AUDIT_COVERAGE')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('INVALIDATE：切文档/根重绑取消待处理项并计数（不静默、不污染新文档）', () => {
+    vi.useFakeTimers()
+    try {
+      const { write } = world()
+      for (let i = 0; i < 3; i++) scheduleNavigationPostDefaultAudit('End', true, false, ctx(write))
+      const cancelled = invalidateNavigationAudits('DOCUMENT_SWITCH')
+      expect(cancelled).toBe(3)
+      const c = getNavigationAuditCounters()
+      expect(c.AUDITS_CANCELLED_WITH_REASON).toBe(3)
+      expect(c.STALE_DOCUMENT_DISCARD).toBe(3)
+      expect(c.AUDITS_DROPPED).toBe(0)
+      vi.runOnlyPendingTimers()
+      // 待处理项已被取消：不会 flush 出跨文档污染样本
+      expect(getNavigationAuditCounters().AUDITS_FLUSHED).toBe(0)
+      expect(evaluateAuditCoverageGate().decision).toBe('PASS')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('非导航键不进入 eligible（信息性 UNSUPPORTED_KEY），不产生审计', () => {
+    const { write } = world()
+    scheduleNavigationPostDefaultAudit('Enter', true, false, ctx(write))
+    scheduleNavigationPostDefaultAudit('a', true, false, ctx(write))
+    const c = getNavigationAuditCounters()
+    expect(c.KEY_EVENTS_ELIGIBLE).toBe(0)
+    expect(c.AUDITS_ENQUEUED).toBe(0)
+    expect(c.UNSUPPORTED_KEY).toBe(2)
+  })
+
+  it('PLUGIN_TEXT_IN_SERIALIZED_MARKDOWN：真实导出文本比对 + 未采样必须 NOT_RUN', () => {
+    const { write } = world()
+    const texts = collectPluginPresentationTexts(write)
+    expect(texts).toContain('空行过多')
+
+    const leaked = scanPluginTextInSerializedMarkdown('# Title\n空行过多\n', texts)
+    expect(leaked.count).toBe(1)
+    const clean = scanPluginTextInSerializedMarkdown('# Title\n\nbody\n', texts)
+    expect(clean.count).toBe(0)
+
+    expect(evaluateSerializedMarkdownGate(null).decision).toBe('NOT_RUN')
+    expect(evaluateSerializedMarkdownGate(0).decision).toBe('PASS')
+    expect(evaluateSerializedMarkdownGate(1).decision).toBe('FAIL')
+  })
 })

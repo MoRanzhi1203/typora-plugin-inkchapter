@@ -7,8 +7,9 @@
   "main": "",
   "scripts": {
     "verify:archive": "node scripts/progress-archive.mjs verify",
-    "build:dev": "pnpm run verify:archive && node build.js",
-    "build": "pnpm run verify:archive && node build.js --prod",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:dev": "pnpm run verify:archive && pnpm run typecheck && node build.js",
+    "build": "pnpm run verify:archive && pnpm run typecheck && node build.js --prod",
     "pack": "pnpm run build && node pack.js",
     "test": "pnpm run verify:archive && vitest run",
     "test:watch": "vitest",

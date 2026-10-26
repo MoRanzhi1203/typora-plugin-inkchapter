@@ -218,6 +218,61 @@ export function scanDiagnosticTextInEditableTree(
   return { count, samples }
 }
 
+/**
+ * 收集当前文档树内**插件展示节点**的可见文字指纹（长度 ≥ 2，去重）。
+ * 供「实际 Typora 导出 Markdown 是否含插件备注」判定使用（§2.3 / §7.3）。
+ */
+export function collectPluginPresentationTexts(editorRoot: HTMLElement | null): string[] {
+  const out = new Set<string>()
+  if (!editorRoot) return []
+  try {
+    for (const el of Array.from(editorRoot.querySelectorAll('*'))) {
+      if (!isPluginPresentationNode(el)) continue
+      const t = (el.textContent ?? '').trim()
+      if (t.length >= 2) out.add(t)
+    }
+  } catch { /* ignore */ }
+  return [...out]
+}
+
+/**
+ * §7.3 `PLUGIN_TEXT_IN_SERIALIZED_MARKDOWN_COUNT`：**必须**由 Typora 实际导出/保存的
+ * Markdown 文本判定，而非由 `contenteditable=false` / 展示节点标记推断。
+ * 本函数只做纯文本比对，任何命中即真实泄漏。
+ */
+export function scanPluginTextInSerializedMarkdown(
+  markdown: string,
+  presentationTexts: readonly string[],
+  maxSamples = 6,
+): { count: number; samples: string[] } {
+  const samples: string[] = []
+  let count = 0
+  const text = String(markdown ?? '')
+  for (const t of presentationTexts) {
+    const needle = String(t ?? '').trim()
+    if (needle.length < 2) continue
+    if (text.includes(needle)) {
+      count++
+      if (samples.length < maxSamples) samples.push(bounded(needle, 30))
+    }
+  }
+  return { count, samples }
+}
+
+/**
+ * 序列化泄漏门禁：**未取得真实导出文本时必须报 `NOT_RUN`**，不得以静态 0 冒充 PASS。
+ */
+export function evaluateSerializedMarkdownGate(
+  measuredCount: number | null,
+): { decision: 'PASS' | 'FAIL' | 'NOT_RUN'; reason: string } {
+  if (measuredCount === null || !Number.isFinite(measuredCount)) {
+    return { decision: 'NOT_RUN', reason: 'NO_REAL_EXPORT_SAMPLE' }
+  }
+  return measuredCount === 0
+    ? { decision: 'PASS', reason: 'NO_PLUGIN_TEXT_IN_SERIALIZED_MARKDOWN' }
+    : { decision: 'FAIL', reason: 'PLUGIN_TEXT_LEAKED_INTO_MARKDOWN' }
+}
+
 /** 判定一个插入点是否“落在插件展示文字上”（门禁/兜底用）。 */
 export function isSelectionAnchorOnPluginPresentation(
   node: Node | null,
@@ -353,10 +408,14 @@ export interface ArrowDownAuditContext {
 }
 
 interface PendingArrowDown {
+  /** 单调事件序号（每次 enqueue 分配；用于与密钥事件一一对账）。 */
+  eventSeq: number
   key: string
   isTrusted: boolean
   defaultPrevented: boolean
   ctx: ArrowDownAuditContext
+  /** 入队时刻（真实时钟）。 */
+  queuedAt: number
   /** 默认行为发生**之前**的插入点（keydown 同步捕获）。 */
   beforeSite: CaretSiteSummary
   beforeLastReal: { tag: string | null; runtimeId: string | null; textPreview: string | null }
@@ -369,9 +428,102 @@ export const NAVIGATION_AUDIT_KEYS: ReadonlyArray<string> = [
 
 // 有界队列 + 单个合并宏任务：每次导航键都留下一条审计（不再相互覆盖），
 // 且同一帧内多次按键只调度一次 setTimeout(0)。上限防止无界增长。
-const MAX_PENDING_AUDITS = 16
+//
+// P0 HARDENING：**禁止静默覆盖**。旧实现队列满时 `pendingAudits.shift()` 直接丢掉
+// 最旧样本且不计数 → 门禁永远看不到缺口（§2.3 / §7.2 明令禁止）。现在：
+//   - 队列满 → 计入 `AUDITS_DROPPED`（**不静默**），并让覆盖门禁 FAIL；
+//   - 切文档/编辑器根重绑 → `invalidateNavigationAudits(reason)` 取消待处理项并计数；
+//   - 每次入队分配 `eventSeq`/`queuedAt`，出队分配 `flushedAt`，供 §7.2 对账。
+const MAX_PENDING_AUDITS = 64
 const pendingAudits: PendingArrowDown[] = []
 let auditFlushScheduled = false
+let navigationAuditEventSeq = 0
+
+/** §7.2 审计覆盖计数（真实事件驱动；调用方不得直接写值）。 */
+export interface NavigationAuditCounters {
+  /** 落在导航允许集内、本应被审计的密钥事件数。 */
+  KEY_EVENTS_ELIGIBLE: number
+  /** 成功入队的审计数。 */
+  AUDITS_ENQUEUED: number
+  /** 已执行（真实读取 Selection/DOM）的审计数。 */
+  AUDITS_FLUSHED: number
+  /** 因队列溢出被丢弃的审计数（本次准入要求 = 0）。 */
+  AUDITS_DROPPED: number
+  /** 因上下文失效（切文档/根重绑）被取消的待处理审计数。 */
+  AUDITS_CANCELLED_WITH_REASON: number
+  /** 因不支持而被拒绝的**导航意图**键数。 */
+  AUDITS_REJECTED_WITH_REASON: number
+  /** 取消项中因切文档而废弃的子集。 */
+  STALE_DOCUMENT_DISCARD: number
+  /** 落在导航意图之外、审计不支持的键事件数（信息性，不计入 eligible）。 */
+  UNSUPPORTED_KEY: number
+}
+
+export function createNavigationAuditCounters(): NavigationAuditCounters {
+  return {
+    KEY_EVENTS_ELIGIBLE: 0,
+    AUDITS_ENQUEUED: 0,
+    AUDITS_FLUSHED: 0,
+    AUDITS_DROPPED: 0,
+    AUDITS_CANCELLED_WITH_REASON: 0,
+    AUDITS_REJECTED_WITH_REASON: 0,
+    STALE_DOCUMENT_DISCARD: 0,
+    UNSUPPORTED_KEY: 0,
+  }
+}
+
+const navigationAuditCounters: NavigationAuditCounters = createNavigationAuditCounters()
+
+export function getNavigationAuditCounters(): Readonly<NavigationAuditCounters> {
+  return { ...navigationAuditCounters }
+}
+
+/** 仅测试用：复位审计覆盖计数。 */
+export function resetNavigationAuditCounters(): void {
+  Object.assign(navigationAuditCounters, createNavigationAuditCounters())
+  pendingAudits.length = 0
+  auditFlushScheduled = false
+}
+
+/**
+ * §7.2 覆盖门禁：eligible == enqueued + rejected；enqueued == flushed + dropped + cancelled；
+ * 且**本次准入要求 `AUDITS_DROPPED = 0`**。任何 `observedCount=0` 且 eligible>0 的情形判 FAIL_COVERAGE。
+ */
+export function evaluateAuditCoverageGate(
+  provided?: Partial<NavigationAuditCounters>,
+): { decision: 'PASS' | 'FAIL'; failing: string[]; reason: string } {
+  const c = { ...navigationAuditCounters, ...(provided ?? {}) } as NavigationAuditCounters
+  const failing: string[] = []
+  const eligibleBalanced = c.KEY_EVENTS_ELIGIBLE === c.AUDITS_ENQUEUED + c.AUDITS_REJECTED_WITH_REASON
+  // 待处理（已入队、尚未 flush/取消）不构成缺口：用「已入队 ≥ 已 flush + dropped + cancelled」判定，
+  // 差额即仍在队列中的在途项。缺口只可能来自 dropped。
+  const enqueuedBalanced = c.AUDITS_ENQUEUED >= c.AUDITS_FLUSHED + c.AUDITS_DROPPED + c.AUDITS_CANCELLED_WITH_REASON
+  if (!eligibleBalanced) failing.push('KEY_EVENTS_ELIGIBLE_BALANCE')
+  if (!enqueuedBalanced) failing.push('AUDITS_ENQUEUED_BALANCE')
+  if (c.AUDITS_DROPPED !== 0) failing.push('AUDITS_DROPPED')
+  const decision = failing.length === 0 ? 'PASS' : 'FAIL'
+  return {
+    decision,
+    failing,
+    reason: decision === 'PASS' ? 'AUDIT_COVERAGE_COMPLETE' : 'FAIL_AUDIT_COVERAGE',
+  }
+}
+
+/**
+ * 取消所有待处理导航审计（切文档 / 编辑器根重绑）。**不静默**：计入
+ * `AUDITS_CANCELLED_WITH_REASON`；文档相关原因同时计入 `STALE_DOCUMENT_DISCARD`。
+ */
+export function invalidateNavigationAudits(reason: string): number {
+  const n = pendingAudits.length
+  if (n > 0) pendingAudits.length = 0
+  if (n > 0) {
+    navigationAuditCounters.AUDITS_CANCELLED_WITH_REASON += n
+    if (/DOCUMENT|ROOT_REBIND|SWITCH/i.test(reason)) {
+      navigationAuditCounters.STALE_DOCUMENT_DISCARD += n
+    }
+  }
+  return n
+}
 
 export function scheduleNavigationPostDefaultAudit(
   key: string,
@@ -379,16 +531,28 @@ export function scheduleNavigationPostDefaultAudit(
   defaultPrevented: boolean,
   ctx: ArrowDownAuditContext,
 ): void {
-  if (!NAVIGATION_AUDIT_KEYS.includes(key)) return
+  if (!NAVIGATION_AUDIT_KEYS.includes(key)) {
+    // 非导航键：信息性计数，绝不冒充覆盖缺口。
+    navigationAuditCounters.UNSUPPORTED_KEY++
+    return
+  }
+  navigationAuditCounters.KEY_EVENTS_ELIGIBLE++
   let beforeNode: Node | null = null
   try {
     const sel = window.getSelection()
     beforeNode = sel && sel.rangeCount > 0 ? sel.anchorNode : null
   } catch { beforeNode = null }
-  if (pendingAudits.length >= MAX_PENDING_AUDITS) pendingAudits.shift()
+  if (pendingAudits.length >= MAX_PENDING_AUDITS) {
+    // **不静默覆盖**：显式计入 dropped（门禁将 FAIL_AUDIT_COVERAGE），仍保留最新样本。
+    navigationAuditCounters.AUDITS_DROPPED++
+    pendingAudits.shift()
+  }
+  navigationAuditCounters.AUDITS_ENQUEUED++
   pendingAudits.push({
+    eventSeq: ++navigationAuditEventSeq,
     key, isTrusted, defaultPrevented,
     ctx,
+    queuedAt: Date.now(),
     beforeSite: summarizeCaretSite(beforeNode, ctx.editorRoot, ctx.peekRuntimeId),
     beforeLastReal: summarizeLastRealEditableParagraph(ctx.editorRoot, ctx.peekRuntimeId),
   })
@@ -405,6 +569,8 @@ export function scheduleNavigationPostDefaultAudit(
 
 function runNavigationPostDefaultAudit(p: PendingArrowDown): void {
   const { ctx } = p
+  const flushedAt = Date.now()
+  navigationAuditCounters.AUDITS_FLUSHED++
   let sel: Selection | null = null
   try { sel = window.getSelection() } catch { sel = null }
   const anchorNode = sel && sel.rangeCount > 0 ? sel.anchorNode : null
@@ -467,6 +633,14 @@ function runNavigationPostDefaultAudit(p: PendingArrowDown): void {
     lastRealEditableParagraphTag: lastReal.tag,
     lastRealEditableParagraphRuntimeId: lastReal.runtimeId,
     sourceRevision: ctx.sourceRevision,
+    // ── §2.3/§7.2 审计覆盖事实（eventSeq/queuedAt/flushedAt/before-after anchor/defaultPrevented）──
+    eventSeq: p.eventSeq,
+    queuedAt: p.queuedAt,
+    flushedAt,
+    auditQueueLatencyMs: Math.max(0, flushedAt - p.queuedAt),
+    auditCounters: { ...navigationAuditCounters },
+    auditCoverageDecision: evaluateAuditCoverageGate().decision,
+    auditCoverageReason: evaluateAuditCoverageGate().reason,
     decision: inPresentation ? 'ANCHOR_IN_PLUGIN_PRESENTATION' : 'ANCHOR_IN_EDITOR_CONTENT',
     // ── 六项硬门禁（真实 DOM/Selection；禁止硬编码） ──
     caretIsolationGate: { ...caretIsolationCounters },
