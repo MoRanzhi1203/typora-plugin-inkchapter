@@ -491,7 +491,33 @@ export default class extends Plugin<InkChapterSettings> {
       },
       registerDisposable: (fn) => this.register(fn),
       getActiveFilePath: () => this.app.workspace.activeFile ?? null,
-      getMarkdown: () => editor.getMarkdown(),
+      // R10 — Typora's `editor.getMarkdown()` is an INCREMENTAL text mirror:
+      // inserted characters do land in it, but blank-line / block structure
+      // NEVER does. Proven in a real session — three real edits (17 blank lines
+      // -> 13/a/3 -> 11/b/1/a/3) each added exactly one character to the
+      // mirrored string while its LF count and blank-run count stayed at 30/14,
+      // even after Ctrl+S wrote the correct structure to disk.
+      //
+      // Repair: keep the fast incremental path, but re-serialize the writing
+      // area ONLY when the BLOCK COUNT really changed (a structural edit). This
+      // is event-driven and bounded — no fixed delay, no polling, and pure text
+      // edits inside one block never pay the serialization cost.
+      getMarkdown: (() => {
+        let lastStructuralBlockCount = -1
+        return (): string => {
+          const incremental = editor.getMarkdown()
+          try {
+            const area = editor.writingArea
+            const blocks = area ? area.childElementCount : -1
+            if (blocks >= 0 && blocks !== lastStructuralBlockCount) {
+              lastStructuralBlockCount = blocks
+              const structural = editor.UserOp.getMarkdownSourceFrom($(area))
+              if (typeof structural === 'string' && structural !== '') return structural
+            }
+          } catch { /* fall through to the incremental mirror */ }
+          return incremental
+        }
+      })(),
       reloadContent: (markdown: string) => {
         File.reloadContent(markdown, false, true, false, true)
       },

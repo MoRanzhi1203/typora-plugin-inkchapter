@@ -16606,6 +16606,20 @@ export class DocumentUtilityOverlayHost {
   ): DocumentDiagnosticsSnapshot | null {
     if (snapshot == null) return null
     const headless = isHeadlessTestRuntime()
+    // R10 — forensic ONLY: prove what `getMarkdown()` really returns for this
+    // revision (does it carry the new blank-line structure, or a stale cache?).
+    // Never used for any decision.
+    try {
+      const md = this.opts.ctx.authority.getMarkdown() ?? ''
+      let lf = 0
+      for (let i = 0; i < md.length; i++) if (md.charCodeAt(i) === 10) lf++
+      emitRuntimeAudit('R10-SOURCE-CENSUS-AUDIT', {
+        sourceRevision: snapshot.sourceRevision ?? null,
+        markdownLength: md.length,
+        lfCount: lf,
+        blankRuns: (md.match(/\n[ \t\u200B\u00A0\uFEFF]*\n/g) ?? []).length,
+      })
+    } catch { /* forensic only */ }
     const mode = detectDocumentEditingMode(typeof document !== 'undefined' ? document : null)
     const modeChanged = mode !== this.lastInternalBlankEditingMode
     this.lastInternalBlankEditingMode = mode
