@@ -44,8 +44,26 @@ const BLOCKED_BEFOREINPUT_INPUT_TYPES = new Set([
 
 type EditGuardAuditAction = 'LOCK' | 'UNLOCK' | 'BLOCK' | 'ALLOW'
 
+/**
+ * PA-LOCK-01 — the host keeps ONE guard instance plus a per-document lockState
+ * map. Projecting the button must therefore be BIDIRECTIONAL: switching from a
+ * locked document to an unlocked one has to release the guard, otherwise the
+ * new document silently swallows every edit while the button reads 编辑.
+ */
+export type LockGuardTransition = 'LOCK' | 'UNLOCK' | 'NONE'
+
+export function resolveLockGuardTransition(
+  desiredLocked: boolean,
+  guardCurrentlyLocked: boolean,
+): LockGuardTransition {
+  if (desiredLocked === guardCurrentlyLocked) return 'NONE'
+  return desiredLocked ? 'LOCK' : 'UNLOCK'
+}
+
 export class DocumentEditGuard {
   private locked = false
+  /** PA-LOCK-02 — the exact root that bindGuards() attached to. */
+  private boundRoot: HTMLElement | null = null
   private boundKeys = false
   private boundBeforeInput = false
   private boundClipboard = false
@@ -173,6 +191,7 @@ export class DocumentEditGuard {
     if (!root) return false
     if (this.locked) return true
     this.bindGuards(root)
+    this.boundRoot = root
     this.locked = true
     this.audit('LOCK', { eventType: 'transition', decision: 'PASS' })
     return true
@@ -181,7 +200,10 @@ export class DocumentEditGuard {
   /** Unlock and restore the original editor state. */
   unlock(): void {
     if (!this.locked) return
-    const root = resolveBusinessContentRoot()
+    // PA-LOCK-02 — remove from the ROOT WE BOUND, not a freshly resolved one:
+    // Typora may rebuild #write between lock and unlock.
+    const root = this.boundRoot
+    this.boundRoot = null
     if (root) this.unbindGuards(root)
     this.locked = false
     this.audit('UNLOCK', { eventType: 'transition', decision: 'PASS' })

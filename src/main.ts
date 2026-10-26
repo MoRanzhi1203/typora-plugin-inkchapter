@@ -1404,7 +1404,14 @@ export default class extends Plugin<InkChapterSettings> {
             const marginZero = /^0px( 0px)*$/.test(c.computed.margin.trim())
             const pseudoNoOffset = c.pseudo.transform === 'none' && c.pseudo.top === 'auto' && c.pseudo.left === 'auto' && c.pseudo.padding === '0px' && c.pseudo.margin === '0px'
             const square = Math.abs(c.closeRect.width - c.closeRect.height) <= 1 && c.closeRect.width >= 18 && c.closeRect.width <= 22
+            // R10 Project Audit §2.6 — Typora hides the tab close control by
+            // default (single tab / hover-only). A hidden control has no hitbox;
+            // evaluating it produced a permanent false FAIL audit.
+            const closeRendered = c.computed.display !== 'none'
+              && c.closeRect.width > 0
+              && c.closeRect.height > 0
             const centering = evaluateTabCloseCentering({
+              closeRendered,
               deltaCenterX: null,
               deltaCenterY: null,
               widthPx: c.closeRect.width,
@@ -1428,6 +1435,7 @@ export default class extends Plugin<InkChapterSettings> {
               closePseudo: c.pseudo,
               glyphAuthority: 'PSEUDO_ELEMENT ::before content:"×"',
               hitboxFlags: { inlineFlex, alignCenter, justifyCenter, paddingZero, marginZero, square, pseudoNoOffset },
+              closeRendered,
               measureMode: centering.measureMode,
               deltaCenterX: null,
               deltaCenterY: null,

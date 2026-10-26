@@ -272,15 +272,50 @@ export function sourceHasExplicitUserTag(tex: string): boolean {
  * Scan the Markdown source for display-math `$$...$$` blocks in document order.
  * Used ONLY to obtain the render-input correlation hash per canonical Formula
  * host (document order ↔ canonical target order). It is NOT semantic authority.
+ *
+ * PA-FORMULA-01 — fenced code (` ``` ` / `~~~`) is blanked out first. A `$$`
+ * pair inside a fence used to be counted as a formula source, shifting every
+ * later index: the correlation hash then pointed at the wrong formula, so the
+ * MathJax hook found no plan and the visible numbers silently disappeared.
+ * Blanking preserves line structure, so multi-line display math still matches.
  */
 export function scanDisplayMathSources(markdown: string): string[] {
   const sources: string[] = []
   const re = /\$\$([\s\S]*?)\$\$/g
   let m: RegExpExecArray | null
-  while ((m = re.exec(markdown ?? '')) !== null) {
+  while ((m = re.exec(maskFencedCode(markdown ?? ''))) !== null) {
     sources.push(m[1])
   }
   return sources
+}
+
+/** Replace fenced code-block lines with empty lines (keeps line offsets). */
+function maskFencedCode(markdown: string): string {
+  const lines = markdown.split('\n')
+  let fenceChar: '`' | '~' | null = null
+  let fenceLen = 0
+  const out = new Array<string>(lines.length)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (fenceChar !== null) {
+      const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
+      if (close != null && close[1][0] === fenceChar && close[1].length >= fenceLen) {
+        fenceChar = null
+        fenceLen = 0
+      }
+      out[i] = ''
+      continue
+    }
+    const open = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (open != null) {
+      fenceChar = open[1][0] as '`' | '~'
+      fenceLen = open[1].length
+      out[i] = ''
+      continue
+    }
+    out[i] = line
+  }
+  return out.join('\n')
 }
 
 /** Deterministic, bounded source hash used only for render-call↔host correlation. */

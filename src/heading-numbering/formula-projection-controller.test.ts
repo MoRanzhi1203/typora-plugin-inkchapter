@@ -187,6 +187,38 @@ describe('source helpers — SOURCE-INTEGRITY tests', () => {
     expect(sources[1].trim()).toBe('F = ma')
   })
 
+  // PA-FORMULA-01 — fenced code must not contribute pseudo-math sources:
+  // a `$$` pair inside a fence used to shift every later source index, so the
+  // correlation hash pointed at the wrong formula and numbering silently broke.
+  it('ignores $$ inside a ``` fence', () => {
+    const md = [
+      '$$',
+      'a',
+      '$$',
+      '',
+      '```md',
+      '$$',
+      'not math',
+      '$$',
+      '```',
+      '',
+      '$$',
+      'b',
+      '$$',
+    ].join('\n')
+    const sources = scanDisplayMathSources(md)
+    expect(sources).toHaveLength(2)
+    expect(sources[0].trim()).toBe('a')
+    expect(sources[1].trim()).toBe('b')
+  })
+
+  it('ignores $$ inside a ~~~ fence', () => {
+    const md = ['~~~', '$$', 'x', '$$', '~~~', '$$', 'c', '$$'].join('\n')
+    const sources = scanDisplayMathSources(md)
+    expect(sources).toHaveLength(1)
+    expect(sources[0].trim()).toBe('c')
+  })
+
   it('hashFormulaSource is deterministic and ignores whitespace normalization', () => {
     expect(hashFormulaSource('E = mc^2')).toBe(hashFormulaSource('E = mc^2'))
     expect(hashFormulaSource('  E = mc^2  ')).toBe(hashFormulaSource('E = mc^2'))

@@ -291,7 +291,7 @@ import {
   sourceOccurrenceGroupKey,
   type SourceResourceKind,
 } from './document-diagnostic-source-occurrence-v512-r5'
-import { DocumentEditGuard } from './document-edit-guard'
+import { DocumentEditGuard, resolveLockGuardTransition } from './document-edit-guard'
 import { DocumentScrollNavigator, getActiveEditorScrollContainer } from './document-scroll-navigator'
 import type { ScrollNavigatorState } from './document-scroll-navigator'
 import {
@@ -21740,10 +21740,13 @@ export class DocumentUtilityOverlayHost {
     label.textContent = locked ? '已锁定' : '编辑'
     btn.append(icon, label)
     btn.classList.toggle('is-locked', locked)
-    if (locked && !this.editGuard.isLocked()) {
-      // Re-assert the guard when the button state says locked (e.g. switch back).
-      this.editGuard.lock()
-    }
+    // PA-LOCK-01 — the guard is a SINGLE instance shared by every document, so
+    // the per-document lockState must be applied in BOTH directions. Asserting
+    // only the locked case left the previous document's capture guards attached
+    // after a switch, making the new document silently read-only.
+    const transition = resolveLockGuardTransition(locked, this.editGuard.isLocked())
+    if (transition === 'LOCK') this.editGuard.lock()
+    else if (transition === 'UNLOCK') this.editGuard.unlock()
   }
 
   private lockState = new Map<string, boolean>()

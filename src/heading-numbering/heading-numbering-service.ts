@@ -4228,9 +4228,9 @@ export class HeadingNumberingService {
 
   /** Listen for external settings changes (e.g. from settings UI) and sync local state. */
   private registerSettingsListener(): void {
-    const dispose = this.ctx.settings.onChange('headingNumbering', (_key: unknown, value: HeadingNumberingSettings) => {
+    const dispose = this.ctx.settings.onChange('headingNumbering', (_key, value) => {
       // Legacy listener: migrate and reload from scope store
-      if (!this.scopeStore.schemaVersion) {
+      if (value != null && !this.scopeStore.schemaVersion) {
         const migResult = migrateHeadingNumberingToScopeStore({ headingNumbering: value })
         if (migResult.migrated) {
           this.persistScopeStore(migResult.store)

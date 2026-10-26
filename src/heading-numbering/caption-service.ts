@@ -69,7 +69,7 @@ import {
   type FormulaNativeRenderPlan,
   type FormulaProjectionContext,
 } from './formula-projection-controller'
-import { ensureMathJaxRenderInputHook, getMathJaxHookLifecycle, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
+import { ensureMathJaxRenderInputHook, uninstallMathJaxRenderInputHook, getMathJaxHookLifecycle, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
 import {
@@ -1480,6 +1480,9 @@ export class CaptionService {
 
   dispose(): void {
     this.disconnectObserver()
+    // PA-HOOK-01 — the MathJax tex2svg* wrappers are a GLOBAL resource whose
+    // live-context provider closes over this service. Restore them on dispose.
+    uninstallMathJaxRenderInputHook()
     for (const d of this.disposers) { try { d() } catch { /* ignore */ } }
     this.disposers = []
     if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null }
