@@ -13935,6 +13935,7 @@ export class DocumentUtilityOverlayHost {
     const prevBinding = this.bindGapBoundary({
       canonicalKind: prevCanonicalKind, canonicalOrdinal: prevCanonicalOrdinal,
       startLine: prevLine, anchorText: prevAnchorText,
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(prevIdentity),
     })
     // V2 §A — the NEXT side prefers the CANONICAL element the locate/figure/
     // resource resolver already bound; the ladder (incl. IMAGE_ONLY_ORDINAL) is a
@@ -13951,6 +13952,7 @@ export class DocumentUtilityOverlayHost {
       : this.bindGapBoundary({
         canonicalKind: nextCanonicalKind, canonicalOrdinal: nextCanonicalOrdinal,
         startLine: nextLine, anchorText: nextAnchorText,
+        blockOrdinal: this.sourceOrdinalFromBlockIdentity(nextIdentity),
       })
     let prevEl = prevBinding.element
     let nextEl = nextBinding.element
@@ -15068,6 +15070,25 @@ export class DocumentUtilityOverlayHost {
     return Number.isFinite(n) ? Math.abs(n - line) : Number.POSITIVE_INFINITY
   }
 
+  /**
+   * R8F — the SOURCE occurrence ordinal carried inside a block identity.
+   *
+   * The source scanner already disambiguates two blocks whose first line is the
+   * same text: `paragraph:啊#0` / `paragraph:啊#1` (see
+   * `collectDocumentBlockGaps` → `ordinalByKey`). That ordinal is a SOURCE fact,
+   * not a DOM guess — it is the rank of this block among all sibling blocks with
+   * the same normalized first line, in document order.
+   *
+   * `block:code:0` has no `#` suffix → null (canonical kinds never use it).
+   */
+  private sourceOrdinalFromBlockIdentity(identity: unknown): number | null {
+    if (typeof identity !== 'string' || identity === '') return null
+    const m = /#(\d+)$/.exec(identity)
+    if (m == null) return null
+    const n = Number.parseInt(m[1], 10)
+    return Number.isFinite(n) ? n : null
+  }
+
   /** TRAE §8 — is this live element the canonical DOM target of the given kind? */
   private gapBoundaryElementMatchesKind(
     el: HTMLElement,
@@ -15103,11 +15124,13 @@ export class DocumentUtilityOverlayHost {
     canonicalOrdinal: number | null
     startLine: number | null
     anchorText: string
+    /** R8F — source occurrence ordinal from the block identity (`啊#1` → 1). */
+    blockOrdinal?: number | null
   }): { element: HTMLElement | null; decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'; strategy: string; semanticTextMatch: boolean } {
     const kind = ref.canonicalKind === 'code' || ref.canonicalKind === 'table' || ref.canonicalKind === 'formula'
       ? ref.canonicalKind
       : null
-    if (kind == null) return this.bindGapBlock(ref.startLine, ref.anchorText)
+    if (kind == null) return this.bindGapBlock(ref.startLine, ref.anchorText, ref.blockOrdinal ?? null)
     const canonicalStrategy = kind === 'code' ? 'CANONICAL_CODE_TARGET'
       : kind === 'table' ? 'CANONICAL_TABLE_TARGET'
         : 'CANONICAL_FORMULA_TARGET'
@@ -15192,6 +15215,7 @@ export class DocumentUtilityOverlayHost {
   private bindGapBlock(
     line: number | null,
     anchorText: string,
+    blockOrdinal: number | null = null,
   ): { element: HTMLElement | null; decision: 'BOUND' | 'AMBIGUOUS' | 'MISSING'; strategy: string; semanticTextMatch: boolean } {
     if (line == null) return { element: null, decision: 'MISSING', strategy: 'NO_SOURCE_LINE', semanticTextMatch: false }
     const needle = normalizeSourceAnchorText(anchorText)
@@ -15251,6 +15275,17 @@ export class DocumentUtilityOverlayHost {
         // Only a STRICTLY closest candidate is deterministic; a tie is AMBIGUOUS.
         if (ranked.length >= 2 && Number.isFinite(ranked[0].d) && ranked[0].d < ranked[1].d) {
           return { element: ranked[0].el, decision: 'BOUND', strategy: 'ANCHOR_TEXT_NEAREST_LINE', semanticTextMatch: true }
+        }
+        // ── R8F — THIS Typora build renders `<p>` WITHOUT `data-line`, so two
+        // same-text paragraphs both rank at Infinity and the ladder used to
+        // declare AMBIGUOUS. The source scanner already numbered them
+        // (`paragraph:啊#0` / `paragraph:啊#1`) in document order, and
+        // `gapBindingCandidates()` is a document-order DOM walk — so the source
+        // ordinal selects exactly one candidate, deterministically. An ordinal
+        // that overflows the DOM match count is still refused (fail-closed).
+        if (blockOrdinal != null && Number.isInteger(blockOrdinal)
+          && blockOrdinal >= 0 && blockOrdinal < matches.length) {
+          return { element: matches[blockOrdinal], decision: 'BOUND', strategy: 'ANCHOR_TEXT_SOURCE_ORDINAL', semanticTextMatch: true }
         }
         return { element: null, decision: 'AMBIGUOUS', strategy: 'ANCHOR_TEXT_AMBIGUOUS', semanticTextMatch: true }
       }
@@ -16473,12 +16508,14 @@ export class DocumentUtilityOverlayHost {
         canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
         startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
         anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
+        blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.previousBlockIdentity),
       })
       const nextBinding = this.bindGapBoundary({
         canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
         canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
         startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
         anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+        blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.nextBlockIdentity),
       })
       if (prevBinding.element == null || nextBinding.element == null) { unpaintedMemberCount++; continue }
       const pair = normalizeSiblingBoundaryPair(root, prevBinding.element, nextBinding.element)
@@ -16641,6 +16678,9 @@ export class DocumentUtilityOverlayHost {
         publish: decision.publish,
         reason: decision.reason,
         renderedBlankRowDecision: result?.decision ?? 'RUNTIME_UNAVAILABLE',
+        // R8F — `result == null` 表示边界绑定/兄弟级归一化阶段就失败了（不是 DOM 断开）。
+        // 单独记录，避免把「绑定失败」误读成「运行时不可用」。
+        renderedBlankRowResultPresent: result != null,
       })
       if (!headless && decision.visibleBlankLineCount != null) {
         this.coverageInternalBlankDecision.INTERNAL_BLANK_LINE_VISIBLE_DECISION_COUNT++
@@ -16940,7 +16980,29 @@ export class DocumentUtilityOverlayHost {
     // the diagnostic silently dropped after a blank run is split. Lift BOTH
     // boundaries to their deepest common sibling level first.
     const pair = normalizeSiblingBoundaryPair(businessRoot, previousRaw, nextRaw)
-    if (pair == null) return null
+    if (pair == null) {
+      // R8F — 取证：两侧都绑到了元素，但兄弟级归一化失败（同元素 / 顺序反 / 跨父级）。
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLANK-BOUNDARY-PAIR-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        previousTag: previousRaw.tagName.toLowerCase(),
+        previousClass: String(previousRaw.className).slice(0, 64),
+        previousDataLine: previousRaw.getAttribute('data-line'),
+        previousText: normalizeSourceAnchorText(previousRaw.textContent).slice(0, 24),
+        previousParentTag: previousRaw.parentElement?.tagName.toLowerCase() ?? null,
+        previousParentClass: previousRaw.parentElement ? String(previousRaw.parentElement.className).slice(0, 48) : null,
+        nextTag: nextRaw.tagName.toLowerCase(),
+        nextClass: String(nextRaw.className).slice(0, 64),
+        nextDataLine: nextRaw.getAttribute('data-line'),
+        nextText: normalizeSourceAnchorText(nextRaw.textContent).slice(0, 24),
+        nextParentTag: nextRaw.parentElement?.tagName.toLowerCase() ?? null,
+        nextParentClass: nextRaw.parentElement ? String(nextRaw.parentElement.className).slice(0, 48) : null,
+        sameElement: previousRaw === nextRaw,
+        sameParent: previousRaw.parentElement === nextRaw.parentElement,
+        order: previousRaw.compareDocumentPosition(nextRaw),
+        decision: 'PAIR_UNRESOLVED',
+      })
+      return null
+    }
     const previousElement = pair.previous
     const nextElement = pair.next
     // TRAE diagnostic — the exact DOM relationship between the two boundaries
@@ -16993,9 +17055,43 @@ export class DocumentUtilityOverlayHost {
       ? meta[`${side}BlockStartLine`] as number : null
     const anchorText = typeof meta[`${side}BlockAnchorText`] === 'string'
       ? meta[`${side}BlockAnchorText`] as string : ''
-    const bound = this.bindGapBoundary({ canonicalKind: kind, canonicalOrdinal: ordinal, startLine, anchorText })
+    const bound = this.bindGapBoundary({
+      canonicalKind: kind, canonicalOrdinal: ordinal, startLine, anchorText,
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta[`${side}BlockIdentity`]),
+    })
     const el = bound.element
-    if (el == null) return null
+    if (el == null) {
+      // R8F — 取证：绑定阶梯在元素解出之前就失败了。记录真实阶梯决策 + 候选事实，
+      // 让「RUNTIME_UNAVAILABLE」不再是一个不可区分的兜底值。
+      const needle = normalizeSourceAnchorText(anchorText)
+      const candidates = this.gapBindingCandidates()
+      const textMatches = needle !== ''
+        ? candidates.filter(c => normalizeSourceAnchorText(c.textContent) === needle)
+        : []
+      emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-BLANK-BOUNDARY-BIND-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        side,
+        canonicalKind: kind,
+        canonicalOrdinal: ordinal,
+        startLine,
+        anchorText: anchorText.slice(0, 40),
+        needle: needle.slice(0, 40),
+        decision: bound.decision,
+        strategy: bound.strategy,
+        semanticTextMatch: bound.semanticTextMatch,
+        candidateCount: candidates.length,
+        textMatchCount: textMatches.length,
+        matchedDataLines: textMatches.slice(0, 8).map(c => c.getAttribute('data-line')),
+        matchedClasses: textMatches.slice(0, 8).map(c => String(c.className).slice(0, 48)),
+        candidates: candidates.slice(0, 12).map(c => ({
+          tag: c.tagName.toLowerCase(),
+          cls: String(c.className).slice(0, 40),
+          dataLine: c.getAttribute('data-line'),
+          text: normalizeSourceAnchorText(c.textContent).slice(0, 20),
+        })),
+      })
+      return null
+    }
     if (kind != null && !this.gapBoundaryElementMatchesKind(el, kind)) return null
     const root = resolveBusinessContentRoot()
     if (root == null || !root.contains(el) || !el.isConnected) return null
@@ -27416,12 +27512,14 @@ export class DocumentUtilityOverlayHost {
       canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
       startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
       anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.previousBlockIdentity),
     })
     const next = this.bindGapBoundary({
       canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
       canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
       startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
       anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.nextBlockIdentity),
     })
     if (prev.element == null || next.element == null || prev.element === next.element) return null
     // §17/§20 — re-resolve the RENDERED blank rows FRESH between the two live
