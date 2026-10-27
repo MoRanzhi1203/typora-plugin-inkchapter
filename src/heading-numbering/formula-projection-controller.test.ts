@@ -4,6 +4,7 @@ import {
   FormulaProjectionController,
   classifyFormulaProjectionVerify,
   hashFormulaSource,
+  isPlanSourceAdmissible,
   normalizeTyporaAutoNumberingPolicy,
   scanDisplayMathSources,
   sourceHasExplicitUserTag,
@@ -150,16 +151,189 @@ describe('FormulaProjectionController.prepareTransientRenderInput — SINGLE-OUT
     expect(d1.tex.match(/\\tag\{/g)).toHaveLength(1)
   })
 
-  it('duplicate source text across hosts → NO injection (host correlation not provable)', () => {
+  it('duplicate source text across hosts → each host gets its OWN tag by stable order (PA-10)', () => {
     const h1 = document.createElement('div')
     const h2 = document.createElement('div')
+    document.body.appendChild(h1)
+    document.body.appendChild(h2)
     const controller = new FormulaProjectionController()
-    const plan1: FormulaNativeRenderPlan = { documentKey: 'doc-a', revision: 3, sourceHash: 'h-dup', rawNumber: '1.1-1', renderedNumber: '(1.1-1)', formulaRuntimeKey: 'formula:0', authority: 'inkchapter-native-transient', formulaMode: 'inkchapter' }
+    const plan1: FormulaNativeRenderPlan = { documentKey: 'doc-a', revision: 3, sourceHash: hashFormulaSource('x = 1'), rawNumber: '1.1-1', renderedNumber: '(1.1-1)', formulaRuntimeKey: 'formula:0', authority: 'inkchapter-native-transient', formulaMode: 'inkchapter' }
     const plan2: FormulaNativeRenderPlan = { ...plan1, rawNumber: '1.1-2', renderedNumber: '(1.1-2)', formulaRuntimeKey: 'formula:1' }
     controller.setPlan(h1, plan1)
     controller.setPlan(h2, plan2)
-    const decision = controller.prepareTransientRenderInput('x = 1', 'doc-a', 3)
-    expect(decision.injected).toBe(false)
+
+    const d1 = controller.prepareTransientRenderInput('x = 1', 'doc-a', 3)
+    const d2 = controller.prepareTransientRenderInput('x = 1', 'doc-a', 3)
+
+    expect(d1.injected).toBe(true)
+    expect(d2.injected).toBe(true)
+    expect(d1.tex).toBe('x = 1\\tag{1.1-1}')
+    expect(d2.tex).toBe('x = 1\\tag{1.1-2}')
+    expect(d1.host).toBe(h1)
+    expect(d2.host).toBe(h2)
+    expect(d1.ambiguousGroupSize).toBe(2)
+    expect(d1.ambiguousResolutionBasis).toBe('DOCUMENT_ORDER_NEEDS_INJECTION')
+  })
+
+  it('PA-10: three identical formulas receive three distinct, sequential tags', () => {
+    const hosts = [0, 1, 2].map(() => document.createElement('div'))
+    hosts.forEach(h => document.body.appendChild(h))
+    const controller = new FormulaProjectionController()
+    hosts.forEach((h, i) => {
+      controller.setPlan(h, {
+        documentKey: 'doc-a', revision: 5, sourceHash: hashFormulaSource('a = b'),
+        rawNumber: `1.1-${i + 1}`, renderedNumber: `(1.1-${i + 1})`,
+        formulaRuntimeKey: `formula:${i}`, authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+      })
+    })
+    const decisions = hosts.map(() => controller.prepareTransientRenderInput('a = b', 'doc-a', 5))
+    expect(decisions.map(d => d.injected)).toEqual([true, true, true])
+    expect(decisions.map(d => d.tex)).toEqual([
+      'a = b\\tag{1.1-1}',
+      'a = b\\tag{1.1-2}',
+      'a = b\\tag{1.1-3}',
+    ])
+    expect(decisions.map(d => d.host)).toEqual(hosts)
+  })
+
+  it('PA-10: a controlled render can ARM its exact target out of DOM order', () => {
+    const h1 = document.createElement('div')
+    const h2 = document.createElement('div')
+    document.body.appendChild(h1)
+    document.body.appendChild(h2)
+    const controller = new FormulaProjectionController()
+    const base: FormulaNativeRenderPlan = {
+      documentKey: 'doc-a', revision: 2, sourceHash: hashFormulaSource('y = z'),
+      rawNumber: '2.1-1', renderedNumber: '(2.1-1)', formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    }
+    controller.setPlan(h1, base)
+    controller.setPlan(h2, { ...base, rawNumber: '2.1-2', renderedNumber: '(2.1-2)', formulaRuntimeKey: 'formula:1' })
+
+    controller.armPendingLookupHost(h2)
+    const d = controller.prepareTransientRenderInput('y = z', 'doc-a', 2)
+    expect(d.host).toBe(h2)
+    expect(d.tex).toBe('y = z\\tag{2.1-2}')
+    expect(d.ambiguousResolutionBasis).toBe('ARMED_CONTROLLED_TARGET')
+  })
+
+  it('PA-10: duplicate group never invents a host without a plan (explicit defer)', () => {
+    const h1 = document.createElement('div')
+    document.body.appendChild(h1)
+    const controller = new FormulaProjectionController()
+    // Two hosts share the hash but the plan is cleared for one of them.
+    const plan: FormulaNativeRenderPlan = {
+      documentKey: 'doc-a', revision: 2, sourceHash: hashFormulaSource('q = r'),
+      rawNumber: '3.1-1', renderedNumber: '(3.1-1)', formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    }
+    controller.setPlan(h1, plan)
+    const h2 = document.createElement('div')
+    document.body.appendChild(h2)
+    controller.setPlan(h2, { ...plan, rawNumber: '3.1-2', formulaRuntimeKey: 'formula:1' })
+    controller.clearPlan(h1)
+    const d = controller.prepareTransientRenderInput('q = r', 'doc-a', 2)
+    expect(d.injected).toBe(true)
+    expect(d.host).toBe(h2)
+  })
+
+  it('PA-10: a new plan-set epoch restarts the document-order correlation', () => {
+    const h1 = document.createElement('div')
+    const h2 = document.createElement('div')
+    document.body.appendChild(h1)
+    document.body.appendChild(h2)
+    const controller = new FormulaProjectionController()
+    const base: FormulaNativeRenderPlan = {
+      documentKey: 'doc-a', revision: 1, sourceHash: hashFormulaSource('m = n'),
+      rawNumber: '4.1-1', renderedNumber: '(4.1-1)', formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    }
+    controller.setPlan(h1, base)
+    controller.setPlan(h2, { ...base, rawNumber: '4.1-2', formulaRuntimeKey: 'formula:1' })
+    controller.prepareTransientRenderInput('m = n', 'doc-a', 1)
+    controller.prepareTransientRenderInput('m = n', 'doc-a', 1)
+
+    controller.beginPlanSetEpoch()
+    const d = controller.prepareTransientRenderInput('m = n', 'doc-a', 1)
+    expect(d.host).toBe(h1)
+  })
+})
+
+describe('PA-13 render-seam failure releases the reservation (bounded)', () => {
+  function makeHostWithPlan(controller: FormulaProjectionController, rawNumber = '6.1-1'): HTMLElement {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    controller.setPlan(host, {
+      documentKey: 'doc-a', revision: 2, sourceHash: hashFormulaSource('u = v'),
+      rawNumber, renderedNumber: `(${rawNumber})`, formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    })
+    return host
+  }
+
+  it('refunds the one-shot budget, clears the in-flight marker and allows a retry', () => {
+    const controller = new FormulaProjectionController()
+    const host = makeHostWithPlan(controller)
+
+    expect(controller.tryReserveRecoveryRender(host)).toBe(true)
+    controller.markRenderRequested(host)
+    expect(controller.getExecutionState(host)).toBe('render-requested')
+    expect(controller.recoveryAttemptCount(host)).toBe(1)
+
+    const failures = controller.markRecoveryRenderFailed(host, 'doc-a', 'formula:0', 'ROUTE_NOT_AVAILABLE')
+
+    expect(failures).toBe(1)
+    expect(controller.getExecutionState(host)).toBe('plan-ready')
+    expect(controller.recoveryAttemptCount(host)).toBe(0)
+    expect(controller.lastRenderRequestedSignatureHash(host)).toBeNull()
+    expect(controller.canAttemptRecoveryRender(host)).toBe(true)
+    expect(controller.tryReserveRecoveryRender(host)).toBe(true)
+  })
+
+  it('stops after the bounded number of failures and resets on a new signature', () => {
+    const controller = new FormulaProjectionController()
+    const host = makeHostWithPlan(controller)
+
+    for (let i = 0; i < 3; i++) {
+      expect(controller.tryReserveRecoveryRender(host)).toBe(true)
+      controller.markRenderRequested(host)
+      controller.markRecoveryRenderFailed(host, 'doc-a', 'formula:0', 'ROUTE_NOT_AVAILABLE')
+    }
+    expect(controller.recoveryFailureCount(host)).toBe(3)
+    expect(controller.canAttemptRecoveryRender(host)).toBe(false)
+
+    // A semantic change mints a NEW activation → the failure budget starts over.
+    controller.setPlan(host, {
+      documentKey: 'doc-a', revision: 3, sourceHash: hashFormulaSource('u = v'),
+      rawNumber: '6.1-2', renderedNumber: '(6.1-2)', formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    })
+    expect(controller.recoveryFailureCount(host)).toBe(0)
+    expect(controller.canAttemptRecoveryRender(host)).toBe(true)
+  })
+})
+
+describe('PA-12 empty formula keeps its ordinal', () => {
+  it('a zero-length source is admissible only when sources and hosts are 1:1 aligned', () => {
+    expect(isPlanSourceAdmissible('', true)).toBe(true)
+    expect(isPlanSourceAdmissible('', false)).toBe(false)
+    expect(isPlanSourceAdmissible('x = 1', false)).toBe(true)
+    expect(isPlanSourceAdmissible('x = 1', true)).toBe(true)
+  })
+
+  it('an empty host with a plan receives its own tag instead of being skipped', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const controller = new FormulaProjectionController()
+    controller.setPlan(host, {
+      documentKey: 'doc-a', revision: 1, sourceHash: hashFormulaSource(''),
+      rawNumber: '5.2-3', renderedNumber: '(5.2-3)', formulaRuntimeKey: 'formula:2',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    })
+    const d = controller.prepareTransientRenderInput('', 'doc-a', 1)
+    expect(d.injected).toBe(true)
+    expect(d.tex).toBe('\\tag{5.2-3}')
+    expect(d.host).toBe(host)
   })
 })
 

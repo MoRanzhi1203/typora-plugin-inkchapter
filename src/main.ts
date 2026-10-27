@@ -879,7 +879,18 @@ export default class extends Plugin<InkChapterSettings> {
         },
         onCanonicalFrameCommit: (cb) => {
           if (!this.numberingService) return () => undefined
-          return this.numberingService.subscribeCanonicalHeadingFrame(() => cb(), { emitCurrent: true })
+          // PA-16 — forward the committed frame so diagnostics can tell a real
+          // heading change from a presentation-only commit (caret/focus/re-bind).
+          return this.numberingService.subscribeCanonicalHeadingFrame(
+            (frame) => cb(frame == null
+              ? undefined
+              : {
+                  documentKey: frame.documentKey,
+                  semanticRevision: frame.semanticRevision,
+                  semanticFingerprint: frame.semanticFingerprint,
+                }),
+            { emitCurrent: true },
+          )
         },
         onSettingsChanged: (cb) => {
           if (!this.numberingService) return () => undefined

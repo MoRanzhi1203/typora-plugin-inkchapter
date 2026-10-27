@@ -3,6 +3,7 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { planFormulaSemanticNumbers, type FormulaSemanticContext } from './formula-semantic-planner'
 import { DEFAULT_OBJECT_NUMBERING_CONFIG, type ObjectNumberingConfig } from './object-numbering-engine'
+import { migrateObjectNumberingConfig } from './object-numbering-settings'
 
 function cfg(overrides: Partial<ObjectNumberingConfig> = {}): ObjectNumberingConfig {
   return { ...DEFAULT_OBJECT_NUMBERING_CONFIG.formula, enabled: true, formulaMode: 'inkchapter', ...overrides }
@@ -77,6 +78,29 @@ describe('Phase 7 FORMULA-SEM — canonical semantic formula numbering (pure pla
     const r = planFormulaSemanticNumbers([ctx(1, 3)], cfg({ preset: 'chapter-dash' }))
     expect(r[0].effectiveScope).toBe('chapter')
     expect(r[0].renderedNumber).toBe('(1-1)')
+  })
+})
+
+describe('PA-11 shipped default numbers formulas per section', () => {
+  it('the default formula config yields per-section numbers', () => {
+    const shipped = DEFAULT_OBJECT_NUMBERING_CONFIG.formula
+    expect(shipped.preset).toBe('section-dash')
+    const r = planFormulaSemanticNumbers([ctx(1, 1), ctx(1, 1), ctx(1, 2)], shipped)
+    expect(r.map(x => x.renderedNumber)).toEqual(['(1.1-1)', '(1.1-2)', '(1.2-1)'])
+  })
+
+  it('an explicitly stored preset is preserved by migration (existing users unchanged)', () => {
+    const keepGlobal = migrateObjectNumberingConfig('formula', {
+      ...DEFAULT_OBJECT_NUMBERING_CONFIG.formula,
+      preset: 'global',
+    })
+    expect(keepGlobal.preset).toBe('global')
+
+    const keepSection = migrateObjectNumberingConfig('formula', {
+      ...DEFAULT_OBJECT_NUMBERING_CONFIG.formula,
+      preset: 'section-dot',
+    })
+    expect(keepSection.preset).toBe('section-dot')
   })
 })
 

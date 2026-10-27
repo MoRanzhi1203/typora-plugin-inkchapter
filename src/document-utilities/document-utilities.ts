@@ -12,6 +12,7 @@ import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import type { ObjectEffectiveNumberElementFacts } from './diagnostics-types'
 import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import type { DocumentUtilitiesContext, StructuralMarkdownSnapshot } from './document-utilities-context'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
@@ -125,7 +126,7 @@ export interface DocumentUtilitiesSources {
   /** Subscribe to document switch (workspace file:open etc.). */
   onDocumentSwitch: (cb: () => void) => () => void
   /** Phase 7R.3.11.8-B — canonical heading frame commit subscription (live diagnostics). */
-  onCanonicalFrameCommit?: (cb: () => void) => () => void
+  onCanonicalFrameCommit?: (cb: (frame?: CanonicalFrameSignal) => void) => () => void
   /** Phase 7R.3.11.8-B — numbering settings/mode change subscription. */
   onSettingsChanged?: (cb: () => void) => () => void
   /** Phase 7R.3.11.8B.7.1 — effective-mode transition revision (real transitions). */
@@ -138,6 +139,38 @@ export interface DocumentUtilities {
   dispose: () => void
   /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only). */
   getSnapshot: () => DocumentDiagnosticsSnapshot | null
+}
+
+/**
+ * PA-16 — the SEMANTIC identity of a committed canonical heading frame.
+ *
+ * A frame commit also fires for presentation-only reasons (caret move, focus,
+ * re-bind, scroll). Diagnostics must be able to tell those apart from a real
+ * heading change WITHOUT consulting the incremental markdown mirror:
+ * `semanticFingerprint` is produced by the canonical heading authority itself.
+ */
+export interface CanonicalFrameSignal {
+  documentKey?: string
+  semanticRevision?: number
+  semanticFingerprint?: string
+}
+
+/**
+ * PA-16 — whether a frame commit must start a FULL diagnostics transaction.
+ *
+ * Rules (monotonic, never "assume unchanged"):
+ * - no frame / no documentKey / no semanticFingerprint ⇒ RUN (no evidence);
+ * - same document AND same semantic fingerprint ⇒ SKIP (presentation-only);
+ * - anything else ⇒ RUN.
+ */
+export function shouldRunDiagnosticsForFrame(
+  frame: CanonicalFrameSignal | undefined,
+  last: { documentKey: string | null; semanticFingerprint: string | null },
+): boolean {
+  const key = frame?.documentKey ?? null
+  const fingerprint = frame?.semanticFingerprint ?? null
+  if (key === null || fingerprint === null) return true
+  return !(key === last.documentKey && fingerprint === last.semanticFingerprint)
 }
 
 const VISIBLE_TAG_TOKEN_RE = /^\(\s*([\d]+(?:\.[\d]+)*-\d+|\d+)\s*\)$/
@@ -350,6 +383,9 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
   // producer fingerprint still dedupes a genuinely unchanged state.
   const pendingRecomputeReasons = new Set<string>()
   let recomputeRafPending = false
+  /** PA-16 — semantic identity of the LAST full diagnostics transaction. */
+  let lastDiagnosticFrameKey: string | null = null
+  let lastDiagnosticSemanticFingerprint: string | null = null
 
   const host = new DocumentUtilityOverlayHost({
     ctx,
@@ -388,8 +424,30 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
           recompute(merged || reason)
         })
       }
-      sources.onCanonicalFrameCommit?.(() => {
+      sources.onCanonicalFrameCommit?.((frame) => {
         indexHeadingIdentities()
+        const frameKey = frame?.documentKey ?? null
+        const frameFingerprint = frame?.semanticFingerprint ?? null
+        // PA-16 — SAME document + SAME semantic fingerprint as the last full
+        // transaction ⇒ this commit is presentation-only (caret/focus/re-bind),
+        // so the structural diagnostics pass is skipped. Real edits still reach
+        // diagnostics through DOCUMENT_MUTATION / DOCUMENT_SOURCE_CHANGED, and
+        // the first frame of every document always runs.
+        if (!shouldRunDiagnosticsForFrame(frame, {
+          documentKey: lastDiagnosticFrameKey,
+          semanticFingerprint: lastDiagnosticSemanticFingerprint,
+        })) {
+          emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-FRAME-SKIPPED', {
+            documentKey: frameKey,
+            semanticRevision: frame?.semanticRevision ?? null,
+            semanticFingerprint: frameFingerprint,
+            reason: 'SEMANTICALLY_UNCHANGED_FRAME',
+            decision: 'SKIPPED',
+          })
+          return
+        }
+        lastDiagnosticFrameKey = frameKey
+        lastDiagnosticSemanticFingerprint = frameFingerprint
         recompute('CANONICAL_FRAME_CHANGED')
       })
       sources.onSettingsChanged?.(() => {

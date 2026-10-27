@@ -57,7 +57,7 @@ import {
 import {
   HEADING_NUMBER_DECORATION_AUDIT_EVENT,
   HEADING_DECORATION_V514R4_GATE_KEYS,
-  buildHeadingDecorationProjections,
+  buildAlignedHeadingDecorationProjections,
   createHeadingDecorationV514R4Counters,
   evaluateHeadingDecorationV514R4Gates,
   formatHeadingDecorationV514R4GateReport,
@@ -99,6 +99,7 @@ import {
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
+import { decideRefreshBatch, FORCE_REFRESH_REASON_IDS } from './refresh-reason-policy'
 import { HeadingOverrideStore } from './heading-override-store'
 import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
@@ -523,10 +524,7 @@ export interface ServiceContext {
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
-const FORCE_REFRESH_REASONS: Set<RefreshReason> = new Set([
-  'toggle', 'manual', 'initial-load', 'focus-in', 'decoration-repair',
-  'file-open', 'active-leaf-change',
-])
+const FORCE_REFRESH_REASONS: ReadonlySet<string> = FORCE_REFRESH_REASON_IDS
 
 /**
  * Convert contextual format variants back to multilevel format variants.
@@ -4384,7 +4382,10 @@ export class HeadingNumberingService {
     })
 
     // ── R58.2: Document switch — canonical registry lifecycle ──────────
-    if (primaryReason === 'active-leaf-change' || primaryReason === 'file-open') {
+    // PA-15 — decided from the WHOLE batch: a same-frame `editor-input` must
+    // never swallow the document-switch cleanup.
+    const batchDecision = decideRefreshBatch(reasons)
+    if (batchDecision.documentSwitch) {
       this.canonicalRegistry.clearDocumentBindings(this.getDocumentKey() ?? '')
       this.releaseOneShotHandoff('document-switch')
       // STRICT-FIRST-H1: force revalidation on the new document (no stale state/signature).
@@ -4396,7 +4397,7 @@ export class HeadingNumberingService {
       )
     }
 
-    this.doRefresh(primaryReason, { hasParagraphCommandMutation })
+    this.doRefresh(primaryReason, { hasParagraphCommandMutation, forceRefresh: batchDecision.forceRefresh })
   }
 
   private scheduleTail(reason: RefreshReason, ms: number): void {
@@ -4529,7 +4530,7 @@ export class HeadingNumberingService {
 
   // ── Core refresh ───────────────────────────────────────
 
-  private doRefresh(reason: RefreshReason, flags?: { hasParagraphCommandMutation?: boolean }): void {
+  private doRefresh(reason: RefreshReason, flags?: { hasParagraphCommandMutation?: boolean; forceRefresh?: boolean }): void {
     const startTime = performance.now()
     const hasParagraphCommand = flags?.hasParagraphCommandMutation ?? false
 
@@ -4648,7 +4649,7 @@ export class HeadingNumberingService {
       if (!this.s.enabled) return
 
       const snapshot = this.adapter.createHeadingSnapshot(headings)
-      const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
+      const forceRefresh = flags?.forceRefresh ?? FORCE_REFRESH_REASONS.has(reason)
 
       if (!forceRefresh && this.lastSnapshot && this.renderedStates && this.renderedProjections) {
         // Structure unchanged?
@@ -4695,9 +4696,12 @@ export class HeadingNumberingService {
 
       // ── V5.14-R4 §8/§9 — the ONE projection for this refresh. label + gap are
       // two projections of the SAME business result and are committed together.
-      const projections = buildHeadingDecorationProjections(
-        numbered.map((h, i) => ({ key: h.key, label: labels[i] ?? h.label, labelGap: h.labelGap })),
-      )
+      //
+      // PA-14 — `numbered` is FILTERED by maxDepth while `headings` is the full
+      // DOM list. Align by stable identity (empty label for out-of-range
+      // headings) so no label can shift to a neighbour.
+      const alignedProjections = buildAlignedHeadingDecorationProjections(headings, numbered, labels)
+      const alignedLabels = alignedProjections.map(p => p.label)
 
       // Snapshot numbering engine per-heading output
       const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {
@@ -4723,10 +4727,10 @@ export class HeadingNumberingService {
       snapshotNumberingEngine(this.s, engineEntries)
 
       const previousProjections = this.renderedProjections
-      const diff = this.adapter.reconcileHeadingDecorations(projections, headingEls)
-      this.syncRenderedDecorationCache(projections, headingEls)
+      const diff = this.adapter.reconcileHeadingDecorations(alignedProjections, headingEls)
+      this.syncRenderedDecorationCache(alignedProjections, headingEls)
 
-      const gaps = projections.map(p => p.gap)
+      const gaps = alignedProjections.map(p => p.gap)
       this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff, headingEls)
 
       // Snapshot apply-diff (SAME heading collection — no second query)
@@ -4735,19 +4739,20 @@ export class HeadingNumberingService {
         diffEntries.push({
           domIndex: di, domKey: el.tagName + '-' + (el.getAttribute('data-line') ?? ''), tagName: el.tagName,
           parsedLevel: parseInt(el.tagName.charAt(1)), textPreview: (el.textContent ?? '').slice(0, 40),
-          labelIndex: di, incomingLabel: di < labels.length ? labels[di] : 'N/A',
+          labelIndex: di, incomingLabel: di < alignedLabels.length ? alignedLabels[di] : 'N/A',
           previousAttr: el.getAttribute('data-inkchapter-heading-number'),
-          action: di < labels.length ? (labels[di] ? 'update' : 'skip-empty') : 'skip-empty',
+          action: di < alignedLabels.length ? (alignedLabels[di] ? 'update' : 'skip-empty') : 'skip-empty',
           nextAttr: null as string | null,
         });
         di++
       }
-      snapshotApplyDiff(labels, diffEntries, labels.length, headingEls.length)
+      snapshotApplyDiff(alignedLabels, diffEntries, alignedLabels.length, headingEls.length)
 
       // Sync outline sidebar numbering — pass the authoritative documentKey AND
       // the SAME projection snapshot (V5.14-R4 §12: the outline consumes the
-      // identical label+gap, never a re-derived one).
-      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, labels, gaps, projections)
+      // identical label+gap, never a re-derived one). PA-14 — all four lists are
+      // aligned to `headings` (DOM order), never to the maxDepth-filtered list.
+      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, alignedLabels, gaps, alignedProjections)
 
       // Phase 7R.3.11.8B.4.2 — pure-observability structure authority audits
       // (state-deduped; never mutates settings/store/DOM/outline).

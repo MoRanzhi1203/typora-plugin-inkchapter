@@ -231,6 +231,13 @@ export interface FormulaVerifyInput {
 export const MAX_CONTROLLED_RERENDER_PER_ACTIVATION = 1
 
 /**
+ * PA-13 — bounded retries when the render SEAM itself fails (route missing,
+ * throw, rejection). The one-shot budget is refunded on failure, so this cap is
+ * what keeps a permanently broken renderer from looping.
+ */
+export const MAX_RECOVERY_RENDER_FAILURES_PER_SIGNATURE = 3
+
+/**
  * Phase 7R.3.1-A / 7R.3.3-F verifier — the ONLY path to SEMANTIC_VISIBLE_VERIFIED.
  * `customDecorationCount=0` alone never implies the semantic number is visible;
  * `semanticCommitted` must already be an EXACT tag-token match against the
@@ -261,6 +268,11 @@ export interface FormulaRenderInputDecision {
   planSetEpoch?: number
   activationId?: number | null
   signatureHash?: string
+  /** PA-10 — this lookup belonged to a duplicate-TeX group and was resolved. */
+  ambiguousGroupSize?: number
+  ambiguousResolutionBasis?: string
+  /** PA-10 — the EXACT host this render call was correlated to. */
+  host?: HTMLElement
 }
 
 /** A source-authored explicit `\tag{...}` — must be preserved, never overwritten. */
@@ -287,6 +299,15 @@ export function scanDisplayMathSources(markdown: string): string[] {
     sources.push(m[1])
   }
   return sources
+}
+
+/**
+ * PA-12 — a zero-length `$$$$` block is a REAL (empty) formula and must keep
+ * its number. It may only be skipped when the source list could not be aligned
+ * 1:1 with the canonical hosts, because the index mapping is then meaningless.
+ */
+export function isPlanSourceAdmissible(sourceTex: string, sourcesAligned: boolean): boolean {
+  return sourceTex.length > 0 || sourcesAligned
 }
 
 /** Replace fenced code-block lines with empty lines (keeps line offsets). */
@@ -390,6 +411,17 @@ export class FormulaProjectionController {
   private staleActivationCommitIgnoredCount = 0
   private staleActivationLookupCount = 0
   private adoptedExistingSemanticOutputCount = 0
+  /**
+   * PA-10 — identical TeX cannot be told apart by `sourceHash` alone. The hook
+   * only receives the TeX string, so the ONLY stable correlation left is the
+   * host's position inside its hash group (document order) plus a one-shot
+   * "armed target" used by controlled single-host renders.
+   */
+  private ambiguousLookupCursors = new Map<string, number>()
+  private pendingLookupHost: HTMLElement | null = null
+  private lastAmbiguousResolutionBasis: string | null = null
+  /** PA-13 — bounded render-seam failures per host + signature. */
+  private recoveryFailures = new Map<HTMLElement, { signatureHash: string; count: number }>()
 
   private stateOf(host: HTMLElement): HostProjectionState {
     let s = this.stateByHost.get(host)
@@ -417,7 +449,64 @@ export class FormulaProjectionController {
   /** Increment ONLY when a COMPLETE candidate is atomically published. */
   beginPlanSetEpoch(): number {
     this.planSetEpochValue++
+    // A new atomic plan set starts a NEW correlation pass: a fresh DOM order
+    // must be consumed from the beginning.
+    this.resetAmbiguousLookupState()
     return this.planSetEpochValue
+  }
+
+  // ── PA-10 ambiguous-source correlation ──────────────────────────────
+
+  /**
+   * Arm the ONE host the next ambiguous lookup belongs to. Used by controlled
+   * single-host renders, where we initiated the render and therefore KNOW the
+   * target (the hook itself only sees TeX).
+   */
+  armPendingLookupHost(host: HTMLElement | null): void {
+    this.pendingLookupHost = host
+  }
+
+  /** Forget pending/cursor state (plan-set publish, document switch, dispose). */
+  resetAmbiguousLookupState(): void {
+    this.ambiguousLookupCursors.clear()
+    this.pendingLookupHost = null
+    this.lastAmbiguousResolutionBasis = null
+  }
+
+  /** Basis used by the last ambiguous resolution (audit/tests). */
+  getLastAmbiguousResolutionBasis(): string | null {
+    return this.lastAmbiguousResolutionBasis
+  }
+
+  /**
+   * Resolve WHICH host a duplicate-TeX render call belongs to.
+   * Priority: armed target → first host still needing its tag → round-robin
+   * over document order. Never invents a host that has no plan.
+   */
+  private resolveAmbiguousHost(sourceHash: string, hosts: Set<HTMLElement>): HTMLElement {
+    const pending = this.pendingLookupHost
+    if (pending !== null && hosts.has(pending)) {
+      this.pendingLookupHost = null
+      this.lastAmbiguousResolutionBasis = 'ARMED_CONTROLLED_TARGET'
+      return pending
+    }
+    const list = Array.from(hosts)
+    const needsInjection = list.find(h => {
+      const act = this.stateOf(h).activation
+      if (act === null) return false
+      const plan = this.plans.get(h)
+      if (plan === undefined) return false
+      const sig = hashProjectionSignature(projectionSignatureOf(h, plan))
+      return act.signatureHash === sig && !(act.injected && act.lastInjectedActivationId === act.activationId)
+    })
+    if (needsInjection !== undefined) {
+      this.lastAmbiguousResolutionBasis = 'DOCUMENT_ORDER_NEEDS_INJECTION'
+      return needsInjection
+    }
+    const cursor = this.ambiguousLookupCursors.get(sourceHash) ?? 0
+    this.ambiguousLookupCursors.set(sourceHash, cursor + 1)
+    this.lastAmbiguousResolutionBasis = 'DOCUMENT_ORDER_ROUND_ROBIN'
+    return list[cursor % list.length]
   }
 
   // ── Activation accessors ─────────────────────────────────────────────
@@ -832,6 +921,7 @@ export class FormulaProjectionController {
     const inputHasExplicitTag = sourceHasExplicitUserTag(tex)
     const hosts = this.sourceIndex.get(sourceHash)
     const activePlanCount = this.sourceIndex.size
+    const ambiguousGroupSize = hosts ? hosts.size : 0
 
     const emitLookup = (host: HTMLElement | null, decision: FormulaTransientPlanLookupDecision) => {
       if (host) this.stateOf(host).lastLookupDecision = decision
@@ -842,7 +932,9 @@ export class FormulaProjectionController {
         activePlanCount,
         expectedPlanCount: this.expectedPlanCount,
         planSetComplete: activePlanCount >= this.expectedPlanCount && this.expectedPlanCount > 0,
-        sourceHashMatchCount: hosts ? hosts.size : 0,
+        sourceHashMatchCount: ambiguousGroupSize,
+        ambiguousGroupSize,
+        ambiguousResolutionBasis: ambiguousGroupSize > 1 ? this.lastAmbiguousResolutionBasis : null,
         matchedFormulaRuntimeKey: host && this.plans.get(host) ? this.plans.get(host)!.formulaRuntimeKey : null,
         matchedHostConnected: host ? host.isConnected : null,
         inputHasExplicitTag,
@@ -860,29 +952,34 @@ export class FormulaProjectionController {
       }
       return { tex, injected: false, authority: 'defer', sourceHash }
     }
-    if (hosts.size > 1) {
-      emitLookup(null, 'AMBIGUOUS_SOURCE_MATCH')
-      return { tex, injected: false, authority: 'defer', sourceHash }
-    }
-    const host = hosts.values().next().value as HTMLElement
+    // PA-10 — duplicate TeX is correlated by HOST IDENTITY + DOCUMENT ORDER,
+    // never by "pick any host with this hash". The hook only receives TeX, so
+    // the host slot is the only remaining stable fact; a controlled render can
+    // additionally ARM its exact target.
+    const host = hosts.size > 1
+      ? this.resolveAmbiguousHost(sourceHash, hosts)
+      : (hosts.values().next().value as HTMLElement)
+    const ambiguousResolution = hosts.size > 1
+      ? { ambiguousGroupSize, ambiguousResolutionBasis: this.lastAmbiguousResolutionBasis ?? 'UNKNOWN' }
+      : {}
     const plan = this.plans.get(host)
     if (!plan) {
       emitLookup(host, 'NO_ACTIVE_PLAN_SET')
-      return { tex, injected: false, authority: 'defer', sourceHash }
+      return { tex, injected: false, authority: 'defer', sourceHash, host, ...ambiguousResolution }
     }
     if (!host.isConnected) {
       emitLookup(host, 'HOST_DISCONNECTED')
       this.clearPlan(host)
-      return { tex, injected: false, authority: 'defer', sourceHash }
+      return { tex, injected: false, authority: 'defer', sourceHash, host, ...ambiguousResolution }
     }
     if (plan.documentKey !== documentKey) {
       emitLookup(host, 'DOCUMENT_MISMATCH')
       this.clearPlan(host)
-      return { tex, injected: false, authority: 'defer', sourceHash }
+      return { tex, injected: false, authority: 'defer', sourceHash, host, ...ambiguousResolution }
     }
     if (inputHasExplicitTag) {
       emitLookup(host, 'EXPLICIT_USER_TAG_PRESERVED')
-      return { tex, injected: false, authority: 'explicit-user-tag-preserved', sourceHash }
+      return { tex, injected: false, authority: 'explicit-user-tag-preserved', sourceHash, host, ...ambiguousResolution }
     }
 
     // Phase 7R.3.6 §36: if the current activation no longer matches the CURRENT
@@ -893,7 +990,7 @@ export class FormulaProjectionController {
     if (currentActivation && currentActivation.signatureHash !== sig) {
       emitLookup(host, 'STALE_ACTIVATION_LOOKUP')
       this.markStaleActivationLookup(documentKey, plan.formulaRuntimeKey)
-      return { tex, injected: false, authority: 'defer', sourceHash }
+      return { tex, injected: false, authority: 'defer', sourceHash, host, ...ambiguousResolution }
     }
 
     // Phase 7R.3.2-C: revision drift on an identical plan is ACCEPTED.
@@ -920,6 +1017,8 @@ export class FormulaProjectionController {
       planSetEpoch: currentActivation?.planSetEpoch ?? this.planSetEpochValue,
       activationId: currentActivation?.activationId ?? null,
       signatureHash: sig,
+      host,
+      ...ambiguousResolution,
     }
   }
 
@@ -995,6 +1094,72 @@ export class FormulaProjectionController {
     act.lastRenderRequestedSignatureHash = act.signatureHash
     act.state = 'render-requested'
     s.executionState = 'render-requested'
+  }
+
+  /**
+   * PA-13 — the render SEAM failed (route missing / throw / rejection).
+   *
+   * The reservation is REFUNDED and the in-flight marker cleared, so a later
+   * event can try again instead of the activation being stuck forever in
+   * `render-requested` (which made every later reconcile emit
+   * SKIPPED_SAME_SIGNATURE_IN_FLIGHT). Retries stay bounded per signature.
+   */
+  markRecoveryRenderFailed(
+    host: HTMLElement,
+    documentKey: string,
+    formulaRuntimeKey: string | null,
+    reason: string,
+  ): number {
+    const s = this.stateOf(host)
+    const act = s.activation
+    let failureCount = 0
+    if (act) {
+      const rec = this.recoveryFailures.get(host)
+      if (rec && rec.signatureHash === act.signatureHash) {
+        rec.count++
+        failureCount = rec.count
+      } else {
+        this.recoveryFailures.set(host, { signatureHash: act.signatureHash, count: 1 })
+        failureCount = 1
+      }
+      if (act.rerenderAttemptCount > 0) act.rerenderAttemptCount--
+      if (act.lastRenderRequestedSignatureHash === act.signatureHash) {
+        act.lastRenderRequestedActivationId = null
+        act.lastRenderRequestedSignatureHash = null
+      }
+      act.state = 'plan-ready'
+    }
+    s.executionState = 'plan-ready'
+    emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+      documentKey,
+      formulaRuntimeKey,
+      activationId: act?.activationId ?? null,
+      signatureHash: act?.signatureHash ?? null,
+      rerenderAttemptCount: act?.rerenderAttemptCount ?? 0,
+      failureCount,
+      maxRecoveryRenderFailuresPerSignature: MAX_RECOVERY_RENDER_FAILURES_PER_SIGNATURE,
+      route: 'mathBlock.renderUnder',
+      decision: 'FAILED_RELEASED',
+      reason,
+    })
+    return failureCount
+  }
+
+  /** PA-13 — whether another render-seam attempt is allowed for this signature. */
+  canAttemptRecoveryRender(host: HTMLElement): boolean {
+    const act = this.stateOf(host).activation
+    if (!act) return false
+    const rec = this.recoveryFailures.get(host)
+    if (!rec || rec.signatureHash !== act.signatureHash) return true
+    return rec.count < MAX_RECOVERY_RENDER_FAILURES_PER_SIGNATURE
+  }
+
+  /** PA-13 — failures recorded for the host's CURRENT signature. */
+  recoveryFailureCount(host: HTMLElement): number {
+    const act = this.stateOf(host).activation
+    const rec = this.recoveryFailures.get(host)
+    if (!act || !rec || rec.signatureHash !== act.signatureHash) return 0
+    return rec.count
   }
 
   /** Diagnostic inventory (bounded). */

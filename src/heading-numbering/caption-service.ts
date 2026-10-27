@@ -66,6 +66,7 @@ import {
   hashFormulaSource,
   normalizeTyporaAutoNumberingPolicy,
   scanDisplayMathSources,
+  isPlanSourceAdmissible,
   type FormulaNativeRenderPlan,
   type FormulaProjectionContext,
 } from './formula-projection-controller'
@@ -3075,10 +3076,13 @@ export class CaptionService {
         // COMPLETE formula plan (element → number). Never parsed from rendered text.
         const formulaElementNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
         let anyFormulaSection = false
+        // PA-12 — an EMPTY formula (`$$$$`) still owns its ordinal. Only skip a
+        // zero-length source when the scan could not be aligned with the hosts.
+        const sourcesAligned = sources.length === formulaTargets.length
         for (let i = 0; i < formulaTargets.length; i++) {
           const t = formulaTargets[i]
           const sourceTex = sources[i] ?? ''
-          if (sourceTex.length === 0) continue
+          if (!isPlanSourceAdmissible(sourceTex, sourcesAligned)) continue
           const context: FormulaProjectionContext = {
             formulaMode: mode === 'inkchapter' ? 'inkchapter' : 'typora-native',
             typoraAutoNumberingPolicy: policy,
@@ -3522,6 +3526,22 @@ export class CaptionService {
         })
         continue
       }
+      if (!this.projectionController.canAttemptRecoveryRender(t.root)) {
+        // PA-13 — the render seam failed repeatedly for THIS signature; stay
+        // event-driven (a new signature resets the counter) instead of looping.
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey: plan.formulaRuntimeKey,
+          projectionSignatureHash: sigHash,
+          activationId,
+          rawNumber: plan.rawNumber,
+          attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
+          failureCount: this.projectionController.recoveryFailureCount(t.root),
+          route: 'mathBlock.renderUnder',
+          decision: 'SKIPPED_RECOVERY_FAILURES_EXHAUSTED',
+        })
+        continue
+      }
       if (!this.projectionController.tryReserveRecoveryRender(t.root)) {
         // Phase 7R.3.6-D: the CURRENT activation already consumed its one shot.
         // This must NEVER be caused by a historical signature (new activations
@@ -3568,13 +3588,9 @@ export class CaptionService {
       }
       const renderUnder = g.File?.editor?.mathBlock?.renderUnder
       if (typeof renderUnder !== 'function') {
-        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
-          documentKey,
-          formulaRuntimeKey,
-          route: 'mathBlock.renderUnder',
-          decision: 'FAILED',
-          reason: 'ROUTE_NOT_AVAILABLE',
-        })
+        // PA-13 — release the reservation and the in-flight marker so a later
+        // event can retry (bounded), instead of a permanent IN_FLIGHT state.
+        this.projectionController.markRecoveryRenderFailed(host, documentKey, formulaRuntimeKey, 'ROUTE_NOT_AVAILABLE')
         return
       }
       const result = renderUnder.call(g.File?.editor?.mathBlock, host, true)
@@ -3589,24 +3605,17 @@ export class CaptionService {
             })
           },
           () => {
-            emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
-              documentKey,
-              formulaRuntimeKey,
-              route: 'mathBlock.renderUnder',
-              decision: 'FAILED',
-              reason: 'RENDER_REJECTED',
-            })
+            this.projectionController.markRecoveryRenderFailed(host, documentKey, formulaRuntimeKey, 'RENDER_REJECTED')
           },
         )
       }
     } catch (error) {
-      emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+      this.projectionController.markRecoveryRenderFailed(
+        host,
         documentKey,
         formulaRuntimeKey,
-        route: 'mathBlock.renderUnder',
-        decision: 'FAILED',
-        reason: error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120),
-      })
+        error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120),
+      )
     }
   }
 

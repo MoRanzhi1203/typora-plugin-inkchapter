@@ -172,6 +172,8 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
     documentKey?: string | null
     formulaRuntimeKey?: string | null
     rawNumber?: string | null
+    /** PA-10 — the exact correlated host (required for duplicate TeX). */
+    host?: HTMLElement
   } => {
     const inputHashBefore = typeof tex === 'string' ? hashFormulaSource(tex) : ''
     const inputLength = typeof tex === 'string' ? tex.length : 0
@@ -195,8 +197,13 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
     }
     try {
       const decision = live.controller.prepareTransientRenderInput(tex, live.documentKey, live.headingSnapshotRevision ?? -1)
+      // PA-10 — with duplicate TeX the hash alone maps to several hosts, so the
+      // plan MUST be read from the host the controller actually correlated.
+      const correlatedPlan = decision.host
+        ? live.controller.getPlan(decision.host)
+        : live.controller.getPlanBySourceHash(decision.sourceHash)
       if (decision.injected) {
-        const plan = live.controller.getPlanBySourceHash(decision.sourceHash)
+        const plan = correlatedPlan
         emitRuntimeAudit('FORMULA-NATIVE-TRANSIENT-INJECT', {
           documentKey: live.documentKey,
           activeRevision: live.headingSnapshotRevision ?? -1,
@@ -233,8 +240,9 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
         activationId: decision.activationId,
         signatureHash: decision.signatureHash,
         documentKey: live.documentKey,
-        formulaRuntimeKey: decision.injected ? (live.controller.getPlanBySourceHash(decision.sourceHash)?.formulaRuntimeKey ?? null) : null,
-        rawNumber: decision.injected ? (live.controller.getPlanBySourceHash(decision.sourceHash)?.rawNumber ?? null) : null,
+        formulaRuntimeKey: decision.injected ? (correlatedPlan?.formulaRuntimeKey ?? null) : null,
+        rawNumber: decision.injected ? (correlatedPlan?.rawNumber ?? null) : null,
+        host: decision.host,
       }
     } catch {
       return { tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
@@ -258,13 +266,18 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
         const live = liveProvider ? liveProvider() : null
         if (live?.controller && live.documentKey) {
           const hostInfo = live.controller.getHostBySourceHash(sourceHash)
-          const current =
-            hostInfo
-            && hostInfo.activation
-            && hostInfo.activation.activationId === txnActivationId
-            && hostInfo.activation.planSetEpoch === txnPlanSetEpoch
-            && hostInfo.activation.signatureHash === txnSignatureHash
-            && txnDocumentKey === live.documentKey
+          const txnHost = prepared.host ?? null
+          // PA-10 — duplicate TeX has no unique hash→host mapping, so the guard
+          // must use the EXACT host this call was correlated to.
+          const current = hostInfo !== null
+            ? (!!hostInfo.activation
+              && hostInfo.activation.activationId === txnActivationId
+              && hostInfo.activation.planSetEpoch === txnPlanSetEpoch
+              && hostInfo.activation.signatureHash === txnSignatureHash
+              && txnDocumentKey === live.documentKey)
+            : (txnHost !== null
+              && live.controller.isCurrentActivation(txnHost, txnActivationId, txnPlanSetEpoch)
+              && txnDocumentKey === live.documentKey)
           if (!current) {
             live.controller.markStaleActivationCommitIgnored(
               live.documentKey,

@@ -23,6 +23,7 @@ import {
   gapDriftedWithoutSettingsChange,
   headingDecorationMatches,
   normalizeDecorationGap,
+  buildAlignedHeadingDecorationProjections,
   outlineGapForBodyIndex,
   verifyBodyOutlineParity,
   HEADING_DECORATION_V514R4_GATE_KEYS,
@@ -226,6 +227,39 @@ describe('V5.14-R4 §8/§13 — projection contract', () => {
 })
 
 // ── §16.2 — heading DOM adapter Case A–F ────────────────────────────────────
+
+describe('PA-14 numbering results align with the FULL heading list', () => {
+  it('an out-of-range heading in the middle gets NO label and does not steal its neighbour', () => {
+    const headings = [{ key: 'h1-a' }, { key: 'h5-x' }, { key: 'h2-b' }]
+    // maxDepth=4 filters the H5 out of `physical`, so numbering only has 2 rows.
+    const numbered = [{ key: 'h1-a', labelGap: 'space' }, { key: 'h2-b', labelGap: 'space' }]
+    const labels = ['1', '1.1']
+
+    const projections = buildAlignedHeadingDecorationProjections(headings, numbered, labels)
+
+    expect(projections.map(p => p.stableIdentity)).toEqual(['h1-a', 'h5-x', 'h2-b'])
+    expect(projections.map(p => p.label)).toEqual(['1', '', '1.1'])
+    expect(projections[1].gap).toBe('none')
+    expect(projections[0].gap).toBe('space')
+  })
+
+  it('a trailing out-of-range heading is cleared instead of inheriting the last label', () => {
+    const headings = [{ key: 'a' }, { key: 'b' }, { key: 'c' }]
+    const numbered = [{ key: 'a' }, { key: 'b' }]
+    const labels = ['1', '2']
+    const projections = buildAlignedHeadingDecorationProjections(headings, numbered, labels)
+    expect(projections.map(p => p.label)).toEqual(['1', '2', ''])
+  })
+
+  it('without any filtering the aligned list is identical to the plain projection list', () => {
+    const headings = [{ key: 'a' }, { key: 'b' }]
+    const numbered = [{ key: 'a', labelGap: 'space' }, { key: 'b', labelGap: 'none' }]
+    const labels = ['1', '2']
+    const aligned = buildAlignedHeadingDecorationProjections(headings, numbered, labels)
+    const plain = buildHeadingDecorationProjections(numbered.map((h, i) => ({ key: h.key, label: labels[i], labelGap: h.labelGap })))
+    expect(aligned).toEqual(plain)
+  })
+})
 
 describe('V5.14-R4 §16.2 — heading DOM adapter atomic reconcile (Case A–F)', () => {
   it('Case A — label 2.1 + gap space → class + number + gap all present', () => {
