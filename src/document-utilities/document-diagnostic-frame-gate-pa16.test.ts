@@ -42,4 +42,13 @@ describe('PA-16 canonical-frame diagnostics gate', () => {
     expect(shouldRunDiagnosticsForFrame({ semanticFingerprint: 'fp-1' }, { documentKey: 'doc-a', semanticFingerprint: 'fp-1' })).toBe(true)
     expect(shouldRunDiagnosticsForFrame({ documentKey: 'doc-a' }, { documentKey: 'doc-a', semanticFingerprint: 'fp-1' })).toBe(true)
   })
+
+  // PA-16 audit H2 — an EMPTY fingerprint is not evidence of "semantically
+  // unchanged" (the authority emits '' before it has real heading data).
+  it('treats an empty fingerprint as no evidence and runs', () => {
+    expect(shouldRunDiagnosticsForFrame(
+      { documentKey: 'doc-a', semanticFingerprint: '' },
+      { documentKey: 'doc-a', semanticFingerprint: '' },
+    )).toBe(true)
+  })
 })

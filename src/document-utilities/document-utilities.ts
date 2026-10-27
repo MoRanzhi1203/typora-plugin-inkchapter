@@ -169,7 +169,9 @@ export function shouldRunDiagnosticsForFrame(
 ): boolean {
   const key = frame?.documentKey ?? null
   const fingerprint = frame?.semanticFingerprint ?? null
-  if (key === null || fingerprint === null) return true
+  // An EMPTY fingerprint is not evidence: the authority emits '' before it has
+  // real heading data, and two empties must never be treated as "unchanged".
+  if (key === null || key === '' || fingerprint === null || fingerprint === '') return true
   return !(key === last.documentKey && fingerprint === last.semanticFingerprint)
 }
 

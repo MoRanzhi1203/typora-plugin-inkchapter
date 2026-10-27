@@ -466,6 +466,15 @@ export class FormulaProjectionController {
     this.pendingLookupHost = host
   }
 
+  /**
+   * Drop an armed target that was never consumed (the controlled render did not
+   * reach MathJax). Without this a stale arm could mis-bind the NEXT render of
+   * the same hash group.
+   */
+  clearPendingLookupHost(): void {
+    this.pendingLookupHost = null
+  }
+
   /** Forget pending/cursor state (plan-set publish, document switch, dispose). */
   resetAmbiguousLookupState(): void {
     this.ambiguousLookupCursors.clear()
@@ -1112,6 +1121,20 @@ export class FormulaProjectionController {
   ): number {
     const s = this.stateOf(host)
     const act = s.activation
+    // Audit H1 — a LATE rejection of an already COMMITTED activation must not
+    // rewind the durable commit (that would re-inject \tag and re-render).
+    if (act !== null && act.committed && this.isCommittedForCurrentSignature(host)) {
+      emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+        documentKey,
+        formulaRuntimeKey,
+        activationId: act.activationId,
+        signatureHash: act.signatureHash,
+        route: 'mathBlock.renderUnder',
+        decision: 'FAILED_AFTER_COMMIT_IGNORED',
+        reason,
+      })
+      return 0
+    }
     let failureCount = 0
     if (act) {
       const rec = this.recoveryFailures.get(host)

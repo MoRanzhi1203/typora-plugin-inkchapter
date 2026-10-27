@@ -3588,15 +3588,20 @@ export class CaptionService {
       }
       const renderUnder = g.File?.editor?.mathBlock?.renderUnder
       if (typeof renderUnder !== 'function') {
+        this.projectionController.clearPendingLookupHost()
         // PA-13 — release the reservation and the in-flight marker so a later
         // event can retry (bounded), instead of a permanent IN_FLIGHT state.
         this.projectionController.markRecoveryRenderFailed(host, documentKey, formulaRuntimeKey, 'ROUTE_NOT_AVAILABLE')
         return
       }
+      // PA-10 — we initiated THIS render for THIS host, so arm the ambiguous
+      // correlation with its exact target (the hook only sees TeX).
+      this.projectionController.armPendingLookupHost(host)
       const result = renderUnder.call(g.File?.editor?.mathBlock, host, true)
       if (result && typeof (result as Promise<unknown>).then === 'function') {
         ;(result as Promise<unknown>).then(
           () => {
+            this.projectionController.clearPendingLookupHost()
             emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
               documentKey,
               formulaRuntimeKey,
@@ -3605,11 +3610,16 @@ export class CaptionService {
             })
           },
           () => {
+            this.projectionController.clearPendingLookupHost()
             this.projectionController.markRecoveryRenderFailed(host, documentKey, formulaRuntimeKey, 'RENDER_REJECTED')
           },
         )
+      } else {
+        // Synchronous seam: the hook (if any) already ran inside the call.
+        this.projectionController.clearPendingLookupHost()
       }
     } catch (error) {
+      this.projectionController.clearPendingLookupHost()
       this.projectionController.markRecoveryRenderFailed(
         host,
         documentKey,

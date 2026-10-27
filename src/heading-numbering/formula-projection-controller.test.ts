@@ -237,6 +237,29 @@ describe('FormulaProjectionController.prepareTransientRenderInput — SINGLE-OUT
     expect(d.host).toBe(h2)
   })
 
+  it('PA-10 audit H3 — a stale armed target never survives the render call', () => {
+    const h1 = document.createElement('div')
+    const h2 = document.createElement('div')
+    document.body.appendChild(h1)
+    document.body.appendChild(h2)
+    const controller = new FormulaProjectionController()
+    const base: FormulaNativeRenderPlan = {
+      documentKey: 'doc-a', revision: 2, sourceHash: hashFormulaSource('s = t'),
+      rawNumber: '7.1-1', renderedNumber: '(7.1-1)', formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
+    }
+    controller.setPlan(h1, base)
+    controller.setPlan(h2, { ...base, rawNumber: '7.1-2', formulaRuntimeKey: 'formula:1' })
+
+    controller.armPendingLookupHost(h2)
+    // The controlled render never reached MathJax → the arm must be released.
+    controller.clearPendingLookupHost()
+
+    const d = controller.prepareTransientRenderInput('s = t', 'doc-a', 2)
+    expect(d.host).toBe(h1)
+    expect(d.ambiguousResolutionBasis).not.toBe('ARMED_CONTROLLED_TARGET')
+  })
+
   it('PA-10: a new plan-set epoch restarts the document-order correlation', () => {
     const h1 = document.createElement('div')
     const h2 = document.createElement('div')
@@ -310,6 +333,25 @@ describe('PA-13 render-seam failure releases the reservation (bounded)', () => {
     })
     expect(controller.recoveryFailureCount(host)).toBe(0)
     expect(controller.canAttemptRecoveryRender(host)).toBe(true)
+  })
+
+  // PA-13 audit H1 — a LATE rejection of an already committed activation must
+  // never rewind the durable commit (that would re-inject \tag and loop).
+  it('a late failure does not rewind an already committed activation', () => {
+    const controller = new FormulaProjectionController()
+    const host = makeHostWithPlan(controller)
+    expect(controller.tryReserveRecoveryRender(host)).toBe(true)
+    controller.markRenderRequested(host)
+    controller.markCommitted(host)
+    expect(controller.isCommittedForCurrentSignature(host)).toBe(true)
+
+    controller.markRecoveryRenderFailed(host, 'doc-a', 'formula:0', 'LATE_REJECTION')
+
+    expect(controller.getExecutionState(host)).toBe('committed')
+    expect(controller.isCommittedForCurrentSignature(host)).toBe(true)
+    expect(controller.lastCommittedSignatureHash(host)).not.toBeNull()
+    // The late failure is NOT counted: the activation was already durable.
+    expect(controller.recoveryFailureCount(host)).toBe(0)
   })
 })
 
