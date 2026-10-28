@@ -124,7 +124,12 @@ export function reduceDiagnosticClick(
 ): DiagnosticTransition {
   const version = prev.version + 1
   const sameTarget = prev.phase === 'ACTIVE' && prev.targetKey === click.targetKey
-  const groupToggleOff = context?.inheritedGroupMember === true
+  // BLANK-GAP ACTIVATION RECOVERY §3.1 — an inherited MEMBER click may only toggle
+  // the group OFF when a REAL active owner exists. From IDLE there is nothing to
+  // cancel: the historical `inheritedGroupMember` fact (lineage / past activation)
+  // must never turn the FIRST click into `GROUP_MEMBER_TOGGLE_OFF`, otherwise the
+  // warning can never be activated at all.
+  const groupToggleOff = context?.inheritedGroupMember === true && prev.phase === 'ACTIVE'
   if (sameTarget || groupToggleOff) {
     const provenanceAction: DiagnosticTransitionAction = sameTarget
       ? 'DEACTIVATE'

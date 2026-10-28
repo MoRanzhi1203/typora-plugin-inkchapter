@@ -1216,6 +1216,8 @@ export type DiagnosticResolveAnchor =
   | 'link-anchor'
   /** TRAE V4 §6 — a source-syntax opener projected through the canonical `data-line`. */
   | 'source-syntax-opener'
+  /** BLANK-GAP LOCATOR RECOVERY — the NEXT content boundary of an internal gap. */
+  | 'blank-gap-boundary'
 
 /**
  * V5.12-R5 §7 — the resolver's OWN output for a source occurrence. It must be
@@ -1454,6 +1456,27 @@ export interface DiagnosticLocationResolveContext {
     occurrenceWithinLine: number
     expectedOccurrenceIndex: number | null
   }) => ResolvedSourceOccurrenceHint | null
+  /**
+   * BLANK-GAP LOCATOR RECOVERY — resolve the NEXT content boundary of an
+   * `EXCESSIVE_INTERNAL_BLANK_LINES` gap from the gap's OWN metadata
+   * (canonical `block:<kind>:<ordinal>` / stable block identity / source line).
+   *
+   * Why this hook exists: the rule's `source-range` location carries the NEXT
+   * block's WHOLE normalized text (multi-line for a wrapped paragraph or a code
+   * fence), but the generic source-range resolver treats `rawText` as ONE source
+   * line. On Typora builds where `<p>` / `<pre>` carry no `data-line`, the DOM
+   * lookup fails first and the single-line content check then reports
+   * `SOURCE_LINE_CONTENT_CHANGED` even though `sourceRevision` never changed.
+   *
+   * Returning null means "not uniquely verifiable" — the caller must FAIL CLOSED
+   * (never fall back to a text first-match). Returning `undefined` means the
+   * record carries no boundary facts at all (legacy / sparse producer): the
+   * caller keeps the generic source-range ladder.
+   */
+  resolveBlankGapBoundary?: (input: {
+    metadata: Record<string, unknown>
+    startLine: number | null
+  }) => { element: HTMLElement; strategy: string } | null | undefined
   /**
    * TRAE V4 §6/§7 — the SOURCE-SYNTAX OPENER → DOM projection authority. It
    * resolves an unclosed fence / formula / front matter OPENER to a live DOM
@@ -1843,6 +1866,45 @@ export function resolveDiagnosticLocation(
       }, ctx, targetIndex)
     }
     case 'source-range': {
+      // ── BLANK-GAP LOCATOR RECOVERY — an internal blank-line gap is identified
+      // by the TWO content blocks around it, never by the text of one source
+      // line. Its recorded anchor is the NEXT block's WHOLE normalized text
+      // (multi-line for a wrapped paragraph / code fence), while the generic
+      // single-line content check below compares it with
+      // `getSourceLineText(startLine)`. On Typora builds where `<p>` / `<pre>`
+      // carry no `data-line`, that combination reports
+      // `SOURCE_LINE_CONTENT_CHANGED` even when `sourceRevision` never changed,
+      // so the ONE click paints nothing. Resolve the NEXT canonical boundary
+      // from the gap's own metadata instead; a boundary that cannot be uniquely
+      // verified FAILS CLOSED with its own reason (never a text first-match).
+      if (
+        typeof ctx.resolveBlankGapBoundary === 'function'
+        && (diagnostic.metadata as Record<string, unknown> | undefined)?.scope === 'block-gap'
+      ) {
+        const boundary = ctx.resolveBlankGapBoundary({
+          metadata: (diagnostic.metadata ?? {}) as Record<string, unknown>,
+          startLine: typeof location.startLine === 'number' ? location.startLine : null,
+        })
+        // `undefined` = the record carries no boundary facts → legacy ladder.
+        if (boundary !== undefined) {
+          if (boundary != null && boundary.element.isConnected) {
+            return {
+              ...resolvedResult(boundary.element, targetIndex, 'blank-gap-boundary', null),
+              resolvedNodeKind: boundary.element.tagName.toLowerCase(),
+              resolvedBlockIdentity: boundary.strategy,
+            }
+          }
+          return {
+            decision: 'UNRESOLVED',
+            element: null,
+            scrollAction: null,
+            targetIndex,
+            primaryAnchor: 'blank-gap-boundary',
+            fallbackAnchor: null,
+            reason: 'BLANK_GAP_BOUNDARY_UNRESOLVED',
+          }
+        }
+      }
       // ── Anchor Integrity — a `[label](#anchor)` reference is a source-range
       // whose rendered DOM is the inline `<a href="#anchor">`, NOT the raw
       // `[label](#anchor)` token (the text resolver + source-occurrence

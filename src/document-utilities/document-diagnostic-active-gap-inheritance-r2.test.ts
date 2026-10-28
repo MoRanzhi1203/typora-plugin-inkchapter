@@ -640,7 +640,7 @@ describe('WC-R4 §3.1 — the ONE click authority', () => {
     })
   })
 
-  it('R4-14b the same inherited click from IDLE is also a whole-group toggle-off', () => {
+  it('R4-14b 从 IDLE 点击继承组成员必须 ACTIVATE（无有效 owner 时没有可取消的东西）', () => {
     const t = reduceDiagnosticClick(
       emptyDiagnosticInteractionState(),
       gapClick('G2', 'doc:key::G2::0::X>>Y'),
@@ -648,9 +648,29 @@ describe('WC-R4 §3.1 — the ONE click authority', () => {
       null,
       { inheritedGroupMember: true },
     )
-    expect(t.action).toBe('DEACTIVATE')
-    expect(t.reason).toBe('GROUP_MEMBER_TOGGLE_OFF')
-    expect(t.next.version).toBe(1)
+    // BLANK-GAP ACTIVATION RECOVERY §3.1 — GROUP_MEMBER_TOGGLE_OFF 只在存在真实
+    // ACTIVE owner 时才成立。IDLE + 历史组成员必须走正常激活（否则第一次点击
+    // 就被解释为“取消”，永远画不出高亮）。
+    expect(t.action).toBe('ACTIVATE')
+    expect(t.provenanceAction).toBe('ACTIVATE')
+    expect(t.reason).toBeUndefined()
+    expect(t.next).toMatchObject({
+      version: 1,
+      phase: 'ACTIVE',
+      diagnosticId: 'G2',
+      targetKey: 'doc:key::G2::0::X>>Y',
+      transactionId: 6,
+    })
+  })
+
+  it('ACT-05 Drawer 仍选中但 phase=IDLE 时，继承组成员点击仍是激活而不是取消', () => {
+    // `selectedDiagnosticId` / Drawer 选中只是 UI 关注，不是 ACTIVE owner。
+    const prev = emptyDiagnosticInteractionState()
+    const t = reduceDiagnosticClick(prev, gapClick('G2', 'doc:key::G2::0::X>>Y'), 7, null, {
+      inheritedGroupMember: true,
+    })
+    expect(t.action).toBe('ACTIVATE')
+    expect(t.next.phase).toBe('ACTIVE')
   })
 
   it('R4-15 an unrelated diagnostic still SWITCHes and inherits nothing', () => {

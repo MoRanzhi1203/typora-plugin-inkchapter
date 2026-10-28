@@ -309,6 +309,15 @@ import {
   type WorkspaceWidthState,
 } from './document-workspace-width-guard'
 import { deriveDiagnosticsState } from './document-diagnostics'
+import { buildInternalBlankLineDiagnostics } from './document-diagnostics'
+// 空行规则编辑期快速通路 — 脏区间推导（纯函数，无宿主状态）。
+import {
+  dirtyLineCount,
+  exceedsDirtyRatio,
+  mergeDirtyLineRanges,
+  scanBlankDirtyRanges,
+  type DirtyLineRange,
+} from './document-diagnostic-internal-blank-incremental-v1'
 // Heading Auto-Number Conflict V1 §28 — the conflict code (first-click coverage).
 import { HEADING_AUTO_NUMBER_CONFLICT_CODE } from './document-diagnostics'
 import { deriveDocumentProblemsProjection } from './document-problems-projection'
@@ -3107,6 +3116,16 @@ export class DocumentUtilityOverlayHost {
    * `null` when the active locate is not an internal-blank-gap locate.
    */
   private lastBlockGapDiagnosticId: string | null = null
+  /**
+   * BLANK-GAP-VISUAL-DIFF §3 — the STABLE gap-interval identity the painted
+   * carrier currently owns (`blank-gap:<prevIdentity>><<nextIdentity>`).
+   *
+   * A diagnostic `id` may carry source line numbers and therefore drift while a
+   * user keeps typing inside the SAME interval; the interval identity does not.
+   * Carrier reuse is decided on THIS identity so one logical gap can never be
+   * painted twice under two revolving ids.
+   */
+  private lastBlockGapTargetIdentity: string | null = null
   /** TRAE §17 — the last scoped visual-closure verdict for the block-gap rule. */
   private lastBlockGapClosureScoped: boolean | null = null
   // ── TRAE — RENDERED BLANK ROW AUTHORITY (§35/§39–§44) ─────────────────────
@@ -3177,6 +3196,15 @@ export class DocumentUtilityOverlayHost {
   private internalBlankReDecisionRaf: number | null = null
   /** §7 — the editing mode the CURRENT decision ran in (mode-change detector). */
   private lastInternalBlankEditingMode: DocumentEditingMode | null = null
+  // ── 空行规则编辑期快速通路（BLANK-FAST） ─────────────────────────────────
+  // 编辑后不再等待 300ms 全量语义去抖：本条通路在同一帧内只重算空行诊断，
+  // 构造权威与全量共享 `buildInternalBlankLineDiagnostics`。
+  private blankFastDirtyRanges: DirtyLineRange[] = []
+  private blankFastRequiresFullScan = false
+  private blankFastFullScanReason: string | null = null
+  private blankFastRaf: number | null = null
+  private blankFastQueuedAtMs: number | null = null
+  private blankFastCounters = { runs: 0, fullScans: 0, commits: 0, lastTotalMs: 0, lastEditToCommitMs: 0 }
   /** §7 — the targeted body-class observer that re-evaluates on a mode switch. */
   private internalBlankModeObserver: MutationObserver | null = null
   /** §25 — the monotonic reason-chip rect trace sequence (runtime forensics). */
@@ -3544,6 +3572,11 @@ export class DocumentUtilityOverlayHost {
   }
 
   private commitAdmittedSnapshot(snapshot: DocumentDiagnosticsSnapshot | null, source: string): void {
+    // TEMP-PROFILE — 分段计时，定位 commit 内的同步展示成本。
+    const profileNow = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+    const profileStart = profileNow()
+    let profileAfterReconcile = profileStart
+    let profileAfterDrawer = profileStart
     // V5.12-R6 §13 — capture the PREVIOUS snapshot's diagnostic ids BEFORE the
     // atomic replacement so a stale residue can be proven (never assumed).
     const previousDiagnosticIds = this.snapshot?.diagnostics.map(d => d.id) ?? []
@@ -3563,6 +3596,7 @@ export class DocumentUtilityOverlayHost {
       this.reconcileInternalBlankLineDiagnostics(snapshot),
     )
     this.snapshot = admitted
+    profileAfterReconcile = profileNow()
     // ── EOF-R5 §3/§4 — PASSIVE EOF VISUAL SYNC. The excess band + `多余 N 空行`
     // label used to be written ONLY by the locate/click transaction, so a passive
     // edit updated the diagnostic/Drawer while the band stayed stale until the
@@ -3647,14 +3681,15 @@ export class DocumentUtilityOverlayHost {
     // from the SAME snapshot, so UI-count parity is a real measurement).
     this.commitEmptyDocumentShortCircuit(admitted, previousDiagnosticIds)
     if (this.drawerOpen) this.renderDrawer()
+    profileAfterDrawer = profileNow()
     // Internal Blank-Line Policy V1 §27/§33 — the source audit + the Toolbar
     // warning-count parity witness at the SAME commit boundary that drives the
     // Toolbar projection (so the parity measurement is a real one).
     this.emitInternalBlankLineSourceAudit()
-    // SORT-P0 §7 — the REAL source-order audit at the SAME commit boundary,
-    // INDEPENDENT of whether the Drawer is open (so the rendered order can be
-    // verified without a GUI interaction).
-    this.emitSourceOrderAudit(this.buildDrawerProjections())
+    // SORT-P0 §7 — the REAL source-order audit at the SAME commit boundary.
+    // 抽屉关闭时投影/排序审计是纯展示成本，不参与诊断与标记，因此跳过；
+    // 打开时由 `renderDrawerBody` 在渲染边界内统一发出。
+    if (this.drawerOpen) this.emitSourceOrderAudit(this.buildDrawerProjections())
     this.checkInternalBlankLineToolbarParity(admitted)
     // ── §5 (live-update closure) — the ACTIVE visual MUST follow the PUBLISHED
     // snapshot. A stable-id fact change (blank COUNT 2→4) keeps the diagnostic
@@ -3682,6 +3717,17 @@ export class DocumentUtilityOverlayHost {
     // Enter's echo window so the plugin never mutates `#write` during it.
     this.runContentDocumentPaint('HEADING_MARKERS', () => this.renderHeadingDiagnosticMarkers())
     this.runContentDocumentPaint('ACTIVE_HEADING_EMPHASIS', () => this.renderActiveHeadingEmphasisForCommittedVisual())
+    if (source === 'BLANK_FAST') {
+      const round = (v: number): number => Math.round(v * 100) / 100
+      emitRuntimeAudit('BLANK-GAP-COMMIT-PROFILE', {
+        documentKey: snapshot?.documentKey ?? null,
+        drawerOpen: this.drawerOpen,
+        reconcileMs: round(profileAfterReconcile - profileStart),
+        drawerMs: round(profileAfterDrawer - profileAfterReconcile),
+        restMs: round(profileNow() - profileAfterDrawer),
+        totalMs: round(profileNow() - profileStart),
+      })
+    }
     emitRuntimeAudit('DOCUMENT-UTILITY-DIAGNOSTIC-SNAPSHOT', {
       action: source === 'RECONCILE' ? 'RECONCILE_COMMITTED' : 'PUBLISHED',
       documentKey: snapshot?.documentKey ?? null,
@@ -4554,6 +4600,8 @@ export class DocumentUtilityOverlayHost {
             // serialization that can never publish (pure self-wake). Only real
             // editor content mutations may request the formal recompute.
             if (realContentMutation) {
+              // 空行规则快速通路：同一帧内只重算空行诊断（不再等 300ms 全量去抖）。
+              this.queueBlankFastRecompute(records)
               this.scheduleDiagnosticsRecompute('DOCUMENT_MUTATION', true)
             }
             this.scheduleGeometrySync('content-mutation')
@@ -13790,6 +13838,140 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * 空行规则编辑期快速通路 — 把 mutation 目标映射到源码行。
+   * 使用 Typora 的 `[data-line]` 祖先；无法定位时返回 null（触发全量兜底）。
+   */
+  private blankFastLineOfNode(node: Node): number | null {
+    const el: Element | null = node.nodeType === 1 ? node as Element : node.parentElement
+    if (el == null) return null
+    const host = el.closest('[data-line]')
+    const raw = host?.getAttribute('data-line') ?? null
+    if (raw == null || raw === '') return null
+    const n = Number.parseInt(raw, 10)
+    return Number.isFinite(n) && n >= 0 ? n : null
+  }
+
+  /** 收集脏区间并在下一帧合并执行一次空行专用重算。 */
+  private queueBlankFastRecompute(records: readonly MutationRecord[]): void {
+    if (this.disposed) return
+    const scan = scanBlankDirtyRanges(records, n => this.blankFastLineOfNode(n))
+    if (scan.requiresFullScan) {
+      this.blankFastRequiresFullScan = true
+      this.blankFastFullScanReason = scan.fullScanReason
+    }
+    if (scan.ranges.length > 0) {
+      this.blankFastDirtyRanges = mergeDirtyLineRanges([...this.blankFastDirtyRanges, ...scan.ranges])
+    }
+    if (this.blankFastQueuedAtMs == null) {
+      this.blankFastQueuedAtMs = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    }
+    if (this.blankFastRaf != null) return
+    if (typeof requestAnimationFrame !== 'function') {
+      this.runBlankFastRecompute()
+      return
+    }
+    this.blankFastRaf = requestAnimationFrame(() => {
+      this.blankFastRaf = null
+      this.runBlankFastRecompute()
+    })
+  }
+
+  /**
+   * 空行专用快速重算：只重建本规则的诊断，其余诊断原样保留。
+   *
+   * 兜底条件（走全量 recompute）：结构敏感容器被编辑 / 无法定位源码行 /
+   * 脏区间覆盖超过全文 20% / 尚无已提交快照。
+   */
+  private runBlankFastRecompute(): void {
+    if (this.disposed) return
+    const nowMs = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+    const t0 = nowMs()
+    const queuedAt = this.blankFastQueuedAtMs
+    this.blankFastQueuedAtMs = null
+    const ranges = this.blankFastDirtyRanges
+    this.blankFastDirtyRanges = []
+    const requiresFullScan = this.blankFastRequiresFullScan
+    const fullScanReason = this.blankFastFullScanReason
+    this.blankFastRequiresFullScan = false
+    this.blankFastFullScanReason = null
+
+    const base = this.snapshot
+    if (base == null || base.documentKey == null) return
+    // 文档切换竞态：旧快照 + 新文档的 markdown 不得混合提交，交给全量权威。
+    const activeKey = this.opts.ctx.authority.getDocumentKey()
+    if (activeKey == null || base.documentKey !== activeKey) {
+      this.diagnostics.recompute('BLANK_FAST_DOC_MISMATCH')
+      return
+    }
+    const markdown = this.opts.ctx.authority.getMarkdown()
+    if (markdown == null) return
+    const totalLineCount = markdown.split('\n').length
+    const tooWide = ranges.length === 0 || exceedsDirtyRatio(ranges, totalLineCount)
+    // 结构敏感容器（围栏 / 公式 / 表格 / HTML / front-matter / 列表 / 引用）被编辑：
+    // 块边界与保护区域可能整体变化 → 必须走全量权威。
+    if (requiresFullScan && fullScanReason === 'STRUCTURE_CONTAINER') {
+      const fullScanStart = nowMs()
+      this.diagnostics.recompute('BLANK_FAST_FULL_SCAN')
+      const fullScanMs = nowMs() - fullScanStart
+      this.blankFastCounters.runs++
+      this.blankFastCounters.fullScans++
+      emitRuntimeAudit('BLANK-GAP-EDIT-LATENCY-AUDIT', {
+        documentKey: base.documentKey,
+        trigger: 'MUTATION',
+        incrementalHit: false,
+        requiresFullScan: true,
+        fullScanReason: 'STRUCTURE_CONTAINER',
+        dirtyRangeCount: ranges.length,
+        dirtyLineCount: dirtyLineCount(ranges),
+        totalLineCount,
+        editToCommitMs: queuedAt == null ? Math.round(fullScanMs * 100) / 100 : Math.round((nowMs() - queuedAt) * 100) / 100,
+        computeToCommitMs: Math.round(fullScanMs * 100) / 100,
+        diagnosticCount: null,
+        decision: 'FULL_SCAN_DELEGATED',
+      })
+      return
+    }
+    // 行号不可映射 / 脏区间过宽：空行规则只依赖全文文本扫描（不依赖行号），
+    // 因此仍走空行专用快速重算，只把降级事实记录在审计里。
+    const degradedReason = tooWide ? 'DIRTY_RATIO_EXCEEDED' : (fullScanReason ?? null)
+
+    const diags = buildInternalBlankLineDiagnostics({
+      documentKey: base.documentKey,
+      markdown,
+      strictMode: this.opts.ctx.authority.isStrictMode(),
+    })
+    const others = base.diagnostics.filter(d => d.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE)
+    const diagnostics = [...others, ...diags]
+    const next: DocumentDiagnosticsSnapshot = {
+      ...base,
+      diagnostics,
+      errorCount: diagnostics.filter(d => d.severity === 'error').length,
+      warningCount: diagnostics.filter(d => d.severity === 'warning').length,
+      infoCount: diagnostics.filter(d => d.severity === 'info').length,
+    }
+    this.commitAdmittedSnapshot(next, 'BLANK_FAST')
+    const totalMs = nowMs() - t0
+    this.blankFastCounters.runs++
+    this.blankFastCounters.commits++
+    this.blankFastCounters.lastTotalMs = totalMs
+    this.blankFastCounters.lastEditToCommitMs = queuedAt == null ? totalMs : nowMs() - queuedAt
+    emitRuntimeAudit('BLANK-GAP-EDIT-LATENCY-AUDIT', {
+      documentKey: base.documentKey,
+      trigger: 'MUTATION',
+      incrementalHit: true,
+      requiresFullScan: false,
+      fullScanReason: degradedReason,
+      dirtyRangeCount: ranges.length,
+      dirtyLineCount: dirtyLineCount(ranges),
+      totalLineCount,
+      editToCommitMs: Math.round(this.blankFastCounters.lastEditToCommitMs * 100) / 100,
+      computeToCommitMs: Math.round(totalMs * 100) / 100,
+      diagnosticCount: diags.length,
+      decision: degradedReason == null ? 'COMMITTED' : 'COMMITTED_DEGRADED',
+    })
+  }
+
+  /**
    * ROOT_BLANK_SOURCE_AUTHORITY §2.2 —— ONE bounded recovery when the internal
    * blank-line SOURCE count is missing. It NEVER substitutes the rendered row count;
    * it asks the diagnostics authority for exactly ONE re-parse per source revision
@@ -13879,6 +14061,114 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * 差分渲染 — 复用 carrier 内的 fragment 节点：几何 / 角色原地更新，多删少补。
+   * 新建节点时保持与 `buildBlankRowFragmentEls` 完全一致的 class / aria / role 契约。
+   *
+   * BLANK-GAP-VISUAL-DIFF §3 — DOM 才是权威：除了「数组里少了就补」，还要把
+   * carrier 下「数组里没有」的旧片段清出 DOM（数组与 DOM 必须完全一致，任一
+   * 一侧残留都会在回退/重试后留下不可回收的旧几何）。
+   */
+  private reconcileBlankRowFragmentEls(
+    parent: HTMLElement,
+    fragments: ReadonlyArray<{ left: number; top: number; width: number; height: number }>,
+    allowance: number,
+    severity: string,
+  ): HTMLElement[] {
+    const existing = this.blockGapFragmentEls.filter(el => el.parentElement === parent)
+    const els: HTMLElement[] = []
+    fragments.forEach((frag, i) => {
+      const role = i < allowance ? 'allowed' : 'excess'
+      const css = `position:absolute;left:${Math.round(frag.left)}px;top:${Math.round(frag.top)}px;`
+        + `width:${Math.round(frag.width)}px;height:${Math.round(frag.height)}px;pointer-events:none;`
+      let f = existing[i]
+      if (f == null) {
+        f = document.createElement('div')
+        f.className = `${RENDERED_BLANK_ROW_FRAGMENT_CLASS} ${BLANK_SPACE_WARNING_MARKER_CLASS}`
+        f.setAttribute('aria-hidden', 'true')
+        noteEnterEchoWrite('write:fragment.appendChild', parent)
+        parent.appendChild(f)
+      }
+      f.setAttribute('data-severity', severity)
+      f.setAttribute('data-active', 'true')
+      f.setAttribute(RENDERED_BLANK_ROW_ROLE_ATTR, role)
+      // 几何不变时不写 style（避免无意义的样式重算）。
+      if (f.style.cssText !== css) f.style.cssText = css
+      els.push(f)
+    })
+    for (let i = fragments.length; i < existing.length; i++) {
+      try { existing[i].remove() } catch { /* noop */ }
+    }
+    // DOM 侧收敛 — 删除不属于本次结果集的旧片段（含数组失同步的历史残留）。
+    const keep = new Set<Element>(els)
+    for (const child of Array.from(parent.children)) {
+      if (!child.classList.contains(RENDERED_BLANK_ROW_FRAGMENT_CLASS)) continue
+      if (keep.has(child)) continue
+      try { child.remove() } catch { /* noop */ }
+    }
+    return els
+  }
+
+  /** 差分渲染 — 复用/更新唯一数量标签（右对齐，纯 overlay 文本）。 */
+  private upsertBlockGapCountChip(parent: HTMLElement, count: number): void {
+    const chips = Array.from(parent.querySelectorAll<HTMLElement>(`.${BLANK_RUN_COUNT_CHIP_CLASS}`))
+    const current = chips[0] ?? null
+    // 去叠加 — 历史提交可能留下多个数量标签，只保留一个。
+    for (let i = 1; i < chips.length; i++) {
+      try { chips[i].remove() } catch { /* noop */ }
+    }
+    if (count <= 0) {
+      if (current != null) current.remove()
+      return
+    }
+    const text = `${count} 空行`
+    if (current != null) {
+      if (current.textContent !== text) current.textContent = text
+      return
+    }
+    const chip = document.createElement('span')
+    chip.className = BLANK_RUN_COUNT_CHIP_CLASS
+    chip.setAttribute('aria-hidden', 'true')
+    chip.textContent = text
+    parent.appendChild(chip)
+  }
+
+  /**
+   * BLANK-GAP-VISUAL-DIFF §3 — 去叠加：同一区间只允许一个主 carrier。
+   *
+   * 只退役 `data-block-gap-visual="block-gap"` 且不是本事务 keep 的节点。
+   * 组载体（`active-gap-group`）与文末 EOF 载体属于别的展示所有者，永不越权
+   * 删除；`keep == null` 时只清没有 owner token 的旧 revision 泄漏节点。
+   */
+  private retireStrayBlockGapCarriers(keep: HTMLElement | null): number {
+    // 载体都挂在定位文档层（`ensureLocateDocumentLayer` 建在业务内容根内），
+    // 不是宿主 UI root；清理必须用同一个 DOM 作用域。
+    const scope = this.locateDocLayer != null && this.locateDocLayer.isConnected
+      ? this.locateDocLayer
+      : resolveBusinessContentRoot()
+    if (scope == null) return 0
+    let removed = 0
+    for (const el of Array.from(scope.querySelectorAll<HTMLElement>('[data-block-gap-visual]'))) {
+      if (el === keep) continue
+      if (el.getAttribute('data-block-gap-visual') !== BLOCK_GAP_VISUAL_TARGET) continue
+      if (el === this.blockGapVisualEl) continue
+      try { el.remove(); removed++ } catch { /* noop */ }
+    }
+    return removed
+  }
+
+  /** 复用 carrier 前取消可能仍在追旧几何的动画 / 过渡（无 WAAPI 时安全跳过）。 */
+  private cancelBlockGapCarrierAnimations(el: HTMLElement): void {
+    const getAnimations = (el as unknown as { getAnimations?: () => Array<{ cancel?: () => void }> }).getAnimations
+    if (typeof getAnimations !== 'function') return
+    try {
+      for (const animation of getAnimations.call(el)) {
+        try { animation.cancel?.() } catch { /* already finished */ }
+      }
+    } catch { /* jsdom / legacy engine */ }
+  }
+
+
+  /**
    * Presentation Stability Closure V1 §6/§7/§8/§9/§10/§11 — paint the ONE
    * BLOCK-GAP visual: a Warning rail + a faint Warning gap background strictly
    * INSIDE the blank run between the two sibling content blocks.
@@ -13913,8 +14203,22 @@ export class DocumentUtilityOverlayHost {
     const nextIdentity = typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : ''
     const actualBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
     const headless = isHeadlessTestRuntime()
-    // §12 — a stale carrier must never survive a new locate.
-    this.removeBlockGapVisual()
+    // BLANK-GAP-VISUAL-DIFF §3 — the STABLE interval identity of this gap. The
+    // diagnostic id can drift while the interval stays the same (source line
+    // numbers move), so reuse must be keyed on BOTH.
+    const gapTargetIdentity = `blank-gap:${prevIdentity}>>${nextIdentity}`
+    // §12 — 目标变化时必须先退役旧 carrier；同一区间的增量重提交则保留，
+    // 由下方差分 patch 原地更新（避免编辑期每次销毁重建）。
+    //
+    // 失败先行证据（VIS-02，修复前）：同一诊断连续提交 20 次 → 20 个 carrier。
+    // 复用一个判定只能有一处：此前绘制前又算了一次，而它位于下方
+    // `lastBlockGapDiagnosticId = null` 之后，永远为 false —— 于是旧 carrier
+    // 既不退役、也不再被引用，同区间逐次叠加一层琥珀色背景。
+    const reuseExistingCarrier = this.blockGapVisualEl != null
+      && this.blockGapVisualEl.isConnected
+      && (this.lastBlockGapDiagnosticId === diagId
+        || this.lastBlockGapTargetIdentity === gapTargetIdentity)
+    if (!reuseExistingCarrier) this.removeBlockGapVisual()
     // ROOT_BLANK_LAYOUT_REDERIVE §3.1 — keep this channel's OWN inputs past the
     // transaction (AFTER the removal above) so the layout-invalidation branch can
     // re-derive the band from the LIVE boundary blocks.
@@ -14242,7 +14546,6 @@ export class DocumentUtilityOverlayHost {
     // When it is MISSING the entry is NEVER derived from the rendered row count:
     // the source is marked UNRESOLVED, ONE bounded re-parse is requested, and nothing
     // is registered (so no warning / copy / severity can be invented from the DOM).
-    const gapTargetIdentity = `blank-gap:${prevIdentity}>>${nextIdentity}`
     if (actualBlankLines == null) {
       this.renderedBlankRowAuthority.delete(gapTargetIdentity)
       this.requestBoundedInternalBlankReparse('INTERNAL_BLANK_LINE_SOURCE_UNRESOLVED')
@@ -14386,22 +14689,38 @@ export class DocumentUtilityOverlayHost {
     let closureEntries: BlankRowFragmentClosureEntry[] = []
     let paintedFragmentRects: Array<RectLike | null> = []
     let fragmentDomReady = false
+    let paintedCarrier = false
     if (structuralValid && layer && fragmentGeometry.container != null) {
       const box = fragmentGeometry.container
-      const container = document.createElement('div')
-      container.className = `${BLOCK_GAP_VISUAL_CLASS} ${RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS}`
-      container.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
+      // 差分渲染：同一区间的增量重提交复用现有 carrier，避免每次销毁重建
+      // （编辑期增减/合并/拆分时不再产生节点抖动与过渡重放）。
+      // BLANK-GAP-VISUAL-DIFF §3 — `reuseExistingCarrier` 是本次提交唯一的复用
+      // 判定（在 `lastBlockGapDiagnosticId` 重置之前求出），这里绝不能再算一次。
+      const reuseCarrier = reuseExistingCarrier
+      const container = reuseCarrier ? this.blockGapVisualEl! : document.createElement('div')
+      if (!reuseCarrier) {
+        container.className = `${BLOCK_GAP_VISUAL_CLASS} ${RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS}`
+        container.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
+        container.setAttribute('aria-hidden', 'true')
+      } else {
+        // 复用路径：旧动画/过渡可能仍在追一个过时几何，先取消再写新目标。
+        this.cancelBlockGapCarrierAnimations(container)
+      }
+      // owner token — 清理只退役「不是当前所有者」的块间距载体（见
+      // `retireStrayBlockGapCarriers`），组载体 / EOF 载体永不越权删除。
+      container.setAttribute('data-block-gap-owner', `${diagId ?? ''}@${gapTargetIdentity}`)
       container.setAttribute('data-severity', severity)
       container.setAttribute('data-active', 'true')
-      container.setAttribute('aria-hidden', 'true')
       // 统一绘制权威 — the container is the ONE RANGE BACKGROUND for the whole
       // blank run; its SURFACE + ONE left accent come from style.scss (so it must
       // NOT force `background:none` inline). The per-row fragments are pure
       // geometry/closure anchors (transparent), so there is EXACTLY ONE background.
-      container.style.cssText = `position:absolute;left:${Math.round(box.left)}px;top:${Math.round(box.top)}px;`
+      const nextCss = `position:absolute;left:${Math.round(box.left)}px;top:${Math.round(box.top)}px;`
         + `width:${Math.round(box.width)}px;height:${Math.round(box.height)}px;pointer-events:none;`
+      // 几何不变时不写 style（幂等：重复提交不引起样式重算 / 过渡重放）。
+      if (container.style.cssText !== nextCss) container.style.cssText = nextCss
       const allowance = INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
-      const fragEls = this.buildBlankRowFragmentEls(container, fragmentGeometry.fragments, allowance, severity)
+      const fragEls = this.reconcileBlankRowFragmentEls(container, fragmentGeometry.fragments, allowance, severity)
       // ONE count label — the VISIBLE blank line BAND count (§3/§4): the number of
       // distinct blank line bands the user actually sees AND the number the
       // publication decision was made on. The SOURCE blank count is a DIFFERENT,
@@ -14409,18 +14728,37 @@ export class DocumentUtilityOverlayHost {
       // and is NEVER stated as the displayed count. The rendered row/node count is a
       // GEOMETRY fact.
       const labelBlankCount = visibleBlankLineCount
-      if (labelBlankCount > 0) {
-        const chip = document.createElement('span')
-        chip.className = BLANK_RUN_COUNT_CHIP_CLASS
-        chip.setAttribute('aria-hidden', 'true')
-        chip.textContent = `${labelBlankCount} 空行`
-        container.appendChild(chip)
-      }
-      layer.appendChild(container)
+      this.upsertBlockGapCountChip(container, labelBlankCount)
+      // 去叠加 — 无论复用还是新建，都把同一区间上一轮泄漏的孤儿载体
+      // （旧 revision / 失同步的重复 carrier）清出 DOM，保证「一个区间一个载体」。
+      this.retireStrayBlockGapCarriers(container)
+      if (!reuseCarrier) layer.appendChild(container)
+      paintedCarrier = true
       this.blockGapVisualEl = container
       this.blockGapFragmentEls = fragEls
       // R5 §5 — the primary owner is proven only by a REAL painted carrier.
       this.lastBlockGapDiagnosticId = diagId
+      this.lastBlockGapTargetIdentity = gapTargetIdentity
+      // BLANK-GAP-VISUAL-DIFF §2 — DOM census（真实 DOM，而不是内存数组）：
+      // 同一区间的载体数、片段数、数量标签数必须在每次提交后可核查。
+      if (!headless) {
+        const layerCarrierCount = this.locateDocLayer != null
+          ? this.locateDocLayer.querySelectorAll(`[data-block-gap-visual="${BLOCK_GAP_VISUAL_TARGET}"]`).length
+          : -1
+        emitRuntimeAudit('BLANK-GAP-VISUAL-DIFF-CENSUS', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          diagnosticId: diagId,
+          targetKey: gapTargetIdentity,
+          carrierOwner: container.getAttribute('data-block-gap-owner'),
+          reusedCarrier: reuseCarrier,
+          carrierCountInLayer: layerCarrierCount,
+          fragmentDomCount: container.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length,
+          fragmentListCount: fragEls.length,
+          chipDomCount: container.querySelectorAll(`.${BLANK_RUN_COUNT_CHIP_CLASS}`).length,
+          decision: layerCarrierCount === 1 ? 'PASS' : 'FAIL',
+          reason: layerCarrierCount === 1 ? 'ONE_CARRIER_PER_GAP_INTERVAL' : 'DUPLICATE_CARRIER_IN_LAYER',
+        })
+      }
       // V2 §B — the painted gap carrier carries its diagnostic severity so the
       // Unified Visual Closure reads the SAME facts as OneClick.
       this.blockGapActiveSeverity = severity
@@ -14600,6 +14938,9 @@ export class DocumentUtilityOverlayHost {
         this.countersRenderedBlankRow.zeroPaintedRect++
       }
     }
+    // BLANK-GAP-VISUAL-DIFF §3 — 复用的 carrier 在本次提交未能重绘（边界 / 几何
+    // 不可证明）时立即退役：宁可暂时无标记，也不让旧 revision 的几何继续显示。
+    if (!paintedCarrier && reuseExistingCarrier) this.removeBlockGapVisual()
     // §13/§15/§24 — the closure verdict. Headless (jsdom) cannot paint, so it is
     // exempt (its render path is a stub); the REAL runtime proves it visually.
     const maxDriftPx = maxFragmentDrift(closureEntries)
@@ -14911,6 +15252,10 @@ export class DocumentUtilityOverlayHost {
       try { this.blockGapVisualEl.remove() } catch { /* noop */ }
       this.blockGapVisualEl = null
     }
+    // BLANK-GAP-VISUAL-DIFF §3 — owner 自己退役后，把所有「主块间距」载体清出
+    // DOM（组载体 / EOF 载体不在选择器内）。这一步回收历史泄漏的孤儿载体，
+    // 使 `blockGapVisualEl` 指针与实际可见载体始终一一对应。
+    this.retireStrayBlockGapCarriers(null)
     // TRAE §22 — a retired gap carrier must never leave a stale node behind.
     const root = this.root
     if (root && root.querySelectorAll(`.${BLOCK_GAP_VISUAL_CLASS}`).length > 0) {
@@ -14925,6 +15270,7 @@ export class DocumentUtilityOverlayHost {
     }
     this.blockGapScrollTargetRect = null
     this.lastBlockGapDiagnosticId = null
+    this.lastBlockGapTargetIdentity = null
     this.lastScrollTargetKind = null
     // A gap carrier owns the band: retiring it also retires any unified band a
     // previous blank-space Warning may have left behind.
@@ -17162,6 +17508,40 @@ export class DocumentUtilityOverlayHost {
       return `block:${kind}:${ordinal}`
     }
     return null
+  }
+
+  /**
+   * BLANK-GAP LOCATOR RECOVERY — bind the diagnostic's NEXT content boundary from
+   * its OWN metadata, for the locate stage (before any paint).
+   *
+   * The gap's semantic target is the RUN between two blocks, so the next block is
+   * the scroll anchor / identity anchor. Canonical `block:<kind>:<ordinal>`
+   * wins; a paragraph-like block falls back to the existing verified ladder
+   * (unique text / nearest-line / source ordinal). `data-line` is only a
+   * candidate — this Typora build renders `<p>` / `<pre>` without it.
+   *
+   * Returns `undefined` when the record carries no boundary facts at all (legacy
+   * / sparse producer → the caller keeps the generic ladder), and `null` when
+   * the boundary cannot be uniquely + physically verified (caller fails closed
+   * with `BLANK_GAP_BOUNDARY_UNRESOLVED` instead of matching a similar paragraph).
+   */
+  private bindBlankGapNextBoundary(meta: Record<string, unknown>): HTMLElement | null | undefined {
+    const hasAnchor = typeof meta.nextBlockAnchorText === 'string' && meta.nextBlockAnchorText.trim() !== ''
+    const hasLine = typeof meta.nextBlockStartLine === 'number'
+    const hasCanonicalOrdinal = typeof meta.nextBlockCanonicalOrdinal === 'number'
+    if (!hasAnchor && !hasLine && !hasCanonicalOrdinal) return undefined
+    const binding = this.bindGapBoundary({
+      canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
+      canonicalOrdinal: hasCanonicalOrdinal ? (meta.nextBlockCanonicalOrdinal as number) : null,
+      startLine: hasLine ? (meta.nextBlockStartLine as number) : null,
+      anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.nextBlockIdentity),
+    })
+    const el = binding.element
+    if (el == null || !el.isConnected) return null
+    const root = resolveBusinessContentRoot()
+    if (root == null || !root.contains(el)) return null
+    return el
   }
 
   /**
@@ -25093,6 +25473,14 @@ export class DocumentUtilityOverlayHost {
       // the opener SOURCE LINE through the canonical `data-line` authority, so a
       // canonical code-block DOM is never required.
       resolveSourceSyntaxOpener: (request) => this.resolveSourceSyntaxOpenerInRoot(request),
+      // BLANK-GAP LOCATOR RECOVERY — the gap resolves its NEXT content boundary
+      // from its own metadata (canonical identity first), never from the single
+      // source line's text.
+      resolveBlankGapBoundary: (input) => {
+        const element = this.bindBlankGapNextBoundary(input.metadata)
+        if (element === undefined) return undefined
+        return element != null ? { element, strategy: 'CANONICAL_GAP_BOUNDARY' } : null
+      },
     }
     let result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
 
@@ -32522,10 +32910,14 @@ export class DocumentUtilityOverlayHost {
     const sameTarget = this.diagnosticInteractionState.phase === 'ACTIVE'
       && this.diagnosticInteractionState.targetKey === targetKey
     // ── R4 §3.1 — the inherited-group fact is part of the click classification,
-    // not a later correction.
+    // not a later correction. BLANK-GAP ACTIVATION RECOVERY §3.1 — the historical
+    // membership (lineage / a past activation) is NOT an active owner: from IDLE
+    // the click must be classified as ACTIVATE, never GROUP_MEMBER_TOGGLE_OFF.
     const inheritedGroupMember = this.isActiveGapGroupMemberDiagnostic(p.diagnosticId)
+    const inheritedToggleOff = inheritedGroupMember
+      && this.diagnosticInteractionState.phase === 'ACTIVE'
     const mechanicalAction = sameTarget ? 'DEACTIVATE' : (sameDiagnostic ? 'SWITCH' : 'ACTIVATE')
-    const classifiedAction = inheritedGroupMember ? 'DEACTIVATE' : mechanicalAction
+    const classifiedAction = inheritedToggleOff ? 'DEACTIVATE' : mechanicalAction
     emitRuntimeAudit(CLICK_PROVENANCE_AUDIT_EVENT, buildClickProvenanceAudit({
       documentKey: documentKey || null,
       diagnosticId: p.diagnosticId,

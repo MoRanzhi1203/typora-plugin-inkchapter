@@ -903,8 +903,14 @@ function matchesCanonicalHeadingAnchor(
   return decoded !== target && anchors.has(decoded)
 }
 
+/** 诊断盖章所需的最小上下文（documentKey + severity 政策输入）。 */
+interface DiagnosticStampContext {
+  documentKey: string | null
+  strictMode: boolean
+}
+
 function makeDiagnostic(
-  input: DocumentDiagnosticsInput,
+  input: DiagnosticStampContext,
   category: DocumentDiagnosticCategory,
   code: string,
   message: string,
@@ -978,6 +984,82 @@ function makeDiagnostic(
     location: opts.nonLocatableNotice === true ? undefined : (opts.location ?? deriveDefaultLocation(category, opts)),
     nonLocatableNotice: opts.nonLocatableNotice === true ? true : undefined,
   }
+}
+
+/** 内部空行规则的最小输入（快速通路与全量共用同一构造权威）。 */
+export interface InternalBlankLineDiagnosticInput {
+  documentKey: string | null
+  markdown: string | null
+  strictMode: boolean
+}
+
+/**
+ * `EXCESSIVE_INTERNAL_BLANK_LINES` 的唯一构造权威。
+ *
+ * 全量 compute 与编辑期快速通路共用本函数，保证两条链路的诊断身份、metadata、
+ * 定位与文案完全一致（不存在第二份构造逻辑）。
+ */
+export function buildInternalBlankLineDiagnostics(
+  input: InternalBlankLineDiagnosticInput,
+): DocumentDiagnostic[] {
+  if (input.markdown == null) return []
+  const out: DocumentDiagnostic[] = []
+  for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
+    const gapIdentity = internalBlankGapIdentity(gap)
+    out.push(
+      makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
+        detail: internalBlankLineDetail(gap.actualBlankLines),
+        kind: 'document',
+        targetIdentity: gapIdentity,
+        metadata: {
+          ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
+          // §1 — the rule's OWN category / scope vocabulary. `category` on
+          // the record stays the legacy consumer grouping ('document').
+          ruleCategory: 'document-format',
+          scope: 'block-gap',
+          reasonChip: false,
+          passiveVisual: false,
+          activeVisual: true,
+          // §9/§33 — the block-gap facts travel on the record so the Drawer,
+          // the locator and the audits never re-derive them.
+          previousBlockIdentity: gap.previousBlockIdentity,
+          previousBlockKind: gap.previousBlockKind,
+          // TRAE §7 — the CANONICAL binding authority: `block:<kind>:<ordinal>`
+          // for object boundaries (code / table / formula). A fence text is
+          // never the binding identity.
+          previousBlockCanonicalKind: gap.previousBlockCanonicalKind,
+          previousBlockCanonicalOrdinal: gap.previousBlockCanonicalOrdinal,
+          previousBlockStartLine: gap.previousBlockStartLine,
+          previousBlockAnchorText: gap.previousBlockAnchorText,
+          nextBlockIdentity: gap.nextBlockIdentity,
+          nextBlockKind: gap.nextBlockKind,
+          nextBlockCanonicalKind: gap.nextBlockCanonicalKind,
+          nextBlockCanonicalOrdinal: gap.nextBlockCanonicalOrdinal,
+          nextBlockStartLine: gap.nextBlockStartLine,
+          nextBlockAnchorText: gap.nextBlockAnchorText,
+          previousSourceEnd: gap.previousBlockSourceEnd,
+          nextSourceStart: gap.nextBlockSourceStart,
+          firstBlankLine: gap.firstBlankLine,
+          lastBlankLine: gap.lastBlankLine,
+          actualBlankLines: gap.actualBlankLines,
+          passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+          warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+        },
+        // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
+        // (and the active target) is the NEXT block: its proven VISIBLE text
+        // is the verification anchor, so the click shows the block the excess
+        // blanks precede. `source-range` never paints the whole blank band.
+        location: {
+          kind: 'source-range',
+          startLine: gap.nextBlockStartLine,
+          startColumn: 0,
+          sourceFingerprint: `internal-blank:${gapIdentity}`,
+          rawText: gap.nextBlockAnchorText,
+        },
+      }),
+    )
+  }
+  return out
 }
 
 /**
@@ -2288,60 +2370,13 @@ export function computeDocumentDiagnostics(
     //    block identities, never from a line index or the blank count, so
     //    editing 3 → 4 → 5 → 6 blank lines keeps the SAME record (§20/§29).
     if (input.markdown != null) {
-      for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
-        const gapIdentity = internalBlankGapIdentity(gap)
-        push(
-          makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
-            detail: internalBlankLineDetail(gap.actualBlankLines),
-            kind: 'document',
-            targetIdentity: gapIdentity,
-            metadata: {
-              ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
-              // §1 — the rule's OWN category / scope vocabulary. `category` on
-              // the record stays the legacy consumer grouping ('document').
-              ruleCategory: 'document-format',
-              scope: 'block-gap',
-              reasonChip: false,
-              passiveVisual: false,
-              activeVisual: true,
-              // §9/§33 — the block-gap facts travel on the record so the Drawer,
-              // the locator and the audits never re-derive them.
-              previousBlockIdentity: gap.previousBlockIdentity,
-              previousBlockKind: gap.previousBlockKind,
-              // TRAE §7 — the CANONICAL binding authority: `block:<kind>:<ordinal>`
-              // for object boundaries (code / table / formula). A fence text is
-              // never the binding identity.
-              previousBlockCanonicalKind: gap.previousBlockCanonicalKind,
-              previousBlockCanonicalOrdinal: gap.previousBlockCanonicalOrdinal,
-              previousBlockStartLine: gap.previousBlockStartLine,
-              previousBlockAnchorText: gap.previousBlockAnchorText,
-              nextBlockIdentity: gap.nextBlockIdentity,
-              nextBlockKind: gap.nextBlockKind,
-              nextBlockCanonicalKind: gap.nextBlockCanonicalKind,
-              nextBlockCanonicalOrdinal: gap.nextBlockCanonicalOrdinal,
-              nextBlockStartLine: gap.nextBlockStartLine,
-              nextBlockAnchorText: gap.nextBlockAnchorText,
-              previousSourceEnd: gap.previousBlockSourceEnd,
-              nextSourceStart: gap.nextBlockSourceStart,
-              firstBlankLine: gap.firstBlankLine,
-              lastBlankLine: gap.lastBlankLine,
-              actualBlankLines: gap.actualBlankLines,
-              passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
-              warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
-            },
-            // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
-            // (and the active target) is the NEXT block: its proven VISIBLE text
-            // is the verification anchor, so the click shows the block the excess
-            // blanks precede. `source-range` never paints the whole blank band.
-            location: {
-              kind: 'source-range',
-              startLine: gap.nextBlockStartLine,
-              startColumn: 0,
-              sourceFingerprint: `internal-blank:${gapIdentity}`,
-              rawText: gap.nextBlockAnchorText,
-            },
-          }),
-        )
+      // 单一构造权威：快速通路与全量 compute 共用 `buildInternalBlankLineDiagnostics`。
+      for (const d of buildInternalBlankLineDiagnostics({
+        documentKey: input.documentKey,
+        markdown: input.markdown,
+        strictMode: input.strictMode,
+      })) {
+        push(d)
       }
     }
 

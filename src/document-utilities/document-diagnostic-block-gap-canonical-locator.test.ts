@@ -726,3 +726,117 @@ describe('TRAE §17 — the block-gap closure is scoped to the CURRENT diagnosti
     expect(internals.getBlockGapCanonicalClosureCounters().staleVisualCount).toBe(0)
   })
 })
+
+// ── BLANK-GAP-VISUAL-DIFF — 同一区间 carrier 幂等复用 / 去叠加 ───────────────
+//
+// 失败先行：旧实现把「是否复用 carrier」判定放在 `lastBlockGapDiagnosticId`
+// 被重置之后，所以同一诊断的第二次提交永远走「新建 + append」，旧 carrier
+// 既不退役也无人再引用 —— 每次重提交（布局失效 / 滚动 / 侧栏拖拽）都会在同一
+// 空行区间上叠加一层琥珀色背景，形成用户截图里的阶梯色带。
+
+describe('BLANK-GAP-VISUAL-DIFF — 同一区间 carrier 幂等复用与去叠加', () => {
+  const locateLayer = (): HTMLElement | null =>
+    document.querySelector<HTMLElement>('[data-inkchapter-locate-layer="true"]')
+  const paintedFragments = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`))
+  const commit = (world: World, diag: Record<string, unknown>): void => {
+    const internals = world.h as unknown as Internals
+    internals.commitBlockGapVisual(GAP_RULE_DIAG_ID, 'warning', diag, world.paragraph)
+  }
+
+  it('VIS-04 同一诊断重复提交：carrier / fragment / 数量标签节点身份复用且只有一份', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    commit(world, diag)
+    const firstCarrier = document.querySelector<HTMLElement>(`.${BLOCK_GAP_VISUAL_CLASS}`)
+    expect(firstCarrier).not.toBeNull()
+    const firstFragments = paintedFragments()
+    expect(firstFragments).toHaveLength(3)
+
+    commit(world, diag)
+
+    // 去叠加：同一区间只允许一个 carrier（旧实现会留下 2 个）。
+    expect(gapCarriers()).toBe(1)
+    expect(document.querySelector<HTMLElement>(`.${BLOCK_GAP_VISUAL_CLASS}`)).toBe(firstCarrier)
+    // 幂等：片段节点原地复用，不新增、不重排。
+    expect(paintedFragments()).toEqual(firstFragments)
+    // 数量标签也只有一份。
+    expect(document.querySelectorAll('.inkchapter-blank-run-count')).toHaveLength(1)
+  })
+
+  it('VIS-02 连续 20 次同诊断提交：carrier 数恒为 1，片段数不随提交次数增长', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    for (let i = 0; i < 20; i++) commit(world, diag)
+    expect(gapCarriers()).toBe(1)
+    expect(paintedFragments()).toHaveLength(3)
+    expect(document.querySelectorAll('.inkchapter-blank-run-count')).toHaveLength(1)
+    // 单层填充：整个定位层里只有 ONE 个带琥珀背景的 carrier 容器。
+    const layer = locateLayer()
+    expect(layer).not.toBeNull()
+    expect(layer!.querySelectorAll(`.inkchapter-block-gap-fragments`)).toHaveLength(1)
+  })
+
+  it('VIS-06 上一轮泄漏的旧 carrier 会在下一次提交时退役，active-gap-group 不受影响', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    commit(world, diag)
+    const layer = locateLayer()
+    expect(layer).not.toBeNull()
+
+    const stale = document.createElement('div')
+    stale.className = `${BLOCK_GAP_VISUAL_CLASS} inkchapter-block-gap-fragments`
+    stale.setAttribute('data-block-gap-visual', BLOCK_GAP_VISUAL_TARGET)
+    stale.setAttribute('data-block-gap-owner', 'stale-owner:old-revision')
+    layer!.appendChild(stale)
+
+    const group = document.createElement('div')
+    group.className = `${BLOCK_GAP_VISUAL_CLASS} inkchapter-block-gap-fragments`
+    group.setAttribute('data-block-gap-visual', 'active-gap-group')
+    layer!.appendChild(group)
+
+    commit(world, diag)
+
+    // 旧 revision 的孤儿载体被清理（owner token 校验），组载体属于别的所有者，保留。
+    expect(stale.isConnected).toBe(false)
+    expect(group.isConnected).toBe(true)
+    expect(gapCarriers()).toBe(2)
+  })
+
+  it('MUT-01 可见空行 3→1：复用同一 carrier，多余 fragment 立即退役', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    commit(world, diag)
+    const carrier = document.querySelector<HTMLElement>(`.${BLOCK_GAP_VISUAL_CLASS}`)
+    expect(paintedFragments()).toHaveLength(3)
+
+    blankRows[2].remove()
+    blankRows[1].remove()
+    commit(world, diag)
+
+    expect(gapCarriers()).toBe(1)
+    expect(document.querySelector<HTMLElement>(`.${BLOCK_GAP_VISUAL_CLASS}`)).toBe(carrier)
+    expect(paintedFragments()).toHaveLength(1)
+    expect(carrier!.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`)).toHaveLength(1)
+    expect(document.querySelectorAll('.inkchapter-blank-run-count')).toHaveLength(1)
+  })
+
+  it('MUT-02 可见空行全部移除：旧违规视觉在同一提交内消失（不保留旧 revision 几何）', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    commit(world, diag)
+    expect(gapCarriers()).toBe(1)
+
+    for (const row of blankRows) row.remove()
+    commit(world, diag)
+
+    expect(gapCarriers()).toBe(0)
+    expect(paintedFragments()).toHaveLength(0)
+    expect(document.querySelectorAll('.inkchapter-blank-run-count')).toHaveLength(0)
+  })
+})
