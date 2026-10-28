@@ -207,6 +207,7 @@ export type FormulaTransientPlanLookupDecision =
   | 'HOST_DISCONNECTED'
   | 'DOCUMENT_MISMATCH'
   | 'EXPLICIT_USER_TAG_PRESERVED'
+  | 'EMPTY_SOURCE_NO_INJECTION'
   | 'STALE_ACTIVATION_LOOKUP'
 
 export type FormulaVerifyDecision =
@@ -989,6 +990,13 @@ export class FormulaProjectionController {
     if (inputHasExplicitTag) {
       emitLookup(host, 'EXPLICIT_USER_TAG_PRESERVED')
       return { tex, injected: false, authority: 'explicit-user-tag-preserved', sourceHash, host, ...ambiguousResolution }
+    }
+    // PA-12 CORRECTION — an EMPTY source keeps its ordinal in the plan, but a
+    // tag-only input (`\tag{n}` without a body) makes MathJax return an empty
+    // container and the block renders BLANK. Never inject here.
+    if (tex.trim() === '') {
+      emitLookup(host, 'EMPTY_SOURCE_NO_INJECTION')
+      return { tex, injected: false, authority: 'defer', sourceHash, host, ...ambiguousResolution }
     }
 
     // Phase 7R.3.6 §36: if the current activation no longer matches the CURRENT

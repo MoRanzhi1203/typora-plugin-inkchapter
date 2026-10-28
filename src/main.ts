@@ -520,6 +520,13 @@ export default class extends Plugin<InkChapterSettings> {
       if (area == null || area.isConnected === false) {
         return { markdown: incremental(), structural: false, reason: 'ROOT_DISCONNECTED' }
       }
+      // 公式渲染安全阀：`UserOp.getMarkdownSourceFrom` 会遍历并重建块内 DOM，
+      // 实测即使块公式已渲染完成，该序列化仍会清空 `.md-math-block`（公式永久
+      // 空白，renderUnder 也无法恢复）。因此含块公式的文档一律降级为增量镜像，
+      // 公式渲染优先于结构诊断。
+      if (area.querySelector('.md-math-block')) {
+        return { markdown: incremental(), structural: false, reason: 'API_UNAVAILABLE' }
+      }
       const userOp = (editor as unknown as { UserOp?: { getMarkdownSourceFrom?: (el: unknown) => unknown } }).UserOp
       if (userOp == null || typeof userOp.getMarkdownSourceFrom !== 'function') {
         return { markdown: incremental(), structural: false, reason: 'API_UNAVAILABLE' }

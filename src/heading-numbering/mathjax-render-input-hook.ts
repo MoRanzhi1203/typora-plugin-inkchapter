@@ -88,7 +88,7 @@ function getMathJax(): MathJaxLike | null {
 }
 
 /** Bounded structural scan of a MathJax returned node for tag evidence. */
-function scanOutputForTags(node: unknown): { semanticTagEvidenceCount: number; sequentialTagEvidenceCount: number; outputTagName: string } {
+export function scanOutputForTags(node: unknown): { semanticTagEvidenceCount: number; sequentialTagEvidenceCount: number; outputTagName: string } {
   try {
     const el = node as Element
     if (!el || typeof el.querySelectorAll !== 'function') {
@@ -98,7 +98,10 @@ function scanOutputForTags(node: unknown): { semanticTagEvidenceCount: number; s
       .filter(n => n.children.length === 0)
       .map(n => (n.textContent ?? '').trim())
       .filter(t => t.length > 0 && t.length <= 40)
-    const semanticTagEvidenceCount = textNodes.filter(t => /\(\s*[\d]+\.[\d.]+-[\d]+\s*\)/.test(t)).length
+    // PA-11 integration: the section preset renders `(1-1)` (no dot), so the
+    // evidence pattern must not require a dotted prefix — otherwise a correct
+    // visible tag is never counted and the commit is never recorded.
+    const semanticTagEvidenceCount = textNodes.filter(t => /\(\s*\d+(?:\.\d+)*-\d+\s*\)/.test(t)).length
     const sequentialTagEvidenceCount = textNodes.filter(t => /^\(\s*\d+\s*\)$/.test(t)).length
     return { semanticTagEvidenceCount, sequentialTagEvidenceCount, outputTagName: el.tagName }
   } catch {

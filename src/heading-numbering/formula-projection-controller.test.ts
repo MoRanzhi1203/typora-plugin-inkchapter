@@ -363,7 +363,10 @@ describe('PA-12 empty formula keeps its ordinal', () => {
     expect(isPlanSourceAdmissible('x = 1', true)).toBe(true)
   })
 
-  it('an empty host with a plan receives its own tag instead of being skipped', () => {
+  // PA-12 CORRECTION — a tag-only TeX input (`\tag{x}` with no body) makes
+  // MathJax return an EMPTY container, which blanks the block in the preview.
+  // An empty formula keeps its ordinal in the plan but must NOT be injected.
+  it('an empty host keeps its ordinal but never receives a tag-only render input', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const controller = new FormulaProjectionController()
@@ -372,10 +375,12 @@ describe('PA-12 empty formula keeps its ordinal', () => {
       rawNumber: '5.2-3', renderedNumber: '(5.2-3)', formulaRuntimeKey: 'formula:2',
       authority: 'inkchapter-native-transient', formulaMode: 'inkchapter',
     })
+    // The ordinal IS reserved (no numbering hole in the plan set)…
+    expect(controller.getPlan(host)?.rawNumber).toBe('5.2-3')
+    // …but the render input stays EMPTY (`tex2svg('')` is a no-op, not an error).
     const d = controller.prepareTransientRenderInput('', 'doc-a', 1)
-    expect(d.injected).toBe(true)
-    expect(d.tex).toBe('\\tag{5.2-3}')
-    expect(d.host).toBe(host)
+    expect(d.injected).toBe(false)
+    expect(d.tex).toBe('')
   })
 })
 

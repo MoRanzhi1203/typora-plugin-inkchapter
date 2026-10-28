@@ -4547,7 +4547,14 @@ export class DocumentUtilityOverlayHost {
             // PERFORMANCE — the expensive semantic pass is debounced. Geometry
             // invalidation stays on the rAF path so markers never keep stale
             // coordinates while typing.
-            this.scheduleDiagnosticsRecompute('DOCUMENT_MUTATION', realContentMutation)
+            // BLANK-GAP-INCREMENTAL §4.2 — a batch made ONLY of the plugin's own
+            // presentation writes cannot change any diagnostic fact. Scheduling the
+            // semantic pass for it would start with a whole-document structural
+            // serialization that can never publish (pure self-wake). Only real
+            // editor content mutations may request the formal recompute.
+            if (realContentMutation) {
+              this.scheduleDiagnosticsRecompute('DOCUMENT_MUTATION', true)
+            }
             this.scheduleGeometrySync('content-mutation')
           })
         }
