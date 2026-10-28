@@ -48,6 +48,28 @@ import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 let mdRef = { current: '' }
 let docKeyRef = { current: 'doc:r6' }
 
+/**
+ * Brace-balanced extraction of ONE class method from source text.
+ *
+ * The `src.indexOf('\n  }\n', start)` heuristic used by some source-shape tests
+ * stops at the first two-space closing brace — which is not necessarily this
+ * method's own end, so the assertion can silently run on an empty slice.
+ */
+function sliceBalancedMethod(src: string, start: number): string {
+  const open = src.indexOf('{', start)
+  if (open < 0) return ''
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return src.slice(start, i + 1)
+    }
+  }
+  return src.slice(start)
+}
+
 function inputOf(markdown: string): DocumentDiagnosticsInput {
   return {
     documentKey: docKeyRef.current, markdown, strictMode: true, vaultRoot: '/vault',
@@ -404,8 +426,11 @@ describe('R6-08 retiring the primary carrier re-derives the group, atomically', 
       resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
     const start = src.indexOf('private clearDiagnosticLocateVisual(')
     expect(start).toBeGreaterThan(-1)
-    const bodyEnd = src.indexOf('\n  }\n', start) + 4
-    const body = src.slice(start, bodyEnd)
+    // Brace-balanced extraction: the previous `indexOf('\n  }\n')` heuristic
+    // stopped inside a later method, so the assertion could be satisfied by an
+    // empty slice. Extract the REAL body instead.
+    const body = sliceBalancedMethod(src, start)
+    expect(body.length).toBeGreaterThan(200)
     expect(body).not.toContain('paintActiveGapGroupVisuals')
     expect(body).not.toContain('reprojectActiveGapGroupAfterCarrierRetirement')
   })

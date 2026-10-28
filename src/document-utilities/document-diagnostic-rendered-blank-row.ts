@@ -388,6 +388,14 @@ function toRectLike(r: RectLike | null): RectLike | null {
  * between the real block-level siblings. It never merges an ancestor/descendant
  * pair (that cannot describe a gap) and never leaves the business root.
  */
+/**
+ * Typora's packaged runtime exposes `Node` WITHOUT `DOCUMENT_POSITION_*`
+ * (they are `undefined`), so `order & Node.DOCUMENT_POSITION_FOLLOWING` is
+ * ALWAYS 0 — a false "not following" that silently killed the pair lift for two
+ * list items wrapped in separate `<ul>` elements. Use the spec literal.
+ */
+const DOM_POSITION_FOLLOWING = 4
+
 export function normalizeSiblingBoundaryPair(
   root: HTMLElement,
   previous: HTMLElement,
@@ -424,7 +432,7 @@ export function normalizeSiblingBoundaryPair(
   if (liftedPrevious.parentElement == null || liftedPrevious.parentElement !== liftedNext.parentElement) return null
   try {
     const order = liftedPrevious.compareDocumentPosition(liftedNext)
-    if ((order & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return null
+    if ((order & DOM_POSITION_FOLLOWING) === 0) return null
   } catch {
     return null
   }

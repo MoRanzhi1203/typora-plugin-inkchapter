@@ -225,9 +225,34 @@ describe('Internal Blank-Line Policy V1 — separations and exclusions', () => {
     expect(blanksOf(markdown)).toEqual([])
   })
 
-  it('§15 — a loose list / lazy blockquote interior is never a sibling gap', () => {
-    expect(blanksOf('- 项目 A\n\n\n\n- 项目 B\n')).toEqual([])
+  it('§15 — a lazy blockquote interior is never a sibling gap', () => {
     expect(blanksOf('> 引用 A\n\n\n\n> 引用 B\n')).toEqual([])
+  })
+
+  it('§15 — ≥2 blank lines between SIBLING list items IS reported', () => {
+    expect(blanksOf('- 项目 A\n\n\n\n- 项目 B\n')).toEqual([3])
+    expect(blanksOf('1. 项目 A\n\n\n\n2. 项目 B\n')).toEqual([3])
+    expect(blanksOf('* 项目 A\n\n\n* 项目 B\n')).toEqual([2])
+    // 1 blank line between items stays legal (policy: 0~1 → PASS).
+    expect(blanksOf('- 项目 A\n\n- 项目 B\n')).toEqual([])
+  })
+
+  it('§15 — a blank run INSIDE one list item is never a sibling gap', () => {
+    expect(blanksOf('- 第一段\n\n\n\n  第二段\n')).toEqual([])
+  })
+
+  it('§15-R2 — an EMPTY list item counts as one blank row', () => {
+    // Typora folds a list gap to ONE blank line on serialization, so the empty
+    // item is the second blank row the user really sees.
+    expect(blanksOf('- 项目 A\n- \n\n- 项目 B\n')).toEqual([2])
+    // ONE empty item alone is a single blank row → still legal.
+    expect(blanksOf('- 项目 A\n- \n- 项目 B\n')).toEqual([])
+    // two adjacent empty items are two blank rows.
+    expect(blanksOf('- 项目 A\n- \n- \n- 项目 B\n')).toEqual([2])
+  })
+
+  it('§15-R2 — an empty list item inside a code fence is CONTENT', () => {
+    expect(blanksOf('```\n- \n\n- \n```\n\n正文。\n')).toEqual([])
   })
 
   it('§15 — a gap between a container and the NEXT sibling block IS reported', () => {

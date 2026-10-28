@@ -2281,8 +2281,9 @@ export function computeDocumentDiagnostics(
     //      · blank lines inside a fenced code block / display formula / front
     //        matter / HTML block (they are CONTENT — §12/§13/§14),
     //      · the leading run before the first block (§11),
-    //      · the trailing EOF run (owned by the EOF rules above — §10),
-    //      · a loose list / lazy blockquote interior (§15).
+    //      · the trailing EOF run (owned by the EOF rules above — §10).
+    //    §15 — a list ITEM is its own block, so a blank run between two sibling
+    //    items IS reported; only a run inside one item / a blockquote is not.
     //    ONE gap → ONE diagnostic: the stable identity is built from the two
     //    block identities, never from a line index or the blank count, so
     //    editing 3 → 4 → 5 → 6 blank lines keeps the SAME record (§20/§29).

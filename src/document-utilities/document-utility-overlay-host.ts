@@ -57,6 +57,7 @@ import { findReferenceSpanAt, type ReferenceSpan } from './document-resource-sca
 import type { DiagnosticRangeRole } from './diagnostics-types'
 import {
   resolveDiagnosticLocation,
+  resolveLocateSuccessor,
   getRuleMeta,
   resolveRuleActiveVisualMode,
   resolvePresentationSeverity,
@@ -14227,6 +14228,9 @@ export class DocumentUtilityOverlayHost {
       : horizontal
     // §20/§23 — N FILL_ONLY fragments built from the CONVERTED rects (exactly one
     // conversion each), never one big [prev.bottom, next.top].
+    // LAYER CONTRACT — the rendered layer only ever paints REAL rendered blank-row
+    // geometry. A source-only gap (e.g. a list gap, which renders no blank row) is
+    // NEVER synthesized into a fake rendered row here.
     const fragmentGeometry = computeRenderedBlankRowFragments({
       rowRects: localRowRects,
       contentColumns: fragmentHorizontal ? { left: fragmentHorizontal.left, right: fragmentHorizontal.right } : null,
@@ -16705,6 +16709,10 @@ export class DocumentUtilityOverlayHost {
       const measuredVisible = result != null && result.decision === 'VERIFIED'
         ? result.visibleBlankLineCount
         : null
+      // LAYER CONTRACT — the publication decision is rendered-layer ONLY in WYSIWYG.
+      // A list gap renders NO blank-row node (verified: `betweenSiblings: []`), so it
+      // measures 0 visible rows and is correctly NOT published there. The source
+      // count is never promoted into the rendered axis.
       const decision = decideInternalBlankPublication({
         mode,
         measuredVisibleBlankLineCount: measuredVisible,
@@ -25097,15 +25105,27 @@ export class DocumentUtilityOverlayHost {
       if (!refreshed) {
         this.diagnostics.recompute('LOCATE_BOUNDED_REFRESH')
         refreshed = true
-        const nextDiag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
+        // ── P0 LOC — the refresh RE-ISSUES the same rule under a new diagnostic
+        // id. Looking the old id up directly found nothing and finished the
+        // transaction silently, so the user's click painted no marker at all.
+        // Recover the logical violation from the semantic membership of the new
+        // snapshot (rule + canonical boundary identity), never from text.
+        const nextDiag = this.rebindDiagnosticAfterRefresh(diagnosticId, diag)
         if (nextDiag) {
           const retry = resolveDiagnosticLocation(nextDiag, nextDiag.location, resolveCtx, targetIndex)
           if (retry.decision === 'RESOLVED') {
-            this.performLocateScrollTransaction(tx, retry, nextDiag, diagnosticId, targetIndex)
+            this.performLocateScrollTransaction(tx, retry, nextDiag, nextDiag.id, targetIndex)
             return
           }
           result = retry
           diag = nextDiag
+        } else {
+          // The violation itself is gone in the refreshed snapshot: retire the
+          // projection atomically instead of leaving a stale marker behind.
+          this.clearDiagnosticLocateVisual('DIAGNOSTIC_EXPIRED')
+          this.emitLocateAudit(diagnosticId, diag, 'NOT_FOUND', 'DIAGNOSTIC_EXPIRED_AFTER_REFRESH', targetIndex, result)
+          this.finishLocateTransaction(tx, false, 'DIAGNOSTIC_EXPIRED')
+          return
         }
       }
       this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'TARGET_CHANGED', targetIndex, result)
@@ -25118,15 +25138,20 @@ export class DocumentUtilityOverlayHost {
       if (!refreshed) {
         this.diagnostics.recompute('LOCATE_BOUNDED_REFRESH')
         refreshed = true
-        const nextDiag = this.diagnostics.getSnapshot()?.diagnostics.find(d => d.id === diagnosticId) ?? null
+        const nextDiag = this.rebindDiagnosticAfterRefresh(diagnosticId, diag)
         if (nextDiag) {
           const retry = resolveDiagnosticLocation(nextDiag, nextDiag.location, resolveCtx, targetIndex)
           if (retry.decision === 'RESOLVED') {
-            this.performLocateScrollTransaction(tx, retry, nextDiag, diagnosticId, targetIndex)
+            this.performLocateScrollTransaction(tx, retry, nextDiag, nextDiag.id, targetIndex)
             return
           }
           result = retry
           diag = nextDiag
+        } else {
+          this.clearDiagnosticLocateVisual('DIAGNOSTIC_EXPIRED')
+          this.emitLocateAudit(diagnosticId, diag, 'NOT_FOUND', 'DIAGNOSTIC_EXPIRED_AFTER_REFRESH', targetIndex, result)
+          this.finishLocateTransaction(tx, false, 'DIAGNOSTIC_EXPIRED')
+          return
         }
       }
       this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'SOURCE_ANCHOR_NOT_MAPPED_TO_DOM', targetIndex, result)
@@ -25135,6 +25160,29 @@ export class DocumentUtilityOverlayHost {
     }
     this.emitLocateAudit(diagnosticId, diag, result.decision, result.reason ?? 'UNRESOLVED', targetIndex, result)
     this.finishLocateTransaction(tx, false, result.decision)
+  }
+
+  /**
+   * P0 LOC — after a bounded refresh the clicked violation may come back under a
+   * NEW diagnostic id (the blank-gap identity is re-issued). Recover it from the
+   * refreshed snapshot by rule + canonical boundary identity only; an ambiguous
+   * duplicate returns `null` so the caller can retire instead of highlighting a
+   * wrong paragraph.
+   */
+  private rebindDiagnosticAfterRefresh(
+    diagnosticId: string,
+    previous: DocumentDiagnostic,
+  ): DocumentDiagnostic | null {
+    const diagnostics = this.diagnostics.getSnapshot()?.diagnostics ?? []
+    return resolveLocateSuccessor(
+      {
+        diagnosticId,
+        code: previous.code,
+        targetIdentity: previous.targetIdentity ?? null,
+        stableIdentity: previous.stableIdentity ?? null,
+      },
+      diagnostics,
+    )
   }
 
   /** Phase 7R.3.11.8B.7.7 / V5.8 / V5.9 — Locate TRANSACTION scroll path.
@@ -28957,6 +29005,10 @@ export class DocumentUtilityOverlayHost {
         const fillCommitted = this.locateCommittedVisual !== null
           || this.locateDocCarrier != null
           || this.locateFrame?.hasCommitted() === true
+          // P0 VIS — a BLOCK-GAP target is painted by its own carrier, which the
+          // three checks above do not see. Omitting it recorded `fillCommitted=false`
+          // while the closure audit reported `blockGapActiveFillCount=1`.
+          || this.isBlockGapVisualActive()
         const classification = classifyDiagnosticVisualFailure({
           gateReason: gate.reason ?? '',
           targetResolved: true,

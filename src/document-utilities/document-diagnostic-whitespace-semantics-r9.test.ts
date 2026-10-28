@@ -213,9 +213,12 @@ describe('R9-01/02/03 — a spaces-only paragraph never cuts a blank run', () =>
     // a U+200B line inside a fence is also just content
     const fenceZw = ['```', 'a', ZWSP, ZWSP, 'b', '```', '', 'C'].join('\n')
     expect(analyzeInternalBlankLineGaps(fenceZw).length).toBe(0)
-    // a loose list keeps its container semantics
+    // a loose list: ≥2 blank lines between SIBLING items IS a gap (list items
+    // are independent content blocks); 1 blank line stays legal.
     const loose = ['- a', '', '', '', '- b'].join('\n')
-    expect(analyzeInternalBlankLineGaps(loose).length).toBe(0)
+    expect(analyzeInternalBlankLineGaps(loose).length).toBe(1)
+    const looseSingle = ['- a', '', '- b'].join('\n')
+    expect(analyzeInternalBlankLineGaps(looseSingle).length).toBe(0)
   })
 
   it('R9-12 a trailing single blank line is never an internal gap', () => {

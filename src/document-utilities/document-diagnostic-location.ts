@@ -1139,6 +1139,61 @@ export type DiagnosticLocationResolveDecision =
   | 'NOT_FOUND'
   | 'UNSUPPORTED'
 
+/**
+ * P0 LOC — the semantic membership reference of a diagnostic the user clicked.
+ *
+ * A bounded refresh (`LOCATE_BOUNDED_REFRESH`) may re-issue the SAME rule with a
+ * NEW diagnostic id, so an id lookup alone finishes the transaction silently and
+ * the click paints nothing. Recovery therefore keys on the rule code plus the
+ * canonical boundary identity of the target — never on paragraph text and never
+ * on "the first diagnostic that is left".
+ */
+export interface LocateSuccessorReference {
+  diagnosticId: string
+  code: string
+  targetIdentity?: string | null
+  stableIdentity?: string | null
+}
+
+export interface LocateSuccessorCandidate {
+  id: string
+  code: string
+  targetIdentity?: string | null
+  stableIdentity?: string | null
+}
+
+/**
+ * P0 LOC — resolve the refreshed diagnostic that is the SAME logical violation.
+ *
+ * Rules (deterministic, bounded):
+ * 1. the exact id survived ⇒ that diagnostic;
+ * 2. same rule + same NON-EMPTY canonical `targetIdentity` ⇒ that ONE candidate;
+ * 3. otherwise same rule + same NON-EMPTY `stableIdentity` ⇒ that ONE candidate;
+ * 4. more than one candidate at the same identity level ⇒ `null` (ambiguous);
+ * 5. no candidate ⇒ `null` (the violation disappeared; the caller retires it).
+ *
+ * An empty identity never matches another empty identity: two identity-less
+ * diagnostics must never collapse onto each other.
+ */
+export function resolveLocateSuccessor<
+  T extends { id: string; code: string; targetIdentity?: string | null; stableIdentity?: string | null },
+>(
+  previous: LocateSuccessorReference,
+  next: ReadonlyArray<T>,
+): T | null {
+  const exact = next.find(c => c.id === previous.diagnosticId)
+  if (exact) return exact
+
+  const uniqueBy = (pick: (c: T | LocateSuccessorReference) => string): T | null => {
+    const key = pick(previous).trim()
+    if (key === '') return null
+    const matches = next.filter(c => c.code === previous.code && pick(c).trim() === key)
+    return matches.length === 1 ? matches[0] : null
+  }
+
+  return uniqueBy(c => c.targetIdentity ?? '') ?? uniqueBy(c => c.stableIdentity ?? '')
+}
+
 export type DiagnosticResolveAnchor =
   | 'heading-identity'
   | 'block-identity'

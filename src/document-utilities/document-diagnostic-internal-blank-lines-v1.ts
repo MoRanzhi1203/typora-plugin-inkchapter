@@ -29,8 +29,10 @@
  *
  * Exclusion contract: blank lines INSIDE a fenced code block, a display
  * formula, YAML front matter or an HTML block are content — never a gap.
- * A blank run inside ONE list / blockquote container is a loose-list / lazy
- * quote formatting choice, not a sibling block gap (§15).
+ * EVERY list item is its own content block, so a blank run between two SIBLING
+ * list items IS a sibling block gap (§15); only a blank run INSIDE one item
+ * (its own continuation paragraph) or inside a blockquote stays a formatting
+ * choice.
  */
 import { normalizeCanonicalHeadingText } from './latent-atx-heading-marker'
 import { isWhitespaceOnlyText } from './document-diagnostic-whitespace-semantics-v1'
@@ -198,6 +200,12 @@ interface LineClassification {
   protectedRegion: ProtectedRegion | null
   /** Container marker literally carried by the line / inherited by continuation. */
   container: 'list-item' | 'blockquote' | null
+  /**
+   * §15 — the identity of the container INSTANCE the line belongs to. One list
+   * ITEM is one instance (so a gap between sibling items is a real gap); one
+   * blockquote run is one instance.
+   */
+  containerKey: string | null
   /** True when the line STARTS a new content block. */
   blockStart: boolean
   /** True when the line ENDS a content block (so a following blank run is a gap). */
@@ -230,6 +238,17 @@ function sourceContainerKind(text: string): 'list-item' | 'blockquote' | null {
   return null
 }
 
+/**
+ * §15-R2 — an EMPTY list item (`- ` / `* ` / `1. ` with no content) IS one blank
+ * row: Typora renders it as an empty line. Typora's structural serializer folds
+ * several blank lines between list items into ONE blank line, so without this the
+ * list form could never reach the warning threshold while the paragraph form does.
+ */
+function isEmptyListItem(text: string): boolean {
+  if (!LIST_ITEM_RE.test(text)) return false
+  return normalizeIdentityText(text.replace(LIST_ITEM_RE, '')) === ''
+}
+
 function leadingSpaces(text: string): number {
   const m = /^[ ]*/.exec(text)
   return m ? m[0].length : 0
@@ -248,9 +267,10 @@ function classifyLines(markdown: string): { lines: SourceLine[]; classOf: LineCl
   const lines = splitSourceLines(markdown)
   const n = lines.length
   const classOf: LineClassification[] = lines.map(l => ({
-    blank: isBlank(l.text),
+    blank: isBlank(l.text) || isEmptyListItem(l.text),
     protectedRegion: null,
     container: null,
+    containerKey: null,
     blockStart: false,
     blockEnd: false,
     kind: 'paragraph',
@@ -393,13 +413,42 @@ function classifyLines(markdown: string): { lines: SourceLine[]; classOf: LineCl
         break
       }
       const end = j - 1
-      for (let k = i; k <= end; k++) {
-        if (classOf[k].kind !== 'paragraph') continue
-        classOf[k].kind = kind
-        classOf[k].container = sourceContainerKind(lines[k].text) ?? marker
+      if (kind === 'list') {
+        // §15 — EVERY top-level list item is its own content block, so a blank
+        // run between two SIBLING items is a real sibling gap. A blank run
+        // INSIDE one item (its own continuation paragraph) is not: it never
+        // satisfies `blockEnd` + `blockStart` below.
+        const itemStarts: number[] = []
+        for (let k = i; k <= end; k++) {
+          if (!isBlank(lines[k].text) && LIST_ITEM_RE.test(lines[k].text)) itemStarts.push(k)
+        }
+        if (itemStarts.length === 0) itemStarts.push(i)
+        for (let s = 0; s < itemStarts.length; s++) {
+          const itemStart = itemStarts[s]
+          const limit = s + 1 < itemStarts.length ? itemStarts[s + 1] - 1 : end
+          let itemEnd = limit
+          while (itemEnd > itemStart && isBlank(lines[itemEnd].text)) itemEnd--
+          const containerKey = `list-item:${itemStart}`
+          for (let k = itemStart; k <= itemEnd; k++) {
+            if (classOf[k].kind !== 'paragraph') continue
+            classOf[k].kind = kind
+            classOf[k].container = sourceContainerKind(lines[k].text) ?? marker
+            classOf[k].containerKey = containerKey
+          }
+          classOf[itemStart].blockStart = true
+          classOf[itemEnd].blockEnd = true
+        }
+      } else {
+        const containerKey = `blockquote:${i}`
+        for (let k = i; k <= end; k++) {
+          if (classOf[k].kind !== 'paragraph') continue
+          classOf[k].kind = kind
+          classOf[k].container = sourceContainerKind(lines[k].text) ?? marker
+          classOf[k].containerKey = containerKey
+        }
+        classOf[i].blockStart = true
+        classOf[end].blockEnd = true
       }
-      classOf[i].blockStart = true
-      classOf[end].blockEnd = true
       i = end + 1
       continue
     }
@@ -442,14 +491,22 @@ function classifyLines(markdown: string): { lines: SourceLine[]; classOf: LineCl
   // line (a lazy list-item continuation), so a following gap is compared against
   // the container, not against a bare paragraph.
   let previousContainer: 'list-item' | 'blockquote' | null = null
+  let previousContainerKey: string | null = null
   for (let k = 0; k < n; k++) {
     const c = classOf[k]
-    if (protectedOf[k] != null) c.protectedRegion = protectedOf[k]
-    if (c.blank) continue
+    if (protectedOf[k] != null) {
+      c.protectedRegion = protectedOf[k]
+      // §12/§13/§14 — a protected region's interior is CONTENT: an empty list item
+      // textual form inside a fence / formula / front matter / HTML is NOT a blank.
+      c.blank = isBlank(lines[k].text)
+    }
+    if (c.blank && c.container == null) continue
     if (c.container == null && leadingSpaces(lines[k].text) > 0 && previousContainer != null && c.kind === 'paragraph') {
       c.container = previousContainer
+      c.containerKey = previousContainerKey
     }
     previousContainer = c.container
+    previousContainerKey = c.containerKey
   }
   return { lines, classOf }
 }
@@ -668,9 +725,11 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     if (!prevClass.blockEnd || !nextClass.blockStart) continue
     // §12/§13/§14 — a blank line inside a protected region is CONTENT.
     if (prevClass.protectedRegion != null || nextClass.protectedRegion != null) continue
-    // §15 — one list / blockquote container spanning the blank run is a loose
-    // list / lazy quote, not a sibling gap.
-    if (prevClass.container != null && prevClass.container === nextClass.container) continue
+    // §15 — a blank run INSIDE one container INSTANCE (one list item's own
+    // continuation paragraph, or a lazy blockquote interior) is a formatting
+    // choice, not a sibling gap. Two SIBLING list items are different instances
+    // (`containerKey` differs), so their blank run IS reported.
+    if (prevClass.containerKey != null && prevClass.containerKey === nextClass.containerKey) continue
 
     while (runIdx < runs.length && runs[runIdx].end < before) runIdx++
     const prevRun = runs[runIdx]
