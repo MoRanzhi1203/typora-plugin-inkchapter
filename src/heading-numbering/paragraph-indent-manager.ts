@@ -15,6 +15,10 @@ import type {
 } from './heading-types'
 import { PARAGRAPH_INDENT_MARKER } from './heading-types'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import {
+  resolveParagraphIndentEligibility,
+  recordIndentEligibilityBlock,
+} from './paragraph-indent-eligibility'
 
 const INDENT_MARKER_COMMENT = `<!-- ${PARAGRAPH_INDENT_MARKER} -->`
 
@@ -26,6 +30,13 @@ const EFFECTIVE_INDENT_CLASS = 'inkchapter-paragraph-effective-indent-2'
 // Ensures computed text-indent=0 even when parent has text-indent inheritance.
 // Mutually exclusive with EFFECTIVE_INDENT_CLASS.
 const EFFECTIVE_FLUSH_CLASS = 'inkchapter-paragraph-effective-flush'
+
+// ── Explicit two-character first-line indent marker (visual only) ─────────
+// Presentation attribute consumed by CSS to draw two light dashed squares in
+// the EXISTING first-line indent whitespace. Never a text node, never
+// serialized to Markdown, never part of a selection.
+export const INDENT_MARKER_ATTR = 'data-inkchapter-indent-marker'
+export const INDENT_MARKER_VALUE = 'explicit-2'
 
 // ── Writer Registry (dev-only diagnostic) ──────────────────────────
 // Tracks the full writer history for each paragraph.
@@ -970,6 +981,11 @@ export function applyIndentMarkersFromDOM(editorRoot: HTMLElement): number {
       if (next.nodeType === Node.ELEMENT_NODE) {
         const el = next as HTMLElement
         if (el.tagName === 'P') {
+          // Paragraph-Only Eligibility Gate (legacy marker migration).
+          if (!resolveParagraphIndentEligibility(el).eligible) {
+            recordIndentEligibilityBlock('apply')
+            break
+          }
           // Set semantic FORCE_INDENT + apply effective projection
           setParagraphIndentMode(el, 'force-indent', WriterIds.LEGACY_MIGRATION_SEMANTIC)
           applyEffectiveParagraphIndent(el, 'indent-2', WriterIds.LEGACY_MARKER_VISUAL)
@@ -1015,8 +1031,18 @@ export function refreshParagraphIndentStyles(
   const paragraphs = editorRoot.querySelectorAll<HTMLParagraphElement>('p')
 
   for (const p of paragraphs) {
-    // Skip excluded paragraphs
-    if (isInExcludedContext(p)) continue
+    // ── Paragraph-Only Eligibility Gate (single canonical resolver) ──
+    // A non-paragraph business block (image / figure / caption / code / math /
+    // table / list / quote / heading / plugin decoration / inline literal) must
+    // never receive indent semantics or the CSS indent projection. Retract any
+    // stale projection left by an earlier revision instead of touching it again.
+    const eligibility = resolveParagraphIndentEligibility(p)
+    if (!eligibility.eligible) {
+      p.classList.remove(EFFECTIVE_INDENT_CLASS)
+      p.classList.remove(EFFECTIVE_FLUSH_CLASS)
+      if (p.getAttribute(INDENT_MARKER_ATTR) !== null) p.removeAttribute(INDENT_MARKER_ATTR)
+      continue
+    }
 
     // Skip empty paragraphs
     if (!p.textContent?.trim()) continue
@@ -1375,7 +1401,7 @@ export function isIndentShortcutEditingToken(
   indentShortcutEnabled: boolean,
 ): boolean {
   if (!indentShortcutEnabled) return false
-  if (isInExcludedContext(paragraph)) return false
+  if (!resolveParagraphIndentEligibility(paragraph).eligible) return false
   if (getParagraphIndentMode(paragraph) !== 'auto') return false
 
   const text = getUserVisibleParagraphText(paragraph)
@@ -1669,6 +1695,7 @@ export function applyEffectiveParagraphIndent(
  */
 export function clearParagraphIndentVisualAndSemantic(paragraph: HTMLElement, writerId?: string): void {
   paragraph.removeAttribute(INDENT_MODE_ATTR)
+  paragraph.removeAttribute(INDENT_MARKER_ATTR)
   paragraph.classList.remove(EFFECTIVE_INDENT_CLASS)
   paragraph.classList.remove(EFFECTIVE_FLUSH_CLASS)
   paragraph.style.textIndent = ''
@@ -1709,6 +1736,13 @@ export function rehydrateParagraphIndentState(
   settings: ParagraphLayoutSettings,
   context: RehydrateContext,
 ): void {
+  // Paragraph-Only Eligibility Gate — a sidecar/DOM-rebuild restore must never
+  // re-project an override onto a non-paragraph business block.
+  if (!resolveParagraphIndentEligibility(paragraph).eligible) {
+    recordIndentEligibilityBlock('sidecar')
+    return
+  }
+
   // 1. Write semantic state on this exact paragraph
   setParagraphIndentMode(paragraph, mode, context.semanticWriterId)
 
@@ -2232,6 +2266,46 @@ export function setParagraphIndentMode(
   }
   recordParagraphWrite(paragraph, writerId ?? 'setParagraphIndentMode', mode)
   // 'auto': attribute absent = AUTO
+
+  // Presentation derived from the semantic state (explicit marker only).
+  applyIndentMarkerProjection(paragraph, mode)
+}
+
+/**
+ * Project / retract the explicit two-character indent marker.
+ *
+ * Marker = presentation only. Written for `force-indent` paragraphs that pass
+ * the canonical Paragraph-Only Eligibility Gate; retracted for everything else
+ * (auto / force-flush / non-paragraph business blocks / plugin decorations).
+ *
+ * No text node is created, nothing enters Markdown serialization, and the
+ * attribute is classified as plugin-presentation by the mutation provenance
+ * authority, so it never counts as user content.
+ */
+export function applyIndentMarkerProjection(
+  paragraph: HTMLElement,
+  mode: ParagraphIndentSemanticMode,
+): boolean {
+  const wantsMarker = mode === 'force-indent'
+  const hasMarker = paragraph.getAttribute(INDENT_MARKER_ATTR) === INDENT_MARKER_VALUE
+
+  if (!wantsMarker) {
+    if (!hasMarker) return false
+    paragraph.removeAttribute(INDENT_MARKER_ATTR)
+    return true
+  }
+
+  const eligibility = resolveParagraphIndentEligibility(paragraph)
+  if (!eligibility.eligible) {
+    recordIndentEligibilityBlock('marker')
+    if (!hasMarker) return false
+    paragraph.removeAttribute(INDENT_MARKER_ATTR)
+    return true
+  }
+
+  if (hasMarker) return false
+  paragraph.setAttribute(INDENT_MARKER_ATTR, INDENT_MARKER_VALUE)
+  return true
 }
 
 /**
@@ -2688,7 +2762,11 @@ export function resolveCurrentBodyParagraph(editorRoot: HTMLElement): HTMLElemen
   const block = resolveCurrentBlockFromSelection(editorRoot)
   if (!block || block.tagName !== 'P') return null
   if (!isContentBlock(block)) return null
-  if (isInExcludedContext(block)) return null
+  // Single canonical Paragraph-Only Eligibility Gate.
+  if (!resolveParagraphIndentEligibility(block).eligible) {
+    recordIndentEligibilityBlock('apply')
+    return null
+  }
   return block
 }
 

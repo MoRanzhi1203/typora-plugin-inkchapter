@@ -433,6 +433,59 @@ body.ink-console-docked::after {
   padding-inline-start: 2em;
 }
 
+/* ── Explicit two-character first-line indent marker ──────────────────
+   Two light, dashed square placeholders drawn strictly inside the EXISTING
+   first-line indent whitespace of an explicit force-indent paragraph
+   (including the editable empty paragraph).
+
+   Decorative only: no text node, no fake glyph, no extra `text-indent`
+   (never a double indent), not selectable, not serialized to Markdown, and
+   classified as plugin-presentation by the mutation provenance authority.
+   Sizes use `em` so they follow the real font metrics under zoom / font /
+   line-height / theme changes; positions derive from the 2em indent band. */
+#write p[data-inkchapter-indent-marker="explicit-2"] {
+  position: relative;
+}
+
+#write p[data-inkchapter-indent-marker="explicit-2"]::before,
+#write p[data-inkchapter-indent-marker="explicit-2"]::after {
+  content: '';
+  position: absolute;
+  top: 0.3em;
+  width: 0.74em;
+  height: 0.74em;
+  box-sizing: border-box;
+  border: 1px dashed currentColor;
+  border-radius: 1px;
+  opacity: 0.3;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 0;
+}
+
+#write p[data-inkchapter-indent-marker="explicit-2"]::before {
+  inset-inline-start: 0.16em;
+}
+
+#write p[data-inkchapter-indent-marker="explicit-2"]::after {
+  inset-inline-start: 1.06em;
+}
+
+/* Source-code mode: no WYSIWYG first line — hide the boxes, keep the indent. */
+body.typora-sourceview-on #write p[data-inkchapter-indent-marker="explicit-2"]::before,
+body.typora-sourceview-on #write p[data-inkchapter-indent-marker="explicit-2"]::after {
+  display: none;
+}
+
+/* Read-only / preview / print / export: no marker objects in the artifact. */
+@media print {
+  #write p[data-inkchapter-indent-marker="explicit-2"]::before,
+  #write p[data-inkchapter-indent-marker="explicit-2"]::after {
+    display: none;
+  }
+}
+
 /* ── Settings page: live preview ───────────────────────── */
 
 .inkchapter-preview {

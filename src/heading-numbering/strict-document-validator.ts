@@ -46,8 +46,14 @@ function isVisuallyEmpty(el: HTMLElement): boolean {
   return isBlankText(el.textContent ?? '')
 }
 
-/** Classify a top-level DOM element into a semantic block type. */
-function classifyBlock(el: HTMLElement): FirstSemanticBlock {
+/**
+ * Classify a top-level DOM element into a semantic block type.
+ *
+ * Exported as the canonical business-block classifier so other modules
+ * (e.g. the paragraph-indent eligibility gate) reuse ONE classification
+ * instead of inventing `tagName === 'P'` shortcuts.
+ */
+export function classifySemanticBlock(el: HTMLElement): FirstSemanticBlock {
   const tag = el.tagName.toUpperCase()
   const text = (el.textContent ?? '').trim()
 
@@ -106,7 +112,7 @@ export function resolveFirstSemanticBlock(root: HTMLElement): FirstSemanticBlock
   for (let i = 0; i < root.children.length; i++) {
     const child = root.children[i] as HTMLElement
     if (isVisuallyEmpty(child)) continue
-    return classifyBlock(child)
+    return classifySemanticBlock(child)
   }
 
   return null

@@ -184,6 +184,10 @@ import {
   type PluginSelectionWriteAuditEntry,
 } from './paragraph-indent-manager'
 import {
+  resolveParagraphIndentEligibility,
+  recordIndentEligibilityBlock,
+} from './paragraph-indent-eligibility'
+import {
   PostTextInputObservationLifecycle,
   type PostTextInputObservationState,
   type PostTextInputCancelReason,
@@ -7427,6 +7431,13 @@ export class HeadingNumberingService {
     mode: 'force-indent' | 'force-flush' | 'auto',
     writerId?: string,
   ): void {
+    // Paragraph-Only Eligibility Gate — semantic, visual, marker and sidecar all
+    // share this ONE decision so a non-paragraph block can never be overridden.
+    if (!resolveParagraphIndentEligibility(paragraph).eligible) {
+      recordIndentEligibilityBlock('apply')
+      recordIndentEligibilityBlock('sidecar')
+      return
+    }
     setParagraphIndentMode(paragraph, mode, writerId)
     const root = this.adapter.detectEditorRoot()
     if (root) {
@@ -9094,6 +9105,13 @@ export class HeadingNumberingService {
     if (!block) return false
 
     if (!isContentBlock(block)) return false
+
+    // Paragraph-Only Eligibility Gate — a manual command must never style a
+    // non-paragraph business block (image / caption / math / code / table …).
+    if (!resolveParagraphIndentEligibility(block).eligible) {
+      recordIndentEligibilityBlock('apply')
+      return false
+    }
 
     // Use unified entry point — handles both runtime semantic and sidecar persistence
     this.applyParagraphIndentOverride(block, mode)

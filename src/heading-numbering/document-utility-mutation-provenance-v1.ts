@@ -53,6 +53,7 @@ export const INKCHAPTER_OWNED_ATTRIBUTES = [
   'data-ink-diagnostic-active',
   'data-ink-layout-epoch',
   'data-ink-geometry-generation',
+  'data-inkchapter-indent-marker',
 ] as const
 
 export const INKCHAPTER_OWNED_CLASS_PREFIX = 'inkchapter-'
