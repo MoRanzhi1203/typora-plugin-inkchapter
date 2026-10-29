@@ -5537,6 +5537,45 @@ export class HeadingNumberingService {
     const computedPaddingInlineStart = cs.paddingLeft
     const visualIndentCorrect = semanticCorrect && this.emptyVisualIndentCorrect(projectionMode, cs)
 
+    // Paragraph Indent V2 GUI regression D-06/D-07 — LINE-BOX FORENSICS.
+    // An empty paragraph has no content of its own; its line box comes from
+    // Typora's `#write .md-p:empty:after{content:'\200B'}` pseudo element. Any
+    // plugin rule that turns that SAME ::after into an absolutely positioned
+    // box (the indent marker) removes the line box: the paragraph keeps a
+    // correct content-box left edge but collapses to rect.height = 0, which is
+    // what made the next line overlap and made one Enter look like two.
+    const lineBoxRect = finalElement.getBoundingClientRect()
+    const afterCs = window.getComputedStyle(finalElement, '::after')
+    const previousParagraph = finalElement.previousElementSibling as HTMLElement | null
+    const nextParagraph = finalElement.nextElementSibling as HTMLElement | null
+    const rectFacts = (el: HTMLElement | null): { top: number; bottom: number; height: number } | null => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { top: Number(r.top.toFixed(2)), bottom: Number(r.bottom.toFixed(2)), height: Number(r.height.toFixed(2)) }
+    }
+    const lineBoxProbe = {
+      innerHTMLSnippet: String(finalElement.innerHTML ?? '').slice(0, 64),
+      childNodeCount: finalElement.childNodes.length,
+      indentMarkerAttr: finalElement.getAttribute('data-inkchapter-indent-marker'),
+      rectTop: Number(lineBoxRect.top.toFixed(2)),
+      rectBottom: Number(lineBoxRect.bottom.toFixed(2)),
+      rectHeight: Number(lineBoxRect.height.toFixed(2)),
+      lineHeight: cs.lineHeight,
+      display: cs.display,
+      afterContent: afterCs.content,
+      afterPosition: afterCs.position,
+      afterWidth: afterCs.width,
+      afterHeight: afterCs.height,
+      previousRect: rectFacts(previousParagraph),
+      nextRect: rectFacts(nextParagraph),
+      overlapsPrevious: previousParagraph
+        ? lineBoxRect.top < previousParagraph.getBoundingClientRect().bottom - 0.5
+        : false,
+      overlapsNext: nextParagraph
+        ? lineBoxRect.bottom > nextParagraph.getBoundingClientRect().top + 0.5
+        : false,
+    }
+
     emitRuntimeAudit('EMPTY-SPECIAL-EMPTY-VISUAL-PROJECTION', {
       txnId: emptyTxn.txnId,
       runtimeId: finalRtId,
@@ -5546,6 +5585,7 @@ export class HeadingNumberingService {
       projectionMode,
       computedTextIndent,
       computedPaddingInlineStart,
+      ...lineBoxProbe,
     })
     emitRuntimeAudit('EMPTY-SPECIAL-VISUAL-VERIFY', {
       txnId: emptyTxn.txnId,

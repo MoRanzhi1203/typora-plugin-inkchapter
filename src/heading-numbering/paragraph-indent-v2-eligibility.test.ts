@@ -293,7 +293,7 @@ describe('GREEN-4 标记样式契约（style.scss）', () => {
   // the base pseudo-element rule and carry `display: none`, with a selector at
   // least as specific (`body.typora-sourceview-on` adds one class).
   it('IND-053 源代码模式规则在基础规则之后且更高特异性 ⇒ 覆盖为 display:none', () => {
-    const baseIdx = block.indexOf('#write p[data-inkchapter-indent-marker]::before,')
+    const baseIdx = block.indexOf('#write p[data-inkchapter-indent-marker]:not(:empty)::before,')
     const sourceIdx = block.indexOf('body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::before,')
     expect(baseIdx).toBeGreaterThanOrEqual(0)
     expect(sourceIdx).toBeGreaterThan(baseIdx)
@@ -305,7 +305,7 @@ describe('GREEN-4 标记样式契约（style.scss）', () => {
   // editor root with `inkchapter-document-locked`. Read-only is a viewing mode:
   // the editing boxes must disappear while the first-line indent stays.
   it('IND-052 锁定/只读规则存在、位于基础规则之后、且只隐藏伪元素', () => {
-    const baseIdx = block.indexOf('#write p[data-inkchapter-indent-marker]::before,')
+    const baseIdx = block.indexOf('#write p[data-inkchapter-indent-marker]:not(:empty)::before,')
     const lockedIdx = block.indexOf('#write.inkchapter-document-locked p[data-inkchapter-indent-marker]::before,')
     expect(baseIdx).toBeGreaterThanOrEqual(0)
     expect(lockedIdx).toBeGreaterThan(baseIdx)
@@ -353,7 +353,7 @@ describe('IND-058 / IND-059 / IND-060 几何契约：几何随字号缩放，不
     expect(paragraphRule).toContain('position: relative')
 
     const pseudoRule = rules.slice(
-      rules.indexOf('#write p[data-inkchapter-indent-marker]::before,'),
+      rules.indexOf('#write p[data-inkchapter-indent-marker]:not(:empty)::before,'),
       rules.indexOf('}', rules.indexOf('content:')) + 1,
     )
     expect(pseudoRule).toContain('position: absolute')
@@ -379,8 +379,11 @@ describe('IND-058 / IND-059 / IND-060 几何契约：几何随字号缩放，不
   })
 
   it('IND-060 主题/字体/折行：标记无固定行高与像素定位，缩进本体为 em', () => {
-    expect(rules.includes('line-height')).toBe(false)
-    expect(rules.includes('%')).toBe(false)
+    // A data: URI carries percent-encoded SVG (`%3Crect`, `%23000`); that is
+    // encoding, not a viewport-relative geometry value, so strip it first.
+    const geometryOnly = rules.replace(/url\("data:[^"]*"\)/g, 'url(data)')
+    expect(geometryOnly.includes('line-height')).toBe(false)
+    expect(geometryOnly.includes('%')).toBe(false)
     const indentRule = scss.slice(
       scss.indexOf('#write p.inkchapter-paragraph-effective-indent-2 {'),
       scss.indexOf('}', scss.indexOf('#write p.inkchapter-paragraph-effective-indent-2 {')) + 1,

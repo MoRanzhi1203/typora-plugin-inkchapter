@@ -184,6 +184,14 @@ export interface RenderedBlankRowProbeSibling {
   dataLine: string | null
   textLength: number
   normalizedText: string
+  /**
+   * §6 (Paragraph Indent V2 GUI regression) — the row's raw child structure.
+   * A rendered blank row needs a LINE BOX HOST, and only these facts tell a
+   * native empty paragraph (`<br>` / placeholder) apart from a paragraph the
+   * plugin emptied by hand (no children at all, therefore `height: 0`).
+   */
+  childNodeCount: number
+  innerHTMLSnippet: string
   contentEditable: string | null
   rect: RectLike | null
   pluginOwned: boolean
@@ -570,6 +578,8 @@ export function resolveRenderedBlankRows(input: RenderedBlankRowInput): Rendered
       dataLine: el.getAttribute('data-line'),
       textLength: (el.textContent ?? '').length,
       normalizedText: normalizeRenderedRowText(el.textContent).slice(0, 48),
+      childNodeCount: el.childNodes.length,
+      innerHTMLSnippet: String(el.innerHTML ?? '').slice(0, 96),
       contentEditable: el.getAttribute('contenteditable'),
       rect: toRectLike(rect),
       pluginOwned: cls.pluginOwned,
