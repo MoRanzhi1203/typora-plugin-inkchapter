@@ -129,6 +129,7 @@ import {
   resolveEffectiveParagraphIndent,
   resolveMergeSemantic,
   resolveMergeOwnerRetirement,
+  isBlankParagraphText,
   computeParagraphLogicalCaretOffset,
   resolveMergeWinnerSide,
   resolveProvenMergeSemantic,
@@ -10363,14 +10364,28 @@ export class HeadingNumberingService {
       const left = owners.find(o => o.element === leftElement) ?? owners[0]
       const right = owners.find(o => o !== left) ?? owners[1]
       const result = resolveMergeSemantic(intent, left.semantic, right.semantic)
-      if (result.winner === left.semantic) {
-        winnerOwner = left
-        loserOwner = right
+      const semanticWinner = result.winner === left.semantic ? left : right
+      const semanticLoser = semanticWinner === left ? right : left
+
+      // ── Empty Paragraph Deletion Ownership Rule (multi-owner variant) ──
+      // If the semantic policy picks the BLANK paragraph (e.g. a force-flush body
+      // vs. a blank force-indent line under Backspace conflict), the blank
+      // paragraph's override must still retire: the body keeps its own record
+      // and its own format.
+      const winnerRetirement = resolveMergeOwnerRetirement({
+        ownerSide: semanticWinner === left ? 'left' : 'right',
+        leftText,
+        rightText,
+      })
+      if (winnerRetirement === 'RETIRE_EMPTY_PARA_OWNER') {
+        winnerOwner = semanticLoser
+        loserOwner = semanticWinner
+        mergeResolutionReason = 'MULTI_OWNER_EMPTY_PARA_RETIRED'
       } else {
-        winnerOwner = right
-        loserOwner = left
+        winnerOwner = semanticWinner
+        loserOwner = semanticLoser
+        mergeResolutionReason = result.reason
       }
-      mergeResolutionReason = result.reason
     }
 
     console.info(
@@ -10661,7 +10676,20 @@ export class HeadingNumberingService {
     const rightProvenSemantic = resolveProvenMergeSemantic(intent.rightSemantic, intent.rightRecordId)
     const result = resolveMergeSemantic(semanticIntent, leftProvenSemantic, rightProvenSemantic)
 
-    const winnerSide = resolveMergeWinnerSide(result.reason)
+    // ── Empty Paragraph Deletion Ownership Rule (1→0) ──
+    // When the semantic policy picks the BLANK side (e.g. Delete with a blank
+    // force-indent line above a force-flush body), the blank line's override must
+    // still retire; the body side owns the format.
+    const provenRecordCount = (intent.leftRecordId ? 1 : 0) + (intent.rightRecordId ? 1 : 0)
+    const leftBlank = isBlankParagraphText(intent.leftText)
+    const rightBlank = isBlankParagraphText(intent.rightText)
+    const blankSide: 'left' | 'right' | 'none' =
+      leftBlank !== rightBlank ? (leftBlank ? 'left' : 'right') : 'none'
+    const semanticWinnerSide = resolveMergeWinnerSide(result.reason)
+    const winnerSide: 'left' | 'right' | 'none' =
+      blankSide !== 'none' && semanticWinnerSide === blankSide
+        ? (blankSide === 'left' ? 'right' : 'left')
+        : semanticWinnerSide
 
     const loserSide: 'left' | 'right' | 'none' =
       winnerSide === 'left' ? 'right' : winnerSide === 'right' ? 'left' : 'none'
@@ -10669,19 +10697,17 @@ export class HeadingNumberingService {
     const winnerRecordId = winnerSide === 'left' ? intent.leftRecordId : winnerSide === 'right' ? intent.rightRecordId : null
     const loserRecordId = loserSide === 'left' ? intent.leftRecordId : loserSide === 'right' ? intent.rightRecordId : null
     const scopeId = intent.scopeId
+    const effectiveWinnerSemantic: ParagraphIndentSemanticMode =
+      winnerSide === 'left' ? leftProvenSemantic : winnerSide === 'right' ? rightProvenSemantic : result.winner
+    const ownershipReason = winnerSide !== semanticWinnerSide
+      ? 'MULTI_OWNER_EMPTY_PARA_RETIRED'
+      : result.reason
 
-    // ── Empty Paragraph Deletion Ownership Rule (P0, 1→0 variant) ──
-    // Same rule as the 2→1 path: the ONLY record belongs to a blank paragraph
-    // and all surviving text comes from the other side → retire that record and
-    // keep the survivor's own (auto) format instead of transferring an indent
-    // the user just deleted.
-    const provenRecordCount = (intent.leftRecordId ? 1 : 0) + (intent.rightRecordId ? 1 : 0)
-    const emptyOwnerDecision = resolveMergeOwnerRetirement({
-      ownerSide: intent.leftRecordId ? 'left' : intent.rightRecordId ? 'right' : 'none',
-      leftText: intent.leftText,
-      rightText: intent.rightText,
-    })
-    const emptyOwnerRetired = provenRecordCount === 1 && emptyOwnerDecision === 'RETIRE_EMPTY_PARA_OWNER'
+    // Single-owner + blank-owner case: no body record exists, so the survivor
+    // falls back to AUTO (defaultIndent), never to a forced flush.
+    const emptyOwnerRetired = provenRecordCount === 1
+      && blankSide !== 'none'
+      && (intent.leftRecordId ? 'left' : 'right') === blankSide
     if (emptyOwnerRetired) {
       const retiredRecordId = (intent.leftRecordId ?? intent.rightRecordId)!
       this.canonicalRegistry.retireRecord(
@@ -10710,7 +10736,7 @@ export class HeadingNumberingService {
         decision: 'RETIRE_LOSER',
         loserRecordId,
         winnerRecordId: winnerRecordId ?? 'none',
-        mergeReason: result.reason,
+        mergeReason: ownershipReason,
       })
     }
 
@@ -10738,7 +10764,7 @@ export class HeadingNumberingService {
           winnerRecordId,
           survivorRuntimeId,
           failReason: transferResult.failReason ?? 'none',
-          mergeReason: result.reason,
+          mergeReason: ownershipReason,
         })
       } else {
         // Case A — winner already on survivor; keep CURRENT_LIVE.
@@ -10747,7 +10773,7 @@ export class HeadingNumberingService {
           decision: 'RETAIN_LIVE_OWNER',
           winnerRecordId,
           survivorRuntimeId,
-          mergeReason: result.reason,
+          mergeReason: ownershipReason,
         })
       }
     } else if (!emptyOwnerRetired) {
@@ -10755,7 +10781,7 @@ export class HeadingNumberingService {
       emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
         batchId,
         decision: 'NO_CANONICAL_OWNER',
-        mergeReason: result.reason,
+        mergeReason: ownershipReason,
       })
     }
 
@@ -10812,12 +10838,12 @@ export class HeadingNumberingService {
       rightProvenSemantic,
       leftExplicitProven: intent.leftExplicitProven,
       rightExplicitProven: intent.rightExplicitProven,
-      semanticWinner: emptyOwnerRetired ? 'auto' : result.winner,
+      semanticWinner: emptyOwnerRetired ? 'auto' : effectiveWinnerSemantic,
       winnerRecordId: emptyOwnerRetired ? 'none' : (winnerRecordId ?? 'none'),
       loserRecordId: emptyOwnerRetired
         ? (intent.leftRecordId ?? intent.rightRecordId ?? 'none')
         : (loserRecordId ?? 'none'),
-      mergeReason: emptyOwnerRetired ? 'SINGLE_OWNER_EMPTY_PARA_RETIRED' : result.reason,
+      mergeReason: emptyOwnerRetired ? 'SINGLE_OWNER_EMPTY_PARA_RETIRED' : ownershipReason,
       contentPreserved,
       caretOffsetCorrect: caretOffset === intent.expectedCaretOffset,
       awaitingCount: this.canonicalRegistry.getAwaitingCount(),

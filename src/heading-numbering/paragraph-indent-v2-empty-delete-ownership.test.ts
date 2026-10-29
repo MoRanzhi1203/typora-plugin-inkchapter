@@ -21,12 +21,16 @@
 import { describe, it, expect } from 'vitest'
 import {
   resolveMergeOwnerRetirement,
+  resolveMergeSemantic,
+  isBlankParagraphText,
   computeParagraphLogicalCaretOffset,
   clearParagraphIndentVisualAndSemantic,
   applyIndentMarkerProjection,
   setParagraphIndentMode,
   getParagraphIndentMode,
+  getUserVisibleParagraphText,
   rehydrateParagraphIndentState,
+  readParagraphIndentCommand,
   INDENT_MODE_ATTR,
   INDENT_MARKER_ATTR,
 } from './paragraph-indent-manager'
@@ -143,6 +147,93 @@ describe('EMPTY-DELETE-2b 退役后按 defaultIndent 投影（不得强制 flush
 
     expect(p.classList.contains(INDENT_CLASS)).toBe(false)
     expect(p.hasAttribute(INDENT_MODE_ATTR)).toBe(false)
+  })
+})
+
+describe('EMPTY-DELETE-4 全角快捷命令（。。）与半角（..）走同一所有权规则', () => {
+  for (const token of ['..', '。。'] as const) {
+    it(`命令令牌 "${token}" 可识别，消费后段落为空 ⇒ 删除时 RETIRE`, () => {
+      const p = document.createElement('p')
+      p.textContent = token
+      expect(readParagraphIndentCommand(p)).toBe(token)
+      expect(getUserVisibleParagraphText(p)).toBe(token)
+      expect(isBlankParagraphText(getUserVisibleParagraphText(p))).toBe(false)
+
+      // clearParagraphToken(): the paragraph becomes a native empty paragraph.
+      p.textContent = ''
+      expect(getUserVisibleParagraphText(p)).toBe('')
+      expect(isBlankParagraphText(getUserVisibleParagraphText(p))).toBe(true)
+
+      // Deleting that (now blank) indented line must retire, not transfer.
+      expect(resolveMergeOwnerRetirement({
+        ownerSide: 'right',
+        leftText: '正文段落。',
+        rightText: getUserVisibleParagraphText(p),
+      })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    })
+  }
+
+  it('全角令牌不是空白文本，不会被误判为“空段落所有者”', () => {
+    expect(isBlankParagraphText('。。')).toBe(false)
+    expect(isBlankParagraphText('..')).toBe(false)
+  })
+})
+
+describe('EMPTY-DELETE-5 force-flush 组合：正文保持自己的 force-flush', () => {
+  it('Backspace 冲突策略选中空 force-indent 侧 ⇒ 空段落规则仍必须接管', () => {
+    // left body force-flush (proven), right blank force-indent (proven)
+    const semantic = resolveMergeSemantic('backspace', 'force-flush', 'force-indent')
+    expect(semantic.reason).toBe('CONFLICT_BACKSPACE_RIGHT')
+    const semanticWinnerSide = semantic.winner === 'force-flush' ? 'left' : 'right'
+    expect(semanticWinnerSide).toBe('right')
+
+    // The semantic winner is the BLANK paragraph — the service must swap the
+    // transfer source back to the body side instead of lending its format.
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'right',
+      leftText: '正文段落。',
+      rightText: '',
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('Delete 冲突策略选中空 force-indent 侧（左侧）⇒ 同样 RETIRE', () => {
+    const semantic = resolveMergeSemantic('delete', 'force-indent', 'force-flush')
+    expect(semantic.reason).toBe('CONFLICT_DELETE_LEFT')
+    const semanticWinnerSide = semantic.winner === 'force-indent' ? 'left' : 'right'
+    expect(semanticWinnerSide).toBe('left')
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'left',
+      leftText: '',
+      rightText: '正文段落。',
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('空的 force-flush 段落作为唯一记录：同样退役（规则与语义无关）', () => {
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'left',
+      leftText: '',
+      rightText: '正文段落。',
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'right',
+      leftText: '正文段落。',
+      rightText: '',
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('退役清理同样适用于 force-flush 投影（class/属性/marker 全部还原为 auto）', () => {
+    const p = document.createElement('p')
+    p.textContent = '正文段落。'
+    setParagraphIndentMode(p, 'force-flush')
+    p.classList.add('inkchapter-paragraph-effective-flush')
+    applyIndentMarkerProjection(p, 'force-indent')
+
+    clearParagraphIndentVisualAndSemantic(p, 'test-retire-flush')
+
+    expect(getParagraphIndentMode(p)).toBe('auto')
+    expect(p.hasAttribute(INDENT_MODE_ATTR)).toBe(false)
+    expect(p.hasAttribute(INDENT_MARKER_ATTR)).toBe(false)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
   })
 })
 
