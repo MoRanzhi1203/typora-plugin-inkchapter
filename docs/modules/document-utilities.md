@@ -63,6 +63,14 @@
 - **Resize feedback Hard Gate**：`feedbackLoopConfirmedCount` 只允许由同一 causal token 的 `utility write1 → RO callback → utility write2` 闭环证明自增；一次 `write → callback → geometry noop` 是 `UTILITY_RESIZE_ECHO`（suspect 级别），**echo/suspect 不得升级 confirmed**；时间接近不等于因果（外部 resize + 时间重叠 → `NOT CONFIRMED`）。该 Hard Gate 目标仍为 `feedbackLoopConfirmedCount=0`，**"只出现一次"不得豁免**；到本文档时点的真实归因结论见 §8"仍开放验收项"。
 - 日志纪律延伸：动态/破坏性测试一律走 dedicated fixture（如 `Document-Utilities-Dynamic-Layout-Test.md`、`Document-Utilities-Many-Diagnostics-Test.md`）；README 只作稳定 smoke 基线，warning inventory 与当前实际内容一致（不写死 count=2 或 0）。
 
+### 字数面板避让 + 单手势导航意图（WC-R2）
+
+- **避让几何**：`computeWordCountPanelAvoidance`（`src/document-utilities/document-utility-word-count-avoidance.ts`）保持 `DEFAULT / SHIFT_LEFT / SHIFT_UP / HIDE` 四态；结果以 `data-nav-word-count-avoid` 写回，面板打开态用 `WORD_COUNT_PANEL_OPEN_CLASS` 标记。`HIDE` 态按钮必须 `display:none`（不可点击），不得只改透明度。
+- **单手势单意图**：`NavigatorIntentMachine`（`src/document-utilities/document-navigator-intent.ts`）状态机 `IDLE → PRESSED → ADMITTED → APPLIED / CANCELLED`，`gestureId` 单调。`press` 只记录，手势结束统一执行一次；面板关闭只产生 `ADMITTED`，不得直接触发滚动。
+- **已证伪方案**：用一帧 `rAF` 重放 `scrollTop` 无法稳定到达端点（面板关闭引起按钮位移/卸载，click 丢失）→ 由手势状态机取代；禁止固定超时或重复 `scroll` 调用。
+- **约束**：不改原生 `footer.ty-footer > ul#footer-word-count-info.dropdown-menu`、不接管光标、不改 Markdown；取消条件覆盖 `pointercancel / Esc / 文档切换 / 根替换 / dispose`。
+- **残差**：`WORDCOUNT_POPUP_OPEN_NAVIGATION=PENDING_USER_MANUAL`、多显示器 DPI 与 `HIDE` 分支仅单测覆盖（见 [known-gaps](../roadmap/known-gaps-and-deferred-work.md) §B）。
+
 ## §3 Document Diagnostics（文档检测）
 
 - **单一 authority**：`DocumentDiagnosticsAuthority` 持有**每个活动文档一份已提交 snapshot**；`computeDocumentDiagnostics` 纯函数消费既有 canonical facts，UI（drawer/toolbar）只读 snapshot，绝不复制 validator 逻辑。
@@ -653,6 +661,56 @@
 - **验收边界**：`CARET_ISOLATION_RUNTIME` 在真实重启后仍为 `NOT_RUN`（全部计数为 -1），**不得以静态门禁代替真机采样**；`FULL_RUNTIME_ACCEPTANCE=PARTIAL`。
 - **Enter 只读证明**：`ENTER-PLUGIN-INTERVENTION-AUDIT` 须记录真实 Enter 下 `createdTransaction / defaultPrevented / cancelBubble` 均为 false；并保留 `NO_PRODUCTION_DOM_MUTATING_ACCEPTANCE_PROBE` 门禁，禁止把验收探针写进生产路径。
 - **计数语义**：`UNMEASURABLE` **不得折成 0 或通过**；未取得采样一律 `NOT_RUN`。
+
+### 连续空行实时链路收口：语义 → 组所有权 → 视觉对账（R2–R10 / REALTIME V1–V4，2026-10）
+
+这一小节只固化**跨轮次不变的契约**与**已证伪方案**；细节机制仍以上面各小节及源码为准。
+
+**1）三层权威，永不互换**
+
+- 结构源：`collectDiagnosticsInput()`（`src/document-utilities/document-utilities-context.ts`）在**每个诊断事务**读取一次 `editor.UserOp.getMarkdownSourceFrom($(editor.writingArea))`，产出结构化 Markdown 并携带 `structuralVerified` / `structuralDegradedReason`。
+- `editor.getMarkdown()` 是 Typora 的**增量字符镜像**：插入字符时 `length +1`，但 LF / 空白段**恒不变**，保存后也不刷新结构。它只能作通用快路径（约 18 个消费点），**任何结构判定都不得基于它**。
+- 发布口径：渲染可见空行数（`measuredVisibleBlankLineCount`）`<2` 不发布；源空行数只进审计与规则文案。`source=3 / visible=1 ⇒ publish=false` 是**正确**结果，不是漏报。
+- 视觉是可重算投影，不承载状态；状态在 `activeGapGroup` + `diagnosticInteractionState`。
+
+**2）空白语义统一（R9）**
+
+- `stripInvisiblePlaceholderChars` / `isWhitespaceOnlyText`（`document-diagnostic-whitespace-semantics-v1.ts`）、`normalizeRenderedRowText`、`normalizeSourceAnchorText`、`isBlank` 必须对 `U+0020 / Tab / NBSP / U+200B–U+200D / U+FEFF` 给出一致结论；三处定义不一致会让“纯空白行”被判成正文 → 区间被拆 → `NO_TEXT_ANCHOR` → 诊断整体消失。
+- 上游绑定失败统一报 `BOUNDARY_UNRESOLVED`；`RUNTIME_UNAVAILABLE` 作为兜底值已废弃（它把上游 `null` 伪装成运行时不可用）。
+
+**3）增量边界与已否决的“合成脏区间”**
+
+- `scanBlankDirtyRanges()` 的全量兜底：结构敏感容器 → `STRUCTURE_CONTAINER`；无法映射源码行 → `UNMAPPED_TARGET`；覆盖 >20% → `DIRTY_RATIO_EXCEEDED`。
+- 本机 Typora 构建所有业务块 `data-line=null`，脏区间恒为空 ⇒ 每个按键都走整篇空行重算（审计 `COMMITTED_DEGRADED`）。
+- **已否决**：用视觉 patch 反推“合成脏区间”绕过全量。原因：`runBlankFastRecompute` 无论如何都要对整篇 markdown 调 `buildInternalBlankLineDiagnostics`，合成区间只改审计标签、不减少任何工作量 —— 已从代码移除，不得复活。
+
+**4）视觉 owner：单写者 + 绘制后登记 + 六态解析**
+
+- `commitBlockGapVisual()` 是主 Carrier 的唯一写者；**owner 只在 `appendChild` 成功之后登记**（提前登记会留下“已画过”的假事实，导致后代丢标、合并不扩张）。
+- 快速通道 owner 六态：`SINGLE_READY / GROUP_READY / REBOUND_PENDING / OWNER_STALE / NO_ACTIVE_INTENT / BOUNDARY_AMBIGUOUS`；`NO_ACTIVE_OWNER` **不是**运行期取值。
+- SPLIT 之后 `primaryCarrierMemberCount=0` 是合法状态：组 `ACTIVE` 本身就是“仍可局部更新”的证据；成员由 `data-gap-member` / `data-gap-identity` 索引寻址，不从主 Carrier 反推。
+- 主 Carrier 元素仍 `isConnected` 但诊断已被 SPLIT 退役（`DIAGNOSTIC_NOT_GAP`）时，必须回落 `GROUP_READY`，不得以 miss 结束快速通道（V4）。
+- 组投影必须**对账**而非重建：几何未变零写入；成员合规 / 退出组 / 不可测量只退役它自己的容器；`reconcileBlankRowFragmentEls(..., existingOverride)` 保证组成员的 fragment 节点不被每键重建（V4）。
+- 交互权威：`provenanceAction === action`，一次点击只派发一次业务动作、`version +1`；禁止 host 事后把 `ACTIVATE` 静默改写成 `DEACTIVATE`。
+
+**5）组生命周期与血缘（R2 / R3）**
+
+- 生命周期 `ACTIVE | DORMANT`（取消 = `null`），唯一迁移点 `reconcileActiveGapGroup()`。
+- 血缘由冻结的 `anchors`（`(prev,next)` 块身份，上限 12、只累积不替换）证明；几何 `scope` 仅作佐证，不得凭“落在历史 scope 内 / 共享端点 / 文本相似”继承。
+- `IDLE + inheritedGroupMember` 不得判为取消；点击当前成员才整组取消。合并时主 Carrier 与组合体在同一投影内原子交接。
+
+**6）延迟实测（同一构建、22 行夹具、Drawer 打开；不是“已达标”声明）**
+
+| 指标 | 实测值 |
+|---|---|
+| 单主快速 patch（EXPAND / SHRINK） | P50 12.4ms / P95 18.8ms（目标 ≤4ms **未达**） |
+| SPLIT 后组 patch（V3/V4） | 4.0–5.7ms |
+| `BLANK-GAP-COMMIT-PROFILE.totalMs` | 18.5–23.0ms（reconcile 2.6–3.7 / drawer 5.4–13.7 / rest 4.0–15.0） |
+| `T0→T6`（含一个 rAF 等待 + 视觉 patch + commit） | 36–42ms |
+
+未测：T8 真实屏幕 Paint（无 CDP / 无 `PerformanceObserver` 注入通道）、≥2000 行文档、三层拆合、Undo/Redo 语义、跨文档隔离、审计 ON/OFF A/B。
+
+**7）证据目录**：`runtime/evidence/blank-gap-r9/`、`blank-gap-r10-closure/`、`blank-gap-visual-diff-closure/`、`blank-gap-realtime-render/`、`blank-gap-realtime-v2/`、`blank-gap-realtime-v3/`、`blank-gap-realtime-v4/`、`blank-gap-reliability-closure/`、`blank-gap-r4/`、`blank-gap-r5/`、`internal-blank-active-inheritance-r2/`。
 
 ## §3.1 标题编号装饰：Number + Gap 原子 reconcile（V5.14-R4）
 

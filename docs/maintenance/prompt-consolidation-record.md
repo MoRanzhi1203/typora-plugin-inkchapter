@@ -251,3 +251,53 @@ PROMPT_MD_REMAINING_COUNT           = 0
 | 侧栏冻结 | `TRAE-INKCHAPTER-TYPORA-FREEZE-RIBBON-RUNTIME-CLOSURE` | 部分执行，R1 真机通过 | sidebar-integration.md § Ribbon 可见性（ui.ribbon）与 LC-01 |
 
 > 口径修正：上两轮矩阵的 `Remaining Gap=NONE` 与实际文档不符，本轮以补写后的章节为准；凡 Runtime 未取证项仍标 `NOT_RUN` / `PENDING`，未升级为 PASS。
+
+## 2026-10-30 — 空行 / 诊断 / 公式 / 审计批次（MERGE_THEN_DELETE）
+
+> 本批逐份读完正文（非只看前 30 行），并用 Grep 在 `src/` 核实提示词引用的符号是否真实存在；
+> 标 `ABSENT` 的设计示意符号（`contentStructureEpoch`、`BlankGapIndex`、`ActiveGapVisualProjection`、
+> `highlightedGapIds`、`KNOWN_EMPTY`）一律不写入“当前实现”。
+> **目录 `docs/prompts/pending/` 保留**；正文备份于 `D:\TyporaPluginProjects\_prompt-backups\inkchapter-prompt-reorg-20261030\`。
+
+```text
+PROMPT_TOTAL_COUNT                  = 20   # 18 唯一 + 2 重复副本
+PROMPT_ABSORBED_COUNT               = 20
+PROMPT_SUPERSEDED_COUNT             = 3    # REAL-EDIT-R10 / R10-CLOSURE / R10-GUI（结论被 blank-gap-r10-closure 统一接管）
+PROMPT_REQUIREMENT_TO_ROADMAP_COUNT = 9    # 已登记 known-gaps §B
+PROMPT_DELETE_READY_COUNT           = 20
+PROMPT_DELETE_BLOCKED_COUNT         = 0
+PROMPT_MIGRATION_RECORD_ENTRY_COUNT = 20
+PROMPT_MD_REMAINING_COUNT           = 0
+```
+
+| # | Old Prompt | Classification | Code Verification | Absorbed Into | Changelog Decision | Remaining Gap | Delete Decision |
+|---|---|---|---|---|---|---|---|
+| 142 | `TRAE-INKCHAPTER-BLANK-GAP-ACTIVE-INHERITANCE-R2.md` | PROMPT | PARTIAL（代码 EXISTS：`activeGapGroup` / `scopePrev/Next` / `patchActiveGapGroup…`） | document-utilities §3「连续空行实时链路收口」§5 | DOC_CONSOLIDATED | YES → known-gaps §B（GUI 多项未跑） | DELETE |
+| 143 | `TRAE-INKCHAPTER-BLANK-GAP-INCREMENTAL-UPDATE-CLOSURE.md` | PROMPT | PARTIAL（`scanBlankDirtyRanges` EXISTS；`BlankGapIndex`/`ActiveGapVisualProjection` ABSENT） | document-utilities §3 同节 §3 | DOC_CONSOLIDATED | YES → known-gaps §B | DELETE |
+| 144 | `TRAE-INKCHAPTER-BLANK-GAP-LIFECYCLE-R3.md` | PROMPT | PARTIAL→CANONICAL（`computeInheritedGapMembers` / `mergeGroupAnchors` / `LINEAGE_LOST` EXISTS） | document-utilities §3 同节 §5 | DOC_CONSOLIDATED | YES → known-gaps §B（Undo 台账等 PENDING） | DELETE |
+| 145 | `TRAE-INKCHAPTER-BLANK-GAP-LIFECYCLE-R3 (1).md` | DUPLICATE | 同 144（字节级重复副本） | 同 144 | HISTORICAL_ONLY | NONE | DELETE |
+| 146 | `TRAE-INKCHAPTER-BLANK-GAP-LOCATOR-ACTIVATION-RECOVERY.md` | PROMPT | PARTIAL（`resolveBlankGapBoundary` / `BLANK_GAP_BOUNDARY_UNRESOLVED` / `prev.phase==='ACTIVE'` 守卫 EXISTS） | architecture §5；document-utilities §3 同节 §4 | DOC_CONSOLIDATED | YES → known-gaps §B | DELETE |
+| 147 | `TRAE-INKCHAPTER-BLANK-GAP-REAL-EDIT-CLOSURE-R10.md` | PROMPT | SUPERSEDED（`getStructuralMarkdown` / `structuralVerified` EXISTS） | architecture §1；document-diagnostics §4 | HISTORICAL_ONLY | YES（S14） | DELETE |
+| 148 | `TRAE-INKCHAPTER-BLANK-GAP-REALTIME-RENDER-CLOSURE.md` | PROMPT | PARTIAL（`patchActiveGapVisualFromDom` / `runBlankFastRecompute` / `PresentationPaintCoordinator` EXISTS） | document-utilities §3 同节 §4/§6 | DOC_CONSOLIDATED | YES → known-gaps §B（T8 Paint） | DELETE |
+| 149 | `TRAE-INKCHAPTER-BLANK-GAP-REALTIME-V2-CLOSURE.md` | PROMPT | PARTIAL（`collectGapOccupancyCandidates` / `calibratePaintLayerCached` / `{quiet:true}` EXISTS） | document-utilities §3 同节 §4/§6 | DOC_CONSOLIDATED | YES | DELETE |
+| 150 | `TRAE-INKCHAPTER-BLANK-GAP-REALTIME-V2-CLOSURE (1).md` | DUPLICATE | 同 149 | 同 149 | HISTORICAL_ONLY | NONE | DELETE |
+| 151 | `TRAE-INKCHAPTER-BLANK-GAP-REALTIME-V3-GROUP-OWNER-RECOVERY.md` | PROMPT | CANONICAL（`blankFastOwnerResolution` 六态 / `data-gap-member` / `patchGapGroupMembers` EXISTS） | document-utilities §3 同节 §4；architecture §7 | DOC_CONSOLIDATED | YES（8 项 NOT_TESTED） | DELETE |
+| 152 | `TRAE-INKCHAPTER-BLANK-GAP-RELIABILITY-AND-LATENCY-CLOSURE.md` | PROMPT | PARTIAL（`evaluateSemanticReconcileDecision` / `resolveLocateSuccessor` / `DEGRADED_PRESENTED` EXISTS；`contentStructureEpoch` ABSENT） | document-diagnostics §4；architecture §5 | DOC_CONSOLIDATED | YES（passive marker 仅计数） | DELETE |
+| 153 | `TRAE-INKCHAPTER-BLANK-GAP-RUNTIME-CLOSURE-R5.md` | PROMPT | PARTIAL（owner 绘制后登记 / `shouldSkipGroupMemberForPrimaryCarrier` EXISTS） | architecture §3；document-utilities §3 同节 §4 | DOC_CONSOLIDATED | YES（S00–S10 BLOCKED） | DELETE |
+| 154 | `TRAE-INKCHAPTER-BLANK-GAP-VISUAL-CONSISTENCY-R4.md` | PROMPT | PARTIAL（`provenanceAction` / `isStaleActiveVisualFact` / `commitGroupMemberToggleOff` EXISTS） | document-utilities §3 同节 §4；document-diagnostics §14 | DOC_CONSOLIDATED | YES | DELETE |
+| 155 | `TRAE-INKCHAPTER-BLANK-GAP-VISUAL-DIFF-REPAIR.md` | PROMPT | CANONICAL（`retireStrayBlockGapCarriers` / `reconcileBlankRowFragmentEls` / 稳定区间身份 EXISTS） | document-utilities §3 同节 §4 | DOC_CONSOLIDATED | YES | DELETE |
+| 156 | `TRAE-INKCHAPTER-BLANK-WHITESPACE-SEMANTICS-REPAIR-R9.md` | PROMPT | CANONICAL（`document-diagnostic-whitespace-semantics-v1.ts` EXISTS；`BOUNDARY_UNRESOLVED` 取代 `RUNTIME_UNAVAILABLE`） | document-utilities §3 同节 §2；document-diagnostics §4/§14 | DOC_CONSOLIDATED | YES（侧栏分隔条拖拽未验） | DELETE |
+| 157 | `TRAE-INKCHAPTER-FORMULA-LATENCY-CLOSURE.md` | PROMPT | PARTIAL（`AMBIGUOUS_SOURCE_MATCH` / `DEFAULT_OBJECT_NUMBERING_CONFIG` / PA-11 EXISTS；`buildDocumentDiagnosticsInput` ABSENT → 实为 `collectDiagnosticsInput`） | formula-numbering §14；document-utilities §3 同节 §1 | DOC_CONSOLIDATED | YES（公式 GUI / P95 / PA-17/18） | DELETE |
+| 158 | `TRAE-INKCHAPTER-FULL-PROJECT-AUDIT-REPAIR-OPTIMIZATION.md` | PROMPT | PARTIAL（`document-edit-guard.ts` / `mathjax-render-input-hook.ts` EXISTS；PA-17…26 OPEN） | issue-and-error-ledger §7；runtime-audit-and-identity §15 | DOC_CONSOLIDATED | YES（PA-17/18/P3） | DELETE |
+| 159 | `TRAE-INKCHAPTER-R10-CLOSURE.md` | PROMPT | CANONICAL（`collectDiagnosticsInput` / `StructuralMarkdownSnapshot` / `cachedBlocks` ABSENT 已删除） | document-diagnostics §2/§4；architecture §1 | DOC_CONSOLIDATED | YES（S14） | DELETE |
+| 160 | `TRAE-INKCHAPTER-R10-GUI-SNAPSHOT-ACCEPTANCE-CLOSURE.md` | PROMPT | PARTIAL（`gui-caret-audit.ts` / `R10-GUI-CARET-PROBE` EXISTS；21px 标定结论） | runtime-audit-and-identity §15 | DOC_CONSOLIDATED | YES（S14 / T8） | DELETE |
+| 161 | `TRAE-INKCHAPTER-WORDCOUNT-NAV-R2.md` | PROMPT | PARTIAL（`document-utility-word-count-avoidance.ts` / `NavigatorIntentMachine` EXISTS；`navigationIntent` 符号 ABSENT） | document-utilities §2「字数面板避让 + 单手势导航意图」 | DOC_CONSOLIDATED | YES | DELETE |
+
+### 本批新增的“不得复活”结论
+
+- 不得用 `editor.getMarkdown()` 的文本/LF 不变证明结构未变（R10）。
+- 不得给渲染行解析失败保留 `RUNTIME_UNAVAILABLE` 兜底（R9）。
+- 不得用“视觉 patch 反推的合成脏区间”充当增量优化（只改审计标签，已移除）。
+- 不得用对象身份比较判定 stale 视觉；不得把 `ACTIVATE` 事后改写成 `DEACTIVATE`。
+- 不得让组投影每键 `clearAll` + 重建（V4 已改为按区间身份对账）。
+- 不得用一帧 `rAF` 重放滚动代替手势状态机（WC-R2）。

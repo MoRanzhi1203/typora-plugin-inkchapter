@@ -77,3 +77,12 @@ onload
 ## 14. 历史设计决策
 
 - 历史上 `pluginMainSha256` 优先取 project 构建，无法发现"陈旧部署"；现额外计算 deployed artifact SHA 以闭合该盲点（见 `main.ts` 注释）。
+
+## 15. 只读 GUI caret 探针与视口 21px 标定（R10，2026-10）
+
+- **驱动纪律**：Typora 1.6.7 拒绝 `--remote-debugging-port`，且没有可用的 UIA 可访问性树；GUI 验收只能用**仅夹具/调试开关生效**的只读 caret 探针（`src/runtime/gui-caret-audit.ts`，`INKCHAPTER_GUI_CARET_AUDIT=1` 门控）。**未验证 caret 位置前禁止发送 `Delete` / `Backspace`**。
+- **坐标标定**：CSS 视口原点比 `GetClientRect + ClientToScreen` 的客户区原点**低 21px**；未标定时点击落点整体偏上 21px，表现为“光标看起来对了但按钮点不到”。所有 `PostMessage` 点击/键盘注入必须先做该标定。
+- **证据身份**：每条 GUI 证据必须绑定 `sessionId + documentKey + sourceRevision + diagnosticGeneration + loadedSHA`；`dist == deploy` **不等于** `loaded`，必须以 `inkchapter-runtime-load.json` 的 `loadedAt/loadedSha` 回执为准。
+- **失败分类**：`TEST_DRIVER_FAILURE`（驱动失败）与 `PRODUCT_FAILURE`（产品缺陷）必须分开记录；“命令 exit 0”“DevTools `.click()` 成功”都不能证明用户可点击。
+- **作废手法**：全屏绝对坐标 + 截图 OCR 识别单字母、未验 caret 就 Backspace、用 `keybd_event` / 合成 Enter 代替物理按键，均不得再作为验收证据。
+- **残留**：S14 跨文档隔离只用单测覆盖（真机需 `deploy-test-vault.ps1 -Global -ApproveGlobal`，需用户授权）；T8 真实屏幕 Paint 仍无注入通道（见 [known-gaps](../roadmap/known-gaps-and-deferred-work.md) §B）。

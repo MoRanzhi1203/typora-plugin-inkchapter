@@ -7,6 +7,20 @@
 > 说明：2026-10-05 的整合轮次之后，项目**不再保留任何提示词 Markdown 文件**；本文件只保留历次清理的日期、数量与去向摘要，不再指向已删除文件路径。
 > 2026-10-24 曾按用户要求把两批提示词恢复到 `docs/prompts/pending/`，随后完成二次整合并再次移出（见下节）。
 
+## 2026-10-30 — 空行 / 诊断 / 公式 / 审计批次整合（MERGE_THEN_DELETE）
+
+- 清理 `docs/prompts/pending/` 中 **20 个文件（18 个唯一提示词 + 2 个重复副本 `…LIFECYCLE-R3 (1).md` / `…REALTIME-V2-CLOSURE (1).md`）**；**目录 `docs/prompts/pending/` 按规则保留**，正文移出到外部备份 `D:\TyporaPluginProjects\_prompt-backups\inkchapter-prompt-reorg-20261030\`。
+- 结论去向：
+  - [../modules/document-utilities.md](../modules/document-utilities.md) §3 新增「连续空行实时链路收口：语义 → 组所有权 → 视觉对账（R2–R10 / REALTIME V1–V4）」7 段（三层权威、空白语义统一、增量边界与被否决的合成脏区间、视觉 owner 契约、组生命周期与血缘、延迟实测、证据目录）；§2 新增「字数面板避让 + 单手势导航意图（WC-R2）」。
+  - [../modules/document-diagnostics.md](../modules/document-diagnostics.md) §2 / §4 / §10 / §14：结构化快照契约、结构 no-op 判决、locate successor 重绑定、`DEGRADED_PRESENTED`、审计前缀补充、5 条历史设计决策。
+  - [../architecture/identity-presentation-authorities.md](../architecture/identity-presentation-authorities.md) §1「结构快照 vs 增量镜像」、§3「owner 事实晚于绘制事实 / 一区间一 owner」、§5「刷新后重解析 successor / `data-line=null` 是常态」、§7「组 ACTIVE ≠ 存在主 Carrier / 组投影是对账」。
+  - [../modules/formula-numbering.md](../modules/formula-numbering.md) §14「公式正确性收口（PA-10–PA-14）」；[../modules/runtime-audit-and-identity.md](../modules/runtime-audit-and-identity.md) §15「只读 GUI caret 探针与 21px 视口标定」。
+  - [../roadmap/issue-and-error-ledger.md](../roadmap/issue-and-error-ledger.md) §7「PA-01…PA-26 全项目审计台账（唯一口径）」；[../roadmap/known-gaps-and-deferred-work.md](../roadmap/known-gaps-and-deferred-work.md) §A 更正公式编号行口径（`REDEVELOPMENT_REQUIRED` → `IMPLEMENTED_PARTIAL`），§B 新增 9 条空行/快照/公式/WC-R2/PA 残差。
+  - [../archive/PROGRESS-ARCHIVE.md](../archive/PROGRESS-ARCHIVE.md) ENTRY 36–39（R9/R10、实时视觉先行、组 owner V3/V4、公式+WC-R2+整合）。
+- 如实保留的未闭环事实：T8 真实屏幕 Paint、≥2000 行文档、三层拆合、Undo/Redo、跨文档隔离（S14）、公式 GUI 夹具与 P95、WC-R2 面板打开时导航均未取证；提示词里 `contentStructureEpoch`、`BlankGapIndex`/`ActiveGapVisualProjection`、`highlightedGapIds`、`KNOWN_EMPTY` 等**设计示意符号从未落地（ABSENT）**，未写入“当前实现”。
+- 术语校正（写入文档时已统一为真实名）：`internal-blank-lines-v1.ts` → `document-diagnostic-internal-blank-lines-v1.ts`；`buildDocumentDiagnosticsInput` → `collectDiagnosticsInput`；`activeDiagnosticState` → `diagnosticInteractionState`；`NO_ACTIVE_OWNER` 不是运行期取值（实为 `NO_ACTIVE_INTENT` / `NO_AFFECTED_MEMBER` / `BOUNDARY_UNBOUND`）。
+- 逐条明细见 [prompt-consolidation-record.md](prompt-consolidation-record.md) §2026-10-30。
+
 ## 2026-10-24 — 恢复后二次整合（MERGE_THEN_DELETE）
 
 - 恢复的 26 个提示词（10-11 批次 18 个 + 10-19 批次 8 个，`TRAE-RENDERED-BLANK-ROW-COORDINATE-CLOSURE.md` 重复 1 个）逐条核对后整合，**目录 `docs/prompts/pending/` 保留**，提示词正文移出到外部备份 `D:\TyporaPluginProjects\_prompt-backups\inkchapter-prompt-reorg-20261024\`。

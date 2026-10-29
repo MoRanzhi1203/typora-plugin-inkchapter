@@ -115,3 +115,12 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 ## §13 贯穿性纪律
 
 - 真实制品激活验证（SHA 闭环）才能验收语义；vault-only 启动（禁直接打开 .md）；禁止全局 Typora 设置变更；禁止源文本改写；禁止时间轮询/防抖修正确性；Git 只在真实 Runtime 证明后提交。
+
+## §14 公式正确性收口（PA-10 / PA-11 / PA-12 / PA-13 / PA-14，2026-10）
+
+- **PA-10 相同 TeX 不能按 `sourceHash` 唯一匹配**：重复公式会命中 `AMBIGUOUS_SOURCE_MATCH`，此时编号已被消耗 → 表单层必须用「host 身份 + 文档次序 + hash 校验」三段匹配（`formula-projection-controller.ts`）；禁止“就近随便选”放宽。
+- **PA-11 空公式也必须消耗编号**：`$$$$` 等空公式要显示编号，否则后续公式编号出现空洞；新装默认公式编号作用域为**节内**（`DEFAULT_OBJECT_NUMBERING_CONFIG` 的 section-dash，`object-numbering-engine.ts`），显式 `global` 仍保留（`object-numbering-presets.ts`）。
+- **PA-12 / PA-13 渲染失败必须归还预算**：MathJax 渲染失败按签名有界重试（≤3），失败即归还编号预算；禁止无限注入 `\tag`。
+- **PA-14 纯 selection / caret 帧不触发全文结构化诊断**：刷新原因经 `refresh-reason-policy.ts`（`decideRefreshBatch` / `FORCE_REFRESH_REASON_IDS`）裁决，只用 `editor-click` / `editor-mutation` 等真实原因。
+- **台账口径**：`runtime/evidence/formula-latency-closure-20261027/FINAL-REPORT.md` 的 `FINAL_DECISION=PARTIAL`；公式 GUI 夹具验收（重复 TeX / 空公式 / 默认节内编号）与 P95 预算仍未闭环，见 [known-gaps](../roadmap/known-gaps-and-deferred-work.md) §B。
+- **口径更正**：§A 曾把“分段式公式自动编号”标为 `REDEVELOPMENT_REQUIRED`，与现行 `PA-11` 实现（新装默认节内编号）冲突，已更正该行。

@@ -19,6 +19,7 @@
 - 用户文档事实只来自 Markdown 源（canonical source），不读渲染后的 `textContent` / 可见编号 span。
 - 生产文件：`src/heading-numbering/canonical-heading-frame.ts`（`CanonicalHeadingFrame` / `getCanonicalHeadingFrame`，经 `main.ts` 注入 `DocumentUtilities` 与 `CaptionService`）。
 - 标题级诊断的 `sourceAuthority` = canonical 源标题文本（见 `docs/diagnostics/DOCUMENT-DIAGNOSTICS-VNEXT-GAP-LEDGER.md` §6）。
+- **结构快照 vs 增量镜像（R10，关键分层）**：`editor.getMarkdown()` 是 Typora 的**增量字符镜像**——插入字符只让 `length` 变化，LF / 空白段保持旧值，保存后也不刷新结构，因此**不能**用来证明“结构未变”；结构权威是每诊断事务一次 `editor.UserOp.getMarkdownSourceFrom($(editor.writingArea))` 的结果（`collectDiagnosticsInput` 产出 `structuralVerified` / `structuralDegradedReason`）。降级快照（`structuralVerified=false`）必须一路传播，禁止在下游被当作 `VERIFIED`。
 
 ## 2. Canonical Object Identity（图/表/代码/公式对象身份）— `CURRENT`
 
@@ -32,6 +33,8 @@
 - 诊断"呈现归属"与"呈现范围"由文档工具层持有，不进入编号/题注语义管线。
 - 空白警告呈现：`src/document-utilities/blank-space-warning-presentation.ts`。
 - 呈现 extent 语义与几何分离，禁止把 overlay 遮挡误判为几何截断。
+- **Owner 事实必须晚于绘制事实**：主 Carrier（`commitBlockGapVisual`）只有在节点真正 `appendChild` 成功后才登记 `lastBlockGapDiagnosticId`；提早在入口登记会留下“已画过”的假事实，导致后续组投影跳过合法后代、合并时不扩张。
+- **一个逻辑区间一个有效 owner**：主 Carrier 与组载体（`data-block-gap-visual="active-gap-group"`）都写 `data-gap-member` / `data-gap-identity`；同一区间允许多 fragment，但正面积半透明重叠必须为 0。
 
 ## 4. Stable Diagnostic Identity — `CURRENT`
 
@@ -44,6 +47,8 @@
 - 三态定位策略（canonical-node / source-range / figure-occurrence）由注册表决定。
 - 生产文件：`src/document-utilities/document-diagnostic-location.ts`、`document-diagnostic-locator.ts`、`document-diagnostic-locator-authority-v1.ts`。
 - 定位视觉与定位事务解耦，`canCommitLocateVisual()` 是唯一提交门（见 §7）。
+- **刷新后必须重新解析 successor**：`LOCATE_BOUNDED_REFRESH` 之后要用 `resolveLocateSuccessor` 从新快照取目标；继续沿用刷新前的 `diagnosticId` 是“点击无反应”的根因。歧义即 `null`，不得回落“第一个相似文本”。
+- **`data-line=null` 是常态**：本机 Typora 的业务块普遍无 `data-line`，定位只能走 canonical 块身份 + 锚点文本；`data-line` 只是已验证快速路径，不是必要条件。
 
 ## 6. Presentation Authority（呈现权威）— `CURRENT`
 
@@ -56,6 +61,8 @@
 - 两类 lease 拆分：`DrawerLocateRecoveryLease`（终态前必须释放）与 `ActiveLocateVisualLease`（可跨 COMMIT）；生产文件 `src/document-utilities/document-diagnostic-drawer-persistence-v512-r3.ts`。
 - 交互状态机：`src/document-utilities/document-diagnostic-active-state-machine-v2.ts`（统一 ACTIVATE/DEACTIVATE/SWITCH，severity-blind）。
 - canonical active target 解析 fail-closed，不回落 `targets[0]`：`src/document-utilities/document-diagnostic-canonical-active-target-v2.ts`。
+- **组 ACTIVE ≠ 存在主 Carrier**：SPLIT/MERGE 后主 Carrier 退役、`primaryCarrierMemberCount=0` 是合法状态，组 `ACTIVE` 本身即“仍可局部更新”的证据。快速通道 owner 解析六态：`SINGLE_READY / GROUP_READY / REBOUND_PENDING / OWNER_STALE / NO_ACTIVE_INTENT / BOUNDARY_AMBIGUOUS`（`NO_ACTIVE_OWNER` 不是运行期取值）。
+- **组投影是对账，不是重建**：几何未变不写 DOM；成员合规/退出只退役自己的容器（`reconcileBlankRowFragmentEls(..., existingOverride)`）。
 
 ## 8. Layout Epoch — `CURRENT`
 

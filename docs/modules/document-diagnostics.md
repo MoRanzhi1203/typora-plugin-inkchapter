@@ -26,6 +26,7 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
   - `DocumentInlineLinkAuthority`（`src/document-utilities/document-inline-link-authority.ts`）—— `[text](target)` / `![alt](target)` 结构，一次 source revision 解析 ≤ 1 次。
 - `FRONTMATTER_MALFORMED` 因项目无 canonical YAML parser，按规格登记为 `DEFERRED_BY_SPEC`（reason = `CANONICAL_FRONTMATTER_PARSER_REQUIRED`），绝不用自制 regex 冒充 YAML 校验。
 - 内部空行过多 `EXCESSIVE_INTERNAL_BLANK_LINES` 的**发布判决以可视空行数为依据**（见 §4）。
+- **结构源是每事务一次的结构化快照**（R10）：`collectDiagnosticsInput()` 从 `editor.UserOp.getMarkdownSourceFrom($(editor.writingArea))` 读取，携带 `structuralVerified` / `structuralDegradedReason`。`structuralVerified=false` 的快照不得被下游解释为 `VERIFIED` / `COMPLIANT`，也不得据此撤销既有视觉。
 
 ## 3. Production Entry Points
 
@@ -52,6 +53,10 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - **真实 DOM 内容一致性门禁**：`DOCUMENT-DIAGNOSTIC-DRAWER-CONTENT-CONSISTENCY` 读回 Drawer 行的**真实 DOM 文字**并校验显示数 == 当前诊断的可视空行数（`checkedRowCount` / `mismatchCount`），禁止只比较内部对象即宣布 PASS。
 - **Source-Syntax 三段权威（TRAE V4 / V5）**：`CODE_FENCE_UNCLOSED` / `FORMULA_BLOCK_UNCLOSED` / `FRONTMATTER_UNCLOSED` 走 `locationStrategy=source-syntax-opener`，`protectedRange`（opener→EOF）、opener token 的 `sourceStart/EndOffset`、`presentationRange` 三字段分离；`data-line` 仅为已验证快速路径，miss 必须回退到 canonical source block 投影。机制与实现见 [document-utilities.md](document-utilities.md) §3「Source-Syntax Opener Locator」「Canonical Source Range → DOM Projection Authority」；三条规则能力矩阵仍为 `UNVERIFIED`。
 - **空行事实三层**：source candidate、rendered blank row、`visibleBlankLineCount` 是三个独立事实，发布判决只看可视空行带数（WYSIWYG）/ 源码行数（source 模式），不可测量时不发布。详见 [document-utilities.md](document-utilities.md) §3「空行诊断的三层 authority」。
+- **结构快照 ≠ 增量镜像（R10）**：`editor.getMarkdown()` 是 Typora 的**增量字符镜像**（插入字符只让 `length` 变化，LF / 空白段不变），**禁止**用它证明“结构未变”。结构判定只认 `collectDiagnosticsInput()` 产出的快照；跨修订、跨文档、块数不变但段内变化的场景一律重读，禁止用 `cachedBlocks + setTimeout(0)` 之类缓存作版本边界。
+- **结构 no-op 判决（DET）**：`evaluateSemanticReconcileDecision` 只有在 `mutationShape === 'NONE'` 且无 `businessHostTouched` 时才允许判 `NOOP_DUPLICATE_SEMANTIC_STATE`；仅凭标题派生 `stateKey` 不变不足以免除重算，否则结构编辑会被静默吞掉。
+- **定位 successor 重绑定（LOC）**：`LOCATE_BOUNDED_REFRESH` 之后必须用 `resolveLocateSuccessor` 从**新快照**取得 successor 再提交视觉；继续用刷新前的 diagId 是“点击静默失败”的根因。歧义即 `null`（fail-closed），禁止回落“第一个相似文本”。
+- **视觉结果不得自相矛盾（VIS）**：`PRESENTED` 要求 gate 原因为空；非分层类 gate 失败一律降级为 `DEGRADED_PRESENTED`（`GATE_FAILED_NON_LAYERING`），不得在 `gateReason` 报失败的同时宣称 `PRESENTED`。
 
 ## 5. 核心数据结构
 
@@ -93,6 +98,7 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - 审计前缀：`DOCUMENT-DIAGNOSTIC-*`、`DIAGNOSTIC-DOMAIN-RUNTIME-REPORT`、`RUNTIME-IDENTITY-FINAL`（runtime 域）。
 - 证据落盘：`<vault>/.typora/inkchapter/audit/runtime-<sessionId>.log`（`src/runtime/forensic-log-sink.ts`）。
 - 审计前缀补充（2026-10 批次）：`DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-AUDIT` / `-DOM-PROBE` / `-GEOMETRY-AUDIT`、`DOCUMENT-DIAGNOSTIC-PAINT-LAYER-CALIBRATION-AUDIT`、`DOCUMENT-DIAGNOSTIC-BLANK-ROW-FRAGMENT-CLOSURE-AUDIT`、`DOCUMENT-DIAGNOSTIC-SOURCE-SYNTAX-{LOCATE,VISUAL,PROJECTION}-AUDIT`、`DOCUMENT-DIAGNOSTIC-DOCUMENT-END-VISUAL-AUDIT`、`DOCUMENT-DIAGNOSTIC-PRESENTATION-EPOCH-AUDIT`、`DOCUMENT-DIAGNOSTIC-CLICK-PROVENANCE-AUDIT`。这些前缀目前多数只有静态/单测证据，Runtime 采样为 `NOT_RUN`。
+- 空行 / 定位链补充：`DOCUMENT-DIAGNOSTIC-BLANK-BOUNDARY-BIND-AUDIT`（边界绑定失败的真实原因）、`DOCUMENT-INTERNAL-BLANK-LINE-DECISION-AUDIT`（源空行数 / 可视空行数 / publish）、`BLANK-GAP-EDIT-LATENCY-AUDIT`（`dirtyRangeCount` / `decision`）、`BLANK-GAP-REALTIME-PROFILE`（T1–T6 分段 + `ownerResolution` + `paintMeasured=false`）、`BLANK-GAP-COMMIT-PROFILE`（reconcile / drawer / rest / total）、`DOCUMENT-DIAGNOSTIC-ACTIVE-GAP-GROUP`（组投影 PAINT/STATE）。
 
 ## 11. Tests / Fixtures
 
@@ -117,3 +123,7 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - `CODE_EMPTY_BLOCK` 曾为单一规则分叉出 empty-container surface / persistent carrier / atomic handoff / compositing（V6/V7/V8），因多 owner 语义冲突与不可维护被整体删除，回归通用 code 管线（DG-02）。结论："检测逻辑特殊，呈现逻辑不特殊"，由 `document-diagnostic-code-empty-block-generic-pipeline.test.ts` 守护专用路径不得复活。
 - `data-line` 曾作为唯一 DOM 投影入口，未闭合 fence 无 `data-line` 时直接 `TARGET_NOT_FOUND`；现降级为已验证快速路径，canonical source block 为主权威。
 - 空行诊断曾用"渲染行数覆盖源码事实"的回退（`actualBlankLines ?? renderedRowCount`），导致文案与 severity 失真；现行规范固定为三层事实分离，禁止渲染值反写源码事实。
+- `cachedMarkdown + cachedBlocks + setTimeout(0)` 的“结构缓存”被整体删除（R10）：它只比顶层 `childElementCount`，同块数内部编辑与切文档都会命中旧快照；`setTimeout(0)` 也不构成事务边界。
+- `RUNTIME_UNAVAILABLE` 不再作为渲染行解析失败的兜底值（R9）：它把上游 `null` 伪装成“运行时不可用”，掩盖了真实的 `BOUNDARY_UNRESOLVED`。
+- 视觉 stale 判定曾用**对象身份**（`live !== diag`）比较，导致新建实例被误判为“陈旧激活视觉”；现行规范必须比较**事实**（`isStaleActiveVisualFact`）。
+- 一次点击曾出现“reducer 判 `ACTIVATE` → host 内联静默改写 `DEACTIVATE`”的双决策权威；现固定单 reducer，`provenanceAction === action`。
