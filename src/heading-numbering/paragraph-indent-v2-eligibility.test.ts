@@ -16,6 +16,8 @@ import {
   resolveCurrentBodyParagraph,
   refreshParagraphIndentStyles,
   setParagraphIndentMode,
+  getParagraphIndentMode,
+  healExplicitSemanticOnTokenText,
   INDENT_MODE_ATTR,
   INDENT_MARKER_ATTR,
   INDENT_MARKER_VALUE,
@@ -297,6 +299,224 @@ describe('GREEN-4 标记样式契约（style.scss）', () => {
     expect(sourceIdx).toBeGreaterThan(baseIdx)
     const sourceRule = block.slice(sourceIdx, block.indexOf('}', sourceIdx) + 1)
     expect(sourceRule).toContain('display: none')
+  })
+
+  // IND-052 — the plugin's own read-only lock (`DocumentEditGuard`) marks the
+  // editor root with `inkchapter-document-locked`. Read-only is a viewing mode:
+  // the editing boxes must disappear while the first-line indent stays.
+  it('IND-052 锁定/只读规则存在、位于基础规则之后、且只隐藏伪元素', () => {
+    const baseIdx = block.indexOf('#write p[data-inkchapter-indent-marker]::before,')
+    const lockedIdx = block.indexOf('#write.inkchapter-document-locked p[data-inkchapter-indent-marker]::before,')
+    expect(baseIdx).toBeGreaterThanOrEqual(0)
+    expect(lockedIdx).toBeGreaterThan(baseIdx)
+    const lockedRule = block.slice(lockedIdx, block.indexOf('}', lockedIdx) + 1)
+    expect(lockedRule).toContain('display: none')
+    // Indent itself is NOT touched by this rule (no text-indent / padding).
+    expect(lockedRule.includes('text-indent')).toBe(false)
+    expect(lockedRule.includes('padding')).toBe(false)
+  })
+})
+
+describe('IND-052 只读锁定态：缩进保留、标记由 CSS 隐藏', () => {
+  const LOCK_SETTINGS = { ...INDENT_SETTINGS, showInheritedIndentMarker: true }
+
+  it('锁定不改变段落投影（缩进 class 与标记属性照常写入）', () => {
+    const p = makeP('正文内容')
+    root.classList.add('inkchapter-document-locked')
+    refreshParagraphIndentStyles(root, LOCK_SETTINGS)
+    expect(p.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBe('inherited-2')
+  })
+
+  it('解锁后投影保持一致（无需重算）', () => {
+    const p = makeP('正文内容')
+    root.classList.add('inkchapter-document-locked')
+    refreshParagraphIndentStyles(root, LOCK_SETTINGS)
+    root.classList.remove('inkchapter-document-locked')
+    expect(p.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBe('inherited-2')
+  })
+})
+
+describe('IND-058 / IND-059 / IND-060 几何契约：几何随字号缩放，不依赖视口', () => {
+  const scss = readFileSync(join(process.cwd(), 'src', 'style.scss'), 'utf8')
+  const start = scss.indexOf('/* ── Two-character first-line indent marker')
+  const end = scss.indexOf('/* ── Settings page: live preview', start)
+  const block = start >= 0 && end > start ? scss.slice(start, end) : ''
+  const rules = block.replace(/\/\*[\s\S]*?\*\//g, '')
+
+  it('标记段落建立包含块，伪元素绝对定位（随段落滚动/重排，不脱离文档流）', () => {
+    const paragraphRule = rules.slice(
+      rules.indexOf('#write p[data-inkchapter-indent-marker] {'),
+      rules.indexOf('}', rules.indexOf('#write p[data-inkchapter-indent-marker] {')) + 1,
+    )
+    expect(paragraphRule).toContain('position: relative')
+
+    const pseudoRule = rules.slice(
+      rules.indexOf('#write p[data-inkchapter-indent-marker]::before,'),
+      rules.indexOf('}', rules.indexOf('content:')) + 1,
+    )
+    expect(pseudoRule).toContain('position: absolute')
+    // Absolute children are positioned from the paragraph box, never the viewport.
+    expect(pseudoRule.includes('position: fixed')).toBe(false)
+  })
+
+  it('IND-058 缩放：所有尺寸使用 em（唯一 px 为 1px 描边/圆角）', () => {
+    const pxValues = rules.match(/[\d.]+px/g) ?? []
+    expect(pxValues.length).toBeGreaterThan(0)
+    expect(pxValues.every(v => v === '1px')).toBe(true)
+    expect(rules).toContain('width: 0.72em')
+    expect(rules).toContain('height: 0.72em')
+    expect(rules).toContain('top: 0.3em')
+  })
+
+  it('IND-059 宽度/侧栏变化：水平位置用逻辑内联起点（em），不写死 left/right', () => {
+    expect(rules).toContain('inset-inline-start: 0.18em')
+    expect(rules).toContain('inset-inline-start: 1.04em')
+    expect(/(^|[^-])left\s*:/.test(rules)).toBe(false)
+    expect(/(^|[^-])right\s*:/.test(rules)).toBe(false)
+    expect(rules.includes('vw') || rules.includes('vh')).toBe(false)
+  })
+
+  it('IND-060 主题/字体/折行：标记无固定行高与像素定位，缩进本体为 em', () => {
+    expect(rules.includes('line-height')).toBe(false)
+    expect(rules.includes('%')).toBe(false)
+    const indentRule = scss.slice(
+      scss.indexOf('#write p.inkchapter-paragraph-effective-indent-2 {'),
+      scss.indexOf('}', scss.indexOf('#write p.inkchapter-paragraph-effective-indent-2 {')) + 1,
+    )
+    expect(indentRule).toContain('text-indent: 2em')
+  })
+})
+
+describe('IND-020 / IND-045 IME 组合期不覆盖投影', () => {
+  const IME_SETTINGS = { ...INDENT_SETTINGS, showInheritedIndentMarker: true }
+
+  it('组合中的段落保持原样，其它段落照常投影', () => {
+    const p1 = makeP('正在输入')
+    const p2 = makeP('另一段')
+    setCaret(p1, 0)
+    const stats = refreshParagraphIndentStyles(root, IME_SETTINGS, true)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(false)
+    expect(p1.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
+    expect(p2.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(stats.composingSkipped).toBe(1)
+  })
+
+  it('组合结束（isComposing=false）后同一段落立即补投影', () => {
+    const p1 = makeP('正在输入')
+    setCaret(p1, 0)
+    refreshParagraphIndentStyles(root, IME_SETTINGS, true)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(false)
+    const stats = refreshParagraphIndentStyles(root, IME_SETTINGS, false)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(p1.getAttribute(INDENT_MARKER_ATTR)).toBe('inherited-2')
+    expect(stats.composingSkipped).toBe(0)
+  })
+
+  it('组合期不撤销已有显式投影（不清 class / 不清标记）', () => {
+    const p1 = makeP('正文内容')
+    refreshParagraphIndentStyles(root, IME_SETTINGS)
+    setParagraphIndentMode(p1, 'force-indent')
+    refreshParagraphIndentStyles(root, IME_SETTINGS)
+    expect(p1.getAttribute(INDENT_MARKER_ATTR)).toBe('explicit-2')
+
+    setCaret(p1, 0)
+    const stats = refreshParagraphIndentStyles(root, IME_SETTINGS, true)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(p1.getAttribute(INDENT_MARKER_ATTR)).toBe('explicit-2')
+    expect(stats.composingSkipped).toBe(1)
+  })
+
+  it('组合中出现的独占标记字符不会在组合期把缩进降级为 flush', () => {
+    const p1 = makeP('正文内容')
+    refreshParagraphIndentStyles(root, IME_SETTINGS)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(true)
+
+    // IME inserts a lone "。" while composing.
+    p1.textContent = '。'
+    setCaret(p1, 0)
+    const stats = refreshParagraphIndentStyles(root, IME_SETTINGS, true)
+    expect(stats.composingSkipped).toBe(1)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(p1.classList.contains('inkchapter-paragraph-effective-flush')).toBe(false)
+
+    // Composition ends: the editing-token rule now legitimately applies.
+    refreshParagraphIndentStyles(root, IME_SETTINGS, false)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(false)
+    expect(p1.classList.contains('inkchapter-paragraph-effective-flush')).toBe(true)
+  })
+
+  it('无选区时组合标志不跳过任何段落', () => {
+    const p1 = makeP('正文内容')
+    window.getSelection()?.removeAllRanges()
+    const stats = refreshParagraphIndentStyles(root, IME_SETTINGS, true)
+    expect(stats.composingSkipped).toBe(0)
+    expect(p1.classList.contains(INDENT_CLASS)).toBe(true)
+  })
+})
+
+describe('IND-032…035 Undo/Redo：令牌文本回归时自愈显式语义', () => {
+  it('force-indent + 文本回到 ".." ⇒ 语义回退 auto', () => {
+    const p = makeP('正文内容')
+    setParagraphIndentMode(p, 'force-indent')
+    refreshParagraphIndentStyles(root, INDENT_SETTINGS)
+
+    // Typora undo restores the token text, the plugin attribute survives.
+    p.textContent = '..'
+    expect(healExplicitSemanticOnTokenText(root)).toBe(1)
+    expect(getParagraphIndentMode(p)).toBe('auto')
+  })
+
+  it('自愈后投影为 flush 且无标记（不再显示已提交的缩进）', () => {
+    const p = makeP('正文内容')
+    setParagraphIndentMode(p, 'force-indent')
+    refreshParagraphIndentStyles(root, INDENT_SETTINGS)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBe('explicit-2')
+
+    p.textContent = '。。'
+    healExplicitSemanticOnTokenText(root)
+    refreshParagraphIndentStyles(root, INDENT_SETTINGS)
+    expect(p.classList.contains(INDENT_CLASS)).toBe(false)
+    expect(p.classList.contains('inkchapter-paragraph-effective-flush')).toBe(true)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
+  })
+
+  it('非令牌文本保持显式语义（不误伤真实覆盖）', () => {
+    const p = makeP('正文内容')
+    setParagraphIndentMode(p, 'force-indent')
+    expect(healExplicitSemanticOnTokenText(root)).toBe(0)
+    expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
+  })
+
+  it('令牌只是文本前缀/后缀时不触发（必须是整段恰为令牌）', () => {
+    const p = makeP('..正文')
+    setParagraphIndentMode(p, 'force-indent')
+    expect(healExplicitSemanticOnTokenText(root)).toBe(0)
+
+    p.textContent = '正文。。'
+    expect(healExplicitSemanticOnTokenText(root)).toBe(0)
+    expect(p.getAttribute(INDENT_MODE_ATTR)).toBe('force-indent')
+  })
+
+  it('force-flush + 令牌文本同样回退 auto', () => {
+    const p = makeP('。')
+    setParagraphIndentMode(p, 'force-flush')
+    expect(healExplicitSemanticOnTokenText(root)).toBe(1)
+    expect(getParagraphIndentMode(p)).toBe('auto')
+  })
+
+  it('自愈是幂等的（重复刷新不再计次）', () => {
+    const p = makeP('..')
+    setParagraphIndentMode(p, 'force-indent')
+    expect(healExplicitSemanticOnTokenText(root)).toBe(1)
+    expect(healExplicitSemanticOnTokenText(root)).toBe(0)
+  })
+
+  it('auto 段落上的令牌文本不产生副作用', () => {
+    const p = makeP('..')
+    expect(healExplicitSemanticOnTokenText(root)).toBe(0)
+    expect(p.getAttribute(INDENT_MODE_ATTR)).toBeNull()
   })
 })
 

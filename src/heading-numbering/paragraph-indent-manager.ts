@@ -66,6 +66,7 @@ export const WriterIds = {
   PENDING_CONTINUITY_VISUAL: 'W-PENDING-CONTINUITY-VISUAL',
   PENDING_CONTINUITY_CARET: 'W-PENDING-CONTINUITY-CARET',
   EMPTY_SPECIAL_ROLLBACK: 'W-EMPTY-SPECIAL-ROLLBACK',
+  TOKEN_SEMANTIC_HEAL: 'W-TOKEN-SEMANTIC-HEAL',
 } as const
 
 // ── R58.7: Plugin Selection Write Audit sink (read-only observation) ──
@@ -1028,6 +1029,28 @@ export interface ParagraphIndentRefreshStats {
   flush: number
   explicitMarkers: number
   inheritedMarkers: number
+  /** Eligible paragraphs left untouched because an IME session is composing into them. */
+  composingSkipped: number
+}
+
+/**
+ * IND-020/045 — the paragraph the IME is currently composing into, if any.
+ *
+ * Pure DOM read of the selection anchor: no diagnostics, no eligibility side
+ * effects. Returns null when there is no collapsed/selection anchor inside an
+ * ordinary `<p>` of this editor root.
+ */
+export function resolveComposingParagraph(editorRoot: HTMLElement): HTMLElement | null {
+  const sel = typeof window !== 'undefined' ? window.getSelection() : null
+  if (!sel || sel.rangeCount === 0) return null
+  let node: Node | null = sel.getRangeAt(0).startContainer
+  while (node) {
+    if (node instanceof HTMLElement && node.tagName === 'P') {
+      return editorRoot.contains(node) ? node : null
+    }
+    node = node.parentNode
+  }
+  return null
 }
 
 export function refreshParagraphIndentStyles(
@@ -1046,7 +1069,12 @@ export function refreshParagraphIndentStyles(
     flush: 0,
     explicitMarkers: 0,
     inheritedMarkers: 0,
+    composingSkipped: 0,
   }
+  // IND-020/045 — a projection write (class / marker attribute) reflows the
+  // composing line and can move the native IME candidate window. Leave the
+  // paragraph the IME owns exactly as it is until the session ends.
+  const composingParagraph = isComposing ? resolveComposingParagraph(editorRoot) : null
   const paragraphs = editorRoot.querySelectorAll<HTMLParagraphElement>('p')
   stats.paragraphs = paragraphs.length
 
@@ -1065,6 +1093,12 @@ export function refreshParagraphIndentStyles(
       continue
     }
     stats.eligible++
+
+    // IME owns this paragraph right now — keep its current projection as-is.
+    if (p === composingParagraph) {
+      stats.composingSkipped++
+      continue
+    }
 
     // Skip empty paragraphs
     if (!p.textContent?.trim()) continue
@@ -1440,9 +1474,50 @@ export function isIndentShortcutEditingToken(
   if (!resolveParagraphIndentEligibility(paragraph).eligible) return false
   if (getParagraphIndentMode(paragraph) !== 'auto') return false
 
+  return isIndentShortcutTokenText(paragraph)
+}
+
+/**
+ * IND-032…035 — TRUE when the paragraph's visible text is EXACTLY one of the
+ * four shortcut tokens (".", "。", "..", "。。"), regardless of its semantic.
+ */
+export function isIndentShortcutTokenText(paragraph: HTMLElement): boolean {
   const text = getUserVisibleParagraphText(paragraph)
   // Exact tokens: '.' (U+002E), '\u3002' (CJK full stop), '..', '\u3002\u3002'
   return text === '.' || text === '\u3002' || text === '..' || text === '\u3002\u3002'
+}
+
+/**
+ * IND-032…035 — undo/redo reconcile: a paragraph whose visible text is back to
+ * a bare shortcut token cannot be a *committed* explicit override any more.
+ *
+ * Typora's undo/redo rewrites the text, but it never touches the plugin's
+ * `data-inkchapter-indent-mode` attribute, so an undone command left the
+ * paragraph "force-indent" with the token restored (and a redo showed the
+ * token indented + marked). Reverting such paragraphs to `auto` restores the
+ * pre-command semantics; the ordinary projection then treats the token as an
+ * in-progress editing token (flush, no marker).
+ *
+ * Scope is deliberately narrow: only explicit semantics + token-only text +
+ * an eligible ordinary body paragraph.
+ *
+ * @returns how many paragraphs were healed
+ */
+export function healExplicitSemanticOnTokenText(editorRoot: HTMLElement): number {
+  let healed = 0
+  for (const p of editorRoot.querySelectorAll<HTMLParagraphElement>('p')) {
+    if (getParagraphIndentMode(p) === 'auto') continue
+    if (!resolveParagraphIndentEligibility(p).eligible) continue
+    if (!isIndentShortcutTokenText(p)) continue
+    const before = getParagraphIndentMode(p)
+    setParagraphIndentMode(p, 'auto')
+    recordParagraphWrite(p, WriterIds.TOKEN_SEMANTIC_HEAL, 'UNDO_REDO_TOKEN_TEXT_DIVERGENCE', {
+      beforeSemantic: before,
+      afterSemantic: 'auto',
+    })
+    healed++
+  }
+  return healed
 }
 
 /**

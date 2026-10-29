@@ -148,6 +148,7 @@ import {
   readParagraphIndentCommand,
   isCaretAtTokenEnd,
   isIndentShortcutEditingToken,
+  healExplicitSemanticOnTokenText,
   recordParagraphWrite,
   getLastParagraphWriter,
   getParagraphWriterHistory,
@@ -4449,6 +4450,7 @@ export class HeadingNumberingService {
       stats.flush,
       stats.explicitMarkers,
       stats.inheritedMarkers,
+      stats.composingSkipped,
     ].join('|')
     if (signature === this.lastParagraphIndentAuditSignature) return
     this.lastParagraphIndentAuditSignature = signature
@@ -4468,6 +4470,7 @@ export class HeadingNumberingService {
       flush: stats.flush,
       explicitMarkers: stats.explicitMarkers,
       inheritedMarkers: stats.inheritedMarkers,
+      composingSkipped: stats.composingSkipped,
     })
   }
 
@@ -4875,9 +4878,20 @@ export class HeadingNumberingService {
     // REFUTED by the runtime log — the deferral fired (ENTER-ECHO-STYLE-WRITE-DEFERRED)
     // and the duplicate split STILL happened. The write is therefore NOT gated here;
     // the targeted write tracer (`enter-echo-write-trace`) names the real culprit.
+    // IND-032…035 — undo/redo restores the token TEXT but never the plugin's
+    // semantic attribute. Heal that divergence BEFORE projecting, so an undone
+    // command stops showing an indent/marker and a redo'd token is editable
+    // (and re-consumable) instead of looking committed.
+    const healed = healExplicitSemanticOnTokenText(root)
+    if (healed > 0) {
+      emitRuntimeAudit('PARAGRAPH-INDENT-TOKEN-SEMANTIC-HEAL', {
+        documentKey: this.getDocumentKey() ?? 'none',
+        healed,
+      })
+    }
+
     const indentStats = refreshParagraphIndentStyles(root, settings, this.isInComposition)
     this.emitParagraphIndentRefreshAudit(root, settings, indentStats)
-
 
     // ── Trace: T7 after ──
     safeTrace(() => {

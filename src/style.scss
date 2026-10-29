@@ -486,6 +486,14 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   display: none;
 }
 
+/* Locked (plugin read-only / preview) document: viewing mode only, so the
+   editing aid disappears while the first-line indent is untouched (the indent
+   is owned by the effective-indent class, not by these pseudo elements). */
+#write.inkchapter-document-locked p[data-inkchapter-indent-marker]::before,
+#write.inkchapter-document-locked p[data-inkchapter-indent-marker]::after {
+  display: none;
+}
+
 /* Read-only / preview / print / export: no marker objects in the artifact. */
 @media print {
   #write p[data-inkchapter-indent-marker]::before,
