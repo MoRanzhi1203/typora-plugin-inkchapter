@@ -1667,6 +1667,83 @@ export type MergeSemanticReason =
   | 'CONFLICT_DELETE_LEFT'
   | 'CONFLICT_BACKSPACE_RIGHT'
 
+// ── Empty Paragraph Deletion Ownership Rule (P0) ─────────────────────
+//
+// A boundary merge deletes exactly one paragraph. When the ONLY canonical
+// owner sits on a PURE-BLANK side and the merged visible text provably comes
+// from the other side, that record describes the line the user just deleted —
+// it must be retired instead of transferred to the surviving body paragraph.
+//
+// Real-GUI defect (21:14:10.913Z): a blank force-indent paragraph was removed
+// with Backspace; `mergeReason=SINGLE_OWNER` transferred its record onto the
+// auto body paragraph, which then showed an indent + explicit marker.
+
+export type MergeOwnerRetirementDecision =
+  | 'TRANSFER_SINGLE_OWNER'
+  | 'RETIRE_EMPTY_PARA_OWNER'
+
+export interface MergeOwnerRetirementInput {
+  ownerSide: 'left' | 'right' | 'none'
+  leftText: string
+  rightText: string
+}
+
+/**
+ * Typora placeholders / whitespace that carry no user content. A paragraph made
+ * only of these characters is still an EMPTY paragraph for ownership purposes.
+ */
+const BLANK_PARAGRAPH_CHARS = /[\s\u180E\u200B-\u200D\u2060\uFEFF\u00A0]/g
+
+export function isBlankParagraphText(text: string | null | undefined): boolean {
+  return String(text ?? '').replace(BLANK_PARAGRAPH_CHARS, '') === ''
+}
+
+/**
+ * Decide whether a merge's single canonical owner transfers to the surviving
+ * paragraph or retires with the deleted blank paragraph.
+ *
+ * - owner on a blank side + the other side carries visible text → RETIRE
+ *   (the survivor's content — and therefore its format — comes from the other side)
+ * - both sides blank → provenance is unprovable → keep the legacy TRANSFER
+ * - owner on the content side, or no owner → TRANSFER
+ */
+export function resolveMergeOwnerRetirement(
+  input: MergeOwnerRetirementInput,
+): MergeOwnerRetirementDecision {
+  if (input.ownerSide === 'none') return 'TRANSFER_SINGLE_OWNER'
+  const ownerText = input.ownerSide === 'left' ? input.leftText : input.rightText
+  const otherText = input.ownerSide === 'left' ? input.rightText : input.leftText
+  if (!isBlankParagraphText(ownerText)) return 'TRANSFER_SINGLE_OWNER'
+  if (isBlankParagraphText(otherText)) return 'TRANSFER_SINGLE_OWNER'
+  return 'RETIRE_EMPTY_PARA_OWNER'
+}
+
+/**
+ * Paragraph-level logical caret offset (sum of all text before the caret).
+ *
+ * `resolveSelectionParagraph().localLogicalOffset` is the SELECTION NODE's own
+ * offset (`selection.anchorOffset`), which is meaningless across inline elements
+ * (e.g. bold runs): a caret at the very end of a 40-character paragraph that is
+ * split into 3 text nodes reports 10. Merge verification needs the paragraph
+ * offset, so it must be measured with a Range from the paragraph start.
+ */
+export function computeParagraphLogicalCaretOffset(
+  paragraph: HTMLElement,
+  node: Node | null,
+  offset: number,
+): number {
+  if (!paragraph || !node) return -1
+  if (node !== paragraph && !paragraph.contains(node)) return -1
+  try {
+    const range = paragraph.ownerDocument.createRange()
+    range.setStart(paragraph, 0)
+    range.setEnd(node, Math.max(0, offset))
+    return range.toString().length
+  } catch {
+    return -1
+  }
+}
+
 /** Which side owns the merged semantic after a boundary merge. */
 export type MergeWinnerSide = 'left' | 'right' | 'none'
 

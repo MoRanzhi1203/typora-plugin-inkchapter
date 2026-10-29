@@ -128,6 +128,8 @@ import {
   applyEffectiveParagraphIndent,
   resolveEffectiveParagraphIndent,
   resolveMergeSemantic,
+  resolveMergeOwnerRetirement,
+  computeParagraphLogicalCaretOffset,
   resolveMergeWinnerSide,
   resolveProvenMergeSemantic,
   computeMergeContentExpectation,
@@ -9661,7 +9663,7 @@ export class HeadingNumberingService {
     // Collect owners BEFORE any markAwaitingTransfer / canonicalTransferBinding.
     // M3 (canonicalOwnerCount >= 2) → BLOCK_MULTI_OWNER with ZERO partial commit.
     if (globalShape === 'MERGE_2_TO_1') {
-      this.handleMerge2To1BatchFirst(removedPs, addedPs, batchId, docKeyBatch, selRuntimeId)
+      this.handleMerge2To1BatchFirst(removedPs, addedPs, batchId, docKeyBatch, selRuntimeId, boundaryIntent)
     } else if (boundaryIntent && removedPs.length === 1 && addedPs.length === 0) {
       // ── PF4: 1→0 existing-survivor boundary merge (continuity sub-classification) ──
       this.handleBoundaryMergeExistingSurvivor(boundaryIntent, removedPs, batchId, docKeyBatch, selRuntimeId)
@@ -10123,6 +10125,7 @@ export class HeadingNumberingService {
     batchId: string,
     docKey: string,
     selRuntimeId: string,
+    boundaryIntent: PendingBoundaryMergeIntent | null = null,
   ): void {
     // 1. Collect unique canonical owners
     const owners: MergeOwnerSnapshot[] = []
@@ -10172,13 +10175,27 @@ export class HeadingNumberingService {
     // ── PF3: content preservation snapshot ──────────────────────────
     // Removed paragraphs retain their frozen pre-merge textContent, so this is
     // the authoritative leftText/rightText WITHOUT intercepting native input.
-    const leftText = removedPs[0]?.textContent ?? ''
-    const rightText = removedPs[1]?.textContent ?? ''
+    //
+    // VISUAL ORDER IS AUTHORITATIVE: the mutation batch lists removed nodes in
+    // RECORD order, not document order (a Backspace batch can list the empty
+    // right paragraph first). The keydown intent carries the real left/right, so
+    // the expected caret offset (`leftText.length`) is the end of the visual
+    // left paragraph instead of 0.
+    const intentLeft = boundaryIntent && removedPs.includes(boundaryIntent.leftElement)
+      ? boundaryIntent.leftElement
+      : null
+    const intentRight = boundaryIntent && removedPs.includes(boundaryIntent.rightElement)
+      ? boundaryIntent.rightElement
+      : null
+    const leftElement = intentLeft ?? removedPs[0] ?? null
+    const rightElement = intentRight ?? removedPs[1] ?? null
+    const leftText = leftElement?.textContent ?? ''
+    const rightText = rightElement?.textContent ?? ''
     const contentExpectation = computeMergeContentExpectation(leftText, rightText)
     const mergeKey = this.lastUserIntentKey === 'Backspace' ? 'Backspace' : 'Delete'
     const mergeDirection = this.lastUserIntentKey === 'Backspace' ? 'backward' : 'forward'
-    const leftRuntimeId = removedPs[0] ? this.getParagraphRuntimeId(removedPs[0]) : 'none'
-    const rightRuntimeId = removedPs[1] ? this.getParagraphRuntimeId(removedPs[1]) : 'none'
+    const leftRuntimeId = leftElement ? this.getParagraphRuntimeId(leftElement) : 'none'
+    const rightRuntimeId = rightElement ? this.getParagraphRuntimeId(rightElement) : 'none'
 
     emitRuntimeAudit('PARAGRAPH-MERGE-INTENT', {
       batchId,
@@ -10219,13 +10236,132 @@ export class HeadingNumberingService {
     let mergeResolutionReason = 'NO_CANONICAL_OWNER'
 
     if (canonicalOwnerCount === 1) {
-      winnerOwner = owners[0]
+      const singleOwner = owners[0]
+      const ownerSide: 'left' | 'right' | 'none' =
+        singleOwner.element === leftElement ? 'left'
+          : singleOwner.element === rightElement ? 'right' : 'none'
+      const ownership = resolveMergeOwnerRetirement({ ownerSide, leftText, rightText })
+
+      if (ownership === 'RETIRE_EMPTY_PARA_OWNER') {
+        // ── Empty Paragraph Deletion Ownership Rule (P0) ──
+        // The deleted paragraph was PURE BLANK; all surviving visible text comes
+        // from the other side. Its explicit override belongs to the line the user
+        // just deleted: retire it — never transfer it onto the body paragraph and
+        // never let the next rehydrate round resurrect it.
+        this.canonicalRegistry.retireRecord(
+          singleOwner.recordId,
+          'merge-empty-paragraph-deleted',
+          'EXPLICIT_PARAGRAPH_DELETE',
+          this.documentContext.scopeId ?? 'unknown',
+        )
+        emitRuntimeAudit('PARAGRAPH-MERGE-CANONICAL-TRANSFER', {
+          batchId,
+          loserRecordId: singleOwner.recordId,
+          winnerRecordId: 'none',
+          decision: 'RETIRE_EMPTY_PARA_OWNER',
+          mergeReason: 'SINGLE_OWNER_EMPTY_PARA_RETIRED',
+          ownerSide,
+        })
+
+        const destination = mergedDestination
+        if (destination && destination.isConnected) {
+          // The rebuilt node may still carry the blank paragraph's projection.
+          // Clear it, then project AUTO from the document default (never a
+          // forced flush, never the retired explicit override).
+          clearParagraphIndentVisualAndSemantic(destination, 'W-MERGE-EMPTY-OWNER-RETIRED')
+          rehydrateParagraphIndentState(destination, 'auto', this.getParagraphLayoutSettings(), {
+            source: 'dom-rebuild-restore',
+            semanticWriterId: 'W-MERGE-EMPTY-OWNER-RETIRED',
+            visualWriterId: 'W-MERGE-EMPTY-OWNER-RETIRED',
+          })
+        }
+
+        const retireText = destination?.textContent ?? ''
+        const retireVerify = verifyMergeContent(
+          contentExpectation.expectedMergedText,
+          retireText,
+          contentExpectation.expectedCaretOffset,
+        )
+        emitRuntimeAudit('PARAGRAPH-MERGE-CONTENT-VERIFY', {
+          batchId,
+          phase: 'AFTER_EMPTY_PARA_OWNER_RETIRE',
+          expectedMergedText: retireVerify.expectedMergedText,
+          actualMergedText: retireVerify.actualMergedText,
+          expectedCaretOffset: retireVerify.expectedCaretOffset,
+          reason: retireVerify.reason,
+          overall: retireVerify.preserved,
+        })
+
+        const retireRoot = this.adapter.getEditorRoot()
+        const retireSel = window.getSelection()
+        const retireRange = retireSel && retireSel.rangeCount > 0 ? retireSel.getRangeAt(0) : null
+        const retireDestinationRuntimeId = destination ? this.getParagraphRuntimeId(destination) : 'none'
+        const retireCaretRuntimeId = retireRoot
+          ? (resolveSelectionParagraph(
+              retireSel, retireRoot,
+              (el: object) => this.getParagraphRuntimeId(el as HTMLElement),
+            )?.paragraphRuntimeId ?? 'none')
+          : 'none'
+        // Paragraph-level offset, not the selection node's own offset.
+        const retireCaretOffset = destination && retireRange
+          ? computeParagraphLogicalCaretOffset(destination, retireRange.startContainer, retireRange.startOffset)
+          : -1
+        const retireCaretOk = retireSel?.isCollapsed === true
+          && retireCaretRuntimeId === retireDestinationRuntimeId
+          && retireCaretOffset === contentExpectation.expectedCaretOffset
+        emitRuntimeAudit('PARAGRAPH-MERGE-CARET-VERIFY', {
+          batchId,
+          selectionCollapsed: retireSel?.isCollapsed ?? false,
+          caretRuntimeId: retireCaretRuntimeId,
+          expectedCaretOffset: contentExpectation.expectedCaretOffset,
+          actualCaretOffset: retireCaretOffset,
+          caretOnSurvivor: retireCaretRuntimeId === retireDestinationRuntimeId,
+          caretOffsetCorrect: retireCaretOffset === contentExpectation.expectedCaretOffset,
+          overall: retireCaretOk,
+          ownershipDecision: 'RETIRE_EMPTY_PARA_OWNER',
+        })
+        emitRuntimeAudit('PARAGRAPH-MERGE-FINAL', {
+          batchId,
+          key: mergeKey,
+          direction: mergeDirection,
+          leftRuntimeId,
+          rightRuntimeId,
+          survivorRuntimeId: retireDestinationRuntimeId,
+          leftText,
+          rightText,
+          expectedMergedText: contentExpectation.expectedMergedText,
+          actualMergedText: retireText,
+          contentPreserved: retireVerify.preserved,
+          semanticWinner: 'auto',
+          winnerRecordId: 'none',
+          loserRecordId: singleOwner.recordId,
+          mergeReason: 'SINGLE_OWNER_EMPTY_PARA_RETIRED',
+          recordCountBefore: canonicalOwnerCount,
+          awaitingCount: this.canonicalRegistry.getAwaitingCount(),
+          caretOffsetCorrect: retireCaretOffset === contentExpectation.expectedCaretOffset,
+          overall: retireVerify.preserved && retireCaretOk,
+        })
+        console.info(
+          `[InkChapter] MERGE-EMPTY-OWNER-RETIRE: ` +
+          `batchId=${batchId} ` +
+          `recordId=${singleOwner.recordId} ` +
+          `ownerSide=${ownerSide} ` +
+          `leftTextLength=${leftText.length} ` +
+          `rightTextLength=${rightText.length} ` +
+          `semantic=auto ` +
+          `decision=SKIP_TRANSFER`,
+        )
+        return
+      }
+
+      winnerOwner = singleOwner
       mergeResolutionReason = 'SINGLE_OWNER'
     } else if (canonicalOwnerCount >= 2) {
-      // owners[] follows removedNodes order (left → right).
+      // owners[] follows removedNodes order, which is NOT necessarily the visual
+      // left→right order. Resolve the sides by element identity first.
       const intent: 'delete' | 'backspace' = this.lastUserIntentKey === 'Backspace' ? 'backspace' : 'delete'
-      const left = owners[0]
-      const right = owners[1]
+      const left = owners.find(o => o.element === leftElement) ?? owners[0]
+      const right = owners.find(o => o !== left) ?? owners[1]
       const result = resolveMergeSemantic(intent, left.semantic, right.semantic)
       if (result.winner === left.semantic) {
         winnerOwner = left
@@ -10384,7 +10520,16 @@ export class HeadingNumberingService {
         : null
       const caretCollapsed = mergeSel?.isCollapsed ?? false
       const caretRuntimeId = caretVerifyRes?.paragraphRuntimeId ?? 'none'
-      const caretOffset = caretVerifyRes?.localLogicalOffset ?? -1
+      // Paragraph-level offset (sum of text before the caret). The selection
+      // node's own offset is 10 for a caret at the end of a 40-char paragraph
+      // split by inline runs, which made this verify fail on a correct caret.
+      const caretRange = mergeSel && mergeSel.rangeCount > 0 ? mergeSel.getRangeAt(0) : null
+      const caretOffset = caretRange
+        ? computeParagraphLogicalCaretOffset(mergedDestination, caretRange.startContainer, caretRange.startOffset)
+        : -1
+      const caretOk = caretCollapsed
+        && caretRuntimeId === toRtId
+        && caretOffset === contentExpectation.expectedCaretOffset
       emitRuntimeAudit('PARAGRAPH-MERGE-CARET-VERIFY', {
         batchId,
         selectionCollapsed: caretCollapsed,
@@ -10393,7 +10538,7 @@ export class HeadingNumberingService {
         actualCaretOffset: caretOffset,
         caretOnSurvivor: caretRuntimeId === toRtId,
         caretOffsetCorrect: caretOffset === contentExpectation.expectedCaretOffset,
-        overall: caretCollapsed && caretRuntimeId === toRtId && caretOffset === contentExpectation.expectedCaretOffset,
+        overall: caretOk,
       })
 
       // ── PF3: final merge audit ──
@@ -10415,7 +10560,9 @@ export class HeadingNumberingService {
         mergeReason: mergeResolutionReason,
         recordCountBefore: canonicalOwnerCount,
         awaitingCount: this.canonicalRegistry.getAwaitingCount(),
-        overall: postTransferVerify.preserved,
+        caretOffsetCorrect: caretOffset === contentExpectation.expectedCaretOffset,
+        // A merge transaction is never PASS while its caret check fails.
+        overall: postTransferVerify.preserved && caretOk,
       })
 
       // Check selection for caret destination
@@ -10523,8 +10670,40 @@ export class HeadingNumberingService {
     const loserRecordId = loserSide === 'left' ? intent.leftRecordId : loserSide === 'right' ? intent.rightRecordId : null
     const scopeId = intent.scopeId
 
+    // ── Empty Paragraph Deletion Ownership Rule (P0, 1→0 variant) ──
+    // Same rule as the 2→1 path: the ONLY record belongs to a blank paragraph
+    // and all surviving text comes from the other side → retire that record and
+    // keep the survivor's own (auto) format instead of transferring an indent
+    // the user just deleted.
+    const provenRecordCount = (intent.leftRecordId ? 1 : 0) + (intent.rightRecordId ? 1 : 0)
+    const emptyOwnerDecision = resolveMergeOwnerRetirement({
+      ownerSide: intent.leftRecordId ? 'left' : intent.rightRecordId ? 'right' : 'none',
+      leftText: intent.leftText,
+      rightText: intent.rightText,
+    })
+    const emptyOwnerRetired = provenRecordCount === 1 && emptyOwnerDecision === 'RETIRE_EMPTY_PARA_OWNER'
+    if (emptyOwnerRetired) {
+      const retiredRecordId = (intent.leftRecordId ?? intent.rightRecordId)!
+      this.canonicalRegistry.retireRecord(
+        retiredRecordId, 'merge-empty-paragraph-deleted', 'EXPLICIT_PARAGRAPH_DELETE', scopeId,
+      )
+      emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
+        batchId,
+        decision: 'RETIRE_EMPTY_PARA_OWNER',
+        loserRecordId: retiredRecordId,
+        winnerRecordId: 'none',
+        mergeReason: 'SINGLE_OWNER_EMPTY_PARA_RETIRED',
+      })
+      clearParagraphIndentVisualAndSemantic(survivor, 'W-MERGE-EMPTY-OWNER-RETIRED')
+      rehydrateParagraphIndentState(survivor, 'auto', this.getParagraphLayoutSettings(), {
+        source: 'dom-rebuild-restore',
+        semanticWriterId: 'W-MERGE-EMPTY-OWNER-RETIRED',
+        visualWriterId: 'W-MERGE-EMPTY-OWNER-RETIRED',
+      })
+    }
+
     // Retire loser FIRST (avoid element/runtime collision on transfer).
-    if (loserRecordId) {
+    if (!emptyOwnerRetired && loserRecordId) {
       this.canonicalRegistry.retireRecord(loserRecordId, 'merge-superseded', 'EXPLICIT_PARAGRAPH_DELETE', scopeId)
       emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
         batchId,
@@ -10536,7 +10715,7 @@ export class HeadingNumberingService {
     }
 
     // Transfer winner record if it lives on the removed side; otherwise keep live.
-    if (winnerRecordId) {
+    if (!emptyOwnerRetired && winnerRecordId) {
       const winnerElement = winnerSide === 'left' ? intent.leftElement : intent.rightElement
       const winnerRuntimeId = winnerSide === 'left' ? intent.leftRuntimeId : intent.rightRuntimeId
 
@@ -10571,7 +10750,7 @@ export class HeadingNumberingService {
           mergeReason: result.reason,
         })
       }
-    } else {
+    } else if (!emptyOwnerRetired) {
       // BOTH_AUTO — no explicit record to transfer.
       emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
         batchId,
@@ -10601,7 +10780,14 @@ export class HeadingNumberingService {
       : null
     const caretCollapsed = sel?.isCollapsed ?? false
     const caretRuntimeId = caretRes?.paragraphRuntimeId ?? 'none'
-    const caretOffset = caretRes?.localLogicalOffset ?? -1
+    // Paragraph-level offset (see computeParagraphLogicalCaretOffset).
+    const caretRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+    const caretOffset = caretRange
+      ? computeParagraphLogicalCaretOffset(survivor, caretRange.startContainer, caretRange.startOffset)
+      : -1
+    const caretOk = caretCollapsed
+      && caretRuntimeId === survivorRuntimeId
+      && caretOffset === intent.expectedCaretOffset
     emitRuntimeAudit('BOUNDARY-MERGE-CARET-VERIFY', {
       batchId,
       selectionCollapsed: caretCollapsed,
@@ -10610,7 +10796,7 @@ export class HeadingNumberingService {
       actualCaretOffset: caretOffset,
       caretOnSurvivor: caretRuntimeId === survivorRuntimeId,
       caretOffsetCorrect: caretOffset === intent.expectedCaretOffset,
-      overall: caretCollapsed && caretRuntimeId === survivorRuntimeId && caretOffset === intent.expectedCaretOffset,
+      overall: caretOk,
     })
 
     emitRuntimeAudit('BOUNDARY-MERGE-FINAL', {
@@ -10626,13 +10812,16 @@ export class HeadingNumberingService {
       rightProvenSemantic,
       leftExplicitProven: intent.leftExplicitProven,
       rightExplicitProven: intent.rightExplicitProven,
-      semanticWinner: result.winner,
-      winnerRecordId: winnerRecordId ?? 'none',
-      loserRecordId: loserRecordId ?? 'none',
-      mergeReason: result.reason,
+      semanticWinner: emptyOwnerRetired ? 'auto' : result.winner,
+      winnerRecordId: emptyOwnerRetired ? 'none' : (winnerRecordId ?? 'none'),
+      loserRecordId: emptyOwnerRetired
+        ? (intent.leftRecordId ?? intent.rightRecordId ?? 'none')
+        : (loserRecordId ?? 'none'),
+      mergeReason: emptyOwnerRetired ? 'SINGLE_OWNER_EMPTY_PARA_RETIRED' : result.reason,
       contentPreserved,
+      caretOffsetCorrect: caretOffset === intent.expectedCaretOffset,
       awaitingCount: this.canonicalRegistry.getAwaitingCount(),
-      overall: contentPreserved,
+      overall: contentPreserved && caretOk,
     })
   }
 
