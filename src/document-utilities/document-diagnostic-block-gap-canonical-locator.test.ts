@@ -284,6 +284,10 @@ interface Internals {
   lastBlockGapDiagnosticId: string | null
   /** V3 — 组投影绘制（真实组容器 + 成员索引）。 */
   paintActiveGapGroupVisuals(): void
+  /** V4 — 最近一次 owner 解析结果与组测量成员数（定向优化证据）。 */
+  blankFastOwnerResolution: string | null
+  lastGroupMeasuredMemberCount: number
+  blankFastDirtyRanges: Array<{ start: number; end: number }>
 }
 
 interface World {
@@ -1104,6 +1108,7 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
     prev: BoundarySpec,
     next: BoundarySpec,
     actualBlankLines = 3,
+    firstBlankLine = 1,
   ): Record<string, unknown> {
     return {
       id,
@@ -1128,8 +1133,8 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
         nextBlockCanonicalOrdinal: next.canonicalOrdinal,
         nextBlockStartLine: next.startLine,
         nextBlockAnchorText: next.anchor,
-        firstBlankLine: 1,
-        lastBlankLine: actualBlankLines,
+        firstBlankLine,
+        lastBlankLine: firstBlankLine + actualBlankLines - 1,
         actualBlankLines,
         passMaxBlankLines: 1,
         warningThreshold: 2,
@@ -1186,8 +1191,8 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
       middle,
       a1Rows: blankRows.slice(),
       a2Rows,
-      a1Diag: memberDiag('doc:gap:a1', a1Identity, FENCE_NEXT, MIDDLE),
-      a2Diag: memberDiag('doc:gap:a2', a2Identity, MIDDLE, TAIL),
+      a1Diag: memberDiag('doc:gap:a1', a1Identity, FENCE_NEXT, MIDDLE, 3, 15),
+      a2Diag: memberDiag('doc:gap:a2', a2Identity, MIDDLE, TAIL, 3, 31),
     }
   }
 
@@ -1267,7 +1272,7 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
     scene.middle.remove()
     const mergedRows = [...scene.a1Rows, ...scene.a2Rows]
     const mergedIdentity = 'blank-gap:code:```#2>>paragraph:代码 3 Manual prefix code caption#0'
-    const mergedDiag = memberDiag('doc:gap:m', mergedIdentity, FENCE_NEXT, TAIL, 6)
+    const mergedDiag = memberDiag('doc:gap:m', mergedIdentity, FENCE_NEXT, TAIL, 6, 15)
     const i = internals(scene.world)
     i.snapshot = snapshotOf([mergedDiag])
     i.activeGapGroup = {
@@ -1304,5 +1309,78 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
     expect(patch(scene.world)).toBe(true)
     expect(groupCarriers()).toHaveLength(1)
     expect(fragmentsOf(groupCarriers()[0])).toBe(mergedRows.length + 1)
+  })
+
+  it('V4-STALE-PRIMARY 主 Carrier 仍连着但诊断已被 SPLIT 退役：回落到 GROUP_READY', () => {
+    const scene = makeSplitScene()
+    installGroup(scene)
+    const i = internals(scene.world)
+    const left = groupCarriers().find(el => el.getAttribute('data-gap-member') === String(scene.a1Diag.id))!
+    // 旧主 Carrier 元素仍连着、字段也仍指向已退役的旧诊断（真实 SPLIT 那一帧）。
+    injectSnapshot(scene.world, [scene.a2Diag])
+    i.lastBlockGapDiagnosticId = String(scene.a1Diag.id)
+    i.blockGapVisualEl = left
+    scene.a2Rows[2].remove()
+
+    expect(patch(scene.world)).toBe(true)
+    expect(i.blankFastOwnerResolution).toBe('GROUP_READY')
+    expect(groupCarriers()).toHaveLength(2)
+  })
+
+  it('V4-TARGET-ONE-MEMBER 脏区间只覆盖左块：组 patch 只测量 1 个成员', () => {
+    const scene = makeSplitScene()
+    installGroup(scene)
+    const i = internals(scene.world)
+    i.blankFastDirtyRanges = [{ start: 15, end: 17 }]
+    const extra = row(519, 552, '29')
+    scene.world.write.insertBefore(extra, scene.middle)
+
+    expect(patch(scene.world)).toBe(true)
+    expect(i.lastGroupMeasuredMemberCount).toBe(1)
+  })
+
+  // ── V4 §2 — 组投影必须“对账”，不能每次提交都整组销毁重建 ──────────────────
+  // 拆合之后每个按键都会提交一次组投影；旧实现先清空全部容器再逐成员重建，
+  // 等于把快速通道刚原位更新过的 DOM 全部丢弃（样式重算 + 布局抖动 + 一帧空窗）。
+  it('V4-GROUP-RECONCILE-INPLACE 未变化的成员：容器与片段节点身份在再次投影后保持不变', () => {
+    const scene = makeSplitScene()
+    installGroup(scene)
+    const i = internals(scene.world)
+    const carriers = groupCarriers()
+    expect(carriers).toHaveLength(2)
+    const before = carriers.map(el => ({
+      el,
+      fragments: Array.from(el.querySelectorAll<HTMLElement>(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`)),
+    }))
+    expect(before.every(c => c.fragments.length === 3)).toBe(true)
+
+    i.paintActiveGapGroupVisuals()
+
+    const after = groupCarriers()
+    expect(after).toHaveLength(2)
+    for (const c of before) {
+      // 容器本身没有被销毁重建
+      expect(after).toContain(c.el)
+      // 片段也没有被重建（几何未变 → 零写入）
+      const fragments = Array.from(c.el.querySelectorAll<HTMLElement>(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`))
+      expect(fragments).toEqual(c.fragments)
+    }
+  })
+
+  it('V4-GROUP-RECONCILE-PRUNE 成员退出组：只退役它自己的容器，其余成员原样保留', () => {
+    const scene = makeSplitScene()
+    installGroup(scene)
+    const i = internals(scene.world)
+    const left = groupCarriers().find(el => el.getAttribute('data-gap-member') === String(scene.a1Diag.id))!
+    const right = groupCarriers().find(el => el.getAttribute('data-gap-member') === String(scene.a2Diag.id))!
+    const group = i.activeGapGroup as unknown as { members: Set<string> }
+    group.members = new Set([String(scene.a1Diag.targetIdentity)])
+
+    i.paintActiveGapGroupVisuals()
+
+    const after = groupCarriers()
+    expect(after).toEqual([left])
+    expect(left.isConnected).toBe(true)
+    expect(right.isConnected).toBe(false)
   })
 })
