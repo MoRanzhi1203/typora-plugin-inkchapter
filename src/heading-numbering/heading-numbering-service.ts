@@ -1838,6 +1838,9 @@ export class HeadingNumberingService {
   // Render version: incremented on document switch to cancel stale async ops
   private renderVersion = 0
 
+  // State-dedup key for the paragraph-indent refresh audit (state, not per keystroke).
+  private lastParagraphIndentAuditSignature = ''
+
   // Scope store: authoritative source for heading numbering settings
   private scopeStore: HeadingNumberingScopeStore
 
@@ -4422,6 +4425,52 @@ export class HeadingNumberingService {
     this.doRefresh('manual')
   }
 
+  /**
+   * State-deduped, read-only audit of ONE paragraph-indent refresh.
+   *
+   * Answers, without a debugger: which settings were effective, how many
+   * paragraphs were gated in/out and how many actually received the indent and
+   * the marker. Emitted only when the resulting state changes.
+   */
+  private emitParagraphIndentRefreshAudit(
+    root: HTMLElement,
+    settings: import('./heading-types').ParagraphLayoutSettings,
+    stats: ReturnType<typeof refreshParagraphIndentStyles>,
+  ): void {
+    const documentKey = this.getDocumentKey() ?? 'none'
+    const signature = [
+      documentKey,
+      settings.defaultIndent,
+      settings.showInheritedIndentMarker === true ? 1 : 0,
+      stats.paragraphs,
+      stats.eligible,
+      stats.ineligible,
+      stats.indent2,
+      stats.flush,
+      stats.explicitMarkers,
+      stats.inheritedMarkers,
+    ].join('|')
+    if (signature === this.lastParagraphIndentAuditSignature) return
+    this.lastParagraphIndentAuditSignature = signature
+
+    emitRuntimeAudit('PARAGRAPH-INDENT-REFRESH-AUDIT', {
+      documentKey,
+      rootConnected: root.isConnected,
+      rootParagraphCount: root.querySelectorAll('p').length,
+      defaultIndent: settings.defaultIndent,
+      flushAfterDisplayMath: settings.flushAfterDisplayMath,
+      indentShortcutEnabled: settings.indentShortcutEnabled,
+      showInheritedIndentMarker: settings.showInheritedIndentMarker === true,
+      paragraphs: stats.paragraphs,
+      eligible: stats.eligible,
+      ineligible: stats.ineligible,
+      indent2: stats.indent2,
+      flush: stats.flush,
+      explicitMarkers: stats.explicitMarkers,
+      inheritedMarkers: stats.inheritedMarkers,
+    })
+  }
+
   private cancelPending(): void {
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
     if (this.tailTimer !== null) { clearTimeout(this.tailTimer); this.tailTimer = null }
@@ -4826,7 +4875,9 @@ export class HeadingNumberingService {
     // REFUTED by the runtime log — the deferral fired (ENTER-ECHO-STYLE-WRITE-DEFERRED)
     // and the duplicate split STILL happened. The write is therefore NOT gated here;
     // the targeted write tracer (`enter-echo-write-trace`) names the real culprit.
-    refreshParagraphIndentStyles(root, settings, this.isInComposition)
+    const indentStats = refreshParagraphIndentStyles(root, settings, this.isInComposition)
+    this.emitParagraphIndentRefreshAudit(root, settings, indentStats)
+
 
     // ── Trace: T7 after ──
     safeTrace(() => {

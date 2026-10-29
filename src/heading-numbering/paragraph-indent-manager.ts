@@ -1020,15 +1020,35 @@ export function applyIndentMarkersFromDOM(editorRoot: HTMLElement): number {
  *   - force-indent → always 2em regardless of default
  *   - force-flush → always 0 regardless of default
  */
+export interface ParagraphIndentRefreshStats {
+  paragraphs: number
+  eligible: number
+  ineligible: number
+  indent2: number
+  flush: number
+  explicitMarkers: number
+  inheritedMarkers: number
+}
+
 export function refreshParagraphIndentStyles(
   editorRoot: HTMLElement,
   settings: ParagraphLayoutSettings,
   isComposing: boolean = false,
-): void {
+): ParagraphIndentRefreshStats {
   // First, run legacy marker migration (converts HTML comments to sidecar)
   applyIndentMarkersFromDOM(editorRoot)
 
+  const stats: ParagraphIndentRefreshStats = {
+    paragraphs: 0,
+    eligible: 0,
+    ineligible: 0,
+    indent2: 0,
+    flush: 0,
+    explicitMarkers: 0,
+    inheritedMarkers: 0,
+  }
   const paragraphs = editorRoot.querySelectorAll<HTMLParagraphElement>('p')
+  stats.paragraphs = paragraphs.length
 
   for (const p of paragraphs) {
     // ── Paragraph-Only Eligibility Gate (single canonical resolver) ──
@@ -1038,11 +1058,13 @@ export function refreshParagraphIndentStyles(
     // stale projection left by an earlier revision instead of touching it again.
     const eligibility = resolveParagraphIndentEligibility(p)
     if (!eligibility.eligible) {
+      stats.ineligible++
       p.classList.remove(EFFECTIVE_INDENT_CLASS)
       p.classList.remove(EFFECTIVE_FLUSH_CLASS)
       if (p.getAttribute(INDENT_MARKER_ATTR) !== null) p.removeAttribute(INDENT_MARKER_ATTR)
       continue
     }
+    stats.eligible++
 
     // Skip empty paragraphs
     if (!p.textContent?.trim()) continue
@@ -1066,13 +1088,21 @@ export function refreshParagraphIndentStyles(
     )
 
     applyEffectiveParagraphIndent(p, effective, WriterIds.REFRESH_VISUAL)
+    if (effective === 'indent-2') stats.indent2++
+    else stats.flush++
 
     // IND-057 — explicit marker always; inherited marker only when opted in.
-    applyIndentMarkerValue(
-      p,
-      resolveIndentMarkerValue(semantic, effective, settings.showInheritedIndentMarker === true),
+    const markerValue = resolveIndentMarkerValue(
+      semantic,
+      effective,
+      settings.showInheritedIndentMarker === true,
     )
+    applyIndentMarkerValue(p, markerValue)
+    if (markerValue === 'explicit-2') stats.explicitMarkers++
+    else if (markerValue === 'inherited-2') stats.inheritedMarkers++
   }
+
+  return stats
 }
 
 /**
