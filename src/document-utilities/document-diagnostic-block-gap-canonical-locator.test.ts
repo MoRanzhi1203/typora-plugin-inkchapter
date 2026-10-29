@@ -277,6 +277,13 @@ interface Internals {
   lastCalibrationReused: boolean
   /** PERF-C — 最近一次提交是否处于静默审计模式。 */
   lastCommitAuditQuiet: boolean
+  /** V3 — 活动组投影（测试直接构造组状态）。 */
+  activeGapGroup: Record<string, unknown> | null
+  /** V3 — 主 Carrier（快速通道的历史入口）。 */
+  blockGapVisualEl: HTMLElement | null
+  lastBlockGapDiagnosticId: string | null
+  /** V3 — 组投影绘制（真实组容器 + 成员索引）。 */
+  paintActiveGapGroupVisuals(): void
 }
 
 interface World {
@@ -1056,5 +1063,246 @@ describe('REALTIME — GAP_EXPAND / GAP_SHRINK 局部视觉先于正式诊断', 
     activate(world, diag)
     expect(patch(world)).toBe(true)
     expect((world.h as unknown as Internals).lastCommitAuditQuiet).toBe(true)
+  })
+})
+
+// ── REALTIME V3 — Group-aware owner resolution (SPLIT / MERGE) ──────────────
+//
+// 失败先行：SPLIT 之后活动组仍是 ACTIVE（memberCount=2、paintedGroupTargetCount=2），
+// 但主 Carrier 已随旧区间退役（primaryCarrierMemberCount=0）。旧的快速通道只认
+// `lastBlockGapDiagnosticId === state.diagnosticId` + 单个 `blockGapVisualEl`，于是
+// 后续每一次普通增删都返回 `NO_ACTIVE_OWNER`，永远回退正式诊断。
+
+describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
+  const patch = (world: World): boolean =>
+    (world.h as unknown as Internals).patchActiveGapVisualFromDom()
+  const internals = (world: World): Internals => world.h as unknown as Internals
+  const groupCarriers = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-block-gap-visual="active-gap-group"]'))
+  const fragmentsOf = (el: HTMLElement): number =>
+    el.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length
+  const row = (top: number, bottom: number, line: string): HTMLElement => {
+    const p = document.createElement('p')
+    p.className = 'md-p md-end-block'
+    p.setAttribute('data-line', line)
+    stubRect(p, () => ({ left: 60, top, right: 700, bottom }))
+    return p
+  }
+
+  type BoundarySpec = {
+    identity: string
+    kind: 'code' | 'paragraph'
+    canonicalKind: string | null
+    canonicalOrdinal: number | null
+    startLine: number
+    anchor: string
+  }
+
+  function memberDiag(
+    id: string,
+    identity: string,
+    prev: BoundarySpec,
+    next: BoundarySpec,
+    actualBlankLines = 3,
+  ): Record<string, unknown> {
+    return {
+      id,
+      targetIdentity: identity,
+      documentKey: 'doc:gap',
+      severity: 'warning',
+      category: 'document',
+      code: EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+      message: '连续空行过多',
+      detail: '',
+      metadata: {
+        ruleId: 'EXCESSIVE-INTERNAL-BLANK-LINES',
+        previousBlockIdentity: prev.identity,
+        previousBlockKind: prev.kind,
+        previousBlockCanonicalKind: prev.canonicalKind,
+        previousBlockCanonicalOrdinal: prev.canonicalOrdinal,
+        previousBlockStartLine: prev.startLine,
+        previousBlockAnchorText: prev.anchor,
+        nextBlockIdentity: next.identity,
+        nextBlockKind: next.kind,
+        nextBlockCanonicalKind: next.canonicalKind,
+        nextBlockCanonicalOrdinal: next.canonicalOrdinal,
+        nextBlockStartLine: next.startLine,
+        nextBlockAnchorText: next.anchor,
+        firstBlankLine: 1,
+        lastBlankLine: actualBlankLines,
+        actualBlankLines,
+        passMaxBlankLines: 1,
+        warningThreshold: 2,
+      },
+      location: {
+        kind: 'source-range', startLine: next.startLine, startColumn: 0,
+        sourceFingerprint: 'internal-blank:group', rawText: next.anchor,
+      },
+    }
+  }
+
+  const FENCE_NEXT: BoundarySpec = {
+    identity: 'code:```#2', kind: 'code', canonicalKind: 'code', canonicalOrdinal: 2,
+    startLine: 12, anchor: '```',
+  }
+  const MIDDLE: BoundarySpec = {
+    identity: 'paragraph:中间正文 X#0', kind: 'paragraph', canonicalKind: null, canonicalOrdinal: null,
+    startLine: 30, anchor: '中间正文 X',
+  }
+  const TAIL: BoundarySpec = {
+    identity: 'paragraph:代码 3 Manual prefix code caption#0', kind: 'paragraph',
+    canonicalKind: null, canonicalOrdinal: null, startLine: 40, anchor: '代码 3 Manual prefix code caption',
+  }
+
+  type SplitScene = {
+    world: World
+    middle: HTMLElement
+    a1Rows: HTMLElement[]
+    a2Rows: HTMLElement[]
+    a1Diag: Record<string, unknown>
+    a2Diag: Record<string, unknown>
+  }
+
+  /** fence#2 → 3 空行 → 中间正文 X → 3 空行 → 段落（真实 SPLIT 形态）。 */
+  function makeSplitScene(): SplitScene {
+    const world = makeWorld()
+    const middle = document.createElement('p')
+    middle.className = 'md-end-block md-p'
+    middle.setAttribute('data-line', '30')
+    middle.textContent = '中间正文 X'
+    stubRect(middle, () => ({ left: 60, top: 520, right: 700, bottom: 552 }))
+    world.write.insertBefore(middle, world.paragraph)
+    const a2Rows: HTMLElement[] = []
+    for (let i = 0; i < 3; i++) {
+      const r = row(553 + i * 33, 586 + i * 33, String(31 + i))
+      world.write.insertBefore(r, world.paragraph)
+      a2Rows.push(r)
+    }
+    stubRect(world.paragraph, () => ({ left: 60, top: 660, right: 700, bottom: 684 }))
+    const a1Identity = 'blank-gap:code:```#2>>paragraph:中间正文 X#0'
+    const a2Identity = 'blank-gap:paragraph:中间正文 X#0>>paragraph:代码 3 Manual prefix code caption#0'
+    return {
+      world,
+      middle,
+      a1Rows: blankRows.slice(),
+      a2Rows,
+      a1Diag: memberDiag('doc:gap:a1', a1Identity, FENCE_NEXT, MIDDLE),
+      a2Diag: memberDiag('doc:gap:a2', a2Identity, MIDDLE, TAIL),
+    }
+  }
+
+  function installGroup(scene: SplitScene): void {
+    const i = internals(scene.world)
+    i.snapshot = snapshotOf([scene.a1Diag, scene.a2Diag])
+    i.activeGapGroup = {
+      groupId: 'g-split',
+      documentKey: 'doc:gap',
+      lifecycle: 'ACTIVE',
+      members: new Set([
+        String(scene.a1Diag.targetIdentity),
+        String(scene.a2Diag.targetIdentity),
+      ]),
+      anchors: [],
+      scopePrev: FENCE_NEXT.identity,
+      scopeNext: TAIL.identity,
+      sourceRevision: 1,
+    }
+    i.paintActiveGapGroupVisuals()
+    // 主 Carrier 已随旧区间退役：这正是历史日志的 primaryCarrierMemberCount=0。
+    i.blockGapVisualEl = null
+    i.lastBlockGapDiagnosticId = null
+    i.diagnosticInteractionState = {
+      version: 1,
+      phase: 'ACTIVE',
+      diagnosticId: String(scene.a1Diag.id),
+      targetKey: `doc:gap::${FENCE_NEXT.identity}`,
+      diagnosticTargetIndex: 0,
+      transactionLocalTargetIndex: 0,
+      transactionId: 1,
+      leaseToken: 'lease-1',
+    }
+  }
+
+  it('V3-SPLIT-LEFT 拆分后左块新增空行：只更新左块容器，右块不变', () => {
+    const scene = makeSplitScene()
+    installGroup(scene)
+    const carriers = groupCarriers()
+    expect(carriers).toHaveLength(2)
+    const left = carriers.find(el => el.getAttribute('data-gap-member') === String(scene.a1Diag.id))
+    const right = carriers.find(el => el.getAttribute('data-gap-member') === String(scene.a2Diag.id))
+    expect(left, 'left member carrier').toBeTruthy()
+    expect(right, 'right member carrier').toBeTruthy()
+    expect(fragmentsOf(left!)).toBe(3)
+
+    const extra = row(519, 552, '29')
+    scene.world.write.insertBefore(extra, scene.middle)
+
+    expect(patch(scene.world)).toBe(true)
+    expect(groupCarriers()).toHaveLength(2)
+    expect(groupCarriers().find(el => el.getAttribute('data-gap-member') === String(scene.a1Diag.id))).toBe(left)
+    expect(fragmentsOf(left!)).toBe(4)
+    expect(fragmentsOf(right!)).toBe(3)
+  })
+
+  it('V3-SPLIT-RIGHT 拆分后右块删除空行：只更新右块容器，左块不变', () => {
+    const scene = makeSplitScene()
+    installGroup(scene)
+    const carriers = groupCarriers()
+    const left = carriers.find(el => el.getAttribute('data-gap-member') === String(scene.a1Diag.id))!
+    const right = carriers.find(el => el.getAttribute('data-gap-member') === String(scene.a2Diag.id))!
+    const leftBefore = fragmentsOf(left)
+    expect(leftBefore).toBe(3)
+
+    scene.a2Rows[2].remove()
+
+    expect(patch(scene.world)).toBe(true)
+    expect(groupCarriers()).toHaveLength(2)
+    expect(fragmentsOf(right)).toBe(2)
+    expect(fragmentsOf(left)).toBe(leftBefore)
+  })
+
+  it('V3-MERGE-READY 合并后的单一成员立即恢复快速通道（不再 NO_ACTIVE_OWNER）', () => {
+    const scene = makeSplitScene()
+    // 中间正文被真正删除 → 只剩一个成员 M（中间三段空行可见）
+    scene.middle.remove()
+    const mergedRows = [...scene.a1Rows, ...scene.a2Rows]
+    const mergedIdentity = 'blank-gap:code:```#2>>paragraph:代码 3 Manual prefix code caption#0'
+    const mergedDiag = memberDiag('doc:gap:m', mergedIdentity, FENCE_NEXT, TAIL, 6)
+    const i = internals(scene.world)
+    i.snapshot = snapshotOf([mergedDiag])
+    i.activeGapGroup = {
+      groupId: 'g-merge',
+      documentKey: 'doc:gap',
+      lifecycle: 'ACTIVE',
+      members: new Set([mergedIdentity]),
+      anchors: [],
+      scopePrev: FENCE_NEXT.identity,
+      scopeNext: TAIL.identity,
+      sourceRevision: 2,
+    }
+    i.paintActiveGapGroupVisuals()
+    i.blockGapVisualEl = null
+    i.lastBlockGapDiagnosticId = null
+    i.diagnosticInteractionState = {
+      version: 2,
+      phase: 'ACTIVE',
+      diagnosticId: String(mergedDiag.id),
+      targetKey: `doc:gap::${FENCE_NEXT.identity}`,
+      diagnosticTargetIndex: 0,
+      transactionLocalTargetIndex: 0,
+      transactionId: 2,
+      leaseToken: 'lease-2',
+    }
+    const carrier = groupCarriers()[0]
+    expect(carrier).toBeTruthy()
+    expect(carrier.getAttribute('data-gap-member')).toBe(String(mergedDiag.id))
+    expect(fragmentsOf(carrier)).toBe(mergedRows.length)
+
+    const extra = row(652, 685, '39')
+    scene.world.write.insertBefore(extra, scene.world.paragraph)
+
+    expect(patch(scene.world)).toBe(true)
+    expect(groupCarriers()).toHaveLength(1)
+    expect(fragmentsOf(groupCarriers()[0])).toBe(mergedRows.length + 1)
   })
 })

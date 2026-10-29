@@ -3223,9 +3223,13 @@ export class DocumentUtilityOverlayHost {
     carrierReused: boolean
     fragmentBefore: number
     fragmentAfter: number
+    /** V3 §7 — PRIMARY = 单主 Carrier；GROUP = 组成员级局部 patch。 */
+    scope: 'PRIMARY' | 'GROUP'
   } | null = null
   /** REALTIME V2 — 快速 patch 拒绝原因（NO_ACTIVE_OWNER / CARRIER_RETIRED / …）。 */
   private blankFastMissReason: string | null = null
+  /** V3 §7 — 最近一次 owner 解析结果（SINGLE_READY / GROUP_READY / REBOUND_PENDING / …）。 */
+  private blankFastOwnerResolution: string | null = null
   /** PERF-A — 最近一次占据扫描实际测量的候选节点数（邻域而非全文档）。 */
   private lastOccupancyCandidateCount = 0
   /** PERF-B — 绘制层校准缓存（键 = epoch + layerRect + DPR）。 */
@@ -14055,9 +14059,11 @@ export class DocumentUtilityOverlayHost {
     const round = (v: number): number => Math.round(v * 100) / 100
     const layer = this.locateDocLayer
     let carrierCountInLayer = 0
+    let groupCarrierCountInLayer = 0
     let staleFragmentCount = 0
     if (layer != null) {
       carrierCountInLayer = layer.querySelectorAll(`[data-block-gap-visual="${BLOCK_GAP_VISUAL_TARGET}"]`).length
+      groupCarrierCountInLayer = layer.querySelectorAll('[data-block-gap-visual="active-gap-group"]').length
       const frags = Array.from(layer.querySelectorAll<HTMLElement>(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`))
       staleFragmentCount = frags.filter(f =>
         f.closest(`[data-block-gap-visual]`) == null && f.closest('[data-ink-eof-marker="true"]') == null,
@@ -14074,6 +14080,10 @@ export class DocumentUtilityOverlayHost {
       fragmentBefore: patch?.fragmentBefore ?? null,
       fragmentAfter: patch?.fragmentAfter ?? null,
       carrierCountInLayer,
+      // V3 §7 — post-SPLIT/MERGE the carriers are GROUP-owned; the primary count
+      // alone would read 0 and hide a healthy projection.
+      primaryCarrierCountInLayer: carrierCountInLayer,
+      groupCarrierCountInLayer,
       duplicateCarrierCount: Math.max(0, carrierCountInLayer - 1),
       staleFragmentCount,
       structuralSerializeCount: 0,
@@ -14081,6 +14091,9 @@ export class DocumentUtilityOverlayHost {
       rafCommitCount: 1,
       fallbackReason: options.fallbackReason,
       patchMissReason: this.blankFastMissReason,
+      ownerResolution: this.blankFastOwnerResolution,
+      fastPatchScope: patch?.scope ?? null,
+      groupMemberCount: this.activeGapGroup?.members.size ?? 0,
       diagnosticCount: options.diagnosticCount,
       decision: options.committed ? 'COMMITTED' : 'DELEGATED',
       paintMeasured: false,
@@ -16539,6 +16552,28 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * V3 §4.3 — MERGE handoff. When the ACTIVE group no longer contains the primary
+   * carrier's interval, that carrier is a band from the PRE-MERGE structure. It is
+   * retired in the SAME projection pass (before the merged member is repainted), so
+   * the user never sees one frame with the old wide band + the new merged band.
+   */
+  private retireStalePrimaryGapCarrierForGroup(): void {
+    const el = this.blockGapVisualEl
+    if (el == null || !el.isConnected) return
+    const group = this.activeGapGroup
+    if (group == null) return
+    const primaryIdentity = this.lastBlockGapTargetIdentity
+    if (primaryIdentity != null && group.members.has(primaryIdentity)) return
+    const primaryId = this.lastBlockGapDiagnosticId
+    if (primaryId != null) {
+      for (const identity of group.members) {
+        if (identity.includes(primaryId)) return
+      }
+    }
+    this.removeBlockGapVisual()
+  }
+
+  /**
    * R6 — the number of group containers that are REALLY in the live document.
    * A layer teardown (document switch / host remount) can detach every container
    * while the bookkeeping array still holds the old references, so
@@ -16948,6 +16983,71 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
+   * V3 §3.2 — measure ONE group member's visible blank run from the LIVE DOM.
+   *
+   * After a SPLIT the old single primary carrier is retired while the group stays
+   * ACTIVE (`primaryCarrierMemberCount=0`). The member fast patch therefore needs
+   * the SAME measurement authority the formal group projection uses — this method
+   * is that single extraction (`bindGapBoundary` → `resolveRenderedBlankRows` →
+   * `computeRenderedBlankRowFragments`), never a second, weaker rule.
+   */
+  private measureGapMemberVisual(
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number],
+    root: HTMLElement,
+    hostRect: RectRecord,
+  ):
+    | { kind: 'OK'; visible: number; geometry: ReturnType<typeof computeRenderedBlankRowFragments> }
+    | { kind: 'COMPLIANT' }
+    | { kind: 'UNPAINTABLE' } {
+    const meta = (diag.metadata ?? {}) as Record<string, unknown>
+    const prevBinding = this.bindGapBoundary({
+      canonicalKind: typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null,
+      canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
+      startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
+      anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.previousBlockIdentity),
+    })
+    const nextBinding = this.bindGapBoundary({
+      canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
+      canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
+      startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
+      anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.nextBlockIdentity),
+    })
+    if (prevBinding.element == null || nextBinding.element == null) return { kind: 'UNPAINTABLE' }
+    const pair = normalizeSiblingBoundaryPair(root, prevBinding.element, nextBinding.element)
+    if (pair == null) return { kind: 'UNPAINTABLE' }
+    const rows = resolveRenderedBlankRows({
+      businessRoot: root,
+      previousElement: pair.previous,
+      nextElement: pair.next,
+      sourceBlankLineCount: typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : 0,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+      expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
+    })
+    if (rows.decision !== 'VERIFIED' || rows.rows.length === 0) return { kind: 'UNPAINTABLE' }
+    const visible = rows.visibleBlankLineCount
+    // A member that now MEASURES as compliant is correctly left unpainted: it is
+    // no longer excessive, so there is nothing to highlight (not a paint failure).
+    if (visible < INTERNAL_BLANK_LINE_POLICY.warningThreshold) return { kind: 'COMPLIANT' }
+    const local = convertRenderedRowsToLocal({
+      rows: rows.rows.map(r => ({ rect: r.rect })),
+      inputCoordinateSpace: 'VIEWPORT',
+      contentHostRect: hostRect,
+      layoutEpoch: this.currentDocumentLayoutEpoch,
+    })
+    if (local.localRects.length === 0) return { kind: 'UNPAINTABLE' }
+    const left = Math.min(...local.localRects.map(r => r.left))
+    const right = Math.max(...local.localRects.map(r => r.right))
+    const geometry = computeRenderedBlankRowFragments({
+      rowRects: local.localRects,
+      contentColumns: { left, right },
+    })
+    if (geometry.container == null || geometry.fragments.length === 0) return { kind: 'UNPAINTABLE' }
+    return { kind: 'OK', visible, geometry }
+  }
+
+  /**
    * WC-R2 §3.3/§3.4 — paint the group's CURRENT members from live DOM rows.
    * The locate transaction owns its primary carrier; every OTHER member gets its
    * own container here. Containers are rebuilt from the real row set, so a merge
@@ -16955,6 +17055,11 @@ export class DocumentUtilityOverlayHost {
    */
   private paintActiveGapGroupVisuals(): void {
     this.clearActiveGapGroupVisuals()
+    // V3 §4.3 — MERGE handoff: once the group owns the ACTIVE intent, a primary
+    // carrier whose interval is NO LONGER a group member is a stale band from the
+    // pre-merge structure. Retire it in the SAME projection pass instead of letting
+    // a ghost rectangle survive until the next locate commit.
+    this.retireStalePrimaryGapCarrierForGroup()
     const group = this.activeGapGroup
     // WC-R3 §2.2 — DORMANT renders NOTHING (no stale warning, no ghost band).
     if (group == null || group.lifecycle !== 'ACTIVE' || group.members.size === 0) return
@@ -16986,51 +17091,10 @@ export class DocumentUtilityOverlayHost {
         primaryCarrierConnected: this.blockGapVisualEl != null && this.blockGapVisualEl.isConnected,
       })
       if (primaryCarrierAlive) { primaryOwnedMemberCount++; continue }
-      const meta = (diag.metadata ?? {}) as Record<string, unknown>
-      const prevBinding = this.bindGapBoundary({
-        canonicalKind: typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null,
-        canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
-        startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
-        anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
-        blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.previousBlockIdentity),
-      })
-      const nextBinding = this.bindGapBoundary({
-        canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
-        canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
-        startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
-        anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
-        blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.nextBlockIdentity),
-      })
-      if (prevBinding.element == null || nextBinding.element == null) { unpaintedMemberCount++; continue }
-      const pair = normalizeSiblingBoundaryPair(root, prevBinding.element, nextBinding.element)
-      if (pair == null) { unpaintedMemberCount++; continue }
-      const rows = resolveRenderedBlankRows({
-        businessRoot: root,
-        previousElement: pair.previous,
-        nextElement: pair.next,
-        sourceBlankLineCount: typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : 0,
-        layoutEpoch: this.currentDocumentLayoutEpoch,
-        expectedLayoutEpoch: this.currentDocumentLayoutEpoch,
-      })
-      if (rows.decision !== 'VERIFIED' || rows.rows.length === 0) { unpaintedMemberCount++; continue }
-      const visible = rows.visibleBlankLineCount
-      // A member that now MEASURES as compliant is correctly left unpainted: it is
-      // no longer excessive, so there is nothing to highlight (not a paint failure).
-      if (visible < INTERNAL_BLANK_LINE_POLICY.warningThreshold) continue
-      const local = convertRenderedRowsToLocal({
-        rows: rows.rows.map(r => ({ rect: r.rect })),
-        inputCoordinateSpace: 'VIEWPORT',
-        contentHostRect: hostRect,
-        layoutEpoch: this.currentDocumentLayoutEpoch,
-      })
-      if (local.localRects.length === 0) { unpaintedMemberCount++; continue }
-      const left = Math.min(...local.localRects.map(r => r.left))
-      const right = Math.max(...local.localRects.map(r => r.right))
-      const geometry = computeRenderedBlankRowFragments({
-        rowRects: local.localRects,
-        contentColumns: { left, right },
-      })
-      if (geometry.container == null || geometry.fragments.length === 0) { unpaintedMemberCount++; continue }
+      const visual = this.measureGapMemberVisual(diag, root, hostRect)
+      if (visual.kind === 'UNPAINTABLE') { unpaintedMemberCount++; continue }
+      if (visual.kind === 'COMPLIANT') continue
+      const { visible, geometry } = visual
       const container = document.createElement('div')
       // ── R6 — the group carrier MUST own the SAME surface contract as the
       // primary carrier. It previously carried only `BLOCK_GAP_VISUAL_CLASS`
@@ -17042,12 +17106,19 @@ export class DocumentUtilityOverlayHost {
       // NO visible highlight at all. One style authority, two owners.
       container.className = `${BLOCK_GAP_VISUAL_CLASS} ${RENDERED_BLANK_ROW_FRAGMENT_CONTAINER_CLASS} inkchapter-block-gap-group-visual`
       container.setAttribute('data-block-gap-visual', 'active-gap-group')
+      // V3 §3.2 — the DERIVED member index: the container carries its owning
+      // diagnostic + interval identity so the fast channel can address ONE member
+      // without re-deriving the whole group (never a second state authority).
+      container.setAttribute('data-gap-member', diag.id)
+      container.setAttribute('data-gap-identity', identity)
       container.setAttribute('data-severity', diag.severity)
       container.setAttribute('data-active', 'true')
       container.setAttribute('aria-hidden', 'true')
-      container.style.cssText = `position:absolute;left:${Math.round(geometry.container.left)}px;`
-        + `top:${Math.round(geometry.container.top)}px;width:${Math.round(geometry.container.width)}px;`
-        + `height:${Math.round(geometry.container.height)}px;pointer-events:none;`
+      const memberBox = geometry.container
+      if (memberBox == null) { unpaintedMemberCount++; continue }
+      container.style.cssText = `position:absolute;left:${Math.round(memberBox.left)}px;`
+        + `top:${Math.round(memberBox.top)}px;width:${Math.round(memberBox.width)}px;`
+        + `height:${Math.round(memberBox.height)}px;pointer-events:none;`
       this.buildBlankRowFragmentEls(container, geometry.fragments, INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines, diag.severity)
       const chip = document.createElement('span')
       chip.className = BLANK_RUN_COUNT_CHIP_CLASS
@@ -17688,28 +17759,51 @@ export class DocumentUtilityOverlayHost {
   private patchActiveGapVisualFromDom(): boolean {
     if (this.disposed) return false
     this.blankFastMissReason = null
-    // ── V2 §4.1 — 快速绘制只服从「当前真实 ACTIVE owner」：
-    // 历史 group / Drawer 选中 / lastBlockGapDiagnosticId 都不能单独授权。
-    // 载体已退役、文档身份不符或 owner 不是同一修订时一律拒绝。
-    const state = this.diagnosticInteractionState
-    if (state.phase !== 'ACTIVE' || state.diagnosticId == null) {
-      this.blankFastMissReason = 'NO_ACTIVE_OWNER'
-      return false
-    }
-    const id = state.diagnosticId
-    if (this.lastBlockGapDiagnosticId !== id) {
-      this.blankFastMissReason = 'CARRIER_OWNER_MISMATCH'
-      return false
-    }
-    if (this.blockGapVisualEl == null || !this.blockGapVisualEl.isConnected) {
-      this.blankFastMissReason = 'CARRIER_RETIRED'
-      return false
-    }
+    this.blankFastOwnerResolution = null
+    // Document identity is the FIRST gate for every owner kind: a cross-document
+    // rAF must never patch a carrier of the previous document.
     const docKey = this.opts.ctx.authority.getDocumentKey()
     if (docKey == null || this.snapshot == null || this.snapshot.documentKey !== docKey) {
       this.blankFastMissReason = 'DOCUMENT_MISMATCH'
       return false
     }
+    // ── V3 §3.1 — SINGLE_READY keeps the V2 fast path byte-identical. ────────
+    const state = this.diagnosticInteractionState
+    const primaryId = state.phase === 'ACTIVE' ? state.diagnosticId : null
+    const primaryReady = primaryId != null
+      && this.lastBlockGapDiagnosticId === primaryId
+      && this.blockGapVisualEl != null && this.blockGapVisualEl.isConnected
+    if (primaryReady && primaryId != null) {
+      this.blankFastOwnerResolution = 'SINGLE_READY'
+      return this.patchPrimaryGapFromDom(primaryId)
+    }
+    // ── V3 §3.1 — GROUP_READY: SPLIT/MERGE 之后主 Carrier 已退役，但活动组仍有
+    // 成员与自己的容器。历史日志里 memberCount=2 / primaryCarrierMemberCount=0
+    // 却被判成 NO_ACTIVE_OWNER —— 组 ACTIVE 本身就是“仍可局部更新”的证据。
+    const members = this.resolveGapPatchMembers()
+    if (members.length > 0) {
+      this.blankFastOwnerResolution = 'GROUP_READY'
+      return this.patchGapGroupMembers(members)
+    }
+    const groupActive = this.activeGapGroup != null && this.activeGapGroup.lifecycle === 'ACTIVE'
+    if (groupActive) {
+      // 组的投影已确认，但成员容器尚未就绪（重绑定中）→ 明确状态，正式重绑定后恢复。
+      this.blankFastOwnerResolution = 'REBOUND_PENDING'
+      this.blankFastMissReason = 'REBOUND_PENDING'
+      return false
+    }
+    if (state.phase === 'ACTIVE') {
+      this.blankFastOwnerResolution = 'OWNER_STALE'
+      this.blankFastMissReason = 'OWNER_STALE'
+      return false
+    }
+    this.blankFastOwnerResolution = 'NO_ACTIVE_INTENT'
+    this.blankFastMissReason = 'NO_ACTIVE_INTENT'
+    return false
+  }
+
+  /** V2 §4.1 — 单主 Carrier 快速 patch（行为与本轮之前完全一致）。 */
+  private patchPrimaryGapFromDom(id: string): boolean {
     const live = this.liveDiagnosticFor(id) ?? this.diagnosticById(id)
     if (live == null || live.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) {
       this.blankFastMissReason = 'DIAGNOSTIC_NOT_GAP'
@@ -17757,7 +17851,130 @@ export class DocumentUtilityOverlayHost {
       carrierReused: carrierBefore != null && carrierBefore === this.blockGapVisualEl,
       fragmentBefore,
       fragmentAfter: this.blockGapFragmentEls.length,
+      scope: 'PRIMARY',
     }
+    return true
+  }
+
+  /**
+   * V3 §3.2 — the DERIVED member index of the ACTIVE gap group.
+   *
+   * Not a second state authority: every field is read from the existing group +
+   * the committed snapshot + the container's own member attributes. Members whose
+   * container is gone, whose diagnostic is not published, or whose document does
+   * not match are simply absent (the caller then reports REBOUND_PENDING).
+   */
+  private resolveGapPatchMembers(): Array<{
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number]
+    identity: string
+    container: HTMLElement
+  }> {
+    const group = this.activeGapGroup
+    const snapshot = this.snapshot
+    if (group == null || snapshot == null) return []
+    if (group.lifecycle !== 'ACTIVE' || group.members.size === 0) return []
+    const docKey = this.opts.ctx.authority.getDocumentKey()
+    if (docKey == null || group.documentKey == null || group.documentKey !== docKey) return []
+    const out: Array<{
+      diag: DocumentDiagnosticsSnapshot['diagnostics'][number]
+      identity: string
+      container: HTMLElement
+    }> = []
+    for (const identity of group.members) {
+      const diag = snapshot.diagnostics.find(d =>
+        d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE
+        && String((d as { targetIdentity?: string }).targetIdentity ?? '') === identity)
+      if (!diag) continue
+      const container = this.findGapMemberContainer(diag.id, identity)
+      if (container == null) continue
+      out.push({ diag, identity, container })
+    }
+    return out
+  }
+
+  /** V3 §3.2 — member → carrier lookup (bookkeeping array first, live layer second). */
+  private findGapMemberContainer(diagId: string, identity: string): HTMLElement | null {
+    for (const el of this.activeGapGroupVisualEls) {
+      if (!el.isConnected) continue
+      if (el.getAttribute('data-gap-member') === diagId) return el
+      if (identity !== '' && el.getAttribute('data-gap-identity') === identity) return el
+    }
+    const layer = this.locateDocLayer
+    if (layer == null) return null
+    for (const el of Array.from(layer.querySelectorAll<HTMLElement>('[data-block-gap-visual="active-gap-group"]'))) {
+      if (el.getAttribute('data-gap-member') === diagId) return el
+      if (identity !== '' && el.getAttribute('data-gap-identity') === identity) return el
+    }
+    return null
+  }
+
+  /**
+   * V3 §3.3/§4.2/§4.3 — member-level fast patch.
+   *
+   * Each READY member is re-measured with the SAME authority the formal group
+   * projection uses, and ONLY members whose real geometry changed are written.
+   * A member that became compliant retires its OWN container (no whole-group
+   * repaint, no cross-member overwrite, no animation catch-up).
+   */
+  private patchGapGroupMembers(members: Array<{
+    diag: DocumentDiagnosticsSnapshot['diagnostics'][number]
+    identity: string
+    container: HTMLElement
+  }>): boolean {
+    const root = resolveBusinessContentRoot()
+    const layer = root ? this.ensureLocateDocumentLayer() : null
+    const hostRect = layer ? this.measureLocateRect(layer) : null
+    if (root == null || layer == null || hostRect == null) {
+      this.blankFastMissReason = 'NO_LAYER'
+      return false
+    }
+    let touched = 0
+    let ambiguous = 0
+    let fragmentBefore = 0
+    let fragmentAfter = 0
+    for (const member of members) {
+      const container = member.container
+      if (!container.isConnected) { ambiguous++; continue }
+      const visual = this.measureGapMemberVisual(member.diag, root, hostRect)
+      if (visual.kind === 'UNPAINTABLE') { ambiguous++; continue }
+      const beforeFragments = container.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length
+      if (visual.kind === 'COMPLIANT') {
+        // 该成员已回到允许范围：只退役它自己的载体（其余成员完全不动）。
+        container.remove()
+        this.activeGapGroupVisualEls = this.activeGapGroupVisualEls.filter(el => el !== container)
+        fragmentBefore += beforeFragments
+        touched++
+        continue
+      }
+      const box = visual.geometry.container
+      if (box == null) { ambiguous++; continue }
+      const nextCss = `position:absolute;left:${Math.round(box.left)}px;top:${Math.round(box.top)}px;`
+        + `width:${Math.round(box.width)}px;height:${Math.round(box.height)}px;pointer-events:none;`
+      const sameGeometry = container.style.cssText === nextCss
+        && beforeFragments === visual.geometry.fragments.length
+      if (sameGeometry) continue
+      // 旧动画/过渡可能仍在追一个过时几何：先取消再写新目标（不做动画追赶）。
+      this.cancelBlockGapCarrierAnimations(container)
+      if (!sameGeometry) container.style.cssText = nextCss
+      this.reconcileBlankRowFragmentEls(
+        container,
+        visual.geometry.fragments,
+        INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+        member.diag.severity,
+      )
+      this.upsertBlockGapCountChip(container, visual.visible)
+      container.setAttribute('data-gap-member', member.diag.id)
+      container.setAttribute('data-gap-identity', member.identity)
+      container.setAttribute('data-severity', member.diag.severity)
+      fragmentBefore += beforeFragments
+      fragmentAfter += visual.geometry.fragments.length
+      touched++
+    }
+    if (touched === 0) {
+      this.blankFastMissReason = ambiguous > 0 ? 'BOUNDARY_AMBIGUOUS' : 'NO_AFFECTED_MEMBER'
+      return false
+    }
+    this.lastFastGapPatch = { carrierReused: true, fragmentBefore, fragmentAfter, scope: 'GROUP' }
     return true
   }
 
