@@ -286,6 +286,18 @@ describe('GREEN-4 标记样式契约（style.scss）', () => {
     expect(block).toContain('[data-inkchapter-indent-marker="inherited-2"]')
     expect(block).toContain('opacity: 0.2')
   })
+
+  // IND-053 — deterministic cascade check: the source-view rule must come AFTER
+  // the base pseudo-element rule and carry `display: none`, with a selector at
+  // least as specific (`body.typora-sourceview-on` adds one class).
+  it('IND-053 源代码模式规则在基础规则之后且更高特异性 ⇒ 覆盖为 display:none', () => {
+    const baseIdx = block.indexOf('#write p[data-inkchapter-indent-marker]::before,')
+    const sourceIdx = block.indexOf('body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::before,')
+    expect(baseIdx).toBeGreaterThanOrEqual(0)
+    expect(sourceIdx).toBeGreaterThan(baseIdx)
+    const sourceRule = block.slice(sourceIdx, block.indexOf('}', sourceIdx) + 1)
+    expect(sourceRule).toContain('display: none')
+  })
 })
 
 describe('IND-057 继承缩进标记开关（showInheritedIndentMarker）', () => {
