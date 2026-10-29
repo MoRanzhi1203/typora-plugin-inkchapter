@@ -10,6 +10,7 @@ import {
   uninstallMathJaxRenderInputHook,
   getMathJaxHookLifecycle,
   getMathJaxHookCounters,
+  scanOutputForTags,
 } from './mathjax-render-input-hook'
 import { FormulaProjectionController } from './formula-projection-controller'
 import { DocumentOpenPerfTracker, registerActivePerfTracker, getActivePerfTracker } from './document-open-perf'
@@ -127,5 +128,33 @@ describe('DocumentOpenPerfTracker (Phase 7R.3.4-A / LOG-PERF-4)', () => {
     expect(snap.counters.semanticNoopSkipCount).toBe(1)
     expect(snap.counters.mathJaxHookInstallAttemptCount).toBe(1)
     expect(getActivePerfTracker()).toBe(null)
+  })
+})
+
+// PA-11 integration audit — the section preset renders `(1-1)` (no dot). The
+// returned-output scanner must still recognise it as semantic tag evidence,
+// otherwise the durable commit is never recorded and the visible tag is later
+// treated as a false positive.
+describe('PA-11 tag-evidence scan', () => {
+  function containerWith(text: string): HTMLElement {
+    const wrap = document.createElement('mjx-container')
+    const label = document.createElement('mjx-labels')
+    const node = document.createElement('span')
+    node.textContent = text
+    label.appendChild(node)
+    wrap.appendChild(label)
+    return wrap
+  }
+
+  it('recognises (1-1) section-dash and (1.1-1) mixed forms', () => {
+    expect(scanOutputForTags(containerWith('(1-1)')).semanticTagEvidenceCount).toBe(1)
+    expect(scanOutputForTags(containerWith('(1.1-1)')).semanticTagEvidenceCount).toBe(1)
+    expect(scanOutputForTags(containerWith('(1.2.3-4)')).semanticTagEvidenceCount).toBe(1)
+  })
+
+  it('still separates sequential tags and rejects plain formulas', () => {
+    expect(scanOutputForTags(containerWith('(3)')).sequentialTagEvidenceCount).toBe(1)
+    expect(scanOutputForTags(containerWith('(3)')).semanticTagEvidenceCount).toBe(0)
+    expect(scanOutputForTags(containerWith('E=mc2')).semanticTagEvidenceCount).toBe(0)
   })
 })

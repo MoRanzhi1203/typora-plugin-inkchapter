@@ -237,6 +237,18 @@ describe('TAB-CLOSE-CENTER-1..14 20×20 hitbox + glyph centering', () => {
     expect(r.decision).toBe('FAIL')
   })
 
+  it('PA-01 a NOT-rendered close (display:none / 0x0) is SKIP, never a false FAIL', () => {
+    // Real runtime: Typora hides the close control by default (0x0, display:none).
+    // The old evaluator produced a permanent FAIL with
+    // HITBOX_OR_CENTER_RULE_MISSING on every session.
+    const hidden = evaluateTabCloseCentering(ok({ closeRendered: false }))
+    expect(hidden.decision).toBe('SKIP')
+    expect(hidden.reason).toBe('CLOSE_NOT_RENDERED')
+    // A RENDERED close with bad rules must still fail (no gate relaxation).
+    const renderedBad = evaluateTabCloseCentering(ok({ closeRendered: true, inlineFlex: false }))
+    expect(renderedBad.decision).toBe('FAIL')
+  })
+
   it('TAB-CLOSE-CENTER-6/7 padding & margin are zero (css + rules)', () => {
     const css = closeCss()
     expect(css).toMatch(/padding:\s*0;/)

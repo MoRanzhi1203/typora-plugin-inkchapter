@@ -5,13 +5,16 @@
  * The product semantics are fixed:
  *
  *   文档内部两个有效内容块之间
- *   0~2 个连续空行 → PASS
- *   3 个及以上连续空行 → Warning
+ *   0~1 个连续空行 → PASS
+ *   2 个及以上连续空行 → Warning
+ *
+ * 空行数量一律以 **Markdown 源码** 为准（Typora 会把 N 个连续空行折叠成 1 个空
+ * `<p>`，渲染 DOM 的行数只用于「可绘制几何」，绝不是规则计数）。
  *
  * This module is the ONE authority for
  *
  *   1. `INTERNAL_BLANK_LINE_POLICY` — the threshold constants. NO producer /
- *      locator / test may hardcode `2` or `3` independently.
+ *      locator / test may hardcode `1` or `2` independently.
  *   2. `DocumentBlockGap` — the source-only BLOCK GAP model: every gap is
  *      proven from the canonical Markdown SOURCE (line map + block ownership),
  *      NEVER from DOM margins / computed style / visual whitespace height.
@@ -26,10 +29,13 @@
  *
  * Exclusion contract: blank lines INSIDE a fenced code block, a display
  * formula, YAML front matter or an HTML block are content — never a gap.
- * A blank run inside ONE list / blockquote container is a loose-list / lazy
- * quote formatting choice, not a sibling block gap (§15).
+ * EVERY list item is its own content block, so a blank run between two SIBLING
+ * list items IS a sibling block gap (§15); only a blank run INSIDE one item
+ * (its own continuation paragraph) or inside a blockquote stays a formatting
+ * choice.
  */
 import { normalizeCanonicalHeadingText } from './latent-atx-heading-marker'
+import { isWhitespaceOnlyText } from './document-diagnostic-whitespace-semantics-v1'
 
 // ── §3 — the ONE threshold authority ────────────────────────────────────────
 
@@ -46,8 +52,8 @@ export interface InternalBlankLinePolicy {
  * document can never fall into an undefined band.
  */
 export const INTERNAL_BLANK_LINE_POLICY: InternalBlankLinePolicy = {
-  passMaxBlankLines: 2,
-  warningThreshold: 3,
+  passMaxBlankLines: 1,
+  warningThreshold: 2,
 }
 
 /** §9 — the rule code (the ONLY business rule for internal blank-line gaps). */
@@ -78,16 +84,41 @@ export type DocumentBlockKind =
   | 'thematic-break'
 
 /**
+ * TRAE — the CANONICAL (DOM-resolvable) object kinds a gap boundary can own.
+ * These are the only kinds with a `block:<kind>:<ordinal>` authority, so they
+ * bind by canonical identity — never by fence/text guessing.
+ */
+export type CanonicalGapBoundaryKind = 'code' | 'table' | 'formula'
+
+/**
+ * TRAE §8.1/§8.4 — map a source block kind to its canonical object kind, or null
+ * when the kind has no canonical ordinal authority (heading / paragraph / list /
+ * blockquote bind through the existing source-line + verified-anchor ladder).
+ */
+export function canonicalGapBoundaryKind(kind: DocumentBlockKind): CanonicalGapBoundaryKind | null {
+  return kind === 'code' || kind === 'table' || kind === 'formula' ? kind : null
+}
+
+/**
  * §7/§33 — ONE proven gap between two sibling content blocks. Every field is
  * derived from the canonical source line map (never from the DOM).
  */
 export interface DocumentBlockGap {
   previousBlockIdentity: string
   previousBlockKind: DocumentBlockKind
+  /**
+   * TRAE §7 — the canonical object kind + the document-order ordinal among runs
+   * of that SAME kind. `block:<kind>:<ordinal>` is the ONLY binding authority for
+   * a canonical boundary block; a Markdown fence text (`"```"`) never is.
+   */
+  previousBlockCanonicalKind: CanonicalGapBoundaryKind | null
+  previousBlockCanonicalOrdinal: number | null
   /** 0-based source line of the previous block's first content line. */
   previousBlockStartLine: number
   nextBlockIdentity: string
   nextBlockKind: DocumentBlockKind
+  nextBlockCanonicalKind: CanonicalGapBoundaryKind | null
+  nextBlockCanonicalOrdinal: number | null
   /** 0-based source line of the next block's first content line. */
   nextBlockStartLine: number
   previousBlockSourceEnd: number
@@ -169,6 +200,12 @@ interface LineClassification {
   protectedRegion: ProtectedRegion | null
   /** Container marker literally carried by the line / inherited by continuation. */
   container: 'list-item' | 'blockquote' | null
+  /**
+   * §15 — the identity of the container INSTANCE the line belongs to. One list
+   * ITEM is one instance (so a gap between sibling items is a real gap); one
+   * blockquote run is one instance.
+   */
+  containerKey: string | null
   /** True when the line STARTS a new content block. */
   blockStart: boolean
   /** True when the line ENDS a content block (so a following blank run is a gap). */
@@ -176,8 +213,19 @@ interface LineClassification {
   kind: DocumentBlockKind
 }
 
+/**
+ * §5/R9 — a source line with NO visible content.
+ *
+ * R9: `trim()` alone is NOT the whitespace authority. Typora serializes an
+ * empty paragraph that the user typed only spaces into as a line holding a
+ * single U+200B, which `trim()` keeps. Treating that line as content cut one
+ * 6-blank run into two phantom gaps whose boundaries could never bind
+ * (`NO_TEXT_ANCHOR`), so the still-violating region disappeared from the
+ * diagnostics. The shared contract makes the source scanner agree with the
+ * anchor projection and the rendered-row classifier.
+ */
 function isBlank(text: string): boolean {
-  return text.trim() === ''
+  return isWhitespaceOnlyText(text)
 }
 
 function normalizeIdentityText(text: string): string {
@@ -188,6 +236,17 @@ function sourceContainerKind(text: string): 'list-item' | 'blockquote' | null {
   if (BLOCKQUOTE_RE.test(text)) return 'blockquote'
   if (LIST_ITEM_RE.test(text)) return 'list-item'
   return null
+}
+
+/**
+ * §15-R2 — an EMPTY list item (`- ` / `* ` / `1. ` with no content) IS one blank
+ * row: Typora renders it as an empty line. Typora's structural serializer folds
+ * several blank lines between list items into ONE blank line, so without this the
+ * list form could never reach the warning threshold while the paragraph form does.
+ */
+function isEmptyListItem(text: string): boolean {
+  if (!LIST_ITEM_RE.test(text)) return false
+  return normalizeIdentityText(text.replace(LIST_ITEM_RE, '')) === ''
 }
 
 function leadingSpaces(text: string): number {
@@ -208,9 +267,10 @@ function classifyLines(markdown: string): { lines: SourceLine[]; classOf: LineCl
   const lines = splitSourceLines(markdown)
   const n = lines.length
   const classOf: LineClassification[] = lines.map(l => ({
-    blank: isBlank(l.text),
+    blank: isBlank(l.text) || isEmptyListItem(l.text),
     protectedRegion: null,
     container: null,
+    containerKey: null,
     blockStart: false,
     blockEnd: false,
     kind: 'paragraph',
@@ -353,13 +413,42 @@ function classifyLines(markdown: string): { lines: SourceLine[]; classOf: LineCl
         break
       }
       const end = j - 1
-      for (let k = i; k <= end; k++) {
-        if (classOf[k].kind !== 'paragraph') continue
-        classOf[k].kind = kind
-        classOf[k].container = sourceContainerKind(lines[k].text) ?? marker
+      if (kind === 'list') {
+        // §15 — EVERY top-level list item is its own content block, so a blank
+        // run between two SIBLING items is a real sibling gap. A blank run
+        // INSIDE one item (its own continuation paragraph) is not: it never
+        // satisfies `blockEnd` + `blockStart` below.
+        const itemStarts: number[] = []
+        for (let k = i; k <= end; k++) {
+          if (!isBlank(lines[k].text) && LIST_ITEM_RE.test(lines[k].text)) itemStarts.push(k)
+        }
+        if (itemStarts.length === 0) itemStarts.push(i)
+        for (let s = 0; s < itemStarts.length; s++) {
+          const itemStart = itemStarts[s]
+          const limit = s + 1 < itemStarts.length ? itemStarts[s + 1] - 1 : end
+          let itemEnd = limit
+          while (itemEnd > itemStart && isBlank(lines[itemEnd].text)) itemEnd--
+          const containerKey = `list-item:${itemStart}`
+          for (let k = itemStart; k <= itemEnd; k++) {
+            if (classOf[k].kind !== 'paragraph') continue
+            classOf[k].kind = kind
+            classOf[k].container = sourceContainerKind(lines[k].text) ?? marker
+            classOf[k].containerKey = containerKey
+          }
+          classOf[itemStart].blockStart = true
+          classOf[itemEnd].blockEnd = true
+        }
+      } else {
+        const containerKey = `blockquote:${i}`
+        for (let k = i; k <= end; k++) {
+          if (classOf[k].kind !== 'paragraph') continue
+          classOf[k].kind = kind
+          classOf[k].container = sourceContainerKind(lines[k].text) ?? marker
+          classOf[k].containerKey = containerKey
+        }
+        classOf[i].blockStart = true
+        classOf[end].blockEnd = true
       }
-      classOf[i].blockStart = true
-      classOf[end].blockEnd = true
       i = end + 1
       continue
     }
@@ -402,14 +491,22 @@ function classifyLines(markdown: string): { lines: SourceLine[]; classOf: LineCl
   // line (a lazy list-item continuation), so a following gap is compared against
   // the container, not against a bare paragraph.
   let previousContainer: 'list-item' | 'blockquote' | null = null
+  let previousContainerKey: string | null = null
   for (let k = 0; k < n; k++) {
     const c = classOf[k]
-    if (protectedOf[k] != null) c.protectedRegion = protectedOf[k]
-    if (c.blank) continue
+    if (protectedOf[k] != null) {
+      c.protectedRegion = protectedOf[k]
+      // §12/§13/§14 — a protected region's interior is CONTENT: an empty list item
+      // textual form inside a fence / formula / front matter / HTML is NOT a blank.
+      c.blank = isBlank(lines[k].text)
+    }
+    if (c.blank && c.container == null) continue
     if (c.container == null && leadingSpaces(lines[k].text) > 0 && previousContainer != null && c.kind === 'paragraph') {
       c.container = previousContainer
+      c.containerKey = previousContainerKey
     }
     previousContainer = c.container
+    previousContainerKey = c.containerKey
   }
   return { lines, classOf }
 }
@@ -462,18 +559,20 @@ function nextBlockAnchorText(
 }
 
 /**
- * §7/§8/§10/§11/§12/§13/§14/§15 — the ONE source-only BLOCK GAP analyzer.
- *
- * Returns every gap (>= 1 blank line) between two sibling content blocks, in
- * document order. EOF / leading blank runs are structurally excluded here (the
- * EOF rules own the former; this rule owns neither).
+ * §7/§8.1 — the shared SOURCE run index. BOTH the block-gap analyzer and the
+ * Drawer's SOURCE POSITION authority consume THIS ONE computation, so the
+ * SOURCE-side `block:<kind>:<ordinal>` space can never diverge between them.
  */
-export function collectDocumentBlockGaps(markdown: string | null | undefined): DocumentBlockGap[] {
-  if (markdown == null) return []
+interface SourceRunsIndex {
+  lines: SourceLine[]
+  classOf: LineClassification[]
+  runs: Array<{ start: number; end: number }>
+  canonicalOrdinalOf: Array<number | null>
+}
+
+function buildSourceRunsIndex(markdown: string): SourceRunsIndex {
   const { lines, classOf } = classifyLines(markdown)
   const n = lines.length
-  if (n === 0) return []
-
   // Block extents: maximal non-blank content runs separated by GAP runs.
   const runs: Array<{ start: number; end: number }> = []
   let i = 0
@@ -483,30 +582,129 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     while (i < n && !classOf[i].blank) i++
     runs.push({ start, end: i - 1 })
   }
+  // ── TRAE §7/§8.1 — the canonical `block:<kind>:<ordinal>` ordinal of each run:
+  // the document-order index among runs of the SAME canonical object kind.
+  const runKindOf = (r: number): DocumentBlockKind => classOf[runs[r].start].kind
+  const canonicalOrdinalOf: Array<number | null> = []
+  const canonicalCounters = new Map<CanonicalGapBoundaryKind, number>()
+  for (let r = 0; r < runs.length; r++) {
+    const ck = canonicalGapBoundaryKind(runKindOf(r))
+    if (ck == null) { canonicalOrdinalOf.push(null); continue }
+    // TRAE §7 — a run that CONTINUES the same canonical source block keeps the
+    // previous ordinal: an empty fence's interior blank line splits it into two
+    // runs, but BOTH are the SAME `pre.md-fences` → SAME `block:code:<ordinal>`.
+    const continuesSameBlock = r > 0
+      && runs[r - 1].end === runs[r].start - 2
+      && classOf[runs[r].start - 1]?.protectedRegion != null
+      && canonicalGapBoundaryKind(runKindOf(r - 1)) === ck
+    if (continuesSameBlock) {
+      canonicalOrdinalOf.push(canonicalOrdinalOf[r - 1] ?? 0)
+      continue
+    }
+    const ordinal = canonicalCounters.get(ck) ?? 0
+    canonicalCounters.set(ck, ordinal + 1)
+    canonicalOrdinalOf.push(ordinal)
+  }
+  return { lines, classOf, runs, canonicalOrdinalOf }
+}
 
-  // §20 — the identity ordinal: the Nth block (document order) sharing the same
-  // (kind, normalized first-line text). Text-based, so inserting / removing
-  // BLANK LINES never changes a block's identity (Hard Gate
+/**
+ * SORT-P0 §4 — the SOURCE POSITION of every canonical object boundary
+ * (`block:code:<n>` / `block:table:<n>` / `block:formula:<n>`) → its 0-based
+ * START source line.
+ *
+ * The Drawer ordering authority consumes this so a code / table / formula
+ * diagnostic orders on its REAL SOURCE line, even when Typora renders the
+ * object element WITHOUT a `data-line` attribute (a `<pre class="md-fences">`
+ * is not guaranteed to carry one). It NEVER fabricates a position: an object
+ * that the source scan does not recognize simply has no entry.
+ */
+export function collectCanonicalSourceObjectLines(
+  markdown: string | null | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  if (markdown == null) return out
+  const { classOf, runs, canonicalOrdinalOf } = buildSourceRunsIndex(markdown)
+  for (let r = 0; r < runs.length; r++) {
+    const ck = canonicalGapBoundaryKind(classOf[runs[r].start].kind)
+    const ordinal = canonicalOrdinalOf[r]
+    if (ck == null || ordinal == null) continue
+    const key = `block:${ck}:${ordinal}`
+    if (!out.has(key)) out.set(key, runs[r].start)
+  }
+  return out
+}
+
+/**
+ * SORT-P0 §4 — the SOURCE START LINE of every ATX heading, in document order.
+ * Index `i` here is the SAME heading index `headingIndexOfStableIdentity`
+ * returns, so a heading diagnostic orders on its real source line even when its
+ * canonical `stableIdentity` cannot be resolved against the live DOM.
+ */
+export function collectSourceHeadingLines(markdown: string | null | undefined): number[] {
+  if (markdown == null) return []
+  const lines = splitSourceLines(markdown)
+  const out: number[] = []
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  for (const line of lines) {
+    const fence = FENCE_RE.exec(line.text)
+    if (fence) {
+      const char = fence[1][0]
+      const len = fence[1].length
+      if (!inFence) { inFence = true; fenceChar = char; fenceLen = len; continue }
+      if (char === fenceChar && len >= fenceLen) { inFence = false; continue }
+      continue
+    }
+    if (inFence) continue
+    if (ATX_RE.test(line.text)) out.push(line.index)
+  }
+  return out
+}
+
+/**
+ * §7/§8/§10/§11/§12/§13/§14/§15 — the ONE source-only BLOCK GAP analyzer.
+ *
+ * Returns every gap (>= 1 blank line) between two sibling content blocks, in
+ * document order. EOF / leading blank runs are structurally excluded here (the
+ * EOF rules own the former; this rule owns neither).
+ */
+export function collectDocumentBlockGaps(markdown: string | null | undefined): DocumentBlockGap[] {
+  if (markdown == null) return []
+  const { lines, classOf, runs, canonicalOrdinalOf } = buildSourceRunsIndex(markdown)
+  const n = lines.length
+  if (n === 0) return []
+  const runKindOf = (r: number): DocumentBlockKind => classOf[runs[r].start].kind
+
+  // §20 — the stable block identity. TRAE §3/§7 — a CANONICAL object boundary
+  // (code / table / formula) is identified by its canonical `block:<kind>:<ordinal>`
+  // form, NEVER by its non-unique Markdown first line (a fenced code block's first
+  // line is literally "```", so a fence text is not an identity authority). Every
+  // other kind keeps the ordinal-suffixed source-text identity, so inserting /
+  // removing BLANK LINES never changes a block's identity (Hard Gate
   // INTERNAL_BLANK_LINE_UNSTABLE_IDENTITY_COUNT / EDIT_DUPLICATE).
   const ordinalByKey = new Map<string, number>()
-  const identityOfRun = (run: { start: number; end: number }): { identity: string; kind: DocumentBlockKind; anchor: string } => {
-    const kind = classOf[run.start].kind
-    const keyText = normalizeIdentityText(lines[run.start].text)
-    const key = `${kind}:${keyText}`
-    const ordinal = ordinalByKey.get(key) ?? 0
-    ordinalByKey.set(key, ordinal + 1)
-    return {
-      identity: `${key}#${ordinal}`,
-      kind,
-      anchor: nextBlockAnchorText(kind, lines, run.start, run.end),
+  const runIdentities = runs.map((run, r): { identity: string; kind: DocumentBlockKind; anchor: string } => {
+    const kind = runKindOf(r)
+    const ck = canonicalGapBoundaryKind(kind)
+    const canonicalOrdinal = canonicalOrdinalOf[r]
+    let identity: string
+    if (ck != null && canonicalOrdinal != null) {
+      identity = `block:${ck}:${canonicalOrdinal}`
+    } else {
+      const keyText = normalizeIdentityText(lines[run.start].text)
+      const key = `${kind}:${keyText}`
+      const ordinal = ordinalByKey.get(key) ?? 0
+      ordinalByKey.set(key, ordinal + 1)
+      identity = `${key}#${ordinal}`
     }
-  }
+    return { identity, kind, anchor: nextBlockAnchorText(kind, lines, run.start, run.end) }
+  })
 
   const gaps: DocumentBlockGap[] = []
   let runIdx = 0
   let cursor = 0
-  // Pre-compute identities in DOCUMENT ORDER so the ordinal is deterministic.
-  const runIdentities = runs.map(r => identityOfRun(r))
 
   while (cursor < n) {
     if (!classOf[cursor].blank) { cursor++; continue }
@@ -527,9 +725,11 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     if (!prevClass.blockEnd || !nextClass.blockStart) continue
     // §12/§13/§14 — a blank line inside a protected region is CONTENT.
     if (prevClass.protectedRegion != null || nextClass.protectedRegion != null) continue
-    // §15 — one list / blockquote container spanning the blank run is a loose
-    // list / lazy quote, not a sibling gap.
-    if (prevClass.container != null && prevClass.container === nextClass.container) continue
+    // §15 — a blank run INSIDE one container INSTANCE (one list item's own
+    // continuation paragraph, or a lazy blockquote interior) is a formatting
+    // choice, not a sibling gap. Two SIBLING list items are different instances
+    // (`containerKey` differs), so their blank run IS reported.
+    if (prevClass.containerKey != null && prevClass.containerKey === nextClass.containerKey) continue
 
     while (runIdx < runs.length && runs[runIdx].end < before) runIdx++
     const prevRun = runs[runIdx]
@@ -538,9 +738,13 @@ export function collectDocumentBlockGaps(markdown: string | null | undefined): D
     gaps.push({
       previousBlockIdentity: runIdentities[runIdx].identity,
       previousBlockKind: runIdentities[runIdx].kind,
+      previousBlockCanonicalKind: canonicalGapBoundaryKind(runIdentities[runIdx].kind),
+      previousBlockCanonicalOrdinal: canonicalOrdinalOf[runIdx] ?? null,
       previousBlockStartLine: prevRun.start,
       nextBlockIdentity: runIdentities[runIdx + 1].identity,
       nextBlockKind: runIdentities[runIdx + 1].kind,
+      nextBlockCanonicalKind: canonicalGapBoundaryKind(runIdentities[runIdx + 1].kind),
+      nextBlockCanonicalOrdinal: canonicalOrdinalOf[runIdx + 1] ?? null,
       nextBlockStartLine: nextRun.start,
       previousBlockSourceEnd: lines[before].end,
       nextBlockSourceStart: lines[after].start,
@@ -581,6 +785,44 @@ export function internalBlankGapIdentity(gap: DocumentBlockGap): string {
   return `blank-gap:${gap.previousBlockIdentity}>>${gap.nextBlockIdentity}`
 }
 
+export interface DocumentBlockSequenceEntry {
+  identity: string
+  kind: DocumentBlockKind
+  /** 0-based source line of the block's first content line. */
+  startLine: number
+}
+
+/**
+ * WC-R2 active-group lineage — the ORDERED block identity sequence of a source.
+ *
+ * The identity computation is byte-for-byte the same one used by the gap
+ * analyzer (`collectDocumentBlockGaps`), so a lineage lookup can never disagree
+ * with a gap's own `previousBlockIdentity` / `nextBlockIdentity`.
+ */
+export function collectDocumentBlockSequence(
+  markdown: string | null | undefined,
+): DocumentBlockSequenceEntry[] {
+  if (markdown == null) return []
+  const { lines, classOf, runs, canonicalOrdinalOf } = buildSourceRunsIndex(markdown)
+  const ordinalByKey = new Map<string, number>()
+  return runs.map((run, r) => {
+    const kind = classOf[run.start].kind
+    const ck = canonicalGapBoundaryKind(kind)
+    const canonicalOrdinal = canonicalOrdinalOf[r]
+    let identity: string
+    if (ck != null && canonicalOrdinal != null) {
+      identity = `block:${ck}:${canonicalOrdinal}`
+    } else {
+      const keyText = normalizeIdentityText(lines[run.start].text)
+      const key = `${kind}:${keyText}`
+      const ordinal = ordinalByKey.get(key) ?? 0
+      ordinalByKey.set(key, ordinal + 1)
+      identity = `${key}#${ordinal}`
+    }
+    return { identity, kind, startLine: run.start }
+  })
+}
+
 /**
  * §12/§13/§14 — the protected source region containing ONE line, or null. The
  * runtime gate uses this to prove that no reported gap run sits inside a fenced
@@ -613,9 +855,16 @@ export function firstContentSourceLine(markdown: string | null | undefined): num
   return -1
 }
 
-/** §12 — the Drawer-facing detail copy (carries `actualBlankLines`). */
+/**
+ * §12 — the SCANNER's raw SOURCE-count detail for a candidate gap. This is the
+ * source fact carried by the freshly-scanned candidate (used for source parsing /
+ * position mapping / debugging). The PUBLISHED diagnostic's user-facing copy is
+ * decided in `document-diagnostic-internal-blank-decision-v1.ts` and states the
+ * VISIBLE blank-line count — a source count must never be presented as the visible
+ * display count. Kept here because the scanner still owns the raw source fact.
+ */
 export function internalBlankLineDetail(actualBlankLines: number): string {
-  return `当前两个内容块之间存在 ${actualBlankLines} 个连续空行，建议压缩为 1 个空行。`
+  return `源码中存在 ${actualBlankLines} 个连续空行，建议压缩为 1 个空行。`
 }
 
 // ── §35 — the hard gates ───────────────────────────────────────────────────
@@ -704,7 +953,7 @@ export function evaluateInternalBlankLineV1Gates(
 
 export const INTERNAL_BLANK_LINE_V1_COVERAGE_KEYS = [
   'warningRuntime',
-  'threshold3Runtime',
+  'thresholdRuntime',
   'headingToParagraphRuntime',
   'paragraphToHeadingRuntime',
   'headingToHeadingRuntime',
@@ -731,7 +980,7 @@ export function formatInternalBlankLineV1CoverageReport(
 ): string[] {
   const label: Record<InternalBlankLineV1CoverageKey, string> = {
     warningRuntime: 'INTERNAL_BLANK_LINE_WARNING_RUNTIME_COUNT',
-    threshold3Runtime: 'INTERNAL_BLANK_LINE_THRESHOLD_3_RUNTIME_COUNT',
+    thresholdRuntime: 'INTERNAL_BLANK_LINE_THRESHOLD_RUNTIME_COUNT',
     headingToParagraphRuntime: 'INTERNAL_BLANK_LINE_HEADING_TO_PARAGRAPH_RUNTIME_COUNT',
     paragraphToHeadingRuntime: 'INTERNAL_BLANK_LINE_PARAGRAPH_TO_HEADING_RUNTIME_COUNT',
     headingToHeadingRuntime: 'INTERNAL_BLANK_LINE_HEADING_TO_HEADING_RUNTIME_COUNT',
@@ -759,7 +1008,7 @@ export function noteInternalBlankLineCoverage(
   },
 ): void {
   coverage.warningRuntime++
-  if (facts.actualBlankLines === INTERNAL_BLANK_LINE_POLICY.warningThreshold) coverage.threshold3Runtime++
+  if (facts.actualBlankLines === INTERNAL_BLANK_LINE_POLICY.warningThreshold) coverage.thresholdRuntime++
   const pair = `${facts.previousBlockKind}>${facts.nextBlockKind}`
   if (pair === 'heading>paragraph') coverage.headingToParagraphRuntime++
   if (pair === 'paragraph>heading') coverage.paragraphToHeadingRuntime++

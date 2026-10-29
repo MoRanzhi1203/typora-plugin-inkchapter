@@ -31,6 +31,17 @@ import {
   type CanonicalHeadingFrame,
 } from './canonical-heading-frame'
 import { updateActiveFormatVariant, updateActiveMultilevelFormatVariant, updateActiveContextualFormatVariant, diagnoseHeadingChain } from './numbering-engine'
+import { armEnterEchoWriteTrace, drainEnterEchoWriteTrace, persistEnterEchoWriteTrace } from '../document-utilities/enter-echo-write-trace'
+import {
+  scheduleNavigationPostDefaultAudit,
+  refreshCaretIsolationDomCounters,
+  invalidateNavigationAudits,
+  getNavigationAuditCounters,
+  evaluateAuditCoverageGate,
+  getCaretIsolationCounters,
+  formatCaretIsolationGateReport,
+  evaluateCaretIsolationGates,
+} from '../document-utilities/document-diagnostic-caret-isolation-v1'
 import { decimalHierarchicalFormatter } from './numbering-formatter'
 // Heading Auto-Number Conflict Diagnostics V1 §2/§4 — the ONE per-heading
 // auto-numbering EFFECTIVENESS authority (reuses THIS service's effective
@@ -46,7 +57,7 @@ import {
 import {
   HEADING_NUMBER_DECORATION_AUDIT_EVENT,
   HEADING_DECORATION_V514R4_GATE_KEYS,
-  buildHeadingDecorationProjections,
+  buildAlignedHeadingDecorationProjections,
   createHeadingDecorationV514R4Counters,
   evaluateHeadingDecorationV514R4Gates,
   formatHeadingDecorationV514R4GateReport,
@@ -68,6 +79,7 @@ import {
   collectHeadingProjectionFacts,
 } from './heading-structure-audit'
 import type { DocumentDiagnosticsSnapshot } from '../document-utilities/diagnostics-types'
+import type { StructuralMarkdownSnapshot } from '../document-utilities/document-utilities-context'
 import {
   resolveEffectiveHeadingMode,
   resolveDocumentScopeState,
@@ -87,6 +99,7 @@ import {
 import { getPresetLevels, getPresetPreview } from './presets'
 import { scanHeadingsForRange, convertHeadingsToBold, type HeadingScanResult, type RangeReduceAction } from './level-range-utils'
 import { HeadingLevelRangeEnforcer, type EnforcerCallbacks } from './heading-level-range-enforcer'
+import { decideRefreshBatch, FORCE_REFRESH_REASON_IDS } from './refresh-reason-policy'
 import { HeadingOverrideStore } from './heading-override-store'
 import type { HeadingOverrideMap } from './numbering-engine'
 import { OutlineNumberingController } from './outline-numbering-controller'
@@ -476,6 +489,12 @@ export interface ServiceContext {
   getActiveFilePath?: () => string | null
   /** Optional: get the raw markdown content of the current editor. */
   getMarkdown?: () => string
+  /**
+   * R10 Closure §2.2 — the ONE immutable STRUCTURAL markdown snapshot for one
+   * diagnostics transaction (see DocumentUtilitiesAuthorityContext's twin).
+   * `structural=false` is a degraded fallback, never a verified structure.
+   */
+  getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   /** Optional: replace editor content with undo support. */
   reloadContent?: (markdown: string) => void
   /** Optional: replace editor content preserving undo history (for shortcut commands). */
@@ -489,6 +508,13 @@ export interface ServiceContext {
   /** R58.3: Authoritative vault root for sidecar storage. */
   vaultRoot?: string
   /**
+   * V1.1-GLOBAL §7 — the SIDECAR/AUDIT storage root. Equals `vaultRoot` for a REAL
+   * vault; a per-folder USER-LEVEL directory for a plain document folder, so the
+   * plugin never creates `<folder>/.typora` (which would flip the framework to
+   * per-folder config and disable this user-level plugin on the next start).
+   */
+  storageRoot?: string | null
+  /**
    * V1.1-GLOBAL §6 — the SPLIT document context. `vaultRoot` here may be null
    * (single-file / non-vault folder) while the plugin still initializes.
    */
@@ -498,10 +524,7 @@ export interface ServiceContext {
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
-const FORCE_REFRESH_REASONS: Set<RefreshReason> = new Set([
-  'toggle', 'manual', 'initial-load', 'focus-in', 'decoration-repair',
-  'file-open', 'active-leaf-change',
-])
+const FORCE_REFRESH_REASONS: ReadonlySet<string> = FORCE_REFRESH_REASON_IDS
 
 /**
  * Convert contextual format variants back to multilevel format variants.
@@ -537,6 +560,13 @@ function contextualToMultilevelVariants(
 const DOM_POSITION_DISCONNECTED = 1
 const DOM_POSITION_PRECEDING = 2
 const DOM_POSITION_FOLLOWING = 4
+
+/**
+ * ENTER→BLANK ECHO GUARD — the bounded window in which a SECOND structural
+ * `SPLIT_1_TO_2` is attributed to the SAME trusted Enter scene (one Enter = one
+ * split). A split beyond this window is a genuinely new user action.
+ */
+const ENTER_SPLIT_ECHO_WINDOW_MS = 250
 
 export class HeadingNumberingService {
   private adapter: HeadingDomAdapter
@@ -1268,6 +1298,88 @@ export class HeadingNumberingService {
   private specialCommandCreatedFromNonEnterCount = 0
   private activeEmptySpecialTransaction: EmptySpecialCommandTransaction | null = null
   private activeEmptySpecialSettle: EmptySpecialSettleContext | null = null
+  // ── R58.7+ ENTER→BLANK ECHO GUARD — one trusted Enter must commit EXACTLY ONE
+  // structural split. The plugin never dispatches Enter and never splits a
+  // paragraph, so a SECOND `SPLIT_1_TO_2` after NORMAL-ENTER-FINAL is an EXTERNAL
+  // structural echo (native re-render). It is counted here with REAL evidence so
+  // the duplicate can never hide behind a count formula.
+  private lastNormalEnterTxnId: string | null = null
+  private enterSplitSceneId: string | null = null
+  private enterSplitSceneCount = 0
+  private enterSplitSceneLastAt = 0
+  private enterDuplicateStructuralSplitCount = 0
+  /** §D2 — of the duplicates above, how many were Typora's own end-block re-normalisation. */
+  private enterEndBlockRenormalizationCount = 0
+
+  // ── P0 CARET ISOLATION 门禁（真实 DOM/Selection 审计；禁止硬编码 PASS） ──
+  getCaretIsolationGateReport(): string[] {
+    return formatCaretIsolationGateReport({ ...getCaretIsolationCounters() })
+  }
+
+  getCaretIsolationGateDecision(): { decision: 'PASS' | 'FAIL'; failCount: number; failing: string[] } {
+    return evaluateCaretIsolationGates({ ...getCaretIsolationCounters() })
+  }
+
+  /** P0 §7.2 审计覆盖门禁报告（真实事件计数；AUDITS_DROPPED 必须为 0）。 */
+  getNavigationAuditCoverageReport(): {
+    decision: 'PASS' | 'FAIL'
+    failing: string[]
+    reason: string
+    counters: Readonly<Record<string, number>>
+  } {
+    const g = evaluateAuditCoverageGate()
+    return { decision: g.decision, failing: g.failing, reason: g.reason, counters: { ...getNavigationAuditCounters() } }
+  }
+
+  /** 视觉提交后重算「可编辑树内插件文字」集合计数（只读）。 */
+  refreshCaretIsolationCounters(): void {
+    try { refreshCaretIsolationDomCounters(this.adapter.getEditorRoot()) } catch { /* observability only */ }
+  }
+  /**
+   * §D2 — while `now < enterTransactionCoalesceUntil`, the diagnostics commit must be
+   * IDEMPOTENT for `enterTransactionCoalesceSceneId`: the trailing end-block
+   * re-normalisation belongs to the SAME Enter transaction, so the final snapshot is
+   * committed once (never as a second user transaction, never by swallowing a batch).
+   */
+  private enterTransactionCoalesceSceneId: string | null = null
+  private enterTransactionCoalesceUntil = 0
+
+  /**
+   * ENTER→BLANK ECHO GUARD — the REAL duplicate-structural-split evidence.
+   *
+   * `duplicateStructuralSplitCount` is the number of EXTERNAL `SPLIT_1_TO_2`
+   * echoes seen AFTER a trusted Enter reached NORMAL-ENTER-FINAL, within the
+   * bounded echo window and attributed to the SAME Enter scene. 0 ⇒ one Enter
+   * produced exactly one structural split (PASS); >0 ⇒ a duplicate split.
+   */
+  getEnterSplitEchoReport(): {
+    duplicateStructuralSplitCount: number
+    endBlockRenormalizationCount: number
+    lastSceneId: string | null
+    lastSceneSplitCount: number
+    transactionCoalesce: { sceneId: string | null; active: boolean }
+  } {
+    return {
+      duplicateStructuralSplitCount: this.enterDuplicateStructuralSplitCount,
+      endBlockRenormalizationCount: this.enterEndBlockRenormalizationCount,
+      lastSceneId: this.enterSplitSceneId,
+      lastSceneSplitCount: this.enterSplitSceneCount,
+      transactionCoalesce: {
+        sceneId: this.enterTransactionCoalesceSceneId,
+        active: Date.now() < this.enterTransactionCoalesceUntil,
+      },
+    }
+  }
+
+  /**
+   * §D2 — TRUE when the CURRENT editor mutation belongs to the SAME trusted Enter
+   * transaction (Typora's trailing end-block re-normalisation). Consumers use it to
+   * commit diagnostics IDEMPOTENTLY against the final snapshot; it must never be
+   * used to hide a real content change (the batch is still fully processed).
+   */
+  isEnterTransactionCoalesced(now = Date.now()): boolean {
+    return now < this.enterTransactionCoalesceUntil
+  }
 
   /** R58.7 Step 1.2: Validate that a KeyboardEvent is a real Enter key, not IME Process/Period. */
   private isRealEnterKey(e: KeyboardEvent): boolean {
@@ -2745,12 +2857,14 @@ export class HeadingNumberingService {
   /** Inject production vault root before any sidecar operation. */
   private injectVaultRoot(): void {
     try {
-      // R58.3: Use authoritative vault root from ServiceContext (set by main.ts)
-      const vaultCandidate = this.ctx.vaultRoot
+      // R58.3 / V1.1-GLOBAL §7: use the SIDECAR/AUDIT storage root injected by
+      // main.ts. It equals the vault root for a REAL vault, and a user-level
+      // per-folder directory for a plain document folder (never `<folder>/.typora`).
+      const vaultCandidate = this.ctx.storageRoot ?? this.ctx.vaultRoot
 
       if (typeof vaultCandidate === 'string' && vaultCandidate.length > 0) {
         injectProductionVaultRoot(vaultCandidate)
-        logger.info(`SIDECAR-CONTEXT: vaultRoot=${vaultCandidate} source=service-context`)
+        logger.info(`SIDECAR-CONTEXT: storageRoot=${vaultCandidate} vaultRoot=${this.ctx.vaultRoot ?? 'null'} source=service-context`)
         return
       }
 
@@ -4112,9 +4226,9 @@ export class HeadingNumberingService {
 
   /** Listen for external settings changes (e.g. from settings UI) and sync local state. */
   private registerSettingsListener(): void {
-    const dispose = this.ctx.settings.onChange('headingNumbering', (_key: unknown, value: HeadingNumberingSettings) => {
+    const dispose = this.ctx.settings.onChange('headingNumbering', (_key, value) => {
       // Legacy listener: migrate and reload from scope store
-      if (!this.scopeStore.schemaVersion) {
+      if (value != null && !this.scopeStore.schemaVersion) {
         const migResult = migrateHeadingNumberingToScopeStore({ headingNumbering: value })
         if (migResult.migrated) {
           this.persistScopeStore(migResult.store)
@@ -4268,7 +4382,10 @@ export class HeadingNumberingService {
     })
 
     // ── R58.2: Document switch — canonical registry lifecycle ──────────
-    if (primaryReason === 'active-leaf-change' || primaryReason === 'file-open') {
+    // PA-15 — decided from the WHOLE batch: a same-frame `editor-input` must
+    // never swallow the document-switch cleanup.
+    const batchDecision = decideRefreshBatch(reasons)
+    if (batchDecision.documentSwitch) {
       this.canonicalRegistry.clearDocumentBindings(this.getDocumentKey() ?? '')
       this.releaseOneShotHandoff('document-switch')
       // STRICT-FIRST-H1: force revalidation on the new document (no stale state/signature).
@@ -4280,7 +4397,7 @@ export class HeadingNumberingService {
       )
     }
 
-    this.doRefresh(primaryReason, { hasParagraphCommandMutation })
+    this.doRefresh(primaryReason, { hasParagraphCommandMutation, forceRefresh: batchDecision.forceRefresh })
   }
 
   private scheduleTail(reason: RefreshReason, ms: number): void {
@@ -4413,7 +4530,7 @@ export class HeadingNumberingService {
 
   // ── Core refresh ───────────────────────────────────────
 
-  private doRefresh(reason: RefreshReason, flags?: { hasParagraphCommandMutation?: boolean }): void {
+  private doRefresh(reason: RefreshReason, flags?: { hasParagraphCommandMutation?: boolean; forceRefresh?: boolean }): void {
     const startTime = performance.now()
     const hasParagraphCommand = flags?.hasParagraphCommandMutation ?? false
 
@@ -4428,6 +4545,12 @@ export class HeadingNumberingService {
       const root = this.adapter.detectEditorRoot()
       if (!root) return
       this.adapter.setEditorRoot(root)
+
+      // PERFORMANCE — ONE full-document heading query for this refresh. Every
+      // step below (layout / bindings / snapshot / fast-path validation /
+      // reconcile / audit) consumes this same collection instead of re-running
+      // the identical selector 5-7 times per keystroke.
+      const headingEls = this.adapter.queryHeadingElements()
 
       // ── Trace: T5 doRefresh (fail-open) ──
       this.traceDoRefreshCount++
@@ -4444,7 +4567,7 @@ export class HeadingNumberingService {
       })
 
       // Apply heading layouts (always, independent of numbering state)
-      this.applyHeadingLayouts()
+      this.applyHeadingLayouts(headingEls)
 
       // ── Rehydrate explicit paragraph overrides before layout refresh ──
       // Normal Enter / paragraph split destroys HTMLElement identity.
@@ -4462,7 +4585,7 @@ export class HeadingNumberingService {
       // Phase 7R.3.9: ONE canonical heading collection (binding retains the live
       // element). The semantic snapshot + CanonicalHeadingFrame are built from
       // this SAME collection — the 34-vs-33 two-collector drift cannot occur.
-      const headingBindings = this.adapter.collectHeadingBindings()
+      const headingBindings = this.adapter.collectHeadingBindings(headingEls)
       this.headingStructureEpochValue++
       const headings = headingBindings.map(b => ({ key: b.key, level: b.level as HeadingLevel, text: b.text }))
       snapshotHeadingCollection(headings)
@@ -4525,8 +4648,8 @@ export class HeadingNumberingService {
       // ── PHYSICAL PROJECTION GATE (semantic already committed) ──
       if (!this.s.enabled) return
 
-      const snapshot = this.adapter.createHeadingSnapshot()
-      const forceRefresh = FORCE_REFRESH_REASONS.has(reason)
+      const snapshot = this.adapter.createHeadingSnapshot(headings)
+      const forceRefresh = flags?.forceRefresh ?? FORCE_REFRESH_REASONS.has(reason)
 
       if (!forceRefresh && this.lastSnapshot && this.renderedStates && this.renderedProjections) {
         // Structure unchanged?
@@ -4535,9 +4658,9 @@ export class HeadingNumberingService {
           // AND gap are all still valid from the SAME projection. The gap is now
           // validated inside `isRenderedStateValid` (the state carries it), so a
           // "label valid but gap invalid" DOM can never be fast-path accepted.
-          if (this.adapter.isRenderedStateValid(this.renderedStates)) {
+          if (this.adapter.isRenderedStateValid(this.renderedStates, headingEls)) {
             this.lastSnapshot = snapshot
-            this.emitHeadingDecorationAudit(reason, 'FAST_PATH_SKIP', null, numberingSnapshot.revision)
+            this.emitHeadingDecorationAudit(reason, 'FAST_PATH_SKIP', null, numberingSnapshot.revision, undefined, headingEls)
             return // physical DOM unchanged → skip projection (semantic already committed)
           }
           // Structure same but the ATOMIC decoration drifted (node replaced, gap
@@ -4546,10 +4669,10 @@ export class HeadingNumberingService {
           // rewritten, from the SAME projection snapshot.
           const repairProjections = this.renderedProjections
           if (repairProjections) {
-            const diff = this.adapter.reconcileHeadingDecorations(repairProjections)
-            this.syncRenderedDecorationCache(repairProjections)
+            const diff = this.adapter.reconcileHeadingDecorations(repairProjections, headingEls)
+            this.syncRenderedDecorationCache(repairProjections, headingEls)
             this.logRefresh(reason, snapshot.length, diff, startTime)
-            this.emitHeadingDecorationAudit(reason, 'DECORATION_REPAIR', repairProjections, numberingSnapshot.revision, diff)
+            this.emitHeadingDecorationAudit(reason, 'DECORATION_REPAIR', repairProjections, numberingSnapshot.revision, diff, headingEls)
             this.lastSnapshot = snapshot
             return
           }
@@ -4573,9 +4696,12 @@ export class HeadingNumberingService {
 
       // ── V5.14-R4 §8/§9 — the ONE projection for this refresh. label + gap are
       // two projections of the SAME business result and are committed together.
-      const projections = buildHeadingDecorationProjections(
-        numbered.map((h, i) => ({ key: h.key, label: labels[i] ?? h.label, labelGap: h.labelGap })),
-      )
+      //
+      // PA-14 — `numbered` is FILTERED by maxDepth while `headings` is the full
+      // DOM list. Align by stable identity (empty label for out-of-range
+      // headings) so no label can shift to a neighbour.
+      const alignedProjections = buildAlignedHeadingDecorationProjections(headings, numbered, labels)
+      const alignedLabels = alignedProjections.map(p => p.label)
 
       // Snapshot numbering engine per-heading output
       const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {
@@ -4601,32 +4727,32 @@ export class HeadingNumberingService {
       snapshotNumberingEngine(this.s, engineEntries)
 
       const previousProjections = this.renderedProjections
-      const diff = this.adapter.reconcileHeadingDecorations(projections)
-      this.syncRenderedDecorationCache(projections)
+      const diff = this.adapter.reconcileHeadingDecorations(alignedProjections, headingEls)
+      this.syncRenderedDecorationCache(alignedProjections, headingEls)
 
-      const gaps = projections.map(p => p.gap)
-      this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff)
+      const gaps = alignedProjections.map(p => p.gap)
+      this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff, headingEls)
 
-      // Snapshot apply-diff
-      const headingEls = this.adapter.getEditorRoot()?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []
+      // Snapshot apply-diff (SAME heading collection — no second query)
       const diffEntries: ApplyDiffEntry[] = []
       let di = 0; for (const el of Array.from(headingEls).slice(0, 20)) {
         diffEntries.push({
           domIndex: di, domKey: el.tagName + '-' + (el.getAttribute('data-line') ?? ''), tagName: el.tagName,
           parsedLevel: parseInt(el.tagName.charAt(1)), textPreview: (el.textContent ?? '').slice(0, 40),
-          labelIndex: di, incomingLabel: di < labels.length ? labels[di] : 'N/A',
+          labelIndex: di, incomingLabel: di < alignedLabels.length ? alignedLabels[di] : 'N/A',
           previousAttr: el.getAttribute('data-inkchapter-heading-number'),
-          action: di < labels.length ? (labels[di] ? 'update' : 'skip-empty') : 'skip-empty',
+          action: di < alignedLabels.length ? (alignedLabels[di] ? 'update' : 'skip-empty') : 'skip-empty',
           nextAttr: null as string | null,
         });
         di++
       }
-      snapshotApplyDiff(labels, diffEntries, labels.length, headingEls.length)
+      snapshotApplyDiff(alignedLabels, diffEntries, alignedLabels.length, headingEls.length)
 
       // Sync outline sidebar numbering — pass the authoritative documentKey AND
       // the SAME projection snapshot (V5.14-R4 §12: the outline consumes the
-      // identical label+gap, never a re-derived one).
-      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, labels, gaps, projections)
+      // identical label+gap, never a re-derived one). PA-14 — all four lists are
+      // aligned to `headings` (DOM order), never to the maxDepth-filtered list.
+      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, alignedLabels, gaps, alignedProjections)
 
       // Phase 7R.3.11.8B.4.2 — pure-observability structure authority audits
       // (state-deduped; never mutates settings/store/DOM/outline).
@@ -4656,15 +4782,15 @@ export class HeadingNumberingService {
   // ── Heading layout ─────────────────────────────────────
 
   /** Apply heading layout to the editor (independent of numbering state). */
-  private applyHeadingLayouts(): void {
+  private applyHeadingLayouts(headingEls?: readonly HTMLHeadingElement[]): void {
     const structure = resolveHeadingStructure(this.s)
     const layouts = this.getEffectiveHeadingLayouts(structure.mode)
     if (!layouts) {
-      this.adapter.clearHeadingLayouts()
+      this.adapter.clearHeadingLayouts(headingEls)
       return
     }
     // Layout is physical H1-H6 (NO level shift): real H2 uses layout.h2.
-    this.adapter.applyHeadingLayouts(layouts)
+    this.adapter.applyHeadingLayouts(layouts, headingEls)
   }
 
   /** Apply paragraph indent styles to the editor DOM. */
@@ -4692,6 +4818,10 @@ export class HeadingNumberingService {
     })
 
     // Business: always execute (never inside trace wrapper)
+    // NOTE: plan ① (deferring this write inside the Enter echo window) was tried and
+    // REFUTED by the runtime log — the deferral fired (ENTER-ECHO-STYLE-WRITE-DEFERRED)
+    // and the duplicate split STILL happened. The write is therefore NOT gated here;
+    // the targeted write tracer (`enter-echo-write-trace`) names the real culprit.
     refreshParagraphIndentStyles(root, settings, this.isInComposition)
 
     // ── Trace: T7 after ──
@@ -6413,10 +6543,10 @@ export class HeadingNumberingService {
     try {
       const fs = require('fs') as typeof import('fs')
       const path = require('path') as typeof import('path')
-      const vaultRoot = (this.ctx as any).vaultRoot ??
+      const storageRoot = this.ctx.storageRoot ??
         (this.ctx.settings as any).getVaultRoot?.() ?? ''
       const tracePath = path.join(
-        vaultRoot || path.dirname(this.getActiveFilePath() || ''),
+        storageRoot || path.dirname(this.getActiveFilePath() || ''),
         '.typora',
         'inkchapter-enter-race-trace.jsonl',
       )
@@ -9154,11 +9284,15 @@ export class HeadingNumberingService {
    * V5.14-R4 §9 — commit the ONE decoration projection and cache it as the
    * AUTHORITY that repair / fast-path validation / diagnostics read back.
    */
-  private syncRenderedDecorationCache(projections: readonly HeadingDecorationProjection[]): void {
+  private syncRenderedDecorationCache(
+    projections: readonly HeadingDecorationProjection[],
+    preCollected?: readonly HTMLHeadingElement[],
+  ): void {
     this.renderedProjections = [...projections]
     this.renderedStates = this.adapter.buildRenderedStates(
       projections.map(p => p.label),
       projections.map(p => p.gap),
+      preCollected,
     )
     this.renderedGaps = projections.map(p => p.gap)
     this.decorationProjectionGeneration++
@@ -9175,6 +9309,7 @@ export class HeadingNumberingService {
     previous: readonly HeadingDecorationProjection[] | null,
     numberingRevision: number | null,
     diff?: { labelMismatch: number; gapMismatch: number; classMismatch: number },
+    preCollected?: readonly HTMLHeadingElement[],
   ): void {
     const root = this.adapter.getEditorRoot()
     const projections = this.renderedProjections
@@ -9183,7 +9318,7 @@ export class HeadingNumberingService {
     const settingsRevision = this.docContext?.settingsRevision ?? null
     const settingsChanged = settingsRevision != null && settingsRevision !== this.lastAuditedSettingsRevision
     const previousByIdentity = new Map((previous ?? []).map(p => [p.stableIdentity, p]))
-    const els = root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6')
+    const els = preCollected ?? root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6')
     let idx = 0
     for (let i = 0; i < els.length; i++) {
       const el = els[i]
@@ -10456,6 +10591,105 @@ export class HeadingNumberingService {
         suppressParagraphDetection: this.suppressParagraphCommandDetection,
       })
 
+      // ── ENTER→BLANK ECHO GUARD (R58.7+) ─────────────────────────────────────
+      // ONE trusted Enter must commit EXACTLY ONE structural split. The plugin
+      // never dispatches Enter and never splits a paragraph; therefore a SECOND
+      // `SPLIT_1_TO_2` attributed to the SAME just-closed Enter scene inside the
+      // bounded window is an EXTERNAL structural echo. It is counted with REAL
+      // evidence (never derived from a source-newline formula) so the duplicate
+      // cannot hide behind the visible-count arithmetic.
+      {
+        let removedP = 0
+        let addedP = 0
+        for (const m of mutations) {
+          if (m.type !== 'childList') continue
+          for (const n of Array.from(m.removedNodes)) {
+            if (n instanceof HTMLElement && /^(P|DIV)$/.test(n.tagName)
+              && !this.isHeadingOrContainsHeading(n) && !/inkchapter/i.test(String(n.className ?? ''))) removedP++
+          }
+          for (const n of Array.from(m.addedNodes)) {
+            if (n instanceof HTMLElement && /^(P|DIV)$/.test(n.tagName)
+              && !this.isHeadingOrContainsHeading(n) && !/inkchapter/i.test(String(n.className ?? ''))) addedP++
+          }
+        }
+        if (removedP === 1 && addedP === 2) {
+          const now = Date.now()
+          const sceneId = this.activeNormalEnterTxn?.id ?? this.lastNormalEnterTxnId
+          // §D2 — Typora keeps an ALWAYS-PRESENT trailing end block
+          // (`P.md-end-block`). Pressing Enter at the document end makes Typora's
+          // own `Editor.pressReturn` re-normalise that block; the observer then sees
+          // a SECOND `SPLIT_1_TO_2` that is a NATIVE INTERMEDIATE STATE, not a
+          // second user Enter. Classified here (never swallowed) so the final
+          // snapshot can commit idempotently under the SAME Enter transaction.
+          let endBlockTouched = false
+          for (const m of mutations) {
+            if (m.type !== 'childList') continue
+            for (const n of [...Array.from(m.removedNodes), ...Array.from(m.addedNodes)]) {
+              if (n instanceof HTMLElement && n.classList.contains('md-end-block')) endBlockTouched = true
+            }
+          }
+          const sameScene = sceneId != null && sceneId === this.enterSplitSceneId
+            && (now - this.enterSplitSceneLastAt) <= ENTER_SPLIT_ECHO_WINDOW_MS
+          if (sameScene) {
+            this.enterDuplicateStructuralSplitCount++
+            if (endBlockTouched) this.enterEndBlockRenormalizationCount++
+            // §D2 — PROVEN by real runtime evidence (structural=0, pluginStructural=0,
+            // origin: typora=14, endBlockRenormalization=true): the second
+            // `SPLIT_1_TO_2` is Typora's OWN trailing end-block re-normalisation, a
+            // NATIVE INTERMEDIATE STATE. It is NOT swallowed. It is ATTRIBUTED to the
+            // SAME Enter transaction so the diagnostics commit IDEMPOTENTLY against
+            // the final DOM (no second user transaction, no count formula change).
+            if (endBlockTouched) {
+              this.enterTransactionCoalesceSceneId = sceneId
+              this.enterTransactionCoalesceUntil = now + ENTER_SPLIT_ECHO_WINDOW_MS
+            }
+            emitRuntimeAudit('ENTER-DUPLICATE-SPLIT-AFTER-FINAL', {
+              normalEnterTxnId: sceneId,
+              duplicateSplitIndex: this.enterSplitSceneCount + 1,
+              windowMs: now - this.enterSplitSceneLastAt,
+              endBlockRenormalization: endBlockTouched,
+              transactionAttribution: endBlockTouched ? 'SAME_ENTER_SCENE_IDEMPOTENT' : 'USER_DUPLICATE_SPLIT',
+              decision: endBlockTouched ? 'NATIVE_END_BLOCK_RENORMALIZATION' : 'DUPLICATE_SPLIT',
+            })
+            // plan ② — the DIRECT evidence: every plugin DOM write inside the echo
+            // window with its call stack, so the REAL writer of the second split is
+            // named instead of guessed.
+            const trace = drainEnterEchoWriteTrace()
+            const structural = trace.records.filter(r => r.kind.startsWith('struct:'))
+            const pluginStructural = structural.filter(r => r.origin === 'plugin')
+            const tracePayload = {
+              normalEnterTxnId: sceneId,
+              duplicateSplitIndex: this.enterSplitSceneCount + 1,
+              windowMs: now - this.enterSplitSceneLastAt,
+              endBlockRenormalization: endBlockTouched,
+              capturedAt: new Date().toISOString(),
+              recordCount: trace.records.length,
+              truncated: trace.truncated,
+              structuralRecordCount: structural.length,
+              pluginStructuralWriteCount: pluginStructural.length,
+              originCounts: {
+                plugin: trace.records.filter(r => r.origin === 'plugin').length,
+                typora: trace.records.filter(r => r.origin === 'typora').length,
+                unknown: trace.records.filter(r => r.origin === 'unknown').length,
+              },
+              records: trace.records,
+            }
+            persistEnterEchoWriteTrace(tracePayload)
+            emitRuntimeAudit('ENTER-ECHO-DOM-WRITE-TRACE', {
+              normalEnterTxnId: sceneId,
+              recordCount: trace.records.length,
+              truncated: trace.truncated,
+              structuralRecordCount: structural.length,
+              pluginStructuralWriteCount: pluginStructural.length,
+              decision: 'TRACED',
+            })
+          }
+          this.enterSplitSceneId = sceneId
+          this.enterSplitSceneCount = sameScene ? this.enterSplitSceneCount + 1 : 1
+          this.enterSplitSceneLastAt = now
+        }
+      }
+
       // ── Trace: T3 Classifier (fail-open) ──
       safeTrace(() => {
         traceT3_Classifier({
@@ -10627,6 +10861,9 @@ export class HeadingNumberingService {
             // overall=true if the canonical transfer failed at any layer.
             const canonicalGatePassed = !hasCanonicalSource || (canonicalOutcome?.overall ?? false)
             if (canonicalGatePassed) this.normalEnterSuccessCount++
+            // ENTER→BLANK ECHO GUARD — the scene id for the split detector is the
+            // JUST-CLOSED transaction, so a post-FINAL echo is attributed to it.
+            this.lastNormalEnterTxnId = postTxn.id
             emitRuntimeAudit('NORMAL-ENTER-FINAL', {
               normalEnterTxnId: postTxn.id,
               caretDestinationRuntimeId: caretDestRtId ?? 'none',
@@ -10767,6 +11004,9 @@ export class HeadingNumberingService {
     if (this.editorRootDisposables) {
       this.editorRootDisposables.dispose()
     }
+    // ── P0 §2.3/§7.2: 编辑器根重绑（切文档/换 editor root）→ 取消旧待处理导航审计，
+    // 防止跨文档污染（不静默：计入 AUDITS_CANCELLED_WITH_REASON / STALE_DOCUMENT_DISCARD）。
+    try { invalidateNavigationAudits('EDITOR_ROOT_REBIND') } catch { /* observability only */ }
     this.editorRootDisposables = new DisposableStore()
     this.boundEditorRoot = root
 
@@ -10776,8 +11016,26 @@ export class HeadingNumberingService {
       if (this.skipIfInkChapterUiEvent(e, 'enter-command')) return
       this.logKeyboardProvenance(e, 'onEnterCommand')
 
+      // ── P0 CARET ISOLATION — 方向键默认行为后的有界、只读插入点审计 ──
+      // 仅 ArrowDown/ArrowUp；不做 preventDefault、不移动光标、不改 Selection。
+      try {
+        scheduleNavigationPostDefaultAudit(e.key, e.isTrusted, e.defaultPrevented, {
+          documentKey: this.getDocumentKey() ?? null,
+          buildShaOrMarker: FORENSIC_BUILD_MARKER,
+          editorRoot: root,
+          editorRootIdentity: `${root.tagName}#${root.id || ''}.${String(root.className ?? '').split(/\s+/).filter(Boolean).slice(0, 2).join('.')}`,
+          sourceRevision: null,
+          peekRuntimeId: (el: HTMLElement) => this.getParagraphRuntimeId(el),
+        })
+      } catch { /* observability only */ }
+
       // ── R58.7 Step 1.2: ENTER ADMISSION FIREWALL ──
       const isRealEnter = this.isRealEnterKey(e)
+      // ── ENTER→BLANK ECHO GUARD (plan ②) — arm the targeted DOM-WRITE CALL-STACK
+      // TRACER for the bounded echo window BEFORE the native split, so the REAL
+      // writer of the second `SPLIT_1_TO_2` is captured (plan ① style deferral was
+      // refuted by the runtime log).
+      if (isRealEnter) armEnterEchoWriteTrace(null, ENTER_SPLIT_ECHO_WINDOW_MS)
       const preParagraph = resolveCurrentBodyParagraph(root)
       const preVisibleText = preParagraph ? getUserVisibleParagraphText(preParagraph) : ''
       const preToken = preParagraph ? readParagraphIndentCommand(preParagraph) : null
@@ -10832,6 +11090,22 @@ export class HeadingNumberingService {
 
       if (!handled) {
         this.beginTrustedUserIntent('NORMAL_ENTER', 'keydown', 'Enter')
+      }
+
+      // ── P0 §3.5 — 有界、只读的「插件是否干预原生 Enter 事件链」取证 ──
+      // 用于区分「原生 pressReturn 单次」与「被插件事件链干预后二次执行」。仅记录真实事实，
+      // 不做任何 preventDefault/stopPropagation/二次派发（本路径自始至终不干预）。
+      if (isRealEnter) {
+        emitRuntimeAudit('ENTER-PLUGIN-INTERVENTION-AUDIT', {
+          key: e.key,
+          code: e.code,
+          isTrusted: e.isTrusted,
+          admissionDecision,
+          createdTransaction: handled,
+          defaultPreventedAtHandlerEnd: e.defaultPrevented,
+          cancelBubbleAtHandlerEnd: e.cancelBubble,
+          pluginDispatchSyntheticEnter: false,
+        })
       }
     }
     root.addEventListener('keydown', onEnterCommand, true)

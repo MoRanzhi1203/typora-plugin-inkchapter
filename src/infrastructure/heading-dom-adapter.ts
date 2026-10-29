@@ -50,6 +50,16 @@ export class HeadingDomAdapter {
   setEditorRoot(el: HTMLElement | null): void { this.editorRoot = el }
   detectEditorRoot(): HTMLElement | null { return document.getElementById('write') }
 
+  /**
+   * PERFORMANCE — ONE heading query for a whole refresh cycle. Callers pass the
+   * result into the collect/validate/reconcile methods so a single keystroke no
+   * longer runs 5-7 identical full-document selector scans.
+   */
+  queryHeadingElements(): HTMLHeadingElement[] {
+    if (!this.editorRoot) return []
+    return Array.from(this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR))
+  }
+
   collectHeadings(): HeadingDescriptor[] {
     if (!this.editorRoot) return []
     const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
@@ -69,12 +79,12 @@ export class HeadingDomAdapter {
    * (same exclusion + same elementKey), but retaining the live element so the
    * Heading authority can resolve "nearest preceding heading" by identity.
    */
-  collectHeadingBindings(): { key: string; element: HTMLHeadingElement; level: HeadingLevel; text: string }[] {
+  collectHeadingBindings(els?: readonly HTMLHeadingElement[]): { key: string; element: HTMLHeadingElement; level: HeadingLevel; text: string }[] {
     if (!this.editorRoot) return []
-    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const headingEls = els ?? this.queryHeadingElements()
     const result: { key: string; element: HTMLHeadingElement; level: HeadingLevel; text: string }[] = []
-    for (let i = 0; i < els.length; i++) {
-      const el = els[i]
+    for (let i = 0; i < headingEls.length; i++) {
+      const el = headingEls[i]
       if (this.isInsideExcluded(el)) continue
       const level = parseInt(el.tagName.charAt(1), 10)
       if (level < 1 || level > 6) continue
@@ -115,9 +125,9 @@ export class HeadingDomAdapter {
    * attribute is validated as part of the SAME check, so a label-valid but
    * gap-invalid DOM can never be accepted by the fast path.
    */
-  isRenderedStateValid(states: RenderedHeadingState[]): boolean {
+  isRenderedStateValid(states: RenderedHeadingState[], els?: readonly HTMLHeadingElement[]): boolean {
     if (!this.editorRoot) return false
-    const currentEls = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const currentEls = els ?? this.queryHeadingElements()
     let idx = 0
     for (let i = 0; i < currentEls.length && idx < states.length; i++) {
       const el = currentEls[i]
@@ -150,13 +160,17 @@ export class HeadingDomAdapter {
   }
 
   /** Build rendered states from current DOM + computed labels (+ optional gaps). */
-  buildRenderedStates(labels: readonly string[], gaps?: readonly (string | null | undefined)[]): RenderedHeadingState[] {
+  buildRenderedStates(
+    labels: readonly string[],
+    gaps?: readonly (string | null | undefined)[],
+    els?: readonly HTMLHeadingElement[],
+  ): RenderedHeadingState[] {
     if (!this.editorRoot) return []
-    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const headingEls = els ?? this.queryHeadingElements()
     const result: RenderedHeadingState[] = []
     let labelIdx = 0
-    for (let i = 0; i < els.length; i++) {
-      const el = els[i]
+    for (let i = 0; i < headingEls.length; i++) {
+      const el = headingEls[i]
       if (this.isInsideExcluded(el)) continue
       if (labelIdx >= labels.length) continue
       const level = parseInt(el.tagName.charAt(1), 10)
@@ -299,14 +313,17 @@ export class HeadingDomAdapter {
    * in which the number attribute can be written without the gap being resolved
    * from the SAME projection.
    */
-  reconcileHeadingDecorations(projections: readonly HeadingDecorationProjection[]): DecorationReconcileResult {
+  reconcileHeadingDecorations(
+    projections: readonly HeadingDecorationProjection[],
+    preCollected?: readonly HTMLHeadingElement[],
+  ): DecorationReconcileResult {
     const result: DecorationReconcileResult = {
       scanned: 0, repaired: 0, updated: 0, removed: 0,
       labelMismatch: 0, gapMismatch: 0, classMismatch: 0, cleared: 0, staleGapRemoved: 0,
     }
     if (!this.editorRoot) return result
 
-    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const els = preCollected ?? this.queryHeadingElements()
     const handled = new Set<HTMLElement>()
     let idx = 0
     for (let i = 0; i < els.length; i++) {
@@ -485,9 +502,9 @@ export class HeadingDomAdapter {
    * Apply heading layout classes to all headings in the editor.
    * Layout is independent of numbering — it applies even when numbering is off.
    */
-  applyHeadingLayouts(layouts: HeadingLayoutSettings): void {
+  applyHeadingLayouts(layouts: HeadingLayoutSettings, preCollected?: readonly HTMLHeadingElement[]): void {
     if (!this.editorRoot) return
-    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const els = preCollected ?? this.queryHeadingElements()
     const levelToConfig: Record<number, { textAlign: string; firstLineIndentEm: number }> = {
       1: layouts.h1, 2: layouts.h2, 3: layouts.h3,
       4: layouts.h4, 5: layouts.h5, 6: layouts.h6,
@@ -499,27 +516,26 @@ export class HeadingDomAdapter {
       const config = levelToConfig[level]
       if (!config) continue
 
-      // Remove all old layout classes
+      // PERFORMANCE — write only on a real state change. The class list is
+      // stable for almost every keystroke, so the old unconditional
+      // remove×N + add caused needless attribute/style invalidation.
+      const desired = config.textAlign === 'left' && config.firstLineIndentEm >= 2
+        ? 'inkchapter-heading-indent-2'
+        : `inkchapter-heading-align-${config.textAlign}`
       for (const cls of LAYOUT_CLASSES) {
-        el.classList.remove(cls)
+        if (cls !== desired && el.classList.contains(cls)) el.classList.remove(cls)
       }
-
-      // Apply the appropriate class
-      if (config.textAlign === 'left' && config.firstLineIndentEm >= 2) {
-        el.classList.add('inkchapter-heading-indent-2')
-      } else {
-        el.classList.add(`inkchapter-heading-align-${config.textAlign}`)
-      }
+      if (!el.classList.contains(desired)) el.classList.add(desired)
     }
   }
 
   /** Clear all layout classes from headings. */
-  clearHeadingLayouts(): void {
+  clearHeadingLayouts(preCollected?: readonly HTMLHeadingElement[]): void {
     if (!this.editorRoot) return
-    const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
+    const els = preCollected ?? this.queryHeadingElements()
     for (let i = 0; i < els.length; i++) {
       for (const cls of LAYOUT_CLASSES) {
-        els[i].classList.remove(cls)
+        if (els[i].classList.contains(cls)) els[i].classList.remove(cls)
       }
     }
   }

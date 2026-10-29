@@ -1636,18 +1636,30 @@ export function applyEffectiveParagraphIndent(
   effective: ParagraphEffectiveIndent,
   writerId?: string,
 ): void {
-  // Clear all visual state first
-  paragraph.classList.remove(EFFECTIVE_INDENT_CLASS)
-  paragraph.classList.remove(EFFECTIVE_FLUSH_CLASS)
-  paragraph.style.textIndent = ''
+  // PERFORMANCE — the previous implementation always performed
+  // remove×2 + inline-style reset + add on EVERY paragraph of EVERY refresh
+  // (i.e. once per keystroke per paragraph). Most paragraphs are already in the
+  // desired state, so only the real transition is written now.
+  const wantsIndent = effective === 'indent-2'
+  const hasIndent = paragraph.classList.contains(EFFECTIVE_INDENT_CLASS)
+  const hasFlush = paragraph.classList.contains(EFFECTIVE_FLUSH_CLASS)
+  const hasInlineIndent = paragraph.style.textIndent !== ''
 
-  if (effective === 'indent-2') {
-    paragraph.classList.add(EFFECTIVE_INDENT_CLASS)
+  if (wantsIndent) {
+    if (hasFlush) paragraph.classList.remove(EFFECTIVE_FLUSH_CLASS)
+    if (!hasIndent) paragraph.classList.add(EFFECTIVE_INDENT_CLASS)
   } else {
-    // FLUSH: apply explicit flush class to prevent parent text-indent inheritance
-    paragraph.classList.add(EFFECTIVE_FLUSH_CLASS)
+    if (hasIndent) paragraph.classList.remove(EFFECTIVE_INDENT_CLASS)
+    if (!hasFlush) paragraph.classList.add(EFFECTIVE_FLUSH_CLASS)
   }
-  recordParagraphWrite(paragraph, writerId ?? 'applyEffectiveParagraphIndent', effective)
+  if (hasInlineIndent) paragraph.style.textIndent = ''
+
+  const changed = wantsIndent
+    ? (!hasIndent || hasFlush || hasInlineIndent)
+    : (!hasFlush || hasIndent || hasInlineIndent)
+  if (changed) {
+    recordParagraphWrite(paragraph, writerId ?? 'applyEffectiveParagraphIndent', effective)
+  }
 }
 
 /**

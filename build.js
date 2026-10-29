@@ -1,10 +1,10 @@
-import * as child_process from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import * as path from 'node:path'
 import * as esbuild from 'esbuild'
 import typoraPlugin, { installDevPlugin, closeTypora } from 'esbuild-plugin-typora'
 import { sassPlugin } from 'esbuild-sass-plugin'
+import { isTyporaRunning, openTestVault } from './scripts/open-test-vault.mjs'
 
 
 const args = process.argv.slice(2)
@@ -58,8 +58,20 @@ await esbuild.build({
 if (IS_DEV) {
 
   await installDevPlugin()
-  await closeTypora()
-  child_process.exec('Typora ./test/vault/doc.md')
+  // Never close a running Typora just because a dev build finished: the user may
+  // have unsaved windows. closeTypora() removes the community-framework dev lock
+  // (which makes the running app quit) and the old flow then relaunched it.
+  // Skipping both keeps every window intact; the new artifact still lands in
+  // test/vault/.typora/plugins/dist and is loaded on the next manual restart.
+  if (isTyporaRunning()) {
+    console.log('[build] Typora is running — skipped closeTypora()/relaunch to preserve open windows.')
+    console.log('[build] Restart Typora manually to load the new build from test/vault/.typora/plugins/dist.')
+  } else {
+    await closeTypora()
+    // Always mount the VAULT first (a lone `.md` launch yields a window without
+    // the InkChapter UI), wait for the real plugin receipt, then open the doc.
+    await openTestVault()
+  }
 } else {
   // esbuild-sass-plugin names the compiled stylesheet after the `main.ts` entry
   // (`main.css`); the runtime loader and deploy contract expect `style.css`.

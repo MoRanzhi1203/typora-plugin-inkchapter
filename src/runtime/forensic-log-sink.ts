@@ -75,6 +75,16 @@ let outputPath: string | null = null
 const writeQueue: string[] = []
 let flushScheduled = false
 let flushTimer: ReturnType<typeof setTimeout> | null = null
+let dirEnsured = false
+
+/**
+ * PERFORMANCE — the file sink used to flush on every `setTimeout(0)`, i.e. once
+ * per audit event. Coalescing into a 500 ms batch keeps the JSONL stream intact
+ * while removing per-keystroke disk writes from the editing hot path.
+ */
+const AUTO_FLUSH_DELAY_MS = 500
+/** Bound the in-memory queue so a slow/failing disk can never grow it forever. */
+const MAX_QUEUE_RECORDS = 5000
 
 let queuedCount = 0
 let writtenCount = 0
@@ -91,6 +101,11 @@ let suppressedInfoLogCount = 0
 let warnAuditCount = 0
 let errorAuditCount = 0
 const dedupLastSignature = new Map<string, string>()
+/**
+ * PERFORMANCE — bound the dedup cache so a long editing session with many
+ * distinct document/state tokens can never grow it without limit.
+ */
+const MAX_DEDUP_SIGNATURES = 500
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -202,7 +217,7 @@ function scheduleFlush(): void {
     flushTimer = null
     flushScheduled = false
     flush()
-  }, 0)
+  }, AUTO_FLUSH_DELAY_MS)
 }
 
 /** Synchronous flush of the current queue. Used by boundaries and tests. */
@@ -211,31 +226,44 @@ function flush(): void {
   if (writeQueue.length === 0) return
   const lines = writeQueue.splice(0, writeQueue.length)
   try {
-    const dir = path.dirname(outputPath)
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    if (!dirEnsured) {
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+      dirEnsured = true
+    }
     fs.appendFileSync(outputPath, lines.join('\n') + '\n', 'utf8')
     writtenCount += lines.length
   } catch (e) {
     errorCount++
     droppedCount += lines.length
+    dirEnsured = false
     recordSinkError(String(e))
   }
 }
 
 function enqueueRecord(event: string, payload?: Record<string, unknown>, level: AuditLogLevel = 'info'): void {
-  // Capture the emission timestamp exactly once (NOT at flush time).
-  const ts = captureRuntimeLogTimestamp()
-
   // Phase 7R.3.11.7 — summary level counters (non-info authority preserved).
   if (level === 'warn') warnAuditCount++
   else if (level === 'error') errorAuditCount++
 
-  // Console mirror always runs — preserves the existing observable stream.
-  consoleLog(level, buildConsoleLine(event, payload, ts))
+  const consoleEnabled = isRuntimeAuditConsoleRequested()
+  // PERFORMANCE — zero-cost path: no timestamp, no formatting and no string
+  // building when both the console mirror and the file sink are disabled.
+  if (!consoleEnabled && (!enabled || failed)) return
+
+  // Capture the emission timestamp exactly once (NOT at flush time).
+  const ts = captureRuntimeLogTimestamp()
+
+  // Console mirror always runs (unless explicitly silenced) — preserves the
+  // existing observable stream.
+  if (consoleEnabled) consoleLog(level, buildConsoleLine(event, payload, ts))
 
   // File sink is best-effort; never throws into business code.
   if (!enabled || failed) return
   try {
+    if (writeQueue.length >= MAX_QUEUE_RECORDS) {
+      writeQueue.shift()
+      droppedCount++
+    }
     writeQueue.push(buildRecord(event, payload, ts))
     queuedCount++
   } catch (e) {
@@ -246,6 +274,51 @@ function enqueueRecord(event: string, payload?: Record<string, unknown>, level: 
 }
 
 // ── Public API ───────────────────────────────────────────────────────
+
+/**
+ * PERFORMANCE — the file-backed sink is OPT-IN.
+ *
+ * Historically the plugin initialized it unconditionally at startup, so every
+ * audit event (including per-keystroke mutation audits) ended in a synchronous
+ * `appendFileSync`. Console mirroring stays always-on; persisting JSONL now
+ * requires an explicit flag:
+ *   - `globalThis.__inkchapter_audit_sink__ = true` (runtime toggle), or
+ *   - environment variable `INKCHAPTER_AUDIT_SINK=1`.
+ */
+export function isRuntimeAuditSinkRequested(): boolean {
+  const g = globalThis as { __inkchapter_audit_sink__?: unknown }
+  if (g.__inkchapter_audit_sink__ === true) return true
+  if (g.__inkchapter_audit_sink__ === false) return false
+  try {
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    return proc?.env?.INKCHAPTER_AUDIT_SINK === '1'
+  } catch {
+    return false
+  }
+}
+
+let consoleEnvDefault: boolean | null = null
+
+/**
+ * PERFORMANCE — console mirroring is ON by default and can be silenced with
+ * `globalThis.__inkchapter_audit_console__ = false` or `INKCHAPTER_AUDIT_CONSOLE=0`.
+ * Combined with the opt-in file sink this gives the hot path a zero-cost mode
+ * (no timestamp, no payload formatting, no console call).
+ */
+export function isRuntimeAuditConsoleRequested(): boolean {
+  const g = globalThis as { __inkchapter_audit_console__?: unknown }
+  if (g.__inkchapter_audit_console__ === false) return false
+  if (g.__inkchapter_audit_console__ === true) return true
+  if (consoleEnvDefault === null) {
+    try {
+      const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      consoleEnvDefault = proc?.env?.INKCHAPTER_AUDIT_CONSOLE !== '0'
+    } catch {
+      consoleEnvDefault = true
+    }
+  }
+  return consoleEnvDefault
+}
 
 /**
  * Unified audit facade. Console + file-backed sink in one place.
@@ -282,6 +355,10 @@ export function emitRuntimeAuditStateDedup(
   if (last === signature) {
     suppressedInfoLogCount++
     return
+  }
+  if (dedupLastSignature.size >= MAX_DEDUP_SIGNATURES && !dedupLastSignature.has(event)) {
+    const oldest = dedupLastSignature.keys().next().value
+    if (oldest !== undefined) dedupLastSignature.delete(oldest)
   }
   dedupLastSignature.set(event, signature)
   emittedInfoLogCount++
@@ -344,6 +421,7 @@ export function initializeForensicSink(options: ForensicSinkInitOptions = {}): v
     console.warn(`${formatRuntimeLogTimestamp(captureRuntimeLogTimestamp())}[InkChapter] FORENSIC-SINK-UNAVAILABLE: reason=mkdir-failed path=${auditDir} error=${String(e)}`)
     return
   }
+  dirEnsured = true
 
   buildId = nextBuildId
   sessionId = nextSessionId

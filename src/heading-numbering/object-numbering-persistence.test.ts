@@ -54,7 +54,9 @@ describe('PERSIST — real persisted settings save/reload', () => {
     const s = defaultObjectNumberingSettings()
     s.types.figure = { ...s.types.figure, preset: 'section-dash' }
     expect(s.types.table.preset).toBe('global')
-    expect(s.types.formula.preset).toBe('global')
+    // PA-11 — the shipped default for formulas is now PER SECTION; the other
+    // object kinds keep their continuous/global default.
+    expect(s.types.formula.preset).toBe('section-dash')
     expect(s.types.code.preset).toBe('global')
   })
 

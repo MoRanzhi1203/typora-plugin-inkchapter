@@ -18,6 +18,7 @@ import type {
 import { hashText } from './paragraph-layout-store'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import { forensicVerboseEnabled } from './document-open-perf'
+import { stampCaretInertPresentation } from '../document-utilities/document-diagnostic-caret-isolation-v1'
 // V5.15 — Standalone Object Block Invariant: ONE business object = ONE
 // standalone owning block = ONE canonical target. A structurally invalid image
 // block is excluded HERE, before any ordinal / caption is produced.
@@ -69,6 +70,38 @@ export function getCanonicalCaptionOwnerRoot(captionEl: HTMLElement): HTMLElemen
 /** V7 §2 — the canonical caption kind of a generated caption element. */
 export function getCanonicalCaptionKind(captionEl: HTMLElement): string | null {
   return captionEl.getAttribute(CAPTION_TYPE_ATTR)
+}
+
+/** Phase G — the caption service's OWN stable id of a caption projection. */
+export function getCanonicalCaptionId(captionEl: HTMLElement): string {
+  return captionEl.getAttribute(CAPTION_ID_ATTR) ?? ''
+}
+
+/** Phase G — the caption projection's canonical title (the user-entered name). */
+export function getCanonicalCaptionTitle(captionEl: HTMLElement): string {
+  return captionEl.getAttribute(CAPTION_TITLE_ATTR) ?? ''
+}
+
+/**
+ * Phase G — the ONE canonical caption projection selector. Every caption the
+ * service writes carries `data-inkchapter-caption`; this is the SINGLE source of
+ * that selector (no second copy of the string, no class/attr drift).
+ */
+export function collectCanonicalCaptionProjections(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(`[${CAPTION_ATTR}]`))
+}
+
+/**
+ * Phase G (locate-time) — resolve a live caption projection by the caption
+ * service's OWN stable id. Attribute-equality over the canonical projection set
+ * (never a first-match selector, never DOM adjacency).
+ */
+export function resolveCanonicalCaptionProjection(root: HTMLElement, captionId: string): HTMLElement | null {
+  if (captionId === '') return null
+  for (const el of collectCanonicalCaptionProjections(root)) {
+    if (el.getAttribute(CAPTION_ID_ATTR) === captionId) return el
+  }
+  return null
 }
 
 const DOCUMENT_POSITION_FOLLOWING = 4
@@ -743,7 +776,9 @@ export class CaptionDomAdapter {
     el.setAttribute(CAPTION_TITLE_ATTR, title)
     const ownerKey = this.targetKeysByRoot.get(target.root) ?? ''
     el.setAttribute(CAPTION_TARGET_KEY_ATTR, ownerKey)
-    el.setAttribute('contenteditable', 'false')
+    // P0 CARET ISOLATION — 题注是**投影展示文字**，必须标记为光标惰性孤岛
+    // （contenteditable=false + tabindex=-1 + user-select:none；保留点击交互）。
+    stampCaretInertPresentation(el, true)
     el.textContent = label
     this.captionOwnerRoots.set(el, target.root)
     // ── V7 §2 — the SAME canonical key is stamped on the OWNER ROOT element, so

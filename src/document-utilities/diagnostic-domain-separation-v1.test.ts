@@ -119,9 +119,12 @@ describe('V1 §24 — existing document rules carry domain=document', () => {
     expect(resolveDiagnosticDomain('LATENT_ATX_HEADING_MARKER_LEVEL_2')).toBe('document')
     expect(resolveDiagnosticDomain('STRICT_FIRST_H1_POSITION')).toBe('document')
     // an UNREGISTERED code has NO domain (a new rule must register one).
-    // VNext §18/§29 — a DEFERRED rule is deliberately NOT registered, so it
-    // resolves to null: no invented domain for a rule that is not implemented.
-    expect(resolveDiagnosticDomain('FIGURE_REFERENCE_TARGET_MISSING')).toBeNull()
+    expect(resolveDiagnosticDomain('NOT_A_REAL_DIAGNOSTIC_CODE')).toBeNull()
+    // Capability Matrix V1 §11 — a DEFERRED_BY_SPEC rule IS registered now (with
+    // an honest status): it keeps the document domain but has no producer, so it
+    // is never accidentally enabled.
+    expect(resolveDiagnosticDomain('FIGURE_REFERENCE_TARGET_MISSING')).toBe('document')
+    expect(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY.FIGURE_REFERENCE_TARGET_MISSING.implementationStatus).toBe('DEFERRED_BY_SPEC')
   })
 
   it('the real producer stamps domain=document on every emitted diagnostic', () => {

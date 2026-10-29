@@ -26,6 +26,66 @@ export const DIAGNOSTIC_INLINE_MARK_CLASS = 'inkchapter-diagnostic-inline-mark'
 export const DIAGNOSTIC_INLINE_FRAGMENT_CLASS = 'inkchapter-diagnostic-inline-fragment'
 export const DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS = 'inkchapter-diagnostic-locate-marker'
 
+/**
+ * ROOT_COMPOUND_CAPTION_COVERAGE §3.2/§3.3 —— THE single pure authority for the
+ * caption / expected-name PRIMARY slot geometry (relative to the carrier box).
+ *
+ * It is shared by the pre-commit frame controller AND the post-commit document-space
+ * reconcile: a composite target (code/table caption ∪ body) must re-derive BOTH the
+ * outer carrier AND its caption child on the SAME layout snapshot. Resizing only the
+ * outer box left the caption cue at its COMMIT-time width/offsets — after a sidebar
+ * drag the caption emphasis no longer matched the caption (the reported "题注高亮
+ * 消失/不一致").
+ */
+export interface CaptionCueRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export function computeCaptionCueRect(
+  present: { left: number; top: number; width: number; height: number },
+  caption: { left: number; top: number; right: number; bottom: number } | null,
+): CaptionCueRect | null {
+  if (!caption) return null
+  const relLeftRaw = caption.left - present.left
+  const relTopRaw = caption.top - present.top
+  let cueWidth = Math.max(12, caption.right - caption.left)
+  if (relLeftRaw < -2 || relTopRaw < -2 || relTopRaw > present.height + 2 || cueWidth < 6) return null
+  const maxW = present.width - Math.max(relLeftRaw, 0) - 2
+  if (maxW < 6) return null
+  cueWidth = Math.min(cueWidth, maxW)
+  // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured slot
+  // height, min 12px, clamped to the visible frame). No bottom keyline.
+  const slotTop = Math.max(relTopRaw, 0)
+  const captionH = caption.bottom - caption.top
+  // TRAE P0 §A/§2 — CAPTION_ONLY: the carrier box IS the caption row, so the cue
+  // must fill the WHOLE frame. The old −2px inset left the last 2px of the row
+  // uncovered and tripped COMPOUND_CAPTION_CUE_NOT_COVERING_CAPTION. Inert for a
+  // compound carrier, whose frame is far taller/wider than the caption.
+  const fullBleed = slotTop <= 1 && relLeftRaw <= 1
+    && present.height <= captionH + 3
+    && present.width <= Math.max(12, caption.right - caption.left) + 3
+  if (fullBleed) {
+    return {
+      left: Math.round(Math.max(relLeftRaw, 0)),
+      top: Math.round(slotTop),
+      width: Math.round(present.width),
+      height: Math.round(present.height),
+    }
+  }
+  // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured slot
+  // height, min 12px, clamped to the visible frame). No bottom keyline.
+  const slotH = Math.max(12, Math.min(captionH, present.height - slotTop - 2))
+  return {
+    left: Math.round(Math.max(relLeftRaw, 0)),
+    top: Math.round(slotTop),
+    width: Math.round(cueWidth),
+    height: Math.round(slotH),
+  }
+}
+
 import {
   clampRectToClip,
   inflateRectBy,
@@ -98,6 +158,21 @@ export interface DiagnosticLocateVisualCommit {
   forceInlineMark?: boolean
   /** V4 — caption / expected-name host rect (missing-name diagnostics). */
   captionHostRect?: RectLike | null
+  /**
+   * ROOT_CODE_CARRIER_CONTENT_COLUMN —— the LIVE semantic content column. The
+   * outer frame gap is clamped to it so a full-width carrier (code/table/figure/
+   * formula) never paints past the column edge.
+   */
+  contentColumnRect?: RectLike | null
+  /**
+   * TRAE V4 §10 — the EXPLICIT source-syntax OPENING-LINE fragment rects. When
+   * present they are painted verbatim (one overlay child per rect) and the
+   * controller NEVER mounts a block frame — the source-syntax active visual may
+   * only ever cover the opening token / opening line, never opener→EOF.
+   */
+  fragmentRects?: RectLike[] | null
+  /** TRAE V4 §10 — paint the source-syntax left ERROR accent on the fragments. */
+  sourceSyntaxAccent?: boolean
 }
 
 export interface DiagnosticLocateFrameStructure {
@@ -198,6 +273,31 @@ function mergeCaptionHost(
 }
 
 /**
+ * ROOT_CODE_CARRIER_CONTENT_COLUMN —— clamp the outer BREATHING GAP to the
+ * content column, never the target.
+ *
+ * `withGap` is the target box already inflated by the frame gap; `base` is the
+ * same target WITHOUT the gap. A side is only pulled back to the column edge when
+ * the pre-gap box was already inside it — so a full-width block loses its (out-of-
+ * column) 2px gap while a target that legitimately extends past the column keeps
+ * its real extent.
+ */
+function clampCarrierGapToColumn(
+  withGap: RectSnapshot,
+  base: RectSnapshot,
+  column: { left: number; right: number },
+): RectSnapshot {
+  if (!Number.isFinite(column.left) || !Number.isFinite(column.right) || column.right <= column.left) return withGap
+  // A side is pulled back to the column edge ONLY when the pre-gap box was already
+  // inside it; a target that legitimately extends past the column keeps its gap.
+  const left = base.left >= column.left ? Math.max(withGap.left, column.left) : withGap.left
+  const right = base.right <= column.right ? Math.min(withGap.right, column.right) : withGap.right
+  if (left === withGap.left && right === withGap.right) return withGap
+  if (right <= left) return withGap
+  return makeRectSnapshot({ left, top: withGap.top, right, bottom: withGap.bottom })
+}
+
+/**
  * Phase 7R.3.11.8B.8 — SINGLE Diagnostic Locate Frame controller.
  *
  * The host owns ONE instance per overlay host. The controller owns at most ONE
@@ -224,6 +324,14 @@ export class DiagnosticLocateFrameController {
   private preciseOccurrenceWithinAnchor = 0
   private forceInlineMarkOverride = false
   private captionHostRectOverride: { left: number; top: number; right: number; bottom: number } | null = null
+  /**
+   * ROOT_CODE_CARRIER_CONTENT_COLUMN —— the LIVE content column the carrier must
+   * never overflow. The 2px breathing gap is symmetric, so a FULL-WIDTH block
+   * (code/table/figure/formula) pushed the carrier 2px past the column on each
+   * side (measured 763.4 → 767.4 = +4px). The gap is clamped to the available
+   * headroom; the TARGET itself is never shrunk.
+   */
+  private contentColumnRectOverride: { left: number; top: number; right: number; bottom: number } | null = null
   /** V4 — last committed visual geometry decision (audit/tests). */
   private lastVisualPresentation: string | null = null
   private lastOcclusion: string | null = null
@@ -285,6 +393,9 @@ export class DiagnosticLocateFrameController {
   /** The scroll offset the current inline geometry was measured at. */
   private inlineMeasuredScrollTop: number | null = null
   private lastHeadingLegacyFrameRender = false
+  /** TRAE V4 §10 — explicit source-syntax opening-line fragments. */
+  private explicitFragmentRects: RectLike[] | null = null
+  private sourceSyntaxAccent = false
 
   constructor(private readonly root: HTMLElement | null) {}
 
@@ -390,6 +501,24 @@ export class DiagnosticLocateFrameController {
     this.preciseOccurrenceWithinAnchor = Math.max(0, Math.floor(input.preciseOccurrenceWithinAnchor ?? 0))
     this.forceInlineMarkOverride = input.forceInlineMark === true
     this.captionHostRectOverride = input.captionHostRect ?? null
+    this.contentColumnRectOverride = input.contentColumnRect ?? null
+    this.explicitFragmentRects = input.fragmentRects ?? null
+    this.sourceSyntaxAccent = input.sourceSyntaxAccent === true
+    // ── TRAE V4 §10 — EXPLICIT-FRAGMENT carrier (source-syntax opener). The
+    // fragments are painted verbatim; a block frame is NEVER mounted and no text
+    // range is ever required.
+    if (input.sourceSyntaxAccent === true) {
+      this.kind = 'inline'
+      this.lastVisualPresentation = 'inline-mark'
+      this.lastOcclusion = 'none'
+      this.lastRectInvariantPass = true
+      this.lastRightEdgeAuthority = 'SEMANTIC_TARGET'
+      this.lastCoverage = { horizontal: 1, vertical: 1 }
+      const ar = safeAnchorRect(anchor)
+      this.lastSemanticRect = { left: ar.left, top: ar.top, right: ar.right, bottom: ar.bottom, width: ar.width, height: ar.height }
+      this.paintExplicitFragments()
+      return this.inlineFragmentEls.length > 0
+    }
     // ── V5.12-R2 §5/§4 — HEADING: scroll authority ≠ visual authority. ──────
     // The heading's block rect stays the SCROLL / visibility authority, but the
     // visual carrier is the TEXT-TIGHT heading marker (passive + active), which
@@ -439,6 +568,38 @@ export class DiagnosticLocateFrameController {
     this.mountFrame(kind)
     this.reposition()
     return true
+  }
+
+  /**
+   * TRAE V4 §10 — paint the EXPLICIT source-syntax opening-line rects verbatim.
+   * Each rect becomes ONE overlay child carrying the error severity + the
+   * source-syntax left accent marker. No text measurement, no block frame.
+   */
+  private paintExplicitFragments(): void {
+    this.removeInlineFragments()
+    const rects = this.explicitFragmentRects
+    if (!rects || rects.length === 0 || !this.root) return
+    const fragments: ClosureRect[] = []
+    for (const f of rects) {
+      if (![f.left, f.top, f.width, f.height].every(Number.isFinite)) continue
+      const el = document.createElement('div')
+      el.className = DIAGNOSTIC_INLINE_FRAGMENT_CLASS
+      el.setAttribute('data-severity', this.severity)
+      el.setAttribute('data-target-kind', 'inline')
+      if (this.sourceSyntaxAccent) el.setAttribute('data-ink-source-syntax', 'true')
+      el.setAttribute('aria-hidden', 'true')
+      el.style.cssText = `position:absolute;left:${Math.round(f.left)}px;top:${Math.round(f.top)}px;width:${Math.round(f.width)}px;height:${Math.round(f.height)}px;pointer-events:none;`
+      this.root.appendChild(el)
+      this.inlineFragmentEls.push(el)
+      fragments.push({ left: f.left, top: f.top, right: f.right, bottom: f.bottom, width: f.width, height: f.height })
+    }
+    this.lastInlineExpected = fragments.slice()
+    this.lastInlineFragments = fragments.slice()
+    this.inlineGeometryGeneration++
+    this.inlineMeasuredScrollTop = this.currentScrollTop()
+    if (this.preScrollInlineGeometryInvalidated) this.postScrollInlineGeometryFresh = true
+    this.lastInlineFragmentCoverage = 1
+    this.lastInlineCrossLineUnion = false
   }
 
   /** §10 — the exact source-range geometry as one overlay child per visual line. */
@@ -693,7 +854,7 @@ export class DiagnosticLocateFrameController {
    * separate by buildLocateVisualGeometryV4. Drawer occlusion becomes an
    * OPEN-EDGE presentation (no fake closed clipped rectangle).
    */
-  reposition(opts?: { clipRect?: RectLike | null; headless?: boolean; drawerRect?: RectLike | null; preciseRect?: RectLike | null; scroll?: boolean }): void {
+  reposition(opts?: { clipRect?: RectLike | null; headless?: boolean; drawerRect?: RectLike | null; preciseRect?: RectLike | null; scroll?: boolean; contentColumnRect?: RectLike | null }): void {
     if (this.disposed) return
     if (this.anchorEl && !this.anchorEl.isConnected) {
       this.clear('ANCHOR_DISCONNECTED')
@@ -720,7 +881,15 @@ export class DiagnosticLocateFrameController {
     const gap = precise || this.forceInlineMarkOverride ? 0 : diagnosticLocateFrameGapFor(this.kind)
     const inflated = inflateRectBy(semanticSource, gap)
     const caption = this.captionHostRectOverride
-    const withCaption = mergeCaptionHost(inflated, caption)
+    const withCaptionGap = mergeCaptionHost(inflated, caption)
+    // ── ROOT_CODE_CARRIER_CONTENT_COLUMN —— the outer breathing gap is clamped to
+    // the LIVE content column so a full-width carrier never paints past the column
+    // edge (measured 763.4 → 767.4 = +4px). The pre-gap union is the TARGET that
+    // must stay covered, so a legitimately wider-than-column target is never shrunk.
+    const contentColumn = opts?.contentColumnRect ?? this.contentColumnRectOverride
+    const withCaption = contentColumn && gap > 0
+      ? clampCarrierGapToColumn(withCaptionGap, mergeCaptionHost(semanticSource, caption), contentColumn)
+      : withCaptionGap
     // Heading — measure the REAL text extent for the text-tight bottom edge
     // (never a full-width heading border). Headless keeps the semantic box.
     let headingTextRight = 0
@@ -947,6 +1116,9 @@ export class DiagnosticLocateFrameController {
     this.preciseOccurrenceWithinAnchor = 0
     this.forceInlineMarkOverride = false
     this.captionHostRectOverride = null
+    this.contentColumnRectOverride = null
+    this.explicitFragmentRects = null
+    this.sourceSyntaxAccent = false
     this.lastVisualPresentation = null
     this.lastOcclusion = null
     this.lastRectInvariantPass = true
@@ -1003,26 +1175,18 @@ export class DiagnosticLocateFrameController {
     // measured name slot there is no cue at all (never a 2px keyline).
     if (!caption) return
     const cueType = 'caption-host'
-    const relLeftRaw = caption.left - present.left
-    const relTopRaw = caption.top - present.top
-    let cueWidth = Math.max(12, caption.right - caption.left)
-    if (relLeftRaw < -2 || relTopRaw < -2 || relTopRaw > present.height + 2 || cueWidth < 6) return
-    const maxW = present.width - Math.max(relLeftRaw, 0) - 2
-    if (maxW < 6) return
-    cueWidth = Math.min(cueWidth, maxW)
+    // THE single pure authority (shared with the post-commit reconcile).
+    const cueRect = computeCaptionCueRect(present, caption)
+    if (!cueRect) return
     const cue = document.createElement('div')
     cue.className = DIAGNOSTIC_LOCATE_CAPTION_CUE_CLASS
     cue.setAttribute('data-marker-kind', 'caption-edge')
     cue.setAttribute('data-cue-type', cueType)
     cue.setAttribute('data-severity', this.severity)
-    cue.style.left = `${Math.round(Math.max(relLeftRaw, 0))}px`
-    cue.style.top = `${Math.round(Math.max(relTopRaw, 0))}px`
-    cue.style.width = `${Math.round(cueWidth)}px`
-    // V5.12-R7 §7 — the primary name slot is a compact FILL (height = measured
-    // slot height, min 12px, clamped to the visible frame). No bottom keyline.
-    const slotTop = Math.max(relTopRaw, 0)
-    const slotH = Math.max(12, Math.min(caption.bottom - caption.top, present.height - slotTop - 2))
-    cue.style.height = `${Math.round(slotH)}px`
+    cue.style.left = `${cueRect.left}px`
+    cue.style.top = `${cueRect.top}px`
+    cue.style.width = `${cueRect.width}px`
+    cue.style.height = `${cueRect.height}px`
     frame.appendChild(cue)
     frame.setAttribute('data-caption-cue', cueType)
   }

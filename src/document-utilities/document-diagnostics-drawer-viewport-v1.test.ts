@@ -5,8 +5,9 @@
  * EDITOR_SCROLL_OWNER != DIAGNOSTICS_DRAWER_SCROLL_OWNER: a diagnostic-row click
  * may scroll the EDITOR but must NEVER move the Drawer. ACTIVE-only updates
  * (first click / deactivate / A→B switch) are an ACTIVE_PATCH on the EXISTING row
- * nodes — never a structural rebuild; a true STRUCTURAL_RENDER captures the
- * viewport first and restores the visible anchor (+ offset) afterwards.
+ * nodes; a pure CONTENT change (detail / title / visible count) is a CONTENT_UPDATE
+ * (text refreshed in place); a true STRUCTURAL_UPDATE captures the viewport first
+ * and restores the visible anchor (+ offset) afterwards.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
@@ -27,18 +28,44 @@ import {
 // ── pure module ─────────────────────────────────────────────────────────────
 
 describe('Drawer Viewport V1 — pure authority', () => {
-  it('§16 — ACTIVE_PATCH when the projection signature is unchanged', () => {
+  it('§16 — ACTIVE_PATCH when both the structure AND content signatures are unchanged', () => {
     const base = {
-      projectionSignature: 'sig',
+      structureSignature: 'struct',
+      contentSignature: 'content',
       documentKey: 'd',
       filter: 'all',
       listHasRows: true,
     }
-    expect(resolveDrawerUpdateMode({ previousSignature: 'sig', facts: base }).mode).toBe('ACTIVE_PATCH')
-    expect(resolveDrawerUpdateMode({ previousSignature: 'other', facts: base }).mode).toBe('STRUCTURAL_RENDER')
-    expect(resolveDrawerUpdateMode({ previousSignature: 'sig', facts: { ...base, listHasRows: false } }).mode)
-      .toBe('STRUCTURAL_RENDER')
-    expect(resolveDrawerUpdateMode({ previousSignature: null, facts: base }).mode).toBe('STRUCTURAL_RENDER')
+    // both unchanged → ACTIVE_PATCH
+    expect(resolveDrawerUpdateMode({
+      previousStructureSignature: 'struct', previousContentSignature: 'content', facts: base,
+    }).mode).toBe('ACTIVE_PATCH')
+    // structure changed → STRUCTURAL_UPDATE
+    expect(resolveDrawerUpdateMode({
+      previousStructureSignature: 'other', previousContentSignature: 'content', facts: base,
+    }).mode).toBe('STRUCTURAL_UPDATE')
+    expect(resolveDrawerUpdateMode({
+      previousStructureSignature: 'struct', previousContentSignature: 'content', facts: { ...base, listHasRows: false },
+    }).mode).toBe('STRUCTURAL_UPDATE')
+    expect(resolveDrawerUpdateMode({
+      previousStructureSignature: null, previousContentSignature: null, facts: base,
+    }).mode).toBe('STRUCTURAL_UPDATE')
+  })
+
+  it('§6 — CONTENT_UPDATE (never ACTIVE_PATCH) when the row set is unchanged but the displayed text changed', () => {
+    const facts = {
+      structureSignature: 'struct',
+      contentSignature: 'NEW-detail-4',
+      documentKey: 'd',
+      filter: 'all',
+      listHasRows: true,
+    }
+    // the row SET is identical, only the displayed content changed → CONTENT_UPDATE
+    const decision = resolveDrawerUpdateMode({
+      previousStructureSignature: 'struct', previousContentSignature: 'OLD-detail-2', facts,
+    })
+    expect(decision.mode).toBe('CONTENT_UPDATE')
+    expect(decision.reason).toBe('PROJECTION_CONTENT_CHANGED')
   })
 
   it('§15 — firstVisibleRowIndex picks the row straddling the scroll offset', () => {
@@ -80,7 +107,7 @@ describe('Drawer Viewport V1 — pure authority', () => {
 
   it('§30 — every violation maps to its OWN gate', () => {
     expect(evaluateDrawerActiveClickFacts({
-      action: 'ACTIVATE', updateMode: 'STRUCTURAL_RENDER',
+      action: 'ACTIVATE', updateMode: 'STRUCTURAL_UPDATE',
       scrollTopBefore: 300, scrollTopAfter: 0,
       firstVisibleDiagnosticIdBefore: 'd8', firstVisibleDiagnosticIdAfter: 'd1',
       firstVisibleOffsetBefore: 12, firstVisibleOffsetAfter: 0,
@@ -459,7 +486,7 @@ describe('Drawer Viewport V1 — ACTIVE_PATCH on active-only clicks', () => {
   })
 })
 
-describe('Drawer Viewport V1 — STRUCTURAL_RENDER capture/restore', () => {
+describe('Drawer Viewport V1 — STRUCTURAL_UPDATE capture/restore', () => {
   it('R9 §10/§12/§13 — a diagnostic ADD is structural and restores the visible anchor', async () => {
     const w = await openScrollableDrawer()
     w.setScrollTop(300)
@@ -474,7 +501,7 @@ describe('Drawer Viewport V1 — STRUCTURAL_RENDER capture/restore', () => {
     const offsetBefore = rectsOf()[anchorIdxBefore].offsetTop - w.getScrollTop()
     const genBefore = api().getDrawerRowMountGeneration()
 
-    // A real projection-set change (one more diagnostic) → STRUCTURAL_RENDER.
+    // A real projection-set change (one more diagnostic) → STRUCTURAL_UPDATE.
     const w2 = w.ids
     inject(host!, [
       ...Array.from({ length: 20 }, (_, i) => diagFor(`dg-${i}`, i, w2[i])),
@@ -487,17 +514,17 @@ describe('Drawer Viewport V1 — STRUCTURAL_RENDER capture/restore', () => {
     expect(rows()).toHaveLength(21)
     // … and the viewport was captured + restored (visible anchor + offset).
     const structural = lastAudit(STRUCTURAL_AUDIT)
-    expect(structural.updateMode).toBe('STRUCTURAL_RENDER')
+    expect(structural.updateMode).toBe('STRUCTURAL_UPDATE')
     expect(structural.viewportCapturePerformed).toBe('true')
     expect(structural.viewportRestorePerformed).toBe('true')
     expect(structural.viewportRestoreOk).toBe('true')
-    expect(structural.decision).toBe('STRUCTURAL_RENDER_VIEWPORT_RESTORED')
+    expect(structural.decision).toBe('STRUCTURAL_UPDATE_VIEWPORT_RESTORED')
     // the SAME first-visible diagnostic is still anchored at the SAME offset
     const anchorIdxAfter = firstVisibleRowIndex(rectsOf(), w.getScrollTop())
     expect(rectsOf()[anchorIdxAfter].diagnosticId).toBe(anchorBefore)
     expect(Math.abs((rectsOf()[anchorIdxAfter].offsetTop - w.getScrollTop()) - offsetBefore)).toBeLessThanOrEqual(1)
-    expect(api().getDrawerViewportV1GateReport()).toContain('DRAWER_STRUCTURAL_RENDER_WITHOUT_VIEWPORT_CAPTURE_COUNT=0')
-    expect(api().getDrawerViewportV1GateReport()).toContain('DRAWER_STRUCTURAL_RENDER_VIEWPORT_RESTORE_FAIL_COUNT=0')
+    expect(api().getDrawerViewportV1GateReport()).toContain('DRAWER_STRUCTURAL_UPDATE_WITHOUT_VIEWPORT_CAPTURE_COUNT=0')
+    expect(api().getDrawerViewportV1GateReport()).toContain('DRAWER_STRUCTURAL_UPDATE_VIEWPORT_RESTORE_FAIL_COUNT=0')
     const coverage = api().getDrawerViewportV1CoverageReport().find(l => l.startsWith('structuralRenderViewportRestore='))
     expect(Number.parseInt(coverage?.split('=')[1] ?? '0', 10)).toBeGreaterThanOrEqual(1)
   })
@@ -523,7 +550,7 @@ function internalBlankDiagnostic(): Record<string, unknown> {
       nextBlockIdentity: 'paragraph:B#0', nextBlockKind: 'paragraph',
       previousSourceEnd: 10, nextSourceStart: 20,
       firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3,
-      passMaxBlankLines: 2, warningThreshold: 3,
+      passMaxBlankLines: 1, warningThreshold: 2,
     },
     // §22/§23 — the anchor is the NEXT block; `标题 0` is the `data-line="4"` heading.
     location: { kind: 'source-range', startLine: 4, startColumn: 0, rawText: '标题 0' },
@@ -631,5 +658,115 @@ describe('Internal Blank-Line Policy V1 — host behaviour', () => {
     expect(value('INTERNAL_BLANK_LINE_DYNAMIC_REAPPEAR_RUNTIME_COUNT')).toBeGreaterThanOrEqual(1)
     // §21 — still no polling timer anywhere in this authority.
     expect(api().getInternalBlankLineV1GateReport()).toContain('INTERNAL_BLANK_LINE_POLLING_REFRESH_COUNT=0')
+  })
+})
+
+// ── CONTENT_UPDATE — content change must refresh the text IN PLACE ──────────
+
+describe('Drawer CONTENT_UPDATE — 内容变化必须就地刷新文字（禁止 ACTIVE_PATCH 漏更新）', () => {
+  const visibleDetail = (n: number): string =>
+    `当前两个内容块之间存在 ${n} 个可视连续空行，建议压缩为 1 个空行。`
+  const blankWithDetail = (detail: string, visible: number): Record<string, unknown> => {
+    const base = internalBlankDiagnostic()
+    return {
+      ...base,
+      detail,
+      metadata: {
+        ...(base.metadata as Record<string, unknown>),
+        publishedBlankLineCount: visible,
+        visibleBlankLineCount: visible,
+      },
+    }
+  }
+  const worldRows = (w: World, blank: Record<string, unknown> | null): Array<Record<string, unknown>> =>
+    Array.from({ length: 20 }, (_, i) =>
+      i === 8 ? (blank ?? diagFor(`dg-${i}`, i, w.ids[i])) : diagFor(`dg-${i}`, i, w.ids[i]))
+  const internalRowDetail = (): string =>
+    rows().find(r => r.getAttribute('data-diagnostic-id') === INTERNAL_ID)
+      ?.querySelector('.inkchapter-doc-drawer__item-detail')?.textContent ?? ''
+  const internalRowAria = (): string =>
+    rows().find(r => r.getAttribute('data-diagnostic-id') === INTERNAL_ID)?.getAttribute('aria-label') ?? ''
+
+  async function openWithDetail(detail: string, visible: number): Promise<World> {
+    const w = makeScrollableWorld(20)
+    host = w.h
+    inject(w.h, worldRows(w, blankWithDetail(detail, visible)))
+    api().renderHeadingDiagnosticMarkers()
+    ;(host as unknown as Internals).openDrawer('all')
+    await flushRaf()
+    w.setScrollTop(300)
+    return w
+  }
+
+  it('同长度 detail 变化（2 → 4 个可视连续空行）必须触发 CONTENT_UPDATE 并刷新文字', async () => {
+    const w = await openWithDetail(visibleDetail(2), 2)
+    expect(internalRowDetail()).toContain('2 个可视连续空行')
+    const rowBefore = rows().find(r => r.getAttribute('data-diagnostic-id') === INTERNAL_ID)!
+    const genBefore = api().getDrawerRowMountGeneration()
+
+    // same-length text (both single digit) — the OLD signature (message.length +
+    // detail.length) could not tell these apart → it stayed ACTIVE_PATCH.
+    inject(host!, worldRows(w, blankWithDetail(visibleDetail(4), 4)), 2)
+    ;(host as unknown as Internals).renderDrawer()
+
+    const audit = lastAudit(STRUCTURAL_AUDIT)
+    expect(audit.updateMode).toBe('CONTENT_UPDATE')
+    expect(audit.decision).toBe('CONTENT_UPDATE_WITHOUT_STRUCTURAL_RENDER')
+    // the ACTUAL DOM text now states 4 (in place, same node, no rebuild, no scroll move)
+    expect(internalRowDetail()).toContain('4 个可视连续空行')
+    expect(internalRowAria()).toContain('4 个可视连续空行')
+    expect(rows().find(r => r.getAttribute('data-diagnostic-id') === INTERNAL_ID)).toBe(rowBefore)
+    expect(api().getDrawerRowMountGeneration()).toBe(genBefore)
+    expect(w.getScrollTop()).toBe(300)
+    // §6 — the REAL-DOM content gate passes and the stale counter stays 0.
+    expect(api().getDrawerViewportV1GateReport()).toContain('DRAWER_ROW_CONTENT_STALE_AFTER_CONTENT_CHANGE_COUNT=0')
+    expect(api().getDrawerViewportV1GateReport()).toContain('DRAWER_ROW_DISPLAYED_COUNT_MISMATCH_COUNT=0')
+  })
+
+  it('title（message）变化同样触发 CONTENT_UPDATE 并刷新（消息驱动的标题）', async () => {
+    const w = await openScrollableDrawer()
+    const rowId = 'dg-8'
+    const msgOf = (): string =>
+      rows().find(r => r.getAttribute('data-diagnostic-id') === rowId)
+        ?.querySelector('.inkchapter-doc-drawer__item-msg')?.textContent ?? ''
+    expect(msgOf()).toContain('问题 8')
+
+    inject(host!, Array.from({ length: 20 }, (_, i) =>
+      i === 8 ? { ...diagFor('dg-8', 8, w.ids[8]), message: '问题 8 已更新' } : diagFor(`dg-${i}`, i, w.ids[i])), 2)
+    ;(host as unknown as Internals).renderDrawer()
+    expect(lastAudit(STRUCTURAL_AUDIT).updateMode).toBe('CONTENT_UPDATE')
+    expect(msgOf()).toContain('已更新')
+  })
+
+  it('§7 — 1→2→3→4→3→2→1 双向实时刷新（文字更新 + 增删）', async () => {
+    const w = makeScrollableWorld(20)
+    host = w.h
+    const at = (n: number | null): Array<Record<string, unknown>> =>
+      worldRows(w, n == null ? null : blankWithDetail(visibleDetail(n), n))
+    inject(w.h, at(null))
+    api().renderHeadingDiagnosticMarkers()
+    ;(host as unknown as Internals).openDrawer('all')
+    await flushRaf()
+    const hasRow = (): boolean => rows().some(r => r.getAttribute('data-diagnostic-id') === INTERNAL_ID)
+
+    // 1 visible → the rule is absent
+    expect(hasRow()).toBe(false)
+    // 2 → STRUCTURAL_UPDATE (row added)
+    inject(host!, at(2), 2); (host as unknown as Internals).renderDrawer()
+    expect(hasRow()).toBe(true)
+    expect(internalRowDetail()).toContain('2 个可视连续空行')
+    // 2 → 3 → 4 → 3 → 2 → CONTENT_UPDATE each time (text refreshed in place)
+    for (const n of [3, 4, 3, 2]) {
+      const rev = 10 + n
+      inject(host!, at(n), rev)
+      ;(host as unknown as Internals).renderDrawer()
+      expect(hasRow()).toBe(true)
+      expect(lastAudit(STRUCTURAL_AUDIT).updateMode).toBe('CONTENT_UPDATE')
+      expect(internalRowDetail()).toContain(`${n} 个可视连续空行`)
+    }
+    // back to 1 → the warning is REMOVED (structural)
+    inject(host!, at(null), 30)
+    ;(host as unknown as Internals).renderDrawer()
+    expect(hasRow()).toBe(false)
   })
 })

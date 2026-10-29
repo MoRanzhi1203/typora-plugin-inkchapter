@@ -171,12 +171,25 @@ export function evaluateReasonChipGeometry(input: {
   }
   const besideLastLine = input.chipPlacement == null || input.chipPlacement === 'RIGHT_OF_LAST_LINE'
   void besideLastLine
+  const anchorLine = input.textRects[input.textRects.length - 1]
+  // ── V5.14-R8 §4.4 —— BELOW_LAST_LINE 是合法的“独立视觉行”放置：不做同行 anchor /
+  // 居中校验，只要求 chip 真正落在文字行下方（不再把它当作 false-PASS 或 vertical fallback）。
+  if (input.chipPlacement === 'BELOW_LAST_LINE') {
+    const belowOk = chip.top >= anchorLine.bottom - 0.5
+    return {
+      horizontalGapPx: null,
+      anchorDriftPx: null,
+      verticalDriftPx: null,
+      anchorOk: true,
+      verticalOk: belowOk,
+      gapOk: true,
+    }
+  }
   // ── Heading Reason Chip Stable Anchor V2 §10（ROOT_V2_C）—— 旧的“非 RIGHT_OF_LAST_LINE
   // 即短路返回全 ok”分支已删除：它让 `left = 0 / top = bottom + 4` 的 next-line fallback
   // 静默通过（Audit False PASS）。V2 起 placement 恒为 `INLINE_RIGHT`，因此本函数**无条件**
   // 校验 anchor drift / 纵向居中；任何仍在下一行或有水平偏移的 chip 都会 FAIL。
   const tolerance = input.anchorTolerancePx ?? REASON_CHIP_ANCHOR_TOLERANCE_PX_V514R4
-  const anchorLine = input.textRects[input.textRects.length - 1]
   const labelRight = input.visualLabelRight ?? anchorLine.right
   const horizontalGapPx = chip.left - labelRight
   const anchorDriftPx = Math.abs(horizontalGapPx - input.configuredGapPx)

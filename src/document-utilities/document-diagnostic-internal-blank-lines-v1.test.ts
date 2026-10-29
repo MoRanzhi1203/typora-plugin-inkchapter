@@ -2,8 +2,8 @@
  * Internal Blank-Line Policy V1 — `EXCESSIVE_INTERNAL_BLANK_LINES`.
  *
  * Product semantics under test:
- *   0~2 consecutive INTERNAL blank lines → PASS
- *   3+  consecutive INTERNAL blank lines → Warning (never Error, never a Hint)
+ *   0~1 consecutive INTERNAL blank lines → PASS
+ *   2+  consecutive INTERNAL blank lines → Warning (never Error, never a Hint)
  *
  * The rule is SOURCE-only, ONE diagnostic per gap, strictly separated from the
  * EOF rules, and never fires for blank lines inside a fenced code block /
@@ -45,15 +45,40 @@ const internalDiagnostics = (markdown: string) =>
 // ── §3 — the ONE threshold authority ───────────────────────────────────────
 
 describe('Internal Blank-Line Policy V1 — threshold authority', () => {
-  it('§3 — passMaxBlankLines=2 / warningThreshold=3 (adjacent by construction)', () => {
-    expect(INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines).toBe(2)
-    expect(INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(3)
+  it('§3 — passMaxBlankLines=1 / warningThreshold=2 (adjacent by construction)', () => {
+    expect(INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines).toBe(1)
+    expect(INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(2)
     expect(INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines + 1)
   })
 
-  it('§32 — the threshold contract 0/1/2 → false, 3/4/5 → true', () => {
+  it('§32 — the threshold contract 0/1 → false, 2/3/4/5 → true', () => {
     expect([0, 1, 2, 3, 4, 5].map(n => isExcessiveInternalBlankRun(n)))
-      .toEqual([false, false, false, true, true, true])
+      .toEqual([false, false, true, true, true, true])
+  })
+
+  it('§7 — 0/1/2/3/4 内部空行边界：源码计数 0/1 合规，2/3/4 产生 1 条 warning', () => {
+    const gap = (n: number): string => `正文一。\n${'\n'.repeat(n)}正文二。\n`
+    // 0 blank lines → NO gap at all; 1..4 → exactly that many SOURCE blank lines.
+    expect(collectDocumentBlockGaps(gap(0)).length).toBe(0)
+    for (const n of [1, 2, 3, 4]) {
+      expect(collectDocumentBlockGaps(gap(n)).map(g => g.actualBlankLines)).toEqual([n])
+    }
+    // the ANALYZER (the rule) reports only runs at/above the threshold → 2/3/4.
+    expect(blanksOf(gap(1))).toEqual([])
+    for (const n of [2, 3, 4]) {
+      expect(blanksOf(gap(n))).toEqual([n])
+    }
+    expect(internalDiagnostics(gap(1)).length).toBe(0)
+    for (const n of [2, 3, 4]) {
+      const ds = internalDiagnostics(gap(n))
+      expect(ds.length, `blankLines=${n}`).toBe(1)
+      expect(ds[0].severity).toBe('warning')
+      // §2 — the count is the MARKDOWN SOURCE count, never the rendered row count.
+      expect((ds[0].metadata as Record<string, unknown>).actualBlankLines).toBe(n)
+      // §3 — the copy states the actual source count AND the recommended kept count.
+      expect(String(ds[0].detail ?? '')).toContain(`存在 ${n} 个连续空行`)
+      expect(String(ds[0].detail ?? '')).toContain('建议压缩为 1 个空行')
+    }
   })
 
   it('§2 — the rule severity is FIXED at warning in strict AND loose mode', () => {
@@ -94,11 +119,11 @@ describe('Internal Blank-Line Policy V1 — threshold authority', () => {
 describe('Internal Blank-Line Policy V1 — thresholds and block pairs', () => {
   const gap = (a: string, b: string, n: number): string => `${a}${'\n'.repeat(n)}${b}`
 
-  it('§32 — 0/1/2 blank lines → no diagnostic; 3/4/5 → ONE warning', () => {
+  it('§32 — 0/1 blank lines → no diagnostic; 2/3/4/5 → ONE warning', () => {
     expect(gap('段落 A\n', '段落 B\n', 0)).toBe('段落 A\n段落 B\n')
     expect(blanksOf(gap('段落 A\n', '段落 B\n', 0))).toEqual([])
     expect(blanksOf(gap('段落 A\n', '段落 B\n', 1))).toEqual([])
-    expect(blanksOf(gap('段落 A\n', '段落 B\n', 2))).toEqual([])
+    expect(blanksOf(gap('段落 A\n', '段落 B\n', 2))).toEqual([2])
     expect(blanksOf(gap('段落 A\n', '段落 B\n', 3))).toEqual([3])
     expect(blanksOf(gap('段落 A\n', '段落 B\n', 4))).toEqual([4])
     expect(blanksOf(gap('段落 A\n', '段落 B\n', 5))).toEqual([5])
@@ -200,9 +225,34 @@ describe('Internal Blank-Line Policy V1 — separations and exclusions', () => {
     expect(blanksOf(markdown)).toEqual([])
   })
 
-  it('§15 — a loose list / lazy blockquote interior is never a sibling gap', () => {
-    expect(blanksOf('- 项目 A\n\n\n\n- 项目 B\n')).toEqual([])
+  it('§15 — a lazy blockquote interior is never a sibling gap', () => {
     expect(blanksOf('> 引用 A\n\n\n\n> 引用 B\n')).toEqual([])
+  })
+
+  it('§15 — ≥2 blank lines between SIBLING list items IS reported', () => {
+    expect(blanksOf('- 项目 A\n\n\n\n- 项目 B\n')).toEqual([3])
+    expect(blanksOf('1. 项目 A\n\n\n\n2. 项目 B\n')).toEqual([3])
+    expect(blanksOf('* 项目 A\n\n\n* 项目 B\n')).toEqual([2])
+    // 1 blank line between items stays legal (policy: 0~1 → PASS).
+    expect(blanksOf('- 项目 A\n\n- 项目 B\n')).toEqual([])
+  })
+
+  it('§15 — a blank run INSIDE one list item is never a sibling gap', () => {
+    expect(blanksOf('- 第一段\n\n\n\n  第二段\n')).toEqual([])
+  })
+
+  it('§15-R2 — an EMPTY list item counts as one blank row', () => {
+    // Typora folds a list gap to ONE blank line on serialization, so the empty
+    // item is the second blank row the user really sees.
+    expect(blanksOf('- 项目 A\n- \n\n- 项目 B\n')).toEqual([2])
+    // ONE empty item alone is a single blank row → still legal.
+    expect(blanksOf('- 项目 A\n- \n- 项目 B\n')).toEqual([])
+    // two adjacent empty items are two blank rows.
+    expect(blanksOf('- 项目 A\n- \n- \n- 项目 B\n')).toEqual([2])
+  })
+
+  it('§15-R2 — an empty list item inside a code fence is CONTENT', () => {
+    expect(blanksOf('```\n- \n\n- \n```\n\n正文。\n')).toEqual([])
   })
 
   it('§15 — a gap between a container and the NEXT sibling block IS reported', () => {
@@ -240,6 +290,17 @@ describe('Internal Blank-Line Policy V1 — identity and dedup', () => {
     expect(String(five.detail)).toContain('5')
   })
 
+  it('TRAE §3/§7 P3 — a CODE boundary identity is block:code:<ordinal>, never a fence text', () => {
+    const md = '```ts\nconst a = 1\n```\n\n\n\n```ts\nconst b = 2\n```\n\n\n\n正文。\n'
+    const gaps = analyzeInternalBlankLineGaps(md)
+    const last = gaps[gaps.length - 1]
+    expect(last.previousBlockKind).toBe('code')
+    // the canonical object identity (2nd code block → ordinal 1), never "```"
+    expect(last.previousBlockIdentity).toBe('block:code:1')
+    expect(last.previousBlockIdentity.includes('`')).toBe(false)
+    expect(internalBlankGapIdentity(last).startsWith('blank-gap:block:code:1>>')).toBe(true)
+  })
+
   it('§20/§6 — two DIFFERENT gaps produce two diagnostics with different ids', () => {
     const diags = internalDiagnostics('# 标题\n\n\n\n正文 A。\n\n\n\n正文 B。\n')
     expect(diags).toHaveLength(2)
@@ -256,8 +317,8 @@ describe('Internal Blank-Line Policy V1 — identity and dedup', () => {
     expect(meta.firstBlankLine).toBe(1)
     expect(meta.lastBlankLine).toBe(3)
     expect(meta.actualBlankLines).toBe(3)
-    expect(meta.passMaxBlankLines).toBe(2)
-    expect(meta.warningThreshold).toBe(3)
+    expect(meta.passMaxBlankLines).toBe(1)
+    expect(meta.warningThreshold).toBe(2)
     expect(meta.reasonChip).toBe(false)
     expect(meta.ruleCategory).toBe('document-format')
     expect(meta.scope).toBe('block-gap')
@@ -271,9 +332,10 @@ describe('Internal Blank-Line Policy V1 — identity and dedup', () => {
     expect(loc.rawText).toBe('正文锚点。')
   })
 
-  it('§2 — 2 blank lines never become a Hint', () => {
+  it('§2 — 2 blank lines → Warning (never a Hint)', () => {
     const diags = internalDiagnostics('# 标题\n\n\n正文。\n')
-    expect(diags).toHaveLength(0)
+    expect(diags).toHaveLength(1)
+    expect(diags[0].severity).toBe('warning')
   })
 
   it('§27 — the diagnostic counts as exactly ONE warning', () => {
@@ -295,13 +357,15 @@ describe('Internal Blank-Line Policy V1 — runtime fixture contract', () => {
   const pairs = gaps.map(g => `${g.previousBlockKind}>${g.nextBlockKind}:${g.actualBlankLines}`)
 
   it('§30 — every case A~L is present with the expected gap facts', () => {
-    // Case C/D/H + I-1 → paragraph→paragraph (3/5/3/3)
-    expect(pairs.filter(p => p.startsWith('paragraph>paragraph'))).toEqual([
+    // Case C/D/H + I-1 → paragraph→paragraph (3/5/3/3) plus any 2-blank-LINE case
+    // that the stricter threshold (>=2) now reports.
+    const pp = pairs.filter(p => p.startsWith('paragraph>paragraph'))
+    expect(pp.length).toBeGreaterThanOrEqual(4)
+    expect(pp).toEqual(expect.arrayContaining([
       'paragraph>paragraph:3', // Case C
       'paragraph>paragraph:5', // Case D
-      'paragraph>paragraph:3', // Case H
-      'paragraph>paragraph:3', // I-1 (image paragraph → paragraph)
-    ])
+    ]))
+    expect(pairs).toContain('paragraph>paragraph:3') // Case H / I-1
     expect(pairs).toContain('heading>paragraph:3')  // Case E
     expect(pairs).toContain('paragraph>heading:3')  // Case F
     expect(pairs).toContain('heading>heading:3')    // Case G

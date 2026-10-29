@@ -150,6 +150,23 @@ export function evaluateDrawerPresentationFidelity(
   return { decision: 'FAIL', reason: failed.join(','), failedChecks: failed }
 }
 
+/**
+ * §5/§7 — the PANEL GEOMETRY CLIP authority for a COMMITTED terminal.
+ *
+ * A block-gap band (`EXCESSIVE_INTERNAL_BLANK_LINES`) is painted from the DOCUMENT
+ * text column by its own carrier — never clamped to the panel edge (see
+ * `BLOCK-GAP-VISUAL-CONSISTENCY-AUDIT`). A Drawer that merely paints OVER that band
+ * is an EXPECTED overlay occlusion, never a geometry clip. Only a locate FRAME can
+ * be genuinely truncated by the panel. This mirrors the existing synthetic-EOF rule.
+ */
+export function resolvePanelGeometryClipCount(input: {
+  blockGapBandCommitted: boolean
+  drawerClipsTargetGeometry: boolean
+}): number {
+  if (input.blockGapBandCommitted) return 0
+  return input.drawerClipsTargetGeometry ? 1 : 0
+}
+
 // ── §18 — the V5.12-R3 hard-gate counters ──────────────────────────────────
 
 export const DRAWER_PERSISTENCE_V512R3_GATE_KEYS = [

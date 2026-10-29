@@ -9,6 +9,7 @@ import { DEFAULT_CAPTION_SETTINGS, type CaptionSettings, type CaptionRecord } fr
 import { readImageAlt } from './figure-alt-binding'
 import { hashText } from './paragraph-layout-store'
 import { buildHeadingNumberingSnapshotForRevision } from './heading-numbering-snapshot'
+import { ensureMathJaxRenderInputHook, isMathJaxRenderInputHookInstalled, uninstallMathJaxRenderInputHook } from './mathjax-render-input-hook'
 import { DEFAULT_SETTINGS } from '../settings/default-settings'
 import { DEFAULT_OBJECT_NUMBERING_CONFIG } from './object-numbering-engine'
 
@@ -1014,5 +1015,36 @@ describe('Formula forensic isolation (Phase 7R.2-A1)', () => {
     expect(infos.some(l => l.includes('FORMULA-VISIBLE-PROJECTION-FORENSIC-ERROR'))).toBe(true)
     // Phase 7R.3: no custom decoration is created (native-transient owns projection).
     expect(root.querySelector('[data-inkchapter-formula-number]')).toBeNull()
+  })
+})
+
+describe('PA-HOOK-01 MathJax global hook is released on dispose', () => {
+  // The hook replaces globalThis.MathJax.tex2svgPromise / tex2svg. It is a
+  // registered global resource and must be restored when the service that owns
+  // its live context is disposed — otherwise the plugin keeps rewriting render
+  // inputs after unload and retains the disposed service through a closure.
+  it('dispose() restores the original MathJax functions', () => {
+    const root = makeRoot()
+    const svc = createService(root, 'hook-dispose-doc')
+    services.push(svc)
+
+    const origPromise = function tex2svgPromise(this: unknown) { return { kind: 'orig' } }
+    ;(globalThis as unknown as { MathJax: { tex2svgPromise: unknown } }).MathJax = { tex2svgPromise: origPromise }
+    try {
+      const installed = ensureMathJaxRenderInputHook({
+        getLiveContext: () => ({ documentKey: 'hook-dispose-doc', controller: null, headingSnapshotRevision: null }),
+      })
+      expect(installed).toBe(true)
+      expect(isMathJaxRenderInputHookInstalled()).toBe(true)
+
+      svc.dispose()
+
+      expect(isMathJaxRenderInputHookInstalled()).toBe(false)
+      const mj = (globalThis as unknown as { MathJax: { tex2svgPromise: unknown } }).MathJax
+      expect(mj.tex2svgPromise).toBe(origPromise)
+    } finally {
+      uninstallMathJaxRenderInputHook()
+      delete (globalThis as unknown as { MathJax?: unknown }).MathJax
+    }
   })
 })

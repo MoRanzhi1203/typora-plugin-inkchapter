@@ -10,6 +10,13 @@
  * Pure contract: no DOM, no host state. See `DOCUMENT-DIAGNOSTIC-DRAWER-ORDER-AUDIT`.
  */
 import type { DiagnosticLocation, DocumentDiagnostic } from './diagnostics-types'
+// §2 — the STABLE rule priority is the ordering tie-break at an identical
+// position + severity (never the alphabetical rule id, which is not semantic).
+import { resolveRulePriority } from './document-diagnostic-copy-v1'
+// §3 — the DECLARED location strategy of a rule decides whether a runtime
+// `document-start`/`document-end` location is a genuine boundary or merely an
+// UNRESOLVED anchor fallback (see `documentPositionOf`).
+import { getRuleMeta } from './document-diagnostic-location'
 
 export type DiagnosticSeverityV514 = 'error' | 'warning' | 'info'
 
@@ -42,7 +49,14 @@ export const DOCUMENT_POSITION_BAND_START = 0
 export const DOCUMENT_POSITION_BAND_SOURCE = 1
 export const DOCUMENT_POSITION_BAND_END = 2
 
-/** Segregated in-band key ranges so different authorities can never collide. */
+/**
+ * §3 — the in-band key scale. `documentPositionOf` uses ONE comparable unit (the
+ * source line: `line*1000 + column`) for EVERY in-body target, and the single
+ * UNKNOWN sentinel for an unresolved one. The legacy `HEADING_BASE` / `BLOCK_BASE`
+ * canonical-index bases are RETAINED only as exported constants (frozen contract)
+ * — they are deliberately NOT used for ordering any more, because mixing an index
+ * key with a line key let an unresolved object outrank a real source position.
+ */
 export const DOCUMENT_POSITION_KEY_SOURCE_MAX = 10_000_000
 export const DOCUMENT_POSITION_KEY_LINE_BASE = 10_000_000
 export const DOCUMENT_POSITION_KEY_HEADING_BASE = 100_000_000
@@ -121,6 +135,18 @@ function projectOne(
       sourceLine = numOrNull(loc.startLine)
       sourceColumn = 0
       stableIdentity = `block:${loc.sourceBlockIdentity}`
+    } else if (loc.kind === 'source-syntax-opener') {
+      // TRAE V5 §16 — the source-syntax family must carry its REAL source
+      // position: `sourceStartOffset` is never null, the stable identity is the
+      // canonical `openerIdentity`, and the ordering key is the real source line
+      // (never the UNKNOWN 1e10 fallback).
+      sourceStartOffset = numOrNull(loc.sourceStartOffset)
+      sourceEndOffset = numOrNull(loc.sourceEndOffset)
+      sourceLine = numOrNull(loc.sourceLine)
+      sourceColumn = 0
+      stableIdentity = typeof loc.openerIdentity === 'string' && loc.openerIdentity.trim() !== ''
+        ? loc.openerIdentity
+        : `source-syntax:${loc.syntaxKind}:${loc.sourceLine}`
     } else if (loc.kind === 'canonical-node') {
       stableIdentity = loc.stableIdentity
       canonicalHeadingIndex = ctx.headingIndexOfStableIdentity?.(stableIdentity) ?? null
@@ -238,14 +264,34 @@ export function flattenDiagnosticsToProjections(
   return out
 }
 
-/** §3 — the documentPosition of ONE projection (band + key + subKey). */
+/**
+ * §3 — the documentPosition of ONE projection (band + key + subKey).
+ *
+ * UNIFIED SOURCE-POSITION MODEL (ONE comparable scale — a SOURCE LINE):
+ *   band 0 = document-START (only rules whose DECLARED strategy is
+ *            `document-start`);
+ *   band 1 = every IN-BODY target, keyed by `sourceLine*1000 + column`. A target
+ *            whose source line cannot be resolved sorts AFTER every located one
+ *            (key = UNKNOWN) but still BEFORE band 2 — never at the front;
+ *   band 2 = document-END rules.
+ *
+ * ROOT CAUSE this model fixes: the old key mixed INCOMPARABLE scales — a real
+ * source line (`line*1000`) vs a canonical heading/block INDEX (`1e8 + i` /
+ * `1e9 + i`). An object/heading whose source line was not resolved therefore
+ * fell back to a key FAR larger than any line key, so a mid-document
+ * `source-range` diagnostic (e.g. `EXCESSIVE_INTERNAL_BLANK_LINES`) sorted
+ * BEFORE it. Two rules are enforced now:
+ *   1. every located target uses the SAME unit (the source line);
+ *   2. a `document-start`/`document-end` LOCATION on a rule whose DECLARED
+ *      strategy is NOT that boundary is an UNRESOLVED ANCHOR FALLBACK (a heading
+ *      / object whose canonical identity could not be resolved), so it is NEVER
+ *      promoted to band 0/2 — otherwise it jumps to the top of the list.
+ */
 export function documentPositionOf(p: DiagnosticTargetProjection): DocumentPosition {
-  if (p.locationKind === 'document-start') return { band: DOCUMENT_POSITION_BAND_START, key: 0, subKey: 0 }
-  if (p.locationKind === 'document-end') return { band: DOCUMENT_POSITION_BAND_END, key: 0, subKey: 0 }
-  // §3 — ONE common unit: the source LINE. Mixing raw source OFFSETS with line
-  // numbers inside a single ordered key would be unsound (an offset of 1200 would
-  // sort before line 2), so `sourceStartOffset` stays a recorded FACT and the
-  // line (+column) is the ordering key every positionable target shares.
+  // §3 — a RESOLVED source line always wins: it is the ONE comparable unit for
+  // EVERY in-body target (source-range / figure-occurrence / source-block /
+  // source-syntax-opener / canonical-node / block-node). Never a canonical
+  // index, which would sort on an incomparable scale.
   if (p.sourceLine != null) {
     return {
       band: DOCUMENT_POSITION_BAND_SOURCE,
@@ -253,22 +299,21 @@ export function documentPositionOf(p: DiagnosticTargetProjection): DocumentPosit
       subKey: p.targetIndex,
     }
   }
-  if (p.canonicalHeadingIndex != null) {
-    return {
-      band: DOCUMENT_POSITION_BAND_SOURCE,
-      key: DOCUMENT_POSITION_KEY_HEADING_BASE + p.canonicalHeadingIndex,
-      subKey: p.targetIndex,
-    }
+  // §3 — the DECLARED boundary of the rule wins over a runtime location that
+  // merely degraded to a boundary. An unregistered code (legacy / test literal)
+  // keeps the raw location kind so the contract stays backwards compatible. A
+  // source-bearing rule whose location degraded to a boundary (a heading / object
+  // whose canonical identity could not be resolved) falls through to UNKNOWN —
+  // it is NEVER promoted to the front of the list.
+  const strategy = getRuleMeta(p.ruleId)?.locationStrategy ?? null
+  if (strategy === 'document-start' || (strategy === null && p.locationKind === 'document-start')) {
+    return { band: DOCUMENT_POSITION_BAND_START, key: 0, subKey: 0 }
   }
-  if (p.canonicalBlockIndex != null) {
-    return {
-      band: DOCUMENT_POSITION_BAND_SOURCE,
-      key: DOCUMENT_POSITION_KEY_BLOCK_BASE + p.canonicalBlockIndex,
-      subKey: p.targetIndex,
-    }
+  if (strategy === 'document-end' || (strategy === null && p.locationKind === 'document-end')) {
+    return { band: DOCUMENT_POSITION_BAND_END, key: 0, subKey: 0 }
   }
-  // §11 — an unlocatable target still sorts AFTER every located one, but BEFORE
-  // document-end, so a document-level diagnostic can never jump into the body.
+  // §11 — an UNRESOLVED in-body target sorts AFTER every located one, but BEFORE
+  // document-end, so it can never jump into the front of the list.
   return { band: DOCUMENT_POSITION_BAND_SOURCE, key: DOCUMENT_POSITION_KEY_UNKNOWN, subKey: p.targetIndex }
 }
 
@@ -287,6 +332,10 @@ export function compareDiagnosticTargetProjections(
   if (pa.subKey !== pb.subKey) return pa.subKey - pb.subKey
   const sr = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
   if (sr !== 0) return sr
+  // §2 — STABLE rule priority first, then the rule id / diagnostic id as the
+  // final deterministic fallback.
+  const pr = resolveRulePriority(a.ruleId) - resolveRulePriority(b.ruleId)
+  if (pr !== 0) return pr
   if (a.ruleId !== b.ruleId) return a.ruleId < b.ruleId ? -1 : 1
   if (a.diagnosticId !== b.diagnosticId) return a.diagnosticId < b.diagnosticId ? -1 : 1
   return a.targetIndex - b.targetIndex

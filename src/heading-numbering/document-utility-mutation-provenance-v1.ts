@@ -360,7 +360,15 @@ export function evaluateSemanticReconcileDecision(
     }
   }
   const sameStateKey = input.previousStateKey != null && input.previousStateKey === input.stateKey
+  // ── P0 DET — the duplicate-state shortcut requires PROOF that the paragraph
+  // structure did not move. The frame state key is heading/caption-derived, so a
+  // real Enter (`SPLIT_1_TO_2`), a paragraph merge (`MERGE_2_TO_1`), a paragraph
+  // replacement or a mixed batch can keep the key identical while the document
+  // body changed. Those shapes are independent structural evidence and MUST reach
+  // the semantic pass; only a batch that provably touched no paragraph may be
+  // dropped as a duplicate state.
   if (sameStateKey
+    && input.mutationShape === 'NONE'
     && !input.businessHostTouched
     && !input.sourceRevisionChanged
     && !input.canonicalStructureChanged) {

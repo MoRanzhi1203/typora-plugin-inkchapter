@@ -166,6 +166,14 @@ export class TabCloseVisibilityEnhancer {
 // ── V2 centering facts ──────────────────────────────────────────────────────
 
 export interface TabCloseCenteringEvaluationParams {
+  /**
+   * Whether the close control is actually RENDERED (display/visibility/size).
+   * A hidden close (Typora hides it until hover / on a single tab) has no
+   * meaningful hitbox: evaluating it produced a permanent false FAIL
+   * (HITBOX_OR_CENTER_RULE_MISSING) in the real runtime. Absent = rendered,
+   * preserving the legacy pure-test semantics.
+   */
+  closeRendered?: boolean
   /** ±px tolerance check when a real glyph rect was measurable. */
   deltaCenterX: number | null
   deltaCenterY: number | null
@@ -191,7 +199,7 @@ export interface TabCloseCenteringResult {
   centerOk: boolean
   slotStable: boolean
   layoutStable: boolean
-  decision: 'PASS' | 'FAIL'
+  decision: 'PASS' | 'FAIL' | 'SKIP'
   reason: string
 }
 
@@ -199,6 +207,21 @@ export interface TabCloseCenteringResult {
 export function evaluateTabCloseCentering(p: TabCloseCenteringEvaluationParams): TabCloseCenteringResult {
   const canRealMeasure = p.deltaCenterX != null && p.deltaCenterY != null
   const measureMode: 'REAL' | 'STRUCTURAL' = canRealMeasure ? 'REAL' : 'STRUCTURAL'
+
+  // R10 Project Audit §2.6 — a hidden close control (display:none / zero box /
+  // single tab) has NO hitbox to evaluate. Reporting FAIL here was a permanent
+  // false failure in the real runtime; the honest verdict is SKIP.
+  if (p.closeRendered === false) {
+    return {
+      measureMode,
+      hitboxOk: false,
+      centerOk: false,
+      slotStable: true,
+      layoutStable: true,
+      decision: 'SKIP',
+      reason: 'CLOSE_NOT_RENDERED',
+    }
+  }
 
   const sizeOk = p.widthPx != null && p.heightPx != null && Math.abs(p.widthPx - p.heightPx) <= 1 && p.widthPx >= 18 && p.widthPx <= 22
   const hitboxOk = sizeOk && p.paddingZero && p.marginZero && p.inlineFlex && p.alignItemsCenter && p.justifyContentCenter && p.square

@@ -18,6 +18,8 @@
  * this module supplies the third. It is a PURE contract: no DOM, no queries.
  */
 
+import { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS } from './document-diagnostic-document-end-newline-marker-v1'
+
 // ── Identity / audit ───────────────────────────────────────────────────────
 
 export const DOCUMENT_END_VISUAL_AUDIT_EVENT = 'DOCUMENT-DIAGNOSTIC-DOCUMENT-END-VISUAL-AUDIT'
@@ -198,8 +200,12 @@ export function readExtraTrailingBlankLineCount(metadata: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
 }
 
-/** §5.1 — the rule's own threshold (0~1 extra blank lines are legal). */
-export const DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS = 2
+/**
+ * §5.1 — the rule's own threshold (0~1 extra blank lines are legal). SINGLE
+ * SOURCE: re-exported from the document-end contract so the source detection, the
+ * visual resolver and the newline-marker resolver can never drift apart.
+ */
+export { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS }
 
 /**
  * §5.1 — is this diagnostic the `document-end` trailing-blank warning that needs
@@ -569,6 +575,45 @@ export const EOF_ACCENT_MIN_WIDTH_PX = 3
 export const EOF_ACCENT_MAX_WIDTH_PX = 4
 /** §11 — a 4px left accent pairs with a flat left edge and a soft right edge. */
 export const EOF_ACCENT_BORDER_RADIUS = '0 6px 6px 0'
+
+// ── 统一空行区域样式 + 文末多余数量标签 ─────────────────────────────────────
+
+/**
+ * 统一样式 — the document-end trailing-blank marker uses the SAME amber blank-area
+ * region style as the internal `EXCESSIVE_INTERNAL_BLANK_LINES` block gap: a
+ * plain amber RANGE BACKGROUND with NO left accent rail / border. The shared
+ * marker class is `inkchapter-blank-space-warning` + this region flag; the
+ * internal block-gap container paints the identical background.
+ */
+export const BLANK_REGION_STYLE_UNIFIED_ATTR = 'data-ink-blank-region'
+export const BLANK_REGION_STYLE_UNIFIED = 'amber-range'
+/** The doc-end excess chip is pinned to the TOP-RIGHT (never the caret column). */
+export const DOCUMENT_END_TRAILING_CHIP_POS_ATTR = 'data-ink-chip-pos'
+export const DOCUMENT_END_TRAILING_CHIP_POSITION = 'top-right'
+
+/**
+ * 文末多余空行标签 — the ACTUAL excess count in a top-right chip, e.g. `多余 2 空行`.
+ * The number is the rule's OWN Markdown trailing-blank count
+ * (`extraTrailingBlankLineCount`) — NEVER the visible band count. The visual layer
+ * never re-derives an "excess" number.
+ */
+export function formatDocumentEndTrailingBlankChipText(extraTrailingBlankLineCount: number): string {
+  const n = Number.isFinite(extraTrailingBlankLineCount)
+    ? Math.max(0, Math.floor(extraTrailingBlankLineCount))
+    : 0
+  return `多余 ${n} 空行`
+}
+
+/** The missing-terminal-newline endpoint label text (1 legal trailing newline). */
+export const DOCUMENT_END_MISSING_NEWLINE_COUNT = 1
+
+/**
+ * 数据来源分离 — the doc-end marker's count authority is the Markdown trailing
+ * count; the internal blank-line marker's count authority is the VISIBLE band
+ * count. They SHARE the style but must never share a count source.
+ */
+export const DOCUMENT_END_COUNT_SOURCE_MARKDOWN_TRAILING = 'MARKDOWN_TRAILING_BLANK_COUNT'
+export const INTERNAL_BLANK_COUNT_SOURCE_VISIBLE_BANDS = 'VISIBLE_BLANK_LINE_BANDS'
 
 export const DOCUMENT_TEXT_COLUMN_SOURCE = {
   EDITOR_TEXT_COLUMN: 'EDITOR_TEXT_COLUMN',

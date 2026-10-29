@@ -6,8 +6,29 @@
  * never query DOM or resolve authority facts independently.
  */
 import type { DocumentDiagnosticsInput } from './document-diagnostics'
-import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type {
+  DocumentDiagnosticsSnapshot,
+  ObjectEffectiveNumberElementFacts,
+  ObjectEffectiveNumberFact,
+  ObjectEffectiveNumbersSnapshot,
+} from './diagnostics-types'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
+
+/**
+ * R10 Closure §2.2 — the result of ONE structural markdown read.
+ *
+ * `structural=true` — the string came from the editor's SOURCE serializer and
+ * is the authoritative structure for this diagnostics transaction.
+ * `structural=false` — DEGRADED: the serialization threw / returned empty / the
+ * editor root was disconnected, so `markdown` is the incremental mirror. It
+ * must never be presented as a verified structure or as “no problems found”.
+ */
+export interface StructuralMarkdownSnapshot {
+  markdown: string | null
+  structural: boolean
+  /** Why the structural read degraded (forensics only; absent = structural). */
+  reason?: 'ROOT_DISCONNECTED' | 'API_THREW' | 'EMPTY_RESULT' | 'API_UNAVAILABLE'
+}
 
 export interface HeadingPolicyActivationState {
   /** Global heading-numbering feature master switch (enabled ≠ configured). */
@@ -48,6 +69,21 @@ export interface DocumentUtilitiesAuthorityContext {
   getActiveLeafState?: () => ActiveLeafDocumentFacts | null | undefined
 
   getMarkdown: () => string | null
+  /**
+   * R10 Closure §2.2 — the ONE immutable STRUCTURAL markdown snapshot for a
+   * diagnostics transaction.
+   *
+   * WHY IT EXISTS: in this Typora build `getMarkdown()` is an incremental text
+   * mirror — typed characters land in it but blank-line / block structure never
+   * updates. It is consumed by ~18 call sites (not only blank-gap), so forcing
+   * it to serialize globally would tax every consumer.
+   *
+   * CONTRACT: diagnostic-input building calls THIS exactly once per reconcile.
+   * `structural=false` means the structural read failed/returned empty and the
+   * caller received the incremental mirror — that is a DEGRADED fact and must
+   * never be reported as structure-verified.
+   */
+  getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
   /**
@@ -92,6 +128,15 @@ export interface DocumentUtilitiesAuthorityContext {
     styleKey?: string
     isEffectiveForElement: (element: HTMLElement | null) => boolean
   }
+  /**
+   * Numbering Integrity V2 (spec §9/§21) — the ONE canonical effective-number
+   * fact provider (owned by the caption service / formula planner), keyed by the
+   * object's DOM element. The diagnostics layer joins each of ITS object facts
+   * (element + canonical `block:<kind>:<ordinal>` identity) to this map, so the
+   * identity authority stays here and the NUMBER authority stays there.
+   * Optional: absent ⇒ every number rule stays silent.
+   */
+  getObjectEffectiveNumberElementFacts?: () => ObjectEffectiveNumberElementFacts | null
 }
 
 export interface DocumentUtilitiesContext {
@@ -124,6 +169,43 @@ export function resolveEditorScrollContainer(): HTMLElement | null {
   if (!root) return null
   const parent = root.parentElement
   return parent instanceof HTMLElement ? parent : root
+}
+
+/**
+ * Numbering Integrity V2 (spec §9/§21) — join the numbering authority's
+ * element-keyed effective-number facts to the diagnostics layer's OWN canonical
+ * object facts (`block:<kind>:<ordinal>`). Returns null when the provider is
+ * absent / disabled / empty so every number rule stays silent.
+ */
+function buildObjectEffectiveNumbersSnapshot(
+  elementFacts: ObjectEffectiveNumberElementFacts | null,
+  structural: {
+    figures: DocumentDiagnosticsInput['figures']
+    tables: DocumentDiagnosticsInput['tables']
+    codes: DocumentDiagnosticsInput['codes']
+    formulas: DocumentDiagnosticsInput['formulas']
+  },
+): ObjectEffectiveNumbersSnapshot | null {
+  if (!elementFacts || !elementFacts.numberingEnabled || elementFacts.byElement.size === 0) return null
+  const bySourceIdentity = new Map<string, ObjectEffectiveNumberFact>()
+  const add = (facts: readonly { element: HTMLElement | null; targetIdentity?: string }[]): void => {
+    for (const f of facts) {
+      const id = f.targetIdentity
+      if (!id || !f.element) continue
+      const fact = elementFacts.byElement.get(f.element)
+      if (fact) bySourceIdentity.set(id, fact)
+    }
+  }
+  add(structural.figures)
+  add(structural.tables)
+  add(structural.codes)
+  add(structural.formulas)
+  if (bySourceIdentity.size === 0) return null
+  return {
+    numberingEnabled: elementFacts.numberingEnabled,
+    sectionNumberingEnabled: elementFacts.sectionNumberingEnabled,
+    bySourceIdentity,
+  }
 }
 
 /**
@@ -160,9 +242,38 @@ export function collectDiagnosticsInput(
   // provider exists, its three-state policy decides strict-policy rule gating;
   // without it (pure/legacy consumers) strictMode keeps its old semantics.
   const policy = ctx.authority.getHeadingPolicyState?.()
+  // R10 Closure §2.2 — ONE structural snapshot per diagnostics transaction.
+  // Never falls back silently: when the structural read is unavailable the
+  // incremental mirror is used, and that degraded fact is recorded on the input
+  // (`structuralVerified=false`) so no downstream stage may present it as a
+  // verified structure or as “no problems found”.
+  let transactionMarkdown: string | null = null
+  let structuralVerified: boolean | undefined
+  let structuralDegradedReason: string | null = null
+  const structuralReader = ctx.authority.getStructuralMarkdown
+  if (structuralReader != null) {
+    try {
+      const structuralSnapshot = structuralReader()
+      structuralVerified = structuralSnapshot.structural === true
+        && typeof structuralSnapshot.markdown === 'string'
+        && structuralSnapshot.markdown !== ''
+      if (structuralVerified) {
+        transactionMarkdown = structuralSnapshot.markdown
+      } else {
+        structuralDegradedReason = structuralSnapshot.reason ?? 'EMPTY_RESULT'
+      }
+    } catch {
+      structuralVerified = false
+      structuralDegradedReason = 'API_THREW'
+    }
+  }
+  if (transactionMarkdown == null) transactionMarkdown = ctx.authority.getMarkdown()
   return {
     documentKey: ctx.authority.getDocumentKey(),
-    markdown: ctx.authority.getMarkdown(),
+    markdown: transactionMarkdown,
+    ...(structuralVerified === undefined
+      ? {}
+      : { structuralVerified, structuralDegradedReason }),
     strictMode: ctx.authority.isStrictMode(),
     headingPolicyEnabled: policy?.enabled,
     headingPolicyConfigured: policy?.configured,
@@ -187,5 +298,12 @@ export function collectDiagnosticsInput(
       ...(ctx.authority.getObjectNumberingEnabled?.() ?? {}),
     },
     headingAutoNumbering: structural.headingAutoNumbering,
+    // Numbering Integrity V2 (spec §9/§21) — the canonical effective-number
+    // snapshot (joined to the diagnostics' OWN `block:<kind>:<ordinal>`
+    // identity). Absent/empty ⇒ the number rules stay silent.
+    objectEffectiveNumbers: buildObjectEffectiveNumbersSnapshot(
+      ctx.authority.getObjectEffectiveNumberElementFacts?.() ?? null,
+      structural,
+    ),
   }
 }

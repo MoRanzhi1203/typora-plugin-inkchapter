@@ -163,3 +163,78 @@ describe('SRC — source-only diagnostic anchors (LATENT_ATX without Heading DOM
     expect(r.primaryAnchor).toBe('heading-identity')
   })
 })
+
+// ── BLANK-GAP LOCATOR — 区间身份优先于单行文本 ───────────────────────────────
+//
+// `EXCESSIVE_INTERNAL_BLANK_LINES` 的 location 指向 NEXT 块的**整块**文本
+// （多行段落 / 代码围栏会被 join 成多行 anchor），而通用 source-range 只把
+// `rawText` 当作一行去和 `getSourceLineText(startLine)` 比对。当 Typora 的
+// `<p>/<pre>` 没有 `data-line` 时，DOM 解析必然失败，随后这次单行比对必然
+// 失配 → 误报 SOURCE_LINE_CONTENT_CHANGED（即使 sourceRevision 没变）。
+// 失败先行：这里先要求「按区间边界解析」，修复前该断言必然红。
+
+function makeGapDiag(rawText: string): DocumentDiagnostic {
+  return {
+    id: 'gap-1',
+    documentKey: 'doc:key',
+    severity: 'warning',
+    category: 'document',
+    code: 'EXCESSIVE_INTERNAL_BLANK_LINES',
+    message: '连续空行过多',
+    metadata: {
+      scope: 'block-gap',
+      nextBlockStartLine: 20,
+      nextBlockAnchorText: rawText,
+      nextBlockIdentity: 'code:```#0',
+    },
+    location: {
+      kind: 'source-range',
+      startLine: 20,
+      startColumn: 0,
+      rawText,
+    },
+  } as unknown as DocumentDiagnostic
+}
+
+describe('LOC — BLANK-GAP 区间身份定位（data-line=null 也能解析）', () => {
+  beforeEach(() => { document.body.innerHTML = '' })
+
+  const MULTI_LINE_ANCHOR = '```\nconst a = 1\n```'
+
+  it('LOC-05: p → pre（data-line=null）通过 canonical 边界解析，而不是单行文本比对', () => {
+    const pre = document.createElement('pre')
+    pre.className = 'md-fences'
+    document.body.appendChild(pre)
+    const diag = makeGapDiag(MULTI_LINE_ANCHOR)
+    const ctx = baseCtx({
+      // 该 Typora 构建：段落 / 代码块没有 data-line
+      resolveSourceLine: () => null,
+      // 单行视图只有围栏起始行 —— 与整块 anchor 必然不同
+      getSourceLineText: (line) => (line === 20 ? '```' : null),
+      findBlockByText: () => null,
+    })
+    ;(ctx as unknown as Record<string, unknown>).resolveBlankGapBoundary = () => ({
+      element: pre,
+      strategy: 'CANONICAL_CODE_TARGET',
+    })
+    const r = resolveDiagnosticLocation(diag, diag.location!, ctx)
+    expect(r.decision).toBe('RESOLVED')
+    expect(r.element).toBe(pre)
+    expect(r.primaryAnchor).toBe('blank-gap-boundary')
+  })
+
+  it('LOC-05b: 边界无法唯一验证时显式失败，绝不回退到单行文本首匹配', () => {
+    const diag = makeGapDiag(MULTI_LINE_ANCHOR)
+    const ctx = baseCtx({
+      resolveSourceLine: () => null,
+      getSourceLineText: (line) => (line === 20 ? '```' : null),
+      findBlockByText: () => document.createElement('p'), // 若被调用即证明走了旧路径
+    })
+    ;(ctx as unknown as Record<string, unknown>).resolveBlankGapBoundary = () => null
+    const r = resolveDiagnosticLocation(diag, diag.location!, ctx)
+    expect(r.decision).toBe('UNRESOLVED')
+    expect(r.reason).toBe('BLANK_GAP_BOUNDARY_UNRESOLVED')
+    expect(r.primaryAnchor).toBe('blank-gap-boundary')
+    expect(r.element).toBeNull()
+  })
+})

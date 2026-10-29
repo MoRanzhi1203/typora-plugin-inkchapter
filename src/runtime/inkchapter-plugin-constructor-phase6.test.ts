@@ -12,10 +12,12 @@ function read(rel: string): string {
 function pluginEntrySnippet(bundle: string): string {
   const marker = bundle.indexOf('INKCHAPTER-BOOT-ONLOAD-START')
   if (marker < 0) return ''
-  // Anchor to the ENCLOSING native class declaration — `class extends Plugin {`
-  // is what proves the plugin was NOT downleveled. A fixed lookback is brittle:
-  // any extra class field can push the declaration out of the window.
-  const classStart = bundle.lastIndexOf('class extends Plugin', marker)
+  // Anchor to the ENCLOSING native class declaration. The base-class identifier is
+  // MINIFIER-DEPENDENT: a non-minified build emits `class extends Plugin`, while the
+  // prod (minified) bundle mangles that binding (e.g. `class extends Xx`). This gate
+  // proves the plugin was NOT ES5-downleveled, so match any native `class extends`
+  // nearest before the marker — never the literal base name.
+  const classStart = bundle.lastIndexOf('class extends', marker)
   const from = classStart >= 0 ? classStart : Math.max(0, marker - 600)
   return bundle.slice(from, Math.min(bundle.length, marker + 200))
 }
@@ -23,7 +25,11 @@ function pluginEntrySnippet(bundle: string): string {
 describe('Phase 6.0R plugin constructor / bundle boot compatibility', () => {
   it('BOOT-T1: authoritative production build is node build.js --prod, not Rollup ES5 downlevel', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> }
-    expect(pkg.scripts.build).toBe('node build.js --prod')
+    // The authoritative production build is `node build.js --prod`; a bounded
+    // `verify:archive` pre-step may precede it (progress-archive v1), but the
+    // bundle producer must never become a Rollup ES5 downlevel pipeline.
+    expect(pkg.scripts.build).toContain('node build.js --prod')
+    expect(pkg.scripts.build).not.toContain('rollup')
   })
 
   it('BOOT-T1/T3: production bundle keeps native class inheritance and has no illegal base apply/call', () => {

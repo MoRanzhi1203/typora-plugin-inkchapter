@@ -26,6 +26,12 @@ export type DiagnosticLocateOutcome = 'RESOLVED' | 'UNRESOLVABLE' | 'STALE' | 'A
 
 export type DiagnosticVisualOutcome =
   | 'PRESENTED'
+  /**
+   * P0 VIS — the presentation gate FAILED, but the target resolved, scrolled and a
+   * fill really committed. Recording this as `PRESENTED` made the audit contradict
+   * its own `gateReason`; `PRESENTED` is now reserved for a clean gate.
+   */
+  | 'DEGRADED_PRESENTED'
   | 'RECOVERABLE_COLLISION'
   | 'UNRECOVERABLE_PRESENTATION_FAILURE'
 
@@ -74,12 +80,20 @@ export interface VisualFailureClassification {
 /** The layering-collision reason family (RECOVERABLE by construction). */
 export function isPanelLayeringCollisionReason(reason: string): boolean {
   const r = String(reason ?? '')
-  return r === 'FRAME_PAINTS_ABOVE_PANEL_SURFACE'
-    || r.startsWith('FRAME_PAINTS_ABOVE_')
-    || r.includes('PAINTS_ABOVE_NAVIGATOR')
-    || r.includes('PAINTS_ABOVE_PANEL')
-    || r === 'NAVIGATOR_DRAWER_SAFE_REGION_CONFLICT'
-    || r === 'FRAME_INTERSECTS_TOOLBAR'
+  // P0 VIS — the runtime joins several gate reasons with ',' (e.g.
+  // `PRESENTATION_NOT_BUILT,VISUAL_CARRIER_MISSING,PANEL_GEOMETRY_CLIP`). Judging the
+  // WHOLE string let a layering collision hide inside a list, so every token is
+  // evaluated on its own.
+  const tokens = r.split(',').map(t => t.trim()).filter(t => t !== '')
+  const isCollisionToken = (s: string): boolean =>
+    s === 'FRAME_PAINTS_ABOVE_PANEL_SURFACE'
+    || s.startsWith('FRAME_PAINTS_ABOVE_')
+    || s.includes('PAINTS_ABOVE_NAVIGATOR')
+    || s.includes('PAINTS_ABOVE_PANEL')
+    || s === 'NAVIGATOR_DRAWER_SAFE_REGION_CONFLICT'
+    || s === 'FRAME_INTERSECTS_TOOLBAR'
+  if (tokens.length === 0) return false
+  return tokens.some(isCollisionToken)
 }
 
 /**
@@ -99,15 +113,32 @@ export function classifyDiagnosticVisualFailure(input: VisualFailureClassificati
       reason: 'LOCATE_DID_NOT_RESOLVE',
     }
   }
-  // §4.2 — resolved + presented (no layering collision).
+  // §4.2 — resolved + presented (no layering collision, and the gate really passed).
   if (!input.panelLayeringCollision && !isPanelLayeringCollisionReason(input.gateReason)) {
+    // P0 VIS — `PRESENTED` requires a CLEAN gate. A non-empty gateReason means the
+    // presentation was blocked, so claiming PRESENTED contradicts the record.
+    if (input.gateReason.trim() === '') {
+      return {
+        locate: 'RESOLVED',
+        visual: 'PRESENTED',
+        keepActive: true,
+        rollbackRequired: false,
+        strategy: 'NONE',
+        reason: 'PRESENTED',
+      }
+    }
+    // The gate failed for a non-layering reason. The interaction still succeeded
+    // (the target resolved and scrolled), so it stays ACTIVE — but it is recorded
+    // as DEGRADED, never as a clean presentation. The fill fact stays separate in
+    // the outcome payload (`fillCommitted`), because a block-gap carrier may only
+    // connect on the next frame.
     return {
       locate: 'RESOLVED',
-      visual: 'PRESENTED',
+      visual: 'DEGRADED_PRESENTED',
       keepActive: true,
       rollbackRequired: false,
       strategy: 'NONE',
-      reason: 'PRESENTED',
+      reason: 'GATE_FAILED_NON_LAYERING',
     }
   }
   // §4.3 — resolved + a recoverable panel layering collision. The target IS found

@@ -24,6 +24,14 @@ import {
 } from './caption-system'
 import * as path from 'path'
 import { CaptionDomAdapter, MATH_HOST_SELECTOR, type CaptionTarget, type ReconcileItem, type ReconcileStats } from './caption-dom-adapter'
+// Phase G §8 — the read-only DOM caption-integrity producer (same pipeline).
+// NOTE: a namespace import is required — this repo's `esbuild-plugin-typora`
+// rewrites `import { A as B } from 'x'` into the invalid `const { A as B } =
+// await import('x')`, so aliased value imports must never be used.
+import * as captionIntegrityProducer from '../document-utilities/document-diagnostics-caption-integrity-v1'
+import { stampCaretInertPresentation } from '../document-utilities/document-diagnostic-caret-isolation-v1'
+import type { DocumentDiagnostic } from '../document-utilities/diagnostics-types'
+import type { ObjectEffectiveNumberElementFacts, ObjectEffectiveNumberFact } from '../document-utilities/diagnostics-types'
 import { loadCaptionStore, saveCaptionStore } from './caption-store'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 import { INKCHAPTER_BUILD_ID } from './paragraph-indent-forensic'
@@ -58,10 +66,11 @@ import {
   hashFormulaSource,
   normalizeTyporaAutoNumberingPolicy,
   scanDisplayMathSources,
+  isPlanSourceAdmissible,
   type FormulaNativeRenderPlan,
   type FormulaProjectionContext,
 } from './formula-projection-controller'
-import { ensureMathJaxRenderInputHook, getMathJaxHookLifecycle, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
+import { ensureMathJaxRenderInputHook, uninstallMathJaxRenderInputHook, getMathJaxHookLifecycle, type FormulaProjectionLiveContext } from './mathjax-render-input-hook'
 import type { HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import { computeProductionDesiredCaptionStates, type CaptionObjectEntry, type ProductionObjectConfigs } from './caption-semantic-bridge'
 import {
@@ -565,6 +574,19 @@ export class CaptionService {
   private lastCompletePlanSet: FormulaCompletePlanSet | null = null
   /** Phase 7R.3.7: LAST COMPLETE caption plan set (atomic authority). */
   private lastCompleteCaptionPlanSet: CaptionCompleteCaptionPlanSet | null = null
+  /**
+   * Numbering Integrity V2 §9/§21 — the canonical effective-number facts of the
+   * LAST published COMPLETE caption / formula plan, keyed by the object's DOM
+   * element. Read-only snapshot consumed by the document diagnostics producer
+   * (joined to the diagnostics' OWN canonical source identity). Never mutates;
+   * cleared on document switch; never a second numbering authority.
+   */
+  private captionEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+  private captionEffectiveNumberingEnabled = false
+  private captionEffectiveSectionNumberingEnabled = false
+  private formulaEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+  private formulaEffectiveNumberingEnabled = false
+  private formulaEffectiveSectionNumberingEnabled = false
   /** Last canonical Formula host fingerprint (transient host-set detection). */
   private lastCanonicalFormulaHostFingerprint = ''
   // ── Phase 7R.3.6 gate counters ──────────────────────────────────────
@@ -893,6 +915,14 @@ export class CaptionService {
       // previous document's COMPLETE caption plan (never project doc A into B).
       this.captionDeferredRetry.resetForDocument()
       this.lastCompleteCaptionPlanSet = null
+      // Numbering Integrity V2 §7 — never project document A's effective
+      // numbers into document B (cross-document leak guard).
+      this.captionEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+      this.captionEffectiveNumberingEnabled = false
+      this.captionEffectiveSectionNumberingEnabled = false
+      this.formulaEffectiveNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+      this.formulaEffectiveNumberingEnabled = false
+      this.formulaEffectiveSectionNumberingEnabled = false
       this.lastReportedCaptionFailureSignature = ''
       // Phase 7R.3.9R: clear A's pending intent + authority state; B starts
       // WAITING_FOR_HEADING_AUTHORITY until B's committed frame releases it.
@@ -1451,6 +1481,9 @@ export class CaptionService {
 
   dispose(): void {
     this.disconnectObserver()
+    // PA-HOOK-01 — the MathJax tex2svg* wrappers are a GLOBAL resource whose
+    // live-context provider closes over this service. Restore them on dispose.
+    uninstallMathJaxRenderInputHook()
     for (const d of this.disposers) { try { d() } catch { /* ignore */ } }
     this.disposers = []
     if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null }
@@ -2115,12 +2148,49 @@ export class CaptionService {
     return this.adapter.findCaptionHostForRoot(target.root)
   }
 
+  /**
+   * Phase G §8 — read-only DOM caption-integrity snapshot for the document
+   * diagnostics authority. Never mutates the DOM or the registry; ownership is
+   * resolved ONLY through the canonical owner map (this service is its single
+   * writer).
+   */
+  computeCaptionIntegrityDiagnostics(documentKey: string | null, sourceRevision: number): DocumentDiagnostic[] {
+    return captionIntegrityProducer.computeCaptionIntegrityDiagnostics({
+      documentKey,
+      root: this.currentEditorRoot,
+      sourceRevision,
+    }).diagnostics
+  }
+
   getCaptionCount(): number {
     return this.registry.listByDocument(this.currentDocumentKey ?? '').length
   }
 
   getCaptionById(captionId: string): CaptionRecord | null {
     return this.registry.getById(captionId)
+  }
+
+  /**
+   * Numbering Integrity V2 §9/§21 — the ONE read-only "canonical effective
+   * number" fact provider the document diagnostics producer consumes. It is a
+   * snapshot of the LAST published COMPLETE caption / formula plan, keyed by the
+   * object's DOM element; the diagnostics layer joins it to its OWN canonical
+   * `block:<kind>:<ordinal>` source identity. Returns an EMPTY snapshot when no
+   * complete plan exists yet (the number rules then stay silent).
+   */
+  getObjectEffectiveNumberElementFacts(): ObjectEffectiveNumberElementFacts {
+    const byElement = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+    for (const [el, fact] of this.captionEffectiveNumbers) {
+      if (el.isConnected) byElement.set(el, fact)
+    }
+    for (const [el, fact] of this.formulaEffectiveNumbers) {
+      if (el.isConnected) byElement.set(el, fact)
+    }
+    return {
+      numberingEnabled: this.captionEffectiveNumberingEnabled || this.formulaEffectiveNumberingEnabled,
+      sectionNumberingEnabled: this.captionEffectiveSectionNumberingEnabled || this.formulaEffectiveSectionNumberingEnabled,
+      byElement,
+    }
   }
 
   getOrphanCount(): number {
@@ -2567,6 +2637,37 @@ export class CaptionService {
       resolvedTargetCount: resolvedCount,
       states: desiredStates,
     }
+    // Numbering Integrity V2 §9 — publish the canonical effective-number facts
+    // of THIS COMPLETE caption plan (element → number), read-only. The document
+    // diagnostics producer joins them to its OWN `block:<kind>:<ordinal>`
+    // identity; nothing here is ever parsed from rendered text.
+    {
+      const elementNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+      let anyEnabled = false
+      let anySection = false
+      for (let i = 0; i < plan.length; i++) {
+        const item = plan[i]
+        const state = desiredStates[i]
+        if (!state) continue
+        const el = item.type === 'figure'
+          ? (item.target.root.tagName === 'IMG'
+            ? item.target.root
+            : item.target.root.querySelector<HTMLElement>('img'))
+          : item.target.root
+        if (!el) continue
+        anyEnabled = true
+        const isSectionScoped = state.effectiveScope === 'section' && state.sectionOrdinal != null
+        if (isSectionScoped) anySection = true
+        elementNumbers.set(el, {
+          effectiveNumber: state.rawNumber,
+          sectionNumber: isSectionScoped ? String(state.sectionOrdinal) : undefined,
+          actualSectionNumber: state.sectionOrdinal != null ? String(state.sectionOrdinal) : undefined,
+        })
+      }
+      this.captionEffectiveNumbers = elementNumbers
+      this.captionEffectiveNumberingEnabled = anyEnabled
+      this.captionEffectiveSectionNumberingEnabled = anySection
+    }
     incHeadingSemanticPerf('captionSemanticReconcileCount')
     this.emitCaptionReconcilePerf(snapshot, 'COMPLETE', plan.length, 'COMPLETE_TO_IDLE', this.computeCaptionStateToken(snapshot, plan), previousCompleteCaptionCount, desiredStates.length)
     emitRuntimeAudit('CAPTION-PLAN-SET-PUBLISH', {
@@ -2684,7 +2785,7 @@ export class CaptionService {
     el.className = 'inkchapter-caption inkchapter-caption-table'
     el.setAttribute('data-inkchapter-caption', 'true')
     el.setAttribute('data-inkchapter-caption-debug', 'true')
-    el.setAttribute('contenteditable', 'false')
+    stampCaretInertPresentation(el, true) // P0 CARET ISOLATION — 投影展示文字隔离
     el.textContent = 'CAPTION DEBUG · 表 1'
     firstTable.root.parentElement?.insertBefore(el, firstTable.root)
     this.verifyRender('debug-minimal', 'CAPTION DEBUG · 表 1')
@@ -2971,10 +3072,17 @@ export class CaptionService {
           return { ...ctx, mode: snap.structureMode }
         })
         const planned = planFormulaSemanticNumbers(formulaContexts, cfg)
+        // Numbering Integrity V2 §9 — canonical effective-number facts of THIS
+        // COMPLETE formula plan (element → number). Never parsed from rendered text.
+        const formulaElementNumbers = new Map<HTMLElement, ObjectEffectiveNumberFact>()
+        let anyFormulaSection = false
+        // PA-12 — an EMPTY formula (`$$$$`) still owns its ordinal. Only skip a
+        // zero-length source when the scan could not be aligned with the hosts.
+        const sourcesAligned = sources.length === formulaTargets.length
         for (let i = 0; i < formulaTargets.length; i++) {
           const t = formulaTargets[i]
           const sourceTex = sources[i] ?? ''
-          if (sourceTex.length === 0) continue
+          if (!isPlanSourceAdmissible(sourceTex, sourcesAligned)) continue
           const context: FormulaProjectionContext = {
             formulaMode: mode === 'inkchapter' ? 'inkchapter' : 'typora-native',
             typoraAutoNumberingPolicy: policy,
@@ -3003,7 +3111,17 @@ export class CaptionService {
               effectiveScope: p.effectiveScope,
             },
           })
+          const isSectionScoped = p.effectiveScope === 'section' && p.sectionOrdinal != null
+          if (isSectionScoped) anyFormulaSection = true
+          formulaElementNumbers.set(t.root, {
+            effectiveNumber: p.rawNumber,
+            sectionNumber: isSectionScoped ? String(p.sectionOrdinal) : undefined,
+            actualSectionNumber: p.sectionOrdinal != null ? String(p.sectionOrdinal) : undefined,
+          })
         }
+        this.formulaEffectiveNumbers = formulaElementNumbers
+        this.formulaEffectiveNumberingEnabled = formulaElementNumbers.size > 0
+        this.formulaEffectiveSectionNumberingEnabled = anyFormulaSection
       }
 
       const candidate: FormulaPlanSetCandidate = {
@@ -3408,6 +3526,22 @@ export class CaptionService {
         })
         continue
       }
+      if (!this.projectionController.canAttemptRecoveryRender(t.root)) {
+        // PA-13 — the render seam failed repeatedly for THIS signature; stay
+        // event-driven (a new signature resets the counter) instead of looping.
+        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+          documentKey,
+          formulaRuntimeKey: plan.formulaRuntimeKey,
+          projectionSignatureHash: sigHash,
+          activationId,
+          rawNumber: plan.rawNumber,
+          attemptForActivation: this.projectionController.recoveryAttemptCount(t.root),
+          failureCount: this.projectionController.recoveryFailureCount(t.root),
+          route: 'mathBlock.renderUnder',
+          decision: 'SKIPPED_RECOVERY_FAILURES_EXHAUSTED',
+        })
+        continue
+      }
       if (!this.projectionController.tryReserveRecoveryRender(t.root)) {
         // Phase 7R.3.6-D: the CURRENT activation already consumed its one shot.
         // This must NEVER be caused by a historical signature (new activations
@@ -3454,19 +3588,20 @@ export class CaptionService {
       }
       const renderUnder = g.File?.editor?.mathBlock?.renderUnder
       if (typeof renderUnder !== 'function') {
-        emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
-          documentKey,
-          formulaRuntimeKey,
-          route: 'mathBlock.renderUnder',
-          decision: 'FAILED',
-          reason: 'ROUTE_NOT_AVAILABLE',
-        })
+        this.projectionController.clearPendingLookupHost()
+        // PA-13 — release the reservation and the in-flight marker so a later
+        // event can retry (bounded), instead of a permanent IN_FLIGHT state.
+        this.projectionController.markRecoveryRenderFailed(host, documentKey, formulaRuntimeKey, 'ROUTE_NOT_AVAILABLE')
         return
       }
+      // PA-10 — we initiated THIS render for THIS host, so arm the ambiguous
+      // correlation with its exact target (the hook only sees TeX).
+      this.projectionController.armPendingLookupHost(host)
       const result = renderUnder.call(g.File?.editor?.mathBlock, host, true)
       if (result && typeof (result as Promise<unknown>).then === 'function') {
         ;(result as Promise<unknown>).then(
           () => {
+            this.projectionController.clearPendingLookupHost()
             emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
               documentKey,
               formulaRuntimeKey,
@@ -3475,24 +3610,22 @@ export class CaptionService {
             })
           },
           () => {
-            emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
-              documentKey,
-              formulaRuntimeKey,
-              route: 'mathBlock.renderUnder',
-              decision: 'FAILED',
-              reason: 'RENDER_REJECTED',
-            })
+            this.projectionController.clearPendingLookupHost()
+            this.projectionController.markRecoveryRenderFailed(host, documentKey, formulaRuntimeKey, 'RENDER_REJECTED')
           },
         )
+      } else {
+        // Synchronous seam: the hook (if any) already ran inside the call.
+        this.projectionController.clearPendingLookupHost()
       }
     } catch (error) {
-      emitRuntimeAudit('FORMULA-CONTROLLED-RERENDER', {
+      this.projectionController.clearPendingLookupHost()
+      this.projectionController.markRecoveryRenderFailed(
+        host,
         documentKey,
         formulaRuntimeKey,
-        route: 'mathBlock.renderUnder',
-        decision: 'FAILED',
-        reason: error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120),
-      })
+        error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120),
+      )
     }
   }
 

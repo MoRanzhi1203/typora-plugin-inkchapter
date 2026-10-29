@@ -68,9 +68,10 @@ export function preserveBlockedAtxHeadingAsText(
   // Only escape if the hash count matches the blocked level
   if (hashes.length !== requestedLevel) return rawLine
 
-  // Escape: \ before each #
-  const escaped = '\\' + hashes.replace(/#/g, '\\#')
-  return escaped + rest
+  // Escape: one backslash before each hash (`\#\#\#\#\#`).
+  // PA-ESCAPE-01 — the old code prefixed an extra `\`, producing `\\#\#\#...`,
+  // which renders as a literal `\` plus the hashes → visible corruption.
+  return hashes.replace(/#/g, '\\#') + rest
 }
 
 /**
@@ -100,6 +101,59 @@ export function parseHeadingLevel(line: string): number {
 }
 
 // ── Phase 2: Post-hoc enforcer for the HeadingNumberingService ───────
+
+/**
+ * PA-FENCE-01 — mark every line that must never be rewritten as a heading.
+ *
+ * Only backtick fences were recognized before, so `##### x` inside a `~~~`
+ * fence (valid CommonMark and rendered as code by Typora) was escaped to plain
+ * text, silently mangling the user's Markdown. This mask also protects
+ * indented code blocks, block-scalar YAML front matter and unclosed fences
+ * (everything after them stays protected).
+ */
+export function computeProtectedLineMask(lines: readonly string[]): boolean[] {
+  const mask: boolean[] = new Array(lines.length).fill(false)
+  let fenceChar: '`' | '~' | null = null
+  let fenceLen = 0
+
+  // YAML front matter: only when it starts on line 1 and is closed.
+  if (lines.length > 1 && /^---\s*$/.test(lines[0])) {
+    for (let i = 1; i < lines.length; i++) {
+      if (/^(---|\.\.\.)\s*$/.test(lines[i])) {
+        for (let j = 0; j <= i; j++) mask[j] = true
+        break
+      }
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (mask[i]) continue
+    const line = lines[i]
+
+    if (fenceChar !== null) {
+      mask[i] = true
+      const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
+      if (close != null && close[1][0] === fenceChar && close[1].length >= fenceLen) {
+        fenceChar = null
+        fenceLen = 0
+      }
+      continue
+    }
+
+    const open = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (open != null) {
+      fenceChar = open[1][0] as '`' | '~'
+      fenceLen = open[1].length
+      mask[i] = true
+      continue
+    }
+
+    // Indented code block (4+ spaces / tab) — never an ATX heading.
+    if (/^( {4,}|\t)/.test(line)) mask[i] = true
+  }
+
+  return mask
+}
 
 export interface EnforcerCallbacks {
   /** Get current effective max level. */
@@ -191,14 +245,12 @@ export class HeadingLevelRangeEnforcer {
     // Revert via markdown manipulation: replace heading lines with escaped text
     const md = this.callbacks.getMarkdown()
     const lines = md.split('\n')
-    let inCodeBlock = false
+    const protectedMask = computeProtectedLineMask(lines)
     let modified = false
 
     for (let i = 0; i < lines.length; i++) {
+      if (protectedMask[i]) continue
       const line = lines[i]
-      const isFence = /^```/.test(line.trimStart())
-      if (isFence) { inCodeBlock = !inCodeBlock; continue }
-      if (inCodeBlock) continue
 
       const match = line.match(/^(#{1,6})\s+(.+)/)
       if (!match) continue
@@ -244,15 +296,12 @@ export class HeadingLevelRangeEnforcer {
   private doEnforceAfterPaste(maxLevel: number): void {
     const md = this.callbacks.getMarkdown()
     const lines = md.split('\n')
-    let inCodeBlock = false
+    const protectedMask = computeProtectedLineMask(lines)
     let blockedCount = 0
-    const converted: string[] = []
 
     for (let i = 0; i < lines.length; i++) {
+      if (protectedMask[i]) continue
       const line = lines[i]
-      const isFence = /^```/.test(line.trimStart())
-      if (isFence) { inCodeBlock = !inCodeBlock; continue }
-      if (inCodeBlock) continue
 
       const match = line.match(/^(#{1,6})\s+(.+)/)
       if (!match) continue
@@ -262,7 +311,6 @@ export class HeadingLevelRangeEnforcer {
 
       lines[i] = preserveBlockedAtxHeadingAsText(line, level)
       blockedCount++
-      converted.push(line.trim())
     }
 
     if (blockedCount > 0) {

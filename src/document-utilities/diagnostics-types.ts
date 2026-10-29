@@ -7,6 +7,7 @@
  */
 
 import type { DiagnosticDomain } from './diagnostic-domain-v1'
+import type { SourceSyntaxOpenerLocation } from './document-diagnostic-source-syntax-location-authority'
 
 export type DocumentDiagnosticSeverity = 'error' | 'warning' | 'info'
 
@@ -183,10 +184,31 @@ export type DiagnosticLocation =
       blockKind: 'figure' | 'table' | 'code' | 'formula' | 'link'
       stableIdentity: string
     }
+  /**
+   * Caption Integrity (spec §8/§15) — a DOM-side locator for a caption
+   * PROJECTION. Caption ownership is a runtime concept, so the locator carries
+   * the caption service's OWN stable `captionId` (never a source offset, never
+   * an adjacency-derived neighbour). Locate resolves the live caption element
+   * by that id.
+   */
+  | {
+      kind: 'caption-projection'
+      captionKind: 'figure' | 'table' | 'code'
+      captionId: string
+    }
   | {
       kind: 'multi-target'
       targets: readonly DiagnosticLocation[]
     }
+  /**
+   * TRAE V4 §3 — a SOURCE-SYNTAX OPENER locator. The target is the Markdown
+   * source-syntax opening token (code fence ``` / display formula $$ / front
+   * matter `---`) of a protected region that never closed — NEVER a canonical
+   * code-block object, and NEVER the opener→EOF protected range. The three
+   * ranges (`protectedRange` / `locationRange` / `presentationRange`) are
+   * deliberately separate fields.
+   */
+  | SourceSyntaxOpenerLocation
   /**
    * V1 (Target Group closure) — a TARGET GROUP. ONE diagnostic whose semantic
    * fact is carried by SEVERAL co-equal members (e.g. "the document only owns a
@@ -314,6 +336,63 @@ export interface DocumentDiagnostic {
   nonLocatableNotice?: true
 }
 
+// ── Numbering Integrity V2 (§9/§21) — canonical effective-number facts ───────
+//
+// The ONE read-only "effective number" fact provider. It is produced by the
+// EXISTING canonical numbering authority (the caption service / formula
+// planner) and CONSUMED by the source-only diagnostics producer — the producer
+// NEVER re-derives a number and NEVER parses one out of rendered text.
+
+/** Which object kind an effective number belongs to. */
+export type ObjectEffectiveNumberKind = 'figure' | 'table' | 'code' | 'formula'
+
+/**
+ * ONE canonical effective-number fact. Every field is a CANONICAL fact supplied
+ * by the numbering authority (never parsed from rendered text).
+ */
+export interface ObjectEffectiveNumberFact {
+  /** The canonical effective number (raw, no display prefix), e.g. `1` / `2.1`. */
+  effectiveNumber: string
+  /**
+   * FORMULA — the effective SECTION number ENCODED by `effectiveNumber` when
+   * the numbering is section-scoped (`effectiveScope === 'section'`). Absent
+   * when the number is NOT section-scoped → the section-mismatch rule must
+   * never fire (do not invent a section).
+   */
+  sectionNumber?: string
+  /**
+   * FORMULA — the section number the object ACTUALLY sits in, per the numbering
+   * authority's own canonical resolver. Absent when unknown.
+   */
+  actualSectionNumber?: string
+}
+
+/**
+ * The canonical effective-number snapshot the diagnostics producer consumes.
+ * `bySourceIdentity` is keyed by the object's CANONICAL SOURCE identity
+ * (`block:<kind>:<ordinal>`), i.e. the SAME identity the figure / table / code
+ * / formula source rules already use for their stable diagnostic ids — no
+ * parallel key is invented.
+ */
+export interface ObjectEffectiveNumbersSnapshot {
+  numberingEnabled: boolean
+  sectionNumberingEnabled: boolean
+  bySourceIdentity: ReadonlyMap<string, ObjectEffectiveNumberFact>
+}
+
+/**
+ * The numbering authority's raw (element-keyed) effective-number facts. The
+ * diagnostics authority joins each of ITS object facts (element + canonical
+ * `block:<kind>:<ordinal>` identity) to this map to build the
+ * `ObjectEffectiveNumbersSnapshot.bySourceIdentity` — the identity authority
+ * stays the diagnostics layer; the NUMBER authority stays the caption service.
+ */
+export interface ObjectEffectiveNumberElementFacts {
+  numberingEnabled: boolean
+  sectionNumberingEnabled: boolean
+  byElement: ReadonlyMap<HTMLElement, ObjectEffectiveNumberFact>
+}
+
 export interface DocumentDiagnosticsSnapshot {
   documentKey: string | null
   /** Monotonic diagnostic recompute revision (per authority). */
@@ -334,6 +413,13 @@ export interface DocumentDiagnosticsSnapshot {
   effectiveMode?: 'strict' | 'loose'
   /** Effective-mode transition revision (increments on REAL transitions only). */
   effectiveModeRevision?: number
+  /**
+   * R10 Closure §2.2 — whether this snapshot was computed from a VERIFIED
+   * structural markdown snapshot. `false` = DEGRADED (incremental mirror).
+   * Absent = legacy/pure snapshot (no structural authority was involved).
+   * A degraded snapshot must never be presented as “no problems found”.
+   */
+  structuralVerified?: boolean
 }
 
 export interface DocumentDiagnosticsState {

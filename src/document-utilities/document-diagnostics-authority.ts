@@ -13,6 +13,7 @@ import {
   computeDocumentDiagnostics,
   computeEofNewlinePolicy,
   hasSubstantiveNonHeadingContent,
+  mergeDocumentDiagnostics,
 } from './document-diagnostics'
 // Heading Auto-Number Conflict V1.2 §3–§47 — the ONE per-heading evidence-state
 // audit + transition classifier + hard-gate + positive-coverage authority for
@@ -105,6 +106,11 @@ import {
   computeDiagnosticLocationContract,
   getRuleMeta,
 } from './document-diagnostic-location'
+// Capability Matrix V1 §14 — the ONE read-only capability count authority.
+import { DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT } from './document-diagnostic-capability-summary'
+// Capability Matrix V2 §19/§22 — the ONE Runtime Closure Authority (the §19
+// capability audit is DERIVED from it, never hand-written).
+import { resolveDocumentDiagnosticsCapabilityAudit } from './document-diagnostic-runtime-closure-authority'
 import { emitRuntimeAudit, emitRuntimeAuditStateDedup } from '../runtime/forensic-log-sink'
 
 export interface DocumentDiagnosticsProviders {
@@ -181,6 +187,17 @@ export interface DocumentDiagnosticsProviders {
    * the official-setter call; this module only requests it. Optional.
    */
   consumeHeadingConflictTestBridge?: () => void
+  /**
+   * Phase G (spec §8) — the DOM-side Caption Integrity producer. It returns the
+   * caption-integrity diagnostics for the CURRENT document (ownership resolved
+   * ONLY through the caption service's canonical owner map). Merged into the
+   * SAME snapshot as the source-only diagnostics. Optional: absent ⇒ no caption
+   * integrity diagnostics (pure / legacy callers).
+   */
+  getCaptionIntegrityDiagnostics?: (
+    documentKey: string | null,
+    sourceRevision: number,
+  ) => readonly DocumentDiagnostic[]
 }
 
 export class DocumentDiagnosticsAuthority {
@@ -188,6 +205,8 @@ export class DocumentDiagnosticsAuthority {
   private revision = 0
   private sourceRevision = 0
   private lastDocumentKey: string | null = null
+  /** TRAE item 5 — the last SOURCE text, so `sourceRevision` tracks real edits. */
+  private lastSourceText: string | null = null
   private lastContentFingerprint = ''
   /** Phase 7R.3.11.8B.1 — H1 authority bridge audit dedup (state-token). */
   private lastH1BridgeSignature = ''
@@ -251,20 +270,79 @@ export class DocumentDiagnosticsAuthority {
     for (const l of this.listeners) l(this.snapshot)
   }
 
+  /**
+   * §32 (live-update closure) — the per-diagnostic FACT suffix folded into the
+   * content fingerprint.
+   *
+   * A blank-line COUNT change keeps the rule's STABLE identity (`targetIdentity`
+   * is the gap's previous>>next pair, count-independent), so a fingerprint built
+   * from `{severity:code:targetIdentity}` alone classified an edit like 3→5
+   * blanks as a NOOP — the recompute RETURNED EARLY and the Drawer count / the
+   * body count label / the Active visual never learned the new fact. Folding the
+   * count-bearing metadata into the fingerprint makes a fact change a REAL
+   * publish, without inventing a second identity authority.
+   */
+  private diagnosticFactSuffix(d: DocumentDiagnostic): string {
+    const meta = d.metadata
+    if (meta == null) return ''
+    const parts: string[] = []
+    if (typeof meta['actualBlankLines'] === 'number') {
+      const first = typeof meta['firstBlankLine'] === 'number' ? meta['firstBlankLine'] : 'n'
+      parts.push(`b${meta['actualBlankLines']}@${first}`)
+    }
+    if (typeof meta['extraTrailingBlankLineCount'] === 'number') parts.push(`t${meta['extraTrailingBlankLineCount']}`)
+    if (typeof meta['terminalNewlineCount'] === 'number') parts.push(`n${meta['terminalNewlineCount']}`)
+    return parts.length > 0 ? `#${parts.join(',')}` : ''
+  }
+
   /** Recompute from current authorities. Event-driven only. */
   recompute(reason: string = 'AUTO'): void {
     const structural = this.collectStructuralFacts()
     const input = collectDiagnosticsInput(this.ctx, structural)
+    const src = input.markdown ?? ''
     if (input.documentKey !== this.lastDocumentKey) {
       this.sourceRevision++
       this.lastDocumentKey = input.documentKey
+      this.lastSourceText = src
+    } else if (this.lastSourceText !== src) {
+      // TRAE item 5 — SOURCE REVISION is a real CONTENT version, not a per-document
+      // constant. It used to stay `1` for a whole session (it only bumped on a
+      // document switch), which made it useless for stale-result elimination and
+      // hid the real content generation. It now advances on every real source
+      // change, so a snapshot's `sourceRevision` truthfully identifies the source
+      // generation it was computed from.
+      this.sourceRevision++
+      this.lastSourceText = src
     }
     // V1 §21 — the figure locator records the EXACT source generation this
     // compute runs against, so a later click can detect a stale revision.
     input.sourceRevision = this.sourceRevision
+    // R10 Closure §2.2 — structural provenance travels WITH the transaction.
+    // A degraded read (throw / empty / disconnected root) is an explicit
+    // UNRESOLVED fact: it is recorded on the snapshot and must never be
+    // presented downstream as verified structure or “no problems found”.
+    const structuralVerified = input.structuralVerified !== false
+    const structuralProvenance = input.structuralVerified === true
+      ? 'STRUCTURAL_SERIALIZER'
+      : (input.structuralVerified === false ? 'INCREMENTAL_MIRROR' : 'UNSPECIFIED_LEGACY')
+    emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-STRUCTURAL-SNAPSHOT', {
+      documentKey: input.documentKey,
+      sourceRevision: this.sourceRevision,
+      snapshotOrigin: structuralProvenance,
+      structuralVerified: input.structuralVerified ?? null,
+      degradedReason: structuralVerified ? null : (input.structuralDegradedReason ?? 'UNKNOWN'),
+      decision: input.structuralVerified === true
+        ? 'VERIFIED'
+        : (input.structuralVerified === false ? 'DEGRADED' : 'UNVERIFIED_LEGACY'),
+    })
     // Phase 7R.3.11.8B.4 — severity transition log (strict/loose switch only).
     this.emitHeadingSeverityTransition(input.documentKey, input.strictMode)
     const computed = computeDocumentDiagnostics(input)
+    // Phase G §8 — merge the DOM-side caption-integrity diagnostics (when a
+    // producer is wired) into the SAME snapshot the Drawer / location contract
+    // consume. Never a second pipeline, never a second registry.
+    const captionDiagnostics = this.collectCaptionIntegrityDiagnostics(input.documentKey)
+    const merged = mergeDocumentDiagnostics(computed.diagnostics, captionDiagnostics)
     // Heading Auto-Number Conflict V1 §44/§45 — the ONE runtime audit for the
     // conflict rule (state-deduped; event-driven, never a poll).
     this.emitHeadingAutoNumberConflictAudits(input, computed)
@@ -293,18 +371,21 @@ export class DocumentDiagnosticsAuthority {
       revision: this.revision,
       sourceRevision: this.sourceRevision,
       generatedAt: Date.now(),
-      diagnostics: computed.diagnostics,
-      errorCount: computed.errorCount,
-      warningCount: computed.warningCount,
-      infoCount: computed.infoCount,
+      diagnostics: merged.diagnostics,
+      errorCount: merged.errorCount,
+      warningCount: merged.warningCount,
+      infoCount: merged.infoCount,
       effectiveMode,
       effectiveModeRevision,
+      ...(input.structuralVerified === undefined ? {} : { structuralVerified: input.structuralVerified }),
     }
     // Phase 7R.3.11.8B.7.1 — the semantic fingerprint MUST include the mode
     // provenance: same content + different mode = different fingerprint.
+    // R10 Closure §2.2 — structural provenance joins it too: the same content
+    // read from a degraded mirror is NOT the same fact as a verified read.
     // Phase 7R.3.11.8-B §32 — identical-state recomputes do NOT re-publish.
-    const fingerprint = `${nextSnapshot.documentKey ?? ''}|mode:${effectiveMode}:${effectiveModeRevision}|${nextSnapshot.diagnostics
-      .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}`)
+    const fingerprint = `${nextSnapshot.documentKey ?? ''}|mode:${effectiveMode}:${effectiveModeRevision}|struct:${structuralVerified ? 'V' : 'D'}|${nextSnapshot.diagnostics
+      .map(d => `${d.severity}:${d.code}:${d.targetIdentity ?? d.stableIdentity ?? ''}${this.diagnosticFactSuffix(d)}`)
       .sort()
       .join(';')}`
     // Phase 7R.3.11.8B.11 — HEADING-DOCUMENT-SHAPE-AUDIT: the shape decision
@@ -321,6 +402,10 @@ export class DocumentDiagnosticsAuthority {
     // classified (source authority vs counter vs reconcile/publish vs timing).
     const publishDecision = fingerprint === this.lastContentFingerprint ? 'NOOP' : 'PUBLISHED'
     this.emitTrailingBlankAudit(input.markdown, this.sourceRevision, this.snapshot, nextSnapshot, publishDecision)
+    // Capability Matrix V1 §14 — ONE capability audit per recompute (event-driven,
+    // never a poll): the registry-derived counts + decision, emitted before the
+    // NOOP early-return so it fires exactly once per recompute either way.
+    this.emitDiagnosticCapabilityAudit(input.documentKey, publishDecision)
     if (fingerprint === this.lastContentFingerprint) {
       // §21/§22 — the bridge is consumed POST-COMMIT (never at the start of the
       // recompute): the evidence state must describe a CONSISTENT snapshot, so
@@ -363,6 +448,21 @@ export class DocumentDiagnosticsAuthority {
     try { this.providers.consumeHeadingConflictTestBridge?.() } catch { /* observability only */ }
   }
 
+  /**
+   * Phase G §8 — the DOM-side caption-integrity producer bridge. Optional;
+   * failures are observability-only and must never affect the diagnostics
+   * commit (a broken caption producer simply yields no caption diagnostics).
+   */
+  private collectCaptionIntegrityDiagnostics(documentKey: string | null): readonly DocumentDiagnostic[] {
+    const provider = this.providers.getCaptionIntegrityDiagnostics
+    if (typeof provider !== 'function') return []
+    try {
+      return provider(documentKey, this.sourceRevision) ?? []
+    } catch {
+      return []
+    }
+  }
+
   /** Phase 7R.3.11.8B.7.7 — reason of the LAST published snapshot. */
   lastPublishReason = 'AUTO'
 
@@ -376,14 +476,16 @@ export class DocumentDiagnosticsAuthority {
   }
 
   /**
-   * Phase 7R.3.11.8B.8 — DOCUMENT-TRAILING-BLANK-AUDIT (one per recompute;
-   * recompute is event-driven, never a poll). Records the REAL observed source
-   * tail + the two split quantities (hasTerminalNewline /
-   * extraTrailingBlankLineCount) so a Runtime failure is classifiable:
+   * Phase 7R.3.11.8B.8 / TRAE §1.3 — DOCUMENT-TRAILING-BLANK-AUDIT (one per
+   * recompute, STATE-DEDUPED). Records the REAL observed source tail + the two
+   * split quantities (hasTerminalNewline / extraTrailingBlankLineCount) so a
+   * Runtime failure is classifiable:
    *   1. EOF_SOURCE_AUTHORITY_MISMATCH  (visual tail ≠ getMarkdown tail)
    *   2. EOF_COUNTER_BUG                (counter disagrees with the tail)
    *   3. DIAGNOSTIC_RECONCILE_PUBLISH_BUG (policy flipped but no publish)
    *   4. EDIT_EVENT_PRE_COMMIT_TIMING_BUG (edit read old source)
+   * Identical consecutive semantic states collapse to ONE row (see the token
+   * built in the body); a real tail/verdict/publish change always re-emits.
    */
   private emitTrailingBlankAudit(
     markdown: string | null | undefined,
@@ -401,7 +503,22 @@ export class DocumentDiagnosticsAuthority {
       : prevCodes.length === 0 ? `ADD:${nextCodes.join(',')}`
         : nextCodes.length === 0 ? `REMOVE:${prevCodes.join(',')}`
           : `REPLACE:${prevCodes.join('>')}->${nextCodes.join(',')}`
-    emitRuntimeAudit('DOCUMENT-TRAILING-BLANK-AUDIT', {
+    // TRAE §1.3/§4.3 — STATE-DEDUPED. This audit is emitted BEFORE the content
+    // fingerprint early-return, so without dedup every recompute (source edit,
+    // `#write` mutation, canonical frame commit, settings change) re-wrote the
+    // SAME semantic EOF state (the repeated `publishDecision=NOOP` rows). The
+    // state token collapses identical consecutive tails; a REAL change (verdict /
+    // counts / published codes) re-emits, so the forensic authority is preserved.
+    const signature = [
+      next.documentKey ?? '',
+      policy.verdict,
+      policy.hasTerminalNewline ? 1 : 0,
+      policy.terminalNewlineCount,
+      policy.extraTrailingBlankLineCount,
+      publishDecision,
+      nextCodes.join(','),
+    ].join('|')
+    emitRuntimeAuditStateDedup('DOCUMENT-TRAILING-BLANK-AUDIT', signature, {
       documentKey: next.documentKey,
       trigger: this.lastPublishReason,
       sourceRevision,
@@ -691,6 +808,44 @@ export class DocumentDiagnosticsAuthority {
     })
   }
 
+  /**
+   * Capability Matrix V1 §14 — the ONE runtime capability audit.
+   *
+   * Emitted ONCE per diagnostics recompute (event-driven, never a poll) with the
+   * registry-derived counts + decision + reason. The counts are read from the
+   * SINGLE registry via `resolveDocumentDiagnosticCapabilitySummary`, so the
+   * audit can never drift from the Capability Matrix document.
+   */
+  private emitDiagnosticCapabilityAudit(
+    documentKey: string | null,
+    publishDecision: 'PUBLISHED' | 'NOOP',
+  ): void {
+    const audit = resolveDocumentDiagnosticsCapabilityAudit()
+    emitRuntimeAudit(DOCUMENT_DIAGNOSTICS_CAPABILITY_AUDIT_EVENT, {
+      documentKey,
+      registeredRuleFamilyCount: audit.registeredRuleFamilyCount,
+      resolvedDiagnosticCodeCount: audit.resolvedDiagnosticCodeCount,
+      userVisibleDiagnosticTypeCount: audit.userVisibleDiagnosticTypeCount,
+      implementedFamilyCount: audit.implementedFamilyCount,
+      deferredFamilyCount: audit.deferredFamilyCount,
+      stateGuardCodeCount: audit.stateGuardCodeCount,
+      contentDiagnosticCodeCount: audit.contentDiagnosticCodeCount,
+      closedFamilyCount: audit.closedFamilyCount,
+      partialFamilyCount: audit.partialFamilyCount,
+      unverifiedFamilyCount: audit.unverifiedFamilyCount,
+      deferredClosureFamilyCount: audit.deferredClosureFamilyCount,
+      unregisteredRuntimeCodeCount: audit.unregisteredRuntimeCodeCount,
+      implementedWithoutProducerCount: audit.implementedWithoutProducerCount,
+      duplicateFamilyCount: audit.duplicateFamilyCount,
+      unknownSeverityCount: audit.unknownSeverityCount,
+      staleRuntimeEvidenceCount: audit.staleRuntimeEvidenceCount,
+      runtimeEvidenceShaMismatchCount: audit.runtimeEvidenceShaMismatchCount,
+      decision: audit.decision,
+      gateReason: audit.reason,
+      reason: publishDecision === 'PUBLISHED' ? 'SNAPSHOT_PUBLISHED' : 'SNAPSHOT_UNCHANGED',
+    })
+  }
+
   private emitDocumentDiagnosticRuleSnapshot(snapshot: DocumentDiagnosticsSnapshot): void {
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-RULE-SNAPSHOT', {
       documentKey: snapshot.documentKey,
@@ -795,6 +950,7 @@ export class DocumentDiagnosticsAuthority {
       nonLocatableNoticeCount: contract.nonLocatableNoticeCount,
       canonicalNodeLocationCount: contract.canonicalNodeLocationCount,
       sourceRangeLocationCount: contract.sourceRangeLocationCount,
+      sourceSyntaxOpenerLocationCount: contract.sourceSyntaxOpenerLocationCount,
       documentStartLocationCount: contract.documentStartLocationCount,
       documentEndLocationCount: contract.documentEndLocationCount,
       blockNodeLocationCount: contract.blockNodeLocationCount,

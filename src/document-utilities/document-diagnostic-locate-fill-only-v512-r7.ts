@@ -132,6 +132,21 @@ export interface ActiveLocateFillOnlyFacts {
   passiveHeadingMarkerRemoved: boolean
   /** Drawer rows exist but a row severity indicator was removed. */
   drawerSeverityIndicatorRemoved: boolean
+  /**
+   * TRAE V7 §7.2 — the LAYERED ownership split. FILL_ONLY only constrains what
+   * the PLUGIN drew; a Typora native code block border is a host fact and must
+   * never FAIL the gate (and must never be deleted to make the gate pass).
+   */
+  pluginOwnedFillCount: number
+  pluginOwnedBorderCount: number
+  pluginOwnedOutlineCount: number
+  pluginOwnedVerticalLineCount: number
+  pluginOwnedHorizontalLineCount: number
+  pluginOwnedKeylineCount: number
+  pluginOwnedCornerArmCount: number
+  pluginOwnedShadowCount: number
+  hostNativeBorderCount: number
+  hostNativeOutlineCount: number
 }
 
 export function emptyActiveLocateFillOnlyFacts(): ActiveLocateFillOnlyFacts {
@@ -149,6 +164,16 @@ export function emptyActiveLocateFillOnlyFacts(): ActiveLocateFillOnlyFacts {
     editorShadowCount: 0,
     passiveHeadingMarkerRemoved: false,
     drawerSeverityIndicatorRemoved: false,
+    pluginOwnedFillCount: 0,
+    pluginOwnedBorderCount: 0,
+    pluginOwnedOutlineCount: 0,
+    pluginOwnedVerticalLineCount: 0,
+    pluginOwnedHorizontalLineCount: 0,
+    pluginOwnedKeylineCount: 0,
+    pluginOwnedCornerArmCount: 0,
+    pluginOwnedShadowCount: 0,
+    hostNativeBorderCount: 0,
+    hostNativeOutlineCount: 0,
   }
 }
 

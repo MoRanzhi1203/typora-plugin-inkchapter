@@ -80,7 +80,10 @@ export const DEFAULT_OBJECT_NUMBERING_CONFIG: Record<ObjectNumberingType, Object
   table: { enabled: true, prefix: '表', position: 'above', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}', preset: 'global' },
   figure: { enabled: true, prefix: '图', position: 'below', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}', preset: 'global' },
   code: { enabled: true, prefix: '代码', position: 'above', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '{n}', preset: 'global' },
-  formula: { enabled: false, prefix: '', position: 'right', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '({n})', formulaMode: 'typora-native', preset: 'global' },
+  // PA-11 — brand-new installs number formulas PER SECTION (1.1-1, 11.2-1).
+  // An explicitly stored `preset` (including 'global') always wins, so existing
+  // users keep their numbering; see migrateObjectNumberingConfig().
+  formula: { enabled: false, prefix: '', position: 'right', numberingMode: 'continuous', numberStyle: 'arabic', startAt: 1, minDigits: 1, template: '({n})', formulaMode: 'typora-native', preset: 'section-dash' },
 }
 
 // ── Number style formatting ──────────────────────────────────────────

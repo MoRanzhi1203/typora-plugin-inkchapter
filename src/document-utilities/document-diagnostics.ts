@@ -10,10 +10,18 @@ import { validateStrictFirstH1Topline } from '../heading-numbering/strict-docume
 import { normalizeResourcePath, normalizeSourceAnchorText } from './document-diagnostic-location'
 // V5.12-R5 §4 — the SOURCE RANGE IDENTITY authority (pure, no DOM).
 import { buildSourceRangeIdentity } from './document-diagnostic-source-occurrence-v512-r5'
+// TRAE V4 §3/§4 — the SOURCE-SYNTAX OPENER location kind.
+import type { SourceSyntaxKind } from './document-diagnostic-source-syntax-location-authority'
 // V5.12-R6 §7 — the ONE empty-document predicate (pure, no DOM / no runtime).
 import { isSemanticallyEmptyDocument } from './document-diagnostic-empty-short-circuit-v512-r6'
 // V5.12-R8 §4 — resource classification + the unified figure occurrence model.
 import type { ResourceClass, ImageSourceOccurrence } from './document-resource-scanner'
+// Phase I (spec §10) — the ONE in-document anchor scanner (`[x](#target)`),
+// reusing the SAME literal-excluding reference scanner (no second parser).
+import { parseLocalAnchorTargets } from './document-resource-scanner'
+// TRAE §2.4 — the SINGLE-SOURCE document-end trailing-blank threshold (0~1 extra
+// blank lines are legal), shared with the visual + newline-marker resolvers.
+import { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS } from './document-diagnostic-document-end-newline-marker-v1'
 // V5.15 — Standalone Object Block Invariant (figure structure gate).
 import {
   analyzeFigureStandaloneSourceBlocks,
@@ -33,6 +41,7 @@ import type {
   DocumentDiagnosticSeverity,
   DocumentDiagnosticsSnapshot,
   DocumentDiagnosticsState,
+  ObjectEffectiveNumbersSnapshot,
 } from './diagnostics-types'
 // V1 — Figure Diagnostic Locator Authority (identity builders, pure).
 import {
@@ -73,6 +82,21 @@ import {
   internalBlankGapIdentity,
   internalBlankLineDetail,
 } from './document-diagnostic-internal-blank-lines-v1'
+// Phase G — the DOM-side caption-integrity producer's emitted codes (the SAME
+// single allow-list mirrored below; the caption producer is not a second registry).
+import { CAPTION_INTEGRITY_DIAGNOSTIC_CODES } from './document-diagnostics-caption-integrity-v1'
+// TRAE V3 §7 — the THREE shared source authorities (single-pass per source
+// revision; every new rule consumes them instead of re-scanning the document).
+import {
+  getDocumentSourceSyntaxSnapshot,
+  parseDocumentSourceTables,
+  type SourceTableStructure,
+} from './document-source-syntax-authority'
+import {
+  getDocumentDefinitionReferenceIndex,
+  type DefinitionReferenceOccurrence,
+} from './document-definition-reference-index'
+import { getDocumentInlineLinkAuthority } from './document-inline-link-authority'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -276,6 +300,14 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FORMULA_DUPLICATE_VISIBLE_TAG':
     case 'HEADING_DUPLICATE_IDENTITY':
       return 'error'
+    // TRAE V3 — an unclosed code fence / formula block swallows the rest of the
+    // document as one protected range and a duplicate footnote definition breaks
+    // the footnote model: all are ERRORS.
+    case 'CODE_FENCE_UNCLOSED':
+    case 'FORMULA_BLOCK_UNCLOSED':
+    case 'FOOTNOTE_DEFINITION_DUPLICATE':
+    case 'FRONTMATTER_UNCLOSED':
+      return 'error'
     // V5.15 §26 — a structurally invalid picture block breaks the Figure
     // business model itself (occurrence identity / numbering / caption /
     // locate / visual target), so it is an ERROR, never a Warning.
@@ -290,6 +322,9 @@ export function resolveDocumentDiagnosticSeverity(
     // USER-content defect (it will collide with the generated number).
     case 'HEADING_MANUAL_NUMBER_PREFIX':
     case 'FIGURE_MANUAL_NUMBER_PREFIX':
+    // Phase H (spec §9) — the table / code analogues of the figure rule.
+    case 'TABLE_MANUAL_NUMBER_PREFIX':
+    case 'CODE_MANUAL_NUMBER_PREFIX':
       return 'warning'
     // Heading Auto-Number Conflict V1 §13 — when the auto number is EFFECTIVE
     // for the heading AND the source already carries a confirmed manual prefix,
@@ -307,6 +342,25 @@ export function resolveDocumentDiagnosticSeverity(
     // NEVER escalated to an error (a readable document with sloppy spacing).
     case EXCESSIVE_INTERNAL_BLANK_LINES_CODE:
       return 'warning'
+    // Phase I (spec §10) — a `#anchor` link that resolves to no canonical
+    // heading anchor is a broken cross-reference (Warning, never Error: the
+    // document structure is intact; only the link destination is wrong).
+    case 'LINK_LOCAL_ANCHOR_MISSING':
+      return 'warning'
+    // Phase I (spec §10) — two canonical headings sharing ONE anchor id make the
+    // anchor ambiguous; a Warning (a defensive integrity check on Typora's own
+    // heading ids).
+    case 'HEADING_ANCHOR_COLLISION':
+      return 'warning'
+    // TRAE V3 — a missing footnote / reference-style link definition, a duplicate
+    // reference definition and a link with no destination are WARNINGS (the
+    // document structure is intact; only a reference target is wrong).
+    case 'FOOTNOTE_REFERENCE_TARGET_MISSING':
+    case 'LINK_REFERENCE_DEFINITION_MISSING':
+    case 'LINK_REFERENCE_DEFINITION_DUPLICATE':
+    case 'LINK_TARGET_EMPTY':
+    case 'TABLE_HEADER_DUPLICATE':
+      return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
     case 'DOCUMENT_INACTIVE':
@@ -323,6 +377,13 @@ export function resolveDocumentDiagnosticSeverity(
     // syntax error / structural warning. Constant across strict and loose mode:
     // an incomplete document is incomplete in both.
     case DOCUMENT_HEADING_ONLY_NO_BODY_CODE:
+      return 'info'
+    // TRAE V3 — unused / empty footnote definitions and an empty table header cell
+    // are HINTS; an empty inline link TEXT is a hint too (an icon link is legal).
+    case 'FOOTNOTE_DEFINITION_UNUSED':
+    case 'FOOTNOTE_DEFINITION_EMPTY':
+    case 'TABLE_HEADER_EMPTY':
+    case 'LINK_TEXT_EMPTY':
       return 'info'
     default:
       // Phase 7R.3.11.8B.4.1 — latent source syntax risk: strict=WARNING,
@@ -346,6 +407,19 @@ export interface DocumentDiagnosticsInput {
    * outdated offset.
    */
   sourceRevision?: number | null
+  /**
+   * R10 Closure §2.2 — structural-snapshot provenance.
+   *
+   * `true`  — `markdown` came from the editor's structural serializer for THIS
+   *           transaction (verified structure).
+   * `false` — DEGRADED: the structural read failed and `markdown` is the
+   *           incremental mirror. A degraded transaction must never be
+   *           presented as verified / compliant downstream.
+   * Absent (pure/legacy callers) keeps the previous semantics.
+   */
+  structuralVerified?: boolean
+  /** Forensics: why the structural read degraded (only when `false`). */
+  structuralDegradedReason?: string | null
   strictMode: boolean
   /**
    * Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation.
@@ -408,6 +482,15 @@ export interface DocumentDiagnosticsInput {
     formula?: boolean
   }
   /**
+   * Numbering Integrity V2 (spec §9/§21) — the canonical effective-number fact
+   * snapshot consumed by the object / formula NUMBER rules (duplicate / order /
+   * section-mismatch). It is produced by the EXISTING numbering authority (the
+   * caption service) and keyed by the object's canonical SOURCE identity
+   * (`block:<kind>:<ordinal>`). Absent / empty ⇒ every number rule stays SILENT
+   * (never a false positive). The producer NEVER re-derives or parses a number.
+   */
+  objectEffectiveNumbers?: ObjectEffectiveNumbersSnapshot | null
+  /**
    * Heading Auto-Number Conflict V1 §2/§4/§44 — the heading auto-numbering
    * EFFECTIVENESS authority's global audit facts. The PER-HEADING verdict
    * travels on `DiagnosticHeadingFact.autoNumberingEffective`; these two
@@ -457,6 +540,14 @@ export const HEADING_MANUAL_NUMBER_PREFIX_CODE = 'HEADING_MANUAL_NUMBER_PREFIX'
 export const HEADING_AUTO_NUMBER_CONFLICT_CODE = 'HEADING_AUTO_NUMBER_CONFLICT'
 /** §24 — a figure name carrying a manual number prefix while auto-numbering is ON. */
 export const FIGURE_MANUAL_NUMBER_PREFIX_CODE = 'FIGURE_MANUAL_NUMBER_PREFIX'
+/** Phase H (spec §9) — a table name carrying a manual number prefix while auto-numbering is ON. */
+export const TABLE_MANUAL_NUMBER_PREFIX_CODE = 'TABLE_MANUAL_NUMBER_PREFIX'
+/** Phase H (spec §9) — a code-block name carrying a manual number prefix while auto-numbering is ON. */
+export const CODE_MANUAL_NUMBER_PREFIX_CODE = 'CODE_MANUAL_NUMBER_PREFIX'
+/** Phase I (spec §10) — a `[x](#target)` link whose target is no canonical heading anchor. */
+export const LINK_LOCAL_ANCHOR_MISSING_CODE = 'LINK_LOCAL_ANCHOR_MISSING'
+/** Phase I (spec §10) — a collision group of canonical headings sharing ONE anchor id. */
+export const HEADING_ANCHOR_COLLISION_CODE = 'HEADING_ANCHOR_COLLISION'
 /** §18 — a table that is not a standalone block (list / blockquote marker). */
 export const TABLE_BLOCK_STRUCTURE_INVALID_CODE = 'TABLE_BLOCK_STRUCTURE_INVALID'
 /** §19 — a display formula that is not a standalone block. */
@@ -469,6 +560,190 @@ export const TABLE_EMPTY_CONTENT_CODE = 'TABLE_EMPTY_CONTENT'
 export const FORMULA_EMPTY_CONTENT_CODE = 'FORMULA_EMPTY_CONTENT'
 /** §28 — an empty blockquote. */
 export const BLOCKQUOTE_EMPTY_CODE = 'BLOCKQUOTE_EMPTY'
+
+// ── TRAE V3 (spec §1–§6) — Source Syntax / Footnote / Reference / Front Matter
+//    / Table header / Empty-link integrity rule codes ────────────────────────
+export const CODE_FENCE_UNCLOSED_CODE = 'CODE_FENCE_UNCLOSED'
+export const FORMULA_BLOCK_UNCLOSED_CODE = 'FORMULA_BLOCK_UNCLOSED'
+export const FOOTNOTE_REFERENCE_TARGET_MISSING_CODE = 'FOOTNOTE_REFERENCE_TARGET_MISSING'
+export const FOOTNOTE_DEFINITION_DUPLICATE_CODE = 'FOOTNOTE_DEFINITION_DUPLICATE'
+export const FOOTNOTE_DEFINITION_UNUSED_CODE = 'FOOTNOTE_DEFINITION_UNUSED'
+export const FOOTNOTE_DEFINITION_EMPTY_CODE = 'FOOTNOTE_DEFINITION_EMPTY'
+export const LINK_REFERENCE_DEFINITION_MISSING_CODE = 'LINK_REFERENCE_DEFINITION_MISSING'
+export const LINK_REFERENCE_DEFINITION_DUPLICATE_CODE = 'LINK_REFERENCE_DEFINITION_DUPLICATE'
+export const FRONTMATTER_UNCLOSED_CODE = 'FRONTMATTER_UNCLOSED'
+export const FRONTMATTER_MALFORMED_CODE = 'FRONTMATTER_MALFORMED'
+export const TABLE_HEADER_EMPTY_CODE = 'TABLE_HEADER_EMPTY'
+export const TABLE_HEADER_DUPLICATE_CODE = 'TABLE_HEADER_DUPLICATE'
+export const LINK_TEXT_EMPTY_CODE = 'LINK_TEXT_EMPTY'
+export const LINK_TARGET_EMPTY_CODE = 'LINK_TARGET_EMPTY'
+
+/**
+ * §6/§31 — every TRAE V3 runtime code this producer can emit. `FRONTMATTER_MALFORMED`
+ * is deliberately ABSENT: it is DEFERRED_BY_SPEC (no canonical YAML parser), so the
+ * producer never fabricates it.
+ */
+export const SOURCE_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
+  CODE_FENCE_UNCLOSED_CODE,
+  FORMULA_BLOCK_UNCLOSED_CODE,
+  FOOTNOTE_REFERENCE_TARGET_MISSING_CODE,
+  FOOTNOTE_DEFINITION_DUPLICATE_CODE,
+  FOOTNOTE_DEFINITION_UNUSED_CODE,
+  FOOTNOTE_DEFINITION_EMPTY_CODE,
+  LINK_REFERENCE_DEFINITION_MISSING_CODE,
+  LINK_REFERENCE_DEFINITION_DUPLICATE_CODE,
+  FRONTMATTER_UNCLOSED_CODE,
+  TABLE_HEADER_EMPTY_CODE,
+  TABLE_HEADER_DUPLICATE_CODE,
+  LINK_TEXT_EMPTY_CODE,
+  LINK_TARGET_EMPTY_CODE,
+]
+
+// ── Numbering Integrity V2 (spec §9/§21) rule codes ─────────────────────────
+/** §9 — two canonical figures share the same effective number. */
+export const FIGURE_NUMBER_DUPLICATE_CODE = 'FIGURE_NUMBER_DUPLICATE'
+/** §9 — two canonical tables share the same effective number. */
+export const TABLE_NUMBER_DUPLICATE_CODE = 'TABLE_NUMBER_DUPLICATE'
+/** §9 — two canonical code blocks share the same effective number. */
+export const CODE_NUMBER_DUPLICATE_CODE = 'CODE_NUMBER_DUPLICATE'
+/** §9 — figure effective numbers are not strictly increasing in document order. */
+export const FIGURE_NUMBER_ORDER_INVALID_CODE = 'FIGURE_NUMBER_ORDER_INVALID'
+/** §9 — table effective numbers are not strictly increasing in document order. */
+export const TABLE_NUMBER_ORDER_INVALID_CODE = 'TABLE_NUMBER_ORDER_INVALID'
+/** §9 — code effective numbers are not strictly increasing in document order. */
+export const CODE_NUMBER_ORDER_INVALID_CODE = 'CODE_NUMBER_ORDER_INVALID'
+/** §9 — formula effective numbers are not strictly increasing in document order. */
+export const FORMULA_NUMBER_ORDER_INVALID_CODE = 'FORMULA_NUMBER_ORDER_INVALID'
+/** §9 — a section-scoped formula number's section ≠ the section it sits in. */
+export const FORMULA_NUMBER_SECTION_MISMATCH_CODE = 'FORMULA_NUMBER_SECTION_MISMATCH'
+
+/**
+ * §9 — every NUMBER-INTEGRITY runtime code this producer can emit. The registry
+ * ↔ producer gate mirrors this list exactly.
+ */
+export const NUMBER_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
+  FIGURE_NUMBER_DUPLICATE_CODE,
+  TABLE_NUMBER_DUPLICATE_CODE,
+  CODE_NUMBER_DUPLICATE_CODE,
+  FIGURE_NUMBER_ORDER_INVALID_CODE,
+  TABLE_NUMBER_ORDER_INVALID_CODE,
+  CODE_NUMBER_ORDER_INVALID_CODE,
+  FORMULA_NUMBER_ORDER_INVALID_CODE,
+  FORMULA_NUMBER_SECTION_MISMATCH_CODE,
+]
+
+/**
+ * Capability Matrix V1 §6 — the CONSERVATIVE allow-list of every runtime
+ * diagnostic code `computeDocumentDiagnostics` can emit. It exists so the
+ * Registry ↔ Producer consistency gate is REAL (never vacuous): the capability
+ * summary checks each produced code resolves to a registered family. Every
+ * entry is mirrored by the registry; the capability test asserts the mapping.
+ */
+export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
+  // document / strict / completeness
+  DOCUMENT_EMPTY_CODE,
+  SOURCE_UNAVAILABLE_CODE,
+  'DOCUMENT_INACTIVE',
+  'STRICT_FIRST_H1_LEADING_PARAGRAPH',
+  'STRICT_FIRST_H1_LEADING_EMPTY_LINE',
+  'STRICT_FIRST_H1_LEADING_EMPTY_BLOCK',
+  'STRICT_FIRST_H1_LEADING_OTHER_HEADING',
+  'STRICT_FIRST_H1_LEADING_OTHER_BLOCK',
+  'STRICT_FIRST_H1_DOCUMENT_EMPTY',
+  'STRICT_FIRST_H1_SOURCE_UNAVAILABLE',
+  'STRICT_SINGLE_H1_NO_H1',
+  'STRICT_SINGLE_H1_MULTIPLE_H1',
+  DOCUMENT_HEADING_ONLY_NO_BODY_CODE,
+  DOCUMENT_HEADINGS_ONLY_NO_BODY_CODE,
+  SECTION_EMPTY_CODE,
+  SECTION_ONLY_SUBHEADINGS_CODE,
+  HEADING_AUTO_NUMBER_CONFLICT_CODE,
+  HEADING_MANUAL_NUMBER_PREFIX_CODE,
+  'DOCUMENT_TERMINAL_NEWLINE_MISSING',
+  'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
+  EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
+  // latent ATX (LEVEL_n — one representative per emitted level 1..6)
+  'LATENT_ATX_HEADING_MARKER_LEVEL_1',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_2',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_3',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_4',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_5',
+  'LATENT_ATX_HEADING_MARKER_LEVEL_6',
+  // heading structure
+  'HEADING_DUPLICATE_IDENTITY',
+  'HEADING_DUPLICATE_TEXT',
+  'HEADING_EMPTY_TEXT',
+  'HEADING_LEVEL_GAP',
+  // figure
+  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  'FIGURE_DUPLICATE_NAME',
+  'FIGURE_LOCAL_IMAGE_MISSING',
+  'FIGURE_MISSING_NAME',
+  FIGURE_MANUAL_NUMBER_PREFIX_CODE,
+  // table
+  TABLE_BLOCK_STRUCTURE_INVALID_CODE,
+  'TABLE_DUPLICATE_NAME',
+  'TABLE_MISSING_NAME',
+  TABLE_EMPTY_CONTENT_CODE,
+  TABLE_MANUAL_NUMBER_PREFIX_CODE,
+  // code
+  CODE_EMPTY_BLOCK_CODE,
+  'CODE_DUPLICATE_NAME',
+  'CODE_MISSING_NAME',
+  'CODE_MISSING_LANGUAGE',
+  CODE_MANUAL_NUMBER_PREFIX_CODE,
+  // formula
+  FORMULA_BLOCK_STRUCTURE_INVALID_CODE,
+  'FORMULA_DUPLICATE_VISIBLE_TAG',
+  FORMULA_EMPTY_CONTENT_CODE,
+  // blockquote
+  BLOCKQUOTE_EMPTY_CODE,
+  // link
+  'LINK_LOCAL_TARGET_MISSING',
+  LINK_LOCAL_ANCHOR_MISSING_CODE,
+  // heading
+  HEADING_ANCHOR_COLLISION_CODE,
+  // Phase G — DOM-side Caption Integrity (produced by
+  // `computeCaptionIntegrityDiagnostics`, merged into the SAME snapshot).
+  ...CAPTION_INTEGRITY_DIAGNOSTIC_CODES,
+  // Numbering Integrity V2 (spec §9) — the object / formula NUMBER rules.
+  ...NUMBER_INTEGRITY_DIAGNOSTIC_CODES,
+  // TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table header
+  // / Empty-link integrity (13 codes; FRONTMATTER_MALFORMED stays DEFERRED).
+  ...SOURCE_INTEGRITY_DIAGNOSTIC_CODES,
+]
+
+/**
+ * Phase G §8 — merge the source-only diagnostics with the DOM-side diagnostics
+ * (caption integrity) into ONE deduplicated list + honest severity counts. The
+ * base order is preserved; an id emitted twice keeps its FIRST occurrence.
+ */
+export function mergeDocumentDiagnostics(
+  base: readonly DocumentDiagnostic[],
+  extra: readonly DocumentDiagnostic[],
+): DocumentDiagnosticsComputed {
+  const seen = new Set<string>()
+  const diagnostics: DocumentDiagnostic[] = []
+  for (const d of base) {
+    if (seen.has(d.id)) continue
+    seen.add(d.id)
+    diagnostics.push(d)
+  }
+  for (const d of extra) {
+    if (seen.has(d.id)) continue
+    seen.add(d.id)
+    diagnostics.push(d)
+  }
+  let errorCount = 0
+  let warningCount = 0
+  let infoCount = 0
+  for (const d of diagnostics) {
+    if (d.severity === 'error') errorCount++
+    else if (d.severity === 'warning') warningCount++
+    else infoCount++
+  }
+  return { diagnostics, errorCount, warningCount, infoCount }
+}
 
 // ── Standard EOF newline policy (Phase 7R.3.11.8B.8) ────────────────────
 // Supersedes the "exactly one trailing blank line" rule (7R.3.11.8B.7.x).
@@ -531,7 +806,7 @@ export function computeEofNewlinePolicy(markdown: string | null | undefined): Eo
   if (!hasTerminalNewline) {
     return { verdict: 'MISSING_TERMINAL_NEWLINE', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
   }
-  if (extraTrailingBlankLineCount >= 2) {
+  if (extraTrailingBlankLineCount >= DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS) {
     return { verdict: 'EXCESSIVE_TRAILING_BLANK_LINES', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
   }
   return { verdict: 'PASS', hasTerminalNewline, terminalNewlineCount, extraTrailingBlankLineCount }
@@ -607,8 +882,35 @@ export function deduplicateDiagnostics(
   return out
 }
 
+/**
+ * Phase I §10 — does a `#target` resolve to a canonical heading anchor? The
+ * anchor authority is Typora's rendered heading id (raw), with a bounded
+ * percent-decode attempt (Typora may encode a non-ASCII anchor in the href).
+ * No slugifier, no guessing: an unknown target is simply NOT a heading anchor.
+ */
+function matchesCanonicalHeadingAnchor(
+  target: string,
+  anchors: ReadonlyMap<string, readonly DiagnosticHeadingFact[]>,
+): boolean {
+  if (target === '') return false
+  if (anchors.has(target)) return true
+  let decoded = target
+  try {
+    decoded = decodeURIComponent(target)
+  } catch {
+    return false
+  }
+  return decoded !== target && anchors.has(decoded)
+}
+
+/** 诊断盖章所需的最小上下文（documentKey + severity 政策输入）。 */
+interface DiagnosticStampContext {
+  documentKey: string | null
+  strictMode: boolean
+}
+
 function makeDiagnostic(
-  input: DocumentDiagnosticsInput,
+  input: DiagnosticStampContext,
   category: DocumentDiagnosticCategory,
   code: string,
   message: string,
@@ -684,6 +986,82 @@ function makeDiagnostic(
   }
 }
 
+/** 内部空行规则的最小输入（快速通路与全量共用同一构造权威）。 */
+export interface InternalBlankLineDiagnosticInput {
+  documentKey: string | null
+  markdown: string | null
+  strictMode: boolean
+}
+
+/**
+ * `EXCESSIVE_INTERNAL_BLANK_LINES` 的唯一构造权威。
+ *
+ * 全量 compute 与编辑期快速通路共用本函数，保证两条链路的诊断身份、metadata、
+ * 定位与文案完全一致（不存在第二份构造逻辑）。
+ */
+export function buildInternalBlankLineDiagnostics(
+  input: InternalBlankLineDiagnosticInput,
+): DocumentDiagnostic[] {
+  if (input.markdown == null) return []
+  const out: DocumentDiagnostic[] = []
+  for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
+    const gapIdentity = internalBlankGapIdentity(gap)
+    out.push(
+      makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
+        detail: internalBlankLineDetail(gap.actualBlankLines),
+        kind: 'document',
+        targetIdentity: gapIdentity,
+        metadata: {
+          ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
+          // §1 — the rule's OWN category / scope vocabulary. `category` on
+          // the record stays the legacy consumer grouping ('document').
+          ruleCategory: 'document-format',
+          scope: 'block-gap',
+          reasonChip: false,
+          passiveVisual: false,
+          activeVisual: true,
+          // §9/§33 — the block-gap facts travel on the record so the Drawer,
+          // the locator and the audits never re-derive them.
+          previousBlockIdentity: gap.previousBlockIdentity,
+          previousBlockKind: gap.previousBlockKind,
+          // TRAE §7 — the CANONICAL binding authority: `block:<kind>:<ordinal>`
+          // for object boundaries (code / table / formula). A fence text is
+          // never the binding identity.
+          previousBlockCanonicalKind: gap.previousBlockCanonicalKind,
+          previousBlockCanonicalOrdinal: gap.previousBlockCanonicalOrdinal,
+          previousBlockStartLine: gap.previousBlockStartLine,
+          previousBlockAnchorText: gap.previousBlockAnchorText,
+          nextBlockIdentity: gap.nextBlockIdentity,
+          nextBlockKind: gap.nextBlockKind,
+          nextBlockCanonicalKind: gap.nextBlockCanonicalKind,
+          nextBlockCanonicalOrdinal: gap.nextBlockCanonicalOrdinal,
+          nextBlockStartLine: gap.nextBlockStartLine,
+          nextBlockAnchorText: gap.nextBlockAnchorText,
+          previousSourceEnd: gap.previousBlockSourceEnd,
+          nextSourceStart: gap.nextBlockSourceStart,
+          firstBlankLine: gap.firstBlankLine,
+          lastBlankLine: gap.lastBlankLine,
+          actualBlankLines: gap.actualBlankLines,
+          passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+          warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+        },
+        // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
+        // (and the active target) is the NEXT block: its proven VISIBLE text
+        // is the verification anchor, so the click shows the block the excess
+        // blanks precede. `source-range` never paints the whole blank band.
+        location: {
+          kind: 'source-range',
+          startLine: gap.nextBlockStartLine,
+          startColumn: 0,
+          sourceFingerprint: `internal-blank:${gapIdentity}`,
+          rawText: gap.nextBlockAnchorText,
+        },
+      }),
+    )
+  }
+  return out
+}
+
 /**
  * V5.12-R6 §9 — the ONE diagnostic an empty document publishes.
  *
@@ -740,6 +1118,206 @@ function deriveDefaultLocation(
     return { kind: 'document-start' }
   }
   return { kind: 'document-start' }
+}
+
+// ── Numbering Integrity V2 (spec §9/§21) — pure effective-number helpers ─────
+
+/** ONE object's canonical effective-number fact, keyed by its SOURCE identity. */
+interface ObjectNumberEntry {
+  sourceIdentity: string
+  effectiveNumber: string
+  sectionNumber?: string
+  actualSectionNumber?: string
+  element: HTMLElement | null
+}
+
+/**
+ * §9 — parse a CANONICAL effective number (a numbering-authority fact, never
+ * rendered text) into comparable integer components. Returns null for a value
+ * the canonical ordering cannot judge (e.g. a Roman numeral) — the caller then
+ * never reports an order violation for that step (no false positive).
+ */
+function parseEffectiveNumberComponents(value: string): number[] | null {
+  if (value === '') return null
+  const parts = value.split('.')
+  const out: number[] = []
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return null
+    out.push(Number.parseInt(part, 10))
+  }
+  return out.length > 0 ? out : null
+}
+
+/** §9 — lexical numeric comparison of two component vectors, shorter padded 0. */
+function compareEffectiveNumberComponents(a: readonly number[], b: readonly number[]): number {
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+interface ObjectNumberKindMeta {
+  category: DocumentDiagnosticCategory
+  duplicateCode: string
+  orderCode: string
+  label: string
+}
+
+const OBJECT_NUMBER_KIND_META: Readonly<Record<'figure' | 'table' | 'code', ObjectNumberKindMeta>> = {
+  figure: { category: 'figure', duplicateCode: FIGURE_NUMBER_DUPLICATE_CODE, orderCode: FIGURE_NUMBER_ORDER_INVALID_CODE, label: '图片' },
+  table: { category: 'table', duplicateCode: TABLE_NUMBER_DUPLICATE_CODE, orderCode: TABLE_NUMBER_ORDER_INVALID_CODE, label: '表格' },
+  code: { category: 'code', duplicateCode: CODE_NUMBER_DUPLICATE_CODE, orderCode: CODE_NUMBER_ORDER_INVALID_CODE, label: '代码块' },
+}
+
+/**
+ * §9/§21 — the object / formula NUMBER-INTEGRITY producer. It consumes ONLY the
+ * canonical effective-number snapshot (`input.objectEffectiveNumbers`); when the
+ * snapshot is absent / disabled / empty EVERY rule stays silent (zero output).
+ * Every emitted id derives from the object's SOURCE identity — never from the
+ * generated number — so a Chinese / Decimal / Roman style switch never churns
+ * an id.
+ */
+function emitObjectNumberIntegrity(
+  input: DocumentDiagnosticsInput,
+  emit: (d: DocumentDiagnostic) => void,
+): void {
+  const snapshot = input.objectEffectiveNumbers
+  if (!snapshot || !snapshot.numberingEnabled) return
+  const bySource = snapshot.bySourceIdentity
+  if (!bySource || bySource.size === 0) return
+
+  const collect = (
+    facts: readonly { element: HTMLElement | null; targetIdentity?: string }[],
+  ): { entries: ObjectNumberEntry[]; complete: boolean } => {
+    const entries: ObjectNumberEntry[] = []
+    let complete = true
+    for (const f of facts) {
+      const id = f.targetIdentity
+      if (!id) { complete = false; continue }
+      const fact = bySource.get(id)
+      if (!fact) { complete = false; continue }
+      entries.push({
+        sourceIdentity: id,
+        effectiveNumber: fact.effectiveNumber,
+        sectionNumber: fact.sectionNumber,
+        actualSectionNumber: fact.actualSectionNumber,
+        element: f.element,
+      })
+    }
+    return { entries, complete }
+  }
+
+  const emitDuplicates = (
+    kind: 'figure' | 'table' | 'code',
+    entries: readonly ObjectNumberEntry[],
+  ): void => {
+    const meta = OBJECT_NUMBER_KIND_META[kind]
+    const groups = new Map<string, ObjectNumberEntry[]>()
+    for (const e of entries) {
+      const list = groups.get(e.effectiveNumber)
+      if (list) list.push(e)
+      else groups.set(e.effectiveNumber, [e])
+    }
+    for (const [number, group] of groups) {
+      if (group.length <= 1) continue
+      const anchor = group[0]
+      const targets: DiagnosticLocation[] = group.map(g => ({
+        kind: 'block-node',
+        blockKind: kind,
+        stableIdentity: g.sourceIdentity,
+      }))
+      emit(makeDiagnostic(input, meta.category, meta.duplicateCode, `${meta.label}编号重复：${number}`, {
+        detail: `多个${meta.label}解析出了相同的有效编号，编号应当唯一。`,
+        targetIdentity: anchor.sourceIdentity,
+        element: anchor.element,
+        kind: 'object',
+        metadata: {
+          ruleId: meta.duplicateCode,
+          reason: 'OBJECT_NUMBER_DUPLICATE',
+          effectiveNumber: number,
+          memberCount: group.length,
+        },
+        location: { kind: 'target-group', scrollAnchor: targets[0], targets },
+      }))
+    }
+  }
+
+  const emitOrder = (
+    category: 'figure' | 'table' | 'code' | 'formula',
+    orderCode: string,
+    label: string,
+    entries: readonly ObjectNumberEntry[],
+    complete: boolean,
+  ): void => {
+    // Order is only judgeable when EVERY object of the type carries a canonical
+    // fact — a partial snapshot would produce a false "not increasing" verdict.
+    if (!complete || entries.length < 2) return
+    let prev: number[] | null = null
+    for (const e of entries) {
+      const comps = parseEffectiveNumberComponents(e.effectiveNumber)
+      if (!comps) { prev = null; continue }
+      if (prev && compareEffectiveNumberComponents(prev, comps) >= 0) {
+        emit(makeDiagnostic(input, category, orderCode, `${label}编号顺序异常：${e.effectiveNumber}`, {
+          detail: `${label}的有效编号在文档顺序中不是严格递增的。`,
+          targetIdentity: e.sourceIdentity,
+          element: e.element,
+          kind: 'object',
+          metadata: {
+            ruleId: orderCode,
+            reason: 'OBJECT_NUMBER_ORDER_INVALID',
+            effectiveNumber: e.effectiveNumber,
+          },
+          location: { kind: 'block-node', blockKind: category, stableIdentity: e.sourceIdentity },
+        }))
+      }
+      prev = comps
+    }
+  }
+
+  const figureScan = collect(input.figures)
+  if (figureScan.entries.length > 0) {
+    emitDuplicates('figure', figureScan.entries)
+    emitOrder('figure', FIGURE_NUMBER_ORDER_INVALID_CODE, OBJECT_NUMBER_KIND_META.figure.label, figureScan.entries, figureScan.complete)
+  }
+  const tableScan = collect(input.tables)
+  if (tableScan.entries.length > 0) {
+    emitDuplicates('table', tableScan.entries)
+    emitOrder('table', TABLE_NUMBER_ORDER_INVALID_CODE, OBJECT_NUMBER_KIND_META.table.label, tableScan.entries, tableScan.complete)
+  }
+  const codeScan = collect(input.codes)
+  if (codeScan.entries.length > 0) {
+    emitDuplicates('code', codeScan.entries)
+    emitOrder('code', CODE_NUMBER_ORDER_INVALID_CODE, OBJECT_NUMBER_KIND_META.code.label, codeScan.entries, codeScan.complete)
+  }
+
+  const formulaScan = collect(input.formulas)
+  if (formulaScan.entries.length > 0) {
+    emitOrder('formula', FORMULA_NUMBER_ORDER_INVALID_CODE, '公式', formulaScan.entries, formulaScan.complete)
+    // §9 — FORMULA_NUMBER_SECTION_MISMATCH fires ONLY for a SECTION-scoped
+    // number (sectionNumber present); a non-section mode never invents one.
+    for (const e of formulaScan.entries) {
+      if (e.sectionNumber == null || e.actualSectionNumber == null) continue
+      if (e.sectionNumber === e.actualSectionNumber) continue
+      emit(makeDiagnostic(input, 'formula', FORMULA_NUMBER_SECTION_MISMATCH_CODE,
+        `公式编号章节不一致：${e.effectiveNumber}`, {
+        detail: '公式编号所使用的章节号与该公式实际所在章节不一致。',
+        targetIdentity: e.sourceIdentity,
+        element: e.element,
+        kind: 'formula',
+        metadata: {
+          ruleId: FORMULA_NUMBER_SECTION_MISMATCH_CODE,
+          reason: 'FORMULA_NUMBER_SECTION_MISMATCH',
+          effectiveNumber: e.effectiveNumber,
+          numberSection: e.sectionNumber,
+          actualSection: e.actualSectionNumber,
+        },
+        location: { kind: 'block-node', blockKind: 'formula', stableIdentity: e.sourceIdentity },
+      }))
+    }
+  }
 }
 
 /** Count duplicate text names (case-insensitive, trimmed, non-empty). */
@@ -1034,6 +1612,279 @@ export function figureDestinationOccurrenceIndex(
  * Pure and synchronous — the production authority calls this on relevant
  * document/authority change events (never on a timer).
  */
+/**
+ * TRAE V3 §1–§6/§7 — Source Syntax / Footnote / Reference-link / Front Matter /
+ * Table-header / Empty-link integrity. ONE emitter that consumes the THREE
+ * shared source authorities; it NEVER re-scans the document itself.
+ */
+function sourceRangeTarget(
+  markdown: string,
+  startLine: number,
+  sourceStart: number,
+  sourceEnd: number,
+  startColumn = 0,
+): DiagnosticLocation {
+  return {
+    kind: 'source-range',
+    startLine,
+    startColumn,
+    rawText: lineTextAt(markdown, startLine),
+    sourceStart,
+    sourceEnd,
+  }
+}
+
+/**
+ * TRAE V4 §3/§4 — the ONE source-syntax opener locator. It carries the canonical
+ * opener identity (never a bare line), the THREE separated ranges, and the
+ * source generation. The producer NEVER stores only `line=N`.
+ */
+function sourceSyntaxOpenerTarget(
+  markdown: string,
+  syntaxKind: SourceSyntaxKind,
+  sourceLine: number,
+  openerIdentity: string,
+  locationRange: { start: number; end: number },
+  protectedRange: { start: number; end: number },
+  sourceRevision: number | null | undefined,
+): DiagnosticLocation {
+  return {
+    kind: 'source-syntax-opener',
+    syntaxKind,
+    sourceLine,
+    sourceStartOffset: locationRange.start,
+    sourceEndOffset: locationRange.end,
+    openerText: lineTextAt(markdown, sourceLine),
+    openerIdentity,
+    sourceRevision: sourceRevision ?? null,
+    protectedRange,
+    presentationRange: locationRange,
+  }
+}
+
+function groupTargetLocations(
+  markdown: string,
+  occurrences: ReadonlyArray<{ startLine: number; sourceStart: number; sourceEnd: number }>,
+): DiagnosticLocation[] {
+  return occurrences.map(o => sourceRangeTarget(markdown, o.startLine, o.sourceStart, o.sourceEnd))
+}
+
+function pushIntoMap<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const list = map.get(key)
+  if (list) list.push(value)
+  else map.set(key, [value])
+}
+
+function emitSourceSyntaxIntegrity(
+  input: DocumentDiagnosticsInput,
+  push: (d: DocumentDiagnostic) => void,
+): void {
+  if (input.markdown == null || input.documentKey == null || input.markdown.trim() === '') return
+  const markdown = input.markdown
+  const documentKey = input.documentKey
+  const syntax = getDocumentSourceSyntaxSnapshot(documentKey, markdown, input.sourceRevision)
+  const refIndex = getDocumentDefinitionReferenceIndex(documentKey, markdown, input.sourceRevision, syntax)
+  const inlineLinks = getDocumentInlineLinkAuthority(documentKey, markdown, input.sourceRevision, syntax)
+  const tables: SourceTableStructure[] = parseDocumentSourceTables(markdown, syntax)
+
+  // §1.1 — an unclosed code fence (the opener is the SINGLE target).
+  for (const fence of syntax.codeFences) {
+    if (fence.closed) continue
+    const label = fence.fenceKind === 'backtick' ? '```' : '~~~'
+    const identity = `${documentKey}:${fence.openerIdentity}`
+    push(makeDiagnostic(input, 'code', CODE_FENCE_UNCLOSED_CODE,
+      `代码块（${label}）未闭合，始于第 ${fence.openLine + 1} 行。`, {
+      detail: '未闭合的代码围栏会把后续所有内容视为代码。',
+      kind: 'object',
+      stableIdentity: identity,
+      targetIdentity: identity,
+      location: sourceSyntaxOpenerTarget(
+        markdown,
+        'code-fence',
+        fence.openLine,
+        identity,
+        { start: fence.openStart, end: fence.openEnd },
+        { start: fence.protectedRange.start, end: fence.protectedRange.end },
+        input.sourceRevision,
+      ),
+    }))
+  }
+
+  // §1.2 — an unclosed `$$` formula block (the opener is the SINGLE target).
+  for (const formula of syntax.formulaBlocks) {
+    if (formula.closed) continue
+    const identity = `${documentKey}:${formula.openerIdentity}`
+    push(makeDiagnostic(input, 'formula', FORMULA_BLOCK_UNCLOSED_CODE,
+      `公式块（$$）未闭合，始于第 ${formula.openLine + 1} 行。`, {
+      detail: '未闭合的 $$ 公式块会把后续内容视为公式。',
+      kind: 'formula',
+      stableIdentity: identity,
+      targetIdentity: identity,
+      location: sourceSyntaxOpenerTarget(
+        markdown,
+        'formula-block',
+        formula.openLine,
+        identity,
+        { start: formula.openStart, end: formula.openStart + 2 },
+        { start: formula.protectedRange.start, end: formula.protectedRange.end },
+        input.sourceRevision,
+      ),
+    }))
+  }
+
+  // §4.1 — Front Matter unclosed (its opener is the target). FRONTMATTER_MALFORMED
+  // is never emitted here: it is DEFERRED_BY_SPEC (no canonical YAML parser).
+  const fm = syntax.frontMatter
+  if (fm != null && !fm.closed) {
+    push(makeDiagnostic(input, 'document', FRONTMATTER_UNCLOSED_CODE,
+      'Front Matter 起始分隔符（---）未闭合。', {
+      detail: '文档开头的 `---` 缺少结束分隔符，无法解析 Front Matter。',
+      kind: 'document',
+      stableIdentity: fm.identity,
+      targetIdentity: fm.identity,
+      location: sourceSyntaxOpenerTarget(
+        markdown,
+        'frontmatter',
+        fm.openLine,
+        fm.identity,
+        { start: fm.protectedRange.start, end: fm.protectedRange.start + 3 },
+        { start: fm.protectedRange.start, end: fm.protectedRange.end },
+        input.sourceRevision,
+      ),
+    }))
+  }
+
+  // §2 — Footnote Integrity (ONE diagnostic per label; duplicate suppresses missing).
+  const fnDefs = new Map<string, typeof refIndex.footnoteDefinitions[number][]>()
+  for (const d of refIndex.footnoteDefinitions) pushIntoMap(fnDefs, d.label, d)
+  const fnRefs = new Map<string, DefinitionReferenceOccurrence[]>()
+  for (const r of refIndex.footnoteReferences) pushIntoMap(fnRefs, r.label, r)
+  for (const label of new Set([...fnDefs.keys(), ...fnRefs.keys()])) {
+    const defs = fnDefs.get(label) ?? []
+    const refs = fnRefs.get(label) ?? []
+    const identity = `${documentKey}:footnote:${label}`
+    if (defs.length > 1) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_DEFINITION_DUPLICATE_CODE,
+        `脚注「${defs[0].rawLabel}」存在 ${defs.length} 个重复定义。`, {
+        detail: '同一个脚注标签只能有一个定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, defs)[0], targets: groupTargetLocations(markdown, defs) },
+      }))
+    } else if (defs.length === 0 && refs.length > 0) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_REFERENCE_TARGET_MISSING_CODE,
+        `脚注引用「${refs[0].rawLabel}」缺少对应定义。`, {
+        detail: '存在脚注引用，但没有 `[^label]: 内容` 定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, refs)[0], targets: groupTargetLocations(markdown, refs) },
+      }))
+    } else if (defs.length >= 1 && refs.length === 0) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_DEFINITION_UNUSED_CODE,
+        `脚注定义「${defs[0].rawLabel}」未被任何引用使用。`, {
+        detail: '该脚注定义没有对应的正文引用。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, defs[0].startLine, defs[0].sourceStart, defs[0].sourceEnd),
+      }))
+    }
+    if (defs.length === 1 && defs[0].empty) {
+      push(makeDiagnostic(input, 'document', FOOTNOTE_DEFINITION_EMPTY_CODE,
+        `脚注定义「${defs[0].rawLabel}」内容为空。`, {
+        detail: '该脚注定义没有任何内容（含续行）。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, defs[0].startLine, defs[0].sourceStart, defs[0].sourceEnd),
+      }))
+    }
+  }
+
+  // §3 — Reference-style Link Integrity (shares the SAME index as footnotes).
+  const linkDefs = new Map<string, typeof refIndex.linkDefinitions[number][]>()
+  for (const d of refIndex.linkDefinitions) pushIntoMap(linkDefs, d.label, d)
+  const linkRefs = new Map<string, DefinitionReferenceOccurrence[]>()
+  for (const r of refIndex.linkReferences) pushIntoMap(linkRefs, r.label, r)
+  for (const label of new Set([...linkDefs.keys(), ...linkRefs.keys()])) {
+    const defs = linkDefs.get(label) ?? []
+    const refs = linkRefs.get(label) ?? []
+    const identity = `${documentKey}:link-ref:${label}`
+    if (defs.length > 1) {
+      push(makeDiagnostic(input, 'link', LINK_REFERENCE_DEFINITION_DUPLICATE_CODE,
+        `引用式链接定义「${defs[0].rawLabel}」存在 ${defs.length} 个重复定义。`, {
+        detail: '同一个引用标签只能有一个链接定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, defs)[0], targets: groupTargetLocations(markdown, defs) },
+      }))
+    } else if (defs.length === 0 && refs.length > 0) {
+      push(makeDiagnostic(input, 'link', LINK_REFERENCE_DEFINITION_MISSING_CODE,
+        `引用式链接「${refs[0].rawLabel}」缺少对应定义。`, {
+        detail: '存在 `[text][label]` 引用，但没有 `[label]: 目标` 定义。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: groupTargetLocations(markdown, refs)[0], targets: groupTargetLocations(markdown, refs) },
+      }))
+    }
+  }
+
+  // §5 — Table Header Integrity (from the Source Table Structure authority).
+  for (const table of tables) {
+    const emptyCells = table.headerCells.filter(c => c.semantic === '')
+    if (emptyCells.length > 0) {
+      const targets = emptyCells.map(c => sourceRangeTarget(markdown, table.headerLine, c.start, c.end))
+      const identity = `${documentKey}:${table.identity}:empty-header`
+      push(makeDiagnostic(input, 'table', TABLE_HEADER_EMPTY_CODE,
+        `表格存在 ${emptyCells.length} 个空的表头单元格。`, {
+        detail: '表头单元格为空，建议补充列名。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: targets[0], targets },
+      }))
+    }
+    const bySemantic = new Map<string, typeof table.headerCells[number][]>()
+    for (const cell of table.headerCells) {
+      if (cell.semantic === '') continue
+      pushIntoMap(bySemantic, cell.semantic, cell)
+    }
+    for (const [semantic, cells] of bySemantic) {
+      if (cells.length < 2) continue
+      const targets = cells.map(c => sourceRangeTarget(markdown, table.headerLine, c.start, c.end))
+      const identity = `${documentKey}:${table.identity}:header:${semantic}`
+      push(makeDiagnostic(input, 'table', TABLE_HEADER_DUPLICATE_CODE,
+        `表格存在 ${cells.length} 个重复的表头「${semantic}」。`, {
+        detail: '同一表头文字出现多次，请重命名以区分列。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: { kind: 'target-group', scrollAnchor: targets[0], targets },
+      }))
+    }
+  }
+
+  // §6 — Empty Inline Link Integrity (images are EXCLUDED from LINK_TEXT_EMPTY).
+  for (const link of inlineLinks) {
+    if (link.isImage) continue
+    const identity = `${documentKey}:${link.identity}`
+    if (link.text.trim() === '') {
+      push(makeDiagnostic(input, 'link', LINK_TEXT_EMPTY_CODE,
+        '链接文本为空。', {
+        detail: '`[](目标)` 没有可见的链接文字。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, link.startLine, link.tokenStart, link.tokenEnd, link.startColumn),
+      }))
+    }
+    if (link.target.trim() === '') {
+      push(makeDiagnostic(input, 'link', LINK_TARGET_EMPTY_CODE,
+        '链接目标为空。', {
+        detail: '`[文字]()` 没有链接目标地址。',
+        stableIdentity: identity,
+        targetIdentity: identity,
+        location: sourceRangeTarget(markdown, link.startLine, link.tokenStart, link.tokenEnd, link.startColumn),
+      }))
+    }
+  }
+}
+
 export function computeDocumentDiagnostics(
   input: DocumentDiagnosticsInput,
 ): DocumentDiagnosticsComputed {
@@ -1464,7 +2315,7 @@ export function computeDocumentDiagnostics(
       if (policy.verdict === 'MISSING_TERMINAL_NEWLINE') {
         push(
           makeDiagnostic(input, 'document', 'DOCUMENT_TERMINAL_NEWLINE_MISSING',
-            '警告：文档末尾缺少换行符', {
+            '文档末尾缺少换行符', {
             detail: 'Markdown 文档应以一个换行符结束。',
             kind: 'document',
             targetIdentity: 'document:terminal-newline-missing',
@@ -1472,6 +2323,11 @@ export function computeDocumentDiagnostics(
               ruleId: 'DOCUMENT-TERMINAL-NEWLINE-MISSING',
               reason: 'MISSING_TERMINAL_NEWLINE',
               hasTerminalNewline: policy.hasTerminalNewline,
+              // SOURCE_REVISION_SYNC 修复 — the EOF fact MUST travel on the record so
+              // the locate/visual audits never read `terminalNewlineCount = null`
+              // (which was `terminalNewlineFactNull++`). A missing fact must never be
+              // silently treated as a normal state.
+              terminalNewlineCount: policy.terminalNewlineCount,
               extraTrailingBlankLineCount: policy.extraTrailingBlankLineCount,
             },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
@@ -1481,7 +2337,7 @@ export function computeDocumentDiagnostics(
       } else if (policy.verdict === 'EXCESSIVE_TRAILING_BLANK_LINES') {
         push(
           makeDiagnostic(input, 'document', 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
-            '警告：文档末尾存在过多空行', {
+            '文档末尾空行过多', {
             detail: 'Markdown 文档末尾存在多个连续空行，建议删除多余空行。',
             kind: 'document',
             targetIdentity: 'document:trailing-blank-lines-excessive',
@@ -1507,59 +2363,20 @@ export function computeDocumentDiagnostics(
     //      · blank lines inside a fenced code block / display formula / front
     //        matter / HTML block (they are CONTENT — §12/§13/§14),
     //      · the leading run before the first block (§11),
-    //      · the trailing EOF run (owned by the EOF rules above — §10),
-    //      · a loose list / lazy blockquote interior (§15).
+    //      · the trailing EOF run (owned by the EOF rules above — §10).
+    //    §15 — a list ITEM is its own block, so a blank run between two sibling
+    //    items IS reported; only a run inside one item / a blockquote is not.
     //    ONE gap → ONE diagnostic: the stable identity is built from the two
     //    block identities, never from a line index or the blank count, so
     //    editing 3 → 4 → 5 → 6 blank lines keeps the SAME record (§20/§29).
     if (input.markdown != null) {
-      for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
-        const gapIdentity = internalBlankGapIdentity(gap)
-        push(
-          makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
-            detail: internalBlankLineDetail(gap.actualBlankLines),
-            kind: 'document',
-            targetIdentity: gapIdentity,
-            metadata: {
-              ruleId: EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
-              // §1 — the rule's OWN category / scope vocabulary. `category` on
-              // the record stays the legacy consumer grouping ('document').
-              ruleCategory: 'document-format',
-              scope: 'block-gap',
-              reasonChip: false,
-              passiveVisual: false,
-              activeVisual: true,
-              // §9/§33 — the block-gap facts travel on the record so the Drawer,
-              // the locator and the audits never re-derive them.
-              previousBlockIdentity: gap.previousBlockIdentity,
-              previousBlockKind: gap.previousBlockKind,
-              previousBlockStartLine: gap.previousBlockStartLine,
-              previousBlockAnchorText: gap.previousBlockAnchorText,
-              nextBlockIdentity: gap.nextBlockIdentity,
-              nextBlockKind: gap.nextBlockKind,
-              nextBlockStartLine: gap.nextBlockStartLine,
-              nextBlockAnchorText: gap.nextBlockAnchorText,
-              previousSourceEnd: gap.previousBlockSourceEnd,
-              nextSourceStart: gap.nextBlockSourceStart,
-              firstBlankLine: gap.firstBlankLine,
-              lastBlankLine: gap.lastBlankLine,
-              actualBlankLines: gap.actualBlankLines,
-              passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
-              warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
-            },
-            // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
-            // (and the active target) is the NEXT block: its proven VISIBLE text
-            // is the verification anchor, so the click shows the block the excess
-            // blanks precede. `source-range` never paints the whole blank band.
-            location: {
-              kind: 'source-range',
-              startLine: gap.nextBlockStartLine,
-              startColumn: 0,
-              sourceFingerprint: `internal-blank:${gapIdentity}`,
-              rawText: gap.nextBlockAnchorText,
-            },
-          }),
-        )
+      // 单一构造权威：快速通路与全量 compute 共用 `buildInternalBlankLineDiagnostics`。
+      for (const d of buildInternalBlankLineDiagnostics({
+        documentKey: input.documentKey,
+        markdown: input.markdown,
+        strictMode: input.strictMode,
+      })) {
+        push(d)
       }
     }
 
@@ -1889,37 +2706,51 @@ export function computeDocumentDiagnostics(
       kind: 'object' | 'formula',
       identityPrefix: string,
       spans: readonly SourceBlockSpan[],
+      canonicalBlockKind?: 'code',
     ): void => {
       for (const span of spans) {
+        // TRAE V6 §6/§7 — an EMPTY container binds a CANONICAL BLOCK identity
+        // (`block:<kind>:<ordinal>`), NEVER a bare line / caption / Nth-block
+        // guess. The canonical block locator resolves the real DOM block.
+        const canonicalBlockIdentity = canonicalBlockKind != null && typeof span.ordinal === 'number'
+          ? `block:${canonicalBlockKind}:${span.ordinal}`
+          : null
         push(
           makeDiagnostic(input, category, kindCode, message, {
             detail,
             kind,
-            targetIdentity: `${identityPrefix}:line:${span.startLine}`,
+            targetIdentity: canonicalBlockIdentity ?? `${identityPrefix}:line:${span.startLine}`,
             metadata: {
               ruleId,
               reason: 'EMPTY_SOURCE_OBJECT',
+              // V6-R2 §2 — the SOURCE authority's emptiness verdict. The
+              // presentation MUST trust this, never re-derive emptiness from the
+              // DOM (Typora renders line numbers / CodeMirror scaffold).
+              sourceSemanticEmpty: true,
               startLine: span.startLine,
               endLine: span.endLine,
               sourceStart: span.sourceStart,
               sourceEnd: span.sourceEnd,
+              ...(canonicalBlockIdentity != null ? { canonicalBlockIdentity, blockKind: canonicalBlockKind } : {}),
             },
-            location: {
-              kind: 'source-range',
-              startLine: span.startLine,
-              startColumn: span.startColumn,
-              endLine: span.endLine,
-              endColumn: span.endColumn,
-              sourceStart: span.sourceStart,
-              sourceEnd: span.sourceEnd,
-              sourceFingerprint: `${identityPrefix}:${span.startLine}`,
-              rawText: span.rawText,
-            },
+            location: canonicalBlockIdentity != null && canonicalBlockKind != null
+              ? { kind: 'block-node', blockKind: canonicalBlockKind, stableIdentity: canonicalBlockIdentity }
+              : {
+                  kind: 'source-range',
+                  startLine: span.startLine,
+                  startColumn: span.startColumn,
+                  endLine: span.endLine,
+                  endColumn: span.endColumn,
+                  sourceStart: span.sourceStart,
+                  sourceEnd: span.sourceEnd,
+                  sourceFingerprint: `${identityPrefix}:${span.startLine}`,
+                  rawText: span.rawText,
+                },
           }),
         )
       }
     }
-    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', emptyObjects.codeBlocks)
+    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', emptyObjects.codeBlocks, 'code')
     for (const span of emptyObjects.tables) {
       push(
         makeDiagnostic(input, 'table', TABLE_EMPTY_CONTENT_CODE, '表格没有数据行', {
@@ -2450,6 +3281,63 @@ export function computeDocumentDiagnostics(
     }
   }
 
+  // ── Phase H §9 — TABLE / CODE manual number prefix ────────────────────────
+  // MIRRORS the existing FIGURE_MANUAL_NUMBER_PREFIX rule: the object NAME is
+  // the user's own caption name, so a manual number inside it is a
+  // DOCUMENT-domain defect — but ONLY while the matching auto-numbering is ON
+  // (otherwise a literal `1.` prefix is plain text). Reuses the SAME
+  // `detectManualNumberPrefix` authority — no second regex. The diagnostic
+  // identity derives from the object's SOURCE identity (block ordinal), never
+  // from any generated number (style switches therefore never churn the id).
+  if (input.numberingEnabled?.table === true) {
+    for (const t of input.tables) {
+      const match = detectManualNumberPrefix(t.name)
+      if (!match) continue
+      push(
+        makeDiagnostic(input, 'table', TABLE_MANUAL_NUMBER_PREFIX_CODE,
+          `表名包含手工编号「${match.matched}」`, {
+          detail: '当前已开启表格自动编号，表名中的手工编号会与自动编号同时出现，建议删除手工编号。',
+          element: t.element,
+          targetIdentity: t.targetIdentity ?? undefined,
+          kind: 'object',
+          metadata: {
+            ruleId: 'TABLE-MANUAL-NUMBER-PREFIX',
+            reason: 'MANUAL_NUMBER_PREFIX',
+            family: match.family,
+            matched: match.matched,
+          },
+          location: t.targetIdentity
+            ? { kind: 'block-node', blockKind: 'table', stableIdentity: t.targetIdentity }
+            : undefined,
+        }),
+      )
+    }
+  }
+  if (input.numberingEnabled?.code === true) {
+    for (const c of input.codes) {
+      const match = detectManualNumberPrefix(c.name)
+      if (!match) continue
+      push(
+        makeDiagnostic(input, 'code', CODE_MANUAL_NUMBER_PREFIX_CODE,
+          `代码名称包含手工编号「${match.matched}」`, {
+          detail: '当前已开启代码自动编号，代码名称中的手工编号会与自动编号同时出现，建议删除手工编号。',
+          element: c.element,
+          targetIdentity: c.targetIdentity ?? undefined,
+          kind: 'object',
+          metadata: {
+            ruleId: 'CODE-MANUAL-NUMBER-PREFIX',
+            reason: 'MANUAL_NUMBER_PREFIX',
+            family: match.family,
+            matched: match.matched,
+          },
+          location: c.targetIdentity
+            ? { kind: 'block-node', blockKind: 'code', stableIdentity: c.targetIdentity }
+            : undefined,
+        }),
+      )
+    }
+  }
+
   // ── Formula diagnostics (projection invariants only — never business re-derivation) ──
   for (const f of input.formulas) {
     const tokenSet = new Set(f.visibleTagTokens.map(t => t.trim()))
@@ -2513,6 +3401,102 @@ export function computeDocumentDiagnostics(
       }),
     )
   }
+
+  // ── Phase I §10 — ANCHOR INTEGRITY ────────────────────────────────────────
+  // The canonical heading ANCHOR authority is Typora's OWN rendered heading id
+  // (`el.id`) — the SAME identity the outline adapter matches `href="#id"`
+  // against (`outline-numbering-adapter.matchHeadingsToOutline`). We NEVER write
+  // a second slugifier and NEVER parse a rendered number.
+  const headingAnchors = new Map<string, DiagnosticHeadingFact[]>()
+  for (const h of input.headings) {
+    const id = (h.element?.id ?? '').trim()
+    if (id === '') continue
+    const list = headingAnchors.get(id)
+    if (list) list.push(h)
+    else headingAnchors.set(id, [h])
+  }
+
+  // HEADING_ANCHOR_COLLISION — ONE diagnostic per collision group (a
+  // target-group of the colliding headings), never N business diagnostics.
+  for (const [anchorId, group] of headingAnchors) {
+    if (group.length <= 1) continue
+    const targets: DiagnosticLocation[] = group.map(h => {
+      if (h.stableIdentity) return { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: h.stableIdentity }
+      const line = h.element?.getAttribute?.('data-line')
+      if (line != null && line !== '') {
+        const n = Number.parseInt(line, 10)
+        if (Number.isInteger(n)) return { kind: 'source-range', startLine: n, startColumn: 0 }
+      }
+      return { kind: 'document-start' }
+    })
+    push(
+      makeDiagnostic(input, 'heading', HEADING_ANCHOR_COLLISION_CODE,
+        `标题锚点重复：${anchorId}`, {
+        detail: '多个标题生成了相同的锚点，文档内跳转将无法定位到唯一标题。',
+        stableIdentity: group[0]?.stableIdentity,
+        element: group[0]?.element ?? null,
+        targetIdentity: `heading-anchor-collision:${anchorId}`,
+        kind: 'heading',
+        metadata: {
+          ruleId: 'HEADING-ANCHOR-COLLISION',
+          reason: 'HEADING_ANCHOR_COLLISION',
+          anchor: anchorId,
+          groupMemberCount: group.length,
+        },
+        locator: group[0]?.element
+          ? { kind: 'heading', targetElement: group[0].element }
+          : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+        location: { kind: 'target-group', scrollAnchor: targets[0] ?? { kind: 'document-start' }, targets },
+      }),
+    )
+  }
+
+  // LINK_LOCAL_ANCHOR_MISSING — `[x](#target)` resolving to NO canonical heading
+  // anchor. A source-syntax rule; SILENT when the anchor authority is
+  // unavailable (no canonical heading carries an id) so it never false-fires.
+  if (input.markdown != null && headingAnchors.size > 0) {
+    for (const ref of parseLocalAnchorTargets(input.markdown)) {
+      if (matchesCanonicalHeadingAnchor(ref.target, headingAnchors)) continue
+      push(
+        makeDiagnostic(input, 'link', LINK_LOCAL_ANCHOR_MISSING_CODE,
+          `本地锚点不存在：#${ref.target}`, {
+          detail: '链接指向的文档内锚点无法解析到任何标题。',
+          kind: 'link',
+          targetIdentity: `anchor:${ref.target}`,
+          metadata: {
+            ruleId: 'LINK-LOCAL-ANCHOR-MISSING',
+            reason: 'LOCAL_ANCHOR_MISSING',
+            anchor: ref.target,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: ref.startLine,
+            startColumn: ref.startColumn,
+            endLine: ref.endLine,
+            endColumn: ref.endColumn,
+            rawText: ref.rawText,
+            sourceStart: ref.sourceStart,
+            sourceEnd: ref.sourceEnd,
+            // Anchor Integrity — the rendered DOM of `[label](#anchor)` is the
+            // inline `<a href="#anchor">`; the raw `#anchor` fragment is the
+            // locator identity the anchor authority resolves by href equality.
+            resourceKind: 'link',
+            rawDestination: ref.rawDestination,
+            canonicalDestination: ref.rawDestination,
+          },
+        }),
+      )
+    }
+  }
+
+  // ── Numbering Integrity V2 (spec §9/§21) — object / formula NUMBER rules ──
+  // Consumes ONLY the canonical effective-number snapshot; absent / empty ⇒ all
+  // of these rules stay silent (never a false positive).
+  emitObjectNumberIntegrity(input, push)
+
+  // ── TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table
+  //    header / Empty-link integrity (ONE shared-authority pass).
+  emitSourceSyntaxIntegrity(input, push)
 
   const deduped = deduplicateDiagnostics(diagnostics)
   return {

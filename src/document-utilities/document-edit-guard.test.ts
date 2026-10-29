@@ -6,7 +6,7 @@
  * never blocks InkChapter renderer writes. Fully reversible on unlock/dispose.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { DocumentEditGuard } from './document-edit-guard'
+import { DocumentEditGuard, resolveLockGuardTransition } from './document-edit-guard'
 
 function makeEditor(): { root: HTMLElement; container: HTMLElement } {
   const container = document.createElement('div')
@@ -130,5 +130,55 @@ describe('LOCK-7 dispose restores editor state and removes guards', () => {
     expect(guard.isLocked()).toBe(false)
     expect(root.classList.contains('inkchapter-document-locked')).toBe(false)
     expect(dispatchBeforeInput(root, 'insertText').defaultPrevented).toBe(false)
+  })
+})
+
+describe('LOCK-8 host lock intent is bidirectional (document switch)', () => {
+  // PA-LOCK-01: A locked → switch to an UNLOCKED document must RELEASE the guard.
+  // The host keeps one guard instance + a per-document lockState map, so an
+  // "assert-only" projection leaves doc B silently read-only while the button
+  // says 编辑.
+  it('desired=locked, guard unlocked → LOCK', () => {
+    expect(resolveLockGuardTransition(true, false)).toBe('LOCK')
+  })
+
+  it('desired=unlocked, guard locked → UNLOCK', () => {
+    expect(resolveLockGuardTransition(false, true)).toBe('UNLOCK')
+  })
+
+  it('matching states → NONE (idempotent, no event churn)', () => {
+    expect(resolveLockGuardTransition(true, true)).toBe('NONE')
+    expect(resolveLockGuardTransition(false, false)).toBe('NONE')
+  })
+
+  it('applying UNLOCK on a document switch makes the new document editable', () => {
+    const { root } = makeEditor()
+    guard.lock()
+    expect(dispatchKey(root, 'Backspace').defaultPrevented).toBe(true)
+    // Document switch: doc B has no lockState entry (desired=false).
+    const transition = resolveLockGuardTransition(false, guard.isLocked())
+    if (transition === 'UNLOCK') guard.unlock()
+    expect(dispatchKey(root, 'Backspace').defaultPrevented).toBe(false)
+    expect(dispatchBeforeInput(root, 'insertText').defaultPrevented).toBe(false)
+  })
+})
+
+describe('LOCK-9 unlock targets the root that lock() actually bound', () => {
+  // PA-LOCK-02: unlock() re-resolved #write. If Typora rebuilt the editor root
+  // between lock/unlock, the old element kept all six capture listeners.
+  it('removes guards from the original root after the editor root is replaced', () => {
+    const { root: originalRoot } = makeEditor()
+    guard.lock()
+    expect(dispatchKey(originalRoot, 'Backspace').defaultPrevented).toBe(true)
+    // Typora rebuilds the editor root (new node, old one detached).
+    document.body.innerHTML = ''
+    const replacement = makeEditor().root
+    guard.unlock()
+    expect(guard.isLocked()).toBe(false)
+    // The detached original root must no longer swallow user input.
+    expect(dispatchKey(originalRoot, 'Backspace').defaultPrevented).toBe(false)
+    expect(dispatchBeforeInput(originalRoot, 'insertText').defaultPrevented).toBe(false)
+    // The fresh root is untouched.
+    expect(dispatchKey(replacement, 'Backspace').defaultPrevented).toBe(false)
   })
 })

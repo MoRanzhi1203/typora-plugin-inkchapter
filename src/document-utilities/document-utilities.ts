@@ -9,9 +9,11 @@ import * as path from 'path'
 import type { CanonicalHeadingFrame } from '../heading-numbering/canonical-heading-frame'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import type { ObjectEffectiveNumberElementFacts } from './diagnostics-types'
 import type { OutlineDiagnosticTargetInput } from './document-diagnostic-outline-projection-v514-r2'
 import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
-import type { DocumentUtilitiesContext } from './document-utilities-context'
+import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
+import type { DocumentUtilitiesContext, StructuralMarkdownSnapshot } from './document-utilities-context'
 import type { ActiveLeafDocumentFacts } from './document-active-leaf-presence'
 import { mapCanonicalHeadingFrameForDiagnostics } from './document-h1-authority-bridge'
 
@@ -31,9 +33,18 @@ export interface DocumentUtilitiesSources {
   emptyWorkspace?: {
     platform: import('./document-empty-workspace-controller').EmptyWorkspaceUxPlatform
     contentEditableBoundaryAllowed?: boolean
+    /** 配置：空工作区双击新建是否启用（缺省 = 启用）。 */
+    isEnabled?: () => boolean
     resolveEmptySurface?(): import('./document-empty-workspace-controller').EmptyWorkspaceSurfaceFacts | null
   }
   getMarkdown: () => string | null
+  /**
+   * R10 Closure §2.2 — the ONE structural markdown snapshot per diagnostics
+   * transaction. Forwarded VERBATIM into the diagnostics authority (the host
+   * transaction builder calls it exactly once per reconcile). Absent only for
+   * legacy/pure consumers.
+   */
+  getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   isStrictMode: () => boolean
   /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
    *  (enabled && explicitly-configured && effective strict). Optional so
@@ -67,6 +78,12 @@ export interface DocumentUtilitiesSources {
     isEffectiveForElement: (element: HTMLElement | null) => boolean
   }
   /**
+   * Numbering Integrity V2 (spec §9/§21) — the ONE canonical effective-number
+   * fact provider (owned by the caption service / formula planner), keyed by the
+   * object's DOM element. Optional: absent ⇒ every number rule stays silent.
+   */
+  getObjectEffectiveNumberElementFacts?: () => ObjectEffectiveNumberElementFacts | null
+  /**
    * Heading Auto-Number Conflict V1.2 §21/§22 — the dev/test post-commit report
    * sink (implemented by main.ts, which owns the file IO).
    */
@@ -91,6 +108,14 @@ export interface DocumentUtilitiesSources {
   /** Phase 7R.3.11.8B.7.6 — rendered caption host for an object element
    *  (compound missing-name locator). Optional. */
   getObjectCaptionHost?: (el: HTMLElement) => HTMLElement | null
+  /**
+   * Phase G §8 — the DOM-side Caption Integrity producer. Optional: absent ⇒
+   * no caption-integrity diagnostics are merged into the snapshot.
+   */
+  getCaptionIntegrityDiagnostics?: (
+    documentKey: string | null,
+    sourceRevision: number,
+  ) => readonly import('./diagnostics-types').DocumentDiagnostic[]
   /** V5.14-R2 §P8 — heading diagnostic occurrences → LEFT OUTLINE mirror. Optional. */
   publishOutlineHeadingDiagnostics?: (targets: readonly OutlineDiagnosticTargetInput[]) => void
   /** Phase 7R.3.11.8B.7.7 — Markdown SOURCE change subscription (markdownEditor
@@ -101,7 +126,7 @@ export interface DocumentUtilitiesSources {
   /** Subscribe to document switch (workspace file:open etc.). */
   onDocumentSwitch: (cb: () => void) => () => void
   /** Phase 7R.3.11.8-B — canonical heading frame commit subscription (live diagnostics). */
-  onCanonicalFrameCommit?: (cb: () => void) => () => void
+  onCanonicalFrameCommit?: (cb: (frame?: CanonicalFrameSignal) => void) => () => void
   /** Phase 7R.3.11.8-B — numbering settings/mode change subscription. */
   onSettingsChanged?: (cb: () => void) => () => void
   /** Phase 7R.3.11.8B.7.1 — effective-mode transition revision (real transitions). */
@@ -114,6 +139,40 @@ export interface DocumentUtilities {
   dispose: () => void
   /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only). */
   getSnapshot: () => DocumentDiagnosticsSnapshot | null
+}
+
+/**
+ * PA-16 — the SEMANTIC identity of a committed canonical heading frame.
+ *
+ * A frame commit also fires for presentation-only reasons (caret move, focus,
+ * re-bind, scroll). Diagnostics must be able to tell those apart from a real
+ * heading change WITHOUT consulting the incremental markdown mirror:
+ * `semanticFingerprint` is produced by the canonical heading authority itself.
+ */
+export interface CanonicalFrameSignal {
+  documentKey?: string
+  semanticRevision?: number
+  semanticFingerprint?: string
+}
+
+/**
+ * PA-16 — whether a frame commit must start a FULL diagnostics transaction.
+ *
+ * Rules (monotonic, never "assume unchanged"):
+ * - no frame / no documentKey / no semanticFingerprint ⇒ RUN (no evidence);
+ * - same document AND same semantic fingerprint ⇒ SKIP (presentation-only);
+ * - anything else ⇒ RUN.
+ */
+export function shouldRunDiagnosticsForFrame(
+  frame: CanonicalFrameSignal | undefined,
+  last: { documentKey: string | null; semanticFingerprint: string | null },
+): boolean {
+  const key = frame?.documentKey ?? null
+  const fingerprint = frame?.semanticFingerprint ?? null
+  // An EMPTY fingerprint is not evidence: the authority emits '' before it has
+  // real heading data, and two empties must never be treated as "unchanged".
+  if (key === null || key === '' || fingerprint === null || fingerprint === '') return true
+  return !(key === last.documentKey && fingerprint === last.semanticFingerprint)
 }
 
 const VISIBLE_TAG_TOKEN_RE = /^\(\s*([\d]+(?:\.[\d]+)*-\d+|\d+)\s*\)$/
@@ -164,6 +223,39 @@ function resourceBaseDir(activeFilePath: string | null, vaultRoot: string | null
   return vaultRoot
 }
 
+/**
+ * PERFORMANCE — local resource existence cache.
+ *
+ * Applies to the diagnostics recompute path only (image / link targets). That
+ * recompute runs on every editor mutation, so this used to issue one
+ * synchronous `fs.existsSync` per resource per keystroke — a blocking disk stat
+ * on the renderer thread (worst on Windows / network drives).
+ *
+ * Results are cached by resolved absolute path for a short TTL: one typing
+ * burst never stats the same path twice, while a created/deleted asset is still
+ * observed within the freshness window.
+ */
+const RESOURCE_EXISTENCE_TTL_MS = 2000
+const RESOURCE_EXISTENCE_CACHE_MAX_ENTRIES = 2000
+const resourceExistenceCache = new Map<string, { exists: boolean; checkedAt: number }>()
+
+function cachedPathExists(absolutePath: string): boolean {
+  const now = Date.now()
+  const hit = resourceExistenceCache.get(absolutePath)
+  if (hit && now - hit.checkedAt < RESOURCE_EXISTENCE_TTL_MS) return hit.exists
+  let exists = false
+  try {
+    exists = fs.existsSync(absolutePath)
+  } catch {
+    exists = false
+  }
+  if (resourceExistenceCache.size >= RESOURCE_EXISTENCE_CACHE_MAX_ENTRIES) {
+    resourceExistenceCache.clear()
+  }
+  resourceExistenceCache.set(absolutePath, { exists, checkedAt: now })
+  return exists
+}
+
 function imageLocalPath(img: HTMLElement, baseDir: string | null): string | null {
   const src = img.getAttribute('src') ?? ''
   if (!src) return null
@@ -179,7 +271,7 @@ function imageLocalPath(img: HTMLElement, baseDir: string | null): string | null
   }
   if (!candidate) return null
   try {
-    return fs.existsSync(candidate) ? null : candidate
+    return cachedPathExists(candidate) ? null : candidate
   } catch {
     return null
   }
@@ -189,7 +281,7 @@ function linkTargetMissing(target: string, baseDir: string | null): boolean {
   if (!isLocalRelative(target) || !baseDir) return false
   try {
     const resolved = path.resolve(baseDir, target)
-    return !fs.existsSync(resolved)
+    return !cachedPathExists(resolved)
   } catch {
     return false
   }
@@ -202,6 +294,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       getDocumentKey: sources.getDocumentKey,
       getActiveLeafState: sources.getActiveLeafState,
       getMarkdown: sources.getMarkdown,
+      getStructuralMarkdown: sources.getStructuralMarkdown,
       isStrictMode: sources.isStrictMode,
       getHeadingPolicyState: sources.getHeadingPolicyState,
       getEffectiveHeadingModeRevision: () => sources.getEffectiveHeadingModeRevision?.() ?? 0,
@@ -228,6 +321,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       // VNext §24 — the object auto-numbering activation authority (optional:
       // absent ⇒ the manual-number rules stay OFF).
       getObjectNumberingEnabled: sources.getObjectNumberingEnabled,
+      // Numbering Integrity V2 §9 — the canonical effective-number fact provider.
+      getObjectEffectiveNumberElementFacts: sources.getObjectEffectiveNumberElementFacts,
     },
     hasActiveDocument: () => sources.getActiveFilePath() != null,
   }
@@ -260,6 +355,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     parseImageSourceOccurrences,
     // Phase 7R.3.11.8B.7.6 — compound locator caption host (optional).
     getObjectCaptionHost: sources.getObjectCaptionHost,
+    // Phase G §8 — the DOM-side caption-integrity producer (optional).
+    getCaptionIntegrityDiagnostics: sources.getCaptionIntegrityDiagnostics,
     // V5.14-R2 §P8 — heading diagnostics → LEFT OUTLINE projection publisher.
     publishOutlineHeadingDiagnostics: sources.publishOutlineHeadingDiagnostics,
     // Phase 7R.3.11.8B.1 — canonical H1 authority bridge: maps the REAL
@@ -279,15 +376,18 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     consumeHeadingConflictTestBridge: sources.consumeHeadingConflictTestBridge,
   }
 
-  // Phase 7R.3.11.8B.7.1 — settings/mode recompute is rAF-coalesced so one mode
-  // transaction produces AT MOST ONE final recompute/publish.
-  let settingsRecomputePending = false
-  // Phase 7R.3.11.8B.7.7 — source-edit recompute is rAF-coalesced. The Markdown
-  // SOURCE (markdownEditor 'edit') is the authority for document-level rules
-  // (EOF trailing blank lines etc.) — EOF whitespace changes may not produce
-  // any ordinary DOM block mutation, so we must not rely on the MutationObserver
-  // alone to retire/add those diagnostics.
-  let sourceRecomputePending = false
+  // TRAE §1.3/§4.3 — ONE rAF-coalescing scheduler for the ASYNC diagnostics
+  // triggers (source edit + settings/mode change). They used to hold SEPARATE rAF
+  // flags and never merged, so a single user action that both edited the source
+  // and flipped a setting ran TWO recomputes of the SAME semantic state (the
+  // duplicated `DOCUMENT-TRAILING-BLANK-AUDIT` / `ACTIVE_DOCUMENT_RECONCILE`
+  // storm). Now a frame runs exactly ONE recompute with the MERGED reason; the
+  // producer fingerprint still dedupes a genuinely unchanged state.
+  const pendingRecomputeReasons = new Set<string>()
+  let recomputeRafPending = false
+  /** PA-16 — semantic identity of the LAST full diagnostics transaction. */
+  let lastDiagnosticFrameKey: string | null = null
+  let lastDiagnosticSemanticFingerprint: string | null = null
 
   const host = new DocumentUtilityOverlayHost({
     ctx,
@@ -314,29 +414,53 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     // Phase 7R.3.11.8-B — live diagnostics triggers (heading frame commit +
     // settings/mode change) → lightweight snapshot recompute only.
     onDiagnosticsTrigger: (recompute) => {
-      sources.onCanonicalFrameCommit?.(() => {
+      // TRAE §1.3/§4.3 — the ONE coalescing scheduler (see the state above).
+      const scheduleRecompute = (reason: string): void => {
+        pendingRecomputeReasons.add(reason)
+        if (recomputeRafPending) return
+        recomputeRafPending = true
+        requestAnimationFrame(() => {
+          recomputeRafPending = false
+          const merged = Array.from(pendingRecomputeReasons).join('+')
+          pendingRecomputeReasons.clear()
+          recompute(merged || reason)
+        })
+      }
+      sources.onCanonicalFrameCommit?.((frame) => {
         indexHeadingIdentities()
+        const frameKey = frame?.documentKey ?? null
+        const frameFingerprint = frame?.semanticFingerprint ?? null
+        // PA-16 — SAME document + SAME semantic fingerprint as the last full
+        // transaction ⇒ this commit is presentation-only (caret/focus/re-bind),
+        // so the structural diagnostics pass is skipped. Real edits still reach
+        // diagnostics through DOCUMENT_MUTATION / DOCUMENT_SOURCE_CHANGED, and
+        // the first frame of every document always runs.
+        if (!shouldRunDiagnosticsForFrame(frame, {
+          documentKey: lastDiagnosticFrameKey,
+          semanticFingerprint: lastDiagnosticSemanticFingerprint,
+        })) {
+          emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-FRAME-SKIPPED', {
+            documentKey: frameKey,
+            semanticRevision: frame?.semanticRevision ?? null,
+            semanticFingerprint: frameFingerprint,
+            reason: 'SEMANTICALLY_UNCHANGED_FRAME',
+            decision: 'SKIPPED',
+          })
+          return
+        }
+        lastDiagnosticFrameKey = frameKey
+        lastDiagnosticSemanticFingerprint = frameFingerprint
         recompute('CANONICAL_FRAME_CHANGED')
       })
       sources.onSettingsChanged?.(() => {
-        if (settingsRecomputePending) return
-        settingsRecomputePending = true
-        requestAnimationFrame(() => {
-          settingsRecomputePending = false
-          recompute('HEADING_STRUCTURE_MODE_CHANGED')
-        })
+        scheduleRecompute('HEADING_STRUCTURE_MODE_CHANGED')
       })
       // Phase 7R.3.11.8B.7.7 — Markdown SOURCE change is the live-reconcile
       // authority for document-level diagnostics (EOF blank lines). Recompute
       // is pure + fingerprint-gated, so identical state never re-publishes and
       // a real 0→1 / 1→2 / 2→1 / 1→0 transition auto ADD/REMOVE the warning.
       sources.onSourceEdit?.(() => {
-        if (sourceRecomputePending) return
-        sourceRecomputePending = true
-        requestAnimationFrame(() => {
-          sourceRecomputePending = false
-          recompute('DOCUMENT_SOURCE_CHANGED')
-        })
+        scheduleRecompute('DOCUMENT_SOURCE_CHANGED')
       })
     },
   })

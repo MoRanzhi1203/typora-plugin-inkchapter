@@ -67,6 +67,36 @@ export function buildHeadingDecorationProjections(
   }))
 }
 
+/**
+ * PA-14 — align numbering results with the FULL heading list (DOM order).
+ *
+ * `computeHeadingNumbering()` drops headings deeper than `maxDepth`, but the DOM
+ * still contains them. Pairing the two lists by INDEX therefore shifted every
+ * label after an out-of-range heading (and handed the neighbour's number to the
+ * out-of-range heading). Align by stable identity instead; a heading with no
+ * numbering result keeps an EMPTY projection so its decoration is cleared.
+ */
+export function buildAlignedHeadingDecorationProjections(
+  headings: readonly { key: string }[],
+  numbered: readonly { key: string; label?: string; labelGap?: unknown }[],
+  labels: readonly string[],
+): HeadingDecorationProjection[] {
+  const labelByKey = new Map<string, string>()
+  const gapByKey = new Map<string, unknown>()
+  numbered.forEach((h, i) => {
+    labelByKey.set(h.key, labels[i] ?? h.label ?? '')
+    gapByKey.set(h.key, h.labelGap)
+  })
+  return headings.map(h => {
+    const label = labelByKey.get(h.key) ?? ''
+    return {
+      stableIdentity: h.key,
+      label,
+      gap: label === '' ? 'none' : normalizeDecorationGap(gapByKey.get(h.key)),
+    }
+  })
+}
+
 /** §8 — the gap of the BODY heading at `bodyIndex` (the outline's ONLY source). */
 export function outlineGapForBodyIndex(
   projections: readonly HeadingDecorationProjection[] | null | undefined,

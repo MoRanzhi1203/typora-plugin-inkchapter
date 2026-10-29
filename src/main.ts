@@ -1,7 +1,14 @@
 import './style.scss'
 import { Notice, Plugin, PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from './settings/settings-model'
-import { DEFAULT_SETTINGS } from './settings/default-settings'
+import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
+import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
+import {
+  FRAMEWORK_RIBBON_ENABLE_CLASS,
+  INKCHAPTER_RIBBON_HIDDEN_CLASS,
+  applyRibbonHiddenClass,
+  resolveRibbonHidden,
+} from './settings/ribbon-visibility'
 import { HeadingNumberingService } from './heading-numbering/heading-numbering-service'
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { resolveHeadingPolicyActivation } from './heading-numbering/heading-policy-activation'
@@ -19,15 +26,17 @@ import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
 import { INKCHAPTER_BUILD_ID, RUNTIME_GATE_REVISION } from './heading-numbering/paragraph-indent-forensic'
-import { initializeForensicSink, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
+import { initializeForensicSink, isRuntimeAuditSinkRequested, shutdownForensicSink, emitRuntimeAudit } from './runtime/forensic-log-sink'
 import {
   INKCHAPTER_PLUGIN_ID,
   buildInkChapterGlobalLoadAudit,
   resolveInkChapterPathAuthority,
+  resolveInkChapterStorageRoot,
   toInkChapterDocumentContext,
   type InkChapterDocumentContext,
 } from './runtime/inkchapter-path-authority'
 import { recordInkChapterBootstrap } from './runtime/inkchapter-bootstrap-audit'
+import { installGuiCaretAudit } from './runtime/gui-caret-audit'
 // Unified Diagnostics Domain V1 §6/§37 — the plugin's OWN runtime integrity is
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
@@ -36,10 +45,37 @@ import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentU
 import { writeHeadingConflictBridgeReport, readHeadingConflictBridgeFile, consumeHeadingConflictBridgeFile } from './heading-numbering/heading-conflict-test-bridge'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
+import { FileCopyService } from './file-transfer/file-copy-service'
+import { resolveModifiedState } from './file-transfer/file-transfer-policy'
+import { FileTreeDragAdapter } from './file-transfer/file-tree-drag-adapter'
+import { NativeDragBridge, type ElectronRendererLike } from './file-transfer/native-drag-bridge'
 import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-empty-workspace-controller'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
 const RUNTIME_AUDIT_BUILD_MARKER = 'inkchapter-runtime-audit-h2-outline-v2'
+
+/**
+ * R10 Closure §5.1 — OPT-IN structural-serialization perf evidence
+ * (`INKCHAPTER_STRUCTURAL_AUDIT=1`). Off by default so the production hot path
+ * never formats an audit payload per transaction.
+ *
+ * Resolved LAZILY: the renderer may expose `process` only after the bundle is
+ * evaluated, so a module-scope read can miss the environment (forensic only).
+ */
+let structuralAuditEnabledCache: boolean | null = null
+function isStructuralAuditEnabled(): boolean {
+  if (structuralAuditEnabledCache !== null) return structuralAuditEnabledCache
+  try {
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    structuralAuditEnabledCache = proc?.env?.INKCHAPTER_STRUCTURAL_AUDIT === '1'
+      // The GUI-acceptance run already proves the env channel works and needs
+      // the same per-transaction serialization cost; both are test-only flags.
+      || proc?.env?.INKCHAPTER_GUI_CARET_AUDIT === '1'
+  } catch {
+    structuralAuditEnabledCache = false
+  }
+  return structuralAuditEnabledCache
+}
 
 console.log('[InkChapter] INKCHAPTER-BOOT-MODULE-LOAD')
 
@@ -196,6 +232,70 @@ export default class extends Plugin<InkChapterSettings> {
   private headingConflictBridgeLastNonce: string | null = null
   private docViewMenu?: DocumentViewContextMenu
   private tabCloseVisibility?: TabCloseVisibilityEnhancer
+  private fileCopyService?: FileCopyService
+  private nativeDragBridge?: NativeDragBridge
+  private fileTreeDragAdapter?: FileTreeDragAdapter
+
+  /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
+  private readUiSettings() {
+    return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
+  }
+
+  /** 界面配置应用次数（有界取证 A3，仅计数，不产生日志风暴）。 */
+  private uiApplyCount = 0
+
+  /**
+   * 应用 Ribbon 可见性 —— **幂等、只写墨章自己的类、绝不与框架争夺框架类**。
+   *
+   * `ui.ribbon === false`（默认）= 保持 Typora 原生侧栏：
+   *   仅切换 `body.inkchapter-ribbon-hidden`；框架的 `typ-ribbon--enable` **保持不动**
+   *   （它是框架自己的模式状态），原生「文件 / 搜索 / 大纲」切页栏与侧栏布局改由
+   *   style.scss 在墨章命名空间下恢复。状态未变化时零 DOM 写入 ⇒ 无 MutationRecord
+   *   ⇒ 不触发任何观察者，也不与框架形成“写—观察”反馈环。
+   *
+   * 只允许由：插件设置加载完成、用户修改 `ui.ribbon`、设置页写回 触发。
+   */
+  private applyRibbonVisibility(): void {
+    try {
+      const body = document.body
+      if (!body) return
+      this.uiApplyCount++
+      const hidden = resolveRibbonHidden(this.readUiSettings().ribbon)
+      const wrote = applyRibbonHiddenClass(body, hidden)
+      if (wrote) {
+        emitRuntimeAudit('INKCHAPTER-UI-RIBBON-STATE', {
+          ribbonHidden: hidden,
+          frameworkRibbonEnabled: body.classList.contains(FRAMEWORK_RIBBON_ENABLE_CLASS),
+          domWrite: true,
+          applyCount: this.uiApplyCount,
+        })
+      }
+    } catch { /* fail-open */ }
+  }
+
+  /**
+   * 有界取证（A3）——3 次一次性心跳，证明 onload 之后主线程仍在运行、以及最终的
+   * Ribbon 状态；发射完即停止，**不做任何轮询 / 长期观察器**。仅用于 Runtime 验收。
+   */
+  private emitResponsiveHeartbeats(): void {
+    try {
+      for (const ms of [1000, 3000, 6000]) {
+        const id = window.setTimeout(() => {
+          try {
+            const body = document.body
+            emitRuntimeAudit('INKCHAPTER-UI-RESPONSIVE-HEARTBEAT', {
+              afterMs: ms,
+              ribbonHidden: body.classList.contains(INKCHAPTER_RIBBON_HIDDEN_CLASS),
+              frameworkRibbonEnabled: body.classList.contains(FRAMEWORK_RIBBON_ENABLE_CLASS),
+              uiApplyCount: this.uiApplyCount,
+              ribbonObserverCount: 0,
+            })
+          } catch { /* fail-open */ }
+        }, ms)
+        this.register(() => window.clearTimeout(id))
+      }
+    } catch { /* fail-open */ }
+  }
 
   constructor(...args: ConstructorParameters<typeof Plugin>) {
     super(...args)
@@ -312,6 +412,17 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] caption settings migration error:', e)
     }
 
+    // ── Schema migration: init ui (界面 / 文件夹树) if missing ──
+    try {
+      const current = this.settings.get('ui' as keyof InkChapterSettings) as any
+      if (!current || typeof current !== 'object') {
+        this.settings.set('ui' as keyof InkChapterSettings, DEFAULT_UI_SETTINGS as any)
+        console.log('[InkChapter] ui settings migration applied')
+      }
+    } catch (e) {
+      console.error('[InkChapter] ui settings migration error:', e)
+    }
+
     // Build service context (exposes only needed APIs, avoids protected access)
     // R58.4: Authoritative vault root from Typora Core app.vault.path
     let vaultRoot: string | undefined
@@ -324,9 +435,40 @@ export default class extends Plugin<InkChapterSettings> {
       }
     } catch { /* vaultRoot stays undefined */ }
 
+    // ── V1.1-GLOBAL §7/§12 — SIDECAR/AUDIT STORAGE ROOT ──────────────────
+    // A REAL vault already owns a `.typora` config dir, so sidecars/audits stay
+    // there. A plain document folder must NOT be turned into a vault by our own
+    // writes: the community framework reads `enabledPlugins` from `<folder>/.typora`
+    // whenever it exists, so creating it silently disables this user-level plugin
+    // on the next start. Non-vault storage goes to a per-folder USER-LEVEL dir.
+    const storageRoot = resolveInkChapterStorageRoot({
+      vaultPath: vaultRoot ?? null,
+      userHome: (() => { try { return os.homedir() } catch { return null } })(),
+      localDotTyporaPresent: vaultRoot ? fs.existsSync(path.join(vaultRoot, '.typora')) : false,
+    })
+    console.info(
+      `[InkChapter] SIDECAR-CONTEXT-UPDATE: vaultRoot=${vaultRoot ?? 'null'} ` +
+      `storageRoot=${storageRoot ?? 'null'} source=storage-root-authority`,
+    )
+
     // ── File-backed forensic audit sink (pure observability, fail-open) ──
+    // PERFORMANCE: opt-in only. Console mirroring stays always-on; persisting
+    // JSONL would otherwise write to disk from the editing hot path.
+    // `sessionId` stays function-scoped: the runtime identity audit below
+    // reports it regardless of whether the file sink is enabled.
     const sessionId = `sess-${Date.now()}`
-    initializeForensicSink({ vaultRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
+    if (isRuntimeAuditSinkRequested()) {
+      initializeForensicSink({ vaultRoot: storageRoot, buildId: INKCHAPTER_BUILD_ID, sessionId })
+    } else {
+      console.info('[InkChapter] RUNTIME-AUDIT-SINK: disabled (console-only)')
+    }
+
+    // ── 界面配置：Ribbon 可见性（在 sink 就绪后应用；幂等、无长期观察器） ──
+    try {
+      this.register(this.settings.onChange('*', () => this.applyRibbonVisibility()))
+    } catch { /* fail-open */ }
+    this.applyRibbonVisibility()
+    this.emitResponsiveHeartbeats()
 
     // ── GLOBAL LOAD AUDIT (Block-Gap Transaction Closure V1.1-GLOBAL §12/§14) ──
     // Observability ONLY (fail-open): InkChapter is a Typora USER-LEVEL plugin,
@@ -356,9 +498,67 @@ export default class extends Plugin<InkChapterSettings> {
       })
     } catch { /* observability must never block initialization */ }
 
+    /**
+     * R10 Closure §2.2 — ONE structural-read implementation shared by the
+     * ServiceContext and the Document-Utilities authority. Every degraded path
+     * reports WHY and always returns `structural:false` with the fallback string;
+     * the transaction builder records that fact on the diagnostics input.
+     */
+    const readStructuralMarkdown = (): {
+      markdown: string | null
+      structural: boolean
+      reason?: 'ROOT_DISCONNECTED' | 'API_THREW' | 'EMPTY_RESULT' | 'API_UNAVAILABLE'
+    } => {
+      const incremental = (): string | null => {
+        try { return editor.getMarkdown() } catch { return null }
+      }
+      let area: HTMLElement | null = null
+      try {
+        const writingArea = editor.writingArea as HTMLElement | null | undefined
+        area = writingArea ?? null
+      } catch { area = null }
+      if (area == null || area.isConnected === false) {
+        return { markdown: incremental(), structural: false, reason: 'ROOT_DISCONNECTED' }
+      }
+      // 公式渲染安全阀：`UserOp.getMarkdownSourceFrom` 会遍历并重建块内 DOM，
+      // 实测即使块公式已渲染完成，该序列化仍会清空 `.md-math-block`（公式永久
+      // 空白，renderUnder 也无法恢复）。因此含块公式的文档一律降级为增量镜像，
+      // 公式渲染优先于结构诊断。
+      if (area.querySelector('.md-math-block')) {
+        return { markdown: incremental(), structural: false, reason: 'API_UNAVAILABLE' }
+      }
+      const userOp = (editor as unknown as { UserOp?: { getMarkdownSourceFrom?: (el: unknown) => unknown } }).UserOp
+      if (userOp == null || typeof userOp.getMarkdownSourceFrom !== 'function') {
+        return { markdown: incremental(), structural: false, reason: 'API_UNAVAILABLE' }
+      }
+      const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+      try {
+        const structural = userOp.getMarkdownSourceFrom($(area))
+        const elapsedMs = t0 > 0 ? Math.round((performance.now() - t0) * 100) / 100 : -1
+        // Perf evidence is OPT-IN (`INKCHAPTER_STRUCTURAL_AUDIT=1`): the
+        // product hot path performs no audit formatting by default.
+        if (isStructuralAuditEnabled()) {
+          emitRuntimeAudit('R10-STRUCTURAL-SERIALIZE-AUDIT', {
+            path: this.app.workspace.activeFile ?? null,
+            writingAreaChildCount: area.childElementCount,
+            serializeMs: elapsedMs,
+            markdownLength: typeof structural === 'string' ? structural.length : null,
+            decision: typeof structural === 'string' && structural !== '' ? 'STRUCTURAL' : 'EMPTY_RESULT',
+          })
+        }
+        if (typeof structural === 'string' && structural !== '') {
+          return { markdown: structural, structural: true }
+        }
+        return { markdown: incremental(), structural: false, reason: 'EMPTY_RESULT' }
+      } catch {
+        return { markdown: incremental(), structural: false, reason: 'API_THREW' }
+      }
+    }
+
     const ctx: ServiceContext = {
       settings: this.settings,
       vaultRoot,
+      storageRoot,
       documentContext,
       onWorkspaceEvent: (event, listener) => {
         const dispose = this.app.workspace.on(event as never, listener as never)
@@ -372,7 +572,18 @@ export default class extends Plugin<InkChapterSettings> {
       },
       registerDisposable: (fn) => this.register(fn),
       getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+      // R10 Closure §2.1 — `getMarkdown()` is the GENERAL read path consumed by
+      // ~18 places (not only blank-gap). It stays the incremental mirror exactly
+      // as before: forcing serialization here would tax every consumer.
       getMarkdown: () => editor.getMarkdown(),
+      // R10 Closure §2.2 — the STRUCTURAL snapshot authority for one diagnostics
+      // transaction. buildDocumentDiagnosticsInput calls this exactly once per
+      // reconcile; the returned string then flows through source scanning,
+      // visible-row binding, diagnostic publish and the read-only audit.
+      // `structural=false` means the structural read failed or came back empty
+      // and the caller got the incremental mirror — a DEGRADED fact that must
+      // never be reported as structure-verified.
+      getStructuralMarkdown: readStructuralMarkdown,
       reloadContent: (markdown: string) => {
         File.reloadContent(markdown, false, true, false, true)
       },
@@ -381,11 +592,12 @@ export default class extends Plugin<InkChapterSettings> {
       },
       writeDiagnosticFile: (filename: string, data: string) => {
         try {
-          // Derive vault path from active file
-          let vaultDir = ''
-          const fp = this.app.workspace.activeFile
-          if (fp) { vaultDir = path.dirname(fp) }
-          const dp = path.join(vaultDir, '.typora', filename)
+          // V1.1-GLOBAL §7 — diagnostics are plugin-owned sidecars: they go to the
+          // resolved storage root (user-level for a non-vault folder) and never
+          // create a `.typora` inside a plain document folder.
+          if (!storageRoot) return
+          const dp = path.join(storageRoot, '.typora', filename)
+          fs.mkdirSync(path.dirname(dp), { recursive: true })
           fs.writeFileSync(dp, data, 'utf8')
         } catch { /* fail-open */ }
       },
@@ -521,6 +733,10 @@ export default class extends Plugin<InkChapterSettings> {
         getMarkdown: () => {
           try { return editor.getMarkdown() } catch { return null }
         },
+        // R10 Closure §2.2 — the diagnostics transaction's ONE structural
+        // snapshot source. Without this forwarding the authority fell back to
+        // the incremental mirror while still reporting “verified”.
+        getStructuralMarkdown: readStructuralMarkdown,
         isStrictMode: () => {
           // Phase 7R.3.11.8B.7.1 — the diagnostics mode input MUST be the
           // EFFECTIVE mode (document override ?? global), never global-only.
@@ -598,7 +814,7 @@ export default class extends Plugin<InkChapterSettings> {
         // sink: the diagnostics authority calls it at the END of a committed
         // recompute (never right after a setter), and main.ts owns the file IO.
         onHeadingConflictReportCapture: (capture) => {
-          const root = vaultRoot ?? null
+          const root = storageRoot ?? null
           if (!root) return
           writeHeadingConflictBridgeReport(root, {
             command: this.headingConflictBridgeLastCommand?.command ?? 'REPORT_ONLY',
@@ -622,7 +838,7 @@ export default class extends Plugin<InkChapterSettings> {
         // consumption point, driven by the diagnostics recompute (the toolbar
         // 「重新检查文档」 button), never by an OS-level focus/selection event.
         consumeHeadingConflictTestBridge: () => {
-          const root = vaultRoot ?? null
+          const root = storageRoot ?? null
           if (!root) return
           const cmd = readHeadingConflictBridgeFile(root, this.headingConflictBridgeLastNonce)
           if (!cmd) return
@@ -638,6 +854,16 @@ export default class extends Plugin<InkChapterSettings> {
         },
         // Phase 7R.3.11.8B.7.6 — rendered caption host for compound locate.
         getObjectCaptionHost: (el) => this.captionService?.getObjectCaptionHost(el) ?? null,
+        // Phase G §8 — DOM-side Caption Integrity producer (same diagnostics
+        // pipeline). Ownership comes ONLY from the caption service's canonical
+        // owner map; no adjacency guessing.
+        getCaptionIntegrityDiagnostics: (documentKey, sourceRevision) =>
+          this.captionService?.computeCaptionIntegrityDiagnostics(documentKey, sourceRevision) ?? [],
+        // Numbering Integrity V2 §9/§21 — the ONE canonical effective-number fact
+        // provider (owned by the caption service / formula planner). The
+        // diagnostics layer joins it to its OWN canonical source identity.
+        getObjectEffectiveNumberElementFacts: () =>
+          this.captionService?.getObjectEffectiveNumberElementFacts() ?? null,
         // V5.14-R2 §P8 — mirror heading diagnostics onto the LEFT outline
         // (painted only on a COMMITTED outline mapping).
         publishOutlineHeadingDiagnostics: (targets) => {
@@ -660,7 +886,18 @@ export default class extends Plugin<InkChapterSettings> {
         },
         onCanonicalFrameCommit: (cb) => {
           if (!this.numberingService) return () => undefined
-          return this.numberingService.subscribeCanonicalHeadingFrame(() => cb(), { emitCurrent: true })
+          // PA-16 — forward the committed frame so diagnostics can tell a real
+          // heading change from a presentation-only commit (caret/focus/re-bind).
+          return this.numberingService.subscribeCanonicalHeadingFrame(
+            (frame) => cb(frame == null
+              ? undefined
+              : {
+                  documentKey: frame.documentKey,
+                  semanticRevision: frame.semanticRevision,
+                  semanticFingerprint: frame.semanticFingerprint,
+                }),
+            { emitCurrent: true },
+          )
         },
         onSettingsChanged: (cb) => {
           if (!this.numberingService) return () => undefined
@@ -672,6 +909,7 @@ export default class extends Plugin<InkChapterSettings> {
         // created file opens through the framework App.openFile (real API).
         emptyWorkspace: {
           contentEditableBoundaryAllowed: true,
+          isEnabled: () => this.readUiSettings().emptyWorkspaceCreate,
           resolveEmptySurface: () => readActiveEmptyWorkspaceSurface(
             this.app.workspace as unknown as { activeLeaf?: { viewType?: string; view?: { containerEl?: unknown } } | null },
           ),
@@ -740,6 +978,22 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] 文档工具初始化失败，诊断/锁定/滚动功能不可用', e)
     }
+
+    // ── R10 GUI caret probe (READ-ONLY, disposable-fixture only) ──────────
+    // Typora 1.6.7 refuses remote debugging and exposes no accessibility tree,
+    // so the GUI driver cannot otherwise prove which paragraph owns the caret
+    // BEFORE sending a destructive key. Off unless explicitly requested.
+    try {
+      this.register(installGuiCaretAudit({
+        getDocumentKey: () => {
+          const fp = this.app.workspace.activeFile
+          const vr = vaultRoot ?? ''
+          if (!fp || !vr) return null
+          try { return generateDocumentKey(fp, vr) } catch { return null }
+        },
+        getSourceRevision: () => this.documentUtilities?.getSnapshot()?.sourceRevision ?? null,
+      }))
+    } catch { /* test-only probe must never block initialization */ }
 
     // ── Document View context menu (墨章 · 文档查看, tab right-click V1) ──
     // Presentation only: reuses the current Typora file-tree root as the
@@ -822,7 +1076,10 @@ export default class extends Plugin<InkChapterSettings> {
           emitRuntimeAudit(event, payload)
         },
       }
-      this.docViewMenu = new DocumentViewContextMenu(docViewPlatform)
+      this.docViewMenu = new DocumentViewContextMenu(docViewPlatform, document, () => {
+        const ui = this.readUiSettings()
+        return { menu: ui.docViewMenu, flash: ui.fileTreeLocateFlash }
+      })
       this.docViewMenu.attach()
       this.register(() => {
         this.docViewMenu?.dispose()
@@ -832,6 +1089,293 @@ export default class extends Plugin<InkChapterSettings> {
       console.log('[InkChapter] document view context menu ready', invariant)
     } catch (e) {
       console.error('[InkChapter] 文档查看右键菜单初始化失败', e)
+    }
+
+    // ── File tree ↔ Windows Explorer drag/drop enhancement ──
+    // 外部拖入：捕获阶段改「移动」为真实复制；拖出：只观察，保留 Typora 原生 IPC 拖拽。
+    try {
+      this.fileCopyService = new FileCopyService()
+      this.nativeDragBridge = new NativeDragBridge({
+        getElectron: () => {
+          const globalScope = globalThis as { reqnode?: unknown }
+          if (typeof globalScope.reqnode !== 'function') return null
+          try {
+            return (globalScope.reqnode as (id: string) => unknown)('electron') as ElectronRendererLike
+          } catch {
+            return null
+          }
+        },
+      })
+      const copyService = this.fileCopyService
+      const bridge = this.nativeDragBridge
+      let lastDragOutNoticeAt = 0
+      // 真实 Typora 1.6.7（Windows）不提供可靠的未保存标记：
+      // hasMidified 恒为 false，getContent/savedContent 始终相同。这里记录编辑器
+      // 最后一次 input 时间；拖出时若晚于磁盘 mtime（允许 1s 时钟粒度），
+      // 说明存在未保存修改。保存会推进 mtime，从而自动恢复为干净状态。
+      const lastEditAt = new Map<string, number>()
+      const markEdited = (): void => {
+        try {
+          const activePath = File.bundle?.filePath
+          if (activePath) lastEditAt.set(activePath, Date.now())
+        } catch { /* 忽略 */ }
+      }
+      const isInsideEditor = (target: EventTarget | null): boolean => {
+        const element = target as Element | null
+        return !!element && typeof element.closest === 'function' && !!element.closest('#write')
+      }
+      const onEditorEdit = (event: Event): void => {
+        if (isInsideEditor(event.target)) markEdited()
+      }
+      const onEditorKeyDown = (event: KeyboardEvent): void => {
+        if (!isInsideEditor(event.target)) return
+        if (event.ctrlKey || event.metaKey || event.altKey) {
+          if (!['v', 'x', 'z', 'y'].includes(event.key.toLowerCase())) return
+        } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape', 'CapsLock'].includes(event.key)) {
+          return
+        }
+        markEdited()
+      }
+      document.addEventListener('input', onEditorEdit, true)
+      document.addEventListener('paste', onEditorEdit, true)
+      document.addEventListener('cut', onEditorEdit, true)
+      document.addEventListener('drop', onEditorEdit, true)
+      document.addEventListener('compositionend', onEditorEdit, true)
+      document.addEventListener('keydown', onEditorKeyDown, true)
+      this.register(() => {
+        document.removeEventListener('input', onEditorEdit, true)
+        document.removeEventListener('paste', onEditorEdit, true)
+        document.removeEventListener('cut', onEditorEdit, true)
+        document.removeEventListener('drop', onEditorEdit, true)
+        document.removeEventListener('compositionend', onEditorEdit, true)
+        document.removeEventListener('keydown', onEditorKeyDown, true)
+      })
+
+      this.fileTreeDragAdapter = new FileTreeDragAdapter({
+        document,
+        getVaultRoot: () => {
+          try {
+            return File.getMountFolder() || null
+          } catch {
+            return null
+          }
+        },
+        copy: (sources, destinationDir) => {
+          const vaultRoot = File.getMountFolder()
+          if (!vaultRoot) {
+            return Promise.resolve({
+              entries: [],
+              copiedCount: 0,
+              skippedCount: 0,
+              failedCount: sources.length,
+              conflictCount: 0,
+              sourcePreserved: true as const,
+            })
+          }
+          return copyService.copyBatch(sources, destinationDir, {
+            vaultRoot,
+            conflictPolicy: 'rename',
+          })
+        },
+        refreshTree: (destinationDir, copiedFiles) => {
+          try {
+            const tree = editor.library?.fileTree
+            if (!tree) return
+            // 增量更新：不调用 refreshPanelCommand()，避免整体重绘折叠用户已展开的节点。
+            for (const filePath of copiedFiles) {
+              tree.onChangeForWin(filePath, [], 'add')
+            }
+          } catch (e) {
+            console.warn('[InkChapter] 文件树增量刷新失败', e)
+          }
+        },
+        notify: (message, level) => {
+          if (level === 'error') Notice.error(message)
+          else if (level === 'warning') Notice.warning(message)
+          else Notice.info(message)
+        },
+        onDragOutObserved: ({ path: draggedPath, isDirectory }) => {
+          if (isDirectory) return
+          try {
+            // Typora 的 bundle.filePath 通常为绝对路径；旧版 File.filePath 可能为
+            // vault 相对路径，先按 vault 根规范化，避免同一文件因形式不同而漏报。
+            const bundle = File.bundle as { filePath?: string; hasMidified?: boolean; savedContent?: string; modifiedDate?: Date } | undefined
+            const legacyPath = File.filePath
+            let activePath: string | null = bundle?.filePath || legacyPath || null
+            if (activePath && !path.isAbsolute(activePath)) {
+              try {
+                const vault = File.getMountFolder()
+                if (vault) activePath = path.resolve(vault, activePath)
+              } catch { /* 保持原值 */ }
+            }
+            let currentContent: string | null = null
+            let contentError: string | null = null
+            try { currentContent = File.getContent() } catch (e) { contentError = e instanceof Error ? e.message : String(e) }
+            const contentType = typeof currentContent
+            const contentCtor = currentContent && typeof currentContent === 'object'
+              ? ((currentContent as unknown as { constructor?: { name?: string } }).constructor?.name ?? null)
+              : null
+            // hasMidified 在真实运行中可能滞后；用 savedContent 与当前正文比对兜底。
+            const state = resolveModifiedState(bundle?.hasMidified, currentContent, bundle?.savedContent)
+            let modified = state.modified
+            const editedAt = lastEditAt.get(draggedPath) ?? null
+            if (!modified && editedAt !== null) {
+              try {
+                const mtime = fs.statSync(draggedPath).mtimeMs
+                if (editedAt > mtime + 1000) modified = true
+              } catch { /* 忽略 */ }
+            }
+            // 诊断：记录文档标签页 DOM（.typ-tab）的类名与活动标签 HTML，
+            // 定位 Typora 原生的未保存标记（hasMidified 在真实运行中不可靠）。
+            let docTabClasses: string[] = []
+            let activeTabHtml: string | null = null
+            let activeCloseBefore: string | null = null
+            try {
+              const tabs = Array.from(document.querySelectorAll('.typ-workspace-tabs .typ-tab, .typ-workspace-tab-header .typ-tab'))
+              docTabClasses = tabs.slice(0, 8).map(element => String((element as HTMLElement).className))
+              const activeTab = tabs.find(element => element.classList.contains('active'))
+              activeTabHtml = activeTab ? String(activeTab.outerHTML).slice(0, 600) : null
+              const closeButton = activeTab?.querySelector('.typ-close')
+              activeCloseBefore = closeButton ? window.getComputedStyle(closeButton, '::before').content : null
+            } catch { docTabClasses = []; activeTabHtml = null; activeCloseBefore = null }
+            // 诊断：Typora 在加载/保存后重置 UndoManager.commandStack；
+            // 非空命令栈通常意味着存在未保存编辑。
+            let undoStackLength: number | null = null
+            try {
+              const undoManager = (editor as unknown as { undo?: { UndoManager?: { commandStack?: unknown[] } } }).undo?.UndoManager
+              undoStackLength = Array.isArray(undoManager?.commandStack) ? undoManager.commandStack.length : null
+            } catch { undoStackLength = null }
+            const inspection = bridge.inspect(draggedPath, activePath, modified)
+            const warning = bridge.warningFor(inspection)
+            const notify = (text: string | null): void => {
+              if (!text) return
+              const now = Date.now()
+              if (now - lastDragOutNoticeAt < 4000) return
+              lastDragOutNoticeAt = now
+              Notice.warning(text)
+            }
+            emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+              phase: 'sync',
+              draggedPath,
+              activePath,
+              modified,
+              modifiedSource: state.source,
+              hasMidified: !!bundle?.hasMidified,
+              bundleType: typeof bundle,
+              legacyPath: legacyPath || null,
+              savedContentLength: typeof bundle?.savedContent === 'string' ? bundle.savedContent.length : null,
+              currentContentLength: typeof currentContent === 'string' ? currentContent.length : null,
+              contentType,
+              contentCtor,
+              contentError,
+              docTabClasses,
+              activeTabHtml,
+              activeCloseBefore,
+              undoStackLength,
+              modifiedDate: bundle?.modifiedDate instanceof Date ? bundle.modifiedDate.toISOString() : String(bundle?.modifiedDate ?? null),
+              fileMtime: (() => { try { return new Date(fs.statSync(draggedPath).mtimeMs).toISOString() } catch { return null } })(),
+              editedAt: editedAt === null ? null : new Date(editedAt).toISOString(),
+              windowTitle: (() => {
+                try {
+                  const reqnode = (globalThis as { reqnode?: (id: string) => unknown }).reqnode
+                  const electron = reqnode?.('electron') as { remote?: { getCurrentWindow?: () => { getTitle?: () => string } } } | undefined
+                  return electron?.remote?.getCurrentWindow?.()?.getTitle?.() ?? null
+                } catch (e) { return e instanceof Error ? `ERR:${e.message}` : 'ERR' }
+              })(),
+              documentTitle: document.title,
+              remoteTitle: (() => {
+                try {
+                  const reqnode = (globalThis as { reqnode?: (id: string) => unknown }).reqnode
+                  const remote = reqnode?.('@electron/remote') as { getCurrentWindow?: () => { getTitle?: () => string } } | undefined
+                  return remote?.getCurrentWindow?.()?.getTitle?.() ?? null
+                } catch (e) { return e instanceof Error ? `ERR:${e.message}` : 'ERR' }
+              })(),
+              exists: inspection.exists,
+              symlink: inspection.symlink,
+              staleDueToUnsavedChanges: inspection.staleDueToUnsavedChanges,
+              warning: warning ? 'WARN' : 'NONE',
+            })
+            if (warning) {
+              notify(warning)
+              return
+            }
+            // hasMidified 与 getContent 在真实运行中均不可靠；尝试从 getContent 的
+            // 异步返回值或 Typora 文档桥读取当前 Markdown，与 savedContent 比对。
+            const savedContent = bundle?.savedContent
+            if (typeof savedContent !== 'string') return
+            const evaluateContent = (raw: unknown, source: string): void => {
+              const content = typeof raw === 'string'
+                ? raw
+                : (raw && typeof (raw as { content?: unknown }).content === 'string'
+                  ? (raw as { content: string }).content
+                  : null)
+              const asyncState = resolveModifiedState(false, content, savedContent)
+              const asyncInspection = bridge.inspect(draggedPath, activePath, asyncState.modified)
+              const asyncWarning = bridge.warningFor(asyncInspection)
+              emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+                phase: 'async',
+                contentSource: source,
+                draggedPath,
+                activePath,
+                modified: asyncState.modified,
+                modifiedSource: asyncState.source,
+                resultType: typeof raw,
+                savedContentLength: savedContent.length,
+                currentContentLength: typeof content === 'string' ? content.length : null,
+                exists: asyncInspection.exists,
+                symlink: asyncInspection.symlink,
+                staleDueToUnsavedChanges: asyncInspection.staleDueToUnsavedChanges,
+                warning: asyncWarning ? 'WARN' : 'NONE',
+              })
+              notify(asyncWarning)
+            }
+            const maybePromise = currentContent as unknown
+            if (maybePromise && typeof (maybePromise as { then?: unknown }).then === 'function') {
+              void (maybePromise as Promise<unknown>).then(value => evaluateContent(value, 'getContentPromise')).catch((error: unknown) => {
+                emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+                  phase: 'async-error',
+                  contentSource: 'getContentPromise',
+                  draggedPath,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              })
+              return
+            }
+            const jsBridge = (globalThis as { JSBridge?: { invoke: (command: string) => Promise<unknown> } }).JSBridge
+            if (!jsBridge) return
+            void jsBridge.invoke('document.getContent').then(value => evaluateContent(value, 'jsbridge')).catch((error: unknown) => {
+              emitRuntimeAudit('INKCHAPTER-FILE-DRAG-OUT-INSPECT', {
+                phase: 'async-error',
+                contentSource: 'jsbridge',
+                draggedPath,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            })
+          } catch { /* 观察失败绝不影响原生拖出 */ }
+        },
+        onDropDecided: (decision) => {
+          emitRuntimeAudit('INKCHAPTER-FILE-DRAG-IN-DROP', {
+            phase: decision.phase,
+            processing: decision.processing,
+            sourcesCount: decision.sourcesCount,
+            targetDirectory: decision.targetDirectory,
+          })
+        },
+      })
+
+      const attached = this.fileTreeDragAdapter.attach()
+      const capability = this.nativeDragBridge.probe()
+      console.log('[InkChapter] file tree drag adapter ready', {
+        attached,
+        capability,
+        invariant: this.fileTreeDragAdapter.getInvariant(),
+      })
+      this.register(() => {
+        this.fileTreeDragAdapter?.dispose()
+        this.fileTreeDragAdapter = undefined
+      })
+    } catch (e) {
+      console.error('[InkChapter] 文件树拖放增强初始化失败', e)
     }
 
     // ── Workspace tab close × — hover/focus-only (CSS) enhancer (V1) ──
@@ -878,7 +1422,14 @@ export default class extends Plugin<InkChapterSettings> {
             const marginZero = /^0px( 0px)*$/.test(c.computed.margin.trim())
             const pseudoNoOffset = c.pseudo.transform === 'none' && c.pseudo.top === 'auto' && c.pseudo.left === 'auto' && c.pseudo.padding === '0px' && c.pseudo.margin === '0px'
             const square = Math.abs(c.closeRect.width - c.closeRect.height) <= 1 && c.closeRect.width >= 18 && c.closeRect.width <= 22
+            // R10 Project Audit §2.6 — Typora hides the tab close control by
+            // default (single tab / hover-only). A hidden control has no hitbox;
+            // evaluating it produced a permanent false FAIL audit.
+            const closeRendered = c.computed.display !== 'none'
+              && c.closeRect.width > 0
+              && c.closeRect.height > 0
             const centering = evaluateTabCloseCentering({
+              closeRendered,
               deltaCenterX: null,
               deltaCenterY: null,
               widthPx: c.closeRect.width,
@@ -902,6 +1453,7 @@ export default class extends Plugin<InkChapterSettings> {
               closePseudo: c.pseudo,
               glyphAuthority: 'PSEUDO_ELEMENT ::before content:"×"',
               hitboxFlags: { inlineFlex, alignCenter, justifyCenter, paddingZero, marginZero, square, pseudoNoOffset },
+              closeRendered,
               measureMode: centering.measureMode,
               deltaCenterX: null,
               deltaCenterY: null,
@@ -987,6 +1539,20 @@ export default class extends Plugin<InkChapterSettings> {
       }
     }
 
+    // Register 界面 / 文件夹树 settings tab (independent of the numbering service)
+    try {
+      this.registerSettingTab(new InkChapterUiSettingTab({
+        read: () => this.readUiSettings(),
+        write: (next) => {
+          this.settings.set('ui' as keyof InkChapterSettings, next as never)
+          this.applyRibbonVisibility()
+        },
+      }))
+      console.log('[InkChapter] ui settings tab registered')
+    } catch (e) {
+      console.error('[InkChapter] 界面设置页注册失败', e)
+    }
+
     // ── Commands (always registered, even if service failed) ──
 
     // Status check command
@@ -995,6 +1561,25 @@ export default class extends Plugin<InkChapterSettings> {
       title: '检查插件状态',
       scope: 'global',
       callback: () => Notice.info('墨章 InkChapter 已正常加载'),
+    })
+
+    // File tree drag/drop capability report (runtime verification helper)
+    this.registerCommand({
+      id: 'inkchapter.file-transfer.capability',
+      title: '墨章：文件拖放能力检测',
+      scope: 'global',
+      callback: () => {
+        const capability = this.nativeDragBridge?.probe()
+        const invariant = this.fileTreeDragAdapter?.getInvariant()
+        const dragOut = capability?.nativeDragOut ?? 'UNAVAILABLE'
+        const ipc = capability?.ipcRendererAvailable ? '可用' : '不可用'
+        const stats = invariant
+          ? `拖入 ${invariant.externalDropCount} 次 / 复制 ${invariant.copiedCount} 个 / 失败 ${invariant.failedCount} 个`
+          : '适配器未就绪'
+        Notice.info(
+          `文件树拖放：原生拖出=${dragOut}，Electron IPC=${ipc}；${stats}。目标端默认复制，Shift 拖放由系统判定为移动。`,
+        )
+      },
     })
 
     // Toggle heading numbering
@@ -1263,6 +1848,11 @@ export default class extends Plugin<InkChapterSettings> {
           mainJsPath,
           mainJsSha256: hash,
           manifestPath,
+          // Framework-reported install position: 'global' (user-level) or 'vault'
+          // (a local `.typora/plugins` copy). This is the AUTHORITATIVE per-window
+          // load source — the same id can be installed in both roots, and only
+          // this field (plus pluginRoot) tells them apart without path guessing.
+          loadSource: (this as any).manifest?.postion ?? 'unknown',
           initializationCount: 1,
           ribbonInjected: !!document.querySelector('.typ-ribbon'),
           ribbonEnableClass: document.body.classList.contains('typ-ribbon--enable'),
@@ -1275,6 +1865,13 @@ export default class extends Plugin<InkChapterSettings> {
           },
         }
         fs.writeFileSync(runtimeLoadPath, JSON.stringify(runtimeLoad, null, 2), 'utf8')
+        // ENTER→BLANK ECHO GUARD (plan ②) — publish the evidence directory so the
+        // targeted DOM-write call-stack tracer can persist its DIRECT evidence to
+        // disk (the console audits cannot be read from outside the app).
+        try {
+          (globalThis as unknown as { __INKCHAPTER_EVIDENCE_DIR?: string }).__INKCHAPTER_EVIDENCE_DIR
+            = path.join(pluginRoot, '..', '..')
+        } catch { /* forensics only */ }
         console.log('[InkChapter] runtime-load.json written:', runtimeLoadPath)
       }
     } catch (e) {
@@ -1432,6 +2029,12 @@ export default class extends Plugin<InkChapterSettings> {
   }
 
   onunload() {
+    if (this.fileTreeDragAdapter) {
+      this.fileTreeDragAdapter.dispose()
+      this.fileTreeDragAdapter = undefined
+    }
+    this.fileCopyService = undefined
+    this.nativeDragBridge = undefined
     if (this.tabCloseVisibility) {
       this.tabCloseVisibility.dispose()
       this.tabCloseVisibility = undefined
