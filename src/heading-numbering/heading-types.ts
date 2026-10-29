@@ -512,6 +512,12 @@ export interface ParagraphLayoutSettings {
   defaultIndent: ParagraphIndentMode
   flushAfterDisplayMath: boolean
   indentShortcutEnabled: boolean
+  /**
+   * Paragraph Indent V2 (IND-057) — also draw the two-box marker on paragraphs
+   * that inherit the indent from the document/global default (semantic AUTO).
+   * Default (undefined/false) = explicit `..`/`。。` overrides only.
+   */
+  showInheritedIndentMarker?: boolean
 }
 
 /** Semantic marker key used in HTML comments. */
@@ -521,6 +527,7 @@ export const DEFAULT_PARAGRAPH_LAYOUT: ParagraphLayoutSettings = {
   defaultIndent: 'flush',
   flushAfterDisplayMath: true,
   indentShortcutEnabled: true,
+  showInheritedIndentMarker: false,
 }
 
 // ── Heading numbering scope store (schema refactor) ──────

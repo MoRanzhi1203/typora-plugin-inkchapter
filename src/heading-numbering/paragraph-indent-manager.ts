@@ -1066,6 +1066,12 @@ export function refreshParagraphIndentStyles(
     )
 
     applyEffectiveParagraphIndent(p, effective, WriterIds.REFRESH_VISUAL)
+
+    // IND-057 — explicit marker always; inherited marker only when opted in.
+    applyIndentMarkerValue(
+      p,
+      resolveIndentMarkerValue(semantic, effective, settings.showInheritedIndentMarker === true),
+    )
   }
 }
 
@@ -1765,6 +1771,12 @@ export function rehydrateParagraphIndentState(
 
   // 4. Apply visual on the SAME paragraph element
   applyEffectiveParagraphIndent(paragraph, effective, context.visualWriterId)
+
+  // 5. Marker follows the SAME recomputed semantic/effective pair.
+  applyIndentMarkerValue(
+    paragraph,
+    resolveIndentMarkerValue(mode, effective, settings.showInheritedIndentMarker === true),
+  )
 }
 
 // ── Pending Logical Paragraph Identity ──────────────────────────────
@@ -2286,25 +2298,50 @@ export function applyIndentMarkerProjection(
   paragraph: HTMLElement,
   mode: ParagraphIndentSemanticMode,
 ): boolean {
-  const wantsMarker = mode === 'force-indent'
-  const hasMarker = paragraph.getAttribute(INDENT_MARKER_ATTR) === INDENT_MARKER_VALUE
-
-  if (!wantsMarker) {
-    if (!hasMarker) return false
-    paragraph.removeAttribute(INDENT_MARKER_ATTR)
-    return true
-  }
+  if (mode !== 'force-indent') return applyIndentMarkerValue(paragraph, null)
 
   const eligibility = resolveParagraphIndentEligibility(paragraph)
   if (!eligibility.eligible) {
     recordIndentEligibilityBlock('marker')
-    if (!hasMarker) return false
+    return applyIndentMarkerValue(paragraph, null)
+  }
+  return applyIndentMarkerValue(paragraph, 'explicit-2')
+}
+
+/** Marker values: explicit override vs inherited (document/global) indent. */
+export type IndentMarkerValue = 'explicit-2' | 'inherited-2'
+
+/**
+ * IND-057 — resolve which marker (if any) a paragraph must show.
+ *
+ * Explicit `force-indent` always shows; an AUTO paragraph shows only when the
+ * optional `showInheritedIndentMarker` setting is ON and the resolved visual
+ * indent really is the two-character indent (never for flush / formula
+ * continuation / transient token editing).
+ */
+export function resolveIndentMarkerValue(
+  semantic: ParagraphIndentSemanticMode,
+  effective: ParagraphEffectiveIndent,
+  showInheritedIndentMarker: boolean,
+): IndentMarkerValue | null {
+  if (semantic === 'force-indent') return 'explicit-2'
+  if (semantic === 'auto' && effective === 'indent-2' && showInheritedIndentMarker) return 'inherited-2'
+  return null
+}
+
+/** Single writer for the marker attribute (idempotent, transition-only). */
+export function applyIndentMarkerValue(
+  paragraph: HTMLElement,
+  value: IndentMarkerValue | null,
+): boolean {
+  const current = paragraph.getAttribute(INDENT_MARKER_ATTR)
+  if (value === null) {
+    if (current === null) return false
     paragraph.removeAttribute(INDENT_MARKER_ATTR)
     return true
   }
-
-  if (hasMarker) return false
-  paragraph.setAttribute(INDENT_MARKER_ATTR, INDENT_MARKER_VALUE)
+  if (current === value) return false
+  paragraph.setAttribute(INDENT_MARKER_ATTR, value)
   return true
 }
 

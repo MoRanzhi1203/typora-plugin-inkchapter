@@ -433,22 +433,23 @@ body.ink-console-docked::after {
   padding-inline-start: 2em;
 }
 
-/* ── Explicit two-character first-line indent marker ──────────────────
+/* ── Two-character first-line indent marker ───────────────────────────
    Two light, dashed square placeholders drawn strictly inside the EXISTING
-   first-line indent whitespace of an explicit force-indent paragraph
-   (including the editable empty paragraph).
+   first-line indent whitespace of a paragraph that carries a two-character
+   first-line indent (explicit `..`/`。。` override, or inherited default when
+   the optional toggle is ON; including the editable empty paragraph).
 
    Decorative only: no text node, no fake glyph, no extra `text-indent`
    (never a double indent), not selectable, not serialized to Markdown, and
    classified as plugin-presentation by the mutation provenance authority.
    Sizes use `em` so they follow the real font metrics under zoom / font /
    line-height / theme changes; positions derive from the 2em indent band. */
-#write p[data-inkchapter-indent-marker="explicit-2"] {
+#write p[data-inkchapter-indent-marker] {
   position: relative;
 }
 
-#write p[data-inkchapter-indent-marker="explicit-2"]::before,
-#write p[data-inkchapter-indent-marker="explicit-2"]::after {
+#write p[data-inkchapter-indent-marker]::before,
+#write p[data-inkchapter-indent-marker]::after {
   content: '';
   position: absolute;
   top: 0.3em;
@@ -464,24 +465,31 @@ body.ink-console-docked::after {
   z-index: 0;
 }
 
-#write p[data-inkchapter-indent-marker="explicit-2"]::before {
+#write p[data-inkchapter-indent-marker]::before {
   inset-inline-start: 0.18em;
 }
 
-#write p[data-inkchapter-indent-marker="explicit-2"]::after {
+#write p[data-inkchapter-indent-marker]::after {
   inset-inline-start: 1.04em;
 }
 
+/* Inherited (document/global default) indent: same geometry, slightly lighter
+   so an inherited indent is still distinguishable from an explicit override. */
+#write p[data-inkchapter-indent-marker="inherited-2"]::before,
+#write p[data-inkchapter-indent-marker="inherited-2"]::after {
+  opacity: 0.2;
+}
+
 /* Source-code mode: no WYSIWYG first line — hide the boxes, keep the indent. */
-body.typora-sourceview-on #write p[data-inkchapter-indent-marker="explicit-2"]::before,
-body.typora-sourceview-on #write p[data-inkchapter-indent-marker="explicit-2"]::after {
+body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::before,
+body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   display: none;
 }
 
 /* Read-only / preview / print / export: no marker objects in the artifact. */
 @media print {
-  #write p[data-inkchapter-indent-marker="explicit-2"]::before,
-  #write p[data-inkchapter-indent-marker="explicit-2"]::after {
+  #write p[data-inkchapter-indent-marker]::before,
+  #write p[data-inkchapter-indent-marker]::after {
     display: none;
   }
 }

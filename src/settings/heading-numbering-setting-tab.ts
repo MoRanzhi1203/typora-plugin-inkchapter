@@ -5816,6 +5816,22 @@ export class HeadingNumberingSettingTab extends SettingTab {
     shortcutCbLabel.style.cssText = 'font-size:13px;margin-left:6px;'
     shortcutControls.appendChild(shortcutCbLabel)
 
+    // ── Inherited indent marker toggle (IND-057) ──
+    // Default OFF: only explicit overrides show the two dashed boxes.
+    const markerRow = el('div', 'inkchapter-range-setting-row', section)
+    markerRow.style.cssText = 'margin-top:8px;'
+    const markerLabel = el('span', 'inkchapter-range-setting-label', markerRow)
+    markerLabel.textContent = '缩进标记'
+    const markerControls = el('div', 'inkchapter-range-controls', markerRow)
+    const markerCb = document.createElement('input')
+    markerCb.type = 'checkbox'; markerCb.checked = draft.showInheritedIndentMarker === true
+    markerCb.onchange = () => { draft.showInheritedIndentMarker = markerCb.checked }
+    markerControls.appendChild(markerCb)
+    const markerCbLabel = document.createElement('span')
+    markerCbLabel.textContent = '继承默认缩进的段落也显示虚框标记（仅编辑模式）'
+    markerCbLabel.style.cssText = 'font-size:13px;margin-left:6px;'
+    markerControls.appendChild(markerCbLabel)
+
     // ── Preview ──
     const previewRow = el('div', 'inkchapter-para-preview', section)
     previewRow.style.cssText = 'margin-top:12px;padding:10px 12px;border:1px solid var(--border-primary,#ddd);border-radius:6px;background:var(--background-secondary,#f8f8f8);'

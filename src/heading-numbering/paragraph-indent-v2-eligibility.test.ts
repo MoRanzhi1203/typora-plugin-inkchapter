@@ -252,14 +252,14 @@ describe('GREEN-3 标记属性归为插件呈现（诊断 / 空行兼容）', ()
 
 describe('GREEN-4 标记样式契约（style.scss）', () => {
   const scss = readFileSync(join(process.cwd(), 'src', 'style.scss'), 'utf8')
-  const start = scss.indexOf('/* ── Explicit two-character first-line indent marker')
+  const start = scss.indexOf('/* ── Two-character first-line indent marker')
   const end = scss.indexOf('/* ── Settings page: live preview', start)
   const block = start >= 0 && end > start ? scss.slice(start, end) : ''
   /** Rule text only — comments mention the forbidden properties by name. */
   const rules = block.replace(/\/\*[\s\S]*?\*\//g, '')
 
   it('存在标记选择器', () => {
-    expect(block).toContain('[data-inkchapter-indent-marker="explicit-2"]')
+    expect(block).toContain('[data-inkchapter-indent-marker]')
     expect(block).toContain('::before')
     expect(block).toContain('::after')
     expect(block).toContain('border: 1px dashed')
@@ -271,8 +271,8 @@ describe('GREEN-4 标记样式契约（style.scss）', () => {
     expect(rules.includes("content: ''")).toBe(true)
   })
 
-  it('源代码模式隐藏、打印/导出隐藏', () => {
-    expect(block).toContain('body.typora-sourceview-on')
+  it('源代码模式隐藏、打印/导出隐藏（对显式与继承两种标记同时生效）', () => {
+    expect(block).toContain('body.typora-sourceview-on #write p[data-inkchapter-indent-marker]')
     expect(block).toContain('@media print')
     expect((block.match(/display: none/g) ?? []).length).toBeGreaterThanOrEqual(2)
   })
@@ -280,5 +280,62 @@ describe('GREEN-4 标记样式契约（style.scss）', () => {
   it('装饰不可交互、不进入选择', () => {
     expect(block).toContain('pointer-events: none')
     expect(block).toContain('user-select: none')
+  })
+
+  it('继承标记使用更浅的不透明度（与显式覆盖可区分）', () => {
+    expect(block).toContain('[data-inkchapter-indent-marker="inherited-2"]')
+    expect(block).toContain('opacity: 0.2')
+  })
+})
+
+describe('IND-057 继承缩进标记开关（showInheritedIndentMarker）', () => {
+  const INHERITED_SETTINGS = { ...INDENT_SETTINGS, showInheritedIndentMarker: true }
+  const INHERITED_OFF = { ...INDENT_SETTINGS, showInheritedIndentMarker: false }
+
+  it('默认关闭：继承默认缩进的段落不显示标记', () => {
+    const p = makeP('正文内容')
+    refreshParagraphIndentStyles(root, INHERITED_OFF)
+    expect(p.classList.contains(INDENT_CLASS)).toBe(true)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
+  })
+
+  it('开启后：继承默认缩进的段落显示 inherited-2 标记', () => {
+    const p = makeP('正文内容')
+    refreshParagraphIndentStyles(root, INHERITED_SETTINGS)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBe('inherited-2')
+  })
+
+  it('开启后：默认顶格的段落仍无标记', () => {
+    const p = makeP('正文内容')
+    refreshParagraphIndentStyles(root, { ...INHERITED_SETTINGS, defaultIndent: 'flush' })
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
+  })
+
+  it('开启后：显式 force-indent 仍是 explicit-2（不降级为继承）', () => {
+    const p = makeP('正文内容')
+    setParagraphIndentMode(p, 'force-indent')
+    refreshParagraphIndentStyles(root, INHERITED_SETTINGS)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBe('explicit-2')
+  })
+
+  it('关闭开关后重建投影会撤销继承标记', () => {
+    const p = makeP('正文内容')
+    refreshParagraphIndentStyles(root, INHERITED_SETTINGS)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBe('inherited-2')
+    refreshParagraphIndentStyles(root, INHERITED_OFF)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
+  })
+
+  it('开启后：非普通正文段落（图文混排）永不显示标记', () => {
+    const p = makeP('<img src="a.png" alt="">说明文字')
+    refreshParagraphIndentStyles(root, INHERITED_SETTINGS)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
+  })
+
+  it('开启后：force-flush 段落无标记', () => {
+    const p = makeP('正文内容')
+    setParagraphIndentMode(p, 'force-flush')
+    refreshParagraphIndentStyles(root, INHERITED_SETTINGS)
+    expect(p.getAttribute(INDENT_MARKER_ATTR)).toBeNull()
   })
 })
