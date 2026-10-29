@@ -64,6 +64,7 @@ const CURRENT_SCHEMA_VERSION = 1
  */
 export function dedupeParagraphOverrides(
   records: ParagraphIndentOverrideRecord[],
+  prefer: 'stable' | 'newest' = 'stable',
 ): ParagraphIndentOverrideRecord[] {
   const byAnchor = new Map<string, ParagraphIndentOverrideRecord>()
   for (const record of records) {
@@ -77,6 +78,13 @@ export function dedupeParagraphOverrides(
     ].join('|')
     const previous = byAnchor.get(key)
     if (!previous) {
+      byAnchor.set(key, record)
+      continue
+    }
+    if (prefer === 'newest') {
+      // SAVE path: the newest record is the one the running editor just wrote
+      // (CREATE_NEW appends), so it is also the live owner. Dropping it would
+      // detach the live semantic from the sidecar.
       byAnchor.set(key, record)
       continue
     }
@@ -266,14 +274,13 @@ export function saveParagraphLayout(
     try { if (fs.existsSync(filePath)) { const raw = fs.readFileSync(filePath, 'utf8'); const data = JSON.parse(raw); return data.paragraphOverrides?.length ?? 0 } } catch {}
     return -1
   })()
-  console.info(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} recordCountBefore=${prevCount} recordCountAfter=${overrides.length} source=physical backend=filesystem`)
-
   const doc: ParagraphLayoutDocument = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     documentPath,
     updatedAt: Date.now(),
-    paragraphOverrides: overrides,
+    paragraphOverrides: dedupeParagraphOverrides(overrides, 'newest'),
   }
+  console.info(`[InkChapter] SIDECAR-ACTUAL-WRITE: documentKey=${documentKey} vaultRoot=${vault ?? 'unknown'} absolutePath=${filePath} recordCountBefore=${prevCount} recordCountAfter=${doc.paragraphOverrides.length} source=physical backend=filesystem`)
   // Atomic write: temp file → rename
   const tmpPath = filePath + '.tmp'
   fs.writeFileSync(tmpPath, JSON.stringify(doc, null, 2), 'utf8')

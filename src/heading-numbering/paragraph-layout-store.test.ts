@@ -359,11 +359,19 @@ describe('Sidecar duplicate override records', () => {
     expect(loaded?.paragraphOverrides.length).toBe(1)
   })
 
-  it('prefers a stable record over a temporary one with the same anchor', () => {
-    saveParagraphLayout('dup2.md', '/tmp/dup2.md', [
-      { id: 'stable', mode: 'force-indent', anchor },
-      { id: 'temp', mode: 'force-indent', anchor, temporary: true },
-    ])
+  it('prefers a stable record over a temporary one when LOADING a legacy file', () => {
+    // Written directly (not through saveParagraphLayout, which already collapses
+    // on write) to model a sidecar produced by an older build.
+    const file = path.join(TEST_VAULT, '.typora', 'inkchapter', 'paragraph-layout', 'dup2.md.json')
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1,
+      documentPath: '/tmp/dup2.md',
+      updatedAt: Date.now(),
+      paragraphOverrides: [
+        { id: 'stable', mode: 'force-indent', anchor },
+        { id: 'temp', mode: 'force-indent', anchor, temporary: true },
+      ],
+    }), 'utf8')
     const loaded = loadParagraphLayout('dup2.md')
     expect(loaded?.paragraphOverrides.length).toBe(1)
     expect(loaded?.paragraphOverrides[0].id).toBe('stable')
@@ -375,6 +383,32 @@ describe('Sidecar duplicate override records', () => {
       { id: 'two', mode: 'force-indent', anchor: { lastKnownOrdinal: 2, beforeHash: 'other' } },
     ])
     const loaded = loadParagraphLayout('keep.md')
+    expect(loaded?.paragraphOverrides.length).toBe(2)
+  })
+})
+
+describe('Sidecar duplicate override records on write', () => {
+  const anchor: ParagraphAnchor = { lastKnownOrdinal: 1, beforeHash: 'hdz185w' }
+
+  it('saveParagraphLayout persists ONE record per anchor (newest wins)', () => {
+    saveParagraphLayout('write.md', '/tmp/write.md', [
+      { id: 'older', mode: 'force-indent', anchor, temporary: true },
+      { id: 'newer', mode: 'force-indent', anchor, temporary: true },
+    ])
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(TEST_VAULT, '.typora', 'inkchapter', 'paragraph-layout', 'write.md.json'),
+      'utf8',
+    ))
+    expect(raw.paragraphOverrides.length).toBe(1)
+    expect(raw.paragraphOverrides[0].id).toBe('newer')
+  })
+
+  it('keeps records with different anchors on write', () => {
+    saveParagraphLayout('write2.md', '/tmp/write2.md', [
+      { id: 'a', mode: 'force-indent', anchor },
+      { id: 'b', mode: 'force-flush', anchor: { lastKnownOrdinal: 3, beforeHash: 'x' } },
+    ])
+    const loaded = loadParagraphLayout('write2.md')
     expect(loaded?.paragraphOverrides.length).toBe(2)
   })
 })
