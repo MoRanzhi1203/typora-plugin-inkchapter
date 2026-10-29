@@ -269,6 +269,14 @@ interface Internals {
   getBlockGapCanonicalClosureCounters(): Record<string, number>
   /** REALTIME — 结构 mutation 后的局部视觉快速 patch（本轮新增）。 */
   patchActiveGapVisualFromDom(): boolean
+  /** REALTIME V2 — 交互所有权状态（快速 patch 的授权来源）。 */
+  diagnosticInteractionState: Record<string, unknown>
+  /** PERF-A/B/C — 最近一次占据扫描的候选节点数。 */
+  lastOccupancyCandidateCount: number
+  /** PERF-B — 最近一次校准是否命中缓存。 */
+  lastCalibrationReused: boolean
+  /** PERF-C — 最近一次提交是否处于静默审计模式。 */
+  lastCommitAuditQuiet: boolean
 }
 
 interface World {
@@ -859,6 +867,17 @@ describe('REALTIME — GAP_EXPAND / GAP_SHRINK 局部视觉先于正式诊断', 
   const activate = (world: World, diag: Record<string, unknown>): void => {
     const internals = world.h as unknown as Internals
     internals.commitBlockGapVisual(GAP_RULE_DIAG_ID, 'warning', diag, world.paragraph)
+    // REALTIME V2 §4.1 — 快速 patch 只由真实 ACTIVE owner 授权。
+    internals.diagnosticInteractionState = {
+      version: 1,
+      phase: 'ACTIVE',
+      diagnosticId: GAP_RULE_DIAG_ID,
+      targetKey: 'doc:gap::gap#0',
+      diagnosticTargetIndex: 0,
+      transactionLocalTargetIndex: 0,
+      transactionId: 1,
+      leaseToken: 'lease-1',
+    }
   }
   const blankRow = (top: number, bottom: number, line: string): HTMLElement => {
     const row = document.createElement('p')
@@ -902,6 +921,27 @@ describe('REALTIME — GAP_EXPAND / GAP_SHRINK 局部视觉先于正式诊断', 
     expect(carriers()).toHaveLength(1)
     expect(carriers()[0]).toBe(carrier)
     expect(fragments()).toHaveLength(2)
+  })
+
+  it('FAST-CAPTION 插件图题位于边界之间：仍可局部 patch（不得误判为正文拆分）', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const carrier = carriers()[0]
+    // 真实 Case B DOM：上一块 → 插件图题 → 2 个空段落 → 标题。图题没有
+    // `data-inkchapter-ui-root` 等属性，旧实现把它当成「用户正文」而放弃快速 patch。
+    const caption = document.createElement('div')
+    caption.className = 'inkchapter-caption inkchapter-caption-figure'
+    caption.setAttribute('contenteditable', 'false')
+    caption.textContent = '图 1 缺失图片诊断目标'
+    stubRect(caption, () => ({ left: 60, top: 421, right: 700, bottom: 447 }))
+    world.write.insertBefore(caption, blankRows[0])
+
+    expect(patch(world)).toBe(true)
+    expect(carriers()).toHaveLength(1)
+    expect(carriers()[0]).toBe(carrier)
+    expect(fragments()).toHaveLength(3)
   })
 
   it('FAST-SPLIT 中间插入正文：不误涂（返回 false，交给正式 SPLIT 路径）', () => {
@@ -953,5 +993,68 @@ describe('REALTIME — GAP_EXPAND / GAP_SHRINK 局部视觉先于正式诊断', 
     expect(carriers()[0]).toBe(carrier)
     expect(carrier.style.cssText).toBe(style)
     expect(fragments()).toHaveLength(3)
+  })
+
+  it('FAST-ACT-OWNER phase=IDLE 时拒绝快速 patch（历史绘制 id 不得复活激活）', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const internals = world.h as unknown as Internals
+    // 交互层已回到 IDLE（例如刚被取消 / 事务回滚），载体与 lastBlockGapDiagnosticId
+    // 仍短暂存在。历史绘制 id 不能单独授权新的快速绘制。
+    internals.diagnosticInteractionState = {
+      version: 2,
+      phase: 'IDLE',
+      diagnosticId: null,
+      targetKey: null,
+      diagnosticTargetIndex: null,
+      transactionLocalTargetIndex: null,
+      transactionId: null,
+      leaseToken: null,
+    }
+    const before = fragments().length
+    expect(patch(world)).toBe(false)
+    expect(fragments()).toHaveLength(before)
+    expect(carriers()).toHaveLength(1)
+  })
+
+  it('PERF-A 占据扫描只覆盖边界邻域，不扫描全文档', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    // 与 gap 无关的大量正文块（真实文档形状）。
+    for (let i = 0; i < 120; i++) {
+      const p = document.createElement('p')
+      p.className = 'md-end-block md-p'
+      p.setAttribute('data-line', String(100 + i))
+      p.textContent = `无关正文 ${i}`
+      stubRect(p, () => ({ left: 60, top: 800 + i * 12, right: 700, bottom: 810 + i * 12 }))
+      world.write.appendChild(p)
+    }
+    expect(patch(world)).toBe(true)
+    const count = (world.h as unknown as Internals).lastOccupancyCandidateCount
+    expect(count).toBeGreaterThan(0)
+    expect(count).toBeLessThanOrEqual(40)
+  })
+
+  it('PERF-B 布局未变时复用绘制层校准（不再每键插入探针）', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    expect(patch(world)).toBe(true)
+    expect(patch(world)).toBe(true)
+    expect((world.h as unknown as Internals).lastCalibrationReused).toBe(true)
+  })
+
+  it('PERF-C 快速通道使用静默审计（详细几何审计留给正式诊断）', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    expect(patch(world)).toBe(true)
+    expect((world.h as unknown as Internals).lastCommitAuditQuiet).toBe(true)
   })
 })

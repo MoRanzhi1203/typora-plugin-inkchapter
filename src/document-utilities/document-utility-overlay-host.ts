@@ -692,6 +692,7 @@ import {
   formatRenderedBlankRowGateReport,
   evaluateRenderedBlankRowGates,
   evaluateRenderedBlankRowCoverage,
+  classifyRenderedRowCandidate,
   type BoundaryResolution,
   type RenderedBlankRowResult,
 } from './document-diagnostic-rendered-blank-row'
@@ -1052,6 +1053,7 @@ import {
   formatDrawerPersistenceGateReport,
   resolveDrawerRestoreRequired,
   resolveDrawerViewportClass,
+  resolvePanelGeometryClipCount,
   type DrawerPersistenceV512R3GateKey,
   type DrawerPresentationModeV3,
   type DrawerViewportClass,
@@ -3222,6 +3224,19 @@ export class DocumentUtilityOverlayHost {
     fragmentBefore: number
     fragmentAfter: number
   } | null = null
+  /** REALTIME V2 — 快速 patch 拒绝原因（NO_ACTIVE_OWNER / CARRIER_RETIRED / …）。 */
+  private blankFastMissReason: string | null = null
+  /** PERF-A — 最近一次占据扫描实际测量的候选节点数（邻域而非全文档）。 */
+  private lastOccupancyCandidateCount = 0
+  /** PERF-B — 绘制层校准缓存（键 = epoch + layerRect + DPR）。 */
+  private paintLayerCalibrationCache: {
+    key: string
+    calibration: ReturnType<typeof calibratePaintLayerFromLayer>
+  } | null = null
+  /** PERF-B — 最近一次校准是否命中缓存（测试/审计）。 */
+  private lastCalibrationReused = false
+  /** PERF-C — 最近一次 gap 提交是否处于静默审计模式。 */
+  private lastCommitAuditQuiet = false
   /** §7 — the targeted body-class observer that re-evaluates on a mode switch. */
   private internalBlankModeObserver: MutationObserver | null = null
   /** §25 — the monotonic reason-chip rect trace sequence (runtime forensics). */
@@ -4618,7 +4633,8 @@ export class DocumentUtilityOverlayHost {
             // editor content mutations may request the formal recompute.
             if (realContentMutation) {
               // 空行规则快速通路：同一帧内只重算空行诊断（不再等 300ms 全量去抖）。
-              this.queueBlankFastRecompute(records)
+              // V2 §5.3 — 视觉 patch 就在本 rAF 内完成，诊断重算排在其后。
+              this.queueBlankFastRecompute(records, { visualNow: true })
               this.scheduleDiagnosticsRecompute('DOCUMENT_MUTATION', true)
             }
             this.scheduleGeometrySync('content-mutation')
@@ -13869,7 +13885,10 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** 收集脏区间并在下一帧合并执行一次空行专用重算。 */
-  private queueBlankFastRecompute(records: readonly MutationRecord[]): void {
+  private queueBlankFastRecompute(
+    records: readonly MutationRecord[],
+    options?: { visualNow?: boolean },
+  ): void {
     if (this.disposed) return
     const nowMs = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
     if (this.blankFastQueuedAtMs == null) this.blankFastQueuedAtMs = nowMs()
@@ -13885,13 +13904,21 @@ export class DocumentUtilityOverlayHost {
     }
     // T2 — 受影响区间失效登记完成。
     const classifiedAt = nowMs()
-    // ── REALTIME §5 — 视觉先行：先按当前 DOM 原位 patch 活动空行区间，
-    // 再执行正式诊断重算（诊断重算仍然是唯一的事实发布者）。
-    const runVisualThenDiagnostics = (): void => {
+    // ── REALTIME V2 §5.3 — 视觉先行可以发生在**当前** mutation rAF 内，
+    // 不再额外等一个 rAF：本帧读取最新 DOM 并原位 patch，诊断重算随后（下一帧）。
+    if (options?.visualNow) {
       const patchStart = nowMs()
       const patched = this.patchActiveGapVisualFromDom()
       const patchEnd = nowMs()
       this.blankFastVisualStage = { observedAtMs: observedAt, classifiedAtMs: classifiedAt, patchStartMs: patchStart, patchEndMs: patchEnd, patched }
+    }
+    const runVisualThenDiagnostics = (): void => {
+      if (this.blankFastVisualStage == null) {
+        const patchStart = nowMs()
+        const patched = this.patchActiveGapVisualFromDom()
+        const patchEnd = nowMs()
+        this.blankFastVisualStage = { observedAtMs: observedAt, classifiedAtMs: classifiedAt, patchStartMs: patchStart, patchEndMs: patchEnd, patched }
+      }
       this.runBlankFastRecompute()
     }
     if (this.blankFastRaf != null) return
@@ -14053,6 +14080,7 @@ export class DocumentUtilityOverlayHost {
       canonicalRecomputeCount: 0,
       rafCommitCount: 1,
       fallbackReason: options.fallbackReason,
+      patchMissReason: this.blankFastMissReason,
       diagnosticCount: options.diagnosticCount,
       decision: options.committed ? 'COMMITTED' : 'DELEGATED',
       paintMeasured: false,
@@ -14273,7 +14301,18 @@ export class DocumentUtilityOverlayHost {
     diag: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
     /** V2 §A — the canonical next-block element the locate resolver already bound. */
     preferredNextElement: HTMLElement | null = null,
+    /**
+     * C — the fast (real-time) channel's SILENT re-commit. The four detailed
+     * audits are pure per-commit side channels (calibration / closure / rendered
+     * row / geometry): they mutate nothing, but they serialize geometry and
+     * allocate on EVERY keystroke-driven patch. The fast channel keeps the
+     * structural diff census (still emitted) and the diagnostic truth itself,
+     * and only silences those four. A normal commit is byte-identical to before.
+     */
+    options?: { quiet?: boolean },
   ): void {
+    this.lastCommitAuditQuiet = options?.quiet === true
+    const quietAudit = this.lastCommitAuditQuiet
     // ── R4 §3.3/§3.4 — the ONE final visual set is derived from the CURRENT
     // snapshot. A diagnostic object captured at CLICK time can be older than the
     // committed snapshot (sourceRevision drift: 3 → 28), so the band re-binds to
@@ -14583,7 +14622,7 @@ export class DocumentUtilityOverlayHost {
     // scale. `contentHostRect` is NO LONGER assumed to be the paint-layer origin:
     // it only backs the headless (jsdom, no layout) fallback below.
     const paintLayerEl = this.ensureLocateDocumentLayer()
-    const calibration = calibratePaintLayerFromLayer(paintLayerEl, this.currentDocumentLayoutEpoch)
+    const calibration = this.calibratePaintLayerCached(paintLayerEl, this.currentDocumentLayoutEpoch)
     this.lastPaintLayerCalibration = calibration
     const useCalibrated = !headless && calibration.decision === 'VERIFIED'
     // ── TRAE coordinate closure §5/§7 — kept as the DEGRADED diagnostic path: a
@@ -15036,7 +15075,7 @@ export class DocumentUtilityOverlayHost {
     const valid = structuralValid && closureOk
     this.lastBlankRowFragmentClosure = closureEntries
     // ── §16 — the paint-layer calibration audit ─────────────────────────────
-    emitRuntimeAudit(PAINT_LAYER_CALIBRATION_AUDIT_EVENT, {
+    if (!quietAudit) emitRuntimeAudit(PAINT_LAYER_CALIBRATION_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       diagnosticId: diagId,
       targetKey: gapTargetIdentity,
@@ -15058,7 +15097,7 @@ export class DocumentUtilityOverlayHost {
       reason: calibration.reason,
     })
     // ── §17 — the painted-fragment closure audit ────────────────────────────
-    emitRuntimeAudit(BLANK_ROW_FRAGMENT_CLOSURE_AUDIT_EVENT, {
+    if (!quietAudit) emitRuntimeAudit(BLANK_ROW_FRAGMENT_CLOSURE_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       diagnosticId: diagId,
       targetKey: gapTargetIdentity,
@@ -15273,14 +15312,14 @@ export class DocumentUtilityOverlayHost {
         : `RENDERED_BLANK_ROWS_UNVERIFIED:${renderedBlankRows.decision}:${gapFailClosed ?? 'GEOMETRY_INVALID'}`,
     }
     this.lastRenderedBlankRowAudit = renderedAudit
-    emitRuntimeAudit(RENDERED_BLANK_ROW_AUDIT_EVENT, renderedAudit)
+    if (!quietAudit) emitRuntimeAudit(RENDERED_BLANK_ROW_AUDIT_EVENT, renderedAudit)
     // ── §15 — the coordinate-space audit (one record per geometry build). It makes
     // the conversion count, the input/output spaces and any double / mixed
     // conversion PROVABLE at runtime instead of inferred.
     const scrollCenterYFromUnion = this.blockGapScrollTargetRect
       ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2
       : null
-    emitRuntimeAudit(RENDERED_BLANK_ROW_GEOMETRY_AUDIT_EVENT, {
+    if (!quietAudit) emitRuntimeAudit(RENDERED_BLANK_ROW_GEOMETRY_AUDIT_EVENT, {
       documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
       diagnosticId: diagId,
       targetKey: gapTargetIdentity,
@@ -15977,15 +16016,15 @@ export class DocumentUtilityOverlayHost {
     }
     const root = resolveBusinessContentRoot()
     if (!root) return { ...empty, gapRect }
-    const nodes = Array.from(root.querySelectorAll<HTMLElement>(
-      'p,h1,h2,h3,h4,h5,h6,figure,table,pre,blockquote,li,img,[class*="caption"],[class*="Caption"]',
-    ))
     const boundaries = boundaryElements.filter((x): x is HTMLElement => x != null)
+    // PERF-A — 只测边界之间的邻域（含后代），不再每键扫描整篇文档。
+    const candidates = this.collectGapOccupancyCandidates(root, boundaries)
+    this.lastOccupancyCandidateCount = candidates.length
     let visibleContentCount = 0
     let intersectedCount = 0
     let semanticIntersectedCount = 0
     const intersections: Array<{ tag: string; cls: string; area: number; semantic: boolean }> = []
-    for (const n of nodes) {
+    for (const n of candidates) {
       const vp = this.measureLocateRect(n)
       if (!vp || !(vp.width > 0) || !(vp.height > 0)) continue
       const loc = viewportRectToDocumentLocalRect({ viewportRect: vp, contentHostRect: hostRect })
@@ -17348,7 +17387,7 @@ export class DocumentUtilityOverlayHost {
     }
     const layer = this.ensureLocateDocumentLayer()
     if (!layer) return
-    const calibration = calibratePaintLayerFromLayer(layer, this.currentDocumentLayoutEpoch)
+    const calibration = this.calibratePaintLayerCached(layer, this.currentDocumentLayoutEpoch)
     this.lastPaintLayerCalibration = calibration
     const sourceRowRects = input.result.rows.map(r => r.rect)
     const dryNodes: HTMLElement[] = []
@@ -17648,10 +17687,34 @@ export class DocumentUtilityOverlayHost {
    */
   private patchActiveGapVisualFromDom(): boolean {
     if (this.disposed) return false
-    const id = this.diagnosticInteractionState.diagnosticId ?? this.lastBlockGapDiagnosticId
-    if (id == null) return false
+    this.blankFastMissReason = null
+    // ── V2 §4.1 — 快速绘制只服从「当前真实 ACTIVE owner」：
+    // 历史 group / Drawer 选中 / lastBlockGapDiagnosticId 都不能单独授权。
+    // 载体已退役、文档身份不符或 owner 不是同一修订时一律拒绝。
+    const state = this.diagnosticInteractionState
+    if (state.phase !== 'ACTIVE' || state.diagnosticId == null) {
+      this.blankFastMissReason = 'NO_ACTIVE_OWNER'
+      return false
+    }
+    const id = state.diagnosticId
+    if (this.lastBlockGapDiagnosticId !== id) {
+      this.blankFastMissReason = 'CARRIER_OWNER_MISMATCH'
+      return false
+    }
+    if (this.blockGapVisualEl == null || !this.blockGapVisualEl.isConnected) {
+      this.blankFastMissReason = 'CARRIER_RETIRED'
+      return false
+    }
+    const docKey = this.opts.ctx.authority.getDocumentKey()
+    if (docKey == null || this.snapshot == null || this.snapshot.documentKey !== docKey) {
+      this.blankFastMissReason = 'DOCUMENT_MISMATCH'
+      return false
+    }
     const live = this.liveDiagnosticFor(id) ?? this.diagnosticById(id)
-    if (live == null || live.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return false
+    if (live == null || live.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) {
+      this.blankFastMissReason = 'DIAGNOSTIC_NOT_GAP'
+      return false
+    }
     const meta = (live.metadata ?? {}) as Record<string, unknown>
     const prevBinding = this.bindGapBoundary({
       canonicalKind: typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null,
@@ -17669,17 +17732,25 @@ export class DocumentUtilityOverlayHost {
     })
     const prevEl = prevBinding.element
     const nextEl = nextBinding.element
-    if (prevEl == null || nextEl == null || !prevEl.isConnected || !nextEl.isConnected) return false
+    if (prevEl == null || nextEl == null || !prevEl.isConnected || !nextEl.isConnected) {
+      this.blankFastMissReason = 'BOUNDARY_UNBOUND'
+      return false
+    }
     // SPLIT / MERGE 必须由正式诊断重算区间身份；局部通道只处理边界稳定的增删。
-    if (!this.activeGapBoundariesAdjacent(prevEl, nextEl)) return false
+    const adjacency = this.activeGapBoundariesAdjacent(prevEl, nextEl)
+    if (adjacency !== 'ADJACENT') {
+      this.blankFastMissReason = adjacency
+      return false
+    }
     const carrierBefore = this.blockGapVisualEl
     const fragmentBefore = this.blockGapFragmentEls.length
-    this.commitBlockGapVisual(id, live.severity, live, nextEl)
+    this.commitBlockGapVisual(id, live.severity, live, nextEl, { quiet: true })
     const painted = this.lastBlockGapDiagnosticId === id
       && this.blockGapVisualEl != null
       && this.blockGapVisualEl.isConnected
     if (!painted) {
       // 结构已不满足（例如可见空行降到合规）：由正式诊断负责撤销视觉。
+      this.blankFastMissReason = 'PAINT_REFUSED'
       return false
     }
     this.lastFastGapPatch = {
@@ -17691,18 +17762,25 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * REALTIME §4 安全前置 — 两个边界之间只能是空行段落 / 插件自身覆盖层。
-   * 出现任何非空业务块都说明区间已被正文拆分，必须走 SPLIT 正式路径。
+   * REALTIME §4 安全前置 — 两个边界之间只能是**符合 R9 渲染空行语义**的空段落 /
+   * 插件自身覆盖层。出现任何非空业务块都说明区间已被正文拆分（SPLIT）。
+   *
+   * 使用 `classifyRenderedRowCandidate`（与正式空白测量同一权威），而不是
+   * `textContent.trim()===''`：`<br>` 占位、嵌套、受保护块内部、隐藏节点都按
+   * 正式分类处理。扫描有节点上限，超限明确降级。
    */
-  private activeGapBoundariesAdjacent(prevEl: HTMLElement, nextEl: HTMLElement): boolean {
+  private activeGapBoundariesAdjacent(
+    prevEl: HTMLElement,
+    nextEl: HTMLElement,
+  ): 'ADJACENT' | 'NEIGHBOR_NOT_BLANK' | 'NEIGHBOR_SCAN_LIMIT' {
     const root = resolveBusinessContentRoot()
-    if (root == null || !root.contains(prevEl) || !root.contains(nextEl)) return false
-    if (prevEl === nextEl) return false
+    if (root == null || !root.contains(prevEl) || !root.contains(nextEl)) return 'NEIGHBOR_NOT_BLANK'
+    if (prevEl === nextEl) return 'NEIGHBOR_NOT_BLANK'
     let node: Element | null = prevEl.nextElementSibling
     let steps = 0
-    while (node != null && steps < 400) {
-      steps++
-      if (node === nextEl) return true
+    while (node != null) {
+      if (++steps > 200) return 'NEIGHBOR_SCAN_LIMIT'
+      if (node === nextEl) return 'ADJACENT'
       if (node instanceof HTMLElement) {
         if (node.matches(`[data-inkchapter-ui-root], [data-block-gap-visual], .${LOCATE_DOCUMENT_LAYER_CLASS}`)) {
           node = node.nextElementSibling
@@ -17712,17 +17790,98 @@ export class DocumentUtilityOverlayHost {
           node = node.nextElementSibling
           continue
         }
+        // §9 — 插件自有的图题（`.inkchapter-caption`）等覆盖层不属于「正文拆分」。
+        // Case B 夹具真实 DOM：`图题 → 2 个空段落 → 标题`，图题位于两个边界之间。
+        // 旧实现只按属性选择器跳过覆盖层，图题没有这些属性 → 16 次真实编辑中
+        // 13 次被判 `NEIGHBOR_NOT_BLANK` 而回退正式诊断（本轮实测证据）。这里复用
+        // R9 的 `pluginOwned` 分类，绝不把插件自己的图题误判为用户正文。
+        if (this.isPluginOwnedGapNeighborForFastPatch(node)) {
+          node = node.nextElementSibling
+          continue
+        }
       }
-      return false
+      return 'NEIGHBOR_NOT_BLANK'
     }
-    return false
+    return 'NEIGHBOR_NOT_BLANK'
   }
 
-  /** REALTIME §4 — 行级空段落判定（无可见文本、无内嵌业务块）。 */
+  /** REALTIME §4 — 与 R9 渲染空行分类完全一致的候选判定。 */
   private isBlankGapRowForFastPatch(el: HTMLElement): boolean {
-    if (el.querySelector('img, pre, table, .md-math-block, ul, ol, blockquote') != null) return false
-    if (normalizeSourceAnchorText(el.textContent) !== '') return false
-    return el.tagName === 'P' || el.tagName === 'LI' || el.tagName === 'DIV'
+    const cls = classifyRenderedRowCandidate(el, node => this.measureLocateRect(node))
+    return cls.candidateBlankRow
+  }
+
+  /** §9 — 插件自有的邻接行（图题 / marker / 定位层后代）不是用户正文。 */
+  private isPluginOwnedGapNeighborForFastPatch(el: HTMLElement): boolean {
+    const cls = classifyRenderedRowCandidate(el, node => this.measureLocateRect(node))
+    return cls.pluginOwned
+  }
+
+  /**
+   * PERF-B — 绘制层校准缓存。
+   *
+   * 校准每次会创建 3 个隐藏探针并强制一次布局；打字期间绘制层的
+   * `(layoutEpoch, layerRect, DPR)` 通常不变，因此可直接复用上一次结果。
+   * 滚动 / 改宽 / 缩放会改变 layerRect 或 epoch，键失效后自动重探。
+   */
+  private calibratePaintLayerCached(
+    layer: HTMLElement | null,
+    layoutEpoch: number,
+  ): ReturnType<typeof calibratePaintLayerFromLayer> {
+    const rect = layer != null ? this.measureLocateRect(layer) : null
+    const dpr = typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio)
+      ? window.devicePixelRatio
+      : 1
+    const rectKey = rect == null
+      ? 'none'
+      : `${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)},${Math.round(rect.height)}`
+    const key = `${layoutEpoch}|${rectKey}|${dpr}`
+    if (this.paintLayerCalibrationCache != null && this.paintLayerCalibrationCache.key === key) {
+      this.lastCalibrationReused = true
+      return this.paintLayerCalibrationCache.calibration
+    }
+    const calibration = calibratePaintLayerFromLayer(layer, layoutEpoch)
+    this.paintLayerCalibrationCache = { key, calibration }
+    this.lastCalibrationReused = false
+    return calibration
+  }
+
+  /**
+   * PERF-A — 占据扫描的候选集：只覆盖两个边界之间的邻域（含后代），
+   * 而不是整篇 `#write`。区间之外的块不可能与该 band 相交；边界自身由
+   * `isSubstantiveGapContent` 排除。邻域超限或边界缺失时才回退全量扫描。
+   */
+  private collectGapOccupancyCandidates(
+    root: HTMLElement,
+    boundaries: HTMLElement[],
+  ): HTMLElement[] {
+    const selector = 'p,h1,h2,h3,h4,h5,h6,figure,table,pre,blockquote,li,img,[class*="caption"],[class*="Caption"]'
+    const MAX = 400
+    const push = (el: Element, out: HTMLElement[]): void => {
+      if (!(el instanceof HTMLElement)) return
+      if (el.matches(selector)) out.push(el)
+      for (const child of Array.from(el.querySelectorAll<HTMLElement>(selector))) out.push(child)
+    }
+    if (boundaries.length >= 2) {
+      let a = boundaries[0]
+      let b = boundaries[1]
+      if ((a.compareDocumentPosition(b) & 4) === 0) {
+        const swap = a
+        a = b
+        b = swap
+      }
+      const out: HTMLElement[] = []
+      let node: Element | null = a
+      let reachedNext = false
+      while (node != null) {
+        push(node, out)
+        if (node === b) { reachedNext = true; break }
+        if (out.length > MAX) break
+        node = node.nextElementSibling
+      }
+      if (reachedNext && out.length > 0 && out.length <= MAX) return out
+    }
+    return Array.from(root.querySelectorAll<HTMLElement>(selector))
   }
 
   /**
@@ -28621,7 +28780,13 @@ export class DocumentUtilityOverlayHost {
     const panelOverlayOcclusionExpected = eofCommitted && this.lastDocEndVisual?.expectedPanelOcclusion === true
     const panelGeometryClipCount = eofCommitted
       ? (this.lastDocEndVisual ? Math.max(0, this.countersDocEndV513R2.panelGeometryClip) : 0)
-      : (layers?.drawerClipsTargetGeometry ? 1 : 0)
+      // A committed block-gap band owns its own document-column geometry (painted
+      // by `commitBlockGapVisual`, never clamped to the panel edge). A Drawer that
+      // paints OVER it is an EXPECTED overlay occlusion, not a clip.
+      : resolvePanelGeometryClipCount({
+          blockGapBandCommitted: facts?.targetKind === BLOCK_GAP_VISUAL_TARGET,
+          drawerClipsTargetGeometry: layers?.drawerClipsTargetGeometry === true,
+        })
     const inlineFacts = this.locateFrame?.getInlineFragmentFacts() ?? null
     const kind = this.locateFrame?.getStructure().kind ?? null
     const isInline = kind === 'inline'
@@ -29638,6 +29803,30 @@ export class DocumentUtilityOverlayHost {
             this.renderHeadingActiveEmphasis(diag.id, diag, headingAnchor)
           }
           facts.locateCommittedThisTransaction = true
+          // ── V5.12-R3 §7/§16 — THIS degraded COMMIT must ALSO end the transient
+          // Drawer presentation and record the REAL terminal facts. The normal path
+          // does this in `commitLocateVisual()` + PHASE_A; this branch used to skip
+          // it, so the terminal audit read the PLACEHOLDER facts
+          // (`drawerVisibleAtFinalCommit=false`) and reported
+          // DRAWER_REQUESTED_OPEN_BUT_HIDDEN_AFTER_COMMIT even though the Drawer
+          // was restored (real Typora: 800/802px window, two consecutive gate
+          // retries → ONE_CLICK_COMMITTED_AFTER_VISUAL_RECOVERY).
+          if (this.drawerCollapseActive || this.drawerCompactActive) {
+            facts.drawerRestoreRequired = true
+            facts.drawerRestoreStarted = true
+            this.releaseDrawerRecoveryLease('DRAWER_RESTORED_AFTER_VISUAL_RECOVERY')
+            // §10 — the restore changes the editor available width: re-derive the
+            // document-space carrier for the new layout epoch. Geometry refresh
+            // only — the locate decision is already final and never re-judged.
+            this.bumpDocumentLayoutEpoch('PLUGIN_DOM_MUTATION')
+            this.reconcileLocateDocumentSpace('POST_RESTORE_SETTLE')
+            facts.drawerRestoreSettled = true
+            facts.remeasuredAfterDrawerRestore = true
+            facts.repaintedAfterDrawerRestore = true
+            facts.presentationAfterRestore = this.getDrawerPresentationMode()
+          }
+          facts.presentationAtFinalCommit = this.getDrawerPresentationMode()
+          facts.drawerVisibleAtFinalCommit = this.measureDrawerRenderedVisible()
           this.emitLocateAudit(diagnosticId, diag, 'RESOLVED', 'PRESENTED_WITH_RECOVERABLE_COLLISION', targetIndex, result, true)
           tx.state = 'COMMITTED'
           this.finishLocateTransaction(tx, true, navigatorCollision

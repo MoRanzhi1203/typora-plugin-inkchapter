@@ -39,6 +39,7 @@ import {
   formatDrawerPersistenceGateReport,
   resolveDrawerRestoreRequired,
   resolveDrawerViewportClass,
+  resolvePanelGeometryClipCount,
 } from './document-diagnostic-drawer-persistence-v512-r3'
 import type { DrawerPresentationFidelityInput } from './document-diagnostic-drawer-persistence-v512-r3'
 // V5.12-R9 §5/§7 — the unique commit gate (overlay vs geometry clip).
@@ -243,6 +244,74 @@ function expectAllR3GatesZero(h: DocumentUtilityOverlayHost): void {
   const counters = h.getDrawerPersistenceCounters()
   for (const key of Object.keys(counters)) expect(counters[key], key).toBe(0)
 }
+
+/** ARM the FIRST N occlusion failures of one locate transaction (recovery path). */
+function armOcclusionFirstN(host: DocumentUtilityOverlayHost, n: number): { reset: () => void } {
+  const self = host as unknown as Record<string, unknown>
+  const real = (self.evaluateLocateCommitGate as GateFn).bind(host)
+  let calls = 0
+  vi.spyOn(self as { evaluateLocateCommitGate: GateFn }, 'evaluateLocateCommitGate').mockImplementation((...args: unknown[]) => {
+    calls++
+    if (calls <= n) {
+      return { canCommit: false, reason: 'TARGET_NOT_FULLY_UNOBSCURED', failedChecks: ['TARGET_NOT_FULLY_UNOBSCURED'] }
+    }
+    return real(...args)
+  })
+  return { reset: () => { calls = 0 } }
+}
+
+// ── R3-8 ───────────────────────────────────────────────────────────────────
+describe('R3-8 — the DEGRADED visual-recovery COMMIT still ends the transient Drawer', () => {
+  it('R3-8: two consecutive occlusion gate failures → COMMITTED_AFTER_VISUAL_RECOVERY with a VISIBLE Drawer', async () => {
+    const mounted = makeHost()
+    host = mounted.h
+    mounted.write.innerHTML = '<table><tr><td>x</td></tr></table>'
+    const table = mounted.write.querySelector('table') as HTMLElement
+    stubRect(table, () => ({ ...ONSCREEN }))
+    injectSnapshot(host, tableDiag())
+    renderWideDrawer(mounted)
+    openDrawerViaProblemsControl()
+    expect(host.getDrawerRequestedOpen()).toBe(true)
+
+    const gate = armOcclusionFirstN(host, 2)
+    gate.reset()
+    await clickLocate(host, 'T1')
+
+    const audit = host.getLastDrawerPersistenceAudit()
+    expect(audit, 'persistence audit').not.toBeNull()
+    expect(audit!.terminalState).toBe('COMMITTED')
+    // The transient collapse really RAN and really ENDED before the audit.
+    expect(audit!.restoreRequired).toBe(true)
+    expect(audit!.restoreStarted).toBe(true)
+    expect(audit!.restoreSettled).toBe(true)
+    expect(audit!.presentationAfterRestore).toBe('open')
+    expect(audit!.presentationAtFinalCommit).toBe('open')
+    // The terminal audit must read the REAL Drawer, never the placeholder facts.
+    expect(audit!.drawerRenderedVisibleAtFinalCommit).toBe(true)
+    expect(audit!.drawerLocateRecoveryLeaseActive).toBe(false)
+    expect(audit!.decision).toBe('PASS')
+
+    const drawer = document.querySelector<HTMLElement>('.inkchapter-doc-drawer')!
+    expect(drawer.hasAttribute('data-locate-collapsed')).toBe(false)
+    expect(drawer.style.display).toBe('flex')
+    expect(host.getDrawerPresentationMode()).toBe('open')
+    expectAllR3GatesZero(host)
+  })
+})
+
+// ── §5/§7 — the panel clip authority (pure) ────────────────────────────────
+
+describe('R3-9 — a committed block-gap band is never “clipped” by the Drawer', () => {
+  it('block-gap band committed → overlay occlusion is NOT a geometry clip', () => {
+    expect(resolvePanelGeometryClipCount({ blockGapBandCommitted: true, drawerClipsTargetGeometry: true })).toBe(0)
+    expect(resolvePanelGeometryClipCount({ blockGapBandCommitted: true, drawerClipsTargetGeometry: false })).toBe(0)
+  })
+
+  it('a FRAME target keeps the strict clip authority', () => {
+    expect(resolvePanelGeometryClipCount({ blockGapBandCommitted: false, drawerClipsTargetGeometry: true })).toBe(1)
+    expect(resolvePanelGeometryClipCount({ blockGapBandCommitted: false, drawerClipsTargetGeometry: false })).toBe(0)
+  })
+})
 
 // ── R3-1 / R3-2 ────────────────────────────────────────────────────────────
 describe('R3-1/2 — WIDE viewport + requested-open Drawer survives the locate', () => {
