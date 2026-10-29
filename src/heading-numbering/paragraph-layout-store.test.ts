@@ -344,3 +344,37 @@ describe('hashText', () => {
     expect(hashText(' hello')).not.toBe(hashText('hello'))
   })
 })
+
+// ── 7. Duplicate override records (Paragraph Indent V2) ────────────────
+
+describe('Sidecar duplicate override records', () => {
+  const anchor: ParagraphAnchor = { lastKnownOrdinal: 1, beforeHash: 'hdz185w' }
+
+  it('loadParagraphLayout collapses records with an identical anchor', () => {
+    saveParagraphLayout('dup.md', '/tmp/dup.md', [
+      { id: 'indent-a', mode: 'force-indent', anchor, temporary: true },
+      { id: 'indent-b', mode: 'force-indent', anchor, temporary: true },
+    ])
+    const loaded = loadParagraphLayout('dup.md')
+    expect(loaded?.paragraphOverrides.length).toBe(1)
+  })
+
+  it('prefers a stable record over a temporary one with the same anchor', () => {
+    saveParagraphLayout('dup2.md', '/tmp/dup2.md', [
+      { id: 'stable', mode: 'force-indent', anchor },
+      { id: 'temp', mode: 'force-indent', anchor, temporary: true },
+    ])
+    const loaded = loadParagraphLayout('dup2.md')
+    expect(loaded?.paragraphOverrides.length).toBe(1)
+    expect(loaded?.paragraphOverrides[0].id).toBe('stable')
+  })
+
+  it('keeps records whose anchors differ', () => {
+    saveParagraphLayout('keep.md', '/tmp/keep.md', [
+      { id: 'one', mode: 'force-indent', anchor },
+      { id: 'two', mode: 'force-indent', anchor: { lastKnownOrdinal: 2, beforeHash: 'other' } },
+    ])
+    const loaded = loadParagraphLayout('keep.md')
+    expect(loaded?.paragraphOverrides.length).toBe(2)
+  })
+})

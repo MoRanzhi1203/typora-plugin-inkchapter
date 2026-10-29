@@ -47,6 +47,50 @@ export interface ParagraphLayoutDocument {
 
 const CURRENT_SCHEMA_VERSION = 1
 
+/**
+ * Paragraph Indent V2 — ONE semantic owner per paragraph.
+ *
+ * A record's anchor is its persisted business identity. Two records with an
+ * identical anchor describe the SAME paragraph, so only one may survive a load
+ * (otherwise a restarted session keeps appending a new `temporary` record for a
+ * paragraph whose provisional record could never be re-bound, growing the
+ * sidecar forever and violating `DUPLICATE_OVERRIDE_RECORDS = 0`).
+ *
+ * Dedupe happens at LOAD time only, where no live canonical binding exists yet,
+ * so it can never detach a record that the running editor still owns. A stable
+ * record wins over a `temporary` one; otherwise the newest (last) wins.
+ *
+ * Pure: no I/O, no mutation of the input array.
+ */
+export function dedupeParagraphOverrides(
+  records: ParagraphIndentOverrideRecord[],
+): ParagraphIndentOverrideRecord[] {
+  const byAnchor = new Map<string, ParagraphIndentOverrideRecord>()
+  for (const record of records) {
+    const anchor = record.anchor
+    const key = [
+      anchor.lastKnownOrdinal,
+      anchor.textHash ?? '',
+      anchor.occurrence ?? '',
+      anchor.beforeHash ?? '',
+      anchor.afterHash ?? '',
+    ].join('|')
+    const previous = byAnchor.get(key)
+    if (!previous) {
+      byAnchor.set(key, record)
+      continue
+    }
+    if (previous.temporary === true && record.temporary !== true) {
+      byAnchor.set(key, record)
+    } else if (previous.temporary !== true && record.temporary === true) {
+      continue
+    } else {
+      byAnchor.set(key, record) // same kind → newest wins
+    }
+  }
+  return Array.from(byAnchor.values())
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /** Simple text hash for paragraph identity. */
@@ -173,6 +217,17 @@ export function loadParagraphLayout(documentKey: string): ParagraphLayoutDocumen
       source: 'physical',
       backend: 'filesystem',
     })
+    const deduped = dedupeParagraphOverrides(data.paragraphOverrides)
+    if (deduped.length !== data.paragraphOverrides.length) {
+      emitRuntimeAudit('SIDECAR-DUPLICATE-OVERRIDE-COLLAPSED', {
+        documentKey,
+        absolutePath: filePath,
+        recordCountBefore: data.paragraphOverrides.length,
+        recordCountAfter: deduped.length,
+        droppedCount: data.paragraphOverrides.length - deduped.length,
+      })
+      data.paragraphOverrides = deduped
+    }
     return data
   } catch (e) {
     emitRuntimeAudit('SIDECAR-ACTUAL-LOAD', {
