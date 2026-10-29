@@ -3205,6 +3205,23 @@ export class DocumentUtilityOverlayHost {
   private blankFastRaf: number | null = null
   private blankFastQueuedAtMs: number | null = null
   private blankFastCounters = { runs: 0, fullScans: 0, commits: 0, lastTotalMs: 0, lastEditToCommitMs: 0 }
+  /**
+   * REALTIME — 结构 mutation 批次内的「视觉先行」阶段（T1→T5）。
+   * 先用当前 DOM 重测活动空行区间并原位 patch，再在同一帧之后执行诊断重算。
+   */
+  private blankFastVisualStage: {
+    observedAtMs: number
+    classifiedAtMs: number
+    patchStartMs: number
+    patchEndMs: number
+    patched: boolean
+  } | null = null
+  /** REALTIME — 最近一次快速 patch 的载体/片段复用事实（审计用）。 */
+  private lastFastGapPatch: {
+    carrierReused: boolean
+    fragmentBefore: number
+    fragmentAfter: number
+  } | null = null
   /** §7 — the targeted body-class observer that re-evaluates on a mode switch. */
   private internalBlankModeObserver: MutationObserver | null = null
   /** §25 — the monotonic reason-chip rect trace sequence (runtime forensics). */
@@ -13854,6 +13871,10 @@ export class DocumentUtilityOverlayHost {
   /** 收集脏区间并在下一帧合并执行一次空行专用重算。 */
   private queueBlankFastRecompute(records: readonly MutationRecord[]): void {
     if (this.disposed) return
+    const nowMs = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+    if (this.blankFastQueuedAtMs == null) this.blankFastQueuedAtMs = nowMs()
+    // T1 — 本批次被观察到的时刻（同一批次只记第一次）。
+    const observedAt = this.blankFastQueuedAtMs
     const scan = scanBlankDirtyRanges(records, n => this.blankFastLineOfNode(n))
     if (scan.requiresFullScan) {
       this.blankFastRequiresFullScan = true
@@ -13862,17 +13883,25 @@ export class DocumentUtilityOverlayHost {
     if (scan.ranges.length > 0) {
       this.blankFastDirtyRanges = mergeDirtyLineRanges([...this.blankFastDirtyRanges, ...scan.ranges])
     }
-    if (this.blankFastQueuedAtMs == null) {
-      this.blankFastQueuedAtMs = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    // T2 — 受影响区间失效登记完成。
+    const classifiedAt = nowMs()
+    // ── REALTIME §5 — 视觉先行：先按当前 DOM 原位 patch 活动空行区间，
+    // 再执行正式诊断重算（诊断重算仍然是唯一的事实发布者）。
+    const runVisualThenDiagnostics = (): void => {
+      const patchStart = nowMs()
+      const patched = this.patchActiveGapVisualFromDom()
+      const patchEnd = nowMs()
+      this.blankFastVisualStage = { observedAtMs: observedAt, classifiedAtMs: classifiedAt, patchStartMs: patchStart, patchEndMs: patchEnd, patched }
+      this.runBlankFastRecompute()
     }
     if (this.blankFastRaf != null) return
     if (typeof requestAnimationFrame !== 'function') {
-      this.runBlankFastRecompute()
+      runVisualThenDiagnostics()
       return
     }
     this.blankFastRaf = requestAnimationFrame(() => {
       this.blankFastRaf = null
-      this.runBlankFastRecompute()
+      runVisualThenDiagnostics()
     })
   }
 
@@ -13929,6 +13958,11 @@ export class DocumentUtilityOverlayHost {
         diagnosticCount: null,
         decision: 'FULL_SCAN_DELEGATED',
       })
+      this.emitBlankRealtimeProfile(base.documentKey, {
+        fallbackReason: 'STRUCTURE_CONTAINER',
+        diagnosticCount: null,
+        committed: false,
+      })
       return
     }
     // 行号不可映射 / 脏区间过宽：空行规则只依赖全文文本扫描（不依赖行号），
@@ -13968,6 +14002,60 @@ export class DocumentUtilityOverlayHost {
       computeToCommitMs: Math.round(totalMs * 100) / 100,
       diagnosticCount: diags.length,
       decision: degradedReason == null ? 'COMMITTED' : 'COMMITTED_DEGRADED',
+    })
+    this.emitBlankRealtimeProfile(base.documentKey, {
+      fallbackReason: degradedReason,
+      diagnosticCount: diags.length,
+      committed: true,
+    })
+  }
+
+  /**
+   * REALTIME §2 — ONE compact T1–T6 profile per mutation batch.
+   *
+   * 只陈述可测的阶段事实：视觉 patch 是否早于正式诊断、各自耗时、
+   * 载体/片段复用与重复计数。**不包含任何“屏幕已绘制”声明**（T8 需独立视觉证据）。
+   */
+  private emitBlankRealtimeProfile(
+    documentKey: string,
+    options: { fallbackReason: string | null; diagnosticCount: number | null; committed: boolean },
+  ): void {
+    const stage = this.blankFastVisualStage
+    this.blankFastVisualStage = null
+    const patch = this.lastFastGapPatch
+    this.lastFastGapPatch = null
+    const nowMs = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+    const round = (v: number): number => Math.round(v * 100) / 100
+    const layer = this.locateDocLayer
+    let carrierCountInLayer = 0
+    let staleFragmentCount = 0
+    if (layer != null) {
+      carrierCountInLayer = layer.querySelectorAll(`[data-block-gap-visual="${BLOCK_GAP_VISUAL_TARGET}"]`).length
+      const frags = Array.from(layer.querySelectorAll<HTMLElement>(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`))
+      staleFragmentCount = frags.filter(f =>
+        f.closest(`[data-block-gap-visual]`) == null && f.closest('[data-ink-eof-marker="true"]') == null,
+      ).length
+    }
+    emitRuntimeAudit('BLANK-GAP-REALTIME-PROFILE', {
+      documentKey,
+      patched: stage?.patched ?? false,
+      t1ObserveToT2ClassifyMs: stage != null ? round(stage.classifiedAtMs - stage.observedAtMs) : null,
+      t3ToT5VisualPatchMs: stage != null ? round(stage.patchEndMs - stage.patchStartMs) : null,
+      t0ToT5VisualCommitMs: stage != null && stage.patched ? round(stage.patchEndMs - stage.observedAtMs) : null,
+      t0ToT6DiagnosticsCommitMs: stage != null ? round(nowMs() - stage.observedAtMs) : null,
+      carrierReused: patch?.carrierReused ?? null,
+      fragmentBefore: patch?.fragmentBefore ?? null,
+      fragmentAfter: patch?.fragmentAfter ?? null,
+      carrierCountInLayer,
+      duplicateCarrierCount: Math.max(0, carrierCountInLayer - 1),
+      staleFragmentCount,
+      structuralSerializeCount: 0,
+      canonicalRecomputeCount: 0,
+      rafCommitCount: 1,
+      fallbackReason: options.fallbackReason,
+      diagnosticCount: options.diagnosticCount,
+      decision: options.committed ? 'COMMITTED' : 'DELEGATED',
+      paintMeasured: false,
     })
   }
 
@@ -17542,6 +17630,99 @@ export class DocumentUtilityOverlayHost {
     const root = resolveBusinessContentRoot()
     if (root == null || !root.contains(el)) return null
     return el
+  }
+
+  /**
+   * REALTIME §4 — GAP_EXPAND / GAP_SHRINK 的局部视觉快速通道。
+   *
+   * 结构 Mutation 已经发生：先用 **当前 DOM** 重新绑定活动区间的两个边界、
+   * 重新测量可见空行并原位 patch 现有 carrier，不等待正式诊断重算。
+   *
+   * 安全前置（任一不满足即返回 false，交给正式诊断）：
+   *   - 存在当前视觉 owner（ACTIVE 交互或最近已绘制的载体）；
+   *   - 诊断仍是 `EXCESSIVE_INTERNAL_BLANK_LINES` 且能重新绑定两个边界；
+   *   - 两个边界之间**只允许空行段落**（出现正文 = SPLIT，不能当 EXPAND 画）；
+   *   - 重测后仍达到违规阈值（否则由正式诊断撤销，不在这里私自清除）。
+   *
+   * 不创建第二套覆盖层：复用 `commitBlockGapVisual` 的原位 patch。
+   */
+  private patchActiveGapVisualFromDom(): boolean {
+    if (this.disposed) return false
+    const id = this.diagnosticInteractionState.diagnosticId ?? this.lastBlockGapDiagnosticId
+    if (id == null) return false
+    const live = this.liveDiagnosticFor(id) ?? this.diagnosticById(id)
+    if (live == null || live.code !== EXCESSIVE_INTERNAL_BLANK_LINES_CODE) return false
+    const meta = (live.metadata ?? {}) as Record<string, unknown>
+    const prevBinding = this.bindGapBoundary({
+      canonicalKind: typeof meta.previousBlockCanonicalKind === 'string' ? meta.previousBlockCanonicalKind : null,
+      canonicalOrdinal: typeof meta.previousBlockCanonicalOrdinal === 'number' ? meta.previousBlockCanonicalOrdinal : null,
+      startLine: typeof meta.previousBlockStartLine === 'number' ? meta.previousBlockStartLine : null,
+      anchorText: typeof meta.previousBlockAnchorText === 'string' ? meta.previousBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.previousBlockIdentity),
+    })
+    const nextBinding = this.bindGapBoundary({
+      canonicalKind: typeof meta.nextBlockCanonicalKind === 'string' ? meta.nextBlockCanonicalKind : null,
+      canonicalOrdinal: typeof meta.nextBlockCanonicalOrdinal === 'number' ? meta.nextBlockCanonicalOrdinal : null,
+      startLine: typeof meta.nextBlockStartLine === 'number' ? meta.nextBlockStartLine : null,
+      anchorText: typeof meta.nextBlockAnchorText === 'string' ? meta.nextBlockAnchorText : '',
+      blockOrdinal: this.sourceOrdinalFromBlockIdentity(meta.nextBlockIdentity),
+    })
+    const prevEl = prevBinding.element
+    const nextEl = nextBinding.element
+    if (prevEl == null || nextEl == null || !prevEl.isConnected || !nextEl.isConnected) return false
+    // SPLIT / MERGE 必须由正式诊断重算区间身份；局部通道只处理边界稳定的增删。
+    if (!this.activeGapBoundariesAdjacent(prevEl, nextEl)) return false
+    const carrierBefore = this.blockGapVisualEl
+    const fragmentBefore = this.blockGapFragmentEls.length
+    this.commitBlockGapVisual(id, live.severity, live, nextEl)
+    const painted = this.lastBlockGapDiagnosticId === id
+      && this.blockGapVisualEl != null
+      && this.blockGapVisualEl.isConnected
+    if (!painted) {
+      // 结构已不满足（例如可见空行降到合规）：由正式诊断负责撤销视觉。
+      return false
+    }
+    this.lastFastGapPatch = {
+      carrierReused: carrierBefore != null && carrierBefore === this.blockGapVisualEl,
+      fragmentBefore,
+      fragmentAfter: this.blockGapFragmentEls.length,
+    }
+    return true
+  }
+
+  /**
+   * REALTIME §4 安全前置 — 两个边界之间只能是空行段落 / 插件自身覆盖层。
+   * 出现任何非空业务块都说明区间已被正文拆分，必须走 SPLIT 正式路径。
+   */
+  private activeGapBoundariesAdjacent(prevEl: HTMLElement, nextEl: HTMLElement): boolean {
+    const root = resolveBusinessContentRoot()
+    if (root == null || !root.contains(prevEl) || !root.contains(nextEl)) return false
+    if (prevEl === nextEl) return false
+    let node: Element | null = prevEl.nextElementSibling
+    let steps = 0
+    while (node != null && steps < 400) {
+      steps++
+      if (node === nextEl) return true
+      if (node instanceof HTMLElement) {
+        if (node.matches(`[data-inkchapter-ui-root], [data-block-gap-visual], .${LOCATE_DOCUMENT_LAYER_CLASS}`)) {
+          node = node.nextElementSibling
+          continue
+        }
+        if (this.isBlankGapRowForFastPatch(node)) {
+          node = node.nextElementSibling
+          continue
+        }
+      }
+      return false
+    }
+    return false
+  }
+
+  /** REALTIME §4 — 行级空段落判定（无可见文本、无内嵌业务块）。 */
+  private isBlankGapRowForFastPatch(el: HTMLElement): boolean {
+    if (el.querySelector('img, pre, table, .md-math-block, ul, ol, blockquote') != null) return false
+    if (normalizeSourceAnchorText(el.textContent) !== '') return false
+    return el.tagName === 'P' || el.tagName === 'LI' || el.tagName === 'DIV'
   }
 
   /**

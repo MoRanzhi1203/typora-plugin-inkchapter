@@ -267,6 +267,8 @@ interface Internals {
   snapshot: DocumentDiagnosticsSnapshot | null
   removeBlockGapVisual(): void
   getBlockGapCanonicalClosureCounters(): Record<string, number>
+  /** REALTIME — 结构 mutation 后的局部视觉快速 patch（本轮新增）。 */
+  patchActiveGapVisualFromDom(): boolean
 }
 
 interface World {
@@ -838,5 +840,118 @@ describe('BLANK-GAP-VISUAL-DIFF — 同一区间 carrier 幂等复用与去叠�
     expect(gapCarriers()).toBe(0)
     expect(paintedFragments()).toHaveLength(0)
     expect(document.querySelectorAll('.inkchapter-blank-run-count')).toHaveLength(0)
+  })
+})
+
+// ── REALTIME — 结构 Mutation 后的局部视觉快速 patch ─────────────────────────
+//
+// 失败先行：本节要求存在一个「不等待正式诊断重算、直接用当前 DOM 测量并原位
+// patch 活动 carrier」的入口。修复前宿主没有该方法（调用即 TypeError），
+// 且视觉只能在诊断快照提交后才更新。
+
+describe('REALTIME — GAP_EXPAND / GAP_SHRINK 局部视觉先于正式诊断', () => {
+  const carriers = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>(`[data-block-gap-visual="${BLOCK_GAP_VISUAL_TARGET}"]`))
+  const fragments = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`))
+  const patch = (world: World): boolean =>
+    (world.h as unknown as Internals).patchActiveGapVisualFromDom()
+  const activate = (world: World, diag: Record<string, unknown>): void => {
+    const internals = world.h as unknown as Internals
+    internals.commitBlockGapVisual(GAP_RULE_DIAG_ID, 'warning', diag, world.paragraph)
+  }
+  const blankRow = (top: number, bottom: number, line: string): HTMLElement => {
+    const row = document.createElement('p')
+    row.className = 'md-p md-end-block'
+    row.setAttribute('data-line', line)
+    stubRect(row, () => ({ left: 60, top, right: 700, bottom }))
+    return row
+  }
+
+  it('FAST-EXPAND 新增一个可见空行：复用同一 carrier，只补差额片段', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const carrier = carriers()[0]
+    expect(fragments()).toHaveLength(3)
+
+    const row = blankRow(519, 552, '25')
+    world.write.insertBefore(row, world.paragraph)
+    blankRows.push(row)
+    stubRect(world.paragraph, () => ({ left: 60, top: 560, right: 700, bottom: 584 }))
+
+    expect(patch(world)).toBe(true)
+    expect(carriers()).toHaveLength(1)
+    expect(carriers()[0]).toBe(carrier)
+    expect(fragments()).toHaveLength(4)
+    expect(document.querySelectorAll('.inkchapter-blank-run-count')).toHaveLength(1)
+  })
+
+  it('FAST-SHRINK 删除一个可见空行：原位收缩，片段立即退役', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const carrier = carriers()[0]
+
+    blankRows[2].remove()
+    blankRows.length = 2
+
+    expect(patch(world)).toBe(true)
+    expect(carriers()).toHaveLength(1)
+    expect(carriers()[0]).toBe(carrier)
+    expect(fragments()).toHaveLength(2)
+  })
+
+  it('FAST-SPLIT 中间插入正文：不误涂（返回 false，交给正式 SPLIT 路径）', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const carrier = carriers()[0]
+    const before = fragments().length
+
+    const text = document.createElement('p')
+    text.className = 'md-end-block md-p'
+    text.setAttribute('data-line', '21')
+    text.textContent = '中间正文 a'
+    stubRect(text, () => ({ left: 60, top: 420, right: 700, bottom: 452 }))
+    world.write.insertBefore(text, blankRows[0])
+
+    expect(patch(world)).toBe(false)
+    // 局部路径不越权：载体与片段保持不变，等待正式诊断决定拆分
+    expect(carriers()).toHaveLength(1)
+    expect(carriers()[0]).toBe(carrier)
+    expect(fragments()).toHaveLength(before)
+  })
+
+  it('FAST-GUARD 边界失联：不绘制、不删除现有载体', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const carrier = carriers()[0]
+
+    world.fences[2].remove()
+
+    expect(patch(world)).toBe(false)
+    expect(carriers()).toHaveLength(1)
+    expect(carriers()[0]).toBe(carrier)
+  })
+
+  it('FAST-IDEMPOTENT 连续两次 patch：节点身份与样式不变', () => {
+    const world = makeWorld()
+    const diag = gapDiag()
+    injectSnapshot(world, [diag])
+    activate(world, diag)
+    const carrier = carriers()[0]
+    const style = carrier.style.cssText
+
+    expect(patch(world)).toBe(true)
+    expect(patch(world)).toBe(true)
+    expect(carriers()[0]).toBe(carrier)
+    expect(carrier.style.cssText).toBe(style)
+    expect(fragments()).toHaveLength(3)
   })
 })
