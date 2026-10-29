@@ -2147,6 +2147,13 @@ export interface RehydrateResolvedCandidate {
 
   score: number
   candidateCountAtGroup: number
+
+  /**
+   * PF6: historical admission decision that authorised this candidate.
+   * Only PERSISTED_HISTORICAL candidates carry it; a candidate without an
+   * admission decision never came from the historical resolver.
+   */
+  admissionDecision?: string
 }
 
 /**
@@ -2178,6 +2185,12 @@ export interface ParagraphRehydratePlan {
   blockedGroups: RehydrateOwnershipGroup[]
   /** Phase 1 writer count — must be 0 per invariant */
   phase1WriterCount: number
+  /**
+   * PF6: number of accepted historical records whose stored anchor was
+   * re-identified during this plan (INITIAL_LOAD structural admission).
+   * Non-zero requires a sidecar write so the identity is not re-derived again.
+   */
+  historicalAnchorRepairedCount?: number
 }
 
 /**

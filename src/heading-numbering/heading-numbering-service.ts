@@ -203,7 +203,6 @@ import {
   createParagraphAnchor,
   resolveParagraphAnchor,
   updateParagraphAnchor,
-  evaluateHistoricalRehydrateIdentity,
   collectContentParagraphs,
   migrateLegacyIndentMarkers,
   injectProductionVaultRoot,
@@ -223,6 +222,15 @@ import {
   type LiveReplacementTicket,
   type ReplacementResolution,
 } from './paragraph-canonical-registry'
+// PF6: Historical empty-paragraph rebind closure — admission authority + sidecar
+// lifecycle + session-scoped Undo recovery ledger.
+import {
+  evaluateHistoricalRehydrateAdmission,
+  selectTemporaryHistoricalRecordsForRetirement,
+  SessionRetiredIndentLedger,
+  HISTORY_UNDO_CLAIM_WINDOW_MS,
+  type RehydratePhase,
+} from './paragraph-rehydrate-ownership'
 import {
   activateNormalEnterTrace,
   deactivateNormalEnterTrace,
@@ -681,6 +689,24 @@ export class HeadingNumberingService {
   private rehydratePlanCount = 0
   private rehydrateApplyCount = 0
   private rehydrateDomWriteCount = 0
+
+  // ── PF6: Historical Rebind Closure ─────────────────────────────────
+  /** True once the user has produced a real edit in this session (identity phase). */
+  private documentEditedSinceLoad = false
+  /** Set by Ctrl+Z / Ctrl+Shift+Z so the next rehydrate runs in UNDO_REDO phase. */
+  private historyIntentAt = 0
+  private historyIntentKind: 'undo' | 'redo' | null = null
+  /** Session-scoped ledger of records retired by an explicit paragraph deletion. */
+  private retiredIndentLedger = new SessionRetiredIndentLedger()
+  /** Post-rehydrate acceptance for the most recent Normal Enter transaction. */
+  private pendingNormalEnterConvergence: {
+    txnId: string
+    runtimeId: string
+    expectedSemantic: ParagraphIndentSemanticMode
+    attempts: number
+  } | null = null
+  private normalEnterRehydrateDivergenceCount = 0
+
   private postTextInputLifecycle = new PostTextInputObservationLifecycle()
   private imeCompositionSessionSeq = 0
   private imeCompositionActiveSessionId = ''
@@ -705,6 +731,15 @@ export class HeadingNumberingService {
 
     if (!deduplicated) {
       this.userIntentEpoch++
+    }
+
+    // ── PF6: a real edit moves the document into the LIVE_EDIT identity phase ──
+    if (
+      !deduplicated &&
+      (source === 'TEXT_INPUT' || source === 'NORMAL_ENTER' || source === 'BACKSPACE' || source === 'DELETE')
+    ) {
+      this.documentEditedSinceLoad = true
+      this.retiredIndentLedger.invalidateOnContentEdit()
     }
 
     this.intentSeq++
@@ -8438,6 +8473,11 @@ export class HeadingNumberingService {
     const planId = `plan-${source}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const resolvedCandidates: RehydrateResolvedCandidate[] = []
     let phase1WriterCount = 0
+    // PF6: identity phase for this pass (INITIAL_LOAD / LIVE_EDIT / UNDO_REDO).
+    const phase: RehydratePhase = source === 'reconstruct'
+      ? 'INITIAL_LOAD'
+      : this.resolveRehydratePhase()
+    let historicalAnchorRepairedCount = 0
 
     // ── Phase 1: RESOLVE ALL — NO writers allowed ──
     // Promote temporary anchors first (same logic as before)
@@ -8595,34 +8635,63 @@ export class HeadingNumberingService {
       const para = allParas[resolved.index]
       if (!para) continue
 
-      // ── PF5: Historical identity isolation — text-only match is NOT sufficient ──
-      // A PERSISTED_HISTORICAL record must not bind to a session-born paragraph
-      // merely because visible text (textHash) collides. Require structural
-      // neighborhood corroboration for textHash 'exact' matches.
-      if (resolved.confidence === 'exact') {
-        const histIdentity = evaluateHistoricalRehydrateIdentity(o.anchor, resolved.index, allParas)
-        if (histIdentity.decision !== 'ACCEPT_STRONG_IDENTITY') {
-          emitRuntimeAudit('HISTORICAL-REHYDRATE-CANDIDATE', {
-            recordId: o.id,
-            recordState: 'PERSISTED_HISTORICAL',
-            recordMode: o.mode,
-            candidateRuntimeId: this.getParagraphRuntimeId(para),
-            candidateText: getUserVisibleParagraphText(para).slice(0, 80),
-            matchStrategy: RehydrateMatchStrategy.EXACT_ANCHOR,
-            identityProof: false,
-            sessionBorn: false,
-            currentLiveOwnerPresent: false,
-            decision: histIdentity.decision,
-            reason: histIdentity.reason,
-          })
-          console.info(
-            `[InkChapter] HISTORICAL-REHYDRATE-REJECT: recordId=${o.id} ` +
-            `candidateRuntimeId=${this.getParagraphRuntimeId(para)} ` +
-            `decision=${histIdentity.decision} reason=${histIdentity.reason} ` +
-            `duplicateTextCount=${histIdentity.duplicateTextCount}`,
-          )
-          continue
-        }
+      // ── PF6: Historical admission — the ONLY gate for PERSISTED_HISTORICAL ──
+      // Neighbour hashes, ordinal proximity and "the only candidate" are NOT an
+      // identity proof for an empty paragraph. Admission requires business
+      // identity (exact text during live editing, structural corroboration on
+      // initial load) or a ledger-proven Undo recovery. Everything else fails
+      // closed so a stale record can never flip a new `auto` paragraph to
+      // `force-indent` (app-1793310238729.log P-RUNTIME-36/40/42/45/49).
+      const admission = evaluateHistoricalRehydrateAdmission({
+        record: o,
+        resolvedConfidence: resolved.confidence,
+        resolvedIndex: resolved.index,
+        allParagraphs: allParas,
+        phase,
+        undoRecoveryProof: false,
+      })
+      emitRuntimeAudit('HISTORICAL-REHYDRATE-CANDIDATE', {
+        recordId: o.id,
+        recordState: 'PERSISTED_HISTORICAL',
+        recordMode: o.mode,
+        recordTemporary: o.temporary === true,
+        candidateRuntimeId: this.getParagraphRuntimeId(para),
+        candidateText: getUserVisibleParagraphText(para).slice(0, 80),
+        candidateEmpty: !(para.textContent ?? '').trim(),
+        resolvedConfidence: resolved.confidence,
+        identityProof: o.anchor.textHash !== undefined,
+        sessionBorn: false,
+        currentLiveOwnerPresent: false,
+        phase,
+        decision: admission.decision,
+        reason: admission.reason,
+      })
+      if (!admission.admitted) {
+        emitRuntimeAudit('HISTORICAL-REHYDRATE-REJECT', {
+          recordId: o.id,
+          candidateRuntimeId: this.getParagraphRuntimeId(para),
+          resolvedConfidence: resolved.confidence,
+          phase,
+          decision: admission.decision,
+          reason: admission.reason,
+        })
+        console.info(
+          `[InkChapter] HISTORICAL-REHYDRATE-REJECT: recordId=${o.id} ` +
+          `candidateRuntimeId=${this.getParagraphRuntimeId(para)} ` +
+          `candidateEmpty=${!(para.textContent ?? '').trim()} ` +
+          `resolvedConfidence=${resolved.confidence} ` +
+          `phase=${phase} ` +
+          `decision=${admission.decision} reason=${admission.reason}`,
+        )
+        continue
+      }
+
+      // INITIAL_LOAD structural admission: the stored text identity is stale.
+      // Re-identify NOW, then persist (plan-level dirty flag).
+      if (admission.decision === 'ADMIT_INITIAL_LOAD_STRUCTURAL') {
+        o.anchor = createParagraphAnchor(resolved.index, allParas)
+        o.temporary = false
+        historicalAnchorRepairedCount++
       }
 
       const matchConfidence = anchorConfidenceToRehydrateConfidence(resolved.confidence)
@@ -8655,6 +8724,7 @@ export class HeadingNumberingService {
         confidence: matchConfidence,
         score,
         candidateCountAtGroup: 0, // filled in Phase 2
+        admissionDecision: admission.decision,
       })
     }
 
@@ -8827,6 +8897,7 @@ export class HeadingNumberingService {
       winners,
       blockedGroups,
       phase1WriterCount,
+      historicalAnchorRepairedCount,
     }
   }
 
@@ -8836,7 +8907,11 @@ export class HeadingNumberingService {
    * Also handles anchor repair and sidecar persistence.
    */
   private applyParagraphRehydratePlan(plan: ParagraphRehydratePlan): void {
-    if (plan.winners.length === 0) return
+    if (plan.winners.length === 0) {
+      // PF6: even a no-op plan is a rehydrate convergence point.
+      this.verifyNormalEnterRehydrateConvergence()
+      return
+    }
 
     const root = this.adapter.getEditorRoot()
     if (!root) return
@@ -8903,6 +8978,42 @@ export class HeadingNumberingService {
           `ACTION=BLOCKED`,
         )
         continue // Block this winner — do NOT apply
+      }
+
+      // ── PF6: An admitted historical record becomes the live canonical owner ──
+      // Without this claim the paragraph carries an explicit semantic with NO
+      // ownership proof: BOUNDARY-MERGE-INTENT-ARM reports recordId=none and
+      // MERGE-BATCH-PREFLIGHT reports NO_CANONICAL_OWNER, so the record can never
+      // be retired when the paragraph is deleted. Claim BEFORE projecting so a
+      // failed claim leaves zero projection side effects.
+      if (winner.admissionDecision) {
+        const preMeta = this.canonicalRegistry.getRuntimeMeta(winner.recordId)
+        if (preMeta?.state === 'PERSISTED_HISTORICAL') {
+          const claimed = this.canonicalRegistry.claimPersistedRecord({
+            recordId: winner.recordId,
+            element: para,
+            runtimeId: this.getParagraphRuntimeId(para),
+            scopeId: this.documentContext.scopeId ?? plan.documentKey,
+            proof: winner.admissionDecision === 'ADMIT_INITIAL_LOAD_STRUCTURAL'
+              ? 'INITIAL_LOAD_STRUCTURAL'
+              : 'EXACT_TEXT_IDENTITY',
+          })
+          if (!claimed.ok) {
+            emitRuntimeAudit('HISTORICAL-RECORD-CLAIM-BLOCKED', {
+              planId: plan.planId,
+              recordId: winner.recordId,
+              runtimeId: this.getParagraphRuntimeId(para),
+              admissionDecision: winner.admissionDecision,
+              reason: claimed.reason ?? 'unknown',
+              decision: 'BLOCK_APPLY',
+            })
+            console.error(
+              `[InkChapter] HISTORICAL-RECORD-CLAIM-BLOCKED: recordId=${winner.recordId} ` +
+              `reason=${claimed.reason ?? 'unknown'} ACTION=SKIP_APPLY`,
+            )
+            continue
+          }
+        }
       }
 
       const rehydrateCtx: RehydrateContext = {
@@ -8976,8 +9087,11 @@ export class HeadingNumberingService {
       }
     }
 
-    // Persist repaired anchors to sidecar (debounced)
-    if (dirty) {
+    // Persist repaired anchors to sidecar (debounced).
+    // PF6: an INITIAL_LOAD structural admission also rewrote the stored identity,
+    // so it must be persisted even though the record is now CURRENT_LIVE.
+    const historicalIdentityRepaired = (plan.historicalAnchorRepairedCount ?? 0) > 0
+    if (dirty || historicalIdentityRepaired) {
       const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
       this.scheduleSidecarWrite(plan.documentKey, docPath, [...plan.allRecords])
 
@@ -8988,6 +9102,7 @@ export class HeadingNumberingService {
         `winners=${plan.winners.length} blocked=${plan.blockedGroups.length} ` +
         `recordCount=${plan.allRecords.length} ` +
         `dirty=${dirty} ` +
+        `historicalIdentityRepaired=${historicalIdentityRepaired} ` +
         `reason=anchor-repair ` +
         `writeScheduled=true`,
       )
@@ -9054,6 +9169,204 @@ export class HeadingNumberingService {
         `runtimeId=${t.runtimeId ?? 'null'} logicalOffset=${t.logicalOffset ?? 'null'} visibleText=${t.paragraph ? getUserVisibleParagraphText(t.paragraph) : ''}`,
       )
     })
+
+    // PF6: NORMAL-ENTER acceptance extends through rehydrate convergence.
+    this.verifyNormalEnterRehydrateConvergence()
+  }
+
+  /**
+   * PF6: Identity phase for the current rehydrate pass.
+   *
+   * INITIAL_LOAD — nothing has been edited in this session yet.
+   * LIVE_EDIT    — the user has already edited; new paragraphs are session-born
+   *                and can only inherit an EXACT business-text identity.
+   * UNDO_REDO    — a history navigation is in flight; only ledger-proven
+   *                recoveries are honoured.
+   */
+  private resolveRehydratePhase(): RehydratePhase {
+    if (
+      this.historyIntentKind !== null &&
+      Date.now() - this.historyIntentAt <= HISTORY_UNDO_CLAIM_WINDOW_MS
+    ) {
+      return 'UNDO_REDO'
+    }
+    return this.documentEditedSinceLoad ? 'LIVE_EDIT' : 'INITIAL_LOAD'
+  }
+
+  /**
+   * PF6: Consume a controlled Undo recovery before heuristic resolution.
+   *
+   * Only a record that THIS session retired through an explicit paragraph
+   * deletion can be restored, and only within the history-intent window. The
+   * claim is one-shot; a Redo deletes the paragraph again and re-arms a fresh
+   * ledger entry instead of being silently undone twice.
+   */
+  private tryClaimUndoRecovery(docKey: string, allParas: HTMLElement[]): boolean {
+    const claim = this.retiredIndentLedger.claimUndoRecovery(docKey, allParas)
+    if (!claim) return false
+
+    const { entry, matchedIndex } = claim
+    const para = allParas[matchedIndex]
+    if (!para) return false
+
+    const runtimeId = this.getParagraphRuntimeId(para)
+    const scopeId = this.documentContext.scopeId ?? docKey
+    const claimed = this.canonicalRegistry.claimPersistedRecord({
+      recordId: entry.recordId,
+      element: para,
+      runtimeId,
+      scopeId,
+      proof: 'UNDO_RECOVERY',
+    })
+    if (!claimed.ok) {
+      emitRuntimeAudit('UNDO-REDO-INDENT-RECOVERY', {
+        recordId: entry.recordId,
+        runtimeId,
+        matchedIndex,
+        decision: 'BLOCK',
+        reason: claimed.reason ?? 'unknown',
+      })
+      return false
+    }
+
+    const overrides = this.inMemoryOverrides.get(docKey) ?? []
+    if (!overrides.some(o => o.id === entry.recordId)) {
+      overrides.push({
+        ...entry.record,
+        temporary: false,
+        anchor: createParagraphAnchor(matchedIndex, allParas),
+      })
+    }
+    this.inMemoryOverrides.set(docKey, [...overrides])
+
+    rehydrateParagraphIndentState(para, entry.record.mode, this.getParagraphLayoutSettings(), {
+      source: 'rehydrate',
+      semanticWriterId: 'W-UNDO-RECOVERY-SEMANTIC',
+      visualWriterId: 'W-UNDO-RECOVERY-VISUAL',
+    })
+
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    this.scheduleSidecarWrite(docKey, docPath, [...overrides])
+    this.historyIntentKind = null
+
+    emitRuntimeAudit('UNDO-REDO-INDENT-RECOVERY', {
+      recordId: entry.recordId,
+      runtimeId,
+      matchedIndex,
+      mode: entry.record.mode,
+      decision: 'RESTORE',
+      reason: 'explicit-deletion-undo-proof',
+    })
+    console.info(
+      `[InkChapter] UNDO-REDO-INDENT-RECOVERY: recordId=${entry.recordId} ` +
+      `runtimeId=${runtimeId} matchedIndex=${matchedIndex} ` +
+      `mode=${entry.record.mode} decision=RESTORE`,
+    )
+    return true
+  }
+
+  /**
+   * PF6: Safe retirement of a DELETED paragraph's indent record.
+   *
+   * The record leaves the in-memory registry AND the sidecar so it can never
+   * revive on the next Enter/Backspace or after a reopen. Only the session
+   * ledger keeps a copy, and only to serve a controlled Undo restore. This is
+   * strictly per-record: no other sidecar entry is touched.
+   */
+  private retireDeletedParagraphRecord(recordId: string, docKey: string, cause: string): void {
+    const overrides = this.inMemoryOverrides.get(docKey) ?? []
+    const record = overrides.find(o => o.id === recordId)
+    if (!record) return
+
+    this.retiredIndentLedger.retire({
+      recordId,
+      record: { ...record, anchor: { ...record.anchor } },
+      documentKey: docKey,
+      deletedAt: Date.now(),
+      ordinal: record.anchor.lastKnownOrdinal,
+      beforeHash: record.anchor.beforeHash,
+      afterHash: record.anchor.afterHash,
+      targetWasEmpty: record.temporary === true || record.anchor.textHash === undefined,
+    })
+
+    const remaining = overrides.filter(o => o.id !== recordId)
+    this.inMemoryOverrides.set(docKey, remaining)
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    this.scheduleSidecarWrite(docKey, docPath, remaining)
+
+    emitRuntimeAudit('SIDECAR-RECORD-RETIRED-ON-PARAGRAPH-DELETE', {
+      recordId,
+      documentKey: docKey,
+      cause,
+      sidecarRecordCountAfter: remaining.length,
+      ledgerSize: this.retiredIndentLedger.size,
+    })
+    console.info(
+      `[InkChapter] SIDECAR-RECORD-RETIRED-ON-PARAGRAPH-DELETE: recordId=${recordId} ` +
+      `cause=${cause} sidecarRecordCountAfter=${remaining.length} ` +
+      `ledgerSize=${this.retiredIndentLedger.size}`,
+    )
+  }
+
+  /**
+   * PF6: Extend NORMAL-ENTER acceptance past rehydrate convergence.
+   *
+   * NORMAL-ENTER-FINAL is emitted inside the native mutation callback, BEFORE
+   * the rehydrate pass runs. A paragraph committed as `auto` that LATER becomes
+   * `force-indent` (the app-1793310238729.log failure) must be reported as an
+   * explicit FAIL — never an overall PASS.
+   */
+  private verifyNormalEnterRehydrateConvergence(): void {
+    const pending = this.pendingNormalEnterConvergence
+    if (!pending) return
+
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+
+    const allParas = collectContentParagraphs(root)
+    const para = allParas.find(p => this.getParagraphRuntimeId(p) === pending.runtimeId) ?? null
+
+    // The caret paragraph may have been replaced by a DOM rebuild. Retry a few
+    // times before declaring divergence, so a rebuild is not a false FAIL.
+    if (!para && pending.attempts < 3) {
+      pending.attempts++
+      return
+    }
+
+    const actual = para ? getParagraphIndentMode(para) : 'missing'
+    const converged = para !== null && actual === pending.expectedSemantic
+
+    emitRuntimeAudit('NORMAL-ENTER-FINAL-RECHECK', {
+      txnId: pending.txnId,
+      runtimeId: pending.runtimeId,
+      expectedSemantic: pending.expectedSemantic,
+      actualSemantic: actual,
+      paragraphFound: para !== null,
+      attempts: pending.attempts,
+      converged,
+      overall: converged,
+    })
+
+    if (!converged) {
+      this.normalEnterRehydrateDivergenceCount++
+      this.normalEnterSuccessCount = Math.max(0, this.normalEnterSuccessCount - 1)
+      this.normalEnterFailedCount++
+      emitRuntimeAudit('NORMAL-ENTER-REHYDRATE-DIVERGENCE', {
+        txnId: pending.txnId,
+        runtimeId: pending.runtimeId,
+        expectedSemantic: pending.expectedSemantic,
+        actualSemantic: actual,
+        paragraphFound: para !== null,
+        decision: 'FAIL',
+      })
+      console.error(
+        `[InkChapter] NORMAL-ENTER-REHYDRATE-DIVERGENCE: txnId=${pending.txnId} ` +
+        `runtimeId=${pending.runtimeId} expectedSemantic=${pending.expectedSemantic} ` +
+        `actualSemantic=${actual} decision=FAIL`,
+      )
+    }
+
+    this.pendingNormalEnterConvergence = null
   }
 
   /**
@@ -9074,11 +9387,20 @@ export class HeadingNumberingService {
     const docKey = this.getDocumentKey()
     if (!docKey) return
     const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
-    const overrides = this.inMemoryOverrides.get(docKey)
-    if (!overrides || overrides.length === 0) return
 
     const allParas = collectContentParagraphs(root)
     if (allParas.length === 0) return
+
+    // ── PF6: controlled Undo recovery BEFORE any heuristic resolution ──
+    // A record retired by this session's explicit deletion may be restored only
+    // here, only once, and only while the Undo intent is fresh.
+    this.tryClaimUndoRecovery(docKey, allParas)
+
+    const overrides = this.inMemoryOverrides.get(docKey)
+    if (!overrides || overrides.length === 0) {
+      this.verifyNormalEnterRehydrateConvergence()
+      return
+    }
 
     // ── Build and apply the plan ──
     const plan = this.resolveParagraphOverrideRehydratePlan(
@@ -9104,8 +9426,42 @@ export class HeadingNumberingService {
     const docKey = this.getDocumentKey()
     if (!docKey) return
 
+    // ── PF6: a document load resets the identity phase ──
+    this.documentEditedSinceLoad = false
+    this.historyIntentKind = null
+    this.pendingNormalEnterConvergence = null
+
     const data = loadParagraphLayout(docKey)
-    if (!data || data.paragraphOverrides.length === 0) {
+
+    // ── PF6: retire temporary historical records BEFORE registration ──
+    // A `temporary` record was created for an EMPTY paragraph, which has no
+    // business identity. Neighbour hashes cannot prove ownership (every new
+    // empty paragraph between the same neighbours matches), so such a record
+    // must be physically retired instead of poisoning the next new paragraph.
+    // Business records (non-temporary) are always preserved.
+    const retireIds = selectTemporaryHistoricalRecordsForRetirement(data?.paragraphOverrides ?? [])
+    let sidecarOverrides = data?.paragraphOverrides ?? []
+    if (data && retireIds.length > 0) {
+      sidecarOverrides = data.paragraphOverrides.filter(o => !retireIds.includes(o.id))
+      const docPathForRetire = this.ctx.getActiveFilePath?.() ?? 'unknown'
+      saveParagraphLayout(docKey, docPathForRetire, sidecarOverrides)
+      emitRuntimeAudit('SIDECAR-TEMPORARY-HISTORICAL-RETIRED', {
+        documentKey: docKey,
+        retiredCount: retireIds.length,
+        retiredRecordIds: retireIds,
+        recordCountBefore: data.paragraphOverrides.length,
+        recordCountAfter: sidecarOverrides.length,
+      })
+      console.info(
+        `[InkChapter] SIDECAR-TEMPORARY-HISTORICAL-RETIRED: documentKey=${docKey} ` +
+        `retiredCount=${retireIds.length} recordCountBefore=${data.paragraphOverrides.length} ` +
+        `recordCountAfter=${sidecarOverrides.length} ` +
+        `retiredRecordIds=[${retireIds.join(',')}]`,
+      )
+      data.paragraphOverrides = sidecarOverrides
+    }
+
+    if (!data || sidecarOverrides.length === 0) {
       this.inMemoryOverrides.set(docKey, [])
       return
     }
@@ -10255,6 +10611,7 @@ export class HeadingNumberingService {
           'EXPLICIT_PARAGRAPH_DELETE',
           this.documentContext.scopeId ?? 'unknown',
         )
+        this.retireDeletedParagraphRecord(singleOwner.recordId, docKey, 'merge-empty-paragraph-deleted')
         emitRuntimeAudit('PARAGRAPH-MERGE-CANONICAL-TRANSFER', {
           batchId,
           loserRecordId: singleOwner.recordId,
@@ -10409,6 +10766,7 @@ export class HeadingNumberingService {
         'EXPLICIT_PARAGRAPH_DELETE',
         this.documentContext.scopeId ?? 'unknown',
       )
+      this.retireDeletedParagraphRecord(loserOwner.recordId, docKey, 'merge-superseded')
       emitRuntimeAudit('PARAGRAPH-MERGE-CANONICAL-TRANSFER', {
         batchId,
         loserRecordId: loserOwner.recordId,
@@ -10713,6 +11071,9 @@ export class HeadingNumberingService {
       this.canonicalRegistry.retireRecord(
         retiredRecordId, 'merge-empty-paragraph-deleted', 'EXPLICIT_PARAGRAPH_DELETE', scopeId,
       )
+      this.retireDeletedParagraphRecord(
+        retiredRecordId, this.getDocumentKey() ?? '', 'merge-empty-paragraph-deleted',
+      )
       emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
         batchId,
         decision: 'RETIRE_EMPTY_PARA_OWNER',
@@ -10731,6 +11092,9 @@ export class HeadingNumberingService {
     // Retire loser FIRST (avoid element/runtime collision on transfer).
     if (!emptyOwnerRetired && loserRecordId) {
       this.canonicalRegistry.retireRecord(loserRecordId, 'merge-superseded', 'EXPLICIT_PARAGRAPH_DELETE', scopeId)
+      this.retireDeletedParagraphRecord(
+        loserRecordId, this.getDocumentKey() ?? '', 'merge-superseded',
+      )
       emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
         batchId,
         decision: 'RETIRE_LOSER',
@@ -11202,9 +11566,23 @@ export class HeadingNumberingService {
             // ENTER→BLANK ECHO GUARD — the scene id for the split detector is the
             // JUST-CLOSED transaction, so a post-FINAL echo is attributed to it.
             this.lastNormalEnterTxnId = postTxn.id
+
+            // ── PF6: capture the committed semantic for post-rehydrate acceptance ──
+            // The paragraph's format must still hold AFTER the next rehydrate pass.
+            // A commit that later becomes force-indent is an explicit FAIL.
+            if (canonicalGatePassed && caretDestRtId) {
+              this.pendingNormalEnterConvergence = {
+                txnId: postTxn.id,
+                runtimeId: caretDestRtId,
+                expectedSemantic: caretDestPara ? getParagraphIndentMode(caretDestPara) : 'auto',
+                attempts: 0,
+              }
+            }
+
             emitRuntimeAudit('NORMAL-ENTER-FINAL', {
               normalEnterTxnId: postTxn.id,
               caretDestinationRuntimeId: caretDestRtId ?? 'none',
+              caretDestinationSemantic: caretDestPara ? getParagraphIndentMode(caretDestPara) : 'unknown',
               selectionInsideEditor: postSel.insideEditor,
               sourceCanonicalRecordId: postTxn.sourceCanonicalRecordId ?? 'none',
               canonicalOutcomeOverall: hasCanonicalSource ? String(canonicalOutcome?.overall ?? 'none') : 'n/a',
@@ -11454,6 +11832,18 @@ export class HeadingNumberingService {
     const onIntentKeydown = (e: KeyboardEvent): void => {
       if (this.skipIfInkChapterUiEvent(e, 'intent-keydown')) return
       if (e.isComposing) return
+
+      // ── PF6: history navigation intent (Undo / Redo) ──
+      // Captured at keydown so a controlled indent recovery can be proven even
+      // when Typora's own undo manager does not emit beforeinput.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
+        const redo = e.shiftKey || e.key === 'y' || e.key === 'Y'
+        this.historyIntentKind = redo ? 'redo' : 'undo'
+        this.historyIntentAt = Date.now()
+        this.retiredIndentLedger.noteHistoryIntent(redo ? 'redo' : 'undo', this.historyIntentAt)
+        return
+      }
+
       let source: UserIntentSource
       if (e.key === 'Enter' || e.key === 'Backspace') return // handled by dedicated handlers
       if (e.key === 'Delete') {
@@ -11465,6 +11855,10 @@ export class HeadingNumberingService {
         source = 'TEXT_INPUT'
       } else {
         return
+      }
+      // ── PF6: a real content edit invalidates pending Undo recovery claims ──
+      if (source === 'DELETE' || source === 'TEXT_INPUT') {
+        this.retiredIndentLedger.invalidateOnContentEdit()
       }
       this.beginTrustedUserIntent(source, 'keydown', e.key)
 

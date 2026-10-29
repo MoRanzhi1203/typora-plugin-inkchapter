@@ -201,8 +201,8 @@ export interface CanonicalRuntimeMeta {
   /** Last mutation timestamp (epoch ms). */
   updatedAt: number
 
-  /** Origin: 'current-session' or 'persisted-load'. */
-  origin: 'current-session' | 'persisted-load'
+  /** Origin: 'current-session', 'persisted-load', or 'historical-claim'. */
+  origin: 'current-session' | 'persisted-load' | 'historical-claim'
 }
 
 // ── Binding Transfer Result ──────────────────────────────────────────
@@ -349,6 +349,72 @@ export class ParagraphCanonicalRegistry {
 
     this.emitLifecycle(record.id, 'PERSISTED_LOAD', meta, undefined)
     return meta
+  }
+
+  /**
+   * PF6: Claim an orphaned historical/retired record for a live paragraph.
+   *
+   * This is the ONLY transition from PERSISTED_HISTORICAL / CURRENT_RETIRED back
+   * to CURRENT_LIVE, and it demands an explicit ownership proof supplied by the
+   * caller (`evaluateHistoricalRehydrateAdmission`). Without a claim a historical
+   * record stays unbound, so merge/delete ownership logic can never mistake it
+   * for a live owner.
+   */
+  claimPersistedRecord(params: {
+    recordId: string
+    element: HTMLElement
+    runtimeId: string
+    scopeId: string
+    proof: 'EXACT_TEXT_IDENTITY' | 'INITIAL_LOAD_STRUCTURAL' | 'UNDO_RECOVERY'
+  }): { ok: boolean; reason?: string; stateBefore?: CanonicalRuntimeState } {
+    const { recordId, element, runtimeId, scopeId, proof } = params
+    const meta = this.runtimeMetaByRecordId.get(recordId)
+    if (!meta) return { ok: false, reason: 'RECORD_MISSING' }
+
+    if (meta.state === 'CURRENT_LIVE') {
+      if (meta.currentElement === element) return { ok: true, stateBefore: 'CURRENT_LIVE' }
+      return { ok: false, reason: 'BINDING_COLLISION', stateBefore: meta.state }
+    }
+
+    if (meta.state !== 'PERSISTED_HISTORICAL' && meta.state !== 'CURRENT_RETIRED') {
+      return { ok: false, reason: 'INVALID_LIFECYCLE_STATE', stateBefore: meta.state }
+    }
+
+    const existingByElement = this.recordIdByElement.get(element)
+    if (existingByElement && existingByElement !== recordId) {
+      return { ok: false, reason: 'BINDING_COLLISION', stateBefore: meta.state }
+    }
+    const existingByRuntime = this.recordIdByRuntimeId.get(runtimeId)
+    if (existingByRuntime && existingByRuntime !== recordId) {
+      return { ok: false, reason: 'BINDING_COLLISION', stateBefore: meta.state }
+    }
+
+    const stateBefore = meta.state
+    const generationBefore = meta.generation
+    meta.previousRuntimeId = meta.currentRuntimeId ?? meta.previousRuntimeId
+    meta.state = 'CURRENT_LIVE'
+    meta.scopeId = scopeId
+    meta.currentElement = element
+    meta.currentRuntimeId = runtimeId
+    meta.generation = generationBefore + 1
+    meta.temporary = false
+    meta.origin = 'historical-claim'
+    meta.updatedAt = Date.now()
+
+    this.recordIdByElement.set(element, recordId)
+    this.recordIdByRuntimeId.set(runtimeId, recordId)
+
+    this.emitLifecycle(recordId, 'CLAIM', meta, runtimeId)
+    emitRuntimeAudit('HISTORICAL-RECORD-CLAIM', {
+      recordId,
+      proof,
+      stateBefore,
+      stateAfter: 'CURRENT_LIVE',
+      runtimeId,
+      generation: meta.generation,
+      scopeId,
+    })
+    return { ok: true, stateBefore }
   }
 
   /**
