@@ -452,8 +452,8 @@ body.ink-console-docked::after {
   content: '';
   position: absolute;
   top: 0.3em;
-  width: 0.74em;
-  height: 0.74em;
+  width: 0.72em;
+  height: 0.72em;
   box-sizing: border-box;
   border: 1px dashed currentColor;
   border-radius: 1px;
@@ -465,11 +465,11 @@ body.ink-console-docked::after {
 }
 
 #write p[data-inkchapter-indent-marker="explicit-2"]::before {
-  inset-inline-start: 0.16em;
+  inset-inline-start: 0.18em;
 }
 
 #write p[data-inkchapter-indent-marker="explicit-2"]::after {
-  inset-inline-start: 1.06em;
+  inset-inline-start: 1.04em;
 }
 
 /* Source-code mode: no WYSIWYG first line — hide the boxes, keep the indent. */
