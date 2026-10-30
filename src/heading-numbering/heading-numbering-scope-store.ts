@@ -21,6 +21,7 @@ import type {
   NumberingFormatSource,
   FormatLibrary,
 } from './heading-types'
+import { DEFAULT_HEADING_LEVEL_POSITION } from './heading-types'
 import { getPresetLevels } from './presets'
 
 // ── Document key generation ───────────────────────
@@ -201,6 +202,7 @@ function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
       })) as any,
     },
     numberTitleSpacing: s.numberTitleSpacing ?? 'space',
+    position: s.position ? { ...s.position } : { ...DEFAULT_HEADING_LEVEL_POSITION },
   }
 }
 
@@ -266,6 +268,12 @@ export function deepMergeSettings(
                 appearance: seg.type === 'level-reference' ? { ...(seg as any).appearance } : undefined,
               })) as any,
         },
+        // Never share the mutable position object with the document override.
+        position: override.levels[lv].position
+          ? { ...override.levels[lv].position }
+          : result.levels[lv].position
+            ? { ...result.levels[lv].position }
+            : { ...DEFAULT_HEADING_LEVEL_POSITION },
       }
     }
   }

@@ -24,6 +24,8 @@ import type {
   NumberingFormatSource,
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
+import { HEADING_LEVELS, DEFAULT_HEADING_LEVEL_POSITION } from './heading-types'
+import type { HeadingLevelPosition } from './heading-types'
 import { HeadingNumberingAuthority, type HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import {
   buildCanonicalHeadingFrame,
@@ -4881,10 +4883,25 @@ export class HeadingNumberingService {
     const layouts = this.getEffectiveHeadingLayouts(structure.mode)
     if (!layouts) {
       this.adapter.clearHeadingLayouts(headingEls)
-      return
+    } else {
+      // Layout is physical H1-H6 (NO level shift): real H2 uses layout.h2.
+      this.adapter.applyHeadingLayouts(layouts, headingEls)
     }
-    // Layout is physical H1-H6 (NO level shift): real H2 uses layout.h2.
-    this.adapter.applyHeadingLayouts(layouts, headingEls)
+    this.applyHeadingNumberPositions(headingEls)
+  }
+
+  /**
+   * Phase 4 — number position / layout (alignment, box width, extra gap,
+   * wrapped-line alignment). Independent of the text-align / first-line-indent
+   * heading layout above. A level without a stored position resolves to the
+   * DISABLED default, which also CLEANS any stale CSS variables.
+   */
+  private applyHeadingNumberPositions(headingEls?: readonly HTMLHeadingElement[]): void {
+    const positions = {} as Record<import('./heading-types').HeadingLevel, HeadingLevelPosition>
+    for (const lv of HEADING_LEVELS) {
+      positions[lv] = this.s.levels[lv]?.position ?? DEFAULT_HEADING_LEVEL_POSITION
+    }
+    this.adapter.applyHeadingNumberPositions(positions, headingEls)
   }
 
   /** Apply paragraph indent styles to the editor DOM. */

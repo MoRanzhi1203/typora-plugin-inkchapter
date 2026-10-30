@@ -168,6 +168,41 @@ export interface HeadingLevelStyle {
 
   // ── Number-to-title spacing ──────
   numberTitleSpacing?: NumberTitleSpacing
+
+  // ── Number position & layout ──────
+
+  /** Where the number sits inside its own box, and how a wrapped title line aligns. */
+  position?: HeadingLevelPosition
+}
+
+// ── Number position & layout ─────────────────────────────
+
+export type NumberAlignment = 'left' | 'center' | 'right'
+
+/**
+ * Per-level number position / layout.
+ *
+ * Every field's DEFAULT value renders EXACTLY like the pre-feature layout:
+ * `numberBoxWidthEm: 0` = no fixed box width, `numberTextGapEm: 0` = no extra
+ * margin, `alignWrappedLines: false` = no hanging indent. A document that never
+ * touches this section keeps its original rendering.
+ */
+export interface HeadingLevelPosition {
+  /** Alignment of the number inside the number box. */
+  numberAlignment: NumberAlignment
+  /** Fixed number-box width in em. 0 = natural inline width (feature disabled). */
+  numberBoxWidthEm: number
+  /** Extra gap between the number box and the title text in em. 0 = none. */
+  numberTextGapEm: number
+  /** Hanging indent: a wrapped title line starts where the title text starts. */
+  alignWrappedLines: boolean
+}
+
+export const DEFAULT_HEADING_LEVEL_POSITION: HeadingLevelPosition = {
+  numberAlignment: 'left',
+  numberBoxWidthEm: 0,
+  numberTextGapEm: 0,
+  alignWrappedLines: false,
 }
 
 // ── Heading layout ───────────────────────────────────────

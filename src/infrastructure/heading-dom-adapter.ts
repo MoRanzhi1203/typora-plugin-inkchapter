@@ -1,6 +1,7 @@
 import type {
   HeadingDescriptor,
   HeadingLevel,
+  HeadingLevelPosition,
   HeadingSnapshot,
   RenderedHeadingState,
   DiffResult,
@@ -31,6 +32,12 @@ export interface DecorationReconcileResult extends DiffResult {
   /** stale gap attributes removed from headings with no decoration at all. */
   staleGapRemoved: number
 }
+
+// Number position CSS custom properties — must match CSS in style.scss
+const NUM_WIDTH_VAR = '--inkchapter-num-width'
+const NUM_ALIGN_VAR = '--inkchapter-num-align'
+const NUM_GAP_VAR = '--inkchapter-num-gap'
+const WRAP_ALIGN_ATTR = 'data-inkchapter-wrap-align'
 
 // Layout class names — must match CSS in style.scss
 const LAYOUT_CLASSES = [
@@ -464,11 +471,97 @@ export class HeadingDomAdapter {
     const els = this.editorRoot.querySelectorAll<HTMLHeadingElement>(HEADING_SELECTOR)
     for (let i = 0; i < els.length; i++) {
       const el = els[i]
-      if (!el.classList.contains(NUMBERED_CLASS) && !el.hasAttribute(NUMBER_ATTR) && !el.hasAttribute(GAP_ATTR)) continue
+      if (
+        !el.classList.contains(NUMBERED_CLASS)
+        && !el.hasAttribute(NUMBER_ATTR)
+        && !el.hasAttribute(GAP_ATTR)
+        && !el.hasAttribute(WRAP_ALIGN_ATTR)
+        && !el.style.getPropertyValue(NUM_WIDTH_VAR)
+        && !el.style.getPropertyValue(NUM_ALIGN_VAR)
+        && !el.style.getPropertyValue(NUM_GAP_VAR)
+      ) continue
       el.classList.remove(NUMBERED_CLASS)
       el.removeAttribute(NUMBER_ATTR)
       el.removeAttribute(GAP_ATTR)
+      this.clearPositionVars(el)
     }
+  }
+
+  /**
+   * Phase 4 — apply per-level number position (alignment / box width / extra gap /
+   * wrapped-line alignment) as CSS custom properties.
+   *
+   * The DISABLED position (the default) writes nothing, so a document that never
+   * configured the feature keeps the pre-feature rendering byte-for-byte; applying
+   * the default after a custom position CLEANS the previous variables.
+   */
+  applyHeadingNumberPositions(
+    positions: Record<HeadingLevel, HeadingLevelPosition>,
+    preCollected?: readonly HTMLHeadingElement[],
+  ): void {
+    if (!this.editorRoot) return
+    const els = preCollected ?? this.queryHeadingElements()
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      const level = parseInt(el.tagName.charAt(1), 10) as HeadingLevel
+      const pos = positions[level]
+      if (!pos) continue
+      this.applyPositionVars(el, pos)
+    }
+  }
+
+  /** Clear the position CSS variables / attribute from every heading. */
+  clearHeadingNumberPositions(preCollected?: readonly HTMLHeadingElement[]): void {
+    if (!this.editorRoot) return
+    const els = preCollected ?? this.queryHeadingElements()
+    for (let i = 0; i < els.length; i++) this.clearPositionVars(els[i])
+  }
+
+  /**
+   * Write ONLY the non-default fields. A field at its disabled value is removed
+   * instead of written, so the default position is a strict no-op on the DOM.
+   */
+  private applyPositionVars(el: HTMLElement, pos: HeadingLevelPosition): void {
+    if (pos.numberBoxWidthEm > 0) {
+      if (el.style.getPropertyValue(NUM_WIDTH_VAR) !== `${pos.numberBoxWidthEm}em`) {
+        el.style.setProperty(NUM_WIDTH_VAR, `${pos.numberBoxWidthEm}em`)
+      }
+      if (el.style.getPropertyValue(NUM_ALIGN_VAR) !== pos.numberAlignment) {
+        el.style.setProperty(NUM_ALIGN_VAR, pos.numberAlignment)
+      }
+    } else {
+      el.style.removeProperty(NUM_WIDTH_VAR)
+      el.style.removeProperty(NUM_ALIGN_VAR)
+    }
+
+    if (pos.numberTextGapEm > 0) {
+      if (el.style.getPropertyValue(NUM_GAP_VAR) !== `${pos.numberTextGapEm}em`) {
+        el.style.setProperty(NUM_GAP_VAR, `${pos.numberTextGapEm}em`)
+      }
+    } else {
+      el.style.removeProperty(NUM_GAP_VAR)
+    }
+
+    if (pos.alignWrappedLines) {
+      if (el.getAttribute(WRAP_ALIGN_ATTR) !== 'true') el.setAttribute(WRAP_ALIGN_ATTR, 'true')
+    } else {
+      el.removeAttribute(WRAP_ALIGN_ATTR)
+    }
+
+    this.dropEmptyStyleAttribute(el)
+  }
+
+  private clearPositionVars(el: HTMLElement): void {
+    el.style.removeProperty(NUM_WIDTH_VAR)
+    el.style.removeProperty(NUM_ALIGN_VAR)
+    el.style.removeProperty(NUM_GAP_VAR)
+    el.removeAttribute(WRAP_ALIGN_ATTR)
+    this.dropEmptyStyleAttribute(el)
+  }
+
+  /** Remove the style attribute only when WE left it completely empty. */
+  private dropEmptyStyleAttribute(el: HTMLElement): void {
+    if (el.style.length === 0 && el.hasAttribute('style')) el.removeAttribute('style')
   }
 
   /**

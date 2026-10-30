@@ -1,6 +1,13 @@
 import type { HeadingLevel, HeadingLevelStyle, HeadingNumberingPreset, HeadingNumberingSettings, NumberTokenStyle, NumberFormatSegment, HeadingFormatVariants, MultilevelFormatSegment, MultilevelFormatVariants, HeadingLevelNumberTemplate, ContextualFormatSegment, ContextualFormatVariants, LevelReferenceAppearance } from './heading-types'
 import type { HeadingStructureMode } from './heading-structure'
-import { HEADING_LEVELS, createDefaultLevelTemplate, createDefaultReferenceAppearance, generateStableId } from './heading-types'
+import {
+  HEADING_LEVELS,
+  DEFAULT_HEADING_LEVEL_POSITION,
+  createDefaultLevelTemplate,
+  createDefaultReferenceAppearance,
+  generateStableId,
+} from './heading-types'
+import type { HeadingLevelPosition, NumberAlignment } from './heading-types'
 import { getPresetLevels } from './presets'
 import { stripHiddenLevelReferences } from './numbering-engine'
 import { stripHiddenMultilevelReferences } from './numbering-engine'
@@ -67,9 +74,37 @@ function defaultLevelStyle(): Record<HeadingLevel, HeadingLevelStyle> {
       levelTemplate: createDefaultLevelTemplate('arabic'),
       multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
       contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      position: { ...DEFAULT_HEADING_LEVEL_POSITION },
     }
   }
   return ls
+}
+
+function validateNumberAlignment(raw: unknown): NumberAlignment {
+  if (raw === 'left' || raw === 'center' || raw === 'right') return raw
+  return DEFAULT_HEADING_LEVEL_POSITION.numberAlignment
+}
+
+function validateEm(raw: unknown, fallback: number, min: number, max: number): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.max(min, Math.min(max, Math.round(raw * 10) / 10))
+  }
+  return fallback
+}
+
+/**
+ * Sanitise a stored per-level number position.
+ * A missing / non-object value yields the DISABLED default (zero visual change).
+ */
+function validatePosition(raw: unknown): HeadingLevelPosition {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_HEADING_LEVEL_POSITION }
+  const pos = raw as Record<string, unknown>
+  return {
+    numberAlignment: validateNumberAlignment(pos.numberAlignment),
+    numberBoxWidthEm: validateEm(pos.numberBoxWidthEm, DEFAULT_HEADING_LEVEL_POSITION.numberBoxWidthEm, 0, 12),
+    numberTextGapEm: validateEm(pos.numberTextGapEm, DEFAULT_HEADING_LEVEL_POSITION.numberTextGapEm, 0, 6),
+    alignWrappedLines: validateBoolean(pos.alignWrappedLines, DEFAULT_HEADING_LEVEL_POSITION.alignWrappedLines),
+  }
 }
 
 function validateStartAt(raw: unknown): number {
@@ -538,6 +573,7 @@ function migrateLegacyLevels(
       levelTemplate: v7.levelTemplate,
       multilevelFormatVariants: v7.multilevelFormatVariants,
       contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+      position: validatePosition((old as any).position),
     }
   }
 
@@ -630,6 +666,7 @@ function doMigrate(
           levelTemplate: v7.levelTemplate,
           multilevelFormatVariants: v7.multilevelFormatVariants,
           contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+          position: validatePosition(stored.position),
         }
       }
     }
@@ -683,6 +720,7 @@ function doMigrate(
           levelTemplate: v7.levelTemplate,
           multilevelFormatVariants: v7.multilevelFormatVariants,
           contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+          position: validatePosition(sdObj.position),
         }
       }
     }
