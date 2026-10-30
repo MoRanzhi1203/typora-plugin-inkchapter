@@ -1704,18 +1704,122 @@ export function isBlankParagraphText(text: string | null | undefined): boolean {
  *
  * - owner on a blank side + the other side carries visible text → RETIRE
  *   (the survivor's content — and therefore its format — comes from the other side)
- * - both sides blank → provenance is unprovable → keep the legacy TRANSFER
- * - owner on the content side, or no owner → TRANSFER
+ * - both sides blank → RETIRE: the merged paragraph is a blank line and the
+ *   override describes a blank line that no longer exists. Transferring it made
+ *   the indent "jump" onto the surviving blank line (real-GUI defect).
+ * - owner on the content side → TRANSFER
+ * - no owner → TRANSFER
  */
 export function resolveMergeOwnerRetirement(
   input: MergeOwnerRetirementInput,
 ): MergeOwnerRetirementDecision {
   if (input.ownerSide === 'none') return 'TRANSFER_SINGLE_OWNER'
   const ownerText = input.ownerSide === 'left' ? input.leftText : input.rightText
-  const otherText = input.ownerSide === 'left' ? input.rightText : input.leftText
   if (!isBlankParagraphText(ownerText)) return 'TRANSFER_SINGLE_OWNER'
-  if (isBlankParagraphText(otherText)) return 'TRANSFER_SINGLE_OWNER'
   return 'RETIRE_EMPTY_PARA_OWNER'
+}
+
+export interface BlankMergeOwnerRetirementInput {
+  /** Side that carries the single canonical owner record. */
+  ownerSide: 'left' | 'right' | 'none'
+  /** Side whose paragraph the merge actually removes. */
+  removedSide: 'left' | 'right' | 'none'
+  leftText: string
+  rightText: string
+}
+
+/**
+ * Boundary-merge (1→0, existing survivor) rule.
+ *
+ * When BOTH sides are blank the survivor is just another blank line, so a record
+ * that sits on the removed blank line describes the deleted line — it must be
+ * retired instead of being transferred onto the surviving blank line.
+ *
+ * A record that already sits on the SURVIVING blank line is kept: that indent is
+ * still attached to the line the user sees.
+ */
+export function shouldRetireBlankMergeOwner(
+  input: BlankMergeOwnerRetirementInput,
+): boolean {
+  if (input.ownerSide === 'none' || input.removedSide === 'none') return false
+  if (input.ownerSide !== input.removedSide) return false
+  return isBlankParagraphText(input.leftText) && isBlankParagraphText(input.rightText)
+}
+
+/**
+ * Delete a text range through Typora's OWN selection deletion.
+ *
+ * WHY: the `..` / `。。` command token lives in Typora's source model and is only
+ * mirrored in the DOM. Editing the text node directly clears the DOM but NOT the
+ * model; a later native boundary merge then writes the stale token into the
+ * previous paragraph (real-GUI defect: the body ended with "。。"). Deleting the
+ * same range through `UserOp.backspaceHandler(..., 'delSelection')` updates the
+ * model exactly like a real user deletion.
+ *
+ * The caller MUST re-check the DOM afterwards: `true` only means "the editor API
+ * accepted the deletion", not "the token is gone".
+ *
+ * @returns false when no editor API is available (caller falls back to the DOM edit).
+ */
+export function deleteTextThroughEditorSelection(
+  node: Text,
+  startOffset: number,
+  length: number,
+  editorApi: unknown,
+): boolean {
+  try {
+    if (length <= 0) return false
+    const doc = node.ownerDocument
+    if (!doc) return false
+    const selection = doc.getSelection()
+    if (!selection) return false
+    const api = editorApi as {
+      UserOp?: {
+        backspaceHandler?: (
+          editor: unknown,
+          event: Event | null,
+          kind: 'delSelection' | 'Backspace' | 'Delete',
+        ) => void
+      }
+    } | null | undefined
+    const userOp = api?.UserOp
+    const handler = userOp?.backspaceHandler
+    if (typeof handler !== 'function') return false
+    const content = node.textContent ?? ''
+    if (startOffset < 0 || startOffset + length > content.length) return false
+    const range = doc.createRange()
+    range.setStart(node, startOffset)
+    range.setEnd(node, startOffset + length)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    handler.call(userOp, api, null, 'delSelection')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Drop ZERO-LENGTH text children of a paragraph.
+ *
+ * Typora's own selection deletion leaves an empty text node behind, so the
+ * paragraph is `<p>""</p>` instead of the native `<p></p>`. The empty-block
+ * normalizer only treats a paragraph with NO child nodes as native empty and
+ * rejects everything else as unsafe — dropping the empty text node restores the
+ * accepted shape. Whitespace text is deliberately NOT touched (the predicate
+ * treats it as content).
+ *
+ * @returns number of removed nodes.
+ */
+export function dropZeroLengthTextChildren(paragraph: HTMLElement): number {
+  let removed = 0
+  for (const child of Array.from(paragraph.childNodes)) {
+    if (child.nodeType === 3 && (child.textContent ?? '').length === 0) {
+      paragraph.removeChild(child)
+      removed++
+    }
+  }
+  return removed
 }
 
 /**

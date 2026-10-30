@@ -131,6 +131,9 @@ import {
   resolveEffectiveParagraphIndent,
   resolveMergeSemantic,
   resolveMergeOwnerRetirement,
+  shouldRetireBlankMergeOwner,
+  deleteTextThroughEditorSelection,
+  dropZeroLengthTextChildren,
   isBlankParagraphText,
   computeParagraphLogicalCaretOffset,
   resolveMergeWinnerSide,
@@ -7349,14 +7352,20 @@ export class HeadingNumberingService {
   }
 
   /**
-   * Clear the command token from a paragraph by modifying only the text node.
+   * Clear the command token from a paragraph.
    *
-   * Must preserve Typora's inline DOM structure (<span>, etc.).
+   * Two layers, in this order:
+   * 1. Delete the token through Typora's OWN selection deletion
+   *    (`UserOp.backspaceHandler(..., 'delSelection')`). The token lives in
+   *    Typora's source model; a DOM-only edit leaves it there, and the next
+   *    native boundary merge writes the stale token into the previous paragraph
+   *    (real-GUI defect: the body ended with "。。").
+   * 2. Fall back to the direct text-node edit below when the editor API is not
+   *    available (unit tests) or did not remove the token.
+   *
+   * The DOM edit preserves Typora's inline DOM structure (<span>, etc.).
    * Does NOT use execCommand (unreliable in Typora).
    * Does NOT use textContent= replacement (destroys inline spans).
-   *
-   * Instead: finds the exact text node containing the token and
-   * replaces the token substring within that text node only.
    */
   private clearParagraphToken(paragraph: HTMLElement, token: '..' | '。。'): void {
     // Find the text node containing the token
@@ -7367,7 +7376,25 @@ export class HeadingNumberingService {
     const idx = content.indexOf(token)
     if (idx < 0) return
 
-    // Replace token within the text node — preserves all DOM structure
+    // Layer 1 — model-aware deletion. The node may be replaced by the editor, so
+    // re-resolve it before deciding whether the fallback is still needed.
+    const editorApi = (globalThis as { editor?: unknown }).editor
+    if (deleteTextThroughEditorSelection(textNode, idx, token.length, editorApi)) {
+      const remainingNode = findTextNodeContaining(paragraph, token)
+      if (remainingNode) {
+        const remainingText = remainingNode.textContent ?? ''
+        const remainingIdx = remainingText.indexOf(token)
+        if (remainingIdx >= 0) {
+          remainingNode.textContent = remainingText.slice(0, remainingIdx) + remainingText.slice(remainingIdx + token.length)
+        }
+      }
+      // Typora's deletion leaves a zero-length text node; the empty-block
+      // normalizer only accepts the native `<p></p>` shape.
+      dropZeroLengthTextChildren(paragraph)
+      return
+    }
+
+    // Layer 2 — direct DOM edit (original behaviour).
     textNode.textContent = content.slice(0, idx) + content.slice(idx + token.length)
   }
 
@@ -11060,6 +11087,14 @@ export class HeadingNumberingService {
     const rightBlank = isBlankParagraphText(intent.rightText)
     const blankSide: 'left' | 'right' | 'none' =
       leftBlank !== rightBlank ? (leftBlank ? 'left' : 'right') : 'none'
+
+    // Both-blank rule inputs: which side holds the single record, and which side
+    // the merge actually removes (the survivor is the opposite one).
+    const ownerRecordSide: 'left' | 'right' | 'none' =
+      intent.leftRecordId ? 'left' : intent.rightRecordId ? 'right' : 'none'
+    const removedSide: 'left' | 'right' | 'none' =
+      removedEl === intent.leftElement ? 'left' : removedEl === intent.rightElement ? 'right' : 'none'
+
     const semanticWinnerSide = resolveMergeWinnerSide(result.reason)
     const winnerSide: 'left' | 'right' | 'none' =
       blankSide !== 'none' && semanticWinnerSide === blankSide
@@ -11080,9 +11115,17 @@ export class HeadingNumberingService {
 
     // Single-owner + blank-owner case: no body record exists, so the survivor
     // falls back to AUTO (defaultIndent), never to a forced flush.
-    const emptyOwnerRetired = provenRecordCount === 1
+    // Both-sides-blank is the same situation for the surviving blank line: the
+    // record sits on the removed blank line, so it retires instead of jumping.
+    const emptyOwnerRetired = (provenRecordCount === 1
       && blankSide !== 'none'
-      && (intent.leftRecordId ? 'left' : 'right') === blankSide
+      && (intent.leftRecordId ? 'left' : 'right') === blankSide)
+      || shouldRetireBlankMergeOwner({
+        ownerSide: ownerRecordSide,
+        removedSide,
+        leftText: intent.leftText,
+        rightText: intent.rightText,
+      })
     if (emptyOwnerRetired) {
       const retiredRecordId = (intent.leftRecordId ?? intent.rightRecordId)!
       this.canonicalRegistry.retireRecord(

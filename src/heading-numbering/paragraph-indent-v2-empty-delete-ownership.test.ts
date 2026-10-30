@@ -21,6 +21,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   resolveMergeOwnerRetirement,
+  shouldRetireBlankMergeOwner,
+  deleteTextThroughEditorSelection,
+  dropZeroLengthTextChildren,
   resolveMergeSemantic,
   isBlankParagraphText,
   computeParagraphLogicalCaretOffset,
@@ -73,12 +76,17 @@ describe('EMPTY-DELETE-1 被删除的空缩进段落：记录退役，不转移�
     })).toBe('TRANSFER_SINGLE_OWNER')
   })
 
-  it('两侧都为空 → 来源不可证明，保持原行为（TRANSFER）', () => {
+  it('两侧都为空 → 同样 RETIRE（缩进不得跳到另一条空行上）', () => {
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'right',
       leftText: '',
       rightText: '',
-    })).toBe('TRANSFER_SINGLE_OWNER')
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'left',
+      leftText: '',
+      rightText: '',
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
   })
 
   it('两侧都有正文 → 不适用空段落规则（TRANSFER）', () => {
@@ -251,5 +259,115 @@ describe('EMPTY-DELETE-3 光标期望值必须是“段落逻辑偏移”而不�
   it('空段落偏移恒为 0', () => {
     const p = document.createElement('p')
     expect(computeParagraphLogicalCaretOffset(p, p, 0)).toBe(0)
+  })
+})
+
+describe('EMPTY-DELETE-6 两侧都空白：只退役“被删那一行”的记录', () => {
+  it('记录在被删的右侧空行 → RETIRE', () => {
+    expect(shouldRetireBlankMergeOwner({
+      ownerSide: 'right',
+      removedSide: 'right',
+      leftText: '',
+      rightText: '',
+    })).toBe(true)
+  })
+
+  it('记录在存活的左侧空行 → 保留（不退役）', () => {
+    expect(shouldRetireBlankMergeOwner({
+      ownerSide: 'left',
+      removedSide: 'right',
+      leftText: '',
+      rightText: '',
+    })).toBe(false)
+  })
+
+  it('任一侧有正文 → 不适用该规则', () => {
+    expect(shouldRetireBlankMergeOwner({
+      ownerSide: 'right',
+      removedSide: 'right',
+      leftText: '正文',
+      rightText: '',
+    })).toBe(false)
+    expect(shouldRetireBlankMergeOwner({
+      ownerSide: 'left',
+      removedSide: 'left',
+      leftText: '',
+      rightText: '正文',
+    })).toBe(false)
+  })
+
+  it('没有记录 / 无法判定被删侧 → 不退役', () => {
+    expect(shouldRetireBlankMergeOwner({
+      ownerSide: 'none',
+      removedSide: 'right',
+      leftText: '',
+      rightText: '',
+    })).toBe(false)
+    expect(shouldRetireBlankMergeOwner({
+      ownerSide: 'right',
+      removedSide: 'none',
+      leftText: '',
+      rightText: '',
+    })).toBe(false)
+  })
+})
+
+describe('EMPTY-DELETE-7 token 消费必须同时更新 Typora 模型', () => {
+  it('通过编辑器选择删除时，选区覆盖 token 且返回 true', () => {
+    const p = document.createElement('p')
+    const span = document.createElement('span')
+    span.className = 'md-plain md-expand'
+    const text = document.createTextNode('。。')
+    span.appendChild(text)
+    p.appendChild(span)
+    document.body.appendChild(p)
+
+    let captured: { text: string; kind: string } | null = null
+    const editorApi = {
+      UserOp: {
+        backspaceHandler: (_editor: unknown, _event: Event | null, kind: 'delSelection') => {
+          const sel = document.getSelection()!
+          captured = { text: String(sel), kind }
+          const range = sel.getRangeAt(0)
+          range.deleteContents()
+        },
+      },
+    }
+
+    const ok = deleteTextThroughEditorSelection(text, 0, 2, editorApi)
+    expect(ok).toBe(true)
+    expect(captured).toEqual({ text: '。。', kind: 'delSelection' })
+    expect(p.textContent).toBe('')
+
+    p.remove()
+  })
+
+  it('没有编辑器 API 时返回 false（调用方回退到直接 DOM 编辑）', () => {
+    const text = document.createTextNode('。。')
+    expect(deleteTextThroughEditorSelection(text, 0, 2, undefined)).toBe(false)
+    expect(deleteTextThroughEditorSelection(text, 0, 2, {})).toBe(false)
+  })
+
+  it('越界偏移不执行删除', () => {
+    const text = document.createTextNode('。。')
+    const calls: string[] = []
+    const editorApi = { UserOp: { backspaceHandler: () => calls.push('called') } }
+    expect(deleteTextThroughEditorSelection(text, 1, 5, editorApi)).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('删除后残留的零长度文本节点会被清掉（恢复原生空段落形状）', () => {
+    const p = document.createElement('p')
+    p.appendChild(document.createTextNode(''))
+    expect(p.childNodes.length).toBe(1)
+    expect(dropZeroLengthTextChildren(p)).toBe(1)
+    expect(p.childNodes.length).toBe(0)
+  })
+
+  it('空白文本不会被当作可清理节点', () => {
+    const p = document.createElement('p')
+    p.appendChild(document.createTextNode(' '))
+    expect(dropZeroLengthTextChildren(p)).toBe(0)
+    expect(p.childNodes.length).toBe(1)
   })
 })
