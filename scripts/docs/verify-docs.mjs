@@ -75,11 +75,14 @@ const counters = {
   STALE_PROMPT_REFERENCE_COUNT: 0,
   DUPLICATE_CANONICAL_DOC_AUTHORITY_COUNT: 0,
   PROMPT_MD_REMAINING_COUNT: 0,
-  LOCAL_EVIDENCE_REFERENCE_COUNT: 0,
+  LOCAL_RUNTIME_REFERENCE_COUNT: 0,
 }
 const problems = []
 
 const PROMPT_PATH_RE = /docs\/prompts|prompts\/(pending|archive)|\.prompt-backup/
+// Git-ignored runtime roots that formal docs may legitimately cite but that never
+// exist in a published clone (see .gitignore: `/runtime/`, `test/vault/.typora/`).
+const LOCAL_RUNTIME_PREFIXES = ['runtime/', 'test/vault/.typora/']
 const PATH_EXT_RE = /\.(ts|tsx|js|mjs|cjs|json|scss|css|ps1|md|yml|yaml)$/i
 const PATH_IGNORE_RE = /[*<>…]|\.\.\.|\s/
 
@@ -153,11 +156,10 @@ for (const rel of files) {
     // A migration / cleanup record legitimately lists DELETED paths as provenance,
     // so its path tokens are never existence-checked.
     if (isProvenance) continue
-    // `runtime/` is local-only evidence by repository policy (it is git-ignored
-    // and never published). Formal docs may cite it, but a fresh clone will not
-    // contain it, so existence is counted for visibility, never enforced.
-    if (token.startsWith('runtime/')) {
-      counters.LOCAL_EVIDENCE_REFERENCE_COUNT++
+    // Local-only runtime roots: git-ignored by policy, never present in a
+    // published clone. Formal docs may cite them, so count but never enforce.
+    if (LOCAL_RUNTIME_PREFIXES.some((p) => token.startsWith(p))) {
+      counters.LOCAL_RUNTIME_REFERENCE_COUNT++
       continue
     }
     const isSrc = token.startsWith('src/')
