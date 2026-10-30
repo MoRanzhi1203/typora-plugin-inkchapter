@@ -75,6 +75,7 @@ const counters = {
   STALE_PROMPT_REFERENCE_COUNT: 0,
   DUPLICATE_CANONICAL_DOC_AUTHORITY_COUNT: 0,
   PROMPT_MD_REMAINING_COUNT: 0,
+  LOCAL_EVIDENCE_REFERENCE_COUNT: 0,
 }
 const problems = []
 
@@ -152,9 +153,16 @@ for (const rel of files) {
     // A migration / cleanup record legitimately lists DELETED paths as provenance,
     // so its path tokens are never existence-checked.
     if (isProvenance) continue
+    // `runtime/` is local-only evidence by repository policy (it is git-ignored
+    // and never published). Formal docs may cite it, but a fresh clone will not
+    // contain it, so existence is counted for visibility, never enforced.
+    if (token.startsWith('runtime/')) {
+      counters.LOCAL_EVIDENCE_REFERENCE_COUNT++
+      continue
+    }
     const isSrc = token.startsWith('src/')
     const isScript = token.startsWith('scripts/')
-    const isFixture = token.startsWith('test/') || token.startsWith('runtime/')
+    const isFixture = token.startsWith('test/')
     if (!isSrc && !isScript && !isFixture) continue
     if (!PATH_EXT_RE.test(token)) continue
     if (!exists(path.resolve(root, token))) {
