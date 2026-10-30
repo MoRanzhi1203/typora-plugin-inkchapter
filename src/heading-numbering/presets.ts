@@ -8,7 +8,13 @@ import type {
   NumberTokenStyle,
   LevelReferenceAppearance,
 } from './heading-types'
-import { HEADING_LEVELS, createDefaultLevelTemplate, createDefaultReferenceAppearance, generateStableId } from './heading-types'
+import {
+  HEADING_LEVELS,
+  DEFAULT_HEADING_LEVEL_POSITION,
+  createDefaultLevelTemplate,
+  createDefaultReferenceAppearance,
+  generateStableId,
+} from './heading-types'
 
 // ── Preset metadata ──────────────────────────────────────
 
@@ -104,6 +110,7 @@ function defaultLevelStyle(lv: HeadingLevel, overrides: Partial<HeadingLevelStyl
     multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     numberTitleSpacing: 'space' as const,
+    position: { ...DEFAULT_HEADING_LEVEL_POSITION },
     ...overrides,
   }
 }
@@ -817,6 +824,7 @@ function deepClonePresetLevels(
             : undefined,
         })),
       },
+      position: s.position ? { ...s.position } : { ...DEFAULT_HEADING_LEVEL_POSITION },
     }
   }
   return cloned

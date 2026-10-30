@@ -21,7 +21,7 @@ import type {
   BuiltInPresetId,
   NumberingFormatSource,
 } from './heading-types'
-import { BUILT_IN_PRESET_IDS } from './heading-types'
+import { BUILT_IN_PRESET_IDS, DEFAULT_HEADING_LEVEL_POSITION } from './heading-types'
 
 // ── ID generation ───────────────────────────────────────
 
@@ -77,6 +77,7 @@ function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
       })) as any,
     },
     numberTitleSpacing: s.numberTitleSpacing ?? 'space',
+    position: s.position ? { ...s.position } : { ...DEFAULT_HEADING_LEVEL_POSITION },
   }
 }
 

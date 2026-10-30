@@ -1,6 +1,6 @@
 import type { InkChapterSettings, InkChapterUiSettings } from './settings-model'
 import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary, ParagraphLayoutSettings } from '../heading-numbering/heading-types'
-import { DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
+import { DEFAULT_HEADING_LEVEL_POSITION, DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 import { DEFAULT_CAPTION_SETTINGS } from '../heading-numbering/caption-system'
 
@@ -21,6 +21,7 @@ for (const lv of [1, 2, 3, 4, 5, 6] as HeadingLevel[]) {
     levelTemplate: { ...defaultTemplate },
     multilevelFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
     contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
+    position: { ...DEFAULT_HEADING_LEVEL_POSITION },
   }
 }
 

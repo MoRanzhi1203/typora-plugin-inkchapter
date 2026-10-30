@@ -20,8 +20,16 @@ import type {
   HeadingNumberingDocumentOverride,
   NumberTitleSpacing,
   ParagraphLayoutSettings,
+  HeadingLevelPosition,
+  NumberAlignment,
 } from '../heading-numbering/heading-types'
-import { HEADING_LEVELS, generateStableId, clampMaxLevel, BUILT_IN_PRESET_IDS } from '../heading-numbering/heading-types'
+import {
+  HEADING_LEVELS,
+  DEFAULT_HEADING_LEVEL_POSITION,
+  generateStableId,
+  clampMaxLevel,
+  BUILT_IN_PRESET_IDS,
+} from '../heading-numbering/heading-types'
 import { resolveHeadingStructure, resolveStyleSlot, resolvePhysicalHeadingForStyleSlot, validateHeadingStructure } from '../heading-numbering/heading-structure'
 import type { HeadingStructureMode, StyleSlot } from '../heading-numbering/heading-structure'
 import {
@@ -2722,6 +2730,35 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Format summary using multilevel model
     const summary = el('div', 'inkchapter-advanced-summary', section)
     summary.textContent = multilevelFormatSummary(activeFmt, style.levelTemplate)
+
+    // ── Number position & layout (Phase 4) ──────────
+    const posHeader = el('div', 'inkchapter-format-header', section)
+    posHeader.textContent = '四、编号位置'
+
+    const posHint = el('div', 'inkchapter-advanced-summary', section)
+    posHint.textContent = '编号区域宽度为 0 时保持原生内联宽度（默认，不改变现有外观）。'
+
+    const pos = style.position ?? DEFAULT_HEADING_LEVEL_POSITION
+    const updatePosition = (patch: Partial<HeadingLevelPosition>): void => {
+      this.numberingService.updateLevelStyle(lv, { position: { ...pos, ...patch } })
+      this.onshow()
+    }
+
+    this.addCustomSelect(section, '编号对齐', buildNumberAlignmentOptions(), pos.numberAlignment, (val) => {
+      updatePosition({ numberAlignment: val as NumberAlignment })
+    })
+
+    this.addCustomDecimal(section, '编号区域宽度 (em)', pos.numberBoxWidthEm, 0, 12, 0.5, (val) => {
+      updatePosition({ numberBoxWidthEm: val })
+    })
+
+    this.addCustomDecimal(section, '编号后间距 (em)', pos.numberTextGapEm, 0, 6, 0.1, (val) => {
+      updatePosition({ numberTextGapEm: val })
+    })
+
+    this.addCustomCheckbox(section, '长标题换行后与正文起点对齐', pos.alignWrappedLines, (checked) => {
+      updatePosition({ alignWrappedLines: checked })
+    })
   }
 
   // ── Multilevel chip rendering ────────────────────
@@ -3199,6 +3236,38 @@ export class HeadingNumberingSettingTab extends SettingTab {
       const n = parseInt(input.value, 10)
       if (!isNaN(n) && n >= min && n <= max) {
         onChange(n)
+      } else {
+        input.value = String(value)
+      }
+    }
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') input.blur()
+    }
+    row.appendChild(input)
+  }
+
+  /** Decimal (em) input — used by the number position box width / gap. */
+  private addCustomDecimal(
+    container: HTMLElement, label: string, value: number,
+    min: number, max: number, step: number,
+    onChange: (val: number) => void,
+    disabled = false,
+  ): void {
+    const row = el('div', 'inkchapter-custom-row', container)
+    const span = el('span', 'inkchapter-custom-col-label', row)
+    span.textContent = label
+    const input = document.createElement('input')
+    input.type = 'number'
+    input.value = String(value)
+    input.min = String(min)
+    input.max = String(max)
+    input.step = String(step)
+    input.disabled = disabled
+    input.style.width = '80px'
+    input.onblur = () => {
+      const n = parseFloat(input.value)
+      if (Number.isFinite(n) && n >= min && n <= max) {
+        onChange(Math.round(n * 10) / 10)
       } else {
         input.value = String(value)
       }
@@ -6495,6 +6564,14 @@ function getSampleToken(style: NumberTokenStyle): string {
     case 'circled': return '①'
     default: return '1'
   }
+}
+
+function buildNumberAlignmentOptions(): { value: string; label: string }[] {
+  return [
+    { value: 'left', label: '左对齐' },
+    { value: 'center', label: '居中' },
+    { value: 'right', label: '右对齐' },
+  ]
 }
 
 function buildRestartOptions(currentLevel: HeadingLevel): { value: string; label: string }[] {

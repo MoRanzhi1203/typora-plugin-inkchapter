@@ -409,6 +409,36 @@ body.ink-console-docked::after {
   content: attr(data-inkchapter-heading-number) "\00a0" !important;
 }
 
+/* ── Number position (Phase 4) ────────────────────────────
+ * Per-level alignment / box width / extra gap. The adapter writes the three
+ * custom properties ONLY when a level enables them; with the default position
+ * they are absent, so these declarations resolve to the pre-feature geometry:
+ * natural width, inherited alignment, no extra margin. */
+#write h1.inkchapter-numbered-heading::before,
+#write h2.inkchapter-numbered-heading::before,
+#write h3.inkchapter-numbered-heading::before,
+#write h4.inkchapter-numbered-heading::before,
+#write h5.inkchapter-numbered-heading::before,
+#write h6.inkchapter-numbered-heading::before {
+  min-width: var(--inkchapter-num-width, 0) !important;
+  text-align: var(--inkchapter-num-align, inherit) !important;
+  margin-right: var(--inkchapter-num-gap, 0) !important;
+}
+
+/* Wrapped-line alignment (hanging indent). Only active when the attribute is
+ * present; the indent equals the number box + gap, so a wrapped title line
+ * starts exactly where the title text starts. */
+#write h1.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h2.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h3.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h4.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h5.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"],
+#write h6.inkchapter-numbered-heading[data-inkchapter-wrap-align="true"] {
+  --inkchapter-num-advance: calc(var(--inkchapter-num-width, 0em) + var(--inkchapter-num-gap, 0em));
+  text-indent: calc(-1 * var(--inkchapter-num-advance)) !important;
+  padding-left: var(--inkchapter-num-advance) !important;
+}
+
 /* ── Paragraph indent ───────────────────────────────── */
 /* Effective visual indent-2 projection class.
    This is PURELY visual — NOT a semantic force-indent marker.
