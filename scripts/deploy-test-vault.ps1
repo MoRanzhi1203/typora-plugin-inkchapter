@@ -79,7 +79,7 @@ if (-not (Test-Path $ProjectMain)) { throw "PROJECT_MAIN_NOT_FOUND: $ProjectMain
 if (-not (Test-Path $ProjectCss))  { throw "PROJECT_CSS_NOT_FOUND: $ProjectCss" }
 if (-not (Test-Path $ManifestSrc)) { throw "PROJECT_MANIFEST_NOT_FOUND: $ManifestSrc" }
 
-$PluginId = (Get-Content $ManifestSrc -Raw | ConvertFrom-Json).id
+$PluginId = (Get-Content $ManifestSrc -Raw -Encoding UTF8 | ConvertFrom-Json).id
 if (-not $PluginId) { throw "MANIFEST_ID_MISSING: $ManifestSrc" }
 
 Write-Output "PROJECT_MAIN: $ProjectMain"
@@ -154,7 +154,7 @@ Write-Output "========================================"
 $coreVersion = "unknown"
 $loaderJson = Join-Path $GlobalRoot "loader.json"
 if (Test-Path $loaderJson) {
-    try { $coreVersion = (Get-Content $loaderJson -Raw | ConvertFrom-Json).coreVersion } catch { }
+    try { $coreVersion = (Get-Content $loaderJson -Raw -Encoding UTF8 | ConvertFrom-Json).coreVersion } catch { }
 }
 
 $globalPluginDir = Join-Path $GlobalRoot "plugins\$PluginId"
@@ -168,12 +168,12 @@ $candidates = @(
 $globalSettings = Join-Path $GlobalRoot "settings\plugins.json"
 $globalEnabled = $false
 if (Test-Path $globalSettings) {
-    try { $globalEnabled = [bool]((Get-Content $globalSettings -Raw | ConvertFrom-Json).$PluginId) } catch { }
+    try { $globalEnabled = [bool]((Get-Content $globalSettings -Raw -Encoding UTF8 | ConvertFrom-Json).$PluginId) } catch { }
 }
 $vaultSettings = Join-Path $ProjectRoot "test\vault\.typora\plugins.json"
 $vaultEnabled = $false
 if (Test-Path $vaultSettings) {
-    try { $vaultEnabled = [bool]((Get-Content $vaultSettings -Raw | ConvertFrom-Json).$PluginId) } catch { }
+    try { $vaultEnabled = [bool]((Get-Content $vaultSettings -Raw -Encoding UTF8 | ConvertFrom-Json).$PluginId) } catch { }
 }
 
 foreach ($c in $candidates) {
@@ -253,7 +253,7 @@ $globalConfigPath = Join-Path $GlobalSettingsDir "plugins.json"
 $enabled = @{}
 if (Test-Path $globalConfigPath) {
     try {
-        $existing = Get-Content $globalConfigPath -Raw | ConvertFrom-Json
+        $existing = Get-Content $globalConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($prop in $existing.PSObject.Properties) { $enabled[$prop.Name] = $prop.Value }
     } catch {
         Write-Output "GLOBAL_CONFIG_UNREADABLE: $globalConfigPath (rewriting)"
@@ -299,7 +299,7 @@ if (-not $crossRootMatch) {
 $runtimeLoadPath = Join-Path $GlobalRoot "inkchapter-runtime-load.json"
 if (Test-Path $runtimeLoadPath) {
     try {
-        $rl = Get-Content $runtimeLoadPath -Raw | ConvertFrom-Json
+        $rl = Get-Content $runtimeLoadPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $runningSha = [string]$rl.mainJsSha256
         $reloaded = ($runningSha -eq $gMainHash)
         Write-Output "GLOBAL_RUNNING_SHA256: $runningSha"
