@@ -7,6 +7,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -35,7 +36,36 @@ function walk(dir, out = []) {
 const toRel = (p) => path.relative(root, p).replace(/\\/g, '/')
 const exists = (p) => fs.existsSync(p)
 
-const files = walk(root).map(toRel).filter((r) => !SKIP_FILES.has(r)).sort()
+/**
+ * Documentation gates only apply to content that can actually be published.
+ *
+ * Local-only Trae prompts (for example `docs/prompts/pending/**`) are
+ * deliberately git-ignored: they are working notes, not repository content.
+ * Scanning them reported them as `PROMPT_MD_REMAINING_COUNT` / stale prompt
+ * references even though they never reach GitHub.
+ *
+ * `git check-ignore` never reports tracked paths, so a prompt file that is
+ * actually tracked is still scanned and still fails the gate.
+ */
+function selectGitIgnored(relPaths) {
+  if (relPaths.length === 0) return new Set()
+  try {
+    const out = execFileSync('git', ['check-ignore', '--stdin', '-z'], {
+      cwd: root,
+      input: relPaths.join('\0') + '\0',
+      encoding: 'utf8',
+    })
+    return new Set(out.split('\0').filter(Boolean))
+  } catch (error) {
+    // exit 1 = nothing ignored; anything else = not a git checkout → scan all
+    const out = typeof error?.stdout === 'string' ? error.stdout : ''
+    return new Set(out.split('\0').filter(Boolean))
+  }
+}
+
+const allFiles = walk(root).map(toRel).filter((r) => !SKIP_FILES.has(r)).sort()
+const localOnlyFiles = selectGitIgnored(allFiles)
+const files = allFiles.filter((r) => !localOnlyFiles.has(r))
 
 const counters = {
   DOC_BROKEN_LINK_COUNT: 0,
@@ -161,6 +191,7 @@ const labels = {
 
 console.log('=== InkChapter documentation verification ===')
 console.log(`scanned_markdown_files=${files.length}`)
+console.log(`local_only_markdown_files=${localOnlyFiles.size}`)
 for (const [k, v] of Object.entries(counters)) console.log(`${k}=${v}`)
 if (problems.length) {
   console.log('--- problems ---')
