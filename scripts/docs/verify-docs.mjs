@@ -7,6 +7,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -35,7 +36,36 @@ function walk(dir, out = []) {
 const toRel = (p) => path.relative(root, p).replace(/\\/g, '/')
 const exists = (p) => fs.existsSync(p)
 
-const files = walk(root).map(toRel).filter((r) => !SKIP_FILES.has(r)).sort()
+/**
+ * Documentation gates only apply to content that can actually be published.
+ *
+ * Local-only Trae prompts (for example `docs/prompts/pending/**`) are
+ * deliberately git-ignored: they are working notes, not repository content.
+ * Scanning them reported them as `PROMPT_MD_REMAINING_COUNT` / stale prompt
+ * references even though they never reach GitHub.
+ *
+ * `git check-ignore` never reports tracked paths, so a prompt file that is
+ * actually tracked is still scanned and still fails the gate.
+ */
+function selectGitIgnored(relPaths) {
+  if (relPaths.length === 0) return new Set()
+  try {
+    const out = execFileSync('git', ['check-ignore', '--stdin', '-z'], {
+      cwd: root,
+      input: relPaths.join('\0') + '\0',
+      encoding: 'utf8',
+    })
+    return new Set(out.split('\0').filter(Boolean))
+  } catch (error) {
+    // exit 1 = nothing ignored; anything else = not a git checkout → scan all
+    const out = typeof error?.stdout === 'string' ? error.stdout : ''
+    return new Set(out.split('\0').filter(Boolean))
+  }
+}
+
+const allFiles = walk(root).map(toRel).filter((r) => !SKIP_FILES.has(r)).sort()
+const localOnlyFiles = selectGitIgnored(allFiles)
+const files = allFiles.filter((r) => !localOnlyFiles.has(r))
 
 const counters = {
   DOC_BROKEN_LINK_COUNT: 0,
@@ -45,10 +75,14 @@ const counters = {
   STALE_PROMPT_REFERENCE_COUNT: 0,
   DUPLICATE_CANONICAL_DOC_AUTHORITY_COUNT: 0,
   PROMPT_MD_REMAINING_COUNT: 0,
+  LOCAL_RUNTIME_REFERENCE_COUNT: 0,
 }
 const problems = []
 
 const PROMPT_PATH_RE = /docs\/prompts|prompts\/(pending|archive)|\.prompt-backup/
+// Git-ignored runtime roots that formal docs may legitimately cite but that never
+// exist in a published clone (see .gitignore: `/runtime/`, `test/vault/.typora/`).
+const LOCAL_RUNTIME_PREFIXES = ['runtime/', 'test/vault/.typora/']
 const PATH_EXT_RE = /\.(ts|tsx|js|mjs|cjs|json|scss|css|ps1|md|yml|yaml)$/i
 const PATH_IGNORE_RE = /[*<>…]|\.\.\.|\s/
 
@@ -122,9 +156,15 @@ for (const rel of files) {
     // A migration / cleanup record legitimately lists DELETED paths as provenance,
     // so its path tokens are never existence-checked.
     if (isProvenance) continue
+    // Local-only runtime roots: git-ignored by policy, never present in a
+    // published clone. Formal docs may cite them, so count but never enforce.
+    if (LOCAL_RUNTIME_PREFIXES.some((p) => token.startsWith(p))) {
+      counters.LOCAL_RUNTIME_REFERENCE_COUNT++
+      continue
+    }
     const isSrc = token.startsWith('src/')
     const isScript = token.startsWith('scripts/')
-    const isFixture = token.startsWith('test/') || token.startsWith('runtime/')
+    const isFixture = token.startsWith('test/')
     if (!isSrc && !isScript && !isFixture) continue
     if (!PATH_EXT_RE.test(token)) continue
     if (!exists(path.resolve(root, token))) {
@@ -161,6 +201,7 @@ const labels = {
 
 console.log('=== InkChapter documentation verification ===')
 console.log(`scanned_markdown_files=${files.length}`)
+console.log(`local_only_markdown_files=${localOnlyFiles.size}`)
 for (const [k, v] of Object.entries(counters)) console.log(`${k}=${v}`)
 if (problems.length) {
   console.log('--- problems ---')

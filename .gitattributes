@@ -1,0 +1,4 @@
+# The repair-progress archive is hashed byte-for-byte by scripts/progress-archive.mjs
+# (each entry carries a sha256 of its body). Normalising line endings would change
+# those hashes, so this file must always be checked out with LF — on Windows too.
+docs/archive/PROGRESS-ARCHIVE.md text eol=lf
