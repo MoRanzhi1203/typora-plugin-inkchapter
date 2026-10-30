@@ -193,6 +193,13 @@ import {
   type PluginSelectionWriteAuditEntry,
 } from './paragraph-indent-manager'
 import {
+  canApplySingleStepBlankEnter,
+  applySingleStepBlankEnter,
+  shouldApplySingleStepBlankEnter,
+  type BlankRunEnterGateInput,
+  type BlankRunEnterMode,
+} from './blank-run-enter'
+import {
   resolveParagraphIndentEligibility,
   recordIndentEligibilityBlock,
 } from './paragraph-indent-eligibility'
@@ -7398,6 +7405,71 @@ export class HeadingNumberingService {
     textNode.textContent = content.slice(0, idx) + content.slice(idx + token.length)
   }
 
+  /**
+   * BLANK-RUN SINGLE-STEP ENTER (product requirement).
+   *
+   * One Enter on the LAST empty paragraph of an INTERIOR blank run must add ONE
+   * source blank line (3 -> 4), not two (3 -> 5). Typora's native split creates a
+   * second empty block, which serializes as +2 lines. The only model-level
+   * transaction that adds a single line is Typora's own soft-line-break insertion
+   * (the same transaction Shift+Enter uses); we issue it and suppress the native
+   * split, so the source model and the undo manager stay consistent.
+   */
+  private tryApplyBlankRunSingleStepEnter(
+    e: KeyboardEvent,
+    root: HTMLElement,
+    paragraph: HTMLElement | null,
+  ): boolean {
+    if (!paragraph) return false
+    const editorApi = (globalThis as {
+      editor?: { sourceView?: { inSourceMode?: boolean } }
+    }).editor
+    const mode: BlankRunEnterMode = editorApi == null
+      ? 'unknown'
+      : editorApi.sourceView?.inSourceMode === true ? 'source' : 'wysiwyg'
+
+    const selection = root.ownerDocument?.getSelection()
+    const isEmptyParagraphBlock = (el: Element | null): boolean =>
+      el != null && el.tagName === 'P' && getUserVisibleParagraphText(el as HTMLElement) === ''
+
+    const next = paragraph.nextElementSibling
+    let runStartPrev: Element | null = paragraph.previousElementSibling
+    while (isEmptyParagraphBlock(runStartPrev)) runStartPrev = runStartPrev!.previousElementSibling
+
+    const gate: BlankRunEnterGateInput = {
+      mode,
+      isComposing: e.isComposing,
+      isCollapsedSelection: selection?.isCollapsed === true,
+      paragraphVisibleText: getUserVisibleParagraphText(paragraph),
+      paragraphIsTopLevelBlock: paragraph.parentElement === root,
+      paragraphHasSpecialAncestor: paragraph.closest(
+        'li, blockquote, pre, table, .md-table, .md-math-block, .md-figure, .md-def-footnote, .md-def-link, .md-html-block',
+      ) != null,
+      isLastEmptyParagraphOfRun: !isEmptyParagraphBlock(next),
+      runIsFollowedByContent: next != null && !isEmptyParagraphBlock(next),
+      runIsPrecededByContent: runStartPrev != null,
+    }
+    if (!shouldApplySingleStepBlankEnter(gate)) return false
+    if (!canApplySingleStepBlankEnter(editorApi)) return false
+
+    const cid = paragraph.getAttribute('cid')
+    // Issue the native transaction FIRST; suppress the default only when the
+    // editor really performed it, so a failed adapter never swallows the Enter.
+    const applied = applySingleStepBlankEnter(editorApi, cid, 0)
+    if (applied) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    emitRuntimeAudit('BLANK-RUN-ENTER-SINGLE-STEP', {
+      cid: cid ?? 'none',
+      applied,
+      mode,
+      visibleText: gate.paragraphVisibleText,
+      runFollowedByContent: gate.runIsFollowedByContent,
+    })
+    return applied
+  }
+
   /** Place caret at the start of a paragraph, handling empty/BR/text node. */
   private placeCaretInParagraph(paragraph: HTMLElement): CaretWriteResult {
     const result: CaretWriteResult = {
@@ -11835,6 +11907,12 @@ export class HeadingNumberingService {
       }
 
       const handled = this.tryStartEnterIndentTransaction(e, root)
+      // Blank-run single-step Enter: only when the indent command did not take
+      // over. Suppresses the native +2 split for the LAST empty line of an
+      // interior blank run (3 -> 4 instead of 3 -> 5).
+      const blankRunSingleStep = handled
+        ? false
+        : this.tryApplyBlankRunSingleStepEnter(e, root, preParagraph)
 
       // P0-C routing audit — locate SPECIAL→NORMAL_ENTER divergence without modifying NormalEnter.
       if (admissionDecision === 'ALLOW_SPECIAL_COMMAND') {
@@ -11864,13 +11942,14 @@ export class HeadingNumberingService {
         })
       }
 
-      if (!handled) {
+      if (!handled && !blankRunSingleStep) {
         this.beginTrustedUserIntent('NORMAL_ENTER', 'keydown', 'Enter')
       }
 
       // ── P0 §3.5 — 有界、只读的「插件是否干预原生 Enter 事件链」取证 ──
-      // 用于区分「原生 pressReturn 单次」与「被插件事件链干预后二次执行」。仅记录真实事实，
-      // 不做任何 preventDefault/stopPropagation/二次派发（本路径自始至终不干预）。
+      // 用于区分「原生 pressReturn 单次」与「被插件事件链干预后二次执行」。
+      // 本审计只记录事实；实际干预仅发生在 BLANK-RUN 单步接管（defaultPrevented 会如实反映），
+      // 从不二次派发合成 Enter。
       if (isRealEnter) {
         emitRuntimeAudit('ENTER-PLUGIN-INTERVENTION-AUDIT', {
           key: e.key,
