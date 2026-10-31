@@ -10992,12 +10992,30 @@ export class HeadingNumberingService {
           removedSide: replayRemovedSide,
         })
 
-      if (effectiveOwnership === 'RETIRE_EMPTY_PARA_OWNER') {
-        // ── Empty Paragraph Deletion Ownership Rule (P0) ──
-        // The deleted paragraph was PURE BLANK; all surviving visible text comes
-        // from the other side. Its explicit override belongs to the line the user
+      // ── P0-2 non-empty variant ──
+      // The user's FIRST Backspace explicitly flushed this paragraph (stage
+      // recorded force-indent → force-flush) and the SECOND Backspace now merges
+      // it away. The cancelled indent belongs to the deleted line: retire it
+      // instead of transferring it onto the survivor. The survivor keeps its own
+      // (auto) semantic, and Undo can restore the flushed stage from the ledger.
+      const flushedStageRecordRemoved = this.indentStageActive != null
+        && this.indentStageActive.recordId === singleOwner.recordId
+        // The registry snapshot still carries the record's creation-time mode;
+        // the DOM mode is the authoritative post-Backspace semantic.
+        && getParagraphIndentMode(singleOwner.element) === 'force-flush'
+        && (removedSide === 'none' || ownerSide === removedSide)
+      const retireReason = flushedStageRecordRemoved
+        ? 'P02_FLUSHED_PARA_RETIRED'
+        : 'SINGLE_OWNER_EMPTY_PARA_RETIRED'
+
+      if (flushedStageRecordRemoved || effectiveOwnership === 'RETIRE_EMPTY_PARA_OWNER') {
+        // ── Deleted-line Ownership Rule (P0 / P0-2) ──
+        // The deleted paragraph's explicit override belongs to the line the user
         // just deleted: retire it — never transfer it onto the body paragraph and
-        // never let the next rehydrate round resurrect it.
+        // never let the next rehydrate round resurrect it. Two cases reach here:
+        //   - a pure-blank explicit paragraph (legacy P0), or
+        //   - a non-empty paragraph the user flushed with the FIRST Backspace and
+        //     then merged with the SECOND (P0-2 non-empty variant).
         this.canonicalRegistry.retireRecord(
           singleOwner.recordId,
           'merge-empty-paragraph-deleted',
@@ -11010,7 +11028,7 @@ export class HeadingNumberingService {
           loserRecordId: singleOwner.recordId,
           winnerRecordId: 'none',
           decision: 'RETIRE_EMPTY_PARA_OWNER',
-          mergeReason: 'SINGLE_OWNER_EMPTY_PARA_RETIRED',
+          mergeReason: retireReason,
           ownerSide,
         })
 
@@ -11086,7 +11104,7 @@ export class HeadingNumberingService {
           semanticWinner: 'auto',
           winnerRecordId: 'none',
           loserRecordId: singleOwner.recordId,
-          mergeReason: 'SINGLE_OWNER_EMPTY_PARA_RETIRED',
+          mergeReason: retireReason,
           recordCountBefore: canonicalOwnerCount,
           awaitingCount: this.canonicalRegistry.getAwaitingCount(),
           caretOffsetCorrect: retireCaretOffset === contentExpectation.expectedCaretOffset,
@@ -12395,23 +12413,24 @@ export class HeadingNumberingService {
 
       // ── PF4: Boundary paragraph merge priority over BACKSPACE-REVERSE ──
       // When a previous mergeable paragraph exists, Backspace at paragraph start
-      // normally merges (native). P0-2 exception: a force-indent EMPTY paragraph
-      // at its logical start consumes the FIRST Backspace to cancel its explicit
-      // indent (force-indent → force-flush) without deleting/merging. The second
-      // Backspace then falls through to the native boundary merge below.
+      // normally merges (native). P0-2 exception: a force-indent paragraph at its
+      // logical start consumes the FIRST Backspace to cancel its explicit indent
+      // (force-indent → force-flush) without deleting/merging. This holds for
+      // BOTH empty and non-empty explicit-indent paragraphs — the indent is always
+      // removed before any boundary merge. The second Backspace then falls through
+      // to the native boundary merge below.
       const settings = this.getParagraphLayoutSettings()
       const preCtx = shouldConsumeBackspaceForIndentRemoval(
         root,
         settings,
         this.isInComposition || e.isComposing,
       )
-      const forceIndentEmptyAtStart = preCtx != null
+      const forceIndentAtStart = preCtx != null
         && preCtx.paragraph != null
         && preCtx.caretAtLogicalStart
         && preCtx.mode === 'force-indent'
-        && getUserVisibleParagraphText(preCtx.paragraph) === ''
 
-      if (!forceIndentEmptyAtStart && this.armBoundaryMergeIntent('Backspace')) {
+      if (!forceIndentAtStart && this.armBoundaryMergeIntent('Backspace')) {
         emitRuntimeAudit('BACKSPACE-ADMISSION', {
           decision: 'ALLOW_NATIVE_BOUNDARY_MERGE',
           intentEpoch: this.userIntentEpoch,
