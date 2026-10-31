@@ -151,6 +151,15 @@ function captionEls(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>('.inkchapter-caption'))
 }
 
+/** P0-1 — code captions live on the PRE; every caption host carries the marker. */
+function captionHosts(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-inkchapter-caption]'))
+}
+
+function captionText(el: HTMLElement): string {
+  return el.getAttribute('data-inkchapter-caption-label') ?? el.textContent ?? ''
+}
+
 let services: CaptionService[] = []
 
 beforeEach(() => {
@@ -183,19 +192,21 @@ describe('CaptionService orchestration', () => {
     svc.setCaption('figure', figureTarget, '系统架构')
     svc.setCaption('code', codeTarget, '初始化逻辑')
 
-    const els = captionEls(root)
-    const text = els.map(e => e.textContent)
+    const hosts = captionHosts(root)
+    const text = hosts.map(captionText)
     expect(text).toContain('表 1 实验结果')
     expect(text).toContain('图 1 系统架构')
     expect(text).toContain('代码 1 初始化逻辑')
 
     // Position: table caption before table, figure caption after image <p>.
+    const els = captionEls(root)
     const tableCaption = els.find(e => e.textContent!.startsWith('表'))!
     const figureCaption = els.find(e => e.textContent!.startsWith('图'))!
-    const codeCaption = els.find(e => e.textContent!.startsWith('代码'))!
     expect(tableCaption.nextElementSibling).toBe(tb)
     expect(figureCaption.previousElementSibling).toBe(im.closest('p'))
-    expect(codeCaption.nextElementSibling).toBe(cd)
+    // Code caption is hosted ON the code block itself (no sibling DIV).
+    expect(cd.getAttribute('data-inkchapter-caption')).toBe('true')
+    expect(cd.getAttribute('data-inkchapter-caption-type')).toBe('code')
   })
 
   it('all enabled live targets participate; unnamed targets get number-only caption', () => {
@@ -431,7 +442,7 @@ describe('CaptionService orchestration', () => {
     services.push(svc)
     svc.setCaption('code', svc.resolveTargetForElement(cd2)!, '初始化逻辑')
 
-    expect(captionEls(root).map(e => e.textContent)).toEqual(['代码 1', '代码 2 初始化逻辑'])
+    expect(captionHosts(root).map(captionText)).toEqual(['代码 1', '代码 2 初始化逻辑'])
   })
 
   it('enabled=false hides all captions; re-enable restores', () => {
@@ -507,7 +518,7 @@ describe('CaptionService orchestration', () => {
     const svc = createService(root, 'doc-a')
     services.push(svc)
 
-    expect(captionEls(root).map(e => e.textContent)).toEqual(['代码 1', '代码 2'])
+    expect(captionHosts(root).map(captionText)).toEqual(['代码 1', '代码 2'])
     // The math editor's internal PRE must never carry a code caption.
     expect(math.querySelector('[data-inkchapter-caption]')).toBeNull()
     void codeA; void codeB
@@ -613,7 +624,7 @@ describe('CaptionService orchestration', () => {
     services.push(svc1)
     svc1.setCaption('code', svc1.resolveTargetForElement(root1.querySelectorAll('pre')[0])!, '初始化')
     svc1.setCaption('code', svc1.resolveTargetForElement(root1.querySelectorAll('pre')[1])!, '清理')
-    expect(captionEls(root1).map(e => e.textContent)).toEqual(['代码 1 初始化', '代码 2 清理'])
+    expect(captionHosts(root1).map(captionText)).toEqual(['代码 1 初始化', '代码 2 清理'])
 
     document.body.innerHTML = ''
     const root2 = makeRoot()
@@ -622,7 +633,7 @@ describe('CaptionService orchestration', () => {
     const svc2 = createService(root2, 'doc-a')
     services.push(svc2)
 
-    expect(captionEls(root2).map(e => e.textContent)).toEqual(['代码 1 初始化', '代码 2 清理'])
+    expect(captionHosts(root2).map(captionText)).toEqual(['代码 1 初始化', '代码 2 清理'])
   })
 
   it('duplicate tables keep independent names', () => {

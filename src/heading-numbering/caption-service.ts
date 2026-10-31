@@ -1956,7 +1956,7 @@ export class CaptionService {
     const eventTargetTag = captionEl.tagName
     const eventTargetClass = String(captionEl.className || '').slice(0, 60)
     const captionType = captionEl.getAttribute('data-inkchapter-caption-type') ?? ''
-    const captionText = captionEl.textContent ?? ''
+    const captionText = captionEl.getAttribute('data-inkchapter-caption-label') ?? captionEl.textContent ?? ''
     const targetKey = captionEl.getAttribute('data-inkchapter-caption-target-key') ?? ''
 
     const owner = this.adapter.resolveCaptionOwnerRoot(captionEl)

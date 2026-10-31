@@ -18,6 +18,7 @@ import {
   collectCanonicalCaptionProjections,
   getCanonicalCaptionId,
   getCanonicalCaptionKind,
+  getCanonicalCaptionLabel,
   getCanonicalCaptionOwnerRoot,
   getCanonicalCaptionTitle,
 } from '../heading-numbering/caption-dom-adapter'
@@ -146,7 +147,7 @@ export function computeCaptionIntegrityDiagnostics(input: CaptionIntegrityInput)
     const captionId = getCanonicalCaptionId(caption)
     if (captionId === '') continue // an id-less projection cannot be located; skip
     const owner = getCanonicalCaptionOwnerRoot(caption)
-    const label = caption.textContent ?? ''
+    const label = getCanonicalCaptionLabel(caption)
 
     if (!owner) {
       // ── §8.1 ORPHAN — ONE diagnostic per unbound caption. Never adopt a

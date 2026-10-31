@@ -52,6 +52,14 @@ const CAPTION_ID_ATTR = 'data-inkchapter-caption-id'
 const CAPTION_TYPE_ATTR = 'data-inkchapter-caption-type'
 const CAPTION_TITLE_ATTR = 'data-inkchapter-caption-title'
 const CAPTION_TARGET_KEY_ATTR = 'data-inkchapter-caption-target-key'
+/**
+ * P0-1 — CODE captions are rendered as a PRE attribute + CSS ::before, NOT as a
+ * sibling DIV. A bare caption DIV directly before `pre.md-fences` makes Typora
+ * re-normalise the end block after Enter (SECOND SPLIT_1_TO_2 → one extra blank
+ * line). The PRE itself is an element Typora already treats as a block, so the
+ * label attribute changes no block structure.
+ */
+const CODE_CAPTION_LABEL_ATTR = 'data-inkchapter-caption-label'
 
 /**
  * V7 §2 — the canonical runtime caption-owner map, shared at MODULE scope so the
@@ -89,6 +97,15 @@ export function getCanonicalCaptionTitle(captionEl: HTMLElement): string {
  */
 export function collectCanonicalCaptionProjections(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(`[${CAPTION_ATTR}]`))
+}
+
+/**
+ * P0-1 — the canonical caption LABEL for any projection host. A code caption is
+ * hosted on its PRE (label attribute); table/figure captions keep their text
+ * content. The PRE's text is the CODE, never the caption.
+ */
+export function getCanonicalCaptionLabel(el: HTMLElement): string {
+  return el.getAttribute(CODE_CAPTION_LABEL_ATTR) ?? el.textContent ?? ''
 }
 
 /**
@@ -519,7 +536,10 @@ export class CaptionDomAdapter {
 
     const canonicalHosts = new Set<HTMLElement>()
     for (const pre of allPres) {
-      if (isInside(pre, `[${CAPTION_ATTR}]`)) continue
+      // P0-1: a code caption lives ON the PRE itself. Only a PRE nested INSIDE a
+      // caption decoration is excluded; the PRE host is still a code target.
+      const captionAncestor = pre.closest<HTMLElement>(`[${CAPTION_ATTR}]`)
+      if (captionAncestor && captionAncestor !== pre) continue
       const { decision, reason } = classifyCodeCandidate(pre)
       const mdtype = pre.getAttribute('mdtype') ?? ''
       const closestFence = pre.closest<HTMLElement>('pre.md-fences')
@@ -768,6 +788,9 @@ export class CaptionDomAdapter {
     captionId: string,
     position: 'above' | 'below',
   ): HTMLElement {
+    if (target.type === 'code') {
+      return this.renderCodeCaptionHost(target, label, title, captionId)
+    }
     const el = document.createElement('div')
     el.className = `${CAPTION_CLASS} ${CAPTION_CLASS}-${target.type}`
     el.setAttribute(CAPTION_ATTR, 'true')
@@ -792,6 +815,48 @@ export class CaptionDomAdapter {
 
     this.insertCaption(el, this.resolveCaptionPlacement(target, position))
     return el
+  }
+
+  /**
+   * P0-1 — code caption lives ON the PRE (attribute + CSS ::before) instead of a
+   * sibling DIV, so Enter on the paragraph above keeps Typora's native ONE-split
+   * behaviour. The PRE is both the caption host and the owner root.
+   */
+  private renderCodeCaptionHost(
+    target: CaptionTarget,
+    label: string,
+    title: string,
+    captionId: string,
+  ): HTMLElement {
+    const pre = target.root
+    const ownerKey = this.targetKeysByRoot.get(target.root) ?? ''
+    pre.setAttribute(CAPTION_ATTR, 'true')
+    pre.setAttribute(CAPTION_ID_ATTR, captionId)
+    pre.setAttribute(CAPTION_TYPE_ATTR, 'code')
+    pre.setAttribute(CAPTION_TITLE_ATTR, title)
+    pre.setAttribute(CAPTION_TARGET_KEY_ATTR, ownerKey)
+    pre.setAttribute(CODE_CAPTION_LABEL_ATTR, label)
+    if (ownerKey !== '') {
+      try { pre.setAttribute('data-inkchapter-caption-owner-key', ownerKey) } catch { /* noop */ }
+    }
+    this.captionOwnerRoots.set(pre, pre)
+    return pre
+  }
+
+  /** True when the element is a PRE acting as the code caption host. */
+  private isCodeCaptionHost(el: HTMLElement): boolean {
+    return el.tagName === 'PRE' && el.getAttribute(CAPTION_TYPE_ATTR) === 'code'
+  }
+
+  /** Remove code caption metadata from a PRE host (never removes the PRE itself). */
+  private clearCodeCaptionHost(el: HTMLElement): void {
+    el.removeAttribute(CAPTION_ATTR)
+    el.removeAttribute(CAPTION_ID_ATTR)
+    el.removeAttribute(CAPTION_TYPE_ATTR)
+    el.removeAttribute(CAPTION_TITLE_ATTR)
+    el.removeAttribute(CAPTION_TARGET_KEY_ATTR)
+    el.removeAttribute(CODE_CAPTION_LABEL_ATTR)
+    this.captionOwnerRoots.delete(el)
   }
 
   /**
@@ -829,6 +894,41 @@ export class CaptionDomAdapter {
         console.info(
           `[InkChapter Caption] RENDER-RECONCILE type=${item.target.type} captionId=${item.captionId} ` +
           `label=${item.label} labelJson=${JSON.stringify(item.label)} decision=CREATE reason=missing-decoration`,
+        )
+        continue
+      }
+
+      if (item.target.type === 'code') {
+        if (!this.isCodeCaptionHost(existingEl)) {
+          // Migration from the legacy sibling DIV host.
+          existingEl.remove()
+          this.renderCodeCaptionHost(item.target, item.label, item.title, item.captionId)
+          stats.createCount++
+          createdIds.push(item.captionId)
+          console.info(
+            `[InkChapter Caption] RENDER-RECONCILE type=code captionId=${item.captionId} ` +
+            `label=${item.label} labelJson=${JSON.stringify(item.label)} decision=CREATE reason=host-migrated`,
+          )
+          continue
+        }
+        const labelBefore = existingEl.getAttribute(CODE_CAPTION_LABEL_ATTR) ?? ''
+        const titleBefore = existingEl.getAttribute(CAPTION_TITLE_ATTR)
+        const desiredTargetKey = this.targetKeysByRoot.get(item.target.root) ?? ''
+        const keyBefore = existingEl.getAttribute(CAPTION_TARGET_KEY_ATTR) ?? ''
+        const changed = labelBefore !== item.label || titleBefore !== item.title || keyBefore !== desiredTargetKey
+        if (changed) {
+          existingEl.setAttribute(CODE_CAPTION_LABEL_ATTR, item.label)
+          existingEl.setAttribute(CAPTION_TITLE_ATTR, item.title)
+          existingEl.setAttribute(CAPTION_TARGET_KEY_ATTR, desiredTargetKey)
+          stats.updateCount++
+        } else {
+          stats.noOpCount++
+        }
+        this.captionOwnerRoots.set(existingEl, existingEl)
+        console.info(
+          `[InkChapter Caption] RENDER-RECONCILE type=code captionId=${item.captionId} ` +
+          `label=${item.label} labelJson=${JSON.stringify(item.label)} ` +
+          `decision=${changed ? 'UPDATE_TEXT' : 'NO_OP'} reason=${changed ? 'label/title/key changed' : 'state unchanged'}`,
         )
         continue
       }
@@ -884,7 +984,11 @@ export class CaptionDomAdapter {
       const typeAttr = el.getAttribute(CAPTION_TYPE_ATTR)
       const type = (typeAttr ?? '') as CaptionTargetType | ''
       const disabled = type !== '' && disabledTypes.has(type)
-      el.remove()
+      if (this.isCodeCaptionHost(el)) {
+        this.clearCodeCaptionHost(el)
+      } else {
+        el.remove()
+      }
       if (disabled) stats.removeDisabledCount++
       else stats.removeStaleCount++
       console.info(
@@ -900,13 +1004,19 @@ export class CaptionDomAdapter {
   clearAllCaptions(): void {
     const root = this.getEditorRoot()
     if (!root) return
-    root.querySelectorAll(`.${CAPTION_CLASS}`).forEach(el => el.remove())
+    root.querySelectorAll<HTMLElement>(`[${CAPTION_ID_ATTR}]`).forEach(el => {
+      if (this.isCodeCaptionHost(el)) this.clearCodeCaptionHost(el)
+      else el.remove()
+    })
   }
 
   /** Remove a single caption projection by captionId. */
   removeCaption(captionId: string): void {
     const root = this.getEditorRoot()
     if (!root) return
-    root.querySelectorAll(`[${CAPTION_ID_ATTR}="${captionId}"]`).forEach(el => el.remove())
+    root.querySelectorAll<HTMLElement>(`[${CAPTION_ID_ATTR}="${captionId}"]`).forEach(el => {
+      if (this.isCodeCaptionHost(el)) this.clearCodeCaptionHost(el)
+      else el.remove()
+    })
   }
 }

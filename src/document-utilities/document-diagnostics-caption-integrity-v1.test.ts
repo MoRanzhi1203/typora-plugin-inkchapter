@@ -127,14 +127,22 @@ describe('Phase G §15 — C2 orphan (unbound caption projection)', () => {
     expect(diags[0].location?.kind).toBe('caption-projection')
   })
 
-  it('table + code orphans each emit their own code', () => {
+  it('table + legacy code orphans each emit their own code', () => {
     const h = harness()
     const t = addObject(h.root, 'table')
-    const c = addObject(h.root, 'code')
     writerCaption(h, t, 'table', '表 1', '')
-    writerCaption(h, c, 'code', '代码 1', '')
+    // P0-1: a code caption now lives ON the PRE, so deleting the PRE deletes the
+    // projection. A legacy (pre-upgrade) sibling DIV is still a projection and
+    // must be reported as an orphan.
+    const legacy = document.createElement('div')
+    legacy.className = 'inkchapter-caption inkchapter-caption-code'
+    legacy.setAttribute('data-inkchapter-caption', 'true')
+    legacy.setAttribute('data-inkchapter-caption-id', 'legacy-code-1')
+    legacy.setAttribute('data-inkchapter-caption-type', 'code')
+    legacy.setAttribute('data-inkchapter-caption-title', '')
+    legacy.textContent = '代码 1'
+    h.root.appendChild(legacy)
     t.remove()
-    c.remove()
     expect(codes(run(h)).sort()).toEqual([CODE_ORPHAN_CAPTION_CODE, TABLE_ORPHAN_CAPTION_CODE].sort())
   })
 
@@ -172,17 +180,19 @@ describe('Phase G §15 — C3 multiple (one owner, >1 caption)', () => {
     }
   })
 
-  it('table + code multiple variants', () => {
+  it('table multiple variants; a code owner has exactly ONE host (no multiple)', () => {
     const h = harness()
     const t = addObject(h.root, 'table')
     const c = addObject(h.root, 'code')
     writerCaption(h, t, 'table', '表 1', '')
     writerCaption(h, t, 'table', '表 2', '')
     writerCaption(h, c, 'code', '代码 1', '')
+    // P0-1: the code caption is hosted ON the PRE, so re-rendering replaces the
+    // single host instead of creating a second projection.
     writerCaption(h, c, 'code', '代码 2', '')
     const found = codes(run(h))
     expect(found).toContain(TABLE_MULTIPLE_CAPTIONS_CODE)
-    expect(found).toContain(CODE_MULTIPLE_CAPTIONS_CODE)
+    expect(found).not.toContain(CODE_MULTIPLE_CAPTIONS_CODE)
   })
 
   it('§20 *_MULTIPLE_CAPTIONS_FALSE_POSITIVE_COUNT=0 for a single-caption owner', () => {

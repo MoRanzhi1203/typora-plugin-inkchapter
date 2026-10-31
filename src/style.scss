@@ -2829,6 +2829,36 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   margin-top: 3px;
 }
 
+// P0-1 — CODE caption is rendered ON the PRE (attribute + ::before) instead of a
+// sibling DIV. A bare caption DIV immediately before `pre.md-fences` makes
+// Typora re-normalise its end block after Enter (second SPLIT_1_TO_2 → one
+// extra visible blank line). The PRE keeps Typora's native one-split behaviour.
+#write pre.md-fences[data-inkchapter-caption='true'] {
+  position: relative;
+  margin-top: calc(1.6em + 6px);
+}
+#write pre.md-fences[data-inkchapter-caption='true']::before {
+  content: attr(data-inkchapter-caption-label);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  display: block;
+  font-family: var(--inkchapter-object-caption-font-family);
+  font-size: var(--inkchapter-object-caption-font-size);
+  font-weight: var(--inkchapter-object-caption-font-weight);
+  font-style: var(--inkchapter-object-caption-font-style);
+  line-height: var(--inkchapter-object-caption-line-height);
+  color: var(--inkchapter-object-caption-color);
+  letter-spacing: var(--inkchapter-object-caption-letter-spacing);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: none;
+  pointer-events: auto;
+  cursor: context-menu;
+}
+
 // Context menu
 .inkchapter-caption-menu {
   position: fixed;

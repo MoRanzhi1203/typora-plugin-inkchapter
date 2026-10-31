@@ -129,9 +129,15 @@ describe('R8-CODE — code caption → code body spacing', () => {
 
   it('R8-CODE-02: no global pre/code/.md-fences margin, line-height or code-padding mutation', () => {
     const cleaned = stripComments(scss)
-    // The ONLY `.md-fences` rule in the stylesheet is the scoped sibling rule.
+    // P0-1: code captions are hosted ON the PRE. Only two scoped `.md-fences`
+    // rules are allowed: the legacy caption-sibling spacing rule and the
+    // attribute-scoped caption space reservation (never a bare global rule).
     const mdFencesRules: string[] = cleaned.match(/\}[^]*?\.md-fences[^{]*\{/g) ?? []
-    expect(mdFencesRules.every(r => r.includes('.inkchapter-caption-code + pre.md-fences'))).toBe(true)
+    const isScopedFenceRule = (r: string): boolean =>
+      r.includes('.inkchapter-caption-code + pre.md-fences')
+      || r.includes("pre.md-fences[data-inkchapter-caption='true']")
+    expect(mdFencesRules.every(isScopedFenceRule)).toBe(true)
+    expect(cleaned).toMatch(/#write\s+pre\.md-fences\[data-inkchapter-caption='true'\]\s*\{[^}]*margin-top/)
     // No bare global `pre {`, `code {` margin rules were introduced.
     expect(cleaned).not.toMatch(/(^|\})\s*pre\s*\{[^}]*margin/)
     expect(cleaned).not.toMatch(/(^|\})\s*code\s*\{[^}]*margin/)
