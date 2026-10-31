@@ -709,6 +709,14 @@ export class HeadingNumberingService {
   private historyIntentAt = 0
   private historyIntentKind: 'undo' | 'redo' | null = null
   /**
+   * P0-2 plugin-owned history overlay. Typora's native stack has no entry for
+   * the prevented force-indent → force-flush stage, so Ctrl+Z / Ctrl+Y are
+   * intercepted ONLY while this stage is the next applicable action. Native
+   * history is otherwise untouched (native edits are undone/redone first).
+   */
+  private indentStageActive: { cid: string; recordId: string; stageIndex: number } | null = null
+  private indentStageUndone: { cid: string; recordId: string; stageIndex: number } | null = null
+  /**
    * Pre-mutation visual paragraph order captured at Undo/Redo keydown.
    *
    * A history replay of a boundary merge arrives WITHOUT a keydown boundary
@@ -7947,6 +7955,107 @@ export class HeadingNumberingService {
     this.scheduleSidecarWrite(docKey, docPath, refreshed)
   }
 
+  private applyIndentUndoCommand(data: {
+    cid: string
+    recordId: string
+    mode: 'force-indent' | 'force-flush'
+  }): void {
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+    const para = root.querySelector(`[cid="${data.cid}"]`) as HTMLElement | null
+    if (!para) return
+
+    setParagraphIndentMode(para, data.mode, WriterIds.BACKSPACE_SEMANTIC)
+    applyEffectiveParagraphIndent(
+      para,
+      data.mode === 'force-flush' ? 'flush' : 'indent-2',
+      WriterIds.BACKSPACE_SEMANTIC,
+    )
+
+    const docKey = this.getDocumentKey()
+    if (docKey) {
+      const overrides = this.inMemoryOverrides.get(docKey)
+      const record = overrides?.find(r => r.id === data.recordId)
+      if (overrides && record) {
+        record.mode = data.mode
+        const allParas = collectContentParagraphs(root)
+        const idx = allParas.indexOf(para)
+        if (idx >= 0) record.anchor = createParagraphAnchor(idx, allParas)
+        this.scheduleSidecarWrite(
+          docKey,
+          this.ctx.getActiveFilePath?.() ?? 'unknown',
+          overrides,
+        )
+      }
+    }
+
+    emitRuntimeAudit('BACKSPACE-INDENT-UNDO-APPLIED', {
+      cid: data.cid,
+      recordId: data.recordId,
+      mode: data.mode,
+    })
+  }
+
+  /**
+   * Consume Ctrl+Z / Ctrl+Y only when the P0-2 stage is the next action.
+   * Returning false lets Typora's native history run (and keeps the counters
+   * aligned with native edits/redos).
+   */
+  private tryHandleIndentStageHistory(redo: boolean): boolean {
+    if (!this.indentStageActive && !this.indentStageUndone) return false
+
+    const editor = (globalThis as {
+      editor?: { undo?: { index?: number; commandStack?: unknown[] } }
+    }).editor
+    const undo = editor?.undo
+    const index = typeof undo?.index === 'number' ? undo.index : -1
+
+    if (redo) {
+      if (this.indentStageUndone) {
+        // A native edit above the stage (and its redo stack) invalidates the
+        // overlay: the stage is no longer the next redo action.
+        if (index > this.indentStageUndone.stageIndex) {
+          this.indentStageUndone = null
+          return false
+        }
+        const entry = this.indentStageUndone
+        this.applyIndentUndoCommand({
+          cid: entry.cid,
+          recordId: entry.recordId,
+          mode: 'force-flush',
+        })
+        this.indentStageActive = entry
+        this.indentStageUndone = null
+        return true
+      }
+      // Stage active: let native redo its own entries above the stage.
+      return false
+    }
+
+    if (this.indentStageActive) {
+      if (index > this.indentStageActive.stageIndex) return false // native undo above
+      if (index === this.indentStageActive.stageIndex) {
+        const entry = this.indentStageActive
+        this.applyIndentUndoCommand({
+          cid: entry.cid,
+          recordId: entry.recordId,
+          mode: 'force-indent',
+        })
+        this.indentStageUndone = entry
+        this.indentStageActive = null
+        return true
+      }
+      // Undo below the stage — hand the rest to native history.
+      this.indentStageActive = null
+      return false
+    }
+
+    if (this.indentStageUndone) {
+      this.indentStageUndone = null
+    }
+    return false
+  }
+
   private scheduleSidecarWrite(docKey: string, docPath: string, overrides: ParagraphIndentOverrideRecord[]): void {
     // ── R58.7 Phase A.1.2: Skip scheduling when persistence not ready (EPHEMERAL mode) ──
     if (!this.documentContext.persistenceReady) {
@@ -9672,6 +9781,8 @@ export class HeadingNumberingService {
     // ── PF6: a document load resets the identity phase ──
     this.documentEditedSinceLoad = false
     this.historyIntentKind = null
+    this.indentStageActive = null
+    this.indentStageUndone = null
     this.pendingNormalEnterConvergence = null
 
     const data = loadParagraphLayout(docKey)
@@ -12149,6 +12260,11 @@ export class HeadingNumberingService {
       // when Typora's own undo manager does not emit beforeinput.
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
         const redo = e.shiftKey || e.key === 'y' || e.key === 'Y'
+        if (this.tryHandleIndentStageHistory(redo)) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          return
+        }
         this.historyIntentKind = redo ? 'redo' : 'undo'
         this.historyIntentAt = Date.now()
         this.retiredIndentLedger.noteHistoryIntent(redo ? 'redo' : 'undo', this.historyIntentAt)
@@ -12279,8 +12395,23 @@ export class HeadingNumberingService {
 
       // ── PF4: Boundary paragraph merge priority over BACKSPACE-REVERSE ──
       // When a previous mergeable paragraph exists, Backspace at paragraph start
-      // must merge (native), NOT reverse force-indent → force-flush.
-      if (this.armBoundaryMergeIntent('Backspace')) {
+      // normally merges (native). P0-2 exception: a force-indent EMPTY paragraph
+      // at its logical start consumes the FIRST Backspace to cancel its explicit
+      // indent (force-indent → force-flush) without deleting/merging. The second
+      // Backspace then falls through to the native boundary merge below.
+      const settings = this.getParagraphLayoutSettings()
+      const preCtx = shouldConsumeBackspaceForIndentRemoval(
+        root,
+        settings,
+        this.isInComposition || e.isComposing,
+      )
+      const forceIndentEmptyAtStart = preCtx != null
+        && preCtx.paragraph != null
+        && preCtx.caretAtLogicalStart
+        && preCtx.mode === 'force-indent'
+        && getUserVisibleParagraphText(preCtx.paragraph) === ''
+
+      if (!forceIndentEmptyAtStart && this.armBoundaryMergeIntent('Backspace')) {
         emitRuntimeAudit('BACKSPACE-ADMISSION', {
           decision: 'ALLOW_NATIVE_BOUNDARY_MERGE',
           intentEpoch: this.userIntentEpoch,
@@ -12288,9 +12419,7 @@ export class HeadingNumberingService {
         return // do NOT preventDefault — let Typora native merge
       }
 
-      const settings = this.getParagraphLayoutSettings()
-
-      const ctx = shouldConsumeBackspaceForIndentRemoval(
+      const ctx = preCtx ?? shouldConsumeBackspaceForIndentRemoval(
         root,
         settings,
         this.isInComposition || e.isComposing,
@@ -12363,6 +12492,27 @@ export class HeadingNumberingService {
         `decision=${bsDecision} ` +
         `appendOccurred=${bsRecordsAfter > bsRecordsBefore}`,
       )
+
+      // P0-2: record the overlay stage for Ctrl+Z / Ctrl+Y with the CURRENT
+      // native history index. The stage sits above the 。。+Enter command and
+      // below any later native edit; Typora's own index decides the order.
+      const bsCid = para.getAttribute('cid')
+      if (bsCid) {
+        const stageIndex = (globalThis as { editor?: { undo?: { index?: number } } })
+          .editor?.undo?.index
+        this.indentStageActive = {
+          cid: bsCid,
+          recordId: bsRecordId,
+          stageIndex: typeof stageIndex === 'number' ? stageIndex : -1,
+        }
+        this.indentStageUndone = null
+        emitRuntimeAudit('BACKSPACE-INDENT-STAGE-RECORDED', {
+          cid: bsCid,
+          recordId: bsRecordId,
+          stageIndex: this.indentStageActive.stageIndex,
+          stage: 'force-indent->force-flush',
+        })
+      }
 
       // ── r57: Update active handoff semantic if this paragraph is the handoff owner ──
       const handoff = this.activeOneShotHandoff
