@@ -62,6 +62,59 @@ describe('PF6-ADMISSION: historical record admission', () => {
     expect(r.decision).toBe('REJECT_TEMPORARY_HISTORICAL')
   })
 
+  it('PF6-A1b: temporary record survives INITIAL_LOAD through its unique empty structural slot', () => {
+    const paras = [p('甲段正文'), p(''), p('乙段正文')]
+    const record = tempRecord('indent-persist', {
+      lastKnownOrdinal: 1,
+      beforeHash: hashText('甲段正文'),
+      afterHash: hashText('乙段正文'),
+    })
+    const r = evaluateHistoricalRehydrateAdmission({
+      record,
+      resolvedConfidence: 'high',
+      resolvedIndex: 1,
+      allParagraphs: paras,
+      phase: 'INITIAL_LOAD',
+    })
+    expect(r.admitted).toBe(true)
+    expect(r.decision).toBe('ADMIT_TEMPORARY_EMPTY_STRUCTURAL')
+    expect(r.resolvedIndexOverride).toBe(1)
+  })
+
+  it('PF6-A1c: temporary record is rejected when its empty slot is gone or ambiguous', () => {
+    const deleted = tempRecord('indent-deleted', {
+      lastKnownOrdinal: 1,
+      beforeHash: hashText('甲段正文'),
+      afterHash: hashText('乙段正文'),
+    })
+    const body = [p('甲段正文'), p('乙段正文')]
+    expect(evaluateHistoricalRehydrateAdmission({
+      record: deleted,
+      resolvedConfidence: 'high',
+      resolvedIndex: 1,
+      allParagraphs: body,
+      phase: 'INITIAL_LOAD',
+    }).admitted).toBe(false)
+
+    // Two identical gaps -> the same anchor matches two empty paragraphs.
+    const ambiguous = [
+      p('甲段正文'), p(''), p('乙段正文'),
+      p('甲段正文'), p(''), p('乙段正文'),
+    ]
+    const twoSided = tempRecord('indent-two', {
+      lastKnownOrdinal: 1,
+      beforeHash: hashText('甲段正文'),
+      afterHash: hashText('乙段正文'),
+    })
+    expect(evaluateHistoricalRehydrateAdmission({
+      record: twoSided,
+      resolvedConfidence: 'fallback',
+      resolvedIndex: 1,
+      allParagraphs: ambiguous,
+      phase: 'INITIAL_LOAD',
+    }).admitted).toBe(false)
+  })
+
   it('PF6-A2: an empty target has no business identity — even a non-temporary record fails closed', () => {
     const paras = [p('BEFORE'), p(''), p('AFTER')]
     const record = stableRecord('rec-empty', {
@@ -173,6 +226,34 @@ describe('PF6-SIDECAR: temporary historical retirement', () => {
     const ids = selectTemporaryHistoricalRecordsForRetirement(records)
     expect(ids).toEqual(['indent-1793304479550-0', 'indent-1793310577316-12'])
   })
+
+  it('PF6-S2: with a document view, a unique empty slot is kept; a vanished/ambiguous one is retired', () => {
+    const kept = tempRecord('kept', {
+      lastKnownOrdinal: 1,
+      beforeHash: hashText('BEFORE'),
+      afterHash: hashText('AFTER'),
+    })
+    const vanished = tempRecord('vanished', {
+      lastKnownOrdinal: 2,
+      beforeHash: hashText('MISSING-BEFORE'),
+    })
+    const paras = [p('BEFORE'), p(''), p('AFTER'), p('X'), p(''), p('Y')]
+    expect(selectTemporaryHistoricalRecordsForRetirement([kept, vanished], paras))
+      .toEqual(['vanished'])
+
+    // Two identical gaps -> the same anchor matches two empty paragraphs.
+    const duplicateGap = [
+      p('BEFORE'), p(''), p('AFTER'),
+      p('BEFORE'), p(''), p('AFTER'),
+    ]
+    const ambiguous = tempRecord('ambiguous', {
+      lastKnownOrdinal: 1,
+      beforeHash: hashText('BEFORE'),
+      afterHash: hashText('AFTER'),
+    })
+    expect(selectTemporaryHistoricalRecordsForRetirement([ambiguous], duplicateGap))
+      .toEqual(['ambiguous'])
+  })
 })
 
 describe('PF6-LEDGER: session-scoped controlled recovery', () => {
@@ -275,19 +356,30 @@ describe('PF6-LEDGER: session-scoped controlled recovery', () => {
 })
 
 describe('PF6-REPLAY: the reported Enter/Rehydrate sequence', () => {
-  it('PF6-R1: defaultIndent=flush + Enter inside two body paragraphs stays auto end-to-end', () => {
+  it('PF6-R1: a temporary empty record persists on INITIAL_LOAD but never during live editing', () => {
     // 1. Document state after Enter (fresh empty paragraph in the middle).
     const paras = [p('甲段正文'), p(''), p('乙段正文')]
 
-    // 2. Sidecar still holds the historical record created by an earlier session.
+    // 2. Sidecar still holds the record created by an earlier session.
     const historical = tempRecord('indent-1793304479550-0', {
       lastKnownOrdinal: 1,
       beforeHash: hashText('甲段正文'),
       afterHash: hashText('乙段正文'),
     })
 
-    // 3. Rehydrate must fail closed for every phase (no live binding exists).
-    for (const phase of ['INITIAL_LOAD', 'LIVE_EDIT', 'UNDO_REDO'] as const) {
+    // 3. INITIAL_LOAD re-admits through the unique empty structural slot.
+    const initial = evaluateHistoricalRehydrateAdmission({
+      record: historical,
+      resolvedConfidence: 'high',
+      resolvedIndex: 1,
+      allParagraphs: paras,
+      phase: 'INITIAL_LOAD',
+    })
+    expect(initial.admitted).toBe(true)
+    expect(initial.decision).toBe('ADMIT_TEMPORARY_EMPTY_STRUCTURAL')
+
+    // 4. Live editing / history replay never re-admit a temporary record.
+    for (const phase of ['LIVE_EDIT', 'UNDO_REDO'] as const) {
       const r = evaluateHistoricalRehydrateAdmission({
         record: historical,
         resolvedConfidence: 'high',
@@ -298,7 +390,9 @@ describe('PF6-REPLAY: the reported Enter/Rehydrate sequence', () => {
       expect(r.admitted).toBe(false)
     }
 
-    // 4. The poisoned record is therefore retired from the sidecar on load.
+    // 5. With the document view the surviving slot keeps the record; the legacy
+    //    caller without a document view still retires it (fail closed).
+    expect(selectTemporaryHistoricalRecordsForRetirement([historical], paras)).toEqual([])
     expect(selectTemporaryHistoricalRecordsForRetirement([historical])).toEqual([historical.id])
   })
 })

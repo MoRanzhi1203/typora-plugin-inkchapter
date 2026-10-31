@@ -708,6 +708,16 @@ export class HeadingNumberingService {
   /** Set by Ctrl+Z / Ctrl+Shift+Z so the next rehydrate runs in UNDO_REDO phase. */
   private historyIntentAt = 0
   private historyIntentKind: 'undo' | 'redo' | null = null
+  /**
+   * Pre-mutation visual paragraph order captured at Undo/Redo keydown.
+   *
+   * A history replay of a boundary merge arrives WITHOUT a keydown boundary
+   * intent, so the MutationRecord order cannot tell which blank paragraph
+   * survived. The snapshot supplies the REAL visual order: the upper paragraph
+   * always survives a join.
+   */
+  private preMergeParagraphOrder: HTMLElement[] | null = null
+  private preMergeParagraphOrderAt = 0
   /** Session-scoped ledger of records retired by an explicit paragraph deletion. */
   private retiredIndentLedger = new SessionRetiredIndentLedger()
   /** Post-rehydrate acceptance for the most recent Normal Enter transaction. */
@@ -7436,6 +7446,30 @@ export class HeadingNumberingService {
     let runStartPrev: Element | null = paragraph.previousElementSibling
     while (isEmptyParagraphBlock(runStartPrev)) runStartPrev = runStartPrev!.previousElementSibling
 
+    const isExplicitParagraph = (el: Element | null): boolean => {
+      if (el == null || el.tagName !== 'P') return false
+      const p = el as HTMLElement
+      return getParagraphIndentMode(p) !== 'auto'
+        || p.hasAttribute('data-inkchapter-indent-marker')
+        || this.canonicalRegistry.resolveExactLiveRecord(p) != null
+    }
+    const paragraphHasExplicitIndent = isExplicitParagraph(paragraph)
+    let runContainsExplicitIndent = false
+    {
+      let cur: Element | null = paragraph
+      while (cur != null && isEmptyParagraphBlock(cur)) {
+        if (isExplicitParagraph(cur)) { runContainsExplicitIndent = true; break }
+        cur = cur.previousElementSibling
+      }
+      if (!runContainsExplicitIndent) {
+        cur = next
+        while (cur != null && isEmptyParagraphBlock(cur)) {
+          if (isExplicitParagraph(cur)) { runContainsExplicitIndent = true; break }
+          cur = cur.nextElementSibling
+        }
+      }
+    }
+
     const gate: BlankRunEnterGateInput = {
       mode,
       isComposing: e.isComposing,
@@ -7445,6 +7479,13 @@ export class HeadingNumberingService {
       paragraphHasSpecialAncestor: paragraph.closest(
         'li, blockquote, pre, table, .md-table, .md-math-block, .md-figure, .md-def-footnote, .md-def-link, .md-html-block',
       ) != null,
+      // A force-indent / force-flush (or canonically owned) paragraph is a real
+      // formatted block. Turning Enter into a soft line break inside it leaves
+      // the new visual line without a paragraph identity (arrow navigation skips
+      // it, the indent marker only covers the first line). Native split keeps
+      // both halves real paragraphs; the record stays on the upper one.
+      paragraphHasExplicitIndent,
+      runContainsExplicitIndent,
       isLastEmptyParagraphOfRun: !isEmptyParagraphBlock(next),
       runIsFollowedByContent: next != null && !isEmptyParagraphBlock(next),
       runIsPrecededByContent: runStartPrev != null,
@@ -7453,9 +7494,17 @@ export class HeadingNumberingService {
     if (!canApplySingleStepBlankEnter(editorApi)) return false
 
     const cid = paragraph.getAttribute('cid')
+    // Insert at the REAL caret offset. Hardcoding 0 repositions the caret to the
+    // paragraph start before the transaction commits, which is the only
+    // plugin-side source of a second visible caret move.
+    const caretRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+    const logicalOffset = caretRange
+      ? computeParagraphLogicalCaretOffset(paragraph, caretRange.startContainer, caretRange.startOffset)
+      : 0
+    const insertOffset = logicalOffset > 0 ? logicalOffset : 0
     // Issue the native transaction FIRST; suppress the default only when the
     // editor really performed it, so a failed adapter never swallows the Enter.
-    const applied = applySingleStepBlankEnter(editorApi, cid, 0)
+    const applied = applySingleStepBlankEnter(editorApi, cid, insertOffset)
     if (applied) {
       e.preventDefault()
       e.stopPropagation()
@@ -7847,6 +7896,57 @@ export class HeadingNumberingService {
   private sidecarWritePending: { docKey: string; docPath: string; overrides: ParagraphIndentOverrideRecord[] } | null = null
   private sidecarGeneration = 0
 
+  /**
+   * Recompute anchors of CURRENT_LIVE records from their bound element.
+   *
+   * A split/merge changes a paragraph's ordinal and neighbours without changing
+   * its canonical record. Writing the stored (pre-mutation) anchor to the
+   * sidecar makes the next load unable to re-identify the paragraph. Refresh at
+   * write time so persistence always describes the CURRENT structural slot.
+   */
+  private refreshOverrideAnchors(
+    overrides: ParagraphIndentOverrideRecord[],
+  ): ParagraphIndentOverrideRecord[] {
+    if (overrides.length === 0) return overrides
+    const root = this.adapter.detectEditorRoot()
+    if (!root) return overrides
+    const allParas = collectContentParagraphs(root)
+    if (allParas.length === 0) return overrides
+
+    let changed = false
+    const next = overrides.map(o => {
+      const meta = this.canonicalRegistry.getRuntimeMeta(o.id)
+      if (!meta || meta.state !== 'CURRENT_LIVE' || !meta.currentElement?.isConnected) return o
+      const idx = allParas.indexOf(meta.currentElement)
+      if (idx < 0) return o
+      const anchor = createParagraphAnchor(idx, allParas)
+      if (JSON.stringify(anchor) !== JSON.stringify(o.anchor)) {
+        changed = true
+        return { ...o, anchor }
+      }
+      return o
+    })
+    return changed ? next : overrides
+  }
+
+  /**
+   * Structural mutations (split/merge) change a paragraph's ordinal and
+   * neighbours without changing its canonical record. The sidecar write that
+   * created the record may have already fired with the pre-mutation anchor, so
+   * repair + persist anchors after every mutation batch when they changed.
+   */
+  private repairSidecarAnchorsAfterMutation(): void {
+    const docKey = this.getDocumentKey()
+    if (!docKey) return
+    const overrides = this.inMemoryOverrides.get(docKey)
+    if (!overrides || overrides.length === 0) return
+    const refreshed = this.refreshOverrideAnchors(overrides)
+    if (refreshed === overrides) return
+    this.inMemoryOverrides.set(docKey, refreshed)
+    const docPath = this.ctx.getActiveFilePath?.() ?? 'unknown'
+    this.scheduleSidecarWrite(docKey, docPath, refreshed)
+  }
+
   private scheduleSidecarWrite(docKey: string, docPath: string, overrides: ParagraphIndentOverrideRecord[]): void {
     // ── R58.7 Phase A.1.2: Skip scheduling when persistence not ready (EPHEMERAL mode) ──
     if (!this.documentContext.persistenceReady) {
@@ -7875,7 +7975,11 @@ export class HeadingNumberingService {
       // Only execute if no newer generation has been scheduled
       if (pending && this.sidecarGeneration === gen) {
         this.sidecarWritePending = null
-        saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
+        const refreshed = this.refreshOverrideAnchors(pending.overrides)
+        if (refreshed !== pending.overrides) {
+          this.inMemoryOverrides.set(pending.docKey, refreshed)
+        }
+        saveParagraphLayout(pending.docKey, pending.docPath, refreshed)
       }
     }, 200)
   }
@@ -7890,7 +7994,11 @@ export class HeadingNumberingService {
     if (pending) {
       this.sidecarWritePending = null
       if (!this.assertPersistenceContextReady('flush-sidecar')) return
-      saveParagraphLayout(pending.docKey, pending.docPath, pending.overrides)
+      const refreshed = this.refreshOverrideAnchors(pending.overrides)
+      if (refreshed !== pending.overrides) {
+        this.inMemoryOverrides.set(pending.docKey, refreshed)
+      }
+      saveParagraphLayout(pending.docKey, pending.docPath, refreshed)
     }
   }
 
@@ -8748,24 +8856,33 @@ export class HeadingNumberingService {
       const resolved = resolveParagraphAnchor(o.anchor, allParas)
       if (!resolved) continue
 
-      const para = allParas[resolved.index]
+      let resolvedIndex = resolved.index
+      let para = allParas[resolvedIndex]
       if (!para) continue
 
       // ── PF6: Historical admission — the ONLY gate for PERSISTED_HISTORICAL ──
       // Neighbour hashes, ordinal proximity and "the only candidate" are NOT an
-      // identity proof for an empty paragraph. Admission requires business
+      // identity proof for a business paragraph. Admission requires business
       // identity (exact text during live editing, structural corroboration on
-      // initial load) or a ledger-proven Undo recovery. Everything else fails
-      // closed so a stale record can never flip a new `auto` paragraph to
-      // `force-indent` (app-1793310238729.log P-RUNTIME-36/40/42/45/49).
+      // initial load) or a ledger-proven Undo recovery.
+      //
+      // Temporary records (empty targets) have no text identity. On an initial
+      // document load they may re-admit ONLY through a unique structural slot,
+      // which is what keeps a surviving blank line's explicit indent across
+      // save/reopen. A deleted or ambiguous slot still fails closed.
       const admission = evaluateHistoricalRehydrateAdmission({
         record: o,
         resolvedConfidence: resolved.confidence,
-        resolvedIndex: resolved.index,
+        resolvedIndex,
         allParagraphs: allParas,
         phase,
         undoRecoveryProof: false,
       })
+      if (admission.resolvedIndexOverride !== undefined) {
+        resolvedIndex = admission.resolvedIndexOverride
+        para = allParas[resolvedIndex]
+        if (!para) continue
+      }
       emitRuntimeAudit('HISTORICAL-REHYDRATE-CANDIDATE', {
         recordId: o.id,
         recordState: 'PERSISTED_HISTORICAL',
@@ -8802,11 +8919,14 @@ export class HeadingNumberingService {
         continue
       }
 
-      // INITIAL_LOAD structural admission: the stored text identity is stale.
-      // Re-identify NOW, then persist (plan-level dirty flag).
-      if (admission.decision === 'ADMIT_INITIAL_LOAD_STRUCTURAL') {
-        o.anchor = createParagraphAnchor(resolved.index, allParas)
-        o.temporary = false
+      // INITIAL_LOAD structural admission: the stored anchor is stale.
+      // Re-identify NOW, then persist (plan-level dirty flag). A temporary
+      // empty-target record stays temporary so the next load re-validates its
+      // unique structural slot instead of turning it into a blind stable owner.
+      if (admission.decision === 'ADMIT_INITIAL_LOAD_STRUCTURAL'
+        || admission.decision === 'ADMIT_TEMPORARY_EMPTY_STRUCTURAL') {
+        o.anchor = createParagraphAnchor(resolvedIndex, allParas)
+        if (admission.decision === 'ADMIT_INITIAL_LOAD_STRUCTURAL') o.temporary = false
         historicalAnchorRepairedCount++
       }
 
@@ -8835,7 +8955,7 @@ export class HeadingNumberingService {
         recordMode: o.mode,
         record: { ...o },
         targetParagraph: para,
-        targetParagraphIndex: resolved.index,
+        targetParagraphIndex: resolvedIndex,
         strategy: matchStrategy,
         confidence: matchConfidence,
         score,
@@ -8988,7 +9108,13 @@ export class HeadingNumberingService {
         rehydrateBlocked: false,
       }
 
-      const blockReason = evaluateRehydrateSafety(provenance)
+      // A temporary record admitted through its UNIQUE empty structural slot has
+      // already passed the stronger admission gate; the generic weak-match
+      // safety check (which cannot see empty-target identity) must not re-block
+      // it, otherwise the surviving blank line loses its explicit indent on load.
+      const blockReason = winner.admissionDecision === 'ADMIT_TEMPORARY_EMPTY_STRUCTURAL'
+        ? null
+        : evaluateRehydrateSafety(provenance)
       if (blockReason) {
         group.decision = 'block'
         group.reason = blockReason
@@ -9111,6 +9237,7 @@ export class HeadingNumberingService {
             runtimeId: this.getParagraphRuntimeId(para),
             scopeId: this.documentContext.scopeId ?? plan.documentKey,
             proof: winner.admissionDecision === 'ADMIT_INITIAL_LOAD_STRUCTURAL'
+              || winner.admissionDecision === 'ADMIT_TEMPORARY_EMPTY_STRUCTURAL'
               ? 'INITIAL_LOAD_STRUCTURAL'
               : 'EXACT_TEXT_IDENTITY',
           })
@@ -9549,13 +9676,17 @@ export class HeadingNumberingService {
 
     const data = loadParagraphLayout(docKey)
 
-    // ── PF6: retire temporary historical records BEFORE registration ──
-    // A `temporary` record was created for an EMPTY paragraph, which has no
-    // business identity. Neighbour hashes cannot prove ownership (every new
-    // empty paragraph between the same neighbours matches), so such a record
-    // must be physically retired instead of poisoning the next new paragraph.
-    // Business records (non-temporary) are always preserved.
-    const retireIds = selectTemporaryHistoricalRecordsForRetirement(data?.paragraphOverrides ?? [])
+    // ── Sidecar lifecycle: temporary (empty-target) records ──────────────
+    // A `temporary` record has no text identity, only its structural slot
+    // (ordinal + neighbour hashes). It is retired ONLY when that slot no longer
+    // resolves to exactly ONE empty paragraph (deleted line or ambiguous run).
+    // A surviving unique slot keeps the record, so an explicit indent on a blank
+    // line survives save/reopen instead of being silently dropped at load.
+    const retireRoot = this.adapter.detectEditorRoot()
+    const retireParas = retireRoot ? collectContentParagraphs(retireRoot) : []
+    const retireIds = selectTemporaryHistoricalRecordsForRetirement(
+      data?.paragraphOverrides ?? [], retireParas,
+    )
     let sidecarOverrides = data?.paragraphOverrides ?? []
     if (data && retireIds.length > 0) {
       sidecarOverrides = data.paragraphOverrides.filter(o => !retireIds.includes(o.id))
@@ -9567,6 +9698,8 @@ export class HeadingNumberingService {
         retiredRecordIds: retireIds,
         recordCountBefore: data.paragraphOverrides.length,
         recordCountAfter: sidecarOverrides.length,
+        visibleParagraphCount: retireParas.length,
+        decision: 'NO_UNIQUE_EMPTY_SLOT',
       })
       console.info(
         `[InkChapter] SIDECAR-TEMPORARY-HISTORICAL-RETIRED: documentKey=${docKey} ` +
@@ -10669,6 +10802,14 @@ export class HeadingNumberingService {
     const mergeDirection = this.lastUserIntentKey === 'Backspace' ? 'backward' : 'forward'
     const leftRuntimeId = leftElement ? this.getParagraphRuntimeId(leftElement) : 'none'
     const rightRuntimeId = rightElement ? this.getParagraphRuntimeId(rightElement) : 'none'
+    // Direction-sensitive merge identity (P0). A boundary merge always joins the
+    // RIGHT line into the LEFT one: Backspace at the start of the right
+    // paragraph and Delete at the end of the left paragraph both keep the left
+    // paragraph's identity. Only trust this when the keydown intent really
+    // supplied both visual sides.
+    const boundaryIdentityKnown = boundaryIntent != null && intentLeft != null && intentRight != null
+    const survivorSide: 'left' | 'right' | 'none' = boundaryIdentityKnown ? 'left' : 'none'
+    const removedSide: 'left' | 'right' | 'none' = boundaryIdentityKnown ? 'right' : 'none'
 
     emitRuntimeAudit('PARAGRAPH-MERGE-INTENT', {
       batchId,
@@ -10713,9 +10854,34 @@ export class HeadingNumberingService {
       const ownerSide: 'left' | 'right' | 'none' =
         singleOwner.element === leftElement ? 'left'
           : singleOwner.element === rightElement ? 'right' : 'none'
-      const ownership = resolveMergeOwnerRetirement({ ownerSide, leftText, rightText })
+      const ownership = resolveMergeOwnerRetirement({
+        ownerSide, leftText, rightText, survivorSide, removedSide,
+      })
 
-      if (ownership === 'RETIRE_EMPTY_PARA_OWNER') {
+      // Undo/Redo replay has NO keydown boundary intent, so the batch order
+      // cannot tell which blank paragraph survived. Resolve the REAL visual
+      // order from the pre-mutation snapshot taken at the history keydown: the
+      // UPPER paragraph is always the survivor of a join.
+      let replaySurvivorSide: 'left' | 'right' | 'none' = 'none'
+      let replayRemovedSide: 'left' | 'right' | 'none' = 'none'
+      const orderSnapshot = this.preMergeParagraphOrder
+      if (!boundaryIdentityKnown && orderSnapshot && Date.now() - this.preMergeParagraphOrderAt <= 2000) {
+        const li = leftElement ? orderSnapshot.indexOf(leftElement) : -1
+        const ri = rightElement ? orderSnapshot.indexOf(rightElement) : -1
+        if (li >= 0 && ri >= 0 && li !== ri) {
+          replaySurvivorSide = li < ri ? 'left' : 'right'
+          replayRemovedSide = li < ri ? 'right' : 'left'
+        }
+      }
+      const effectiveOwnership = replaySurvivorSide === 'none'
+        ? ownership
+        : resolveMergeOwnerRetirement({
+          ownerSide, leftText, rightText,
+          survivorSide: replaySurvivorSide,
+          removedSide: replayRemovedSide,
+        })
+
+      if (effectiveOwnership === 'RETIRE_EMPTY_PARA_OWNER') {
         // ── Empty Paragraph Deletion Ownership Rule (P0) ──
         // The deleted paragraph was PURE BLANK; all surviving visible text comes
         // from the other side. Its explicit override belongs to the line the user
@@ -10849,6 +11015,8 @@ export class HeadingNumberingService {
         ownerSide: semanticWinner === left ? 'left' : 'right',
         leftText,
         rightText,
+        survivorSide,
+        removedSide,
       })
       if (winnerRetirement === 'RETIRE_EMPTY_PARA_OWNER') {
         winnerOwner = semanticLoser
@@ -11746,6 +11914,10 @@ export class HeadingNumberingService {
           }
         }
       }
+
+      // Keep the persisted structural anchor aligned with the live DOM after
+      // split/merge rebuilds (see repairSidecarAnchorsAfterMutation).
+      try { this.repairSidecarAnchorsAfterMutation() } catch { /* observability only */ }
     })
 
     this.mutationObserver.observe(root, {
@@ -11980,6 +12152,12 @@ export class HeadingNumberingService {
         this.historyIntentKind = redo ? 'redo' : 'undo'
         this.historyIntentAt = Date.now()
         this.retiredIndentLedger.noteHistoryIntent(redo ? 'redo' : 'undo', this.historyIntentAt)
+        // Visual order snapshot for a merge replayed by history (no boundary intent).
+        try {
+          const orderRoot = this.adapter.getEditorRoot()
+          this.preMergeParagraphOrder = orderRoot ? collectContentParagraphs(orderRoot) : null
+          this.preMergeParagraphOrderAt = Date.now()
+        } catch { this.preMergeParagraphOrder = null }
         return
       }
 

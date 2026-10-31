@@ -312,6 +312,51 @@ describe('EMPTY-DELETE-6 两侧都空白：只退役“被删那一行”的记�
   })
 })
 
+describe('EMPTY-DELETE-8（P0-2）2→1 合并：方向敏感的所有权判定', () => {
+  const bothBlank = (
+    ownerSide: 'left' | 'right' | 'none',
+    survivorSide: 'left' | 'right' | 'none',
+    removedSide: 'left' | 'right' | 'none',
+  ) => resolveMergeOwnerRetirement({
+    ownerSide, leftText: '', rightText: '', survivorSide, removedSide,
+  })
+
+  it('① A=auto、B=force-indent，Backspace 删除 B → 退役 B', () => {
+    expect(bothBlank('right', 'left', 'right')).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('② A=force-indent、B=auto，Backspace 删除 B → 保留 A（TRANSFER）', () => {
+    expect(bothBlank('left', 'left', 'right')).toBe('TRANSFER_SINGLE_OWNER')
+  })
+
+  it('③ A=force-indent、B=force-indent：语义赢家=A（存活）→ 保留；赢家=B（被删）→ 退役', () => {
+    expect(bothBlank('left', 'left', 'right')).toBe('TRANSFER_SINGLE_OWNER')
+    expect(bothBlank('right', 'left', 'right')).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('④ A=force-flush、B=auto，Backspace 删除 B → 保留 A 的显式取消缩进', () => {
+    expect(bothBlank('left', 'left', 'right')).toBe('TRANSFER_SINGLE_OWNER')
+  })
+
+  it('⑤ A=auto、B=force-flush，Backspace 删除 B → 退役 B', () => {
+    expect(bothBlank('right', 'left', 'right')).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('方向未知（无 keydown 意图）→ 保守 RETIRE，不把记录跳到另一条空行', () => {
+    expect(bothBlank('left', 'none', 'none')).toBe('RETIRE_EMPTY_PARA_OWNER')
+    expect(bothBlank('right', 'none', 'none')).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+
+  it('只在 survivorSide 可用时按其判定；removedSide 优先', () => {
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'left', leftText: '', rightText: '', survivorSide: 'left',
+    })).toBe('TRANSFER_SINGLE_OWNER')
+    expect(resolveMergeOwnerRetirement({
+      ownerSide: 'left', leftText: '', rightText: '', survivorSide: 'left', removedSide: 'left',
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+  })
+})
+
 describe('EMPTY-DELETE-7 token 消费必须同时更新 Typora 模型', () => {
   it('通过编辑器选择删除时，选区覆盖 token 且返回 true', () => {
     const p = document.createElement('p')

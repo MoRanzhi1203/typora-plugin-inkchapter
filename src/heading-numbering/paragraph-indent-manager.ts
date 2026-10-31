@@ -1682,12 +1682,6 @@ export type MergeOwnerRetirementDecision =
   | 'TRANSFER_SINGLE_OWNER'
   | 'RETIRE_EMPTY_PARA_OWNER'
 
-export interface MergeOwnerRetirementInput {
-  ownerSide: 'left' | 'right' | 'none'
-  leftText: string
-  rightText: string
-}
-
 /**
  * Typora placeholders / whitespace that carry no user content. A paragraph made
  * only of these characters is still an EMPTY paragraph for ownership purposes.
@@ -1698,17 +1692,40 @@ export function isBlankParagraphText(text: string | null | undefined): boolean {
   return String(text ?? '').replace(BLANK_PARAGRAPH_CHARS, '') === ''
 }
 
+export interface MergeOwnerRetirementInput {
+  ownerSide: 'left' | 'right' | 'none'
+  leftText: string
+  rightText: string
+  /**
+   * Side whose paragraph identity survives the merge. For a boundary merge the
+   * LEFT side always survives (Backspace at the start of the right paragraph or
+   * Delete at the end of the left paragraph both join the right line into the
+   * left one). `none` = unknown (legacy caller).
+   */
+  survivorSide?: 'left' | 'right' | 'none'
+  /**
+   * Side whose paragraph the merge removes from the document identity.
+   * `none` = unknown (legacy caller).
+   */
+  removedSide?: 'left' | 'right' | 'none'
+}
+
 /**
  * Decide whether a merge's single canonical owner transfers to the surviving
- * paragraph or retires with the deleted blank paragraph.
+ * paragraph or retires with the deleted paragraph.
  *
- * - owner on a blank side + the other side carries visible text → RETIRE
- *   (the survivor's content — and therefore its format — comes from the other side)
- * - both sides blank → RETIRE: the merged paragraph is a blank line and the
- *   override describes a blank line that no longer exists. Transferring it made
- *   the indent "jump" onto the surviving blank line (real-GUI defect).
- * - owner on the content side → TRANSFER
+ * Direction-sensitive ownership (P0):
+ * - owner on a content side → TRANSFER (format belongs to the surviving text)
+ * - one side blank, owner on the blank side → RETIRE (that line was deleted)
+ * - BOTH sides blank:
+ *     - owner on the REMOVED side → RETIRE
+ *     - owner on the SURVIVING side → TRANSFER (the blank line the user kept
+ *       keeps its explicit format, its marker and its sidecar record)
+ *     - direction unknown → RETIRE (legacy conservative behaviour)
  * - no owner → TRANSFER
+ *
+ * The old blanket "both blank → RETIRE" rule deleted the surviving upper
+ * paragraph's explicit indent when the lower blank line was removed.
  */
 export function resolveMergeOwnerRetirement(
   input: MergeOwnerRetirementInput,
@@ -1716,6 +1733,18 @@ export function resolveMergeOwnerRetirement(
   if (input.ownerSide === 'none') return 'TRANSFER_SINGLE_OWNER'
   const ownerText = input.ownerSide === 'left' ? input.leftText : input.rightText
   if (!isBlankParagraphText(ownerText)) return 'TRANSFER_SINGLE_OWNER'
+
+  const bothBlank = isBlankParagraphText(input.leftText) && isBlankParagraphText(input.rightText)
+  if (!bothBlank) return 'RETIRE_EMPTY_PARA_OWNER'
+
+  const removedSide = input.removedSide ?? 'none'
+  if (removedSide !== 'none') {
+    return input.ownerSide === removedSide ? 'RETIRE_EMPTY_PARA_OWNER' : 'TRANSFER_SINGLE_OWNER'
+  }
+  const survivorSide = input.survivorSide ?? 'none'
+  if (survivorSide !== 'none') {
+    return input.ownerSide === survivorSide ? 'TRANSFER_SINGLE_OWNER' : 'RETIRE_EMPTY_PARA_OWNER'
+  }
   return 'RETIRE_EMPTY_PARA_OWNER'
 }
 

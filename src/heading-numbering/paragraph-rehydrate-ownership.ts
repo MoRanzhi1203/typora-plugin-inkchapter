@@ -30,6 +30,7 @@ import {
   hashText,
   type ParagraphIndentOverrideRecord,
 } from './paragraph-layout-store'
+import { isBlankParagraphText } from './paragraph-indent-manager'
 
 // ── Rehydrate Phase Identity ───────────────────────────────────────────
 
@@ -49,6 +50,7 @@ export type RehydratePhase = 'INITIAL_LOAD' | 'LIVE_EDIT' | 'UNDO_REDO'
 export type HistoricalAdmissionDecision =
   | 'ADMIT_EXACT_TEXT_IDENTITY'
   | 'ADMIT_INITIAL_LOAD_STRUCTURAL'
+  | 'ADMIT_TEMPORARY_EMPTY_STRUCTURAL'
   | 'ADMIT_UNDO_RECOVERY'
   | 'REJECT_TEMPORARY_HISTORICAL'
   | 'REJECT_NO_TARGET'
@@ -72,10 +74,56 @@ export interface HistoricalAdmissionResult {
   admitted: boolean
   decision: HistoricalAdmissionDecision
   reason: string
+  /** The admission gate's own unique-slot resolution (temporary records). */
+  resolvedIndexOverride?: number
 }
 
 function normalizeText(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Find the ONE empty paragraph that a temporary record can proveably describe.
+ *
+ * Temporary records are created for empty targets, which have no text identity.
+ * Their only persisted proof is the structural slot: the ordinal plus the
+ * hashes of the neighbouring CONTENT paragraphs. The slot is admissible only
+ * when exactly ONE empty paragraph in the document matches it. Two or more
+ * candidates (e.g. a run of blank lines collapsed/created elsewhere) are
+ * ambiguous, and a slot with no empty candidate describes a deleted line — both
+ * must fail closed.
+ */
+export function findUniqueEmptyStructuralSlot(
+  record: ParagraphIndentOverrideRecord,
+  allParagraphs: HTMLElement[],
+): number {
+  if (allParagraphs.length === 0) return -1
+  const anchor = record.anchor
+  const hasNeighbours = anchor.beforeHash !== undefined || anchor.afterHash !== undefined
+  const candidates: number[] = []
+
+  for (let i = 0; i < allParagraphs.length; i++) {
+    const para = allParagraphs[i]
+    if (!para || !isBlankParagraphText(para.textContent ?? '')) continue
+
+    if (!hasNeighbours) {
+      // No structural proof at all: only the exact stored ordinal may match.
+      if (i === anchor.lastKnownOrdinal) candidates.push(i)
+      continue
+    }
+
+    if (anchor.beforeHash !== undefined) {
+      const prev = i > 0 ? allParagraphs[i - 1] : null
+      if (!prev || hashText(normalizeText(prev.textContent ?? '')) !== anchor.beforeHash) continue
+    }
+    if (anchor.afterHash !== undefined) {
+      const next = i < allParagraphs.length - 1 ? allParagraphs[i + 1] : null
+      if (!next || hashText(normalizeText(next.textContent ?? '')) !== anchor.afterHash) continue
+    }
+    candidates.push(i)
+  }
+
+  return candidates.length === 1 ? candidates[0] : -1
 }
 
 /**
@@ -88,7 +136,7 @@ export function evaluateHistoricalRehydrateAdmission(
 ): HistoricalAdmissionResult {
   const { record, resolvedConfidence, resolvedIndex, allParagraphs, phase } = req
 
-  // 1. Controlled Undo recovery — the only path that can restore an empty target.
+  // 1. Controlled Undo recovery — the only path that restores a deleted target.
   if (req.undoRecoveryProof) {
     return {
       admitted: true,
@@ -97,12 +145,32 @@ export function evaluateHistoricalRehydrateAdmission(
     }
   }
 
-  // 2. Records created for an empty target never regain heuristic write access.
+  // 2. Temporary records describe an EMPTY paragraph. They are re-admitted only
+  //    on INITIAL_LOAD and only when the stored structural slot still resolves to
+  //    exactly ONE empty paragraph. This is what makes an explicit indent on a
+  //    surviving blank line survive save/reopen; a deleted or ambiguous line
+  //    still fails closed.
   if (record.temporary === true) {
+    if (phase !== 'INITIAL_LOAD') {
+      return {
+        admitted: false,
+        decision: 'REJECT_TEMPORARY_HISTORICAL',
+        reason: 'temporary record may only be re-admitted by an initial document load',
+      }
+    }
+    const uniqueIndex = findUniqueEmptyStructuralSlot(record, allParagraphs)
+    if (uniqueIndex < 0) {
+      return {
+        admitted: false,
+        decision: 'REJECT_TEMPORARY_HISTORICAL',
+        reason: 'temporary record has no unique empty structural slot (deleted or ambiguous)',
+      }
+    }
     return {
-      admitted: false,
-      decision: 'REJECT_TEMPORARY_HISTORICAL',
-      reason: 'temporary historical record has no transferable business identity',
+      admitted: true,
+      decision: 'ADMIT_TEMPORARY_EMPTY_STRUCTURAL',
+      reason: `unique empty structural slot at index ${uniqueIndex}`,
+      resolvedIndexOverride: uniqueIndex,
     }
   }
 
@@ -185,14 +253,23 @@ export function evaluateHistoricalRehydrateAdmission(
 // ── Sidecar Lifecycle: temporary historical retirement ─────────────────
 
 /**
- * Temporary records describe an EMPTY paragraph, which has no business
- * identity. They cannot be rebound safely and must be retired from the sidecar
- * so they can never poison a new empty paragraph. Business records are kept.
+ * Temporary records describe an EMPTY paragraph. On load they must be retired
+ * only when their structural slot no longer resolves to exactly one empty
+ * paragraph (deleted line / ambiguous run). A surviving unique slot keeps the
+ * record so the explicit indent survives save/reopen.
+ *
+ * When `allParagraphs` is not supplied the legacy caller has no document view,
+ * so every temporary record is retired (fail closed).
  */
 export function selectTemporaryHistoricalRecordsForRetirement(
   records: ParagraphIndentOverrideRecord[],
+  allParagraphs?: HTMLElement[] | null,
 ): string[] {
-  return records.filter(r => r.temporary === true).map(r => r.id)
+  const temps = records.filter(r => r.temporary === true)
+  if (!allParagraphs || allParagraphs.length === 0) return temps.map(r => r.id)
+  return temps
+    .filter(r => findUniqueEmptyStructuralSlot(r, allParagraphs) < 0)
+    .map(r => r.id)
 }
 
 // ── Session Retirement Ledger (Undo/Redo controlled recovery) ──────────

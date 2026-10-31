@@ -14,6 +14,8 @@ function gate(overrides: Partial<BlankRunEnterGateInput> = {}): BlankRunEnterGat
     paragraphVisibleText: '',
     paragraphIsTopLevelBlock: true,
     paragraphHasSpecialAncestor: false,
+    paragraphHasExplicitIndent: false,
+    runContainsExplicitIndent: false,
     isLastEmptyParagraphOfRun: true,
     runIsFollowedByContent: true,
     runIsPrecededByContent: true,
@@ -47,6 +49,16 @@ describe('BLANK-RUN-ENTER gate', () => {
   it('非顶层块 / 特殊结构内不接管', () => {
     expect(shouldApplySingleStepBlankEnter(gate({ paragraphIsTopLevelBlock: false }))).toBe(false)
     expect(shouldApplySingleStepBlankEnter(gate({ paragraphHasSpecialAncestor: true }))).toBe(false)
+  })
+
+  it('P0-3: 显式缩进（force-indent / force-flush / 有 canonical 记录）的空段落不接管', () => {
+    // 软换行不会产生新的段落身份：方向键会跳过第二行、占位框只覆盖第一行。
+    // 显式格式段落必须走原生拆段，让上下两半都是真实段落。
+    expect(shouldApplySingleStepBlankEnter(gate({ paragraphHasExplicitIndent: true }))).toBe(false)
+  })
+
+  it('P0-E: 同一空行块内混有显式缩进空段时不接管（混合块必须保留真实段落身份）', () => {
+    expect(shouldApplySingleStepBlankEnter(gate({ runContainsExplicitIndent: true }))).toBe(false)
   })
 
   it('不是空行块的最后一行不接管', () => {

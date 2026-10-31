@@ -30,6 +30,20 @@ export interface BlankRunEnterGateInput {
   paragraphIsTopLevelBlock: boolean
   /** Caret paragraph sits inside list / quote / code / table / figure / def. */
   paragraphHasSpecialAncestor: boolean
+  /**
+   * Caret paragraph carries an explicit indent semantic (force-indent /
+   * force-flush) or a live canonical ownership record. Such a paragraph is a
+   * real formatted block, not blank filler: Enter must use Typora's native
+   * paragraph split so both halves stay real, reachable paragraphs.
+   */
+  paragraphHasExplicitIndent: boolean
+  /**
+   * Any paragraph in the SAME empty run carries an explicit indent semantic or
+   * a live canonical record. A mixed run (ordinary blank lines alternating with
+   * explicitly indented ones) must keep real paragraph identities: a soft line
+   * break would create a visual line that arrow navigation cannot reach.
+   */
+  runContainsExplicitIndent: boolean
   /** No following sibling block is an empty paragraph (this is the LAST empty line). */
   isLastEmptyParagraphOfRun: boolean
   /** A non-empty block follows the run (interior blank run, not document end). */
@@ -52,6 +66,8 @@ export function shouldApplySingleStepBlankEnter(input: BlankRunEnterGateInput): 
   if (input.paragraphVisibleText !== '') return false
   if (!input.paragraphIsTopLevelBlock) return false
   if (input.paragraphHasSpecialAncestor) return false
+  if (input.paragraphHasExplicitIndent) return false
+  if (input.runContainsExplicitIndent) return false
   if (!input.isLastEmptyParagraphOfRun) return false
   if (!input.runIsFollowedByContent) return false
   if (!input.runIsPrecededByContent) return false
