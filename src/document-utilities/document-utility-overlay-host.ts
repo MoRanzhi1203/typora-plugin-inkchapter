@@ -54,6 +54,11 @@ import {
 } from './document-navigator-intent'
 // V5.12-R8 §6 — the SINGLE Markdown reference scanner (no second parser).
 import { findReferenceSpanAt, type ReferenceSpan } from './document-resource-scanner'
+// 内容块悬停工具栏 — 复用本宿主唯一 overlay 根与唯一几何调度。
+import {
+  ContentBlockToolbarController,
+  type ContentBlockToolbarActions,
+} from './content-block-toolbar-controller'
 import type { DiagnosticRangeRole } from './diagnostics-types'
 import {
   resolveDiagnosticLocation,
@@ -1211,6 +1216,16 @@ export interface DocumentUtilitiesOverlayOptions {
     /** V2 — authoritative empty-workspace surface resolver (active EMPTY leaf
      *  view container). Never falls back to the stale #write business root. */
     resolveEmptySurface?(): EmptyWorkspaceSurfaceFacts | null
+  }
+  /**
+   * 内容块悬停工具栏（代码复制 / 图片复制 / 手动折叠）。
+   * 可选注入：缺省时宿主行为与既有一致（测试/无平台环境安全）。
+   * 工具栏复用本宿主的唯一 overlay 根与唯一几何调度，不新增观察器。
+   */
+  contentBlockToolbar?: {
+    actions: ContentBlockToolbarActions
+    getMarkdown: () => string | null
+    emitAudit?: (event: string, payload: Record<string, unknown>) => void
   }
 }
 
@@ -3390,6 +3405,8 @@ export class DocumentUtilityOverlayHost {
   private activeLeafLifecycleDispose: (() => void) | null = null
   /** Empty Workspace UX V1 — single marker writer + scoped dblclick listener. */
   private emptyWorkspaceUx: EmptyWorkspaceUxController | null = null
+  /** 内容块悬停工具栏（代码/图片快捷操作），复用本 overlay 根。 */
+  private contentBlockToolbar: ContentBlockToolbarController | null = null
   /** V2 — active document reconcile coordinator (single authoritative chain). */
   private activeDocumentEpoch = 0
   private lastReconcileIdentity: { state: string; path: string | null; key: string | null } | null = null
@@ -4467,6 +4484,19 @@ export class DocumentUtilityOverlayHost {
     this.locateFrame = new DiagnosticLocateFrameController(root)
     this.bindLocateFrameEditorScroll()
 
+    // 内容块悬停工具栏 — 同一 overlay 根内的可交互子层（wrapper 不接收指针）。
+    const toolbarOpts = this.opts.contentBlockToolbar
+    if (toolbarOpts) {
+      this.contentBlockToolbar = new ContentBlockToolbarController(root, {
+        getEditorRoot: () => resolveBusinessContentRoot(),
+        getMarkdown: toolbarOpts.getMarkdown,
+        actions: toolbarOpts.actions,
+        onLayoutInvalidated: (reason) => this.scheduleGeometrySync(reason),
+        emitAudit: toolbarOpts.emitAudit,
+      })
+      this.contentBlockToolbar.mount()
+    }
+
     // Scroll navigator lifecycle (one active listener).
     this.scrollNav = new DocumentScrollNavigator({
       getContainer: () => getActiveEditorScrollContainer(),
@@ -4793,6 +4823,9 @@ export class DocumentUtilityOverlayHost {
     }
     this.locateFrame?.dispose()
     this.locateFrame = null
+    // 内容块工具栏：释放监听器 / 定时器 / 浮层节点。
+    this.contentBlockToolbar?.dispose()
+    this.contentBlockToolbar = null
     // V5.11 — tear down the document-space layer + carrier.
     this.clearHeadingDiagnosticMarkers()
     if (this.headingMarkerLayer) {
@@ -4848,6 +4881,9 @@ export class DocumentUtilityOverlayHost {
 
   /** FILE_OPEN document switch — routed into the single reconcile authority. */
   bindDocument(): void {
+    // 内容块工具栏：文档切换先丢弃会话折叠状态并隐藏，再重新绑定新的 #write。
+    this.contentBlockToolbar?.resetForDocument('FILE_OPEN')
+    this.contentBlockToolbar?.rebindEditorSurface()
     // WC-R2 — a document switch drops any pending navigator gesture before it
     // could be applied to the NEW document.
     this.cancelNavigatorGesture('DOCUMENT_SWITCH')
@@ -13322,6 +13358,9 @@ export class DocumentUtilityOverlayHost {
   }
 
   private onEditorScrollForLocateFrame(): void {
+    // 内容块工具栏：滚动后立即隐藏，绝不留下浮在顶部的陈旧工具栏。
+    // 复用这一个既有 scroll 监听器（不新增第二个 scroll listener）。
+    this.contentBlockToolbar?.onEditorScroll()
     // V5.11 §12/§13 — the LocateScrollLease is the ONLY authority. Once the
     // transaction reached a terminal state (COMMITTED/FAILED/CANCELLED/
     // DISMISSED) the lease is RELEASED and the locate subsystem is INERT:
@@ -22121,6 +22160,8 @@ export class DocumentUtilityOverlayHost {
     // Phase 7R.3.11.8B.8 — the visible editor region is unchanged yet a drawer /
     // DevTools / resize transition may have happened: keep the frame honest.
     this.repositionDiagnosticLocateFrame()
+      // 内容块工具栏：复用同一 pass 复核锚点（不改锚点内容，只重定位/隐藏）。
+      this.contentBlockToolbar?.syncGeometry()
       return
     }
     this.geometryCounters.writeCount++
@@ -22212,6 +22253,8 @@ export class DocumentUtilityOverlayHost {
     // close / DevTools layout change): reposition the locate frame so it always
     // follows its resolved target.
     this.repositionDiagnosticLocateFrame()
+    // 内容块工具栏：几何提交后同帧复核（只读测量 + 位置写入，不触发新 pass）。
+    this.contentBlockToolbar?.syncGeometry()
   }
 
   /**

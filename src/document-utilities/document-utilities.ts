@@ -131,6 +131,14 @@ export interface DocumentUtilitiesSources {
   onSettingsChanged?: (cb: () => void) => () => void
   /** Phase 7R.3.11.8B.7.1 — effective-mode transition revision (real transitions). */
   getEffectiveHeadingModeRevision?: () => number
+  /**
+   * 内容块悬停工具栏（可选）。提供后宿主在**同一个** overlay 根内挂载
+   * 代码复制 / 图片复制 / 手动折叠工具栏；缺省时宿主行为完全不变。
+   */
+  contentBlockToolbar?: {
+    actions: import('./content-block-toolbar-controller').ContentBlockToolbarActions
+    emitAudit?: (event: string, payload: Record<string, unknown>) => void
+  }
 }
 
 export interface DocumentUtilities {
@@ -392,6 +400,14 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
   const host = new DocumentUtilityOverlayHost({
     ctx,
     providers,
+    // 内容块工具栏：Markdown 回退读取复用同一权威快照入口（只读）。
+    contentBlockToolbar: sources.contentBlockToolbar
+      ? {
+          actions: sources.contentBlockToolbar.actions,
+          getMarkdown: () => sources.getMarkdown(),
+          emitAudit: sources.contentBlockToolbar.emitAudit,
+        }
+      : undefined,
     onBindDocument: (bind) => {
       sources.onDocumentSwitch(() => {
         indexHeadingIdentities()

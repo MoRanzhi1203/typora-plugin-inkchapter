@@ -49,6 +49,7 @@ import { FileCopyService } from './file-transfer/file-copy-service'
 import { resolveModifiedState } from './file-transfer/file-transfer-policy'
 import { FileTreeDragAdapter } from './file-transfer/file-tree-drag-adapter'
 import { NativeDragBridge, type ElectronRendererLike } from './file-transfer/native-drag-bridge'
+import { createContentBlockClipboard, type ElectronLike } from './infrastructure/content-block-clipboard'
 import type { EmptyWorkspaceSurfaceFacts } from './document-utilities/document-empty-workspace-controller'
 
 /** Runtime audit marker — separate from INKCHAPTER_BUILD_ID. */
@@ -700,11 +701,36 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] 题注服务初始化失败，题注功能不可用', e)
     }
 
+    // ── 内容块悬停工具栏：唯一剪贴板边界（Typora / Electron） ──────────
+    // 代码文本走 CodeMirror 队列（只读），图片走 Electron nativeImage（与
+    // Typora 原生 copyImage 同一通道），均带回读校验。
+    const contentBlockClipboard = createContentBlockClipboard({
+      getEditor: () => editor,
+      getElectron: () => {
+        const globalScope = globalThis as { reqnode?: unknown }
+        if (typeof globalScope.reqnode !== 'function') return null
+        try {
+          return (globalScope.reqnode as (id: string) => unknown)('electron') as ElectronLike
+        } catch {
+          return null
+        }
+      },
+      getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+    })
+
     // ── Phase 7R.3.11: Document Utilities (diagnostics + lock + scroll) ──
     // Presentation/utility layer only. Mounts editor-shell overlays OUTSIDE
     // #write so their mutations never enter numbering pipelines.
     try {
       this.documentUtilities = createDocumentUtilities({
+        contentBlockToolbar: {
+          actions: {
+            readCodeSource: (fence) => contentBlockClipboard.readCodeSource(fence),
+            copyText: (text) => contentBlockClipboard.copyText(text),
+            copyImage: (img) => contentBlockClipboard.copyImage(img),
+          },
+          emitAudit: (event, payload) => emitRuntimeAudit(event, payload),
+        },
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {
           const fp = this.app.workspace.activeFile
