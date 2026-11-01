@@ -67,7 +67,11 @@ if (IS_DEV) {
     console.log('[build] Typora is running — skipped closeTypora()/relaunch to preserve open windows.')
     console.log('[build] Restart Typora manually to load the new build from test/vault/.typora/plugins/dist.')
   } else {
-    await closeTypora()
+    // AUDIT: closeTypora() removes the community-framework dev lock
+    // (`node_modules/@typora-community-plugin/core/dist/_lock/win-test`). The
+    // development core watches that file and calls `window.close` on `rename`, so
+    // deleting it is exactly what terminated Typora in the automated flows. Never
+    // call it from a build: mount the vault and open the document instead.
     // Always mount the VAULT first (a lone `.md` launch yields a window without
     // the InkChapter UI), wait for the real plugin receipt, then open the doc.
     await openTestVault()
