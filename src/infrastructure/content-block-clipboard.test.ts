@@ -98,6 +98,18 @@ describe('CONTENT-TOOLBAR-CLIPBOARD plain text', () => {
     expect(result.reason).toBe('CLIPBOARD_VERIFY_FAILED')
   })
 
+  it('retries the read-back once when the clipboard write is not immediately visible', async () => {
+    let calls = 0
+    const { electron } = fakeElectron()
+    electron.clipboard!.readText = () => (++calls === 1 ? 'stale-previous-content' : 'a\nb')
+    const result = await writePlainText('a\nb', baseDeps({
+      getEditor: () => ({ UserOp: { setClipboard: () => {} } }),
+      getElectron: () => electron,
+    }))
+    expect(result).toEqual({ ok: true, verified: true, reason: null })
+    expect(calls).toBe(2)
+  })
+
   it('falls back to the navigator clipboard when Typora throws', async () => {
     const writeText = vi.fn(async () => {})
     const result = await writePlainText('x', baseDeps({

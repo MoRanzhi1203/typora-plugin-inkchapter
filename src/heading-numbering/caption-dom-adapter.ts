@@ -60,6 +60,8 @@ const CAPTION_TARGET_KEY_ATTR = 'data-inkchapter-caption-target-key'
  * label attribute changes no block structure.
  */
 const CODE_CAPTION_LABEL_ATTR = 'data-inkchapter-caption-label'
+/** V3 — 代码题注锚定侧（above | below），只影响 PRE 的 ::before 位置。 */
+const CAPTION_POSITION_ATTR = 'data-inkchapter-caption-position'
 
 /**
  * V7 §2 — the canonical runtime caption-owner map, shared at MODULE scope so the
@@ -789,7 +791,7 @@ export class CaptionDomAdapter {
     position: 'above' | 'below',
   ): HTMLElement {
     if (target.type === 'code') {
-      return this.renderCodeCaptionHost(target, label, title, captionId)
+      return this.renderCodeCaptionHost(target, label, title, captionId, position)
     }
     const el = document.createElement('div')
     el.className = `${CAPTION_CLASS} ${CAPTION_CLASS}-${target.type}`
@@ -827,6 +829,7 @@ export class CaptionDomAdapter {
     label: string,
     title: string,
     captionId: string,
+    position: 'above' | 'below' = 'above',
   ): HTMLElement {
     const pre = target.root
     const ownerKey = this.targetKeysByRoot.get(target.root) ?? ''
@@ -836,6 +839,9 @@ export class CaptionDomAdapter {
     pre.setAttribute(CAPTION_TITLE_ATTR, title)
     pre.setAttribute(CAPTION_TARGET_KEY_ATTR, ownerKey)
     pre.setAttribute(CODE_CAPTION_LABEL_ATTR, label)
+    // V3 — 代码题注位置（above/below）：题注仍是 PRE 的 ::before 投影，
+    // 只切换它相对 PRE 的锚定侧，不新增 DOM、不改 Markdown。
+    pre.setAttribute(CAPTION_POSITION_ATTR, position)
     if (ownerKey !== '') {
       try { pre.setAttribute('data-inkchapter-caption-owner-key', ownerKey) } catch { /* noop */ }
     }
@@ -856,6 +862,7 @@ export class CaptionDomAdapter {
     el.removeAttribute(CAPTION_TITLE_ATTR)
     el.removeAttribute(CAPTION_TARGET_KEY_ATTR)
     el.removeAttribute(CODE_CAPTION_LABEL_ATTR)
+    el.removeAttribute(CAPTION_POSITION_ATTR)
     this.captionOwnerRoots.delete(el)
   }
 
@@ -902,7 +909,7 @@ export class CaptionDomAdapter {
         if (!this.isCodeCaptionHost(existingEl)) {
           // Migration from the legacy sibling DIV host.
           existingEl.remove()
-          this.renderCodeCaptionHost(item.target, item.label, item.title, item.captionId)
+          this.renderCodeCaptionHost(item.target, item.label, item.title, item.captionId, item.position)
           stats.createCount++
           createdIds.push(item.captionId)
           console.info(
@@ -915,11 +922,16 @@ export class CaptionDomAdapter {
         const titleBefore = existingEl.getAttribute(CAPTION_TITLE_ATTR)
         const desiredTargetKey = this.targetKeysByRoot.get(item.target.root) ?? ''
         const keyBefore = existingEl.getAttribute(CAPTION_TARGET_KEY_ATTR) ?? ''
-        const changed = labelBefore !== item.label || titleBefore !== item.title || keyBefore !== desiredTargetKey
+        const positionBefore = existingEl.getAttribute(CAPTION_POSITION_ATTR)
+        const changed = labelBefore !== item.label
+          || titleBefore !== item.title
+          || keyBefore !== desiredTargetKey
+          || positionBefore !== item.position
         if (changed) {
           existingEl.setAttribute(CODE_CAPTION_LABEL_ATTR, item.label)
           existingEl.setAttribute(CAPTION_TITLE_ATTR, item.title)
           existingEl.setAttribute(CAPTION_TARGET_KEY_ATTR, desiredTargetKey)
+          existingEl.setAttribute(CAPTION_POSITION_ATTR, item.position)
           stats.updateCount++
         } else {
           stats.noOpCount++

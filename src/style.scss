@@ -4792,34 +4792,155 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   }
 }
 
-/* 折叠投影：只隐藏代码可视主体，保留围栏标题/题注与占位摘要。
-   不改 CodeMirror 模型、Markdown 源与 Undo 历史（Typora 自身也用
-   `.md-fences-advanced:not(.md-focus) .CodeMirror{display:none}`）。
-   选择器使用插件自有 data 属性，避免引入任何全局 .md-fences 规则。 */
+/* ── V3 语言栏（代码块内顶部，常驻） ─────────────────────────────────────────
+   视觉上位于代码容器内：代码块通过 `data-inkchapter-langbar` 预留 34px 顶部内边距，
+   语言栏本体是 overlay 层元素（绝不插入 #write）。 */
+.inkchapter-content-toolbar--langbar {
+  gap: 8px;
+  padding: 0 10px;
+  min-height: 30px;
+  height: 30px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-color, #333) 10%, transparent);
+  border-radius: 3px 3px 0 0;
+  box-shadow: none;
+  opacity: 1;
+  color: var(--text-muted, #777);
+  font-size: 12px;
+  line-height: 1;
+  transition: none;
+}
+
+.inkchapter-content-toolbar__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-color, #333) 9%, transparent);
+  color: var(--text-muted, #666);
+  font-family: var(--font-monospace, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.inkchapter-content-toolbar__lang {
+  color: var(--text-muted, #666);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.inkchapter-content-toolbar__lines {
+  color: color-mix(in srgb, var(--text-color, #333) 45%, transparent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.inkchapter-content-toolbar__btn--copy {
+  margin-left: auto;
+}
+
+/* ── V3 折叠条（块外下方） ────────────────────────────────────────────────── */
+.inkchapter-code-foldbar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 120ms ease-out;
+}
+
+.inkchapter-code-foldbar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--text-color, #333) 14%, transparent);
+  border-radius: 999px;
+  background: var(--background-primary, #fff);
+  color: var(--text-muted, #666);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+
+  &:hover {
+    background: var(--background-modifier-hover, #ececec);
+    color: var(--text-color, #333);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--text-accent, #07a);
+    outline-offset: -1px;
+  }
+
+  &.is-error {
+    color: var(--text-error, #d00);
+  }
+}
+
+.inkchapter-code-foldbar__icon {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inkchapter-code-foldbar,
+  .inkchapter-code-foldbar__btn {
+    transition: none;
+  }
+}
+
+/* ── V3 预览式折叠（只裁剪 CodeMirror 可视高度，保留高亮/缩进/整块 DOM） ────
+   选择器使用插件自有 data 属性，避免引入任何全局 .md-fences 规则。
+   PRE 自身不使用 overflow:hidden，因此题注（::before）永不被裁切。 */
+#write pre[data-inkchapter-langbar='true'] {
+  position: relative;
+  padding-top: 34px !important;
+}
+
+/* 可折叠块：底部预留折叠带（纯内边距，不改 Markdown / 不增删空段落）。
+   折叠条落在这条带内，因此既不遮挡代码行，也不与下方题注抢位置。 */
+#write pre[data-inkchapter-code-foldable='true'] {
+  padding-bottom: 36px !important;
+  --ink-fold-band: 36px;
+}
+
 #write pre[data-inkchapter-code-folded='true'] {
   position: relative;
-  height: 44px;
-  min-height: 0;
+}
+
+#write pre[data-inkchapter-code-folded='true'] > .CodeMirror {
+  max-height: var(--ink-fold-preview-height, 200px);
   overflow: hidden;
 }
 
-#write pre[data-inkchapter-code-folded='true'] > .CodeMirror,
-#write pre[data-inkchapter-code-folded='true'] > .code-tooltip,
-#write pre[data-inkchapter-code-folded='true'] > [class*='fences-adv-panel'] {
-  display: none !important;
+#write pre[data-inkchapter-code-folded='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 100%;
+  bottom: var(--ink-fold-band, 0);
+  height: 48px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg-color, var(--background-primary, #fff)) 0%, transparent),
+    var(--bg-color, var(--background-primary, #fff))
+  );
+  pointer-events: none;
 }
 
-#write pre[data-inkchapter-code-folded='true']::after {
-  content: attr(data-inkchapter-fold-summary);
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  font-family: var(--font-monospace, monospace);
-  font-size: 0.85em;
-  color: var(--text-muted, #888);
-  pointer-events: none;
-  -webkit-user-select: none;
-  user-select: none;
+/* 代码题注位置：默认上方（::before, bottom:100%）；below 时翻到代码块下方。 */
+#write pre.md-fences[data-inkchapter-caption='true'][data-inkchapter-caption-position='below']::before {
+  bottom: auto;
+  top: 100%;
 }

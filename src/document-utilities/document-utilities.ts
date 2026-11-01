@@ -138,6 +138,8 @@ export interface DocumentUtilitiesSources {
   contentBlockToolbar?: {
     actions: import('./content-block-toolbar-controller').ContentBlockToolbarActions
     emitAudit?: (event: string, payload: Record<string, unknown>) => void
+    /** V3 — 折叠预览保留行数（5 | 10，默认 10）。 */
+    getPreviewLines?: () => 5 | 10
   }
 }
 
@@ -406,6 +408,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
           actions: sources.contentBlockToolbar.actions,
           getMarkdown: () => sources.getMarkdown(),
           emitAudit: sources.contentBlockToolbar.emitAudit,
+          getPreviewLines: sources.contentBlockToolbar.getPreviewLines,
         }
       : undefined,
     onBindDocument: (bind) => {

@@ -44,35 +44,68 @@ describe('CONTENT-TOOLBAR-STYLE shell', () => {
   })
 
   it('respects prefers-reduced-motion', () => {
-    const start = scss.lastIndexOf('@media (prefers-reduced-motion: reduce)')
-    expect(start).toBeGreaterThan(-1)
-    const block = scss.slice(start, start + 400)
-    expect(block).toContain('.inkchapter-content-toolbar')
-    expect(block).toContain('animation: none')
+    expect(scss).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(scss).toContain('.inkchapter-code-foldbar__btn')
+    expect(scss).toContain('animation: none')
+  })
+
+  it('never animates the always-on language bar', () => {
+    const bar = ruleBody('.inkchapter-content-toolbar--langbar {')
+    expect(bar).toContain('transition: none')
   })
 })
 
-describe('CONTENT-TOOLBAR-STYLE folded fence projection', () => {
-  it('hides only the code body, keeping the fence (and its caption) intact', () => {
-    const collapsed = ruleBody("#write pre[data-inkchapter-code-folded='true'] {")
-    expect(collapsed).toContain('position: relative')
-    expect(collapsed).toContain('height: 44px')
-    expect(scss).toContain("#write pre[data-inkchapter-code-folded='true'] > .CodeMirror")
-    expect(scss).toContain('display: none !important')
+describe('CONTENT-TOOLBAR-STYLE V3 language bar', () => {
+  it('reserves in-block space for the language bar without touching Markdown', () => {
+    const fence = ruleBody("#write pre[data-inkchapter-langbar='true'] {")
+    expect(fence).toContain('position: relative')
+    expect(fence).toContain('padding-top: 34px')
   })
 
-  it('paints the folded placeholder from a data attribute', () => {
-    const placeholder = ruleBody("#write pre[data-inkchapter-code-folded='true']::after {")
-    expect(placeholder).toContain('attr(data-inkchapter-fold-summary)')
-    expect(placeholder).toContain('pointer-events: none')
+  it('renders badge / language / line count and keeps only the copy button interactive', () => {
+    expect(ruleBody('.inkchapter-content-toolbar__badge {')).toContain('font-family: var(--font-monospace')
+    expect(ruleBody('.inkchapter-content-toolbar__lang {')).toContain('font-size: 12px')
+    expect(ruleBody('.inkchapter-content-toolbar__lines {')).toContain('font-size: 11px')
+    expect(ruleBody('.inkchapter-content-toolbar__btn--copy {')).toContain('margin-left: auto')
+    expect(ruleBody('.inkchapter-code-foldbar__btn {')).toContain('pointer-events: auto')
+  })
+})
+
+describe('CONTENT-TOOLBAR-STYLE V3 folded preview', () => {
+  it('clips only the CodeMirror height and keeps the PRE (and its caption) unclipped', () => {
+    const pre = ruleBody("#write pre[data-inkchapter-code-folded='true'] {")
+    expect(pre).toContain('position: relative')
+    expect(pre).not.toContain('overflow: hidden')
+    expect(pre).not.toContain('height: 44px')
+    const cm = ruleBody("#write pre[data-inkchapter-code-folded='true'] > .CodeMirror {")
+    expect(cm).toContain('max-height: var(--ink-fold-preview-height')
+    expect(cm).toContain('overflow: hidden')
+  })
+
+  it('paints a soft fade instead of removing the code body', () => {
+    const fade = ruleBody("#write pre[data-inkchapter-code-folded='true']::after {")
+    expect(fade).toContain('linear-gradient')
+    expect(fade).toContain('pointer-events: none')
+    expect(fade).not.toContain('attr(data-inkchapter-fold-summary)')
+    expect(fade).toContain('bottom: var(--ink-fold-band')
+  })
+
+  it('reserves an in-block fold band so the fold control never covers code or caption', () => {
+    const band = ruleBody("#write pre[data-inkchapter-code-foldable='true'] {")
+    expect(band).toContain('padding-bottom: 36px')
+    expect(band).toContain('--ink-fold-band: 36px')
+  })
+
+  it('supports code captions above and below the fence', () => {
+    const below = ruleBody(
+      "#write pre.md-fences[data-inkchapter-caption='true'][data-inkchapter-caption-position='below']::before {",
+    )
+    expect(below).toContain('top: 100%')
+    expect(below).toContain('bottom: auto')
+    expect(scss).toContain("#write pre.md-fences[data-inkchapter-caption='true']::before")
   })
 
   it('never authors a global .md-fences rule (code typography stays untouched)', () => {
     expect(scss).not.toContain('.md-fences.inkchapter-code-folded')
-  })
-
-  it('never targets the Markdown caption pseudo element', () => {
-    // 折叠占位必须用 ::after；题注仍是 ::before。
-    expect(scss).toContain("#write pre.md-fences[data-inkchapter-caption='true']::before")
   })
 })

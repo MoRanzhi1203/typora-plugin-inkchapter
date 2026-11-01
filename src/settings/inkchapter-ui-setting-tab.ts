@@ -52,6 +52,23 @@ export class InkChapterUiSettingTab extends SettingTab {
     this.checkbox('在文件树中定位', '', ui.docViewMenu.revealTree, v => this.patchMenu('revealTree', v))
     this.checkbox('在文件资源管理器中显示', '仅 Windows 平台可用。', ui.docViewMenu.revealExplorer, v => this.patchMenu('revealExplorer', v))
 
+    this.addSettingTitle('内容块工具栏')
+    this.addSetting(s => {
+      s.addName('代码块折叠预览行数')
+      s.addDescription(
+        '只对超过该行数的代码块生效（短代码始终完整显示）。折叠后保留代码高亮与缩进，'
+        + '底部显示「展开剩余 N 行」；复制始终复制完整代码。',
+      )
+      s.addSelect(sel => {
+        sel.add(new Option('预览 10 行（默认）', '10'))
+        sel.add(new Option('预览 5 行', '5'))
+        sel.value = String(ui.codeBlockPreviewLines)
+        sel.onchange = () => this.patch({
+          codeBlockPreviewLines: sel.value === '5' ? 5 : 10,
+        })
+      })
+    })
+
     this.addSettingTitle('界面')
     this.checkbox(
       '使用社区框架的左侧 Ribbon',

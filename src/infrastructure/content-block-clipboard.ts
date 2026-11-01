@@ -189,15 +189,22 @@ export async function writePlainText(
     }
   }
 
-  // 3) 回读校验（Electron 可用时）；Windows 剪贴板会把 \n 规范化为 \r\n。
+  // 3) 回读校验（Electron 可用时）；Windows 剪贴板会把 \n 规范化为 \r\n，
+  //    且首次写入后立即回读可能仍是旧内容 → 允许一次短延迟重试。
   try {
     const readText = electron?.clipboard?.readText
     if (typeof readText === 'function') {
-      const readBack = readText.call(electron?.clipboard)
-      if (typeof readBack === 'string') {
-        const same = clipboardTextMatches(readBack, text)
-        return { ok: same, verified: true, reason: same ? null : 'CLIPBOARD_VERIFY_FAILED' }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const readBack = readText.call(electron?.clipboard)
+        if (typeof readBack !== 'string') break
+        if (clipboardTextMatches(readBack, text)) {
+          return { ok: true, verified: true, reason: null }
+        }
+        if (attempt === 0) {
+          await new Promise<void>((resolve) => { setTimeout(resolve, 20) })
+        }
       }
+      return { ok: false, verified: true, reason: 'CLIPBOARD_VERIFY_FAILED' }
     }
   } catch {
     // 回读失败不改变写入结论，只标记未校验。

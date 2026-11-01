@@ -10,7 +10,7 @@ import {
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import {
-  CODE_FOLD_CLASS,
+  CODE_LANGBAR_ATTR,
   CONTENT_TOOLBAR_CLASS,
 } from './content-block-toolbar-controller'
 
@@ -94,11 +94,13 @@ function mountHost(): DocumentUtilityOverlayHost {
 const rootSelector = '[data-inkchapter-utility-root="true"]'
 
 describe('CONTENT-TOOLBAR-HOST mount', () => {
-  it('mounts one toolbar inside the existing overlay root, never inside #write', () => {
+  it('mounts one language bar per visible code block inside the existing overlay root', async () => {
     mountHost()
+    await new Promise((resolve) => setTimeout(resolve, 40))
     const root = document.querySelector(rootSelector) as HTMLElement
     const write = document.getElementById('write') as HTMLElement
-    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}`)).toHaveLength(1)
+    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(1)
+    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(1)
     expect(write.querySelector(`.${CONTENT_TOOLBAR_CLASS}`)).toBeNull()
   })
 
@@ -123,25 +125,27 @@ describe('CONTENT-TOOLBAR-HOST mount', () => {
 })
 
 describe('CONTENT-TOOLBAR-HOST interaction', () => {
-  it('shows on hover and hides on editor scroll (single existing listener)', () => {
+  it('keeps the language bar anchored across an editor scroll (no stale position)', async () => {
     mountHost()
-    const fence = document.querySelector('pre.md-fences')!
-    fence.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
-    const toolbar = document.querySelector(`.${CONTENT_TOOLBAR_CLASS}`) as HTMLElement
-    expect(toolbar.style.display).not.toBe('none')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const bar = document.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`) as HTMLElement
+    expect(bar).toBeTruthy()
+    expect(bar.style.display).not.toBe('none')
     ;(document.getElementById('scroll-host') as HTMLElement).dispatchEvent(new Event('scroll'))
-    expect(toolbar.style.display).toBe('none')
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // V3: 滚动不隐藏语言栏，只重定位（折叠条随内容移动）。
+    expect(bar.isConnected).toBe(true)
+    expect(bar.style.top).toBe('100px')
   })
 
-  it('drops the fold projection on document switch', () => {
+  it('resets code-block views on document switch', async () => {
     mountHost()
+    await new Promise((resolve) => setTimeout(resolve, 40))
     const fence = document.querySelector('pre.md-fences') as HTMLElement
-    fence.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
-    const foldBtn = document.querySelector('[data-action="toggle-fold"]') as HTMLButtonElement
-    foldBtn.click()
-    expect(fence.classList.contains(CODE_FOLD_CLASS)).toBe(true)
+    expect(fence.getAttribute(CODE_LANGBAR_ATTR)).toBe('true')
     host!.bindDocument()
-    expect(fence.classList.contains(CODE_FOLD_CLASS)).toBe(false)
+    expect(fence.hasAttribute(CODE_LANGBAR_ATTR)).toBe(false)
+    expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
   })
 
   it('removes the toolbar element on dispose', () => {

@@ -1226,6 +1226,8 @@ export interface DocumentUtilitiesOverlayOptions {
     actions: ContentBlockToolbarActions
     getMarkdown: () => string | null
     emitAudit?: (event: string, payload: Record<string, unknown>) => void
+    /** V3 — 折叠预览保留行数（5 | 10）。 */
+    getPreviewLines?: () => 5 | 10
   }
 }
 
@@ -4493,6 +4495,7 @@ export class DocumentUtilityOverlayHost {
         actions: toolbarOpts.actions,
         onLayoutInvalidated: (reason) => this.scheduleGeometrySync(reason),
         emitAudit: toolbarOpts.emitAudit,
+        getPreviewLines: toolbarOpts.getPreviewLines,
       })
       this.contentBlockToolbar.mount()
     }

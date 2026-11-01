@@ -730,6 +730,7 @@ export default class extends Plugin<InkChapterSettings> {
             copyImage: (img) => contentBlockClipboard.copyImage(img),
           },
           emitAudit: (event, payload) => emitRuntimeAudit(event, payload),
+          getPreviewLines: () => this.readUiSettings().codeBlockPreviewLines,
         },
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {

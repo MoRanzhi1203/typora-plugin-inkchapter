@@ -37,6 +37,11 @@ export interface InkChapterUiSettings {
    * 「文件 / 搜索 / 大纲」切页栏与侧栏布局 ⇒ 任何文件夹下都保持原生外观。
    */
   ribbon: boolean
+  /**
+   * 代码块预览式折叠保留的逻辑行数（V3）。
+   * 仅影响「超过该行数」的代码块；短代码始终完整显示。
+   */
+  codeBlockPreviewLines: 5 | 10
 }
 
 export interface InkChapterSettings {

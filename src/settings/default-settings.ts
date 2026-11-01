@@ -67,6 +67,7 @@ export const DEFAULT_UI_SETTINGS: InkChapterUiSettings = {
     revealExplorer: true,
   },
   ribbon: false,
+  codeBlockPreviewLines: 10,
 }
 
 /** 把可能不完整的 `ui` 配置按默认值补齐（纯函数，读取侧唯一权威）。 */
@@ -87,6 +88,7 @@ export function resolveUiSettings(
       revealExplorer: typeof menu?.revealExplorer === 'boolean' ? menu.revealExplorer : DEFAULT_UI_SETTINGS.docViewMenu.revealExplorer,
     },
     ribbon: typeof raw?.ribbon === 'boolean' ? raw.ribbon : DEFAULT_UI_SETTINGS.ribbon,
+    codeBlockPreviewLines: raw?.codeBlockPreviewLines === 5 ? 5 : DEFAULT_UI_SETTINGS.codeBlockPreviewLines,
   }
 }
 
