@@ -1714,38 +1714,23 @@ export interface MergeOwnerRetirementInput {
  * Decide whether a merge's single canonical owner transfers to the surviving
  * paragraph or retires with the deleted paragraph.
  *
- * Direction-sensitive ownership (P0):
- * - owner on a content side → TRANSFER (format belongs to the surviving text)
- * - one side blank, owner on the blank side → RETIRE (that line was deleted)
- * - BOTH sides blank:
- *     - owner on the REMOVED side → RETIRE
- *     - owner on the SURVIVING side → TRANSFER (the blank line the user kept
- *       keeps its explicit format, its marker and its sidecar record)
- *     - direction unknown → RETIRE (legacy conservative behaviour)
- * - no owner → TRANSFER
+ * PLAIN-PARAGRAPH BOUNDARY MERGE (P0-2 / M01–M04):
+ * - owner on the LOGICAL LEFT paragraph → TRANSFER to the merged result.
+ *   Whether Typora keeps the left node, the right node or rebuilds both is a DOM
+ *   detail and MUST NOT change semantic ownership.
+ * - owner on the RIGHT paragraph → RETIRE (the right format is not the
+ *   inheritance base; the left paragraph's format wins).
+ * - no owner → TRANSFER.
  *
- * The old blanket "both blank → RETIRE" rule deleted the surviving upper
- * paragraph's explicit indent when the lower blank line was removed.
+ * Blank and non-blank text follow the SAME rule: only the logical-left format is
+ * inherited. The old directional rule retired a blank LEFT owner as soon as the
+ * right side had text, which is exactly the M02/M03/M04 loss.
  */
 export function resolveMergeOwnerRetirement(
   input: MergeOwnerRetirementInput,
 ): MergeOwnerRetirementDecision {
   if (input.ownerSide === 'none') return 'TRANSFER_SINGLE_OWNER'
-  const ownerText = input.ownerSide === 'left' ? input.leftText : input.rightText
-  if (!isBlankParagraphText(ownerText)) return 'TRANSFER_SINGLE_OWNER'
-
-  const bothBlank = isBlankParagraphText(input.leftText) && isBlankParagraphText(input.rightText)
-  if (!bothBlank) return 'RETIRE_EMPTY_PARA_OWNER'
-
-  const removedSide = input.removedSide ?? 'none'
-  if (removedSide !== 'none') {
-    return input.ownerSide === removedSide ? 'RETIRE_EMPTY_PARA_OWNER' : 'TRANSFER_SINGLE_OWNER'
-  }
-  const survivorSide = input.survivorSide ?? 'none'
-  if (survivorSide !== 'none') {
-    return input.ownerSide === survivorSide ? 'TRANSFER_SINGLE_OWNER' : 'RETIRE_EMPTY_PARA_OWNER'
-  }
-  return 'RETIRE_EMPTY_PARA_OWNER'
+  return input.ownerSide === 'left' ? 'TRANSFER_SINGLE_OWNER' : 'RETIRE_EMPTY_PARA_OWNER'
 }
 
 export interface BlankMergeOwnerRetirementInput {

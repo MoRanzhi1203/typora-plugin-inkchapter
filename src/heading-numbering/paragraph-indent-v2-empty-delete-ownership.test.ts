@@ -50,12 +50,12 @@ describe('EMPTY-DELETE-1 被删除的空缩进段落：记录退役，不转移�
     })).toBe('RETIRE_EMPTY_PARA_OWNER')
   })
 
-  it('Delete：左侧空 force-indent、右侧正文 auto → RETIRE（反向场景）', () => {
+  it('Delete：左侧空 force-indent、右侧正文 → TRANSFER（左段格式为基准，M03）', () => {
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'left',
       leftText: '',
       rightText: '正文段落。',
-    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    })).toBe('TRANSFER_SINGLE_OWNER')
   })
 
   it('纯空白占位符（U+200B / 空格 / NBSP）同样视为空段落', () => {
@@ -76,7 +76,7 @@ describe('EMPTY-DELETE-1 被删除的空缩进段落：记录退役，不转移�
     })).toBe('TRANSFER_SINGLE_OWNER')
   })
 
-  it('两侧都为空 → 同样 RETIRE（缩进不得跳到另一条空行上）', () => {
+  it('两侧都为空 → 左段记录转移，右段记录退役', () => {
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'right',
       leftText: '',
@@ -86,15 +86,15 @@ describe('EMPTY-DELETE-1 被删除的空缩进段落：记录退役，不转移�
       ownerSide: 'left',
       leftText: '',
       rightText: '',
-    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    })).toBe('TRANSFER_SINGLE_OWNER')
   })
 
-  it('两侧都有正文 → 不适用空段落规则（TRANSFER）', () => {
+  it('两侧都有正文 → 左段为格式基准，右段记录退役', () => {
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'right',
       leftText: '左正文',
       rightText: '右正文',
-    })).toBe('TRANSFER_SINGLE_OWNER')
+    })).toBe('RETIRE_EMPTY_PARA_OWNER')
   })
 
   it('owner 缺失 → TRANSFER（由既有路径处理）', () => {
@@ -204,7 +204,7 @@ describe('EMPTY-DELETE-5 force-flush 组合：正文保持自己的 force-flush'
     })).toBe('RETIRE_EMPTY_PARA_OWNER')
   })
 
-  it('Delete 冲突策略选中空 force-indent 侧（左侧）⇒ 同样 RETIRE', () => {
+  it('Delete 从 A 末尾：左段空 force-indent 转移（TRANSFER，M03）', () => {
     const semantic = resolveMergeSemantic('delete', 'force-indent', 'force-flush')
     expect(semantic.reason).toBe('CONFLICT_DELETE_LEFT')
     const semanticWinnerSide = semantic.winner === 'force-indent' ? 'left' : 'right'
@@ -213,15 +213,15 @@ describe('EMPTY-DELETE-5 force-flush 组合：正文保持自己的 force-flush'
       ownerSide: 'left',
       leftText: '',
       rightText: '正文段落。',
-    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    })).toBe('TRANSFER_SINGLE_OWNER')
   })
 
-  it('空的 force-flush 段落作为唯一记录：同样退役（规则与语义无关）', () => {
+  it('空的显式段落作为唯一记录：左段转移、右段退役', () => {
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'left',
       leftText: '',
       rightText: '正文段落。',
-    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    })).toBe('TRANSFER_SINGLE_OWNER')
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'right',
       leftText: '正文段落。',
@@ -342,18 +342,18 @@ describe('EMPTY-DELETE-8（P0-2）2→1 合并：方向敏感的所有权判定'
     expect(bothBlank('right', 'left', 'right')).toBe('RETIRE_EMPTY_PARA_OWNER')
   })
 
-  it('方向未知（无 keydown 意图）→ 保守 RETIRE，不把记录跳到另一条空行', () => {
-    expect(bothBlank('left', 'none', 'none')).toBe('RETIRE_EMPTY_PARA_OWNER')
+  it('方向未知（无 keydown 意图）仍按逻辑左右判定', () => {
+    expect(bothBlank('left', 'none', 'none')).toBe('TRANSFER_SINGLE_OWNER')
     expect(bothBlank('right', 'none', 'none')).toBe('RETIRE_EMPTY_PARA_OWNER')
   })
 
-  it('只在 survivorSide 可用时按其判定；removedSide 优先', () => {
+  it('survivorSide / removedSide 不再影响逻辑左段的归属', () => {
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'left', leftText: '', rightText: '', survivorSide: 'left',
     })).toBe('TRANSFER_SINGLE_OWNER')
     expect(resolveMergeOwnerRetirement({
       ownerSide: 'left', leftText: '', rightText: '', survivorSide: 'left', removedSide: 'left',
-    })).toBe('RETIRE_EMPTY_PARA_OWNER')
+    })).toBe('TRANSFER_SINGLE_OWNER')
   })
 })
 

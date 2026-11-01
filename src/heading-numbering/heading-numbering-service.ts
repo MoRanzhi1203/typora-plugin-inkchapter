@@ -131,7 +131,6 @@ import {
   resolveEffectiveParagraphIndent,
   resolveMergeSemantic,
   resolveMergeOwnerRetirement,
-  shouldRetireBlankMergeOwner,
   deleteTextThroughEditorSelection,
   dropZeroLengthTextChildren,
   isBlankParagraphText,
@@ -589,6 +588,15 @@ const DOM_POSITION_FOLLOWING = 4
  */
 const ENTER_SPLIT_ECHO_WINDOW_MS = 250
 
+/**
+ * How long a plain-paragraph merge stays invertible across a history navigation.
+ * Undo of a merge can arrive long after the merge itself (the user keeps typing
+ * elsewhere is excluded by the content-edit invalidation), so this must not be
+ * tied to the 3 s history-intent window. The journal is still validated by
+ * paragraph count, the merged/left text pair and the record's live binding.
+ */
+const MERGE_HISTORY_TTL_MS = 5 * 60_000
+
 export class HeadingNumberingService {
   private adapter: HeadingDomAdapter
   private store: DisposableStore
@@ -719,6 +727,32 @@ export class HeadingNumberingService {
    */
   private preMergeParagraphOrder: HTMLElement[] | null = null
   private preMergeParagraphOrderAt = 0
+  /**
+   * Ownership journal for the MOST RECENT plain-paragraph merge whose canonical
+   * record moved from the LOGICAL LEFT paragraph onto the merged paragraph.
+   *
+   * Native Undo splits the merge again (the left line comes back with NO plugin
+   * attributes) and native Redo joins it again (the left line is removed again).
+   * Neither replay has a keydown boundary intent, so the record would stay on the
+   * DOM survivor. The journal restores the PRE-MERGE ownership on Undo and
+   * re-applies the transfer on Redo — the record always belongs to the logical
+   * left paragraph, never to whichever node Typora happened to keep.
+   */
+  private mergeHistoryEntry: {
+    recordId: string
+    documentKey: string
+    leftText: string
+    mergedText: string
+    /** Pre-merge record anchor (the undo must restore exactly this identity). */
+    leftAnchor: ParagraphIndentOverrideRecord['anchor']
+    leftTemporary: boolean
+    survivorElement: HTMLElement
+    survivorRuntimeId: string
+    mergedOrdinal: number
+    preMergeCount: number
+    at: number
+    phase: 'merged' | 'undone'
+  } | null = null
   /** Session-scoped ledger of records retired by an explicit paragraph deletion. */
   private retiredIndentLedger = new SessionRetiredIndentLedger()
   /** Post-rehydrate acceptance for the most recent Normal Enter transaction. */
@@ -10274,6 +10308,14 @@ export class HeadingNumberingService {
       // ── PF4: 1→0 existing-survivor boundary merge (continuity sub-classification) ──
       this.handleBoundaryMergeExistingSurvivor(boundaryIntent, removedPs, batchId, docKeyBatch, selRuntimeId)
       boundaryMergeConsumed = true
+    } else if (boundaryIntent && addedPs.length > 0) {
+      // ── Wholesale DOM rebuild during a boundary merge (rich text on both sides) ──
+      // Typora may replace the whole content run (COMPLEX shape: N removed / M added)
+      // instead of joining one node into the other. The keydown intent still names
+      // the exact logical left/right paragraphs, so the LEFT ownership must survive.
+      boundaryMergeConsumed = this.tryResolveRebuiltBoundaryMerge(
+        boundaryIntent, addedPs, batchId, selRuntimeId,
+      )
     }
 
     // Per-owner loop for non-MERGE shapes (REPLACE_1_TO_1, SPLIT_1_TO_2, COMPLEX).
@@ -10851,12 +10893,9 @@ export class HeadingNumberingService {
 
     if (canonicalOwnerCount === 1) {
       const singleOwner = owners[0]
-      const ownerSide: 'left' | 'right' | 'none' =
+      let ownerSide: 'left' | 'right' | 'none' =
         singleOwner.element === leftElement ? 'left'
           : singleOwner.element === rightElement ? 'right' : 'none'
-      const ownership = resolveMergeOwnerRetirement({
-        ownerSide, leftText, rightText, survivorSide, removedSide,
-      })
 
       // Undo/Redo replay has NO keydown boundary intent, so the batch order
       // cannot tell which blank paragraph survived. Resolve the REAL visual
@@ -10871,15 +10910,23 @@ export class HeadingNumberingService {
         if (li >= 0 && ri >= 0 && li !== ri) {
           replaySurvivorSide = li < ri ? 'left' : 'right'
           replayRemovedSide = li < ri ? 'right' : 'left'
+          // The mutation order is NOT the visual order: when the owner element is
+          // one of the two removed paragraphs, its side must come from the visual
+          // snapshot (an Undo of Enter joins the LOWER line into the UPPER one).
+          const oi = orderSnapshot.indexOf(singleOwner.element)
+          if (ownerSide !== 'none' && oi >= 0) {
+            const other = oi === li ? ri : li
+            ownerSide = oi < other ? 'left' : 'right'
+          }
         }
       }
-      const effectiveOwnership = replaySurvivorSide === 'none'
-        ? ownership
-        : resolveMergeOwnerRetirement({
-          ownerSide, leftText, rightText,
-          survivorSide: replaySurvivorSide,
-          removedSide: replayRemovedSide,
-        })
+      // The unified rule reads ONLY the (visually corrected) owner side, so the
+      // retirement decision can never depend on the native mutation order.
+      const effectiveOwnership = resolveMergeOwnerRetirement({
+        ownerSide, leftText, rightText,
+        survivorSide: replaySurvivorSide === 'none' ? survivorSide : replaySurvivorSide,
+        removedSide: replaySurvivorSide === 'none' ? removedSide : replayRemovedSide,
+      })
 
       // ── P0-2 non-empty variant ──
       // The user's FIRST Backspace explicitly flushed this paragraph (stage
@@ -11139,6 +11186,17 @@ export class HeadingNumberingService {
     )
 
     // Mark awaiting → transfer → live in one atomic sequence
+    // Journal the pre-merge logical-left identity BEFORE the transfer moves the
+    // record off the removed paragraph (Undo/Redo must invert this transfer).
+    if (winnerOwner.element === leftElement) {
+      this.captureMergeHistoryForUndo({
+        recordId: owner.recordId,
+        leftText,
+        mergedText: contentExpectation.expectedMergedText,
+        survivor: mergedDestination,
+        survivorRuntimeId: toRtId,
+      })
+    }
     this.canonicalRegistry.markAwaitingTransfer(
       owner.recordId, ticketId, 'generic-dom-replacement',
       ticket.scopeId,
@@ -11346,16 +11404,19 @@ export class HeadingNumberingService {
     const blankSide: 'left' | 'right' | 'none' =
       leftBlank !== rightBlank ? (leftBlank ? 'left' : 'right') : 'none'
 
-    // Both-blank rule inputs: which side holds the single record, and which side
-    // the merge actually removes (the survivor is the opposite one).
+    // Single canonical record side (the plain-paragraph format base is LEFT).
     const ownerRecordSide: 'left' | 'right' | 'none' =
       intent.leftRecordId ? 'left' : intent.rightRecordId ? 'right' : 'none'
-    const removedSide: 'left' | 'right' | 'none' =
-      removedEl === intent.leftElement ? 'left' : removedEl === intent.rightElement ? 'right' : 'none'
 
     const semanticWinnerSide = resolveMergeWinnerSide(result.reason)
-    const winnerSide: 'left' | 'right' | 'none' =
-      blankSide !== 'none' && semanticWinnerSide === blankSide
+    // P0-2 / M01–M04: a single owner on the LOGICAL LEFT is the format base and
+    // wins regardless of blank/text or of the key direction. The old blank-side
+    // flip (treating the blank semantic winner as the deleted line) is what
+    // retired A's force-indent in M02/M03/M04.
+    const singleOwnerLeft = provenRecordCount === 1 && ownerRecordSide === 'left'
+    const winnerSide: 'left' | 'right' | 'none' = singleOwnerLeft
+      ? 'left'
+      : blankSide !== 'none' && semanticWinnerSide === blankSide
         ? (blankSide === 'left' ? 'right' : 'left')
         : semanticWinnerSide
 
@@ -11371,19 +11432,17 @@ export class HeadingNumberingService {
       ? 'MULTI_OWNER_EMPTY_PARA_RETIRED'
       : result.reason
 
-    // Single-owner + blank-owner case: no body record exists, so the survivor
-    // falls back to AUTO (defaultIndent), never to a forced flush.
-    // Both-sides-blank is the same situation for the surviving blank line: the
-    // record sits on the removed blank line, so it retires instead of jumping.
-    const emptyOwnerRetired = (provenRecordCount === 1
-      && blankSide !== 'none'
-      && (intent.leftRecordId ? 'left' : 'right') === blankSide)
-      || shouldRetireBlankMergeOwner({
-        ownerSide: ownerRecordSide,
-        removedSide,
-        leftText: intent.leftText,
-        rightText: intent.rightText,
-      })
+    // ── Plain-paragraph boundary merge (1→0) ownership (P0-2 / M01–M04) ──
+    // The LOGICAL LEFT paragraph is the format inheritance base. A single owner
+    // on the left always transfers to the merged paragraph; a single owner on
+    // the right retires. The native DOM survivor (left node, right node or a
+    // rebuilt node) must NOT change semantic ownership — Delete keeps the right
+    // node and Backspace keeps the left node for the same A/B pair.
+    //
+    // Blank and non-blank text follow the SAME rule (the old blank-side rule is
+    // exactly the M02/M03/M04 indent loss).
+    const singleOwnerRetires = provenRecordCount === 1 && ownerRecordSide === 'right'
+    const emptyOwnerRetired = singleOwnerRetires
     if (emptyOwnerRetired) {
       const retiredRecordId = (intent.leftRecordId ?? intent.rightRecordId)!
       this.canonicalRegistry.retireRecord(
@@ -11430,6 +11489,17 @@ export class HeadingNumberingService {
       if (!winnerElement.isConnected) {
         // Case B — winner was removed; transfer to survivor.
         const ticketId = `bmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        // The LOGICAL LEFT paragraph owns the format. Journal the pre-merge
+        // identity so Undo can put the record back on the restored left line.
+        if (winnerSide === 'left') {
+          this.captureMergeHistoryForUndo({
+            recordId: winnerRecordId,
+            leftText: intent.leftText,
+            mergedText: intent.expectedMergedText,
+            survivor,
+            survivorRuntimeId,
+          })
+        }
         const transferResult = this.canonicalTransferBinding(
           winnerRecordId,
           winnerElement,
@@ -11533,6 +11603,355 @@ export class HeadingNumberingService {
     })
   }
 
+  /**
+   * Boundary merge whose native batch is a FULL DOM REBUILD.
+   *
+   * With rich text on both sides Typora does not always join the right line into
+   * the left node (1→0) or rebuild both into one (2→1): it can replace the whole
+   * content run, which classifies as COMPLEX (N removed / M added). The keydown
+   * intent still names the exact logical left/right paragraphs and their record
+   * ids, so ownership resolution must use the INTENT — never the surviving node.
+   *
+   * Only the LOGICAL LEFT owner is handled here (the right owner retires by the
+   * unified rule), and the result is located by caret paragraph then by unique
+   * merged text, never by DOM position guesses.
+   */
+  private tryResolveRebuiltBoundaryMerge(
+    intent: PendingBoundaryMergeIntent,
+    addedPs: HTMLElement[],
+    batchId: string,
+    selRuntimeId: string,
+  ): boolean {
+    if (!intent.leftRecordId) return false
+    const root = this.adapter.getEditorRoot()
+    if (!root) return false
+
+    const mergedText = intent.expectedMergedText
+    const isCandidate = (p: HTMLElement): boolean =>
+      p.isConnected
+      && p.tagName === 'P'
+      && !/inkchapter/i.test(String(p.className ?? ''))
+      && getUserVisibleParagraphText(p) === mergedText
+
+    let survivor: HTMLElement | null = null
+    const sel = window.getSelection()
+    const selRes = sel
+      ? resolveSelectionParagraph(sel, root, (el: object) => this.getParagraphRuntimeId(el as HTMLElement))
+      : null
+    if (selRes) {
+      const caretPara = addedPs.find(p => this.getParagraphRuntimeId(p) === selRes.paragraphRuntimeId)
+      if (caretPara && isCandidate(caretPara)) survivor = caretPara
+    }
+    if (!survivor) {
+      const matches = addedPs.filter(isCandidate)
+      if (matches.length !== 1) return false
+      survivor = matches[0]
+    }
+
+    const survivorRuntimeId = this.getParagraphRuntimeId(survivor)
+    const scopeId = intent.scopeId
+    const ticketId = `bmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
+    this.captureMergeHistoryForUndo({
+      recordId: intent.leftRecordId,
+      leftText: intent.leftText,
+      mergedText,
+      survivor,
+      survivorRuntimeId,
+    })
+    const transferResult = this.canonicalTransferBinding(
+      intent.leftRecordId,
+      intent.leftElement,
+      intent.leftRuntimeId,
+      survivor,
+      survivorRuntimeId,
+      'BOUNDARY_MERGE_REBUILT_RUN',
+      ticketId,
+      scopeId,
+    )
+
+    const actualMergedText = getUserVisibleParagraphText(survivor)
+    const contentPreserved = actualMergedText === mergedText
+    emitRuntimeAudit('BOUNDARY-MERGE-CANONICAL-RESOLVE', {
+      batchId,
+      decision: transferResult.success ? 'TRANSFER_WINNER_TO_SURVIVOR' : 'TRANSFER_BLOCKED',
+      winnerRecordId: intent.leftRecordId,
+      survivorRuntimeId,
+      failReason: transferResult.failReason ?? 'none',
+      mergeReason: 'REBUILT_RUN_LEFT_EXPLICIT_ONLY',
+    })
+    emitRuntimeAudit('BOUNDARY-MERGE-CONTENT-VERIFY', {
+      batchId,
+      phase: 'AFTER_REBUILT_RUN_TRANSFER',
+      expectedMergedText: mergedText,
+      actualMergedText,
+      expectedCaretOffset: intent.expectedCaretOffset,
+      reason: contentPreserved ? 'CONTENT_PRESERVED' : 'NATIVE_CONTENT_MISMATCH',
+      overall: contentPreserved,
+    })
+
+    const caretRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+    const caretOffset = caretRange
+      ? computeParagraphLogicalCaretOffset(survivor, caretRange.startContainer, caretRange.startOffset)
+      : -1
+    const caretOk = (sel?.isCollapsed ?? false)
+      && selRuntimeId === survivorRuntimeId
+      && caretOffset === intent.expectedCaretOffset
+    emitRuntimeAudit('BOUNDARY-MERGE-CARET-VERIFY', {
+      batchId,
+      selectionCollapsed: sel?.isCollapsed ?? false,
+      caretRuntimeId: selRuntimeId,
+      expectedCaretOffset: intent.expectedCaretOffset,
+      actualCaretOffset: caretOffset,
+      caretOnSurvivor: selRuntimeId === survivorRuntimeId,
+      caretOffsetCorrect: caretOffset === intent.expectedCaretOffset,
+      overall: caretOk,
+    })
+    emitRuntimeAudit('BOUNDARY-MERGE-FINAL', {
+      batchId,
+      key: intent.key,
+      direction: intent.direction,
+      leftRuntimeId: intent.leftRuntimeId,
+      rightRuntimeId: intent.rightRuntimeId,
+      survivorRuntimeId,
+      leftSemantic: intent.leftSemantic,
+      rightSemantic: intent.rightSemantic,
+      leftProvenSemantic: resolveProvenMergeSemantic(intent.leftSemantic, intent.leftRecordId),
+      rightProvenSemantic: resolveProvenMergeSemantic(intent.rightSemantic, intent.rightRecordId),
+      leftExplicitProven: intent.leftExplicitProven,
+      rightExplicitProven: intent.rightExplicitProven,
+      semanticWinner: intent.leftSemantic,
+      winnerRecordId: intent.leftRecordId,
+      loserRecordId: intent.rightRecordId ?? 'none',
+      mergeReason: 'REBUILT_RUN_LEFT_EXPLICIT_ONLY',
+      contentPreserved,
+      caretOffsetCorrect: caretOffset === intent.expectedCaretOffset,
+      awaitingCount: this.canonicalRegistry.getAwaitingCount(),
+      overall: contentPreserved && caretOk,
+    })
+    return transferResult.success
+  }
+
+  // ── Plain-paragraph merge: history (Undo/Redo) ownership journal ──
+
+  /**
+   * Remember the PRE-MERGE ownership of the record that is about to be moved from
+   * the logical LEFT paragraph onto the merged paragraph. Only called when the
+   * left paragraph owns the record (the case where Undo/Redo loses the format).
+   */
+  private captureMergeHistoryForUndo(params: {
+    recordId: string
+    leftText: string
+    mergedText: string
+    survivor: HTMLElement
+    survivorRuntimeId: string
+  }): void {
+    const root = this.adapter.getEditorRoot()
+    if (!root) return
+    const record = this.canonicalRegistry.getRecord(params.recordId)
+      ?? (this.inMemoryOverrides.get(this.getDocumentKey() ?? '') ?? []).find(o => o.id === params.recordId)
+    if (!record) return
+    const allParas = collectContentParagraphs(root)
+    const mergedOrdinal = allParas.indexOf(params.survivor)
+    if (mergedOrdinal < 0) return
+    this.mergeHistoryEntry = {
+      recordId: params.recordId,
+      documentKey: this.getDocumentKey() ?? '',
+      leftText: params.leftText,
+      mergedText: params.mergedText,
+      leftAnchor: { ...record.anchor },
+      leftTemporary: record.temporary === true,
+      survivorElement: params.survivor,
+      survivorRuntimeId: params.survivorRuntimeId,
+      mergedOrdinal,
+      preMergeCount: allParas.length + 1,
+      at: Date.now(),
+      phase: 'merged',
+    }
+    emitRuntimeAudit('MERGE-HISTORY-JOURNAL-ARM', {
+      recordId: params.recordId,
+      leftText: params.leftText,
+      mergedText: params.mergedText,
+      survivorRuntimeId: params.survivorRuntimeId,
+      mergedOrdinal,
+      preMergeCount: allParas.length + 1,
+      leftAnchorOrdinal: record.anchor.lastKnownOrdinal,
+      leftTemporary: record.temporary === true,
+    })
+  }
+
+  /** Restore the record's sidecar identity (anchor + temporary) after a history replay. */
+  private applyMergeHistoryRecordAnchor(
+    recordId: string,
+    anchor: ParagraphIndentOverrideRecord['anchor'],
+    temporary: boolean,
+  ): void {
+    const docKey = this.getDocumentKey() ?? ''
+    const overrides = this.inMemoryOverrides.get(docKey) ?? []
+    const record = overrides.find(o => o.id === recordId)
+    if (!record) return
+    record.anchor = { ...anchor }
+    record.temporary = temporary
+    this.inMemoryOverrides.set(docKey, [...overrides])
+    this.scheduleSidecarWrite(docKey, this.ctx.getActiveFilePath?.() ?? 'unknown', overrides)
+  }
+
+  /**
+   * Index of the restored LEFT paragraph in an Undo replay, or -1.
+   *
+   * The pair (left, survivor) is proven by TEXT, not by DOM node identity: native
+   * Undo may keep the merged node (M02–M04) or rebuild BOTH paragraphs (M01).
+   */
+  private resolveMergeUndoLeftIndex(
+    entry: NonNullable<typeof this.mergeHistoryEntry>,
+    allParas: HTMLElement[],
+  ): number {
+    const isPair = (i: number): boolean =>
+      i >= 0 && i + 1 < allParas.length
+      && getUserVisibleParagraphText(allParas[i]) === entry.leftText
+      && getUserVisibleParagraphText(allParas[i + 1]) === entry.mergedText
+    // 1. The merged node survived the Undo — the restored line sits right before it.
+    if (entry.survivorElement.isConnected) {
+      const s = allParas.indexOf(entry.survivorElement)
+      if (s > 0 && isPair(s - 1)) return s - 1
+    }
+    // 2. The merged node was rebuilt — the pre-merge slot is known.
+    if (isPair(entry.mergedOrdinal)) return entry.mergedOrdinal
+    // 3. Fall back to a UNIQUE textual pair.
+    const hits: number[] = []
+    for (let i = 0; i < allParas.length - 1; i++) if (isPair(i)) hits.push(i)
+    return hits.length === 1 ? hits[0] : -1
+  }
+
+  /** Index of the merged paragraph in a Redo replay, or -1. */
+  private resolveMergeRedoIndex(
+    entry: NonNullable<typeof this.mergeHistoryEntry>,
+    allParas: HTMLElement[],
+  ): number {
+    if (allParas.length !== entry.preMergeCount - 1) return -1
+    const hits: number[] = []
+    for (let i = 0; i < allParas.length; i++) {
+      if (getUserVisibleParagraphText(allParas[i]) === entry.mergedText) hits.push(i)
+    }
+    if (hits.length === 1) return hits[0]
+    if (hits.includes(entry.mergedOrdinal)) return entry.mergedOrdinal
+    return -1
+  }
+
+  /**
+   * Invert (Undo) or re-apply (Redo) the ownership transfer of the last plain
+   * paragraph merge. Runs inside the mutation batch, BEFORE any generic
+   * replacement / merge heuristic, so the same record cannot be re-attributed.
+   */
+  private reconcileMergeHistory(root: HTMLElement): boolean {
+    const entry = this.mergeHistoryEntry
+    if (!entry) return false
+    if (this.historyIntentKind === null) return false
+    if (Date.now() - this.historyIntentAt > HISTORY_UNDO_CLAIM_WINDOW_MS) return false
+    if (Date.now() - entry.at > MERGE_HISTORY_TTL_MS) {
+      this.mergeHistoryEntry = null
+      return false
+    }
+    if ((this.getDocumentKey() ?? '') !== entry.documentKey) return false
+    const meta = this.canonicalRegistry.getRuntimeMeta(entry.recordId)
+    if (!meta || meta.state !== 'CURRENT_LIVE') return false
+
+    const allParas = collectContentParagraphs(root)
+
+    if (this.historyIntentKind === 'undo' && entry.phase === 'merged') {
+      if (allParas.length !== entry.preMergeCount) return false
+      const leftIndex = this.resolveMergeUndoLeftIndex(entry, allParas)
+      if (leftIndex < 0) return false
+      const left = allParas[leftIndex]
+      const survivor = allParas[leftIndex + 1]
+      if (meta.currentElement === left) {
+        // Ownership already back on the logical left line.
+        entry.phase = 'undone'
+        return true
+      }
+      const from = meta.currentElement
+      if (!from) return false
+      const candidateRuntimeId = this.getParagraphRuntimeId(left)
+      const restored = this.canonicalTransferBinding(
+        entry.recordId,
+        from,
+        meta.currentRuntimeId ?? 'none',
+        left,
+        candidateRuntimeId,
+        'MERGE_HISTORY_UNDO',
+        undefined,
+        meta.scopeId,
+      )
+      if (!restored.success) return false
+      // The record never belonged to the merged line: return it to its own
+      // semantic (auto by default) instead of leaving the transferred indent on.
+      if (!this.canonicalRegistry.resolveExactLiveRecord(survivor)) {
+        clearParagraphIndentVisualAndSemantic(survivor, 'W-MERGE-HISTORY-UNDO')
+        rehydrateParagraphIndentState(survivor, 'auto', this.getParagraphLayoutSettings(), {
+          source: 'dom-rebuild-restore',
+          semanticWriterId: 'W-MERGE-HISTORY-UNDO',
+          visualWriterId: 'W-MERGE-HISTORY-UNDO',
+        })
+      }
+      this.applyMergeHistoryRecordAnchor(entry.recordId, entry.leftAnchor, entry.leftTemporary)
+      entry.phase = 'undone'
+      entry.survivorElement = survivor
+      this.historyIntentKind = null
+      emitRuntimeAudit('MERGE-HISTORY-UNDO', {
+        recordId: entry.recordId,
+        leftRuntimeId: candidateRuntimeId,
+        survivorRuntimeId: this.getParagraphRuntimeId(survivor),
+        leftText: entry.leftText,
+        mergedText: entry.mergedText,
+        decision: 'OWNER_RESTORED_TO_LOGICAL_LEFT',
+        overall: getParagraphIndentMode(left) === 'force-indent',
+      })
+      return true
+    }
+
+    if (this.historyIntentKind === 'redo' && entry.phase === 'undone') {
+      const mergedIndex = this.resolveMergeRedoIndex(entry, allParas)
+      if (mergedIndex < 0) return false
+      const merged = allParas[mergedIndex]
+      if (meta.currentElement === merged) {
+        this.mergeHistoryEntry = null
+        return true
+      }
+      const from = meta.currentElement
+      if (!from) return false
+      const mergedRuntimeId = this.getParagraphRuntimeId(merged)
+      const transferred = this.canonicalTransferBinding(
+        entry.recordId,
+        from,
+        meta.currentRuntimeId ?? 'none',
+        merged,
+        mergedRuntimeId,
+        'MERGE_HISTORY_REDO',
+        undefined,
+        meta.scopeId,
+      )
+      if (!transferred.success) return false
+      this.applyMergeHistoryRecordAnchor(
+        entry.recordId,
+        createParagraphAnchor(mergedIndex, allParas),
+        isBlankParagraphText(entry.mergedText),
+      )
+      this.mergeHistoryEntry = null
+      this.historyIntentKind = null
+      emitRuntimeAudit('MERGE-HISTORY-REDO', {
+        recordId: entry.recordId,
+        mergedRuntimeId,
+        mergedText: entry.mergedText,
+        mergedOrdinal: mergedIndex,
+        decision: 'OWNER_REAPPLIED_TO_MERGED_PARAGRAPH',
+        overall: getParagraphIndentMode(merged) === 'force-indent',
+      })
+      return true
+    }
+
+    return false
+  }
+
   // ── MutationObserver ───────────────────────────────────
 
   private setupMutationObserver(): void {
@@ -11560,8 +11979,19 @@ export class HeadingNumberingService {
         txn.state = 'NATIVE_MUTATION_PENDING'
       }
 
+      // ── Plain-paragraph merge history replay (Undo/Redo) ──────
+      // Undo/Redo of a merge carries NO keydown boundary intent. The journal
+      // restores (Undo) or re-applies (Redo) the record's logical-left ownership
+      // BEFORE the generic replacement/merge heuristics can touch it.
+      const historyMergeHandled = (() => {
+        try {
+          const historyRoot = this.adapter.getEditorRoot()
+          return historyRoot ? this.reconcileMergeHistory(historyRoot) : false
+        } catch { return false }
+      })()
+
       // ── R58.5: Generic DOM Replacement Continuity Detection ──────
-      this.detectGenericDomReplacement(mutations)
+      if (!historyMergeHandled) this.detectGenericDomReplacement(mutations)
 
       // ── Trace: T1 + T2 (fail-open: never blocks classifier) ──
       safeTrace(() => {
@@ -12192,6 +12622,8 @@ export class HeadingNumberingService {
       // ── PF6: a real content edit invalidates pending Undo recovery claims ──
       if (source === 'DELETE' || source === 'TEXT_INPUT') {
         this.retiredIndentLedger.invalidateOnContentEdit()
+        // A new edit means the next Undo/Redo cannot be the replayed merge.
+        this.mergeHistoryEntry = null
       }
       this.beginTrustedUserIntent(source, 'keydown', e.key)
 
