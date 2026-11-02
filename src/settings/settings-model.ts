@@ -42,6 +42,11 @@ export interface InkChapterUiSettings {
    * 仅影响「超过该行数」的代码块；短代码始终完整显示。
    */
   codeBlockPreviewLines: 5 | 10
+  /**
+   * 点击已折叠代码块的可见代码文字时，是否自动展开并进入编辑。
+   * 默认 true；关闭后只能通过顶部展开按钮或诊断定位展开。
+   */
+  codeBlockAutoExpandOnEdit: boolean
 }
 
 export interface InkChapterSettings {

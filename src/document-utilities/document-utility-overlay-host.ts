@@ -1229,6 +1229,8 @@ export interface DocumentUtilitiesOverlayOptions {
     emitAudit?: (event: string, payload: Record<string, unknown>) => void
     /** V3 — 折叠预览保留行数（5 | 10）。 */
     getPreviewLines?: () => 5 | 10
+    /** 点击折叠代码块可见文字时是否自动展开（默认 true）。 */
+    getAutoExpandOnEdit?: () => boolean
   }
 }
 
@@ -4499,6 +4501,7 @@ export class DocumentUtilityOverlayHost {
         onLayoutInvalidated: (reason) => this.scheduleGeometrySync(reason),
         emitAudit: toolbarOpts.emitAudit,
         getPreviewLines: toolbarOpts.getPreviewLines,
+        getAutoExpandOnEdit: toolbarOpts.getAutoExpandOnEdit,
         getBlockDiagnosticMarks: (ordinal) => this.readCodeBlockDiagnosticMarks(ordinal),
       })
       this.contentBlockToolbar.mount()

@@ -733,6 +733,7 @@ export default class extends Plugin<InkChapterSettings> {
           },
           emitAudit: (event, payload) => emitRuntimeAudit(event, payload),
           getPreviewLines: () => this.readUiSettings().codeBlockPreviewLines,
+          getAutoExpandOnEdit: () => this.readUiSettings().codeBlockAutoExpandOnEdit,
         },
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {

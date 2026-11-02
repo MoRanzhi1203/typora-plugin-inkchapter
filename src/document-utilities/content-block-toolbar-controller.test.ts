@@ -54,6 +54,7 @@ interface Harness {
   onLayoutInvalidated: ReturnType<typeof vi.fn>
   audits: Array<{ event: string; payload: Record<string, unknown> }>
   setPreviewLines: (n: 5 | 10) => void
+  setAutoExpandOnEdit: (value: boolean) => void
   setBlockDiagnosticMarks: (fn: ((ordinal: number) => CodeDiagnosticMark[]) | null) => void
   stubBarRect: (cid: string, left: number, top: number, width: number) => void
 }
@@ -85,6 +86,7 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
   const onLayoutInvalidated = vi.fn()
   const audits: Array<{ event: string; payload: Record<string, unknown> }> = []
   let previewLines: 5 | 10 = 10
+  let autoExpandOnEdit = true
   let blockDiagnosticMarks: ((ordinal: number) => CodeDiagnosticMark[]) | null = null
 
   const controller = new ContentBlockToolbarController(overlay, {
@@ -98,6 +100,7 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     onLayoutInvalidated,
     emitAudit: (event, payload) => audits.push({ event, payload }),
     getPreviewLines: () => previewLines,
+    getAutoExpandOnEdit: () => autoExpandOnEdit,
     getBlockDiagnosticMarks: (ordinal) => blockDiagnosticMarks?.(ordinal) ?? [],
   })
   controller.mount()
@@ -123,6 +126,7 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     onLayoutInvalidated,
     audits,
     setPreviewLines: (n) => { previewLines = n },
+    setAutoExpandOnEdit: (value) => { autoExpandOnEdit = value },
     setBlockDiagnosticMarks: (fn) => { blockDiagnosticMarks = fn },
     stubBarRect: (cid, left, top, width) => {
       const bar = barFor(cid)
@@ -149,10 +153,20 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
 }
 
+function pointerDown(x = 120, y = 150): MouseEvent {
+  return new MouseEvent('pointerdown', {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: y,
+  })
+}
+
 let harness: Harness | null = null
 
 beforeEach(() => {
   vi.useFakeTimers()
+  window.getSelection()?.removeAllRanges()
   harness = null
 })
 
@@ -592,6 +606,72 @@ describe('V3 preview folding (top-bar control)', () => {
     expect(harness.controller.expandFoldedBlockForLocate(harness.shortFence)).toBe(false)
   })
 
+  it('auto-expands only when the pointer hits visible code text', () => {
+    harness = createHarness()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const lines = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+
+    // 1) 工具栏语言/行数区域：不展开。
+    harness.barFor('long')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}__lines`)!
+      .dispatchEvent(pointerDown())
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+
+    // 2) 行号区：不展开。
+    const gutter = document.createElement('div')
+    gutter.className = 'CodeMirror-gutter-wrapper'
+    gutter.innerHTML = '<div class="CodeMirror-linenumber">1</div>'
+    lines[0].appendChild(gutter)
+    gutter.dispatchEvent(pointerDown())
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+
+    // 3) 行容器本身（文字之外的空白背景）：不展开。
+    lines[0].dispatchEvent(pointerDown())
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+
+    // 4) 预览区之外的代码文字：不展开。
+    lines[15].querySelector('span')!.dispatchEvent(pointerDown())
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+
+    // 5) 前 N 行真实代码文字：展开。
+    lines[2].querySelector('span')!.dispatchEvent(pointerDown())
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+    const decision = harness.audits.filter(a => a.event === 'FOLD-AUTO-EXPAND-DECISION').pop()
+    expect(decision?.payload).toMatchObject({
+      source: 'POINTER_DOWN',
+      setting: true,
+      editable: true,
+      reason: 'CODE_TEXT',
+      lineIndex: 2,
+      decision: 'EXPAND',
+    })
+  })
+
+  it('keeps manual folding when auto-expand-on-edit is disabled', () => {
+    harness = createHarness()
+    harness.setAutoExpandOnEdit(false)
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const line = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')[3]
+    line.querySelector('span')!.dispatchEvent(pointerDown())
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const decision = harness.audits.filter(a => a.event === 'FOLD-AUTO-EXPAND-DECISION').pop()
+    expect(decision?.payload).toMatchObject({
+      source: 'POINTER_DOWN',
+      setting: false,
+      decision: 'KEEP_FOLDED',
+    })
+  })
+
+  it('does not auto-expand a folded block on plain focus without a hidden caret', () => {
+    harness = createHarness()
+    harness.foldBtnFor('long')!.click()
+    const line = harness.longFence.querySelector('.CodeMirror-line') as HTMLElement
+    line.tabIndex = 0
+    line.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+  })
+
   it('allows folding when the caret line cannot be resolved (no range / no CM)', () => {
     harness = createHarness()
     const line = harness.longFence.querySelector('.CodeMirror-line') as HTMLElement
@@ -605,13 +685,20 @@ describe('V3 preview folding (top-bar control)', () => {
     expect(dispatch?.payload.caret).toMatchObject({ caretSource: 'none', hiddenByPreview: null })
   })
 
-  it('auto-expands when a folded block gains focus', () => {
+  it('auto-expands when focus lands on a hidden caret line', () => {
     harness = createHarness()
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
-    const line = harness.longFence.querySelector('.CodeMirror-line') as HTMLElement
-    line.tabIndex = 0
-    line.focus()
+    const lines = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+    const hiddenText = lines[15].querySelector('span')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(hiddenText, 0)
+    range.collapse(true)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    lines[15].tabIndex = 0
+    lines[15].focus()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
     expect(harness.controller.getFoldKeys()).toEqual([])
   })

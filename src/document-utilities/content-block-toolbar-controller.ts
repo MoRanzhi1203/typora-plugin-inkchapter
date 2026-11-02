@@ -74,6 +74,11 @@ export interface ContentBlockToolbarOptions {
   /** 折叠预览行数（5 | 10）。 */
   getPreviewLines?: () => 5 | 10
   /**
+   * 点击已折叠代码块的“可见代码文字”时是否允许自动展开并进入编辑。
+   * 默认 `true`；关闭后只能通过顶部展开按钮或诊断定位展开。
+   */
+  getAutoExpandOnEdit?: () => boolean
+  /**
    * 代码块只读行级标记（按围栏序号）。空行区段用行号侧标记，全角标点用文本下划线。
    * 只使用 CodeMirror 公开 API，不插入文本、不改文档模型。
    */
@@ -1506,18 +1511,111 @@ export class ContentBlockToolbarController {
     const view = this.views.get(target.key)
     if (view?.folded) {
       // 只有“焦点落点会让光标/选区不可见”时才自动展开。窗口重新激活时 Typora 会
-      // 把焦点还给代码文本域；若光标仍在预览可见行内，保持折叠，避免折叠被无关
-      // 的 focus 事件悄悄反向展开（表现为“折叠时灵时不灵”）。
+      // 把焦点还给代码文本域；若光标仍在预览可见行内（或暂时无法判定），保持折叠，
+      // 避免折叠被无关的 focus 事件悄悄反向展开（表现为“折叠时灵时不灵”）。
       const caret = this.caretSnapshot(view)
-      if (caret.hiddenByPreview !== false) {
-        this.setCollapsed(view, false, null, 'UNFOLDED:FOCUS_ENTERED_FOLDED_BLOCK')
-      } else {
-        this.opts.emitAudit?.('FOLD-FOCUS-KEPT', {
-          blockKey: view.key, previewLines: view.previewLines, caret,
+      const enabled = this.autoExpandOnEdit()
+      if (enabled && caret.hiddenByPreview === true) {
+        const actionId = `focus-expand-${++this.actionSeq}-${view.key}`
+        this.opts.emitAudit?.('FOLD-AUTO-EXPAND-DECISION', {
+          actionId,
+          blockKey: view.key,
+          source: 'FOCUS_HIDDEN_CARET',
+          setting: enabled,
+          hiddenByPreview: caret.hiddenByPreview,
+          previewLines: view.previewLines,
+          decision: 'EXPAND',
         })
+        this.setCollapsed(view, false, actionId, 'UNFOLDED:FOCUS_HIDDEN_CARET')
+      } else {
+        // 关闭自动展开时，绝不把隐藏行留在“看不见的可编辑光标”上：
+        // 把 CM 光标钳制到最后一个可见行，折叠本身保持不变。
+        let clamped = false
+        if (!enabled && caret.hiddenByPreview === true) {
+          const clamp = this.clampCaretToPreview(view, view.previewLines, caret)
+          clamped = clamp.moved
+          this.opts.emitAudit?.('FOLD-AUTO-EXPAND-DECISION', {
+            blockKey: view.key,
+            source: 'FOCUS_HIDDEN_CARET',
+            setting: enabled,
+            hiddenByPreview: caret.hiddenByPreview,
+            previewLines: view.previewLines,
+            caretClamped: clamped,
+            decision: clamped ? 'KEEP_FOLDED_CLAMP_CARET' : 'KEEP_FOLDED',
+          })
+        } else {
+          this.opts.emitAudit?.('FOLD-FOCUS-KEPT', {
+            blockKey: view.key, previewLines: view.previewLines, caret, autoExpand: enabled,
+          })
+        }
       }
     }
     this.syncGeometry()
+  }
+
+  /**
+   * 折叠态点击命中分类：只有“前 N 行内的真实代码文字”才算编辑进入点。
+   * 工具栏 / 行号区 / 空白背景 / 预览外行都不允许触发展开。
+   */
+  private classifyFoldedPointerHit(
+    ev: Event,
+    view: CodeBlockView,
+  ): { editable: boolean; lineIndex: number | null; reason: string } {
+    const raw = ev.target
+    if (!(raw instanceof Element)) return { editable: false, lineIndex: null, reason: 'NON_ELEMENT' }
+    if (raw.closest(`[${CONTENT_TOOLBAR_ATTR}]`)) {
+      return { editable: false, lineIndex: null, reason: 'TOOLBAR' }
+    }
+    if (raw.closest('.CodeMirror-gutter-wrapper, .CodeMirror-gutters, .CodeMirror-linenumber')) {
+      return { editable: false, lineIndex: null, reason: 'GUTTER' }
+    }
+    const lineEl = raw.closest('.CodeMirror-line')
+    if (!lineEl || !view.fence.contains(lineEl)) {
+      return { editable: false, lineIndex: null, reason: 'NOT_CODE_LINE' }
+    }
+    const codeEl = lineEl.parentElement
+    const lines = codeEl
+      ? Array.from(codeEl.querySelectorAll<HTMLElement>(':scope > .CodeMirror-line'))
+      : []
+    const lineIndex = lines.indexOf(lineEl as HTMLElement)
+    // 浏览器命中测试已经给出最深的 token 元素；命中行容器本身 = 行内文字以外的
+    // 空白背景（CM 的文字都在 token <span> 内），因此不需要再做坐标反查。
+    if (raw === lineEl) {
+      return { editable: false, lineIndex, reason: 'BLANK_AREA' }
+    }
+    if (!this.pointIntersectsText(raw, ev)) {
+      return { editable: false, lineIndex, reason: 'NO_TEXT_AT_POINT' }
+    }
+    if (lineIndex < 0) return { editable: false, lineIndex: null, reason: 'LINE_NOT_FOUND' }
+    if (lineIndex >= view.previewLines) {
+      return { editable: false, lineIndex, reason: 'LINE_OUTSIDE_PREVIEW' }
+    }
+    return { editable: true, lineIndex, reason: 'CODE_TEXT' }
+  }
+
+  /** 点击位置是否真的落在该元素的非空白文本上（无布局环境则信任文本节点）。 */
+  private pointIntersectsText(el: Element, ev: Event): boolean {
+    const x = (ev as MouseEvent).clientX
+    const y = (ev as MouseEvent).clientY
+    try {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      let node = walker.nextNode()
+      while (node) {
+        if ((node.textContent ?? '').trim() !== '') {
+          const range = document.createRange()
+          range.selectNodeContents(node)
+          const rects = Array.from(range.getClientRects())
+          if (rects.length === 0) return true
+          if (rects.some(r => x >= r.left - 1 && x <= r.right + 1 && y >= r.top - 1 && y <= r.bottom + 1)) {
+            return true
+          }
+        }
+        node = walker.nextNode()
+      }
+    } catch {
+      return true
+    }
+    return false
   }
 
   private handlePointerDown(ev: Event): void {
@@ -1527,8 +1625,34 @@ export class ContentBlockToolbarController {
     const target = resolveContentBlockTarget(ev.target, this.boundRoot)
     if (!target || target.kind !== 'code') return
     const view = this.views.get(target.key)
-    if (view?.folded) {
-      this.setCollapsed(view, false, null, 'UNFOLDED:POINTER_DOWN_ON_FOLDED_BLOCK')
+    if (!view?.folded) return
+
+    const hit = this.classifyFoldedPointerHit(ev, view)
+    const enabled = this.autoExpandOnEdit()
+    const expand = enabled && hit.editable
+    this.opts.emitAudit?.('FOLD-AUTO-EXPAND-DECISION', {
+      blockKey: view.key,
+      source: 'POINTER_DOWN',
+      setting: enabled,
+      editable: hit.editable,
+      reason: hit.reason,
+      lineIndex: hit.lineIndex,
+      previewLines: view.previewLines,
+      decision: expand ? 'EXPAND' : 'KEEP_FOLDED',
+    })
+    if (!expand) return
+    const actionId = `edit-expand-${++this.actionSeq}-${view.key}`
+    view.actionId = actionId
+    this.setCollapsed(view, false, actionId, 'UNFOLDED:POINTER_DOWN_CODE_TEXT')
+  }
+
+  /** 自动展开开关（默认 true）。 */
+  private autoExpandOnEdit(): boolean {
+    try {
+      const read = this.opts.getAutoExpandOnEdit
+      return read ? read() !== false : true
+    } catch {
+      return true
     }
   }
 

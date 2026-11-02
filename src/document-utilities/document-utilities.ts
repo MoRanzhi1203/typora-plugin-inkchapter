@@ -140,6 +140,8 @@ export interface DocumentUtilitiesSources {
     emitAudit?: (event: string, payload: Record<string, unknown>) => void
     /** V3 — 折叠预览保留行数（5 | 10，默认 10）。 */
     getPreviewLines?: () => 5 | 10
+    /** 点击折叠代码块可见文字时是否自动展开（默认 true）。 */
+    getAutoExpandOnEdit?: () => boolean
   }
 }
 
