@@ -97,6 +97,9 @@ import {
   type DefinitionReferenceOccurrence,
 } from './document-definition-reference-index'
 import { getDocumentInlineLinkAuthority } from './document-inline-link-authority'
+// Code Block V4 — read-only lint (source-only, never edits the Markdown).
+import { analyzeCodeBlockV4 } from './document-diagnostic-code-block-v4'
+import { parseFencedCodeBlocks, readFenceSourceFromElement } from './content-block-toolbar-code-source'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -326,6 +329,16 @@ export function resolveDocumentDiagnosticSeverity(
     case 'TABLE_MANUAL_NUMBER_PREFIX':
     case 'CODE_MANUAL_NUMBER_PREFIX':
       return 'warning'
+    // Code Block V4 (read-only lint) — the analyzer's `warning` findings.
+    // CB008 / CB010 stay OFF by default (their options are never enabled here).
+    case 'CB001':
+    case 'CB002':
+    case 'CB006':
+    case 'CB101':
+    case 'CB102':
+    case 'CB103':
+    case 'CB104':
+      return 'warning'
     // Heading Auto-Number Conflict V1 §13 — when the auto number is EFFECTIVE
     // for the heading AND the source already carries a confirmed manual prefix,
     // two numbering authorities WILL coexist. Fixed ERROR (never mode-dependent).
@@ -373,6 +386,16 @@ export function resolveDocumentDiagnosticSeverity(
     case 'TABLE_EMPTY_CONTENT':
     case 'FORMULA_EMPTY_CONTENT':
     case 'BLOCKQUOTE_EMPTY':
+    // Code Block V4 — the analyzer's `hint` findings map to the internal
+    // `info` level (presented as 提示). Formatting advice never becomes a warning.
+    case 'CB003':
+    case 'CB004':
+    case 'CB005':
+    case 'CB007':
+    case 'CB008':
+    case 'CB009':
+    case 'CB010':
+    case 'CB105':
     // V1 §3 — a document that only owns a title is a completeness HINT, never a
     // syntax error / structural warning. Constant across strict and loose mode:
     // an incomplete document is incomplete in both.
@@ -544,6 +567,28 @@ export const FIGURE_MANUAL_NUMBER_PREFIX_CODE = 'FIGURE_MANUAL_NUMBER_PREFIX'
 export const TABLE_MANUAL_NUMBER_PREFIX_CODE = 'TABLE_MANUAL_NUMBER_PREFIX'
 /** Phase H (spec §9) — a code-block name carrying a manual number prefix while auto-numbering is ON. */
 export const CODE_MANUAL_NUMBER_PREFIX_CODE = 'CODE_MANUAL_NUMBER_PREFIX'
+
+// ── Code Block V4 (read-only lint) rule codes ────────────────────────────────
+// The analyzer owns the SEMANTICS (`document-diagnostic-code-block-v4.ts`);
+// this list is the producer's allow-list mirrored by the ONE rule registry.
+export const CODE_BLOCK_V4_DIAGNOSTIC_CODES: readonly string[] = [
+  'CB001',
+  'CB002',
+  'CB003',
+  'CB004',
+  'CB005',
+  'CB006',
+  'CB007',
+  'CB008',
+  'CB009',
+  'CB010',
+  'CB101',
+  'CB102',
+  'CB103',
+  'CB104',
+  'CB105',
+]
+
 /** Phase I (spec §10) — a `[x](#target)` link whose target is no canonical heading anchor. */
 export const LINK_LOCAL_ANCHOR_MISSING_CODE = 'LINK_LOCAL_ANCHOR_MISSING'
 /** Phase I (spec §10) — a collision group of canonical headings sharing ONE anchor id. */
@@ -692,6 +737,8 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   'CODE_MISSING_NAME',
   'CODE_MISSING_LANGUAGE',
   CODE_MANUAL_NUMBER_PREFIX_CODE,
+  // Code Block V4 (read-only lint) — CB001–CB010 / CB101–CB105.
+  ...CODE_BLOCK_V4_DIAGNOSTIC_CODES,
   // formula
   FORMULA_BLOCK_STRUCTURE_INVALID_CODE,
   'FORMULA_DUPLICATE_VISIBLE_TAG',
@@ -3278,6 +3325,56 @@ export function computeDocumentDiagnostics(
             : undefined,
         }),
       )
+    }
+  }
+
+  // ── Code Block V4 — read-only lint (source-only, never edits) ──────────────
+  // The fence source is parsed ONCE in document order; `input.codes` is already
+  // in `pre.md-fences` document order, so index i is the SAME `block:code:<i>`
+  // identity the `CODE_MISSING_*` rules use. No second numbering scheme.
+  if (input.markdown != null && input.codes.length > 0) {
+    const fences = parseFencedCodeBlocks(input.markdown)
+    const aligned = Math.min(fences.length, input.codes.length)
+    for (let i = 0; i < aligned; i++) {
+      const c = input.codes[i]
+      if (!c.targetIdentity) continue
+      const fence = fences[i]
+      // SOURCE AUTHORITY: the live CodeMirror document model wins. Some
+      // environments serialize a fence's PRE text (line-number gutter + the
+      // in-fence language bar) instead of the code model; analyzing that string
+      // would create false positives. `getValue()` is the SAME source the copy
+      // action uses, so diagnostics and copying always agree.
+      const cmText = readFenceSourceFromElement(c.element)
+      const text = cmText ?? fence.text
+      const language = (c.language ?? '').trim() || fence.info
+      const findings = analyzeCodeBlockV4({
+        text,
+        language,
+        options: { captionPresent: (c.name ?? '').trim() !== '' },
+      })
+      for (const finding of findings) {
+        push(
+          makeDiagnostic(input, 'code', finding.ruleId, finding.message, {
+            detail: '仅检测，不修改代码。',
+            element: c.element,
+            // Unique per finding: the block identity alone would let the
+            // (category + code + targetIdentity) dedup collapse several
+            // findings of the same rule inside ONE block.
+            targetIdentity: `${c.targetIdentity}:cb:${finding.ruleId}:${finding.startLine}:${finding.startColumn}`,
+            kind: 'object',
+            metadata: {
+              ruleId: finding.ruleId,
+              language: fence.info,
+              startLine: finding.startLine,
+              startColumn: finding.startColumn,
+              endLine: finding.endLine,
+              endColumn: finding.endColumn,
+              confidence: finding.confidence,
+            },
+            location: { kind: 'block-node', blockKind: 'code', stableIdentity: c.targetIdentity },
+          }),
+        )
+      }
     }
   }
 

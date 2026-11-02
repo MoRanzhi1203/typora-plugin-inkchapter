@@ -26191,6 +26191,8 @@ export class DocumentUtilityOverlayHost {
     let result = resolveDiagnosticLocation(diag, diag.location, resolveCtx, targetIndex)
 
     if (result.decision === 'RESOLVED') {
+      // Code Block V4 — 折叠态定位：先安全展开目标代码块，再做滚动/高亮事务。
+      if (result.element) this.contentBlockToolbar?.expandFoldedBlockForLocate(result.element)
       this.performLocateScrollTransaction(tx, result, diag, diagnosticId, targetIndex)
       return
     }

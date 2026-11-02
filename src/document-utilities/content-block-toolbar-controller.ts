@@ -703,24 +703,106 @@ export class ContentBlockToolbarController {
     }
 
     const caret = this.caretSnapshot(view)
-    // 只有“折叠会隐藏当前光标/选区”时才拒绝；光标在可见行内允许手动折叠。
     if (caret.hiddenByPreview === true) {
-      view.foldBtn.classList.add('is-error')
-      view.foldBtn.setAttribute('title', `光标位于第 ${(caret.caretLine ?? 0) + 1} 行，超出预览范围，无法折叠`)
-      this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
-        actionId, blockKey: view.key, from: 'expanded', to: 'expanded',
-        decision: 'BLOCKED', reason: 'CARET_IN_HIDDEN_PREVIEW',
-        caretInsideNow: this.selectionInside(view.fence), caret,
-      })
-      const timer = window.setTimeout(() => {
-        view.foldBtn.classList.remove('is-error')
-        this.syncFoldButton(view)
-      }, FEEDBACK_RESET_MS)
-      this.resetTimers.set(view.foldBtn, timer)
-      return
+      // 真实 DOM 选区落在将被隐藏的行内：保持既有安全策略（拒绝并反馈）。
+      if (caret.anchorInFence === true) {
+        this.rejectFoldForHiddenCaret(view, actionId, caret)
+        return
+      }
+      // CodeMirror 文本域光标（Typora 代码编辑的常规形态）：折叠前把光标钳制到
+      // 最后一个可见逻辑行。这样折叠不再依赖尾部空行/光标位置，也不会留下不可见光标。
+      if (caret.activeInFence === true) {
+        const clamp = this.clampCaretToPreview(view, view.previewLines, caret)
+        this.opts.emitAudit?.('FOLD-CARET-CLAMPED', {
+          actionId, blockKey: view.key,
+          previewLines: view.previewLines, totalLines: view.totalLines,
+          fromLine: caret.caretLine, toLine: clamp.toLine, toCh: clamp.toCh,
+          source: clamp.source, moved: clamp.moved,
+        })
+        if (!clamp.moved) {
+          this.rejectFoldForHiddenCaret(view, actionId, caret)
+          return
+        }
+      }
     }
 
     this.setCollapsed(view, true, actionId, 'FOLDED_PREVIEW')
+  }
+
+  /**
+   * 折叠前把 CodeMirror 文本域光标钳制到最后一个可见逻辑行（只改光标，不改文本）。
+   *
+   * 背景：预览折叠只保留前 N 行。用户刚在代码块末尾追加空行时，光标位于折叠后
+   * 不可见的尾部；旧实现直接拒绝折叠，于是“末尾空行”表现为折叠失效。
+   */
+  private clampCaretToPreview(
+    view: CodeBlockView,
+    previewLines: number,
+    caret: CaretSnapshot,
+  ): { moved: boolean; toLine: number | null; toCh: number | null; source: string } {
+    if (previewLines <= 0) return { moved: false, toLine: null, toCh: null, source: 'none' }
+    try {
+      type CmCursor = { line: number; ch: number }
+      type CmLike = {
+        getCursor?: (end?: string) => CmCursor | null
+        getLine?: (line: number) => string | null
+        setCursor?: (pos: CmCursor) => void
+      }
+      const wrapper = view.fence.querySelector('.CodeMirror') as
+        (HTMLElement & { CodeMirror?: CmLike }) | null
+      const cm = wrapper?.CodeMirror
+      if (!cm || typeof cm.setCursor !== 'function') {
+        return { moved: false, toLine: null, toCh: null, source: 'unavailable' }
+      }
+      const cursor = cm.getCursor?.('head') ?? null
+      const fromLine = cursor && typeof cursor.line === 'number' ? cursor.line : caret.caretLine
+      if (fromLine == null || fromLine < previewLines) {
+        return { moved: false, toLine: fromLine ?? null, toCh: null, source: 'already-visible' }
+      }
+      const toLine = previewLines - 1
+      const lineText = typeof cm.getLine === 'function' ? (cm.getLine(toLine) ?? '') : ''
+      const toCh = Math.min(caret.caretCh ?? 0, lineText.length)
+      cm.setCursor({ line: toLine, ch: toCh })
+      return { moved: true, toLine, toCh, source: 'cm' }
+    } catch {
+      return { moved: false, toLine: null, toCh: null, source: 'error' }
+    }
+  }
+
+  /** 明确拒绝折叠并给出短暂反馈（不吞掉操作）。 */
+  private rejectFoldForHiddenCaret(
+    view: CodeBlockView,
+    actionId: string | null,
+    caret: CaretSnapshot,
+  ): void {
+    view.foldBtn.classList.add('is-error')
+    view.foldBtn.setAttribute('title', `光标位于第 ${(caret.caretLine ?? 0) + 1} 行，超出预览范围，无法折叠`)
+    this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
+      actionId, blockKey: view.key, from: 'expanded', to: 'expanded',
+      decision: 'BLOCKED', reason: 'CARET_IN_HIDDEN_PREVIEW',
+      caretInsideNow: this.selectionInside(view.fence), caret,
+    })
+    const timer = window.setTimeout(() => {
+      view.foldBtn.classList.remove('is-error')
+      this.syncFoldButton(view)
+    }, FEEDBACK_RESET_MS)
+    this.resetTimers.set(view.foldBtn, timer)
+  }
+
+  /**
+   * 诊断定位前展开目标代码块（唯一状态写入者；只展开，绝不 toggle）。
+   *
+   * 文档检测栏的 `block-node`（code）定位在滚动/高亮之前调用：折叠态下目标行
+   * 被裁剪，必须先安全展开，定位才会落到真实几何位置。
+   */
+  expandFoldedBlockForLocate(element: HTMLElement): boolean {
+    if (this.disposed || !element) return false
+    for (const view of this.views.values()) {
+      if (view.fence !== element && !view.fence.contains(element)) continue
+      if (!view.folded) return false
+      return this.setCollapsed(view, false, null, 'UNFOLDED:DIAGNOSTIC_LOCATE')
+    }
+    return false
   }
 
   /**
@@ -1134,8 +1216,17 @@ export class ContentBlockToolbarController {
     if (!target || target.kind !== 'code') return
     const view = this.views.get(target.key)
     if (view?.folded) {
-      // 折叠块获得焦点 → 自动展开，避免输入落进不可见区域（单一状态写入者）。
-      this.setCollapsed(view, false, null, 'UNFOLDED:FOCUS_ENTERED_FOLDED_BLOCK')
+      // 只有“焦点落点会让光标/选区不可见”时才自动展开。窗口重新激活时 Typora 会
+      // 把焦点还给代码文本域；若光标仍在预览可见行内，保持折叠，避免折叠被无关
+      // 的 focus 事件悄悄反向展开（表现为“折叠时灵时不灵”）。
+      const caret = this.caretSnapshot(view)
+      if (caret.hiddenByPreview !== false) {
+        this.setCollapsed(view, false, null, 'UNFOLDED:FOCUS_ENTERED_FOLDED_BLOCK')
+      } else {
+        this.opts.emitAudit?.('FOLD-FOCUS-KEPT', {
+          blockKey: view.key, previewLines: view.previewLines, caret,
+        })
+      }
     }
     this.syncGeometry()
   }

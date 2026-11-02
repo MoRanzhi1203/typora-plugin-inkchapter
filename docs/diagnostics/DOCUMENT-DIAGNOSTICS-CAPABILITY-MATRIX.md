@@ -7,45 +7,60 @@
 ## Capability Summary
 
 ```text
-77 Registered Families
-83 Resolved Runtime Codes
-72 User-visible Diagnostic Types
+92 Registered Families
+98 Resolved Runtime Codes
+87 User-visible Diagnostic Types
 
-72 Implemented Families
+87 Implemented Families
 5 Deferred Families
 
 0 Runtime Closed
 0 Runtime Partial
-72 Runtime Unverified
+87 Runtime Unverified
 5 Deferred
 
 5 State Guard Codes
-78 Content Diagnostic Codes
+93 Content Diagnostic Codes
 ```
 
 ## Machine-readable Summary
 
 ```text
-REGISTERED_RULE_FAMILY_COUNT=77
-RESOLVED_DIAGNOSTIC_CODE_COUNT=83
-USER_VISIBLE_DIAGNOSTIC_TYPE_COUNT=72
-IMPLEMENTED_FAMILY_COUNT=72
+REGISTERED_RULE_FAMILY_COUNT=92
+RESOLVED_DIAGNOSTIC_CODE_COUNT=98
+USER_VISIBLE_DIAGNOSTIC_TYPE_COUNT=87
+IMPLEMENTED_FAMILY_COUNT=87
 DEFERRED_FAMILY_COUNT=5
 PLANNED_FAMILY_COUNT=0
 STATE_GUARD_CODE_COUNT=5
-CONTENT_DIAGNOSTIC_CODE_COUNT=78
+CONTENT_DIAGNOSTIC_CODE_COUNT=93
 ERROR_FAMILY_COUNT=12
-WARNING_FAMILY_COUNT=49
-HINT_FAMILY_COUNT=16
+WARNING_FAMILY_COUNT=56
+HINT_FAMILY_COUNT=24
 CLOSED_FAMILY_COUNT=0
 PARTIAL_FAMILY_COUNT=0
-UNVERIFIED_FAMILY_COUNT=72
+UNVERIFIED_FAMILY_COUNT=87
 DEFERRED_CLOSURE_FAMILY_COUNT=5
 ```
 
 | Family | Runtime Code | Kind | Category | Internal Severity | UI Severity | Scope | Producer | Stable Identity | Suppression | Dynamic Refresh | Location | Presentation | Interaction | Static Test | Runtime Evidence | Closure |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | BLOCKQUOTE_EMPTY | BLOCKQUOTE_EMPTY | CONTENT_DIAGNOSTIC | document | info | hint | block | computeDocumentDiagnostics | source-range-identity | none | runtime-recompute | source-range | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB001 | CB001 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB002 | CB002 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB003 | CB003 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB004 | CB004 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB005 | CB005 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB006 | CB006 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB007 | CB007 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB008 | CB008 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB009 | CB009 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB010 | CB010 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB101 | CB101 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB102 | CB102 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB103 | CB103 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB104 | CB104 | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
+| CB105 | CB105 | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
 | CODE_CAPTION_FORMAT_INVALID | CODE_CAPTION_FORMAT_INVALID | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeCaptionIntegrityDiagnostics | caption-projection-identity | caption-integrity | runtime-recompute | caption-projection | caption-slot | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |
 | CODE_DUPLICATE_NAME | CODE_DUPLICATE_NAME | CONTENT_DIAGNOSTIC | code | warning | warning | object | computeDocumentDiagnostics | multi-target-identity | none | runtime-recompute | multi-target | reason-chip | ORDINARY_MULTI_TARGET | NONE | NONE | UNVERIFIED |
 | CODE_EMPTY_BLOCK | CODE_EMPTY_BLOCK | CONTENT_DIAGNOSTIC | code | info | hint | object | computeDocumentDiagnostics | block-identity | none | runtime-recompute | block-node | reason-chip | SINGLE_TARGET | TARGETED | NONE | UNVERIFIED |

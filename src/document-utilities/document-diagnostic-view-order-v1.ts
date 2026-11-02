@@ -74,6 +74,8 @@ export function resolveProblemType(code: string): DiagnosticProblemType {
   if (c.startsWith('FIGURE_')) return 'figure'
   if (c.startsWith('TABLE_')) return 'table'
   if (c.startsWith('CODE_')) return 'code'
+  // Code Block V4 (read-only lint) — CB001–CB010 / CB101–CB105 are code rules.
+  if (c.startsWith('CB0') || c.startsWith('CB1')) return 'code'
   if (c.startsWith('FORMULA_')) return 'formula'
   if (c.startsWith('LINK_') || c.startsWith('FOOTNOTE_') || c.startsWith('FRONTMATTER_')) return 'link'
   return 'document'

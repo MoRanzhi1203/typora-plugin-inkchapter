@@ -111,6 +111,24 @@ export function lookupFenceSource(markdown: string, ordinal: number): FenceSourc
   return { found: true, text: block.text, block }
 }
 
+/**
+ * 从活动代码块元素读取 CodeMirror 的真实源文本（只读）。
+ *
+ * 为什么优先于 Markdown 解析：语言栏位于 PRE 内部后，部分环境的 Markdown
+ * 序列化会把 PRE 的渲染文本（行号占位、语言栏文字）当作代码内容并压成一行。
+ * CodeMirror 的 `getValue()` 是文档模型权威，且与复制功能使用同一来源。
+ */
+export function readFenceSourceFromElement(element: HTMLElement | null | undefined): string | null {
+  try {
+    const wrapper = element?.querySelector('.CodeMirror') as
+      (HTMLElement & { CodeMirror?: { getValue?: () => string } }) | null
+    const value = wrapper?.CodeMirror?.getValue?.()
+    return typeof value === 'string' ? value : null
+  } catch {
+    return null
+  }
+}
+
 /** 目标围栏在编辑器根内的序号（与 Markdown 围栏顺序一致）。 */
 export function codeFenceOrdinal(element: HTMLElement, editorRoot: HTMLElement): number {
   try {

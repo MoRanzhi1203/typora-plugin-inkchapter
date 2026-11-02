@@ -199,14 +199,14 @@ export interface DocumentDiagnosticsCapabilityAudit {
 
 /** §31 — the FROZEN baseline counts the count-authority gate asserts. */
 export const DOCUMENT_DIAGNOSTIC_BASELINE = {
-  registeredRuleFamilyCount: 77,
-  resolvedDiagnosticCodeCount: 83,
-  userVisibleDiagnosticTypeCount: 72,
-  implementedFamilyCount: 72,
+  registeredRuleFamilyCount: 92,
+  resolvedDiagnosticCodeCount: 98,
+  userVisibleDiagnosticTypeCount: 87,
+  implementedFamilyCount: 87,
   deferredFamilyCount: 5,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 78,
+  contentDiagnosticCodeCount: 93,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────

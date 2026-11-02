@@ -74,6 +74,8 @@ export function classifyDocumentDiagnosticRuleFamily(code: string): DocumentDiag
   if (code.startsWith('FIGURE_') || code.startsWith('TABLE_') || code.startsWith('CODE_') || code.startsWith('FORMULA_')) {
     return 'object'
   }
+  // Code Block V4 (read-only lint) — CB001–CB010 / CB101–CB105 are object rules.
+  if (code.startsWith('CB0') || code.startsWith('CB1')) return 'object'
   if (code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING' || code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE') return 'eof'
   return 'documentOther'
 }

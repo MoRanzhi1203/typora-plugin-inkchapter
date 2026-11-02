@@ -338,6 +338,22 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   SECTION_EMPTY: 'info',
   SECTION_ONLY_SUBHEADINGS: 'info',
   CODE_EMPTY_BLOCK: 'info',
+  // Code Block V4 — MIRRORS `resolveDocumentDiagnosticSeverity` (warning/hint→info).
+  CB001: 'warning',
+  CB002: 'warning',
+  CB003: 'info',
+  CB004: 'info',
+  CB005: 'info',
+  CB006: 'warning',
+  CB007: 'info',
+  CB008: 'info',
+  CB009: 'info',
+  CB010: 'info',
+  CB101: 'warning',
+  CB102: 'warning',
+  CB103: 'warning',
+  CB104: 'warning',
+  CB105: 'info',
   TABLE_EMPTY_CONTENT: 'info',
   FORMULA_EMPTY_CONTENT: 'info',
   BLOCKQUOTE_EMPTY: 'info',
@@ -653,6 +669,69 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // CODE_MISSING_LANGUAGE. Detection is special; the presentation lifecycle is NOT.
   CODE_EMPTY_BLOCK: rule('CODE_EMPTY_BLOCK', 'code', 'block-node', {
     area: 'document-completeness', scope: 'object',
+  }),
+  // Code Block V4 (read-only lint) — ONE family per runtime code, located on the
+  // SAME canonical `block:code:<ordinal>` node as CODE_MISSING_NAME / LANGUAGE.
+  // The analyzer's severity is mirrored here (warning → warning, hint → info).
+  CB001: rule('CB001', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB002: rule('CB002', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB003: rule('CB003', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB004: rule('CB004', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB005: rule('CB005', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB006: rule('CB006', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB007: rule('CB007', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB008: rule('CB008', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB009: rule('CB009', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB010: rule('CB010', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB101: rule('CB101', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB102: rule('CB102', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB103: rule('CB103', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB104: rule('CB104', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  CB105: rule('CB105', 'code', 'block-node', {
+    area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
+    producerAuthority: 'computeDocumentDiagnostics',
   }),
   FORMULA_DUPLICATE_VISIBLE_TAG: rule('FORMULA_DUPLICATE_VISIBLE_TAG', 'formula', 'block-node'),
   // VNext §19 — a display formula carrying a list/blockquote marker is not a

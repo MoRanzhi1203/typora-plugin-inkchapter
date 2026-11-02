@@ -309,6 +309,75 @@ describe('V3 preview folding (top-bar control)', () => {
     })
   })
 
+  it('folds after clamping a CodeMirror caret that would be hidden (trailing blank lines)', () => {
+    harness = createHarness()
+    const cmEl = harness.longFence.querySelector('.CodeMirror') as HTMLElement
+    const setCursor = vi.fn()
+    ;(cmEl as unknown as { CodeMirror: unknown }).CodeMirror = {
+      getCursor: () => ({ line: 16, ch: 2 }),
+      getLine: () => 'const v9 = 9',
+      setCursor,
+    }
+    const textarea = document.createElement('textarea')
+    cmEl.appendChild(textarea)
+    textarea.focus()
+    window.getSelection()?.removeAllRanges()
+    harness.controller.syncGeometry()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    expect(setCursor).toHaveBeenCalledWith({ line: 9, ch: 2 })
+    const clamped = harness.audits.find((a) => a.event === 'FOLD-CARET-CLAMPED')
+    expect(clamped?.payload).toMatchObject({
+      previewLines: 10, fromLine: 16, toLine: 9, moved: true, source: 'cm',
+    })
+    const transition = harness.audits.filter((a) => a.event === 'FOLD-STATE-TRANSITION').pop()
+    expect(transition?.payload).toMatchObject({ from: 'expanded', to: 'folded', decision: 'PASS' })
+  })
+
+  it('keeps a folded block when focus returns with a visible caret (window re-activation)', () => {
+    harness = createHarness()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const lines = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+    const visibleLine = lines[3]
+    visibleLine.tabIndex = 0
+    placeCaret(visibleLine)
+    visibleLine.focus()
+    harness.controller.syncGeometry()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    expect(harness.audits.some((a) => a.event === 'FOLD-FOCUS-KEPT')).toBe(true)
+  })
+
+  it('auto-expands when focus returns with a hidden caret', () => {
+    harness = createHarness()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const lines = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+    const hiddenLine = lines[14]
+    hiddenLine.tabIndex = 0
+    placeCaret(hiddenLine)
+    hiddenLine.focus()
+    harness.controller.syncGeometry()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+  })
+
+  it('expands a folded block before diagnostic locate (never toggles)', () => {
+    harness = createHarness()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    expect(harness.controller.expandFoldedBlockForLocate(harness.longFence)).toBe(true)
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+    const last = harness.audits.filter((a) => a.event === 'FOLD-STATE-TRANSITION').pop()
+    expect(last?.payload).toMatchObject({
+      from: 'folded', to: 'expanded', decision: 'PASS', reason: 'UNFOLDED:DIAGNOSTIC_LOCATE',
+    })
+    // 已展开时再次定位请求不得反向折叠。
+    expect(harness.controller.expandFoldedBlockForLocate(harness.longFence)).toBe(false)
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+    // 非目标元素不产生任何状态变化。
+    expect(harness.controller.expandFoldedBlockForLocate(harness.shortFence)).toBe(false)
+  })
+
   it('allows folding when the caret line cannot be resolved (no range / no CM)', () => {
     harness = createHarness()
     const line = harness.longFence.querySelector('.CodeMirror-line') as HTMLElement

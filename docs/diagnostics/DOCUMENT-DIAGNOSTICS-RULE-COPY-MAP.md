@@ -8,11 +8,11 @@
 ## Summary
 
 ```text
-REGISTERED_RULE_FAMILY_COUNT=77
-RESOLVED_RUNTIME_CODE_COUNT=83
+REGISTERED_RULE_FAMILY_COUNT=92
+RESOLVED_RUNTIME_CODE_COUNT=98
 ERROR_FAMILY_COUNT=12
-WARNING_FAMILY_COUNT=49
-HINT_FAMILY_COUNT=16
+WARNING_FAMILY_COUNT=56
+HINT_FAMILY_COUNT=24
 ```
 
 ## Rule map
@@ -20,6 +20,21 @@ HINT_FAMILY_COUNT=16
 | RuleId (家族) | 运行码 | 严重程度 | 可否定位 | 位置策略 | 交互 | 现状内联短标 | 建议标题 | 建议说明 | 建议修复建议 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `BLOCKQUOTE_EMPTY` | BLOCKQUOTE_EMPTY | 提示 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 引用块为空 | 引用块没有任何内容。 | 补充引用内容，或删除空引用块。 |
+| `CB001` | CB001 | 警告 | 是 | block-node | SINGLE_TARGET | 开头空行过多 | 代码开头空行过多 | 代码内容开头存在多个空白逻辑行。 | 删除代码块开头的多余空行。 |
+| `CB002` | CB002 | 警告 | 是 | block-node | SINGLE_TARGET | 末尾空行过多 | 代码末尾空行过多 | 代码内容末尾存在多个空白逻辑行。 | 删除代码块末尾的多余空行。 |
+| `CB003` | CB003 | 提示 | 是 | block-node | SINGLE_TARGET | 正文空行过多 | 代码正文空行过多 | 代码正文中出现连续的空白行。 | 合并或删除正文中多余的连续空行。 |
+| `CB004` | CB004 | 提示 | 是 | block-node | SINGLE_TARGET | 行尾空格 | 代码行尾有多余空格 | 非空代码行的末尾存在空格或制表符。 | 删除行尾多余的空格或制表符。 |
+| `CB005` | CB005 | 提示 | 是 | block-node | SINGLE_TARGET | 缩进混用 | 代码缩进混用 | 同一行的缩进同时使用空格与制表符。 | 统一使用空格或制表符缩进。 |
+| `CB006` | CB006 | 警告 | 是 | block-node | SINGLE_TARGET | 不可见字符 | 代码含不可见字符 | 代码行内包含零宽或不可见控制字符。 | 删除不可见字符后重新输入该段内容。 |
+| `CB007` | CB007 | 提示 | 是 | block-node | SINGLE_TARGET | 换行符混用 | 代码换行符混用 | 同一代码块内混用 LF 与 CRLF 换行。 | 统一代码块的换行符。 |
+| `CB008` | CB008 | 提示 | 是 | block-node | SINGLE_TARGET | 代码行过长 | 代码行过长 | 代码行长度超过设定上限。 | 将过长的代码行拆分为多行。 |
+| `CB009` | CB009 | 提示 | 是 | block-node | SINGLE_TARGET | 空块带题注 | 空代码块带有题注 | 代码块没有任何内容，但仍带有题注。 | 补充代码内容，或删除该题注。 |
+| `CB010` | CB010 | 提示 | 是 | block-node | SINGLE_TARGET | 未指定语言 | 代码块缺少语言标识 | 代码块未指定语言。 | 为代码围栏补充语言标识（如 python / ts）。 |
+| `CB101` | CB101 | 警告 | 是 | block-node | SINGLE_TARGET | 全角括号 | 代码使用全角括号 | 代码中出现了全角括号。 | 将全角括号替换为半角括号。 |
+| `CB102` | CB102 | 警告 | 是 | block-node | SINGLE_TARGET | 全角逗号 | 代码使用全角逗号或分号 | 代码中出现了全角逗号或分号。 | 将全角逗号、分号替换为半角标点。 |
+| `CB103` | CB103 | 警告 | 是 | block-node | SINGLE_TARGET | 全角冒号 | 代码使用全角冒号 | 代码中出现了全角冒号。 | 将全角冒号替换为半角冒号。 |
+| `CB104` | CB104 | 警告 | 是 | block-node | SINGLE_TARGET | 全角运算符 | 代码使用全角运算符 | 代码中出现了全角运算符或智能引号。 | 将全角运算符与智能引号替换为半角符号。 |
+| `CB105` | CB105 | 提示 | 是 | block-node | SINGLE_TARGET | 全角标点 | 代码含全角标点 | 代码中疑似出现了输入法误输入的全角标点。 | 检查并替换为对应的半角标点。 |
 | `CODE_CAPTION_FORMAT_INVALID` | CODE_CAPTION_FORMAT_INVALID | 警告 | 是 | caption-projection | SINGLE_TARGET | （无映射/动态） | 代码块题注格式不规范 | 题注文字不符合规范格式「代码块 编号 名称」。 | 按「代码块 编号 名称」格式修改题注。 |
 | `CODE_DUPLICATE_NAME` | CODE_DUPLICATE_NAME | 警告 | 是 | multi-target | ORDINARY_MULTI_TARGET | 重复代码名 | （动态：沿用规则事实标题） | 多个代码块使用了相同名称。 | 修改代码块名称以互相区分。 |
 | `CODE_EMPTY_BLOCK` | CODE_EMPTY_BLOCK | 提示 | 是 | block-node | SINGLE_TARGET | （无映射/动态） | 代码块为空 | 代码块没有任何内容。 | 补充代码内容，或删除空代码块。 |

@@ -374,3 +374,93 @@ describe('EOF-NEWLINE standard file-level newline policy', () => {
     expect(r.diagnostics.some(d => d.code === 'DOCUMENT_TERMINAL_NEWLINE_MISSING')).toBe(true)
   })
 })
+
+// ── Code Block V4 — read-only lint wired into the code segment ──────────────
+describe('DIAG code block V4 — read-only lint wiring', () => {
+  const fenceMarkdown = (body: readonly string[]): string => [
+    '# 标题',
+    '',
+    '```javascript',
+    ...body,
+    '```',
+    '',
+  ].join('\n')
+
+  it('CB101 / CB102 / CB002 land on block:code:0 with a unique per-finding identity', () => {
+    const r = computeDocumentDiagnostics(
+      input({
+        markdown: fenceMarkdown(['console.log（"你好"）；', '', '']),
+        codes: [{ name: '示例代码', language: 'javascript', element: el(), targetIdentity: 'block:code:0' }],
+      }),
+    )
+    const codes = r.diagnostics.filter(d => d.category === 'code').map(d => d.code)
+    expect(codes).toContain('CB101')
+    expect(codes).toContain('CB102')
+    expect(codes).toContain('CB002')
+
+    const paren = r.diagnostics.find(d => d.code === 'CB101')!
+    expect(paren.severity).toBe('warning')
+    expect(paren.location).toEqual({ kind: 'block-node', blockKind: 'code', stableIdentity: 'block:code:0' })
+    expect(String(paren.targetIdentity)).toContain(':cb:CB101:')
+
+    const trailing = r.diagnostics.find(d => d.code === 'CB002')!
+    expect(trailing.severity).toBe('warning')
+    expect(trailing.location).toEqual({ kind: 'block-node', blockKind: 'code', stableIdentity: 'block:code:0' })
+    expect(trailing.metadata?.ruleId).toBe('CB002')
+    expect(trailing.metadata?.language).toBe('javascript')
+  })
+
+  it('does NOT flag Chinese punctuation inside JS strings / comments (CB101–CB105 silent)', () => {
+    const r = computeDocumentDiagnostics(
+      input({
+        markdown: fenceMarkdown(['const a = "（你好）；"', '// 注释：（全角），；：', 'const b = 1']),
+        codes: [{ name: '示例代码', language: 'javascript', element: el(), targetIdentity: 'block:code:0' }],
+      }),
+    )
+    for (const code of ['CB101', 'CB102', 'CB103', 'CB104', 'CB105']) {
+      expect(r.diagnostics.some(d => d.code === code), code).toBe(false)
+    }
+  })
+
+  it('prefers the live CodeMirror source over a polluted serialized fence', () => {
+    const codeEl = document.createElement('pre')
+    codeEl.className = 'md-fences'
+    const cmEl = document.createElement('div')
+    cmEl.className = 'CodeMirror'
+    ;(cmEl as unknown as { CodeMirror: unknown }).CodeMirror = {
+      getValue: () => 'const a = 1\n\n',
+    }
+    codeEl.appendChild(cmEl)
+    const r = computeDocumentDiagnostics(
+      input({
+        markdown: fenceMarkdown(['xxxxxxxxxx1 1const a = 1JSJavaScript 2 行']),
+        codes: [{ name: '示例代码', language: 'javascript', element: codeEl, targetIdentity: 'block:code:0' }],
+      }),
+    )
+    expect(r.diagnostics.some(d => d.code === 'CB002')).toBe(true)
+    expect(r.diagnostics.some(d => d.code === 'CB006')).toBe(false)
+  })
+
+  it('maps hint findings to info and publishes nothing without a targetIdentity', () => {
+    const markdown = fenceMarkdown(['const ok = 1。'])
+    const withIdentity = computeDocumentDiagnostics(
+      input({
+        markdown,
+        codes: [{ name: '示例代码', language: 'javascript', element: el(), targetIdentity: 'block:code:0' }],
+      }),
+    )
+    const hits = withIdentity.diagnostics.filter(d => d.code === 'CB105')
+    expect(hits).toHaveLength(1)
+    expect(hits[0].severity).toBe('info')
+    expect(String(hits[0].targetIdentity)).toContain(':cb:CB105:')
+    expect(hits[0].location).toEqual({ kind: 'block-node', blockKind: 'code', stableIdentity: 'block:code:0' })
+
+    const withoutIdentity = computeDocumentDiagnostics(
+      input({
+        markdown,
+        codes: [{ name: '示例代码', language: 'javascript', element: el() }],
+      }),
+    )
+    expect(withoutIdentity.diagnostics.some(d => d.code.startsWith('CB'))).toBe(false)
+  })
+})
