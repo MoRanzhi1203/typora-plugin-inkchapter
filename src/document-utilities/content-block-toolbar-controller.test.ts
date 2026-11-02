@@ -12,6 +12,7 @@ import {
   CODE_LANGBAR_ATTR,
   CONTENT_TOOLBAR_CLASS,
   ContentBlockToolbarController,
+  type CodeDiagnosticMark,
 } from './content-block-toolbar-controller'
 import { ContentBlockToolbarSession } from './content-block-toolbar-session'
 
@@ -46,11 +47,14 @@ interface Harness {
   barFor: (cid: string) => HTMLElement | null
   copyBtnFor: (cid: string) => HTMLButtonElement | null
   foldBtnFor: (cid: string) => HTMLButtonElement | null
+  diagFor: (cid: string) => HTMLElement | null
   copyText: ReturnType<typeof vi.fn>
   copyImage: ReturnType<typeof vi.fn>
   onLayoutInvalidated: ReturnType<typeof vi.fn>
   audits: Array<{ event: string; payload: Record<string, unknown> }>
   setPreviewLines: (n: 5 | 10) => void
+  setBlockDiagnostics: (fn: ((ordinal: number) => { error: number; warning: number; hint: number } | null) | null) => void
+  setBlockDiagnosticMarks: (fn: ((ordinal: number) => CodeDiagnosticMark[]) | null) => void
   stubBarRect: (cid: string, left: number, top: number, width: number) => void
 }
 
@@ -81,6 +85,8 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
   const onLayoutInvalidated = vi.fn()
   const audits: Array<{ event: string; payload: Record<string, unknown> }> = []
   let previewLines: 5 | 10 = 10
+  let blockDiagnostics: ((ordinal: number) => { error: number; warning: number; hint: number } | null) | null = null
+  let blockDiagnosticMarks: ((ordinal: number) => CodeDiagnosticMark[]) | null = null
 
   const controller = new ContentBlockToolbarController(overlay, {
     getEditorRoot: () => document.getElementById('write') as HTMLElement | null,
@@ -93,6 +99,8 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     onLayoutInvalidated,
     emitAudit: (event, payload) => audits.push({ event, payload }),
     getPreviewLines: () => previewLines,
+    getBlockDiagnostics: (ordinal) => blockDiagnostics?.(ordinal) ?? null,
+    getBlockDiagnosticMarks: (ordinal) => blockDiagnosticMarks?.(ordinal) ?? [],
   })
   controller.mount()
   controller.syncGeometry()
@@ -112,11 +120,14 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     barFor,
     copyBtnFor: (cid) => barFor(cid)?.querySelector<HTMLButtonElement>('[data-action="copy-code"]') ?? null,
     foldBtnFor: (cid) => barFor(cid)?.querySelector<HTMLButtonElement>('[data-action="toggle-fold"]') ?? null,
+    diagFor: (cid) => barFor(cid)?.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}__diag`) ?? null,
     copyText,
     copyImage,
     onLayoutInvalidated,
     audits,
     setPreviewLines: (n) => { previewLines = n },
+    setBlockDiagnostics: (fn) => { blockDiagnostics = fn },
+    setBlockDiagnosticMarks: (fn) => { blockDiagnosticMarks = fn },
     stubBarRect: (cid, left, top, width) => {
       const bar = barFor(cid)
       if (bar) stubRect(bar, left, top, width, 30)
@@ -359,6 +370,69 @@ describe('V3 preview folding (top-bar control)', () => {
     hiddenLine.focus()
     harness.controller.syncGeometry()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+  })
+
+  it('shows a compact per-block diagnostic count only when diagnostics exist', () => {
+    harness = createHarness()
+    harness.setBlockDiagnostics((ordinal) => (
+      ordinal === 0 ? { error: 0, warning: 2, hint: 1 } : null
+    ))
+    harness.controller.syncGeometry()
+    const longDiag = harness.diagFor('long')!
+    expect(longDiag).toBeTruthy()
+    expect(longDiag.textContent).toBe('3')
+    expect(longDiag.style.display).not.toBe('none')
+    expect(longDiag.classList.contains('is-warning')).toBe(true)
+    expect(longDiag.getAttribute('title')).toContain('3 个问题')
+    // 无诊断的块不显示徽标（不占位、不挤掉语言/行数）。
+    expect(harness.diagFor('short')!.style.display).toBe('none')
+    // 快照变化后 refresh 即可更新，无需重新布局。
+    harness.setBlockDiagnostics((ordinal) => (
+      ordinal === 0 ? { error: 1, warning: 0, hint: 0 } : null
+    ))
+    harness.controller.refreshDiagnosticBadges()
+    expect(longDiag.textContent).toBe('1')
+    expect(longDiag.classList.contains('is-error')).toBe(true)
+    // 诊断消失 → 隐藏。
+    harness.setBlockDiagnostics(() => null)
+    harness.controller.refreshDiagnosticBadges()
+    expect(longDiag.style.display).toBe('none')
+  })
+
+  it('applies read-only line classes and text marks, then clears them', () => {
+    harness = createHarness()
+    const cmEl = harness.longFence.querySelector('.CodeMirror') as HTMLElement
+    const addLineClass = vi.fn()
+    const removeLineClass = vi.fn()
+    const clear = vi.fn()
+    const markText = vi.fn(() => ({ clear }))
+    ;(cmEl as unknown as { CodeMirror: unknown }).CodeMirror = {
+      lineCount: () => 20,
+      getLine: () => 'const x = 1',
+      addLineClass,
+      removeLineClass,
+      markText,
+    }
+    harness.setBlockDiagnosticMarks((ordinal) => (ordinal === 0 ? [
+      { ruleId: 'CB002', severity: 'warning', startLine: 18, startColumn: 1, endLine: 20, endColumn: 1, blank: true },
+      { ruleId: 'CB101', severity: 'warning', startLine: 2, startColumn: 5, endLine: 2, endColumn: 6, blank: false },
+    ] : []))
+    harness.controller.syncGeometry()
+    expect(addLineClass).toHaveBeenCalledTimes(3)
+    expect(markText).toHaveBeenCalledWith(
+      { line: 1, ch: 4 },
+      { line: 1, ch: 5 },
+      { className: 'inkchapter-code-diag-range' },
+    )
+    // 相同签名不重复写入（避免 DOM 抖动）。
+    harness.controller.refreshDiagnosticMarks()
+    expect(addLineClass).toHaveBeenCalledTimes(3)
+    expect(markText).toHaveBeenCalledTimes(1)
+    // 诊断消失 → 精确移除行类并清空文本标记。
+    harness.setBlockDiagnosticMarks(() => [])
+    harness.controller.refreshDiagnosticMarks()
+    expect(removeLineClass).toHaveBeenCalledTimes(3)
+    expect(clear).toHaveBeenCalledTimes(1)
   })
 
   it('expands a folded block before diagnostic locate (never toggles)', () => {

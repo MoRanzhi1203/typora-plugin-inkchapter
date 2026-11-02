@@ -4855,6 +4855,46 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   white-space: nowrap;
 }
 
+/* 紧凑诊断计数：仅在该代码块存在诊断时显示，不挤占语言/行数与右侧按钮。 */
+.inkchapter-content-toolbar__diag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: #4b8bf5;
+}
+
+.inkchapter-content-toolbar__diag.is-warning {
+  background: #c98a00;
+}
+
+.inkchapter-content-toolbar__diag.is-error {
+  background: #c62828;
+}
+
+/* 代码块只读行级标记：空行区段背景、全角标点下划线（仅展示，不改文本）。 */
+.inkchapter-code-diag-blank {
+  background: color-mix(in srgb, #c98a00 10%, transparent);
+}
+
+.inkchapter-code-diag-range {
+  text-decoration: underline wavy #c98a00;
+  text-underline-offset: 2px;
+}
+
+.inkchapter-code-diag-range.inkchapter-code-diag-hint {
+  text-decoration-color: #4b8bf5;
+}
+
 .inkchapter-content-toolbar__btn--copy {
   margin-left: auto;
 }

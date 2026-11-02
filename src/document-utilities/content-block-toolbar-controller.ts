@@ -68,7 +68,46 @@ export interface ContentBlockToolbarOptions {
   emitAudit?: (event: string, payload: Record<string, unknown>) => void
   /** 折叠预览行数（5 | 10）。 */
   getPreviewLines?: () => 5 | 10
+  /**
+   * 代码块诊断计数（按围栏序号）。返回 null / 全 0 时不显示徽标。
+   * 只读：控制器绝不根据诊断改变折叠或文本。
+   */
+  getBlockDiagnostics?: (ordinal: number) => { error: number; warning: number; hint: number } | null
+  /**
+   * 代码块只读行级标记（按围栏序号）。空行区段用行背景类，全角标点用文本下划线。
+   * 只使用 CodeMirror 公开 API，不插入文本、不改文档模型。
+   */
+  getBlockDiagnosticMarks?: (ordinal: number) => CodeDiagnosticMark[]
 }
+
+/** 只读诊断标记（行/列 1 基）。 */
+export interface CodeDiagnosticMark {
+  ruleId: string
+  severity: 'error' | 'warning' | 'hint'
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+  /** 空行区段：逐行加背景类；否则对文本范围加下划线。 */
+  blank: boolean
+}
+
+/** CodeMirror 5 的公开装饰能力子集（缺失即安全跳过）。 */
+interface CodeMirrorDecorateLike {
+  markText?: (
+    from: { line: number; ch: number },
+    to: { line: number; ch: number },
+    opts: { className: string },
+  ) => { clear(): void } | null
+  addLineClass?: (line: number, where: string, cls: string) => void
+  removeLineClass?: (line: number, where: string, cls: string) => void
+  getLine?: (line: number) => string | null
+  lineCount?: () => number
+}
+
+const DIAG_BLANK_CLASS = 'inkchapter-code-diag-blank'
+const DIAG_RANGE_CLASS = 'inkchapter-code-diag-range'
+const DIAG_HINT_CLASS = 'inkchapter-code-diag-hint'
 
 interface CodeBlockView {
   key: string
@@ -77,6 +116,10 @@ interface CodeBlockView {
   badge: HTMLSpanElement
   lang: HTMLSpanElement
   lines: HTMLSpanElement
+  /** 紧凑诊断计数（存在问题时才显示）。 */
+  diag: HTMLSpanElement
+  /** 当前围栏在编辑器根内的序号（诊断计数用）。 */
+  ordinal: number | null
   copyBtn: HTMLButtonElement
   foldBtn: HTMLButtonElement
   folded: boolean
@@ -89,6 +132,12 @@ interface CodeBlockView {
   actionId: string | null
   /** 已处理的 actionId：同一 actionId 只允许一次状态转换。 */
   handledActionId: string | null
+  /** 已应用的诊断标记签名（相同则不重复写入，避免 DOM 抖动）。 */
+  diagMarkSignature: string
+  /** 可清理的 CodeMirror 文本标记句柄。 */
+  diagMarks: Array<{ clear(): void }>
+  /** 已添加的行背景类（用于精确移除）。 */
+  diagLineClasses: Array<{ line: number; cls: string }>
 }
 
 interface CaretSnapshot {
@@ -374,6 +423,11 @@ export class ContentBlockToolbarController {
     lang.className = `${CONTENT_TOOLBAR_CLASS}__lang`
     const lines = doc.createElement('span')
     lines.className = `${CONTENT_TOOLBAR_CLASS}__lines`
+    const diag = doc.createElement('span')
+    diag.className = `${CONTENT_TOOLBAR_CLASS}__diag`
+    diag.setAttribute('data-inkchapter-ui-root', 'document-utilities')
+    diag.setAttribute('aria-live', 'polite')
+    diag.style.display = 'none'
     const copyBtn = doc.createElement('button')
     copyBtn.type = 'button'
     copyBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn ${CONTENT_TOOLBAR_CLASS}__btn--copy`
@@ -390,7 +444,7 @@ export class ContentBlockToolbarController {
     foldBtn.setAttribute('aria-label', '收起至预览')
     foldBtn.setAttribute('title', '收起至预览')
     foldBtn.style.display = 'none'
-    bar.append(badge, lang, lines, copyBtn, foldBtn)
+    bar.append(badge, lang, lines, diag, copyBtn, foldBtn)
 
     this.bindButtonFocusGuard(copyBtn)
     this.bindButtonFocusGuard(foldBtn)
@@ -402,6 +456,8 @@ export class ContentBlockToolbarController {
       badge,
       lang,
       lines,
+      diag,
+      ordinal: null,
       copyBtn,
       foldBtn,
       folded: false,
@@ -411,6 +467,9 @@ export class ContentBlockToolbarController {
       syncBaselinePx: null,
       actionId: null,
       handledActionId: null,
+      diagMarkSignature: '',
+      diagMarks: [],
+      diagLineClasses: [],
     }
 
     copyBtn.addEventListener('click', (ev) => {
@@ -463,6 +522,7 @@ export class ContentBlockToolbarController {
   }
 
   private destroyView(view: CodeBlockView): void {
+    this.clearDiagnosticMarks(view)
     view.fence.removeAttribute(CODE_LANGBAR_ATTR)
     view.bar.remove()
     for (const btn of [view.copyBtn, view.foldBtn]) {
@@ -573,6 +633,8 @@ export class ContentBlockToolbarController {
     view.previewLines = previewLines
     const linesLabel = `${total} 行`
     if (view.lines.textContent !== linesLabel) view.lines.textContent = linesLabel
+    this.syncDiagnosticBadge(view, target.element)
+    this.syncDiagnosticMarks(view, target.element)
 
     const folded = this.session.isFolded(target.key) && total > previewLines
     if (folded !== view.folded) {
@@ -586,6 +648,149 @@ export class ContentBlockToolbarController {
   }
 
   // ── 折叠（预览式） ─────────────────────────────────────────
+
+  /**
+   * 紧凑诊断计数：仅当该代码块存在诊断时显示，绝不挤掉左侧语言/行数与右侧按钮。
+   * 只读：诊断计数不改变折叠状态，也不写入编辑器。
+   */
+  private syncDiagnosticBadge(view: CodeBlockView, element: HTMLElement): void {
+    const provider = this.opts.getBlockDiagnostics
+    if (!provider) {
+      view.diag.style.display = 'none'
+      return
+    }
+    const root = this.boundRoot ?? this.opts.getEditorRoot()
+    const ordinal = root ? codeFenceOrdinal(element, root) : -1
+    view.ordinal = ordinal >= 0 ? ordinal : null
+    const counts = view.ordinal == null ? null : provider(view.ordinal)
+    if (!counts) {
+      view.diag.style.display = 'none'
+      return
+    }
+    const total = counts.error + counts.warning + counts.hint
+    if (total <= 0) {
+      view.diag.style.display = 'none'
+      if (view.diag.textContent) view.diag.textContent = ''
+      return
+    }
+    const severity = counts.error > 0 ? 'error' : counts.warning > 0 ? 'warning' : 'hint'
+    const signature = `${severity}|${counts.error}|${counts.warning}|${counts.hint}`
+    view.diag.style.display = ''
+    if (view.diag.getAttribute('data-signature') === signature) return
+    view.diag.setAttribute('data-signature', signature)
+    view.diag.classList.remove('is-error', 'is-warning', 'is-hint')
+    view.diag.classList.add(`is-${severity}`)
+    view.diag.textContent = String(total)
+    const label = `代码诊断：${total} 个问题（错误 ${counts.error}，警告 ${counts.warning}，提示 ${counts.hint}）`
+    view.diag.setAttribute('title', label)
+    view.diag.setAttribute('aria-label', label)
+    this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-DIAG-BADGE', {
+      blockKey: view.key,
+      ordinal: view.ordinal,
+      total,
+      error: counts.error,
+      warning: counts.warning,
+      hint: counts.hint,
+    })
+  }
+
+  /** 诊断快照提交后刷新全部徽标（不重新布局、不触碰折叠）。 */
+  refreshDiagnosticBadges(): void {
+    if (this.disposed) return
+    for (const view of this.views.values()) {
+      if (!view.fence.isConnected) continue
+      this.syncDiagnosticBadge(view, view.fence)
+    }
+  }
+
+  /** 诊断快照提交后刷新行级标记（签名相同则跳过，避免 DOM 抖动）。 */
+  refreshDiagnosticMarks(): void {
+    if (this.disposed) return
+    for (const view of this.views.values()) {
+      if (!view.fence.isConnected) continue
+      this.syncDiagnosticMarks(view, view.fence)
+    }
+  }
+
+  private codeMirrorOf(element: HTMLElement): CodeMirrorDecorateLike | null {
+    try {
+      const wrapper = element.querySelector('.CodeMirror') as
+        (HTMLElement & { CodeMirror?: CodeMirrorDecorateLike }) | null
+      return wrapper?.CodeMirror ?? null
+    } catch {
+      return null
+    }
+  }
+
+  private clearDiagnosticMarks(view: CodeBlockView): void {
+    const cm = this.codeMirrorOf(view.fence)
+    if (cm && typeof cm.removeLineClass === 'function') {
+      for (const entry of view.diagLineClasses) {
+        try { cm.removeLineClass(entry.line, 'background', entry.cls) } catch { /* noop */ }
+      }
+    }
+    for (const handle of view.diagMarks) {
+      try { handle.clear() } catch { /* noop */ }
+    }
+    view.diagMarks = []
+    view.diagLineClasses = []
+    view.diagMarkSignature = ''
+  }
+
+  /**
+   * 只读行级标记：空行区段逐行加背景类；全角标点等文本范围加下划线。
+   * 只用 CodeMirror 公开 API；任何缺失/异常都安全跳过，绝不写入文本模型。
+   */
+  private syncDiagnosticMarks(view: CodeBlockView, element: HTMLElement): void {
+    const provider = this.opts.getBlockDiagnosticMarks
+    if (!provider) return
+    const root = this.boundRoot ?? this.opts.getEditorRoot()
+    const ordinal = root ? codeFenceOrdinal(element, root) : -1
+    const marks = ordinal >= 0 ? provider(ordinal) : []
+    const signature = marks
+      .map(m => `${m.ruleId}:${m.severity}:${m.startLine}:${m.startColumn}:${m.endLine}:${m.endColumn}`)
+      .join('|')
+    if (view.diagMarkSignature === signature) return
+    this.clearDiagnosticMarks(view)
+    if (marks.length === 0) return
+    const cm = this.codeMirrorOf(element)
+    if (!cm || typeof cm.markText !== 'function' || typeof cm.addLineClass !== 'function') return
+    const lineCount = typeof cm.lineCount === 'function' ? cm.lineCount() : 0
+    if (lineCount <= 0) return
+    view.diagMarkSignature = signature
+    try {
+      for (const mark of marks) {
+        if (mark.blank) {
+          const from = Math.max(0, Math.min(lineCount - 1, mark.startLine - 1))
+          const to = Math.max(from, Math.min(lineCount - 1, mark.endLine - 1))
+          for (let line = from; line <= to; line++) {
+            cm.addLineClass(line, 'background', DIAG_BLANK_CLASS)
+            view.diagLineClasses.push({ line, cls: DIAG_BLANK_CLASS })
+          }
+          continue
+        }
+        const fromLine = mark.startLine - 1
+        const endLine = mark.endLine - 1
+        if (fromLine < 0 || endLine < 0 || fromLine >= lineCount || endLine >= lineCount) continue
+        const fromText = typeof cm.getLine === 'function' ? (cm.getLine(fromLine) ?? '') : ''
+        const endText = typeof cm.getLine === 'function' ? (cm.getLine(endLine) ?? '') : ''
+        const fromCh = Math.max(0, Math.min(fromText.length, mark.startColumn - 1))
+        const toCh = Math.max(0, Math.min(endText.length, mark.endColumn - 1))
+        if (fromLine === endLine && toCh <= fromCh) continue
+        const className = mark.severity === 'hint' ? `${DIAG_RANGE_CLASS} ${DIAG_HINT_CLASS}` : DIAG_RANGE_CLASS
+        const handle = cm.markText({ line: fromLine, ch: fromCh }, { line: endLine, ch: toCh }, { className })
+        if (handle) view.diagMarks.push(handle)
+      }
+      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-DIAG-MARKS', {
+        blockKey: view.key,
+        ordinal: view.ordinal,
+        textMarks: view.diagMarks.length,
+        lineClasses: view.diagLineClasses.length,
+      })
+    } catch {
+      this.clearDiagnosticMarks(view)
+    }
+  }
 
   /** 精确显示前 N 个逻辑行：优先使用真实行元素的像素范围，避免裁断半行。 */
   private computePreviewHeight(fence: HTMLElement, previewLines: number): { height: number; source: string } {

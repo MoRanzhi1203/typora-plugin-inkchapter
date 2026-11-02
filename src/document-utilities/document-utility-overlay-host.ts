@@ -57,6 +57,7 @@ import { findReferenceSpanAt, type ReferenceSpan } from './document-resource-sca
 // 内容块悬停工具栏 — 复用本宿主唯一 overlay 根与唯一几何调度。
 import {
   ContentBlockToolbarController,
+  type CodeDiagnosticMark,
   type ContentBlockToolbarActions,
 } from './content-block-toolbar-controller'
 import type { DiagnosticRangeRole } from './diagnostics-types'
@@ -3732,6 +3733,9 @@ export class DocumentUtilityOverlayHost {
     this.reconcileActiveGapGroup(admitted)
     this.handleStrictSingleH1Popup(admitted)
     this.renderDiagnosticsButton()
+    // Code Block V4 — compact per-block diagnostic counts on the language bar.
+    this.contentBlockToolbar?.refreshDiagnosticBadges()
+    this.contentBlockToolbar?.refreshDiagnosticMarks()
     this.renderLockButton()
     // V5.12-R6 §11/§15/§19 — the empty-document short-circuit gates + audit are
     // measured at this SINGLE commit boundary (after the projection is derived
@@ -4496,6 +4500,8 @@ export class DocumentUtilityOverlayHost {
         onLayoutInvalidated: (reason) => this.scheduleGeometrySync(reason),
         emitAudit: toolbarOpts.emitAudit,
         getPreviewLines: toolbarOpts.getPreviewLines,
+        getBlockDiagnostics: (ordinal) => this.readCodeBlockDiagnosticCounts(ordinal),
+        getBlockDiagnosticMarks: (ordinal) => this.readCodeBlockDiagnosticMarks(ordinal),
       })
       this.contentBlockToolbar.mount()
     }
@@ -22677,17 +22683,60 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * V1.1 / VNext Presentation Closure V1.1 §17/§18/§19/§21 — Smart Summary.
-   *
-   * Shows an INDEPENDENT Error / Warning / Hint badge for EVERY non-zero severity
-   * (never a zero badge). The `✓ 文档检测` success entry is shown ONLY when ALL
-   * THREE counts are zero (§19 — a document with a Hint is NOT "healthy").
-   *
-   * The counts come from the ONE `deriveDocumentProblemsProjection` authority,
-   * which reads the FULL document snapshot — NEVER the Drawer filter / visible
-   * rows / runtime diagnostics (§20/§22), so switching the Drawer filter can
-   * never change the toolbar summary (§20 `TOOLBAR_COUNT_CHANGED_BY_DRAWER_FILTER=0`).
+   * Code Block V4 — per-block diagnostic counts for the compact language-bar
+   * badge. Reads the committed snapshot only; never recomputes or filters UI.
    */
+  private readCodeBlockDiagnosticCounts(ordinal: number): { error: number; warning: number; hint: number } | null {
+    const diagnostics = this.snapshot?.diagnostics
+    if (!diagnostics || !Number.isInteger(ordinal) || ordinal < 0) return null
+    const identity = `block:code:${ordinal}`
+    let error = 0
+    let warning = 0
+    let hint = 0
+    for (const d of diagnostics) {
+      const loc = d.location
+      if (!loc || loc.kind !== 'block-node' || loc.blockKind !== 'code' || loc.stableIdentity !== identity) continue
+      if (d.severity === 'error') error++
+      else if (d.severity === 'warning') warning++
+      else hint++
+    }
+    return { error, warning, hint }
+  }
+
+  /**
+   * Code Block V4 — read-only per-block marks. Empty-line runs become line
+   * background classes; punctuation findings become one-character text marks.
+   */
+  private readCodeBlockDiagnosticMarks(ordinal: number): CodeDiagnosticMark[] {
+    const diagnostics = this.snapshot?.diagnostics
+    if (!diagnostics || !Number.isInteger(ordinal) || ordinal < 0) return []
+    const identity = `block:code:${ordinal}`
+    const marks: CodeDiagnosticMark[] = []
+    for (const d of diagnostics) {
+      const loc = d.location
+      if (!loc || loc.kind !== 'block-node' || loc.blockKind !== 'code' || loc.stableIdentity !== identity) continue
+      const meta = d.metadata as Record<string, unknown> | undefined
+      const ruleId = typeof meta?.['ruleId'] === 'string' ? (meta['ruleId'] as string) : d.code
+      if (!ruleId.startsWith('CB')) continue
+      const startLine = Number(meta?.['startLine'])
+      const startColumn = Number(meta?.['startColumn'])
+      const endLine = Number(meta?.['endLine'])
+      const endColumn = Number(meta?.['endColumn'])
+      if (![startLine, startColumn, endLine, endColumn].every(Number.isInteger)) continue
+      marks.push({
+        ruleId,
+        severity: d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'hint',
+        startLine,
+        startColumn,
+        endLine,
+        endColumn,
+        blank: ruleId === 'CB001' || ruleId === 'CB002' || ruleId === 'CB003',
+      })
+    }
+    return marks
+  }
+
+  /** V1.1 Smart Summary — three independent non-zero severity segments from ONE projection. */
   private renderDiagnosticsButton(): void {
     const control = this.problemsControlEl
     if (!control) return
