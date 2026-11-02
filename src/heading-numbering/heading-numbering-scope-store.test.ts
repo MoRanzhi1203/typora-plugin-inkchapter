@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   resolveEffectiveSettings,
   saveHeadingSettings,
+  saveLayoutOverrides,
   removeDocumentOverride,
   getDefaultHeadingNumberingSettings,
   deepCloneSettings,
+  sanitizeHeadingNumberingScopeStore,
 } from './heading-numbering-scope-store'
 import type {
   HeadingNumberingScopeStore,
@@ -47,6 +49,15 @@ describe('getDefaultHeadingNumberingSettings', () => {
 // ── Scope: structure mode inheritance ──────────────
 
 describe('headingStructureMode scope inheritance', () => {
+  it('layout-only override keeps inheriting later global changes', () => {
+    let store = makeStore({ maxDepth: 6 })
+    store = saveLayoutOverrides(store, 'doc-layout', undefined)
+    // A layout-only override must NOT capture the global settings snapshot.
+    expect(store.documentOverrides['doc-layout'].settings).toBeUndefined()
+    store = { ...store, globalDefault: { ...store.globalDefault, maxDepth: 3 } }
+    expect(resolveEffectiveSettings(store, 'doc-layout').effectiveSettings.maxDepth).toBe(3)
+  })
+
   it('global strict + no doc override → effective strict', () => {
     const store = makeStore({ headingStructureMode: 'strict' })
     const ctx = resolveEffectiveSettings(store, 'doc-1')
@@ -148,5 +159,30 @@ describe('headingStructureMode version isolation', () => {
     if (docFmt2?.type === 'custom') {
       expect(docFmt2.version).toBe(5)
     }
+  })
+})
+
+// ── Load-time sanitization ─────────────────────────
+
+describe('sanitizeHeadingNumberingScopeStore', () => {
+  it('accepts a well-formed store', () => {
+    const store = makeStore()
+    expect(sanitizeHeadingNumberingScopeStore(store)).not.toBeNull()
+  })
+
+  it('rejects a store whose global level lost its format variants', () => {
+    const store = makeStore() as any
+    delete store.globalDefault.levels['1'].formatVariants
+    expect(sanitizeHeadingNumberingScopeStore(store)).toBeNull()
+  })
+
+  it('drops only the invalid document override settings', () => {
+    const store = makeStore() as any
+    store.documentOverrides['bad'] = { settings: { levels: { '1': {} } } }
+    store.documentOverrides['good'] = { settings: makeDefaults() }
+    const sanitized = sanitizeHeadingNumberingScopeStore(store)
+    expect(sanitized).not.toBeNull()
+    expect(sanitized!.documentOverrides['bad'].settings).toBeUndefined()
+    expect(sanitized!.documentOverrides['good'].settings).toBeDefined()
   })
 })

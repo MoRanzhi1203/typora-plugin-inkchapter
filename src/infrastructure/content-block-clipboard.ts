@@ -190,18 +190,18 @@ export async function writePlainText(
   }
 
   // 3) 回读校验（Electron 可用时）；Windows 剪贴板会把 \n 规范化为 \r\n，
-  //    且首次写入后立即回读可能仍是旧内容 → 允许一次短延迟重试。
+  //    且首次写入后立即回读可能仍是旧内容 → 有界轮询（最多 150ms）。
   try {
     const readText = electron?.clipboard?.readText
     if (typeof readText === 'function') {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 6; attempt++) {
         const readBack = readText.call(electron?.clipboard)
         if (typeof readBack !== 'string') break
         if (clipboardTextMatches(readBack, text)) {
           return { ok: true, verified: true, reason: null }
         }
-        if (attempt === 0) {
-          await new Promise<void>((resolve) => { setTimeout(resolve, 20) })
+        if (attempt < 5) {
+          await new Promise<void>((resolve) => { setTimeout(resolve, 25) })
         }
       }
       return { ok: false, verified: true, reason: 'CLIPBOARD_VERIFY_FAILED' }
@@ -231,12 +231,18 @@ export async function rasterizeImageElement(img: HTMLImageElement): Promise<stri
   const width = img.naturalWidth || 0
   const height = img.naturalHeight || 0
   if (width <= 0 || height <= 0) throw new Error('IMAGE_NOT_LOADED')
+  // Bound the canvas allocation: a huge source image would otherwise allocate
+  // hundreds of MB twice (canvas + toDataURL) and can crash the renderer.
+  const MAX_RASTER_PIXELS = 16_000_000
+  const scale = Math.min(1, Math.sqrt(MAX_RASTER_PIXELS / (width * height)))
+  const targetWidth = Math.max(1, Math.round(width * scale))
+  const targetHeight = Math.max(1, Math.round(height * scale))
   const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
+  canvas.width = targetWidth
+  canvas.height = targetHeight
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('CANVAS_UNAVAILABLE')
-  ctx.drawImage(img, 0, 0, width, height)
+  ctx.drawImage(img, 0, 0, targetWidth, targetHeight)
   // 污染画布在此抛出 SecurityError
   return canvas.toDataURL('image/png')
 }
@@ -285,11 +291,19 @@ async function tryElectronImage(
       return image && !image.isEmpty() ? { image, reason: null } : { image: null, reason: 'IMAGE_DECODE_FAILED' }
     }
     if (strategy === 'native-buffer' && resource) {
-      const response = await fetch(resource.value)
-      if (!response.ok) return { image: null, reason: 'REMOTE_FETCH_FAILED' }
-      const buffer = new Uint8Array(await response.arrayBuffer())
-      const image = factory.createFromBuffer(buffer)
-      return image && !image.isEmpty() ? { image, reason: null } : { image: null, reason: 'IMAGE_DECODE_FAILED' }
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+      const timer = controller !== null
+        ? setTimeout(() => controller.abort(), 5000)
+        : null
+      try {
+        const response = await fetch(resource.value, controller !== null ? { signal: controller.signal } : undefined)
+        if (!response.ok) return { image: null, reason: 'REMOTE_FETCH_FAILED' }
+        const buffer = new Uint8Array(await response.arrayBuffer())
+        const image = factory.createFromBuffer(buffer)
+        return image && !image.isEmpty() ? { image, reason: null } : { image: null, reason: 'IMAGE_DECODE_FAILED' }
+      } finally {
+        if (timer !== null) clearTimeout(timer)
+      }
     }
   } catch (error) {
     const message = errorMessage(error)
@@ -336,10 +350,11 @@ export async function copyImageToClipboard(
     const attempt = await tryElectronImage(resource, plan.strategy, electron)
     if (attempt.image) {
       try {
+        const expected = attempt.image.getSize()
         electron.clipboard.writeImage(attempt.image)
         const readBack = electron.clipboard.readImage()
         const size = readBack && !readBack.isEmpty() ? readBack.getSize() : null
-        if (size && size.width > 0 && size.height > 0) {
+        if (size && size.width === expected.width && size.height === expected.height) {
           return {
             ok: true,
             verified: true,
@@ -350,7 +365,11 @@ export async function copyImageToClipboard(
             note,
           }
         }
-        return fail('CLIPBOARD_VERIFY_FAILED', plan.strategy)
+        return fail(
+          'CLIPBOARD_VERIFY_FAILED',
+          plan.strategy,
+          new Error(`expected=${expected.width}x${expected.height} actual=${size ? `${size.width}x${size.height}` : 'empty'}`),
+        )
       } catch (error) {
         return fail('CLIPBOARD_WRITE_FAILED', plan.strategy, error)
       }
@@ -370,7 +389,13 @@ export async function copyImageToClipboard(
     const message = errorMessage(error)
     if (message.includes('IMAGE_NOT_LOADED')) return fail('IMAGE_NOT_LOADED', 'dom-raster')
     if (message.includes('CANVAS_UNAVAILABLE')) return fail('CANVAS_UNAVAILABLE', 'dom-raster')
-    return fail('CANVAS_TAINTED', 'dom-raster', error)
+    const isSecurity = (typeof DOMException !== 'undefined'
+      && error instanceof DOMException
+      && error.name === 'SecurityError')
+      || /SecurityError/i.test(message)
+    return isSecurity || message.includes('CANVAS_TAINTED')
+      ? fail('CANVAS_TAINTED', 'dom-raster', error)
+      : fail('IMAGE_DECODE_FAILED', 'dom-raster', error)
   }
 
   // 2a) Electron 存在但原生路径失败 → 用栅格化结果交给 nativeImage。
@@ -378,10 +403,11 @@ export async function copyImageToClipboard(
     try {
       const image = electron.nativeImage.createFromDataURL(dataUrl)
       if (image && !image.isEmpty()) {
+        const expected = image.getSize()
         electron.clipboard.writeImage(image)
         const readBack = electron.clipboard.readImage()
         const size = readBack && !readBack.isEmpty() ? readBack.getSize() : null
-        if (size && size.width > 0 && size.height > 0) {
+        if (size && size.width === expected.width && size.height === expected.height) {
           return {
             ok: true,
             verified: true,

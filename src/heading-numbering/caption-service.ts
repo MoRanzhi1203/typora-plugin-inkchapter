@@ -1885,14 +1885,24 @@ export class CaptionService {
     )
   }
 
-  /** Migrate a legacy sidecar figure name to Markdown alt (alt wins on conflict). */
-  private migrateFigureSidecarName(record: CaptionRecord, target: CaptionTarget): void {
+  /**
+   * Resolve a legacy sidecar figure name against the Markdown alt.
+   *
+   * PENDING never writes the user's Markdown on open: the sidecar name is kept
+   * (and the record stays in the registry) until the user explicitly renames or
+   * migrates the figure. Only an already-present alt can make the sidecar name
+   * obsolete (ALT_WINS).
+   */
+  private migrateFigureSidecarName(
+    record: CaptionRecord,
+    target: CaptionTarget,
+  ): 'NONE' | 'PENDING' | 'ALT_WINS' {
     const sidecarName = record.title.trim()
     const alt = (target.alt ?? '').trim()
-    let decision: 'NONE' | 'MIGRATED' | 'ALT_WINS'
+    let decision: 'NONE' | 'PENDING' | 'ALT_WINS'
     if (alt === '' && sidecarName !== '') {
-      decision = 'MIGRATED'
-      this.writeFigureAlt(target, sidecarName)
+      // Legitimate legacy data, but opening a document must never rewrite it.
+      decision = 'PENDING'
     } else if (alt !== '' && sidecarName !== '' && alt !== sidecarName) {
       decision = 'ALT_WINS'
     } else {
@@ -1902,6 +1912,7 @@ export class CaptionService {
       `[InkChapter Caption] FIGURE-NAME-MIGRATION recordId=${record.captionId} ` +
       `sidecarName=${JSON.stringify(sidecarName)} alt=${JSON.stringify(alt)} decision=${decision}`,
     )
+    return decision
   }
 
   private numberForRoot(root: HTMLElement | null): number {
@@ -1988,9 +1999,18 @@ export class CaptionService {
     let recordId: string | null = null
     let currentName: string | undefined
     if (target.type === 'figure') {
-      // Figure name source = Markdown alt (target.alt projection).
+      // Figure name source = Markdown alt; a legacy sidecar-only name stays
+      // PENDING and is still shown (read-only) until the user migrates it.
       const alt = (target.alt ?? '').trim()
-      currentName = alt !== '' ? alt : undefined
+      if (alt !== '') {
+        currentName = alt
+      } else {
+        const pending = this.pendingFigureName(target.root)
+        if (pending) {
+          recordId = pending.recordId
+          currentName = pending.title
+        }
+      }
     } else {
       recordId = this.captionIdForRoot(target.root)
       const record = recordId ? this.registry.getById(recordId) : null
@@ -2045,7 +2065,15 @@ export class CaptionService {
     let currentName: string | undefined
     if (target.type === 'figure') {
       const alt = (target.alt ?? '').trim()
-      currentName = alt !== '' ? alt : undefined
+      if (alt !== '') {
+        currentName = alt
+      } else {
+        const pending = this.pendingFigureName(target.root)
+        if (pending) {
+          recordId = pending.recordId
+          currentName = pending.title
+        }
+      }
     } else {
       recordId = this.captionIdForRoot(target.root)
       const record = recordId ? this.registry.getById(recordId) : null
@@ -2129,7 +2157,8 @@ export class CaptionService {
     if (!target) return null
     if (target.type === 'figure') {
       const alt = (target.alt ?? '').trim()
-      return alt !== '' ? alt : null
+      if (alt !== '') return alt
+      return this.pendingFigureName(target.root)?.title ?? null
     }
     const id = this.captionIdForRoot(target.root)
     const record = id ? this.registry.getById(id) : null
@@ -2217,6 +2246,20 @@ export class CaptionService {
       if (r === root) return id
     }
     return null
+  }
+
+  /**
+   * Legacy figure name that only exists in the sidecar (Markdown alt empty).
+   * Kept read-only while PENDING: rendered from the sidecar, never written to
+   * the user's Markdown just because the document was opened.
+   */
+  private pendingFigureName(root: HTMLElement): { recordId: string; title: string } | null {
+    const recordId = this.captionIdForRoot(root)
+    if (!recordId) return null
+    const record = this.registry.getById(recordId)
+    if (!record || record.type !== 'figure') return null
+    const title = record.title.trim()
+    return title === '' ? null : { recordId, title }
   }
 
   private nextCaptionId(): string {
@@ -2337,10 +2380,13 @@ export class CaptionService {
       let name: string | undefined
       if (type === 'figure') {
         // Figure name source of truth = Markdown image alt (target.alt projection).
+        // A legacy sidecar-only name is PENDING: still rendered from the sidecar
+        // (read-only) without rewriting the document on open.
         const rawAlt = target.alt ?? ''
         const alt = rawAlt.trim()
-        name = alt !== '' ? alt : undefined
-        recordId = null
+        const pending = alt === '' ? this.pendingFigureName(target.root) : null
+        name = alt !== '' ? alt : pending?.title
+        recordId = alt === '' ? (pending?.recordId ?? null) : null
         console.info(
           `[InkChapter Caption] FIGURE-ALT-READ rawAlt=${JSON.stringify(rawAlt)} ` +
           `normalizedAlt=${JSON.stringify(alt)} captionName=${name ?? ''} decision=READ`,
@@ -2348,14 +2394,15 @@ export class CaptionService {
         console.info(
           `[InkChapter Caption] FIGURE-NAME-SOURCE runtimeKey=${this.runtimeKeyForTarget(target, targets)} ` +
           `rawAlt=${JSON.stringify(rawAlt)} resolvedName=${name ?? ''} ` +
-          `source=MARKDOWN_ALT sidecarName= migrationDecision=NONE`,
+          `source=${alt !== '' ? 'MARKDOWN_ALT' : pending ? 'SIDECAR_PENDING' : 'NONE'} ` +
+          `sidecarName=${JSON.stringify(pending?.title ?? '')} migrationDecision=${pending ? 'PENDING' : 'NONE'}`,
         )
       } else {
         recordId = this.captionIdForRoot(target.root)
         const record = recordId ? this.registry.getById(recordId) : null
         name = record && record.title.trim() !== '' ? record.title : undefined
       }
-      const hasCaptionRecord = type !== 'figure' && !!recordId
+      const hasCaptionRecord = !!recordId
       const hasName = !!name
 
       let decision: 'RENDER' | 'SKIP'
@@ -4004,10 +4051,17 @@ export class CaptionService {
         if (target) {
           matchedRuntimeKey = this.runtimeKeyForTarget(target, targets)
           if (record.type === 'figure') {
-            // Figure name now lives in Markdown alt; migrate legacy sidecar name.
-            this.migrateFigureSidecarName(record, target)
-            this.registry.delete(record.captionId)
-            figureDropped = true
+            // Figure name now lives in Markdown alt. A legacy sidecar-only name
+            // stays PENDING: never rewrite the user's document just by opening it.
+            const nameDecision = this.migrateFigureSidecarName(record, target)
+            if (nameDecision === 'PENDING') {
+              this.boundTargets.set(record.captionId, target.root)
+              this.registry.retarget(record.captionId, this.adapter.computeAnchorForTarget(target, targets))
+              matched = true
+            } else {
+              this.registry.delete(record.captionId)
+              figureDropped = true
+            }
           } else {
             this.boundTargets.set(record.captionId, target.root)
             this.registry.retarget(record.captionId, this.adapter.computeAnchorForTarget(target, targets))

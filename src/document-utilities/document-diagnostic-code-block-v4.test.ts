@@ -180,4 +180,12 @@ describe('只读与边界', () => {
     const findings = analyze(dense, 'javascript', { maxFindings: 5 })
     expect(findings.length).toBeLessThanOrEqual(5)
   })
+
+  it('maxFindings 截断前优先保留警告（不被 hint 挤掉）', () => {
+    const lines = Array.from({ length: 6 }, (_, i) => `const v${i} = ${i}  `)
+    lines.push('console.log（1）')
+    const findings = analyze(lines.join('\n'), 'javascript', { maxFindings: 2 })
+    expect(findings.length).toBeLessThanOrEqual(2)
+    expect(findings.some(f => f.ruleId === 'CB101')).toBe(true)
+  })
 })

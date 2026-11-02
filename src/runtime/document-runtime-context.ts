@@ -52,6 +52,25 @@ export interface EphemeralScopeParams {
 }
 
 /**
+ * Path prefix check for the vault gate.
+ *
+ * A bare `startsWith(vault)` treats `D:\notes2\a.md` as inside `D:\notes`;
+ * the separator must be part of the comparison. Case is only folded on
+ * case-insensitive filesystems (win32), never on macOS/Linux.
+ */
+function isInsideVault(vaultRoot: string, activeFilePath: string): boolean {
+  const normalize = (p: string): string => {
+    const slashed = p.replace(/\\/g, '/')
+    return process.platform === 'win32' ? slashed.toLowerCase() : slashed
+  }
+  const vault = normalize(vaultRoot)
+  const file = normalize(activeFilePath)
+  if (vault === '' || file === '') return false
+  const vaultWithSep = vault.endsWith('/') ? vault : `${vault}/`
+  return file.startsWith(vaultWithSep)
+}
+
+/**
  * Resolve document runtime context for any editor state.
  *
  * Three modes:
@@ -128,9 +147,7 @@ export function resolveDocumentRuntimeContext(
     persistenceReady = false
     persistenceReason = 'PERSISTENCE_KEY_MISSING'
   } else {
-    const normalizedVault = vaultRoot.replace(/\\/g, '/').toLowerCase()
-    const normalizedFile = (activeFilePath ?? '').replace(/\\/g, '/').toLowerCase()
-    if (!normalizedFile.startsWith(normalizedVault)) {
+    if (!isInsideVault(vaultRoot, activeFilePath ?? '')) {
       persistenceReady = false
       persistenceReason = 'FILE_OUTSIDE_VAULT'
     } else {

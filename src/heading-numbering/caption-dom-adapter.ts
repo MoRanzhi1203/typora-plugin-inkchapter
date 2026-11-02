@@ -279,6 +279,8 @@ export class CaptionDomAdapter {
   private collectTargetsCacheKey: string | null = null
   private collectTargetsCache: CaptionTarget[] | null = null
   private collectTargetsCacheWitness = ''
+  /** Root the cached targets were collected from (Typora may rebuild `#write`). */
+  private collectTargetsCacheRoot: HTMLElement | null = null
   private codeCandidateCacheHitCount = 0
   private codeCandidateCacheMissCount = 0
 
@@ -305,6 +307,7 @@ export class CaptionDomAdapter {
   setCollectTargetsCacheKey(key: string | null): void {
     if (key !== this.collectTargetsCacheKey) {
       this.collectTargetsCache = null
+      this.collectTargetsCacheRoot = null
       this.collectTargetsCacheKey = key
     }
   }
@@ -312,6 +315,7 @@ export class CaptionDomAdapter {
   /** V1 §14 — explicit invalidation (document switch / full reload). */
   invalidateCollectTargetsCache(): void {
     this.collectTargetsCache = null
+    this.collectTargetsCacheRoot = null
     this.collectTargetsCacheKey = null
   }
 
@@ -450,7 +454,14 @@ export class CaptionDomAdapter {
     // from the live hosts, so an alt/label/style change always misses.
     if (this.collectTargetsCacheKey != null && this.collectTargetsCache != null) {
       const witness = this.captionHostWitness(root)
-      if (witness === this.collectTargetsCacheWitness) {
+      // A byte-identical witness is NOT enough after Typora rebuilds `#write`:
+      // the cached elements would already be detached. Require the same root and
+      // a still-connected target subtree before reusing.
+      const sameRoot = this.collectTargetsCacheRoot === root
+      const stillConnected = sameRoot && this.collectTargetsCache.every(
+        (t) => t.root != null && t.root.isConnected,
+      )
+      if (stillConnected && witness === this.collectTargetsCacheWitness) {
         this.codeCandidateCacheHitCount++
         emitRuntimeAudit('CODE-CANDIDATE-SUMMARY', {
           rawPreCount: this.codeDiagnostics.rawPreCount,
@@ -620,6 +631,7 @@ export class CaptionDomAdapter {
     if (this.collectTargetsCacheKey != null) {
       this.collectTargetsCache = targets
       this.collectTargetsCacheWitness = this.captionHostWitness(root)
+      this.collectTargetsCacheRoot = root
       this.codeCandidateCacheMissCount++
     }
 

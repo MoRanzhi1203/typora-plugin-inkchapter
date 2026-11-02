@@ -1045,7 +1045,10 @@ export default class extends Plugin<InkChapterSettings> {
           try {
             editor.UserOp.setClipboard(null, null, text, true)
           } catch {
-            try { void navigator.clipboard?.writeText(text) } catch { /* fail-open */ }
+            try {
+              const pending = navigator.clipboard?.writeText(text)
+              if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+            } catch { /* fail-open */ }
           }
         },
         revealInExplorer: (absolutePath) => new Promise<boolean>((resolve) => {
@@ -2056,37 +2059,60 @@ export default class extends Plugin<InkChapterSettings> {
   }
 
   onunload() {
-    if (this.fileTreeDragAdapter) {
-      this.fileTreeDragAdapter.dispose()
-      this.fileTreeDragAdapter = undefined
+    // Each disposer is isolated: one throwing service must not abort the rest
+    // (in particular the forensic sink flush at the end).
+    const safely = (step: string, fn: () => void): void => {
+      try {
+        fn()
+      } catch (error) {
+        console.error(`[InkChapter] UNLOAD-STEP-FAILED: step=${step} error=${String(error)}`)
+      }
     }
+    safely('file-tree-drag', () => {
+      if (this.fileTreeDragAdapter) {
+        this.fileTreeDragAdapter.dispose()
+        this.fileTreeDragAdapter = undefined
+      }
+    })
     this.fileCopyService = undefined
     this.nativeDragBridge = undefined
-    if (this.tabCloseVisibility) {
-      this.tabCloseVisibility.dispose()
-      this.tabCloseVisibility = undefined
-    }
-    if (this.docViewMenu) {
-      this.docViewMenu.dispose()
-      this.docViewMenu = undefined
-    }
-    if (this.documentUtilities) {
-      this.documentUtilities.dispose()
-      this.documentUtilities = undefined
-    }
-    if (this.numberingService) {
-      this.numberingService.dispose()
-      this.numberingService = undefined
-    }
-    if (this.captionContextMenu) {
-      this.captionContextMenu.dispose()
-      this.captionContextMenu = undefined
-    }
-    if (this.captionService) {
-      this.captionService.dispose()
-      this.captionService = undefined
-    }
-    shutdownForensicSink()
+    safely('tab-close-visibility', () => {
+      if (this.tabCloseVisibility) {
+        this.tabCloseVisibility.dispose()
+        this.tabCloseVisibility = undefined
+      }
+    })
+    safely('doc-view-menu', () => {
+      if (this.docViewMenu) {
+        this.docViewMenu.dispose()
+        this.docViewMenu = undefined
+      }
+    })
+    safely('document-utilities', () => {
+      if (this.documentUtilities) {
+        this.documentUtilities.dispose()
+        this.documentUtilities = undefined
+      }
+    })
+    safely('numbering-service', () => {
+      if (this.numberingService) {
+        this.numberingService.dispose()
+        this.numberingService = undefined
+      }
+    })
+    safely('caption-context-menu', () => {
+      if (this.captionContextMenu) {
+        this.captionContextMenu.dispose()
+        this.captionContextMenu = undefined
+      }
+    })
+    safely('caption-service', () => {
+      if (this.captionService) {
+        this.captionService.dispose()
+        this.captionService = undefined
+      }
+    })
+    safely('forensic-sink', () => shutdownForensicSink())
     console.log('[InkChapter] 插件已卸载')
   }
 }

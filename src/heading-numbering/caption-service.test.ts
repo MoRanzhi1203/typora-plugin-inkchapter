@@ -716,7 +716,7 @@ describe('CaptionService orchestration', () => {
     expect(svc.resolveCaptionOwner(orphan)).toBeNull()
   })
 
-  it('migrates legacy sidecar figure name to Markdown alt when alt is empty', () => {
+  it('keeps a legacy sidecar figure name pending instead of rewriting Markdown on open', () => {
     const root = makeRoot()
     addImage(root, 'a.png')
     // Seed a legacy figure sidecar record (old SIDECAR semantics).
@@ -733,11 +733,12 @@ describe('CaptionService orchestration', () => {
     const svc = createService(root, 'doc-a')
     services.push(svc)
 
-    // Legacy sidecar name migrated to Markdown alt; figure record dropped.
+    // Opening a document must never rewrite the user's Markdown: the legacy
+    // name stays in the sidecar (PENDING) and is still rendered from there.
     const img = root.querySelector('img')!
-    expect(img.getAttribute('alt')).toBe('系统架构')
+    expect(img.getAttribute('alt')).toBeNull()
     expect(captionEls(root).map(e => e.textContent)).toEqual(['图 1 系统架构'])
-    expect(svc.getCaptionCount()).toBe(0)
+    expect(svc.getCaptionCount()).toBe(1)
   })
 
   it('Markdown alt wins over conflicting legacy sidecar figure name (ALT_WINS)', () => {

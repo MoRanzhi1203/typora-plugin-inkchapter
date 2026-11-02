@@ -573,7 +573,12 @@ export type HeadingSettingsScope = 'global' | 'document'
 /** Per-document heading numbering override. */
 export interface HeadingNumberingDocumentOverride {
   updatedAt: number
-  settings: HeadingNumberingSettings
+  /**
+   * Document-specific numbering settings. ABSENT = inherit the global settings
+   * (used by layout/paragraph-only overrides, so later global changes still
+   * apply to this document).
+   */
+  settings?: HeadingNumberingSettings
   /** Which format was applied to create this snapshot (informational).
    *  Must remain stable when only layout overrides change. */
   formatSource?: NumberingFormatSource

@@ -763,7 +763,11 @@ export function analyzeCodeBlockV4(input: CodeBlockAnalysisInput): CodeBlockFind
     : DEFAULT_MAX_FINDINGS
 
   const findings: CodeBlockFinding[] = []
-  pushFindings(findings, analyzeFormat(lines, options, max), max)
+  // Collect a bounded superset first, then prefer warnings over hints before
+  // truncating: a block full of trailing-space hints must never hide all
+  // full-width punctuation warnings.
+  const rawMax = Math.max(max * 4, max)
+  pushFindings(findings, analyzeFormat(lines, options, rawMax), rawMax)
 
   // CB010（默认关闭）：与既有 CODE_MISSING_LANGUAGE 重复，不默认启用。
   if (options.enableMissingLanguage === true && normalizeCodeLanguage(input.language) === '' && text !== '') {
@@ -780,8 +784,13 @@ export function analyzeCodeBlockV4(input: CodeBlockAnalysisInput): CodeBlockFind
   }
 
   const family = resolveCodeLexicalFamily(input.language)
-  pushFindings(findings, analyzePunctuation(text, family, max), max)
+  pushFindings(findings, analyzePunctuation(text, family, rawMax), rawMax)
 
-  findings.sort((a, b) => a.startLine - b.startLine || a.startColumn - b.startColumn)
-  return findings
+  const rank = (severity: CodeDiagnosticSeverity): number => (severity === 'warning' ? 0 : 1)
+  const byPosition = (a: CodeBlockFinding, b: CodeBlockFinding): number =>
+    a.startLine - b.startLine || a.startColumn - b.startColumn
+  findings.sort((a, b) => rank(a.severity) - rank(b.severity) || byPosition(a, b))
+  const kept = findings.slice(0, max)
+  kept.sort(byPosition)
+  return kept
 }

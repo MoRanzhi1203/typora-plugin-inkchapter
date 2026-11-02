@@ -131,7 +131,7 @@ describe('applyFormatToScope mode preservation', () => {
     }
     const formatSource = { type: 'custom' as const, formatId: 'legacy-loose', version: 1 }
     const updated = saveHeadingSettings(store, { scope: 'document', documentKey: 'doc-d', settings: snapshot, formatSource })
-    expect(resolveHeadingStructure(updated.documentOverrides['doc-d'].settings).mode).toBe('strict')
+    expect(resolveHeadingStructure(updated.documentOverrides['doc-d'].settings!).mode).toBe('strict')
     expect(updated.documentOverrides['doc-d'].formatSource).toEqual(formatSource)
   })
 
@@ -147,7 +147,7 @@ describe('applyFormatToScope mode preservation', () => {
       customDefinition: getPresetLevels('decimal-hierarchical'),
     }
     const updated = saveHeadingSettings(store, { scope: 'document', documentKey: 'doc-e', settings: snapshot })
-    expect(resolveHeadingStructure(updated.documentOverrides['doc-e'].settings).mode).toBe('loose')
+    expect(resolveHeadingStructure(updated.documentOverrides['doc-e'].settings!).mode).toBe('loose')
   })
 
   it('custom format formatSource preserved correctly', () => {

@@ -226,6 +226,9 @@ export class ContentBlockToolbarController {
   private lastViewportW = 0
   private actionSeq = 0
   private resetTimers = new Map<HTMLElement, number>()
+  /** CodeMirror 实例代次：实例被重建时让诊断标记签名失效。 */
+  private readonly cmGenerations = new WeakMap<object, number>()
+  private cmGenerationSeq = 0
 
   private readonly onPointerOver: (ev: Event) => void
   private readonly onPointerOut: (ev: Event) => void
@@ -399,7 +402,11 @@ export class ContentBlockToolbarController {
     if (existing) {
       if (existing.fence === target.element) {
         // Typora 可能重建 PRE 的子节点；掉线时重新挂回（仍不进入 CodeMirror）。
-        if (!existing.bar.isConnected) existing.fence.appendChild(existing.bar)
+        // The rebuilt CM may have dropped our marks: force a re-apply.
+        if (!existing.bar.isConnected) {
+          existing.fence.appendChild(existing.bar)
+          this.clearDiagnosticMarks(existing)
+        }
         return existing
       }
       this.clearFoldProjection(existing)
@@ -496,7 +503,14 @@ export class ContentBlockToolbarController {
     foldBtn.addEventListener('click', (ev) => {
       ev.preventDefault()
       ev.stopPropagation()
-      const actionId = view.actionId
+      // Keyboard / assistive-technology activation has no pointerdown. It must
+      // get a FRESH action id, otherwise it reuses the previous mouse action and
+      // is permanently rejected as DUPLICATE_ACTION.
+      let actionId = view.actionId
+      if (ev.detail === 0) {
+        actionId = `fold-kb-${++this.actionSeq}-${view.key}`
+        view.actionId = actionId
+      }
       const caret = this.caretSnapshot(view)
       this.opts.emitAudit?.('FOLD-CLICK-DISPATCH', {
         actionId,
@@ -639,8 +653,16 @@ export class ContentBlockToolbarController {
     const folded = this.session.isFolded(target.key) && total > previewLines
     if (folded !== view.folded) {
       view.folded = folded
-      if (folded) this.applyFoldProjection(view, previewLines)
-      else this.clearFoldProjection(view)
+      if (folded) {
+        // Keep the session in lockstep with the projection (content grew back).
+        this.session.setFold({ key: view.key, lineCount: total, documentKey: null })
+        this.applyFoldProjection(view, previewLines)
+      } else {
+        // No longer foldable: clear the user's fold intent instead of keeping a
+        // phantom session entry that would re-fold when the block grows again.
+        this.session.clearFold(view.key)
+        this.clearFoldProjection(view)
+      }
     } else if (folded) {
       this.applyFoldProjection(view, previewLines)
     }
@@ -656,7 +678,7 @@ export class ContentBlockToolbarController {
   private syncDiagnosticBadge(view: CodeBlockView, element: HTMLElement): void {
     const provider = this.opts.getBlockDiagnostics
     if (!provider) {
-      view.diag.style.display = 'none'
+      this.resetDiagnosticBadge(view)
       return
     }
     const root = this.boundRoot ?? this.opts.getEditorRoot()
@@ -664,13 +686,12 @@ export class ContentBlockToolbarController {
     view.ordinal = ordinal >= 0 ? ordinal : null
     const counts = view.ordinal == null ? null : provider(view.ordinal)
     if (!counts) {
-      view.diag.style.display = 'none'
+      this.resetDiagnosticBadge(view)
       return
     }
     const total = counts.error + counts.warning + counts.hint
     if (total <= 0) {
-      view.diag.style.display = 'none'
-      if (view.diag.textContent) view.diag.textContent = ''
+      this.resetDiagnosticBadge(view)
       return
     }
     const severity = counts.error > 0 ? 'error' : counts.warning > 0 ? 'warning' : 'hint'
@@ -692,6 +713,17 @@ export class ContentBlockToolbarController {
       warning: counts.warning,
       hint: counts.hint,
     })
+  }
+
+  /**
+   * 完全清除徽标状态（含签名/标题），保证“归零后同值恢复”也会重新绘制。
+   */
+  private resetDiagnosticBadge(view: CodeBlockView): void {
+    view.diag.style.display = 'none'
+    view.diag.removeAttribute('data-signature')
+    view.diag.removeAttribute('title')
+    view.diag.removeAttribute('aria-label')
+    if (view.diag.textContent) view.diag.textContent = ''
   }
 
   /** 诊断快照提交后刷新全部徽标（不重新布局、不触碰折叠）。 */
@@ -722,6 +754,16 @@ export class ContentBlockToolbarController {
     }
   }
 
+  /** 稳定的 CM 实例代次（第一次见到的实例分配新 id）。 */
+  private cmGeneration(cm: object): number {
+    let id = this.cmGenerations.get(cm)
+    if (id == null) {
+      id = ++this.cmGenerationSeq
+      this.cmGenerations.set(cm, id)
+    }
+    return id
+  }
+
   private clearDiagnosticMarks(view: CodeBlockView): void {
     const cm = this.codeMirrorOf(view.fence)
     if (cm && typeof cm.removeLineClass === 'function') {
@@ -747,13 +789,14 @@ export class ContentBlockToolbarController {
     const root = this.boundRoot ?? this.opts.getEditorRoot()
     const ordinal = root ? codeFenceOrdinal(element, root) : -1
     const marks = ordinal >= 0 ? provider(ordinal) : []
-    const signature = marks
+    const cm = this.codeMirrorOf(element)
+    const generation = cm ? this.cmGeneration(cm) : 0
+    const signature = `${generation}|${marks
       .map(m => `${m.ruleId}:${m.severity}:${m.startLine}:${m.startColumn}:${m.endLine}:${m.endColumn}`)
-      .join('|')
+      .join('|')}`
     if (view.diagMarkSignature === signature) return
     this.clearDiagnosticMarks(view)
     if (marks.length === 0) return
-    const cm = this.codeMirrorOf(element)
     if (!cm || typeof cm.markText !== 'function' || typeof cm.addLineClass !== 'function') return
     const lineCount = typeof cm.lineCount === 'function' ? cm.lineCount() : 0
     if (lineCount <= 0) return

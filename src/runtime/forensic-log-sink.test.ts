@@ -206,4 +206,50 @@ describe('forensic-log-sink', () => {
     errSpy.mockRestore()
     warnSpy.mockRestore()
   })
+
+  it('AUD-11: a transient write failure is retried and recovers', () => {
+    const tmp = makeTempDir()
+    initializeForensicSink({ auditDir: tmp, sessionId: 'retry' })
+
+    // Turn the audit directory into a file so the next flush fails.
+    fs.rmSync(tmp, { recursive: true, force: true })
+    fs.writeFileSync(tmp, 'not-a-directory')
+    emitRuntimeAudit('BEFORE-FAILURE', { a: 1 })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    flushForensicSink()
+    expect(getForensicSinkStats().failed).toBe(true)
+
+    // Heal the directory; the queued record must be written, not dropped.
+    fs.rmSync(tmp, { force: true })
+    fs.mkdirSync(tmp, { recursive: true })
+    emitRuntimeAudit('AFTER-RECOVERY', { b: 2 })
+    flushForensicSink()
+
+    const stats = getForensicSinkStats()
+    expect(stats.failed).toBe(false)
+    const events = readLines(path.join(tmp, 'runtime-retry.log')).map((l) => JSON.parse(l).event)
+    expect(events).toContain('BEFORE-FAILURE')
+    expect(events).toContain('AFTER-RECOVERY')
+    errSpy.mockRestore()
+  })
+
+  it('AUD-12: beforeunload handler is registered once per session and removed on shutdown', () => {
+    const add = vi.fn()
+    const remove = vi.fn()
+    vi.stubGlobal('window', { addEventListener: add, removeEventListener: remove })
+    const tmp = makeTempDir()
+
+    initializeForensicSink({ auditDir: tmp, sessionId: 'aud12a' })
+    initializeForensicSink({ auditDir: tmp, sessionId: 'aud12a-again' })
+    expect(add).toHaveBeenCalledTimes(1)
+
+    shutdownForensicSink()
+    expect(remove).toHaveBeenCalledTimes(1)
+
+    initializeForensicSink({ auditDir: tmp, sessionId: 'aud12b' })
+    expect(add).toHaveBeenCalledTimes(2)
+    shutdownForensicSink()
+    vi.unstubAllGlobals()
+    expect(remove).toHaveBeenCalledTimes(2)
+  })
 })

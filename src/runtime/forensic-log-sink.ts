@@ -76,6 +76,10 @@ const writeQueue: string[] = []
 let flushScheduled = false
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 let dirEnsured = false
+/** Consecutive flush failures — a successful write resets the sink to healthy. */
+let consecutiveFailures = 0
+/** Single shared `beforeunload` handler so re-init never stacks listeners. */
+let beforeUnloadHandler: (() => void) | null = null
 
 /**
  * PERFORMANCE — the file sink used to flush on every `setTimeout(0)`, i.e. once
@@ -83,6 +87,8 @@ let dirEnsured = false
  * while removing per-keystroke disk writes from the editing hot path.
  */
 const AUTO_FLUSH_DELAY_MS = 500
+/** Retry delay after a failed flush (transient EBUSY/ENOSPC stays observable). */
+const RETRY_FLUSH_DELAY_MS = 5000
 /** Bound the in-memory queue so a slow/failing disk can never grow it forever. */
 const MAX_QUEUE_RECORDS = 5000
 
@@ -180,6 +186,7 @@ function sinkStatsPayload(): Record<string, unknown> {
 
 function recordSinkError(message: string): void {
   failed = true
+  consecutiveFailures++
   const ts = formatRuntimeLogTimestamp(captureRuntimeLogTimestamp())
   console.error(
     `${ts}[InkChapter] FORENSIC-SINK-ERROR: ` +
@@ -188,8 +195,30 @@ function recordSinkError(message: string): void {
     `writtenCount=${writtenCount} ` +
     `droppedCount=${droppedCount} ` +
     `errorCount=${errorCount} ` +
+    `consecutiveFailures=${consecutiveFailures} ` +
     `message=${message}`,
   )
+}
+
+function registerBeforeUnload(): void {
+  if (typeof window === 'undefined' || beforeUnloadHandler) return
+  const handler = (): void => { shutdownForensicSink() }
+  try {
+    window.addEventListener('beforeunload', handler)
+    beforeUnloadHandler = handler
+  } catch {
+    beforeUnloadHandler = null
+  }
+}
+
+function unregisterBeforeUnload(): void {
+  const handler = beforeUnloadHandler
+  if (!handler) return
+  beforeUnloadHandler = null
+  if (typeof window === 'undefined') return
+  try {
+    window.removeEventListener('beforeunload', handler)
+  } catch { /* ignore */ }
 }
 
 function resolveAuditDir(vaultRoot?: string | null): string | null {
@@ -209,15 +238,15 @@ function resolveAuditDir(vaultRoot?: string | null): string | null {
   return null
 }
 
-function scheduleFlush(): void {
-  if (!enabled || failed) return
+function scheduleFlush(delayMs: number = AUTO_FLUSH_DELAY_MS): void {
+  if (!enabled) return
   if (flushScheduled || flushTimer !== null) return
   flushScheduled = true
   flushTimer = setTimeout(() => {
     flushTimer = null
     flushScheduled = false
     flush()
-  }, AUTO_FLUSH_DELAY_MS)
+  }, delayMs)
 }
 
 /** Synchronous flush of the current queue. Used by boundaries and tests. */
@@ -232,11 +261,20 @@ function flush(): void {
     }
     fs.appendFileSync(outputPath, lines.join('\n') + '\n', 'utf8')
     writtenCount += lines.length
+    failed = false
+    consecutiveFailures = 0
   } catch (e) {
     errorCount++
-    droppedCount += lines.length
     dirEnsured = false
+    // Keep the records: a transient failure must not silently discard
+    // observability. Re-queue (bounded) and retry on a later flush.
+    writeQueue.unshift(...lines)
+    while (writeQueue.length > MAX_QUEUE_RECORDS) {
+      writeQueue.shift()
+      droppedCount++
+    }
     recordSinkError(String(e))
+    scheduleFlush(RETRY_FLUSH_DELAY_MS)
   }
 }
 
@@ -248,7 +286,7 @@ function enqueueRecord(event: string, payload?: Record<string, unknown>, level: 
   const consoleEnabled = isRuntimeAuditConsoleRequested()
   // PERFORMANCE — zero-cost path: no timestamp, no formatting and no string
   // building when both the console mirror and the file sink are disabled.
-  if (!consoleEnabled && (!enabled || failed)) return
+  if (!consoleEnabled && !enabled) return
 
   // Capture the emission timestamp exactly once (NOT at flush time).
   const ts = captureRuntimeLogTimestamp()
@@ -257,8 +295,9 @@ function enqueueRecord(event: string, payload?: Record<string, unknown>, level: 
   // existing observable stream.
   if (consoleEnabled) consoleLog(level, buildConsoleLine(event, payload, ts))
 
-  // File sink is best-effort; never throws into business code.
-  if (!enabled || failed) return
+  // File sink is best-effort; never throws into business code. After a failed
+  // flush the queue keeps accepting records (bounded) so the retry can recover.
+  if (!enabled) return
   try {
     if (writeQueue.length >= MAX_QUEUE_RECORDS) {
       writeQueue.shift()
@@ -428,6 +467,7 @@ export function initializeForensicSink(options: ForensicSinkInitOptions = {}): v
   outputPath = path.join(auditDir, `runtime-${nextSessionId}.log`)
   enabled = true
   failed = false
+  consecutiveFailures = 0
   queuedCount = 0
   writtenCount = 0
   droppedCount = 0
@@ -435,9 +475,7 @@ export function initializeForensicSink(options: ForensicSinkInitOptions = {}): v
   writeQueue.length = 0
 
   if (typeof window !== 'undefined') {
-    try {
-      window.addEventListener('beforeunload', () => shutdownForensicSink())
-    } catch { /* ignore */ }
+    registerBeforeUnload()
   }
 
   // Write the READY marker synchronously so the Runner has a stable byte-offset anchor.
@@ -467,6 +505,12 @@ export function shutdownForensicSink(): void {
   enqueueRecord('FORENSIC-SINK-FLUSH', sinkStatsPayload(), 'info')
   flush()
   enabled = false
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+    flushScheduled = false
+  }
+  unregisterBeforeUnload()
 }
 
 /** Read-only snapshot of sink counters (used by sink self-audits and tests). */

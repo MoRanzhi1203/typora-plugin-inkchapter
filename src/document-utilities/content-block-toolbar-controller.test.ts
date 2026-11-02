@@ -397,6 +397,13 @@ describe('V3 preview folding (top-bar control)', () => {
     harness.setBlockDiagnostics(() => null)
     harness.controller.refreshDiagnosticBadges()
     expect(longDiag.style.display).toBe('none')
+    // 消失后再次出现相同计数 → 必须重新绘制（不能留下空徽标）。
+    harness.setBlockDiagnostics((ordinal) => (
+      ordinal === 0 ? { error: 0, warning: 2, hint: 1 } : null
+    ))
+    harness.controller.refreshDiagnosticBadges()
+    expect(longDiag.style.display).not.toBe('none')
+    expect(longDiag.textContent).toBe('3')
   })
 
   it('applies read-only line classes and text marks, then clears them', () => {
@@ -433,6 +440,19 @@ describe('V3 preview folding (top-bar control)', () => {
     harness.controller.refreshDiagnosticMarks()
     expect(removeLineClass).toHaveBeenCalledTimes(3)
     expect(clear).toHaveBeenCalledTimes(1)
+  })
+
+  it('accepts keyboard activation after a mouse click (fresh action id)', () => {
+    harness = createHarness()
+    const btn = harness.foldBtnFor('long')!
+    btn.dispatchEvent(new Event('pointerdown'))
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    // Keyboard / AT activation: click with detail 0, no pointerdown.
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }))
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }))
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
   })
 
   it('expands a folded block before diagnostic locate (never toggles)', () => {

@@ -328,6 +328,7 @@ import {
   hasLayoutOverrides,
   resolveHeadingLayoutsForMode,
   resolveParagraphLayoutSettings,
+  sanitizeHeadingNumberingScopeStore,
 } from './heading-numbering-scope-store'
 import { isInkChapterUiEvent } from './plugin-ui-event-guard'
 import {
@@ -2029,7 +2030,7 @@ export class HeadingNumberingService {
     const enforcerCallbacks: EnforcerCallbacks = {
       getEffectiveMaxLevel: () => this.getEffectiveMaxLevel(),
       getMarkdown: () => this.ctx.getMarkdown?.() ?? '',
-      reloadContent: (md: string) => this.ctx.reloadContent?.(md),
+      reloadContent: (md: string) => (this.ctx.reloadContentPreservingUndo ?? this.ctx.reloadContent)?.(md),
       showNotice: (msg: string) => Notice.info(msg),
     }
     this.levelRangeEnforcer = new HeadingLevelRangeEnforcer(enforcerCallbacks)
@@ -2106,8 +2107,16 @@ export class HeadingNumberingService {
   private initScopeStore(): HeadingNumberingScopeStore {
     const raw = this.ctx.settings.get('headingNumberingScopes' as any) as any
     if (raw?.schemaVersion && raw.globalDefault) {
-      logger.info('Using headingNumberingScopes')
-      return raw as HeadingNumberingScopeStore
+      const sanitized = sanitizeHeadingNumberingScopeStore(raw)
+      if (sanitized) {
+        logger.info('Using headingNumberingScopes')
+        return sanitized
+      }
+      emitRuntimeAudit('HEADING-SCOPE-STORE-INVALID', {
+        decision: 'FALLBACK_TO_DEFAULTS',
+        reason: 'persisted scope store failed shape validation',
+        schemaVersion: raw.schemaVersion,
+      }, 'warn')
     }
 
     // Try migration from old headingNumbering
@@ -2267,7 +2276,7 @@ export class HeadingNumberingService {
     const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
       ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
     const docOverrideMode: HeadingStructureMode | null = req.documentKey
-      ? (store.documentOverrides[req.documentKey]?.settings.headingStructureMode ?? null)
+      ? (store.documentOverrides[req.documentKey]?.settings?.headingStructureMode ?? null)
       : null
     const plan = planHeadingStructureModeWrite(savedGlobal, docOverrideMode, req.scope, req.mode, req.source, req.documentKey)
 
@@ -2372,7 +2381,7 @@ export class HeadingNumberingService {
     const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
       ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
     const beforeEffective = this.getEffectiveHeadingMode()
-    const overrideBefore = store.documentOverrides[req.documentKey]?.settings.headingStructureMode ?? null
+    const overrideBefore = store.documentOverrides[req.documentKey]?.settings?.headingStructureMode ?? null
     if (!store.documentOverrides[req.documentKey]) {
       emitRuntimeAudit('HEADING-STRUCTURE-MODE-WRITE', {
         source: req.source,
@@ -2425,7 +2434,7 @@ export class HeadingNumberingService {
       ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
     const docKey = this.getDocumentKey()
     const docOverride: HeadingStructureMode | null = docKey
-      ? (store.documentOverrides[docKey]?.settings.headingStructureMode ?? null)
+      ? (store.documentOverrides[docKey]?.settings?.headingStructureMode ?? null)
       : null
     return resolveEffectiveHeadingMode(savedGlobal, docOverride)
   }
@@ -2439,7 +2448,7 @@ export class HeadingNumberingService {
   getDocumentHeadingScopeState(): DocumentHeadingScopeState {
     const docKey = this.getDocumentKey()
     const docOverride = docKey
-      ? (this.scopeStore.documentOverrides[docKey]?.settings.headingStructureMode ?? null)
+      ? (this.scopeStore.documentOverrides[docKey]?.settings?.headingStructureMode ?? null)
       : null
     return resolveDocumentScopeState(docOverride)
   }
@@ -2468,7 +2477,7 @@ export class HeadingNumberingService {
       const savedGlobal: HeadingStructureMode = store.globalDefault.headingStructureMode
         ?? (store.globalDefault.showLevelOneNumber ? 'loose' : 'strict')
       const override = docKey ? store.documentOverrides[docKey] : undefined
-      const savedDocMode = override?.settings.headingStructureMode ?? null
+      const savedDocMode = override?.settings?.headingStructureMode ?? null
       const effective = this.getEffectiveHeadingMode()
       const resolved = resolveHeadingStructure(this.s).mode
       const scopeState = this.getDocumentHeadingScopeState()
@@ -2601,7 +2610,7 @@ export class HeadingNumberingService {
           ...this.scopeStore.documentOverrides,
           [docKey]: {
             updatedAt: Date.now(),
-            settings: existing?.settings ?? this.scopeStore.globalDefault,
+            settings: existing?.settings,
             formatSource: existing?.formatSource,
             layoutOverrides: existing?.layoutOverrides,
             paragraphLayout: { ...settings },
@@ -2900,7 +2909,7 @@ export class HeadingNumberingService {
   ): import('./heading-structure').HeadingStructureMode {
     if (scope === 'document' && documentKey) {
       const override = this.scopeStore.documentOverrides[documentKey]
-      if (override?.settings.headingStructureMode) {
+      if (override?.settings?.headingStructureMode) {
         return override.settings.headingStructureMode
       }
     }
@@ -2924,6 +2933,7 @@ export class HeadingNumberingService {
       const persisted = readPersistedSettingsMode(this.ctx.vaultRoot ?? null)
       const gd = this.scopeStore.globalDefault
       const override = docKey ? this.scopeStore.documentOverrides[docKey] : undefined
+      const overrideSettings = override?.settings
       const rawEffectiveMode = this.s.headingStructureMode ?? 'strict'
       const resolved = resolveHeadingStructure(this.s)
       const facts = collectHeadingProjectionFacts(this.adapter.getEditorRoot())
@@ -2935,8 +2945,10 @@ export class HeadingNumberingService {
         runtimeGlobalMode: gd.headingStructureMode ?? 'strict',
         runtimeGlobalLegacyH1: gd.showLevelOneNumber ?? false,
         documentOverridePresent: !!override,
-        documentOverrideMode: override?.settings.headingStructureMode ?? null,
-        documentOverrideLegacyH1: typeof override?.settings.showLevelOneNumber === 'boolean' ? override.settings.showLevelOneNumber : null,
+        documentOverrideMode: overrideSettings?.headingStructureMode ?? null,
+        documentOverrideLegacyH1: overrideSettings && typeof overrideSettings.showLevelOneNumber === 'boolean'
+          ? overrideSettings.showLevelOneNumber
+          : null,
         effectiveMode: rawEffectiveMode,
         effectiveLegacyH1: this.s.showLevelOneNumber ?? false,
         resolvedMode: resolved.mode,
@@ -4321,6 +4333,14 @@ export class HeadingNumberingService {
     this.levelRangeEnforcer.dispose()
     this.outlineController.stop()
     this.outlineToolbar.stop()
+    // Persist (or drop) the debounced sidecar write; never leave a timer that
+    // fires against a stale document key after unload.
+    try {
+      this.flushSidecarWrite()
+    } catch {
+      this.sidecarWritePending = null
+    }
+    if (this.sidecarWriteTimer !== null) { clearTimeout(this.sidecarWriteTimer); this.sidecarWriteTimer = null }
     if (this.pasteListenerTimer !== null) { clearTimeout(this.pasteListenerTimer); this.pasteListenerTimer = null }
     if (this.fileOpenRetryTimer !== null) { clearTimeout(this.fileOpenRetryTimer); this.fileOpenRetryTimer = null }
   }
@@ -13130,7 +13150,9 @@ export class HeadingNumberingService {
           queueMicrotask(() => this.requestRefresh('initial-load'))
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
           // Reconstruct paragraph indent overrides from sidecar after DOM settles
-          setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 100)
+          setTimeout(() => {
+            if (!this.disposed) this.reconstructParagraphOverridesFromSidecar()
+          }, 100)
           // Normal Enter Trace: OFF by default. Enable via window.__INKCHAPTER_NORMAL_ENTER_TRACE__
           // Forensic Probe: OFF by default. Enable via window.__INKCHAPTER_PARAGRAPH_FORENSIC__
           // Then call window.__inkchapter_activate_forensic__() from DevTools to activate.
@@ -13235,7 +13257,9 @@ export class HeadingNumberingService {
           this.requestRefresh('file-open')
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
           // Reconstruct sidecar overrides
-          setTimeout(() => this.reconstructParagraphOverridesFromSidecar(), 120)
+          setTimeout(() => {
+            if (!this.disposed) this.reconstructParagraphOverridesFromSidecar()
+          }, 120)
         })
         if (this.fileOpenRetryTimer !== null) clearTimeout(this.fileOpenRetryTimer)
         this.fileOpenRetryTimer = setTimeout(() => {
@@ -13285,6 +13309,7 @@ export class HeadingNumberingService {
           this.scheduleTail('decoration-repair', TAIL_REFRESH_MS)
         })
         setTimeout(() => {
+          if (this.disposed) return
           if (version !== this.renderVersion) return
           const area = this.adapter.detectEditorRoot()
           if (area && (!this.lastSnapshot || this.lastSnapshot.length === 0)) {

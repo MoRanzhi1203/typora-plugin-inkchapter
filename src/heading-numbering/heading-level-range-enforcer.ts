@@ -115,6 +115,11 @@ export function computeProtectedLineMask(lines: readonly string[]): boolean[] {
   const mask: boolean[] = new Array(lines.length).fill(false)
   let fenceChar: '`' | '~' | null = null
   let fenceLen = 0
+  // HTML block / display-math state: `#`-looking lines inside them are not
+  // Markdown ATX headings and must never be escaped.
+  let htmlTerminator: string | null = null
+  let htmlBlankTerminated = false
+  let mathOpen = false
 
   // YAML front matter: only when it starts on line 1 and is closed.
   if (lines.length > 1 && /^---\s*$/.test(lines[0])) {
@@ -129,6 +134,26 @@ export function computeProtectedLineMask(lines: readonly string[]): boolean[] {
   for (let i = 0; i < lines.length; i++) {
     if (mask[i]) continue
     const line = lines[i]
+
+    // Continue an open HTML block (comment / CDATA / declaration / tag block).
+    if (htmlTerminator !== null) {
+      mask[i] = true
+      if (htmlBlankTerminated) {
+        if (line.trim() === '') {
+          htmlTerminator = null
+          htmlBlankTerminated = false
+        }
+      } else if (line.includes(htmlTerminator)) {
+        htmlTerminator = null
+      }
+      continue
+    }
+    // Continue an open $$ display-math block.
+    if (mathOpen) {
+      mask[i] = true
+      if (line.includes('$$')) mathOpen = false
+      continue
+    }
 
     if (fenceChar !== null) {
       mask[i] = true
@@ -148,11 +173,57 @@ export function computeProtectedLineMask(lines: readonly string[]): boolean[] {
       continue
     }
 
+    const html = detectHtmlBlockStart(line)
+    if (html != null) {
+      mask[i] = true
+      if (!html.inlineClosed) {
+        htmlTerminator = html.terminator
+        htmlBlankTerminated = html.terminator === 'blank'
+      }
+      continue
+    }
+
+    const math = /^ {0,3}\$\$(.*)$/.exec(line)
+    if (math != null) {
+      mask[i] = true
+      if (!math[1].includes('$$')) mathOpen = true
+      continue
+    }
+
     // Indented code block (4+ spaces / tab) — never an ATX heading.
     if (/^( {4,}|\t)/.test(line)) mask[i] = true
   }
 
   return mask
+}
+
+/**
+ * CommonMark HTML block opener detection (0-3 space indent). The returned
+ * terminator closes the block; `blank` means "until the next blank line".
+ */
+function detectHtmlBlockStart(line: string): { terminator: string; inlineClosed: boolean } | null {
+  const trimmed = line.replace(/^ {0,3}/, '')
+  if (trimmed.startsWith('<!--')) {
+    return { terminator: '-->', inlineClosed: trimmed.indexOf('-->', 4) >= 0 }
+  }
+  if (trimmed.startsWith('<?')) {
+    return { terminator: '?>', inlineClosed: trimmed.indexOf('?>', 2) >= 0 }
+  }
+  if (trimmed.startsWith('<![CDATA[')) {
+    return { terminator: ']]>', inlineClosed: trimmed.indexOf(']]>', 9) >= 0 }
+  }
+  if (trimmed.startsWith('<!')) {
+    return { terminator: '>', inlineClosed: trimmed.indexOf('>', 2) >= 0 }
+  }
+  const rawTag = /^<\/?(script|pre|style|textarea)\b/i.exec(trimmed)
+  if (rawTag != null) {
+    const close = `</${rawTag[1].toLowerCase()}>`
+    return { terminator: close, inlineClosed: trimmed.toLowerCase().indexOf(close, 1) >= 0 }
+  }
+  if (/^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s|\/?>|$)/.test(trimmed)) {
+    return { terminator: 'blank', inlineClosed: false }
+  }
+  return null
 }
 
 export interface EnforcerCallbacks {

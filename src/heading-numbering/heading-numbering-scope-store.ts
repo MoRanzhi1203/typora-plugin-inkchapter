@@ -206,6 +206,66 @@ function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
   }
 }
 
+// ── Load-time sanitization ─────────────────────────
+
+/**
+ * Defensive load gate. Persisted stores can be legacy, truncated or hand-edited;
+ * `deepCloneSettings` maps over `formatVariants.*`, so one broken level would
+ * crash the settings page on open. Validate the shape once and drop only the
+ * invalid parts (document overrides fall back to inheriting global settings).
+ */
+export function sanitizeHeadingNumberingScopeStore(
+  raw: unknown,
+): HeadingNumberingScopeStore | null {
+  if (!raw || typeof raw !== 'object') return null
+  const candidate = raw as HeadingNumberingScopeStore
+  if (!candidate.globalDefault || typeof candidate.globalDefault !== 'object') return null
+  if (!isClonableHeadingSettings(candidate.globalDefault)) return null
+
+  const documentOverrides: Record<string, HeadingNumberingDocumentOverride> = {}
+  for (const [key, override] of Object.entries(candidate.documentOverrides ?? {})) {
+    if (!override || typeof override !== 'object') continue
+    documentOverrides[key] = override.settings && !isClonableHeadingSettings(override.settings)
+      ? { ...override, settings: undefined }
+      : override
+  }
+
+  return {
+    ...candidate,
+    documentOverrides,
+    globalParagraphLayout: candidate.globalParagraphLayout ?? {
+      defaultIndent: 'flush',
+      flushAfterDisplayMath: true,
+      indentShortcutEnabled: true,
+    },
+  }
+}
+
+function isClonableHeadingSettings(value: unknown): value is HeadingNumberingSettings {
+  const settings = value as HeadingNumberingSettings
+  if (!settings || typeof settings !== 'object') return false
+  if (!settings.levels || typeof settings.levels !== 'object') return false
+  for (const level of Object.values(settings.levels)) {
+    if (!level || typeof level !== 'object') return false
+    for (const variants of [
+      level.formatVariants,
+      level.multilevelFormatVariants,
+      level.contextualFormatVariants,
+    ]) {
+      if (!variants || !Array.isArray(variants.withLevelOne) || !Array.isArray(variants.withoutLevelOne)) {
+        return false
+      }
+    }
+    if (!level.levelTemplate || typeof level.levelTemplate !== 'object') return false
+  }
+  try {
+    deepCloneSettings(settings)
+    return true
+  } catch {
+    return false
+  }
+}
+
 // ── Deep merge ─────────────────────────────────────
 
 /** Deep merge document override into global default. Document fields take precedence. */
@@ -332,7 +392,7 @@ export function resolveEffectiveSettings(
   formatLibrary?: FormatLibrary,
 ): DocumentNumberingContext {
   const docOverride = documentKey ? store.documentOverrides[documentKey] : undefined
-  const base = docOverride
+  const base = docOverride?.settings
     ? deepMergeSettings(store.globalDefault, docOverride.settings)
     : deepCloneSettings(store.globalDefault)
 
@@ -513,7 +573,7 @@ export function saveLayoutOverrides(
       ...store.documentOverrides,
       [documentKey]: {
         updatedAt: Date.now(),
-        settings: existingOverride?.settings ?? store.globalDefault,
+        settings: existingOverride?.settings,
         formatSource: existingOverride?.formatSource,
         layoutOverrides,
       },
@@ -579,8 +639,10 @@ export function normalizeHeadingLayoutsByMode(
   const documentOverrides: Record<string, HeadingNumberingDocumentOverride> = {}
   for (const [key, ov] of Object.entries(store.documentOverrides)) {
     let next = ov
-    const settings = normalizeSettingsLayoutsByMode(ov.settings)
-    if (settings !== ov.settings) { next = { ...next, settings }; changed = true }
+    if (ov.settings) {
+      const settings = normalizeSettingsLayoutsByMode(ov.settings)
+      if (settings !== ov.settings) { next = { ...next, settings }; changed = true }
+    }
     if (ov.layoutOverrides) {
       const lo = normalizeLayoutOverridesByMode(ov.layoutOverrides)
       if (lo !== ov.layoutOverrides) { next = { ...next, layoutOverrides: lo }; changed = true }

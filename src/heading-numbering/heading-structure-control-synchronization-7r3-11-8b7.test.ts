@@ -100,7 +100,7 @@ describe('SCOPE MATRIX (S1-S4 + S5)', () => {
     store = removeDocumentOverride(store, 'doc-d')
     expect(store.documentOverrides['doc-d']).toBeUndefined()
     expect(resolveEffectiveSettings(store, 'doc-d').effectiveSettings.headingStructureMode).toBe('strict')
-    expect(resolveDocumentScopeState(store.documentOverrides['doc-d']?.settings.headingStructureMode ?? null)).toBe('inherit')
+    expect(resolveDocumentScopeState(store.documentOverrides['doc-d']?.settings?.headingStructureMode ?? null)).toBe('inherit')
   })
 })
 

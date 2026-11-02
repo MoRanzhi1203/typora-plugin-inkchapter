@@ -95,6 +95,37 @@ describe('PA-FENCE-01 fenced code is never rewritten', () => {
     vi.advanceTimersByTime(500)
     expect(h.reloaded).toHaveLength(0)
   })
+
+  it('keeps heading-looking lines inside an HTML block intact', () => {
+    makeWriteWithH5()
+    const md = ['# 第一章', '', '<div>', '##### html 内', '</div>', '', '##### 真标题', ''].join('\n')
+    const h = makeHarness(md)
+    h.enforcer.enforceAfterMutation()
+    vi.advanceTimersByTime(500)
+    const out = h.reloaded[0]
+    expect(out).toContain('##### html 内')
+    expect(out).toContain('\\#\\#\\#\\#\\# 真标题')
+  })
+
+  it('keeps heading-looking lines inside a $$ display-math block intact', () => {
+    makeWriteWithH5()
+    const md = ['# 第一章', '', '$$', '##### 公式内', '$$', '', '##### 真标题', ''].join('\n')
+    const h = makeHarness(md)
+    h.enforcer.enforceAfterMutation()
+    vi.advanceTimersByTime(500)
+    const out = h.reloaded[0]
+    expect(out).toContain('##### 公式内')
+    expect(out).toContain('\\#\\#\\#\\#\\# 真标题')
+  })
+
+  it('keeps single-line HTML comments and single-line $$ math intact', () => {
+    makeWriteWithH5()
+    const md = ['# 第一章', '<!-- ##### 注释 -->', '$$ ##### 单行公式 $$', ''].join('\n')
+    const h = makeHarness(md)
+    h.enforcer.enforceAfterMutation()
+    vi.advanceTimersByTime(500)
+    expect(h.reloaded).toHaveLength(0)
+  })
 })
 
 describe('PA-FENCE-02 paste path shares the same fence recognition', () => {

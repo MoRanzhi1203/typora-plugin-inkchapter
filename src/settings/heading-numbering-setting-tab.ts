@@ -532,7 +532,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     const docKey = this.numberingService.getDocumentKey()
     const override = docKey ? this.numberingService.getScopeStore().documentOverrides[docKey] : undefined
-    return override?.settings.headingStructureMode ?? this.numberingService.getScopeStore().globalDefault.headingStructureMode
+    return override?.settings?.headingStructureMode ?? this.numberingService.getScopeStore().globalDefault.headingStructureMode
       ?? (this.numberingService.getScopeStore().globalDefault.showLevelOneNumber ? 'loose' : 'strict')
   }
 
@@ -540,7 +540,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private readSavedDocumentScopeState(): DocumentHeadingScopeState {
     const docKey = this.numberingService.getDocumentKey()
     const override = docKey ? this.numberingService.getScopeStore().documentOverrides[docKey] : undefined
-    return override?.settings.headingStructureMode ?? 'inherit'
+    return override?.settings?.headingStructureMode ?? 'inherit'
   }
 
   /** Read the user's UNSAVED mode intent from the draft scope selection / draft. */
