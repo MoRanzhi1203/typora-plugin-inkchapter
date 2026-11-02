@@ -369,7 +369,7 @@ describe('V3 preview folding (top-bar control)', () => {
     expect(harness.audits.some((a) => a.event === 'FOLD-FOCUS-KEPT')).toBe(true)
   })
 
-  it('auto-expands when focus returns with a hidden caret', () => {
+  it('keeps folding when focus returns with a hidden caret (no text change)', () => {
     harness = createHarness()
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
@@ -379,7 +379,7 @@ describe('V3 preview folding (top-bar control)', () => {
     placeCaret(hiddenLine)
     hiddenLine.focus()
     harness.controller.syncGeometry()
-    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
   })
 
   it('never renders a diagnostic count badge in the language bar (removed)', () => {
@@ -606,18 +606,17 @@ describe('V3 preview folding (top-bar control)', () => {
     expect(harness.controller.expandFoldedBlockForLocate(harness.shortFence)).toBe(false)
   })
 
-  it('auto-expands only when the pointer hits visible code text', () => {
+  it('never expands on pointer clicks alone (text / gutter / background)', () => {
     harness = createHarness()
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
     const lines = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')
 
-    // 1) 工具栏语言/行数区域：不展开。
-    harness.barFor('long')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}__lines`)!
-      .dispatchEvent(pointerDown())
+    // 纯点击可见代码文字：保持折叠（只有文本修改才展开）。
+    lines[2].querySelector('span')!.dispatchEvent(pointerDown())
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
 
-    // 2) 行号区：不展开。
+    // 行号区。
     const gutter = document.createElement('div')
     gutter.className = 'CodeMirror-gutter-wrapper'
     gutter.innerHTML = '<div class="CodeMirror-linenumber">1</div>'
@@ -625,39 +624,72 @@ describe('V3 preview folding (top-bar control)', () => {
     gutter.dispatchEvent(pointerDown())
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
 
-    // 3) 行容器本身（文字之外的空白背景）：不展开。
+    // 行容器空白背景。
     lines[0].dispatchEvent(pointerDown())
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
 
-    // 4) 预览区之外的代码文字：不展开。
-    lines[15].querySelector('span')!.dispatchEvent(pointerDown())
+    // 工具栏。
+    harness.barFor('long')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}__lines`)!
+      .dispatchEvent(pointerDown())
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
 
-    // 5) 前 N 行真实代码文字：展开。
-    lines[2].querySelector('span')!.dispatchEvent(pointerDown())
+    // 从未产生任何自动展开决策。
+    expect(harness.audits.some(a => a.event === 'FOLD-AUTO-EXPAND-DECISION')).toBe(false)
+  })
+
+  it('expands when the code text changes while folded', () => {
+    harness = createHarness()
+    const cmEl = harness.longFence.querySelector('.CodeMirror') as HTMLElement
+    const handlers: Array<() => void> = []
+    ;(cmEl as unknown as { CodeMirror: unknown }).CodeMirror = {
+      lineCount: () => 20,
+      getLine: () => 'const x = 1',
+      getValue: () => LONG_CODE,
+      addLineClass: vi.fn(() => ({ handle: true })),
+      removeLineClass: vi.fn(),
+      markText: vi.fn(() => ({ clear: vi.fn() })),
+      on: (_event: string, handler: () => void) => { handlers.push(handler) },
+      off: vi.fn(),
+    }
+    harness.controller.syncGeometry()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    expect(handlers).toHaveLength(1)
+
+    // 文本修改（插入 / 删除 / 空格 / Tab 都会触发 CM change）。
+    handlers[0]()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
     const decision = harness.audits.filter(a => a.event === 'FOLD-AUTO-EXPAND-DECISION').pop()
     expect(decision?.payload).toMatchObject({
-      source: 'POINTER_DOWN',
+      source: 'CODE_TEXT_CHANGED',
       setting: true,
-      editable: true,
-      reason: 'CODE_TEXT',
-      lineIndex: 2,
       decision: 'EXPAND',
     })
   })
 
-  it('keeps manual folding when auto-expand-on-edit is disabled', () => {
+  it('keeps folding on text change when auto-expand-on-edit is disabled', () => {
     harness = createHarness()
     harness.setAutoExpandOnEdit(false)
+    const cmEl = harness.longFence.querySelector('.CodeMirror') as HTMLElement
+    const handlers: Array<() => void> = []
+    ;(cmEl as unknown as { CodeMirror: unknown }).CodeMirror = {
+      lineCount: () => 20,
+      getLine: () => 'const x = 1',
+      getValue: () => LONG_CODE,
+      addLineClass: vi.fn(() => ({ handle: true })),
+      removeLineClass: vi.fn(),
+      markText: vi.fn(() => ({ clear: vi.fn() })),
+      on: (_event: string, handler: () => void) => { handlers.push(handler) },
+      off: vi.fn(),
+    }
+    harness.controller.syncGeometry()
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
-    const line = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')[3]
-    line.querySelector('span')!.dispatchEvent(pointerDown())
+    handlers[0]()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
     const decision = harness.audits.filter(a => a.event === 'FOLD-AUTO-EXPAND-DECISION').pop()
     expect(decision?.payload).toMatchObject({
-      source: 'POINTER_DOWN',
+      source: 'CODE_TEXT_CHANGED',
       setting: false,
       decision: 'KEEP_FOLDED',
     })
@@ -685,7 +717,7 @@ describe('V3 preview folding (top-bar control)', () => {
     expect(dispatch?.payload.caret).toMatchObject({ caretSource: 'none', hiddenByPreview: null })
   })
 
-  it('auto-expands when focus lands on a hidden caret line', () => {
+  it('keeps folding when focus lands on a hidden caret line (no text change)', () => {
     harness = createHarness()
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
@@ -699,8 +731,9 @@ describe('V3 preview folding (top-bar control)', () => {
     selection?.addRange(range)
     lines[15].tabIndex = 0
     lines[15].focus()
-    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
-    expect(harness.controller.getFoldKeys()).toEqual([])
+    // 纯光标定位/选中不展开。
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    expect(harness.controller.getFoldKeys()).toHaveLength(1)
   })
 
   it('re-applies the projection after Typora re-renders the fence', () => {

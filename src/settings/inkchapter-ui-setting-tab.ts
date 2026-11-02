@@ -69,9 +69,10 @@ export class InkChapterUiSettingTab extends SettingTab {
       })
     })
     this.checkbox(
-      '点击可见代码时自动展开',
-      '开启：点击折叠代码块前 N 行内的代码文字，会自动展开并进入编辑。'
-        + '关闭：只能通过顶部展开按钮或文档检测栏定位展开；点击代码文字不会改变折叠状态。',
+      '编辑代码时自动展开',
+      '开启：在折叠代码块内修改文本（输入字符、空格 / Tab、删除、粘贴）时，自动完整展开。'
+        + '关闭：折叠状态下编辑不会自动展开，只能通过顶部展开按钮或文档检测栏定位展开。'
+        + '仅点击、选中或移动光标始终不会改变折叠状态。',
       ui.codeBlockAutoExpandOnEdit,
       v => this.patch({ codeBlockAutoExpandOnEdit: v }),
     )

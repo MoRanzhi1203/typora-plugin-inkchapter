@@ -43,8 +43,9 @@ export interface InkChapterUiSettings {
    */
   codeBlockPreviewLines: 5 | 10
   /**
-   * 点击已折叠代码块的可见代码文字时，是否自动展开并进入编辑。
-   * 默认 true；关闭后只能通过顶部展开按钮或诊断定位展开。
+   * 折叠代码块内的文本真正发生变化时（输入 / 空格 / Tab / 删除 / 粘贴），
+   * 是否自动完整展开。默认 true；关闭后只能通过顶部展开按钮或诊断定位展开。
+   * 纯点击、选中、光标移动不改变折叠状态。
    */
   codeBlockAutoExpandOnEdit: boolean
 }
