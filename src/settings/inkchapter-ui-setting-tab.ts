@@ -57,7 +57,7 @@ export class InkChapterUiSettingTab extends SettingTab {
       s.addName('代码块折叠预览行数')
       s.addDescription(
         '只对超过该行数的代码块生效（短代码始终完整显示）。折叠后保留代码高亮与缩进，'
-        + '底部显示「展开剩余 N 行」；复制始终复制完整代码。',
+        + '底部保留 20px 渐隐；顶部语言栏右侧的折叠按钮可随时展开全部或收起至预览。复制始终复制完整代码。',
       )
       s.addSelect(sel => {
         sel.add(new Option('预览 10 行（默认）', '10'))

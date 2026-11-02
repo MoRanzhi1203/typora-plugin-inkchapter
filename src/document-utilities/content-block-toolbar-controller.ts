@@ -1,16 +1,18 @@
 /**
- * 内容块工具栏 — V3 控制器。
+ * 内容块工具栏 — V3 稳定性修复版控制器。
  *
- * V3 结构（参考 CSDN 代码块）：
+ * 结构（参考 CSDN 代码块）：
  *   [代码题注（墨章题注，文档内容，第一行）]
- *   [语言栏（块内顶部）：语言徽标 + 真实语言 + 行数 | 复制完整代码]
- *   [代码正文（可预览式折叠）]
- *   [折叠条（块外下方）：展开剩余 N 行 / 收起至预览]
+ *   [语言栏（PRE 内部顶部，随块原生滚动）]
+ *     左：语言徽标 + 真实语言 + 逻辑行数
+ *     右：复制图标 + 折叠/展开图标（可折叠时才显示）
+ *   [代码正文（预览式折叠）]
  *
- * 约束（与 V1/V2 相同，不放松）：
- * - 只挂到既有 Overlay 根（`[data-inkchapter-utility-root]`），绝不插入 #write；
- * - 定位复用宿主几何调度；不新增 ResizeObserver / MutationObserver / 轮询；
- * - 折叠只改可视投影（属性 + CSS 变量），不改 Markdown / CodeMirror 模型 / Undo；
+ * 关键约束：
+ * - 语言栏挂在 `pre.md-fences` 内部（不是 #write 的独立浮层），与代码块共享原生滚动坐标系，
+ *   滚动期间零定位计算、零滞后；绝不插入 CodeMirror 的可编辑模型。
+ * - 图片工具栏仍复用既有 Overlay 根（悬停单实例），不新增观察器/轮询。
+ * - 折叠只改可视投影（属性 + CSS 变量），不改 Markdown / CodeMirror 模型 / Undo。
  * - 复制永远复制完整源码，与折叠状态无关。
  */
 
@@ -28,8 +30,6 @@ import { ContentBlockToolbarSession } from './content-block-toolbar-session'
 export const CONTENT_TOOLBAR_CLASS = 'inkchapter-content-toolbar'
 export const CONTENT_TOOLBAR_ATTR = 'data-inkchapter-content-toolbar'
 export const CODE_FOLD_CLASS = 'inkchapter-code-folded'
-/** 可折叠块标记：为该 PRE 预留底部折叠带（纯视觉，不改 Markdown）。 */
-export const CODE_FOLDABLE_ATTR = 'data-inkchapter-code-foldable'
 export const CODE_FOLD_ATTR = 'data-inkchapter-code-folded'
 export const CODE_FOLD_SUMMARY_ATTR = 'data-inkchapter-fold-summary'
 /** 语言栏存在标记（CSS 用它为代码块预留顶部内边距）。 */
@@ -38,12 +38,7 @@ export const CODE_LANGBAR_ATTR = 'data-inkchapter-langbar'
 export const CODE_FOLD_PREVIEW_ATTR = 'data-inkchapter-fold-preview'
 /** 折叠预览高度（CSS 变量，作用在 `.CodeMirror` 上）。 */
 export const CODE_FOLD_HEIGHT_VAR = '--ink-fold-preview-height'
-export const FOLD_BAR_CLASS = 'inkchapter-code-foldbar'
 
-const LANGBAR_HEIGHT_PX = 30
-const FOLDBAR_HEIGHT_PX = 28
-/** 折叠条在底部折叠带内的上/下留白（带高见 CSS `--ink-fold-band`）。 */
-const FOLDBAR_INSET_PX = 4
 const DEFAULT_PREVIEW_LINES = 10
 const FEEDBACK_RESET_MS = 1600
 const MAX_VIEWS = 80
@@ -71,7 +66,7 @@ export interface ContentBlockToolbarOptions {
   /** 折叠导致布局变化 → 交由既有几何调度刷新。 */
   onLayoutInvalidated: (reason: string) => void
   emitAudit?: (event: string, payload: Record<string, unknown>) => void
-  /** V3 — 折叠预览行数（5 | 10）。 */
+  /** 折叠预览行数（5 | 10）。 */
   getPreviewLines?: () => 5 | 10
 }
 
@@ -83,15 +78,31 @@ interface CodeBlockView {
   lang: HTMLSpanElement
   lines: HTMLSpanElement
   copyBtn: HTMLButtonElement
-  foldBar: HTMLDivElement
   foldBtn: HTMLButtonElement
   folded: boolean
   previewLines: number
   totalLines: number
-  lastLeft: number
-  lastTop: number
-  lastFoldTop: number
   shownAudited: boolean
+  /** 语言栏顶边 - PRE 顶边的基线（首帧采样）；滚动期间漂移必须为 0。 */
+  syncBaselinePx: number | null
+  /** 本次真实按钮操作的唯一 id（pointerdown 生成，click/状态/视觉审计共用）。 */
+  actionId: string | null
+  /** 已处理的 actionId：同一 actionId 只允许一次状态转换。 */
+  handledActionId: string | null
+}
+
+interface CaretSnapshot {
+  activeTag: string | null
+  activeClass: string | null
+  activeInFence: boolean
+  activeIsFoldButton: boolean
+  anchorInFence: boolean
+  anchorLineIndex: number | null
+  caretLine: number | null
+  caretCh: number | null
+  caretSource: 'none' | 'range' | 'cm'
+  hiddenByPreview: boolean | null
+  selectionType: string | null
 }
 
 const LANG_BADGES: Array<[RegExp, string, string]> = [
@@ -149,15 +160,6 @@ function iconSvg(name: string, cls: string): string {
     + `stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`
 }
 
-function rectTuple(rect: DOMRect): [number, number, number, number] {
-  return [
-    Math.round(rect.left),
-    Math.round(rect.top),
-    Math.round(rect.width),
-    Math.round(rect.height),
-  ]
-}
-
 export class ContentBlockToolbarController {
   private readonly views = new Map<string, CodeBlockView>()
   private readonly session = new ContentBlockToolbarSession()
@@ -172,6 +174,8 @@ export class ContentBlockToolbarController {
   private imageVisible = false
   private imageHideTimer: number | null = null
   private scrollRaf: number | null = null
+  private lastViewportW = 0
+  private actionSeq = 0
   private resetTimers = new Map<HTMLElement, number>()
 
   private readonly onPointerOver: (ev: Event) => void
@@ -267,7 +271,10 @@ export class ContentBlockToolbarController {
 
   // ── 宿主接入：几何 / 滚动 ──────────────────────────────────
 
-  /** 每次既有 geometry pass 调用（无新增调度器）。 */
+  /**
+   * 既有 geometry pass 调用（无新增调度器）。
+   * 语言栏是 PRE 的子节点，不需要任何坐标计算；这里只同步内容与折叠态。
+   */
   syncGeometry(): void {
     if (this.disposed || !this.mounted) return
     const root = this.boundRoot
@@ -276,29 +283,17 @@ export class ContentBlockToolbarController {
     const previewLines = this.previewLines()
     const fences = Array.from(root.querySelectorAll<HTMLElement>(CODE_BLOCK_SELECTOR))
     const seen = new Set<string>()
-    const viewportW = window.innerWidth || root.ownerDocument?.documentElement?.clientWidth || 0
-    const viewportH = window.innerHeight || root.ownerDocument?.documentElement?.clientHeight || 0
 
     for (const fence of fences) {
       const target = resolveContentBlockTargetFromElement(fence, root)
       if (!target || target.kind !== 'code') continue
       seen.add(target.key)
       if (this.views.size >= MAX_VIEWS && !this.views.has(target.key)) continue
-
-      const rect = fence.getBoundingClientRect()
-      const onScreen = rect.width > 0 && rect.height > 0
-        && rect.bottom > 0 && rect.top < viewportH && rect.right > 0 && rect.left < viewportW
-      if (!onScreen || !isTargetRenderable(fence)) {
-        const existing = this.views.get(target.key)
-        if (existing) this.hideView(existing)
-        continue
-      }
+      if (!isTargetRenderable(fence)) continue
 
       const view = this.ensureView(target)
-      // 先同步内容（语言 / 行数 / 折叠态 / 折叠带），重新测量后再布局：
-      // 折叠带通过 padding 预留空间，必须在同一帧内计入 rect，否则折叠条会压住代码。
       this.syncViewContent(view, target, previewLines)
-      this.layoutView(view, fence.getBoundingClientRect(), previewLines)
+      this.auditShownOnce(view)
     }
 
     // 清理：块已不存在 / 已不是代码块。
@@ -313,29 +308,31 @@ export class ContentBlockToolbarController {
     if (removed.length > 0) {
       this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD-RETIRED', { removedCount: removed.length })
     }
+    this.auditViewportLayout()
   }
 
   /**
-   * 既有 scroll 监听驱动：V3 不再隐藏语言栏，而是同帧重定位
-   * （折叠条与语言栏都随内容移动），保持滚动后稳定。
+   * 既有 scroll 监听驱动：语言栏与代码块同属一个滚动坐标系，
+   * 这里不做任何重定位；仅关闭图片浮层并按帧采样“语言栏顶边 - 代码块顶边”的偏差。
    */
   onEditorScroll(): void {
-    if (this.disposed || this.views.size === 0) return
+    if (this.disposed) return
     this.dropImageBar()
+    if (this.views.size === 0 || !this.opts.emitAudit) return
     if (this.scrollRaf !== null) return
     try {
       this.scrollRaf = requestAnimationFrame(() => {
         this.scrollRaf = null
-        this.syncGeometry()
+        this.auditScrollSync()
       })
     } catch {
       this.scrollRaf = null
-      this.syncGeometry()
+      this.auditScrollSync()
     }
   }
 
   isVisible(): boolean {
-    return this.imageVisible || Array.from(this.views.values()).some(v => v.bar.style.display !== 'none')
+    return this.imageVisible || this.views.size > 0
   }
 
   getActiveKey(): string | null {
@@ -350,7 +347,16 @@ export class ContentBlockToolbarController {
 
   private ensureView(target: ContentBlockTarget): CodeBlockView {
     const existing = this.views.get(target.key)
-    if (existing && existing.fence === target.element) return existing
+    if (existing) {
+      if (existing.fence === target.element) {
+        // Typora 可能重建 PRE 的子节点；掉线时重新挂回（仍不进入 CodeMirror）。
+        if (!existing.bar.isConnected) existing.fence.appendChild(existing.bar)
+        return existing
+      }
+      this.clearFoldProjection(existing)
+      this.destroyView(existing)
+      this.views.delete(target.key)
+    }
 
     const doc = this.root.ownerDocument ?? document
     const bar = doc.createElement('div')
@@ -358,7 +364,7 @@ export class ContentBlockToolbarController {
     bar.setAttribute(CONTENT_TOOLBAR_ATTR, 'true')
     bar.setAttribute('data-inkchapter-ui-root', 'document-utilities')
     bar.setAttribute('role', 'toolbar')
-    bar.setAttribute('aria-label', '代码块语言与复制')
+    bar.setAttribute('aria-label', '代码块语言与操作')
     bar.setAttribute('contenteditable', 'false')
     bar.setAttribute('data-block-key', target.key)
 
@@ -373,24 +379,19 @@ export class ContentBlockToolbarController {
     copyBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn ${CONTENT_TOOLBAR_CLASS}__btn--copy`
     copyBtn.setAttribute('data-action', 'copy-code')
     copyBtn.setAttribute('data-inkchapter-ui-root', 'document-utilities')
-    copyBtn.setAttribute('aria-label', '复制完整代码')
-    copyBtn.setAttribute('title', '复制完整代码')
+    copyBtn.setAttribute('aria-label', '复制代码')
+    copyBtn.setAttribute('title', '复制代码')
     copyBtn.innerHTML = iconSvg('copy', `${CONTENT_TOOLBAR_CLASS}__icon`)
-    bar.append(badge, lang, lines, copyBtn)
-
-    const foldBar = doc.createElement('div')
-    foldBar.className = FOLD_BAR_CLASS
-    foldBar.setAttribute('data-inkchapter-ui-root', 'document-utilities')
-    foldBar.setAttribute('contenteditable', 'false')
-    foldBar.setAttribute('data-block-key', target.key)
-    foldBar.style.display = 'none'
     const foldBtn = doc.createElement('button')
     foldBtn.type = 'button'
-    foldBtn.className = `${FOLD_BAR_CLASS}__btn`
+    foldBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn ${CONTENT_TOOLBAR_CLASS}__btn--fold`
+    foldBtn.setAttribute('data-action', 'toggle-fold')
     foldBtn.setAttribute('data-inkchapter-ui-root', 'document-utilities')
-    foldBar.appendChild(foldBtn)
+    foldBtn.setAttribute('aria-label', '收起至预览')
+    foldBtn.setAttribute('title', '收起至预览')
+    foldBtn.style.display = 'none'
+    bar.append(badge, lang, lines, copyBtn, foldBtn)
 
-    this.root.append(bar, foldBar)
     this.bindButtonFocusGuard(copyBtn)
     this.bindButtonFocusGuard(foldBtn)
 
@@ -402,15 +403,14 @@ export class ContentBlockToolbarController {
       lang,
       lines,
       copyBtn,
-      foldBar,
       foldBtn,
       folded: false,
       previewLines: DEFAULT_PREVIEW_LINES,
       totalLines: 0,
-      lastLeft: Number.NaN,
-      lastTop: Number.NaN,
-      lastFoldTop: Number.NaN,
       shownAudited: false,
+      syncBaselinePx: null,
+      actionId: null,
+      handledActionId: null,
     }
 
     copyBtn.addEventListener('click', (ev) => {
@@ -418,91 +418,148 @@ export class ContentBlockToolbarController {
       ev.stopPropagation()
       void this.copyCode(view)
     })
+    foldBtn.addEventListener('pointerdown', (ev) => {
+      const actionId = `fold-${++this.actionSeq}-${view.key}`
+      view.actionId = actionId
+      this.auditFoldPointerHit(view, ev, actionId)
+    })
+    foldBtn.addEventListener('pointerup', (ev) => {
+      this.opts.emitAudit?.('FOLD-POINTER-UP', {
+        actionId: view.actionId,
+        blockKey: view.key,
+        detail: ev.detail,
+        isTrusted: ev.isTrusted,
+        targetTag: (ev.target as Element | null)?.tagName ?? null,
+        path: this.eventPathSummary(ev),
+        caret: this.caretSnapshot(view),
+      })
+    })
     foldBtn.addEventListener('click', (ev) => {
       ev.preventDefault()
       ev.stopPropagation()
-      this.toggleFold(view)
+      const actionId = view.actionId
+      const caret = this.caretSnapshot(view)
+      this.opts.emitAudit?.('FOLD-CLICK-DISPATCH', {
+        actionId,
+        blockKey: view.key,
+        detail: ev.detail,
+        isTrusted: ev.isTrusted,
+        folded: view.folded,
+        totalLines: view.totalLines,
+        previewLines: view.previewLines,
+        caretInside: this.selectionInside(view.fence),
+        caret,
+        path: this.eventPathSummary(ev),
+        toolbarConnected: view.bar.isConnected && view.foldBtn.isConnected,
+        fenceIsCurrent: view.fence.isConnected && view.fence === target.element,
+      })
+      this.toggleFold(view, actionId)
     })
 
     target.element.setAttribute(CODE_LANGBAR_ATTR, 'true')
+    target.element.appendChild(bar)
     this.views.set(target.key, view)
     return view
   }
 
   private destroyView(view: CodeBlockView): void {
     view.fence.removeAttribute(CODE_LANGBAR_ATTR)
-    view.fence.removeAttribute(CODE_FOLDABLE_ATTR)
     view.bar.remove()
-    view.foldBar.remove()
-    const timer = this.resetTimers.get(view.copyBtn)
-    if (timer !== undefined) window.clearTimeout(timer)
-    this.resetTimers.delete(view.copyBtn)
-  }
-
-  private hideView(view: CodeBlockView): void {
-    view.bar.style.display = 'none'
-    view.foldBar.style.display = 'none'
-  }
-
-  // ── 布局 ───────────────────────────────────────────────────
-
-  private layoutView(view: CodeBlockView, rect: DOMRect, previewLines: number): void {
-    const left = Math.round(rect.left)
-    const top = Math.round(rect.top)
-    const width = Math.max(60, Math.round(rect.width))
-
-    const bar = view.bar
-    bar.style.display = ''
-    bar.style.left = `${left}px`
-    bar.style.top = `${top}px`
-    bar.style.width = `${width}px`
-    bar.style.height = `${LANGBAR_HEIGHT_PX}px`
-
-    const showFoldBar = view.totalLines > previewLines
-    // 折叠条落在 PRE 的底部折叠带内（带由 syncViewContent 提前写入）。
-    const foldTop = Math.round(rect.bottom - FOLDBAR_HEIGHT_PX - FOLDBAR_INSET_PX)
-    view.foldBar.style.display = showFoldBar ? '' : 'none'
-    if (showFoldBar) {
-      view.foldBar.style.left = `${left}px`
-      view.foldBar.style.top = `${foldTop}px`
-      view.foldBar.style.width = `${width}px`
-      view.foldBar.style.height = `${FOLDBAR_HEIGHT_PX}px`
-    }
-
-    if (!view.shownAudited) {
-      view.shownAudited = true
-      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-SHOW', {
-        blockKey: view.key,
-        kind: 'code',
-        mode: 'langbar',
-        anchorRect: rectTuple(rect),
-        toolbarRect: [left, top, width, LANGBAR_HEIGHT_PX],
-        foldBarRect: showFoldBar ? [left, foldTop, width, FOLDBAR_HEIGHT_PX] : null,
-        belowCaptionLine: top - Math.round(rect.top),
-        insideAnchorRight: Math.round(rect.right) - (left + width),
-        insideAnchorBottom: Math.round(rect.bottom) - top,
-        captionLabel: view.fence.getAttribute('data-inkchapter-caption-label'),
-        buttonCount: 1,
-      })
-      view.lastLeft = left
-      view.lastTop = top
-      view.lastFoldTop = foldTop
-      return
-    }
-
-    if (view.lastLeft !== left || view.lastTop !== top || (showFoldBar && view.lastFoldTop !== foldTop)) {
-      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-REPOSITION', {
-        blockKey: view.key,
-        from: [view.lastLeft, view.lastTop],
-        to: [left, top],
-        anchorRect: rectTuple(rect),
-        foldBarRect: showFoldBar ? [left, foldTop, width, FOLDBAR_HEIGHT_PX] : null,
-      })
-      view.lastLeft = left
-      view.lastTop = top
-      view.lastFoldTop = foldTop
+    for (const btn of [view.copyBtn, view.foldBtn]) {
+      const timer = this.resetTimers.get(btn)
+      if (timer !== undefined) window.clearTimeout(timer)
+      this.resetTimers.delete(btn)
     }
   }
+
+  // ── 展示审计（每块一次） ───────────────────────────────────
+
+  private auditShownOnce(view: CodeBlockView): void {
+    if (view.shownAudited) return
+    view.shownAudited = true
+    const fenceRect = view.fence.getBoundingClientRect()
+    const barRect = view.bar.getBoundingClientRect()
+    const buttons = Array.from(view.bar.querySelectorAll('button'))
+    let preOverflow = ''
+    try { preOverflow = getComputedStyle(view.fence).overflow } catch { preOverflow = '' }
+    this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-SHOW', {
+      blockKey: view.key,
+      kind: 'code',
+      mode: 'langbar-in-fence',
+      anchorRect: rectTuple(fenceRect),
+      toolbarRect: rectTuple(barRect),
+      copyRect: rectTuple(view.copyBtn.getBoundingClientRect()),
+      foldRect: rectTuple(view.foldBtn.getBoundingClientRect()),
+      barChildren: view.bar.children.length,
+      captionLabel: view.fence.getAttribute('data-inkchapter-caption-label'),
+      foldable: view.totalLines > view.previewLines,
+      totalLines: view.totalLines,
+      previewLines: view.previewLines,
+      buttonCount: buttons.length,
+      preOverflow,
+      dpr: window.devicePixelRatio || 1,
+    })
+  }
+
+  /**
+   * 视口宽度变化（窗口缩放 / 侧栏拖拽）时输出一次真实布局：
+   * 证明语言栏 left/right 由 CSS 驱动而非旧坐标，且没有被裁到视口外。
+   */
+  private auditViewportLayout(): void {
+    const vw = window.innerWidth || 0
+    if (vw === this.lastViewportW) return
+    this.lastViewportW = vw
+    const entries: Array<{ key: string; bar: [number, number, number, number]; fence: [number, number, number, number] }> = []
+    let clipped = 0
+    for (const view of this.views.values()) {
+      if (!view.bar.isConnected) continue
+      const barRect = view.bar.getBoundingClientRect()
+      const fenceRect = view.fence.getBoundingClientRect()
+      if (barRect.right > vw + 1) clipped++
+      if (entries.length < 6) {
+        entries.push({ key: view.key, bar: rectTuple(barRect), fence: rectTuple(fenceRect) })
+      }
+    }
+    this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-LAYOUT', {
+      viewportW: vw,
+      dpr: window.devicePixelRatio || 1,
+      blocks: this.views.size,
+      clipped,
+      entries,
+    })
+  }
+
+  /** 滚动采样：语言栏与 PRE 同属一个滚动坐标系，相对位移漂移应恒为 0。 */
+  private auditScrollSync(): void {
+    if (this.disposed || this.views.size === 0) return
+    const vh = window.innerHeight || 0
+    let blocks = 0
+    let maxDrift = 0
+    let maxDelta = 0
+    let worst: string | null = null
+    for (const view of this.views.values()) {
+      if (!view.bar.isConnected) continue
+      const fr = view.fence.getBoundingClientRect()
+      if (fr.bottom <= 0 || fr.top >= vh) continue
+      const br = view.bar.getBoundingClientRect()
+      const delta = br.top - fr.top
+      if (view.syncBaselinePx === null) view.syncBaselinePx = delta
+      const drift = Math.abs(delta - view.syncBaselinePx)
+      blocks++
+      if (drift > maxDrift) { maxDrift = drift; worst = view.key }
+      if (Math.abs(delta) > maxDelta) maxDelta = Math.abs(delta)
+    }
+    if (blocks === 0) return
+    this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-SCROLL-SYNC', {
+      blocks,
+      maxDriftPx: Math.round(maxDrift * 100) / 100,
+      maxDeltaPx: Math.round(maxDelta * 100) / 100,
+      worstBlock: worst,
+      dpr: window.devicePixelRatio || 1,
+    })
+  }
+
+  // ── 内容同步 ───────────────────────────────────────────────
 
   private syncViewContent(view: CodeBlockView, target: ContentBlockTarget, previewLines: number): void {
     const language = resolveLanguage(target.element)
@@ -525,31 +582,69 @@ export class ContentBlockToolbarController {
     } else if (folded) {
       this.applyFoldProjection(view, previewLines)
     }
-    // 折叠带必须在测量 rect 之前落到 PRE 上，否则底部内边距不会计入本次布局。
-    if (total > previewLines) view.fence.setAttribute(CODE_FOLDABLE_ATTR, 'true')
-    else view.fence.removeAttribute(CODE_FOLDABLE_ATTR)
     this.syncFoldButton(view)
   }
 
   // ── 折叠（预览式） ─────────────────────────────────────────
 
+  /** 精确显示前 N 个逻辑行：优先使用真实行元素的像素范围，避免裁断半行。 */
+  private computePreviewHeight(fence: HTMLElement, previewLines: number): { height: number; source: string } {
+    try {
+      const lines = fence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+      if (previewLines > 0 && lines.length >= previewLines) {
+        const first = lines[0].getBoundingClientRect()
+        const nth = lines[previewLines - 1].getBoundingClientRect()
+        const h = Math.ceil(nth.bottom - first.top)
+        if (h > 0) return { height: h, source: 'line-rects' }
+      }
+    } catch { /* fall through */ }
+    const lh = this.measureLineHeight(fence)
+    return { height: Math.max(24, Math.ceil(lh * previewLines)), source: 'line-height' }
+  }
+
   private applyFoldProjection(view: CodeBlockView, previewLines: number): void {
-    const lineHeight = this.measureLineHeight(view.fence)
-    const height = Math.max(24, Math.round(previewLines * lineHeight + 6))
+    const { height, source } = this.computePreviewHeight(view.fence, previewLines)
     view.fence.classList.add(CODE_FOLD_CLASS)
     view.fence.setAttribute(CODE_FOLD_ATTR, 'true')
     view.fence.setAttribute(CODE_FOLD_PREVIEW_ATTR, String(previewLines))
     view.fence.setAttribute(CODE_FOLD_SUMMARY_ATTR, `已折叠 · ${previewLines} 行`)
-    view.fence.style.setProperty(CODE_FOLD_HEIGHT_VAR, `${height}px`)
+    const next = `${height}px`
+    const previous = view.fence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)
+    view.fence.style.setProperty(CODE_FOLD_HEIGHT_VAR, next)
+    if (previous === next) return
+    this.opts.emitAudit?.('FOLD-DOM-COMMIT', {
+      actionId: view.actionId,
+      blockKey: view.key,
+      folded: true,
+      previewLines,
+      previewHeight: height,
+      heightSource: source,
+      foldAttr: true,
+      previewAttr: previewLines,
+      heightVar: next,
+    })
   }
 
   private clearFoldProjection(view: CodeBlockView): void {
+    const hadProjection = view.fence.hasAttribute(CODE_FOLD_ATTR)
     view.folded = false
     view.fence.classList.remove(CODE_FOLD_CLASS)
     view.fence.removeAttribute(CODE_FOLD_ATTR)
     view.fence.removeAttribute(CODE_FOLD_PREVIEW_ATTR)
     view.fence.removeAttribute(CODE_FOLD_SUMMARY_ATTR)
     view.fence.style.removeProperty(CODE_FOLD_HEIGHT_VAR)
+    if (!hadProjection) return
+    this.opts.emitAudit?.('FOLD-DOM-COMMIT', {
+      actionId: view.actionId,
+      blockKey: view.key,
+      folded: false,
+      previewLines: view.previewLines,
+      previewHeight: null,
+      heightSource: null,
+      foldAttr: false,
+      previewAttr: null,
+      heightVar: null,
+    })
   }
 
   private measureLineHeight(fence: HTMLElement): number {
@@ -567,49 +662,55 @@ export class ContentBlockToolbarController {
   }
 
   private syncFoldButton(view: CodeBlockView): void {
-    const remaining = Math.max(0, view.totalLines - view.previewLines)
-    // 折叠态提示“展开剩余 N 行”，展开态提示“收起至预览”。
-    const label = view.folded ? `展开剩余 ${remaining} 行` : '收起至预览'
+    const foldable = view.totalLines > view.previewLines
+    view.foldBtn.style.display = foldable ? '' : 'none'
+    if (!foldable) return
+    const label = view.folded ? '展开全部代码' : `收起至前 ${view.previewLines} 行`
     const signature = `${view.folded}|${label}`
+    view.foldBtn.setAttribute('aria-expanded', view.folded ? 'false' : 'true')
     if (view.foldBtn.getAttribute('data-signature') === signature) return
     view.foldBtn.setAttribute('data-signature', signature)
-    view.foldBtn.setAttribute('aria-expanded', view.folded ? 'false' : 'true')
     view.foldBtn.setAttribute('title', label)
-    view.foldBtn.innerHTML = `${view.folded
-      ? iconSvg('chevron-down', `${FOLD_BAR_CLASS}__icon`)
-      : iconSvg('chevron-up', `${FOLD_BAR_CLASS}__icon`)}<span>${label}</span>`
+    view.foldBtn.setAttribute('aria-label', label)
+    view.foldBtn.innerHTML = iconSvg(
+      view.folded ? 'chevron-down' : 'chevron-up',
+      `${CONTENT_TOOLBAR_CLASS}__icon`,
+    )
   }
 
-  private toggleFold(view: CodeBlockView): void {
+  private toggleFold(view: CodeBlockView, actionId: string | null): void {
     if (view.totalLines <= view.previewLines) {
-      this.setCopyState(view, 'idle')
+      this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
+        actionId, blockKey: view.key, from: view.folded ? 'folded' : 'expanded', to: 'unchanged',
+        decision: 'IGNORED', reason: 'NOT_FOLDABLE',
+      })
       return
     }
-    if (view.folded) {
-      this.session.clearFold(view.key)
-      this.clearFoldProjection(view)
-      this.syncFoldButton(view)
-      this.opts.onLayoutInvalidated('content-block-unfold')
-      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD', {
-        decision: 'PASS',
-        reason: 'UNFOLDED:PREVIEW_TOGGLE',
-        blockKey: view.key,
+    // 同一次真实点击只允许一次状态转换（防止重复 click / 双击产生反向切换）。
+    if (actionId && view.handledActionId === actionId) {
+      this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
+        actionId, blockKey: view.key, from: view.folded ? 'folded' : 'expanded',
+        to: view.folded ? 'folded' : 'expanded',
+        decision: 'IGNORED', reason: 'DUPLICATE_ACTION',
       })
-      this.syncGeometry()
+      return
+    }
+    view.handledActionId = actionId
+
+    if (view.folded) {
+      this.setCollapsed(view, false, actionId, 'UNFOLDED:PREVIEW_TOGGLE')
       return
     }
 
-    const caretInside = this.selectionInside(view.fence)
-    const recentlyFocused = this.lastFocusedKey === view.key
-    if (caretInside || recentlyFocused) {
+    const caret = this.caretSnapshot(view)
+    // 只有“折叠会隐藏当前光标/选区”时才拒绝；光标在可见行内允许手动折叠。
+    if (caret.hiddenByPreview === true) {
       view.foldBtn.classList.add('is-error')
-      view.foldBtn.setAttribute('title', '光标位于该代码块内，无法折叠')
-      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD', {
-        decision: 'BLOCKED',
-        reason: 'CARET_OR_SELECTION_INSIDE',
-        caretInsideNow: caretInside,
-        recentlyFocused,
-        blockKey: view.key,
+      view.foldBtn.setAttribute('title', `光标位于第 ${(caret.caretLine ?? 0) + 1} 行，超出预览范围，无法折叠`)
+      this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
+        actionId, blockKey: view.key, from: 'expanded', to: 'expanded',
+        decision: 'BLOCKED', reason: 'CARET_IN_HIDDEN_PREVIEW',
+        caretInsideNow: this.selectionInside(view.fence), caret,
       })
       const timer = window.setTimeout(() => {
         view.foldBtn.classList.remove('is-error')
@@ -619,19 +720,212 @@ export class ContentBlockToolbarController {
       return
     }
 
-    this.session.setFold({ key: view.key, lineCount: view.totalLines, documentKey: null })
-    view.folded = true
-    this.applyFoldProjection(view, view.previewLines)
+    this.setCollapsed(view, true, actionId, 'FOLDED_PREVIEW')
+  }
+
+  /**
+   * 唯一折叠状态写入者：目标状态明确（true/false），不再“盲目 toggle”。
+   * 所有调用（按钮、自动展开）都必须经过这里，避免多处状态互相覆盖。
+   */
+  private setCollapsed(
+    view: CodeBlockView,
+    collapsed: boolean,
+    actionId: string | null,
+    reason: string,
+  ): boolean {
+    if (this.disposed || view.folded === collapsed) {
+      this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
+        actionId, blockKey: view.key,
+        from: view.folded ? 'folded' : 'expanded',
+        to: view.folded ? 'folded' : 'expanded',
+        decision: 'IGNORED', reason: 'ALREADY_IN_TARGET_STATE',
+      })
+      return false
+    }
+    if (collapsed) {
+      this.session.setFold({ key: view.key, lineCount: view.totalLines, documentKey: null })
+      view.folded = true
+      this.applyFoldProjection(view, view.previewLines)
+    } else {
+      this.session.clearFold(view.key)
+      this.clearFoldProjection(view)
+    }
     this.syncFoldButton(view)
-    this.opts.onLayoutInvalidated('content-block-fold')
+    this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
+      actionId, blockKey: view.key,
+      from: collapsed ? 'expanded' : 'folded',
+      to: collapsed ? 'folded' : 'expanded',
+      decision: 'PASS', reason,
+      previewLines: view.previewLines, totalLines: view.totalLines,
+      foldedKeys: this.session.entries().map(e => e.key),
+    })
     this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD', {
-      decision: 'PASS',
-      reason: 'FOLDED_PREVIEW',
+      decision: 'PASS', reason,
+      previewLines: view.previewLines, totalLines: view.totalLines, blockKey: view.key,
+    })
+    this.opts.onLayoutInvalidated(collapsed ? 'content-block-fold' : 'content-block-unfold')
+    this.scheduleVisualVerify(view, actionId)
+    return true
+  }
+
+  /** 下一帧与下下帧各回读一次真实渲染结果，用于检测视觉提交后是否被回滚。 */
+  private scheduleVisualVerify(view: CodeBlockView, actionId: string | null = null): void {
+    const id = actionId ?? view.actionId
+    try {
+      requestAnimationFrame(() => {
+        this.emitVisualVerify(view, 1, id)
+        requestAnimationFrame(() => this.emitVisualVerify(view, 2, id))
+      })
+    } catch {
+      this.emitVisualVerify(view, 1, id)
+    }
+  }
+
+  private emitVisualVerify(view: CodeBlockView, frame: number, actionId: string | null): void {
+    if (this.disposed || !view.fence.isConnected) return
+    const fence = view.fence
+    const cm = fence.querySelector('.CodeMirror') as HTMLElement | null
+    const fenceRect = fence.getBoundingClientRect()
+    const lines = fence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+    let fullyVisibleLines = 0
+    let cmClientHeight: number | null = null
+    let cmScrollHeight: number | null = null
+    let cmMaxHeight: string | null = null
+    if (cm) {
+      cmClientHeight = Math.round(cm.clientHeight)
+      cmScrollHeight = Math.round(cm.scrollHeight)
+      try { cmMaxHeight = getComputedStyle(cm).maxHeight } catch { cmMaxHeight = null }
+      const cmRect = cm.getBoundingClientRect()
+      for (const line of lines) {
+        const r = line.getBoundingClientRect()
+        if (r.top >= cmRect.top - 1 && r.bottom <= cmRect.bottom + 1) fullyVisibleLines++
+      }
+    }
+    this.opts.emitAudit?.('FOLD-VISUAL-VERIFY', {
+      actionId,
+      frame,
+      blockKey: view.key,
+      folded: view.folded,
       previewLines: view.previewLines,
       totalLines: view.totalLines,
-      blockKey: view.key,
+      fenceHeight: Math.round(fenceRect.height),
+      fenceWidth: Math.round(fenceRect.width),
+      barRect: rectTuple(view.bar.getBoundingClientRect()),
+      copyRect: rectTuple(view.copyBtn.getBoundingClientRect()),
+      foldRect: rectTuple(view.foldBtn.getBoundingClientRect()),
+      cmClientHeight,
+      cmScrollHeight,
+      cmMaxHeight,
+      fullyVisibleLines,
+      renderedLines: lines.length,
+      caretInside: this.selectionInside(fence),
+      dpr: window.devicePixelRatio || 1,
     })
-    this.syncGeometry()
+  }
+
+  private auditFoldPointerHit(view: CodeBlockView, ev: PointerEvent, actionId: string): void {
+    const btn = view.foldBtn
+    const rect = btn.getBoundingClientRect()
+    let hit: Element | null = null
+    try { hit = document.elementFromPoint(ev.clientX, ev.clientY) } catch { hit = null }
+    const hitKey = hit instanceof Element
+      ? hit.closest('[data-block-key]')?.getAttribute('data-block-key') ?? null
+      : null
+    this.opts.emitAudit?.('FOLD-POINTER-HIT', {
+      actionId,
+      blockKey: view.key,
+      pointerType: ev.pointerType ?? null,
+      button: ev.button,
+      detail: ev.detail,
+      isTrusted: ev.isTrusted,
+      client: [Math.round(ev.clientX), Math.round(ev.clientY)],
+      rect: rectTuple(rect),
+      hitSelf: !!hit && (hit === btn || btn.contains(hit)),
+      hitTag: hit ? hit.tagName : null,
+      hitClass: hit instanceof HTMLElement ? String(hit.className || '') : null,
+      hitBlockKey: hitKey,
+      path: this.eventPathSummary(ev),
+      toolbarConnected: view.bar.isConnected && btn.isConnected,
+      fenceConnected: view.fence.isConnected,
+      fenceIsCurrent: view.fence.getAttribute('cid') === view.key.split(':').pop(),
+      caret: this.caretSnapshot(view),
+      dpr: window.devicePixelRatio || 1,
+    })
+  }
+
+  private eventPathSummary(ev: Event): string[] {
+    try {
+      return ev.composedPath().slice(0, 8).map((node) => {
+        if (!(node instanceof Element)) {
+          return node instanceof Node ? String(node.nodeName) : 'window'
+        }
+        const cls = String(node.className || '').split(/\s+/).filter(Boolean).slice(0, 2).join('.')
+        const key = node.getAttribute('data-block-key')
+        return `${node.tagName.toLowerCase()}${cls ? `.${cls}` : ''}${key ? `[${key}]` : ''}`
+      })
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * 光标/选区快照：优先用 Range 所在逻辑行，其次用 CodeMirror wrapper 上的
+   * `CodeMirror` 实例（CM5 公开挂载点）读取 cursor；用于判断折叠是否会隐藏光标。
+   */
+  private caretSnapshot(view: CodeBlockView): CaretSnapshot {
+    const fence = view.fence
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const result: CaretSnapshot = {
+      activeTag: active?.tagName ?? null,
+      activeClass: active ? String(active.className || '').slice(0, 80) : null,
+      activeInFence: !!active && fence.contains(active),
+      activeIsFoldButton: active === view.foldBtn,
+      anchorInFence: false,
+      anchorLineIndex: null,
+      caretLine: null,
+      caretCh: null,
+      caretSource: 'none',
+      hiddenByPreview: null,
+      selectionType: null,
+    }
+    try {
+      const selection = window.getSelection()
+      result.selectionType = selection?.type ?? null
+      const anchor = selection?.anchorNode ?? null
+      if (anchor instanceof Node && fence.contains(anchor)) {
+        result.anchorInFence = true
+        const host = anchor instanceof Element ? anchor : anchor.parentElement
+        const line = host?.closest('.CodeMirror-line') as HTMLElement | null
+        if (line) {
+          const index = Array.from(fence.querySelectorAll('.CodeMirror-line')).indexOf(line)
+          if (index >= 0) {
+            result.anchorLineIndex = index
+            result.caretLine = index
+            result.caretSource = 'range'
+          }
+        }
+      }
+    } catch { /* noop */ }
+
+    if (result.caretLine === null) {
+      try {
+        type CmCursor = { line: number; ch: number }
+        type CmLike = { getCursor?: (end?: string) => CmCursor | null }
+        const wrapper = fence.querySelector('.CodeMirror') as
+          (HTMLElement & { CodeMirror?: CmLike }) | null
+        const cursor = wrapper?.CodeMirror?.getCursor?.('head') ?? null
+        if (cursor && typeof cursor.line === 'number') {
+          result.caretLine = cursor.line
+          result.caretCh = cursor.ch ?? null
+          result.caretSource = 'cm'
+        }
+      } catch { /* noop */ }
+    }
+
+    if (result.caretLine !== null) {
+      result.hiddenByPreview = result.caretLine >= view.previewLines
+    }
+    return result
   }
 
   private countRenderedLines(fence: HTMLElement): number {
@@ -704,8 +998,8 @@ export class ContentBlockToolbarController {
       this.resetTimers.delete(btn)
       btn.classList.remove('is-loading', 'is-success', 'is-error')
       btn.disabled = false
-      btn.setAttribute('title', '复制完整代码')
-      btn.setAttribute('aria-label', '复制完整代码')
+      btn.setAttribute('title', '复制代码')
+      btn.setAttribute('aria-label', '复制代码')
     }, FEEDBACK_RESET_MS)
     this.resetTimers.set(btn, timer)
   }
@@ -833,44 +1127,32 @@ export class ContentBlockToolbarController {
   }
 
   private handleFocusIn(ev: Event): void {
+    // 工具栏自身的焦点不属于“进入代码块”：不得据此阻断折叠或触发自动展开。
+    if (ev.target instanceof Element && ev.target.closest(`[${CONTENT_TOOLBAR_ATTR}]`)) return
     const target = resolveContentBlockTarget(ev.target, this.boundRoot)
     this.lastFocusedKey = target && target.kind === 'code' ? target.key : null
     if (!target || target.kind !== 'code') return
     const view = this.views.get(target.key)
     if (view?.folded) {
-      // 折叠块获得焦点 → 自动展开，避免输入落进不可见区域。
-      this.session.clearFold(view.key)
-      this.clearFoldProjection(view)
-      this.syncFoldButton(view)
-      this.opts.onLayoutInvalidated('content-block-unfold')
-      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD', {
-        decision: 'PASS',
-        reason: 'UNFOLDED:FOCUS_ENTERED_FOLDED_BLOCK',
-        blockKey: view.key,
-      })
+      // 折叠块获得焦点 → 自动展开，避免输入落进不可见区域（单一状态写入者）。
+      this.setCollapsed(view, false, null, 'UNFOLDED:FOCUS_ENTERED_FOLDED_BLOCK')
     }
     this.syncGeometry()
   }
 
   private handlePointerDown(ev: Event): void {
+    // 工具栏按钮上的按下不属于“进入代码块”，不得触发自动展开或光标迁移。
+    if (ev.target instanceof Element && ev.target.closest(`[${CONTENT_TOOLBAR_ATTR}]`)) return
     if (this.session.size === 0) return
     const target = resolveContentBlockTarget(ev.target, this.boundRoot)
     if (!target || target.kind !== 'code') return
     const view = this.views.get(target.key)
     if (view?.folded) {
-      this.session.clearFold(view.key)
-      this.clearFoldProjection(view)
-      this.syncFoldButton(view)
-      this.opts.onLayoutInvalidated('content-block-unfold')
-      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD', {
-        decision: 'PASS',
-        reason: 'UNFOLDED:POINTER_DOWN_ON_FOLDED_BLOCK',
-        blockKey: view.key,
-      })
+      this.setCollapsed(view, false, null, 'UNFOLDED:POINTER_DOWN_ON_FOLDED_BLOCK')
     }
   }
 
-  /** 按钮按下不转移焦点：编辑器光标/选区不被浮层改写。 */
+  /** 按钮按下不转移焦点：编辑器光标/选区不被工具栏改写。 */
   private bindButtonFocusGuard(btn: HTMLElement): void {
     const keep = (ev: Event): void => { ev.preventDefault() }
     btn.addEventListener('pointerdown', keep)
@@ -900,4 +1182,13 @@ export class ContentBlockToolbarController {
       return DEFAULT_PREVIEW_LINES
     }
   }
+}
+
+function rectTuple(rect: DOMRect): [number, number, number, number] {
+  return [
+    Math.round(rect.left),
+    Math.round(rect.top),
+    Math.round(rect.width),
+    Math.round(rect.height),
+  ]
 }

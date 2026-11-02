@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 内容块工具栏 V3 — 语言栏 / 预览折叠 / 图片复制 控制器测试。
+ * 内容块工具栏 V3 稳定性修复 — 语言栏（PRE 内部）/ 顶部折叠按钮 / 精确预览高度。
  * 只使用 jsdom + 既有 overlay 根，不启动 Typora。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -9,11 +9,9 @@ import {
   CODE_FOLD_HEIGHT_VAR,
   CODE_FOLD_PREVIEW_ATTR,
   CODE_FOLD_SUMMARY_ATTR,
-  CODE_FOLDABLE_ATTR,
   CODE_LANGBAR_ATTR,
   CONTENT_TOOLBAR_CLASS,
   ContentBlockToolbarController,
-  FOLD_BAR_CLASS,
 } from './content-block-toolbar-controller'
 import { ContentBlockToolbarSession } from './content-block-toolbar-session'
 
@@ -28,6 +26,15 @@ function stubRect(el: Element, left: number, top: number, width: number, height:
   el.getBoundingClientRect = () => rect
 }
 
+/** 给 CodeMirror 的每一行建立真实像素位置（20px/行），用于验证“不裁断半行”。 */
+function stubLines(fence: HTMLElement, lineCount: number, startTop: number, lineHeight = 20): void {
+  const lines = fence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+  lines.forEach((line, i) => {
+    stubRect(line, 100, startTop + i * lineHeight, 400, lineHeight)
+  })
+  expect(lines.length).toBe(lineCount)
+}
+
 interface Harness {
   write: HTMLElement
   overlay: HTMLElement
@@ -37,7 +44,6 @@ interface Harness {
   controller: ContentBlockToolbarController
   bars: () => HTMLElement[]
   barFor: (cid: string) => HTMLElement | null
-  foldBarFor: (cid: string) => HTMLElement | null
   copyBtnFor: (cid: string) => HTMLButtonElement | null
   foldBtnFor: (cid: string) => HTMLButtonElement | null
   copyText: ReturnType<typeof vi.fn>
@@ -45,14 +51,17 @@ interface Harness {
   onLayoutInvalidated: ReturnType<typeof vi.fn>
   audits: Array<{ event: string; payload: Record<string, unknown> }>
   setPreviewLines: (n: 5 | 10) => void
+  stubBarRect: (cid: string, left: number, top: number, width: number) => void
 }
 
 function createHarness(overrides: { source?: (cid: string) => string | null } = {}): Harness {
+  const longLines = Array.from({ length: 20 }, () => '<div class="CodeMirror-line"><span>code</span></div>').join('')
+  const shortLines = Array.from({ length: 3 }, () => '<div class="CodeMirror-line"><span>code</span></div>').join('')
   document.body.innerHTML = `
     <div data-inkchapter-utility-root="true" id="overlay-root"></div>
     <div id="write">
-      <pre class="md-fences" cid="long" lang="javascript" data-inkchapter-caption-label="代码 1-1"><div class="CodeMirror"><div class="CodeMirror-line"><span>code</span></div></div></pre>
-      <pre class="md-fences" cid="short" lang="python"><div class="CodeMirror"><div class="CodeMirror-line"><span>code</span></div></div></pre>
+      <pre class="md-fences" cid="long" lang="javascript" data-inkchapter-caption-label="代码 1-1"><div class="CodeMirror">${longLines}</div></pre>
+      <pre class="md-fences" cid="short" lang="python"><div class="CodeMirror">${shortLines}</div></pre>
       <p cid="p1"><span class="md-image" data-src="./a.png"><img id="img1" src="file:///D:/a.png"></span></p>
     </div>`
   const overlay = document.getElementById('overlay-root') as HTMLElement
@@ -63,6 +72,8 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
   stubRect(longFence, 100, 100, 400, 420)
   stubRect(shortFence, 100, 560, 400, 90)
   stubRect(img, 200, 700, 400, 150)
+  stubLines(longFence, 20, 134)
+  stubLines(shortFence, 3, 594)
 
   const source = overrides.source ?? ((cid: string) => (cid === 'long' ? LONG_CODE : SHORT_CODE))
   const copyText = vi.fn(async () => ({ ok: true, verified: true, reason: null }))
@@ -88,8 +99,7 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
 
   const barFor = (cid: string): HTMLElement | null =>
     overlay.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--langbar[data-block-key="code:cid:${cid}"]`)
-  const foldBarFor = (cid: string): HTMLElement | null =>
-    overlay.querySelector<HTMLElement>(`.${FOLD_BAR_CLASS}[data-block-key="code:cid:${cid}"]`)
+      ?? document.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--langbar[data-block-key="code:cid:${cid}"]`)
 
   return {
     write,
@@ -98,17 +108,32 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     shortFence,
     img,
     controller,
-    bars: () => Array.from(overlay.querySelectorAll<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--langbar`)),
+    bars: () => Array.from(document.querySelectorAll<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--langbar`)),
     barFor,
-    foldBarFor,
     copyBtnFor: (cid) => barFor(cid)?.querySelector<HTMLButtonElement>('[data-action="copy-code"]') ?? null,
-    foldBtnFor: (cid) => foldBarFor(cid)?.querySelector<HTMLButtonElement>('button') ?? null,
+    foldBtnFor: (cid) => barFor(cid)?.querySelector<HTMLButtonElement>('[data-action="toggle-fold"]') ?? null,
     copyText,
     copyImage,
     onLayoutInvalidated,
     audits,
     setPreviewLines: (n) => { previewLines = n },
+    stubBarRect: (cid, left, top, width) => {
+      const bar = barFor(cid)
+      if (bar) stubRect(bar, left, top, width, 30)
+    },
   }
+}
+
+/** 把真实 DOM Range 放进指定代码行，模拟 Typora 编辑器内的光标行。 */
+function placeCaret(line: HTMLElement): void {
+  const host = line.firstChild ?? line
+  const range = document.createRange()
+  if (host.nodeType === Node.TEXT_NODE) range.setStart(host, 0)
+  else range.setStart(line, 0)
+  range.collapse(true)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -130,111 +155,114 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('V3 langbar mount', () => {
-  it('creates one language bar per visible code block and none inside #write', () => {
+describe('V3 langbar mount (inside the fence)', () => {
+  it('creates one bar per code block inside each PRE, never in the overlay root', () => {
     harness = createHarness()
     expect(harness.bars()).toHaveLength(2)
-    expect(harness.write.querySelector(`.${CONTENT_TOOLBAR_CLASS}`)).toBeNull()
+    expect(harness.overlay.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toBeNull()
+    expect(harness.longFence.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toBeTruthy()
     expect(harness.longFence.getAttribute(CODE_LANGBAR_ATTR)).toBe('true')
   })
 
-  it('renders language badge, real language, line count and a copy button', () => {
+  it('renders badge, real language, line count, copy and fold buttons', () => {
     harness = createHarness()
     const bar = harness.barFor('long')!
     expect(bar.querySelector(`.${CONTENT_TOOLBAR_CLASS}__badge`)?.textContent).toBe('JS')
     expect(bar.querySelector(`.${CONTENT_TOOLBAR_CLASS}__lang`)?.textContent).toBe('JavaScript')
     expect(bar.querySelector(`.${CONTENT_TOOLBAR_CLASS}__lines`)?.textContent).toBe('20 行')
-    expect(harness.copyBtnFor('long')?.getAttribute('aria-label')).toBe('复制完整代码')
+    expect(harness.copyBtnFor('long')?.getAttribute('title')).toBe('复制代码')
+    expect(harness.foldBtnFor('long')?.style.display).not.toBe('none')
     expect(harness.barFor('short')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}__badge`)?.textContent).toBe('PY')
   })
 
-  it('anchors the language bar to the code body top and the fold bar inside the bottom band', () => {
+  it('never positions the bar with inline coordinates (native scroll coordinate system)', () => {
     harness = createHarness()
     const bar = harness.barFor('long')!
-    expect(bar.style.left).toBe('100px')
-    expect(bar.style.top).toBe('100px')
-    expect(bar.style.width).toBe('400px')
-    expect(bar.style.height).toBe('30px')
-    const foldBar = harness.foldBarFor('long')!
-    expect(foldBar.style.top).toBe('488px')
-    expect(foldBar.style.display).not.toBe('none')
+    expect(bar.style.left).toBe('')
+    expect(bar.style.top).toBe('')
+    expect(bar.style.width).toBe('')
   })
 
-  it('never renders a fold bar for short code', () => {
+  it('hides the fold button for short code', () => {
     harness = createHarness()
-    expect(harness.foldBarFor('short')!.style.display).toBe('none')
+    expect(harness.foldBtnFor('short')!.style.display).toBe('none')
   })
 
-  it('emits a geometry audit that proves the bar sits below the caption line', () => {
+  it('emits a show audit once, without any reposition chasing', () => {
     harness = createHarness()
-    const show = harness.audits.find((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-SHOW')
-    expect(show?.payload).toMatchObject({
-      kind: 'code',
-      mode: 'langbar',
+    const show = harness.audits.filter((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-SHOW')
+    expect(show).toHaveLength(2)
+    expect(show[0].payload).toMatchObject({
+      mode: 'langbar-in-fence',
       blockKey: 'code:cid:long',
       captionLabel: '代码 1-1',
-      buttonCount: 1,
+      foldable: true,
+      buttonCount: 2,
     })
-    expect(show?.payload.belowCaptionLine).toBe(0)
-    expect(show?.payload.insideAnchorRight).toBe(0)
-  })
-
-  it('repositions every bar on layout changes', () => {
-    harness = createHarness()
     stubRect(harness.longFence, 40, 100, 400, 420)
     harness.controller.syncGeometry()
-    expect(harness.barFor('long')!.style.left).toBe('40px')
-    const reposition = harness.audits.find((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-REPOSITION')
-    expect(reposition?.payload).toMatchObject({ from: [100, 100], to: [40, 100] })
+    expect(harness.audits.filter((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-REPOSITION')).toHaveLength(0)
   })
 
-  it('dispose removes every bar and the image toolbar', () => {
+  it('re-attaches the bar if the fence loses it on re-render', () => {
+    harness = createHarness()
+    const bar = harness.barFor('long')!
+    bar.remove()
+    harness.controller.syncGeometry()
+    expect(harness.longFence.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toBeTruthy()
+  })
+
+  it('dispose removes bars from fences and the image toolbar from the overlay', () => {
     harness = createHarness()
     harness.controller.dispose()
+    expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
     expect(harness.overlay.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}`)).toHaveLength(0)
-    expect(harness.overlay.querySelectorAll(`.${FOLD_BAR_CLASS}`)).toHaveLength(0)
+    harness = null
   })
 })
 
-describe('V3 preview folding', () => {
-  it('reserves an in-block fold band and keeps the fold bar inside the fence', () => {
+describe('V3 preview folding (top-bar control)', () => {
+  it('folds to exactly the first 10 lines without touching the CodeMirror DOM', () => {
     harness = createHarness()
-    expect(harness.longFence.getAttribute(CODE_FOLDABLE_ATTR)).toBe('true')
-    expect(harness.shortFence.hasAttribute(CODE_FOLDABLE_ATTR)).toBe(false)
-    const foldBar = harness.foldBarFor('long')!
-    // rect = top 100 / height 420 → bottom 520；折叠条在带内（bottom - 28 - 4）。
-    expect(foldBar.style.top).toBe('488px')
-    expect(foldBar.style.display).not.toBe('none')
-  })
-
-  it('folds 20 lines to the first 10 and keeps the code DOM intact', () => {
-    harness = createHarness()
-    const before = harness.longFence.innerHTML
+    const before = harness.longFence.querySelector('.CodeMirror')!.innerHTML
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.getAttribute(CODE_FOLD_ATTR)).toBe('true')
     expect(harness.longFence.getAttribute(CODE_FOLD_PREVIEW_ATTR)).toBe('10')
     expect(harness.longFence.getAttribute(CODE_FOLD_SUMMARY_ATTR)).toBe('已折叠 · 10 行')
-    expect(harness.longFence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)).toMatch(/px$/)
-    expect(harness.longFence.innerHTML).toBe(before)
+    // 20px/行 × 10 行 = 200px，来自真实行元素而非固定留白。
+    expect(harness.longFence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)).toBe('200px')
+    expect(harness.longFence.querySelector('.CodeMirror')!.innerHTML).toBe(before)
     expect(harness.onLayoutInvalidated).toHaveBeenCalledWith('content-block-fold')
-    expect(harness.foldBtnFor('long')!.textContent).toContain('展开剩余 10 行')
-    const audit = harness.audits.find(
-      (a) => a.event === 'CONTENT-BLOCK-TOOLBAR-FOLD' && a.payload.reason === 'FOLDED_PREVIEW',
-    )
-    expect(audit?.payload).toMatchObject({ previewLines: 10, totalLines: 20 })
+    expect(harness.foldBtnFor('long')!.getAttribute('title')).toBe('展开全部代码')
   })
 
-  it('switches to 5 preview lines when the setting changes', () => {
+  it('emits the staged fold audits (dispatch → transition → dom commit → visual verify)', () => {
+    harness = createHarness()
+    harness.stubBarRect('long', 100, 100, 400)
+    harness.foldBtnFor('long')!.click()
+    vi.advanceTimersByTime(20)
+    const events = harness.audits.map((a) => a.event)
+    expect(events).toContain('FOLD-CLICK-DISPATCH')
+    expect(events).toContain('FOLD-STATE-TRANSITION')
+    expect(events).toContain('FOLD-DOM-COMMIT')
+    expect(events).toContain('FOLD-VISUAL-VERIFY')
+    const transition = harness.audits.find((a) => a.event === 'FOLD-STATE-TRANSITION')
+    expect(transition?.payload).toMatchObject({ from: 'expanded', to: 'folded', decision: 'PASS' })
+    const commit = harness.audits.find((a) => a.event === 'FOLD-DOM-COMMIT')
+    expect(commit?.payload).toMatchObject({ folded: true, previewLines: 10, previewHeight: 200 })
+  })
+
+  it('switches to 5 preview lines and halves the preview height', () => {
     harness = createHarness()
     harness.foldBtnFor('long')!.click()
-    const height10 = harness.longFence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)
     harness.setPreviewLines(5)
     harness.controller.syncGeometry()
     expect(harness.longFence.getAttribute(CODE_FOLD_PREVIEW_ATTR)).toBe('5')
-    expect(harness.longFence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)).not.toBe(height10)
+    expect(harness.longFence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)).toBe('100px')
+    expect(harness.foldBtnFor('long')!.getAttribute('title')).toBe('展开全部代码')
   })
 
-  it('expands back through the same bar', () => {
+  it('expands back through the same top-bar button and restores natural height', () => {
     harness = createHarness()
     const btn = () => harness!.foldBtnFor('long')!
     btn().click()
@@ -243,22 +271,55 @@ describe('V3 preview folding', () => {
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
     expect(harness.longFence.hasAttribute(CODE_FOLD_PREVIEW_ATTR)).toBe(false)
     expect(harness.longFence.style.getPropertyValue(CODE_FOLD_HEIGHT_VAR)).toBe('')
-    expect(btn().textContent).toContain('收起至预览')
+    expect(btn().getAttribute('title')).toBe('收起至前 10 行')
     expect(harness.onLayoutInvalidated).toHaveBeenLastCalledWith('content-block-unfold')
+    const last = harness.audits.filter((a) => a.event === 'FOLD-STATE-TRANSITION').pop()
+    expect(last?.payload).toMatchObject({ from: 'folded', to: 'expanded', decision: 'PASS' })
   })
 
-  it('refuses to fold while the caret is inside the block', () => {
+  it('allows folding while the caret is on a visible line (no intermittent refusal)', () => {
     harness = createHarness()
     const line = harness.longFence.querySelector('.CodeMirror-line') as HTMLElement
     line.tabIndex = 0
     line.focus()
+    placeCaret(line)
+    harness.controller.syncGeometry()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const transition = harness.audits.filter((a) => a.event === 'FOLD-STATE-TRANSITION').pop()
+    expect(transition?.payload).toMatchObject({ from: 'expanded', to: 'folded', decision: 'PASS' })
+  })
+
+  it('refuses only when folding would hide the caret line', () => {
+    harness = createHarness()
+    const lines = harness.longFence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+    const hiddenLine = lines[14]
+    hiddenLine.tabIndex = 0
+    hiddenLine.focus()
+    placeCaret(hiddenLine)
     harness.controller.syncGeometry()
     harness.foldBtnFor('long')!.click()
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
     const blocked = harness.audits.find(
-      (a) => a.event === 'CONTENT-BLOCK-TOOLBAR-FOLD' && a.payload.decision === 'BLOCKED',
+      (a) => a.event === 'FOLD-STATE-TRANSITION' && a.payload.decision === 'BLOCKED',
     )
-    expect(blocked?.payload).toMatchObject({ reason: 'CARET_OR_SELECTION_INSIDE', recentlyFocused: true })
+    expect(blocked?.payload).toMatchObject({
+      reason: 'CARET_IN_HIDDEN_PREVIEW',
+      caret: { caretLine: 14, hiddenByPreview: true },
+    })
+  })
+
+  it('allows folding when the caret line cannot be resolved (no range / no CM)', () => {
+    harness = createHarness()
+    const line = harness.longFence.querySelector('.CodeMirror-line') as HTMLElement
+    line.tabIndex = 0
+    line.focus()
+    window.getSelection()?.removeAllRanges()
+    harness.controller.syncGeometry()
+    harness.foldBtnFor('long')!.click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(true)
+    const dispatch = harness.audits.find((a) => a.event === 'FOLD-CLICK-DISPATCH')
+    expect(dispatch?.payload.caret).toMatchObject({ caretSource: 'none', hiddenByPreview: null })
   })
 
   it('auto-expands when a folded block gains focus', () => {
@@ -289,7 +350,30 @@ describe('V3 preview folding', () => {
     harness.controller.resetForDocument('FILE_OPEN')
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
     expect(harness.controller.getFoldKeys()).toEqual([])
-    expect(harness.overlay.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
+    expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
+  })
+})
+
+describe('V3 scroll synchronisation', () => {
+  it('reports zero relative drift while the fence and bar scroll together', () => {
+    harness = createHarness()
+    harness.stubBarRect('long', 100, 100, 400)
+    harness.stubBarRect('short', 100, 560, 400)
+    harness.controller.onEditorScroll()
+    vi.advanceTimersByTime(20)
+    const first = harness.audits.filter((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-SCROLL-SYNC').pop()
+    expect(first?.payload).toMatchObject({ blocks: 2, maxDriftPx: 0 })
+
+    // 模拟滚动：代码块与语言栏同步上移 260px（共享滚动坐标系）。
+    stubRect(harness.longFence, 100, -160, 400, 420)
+    stubRect(harness.shortFence, 100, 300, 400, 90)
+    harness.stubBarRect('long', 100, -160, 400)
+    harness.stubBarRect('short', 100, 300, 400)
+    harness.controller.onEditorScroll()
+    vi.advanceTimersByTime(20)
+    const second = harness.audits.filter((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-SCROLL-SYNC').pop()
+    expect(second?.payload).toMatchObject({ blocks: 2, maxDriftPx: 0 })
+    expect(harness.audits.filter((a) => a.event === 'CONTENT-BLOCK-TOOLBAR-REPOSITION')).toHaveLength(0)
   })
 })
 

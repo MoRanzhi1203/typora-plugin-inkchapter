@@ -45,7 +45,7 @@ describe('CONTENT-TOOLBAR-STYLE shell', () => {
 
   it('respects prefers-reduced-motion', () => {
     expect(scss).toContain('@media (prefers-reduced-motion: reduce)')
-    expect(scss).toContain('.inkchapter-code-foldbar__btn')
+    expect(scss).toContain('.inkchapter-content-toolbar__btn')
     expect(scss).toContain('animation: none')
   })
 
@@ -56,44 +56,57 @@ describe('CONTENT-TOOLBAR-STYLE shell', () => {
 })
 
 describe('CONTENT-TOOLBAR-STYLE V3 language bar', () => {
+  it('pins the bar inside the fence so it shares the native scroll coordinate system', () => {
+    const bar = ruleBody('.inkchapter-content-toolbar--langbar {')
+    expect(bar).toContain('position: absolute')
+    expect(bar).toContain('top: 0')
+    expect(bar).toContain('left: 0')
+    expect(bar).toContain('width: 100%')
+    expect(bar).not.toContain('transition: opacity')
+  })
+
   it('reserves in-block space for the language bar without touching Markdown', () => {
     const fence = ruleBody("#write pre[data-inkchapter-langbar='true'] {")
     expect(fence).toContain('position: relative')
     expect(fence).toContain('padding-top: 34px')
   })
 
-  it('renders badge / language / line count and keeps only the copy button interactive', () => {
+  it('renders badge / language / line count and 28px copy + fold hit areas', () => {
     expect(ruleBody('.inkchapter-content-toolbar__badge {')).toContain('font-family: var(--font-monospace')
     expect(ruleBody('.inkchapter-content-toolbar__lang {')).toContain('font-size: 12px')
     expect(ruleBody('.inkchapter-content-toolbar__lines {')).toContain('font-size: 11px')
     expect(ruleBody('.inkchapter-content-toolbar__btn--copy {')).toContain('margin-left: auto')
-    expect(ruleBody('.inkchapter-code-foldbar__btn {')).toContain('pointer-events: auto')
+    expect(ruleBody('.inkchapter-content-toolbar__btn--fold {')).toContain('margin-left: 2px')
+    const sized = ruleBody(
+      '.inkchapter-content-toolbar--langbar .inkchapter-content-toolbar__btn {',
+    )
+    expect(sized).toContain('width: 28px')
+    expect(sized).toContain('height: 28px')
   })
 })
 
 describe('CONTENT-TOOLBAR-STYLE V3 folded preview', () => {
   it('clips only the CodeMirror height and keeps the PRE (and its caption) unclipped', () => {
-    const pre = ruleBody("#write pre[data-inkchapter-code-folded='true'] {")
-    expect(pre).toContain('position: relative')
-    expect(pre).not.toContain('overflow: hidden')
-    expect(pre).not.toContain('height: 44px')
     const cm = ruleBody("#write pre[data-inkchapter-code-folded='true'] > .CodeMirror {")
     expect(cm).toContain('max-height: var(--ink-fold-preview-height')
     expect(cm).toContain('overflow: hidden')
+    // PRE 自身不得出现 overflow/固定高度规则（题注与选中态不被裁切）。
+    expect(scss).not.toMatch(/#write pre\[data-inkchapter-code-folded='true'\]\s*\{[^}]*overflow/)
   })
 
-  it('paints a soft fade instead of removing the code body', () => {
+  it('paints a 20px soft fade and never reserves a bottom fold band', () => {
     const fade = ruleBody("#write pre[data-inkchapter-code-folded='true']::after {")
     expect(fade).toContain('linear-gradient')
     expect(fade).toContain('pointer-events: none')
-    expect(fade).not.toContain('attr(data-inkchapter-fold-summary)')
-    expect(fade).toContain('bottom: var(--ink-fold-band')
+    expect(fade).toContain('height: 20px')
+    expect(fade).toContain('bottom: 0')
+    expect(scss).not.toContain('--ink-fold-band')
+    expect(scss).not.toContain('data-inkchapter-code-foldable')
+    expect(scss).not.toContain('.inkchapter-code-foldbar')
   })
 
-  it('reserves an in-block fold band so the fold control never covers code or caption', () => {
-    const band = ruleBody("#write pre[data-inkchapter-code-foldable='true'] {")
-    expect(band).toContain('padding-bottom: 36px')
-    expect(band).toContain('--ink-fold-band: 36px')
+  it('keeps the bottom padding untouched so expanded code has its natural height', () => {
+    expect(scss).not.toContain('padding-bottom: 36px')
   })
 
   it('supports code captions above and below the fence', () => {

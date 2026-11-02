@@ -94,14 +94,17 @@ function mountHost(): DocumentUtilityOverlayHost {
 const rootSelector = '[data-inkchapter-utility-root="true"]'
 
 describe('CONTENT-TOOLBAR-HOST mount', () => {
-  it('mounts one language bar per visible code block inside the existing overlay root', async () => {
+  it('mounts one language bar per code block inside each fence (never in the overlay root)', async () => {
     mountHost()
     await new Promise((resolve) => setTimeout(resolve, 40))
     const root = document.querySelector(rootSelector) as HTMLElement
     const write = document.getElementById('write') as HTMLElement
-    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(1)
+    const fence = write.querySelector('pre.md-fences') as HTMLElement
+    // V3 stability：语言栏挂在 PRE 内部，与代码块共享原生滚动坐标系。
+    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
     expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(1)
-    expect(write.querySelector(`.${CONTENT_TOOLBAR_CLASS}`)).toBeNull()
+    expect(fence.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toBeTruthy()
+    expect(fence.querySelector('.CodeMirror')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}`)).toBeNull()
   })
 
   it('keeps existing overlay surfaces intact (single root / toolbar / navigator / drawer)', () => {
@@ -125,17 +128,20 @@ describe('CONTENT-TOOLBAR-HOST mount', () => {
 })
 
 describe('CONTENT-TOOLBAR-HOST interaction', () => {
-  it('keeps the language bar anchored across an editor scroll (no stale position)', async () => {
+  it('keeps the language bar inside the fence across an editor scroll (no inline position)', async () => {
     mountHost()
     await new Promise((resolve) => setTimeout(resolve, 40))
-    const bar = document.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`) as HTMLElement
+    const fence = document.querySelector('pre.md-fences') as HTMLElement
+    const bar = fence.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`) as HTMLElement
     expect(bar).toBeTruthy()
     expect(bar.style.display).not.toBe('none')
     ;(document.getElementById('scroll-host') as HTMLElement).dispatchEvent(new Event('scroll'))
     await new Promise((resolve) => setTimeout(resolve, 60))
-    // V3: 滚动不隐藏语言栏，只重定位（折叠条随内容移动）。
+    // 语言栏是 PRE 的子节点：滚动不隐藏、不重定位、不产生 inline 坐标。
     expect(bar.isConnected).toBe(true)
-    expect(bar.style.top).toBe('100px')
+    expect(bar.parentElement).toBe(fence)
+    expect(bar.style.top).toBe('')
+    expect(bar.style.left).toBe('')
   })
 
   it('resets code-block views on document switch', async () => {
