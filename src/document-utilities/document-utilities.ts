@@ -149,6 +149,8 @@ export interface DocumentUtilities {
   dispose: () => void
   /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only). */
   getSnapshot: () => DocumentDiagnosticsSnapshot | null
+  /** 即时短提示（复用唯一 toast，重复调用只更新文案，不堆叠）。 */
+  showTransientHint: (message: string) => void
 }
 
 /**
@@ -491,5 +493,6 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     // Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only,
     // consumed by the control-surface invariant).
     getSnapshot: () => host.getSnapshot(),
+    showTransientHint: (message: string) => host.showTransientHint(message),
   }
 }

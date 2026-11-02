@@ -3733,8 +3733,7 @@ export class DocumentUtilityOverlayHost {
     this.reconcileActiveGapGroup(admitted)
     this.handleStrictSingleH1Popup(admitted)
     this.renderDiagnosticsButton()
-    // Code Block V4 — compact per-block diagnostic counts on the language bar.
-    this.contentBlockToolbar?.refreshDiagnosticBadges()
+    // Code Block V4 — read-only per-block marks (no count badge).
     this.contentBlockToolbar?.refreshDiagnosticMarks()
     this.renderLockButton()
     // V5.12-R6 §11/§15/§19 — the empty-document short-circuit gates + audit are
@@ -4500,7 +4499,6 @@ export class DocumentUtilityOverlayHost {
         onLayoutInvalidated: (reason) => this.scheduleGeometrySync(reason),
         emitAudit: toolbarOpts.emitAudit,
         getPreviewLines: toolbarOpts.getPreviewLines,
-        getBlockDiagnostics: (ordinal) => this.readCodeBlockDiagnosticCounts(ordinal),
         getBlockDiagnosticMarks: (ordinal) => this.readCodeBlockDiagnosticMarks(ordinal),
       })
       this.contentBlockToolbar.mount()
@@ -22683,29 +22681,10 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * Code Block V4 — per-block diagnostic counts for the compact language-bar
-   * badge. Reads the committed snapshot only; never recomputes or filters UI.
-   */
-  private readCodeBlockDiagnosticCounts(ordinal: number): { error: number; warning: number; hint: number } | null {
-    const diagnostics = this.snapshot?.diagnostics
-    if (!diagnostics || !Number.isInteger(ordinal) || ordinal < 0) return null
-    const identity = `block:code:${ordinal}`
-    let error = 0
-    let warning = 0
-    let hint = 0
-    for (const d of diagnostics) {
-      const loc = d.location
-      if (!loc || loc.kind !== 'block-node' || loc.blockKind !== 'code' || loc.stableIdentity !== identity) continue
-      if (d.severity === 'error') error++
-      else if (d.severity === 'warning') warning++
-      else hint++
-    }
-    return { error, warning, hint }
-  }
-
-  /**
-   * Code Block V4 — read-only per-block marks. Empty-line runs become line
-   * background classes; punctuation findings become one-character text marks.
+   * Code Block V4 — read-only per-block marks. Empty-line runs become gutter
+   * line markers (never a full-line background); punctuation findings become
+   * one-character text marks. Every mark carries the source signature it was
+   * computed from, so the display layer can reject stale snapshots.
    */
   private readCodeBlockDiagnosticMarks(ordinal: number): CodeDiagnosticMark[] {
     const diagnostics = this.snapshot?.diagnostics
@@ -22731,6 +22710,9 @@ export class DocumentUtilityOverlayHost {
         endLine,
         endColumn,
         blank: ruleId === 'CB001' || ruleId === 'CB002' || ruleId === 'CB003',
+        contentSignature: typeof meta?.['contentSignature'] === 'string'
+          ? (meta['contentSignature'] as string)
+          : undefined,
       })
     }
     return marks
@@ -33822,6 +33804,15 @@ export class DocumentUtilityOverlayHost {
   // ── Toast (subtle, transient) ───────────────────────
   private toastEl: HTMLDivElement | null = null
   private toastTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Public transient hint — reuses the ONE toast element, so repeated calls
+   * replace the current message instead of stacking notifications.
+   */
+  showTransientHint(message: string): void {
+    if (!message) return
+    this.showToast(message)
+  }
 
   private showToast(message: string): void {
     if (!this.root) return

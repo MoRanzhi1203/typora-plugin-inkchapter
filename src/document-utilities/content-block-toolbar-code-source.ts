@@ -137,3 +137,18 @@ export function codeFenceOrdinal(element: HTMLElement, editorRoot: HTMLElement):
     return -1
   }
 }
+
+/**
+ * 代码源文本的内容签名（FNV-1a 32 位，十六进制）。
+ *
+ * 诊断在某一行号上成立，只对生成它的那份源文本有效；显示层用同一签名验证
+ * “当前 CM 内容 == 诊断内容”，防止旧异步结果盖在新内容上。
+ */
+export function codeContentSignature(text: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${text.length.toString(16)}-${hash.toString(16).padStart(8, '0')}`
+}

@@ -4855,35 +4855,10 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   white-space: nowrap;
 }
 
-/* 紧凑诊断计数：仅在该代码块存在诊断时显示，不挤占语言/行数与右侧按钮。 */
-.inkchapter-content-toolbar__diag {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  margin-left: 4px;
-  padding: 0 4px;
-  border-radius: 8px;
-  font-size: 10px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: #fff;
-  background: #4b8bf5;
-}
-
-.inkchapter-content-toolbar__diag.is-warning {
-  background: #c98a00;
-}
-
-.inkchapter-content-toolbar__diag.is-error {
-  background: #c62828;
-}
-
-/* 代码块只读行级标记：空行区段背景、全角标点下划线（仅展示，不改文本）。 */
+/* 代码块只读行级标记：空行区段只标记行号侧（不铺满代码行），全角标点用下划线。 */
 .inkchapter-code-diag-blank {
-  background: color-mix(in srgb, #c98a00 10%, transparent);
+  background: color-mix(in srgb, #c98a00 22%, transparent);
+  box-shadow: inset 2px 0 0 #c98a00;
 }
 
 .inkchapter-code-diag-range {
@@ -4932,6 +4907,19 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
     var(--bg-color, var(--background-primary, #fff))
   );
   pointer-events: none;
+}
+
+
+/* 折叠后仍有诊断位于预览区之外：底部细色带提示“下面还有问题”，不显示数量。 */
+#write pre[data-inkchapter-code-folded='true'][data-inkchapter-fold-diag='true']::after {
+  height: 22px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, #c98a00 18%, transparent)
+  );
+  border-bottom: 2px solid #c98a00;
+  box-sizing: border-box;
 }
 
 

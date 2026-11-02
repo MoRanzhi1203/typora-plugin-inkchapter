@@ -196,6 +196,10 @@ import {
   recordIndentEligibilityBlock,
 } from './paragraph-indent-eligibility'
 import {
+  resolveDeleteBoundaryGuard,
+  type DeleteBoundaryGuardDecision,
+} from './paragraph-delete-boundary'
+import {
   PostTextInputObservationLifecycle,
   type PostTextInputObservationState,
   type PostTextInputCancelReason,
@@ -542,6 +546,8 @@ export interface ServiceContext {
   documentContext?: InkChapterDocumentContext
   /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (invariant read). */
   getDiagnosticSnapshot?: () => DocumentDiagnosticsSnapshot | null
+  /** 现有即时提示组件（短提示，同一时刻只保留一条，不堆积）。 */
+  showTransientHint?: (message: string) => void
 }
 
 /** Reasons that mandate a force refresh (skip dirty check entirely). */
@@ -588,6 +594,9 @@ const DOM_POSITION_FOLLOWING = 4
  * split). A split beyond this window is a genuinely new user action.
  */
 const ENTER_SPLIT_ECHO_WINDOW_MS = 250
+
+/** P0-3 — 同一结构边界重复按 Delete 时，提示只刷新、不堆叠的判定窗口。 */
+const DELETE_BOUNDARY_HINT_DEDUPE_MS = 800
 
 /**
  * How long a plain-paragraph merge stays invertible across a history navigation.
@@ -691,6 +700,9 @@ export class HeadingNumberingService {
   // ── R58.6.7: User Intent Epoch (editor-wide trusted intent authority) ──
   private userIntentEpoch = 0
   private lastUserIntentKey = ''
+  /** P0-3 — 结构边界提示节流状态。 */
+  private lastDeleteBoundaryHintAt = 0
+  private lastDeleteBoundaryHintMessage = ''
   private lastUserIntentSource: UserIntentSource | '' = ''
   private lastUserIntentTime = 0
   private intentSeq = 0
@@ -10659,6 +10671,45 @@ export class HeadingNumberingService {
   }
 
   /**
+   * P0-3 — 结构边界 Delete 的唯一判定入口（只读）。
+   *
+   * 必须全部满足：折叠光标、普通顶层空段落、显式 force-indent、光标在逻辑
+   * 末端、下一块为不可合并结构、非 IME。任何一项不满足都交给 Typora 原生行为。
+   */
+  private resolveDeleteStructuralBoundary(): DeleteBoundaryGuardDecision {
+    const root = this.adapter.getEditorRoot()
+    const sel = typeof window !== 'undefined' ? window.getSelection() : null
+    const paragraph = root ? resolveCurrentBodyParagraph(root) : null
+    return resolveDeleteBoundaryGuard({
+      paragraph,
+      indentMode: paragraph ? getParagraphIndentMode(paragraph) : 'auto',
+      selectionCollapsed: sel ? sel.isCollapsed : false,
+      caretAtLogicalEnd: sel ? isCursorAtEnd() : false,
+      nextBlock: paragraph?.nextElementSibling ?? null,
+      composing: false,
+    })
+  }
+
+  /** 同一位置快速重复按键：只刷新当前提示，不堆积通知。 */
+  private reportBlockedDeleteBoundary(decision: DeleteBoundaryGuardDecision): void {
+    const now = Date.now()
+    const repeated = decision.message != null
+      && this.lastDeleteBoundaryHintMessage === decision.message
+      && now - this.lastDeleteBoundaryHintAt < DELETE_BOUNDARY_HINT_DEDUPE_MS
+    this.lastDeleteBoundaryHintAt = now
+    this.lastDeleteBoundaryHintMessage = decision.message ?? ''
+    if (decision.message) this.ctx.showTransientHint?.(decision.message)
+    emitRuntimeAudit('DELETE-STRUCTURAL-BOUNDARY-BLOCKED', {
+      documentKey: this.getDocumentKey() ?? 'none',
+      kind: decision.kind,
+      reason: decision.reason,
+      message: decision.message,
+      repeated,
+      decision: 'BLOCKED',
+    })
+  }
+
+  /**
    * PF4: Arm a single-slot boundary merge intent at keydown, BEFORE Typora's
    * native DOM mutation. Only arms on a genuine ordinary-body paragraph
    * boundary (Delete at end / Backspace at start with a mergeable neighbor).
@@ -12604,7 +12655,6 @@ export class HeadingNumberingService {
     const onIntentKeydown = (e: KeyboardEvent): void => {
       if (this.skipIfInkChapterUiEvent(e, 'intent-keydown')) return
       if (e.isComposing) return
-
       // ── PF6: history navigation intent (Undo / Redo) ──
       // Captured at keydown so a controlled indent recovery can be proven even
       // when Typora's own undo manager does not emit beforeinput.
@@ -12625,6 +12675,19 @@ export class HeadingNumberingService {
           this.preMergeParagraphOrderAt = Date.now()
         } catch { this.preMergeParagraphOrder = null }
         return
+      }
+
+      // ── P0-3: 结构边界 Delete 保护（必须在原生模型修改之前判定） ──
+      // force-indent 空段落 + 下一块为不可合并结构（代码/表格/公式/图片/
+      // HTML/分隔线）→ 阻止本次 Delete，绝不先交换再修回。
+      if (e.key === 'Delete' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const boundary = this.resolveDeleteStructuralBoundary()
+        if (boundary.blocked) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          this.reportBlockedDeleteBoundary(boundary)
+          return
+        }
       }
 
       let source: UserIntentSource
@@ -12695,6 +12758,17 @@ export class HeadingNumberingService {
 
       if (deducedKey === 'TEXT_INPUT' && e.isComposing) {
         this.auditImeSelection('beforeinput', e.inputType, e.isComposing)
+      }
+
+      // ── P0-3 兜底：keydown 未拦下时，仍在原生模型修改前阻止 ──
+      if (deducedKey === 'Delete') {
+        const boundary = this.resolveDeleteStructuralBoundary()
+        if (boundary.blocked) {
+          e.preventDefault()
+          e.stopPropagation()
+          this.reportBlockedDeleteBoundary(boundary)
+          return
+        }
       }
 
       this.beginTrustedUserIntent(

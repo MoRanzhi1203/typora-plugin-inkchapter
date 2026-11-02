@@ -99,7 +99,7 @@ import {
 import { getDocumentInlineLinkAuthority } from './document-inline-link-authority'
 // Code Block V4 — read-only lint (source-only, never edits the Markdown).
 import { analyzeCodeBlockV4 } from './document-diagnostic-code-block-v4'
-import { parseFencedCodeBlocks, readFenceSourceFromElement } from './content-block-toolbar-code-source'
+import { parseFencedCodeBlocks, readFenceSourceFromElement, codeContentSignature } from './content-block-toolbar-code-source'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -3370,6 +3370,9 @@ export function computeDocumentDiagnostics(
               endLine: finding.endLine,
               endColumn: finding.endColumn,
               confidence: finding.confidence,
+              // Display-layer version gate: marks are only painted while the
+              // live CodeMirror text still has this exact signature.
+              contentSignature: codeContentSignature(text),
             },
             location: { kind: 'block-node', blockKind: 'code', stableIdentity: c.targetIdentity },
           }),

@@ -612,6 +612,8 @@ export default class extends Plugin<InkChapterSettings> {
       // diagnostic snapshot for the CONTROL-SURFACE-INVARIANT (closes the
       // stale-snapshot false PASS).
       getDiagnosticSnapshot: () => this.documentUtilities?.getSnapshot() ?? null,
+      // P0-3 — 结构边界 Delete 被阻止时的即时提示（复用墨章 toast 组件）。
+      showTransientHint: (message: string) => this.documentUtilities?.showTransientHint(message),
     }
 
     // Init heading numbering (safe: service is optional)
