@@ -23,6 +23,13 @@ describe('evaluatePicGoResult', () => {
     })
   })
 
+  it('keeps scanning until a valid URL is found', () => {
+    expect(evaluatePicGoResult([
+      { imgUrl: 'http://127.0.0.1/a.png' },
+      { imgUrl: 'https://example.test/ok.png' },
+    ])).toEqual({ ok: true, url: 'https://example.test/ok.png' })
+  })
+
   it('treats empty output and empty URLs as failures', () => {
     expect(evaluatePicGoResult([])).toEqual({ ok: false, errorCode: 'PICGO_EMPTY_RESULT' })
     expect(evaluatePicGoResult([{ imgUrl: '' }])).toEqual({ ok: false, errorCode: 'PICGO_EMPTY_RESULT' })

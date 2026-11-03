@@ -11,8 +11,9 @@
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
+import { pathToFileURL } from 'url'
 import type { ImageAssetService } from './image-asset-service'
-import { sha256File } from './image-asset-index'
+import { sha256File, type ImageAssetRecord } from './image-asset-index'
 import type { ImageDataPaths } from './image-data-paths'
 import type { ImageNamingStrategy, ImageSettings } from './image-settings'
 import type { ImageTransferTaskStore } from './image-transfer-task-store'
@@ -79,6 +80,7 @@ export type UploadLocalFileResult = UploadLocalFileSuccess | UploadLocalFileFail
 const ERROR_MESSAGES: Record<ImageUploadErrorCode, string> = {
   UPLOAD_SERVICE_NONE: '上传服务为「无」，未发起上传；源文件保持不变。',
   REMOTE_PROFILE_MISSING: '未找到可用的 GitHub 远程配置，未发起上传。',
+  REMOTE_PATH_INVALID: '远程目录或文件名包含不安全字符，未发起上传；源文件保持不变。',
   FILE_NOT_FOUND: '源文件不存在，未发起上传。',
   FILE_NOT_READABLE: '源文件不可读，未发起上传。',
   STAGING_FAILED: '暂存副本创建失败，未发起上传；源文件保持不变。',
@@ -86,7 +88,7 @@ const ERROR_MESSAGES: Record<ImageUploadErrorCode, string> = {
   PICGO_CONFIG_MISSING: '插件私有 PicGo 配置不存在，未发起上传；源文件保持不变。',
   PICGO_EMPTY_RESULT: 'PicGo 未返回可用 URL，按失败处理；源文件保持不变。',
   PICGO_INVALID_URL: 'PicGo 返回的 URL 非法或不可公开访问，按失败处理；源文件保持不变。',
-  INDEX_WRITE_FAILED: '上传成功但资产索引写入失败，请检查数据目录权限。',
+  INDEX_WRITE_FAILED: '资产索引写入失败，请检查数据目录权限；源文件保持不变。',
 }
 
 function failure(
@@ -97,9 +99,26 @@ function failure(
   return { ok: false, errorCode, message: ERROR_MESSAGES[errorCode], assetId, taskId }
 }
 
+/**
+ * 把环境变量里的模块标识转换为可被 `import()` 使用的说明符。
+ *
+ * ESM 动态导入在 Windows 上不接受裸绝对路径（`E:\...`），必须转成
+ * `file:///E:/...`；裸包名（`picgo`）与已带协议的说明符保持原样。
+ */
+export function toPicGoImportSpecifier(raw: string): string {
+  const value = raw.trim()
+  if (!value) return 'picgo'
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[a-zA-Z]:[\\/]/.test(value)) return value
+  const looksLikePath = /^[a-zA-Z]:[\\/]/.test(value)
+    || value.startsWith('\\\\')
+    || value.startsWith('.')
+    || path.isAbsolute(value)
+  return looksLikePath ? pathToFileURL(path.resolve(value)).href : value
+}
+
 /** 默认加载器：优先显式注入的模块路径，其次裸 `picgo`。 */
 export async function defaultPicGoLoader(): Promise<PicGoConstructorLike> {
-  const specifier = process.env.INKCHAPTER_PICGO_MODULE?.trim() || 'picgo'
+  const specifier = toPicGoImportSpecifier(process.env.INKCHAPTER_PICGO_MODULE ?? '')
   const imported = await import(/* @vite-ignore */ specifier) as {
     PicGo?: PicGoConstructorLike
     default?: unknown
@@ -122,8 +141,11 @@ export class ImageUploadService {
   constructor(private readonly options: ImageUploadServiceOptions) {
     this.picgoConfigPath = options.picgoConfigPath
       ?? path.join(options.paths.dataRoot, 'picgo', 'config.json')
+    const appData = process.env.APPDATA?.trim()
+    // 没有 APPDATA（非 Windows 或受限环境）时留空，读取侧直接返回 unknown，
+    // 避免把相对路径 `Typora/profile.data` 误当作用户配置。
     this.typoraProfilePath = options.typoraProfilePath
-      ?? path.join(process.env.APPDATA?.trim() || '', 'Typora', 'profile.data')
+      ?? (appData ? path.join(appData, 'Typora', 'profile.data') : '')
     this.loadPicGo = options.loadPicGo ?? defaultPicGoLoader
   }
 
@@ -137,6 +159,7 @@ export class ImageUploadService {
 
   /** 只读解析 Typora 首选项；文件缺失或无法解析时返回 `unknown`，不抛错。 */
   async readTyporaImagePreferences(): Promise<TyporaImagePreferences> {
+    if (!this.typoraProfilePath) return { insertMode: 'unknown', uploader: null }
     try {
       const raw = await fs.readFile(this.typoraProfilePath, 'utf8')
       return parseTyporaImagePreferences(raw)
@@ -175,7 +198,7 @@ export class ImageUploadService {
       now: this.options.now?.() ?? new Date(),
     })
     const remotePath = joinRemotePath(profile.remoteDirectory, fileName)
-    if (!remotePath) return failure('STAGING_FAILED')
+    if (!remotePath) return failure('REMOTE_PATH_INVALID')
 
     let assetId: string | null = null
     let taskId: string | null = null
@@ -218,23 +241,32 @@ export class ImageUploadService {
         const outcome = evaluatePicGoResult(output)
         if (!outcome.ok) return this.failWithTask(outcome.errorCode, assetId, taskId)
 
-        const location = await this.options.assets.recordRemoteLocation({
-          assetId,
-          remoteProfileId: profile.remoteProfileId,
-          branch: profile.branch,
-          remotePath,
-          remoteUrl: outcome.url,
-          availability: 'available',
-        })
+        let location: ImageAssetRecord
+        try {
+          location = await this.options.assets.recordRemoteLocation({
+            assetId,
+            remoteProfileId: profile.remoteProfileId,
+            branch: profile.branch,
+            remotePath,
+            remoteUrl: outcome.url,
+            availability: 'available',
+          })
+        } catch {
+          // 上传已成功但索引写不进去：如实报错，避免下次重复上传或丢失远程位置。
+          return this.failWithTask('INDEX_WRITE_FAILED', assetId, taskId)
+        }
         const recorded = location.locations.find(
           item => item.type === 'github' && item.locator === outcome.url,
         )
         if (taskId && this.options.tasks) {
-          await this.options.tasks.update(taskId, {
-            status: 'succeeded',
-            attempt: 1,
-            locationId: recorded?.locationId ?? null,
-          })
+          // 任务记录是诊断信息，写入失败不应把已成功的上传判为失败。
+          try {
+            await this.options.tasks.update(taskId, {
+              status: 'succeeded',
+              attempt: 1,
+              locationId: recorded?.locationId ?? null,
+            })
+          } catch { /* 任务记录失败不影响上传结果 */ }
         }
         return { ok: true, url: outcome.url, assetId, remotePath, taskId }
       } catch (error) {
@@ -254,7 +286,7 @@ export class ImageUploadService {
   ): Promise<UploadLocalFileFailure> {
     if (taskId && this.options.tasks) {
       try {
-        await this.options.tasks.update(taskId, { status: 'failed', errorCode })
+        await this.options.tasks.update(taskId, { status: 'failed', errorCode, attempt: 1 })
       } catch { /* 任务写入失败不应掩盖原始上传错误 */ }
     }
     return failure(errorCode, assetId, taskId)
@@ -262,9 +294,10 @@ export class ImageUploadService {
 
   private resolveRemoteProfile(settings: ImageSettings) {
     const enabled = settings.remoteProfiles.filter(profile => profile.enabled)
+    // 显式默认配置存在时只认它：默认 Profile 被禁用/删除就报缺失，
+    // 绝不静默切到另一个仓库，避免把图片传到非预期账号。
     if (settings.defaultRemoteProfileId) {
-      const matched = enabled.find(profile => profile.remoteProfileId === settings.defaultRemoteProfileId)
-      if (matched) return matched
+      return enabled.find(profile => profile.remoteProfileId === settings.defaultRemoteProfileId) ?? null
     }
     return enabled[0] ?? null
   }

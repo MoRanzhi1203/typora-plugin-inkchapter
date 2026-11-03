@@ -164,13 +164,20 @@ export class ImageTransferTaskStore {
   }
 }
 
+const TRANSFER_KINDS = new Set(['upload', 'download', 'copy', 'verify'])
+const TRANSFER_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+
 function isTransferTask(value: unknown): value is TransferTask {
   if (!value || typeof value !== 'object') return false
   const task = value as Partial<TransferTask>
   return typeof task.taskId === 'string'
     && typeof task.kind === 'string'
+    && TRANSFER_KINDS.has(task.kind)
     && typeof task.status === 'string'
+    && TRANSFER_STATUSES.has(task.status)
     && typeof task.assetId === 'string'
     && typeof task.attempt === 'number'
+    && typeof task.maxAttempts === 'number'
     && typeof task.createdAt === 'string'
+    && typeof task.updatedAt === 'string'
 }

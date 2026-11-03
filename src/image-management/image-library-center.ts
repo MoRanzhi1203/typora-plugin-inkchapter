@@ -192,7 +192,7 @@ function buildTasksDiagnosticsView(input: ImageLibraryCenterInput): ImageLibrary
   const definition = IMAGE_LIBRARY_VIEWS[3]
   const taskRows: ImageLibraryCenterRow[] = input.tasks.map(task => ({
     primary: `${task.kind} · ${task.assetId}`,
-    secondary: `第 ${task.attempt + 1}/${task.maxAttempts} 次${task.errorCode ? ` · ${task.errorCode}` : ''}`,
+    secondary: `已尝试 ${task.attempt}/${task.maxAttempts} 次${task.errorCode ? ` · ${task.errorCode}` : ''}`,
     status: task.status,
   }))
 

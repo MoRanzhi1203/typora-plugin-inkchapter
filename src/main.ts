@@ -260,7 +260,7 @@ export default class extends Plugin<InkChapterSettings> {
 
   /**
    * 构建四视图图库中心（只读）。
-   * 图片服务未启用或初始化未完成时返回空数组，设置页据此显示「尚未就绪」。
+   * 图片管理未启用或服务未初始化时返回空数组，设置页据此显示「尚未就绪」。
    */
   private async buildImageLibraryCenter(): Promise<ImageLibraryView[]> {
     const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)

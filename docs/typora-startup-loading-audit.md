@@ -69,7 +69,7 @@ if (File.isNode) createLocker();
 
 ### 修复
 
-[build.js](file:///d:/TyporaPluginProjects/typora-plugin-inkchapter/build.js#L66-L78)：`build:dev` 不再调用
+[build.js](../build.js#L66-L78)：`build:dev` 不再调用
 `closeTypora()`；Typora 未运行时只 `openTestVault()`。验证：构建前后 Typora 进程数均为 5，窗口保持。
 
 **未修改**：开发 core 的 `if (true) devtools()` 属第三方依赖（`node_modules`），按规则不动；因此 vault

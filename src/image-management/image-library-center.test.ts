@@ -154,7 +154,7 @@ describe('buildImageLibraryCenter', () => {
       assets: [],
       tasks: [
         makeTask({ taskId: 'task_1', status: 'running' }),
-        makeTask({ taskId: 'task_2', status: 'failed', errorCode: 'PICGO_EMPTY_RESULT' }),
+        makeTask({ taskId: 'task_2', status: 'failed', attempt: 1, errorCode: 'PICGO_EMPTY_RESULT' }),
       ],
       settings,
       paths,
@@ -165,6 +165,7 @@ describe('buildImageLibraryCenter', () => {
     expect(diagnostics.summary).toContain('1 个进行中')
     expect(diagnostics.summary).toContain('1 个失败')
     expect(diagnostics.rows.some(row => row.status === 'failed' && row.primary.includes('上传图片'))).toBe(true)
+    expect(diagnostics.rows.some(row => row.secondary === '已尝试 1/3 次 · PICGO_EMPTY_RESULT')).toBe(true)
     expect(diagnostics.rows.some(row => row.secondary?.includes('2 个文件'))).toBe(true)
   })
 

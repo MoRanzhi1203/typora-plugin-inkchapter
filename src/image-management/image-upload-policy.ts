@@ -14,6 +14,7 @@ import type { ImageUploadService } from './image-settings'
 export type ImageUploadErrorCode =
   | 'UPLOAD_SERVICE_NONE'
   | 'REMOTE_PROFILE_MISSING'
+  | 'REMOTE_PATH_INVALID'
   | 'FILE_NOT_FOUND'
   | 'FILE_NOT_READABLE'
   | 'STAGING_FAILED'
@@ -45,6 +46,7 @@ export function evaluatePicGoResult(output: unknown): UploadOutcome {
   if (!Array.isArray(output) || output.length === 0) {
     return { ok: false, errorCode: 'PICGO_EMPTY_RESULT' }
   }
+  let sawCandidate = false
   for (const item of output) {
     if (!item || typeof item !== 'object') continue
     const record = item as { imgUrl?: unknown; url?: unknown }
@@ -54,13 +56,14 @@ export function evaluatePicGoResult(output: unknown): UploadOutcome {
         ? record.url
         : ''
     if (!candidate.trim()) continue
+    sawCandidate = true
     const validation = validateRemoteImageUrl(candidate.trim())
     if (validation.ok && validation.normalized) {
       return { ok: true, url: validation.normalized }
     }
-    return { ok: false, errorCode: 'PICGO_INVALID_URL' }
   }
-  return { ok: false, errorCode: 'PICGO_EMPTY_RESULT' }
+  // 只要存在候选但全部非法就报 INVALID_URL；完全没有候选才算空结果。
+  return { ok: false, errorCode: sawCandidate ? 'PICGO_INVALID_URL' : 'PICGO_EMPTY_RESULT' }
 }
 
 /** 把异常映射为稳定错误码，绝不把响应正文或凭据写入日志。 */

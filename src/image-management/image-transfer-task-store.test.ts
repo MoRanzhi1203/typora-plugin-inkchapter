@@ -54,6 +54,28 @@ describe('ImageTransferTaskStore', () => {
     expect(await fs.readFile(file, 'utf8')).toBe('{not json')
   })
 
+  it('refuses to load tasks with unknown kind or status', async () => {
+    const { store, file } = await makeStore()
+    const base = {
+      taskId: 'task_1',
+      kind: 'upload',
+      status: 'queued',
+      assetId: 'img_a',
+      locationId: null,
+      attempt: 0,
+      maxAttempts: 3,
+      errorCode: null,
+      createdAt: '2026-11-04T00:00:00.000Z',
+      updatedAt: '2026-11-04T00:00:00.000Z',
+    }
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, JSON.stringify({ schemaVersion: 1, tasks: [{ ...base, status: 'bogus' }] }), 'utf8')
+    await expect(store.list()).rejects.toThrow('corrupt')
+
+    await fs.writeFile(file, JSON.stringify({ schemaVersion: 1, tasks: [{ ...base, kind: 'teleport' }] }), 'utf8')
+    await expect(new ImageTransferTaskStore(file).list()).rejects.toThrow('corrupt')
+  })
+
   it('treats a missing task file as empty', async () => {
     const { store } = await makeStore()
     expect(await store.list()).toEqual([])

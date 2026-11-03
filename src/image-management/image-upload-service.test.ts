@@ -6,7 +6,7 @@ import { resolveImageDataPaths } from './image-data-paths'
 import { resolveImageSettings, type ImageSettings } from './image-settings'
 import { ImageAssetService } from './image-asset-service'
 import { ImageTransferTaskStore } from './image-transfer-task-store'
-import { ImageUploadService, type PicGoConstructorLike } from './image-upload-service'
+import { ImageUploadService, toPicGoImportSpecifier, type PicGoConstructorLike } from './image-upload-service'
 
 const roots: string[] = []
 
@@ -135,6 +135,7 @@ describe('ImageUploadService', () => {
     const taskList = await tasks.list()
     expect(taskList[0].status).toBe('failed')
     expect(taskList[0].errorCode).toBe('PICGO_EMPTY_RESULT')
+    expect(taskList[0].attempt).toBe(1)
   })
 
   it('refuses to upload when the service is none without touching the file', async () => {
@@ -157,6 +158,71 @@ describe('ImageUploadService', () => {
     expect((await tasks.list())[0].status).toBe('failed')
   })
 
+  it('does not silently fall back to another profile when the default is disabled', async () => {
+    const { sourcePath, service, uploaded } = await setup({
+      settings: makeSettings({
+        remoteProfiles: [
+          { ...PROFILE, remoteProfileId: 'default-disabled', enabled: false },
+          { ...PROFILE, remoteProfileId: 'other-enabled', enabled: true },
+        ],
+        defaultRemoteProfileId: 'default-disabled',
+      }),
+    })
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, errorCode: 'REMOTE_PROFILE_MISSING' }))
+    expect(uploaded).toHaveLength(0)
+    await expect(fs.access(sourcePath)).resolves.toBeUndefined()
+  })
+
+  it('reports an invalid remote directory without uploading', async () => {
+    const { sourcePath, service, uploaded } = await setup({
+      settings: makeSettings({
+        remoteProfiles: [{ ...PROFILE, remoteDirectory: 'bad#dir' }],
+        defaultRemoteProfileId: PROFILE.remoteProfileId,
+      }),
+    })
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, errorCode: 'REMOTE_PATH_INVALID' }))
+    expect(uploaded).toHaveLength(0)
+    await expect(fs.access(sourcePath)).resolves.toBeUndefined()
+  })
+
+  it('reports index write failure after a successful upload without deleting the source', async () => {
+    const { sourcePath, service, assets, tasks } = await setup()
+    assets.recordRemoteLocation = async () => { throw new Error('EACCES: denied') }
+
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, errorCode: 'INDEX_WRITE_FAILED' }))
+    await expect(fs.access(sourcePath)).resolves.toBeUndefined()
+    expect((await tasks.list())[0].status).toBe('failed')
+    expect((await tasks.list())[0].errorCode).toBe('INDEX_WRITE_FAILED')
+  })
+
+  it('leaves the Typora profile path empty when APPDATA is unavailable', async () => {
+    const { paths, assets } = await setup()
+    const saved = process.env.APPDATA
+    delete process.env.APPDATA
+    try {
+      const service = new ImageUploadService({
+        paths,
+        assets,
+        readSettings: () => makeSettings(),
+        loadPicGo: fakeLoader([]).loader,
+      })
+      expect(service.getTyporaProfilePath()).toBe('')
+      await expect(service.readTyporaImagePreferences()).resolves.toEqual({
+        insertMode: 'unknown',
+        uploader: null,
+      })
+    } finally {
+      if (saved === undefined) delete process.env.APPDATA
+      else process.env.APPDATA = saved
+    }
+  })
+
   it('exposes the Typora upload-mode conflict without modifying any preference', async () => {
     const { root, service } = await setup({ settings: makeSettings({ uploadService: 'none' }) })
     const profilePath = path.join(root, 'profile.data')
@@ -176,5 +242,18 @@ describe('ImageUploadService', () => {
     expect(conflict.hasConflict).toBe(true)
     expect(conflict.message).toContain('上传图片')
     expect(service.getTyporaProfilePath()).not.toBe(profilePath)
+  })
+})
+
+describe('toPicGoImportSpecifier', () => {
+  it('keeps bare package names and already-qualified specifiers', () => {
+    expect(toPicGoImportSpecifier('')).toBe('picgo')
+    expect(toPicGoImportSpecifier('picgo')).toBe('picgo')
+    expect(toPicGoImportSpecifier('file:///opt/picgo/index.js')).toBe('file:///opt/picgo/index.js')
+  })
+
+  it('converts absolute and relative paths to file URLs', () => {
+    expect(toPicGoImportSpecifier(path.resolve('node_modules', 'picgo')).startsWith('file://')).toBe(true)
+    expect(toPicGoImportSpecifier('./local-picgo.js').startsWith('file://')).toBe(true)
   })
 })
