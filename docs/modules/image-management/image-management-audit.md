@@ -12,7 +12,7 @@
 4. `MoRanzhi1203/Picture_Bed` 存在、公开、默认分支 `main`，Raw URL 可访问；凭据具备 `push` 权限。
 5. 关键结论：**PicGo-CLI 每次启动都会以默认 `~/.picgo/config.json` 初始化并改写它**，即使传入 `-c`。审计过程已复现该行为并恢复原文件；后续实现必须使用 PicGo 编程 API + 插件私有配置路径。
 6. PicGo 上传结果必须校验 `imgUrl`：成功时 `url` 可能为 `undefined`；失败时不抛异常但两个 URL 均为空。
-7. Typora 内部编辑接口（自定义上传命令、原生粘贴/拖拽、`Editor.reset` / `File.reloadContent` 的撤销语义）**尚未在真实运行时验证**，属于 P0 未完成项，必须先验证再改引用。
+7. Typora 内部编辑接口：`File.imgEdit` 在 1.6.7 不存在，`File.option.imageUploader = custom`；原生粘贴可观测（4.3），但 `Editor.reset` / `File.reloadContent` 的撤销语义与真实拖拽仍未验证，引用替换继续冻结。
 
 ## 2. 项目结构（P0.1）
 
@@ -81,7 +81,7 @@ Node 能力已可用：`fs`、`path`、`crypto`、`child_process`（打包后运
 | 社区插件运行目录 | `C:\Users\MSIPC\.typora\community-plugins` 存在框架 2.9.13 | 目录枚举 |
 | Typora 类型声明中的图片接口 | `File.imgEdit.getImageUploaderCommand()`、`getRealSrc()`、`resolveImagePath()`、`File.option.imageUploader`、`Editor.imgEdit` | `@types/typora` 类型定义 |
 | Typora 粘贴与撤销接口 | `Editor.UserOp.pasteHandler`、`Editor.undo.UndoManager`、`Editor.reset`、`File.reloadContent` | `@types/typora` 类型定义 |
-| 自定义上传命令是否为空 | **无法静态确认**：Typora 的图片设置未写入 `conf.user.json`，LevelDB 扫描未命中 `upload/picgo` 字符串 | 见 4.3 |
+| 自定义上传命令 | `File.option.imageUploader = custom`；`File.imgEdit` 在 1.6.7 不存在，命令文本仍无法通过接口读取（见 4.3） | 运行时探针 |
 
 ### 4.2 类型声明可用的编辑接口（结论：不足以安全做单点引用替换）
 
@@ -92,16 +92,37 @@ Node 能力已可用：`fs`、`path`、`crypto`、`child_process`（打包后运
 
 因此：**不得在 P1 直接做自动引用替换**。第一版上传只新增/记录资产与远程位置；Markdown 引用替换必须等运行时验证通过后单独开放，并优先使用「选中图片后走原生替换 / 用户确认重载」的安全路径。
 
-### 4.3 尚未验证（真实 Typora 运行时）
+### 4.3 真实运行时验证（2026-11-03，Typora 1.6.7）
 
-以下全部标记为**未验证**，不得在后续报告中当作已结论：
+在 `test/vault` 开发挂载中，用只观察、不拦截的临时探针（捕获阶段监听 `paste` / `drop` + `markdownEditor 'edit'`）实测：
 
-1. `File.imgEdit.getImageUploaderCommand()` 的实际返回值（当前自定义上传命令是否为空）。
-2. 粘贴截图、粘贴本地图片文件、浏览器复制图片、拖入图片的原始 Markdown 落点与路径规则。
-3. 「复制图片到资源目录」的原生设置与目标目录。
+| 项目 | 结果 |
+|---|---|
+| `File.imgEdit` | **不存在（undefined）**；类型声明中的 `getImageUploaderCommand()` 在本版本不可调用 |
+| `File.option.imageUploader` | `custom`（Typora 当前使用「自定义命令」上传方式） |
+| `File` 上与图片相关的键 | `setDefaultImageStorage`、`pasteAsPlainText`、`refreshImageCopyStatus` |
+| 截图粘贴 | DOM `paste` 事件 `isTrusted=true`、`defaultPrevented=false`；`clipboardData.files` 含 1 个 `image.png`（16,594 B） |
+| 截图粘贴后的 Markdown | `![image-20261103210839457](C:\Users\<user>\AppData\Roaming\Typora\typora-user-images\image-20261103210839457.png)`（绝对路径 + 时间戳文件名） |
+| 截图粘贴后的 DOM | `.md-image[data-src="C:\...\image-...png"]`，`img[src="file:///C:/.../image-...png?lastModify=..."]` |
+| 复制文件后粘贴 | `clipboardData.files` 为原文件 `02-3-3-3.png`（14,970 B）；Typora 将其复制到 `typora-user-images` 并保留原文件名，Markdown 仍写绝对路径 |
+| 观测点 `markdownEditor 'edit'` | 粘贴后约 0.5 s 触发一次，`editor.getMarkdown()` 已包含新引用，可据此做「新增图片」登记 |
+| 撤销粘贴 | Markdown 正确回退，但**未触发** `markdownEditor 'edit'`（不能只靠 edit 事件感知引用移除） |
+| 同名覆盖风险 | Typora 粘贴到 `typora-user-images` 时按原文件名写入；同名文件会被覆盖（本次内容相同，未造成数据损失） |
+
+由此确定的观测方案：**不拦截原生粘贴 / 拖拽**；在 `markdownEditor 'edit'` 后对 `editor.getMarkdown()` 做图片引用差量，登记新增资产；引用移除（含撤销）另行处理，不依据单次 edit 事件。
+
+### 4.4 仍未验证
+
+1. 从资源管理器真实拖入图片（需要人工跨窗口拖拽；当前自动化环境无法可靠完成）。
+2. 浏览器直接复制图片（与截图粘贴同属 `clipboardData.files`，但仍需真实浏览器验证）。
+3. 「复制图片到资源目录」的原生设置与目标目录（当前设置为 `typora-user-images`）。
 4. `Editor.reset` / `File.reloadContent` 是否清空撤销栈、是否触发未保存提示。
 5. 上传期间切换文档、删除图片、撤销插入时原生行为。
 6. Typora 原生图片右键菜单的实际项与可扩展点。
+
+### 4.5 已有扫描器的缺陷（已修复）
+
+实测粘贴产生的 Windows 绝对路径被 `document-resource-scanner` 误判为 `remote`（`C:` 被当作 URL scheme）。已在 `classifyResourceClass` / `isLocalResourceDestination` 中优先识别盘符绝对路径，并新增 6 个单测覆盖。
 
 ## 5. PicGo 环境审计（P0.3 / P0.4）
 
