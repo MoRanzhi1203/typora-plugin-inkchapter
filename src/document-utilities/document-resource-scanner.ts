@@ -125,6 +125,8 @@ function countLineBreaks(text: string): number {
  */
 export function classifyResourceClass(target: string): ResourceClass {
   if (/^data:/i.test(target)) return 'data'
+  // Windows 绝对路径（`C:\...` / `C:/...`）不是 URL scheme，必须按本地资源处理。
+  if (/^[a-zA-Z]:[\\/]/.test(target)) return 'local'
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return 'remote'
   if (target.startsWith('#')) return 'other'
   return 'local'
@@ -133,6 +135,8 @@ export function classifyResourceClass(target: string): ResourceClass {
 /** True for a destination the plugin is allowed to check on the filesystem. */
 export function isLocalResourceDestination(target: string): boolean {
   if (!target) return false
+  // Windows 绝对路径优先于 scheme 判定。
+  if (/^[a-zA-Z]:[\\/]/.test(target)) return true
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return false // scheme (incl. data:, mailto:, http:)
   if (target.startsWith('#')) return false // in-document anchor
   return true
