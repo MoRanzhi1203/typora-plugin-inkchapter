@@ -186,3 +186,37 @@ describe('resolveImageSettings', () => {
     expect(DEFAULT_IMAGE_SETTINGS.remoteProfiles).toEqual([])
   })
 })
+
+describe('uploadService', () => {
+  it('defaults to none so a clean install never uploads', () => {
+    expect(DEFAULT_IMAGE_SETTINGS.uploadService).toBe('none')
+    expect(resolveImageSettings({}).uploadService).toBe('none')
+    expect(resolveImageSettings(null).uploadService).toBe('none')
+  })
+
+  it('refuses github when no enabled remote profile exists', () => {
+    expect(resolveImageSettings({ uploadService: 'github' }).uploadService).toBe('none')
+    expect(resolveImageSettings({ uploadService: 'github', remoteProfiles: [] }).uploadService).toBe('none')
+    expect(
+      resolveImageSettings({
+        uploadService: 'github',
+        remoteProfiles: [{ ...VALID_PROFILE, enabled: false }],
+      }).uploadService,
+    ).toBe('none')
+  })
+
+  it('keeps github only with an enabled remote profile', () => {
+    expect(
+      resolveImageSettings({ uploadService: 'github', remoteProfiles: [VALID_PROFILE] }).uploadService,
+    ).toBe('github')
+  })
+
+  it('falls back to none for unknown service names', () => {
+    expect(
+      resolveImageSettings({
+        uploadService: 'smms' as never,
+        remoteProfiles: [VALID_PROFILE],
+      }).uploadService,
+    ).toBe('none')
+  })
+})

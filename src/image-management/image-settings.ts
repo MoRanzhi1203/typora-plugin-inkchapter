@@ -9,6 +9,12 @@
 
 export type ImageStorageMode = 'local-first' | 'remote-first' | 'dual-storage'
 export type ImageReferenceMode = 'local-relative' | 'remote-url'
+/**
+ * 上传服务。`none` 表示墨章不发起任何新上传、不新增远程位置与双链；
+ * 历史远程 URL 仍可正常打开与保留。`github` 只提供上传能力，不会因为
+ * 用户选择本地复制模式而自动上传。
+ */
+export type ImageUploadService = 'none' | 'github'
 export type ImageNamingStrategy = 'timestamp-hash' | 'original-name' | 'custom'
 export type ImageCompressionMode = 'keep' | 'lossless' | 'smart'
 export type ImageRemoteProvider = 'github'
@@ -47,6 +53,8 @@ export interface ImageSettings {
   documentResourceDirectory: string
   storageMode: ImageStorageMode
   referenceMode: ImageReferenceMode
+  /** 默认 `none`：未显式启用 GitHub 时绝不发起上传。 */
+  uploadService: ImageUploadService
   autoUpload: boolean
   namingStrategy: ImageNamingStrategy
   compressionMode: ImageCompressionMode
@@ -71,6 +79,7 @@ export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   documentResourceDirectory: 'assets/images',
   storageMode: 'dual-storage',
   referenceMode: 'local-relative',
+  uploadService: 'none',
   autoUpload: false,
   namingStrategy: 'timestamp-hash',
   compressionMode: 'keep',
@@ -244,6 +253,16 @@ function resolveReferenceMode(value: unknown): ImageReferenceMode {
   return value === 'remote-url' ? 'remote-url' : 'local-relative'
 }
 
+/**
+ * 上传服务只能显式开启，且必须有已启用的远程配置。
+ * 缺失、拼写错误或没有可用远程配置时一律回落为 `none`，
+ * 避免旧配置或损坏数据在用户不知情时触发上传。
+ */
+function resolveUploadService(value: unknown, profiles: ImageRemoteProfile[]): ImageUploadService {
+  if (value !== 'github') return 'none'
+  return profiles.some(profile => profile.enabled) ? 'github' : 'none'
+}
+
 function resolveNamingStrategy(value: unknown): ImageNamingStrategy {
   return value === 'original-name' || value === 'custom' ? value : 'timestamp-hash'
 }
@@ -292,6 +311,7 @@ export function resolveImageSettings(raw: Partial<ImageSettings> | null | undefi
     documentResourceDirectory,
     storageMode: resolveStorageMode(raw?.storageMode),
     referenceMode: resolveReferenceMode(raw?.referenceMode),
+    uploadService: resolveUploadService(raw?.uploadService, resolvedProfiles),
     autoUpload: raw?.autoUpload === true,
     namingStrategy: resolveNamingStrategy(raw?.namingStrategy),
     compressionMode: resolveCompressionMode(raw?.compressionMode),

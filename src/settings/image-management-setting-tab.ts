@@ -15,6 +15,7 @@ import {
   type ImageReferenceMode,
   type ImageSettings,
   type ImageStorageMode,
+  type ImageUploadService,
 } from '../image-management/image-settings'
 import type { InitializeImageLibraryResult, LibraryInspection } from '../image-management/image-library-inspection'
 
@@ -186,8 +187,37 @@ export class ImageManagementSettingTab extends SettingTab {
     })
 
     this.addSetting(s => {
+      s.addName('上传服务')
+      s.addDescription(
+        '「无」不发起任何新上传、不新增远程位置或双链，历史远程 URL 保持原样；'
+        + '「GitHub」需要先保存有效的远程配置。Typora 原生六种插入方式不受影响。',
+      )
+      s.addSelect(select => {
+        const options: Array<[ImageUploadService, string]> = [
+          ['none', '无'],
+          ['github', 'GitHub'],
+        ]
+        for (const [value, label] of options) select.add(new Option(label, value))
+        select.value = settings.uploadService
+        select.onchange = () => {
+          const next = resolveImageSettings({
+            ...this.host.read(),
+            uploadService: select.value as ImageUploadService,
+          })
+          if (select.value === 'github' && next.uploadService === 'none') {
+            this.host.notify('尚无有效 GitHub 远程配置，上传服务保持为「无」', 'error')
+            this.render()
+            return
+          }
+          this.write(next)
+          this.render()
+        }
+      })
+    })
+
+    this.addSetting(s => {
       s.addName('自动上传')
-      s.addDescription('导入后是否自动上传远程。第一版默认关闭，需在任务队列可用后开启。')
+      s.addDescription('仅在已有可用的上传服务时生效；默认关闭，避免插入即上传。')
       s.addCheckbox(cb => {
         cb.checked = settings.autoUpload
         cb.onchange = () => this.write({ ...this.host.read(), autoUpload: cb.checked })

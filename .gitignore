@@ -60,3 +60,15 @@ docs/archive/test-vault/
 
 # One-off internal remediation plans (working notes, not published docs).
 docs/diagnostics/blank-gap-marker-latency-remediation-plan.md
+
+# ── local private configuration / credentials (2026-11-03) ────────────
+# User-level image profiles, tokens, PicGo config copies and absolute personal
+# paths must live outside the repository. These are defence-in-depth only:
+# .gitignore cannot protect files that are already tracked.
+.env.local
+.env.*.local
+config.local.*
+config.private.*
+*.private.json
+picgo.config.json
+.picgo/
