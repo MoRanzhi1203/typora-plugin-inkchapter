@@ -3,6 +3,7 @@ import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary, Paragraph
 import { DEFAULT_HEADING_LEVEL_POSITION, DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 import { DEFAULT_CAPTION_SETTINGS } from '../heading-numbering/caption-system'
+import { DEFAULT_IMAGE_SETTINGS } from '../image-management/image-settings'
 
 const decimalLevels = {} as Record<HeadingLevel, import('../heading-numbering/heading-types').HeadingLevelStyle>
 const defaultTemplate: HeadingLevelNumberTemplate = { tokenStyle: 'arabic', prefix: '', suffix: '' }
@@ -142,4 +143,5 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
   },
   caption: DEFAULT_CAPTION_SETTINGS,
   ui: DEFAULT_UI_SETTINGS,
+  image: DEFAULT_IMAGE_SETTINGS,
 }

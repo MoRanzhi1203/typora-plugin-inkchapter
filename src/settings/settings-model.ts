@@ -1,5 +1,6 @@
 import type { HeadingNumberingSettings, HeadingLevelRangeSettings, SpecialHeadingNumberingSettings, HeadingNumberingScopeStore, FormatLibrary } from '../heading-numbering/heading-types'
 import type { CaptionSettings } from '../heading-numbering/caption-system'
+import type { ImageSettings } from '../image-management/image-settings'
 
 export type { HeadingNumberingSettings }
 
@@ -66,4 +67,6 @@ export interface InkChapterSettings {
   caption?: CaptionSettings
   /** 界面 / 文件夹树 设置（可选字段，缺失时按 DEFAULT_UI_SETTINGS 补齐）。 */
   ui?: InkChapterUiSettings
+  /** 图片管理配置（可选字段，缺失或非法时由 resolveImageSettings 补齐）。 */
+  image?: ImageSettings
 }
