@@ -37,6 +37,10 @@
 - [operations/development.md](operations/development.md) — 开发环境与流程。
 - [operations/prompt-lifecycle.md](operations/prompt-lifecycle.md) — 提示词治理（历史证据规则；提示词文档已于 2026-10 整合退休）。
 
+## 图片管理（Image Management）
+
+- [modules/image-management/git-pre-image-merge-report.md](modules/image-management/git-pre-image-merge-report.md) — G0：图片开发前置分支合并报告。
+
 ## Roadmap
 
 - [roadmap/known-gaps-and-deferred-work.md](roadmap/known-gaps-and-deferred-work.md) — 已知缺口与被延后能力。
