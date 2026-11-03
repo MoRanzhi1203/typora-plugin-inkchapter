@@ -9,6 +9,9 @@ import { initializeImageLibrary, inspectImageLibraryTarget } from './image-manag
 import { pickFolderNative } from './image-management/image-directory-picker'
 import { resolveImageDataPaths } from './image-management/image-data-paths'
 import { ImageAssetService } from './image-management/image-asset-service'
+import { ImageTransferTaskStore } from './image-management/image-transfer-task-store'
+import { ImageUploadService } from './image-management/image-upload-service'
+import { buildImageLibraryCenter, type ImageLibraryView } from './image-management/image-library-center'
 import { inspectDirectoryUsage } from './image-management/image-path-policy'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
@@ -245,10 +248,56 @@ export default class extends Plugin<InkChapterSettings> {
   private fileTreeDragAdapter?: FileTreeDragAdapter
   /** 图片资产索引服务：延迟加载，损坏索引不阻断插件启动。 */
   private imageAssetService?: ImageAssetService
+  /** 传输任务持久化（上传队列与诊断）。 */
+  private imageTransferTaskStore?: ImageTransferTaskStore
+  /** 墨章侧上传适配器（PicGo 编程 API + 插件私有配置）。 */
+  private imageUploadService?: ImageUploadService
 
   /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
   private readUiSettings() {
     return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
+  }
+
+  /**
+   * 构建四视图图库中心（只读）。
+   * 图片服务未启用或初始化未完成时返回空数组，设置页据此显示「尚未就绪」。
+   */
+  private async buildImageLibraryCenter(): Promise<ImageLibraryView[]> {
+    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    if (!settings.enabled || !this.imageAssetService || !this.imageUploadService) return []
+
+    const paths = resolveImageDataPaths(this.dataPath, { settings })
+    const assets = await this.imageAssetService.list()
+    const tasks = this.imageTransferTaskStore ? await this.imageTransferTaskStore.list() : []
+    const typoraPreferences = await this.imageUploadService.readTyporaImagePreferences()
+
+    const documentPath = this.app.workspace.activeFile ?? null
+    let markdown: string | null = null
+    if (documentPath) {
+      try {
+        const content = File.getContent()
+        if (typeof content === 'string') markdown = content
+      } catch { /* 编辑器未就绪时只展示「未索引」状态 */ }
+    }
+
+    let cacheUsage: { fileCount: number; totalBytes: number } | null = null
+    if (paths.cacheObjectsDir) {
+      try {
+        const usage = await inspectDirectoryUsage(paths.cacheObjectsDir)
+        cacheUsage = { fileCount: usage.fileCount, totalBytes: usage.totalBytes }
+      } catch { /* 缓存目录尚未创建 */ }
+    }
+
+    return buildImageLibraryCenter({
+      documentPath,
+      markdown,
+      assets,
+      tasks,
+      settings,
+      paths,
+      typoraPreferences,
+      cacheUsage,
+    })
   }
 
   /** 界面配置应用次数（有界取证 A3，仅计数，不产生日志风暴）。 */
@@ -1621,6 +1670,7 @@ export default class extends Plugin<InkChapterSettings> {
             return null
           }
         },
+        getLibraryCenter: () => this.buildImageLibraryCenter(),
       }))
       console.log('[InkChapter] image settings tab registered')
     } catch (e) {
@@ -1632,7 +1682,23 @@ export default class extends Plugin<InkChapterSettings> {
       const imageSettings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
       const paths = resolveImageDataPaths(this.dataPath, { settings: imageSettings })
       this.imageAssetService = new ImageAssetService(paths)
+      this.imageTransferTaskStore = new ImageTransferTaskStore(
+        path.join(paths.dataRoot, 'transfer-tasks.json'),
+      )
+      this.imageUploadService = new ImageUploadService({
+        paths,
+        assets: this.imageAssetService,
+        tasks: this.imageTransferTaskStore,
+        readSettings: () => resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+      })
       console.log('[InkChapter] image asset service ready')
+
+      // 「上传图片 + 上传服务 none」在启动时提示一次；不修改 Typora 首选项。
+      if (imageSettings.enabled) {
+        void this.imageUploadService.inspectInsertModeConflict().then(conflict => {
+          if (conflict.hasConflict) Notice.info(`墨章：${conflict.message}`)
+        }).catch(() => undefined)
+      }
     } catch (e) {
       console.error('[InkChapter] 图片资产索引初始化失败，图片增强功能不可用', e)
     }
@@ -1653,6 +1719,27 @@ export default class extends Plugin<InkChapterSettings> {
       title: '检查插件状态',
       scope: 'global',
       callback: () => Notice.info('墨章 InkChapter 已正常加载'),
+    })
+
+    // 图库中心入口：只读汇总四视图，不修改任何文件。
+    this.registerCommand({
+      id: 'inkchapter.image.library-center',
+      title: '墨章：图片图库中心',
+      scope: 'global',
+      callback: () => {
+        void this.buildImageLibraryCenter().then(views => {
+          if (views.length === 0) {
+            Notice.info('墨章：图片管理尚未启用或未初始化，请先在「设置 → 墨章 · 图片」完成初始化。')
+            return
+          }
+          const summary = views
+            .map(view => `${view.title}：${view.rows.length} 项`)
+            .join('；')
+          const diagnostics = views.find(view => view.id === 'tasks-diagnostics')
+          const conflict = diagnostics?.rows.find(row => row.status === 'failed' && row.primary.includes('上传图片'))
+          Notice.info(`墨章图库中心 — ${summary}${conflict ? `。${conflict.primary}` : ''}`)
+        }).catch(() => { Notice.error('墨章：图库中心读取失败，编辑与文件不受影响。') })
+      },
     })
 
     // File tree drag/drop capability report (runtime verification helper)

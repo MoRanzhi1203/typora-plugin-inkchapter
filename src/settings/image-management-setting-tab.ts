@@ -19,6 +19,7 @@ import {
 } from '../image-management/image-settings'
 import type { InitializeImageLibraryResult, LibraryInspection } from '../image-management/image-library-inspection'
 import { resolveImageDataPaths } from '../image-management/image-data-paths'
+import type { ImageLibraryCenterRow, ImageLibraryView } from '../image-management/image-library-center'
 
 const DEFAULT_REMOTE_PROFILE_ID = 'github-default'
 
@@ -34,6 +35,8 @@ export interface ImageManagementSettingTabHost {
   getDataPath(): string
   /** 只读统计目录占用；失败返回 null。 */
   inspectUsage(path: string): Promise<{ fileCount: number; totalBytes: number } | null>
+  /** 四视图图库中心数据；未就绪时返回空数组。 */
+  getLibraryCenter(): Promise<ImageLibraryView[]>
 }
 
 function formatBytes(bytes: number | null): string {
@@ -84,6 +87,7 @@ export class ImageManagementSettingTab extends SettingTab {
   private libraryPathDraft = ''
   private statusEl: HTMLElement | null = null
   private diagnosticsEl: HTMLElement | null = null
+  private libraryCenterEl: HTMLElement | null = null
   private remoteInputs: {
     owner: HTMLInputElement | null
     repository: HTMLInputElement | null
@@ -106,6 +110,7 @@ export class ImageManagementSettingTab extends SettingTab {
     this.libraryPathDraft = settings.globalLibrary.root
     this.statusEl = null
     this.diagnosticsEl = null
+    this.libraryCenterEl = null
     this.remoteInputs = { owner: null, repository: null, branch: null, remoteDirectory: null, credentialReferenceId: null }
 
     this.addSettingTitle(settings.initialized ? '图片管理' : '图片管理 · 初始化向导')
@@ -411,14 +416,70 @@ export class ImageManagementSettingTab extends SettingTab {
       )
     })
 
+    this.renderLibraryCenterSection()
+  }
+
+  private renderLibraryCenterSection(): void {
     this.addSettingTitle('图库中心')
     this.addSetting(s => {
-      s.addName('只读概览')
+      s.addName('四视图（只读）')
       s.addDescription(
-        '当前文档 / 本地图库 / 云端图库 / 任务与诊断四个视图在文档上下文中呈现；'
-        + '设置页只显示配置与占用概览，不新增漂浮标记，不影响既有图号与题注样式。',
+        '当前文档 / 本地图库 / 云端图库 / 任务与诊断；只展示已记录的事实，'
+        + '不联网探测、不新增漂浮标记、不改变图号与题注样式。',
       )
+      s.addButton(button => {
+        button.textContent = '刷新'
+        button.onclick = () => void this.refreshLibraryCenter()
+      })
     })
+    this.addSetting(s => {
+      s.addDescription(div => {
+        this.libraryCenterEl = div
+        div.textContent = '正在读取…'
+      })
+    })
+    void this.refreshLibraryCenter()
+  }
+
+  private async refreshLibraryCenter(): Promise<void> {
+    const target = this.libraryCenterEl
+    if (!target) return
+    let views: ImageLibraryView[]
+    try {
+      views = await this.host.getLibraryCenter()
+    } catch {
+      target.textContent = '图库中心读取失败；编辑与文件不受影响。'
+      return
+    }
+    while (target.firstChild) target.removeChild(target.firstChild)
+    if (views.length === 0) {
+      target.textContent = '图库中心尚未就绪（图片服务未启用或初始化未完成）。'
+      return
+    }
+    for (const view of views) {
+      const section = document.createElement('div')
+      section.style.marginBottom = '10px'
+      const title = document.createElement('div')
+      title.textContent = `${view.title} — ${view.summary}`
+      title.style.fontWeight = '600'
+      section.appendChild(title)
+      if (view.rows.length === 0) {
+        const empty = document.createElement('div')
+        empty.textContent = view.emptyMessage
+        empty.style.opacity = '0.7'
+        section.appendChild(empty)
+      } else {
+        for (const row of view.rows) section.appendChild(this.buildLibraryCenterRow(row))
+      }
+      target.appendChild(section)
+    }
+  }
+
+  private buildLibraryCenterRow(row: ImageLibraryCenterRow): HTMLElement {
+    const line = document.createElement('div')
+    line.textContent = `• [${row.status}] ${row.primary}${row.secondary ? ` — ${row.secondary}` : ''}`
+    line.style.whiteSpace = 'pre-wrap'
+    return line
   }
 
   private writePathRoot(
