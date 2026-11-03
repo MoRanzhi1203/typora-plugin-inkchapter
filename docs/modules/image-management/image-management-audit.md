@@ -160,12 +160,7 @@ npm install -g picgo  →  E:\NodeJS\picgo.ps1，版本 3.2.0
 
 空 Token 对照组：HTTP 401 `Bad credentials`；编程 API 不抛异常，返回长度 1 的数组，`url` / `imgUrl` 均为 `undefined`。
 
-遗留测试产物（等待用户确认后删除，不自动清理）：
-
-```text
-inkchapter-audit/2026-11-03inkchapter-verify-20261103-201700.png
-inkchapter-audit/2026-11-03inkchapter-verify-20261103-201747.png
-```
+验证结束后已按用户确认删除两个测试文件（远程提交 `9970eac` 与 `d4b1985`），`inkchapter-audit/` 目录已不存在。未触碰仓库内任何既有图片。
 
 ### 5.4 PicGo 行为约束（实测）
 
