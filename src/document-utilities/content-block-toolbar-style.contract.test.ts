@@ -27,8 +27,11 @@ describe('CONTENT-TOOLBAR-STYLE image actions', () => {
   it('binds the image bar to a relative image container and keeps it hidden by default', () => {
     expect(ruleBody('.inkchapter-image-actions-anchor {')).toContain('position: relative')
     const bar = ruleBody('.inkchapter-content-toolbar--image {')
-    expect(bar).toContain('top: 6px')
-    expect(bar).toContain('right: 6px')
+    // 定位由 JS 依据实际图片矩形写入：CSS 只提供 0 基线。
+    expect(bar).toContain('top: 0')
+    expect(bar).toContain('left: 0')
+    expect(bar).toContain('right: auto')
+    expect(bar).not.toContain('right: 6px')
     expect(bar).toContain('opacity: 0')
     expect(bar).toContain('visibility: hidden')
     expect(bar).toContain('pointer-events: none')

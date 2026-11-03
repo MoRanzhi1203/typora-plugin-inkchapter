@@ -27,6 +27,10 @@ import {
 import { codeContentSignature, codeFenceOrdinal, lookupFenceSource } from './content-block-toolbar-code-source'
 import { ContentBlockToolbarSession } from './content-block-toolbar-session'
 import { buildImageActions, type ImageActionAvailability } from './content-block-toolbar-image-actions'
+import {
+  clipEditorRect,
+  computeImageToolbarPlacement,
+} from './content-block-toolbar-image-placement'
 
 export const CONTENT_TOOLBAR_CLASS = 'inkchapter-content-toolbar'
 export const CONTENT_TOOLBAR_ATTR = 'data-inkchapter-content-toolbar'
@@ -59,6 +63,9 @@ export const CODE_FOLD_DIAG_ATTR = 'data-inkchapter-fold-diag'
 const DEFAULT_PREVIEW_LINES = 10
 const FEEDBACK_RESET_MS = 1600
 const MAX_VIEWS = 80
+/** jsdom / 隐藏态下测不到 offsetWidth 时的保守尺寸。 */
+const IMAGE_BAR_FALLBACK_WIDTH = 64
+const IMAGE_BAR_FALLBACK_HEIGHT = 32
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error'
 
@@ -298,6 +305,8 @@ export class ContentBlockToolbarController {
   private imageMenuOpen = false
   private imageHideTimer: number | null = null
   private imageFeedbackTimer: number | null = null
+  private watchedImage: HTMLImageElement | null = null
+  private imageSizeHandler: (() => void) | null = null
   private scrollRaf: number | null = null
   private lastViewportW = 0
   private actionSeq = 0
@@ -474,6 +483,8 @@ export class ContentBlockToolbarController {
     if (removed.length > 0) {
       this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD-RETIRED', { removedCount: removed.length })
     }
+    // 窗口/侧栏宽度变化后复用同一几何 pass 重新定位图片操作条（无新增观察器）。
+    if (this.imageVisible && this.imageTarget) this.positionImageBar()
     this.auditViewportLayout()
   }
 
@@ -1684,10 +1695,82 @@ export class ContentBlockToolbarController {
       anchor.appendChild(this.imageBar)
     }
     this.imageTarget = target
-    this.imageBar.setAttribute(IMAGE_BAR_VISIBLE_ATTR, 'true')
     this.imageVisible = true
     this.updateImageActions()
     this.updateImageBarState(target.element as HTMLImageElement)
+    this.watchImageSize(target.element as HTMLImageElement)
+    // 先按图片真实边界定位，再显示，避免出现“先显示在块右侧再跳回”的闪烁。
+    this.positionImageBar()
+    this.imageBar.setAttribute(IMAGE_BAR_VISIBLE_ATTR, 'true')
+  }
+
+  /**
+   * 以**实际图片矩形**为参照，写入相对锚点容器的 left/top。
+   * 不使用视口绝对坐标，因此滚动时不需要重算。
+   */
+  private positionImageBar(): void {
+    const target = this.imageTarget
+    const anchor = this.imageAnchorEl
+    if (!target || !anchor || !this.imageBar.isConnected) return
+    const img = target.element as HTMLImageElement
+    const imageRect = img.getBoundingClientRect()
+    const anchorRect = anchor.getBoundingClientRect()
+    const root = this.opts.getEditorRoot()
+    const rawEditor = root?.getBoundingClientRect() ?? anchorRect
+    const viewportWidth = window.innerWidth || rawEditor.right || 1024
+    const viewportHeight = window.innerHeight || rawEditor.bottom || 768
+    const placement = computeImageToolbarPlacement({
+      imageRect,
+      anchorRect,
+      editorRect: clipEditorRect(rawEditor, viewportWidth, viewportHeight),
+      barWidth: this.imageBar.offsetWidth || IMAGE_BAR_FALLBACK_WIDTH,
+      barHeight: this.imageBar.offsetHeight || IMAGE_BAR_FALLBACK_HEIGHT,
+    })
+    this.imageBar.setAttribute('data-placement', placement.mode)
+    this.imageBar.style.left = `${placement.left}px`
+    this.imageBar.style.top = `${placement.top}px`
+    // 运行时定位取证：以视口坐标记录“图片边缘 → 操作条边缘”的真实间距。
+    // 每次定位只读一次几何（非滚动路径、非轮询）。
+    const barRect = this.imageBar.getBoundingClientRect()
+    const measuredGap = placement.mode === 'right'
+      ? barRect.left - imageRect.right
+      : placement.mode === 'left'
+        ? imageRect.left - barRect.right
+        : null
+    this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-IMAGE-PLACEMENT', {
+      mode: placement.mode,
+      gap: placement.gap,
+      measuredGapPx: measuredGap === null ? null : Math.round(measuredGap * 10) / 10,
+      topDeltaPx: Math.round((barRect.top - imageRect.top) * 10) / 10,
+      imageWidth: Math.round(imageRect.width),
+      blockWidth: Math.round(anchorRect.width),
+      barWidth: Math.round(barRect.width),
+    })
+  }
+
+  /** 图片异步加载完成后尺寸会变化：只监听这一次 load/error，不做轮询。 */
+  private watchImageSize(img: HTMLImageElement): void {
+    if (this.watchedImage === img) return
+    this.unwatchImageSize()
+    this.watchedImage = img
+    this.imageSizeHandler = () => {
+      if (this.disposed || this.imageTarget?.element !== img) return
+      this.updateImageBarState(img)
+      this.positionImageBar()
+    }
+    img.addEventListener('load', this.imageSizeHandler)
+    img.addEventListener('error', this.imageSizeHandler)
+  }
+
+  private unwatchImageSize(): void {
+    const img = this.watchedImage
+    const handler = this.imageSizeHandler
+    if (img && handler) {
+      img.removeEventListener('load', handler)
+      img.removeEventListener('error', handler)
+    }
+    this.watchedImage = null
+    this.imageSizeHandler = null
   }
 
   /** 计算当前图片可用的“更多操作”，没有资源的项不渲染。 */
@@ -1747,6 +1830,8 @@ export class ContentBlockToolbarController {
     this.imageFeedback.classList.toggle('is-success', kind === 'success')
     this.imageFeedback.classList.toggle('is-error', kind === 'error')
     this.imageBar.setAttribute('data-feedback', kind)
+    // 反馈文字会改变按钮条宽度，重新按图片边界校正位置。
+    this.positionImageBar()
     this.imageFeedbackTimer = window.setTimeout(() => {
       this.imageFeedbackTimer = null
       this.clearImageFeedback()
@@ -1761,6 +1846,7 @@ export class ContentBlockToolbarController {
     this.imageFeedback.textContent = ''
     this.imageFeedback.classList.remove('is-success', 'is-error')
     this.imageBar.removeAttribute('data-feedback')
+    this.positionImageBar()
   }
 
   private toggleImageMenu(): void {
@@ -1838,6 +1924,7 @@ export class ContentBlockToolbarController {
 
   /** 从当前图片容器移除操作条与锚点类；图片本身不受影响。 */
   private releaseImageAnchor(): void {
+    this.unwatchImageSize()
     const anchor = this.imageAnchorEl
     this.imageAnchorEl = null
     if (!anchor) {

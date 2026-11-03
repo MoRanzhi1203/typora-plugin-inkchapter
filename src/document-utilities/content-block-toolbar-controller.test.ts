@@ -924,6 +924,98 @@ describe('V3 image toolbar (container-bound)', () => {
     expect(harness.overlay.contains(bar)).toBe(false)
   })
 
+  it('positions the bar against the real image edge, not the block width', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    // 内容块宽 400，居中图片宽 200（图片右侧留白 100）。
+    stubRect(harness.write, 100, 0, 400, 800)
+    stubRect(wrapper, 100, 700, 400, 150)
+    stubRect(harness.img, 200, 700, 200, 150)
+    hover(harness.img)
+    const bar = imageBar()!
+    expect(bar.getAttribute('data-placement')).toBe('right')
+    // 图片右边 (x=400) + 7px → 相对锚点左侧 (x=100) 的局部坐标 307，而不是块右侧。
+    expect(bar.style.left).toBe('307px')
+    expect(bar.style.top).toBe('0px')
+    expect(bar.style.right).toBe('')
+    // 定位不得改变图片尺寸/居中布局。
+    expect(harness.img.style.width).toBe('')
+    expect(wrapper.style.width).toBe('')
+  })
+
+  it('flips to the left when the right side has no room', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    stubRect(harness.write, 100, 0, 400, 800)
+    stubRect(wrapper, 100, 700, 400, 150)
+    stubRect(harness.img, 400, 700, 100, 150)
+    hover(harness.img)
+    const bar = imageBar()!
+    expect(bar.getAttribute('data-placement')).toBe('left')
+    // 图片左边局部坐标 300 - 7 - 64 = 229。
+    expect(bar.style.left).toBe('229px')
+    expect(bar.style.top).toBe('0px')
+  })
+
+  it('falls back to the image inner corner when both sides are tight', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    stubRect(harness.write, 100, 0, 400, 800)
+    stubRect(wrapper, 100, 700, 400, 150)
+    stubRect(harness.img, 100, 700, 400, 150)
+    hover(harness.img)
+    const bar = imageBar()!
+    expect(bar.getAttribute('data-placement')).toBe('inside')
+    expect(bar.style.left).toBe('330px')
+    expect(bar.style.top).toBe('6px')
+  })
+
+  it('keeps an inline image aligned to its own top edge', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    stubRect(harness.write, 100, 0, 400, 800)
+    stubRect(wrapper, 100, 700, 400, 40)
+    stubRect(harness.img, 120, 708, 100, 24)
+    hover(harness.img)
+    const bar = imageBar()!
+    expect(bar.getAttribute('data-placement')).toBe('right')
+    expect(bar.style.left).toBe('127px')
+    expect(bar.style.top).toBe('8px')
+  })
+
+  it('repositions on geometry changes and does not drift on scroll', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    stubRect(harness.write, 100, 0, 400, 800)
+    stubRect(wrapper, 100, 700, 400, 150)
+    stubRect(harness.img, 300, 700, 150, 150)
+    hover(harness.img)
+    const bar = imageBar()!
+    expect(bar.getAttribute('data-placement')).toBe('left')
+    expect(bar.style.left).toBe('129px')
+
+    // 侧栏收起 / 窗口变宽：编辑区变宽后回到右侧。
+    stubRect(harness.write, 100, 0, 800, 800)
+    harness.controller.syncGeometry()
+    expect(bar.getAttribute('data-placement')).toBe('right')
+    expect(bar.style.left).toBe('357px')
+
+    // 滚动时锚点与图片一起移动：相对坐标不变，不产生漂移。
+    harness.write.dispatchEvent(new Event('scroll'))
+    expect(bar.isConnected).toBe(true)
+    expect(bar.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+    expect(bar.style.left).toBe('357px')
+    expect(bar.style.top).toBe('0px')
+  })
+
+  it('reuses one bar across repeated hovers', () => {
+    harness = createHarness()
+    hover(harness.img)
+    hover(harness.img)
+    hover(harness.img)
+    expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(1)
+  })
+
   it('uses a copy icon and 28px image buttons in the stylesheet', () => {
     harness = createHarness()
     hover(harness.img)

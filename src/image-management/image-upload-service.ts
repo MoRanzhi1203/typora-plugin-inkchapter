@@ -175,7 +175,10 @@ function extractPicGoConstructor(value: unknown): PicGoConstructorLike | null {
 }
 
 function requirePicGoIfAvailable(specifier: string): PicGoConstructorLike | null {
-  if (typeof require !== 'function') return null
+  // 通过 globalThis 读取 Typora/Electron 注入的 require：直接调用裸 `require`
+  // 会让 esbuild 在 ESM 产物里插入 dynamic require 兼容层，破坏构造期门禁。
+  const nodeRequire = (globalThis as { require?: (id: string) => unknown }).require
+  if (typeof nodeRequire !== 'function') return null
   const target = /^file:\/\//i.test(specifier)
     ? fileURLToPath(specifier)
     : path.isAbsolute(specifier)
@@ -183,7 +186,7 @@ function requirePicGoIfAvailable(specifier: string): PicGoConstructorLike | null
       : null
   if (!target) return null
   try {
-    return extractPicGoConstructor(require(target))
+    return extractPicGoConstructor(nodeRequire(target))
   } catch {
     return null
   }
