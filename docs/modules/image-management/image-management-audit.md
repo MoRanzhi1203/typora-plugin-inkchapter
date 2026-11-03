@@ -271,7 +271,7 @@ src/image-management/
 | 无 SQLite 原生模块验证 | 中 | 第一版用 JSON 索引规避 |
 | 大图库性能 | 中 | 面板分页/虚拟列表；哈希与 IO 移出主线程 |
 | `typora-adapter.ts` 为空 | 中 | 新模块必须把 Typora 访问收敛到 infrastructure |
-| 现有文档校验既有断链 | 低 | `docs/typora-startup-loading-audit.md` 1 处断链，合并前已存在，与本阶段无关 |
+| 现有文档校验既有断链 | 低 | 历史启动审计文档曾有 1 处断链，合并前已存在；该一次性文档已清理，与本阶段无关 |
 
 ## 9. 验证证据分级
 
