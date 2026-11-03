@@ -15,6 +15,11 @@ import {
   type UpsertLocalFileResult,
 } from './image-asset-index'
 import type { ImageDataPaths } from './image-data-paths'
+import {
+  executePathMigration,
+  type ExecutePathMigrationResult,
+  type PathMigrationPlan,
+} from './image-path-migration'
 
 export class ImageAssetService {
   private readonly index: ImageAssetIndex
@@ -62,6 +67,48 @@ export class ImageAssetService {
   async list(): Promise<ImageAssetRecord[]> {
     await this.ensureLoaded()
     return this.index.list()
+  }
+
+  /** 目录迁移成功后同步数据库中的本地位置。 */
+  async rewriteLocalLocationRoot(fromRoot: string, toRoot: string): Promise<number> {
+    await this.ensureLoaded()
+    return this.index.rewriteLocalLocationRoot(fromRoot, toRoot)
+  }
+
+  /**
+   * 备份 → 迁移复制校验 → 更新本地位置。
+   * 迁移失败时不改写数据库；数据库更新失败时保留迁移日志以便回滚。
+   */
+  async applyPathMigration(
+    plan: PathMigrationPlan,
+    options: { deleteSource?: boolean } = {},
+  ): Promise<{
+    ok: boolean
+    backupPath: string | null
+    migration: ExecutePathMigrationResult
+    indexUpdated: number
+    error?: string
+  }> {
+    const backupPath = await this.index.backupTo(this.paths.backupDir)
+    const migration = await executePathMigration(plan, {
+      backupDir: this.paths.backupDir,
+      deleteSource: options.deleteSource,
+    })
+    if (!migration.ok) {
+      return { ok: false, backupPath, migration, indexUpdated: 0, error: migration.error }
+    }
+    try {
+      const indexUpdated = await this.rewriteLocalLocationRoot(plan.fromRoot, plan.toRoot)
+      return { ok: true, backupPath, migration, indexUpdated }
+    } catch (error) {
+      return {
+        ok: false,
+        backupPath,
+        migration,
+        indexUpdated: 0,
+        error: `INDEX_UPDATE_FAILED:${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
   }
 
   dispose(): void {

@@ -20,6 +20,41 @@ export type ImageCompressionMode = 'keep' | 'lossless' | 'smart'
 export type ImageRemoteProvider = 'github'
 export type ImageUrlStrategy = 'raw' | 'blob' | 'custom'
 
+/** 全局图库：关闭 / 仅索引 / 长期归档。默认关闭，归档才需要物理目录。 */
+export type ImageLibraryMode = 'off' | 'index' | 'archive'
+export interface ImageGlobalLibrarySettings {
+  mode: ImageLibraryMode
+  /** 空字符串 = 未选择；仅 `archive` 必须有目录。 */
+  root: string
+}
+
+/** 普通缓存：关闭 / 智能按需 / 手动。 */
+export type ImageCacheMode = 'off' | 'smart' | 'manual'
+export interface ImageCacheSettings {
+  mode: ImageCacheMode
+  /** 空字符串 = 运行时默认（%LOCALAPPDATA%）。 */
+  root: string
+  maxSizeMB: number
+}
+
+export interface ImageOfflineSettings {
+  /** 空字符串 = 运行时默认（%LOCALAPPDATA%）。 */
+  root: string
+}
+
+export interface ImageUploadStagingSettings {
+  /** 空字符串 = 运行时默认（%TEMP%）。 */
+  root: string
+}
+
+export interface ImageDatabaseSettings {
+  /** 空字符串 = 插件私有数据目录。 */
+  root: string
+}
+
+export const DEFAULT_CACHE_MAX_SIZE_MB = 512
+export const CACHE_MAX_SIZE_OPTIONS_MB = [256, 512, 1024] as const
+
 export interface ImageRemoteProfile {
   remoteProfileId: string
   provider: ImageRemoteProvider
@@ -48,7 +83,11 @@ export interface ImageSettings {
   enabled: boolean
   /** 首次初始化向导是否已完成；未完成时不得创建图库目录。 */
   initialized: boolean
-  localLibraryPath: string
+  globalLibrary: ImageGlobalLibrarySettings
+  cache: ImageCacheSettings
+  offline: ImageOfflineSettings
+  uploadStaging: ImageUploadStagingSettings
+  database: ImageDatabaseSettings
   /** 文档级资源目录（相对文档所在目录）。 */
   documentResourceDirectory: string
   storageMode: ImageStorageMode
@@ -75,7 +114,11 @@ export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   schemaVersion: 1,
   enabled: false,
   initialized: false,
-  localLibraryPath: '',
+  globalLibrary: { mode: 'off', root: '' },
+  cache: { mode: 'smart', root: '', maxSizeMB: DEFAULT_CACHE_MAX_SIZE_MB },
+  offline: { root: '' },
+  uploadStaging: { root: '' },
+  database: { root: '' },
   documentResourceDirectory: 'assets/images',
   storageMode: 'dual-storage',
   referenceMode: 'local-relative',
@@ -245,6 +288,36 @@ function resolveLimits(raw: Partial<ImageTaskLimits> | undefined): ImageTaskLimi
   }
 }
 
+function resolveOptionalAbsolutePath(value: unknown): string {
+  const validation = validateImageLibraryPath(value)
+  return validation.ok && validation.normalized ? validation.normalized : ''
+}
+
+function resolveLibraryMode(value: unknown): ImageLibraryMode {
+  return value === 'index' || value === 'archive' ? value : 'off'
+}
+
+function resolveGlobalLibrary(
+  raw: Partial<ImageGlobalLibrarySettings> | undefined,
+  legacyRoot: string,
+): ImageGlobalLibrarySettings {
+  if (!raw && legacyRoot) return { mode: 'archive', root: legacyRoot }
+  const root = resolveOptionalAbsolutePath(raw?.root)
+  let mode = resolveLibraryMode(raw?.mode)
+  // 归档必须有真实目录；缺失时回落到关闭，而不是悄悄创建目录。
+  if (mode === 'archive' && !root) mode = 'off'
+  return { mode, root }
+}
+
+function resolveCache(raw: Partial<ImageCacheSettings> | undefined): ImageCacheSettings {
+  const mode: ImageCacheMode = raw?.mode === 'off' || raw?.mode === 'manual' ? raw.mode : 'smart'
+  return {
+    mode,
+    root: resolveOptionalAbsolutePath(raw?.root),
+    maxSizeMB: boundedInt(raw?.maxSizeMB, DEFAULT_CACHE_MAX_SIZE_MB, 64, 100 * 1024),
+  }
+}
+
 function resolveStorageMode(value: unknown): ImageStorageMode {
   return value === 'local-first' || value === 'remote-first' ? value : 'dual-storage'
 }
@@ -275,7 +348,9 @@ function resolveCompressionMode(value: unknown): ImageCompressionMode {
  * 读取侧权威：把任意持久化数据补齐为完整、合法的图片配置。
  * 非法远程配置会被丢弃（而不是带着错误配置继续上传）。
  */
-export function resolveImageSettings(raw: Partial<ImageSettings> | null | undefined): ImageSettings {
+export function resolveImageSettings(
+  raw: (Partial<ImageSettings> & { localLibraryPath?: unknown }) | null | undefined,
+): ImageSettings {
   const limits = resolveLimits(raw?.limits)
 
   const resolvedProfiles: ImageRemoteProfile[] = []
@@ -290,8 +365,13 @@ export function resolveImageSettings(raw: Partial<ImageSettings> | null | undefi
     }
   }
 
-  const localLibraryPath =
-    validateImageLibraryPath(raw?.localLibraryPath).normalized ?? DEFAULT_IMAGE_SETTINGS.localLibraryPath
+  // 旧版单一图库路径迁移为归档模式；新配置一旦存在就不再被旧字段覆盖。
+  const legacyLibraryRoot = resolveOptionalAbsolutePath(raw?.localLibraryPath)
+  const globalLibrary = resolveGlobalLibrary(raw?.globalLibrary, legacyLibraryRoot)
+  const cache = resolveCache(raw?.cache)
+  const offline = { root: resolveOptionalAbsolutePath(raw?.offline?.root) }
+  const uploadStaging = { root: resolveOptionalAbsolutePath(raw?.uploadStaging?.root) }
+  const database = { root: resolveOptionalAbsolutePath(raw?.database?.root) }
   const documentResourceDirectory =
     normalizeDocumentResourceDirectory(raw?.documentResourceDirectory)
     ?? DEFAULT_IMAGE_SETTINGS.documentResourceDirectory
@@ -307,7 +387,11 @@ export function resolveImageSettings(raw: Partial<ImageSettings> | null | undefi
     schemaVersion: 1,
     enabled: raw?.enabled === true,
     initialized: raw?.initialized === true,
-    localLibraryPath,
+    globalLibrary,
+    cache,
+    offline,
+    uploadStaging,
+    database,
     documentResourceDirectory,
     storageMode: resolveStorageMode(raw?.storageMode),
     referenceMode: resolveReferenceMode(raw?.referenceMode),

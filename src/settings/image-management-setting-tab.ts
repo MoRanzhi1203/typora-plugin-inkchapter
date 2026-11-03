@@ -97,7 +97,7 @@ export class ImageManagementSettingTab extends SettingTab {
   private render(): void {
     while (this.containerEl.firstChild) this.containerEl.removeChild(this.containerEl.firstChild)
     const settings = this.host.read()
-    this.libraryPathDraft = settings.localLibraryPath
+    this.libraryPathDraft = settings.globalLibrary.root
     this.statusEl = null
     this.remoteInputs = { owner: null, repository: null, branch: null, remoteDirectory: null, credentialReferenceId: null }
 
@@ -118,10 +118,31 @@ export class ImageManagementSettingTab extends SettingTab {
 
     this.addSettingTitle('本地图库')
     this.addSetting(s => {
+      s.addName('图库模式')
+      s.addDescription('「仅索引」不要求创建目录；「长期归档」必须选择真实目录，墨章不会自动清理。')
+      s.addSelect(select => {
+        const options: Array<['off' | 'index' | 'archive', string]> = [
+          ['off', '关闭'],
+          ['index', '仅索引（推荐）'],
+          ['archive', '长期归档'],
+        ]
+        for (const [value, label] of options) select.add(new Option(label, value))
+        select.value = settings.globalLibrary.mode
+        select.onchange = () => {
+          const current = this.host.read()
+          this.write({
+            ...current,
+            globalLibrary: { ...current.globalLibrary, mode: select.value as 'off' | 'index' | 'archive' },
+          })
+          this.render()
+        }
+      })
+    })
+    this.addSetting(s => {
       s.addName('图库目录')
       s.addDescription('用于统一存放原图。建议放在独立磁盘或固定目录；初始化前会检查磁盘、权限、空间与目录占用。')
       s.addInput('text', input => {
-        input.value = settings.localLibraryPath
+        input.value = settings.globalLibrary.root
         input.placeholder = '例如 D:\\MyImageLibrary（不要使用 E 盘硬编码）'
         input.onchange = () => {
           this.libraryPathDraft = input.value.trim()
@@ -151,7 +172,7 @@ export class ImageManagementSettingTab extends SettingTab {
       s.addDescription(div => {
         this.statusEl = div
         div.textContent = settings.initialized
-          ? `当前图库：${settings.localLibraryPath}${settings.documentResourceDirectory ? ` · 文档资源目录：${settings.documentResourceDirectory}` : ''}`
+          ? `当前图库：${settings.globalLibrary.root || '未选择目录'}`
           : '尚未初始化本地图库。'
       })
     })
@@ -397,7 +418,10 @@ export class ImageManagementSettingTab extends SettingTab {
 
   private persistDraftPath(): void {
     const current = this.host.read()
-    this.write({ ...current, localLibraryPath: this.libraryPathDraft })
+    this.write({
+      ...current,
+      globalLibrary: { ...current.globalLibrary, root: this.libraryPathDraft },
+    })
   }
 
   private async browse(): Promise<void> {
@@ -445,7 +469,10 @@ export class ImageManagementSettingTab extends SettingTab {
       ...current,
       enabled: true,
       initialized: true,
-      localLibraryPath: normalizedPath,
+      globalLibrary: {
+        mode: current.globalLibrary.mode === 'off' ? 'archive' : current.globalLibrary.mode,
+        root: normalizedPath,
+      },
     })
     this.host.notify(`图库已初始化：${normalizedPath}`)
     this.render()

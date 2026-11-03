@@ -1619,7 +1619,8 @@ export default class extends Plugin<InkChapterSettings> {
 
     // 图片资产索引：只解析路径并建立服务，首次使用时才读盘。
     try {
-      const paths = resolveImageDataPaths(this.dataPath)
+      const imageSettings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+      const paths = resolveImageDataPaths(this.dataPath, { settings: imageSettings })
       this.imageAssetService = new ImageAssetService(paths)
       console.log('[InkChapter] image asset service ready')
     } catch (e) {

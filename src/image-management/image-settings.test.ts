@@ -34,8 +34,57 @@ describe('image settings defaults', () => {
   it('is disabled and uninitialized by default', () => {
     expect(DEFAULT_IMAGE_SETTINGS.enabled).toBe(false)
     expect(DEFAULT_IMAGE_SETTINGS.initialized).toBe(false)
-    expect(DEFAULT_IMAGE_SETTINGS.localLibraryPath).toBe('')
+    expect(DEFAULT_IMAGE_SETTINGS.globalLibrary).toEqual({ mode: 'off', root: '' })
     expect(DEFAULT_IMAGE_SETTINGS.remoteProfiles).toEqual([])
+  })
+
+  it('keeps every configurable path empty by default', () => {
+    expect(DEFAULT_IMAGE_SETTINGS.cache.root).toBe('')
+    expect(DEFAULT_IMAGE_SETTINGS.offline.root).toBe('')
+    expect(DEFAULT_IMAGE_SETTINGS.uploadStaging.root).toBe('')
+    expect(DEFAULT_IMAGE_SETTINGS.database.root).toBe('')
+    expect(DEFAULT_IMAGE_SETTINGS.cache.maxSizeMB).toBe(512)
+  })
+})
+
+describe('path settings', () => {
+  it('migrates the legacy single library path into archive mode', () => {
+    const resolved = resolveImageSettings({ localLibraryPath: 'D:\\ImageLibrary' })
+    expect(resolved.globalLibrary).toEqual({ mode: 'archive', root: 'D:\\ImageLibrary' })
+  })
+
+  it('does not let the legacy field override explicit new settings', () => {
+    const resolved = resolveImageSettings({
+      localLibraryPath: 'D:\\Old',
+      globalLibrary: { mode: 'index', root: 'D:\\New' },
+    })
+    expect(resolved.globalLibrary).toEqual({ mode: 'index', root: 'D:\\New' })
+  })
+
+  it('downgrades archive without a root instead of creating a directory', () => {
+    const resolved = resolveImageSettings({ globalLibrary: { mode: 'archive', root: '' } })
+    expect(resolved.globalLibrary.mode).toBe('off')
+  })
+
+  it('rejects relative and traversal paths for every configurable root', () => {
+    const resolved = resolveImageSettings({
+      globalLibrary: { mode: 'archive', root: 'relative/library' },
+      cache: { mode: 'smart', root: '..\\cache', maxSizeMB: 512 },
+      offline: { root: 'C:relative' },
+      uploadStaging: { root: 'staging' },
+      database: { root: '\\\\server\\share' },
+    })
+    expect(resolved.globalLibrary).toEqual({ mode: 'off', root: '' })
+    expect(resolved.cache.root).toBe('')
+    expect(resolved.offline.root).toBe('')
+    expect(resolved.uploadStaging.root).toBe('')
+    expect(resolved.database.root).toBe('\\\\server\\share')
+  })
+
+  it('bounds the cache quota', () => {
+    expect(resolveImageSettings({ cache: { mode: 'smart', root: '', maxSizeMB: 1 } }).cache.maxSizeMB).toBe(64)
+    expect(resolveImageSettings({ cache: { mode: 'smart', root: '', maxSizeMB: 1e9 } }).cache.maxSizeMB)
+      .toBe(100 * 1024)
   })
 })
 

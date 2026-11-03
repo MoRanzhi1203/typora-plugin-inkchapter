@@ -19,7 +19,9 @@ import {
   buildAssetLocationKey,
   buildLocationId,
   deriveStorageState,
+  isPathInside,
   isPermanentLocalLocation,
+  normalizeLocalPathForKey,
   type AssetAvailability,
   type AssetLocationRecord,
   type AssetStorageState,
@@ -620,6 +622,58 @@ export class ImageAssetIndex {
       }
       throw new ImageIndexError(`location not found: ${locationId}`, 'ASSET_NOT_FOUND')
     })
+  }
+
+  /**
+   * 目录迁移完成后同步本地位置：只改写位于旧根内的本地 locator。
+   * 远程位置、项目相对路径与内容哈希保持不变。
+   */
+  async rewriteLocalLocationRoot(fromRoot: string, toRoot: string, now: Date = new Date()): Promise<number> {
+    return this.enqueue(async () => {
+      await this.ensureLoaded()
+      const from = path.resolve(fromRoot)
+      const to = path.resolve(toRoot)
+      const timestamp = now.toISOString()
+      let updated = 0
+      for (const asset of this.assets.values()) {
+        let changed = false
+        for (let index = 0; index < asset.locations.length; index++) {
+          const location = asset.locations[index]
+          if (location.type === 'github') continue
+          if (!isPathInside(from, location.locator)) continue
+          const nextLocator = path.join(to, path.relative(from, location.locator))
+          if (normalizeLocalPathForKey(nextLocator) === normalizeLocalPathForKey(location.locator)) continue
+          asset.locations[index] = {
+            ...location,
+            locator: nextLocator,
+            lastCheckedAt: timestamp,
+            updatedAt: timestamp,
+          }
+          changed = true
+          updated++
+        }
+        if (changed) asset.updatedAt = timestamp
+      }
+      if (updated > 0) await this.persist()
+      return updated
+    })
+  }
+
+  /**
+   * 备份当前索引文件（不解析内容，损坏文件也原样备份）。
+   * 索引不存在时返回 null，不创建空备份。
+   */
+  async backupTo(directory: string, now: Date = new Date()): Promise<string | null> {
+    try {
+      await fs.access(this.indexPath)
+    } catch {
+      return null
+    }
+    const stamp = now.toISOString().replace(/[:.]/g, '-')
+    const target = path.join(directory, `image-assets-${stamp}.json`)
+    await fs.mkdir(directory, { recursive: true })
+    await fs.copyFile(this.indexPath, target)
+    return target
   }
 
   /** 原子写入：临时文件 + rename；失败不破坏既有索引。 */

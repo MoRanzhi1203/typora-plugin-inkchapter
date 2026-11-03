@@ -122,6 +122,30 @@ describe('ImageAssetIndex', () => {
     expect(updated.locations).toHaveLength(1)
   })
 
+  it('rewrites local locations after a directory migration and keeps remote ones', async () => {
+    const filePath = await writeFile(path.join('library', 'a.png'), 'hello')
+    const { asset } = await index.upsertLocalFile({ filePath, locationType: 'library' })
+    await index.recordRemoteLocation({
+      assetId: asset.assetId,
+      remoteProfileId: 'p1',
+      branch: 'main',
+      remotePath: 'images/a.png',
+      remoteUrl: 'https://example.test/a.png',
+    })
+
+    const updated = await index.rewriteLocalLocationRoot(
+      path.join(root, 'library'),
+      path.join(root, 'new-library'),
+    )
+    expect(updated).toBe(1)
+
+    const reloaded = index.get(asset.assetId)
+    expect(reloaded?.locations.find(location => location.type === 'library')?.locator)
+      .toBe(path.join(root, 'new-library', 'a.png'))
+    expect(reloaded?.remoteLocations).toHaveLength(1)
+    expect(reloaded?.remoteLocations[0].remoteUrl).toBe('https://example.test/a.png')
+  })
+
   it('persists assets and reloads them from disk', async () => {
     const filePath = await writeFile('a.png', 'hello')
     await index.upsertLocalFile({ filePath })
