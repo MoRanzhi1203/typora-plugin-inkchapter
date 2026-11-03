@@ -42,6 +42,7 @@
 - [modules/image-management/git-pre-image-merge-report.md](modules/image-management/git-pre-image-merge-report.md) — G0：图片开发前置分支合并报告。
 - [modules/image-management/git-image-branch-report.md](modules/image-management/git-image-branch-report.md) — G1：图片管理专用分支创建报告。
 - [modules/image-management/image-management-audit.md](modules/image-management/image-management-audit.md) — P0：图片管理环境与代码审计。
+- [modules/image-management/image-management-implementation.md](modules/image-management/image-management-implementation.md) — P1-a：配置模型与本地资产索引实现记录。
 
 ## Roadmap
 
