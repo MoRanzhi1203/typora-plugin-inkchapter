@@ -77,5 +77,5 @@ export function planCacheEviction(
 
 export function cacheQuotaBytes(maxSizeMB: number): number {
   if (!Number.isFinite(maxSizeMB) || maxSizeMB <= 0) return 0
-  return Math.floor(maxSizeMB) * 1024 * 1024
+  return Math.max(0, Math.floor(maxSizeMB * 1024 * 1024))
 }

@@ -62,6 +62,7 @@ describe('planCacheEviction', () => {
 describe('cacheQuotaBytes', () => {
   it('converts megabytes to bytes and treats invalid values as zero', () => {
     expect(cacheQuotaBytes(512)).toBe(512 * 1024 * 1024)
+    expect(cacheQuotaBytes(0.0001)).toBe(104)
     expect(cacheQuotaBytes(0)).toBe(0)
     expect(cacheQuotaBytes(Number.NaN)).toBe(0)
   })
