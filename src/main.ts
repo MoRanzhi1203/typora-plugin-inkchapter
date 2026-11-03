@@ -3,6 +3,10 @@ import { Notice, Plugin, PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from './settings/settings-model'
 import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
 import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
+import { ImageManagementSettingTab } from './settings/image-management-setting-tab'
+import { resolveImageSettings } from './image-management/image-settings'
+import { initializeImageLibrary, inspectImageLibraryTarget } from './image-management/image-library-inspection'
+import { pickFolderNative } from './image-management/image-directory-picker'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
   INKCHAPTER_RIBBON_HIDDEN_CLASS,
@@ -1585,6 +1589,37 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] 界面设置页注册失败', e)
     }
+
+    // Register 图片管理 settings tab (initialization wizard; no services yet)
+    try {
+      this.registerSettingTab(new ImageManagementSettingTab({
+        read: () => resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+        write: (next) => {
+          this.settings.set('image' as keyof InkChapterSettings, next as never)
+        },
+        inspect: (libraryPath) => inspectImageLibraryTarget(libraryPath),
+        initialize: (libraryPath, options) => initializeImageLibrary(libraryPath, {
+          allowNonEmpty: options.allowNonEmpty,
+        }),
+        pickDirectory: (initialDirectory) => pickFolderNative({ initialDirectory }),
+        confirm: (message) => window.confirm(message),
+        notify: (message, kind) => {
+          if (kind === 'error') Notice.error(message)
+          else Notice.info(message)
+        },
+      }))
+      console.log('[InkChapter] image settings tab registered')
+    } catch (e) {
+      console.error('[InkChapter] 图片设置页注册失败', e)
+    }
+
+    // 已启用但未初始化：提示用户完成向导（不阻塞启动）
+    try {
+      const image = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+      if (image.enabled && !image.initialized) {
+        Notice.info('墨章：图片管理尚未初始化，请在「设置 → 墨章 · 图片」中完成初始化')
+      }
+    } catch { /* fail-open */ }
 
     // ── Commands (always registered, even if service failed) ──
 

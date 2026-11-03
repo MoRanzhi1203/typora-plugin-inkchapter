@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 本地图片资产索引（P1-a）。
  *
  * 设计要点：
@@ -9,10 +9,10 @@
  * - 所有写操作串行化，避免并发导入互相覆盖。
  */
 
-import * as fs from 'node:fs/promises'
-import { createReadStream } from 'node:fs'
-import { createHash } from 'node:crypto'
-import * as path from 'node:path'
+import * as fs from 'fs/promises'
+import { createReadStream } from 'fs'
+import { createHash } from 'crypto'
+import * as path from 'path'
 
 export const IMAGE_INDEX_SCHEMA_VERSION = 1
 
