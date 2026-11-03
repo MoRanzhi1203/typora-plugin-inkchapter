@@ -8,10 +8,11 @@
 
 1. 墨章已具备**标题 / 图表题注编号**、**Markdown 资源引用扫描**、**图片路径解析与复制**、**文件复制冲突策略**、**设置系统与迁移**、**统一资源释放**等可复用基础设施。
 2. 墨章**不存在**图片资产管理、哈希去重、任务队列、图库面板、GitHub 远程索引、凭据管理、下载与同步能力。
-3. PicGo-Core 3.2.0 可在本机 Node v24 环境安装并运行，GitHub 上传管线存在；但**缺少有效 GitHub Token**，真实上传被 401 阻断。
-4. `MoRanzhi1203/Picture_Bed` 存在、公开、默认分支 `main`，Raw URL 可访问；上传权限因无 Token 未验证。
+3. PicGo-Core 3.2.0 可在本机 Node v24 环境安装并运行，GitHub 上传管线存在；使用本机已存储的 GitHub 凭据完成了**真实上传验证**（文件存在于 `Picture_Bed`，字节数一致，Raw URL 200）。
+4. `MoRanzhi1203/Picture_Bed` 存在、公开、默认分支 `main`，Raw URL 可访问；凭据具备 `push` 权限。
 5. 关键结论：**PicGo-CLI 每次启动都会以默认 `~/.picgo/config.json` 初始化并改写它**，即使传入 `-c`。审计过程已复现该行为并恢复原文件；后续实现必须使用 PicGo 编程 API + 插件私有配置路径。
-6. Typora 内部编辑接口（自定义上传命令、原生粘贴/拖拽、`Editor.reset` / `File.reloadContent` 的撤销语义）**尚未在真实运行时验证**，属于 P0 未完成项，必须先验证再改引用。
+6. PicGo 上传结果必须校验 `imgUrl`：成功时 `url` 可能为 `undefined`；失败时不抛异常但两个 URL 均为空。
+7. Typora 内部编辑接口（自定义上传命令、原生粘贴/拖拽、`Editor.reset` / `File.reloadContent` 的撤销语义）**尚未在真实运行时验证**，属于 P0 未完成项，必须先验证再改引用。
 
 ## 2. 项目结构（P0.1）
 
@@ -137,19 +138,44 @@ npm install -g picgo  →  E:\NodeJS\picgo.ps1，版本 3.2.0
 2. 内置上传器包含 `github`，无需额外插件即可配置 GitHub 图床。
 3. 编程 API 可用：`new PicGo(configPath)`、`setConfig()`、`upload(input)`。
 
-### 5.3 真实上传探测（被凭据阻断）
+### 5.3 真实上传验证（已完成）
 
-使用 `%APPDATA%\Typora\typora-user-images\02-3-3-3.png`（14,970 B）与 GitHub 上传器配置、空 Token 执行上传：
+凭据来源：Windows 凭据管理器中的 `git:https://github.com`（用户名 `MoRanzhi1203`，Token scopes：`gist, repo, workflow`）。Token 通过进程环境变量传入 PicGo 编程 API，未打印、未写入仓库、未落盘。
 
-- CLI：请求到达 GitHub API，返回 **HTTP 401 Bad credentials**。
-- 编程 API：**不抛异常**，返回长度 1 的数组，但 `url` 与 `imgUrl` 均为 `undefined`。
+测试文件：`%APPDATA%\Typora\typora-user-images\02-3-3-3.png`（14,970 B）的临时副本。
 
-设计要求（已由实测确认）：
+上传目标：`MoRanzhi1203/Picture_Bed` 的 `main` 分支，目录 `inkchapter-audit`。
 
-- 上传适配器必须校验 `url` 字段存在且可解析，**不能把「未抛异常」当作上传成功**。
-- 上传失败必须保留本地文件，且不得改写 Markdown 引用。
+验证结果：
 
-### 5.4 重要环境副作用（已复现并修复）
+| 检查 | 结果 |
+|---|---|
+| PicGo 编程 API 上传 | 成功，返回 1 条结果 |
+| 远程文件存在 | 是：`inkchapter-audit/2026-11-03inkchapter-verify-20261103-201747.png` |
+| 远程字节数 | 14,970 B，与本地一致 |
+| Git blob SHA | `f42c324bb0961ae6ade44f7bcfde50f22c00dcf6` |
+| Raw URL | HTTP 200，`image/png`，`Content-Length: 14970` |
+| 重复内容再次上传 | 生成新路径，但 blob SHA 相同（GitHub 按内容去重存储） |
+| Token 写权限 | API `permissions.push = true` |
+
+空 Token 对照组：HTTP 401 `Bad credentials`；编程 API 不抛异常，返回长度 1 的数组，`url` / `imgUrl` 均为 `undefined`。
+
+遗留测试产物（等待用户确认后删除，不自动清理）：
+
+```text
+inkchapter-audit/2026-11-03inkchapter-verify-20261103-201700.png
+inkchapter-audit/2026-11-03inkchapter-verify-20261103-201747.png
+```
+
+### 5.4 PicGo 行为约束（实测）
+
+1. **成功与失败的返回值形状相同**：失败时也不抛异常。适配器必须校验返回项中存在可解析的 URL，不能把「未抛异常」当作成功。
+2. **成功时 `url` 可能为 `undefined`，真实地址在 `imgUrl`**。适配器必须 `url ?? imgUrl` 并按优先级校验。
+3. **`github.path` 末尾缺少 `/` 会与文件名粘连**：配置 `path = inkchapter-audit/2026-11-03` 时实际生成 `inkchapter-audit/2026-11-03inkchapter-verify-....png`。适配器必须规范化远程目录并在拼接时补 `/`。
+4. **GitHub Blob SHA ≠ 本地 SHA-256**：远端返回的是 Git blob SHA，不能与本地内容哈希直接比较；只能比较字节数与 URL 可用性。
+5. 上传失败必须保留本地文件，且不得改写 Markdown 引用。
+
+### 5.5 重要环境副作用（已复现并修复）
 
 **PicGo-CLI 每次启动都会初始化并改写默认 `~/.picgo/config.json`**：
 
@@ -172,7 +198,7 @@ npm install -g picgo  →  E:\NodeJS\picgo.ps1，版本 3.2.0
 | 最近推送 | 2026-10-09 | API `pushed_at` |
 | 目录结构 | 按主题分目录（如 `Big_Data_Technology/intern-it-job-analysis/02/...`），历史图片以语义化文件名存放 | Git Trees API |
 | Raw URL 可用性 | HTTP 200，`image/png` | `raw.githubusercontent.com/.../fig_3_3_acquisition_flow.png` |
-| Token / 上传权限 | **未验证**（无有效 Token，401） | 见 5.3 |
+| Token / 上传权限 | 已验证：`permissions.push = true`，真实上传成功 | 见 5.3 |
 | 旧上传脚本规则 | 未发现脚本；仅能从历史路径推断「按主题目录 + 语义文件名」 | 项目与 `~/.picgo` 扫描 |
 
 约束：不得移动、重命名或删除既有远程图片；默认分支必须从仓库读取而非假设。
@@ -215,15 +241,17 @@ src/image-management/
 3. **P2 上传**：PicGo 编程 API 适配、任务队列持久化、URL 校验。
 4. **P3 面板**：复用覆盖层宿主，四标签 + 懒加载。
 5. **P4 同步**：GitHub 远程索引、状态机、冲突处理。
-6. **P5 验收**：按规范 17 的场景矩阵执行；无 Token 与无运行时验证的场景必须标注为阻塞。
+6. **P5 验收**：按规范 17 的场景矩阵执行；无凭据与无运行时验证的场景必须标注为阻塞。
 
 ## 8. 风险与阻塞
 
 | 风险 | 等级 | 说明 / 缓解 |
 |---|---|---|
-| 无 GitHub Token | 高 | 真实上传成功无法验证；P2 前必须由用户提供最小权限 Token |
+| 插件凭据存取尚未实现 | 高 | 本次验证借用了系统已存的 git 凭据；插件自身必须实现 `credentialReferenceId` 对应的安全存取，禁止复制 Token 到设置或日志 |
 | Typora 编辑 API 未验证 | 高 | 引用替换可能破坏撤销与文档；P2 默认不替换引用 |
 | PicGo-CLI 改写用户配置 | 高 | 已实测；仅用编程 API + 私有配置路径 |
+| PicGo 上传结果判定 | 高 | 失败不抛异常且 `url` 可能为空；必须校验 `imgUrl` 并验证远程文件 |
+| `github.path` 拼接 | 中 | 末尾无 `/` 会与文件名粘连；适配器必须规范化 |
 | 无 SQLite 原生模块验证 | 中 | 第一版用 JSON 索引规避 |
 | 大图库性能 | 中 | 面板分页/虚拟列表；哈希与 IO 移出主线程 |
 | `typora-adapter.ts` 为空 | 中 | 新模块必须把 Typora 访问收敛到 infrastructure |
@@ -234,13 +262,14 @@ src/image-management/
 | 级别 | 本项目状态 |
 |---|---|
 | 静态代码检查通过 | 是：`pnpm run typecheck` 0 错误；`pnpm run verify:archive` PASS |
-| 自动化测试通过 | 是：`pnpm run test` 278 文件 / 5272 用例通过（P0 开始前基线） |
-| 真实 Typora 运行时验证通过 | **否**：图片相关原生行为与上传命令均未验证 |
-| 尚未验证或阻塞 | 见 4.3、5.3、8 |
+| 自动化测试通过 | 是：`pnpm run test` 280 文件 / 5305 用例通过（含 P1-a 新增 33 例） |
+| 真实 PicGo 上传验证 | 是：文件已在 `Picture_Bed` 落地，字节数一致，Raw URL 200（见 5.3） |
+| 真实 Typora 运行时验证 | **否**：图片原生行为与上传命令均未验证 |
+| 尚未验证或阻塞 | 见 4.3 |
 
-## 10. P1 准入条件
+## 10. 下一阶段准入条件
 
-1. 用户提供 GitHub Token（或明确接受「上传成功验证延后」）。
+1. ~~用户提供 GitHub Token~~ 已完成（使用系统已存凭据完成真实验证）；插件自身凭据存取仍待实现。
 2. 真实 Typora 运行时完成 4.3 的 6 项探测，并记录证据。
-3. 图片配置字段与迁移设计评审通过。
+3. 图片配置字段与迁移设计评审通过（P1-a 已交付模型与校验）。
 4. 明确第一版不自动重写已有图片引用。
