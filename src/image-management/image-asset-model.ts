@@ -462,6 +462,8 @@ export interface ProjectManifestAssetEntry {
 
 export interface ProjectImageManifest {
   schemaVersion: 1
+  /** 发送方资源根相对项目根的路径，例如 `assets`；用于接收方去重恢复。 */
+  assetRoot?: string
   assets: ProjectManifestAssetEntry[]
 }
 
@@ -487,6 +489,9 @@ export function parseProjectImageManifest(raw: unknown): ProjectManifestParseRes
   const input = raw as Partial<ProjectImageManifest>
   if (input.schemaVersion !== 1) problems.push('SCHEMA_VERSION_UNSUPPORTED')
   if (!Array.isArray(input.assets)) problems.push('ASSETS_NOT_ARRAY')
+  if (input.assetRoot !== undefined && !isSafeProjectRelativePath(input.assetRoot)) {
+    problems.push('ASSET_ROOT_INVALID')
+  }
 
   const assets: ProjectManifestAssetEntry[] = []
   if (Array.isArray(input.assets)) {
@@ -524,5 +529,13 @@ export function parseProjectImageManifest(raw: unknown): ProjectManifestParseRes
   }
 
   if (problems.length > 0) return { ok: false, manifest: null, problems }
-  return { ok: true, manifest: { schemaVersion: 1, assets }, problems: [] }
+  return {
+    ok: true,
+    manifest: {
+      schemaVersion: 1,
+      ...(typeof input.assetRoot === 'string' ? { assetRoot: input.assetRoot.replace(/\\/g, '/') } : {}),
+      assets,
+    },
+    problems: [],
+  }
 }
