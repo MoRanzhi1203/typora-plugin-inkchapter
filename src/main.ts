@@ -9,6 +9,7 @@ import { initializeImageLibrary, inspectImageLibraryTarget } from './image-manag
 import { pickFolderNative } from './image-management/image-directory-picker'
 import { resolveImageDataPaths } from './image-management/image-data-paths'
 import { ImageAssetService } from './image-management/image-asset-service'
+import { inspectDirectoryUsage } from './image-management/image-path-policy'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
   INKCHAPTER_RIBBON_HIDDEN_CLASS,
@@ -1610,6 +1611,15 @@ export default class extends Plugin<InkChapterSettings> {
         notify: (message, kind) => {
           if (kind === 'error') Notice.error(message)
           else Notice.info(message)
+        },
+        getDataPath: () => this.dataPath,
+        inspectUsage: async (target) => {
+          try {
+            const usage = await inspectDirectoryUsage(target)
+            return { fileCount: usage.fileCount, totalBytes: usage.totalBytes }
+          } catch {
+            return null
+          }
         },
       }))
       console.log('[InkChapter] image settings tab registered')

@@ -18,6 +18,7 @@ import {
   type ImageUploadService,
 } from '../image-management/image-settings'
 import type { InitializeImageLibraryResult, LibraryInspection } from '../image-management/image-library-inspection'
+import { resolveImageDataPaths } from '../image-management/image-data-paths'
 
 const DEFAULT_REMOTE_PROFILE_ID = 'github-default'
 
@@ -29,6 +30,10 @@ export interface ImageManagementSettingTabHost {
   pickDirectory(initialDirectory: string): Promise<string | null>
   confirm(message: string): boolean
   notify(message: string, kind?: 'info' | 'error'): void
+  /** 插件私有数据目录，用于展示有效路径。 */
+  getDataPath(): string
+  /** 只读统计目录占用；失败返回 null。 */
+  inspectUsage(path: string): Promise<{ fileCount: number; totalBytes: number } | null>
 }
 
 function formatBytes(bytes: number | null): string {
@@ -78,6 +83,7 @@ export class ImageManagementSettingTab extends SettingTab {
 
   private libraryPathDraft = ''
   private statusEl: HTMLElement | null = null
+  private diagnosticsEl: HTMLElement | null = null
   private remoteInputs: {
     owner: HTMLInputElement | null
     repository: HTMLInputElement | null
@@ -99,6 +105,7 @@ export class ImageManagementSettingTab extends SettingTab {
     const settings = this.host.read()
     this.libraryPathDraft = settings.globalLibrary.root
     this.statusEl = null
+    this.diagnosticsEl = null
     this.remoteInputs = { owner: null, repository: null, branch: null, remoteDirectory: null, credentialReferenceId: null }
 
     this.addSettingTitle(settings.initialized ? '图片管理' : '图片管理 · 初始化向导')
@@ -286,6 +293,194 @@ export class ImageManagementSettingTab extends SettingTab {
     })
 
     this.renderRemoteSection(settings)
+    this.renderPathSection(settings)
+    this.renderGuidance()
+  }
+
+  private renderPathSection(settings: ImageSettings): void {
+    this.addSettingTitle('存储路径与配额')
+    this.addSetting(s => {
+      s.addName('缓存模式')
+      s.addDescription('普通缓存可被 LRU 清理；固定离线资源永不参与缓存清理。')
+      s.addSelect(select => {
+        const options: Array<['off' | 'smart' | 'manual', string]> = [
+          ['off', '关闭'],
+          ['smart', '智能按需（推荐）'],
+          ['manual', '仅手动'],
+        ]
+        for (const [value, label] of options) select.add(new Option(label, value))
+        select.value = settings.cache.mode
+        select.onchange = () => {
+          const current = this.host.read()
+          this.write(resolveImageSettings({ ...current, cache: { ...current.cache, mode: select.value as 'off' | 'smart' | 'manual' } }))
+          this.render()
+        }
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('缓存目录')
+      s.addDescription('留空使用系统默认（LOCALAPPDATA）；自定义必须是绝对路径。')
+      s.addInput('text', input => {
+        input.value = settings.cache.root
+        input.placeholder = '留空 = 系统默认缓存目录'
+        input.onchange = () => this.writePathRoot('cache', input.value)
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('缓存上限（MB）')
+      s.addDescription('默认 512 MB；仅统计可清理的普通缓存与缩略图。')
+      s.addInput('text', input => {
+        input.value = String(settings.cache.maxSizeMB)
+        input.onchange = () => {
+          const current = this.host.read()
+          const parsed = Number(input.value)
+          const next = resolveImageSettings({ ...current, cache: { ...current.cache, maxSizeMB: parsed } })
+          this.write(next)
+          if (Number.isFinite(parsed) && parsed !== next.cache.maxSizeMB) {
+            this.host.notify(`缓存上限已调整为 ${next.cache.maxSizeMB} MB`, 'info')
+          }
+          input.value = String(next.cache.maxSizeMB)
+        }
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('离线资源目录')
+      s.addDescription('留空使用系统默认；固定离线资源不会被普通缓存清理。')
+      s.addInput('text', input => {
+        input.value = settings.offline.root
+        input.placeholder = '留空 = 系统默认离线目录'
+        input.onchange = () => this.writePathRoot('offline', input.value)
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('上传暂存目录')
+      s.addDescription('留空使用系统临时目录；路径修改只影响未来的上传任务。')
+      s.addInput('text', input => {
+        input.value = settings.uploadStaging.root
+        input.placeholder = '留空 = 系统临时目录'
+        input.onchange = () => this.writePathRoot('uploadStaging', input.value)
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('资产数据库目录')
+      s.addDescription('留空使用插件私有数据目录；迁移前会自动备份索引。')
+      s.addInput('text', input => {
+        input.value = settings.database.root
+        input.placeholder = '留空 = 插件私有数据目录'
+        input.onchange = () => this.writePathRoot('database', input.value)
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('有效配置与来源')
+      s.addDescription('显示运行时解析后的路径与来源，不会创建目录。')
+      s.addButton(button => {
+        button.textContent = '刷新有效配置'
+        button.onclick = () => void this.refreshDiagnostics()
+      })
+      s.addDescription(div => {
+        this.diagnosticsEl = div
+        div.style.whiteSpace = 'pre-wrap'
+        div.textContent = '点击「刷新有效配置」查看逻辑路径与来源。'
+      })
+    })
+  }
+
+  private renderGuidance(): void {
+    this.addSettingTitle('Typora 原生插图')
+    this.addSetting(s => {
+      s.addName('六种插入方式保持不变')
+      s.addDescription(
+        '墨章不复制、不替换 Typora 原生行为：无特殊操作、复制到 ./、复制到 ./assets、'
+        + '复制到 ./${filename}.assets、上传图片、复制到指定路径。请在 Typora 首选项 → 图像中设置；'
+        + '本页不读取、不伪装同步该状态。',
+      )
+    })
+
+    this.addSettingTitle('项目整理与离线')
+    this.addSetting(s => {
+      s.addName('显式操作')
+      s.addDescription(
+        '项目 assets 迁移、离线准备与分享导出需要具体文档/项目上下文，且都会先预览再执行；'
+        + '本页只保存配置，不会自动迁移文件或改写 Markdown。',
+      )
+    })
+
+    this.addSettingTitle('图库中心')
+    this.addSetting(s => {
+      s.addName('只读概览')
+      s.addDescription(
+        '当前文档 / 本地图库 / 云端图库 / 任务与诊断四个视图在文档上下文中呈现；'
+        + '设置页只显示配置与占用概览，不新增漂浮标记，不影响既有图号与题注样式。',
+      )
+    })
+  }
+
+  private writePathRoot(
+    field: 'cache' | 'offline' | 'uploadStaging' | 'database',
+    value: string,
+  ): void {
+    const current = this.host.read()
+    const root = value.trim()
+    let next: ImageSettings
+    if (field === 'cache') {
+      next = resolveImageSettings({ ...current, cache: { ...current.cache, root } })
+    } else if (field === 'offline') {
+      next = resolveImageSettings({ ...current, offline: { root } })
+    } else if (field === 'uploadStaging') {
+      next = resolveImageSettings({ ...current, uploadStaging: { root } })
+    } else {
+      next = resolveImageSettings({ ...current, database: { root } })
+    }
+    this.write(next)
+    const applied = field === 'cache'
+      ? next.cache.root
+      : field === 'offline'
+        ? next.offline.root
+        : field === 'uploadStaging'
+          ? next.uploadStaging.root
+          : next.database.root
+    if (root && !applied) {
+      this.host.notify('路径无效：必须是绝对路径且不能包含 ..；已恢复为运行时默认', 'error')
+    }
+  }
+
+  private async refreshDiagnostics(): Promise<void> {
+    const settings = this.host.read()
+    let paths: ReturnType<typeof resolveImageDataPaths>
+    try {
+      paths = resolveImageDataPaths(this.host.getDataPath(), { settings })
+    } catch (error) {
+      if (this.diagnosticsEl) this.diagnosticsEl.textContent = `无法解析路径：${String(error)}`
+      return
+    }
+    const lines = [
+      `上传服务：${settings.uploadService === 'none' ? '无（默认）' : 'GitHub（本机 Profile）'}`,
+      `图库（${settings.globalLibrary.mode}）：${paths.libraryRoot ?? '未启用'} [${paths.sources.library}]`,
+      `缓存（${settings.cache.mode}）：${paths.cacheRoot ?? '已关闭'} [${paths.sources.cache}]`,
+      `离线资源：${paths.offlineRoot} [${paths.sources.offline}]`,
+      `上传暂存：${paths.stagingRoot} [${paths.sources.staging}]`,
+      `资产数据库：${paths.databaseRoot} [${paths.sources.database}]`,
+    ]
+    if (paths.cacheObjectsDir) {
+      const usage = await this.host.inspectUsage(paths.cacheObjectsDir)
+      lines.push(usage
+        ? `缓存占用：${formatBytes(usage.totalBytes)} · ${usage.fileCount} 个文件`
+        : '缓存占用：尚未创建')
+    }
+    if (paths.libraryRoot) {
+      const inspection = await this.host.inspect(paths.libraryRoot)
+      lines.push(inspection.exists
+        ? `图库状态：${inspection.code}${inspection.entryCount !== null ? ` · ${inspection.entryCount} 项` : ''}`
+        : '图库状态：目录不存在（仅索引模式不会创建）')
+    }
+    lines.push(`云端图库：${settings.remoteProfiles.length} 个本机 Profile，未联网验证`)
+    if (this.diagnosticsEl) this.diagnosticsEl.textContent = lines.join('\n')
   }
 
   private renderRemoteSection(settings: ImageSettings): void {
