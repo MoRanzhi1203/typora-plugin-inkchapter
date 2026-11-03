@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   CODE_FOLD_ATTR,
+  CODE_FOLD_CONTROL_ATTR,
   CODE_FOLD_DIAG_ATTR,
   CODE_FOLD_HEIGHT_VAR,
   CODE_FOLD_PREVIEW_ATTR,
@@ -49,6 +50,7 @@ interface Harness {
   barFor: (cid: string) => HTMLElement | null
   copyBtnFor: (cid: string) => HTMLButtonElement | null
   foldBtnFor: (cid: string) => HTMLButtonElement | null
+  bottomBtnFor: (cid: string) => HTMLButtonElement | null
   copyText: ReturnType<typeof vi.fn>
   copyImage: ReturnType<typeof vi.fn>
   onLayoutInvalidated: ReturnType<typeof vi.fn>
@@ -121,6 +123,8 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     barFor,
     copyBtnFor: (cid) => barFor(cid)?.querySelector<HTMLButtonElement>('[data-action="copy-code"]') ?? null,
     foldBtnFor: (cid) => barFor(cid)?.querySelector<HTMLButtonElement>('[data-action="toggle-fold"]') ?? null,
+    bottomBtnFor: (cid) => (cid === 'long' ? longFence : shortFence)
+      .querySelector<HTMLButtonElement>('[data-action="toggle-fold-bottom"]'),
     copyText,
     copyImage,
     onLayoutInvalidated,
@@ -754,6 +758,88 @@ describe('V3 preview folding (top-bar control)', () => {
     expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
     expect(harness.controller.getFoldKeys()).toEqual([])
     expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
+  })
+})
+
+describe('V3 bottom fold control (mirrors the top bar)', () => {
+  it('renders the bottom chevron only for foldable code', () => {
+    harness = createHarness()
+    const long = harness.bottomBtnFor('long')!
+    const short = harness.bottomBtnFor('short')!
+    expect(long.style.display).toBe('')
+    expect(short.style.display).toBe('none')
+    expect(long.closest('pre.md-fences')).toBe(harness.longFence)
+    expect(harness.longFence.getAttribute(CODE_FOLD_CONTROL_ATTR)).toBe('true')
+    expect(harness.shortFence.hasAttribute(CODE_FOLD_CONTROL_ATTR)).toBe(false)
+  })
+
+  it('folds and unfolds through the bottom chevron and keeps both entries in sync', () => {
+    harness = createHarness()
+    const bottom = () => harness!.bottomBtnFor('long')!
+    const top = () => harness!.foldBtnFor('long')!
+    bottom().click()
+    expect(harness.longFence.getAttribute(CODE_FOLD_ATTR)).toBe('true')
+    for (const btn of [top(), bottom()]) {
+      expect(btn.getAttribute('title')).toBe('展开全部代码')
+      expect(btn.getAttribute('aria-expanded')).toBe('false')
+    }
+    bottom().click()
+    expect(harness.longFence.hasAttribute(CODE_FOLD_ATTR)).toBe(false)
+    for (const btn of [top(), bottom()]) {
+      expect(btn.getAttribute('title')).toBe('收起至前 10 行')
+      expect(btn.getAttribute('aria-expanded')).toBe('true')
+    }
+  })
+
+  it('keeps one state when alternating top and bottom entries (20 clicks)', () => {
+    harness = createHarness()
+    const states: boolean[] = []
+    for (let i = 0; i < 20; i++) {
+      const btn = i % 2 === 0 ? harness.bottomBtnFor('long')! : harness.foldBtnFor('long')!
+      btn.click()
+      states.push(harness.longFence.hasAttribute(CODE_FOLD_ATTR))
+    }
+    expect(states).toEqual(Array.from({ length: 20 }, (_, i) => i % 2 === 0))
+    const passes = harness.audits.filter(
+      (a) => a.event === 'FOLD-STATE-TRANSITION' && a.payload.decision === 'PASS',
+    )
+    expect(passes).toHaveLength(20)
+    const ids = passes.map((a) => String(a.payload.actionId))
+    expect(new Set(ids).size).toBe(20)
+    expect(ids.filter((id) => id.startsWith('fold-kb-bottom-'))).toHaveLength(10)
+    expect(ids.filter((id) => id.startsWith('fold-kb-') && !id.startsWith('fold-kb-bottom-'))).toHaveLength(10)
+  })
+
+  it('never auto-expands when the bottom chevron is clicked (no text change)', () => {
+    harness = createHarness()
+    harness.bottomBtnFor('long')!.click()
+    harness.bottomBtnFor('long')!.click()
+    expect(harness.audits.some((a) => a.event === 'FOLD-AUTO-EXPAND-DECISION')).toBe(false)
+  })
+
+  it('hides the bottom chevron when the code is no longer foldable', () => {
+    harness = createHarness({ source: () => 'const a = 1' })
+    expect(harness.bottomBtnFor('long')!.style.display).toBe('none')
+    expect(harness.longFence.hasAttribute(CODE_FOLD_CONTROL_ATTR)).toBe(false)
+  })
+
+  it('emits one geometry audit describing the bottom control', () => {
+    harness = createHarness()
+    const audit = harness.audits.find((a) => a.event === 'FOLD-BOTTOM-CONTROL')
+    expect(audit?.payload).toMatchObject({
+      blockKey: 'code:cid:long',
+      foldable: true,
+      visible: true,
+      nextTag: 'pre',
+      bottomButtonCount: 1,
+    })
+    expect(audit?.payload).toHaveProperty('buttonRect')
+    expect(audit?.payload).toHaveProperty('iconRect')
+    expect(audit?.payload).toHaveProperty('overlapNextPx')
+    const shortAudit = harness.audits.find(
+      (a) => a.event === 'FOLD-BOTTOM-CONTROL' && a.payload.blockKey === 'code:cid:short',
+    )
+    expect(shortAudit?.payload).toMatchObject({ foldable: false, visible: false })
   })
 })
 

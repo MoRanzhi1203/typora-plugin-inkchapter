@@ -85,6 +85,46 @@ describe('CONTENT-TOOLBAR-STYLE V3 language bar', () => {
   })
 })
 
+describe('CONTENT-TOOLBAR-STYLE bottom fold arrow', () => {
+  const BOTTOM =
+    "#write pre[data-inkchapter-langbar='true'] .inkchapter-content-toolbar__btn--fold-bottom {"
+
+  it('pins a 28x28 hit area on the bottom border without taking layout space', () => {
+    const rule = ruleBody(BOTTOM)
+    expect(rule).toContain('position: absolute')
+    expect(rule).toContain('left: 50%')
+    expect(rule).toContain('bottom: -14px')
+    expect(rule).toContain('width: 28px')
+    expect(rule).toContain('height: 28px')
+    expect(rule).not.toContain('padding-bottom')
+    expect(rule).not.toContain('box-shadow: 0')
+  })
+
+  it('blends into the code container and keeps a 16px chevron', () => {
+    const rule = ruleBody(BOTTOM)
+    expect(rule).toContain('background: transparent')
+    expect(rule).toContain('border-radius')
+    expect(rule).toContain('width: 16px')
+    expect(rule).toContain('height: 16px')
+  })
+
+  it('uses theme tokens so both light and dark themes stay legible', () => {
+    expect(ruleBody(BOTTOM)).toContain('var(--text-color')
+  })
+
+  it('never reserves a bottom fold band', () => {
+    expect(scss).not.toContain('--ink-fold-bottom-band')
+    expect(scss).not.toContain('padding-bottom: 36px')
+  })
+
+  it('shifts a below-caption only when the bottom control exists', () => {
+    const rule = ruleBody(
+      "#write pre.md-fences[data-inkchapter-caption='true'][data-inkchapter-fold-control='true'][data-inkchapter-caption-position='below']::before {",
+    )
+    expect(rule).toContain('top: calc(100% + 10px)')
+  })
+})
+
 describe('CONTENT-TOOLBAR-STYLE V3 folded preview', () => {
   it('clips only the CodeMirror height and keeps the PRE (and its caption) unclipped', () => {
     const cm = ruleBody("#write pre[data-inkchapter-code-folded='true'] > .CodeMirror {")

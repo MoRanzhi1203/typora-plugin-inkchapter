@@ -36,6 +36,11 @@ export const CODE_FOLD_SUMMARY_ATTR = 'data-inkchapter-fold-summary'
 export const CODE_LANGBAR_ATTR = 'data-inkchapter-langbar'
 /** 折叠预览行数（5 | 10）。 */
 export const CODE_FOLD_PREVIEW_ATTR = 'data-inkchapter-fold-preview'
+/**
+ * 可折叠标记（显示顶部/底边折叠入口）。
+ * 仅用于「下方题注避让」这类展示层选择器，不参与折叠状态判定。
+ */
+export const CODE_FOLD_CONTROL_ATTR = 'data-inkchapter-fold-control'
 /** 折叠预览高度（CSS 变量，作用在 `.CodeMirror` 上）。 */
 export const CODE_FOLD_HEIGHT_VAR = '--ink-fold-preview-height'
 /**
@@ -135,6 +140,13 @@ interface CodeBlockView {
   ordinal: number | null
   copyBtn: HTMLButtonElement
   foldBtn: HTMLButtonElement
+  /**
+   * 底边中央的折叠控制（与顶部语言栏按钮同属一个折叠状态）。
+   * 挂在 PRE 内部、绝对定位，不参与布局，也不进入 CodeMirror 模型。
+   */
+  bottomBtn: HTMLButtonElement
+  /** 底边控制的一次性几何审计是否已发出。 */
+  bottomAudited: boolean
   folded: boolean
   previewLines: number
   totalLines: number
@@ -424,6 +436,7 @@ export class ContentBlockToolbarController {
         // The rebuilt CM may have dropped our marks: force a re-apply.
         if (!existing.bar.isConnected) {
           existing.fence.appendChild(existing.bar)
+          existing.fence.appendChild(existing.bottomBtn)
           this.clearDiagnosticMarks(existing)
         }
         return existing
@@ -467,8 +480,20 @@ export class ContentBlockToolbarController {
     foldBtn.style.display = 'none'
     bar.append(badge, lang, lines, copyBtn, foldBtn)
 
+    // 底边中央的折叠控制：与顶部按钮同源状态，独立入口。
+    const bottomBtn = doc.createElement('button')
+    bottomBtn.type = 'button'
+    bottomBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn ${CONTENT_TOOLBAR_CLASS}__btn--fold-bottom`
+    bottomBtn.setAttribute('data-action', 'toggle-fold-bottom')
+    bottomBtn.setAttribute('data-inkchapter-ui-root', 'document-utilities')
+    bottomBtn.setAttribute('data-block-key', target.key)
+    bottomBtn.setAttribute('aria-label', '收起至预览')
+    bottomBtn.setAttribute('title', '收起至预览')
+    bottomBtn.style.display = 'none'
+
     this.bindButtonFocusGuard(copyBtn)
     this.bindButtonFocusGuard(foldBtn)
+    this.bindButtonFocusGuard(bottomBtn)
 
     const view: CodeBlockView = {
       key: target.key,
@@ -480,6 +505,8 @@ export class ContentBlockToolbarController {
       ordinal: null,
       copyBtn,
       foldBtn,
+      bottomBtn,
+      bottomAudited: false,
       folded: false,
       previewLines: DEFAULT_PREVIEW_LINES,
       totalLines: 0,
@@ -501,15 +528,39 @@ export class ContentBlockToolbarController {
       ev.stopPropagation()
       void this.copyCode(view)
     })
-    foldBtn.addEventListener('pointerdown', (ev) => {
-      const actionId = `fold-${++this.actionSeq}-${view.key}`
+    this.bindFoldControl(view, foldBtn, 'top', target.element)
+    this.bindFoldControl(view, bottomBtn, 'bottom', target.element)
+
+    target.element.setAttribute(CODE_LANGBAR_ATTR, 'true')
+    target.element.append(bar, bottomBtn)
+    this.views.set(target.key, view)
+    return view
+  }
+
+  /**
+   * 顶部语言栏按钮与底边箭头共用的折叠入口。
+   *
+   * 两个按钮只产生各自的 actionId，状态仍然只由 `toggleFold` → `setCollapsed`
+   * 写入；不存在第二套折叠状态。`source` 仅用于审计区分入口。
+   */
+  private bindFoldControl(
+    view: CodeBlockView,
+    btn: HTMLButtonElement,
+    source: 'top' | 'bottom',
+    fenceElement: HTMLElement,
+  ): void {
+    const suffix = source === 'bottom' ? 'fold-bottom' : 'fold'
+    const keyboardSuffix = source === 'bottom' ? 'fold-kb-bottom' : 'fold-kb'
+    btn.addEventListener('pointerdown', (ev) => {
+      const actionId = `${suffix}-${++this.actionSeq}-${view.key}`
       view.actionId = actionId
-      this.auditFoldPointerHit(view, ev, actionId)
+      this.auditFoldPointerHit(view, ev, actionId, btn, source)
     })
-    foldBtn.addEventListener('pointerup', (ev) => {
+    btn.addEventListener('pointerup', (ev) => {
       this.opts.emitAudit?.('FOLD-POINTER-UP', {
         actionId: view.actionId,
         blockKey: view.key,
+        source,
         detail: ev.detail,
         isTrusted: ev.isTrusted,
         targetTag: (ev.target as Element | null)?.tagName ?? null,
@@ -517,7 +568,7 @@ export class ContentBlockToolbarController {
         caret: this.caretSnapshot(view),
       })
     })
-    foldBtn.addEventListener('click', (ev) => {
+    btn.addEventListener('click', (ev) => {
       ev.preventDefault()
       ev.stopPropagation()
       // Keyboard / assistive-technology activation has no pointerdown. It must
@@ -525,13 +576,14 @@ export class ContentBlockToolbarController {
       // is permanently rejected as DUPLICATE_ACTION.
       let actionId = view.actionId
       if (ev.detail === 0) {
-        actionId = `fold-kb-${++this.actionSeq}-${view.key}`
+        actionId = `${keyboardSuffix}-${++this.actionSeq}-${view.key}`
         view.actionId = actionId
       }
       const caret = this.caretSnapshot(view)
       this.opts.emitAudit?.('FOLD-CLICK-DISPATCH', {
         actionId,
         blockKey: view.key,
+        source,
         detail: ev.detail,
         isTrusted: ev.isTrusted,
         folded: view.folded,
@@ -540,16 +592,11 @@ export class ContentBlockToolbarController {
         caretInside: this.selectionInside(view.fence),
         caret,
         path: this.eventPathSummary(ev),
-        toolbarConnected: view.bar.isConnected && view.foldBtn.isConnected,
-        fenceIsCurrent: view.fence.isConnected && view.fence === target.element,
+        toolbarConnected: view.bar.isConnected && btn.isConnected,
+        fenceIsCurrent: view.fence.isConnected && view.fence === fenceElement,
       })
       this.toggleFold(view, actionId)
     })
-
-    target.element.setAttribute(CODE_LANGBAR_ATTR, 'true')
-    target.element.appendChild(bar)
-    this.views.set(target.key, view)
-    return view
   }
 
   private destroyView(view: CodeBlockView): void {
@@ -557,8 +604,10 @@ export class ContentBlockToolbarController {
     this.clearDiagnosticMarks(view)
     view.fence.removeAttribute(CODE_FOLD_DIAG_ATTR)
     view.fence.removeAttribute(CODE_LANGBAR_ATTR)
+    view.fence.removeAttribute(CODE_FOLD_CONTROL_ATTR)
     view.bar.remove()
-    for (const btn of [view.copyBtn, view.foldBtn]) {
+    view.bottomBtn.remove()
+    for (const btn of [view.copyBtn, view.foldBtn, view.bottomBtn]) {
       const timer = this.resetTimers.get(btn)
       if (timer !== undefined) window.clearTimeout(timer)
       this.resetTimers.delete(btn)
@@ -583,13 +632,53 @@ export class ContentBlockToolbarController {
       toolbarRect: rectTuple(barRect),
       copyRect: rectTuple(view.copyBtn.getBoundingClientRect()),
       foldRect: rectTuple(view.foldBtn.getBoundingClientRect()),
+      bottomRect: rectTuple(view.bottomBtn.getBoundingClientRect()),
       barChildren: view.bar.children.length,
       captionLabel: view.fence.getAttribute('data-inkchapter-caption-label'),
+      captionPosition: view.fence.getAttribute('data-inkchapter-caption-position'),
       foldable: view.totalLines > view.previewLines,
       totalLines: view.totalLines,
       previewLines: view.previewLines,
       buttonCount: buttons.length,
       preOverflow,
+      dpr: window.devicePixelRatio || 1,
+    })
+    this.auditBottomControlOnce(view)
+  }
+
+  /**
+   * 底边折叠箭头的一次性几何审计：证明它只出现在可折叠块、命中区 ≥28×28、
+   * 不进入布局，并且不覆盖代码行与后续内容（用真实矩形相交计算，不做推测）。
+   */
+  private auditBottomControlOnce(view: CodeBlockView): void {
+    if (view.bottomAudited) return
+    view.bottomAudited = true
+    const foldable = view.totalLines > view.previewLines
+    const btn = view.bottomBtn
+    const icon = btn.querySelector(`.${CONTENT_TOOLBAR_CLASS}__icon`) as HTMLElement | null
+    const lines = view.fence.querySelectorAll<HTMLElement>('.CodeMirror-line')
+    const lastLine = lines.length > 0 ? lines[lines.length - 1] : null
+    const next = view.fence.nextElementSibling as HTMLElement | null
+    const buttonRect = rectTuple(btn.getBoundingClientRect())
+    const iconRect = icon ? rectTuple(icon.getBoundingClientRect()) : null
+    const lastLineRect = lastLine ? rectTuple(lastLine.getBoundingClientRect()) : null
+    const nextRect = next ? rectTuple(next.getBoundingClientRect()) : null
+    this.opts.emitAudit?.('FOLD-BOTTOM-CONTROL', {
+      blockKey: view.key,
+      foldable,
+      visible: foldable && btn.style.display !== 'none',
+      /** 同一 PRE 内的底边按钮数量；重渲染后必须恒为 1（无旧按钮残留）。 */
+      bottomButtonCount: view.fence.querySelectorAll('[data-action="toggle-fold-bottom"]').length,
+      fenceRect: rectTuple(view.fence.getBoundingClientRect()),
+      buttonRect,
+      iconRect,
+      lastLineRect,
+      nextTag: next ? next.tagName.toLowerCase() : null,
+      nextRect,
+      overlapLastLinePx: rectOverlapPx(buttonRect, lastLineRect),
+      overlapNextPx: rectOverlapPx(buttonRect, nextRect),
+      iconOverlapLastLinePx: rectOverlapPx(iconRect, lastLineRect),
+      iconOverlapNextPx: rectOverlapPx(iconRect, nextRect),
       dpr: window.devicePixelRatio || 1,
     })
   }
@@ -602,7 +691,12 @@ export class ContentBlockToolbarController {
     const vw = window.innerWidth || 0
     if (vw === this.lastViewportW) return
     this.lastViewportW = vw
-    const entries: Array<{ key: string; bar: [number, number, number, number]; fence: [number, number, number, number] }> = []
+    const entries: Array<{
+      key: string
+      bar: [number, number, number, number]
+      fence: [number, number, number, number]
+      bottom: [number, number, number, number]
+    }> = []
     let clipped = 0
     for (const view of this.views.values()) {
       if (!view.bar.isConnected) continue
@@ -610,7 +704,12 @@ export class ContentBlockToolbarController {
       const fenceRect = view.fence.getBoundingClientRect()
       if (barRect.right > vw + 1) clipped++
       if (entries.length < 6) {
-        entries.push({ key: view.key, bar: rectTuple(barRect), fence: rectTuple(fenceRect) })
+        entries.push({
+          key: view.key,
+          bar: rectTuple(barRect),
+          fence: rectTuple(fenceRect),
+          bottom: rectTuple(view.bottomBtn.getBoundingClientRect()),
+        })
       }
     }
     this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-LAYOUT', {
@@ -684,7 +783,7 @@ export class ContentBlockToolbarController {
     } else if (folded) {
       this.applyFoldProjection(view, previewLines)
     }
-    this.syncFoldButton(view)
+    this.syncFoldControls(view)
   }
 
   // ── 折叠（预览式） ─────────────────────────────────────────
@@ -978,21 +1077,29 @@ export class ContentBlockToolbarController {
     return 20
   }
 
-  private syncFoldButton(view: CodeBlockView): void {
+  /**
+   * 顶部语言栏按钮 + 底边箭头共用一个折叠状态，必须同时刷新：
+   * 显隐（仅可折叠块显示）、aria-expanded、tooltip 与箭头方向。
+   */
+  private syncFoldControls(view: CodeBlockView): void {
     const foldable = view.totalLines > view.previewLines
-    view.foldBtn.style.display = foldable ? '' : 'none'
-    if (!foldable) return
     const label = view.folded ? '展开全部代码' : `收起至前 ${view.previewLines} 行`
     const signature = `${view.folded}|${label}`
-    view.foldBtn.setAttribute('aria-expanded', view.folded ? 'false' : 'true')
-    if (view.foldBtn.getAttribute('data-signature') === signature) return
-    view.foldBtn.setAttribute('data-signature', signature)
-    view.foldBtn.setAttribute('title', label)
-    view.foldBtn.setAttribute('aria-label', label)
-    view.foldBtn.innerHTML = iconSvg(
-      view.folded ? 'chevron-down' : 'chevron-up',
-      `${CONTENT_TOOLBAR_CLASS}__icon`,
-    )
+    if (foldable) view.fence.setAttribute(CODE_FOLD_CONTROL_ATTR, 'true')
+    else view.fence.removeAttribute(CODE_FOLD_CONTROL_ATTR)
+    for (const btn of [view.foldBtn, view.bottomBtn]) {
+      btn.style.display = foldable ? '' : 'none'
+      if (!foldable) continue
+      btn.setAttribute('aria-expanded', view.folded ? 'false' : 'true')
+      if (btn.getAttribute('data-signature') === signature) continue
+      btn.setAttribute('data-signature', signature)
+      btn.setAttribute('title', label)
+      btn.setAttribute('aria-label', label)
+      btn.innerHTML = iconSvg(
+        view.folded ? 'chevron-down' : 'chevron-up',
+        `${CONTENT_TOOLBAR_CLASS}__icon`,
+      )
+    }
   }
 
   private toggleFold(view: CodeBlockView, actionId: string | null): void {
@@ -1092,18 +1199,23 @@ export class ContentBlockToolbarController {
     actionId: string | null,
     caret: CaretSnapshot,
   ): void {
-    view.foldBtn.classList.add('is-error')
-    view.foldBtn.setAttribute('title', `光标位于第 ${(caret.caretLine ?? 0) + 1} 行，超出预览范围，无法折叠`)
+    const blockedLabel = `光标位于第 ${(caret.caretLine ?? 0) + 1} 行，超出预览范围，无法折叠`
+    for (const btn of [view.foldBtn, view.bottomBtn]) {
+      btn.classList.add('is-error')
+      btn.setAttribute('title', blockedLabel)
+    }
     this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
       actionId, blockKey: view.key, from: 'expanded', to: 'expanded',
       decision: 'BLOCKED', reason: 'CARET_IN_HIDDEN_PREVIEW',
       caretInsideNow: this.selectionInside(view.fence), caret,
     })
-    const timer = window.setTimeout(() => {
-      view.foldBtn.classList.remove('is-error')
-      this.syncFoldButton(view)
-    }, FEEDBACK_RESET_MS)
-    this.resetTimers.set(view.foldBtn, timer)
+    for (const btn of [view.foldBtn, view.bottomBtn]) {
+      const timer = window.setTimeout(() => {
+        btn.classList.remove('is-error')
+        this.syncFoldControls(view)
+      }, FEEDBACK_RESET_MS)
+      this.resetTimers.set(btn, timer)
+    }
   }
 
   /**
@@ -1149,7 +1261,7 @@ export class ContentBlockToolbarController {
       this.session.clearFold(view.key)
       this.clearFoldProjection(view)
     }
-    this.syncFoldButton(view)
+    this.syncFoldControls(view)
     this.opts.emitAudit?.('FOLD-STATE-TRANSITION', {
       actionId, blockKey: view.key,
       from: collapsed ? 'expanded' : 'folded',
@@ -1200,6 +1312,11 @@ export class ContentBlockToolbarController {
         if (r.top >= cmRect.top - 1 && r.bottom <= cmRect.bottom + 1) fullyVisibleLines++
       }
     }
+    const lastLineRect = lines.length > 0
+      ? rectTuple(lines[lines.length - 1].getBoundingClientRect())
+      : null
+    const bottomIcon = view.bottomBtn.querySelector(`.${CONTENT_TOOLBAR_CLASS}__icon`)
+    const bottomIconRect = bottomIcon ? rectTuple(bottomIcon.getBoundingClientRect()) : null
     this.opts.emitAudit?.('FOLD-VISUAL-VERIFY', {
       actionId,
       frame,
@@ -1212,6 +1329,11 @@ export class ContentBlockToolbarController {
       barRect: rectTuple(view.bar.getBoundingClientRect()),
       copyRect: rectTuple(view.copyBtn.getBoundingClientRect()),
       foldRect: rectTuple(view.foldBtn.getBoundingClientRect()),
+      bottomRect: rectTuple(view.bottomBtn.getBoundingClientRect()),
+      bottomVisible: view.bottomBtn.style.display !== 'none' && view.bottomBtn.isConnected,
+      bottomIconRect,
+      lastLineRect,
+      iconOverlapLastLinePx: rectOverlapPx(bottomIconRect, lastLineRect),
       cmClientHeight,
       cmScrollHeight,
       cmMaxHeight,
@@ -1222,8 +1344,13 @@ export class ContentBlockToolbarController {
     })
   }
 
-  private auditFoldPointerHit(view: CodeBlockView, ev: PointerEvent, actionId: string): void {
-    const btn = view.foldBtn
+  private auditFoldPointerHit(
+    view: CodeBlockView,
+    ev: PointerEvent,
+    actionId: string,
+    btn: HTMLButtonElement,
+    source: 'top' | 'bottom',
+  ): void {
     const rect = btn.getBoundingClientRect()
     let hit: Element | null = null
     try { hit = document.elementFromPoint(ev.clientX, ev.clientY) } catch { hit = null }
@@ -1233,6 +1360,7 @@ export class ContentBlockToolbarController {
     this.opts.emitAudit?.('FOLD-POINTER-HIT', {
       actionId,
       blockKey: view.key,
+      source,
       pointerType: ev.pointerType ?? null,
       button: ev.button,
       detail: ev.detail,
@@ -1278,7 +1406,7 @@ export class ContentBlockToolbarController {
       activeTag: active?.tagName ?? null,
       activeClass: active ? String(active.className || '').slice(0, 80) : null,
       activeInFence: !!active && fence.contains(active),
-      activeIsFoldButton: active === view.foldBtn,
+      activeIsFoldButton: active === view.foldBtn || active === view.bottomBtn,
       anchorInFence: false,
       anchorLineIndex: null,
       caretLine: null,
@@ -1603,4 +1731,15 @@ function rectTuple(rect: DOMRect): [number, number, number, number] {
     Math.round(rect.width),
     Math.round(rect.height),
   ]
+}
+
+/** 两个 `[left, top, width, height]` 矩形的相交尺寸（px）；无交集返回 `[0, 0]`。 */
+function rectOverlapPx(
+  a: [number, number, number, number] | null,
+  b: [number, number, number, number] | null,
+): [number, number] | null {
+  if (!a || !b) return null
+  const w = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])
+  const h = Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1])
+  return [Math.max(0, Math.round(w)), Math.max(0, Math.round(h))]
 }

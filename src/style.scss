@@ -4878,6 +4878,50 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   margin-left: 2px;
 }
 
+/* ── 底边中央折叠箭头（与顶部语言栏按钮同一折叠状态） ───────────────────────
+   绝对定位在 PRE 内部：不参与布局、不新增底部留白、与代码块原生同步滚动。
+   16px 图标 + 28×28 命中区；图标中心落在下边框上（轻微跨越），
+   上半部分正好落在 PRE 的底部内边距内，因此不压住最后一行代码。
+   背景透明（与容器融合），仅在 hover / focus 时出现极淡的底色。 */
+#write pre[data-inkchapter-langbar='true'] .inkchapter-content-toolbar__btn--fold-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: -14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: color-mix(in srgb, var(--text-color, #333) 58%, transparent);
+  transition: color 120ms ease-out, background-color 120ms ease-out;
+
+  .inkchapter-content-toolbar__icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  &:hover {
+    background: color-mix(in srgb, var(--text-color, #333) 8%, transparent);
+    color: var(--text-color, #333);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ink-ui-primary, #07a);
+    outline-offset: -2px;
+  }
+}
+
+/* 有下方题注且显示底边箭头时，把题注下移一个箭头高度，避免箭头压住题注文字。
+   只影响「可折叠 + 下方题注」的代码块；上方题注与短代码块完全不受影响。 */
+#write pre.md-fences[data-inkchapter-caption='true'][data-inkchapter-fold-control='true'][data-inkchapter-caption-position='below']::before {
+  top: calc(100% + 10px);
+}
+
 
 /* ── V3 预览式折叠（只裁剪 CodeMirror 可视高度，保留高亮/缩进/整块 DOM） ────
    选择器使用插件自有 data 属性，避免引入任何全局 .md-fences 规则。
