@@ -142,6 +142,8 @@ export interface DocumentUtilitiesSources {
     getPreviewLines?: () => 5 | 10
     /** 点击折叠代码块可见文字时是否自动展开（默认 true）。 */
     getAutoExpandOnEdit?: () => boolean
+    /** 当前文档目录：用于图片“复制本地路径”的解析。 */
+    getDocumentDir?: () => string | null
   }
 }
 

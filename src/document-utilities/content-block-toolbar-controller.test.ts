@@ -13,7 +13,11 @@ import {
   CODE_FOLD_SUMMARY_ATTR,
   CODE_LANGBAR_ATTR,
   CONTENT_TOOLBAR_CLASS,
+  IMAGE_ANCHOR_CLASS,
+  IMAGE_BAR_VISIBLE_ATTR,
+  IMAGE_SELECTED_CLASS,
   ContentBlockToolbarController,
+  imageCopyFailureText,
   type CodeDiagnosticMark,
 } from './content-block-toolbar-controller'
 import { ContentBlockToolbarSession } from './content-block-toolbar-session'
@@ -61,7 +65,7 @@ interface Harness {
   stubBarRect: (cid: string, left: number, top: number, width: number) => void
 }
 
-function createHarness(overrides: { source?: (cid: string) => string | null } = {}): Harness {
+function createHarness(overrides: { source?: (cid: string) => string | null; documentDir?: string | null } = {}): Harness {
   const longLines = Array.from({ length: 20 }, () => '<div class="CodeMirror-line"><span>code</span></div>').join('')
   const shortLines = Array.from({ length: 3 }, () => '<div class="CodeMirror-line"><span>code</span></div>').join('')
   document.body.innerHTML = `
@@ -103,6 +107,7 @@ function createHarness(overrides: { source?: (cid: string) => string | null } = 
     emitAudit: (event, payload) => audits.push({ event, payload }),
     getPreviewLines: () => previewLines,
     getAutoExpandOnEdit: () => autoExpandOnEdit,
+    getDocumentDir: () => overrides.documentDir ?? null,
     getBlockDiagnosticMarks: (ordinal) => blockDiagnosticMarks?.(ordinal) ?? [],
   })
   controller.mount()
@@ -896,32 +901,144 @@ describe('V3 copy', () => {
   })
 })
 
-describe('V3 image toolbar (unchanged behaviour)', () => {
-  it('shows only the copy-image button when hovering an image', () => {
+describe('V3 image toolbar (container-bound)', () => {
+  const imageBar = (): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--image`)
+  const hover = (img: HTMLElement): void => {
+    img.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+  }
+  const leave = (img: HTMLElement, relatedTarget: EventTarget | null = null): void => {
+    img.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget }))
+  }
+
+  it('binds the bar inside the md-image container instead of the overlay root', () => {
     harness = createHarness()
-    harness.img.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
-    const bar = harness.overlay.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--image`)!
-    expect(bar.style.display).not.toBe('none')
-    expect(bar.querySelectorAll('button')).toHaveLength(1)
-    expect(bar.querySelector('button')!.getAttribute('data-action')).toBe('copy-image')
+    hover(harness.img)
+    const bar = imageBar()!
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    expect(bar.parentElement).toBe(wrapper)
+    expect(wrapper.classList.contains(IMAGE_ANCHOR_CLASS)).toBe(true)
+    expect(bar.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+    expect(bar.querySelector('[data-action="copy-image"]')).toBeTruthy()
+    expect(bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.hidden).toBe(false)
+    expect(harness.overlay.contains(bar)).toBe(false)
   })
 
-  it('copies the real image element through the adapter', async () => {
+  it('uses a copy icon and 28px image buttons in the stylesheet', () => {
     harness = createHarness()
-    harness.img.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
-    harness.overlay.querySelector<HTMLButtonElement>(`.${CONTENT_TOOLBAR_CLASS}--image button`)!.click()
+    hover(harness.img)
+    const btn = imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!
+    expect(btn.querySelectorAll('rect').length).toBeGreaterThan(0)
+    expect(btn.getAttribute('title')).toBe('复制图片')
+  })
+
+  it('hides after the pointer leaves the image', () => {
+    harness = createHarness()
+    hover(harness.img)
+    leave(harness.img)
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).toBeNull()
+  })
+
+  it('stays visible when the pointer moves onto the action bar', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const btn = imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!
+    leave(harness.img, btn)
+    vi.advanceTimersByTime(220)
+    expect(imageBar()!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+  })
+
+  it('keeps the bar visible for a selected image until another click', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    harness.img.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(wrapper.classList.contains(IMAGE_SELECTED_CLASS)).toBe(true)
+    leave(harness.img)
+    vi.advanceTimersByTime(220)
+    expect(imageBar()!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+
+    harness.write.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(wrapper.classList.contains(IMAGE_SELECTED_CLASS)).toBe(false)
+    expect(imageBar()).toBeNull()
+  })
+
+  it('copies the real image element and shows a short success feedback', async () => {
+    harness = createHarness()
+    hover(harness.img)
+    imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!.click()
     await flushMicrotasks()
     expect(harness.copyImage).toHaveBeenCalledTimes(1)
     expect(harness.copyImage.mock.calls[0][0]).toBe(harness.img)
+    const feedback = imageBar()!.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}__feedback`)!
+    expect(feedback.textContent).toBe('已复制图片')
+    expect(feedback.classList.contains('is-success')).toBe(true)
   })
 
-  it('hides the image toolbar after the pointer leaves', () => {
+  it('reports a readable clipboard failure instead of silent fallback', async () => {
     harness = createHarness()
-    harness.img.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
-    harness.img.dispatchEvent(new MouseEvent('pointerout', { bubbles: true }))
-    vi.advanceTimersByTime(220)
-    const bar = harness.overlay.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}--image`)!
-    expect(bar.style.display).toBe('none')
+    harness.copyImage.mockResolvedValueOnce({ ok: false, verified: false, reason: 'CLIPBOARD_WRITE_FAILED' })
+    hover(harness.img)
+    imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!.click()
+    await flushMicrotasks()
+    const bar = imageBar()!
+    expect(bar.querySelector<HTMLElement>(`.${CONTENT_TOOLBAR_CLASS}__feedback`)!.textContent)
+      .toBe('复制失败：剪贴板写入失败')
+    expect(bar.querySelector('[data-action="copy-image"]')!.classList.contains('is-error')).toBe(true)
+  })
+
+  it('disables copying when the image failed to load', async () => {
+    harness = createHarness()
+    Object.defineProperty(harness.img, 'complete', { configurable: true, value: true })
+    Object.defineProperty(harness.img, 'naturalWidth', { configurable: true, value: 0 })
+    Object.defineProperty(harness.img, 'naturalHeight', { configurable: true, value: 0 })
+    hover(harness.img)
+    const btn = imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!
+    expect(btn.disabled).toBe(true)
+    expect(btn.getAttribute('title')).toBe('图片加载失败，无法复制原图')
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushMicrotasks()
+    expect(harness.copyImage).not.toHaveBeenCalled()
+  })
+
+  it('offers only actions backed by real resources', () => {
+    harness = createHarness({ documentDir: 'D:\\vault' })
+    hover(harness.img)
+    const bar = imageBar()!
+    bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.click()
+    const labels = Array.from(bar.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}__menu-item`))
+      .map(el => el.textContent)
+    expect(labels).toEqual(['复制本地路径', '复制 Markdown 引用'])
+  })
+
+  it('shows a cloud-link action for remote images', () => {
+    harness = createHarness()
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    wrapper.setAttribute('data-src', 'https://cdn.example.test/a.png')
+    harness.img.setAttribute('src', 'https://cdn.example.test/a.png')
+    hover(harness.img)
+    const bar = imageBar()!
+    bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.click()
+    const labels = Array.from(bar.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}__menu-item`))
+      .map(el => el.textContent)
+    expect(labels).toEqual(['复制云端链接', '复制 Markdown 引用'])
+  })
+
+  it('hides the more entry when no action is available', () => {
+    harness = createHarness()
+    harness.img.removeAttribute('src')
+    harness.img.closest<HTMLElement>('.md-image')!.removeAttribute('data-src')
+    hover(harness.img)
+    expect(imageBar()!.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.hidden).toBe(true)
+  })
+})
+
+describe('imageCopyFailureText', () => {
+  it('translates stable failure codes and keeps unknown codes visible', () => {
+    expect(imageCopyFailureText('CANVAS_TAINTED')).toBe('远程图片受跨域限制')
+    expect(imageCopyFailureText('REMOTE_FETCH_FAILED')).toBe('远程图片下载失败')
+    expect(imageCopyFailureText(null)).toBe('未知错误')
+    expect(imageCopyFailureText('CUSTOM_CODE')).toBe('CUSTOM_CODE')
   })
 })
 

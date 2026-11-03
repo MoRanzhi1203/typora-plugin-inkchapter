@@ -102,7 +102,13 @@ describe('CONTENT-TOOLBAR-HOST mount', () => {
     const fence = write.querySelector('pre.md-fences') as HTMLElement
     // V3 stability：语言栏挂在 PRE 内部，与代码块共享原生滚动坐标系。
     expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toHaveLength(0)
-    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(1)
+    // 图片操作条默认不常驻；悬停后才绑定到图片容器内部（不在 overlay 根）。
+    expect(root.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(0)
+    const img = write.querySelector('img') as HTMLImageElement
+    img.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+    const imageBar = img.closest('.md-image')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}--image`)
+    expect(imageBar).toBeTruthy()
+    expect(root.contains(imageBar)).toBe(false)
     expect(fence.querySelector(`.${CONTENT_TOOLBAR_CLASS}--langbar`)).toBeTruthy()
     expect(fence.querySelector('.CodeMirror')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}`)).toBeNull()
   })

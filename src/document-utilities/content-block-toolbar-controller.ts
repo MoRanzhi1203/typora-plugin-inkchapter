@@ -26,9 +26,16 @@ import {
 } from './content-block-toolbar-target'
 import { codeContentSignature, codeFenceOrdinal, lookupFenceSource } from './content-block-toolbar-code-source'
 import { ContentBlockToolbarSession } from './content-block-toolbar-session'
+import { buildImageActions, type ImageActionAvailability } from './content-block-toolbar-image-actions'
 
 export const CONTENT_TOOLBAR_CLASS = 'inkchapter-content-toolbar'
 export const CONTENT_TOOLBAR_ATTR = 'data-inkchapter-content-toolbar'
+/** 图片操作条的稳定锚点：Typora 的 `.md-image` 包裹层（无则退回业务块）。 */
+export const IMAGE_ANCHOR_CLASS = 'inkchapter-image-actions-anchor'
+/** 图片被点击/选中时保持操作条可见。 */
+export const IMAGE_SELECTED_CLASS = 'inkchapter-image-actions-selected'
+/** 操作条可见状态（CSS 与测试共用）。 */
+export const IMAGE_BAR_VISIBLE_ATTR = 'data-visible'
 export const CODE_FOLD_CLASS = 'inkchapter-code-folded'
 export const CODE_FOLD_ATTR = 'data-inkchapter-code-folded'
 export const CODE_FOLD_SUMMARY_ATTR = 'data-inkchapter-fold-summary'
@@ -78,13 +85,14 @@ export interface ContentBlockToolbarOptions {
   emitAudit?: (event: string, payload: Record<string, unknown>) => void
   /** 折叠预览行数（5 | 10）。 */
   getPreviewLines?: () => 5 | 10
-  /**
-   * 折叠代码块内的文本真正变化时（输入 / 空格 / Tab / 删除 / 粘贴 /
+  /** 折叠代码块内的文本真正变化时（输入 / 空格 / Tab / 删除 / 粘贴 /
    * 程序化替换），是否自动完整展开。
    * 默认 `true`；关闭后只能通过顶部展开按钮或诊断定位展开。
    * 纯点击、选中、光标移动不改变折叠状态。
    */
   getAutoExpandOnEdit?: () => boolean
+  /** 当前文档目录：用于把图片相对路径解析为“复制本地路径”的绝对路径。 */
+  getDocumentDir?: () => string | null
   /**
    * 代码块只读行级标记（按围栏序号）。空行区段用行号侧标记，全角标点用文本下划线。
    * 只使用 CodeMirror 公开 API，不插入文本、不改文档模型。
@@ -232,14 +240,41 @@ function iconSvg(name: string, cls: string): string {
   const body = name === 'copy'
     ? '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
       + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>'
-    : name === 'chevron-down'
-      ? '<polyline points="6 9 12 15 18 9"></polyline>'
-      : name === 'chevron-up'
-        ? '<polyline points="18 15 12 9 6 15"></polyline>'
-        : '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>'
-          + '<circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline>'
+    : name === 'more'
+      ? '<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"></path>'
+      : name === 'chevron-down'
+        ? '<polyline points="6 9 12 15 18 9"></polyline>'
+        : name === 'chevron-up'
+          ? '<polyline points="18 15 12 9 6 15"></polyline>'
+          : '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>'
+            + '<circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline>'
   return `<svg class="${cls}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
     + `stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`
+}
+
+/** 把剪贴板/资源错误码翻译成可理解的中文。 */
+export function imageCopyFailureText(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'IMAGE_ELEMENT_MISSING': return '未找到图片元素'
+    case 'IMAGE_NOT_LOADED': return '图片尚未加载完成'
+    case 'RESOURCE_UNRESOLVED': return '无法解析图片地址'
+    case 'REMOTE_FETCH_FAILED': return '远程图片下载失败'
+    case 'IMAGE_DECODE_FAILED': return '图片解码失败'
+    case 'CANVAS_TAINTED': return '远程图片受跨域限制'
+    case 'CANVAS_UNAVAILABLE': return '当前环境无法绘制图片'
+    case 'CLIPBOARD_UNAVAILABLE': return '剪贴板不可用'
+    case 'CLIPBOARD_WRITE_FAILED': return '剪贴板写入失败'
+    case 'CLIPBOARD_VERIFY_FAILED': return '剪贴板校验失败'
+    case 'CLIPBOARD_ITEM_UNAVAILABLE': return '当前环境不支持图片剪贴板'
+    case 'UNKNOWN_ERROR': return '未知错误'
+    default: return reason ? String(reason) : '未知错误'
+  }
+}
+
+/** 图片加载失败：已完成加载但没有任何像素。 */
+export function isImageLoadFailed(img: HTMLImageElement | null): boolean {
+  if (!img) return false
+  return img.complete === true && (img.naturalWidth === 0 || img.naturalHeight === 0)
 }
 
 export class ContentBlockToolbarController {
@@ -247,6 +282,9 @@ export class ContentBlockToolbarController {
   private readonly session = new ContentBlockToolbarSession()
   private readonly imageBar: HTMLDivElement
   private readonly imageBtn: HTMLButtonElement
+  private readonly imageMoreBtn: HTMLButtonElement
+  private readonly imageFeedback: HTMLSpanElement
+  private readonly imageMenu: HTMLDivElement
 
   private mounted = false
   private disposed = false
@@ -254,7 +292,12 @@ export class ContentBlockToolbarController {
   private lastFocusedKey: string | null = null
   private imageTarget: ContentBlockTarget | null = null
   private imageVisible = false
+  private imageSelected = false
+  private imageActions: ImageActionAvailability = { localPath: null, remoteUrl: null, markdown: null }
+  private imageAnchorEl: HTMLElement | null = null
+  private imageMenuOpen = false
   private imageHideTimer: number | null = null
+  private imageFeedbackTimer: number | null = null
   private scrollRaf: number | null = null
   private lastViewportW = 0
   private actionSeq = 0
@@ -265,8 +308,9 @@ export class ContentBlockToolbarController {
 
   private readonly onPointerOver: (ev: Event) => void
   private readonly onPointerOut: (ev: Event) => void
+  private readonly onPointerDown: (ev: Event) => void
   private readonly onFocusIn: (ev: Event) => void
-  private readonly onFocusOut: () => void
+  private readonly onFocusOut: (ev: Event) => void
 
   constructor(
     private readonly root: HTMLElement,
@@ -274,7 +318,7 @@ export class ContentBlockToolbarController {
   ) {
     const doc = root.ownerDocument ?? document
 
-    // 图片：保留 V1 的悬停单实例工具栏（不常驻，不遮挡图片）。
+    // 图片：单实例操作条，绑定到 `.md-image` 容器内部（随图片滚动，不使用视口坐标）。
     this.imageBar = doc.createElement('div')
     this.imageBar.className = `${CONTENT_TOOLBAR_CLASS} ${CONTENT_TOOLBAR_CLASS}--image`
     this.imageBar.setAttribute(CONTENT_TOOLBAR_ATTR, 'true')
@@ -282,15 +326,15 @@ export class ContentBlockToolbarController {
     this.imageBar.setAttribute('role', 'toolbar')
     this.imageBar.setAttribute('aria-label', '图片快捷操作')
     this.imageBar.setAttribute('contenteditable', 'false')
-    this.imageBar.style.display = 'none'
+    this.imageBar.setAttribute(IMAGE_BAR_VISIBLE_ATTR, 'false')
     this.imageBtn = doc.createElement('button')
     this.imageBtn.type = 'button'
-    this.imageBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn`
+    this.imageBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn ${CONTENT_TOOLBAR_CLASS}__btn--image-copy`
     this.imageBtn.setAttribute('data-action', 'copy-image')
     this.imageBtn.setAttribute('data-inkchapter-ui-root', 'document-utilities')
     this.imageBtn.setAttribute('aria-label', '复制图片')
     this.imageBtn.setAttribute('title', '复制图片')
-    this.imageBtn.innerHTML = iconSvg('image', `${CONTENT_TOOLBAR_CLASS}__icon`)
+    this.imageBtn.innerHTML = iconSvg('copy', `${CONTENT_TOOLBAR_CLASS}__icon`)
     this.imageBar.appendChild(this.imageBtn)
     this.bindButtonFocusGuard(this.imageBtn)
     this.imageBtn.addEventListener('click', (ev) => {
@@ -299,10 +343,43 @@ export class ContentBlockToolbarController {
       void this.copyImage()
     })
 
+    this.imageFeedback = doc.createElement('span')
+    this.imageFeedback.className = `${CONTENT_TOOLBAR_CLASS}__feedback`
+    this.imageFeedback.setAttribute('role', 'status')
+    this.imageFeedback.setAttribute('aria-live', 'polite')
+    this.imageBar.appendChild(this.imageFeedback)
+
+    this.imageMoreBtn = doc.createElement('button')
+    this.imageMoreBtn.type = 'button'
+    this.imageMoreBtn.className = `${CONTENT_TOOLBAR_CLASS}__btn ${CONTENT_TOOLBAR_CLASS}__btn--image-more`
+    this.imageMoreBtn.setAttribute('data-action', 'more-image-actions')
+    this.imageMoreBtn.setAttribute('data-inkchapter-ui-root', 'document-utilities')
+    this.imageMoreBtn.setAttribute('aria-label', '更多图片操作')
+    this.imageMoreBtn.setAttribute('title', '更多图片操作')
+    this.imageMoreBtn.setAttribute('aria-haspopup', 'menu')
+    this.imageMoreBtn.setAttribute('aria-expanded', 'false')
+    this.imageMoreBtn.hidden = true
+    this.imageMoreBtn.innerHTML = iconSvg('more', `${CONTENT_TOOLBAR_CLASS}__icon`)
+    this.imageBar.appendChild(this.imageMoreBtn)
+    this.bindButtonFocusGuard(this.imageMoreBtn)
+    this.imageMoreBtn.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      this.toggleImageMenu()
+    })
+
+    this.imageMenu = doc.createElement('div')
+    this.imageMenu.className = `${CONTENT_TOOLBAR_CLASS}__menu`
+    this.imageMenu.setAttribute('role', 'menu')
+    this.imageMenu.setAttribute('data-inkchapter-ui-root', 'document-utilities')
+    this.imageMenu.hidden = true
+    this.imageBar.appendChild(this.imageMenu)
+
     this.onPointerOver = (ev) => this.handlePointerOver(ev)
     this.onPointerOut = (ev) => this.handlePointerOut(ev)
+    this.onPointerDown = (ev) => this.handlePointerDown(ev)
     this.onFocusIn = (ev) => this.handleFocusIn(ev)
-    this.onFocusOut = () => this.dropImageBar()
+    this.onFocusOut = (ev) => this.handleFocusOut(ev)
   }
 
   // ── 生命周期 ───────────────────────────────────────────────
@@ -310,7 +387,7 @@ export class ContentBlockToolbarController {
   mount(): void {
     if (this.mounted || this.disposed) return
     this.mounted = true
-    this.root.appendChild(this.imageBar)
+    // 图片操作条不再挂到 overlay 根：首次悬停时绑定到图片容器内部。
     this.attachSurface()
   }
 
@@ -326,6 +403,9 @@ export class ContentBlockToolbarController {
     this.mounted = false
     this.detachSurface()
     this.cancelImageHide()
+    this.clearImageFeedback()
+    this.closeImageMenu()
+    this.releaseImageAnchor()
     if (this.scrollRaf !== null) {
       try { cancelAnimationFrame(this.scrollRaf) } catch { /* noop */ }
       this.scrollRaf = null
@@ -348,7 +428,10 @@ export class ContentBlockToolbarController {
     this.lastFocusedKey = null
     this.imageTarget = null
     this.imageVisible = false
-    this.imageBar.style.display = 'none'
+    this.imageSelected = false
+    this.clearImageFeedback()
+    this.closeImageMenu()
+    this.releaseImageAnchor()
     this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-SESSION-RESET', { reason })
   }
 
@@ -400,7 +483,7 @@ export class ContentBlockToolbarController {
    */
   onEditorScroll(): void {
     if (this.disposed) return
-    this.dropImageBar()
+    if (!this.imageSelected) this.dropImageBar()
     if (this.views.size === 0 || !this.opts.emitAudit) return
     if (this.scrollRaf !== null) return
     try {
@@ -1531,21 +1614,36 @@ export class ContentBlockToolbarController {
     this.resetTimers.set(btn, timer)
   }
 
-  // ── 图片（保留 V1 行为） ───────────────────────────────────
+  // ── 图片操作条（绑定图片容器，默认隐藏） ──────────────────────
 
   private async copyImage(): Promise<void> {
     const target = this.imageTarget
     if (!target) return
+    const img = target.element as HTMLImageElement
+    if (isImageLoadFailed(img)) {
+      this.showImageFeedback('error', '图片加载失败，无法复制')
+      this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-COPY-IMAGE', {
+        decision: 'FAIL', reason: 'IMAGE_LOAD_FAILED', blockKey: target.key,
+      })
+      return
+    }
     const btn = this.imageBtn
     btn.classList.add('is-loading')
     btn.disabled = true
     try {
-      const result = await this.opts.actions.copyImage(target.element as HTMLImageElement)
-      btn.classList.toggle('is-success', result.ok)
-      btn.classList.toggle('is-error', !result.ok)
-      btn.setAttribute('title', result.ok
-        ? (result.verified ? '已复制图片（已校验）' : '已复制图片')
-        : `复制图片失败：${result.reason ?? 'UNKNOWN'}`)
+      const result = await this.opts.actions.copyImage(img)
+      if (result.ok) {
+        this.showImageFeedback('success', '已复制图片')
+        btn.classList.remove('is-error')
+        btn.classList.add('is-success')
+        btn.setAttribute('title', result.verified ? '已复制图片（已校验）' : '已复制图片')
+      } else {
+        const message = imageCopyFailureText(result.reason)
+        this.showImageFeedback('error', `复制失败：${message}`)
+        btn.classList.remove('is-success')
+        btn.classList.add('is-error')
+        btn.setAttribute('title', `复制图片失败：${message}`)
+      }
       this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-COPY-IMAGE', {
         decision: result.ok ? 'PASS' : 'FAIL',
         reason: result.reason ?? null,
@@ -1554,6 +1652,7 @@ export class ContentBlockToolbarController {
         blockKey: target.key,
       })
     } catch (error) {
+      this.showImageFeedback('error', '复制失败：未知错误')
       btn.classList.remove('is-success')
       btn.classList.add('is-error')
       this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-COPY-IMAGE', {
@@ -1563,24 +1662,165 @@ export class ContentBlockToolbarController {
       btn.disabled = false
       const timer = window.setTimeout(() => {
         btn.classList.remove('is-loading', 'is-success', 'is-error')
-        btn.setAttribute('title', '复制图片')
+        this.updateImageButtonTitle()
       }, FEEDBACK_RESET_MS)
       this.resetTimers.set(btn, timer)
     }
   }
 
+  /** 操作条锚点：优先 Typora 的 `.md-image`（宽度贴合图片），否则退回业务块。 */
+  private resolveImageAnchor(target: ContentBlockTarget): HTMLElement {
+    const img = target.element
+    const wrapper = img.closest<HTMLElement>('.md-image')
+    return wrapper ?? target.block ?? img
+  }
+
   private showImageBar(target: ContentBlockTarget): void {
+    const anchor = this.resolveImageAnchor(target)
+    if (this.imageAnchorEl !== anchor || !this.imageBar.isConnected) {
+      this.releaseImageAnchor()
+      this.imageAnchorEl = anchor
+      anchor.classList.add(IMAGE_ANCHOR_CLASS)
+      anchor.appendChild(this.imageBar)
+    }
     this.imageTarget = target
-    const rect = target.element.getBoundingClientRect()
-    const barW = this.imageBar.offsetWidth || 32
-    const barH = this.imageBar.offsetHeight || 30
-    const small = rect.width < 140 || rect.height < 64
-    const left = Math.round(rect.right - barW - 8)
-    const top = Math.round(small ? rect.top - barH - 8 : rect.top + 8)
-    this.imageBar.style.display = ''
-    this.imageBar.style.left = `${Math.max(4, left)}px`
-    this.imageBar.style.top = `${Math.max(4, top)}px`
+    this.imageBar.setAttribute(IMAGE_BAR_VISIBLE_ATTR, 'true')
     this.imageVisible = true
+    this.updateImageActions()
+    this.updateImageBarState(target.element as HTMLImageElement)
+  }
+
+  /** 计算当前图片可用的“更多操作”，没有资源的项不渲染。 */
+  private updateImageActions(): void {
+    const target = this.imageTarget
+    if (!target) {
+      this.imageActions = { localPath: null, remoteUrl: null, markdown: null }
+      this.imageMoreBtn.hidden = true
+      return
+    }
+    const img = target.element as HTMLImageElement
+    const wrapper = img.closest<HTMLElement>('.md-image')
+    const meta = wrapper?.querySelector<HTMLElement>('.md-meta')?.textContent ?? null
+    let baseDir: string | null = null
+    try {
+      baseDir = this.opts.getDocumentDir?.() ?? null
+    } catch {
+      baseDir = null
+    }
+    this.imageActions = buildImageActions({
+      src: img.getAttribute('src'),
+      dataSrc: wrapper?.getAttribute('data-src') ?? null,
+      alt: img.getAttribute('alt') ?? meta,
+      baseDir,
+    })
+    this.imageMoreBtn.hidden = !(this.imageActions.localPath
+      || this.imageActions.remoteUrl
+      || this.imageActions.markdown)
+    if (this.imageMoreBtn.hidden) this.closeImageMenu()
+  }
+
+  private updateImageBarState(img: HTMLImageElement): void {
+    const failed = isImageLoadFailed(img)
+    this.imageBtn.disabled = failed
+    this.imageBtn.setAttribute('aria-disabled', failed ? 'true' : 'false')
+    this.imageBtn.classList.toggle('is-error', failed)
+    this.imageBtn.setAttribute('title', failed ? '图片加载失败，无法复制原图' : '复制图片')
+    this.imageBtn.setAttribute('aria-label', failed ? '图片加载失败，无法复制原图' : '复制图片')
+    if (this.imageMoreBtn.hidden) this.closeImageMenu()
+  }
+
+  private updateImageButtonTitle(): void {
+    const img = this.imageTarget?.element as HTMLImageElement | undefined
+    if (img && isImageLoadFailed(img)) {
+      this.imageBtn.setAttribute('title', '图片加载失败，无法复制原图')
+      return
+    }
+    this.imageBtn.setAttribute('title', '复制图片')
+  }
+
+  private showImageFeedback(kind: 'success' | 'error', text: string): void {
+    if (this.imageFeedbackTimer !== null) {
+      window.clearTimeout(this.imageFeedbackTimer)
+      this.imageFeedbackTimer = null
+    }
+    this.imageFeedback.textContent = text
+    this.imageFeedback.classList.toggle('is-success', kind === 'success')
+    this.imageFeedback.classList.toggle('is-error', kind === 'error')
+    this.imageBar.setAttribute('data-feedback', kind)
+    this.imageFeedbackTimer = window.setTimeout(() => {
+      this.imageFeedbackTimer = null
+      this.clearImageFeedback()
+    }, FEEDBACK_RESET_MS)
+  }
+
+  private clearImageFeedback(): void {
+    if (this.imageFeedbackTimer !== null) {
+      window.clearTimeout(this.imageFeedbackTimer)
+      this.imageFeedbackTimer = null
+    }
+    this.imageFeedback.textContent = ''
+    this.imageFeedback.classList.remove('is-success', 'is-error')
+    this.imageBar.removeAttribute('data-feedback')
+  }
+
+  private toggleImageMenu(): void {
+    if (this.imageMenuOpen) this.closeImageMenu()
+    else this.openImageMenu()
+  }
+
+  private openImageMenu(): void {
+    const actions = this.imageActions
+    this.imageMenu.textContent = ''
+    const addItem = (label: string, run: () => Promise<void>): void => {
+      const item = (this.imageBar.ownerDocument ?? document).createElement('button')
+      item.type = 'button'
+      item.className = `${CONTENT_TOOLBAR_CLASS}__menu-item`
+      item.setAttribute('role', 'menuitem')
+      item.textContent = label
+      this.bindButtonFocusGuard(item)
+      item.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        this.closeImageMenu()
+        void run()
+      })
+      this.imageMenu.appendChild(item)
+    }
+    if (actions.localPath) {
+      addItem('复制本地路径', () => this.copyImageText('本地路径', actions.localPath as string))
+    }
+    if (actions.remoteUrl) {
+      addItem('复制云端链接', () => this.copyImageText('云端链接', actions.remoteUrl as string))
+    }
+    if (actions.markdown) {
+      addItem('复制 Markdown 引用', () => this.copyImageText('Markdown 引用', actions.markdown as string))
+    }
+    if (this.imageMenu.childElementCount === 0) {
+      this.closeImageMenu()
+      return
+    }
+    this.imageMenuOpen = true
+    this.imageMenu.hidden = false
+    this.imageMoreBtn.setAttribute('aria-expanded', 'true')
+  }
+
+  private closeImageMenu(): void {
+    this.imageMenuOpen = false
+    this.imageMenu.hidden = true
+    this.imageMoreBtn.setAttribute('aria-expanded', 'false')
+  }
+
+  private async copyImageText(label: string, text: string): Promise<void> {
+    try {
+      const result = await this.opts.actions.copyText(text)
+      if (result.ok) {
+        this.showImageFeedback('success', `已复制${label}`)
+      } else {
+        this.showImageFeedback('error', `复制${label}失败：${imageCopyFailureText(result.reason)}`)
+      }
+    } catch {
+      this.showImageFeedback('error', `复制${label}失败：未知错误`)
+    }
   }
 
   private dropImageBar(): void {
@@ -1588,14 +1828,36 @@ export class ContentBlockToolbarController {
       window.clearTimeout(this.imageHideTimer)
       this.imageHideTimer = null
     }
-    if (!this.imageVisible) return
+    this.closeImageMenu()
+    if (!this.imageVisible && !this.imageAnchorEl) return
     this.imageVisible = false
     this.imageTarget = null
-    this.imageBar.style.display = 'none'
+    this.imageBar.setAttribute(IMAGE_BAR_VISIBLE_ATTR, 'false')
+    if (!this.imageSelected) this.releaseImageAnchor()
+  }
+
+  /** 从当前图片容器移除操作条与锚点类；图片本身不受影响。 */
+  private releaseImageAnchor(): void {
+    const anchor = this.imageAnchorEl
+    this.imageAnchorEl = null
+    if (!anchor) {
+      this.imageBar.remove()
+      return
+    }
+    anchor.classList.remove(IMAGE_ANCHOR_CLASS, IMAGE_SELECTED_CLASS)
+    if (this.imageBar.parentElement === anchor) this.imageBar.remove()
+  }
+
+  private clearSelectedImageAnchors(): void {
+    this.imageSelected = false
+    const root = this.boundRoot
+    if (!root) return
+    root.querySelectorAll<HTMLElement>(`.${IMAGE_ANCHOR_CLASS}.${IMAGE_SELECTED_CLASS}`)
+      .forEach(el => el.classList.remove(IMAGE_SELECTED_CLASS))
   }
 
   private scheduleImageHide(): void {
-    if (!this.imageVisible) return
+    if (!this.imageVisible || this.imageSelected) return
     this.cancelImageHide()
     this.imageHideTimer = window.setTimeout(() => {
       this.imageHideTimer = null
@@ -1619,6 +1881,7 @@ export class ContentBlockToolbarController {
     this.boundRoot = root
     root.addEventListener('pointerover', this.onPointerOver, { passive: true } as AddEventListenerOptions)
     root.addEventListener('pointerout', this.onPointerOut, { passive: true } as AddEventListenerOptions)
+    root.addEventListener('pointerdown', this.onPointerDown, { passive: true } as AddEventListenerOptions)
     root.addEventListener('focusin', this.onFocusIn, { passive: true } as AddEventListenerOptions)
     root.addEventListener('focusout', this.onFocusOut, { passive: true } as AddEventListenerOptions)
   }
@@ -1628,6 +1891,7 @@ export class ContentBlockToolbarController {
     if (root) {
       root.removeEventListener('pointerover', this.onPointerOver)
       root.removeEventListener('pointerout', this.onPointerOut)
+      root.removeEventListener('pointerdown', this.onPointerDown)
       root.removeEventListener('focusin', this.onFocusIn)
       root.removeEventListener('focusout', this.onFocusOut)
     }
@@ -1641,6 +1905,23 @@ export class ContentBlockToolbarController {
     if (target.kind === 'image') this.showImageBar(target)
   }
 
+  private handlePointerDown(ev: Event): void {
+    if (ev.target instanceof Element && ev.target.closest(`[${CONTENT_TOOLBAR_ATTR}]`)) return
+    const target = resolveContentBlockTarget(ev.target, this.boundRoot)
+    if (target?.kind === 'image') {
+      this.clearSelectedImageAnchors()
+      const anchor = this.resolveImageAnchor(target)
+      anchor.classList.add(IMAGE_ANCHOR_CLASS, IMAGE_SELECTED_CLASS)
+      this.imageSelected = true
+      this.showImageBar(target)
+      return
+    }
+    if (this.imageSelected) {
+      this.clearSelectedImageAnchors()
+      this.dropImageBar()
+    }
+  }
+
   private handlePointerOut(ev: Event): void {
     if (!this.imageVisible) return
     const related = (ev as PointerEvent).relatedTarget
@@ -1648,6 +1929,14 @@ export class ContentBlockToolbarController {
       if (this.imageBar.contains(related)) return
       if (this.imageTarget?.block.contains(related)) return
     }
+    if (this.imageSelected) return
+    this.scheduleImageHide()
+  }
+
+  private handleFocusOut(ev: Event): void {
+    if (this.imageSelected) return
+    const related = (ev as FocusEvent).relatedTarget
+    if (related instanceof Node && this.imageBar.contains(related)) return
     this.scheduleImageHide()
   }
 
