@@ -254,6 +254,17 @@ export default class extends Plugin<InkChapterSettings> {
   /** 墨章侧上传适配器（PicGo 编程 API + 插件私有配置）。 */
   private imageUploadService?: ImageUploadService
 
+  /**
+   * 图片数据根目录。
+   *
+   * 框架的 `dataPath` 指向**设置文件**（`<dataDir>/<pluginId>.json`），
+   * 不能直接当作目录传给 `resolveImageDataPaths`，否则会生成
+   * `.../ranzhi.inkchapter.json/image` 这种把文件当目录的非法路径。
+   */
+  private get imageDataBaseDir(): string {
+    return path.dirname(this.dataPath)
+  }
+
   /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
   private readUiSettings() {
     return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
@@ -306,7 +317,7 @@ export default class extends Plugin<InkChapterSettings> {
     const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
     if (!settings.enabled || !this.imageAssetService || !this.imageUploadService) return []
 
-    const paths = resolveImageDataPaths(this.dataPath, { settings })
+    const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings })
     const assets = await this.imageAssetService.list()
     const tasks = this.imageTransferTaskStore ? await this.imageTransferTaskStore.list() : []
     const typoraPreferences = await this.imageUploadService.readTyporaImagePreferences()
@@ -1701,7 +1712,7 @@ export default class extends Plugin<InkChapterSettings> {
           if (kind === 'error') Notice.error(message)
           else Notice.info(message)
         },
-        getDataPath: () => this.dataPath,
+        getDataPath: () => this.imageDataBaseDir,
         inspectUsage: async (target) => {
           try {
             const usage = await inspectDirectoryUsage(target)
@@ -1721,7 +1732,7 @@ export default class extends Plugin<InkChapterSettings> {
     // 图片资产索引：只解析路径并建立服务，首次使用时才读盘。
     try {
       const imageSettings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
-      const paths = resolveImageDataPaths(this.dataPath, { settings: imageSettings })
+      const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings: imageSettings })
       this.imageAssetService = new ImageAssetService(paths)
       this.imageTransferTaskStore = new ImageTransferTaskStore(
         path.join(paths.dataRoot, 'transfer-tasks.json'),

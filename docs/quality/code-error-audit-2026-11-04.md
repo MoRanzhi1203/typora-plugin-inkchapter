@@ -88,6 +88,13 @@
 - **修复**：按 `TransferTaskKind` / `TransferTaskStatus` 白名单校验，缺失或未知值按损坏文件处理（只报错、不覆盖）。
 - **测试**：非法 `status` 与非法 `kind` 均抛出 `corrupt`。
 
+### 2.11 图片数据根目录把设置文件当成目录
+
+- **位置**：`src/main.ts`。
+- **现象**：框架的 `dataPath` 实际是**设置文件路径**（`<dataDir>/<pluginId>.json`），直接传给 `resolveImageDataPaths` 会得到 `.../ranzhi.inkchapter.json/image`。该路径无法创建目录（`ENOTDIR`），导致上传在资产索引阶段失败、磁盘上不产生任何图片数据。
+- **修复**：新增 `imageDataBaseDir = path.dirname(this.dataPath)`，服务初始化、图库中心与设置页诊断统一使用该目录。
+- **验证**：修复后重新执行上传入口，资产索引与任务文件写入 `<dataDir>/image/`，真实上传成功（HTTP 200、`image/png`、字节一致）。
+
 ## 3. 已核实但非缺陷
 
 | 项目 | 结论 |
@@ -103,7 +110,7 @@
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | 类型检查 | `pnpm run typecheck` | PASS |
-| 全量测试 | `pnpm run test` | PASS：300 文件 / 5486 用例 |
+| 全量测试 | `pnpm run test` | PASS：301 文件 / 5492 用例 |
 | 生产构建 | `pnpm run build` | PASS |
 | 文档校验 | `pnpm run docs:verify` | PASS（断链 0） |
 | 隐私门禁 | `pnpm run verify:image-privacy` | PASS |

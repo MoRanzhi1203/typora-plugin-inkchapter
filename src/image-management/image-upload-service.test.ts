@@ -6,7 +6,7 @@ import { resolveImageDataPaths } from './image-data-paths'
 import { resolveImageSettings, type ImageSettings } from './image-settings'
 import { ImageAssetService } from './image-asset-service'
 import { ImageTransferTaskStore } from './image-transfer-task-store'
-import { ImageUploadService, toPicGoImportSpecifier, type PicGoConstructorLike } from './image-upload-service'
+import { ImageUploadService, buildPicGoPackageDirs, parseNpmPrefix, toPicGoImportSpecifier, type PicGoConstructorLike } from './image-upload-service'
 
 const roots: string[] = []
 
@@ -255,5 +255,50 @@ describe('toPicGoImportSpecifier', () => {
   it('converts absolute and relative paths to file URLs', () => {
     expect(toPicGoImportSpecifier(path.resolve('node_modules', 'picgo')).startsWith('file://')).toBe(true)
     expect(toPicGoImportSpecifier('./local-picgo.js').startsWith('file://')).toBe(true)
+  })
+})
+
+describe('global PicGo discovery', () => {
+  it('parses npm prefix from .npmrc', () => {
+    expect(parseNpmPrefix('registry=https://registry.npmjs.org/\nprefix=E:\\NodeJS\n')).toBe('E:\\NodeJS')
+    expect(parseNpmPrefix('prefix = "D:/node"')).toBe('D:/node')
+    expect(parseNpmPrefix('registry=https://example.test')).toBeNull()
+    expect(parseNpmPrefix(null)).toBeNull()
+  })
+
+  it('prefers NPM_CONFIG_PREFIX over .npmrc and lists standard global roots', () => {
+    const prefix = path.resolve('fake-npm-prefix')
+    const appData = path.resolve('fake-appdata')
+    const programFiles = path.resolve('fake-program-files')
+    const dirs = buildPicGoPackageDirs({
+      env: { NPM_CONFIG_PREFIX: prefix, APPDATA: appData, ProgramFiles: programFiles },
+      homeDir: path.resolve('fake-home'),
+      npmrc: `prefix=${path.resolve('ignored-prefix')}`,
+    })
+    expect(dirs).toEqual([
+      path.join(prefix, 'node_modules', 'picgo'),
+      path.join(appData, 'npm', 'node_modules', 'picgo'),
+      path.join(programFiles, 'nodejs', 'node_modules', 'picgo'),
+    ])
+  })
+
+  it('falls back to the .npmrc prefix when no env prefix exists', () => {
+    const prefix = path.resolve('custom-node')
+    const dirs = buildPicGoPackageDirs({
+      env: { APPDATA: path.resolve('fake-appdata') },
+      homeDir: path.resolve('fake-home'),
+      npmrc: `prefix=${prefix}`,
+    })
+    expect(dirs[0]).toBe(path.join(prefix, 'node_modules', 'picgo'))
+  })
+
+  it('discovers node_modules next to PATH entries', () => {
+    const nodeDir = path.resolve('fake-node-install')
+    const dirs = buildPicGoPackageDirs({
+      env: { PATH: [path.resolve('other-bin'), nodeDir].join(path.delimiter) },
+      homeDir: path.resolve('fake-home'),
+      npmrc: null,
+    })
+    expect(dirs).toContain(path.join(nodeDir, 'node_modules', 'picgo'))
   })
 })

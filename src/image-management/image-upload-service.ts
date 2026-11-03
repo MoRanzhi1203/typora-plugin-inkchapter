@@ -10,8 +10,10 @@
  */
 
 import * as fs from 'fs/promises'
+import { readFileSync } from 'fs'
+import * as os from 'os'
 import * as path from 'path'
-import { pathToFileURL } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import type { ImageAssetService } from './image-asset-service'
 import { sha256File, type ImageAssetRecord } from './image-asset-index'
 import type { ImageDataPaths } from './image-data-paths'
@@ -116,21 +118,128 @@ export function toPicGoImportSpecifier(raw: string): string {
   return looksLikePath ? pathToFileURL(path.resolve(value)).href : value
 }
 
-/** 默认加载器：优先显式注入的模块路径，其次裸 `picgo`。 */
+/** 默认加载器：优先显式注入的模块路径，其次全局安装的 `picgo`。 */
 export async function defaultPicGoLoader(): Promise<PicGoConstructorLike> {
-  const specifier = toPicGoImportSpecifier(process.env.INKCHAPTER_PICGO_MODULE ?? '')
-  const imported = await import(/* @vite-ignore */ specifier) as {
+  const envSpecifier = process.env.INKCHAPTER_PICGO_MODULE?.trim()
+  if (envSpecifier) return importPicGoModule(envSpecifier)
+
+  const failures: string[] = []
+  for (const dir of buildPicGoPackageDirs()) {
+    // 优先 CJS：PicGo 3.2.0 的 ESM 构建在 Node 24 下会因 lodash 命名导出失败。
+    for (const entry of ['dist/index.cjs.js', 'dist/index.esm.js']) {
+      const file = path.join(dir, entry)
+      try {
+        await fs.access(file)
+      } catch {
+        continue
+      }
+      try {
+        return await importPicGoModule(file)
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error))
+      }
+    }
+  }
+  throw new Error(
+    'PicGo module not found. Install picgo globally or set INKCHAPTER_PICGO_MODULE.'
+    + (failures.length ? ` (${failures[0]})` : ''),
+  )
+}
+
+async function importPicGoModule(specifier: string): Promise<PicGoConstructorLike> {
+  // 优先 Node 的 require：Electron 渲染进程中的浏览器动态 import 不保证能读
+  // `file://` 的 CJS；Typora 提供了全局 require（插件其它模块已在使用）。
+  const required = requirePicGoIfAvailable(specifier)
+  if (required) return required
+
+  const imported = await import(/* @vite-ignore */ toPicGoImportSpecifier(specifier)) as {
     PicGo?: PicGoConstructorLike
     default?: unknown
   }
-  if (imported.PicGo) return imported.PicGo
-  const fallback = imported.default
+  const constructed = extractPicGoConstructor(imported)
+  if (constructed) return constructed
+  throw new Error('PicGo constructor not found')
+}
+
+function extractPicGoConstructor(value: unknown): PicGoConstructorLike | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as { PicGo?: unknown; default?: unknown }
+  if (typeof record.PicGo === 'function') return record.PicGo as PicGoConstructorLike
+  const fallback = record.default
   if (typeof fallback === 'function') return fallback as PicGoConstructorLike
   if (fallback && typeof fallback === 'object' && 'PicGo' in fallback) {
     const nested = (fallback as { PicGo?: unknown }).PicGo
     if (typeof nested === 'function') return nested as PicGoConstructorLike
   }
-  throw new Error('PicGo constructor not found')
+  return null
+}
+
+function requirePicGoIfAvailable(specifier: string): PicGoConstructorLike | null {
+  if (typeof require !== 'function') return null
+  const target = /^file:\/\//i.test(specifier)
+    ? fileURLToPath(specifier)
+    : path.isAbsolute(specifier)
+      ? specifier
+      : null
+  if (!target) return null
+  try {
+    return extractPicGoConstructor(require(target))
+  } catch {
+    return null
+  }
+}
+
+export interface PicGoResolveContext {
+  env?: NodeJS.ProcessEnv
+  homeDir?: string
+  /** 测试注入；缺省时读取 `<homeDir>/.npmrc`。 */
+  npmrc?: string | null
+}
+
+/** 解析 `.npmrc` 中的 `prefix=`（自定义全局安装目录）。 */
+export function parseNpmPrefix(npmrc: string | null | undefined): string | null {
+  if (typeof npmrc !== 'string' || !npmrc) return null
+  for (const line of npmrc.split(/\r?\n/)) {
+    const match = /^\s*prefix\s*=\s*(.+?)\s*$/.exec(line)
+    if (!match) continue
+    const value = match[1].replace(/^["']|["']$/g, '').trim()
+    if (value) return value
+  }
+  return null
+}
+
+function readNpmrc(homeDir: string): string | null {
+  if (!homeDir) return null
+  try {
+    return readFileSync(path.join(homeDir, '.npmrc'), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/** 按优先级列出可能包含全局 `picgo` 包的目录；不访问网络。 */
+export function buildPicGoPackageDirs(context: PicGoResolveContext = {}): string[] {
+  const env = context.env ?? process.env
+  const homeDir = context.homeDir ?? env.USERPROFILE?.trim() ?? os.homedir()
+  const npmrc = context.npmrc === undefined ? readNpmrc(homeDir) : context.npmrc
+  const dirs: string[] = []
+  const add = (dir: string | null | undefined) => {
+    if (dir && !dirs.includes(dir)) dirs.push(dir)
+  }
+
+  const prefix = env.NPM_CONFIG_PREFIX?.trim() || parseNpmPrefix(npmrc)
+  add(prefix ? path.join(prefix, 'node_modules', 'picgo') : null)
+  add(env.APPDATA?.trim() ? path.join(env.APPDATA.trim(), 'npm', 'node_modules', 'picgo') : null)
+  add(env.ProgramFiles?.trim() ? path.join(env.ProgramFiles.trim(), 'nodejs', 'node_modules', 'picgo') : null)
+  add(env.NVM_SYMLINK?.trim() ? path.join(env.NVM_SYMLINK.trim(), 'node_modules', 'picgo') : null)
+  // 自定义 Node 安装目录通常会在 PATH 中；全局包默认落在 `<nodeDir>\node_modules`。
+  const pathValue = env.PATH ?? env.Path ?? ''
+  for (const entry of pathValue.split(path.delimiter)) {
+    const dir = entry.trim().replace(/^"|"$/g, '')
+    if (!dir) continue
+    add(path.join(dir, 'node_modules', 'picgo'))
+  }
+  return dirs
 }
 
 export class ImageUploadService {
