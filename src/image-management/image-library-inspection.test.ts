@@ -6,6 +6,7 @@ import {
   IMAGE_LIBRARY_MARKER,
   inspectImageLibraryTarget,
   initializeImageLibrary,
+  parsePowerShellFreeBytes,
 } from './image-library-inspection'
 import { parseFolderPickerOutput } from './image-directory-picker'
 
@@ -129,5 +130,19 @@ describe('parseFolderPickerOutput', () => {
     expect(parseFolderPickerOutput('   \r\n')).toBeNull()
     expect(parseFolderPickerOutput(null)).toBeNull()
     expect(parseFolderPickerOutput(undefined)).toBeNull()
+  })
+})
+
+describe('parsePowerShellFreeBytes', () => {
+  it('parses a byte count', () => {
+    expect(parsePowerShellFreeBytes('123456789\r\n')).toBe(123456789)
+    expect(parsePowerShellFreeBytes('0')).toBe(0)
+  })
+
+  it('returns null for empty or invalid output', () => {
+    expect(parsePowerShellFreeBytes('')).toBeNull()
+    expect(parsePowerShellFreeBytes('abc')).toBeNull()
+    expect(parsePowerShellFreeBytes('-1')).toBeNull()
+    expect(parsePowerShellFreeBytes(null)).toBeNull()
   })
 })

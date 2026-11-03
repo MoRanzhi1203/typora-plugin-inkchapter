@@ -9,6 +9,7 @@
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
+import { execFile } from 'child_process'
 import { validateImageLibraryPath } from './image-settings'
 
 export const IMAGE_LIBRARY_MARKER = '.inkchapter-image-library.json'
@@ -60,16 +61,52 @@ function emptyInspection(code: LibraryInspectionCode, rawPath: string | null): L
   }
 }
 
+/** 纯函数：解析 PowerShell 输出的可用字节数；无效返回 null。 */
+export function parsePowerShellFreeBytes(stdout: string | null | undefined): number | null {
+  if (typeof stdout !== 'string') return null
+  const trimmed = stdout.replace(/\r/g, '').trim()
+  if (!trimmed) return null
+  const value = Number(trimmed)
+  return Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function driveLetterOf(target: string): string | null {
+  const match = /^([a-zA-Z]):[\\/]/.exec(target)
+  return match ? match[1].toUpperCase() : null
+}
+
+/**
+ * Typora 自带 Node 可能没有 `fs.statfs`（运行时实测为 undefined）。
+ * 回退到 PowerShell 查询固定磁盘剩余空间；失败返回 null（只影响展示，不阻断校验）。
+ */
+function readFreeBytesViaPowerShell(target: string): Promise<number | null> {
+  const letter = driveLetterOf(target)
+  if (!letter) return Promise.resolve(null)
+  const command = `$d = Get-PSDrive -Name '${letter}' -ErrorAction SilentlyContinue; if ($d) { [Console]::Out.Write($d.Free) }`
+  return new Promise(resolve => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', command],
+      { windowsHide: true, timeout: 10 * 1000, maxBuffer: 16 * 1024 },
+      (error, stdout) => {
+        resolve(error ? null : parsePowerShellFreeBytes(stdout))
+      },
+    )
+  })
+}
+
 async function readFreeBytes(target: string): Promise<number | null> {
   const candidate = fs as unknown as { statfs?: (value: string) => Promise<StatFsLike> }
-  if (typeof candidate.statfs !== 'function') return null
-  try {
-    const stats = await candidate.statfs(target)
-    const blockSize = Number.isFinite(stats.bsize) && stats.bsize > 0 ? stats.bsize : NODE_STATFS_BSIZE
-    return stats.bavail * blockSize
-  } catch {
-    return null
+  if (typeof candidate.statfs === 'function') {
+    try {
+      const stats = await candidate.statfs(target)
+      const blockSize = Number.isFinite(stats.bsize) && stats.bsize > 0 ? stats.bsize : NODE_STATFS_BSIZE
+      return stats.bavail * blockSize
+    } catch {
+      // 继续尝试 PowerShell 回退
+    }
   }
+  return readFreeBytesViaPowerShell(target)
 }
 
 async function probeWritable(directory: string): Promise<boolean> {
