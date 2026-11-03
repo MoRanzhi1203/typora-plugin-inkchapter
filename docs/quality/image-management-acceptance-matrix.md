@@ -24,6 +24,7 @@
 | 「上传图片 + 服务=none」明确冲突 | `image-upload-policy.test.ts`；P10 真实 Typora 命令提示框显示完整冲突文案 | PASS |
 | GitHub 单图/多图真实上传 | P0-LOCAL 使用 Typora 自带 PicGo 实测成功（合成图已清理） | PASS（历史证据） |
 | 插件侧上传器（PicGo 编程 API） | `image-upload-service.test.ts`：安全命名、暂存副本、真实 URL 校验、私有配置缺失失败 | PASS（未联网实测） |
+| 插件上传入口 | 命令「墨章：上传本地图片…」与设置页按钮；运行时命令可见；`image-file-picker.test.ts` | PASS（真实上传待私有 PicGo 配置） |
 | 中文/空格/`%`/`#` 文件名 | 插件上传器使用安全命名并通过测试；Typora 原生链路仍存在 `#` 丢扩展名、空格未编码 | PASS（插件侧）/ FAIL（原生链路，已知限制） |
 | 上传失败不丢唯一数据 | `image-upload-service.test.ts`：空结果、配置缺失均保留源文件并标记任务失败 | PASS |
 | 日志脱敏 | 隐私门禁扫描暂存改动 | PASS（当前改动） |

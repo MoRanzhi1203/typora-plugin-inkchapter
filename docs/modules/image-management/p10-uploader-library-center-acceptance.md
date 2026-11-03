@@ -61,6 +61,15 @@
 - PicGo 模块需在运行时可见（全局安装或 `INKCHAPTER_PICGO_MODULE` 指定路径），未加入仓库依赖。
 - 未做真实网络故障注入（断网、限速、写入中断）。
 
+### 3.5 上传入口（P10 追加）
+
+- 命令面板：「墨章：上传本地图片…」（`inkchapter.image.upload-local`）。
+- 设置页「图库中心」区域：「上传本地图片…」按钮。
+- 行为：原生文件选择 → 墨章上传器 → 显示真实 URL 并尝试复制到剪贴板；**不修改当前 Markdown、不删除源文件**。
+- 上传服务为 `none` 时直接提示并打开设置指引，不弹出文件选择。
+- 真实上传仍依赖插件私有 PicGo 配置；缺失时返回 `PICGO_CONFIG_MISSING`。
+- 运行时已验证：命令出现在命令面板，远程图床显示「已配置」且上传服务为「GitHub」。
+
 ## 4. 插入方式冲突提示
 
 - 读取 Typora `profile.data`（十六进制编码 JSON，兼容直接 JSON），仅解析 `image_save_location` 与 `image_uploader`。

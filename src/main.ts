@@ -7,6 +7,7 @@ import { ImageManagementSettingTab } from './settings/image-management-setting-t
 import { resolveImageSettings } from './image-management/image-settings'
 import { initializeImageLibrary, inspectImageLibraryTarget } from './image-management/image-library-inspection'
 import { pickFolderNative } from './image-management/image-directory-picker'
+import { pickImageFileNative } from './image-management/image-file-picker'
 import { resolveImageDataPaths } from './image-management/image-data-paths'
 import { ImageAssetService } from './image-management/image-asset-service'
 import { ImageTransferTaskStore } from './image-management/image-transfer-task-store'
@@ -256,6 +257,45 @@ export default class extends Plugin<InkChapterSettings> {
   /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
   private readUiSettings() {
     return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
+  }
+
+  /**
+   * 手动上传单张本地图片：选择文件 → 走墨章上传器 → 复制真实 URL。
+   * 不修改当前 Markdown，也不删除源文件。
+   */
+  private async uploadLocalImageInteractive(): Promise<void> {
+    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    if (!settings.enabled) {
+      Notice.info('墨章：图片管理尚未启用，请先在「设置 → 墨章 · 图片」启用。')
+      return
+    }
+    if (!this.imageUploadService) {
+      Notice.error('墨章：上传服务未就绪，请重启 Typora 后重试。')
+      return
+    }
+    if (settings.uploadService !== 'github') {
+      const conflict = await this.imageUploadService.inspectInsertModeConflict()
+      const suffix = conflict.hasConflict
+        ? ' 当前 Typora 插入方式为「上传图片」，同样不会自动上传。'
+        : ''
+      Notice.error(`墨章：上传服务为「无」，未发起上传。请在「设置 → 墨章 · 图片」启用 GitHub 上传服务。${suffix}`)
+      return
+    }
+
+    const filePath = await pickImageFileNative({ description: '选择要上传到图床的图片' })
+    if (!filePath) return
+
+    const result = await this.imageUploadService.uploadLocalFile({ filePath })
+    if (!result.ok) {
+      Notice.error(`墨章：上传失败（${result.errorCode}）— ${result.message}`)
+      return
+    }
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(result.url)
+      copied = true
+    } catch { /* 剪贴板不可用时仍展示 URL */ }
+    Notice.info(`墨章：上传成功${copied ? '，URL 已复制' : ''}：${result.url}`)
   }
 
   /**
@@ -1671,6 +1711,7 @@ export default class extends Plugin<InkChapterSettings> {
           }
         },
         getLibraryCenter: () => this.buildImageLibraryCenter(),
+        uploadLocalImage: () => this.uploadLocalImageInteractive(),
       }))
       console.log('[InkChapter] image settings tab registered')
     } catch (e) {
@@ -1719,6 +1760,14 @@ export default class extends Plugin<InkChapterSettings> {
       title: '检查插件状态',
       scope: 'global',
       callback: () => Notice.info('墨章 InkChapter 已正常加载'),
+    })
+
+    // 手动上传入口：只上传用户显式选择的单张图片，不改写 Markdown。
+    this.registerCommand({
+      id: 'inkchapter.image.upload-local',
+      title: '墨章：上传本地图片…',
+      scope: 'global',
+      callback: () => { void this.uploadLocalImageInteractive() },
     })
 
     // 图库中心入口：只读汇总四视图，不修改任何文件。

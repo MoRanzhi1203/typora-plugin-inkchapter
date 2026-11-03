@@ -37,6 +37,8 @@ export interface ImageManagementSettingTabHost {
   inspectUsage(path: string): Promise<{ fileCount: number; totalBytes: number } | null>
   /** 四视图图库中心数据；未就绪时返回空数组。 */
   getLibraryCenter(): Promise<ImageLibraryView[]>
+  /** 手动上传单张本地图片（不修改 Markdown）。 */
+  uploadLocalImage(): Promise<void>
 }
 
 function formatBytes(bytes: number | null): string {
@@ -430,6 +432,10 @@ export class ImageManagementSettingTab extends SettingTab {
       s.addButton(button => {
         button.textContent = '刷新'
         button.onclick = () => void this.refreshLibraryCenter()
+      })
+      s.addButton(button => {
+        button.textContent = '上传本地图片…'
+        button.onclick = () => void this.host.uploadLocalImage()
       })
     })
     this.addSetting(s => {
