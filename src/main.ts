@@ -7,6 +7,8 @@ import { ImageManagementSettingTab } from './settings/image-management-setting-t
 import { resolveImageSettings } from './image-management/image-settings'
 import { initializeImageLibrary, inspectImageLibraryTarget } from './image-management/image-library-inspection'
 import { pickFolderNative } from './image-management/image-directory-picker'
+import { resolveImageDataPaths } from './image-management/image-data-paths'
+import { ImageAssetService } from './image-management/image-asset-service'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
   INKCHAPTER_RIBBON_HIDDEN_CLASS,
@@ -240,6 +242,8 @@ export default class extends Plugin<InkChapterSettings> {
   private fileCopyService?: FileCopyService
   private nativeDragBridge?: NativeDragBridge
   private fileTreeDragAdapter?: FileTreeDragAdapter
+  /** 图片资产索引服务：延迟加载，损坏索引不阻断插件启动。 */
+  private imageAssetService?: ImageAssetService
 
   /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
   private readUiSettings() {
@@ -1613,6 +1617,15 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] 图片设置页注册失败', e)
     }
 
+    // 图片资产索引：只解析路径并建立服务，首次使用时才读盘。
+    try {
+      const paths = resolveImageDataPaths(this.dataPath)
+      this.imageAssetService = new ImageAssetService(paths)
+      console.log('[InkChapter] image asset service ready')
+    } catch (e) {
+      console.error('[InkChapter] 图片资产索引初始化失败，图片增强功能不可用', e)
+    }
+
     // 已启用但未初始化：提示用户完成向导（不阻塞启动）
     try {
       const image = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
@@ -2148,6 +2161,12 @@ export default class extends Plugin<InkChapterSettings> {
       if (this.captionService) {
         this.captionService.dispose()
         this.captionService = undefined
+      }
+    })
+    safely('image-asset-service', () => {
+      if (this.imageAssetService) {
+        this.imageAssetService.dispose()
+        this.imageAssetService = undefined
       }
     })
     safely('forensic-sink', () => shutdownForensicSink())

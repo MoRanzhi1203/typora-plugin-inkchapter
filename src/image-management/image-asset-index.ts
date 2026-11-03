@@ -1,20 +1,33 @@
-﻿/**
- * 本地图片资产索引（P1-a）。
+/**
+ * 本地图片资产索引（P1-a 建立，P2 扩展为统一位置模型）。
  *
  * 设计要点：
  * - 内容寻址：SHA-256 决定「是不是同一张图」，文件名与文件名冲突不参与身份判断。
- * - 一个内容只对应一个逻辑资产；同一内容再次导入不会新增资产。
+ * - 一个内容只对应一个逻辑资产；同一内容再次导入只新增/复用位置，不新增资产。
+ * - 一张图片可有多个位置（项目 / 图库 / 缓存 / 离线 / GitHub）。
  * - 索引以 JSON 持久化，写入使用「临时文件 + rename」的原子替换。
  * - 索引损坏时**只报错，不覆盖**：用户数据优先于自动修复。
  * - 所有写操作串行化，避免并发导入互相覆盖。
+ * - schema v1 可无损读取并迁移为 v2；v2 才写入 `locations`。
  */
 
 import * as fs from 'fs/promises'
 import { createReadStream } from 'fs'
 import { createHash } from 'crypto'
 import * as path from 'path'
+import {
+  buildAssetLocationKey,
+  buildLocationId,
+  deriveStorageState,
+  isPermanentLocalLocation,
+  type AssetAvailability,
+  type AssetLocationRecord,
+  type AssetStorageState,
+  type AssetLocationType,
+} from './image-asset-model'
 
-export const IMAGE_INDEX_SCHEMA_VERSION = 1
+export const IMAGE_INDEX_SCHEMA_VERSION = 2
+const LEGACY_SCHEMA_VERSION = 1
 
 export interface ImageRemoteLocation {
   remoteProfileId: string
@@ -24,6 +37,10 @@ export interface ImageRemoteLocation {
   uploadedAt: string
 }
 
+/**
+ * 对外资产视图：`localPath` 与 `remoteLocations` 由 `locations` 派生，
+ * 不参与持久化，避免同一事实出现两份可漂移的状态。
+ */
 export interface ImageAssetRecord {
   assetId: string
   sha256: string
@@ -34,14 +51,51 @@ export interface ImageAssetRecord {
   height: number | null
   createdAt: string
   updatedAt: string
-  /** 图库中的规范本地副本；未入库时为 null。 */
+  /** 内容版本；内容变化会产生新资产，版本用于后续迁移/事务记录。 */
+  contentVersion: number
+  locations: AssetLocationRecord[]
+  /** 派生的规范本地副本；未入库时为 null。 */
+  localPath: string | null
+  /** 派生的远端位置视图。 */
+  remoteLocations: ImageRemoteLocation[]
+}
+
+/** 当前存储状态（派生，不持久化）。 */
+export function assetStorageState(asset: ImageAssetRecord): AssetStorageState {
+  return deriveStorageState(asset.locations)
+}
+
+interface PersistedAssetV2 {
+  assetId: string
+  sha256: string
+  filename: string
+  mimeType: string | null
+  sizeBytes: number
+  width: number | null
+  height: number | null
+  createdAt: string
+  updatedAt: string
+  contentVersion: number
+  locations: AssetLocationRecord[]
+}
+
+interface PersistedAssetV1 {
+  assetId: string
+  sha256: string
+  filename: string
+  mimeType: string | null
+  sizeBytes: number
+  width: number | null
+  height: number | null
+  createdAt: string
+  updatedAt: string
   localPath: string | null
   remoteLocations: ImageRemoteLocation[]
 }
 
 export interface ImageAssetIndexFile {
   schemaVersion: number
-  assets: ImageAssetRecord[]
+  assets: Array<PersistedAssetV1 | PersistedAssetV2>
 }
 
 export type ImageIndexErrorCode =
@@ -110,6 +164,11 @@ export interface UpsertLocalFileInput {
   filePath: string
   filename?: string
   mimeType?: string | null
+  /** 本地位置类型；默认按项目图片处理。 */
+  locationType?: Extract<AssetLocationType, 'project' | 'library' | 'offline' | 'cache'>
+  bindingId?: string | null
+  relativePath?: string | null
+  availability?: AssetAvailability
   /** 测试注入用；默认当前时间。 */
   now?: Date
 }
@@ -125,24 +184,194 @@ export interface RecordRemoteLocationInput {
   branch: string
   remotePath: string
   remoteUrl: string
+  remoteVersion?: string | null
+  availability?: AssetAvailability
   now?: Date
 }
 
-function cloneAsset(asset: ImageAssetRecord): ImageAssetRecord {
+export interface RecordLocationInput {
+  assetId: string
+  type: AssetLocationType
+  locator: string
+  bindingId?: string | null
+  relativePath?: string | null
+  availability?: AssetAvailability
+  remoteProfileId?: string | null
+  remoteBranch?: string | null
+  remotePath?: string | null
+  remoteVersion?: string | null
+  now?: Date
+}
+
+function createLocation(input: {
+  assetId: string
+  sha256: string
+  type: AssetLocationType
+  locator: string
+  bindingId: string | null
+  relativePath: string | null
+  availability: AssetAvailability
+  remoteProfileId: string | null
+  remoteBranch: string | null
+  remotePath: string | null
+  remoteVersion: string | null
+  now: string
+}): AssetLocationRecord {
+  const key = buildAssetLocationKey({
+    type: input.type,
+    locator: input.locator,
+    bindingId: input.bindingId,
+    remoteProfileId: input.remoteProfileId,
+    remoteBranch: input.remoteBranch,
+    remotePath: input.remotePath,
+  })
   return {
-    ...asset,
-    remoteLocations: asset.remoteLocations.map(location => ({ ...location })),
+    locationId: buildLocationId(`${input.assetId}|${key}`),
+    assetId: input.assetId,
+    type: input.type,
+    bindingId: input.bindingId,
+    locator: input.locator,
+    relativePath: input.relativePath,
+    sha256: input.sha256,
+    availability: input.availability,
+    lastCheckedAt: input.availability === 'unknown' ? null : input.now,
+    remoteProfileId: input.remoteProfileId,
+    remoteBranch: input.remoteBranch,
+    remotePath: input.remotePath,
+    remoteVersion: input.remoteVersion,
+    createdAt: input.now,
+    updatedAt: input.now,
   }
 }
 
-function isAssetRecord(value: unknown): value is ImageAssetRecord {
+function cloneLocation(location: AssetLocationRecord): AssetLocationRecord {
+  return { ...location }
+}
+
+function deriveLocalPath(locations: readonly AssetLocationRecord[]): string | null {
+  const permanent = locations.find(
+    location => isPermanentLocalLocation(location) && location.availability === 'available',
+  )
+  if (permanent) return permanent.locator
+  const anyLocal = locations.find(location => location.type !== 'github')
+  return anyLocal?.locator ?? null
+}
+
+function deriveRemoteLocations(locations: readonly AssetLocationRecord[]): ImageRemoteLocation[] {
+  return locations
+    .filter(location => location.type === 'github')
+    .map(location => ({
+      remoteProfileId: location.remoteProfileId ?? location.bindingId ?? '',
+      branch: location.remoteBranch ?? '',
+      remotePath: location.remotePath ?? '',
+      remoteUrl: location.locator,
+      uploadedAt: location.updatedAt,
+    }))
+}
+
+function cloneAsset(asset: ImageAssetRecord): ImageAssetRecord {
+  const locations = asset.locations.map(cloneLocation)
+  return {
+    ...asset,
+    locations,
+    localPath: deriveLocalPath(locations),
+    remoteLocations: deriveRemoteLocations(locations),
+  }
+}
+
+function isLegacyAssetRecord(value: unknown): value is PersistedAssetV1 {
   if (!value || typeof value !== 'object') return false
-  const record = value as Partial<ImageAssetRecord>
+  const record = value as Partial<PersistedAssetV1>
   return typeof record.assetId === 'string'
     && typeof record.sha256 === 'string'
     && typeof record.filename === 'string'
     && typeof record.sizeBytes === 'number'
     && Array.isArray(record.remoteLocations)
+}
+
+function isLocationRecord(value: unknown): value is AssetLocationRecord {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<AssetLocationRecord>
+  return typeof record.locationId === 'string'
+    && typeof record.assetId === 'string'
+    && typeof record.type === 'string'
+    && typeof record.locator === 'string'
+    && typeof record.sha256 === 'string'
+    && typeof record.availability === 'string'
+}
+
+function isV2AssetRecord(value: unknown): value is PersistedAssetV2 {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<PersistedAssetV2>
+  return typeof record.assetId === 'string'
+    && typeof record.sha256 === 'string'
+    && typeof record.filename === 'string'
+    && typeof record.sizeBytes === 'number'
+    && typeof record.contentVersion === 'number'
+    && Array.isArray(record.locations)
+    && record.locations.every(isLocationRecord)
+}
+
+/** v1 → v2：本地路径视为项目位置，远端位置视为 GitHub 位置。 */
+function migrateLegacyAsset(record: PersistedAssetV1): ImageAssetRecord {
+  const locations: AssetLocationRecord[] = []
+  if (record.localPath) {
+    locations.push(createLocation({
+      assetId: record.assetId,
+      sha256: record.sha256,
+      type: 'project',
+      locator: record.localPath,
+      bindingId: null,
+      relativePath: null,
+      availability: 'available',
+      remoteProfileId: null,
+      remoteBranch: null,
+      remotePath: null,
+      remoteVersion: null,
+      now: record.updatedAt || record.createdAt,
+    }))
+  }
+  for (const remote of record.remoteLocations) {
+    locations.push(createLocation({
+      assetId: record.assetId,
+      sha256: record.sha256,
+      type: 'github',
+      locator: remote.remoteUrl,
+      bindingId: remote.remoteProfileId,
+      relativePath: remote.remotePath,
+      availability: 'available',
+      remoteProfileId: remote.remoteProfileId,
+      remoteBranch: remote.branch,
+      remotePath: remote.remotePath,
+      remoteVersion: null,
+      now: remote.uploadedAt || record.updatedAt,
+    }))
+  }
+  const asset: ImageAssetRecord = {
+    assetId: record.assetId,
+    sha256: record.sha256,
+    filename: record.filename,
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+    width: record.width,
+    height: record.height,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    contentVersion: 1,
+    locations,
+    localPath: null,
+    remoteLocations: [],
+  }
+  return cloneAsset(asset)
+}
+
+function fromPersistedV2(record: PersistedAssetV2): ImageAssetRecord {
+  return cloneAsset({
+    ...record,
+    locations: record.locations.map(cloneLocation),
+    localPath: null,
+    remoteLocations: [],
+  })
 }
 
 export class ImageAssetIndex {
@@ -183,15 +412,31 @@ export class ImageAssetIndex {
       throw new ImageIndexError('index root is not an object', 'INDEX_CORRUPT')
     }
     const file = parsed as Partial<ImageAssetIndexFile>
-    if (file.schemaVersion !== IMAGE_INDEX_SCHEMA_VERSION || !Array.isArray(file.assets)) {
+    if (!Array.isArray(file.assets)) {
       throw new ImageIndexError('index schema is unsupported', 'INDEX_CORRUPT')
-    }
-    if (!file.assets.every(isAssetRecord)) {
-      throw new ImageIndexError('index contains invalid asset records', 'INDEX_CORRUPT')
     }
 
     this.assets.clear()
-    for (const asset of file.assets) this.assets.set(asset.assetId, cloneAsset(asset))
+    if (file.schemaVersion === LEGACY_SCHEMA_VERSION) {
+      if (!file.assets.every(isLegacyAssetRecord)) {
+        throw new ImageIndexError('index contains invalid asset records', 'INDEX_CORRUPT')
+      }
+      for (const record of file.assets) {
+        const migrated = migrateLegacyAsset(record as PersistedAssetV1)
+        this.assets.set(migrated.assetId, migrated)
+      }
+      this.loaded = true
+      return
+    }
+    if (file.schemaVersion !== IMAGE_INDEX_SCHEMA_VERSION) {
+      throw new ImageIndexError('index schema is unsupported', 'INDEX_CORRUPT')
+    }
+    if (!file.assets.every(isV2AssetRecord)) {
+      throw new ImageIndexError('index contains invalid asset records', 'INDEX_CORRUPT')
+    }
+    for (const record of file.assets) {
+      this.assets.set(record.assetId, fromPersistedV2(record as PersistedAssetV2))
+    }
     this.loaded = true
   }
 
@@ -214,6 +459,17 @@ export class ImageAssetIndex {
   findByLocalPath(localPath: string): ImageAssetRecord | null {
     for (const asset of this.assets.values()) {
       if (asset.localPath && asset.localPath === localPath) return cloneAsset(asset)
+      if (asset.locations.some(location => location.type !== 'github' && location.locator === localPath)) {
+        return cloneAsset(asset)
+      }
+    }
+    return null
+  }
+
+  findByLocation(locationId: string): AssetLocationRecord | null {
+    for (const asset of this.assets.values()) {
+      const found = asset.locations.find(location => location.locationId === locationId)
+      if (found) return cloneLocation(found)
     }
     return null
   }
@@ -223,22 +479,56 @@ export class ImageAssetIndex {
       await this.ensureLoaded()
       const digest = await sha256File(input.filePath)
       const existing = this.findBySha256(digest.sha256)
+      const now = (input.now ?? new Date()).toISOString()
+      const locationType = input.locationType ?? 'project'
+
       if (existing) {
-        if (!existing.localPath) {
-          const updated = this.assets.get(existing.assetId)
-          if (updated) {
-            updated.localPath = input.filePath
-            updated.updatedAt = (input.now ?? new Date()).toISOString()
-            await this.persist()
+        const stored = this.assets.get(existing.assetId)
+        if (stored) {
+          const location = createLocation({
+            assetId: stored.assetId,
+            sha256: stored.sha256,
+            type: locationType,
+            locator: input.filePath,
+            bindingId: input.bindingId ?? null,
+            relativePath: input.relativePath ?? null,
+            availability: input.availability ?? 'available',
+            remoteProfileId: null,
+            remoteBranch: null,
+            remotePath: null,
+            remoteVersion: null,
+            now,
+          })
+          const index = stored.locations.findIndex(item => item.locationId === location.locationId)
+          if (index >= 0) {
+            stored.locations[index] = { ...location, createdAt: stored.locations[index].createdAt }
+          } else {
+            stored.locations.push(location)
           }
+          stored.updatedAt = now
+          await this.persist()
         }
         return { asset: this.get(existing.assetId) as ImageAssetRecord, created: false }
       }
 
-      const now = (input.now ?? new Date()).toISOString()
       const filename = input.filename ?? path.basename(input.filePath)
+      const assetId = this.allocateAssetId(digest.sha256)
+      const location = createLocation({
+        assetId,
+        sha256: digest.sha256,
+        type: locationType,
+        locator: input.filePath,
+        bindingId: input.bindingId ?? null,
+        relativePath: input.relativePath ?? null,
+        availability: input.availability ?? 'available',
+        remoteProfileId: null,
+        remoteBranch: null,
+        remotePath: null,
+        remoteVersion: null,
+        now,
+      })
       const record: ImageAssetRecord = {
-        assetId: this.allocateAssetId(digest.sha256),
+        assetId,
         sha256: digest.sha256,
         filename,
         mimeType: input.mimeType ?? guessMimeType(filename),
@@ -247,7 +537,9 @@ export class ImageAssetIndex {
         height: null,
         createdAt: now,
         updatedAt: now,
-        localPath: input.filePath,
+        contentVersion: 1,
+        locations: [location],
+        localPath: null,
         remoteLocations: [],
       }
       this.assets.set(record.assetId, record)
@@ -257,26 +549,76 @@ export class ImageAssetIndex {
   }
 
   async recordRemoteLocation(input: RecordRemoteLocationInput): Promise<ImageAssetRecord> {
+    return this.recordLocation({
+      assetId: input.assetId,
+      type: 'github',
+      locator: input.remoteUrl,
+      bindingId: input.remoteProfileId,
+      relativePath: input.remotePath,
+      availability: input.availability ?? 'available',
+      remoteProfileId: input.remoteProfileId,
+      remoteBranch: input.branch,
+      remotePath: input.remotePath,
+      remoteVersion: input.remoteVersion ?? null,
+      now: input.now,
+    })
+  }
+
+  async recordLocation(input: RecordLocationInput): Promise<ImageAssetRecord> {
     return this.enqueue(async () => {
       await this.ensureLoaded()
       const asset = this.assets.get(input.assetId)
       if (!asset) throw new ImageIndexError(`asset not found: ${input.assetId}`, 'ASSET_NOT_FOUND')
 
-      const location: ImageRemoteLocation = {
-        remoteProfileId: input.remoteProfileId,
-        branch: input.branch,
-        remotePath: input.remotePath,
-        remoteUrl: input.remoteUrl,
-        uploadedAt: (input.now ?? new Date()).toISOString(),
+      const now = (input.now ?? new Date()).toISOString()
+      const location = createLocation({
+        assetId: asset.assetId,
+        sha256: asset.sha256,
+        type: input.type,
+        locator: input.locator,
+        bindingId: input.bindingId ?? null,
+        relativePath: input.relativePath ?? null,
+        availability: input.availability ?? 'available',
+        remoteProfileId: input.remoteProfileId ?? null,
+        remoteBranch: input.remoteBranch ?? null,
+        remotePath: input.remotePath ?? null,
+        remoteVersion: input.remoteVersion ?? null,
+        now,
+      })
+      const index = asset.locations.findIndex(item => item.locationId === location.locationId)
+      if (index >= 0) {
+        asset.locations[index] = { ...location, createdAt: asset.locations[index].createdAt }
+      } else {
+        asset.locations.push(location)
       }
-      const index = asset.remoteLocations.findIndex(
-        item => item.remoteProfileId === location.remoteProfileId && item.remotePath === location.remotePath,
-      )
-      if (index >= 0) asset.remoteLocations[index] = location
-      else asset.remoteLocations.push(location)
-      asset.updatedAt = location.uploadedAt
+      asset.updatedAt = now
       await this.persist()
       return cloneAsset(asset)
+    })
+  }
+
+  async updateLocationAvailability(
+    locationId: string,
+    availability: AssetAvailability,
+    now: Date = new Date(),
+  ): Promise<ImageAssetRecord> {
+    return this.enqueue(async () => {
+      await this.ensureLoaded()
+      for (const asset of this.assets.values()) {
+        const index = asset.locations.findIndex(location => location.locationId === locationId)
+        if (index < 0) continue
+        const timestamp = now.toISOString()
+        asset.locations[index] = {
+          ...asset.locations[index],
+          availability,
+          lastCheckedAt: timestamp,
+          updatedAt: timestamp,
+        }
+        asset.updatedAt = timestamp
+        await this.persist()
+        return cloneAsset(asset)
+      }
+      throw new ImageIndexError(`location not found: ${locationId}`, 'ASSET_NOT_FOUND')
     })
   }
 
@@ -290,9 +632,21 @@ export class ImageAssetIndex {
   }
 
   private async persist(): Promise<void> {
-    const payload: ImageAssetIndexFile = {
+    const payload = {
       schemaVersion: IMAGE_INDEX_SCHEMA_VERSION,
-      assets: Array.from(this.assets.values()).map(cloneAsset),
+      assets: Array.from(this.assets.values()).map<PersistedAssetV2>(asset => ({
+        assetId: asset.assetId,
+        sha256: asset.sha256,
+        filename: asset.filename,
+        mimeType: asset.mimeType,
+        sizeBytes: asset.sizeBytes,
+        width: asset.width,
+        height: asset.height,
+        createdAt: asset.createdAt,
+        updatedAt: asset.updatedAt,
+        contentVersion: asset.contentVersion,
+        locations: asset.locations.map(cloneLocation),
+      })),
     }
     const temporary = `${this.indexPath}.${process.pid}.${Date.now()}.tmp`
     try {

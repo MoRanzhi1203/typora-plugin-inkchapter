@@ -5,9 +5,11 @@ import * as path from 'node:path'
 import {
   ImageAssetIndex,
   ImageIndexError,
+  assetStorageState,
   guessMimeType,
   sha256File,
 } from './image-asset-index'
+import { pickReusableLocalLocation } from './image-asset-model'
 
 const HELLO_SHA256 = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
 
@@ -83,14 +85,41 @@ describe('ImageAssetIndex', () => {
     expect(index.list()).toHaveLength(2)
   })
 
-  it('keeps the first canonical local path when the same content is imported twice', async () => {
+  it('keeps the first local path canonical and records the second as another location', async () => {
     const first = await writeFile('a.png', 'hello')
     const second = await writeFile('b.png', 'hello')
     await index.upsertLocalFile({ filePath: first })
     const duplicate = await index.upsertLocalFile({ filePath: second })
     expect(duplicate.asset.localPath).toBe(first)
-    expect(index.findByLocalPath(second)).toBeNull()
+    expect(duplicate.asset.locations).toHaveLength(2)
+    expect(index.findByLocalPath(second)?.assetId).toBe(duplicate.asset.assetId)
     expect(index.findByLocalPath(first)?.sha256).toBe(HELLO_SHA256)
+  })
+
+  it('records project and library locations separately with derived storage state', async () => {
+    const filePath = await writeFile('a.png', 'hello')
+    const { asset } = await index.upsertLocalFile({ filePath, locationType: 'project' })
+    await index.upsertLocalFile({ filePath, locationType: 'library', bindingId: 'lib-1', relativePath: 'images/a.png' })
+    const remote = await index.recordRemoteLocation({
+      assetId: asset.assetId,
+      remoteProfileId: 'p1',
+      branch: 'main',
+      remotePath: 'images/a.png',
+      remoteUrl: 'https://example.test/a.png',
+    })
+    expect(remote.locations.map(location => location.type).sort()).toEqual(['github', 'library', 'project'])
+    expect(assetStorageState(remote)).toBe('DUAL_AVAILABLE')
+    expect(pickReusableLocalLocation(remote.locations)?.type).toBe('library')
+  })
+
+  it('updates location availability without deleting the record', async () => {
+    const filePath = await writeFile('a.png', 'hello')
+    const { asset } = await index.upsertLocalFile({ filePath })
+    const locationId = asset.locations[0].locationId
+    const updated = await index.updateLocationAvailability(locationId, 'missing', new Date('2026-03-01T00:00:00Z'))
+    expect(updated.locations[0].availability).toBe('missing')
+    expect(updated.locations[0].lastCheckedAt).toBe('2026-03-01T00:00:00.000Z')
+    expect(updated.locations).toHaveLength(1)
   })
 
   it('persists assets and reloads them from disk', async () => {
@@ -158,6 +187,47 @@ describe('ImageAssetIndex', () => {
     ])
     expect(index.list()).toHaveLength(1)
     expect(results.filter(result => result.created)).toHaveLength(1)
+  })
+
+  it('migrates a schema v1 index into the unified location model', async () => {
+    const indexPath = index.getIndexPath()
+    await fs.mkdir(path.dirname(indexPath), { recursive: true })
+    await fs.writeFile(indexPath, JSON.stringify({
+      schemaVersion: 1,
+      assets: [{
+        assetId: 'img_legacy',
+        sha256: HELLO_SHA256,
+        filename: 'a.png',
+        mimeType: 'image/png',
+        sizeBytes: 5,
+        width: null,
+        height: null,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+        localPath: 'C:/docs/assets/a.png',
+        remoteLocations: [{
+          remoteProfileId: 'p1',
+          branch: 'main',
+          remotePath: 'images/a.png',
+          remoteUrl: 'https://example.test/a.png',
+          uploadedAt: '2026-01-03T00:00:00.000Z',
+        }],
+      }],
+    }, null, 2), 'utf8')
+
+    const migrated = new ImageAssetIndex(indexPath)
+    await migrated.load()
+    const asset = migrated.get('img_legacy')
+    expect(asset?.locations).toHaveLength(2)
+    expect(asset?.localPath).toBe('C:/docs/assets/a.png')
+    expect(asset?.remoteLocations[0].remoteUrl).toBe('https://example.test/a.png')
+    expect(assetStorageState(asset!)).toBe('DUAL_AVAILABLE')
+
+    await migrated.save()
+    const persisted = JSON.parse(await fs.readFile(indexPath, 'utf8'))
+    expect(persisted.schemaVersion).toBe(2)
+    expect(persisted.assets[0].locations).toHaveLength(2)
+    expect('localPath' in persisted.assets[0]).toBe(false)
   })
 
   it('reports a corrupt index without overwriting it', async () => {
