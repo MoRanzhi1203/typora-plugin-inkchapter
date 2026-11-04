@@ -4,7 +4,7 @@
  * 设计：
  * - 未初始化时，页面顶部明确提示，并提供「校验目录 → 初始化图库」流程。
  * - 初始化完成后才写入 `initialized: true`，在此之前不改动任何磁盘内容。
- * - 远程图床可选；Token 永不在此页面输入，只接受凭据引用 ID。
+ * - 远程图床可选；Token 通过密码输入框保存到系统安全存储，不回填、不写设置。
  */
 import { SettingTab } from '@typora-community-plugin/core'
 import {
@@ -13,10 +13,16 @@ import {
   type ImageCompressionMode,
   type ImageNamingStrategy,
   type ImageReferenceMode,
+  type ImageRemoteProfile,
   type ImageSettings,
   type ImageStorageMode,
   type ImageUploadService,
 } from '../image-management/image-settings'
+import {
+  resolveCredentialReferenceId,
+  type ImageCredentialStatus,
+} from '../image-management/image-credential-store'
+import type { GitHubConnectionTestResult } from '../image-management/github-connection-test'
 import type { InitializeImageLibraryResult, LibraryInspection } from '../image-management/image-library-inspection'
 import { resolveImageDataPaths } from '../image-management/image-data-paths'
 import type { ImageLibraryCenterRow, ImageLibraryView } from '../image-management/image-library-center'
@@ -39,6 +45,14 @@ export interface ImageManagementSettingTabHost {
   getLibraryCenter(): Promise<ImageLibraryView[]>
   /** 手动上传单张本地图片（不修改 Markdown）。 */
   uploadLocalImage(): Promise<void>
+  /** 查询安全存储中的凭据状态；不返回 Token。 */
+  getCredentialStatus(referenceId: string): Promise<ImageCredentialStatus>
+  /** 保存/替换 Token；成功后才允许启用 GitHub 上传。 */
+  saveCredential(referenceId: string, token: string): Promise<{ ok: boolean; code?: string }>
+  /** 删除 Token；失败时返回稳定错误码。 */
+  deleteCredential(referenceId: string): Promise<{ ok: boolean; code?: string }>
+  /** 只读连接测试；不创建远程文件。 */
+  testConnection(profile: ImageRemoteProfile): Promise<GitHubConnectionTestResult>
 }
 
 function formatBytes(bytes: number | null): string {
@@ -95,8 +109,10 @@ export class ImageManagementSettingTab extends SettingTab {
     repository: HTMLInputElement | null
     branch: HTMLInputElement | null
     remoteDirectory: HTMLInputElement | null
-    credentialReferenceId: HTMLInputElement | null
-  } = { owner: null, repository: null, branch: null, remoteDirectory: null, credentialReferenceId: null }
+  } = { owner: null, repository: null, branch: null, remoteDirectory: null }
+  private tokenInput: HTMLInputElement | null = null
+  private credentialStatusEl: HTMLElement | null = null
+  private connectionResultEl: HTMLElement | null = null
 
   constructor(private host: ImageManagementSettingTabHost) {
     super()
@@ -113,7 +129,10 @@ export class ImageManagementSettingTab extends SettingTab {
     this.statusEl = null
     this.diagnosticsEl = null
     this.libraryCenterEl = null
-    this.remoteInputs = { owner: null, repository: null, branch: null, remoteDirectory: null, credentialReferenceId: null }
+    this.remoteInputs = { owner: null, repository: null, branch: null, remoteDirectory: null }
+    this.tokenInput = null
+    this.credentialStatusEl = null
+    this.connectionResultEl = null
 
     this.addSettingTitle(settings.initialized ? '图片管理' : '图片管理 · 初始化向导')
     this.addSetting(s => {
@@ -234,15 +253,27 @@ export class ImageManagementSettingTab extends SettingTab {
         ]
         for (const [value, label] of options) select.add(new Option(label, value))
         select.value = settings.uploadService
-        select.onchange = () => {
+        select.onchange = async () => {
+          const current = this.host.read()
           const next = resolveImageSettings({
-            ...this.host.read(),
+            ...current,
             uploadService: select.value as ImageUploadService,
           })
           if (select.value === 'github' && next.uploadService === 'none') {
             this.host.notify('尚无有效 GitHub 远程配置，上传服务保持为「无」', 'error')
             this.render()
             return
+          }
+          if (select.value === 'github') {
+            const profile = current.remoteProfiles.find(item => item.enabled)
+            const status = profile
+              ? await this.host.getCredentialStatus(resolveCredentialReferenceId(profile))
+              : null
+            if (!status?.configured) {
+              this.host.notify('尚未保存 GitHub Token，无法启用上传服务', 'error')
+              this.render()
+              return
+            }
           }
           this.write(next)
           this.render()
@@ -559,8 +590,8 @@ export class ImageManagementSettingTab extends SettingTab {
     this.addSetting(s => {
       s.addName('远程图床')
       s.addDescription(
-        '可以跳过，先只使用本地图库。Token 不在此页面输入：此处只保存凭据引用 ID，'
-        + '上传阶段再从操作系统凭据读取。默认分支留空表示使用仓库真实默认分支。',
+        '可以跳过，先只使用本地图库。GitHub Token 通过下方密码框保存到本机安全存储，'
+        + '不会写入设置、日志或 Markdown；默认分支留空表示使用仓库真实默认分支。',
       )
       if (profile) s.addBadge(`已配置 ${profile.owner}/${profile.repository}`)
     })
@@ -606,13 +637,50 @@ export class ImageManagementSettingTab extends SettingTab {
     })
 
     this.addSetting(s => {
-      s.addName('凭据引用 ID')
-      s.addDescription('例如 image.github.default；Token 本身不得写入设置。')
-      s.addInput('text', input => {
-        this.remoteInputs.credentialReferenceId = input
-        input.value = profile?.credentialReferenceId ?? ''
-        input.placeholder = 'image.github.default'
-        input.onchange = () => this.saveRemoteFromInputs()
+      s.addName('GitHub Token')
+      s.addDescription(
+        '保存后仅显示「已保存」状态，不会回填明文。删除 Token 会立即把上传服务切回「无」。',
+      )
+      s.addInput('password', input => {
+        this.tokenInput = input
+        input.value = ''
+        input.placeholder = '粘贴 GitHub Token（ghp_... 或 github_pat_...）'
+        input.autocomplete = 'new-password'
+        input.spellcheck = false
+      })
+      s.addButton(button => {
+        button.textContent = '显示'
+        button.onclick = () => {
+          const input = this.tokenInput
+          if (!input) return
+          const show = input.type === 'password'
+          input.type = show ? 'text' : 'password'
+          button.textContent = show ? '隐藏' : '显示'
+        }
+      })
+      s.addButton(button => {
+        button.textContent = '保存 Token'
+        button.onclick = () => { void this.saveToken() }
+      })
+      s.addButton(button => {
+        button.textContent = '删除 Token'
+        button.onclick = () => { void this.deleteToken() }
+      })
+      s.addButton(button => {
+        button.textContent = '测试连接'
+        button.onclick = () => { void this.testRemoteConnection() }
+      })
+    })
+
+    this.addSetting(s => {
+      s.addName('凭据与连接状态')
+      s.addDescription(div => {
+        this.credentialStatusEl = div
+        div.textContent = '正在读取凭据状态…'
+      })
+      s.addDescription(div => {
+        this.connectionResultEl = div
+        div.textContent = ''
       })
     })
 
@@ -625,34 +693,162 @@ export class ImageManagementSettingTab extends SettingTab {
       s.addButton(button => {
         button.textContent = '清除远程配置'
         button.onclick = () => {
-          this.write({ ...this.host.read(), remoteProfiles: [], defaultRemoteProfileId: null })
-          this.host.notify('已清除远程图床配置；本地图库不受影响')
+          this.write({
+            ...this.host.read(),
+            remoteProfiles: [],
+            defaultRemoteProfileId: null,
+            uploadService: 'none',
+          })
+          this.host.notify(
+            '已清除远程图床配置；本地图库不受影响。本机安全存储中的 Token 仍保留，'
+            + '如需删除请使用「删除 Token」。',
+          )
           this.render()
         }
       })
     })
+
+    void this.refreshCredentialStatus(profile)
   }
 
-  private inputValues(): { owner: string; repository: string; branch: string; remoteDirectory: string; credentialReferenceId: string } {
+  private inputValues(): { owner: string; repository: string; branch: string; remoteDirectory: string } {
     return {
       owner: this.remoteInputs.owner?.value.trim() ?? '',
       repository: this.remoteInputs.repository?.value.trim() ?? '',
       branch: this.remoteInputs.branch?.value.trim() ?? '',
       remoteDirectory: this.remoteInputs.remoteDirectory?.value.trim() ?? '',
-      credentialReferenceId: this.remoteInputs.credentialReferenceId?.value.trim() ?? '',
     }
+  }
+
+  private currentRemoteProfile(settings: ImageSettings): ImageRemoteProfile | null {
+    return settings.remoteProfiles.find(item => item.remoteProfileId === settings.defaultRemoteProfileId)
+      ?? settings.remoteProfiles.find(item => item.enabled)
+      ?? settings.remoteProfiles[0]
+      ?? null
+  }
+
+  private async refreshCredentialStatus(profile: ImageRemoteProfile | null): Promise<void> {
+    const el = this.credentialStatusEl
+    if (!el) return
+    if (!profile) {
+      el.textContent = '保存 Owner / Repository 后即可保存 Token。'
+      return
+    }
+    const status = await this.host.getCredentialStatus(resolveCredentialReferenceId(profile))
+    if (this.credentialStatusEl !== el) return
+    if (status.backend === 'unavailable') {
+      el.textContent = '系统安全存储不可用：无法保存 Token，上传服务将保持禁用。'
+      return
+    }
+    el.textContent = status.configured
+      ? `已保存（本机安全存储${status.updatedAt ? `，更新于 ${new Date(status.updatedAt).toLocaleString()}` : ''}）`
+      : '未保存 Token'
+  }
+
+  private async saveToken(): Promise<void> {
+    const current = this.host.read()
+    const profile = this.currentRemoteProfile(current)
+    if (!profile) {
+      this.host.notify('请先填写并保存 Owner / Repository，再保存 Token', 'error')
+      return
+    }
+    const token = this.tokenInput?.value.trim() ?? ''
+    if (!token) {
+      this.host.notify('请输入 GitHub Token', 'error')
+      return
+    }
+    if (/\s/.test(token) || token.length < 8 || token.length > 512) {
+      this.host.notify('Token 格式无效：不能包含空白字符，长度应在 8–512 之间', 'error')
+      return
+    }
+    const result = await this.host.saveCredential(
+      resolveCredentialReferenceId(profile),
+      token,
+    )
+    if (!result.ok) {
+      this.host.notify(`Token 保存失败（${result.code ?? 'CREDENTIAL_WRITE_FAILED'}）`, 'error')
+      return
+    }
+    if (this.tokenInput) this.tokenInput.value = ''
+    this.host.notify('GitHub Token 已保存到本机安全存储')
+    await this.refreshCredentialStatus(profile)
+  }
+
+  private async deleteToken(): Promise<void> {
+    const current = this.host.read()
+    const profile = this.currentRemoteProfile(current)
+    if (!profile) {
+      this.host.notify('当前没有可删除的远程配置凭据', 'error')
+      return
+    }
+    const referenceId = resolveCredentialReferenceId(profile)
+    const shared = current.remoteProfiles.filter(
+      item => resolveCredentialReferenceId(item) === referenceId,
+    ).length
+    const confirmed = this.host.confirm(
+      `将删除本机安全存储中的 GitHub Token（${shared} 个远程配置使用该凭据）。\n`
+      + '删除后上传服务会切回「无」，已上传图片与本地文件不受影响。是否继续？',
+    )
+    if (!confirmed) return
+    const result = await this.host.deleteCredential(referenceId)
+    if (!result.ok) {
+      this.host.notify(`Token 删除失败（${result.code ?? 'CREDENTIAL_DELETE_FAILED'}）`, 'error')
+      return
+    }
+    this.write({ ...current, uploadService: 'none' })
+    this.host.notify('GitHub Token 已删除；上传服务已切回「无」')
+    this.render()
+  }
+
+  private async testRemoteConnection(): Promise<void> {
+    const current = this.host.read()
+    const profile = this.currentRemoteProfile(current)
+    if (!profile) {
+      this.host.notify('请先填写并保存 Owner / Repository，再测试连接', 'error')
+      return
+    }
+    const status = await this.host.getCredentialStatus(resolveCredentialReferenceId(profile))
+    if (!status.configured) {
+      this.host.notify('尚未保存 Token，请先保存后再测试连接', 'error')
+      return
+    }
+    const result = await this.host.testConnection(profile)
+    this.renderConnectionResult(result)
+    this.host.notify(result.summary, result.ok ? 'info' : 'error')
+  }
+
+  private renderConnectionResult(result: GitHubConnectionTestResult): void {
+    const el = this.connectionResultEl
+    if (!el) return
+    const mark = (ok: boolean | null): string => (ok === true ? '通过' : ok === false ? '失败' : '未确认')
+    const lines = [result.summary]
+    for (const item of result.checks) {
+      lines.push(`[${mark(item.ok)}] ${item.label}：${item.detail}`)
+    }
+    el.textContent = lines.join('\n')
+    el.style.whiteSpace = 'pre-wrap'
   }
 
   private saveRemoteFromInputs(): void {
     const current = this.host.read()
     const values = this.inputValues()
     if (!values.owner && !values.repository) {
-      this.write({ ...current, remoteProfiles: [], defaultRemoteProfileId: null })
-      this.host.notify('远程图床未配置，将只使用本地图库')
+      this.write({
+        ...current,
+        remoteProfiles: [],
+        defaultRemoteProfileId: null,
+        uploadService: 'none',
+      })
+      this.host.notify('远程图床未配置，将只使用本地图库；已保存的 Token 仍保留在本机安全存储')
       this.render()
       return
     }
 
+    const existing = this.currentRemoteProfile(current)
+    const referenceId = resolveCredentialReferenceId({
+      remoteProfileId: DEFAULT_REMOTE_PROFILE_ID,
+      credentialReferenceId: existing?.credentialReferenceId ?? '',
+    })
     const validation = validateRemoteProfile({
       remoteProfileId: DEFAULT_REMOTE_PROFILE_ID,
       provider: 'github',
@@ -662,7 +858,7 @@ export class ImageManagementSettingTab extends SettingTab {
       remoteDirectory: values.remoteDirectory,
       urlStrategy: 'raw',
       customUrlBase: '',
-      credentialReferenceId: values.credentialReferenceId,
+      credentialReferenceId: referenceId,
       enabled: true,
     })
     if (!validation.ok || !validation.normalized) {

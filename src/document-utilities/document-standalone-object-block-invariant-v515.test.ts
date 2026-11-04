@@ -379,6 +379,19 @@ describe('V5.15 §5 — DOM owning-block descriptor', () => {
     expect(analyzeFigureBlockStructureDom(img).decision).toBe('VALID_STANDALONE_FIGURE')
   })
 
+  it('plugin UI text inside the block never counts as document text', () => {
+    document.body.innerHTML = [
+      '<div id="write"><p><img src="a.png">',
+      '<span data-inkchapter-ui-root="document-utilities">',
+      '<button>编辑图名…</button><button>复制本地路径</button><button>复制 Markdown 引用</button>',
+      '</span></p></div>',
+    ].join('')
+    const img = document.querySelector('img') as HTMLElement
+    const facts = describeFigureOwningBlockDom(img)
+    expect(facts.nonImageSemanticText).toBe('')
+    expect(analyzeFigureBlockStructureDom(img).decision).toBe('VALID_STANDALONE_FIGURE')
+  })
+
   it('§2.1 — the image OWN alt metadata is never "mixed text"', () => {
     document.body.innerHTML =
       '<div id="write"><p><span class="md-image"><img src="a.png" alt="说明"><span class="md-meta">说明</span></span></p></div>'

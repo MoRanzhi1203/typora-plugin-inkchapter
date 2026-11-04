@@ -54,6 +54,15 @@ describe('classifyUploadThrownError', () => {
     expect(classifyUploadThrownError(new Error('EACCES: permission denied'))).toBe('FILE_NOT_READABLE')
     expect(classifyUploadThrownError(new Error('network down'))).toBe('PICGO_UNAVAILABLE')
   })
+
+  it('uses the error code when the message is generic', () => {
+    expect(classifyUploadThrownError({ code: 'FILE_NOT_FOUND', message: 'file not found: D:/a.png' }))
+      .toBe('FILE_NOT_FOUND')
+    expect(classifyUploadThrownError({ code: 'FILE_NOT_READABLE', message: 'read failed' }))
+      .toBe('FILE_NOT_READABLE')
+    expect(classifyUploadThrownError(new Error('file not found: D:/a.png'))).toBe('FILE_NOT_FOUND')
+    expect(classifyUploadThrownError(new Error('not a regular file: D:/a.png'))).toBe('FILE_NOT_READABLE')
+  })
 })
 
 describe('parseTyporaImagePreferences', () => {

@@ -17,9 +17,16 @@ export type ImageUploadErrorCode =
   | 'REMOTE_PATH_INVALID'
   | 'FILE_NOT_FOUND'
   | 'FILE_NOT_READABLE'
+  | 'REMOTE_URL_NOT_LOCAL_FILE'
   | 'STAGING_FAILED'
+  | 'CREDENTIAL_MISSING'
+  | 'CREDENTIAL_UNAVAILABLE'
+  | 'CREDENTIAL_READ_FAILED'
+  | 'REMOTE_BRANCH_UNRESOLVED'
   | 'PICGO_UNAVAILABLE'
   | 'PICGO_CONFIG_MISSING'
+  | 'PICGO_CONFIG_WRITE_FAILED'
+  | 'PICGO_TOKEN_INJECTION_UNSUPPORTED'
   | 'PICGO_EMPTY_RESULT'
   | 'PICGO_INVALID_URL'
   | 'INDEX_WRITE_FAILED'
@@ -69,8 +76,16 @@ export function evaluatePicGoResult(output: unknown): UploadOutcome {
 /** 把异常映射为稳定错误码，绝不把响应正文或凭据写入日志。 */
 export function classifyUploadThrownError(error: unknown): ImageUploadErrorCode {
   const message = error instanceof Error ? error.message : String(error)
-  if (/ENOENT/.test(message)) return 'FILE_NOT_FOUND'
-  if (/EACCES|EPERM|EISDIR/.test(message)) return 'FILE_NOT_READABLE'
+  const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : ''
+  if (code === 'FILE_NOT_FOUND' || code === 'ENOENT' || /ENOENT|file not found/i.test(message)) {
+    return 'FILE_NOT_FOUND'
+  }
+  if (code === 'FILE_NOT_READABLE' || code === 'EACCES' || code === 'EPERM' || code === 'EISDIR'
+    || /EACCES|EPERM|EISDIR|not a regular file|read failed/i.test(message)) {
+    return 'FILE_NOT_READABLE'
+  }
   return 'PICGO_UNAVAILABLE'
 }
 

@@ -65,7 +65,11 @@ interface Harness {
   stubBarRect: (cid: string, left: number, top: number, width: number) => void
 }
 
-function createHarness(overrides: { source?: (cid: string) => string | null; documentDir?: string | null } = {}): Harness {
+function createHarness(overrides: {
+  source?: (cid: string) => string | null
+  documentDir?: string | null
+  imageAssetActions?: import('./content-block-toolbar-controller').ContentBlockToolbarImageAssetActions
+} = {}): Harness {
   const longLines = Array.from({ length: 20 }, () => '<div class="CodeMirror-line"><span>code</span></div>').join('')
   const shortLines = Array.from({ length: 3 }, () => '<div class="CodeMirror-line"><span>code</span></div>').join('')
   document.body.innerHTML = `
@@ -108,6 +112,7 @@ function createHarness(overrides: { source?: (cid: string) => string | null; doc
     getPreviewLines: () => previewLines,
     getAutoExpandOnEdit: () => autoExpandOnEdit,
     getDocumentDir: () => overrides.documentDir ?? null,
+    imageAssetActions: overrides.imageAssetActions,
     getBlockDiagnosticMarks: (ordinal) => blockDiagnosticMarks?.(ordinal) ?? [],
   })
   controller.mount()
@@ -911,17 +916,45 @@ describe('V3 image toolbar (container-bound)', () => {
     img.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget }))
   }
 
-  it('binds the bar inside the md-image container instead of the overlay root', () => {
+  it('binds the bar to the plugin overlay root, never inside the editable image block', () => {
     harness = createHarness()
     hover(harness.img)
     const bar = imageBar()!
     const wrapper = harness.img.closest<HTMLElement>('.md-image')!
-    expect(bar.parentElement).toBe(wrapper)
+    expect(bar.parentElement).toBe(harness.overlay)
+    expect(harness.overlay.contains(bar)).toBe(true)
+    expect(wrapper.contains(bar)).toBe(false)
     expect(wrapper.classList.contains(IMAGE_ANCHOR_CLASS)).toBe(true)
     expect(bar.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
     expect(bar.querySelector('[data-action="copy-image"]')).toBeTruthy()
     expect(bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.hidden).toBe(false)
-    expect(harness.overlay.contains(bar)).toBe(false)
+  })
+
+  it('keeps toolbar/menu text out of editable document content', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const bar = imageBar()!
+    bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.click()
+    expect(harness.overlay.textContent).toContain('复制本地路径')
+    expect(harness.write.textContent).not.toContain('复制本地路径')
+    expect(harness.write.textContent).not.toContain('复制 Markdown 引用')
+    expect(harness.write.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(0)
+    expect(harness.write.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}__menu`)).toHaveLength(0)
+  })
+
+  it('rebinds to a rebuilt image node without duplicating the bar', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const oldWrapper = harness.img.closest<HTMLElement>('.md-image')!
+    const parent = oldWrapper.parentElement!
+    const replacement = oldWrapper.cloneNode(true) as HTMLElement
+    parent.replaceChild(replacement, oldWrapper)
+    const newImg = replacement.querySelector('img') as HTMLImageElement
+    stubRect(newImg, 200, 700, 200, 150)
+    hover(newImg)
+    expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(1)
+    expect(imageBar()!.parentElement).toBe(harness.overlay)
+    expect(harness.write.textContent).not.toContain('复制本地路径')
   })
 
   it('positions the bar against the real image edge, not the block width', () => {
@@ -934,9 +967,9 @@ describe('V3 image toolbar (container-bound)', () => {
     hover(harness.img)
     const bar = imageBar()!
     expect(bar.getAttribute('data-placement')).toBe('right')
-    // 图片右边 (x=400) + 7px → 相对锚点左侧 (x=100) 的局部坐标 307，而不是块右侧。
-    expect(bar.style.left).toBe('307px')
-    expect(bar.style.top).toBe('0px')
+    // 图片右边 (x=400) + 7px → overlay 根的视口坐标 407。
+    expect(bar.style.left).toBe('407px')
+    expect(bar.style.top).toBe('700px')
     expect(bar.style.right).toBe('')
     // 定位不得改变图片尺寸/居中布局。
     expect(harness.img.style.width).toBe('')
@@ -952,9 +985,9 @@ describe('V3 image toolbar (container-bound)', () => {
     hover(harness.img)
     const bar = imageBar()!
     expect(bar.getAttribute('data-placement')).toBe('left')
-    // 图片左边局部坐标 300 - 7 - 64 = 229。
-    expect(bar.style.left).toBe('229px')
-    expect(bar.style.top).toBe('0px')
+    // 图片左边 400 - 7 - 64 = 329（视口坐标）。
+    expect(bar.style.left).toBe('329px')
+    expect(bar.style.top).toBe('700px')
   })
 
   it('falls back to the image inner corner when both sides are tight', () => {
@@ -966,8 +999,8 @@ describe('V3 image toolbar (container-bound)', () => {
     hover(harness.img)
     const bar = imageBar()!
     expect(bar.getAttribute('data-placement')).toBe('inside')
-    expect(bar.style.left).toBe('330px')
-    expect(bar.style.top).toBe('6px')
+    expect(bar.style.left).toBe('430px')
+    expect(bar.style.top).toBe('706px')
   })
 
   it('keeps an inline image aligned to its own top edge', () => {
@@ -979,8 +1012,8 @@ describe('V3 image toolbar (container-bound)', () => {
     hover(harness.img)
     const bar = imageBar()!
     expect(bar.getAttribute('data-placement')).toBe('right')
-    expect(bar.style.left).toBe('127px')
-    expect(bar.style.top).toBe('8px')
+    expect(bar.style.left).toBe('227px')
+    expect(bar.style.top).toBe('708px')
   })
 
   it('repositions on geometry changes and does not drift on scroll', () => {
@@ -992,20 +1025,20 @@ describe('V3 image toolbar (container-bound)', () => {
     hover(harness.img)
     const bar = imageBar()!
     expect(bar.getAttribute('data-placement')).toBe('left')
-    expect(bar.style.left).toBe('129px')
+    expect(bar.style.left).toBe('229px')
+    expect(bar.style.top).toBe('700px')
 
     // 侧栏收起 / 窗口变宽：编辑区变宽后回到右侧。
     stubRect(harness.write, 100, 0, 800, 800)
     harness.controller.syncGeometry()
     expect(bar.getAttribute('data-placement')).toBe('right')
-    expect(bar.style.left).toBe('357px')
+    expect(bar.style.left).toBe('457px')
 
-    // 滚动时锚点与图片一起移动：相对坐标不变，不产生漂移。
+    // 滚动时由单帧 rAF 重定位；未选中时按既有行为隐藏，不重复挂载。
     harness.write.dispatchEvent(new Event('scroll'))
-    expect(bar.isConnected).toBe(true)
     expect(bar.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
-    expect(bar.style.left).toBe('357px')
-    expect(bar.style.top).toBe('0px')
+    expect(bar.style.left).toBe('457px')
+    expect(bar.style.top).toBe('700px')
   })
 
   it('reuses one bar across repeated hovers', () => {
@@ -1039,6 +1072,108 @@ describe('V3 image toolbar (container-bound)', () => {
     leave(harness.img, btn)
     vi.advanceTimersByTime(220)
     expect(imageBar()!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+  })
+
+  it('hides after leaving the overlay action bar', () => {
+    harness = createHarness()
+    hover(harness.img)
+    imageBar()!.dispatchEvent(new MouseEvent('pointerleave'))
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).toBeNull()
+  })
+
+  it('keeps the bar visible when the pointer crosses the gap into the panel', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const btn = imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!
+    // 图片与浮层操作条之间隔着 7px 空隙：离开图片时先启动了隐藏计时，
+    // 随后进入操作条必须在计时到点前取消。
+    leave(harness.img)
+    btn.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).not.toBeNull()
+    expect(imageBar()!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+  })
+
+  it('keeps the bar visible when the pointer returns from the panel to the image', () => {
+    harness = createHarness()
+    hover(harness.img)
+    imageBar()!.dispatchEvent(new MouseEvent('pointerleave', { relatedTarget: harness.img }))
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).not.toBeNull()
+    expect(imageBar()!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+  })
+
+  it('hides once the pointer moves from the image onto adjacent text', () => {
+    harness = createHarness()
+    hover(harness.img)
+    leave(harness.img, harness.write)
+    harness.write.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).toBeNull()
+  })
+
+  it('keeps the panel clickable after the pointer crosses the gap', async () => {
+    harness = createHarness()
+    hover(harness.img)
+    const btn = imageBar()!.querySelector<HTMLButtonElement>('[data-action="copy-image"]')!
+    leave(harness.img)
+    btn.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+    vi.advanceTimersByTime(220)
+    btn.click()
+    await flushMicrotasks()
+    expect(harness.copyImage).toHaveBeenCalledTimes(1)
+    expect(harness.copyImage.mock.calls[0][0]).toBe(harness.img)
+  })
+
+  it('drops the bar when the bound image is removed', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    wrapper.remove()
+    harness.controller.syncGeometry()
+    expect(imageBar()).toBeNull()
+    expect(harness.write.textContent).not.toContain('复制本地路径')
+  })
+
+  it('keeps the bar visible while the image is uploading', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    wrapper.classList.add('md-on-uploading')
+    leave(harness.img)
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).not.toBeNull()
+    expect(imageBar()!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+
+    wrapper.classList.remove('md-on-uploading')
+    leave(harness.img)
+    vi.advanceTimersByTime(220)
+    expect(imageBar()).toBeNull()
+  })
+
+  it('keeps the bar visible when upload replaces the image node', () => {
+    harness = createHarness()
+    hover(harness.img)
+    const oldWrapper = harness.img.closest<HTMLElement>('.md-image')!
+    const parent = oldWrapper.parentElement!
+    const replacement = oldWrapper.cloneNode(true) as HTMLElement
+    const newImg = replacement.querySelector('img') as HTMLImageElement
+    newImg.setAttribute('src', 'https://cdn.example.test/uploaded.png')
+    replacement.setAttribute('data-src', 'https://cdn.example.test/uploaded.png')
+    parent.replaceChild(replacement, oldWrapper)
+    stubRect(newImg, 200, 700, 200, 150)
+
+    // 上传完成后鼠标不一定再次移动：几何 pass 必须把操作条重绑到新节点。
+    harness.controller.syncGeometry()
+
+    const bar = imageBar()
+    expect(bar).not.toBeNull()
+    expect(bar!.parentElement).toBe(harness.overlay)
+    expect(bar!.getAttribute(IMAGE_BAR_VISIBLE_ATTR)).toBe('true')
+    expect(replacement.classList.contains(IMAGE_ANCHOR_CLASS)).toBe(true)
+    expect(document.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}--image`)).toHaveLength(1)
+    expect(harness.write.textContent).not.toContain('复制本地路径')
   })
 
   it('keeps the bar visible for a selected image until another click', () => {
@@ -1101,6 +1236,62 @@ describe('V3 image toolbar (container-bound)', () => {
     const labels = Array.from(bar.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}__menu-item`))
       .map(el => el.textContent)
     expect(labels).toEqual(['复制本地路径', '复制 Markdown 引用'])
+  })
+
+  it('adds figure naming and download actions for remote images', async () => {
+    const download = vi.fn(async () => ({ ok: true, message: 'ok' }))
+    const requestFigureName = vi.fn(() => true)
+    harness = createHarness({
+      imageAssetActions: {
+        getFigureNameState: () => ({ named: false }),
+        requestFigureName,
+        downloadTargets: () => ['project', 'library', 'offline', 'custom'],
+        download,
+      },
+    })
+    const wrapper = harness.img.closest<HTMLElement>('.md-image')!
+    wrapper.setAttribute('data-src', 'https://cdn.example.test/a.png')
+    harness.img.setAttribute('src', 'https://cdn.example.test/a.png')
+    hover(harness.img)
+    const bar = imageBar()!
+    bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.click()
+    const labels = Array.from(bar.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}__menu-item`))
+      .map(el => el.textContent)
+    expect(labels).toEqual(expect.arrayContaining([
+      '设置图名…',
+      '下载图片',
+      '下载并替换为本地引用',
+      '下载到全局图库',
+      '下载到离线区',
+      '选择目录下载…',
+    ]))
+
+    const button = Array.from(bar.querySelectorAll<HTMLButtonElement>(`.${CONTENT_TOOLBAR_CLASS}__menu-item`))
+      .find(el => el.textContent === '下载图片')!
+    button.click()
+    await flushMicrotasks()
+    expect(download).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'https://cdn.example.test/a.png',
+      destination: 'project',
+      replaceReference: false,
+    }))
+  })
+
+  it('offers figure naming but no download for local-only images', () => {
+    harness = createHarness({
+      imageAssetActions: {
+        getFigureNameState: () => ({ named: true }),
+        requestFigureName: () => true,
+        download: async () => ({ ok: true, message: 'ok' }),
+      },
+    })
+    hover(harness.img)
+    const bar = imageBar()!
+    bar.querySelector<HTMLButtonElement>('[data-action="more-image-actions"]')!.click()
+    const labels = Array.from(bar.querySelectorAll(`.${CONTENT_TOOLBAR_CLASS}__menu-item`))
+      .map(el => el.textContent)
+    expect(labels).toEqual(expect.arrayContaining(['编辑图名…', '清除图名']))
+    expect(labels).not.toContain('下载图片')
   })
 
   it('shows a cloud-link action for remote images', () => {

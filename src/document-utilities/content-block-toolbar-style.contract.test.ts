@@ -34,7 +34,9 @@ describe('CONTENT-TOOLBAR-STYLE image actions', () => {
     expect(bar).not.toContain('right: 6px')
     expect(bar).toContain('opacity: 0')
     expect(bar).toContain('visibility: hidden')
-    expect(bar).toContain('pointer-events: none')
+    // 浮层操作条自身必须可命中：否则鼠标落在按钮间隙/图片→面板的空隙时
+    // 会被判为“已离开”，面板在鼠标移到按钮前就隐藏。
+    expect(bar).toContain('pointer-events: auto')
   })
 
   it('paints 28px rounded image buttons and theme tokens', () => {

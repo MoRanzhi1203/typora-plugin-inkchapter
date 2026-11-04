@@ -4798,7 +4798,9 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
   opacity: 0;
   visibility: hidden;
-  pointer-events: none;
+  /* 图片操作条是独立浮层：自身必须可命中，否则鼠标落在按钮间隙或
+     图片→面板的空隙上时会被判为“已离开”，面板提前隐藏。 */
+  pointer-events: auto;
   transition: opacity 120ms ease-out, visibility 120ms ease-out;
 }
 

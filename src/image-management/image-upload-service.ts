@@ -17,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 import type { ImageAssetService } from './image-asset-service'
 import { sha256File, type ImageAssetRecord } from './image-asset-index'
 import type { ImageDataPaths } from './image-data-paths'
-import type { ImageNamingStrategy, ImageSettings } from './image-settings'
+import type { ImageNamingStrategy, ImageRemoteProfile, ImageSettings } from './image-settings'
 import type { ImageTransferTaskStore } from './image-transfer-task-store'
 import {
   classifyUploadThrownError,
@@ -29,10 +29,18 @@ import {
   type UploadConflictResult,
 } from './image-upload-policy'
 import { buildUploadFileName, joinRemotePath } from './image-upload-naming'
+import {
+  resolveCredentialReferenceId,
+  type ImageCredentialStore,
+} from './image-credential-store'
+import { defaultGitHubRequester, type GitHubJsonRequester } from './github-connection-test'
 
 /** PicGo 实例的最小接口；只声明本适配器用到的能力，避免 `any`。 */
 export interface PicGoInstanceLike {
   upload(files?: string[]): Promise<unknown>
+  /** PicGo 3.x：仅写入内存配置，不落盘。缺少时必须拒绝上传。 */
+  setConfig?: (config: Record<string, unknown>) => void
+  unsetConfig?: (key: string, propName: string) => void
 }
 
 export type PicGoConstructorLike = new (configPath?: string) => PicGoInstanceLike
@@ -47,6 +55,10 @@ export interface ImageUploadServiceOptions {
   tasks?: ImageTransferTaskStore
   /** 测试注入：默认动态导入 `picgo`。 */
   loadPicGo?: PicGoModuleLoader
+  /** 系统安全凭据存储；缺少或不可用时拒绝上传，绝不回退明文。 */
+  credentials?: ImageCredentialStore
+  /** 测试注入：GitHub API 请求器（仅用于解析空分支的默认分支）。 */
+  githubRequest?: GitHubJsonRequester
   /** 插件私有 PicGo 配置；默认 `<dataRoot>/picgo/config.json`。 */
   picgoConfigPath?: string
   /** Typora `profile.data`；默认 `%APPDATA%/Typora/profile.data`。 */
@@ -85,9 +97,16 @@ const ERROR_MESSAGES: Record<ImageUploadErrorCode, string> = {
   REMOTE_PATH_INVALID: '远程目录或文件名包含不安全字符，未发起上传；源文件保持不变。',
   FILE_NOT_FOUND: '源文件不存在，未发起上传。',
   FILE_NOT_READABLE: '源文件不可读，未发起上传。',
+  REMOTE_URL_NOT_LOCAL_FILE: '收到的是 HTTPS 远程图片地址，不是本地文件；已跳过上传并保留原 URL。',
   STAGING_FAILED: '暂存副本创建失败，未发起上传；源文件保持不变。',
+  CREDENTIAL_MISSING: '尚未保存 GitHub Token，未发起上传；请在图片设置中保存 Token。',
+  CREDENTIAL_UNAVAILABLE: '系统安全存储不可用，已阻止上传；不会退化为明文保存。',
+  CREDENTIAL_READ_FAILED: '无法读取已保存的 GitHub Token，未发起上传；请重新保存 Token。',
+  REMOTE_BRANCH_UNRESOLVED: '无法确定目标分支，未发起上传；请填写分支或检查仓库访问权限。',
   PICGO_UNAVAILABLE: 'PicGo 运行环境不可用，未发起上传；源文件保持不变。',
   PICGO_CONFIG_MISSING: '插件私有 PicGo 配置不存在，未发起上传；源文件保持不变。',
+  PICGO_CONFIG_WRITE_FAILED: '无法写入插件私有 PicGo 配置，未发起上传；源文件保持不变。',
+  PICGO_TOKEN_INJECTION_UNSUPPORTED: '当前 PicGo 版本不支持运行时注入 Token，已阻止上传。',
   PICGO_EMPTY_RESULT: 'PicGo 未返回可用 URL，按失败处理；源文件保持不变。',
   PICGO_INVALID_URL: 'PicGo 返回的 URL 非法或不可公开访问，按失败处理；源文件保持不变。',
   INDEX_WRITE_FAILED: '资产索引写入失败，请检查数据目录权限；源文件保持不变。',
@@ -290,15 +309,39 @@ export class ImageUploadService {
   }
 
   async uploadLocalFile(input: UploadLocalFileInput): Promise<UploadLocalFileResult> {
+    // P0: PicGo 只接受本地文件。远程 URL 不得进入 sha256/copyFile/上传链路，
+    // 否则会被误映射为 PICGO_UNAVAILABLE，并可能打断 Typora 的图片更新。
+    if (/^https?:\/\//i.test(input.filePath.trim())) {
+      return failure('REMOTE_URL_NOT_LOCAL_FILE')
+    }
     const settings = this.options.readSettings()
     if (settings.uploadService !== 'github') return failure('UPLOAD_SERVICE_NONE')
     const profile = this.resolveRemoteProfile(settings)
     if (!profile) return failure('REMOTE_PROFILE_MISSING')
 
+    const credentials = this.options.credentials
+    if (!credentials || credentials.backend === 'unavailable') {
+      return failure('CREDENTIAL_UNAVAILABLE')
+    }
+    const referenceId = resolveCredentialReferenceId(profile)
+    const credential = await credentials.read(referenceId)
+    if (!credential.ok) {
+      if (credential.code === 'CREDENTIAL_NOT_FOUND') return failure('CREDENTIAL_MISSING')
+      if (credential.code === 'CREDENTIAL_BACKEND_UNAVAILABLE') return failure('CREDENTIAL_UNAVAILABLE')
+      return failure('CREDENTIAL_READ_FAILED')
+    }
+    let token = credential.secret
+    const branch = await this.resolveUploadBranch(profile, token)
+    if (!branch) {
+      token = ''
+      return failure('REMOTE_BRANCH_UNRESOLVED')
+    }
+
     let digest
     try {
       digest = await sha256File(input.filePath)
     } catch (error) {
+      token = ''
       return failure(classifyUploadThrownError(error))
     }
 
@@ -310,11 +353,15 @@ export class ImageUploadService {
       now: this.options.now?.() ?? new Date(),
     })
     const remotePath = joinRemotePath(profile.remoteDirectory, fileName)
-    if (!remotePath) return failure('REMOTE_PATH_INVALID')
+    if (!remotePath) {
+      token = ''
+      return failure('REMOTE_PATH_INVALID')
+    }
 
     let assetId: string | null = null
     let taskId: string | null = null
     let stagedDir: string | null = null
+    let picgo: PicGoInstanceLike | null = null
 
     try {
       try {
@@ -338,9 +385,9 @@ export class ImageUploadService {
       }
 
       try {
-        await fs.access(this.picgoConfigPath)
+        await this.ensurePicGoBaseConfig(profile, branch)
       } catch {
-        return this.failWithTask('PICGO_CONFIG_MISSING', assetId, taskId)
+        return this.failWithTask('PICGO_CONFIG_WRITE_FAILED', assetId, taskId)
       }
       try {
         await fs.mkdir(this.options.paths.stagingRoot, { recursive: true })
@@ -348,7 +395,20 @@ export class ImageUploadService {
         const stagedPath = path.join(stagedDir, fileName)
         await fs.copyFile(input.filePath, stagedPath)
         const PicGo = await this.loadPicGo()
-        const picgo = new PicGo(this.picgoConfigPath)
+        picgo = new PicGo(this.picgoConfigPath)
+        if (!picgo.setConfig) {
+          return this.failWithTask('PICGO_TOKEN_INJECTION_UNSUPPORTED', assetId, taskId)
+        }
+        // 仅写入 PicGo 内存配置；不调用 saveConfig，Token 永远不落盘。
+        picgo.setConfig({
+          // 压掉 PicGo 自身的控制台输出，避免任何配置回显进入 DevTools。
+          silent: true,
+          'picBed.github.token': token,
+          'picBed.github.repo': `${profile.owner}/${profile.repository}`,
+          'picBed.github.branch': branch,
+          'picBed.github.path': profile.remoteDirectory ? `${profile.remoteDirectory.replace(/\/+$/, '')}/` : '',
+          'picBed.github.customUrl': profile.urlStrategy === 'custom' ? profile.customUrlBase : '',
+        })
         const output = await picgo.upload([stagedPath])
         const outcome = evaluatePicGoResult(output)
         if (!outcome.ok) return this.failWithTask(outcome.errorCode, assetId, taskId)
@@ -358,7 +418,7 @@ export class ImageUploadService {
           location = await this.options.assets.recordRemoteLocation({
             assetId,
             remoteProfileId: profile.remoteProfileId,
-            branch: profile.branch,
+            branch,
             remotePath,
             remoteUrl: outcome.url,
             availability: 'available',
@@ -385,9 +445,106 @@ export class ImageUploadService {
         return this.failWithTask(classifyUploadThrownError(error), assetId, taskId)
       }
     } finally {
+      // 凭据只活在本次上传的内存中：先清 Token，再丢弃实例与暂存文件。
+      if (picgo) {
+        try { picgo.unsetConfig?.('picBed.github', 'token') } catch { /* ignore */ }
+        try { picgo.setConfig?.({ 'picBed.github.token': '' }) } catch { /* ignore */ }
+        picgo = null
+      }
+      // 防御性兜底：即使第三方上传器调用 saveConfig，也要把落盘 Token 擦掉。
+      await this.scrubPicGoConfigToken()
+      token = ''
       if (stagedDir) {
         try { await fs.rm(stagedDir, { recursive: true, force: true }) } catch { /* 暂存清理失败不影响源文件 */ }
       }
+    }
+  }
+
+  /** 空分支时读取仓库真实默认分支；只读 API，不修改仓库。 */
+  private async resolveUploadBranch(
+    profile: ImageRemoteProfile,
+    token: string,
+  ): Promise<string | null> {
+    const configured = profile.branch.trim()
+    if (configured) return configured
+    const request = this.options.githubRequest ?? defaultGitHubRequester
+    try {
+      const response = await request({
+        token,
+        path: `/repos/${encodeURIComponent(profile.owner)}/${encodeURIComponent(profile.repository)}`,
+      })
+      if (response.status !== 200) return null
+      const body = response.json as { default_branch?: unknown } | null
+      const branch = typeof body?.default_branch === 'string' ? body.default_branch.trim() : ''
+      return branch || null
+    } catch {
+      return null
+    }
+  }
+
+  /** 第三方上传器若把 Token 写回配置，立即移除；失败不影响上传结果。 */
+  private async scrubPicGoConfigToken(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.picgoConfigPath, 'utf8')
+      const parsed = JSON.parse(raw) as unknown
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+      const root = parsed as Record<string, unknown>
+      const picBed = root.picBed
+      if (!picBed || typeof picBed !== 'object' || Array.isArray(picBed)) return
+      const github = (picBed as Record<string, unknown>).github
+      if (!github || typeof github !== 'object' || Array.isArray(github)) return
+      if (!('token' in github)) return
+      delete (github as Record<string, unknown>).token
+      const temp = `${this.picgoConfigPath}.${process.pid}.${Date.now()}.tmp`
+      await fs.writeFile(temp, JSON.stringify(root, null, 2) + '\n', 'utf8')
+      await fs.rename(temp, this.picgoConfigPath)
+    } catch { /* 兜底清理失败不影响上传结果 */ }
+  }
+
+  /**
+   * 写入**不含 Token** 的 PicGo 基础配置，并保留既有插件字段。
+   * 必须在注入 Token 之前完成，避免任何把 Token 持久化的路径。
+   */
+  private async ensurePicGoBaseConfig(
+    profile: ImageRemoteProfile,
+    branch: string,
+  ): Promise<void> {
+    let existing: Record<string, unknown> = {}
+    try {
+      const raw = await fs.readFile(this.picgoConfigPath, 'utf8')
+      const parsed = JSON.parse(raw) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>
+      }
+    } catch {
+      existing = {}
+    }
+
+    const picBed = existing.picBed && typeof existing.picBed === 'object' && !Array.isArray(existing.picBed)
+      ? existing.picBed as Record<string, unknown>
+      : {}
+    const github = picBed.github && typeof picBed.github === 'object' && !Array.isArray(picBed.github)
+      ? { ...(picBed.github as Record<string, unknown>) }
+      : {}
+    delete github.token
+    Object.assign(github, {
+      repo: `${profile.owner}/${profile.repository}`,
+      branch,
+      path: profile.remoteDirectory ? `${profile.remoteDirectory.replace(/\/+$/, '')}/` : '',
+      customUrl: profile.urlStrategy === 'custom' ? profile.customUrlBase : '',
+    })
+    existing.picBed = { ...picBed, current: 'github', uploader: 'github', github }
+    existing.uploader = 'github'
+    if (!existing.picgoPlugins || typeof existing.picgoPlugins !== 'object') existing.picgoPlugins = {}
+
+    const temp = `${this.picgoConfigPath}.${process.pid}.${Date.now()}.tmp`
+    try {
+      await fs.mkdir(path.dirname(this.picgoConfigPath), { recursive: true })
+      await fs.writeFile(temp, JSON.stringify(existing, null, 2) + '\n', 'utf8')
+      await fs.rename(temp, this.picgoConfigPath)
+    } catch (error) {
+      try { await fs.rm(temp, { force: true }) } catch { /* ignore */ }
+      throw error
     }
   }
 

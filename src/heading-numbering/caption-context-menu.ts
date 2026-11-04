@@ -58,6 +58,12 @@ export class CaptionContextMenu {
       }
       if (!target) return
 
+      // Image compatibility: right-clicking the image itself belongs to Typora's
+      // native menu (open / copy / upload / zoom / save as). Only InkChapter's own
+      // caption decoration keeps the naming menu on right-click; the image's
+      // naming actions live in the墨章 toolbar "more" menu instead.
+      if (!captionEl && target.type === 'figure') return
+
       e.preventDefault()
       e.stopPropagation()
       this.close()
@@ -86,6 +92,22 @@ export class CaptionContextMenu {
       return target.closest('[data-inkchapter-caption]') as HTMLElement | null
     }
     return null
+  }
+
+  /**
+   * Toolbar entry: open naming for a figure/code/table element without stealing
+   * the native context menu. Returns false when the element has no naming target.
+   */
+  requestNamingForElement(el: Element, mode: 'set' | 'edit' | 'clear'): boolean {
+    const target = this.service.resolveCaptionNamingTarget(el)
+    if (!target) return false
+    if (mode === 'clear') {
+      return this.service.clearCaptionName(target.type, target.target)
+    }
+    if (!this.validateBeforeDialog(target)) return false
+    if (mode === 'set') void this.setName(target)
+    else void this.editName(target)
+    return true
   }
 
   dispose(): void {

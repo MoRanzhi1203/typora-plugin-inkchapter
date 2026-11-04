@@ -55,6 +55,19 @@ await esbuild.build({
   ],
 })
 
+// Typora「Custom Command」上传器入口。独立 CJS 产物，避免把 Node CLI
+// 依赖塞进渲染进程主包；部署到插件 dist 后由 profile.data 的绝对路径调用。
+await esbuild.build({
+  entryPoints: ['src/image-management/upload-cli.ts'],
+  outfile: 'dist/upload-cli.cjs',
+  format: 'cjs',
+  platform: 'node',
+  target: 'node18',
+  bundle: true,
+  minify: IS_PROD,
+  sourcemap: IS_DEV,
+})
+
 if (IS_DEV) {
 
   await installDevPlugin()

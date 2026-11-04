@@ -25,10 +25,11 @@ const VALID_PROFILE: ImageRemoteProfile = {
 describe('image settings defaults', () => {
   it('contains no personal path, account or repository', () => {
     const serialized = JSON.stringify(DEFAULT_IMAGE_SETTINGS)
-    expect(serialized).not.toContain('E:\\\\TyporaImageLibrary')
-    expect(serialized).not.toContain('MoRanzhi1203')
-    expect(serialized).not.toContain('Picture_Bed')
-    expect(serialized).not.toContain('token')
+    expect(serialized).not.toMatch(/"owner"\s*:\s*"[^"]+"/)
+    expect(serialized).not.toMatch(/"repository"\s*:\s*"[^"]+"/)
+    expect(serialized).not.toMatch(/"token"\s*:/)
+    expect(serialized).not.toContain('ghp_')
+    expect(serialized).not.toContain('github_pat_')
   })
 
   it('is disabled and uninitialized by default', () => {

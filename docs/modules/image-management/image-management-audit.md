@@ -8,8 +8,8 @@
 
 1. 墨章已具备**标题 / 图表题注编号**、**Markdown 资源引用扫描**、**图片路径解析与复制**、**文件复制冲突策略**、**设置系统与迁移**、**统一资源释放**等可复用基础设施。
 2. 墨章**不存在**图片资产管理、哈希去重、任务队列、图库面板、GitHub 远程索引、凭据管理、下载与同步能力。
-3. PicGo-Core 3.2.0 可在本机 Node v24 环境安装并运行，GitHub 上传管线存在；使用本机已存储的 GitHub 凭据完成了**真实上传验证**（文件存在于 `Picture_Bed`，字节数一致，Raw URL 200）。
-4. `MoRanzhi1203/Picture_Bed` 存在、公开、默认分支 `main`，Raw URL 可访问；凭据具备 `push` 权限。
+3. PicGo-Core 3.2.0 可在本机 Node v24 环境安装并运行，GitHub 上传管线存在；使用本机已存储的 GitHub 凭据完成了**真实上传验证**（文件存在于 `example-image-bed`，字节数一致，Raw URL 200）。
+4. `example-owner/example-image-bed` 存在、公开、默认分支 `main`，Raw URL 可访问；凭据具备 `push` 权限。
 5. 关键结论：**PicGo-CLI 每次启动都会以默认 `~/.picgo/config.json` 初始化并改写它**，即使传入 `-c`。审计过程已复现该行为并恢复原文件；后续实现必须使用 PicGo 编程 API + 插件私有配置路径。
 6. PicGo 上传结果必须校验 `imgUrl`：成功时 `url` 可能为 `undefined`；失败时不抛异常但两个 URL 均为空。
 7. Typora 内部编辑接口：`File.imgEdit` 在 1.6.7 不存在，`File.option.imageUploader = custom`；原生粘贴可观测（4.3），但 `Editor.reset` / `File.reloadContent` 的撤销语义与真实拖拽仍未验证，引用替换继续冻结。
@@ -78,7 +78,7 @@ Node 能力已可用：`fs`、`path`、`crypto`、`child_process`（打包后运
 |---|---|---|
 | Typora 用户配置 | `%APPDATA%\Typora\conf\conf.user.json` 存在，**不含**图片上传相关字段 | 文件内容 |
 | Typora 默认图片缓存目录 | `%APPDATA%\Typora\typora-user-images` 存在，267 个历史图片 | 目录枚举 |
-| 社区插件运行目录 | `C:\Users\MSIPC\.typora\community-plugins` 存在框架 2.9.13 | 目录枚举 |
+| 社区插件运行目录 | `%USERPROFILE%\.typora\community-plugins` 存在框架 2.9.13 | 目录枚举 |
 | Typora 类型声明中的图片接口 | `File.imgEdit.getImageUploaderCommand()`、`getRealSrc()`、`resolveImagePath()`、`File.option.imageUploader`、`Editor.imgEdit` | `@types/typora` 类型定义 |
 | Typora 粘贴与撤销接口 | `Editor.UserOp.pasteHandler`、`Editor.undo.UndoManager`、`Editor.reset`、`File.reloadContent` | `@types/typora` 类型定义 |
 | 自定义上传命令 | `File.option.imageUploader = custom`；`File.imgEdit` 在 1.6.7 不存在，命令文本仍无法通过接口读取（见 4.3） | 运行时探针 |
@@ -161,11 +161,11 @@ npm install -g picgo  →  E:\NodeJS\picgo.ps1，版本 3.2.0
 
 ### 5.3 真实上传验证（已完成）
 
-凭据来源：Windows 凭据管理器中的 `git:https://github.com`（用户名 `MoRanzhi1203`，Token scopes：`gist, repo, workflow`）。Token 通过进程环境变量传入 PicGo 编程 API，未打印、未写入仓库、未落盘。
+凭据来源：Windows 凭据管理器中的 `git:https://github.com`（用户名 `example-owner`，Token scopes：`gist, repo, workflow`）。Token 通过进程环境变量传入 PicGo 编程 API，未打印、未写入仓库、未落盘。
 
 测试文件：`%APPDATA%\Typora\typora-user-images\02-3-3-3.png`（14,970 B）的临时副本。
 
-上传目标：`MoRanzhi1203/Picture_Bed` 的 `main` 分支，目录 `inkchapter-audit`。
+上传目标：`example-owner/example-image-bed` 的 `main` 分支，目录 `inkchapter-audit`。
 
 验证结果：
 
@@ -207,7 +207,7 @@ npm install -g picgo  →  E:\NodeJS\picgo.ps1，版本 3.2.0
 
 | 检查项 | 结果 | 证据 |
 |---|---|---|
-| 仓库存在 | 是 | `https://api.github.com/repos/MoRanzhi1203/Picture_Bed` |
+| 仓库存在 | 是 | `https://api.github.com/repos/example-owner/example-image-bed` |
 | 可见性 | Public | API `private: false` |
 | 默认分支 | `main` | API `default_branch` 与 `git ls-remote --symref` |
 | 仓库大小 | 约 155 MB | API `size` |
@@ -263,7 +263,7 @@ src/image-management/
 
 | 风险 | 等级 | 说明 / 缓解 |
 |---|---|---|
-| 插件凭据存取尚未实现 | 高 | 本次验证借用了系统已存的 git 凭据；插件自身必须实现 `credentialReferenceId` 对应的安全存取，禁止复制 Token 到设置或日志 |
+| 插件凭据存取（历史缺口，已关闭） | 高 | 本次验证借用了系统已存的 git 凭据；P11 已实现 `credentialReferenceId` 对应的 Windows DPAPI 安全存取，Token 不进入设置或日志 |
 | Typora 编辑 API 未验证 | 高 | 引用替换可能破坏撤销与文档；P2 默认不替换引用 |
 | PicGo-CLI 改写用户配置 | 高 | 已实测；仅用编程 API + 私有配置路径 |
 | PicGo 上传结果判定 | 高 | 失败不抛异常且 `url` 可能为空；必须校验 `imgUrl` 并验证远程文件 |
@@ -279,13 +279,13 @@ src/image-management/
 |---|---|
 | 静态代码检查通过 | 是：`pnpm run typecheck` 0 错误；`pnpm run verify:archive` PASS |
 | 自动化测试通过 | 是：`pnpm run test` 280 文件 / 5305 用例通过（含 P1-a 新增 33 例） |
-| 真实 PicGo 上传验证 | 是：文件已在 `Picture_Bed` 落地，字节数一致，Raw URL 200（见 5.3） |
+| 真实 PicGo 上传验证 | 是：文件已在 `example-image-bed` 落地，字节数一致，Raw URL 200（见 5.3） |
 | 真实 Typora 运行时验证 | **否**：图片原生行为与上传命令均未验证 |
 | 尚未验证或阻塞 | 见 4.3 |
 
 ## 10. 下一阶段准入条件
 
-1. ~~用户提供 GitHub Token~~ 已完成（使用系统已存凭据完成真实验证）；插件自身凭据存取仍待实现。
+1. ~~用户提供 GitHub Token~~ 已完成（使用系统已存凭据完成真实验证）；插件自身的 Windows DPAPI 凭据存取已在 P11 实现。
 2. 真实 Typora 运行时完成 4.3 的 6 项探测，并记录证据。
 3. 图片配置字段与迁移设计评审通过（P1-a 已交付模型与校验）。
 4. 明确第一版不自动重写已有图片引用。

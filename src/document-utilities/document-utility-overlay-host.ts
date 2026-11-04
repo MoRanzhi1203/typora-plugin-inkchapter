@@ -1233,6 +1233,8 @@ export interface DocumentUtilitiesOverlayOptions {
     getAutoExpandOnEdit?: () => boolean
     /** 当前文档目录：用于图片“复制本地路径”的解析。 */
     getDocumentDir?: () => string | null
+    /** 图片资产扩展动作（图名 / 下载）；缺省时只保留复制菜单。 */
+    imageAssetActions?: import('./content-block-toolbar-controller').ContentBlockToolbarImageAssetActions
   }
 }
 
@@ -4505,6 +4507,7 @@ export class DocumentUtilityOverlayHost {
         getPreviewLines: toolbarOpts.getPreviewLines,
         getAutoExpandOnEdit: toolbarOpts.getAutoExpandOnEdit,
         getDocumentDir: toolbarOpts.getDocumentDir,
+        imageAssetActions: toolbarOpts.imageAssetActions,
         getBlockDiagnosticMarks: (ordinal) => this.readCodeBlockDiagnosticMarks(ordinal),
       })
       this.contentBlockToolbar.mount()

@@ -83,10 +83,30 @@ export interface ContentBlockToolbarActions {
   copyImage: (img: HTMLImageElement | null) => Promise<ContentBlockToolbarCopyResult>
 }
 
+export type ImageAssetMenuDestination = 'project' | 'library' | 'offline' | 'custom'
+
+/** 图片资产扩展动作（图名 + 下载）；缺省时保持原有复制菜单。 */
+export interface ContentBlockToolbarImageAssetActions {
+  /** 当前图片是否已有图名；null 表示无法解析。 */
+  getFigureNameState?: (img: HTMLImageElement) => { named: boolean } | null
+  /** 打开图名设置/编辑/清除；返回 false 表示目标不可用。 */
+  requestFigureName?: (img: HTMLImageElement, mode: 'set' | 'edit' | 'clear') => boolean
+  /** 当前可用的下载目标；用于决定菜单项显隐。 */
+  downloadTargets?: () => ImageAssetMenuDestination[]
+  /** 执行下载；replaceReference 仅在用户显式选择时传 true。 */
+  download?: (input: {
+    img: HTMLImageElement
+    url: string
+    destination: ImageAssetMenuDestination
+    replaceReference: boolean
+  }) => Promise<{ ok: boolean; message: string }>
+}
+
 export interface ContentBlockToolbarOptions {
   getEditorRoot: () => HTMLElement | null
   getMarkdown: () => string | null
   actions: ContentBlockToolbarActions
+  imageAssetActions?: ContentBlockToolbarImageAssetActions
   /** 折叠导致布局变化 → 交由既有几何调度刷新。 */
   onLayoutInvalidated: (reason: string) => void
   emitAudit?: (event: string, payload: Record<string, unknown>) => void
@@ -301,13 +321,17 @@ export class ContentBlockToolbarController {
   private imageVisible = false
   private imageSelected = false
   private imageActions: ImageActionAvailability = { localPath: null, remoteUrl: null, markdown: null }
+  private imageFigureNamed = false
   private imageAnchorEl: HTMLElement | null = null
+  private imageOrdinal = -1
+  private imageAlt = ''
   private imageMenuOpen = false
   private imageHideTimer: number | null = null
   private imageFeedbackTimer: number | null = null
   private watchedImage: HTMLImageElement | null = null
   private imageSizeHandler: (() => void) | null = null
   private scrollRaf: number | null = null
+  private imagePositionRaf: number | null = null
   private lastViewportW = 0
   private actionSeq = 0
   private resetTimers = new Map<HTMLElement, number>()
@@ -317,6 +341,9 @@ export class ContentBlockToolbarController {
 
   private readonly onPointerOver: (ev: Event) => void
   private readonly onPointerOut: (ev: Event) => void
+  private readonly onImageBarPointerEnter: (ev: Event) => void
+  private readonly onImageBarPointerOver: (ev: Event) => void
+  private readonly onImageBarPointerLeave: (ev: Event) => void
   private readonly onPointerDown: (ev: Event) => void
   private readonly onFocusIn: (ev: Event) => void
   private readonly onFocusOut: (ev: Event) => void
@@ -327,7 +354,8 @@ export class ContentBlockToolbarController {
   ) {
     const doc = root.ownerDocument ?? document
 
-    // 图片：单实例操作条，绑定到 `.md-image` 容器内部（随图片滚动，不使用视口坐标）。
+    // 图片：单实例操作条，挂在插件 overlay 根（`document.body` 下），绝不进入 `#write`，
+    // 因此不会被 Typora 的 Markdown 序列化带进正文。
     this.imageBar = doc.createElement('div')
     this.imageBar.className = `${CONTENT_TOOLBAR_CLASS} ${CONTENT_TOOLBAR_CLASS}--image`
     this.imageBar.setAttribute(CONTENT_TOOLBAR_ATTR, 'true')
@@ -381,8 +409,19 @@ export class ContentBlockToolbarController {
     this.imageMenu.className = `${CONTENT_TOOLBAR_CLASS}__menu`
     this.imageMenu.setAttribute('role', 'menu')
     this.imageMenu.setAttribute('data-inkchapter-ui-root', 'document-utilities')
+    this.imageMenu.setAttribute('contenteditable', 'false')
     this.imageMenu.hidden = true
     this.imageBar.appendChild(this.imageMenu)
+    // overlay 根在 #write 之外：图片与操作条之间还隔着 7px 空隙，
+    // 从图片移向操作条时编辑器先收到 pointerout 并启动隐藏计时，
+    // 而操作条自身的 pointerover 不会冒泡到编辑器根。因此必须给操作条
+    // 独立绑定进入事件取消隐藏，否则把鼠标移到按钮上时面板会消失。
+    this.onImageBarPointerEnter = () => this.cancelImageHide()
+    this.onImageBarPointerOver = () => this.cancelImageHide()
+    this.onImageBarPointerLeave = (ev) => this.handleImageBarPointerLeave(ev)
+    this.imageBar.addEventListener('pointerenter', this.onImageBarPointerEnter)
+    this.imageBar.addEventListener('pointerover', this.onImageBarPointerOver)
+    this.imageBar.addEventListener('pointerleave', this.onImageBarPointerLeave)
 
     this.onPointerOver = (ev) => this.handlePointerOver(ev)
     this.onPointerOut = (ev) => this.handlePointerOut(ev)
@@ -396,7 +435,6 @@ export class ContentBlockToolbarController {
   mount(): void {
     if (this.mounted || this.disposed) return
     this.mounted = true
-    // 图片操作条不再挂到 overlay 根：首次悬停时绑定到图片容器内部。
     this.attachSurface()
   }
 
@@ -411,6 +449,9 @@ export class ContentBlockToolbarController {
     this.disposed = true
     this.mounted = false
     this.detachSurface()
+    this.imageBar.removeEventListener('pointerenter', this.onImageBarPointerEnter)
+    this.imageBar.removeEventListener('pointerover', this.onImageBarPointerOver)
+    this.imageBar.removeEventListener('pointerleave', this.onImageBarPointerLeave)
     this.cancelImageHide()
     this.clearImageFeedback()
     this.closeImageMenu()
@@ -418,6 +459,10 @@ export class ContentBlockToolbarController {
     if (this.scrollRaf !== null) {
       try { cancelAnimationFrame(this.scrollRaf) } catch { /* noop */ }
       this.scrollRaf = null
+    }
+    if (this.imagePositionRaf !== null) {
+      try { cancelAnimationFrame(this.imagePositionRaf) } catch { /* noop */ }
+      this.imagePositionRaf = null
     }
     for (const id of this.resetTimers.values()) window.clearTimeout(id)
     this.resetTimers.clear()
@@ -495,6 +540,7 @@ export class ContentBlockToolbarController {
   onEditorScroll(): void {
     if (this.disposed) return
     if (!this.imageSelected) this.dropImageBar()
+    else if (this.imageVisible && this.imageTarget) this.scheduleImagePosition()
     if (this.views.size === 0 || !this.opts.emitAudit) return
     if (this.scrollRaf !== null) return
     try {
@@ -1686,16 +1732,79 @@ export class ContentBlockToolbarController {
     return wrapper ?? target.block ?? img
   }
 
+  private allBusinessImages(): HTMLImageElement[] {
+    const root = this.boundRoot ?? this.opts.getEditorRoot()
+    if (!root) return []
+    return Array.from(root.querySelectorAll<HTMLImageElement>('img'))
+      .filter(img => img.closest('[data-inkchapter-ui-root]') == null)
+  }
+
+  private rememberImageIdentity(img: HTMLImageElement): void {
+    this.imageOrdinal = this.allBusinessImages().indexOf(img)
+    this.imageAlt = img.getAttribute('alt') ?? ''
+  }
+
+  /**
+   * 上传后 Typora 会替换图片节点。优先按规范块 key 找替代节点，其次按
+   * 文档内图片序号 + alt 找回；找到后继续使用同一个 overlay 操作条。
+   */
+  private rebindDisconnectedImage(oldTarget: ContentBlockTarget): boolean {
+    const root = this.boundRoot ?? this.opts.getEditorRoot()
+    if (!root) return false
+    const images = this.allBusinessImages()
+    let replacement: HTMLImageElement | null = null
+    for (const img of images) {
+      const target = resolveContentBlockTargetFromElement(img, root)
+      if (target?.kind === 'image' && target.key === oldTarget.key) {
+        replacement = img
+        break
+      }
+    }
+    if (!replacement && this.imageOrdinal >= 0) {
+      const candidate = images[this.imageOrdinal]
+      if (candidate && (!this.imageAlt || (candidate.getAttribute('alt') ?? '') === this.imageAlt)) {
+        replacement = candidate
+      }
+    }
+    if (!replacement) return false
+    const target = resolveContentBlockTargetFromElement(replacement, root)
+    if (!target || target.kind !== 'image') return false
+
+    const anchor = this.resolveImageAnchor(target)
+    if (this.imageAnchorEl && this.imageAnchorEl !== anchor) {
+      this.imageAnchorEl.classList.remove(IMAGE_ANCHOR_CLASS, IMAGE_SELECTED_CLASS)
+    }
+    this.imageAnchorEl = anchor
+    anchor.classList.add(IMAGE_ANCHOR_CLASS)
+    if (this.imageSelected) anchor.classList.add(IMAGE_SELECTED_CLASS)
+    this.imageTarget = target
+    this.rememberImageIdentity(replacement)
+    if (this.imageBar.parentElement !== this.root) this.root.appendChild(this.imageBar)
+    this.updateImageActions()
+    this.updateImageBarState(replacement)
+    this.watchImageSize(replacement)
+    this.positionImageBar()
+    this.imageBar.setAttribute(IMAGE_BAR_VISIBLE_ATTR, 'true')
+    this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-IMAGE-REBOUND', {
+      reason: 'DISCONNECTED_IMAGE_REPLACED',
+      keyMatched: target.key === oldTarget.key,
+    })
+    return true
+  }
+
   private showImageBar(target: ContentBlockTarget): void {
     const anchor = this.resolveImageAnchor(target)
-    if (this.imageAnchorEl !== anchor || !this.imageBar.isConnected) {
+    if (this.imageAnchorEl !== anchor) {
       this.releaseImageAnchor()
       this.imageAnchorEl = anchor
       anchor.classList.add(IMAGE_ANCHOR_CLASS)
-      anchor.appendChild(this.imageBar)
     }
+    // P0: 操作条/菜单必须挂在插件 overlay 根，绝不能进入 Typora 可编辑图片段落。
+    // overlay 根是 position:fixed 全视口层，left/top 使用视口坐标。
+    if (this.imageBar.parentElement !== this.root) this.root.appendChild(this.imageBar)
     this.imageTarget = target
     this.imageVisible = true
+    this.rememberImageIdentity(target.element as HTMLImageElement)
     this.updateImageActions()
     this.updateImageBarState(target.element as HTMLImageElement)
     this.watchImageSize(target.element as HTMLImageElement)
@@ -1705,23 +1814,40 @@ export class ContentBlockToolbarController {
   }
 
   /**
-   * 以**实际图片矩形**为参照，写入相对锚点容器的 left/top。
-   * 不使用视口绝对坐标，因此滚动时不需要重算。
+   * 以**实际图片矩形**为参照，写入 overlay 根内的 left/top。
+   * overlay 根是 position:fixed;inset:0 的全视口层，因此 left/top 即视口坐标；
+   * 滚动时由 onEditorScroll 以单帧 rAF 重新定位，不使用轮询。
    */
   private positionImageBar(): void {
     const target = this.imageTarget
     const anchor = this.imageAnchorEl
     if (!target || !anchor || !this.imageBar.isConnected) return
     const img = target.element as HTMLImageElement
+    if (!img.isConnected) {
+      // 上传成功会重建图片节点：先按稳定身份找替代节点并继续显示，
+      // 找不到替代节点才隐藏，避免“上传完成后工具栏消失”。
+      if (this.rebindDisconnectedImage(target)) return
+      this.dropImageBar()
+      return
+    }
     const imageRect = img.getBoundingClientRect()
     const anchorRect = anchor.getBoundingClientRect()
+    const rootRect = this.root.getBoundingClientRect()
     const root = this.opts.getEditorRoot()
     const rawEditor = root?.getBoundingClientRect() ?? anchorRect
     const viewportWidth = window.innerWidth || rawEditor.right || 1024
     const viewportHeight = window.innerHeight || rawEditor.bottom || 768
     const placement = computeImageToolbarPlacement({
       imageRect,
-      anchorRect,
+      // overlay 根作为定位坐标系；其 left/top 通常为 0，但仍按真实矩形换算。
+      anchorRect: {
+        left: rootRect.left,
+        top: rootRect.top,
+        right: rootRect.right,
+        bottom: rootRect.bottom,
+        width: rootRect.width,
+        height: rootRect.height,
+      },
       editorRect: clipEditorRect(rawEditor, viewportWidth, viewportHeight),
       barWidth: this.imageBar.offsetWidth || IMAGE_BAR_FALLBACK_WIDTH,
       barHeight: this.imageBar.offsetHeight || IMAGE_BAR_FALLBACK_HEIGHT,
@@ -1796,9 +1922,19 @@ export class ContentBlockToolbarController {
       alt: img.getAttribute('alt') ?? meta,
       baseDir,
     })
+    this.imageFigureNamed = false
+    try {
+      this.imageFigureNamed = this.opts.imageAssetActions?.getFigureNameState?.(img)?.named === true
+    } catch {
+      this.imageFigureNamed = false
+    }
+    const canDownload = !!this.imageActions.remoteUrl && !!this.opts.imageAssetActions?.download
+    const canName = !!this.opts.imageAssetActions?.requestFigureName
     this.imageMoreBtn.hidden = !(this.imageActions.localPath
       || this.imageActions.remoteUrl
-      || this.imageActions.markdown)
+      || this.imageActions.markdown
+      || canDownload
+      || canName)
     if (this.imageMoreBtn.hidden) this.closeImageMenu()
   }
 
@@ -1872,6 +2008,51 @@ export class ContentBlockToolbarController {
       })
       this.imageMenu.appendChild(item)
     }
+    const assetActions = this.opts.imageAssetActions
+    const img = this.imageTarget?.element as HTMLImageElement | undefined
+    if (assetActions?.requestFigureName && img) {
+      if (this.imageFigureNamed) {
+        addItem('编辑图名…', async () => {
+          if (!assetActions.requestFigureName!(img, 'edit')) this.showImageFeedback('error', '无法定位当前图片的图名')
+        })
+        addItem('清除图名', async () => {
+          if (!assetActions.requestFigureName!(img, 'clear')) this.showImageFeedback('error', '当前图片没有可清除的图名')
+        })
+      } else {
+        addItem('设置图名…', async () => {
+          if (!assetActions.requestFigureName!(img, 'set')) this.showImageFeedback('error', '无法定位当前图片')
+        })
+      }
+    }
+    if (assetActions?.download && actions.remoteUrl && img) {
+      const targets = assetActions.downloadTargets?.() ?? ['project']
+      const run = async (
+        destination: ImageAssetMenuDestination,
+        replaceReference: boolean,
+        successText: string,
+      ): Promise<void> => {
+        const result = await assetActions.download!({
+          img,
+          url: actions.remoteUrl as string,
+          destination,
+          replaceReference,
+        })
+        this.showImageFeedback(result.ok ? 'success' : 'error', result.ok ? successText : result.message)
+      }
+      if (targets.includes('project')) {
+        addItem('下载图片', () => run('project', false, '图片已下载'))
+        addItem('下载并替换为本地引用', () => run('project', true, '已下载并替换为本地引用'))
+      }
+      if (targets.includes('library')) {
+        addItem('下载到全局图库', () => run('library', false, '已下载到全局图库'))
+      }
+      if (targets.includes('offline')) {
+        addItem('下载到离线区', () => run('offline', false, '已下载到离线区'))
+      }
+      if (targets.includes('custom')) {
+        addItem('选择目录下载…', () => run('custom', false, '图片已下载'))
+      }
+    }
     if (actions.localPath) {
       addItem('复制本地路径', () => this.copyImageText('本地路径', actions.localPath as string))
     }
@@ -1914,6 +2095,10 @@ export class ContentBlockToolbarController {
       window.clearTimeout(this.imageHideTimer)
       this.imageHideTimer = null
     }
+    if (this.imagePositionRaf !== null) {
+      try { cancelAnimationFrame(this.imagePositionRaf) } catch { /* noop */ }
+      this.imagePositionRaf = null
+    }
     this.closeImageMenu()
     if (!this.imageVisible && !this.imageAnchorEl) return
     this.imageVisible = false
@@ -1927,12 +2112,16 @@ export class ContentBlockToolbarController {
     this.unwatchImageSize()
     const anchor = this.imageAnchorEl
     this.imageAnchorEl = null
+    this.imageOrdinal = -1
+    this.imageAlt = ''
     if (!anchor) {
       this.imageBar.remove()
       return
     }
     anchor.classList.remove(IMAGE_ANCHOR_CLASS, IMAGE_SELECTED_CLASS)
-    if (this.imageBar.parentElement === anchor) this.imageBar.remove()
+    // 操作条属于插件 overlay 根：隐藏时移除，重新显示时再挂回根；
+    // 任何情况下都不把 UI 放回文档流。
+    this.imageBar.remove()
   }
 
   private clearSelectedImageAnchors(): void {
@@ -1945,11 +2134,37 @@ export class ContentBlockToolbarController {
 
   private scheduleImageHide(): void {
     if (!this.imageVisible || this.imageSelected) return
+    // Typora 上传期间会给图片加 md-on-uploading / 上传遮罩；此时鼠标可能
+    // 被遮罩接管而触发 pointerout。上传结束前不得隐藏，否则鼠标未移动
+    // 就再也没有 pointerover 把工具栏重新显示出来。
+    if (this.isBoundImageUploading()) return
     this.cancelImageHide()
     this.imageHideTimer = window.setTimeout(() => {
       this.imageHideTimer = null
       this.dropImageBar()
     }, 180)
+  }
+
+  private isBoundImageUploading(): boolean {
+    const img = this.imageTarget?.element as HTMLImageElement | undefined
+    const wrapper = img?.closest<HTMLElement>('.md-image')
+    if (!wrapper) return false
+    return wrapper.classList.contains('md-on-uploading')
+      || wrapper.querySelector('.md-image-uploading-mask-wrapper') != null
+  }
+
+  /** 滚动时只做一帧重新定位，跟随图片可视锚点；不轮询、不新增观察器。 */
+  private scheduleImagePosition(): void {
+    if (this.imagePositionRaf !== null) return
+    try {
+      this.imagePositionRaf = requestAnimationFrame(() => {
+        this.imagePositionRaf = null
+        if (!this.disposed && this.imageVisible && this.imageTarget) this.positionImageBar()
+      })
+    } catch {
+      this.imagePositionRaf = null
+      this.positionImageBar()
+    }
   }
 
   private cancelImageHide(): void {
@@ -1987,9 +2202,41 @@ export class ContentBlockToolbarController {
 
   private handlePointerOver(ev: Event): void {
     const target = resolveContentBlockTarget(ev.target, this.boundRoot)
-    this.cancelImageHide()
     if (!target) return
-    if (target.kind === 'image') this.showImageBar(target)
+    if (target.kind === 'image') {
+      this.cancelImageHide()
+      this.showImageBar(target)
+      return
+    }
+    // 进入正文/代码块不等于进入图片区域：不得取消隐藏计时，
+    // 否则鼠标移到图片旁边的文字上时操作条会一直残留。
+  }
+
+  private handlePointerOut(ev: Event): void {
+    if (!this.imageVisible) return
+    const related = (ev as PointerEvent).relatedTarget
+    // 只要指针仍在「图片 + 操作面板」整体区域内（包括图片到面板之间的空隙），
+    // 就不启动隐藏。
+    if (related instanceof Node && this.isWithinImageHoverArea(related)) return
+    if (this.imageSelected) return
+    this.scheduleImageHide()
+  }
+
+  /** 操作面板自身移出：只有离开「图片 + 面板」整体区域才隐藏。 */
+  private handleImageBarPointerLeave(ev: Event): void {
+    if (!this.imageVisible || this.imageSelected) return
+    const related = (ev as PointerEvent).relatedTarget
+    if (related instanceof Node && this.isWithinImageHoverArea(related)) return
+    this.scheduleImageHide()
+  }
+
+  /** 指针是否仍在「图片 + 操作面板」整体区域内。 */
+  private isWithinImageHoverArea(node: Node): boolean {
+    if (this.imageBar.contains(node)) return true
+    const target = this.imageTarget
+    if (!target) return false
+    if (target.element.contains(node)) return true
+    return target.block.contains(node)
   }
 
   private handlePointerDown(ev: Event): void {
@@ -2007,17 +2254,6 @@ export class ContentBlockToolbarController {
       this.clearSelectedImageAnchors()
       this.dropImageBar()
     }
-  }
-
-  private handlePointerOut(ev: Event): void {
-    if (!this.imageVisible) return
-    const related = (ev as PointerEvent).relatedTarget
-    if (related instanceof Node) {
-      if (this.imageBar.contains(related)) return
-      if (this.imageTarget?.block.contains(related)) return
-    }
-    if (this.imageSelected) return
-    this.scheduleImageHide()
   }
 
   private handleFocusOut(ev: Event): void {

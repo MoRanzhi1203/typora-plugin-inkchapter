@@ -11,7 +11,7 @@
 | 当前分支 | `archive/codeblock-fold-intermittent-repair` |
 | 当前分支 HEAD | `95f2f04` feat: bottom fold chevron for foldable code blocks |
 | 主分支实际名称 | `main`（remote HEAD 指向 `origin/main`） |
-| 远程 | `origin` → `git@github.com:MoRanzhi1203/typora-plugin-inkchapter.git` |
+| 远程 | `origin` → `git@github.com:example-owner/typora-plugin-inkchapter.git` |
 | 上游跟踪 | 当前分支与 `origin/archive/codeblock-fold-intermittent-repair` 一致 |
 | 工作区 | clean（无未提交、无未跟踪文件） |
 | 暂存区 | 空 |
