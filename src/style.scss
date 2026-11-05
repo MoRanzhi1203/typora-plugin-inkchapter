@@ -5093,3 +5093,171 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   bottom: auto;
   top: 100%;
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   V5.0 — 设置页统一外观（标题编号 / 界面 / 图片三个页面共用）
+   目标：统一分组标题、说明、控件行距；长页面滚动由框架容器负责，
+   页面内部不再制造第二个滚动区域；窄宽度下字段自动换行。
+   ══════════════════════════════════════════════════════════════════════ */
+.inkchapter-settings {
+  max-width: 960px;
+  padding: 4px 6px 56px;
+  box-sizing: border-box;
+
+  .typ-setting-title {
+    margin: 26px 0 10px;
+    padding-bottom: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.22);
+  }
+
+  .typ-setting-title:first-child {
+    margin-top: 8px;
+  }
+
+  .typ-setting-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 4px 12px;
+    padding: 9px 0 11px;
+    border-bottom: 1px dashed rgba(127, 127, 127, 0.12);
+  }
+
+  .typ-setting-item:last-child {
+    border-bottom: none;
+  }
+
+  .typ-setting-info {
+    flex: 1 1 320px;
+    min-width: 0;
+  }
+
+  .typ-setting-name {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+
+  .typ-setting-description {
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.55;
+    opacity: 0.72;
+    word-break: break-word;
+  }
+
+  .typ-setting-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  input[type='text'],
+  input[type='password'],
+  select {
+    min-width: 180px;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .inkchapter-scope-panel {
+    margin: 2px 0 4px;
+    padding: 12px 14px;
+    border: 1px solid rgba(127, 127, 127, 0.18);
+    border-radius: 10px;
+    background: rgba(127, 127, 127, 0.045);
+    min-width: 0;
+  }
+
+  .inkchapter-scope-meta {
+    font-size: 12px;
+    line-height: 1.6;
+    opacity: 0.8;
+    word-break: break-all;
+  }
+
+  .inkchapter-scope-folder {
+    opacity: 0.75;
+  }
+
+  .inkchapter-scope-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    opacity: 0.7;
+  }
+
+  .inkchapter-scope-grid {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .inkchapter-scope-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 1.1fr) minmax(108px, 0.8fr) minmax(170px, 1.5fr);
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .inkchapter-scope-label {
+    font-size: 12.5px;
+    font-weight: 500;
+    min-width: 0;
+  }
+
+  .inkchapter-scope-origin {
+    justify-self: start;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: nowrap;
+    background: rgba(127, 127, 127, 0.14);
+    opacity: 0.85;
+  }
+
+  .inkchapter-scope-input,
+  .inkchapter-scope-select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .inkchapter-scope-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .inkchapter-scope-button {
+    padding: 4px 12px;
+    border-radius: 7px;
+    border: 1px solid rgba(127, 127, 127, 0.28);
+    background: rgba(127, 127, 127, 0.08);
+    font-size: 12px;
+    line-height: 1.7;
+    cursor: pointer;
+  }
+
+  .inkchapter-scope-button:hover {
+    background: rgba(127, 127, 127, 0.16);
+  }
+}
+
+@media (max-width: 720px) {
+  .inkchapter-settings .inkchapter-scope-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .inkchapter-settings .typ-setting-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

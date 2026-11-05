@@ -7,6 +7,7 @@ import {
   findImagePathConflicts,
   inspectDirectoryUsage,
   inspectImagePathTarget,
+  resolveImageProjectDirectory,
 } from './image-path-policy'
 import { resolveImageDataPaths } from './image-data-paths'
 import type { ImageSettings } from './image-settings'
@@ -131,5 +132,17 @@ describe('inspectImagePathTarget', () => {
     await fs.writeFile(file, 'x')
     const notDirectory = await inspectImagePathTarget(file)
     expect(notDirectory.code).toBe('NOT_DIRECTORY')
+  })
+})
+
+describe('resolveImageProjectDirectory (document-scoped image placement)', () => {
+  it('resolves the document folder plus the effective resource directory', () => {
+    expect(resolveImageProjectDirectory('D:/vault/notes/chapter/doc.md', 'assets/images'))
+      .toBe(path.resolve('D:/vault/notes/chapter', 'assets/images'))
+  })
+
+  it('accepts the per-document / per-folder override directory', () => {
+    expect(resolveImageProjectDirectory('E:/standalone/solo.md', 'pictures'))
+      .toBe(path.resolve('E:/standalone', 'pictures'))
   })
 })

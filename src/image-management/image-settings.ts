@@ -95,6 +95,11 @@ export interface ImageSettings {
   /** 默认 `none`：未显式启用 GitHub 时绝不发起上传。 */
   uploadService: ImageUploadService
   autoUpload: boolean
+  /**
+   * 原生插入远程图片后，是否按文档作用域自动下载到本地并改写引用。
+   * 默认关闭：Typora 原生插入语义保持不变；只有显式开启的文档/文件夹才接管。
+   */
+  autoLocalizeOnInsert: boolean
   namingStrategy: ImageNamingStrategy
   compressionMode: ImageCompressionMode
   convertToWebp: boolean
@@ -124,6 +129,7 @@ export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   referenceMode: 'local-relative',
   uploadService: 'none',
   autoUpload: false,
+  autoLocalizeOnInsert: false,
   namingStrategy: 'timestamp-hash',
   compressionMode: 'keep',
   convertToWebp: false,
@@ -397,6 +403,7 @@ export function resolveImageSettings(
     referenceMode: resolveReferenceMode(raw?.referenceMode),
     uploadService: resolveUploadService(raw?.uploadService, resolvedProfiles),
     autoUpload: raw?.autoUpload === true,
+    autoLocalizeOnInsert: raw?.autoLocalizeOnInsert === true,
     namingStrategy: resolveNamingStrategy(raw?.namingStrategy),
     compressionMode: resolveCompressionMode(raw?.compressionMode),
     convertToWebp: raw?.convertToWebp === true,
