@@ -2147,19 +2147,27 @@ export default class extends Plugin<InkChapterSettings> {
           }
         },
         setDocumentScope: async (overrides) => {
-          await this.imageDocumentScopeService?.setDocumentScope(overrides)
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.setDocumentScope(overrides)
           this.refreshActiveImageScope()
         },
         setFolderScope: async (overrides) => {
-          await this.imageDocumentScopeService?.setFolderScope(overrides)
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.setFolderScope(overrides)
           this.refreshActiveImageScope()
         },
         clearDocumentScope: async () => {
-          await this.imageDocumentScopeService?.clearDocumentScope()
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.clearDocumentScope()
           this.refreshActiveImageScope()
         },
         clearFolderScope: async () => {
-          await this.imageDocumentScopeService?.clearFolderScope()
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.clearFolderScope()
           this.refreshActiveImageScope()
         },
       }))

@@ -438,9 +438,12 @@ export class ImageManagementSettingTab extends SettingTab {
       if (this.scopeContext) this.scopeContext.documentOverride = next
       await this.loadScopeContext()
     } catch (error) {
-      const message = (error as Error)?.message === 'NO_ACTIVE_DOCUMENT'
+      const code = (error as Error)?.message
+      const message = code === 'NO_ACTIVE_DOCUMENT'
         ? '当前没有打开的 Markdown，无法保存文档级覆盖。'
-        : '保存文档级覆盖失败。'
+        : code === 'IMAGE_SCOPE_SERVICE_UNAVAILABLE'
+          ? '图片作用域服务未就绪（请重启 Typora 后重试）。'
+          : `保存文档级覆盖失败：${code ?? 'UNKNOWN'}`
       if (this.scopePanelEl) this.scopePanelEl.textContent = message
     }
   }
@@ -566,7 +569,13 @@ export class ImageManagementSettingTab extends SettingTab {
       const overrides = this.scopeContext?.documentOverride ?? {}
       void this.host.setFolderScope(overrides)
         .then(() => this.loadScopeContext())
-        .catch(() => { if (this.scopePanelEl) this.scopePanelEl.textContent = '保存文件夹级覆盖失败。' })
+        .catch(error => {
+          if (!this.scopePanelEl) return
+          const code = (error as Error)?.message
+          this.scopePanelEl.textContent = code === 'IMAGE_SCOPE_SERVICE_UNAVAILABLE'
+            ? '图片作用域服务未就绪（请重启 Typora 后重试）。'
+            : `保存文件夹级覆盖失败：${code ?? 'UNKNOWN'}`
+        })
     }
     actions.appendChild(toFolder)
 
